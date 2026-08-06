@@ -32,6 +32,7 @@ SECRET_ENV_KEYS: dict[str, str] = {
     "GPTMAIL_API_KEY": "GPTMail API Key",
     "EMAIL_BUTLER_API_KEY": "Email Butler API Key",
     "CLOUDFLARE_API_KEY": "Cloudflare Worker 临时邮箱 API Key / ADMIN_PASSWORD",
+    "CLOUDFLARE_SIGNAL_API_KEY": "Cloudflare 封号邮件只读信号接口专用 Key",
     "CLOUDFLARE_CUSTOM_AUTH": "Cloudflare Worker 全局密码 x-custom-auth",
     "MAIL_NEST_API_KEY": "MailNest API Key",
     "CLOUDMAIL_AUTH_TOKEN": "CloudMail Authorization Token",

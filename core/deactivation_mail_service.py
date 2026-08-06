@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 
 from core import db
 from core.email_butler_client import EmailButlerClientError, scan_openai_deactivation
+from core.cf_temp_mail_client import CFTempMailError, scan_openai_deactivation as scan_cloudflare_deactivation
 
 logger = logging.getLogger(__name__)
 
@@ -59,20 +60,24 @@ def _scan(account_id: int, trigger: str) -> None:
         account = db.get_account(account_id)
         if not account:
             return
-        if str(account.get("email_source") or "").strip().lower() != "email_butler":
+        source = str(account.get("email_source") or "").strip().lower()
+        if source not in {"email_butler", "cloudflare"}:
             db.update_account_deactivation_mail(account_id, {
                 "status": "unsupported", "trigger": trigger,
-                "error": "该账号邮箱来源不是 Email Butler",
+                "error": "该账号邮箱来源暂不支持封号邮件扫描",
             })
             return
         db.update_account_deactivation_mail(account_id, {"status": "running", "trigger": trigger})
-        result = scan_openai_deactivation(account.get("email") or "", lookback_days=_LOOKBACK_DAYS)
+        if source == "email_butler":
+            result = scan_openai_deactivation(account.get("email") or "", lookback_days=_LOOKBACK_DAYS)
+        else:
+            result = scan_cloudflare_deactivation(account.get("email") or "", lookback_days=_LOOKBACK_DAYS)
         db.update_account_deactivation_mail(account_id, {
             "status": "success",
             "trigger": trigger,
             **result,
         })
-    except EmailButlerClientError as exc:
+    except (EmailButlerClientError, CFTempMailError) as exc:
         db.update_account_deactivation_mail(account_id, {
             "status": "failed", "trigger": trigger, "error": str(exc),
         })
@@ -92,10 +97,10 @@ def enqueue(account_id: int, trigger: str = "manual") -> dict:
     account = db.get_account(account_id)
     if not account:
         return {"accepted": False, "error": "账号不存在"}
-    if str(account.get("email_source") or "").strip().lower() != "email_butler":
+    if str(account.get("email_source") or "").strip().lower() not in {"email_butler", "cloudflare"}:
         db.update_account_deactivation_mail(account_id, {
             "status": "unsupported", "trigger": trigger,
-            "error": "该账号邮箱来源不是 Email Butler",
+            "error": "该账号邮箱来源暂不支持封号邮件扫描",
         })
         return {"accepted": False, "unsupported": True, "error": "该账号邮箱来源不支持邮件扫描"}
     with _LOCK:
@@ -120,7 +125,7 @@ def enqueue_due_accounts() -> dict:
     started = 0
     skipped = 0
     for account in db.list_accounts(limit=5000, archived=False):
-        if str(account.get("email_source") or "").strip().lower() != "email_butler":
+        if str(account.get("email_source") or "").strip().lower() not in {"email_butler", "cloudflare"}:
             continue
         checked = _parse_time(account.get("deactivation_mail_checked_at"))
         if checked and (now - checked).total_seconds() < _INTERVAL_SECONDS:

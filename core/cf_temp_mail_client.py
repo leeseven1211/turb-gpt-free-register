@@ -8,9 +8,12 @@
 from __future__ import annotations
 
 import logging
+import json
+import os
 import re
 import secrets
 import string
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -18,7 +21,8 @@ from datetime import datetime, timezone
 from email import policy
 from email.header import decode_header
 from email.parser import BytesParser
-from email.utils import parsedate_to_datetime
+from email.utils import parseaddr, parsedate_to_datetime
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -46,10 +50,72 @@ class CFTempMailAccount:
 
 
 _CONTEXT_CACHE: dict[str, CFTempMailAccount] = {}
+_STATE_LOCK = threading.RLock()
+_DEFAULT_STATE_FILE = Path(__file__).resolve().parent.parent / "accounts" / "cloudflare_mailboxes.json"
 
 
 def _cache_key(email: str) -> str:
     return str(email or "").strip().lower()
+
+
+def _state_file() -> Path:
+    return Path(os.environ.get("CLOUDFLARE_MAILBOX_STATE_FILE") or _DEFAULT_STATE_FILE)
+
+
+def _load_state() -> dict[str, dict]:
+    path = _state_file()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text("utf-8"))
+    except Exception:
+        return {}
+    rows = data.get("mailboxes") if isinstance(data, dict) else {}
+    return {str(k).lower(): dict(v) for k, v in rows.items() if isinstance(v, dict)} if isinstance(rows, dict) else {}
+
+
+def _save_state(rows: dict[str, dict]) -> None:
+    path = _state_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"version": 1, "mailboxes": rows}, fh, ensure_ascii=False, indent=2, sort_keys=True)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def _persist_account(account: CFTempMailAccount) -> None:
+    if not account.email or not account.jwt:
+        return
+    with _STATE_LOCK:
+        rows = _load_state()
+        rows[_cache_key(account.email)] = {
+            "email": account.email,
+            "jwt": account.jwt,
+            "domain": account.domain,
+            "created_at": float(account.created_at or time.time()),
+        }
+        _save_state(rows)
+
+
+def _persisted_account(email: str) -> CFTempMailAccount | None:
+    with _STATE_LOCK:
+        row = _load_state().get(_cache_key(email))
+    if not row or not str(row.get("jwt") or "").strip():
+        return None
+    return CFTempMailAccount(
+        email=str(row.get("email") or email),
+        jwt=str(row.get("jwt") or ""),
+        domain=str(row.get("domain") or ""),
+        created_at=float(row.get("created_at") or 0),
+    )
 
 
 def _cfg_str(name: str, default: str = "") -> str:
@@ -91,6 +157,10 @@ def _auth_mode() -> str:
 
 def _api_key() -> str:
     return _cfg_str("CLOUDFLARE_API_KEY")
+
+
+def _signal_api_key() -> str:
+    return _cfg_str("CLOUDFLARE_SIGNAL_API_KEY")
 
 
 def _custom_auth() -> str:
@@ -229,6 +299,42 @@ def _request(
     return payload
 
 
+def _request_signal(email: str, lookback_days: int) -> dict:
+    key = _signal_api_key()
+    if not key:
+        raise CFTempMailError("Cloudflare 封号信号接口 Key 未配置")
+    path = _normalize_path(
+        _cfg_str("CLOUDFLARE_SIGNAL_PATH", "/signals/scan"),
+        "/signals/scan",
+    )
+    url = _base_url() + path
+    try:
+        response = requests.post(
+            url,
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "x-admin-auth": key,
+            },
+            json={"email": _cache_key(email), "lookback_days": lookback_days},
+            timeout=_timeout(),
+        )
+    except requests.RequestException as exc:
+        raise CFTempMailError(f"Cloudflare 封号信号请求失败: {type(exc).__name__}: {exc}") from exc
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise CFTempMailError(
+            f"Cloudflare 封号信号响应不是 JSON: HTTP {response.status_code}"
+        ) from exc
+    if response.status_code >= 400 or not isinstance(payload, dict):
+        message = str(payload.get("error") or payload.get("message") or payload)[:200] if isinstance(payload, dict) else str(payload)[:200]
+        raise CFTempMailError(
+            f"Cloudflare 封号信号请求失败: HTTP {response.status_code}; {message}"
+        )
+    return payload
+
+
 def _pick_list_payload(data: Any) -> list[dict]:
     if isinstance(data, list):
         return [item for item in data if isinstance(item, dict)]
@@ -303,11 +409,15 @@ def pick_account() -> CFTempMailAccount:
     """创建并缓存一个 Cloudflare 临时邮箱。"""
     account = create_address()
     _CONTEXT_CACHE[_cache_key(account.email)] = account
+    _persist_account(account)
     return account
 
 
 def get_account_context(email: str) -> CFTempMailAccount | None:
-    return _CONTEXT_CACHE.get(_cache_key(email))
+    account = _CONTEXT_CACHE.get(_cache_key(email)) or _persisted_account(email)
+    if account:
+        _CONTEXT_CACHE[_cache_key(email)] = account
+    return account
 
 
 def release_account(email: str, status: str = "available", note: str | None = None) -> None:
@@ -558,6 +668,110 @@ def get_message_detail(jwt: str, message_id: str) -> dict:
     if last_error:
         logger.debug("[Cloudflare] 邮件详情获取失败 id=%s: %s", message_id, last_error)
     return {}
+
+
+def _plain_signal_text(value: Any) -> str:
+    text = re.sub(r"<[^>]+>", " ", str(value or ""))
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def _is_openai_deactivation(item: dict, target_email: str) -> tuple[bool, dict]:
+    probe = _otp_item(item)
+    sender = parseaddr(str(probe.get("from") or ""))[1].strip().lower()
+    sender_domain = sender.rsplit("@", 1)[-1] if "@" in sender else ""
+    if sender_domain != "openai.com" and not sender_domain.endswith(".openai.com"):
+        return False, probe
+    addresses = set(_message_addresses(item))
+    target = _cache_key(target_email)
+    if addresses and target not in addresses:
+        return False, probe
+    subject = _plain_signal_text(probe.get("subject"))
+    content = _plain_signal_text("\n".join([
+        str(probe.get("subject") or ""),
+        str(probe.get("text") or ""),
+        str(probe.get("html") or ""),
+    ]))
+    strong = any(phrase in content for phrase in (
+        "deactivating your access to our services immediately",
+        "your openai account has been deactivated",
+        "your openai account was deactivated",
+        "we have deactivated your openai account",
+    ))
+    subject_signal = "openai" in subject and any(word in subject for word in ("deactivat", "suspend", "disabled"))
+    body_signal = (
+        any(word in content for word in ("policy violations", "as a result of these violations"))
+        and any(word in content for word in ("deactivat", "suspend"))
+        and "appeal" in content
+    )
+    return strong or (subject_signal and body_signal), probe
+
+
+def scan_openai_deactivation(email: str, *, lookback_days: int = 120) -> dict:
+    """Scan Cloudflare mail without touching OpenAI AT.
+
+    Prefer the dedicated server-side signal endpoint so historical accounts do
+    not depend on a process-local address JWT. The JWT path remains a safe
+    fallback for deployments that have not enabled that endpoint yet.
+    """
+    target = _cache_key(email)
+    lookback = max(1, min(int(lookback_days or 120), 365))
+    if _signal_api_key():
+        payload = _request_signal(target, lookback)
+        return {
+            "ok": bool(payload.get("ok", True)),
+            "detected": bool(payload.get("detected")),
+            "checked_at": str(payload.get("checked_at") or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")),
+            "received_at": str(payload.get("received_at") or ""),
+            "subject": str(payload.get("subject") or "")[:300],
+            "sender": str(payload.get("sender") or "")[:200],
+            "message_id": str(payload.get("message_id") or "")[:300],
+            "confidence": "high" if payload.get("detected") else "none",
+        }
+    account = get_account_context(target)
+    if account is None or not account.jwt:
+        raise CFTempMailError(f"Cloudflare 邮箱持久凭据缺失: {target}")
+    since_ts = time.time() - lookback * 86400
+    matches: list[dict] = []
+    for offset in range(0, 500, 100):
+        messages = list_messages(account.jwt, limit=100, offset=offset)
+        if not messages:
+            break
+        page_has_recent = False
+        for item in messages:
+            timestamp = _message_timestamp(item)
+            if timestamp is not None and timestamp < since_ts:
+                continue
+            page_has_recent = True
+            candidate = item
+            matched, probe = _is_openai_deactivation(candidate, target)
+            if not matched and (not probe.get("text") and not probe.get("html")):
+                message_id = _message_id(item)
+                detail = get_message_detail(account.jwt, message_id) if message_id else {}
+                if detail:
+                    candidate = {**item, **detail}
+                    matched, probe = _is_openai_deactivation(candidate, target)
+            if not matched:
+                continue
+            matches.append({
+                "received_at": datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat().replace("+00:00", "Z") if timestamp else str(candidate.get("created_at") or candidate.get("date") or ""),
+                "subject": str(probe.get("subject") or "")[:300],
+                "sender": parseaddr(str(probe.get("from") or ""))[1][:200],
+                "message_id": _message_id(candidate)[:300],
+            })
+        if not page_has_recent or len(messages) < 100:
+            break
+    matches.sort(key=lambda item: str(item.get("received_at") or ""), reverse=True)
+    latest = matches[0] if matches else {}
+    return {
+        "ok": True,
+        "detected": bool(matches),
+        "checked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "received_at": latest.get("received_at") or "",
+        "subject": latest.get("subject") or "",
+        "sender": latest.get("sender") or "",
+        "message_id": latest.get("message_id") or "",
+        "confidence": "high" if matches else "none",
+    }
 
 
 def fetch_latest_otp(

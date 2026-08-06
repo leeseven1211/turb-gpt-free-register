@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from core import cf_temp_mail_client as client
@@ -7,6 +9,11 @@ from core import cf_temp_mail_client as client
 
 class CFTempMailClientTests(unittest.TestCase):
     def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.state_patch = patch.object(client, "_state_file", return_value=Path(self.temp_dir.name) / "cloudflare_mailboxes.json")
+        self.state_patch.start()
+        self.addCleanup(self.state_patch.stop)
         client._CONTEXT_CACHE.clear()
         client._DOMAIN_COUNTER = 0
 
@@ -128,6 +135,61 @@ class CFTempMailClientTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(client.CFTempMailError, "CLOUDFLARE_API_KEY"):
                 client.pick_account()
+
+    def test_persisted_mailbox_survives_release_and_process_cache_clear(self):
+        account = client.CFTempMailAccount(
+            email="persist@mail.example.com", jwt="mailbox-jwt", domain="mail.example.com", created_at=123,
+        )
+        client._persist_account(account)
+        client._CONTEXT_CACHE[account.email] = account
+        client.release_account(account.email, status="used")
+        restored = client.get_account_context(account.email)
+        self.assertIsNotNone(restored)
+        self.assertEqual(restored.jwt, "mailbox-jwt")
+        self.assertEqual((Path(self.temp_dir.name) / "cloudflare_mailboxes.json").stat().st_mode & 0o777, 0o600)
+
+    def test_scan_openai_deactivation_matches_notice(self):
+        client._persist_account(client.CFTempMailAccount(email="user@mail.example.com", jwt="mailbox-jwt"))
+        message = {
+            "id": "m-1",
+            "address": "user@mail.example.com",
+            "from": "OpenAI <noreply@openai.com>",
+            "subject": "Notice regarding your OpenAI account",
+            "created_at": "2026-08-06 09:00:00",
+            "text": "As a result of these violations, we are deactivating your access to our services immediately. Initiate an appeal.",
+        }
+        with patch.object(client._email_cfg, "CLOUDFLARE_SIGNAL_API_KEY", "", create=True), patch.object(
+            client, "list_messages", side_effect=[[message], []]
+        ):
+            result = client.scan_openai_deactivation("user@mail.example.com", lookback_days=120)
+        self.assertTrue(result["detected"])
+        self.assertEqual(result["sender"], "noreply@openai.com")
+        self.assertNotIn("text", result)
+
+    @patch("core.cf_temp_mail_client.requests.post")
+    def test_scan_openai_deactivation_uses_dedicated_signal_endpoint(self, post_mock):
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "ok": True,
+            "detected": True,
+            "confidence": "high",
+            "checked_at": "2026-08-06T10:00:00Z",
+            "received_at": "2026-08-05 09:00:00",
+            "subject": "Notice regarding your OpenAI account",
+            "sender": "noreply@openai.com",
+            "message_id": "mail-1",
+        }
+        post_mock.return_value = response
+        with patch.object(client._email_cfg, "CLOUDFLARE_API_BASE", "https://mail.example.com/compat/temp-mail/v1", create=True), patch.object(
+            client._email_cfg, "CLOUDFLARE_SIGNAL_API_KEY", "signal-key", create=True
+        ), patch.object(client._email_cfg, "CLOUDFLARE_SIGNAL_PATH", "/signals/scan", create=True):
+            result = client.scan_openai_deactivation("old@mail.example.com", lookback_days=120)
+
+        self.assertTrue(result["detected"])
+        args, kwargs = post_mock.call_args
+        self.assertEqual(args[0], "https://mail.example.com/compat/temp-mail/v1/signals/scan")
+        self.assertEqual(kwargs["headers"]["x-admin-auth"], "signal-key")
+        self.assertEqual(kwargs["json"], {"email": "old@mail.example.com", "lookback_days": 120})
 
 
     @patch("core.cf_temp_mail_client.requests.request")

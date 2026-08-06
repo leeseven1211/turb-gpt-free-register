@@ -345,6 +345,15 @@ EDITABLE_FIELDS = [
         "storage": "env", "secret": True,
     },
     {
+        "key": "CLOUDFLARE_SIGNAL_API_KEY", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "Cloudflare 封号信号 Key", "help": "仅用于查询封号邮件信号，不返回邮件正文；建议使用独立 Key",
+        "storage": "env", "secret": True,
+    },
+    {
+        "key": "CLOUDFLARE_SIGNAL_PATH", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "Cloudflare 封号信号路径", "help": "默认 /signals/scan",
+    },
+    {
         "key": "CLOUDFLARE_AUTH_MODE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
         "label": "Cloudflare 鉴权模式", "help": "none / bearer / x-api-key / x-admin-auth / query-key",
     },

@@ -2050,7 +2050,7 @@
         </div>
         <div class="acc-v2-btn-group">
           <span class="acc-v2-btn-group-title">批量</span>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedDeactivationMailV2" disabled title="仅扫描 Email Butler 邮箱中的 OpenAI 封号通知；不会刷新 AT">查封号邮件</button>
+          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedDeactivationMailV2" disabled title="扫描 Email Butler / Cloudflare 邮箱中的 OpenAI 封号通知；不会刷新 AT">查封号邮件</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnNoteSelectedAccountsV2" disabled title="给选中的账号统一设置备注，留空可清空备注">备注</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedLinesV2" disabled title="复制选中账号的完整整行，每个账号一行">复制行</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnDownloadSelectedTxtV2" disabled title="把选中账号的完整整行保存为 TXT 文件，每个账号一行">下载TXT</button>
@@ -3246,12 +3246,12 @@ function _deactivationMailCell(r) {
   const subject = r.deactivation_mail_subject || '';
   const sender = r.deactivation_mail_sender || '';
   const err = r.deactivation_mail_error || '';
-  const supported = (r.email_source || '').toString().toLowerCase() === 'email_butler';
+  const supported = ['email_butler','cloudflare'].includes((r.email_source || '').toString().toLowerCase());
   let badge = '<span class="pill status-used">待扫描</span>';
   let title = '尚未扫描';
   if (!supported || status === 'unsupported') {
     badge = '<span class="pill status-used">不支持</span>';
-    title = err || '当前仅支持 Email Butler 邮箱来源';
+    title = err || '当前邮箱来源暂不支持扫描';
   } else if (detected) {
     badge = '<span class="pill status-failed">已收到</span>';
     title = [received && `收件: ${received}`, sender && `发件人: ${sender}`, subject].filter(Boolean).join('；');
@@ -4086,9 +4086,9 @@ async function checkSelectedDeactivationMail() {
   if (!ids.length) { showToast('请先选择账号'); return; }
   const eligible = ids.filter(id => {
     const acc = ACCOUNTS.find(a => Number(a.id) === Number(id));
-    return acc && (acc.email_source || '').toString().toLowerCase() === 'email_butler';
+    return acc && ['email_butler','cloudflare'].includes((acc.email_source || '').toString().toLowerCase());
   });
-  if (!eligible.length) { showToast('选中账号中没有 Email Butler 邮箱来源'); return; }
+  if (!eligible.length) { showToast('选中账号中没有支持扫描的邮箱来源'); return; }
   const btn = $('#btnCheckSelectedDeactivationMailV2');
   const old = btn.textContent;
   btn.disabled = true;
