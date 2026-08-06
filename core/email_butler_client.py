@@ -6,7 +6,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from urllib.parse import quote
 
 import requests
@@ -54,12 +54,6 @@ def _api_key(override: str | None = None) -> str:
     return key
 
 
-def _service_root(override: str | None = None) -> str:
-    """Return the Email Butler service root for legacy safe pool endpoints."""
-    base = _api_base(override)
-    return base[:-3].rstrip("/") if base.endswith("/v1") else base
-
-
 def _request_timeout() -> int:
     return max(3, int(getattr(_email_cfg, "EMAIL_BUTLER_REQUEST_TIMEOUT", 20) or 20))
 
@@ -72,13 +66,11 @@ def _request(
     json: dict | None = None,
     api_base: str | None = None,
     api_key: str | None = None,
-    service_root: bool = False,
 ) -> dict:
-    root = _service_root(api_base) if service_root else _api_base(api_base)
     try:
         response = requests.request(
             method,
-            root + path,
+            _api_base(api_base) + path,
             params=params,
             json=json,
             headers={
@@ -127,81 +119,6 @@ def test_connection(*, api_base: str | None = None, api_key: str | None = None) 
         "consumer": str(policy.get("consumer") or ""),
         "service": str(policy.get("service") or ""),
         "capabilities": capabilities,
-    }
-
-
-def _parse_api_time(value: object) -> datetime | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-        parsed = datetime.fromisoformat(text)
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
-    except ValueError:
-        return None
-
-
-def _effective_pool_status(account: dict, policy: dict, now: datetime) -> tuple[str, str, str]:
-    """Evaluate availability using this client's service/cooldown policy."""
-    if bool(account.get("disabled")):
-        return "disabled", "已禁用", ""
-    if bool(account.get("bad")):
-        return "bad", "异常", ""
-    leased_until = _parse_api_time(account.get("leased_until"))
-    if bool(account.get("leased")) and (leased_until is None or leased_until > now):
-        return "leased", "租用中", str(account.get("leased_until") or "")
-
-    service = str(policy.get("service") or policy.get("registered_service") or "").strip().lower()
-    tags = {str(item or "").strip().lower() for item in account.get("service_tags") or []}
-    exclude_registered = bool(policy.get("exclude_registered_service", True))
-    if service and exclude_registered and service in tags:
-        return "registered", f"已注册 {service}", ""
-
-    cooldown_minutes = max(0, int(policy.get("cooldown_minutes") or 0))
-    latest = max(
-        filter(None, (
-            _parse_api_time(account.get("last_used_at")),
-            _parse_api_time(account.get("last_success_at")),
-            _parse_api_time(account.get("last_failure_at")),
-        )),
-        default=None,
-    )
-    if latest and cooldown_minutes:
-        cooldown_until = latest + timedelta(minutes=cooldown_minutes)
-        if cooldown_until > now:
-            return "cooldown", "冷却中", cooldown_until.isoformat().replace("+00:00", "Z")
-    return "available", "可用", ""
-
-
-def fetch_pool_snapshot() -> dict:
-    """Return the safe Email Butler pool view, evaluated for the configured client key."""
-    me = _request("GET", "/me")
-    rows_payload = _request("GET", "/api/automation/accounts", service_root=True)
-    policy = me.get("policy") if isinstance(me.get("policy"), dict) else {}
-    now = datetime.now(timezone.utc)
-    rows: list[dict] = []
-    counts = {"total": 0, "available": 0, "leased": 0, "cooldown": 0, "registered": 0, "bad": 0, "disabled": 0}
-    for raw in rows_payload.get("accounts") or []:
-        if not isinstance(raw, dict):
-            continue
-        status, label, until = _effective_pool_status(raw, policy, now)
-        item = dict(raw)
-        item["effective_status"] = status
-        item["effective_status_label"] = label
-        item["effective_until"] = until
-        rows.append(item)
-        counts["total"] += 1
-        counts[status] = counts.get(status, 0) + 1
-    return {
-        "ok": True,
-        "name": str(me.get("name") or "Email Butler"),
-        "policy": policy,
-        "summary": counts,
-        "accounts": rows,
     }
 
 

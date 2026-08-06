@@ -12,7 +12,7 @@ This fork keeps deployment-specific integration separate from upstream `main`.
 ## Local integrations
 
 - CloakBrowser Selenium compatibility fixes.
-- Email Butler mail source and pool view.
+- Email Butler mail source.
 - Host-level WARP egress configuration is managed outside Git by systemd and is
   documented in the service catalog.
 
