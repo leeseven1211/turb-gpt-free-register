@@ -98,13 +98,29 @@ class CloakElement:
             except Exception:
                 self.page.keyboard.press("Control+A")
             return
+        if "\ue003" in text or "backspace" in lower:
+            # Selenium Keys.BACKSPACE：真实退格键。
+            self.page.keyboard.press("Backspace")
+            return
+        if "\ue007" in text or "enter" in lower:
+            self.page.keyboard.press("Enter")
+            return
+        # 关键修复：不能用 fill()——它是覆盖式填入，逐字符调用会互相覆盖；
+        # 改用真实键盘输入逐字符追加，行为与 Selenium send_keys 一致。
         try:
-            if self.locator is not None:
-                self.locator.fill(text, timeout=10000)
-            else:
-                self.handle.fill(text, timeout=10000)
+            self.page.keyboard.press("End")
         except Exception:
+            pass
+        try:
             self.page.keyboard.type(text, delay=35)
+        except Exception:
+            try:
+                if self.locator is not None:
+                    self.locator.fill(text, timeout=10000)
+                else:
+                    self.handle.fill(text, timeout=10000)
+            except Exception:
+                pass
 
     def get_attribute(self, name: str) -> str | None:
         try:
@@ -249,8 +265,17 @@ class CloakSeleniumDriver:
                 cleaned.append(item)
         return first_el, cleaned
 
-    @staticmethod
-    def _unwrap_js_result(page, handle: Any) -> Any:
+    @classmethod
+    def _unwrap_js_result(cls, page, handle: Any, *, _depth: int = 0) -> Any:
+        """把 Playwright JSHandle 递归转换成 Selenium 风格返回值。
+
+        Selenium 的 ``execute_script`` 可以返回嵌套在 dict/list 里的 WebElement；
+        Playwright 对这类对象直接调用 ``json_value()`` 时会把 DOM 节点静默变成
+        空对象。密码页会返回 ``{input: element, button: element}``，因此必须逐项
+        解包并把其中的 ElementHandle 转成 CloakElement。
+        """
+        if _depth > 12:
+            raise RuntimeError("execute_script 返回值嵌套过深")
         try:
             element = handle.as_element()
         except Exception:
@@ -258,7 +283,26 @@ class CloakSeleniumDriver:
         if element is not None:
             return CloakElement(page, handle=element)
         try:
-            return handle.json_value()
+            value_type = handle.evaluate("v => v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v")
+            if value_type not in ("array", "object"):
+                return handle.json_value()
+
+            keys = handle.evaluate("v => Object.keys(v)") or []
+            properties = handle.get_properties()
+            if value_type == "array":
+                indexed = []
+                for key in keys:
+                    if str(key).isdigit():
+                        indexed.append((int(key), properties[str(key)]))
+                indexed.sort(key=lambda item: item[0])
+                return [cls._unwrap_js_result(page, child, _depth=_depth + 1) for _, child in indexed]
+
+            result = {}
+            for key in keys:
+                child = properties.get(str(key))
+                if child is not None:
+                    result[str(key)] = cls._unwrap_js_result(page, child, _depth=_depth + 1)
+            return result
         except Exception as exc:
             msg = str(exc)
             if "Execution context was destroyed" in msg or "navigation" in msg.lower():
