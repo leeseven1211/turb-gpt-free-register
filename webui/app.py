@@ -117,7 +117,7 @@ def _compact_account_for_list(row: dict) -> dict:
         # Codex / Agent 状态提示。
         "codex_error", "codex_agent_message", "codex_agent_runtime_id",
         "codex_agent_sub2api_url", "codex_agent_sub2api_mode", "codex_agent_sub2api_total",
-        # Email Butler deactivation signal cache (never includes mail body/secrets).
+        # Mail-provider deactivation signal cache (never includes mail body/secrets).
         "deactivation_mail_checked_at", "deactivation_mail_received_at",
         "deactivation_mail_subject", "deactivation_mail_sender", "deactivation_mail_error",
         "deactivation_mail_confidence", "deactivation_mail_scan_trigger",

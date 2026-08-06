@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Cached OpenAI deactivation-mail scans via Email Butler.
+"""Cached OpenAI deactivation-mail scans via supported mailbox providers.
 
 This path never reads or refreshes OpenAI access tokens. It only asks the
 mail service for a high-confidence mail signal and writes a small safe result
