@@ -313,7 +313,21 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "EMAIL_SOURCE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
-        "label": "邮箱来源", "help": "可填单个或多个，逗号分隔并按顺序兜底：outlook,generic_api,cloudflare_domain,cloudflare,gptmail,mailnest,cloudmail",
+        "label": "邮箱来源", "help": "可填单个或多个，逗号分隔并按顺序兜底：outlook,generic_api,cloudflare_domain,cloudflare,email_butler,gptmail,mailnest,cloudmail",
+    },
+    {
+        "key": "EMAIL_BUTLER_API_BASE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "Email Butler API 地址", "help": "通用 /v1 根地址，例如 http://127.0.0.1:8788/v1",
+        "storage": "env",
+    },
+    {
+        "key": "EMAIL_BUTLER_API_KEY", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "Email Butler API Key", "help": "专用多客户端 Key；策略在 Butler 端绑定，保存在 .env",
+        "storage": "env", "secret": True,
+    },
+    {
+        "key": "EMAIL_BUTLER_REQUEST_TIMEOUT", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
+        "label": "Email Butler 请求超时(秒)", "help": "单次 HTTP 请求超时，默认 20 秒",
     },
     {
         "key": "GPTMAIL_API_KEY", "file": "email.py", "type": "str", "group": "邮箱 / OTP",

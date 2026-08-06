@@ -5051,6 +5051,7 @@ function emailConfigSectionForKey(key) {
     return ['通用邮箱 / OTP', '邮箱来源选择、OTP 等待参数、手动邮箱等通用设置'];
   }
   if (key.startsWith('GPTMAIL_')) return ['GPTMail', 'GPTMail 临时邮箱 API 配置'];
+  if (key.startsWith('EMAIL_BUTLER_')) return ['Email Butler', 'Email Butler 通用 /v1 发号、收信与释放配置'];
   if (key.startsWith('MAIL_NEST_')) return ['MailNest', 'MailNest / 迈巢临时邮箱 API 配置'];
   if (key.startsWith('CLOUDMAIL_')) return ['CloudMail', 'CloudMail 域名随机邮箱、Token 和收信 API 配置'];
   if (key.startsWith('OUTLOOK_')) return ['Outlook 邮箱池', 'Outlook 邮箱池和取件模式配置'];
@@ -5421,6 +5422,8 @@ function renderSectionedConfigSectionV2(name, fields, sectionForKey, preferred, 
   let extra = '';
   if (name === '邮箱 / OTP' && active === 'CloudMail') {
     extra = renderCloudMailTokenToolsV2();
+  } else if (name === '邮箱 / OTP' && active === 'Email Butler') {
+    extra = renderEmailButlerToolsV2();
   }
   return `
     <section class="config-section-v2" id="${esc(slug)}" data-config-section="${esc(name)}">
@@ -5458,6 +5461,53 @@ function renderCloudMailTokenToolsV2() {
       <div id="cloudMailTokenStatusV2" class="muted" style="font-size:12px;">未生成</div>
     </div>
   `;
+}
+function renderEmailButlerToolsV2() {
+  const hasButler = CONFIG.some(f => String(f.key || '').startsWith('EMAIL_BUTLER_'));
+  if (!hasButler) return '';
+  return `
+    <div class="roxy-workspace-box" style="margin-top:18px;">
+      <div>
+        <b>Email Butler 连接</b>
+        <div class="hint">使用当前表单中的 /v1 URL 与 API Key 验证客户端策略和发号/收信/释放能力，不会租用邮箱。</div>
+      </div>
+      <div class="action-cell">
+        <button class="btn primary" type="button" id="btnTestEmailButlerV2">测试连接</button>
+      </div>
+      <div id="emailButlerStatusV2" class="muted" style="font-size:12px;">未测试</div>
+    </div>
+  `;
+}
+function bindEmailButlerToolsV2() {
+  const btn = $('#btnTestEmailButlerV2');
+  if (btn && !btn.dataset.bound) {
+    btn.dataset.bound = '1';
+    btn.addEventListener('click', () => testEmailButlerV2());
+  }
+}
+async function testEmailButlerV2() {
+  const btn = $('#btnTestEmailButlerV2');
+  const status = $('#emailButlerStatusV2');
+  if (!btn || !status) return;
+  btn.disabled = true;
+  status.textContent = '正在调用 Email Butler /v1/me...';
+  try {
+    const r = await api('/api/email-butler/test-connection', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        api_base: _configValueV2('EMAIL_BUTLER_API_BASE').trim(),
+        api_key: _configValueV2('EMAIL_BUTLER_API_KEY').trim(),
+      }),
+    });
+    const policy = [r.consumer, r.service].filter(Boolean).join(' / ') || '未绑定策略';
+    status.innerHTML = `✅ 连接成功：${esc(r.name || 'Email Butler')} · ${esc(policy)} · ${Number((r.capabilities || []).length)} 项能力`;
+    showToast('Email Butler 连接成功');
+  } catch(e) {
+    status.innerHTML = `<span style="color:var(--red);">连接失败：${esc(e.message)}</span>`;
+  } finally {
+    btn.disabled = false;
+  }
 }
 function bindCloudMailToolsV2() {
   const genBtn = $('#btnGenCloudMailTokenV2');
@@ -5632,7 +5682,7 @@ function renderConfigSectionV2(name, fields) {
       name,
       fields,
       emailConfigSectionForKey,
-      ['通用邮箱 / OTP', 'GPTMail', 'MailNest', 'CloudMail', 'Outlook 邮箱池', 'Cloudflare 临时邮箱', 'Cloudflare 域名邮箱', '其他邮箱配置'],
+      ['通用邮箱 / OTP', 'Email Butler', 'GPTMail', 'MailNest', 'CloudMail', 'Outlook 邮箱池', 'Cloudflare 临时邮箱', 'Cloudflare 域名邮箱', '其他邮箱配置'],
       { get: () => CONFIG_EMAIL_ACTIVE_SECTION_V2, set: v => { CONFIG_EMAIL_ACTIVE_SECTION_V2 = v; } },
       'email-section-v2'
     );
@@ -5672,6 +5722,7 @@ function renderConfigLayoutV2() {
   if (sectionMount) renderRegistrationEpSelect(sectionMount, 'configRegistrationSelectV2');
   bindRoxyWorkspaceToolsV2();
   bindCloudMailToolsV2();
+  bindEmailButlerToolsV2();
 }
 function scrollToConfigSection(slug) {
   const el = document.getElementById(slug);

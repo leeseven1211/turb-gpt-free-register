@@ -431,6 +431,19 @@ def save_account_data(
     )
     logger.info(f"[Save] 账号已写入 DB, id={row_id}, email={email}")
     logger.info(f"[Save] 批次归档目录: {batch_folder}")
+    # Email Butler 使用租约；账号持久化成功后再以 succeeded 释放，
+    # 由专用 API Key 策略自动写入 service=openai 标签并避免后续重复租用。
+    if str(email_source or "").strip() == "email_butler":
+        try:
+            from core.email_butler_client import release_account
+
+            release_account(email, status="succeeded", note="Turb 注册成功并已持久化")
+        except Exception as exc:
+            # 账号已经安全落库，释放失败不能反向判定注册失败；租约会按 TTL 自动回收。
+            logger.warning(
+                "[EmailButler] 注册成功后释放租约失败（不影响账号落库）: %s: %s",
+                type(exc).__name__, str(exc)[:180],
+            )
     # session 中的 account.planType 不能说明 Plus 试用资格。账号落库后只负责
     # 入队，由专用线程池异步查询并回写，避免占用注册工作线程。
     try:

@@ -2104,6 +2104,19 @@ def create_app(auth_code: str | None = None) -> Flask:
                 "workers": workers,
             })
         sources = parse_email_sources(_email_cfg.EMAIL_SOURCE)
+        if "email_butler" in sources:
+            api_base = str(getattr(_email_cfg, "EMAIL_BUTLER_API_BASE", "") or "").strip()
+            api_key = str(getattr(_email_cfg, "EMAIL_BUTLER_API_KEY", "") or "").strip()
+            if not api_base:
+                return jsonify({
+                    "ok": False,
+                    "error": "已选择 email_butler 邮箱来源，请填写 Email Butler API 地址（配置 → 邮箱 / OTP）。",
+                }), 400
+            if not api_key:
+                return jsonify({
+                    "ok": False,
+                    "error": "已选择 email_butler 邮箱来源，请填写 Email Butler API Key（配置 → 邮箱 / OTP）。",
+                }), 400
         if "gptmail" in sources:
             api_key = str(getattr(_email_cfg, "GPTMAIL_API_KEY", "") or "").strip()
             if not api_key:
@@ -2153,7 +2166,7 @@ def create_app(auth_code: str | None = None) -> Flask:
                     "ok": False,
                     "error": "已选择 cloudmail 邮箱来源，请填写 CloudMail Token（配置 → 邮箱 / OTP）。",
                 }), 400
-        if "gptmail" in sources or "mailnest" in sources or "cloudmail" in sources or "cloudflare" in sources:
+        if "gptmail" in sources or "mailnest" in sources or "cloudmail" in sources or "cloudflare" in sources or "email_butler" in sources:
             # 临时邮箱在任务开始时动态生成，不需要本地邮箱池容量提示。
             warning = ""
         elif "cloudflare_domain" in sources:
@@ -2360,6 +2373,21 @@ def create_app(auth_code: str | None = None) -> Flask:
     @app.get("/api/config")
     def api_config_get():
         return jsonify(config_editor.get_config())
+
+    @app.post("/api/email-butler/test-connection")
+    def api_email_butler_test_connection():
+        """用表单当前值验证 Email Butler URL、Key、策略与必要能力，不回显 Key。"""
+        data = request.get_json(silent=True) or {}
+        try:
+            from core.email_butler_client import test_connection
+
+            result = test_connection(
+                api_base=str(data.get("api_base") or "").strip() or None,
+                api_key=str(data.get("api_key") or "").strip() or None,
+            )
+            return jsonify(result)
+        except Exception as exc:
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:260]}"}), 400
 
     @app.post("/api/cloudmail/gen-token")
     def api_cloudmail_gen_token():
