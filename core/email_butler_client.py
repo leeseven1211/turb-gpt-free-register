@@ -109,7 +109,7 @@ def test_connection(*, api_base: str | None = None, api_key: str | None = None) 
     payload = _request("GET", "/me", api_base=api_base, api_key=api_key)
     policy = payload.get("policy") if isinstance(payload.get("policy"), dict) else {}
     capabilities = payload.get("capabilities") if isinstance(payload.get("capabilities"), list) else []
-    required = {"mailboxes.create", "mailboxes.messages", "mailboxes.release"}
+    required = {"mailboxes.create", "mailboxes.messages", "mailboxes.release", "signals.scan"}
     missing = sorted(required.difference(str(item) for item in capabilities))
     if missing:
         raise EmailButlerClientError(f"Email Butler 缺少必要能力: {', '.join(missing)}")
@@ -119,6 +119,34 @@ def test_connection(*, api_base: str | None = None, api_key: str | None = None) 
         "consumer": str(policy.get("consumer") or ""),
         "service": str(policy.get("service") or ""),
         "capabilities": capabilities,
+    }
+
+
+def scan_openai_deactivation(email: str, *, lookback_days: int = 120) -> dict:
+    """Scan one Butler-managed identity for a high-confidence OpenAI deactivation notice."""
+    target = str(email or "").strip().lower()
+    if not target or "@" not in target:
+        raise EmailButlerClientError("待扫描邮箱地址无效")
+    payload = _request(
+        "POST",
+        "/signals/scan",
+        json={
+            "email": target,
+            "signal_type": "openai_account_deactivation",
+            "lookback_days": max(1, min(int(lookback_days or 120), 365)),
+            "folders": ["inbox", "junk"],
+        },
+    )
+    signal = payload.get("signal") if isinstance(payload.get("signal"), dict) else {}
+    return {
+        "ok": True,
+        "detected": bool(signal.get("detected")),
+        "checked_at": str(payload.get("checked_at") or ""),
+        "received_at": str(signal.get("received_at") or ""),
+        "subject": str(signal.get("subject") or "")[:300],
+        "sender": str(signal.get("from") or "")[:200],
+        "message_id": str(signal.get("message_id") or "")[:300],
+        "confidence": str(signal.get("confidence") or "none"),
     }
 
 

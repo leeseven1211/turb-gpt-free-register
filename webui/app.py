@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 
 from flask import Flask, Response, jsonify, make_response, render_template, request
 
-from core import codex_retry_service, db, plan_check_service, extract_link_service, codex_agent_service, live_check_service
+from core import codex_retry_service, db, plan_check_service, extract_link_service, codex_agent_service, live_check_service, deactivation_mail_service
 from webui.auth import init_auth, register_auth_routes
 from core import registration_service as svc
 from webui import config_editor
@@ -93,6 +93,7 @@ def _compact_account_for_list(row: dict) -> dict:
         "user_name", "email_source", "note", "archived", "created_at",
         "plan_type", "current_plan_type", "plus_trial_eligible",
         "plan_check_status", "codex_status", "codex_agent_status",
+        "deactivation_mail_detected", "deactivation_mail_scan_status",
     ):
         if key in row:
             out[key] = row.get(key)
@@ -116,6 +117,10 @@ def _compact_account_for_list(row: dict) -> dict:
         # Codex / Agent 状态提示。
         "codex_error", "codex_agent_message", "codex_agent_runtime_id",
         "codex_agent_sub2api_url", "codex_agent_sub2api_mode", "codex_agent_sub2api_total",
+        # Email Butler deactivation signal cache (never includes mail body/secrets).
+        "deactivation_mail_checked_at", "deactivation_mail_received_at",
+        "deactivation_mail_subject", "deactivation_mail_sender", "deactivation_mail_error",
+        "deactivation_mail_confidence", "deactivation_mail_scan_trigger",
     )
     for key in optional_keys:
         value = row.get(key)
@@ -317,6 +322,50 @@ def create_app(auth_code: str | None = None) -> Flask:
             snapshot = db.list_account_plan_check_statuses(limit=max(1, min(5000, limit)), archived=archived, plan_filter=plan_filter, q=q)
         snapshot["queue"] = plan_check_service.queue_settings()
         return jsonify(snapshot)
+
+    @app.post("/api/accounts/<int:acc_id>/check-deactivation-mail")
+    def api_account_check_deactivation_mail(acc_id: int):
+        result = deactivation_mail_service.enqueue(acc_id, trigger="manual")
+        if result.get("busy"):
+            return jsonify({"ok": False, **result}), 409
+        if not result.get("accepted"):
+            return jsonify({"ok": False, **result}), 400
+        return jsonify({"ok": True, **result, "queue": deactivation_mail_service.queue_settings()}), 202
+
+    @app.post("/api/accounts/check-deactivation-mail-bulk")
+    def api_accounts_check_deactivation_mail_bulk():
+        data = request.get_json(silent=True) or {}
+        ids = data.get("account_ids") or data.get("ids") or []
+        if not isinstance(ids, list) or not ids:
+            return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
+        if len(ids) > 500:
+            return jsonify({"ok": False, "error": "单次最多扫描 500 个账号"}), 400
+        started, busy, skipped = [], [], []
+        seen = set()
+        for raw in ids:
+            try:
+                acc_id = int(raw)
+            except (TypeError, ValueError):
+                skipped.append({"id": raw, "reason": "ID 非法"})
+                continue
+            if acc_id in seen:
+                continue
+            seen.add(acc_id)
+            result = deactivation_mail_service.enqueue(acc_id, trigger="manual_bulk")
+            item = {"id": acc_id, **result}
+            if result.get("accepted"):
+                started.append(item)
+            elif result.get("busy"):
+                busy.append(item)
+            else:
+                skipped.append({"id": acc_id, "reason": result.get("error") or "不支持扫描"})
+        return jsonify({
+            "ok": True,
+            "started": started, "started_count": len(started),
+            "busy": busy, "busy_count": len(busy),
+            "skipped": skipped, "skipped_count": len(skipped),
+            "queue": deactivation_mail_service.queue_settings(),
+        }), 202
 
 
     @app.get("/api/accounts/<int:acc_id>/secret")

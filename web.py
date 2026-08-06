@@ -94,6 +94,8 @@ def main() -> None:
         raise SystemExit(2) from exc
 
     app = create_app(auth_code=args.auth_code)
+    from core.deactivation_mail_service import start_periodic_scanner
+    start_periodic_scanner()
     url = f"http://{'127.0.0.1' if args.host in ('0.0.0.0', '::') else args.host}:{args.port}"
     logger.info(f"WebUI 已启动：{url}")
     if is_generated_code():

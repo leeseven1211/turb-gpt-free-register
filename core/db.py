@@ -1214,6 +1214,43 @@ def update_account_note(acc_id: int, note: str) -> bool:
         return True
 
 
+def update_account_deactivation_mail(acc_id: int, result: dict | None = None) -> bool:
+    """Persist cached deactivation-mail scan state without touching OAuth tokens."""
+    result = result or {}
+    with _LOCK:
+        rows = _load_accounts()
+        row = next((r for r in rows if int(r.get("id") or 0) == int(acc_id)), None)
+        if row is None:
+            return False
+        now = _now()
+        status = str(result.get("status") or "failed")
+        row["deactivation_mail_scan_status"] = status
+        row["deactivation_mail_scan_trigger"] = str(result.get("trigger") or "")
+        if status == "queued":
+            row["deactivation_mail_scan_queued_at"] = now
+        elif status == "running":
+            row["deactivation_mail_scan_started_at"] = now
+        elif status == "success":
+            detected = bool(result.get("detected"))
+            # A confirmed deactivation notice is durable evidence. A later empty
+            # lookback window must not silently erase it.
+            row["deactivation_mail_detected"] = bool(row.get("deactivation_mail_detected")) or detected
+            row["deactivation_mail_checked_at"] = result.get("checked_at") or now
+            row["deactivation_mail_error"] = None
+            if detected:
+                row["deactivation_mail_received_at"] = result.get("received_at") or ""
+                row["deactivation_mail_subject"] = str(result.get("subject") or "")[:300]
+                row["deactivation_mail_sender"] = str(result.get("sender") or "")[:200]
+                row["deactivation_mail_message_id"] = str(result.get("message_id") or "")[:300]
+                row["deactivation_mail_confidence"] = str(result.get("confidence") or "high")
+        elif status in {"failed", "unsupported"}:
+            row["deactivation_mail_checked_at"] = result.get("checked_at") or now
+            row["deactivation_mail_error"] = str(result.get("error") or "")[:500]
+        row["updated_at"] = now
+        _save_accounts(rows)
+        return True
+
+
 def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
     """写回账号查活结果；成功时同步刷新最新 access_token 和账号基础信息。"""
     result = result or {}

@@ -644,6 +644,7 @@
     .accounts-table-v2 .col-source { width: 90px; }
     .accounts-table-v2 .col-token { width: 100px; }
     .accounts-table-v2 .col-plan { width: 120px; }
+    .accounts-table-v2 .col-risk-mail { width: 132px; }
     .accounts-table-v2 .col-note { width: 140px; }
     .accounts-table-v2 .col-small { width: 72px; }
     .accounts-table-v2 .col-status { width: 100px; }
@@ -2049,6 +2050,7 @@
         </div>
         <div class="acc-v2-btn-group">
           <span class="acc-v2-btn-group-title">批量</span>
+          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedDeactivationMailV2" disabled title="仅扫描 Email Butler 邮箱中的 OpenAI 封号通知；不会刷新 AT">查封号邮件</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnNoteSelectedAccountsV2" disabled title="给选中的账号统一设置备注，留空可清空备注">备注</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedLinesV2" disabled title="复制选中账号的完整整行，每个账号一行">复制行</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnDownloadSelectedTxtV2" disabled title="把选中账号的完整整行保存为 TXT 文件，每个账号一行">下载TXT</button>
@@ -2066,7 +2068,7 @@
           <colgroup>
             <col class="col-check"><col class="col-id"><col class="col-email"><col class="col-source">
             <col class="col-token"><col class="col-plan"><col class="col-note"><col class="col-small">
-            <col class="col-status"><col class="col-agent"><col class="col-time"><col class="col-actions">
+            <col class="col-risk-mail"><col class="col-status"><col class="col-agent"><col class="col-time"><col class="col-actions">
           </colgroup>
           <thead>
             <tr>
@@ -2078,6 +2080,7 @@
               <th class="col-plan">套餐</th>
               <th class="col-note">备注</th>
               <th class="col-small">2FA</th>
+              <th class="col-risk-mail">封号邮件</th>
               <th class="col-status">Codex</th>
               <th class="col-agent">Agent Token</th>
               <th class="col-time">创建时间</th>
@@ -3235,6 +3238,38 @@ function _tokenCellV2(r) {
   }
   return `<span class="pill status-failed">无Token</span>${liveHtml}`;
 }
+function _deactivationMailCell(r) {
+  const detected = r.deactivation_mail_detected === true;
+  const status = r.deactivation_mail_scan_status || '';
+  const checked = r.deactivation_mail_checked_at || '';
+  const received = r.deactivation_mail_received_at || '';
+  const subject = r.deactivation_mail_subject || '';
+  const sender = r.deactivation_mail_sender || '';
+  const err = r.deactivation_mail_error || '';
+  const supported = (r.email_source || '').toString().toLowerCase() === 'email_butler';
+  let badge = '<span class="pill status-used">待扫描</span>';
+  let title = '尚未扫描';
+  if (!supported || status === 'unsupported') {
+    badge = '<span class="pill status-used">不支持</span>';
+    title = err || '当前仅支持 Email Butler 邮箱来源';
+  } else if (detected) {
+    badge = '<span class="pill status-failed">已收到</span>';
+    title = [received && `收件: ${received}`, sender && `发件人: ${sender}`, subject].filter(Boolean).join('；');
+  } else if (status === 'queued' || status === 'running') {
+    badge = `<span class="pill status-running">${status === 'queued' ? '排队中' : '扫描中'}</span>`;
+    title = '正在扫描邮箱，不会刷新 AT';
+  } else if (status === 'success') {
+    badge = '<span class="pill status-success">未发现</span>';
+    title = checked ? `扫描时间: ${checked}` : '未发现高置信度封号通知';
+  } else if (status === 'failed') {
+    badge = '<span class="pill status-running">扫描失败</span>';
+    title = err || checked || '扫描失败';
+  }
+  const button = supported && !['queued','running'].includes(status)
+    ? `<button type="button" data-deactivation-mail-check="${esc(r.id)}" title="扫描该账号对应邮箱；不会刷新 AT">复查</button>`
+    : '';
+  return `<div class="agent-token-cell" title="${esc(title)}">${badge}${button}</div>`;
+}
 function _accountsV2MoreMenu(r) {
   const parts = [
     `<button type="button" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button>`,
@@ -3287,6 +3322,7 @@ function renderAccounts() {
       <td class="col-plan">${_planCell(r)}<div class="acc-v2-sub">${_extractLinkCell(r)}</div></td>
       <td class="col-note" title="${esc(r.note || '')}">${r.note ? esc(short(r.note, 80)) : '<span class="acc-v2-muted">-</span>'}</td>
       <td class="col-small">${r.totp_enabled ? '已启用' : '<span class="acc-v2-muted">未启用</span>'}</td>
+      <td class="col-risk-mail">${_deactivationMailCell(r)}</td>
       <td class="col-status">${_codexCellV2(r)}</td>
       <td class="col-agent">${_codexAgentCell(r)}</td>
       <td class="col-time" title="${esc(r.created_at || '-')}">${esc(r.created_at || '-')}</td>
@@ -3303,7 +3339,7 @@ function renderAccounts() {
 
   const bodyV2 = $('#accountsBodyV2');
   if (bodyV2) {
-    bodyV2.innerHTML = rows.map(rowHtmlV2).join('') || '<tr><td colspan="12" style="text-align:center;color:#909399;padding:28px;">暂无账号</td></tr>';
+    bodyV2.innerHTML = rows.map(rowHtmlV2).join('') || '<tr><td colspan="13" style="text-align:center;color:#909399;padding:28px;">暂无账号</td></tr>';
   }
   updateAccountSelectionUi(rows);
   _renderPager('accounts', total);
@@ -3320,6 +3356,7 @@ function updateAccountSelectionUi(pageRows = null) {
     'btnCheckSelectedPlansV2', 'btnExtractSelectedLinksV2',
     'btnGenerateSelectedAgentV2', 'btnDownloadSelectedAgentV2', 'btnUploadSelectedAgentSub2V2',
     'btnRetrySelectedCodexV2', 'btnDownloadSelectedCpaV2', 'btnStopSelectedCodexV2',
+    'btnCheckSelectedDeactivationMailV2',
     'btnNoteSelectedAccountsV2', 'btnCopySelectedLinesV2',
     'btnDownloadSelectedTxtV2', 'btnArchiveSelectedAccountsV2', 'btnDeleteSelectedAccountsV2',
   ];
@@ -3445,6 +3482,12 @@ async function onAccountsBodyClick(e) {
   const planBtn = e.target.closest('[data-plan-check]');
   if (planBtn) {
     await checkOnePlan(Number(planBtn.dataset.planCheck), planBtn);
+    return;
+  }
+
+  const riskMailBtn = e.target.closest('[data-deactivation-mail-check]');
+  if (riskMailBtn) {
+    await checkOneDeactivationMail(Number(riskMailBtn.dataset.deactivationMailCheck), riskMailBtn);
     return;
   }
 
@@ -4013,6 +4056,60 @@ async function checkSelectedPlans() {
   }
 }
 
+async function _pollDeactivationMailResults(ids, attempts = 30) {
+  const wanted = new Set((ids || []).map(Number));
+  for (let i = 0; i < attempts; i += 1) {
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    await loadAccounts();
+    const visible = ACCOUNTS.filter(a => wanted.has(Number(a.id)));
+    if (visible.length && visible.every(a => !['queued','running'].includes(a.deactivation_mail_scan_status || ''))) return;
+  }
+}
+
+async function checkOneDeactivationMail(id, btn) {
+  const old = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '扫描中…'; }
+  try {
+    await api(`/api/accounts/${encodeURIComponent(id)}/check-deactivation-mail`, { method:'POST' });
+    showToast('封号邮件扫描已入队；不会刷新 AT');
+    await loadAccounts();
+    await _pollDeactivationMailResults([id]);
+  } catch(err) {
+    showToast('扫描失败: ' + err.message);
+  } finally {
+    if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = old; }
+  }
+}
+
+async function checkSelectedDeactivationMail() {
+  const ids = Array.from(ACCOUNT_SELECTED);
+  if (!ids.length) { showToast('请先选择账号'); return; }
+  const eligible = ids.filter(id => {
+    const acc = ACCOUNTS.find(a => Number(a.id) === Number(id));
+    return acc && (acc.email_source || '').toString().toLowerCase() === 'email_butler';
+  });
+  if (!eligible.length) { showToast('选中账号中没有 Email Butler 邮箱来源'); return; }
+  const btn = $('#btnCheckSelectedDeactivationMailV2');
+  const old = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '扫描中…';
+  try {
+    const r = await api('/api/accounts/check-deactivation-mail-bulk', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({account_ids: eligible}),
+    });
+    showToast(`已入队 ${r.started_count || 0} 个，跳过 ${r.skipped_count || 0} 个；不会刷新 AT`);
+    await loadAccounts();
+    if ((r.started_count || 0) > 0) await _pollDeactivationMailResults(eligible);
+  } catch(err) {
+    showToast('批量扫描失败: ' + err.message);
+  } finally {
+    btn.textContent = old;
+    updateAccountSelectionUi();
+  }
+}
+
 async function checkSelectedLive(idsArg = null, btnArg = null) {
   const ids = idsArg || Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
@@ -4279,6 +4376,7 @@ async function copySelectedAccountTokens() {
     if (el) el.addEventListener('click', fn);
   };
   bind('btnCheckSelectedPlansV2', checkSelectedPlans);
+  bind('btnCheckSelectedDeactivationMailV2', checkSelectedDeactivationMail);
   bind('btnExtractSelectedLinksV2', extractSelectedLinks);
   bind('btnGenerateSelectedAgentV2', generateSelectedCodexAgents);
   bind('btnDownloadSelectedAgentV2', downloadSelectedCodexAgents);
