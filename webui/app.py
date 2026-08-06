@@ -2389,6 +2389,41 @@ def create_app(auth_code: str | None = None) -> Flask:
         except Exception as exc:
             return jsonify({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:260]}"}), 400
 
+    @app.get("/api/email-butler/pool")
+    def api_email_butler_pool():
+        """返回按当前专用 Key 策略计算的 Email Butler 安全只读池视图。"""
+        try:
+            from core.email_butler_client import fetch_pool_snapshot
+
+            snapshot = fetch_pool_snapshot()
+            rows = snapshot.pop("accounts", [])
+            q = str(request.args.get("q") or "").strip().lower()
+            status = str(request.args.get("status") or "all").strip().lower()
+            if q:
+                rows = [row for row in rows if q in " ".join([
+                    str(row.get("email") or ""),
+                    str(row.get("mailbox_email") or ""),
+                    str(row.get("provider") or ""),
+                    str(row.get("group") or ""),
+                    " ".join(str(tag) for tag in row.get("service_tags") or []),
+                ]).lower()]
+            if status and status != "all":
+                rows = [row for row in rows if str(row.get("effective_status") or "") == status]
+            page = max(1, request.args.get("page", default=1, type=int) or 1)
+            page_size = max(1, min(200, request.args.get("page_size", default=20, type=int) or 20))
+            total = len(rows)
+            start = (page - 1) * page_size
+            snapshot.update({
+                "items": rows[start:start + page_size],
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+            })
+            return jsonify(snapshot)
+        except Exception as exc:
+            logger.warning("读取 Email Butler 邮箱池失败: %s: %s", type(exc).__name__, str(exc)[:260])
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:260]}"}), 502
+
     @app.post("/api/cloudmail/gen-token")
     def api_cloudmail_gen_token():
         """手动生成 CloudMail Authorization Token，并把本次填写的 CloudMail 配置一并写入 .env。"""

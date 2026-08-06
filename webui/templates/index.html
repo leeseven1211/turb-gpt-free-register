@@ -1852,6 +1852,12 @@
       </svg>
       <span class="sidebar-item-label">邮箱池</span>
     </button>
+    <button type="button" data-tab="email-butler" class="sidebar-item">
+      <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M4 4h16v12H5.5L4 17.5V4z"/><path d="M8 20h8"/><path d="M8 8h8M8 12h5"/>
+      </svg>
+      <span class="sidebar-item-label">Email Butler</span>
+    </button>
     <button type="button" data-tab="config" class="sidebar-item">
       <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
@@ -1866,11 +1872,11 @@
       </svg>
       <span>TG 交流群</span>
     </a>
-    <a href="https://github.com/myfanhua/turb-gpt-free-register" target="_blank" rel="noopener noreferrer">
+    <a href="https://github.com/leeseven1211/turb-gpt-free-register/tree/deploy/leeseven" target="_blank" rel="noopener noreferrer">
       <svg class="sidebar-footer-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/>
       </svg>
-      <span>Github 仓库</span>
+      <span>部署仓库</span>
     </a>
     <a href="/?ui=legacy" title="切换到历史版顶部导航 UI">
       <svg class="sidebar-footer-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -2222,6 +2228,48 @@
     </section>
   </div>
 
+  <!-- ============ Email Butler ============ -->
+  <div id="tab-email-butler" class="hidden">
+    <h1 class="register-title">Email Butler 邮箱池</h1>
+    <div class="stats" aria-label="Email Butler 邮箱池统计">
+      <div class="stat"><div class="stat-top"><span>身份总数</span></div><strong id="butlerStatTotal">0</strong></div>
+      <div class="stat"><div class="stat-top"><span>当前可用</span></div><strong id="butlerStatAvailable">0</strong></div>
+      <div class="stat"><div class="stat-top"><span>租用 / 冷却</span></div><strong id="butlerStatBusy">0</strong></div>
+      <div class="stat"><div class="stat-top"><span>已注册 OpenAI</span></div><strong id="butlerStatRegistered">0</strong></div>
+      <div class="stat"><div class="stat-top"><span>异常 / 禁用</span></div><strong id="butlerStatBlocked">0</strong></div>
+    </div>
+    <section class="outlook-panel-v2" aria-label="Email Butler 邮箱池">
+      <div class="outlook-filter-v2">
+        <div class="acc-v2-btn-group acc-v2-search-wrap">
+          <input id="qEmailButlerV2" type="search" placeholder="搜索邮箱、分组、服务标签…" autocomplete="off">
+        </div>
+        <select id="emailButlerStatusV2" class="outlook-v2-select-btn" aria-label="状态筛选">
+          <option value="all">全部状态</option>
+          <option value="available">可用</option>
+          <option value="leased">租用中</option>
+          <option value="cooldown">冷却中</option>
+          <option value="registered">已注册 OpenAI</option>
+          <option value="bad">异常</option>
+          <option value="disabled">已禁用</option>
+        </select>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnRefreshEmailButlerV2">刷新邮箱池</button>
+        <span class="muted" id="emailButlerPolicyV2"></span>
+      </div>
+      <div class="outlook-table-v2-wrap">
+        <table class="outlook-table-v2">
+          <thead>
+            <tr>
+              <th>邮箱身份</th><th>类型</th><th>提供方 / 分组</th><th>当前状态</th>
+              <th>服务标签</th><th>成功 / 失败</th><th>最后使用</th><th>状态截止</th>
+            </tr>
+          </thead>
+          <tbody id="emailButlerBodyV2"></tbody>
+        </table>
+      </div>
+      <div class="jobs-v2-pager" id="pager-email-butler-v2"></div>
+    </section>
+  </div>
+
   <!-- ============ 配置 ============ -->
   <div id="tab-config" class="hidden">
     <div class="config-overview-v2" id="configOverviewV2" aria-label="配置概览">
@@ -2323,9 +2371,10 @@ const $ = (s) => document.querySelector(s);
 const $$ = (s) => Array.from(document.querySelectorAll(s));
 let copySeq = 0;
 const copyStore = new Map();
-let ACCOUNTS = [], OUTLOOK = [], CONFIG = [];
+let ACCOUNTS = [], OUTLOOK = [], EMAIL_BUTLER_POOL = [], CONFIG = [];
 let ACCOUNTS_TOTAL = 0;
 let OUTLOOK_TOTAL = 0;
+let EMAIL_BUTLER_TOTAL = 0;
 let SHOW_ARCHIVED_ACCOUNTS = false;
 let SHOW_PLUS_ACCOUNTS_ONLY = false;
 const ACCOUNT_SELECTED = new Set();
@@ -2342,6 +2391,7 @@ const PAGERS = {
   jobs:     { page: 1, size: 20 },
   accounts: { page: 1, size: 20 },
   outlook:  { page: 1, size: 20 },
+  'email-butler': { page: 1, size: 20 },
   codex:    { page: 1, size: 20 },
 };
 
@@ -2362,18 +2412,20 @@ function _renderPager(id, total) {
   const el = document.getElementById('pager-' + id);
   if (el) el.innerHTML = html;
 
-  if (id === 'jobs' || id === 'accounts' || id === 'codex' || id === 'outlook') {
+  if (id === 'jobs' || id === 'accounts' || id === 'codex' || id === 'outlook' || id === 'email-butler') {
     const elV2 = document.getElementById(
       id === 'jobs' ? 'pager-jobs-v2'
         : id === 'accounts' ? 'pager-accounts-v2'
         : id === 'codex' ? 'pager-codex-v2'
-        : 'pager-outlook-v2'
+        : id === 'outlook' ? 'pager-outlook-v2'
+        : 'pager-email-butler-v2'
     );
     if (elV2) {
       const sizeWrapId = id === 'jobs' ? 'jobsPagerSize'
         : id === 'accounts' ? 'accountsPagerSize'
         : id === 'codex' ? 'codexPagerSize'
-        : 'outlookPagerSize';
+        : id === 'outlook' ? 'outlookPagerSize'
+        : 'emailButlerPagerSize';
       const v2Sizes = [10, 20, 30, 50, 100];
       const pages = [];
       let from = Math.max(1, p.page - 2);
@@ -2433,6 +2485,7 @@ function pagerGoTo(id, page) {
   const total = id === 'jobs' ? JOBS_TOTAL
     : id === 'accounts' ? ACCOUNTS_TOTAL
     : id === 'outlook' ? OUTLOOK_TOTAL
+    : id === 'email-butler' ? EMAIL_BUTLER_TOTAL
     : id === 'codex' ? CODEX_TOTAL
     : (p.size || 20);
   const totalPages = Math.max(1, Math.ceil(Number(total || 0) / p.size) || 1);
@@ -2444,7 +2497,7 @@ function pagerJump(id, val) {
 }
 
 function _reloadPagedList(id) {
-  ({ jobs: refreshJobs, accounts: loadAccounts, outlook: loadOutlook, codex: loadCodex })[id]?.();
+  ({ jobs: refreshJobs, accounts: loadAccounts, outlook: loadOutlook, 'email-butler': loadEmailButlerPool, codex: loadCodex })[id]?.();
 }
 function pagerGo(id, dir) {
   PAGERS[id].page = Math.max(1, PAGERS[id].page + dir);
@@ -2473,7 +2526,7 @@ function short(v, n=40) { const s = v || ''; return s.length > n ? s.slice(0,n)+
 function copyId(v) { if (!v) return ''; const id = 'c'+(++copySeq); copyStore.set(id, v); return id; }
 function cbtn(label, value, cls='') { const id = copyId(value); return `<button class="${cls}" data-copy-id="${id}" ${id?'':'disabled'}>${label}</button>`; }
 function pill(status) {
-  const map = { available:'可用', used:'已用', failed:'失败', partial_success:'部分成功', disabled:'已停用', pending:'排队', running:'运行中', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消' };
+  const map = { available:'可用', used:'已用', failed:'失败', bad:'异常', leased:'租用中', cooldown:'冷却中', registered:'已注册', partial_success:'部分成功', disabled:'已停用', pending:'排队', running:'运行中', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消' };
   return `<span class="pill status-${esc(status)}">${esc(map[status]||status||'-')}</span>`;
 }
 function pillV2(status) {
@@ -2527,7 +2580,7 @@ function debounce(fn, wait=250) {
 
 // ---------- Tab 切换 ----------
 function activateTab(tab, persist=true) {
-  const allowed = ['register','accounts','codex','outlook','config'];
+  const allowed = ['register','accounts','codex','outlook','email-butler','config'];
   if (!allowed.includes(tab)) tab = 'register';
   $$('nav button').forEach(x => x.classList.toggle('active', x.dataset.tab === tab));
   allowed.forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== tab));
@@ -2535,6 +2588,7 @@ function activateTab(tab, persist=true) {
   if (tab === 'accounts') loadAccounts();
   if (tab === 'codex') loadCodex();
   if (tab === 'outlook') loadOutlook();
+  if (tab === 'email-butler') loadEmailButlerPool();
   if (tab === 'config') loadConfig();
   if (tab === 'register') refreshJobs();
 }
@@ -4294,6 +4348,71 @@ async function copySelectedAccountTokens() {
   bind('btnArchiveSelectedAccountsV2', archiveSelectedAccounts);
   bind('btnDeleteSelectedAccountsV2', deleteSelectedAccounts);
 })();
+
+// ---------- Email Butler 动态邮箱池 ----------
+async function loadEmailButlerPool() {
+  const p = PAGERS['email-butler'];
+  const q = ($('#qEmailButlerV2')?.value || '').trim();
+  const status = $('#emailButlerStatusV2')?.value || 'all';
+  const body = $('#emailButlerBodyV2');
+  try {
+    const r = await api(`/api/email-butler/pool?page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&status=${encodeURIComponent(status)}&q=${encodeURIComponent(q)}`);
+    EMAIL_BUTLER_POOL = r.items || [];
+    EMAIL_BUTLER_TOTAL = Number(r.total || 0);
+    const summary = r.summary || {};
+    $('#butlerStatTotal').textContent = Number(summary.total || 0);
+    $('#butlerStatAvailable').textContent = Number(summary.available || 0);
+    $('#butlerStatBusy').textContent = Number(summary.leased || 0) + Number(summary.cooldown || 0);
+    $('#butlerStatRegistered').textContent = Number(summary.registered || 0);
+    $('#butlerStatBlocked').textContent = Number(summary.bad || 0) + Number(summary.disabled || 0);
+    const policy = r.policy || {};
+    $('#emailButlerPolicyV2').textContent = [
+      policy.consumer || '未绑定 consumer',
+      policy.service || '未绑定服务',
+      `${Number(policy.cooldown_minutes || 0)} 分钟冷却`,
+      `${Number(policy.lease_ttl_seconds || 0)} 秒租约`,
+    ].join(' · ');
+    const totalPages = Math.max(1, Math.ceil(EMAIL_BUTLER_TOTAL / p.size));
+    if (p.page > totalPages) { p.page = totalPages; return loadEmailButlerPool(); }
+    renderEmailButlerPool();
+  } catch (e) {
+    EMAIL_BUTLER_POOL = [];
+    EMAIL_BUTLER_TOTAL = 0;
+    if (body) body.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--red);padding:28px;">读取 Email Butler 失败：${esc(e.message)}</td></tr>`;
+    _renderPager('email-butler', 0);
+  }
+}
+function renderEmailButlerPool() {
+  const body = $('#emailButlerBodyV2');
+  if (!body) return;
+  body.innerHTML = EMAIL_BUTLER_POOL.map(r => {
+    const email = esc(r.email || '');
+    const mailbox = String(r.mailbox_email || '');
+    const identity = r.identity_type === 'primary' ? '主邮箱' : '别名';
+    const tags = (r.service_tags || []).map(tag => `<span class="pill status-used">${esc(tag)}</span>`).join(' ') || '-';
+    return `<tr>
+      <td title="${email}"><div class="acc-v2-email">${email || '-'}</div>${mailbox && mailbox !== r.email ? `<div class="acc-v2-sub">归属：${esc(mailbox)}</div>` : ''}</td>
+      <td>${esc(identity)}</td>
+      <td><div>${esc(r.provider || '-')}</div><div class="acc-v2-sub">${esc(r.group || '默认分组')}</div></td>
+      <td>${pill(r.effective_status)}</td>
+      <td>${tags}</td>
+      <td>${Number(r.success_count || 0)} / ${Number(r.fail_count || 0)}</td>
+      <td title="${esc(r.last_used_at || '-')}">${esc(formatDateTime(r.last_used_at))}</td>
+      <td title="${esc(r.effective_until || '-')}">${esc(formatDateTime(r.effective_until))}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="8" style="text-align:center;color:#909399;padding:28px;">当前筛选没有邮箱</td></tr>';
+  _renderPager('email-butler', EMAIL_BUTLER_TOTAL);
+}
+const onEmailButlerFilter = debounce(() => {
+  PAGERS['email-butler'].page = 1;
+  loadEmailButlerPool();
+}, 250);
+$('#qEmailButlerV2')?.addEventListener('input', onEmailButlerFilter);
+$('#emailButlerStatusV2')?.addEventListener('change', () => {
+  PAGERS['email-butler'].page = 1;
+  loadEmailButlerPool();
+});
+$('#btnRefreshEmailButlerV2')?.addEventListener('click', loadEmailButlerPool);
 
 // ---------- 邮箱池 ----------
 function getPoolSource() {

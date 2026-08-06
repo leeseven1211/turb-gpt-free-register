@@ -71,6 +71,40 @@ class EmailButlerClientTests(unittest.TestCase):
         release_body = request.call_args_list[2].kwargs["json"]
         self.assertEqual(release_body["outcome"], "succeeded")
 
+    @patch("core.email_butler_client.requests.request")
+    def test_pool_snapshot_uses_client_policy_and_safe_accounts_endpoint(self, request):
+        me = Mock(status_code=200)
+        me.json.return_value = {
+            "code": 200,
+            "name": "turb-gpt-register",
+            "policy": {
+                "service": "openai",
+                "exclude_registered_service": True,
+                "cooldown_minutes": 60,
+            },
+        }
+        accounts = Mock(status_code=200)
+        accounts.json.return_value = {
+            "code": 200,
+            "accounts": [
+                {"email": "fresh@example.com", "service_tags": []},
+                {"email": "used@example.com", "service_tags": ["openai"]},
+            ],
+        }
+        request.side_effect = [me, accounts]
+        with patch.object(email_butler_client._email_cfg, "EMAIL_BUTLER_API_BASE", "http://127.0.0.1:8788/v1", create=True), patch.object(
+            email_butler_client._email_cfg, "EMAIL_BUTLER_API_KEY", "key-123", create=True
+        ):
+            result = email_butler_client.fetch_pool_snapshot()
+
+        self.assertEqual(result["summary"]["available"], 1)
+        self.assertEqual(result["summary"]["registered"], 1)
+        self.assertEqual(result["accounts"][1]["effective_status"], "registered")
+        self.assertEqual(
+            request.call_args_list[1].args[1],
+            "http://127.0.0.1:8788/api/automation/accounts",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
