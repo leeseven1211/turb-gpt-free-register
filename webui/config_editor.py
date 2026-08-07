@@ -573,6 +573,10 @@ EDITABLE_FIELDS = [
         "label": "服务/项目代码", "help": "GrizzlySMS/L 作为 service；H 通道作为 H_API.md 的 projectId",
     },
     {
+        "key": "SMS_MAX_PRICE", "file": "codex.py", "type": "str", "group": "接码平台",
+        "label": "最高价格", "help": "单个接码号码愿意支付的最高价格；留空表示不限制，GrizzlySMS/L 会作为 maxPrice 传给取号接口",
+    },
+    {
         "key": "SMS_MAX_RETRIES", "file": "codex.py", "type": "int", "group": "接码平台",
         "label": "换号重试次数", "help": "一个号收不到短信/被OpenAI拒时换下一个号，最多重试几次",
     },

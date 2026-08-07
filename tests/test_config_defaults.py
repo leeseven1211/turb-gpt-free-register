@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 import os
+import importlib
 import unittest
 from unittest.mock import patch
 
+from config import codex as codex_config
 from config import env_loader
 from webui import config_editor
 
@@ -68,6 +70,21 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             "wss://connect.browser-use.com",
         )
         self.assertTrue(config_editor._coerce_raw_value("", True, "bool"))
+
+    def test_sms_max_price_is_env_editable(self):
+        fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
+        self.assertIn("SMS_MAX_PRICE", fields)
+        self.assertEqual(fields["SMS_MAX_PRICE"]["group"], "接码平台")
+
+        old_loaded = env_loader._LOADED
+        env_loader._LOADED = True
+        try:
+            with patch.dict(os.environ, {"SMS_MAX_PRICE": "0.13"}, clear=False):
+                reloaded = importlib.reload(codex_config)
+                self.assertEqual(reloaded.SMS_MAX_PRICE, "0.13")
+        finally:
+            env_loader._LOADED = old_loaded
+            importlib.reload(codex_config)
 
 
 if __name__ == "__main__":
