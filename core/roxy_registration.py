@@ -418,6 +418,39 @@ def _email_entry_state(driver) -> dict:
         return {"url": getattr(driver, "current_url", ""), "error": f"{type(exc).__name__}: {exc}"}
 
 
+def _is_cloudflare_challenge_state(state: dict) -> bool:
+    """判断页面状态是否处于 Cloudflare 人机验证挑战页（title=Just a moment... 等）。"""
+    if not isinstance(state, dict):
+        return False
+    title = str(state.get("title") or "").strip().lower()
+    url = str(state.get("url") or "").lower()
+    attrs = " ".join(str(a.get("attrs") or "") for a in (state.get("actions") or [])).lower()
+    if any(t in title for t in ("just a moment", "attention required", "checking your browser")):
+        return True
+    if any(m in url for m in ("challenges.cloudflare.com", "cf-chl-", "/cdn-cgi/challenge")):
+        return True
+    return "cloudflare" in attrs and "challenge" in attrs
+
+
+def _wait_cloudflare_challenge_pass(driver, timeout: int = 45) -> bool:
+    """等待 Cloudflare JS 挑战自动通过；返回 True=已通过/页面恢复可继续。"""
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            state = _email_entry_state(driver)
+        except Exception:
+            state = {}
+        if not _is_cloudflare_challenge_state(state):
+            return True
+        try:
+            if _find_visible_email_input_js(driver):
+                return True
+        except Exception:
+            pass
+        time.sleep(2.0)
+    return False
+
+
 def _find_visible_email_input_js(driver):
     return driver.execute_script(r"""
     const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
@@ -524,15 +557,27 @@ def _type_email_address(driver, email: str, timeout: int | None = None) -> None:
             _human_type_text(driver, el, email, clear=True)
             return
         last_state = _email_entry_state(driver)
+        if _is_cloudflare_challenge_state(last_state):
+            logger.info("%s 检测到 Cloudflare 挑战页，等待自动通过：title=%s", _log_prefix(driver), last_state.get("title"))
+            # 挑战通过可能需要数十秒，独立时间窗，不占用外层等待预算
+            end = max(end, time.time() + 45)
+            if _wait_cloudflare_challenge_pass(driver, timeout=45):
+                continue
+            raise RuntimeError(
+                f"Cloudflare 人机验证挑战未自动通过（IP 可能已被标记），"
+                f"建议更换代理 IP 后重试。state={last_state}"
+            )
         if not clicked_email_option and _click_email_entry_option(driver):
             clicked_email_option = True
             time.sleep(1.0)
             _assert_not_external_idp(driver, "点击邮箱入口后")
             continue
         time.sleep(0.4)
+    if _is_cloudflare_challenge_state(last_state):
+        raise RuntimeError(
+            f"Cloudflare 人机验证挑战未通过（IP 可能已被标记），建议更换代理 IP 后重试。state={last_state}"
+        )
     raise RuntimeError(f"找不到邮箱输入框/邮箱入口（未使用文字识别），state={last_state}")
-
-
 def _submit_nearest_form_for_active_input(driver) -> bool:
     if _is_oauth_consent_like(driver):
         logger.info("%s 当前疑似 OAuth 授权页，禁止执行邮箱提交", _log_prefix(driver))
@@ -957,6 +1002,16 @@ def _wait_email_submit_next_state(driver, email: str, timeout: int = 18) -> str:
     while time.time() < end:
         if _has_access_token(driver):
             return "logged_in"
+        try:
+            cf_state = _email_entry_state(driver)
+        except Exception:
+            cf_state = {}
+        if _is_cloudflare_challenge_state(cf_state):
+            logger.info("%s 邮箱提交后遇到 Cloudflare 挑战页，等待自动通过：title=%s", _log_prefix(driver), cf_state.get("title"))
+            end = max(end, time.time() + 45)
+            if _wait_cloudflare_challenge_pass(driver, timeout=45):
+                continue
+            return "cloudflare_blocked"
         if _is_login_password_page(driver):
             return "login_password"
         if _is_email_verification_page(driver):
@@ -1019,6 +1074,11 @@ def _submit_email_and_wait_next(driver, email: str, attempts: int = 3) -> str:
         _submit_email_step(driver, email)
         logger.info("%s 已提交邮箱，等待进入密码页或验证码页（%s/%s）", _log_prefix(driver), attempt, attempts)
         state_name = _wait_email_submit_next_state(driver, email, timeout=20)
+        if state_name == "cloudflare_blocked":
+            raise RuntimeError(
+                f"邮箱提交后被 Cloudflare 人机验证拦截且未自动通过（IP 可能已被标记），"
+                f"建议更换代理 IP 后重试。url={getattr(driver, 'current_url', '') or ''}"
+            )
         if state_name == "login_password":
             raise RuntimeError(f"邮箱提交后进入登录密码页，按已注册/不可用邮箱处理并停用: url={getattr(driver, 'current_url', '') or 'https://auth.openai.com/log-in/password'}")
         if state_name in ("password", "otp", "logged_in"):
@@ -1027,8 +1087,6 @@ def _submit_email_and_wait_next(driver, email: str, attempts: int = 3) -> str:
         logger.warning("%s 邮箱提交后仍未进入下一步：%s，准备重填重试 state=%s", _log_prefix(driver), state_name, _email_input_value_state(driver))
         time.sleep(1.0)
     raise RuntimeError(f"邮箱提交后未进入密码页/验证码页，最后状态={last_state}")
-
-
 def _type_otp(driver, code: str) -> None:
     from selenium.webdriver.common.by import By
 
