@@ -175,6 +175,31 @@ def get_account_context(email: str) -> EmailButlerAccount | None:
     return _CONTEXT_CACHE.get(_cache_key(email))
 
 
+def restore_account_context(email: str, *, purpose: str = 'live-check') -> EmailButlerAccount:
+    """按邮箱从 Butler 精确租用并恢复进程内上下文（查活等已注册账号场景）。"""
+    key = _cache_key(email)
+    cached = _CONTEXT_CACHE.get(key)
+    if cached:
+        return cached
+    payload = _request('POST', '/mailboxes', json={'requested_email': email, 'purpose': purpose})
+    mailbox = payload.get('mailbox') if isinstance(payload.get('mailbox'), dict) else {}
+    mailbox_id = str(mailbox.get('id') or '').strip()
+    mb_email = str(mailbox.get('email') or '').strip()
+    if not mailbox_id or not mb_email or '@' not in mb_email:
+        raise EmailButlerClientError('Email Butler 按邮箱恢复上下文失败: ' + email)
+    account = EmailButlerAccount(
+        email=mb_email,
+        mailbox_id=mailbox_id,
+        lease_id=str(mailbox.get('lease_id') or ''),
+        leased_until=str(mailbox.get('leased_until') or ''),
+        provider=str(mailbox.get('provider') or ''),
+        mailbox_email=str(mailbox.get('mailbox_email') or mb_email),
+    )
+    _CONTEXT_CACHE[key] = account
+    logger.info('[EmailButler] 已按邮箱恢复上下文: %s', email)
+    return account
+
+
 def _outcome_for_status(status: str) -> str:
     normalized = str(status or "").strip().lower()
     if normalized in {"success", "succeeded", "registered", "used"}:
@@ -235,7 +260,10 @@ def fetch_latest_otp(
     """轮询 Butler `/messages`，返回当前租约内最新 OpenAI 六位验证码。"""
     account = get_account_context(email)
     if not account:
-        raise EmailButlerClientError(f"Email Butler 邮箱租约上下文不存在: {email}")
+        try:
+            account = restore_account_context(email)
+        except EmailButlerClientError:
+            raise EmailButlerClientError(f"Email Butler 邮箱租约上下文不存在: {email}")
 
     wait_seconds = int(max_wait if max_wait is not None else _email_cfg.OTP_MAX_WAIT)
     interval = max(1, int(poll_interval if poll_interval is not None else _email_cfg.OTP_POLL_INTERVAL))
