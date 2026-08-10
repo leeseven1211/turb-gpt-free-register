@@ -16,9 +16,17 @@ import time
 import uuid
 from urllib.parse import urlparse
 
-from flask import Flask, Response, jsonify, make_response, render_template, request
+from flask import Flask, Response, jsonify, make_response, redirect, render_template, request, url_for
 
-from core import codex_retry_service, db, plan_check_service, extract_link_service, codex_agent_service, live_check_service
+from core import (
+    codex_retry_service,
+    db,
+    plan_check_service,
+    extract_link_service,
+    codex_agent_service,
+    live_check_service,
+    deactivation_mail_service,
+)
 from webui.auth import init_auth, register_auth_routes
 from core import registration_service as svc
 from webui import config_editor
@@ -30,7 +38,7 @@ def _pool_source_arg(default: str = "outlook") -> str:
     if not src and request.method == "POST":
         data = request.get_json(silent=True) or {}
         src = (data.get("source") or data.get("type") or "").strip()
-    return src if src in ("all", "outlook", "generic_api", "cloudflare_domain") else default
+    return src if src in ("all", "outlook", "generic_api", "cloudflare_domain", "icloud_hide") else default
 
 
 def _with_pool_source(rows: list[dict], source: str) -> list[dict]:
@@ -93,6 +101,7 @@ def _compact_account_for_list(row: dict) -> dict:
         "user_name", "email_source", "note", "archived", "created_at",
         "plan_type", "current_plan_type", "plus_trial_eligible",
         "plan_check_status", "codex_status", "codex_agent_status",
+        "deactivation_mail_detected", "deactivation_mail_scan_status",
     ):
         if key in row:
             out[key] = row.get(key)
@@ -116,6 +125,10 @@ def _compact_account_for_list(row: dict) -> dict:
         # Codex / Agent 状态提示。
         "codex_error", "codex_agent_message", "codex_agent_runtime_id",
         "codex_agent_sub2api_url", "codex_agent_sub2api_mode", "codex_agent_sub2api_total",
+        # 封号邮件信号缓存（不包含邮件正文和任何凭据）。
+        "deactivation_mail_checked_at", "deactivation_mail_received_at",
+        "deactivation_mail_subject", "deactivation_mail_sender", "deactivation_mail_error",
+        "deactivation_mail_confidence", "deactivation_mail_scan_trigger",
     )
     for key in optional_keys:
         value = row.get(key)
@@ -148,8 +161,12 @@ def _compact_job_for_list(row: dict) -> dict:
     }
     for key in (
         "parent_job_id", "retry_attempt", "email", "started_at", "completed_at",
+        "email_source",
         "display_status", "retryable", "retry_action", "retry_label",
-        "manual_otp_required",
+        "manual_otp_required", "proxy_provider", "proxy_status", "proxy_endpoint",
+        "proxy_exit_ip", "proxy_region", "proxy_acquired_at", "proxy_expires_at",
+        "batch_id", "batch_index", "batch_size", "batch_workers",
+        "progress_stage", "progress_updated_at", "progress_steps",
     ):
         value = row.get(key)
         if value is not None and value != "" and value is not False:
@@ -168,6 +185,31 @@ def _job_status_counts(rows: list[dict]) -> dict:
         counts[status] = counts.get(status, 0) + 1
     counts["active"] = sum(int(counts.get(s, 0) or 0) for s in ("pending", "running", "stopping"))
     return counts
+
+
+def _latest_progress_batch(rows: list[dict]) -> dict | None:
+    """构造最新提交批次的邮箱级进度数据。旧任务没有 batch_id 时不展示。"""
+    latest = next((row for row in rows if row.get("batch_id")), None)
+    if latest is None:
+        return None
+    batch_id = str(latest.get("batch_id") or "")
+    batch_rows = [row for row in rows if str(row.get("batch_id") or "") == batch_id]
+    if not batch_rows:
+        return None
+    batch_rows.sort(key=lambda row: (int(row.get("batch_index") or 0), int(row.get("id") or 0)))
+    counts = _job_status_counts(batch_rows)
+    items = [_compact_job_for_list(row) for row in batch_rows]
+    return {
+        "batch_id": batch_id,
+        "total": len(batch_rows),
+        "workers": int(latest.get("batch_workers") or 1),
+        "created_at": min((str(row.get("created_at") or "") for row in batch_rows), default=""),
+        "started_at": min((str(row.get("started_at") or "") for row in batch_rows if row.get("started_at")), default=""),
+        "completed_at": max((str(row.get("completed_at") or "") for row in batch_rows if row.get("completed_at")), default=""),
+        "status_counts": counts,
+        "stages": [{"key": key, "label": label} for key, label in db.JOB_PROGRESS_STAGES],
+        "items": items,
+    }
 
 def create_app(auth_code: str | None = None) -> Flask:
     app = Flask(__name__, template_folder="templates")
@@ -227,6 +269,10 @@ def create_app(auth_code: str | None = None) -> Flask:
     # ----------------------------------------------------------
     # 页面
     # ----------------------------------------------------------
+    @app.get("/favicon.ico", endpoint="favicon")
+    def favicon():
+        return redirect(url_for("static", filename="favicon.svg"), code=308)
+
     @app.get("/")
     def index():
         requested_ui = (request.args.get("ui") or "").strip().lower()
@@ -253,11 +299,12 @@ def create_app(auth_code: str | None = None) -> Flask:
         pool = {"total": 0, "available": 0, "used": 0, "failed": 0}
         for src in parse_email_sources(_email_cfg.EMAIL_SOURCE):
             # GPTMail/MailNest/CloudMail 地址按需生成，不属于本地邮箱池。
-            if src in ("gptmail", "mailnest", "cloudmail", "cloudflare"):
+            if src in ("gptmail", "mailnest", "cloudmail", "cloudflare", "email_butler"):
                 continue
             one = (
                 db.generic_api_email_pool_summary() if src == "generic_api"
                 else db.domain_email_pool_summary() if src == "cloudflare_domain"
+                else db.icloud_hide_email_pool_summary() if src == "icloud_hide"
                 else db.outlook_pool_summary()
             )
             for k in pool:
@@ -319,6 +366,58 @@ def create_app(auth_code: str | None = None) -> Flask:
             snapshot = db.list_account_plan_check_statuses(limit=max(1, min(5000, limit)), archived=archived, plan_filter=plan_filter, q=q)
         snapshot["queue"] = plan_check_service.queue_settings()
         return jsonify(snapshot)
+
+
+    @app.post("/api/accounts/<int:acc_id>/check-deactivation-mail")
+    def api_account_check_deactivation_mail(acc_id: int):
+        result = deactivation_mail_service.enqueue(acc_id, trigger="manual")
+        if result.get("busy"):
+            return jsonify({"ok": False, **result}), 409
+        if not result.get("accepted"):
+            return jsonify({"ok": False, **result}), 400
+        return jsonify({
+            "ok": True,
+            **result,
+            "queue": deactivation_mail_service.queue_settings(),
+        }), 202
+
+    @app.post("/api/accounts/check-deactivation-mail-bulk")
+    def api_accounts_check_deactivation_mail_bulk():
+        data = request.get_json(silent=True) or {}
+        ids = data.get("account_ids") or data.get("ids") or []
+        if not isinstance(ids, list) or not ids:
+            return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
+        if len(ids) > 500:
+            return jsonify({"ok": False, "error": "单次最多扫描 500 个账号"}), 400
+        started, busy, skipped = [], [], []
+        seen = set()
+        for raw in ids:
+            try:
+                acc_id = int(raw)
+            except (TypeError, ValueError):
+                skipped.append({"id": raw, "reason": "ID 非法"})
+                continue
+            if acc_id in seen:
+                continue
+            seen.add(acc_id)
+            result = deactivation_mail_service.enqueue(acc_id, trigger="manual_bulk")
+            item = {"id": acc_id, **result}
+            if result.get("accepted"):
+                started.append(item)
+            elif result.get("busy"):
+                busy.append(item)
+            else:
+                skipped.append({"id": acc_id, "reason": result.get("error") or "不支持扫描"})
+        return jsonify({
+            "ok": True,
+            "started": started,
+            "started_count": len(started),
+            "busy": busy,
+            "busy_count": len(busy),
+            "skipped": skipped,
+            "skipped_count": len(skipped),
+            "queue": deactivation_mail_service.queue_settings(),
+        }), 202
 
 
     @app.get("/api/accounts/<int:acc_id>/secret")
@@ -1294,11 +1393,14 @@ def create_app(auth_code: str | None = None) -> Flask:
             rows += _with_pool_source(db.list_outlook_pool(status=status, limit=fetch_limit), "outlook")
             rows += _with_pool_source(db.list_generic_api_email_pool(status=status, limit=fetch_limit), "generic_api")
             rows += _with_pool_source(db.list_domain_email_pool(status=status, limit=fetch_limit), "cloudflare_domain")
+            rows += _with_pool_source(db.list_icloud_hide_email_pool(status=status, limit=fetch_limit), "icloud_hide")
             rows = sorted(rows, key=lambda x: str(x.get("created_at") or x.get("imported_at") or x.get("used_at") or ""), reverse=True)
         elif source == "generic_api":
             rows = _with_pool_source(db.list_generic_api_email_pool(status=status, limit=fetch_limit), "generic_api")
         elif source == "cloudflare_domain":
             rows = _with_pool_source(db.list_domain_email_pool(status=status, limit=fetch_limit), "cloudflare_domain")
+        elif source == "icloud_hide":
+            rows = _with_pool_source(db.list_icloud_hide_email_pool(status=status, limit=fetch_limit), "icloud_hide")
         else:
             rows = _with_pool_source(db.list_outlook_pool(status=status, limit=fetch_limit), "outlook")
         if q:
@@ -1382,6 +1484,8 @@ def create_app(auth_code: str | None = None) -> Flask:
             db.release_generic_api_email(email, status=status, note=data.get("note"))
         elif source == "cloudflare_domain":
             db.release_domain_email(email, status=status, note=data.get("note"))
+        elif source == "icloud_hide":
+            db.release_icloud_hide_email(email, status=status, note=data.get("note"))
         else:
             db.release_outlook(email, status=status, note=data.get("note"))
         return jsonify({"ok": True})
@@ -1425,6 +1529,8 @@ def create_app(auth_code: str | None = None) -> Flask:
                     db.release_generic_api_email(email, status=status, note=note)
                 elif item_source == "cloudflare_domain":
                     db.release_domain_email(email, status=status, note=note)
+                elif item_source == "icloud_hide":
+                    db.release_icloud_hide_email(email, status=status, note=note)
                 else:
                     db.release_outlook(email, status=status, note=note)
                 updated.append({"email": email, "source": item_source, "status": status})
@@ -1452,6 +1558,8 @@ def create_app(auth_code: str | None = None) -> Flask:
             if source == "generic_api"
             else db.delete_domain_email(email)
             if source == "cloudflare_domain"
+            else db.delete_icloud_hide_email(email)
+            if source == "icloud_hide"
             else db.delete_outlook(email)
         )
         return jsonify({"ok": True, "deleted": deleted})
@@ -1491,6 +1599,8 @@ def create_app(auth_code: str | None = None) -> Flask:
                 if item_source == "generic_api"
                 else db.delete_domain_email(email)
                 if item_source == "cloudflare_domain"
+                else db.delete_icloud_hide_email(email)
+                if item_source == "icloud_hide"
                 else db.delete_outlook(email)
             )
             if deleted_ok:
@@ -2111,13 +2221,31 @@ def create_app(auth_code: str | None = None) -> Flask:
             result = _paginate_items(rows, page=page, page_size=page_size)
             result["items"] = [_compact_job_for_list(r) for r in (result.get("items") or [])]
             result["status_counts"] = _job_status_counts(rows)
+            result["progress_batch"] = _latest_progress_batch(rows)
             result["compact"] = True
             return jsonify(result)
         return jsonify(rows)
 
+    @app.get("/api/email-sources")
+    def api_email_sources():
+        """返回注册页可明确选择的邮箱来源；顺序来自全局启用列表。"""
+        from config import email as _email_cfg
+        from core.email_provider import EMAIL_SOURCE_LABELS, parse_email_sources
+
+        use_service = bool(getattr(_email_cfg, "USE_EMAIL_SERVICE", True))
+        sources = parse_email_sources(_email_cfg.EMAIL_SOURCE) if use_service else []
+        return jsonify({
+            "ok": True,
+            "manual_mode": not use_service,
+            "sources": [
+                {"value": source, "label": EMAIL_SOURCE_LABELS.get(source, source)}
+                for source in sources
+            ],
+        })
+
     @app.post("/api/jobs")
     def api_jobs_create():
-        """启动批量注册：body {count, workers}。"""
+        """启动批量注册：body {count, workers, email_source}。"""
         data = request.get_json(silent=True) or {}
         try:
             count = int(data.get("count", 1))
@@ -2135,7 +2263,7 @@ def create_app(auth_code: str | None = None) -> Flask:
         # 提交前先确认池里有足够可用邮箱，给前端一个温和提示（不阻断）
         from config import email as _email_cfg
         from config import register as _register_cfg
-        from core.email_provider import parse_email_sources
+        from core.email_provider import parse_email_sources, validate_email_source
         if not bool(getattr(_email_cfg, "USE_EMAIL_SERVICE", True)):
             reg_email = str(getattr(_register_cfg, "REGISTER_EMAIL", "") or "").strip()
             if not reg_email:
@@ -2156,7 +2284,30 @@ def create_app(auth_code: str | None = None) -> Flask:
                 "warning": f"手动 OTP 模式：将使用 {reg_email}；验证码请在任务页提交",
                 "workers": workers,
             })
-        sources = parse_email_sources(_email_cfg.EMAIL_SOURCE)
+        try:
+            selected_source = validate_email_source(data.get("email_source"))
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        configured_sources = parse_email_sources(_email_cfg.EMAIL_SOURCE)
+        if selected_source not in configured_sources:
+            return jsonify({
+                "ok": False,
+                "error": f"邮箱来源 {selected_source} 未在配置页 EMAIL_SOURCE 中启用",
+            }), 400
+        sources = [selected_source]
+        if "email_butler" in sources:
+            api_base = str(getattr(_email_cfg, "EMAIL_BUTLER_API_BASE", "") or "").strip()
+            api_key = str(getattr(_email_cfg, "EMAIL_BUTLER_API_KEY", "") or "").strip()
+            if not api_base:
+                return jsonify({
+                    "ok": False,
+                    "error": "已选择 email_butler 邮箱来源，请填写 Email Butler API 地址（配置 → 邮箱 / OTP）。",
+                }), 400
+            if not api_key:
+                return jsonify({
+                    "ok": False,
+                    "error": "已选择 email_butler 邮箱来源，请填写 Email Butler API Key（配置 → 邮箱 / OTP）。",
+                }), 400
         if "gptmail" in sources:
             api_key = str(getattr(_email_cfg, "GPTMAIL_API_KEY", "") or "").strip()
             if not api_key:
@@ -2206,9 +2357,31 @@ def create_app(auth_code: str | None = None) -> Flask:
                     "ok": False,
                     "error": "已选择 cloudmail 邮箱来源，请填写 CloudMail Token（配置 → 邮箱 / OTP）。",
                 }), 400
-        if "gptmail" in sources or "mailnest" in sources or "cloudmail" in sources or "cloudflare" in sources:
+        if "icloud_hide" in sources:
+            api_base = str(getattr(_email_cfg, "ICLOUD_HME_API_BASE", "") or "").strip()
+            if not api_base:
+                return jsonify({
+                    "ok": False,
+                    "error": "已选择 icloud_hide 邮箱来源，请填写 iCloud HME 服务地址（配置 → 邮箱 / OTP）。",
+                }), 400
+            try:
+                from core.icloud_hme_client import sync_aliases
+                sync_aliases(force=False)
+            except Exception as exc:
+                return jsonify({
+                    "ok": False,
+                    "error": f"iCloud HME 服务不可用：{type(exc).__name__}: {str(exc)[:240]}",
+                }), 400
+        if "gptmail" in sources or "mailnest" in sources or "cloudmail" in sources or "cloudflare" in sources or "email_butler" in sources:
             # 临时邮箱在任务开始时动态生成，不需要本地邮箱池容量提示。
             warning = ""
+        elif sources == ["icloud_hide"]:
+            pool = db.icloud_hide_email_pool_summary()
+            warning = ""
+            if pool.get("available", 0) < count:
+                auto_create = bool(getattr(_email_cfg, "ICLOUD_HME_AUTO_CREATE", False))
+                suffix = "，不足的会按需创建" if auto_create else "，不足的会失败"
+                warning = f"iCloud 隐藏邮箱池仅 {pool.get('available', 0)} 个可用，少于任务数 {count}{suffix}"
         elif "cloudflare_domain" in sources:
             pool = db.domain_email_pool_summary()
             warning = ""
@@ -2225,6 +2398,10 @@ def create_app(auth_code: str | None = None) -> Flask:
                 available += db.outlook_pool_summary().get("available", 0)
             if "generic_api" in sources:
                 available += db.generic_api_email_pool_summary().get("available", 0)
+            if "cloudflare_domain" in sources:
+                available += db.domain_email_pool_summary().get("available", 0)
+            if "icloud_hide" in sources:
+                available += db.icloud_hide_email_pool_summary().get("available", 0)
             warning = ""
             if available < count:
                 warning = f"多个邮箱池合计仅 {available} 个可用，少于任务数 {count}，不足的会失败"
@@ -2233,8 +2410,15 @@ def create_app(auth_code: str | None = None) -> Flask:
             warning = ""
             if pool.get("available", 0) < count:
                 warning = f"可用邮箱仅 {pool.get('available', 0)} 个，少于任务数 {count}，不足的会失败"
-        jobs = svc.submit_registration(count=count, workers=workers)
-        return jsonify({"ok": True, "submitted": len(jobs), "jobs": jobs, "warning": warning, "workers": workers})
+        jobs = svc.submit_registration(count=count, email_source=selected_source, workers=workers)
+        return jsonify({
+            "ok": True,
+            "submitted": len(jobs),
+            "jobs": jobs,
+            "warning": warning,
+            "workers": workers,
+            "email_source": selected_source,
+        })
 
     @app.get("/api/manual-otp/waiting")
     def api_manual_otp_waiting():
@@ -2406,6 +2590,83 @@ def create_app(auth_code: str | None = None) -> Flask:
         except Exception as exc:
             logger.exception("获取 Roxy 团队/工作区失败")
             return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 500
+
+    @app.post("/api/proxy-provider/test")
+    def api_proxy_provider_test():
+        """实际提取并检测一个 1024Proxy IP，供配置页本地联调。"""
+        data = request.get_json(silent=True) or {}
+        lease = None
+        try:
+            from core.proxy_provider import acquire_1024_proxy, release_proxy
+
+            lease = acquire_1024_proxy(
+                api_url=str(data.get("api_url") or "").strip() or None,
+                protocol=str(data.get("protocol") or "").strip() or None,
+                # 空字符串有明确语义：本次测试沿用 API URL 里的 region，
+                # 不能回退到进程中已经保存的 PROXY_1024_REGION。
+                region=str(data.get("region") or "").strip(),
+                session_minutes=data.get("session_minutes"),
+                validate=bool(data.get("validate", True)),
+                job_id="webui-test",
+            )
+            result = lease.public_dict()
+            release_proxy(lease, reason="webui_test")
+            lease = None
+            return jsonify({
+                "ok": True,
+                "lease": result,
+                "message": "已成功提取并检测 1 个 1024Proxy IP；测试租约已在本地释放",
+            })
+        except Exception as exc:
+            logger.warning("1024Proxy 本地测试失败：%s", type(exc).__name__)
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}), 400
+        finally:
+            if lease is not None:
+                try:
+                    from core.proxy_provider import release_proxy
+                    release_proxy(lease, reason="webui_test_failed")
+                except Exception:
+                    pass
+
+    @app.post("/api/icloud-hme/test")
+    def api_icloud_hme_test():
+        """连接本机 iCloud HME 服务、同步别名池并验证实际转发收件通道。"""
+        data = request.get_json(silent=True) or {}
+        try:
+            from core.icloud_hme_client import test_connection
+
+            result = test_connection(
+                api_base=str(data.get("api_base") or "").strip() or None,
+                account_id=str(data.get("account_id") or "").strip() or None,
+                timeout=data.get("timeout"),
+            )
+            return jsonify({
+                "ok": True,
+                **result,
+                "message": (
+                    f"连接成功：远端 {result.get('remote_aliases', 0)} 个别名，"
+                    f"本地可用 {result.get('pool', {}).get('available', 0)} 个，"
+                    f"收件通道 {result.get('inbox_method') or 'unknown'}"
+                ),
+            })
+        except Exception as exc:
+            logger.warning("iCloud HME 本地测试失败：%s", type(exc).__name__)
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}), 400
+
+    @app.post("/api/email-butler/test-connection")
+    def api_email_butler_test_connection():
+        """验证 Email Butler URL、Key、策略与必要能力，不回显 Key。"""
+        data = request.get_json(silent=True) or {}
+        try:
+            from core.email_butler_client import test_connection
+
+            result = test_connection(
+                api_base=str(data.get("api_base") or "").strip() or None,
+                api_key=str(data.get("api_key") or "").strip() or None,
+            )
+            return jsonify(result)
+        except Exception as exc:
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:260]}"}), 400
 
     # ----------------------------------------------------------
     # 配置读写

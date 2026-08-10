@@ -8,6 +8,9 @@ CLOAK_HEADLESS: bool = True
 # 是否启用 CloakBrowser humanize 行为。
 CLOAK_HUMANIZE: bool = True
 
+# 人类行为预设：default / careful。注册流程建议 careful，动作更稳但稍慢。
+CLOAK_HUMAN_PRESET: str = "careful"
+
 # 使用当前出口 IP 自动匹配时区/语言/WebRTC IP。
 CLOAK_GEOIP: bool = True
 
@@ -38,4 +41,4 @@ CLOAK_SELENIUM_TIMEOUT: int = 90
 CLOAK_KEEP_BROWSER_OPEN: bool = False
 
 # ---- .env overrides for WebUI editable fields ----
-apply_env_overrides(globals(), {'CLOAK_HEADLESS': 'bool', 'CLOAK_HUMANIZE': 'bool', 'CLOAK_GEOIP': 'bool', 'CLOAK_LOCALE': 'str', 'CLOAK_TIMEZONE': 'str', 'CLOAK_USE_PROXY': 'bool', 'CLOAK_LICENSE_KEY': 'str', 'CLOAK_FINGERPRINT_SEED': 'str', 'CLOAK_USER_DATA_DIR': 'str', 'CLOAK_SELENIUM_TIMEOUT': 'int', 'CLOAK_KEEP_BROWSER_OPEN': 'bool'})
+apply_env_overrides(globals(), {'CLOAK_HEADLESS': 'bool', 'CLOAK_HUMANIZE': 'bool', 'CLOAK_HUMAN_PRESET': 'str', 'CLOAK_GEOIP': 'bool', 'CLOAK_LOCALE': 'str', 'CLOAK_TIMEZONE': 'str', 'CLOAK_USE_PROXY': 'bool', 'CLOAK_LICENSE_KEY': 'str', 'CLOAK_FINGERPRINT_SEED': 'str', 'CLOAK_USER_DATA_DIR': 'str', 'CLOAK_SELENIUM_TIMEOUT': 'int', 'CLOAK_KEEP_BROWSER_OPEN': 'bool'})

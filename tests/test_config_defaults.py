@@ -86,6 +86,51 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             env_loader._LOADED = old_loaded
             importlib.reload(codex_config)
 
+    def test_1024proxy_fields_are_webui_editable(self):
+        fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
+        expected = {
+            "REGISTRATION_PROXY_MODE", "PROXY_1024_API_URL", "PROXY_1024_REGION", "PROXY_1024_PROTOCOL",
+            "PROXY_1024_SESSION_MINUTES", "PROXY_1024_ROTATE_SESSION_TIME", "PROXY_1024_API_TIMEOUT",
+            "PROXY_1024_MAX_ATTEMPTS", "PROXY_1024_VALIDATE",
+            "PROXY_1024_RECENT_TTL", "PROXY_1024_ACQUIRE_INTERVAL",
+        }
+        self.assertTrue(expected.issubset(fields))
+        self.assertEqual(fields["PROXY_1024_API_URL"]["group"], "代理平台")
+        self.assertTrue(fields["PROXY_1024_API_URL"]["secret"])
+
+    def test_cloak_human_preset_is_webui_editable(self):
+        fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
+        self.assertIn("CLOAK_HUMAN_PRESET", fields)
+        self.assertEqual(fields["CLOAK_HUMAN_PRESET"]["group"], "CloakBrowser")
+
+    def test_icloud_hme_fields_are_webui_editable(self):
+        fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
+        expected = {
+            "ICLOUD_HME_API_BASE", "ICLOUD_HME_ACCOUNT_ID", "ICLOUD_HME_API_TOKEN",
+            "ICLOUD_HME_REQUEST_TIMEOUT", "ICLOUD_HME_SYNC_TTL",
+            "ICLOUD_HME_INBOX_MODE", "ICLOUD_HME_FORWARD_IMAP_SERVER",
+            "ICLOUD_HME_FORWARD_IMAP_PORT", "ICLOUD_HME_FORWARD_IMAP_EMAIL",
+            "ICLOUD_HME_FORWARD_IMAP_PASSWORD",
+            "ICLOUD_HME_AUTO_CREATE", "ICLOUD_HME_CREATE_LABEL_PREFIX",
+        }
+        self.assertTrue(expected.issubset(fields))
+        self.assertEqual(fields["ICLOUD_HME_API_BASE"]["group"], "邮箱 / OTP")
+        self.assertTrue(fields["ICLOUD_HME_API_TOKEN"]["secret"])
+        self.assertTrue(fields["ICLOUD_HME_FORWARD_IMAP_PASSWORD"]["secret"])
+
+    def test_deactivation_mail_provider_fields_are_webui_editable(self):
+        fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
+        expected = {
+            "EMAIL_BUTLER_API_BASE",
+            "EMAIL_BUTLER_API_KEY",
+            "EMAIL_BUTLER_REQUEST_TIMEOUT",
+            "CLOUDFLARE_SIGNAL_API_KEY",
+            "CLOUDFLARE_SIGNAL_PATH",
+        }
+        self.assertTrue(expected.issubset(fields))
+        self.assertTrue(fields["EMAIL_BUTLER_API_KEY"]["secret"])
+        self.assertTrue(fields["CLOUDFLARE_SIGNAL_API_KEY"]["secret"])
+
 
 if __name__ == "__main__":
     unittest.main()

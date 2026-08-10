@@ -60,6 +60,10 @@ EDITABLE_FIELDS = [
         "label": "Cloak人工行为", "help": "启用 CloakBrowser humanize 鼠标/键盘/滚动行为",
     },
     {
+        "key": "CLOAK_HUMAN_PRESET", "file": "cloakbrowser.py", "type": "str", "group": "CloakBrowser",
+        "label": "Cloak行为预设", "help": "default / careful；注册建议 careful，动作更稳但稍慢",
+    },
+    {
         "key": "CLOAK_GEOIP", "file": "cloakbrowser.py", "type": "bool", "group": "CloakBrowser",
         "label": "Cloak按出口定位", "help": "按当前出口 IP 自动匹配时区/语言/WebRTC IP；支持显式代理、系统代理/VPN",
     },
@@ -252,7 +256,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "ROXY_CREATE_USE_PROXY_POOL", "file": "roxybrowser.py", "type": "bool", "group": "RoxyBrowser",
-        "label": "创建环境使用代理池", "help": "创建 Roxy 环境时从配置页「代理池」随机取一个代理，写入 Roxy proxyInfo",
+        "label": "创建环境使用代理池", "help": "仅用于静态「代理池」模式；选择 1024Proxy 时会自动把每个任务的独立家宽租约写入 Roxy proxyInfo，且优先于此开关",
     },
     {
         "key": "ROXY_PROXY_CHECK_CHANNEL", "file": "roxybrowser.py", "type": "str", "group": "RoxyBrowser",
@@ -313,7 +317,21 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "EMAIL_SOURCE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
-        "label": "邮箱来源", "help": "可填单个或多个，逗号分隔并按顺序兜底：outlook,generic_api,cloudflare_domain,cloudflare,gptmail,mailnest,cloudmail",
+        "label": "邮箱来源", "help": "WebUI 可选来源列表，可填单个或多个并用逗号分隔；开始注册时必须明确选择一个，任务不会跨平台兜底：outlook,generic_api,cloudflare_domain,cloudflare,email_butler,gptmail,mailnest,cloudmail,icloud_hide",
+    },
+    {
+        "key": "EMAIL_BUTLER_API_BASE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "Email Butler API 地址", "help": "通用 /v1 根地址，例如 http://127.0.0.1:8788/v1",
+        "storage": "env",
+    },
+    {
+        "key": "EMAIL_BUTLER_API_KEY", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "Email Butler API Key", "help": "专用客户端 Key；策略在 Butler 端绑定，保存在 .env",
+        "storage": "env", "secret": True,
+    },
+    {
+        "key": "EMAIL_BUTLER_REQUEST_TIMEOUT", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
+        "label": "Email Butler 请求超时(秒)", "help": "单次 HTTP 请求超时，默认 20 秒",
     },
     {
         "key": "GPTMAIL_API_KEY", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
@@ -329,6 +347,15 @@ EDITABLE_FIELDS = [
         "key": "CLOUDFLARE_API_KEY", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
         "label": "Cloudflare API Key", "help": "匿名可空；admin 模式填 ADMIN_PASSWORD；保存在 .env",
         "storage": "env", "secret": True,
+    },
+    {
+        "key": "CLOUDFLARE_SIGNAL_API_KEY", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "Cloudflare 封号信号 Key", "help": "仅用于查询封号邮件信号，不返回邮件正文；建议使用独立 Key",
+        "storage": "env", "secret": True,
+    },
+    {
+        "key": "CLOUDFLARE_SIGNAL_PATH", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "Cloudflare 封号信号路径", "help": "默认 /signals/scan",
     },
     {
         "key": "CLOUDFLARE_AUTH_MODE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
@@ -428,6 +455,59 @@ EDITABLE_FIELDS = [
         "key": "CLOUDMAIL_RANDOM_LOCAL_LENGTH", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
         "label": "CloudMail随机名前缀长度", "help": "生成邮箱 local-part 的长度，建议 10-16",
     },
+    {
+        "key": "ICLOUD_HME_API_BASE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "iCloud HME 服务地址", "help": "本机 icloud-hme sidecar 地址，默认 http://127.0.0.1:8081",
+        "storage": "env",
+    },
+    {
+        "key": "ICLOUD_HME_ACCOUNT_ID", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "iCloud 账号 ID", "help": "sidecar 中的账号 ID；留空自动选 active 账号",
+        "storage": "env",
+    },
+    {
+        "key": "ICLOUD_HME_API_TOKEN", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "iCloud HME API Token", "help": "本地服务启用鉴权时填写；仅监听 127.0.0.1 时可留空",
+        "storage": "env", "secret": True,
+    },
+    {
+        "key": "ICLOUD_HME_REQUEST_TIMEOUT", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
+        "label": "iCloud 请求超时(秒)", "help": "同步别名和 IMAP 拉信的单次请求超时，默认 35",
+    },
+    {
+        "key": "ICLOUD_HME_SYNC_TTL", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
+        "label": "iCloud 同步缓存(秒)", "help": "别名池自动同步的缓存时长，默认 300；连接测试会强制同步",
+    },
+    {
+        "key": "ICLOUD_HME_INBOX_MODE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "隐藏邮箱收件模式", "help": "sidecar=iCloud IMAP；forward_imap=读取实际转发 Gmail，当前转发到 Gmail 时选后者",
+    },
+    {
+        "key": "ICLOUD_HME_FORWARD_IMAP_SERVER", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "转发 IMAP 服务器", "help": "Gmail 填 imap.gmail.com",
+    },
+    {
+        "key": "ICLOUD_HME_FORWARD_IMAP_PORT", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
+        "label": "转发 IMAP 端口", "help": "SSL IMAP 默认 993",
+    },
+    {
+        "key": "ICLOUD_HME_FORWARD_IMAP_EMAIL", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "隐藏邮箱转发到", "help": "Apple HME 的 forwardToEmail；必须与实际 Gmail 地址完全一致",
+        "storage": "env",
+    },
+    {
+        "key": "ICLOUD_HME_FORWARD_IMAP_PASSWORD", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "转发邮箱应用密码", "help": "Gmail 应用专用密码，不是 Google 登录密码；只保存在 .env",
+        "storage": "env", "secret": True,
+    },
+    {
+        "key": "ICLOUD_HME_AUTO_CREATE", "file": "email.py", "type": "bool", "group": "邮箱 / OTP",
+        "label": "库存为空自动创建", "help": "关闭时仅使用已同步别名；开启后池为空会向 Apple 申请一个新隐藏邮箱",
+    },
+    {
+        "key": "ICLOUD_HME_CREATE_LABEL_PREFIX", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "新别名标签前缀", "help": "自动创建新隐藏邮箱时使用的标签前缀，默认 turb",
+    },
     # ---- 浏览器地区画像 ----
     {
         "key": "BROWSER_LOCALE_PROFILE", "file": "browser.py", "type": "str", "group": "浏览器画像",
@@ -444,6 +524,51 @@ EDITABLE_FIELDS = [
     },
 
     # ---- 代理池 ----
+    {
+        "key": "REGISTRATION_PROXY_MODE", "file": "proxy.py", "type": "str", "group": "代理平台",
+        "label": "注册代理来源", "help": "pool=现有静态代理池；1024=每个注册任务从 1024Proxy 提取独立 IP；none=直连",
+    },
+    {
+        "key": "PROXY_1024_API_URL", "file": "proxy.py", "type": "str", "group": "代理平台",
+        "label": "1024Proxy 提取 API", "help": "粘贴白名单 API 完整 URL；任务会强制 num=1，并用下方粘性时长覆盖 URL 的 time 参数；仅保存到 .env",
+        "storage": "env", "secret": True,
+    },
+    {
+        "key": "PROXY_1024_REGION", "file": "proxy.py", "type": "str", "group": "代理平台",
+        "label": "家宽国家 / 地区", "help": "选择或输入 ISO 两位地区代码；例如 US=美国、JP=日本、GB=英国；Rand=随机。留空沿用提取 API 链接中的 region",
+    },
+    {
+        "key": "PROXY_1024_PROTOCOL", "file": "proxy.py", "type": "str", "group": "代理平台",
+        "label": "返回代理协议", "help": "通常填 http；也支持 https、socks5、socks5h，必须与 1024Proxy 生成接口时选择的协议一致",
+    },
+    {
+        "key": "PROXY_1024_SESSION_MINUTES", "file": "proxy.py", "type": "int", "group": "代理平台",
+        "label": "粘性时长(分钟)", "help": "默认 30，允许 1~120；延长时间本身不增加按 GB 套餐流量，只增加同一 IP 可使用的窗口",
+    },
+    {
+        "key": "PROXY_1024_ROTATE_SESSION_TIME", "file": "proxy.py", "type": "bool", "group": "代理平台",
+        "label": "每任务轮换远端会话", "help": "推荐开启；按任务在基础时长至 120 分钟间轮换 time 参数，避免白名单 API 在粘性窗口内重复返回同一 IP",
+    },
+    {
+        "key": "PROXY_1024_API_TIMEOUT", "file": "proxy.py", "type": "float", "group": "代理平台",
+        "label": "API/检测超时(秒)", "help": "提取 API 和出口 IP 检测的单次超时，建议 10~20 秒",
+    },
+    {
+        "key": "PROXY_1024_MAX_ATTEMPTS", "file": "proxy.py", "type": "int", "group": "代理平台",
+        "label": "最大提取次数", "help": "遇到空响应、不可用代理或重复 IP 时重新提取；建议 3 次",
+    },
+    {
+        "key": "PROXY_1024_VALIDATE", "file": "proxy.py", "type": "bool", "group": "代理平台",
+        "label": "使用前检测出口", "help": "领取邮箱前先通过该代理访问 IPInfo，确认代理可用并记录出口地区",
+    },
+    {
+        "key": "PROXY_1024_RECENT_TTL", "file": "proxy.py", "type": "int", "group": "代理平台",
+        "label": "最近 IP 隔离(秒)", "help": "任务释放后多久内拒绝重复分配同一 IP；默认 1800，与 30 分钟粘性时间一致",
+    },
+    {
+        "key": "PROXY_1024_ACQUIRE_INTERVAL", "file": "proxy.py", "type": "float", "group": "代理平台",
+        "label": "提取最小间隔(秒)", "help": "并发任务调用提取 API 的最小间隔，默认 0.6 秒，避免瞬间突发",
+    },
     {
         "key": "PROXY_POOL", "file": "proxy.py", "type": "list_str_multiline", "group": "代理池",
         "label": "代理池(每行一个)", "help": "每行一个代理 URL，留空行会被忽略；为空则不使用代理",

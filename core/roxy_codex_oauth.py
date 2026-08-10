@@ -1258,7 +1258,7 @@ def _run_roxy_codex_oauth_once(
         otp_provider = wait_for_otp
 
     client = None if reuse_existing_profile else RoxyBrowserClient()
-    opened = existing_opened if reuse_existing_profile else client.open_profile()
+    opened = existing_opened if reuse_existing_profile else client.open_profile(proxy_url=proxy)
     browser_kind_token = _CODEX_BROWSER_KIND.set(_detect_browser_kind(opened))
     driver = existing_driver if reuse_existing_profile else None
     owns_driver = not reuse_existing_profile

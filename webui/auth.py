@@ -10,7 +10,7 @@ import secrets
 from datetime import timedelta
 from typing import Any
 
-from flask import Response, jsonify, redirect, render_template, request, session, url_for
+from flask import jsonify, redirect, render_template, request, session, url_for
 
 logger = logging.getLogger(__name__)
 
@@ -105,10 +105,8 @@ def register_auth_routes(app: Any) -> None:
     @app.before_request
     def _require_auth_code():
         endpoint = request.endpoint or ""
-        if endpoint in {"auth_login", "auth_logout", "static"}:
+        if endpoint in {"auth_login", "auth_logout", "static", "favicon"}:
             return None
-        if request.path in ("/favicon.ico",):
-            return Response(status=204)
         if request_is_authorized():
             return None
         return _unauthorized_response()

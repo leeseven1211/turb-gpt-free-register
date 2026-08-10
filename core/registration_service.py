@@ -11,6 +11,7 @@
 """
 import logging
 import threading
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -76,6 +77,17 @@ def check_stop_requested() -> None:
         raise StopRequested(f"任务 #{job_id} 已被用户手动停止")
 
 
+def report_job_progress(stage: str, state: str = "running", detail: str | None = None) -> None:
+    """注册驱动调用的轻量进度上报；CLI 场景没有 job_id 时自动忽略。"""
+    job_id = getattr(_THREAD_CTX, "job_id", None)
+    if not job_id:
+        return
+    try:
+        db.update_job_progress(int(job_id), stage, state=state, detail=detail)
+    except Exception:
+        logger.exception("[Job %s] 写入进度失败: stage=%s state=%s", job_id, stage, state)
+
+
 def _append_job_log(job_id: int, message: str) -> None:
     try:
         job = db.get_job(job_id)
@@ -97,7 +109,7 @@ def _random_display_name() -> str:
     return random_display_name()
 
 
-def _prepare_registration_args() -> tuple[str, str, str]:
+def _prepare_registration_args(email_source: str | None = None) -> tuple[str, str, str]:
     """复用 CLI 的默认规则，为旧 Web 任务入口补齐注册参数。"""
     # 用模块属性读，支持 WebUI 热加载
     from config import register as _r, email as _e
@@ -119,7 +131,7 @@ def _prepare_registration_args() -> tuple[str, str, str]:
     # 邮箱领取会把池状态置为 used，因此放在所有其他准备逻辑之后。
     if not email:
         if _e.USE_EMAIL_SERVICE:
-            email = acquire_email()
+            email = acquire_email(email_source)
         else:
             raise RuntimeError(
                 "手动模式未配置邮箱。请在 WebUI 配置页设置 REGISTER_EMAIL，"
@@ -292,18 +304,49 @@ def _run_one_job(job_id: int, log_file: str) -> None:
         return
 
     db.update_job(job_id, status="running", started_at=datetime.now().isoformat(timespec="seconds"))
+    db.update_job_progress(job_id, "email", state="running", detail="正在准备代理并领取邮箱")
 
     email: str | None = None
+    proxy_lease = None
     try:
         with _JobLogContext(log_file):
             from main import run_registration
+            from core.proxy_provider import acquire_registration_proxy, mask_endpoint, mask_ip
+
             log_logger.info(f"[Job {job_id}] 开始注册任务")
-            email, name, birthday = _prepare_registration_args()
+            db.update_job(job_id, proxy_status="acquiring")
+            proxy_lease = acquire_registration_proxy(job_id=job_id)
+            db.update_job(
+                job_id,
+                proxy_provider=proxy_lease.provider,
+                proxy_status="leased",
+                proxy_endpoint=mask_endpoint(proxy_lease.endpoint),
+                proxy_exit_ip=mask_ip(proxy_lease.exit_ip) or "-",
+                proxy_region=proxy_lease.region or "-",
+                proxy_acquired_at=proxy_lease.acquired_at.isoformat(timespec="seconds"),
+                proxy_expires_at=proxy_lease.expires_at.isoformat(timespec="seconds") if proxy_lease.expires_at else "-",
+            )
+            selected_source = str(current.get("email_source") or "").strip()
+            try:
+                from core.email_provider import validate_email_source
+                selected_source = validate_email_source(selected_source)
+            except ValueError:
+                # 兼容改造前已经存在的多来源历史任务；新任务 API 不再允许这种值。
+                from core.email_provider import parse_email_sources
+                selected_source = parse_email_sources(selected_source)[0]
+            email, name, birthday = _prepare_registration_args(selected_source)
             db.update_job(job_id, email=email)
+            db.update_job_progress(job_id, "email", state="success", detail=f"已从 {selected_source} 领取邮箱")
             check_stop_requested()
-            result = run_registration(email=email, name=name, birthday=birthday)
+            result = run_registration(
+                email=email,
+                name=name,
+                birthday=birthday,
+                proxy=proxy_lease.proxy_url,
+            )
             if is_stop_requested(job_id):
                 _release_unconsumed_job_email(email, "用户手动停止")
+                db.finish_job_progress(job_id, success=False, detail="用户手动停止", failure_state="stopped")
                 db.update_job(
                     job_id,
                     status="stopped",
@@ -313,6 +356,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 log_logger.warning(f"[Job {job_id}] 已按用户请求停止")
                 return
             if isinstance(result, dict) and result.get("success"):
+                db.finish_job_progress(job_id, success=True)
                 db.update_job(
                     job_id,
                     status="success",
@@ -325,6 +369,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 # 注意：失败也可能伴随 account_id（如 Codex 失败但账号已注册成功）
                 err = (result or {}).get("error") if isinstance(result, dict) else "unknown"
                 result_email = (result or {}).get("email") if isinstance(result, dict) else None
+                db.finish_job_progress(job_id, success=False, detail=str(err)[:300])
                 db.update_job(
                     job_id,
                     status="failed",
@@ -341,6 +386,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 log_logger.error(f"[Job {job_id}] 失败: {err}")
     except StopRequested as exc:
         _release_unconsumed_job_email(email, str(exc))
+        db.finish_job_progress(job_id, success=False, detail="用户手动停止", failure_state="stopped")
         log_logger.warning(f"[Job {job_id}] 已停止: {exc}")
         db.update_job(
             job_id,
@@ -356,6 +402,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
             _release_unconsumed_job_email(email, err_text)
         if is_stop_requested(job_id):
             log_logger.warning(f"[Job {job_id}] 停止中捕获异常，按停止处理: {type(exc).__name__}: {exc}")
+            db.finish_job_progress(job_id, success=False, detail="用户手动停止", failure_state="stopped")
             db.update_job(
                 job_id,
                 status="stopped",
@@ -364,13 +411,24 @@ def _run_one_job(job_id: int, log_file: str) -> None:
             )
             return
         log_logger.exception(f"[Job {job_id}] 异常")
+        db.finish_job_progress(job_id, success=False, detail=err_text[:300])
         db.update_job(
             job_id,
             status="failed",
+            proxy_status="failed" if proxy_lease is None else "leased",
             error=f"{type(exc).__name__}: {exc}"[:500],
             completed_at=datetime.now().isoformat(timespec="seconds"),
         )
     finally:
+        if proxy_lease is not None:
+            try:
+                from core.proxy_provider import release_proxy
+
+                final_job = db.get_job(job_id) or {}
+                release_proxy(proxy_lease, reason=str(final_job.get("status") or "completed"))
+                db.update_job(job_id, proxy_status="released")
+            except Exception:
+                logger.exception("[Job %s] 释放代理租约失败", job_id)
         _deactivate_job(job_id)
 
 
@@ -384,6 +442,9 @@ def _run_codex_retry_job(job_id: int, log_file: str, email: str, account_id: int
         return
 
     db.update_job(job_id, status="running", started_at=datetime.now().isoformat(timespec="seconds"))
+    for stage, _label in db.JOB_PROGRESS_STAGES[:-1]:
+        db.update_job_progress(job_id, stage, state="skipped", detail="Codex 补跑任务")
+    db.update_job_progress(job_id, "codex", state="running", detail="正在补跑 Codex 授权")
     try:
         result = codex_retry_service.run_worker(
             email,
@@ -392,8 +453,10 @@ def _run_codex_retry_job(job_id: int, log_file: str, email: str, account_id: int
         )
         now_iso = datetime.now().isoformat(timespec="seconds")
         if is_stop_requested(job_id) or result.get("status") == "stopped":
+            db.finish_job_progress(job_id, success=False, detail=str(result.get("message") or "用户手动停止")[:300], failure_state="stopped")
             db.update_job(job_id, status="stopped", email=email, account_id=account_id, error=str(result.get("message") or "用户手动停止")[:500], completed_at=now_iso)
         elif result.get("ok"):
+            db.finish_job_progress(job_id, success=True)
             db.update_job(
                 job_id,
                 status="success",
@@ -402,6 +465,7 @@ def _run_codex_retry_job(job_id: int, log_file: str, email: str, account_id: int
                 completed_at=now_iso,
             )
         else:
+            db.finish_job_progress(job_id, success=False, detail=str(result.get("message") or "Codex 补跑失败")[:300])
             db.update_job(
                 job_id,
                 status="failed",
@@ -411,6 +475,7 @@ def _run_codex_retry_job(job_id: int, log_file: str, email: str, account_id: int
                 completed_at=now_iso,
             )
     except Exception as exc:
+        db.finish_job_progress(job_id, success=False, detail=f"{type(exc).__name__}: {exc}"[:300])
         db.update_job(
             job_id,
             status="failed",
@@ -430,23 +495,33 @@ def _run_codex_retry_job(job_id: int, log_file: str, email: str, account_id: int
 def submit_registration(count: int = 1, email_source: str | None = None, workers: int | None = None) -> list[dict]:
     """
     创建 N 个注册任务并提交到线程池。
-    email_source 仅记录到 DB；实际邮箱来源固定为 Outlook 账号池。
+    email_source 会写入每个任务，任务执行时严格使用该来源，不跨平台兜底。
 
     Returns:
         N 个新创建的 job dict
     """
     if email_source is None:
         from config import email as _email_cfg
-        email_source = _email_cfg.EMAIL_SOURCE
+        from core.email_provider import parse_email_sources
+        email_source = parse_email_sources(_email_cfg.EMAIL_SOURCE)[0]
+    from core.email_provider import validate_email_source
+    email_source = validate_email_source(email_source)
 
     # 创建/切换线程池和提交本批任务必须整体串行化：否则另一请求在本批提交中途
     # 切换 workers 并 shutdown 旧池，会导致后续 submit 报 cannot schedule new futures after shutdown。
     with _executor_lock:
         executor = get_executor(max_workers=workers)
         effective_workers = get_executor_workers()
+        batch_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
         jobs = []
-        for _ in range(count):
-            job = db.create_job(email_source=email_source)
+        for index in range(count):
+            job = db.create_job(
+                email_source=email_source,
+                batch_id=batch_id,
+                batch_index=index + 1,
+                batch_size=count,
+                batch_workers=effective_workers,
+            )
             try:
                 executor.submit(_run_one_job, job["id"], job["log_file"])
             except Exception as exc:

@@ -17,7 +17,7 @@ class CloudflareWebUiTests(unittest.TestCase):
         with patch.object(email_config, "USE_EMAIL_SERVICE", True), patch.object(
             email_config, "EMAIL_SOURCE", "cloudflare"
         ), patch.object(email_config, "CLOUDFLARE_API_BASE", "", create=True):
-            response = self.client.post("/api/jobs", json={"count": 1, "workers": 1})
+            response = self.client.post("/api/jobs", json={"count": 1, "workers": 1, "email_source": "cloudflare"})
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("Cloudflare API 地址", response.get_json()["error"])
@@ -33,7 +33,7 @@ class CloudflareWebUiTests(unittest.TestCase):
         ), patch.object(email_config, "CLOUDFLARE_API_KEY", "", create=True), patch.object(
             email_config, "CLOUDFLARE_PATH_ACCOUNTS", "/admin/new_address", create=True
         ):
-            response = self.client.post("/api/jobs", json={"count": 1, "workers": 1})
+            response = self.client.post("/api/jobs", json={"count": 1, "workers": 1, "email_source": "cloudflare"})
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("Cloudflare API Key", response.get_json()["error"])
@@ -50,12 +50,12 @@ class CloudflareWebUiTests(unittest.TestCase):
         ), patch.object(email_config, "CLOUDFLARE_API_KEY", "", create=True), patch.object(
             email_config, "CLOUDFLARE_PATH_ACCOUNTS", "/api/new_address", create=True
         ):
-            response = self.client.post("/api/jobs", json={"count": 1, "workers": 1})
+            response = self.client.post("/api/jobs", json={"count": 1, "workers": 1, "email_source": "cloudflare"})
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["warning"], "")
         outlook_pool_summary.assert_not_called()
-        submit_registration.assert_called_once_with(count=1, workers=1)
+        submit_registration.assert_called_once_with(count=1, email_source="cloudflare", workers=1)
 
 
 if __name__ == "__main__":

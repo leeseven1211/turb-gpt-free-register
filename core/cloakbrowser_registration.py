@@ -25,27 +25,36 @@ logger = logging.getLogger(__name__)
 
 def run_cloak_registration(email: str, name: str, birthday: str, proxy: str = None, otp_code: str = None, batch_dir: Path | None = None) -> dict:
     """CloakBrowser 自动化注册入口。"""
+    from core.registration_service import report_job_progress
+
     driver = None
     opened = None
     create_acknowledged = False
     openai_password: str | None = None
     try:
+        report_job_progress("browser", "running", "正在启动 CloakBrowser")
         driver, opened = build_cloak_driver(proxy=proxy)
+        report_job_progress("browser", "success", "CloakBrowser 已启动")
         logger.info("[Cloak注册] 开始：%s，profile=%s", email, opened.profile_id)
 
         otp_after_ts = time.time()
+        report_job_progress("page", "running", "正在打开 ChatGPT 注册页")
         logger.info("[Cloak注册] 打开登录页：https://chatgpt.com/auth/login")
         driver.get("https://chatgpt.com/auth/login")
+        report_job_progress("page", "success", "注册页已加载")
         human_delay("navigate")
         _maybe_accept(driver)
         _check_manual_stop()
 
+        report_job_progress("submit_email", "running", "正在填写并提交邮箱")
         next_state = _submit_email_and_wait_next(driver, email, attempts=3)
         _check_manual_stop()
 
         openai_password = None if next_state == "otp" else _fill_password_page_if_present(driver, email, timeout=25)
+        report_job_progress("submit_email", "success", "邮箱已提交")
         _check_manual_stop()
 
+        report_job_progress("email_otp", "running", "正在等待并验证邮箱验证码")
         current_otp = otp_code
         max_otp_attempts = 3
         for otp_attempt in range(1, max_otp_attempts + 1):
@@ -87,13 +96,20 @@ def run_cloak_registration(email: str, name: str, birthday: str, proxy: str = No
             human_delay("api")
             current_otp = None
 
+        report_job_progress("email_otp", "success", "邮箱验证码已通过")
+        report_job_progress("profile", "running", "正在填写账号资料")
         profile_submitted = _complete_profile_page(driver, name, birthday, timeout=60)
         if profile_submitted:
             create_acknowledged = True
             human_delay("post_auth")
+            report_job_progress("profile", "success", "账号资料已提交")
+        else:
+            report_job_progress("profile", "skipped", "已有登录态，无需填写资料")
 
+        report_job_progress("token", "running", "正在等待登录态并获取 Token")
         session_info = _fetch_chatgpt_session(driver, timeout=120)
         access_token = session_info["accessToken"]
+        report_job_progress("token", "success", "已获取 accessToken")
         logger.info("[Cloak注册] 已拿到 accessToken：%s", email)
 
         if _twofa_cfg.ENABLE_2FA:
@@ -108,6 +124,7 @@ def run_cloak_registration(email: str, name: str, birthday: str, proxy: str = No
         try:
             from config import codex as _codex_cfg
             if bool(getattr(_codex_cfg, "ENABLE_CODEX_AUTO", False)):
+                report_job_progress("codex", "running", "正在执行 Codex OAuth")
                 from core.roxy_codex_oauth import run_roxy_codex_oauth
                 logger.info("[Cloak注册][Codex] ENABLE_CODEX_AUTO=True，复用当前 CloakBrowser 窗口执行 Codex 授权")
                 _check_manual_stop()
@@ -119,10 +136,13 @@ def run_cloak_registration(email: str, name: str, birthday: str, proxy: str = No
                     force=True,
                     clear_existing_state=True,
                 )
+                report_job_progress("codex", "success" if codex_result.get("ok") else "failed", str(codex_result.get("message") or "Codex OAuth 已完成")[:300])
             else:
                 logger.info("[Cloak注册][Codex] ENABLE_CODEX_AUTO=False，注册后跳过 Codex OAuth")
+                report_job_progress("codex", "skipped", "未启用 Codex 自动授权")
         except Exception as exc:
             codex_result = {"status": "failed", "ok": False, "message": f"{type(exc).__name__}: {str(exc)[:180]}"}
+            report_job_progress("codex", "failed", codex_result["message"])
 
         account_id = save_account_data(
             email=email,

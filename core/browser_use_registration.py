@@ -1639,6 +1639,8 @@ def run_browser_use_registration(
     cloud_provider: str = "browser_use",
 ) -> dict:
     """Browser Use / Skyvern 云端浏览器注册入口。proxy 参数保留兼容。"""
+    from core.registration_service import report_job_progress
+
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
@@ -1659,6 +1661,7 @@ def run_browser_use_registration(
 
     _set_log_provider_label(cloud_label)
     _t_all = _StepTimer(f"{cloud_label} 注册全流程")
+    report_job_progress("browser", "running", f"正在启动 {cloud_label} 浏览器会话")
     session_info_open = client.open_session()
     create_acknowledged = False
     openai_password: str | None = None
@@ -1684,6 +1687,7 @@ def run_browser_use_registration(
                 connect_kwargs["headers"] = client.cdp_headers()
             browser = p.chromium.connect_over_cdp(session_info_open.connect_url, **connect_kwargs)
             _t_cdp.done()
+            report_job_progress("browser", "success", f"{cloud_label} 浏览器会话已连接")
             # Browser Use 通常已有默认 context/page
             if browser.contexts:
                 context = browser.contexts[0]
@@ -1702,14 +1706,17 @@ def run_browser_use_registration(
             else:
                 start_url = str(getattr(_cfg, "BROWSER_USE_START_URL", "https://chatgpt.com/auth/login") or "https://chatgpt.com/auth/login")
             logger.info("[%s] 打开登录页：%s", cloud_label, start_url)
+            report_job_progress("page", "running", "正在打开 ChatGPT 注册页")
             _t_goto = _StepTimer("打开登录页")
             page.goto(start_url, wait_until="domcontentloaded")
             _t_goto.done(f"url={_page_url(page) or '-'}")
+            report_job_progress("page", "success", "注册页已加载")
             _bu_delay("navigate")
             _maybe_accept_cookies(page)
             _check_manual_stop()
 
             _t_email = _StepTimer("填写并提交邮箱")
+            report_job_progress("submit_email", "running", "正在填写并提交邮箱")
             # OpenAI 可能在点击提交后立刻发 OTP，甚至邮件 ReceivedDateTime 早于 Playwright
             # 点击函数返回的本地时间；先记录时间戳，配合 _is_after 的时钟容忍，避免过滤掉首次验证码。
             otp_after_ts = time.time()
@@ -1723,6 +1730,7 @@ def run_browser_use_registration(
             try:
                 openai_password = _fill_password_if_present(page, email, timeout=8 if _fast_mode() else 15, context=context)
                 _t_pwd.done("password_set=yes" if openai_password else "password_set=no")
+                report_job_progress("submit_email", "success", "邮箱已提交")
             except Exception as exc:
                 _t_pwd.done(f"failed={type(exc).__name__}: {str(exc)[:160]}")
                 raise
@@ -1770,6 +1778,7 @@ def run_browser_use_registration(
                     logger.warning("[BrowserUse][OTP] 重新触发邮箱 OTP 失败，继续按当前页面处理：%s: %s", type(restart_exc).__name__, str(restart_exc)[:180])
 
             current_otp = otp_code
+            report_job_progress("email_otp", "running", "正在等待并验证邮箱验证码")
             max_otp_attempts = 3
             for otp_attempt in range(1, max_otp_attempts + 1):
                 # 等验证码页出现
@@ -1836,19 +1845,26 @@ def run_browser_use_registration(
                 _restart_email_otp_flow("验证码错误/过期或页面未跳转，避免点击 resend 导致 500/chrome-error")
                 current_otp = None
 
+            report_job_progress("email_otp", "success", "邮箱验证码已通过")
             logger.info("[BrowserUse] 处理资料页/登录态")
+            report_job_progress("profile", "running", "正在填写账号资料")
             _t_profile = _StepTimer("资料页/登录态")
             profile_submitted = _complete_profile_page(page, name, birthday, timeout=28 if _fast_mode() else 60)
             if profile_submitted:
                 create_acknowledged = True
                 _bu_delay("post_auth")
+                report_job_progress("profile", "success", "账号资料已提交")
+            else:
+                report_job_progress("profile", "skipped", "已有登录态，无需填写资料")
 
+            report_job_progress("token", "running", "正在等待登录态并获取 Token")
             session_info = _fetch_chatgpt_session(page, context=context, timeout=28 if _fast_mode() else 120)
             _t_profile.done()
             access_token = session_info.get("accessToken")
             if not access_token:
                 raise RuntimeError("注册流程结束但未拿到 accessToken")
             create_acknowledged = True
+            report_job_progress("token", "success", "已获取 accessToken")
             logger.info("[BrowserUse] 已拿到 accessToken：%s", email)
 
             if _twofa_cfg.ENABLE_2FA:
@@ -1865,6 +1881,7 @@ def run_browser_use_registration(
                 codex_auto_enabled = bool(getattr(_codex_cfg, "ENABLE_CODEX_AUTO", False))
                 oauth_driver = str(getattr(_codex_cfg, "CODEX_OAUTH_DRIVER", "") or "").strip() or "same_as_registration"
                 if codex_auto_enabled:
+                    report_job_progress("codex", "running", "正在执行 Codex OAuth")
                     logger.info(
                         "[BrowserUse][Codex] ENABLE_CODEX_AUTO=True，注册成功后自动执行 Codex OAuth：driver=%s",
                         oauth_driver,
@@ -1883,8 +1900,10 @@ def run_browser_use_registration(
                     page = None
                     from core.codex_oauth import run_codex_oauth
                     codex_result = run_codex_oauth(email, otp_provider=wait_for_otp, proxy=proxy, force=True)
+                    report_job_progress("codex", "success" if codex_result.get("ok") else "failed", str(codex_result.get("message") or "Codex OAuth 已完成")[:300])
                 else:
                     logger.info("[BrowserUse][Codex] ENABLE_CODEX_AUTO=False，注册后跳过 Codex OAuth")
+                    report_job_progress("codex", "skipped", "未启用 Codex 自动授权")
             except Exception as exc:
                 logger.warning("[BrowserUse][Codex] 自动授权失败：%s: %s", type(exc).__name__, str(exc)[:220])
                 codex_result = {
@@ -1892,6 +1911,7 @@ def run_browser_use_registration(
                     "ok": False,
                     "message": f"{type(exc).__name__}: {str(exc)[:220]}",
                 }
+                report_job_progress("codex", "failed", codex_result["message"])
 
             account_id = save_account_data(
                 email=email,

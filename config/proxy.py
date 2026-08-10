@@ -19,6 +19,29 @@ PROXY_POOL = [
     "socks5://127.0.0.1:7897",
 ]
 
+# 注册任务代理来源：
+#   pool = 使用上面的静态代理池（兼容原行为）
+#   1024 = 每个注册任务从 1024Proxy API 提取一个独立的粘性住宅代理
+#   none = 注册任务显式直连
+REGISTRATION_PROXY_MODE = "pool"
+
+# 1024Proxy 白名单 API。完整 URL 仅保存到 .env，源码默认留空。
+# 客户端会保留 URL 中的筛选参数，并强制 num=1、使用下面配置的粘性时长。
+PROXY_1024_API_URL = ""
+# 国家/地区代码；留空时沿用 API URL 中原有的 region 参数。
+# 1024Proxy 使用 ISO 3166-1 两位代码，例如 US / JP / GB；Rand 表示随机地区。
+PROXY_1024_REGION = ""
+PROXY_1024_PROTOCOL = "http"
+PROXY_1024_SESSION_MINUTES = 30
+# 1024 白名单接口会在相同 region/time 参数的粘性窗口内复用同一远端会话。
+# 开启后按任务 ID 在基础时长到 120 分钟之间轮换 time，确保新任务建立新会话/IP。
+PROXY_1024_ROTATE_SESSION_TIME = True
+PROXY_1024_API_TIMEOUT = 12.0
+PROXY_1024_MAX_ATTEMPTS = 5
+PROXY_1024_VALIDATE = True
+PROXY_1024_RECENT_TTL = 1800
+PROXY_1024_ACQUIRE_INTERVAL = 0.6
+
 # 套餐/Plus 试用资格查询与 Codex Agent Token 生成共用这组独立网络策略，
 # 避免批量请求被注册代理池中的临时本地代理拖垮，也避免无条件直连造成出口策略失控。
 #   auto   = 优先使用 PLAN_CHECK_PROXY 或代理池；本地代理端口未监听时回退直连
@@ -58,6 +81,17 @@ PROXY = pick_proxy()
 # ---- .env overrides for WebUI editable fields ----
 apply_env_overrides(globals(), {
     'PROXY_POOL': 'list_str_multiline',
+    'REGISTRATION_PROXY_MODE': 'str',
+    'PROXY_1024_API_URL': 'str',
+    'PROXY_1024_REGION': 'str',
+    'PROXY_1024_PROTOCOL': 'str',
+    'PROXY_1024_SESSION_MINUTES': 'int',
+    'PROXY_1024_ROTATE_SESSION_TIME': 'bool',
+    'PROXY_1024_API_TIMEOUT': 'float',
+    'PROXY_1024_MAX_ATTEMPTS': 'int',
+    'PROXY_1024_VALIDATE': 'bool',
+    'PROXY_1024_RECENT_TTL': 'int',
+    'PROXY_1024_ACQUIRE_INTERVAL': 'float',
     'PLAN_CHECK_PROXY_MODE': 'str',
     'PLAN_CHECK_PROXY': 'str',
     'PLAN_CHECK_TIMEOUT': 'float',

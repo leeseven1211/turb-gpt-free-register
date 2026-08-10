@@ -83,6 +83,19 @@ class CloakElement:
         except Exception:
             return ""
 
+    @property
+    def text(self) -> str:
+        """兼容 Selenium WebElement.text，供按钮识别和日志使用。"""
+        try:
+            if self.locator is not None:
+                return str(self.locator.inner_text(timeout=3000) or "").strip()
+            return str(self.handle.inner_text(timeout=3000) or "").strip()
+        except Exception:
+            try:
+                return str(self._eval("el => (el.innerText || el.textContent || '').trim()") or "").strip()
+            except Exception:
+                return ""
+
     def send_keys(self, *values: str) -> None:
         # 兼容 Selenium: el.send_keys(Keys.COMMAND, 'a')。
         text = "".join(str(v or "") for v in values)
@@ -98,11 +111,39 @@ class CloakElement:
             except Exception:
                 self.page.keyboard.press("Control+A")
             return
+        special_keys = {
+            "\ue003": "Backspace",
+            "\ue004": "Tab",
+            "\ue006": "Enter",
+            "\ue007": "Enter",
+            "\ue00c": "Escape",
+            "\ue00e": "PageUp",
+            "\ue00f": "PageDown",
+            "\ue010": "End",
+            "\ue011": "Home",
+            "\ue012": "ArrowLeft",
+            "\ue013": "ArrowUp",
+            "\ue014": "ArrowRight",
+            "\ue015": "ArrowDown",
+            "\ue016": "Insert",
+            "\ue017": "Delete",
+        }
+        if text in special_keys:
+            self.page.keyboard.press(special_keys[text])
+            return
         try:
             if self.locator is not None:
-                self.locator.fill(text, timeout=10000)
+                # Selenium send_keys 是在现有值后追加并触发逐键事件；fill 会覆盖全部
+                # 内容，导致人工化逐字符输入最终只剩最后一个字符。
+                try:
+                    self.locator.press_sequentially(text, delay=35, timeout=10000)
+                except AttributeError:
+                    self.locator.type(text, delay=35, timeout=10000)
             else:
-                self.handle.fill(text, timeout=10000)
+                try:
+                    self.handle.press_sequentially(text, delay=35, timeout=10000)
+                except AttributeError:
+                    self.handle.type(text, delay=35, timeout=10000)
         except Exception:
             self.page.keyboard.type(text, delay=35)
 
@@ -249,8 +290,11 @@ class CloakSeleniumDriver:
                 cleaned.append(item)
         return first_el, cleaned
 
-    @staticmethod
-    def _unwrap_js_result(page, handle: Any) -> Any:
+    @classmethod
+    def _unwrap_js_result(cls, page, handle: Any, *, _depth: int = 0) -> Any:
+        """递归转换 JSHandle，保留嵌套 dict/list 中的 DOM 元素。"""
+        if _depth > 12:
+            raise RuntimeError("execute_script 返回值嵌套过深")
         try:
             element = handle.as_element()
         except Exception:
@@ -258,7 +302,33 @@ class CloakSeleniumDriver:
         if element is not None:
             return CloakElement(page, handle=element)
         try:
-            return handle.json_value()
+            value_type = handle.evaluate(
+                "v => v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v"
+            )
+            if value_type not in ("array", "object"):
+                return handle.json_value()
+
+            keys = handle.evaluate("v => Object.keys(v)") or []
+            properties = handle.get_properties()
+            if value_type == "array":
+                indexed = []
+                for key in keys:
+                    if str(key).isdigit():
+                        indexed.append((int(key), properties[str(key)]))
+                indexed.sort(key=lambda item: item[0])
+                return [
+                    cls._unwrap_js_result(page, child, _depth=_depth + 1)
+                    for _, child in indexed
+                ]
+
+            result = {}
+            for key in keys:
+                child = properties.get(str(key))
+                if child is not None:
+                    result[str(key)] = cls._unwrap_js_result(
+                        page, child, _depth=_depth + 1
+                    )
+            return result
         except Exception as exc:
             msg = str(exc)
             if "Execution context was destroyed" in msg or "navigation" in msg.lower():
@@ -380,12 +450,22 @@ def _build_cloak_locale_options(proxy_url: str | None = None) -> dict:
     if not bool(getattr(_cfg, "CLOAK_GEOIP", True)):
         return out
     try:
-        from config.browser import build_browser_environment
+        from config.browser import COUNTRY_LOCALE_PROFILE_MAP, build_browser_environment
         geo = _detect_cloak_exit_geo(proxy_url)
         profile = build_browser_environment(geo)
-        out.setdefault("locale", str(profile.get("navigator_language") or ""))
+        country = str(geo.get("country") or geo.get("country_code") or "").strip().upper()
+        # 地区画像表只覆盖常用国家。随机住宅代理落到 NZ/KH 等未收录地区时，
+        # 旧逻辑会回退到项目默认 jp，形成“日语 + 奥克兰/金边时区”的明显矛盾。
+        # 未知国家使用通用英文语言画像（语言偏好允许与所在地不同），同时保留
+        # 出口真实时区。这样 timezone/locale 都是显式值，Cloak 无需首次下载约
+        # 70 MB 的 GeoIP 库，但仍会通过代理解析出口 IP 用于 WebRTC 画像。
+        if not country or country in COUNTRY_LOCALE_PROFILE_MAP:
+            out.setdefault("locale", str(profile.get("navigator_language") or ""))
+            out.setdefault("accept_language", str(profile.get("accept_language") or ""))
+        else:
+            out.setdefault("locale", "en-US")
+            out.setdefault("accept_language", "en-US,en;q=0.9")
         out.setdefault("timezone", str(profile.get("timezone_iana") or ""))
-        out.setdefault("accept_language", str(profile.get("accept_language") or ""))
         out["geo"] = geo
     except Exception as exc:
         logger.debug("[Cloak] 构建自动语言/时区失败：%s: %s", type(exc).__name__, exc)
@@ -423,8 +503,12 @@ def build_cloak_driver(proxy: str | None = None) -> tuple[CloakSeleniumDriver, C
     opts = {
         "headless": bool(getattr(_cfg, "CLOAK_HEADLESS", False)),
         "humanize": bool(getattr(_cfg, "CLOAK_HUMANIZE", True)),
+        "human_preset": str(getattr(_cfg, "CLOAK_HUMAN_PRESET", "careful") or "careful").strip(),
         "geoip": bool(getattr(_cfg, "CLOAK_GEOIP", True)),
     }
+    if opts["human_preset"] not in {"default", "careful"}:
+        logger.warning("[Cloak] 未知 human_preset=%s，回退为 careful", opts["human_preset"])
+        opts["human_preset"] = "careful"
     if locale_opts.get("locale"):
         opts["locale"] = locale_opts["locale"]
     if locale_opts.get("timezone"):
@@ -439,8 +523,8 @@ def build_cloak_driver(proxy: str | None = None) -> tuple[CloakSeleniumDriver, C
 
     user_data_dir = str(getattr(_cfg, "CLOAK_USER_DATA_DIR", "") or "").strip()
     logger.info(
-        "[Cloak] 启动 CloakBrowser：headless=%s humanize=%s geoip=%s proxy=%s locale=%s timezone=%s accept_language=%s persistent=%s",
-        opts.get("headless"), opts.get("humanize"), opts.get("geoip"),
+        "[Cloak] 启动 CloakBrowser：headless=%s humanize=%s human_preset=%s geoip=%s proxy=%s locale=%s timezone=%s accept_language=%s persistent=%s",
+        opts.get("headless"), opts.get("humanize"), opts.get("human_preset"), opts.get("geoip"),
         proxy_url or "无", opts.get("locale") or "自动/默认", opts.get("timezone") or "自动/默认",
         locale_opts.get("accept_language") or "自动/默认", bool(user_data_dir),
     )

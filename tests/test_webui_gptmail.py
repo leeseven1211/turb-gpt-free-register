@@ -17,7 +17,7 @@ class GPTMailWebUiTests(unittest.TestCase):
         with patch.object(email_config, "USE_EMAIL_SERVICE", True), patch.object(
             email_config, "EMAIL_SOURCE", "gptmail"
         ), patch.object(email_config, "GPTMAIL_API_KEY", ""):
-            response = self.client.post("/api/jobs", json={"count": 1, "workers": 1})
+            response = self.client.post("/api/jobs", json={"count": 1, "workers": 1, "email_source": "gptmail"})
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("请填写 GPTMail API Key", response.get_json()["error"])
@@ -30,12 +30,12 @@ class GPTMailWebUiTests(unittest.TestCase):
         with patch.object(email_config, "USE_EMAIL_SERVICE", True), patch.object(
             email_config, "EMAIL_SOURCE", "gptmail"
         ), patch.object(email_config, "GPTMAIL_API_KEY", "key-123"):
-            response = self.client.post("/api/jobs", json={"count": 1, "workers": 1})
+            response = self.client.post("/api/jobs", json={"count": 1, "workers": 1, "email_source": "gptmail"})
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["warning"], "")
         outlook_pool_summary.assert_not_called()
-        submit_registration.assert_called_once_with(count=1, workers=1)
+        submit_registration.assert_called_once_with(count=1, email_source="gptmail", workers=1)
 
     @patch("webui.app.db.domain_email_pool_summary", return_value={"total": 0, "available": 0, "used": 0, "failed": 0})
     @patch("webui.app.db.outlook_pool_summary")
@@ -57,7 +57,7 @@ class GPTMailWebUiTests(unittest.TestCase):
         ), patch.object(email_config, "MAIL_NEST_API_KEY", "", create=True), patch.object(
             email_config, "MAIL_NEST_PROJECT_CODE", "chatgpt001", create=True
         ):
-            response = self.client.post("/api/jobs", json={"count": 1, "workers": 1})
+            response = self.client.post("/api/jobs", json={"count": 1, "workers": 1, "email_source": "mailnest"})
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("MailNest API Key", response.get_json()["error"])
@@ -72,12 +72,12 @@ class GPTMailWebUiTests(unittest.TestCase):
         ), patch.object(email_config, "MAIL_NEST_API_KEY", "key-123", create=True), patch.object(
             email_config, "MAIL_NEST_PROJECT_CODE", "chatgpt001", create=True
         ):
-            response = self.client.post("/api/jobs", json={"count": 1, "workers": 1})
+            response = self.client.post("/api/jobs", json={"count": 1, "workers": 1, "email_source": "mailnest"})
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["warning"], "")
         outlook_pool_summary.assert_not_called()
-        submit_registration.assert_called_once_with(count=1, workers=1)
+        submit_registration.assert_called_once_with(count=1, email_source="mailnest", workers=1)
 
     @patch("webui.app.svc.submit_registration")
     def test_jobs_allows_cloudmail_without_manual_domains(self, submit_registration):
@@ -87,11 +87,11 @@ class GPTMailWebUiTests(unittest.TestCase):
         ), patch.object(email_config, "CLOUDMAIL_API_BASE", "https://mail.example.com", create=True), patch.object(
             email_config, "CLOUDMAIL_AUTH_TOKEN", "token", create=True
         ), patch.object(email_config, "CLOUDMAIL_DOMAINS", [], create=True):
-            response = self.client.post("/api/jobs", json={"count": 1, "workers": 1})
+            response = self.client.post("/api/jobs", json={"count": 1, "workers": 1, "email_source": "cloudmail"})
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["warning"], "")
-        submit_registration.assert_called_once_with(count=1, workers=1)
+        submit_registration.assert_called_once_with(count=1, email_source="cloudmail", workers=1)
 
     @patch("webui.app.db.outlook_pool_summary")
     @patch("webui.app.svc.submit_registration", return_value=[{"id": 1}])
@@ -102,9 +102,9 @@ class GPTMailWebUiTests(unittest.TestCase):
         ), patch.object(email_config, "CLOUDMAIL_API_BASE", "https://mail.example.com", create=True), patch.object(
             email_config, "CLOUDMAIL_AUTH_TOKEN", "token", create=True
         ), patch.object(email_config, "CLOUDMAIL_DOMAINS", ["example.com"], create=True):
-            response = self.client.post("/api/jobs", json={"count": 1, "workers": 1})
+            response = self.client.post("/api/jobs", json={"count": 1, "workers": 1, "email_source": "cloudmail"})
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["warning"], "")
         outlook_pool_summary.assert_not_called()
-        submit_registration.assert_called_once_with(count=1, workers=1)
+        submit_registration.assert_called_once_with(count=1, email_source="cloudmail", workers=1)

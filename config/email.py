@@ -14,14 +14,17 @@ from config.env_loader import env_str, apply_env_overrides
 # False: 走人工输入邮箱 + 人工填 OTP 的流程
 USE_EMAIL_SERVICE = False
 
-# 可选值（也可以用英文逗号配置多个，按顺序兜底，例如 "outlook,generic_api,mailnest"）：
+# 可选值（也可以用英文逗号配置多个，作为 WebUI 注册页的可选来源列表）：
+# WebUI 每批必须明确选择一个来源；任务领取失败时不会跨平台兜底。
 #   "outlook"           — 外购 Outlook 账号池 + mail.chatai.codes 远端取信
 #   "cloudflare_domain" — Cloudflare 域名邮箱（转发到 QQ 邮箱），通过 IMAP 取信
 #   "cloudflare" — Cloudflare Worker 临时邮箱（cloudflare_temp_email），API 创建并取码
+#   "email_butler" — Email Butler 通用 /v1 Mail API（租用 + 收信 + 释放）
 #   "generic_api"       — 通用 API 取码邮箱池（邮箱----取码地址）
 #   "gptmail"           — GPTMail 临时邮箱 API（运行时随机生成邮箱并自动收码）
 #   "mailnest"          — MailNest/迈巢临时邮箱 API（运行时购买邮箱并自动收码）
 #   "cloudmail"         — CloudMail/Cloud Mail API（自动从平台获取域名并随机生成邮箱）
+#   "icloud_hide"       — 本机 iCloud Hide My Email 服务（同步别名池并通过 IMAP 收码）
 EMAIL_SOURCE = "outlook,generic_api,mailnest"
 
 
@@ -50,6 +53,15 @@ OTP_MAX_WAIT = 90
 
 # Outlook 双协议取件：抓到一封 OTP 后再多等多少秒看是否有更晚到达的邮件。
 OTP_SETTLE_SECONDS = 5
+
+
+# ============================================================
+# Email Butler 通用 Mail API（/v1）
+# ============================================================
+
+EMAIL_BUTLER_API_BASE = env_str("EMAIL_BUTLER_API_BASE", "")
+EMAIL_BUTLER_API_KEY = env_str("EMAIL_BUTLER_API_KEY", "")
+EMAIL_BUTLER_REQUEST_TIMEOUT = 20
 
 
 # ============================================================
@@ -92,6 +104,10 @@ CLOUDFLARE_API_BASE = env_str("CLOUDFLARE_API_BASE", "")
 
 # 匿名模式可留空；admin 模式填 ADMIN_PASSWORD
 CLOUDFLARE_API_KEY = env_str("CLOUDFLARE_API_KEY", "")
+
+# 只读封号邮件信号接口，建议使用与创建邮箱分离的 Key。
+CLOUDFLARE_SIGNAL_API_KEY = env_str("CLOUDFLARE_SIGNAL_API_KEY", "")
+CLOUDFLARE_SIGNAL_PATH = "/signals/scan"
 
 # none / bearer / x-api-key / x-admin-auth / query-key
 CLOUDFLARE_AUTH_MODE = "none"
@@ -147,5 +163,35 @@ CLOUDMAIL_AUTO_ADD_USER = True
 # 随机邮箱 local-part 长度。
 CLOUDMAIL_RANDOM_LOCAL_LENGTH = 12
 
+
+# ============================================================
+# iCloud Hide My Email 本地服务
+# ============================================================
+
+# 本机 sidecar 地址；Apple Cookie 和 App 专用密码只保存在 sidecar 项目中。
+ICLOUD_HME_API_BASE = "http://127.0.0.1:8081"
+
+# sidecar 账号 ID；留空时自动选择第一个 active 账号。
+ICLOUD_HME_ACCOUNT_ID = ""
+
+# 预留的本地 API Token；当前仅绑定 127.0.0.1 时可留空。
+ICLOUD_HME_API_TOKEN = env_str("ICLOUD_HME_API_TOKEN", "")
+
+ICLOUD_HME_REQUEST_TIMEOUT = 35
+ICLOUD_HME_SYNC_TTL = 300
+
+# 隐藏邮箱验证码实际收件方式：
+#   sidecar     = sidecar 读取 iCloud IMAP（forwardToEmail 必须是 iCloud 邮箱）
+#   forward_imap = turb 直接读取隐藏邮箱转发目标，适合转发到 Gmail
+ICLOUD_HME_INBOX_MODE = "sidecar"
+ICLOUD_HME_FORWARD_IMAP_SERVER = "imap.gmail.com"
+ICLOUD_HME_FORWARD_IMAP_PORT = 993
+ICLOUD_HME_FORWARD_IMAP_EMAIL = ""
+ICLOUD_HME_FORWARD_IMAP_PASSWORD = env_str("ICLOUD_HME_FORWARD_IMAP_PASSWORD", "")
+
+# 库存为空时是否调用 sidecar 自动创建新隐藏邮箱。默认关闭，优先复用已同步别名。
+ICLOUD_HME_AUTO_CREATE = False
+ICLOUD_HME_CREATE_LABEL_PREFIX = "turb"
+
 # ---- .env overrides for WebUI editable fields ----
-apply_env_overrides(globals(), {'USE_EMAIL_SERVICE': 'bool', 'OTP_MAX_WAIT': 'int', 'OTP_POLL_INTERVAL': 'int', 'EMAIL_SOURCE': 'str', 'EMAIL_DOMAIN': 'str', 'QQ_EMAIL': 'str', 'QQ_IMAP_PASSWORD': 'str', 'GPTMAIL_API_KEY': 'str', 'OUTLOOK_FETCH_MODE': 'str', 'MAIL_NEST_API_KEY': 'str', 'MAIL_NEST_PROJECT_CODE': 'str', 'CLOUDFLARE_API_BASE': 'str', 'CLOUDFLARE_API_KEY': 'str', 'CLOUDFLARE_AUTH_MODE': 'str', 'CLOUDFLARE_CUSTOM_AUTH': 'str', 'CLOUDFLARE_PATH_DOMAINS': 'str', 'CLOUDFLARE_PATH_ACCOUNTS': 'str', 'CLOUDFLARE_PATH_TOKEN': 'str', 'CLOUDFLARE_PATH_MESSAGES': 'str', 'CLOUDFLARE_DEFAULT_DOMAINS': 'list_str_multiline', 'CLOUDFLARE_REQUEST_TIMEOUT': 'int', 'CLOUDFLARE_NAME_LENGTH': 'int', 'CLOUDMAIL_API_BASE': 'str', 'CLOUDMAIL_ADMIN_EMAIL': 'str', 'CLOUDMAIL_PASSWORD': 'str', 'CLOUDMAIL_TOKEN_PATH': 'str', 'CLOUDMAIL_AUTH_TOKEN': 'str', 'CLOUDMAIL_DOMAINS': 'list_str_multiline', 'CLOUDMAIL_AUTO_ADD_USER': 'bool', 'CLOUDMAIL_RANDOM_LOCAL_LENGTH': 'int'})
+apply_env_overrides(globals(), {'USE_EMAIL_SERVICE': 'bool', 'OTP_MAX_WAIT': 'int', 'OTP_POLL_INTERVAL': 'int', 'EMAIL_SOURCE': 'str', 'EMAIL_BUTLER_API_BASE': 'str', 'EMAIL_BUTLER_API_KEY': 'str', 'EMAIL_BUTLER_REQUEST_TIMEOUT': 'int', 'EMAIL_DOMAIN': 'str', 'QQ_EMAIL': 'str', 'QQ_IMAP_PASSWORD': 'str', 'GPTMAIL_API_KEY': 'str', 'OUTLOOK_FETCH_MODE': 'str', 'MAIL_NEST_API_KEY': 'str', 'MAIL_NEST_PROJECT_CODE': 'str', 'CLOUDFLARE_API_BASE': 'str', 'CLOUDFLARE_API_KEY': 'str', 'CLOUDFLARE_SIGNAL_API_KEY': 'str', 'CLOUDFLARE_SIGNAL_PATH': 'str', 'CLOUDFLARE_AUTH_MODE': 'str', 'CLOUDFLARE_CUSTOM_AUTH': 'str', 'CLOUDFLARE_PATH_DOMAINS': 'str', 'CLOUDFLARE_PATH_ACCOUNTS': 'str', 'CLOUDFLARE_PATH_TOKEN': 'str', 'CLOUDFLARE_PATH_MESSAGES': 'str', 'CLOUDFLARE_DEFAULT_DOMAINS': 'list_str_multiline', 'CLOUDFLARE_REQUEST_TIMEOUT': 'int', 'CLOUDFLARE_NAME_LENGTH': 'int', 'CLOUDMAIL_API_BASE': 'str', 'CLOUDMAIL_ADMIN_EMAIL': 'str', 'CLOUDMAIL_PASSWORD': 'str', 'CLOUDMAIL_TOKEN_PATH': 'str', 'CLOUDMAIL_AUTH_TOKEN': 'str', 'CLOUDMAIL_DOMAINS': 'list_str_multiline', 'CLOUDMAIL_AUTO_ADD_USER': 'bool', 'CLOUDMAIL_RANDOM_LOCAL_LENGTH': 'int', 'ICLOUD_HME_API_BASE': 'str', 'ICLOUD_HME_ACCOUNT_ID': 'str', 'ICLOUD_HME_API_TOKEN': 'str', 'ICLOUD_HME_REQUEST_TIMEOUT': 'int', 'ICLOUD_HME_SYNC_TTL': 'int', 'ICLOUD_HME_INBOX_MODE': 'str', 'ICLOUD_HME_FORWARD_IMAP_SERVER': 'str', 'ICLOUD_HME_FORWARD_IMAP_PORT': 'int', 'ICLOUD_HME_FORWARD_IMAP_EMAIL': 'str', 'ICLOUD_HME_FORWARD_IMAP_PASSWORD': 'str', 'ICLOUD_HME_AUTO_CREATE': 'bool', 'ICLOUD_HME_CREATE_LABEL_PREFIX': 'str'})

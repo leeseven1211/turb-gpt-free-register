@@ -177,6 +177,37 @@ class CFTempMailClientTests(unittest.TestCase):
         self.assertTrue(looks_like_openai_email(otp_item))
         self.assertEqual(extract_otp(otp_item), "449759")
 
+    @patch("core.cf_temp_mail_client.requests.post")
+    def test_deactivation_scan_uses_dedicated_signal_key(self, post_mock):
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "ok": True,
+            "detected": True,
+            "checked_at": "2026-08-10T00:00:00Z",
+            "received_at": "2026-08-09T00:00:00Z",
+            "subject": "OpenAI Account Deactivated",
+            "sender": "noreply@openai.com",
+            "message_id": "m-1",
+        }
+        post_mock.return_value = response
+        with patch.object(client._email_cfg, "CLOUDFLARE_API_BASE", "https://mail.example.com", create=True), patch.object(
+            client._email_cfg, "CLOUDFLARE_SIGNAL_API_KEY", "signal-key", create=True
+        ), patch.object(client._email_cfg, "CLOUDFLARE_SIGNAL_PATH", "/signals/scan", create=True):
+            result = client.scan_openai_deactivation("user@mail.example.com")
+        self.assertTrue(result["detected"])
+        _, kwargs = post_mock.call_args
+        self.assertEqual(kwargs["headers"]["x-admin-auth"], "signal-key")
+        self.assertEqual(kwargs["json"]["email"], "user@mail.example.com")
+
+    def test_deactivation_detector_rejects_non_openai_sender(self):
+        matched, _ = client._is_openai_deactivation({
+            "address": "user@mail.example.com",
+            "from": "attacker@example.com",
+            "subject": "OpenAI account deactivated",
+            "text": "Your OpenAI account has been deactivated",
+        }, "user@mail.example.com")
+        self.assertFalse(matched)
+
 
 if __name__ == "__main__":
     unittest.main()

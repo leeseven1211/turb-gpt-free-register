@@ -6,19 +6,35 @@ EMAIL_SOURCE 支持单个或多个来源：
     "outlook"
     "cloudflare_domain"   # 自有域名 + QQ IMAP
     "cloudflare"          # Cloudflare Worker 临时邮箱
+    "email_butler"        # Email Butler 通用 /v1 API
     "generic_api"
     "gptmail"
     "mailnest"
     "cloudmail"
-    "outlook,generic_api,mailnest,cloudmail"          # 按顺序兜底
+    "icloud_hide"
+    "outlook,generic_api,mailnest,cloudmail"          # WebUI 可选来源列表
     ["outlook", "generic_api", "mailnest", "cloudmail"]  # 也兼容列表写法
+
+WebUI 注册任务始终传入一个明确来源并严格使用。未传 source 的 CLI/兼容调用仍按
+EMAIL_SOURCE 顺序尝试，以免破坏旧入口。
 """
 import logging
 from typing import Iterable
 
 logger = logging.getLogger(__name__)
 
-_VALID_SOURCES = ("outlook", "generic_api", "cloudflare_domain", "cloudflare", "gptmail", "mailnest", "cloudmail")
+_VALID_SOURCES = ("outlook", "generic_api", "cloudflare_domain", "cloudflare", "email_butler", "gptmail", "mailnest", "cloudmail", "icloud_hide")
+EMAIL_SOURCE_LABELS = {
+    "outlook": "Outlook 邮箱池",
+    "generic_api": "通用 API 邮箱",
+    "cloudflare_domain": "Cloudflare 域名邮箱",
+    "cloudflare": "Cloudflare 临时邮箱",
+    "email_butler": "Email Butler",
+    "gptmail": "GPTMail",
+    "mailnest": "MailNest",
+    "cloudmail": "CloudMail",
+    "icloud_hide": "iCloud 隐藏邮箱",
+}
 
 
 def parse_email_sources(value=None) -> list[str]:
@@ -46,12 +62,27 @@ def parse_email_sources(value=None) -> list[str]:
     return out or ["outlook"]
 
 
+def validate_email_source(source: str) -> str:
+    """校验任务明确选择的单个邮箱来源，不接受逗号分隔和静默回退。"""
+    selected = str(source or "").strip().strip('"\'').lower()
+    if not selected:
+        raise ValueError("请选择本次注册使用的邮箱来源")
+    if any(separator in selected for separator in (",", ";", "|")):
+        raise ValueError("每个注册批次只能明确选择一个邮箱来源")
+    if selected not in _VALID_SOURCES:
+        raise ValueError(f"不支持的邮箱来源: {selected}")
+    return selected
+
+
 def _pick_from_source(source: str) -> str:
     if source == "gptmail":
         from core.gptmail_client import pick_account
         return pick_account().email
     if source == "cloudflare":
         from core.cf_temp_mail_client import pick_account
+        return pick_account().email
+    if source == "email_butler":
+        from core.email_butler_client import pick_account
         return pick_account().email
     if source == "cloudflare_domain":
         from core.qqmail_client import pick_domain_email
@@ -65,13 +96,17 @@ def _pick_from_source(source: str) -> str:
     if source == "cloudmail":
         from core.cloudmail_client import pick_account
         return pick_account().email
+    if source == "icloud_hide":
+        from core.icloud_hme_client import pick_account
+        return pick_account().email
     from core.outlook_client import pick_account
     return pick_account().email
 
 
-def acquire_email() -> str:
-    """根据 EMAIL_SOURCE 领取一个用于注册的邮箱地址；多个来源时按顺序兜底。"""
-    sources = parse_email_sources()
+def acquire_email(source: str | None = None) -> str:
+    """领取邮箱；任务传入 source 时严格使用该来源，不自动切换平台。"""
+    explicit = source is not None
+    sources = [validate_email_source(source)] if explicit else parse_email_sources()
     last_exc: Exception | None = None
     for source in sources:
         try:
@@ -81,7 +116,11 @@ def acquire_email() -> str:
         except Exception as exc:
             last_exc = exc
             logger.warning(f"[EmailProvider] 来源 {source} 领取邮箱失败: {type(exc).__name__}: {exc}")
+            if explicit:
+                break
             continue
+    if explicit:
+        raise RuntimeError(f"所选邮箱来源 {sources[0]} 领取失败: {last_exc}")
     raise RuntimeError(f"所有邮箱来源均领取失败: {sources}; last={last_exc}")
 
 
@@ -93,12 +132,18 @@ def resolve_email_source(email: str) -> str:
     from core.cf_temp_mail_client import get_account_context as get_cf_context
     if get_cf_context(email):
         return "cloudflare"
+    from core.email_butler_client import get_account_context as get_email_butler_context
+    if get_email_butler_context(email):
+        return "email_butler"
     from core.mailnest_client import get_account_context as get_mailnest_context
     if get_mailnest_context(email):
         return "mailnest"
     from core.cloudmail_client import get_account_context as get_cloudmail_context
     if get_cloudmail_context(email):
         return "cloudmail"
+    from core.icloud_hme_client import get_account_context as get_icloud_context
+    if get_icloud_context(email):
+        return "icloud_hide"
 
     from core import db
     if db.get_generic_api_email_by_email(email):
@@ -163,6 +208,9 @@ def wait_for_otp(
     if source == "cloudflare":
         from core.cf_temp_mail_client import fetch_latest_otp
         return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
+    if source == "email_butler":
+        from core.email_butler_client import fetch_latest_otp
+        return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
     if source == "cloudflare_domain":
         from core.qqmail_client import fetch_latest_otp
         return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
@@ -174,6 +222,9 @@ def wait_for_otp(
         return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
     if source == "cloudmail":
         from core.cloudmail_client import fetch_latest_otp
+        return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
+    if source == "icloud_hide":
+        from core.icloud_hme_client import fetch_latest_otp
         return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
     from core.outlook_client import fetch_latest_otp
     return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
@@ -188,6 +239,9 @@ def release_email(email: str, status: str = "available", note: str | None = None
     elif source == "cloudflare":
         from core.cf_temp_mail_client import release_account
         release_account(email, status=status, note=note)
+    elif source == "email_butler":
+        from core.email_butler_client import release_account
+        release_account(email, status=status, note=note)
     elif source == "cloudflare_domain":
         from core.qqmail_client import release_domain_email
         release_domain_email(email, status=status, note=note)
@@ -199,6 +253,9 @@ def release_email(email: str, status: str = "available", note: str | None = None
         release_account(email, status=status, note=note)
     elif source == "cloudmail":
         from core.cloudmail_client import release_account
+        release_account(email, status=status, note=note)
+    elif source == "icloud_hide":
+        from core.icloud_hme_client import release_account
         release_account(email, status=status, note=note)
     else:
         from core.outlook_client import release_account
@@ -220,6 +277,8 @@ def release_email_if_unconsumed(email: str, note: str | None = None) -> bool:
         changed = db.release_unconsumed_generic_api_email(email, note=note)
     elif source == "cloudflare_domain":
         changed = db.release_unconsumed_domain_email(email, note=note)
+    elif source == "icloud_hide":
+        changed = db.release_unconsumed_icloud_hide_email(email, note=note)
     else:
         # 临时邮箱不重新进入本地池，只清理进程上下文；已有本地账号时保留上下文。
         if db.get_account_by_email(email) is not None:

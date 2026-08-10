@@ -8,6 +8,7 @@ import string
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from config import roxybrowser as _cfg
 from config import twofa as _twofa_cfg
@@ -303,6 +304,24 @@ def _human_type_text(driver, el, value: str, *, clear: bool = True) -> None:
             _human_click(driver, el, label="input_focus")
         except Exception:
             driver.execute_script("arguments[0].focus();", el)
+        # CloakBrowser 已在 locator.press_sequentially 上实现逐键和 humanize。
+        # 如果这里再把字符串拆成多个 send_keys 调用，多个异步人类化序列可能交错，
+        # 实测会把邮箱末尾字符换序；重试时 Meta+A/Backspace 也可能和输入交错。
+        # Cloak 路径因此使用一次完整顺序输入，Roxy/Selenium 保持原有分段逻辑。
+        if str(getattr(driver, "_registration_log_prefix", "") or "") == "[Cloak注册]":
+            if clear:
+                try:
+                    el.clear()
+                except Exception:
+                    _set_element_value(driver, el, "")
+                time.sleep(random.uniform(0.04, 0.16))
+            el.send_keys(str(value))
+            driver.execute_script(
+                "arguments[0].dispatchEvent(new Event('input', {bubbles:true}));"
+                "arguments[0].dispatchEvent(new Event('change', {bubbles:true}));",
+                el,
+            )
+            return
         if clear:
             from selenium.webdriver.common.keys import Keys
             mod = Keys.COMMAND
@@ -513,17 +532,95 @@ def _click_email_entry_option(driver) -> bool:
     return False
 
 
+def _is_blank_chatgpt_auth_shell(driver, state: dict | None = None) -> bool:
+    """识别 /auth/login 路由还在、但登录表单被前端异常卸载的空壳页面。"""
+    try:
+        current_url = str((state or {}).get("url") or getattr(driver, "current_url", "") or "")
+        parsed = urlsplit(current_url)
+        if parsed.hostname != "chatgpt.com" or parsed.path.rstrip("/") != "/auth/login":
+            return False
+    except Exception:
+        return False
+
+    try:
+        detected = bool(driver.execute_script(r"""
+        const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+          && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+        const hasEmail = [...document.querySelectorAll(
+          'input[type="email"],input[name="email"],input[name="username"],input[autocomplete*="email"]'
+        )].some(visible);
+        if (hasEmail) return false;
+        const hasHome = !!document.querySelector('a[href="/?slm=1"]');
+        const hasDismiss = !!document.querySelector(
+          '#dismiss-welcome,.dismiss-welcome,[data-testid="dismiss-welcome"],a[href="#"]'
+        );
+        return hasHome && hasDismiss;
+        """))
+        if detected:
+            return True
+    except Exception:
+        pass
+
+    # Selenium 在 SPA 卸载瞬间执行脚本偶发返回 false/异常；使用已采集的页面状态兜底。
+    # 生产日志中的空壳页稳定只剩 /?slm=1 与 dismiss-welcome 两个壳层入口。
+    shell_state = state if isinstance(state, dict) else _email_entry_state(driver)
+    if shell_state.get("inputs"):
+        return False
+    action_attrs = " ".join(
+        str(action.get("attrs") or "").lower()
+        for action in (shell_state.get("actions") or [])
+        if isinstance(action, dict)
+    )
+    return "/?slm=1" in action_attrs and "dismiss-welcome" in action_attrs
+
+
+def _reload_blank_chatgpt_auth_shell(driver) -> None:
+    """刷新异常空壳登录页，使 React 登录表单重新挂载。"""
+    logger.warning("%s 检测到 ChatGPT 登录空壳页，刷新后重新进入邮箱步骤", _log_prefix(driver))
+    try:
+        driver.refresh()
+    except Exception:
+        _safe_get(
+            driver,
+            "https://chatgpt.com/auth/login",
+            timeout=min(45, int(getattr(_cfg, "ROXY_SELENIUM_TIMEOUT", 90) or 90)),
+            attempts=2,
+            accept_hosts=("chatgpt.com", "auth.openai.com"),
+        )
+    human_delay("navigate")
+    _page_warmup(driver, reason="reload_blank_auth_shell")
+    if _is_blank_chatgpt_auth_shell(driver):
+        # 普通 refresh 仍可能复用损坏的 SPA 状态；带一次性查询参数强制新导航。
+        recovery_url = f"https://chatgpt.com/auth/login?recover={int(time.time() * 1000)}"
+        logger.warning("%s 刷新后仍是登录空壳页，执行强制新导航", _log_prefix(driver))
+        _safe_get(
+            driver,
+            recovery_url,
+            timeout=min(45, int(getattr(_cfg, "ROXY_SELENIUM_TIMEOUT", 90) or 90)),
+            attempts=2,
+            accept_hosts=("chatgpt.com", "auth.openai.com"),
+        )
+        human_delay("navigate")
+        _page_warmup(driver, reason="reload_blank_auth_shell_hard")
+
+
 def _type_email_address(driver, email: str, timeout: int | None = None) -> None:
     """进入邮箱登录/注册方式并填写邮箱。全程不依赖页面可见文字，避免非日本出口本地化后误点 Google。"""
     end = time.time() + (timeout or int(_cfg.ROXY_SELENIUM_TIMEOUT))
     last_state = None
     clicked_email_option = False
+    reloaded_blank_shell = False
     while time.time() < end:
         el = _find_visible_email_input_js(driver)
         if el:
             _human_type_text(driver, el, email, clear=True)
             return
         last_state = _email_entry_state(driver)
+        if not reloaded_blank_shell and _is_blank_chatgpt_auth_shell(driver, last_state):
+            _reload_blank_chatgpt_auth_shell(driver)
+            reloaded_blank_shell = True
+            clicked_email_option = False
+            continue
         if not clicked_email_option and _click_email_entry_option(driver):
             clicked_email_option = True
             time.sleep(1.0)
@@ -900,14 +997,38 @@ def _submit_email_via_browser_nextauth(driver, email: str) -> dict:
               if (!u.searchParams.get('auth_session_logging_id')) u.searchParams.set('auth_session_logging_id', authLogId);
               url = u.toString();
             } catch (_) {}
-            window.location.assign(url);
-            done({ok:true, stage:'redirect', url:url.slice(0, 260)});
+            // 先把目标 URL 返回给 Python，再由 Selenium 发起顶层导航。
+            // 若在 async callback 返回前直接 location.assign，页面卸载会吞掉 callback，
+            // 最终表现为 execute_async_script 超时，实际跳转结果也无法确认。
+            done({ok:true, stage:'redirect_ready', url});
           } catch (e) {
             done({ok:false, stage:'exception', error:String(e && (e.stack || e.message) || e).slice(0, 700)});
           }
         })();
         """, email, did, auth_log_id) or {}
-        return result if isinstance(result, dict) else {"ok": False, "reason": "invalid_result", "result": str(result)[:300]}
+        if not isinstance(result, dict):
+            return {"ok": False, "reason": "invalid_result", "result": str(result)[:300]}
+        if not result.get("ok"):
+            return result
+
+        target_url = str(result.get("url") or "").strip()
+        try:
+            parsed = urlsplit(target_url)
+        except Exception:
+            parsed = None
+        if not parsed or parsed.scheme != "https" or parsed.hostname not in ("auth.openai.com", "chatgpt.com"):
+            return {"ok": False, "reason": "unsafe_redirect_url", "url": target_url[:260]}
+
+        _safe_get(
+            driver,
+            target_url,
+            timeout=min(45, int(getattr(_cfg, "ROXY_SELENIUM_TIMEOUT", 90) or 90)),
+            attempts=2,
+            accept_hosts=("auth.openai.com", "chatgpt.com"),
+        )
+        human_delay("navigate")
+        _page_warmup(driver, reason="nextauth_email_fallback")
+        return {"ok": True, "stage": "redirected", "url": target_url[:260]}
     except Exception as exc:
         return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
     finally:
@@ -966,6 +1087,9 @@ def _wait_email_submit_next_state(driver, email: str, timeout: int = 18) -> str:
         state = _email_input_value_state(driver)
         last = state
         inputs = state.get("inputs") or []
+        if not inputs and _is_blank_chatgpt_auth_shell(driver):
+            logger.warning("%s 邮箱提交后进入 ChatGPT 登录空壳页，立即恢复", _log_prefix(driver))
+            return "blank_shell"
         if inputs:
             values = [str(i.get("value") or "") for i in inputs]
             url = str(state.get("url") or "")
@@ -1005,6 +1129,7 @@ def _wait_email_submit_next_state(driver, email: str, timeout: int = 18) -> str:
 def _submit_email_and_wait_next(driver, email: str, attempts: int = 3) -> str:
     """填写并提交邮箱，必须确认进入 password/otp/logged_in 才返回。"""
     last_state = None
+    nextauth_fallback_done = False
     for attempt in range(1, attempts + 1):
         _type_email_address(driver, email, timeout=20)
         state = _email_input_value_state(driver)
@@ -1024,6 +1149,31 @@ def _submit_email_and_wait_next(driver, email: str, attempts: int = 3) -> str:
         if state_name in ("password", "otp", "logged_in"):
             logger.info("%s 邮箱提交后已进入下一步：%s", _log_prefix(driver), state_name)
             return state_name
+        if state_name == "blank_shell":
+            _reload_blank_chatgpt_auth_shell(driver)
+            logger.info("%s 登录空壳页已执行恢复，准备重新填写邮箱（%s/%s）", _log_prefix(driver), attempt, attempts)
+            # 首次空壳先走轻量刷新；若再次出现，说明该出口下 UI 流程持续异常，
+            # 直接切换 NextAuth 导航兜底，避免刷新三次后仍然失败。
+            if attempt == 1:
+                continue
+        if state_name in ("email_page", "email_cleared", "unknown", "blank_shell") and not nextauth_fallback_done:
+            nextauth_fallback_done = True
+            logger.warning("%s UI 提交邮箱后未跳转，启用一次 NextAuth 导航兜底", _log_prefix(driver))
+            fallback = _submit_email_via_browser_nextauth(driver, email)
+            logger.info(
+                "%s NextAuth 邮箱导航兜底结果：%s",
+                _log_prefix(driver),
+                {k: v for k, v in fallback.items() if k != "url"} | ({"url": str(fallback.get("url") or "")[:180]} if fallback.get("url") else {}),
+            )
+            if fallback.get("ok"):
+                fallback_state = _wait_email_submit_next_state(driver, email, timeout=30)
+                if fallback_state == "login_password":
+                    raise RuntimeError(f"邮箱提交后进入登录密码页，按已注册/不可用邮箱处理并停用: url={getattr(driver, 'current_url', '') or 'https://auth.openai.com/log-in/password'}")
+                if fallback_state in ("password", "otp", "logged_in"):
+                    logger.info("%s NextAuth 兜底后已进入下一步：%s", _log_prefix(driver), fallback_state)
+                    return fallback_state
+                if fallback_state == "blank_shell":
+                    _reload_blank_chatgpt_auth_shell(driver)
         logger.warning("%s 邮箱提交后仍未进入下一步：%s，准备重填重试 state=%s", _log_prefix(driver), state_name, _email_input_value_state(driver))
         time.sleep(1.0)
     raise RuntimeError(f"邮箱提交后未进入密码页/验证码页，最后状态={last_state}")
@@ -1979,13 +2129,17 @@ def _check_manual_stop() -> None:
 
 def run_roxy_registration(email: str, name: str, birthday: str, proxy: str = None, otp_code: str = None, batch_dir: Path | None = None) -> dict:
     """Roxy 指纹浏览器自动化注册入口。"""
+    from core.registration_service import report_job_progress
+
+    report_job_progress("browser", "running", "正在创建并启动 Roxy 浏览器环境")
     client = RoxyBrowserClient()
-    opened = client.open_profile()
+    opened = client.open_profile(proxy_url=proxy)
     driver = None
     create_acknowledged = False
     openai_password: str | None = None
     try:
         driver = _build_driver(opened)
+        report_job_progress("browser", "success", "Roxy 浏览器环境已启动")
         _center_browser_window(driver)
         driver.set_page_load_timeout(int(_cfg.ROXY_SELENIUM_TIMEOUT))
         try:
@@ -1995,6 +2149,7 @@ def run_roxy_registration(email: str, name: str, birthday: str, proxy: str = Non
         logger.info("[Roxy注册] 开始：%s，profile=%s", email, opened.profile_id)
 
         otp_after_ts = time.time()
+        report_job_progress("page", "running", "正在打开 ChatGPT 注册页")
         logger.info("[Roxy注册] 打开登录页：https://chatgpt.com/auth/login")
         _safe_get(
             driver,
@@ -2005,20 +2160,24 @@ def run_roxy_registration(email: str, name: str, birthday: str, proxy: str = Non
         )
         human_delay("navigate")
         _page_warmup(driver, reason="login_page")
+        report_job_progress("page", "success", "注册页已加载")
         logger.info("[Roxy注册] 登录页加载完成，准备填写邮箱")
         _maybe_accept(driver)
         _check_manual_stop()
 
         # 填邮箱。OpenAI UI 会随出口 IP/语言变化；这里只按 DOM 技术属性找邮箱入口，
         # 并排除 Google/Apple/Microsoft 等第三方入口，不依赖按钮可见文字。
+        report_job_progress("submit_email", "running", "正在填写并提交邮箱")
         next_state = _submit_email_and_wait_next(driver, email, attempts=3)
         _check_manual_stop()
 
         # 新版注册流可能先进入 /create-account/password；参考 FlowPilot 的 fill-password 步骤，
         # 先设置密码并提交，然后再等待邮箱验证码页。
         openai_password = None if next_state == "otp" else _fill_password_page_if_present(driver, email, timeout=25)
+        report_job_progress("submit_email", "success", "邮箱已提交")
         _check_manual_stop()
 
+        report_job_progress("email_otp", "running", "正在等待并验证邮箱验证码")
         current_otp = otp_code
         max_otp_attempts = 3
         for otp_attempt in range(1, max_otp_attempts + 1):
@@ -2079,7 +2238,9 @@ def run_roxy_registration(email: str, name: str, birthday: str, proxy: str = Non
             human_delay("api")
             current_otp = None
 
+        report_job_progress("email_otp", "success", "邮箱验证码已通过")
         # about-you / profile 信息页：必须完成或确认已有登录态，不能静默跳过。
+        report_job_progress("profile", "running", "正在填写账号资料")
         logger.info("[Roxy注册] 开始等待资料页/登录态")
         _check_manual_stop()
         profile_submitted = _complete_profile_page(driver, name, birthday, timeout=60)
@@ -2087,11 +2248,16 @@ def run_roxy_registration(email: str, name: str, birthday: str, proxy: str = Non
             create_acknowledged = True
             # 给 OAuth 回调 / session cookie 写入一点时间。
             human_delay("post_auth")
+            report_job_progress("profile", "success", "账号资料已提交")
+        else:
+            report_job_progress("profile", "skipped", "已有登录态，无需填写资料")
 
+        report_job_progress("token", "running", "正在等待登录态并获取 Token")
         logger.info("[Roxy注册] 等待 ChatGPT 跳转并写入 session/accessToken")
         _check_manual_stop()
         session_info = _fetch_chatgpt_session(driver, timeout=120)
         access_token = session_info["accessToken"]
+        report_job_progress("token", "success", "已获取 accessToken")
         logger.info("[Roxy注册] 已拿到 accessToken：%s", email)
         _check_manual_stop()
 
@@ -2107,6 +2273,7 @@ def run_roxy_registration(email: str, name: str, birthday: str, proxy: str = Non
         try:
             from config import codex as _codex_cfg
             if bool(getattr(_codex_cfg, "ENABLE_CODEX_AUTO", False)):
+                report_job_progress("codex", "running", "正在执行 Codex OAuth")
                 # 注册流程本身已创建 Roxy 一号一环境。这里不能再新建第二个 Roxy 环境；
                 # 复用当前注册窗口，先清理 Cookie/session/localStorage/cache，再开始 Codex 授权。
                 from core.roxy_codex_oauth import run_roxy_codex_oauth
@@ -2120,10 +2287,17 @@ def run_roxy_registration(email: str, name: str, birthday: str, proxy: str = Non
                     force=True,
                     clear_existing_state=True,
                 )
+                report_job_progress(
+                    "codex",
+                    "success" if codex_result.get("ok") else "failed",
+                    str(codex_result.get("message") or "Codex OAuth 已完成")[:300],
+                )
             else:
                 logger.info("[Roxy注册][Codex] ENABLE_CODEX_AUTO=False，注册后跳过 Codex OAuth")
+                report_job_progress("codex", "skipped", "未启用 Codex 自动授权")
         except Exception as exc:
             codex_result = {"status": "failed", "ok": False, "message": f"{type(exc).__name__}: {str(exc)[:180]}"}
+            report_job_progress("codex", "failed", codex_result["message"])
 
         account_id = save_account_data(
             email=email,

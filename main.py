@@ -176,6 +176,8 @@ def run_registration(
         proxy: 代理地址（不传则从 PROXY_POOL 随机抽）
         otp_code: 邮箱验证码（如果为None，会等待手动输入）
     """
+    from core.registration_service import report_job_progress
+
     # 可选注册驱动：
     #   protocol     = 原有纯协议（curl_cffi）
     #   roxy         = RoxyBrowser 指纹浏览器 + Selenium
@@ -228,8 +230,10 @@ def run_registration(
             f"不支持的 REGISTRATION_DRIVER={driver_mode!r}，可选 protocol / roxy / cloak / browser_use / skyvern"
         )
 
-    # 创建浏览器会话（proxy=None 时自动从 config.PROXY_POOL 随机抽一个）
+    # 创建协议注册会话（UI 统一归入“启动浏览器/环境”阶段）。
+    report_job_progress("browser", "running", "正在初始化协议注册会话")
     session = BrowserSession(proxy=proxy)
+    report_job_progress("browser", "success", "协议注册会话已初始化")
 
     # 从代理 URL 中抽取 sid 段做日志，避免把账号密码完整打印
     proxy_label = "无"
@@ -253,6 +257,7 @@ def run_registration(
 
     create_acknowledged = False
     try:
+        report_job_progress("page", "running", "正在初始化 ChatGPT 注册页状态")
         # 网络预检必须在 signin/follow_authorize 之前完成；预检不带邮箱，不会触发 OTP。
         network_preflight(session)
         human_delay("navigate")
@@ -274,8 +279,10 @@ def run_registration(
         # 步骤2: 获取 CSRF token
         csrf_token = get_csrf_token(session)
         human_delay("api")
+        report_job_progress("page", "success", "注册页状态已初始化")
 
         # 步骤3: 发起 OAuth signin
+        report_job_progress("submit_email", "running", "正在提交邮箱并触发验证码")
         authorize_url = signin_openai(session, csrf_token, email)
         human_delay("api")
 
@@ -290,6 +297,7 @@ def run_registration(
         # 不需要 /create-account/password、register_user、单独 send_email_otp 调用。
         follow_authorize(session, authorize_url)
         human_delay("navigate")
+        report_job_progress("submit_email", "success", "邮箱已提交")
 
         # ==================== 阶段3: 验证码验证 ====================
         # Sentinel Token 不提前生成；等 OTP 到手后紧贴 validate 请求生成，
@@ -297,6 +305,7 @@ def run_registration(
 
         # 等待验证码：USE_EMAIL_SERVICE=True 时自动从 Outlook 取件，否则人工输入。
         # 如果验证码错误/过期，自动重新发送并重新取最新验证码。
+        report_job_progress("email_otp", "running", "正在等待并验证邮箱验证码")
         validate_result = None
         max_otp_attempts = 3
         current_otp = otp_code
@@ -335,6 +344,7 @@ def run_registration(
 
         if validate_result is None:
             raise RuntimeError("OTP 验证未完成")
+        report_job_progress("email_otp", "success", "邮箱验证码已通过")
         human_delay("api")
 
         # OTP 校验后的下一步由服务端 auth session 决定：
@@ -369,16 +379,19 @@ def run_registration(
             )
         )
         if page_type == "external_url" or direct_oauth_after_otp:
+            report_job_progress("profile", "skipped", "已有账号状态，无需填写资料")
             if not otp_continue_url:
                 raise RuntimeError(f"OTP external_url 响应缺少可跟随 URL，无法继续: {validate_result}")
             logger.info(f"[注册] OTP 后进入 OAuth 回调分支，跳过 create_account：{email}")
             create_acknowledged = True
+            report_job_progress("token", "running", "正在完成 OAuth 回调并获取 Token")
             session_info, access_token = _finalize_registration_session(
                 session,
                 otp_continue_url,
                 email,
                 callback_referer="https://auth.openai.com/email-verification",
             )
+            report_job_progress("token", "success", "已获取 accessToken")
             if getattr(_protocol_cfg, "CHATGPT_AUTH_BOOTSTRAP_ENABLED", True):
                 from core.chatgpt_bootstrap import authenticated_bootstrap
                 authenticated_bootstrap(
@@ -388,6 +401,7 @@ def run_registration(
                 )
             human_delay("post_auth")
         else:
+            report_job_progress("profile", "running", "正在填写账号资料")
             # 兼容服务端只返回 continue_url=/about-you 但 page.type 为空/变化的情况。
             if page_type and page_type not in ("about_you", "about-you"):
                 if otp_continue_url and "about-you" not in str(otp_continue_url):
@@ -414,6 +428,7 @@ def run_registration(
             # 步骤12: 提交用户信息，完成注册
             create_result = create_account(session, name, birthday, sentinel_header_11, so_header_11)
             create_acknowledged = True
+            report_job_progress("profile", "success", "账号资料已提交")
 
             logger.info(f"[注册] 创建接口已通过：{email}，继续完成 OAuth 回调")
             human_delay("post_auth")
@@ -426,7 +441,9 @@ def run_registration(
                 )
 
             # 步骤13: 拉 /api/auth/session 提取 accessToken
+            report_job_progress("token", "running", "正在完成 OAuth 回调并获取 Token")
             session_info, access_token = _finalize_registration_session(session, continue_url, email)
+            report_job_progress("token", "success", "已获取 accessToken")
             if getattr(_protocol_cfg, "CHATGPT_AUTH_BOOTSTRAP_ENABLED", True):
                 from core.chatgpt_bootstrap import authenticated_bootstrap
                 authenticated_bootstrap(
@@ -458,13 +475,23 @@ def run_registration(
         codex_result = {"status": "skipped", "ok": False, "message": "未触发"}
         try:
             from core.codex_oauth import run_codex_oauth
-            codex_result = run_codex_oauth(email)
+            from config import codex as _codex_cfg
+            if bool(getattr(_codex_cfg, "ENABLE_CODEX_AUTO", False)):
+                report_job_progress("codex", "running", "正在执行 Codex OAuth")
+            # 自动 Codex 必须继续使用本账号注册阶段的同一出口，避免一个任务内 IP 漂移。
+            codex_result = run_codex_oauth(email, proxy=session.proxy)
+            report_job_progress(
+                "codex",
+                "success" if codex_result.get("ok") else "skipped" if codex_result.get("status") == "skipped" else "failed",
+                str(codex_result.get("message") or "Codex OAuth 已完成")[:300],
+            )
         except Exception as exc:
             codex_result = {
                 "status": "failed",
                 "ok": False,
                 "message": f"{type(exc).__name__}: {str(exc)[:180]}",
             }
+            report_job_progress("codex", "failed", codex_result["message"])
 
         if codex_result.get("ok"):
             logger.info(
@@ -659,19 +686,28 @@ def main():
 def run_one_batch_item(index: int, total: int, batch_dir=None) -> dict:
     """执行批量注册中的一个任务，返回结构化结果。"""
     logger.info(f"[批量] 开始第 {index + 1}/{total} 个注册")
+    proxy_lease = None
     try:
+        from core.proxy_provider import acquire_registration_proxy
+
+        proxy_lease = acquire_registration_proxy(job_id=f"cli-{index + 1}")
         email, name, birthday = prepare_registration_inputs()
         return run_registration(
             email=email,
             name=name,
             birthday=birthday,
             batch_dir=batch_dir,
-            # proxy 不传 → BrowserSession 会从 PROXY_POOL 随机抽
+            proxy=proxy_lease.proxy_url,
         )
     except Exception as exc:
         logger.error(f"[批量] 第 {index + 1} 个注册准备阶段失败: {type(exc).__name__}: {exc}")
         logger.debug("准备阶段错误详情:", exc_info=True)
         return {"success": False, "error": str(exc)}
+    finally:
+        if proxy_lease is not None:
+            from core.proxy_provider import release_proxy
+
+            release_proxy(proxy_lease, reason="cli_task_finished")
 
 
 def run_serial_batch(count: int, delay: float, continue_on_fail: bool, batch_dir=None) -> list[dict]:

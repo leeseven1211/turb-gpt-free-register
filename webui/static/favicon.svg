@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="GPT register console">
+  <rect width="64" height="64" rx="14" fill="#101827"/>
+  <path d="M19 16h26c3.3 0 6 2.7 6 6v20c0 3.3-2.7 6-6 6H30l-9 7v-7h-2c-3.3 0-6-2.7-6-6V22c0-3.3 2.7-6 6-6Z" fill="#3b66f5"/>
+  <path d="M34 20 23 35h9l-2 11 12-16h-9l1-10Z" fill="#f8fafc"/>
+  <circle cx="46" cy="20" r="6" fill="#22c55e"/>
+</svg>

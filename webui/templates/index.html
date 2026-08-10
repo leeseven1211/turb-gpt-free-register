@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
   <title>GPT 注册控制台</title>
   <style>
     * { box-sizing: border-box; }
@@ -370,6 +371,13 @@
       display: inline-flex; align-items: center; gap: 8px;
       color: #606266; font-size: 14px; white-space: nowrap;
     }
+    .jobs-toolbar-v2 .jobs-tb-select {
+      min-width: 190px; height: 40px; padding: 0 34px 0 12px;
+      border: 1px solid #dcdfe6; border-radius: 6px; background: #fff;
+      color: #606266; font: inherit; font-size: 14px; box-sizing: border-box;
+    }
+    .jobs-toolbar-v2 .jobs-tb-select:hover,
+    .jobs-toolbar-v2 .jobs-tb-select:focus { border-color: #409eff; outline: none; }
     .accounts-filter-v2 .acc-v2-date {
       height: 40px; padding: 0 8px;
       border: 1px solid #dcdfe6; border-radius: 6px;
@@ -578,6 +586,7 @@
     }
     .jobs-table-v2 .col-status { width: 110px; }
     .jobs-table-v2 .col-email { min-width: 200px; width: 24%; }
+    .jobs-table-v2 .col-proxy { width: 160px; min-width: 140px; }
     .jobs-table-v2 .col-time { width: 170px; }
     .jobs-table-v2 .col-error { width: auto; min-width: 160px; }
     .jobs-table-v2 .col-actions {
@@ -707,6 +716,115 @@
     .jobs-v2-pager .pager-size-item:hover { background: #f5f7fa; color: #377DFF; }
     .jobs-v2-pager .pager-size-item.is-active { background: #f0f2f5; color: #303133; font-weight: 500; }
 
+    /* ---- 当前注册批次：每个邮箱一张阶段进度卡 ---- */
+    .batch-progress-v2 {
+      margin: 14px 16px 18px; padding: 16px; border: 1px solid #bdeee3;
+      border-radius: 12px; background: linear-gradient(180deg, #fbfffe 0%, #f8fffd 100%);
+    }
+    .batch-progress-v2-head {
+      display: flex; justify-content: space-between; align-items: flex-start;
+      gap: 16px; margin-bottom: 12px;
+    }
+    .batch-progress-v2-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
+    .batch-progress-v2-title { color: #303133; font-size: 15px; font-weight: 650; }
+    .batch-progress-v2-state {
+      padding: 2px 8px; border-radius: 999px; background: #e8faf5;
+      color: #18a985; font-size: 12px; font-weight: 600;
+    }
+    .batch-progress-v2-state.is-failed { background: #fff0f0; color: #e45656; }
+    .batch-progress-v2-state.is-waiting { background: #f2f3f5; color: #7a7f87; }
+    .batch-progress-v2-summary, .batch-progress-v2-time {
+      margin-top: 6px; color: #8a8f98; font-size: 12px; line-height: 1.5;
+    }
+    .batch-progress-v2-time { margin-top: 0; white-space: nowrap; text-align: right; }
+    .batch-progress-v2-list { display: grid; gap: 10px; }
+    .batch-progress-v2-card {
+      padding: 13px 14px 12px; border: 1px solid #d9eee9; border-radius: 10px;
+      background: #fff; box-shadow: 0 1px 2px rgba(20, 117, 96, .025);
+    }
+    .batch-progress-v2-card.is-failed { border-color: #ffd0d0; background: #fffdfd; }
+    .batch-progress-v2-card-top {
+      display: flex; justify-content: space-between; align-items: center; gap: 12px;
+      margin-bottom: 14px; min-width: 0;
+    }
+    .batch-progress-v2-identity {
+      display: flex; align-items: center; gap: 9px; min-width: 0;
+      color: #303133; font-size: 13px; font-weight: 600;
+    }
+    .batch-progress-v2-index {
+      flex: 0 0 auto; padding: 2px 7px; border-radius: 6px;
+      background: #f1f3f5; color: #70757d; font-size: 12px; font-weight: 600;
+    }
+    .batch-progress-v2-email { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .batch-progress-v2-meta {
+      display: flex; align-items: center; gap: 9px; flex: 0 0 auto;
+      color: #8a8f98; font-size: 12px;
+    }
+    .batch-progress-v2-result { color: #18a985; font-weight: 600; }
+    .batch-progress-v2-result.is-failed { color: #e45656; }
+    .batch-progress-v2-result.is-running { color: #377dff; }
+    .batch-progress-v2-result.is-waiting { color: #909399; }
+    .batch-progress-v2-log {
+      padding: 0; border: 0; background: transparent; color: #377dff;
+      font: inherit; font-size: 12px; cursor: pointer;
+    }
+    .batch-progress-v2-log:hover { text-decoration: underline; }
+    .batch-progress-v2-steps {
+      display: grid; grid-template-columns: repeat(8, minmax(74px, 1fr));
+      min-width: 660px; overflow: visible;
+    }
+    .batch-progress-v2-step { position: relative; text-align: center; color: #a6abb2; }
+    .batch-progress-v2-step::before {
+      content: ""; position: absolute; z-index: 0; top: 14px; left: -50%;
+      width: 100%; height: 2px; background: #e4e8eb;
+    }
+    .batch-progress-v2-step:first-child::before { display: none; }
+    .batch-progress-v2-step.is-reached::before { background: #25bd96; }
+    .batch-progress-v2-step.is-failed::before,
+    .batch-progress-v2-step.is-stopped::before { background: #f1a9a9; }
+    .batch-progress-v2-node {
+      position: relative; z-index: 1; display: inline-flex; align-items: center; justify-content: center;
+      width: 28px; height: 28px; border: 2px solid #dce1e5; border-radius: 50%;
+      background: #fff; color: #a6abb2; box-sizing: border-box; font-size: 12px; font-weight: 700;
+    }
+    .batch-progress-v2-step.is-success .batch-progress-v2-node,
+    .batch-progress-v2-step.is-skipped .batch-progress-v2-node {
+      border-color: #25bd96; background: #25bd96; color: #fff;
+    }
+    .batch-progress-v2-step.is-running .batch-progress-v2-node {
+      border-color: #377dff; background: #377dff; color: #fff;
+      box-shadow: 0 0 0 5px rgba(55, 125, 255, .10); animation: batchPulse 1.6s ease-in-out infinite;
+    }
+    .batch-progress-v2-step.is-failed .batch-progress-v2-node,
+    .batch-progress-v2-step.is-stopped .batch-progress-v2-node {
+      border-color: #e45656; background: #e45656; color: #fff;
+    }
+    .batch-progress-v2-step-label {
+      display: block; margin-top: 7px; color: inherit; font-size: 11px; line-height: 1.3;
+      white-space: nowrap;
+    }
+    .batch-progress-v2-step.is-success, .batch-progress-v2-step.is-skipped { color: #168f73; }
+    .batch-progress-v2-step.is-running { color: #377dff; font-weight: 600; }
+    .batch-progress-v2-step.is-failed, .batch-progress-v2-step.is-stopped { color: #e45656; font-weight: 600; }
+    .batch-progress-v2-steps-scroll { overflow-x: auto; padding: 1px 2px 2px; }
+    .batch-progress-v2-error {
+      margin-top: 9px; padding: 7px 9px; border-radius: 6px; background: #fff1f1;
+      color: #cf4b4b; font-size: 12px; line-height: 1.45;
+    }
+    .jobs-history-v2-label {
+      padding: 0 16px 9px; color: #606266; font-size: 13px; font-weight: 600;
+    }
+    @keyframes batchPulse {
+      0%, 100% { box-shadow: 0 0 0 4px rgba(55, 125, 255, .08); }
+      50% { box-shadow: 0 0 0 7px rgba(55, 125, 255, .15); }
+    }
+    @media (max-width: 700px) {
+      .batch-progress-v2 { margin-left: 10px; margin-right: 10px; padding: 12px; }
+      .batch-progress-v2-head, .batch-progress-v2-card-top { align-items: flex-start; flex-direction: column; }
+      .batch-progress-v2-time { text-align: left; }
+      .batch-progress-v2-meta { width: 100%; flex-wrap: wrap; }
+    }
+
     /* ---- 新版账号表（追加在下方，旧区不改；样式对齐注册页） ---- */
     .accounts-panel-v2 {
       margin-top: 0;
@@ -741,6 +859,7 @@
     .accounts-table-v2 .col-plan { width: 120px; }
     .accounts-table-v2 .col-note { width: 140px; }
     .accounts-table-v2 .col-small { width: 72px; }
+    .accounts-table-v2 .col-risk-mail { width: 112px; }
     .accounts-table-v2 .col-status { width: 100px; }
     .accounts-table-v2 .col-agent { width: 140px; }
     .accounts-table-v2 .col-time { width: 170px; }
@@ -2054,6 +2173,11 @@
         <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnDeleteSelectedJobsV2" disabled title="删除选中的非运行中任务，并同时删除对应日志">删除选中</button>
         <button type="button" class="jobs-tb-btn" id="btnCancelPendingV2" title="把所有排队任务标记为已取消">取消全部排队</button>
         <button type="button" class="jobs-tb-btn" id="btnRefreshJobsV2" title="手动刷新任务列表">刷新</button>
+        <label class="jobs-tb-field">邮箱来源
+          <select class="jobs-tb-select" id="regEmailSourceV2" aria-label="本次注册邮箱来源">
+            <option value="">加载邮箱来源…</option>
+          </select>
+        </label>
         <label class="jobs-tb-field">注册数量
           <span class="el-input-number">
             <input id="regCountV2" type="number" min="1" max="200" value="1" inputmode="numeric">
@@ -2079,10 +2203,24 @@
         <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnStartV2">开始注册</button>
       </div>
       <div id="regWarnV2"></div>
+      <section class="batch-progress-v2 hidden" id="batchProgressV2" aria-label="当前批次进度">
+        <div class="batch-progress-v2-head">
+          <div>
+            <div class="batch-progress-v2-title-row">
+              <span class="batch-progress-v2-title">当前批次进度</span>
+              <span class="batch-progress-v2-state" id="batchProgressStateV2">等待任务</span>
+            </div>
+            <div class="batch-progress-v2-summary" id="batchProgressSummaryV2"></div>
+          </div>
+          <div class="batch-progress-v2-time" id="batchProgressTimeV2"></div>
+        </div>
+        <div class="batch-progress-v2-list" id="batchProgressListV2"></div>
+      </section>
+      <div class="jobs-history-v2-label">任务记录</div>
       <div class="jobs-table-v2-wrap">
         <table class="jobs-table-v2">
           <colgroup>
-            <col class="col-check"><col class="col-id"><col class="col-status"><col class="col-email">
+            <col class="col-check"><col class="col-id"><col class="col-status"><col class="col-email"><col class="col-source"><col class="col-proxy">
             <col class="col-time"><col class="col-time"><col class="col-error"><col class="col-actions">
           </colgroup>
           <thead>
@@ -2091,6 +2229,8 @@
               <th class="col-id">ID</th>
               <th class="col-status">状态</th>
               <th class="col-email">邮箱</th>
+              <th class="col-source">邮箱来源</th>
+              <th class="col-proxy">代理</th>
               <th class="col-time">开始</th>
               <th class="col-time">完成</th>
               <th class="col-error">错误</th>
@@ -2162,6 +2302,7 @@
         </div>
         <div class="acc-v2-btn-group">
           <span class="acc-v2-btn-group-title">批量</span>
+          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedDeactivationMailV2" disabled title="扫描 Email Butler / Cloudflare / iCloud 转发邮箱中的 OpenAI 封号通知；不会刷新 AT">查封号邮件</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnNoteSelectedAccountsV2" disabled title="给选中的账号统一设置备注，留空可清空备注">备注</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedLinesV2" disabled title="复制选中账号的完整整行，每个账号一行">复制行</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedEmailsV2" disabled title="复制选中账号的邮箱，每个账号一行">复制邮箱</button>
@@ -2180,7 +2321,7 @@
           <colgroup>
             <col class="col-check"><col class="col-id"><col class="col-email"><col class="col-source">
             <col class="col-token"><col class="col-plan"><col class="col-note"><col class="col-small">
-            <col class="col-status"><col class="col-agent"><col class="col-time"><col class="col-actions">
+            <col class="col-risk-mail"><col class="col-status"><col class="col-agent"><col class="col-time"><col class="col-actions">
           </colgroup>
           <thead>
             <tr>
@@ -2192,6 +2333,7 @@
               <th class="col-plan">套餐</th>
               <th class="col-note">备注</th>
               <th class="col-small">2FA</th>
+              <th class="col-risk-mail">封号邮件</th>
               <th class="col-status">Codex</th>
               <th class="col-agent">Agent Token</th>
               <th class="col-time">创建时间</th>
@@ -2308,6 +2450,7 @@
             <button type="button" class="outlook-v2-select-item" data-value="outlook" role="option">Outlook 邮箱池</button>
             <button type="button" class="outlook-v2-select-item" data-value="generic_api" role="option">通用 API 邮箱池</button>
             <button type="button" class="outlook-v2-select-item" data-value="cloudflare_domain" role="option">域名邮箱池</button>
+            <button type="button" class="outlook-v2-select-item" data-value="icloud_hide" role="option">iCloud 隐藏邮箱池</button>
           </div>
           <input type="hidden" id="poolSourceV2" value="all">
         </div>
@@ -2457,8 +2600,10 @@ const OUTLOOK_SELECTED = new Set();
 let JOBS = [];
 let JOBS_TOTAL = 0;
 let JOB_STATUS_COUNTS = {};
+let JOB_PROGRESS_BATCH = null;
 let jobsRenderSignature = '';
 const JOB_SELECTED = new Set();
+let REGISTRATION_EMAIL_SOURCES = [];
 let activeLogJob = null, logTimer = null, jobsTimer = null;
 
 // ---------- 分页状态 ----------
@@ -2677,9 +2822,40 @@ async function loadSummary() {
 }
 
 // ---------- 注册 / 任务 ----------
-async function startRegistrationFromInputs(countEl, workersEl, startBtn) {
+function registrationEmailSourceLabel(value) {
+  const source = REGISTRATION_EMAIL_SOURCES.find(item => item.value === String(value || ''));
+  return source?.label || String(value || '-');
+}
+async function loadRegistrationEmailSources() {
+  const select = $('#regEmailSourceV2');
+  if (!select) return;
+  try {
+    const result = await api('/api/email-sources');
+    REGISTRATION_EMAIL_SOURCES = Array.isArray(result.sources) ? result.sources : [];
+    if (result.manual_mode) {
+      select.innerHTML = '<option value="manual">手动配置邮箱</option>';
+      select.disabled = true;
+      return;
+    }
+    select.disabled = false;
+    select.innerHTML = '<option value="">请选择本次邮箱来源</option>' + REGISTRATION_EMAIL_SOURCES.map(item =>
+      `<option value="${esc(item.value)}">${esc(item.label)}</option>`
+    ).join('');
+  } catch (error) {
+    select.innerHTML = '<option value="">邮箱来源加载失败</option>';
+    select.disabled = true;
+  }
+}
+async function startRegistrationFromInputs(countEl, workersEl, sourceEl, startBtn) {
   const count = parseInt((countEl?.value || '1'), 10);
   const workers = parseInt((workersEl?.value || '3'), 10);
+  const emailSource = String(sourceEl?.value || '').trim();
+  if (!emailSource) {
+    const warnEl = $('#regWarnV2');
+    if (warnEl) warnEl.innerHTML = '<div class="banner warn">请选择本次注册使用的邮箱来源</div>';
+    sourceEl?.focus();
+    return;
+  }
   const activeCount = Number(JOB_STATUS_COUNTS.active || 0);
   if (activeCount > 0) {
     const ok = confirm(
@@ -2696,8 +2872,9 @@ async function startRegistrationFromInputs(countEl, workersEl, startBtn) {
   };
   const b2 = $('#btnStartV2'); if (b2) b2.disabled = true;
   try {
-    const r = await api('/api/jobs', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({count, workers}) });
-    const warnHtml = r.warning ? `<div class="banner warn">${esc(r.warning)}（本次并发 ${r.workers || workers}）</div>` : `<div class="banner info">已提交 ${r.submitted} 个任务，本次并发 ${r.workers || workers}</div>`;
+    const r = await api('/api/jobs', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({count, workers, email_source:emailSource}) });
+    const sourceLabel = registrationEmailSourceLabel(r.email_source || emailSource);
+    const warnHtml = r.warning ? `<div class="banner warn">${esc(r.warning)}（邮箱 ${esc(sourceLabel)} · 并发 ${r.workers || workers}）</div>` : `<div class="banner info">已提交 ${r.submitted} 个任务 · 邮箱 ${esc(sourceLabel)} · 并发 ${r.workers || workers}</div>`;
     const warnEl = $('#regWarnV2'); if (warnEl) warnEl.innerHTML = warnHtml;
     const c2 = $('#regCountV2'); if (c2) c2.value = count;
     const w2 = $('#regWorkersV2'); if (w2) w2.value = workers;
@@ -2775,7 +2952,8 @@ function bindJobsBodyEvents(bodyEl) {
 // 注册任务区
 (() => {
   const startV2 = $('#btnStartV2');
-  if (startV2) startV2.addEventListener('click', () => startRegistrationFromInputs($('#regCountV2'), $('#regWorkersV2'), startV2));
+  loadRegistrationEmailSources();
+  if (startV2) startV2.addEventListener('click', () => startRegistrationFromInputs($('#regCountV2'), $('#regWorkersV2'), $('#regEmailSourceV2'), startV2));
   const delV2 = $('#btnDeleteSelectedJobsV2');
   if (delV2) delV2.addEventListener('click', deleteSelectedJobs);
   const retryV2 = $('#btnRetrySelectedJobsV2');
@@ -2804,7 +2982,125 @@ function bindJobsBodyEvents(bodyEl) {
   const selectAllV2 = $('#jobsSelectAllV2');
   if (selectAllV2) selectAllV2.addEventListener('change', (e) => syncJobsSelectAll(e.target.checked));
   bindJobsBodyEvents($('#jobsBodyV2'));
+  const progressListV2 = $('#batchProgressListV2');
+  if (progressListV2) progressListV2.addEventListener('click', (e) => {
+    const logBtn = e.target.closest('[data-progress-log-job]');
+    if (logBtn) openLog(parseInt(logBtn.dataset.progressLogJob, 10));
+  });
 })();
+
+function progressDateMs(value) {
+  if (!value) return 0;
+  const ms = new Date(value).getTime();
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function formatProgressDuration(startValue, endValue = '') {
+  const start = progressDateMs(startValue);
+  if (!start) return '';
+  const end = progressDateMs(endValue) || Date.now();
+  const seconds = Math.max(0, Math.floor((end - start) / 1000));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const rest = seconds % 60;
+  if (hours > 0) return `${hours}时${minutes}分${rest}秒`;
+  if (minutes > 0) return `${minutes}分${rest}秒`;
+  return `${rest}秒`;
+}
+
+function progressJobResult(job) {
+  const status = String(job.status || 'pending');
+  if (status === 'success') return { label: '成功', cls: '' };
+  if (status === 'failed') return { label: '失败', cls: 'is-failed' };
+  if (status === 'cancelled') return { label: '已取消', cls: 'is-failed' };
+  if (status === 'stopped') return { label: '已停止', cls: 'is-failed' };
+  if (status === 'stopping') return { label: '停止中', cls: 'is-running' };
+  if (status === 'running') return { label: '进行中', cls: 'is-running' };
+  return { label: '等待中', cls: 'is-waiting' };
+}
+
+function renderBatchProgress() {
+  const panel = $('#batchProgressV2');
+  if (!panel) return;
+  const batch = JOB_PROGRESS_BATCH;
+  const items = batch && Array.isArray(batch.items) ? batch.items : [];
+  const stages = batch && Array.isArray(batch.stages) ? batch.stages : [];
+  if (!batch || !items.length || !stages.length) {
+    panel.classList.add('hidden');
+    return;
+  }
+  panel.classList.remove('hidden');
+
+  const hasFailedStep = job => Object.values(job.progress_steps || {}).some(step => step && ['failed', 'stopped'].includes(step.state));
+  const success = items.filter(job => job.status === 'success' && !hasFailedStep(job)).length;
+  const failed = items.filter(job => ['failed', 'cancelled', 'stopped'].includes(job.status) || hasFailedStep(job)).length;
+  const active = items.filter(job => ['running', 'stopping'].includes(job.status) && !hasFailedStep(job)).length;
+  const pending = items.filter(job => job.status === 'pending').length;
+  const total = Number(batch.total || items.length);
+  const stateEl = $('#batchProgressStateV2');
+  let stateLabel = '等待中', stateClass = 'is-waiting';
+  if (success === total && total > 0) { stateLabel = '全部成功'; stateClass = ''; }
+  else if (active > 0) { stateLabel = '进行中'; stateClass = ''; }
+  else if (failed > 0) { stateLabel = success > 0 ? '部分失败' : '批次失败'; stateClass = 'is-failed'; }
+  if (stateEl) {
+    stateEl.textContent = stateLabel;
+    stateEl.className = `batch-progress-v2-state ${stateClass}`.trim();
+  }
+  const summaryEl = $('#batchProgressSummaryV2');
+  if (summaryEl) summaryEl.textContent = `成功 ${success} · 失败 ${failed} · 运行 ${active} · 等待 ${pending} ｜ 共 ${total} · 并发 ${Number(batch.workers || 1)}`;
+  const allDone = active === 0 && pending === 0;
+  const batchDuration = formatProgressDuration(batch.started_at || batch.created_at, allDone ? batch.completed_at : '');
+  const timeEl = $('#batchProgressTimeV2');
+  if (timeEl) timeEl.textContent = batchDuration ? `批次耗时 ${batchDuration}` : '';
+
+  const list = $('#batchProgressListV2');
+  if (!list) return;
+  list.innerHTML = items.map((job, itemIndex) => {
+    const steps = job.progress_steps && typeof job.progress_steps === 'object' ? job.progress_steps : {};
+    const terminal = ['success', 'failed', 'cancelled', 'stopped'].includes(String(job.status || ''));
+    const duration = formatProgressDuration(job.started_at || job.created_at, terminal ? job.completed_at : '');
+    const failedStep = stages.map(stage => steps[stage.key]).find(step => step && ['failed', 'stopped'].includes(step.state));
+    const result = failedStep ? { label: '部分失败', cls: 'is-failed' } : progressJobResult(job);
+    const error = job.error_message || (failedStep && failedStep.detail) || '';
+    const cardFailed = ['failed', 'cancelled', 'stopped'].includes(String(job.status || '')) || Boolean(failedStep);
+    const stepHtml = stages.map((stage, index) => {
+      const step = steps[stage.key] || {};
+      const state = String(step.state || 'pending');
+      const previous = index > 0 ? (steps[stages[index - 1].key] || {}) : {};
+      const reached = index > 0 && ['success', 'skipped'].includes(String(previous.state || ''));
+      const symbol = state === 'success' || state === 'skipped' ? '✓'
+        : state === 'running' ? '…'
+        : state === 'failed' ? '×'
+        : state === 'stopped' ? '!'
+        : String(index + 1);
+      const stateTitle = state === 'skipped' ? '（已跳过）' : '';
+      const detailTitle = step.detail ? ` title="${esc(step.detail)}"` : '';
+      return `<div class="batch-progress-v2-step is-${esc(state)}${reached ? ' is-reached' : ''}"${detailTitle}>
+        <span class="batch-progress-v2-node">${symbol}</span>
+        <span class="batch-progress-v2-step-label">${esc(stage.label)}${stateTitle}</span>
+      </div>`;
+    }).join('');
+    const batchIndex = Number(job.batch_index || itemIndex + 1);
+    const email = job.email || (job.status === 'pending' ? '等待领取邮箱…' : '准备邮箱中…');
+    const sourceLabel = registrationEmailSourceLabel(job.email_source);
+    return `<article class="batch-progress-v2-card${cardFailed ? ' is-failed' : ''}">
+      <div class="batch-progress-v2-card-top">
+        <div class="batch-progress-v2-identity">
+          <span class="batch-progress-v2-index">#${esc(batchIndex)}</span>
+          <span class="batch-progress-v2-email" title="${esc(email)}">${esc(email)}</span>
+          <span class="sub-cell">${esc(sourceLabel)}</span>
+        </div>
+        <div class="batch-progress-v2-meta">
+          ${duration ? `<span>耗时 ${esc(duration)}</span>` : ''}
+          <span class="batch-progress-v2-result ${result.cls}">${result.label}</span>
+          <button type="button" class="batch-progress-v2-log" data-progress-log-job="${esc(job.id)}">查看日志</button>
+        </div>
+      </div>
+      <div class="batch-progress-v2-steps-scroll"><div class="batch-progress-v2-steps">${stepHtml}</div></div>
+      ${error ? `<div class="batch-progress-v2-error" title="${esc(error)}">${esc(short(error, 180))}</div>` : ''}
+    </article>`;
+  }).join('');
+}
 
 function renderJobs() {
   const total = JOBS_TOTAL;
@@ -2819,12 +3115,15 @@ function renderJobs() {
       const completed = formatDateTime(j.completed_at);
       const err = j.error_message || '';
       const manualOtp = j.status === 'running' && j.email && j.manual_otp_required;
+      const proxyLabel = j.proxy_provider ? `${j.proxy_provider}${j.proxy_endpoint && j.proxy_endpoint !== '-' ? ` · ${j.proxy_endpoint}` : ''}${j.proxy_region && j.proxy_region !== '-' ? ` · ${j.proxy_region}` : ''}` : '-';
       return `
       <tr>
         <td class="col-check"><input type="checkbox" class="job-row-check" data-job-id="${esc(j.id)}" ${JOB_SELECTED.has(Number(j.id)) ? 'checked' : ''} ${running ? 'disabled title="运行中的任务不能选择"' : ''}></td>
         <td class="col-id">#${esc(j.id)}${j.parent_job_id ? `<div class="sub-cell" title="重试自任务 #${esc(j.parent_job_id)}">↳ #${esc(j.parent_job_id)} · ${esc(j.retry_attempt || 1)}</div>` : ''}</td>
         <td class="col-status">${pillV2(j.display_status || j.status)}</td>
         <td class="col-email" title="${esc(j.email || '-')}">${esc(j.email || '-')}</td>
+        <td class="col-source" title="${esc(registrationEmailSourceLabel(j.email_source))}">${esc(registrationEmailSourceLabel(j.email_source))}</td>
+        <td class="col-proxy" title="${esc(proxyLabel)} · ${esc(j.proxy_status || '-')}">${esc(proxyLabel)}</td>
         <td class="col-time" title="${esc(started)}">${esc(started)}</td>
         <td class="col-time" title="${esc(completed)}">${esc(completed)}</td>
         <td class="col-error" title="${esc(err)}">${esc(err ? short(err, 60) : '-')}</td>
@@ -2838,10 +3137,11 @@ function renderJobs() {
           </div>
         </td>
       </tr>`;
-    }).join('') || '<tr><td colspan="8" style="text-align:center;color:#909399;padding:28px;">暂无任务</td></tr>';
+    }).join('') || '<tr><td colspan="10" style="text-align:center;color:#909399;padding:28px;">暂无任务</td></tr>';
   }
 
 
+  renderBatchProgress();
   updateJobsSelectionUi(rows);
   _renderPager('jobs', total);
 }
@@ -2870,13 +3170,17 @@ async function refreshJobs() {
     const nextJobs = res.items || [];
     JOBS_TOTAL = Number(res.total || nextJobs.length || 0);
     JOB_STATUS_COUNTS = res.status_counts || {};
+    JOB_PROGRESS_BATCH = res.progress_batch || null;
     const totalPages = Math.max(1, Math.ceil(JOBS_TOTAL / p.size));
     if (p.page > totalPages) { p.page = totalPages; return refreshJobs(); }
-    const nextSignature = JSON.stringify({items: nextJobs, total: JOBS_TOTAL, status_counts: JOB_STATUS_COUNTS, page: p.page, size: p.size});
+    const nextSignature = JSON.stringify({items: nextJobs, total: JOBS_TOTAL, status_counts: JOB_STATUS_COUNTS, progress_batch: JOB_PROGRESS_BATCH, page: p.page, size: p.size});
     JOBS = nextJobs;
     if (nextSignature !== jobsRenderSignature) {
       jobsRenderSignature = nextSignature;
       renderJobs();
+    } else {
+      // 数据不变时也刷新耗时文本。
+      renderBatchProgress();
     }
     loadSummary();
   } catch(e) {}
@@ -3361,6 +3665,38 @@ function _tokenCellV2(r) {
   }
   return `<span class="pill status-failed">无Token</span>${liveHtml}`;
 }
+function _deactivationMailCell(r) {
+  const detected = r.deactivation_mail_detected === true;
+  const status = r.deactivation_mail_scan_status || '';
+  const checked = r.deactivation_mail_checked_at || '';
+  const received = r.deactivation_mail_received_at || '';
+  const subject = r.deactivation_mail_subject || '';
+  const sender = r.deactivation_mail_sender || '';
+  const err = r.deactivation_mail_error || '';
+  const supported = ['email_butler','cloudflare'].includes((r.email_source || '').toString().toLowerCase());
+  let badge = '<span class="pill status-used">待扫描</span>';
+  let title = '尚未扫描';
+  if (!supported || status === 'unsupported') {
+    badge = '<span class="pill status-used">不支持</span>';
+    title = err || '当前邮箱来源暂不支持扫描';
+  } else if (detected) {
+    badge = '<span class="pill status-failed">已收到</span>';
+    title = [received && `收件: ${received}`, sender && `发件人: ${sender}`, subject].filter(Boolean).join('；');
+  } else if (status === 'queued' || status === 'running') {
+    badge = `<span class="pill status-running">${status === 'queued' ? '排队中' : '扫描中'}</span>`;
+    title = '正在扫描邮箱，不会刷新 AT';
+  } else if (status === 'success') {
+    badge = '<span class="pill status-success">未发现</span>';
+    title = checked ? `扫描时间: ${checked}` : '未发现高置信度封号通知';
+  } else if (status === 'failed') {
+    badge = '<span class="pill status-running">扫描失败</span>';
+    title = err || checked || '扫描失败';
+  }
+  const button = supported && !['queued','running'].includes(status)
+    ? `<button type="button" data-deactivation-mail-check="${esc(r.id)}" title="扫描该账号对应邮箱；不会刷新 AT">复查</button>`
+    : '';
+  return `<div class="agent-token-cell" title="${esc(title)}">${badge}${button}</div>`;
+}
 function _accountsV2MoreMenu(r) {
   const parts = [
     `<button type="button" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button>`,
@@ -3413,6 +3749,7 @@ function renderAccounts() {
       <td class="col-plan">${_planCell(r)}<div class="acc-v2-sub">${_extractLinkCell(r)}</div></td>
       <td class="col-note" title="${esc(r.note || '')}">${r.note ? esc(short(r.note, 80)) : '<span class="acc-v2-muted">-</span>'}</td>
       <td class="col-small">${r.totp_enabled ? '已启用' : '<span class="acc-v2-muted">未启用</span>'}</td>
+      <td class="col-risk-mail">${_deactivationMailCell(r)}</td>
       <td class="col-status">${_codexCellV2(r)}</td>
       <td class="col-agent">${_codexAgentCell(r)}</td>
       <td class="col-time" title="${esc(r.created_at || '-')}">${esc(r.created_at || '-')}</td>
@@ -3429,7 +3766,7 @@ function renderAccounts() {
 
   const bodyV2 = $('#accountsBodyV2');
   if (bodyV2) {
-    bodyV2.innerHTML = rows.map(rowHtmlV2).join('') || '<tr><td colspan="12" style="text-align:center;color:#909399;padding:28px;">暂无账号</td></tr>';
+    bodyV2.innerHTML = rows.map(rowHtmlV2).join('') || '<tr><td colspan="13" style="text-align:center;color:#909399;padding:28px;">暂无账号</td></tr>';
   }
   updateAccountSelectionUi(rows);
   _renderPager('accounts', total);
@@ -3443,7 +3780,7 @@ function updateAccountSelectionUi(pageRows = null) {
   const archiveLabel = SHOW_ARCHIVED_ACCOUNTS ? '恢复选中' : '归档选中';
   const archiveTitle = SHOW_ARCHIVED_ACCOUNTS ? '把选中的归档账号恢复到默认账号列表' : '归档选中的账号；默认账号列表将不再查询/显示这些账号';
   const v2Ids = [
-    'btnCheckSelectedPlansV2', 'btnExtractSelectedLinksV2',
+    'btnCheckSelectedPlansV2', 'btnCheckSelectedDeactivationMailV2', 'btnExtractSelectedLinksV2',
     'btnGenerateSelectedAgentV2', 'btnDownloadSelectedAgentV2', 'btnUploadSelectedAgentSub2V2',
     'btnRetrySelectedCodexV2', 'btnDownloadSelectedCpaV2', 'btnStopSelectedCodexV2',
     'btnNoteSelectedAccountsV2', 'btnCopySelectedLinesV2', 'btnCopySelectedEmailsV2',
@@ -3571,6 +3908,12 @@ async function onAccountsBodyClick(e) {
   const planBtn = e.target.closest('[data-plan-check]');
   if (planBtn) {
     await checkOnePlan(Number(planBtn.dataset.planCheck), planBtn);
+    return;
+  }
+
+  const riskMailBtn = e.target.closest('[data-deactivation-mail-check]');
+  if (riskMailBtn) {
+    await checkOneDeactivationMail(Number(riskMailBtn.dataset.deactivationMailCheck), riskMailBtn);
     return;
   }
 
@@ -4295,6 +4638,60 @@ async function checkSelectedPlans() {
   }
 }
 
+async function _pollDeactivationMailResults(ids, attempts = 30) {
+  const wanted = new Set((ids || []).map(Number));
+  for (let i = 0; i < attempts; i += 1) {
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    await loadAccounts();
+    const visible = ACCOUNTS.filter(a => wanted.has(Number(a.id)));
+    if (visible.length && visible.every(a => !['queued','running'].includes(a.deactivation_mail_scan_status || ''))) return;
+  }
+}
+
+async function checkOneDeactivationMail(id, btn) {
+  const old = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '扫描中…'; }
+  try {
+    await api(`/api/accounts/${encodeURIComponent(id)}/check-deactivation-mail`, { method:'POST' });
+    showToast('封号邮件扫描已入队；不会刷新 AT');
+    await loadAccounts();
+    await _pollDeactivationMailResults([id]);
+  } catch(err) {
+    showToast('扫描失败: ' + err.message);
+  } finally {
+    if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = old; }
+  }
+}
+
+async function checkSelectedDeactivationMail() {
+  const ids = Array.from(ACCOUNT_SELECTED);
+  if (!ids.length) { showToast('请先选择账号'); return; }
+  const eligible = ids.filter(id => {
+    const acc = ACCOUNTS.find(a => Number(a.id) === Number(id));
+    return acc && ['email_butler','cloudflare'].includes((acc.email_source || '').toString().toLowerCase());
+  });
+  if (!eligible.length) { showToast('选中账号中没有支持扫描的邮箱来源'); return; }
+  const btn = $('#btnCheckSelectedDeactivationMailV2');
+  const old = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '扫描中…';
+  try {
+    const r = await api('/api/accounts/check-deactivation-mail-bulk', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({account_ids: eligible}),
+    });
+    showToast(`已入队 ${r.started_count || 0} 个，跳过 ${r.skipped_count || 0} 个；不会刷新 AT`);
+    await loadAccounts();
+    if ((r.started_count || 0) > 0) await _pollDeactivationMailResults(eligible);
+  } catch(err) {
+    showToast('批量扫描失败: ' + err.message);
+  } finally {
+    btn.textContent = old;
+    updateAccountSelectionUi();
+  }
+}
+
 async function checkSelectedLive(idsArg = null, btnArg = null) {
   const ids = idsArg || Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
@@ -4561,6 +4958,7 @@ async function copySelectedAccountTokens() {
     if (el) el.addEventListener('click', fn);
   };
   bind('btnCheckSelectedPlansV2', checkSelectedPlans);
+  bind('btnCheckSelectedDeactivationMailV2', checkSelectedDeactivationMail);
   bind('btnExtractSelectedLinksV2', extractSelectedLinks);
   bind('btnGenerateSelectedAgentV2', generateSelectedCodexAgents);
   bind('btnDownloadSelectedAgentV2', downloadSelectedCodexAgents);
@@ -4588,6 +4986,7 @@ const POOL_SOURCE_LABELS = {
   outlook: 'Outlook 邮箱池',
   generic_api: '通用 API 邮箱池',
   cloudflare_domain: '域名邮箱池',
+  icloud_hide: 'iCloud 隐藏邮箱池',
 };
 function setPoolSourceV2(val) {
   const hidden = document.getElementById('poolSourceV2');
@@ -4609,7 +5008,7 @@ function getOutlookQuery() {
 }
 function poolKey(r) { return `${r.source || getPoolSource() || 'outlook'}|${r.email || ''}`; }
 function poolLabel(src) {
-  return ({outlook:'Outlook', generic_api:'通用API', cloudflare_domain:'域名邮箱'})[src] || src || '-';
+  return ({outlook:'Outlook', generic_api:'通用API', cloudflare_domain:'域名邮箱', icloud_hide:'iCloud 隐藏邮箱'})[src] || src || '-';
 }
 async function loadOutlook() {
   try {
@@ -5395,9 +5794,11 @@ function emailConfigSectionForKey(key) {
   if (['USE_EMAIL_SERVICE','REGISTER_EMAIL','REGISTER_NAME','OTP_MAX_WAIT','OTP_POLL_INTERVAL','EMAIL_SOURCE'].includes(key)) {
     return ['通用邮箱 / OTP', '邮箱来源选择、OTP 等待参数、手动邮箱等通用设置'];
   }
+  if (key.startsWith('EMAIL_BUTLER_')) return ['Email Butler', 'Email Butler 通用 /v1 发号、收信、释放与封号信号配置'];
   if (key.startsWith('GPTMAIL_')) return ['GPTMail', 'GPTMail 临时邮箱 API 配置'];
   if (key.startsWith('MAIL_NEST_')) return ['MailNest', 'MailNest / 迈巢临时邮箱 API 配置'];
   if (key.startsWith('CLOUDMAIL_')) return ['CloudMail', 'CloudMail 域名随机邮箱、Token 和收信 API 配置'];
+  if (key.startsWith('ICLOUD_HME_')) return ['iCloud 隐藏邮箱', '连接本机 iCloud HME 服务、同步 Hide My Email 别名并按实际转发目标自动收码'];
   if (key.startsWith('OUTLOOK_')) return ['Outlook 邮箱池', 'Outlook 邮箱池和取件模式配置'];
   if (key.startsWith('CLOUDFLARE_')) return ['Cloudflare 临时邮箱', 'Cloudflare Worker 临时邮箱 API、鉴权与路径配置'];
   if (['EMAIL_DOMAIN','QQ_EMAIL','QQ_IMAP_PASSWORD'].includes(key)) return ['Cloudflare 域名邮箱', 'Cloudflare 转发到 QQ 邮箱后的 IMAP 收信配置'];
@@ -5510,6 +5911,7 @@ function configSectionIntro(name) {
   if (name === '接码平台') return '接码通道、国家代码与本地取号服务参数。';
   if (name === '人工节奏') return '注册流程中的随机停顿节奏。';
   if (name === '浏览器画像') return '浏览器语言、时区与出口 IP 画像。';
+  if (name === '代理平台') return '为每个注册任务申请独立的粘性住宅代理；当前支持 1024Proxy。';
   if (name === '代理池') return '代理列表与套餐/Agent 网络模式。';
   if (name === '提链') return '提链服务地址、CDK 与并发参数。';
   return '';
@@ -5656,7 +6058,17 @@ function renderFeatureSwitchField(f, opts = {}) {
 function renderConfigPlainFieldV2(f) {
   const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
   let control = '';
-  if (f.type === 'int') {
+  if (f.key === 'REGISTRATION_PROXY_MODE') {
+    const options = [['pool','静态代理池'],['1024','1024Proxy 平台 API'],['none','直连']];
+    control = `<select data-key="${attrEsc(f.key)}">${options.map(([v,l]) => `<option value="${v}"${String(fv)===v?' selected':''}>${l} (${v})</option>`).join('')}</select>`;
+  } else if (f.key === 'PROXY_1024_REGION') {
+    const regions = [['US','美国'],['JP','日本'],['GB','英国'],['CA','加拿大'],['AU','澳大利亚'],['DE','德国'],['FR','法国'],['NL','荷兰'],['SG','新加坡'],['KR','韩国'],['HK','中国香港'],['TW','中国台湾'],['Rand','随机地区']];
+    const listId = 'proxy1024RegionOptionsV2';
+    control = `<input list="${listId}" data-key="${attrEsc(f.key)}" value="${attrEsc(fv == null ? '' : fv)}" placeholder="留空沿用 API 链接中的地区" autocomplete="off" spellcheck="false"><datalist id="${listId}">${regions.map(([v,l]) => `<option value="${v}">${l}</option>`).join('')}</datalist>`;
+  } else if (f.key === 'PROXY_1024_PROTOCOL') {
+    const options = ['http','https','socks5','socks5h'];
+    control = `<select data-key="${attrEsc(f.key)}">${options.map(v => `<option value="${v}"${String(fv)===v?' selected':''}>${v}</option>`).join('')}</select>`;
+  } else if (f.type === 'int') {
     control = `<input type="number" data-key="${attrEsc(f.key)}" value="${attrEsc(fv == null ? '' : fv)}">`;
   } else if (f.type === 'float') {
     control = `<input type="number" step="0.1" data-key="${attrEsc(f.key)}" value="${attrEsc(fv == null ? '' : fv)}">`;
@@ -5676,11 +6088,62 @@ function renderConfigPlainFieldV2(f) {
     </label>
   `;
 }
+function renderProxyProviderToolsV2() {
+  return `
+    <div class="roxy-workspace-box" style="margin-top:18px;margin-bottom:4px;">
+      <div>
+        <b>1024Proxy 本地联调</b>
+        <div class="hint">会实际提取并检测 1 个 IP，可能产生少量流量或配额消耗。API 请求会绕过系统代理。</div>
+      </div>
+      <div class="row">
+        <div class="action-cell"><button class="btn" type="button" id="btnTestProxy1024V2">提取并测试 1 个 IP</button></div>
+      </div>
+      <div id="proxy1024TestStatusV2" class="muted" style="font-size:12px;">尚未测试</div>
+    </div>
+  `;
+}
+
+function bindProxyProviderToolsV2() {
+  const btn = $('#btnTestProxy1024V2');
+  if (!btn || btn.dataset.bound) return;
+  btn.dataset.bound = '1';
+  btn.addEventListener('click', testProxy1024V2);
+}
+
+async function testProxy1024V2() {
+  const btn = $('#btnTestProxy1024V2');
+  const status = $('#proxy1024TestStatusV2');
+  const value = (key, fallback = '') => {
+    const el = document.querySelector(`#configSectionsV2 [data-key="${key}"]`);
+    return el ? readConfigElementValue(el, CONFIG.find(x => x.key === key)) : fallback;
+  };
+  if (btn) btn.disabled = true;
+  if (status) status.textContent = '正在提取并检测代理...';
+  try {
+    const r = await api('/api/proxy-provider/test', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        api_url: value('PROXY_1024_API_URL'),
+        region: value('PROXY_1024_REGION'),
+        protocol: value('PROXY_1024_PROTOCOL', 'http'),
+        session_minutes: value('PROXY_1024_SESSION_MINUTES', 30),
+        validate: value('PROXY_1024_VALIDATE', true),
+      }),
+    });
+    const l = r.lease || {};
+    if (status) status.innerHTML = `✅ ${esc(l.provider || '1024Proxy')} · ${esc(l.endpoint || '-')} · 出口 ${esc(l.exit_ip || '-')} · ${esc(l.region || '-')} · 有效至 ${esc(l.expires_at || '-')}`;
+    showToast(r.message || '代理测试成功');
+  } catch(e) {
+    if (status) status.innerHTML = `<span style="color:var(--red);">测试失败：${esc(e.message)}</span>`;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
 function renderMixedConfigSectionV2(name, fields, intro) {
   const slug = configGroupSlug(name);
   const switches = fields.filter(f => f.type === 'bool');
   const inputs = fields.filter(f => f.type !== 'bool');
-  const extra = name === 'RoxyBrowser' ? renderRoxyWorkspaceToolsV2() : '';
+  const extra = name === 'RoxyBrowser' ? renderRoxyWorkspaceToolsV2() : (name === '代理平台' ? renderProxyProviderToolsV2() : '');
   return `
     <section class="config-section-v2" id="${esc(slug)}" data-config-section="${esc(name)}">
       ${renderConfigSectionHead(name, intro || '')}
@@ -5767,6 +6230,12 @@ function renderSectionedConfigSectionV2(name, fields, sectionForKey, preferred, 
   if (name === '邮箱 / OTP' && active === 'CloudMail') {
     extra = renderCloudMailTokenToolsV2();
   }
+  if (name === '邮箱 / OTP' && active === 'Email Butler') {
+    extra = renderEmailButlerToolsV2();
+  }
+  if (name === '邮箱 / OTP' && active === 'iCloud 隐藏邮箱') {
+    extra = renderICloudHMEToolsV2();
+  }
   return `
     <section class="config-section-v2" id="${esc(slug)}" data-config-section="${esc(name)}">
       ${renderConfigSectionHead(name, '')}
@@ -5804,6 +6273,53 @@ function renderCloudMailTokenToolsV2() {
     </div>
   `;
 }
+function renderEmailButlerToolsV2() {
+  const hasButler = CONFIG.some(f => String(f.key || '').startsWith('EMAIL_BUTLER_'));
+  if (!hasButler) return '';
+  return `
+    <div class="roxy-workspace-box" style="margin-top:18px;">
+      <div>
+        <b>Email Butler 连接</b>
+        <div class="hint">使用当前表单中的 /v1 URL 与 API Key 验证客户端策略和发号、收信、释放、信号扫描能力，不会租用邮箱。</div>
+      </div>
+      <div class="action-cell">
+        <button class="btn primary" type="button" id="btnTestEmailButlerV2">测试连接</button>
+      </div>
+      <div id="emailButlerStatusV2" class="muted" style="font-size:12px;">尚未检测</div>
+    </div>
+  `;
+}
+function bindEmailButlerToolsV2() {
+  const btn = $('#btnTestEmailButlerV2');
+  if (btn && !btn.dataset.bound) {
+    btn.dataset.bound = '1';
+    btn.addEventListener('click', () => testEmailButlerV2());
+  }
+}
+async function testEmailButlerV2() {
+  const btn = $('#btnTestEmailButlerV2');
+  const status = $('#emailButlerStatusV2');
+  if (!btn || !status) return;
+  btn.disabled = true;
+  status.textContent = '正在调用 Email Butler /v1/me...';
+  try {
+    const r = await api('/api/email-butler/test-connection', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        api_base: _configValueV2('EMAIL_BUTLER_API_BASE').trim(),
+        api_key: _configValueV2('EMAIL_BUTLER_API_KEY').trim(),
+      }),
+    });
+    const policy = [r.consumer, r.service].filter(Boolean).join(' / ') || '未绑定策略';
+    status.innerHTML = `✅ 连接成功：${esc(r.name || 'Email Butler')} · ${esc(policy)} · ${Number((r.capabilities || []).length)} 项能力`;
+    showToast('Email Butler 连接成功');
+  } catch(e) {
+    status.innerHTML = `<span style="color:var(--red);">连接失败：${esc(e.message)}</span>`;
+  } finally {
+    btn.disabled = false;
+  }
+}
 function bindCloudMailToolsV2() {
   const genBtn = $('#btnGenCloudMailTokenV2');
   const domainBtn = $('#btnLoadCloudMailDomainsV2');
@@ -5814,6 +6330,52 @@ function bindCloudMailToolsV2() {
   if (domainBtn && !domainBtn.dataset.bound) {
     domainBtn.dataset.bound = '1';
     domainBtn.addEventListener('click', () => loadCloudMailDomainsV2());
+  }
+}
+function renderICloudHMEToolsV2() {
+  return `
+    <div class="roxy-workspace-box" style="margin-top:18px;">
+      <div>
+        <b>iCloud Hide My Email</b>
+        <div class="hint">连接本机服务后同步 Apple 隐藏邮箱库存，并确认收件走 IMAP。Apple Cookie 和 App 专用密码不会保存到 turb。</div>
+      </div>
+      <div class="action-cell">
+        <button class="btn primary" type="button" id="btnTestICloudHMEV2">连接并同步</button>
+      </div>
+      <div id="icloudHMEStatusV2" class="muted" style="font-size:12px;">尚未检测</div>
+    </div>
+  `;
+}
+function bindICloudHMEToolsV2() {
+  const btn = $('#btnTestICloudHMEV2');
+  if (btn && !btn.dataset.bound) {
+    btn.dataset.bound = '1';
+    btn.addEventListener('click', () => testICloudHMEV2());
+  }
+}
+async function testICloudHMEV2() {
+  const btn = $('#btnTestICloudHMEV2');
+  const status = $('#icloudHMEStatusV2');
+  if (!btn || !status) return;
+  btn.disabled = true;
+  status.textContent = '正在连接、同步别名并检测实际收件通道...';
+  try {
+    const r = await api('/api/icloud-hme/test', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        api_base: _configValueV2('ICLOUD_HME_API_BASE').trim(),
+        account_id: _configValueV2('ICLOUD_HME_ACCOUNT_ID').trim(),
+        timeout: Number(_configValueV2('ICLOUD_HME_REQUEST_TIMEOUT')) || 35,
+      }),
+    });
+    status.innerHTML = `✅ ${esc(r.message || 'iCloud HME 连接成功')}`;
+    showToast(`已同步 ${Number(r.remote_aliases || 0)} 个 iCloud 隐藏邮箱`);
+    if (typeof loadOutlook === 'function') await loadOutlook();
+  } catch(e) {
+    status.innerHTML = `<span style="color:var(--red);">检测失败：${esc(e.message)}</span>`;
+  } finally {
+    btn.disabled = false;
   }
 }
 function _configValueV2(key) {
@@ -5977,7 +6539,7 @@ function renderConfigSectionV2(name, fields) {
       name,
       fields,
       emailConfigSectionForKey,
-      ['通用邮箱 / OTP', 'GPTMail', 'MailNest', 'CloudMail', 'Outlook 邮箱池', 'Cloudflare 临时邮箱', 'Cloudflare 域名邮箱', '其他邮箱配置'],
+      ['通用邮箱 / OTP', 'iCloud 隐藏邮箱', 'Email Butler', 'GPTMail', 'MailNest', 'CloudMail', 'Outlook 邮箱池', 'Cloudflare 临时邮箱', 'Cloudflare 域名邮箱', '其他邮箱配置'],
       { get: () => CONFIG_EMAIL_ACTIVE_SECTION_V2, set: v => { CONFIG_EMAIL_ACTIVE_SECTION_V2 = v; } },
       'email-section-v2'
     );
@@ -6016,7 +6578,10 @@ function renderConfigLayoutV2() {
   const sectionMount = document.getElementById('configRegistrationSelectV2');
   if (sectionMount) renderRegistrationEpSelect(sectionMount, 'configRegistrationSelectV2');
   bindRoxyWorkspaceToolsV2();
+  bindEmailButlerToolsV2();
   bindCloudMailToolsV2();
+  bindICloudHMEToolsV2();
+  bindProxyProviderToolsV2();
 }
 function scrollToConfigSection(slug) {
   const el = document.getElementById(slug);

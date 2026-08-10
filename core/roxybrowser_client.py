@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import threading
 import time
 from dataclasses import dataclass
 from urllib.parse import unquote, urljoin, urlparse
@@ -14,6 +15,12 @@ import requests
 from config import roxybrowser as _cfg
 
 logger = logging.getLogger(__name__)
+
+
+# Roxy 本地 API 同一时刻只接受一个 /browser/create；并发提交会返回
+# “正在创建中，请稍等！”。这里只串行化 Profile 创建，创建完成后的浏览器仍可并发运行。
+_PROFILE_CREATE_LOCK = threading.Lock()
+_PROFILE_OPEN_LOCK = threading.Lock()
 
 
 @dataclass
@@ -376,10 +383,11 @@ class RoxyBrowserClient:
 
     def create_profile(self, payload: dict | None = None) -> str:
         body = dict(getattr(_cfg, "ROXY_PROFILE_CREATE_PAYLOAD", {}) or {})
+        proxy_source = "profile_payload" if body.get("proxyInfo") else ""
         random_name_enabled = bool(getattr(_cfg, "ROXY_RANDOM_PROFILE_NAME_ON_CREATE", True))
         if random_name_enabled:
-            # 覆盖 ROXY_PROFILE_CREATE_PAYLOAD 里的固定 name，避免所有 Roxy 窗口同名。
-            body["name"] = _random_roxy_profile_name()
+            # Roxy 官方字段是 windowName；旧的 name 字段会被 API 忽略。
+            body["windowName"] = _random_roxy_profile_name()
         random_os_enabled = bool(getattr(_cfg, "ROXY_RANDOM_OS_ON_CREATE", True))
         if random_os_enabled:
             # 每次创建环境随机 Windows / macOS；覆盖 ROXY_PROFILE_CREATE_PAYLOAD 里的固定 os。
@@ -401,24 +409,39 @@ class RoxyBrowserClient:
         project_id = _project_id_value()
         if project_id:
             body.setdefault("projectId", project_id)
-        if bool(getattr(_cfg, "ROXY_CREATE_USE_PROXY_POOL", False)) and not body.get("proxyInfo"):
+        explicit_proxy_info = bool((payload or {}).get("proxyInfo"))
+        if explicit_proxy_info:
+            # registration_service 为每个任务领取的 1024Proxy/静态池租约优先级最高。
+            # 它必须随新 Profile 一起写入，不能退回 Roxy 配置里的固定代理。
+            proxy_source = "task_lease"
+        if bool(getattr(_cfg, "ROXY_CREATE_USE_PROXY_POOL", False)) and not body.get("proxyInfo") and not explicit_proxy_info:
             from config import proxy as _proxy_cfg
 
             proxy_url = _proxy_cfg.pick_proxy()
             if proxy_url:
                 proxy_info = _proxy_url_to_roxy_info(proxy_url)
                 body["proxyInfo"] = proxy_info
-                logger.info(
-                    "[Roxy] 创建环境启用代理池：proxy=%s type=%s host=%s port=%s",
-                    _mask_proxy(proxy_url),
-                    proxy_info.get("protocol") or proxy_info.get("proxyCategory"),
-                    proxy_info.get("host"),
-                    proxy_info.get("port"),
-                )
+                proxy_source = "static_pool"
             else:
                 logger.warning("[Roxy] 已启用 ROXY_CREATE_USE_PROXY_POOL，但 PROXY_POOL 为空，本次创建环境不设置代理")
         if payload:
             body.update(payload)
+        # 兼容用户已有的旧配置，但发给 Roxy 时统一使用官方 windowName。
+        legacy_name = body.pop("name", None)
+        if legacy_name and not body.get("windowName"):
+            body["windowName"] = legacy_name
+        proxy_info = body.get("proxyInfo")
+        if isinstance(proxy_info, dict) and proxy_info.get("host") and proxy_info.get("port"):
+            from core.proxy_provider import mask_endpoint
+
+            logger.info(
+                "[Roxy] 创建环境绑定代理：source=%s protocol=%s endpoint=%s auth=%s checkChannel=%s",
+                proxy_source or "profile_payload",
+                proxy_info.get("protocol") or proxy_info.get("proxyCategory") or "-",
+                mask_endpoint(f"{proxy_info.get('host')}:{proxy_info.get('port')}"),
+                "yes" if proxy_info.get("proxyUserName") or proxy_info.get("proxyPassword") else "no",
+                proxy_info.get("checkChannel") or "-",
+            )
         if not body.get("workspaceId"):
             raise RuntimeError(
                 "Roxy 创建环境需要 workspaceId。请在 config/roxybrowser.py 或 WebUI 的 RoxyBrowser 配置中填写 ROXY_WORKSPACE_ID，"
@@ -428,13 +451,14 @@ class RoxyBrowserClient:
             "[Roxy] 创建环境参数：workspaceId=%s projectId=%s name=%s random_name=%s os=%s osVersion=%s random_os=%s",
             body.get("workspaceId"),
             body.get("projectId") or "-",
-            body.get("name") or "-",
+            body.get("windowName") or "-",
             random_name_enabled,
             body.get("os") or "-",
             body.get("osVersion") or "-",
             random_os_enabled,
         )
-        result = self.request(_cfg.ROXY_CREATE_METHOD, _cfg.ROXY_CREATE_PATH, json_body=body)
+        with _PROFILE_CREATE_LOCK:
+            result = self.request(_cfg.ROXY_CREATE_METHOD, _cfg.ROXY_CREATE_PATH, json_body=body)
         profile_id = _first(result, [
             ("id",), ("dirId",), ("dir_id",), ("profile_id",), ("profileId",), ("browser_id",),
             ("data", "id"), ("data", "dirId"), ("data", "dir_id"),
@@ -452,9 +476,11 @@ class RoxyBrowserClient:
             return ""
         return text
 
-    def open_profile(self, profile_id: str | None = None) -> RoxyOpenResult:
+    def open_profile(self, profile_id: str | None = None, *, proxy_url: str | None = None) -> RoxyOpenResult:
         one_profile = bool(getattr(_cfg, "ROXY_ONE_PROFILE_PER_ACCOUNT", True))
         configured_pid = self._normalize_profile_id(profile_id if profile_id is not None else getattr(_cfg, "ROXY_PROFILE_ID", ""))
+        if proxy_url and configured_pid:
+            raise RuntimeError("本次任务已绑定独立代理，不能复用固定 ROXY_PROFILE_ID；请留空以创建新环境")
         if one_profile and configured_pid:
             raise RuntimeError(
                 "已启用 ROXY_ONE_PROFILE_PER_ACCOUNT=True（一号一环境），"
@@ -464,7 +490,10 @@ class RoxyBrowserClient:
         pid = configured_pid
         created_by_run = False
         if not pid:
-            pid = self.create_profile()
+            create_payload = None
+            if proxy_url:
+                create_payload = {"proxyInfo": _proxy_url_to_roxy_info(proxy_url)}
+            pid = self.create_profile(payload=create_payload)
             created_by_run = True
             logger.info("[Roxy] 已创建临时环境：%s", pid)
 
@@ -479,12 +508,15 @@ class RoxyBrowserClient:
         # 否则 extra 里残留 headless=False 会导致 WebUI 保存无头后仍弹窗口。
         params["headless"] = bool(getattr(_cfg, "ROXY_OPEN_HEADLESS", False))
         logger.info("[Roxy] open 参数：profile=%s headless=%s keep_open=%s", pid, params.get("headless"), getattr(_cfg, "ROXY_KEEP_BROWSER_OPEN", False))
-        result = self.request(
-            _cfg.ROXY_OPEN_METHOD,
-            path,
-            params=params if _cfg.ROXY_OPEN_METHOD.upper() == "GET" else None,
-            json_body=params if _cfg.ROXY_OPEN_METHOD.upper() != "GET" else None,
-        )
+        # Roxy 本地 API 并发打开多个环境时会长时间阻塞，严重时 API 服务直接退出。
+        # 这里只串行发送 open 并等待浏览器就绪；已打开的窗口不会因此被串行使用。
+        with _PROFILE_OPEN_LOCK:
+            result = self.request(
+                _cfg.ROXY_OPEN_METHOD,
+                path,
+                params=params if _cfg.ROXY_OPEN_METHOD.upper() == "GET" else None,
+                json_body=params if _cfg.ROXY_OPEN_METHOD.upper() != "GET" else None,
+            )
         debugger_address = self._extract_debugger_address(result)
         logger.info("[Roxy] open 返回摘要: debugger=%s raw=%s", debugger_address, json.dumps(result, ensure_ascii=False)[:800])
         webdriver_url = _first(result, [
@@ -536,6 +568,8 @@ class RoxyBrowserClient:
             body = {
                 "workspaceId": _workspace_id_value(),
                 "dirIds": [int(profile_id) if str(profile_id).isdigit() else profile_id],
+                # 临时环境移入 Roxy 回收站即可释放 Profile 配额，同时保留误删恢复能力。
+                "isSoftDelete": True,
             }
             self.request(
                 method,

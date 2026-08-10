@@ -80,7 +80,7 @@ ROXY_DELETE_METHOD: str = "POST"
 ROXY_RANDOM_OS_ON_CREATE: bool = True
 ROXY_RANDOM_OS_CHOICES: str = "Windows,macOS"
 
-# 创建 Roxy 环境时随机名称；开启后会覆盖 ROXY_PROFILE_CREATE_PAYLOAD 里的固定 name。
+# 创建 Roxy 环境时随机名称；开启后会覆盖 ROXY_PROFILE_CREATE_PAYLOAD 里的固定 windowName。
 ROXY_RANDOM_PROFILE_NAME_ON_CREATE: bool = True
 ROXY_PROFILE_NAME_PREFIX: str = "rb"
 
@@ -99,9 +99,9 @@ ROXY_CREATE_USE_PROXY_POOL: bool = False
 ROXY_PROXY_CHECK_CHANNEL: str = "IPRust.io"
 
 # 没有 ROXY_PROFILE_ID 时创建环境的最小 payload；按你的 Roxy 版本字段调整。
-# 默认开启 ROXY_RANDOM_PROFILE_NAME_ON_CREATE，因此这里的 name 只是兜底值。
+# 默认开启 ROXY_RANDOM_PROFILE_NAME_ON_CREATE，因此这里的 windowName 只是兜底值。
 ROXY_PROFILE_CREATE_PAYLOAD: dict = {
-    "name": "gpt-free-register",
+    "windowName": "gpt-free-register",
     "os": "macOS",
 }
 

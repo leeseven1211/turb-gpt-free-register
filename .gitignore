@@ -28,6 +28,9 @@ accounts_viewer.html
 # Cloudflare 域名邮箱池（运行时数据）
 用于注册的域名邮箱.json
 
+# iCloud Hide My Email 别名池（运行时数据）
+用于注册的iCloud隐藏邮箱.json
+
 # 旧版数据/历史迁移残留
 data/
 

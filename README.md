@@ -1,6 +1,6 @@
 # Turb GPT Free Register
 
-ChatGPT / OpenAI 账号自动注册与 Codex OAuth 授权工具。当前项目支持三套注册驱动：
+ChatGPT / OpenAI 账号自动注册与 Codex OAuth 授权工具。当前项目支持以下注册驱动：
 
 - **protocol**：原纯协议注册，基于 `curl_cffi` + Sentinel/PoW。
 - **roxy**：RoxyBrowser 指纹浏览器 + Selenium 自动化注册，兼容新版页面流，例如 `create-account/password`、`about-you` 年龄/生日表单、地区本地化页面等。
@@ -49,11 +49,14 @@ ChatGPT / OpenAI 账号自动注册与 Codex OAuth 授权工具。当前项目�
 - Cloudflare Worker 临时邮箱：自动创建 + JWT 取码（`cloudflare`，兼容 cloudflare_temp_email）
 - 通用 API 邮箱：`email----取码地址`
 - GPTMail 临时邮箱 API：运行时随机生成邮箱并自动收取验证码
-- `EMAIL_SOURCE` 支持多个来源组合，例如：
+- iCloud Hide My Email：同步本机 sidecar 的隐藏邮箱别名，并通过隐藏邮箱实际转发目标的收件箱自动收码（`icloud_hide`）
+- `EMAIL_SOURCE` 支持配置多个已启用来源，例如：
 
 ```python
-EMAIL_SOURCE = "outlook,generic_api"
+EMAIL_SOURCE = "email_butler,icloud_hide"
 ```
+
+WebUI 启动注册前会显示“本次注册邮箱来源”下拉框，操作者必须为这一批任务明确选择其中一个来源。选中的来源会写入每个任务和重试任务；领取失败时任务直接失败，不会静默切换到另一个邮箱平台。这样可以清楚判断每个账号实际用了哪类邮箱，也避免 Butler 与 iCloud 隐藏邮箱在运行时被程序自动混用。
 
 - MailNest-迈巢：Outlook 临时邮箱
 
@@ -82,6 +85,7 @@ EMAIL_SOURCE = "outlook,generic_api"
 - 管理账号、邮箱池、Codex 凭证；账号页支持复制全部/选中整行，邮箱池列表展示导入时间、已用时间和状态。
 - 配置页支持热加载，保存后无需重启。
 - Roxy 团队/项目可在配置页获取并保存。
+- 批次进度按邮箱逐行展示，包含拉邮箱、打开浏览器、打开注册页、提交邮箱、邮箱验证码、填写资料、获取 Token、Codex 等阶段；顶部显示成功/失败/运行/等待和总耗时。
 
 ---
 
@@ -94,11 +98,20 @@ EMAIL_SOURCE = "outlook,generic_api"
 - 如使用 Cloak 注册：首次运行会自动下载 Cloak Chromium binary；`CLOAK_GEOIP=True` 需要 `cloakbrowser[geoip]` 依赖
 - 如启用 Codex 自动授权：需要接码平台配置
 
-安装依赖：
+推荐在项目内创建虚拟环境安装依赖：
 
 ```bash
-pip install -r requirements.txt
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -r requirements.txt
 node --version
+```
+
+macOS 如果本机环境变量仍指向旧版 `openssl@1.1`，安装新版 `cryptography` 可能触发编译失败。可先安装带 wheel 的兼容版本再继续：
+
+```bash
+.venv/bin/python -m pip install --only-binary=:all: 'cryptography>=41,<50'
+.venv/bin/python -m pip install -r requirements.txt
 ```
 
 ### 密钥配置（.env）
@@ -120,6 +133,10 @@ cp .env.example .env
 - `SKYVERN_API_KEY`
 - `ROXY_API_TOKEN`
 - `QQ_IMAP_PASSWORD`
+- `ICLOUD_HME_API_TOKEN`（sidecar 如启用接口鉴权）
+- `ICLOUD_HME_FORWARD_IMAP_PASSWORD`（隐藏邮箱转发到 Gmail 时的 Google 应用专用密码）
+- `CLOAK_LICENSE_KEY`（可选；更推荐使用 Cloak CLI 的本机安全存储）
+- `PROXY_1024_API_URL`
 - `CLOUDFLARE_API_KEY` / `CLOUDFLARE_CUSTOM_AUTH`（`EMAIL_SOURCE=cloudflare` 时）
 - `CPA_MANAGEMENT_KEY`
 - `SMS_API_KEY`
@@ -221,6 +238,51 @@ CLOUDFLARE_DEFAULT_DOMAINS=你的收信域名.com
 
 匿名模式可将 `CLOUDFLARE_AUTH_MODE=none` 且 Key 留空，创建路径默认 `/api/new_address`；若被 Turnstile 拦截请改用 admin 模式。更多字段见 WebUI「配置 → 邮箱 / OTP」或 `.env.example`。
 
+#### iCloud Hide My Email（`icloud_hide`）
+
+先在本机启动 `icloud-hme` sidecar，再到 WebUI「配置 → 邮箱 / OTP → iCloud 隐藏邮箱」填写服务地址和账号 ID，保存后点击“连接并同步”。推荐配置：
+
+```dotenv
+USE_EMAIL_SERVICE=True
+EMAIL_SOURCE=icloud_hide
+ICLOUD_HME_API_BASE=http://127.0.0.1:8081
+ICLOUD_HME_ACCOUNT_ID=你的_sidecar_账号ID
+ICLOUD_HME_AUTO_CREATE=False
+```
+
+turb 只保存别名库存与领取状态；Apple Cookie 和 iCloud App 专用密码保留在 sidecar 中。若使用 Gmail 转发收码，Google 应用专用密码仅保存在 turb 的本地 `.env`，不得写入 README 或提交 Git。每个注册任务领取一个别名，注册成功后永久占用；明确未消耗的失败任务才会把别名退回可用池。默认只复用已同步别名，库存为空时不会自动创建；确需自动补充时再开启 `ICLOUD_HME_AUTO_CREATE`。
+
+收码前必须确认以下链路一致：
+
+```text
+隐藏邮箱别名 → Apple“转发到”地址 → sidecar 实际读取的 IMAP 邮箱
+```
+
+- sidecar 使用 Apple App 专用密码连接 `imap.mail.me.com` 时，设置 `ICLOUD_HME_INBOX_MODE=sidecar`，且 Apple“隐藏邮件地址 → 转发到”必须选择同一个 `@icloud.com` 邮箱。
+- 如果隐藏邮箱实际转发到 Gmail，使用 `ICLOUD_HME_INBOX_MODE=forward_imap`，并配置 Gmail 地址与 Google 应用专用密码：
+
+```dotenv
+ICLOUD_HME_INBOX_MODE=forward_imap
+ICLOUD_HME_FORWARD_IMAP_SERVER=imap.gmail.com
+ICLOUD_HME_FORWARD_IMAP_PORT=993
+ICLOUD_HME_FORWARD_IMAP_EMAIL=你的_Gmail_地址
+ICLOUD_HME_FORWARD_IMAP_PASSWORD=你的_Google_应用专用密码
+```
+
+- Google 应用专用密码需要 Google 账号开启两步验证后在“应用专用密码”页面生成；它不是日常登录密码。程序会自动移除密码显示中的空格。
+- Apple 账号页面“隐藏邮件地址 → 转发到”的已选地址和 sidecar 返回的 `forwardToEmail` 才是转发目标的依据，不要根据当前浏览器登录的是哪个 Gmail 账号推断。
+- 新版 sidecar 会在别名列表返回 `forwardToEmail`。turb 同步时只启用与当前收件模式匹配的别名，避免把验证码发到 Gmail 却轮询 iCloud IMAP 的假成功。
+- 连接测试返回 `inbox_method=forward_imap` 只说明目标 IMAP 可登录；还应确认同步结果的 `forward_incompatible=0`。投产前再用一个真实注册任务验证别名转发、OTP 匹配和账号落库全链路。
+- iCloud 创建别名有频率/数量限制。批量运行建议预先同步库存并保持 `ICLOUD_HME_AUTO_CREATE=False`，不要在遇到限流后高频重试。
+
+sidecar 本地启动示例（具体账号导入方式以 sidecar 自带 README 为准）：
+
+```bash
+cd /path/to/icloud
+go build -o build/icloud-hme .
+./build/icloud-hme -addr 127.0.0.1:8081 -data ./data
+```
+
 #### Cloudflare 域名邮箱（`cloudflare_domain`）
 
 在 `config/email.py` 设置：
@@ -293,10 +355,11 @@ CloakBrowser 专用配置在 `config/cloakbrowser.py`：
 ```python
 CLOAK_HEADLESS = False          # True=无头；False=显示窗口
 CLOAK_HUMANIZE = True           # 人工鼠标/键盘/滚动行为
+CLOAK_HUMAN_PRESET = "careful"  # default / careful；注册推荐 careful
 CLOAK_GEOIP = True              # 按当前出口 IP 自动匹配语言/时区/WebRTC
 CLOAK_LOCALE = ""               # 留空自动；也可强制如 ja-JP / en-US
 CLOAK_TIMEZONE = ""             # 留空自动；也可强制如 Asia/Tokyo
-CLOAK_LICENSE_KEY = ""          # 留空使用免费 binary；填 Pro key 使用最新版
+CLOAK_LICENSE_KEY = ""          # 推荐留空，使用 cloakbrowser login 保存的本机许可证
 CLOAK_FINGERPRINT_SEED = ""     # 留空每次随机；固定值=固定指纹
 CLOAK_USER_DATA_DIR = ""        # 留空临时环境；填路径可持久化 profile
 ```
@@ -305,8 +368,24 @@ CLOAK_USER_DATA_DIR = ""        # 留空临时环境；填路径可持久化 pro
 
 - `CLOAK_GEOIP=True` 会按当前出口 IP 自动生成 `locale / timezone / Accept-Language`，并传给 CloakBrowser 与 Playwright context。
 - 如果你通过项目代理池使用代理，请在 `config/proxy.py` 的 `PROXY_POOL` 填写代理；如果你使用系统代理/VPN，也会按当前实际出口 IP 自动定位。
-- 免费版没有在项目侧限制窗口数；本项目每个注册任务会启动一个 CloakBrowser 实例，即一个实例一套指纹。
+- 免费许可证可以使用最新 Cloak Chromium，但只允许同时运行 1 个浏览器；使用免费许可证时注册线程数必须设为 `1`。
+- 不登录许可证时只能使用旧版 keyless binary，遇到 Cloudflare `Just a moment...` 时应先升级到最新内核再排查代理。
+- 推荐 `CLOAK_HEADLESS=False`、`CLOAK_HUMANIZE=True`、`CLOAK_HUMAN_PRESET=careful`。批量投产前先用显示窗口模式跑通，再评估无头模式。
 - WebUI 中，`Codex授权驱动` 位于「CPA / Codex」分组，对应 `config/codex.py` 的 `CODEX_OAUTH_DRIVER`。
+
+Cloak 免费许可证首次激活与升级：
+
+```bash
+.venv/bin/cloakbrowser login
+.venv/bin/cloakbrowser update
+.venv/bin/cloakbrowser info --quick
+```
+
+许可证默认安全保存在用户目录 `~/.cloakbrowser/license.key`，不要复制到仓库、日志或 README。若 `login` 报 `Invalid port: ':1'`，通常是当前 `httpx` 把 `NO_PROXY` 中的 IPv6 `::1` 误解析为端口；只对该命令临时移除变量即可：
+
+```bash
+env -u NO_PROXY -u no_proxy .venv/bin/cloakbrowser login
+```
 
 #### 使用协议注册
 
@@ -373,6 +452,38 @@ PROXY_POOL = [
 ```
 
 Roxy 一号一环境开启 `ROXY_CREATE_USE_PROXY_POOL=True` 时，会从这里随机取代理写入 Roxy Profile。
+当 `REGISTRATION_PROXY_MODE=1024` 时不需要开启该选项：任务服务领取的独立 1024Proxy
+家宽租约会自动转换成 Roxy `/browser/create` 使用的 `proxyInfo`，并优先于静态代理池。
+Roxy 的字段不是普通浏览器代理 URL，而是 `proxyMethod/proxyCategory/protocol/host/port`
+（有鉴权时再加 `proxyUserName/proxyPassword`）；任务日志只记录脱敏端点。
+
+也可以在 WebUI「配置 → 代理平台」中选择 `1024`，填写 1024Proxy 白名单提取 API。
+平台模式会为每个注册任务提取一个独立粘性代理，并在领取邮箱前检测出口；注册与紧接着执行的
+自动 Codex OAuth 共用该代理。建议把粘性时长设为至少 30 分钟。动态住宅流量套餐按实际流量计费，
+延长粘性时间本身不会持续产生流量。当前平台模式支持 protocol、CloakBrowser 和 RoxyBrowser，
+不用于 Browser Use / Skyvern 云端浏览器。
+
+1024Proxy 推荐基线：
+
+```dotenv
+REGISTRATION_PROXY_MODE=1024
+PROXY_1024_API_URL=https://white.1024proxy.com/white/api?region=US&num=1&time=30&format=1&type=txt
+PROXY_1024_REGION=US
+PROXY_1024_PROTOCOL=http
+PROXY_1024_SESSION_MINUTES=30
+PROXY_1024_ROTATE_SESSION_TIME=True
+PROXY_1024_API_TIMEOUT=12
+PROXY_1024_MAX_ATTEMPTS=5
+PROXY_1024_VALIDATE=True
+PROXY_1024_RECENT_TTL=1800
+PROXY_1024_ACQUIRE_INTERVAL=0.6
+```
+
+- 客户端会强制 `num=1`，保证一个注册任务只领取一个代理端点。
+- `PROXY_1024_ROTATE_SESSION_TIME=True` 会按任务 ID 在基础时长到 120 分钟间派生不同的 `time` 参数，避免平台在相同 `region/time` 窗口内返回同一粘性会话。任务结束只释放本地租约；白名单 API 没有单独的远程释放调用。
+- OpenAI 注册实测优先固定 `region=US`。`Rand` 可能落到画像不完整或高风控地区，增加挑战概率。
+- 粘性时间延长本身不产生流量，只有浏览器实际发出请求才消耗代理流量。30 分钟是注册 + 邮件等待的最低建议值，必要时可设更长。
+- 日志和 UI 只应显示脱敏后的代理端点/出口 IP；完整 API URL 属于私密配置，只放 `.env`。
 
 ---
 
@@ -488,6 +599,139 @@ WebUI 页面说明：
 - 旧线程池里已经排队/运行的任务会继续跑完，不会被强制取消。
 - Codex 批量补跑每次都会按本次提交的补跑线程数创建独立线程池。
 
+### 本地验证基线：Cloak + 1024Proxy + iCloud HME
+
+下面是一套适合先在 macOS 本地单账号验证的组合配置。所有密钥和真实接口都写入 `.env`，不要改进源码或提交 Git：
+
+WebUI 中 1024Proxy 位于「配置 → 代理平台」，不是「代理池」；后者只保留静态代理及套餐查询网络配置。任务列表的“代理”列会显示实际 provider、脱敏端点和出口地区，可据此确认任务是否真的使用了 1024Proxy。
+
+```dotenv
+# WebUI
+WEBUI_AUTH_CODE=请替换
+
+# 主流程
+REGISTRATION_DRIVER=cloak
+ENABLE_CODEX_AUTO=False
+CODEX_OAUTH_DRIVER=same_as_registration
+
+# Cloak（许可证通过 cloakbrowser login 单独保存）
+CLOAK_HEADLESS=False
+CLOAK_HUMANIZE=True
+CLOAK_HUMAN_PRESET=careful
+CLOAK_GEOIP=True
+CLOAK_LOCALE=
+CLOAK_TIMEZONE=
+CLOAK_USE_PROXY=True
+CLOAK_LICENSE_KEY=
+CLOAK_FINGERPRINT_SEED=
+CLOAK_USER_DATA_DIR=
+CLOAK_SELENIUM_TIMEOUT=90
+CLOAK_KEEP_BROWSER_OPEN=False
+
+# 一个任务一个 1024Proxy 美国住宅 IP
+REGISTRATION_PROXY_MODE=1024
+PROXY_1024_API_URL=请替换为你的白名单提取_API
+PROXY_1024_REGION=US
+PROXY_1024_PROTOCOL=http
+PROXY_1024_SESSION_MINUTES=30
+PROXY_1024_ROTATE_SESSION_TIME=True
+PROXY_1024_API_TIMEOUT=12
+PROXY_1024_MAX_ATTEMPTS=5
+PROXY_1024_VALIDATE=True
+PROXY_1024_RECENT_TTL=1800
+PROXY_1024_ACQUIRE_INTERVAL=0.6
+
+# WebUI 启用 Email Butler 与 iCloud 两个可选邮箱来源；本地通过 HTTPS 直连生产 Butler，不需要 SSH 隧道
+USE_EMAIL_SERVICE=True
+EMAIL_SOURCE=email_butler,icloud_hide
+OTP_POLL_INTERVAL=3
+OTP_MAX_WAIT=180
+EMAIL_BUTLER_API_BASE=https://codex-auth.leeseven.com/email-butler/v1
+EMAIL_BUTLER_API_KEY=请从生产客户端配置安全同步，禁止提交
+EMAIL_BUTLER_REQUEST_TIMEOUT=20
+
+# iCloud 隐藏邮箱（在注册页手动选择时使用，不作为 Butler 失败后的自动回退）
+ICLOUD_HME_API_BASE=http://127.0.0.1:8081
+ICLOUD_HME_ACCOUNT_ID=请替换
+ICLOUD_HME_API_TOKEN=
+ICLOUD_HME_REQUEST_TIMEOUT=45
+ICLOUD_HME_SYNC_TTL=300
+ICLOUD_HME_INBOX_MODE=forward_imap
+ICLOUD_HME_FORWARD_IMAP_SERVER=imap.gmail.com
+ICLOUD_HME_FORWARD_IMAP_PORT=993
+ICLOUD_HME_FORWARD_IMAP_EMAIL=请替换为实际转发_Gmail
+ICLOUD_HME_FORWARD_IMAP_PASSWORD=请替换为_Google_应用专用密码
+ICLOUD_HME_AUTO_CREATE=False
+ICLOUD_HME_CREATE_LABEL_PREFIX=turb
+```
+
+本机 `5000` 端口可能被 macOS Control Center 占用，开发测试优先使用 `8000`：
+
+```bash
+PORT=8000 ./webui.sh status
+PORT=8000 ./webui.sh start
+
+# 如果后台进程被终端会话回收，改用前台运行：
+env -u NO_PROXY -u no_proxy .venv/bin/python web.py --host 127.0.0.1 --port 8000
+```
+
+运行前检查：
+
+```bash
+lsof -nP -iTCP:8000 -sTCP:LISTEN
+.venv/bin/cloakbrowser info --quick
+curl -sS http://127.0.0.1:8081/api/accounts
+```
+
+WebUI 提交真实任务时先设为“数量 1、线程 1”。免费 Cloak 许可证不能并发；确认批次进度完整走过“拉邮箱 → 打开浏览器 → 打开注册页 → 提交邮箱 → 邮箱验证码 → 填资料 → 获取 Token”后，再考虑连续任务。Codex OAuth 会额外需要 CPA 和短信接码，主注册验收期间建议保持 `ENABLE_CODEX_AUTO=False`。
+
+`.env.example` 是 WebUI 可编辑字段的完整模板；新增配置时必须同步更新 `config/*.py`、`webui/config_editor.py`、`.env.example` 和本 README。配置页的密钥字段只写 `.env`，页面会按密码框处理。
+
+### 后续投产清单
+
+- 使用 systemd、launchd 或其他进程管理器托管 WebUI 和 iCloud sidecar；反向代理只暴露 WebUI，不要把 sidecar 的 `8081` 直接暴露公网。
+- WebUI 绑定 `127.0.0.1`，由 Nginx/Caddy 提供 HTTPS；设置固定 `WEBUI_AUTH_CODE` 和 `WEBUI_SESSION_SECRET`。
+- 部署新代码前备份 `.env`、邮箱池、`accounts/`、`codex_accounts/`、`注册任务.json`、注册成功文件和日志；这些都是运行时私有数据，不能被仓库覆盖。
+- Cloak 许可证保存在运行服务用户的 `~/.cloakbrowser/`。systemd 使用哪个用户运行，就必须在同一用户下完成 `cloakbrowser login/update`。
+- 免费 Cloak 固定 `workers=1`；需要并发时先升级许可证，再逐步提高并发，同时确保代理平台和邮箱池容量足够。
+- 代理和邮箱都必须按任务生命周期领取：任务开始领取，成功永久占用邮箱并释放本地代理租约；确认账号未创建的失败任务才退回邮箱，避免同一邮箱注册两次。
+- 先执行完整测试，再滚动重启服务。不要提交 `.env`、许可证、Apple Cookie、App 专用密码、邮箱、代理完整地址或 Token。
+
+### 查封号邮件
+
+WebUI「账号」页提供单账号“复查”和批量“查封号邮件”。该功能只读取邮箱服务返回的高置信度 OpenAI 封号通知信号，不登录 OpenAI、不读取或刷新 AT/accessToken，也不保存邮件正文。
+
+当前支持以下账号邮箱来源：
+
+- `email_butler`：调用 `/v1/signals/scan`。
+- `cloudflare`：优先调用只读 `CLOUDFLARE_SIGNAL_PATH`；当前进程仍保有邮箱 JWT 时可回退扫描收件箱。
+- `icloud_hide`：通过已配置的转发 Gmail/IMAP 按隐藏邮箱地址检索；服务器端先过滤收件人，不会为每个账号下载整个收件箱。
+
+`outlook`、`cloudflare_domain` 等其他来源会显示“不支持”，不会误报。已确认收到封号通知后，证据会持久保留；后续缩短回溯窗口或一次未命中不会把它自动清除。
+
+```dotenv
+# Email Butler（本地开发可使用受 API Key 保护的 HTTPS 入口；服务器本机可用 127.0.0.1）
+EMAIL_BUTLER_API_BASE=https://codex-auth.leeseven.com/email-butler/v1
+EMAIL_BUTLER_API_KEY=请替换
+EMAIL_BUTLER_REQUEST_TIMEOUT=20
+
+# Cloudflare 只读封号信号接口（按需）
+CLOUDFLARE_SIGNAL_API_KEY=请替换为独立只读Key
+CLOUDFLARE_SIGNAL_PATH=/signals/scan
+
+# 后台周期扫描
+EMAIL_BUTLER_RISK_SCAN_ENABLED=True
+EMAIL_BUTLER_RISK_SCAN_WORKERS=2
+EMAIL_BUTLER_RISK_SCAN_INTERVAL_SECONDS=21600
+EMAIL_BUTLER_RISK_SCAN_INITIAL_DELAY_SECONDS=90
+EMAIL_BUTLER_RISK_SCAN_LOOKBACK_DAYS=120
+```
+
+手动接口：
+
+- `POST /api/accounts/<id>/check-deactivation-mail`
+- `POST /api/accounts/check-deactivation-mail-bulk`，JSON 为 `{"account_ids":[1,2]}`
+
 ---
 
 ## CLI 使用方式
@@ -581,7 +825,7 @@ REGISTER_PASSWORD = "你的固定密码"
 | `config/roxybrowser.py` | 注册驱动、Roxy API、Roxy 环境生命周期 |
 | `config/cloakbrowser.py` | CloakBrowser 无头/humanize/geoip/语言时区/指纹 seed |
 | `config/codex.py` | Codex OAuth、授权驱动、CPA 管理接口、接码平台 |
-| `config/email.py` | 邮箱来源、OTP 轮询、QQ IMAP、域名邮箱、Cloudflare Worker 临时邮箱 |
+| `config/email.py` | 邮箱来源、OTP 轮询、Email Butler、QQ IMAP、iCloud HME、Cloudflare 临时邮箱及封号信号 |
 | `config/proxy.py` | 代理池 |
 | `config/register.py` | 默认邮箱、密码、显示名 |
 | `config/twofa.py` | 2FA 开关 |

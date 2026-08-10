@@ -46,6 +46,19 @@ _LEGACY_ACCOUNTS_JSON = _LEGACY_DATA_DIR / "registered_accounts.json"
 _LEGACY_JOBS_JSON = _LEGACY_DATA_DIR / "registration_jobs.json"
 _LOCK = threading.RLock()
 
+JOB_PROGRESS_STAGES = (
+    ("email", "准备邮箱"),
+    ("browser", "启动浏览器"),
+    ("page", "打开注册页"),
+    ("submit_email", "提交邮箱"),
+    ("email_otp", "邮箱验证码"),
+    ("profile", "填写资料"),
+    ("token", "获取 Token"),
+    ("codex", "Codex 授权"),
+)
+_JOB_PROGRESS_KEYS = tuple(key for key, _label in JOB_PROGRESS_STAGES)
+_JOB_PROGRESS_STATES = {"pending", "running", "success", "failed", "skipped", "stopped"}
+
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
@@ -1249,6 +1262,42 @@ def update_account_note(acc_id: int, note: str) -> bool:
         return True
 
 
+def update_account_deactivation_mail(acc_id: int, result: dict | None = None) -> bool:
+    """保存封号邮件扫描状态，不读取或修改 OAuth Token。"""
+    result = result or {}
+    with _LOCK:
+        rows = _load_accounts()
+        row = next((r for r in rows if int(r.get("id") or 0) == int(acc_id)), None)
+        if row is None:
+            return False
+        now = _now()
+        status = str(result.get("status") or "failed")
+        row["deactivation_mail_scan_status"] = status
+        row["deactivation_mail_scan_trigger"] = str(result.get("trigger") or "")
+        if status == "queued":
+            row["deactivation_mail_scan_queued_at"] = now
+        elif status == "running":
+            row["deactivation_mail_scan_started_at"] = now
+        elif status == "success":
+            detected = bool(result.get("detected"))
+            # 已确认的封号通知是持久证据，后续缩短回溯窗口不能把它清掉。
+            row["deactivation_mail_detected"] = bool(row.get("deactivation_mail_detected")) or detected
+            row["deactivation_mail_checked_at"] = result.get("checked_at") or now
+            row["deactivation_mail_error"] = None
+            if detected:
+                row["deactivation_mail_received_at"] = result.get("received_at") or ""
+                row["deactivation_mail_subject"] = str(result.get("subject") or "")[:300]
+                row["deactivation_mail_sender"] = str(result.get("sender") or "")[:200]
+                row["deactivation_mail_message_id"] = str(result.get("message_id") or "")[:300]
+                row["deactivation_mail_confidence"] = str(result.get("confidence") or "high")
+        elif status in {"failed", "unsupported"}:
+            row["deactivation_mail_checked_at"] = result.get("checked_at") or now
+            row["deactivation_mail_error"] = str(result.get("error") or "")[:500]
+        row["updated_at"] = now
+        _save_accounts(rows)
+        return True
+
+
 def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
     """写回账号查活结果；成功时同步刷新最新 access_token 和账号基础信息。"""
     result = result or {}
@@ -2070,6 +2119,10 @@ def _new_job_row(
     retry_action: str | None = None,
     email: str | None = None,
     account_id: int | None = None,
+    batch_id: str | None = None,
+    batch_index: int | None = None,
+    batch_size: int | None = None,
+    batch_workers: int | None = None,
 ) -> dict:
     job_uuid = str(uuid.uuid4())
     log_file = str(_LOG_DIR / f"{job_uuid}.log")
@@ -2083,6 +2136,10 @@ def _new_job_row(
         "retry_attempt": int(retry_attempt or 0),
         "retry_action": retry_action,
         "email_source": email_source,
+        "batch_id": str(batch_id or job_uuid),
+        "batch_index": int(batch_index or 1),
+        "batch_size": int(batch_size or 1),
+        "batch_workers": int(batch_workers or 1),
         "email": email,
         "status": "pending",
         "error_message": None,
@@ -2090,15 +2147,39 @@ def _new_job_row(
         "started_at": None,
         "completed_at": None,
         "account_id": account_id,
+        "progress_stage": None,
+        "progress_updated_at": None,
+        "progress_steps": {},
+        "proxy_provider": None,
+        "proxy_status": None,
+        "proxy_endpoint": None,
+        "proxy_exit_ip": None,
+        "proxy_region": None,
+        "proxy_acquired_at": None,
+        "proxy_expires_at": None,
         "created_at": _now(),
     }
 
 
-def create_job(email_source: str) -> dict:
+def create_job(
+    email_source: str,
+    *,
+    batch_id: str | None = None,
+    batch_index: int | None = None,
+    batch_size: int | None = None,
+    batch_workers: int | None = None,
+) -> dict:
     """创建一个首次执行的 pending 注册任务。"""
     with _LOCK:
         rows = _load_jobs()
-        row = _new_job_row(rows, email_source=email_source)
+        row = _new_job_row(
+            rows,
+            email_source=email_source,
+            batch_id=batch_id,
+            batch_index=batch_index,
+            batch_size=batch_size,
+            batch_workers=batch_workers,
+        )
         rows.append(row)
         _save_jobs(rows)
         return dict(row)
@@ -2164,6 +2245,13 @@ def update_job(
     started_at: str | None = None,
     completed_at: str | None = None,
     account_id: int | None = None,
+    proxy_provider: str | None = None,
+    proxy_status: str | None = None,
+    proxy_endpoint: str | None = None,
+    proxy_exit_ip: str | None = None,
+    proxy_region: str | None = None,
+    proxy_acquired_at: str | None = None,
+    proxy_expires_at: str | None = None,
 ) -> None:
     with _LOCK:
         rows = _load_jobs()
@@ -2182,6 +2270,119 @@ def update_job(
             row["completed_at"] = completed_at
         if account_id is not None:
             row["account_id"] = account_id
+        if proxy_provider is not None:
+            row["proxy_provider"] = proxy_provider
+        if proxy_status is not None:
+            row["proxy_status"] = proxy_status
+        if proxy_endpoint is not None:
+            row["proxy_endpoint"] = proxy_endpoint
+        if proxy_exit_ip is not None:
+            row["proxy_exit_ip"] = proxy_exit_ip
+        if proxy_region is not None:
+            row["proxy_region"] = proxy_region
+        if proxy_acquired_at is not None:
+            row["proxy_acquired_at"] = proxy_acquired_at
+        if proxy_expires_at is not None:
+            row["proxy_expires_at"] = proxy_expires_at
+        _save_jobs(rows)
+
+
+def update_job_progress(
+    job_id: int,
+    stage: str,
+    state: str = "running",
+    detail: str | None = None,
+) -> None:
+    """原子更新注册阶段；进入新阶段时自动结束仍在运行的前置阶段。"""
+    stage = str(stage or "").strip()
+    state = str(state or "running").strip().lower()
+    if stage not in _JOB_PROGRESS_KEYS:
+        raise ValueError(f"未知任务阶段: {stage}")
+    if state not in _JOB_PROGRESS_STATES:
+        raise ValueError(f"未知阶段状态: {state}")
+
+    with _LOCK:
+        rows = _load_jobs()
+        row = next((r for r in rows if int(r.get("id") or 0) == int(job_id)), None)
+        if row is None:
+            return
+        now = _now()
+        steps = row.get("progress_steps")
+        if not isinstance(steps, dict):
+            steps = {}
+
+        current_index = _JOB_PROGRESS_KEYS.index(stage)
+        if state == "running":
+            for prior_key in _JOB_PROGRESS_KEYS[:current_index]:
+                prior = steps.get(prior_key)
+                if isinstance(prior, dict) and prior.get("state") == "running":
+                    prior["state"] = "success"
+                    prior["completed_at"] = now
+
+        item = steps.get(stage)
+        if not isinstance(item, dict):
+            item = {}
+        if state == "running" and not item.get("started_at"):
+            item["started_at"] = now
+        elif state in {"success", "failed", "skipped", "stopped"}:
+            item["started_at"] = item.get("started_at") or now
+            item["completed_at"] = now
+        item["state"] = state
+        if detail is not None:
+            item["detail"] = str(detail)[:300]
+        steps[stage] = item
+        row["progress_steps"] = steps
+        row["progress_stage"] = stage
+        row["progress_updated_at"] = now
+        _save_jobs(rows)
+
+
+def finish_job_progress(
+    job_id: int,
+    *,
+    success: bool,
+    detail: str | None = None,
+    failure_state: str = "failed",
+) -> None:
+    """收口任务进度：失败落在当前节点；成功补齐未上报节点。"""
+    with _LOCK:
+        rows = _load_jobs()
+        row = next((r for r in rows if int(r.get("id") or 0) == int(job_id)), None)
+        if row is None:
+            return
+        now = _now()
+        steps = row.get("progress_steps")
+        if not isinstance(steps, dict):
+            steps = {}
+        current = str(row.get("progress_stage") or "email")
+        if current not in _JOB_PROGRESS_KEYS:
+            current = "email"
+
+        if success:
+            for key in _JOB_PROGRESS_KEYS:
+                item = steps.get(key)
+                if not isinstance(item, dict):
+                    item = {"started_at": now}
+                # 已由具体流程上报的终态不能被任务级 success 覆盖；例如账号
+                # 注册成功但 Codex 授权失败时，仍应保留失败节点供 UI 提示。
+                if item.get("state") not in {"skipped", "success", "failed", "stopped"}:
+                    item["state"] = "success"
+                item["completed_at"] = item.get("completed_at") or now
+                steps[key] = item
+            row["progress_stage"] = _JOB_PROGRESS_KEYS[-1]
+        else:
+            item = steps.get(current)
+            if not isinstance(item, dict):
+                item = {"started_at": now}
+            terminal_state = "stopped" if failure_state == "stopped" else "failed"
+            if item.get("state") not in {"failed", "stopped"}:
+                item["state"] = terminal_state
+            item["completed_at"] = now
+            if detail is not None:
+                item["detail"] = str(detail)[:300]
+            steps[current] = item
+        row["progress_steps"] = steps
+        row["progress_updated_at"] = now
         _save_jobs(rows)
 
 
@@ -2515,4 +2716,194 @@ def delete_domain_email(email: str) -> bool:
         if len(new_rows) == len(rows):
             return False
         _save_domain_pool(new_rows)
+        return True
+
+
+# ============================================================
+# iCloud Hide My Email pool（本地状态镜像）
+# ============================================================
+
+_ICLOUD_HIDE_EMAIL_JSON = _PROJECT_ROOT / "用于注册的iCloud隐藏邮箱.json"
+
+
+def _load_icloud_hide_pool() -> list[dict]:
+    rows = _read_json(_ICLOUD_HIDE_EMAIL_JSON, [])
+    return rows if isinstance(rows, list) else []
+
+
+def _save_icloud_hide_pool(rows: list[dict]) -> None:
+    _write_json(_ICLOUD_HIDE_EMAIL_JSON, rows)
+
+
+def _find_icloud_hide_email(rows: list[dict], email: str) -> dict | None:
+    target = (email or "").strip().lower()
+    return next((r for r in rows if (r.get("email") or "").strip().lower() == target), None)
+
+
+def sync_icloud_hide_aliases(aliases: list[dict], account_id: str, *, full_snapshot: bool = True) -> dict:
+    """把 sidecar 返回的 HME 别名同步到本地池，保留本地领取/失败状态。"""
+    with _LOCK:
+        rows = _load_icloud_hide_pool()
+        registered = {
+            (item.get("email") or "").strip().lower()
+            for item in _load_accounts()
+            if (item.get("email") or "").strip()
+        }
+        now = _now()
+        inserted = updated = disabled = 0
+
+        remote_emails: set[str] = set()
+        for raw in aliases or []:
+            email = str(raw.get("email") or "").strip()
+            if not email or "@" not in email:
+                continue
+            remote_emails.add(email.lower())
+            active = bool(raw.get("active", True))
+            row = _find_icloud_hide_email(rows, email)
+            if row is None:
+                status = "used" if email.lower() in registered else ("available" if active else "disabled")
+                row = {
+                    "id": _next_id(rows),
+                    "email": email,
+                    "status": status,
+                    "used_at": now if status == "used" else None,
+                    "note": None,
+                    "created_at": now,
+                }
+                rows.append(row)
+                inserted += 1
+            else:
+                updated += 1
+
+            row["account_id"] = str(account_id or "").strip()
+            row["anonymous_id"] = str(raw.get("anonymousId") or raw.get("anonymous_id") or "").strip()
+            row["label"] = str(raw.get("label") or "").strip()
+            row["remote_created_at"] = str(raw.get("createdAt") or raw.get("created_at") or "").strip()
+            row["remote_active"] = active
+            row["synced_at"] = now
+
+            if email.lower() in registered:
+                row["status"] = "used"
+                row["used_at"] = row.get("used_at") or now
+                row.pop("disabled_reason", None)
+            elif not active and row.get("status") == "available":
+                row["status"] = "disabled"
+                row["disabled_reason"] = "remote_inactive"
+                disabled += 1
+            elif active and row.get("status") == "disabled" and row.get("disabled_reason") in {"remote_inactive", "remote_missing"}:
+                row["status"] = "available"
+                row["used_at"] = None
+                row.pop("disabled_reason", None)
+
+        if full_snapshot:
+            for row in rows:
+                if str(row.get("account_id") or "") != str(account_id or ""):
+                    continue
+                if (row.get("email") or "").strip().lower() in remote_emails:
+                    continue
+                if row.get("status") == "available":
+                    row["status"] = "disabled"
+                    row["disabled_reason"] = "remote_missing"
+                    row["remote_active"] = False
+                    row["synced_at"] = now
+                    disabled += 1
+
+        _save_icloud_hide_pool(rows)
+        return {
+            "inserted": inserted,
+            "updated": updated,
+            "disabled": disabled,
+            "total": len(rows),
+        }
+
+
+def claim_next_icloud_hide_email(account_id: str | None = None) -> dict | None:
+    """原子领取一个已同步且仍激活的 iCloud 隐藏邮箱。"""
+    with _LOCK:
+        rows = sorted(_load_icloud_hide_pool(), key=lambda x: int(x.get("id") or 0))
+        row = next((
+            item for item in rows
+            if item.get("status") == "available"
+            and item.get("remote_active", True) is not False
+            and (not account_id or str(item.get("account_id") or "") == str(account_id))
+        ), None)
+        if row is None:
+            return None
+        row["status"] = "used"
+        row["used_at"] = _now()
+        row["note"] = None
+        _save_icloud_hide_pool(rows)
+        return dict(row)
+
+
+def release_icloud_hide_email(email: str, status: str = "available", note: str | None = None) -> None:
+    """更新 HME 别名的本地池状态；不会停用或删除 Apple 侧地址。"""
+    with _LOCK:
+        rows = _load_icloud_hide_pool()
+        row = _find_icloud_hide_email(rows, email)
+        if row is None:
+            return
+        row["status"] = status
+        if status == "available":
+            row["used_at"] = None
+            row.pop("disabled_reason", None)
+        elif status in ("used", "failed", "disabled"):
+            row["used_at"] = row.get("used_at") or _now()
+            if status == "disabled":
+                row["disabled_reason"] = "manual"
+        if note is not None:
+            row["note"] = note
+        _save_icloud_hide_pool(rows)
+
+
+def release_unconsumed_icloud_hide_email(email: str, note: str | None = None) -> bool:
+    """原子回收未生成本地账号且仍为 used 的 HME 别名。"""
+    with _LOCK:
+        if _find_by_email(_load_accounts(), email) is not None:
+            return False
+        rows = _load_icloud_hide_pool()
+        row = _find_icloud_hide_email(rows, email)
+        if row is None or row.get("status") != "used" or row.get("remote_active", True) is False:
+            return False
+        row["status"] = "available"
+        row["used_at"] = None
+        if note is not None:
+            row["note"] = note
+        _save_icloud_hide_pool(rows)
+        return True
+
+
+def get_icloud_hide_email_by_email(email: str) -> dict | None:
+    with _LOCK:
+        row = _find_icloud_hide_email(_load_icloud_hide_pool(), email)
+        return dict(row) if row else None
+
+
+def list_icloud_hide_email_pool(status: str | None = None, limit: int = 500) -> list[dict]:
+    with _LOCK:
+        rows = sorted(_load_icloud_hide_pool(), key=lambda x: int(x.get("id") or 0), reverse=True)
+        if status:
+            rows = [row for row in rows if row.get("status") == status]
+        return [dict(row) for row in rows[:limit]]
+
+
+def icloud_hide_email_pool_summary() -> dict:
+    with _LOCK:
+        out: dict[str, int] = {"available": 0, "used": 0, "failed": 0, "disabled": 0}
+        for row in _load_icloud_hide_pool():
+            status = row.get("status") or "available"
+            out[status] = out.get(status, 0) + 1
+        out["total"] = sum(value for key, value in out.items() if key != "total")
+        return out
+
+
+def delete_icloud_hide_email(email: str) -> bool:
+    """只删除 turb 的本地镜像；Apple 侧别名不受影响，下次同步可能重新出现。"""
+    with _LOCK:
+        rows = _load_icloud_hide_pool()
+        target = (email or "").strip().lower()
+        new_rows = [r for r in rows if (r.get("email") or "").strip().lower() != target]
+        if len(new_rows) == len(rows):
+            return False
+        _save_icloud_hide_pool(new_rows)
         return True
