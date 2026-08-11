@@ -1233,7 +1233,11 @@ def _do_phone_verification_if_present(page) -> None:
             logger.warning("[Codex][BrowserUse] 手机验证失败（%s/%s）：%s", attempt, max_retries, last_error)
             if activation_id:
                 try:
-                    sms_provider.cancel(activation_id, http)
+                    sms_provider.cancel(
+                        activation_id,
+                        http,
+                        background=not isinstance(exc, sms_provider.SmsCodeTimeout),
+                    )
                 except Exception:
                     pass
             if attempt >= max_retries:

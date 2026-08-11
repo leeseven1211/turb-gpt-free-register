@@ -43,10 +43,18 @@ class BrowserSession:
             detect_exit_geo: 是否探测出口 IP 并自动选择语言/时区画像。
                              套餐查询等短请求可关闭，避免额外网络等待。
         """
-        # proxy=None  → 从池里随机抽（默认行为）
+        # proxy=None  → 仅静态池模式允许从池里随机抽；代理平台模式必须由
+        #                registration/account_proxy 先领取租约并显式传入。
         # proxy=""    → 禁用代理（直连）
         # proxy="..." → 使用指定代理
         if proxy is None:
+            from core.proxy_provider import registration_proxy_mode
+
+            if registration_proxy_mode() == "1024":
+                raise RuntimeError(
+                    "当前启用了 1024Proxy，BrowserSession 禁止在未传代理时回退 PROXY_POOL；"
+                    "请先通过注册代理或账号功能代理服务领取租约"
+                )
             self.proxy = pick_proxy()
         else:
             self.proxy = proxy

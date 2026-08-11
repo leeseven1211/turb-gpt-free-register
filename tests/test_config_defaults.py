@@ -93,6 +93,7 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             "PROXY_1024_SESSION_MINUTES", "PROXY_1024_ROTATE_SESSION_TIME", "PROXY_1024_API_TIMEOUT",
             "PROXY_1024_MAX_ATTEMPTS", "PROXY_1024_VALIDATE",
             "PROXY_1024_RECENT_TTL", "PROXY_1024_ACQUIRE_INTERVAL",
+            "ACCOUNT_ACTION_PROXY_MODE", "ACCOUNT_ACTION_PROXY",
         }
         self.assertTrue(expected.issubset(fields))
         self.assertEqual(fields["PROXY_1024_API_URL"]["group"], "代理平台")

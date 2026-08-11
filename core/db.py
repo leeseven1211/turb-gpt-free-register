@@ -708,120 +708,6 @@ def update_account_codex_status(email: str, codex_status: str, codex_error: str 
         return True
 
 
-def claim_account_codex_agent(acc_id: int, trigger: str = "manual") -> bool:
-    """原子占用账号 Codex Agent Token 生成任务；已有未超时任务时返回 False。"""
-    with _LOCK:
-        accounts = _load_accounts()
-        row = next((r for r in accounts if int(r.get("id") or 0) == int(acc_id)), None)
-        if row is None:
-            return False
-        current_status = row.get("codex_agent_status")
-        if current_status in {"queued", "running"}:
-            try:
-                stamp_key = "codex_agent_queued_at" if current_status == "queued" else "codex_agent_started_at"
-                stale_after = _PLAN_CHECK_QUEUE_STALE_SECONDS if current_status == "queued" else _PLAN_CHECK_STALE_SECONDS
-                started_at = datetime.fromisoformat(str(row.get(stamp_key) or ""))
-                if (datetime.now() - started_at).total_seconds() < stale_after:
-                    return False
-            except (TypeError, ValueError):
-                pass
-        now = _now()
-        row["codex_agent_status"] = "queued"
-        row["codex_agent_ok"] = False
-        row["codex_agent_trigger"] = str(trigger or "manual")
-        row["codex_agent_queued_at"] = now
-        row["codex_agent_started_at"] = None
-        row["codex_agent_completed_at"] = None
-        row["codex_agent_error"] = None
-        row["codex_agent_message"] = "已入队"
-        row["updated_at"] = now
-        _save_accounts(accounts)
-        return True
-
-
-def mark_account_codex_agent_running(acc_id: int) -> bool:
-    """把 Codex Agent Token 生成任务标记为运行中。"""
-    with _LOCK:
-        accounts = _load_accounts()
-        row = next((r for r in accounts if int(r.get("id") or 0) == int(acc_id)), None)
-        if row is None or row.get("codex_agent_status") not in {"queued", "running"}:
-            return False
-        row["codex_agent_status"] = "running"
-        row["codex_agent_started_at"] = _now()
-        row["codex_agent_error"] = None
-        row["codex_agent_message"] = "正在生成 Codex Agent Token"
-        row["updated_at"] = _now()
-        _save_accounts(accounts)
-        return True
-
-
-def update_account_codex_agent(acc_id: int, result: dict | None = None) -> bool:
-    """更新账号 Codex Agent Token 生成结果/进度。"""
-    result = result or {}
-    with _LOCK:
-        accounts = _load_accounts()
-        row = next((r for r in accounts if int(r.get("id") or 0) == int(acc_id)), None)
-        if row is None:
-            return False
-        status = str(result.get("status") or ("success" if result.get("ok") else "failed"))
-        ok = bool(result.get("ok")) and status == "success"
-        row["codex_agent_status"] = status
-        row["codex_agent_ok"] = ok
-        row["codex_agent_checked_at"] = result.get("checked_at") or _now()
-        if status in {"success", "failed", "stopped"}:
-            row["codex_agent_completed_at"] = _now()
-        row["codex_agent_error"] = None if ok or status == "running" else result.get("error")
-        if result.get("message") is not None:
-            row["codex_agent_message"] = result.get("message")
-        if result.get("agent_runtime_id") is not None:
-            row["codex_agent_runtime_id"] = result.get("agent_runtime_id")
-        if result.get("auth_path") is not None:
-            row["codex_agent_auth_path"] = result.get("auth_path")
-        if isinstance(result.get("auth_json"), dict):
-            row["codex_agent_token"] = json.dumps(result.get("auth_json"), ensure_ascii=False)
-        for _k in (
-            "codex_agent_network_route",
-            "codex_agent_proxy_mode",
-            "codex_agent_proxy_used",
-            "codex_agent_proxy_fallback_reason",
-            "codex_agent_device_id",
-            "codex_agent_oai_session_id",
-            "codex_agent_attempt_count",
-            "codex_agent_max_attempts",
-            "codex_agent_request_timeout",
-            "codex_agent_sub2api_path",
-            "codex_agent_sub2api_url",
-            "codex_agent_sub2api_mode",
-            "codex_agent_sub2api_total",
-        ):
-            src_key = _k.replace("codex_agent_", "", 1)
-            if result.get(src_key) is not None:
-                row[_k] = result.get(src_key)
-        row["updated_at"] = _now()
-        _save_accounts(accounts)
-        return True
-
-
-def recover_interrupted_codex_agents() -> int:
-    """服务启动时恢复上次进程中断的 Codex Agent 任务状态。"""
-    with _LOCK:
-        accounts = _load_accounts()
-        recovered = 0
-        now = _now()
-        for row in accounts:
-            if row.get("codex_agent_status") not in {"queued", "running"}:
-                continue
-            row["codex_agent_status"] = "failed"
-            row["codex_agent_ok"] = False
-            row["codex_agent_error"] = "WebUI 重启导致 Codex Agent Token 任务中断，请重新生成"
-            row["codex_agent_completed_at"] = now
-            row["updated_at"] = now
-            recovered += 1
-        if recovered:
-            _save_accounts(accounts)
-        return recovered
-
-
 def claim_account_plan_check(
     acc_id: int | None = None,
     email: str | None = None,
@@ -1163,9 +1049,6 @@ def list_account_plan_check_statuses(limit: int = 5000, offset: int = 0, archive
         "extract_link_image_url_png", "extract_link_image_url_svg",
         "extract_link_expires_at",
         "codex_status", "codex_error",
-        "codex_agent_status", "codex_agent_message",
-        "codex_agent_runtime_id", "codex_agent_sub2api_url",
-        "codex_agent_sub2api_mode", "codex_agent_sub2api_total",
     )
     with _LOCK:
         all_rows = _filtered_decorated_accounts(archived=archived, plan_filter=plan_filter, q=q)
@@ -1186,7 +1069,6 @@ def list_account_plan_check_statuses(limit: int = 5000, offset: int = 0, archive
             if not any(x in plan for x in ("plus", "pro", "team", "go")):
                 for expire_key in ("expires_at", "plan_expires_at", "plan_renews_at", "renews_at"):
                     item.pop(expire_key, None)
-            item["codex_agent_has_token"] = bool(str(row.get("codex_agent_token") or "").strip())
             item["has_access_token"] = bool(str(row.get("access_token") or "").strip())
             items.append(item)
         latest = max((str(row.get("updated_at") or "") for row in all_rows), default="")
@@ -1206,7 +1088,6 @@ def list_account_plan_check_statuses(limit: int = 5000, offset: int = 0, archive
                     "plus_trial_eligible": row.get("plus_trial_eligible"),
                     "extract_link_status": row.get("extract_link_status"),
                     "codex_status": row.get("codex_status"),
-                    "codex_agent_status": row.get("codex_agent_status"),
                 }
                 for row in all_rows
             ],
@@ -1260,6 +1141,69 @@ def update_account_note(acc_id: int, note: str) -> bool:
         row["updated_at"] = now
         _save_accounts(rows)
         return True
+
+
+def update_account_registration_proxy(
+    acc_id: int,
+    *,
+    provider: str | None = None,
+    region: str | None = None,
+) -> bool:
+    """保存账号注册时的代理来源和实际出口国家，供后续账号功能按地区申请新租约。"""
+    with _LOCK:
+        accounts = _load_accounts()
+        row = next((r for r in accounts if int(r.get("id") or 0) == int(acc_id)), None)
+        if row is None:
+            return False
+        if provider is not None:
+            row["registration_proxy_provider"] = str(provider or "").strip() or None
+        if region is not None:
+            normalized = str(region or "").strip().upper()
+            row["registration_proxy_region"] = normalized if len(normalized) == 2 else None
+        row["updated_at"] = _now()
+        _save_accounts(accounts)
+        return True
+
+
+def backfill_account_registration_proxy_context() -> int:
+    """从历史成功注册任务补齐账号的代理来源/实际国家；已有值不覆盖。"""
+    with _LOCK:
+        accounts = _load_accounts()
+        jobs = sorted(_load_jobs(), key=lambda r: int(r.get("id") or 0), reverse=True)
+        changed = 0
+        for row in accounts:
+            if row.get("registration_proxy_provider") and row.get("registration_proxy_region"):
+                continue
+            account_id = int(row.get("id") or 0)
+            email = str(row.get("email") or "").strip().lower()
+            job = next((
+                item for item in jobs
+                if (
+                    (account_id and int(item.get("account_id") or 0) == account_id)
+                    or (email and str(item.get("email") or "").strip().lower() == email)
+                )
+                and (
+                    str(item.get("proxy_provider") or "").strip()
+                    or len(str(item.get("proxy_region") or "").strip()) == 2
+                )
+            ), None)
+            if not job:
+                continue
+            provider = str(job.get("proxy_provider") or "").strip()
+            region = str(job.get("proxy_region") or "").strip().upper()
+            touched = False
+            if not row.get("registration_proxy_provider") and provider:
+                row["registration_proxy_provider"] = provider
+                touched = True
+            if not row.get("registration_proxy_region") and len(region) == 2:
+                row["registration_proxy_region"] = region
+                touched = True
+            if touched:
+                row["updated_at"] = _now()
+                changed += 1
+        if changed:
+            _save_accounts(accounts)
+        return changed
 
 
 def update_account_deactivation_mail(acc_id: int, result: dict | None = None) -> bool:
@@ -2384,6 +2328,59 @@ def finish_job_progress(
         row["progress_steps"] = steps
         row["progress_updated_at"] = now
         _save_jobs(rows)
+
+
+def recover_interrupted_registration_jobs() -> int:
+    """启动时把上个进程遗留的排队/运行任务收口为可重试失败状态。"""
+    with _LOCK:
+        rows = _load_jobs()
+        accounts = _load_accounts()
+        now = _now()
+        recovered = 0
+        account_changed = False
+        for row in rows:
+            if str(row.get("status") or "") not in {"pending", "running", "stopping"}:
+                continue
+            detail = "WebUI 进程重启导致任务中断；浏览器和接码资源将在启动恢复阶段回收，请重新执行任务"
+            row["status"] = "failed"
+            row["error_message"] = detail
+            row["completed_at"] = now
+            if row.get("proxy_status") in {"acquiring", "leased"}:
+                row["proxy_status"] = "interrupted"
+
+            steps = row.get("progress_steps")
+            if not isinstance(steps, dict):
+                steps = {}
+            current = str(row.get("progress_stage") or "email")
+            if current not in _JOB_PROGRESS_KEYS:
+                current = "email"
+            item = steps.get(current)
+            if not isinstance(item, dict):
+                item = {"started_at": row.get("started_at") or now}
+            item.update({"state": "failed", "detail": detail[:300], "completed_at": now})
+            steps[current] = item
+            row["progress_steps"] = steps
+            row["progress_stage"] = current
+            row["progress_updated_at"] = now
+
+            if str(row.get("job_type") or "") == "codex_retry":
+                email = str(row.get("email") or "").strip().lower()
+                account = next(
+                    (item for item in accounts if str(item.get("email") or "").strip().lower() == email),
+                    None,
+                )
+                if account is not None and str(account.get("codex_status") or "") == "retrying":
+                    account["codex_status"] = "failed"
+                    account["codex_error"] = "WebUI 进程重启导致 Codex OAuth 中断，请重新补跑"
+                    account["updated_at"] = now
+                    account_changed = True
+            recovered += 1
+
+        if recovered:
+            _save_jobs(rows)
+        if account_changed:
+            _save_accounts(accounts)
+        return recovered
 
 
 def list_jobs(limit: int = 100) -> list[dict]:

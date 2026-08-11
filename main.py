@@ -173,7 +173,8 @@ def run_registration(
         email: 注册邮箱
         name: 用户显示名称
         birthday: 生日，格式 YYYY-MM-DD
-        proxy: 代理地址（不传则从 PROXY_POOL 随机抽）
+        proxy: 代理地址；WebUI/CLI 批任务会先按当前模式领取租约后显式传入。
+               仅静态池模式允许底层在不传时从 PROXY_POOL 抽取。
         otp_code: 邮箱验证码（如果为None，会等待手动输入）
     """
     from core.registration_service import report_job_progress

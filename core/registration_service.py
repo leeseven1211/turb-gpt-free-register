@@ -344,6 +344,14 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 birthday=birthday,
                 proxy=proxy_lease.proxy_url,
             )
+            # Codex 失败时注册账号可能已经创建并保存。代理地区属于账号注册事实，
+            # 不能只在整项任务 success 时落库，否则后续补跑/查套餐无法稳定沿用地区。
+            if isinstance(result, dict) and result.get("account_id"):
+                db.update_account_registration_proxy(
+                    int(result.get("account_id")),
+                    provider=proxy_lease.provider,
+                    region=proxy_lease.region,
+                )
             if is_stop_requested(job_id):
                 _release_unconsumed_job_email(email, "用户手动停止")
                 db.finish_job_progress(job_id, success=False, detail="用户手动停止", failure_state="stopped")
@@ -452,9 +460,16 @@ def _run_codex_retry_job(job_id: int, log_file: str, email: str, account_id: int
             target_log_path=log_file,
         )
         now_iso = datetime.now().isoformat(timespec="seconds")
+        proxy_fields = {}
+        if result.get("proxy_provider"):
+            proxy_fields = {
+                "proxy_provider": result.get("proxy_provider"),
+                "proxy_region": result.get("proxy_region") or "-",
+                "proxy_status": "released",
+            }
         if is_stop_requested(job_id) or result.get("status") == "stopped":
             db.finish_job_progress(job_id, success=False, detail=str(result.get("message") or "用户手动停止")[:300], failure_state="stopped")
-            db.update_job(job_id, status="stopped", email=email, account_id=account_id, error=str(result.get("message") or "用户手动停止")[:500], completed_at=now_iso)
+            db.update_job(job_id, status="stopped", email=email, account_id=account_id, error=str(result.get("message") or "用户手动停止")[:500], completed_at=now_iso, **proxy_fields)
         elif result.get("ok"):
             db.finish_job_progress(job_id, success=True)
             db.update_job(
@@ -463,6 +478,7 @@ def _run_codex_retry_job(job_id: int, log_file: str, email: str, account_id: int
                 email=email,
                 account_id=account_id,
                 completed_at=now_iso,
+                **proxy_fields,
             )
         else:
             db.finish_job_progress(job_id, success=False, detail=str(result.get("message") or "Codex 补跑失败")[:300])
@@ -473,6 +489,7 @@ def _run_codex_retry_job(job_id: int, log_file: str, email: str, account_id: int
                 account_id=account_id,
                 error=str(result.get("message") or "Codex 补跑失败")[:500],
                 completed_at=now_iso,
+                **proxy_fields,
             )
     except Exception as exc:
         db.finish_job_progress(job_id, success=False, detail=f"{type(exc).__name__}: {exc}"[:300])

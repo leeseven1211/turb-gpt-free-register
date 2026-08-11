@@ -58,6 +58,69 @@ def _registration_recheck_delay() -> float:
     return _float_setting("PLAN_CHECK_REGISTRATION_RECHECK_DELAY", 2.0, 0.0, 30.0)
 
 
+def _query_account_plan(
+    *,
+    email: str,
+    access_token: str,
+    trigger: str,
+    proxy: str | None,
+    timezone_offset_min: str,
+) -> dict:
+    """执行套餐查询和新注册账号复查，不负责队列/数据库状态流转。"""
+    _wait_for_rate_slot()
+    result = check_account_plan(
+        access_token,
+        proxy=proxy,
+        timezone_offset_min=timezone_offset_min,
+    )
+
+    recheck_delay = _registration_recheck_delay()
+    should_recheck = (
+        trigger == "registration_auto"
+        and recheck_delay > 0
+        and bool(result.get("ok"))
+        and str(result.get("current_plan_type") or "").lower() == "free"
+        and not bool(result.get("plus_trial_eligible"))
+    )
+    if should_recheck:
+        logger.info("[Plan] 新账号暂未发现 Plus 试用资格，%.1fs 后复查一次: %s", recheck_delay, email)
+        time.sleep(recheck_delay)
+        _wait_for_rate_slot()
+        recheck_result = check_account_plan(
+            access_token,
+            proxy=proxy,
+            timezone_offset_min=timezone_offset_min,
+            max_attempts=1,
+        )
+        if recheck_result.get("ok"):
+            result = recheck_result
+        else:
+            logger.warning(
+                "[Plan] 新账号资格复查失败，保留首次成功结果: %s, %s",
+                email,
+                recheck_result.get("error") or "未知错误",
+            )
+    return result
+
+
+def _log_plan_result(email: str, trigger: str, result: dict) -> None:
+    if result.get("ok"):
+        logger.info(
+            "[Plan] 后台查询成功: %s, plan=%s, plus_trial=%s, trigger=%s",
+            email,
+            result.get("current_plan_type") or "unknown",
+            bool(result.get("plus_trial_eligible")),
+            trigger,
+        )
+    else:
+        logger.warning(
+            "[Plan] 后台查询失败: %s, trigger=%s, error=%s",
+            email,
+            trigger,
+            result.get("error") or "未知错误",
+        )
+
+
 def _run_plan_check(
     *,
     account_id: int,
@@ -67,60 +130,33 @@ def _run_plan_check(
     proxy: str | None,
     timezone_offset_min: str,
 ) -> dict:
+    account_route = None
     try:
         if not db.mark_account_plan_check_running(account_id):
             return {"ok": False, "error": "账号已删除或套餐查询状态已被重置"}
 
-        _wait_for_rate_slot()
-        result = check_account_plan(
-            access_token,
-            proxy=proxy,
+        from core.account_proxy import acquire_account_proxy
+        account_route = acquire_account_proxy(
+            account_id=account_id,
+            email=email,
+            purpose="plan-check",
+            explicit_proxy=proxy,
+        )
+
+        result = _query_account_plan(
+            email=email,
+            access_token=access_token,
+            trigger=trigger,
+            proxy=account_route.proxy_url,
             timezone_offset_min=timezone_offset_min,
         )
-
-        recheck_delay = _registration_recheck_delay()
-        should_recheck = (
-            trigger == "registration_auto"
-            and recheck_delay > 0
-            and bool(result.get("ok"))
-            and str(result.get("current_plan_type") or "").lower() == "free"
-            and not bool(result.get("plus_trial_eligible"))
-        )
-        if should_recheck:
-            logger.info("[Plan] 新账号暂未发现 Plus 试用资格，%.1fs 后复查一次: %s", recheck_delay, email)
-            time.sleep(recheck_delay)
-            _wait_for_rate_slot()
-            recheck_result = check_account_plan(
-                access_token,
-                proxy=proxy,
-                timezone_offset_min=timezone_offset_min,
-                max_attempts=1,
-            )
-            if recheck_result.get("ok"):
-                result = recheck_result
-            else:
-                logger.warning(
-                    "[Plan] 新账号资格复查失败，保留首次成功结果: %s, %s",
-                    email,
-                    recheck_result.get("error") or "未知错误",
-                )
-
+        result.update({
+            key: value
+            for key, value in account_route.public_dict().items()
+            if key not in {"proxy_mode", "network_route", "proxy_used"} or not result.get(key)
+        })
         db.update_account_plan_check(acc_id=account_id, result=result)
-        if result.get("ok"):
-            logger.info(
-                "[Plan] 后台查询成功: %s, plan=%s, plus_trial=%s, trigger=%s",
-                email,
-                result.get("current_plan_type") or "unknown",
-                bool(result.get("plus_trial_eligible")),
-                trigger,
-            )
-        else:
-            logger.warning(
-                "[Plan] 后台查询失败: %s, trigger=%s, error=%s",
-                email,
-                trigger,
-                result.get("error") or "未知错误",
-            )
+        _log_plan_result(email, trigger, result)
         return result
     except Exception as exc:
         result = {
@@ -135,7 +171,49 @@ def _run_plan_check(
         logger.exception("[Plan] 后台查询异常: %s", email)
         return result
     finally:
+        if account_route is not None:
+            account_route.release(reason=f"plan-check-{account_id}")
         _QUEUE_SLOTS.release()
+
+
+def check_registration_account_plan(
+    *,
+    account_id: int,
+    email: str,
+    access_token: str,
+    proxy: str,
+    timezone_offset_min: str = "-",
+) -> dict:
+    """用注册任务的同一代理同步查询套餐，返回后调用方才可释放代理租约。"""
+    account_id = int(account_id)
+    trigger = "registration_auto"
+    if not db.claim_account_plan_check(acc_id=account_id, trigger=trigger):
+        return {"ok": False, "busy": True, "error": "该账号正在查询套餐"}
+    try:
+        if not db.mark_account_plan_check_running(account_id):
+            return {"ok": False, "error": "账号已删除或套餐查询状态已被重置"}
+        result = _query_account_plan(
+            email=str(email or "").strip(),
+            access_token=str(access_token or "").strip(),
+            trigger=trigger,
+            proxy=str(proxy or "").strip(),
+            timezone_offset_min=str(timezone_offset_min or "-"),
+        )
+        db.update_account_plan_check(acc_id=account_id, result=result)
+        _log_plan_result(str(email or "").strip(), trigger, result)
+        return result
+    except Exception as exc:
+        result = {
+            "ok": False,
+            "checked_at": datetime.now().isoformat(timespec="seconds"),
+            "error": f"{type(exc).__name__}: {str(exc)[:180]}",
+        }
+        try:
+            db.update_account_plan_check(acc_id=account_id, result=result)
+        except Exception:
+            logger.exception("[Plan] 写入同步查询异常状态失败: account_id=%s", account_id)
+        logger.exception("[Plan] 注册代理同步查询异常: %s", email)
+        return result
 
 
 def enqueue_account_plan_check(

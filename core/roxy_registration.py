@@ -1309,8 +1309,9 @@ def _wait_after_email_otp_submit(driver, timeout: int = 30) -> str:
     """提交 OTP 后等待页面离开验证码页。
 
     只有页面明确出现验证码错误（aria-invalid / 错误文案）才判定为无效；
-    网络慢时页面跳转可能超过 10s，超时后只要没有错误标记就按 accepted 处理，
-    避免把已提交成功的验证码误判为失败后误点“重新发送”把流程搞乱。
+    网络慢时最多等待完整 timeout；超时后仍停在验证码页，即使页面没有显式
+    aria-invalid，也必须按 stuck 处理并重新取码。旧逻辑把这种状态当 accepted，
+    后续资料页会再白等 60 秒才失败。
     """
     end = time.time() + timeout
     last = {}
@@ -1323,7 +1324,9 @@ def _wait_after_email_otp_submit(driver, timeout: int = 30) -> str:
         if invalid or (last.get('errors') or []):
             return 'invalid'
     if _is_email_verification_page(driver):
-        # 超时仍停留：若无明确错误标记，判定为提交成功、跳转缓慢，按 accepted 放行。
+        # 超时仍停留：有错误标记是 invalid；没有错误标记也说明提交没有产生跳转，
+        # 返回 stuck 让上层重发/重新取最新验证码。
+        last = _email_otp_page_state(driver)
         has_error_mark = bool(last.get('errors')) or any(
             str(i.get('ariaInvalid') or '').lower() == 'true' for i in (last.get('inputs') or [])
         )
@@ -1331,10 +1334,10 @@ def _wait_after_email_otp_submit(driver, timeout: int = 30) -> str:
             logger.warning("%s[OTP] 提交后仍停留验证码页且存在错误标记，按验证码无效处理 snapshot=%s", _log_prefix(driver), last)
             return 'invalid'
         logger.warning(
-            "%s[OTP] 提交后 %ss 仍在验证码页但无错误标记，按跳转缓慢处理（accepted） snapshot=%s",
+            "%s[OTP] 提交后 %ss 仍在验证码页但无错误标记，按页面卡住处理并重新取码 snapshot=%s",
             _log_prefix(driver), timeout, last
         )
-        return 'accepted'
+        return 'stuck'
     return 'accepted'
 
 
@@ -2281,11 +2284,14 @@ def run_roxy_registration(email: str, name: str, birthday: str, proxy: str = Non
                 _check_manual_stop()
                 codex_result = run_roxy_codex_oauth(
                     email,
+                    proxy=proxy,
                     reuse_existing_profile=True,
                     existing_driver=driver,
                     existing_opened=opened,
                     force=True,
-                    clear_existing_state=True,
+                    # 当前 Roxy 环境刚完成这个账号的注册，保留登录态可直接进入
+                    # consent/手机验证；若登录态不可复用，页面仍会回落到邮箱 OTP。
+                    clear_existing_state=False,
                 )
                 report_job_progress(
                     "codex",
@@ -2305,6 +2311,7 @@ def run_roxy_registration(email: str, name: str, birthday: str, proxy: str = Non
             totp_secret=totp_secret,
             email_source=resolve_email_source(email),
             proxy_used=proxy or None,
+            plan_check_proxy=proxy or None,
             batch_dir=batch_dir,
             extra={
                 "user": session_info.get("user"),

@@ -8,6 +8,7 @@ import random
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import unquote, urljoin, urlparse
 
 import requests
@@ -21,6 +22,61 @@ logger = logging.getLogger(__name__)
 # “正在创建中，请稍等！”。这里只串行化 Profile 创建，创建完成后的浏览器仍可并发运行。
 _PROFILE_CREATE_LOCK = threading.Lock()
 _PROFILE_OPEN_LOCK = threading.Lock()
+_PROFILE_REGISTRY_LOCK = threading.RLock()
+_PROFILE_REGISTRY_PATH = Path(__file__).resolve().parent.parent / "run" / "roxy_active_profiles.json"
+
+
+def _load_profile_registry_locked() -> list[dict]:
+    try:
+        raw = json.loads(_PROFILE_REGISTRY_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    except Exception as exc:
+        logger.warning("[Roxy] 读取临时环境登记表失败：%s", exc)
+        return []
+    items = raw.get("items") if isinstance(raw, dict) else raw
+    if not isinstance(items, list):
+        return []
+    return [
+        dict(item) for item in items
+        if isinstance(item, dict) and str(item.get("profile_id") or "").strip()
+    ]
+
+
+def _save_profile_registry_locked(items: list[dict]) -> None:
+    _PROFILE_REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _PROFILE_REGISTRY_PATH.with_suffix(".tmp")
+    tmp.write_text(
+        json.dumps({"version": 1, "items": items, "updated_at": time.time()}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    tmp.replace(_PROFILE_REGISTRY_PATH)
+
+
+def _track_created_profile(profile_id: str) -> None:
+    profile_id = str(profile_id or "").strip()
+    if not profile_id:
+        return
+    with _PROFILE_REGISTRY_LOCK:
+        items = _load_profile_registry_locked()
+        if not any(str(item.get("profile_id")) == profile_id for item in items):
+            items.append({
+                "profile_id": profile_id,
+                "workspace_id": str(_workspace_id_value() or ""),
+                "created_at": time.time(),
+            })
+            _save_profile_registry_locked(items)
+
+
+def _untrack_created_profile(profile_id: str) -> None:
+    profile_id = str(profile_id or "").strip()
+    if not profile_id:
+        return
+    with _PROFILE_REGISTRY_LOCK:
+        items = _load_profile_registry_locked()
+        remaining = [item for item in items if str(item.get("profile_id")) != profile_id]
+        if len(remaining) != len(items):
+            _save_profile_registry_locked(remaining)
 
 
 @dataclass
@@ -381,6 +437,51 @@ class RoxyBrowserClient:
 
         return {"ok": False, "items": [], "errors": errors}
 
+    @staticmethod
+    def _profile_rows(payload: dict) -> list[dict]:
+        """兼容 Roxy 不同版本的 Profile 列表响应结构。"""
+        if not isinstance(payload, dict):
+            return []
+        data = payload.get("data")
+        if isinstance(data, list):
+            return [row for row in data if isinstance(row, dict)]
+        if isinstance(data, dict):
+            for key in ("rows", "list", "records", "items"):
+                rows = data.get(key)
+                if isinstance(rows, list):
+                    return [row for row in rows if isinstance(row, dict)]
+        for key in ("rows", "list", "records", "items"):
+            rows = payload.get(key)
+            if isinstance(rows, list):
+                return [row for row in rows if isinstance(row, dict)]
+        return []
+
+    def _find_profile_by_name(self, window_name: str) -> str:
+        """按本次唯一名称核对 create 超时前是否已经实际创建成功。"""
+        name = str(window_name or "").strip()
+        if not name:
+            return ""
+        payload = self.request(
+            "GET",
+            "/browser/list_v2",
+            params={
+                "workspaceId": _workspace_id_value(),
+                "windowName": name,
+                "page_index": 1,
+                "page_size": 10,
+            },
+        )
+        for row in self._profile_rows(payload):
+            row_name = _first(row, [("windowName",), ("name",), ("profileName",)])
+            if row_name != name:
+                continue
+            profile_id = _first(row, [
+                ("dirId",), ("dir_id",), ("id",), ("profileId",), ("profile_id",),
+            ])
+            if profile_id:
+                return profile_id
+        return ""
+
     def create_profile(self, payload: dict | None = None) -> str:
         body = dict(getattr(_cfg, "ROXY_PROFILE_CREATE_PAYLOAD", {}) or {})
         proxy_source = "profile_payload" if body.get("proxyInfo") else ""
@@ -457,8 +558,53 @@ class RoxyBrowserClient:
             body.get("osVersion") or "-",
             random_os_enabled,
         )
+        # create 不能像普通 GET 一样直接重试：客户端超时时，服务端有可能已经
+        # 创建成功，再发一次会留下重复环境。Roxy 若明确返回业务失败（例如其
+        # 后端 15 秒超时），先用本次唯一 windowName 查询列表；确认没有创建后
+        # 才重试。若列表本身不可用，则保守失败，不冒险重复创建。
+        max_create_attempts = max(1, int(getattr(_cfg, "ROXY_API_RETRIES", 3) or 3))
+        base_delay = max(0.5, float(getattr(_cfg, "ROXY_API_RETRY_DELAY", 2) or 2))
+        result = None
         with _PROFILE_CREATE_LOCK:
-            result = self.request(_cfg.ROXY_CREATE_METHOD, _cfg.ROXY_CREATE_PATH, json_body=body)
+            for attempt in range(1, max_create_attempts + 1):
+                try:
+                    result = self.request(_cfg.ROXY_CREATE_METHOD, _cfg.ROXY_CREATE_PATH, json_body=body)
+                    if attempt > 1:
+                        logger.info(
+                            "[Roxy] 创建环境重试成功：name=%s attempt=%s/%s",
+                            body.get("windowName") or "-", attempt, max_create_attempts,
+                        )
+                    break
+                except Exception as exc:
+                    # “返回失败”说明本地 API 已给出确定的业务响应；requests 自身
+                    # timeout/connection error 属于结果未知，不能安全地重复 create。
+                    confirmed_failure = "Roxy API 返回失败" in str(exc)
+                    if (
+                        attempt >= max_create_attempts
+                        or not confirmed_failure
+                        or not self._is_retryable_error(exc)
+                    ):
+                        raise
+                    try:
+                        existing_id = self._find_profile_by_name(str(body.get("windowName") or ""))
+                    except Exception as lookup_exc:
+                        raise RuntimeError(
+                            f"Roxy 创建环境失败，且无法核对是否已创建；为避免重复环境，本次不自动重试：{lookup_exc}"
+                        ) from exc
+                    if existing_id:
+                        logger.warning(
+                            "[Roxy] create 返回失败但环境已存在，复用核对结果：name=%s profile=%s",
+                            body.get("windowName") or "-", existing_id,
+                        )
+                        return existing_id
+                    delay = base_delay * attempt
+                    logger.warning(
+                        "[Roxy] create 明确失败且列表确认无同名环境，将在 %.1fs 后重试：attempt=%s/%s error=%s",
+                        delay, attempt, max_create_attempts, exc,
+                    )
+                    time.sleep(delay)
+        if result is None:
+            raise RuntimeError("Roxy 创建环境未返回结果")
         profile_id = _first(result, [
             ("id",), ("dirId",), ("dir_id",), ("profile_id",), ("profileId",), ("browser_id",),
             ("data", "id"), ("data", "dirId"), ("data", "dir_id"),
@@ -495,6 +641,9 @@ class RoxyBrowserClient:
                 create_payload = {"proxyInfo": _proxy_url_to_roxy_info(proxy_url)}
             pid = self.create_profile(payload=create_payload)
             created_by_run = True
+            # Roxy 浏览器独立于 WebUI 进程。先持久化登记临时环境；如果 WebUI
+            # 被 SIGTERM 或崩溃，下一次启动可以主动关闭并软删除孤儿环境。
+            _track_created_profile(pid)
             logger.info("[Roxy] 已创建临时环境：%s", pid)
 
         path = str(_cfg.ROXY_OPEN_PATH).format(profile_id=pid)
@@ -540,9 +689,9 @@ class RoxyBrowserClient:
             created_by_run=created_by_run,
         )
 
-    def close_profile(self, profile_id: str) -> None:
+    def close_profile(self, profile_id: str) -> bool:
         if not profile_id:
-            return
+            return False
         path = str(_cfg.ROXY_CLOSE_PATH).format(profile_id=profile_id)
         try:
             body = {
@@ -556,12 +705,14 @@ class RoxyBrowserClient:
                 json_body=body if str(_cfg.ROXY_CLOSE_METHOD).upper() != "GET" else None,
             )
             logger.info("[Roxy] 已关闭环境：%s", profile_id)
+            return True
         except Exception as exc:
             logger.warning("[Roxy] 关闭环境失败：%s", exc)
+            return False
 
-    def delete_profile(self, profile_id: str) -> None:
+    def delete_profile(self, profile_id: str) -> bool:
         if not profile_id:
-            return
+            return False
         path = str(getattr(_cfg, "ROXY_DELETE_PATH", "/browser/delete")).format(profile_id=profile_id)
         method = str(getattr(_cfg, "ROXY_DELETE_METHOD", "POST") or "POST")
         try:
@@ -578,8 +729,10 @@ class RoxyBrowserClient:
                 json_body=body if method.upper() != "GET" else None,
             )
             logger.info("[Roxy] 已删除环境：%s", profile_id)
+            return True
         except Exception as exc:
             logger.warning("[Roxy] 删除环境失败：%s", exc)
+            return False
 
     def cleanup_profile(self, opened: RoxyOpenResult | None) -> None:
         """任务结束清理：关闭窗口；一号一环境时删除本轮创建的 Profile。"""
@@ -599,7 +752,8 @@ class RoxyBrowserClient:
             if keep_open:
                 logger.info("[Roxy] ROXY_KEEP_BROWSER_OPEN=True，跳过删除环境：%s", opened.profile_id)
                 return
-            self.delete_profile(opened.profile_id)
+            if self.delete_profile(opened.profile_id):
+                _untrack_created_profile(opened.profile_id)
 
     @staticmethod
     def _extract_debugger_address(payload: dict) -> str | None:
@@ -634,3 +788,29 @@ class RoxyBrowserClient:
             if port.isdigit():
                 return f"127.0.0.1:{port}"
         return None
+
+
+def cleanup_orphaned_profiles() -> dict:
+    """关闭并软删除上次 WebUI 异常退出后遗留的临时环境。"""
+    with _PROFILE_REGISTRY_LOCK:
+        items = _load_profile_registry_locked()
+    if not items:
+        return {"found": 0, "cleaned": 0, "failed": 0}
+
+    client = RoxyBrowserClient()
+    cleaned = 0
+    failed = 0
+    try:
+        for item in items:
+            profile_id = str(item.get("profile_id") or "").strip()
+            if not profile_id:
+                continue
+            client.close_profile(profile_id)
+            if client.delete_profile(profile_id):
+                _untrack_created_profile(profile_id)
+                cleaned += 1
+            else:
+                failed += 1
+    finally:
+        client.http.close()
+    return {"found": len(items), "cleaned": cleaned, "failed": failed}

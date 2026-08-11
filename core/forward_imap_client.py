@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""读取 Hide My Email 实际转发目标的通用 IMAP 客户端。"""
+"""Hide My Email 转发收件适配层。
+
+OTP 由 Oracle Email Butler 的事件入库与 PostgreSQL 缓存提供；直接 IMAP
+仅保留给尚未迁移的历史封号邮件扫描功能。
+"""
 from __future__ import annotations
 
 import email as email_lib
@@ -10,7 +14,6 @@ from datetime import datetime, timezone
 from email.utils import parseaddr
 
 from config import email as _email_cfg
-from core.otp_utils import extract_otp, looks_like_openai_email
 from core.qqmail_client import _msg_to_dict
 
 logger = logging.getLogger(__name__)
@@ -50,23 +53,18 @@ def _connect() -> imaplib.IMAP4_SSL:
 
 
 def test_connection() -> dict:
-    server, port, username, _ = _settings()
-    mail = _connect()
     try:
-        status, data = mail.status("INBOX", "(MESSAGES)")
+        from core.email_butler_client import test_connection as test_butler
+
+        result = test_butler()
         return {
-            "method": "forward_imap",
-            "server": server,
-            "port": port,
-            "email_domain": username.rsplit("@", 1)[-1].lower() if "@" in username else "",
-            "status": str(status or ""),
-            "mailbox": str((data or [b""])[0], errors="replace")[:120] if data else "",
+            "method": "email_butler_pg",
+            "status": "ok",
+            "consumer": result.get("consumer") or "",
+            "capabilities": result.get("capabilities") or [],
         }
-    finally:
-        try:
-            mail.logout()
-        except Exception:
-            pass
+    except Exception as exc:
+        raise ForwardIMAPError(f"Email Butler 入站缓存不可用: {exc}") from exc
 
 
 def _recipient_headers(msg) -> str:
@@ -74,25 +72,6 @@ def _recipient_headers(msg) -> str:
     for name in ("To", "Delivered-To", "X-Original-To", "X-Forwarded-To", "Envelope-To"):
         values.extend(str(value or "") for value in (msg.get_all(name, []) or []))
     return " ".join(values).lower()
-
-
-def _recent_messages(mail: imaplib.IMAP4_SSL, after_ts: float, limit: int = 50) -> list[tuple[dict, str]]:
-    after_dt = datetime.fromtimestamp(after_ts - 60, tz=timezone.utc)
-    status, ids_data = mail.search(None, f'(SINCE "{after_dt.strftime("%d-%b-%Y")}")')
-    if status != "OK":
-        return []
-    ids = (ids_data[0].split() if ids_data and ids_data[0] else [])[-max(1, limit):]
-    out: list[tuple[dict, str]] = []
-    for mid in reversed(ids):
-        status, data = mail.fetch(mid, "(RFC822)")
-        if status != "OK" or not data or not isinstance(data[0], tuple):
-            continue
-        try:
-            msg = email_lib.message_from_bytes(data[0][1])
-            out.append((_msg_to_dict(msg), _recipient_headers(msg)))
-        except Exception as exc:
-            logger.debug("[HME Forward IMAP] 解析邮件失败: %s: %s", type(exc).__name__, exc)
-    return out
 
 
 def _messages_for_recipient(
@@ -189,58 +168,15 @@ def fetch_latest_otp(
     poll_interval: int | None = None,
     settle_seconds: int | None = None,
 ) -> str:
-    target = str(email or "").strip().lower()
-    after = float(after_ts if after_ts is not None else time.time())
-    wait_seconds = int(max_wait if max_wait is not None else _email_cfg.OTP_MAX_WAIT)
-    interval = max(1, int(poll_interval if poll_interval is not None else _email_cfg.OTP_POLL_INTERVAL))
-    settle = max(0, int(settle_seconds if settle_seconds is not None else _email_cfg.OTP_SETTLE_SECONDS))
-    deadline = time.monotonic() + max(0, wait_seconds)
-    best_otp: str | None = None
-    best_ts = float("-inf")
-    settle_until: float | None = None
+    try:
+        from core.email_butler_client import fetch_inbound_otp
 
-    logger.info("[HME Forward IMAP] 开始轮询转发收件箱，最长 %ss", wait_seconds)
-    while time.monotonic() < deadline:
-        mail = None
-        try:
-            mail = _connect()
-            messages = _recent_messages(mail, after)
-        except ForwardIMAPError as exc:
-            logger.warning("[HME Forward IMAP] 拉取失败: %s", exc)
-            messages = []
-        finally:
-            if mail is not None:
-                try:
-                    mail.logout()
-                except Exception:
-                    pass
-
-        for item, recipient_headers in messages:
-            if target and target not in recipient_headers:
-                continue
-            if not looks_like_openai_email(item):
-                continue
-            otp = extract_otp(item)
-            if not otp:
-                continue
-            raw_ts = str(item.get("date") or item.get("receivedDateTime") or "")
-            try:
-                ts = datetime.fromisoformat(raw_ts.replace("Z", "+00:00")).timestamp()
-            except (TypeError, ValueError):
-                ts = time.time()
-            if ts < after - 60:
-                continue
-            if ts > best_ts:
-                best_otp = otp
-                best_ts = ts
-                settle_until = time.monotonic() + settle
-            break
-
-        if best_otp and settle_until is not None and time.monotonic() >= settle_until:
-            logger.info("[HME Forward IMAP] 已取得新的 OpenAI OTP")
-            return best_otp
-        time.sleep(interval)
-
-    if best_otp:
-        return best_otp
-    raise ForwardIMAPError(f"等待隐藏邮箱 OTP 超时（>{wait_seconds}s）：转发收件箱没有新的 OpenAI 验证码邮件")
+        return fetch_inbound_otp(
+            email,
+            after_ts=after_ts,
+            max_wait=max_wait,
+            poll_interval=poll_interval,
+            settle_seconds=settle_seconds,
+        )
+    except Exception as exc:
+        raise ForwardIMAPError(f"Email Butler PG 缓存取码失败: {exc}") from exc

@@ -70,24 +70,41 @@ def _request(
     json: dict | None = None,
     api_base: str | None = None,
     api_key: str | None = None,
+    timeout: int | float | None = None,
+    retry_connection_error: bool = False,
 ) -> dict:
-    try:
-        response = requests.request(
-            method,
-            _api_base(api_base) + path,
-            params=params,
-            json=json,
-            headers={
-                "Authorization": f"Bearer {_api_key(api_key)}",
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-            },
-            timeout=_request_timeout(),
-        )
-    except requests.RequestException as exc:
-        raise EmailButlerClientError(
-            f"Email Butler 请求失败 ({path}): {type(exc).__name__}: {exc}"
-        ) from exc
+    attempts = 2 if retry_connection_error else 1
+    for attempt in range(1, attempts + 1):
+        try:
+            response = requests.request(
+                method,
+                _api_base(api_base) + path,
+                params=params,
+                json=json,
+                headers={
+                    "Authorization": f"Bearer {_api_key(api_key)}",
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                },
+                timeout=timeout if timeout is not None else _request_timeout(),
+            )
+            break
+        except requests.ConnectionError as exc:
+            if attempt < attempts:
+                logger.warning(
+                    "[EmailButler] 连接瞬时中断，0.5s 后重试一次：path=%s error=%s",
+                    path,
+                    str(exc)[:180],
+                )
+                time.sleep(0.5)
+                continue
+            raise EmailButlerClientError(
+                f"Email Butler 请求失败 ({path}): {type(exc).__name__}: {exc}"
+            ) from exc
+        except requests.RequestException as exc:
+            raise EmailButlerClientError(
+                f"Email Butler 请求失败 ({path}): {type(exc).__name__}: {exc}"
+            ) from exc
 
     try:
         payload = response.json()
@@ -113,7 +130,13 @@ def test_connection(*, api_base: str | None = None, api_key: str | None = None) 
     payload = _request("GET", "/me", api_base=api_base, api_key=api_key)
     policy = payload.get("policy") if isinstance(payload.get("policy"), dict) else {}
     capabilities = payload.get("capabilities") if isinstance(payload.get("capabilities"), list) else []
-    required = {"mailboxes.create", "mailboxes.messages", "mailboxes.release", "signals.scan"}
+    required = {
+        "mailboxes.create",
+        "mailboxes.messages",
+        "mailboxes.release",
+        "signals.scan",
+        "inbound.code",
+    }
     missing = sorted(required.difference(str(item) for item in capabilities))
     if missing:
         raise EmailButlerClientError(f"Email Butler 缺少必要能力: {', '.join(missing)}")
@@ -256,6 +279,52 @@ def _message_otp(payload: dict) -> str | None:
         if extracted:
             return extracted
     return None
+
+
+def fetch_inbound_otp(
+    email: str,
+    after_ts: float | None = None,
+    max_wait: int | None = None,
+    poll_interval: int | None = None,
+    settle_seconds: int | None = None,
+) -> str:
+    """Wait on Email Butler's PG-backed forwarded-mail cache.
+
+    The server performs one initial exact query and then waits on PostgreSQL
+    LISTEN/NOTIFY. This client does not connect to Gmail or poll the API in a
+    loop; ``poll_interval``/``settle_seconds`` remain accepted for the common
+    mail-provider interface.
+    """
+    target = _cache_key(email)
+    if "@" not in target:
+        raise EmailButlerClientError("待查询的转发邮箱地址无效")
+    wait_seconds = max(
+        1,
+        int(max_wait if max_wait is not None else _email_cfg.OTP_MAX_WAIT),
+    )
+    anchor = float(after_ts if after_ts is not None else time.time()) - 30
+    since = datetime.fromtimestamp(anchor, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    logger.info("[EmailButler] 等待 PG 入站验证码：%s，最长 %ss", target, wait_seconds)
+    payload = _request(
+        "POST",
+        "/inbound/code",
+        json={
+            "email": target,
+            "since": since,
+            "timeout_seconds": wait_seconds,
+        },
+        timeout=max(_request_timeout(), wait_seconds + 10),
+        # 等待入站通知是只读、幂等操作；Oracle/Nginx 偶发在建连阶段断开时，
+        # 立即重连一次即可继续等待，不需要重新扫描 Gmail。
+        retry_connection_error=True,
+    )
+    otp = _message_otp(payload)
+    if otp:
+        logger.info("[EmailButler] 已从 PG 入站缓存取得 OTP")
+        return otp
+    raise EmailButlerClientError(
+        f"等待 Email Butler 入站验证码超时（>{wait_seconds}s）：{target}"
+    )
 
 
 def fetch_latest_otp(

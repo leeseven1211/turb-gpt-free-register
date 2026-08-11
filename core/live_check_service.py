@@ -10,7 +10,6 @@ from pathlib import Path
 
 from core import db
 from core.account_liveness import check_account_liveness, log_path
-from core.chatgpt_plan import resolve_plan_check_route
 
 logger = logging.getLogger(__name__)
 
@@ -39,14 +38,22 @@ def _append_log(email: str, line: str, *, clear: bool = False) -> None:
 
 
 def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: str) -> dict:
+    account_route = None
     try:
         with _LOCK:
             _RUNNING.add(int(account_id))
         if not db.mark_account_live_check_running(account_id):
             _append_log(email, "[查活] 账号已删除或查活状态已被重置，取消执行")
             return {"ok": False, "status": "failed", "error": "账号已删除或查活状态已被重置"}
-        route = resolve_plan_check_route(explicit_proxy=proxy)
-        selected_proxy = route.get("proxy")
+        from core.account_proxy import acquire_account_proxy
+        account_route = acquire_account_proxy(
+            account_id=account_id,
+            email=email,
+            purpose="live-check",
+            explicit_proxy=proxy,
+        )
+        route = account_route.public_dict()
+        selected_proxy = account_route.proxy_url
         _append_log(
             email,
             "[查活] 开始后台执行 "
@@ -55,18 +62,12 @@ def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: 
             f"fallback_reason={route.get('proxy_fallback_reason') or '-'}"
         )
         result = check_account_liveness(email, proxy=selected_proxy, clear_log=False)
-        # 早期 providers/csrf 403 通常是该出口被 CF 拦截，不代表账号死亡。
-        # auto/proxy 模式下如果用了代理，额外直连兜底一次，便于和套餐查询的 auto 语义保持接近。
-        err_text = str(result.get("error") or "")
-        if (
-            not result.get("ok")
-            and result.get("status") == "failed"
-            and "403" in err_text
-            and selected_proxy
-            and str(route.get("network_route") or "") == "proxy"
-        ):
-            _append_log(email, "[查活] 代理出口收到 403，尝试直连兜底一次")
-            result = check_account_liveness(email, proxy="", clear_log=False)
+        result.update({
+            "proxy_provider": route.get("proxy_provider"),
+            "proxy_region": route.get("proxy_region"),
+            "network_route": route.get("network_route"),
+            "proxy_used": route.get("proxy_used"),
+        })
         db.update_account_liveness(account_id, result)
         if result.get("ok"):
             _append_log(email, "[查活] 完成：账号正常，已刷新最新 AT/accessToken")
@@ -93,6 +94,8 @@ def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: 
             pass
         return result
     finally:
+        if account_route is not None:
+            account_route.release(reason=f"live-check-{account_id}")
         with _LOCK:
             _RUNNING.discard(int(account_id))
         _QUEUE_SLOTS.release()

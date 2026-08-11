@@ -27,6 +27,34 @@ class ForwardIMAPTests(unittest.TestCase):
             with self.assertRaises(client.ForwardIMAPError):
                 client._settings()
 
+    @patch("core.email_butler_client.test_connection")
+    def test_connection_uses_email_butler_pg_cache(self, test_butler):
+        test_butler.return_value = {
+            "consumer": "turb",
+            "capabilities": ["inbound.code"],
+        }
+        result = client.test_connection()
+        self.assertEqual(result["method"], "email_butler_pg")
+        self.assertEqual(result["status"], "ok")
+
+    @patch("core.email_butler_client.fetch_inbound_otp", return_value="123456")
+    def test_fetch_latest_otp_delegates_to_pg_cache(self, fetch):
+        result = client.fetch_latest_otp(
+            "alias@icloud.com",
+            after_ts=123.0,
+            max_wait=10,
+            poll_interval=2,
+            settle_seconds=0,
+        )
+        self.assertEqual(result, "123456")
+        fetch.assert_called_once_with(
+            "alias@icloud.com",
+            after_ts=123.0,
+            max_wait=10,
+            poll_interval=2,
+            settle_seconds=0,
+        )
+
     def test_deactivation_scan_matches_forwarded_alias_without_returning_body(self):
         class Mail:
             def logout(self):

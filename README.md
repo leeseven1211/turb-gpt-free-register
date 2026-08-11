@@ -75,6 +75,7 @@ WebUI 启动注册前会显示“本次注册邮箱来源”下拉框，操作�
   - 本地 L 取号服务，见 `L_API.md`
 - 手机验证支持自动取号、填号、收码、提交、失败换号重试。
 - Codex 凭证落盘到 `codex_accounts/`。
+- 账号页可把已经完成的 Codex OAuth 凭证单个或批量上传到 sub2api；旧的 Codex Agent Token 生成链路已经移除，OAuth 凭证是唯一的 Codex 授权产物。
 
 ### WebUI
 
@@ -85,6 +86,7 @@ WebUI 启动注册前会显示“本次注册邮箱来源”下拉框，操作�
 - 管理账号、邮箱池、Codex 凭证；账号页支持复制全部/选中整行，邮箱池列表展示导入时间、已用时间和状态。
 - 配置页支持热加载，保存后无需重启。
 - Roxy 团队/项目可在配置页获取并保存。
+- 根据当前邮箱、代理、浏览器、Codex、提链和 sub2api 配置动态判断功能是否可用；缺少必要配置时，前端按钮会禁用，后端接口也会拒绝执行并返回具体原因。
 - 批次进度按邮箱逐行展示，包含拉邮箱、打开浏览器、打开注册页、提交邮箱、邮箱验证码、填写资料、获取 Token、Codex 等阶段；顶部显示成功/失败/运行/等待和总耗时。
 
 ---
@@ -134,7 +136,7 @@ cp .env.example .env
 - `ROXY_API_TOKEN`
 - `QQ_IMAP_PASSWORD`
 - `ICLOUD_HME_API_TOKEN`（sidecar 如启用接口鉴权）
-- `ICLOUD_HME_FORWARD_IMAP_PASSWORD`（隐藏邮箱转发到 Gmail 时的 Google 应用专用密码）
+- `ICLOUD_HME_FORWARD_IMAP_PASSWORD`（仅旧版直接 IMAP/历史封号扫描使用）
 - `CLOAK_LICENSE_KEY`（可选；更推荐使用 Cloak CLI 的本机安全存储）
 - `PROXY_1024_API_URL`
 - `CLOUDFLARE_API_KEY` / `CLOUDFLARE_CUSTOM_AUTH`（`EMAIL_SOURCE=cloudflare` 时）
@@ -250,29 +252,28 @@ ICLOUD_HME_ACCOUNT_ID=你的_sidecar_账号ID
 ICLOUD_HME_AUTO_CREATE=False
 ```
 
-turb 只保存别名库存与领取状态；Apple Cookie 和 iCloud App 专用密码保留在 sidecar 中。若使用 Gmail 转发收码，Google 应用专用密码仅保存在 turb 的本地 `.env`，不得写入 README 或提交 Git。每个注册任务领取一个别名，注册成功后永久占用；明确未消耗的失败任务才会把别名退回可用池。默认只复用已同步别名，库存为空时不会自动创建；确需自动补充时再开启 `ICLOUD_HME_AUTO_CREATE`。
+turb 只保存别名库存与领取状态；Apple Cookie 和 iCloud App 专用密码保留在 sidecar 中。若使用 Gmail 转发收码，Oracle 上的 `goimapnotify` 会自动接收新邮件并写入 Email Butler PostgreSQL，注册任务不再各自登录 Gmail IMAP。每个注册任务领取一个别名，注册成功后永久占用；明确未消耗的失败任务才会把别名退回可用池。默认只复用已同步别名，库存为空时不会自动创建；确需自动补充时再开启 `ICLOUD_HME_AUTO_CREATE`。
 
 收码前必须确认以下链路一致：
 
 ```text
-隐藏邮箱别名 → Apple“转发到”地址 → sidecar 实际读取的 IMAP 邮箱
+隐藏邮箱别名 → Apple“转发到”Gmail → Oracle IMAP IDLE → Email Butler PG
 ```
 
 - sidecar 使用 Apple App 专用密码连接 `imap.mail.me.com` 时，设置 `ICLOUD_HME_INBOX_MODE=sidecar`，且 Apple“隐藏邮件地址 → 转发到”必须选择同一个 `@icloud.com` 邮箱。
-- 如果隐藏邮箱实际转发到 Gmail，使用 `ICLOUD_HME_INBOX_MODE=forward_imap`，并配置 Gmail 地址与 Google 应用专用密码：
+- 如果隐藏邮箱实际转发到 Gmail，使用 `ICLOUD_HME_INBOX_MODE=forward_butler`，并配置 Gmail 转发目标和 Email Butler API：
 
 ```dotenv
-ICLOUD_HME_INBOX_MODE=forward_imap
-ICLOUD_HME_FORWARD_IMAP_SERVER=imap.gmail.com
-ICLOUD_HME_FORWARD_IMAP_PORT=993
+ICLOUD_HME_INBOX_MODE=forward_butler
 ICLOUD_HME_FORWARD_IMAP_EMAIL=你的_Gmail_地址
-ICLOUD_HME_FORWARD_IMAP_PASSWORD=你的_Google_应用专用密码
+EMAIL_BUTLER_API_BASE=https://你的服务/email-butler/v1
+EMAIL_BUTLER_API_KEY=你的客户端_Key
 ```
 
-- Google 应用专用密码需要 Google 账号开启两步验证后在“应用专用密码”页面生成；它不是日常登录密码。程序会自动移除密码显示中的空格。
+- Gmail 应用专用密码只保存在 Oracle 的 IMAP 通知服务中；turb 的 OTP 流程不再需要这份密码。
 - Apple 账号页面“隐藏邮件地址 → 转发到”的已选地址和 sidecar 返回的 `forwardToEmail` 才是转发目标的依据，不要根据当前浏览器登录的是哪个 Gmail 账号推断。
 - 新版 sidecar 会在别名列表返回 `forwardToEmail`。turb 同步时只启用与当前收件模式匹配的别名，避免把验证码发到 Gmail 却轮询 iCloud IMAP 的假成功。
-- 连接测试返回 `inbox_method=forward_imap` 只说明目标 IMAP 可登录；还应确认同步结果的 `forward_incompatible=0`。投产前再用一个真实注册任务验证别名转发、OTP 匹配和账号落库全链路。
+- 连接测试应返回 `inbox_method=email_butler_pg`，同时确认同步结果的 `forward_incompatible=0`。投产前再用一个真实注册任务验证别名转发、事件入库、OTP 匹配和账号落库全链路。
 - iCloud 创建别名有频率/数量限制。批量运行建议预先同步库存并保持 `ICLOUD_HME_AUTO_CREATE=False`，不要在遇到限流后高频重试。
 
 sidecar 本地启动示例（具体账号导入方式以 sidecar 自带 README 为准）：
@@ -477,13 +478,21 @@ PROXY_1024_MAX_ATTEMPTS=5
 PROXY_1024_VALIDATE=True
 PROXY_1024_RECENT_TTL=1800
 PROXY_1024_ACQUIRE_INTERVAL=0.6
+ACCOUNT_ACTION_PROXY_MODE=registration
 ```
 
 - 客户端会强制 `num=1`，保证一个注册任务只领取一个代理端点。
+- 平台返回代理后会检测实际出口国家；实际国家与请求国家不一致时会拒绝并重新提取。
 - `PROXY_1024_ROTATE_SESSION_TIME=True` 会按任务 ID 在基础时长到 120 分钟间派生不同的 `time` 参数，避免平台在相同 `region/time` 窗口内返回同一粘性会话。任务结束只释放本地租约；白名单 API 没有单独的远程释放调用。
 - OpenAI 注册实测优先固定 `region=US`。`Rand` 可能落到画像不完整或高风控地区，增加挑战概率。
 - 粘性时间延长本身不产生流量，只有浏览器实际发出请求才消耗代理流量。30 分钟是注册 + 邮件等待的最低建议值，必要时可设更长。
 - 日志和 UI 只应显示脱敏后的代理端点/出口 IP；完整 API URL 属于私密配置，只放 `.env`。
+
+`ACCOUNT_ACTION_PROXY_MODE=registration` 会让查套餐、查活和手动 Codex OAuth
+跟随注册代理来源：注册使用 1024Proxy 时，每个账号功能会按该账号注册国家重新申请一条独立租约，
+完成后立即释放；注册使用静态代理池时则继续从池中抽取。邮箱、短信、CPA/Sub2、提链服务、
+Roxy/Skyvern 控制 API 等第三方或本地接口保持直连，不消耗住宅代理流量。批量账号功能不会让整批
+账号共用同一个平台 IP。
 
 ---
 
@@ -509,7 +518,7 @@ CODEX_OAUTH_DRIVER = "browser_use"  # 可选 protocol / roxy / cloak / browser_u
 SMS_PROVIDER = "l"        # 可选 grizzly / l / h
 SMS_API_KEY = "你的 GrizzlySMS key"  # 仅 GrizzlySMS 需要
 SMS_SERVICE = "openai"
-SMS_COUNTRY = "国家代码"
+SMS_COUNTRY = "117,2,148" # Grizzly 可按顺序配置备用国家；无号/超价时自动切换
 SMS_MAX_PRICE = ""       # 最高可接受单号价格，留空=不限；GrizzlySMS/L 会透传 maxPrice
 SMS_MAX_RETRIES = 10
 SMS_CODE_WAIT = 120
@@ -522,6 +531,15 @@ H_API_BASE = "http://localhost:8788"
 H_ADMIN_AUTH_CODE = "你的H后台授权码"
 ```
 
+`SMS_CODE_WAIT` 是常规等待时长。使用 GrizzlySMS 时，为避免旧号码在换号后才收到迟到验证码，
+程序会继续守候当前号码到约 5 分钟取消窗口，并确认旧订单已取消或自然终止后才申请下一个号码。
+
+GrizzlySMS 的订单取消不是“取号后立即取消”：程序会把待取消订单持久化到
+`run/sms_cancel_queue.json`，由单一后台 worker 根据平台允许的时间执行取消。
+`EARLY_CANCEL_DENIED` 会按平台返回时间或退避策略延后处理，不会高频轮询；WebUI 重启后会自动恢复队列。
+`run/` 是运行时私有目录，不得提交 Git。手机号国家选择会按号码国际区号同步页面国家选项；如果页面明确只允许
+WhatsApp 而不是 SMS，当前号码会判为不可用并进入换号流程。
+
 CPA 授权地址来源：
 
 ```python
@@ -529,6 +547,47 @@ CODEX_AUTH_URL_SOURCE = "cpa"
 CPA_MANAGEMENT_URL = "你的CPA管理地址"
 CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 ```
+
+### 当前设计与适配规则
+
+下面这些规则同时适用于 WebUI 自动注册、单账号操作、批量操作和 CLI。修改相关功能时必须一起检查所有入口，不能只修其中一条链路。
+
+#### 邮件验证码
+
+- iCloud 隐藏邮箱转发到 Gmail 时，生产链路固定为 `Gmail IMAP IDLE → Email Butler PostgreSQL → turb HTTP API`。每封新邮件由 Oracle 通知进程主动写入 PG；注册任务只按邮箱地址和时间窗口查询已入库事件，不再为每个账号重复连接或扫描 Gmail IMAP。
+- `ICLOUD_HME_INBOX_MODE=forward_butler` 是当前配置；旧值 `forward_imap` 只作为兼容别名映射到 Butler，不代表 OTP 会重新直连 IMAP。
+- SQLite 只用于导入项目早期遗留数据，不得作为生产 Email Butler/OTP 事件库。turb 自身的账号、邮箱池和任务状态目前仍由 `core/db.py` 管理本地 JSON/TXT 文件；不要把这两类存储混为一谈。
+- OTP 查询必须携带任务开始时间并按目标别名精确匹配，避免并发任务互相拿错验证码。轮询间隔由 `OTP_POLL_INTERVAL` 控制，Butler 已经接收到邮件时只做轻量查询。
+
+#### 代理与地区
+
+- `REGISTRATION_PROXY_MODE=1024` 时必须“失败即停止”：提取、出口检测或地区校验失败后不得静默回退到 `PROXY_POOL`、`127.0.0.1` 或直连。
+- 1024Proxy 每个注册任务领取独立租约；实际出口国家会写入任务和账号。注册结束后的查套餐、查活和独立 Codex OAuth 由 `ACCOUNT_ACTION_PROXY_MODE` 统一管理，默认按账号注册国家领取新的短期租约。
+- 注册完成后立即查套餐时，优先复用仍有效的注册代理并在释放前同步落库，从而保证套餐/Plus 资格查询与注册出口一致；历史账号或手动操作再按账号已保存地区领取线路。
+- 住宅代理只用于访问 OpenAI/ChatGPT 的账号功能。邮箱、短信、CPA、sub2api、提链服务、Roxy 控制 API 和其他本地接口保持直连，不得套用住宅代理，也不得把系统 `HTTP_PROXY/HTTPS_PROXY` 意外注入这些客户端。
+- UI 中选择的地区、1024Proxy API URL 的 `region` 参数、Roxy Profile 的代理字段、任务日志与账号记录必须保持一致。完整代理 URL、用户名和密码只允许保存在 `.env`，日志和 UI 只能显示脱敏信息。
+
+#### Roxy 环境与登录态
+
+- `ROXY_ONE_PROFILE_PER_ACCOUNT=True` 时，每个注册任务创建一个唯一临时 Profile；创建请求超时或断连属于“结果未知”，客户端会先按唯一环境名查询是否已经创建成功，不能盲目重试并制造孤儿环境。
+- 默认在任务结束时关闭浏览器，并在 `ROXY_DELETE_PROFILE_AFTER_RUN=True` 时删除临时 Profile。停止任务不等于用户手动关闭窗口；清理逻辑仍应执行。只有调试时才开启 `ROXY_KEEP_BROWSER_OPEN=True`，调试完成后必须关闭。
+- 注册后紧接着执行 Codex OAuth 时，复用同一个 driver、Profile、代理和 ChatGPT 登录态，授权 URL 不强制 `prompt=login`；若出现账号选择器，只允许选择与当前任务邮箱完全匹配的账号。
+- 从账号页独立补跑 Codex 时没有可信的注册浏览器上下文，因此使用新环境和账号功能代理重新登录。这与“注册后立即 OAuth 复用登录态”是两个不同场景。
+- Roxy 免费版界面显示的 5 个 Profile/窗口额度不等于整条注册链路必然能稳定并发 5。实际并发还受住宅代理提取频率、邮箱库存、OTP、接码平台和 OpenAI 风控限制；首次部署先跑通单任务，再逐步提高并发。
+
+#### Codex、接码与 sub2api
+
+- Codex 的标准产物是 `codex_accounts/` 下的 OAuth JSON。旧 Codex Agent Token 生成、下载和上传接口已经移除；sub2api 导入直接上传 OAuth JSON，并支持按账号更新已有凭证。
+- 注册成功不因 Codex 失败而回滚；账号正常保存，Codex 标记失败并允许单独补跑。补跑停止信号必须贯穿邮箱 OTP、取号、短信等待和浏览器流程，不能被普通换号异常吞掉。
+- GrizzlySMS 支持在 `SMS_COUNTRY` 中按顺序配置备用国家，并透传 `SMS_MAX_PRICE`。只有无号、超价、号码被拒或通道不匹配时才切换；同一旧订单未确认结束前不得并行申请新号码。
+- sub2api、CPA 和短信平台是第三方控制面请求，默认直连；它们的鉴权字段必须放在 `.env`，不得写入源码、README、日志或数据库导出。
+
+#### WebUI 与配置变更
+
+- `/api/capabilities` 是前端功能开关的依据，但后端接口仍必须调用同一套可用性检查，不能只靠隐藏/禁用按钮保证安全。
+- 配置保存并热加载后，要同时刷新功能可用性和注册邮箱来源。后台任务启动前读取最新配置，已经运行的任务保持其提交时的邮箱来源和已领取资源，不在途中静默换源。
+- 新增、删除或重命名配置时，必须同步检查 `config/*.py`、`config/__init__.py`、`webui/config_editor.py`、`.env.example`、README、CLI/WebUI/自动任务/批量任务入口及测试。涉及代理、邮箱、Codex 或数据结构的改动，还要检查账号页、任务恢复、导入导出和部署配置。
+- 提交前至少运行完整单元测试；涉及真实浏览器链路时，按“单任务 → 小并发”顺序验收。`.env`、`run/`、`logs/`、账号、邮箱池、Codex 凭证和生产数据库内容永远不得提交。
 
 ---
 
@@ -587,7 +646,7 @@ WebUI 页面说明：
 | 页面 | 功能 |
 |---|---|
 | 注册 | 设置注册数量、线程数，启动批量注册，查看任务和日志 |
-| 账号 | 查看账号、复制 token、补跑 Codex、批量删除账号 |
+| 账号 | 查看账号、复制 token、补跑 Codex、查套餐/查活、上传 Codex OAuth 凭证到 sub2api、批量删除账号 |
 | Codex 授权 | 查看/下载/删除 `codex_accounts/` 凭证 |
 | 邮箱池 | 导入邮箱、筛选来源、标记可用/失败、删除邮箱 |
 | 配置 | 修改运行配置并热加载，含 Roxy、Codex、邮箱、代理、人工节奏等 |
@@ -640,6 +699,7 @@ PROXY_1024_MAX_ATTEMPTS=5
 PROXY_1024_VALIDATE=True
 PROXY_1024_RECENT_TTL=1800
 PROXY_1024_ACQUIRE_INTERVAL=0.6
+ACCOUNT_ACTION_PROXY_MODE=registration
 
 # WebUI 启用 Email Butler 与 iCloud 两个可选邮箱来源；本地通过 HTTPS 直连生产 Butler，不需要 SSH 隧道
 USE_EMAIL_SERVICE=True
@@ -656,11 +716,11 @@ ICLOUD_HME_ACCOUNT_ID=请替换
 ICLOUD_HME_API_TOKEN=
 ICLOUD_HME_REQUEST_TIMEOUT=45
 ICLOUD_HME_SYNC_TTL=300
-ICLOUD_HME_INBOX_MODE=forward_imap
+ICLOUD_HME_INBOX_MODE=forward_butler
 ICLOUD_HME_FORWARD_IMAP_SERVER=imap.gmail.com
 ICLOUD_HME_FORWARD_IMAP_PORT=993
 ICLOUD_HME_FORWARD_IMAP_EMAIL=请替换为实际转发_Gmail
-ICLOUD_HME_FORWARD_IMAP_PASSWORD=请替换为_Google_应用专用密码
+ICLOUD_HME_FORWARD_IMAP_PASSWORD=
 ICLOUD_HME_AUTO_CREATE=False
 ICLOUD_HME_CREATE_LABEL_PREFIX=turb
 ```
@@ -887,9 +947,11 @@ accounts/20260709-10个-3线程/
   ↓
 进入 ChatGPT，读取 /api/auth/session accessToken
   ↓
+使用当前注册代理查询套餐和 Plus 试用资格并保存注册地区
+  ↓
 可选 2FA
   ↓
-可选 Codex OAuth
+可选 Codex OAuth（复用当前 Profile、代理和登录态）
   ↓
 保存账号与批次归档
   ↓
@@ -901,7 +963,7 @@ accounts/20260709-10个-3线程/
 ```text
 获取 Codex 授权地址（CPA 或 local PKCE）
   ↓
-Roxy 打开授权页
+注册后立即授权：复用现有 Roxy 登录态；独立补跑：创建新环境并重新登录
   ↓
 邮箱登录 + 邮箱 OTP
   ↓

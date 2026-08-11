@@ -173,6 +173,7 @@ def run_worker(
     fh: logging.FileHandler | None = None
     root_logger = logging.getLogger()
     result: dict = {"status": "failed", "ok": False, "message": "Codex 补跑未返回结果"}
+    account_route = None
     key = (email or "").strip().lower()
     try:
         with _RETRYING_LOCK:
@@ -216,7 +217,38 @@ def run_worker(
         logger.info("[Codex 补跑] 开始：%s", email)
         logger.info("[Codex 补跑] 阶段说明：获取授权地址 → 登录邮箱 → 邮箱 OTP → 手机验证 → 捕获 callback → 提交/保存凭证")
         check_stop_requested(email)
-        result = run_codex_oauth(email, force=True)
+        from config import codex as codex_cfg
+        from config import roxybrowser as roxy_cfg
+        oauth_driver = str(getattr(codex_cfg, "CODEX_OAUTH_DRIVER", "protocol") or "protocol").strip().lower()
+        if oauth_driver == "same_as_registration":
+            oauth_driver = str(getattr(roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
+        # Browser Use / Skyvern 的浏览器运行在云端，只能使用云服务自身的代理设置；
+        # protocol / Roxy / Cloak 才能注入本地申请的 1024Proxy 或静态代理池。
+        if oauth_driver not in {"browser_use", "browseruse", "browser-use", "bu", "skyvern", "sv"}:
+            from core.account_proxy import acquire_account_proxy
+            account = db.get_account_by_email(email) or {}
+            account_route = acquire_account_proxy(
+                account_id=int(account.get("id") or 0) or None,
+                email=email,
+                purpose="codex-oauth",
+            )
+            logger.info(
+                "[Codex 补跑] 账号网络：provider=%s region=%s route=%s proxy=%s",
+                account_route.provider,
+                account_route.region or "-",
+                account_route.public_dict().get("network_route"),
+                account_route.public_dict().get("proxy_used") or "-",
+            )
+        result = run_codex_oauth(
+            email,
+            proxy=(account_route.proxy_url if account_route is not None else None),
+            force=True,
+        )
+        if account_route is not None:
+            # 标准任务页需要展示补跑实际使用的平台/地区；只写公开元数据，绝不落代理凭据。
+            result["proxy_provider"] = account_route.provider
+            result["proxy_region"] = account_route.region
+            result["proxy_mode"] = account_route.mode
         check_stop_requested(email)
         logger.info(
             "[Codex 补跑] 结果：status=%s ok=%s file=%s callback=%s",
@@ -256,6 +288,8 @@ def run_worker(
                 root_logger.removeHandler(fh)
                 fh.close()
         finally:
+            if account_route is not None:
+                account_route.release(reason=f"codex-oauth-{email}")
             release(email)
             with _RETRYING_LOCK:
                 if key:

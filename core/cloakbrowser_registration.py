@@ -130,11 +130,14 @@ def run_cloak_registration(email: str, name: str, birthday: str, proxy: str = No
                 _check_manual_stop()
                 codex_result = run_roxy_codex_oauth(
                     email,
+                    proxy=proxy,
                     reuse_existing_profile=True,
                     existing_driver=driver,
                     existing_opened=opened,
                     force=True,
-                    clear_existing_state=True,
+                    # 当前 Cloak 环境刚完成这个账号的注册，直接复用登录态。
+                    # 若服务端仍要求登录，OAuth 页面会自行回落到邮箱 OTP 流程。
+                    clear_existing_state=False,
                 )
                 report_job_progress("codex", "success" if codex_result.get("ok") else "failed", str(codex_result.get("message") or "Codex OAuth 已完成")[:300])
             else:
@@ -150,6 +153,7 @@ def run_cloak_registration(email: str, name: str, birthday: str, proxy: str = No
             totp_secret=totp_secret,
             email_source=resolve_email_source(email),
             proxy_used=((opened.raw or {}).get("proxy") if opened else None) or proxy or None,
+            plan_check_proxy=proxy or None,
             batch_dir=batch_dir,
             extra={
                 "user": session_info.get("user"),

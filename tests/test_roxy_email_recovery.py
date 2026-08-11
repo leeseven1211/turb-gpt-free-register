@@ -132,6 +132,32 @@ class RoxyEmailRecoveryTests(unittest.TestCase):
         page_warmup.assert_called_once_with(driver, reason="reload_blank_auth_shell")
         type_text.assert_called_once_with(driver, email_input, "test@example.com", clear=True)
 
+    def test_otp_submit_timeout_is_stuck_not_accepted(self):
+        driver = _FakeDriver()
+        with patch.object(
+            roxy_registration, "_is_email_verification_page", return_value=True
+        ), patch.object(
+            roxy_registration,
+            "_email_otp_page_state",
+            return_value={"inputs": [], "errors": []},
+        ):
+            outcome = roxy_registration._wait_after_email_otp_submit(driver, timeout=0)
+
+        self.assertEqual(outcome, "stuck")
+
+    def test_otp_submit_timeout_with_error_is_invalid(self):
+        driver = _FakeDriver()
+        with patch.object(
+            roxy_registration, "_is_email_verification_page", return_value=True
+        ), patch.object(
+            roxy_registration,
+            "_email_otp_page_state",
+            return_value={"inputs": [{"ariaInvalid": "true"}], "errors": []},
+        ):
+            outcome = roxy_registration._wait_after_email_otp_submit(driver, timeout=0)
+
+        self.assertEqual(outcome, "invalid")
+
 
 if __name__ == "__main__":
     unittest.main()

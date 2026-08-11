@@ -480,7 +480,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "ICLOUD_HME_INBOX_MODE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
-        "label": "隐藏邮箱收件模式", "help": "sidecar=iCloud IMAP；forward_imap=读取实际转发 Gmail，当前转发到 Gmail 时选后者",
+        "label": "隐藏邮箱收件模式", "help": "sidecar=iCloud IMAP；forward_butler=Oracle 自动接收 Gmail 并从 Email Butler PG 缓存取码（forward_imap 旧值自动兼容）",
     },
     {
         "key": "ICLOUD_HME_FORWARD_IMAP_SERVER", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
@@ -497,7 +497,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "ICLOUD_HME_FORWARD_IMAP_PASSWORD", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
-        "label": "转发邮箱应用密码", "help": "Gmail 应用专用密码，不是 Google 登录密码；只保存在 .env",
+        "label": "旧版 IMAP 应用密码", "help": "仅历史封号邮件直接 IMAP 扫描使用；OTP 已改走 Email Butler PG，可留空",
         "storage": "env", "secret": True,
     },
     {
@@ -575,24 +575,33 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "PLAN_CHECK_PROXY_MODE", "file": "proxy.py", "type": "str", "group": "代理池",
-        "label": "套餐/Agent网络模式", "help": "用于查套餐和生成 Agent Token；auto=本地代理可用则走代理、未监听则直连；proxy=强制代理；direct=强制直连",
+        "label": "旧版套餐网络模式", "help": "仅兼容 CLI/旧接口；WebUI 查套餐、查活、Agent、Codex OAuth 使用“账号功能代理来源”",
     },
     {
         "key": "PLAN_CHECK_PROXY", "file": "proxy.py", "type": "str", "group": "代理池",
-        "label": "套餐/Agent专用代理", "help": "用于查套餐和生成 Agent Token；留空时 auto/proxy 从代理池选择。可能包含认证信息，仅保存到 .env",
+        "label": "旧版套餐专用代理", "help": "仅兼容 CLI/旧接口；留空时从代理池选择。可能包含认证信息，仅保存到 .env",
+        "storage": "env", "secret": True,
+    },
+    {
+        "key": "ACCOUNT_ACTION_PROXY_MODE", "file": "proxy.py", "type": "str", "group": "代理平台",
+        "label": "账号功能代理来源", "help": "registration=跟随注册代理来源（推荐）；1024=每个账号功能申请新租约；pool=使用静态代理池；direct=直连。适用于查套餐、查活和 Codex OAuth",
+    },
+    {
+        "key": "ACCOUNT_ACTION_PROXY", "file": "proxy.py", "type": "str", "group": "代理池",
+        "label": "账号功能固定代理", "help": "仅账号功能代理来源为 pool 时优先使用；留空则从代理池抽取。可能包含认证信息，仅保存到 .env",
         "storage": "env", "secret": True,
     },
     {
         "key": "PLAN_CHECK_TIMEOUT", "file": "proxy.py", "type": "float", "group": "代理池",
-        "label": "套餐/Agent超时(秒)", "help": "查套餐和生成 Agent Token 的单次请求超时，建议 10-20 秒；独立于注册请求超时",
+        "label": "套餐查询超时(秒)", "help": "查套餐的单次请求超时，建议 10-20 秒；独立于注册请求超时",
     },
     {
         "key": "PLAN_CHECK_MAX_ATTEMPTS", "file": "proxy.py", "type": "int", "group": "代理池",
-        "label": "套餐/Agent最大尝试次数", "help": "查套餐和生成 Agent Token 遇到网络错误、429、5xx 等临时错误时的重试次数，建议 2 次",
+        "label": "套餐查询最大尝试次数", "help": "查套餐遇到网络错误、429、5xx 等临时错误时的重试次数，建议 2 次",
     },
     {
         "key": "PLAN_CHECK_RETRY_DELAY", "file": "proxy.py", "type": "float", "group": "代理池",
-        "label": "套餐/Agent重试间隔(秒)", "help": "查套餐和生成 Agent Token 的重试间隔，按尝试次数递增；服务端 Retry-After 优先",
+        "label": "套餐查询重试间隔(秒)", "help": "查套餐的重试间隔，按尝试次数递增；服务端 Retry-After 优先",
     },
     {
         "key": "PLAN_CHECK_REGISTRATION_RECHECK_DELAY", "file": "proxy.py", "type": "float", "group": "代理池",
@@ -600,7 +609,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "PLAN_CHECK_WORKERS", "file": "proxy.py", "type": "int", "group": "代理池",
-        "label": "套餐查询并发数", "help": "自动、手动和批量查套餐共用；Agent Token 生成使用独立队列；建议 2-4 个线程",
+        "label": "套餐查询并发数", "help": "自动、手动和批量查套餐共用，建议 2-4 个线程",
     },
     {
         "key": "PLAN_CHECK_QUEUE_LIMIT", "file": "proxy.py", "type": "int", "group": "代理池",
@@ -608,11 +617,11 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "PLAN_CHECK_MIN_INTERVAL", "file": "proxy.py", "type": "float", "group": "代理池",
-        "label": "套餐/Agent请求最小间隔(秒)", "help": "限制查套餐和生成 Agent Token 的请求启动频率，降低 429 风险",
+        "label": "套餐请求最小间隔(秒)", "help": "限制查套餐请求的启动频率，降低 429 风险",
     },
     {
         "key": "PLAN_CHECK_JITTER", "file": "proxy.py", "type": "float", "group": "代理池",
-        "label": "套餐/Agent请求随机抖动(秒)", "help": "在查套餐和生成 Agent Token 的最小间隔上增加随机延迟，避免请求过于规律",
+        "label": "套餐请求随机抖动(秒)", "help": "在查套餐请求的最小间隔上增加随机延迟，避免请求过于规律",
     },
     # ---- 提链 ----
     {
@@ -634,16 +643,8 @@ EDITABLE_FIELDS = [
     },
     # ---- Codex 配置 ----
     {
-        "key": "SUB2API_AUTO_EXPORT", "file": "sub2api.py", "type": "bool", "group": "Codex",
-        "label": "Agent sub2 自动同步", "help": "生成 Codex Agent Token 成功后自动同步到 sub2api",
-    },
-    {
-        "key": "SUB2API_SYNC_MODE", "file": "sub2api.py", "type": "str", "group": "Codex",
-        "label": "Agent sub2 同步模式", "help": "api=直接上传接口；file=写本地json；both=接口+本地json",
-    },
-    {
         "key": "SUB2API_API_BASE", "file": "sub2api.py", "type": "str", "group": "Codex",
-        "label": "sub2 API基址", "help": "sub2api 服务地址；Agent Token 上传和 Codex OAuth 共用，例如 http://127.0.0.1:8080",
+        "label": "sub2 API基址", "help": "sub2api 服务地址；用于 Codex OAuth 授权和凭证上传，例如 http://127.0.0.1:8080",
     },
     {
         "key": "SUB2API_API_KEY", "file": "sub2api.py", "type": "str", "group": "Codex",
@@ -652,14 +653,6 @@ EDITABLE_FIELDS = [
     {
         "key": "SUB2API_API_TIMEOUT", "file": "sub2api.py", "type": "int", "group": "Codex",
         "label": "sub2 超时", "help": "sub2api 请求超时秒数",
-    },
-    {
-        "key": "SUB2API_OUTPUT_PATH", "file": "sub2api.py", "type": "str", "group": "Codex",
-        "label": "Agent sub2 本地路径", "help": "仅 SUB2API_SYNC_MODE=file/both 时使用；相对路径按项目根目录解析",
-    },
-    {
-        "key": "SUB2API_PROXY_KEY", "file": "sub2api.py", "type": "str", "group": "Codex",
-        "label": "Agent sub2 代理键", "help": "可选；写入 account.proxy_key，并在 proxies 为空时初始化 proxies[0].proxy_key",
     },
     # ---- 接码平台 ----
     # ---- Codex：基础 / CPA / sub2api 配置 ----
@@ -691,7 +684,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "SMS_COUNTRY", "file": "codex.py", "type": "str", "group": "接码平台",
-        "label": "国家代码", "help": "传给接码平台的 country；GrizzlySMS 常用：美国=187；H 通道作为 H_API.md 的 country",
+        "label": "国家代码", "help": "传给接码平台的 country；GrizzlySMS 可用逗号填写有序备用列表（如 117,2,148），无号/超价时自动切换；H/L 通道填写单个国家",
     },
     {
         "key": "SMS_SERVICE", "file": "codex.py", "type": "str", "group": "接码平台",
@@ -707,7 +700,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "SMS_CODE_WAIT", "file": "codex.py", "type": "int", "group": "接码平台",
-        "label": "单号等短信(秒)", "help": "单个号等待短信到达的最长秒数，超时则换号",
+        "label": "常规等短信(秒)", "help": "常规等待时长；Grizzly 超过此值后仍会守候迟到验证码到约5分钟，并确认旧订单终止后才换号",
     },
     {
         "key": "SMS_API_KEY", "file": "codex.py", "type": "str", "group": "接码平台",

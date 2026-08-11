@@ -1919,6 +1919,7 @@ def run_browser_use_registration(
                 totp_secret=totp_secret,
                 email_source=resolve_email_source(email),
                 proxy_used=proxy or f"{provider_prefix}:{session_info_open.proxy_country_code or 'default'}",
+                plan_check_proxy=proxy or None,
                 batch_dir=batch_dir,
                 extra={
                     "user": session_info.get("user"),

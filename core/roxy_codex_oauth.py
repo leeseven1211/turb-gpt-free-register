@@ -241,6 +241,35 @@ def _wait_for_otp_input(driver, timeout: int = 30) -> None:
     raise RuntimeError("等待 OTP 输入框超时，页面未出现验证码输入框")
 
 
+def _select_existing_account_if_present(driver, email: str) -> bool:
+    """登录态复用时选择当前邮箱账号，避免停在 account chooser。
+
+    OpenAI 的账号选择按钮没有稳定的文字按钮名，但可见文本会包含当前邮箱，
+    内部属性通常还带 session_id。只允许点击文本精确包含目标邮箱的元素，避免
+    多账号 Profile 下误选其它账号。
+    """
+    target = str(email or "").strip().lower()
+    if not target:
+        return False
+    try:
+        result = driver.execute_script(r"""
+        const target = String(arguments[0] || '').trim().toLowerCase();
+        const visible = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+        const actions = [...document.querySelectorAll('button,a,[role="button"]')].filter(visible);
+        const matched = actions.find(el => String(el.innerText || el.textContent || '').trim().toLowerCase().includes(target));
+        if (!matched) return {clicked:false, actionCount:actions.length};
+        matched.scrollIntoView({block:'center'});
+        matched.click();
+        return {clicked:true, actionCount:actions.length};
+        """, target) or {}
+        if result.get("clicked"):
+            logger.info("[Codex][Browser] 已选择当前登录账号，继续 OAuth（可见操作数=%s）", result.get("actionCount"))
+            return True
+    except Exception as exc:
+        logger.debug("[Codex][Browser] 当前账号选择探测失败：%s", str(exc)[:160])
+    return False
+
+
 def _fill_email_and_otp(driver, email: str, otp_provider, auth_url: str) -> None:
     otp_after_ts = time.time()
     logger.info("[Codex][Browser] 打开授权地址")
@@ -249,6 +278,8 @@ def _fill_email_and_otp(driver, email: str, otp_provider, auth_url: str) -> None
     human_delay("navigate")
     logger.info("[Codex][Browser] 授权页加载完成，检查是否需要邮箱登录")
     _maybe_accept(driver)
+    if _select_existing_account_if_present(driver, email):
+        human_delay("form")
 
     # 可能已经处于账号选择/授权页；如果有邮箱输入框则完整登录。
     # 非日本出口时按钮文案/顺序会变，不能按可见文字点“继续”，否则可能误点 Google。
@@ -532,12 +563,37 @@ def _phone_page_state(driver) -> dict:
           id: el.id || '', autocomplete: el.getAttribute('autocomplete') || '', placeholder: el.getAttribute('placeholder') || '',
           ariaInvalid: el.getAttribute('aria-invalid') || '', value: el.value || ''
         }));
+        const controls = [...document.querySelectorAll('button,a,label,[role=radio],[role=tab]')]
+          .filter(visible).map(el => ({
+            tag: el.tagName, role: el.getAttribute('role') || '',
+            text: (el.innerText || el.textContent || el.getAttribute('aria-label') || '').trim().slice(0, 160),
+            ariaChecked: el.getAttribute('aria-checked') || '',
+          }));
         const forms = [...document.querySelectorAll('form')].map(f => ({action: f.getAttribute('action') || ''}));
         const bodyText = (document.body?.innerText || '').slice(0, 1200);
-        return {url: location.href, radios, inputs, forms, bodyText};
+        return {url: location.href, radios, inputs, controls, forms, bodyText};
         """) or {}
     except Exception as exc:
         return {"error": f"{type(exc).__name__}: {exc}", "url": getattr(driver, 'current_url', '')}
+
+
+def _has_sms_word(text: str) -> bool:
+    value = str(text or '').lower()
+    return any(marker in value for marker in (
+        'sms', 'text message', 'text-message', '短信', '短訊',
+        'ショートメッセージ', 'テキストメッセージ',
+    ))
+
+
+def _body_indicates_whatsapp_only(state: dict) -> bool:
+    body = str(state.get('bodyText') or '')
+    if 'whatsapp' not in body.lower():
+        return False
+    radios = state.get('radios') or []
+    controls = state.get('controls') or []
+    has_sms_radio = any(_has_sms_word(str(r.get('value') or '')) for r in radios)
+    has_sms_control = any(_has_sms_word(str(c.get('text') or '')) for c in controls)
+    return not has_sms_radio and not has_sms_control and not _has_sms_word(body)
 
 
 def _select_sms_channel_or_raise(driver) -> None:
@@ -548,18 +604,31 @@ def _select_sms_channel_or_raise(driver) -> None:
     has_sms = any(str(r.get('value','')).lower() in ('sms', 'text', 'text_message', 'text-message') for r in radios)
     if has_whatsapp and not has_sms:
         raise RuntimeError(f"whatsapp_channel: 页面仅提供 WhatsApp 通道 state={state}")
-    # 选择 SMS/text radio。无 radio 时可能默认 SMS。
+    # 选择 SMS/text radio；新版页面也可能用 role=radio/tab、button 或 label。
     selected = driver.execute_script(r"""
     const radios = [...document.querySelectorAll('input[type=radio]')];
     const sms = radios.find(el => /^(sms|text|text_message|text-message)$/i.test(el.value || ''));
-    if (!sms) return false;
-    sms.click();
-    sms.dispatchEvent(new Event('input', {bubbles:true}));
-    sms.dispatchEvent(new Event('change', {bubbles:true}));
-    return true;
+    if (sms) {
+      sms.click();
+      sms.dispatchEvent(new Event('input', {bubbles:true}));
+      sms.dispatchEvent(new Event('change', {bubbles:true}));
+      return 'input-radio';
+    }
+    const visible = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+    const isSms = text => /(^|\b)(sms|text message)(\b|$)|短信|短訊|ショートメッセージ|テキストメッセージ/i.test(text || '');
+    const controls = [...document.querySelectorAll('button,a,label,[role=radio],[role=tab]')].filter(visible);
+    const control = controls.find(el => isSms((el.innerText || el.textContent || el.getAttribute('aria-label') || '').trim()));
+    if (!control) return false;
+    control.click();
+    return 'clickable-control';
     """)
     if selected:
-        logger.info("[Codex][Browser] 已选择 SMS 短信通道")
+        logger.info("[Codex][Browser] 已选择 SMS 短信通道：%s", selected)
+        return
+    # 旧逻辑把“无 input radio”一律当默认 SMS。OpenAI 新版页面会直接写明
+    # “通过 WhatsApp 发送”且没有通道控件，这时继续提交只会浪费 SMS 接码号。
+    if _body_indicates_whatsapp_only(state):
+        raise RuntimeError(f"whatsapp_channel: 当前授权页仅提供 WhatsApp，无法使用 SMS 接码 state={state}")
 
 
 def _is_phone_code_state(state: dict) -> bool:
@@ -674,6 +743,127 @@ def _ensure_add_phone_input(driver, *, reason: str = ""):
             )
 
 
+def _select_phone_country_by_calling_code(driver, phone: str, *, timeout: int = 8) -> dict:
+    """通过 React Aria 的可见国家列表选择与号码匹配的国家。
+
+    OpenAI 当前的国家选择器使用 React Aria Select。页面同时渲染了一个仅供无障碍使用的
+    隐藏 ``select``，直接修改它的 ``value`` 不会更新 React 状态；结果是界面/提交仍保留
+    默认国家（通常是美国），即使隐藏 phoneNumber 被临时改成了其它国家的 E.164 号码。
+
+    这里打开真实 listbox，按选项文案里的国际区号匹配号码，再用 Enter 选择。列表是虚拟
+    滚动的，因此逐屏扫描，而不是假设目标选项已经出现在 DOM 中。
+    """
+    digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
+    if not digits:
+        raise RuntimeError("手机号为空，无法选择国家代码")
+
+    info = driver.execute_script(r"""
+    const form = document.querySelector('form[action*="/add-phone" i]')
+      || [...document.querySelectorAll('form')].find(f => /add-phone/i.test(f.getAttribute('action') || ''));
+    const button = form?.querySelector('button[aria-haspopup="listbox"]');
+    const text = String(button?.innerText || button?.textContent || '').replace(/\s+/g, ' ').trim();
+    const match = text.match(/\+(\d{1,4})\b/);
+    return {hasButton: !!button, text, dialCode: match ? match[1] : '', expanded: button?.getAttribute('aria-expanded') || ''};
+    """) or {}
+    if not info.get("hasButton"):
+        # 兼容旧版原生 select 页面；调用方会退回现有 select 解析逻辑。
+        return {"selected": False, "dialCode": "", "selectedText": "", "countryKey": ""}
+
+    current_code = str(info.get("dialCode") or "")
+    if current_code and digits.startswith(current_code):
+        return {
+            "selected": True,
+            "changed": False,
+            "dialCode": current_code,
+            "selectedText": str(info.get("text") or ""),
+            "countryKey": "",
+        }
+
+    button = driver.execute_script(r"""
+    const form = document.querySelector('form[action*="/add-phone" i]')
+      || [...document.querySelectorAll('form')].find(f => /add-phone/i.test(f.getAttribute('action') || ''));
+    return form?.querySelector('button[aria-haspopup="listbox"]') || null;
+    """)
+    if not button:
+        raise RuntimeError("手机号国家选择按钮不存在")
+    try:
+        button.click()
+    except Exception:
+        driver.execute_script("arguments[0].click();", button)
+
+    end = time.time() + max(2, int(timeout or 8))
+    last = {}
+    while time.time() < end:
+        scan = driver.execute_script(r"""
+        const digits = String(arguments[0] || '');
+        const visible = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+        const list = [...document.querySelectorAll('[role="listbox"]')].find(visible);
+        if (!list) return {ready:false};
+        const candidates = [...list.querySelectorAll('[role="option"][data-key]')]
+          .filter(visible)
+          .map(el => {
+            const text = String(el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+            const match = text.match(/\+(\d{1,4})\b/);
+            return {el, text, code: match ? match[1] : '', key: el.getAttribute('data-key') || ''};
+          })
+          .filter(x => x.code && digits.startsWith(x.code))
+          .sort((a, b) => b.code.length - a.code.length);
+        if (candidates.length) {
+          const found = candidates[0];
+          return {ready:true, found:true, option:found.el, text:found.text, code:found.code, key:found.key};
+        }
+        const before = list.scrollTop;
+        const step = Math.max(120, Math.floor((list.clientHeight || 320) * 0.75));
+        const max = Math.max(0, list.scrollHeight - list.clientHeight);
+        list.scrollTop = Math.min(max, before + step);
+        list.dispatchEvent(new Event('scroll', {bubbles:true}));
+        return {ready:true, found:false, before, after:list.scrollTop, max};
+        """, digits) or {}
+        last = scan
+        if scan.get("option"):
+            option = scan["option"]
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'}); arguments[0].focus();", option)
+            time.sleep(0.12)
+            # React Aria 的 option 首次 click 可能只聚焦；Enter 会可靠触发 selection。
+            option.send_keys("\ue007")
+            selected_code = str(scan.get("code") or "")
+            selected_key = str(scan.get("key") or "")
+            selected_text = str(scan.get("text") or "")
+            verify_end = time.time() + 2.5
+            while time.time() < verify_end:
+                verify = driver.execute_script(r"""
+                const form = document.querySelector('form[action*="/add-phone" i]')
+                  || [...document.querySelectorAll('form')].find(f => /add-phone/i.test(f.getAttribute('action') || ''));
+                const button = form?.querySelector('button[aria-haspopup="listbox"]');
+                const hiddenSelect = form?.querySelector('[data-testid="hidden-select-container"] select');
+                const text = String(button?.innerText || button?.textContent || '').replace(/\s+/g, ' ').trim();
+                const match = text.match(/\+(\d{1,4})\b/);
+                return {text, dialCode:match ? match[1] : '', countryKey:hiddenSelect?.value || '', expanded:button?.getAttribute('aria-expanded') || ''};
+                """) or {}
+                if str(verify.get("dialCode") or "") == selected_code and (
+                    not selected_key or str(verify.get("countryKey") or "") == selected_key
+                ):
+                    return {
+                        "selected": True,
+                        "changed": True,
+                        "dialCode": selected_code,
+                        "selectedText": str(verify.get("text") or selected_text),
+                        "countryKey": str(verify.get("countryKey") or selected_key),
+                    }
+                time.sleep(0.1)
+            raise RuntimeError(f"手机号国家选择后未生效：expected_code={selected_code} expected_key={selected_key} actual={verify}")
+
+        if scan.get("ready") and scan.get("after") == scan.get("before") == scan.get("max"):
+            break
+        time.sleep(0.08)
+
+    try:
+        driver.switch_to.active_element.send_keys("\ue00c")  # Escape
+    except Exception:
+        pass
+    raise RuntimeError(f"手机号国家列表找不到匹配区号：phone=+{digits} last={last}")
+
+
 def _set_phone_value(driver, phone: str, *, timeout: int = 10) -> dict:
     """按 FlowPilot 第 9 步逻辑填写 add-phone 表单。
 
@@ -685,8 +875,38 @@ def _set_phone_value(driver, phone: str, *, timeout: int = 10) -> dict:
     """
     if not _has_strict_add_phone_form(driver):
         raise RuntimeError(f"当前不是 add-phone 手机号输入页，不能填写手机号: state={_phone_page_state(driver)}")
+
+    # PhoneInput 清空号码时会把国家恢复成默认值，因此必须先清空、再选国家；如果反过来，
+    # Backspace 会把刚选好的 CL/+56 重置回 US/+1。
+    initial_input = driver.execute_script(r"""
+    const visible = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+    const form = document.querySelector('form[action*="/add-phone" i]')
+      || [...document.querySelectorAll('form')].find(f => /add-phone/i.test(f.getAttribute('action') || ''));
+    return [...(form?.querySelectorAll('input[type="tel"],input[autocomplete="tel"],input[name="phone"],input[name="phone_number"]') || [])].find(visible) || null;
+    """)
+    if initial_input is None:
+        raise RuntimeError(f"手机号可见输入框不存在 state={_phone_page_state(driver)}")
+    try:
+        initial_input.click()
+        initial_input.send_keys("\ue03d", "a")  # Meta+A（macOS）
+        initial_input.send_keys("\ue003")       # Backspace
+        if str(initial_input.get_attribute("value") or ""):
+            initial_input.send_keys("\ue009", "a")  # Control+A 兜底
+            initial_input.send_keys("\ue003")
+    except Exception as exc:
+        raise RuntimeError(f"清空旧手机号失败：{type(exc).__name__}: {exc}") from exc
+
+    country = _select_phone_country_by_calling_code(driver, phone, timeout=timeout)
+    if country.get("changed"):
+        # DOM 上的 SelectValue/隐藏 select 会先更新；React PhoneInput 的内部 country state
+        # 稍后才提交。立即输入号码会被旧的 US state 重新格式化为 +1。
+        time.sleep(0.5)
     result = driver.execute_script(r"""
     const rawPhone = String(arguments[0] || '').trim();
+    const selectedDialCode = String(arguments[1] || '').trim();
+    const selectedCountryText = String(arguments[2] || '').trim();
+    const selectedCountryKey = String(arguments[3] || '').trim();
+    const countryWasChanged = !!arguments[4];
     const e164 = rawPhone.startsWith('+') ? rawPhone : ('+' + rawPhone.replace(/\D+/g, ''));
     const digits = e164.replace(/\D+/g, '');
     const visible = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
@@ -703,15 +923,15 @@ def _set_phone_value(driver, phone: str, *, timeout: int = 10) -> dict:
 
     const hiddenPhoneNumberInput = form.querySelector('input[name="phoneNumber"]');
     const select = form.querySelector('select');
-    let dialCode = '';
-    let selectedText = '';
-    let selectedChanged = false;
+    let dialCode = selectedDialCode;
+    let selectedText = selectedCountryText;
+    let selectedChanged = countryWasChanged;
     const optionDialCode = (opt) => {
       const text = String(opt?.textContent || opt?.label || opt?.value || '').replace(/\s+/g, ' ').trim();
       const m = text.match(/\+(\d{1,4})\b/);
       return m ? m[1] : '';
     };
-    if (select) {
+    if (select && !dialCode) {
       // 参考 FlowPilot ensureCountrySelected：按号码前缀选择对应国家/区号，避免默认国家与号码不一致。
       const options = [...select.options];
       const matched = options
@@ -739,43 +959,66 @@ def _set_phone_value(driver, phone: str, *, timeout: int = 10) -> dict:
       if (!visibleValue) visibleValue = e164;
     }
 
-    const setNativeValue = (el, value) => {
-      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-      const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-      el.focus();
-      if (setter) setter.call(el, ''); else el.value = '';
-      el.dispatchEvent(new Event('input', {bubbles:true}));
-      el.dispatchEvent(new Event('change', {bubbles:true}));
-      if (setter) setter.call(el, value); else el.value = value;
-      el.dispatchEvent(new Event('input', {bubbles:true}));
-      el.dispatchEvent(new Event('change', {bubbles:true}));
-    };
-
     phoneInput.scrollIntoView({block:'center'});
-    setNativeValue(phoneInput, visibleValue);
-    if (hiddenPhoneNumberInput) {
-      hiddenPhoneNumberInput.value = e164;
-      hiddenPhoneNumberInput.dispatchEvent(new Event('input', {bubbles:true}));
-      hiddenPhoneNumberInput.dispatchEvent(new Event('change', {bubbles:true}));
-    }
-    phoneInput.blur();
-    document.body?.focus?.();
     return {
       ok: true,
+      phoneInput,
       e164,
       visibleValue,
-      actualVisible: phoneInput.value || '',
-      hiddenValue: hiddenPhoneNumberInput ? (hiddenPhoneNumberInput.value || '') : '',
       dialCode,
       selectedText,
       selectedChanged,
+      countryKey: selectedCountryKey || (select ? (select.value || '') : ''),
       inputName: phoneInput.getAttribute('name') || '',
       inputId: phoneInput.id || '',
       url: location.href,
     };
-    """, phone)
+    """, phone, country.get("dialCode") or "", country.get("selectedText") or "", country.get("countryKey") or "", bool(country.get("changed")))
     if not result or not result.get("ok"):
         raise RuntimeError(f"手机号写入失败 result={result} state={_phone_page_state(driver)}")
+
+    # React Aria PhoneInput 必须走真实键盘事件。直接调用原生 value setter 虽然能短暂改变
+    # DOM，却会在下一次 React 更新时把国家恢复成默认值（实测为 US/+1）。
+    phone_input = result.pop("phoneInput", None)
+    if phone_input is None:
+        raise RuntimeError(f"手机号可见输入框不存在 result={result} state={_phone_page_state(driver)}")
+    try:
+        phone_input.click()
+        phone_input.send_keys(str(result.get("visibleValue") or ""))
+        phone_input.send_keys("\ue004")  # Tab，触发 blur/校验
+    except Exception as exc:
+        raise RuntimeError(f"手机号真实键盘输入失败：{type(exc).__name__}: {exc}") from exc
+
+    # 等 React 完成格式化并同步隐藏 E.164 字段，再做最终校验。
+    settle_end = time.time() + 2.5
+    values = {}
+    while time.time() < settle_end:
+        values = driver.execute_script(r"""
+        const form = document.querySelector('form[action*="/add-phone" i]')
+          || [...document.querySelectorAll('form')].find(f => /add-phone/i.test(f.getAttribute('action') || ''));
+        const visible = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+        const input = [...(form?.querySelectorAll('input[type="tel"],input[autocomplete="tel"],input[name="phone"],input[name="phone_number"]') || [])].find(visible);
+        const hidden = form?.querySelector('input[name="phoneNumber"]');
+        const button = form?.querySelector('button[aria-haspopup="listbox"]');
+        const select = form?.querySelector('[data-testid="hidden-select-container"] select');
+        return {
+          actualVisible: String(input?.value || ''),
+          hiddenValue: String(hidden?.value || ''),
+          selectedText: String(button?.innerText || button?.textContent || '').replace(/\s+/g, ' ').trim(),
+          countryKey: String(select?.value || ''),
+        };
+        """) or {}
+        result.update(values)
+        actual_digits_now = "".join(ch for ch in str(values.get("actualVisible") or "") if ch.isdigit())
+        hidden_digits_now = "".join(ch for ch in str(values.get("hiddenValue") or "") if ch.isdigit())
+        expected_digits_now = "".join(ch for ch in str(result.get("e164") or "") if ch.isdigit())
+        visible_digits_now = "".join(ch for ch in str(result.get("visibleValue") or "") if ch.isdigit())
+        if actual_digits_now in (visible_digits_now, expected_digits_now) and (
+            not values.get("hiddenValue") or hidden_digits_now == expected_digits_now
+        ):
+            break
+        time.sleep(0.1)
+
     actual = str(result.get("actualVisible") or "").strip()
     visible_value = str(result.get("visibleValue") or "").strip()
     hidden_value = str(result.get("hiddenValue") or "").strip()
@@ -826,7 +1069,9 @@ def _verify_add_phone_value_before_submit(driver, expected_e164: str) -> dict:
     const hiddenDigits = digits(hiddenValue);
     const expectedDigits = digits(expected);
     // 输入框可能被自动格式化，按数字比较；隐藏字段如果存在必须等于完整 E.164。
-    const ok = !!visibleDigits && visibleDigits === expectedDigits && (!hidden || hiddenDigits === expectedDigits);
+    const visibleMatches = visibleDigits === expectedDigits
+      || (!!hiddenDigits && hiddenDigits === expectedDigits && expectedDigits.endsWith(visibleDigits));
+    const ok = !!visibleDigits && visibleMatches && (!hidden || hiddenDigits === expectedDigits);
     return {ok, visibleValue, hiddenValue, expected, visibleDigits, hiddenDigits, expectedDigits, url: location.href};
     """, expected_e164)
     if not result or not result.get("ok"):
@@ -1026,15 +1271,16 @@ def _wait_after_phone_otp_submit(driver, timeout: int = 20) -> str:
 def _classify_phone_page_failure(state: dict) -> str:
     if _is_phone_code_state(state):
         return ''
-    # WhatsApp 用 DOM radio value 判断；其它发送失败用服务端/页面错误文本兜底。
+    # WhatsApp 可能是选中的 input radio，也可能是新版页面唯一提供的正文通道。
+    # 若页面同时出现 SMS 选项/文字，则不能仅凭 bodyText 含 WhatsApp 判失败。
     radios = state.get('radios') or []
     if any('whatsapp' in str(r.get('value','')).lower().replace(' ', '') and r.get('checked') for r in radios):
+        return 'whatsapp_channel'
+    if _body_indicates_whatsapp_only(state):
         return 'whatsapp_channel'
     text = str(state.get('bodyText') or '').lower()
     if 'invalid_auth_step' in text or 'invalid auth step' in text:
         return 'invalid_auth_step'
-    if 'whatsapp' in text or 'whats app' in text:
-        return 'whatsapp_channel'
     if any(k in text for k in ('invalid phone', 'not a valid phone', 'phone number is not valid', '号码无效', '手机号无效')):
         return 'invalid_phone'
     if any(k in text for k in (
@@ -1046,6 +1292,15 @@ def _classify_phone_page_failure(state: dict) -> str:
     if any(k in text for k in ('too many', 'rate limit', 'throttle', '频繁', '限流')):
         return 'send_limited'
     return ''
+
+
+def _is_codex_retry_stopped_exception(exc: Exception) -> bool:
+    """识别 WebUI Codex 补跑的异步停止信号，避免被换号重试捕获后继续买号。"""
+    try:
+        from core.codex_retry_service import CodexRetryStopped
+    except Exception:
+        return False
+    return isinstance(exc, CodexRetryStopped)
 
 def _sleep_before_phone_retry(attempt: int, max_retries: int, *, prefix: str = "[Codex][Browser]") -> None:
     """换号前随机等待，至少 3 秒，避免连续提交号码过快。"""
@@ -1127,23 +1382,36 @@ def _do_phone_verification_if_present(driver) -> None:
                 logger.warning("[Codex][Browser] 手机验证尝试失败，换号：%s", err_text[:240])
                 if activation_id:
                     try:
-                        sms_provider.cancel(activation_id, http)
+                        # 短信已发出但最终超时的号码，必须确认取消完成后才能买下一个，
+                        # 避免旧号码迟到验证码与新号码重叠。其它立即拒绝错误可后台取消。
+                        sms_provider.cancel(
+                            activation_id,
+                            http,
+                            background=not isinstance(exc, sms_provider.SmsCodeTimeout),
+                        )
                     except Exception:
                         pass
+                # 用户点击停止时，先释放本轮已取号码，再立即退出；不能把停止异常
+                # 当成普通手机号错误继续进入下一轮，否则会继续产生接码订单。
+                if _is_codex_retry_stopped_exception(exc):
+                    logger.info("[Codex][Browser] 收到补跑停止信号，已停止继续换号")
+                    raise
                 # 余额不足 / 无可用号码：重试多少次都不会成功，立即失败止损，
                 # 避免白等 N 轮换号重试（每轮还要刷新页面 + 随机等待）。
                 if any(k in err_text for k in (
-                    "NO_BALANCE", "NO_NUMBERS", "BALANCE", "余额不足",
+                    "NO_BALANCE", "NO_NUMBERS", "WRONG_MAX_PRICE", "SMS_MAX_PRICE", "BALANCE", "余额不足",
                     "暂无可用号码", "没有可用号码", "insufficient", "not enough balance",
                 )):
                     raise RuntimeError(
-                        f"接码平台余额不足或无可用号码，已停止换号止损：{err_text[:180]}"
+                        f"接码平台余额/价格上限不足或无可用号码，已停止换号止损：{err_text[:180]}"
                     ) from exc
                 if "invalid_auth_step" in str(exc):
                     raise RuntimeError(
                         "手机号流程进入 invalid_auth_step，说明授权状态还未从 email-verification 正常跳转或已失效；"
                         "已停止继续换号，避免继续消耗号码"
                     ) from exc
+                # WhatsApp/SMS 通道会随号码国家改变，并非整个 OAuth session 固定。
+                # 当前号只支持 WhatsApp 时取消本号，继续让接码国家轮换到下一项。
                 # 如果已经离开手机号/验证码相关页面，认为通过或不再需要；
                 # 如果仍在 phone-verification，则下一轮必须回 add-phone 重新填新号码再提交。
                 try:
@@ -1168,7 +1436,7 @@ def _do_phone_verification_if_present(driver) -> None:
             pass
 
 
-def _finish_consent_workspace(driver) -> str:
+def _finish_consent_workspace(driver, email: str = "") -> str:
     """点击 Codex consent/workspace 页面里的继续/允许按钮，直到 callback。"""
     end = time.time() + int(_roxy_cfg.ROXY_CODEX_CALLBACK_TIMEOUT)
     while time.time() < end:
@@ -1177,13 +1445,16 @@ def _finish_consent_workspace(driver) -> str:
             return callback
         current = str(driver.current_url or "")
         clicked = False
+        if email and _select_existing_account_if_present(driver, email):
+            clicked = True
+            human_delay("form")
         for selectors in [
             ["//button[contains(., 'Allow')]", "//button[contains(., 'Authorize')]", "//button[contains(., 'Continue')]"],
             ["//button[contains(., 'Select')]", "//button[contains(., 'Use workspace')]", "//button[contains(., 'Confirm')]"],
             ["//button[contains(., '允许')]", "//button[contains(., '授权')]", "//button[contains(., '继续')]", "//button[contains(., '确认')]"],
             ["button[type='submit']"],
         ]:
-            if _click_if_present(driver, selectors, timeout=2):
+            if not clicked and _click_if_present(driver, selectors, timeout=2):
                 clicked = True
                 human_delay("form")
                 break
@@ -1246,7 +1517,7 @@ def _run_roxy_codex_oauth_once(
     """指纹浏览器 Codex OAuth 入口。
 
     existing_driver/existing_opened 用于“注册成功后立刻跑 Codex”：
-    复用注册时的 Roxy 窗口，不新建环境，只清理浏览器状态后开始授权。
+    复用注册时的 Roxy 窗口。默认可清理状态；注册流程会明确选择保留刚建立的登录态。
     """
     from core import codex_oauth as proto
 
@@ -1278,7 +1549,10 @@ def _run_roxy_codex_oauth_once(
         elif auth_source == "local":
             code_verifier, code_challenge = proto._generate_pkce()
             state = proto._generate_state()
-            auth_url = proto._build_authorize_url(state, code_challenge, prompt="login")
+            # 注册后复用同一窗口时不要附带 prompt=login，否则 OpenAI 会无条件要求
+            # 再登录一次。若现有 auth cookie 不可用，页面仍会自然回落到登录流程。
+            prompt = None if reuse_existing_profile and not clear_existing_state else "login"
+            auth_url = proto._build_authorize_url(state, code_challenge, prompt=prompt)
             logger.info("[Codex][Browser] 当前使用本地 PKCE 授权地址: %s", auth_url)
         else:
             raise RuntimeError(f"[Codex][Browser] 不支持的 CODEX_AUTH_URL_SOURCE={auth_source!r}")
@@ -1296,7 +1570,7 @@ def _run_roxy_codex_oauth_once(
         logger.info("[Codex][Browser] 检查是否需要手机号验证")
         _do_phone_verification_if_present(driver)
         logger.info("[Codex][Browser] 手机验证处理完成/无需处理，等待授权确认和 callback")
-        callback_url = _finish_consent_workspace(driver)
+        callback_url = _finish_consent_workspace(driver, email=email)
         code = proto._extract_code(callback_url, state)
         logger.info("[Codex][Browser] 已捕获 callback code：%s...", code[:24])
 
@@ -1395,7 +1669,7 @@ def run_roxy_codex_oauth(
     reuse_existing_profile: bool = False,
     clear_existing_state: bool = True,
 ) -> dict:
-    """指纹浏览器 Codex OAuth 入口；CPA callback 409 timeout 时重新开启一轮授权。"""
+    """指纹浏览器 Codex OAuth 入口；可恢复错误时重新开启一轮授权。"""
     from core import codex_oauth as proto
 
     max_rounds = 2
@@ -1403,8 +1677,8 @@ def run_roxy_codex_oauth(
     for round_no in range(1, max_rounds + 1):
         if round_no > 1:
             logger.warning(
-                "[Codex][Browser] CPA callback 返回 Timeout waiting for OAuth callback，重新开启第 %s/%s 轮 Codex 授权：%s",
-                round_no, max_rounds, email,
+                "[Codex][Browser] 上一轮授权遇到可恢复错误，使用新环境开启第 %s/%s 轮 Codex 授权：%s reason=%s",
+                round_no, max_rounds, email, str((last_result or {}).get('message') or '')[:160],
             )
         result = _run_roxy_codex_oauth_once(
             email=email,
@@ -1420,10 +1694,15 @@ def run_roxy_codex_oauth(
         if result.get("ok"):
             return result
         msg = result.get("message") or result.get("error") or ""
-        if not proto._is_cpa_callback_reauth_error(msg):
+        retry_whatsapp = (not reuse_existing_profile) and "whatsapp" in str(msg).lower()
+        if not (proto._is_cpa_callback_reauth_error(msg) or retry_whatsapp):
             return result
     if last_result:
         last_result = dict(last_result)
-        last_result["message"] = f"CPA callback 超时，已重新授权 {max_rounds} 轮仍失败：{last_result.get('message') or ''}"
+        last_message = str(last_result.get("message") or "")
+        if proto._is_cpa_callback_reauth_error(last_message):
+            last_result["message"] = f"CPA callback 超时，已重新授权 {max_rounds} 轮仍失败：{last_message}"
+        else:
+            last_result["message"] = f"可恢复授权错误已使用新环境重试 {max_rounds} 轮仍失败：{last_message}"
         return last_result
     return proto._codex_result(status="failed", email=email, message="CPA callback 超时，重新授权失败")

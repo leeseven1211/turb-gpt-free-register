@@ -55,6 +55,26 @@ class JobProgressTests(unittest.TestCase):
                 self.assertEqual(row["progress_steps"]["email_otp"]["state"], "failed")
                 self.assertEqual(row["progress_steps"]["email_otp"]["detail"], "验证码超时")
 
+    def test_startup_recovers_interrupted_jobs_and_codex_account(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            patches = self._storage_patches(root)
+            with patches[0], patches[1], patches[2], patches[3], patch.object(
+                db, "_ACCOUNTS_JSON", root / "accounts.json"
+            ):
+                job = db.create_job("icloud_hide")
+                db.update_job(job["id"], status="running", proxy_status="leased")
+                db.update_job_progress(job["id"], "email_otp", "running", "等待验证码")
+
+                recovered = db.recover_interrupted_registration_jobs()
+
+                self.assertEqual(recovered, 1)
+                row = db.get_job(job["id"])
+                self.assertEqual(row["status"], "failed")
+                self.assertEqual(row["proxy_status"], "interrupted")
+                self.assertEqual(row["progress_steps"]["email_otp"]["state"], "failed")
+                self.assertIn("WebUI 进程重启", row["error_message"])
+
     def test_jobs_api_returns_latest_batch_progress(self):
         rows = [
             {

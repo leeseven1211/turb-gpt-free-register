@@ -86,6 +86,7 @@ class ProxyProviderTests(unittest.TestCase):
             lease = proxy_provider.acquire_1024_proxy(
                 api_url="https://white.1024proxy.com/white/api?region=Rand&num=1&time=10&type=txt",
                 protocol="http",
+                region="US",
                 session_minutes=30,
                 validate=True,
                 job_id=12,
@@ -125,6 +126,32 @@ class ProxyProviderTests(unittest.TestCase):
             )
         self.assertIn("time=42", fake.calls[0][0])
         self.assertEqual(lease.metadata["session_minutes"], 42)
+
+    @patch("core.proxy_provider.time.sleep", return_value=None)
+    @patch("core.proxy_provider._validate_proxy", side_effect=[("1.1.1.1", "CA"), ("8.8.8.8", "US")])
+    @patch("core.proxy_provider._direct_session")
+    def test_acquire_rejects_actual_country_mismatch(self, direct_session, validate_proxy, _sleep):
+        fake = _FakeSession()
+        direct_session.return_value = fake
+        with patch.multiple(
+            "config.proxy",
+            PROXY_1024_API_TIMEOUT=5.0,
+            PROXY_1024_MAX_ATTEMPTS=2,
+            PROXY_1024_RECENT_TTL=0,
+            PROXY_1024_ACQUIRE_INTERVAL=0.0,
+            PROXY_1024_ROTATE_SESSION_TIME=False,
+        ):
+            lease = proxy_provider.acquire_1024_proxy(
+                api_url="https://white.1024proxy.com/white/api?region=US&type=txt",
+                protocol="http",
+                region="US",
+                session_minutes=30,
+                validate=True,
+                job_id=99,
+            )
+        self.assertEqual(validate_proxy.call_count, 2)
+        self.assertEqual(lease.region, "US")
+        self.assertEqual(lease.exit_ip, "8.8.8.8")
 
     def test_public_values_are_masked(self):
         self.assertEqual(proxy_provider.mask_endpoint("1.2.3.4:8080"), "1.2.*.*:8080")

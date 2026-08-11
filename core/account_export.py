@@ -387,6 +387,7 @@ def save_account_data(
     output_path: Path | None = None,  # 兼容老接口，已废弃
     email_source: str | None = None,
     proxy_used: str | None = None,
+    plan_check_proxy: str | None = None,
     batch_dir: Path | None = None,
 ) -> int:
     """
@@ -431,23 +432,43 @@ def save_account_data(
     )
     logger.info(f"[Save] 账号已写入 DB, id={row_id}, email={email}")
     logger.info(f"[Save] 批次归档目录: {batch_folder}")
-    # session 中的 account.planType 不能说明 Plus 试用资格。账号落库后只负责
-    # 入队，由专用线程池异步查询并回写，避免占用注册工作线程。
+    # session 中的 account.planType 不能说明 Plus 试用资格。
+    # 有注册任务代理时必须同步查完再返回，让上层随后释放代理租约；没有可复用代理时
+    # 保持原来的后台队列行为，按套餐查询网络配置选择线路。
     try:
-        from core.plan_check_service import enqueue_account_plan_check
+        explicit_proxy = str(plan_check_proxy or "").strip()
+        if explicit_proxy:
+            from core.plan_check_service import check_registration_account_plan
 
-        queued = enqueue_account_plan_check(
-            account_id=row_id,
-            email=email,
-            access_token=access_token,
-            trigger="registration_auto",
-        )
-        if queued.get("accepted"):
-            logger.info(f"[Plan] 注册后自动查询已入队: id={row_id}, email={email}")
-        elif queued.get("busy"):
-            logger.info(f"[Plan] 账号已有套餐查询，注册流程不重复入队: id={row_id}, email={email}")
+            logger.info(f"[Plan] 使用本次注册代理同步查询，完成后再释放租约: id={row_id}, email={email}")
+            result = check_registration_account_plan(
+                account_id=row_id,
+                email=email,
+                access_token=access_token,
+                proxy=explicit_proxy,
+            )
+            if result.get("ok"):
+                logger.info(
+                    f"[Plan] 注册代理同步查询完成: id={row_id}, email={email}, "
+                    f"plus_trial={bool(result.get('plus_trial_eligible'))}"
+                )
+            else:
+                logger.warning(f"[Plan] 注册代理同步查询失败（不影响注册结果）: {email}, {result.get('error')}")
         else:
-            logger.warning(f"[Plan] 注册后自动查询入队失败（不影响注册结果）: {email}, {queued.get('error')}")
+            from core.plan_check_service import enqueue_account_plan_check
+
+            queued = enqueue_account_plan_check(
+                account_id=row_id,
+                email=email,
+                access_token=access_token,
+                trigger="registration_auto",
+            )
+            if queued.get("accepted"):
+                logger.info(f"[Plan] 注册后自动查询已入队: id={row_id}, email={email}")
+            elif queued.get("busy"):
+                logger.info(f"[Plan] 账号已有套餐查询，注册流程不重复入队: id={row_id}, email={email}")
+            else:
+                logger.warning(f"[Plan] 注册后自动查询入队失败（不影响注册结果）: {email}, {queued.get('error')}")
     except Exception as exc:
         logger.warning(
             f"[Plan] 注册后自动查询入队异常（不影响注册结果）: "

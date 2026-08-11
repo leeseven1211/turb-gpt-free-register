@@ -85,8 +85,8 @@ class ICloudHMEClientTests(unittest.TestCase):
         self.assertEqual(routing["forward_incompatible"], 0)
 
     @patch("core.forward_imap_client.fetch_latest_otp", return_value="123456")
-    @patch.object(client, "_inbox_mode", return_value="forward_imap")
-    def test_fetch_latest_otp_delegates_to_forward_imap(self, _mode, fetch):
+    @patch.object(client, "_inbox_mode", return_value="forward_butler")
+    def test_fetch_latest_otp_delegates_to_forward_cache(self, _mode, fetch):
         result = client.fetch_latest_otp("alias@icloud.com", after_ts=123.0, max_wait=10)
         self.assertEqual(result, "123456")
         fetch.assert_called_once()

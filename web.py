@@ -93,6 +93,25 @@ def main() -> None:
         logger.error(str(exc))
         raise SystemExit(2) from exc
 
+    # 浏览器、线程池和代理租约都属于进程内资源。异常退出后不能继续把旧任务
+    # 显示成 running，也不能把独立运行的 Roxy 临时环境留在桌面和额度中。
+    from core import db
+    recovered_jobs = db.recover_interrupted_registration_jobs()
+    if recovered_jobs:
+        logger.warning("已恢复 %s 个因 WebUI 重启中断的注册/Codex 任务", recovered_jobs)
+    try:
+        from core.roxybrowser_client import cleanup_orphaned_profiles
+        orphan_result = cleanup_orphaned_profiles()
+        if orphan_result.get("found"):
+            logger.warning(
+                "Roxy 孤儿环境恢复完成：found=%s cleaned=%s failed=%s",
+                orphan_result.get("found"),
+                orphan_result.get("cleaned"),
+                orphan_result.get("failed"),
+            )
+    except Exception:
+        logger.exception("Roxy 孤儿环境启动恢复失败；登记会保留到下次启动继续重试")
+
     app = create_app(auth_code=args.auth_code)
     from core.deactivation_mail_service import start_periodic_scanner
     start_periodic_scanner()

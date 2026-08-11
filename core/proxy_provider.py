@@ -266,6 +266,12 @@ def acquire_1024_proxy(
                 exit_ip = region = None
                 if should_validate:
                     exit_ip, region = _validate_proxy(proxy_url, timeout)
+                    expected_region = _normalize_region(configured_region)
+                    if expected_region and expected_region != "Rand" and region != expected_region:
+                        raise RuntimeError(
+                            f"代理实际出口地区不匹配：请求 {expected_region}，检测到 {region or '-'} "
+                            f"({mask_ip(exit_ip) or '-'})"
+                        )
 
                 now = time.time()
                 uniqueness_key = exit_ip or endpoint

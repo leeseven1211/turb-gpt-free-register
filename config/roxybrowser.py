@@ -59,7 +59,8 @@ ROXY_OPEN_EXTRA_PARAMS: dict = {}
 ROXY_SELENIUM_TIMEOUT: int = 90
 ROXY_KEEP_BROWSER_OPEN: bool = False
 
-# Roxy API transient 错误重试。create 接口默认不重试，避免超时后重复创建孤儿环境；open/close/delete 会重试。
+# Roxy API transient 错误重试。create 仅在 Roxy 明确返回失败、并通过唯一环境名
+# 查证没有创建成功后才重试；客户端超时/断连等结果未知场景不会盲目重复创建。
 ROXY_API_RETRIES: int = 3
 ROXY_API_RETRY_DELAY: int = 2
 

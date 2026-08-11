@@ -124,7 +124,7 @@ def _generate_state() -> str:
     return secrets.token_urlsafe(32)
 
 
-def _build_authorize_url(state: str, code_challenge: str, prompt: str = "login") -> str:
+def _build_authorize_url(state: str, code_challenge: str, prompt: str | None = "login") -> str:
     """按 CLIProxyAPI openai_auth.go 的参数集拼 Codex 授权 URL。"""
     params = {
         "client_id": _cfg.CODEX_CLIENT_ID,
@@ -134,10 +134,11 @@ def _build_authorize_url(state: str, code_challenge: str, prompt: str = "login")
         "state": state,
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
-        "prompt": prompt,
         "id_token_add_organizations": "true",
         "codex_cli_simplified_flow": "true",
     }
+    if prompt:
+        params["prompt"] = prompt
     return f"{_cfg.CODEX_AUTH_URL}?{urlencode(params)}"
 
 
@@ -898,8 +899,8 @@ def _do_phone_verification(session: BrowserSession) -> None:
                 # 通知平台短信已发出（status=1）
                 sms_provider.set_status(activation_id, 1, http=http)
 
-                # 定时轮询接码平台获取短信。wait_for_sms_code 内部按 SMS_POLL_INTERVAL 轮询，
-                # 最长等待 SMS_CODE_WAIT；超时立即取消当前号并换号。
+                # 定时轮询接码平台获取短信。Grizzly 在 SMS_CODE_WAIT 后继续守候迟到码
+                # 到计划取消时间；超时后确认旧订单终止，才允许换下一个号码。
                 try:
                     logger.info(
                         f"[Codex] 短信已发送，开始轮询验证码 activation_id={activation_id}, "
@@ -907,8 +908,11 @@ def _do_phone_verification(session: BrowserSession) -> None:
                     )
                     sms_code = sms_provider.wait_for_sms_code(activation_id, http)
                 except sms_provider.SmsCodeTimeout:
-                    logger.warning(f"[Codex] 号码 +{phone} 在 {_cfg.SMS_CODE_WAIT}s 内未收到短信，取消换号")
-                    sms_provider.cancel(activation_id, http)
+                    logger.warning(
+                        f"[Codex] 号码 +{phone} 在迟到码保护窗口内仍未收到短信，"
+                        "确认旧号码取消后再换号"
+                    )
+                    sms_provider.cancel(activation_id, http, background=False)
                     _sleep_before_phone_retry(attempt, max_retries)
                     continue
 
@@ -935,8 +939,8 @@ def _do_phone_verification(session: BrowserSession) -> None:
                 logger.info("[Codex] 手机号验证通过")
                 return
 
-            except sms_provider.SmsNoBalanceError:
-                # 余额不足，重试无意义，直接抛
+            except (sms_provider.SmsNoBalanceError, sms_provider.SmsPriceLimitError):
+                # 余额不足/价格上限不满足，重复相同请求无意义，直接抛。
                 raise
             except sms_provider.SmsProviderError as exc:
                 last_err = exc
@@ -1296,7 +1300,8 @@ def run_codex_oauth(
     _cpa_reauth_round: int = 1,
 ) -> dict:
     """
-    注册成功后的 Codex OAuth 授权入口（全新 session + 接码方案）。
+    Codex OAuth 授权入口。独立补跑会新建会话；注册流程可把当前浏览器和代理
+    直接交给浏览器驱动复用登录态。
 
     不复用注册的 session：内部新建干净 BrowserSession，从头登录该邮箱，
     走 邮箱 OTP → 手机短信验证 → 选 workspace → 拿 code → 换 token → 落盘。
@@ -1304,7 +1309,7 @@ def run_codex_oauth(
     Args:
         email: 已注册成功的账号邮箱
         otp_provider: 邮箱 OTP 获取回调 fn(email, after_ts)->code，默认用 wait_for_otp
-        proxy: 代理（不传从 PROXY_POOL 抽）
+        proxy: 显式代理；不传时由账号功能代理服务按注册地区领取线路。
         force: True 时跳过 ENABLE_CODEX_AUTO 开关限制，供手动补跑使用
 
     Returns:
@@ -1314,6 +1319,43 @@ def run_codex_oauth(
         return _codex_result(status="skipped", message="ENABLE_CODEX_AUTO=False")
     if not email:
         return _codex_result(status="skipped", message="email 为空")
+
+    # 独立调用也必须遵守统一账号代理策略。以前 proxy=None 会在 BrowserSession
+    # 里静默抽取 PROXY_POOL，导致已启用 1024Proxy 时仍命中 127.0.0.1 静态代理。
+    # 云浏览器使用云端自身代理，不领取本地租约。
+    if proxy is None:
+        from config import codex as _codex_cfg
+        from config import roxybrowser as _roxy_cfg
+
+        managed_driver = str(getattr(_codex_cfg, "CODEX_OAUTH_DRIVER", "protocol") or "protocol").strip().lower()
+        if managed_driver == "same_as_registration":
+            managed_driver = str(getattr(_roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
+        if managed_driver not in {"browser_use", "browseruse", "browser-use", "bu", "skyvern", "sv"}:
+            from core import db
+            from core.account_proxy import acquire_account_proxy
+
+            account = db.get_account_by_email(email) or {}
+            route = acquire_account_proxy(
+                account_id=int(account.get("id") or 0) or None,
+                email=email,
+                purpose="codex-oauth",
+            )
+            try:
+                logger.info(
+                    "[Codex] 统一账号网络：provider=%s region=%s route=%s",
+                    route.provider,
+                    route.region or "-",
+                    route.public_dict().get("network_route"),
+                )
+                return run_codex_oauth(
+                    email,
+                    otp_provider=otp_provider,
+                    proxy=route.proxy_url,
+                    force=force,
+                    _cpa_reauth_round=_cpa_reauth_round,
+                )
+            finally:
+                route.release(reason=f"codex-oauth-{email}")
 
     # Codex OAuth 支持多种驱动：
     # protocol：原纯协议；roxy/cloak/browser_use：用真实浏览器跑页面并捕获 localhost callback。
