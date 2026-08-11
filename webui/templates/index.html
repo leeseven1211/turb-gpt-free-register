@@ -2053,6 +2053,7 @@
       --sidebar-accent: #8b8cf8;
       --sidebar-accent-soft: rgba(139, 140, 248, .13);
       --topbar-height: 76px;
+      --module-subnav-height: 48px;
       --shadow-sm: 0 1px 2px rgba(16, 24, 40, .03), 0 8px 24px rgba(16, 24, 40, .04);
     }
     body {
@@ -2213,9 +2214,13 @@
     }
     .jobs-history-v2-label { padding: 18px 20px 12px; color: #4f586b; font-size: 12px; font-weight: 760; }
     .batch-progress-v2 { margin: 18px 20px 0; border-radius: 11px; border-color: #bde7dc; background: #f5fcfa; }
-    .jobs-table-v2-wrap, .accounts-table-v2-wrap, .codex-table-v2-wrap, .outlook-table-v2-wrap { scrollbar-color: #ccd1dc transparent; }
+    .jobs-table-v2-wrap, .accounts-table-v2-wrap, .codex-table-v2-wrap, .outlook-table-v2-wrap {
+      max-height: min(620px, calc(100vh - var(--topbar-height) - var(--module-subnav-height) - 250px));
+      overflow: auto; scrollbar-color: #ccd1dc transparent; overscroll-behavior: contain;
+    }
     .jobs-table-v2 thead th, .accounts-table-v2 thead th, .codex-table-v2 thead th, .outlook-table-v2 thead th {
-      height: 42px; background: #f8f9fb; color: #7d8596; font-size: 11px; font-weight: 760; letter-spacing: .02em;
+      position: sticky; top: 0; z-index: 8; height: 42px;
+      background: #f8f9fb; color: #7d8596; font-size: 11px; font-weight: 760; letter-spacing: .02em;
     }
     .jobs-table-v2 td, .accounts-table-v2 td, .codex-table-v2 td, .outlook-table-v2 td { height: 52px; color: #4c5568; }
     .jobs-table-v2 tbody tr:hover td, .accounts-table-v2 tbody tr:hover td,
@@ -2235,12 +2240,220 @@
     .config-card-v2-value { margin-top: 18px; font-size: 20px; }
     .config-nav-v2 { top: calc(var(--topbar-height) + 20px); border-radius: 12px; box-shadow: var(--shadow-sm); }
     .config-section-v2 { scroll-margin-top: calc(var(--topbar-height) + 18px); }
+    #configCardsV2 { display: none; }
     #toast { z-index: 5000; border: 1px solid rgba(255,255,255,.12); border-radius: 10px; background: #171927; }
+
+    /* ---- 平台总览 ---- */
+    .overview-hero {
+      min-height: 150px; display: flex; align-items: flex-end; justify-content: space-between; gap: 24px;
+      padding: 26px 28px; overflow: hidden; position: relative;
+      border: 1px solid #292c54; border-radius: 16px; color: #fff;
+      background:
+        radial-gradient(circle at 86% 25%, rgba(139,140,248,.42), transparent 15rem),
+        linear-gradient(125deg, #17192c, #292d61 72%, #41469f);
+      box-shadow: 0 16px 34px rgba(29,32,72,.2);
+    }
+    .overview-hero::after {
+      content: ""; position: absolute; right: 9%; top: -68px; width: 180px; height: 180px;
+      border: 28px solid rgba(255,255,255,.045); border-radius: 50%;
+    }
+    .overview-hero .data-panel-kicker { color: #aeb0ff; }
+    .overview-hero h2 { margin-top: 8px; font-size: 27px; letter-spacing: -.035em; }
+    .overview-hero p { margin-top: 7px; color: rgba(255,255,255,.64); font-size: 13px; }
+    .overview-refresh {
+      position: relative; z-index: 1; min-height: 38px; padding: 0 15px; border: 1px solid rgba(255,255,255,.2);
+      border-radius: 9px; color: #fff; background: rgba(255,255,255,.09); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;
+    }
+    .overview-refresh:hover { background: rgba(255,255,255,.16); }
+    .overview-metrics { display: grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap: 12px; }
+    .overview-metric {
+      min-width: 0; padding: 17px 18px; border: 1px solid var(--line); border-radius: 13px;
+      background: #fff; box-shadow: var(--shadow-sm);
+    }
+    .overview-metric-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #7d8596; font-size: 11px; font-weight: 700; }
+    .overview-metric-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--metric-color,#5b5ce2); box-shadow: 0 0 0 4px color-mix(in srgb, var(--metric-color,#5b5ce2) 12%, transparent); }
+    .overview-metric strong { display: block; margin-top: 12px; font-size: 25px; letter-spacing: -.04em; }
+    .overview-metric small { display: block; margin-top: 5px; color: #969dae; font-size: 10px; }
+    .overview-grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 14px; }
+    .overview-panel {
+      min-width: 0; padding: 19px; border: 1px solid var(--line); border-radius: 14px;
+      background: #fff; box-shadow: var(--shadow-sm);
+    }
+    .overview-panel--wide { grid-column: 1 / -1; }
+    .overview-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+    .overview-panel-head span { color: #969dae; font-size: 10px; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; }
+    .overview-panel-head h3 { margin-top: 4px; font-size: 16px; }
+    .overview-panel-head button {
+      min-height: 30px; padding: 0 10px; border: 1px solid #e3e5ec; border-radius: 7px;
+      color: #626b7d; background: #fff; font: inherit; font-size: 11px; font-weight: 700; cursor: pointer;
+    }
+    .overview-source-grid { display: grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap: 9px; }
+    .overview-source {
+      min-width: 0; padding: 13px; border: 1px solid #eaecf1; border-radius: 10px; background: #fafbfc;
+    }
+    .overview-source-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+    .overview-source-name { overflow: hidden; color: #4e5769; font-size: 11px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+    .overview-source-state { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #c6cbd5; }
+    .overview-source-state.is-on { background: #2dbb8a; box-shadow: 0 0 0 3px rgba(45,187,138,.1); }
+    .overview-source strong { display: block; margin-top: 12px; font-size: 19px; }
+    .overview-source small { display: block; margin-top: 4px; color: #9299aa; font-size: 10px; }
+    .overview-proxy-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 9px; }
+    .overview-proxy-item { padding: 12px; border-radius: 9px; background: #f7f8fb; }
+    .overview-proxy-item span { color: #9299aa; font-size: 10px; }
+    .overview-proxy-item strong { display: block; margin-top: 5px; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .overview-exit-list { display: grid; gap: 7px; margin-top: 10px; }
+    .overview-exit-row { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 9px 10px; border-radius: 8px; background: #f8f9fb; }
+    .overview-exit-row i { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #2dbb8a; box-shadow: 0 0 0 3px rgba(45,187,138,.1); }
+    .overview-exit-row span { flex: 1; overflow: hidden; color: #596274; font-size: 11px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+    .overview-exit-row small { color: #9299aa; font-size: 9px; }
+    .overview-job-list, .overview-plan-list { display: grid; gap: 7px; }
+    .overview-job-row, .overview-plan-row { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 9px 10px; border-radius: 8px; background: #f8f9fb; }
+    .overview-job-row .pill { flex: 0 0 auto; }
+    .overview-job-main { flex: 1; min-width: 0; }
+    .overview-job-main strong { display: block; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+    .overview-job-main small { color: #989faf; font-size: 9px; }
+    .overview-plan-row span { flex: 1; color: #626b7d; font-size: 11px; font-weight: 650; }
+    .overview-plan-bar { flex: 2; height: 6px; overflow: hidden; border-radius: 999px; background: #eceef3; }
+    .overview-plan-bar i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg,#5b5ce2,#8b8cf8); }
+    .overview-plan-row strong { min-width: 25px; text-align: right; font-size: 11px; }
+
+    /* ---- 模块子导航 / 固定操作区 ---- */
+    .module-subnav {
+      position: sticky; top: var(--topbar-height); z-index: 55; min-height: var(--module-subnav-height);
+      display: flex; align-items: center; gap: 4px; padding: 6px; overflow-x: auto;
+      border: 1px solid #e5e7ef; border-radius: 11px; background: rgba(255,255,255,.96);
+      box-shadow: 0 8px 24px rgba(17,24,39,.06); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); scrollbar-width: none;
+    }
+    .module-subnav::-webkit-scrollbar { display: none; }
+    .module-subnav button {
+      min-height: 34px; flex: 0 0 auto; padding: 0 14px; border: 0; border-radius: 7px;
+      color: #737c8e; background: transparent; font: inherit; font-size: 12px; font-weight: 750; cursor: pointer;
+    }
+    .module-subnav button:hover { color: #30384a; background: #f5f6f9; }
+    .module-subnav button.is-active { color: #4f51be; background: #eeeefe; box-shadow: inset 0 0 0 1px #ddddfb; }
+    #tab-register[data-module-view="launch"] .module-tasks-only { display: none !important; }
+    #tab-register[data-module-view="tasks"] .module-launch-only { display: none !important; }
+    #tab-register[data-module-view="tasks"] #jobsToolbarV2 { display: none; }
+    #tab-outlook[data-module-view="overview"] #outlookPanelV2 { display: none; }
+    #tab-outlook[data-module-view="list"] .mail-resource-overview { display: none; }
+    .codex-sync-callout { display: none; }
+    #tab-codex[data-module-view="sub2"] .codex-sync-callout {
+      display: flex; align-items: center; justify-content: space-between; gap: 22px; padding: 18px 20px;
+      border: 1px solid #dcdcf8; border-radius: 13px; background: linear-gradient(135deg,#f7f7ff,#fff); box-shadow: var(--shadow-sm);
+    }
+    .codex-sync-callout h2 { margin-top: 4px; font-size: 17px; }
+    .codex-sync-callout p { margin-top: 5px; color: #7c8495; font-size: 11px; }
+    .codex-sync-callout .jobs-tb-btn { min-height: 38px; flex: 0 0 auto; }
+    .task-records-command-deck {
+      position: sticky; top: calc(var(--topbar-height) + var(--module-subnav-height) + 10px); z-index: 42;
+      display: flex; align-items: center; gap: 10px; min-width: 0; padding: 12px 20px;
+      overflow-x: auto; overflow-y: hidden; border-bottom: 1px solid #edf0f5;
+      background: rgba(255,255,255,.97); box-shadow: 0 10px 24px rgba(17,24,39,.06);
+      backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+      scrollbar-width: thin; scrollbar-color: #d9dce5 transparent;
+    }
+    .task-records-command-deck .job-batch-actions {
+      order: 3; flex: 0 0 auto; flex-wrap: nowrap; gap: 6px; padding: 0;
+    }
+    .task-records-command-deck .job-batch-actions-label { display: none; }
+    .task-records-command-deck .jobs-tb-btn { min-height: 34px; padding: 0 11px; border: 1px solid #dfe2e9; border-radius: 8px; background: #fff; font: inherit; font-size: 11px; font-weight: 700; cursor: pointer; }
+    .task-records-command-deck .jobs-tb-btn--retry { color: #4f51be; border-color: #d6d7fa; background: #f7f7ff; }
+    .task-records-command-deck .jobs-tb-btn--danger { color: #c43d47; border-color: #efc7ca; }
+    .task-records-tools {
+      order: 2; flex: 1 0 auto; display: flex; align-items: center; gap: 7px; min-width: 0; padding: 0;
+    }
+    .task-records-tools label { display: block; flex: 0 0 auto; color: #7c8495; font-size: 10px; font-weight: 750; }
+    .task-records-tools label > span { display: none; }
+    .task-records-tools label:first-child { flex: 1 0 210px; }
+    .task-records-tools label:nth-child(2) { width: 150px; }
+    .task-records-tools label:nth-child(3), .task-records-tools label:nth-child(4) { width: 120px; }
+    .task-records-tools input, .task-records-tools select { width: 100%; min-height: 34px; margin: 0; border-color: #e0e3ea; background: #fff; font-size: 11px; }
+    .task-records-tools .jobs-tb-btn { min-height: 34px; padding-inline: 9px; white-space: nowrap; }
+    .job-status-filters {
+      order: 1; flex: 0 0 138px; width: 138px; padding: 0;
+    }
+    .job-status-filters label { display: block; }
+    .job-status-filters label > span { display: none; }
+    .job-status-filters select {
+      width: 100%; min-height: 34px; margin: 0; padding: 0 30px 0 11px;
+      border: 1px solid #e0e3ea; border-radius: 8px; color: #626b7d; background: #fff;
+      font: inherit; font-size: 11px; font-weight: 700; cursor: pointer;
+    }
+    .job-status-filters select:hover, .job-status-filters select:focus { border-color: #cfd0fa; outline: none; }
+    .accounts-command-deck {
+      position: sticky; top: calc(var(--topbar-height) + var(--module-subnav-height) + 10px); z-index: 35;
+      border-bottom: 1px solid #e7e9ef; background: rgba(255,255,255,.95);
+      backdrop-filter: blur(15px); -webkit-backdrop-filter: blur(15px);
+      box-shadow: 0 10px 24px rgba(17,24,39,.07);
+    }
+    .accounts-command-deck .accounts-filter-v2 { padding-top: 12px; }
+    .accounts-command-deck #accountsToolbarV2 {
+      max-height: none; flex-wrap: nowrap; align-items: center; overflow-x: auto; overflow-y: hidden; padding-block: 8px;
+      scrollbar-width: thin;
+    }
+    .accounts-command-deck #accountsToolbarV2 .acc-v2-btn-group { flex: 0 0 auto; flex-wrap: nowrap; padding-block: 4px; }
+    .accounts-command-deck #accountsToolbarV2 .acc-v2-btn-group-title { flex-basis: auto; }
+    .codex-command-deck {
+      position: sticky; top: calc(var(--topbar-height) + var(--module-subnav-height) + 10px); z-index: 35;
+      border-bottom: 1px solid #e7e9ef; background: rgba(255,255,255,.96);
+      box-shadow: 0 10px 24px rgba(17,24,39,.07); backdrop-filter: blur(15px); -webkit-backdrop-filter: blur(15px);
+    }
+    .outlook-filter-v2 {
+      position: sticky; top: calc(var(--topbar-height) + var(--module-subnav-height) + 10px); z-index: 35;
+      background: rgba(255,255,255,.97); box-shadow: 0 10px 24px rgba(17,24,39,.06);
+      backdrop-filter: blur(15px); -webkit-backdrop-filter: blur(15px);
+    }
+    #jobsPanelV2, #codexPanelV2, #outlookPanelV2 { overflow: visible; }
+
+    /* 配置页：导航保持固定，只滚动右侧配置内容。 */
+    #tab-config .config-layout-v2 {
+      height: calc(100vh - var(--topbar-height) - 54px); min-height: 460px; margin-top: 0; overflow: hidden;
+    }
+    #tab-config .config-nav-v2 { position: sticky; top: 0; max-height: 100%; overflow-y: auto; }
+    #tab-config .config-main-v2 { max-height: 100%; overflow-y: auto; padding: 0 6px 28px 0; overscroll-behavior: contain; }
+
+    /* ---- 邮箱资源平台 ---- */
+    .mail-resource-overview { padding: 20px; border: 1px solid var(--line); border-radius: 14px; background: #fff; box-shadow: var(--shadow-sm); }
+    .mail-resource-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .mail-resource-head h2 { margin-top: 5px; font-size: 18px; }
+    .mail-resource-head p { margin-top: 4px; color: var(--muted); font-size: 11px; }
+    .mail-resource-head .jobs-tb-btn, .butler-lease-actions .jobs-tb-btn {
+      min-height: 34px; padding: 0 12px; border: 1px solid #dfe2e9; border-radius: 8px;
+      color: #626b7d; background: #fff; font: inherit; font-size: 11px; font-weight: 700; cursor: pointer;
+    }
+    .butler-lease-actions .jobs-tb-btn--primary { color: #fff; border-color: #5b5ce2; background: #5b5ce2; box-shadow: 0 7px 16px rgba(91,92,226,.18); }
+    .mail-source-cards { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 10px; margin-top: 17px; }
+    .mail-source-card { padding: 14px; border: 1px solid #e8eaf0; border-radius: 10px; background: #fafbfc; }
+    .mail-source-card.is-enabled { border-color: #d9dafa; background: #f8f8ff; }
+    .mail-source-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .mail-source-card-head strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+    .mail-source-card-head span { color: #9098a9; font-size: 9px; }
+    .mail-source-card-value { margin-top: 12px; font-size: 21px; font-weight: 760; }
+    .mail-source-card-meta { margin-top: 5px; color: #9098a9; font-size: 10px; }
+    .butler-lease-panel {
+      display: grid; grid-template-columns: minmax(240px,.8fr) auto minmax(300px,1.2fr); gap: 16px; align-items: center;
+      margin-top: 14px; padding: 16px; border: 1px solid #e4e5f5; border-radius: 11px; background: linear-gradient(135deg,#f8f8ff,#fbfbfe);
+    }
+    .butler-lease-copy > span { color: #5b5ce2; font-size: 10px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    .butler-lease-copy h3 { margin-top: 4px; font-size: 15px; }
+    .butler-lease-copy p { margin-top: 4px; color: #7e8799; font-size: 10px; line-height: 1.5; }
+    .butler-lease-list { min-width: 0; display: grid; gap: 6px; }
+    .butler-lease-empty { color: #969dae; font-size: 11px; text-align: center; }
+    .butler-lease-row { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 8px 10px; border-radius: 8px; background: #fff; }
+    .butler-lease-row-main { flex: 1; min-width: 0; }
+    .butler-lease-row-main strong { display: block; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+    .butler-lease-row-main small { color: #969dae; font-size: 9px; }
+    .butler-lease-row button { min-height: 26px; border: 1px solid #efc7ca; border-radius: 6px; color: #c43d47; background: #fff; font: inherit; font-size: 10px; cursor: pointer; }
 
     @media (max-width: 1180px) {
       :root { --sidebar-width: 224px; --page-gutter: 20px; }
       .sidebar-brand-title { font-size: 14px; }
       .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .overview-metrics { grid-template-columns: repeat(3, minmax(0,1fr)); }
+      .overview-source-grid { grid-template-columns: repeat(3,minmax(0,1fr)); }
+      .mail-source-cards { grid-template-columns: repeat(3,minmax(0,1fr)); }
+      .butler-lease-panel { grid-template-columns: 1fr auto; }
+      .butler-lease-list { grid-column: 1 / -1; }
       .job-launcher { flex-basis: 100%; }
     }
     @media (max-width: 860px) {
@@ -2263,20 +2476,36 @@
       .topbar-title { font-size: 18px; }
       main { margin-top: calc(var(--topbar-height) + 18px); }
       .stats { grid-template-columns: repeat(2, minmax(0,1fr)); }
+      .overview-grid { grid-template-columns: 1fr; }
+      .overview-panel--wide { grid-column: auto; }
+      .overview-source-grid, .mail-source-cards { grid-template-columns: repeat(2,minmax(0,1fr)); }
+      .accounts-command-deck, .codex-command-deck, .outlook-filter-v2, .task-records-command-deck { top: calc(var(--topbar-height) + var(--module-subnav-height)); }
       .config-layout-v2 { grid-template-columns: 1fr; }
-      .config-nav-v2 { position: static; }
+      #tab-config .config-layout-v2 { height: auto; min-height: 0; overflow: visible; }
+      #tab-config .config-nav-v2 { position: sticky; top: var(--topbar-height); z-index: 45; max-height: 210px; }
+      #tab-config .config-main-v2 { max-height: none; overflow: visible; padding-right: 0; }
     }
     @media (max-width: 560px) {
       :root { --page-gutter: 12px; }
       .system-health span:last-child { display: none; }
       .system-health { width: 34px; min-height: 34px; padding: 0; justify-content: center; }
       .stats { gap: 9px; }
+      .overview-hero { min-height: 160px; align-items: flex-start; flex-direction: column; padding: 20px; }
+      .overview-hero h2 { font-size: 23px; }
+      .overview-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 9px; }
+      .overview-metric { padding: 14px; }
+      .overview-source-grid, .mail-source-cards { grid-template-columns: 1fr 1fr; }
+      .butler-lease-panel { grid-template-columns: 1fr; }
+      .butler-lease-list { grid-column: auto; }
+      .accounts-command-deck #accountsToolbarV2 { max-height: none; }
       .stat { min-height: 100px; padding: 14px; }
       .stat strong { font-size: 22px; }
       .job-launcher { padding: 11px; }
       .job-launcher .jobs-tb-field, .job-launcher .jobs-tb-field select { width: 100%; }
       .job-launcher .jobs-tb-field:first-of-type { flex-basis: 100%; }
       .job-launcher .jobs-tb-btn--primary { flex: 1; }
+      .task-records-command-deck { padding-inline: 14px; }
+      #tab-codex[data-module-view="sub2"] .codex-sync-callout { align-items: stretch; flex-direction: column; }
       .jobs-panel-v2-header { padding: 16px 14px 0; }
       .jobs-toolbar-v2 { padding: 14px; }
       .batch-progress-v2 { margin-inline: 14px; }
@@ -2307,7 +2536,13 @@
   </div>
   <nav class="sidebar-nav">
     <div class="sidebar-nav-group-label">工作区</div>
-    <button type="button" data-tab="register" class="sidebar-item active">
+    <button type="button" data-tab="overview" class="sidebar-item active">
+      <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
+      </svg>
+      <span class="sidebar-item-label">总览</span>
+    </button>
+    <button type="button" data-tab="register" class="sidebar-item">
       <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M12 5v14M5 12h14"/>
       </svg>
@@ -2341,24 +2576,6 @@
     </button>
   </nav>
   <div class="sidebar-footer">
-    <a href="https://t.me/+gu_cvEKq_vcyZWRl" target="_blank" rel="noopener noreferrer">
-      <svg class="sidebar-footer-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/>
-      </svg>
-      <span>TG 交流群</span>
-    </a>
-    <a href="https://github.com/myfanhua/turb-gpt-free-register" target="_blank" rel="noopener noreferrer">
-      <svg class="sidebar-footer-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/>
-      </svg>
-      <span>Github 仓库</span>
-    </a>
-    <a href="/?ui=legacy" title="切换到历史版顶部导航 UI">
-      <svg class="sidebar-footer-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M3 6h18M3 12h18M3 18h18"/>
-      </svg>
-      <span>切换老 UI</span>
-    </a>
     <form class="sidebar-logout" method="post" action="/logout">
       <button type="submit">
         <svg class="sidebar-footer-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -2392,9 +2609,56 @@
 </header>
 
 <main>
+  <!-- ============ 总览 ============ -->
+  <div id="tab-overview">
+    <section class="overview-hero" aria-label="平台状态总览">
+      <div>
+        <div class="data-panel-kicker">Operations overview</div>
+        <h2>整个平台，一屏看清</h2>
+        <p>账号、邮箱资源、注册队列、Codex 与代理运行状态会自动刷新。</p>
+      </div>
+      <button type="button" class="overview-refresh" id="btnRefreshOverview">刷新数据</button>
+    </section>
+    <div class="overview-metrics" id="overviewMetrics"></div>
+    <div class="overview-grid">
+      <section class="overview-panel overview-panel--wide">
+        <div class="overview-panel-head">
+          <div><span>邮箱资源</span><h3>邮箱池与按需平台</h3></div>
+          <button type="button" data-overview-go="outlook">管理邮箱</button>
+        </div>
+        <div class="overview-source-grid" id="overviewEmailSources"></div>
+      </section>
+      <section class="overview-panel">
+        <div class="overview-panel-head">
+          <div><span>网络出口</span><h3>代理平台</h3></div>
+          <button type="button" data-overview-config="代理平台">配置</button>
+        </div>
+        <div id="overviewProxy"></div>
+      </section>
+      <section class="overview-panel">
+        <div class="overview-panel-head">
+          <div><span>注册流水线</span><h3>今日任务结果</h3></div>
+          <button type="button" data-overview-go="register">查看全部</button>
+        </div>
+        <div class="overview-job-list" id="overviewRecentJobs"></div>
+      </section>
+      <section class="overview-panel">
+        <div class="overview-panel-head">
+          <div><span>账号资产</span><h3>套餐分布</h3></div>
+          <button type="button" data-overview-go="accounts">管理账号</button>
+        </div>
+        <div class="overview-plan-list" id="overviewPlans"></div>
+      </section>
+    </div>
+  </div>
+
   <!-- ============ 注册 ============ -->
-  <div id="tab-register">
-    <div class="register-overview">
+  <div id="tab-register" class="hidden" data-module-view="launch">
+    <nav class="module-subnav" data-module-subnav="register" aria-label="注册中心子菜单">
+      <button type="button" class="is-active" data-view="launch">发起注册</button>
+      <button type="button" data-view="tasks">任务记录</button>
+    </nav>
+    <div class="register-overview module-launch-only">
       <h1 class="register-title">注册机</h1>
       <div class="stats">
         <div class="stat">
@@ -2446,7 +2710,7 @@
     </div>
 
     <section class="jobs-panel-v2" id="jobsPanelV2" aria-label="注册任务">
-      <div class="jobs-panel-v2-header">
+      <div class="jobs-panel-v2-header module-launch-only">
         <div>
           <div class="data-panel-kicker">Automation queue</div>
           <h2 class="data-panel-title">注册任务</h2>
@@ -2454,7 +2718,7 @@
         </div>
       </div>
       <div class="jobs-toolbar-v2" id="jobsToolbarV2">
-        <div class="job-launcher">
+        <div class="job-launcher module-launch-only">
           <div class="job-launcher-label">新建运行批次</div>
           <label class="jobs-tb-field">邮箱来源
             <select class="jobs-tb-select" id="regEmailSourceV2" aria-label="本次注册邮箱来源">
@@ -2485,16 +2749,35 @@
           </label>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnStartV2">开始注册</button>
         </div>
-        <div class="job-batch-actions">
-          <div class="job-batch-actions-label">队列管理</div>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--retry" id="btnRetrySelectedJobsV2" disabled title="重试选中的失败、已停止或已取消任务">重试选中</button>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnDeleteSelectedJobsV2" disabled title="删除选中的非运行中任务，并同时删除对应日志">删除选中</button>
-          <button type="button" class="jobs-tb-btn" id="btnCancelPendingV2" title="把所有排队任务标记为已取消">取消排队</button>
-          <button type="button" class="jobs-tb-btn" id="btnRefreshJobsV2" title="手动刷新任务列表">刷新</button>
-        </div>
+      </div>
+      <div class="task-records-command-deck module-tasks-only">
+      <div class="job-batch-actions">
+        <div class="job-batch-actions-label">任务操作</div>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--retry" id="btnRetrySelectedJobsV2" disabled title="重试选中的失败、已停止或已取消任务">重试选中</button>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnDeleteSelectedJobsV2" disabled title="删除选中的非运行中任务，并同时删除对应日志">删除选中</button>
+        <button type="button" class="jobs-tb-btn" id="btnCancelPendingV2" title="把所有排队任务标记为已取消">取消排队</button>
+        <button type="button" class="jobs-tb-btn" id="btnRefreshJobsV2" title="手动刷新任务列表">刷新</button>
+      </div>
+      <div class="task-records-tools module-tasks-only" aria-label="任务记录查询">
+        <label><span>关键词</span><input id="qJobsV2" type="search" placeholder="任务 ID、邮箱、错误或代理…" autocomplete="off"></label>
+        <label><span>邮箱来源</span><select id="jobEmailSourceFilterV2" aria-label="按邮箱来源筛选"><option value="">全部邮箱来源</option></select></label>
+        <label><span>开始日期</span><input id="jobDateFromV2" type="date" aria-label="任务开始日期"></label>
+        <label><span>结束日期</span><input id="jobDateToV2" type="date" aria-label="任务结束日期"></label>
+        <button type="button" class="jobs-tb-btn" id="btnResetJobFiltersV2">重置筛选</button>
+      </div>
+      <div class="job-status-filters module-tasks-only" id="jobStatusFilters" aria-label="按任务状态筛选">
+        <label><span>任务状态</span><select id="jobStatusFilterV2" aria-label="按任务状态筛选">
+          <option value="" data-label="全部状态">全部状态 · 0</option>
+          <option value="running" data-label="运行中">运行中 · 0</option>
+          <option value="failed" data-label="失败">失败 · 0</option>
+          <option value="partial_success" data-label="部分成功">部分成功 · 0</option>
+          <option value="success" data-label="成功">成功 · 0</option>
+          <option value="stopped" data-label="已停止">已停止 · 0</option>
+        </select></label>
+      </div>
       </div>
       <div id="regWarnV2"></div>
-      <section class="batch-progress-v2 hidden" id="batchProgressV2" aria-label="当前批次进度">
+      <section class="batch-progress-v2 hidden module-launch-only" id="batchProgressV2" aria-label="当前批次进度">
         <div class="batch-progress-v2-head">
           <div>
             <div class="batch-progress-v2-title-row">
@@ -2507,8 +2790,8 @@
         </div>
         <div class="batch-progress-v2-list" id="batchProgressListV2"></div>
       </section>
-      <div class="jobs-history-v2-label">任务记录</div>
-      <div class="jobs-table-v2-wrap">
+      <div class="jobs-history-v2-label module-tasks-only">任务列表</div>
+      <div class="jobs-table-v2-wrap module-tasks-only">
         <table class="jobs-table-v2">
           <colgroup>
             <col class="col-check"><col class="col-id"><col class="col-status"><col class="col-email"><col class="col-source"><col class="col-proxy">
@@ -2531,14 +2814,19 @@
           <tbody id="jobsBodyV2"></tbody>
         </table>
       </div>
-      <div class="jobs-v2-pager" id="pager-jobs-v2"></div>
+      <div class="jobs-v2-pager module-tasks-only" id="pager-jobs-v2"></div>
     </section>
   </div>
 
   <!-- ============ 账号 ============ -->
-  <div id="tab-accounts" class="hidden">
+  <div id="tab-accounts" class="hidden" data-module-view="active">
+    <nav class="module-subnav" data-module-subnav="accounts" aria-label="账号资产子菜单">
+      <button type="button" class="is-active" data-view="active">活跃账号</button>
+      <button type="button" data-view="archived">归档账号</button>
+    </nav>
     <h1 class="register-title">账号</h1>
     <section class="accounts-panel-v2" id="accountsPanelV2" aria-label="账号列表">
+      <div class="accounts-command-deck" id="accountsCommandDeck">
       <div class="accounts-filter-v2" id="accountsFilterV2">
         <div class="acc-v2-btn-group acc-v2-search-wrap">
           <input id="qAccountsV2" type="search" placeholder="搜索邮箱、token、来源…" autocomplete="off">
@@ -2557,7 +2845,7 @@
               </button>
             </span>
           </label>
-          <button type="button" class="acc-v2-toggle" id="showArchivedAccountsV2" aria-pressed="false" title="默认只显示未归档账号；开启后单独查看归档账号">查看归档</button>
+          <button type="button" class="acc-v2-toggle hidden" id="showArchivedAccountsV2" aria-pressed="false" title="默认只显示未归档账号；开启后单独查看归档账号">查看归档</button>
           <button type="button" class="acc-v2-toggle" id="showPlusAccountsOnlyV2" aria-pressed="false" title="只查询/显示已开通 Plus 的账号">已开通Plus</button>
           <div class="acc-v2-date-select" id="dateSelectAccountsV2">
             <button type="button" class="acc-v2-date-select-btn" id="btnDateFilterAccountsV2" title="按注册时间筛选日期范围">📅 日期筛选</button>
@@ -2602,6 +2890,7 @@
           <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopyAllLinesV2" title="复制当前页所有账号整行，每个账号一行">复制整行</button>
         </div>
       </div>
+      </div>
       <div class="accounts-table-v2-wrap">
         <table class="accounts-table-v2">
           <colgroup>
@@ -2645,7 +2934,11 @@
   </div>
 
   <!-- ============ Codex 授权 ============ -->
-  <div id="tab-codex" class="hidden">
+  <div id="tab-codex" class="hidden" data-module-view="credentials">
+    <nav class="module-subnav" data-module-subnav="codex" aria-label="Codex 管理子菜单">
+      <button type="button" class="is-active" data-view="credentials">凭证管理</button>
+      <button type="button" data-view="sub2">同步 sub2api</button>
+    </nav>
     <h1 class="register-title">Codex 授权</h1>
     <div class="codex-stats-v2" id="codexStatsV2" aria-label="Codex 统计">
       <div class="codex-stat-card codex-stat-card--total">
@@ -2676,7 +2969,12 @@
         </div>
       </div>
     </div>
+    <section class="codex-sync-callout" aria-label="同步 sub2api">
+      <div><span class="data-panel-kicker">Sub2api sync</span><h2>把本地 Codex OAuth 凭证同步到 sub2api</h2><p>使用同一份凭证列表筛选和选择，避免在账号页来回切换。已选 <strong id="codexSyncSelectedV2">0</strong> 个凭证。</p></div>
+      <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCodexUploadSub2HeroV2" disabled>上传选中凭证</button>
+    </section>
     <section class="codex-panel-v2" id="codexPanelV2" aria-label="Codex 授权">
+      <div class="codex-command-deck">
       <div class="codex-filter-v2" id="codexFilterV2">
         <div class="acc-v2-btn-group acc-v2-search-wrap">
           <input id="qCodexV2" type="search" placeholder="搜索邮箱、plan、account_id…" autocomplete="off">
@@ -2695,8 +2993,10 @@
         <button type="button" class="jobs-tb-btn" id="showArchivedCodexV2" aria-pressed="false" title="默认只显示未归档凭证；开启后单独查看归档凭证">查看归档</button>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCodexDownloadBulkV2" disabled title="把选中的多个本地凭证打包成一个 JSON 文件下载（备份/迁移用，CPA 不能直接读，需先解包）">下载本地</button>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCodexDownloadBulkCpaV2" disabled title="从 CPA auth-files 下载选中账号的真实 Codex JSON，并打包成 ZIP（可直接解压放入 CPA auth-dir）">从CPA下载</button>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCodexUploadSub2V2" disabled title="把选中的本地 Codex OAuth 凭证上传到 sub2api">上传 sub2api</button>
         <button type="button" class="jobs-tb-btn" id="btnCodexArchiveBulkV2" disabled title="归档选中的 Codex 授权凭证；默认列表不再显示">归档选中</button>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnCodexDeleteBulkV2" disabled title="删除选中的本地 Codex JSON 凭证文件">删除选中</button>
+      </div>
       </div>
       <div class="codex-table-v2-wrap">
         <table class="codex-table-v2">
@@ -2724,8 +3024,30 @@
   </div>
 
   <!-- ============ 邮箱池 ============ -->
-  <div id="tab-outlook" class="hidden">
+  <div id="tab-outlook" class="hidden" data-module-view="overview">
+    <nav class="module-subnav" data-module-subnav="outlook" aria-label="邮箱资源池子菜单">
+      <button type="button" class="is-active" data-view="overview">资源总览</button>
+      <button type="button" data-view="list">邮箱列表</button>
+    </nav>
     <h1 class="register-title">邮箱池</h1>
+    <section class="mail-resource-overview" aria-label="邮箱资源平台">
+      <div class="mail-resource-head">
+        <div><span class="data-panel-kicker">Email resources</span><h2>邮箱资源平台</h2><p>本地邮箱池与按需租赁平台分开管理。</p></div>
+        <button type="button" class="jobs-tb-btn" id="btnRefreshMailResources">刷新资源</button>
+      </div>
+      <div class="mail-source-cards" id="mailSourceCards"></div>
+      <div class="butler-lease-panel" id="butlerLeasePanel">
+        <div class="butler-lease-copy">
+          <span>Email Butler</span>
+          <h3>当前进程租约</h3>
+          <p>可手动租用邮箱验证供给，也可释放不再使用的租约；注册任务仍会自动租用和释放。</p>
+        </div>
+        <div class="butler-lease-actions">
+          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnLeaseButlerMailbox">租用邮箱</button>
+        </div>
+        <div class="butler-lease-list" id="butlerLeaseList"></div>
+      </div>
+    </section>
     <section class="outlook-panel-v2" id="outlookPanelV2" aria-label="邮箱池">
       <div class="outlook-filter-v2" id="outlookFilterV2">
         <div class="outlook-v2-select" id="poolSourceV2Wrap">
@@ -2776,11 +3098,6 @@
 
   <!-- ============ 配置 ============ -->
   <div id="tab-config" class="hidden">
-    <div class="config-overview-v2" id="configOverviewV2" aria-label="配置概览">
-      <h1 class="config-overview-v2-title">运行配置</h1>
-      <p class="config-overview-v2-desc">仅开放运行时安全的开关与数值。协议级常量（client_id / sentinel 版本）不在此处，避免误改废号。修改后点保存即可热加载生效，无需重启。</p>
-    </div>
-
     <!-- 配置布局：左侧导航 + 右侧卡片/分区 -->
     <div class="config-layout-v2" id="configLayoutV2">
       <aside class="config-nav-v2" aria-label="配置分组">
@@ -2886,6 +3203,11 @@ let JOBS = [];
 let JOBS_TOTAL = 0;
 let JOB_STATUS_COUNTS = {};
 let JOB_PROGRESS_BATCH = null;
+let JOB_STATUS_FILTER = '';
+let JOB_QUERY = '';
+let JOB_EMAIL_SOURCE_FILTER = '';
+let JOB_DATE_FROM = '';
+let JOB_DATE_TO = '';
 let jobsRenderSignature = '';
 const JOB_SELECTED = new Set();
 let REGISTRATION_EMAIL_SOURCES = [];
@@ -3080,7 +3402,7 @@ const FEATURE_SELECTORS = {
   live_check: '#btnCheckSelectedLiveTopV2,#btnCheckSelectedLiveV2,#btnCheckSelectedLiveTop,#btnCheckSelectedLive,[data-account-live-check]',
   plan_check: '#btnCheckSelectedPlansV2,#btnCheckSelectedPlans,[data-plan-check]',
   extract_link: '#btnExtractSelectedLinksV2,#btnExtractSelectedLinks,[data-extract-link]',
-  sub2_upload: '#btnUploadSelectedCodexSub2V2,#btnUploadSelectedCodexSub2',
+  sub2_upload: '#btnUploadSelectedCodexSub2V2,#btnUploadSelectedCodexSub2,#btnCodexUploadSub2V2,#btnCodexUploadSub2HeroV2,[data-codex-upload-sub2]',
   codex_retry: '#btnRetrySelectedCodexV2,#btnRetrySelectedCodex,[data-codex-retry]',
   cpa_download: '#btnDownloadSelectedCpaV2,#btnDownloadSelectedCpa,#btnCodexDownloadBulkCpaV2,#btnCodexDownloadBulkCpa,[data-codex-download-cpa]',
   deactivation_mail: '#btnCheckSelectedDeactivationMailV2,#btnCheckSelectedDeactivationMail,[data-account-deactivation-mail]',
@@ -3125,6 +3447,7 @@ function debounce(fn, wait=250) {
 
 // ---------- Tab 切换 ----------
 const TAB_META = {
+  overview: { title: '平台总览', description: '账号、邮箱、任务和网络资源运行状态' },
   register: { title: '注册中心', description: '发起批次并追踪自动化注册流程' },
   accounts: { title: '账号资产', description: '查询、筛选和批量维护已注册账号' },
   codex: { title: 'Codex 授权', description: '管理 OAuth 凭证、归档与导出状态' },
@@ -3155,9 +3478,9 @@ updateTopbarClock();
 setInterval(updateTopbarClock, 30000);
 
 function activateTab(tab, persist=true) {
-  const allowed = ['register','accounts','codex','outlook','config'];
-  if (!allowed.includes(tab)) tab = 'register';
-  $$('nav button').forEach(x => {
+  const allowed = ['overview','register','accounts','codex','outlook','config'];
+  if (!allowed.includes(tab)) tab = 'overview';
+  $$('.sidebar-nav button[data-tab]').forEach(x => {
     const active = x.dataset.tab === tab;
     x.classList.toggle('active', active);
     if (active) x.setAttribute('aria-current', 'page');
@@ -3170,13 +3493,63 @@ function activateTab(tab, persist=true) {
   document.title = `${meta.title} · Turb Console`;
   closeMobileSidebar();
   if (persist) localStorage.setItem('gpt_console_active_tab', tab);
+  if (tab === 'overview') loadDashboard();
   if (tab === 'accounts') loadAccounts();
   if (tab === 'codex') loadCodex();
-  if (tab === 'outlook') loadOutlook();
+  if (tab === 'outlook') {
+    const view = $('#tab-outlook')?.dataset.moduleView || 'overview';
+    if (view === 'overview') loadMailResources(); else loadOutlook();
+  }
   if (tab === 'config') loadConfig();
   if (tab === 'register') refreshJobs();
 }
-$$('nav button').forEach(b => b.addEventListener('click', () => activateTab(b.dataset.tab)));
+$$('.sidebar-nav button[data-tab]').forEach(b => b.addEventListener('click', () => activateTab(b.dataset.tab)));
+
+const MODULE_VIEW_META = {
+  register: {
+    launch: '配置邮箱来源、批次数量与并发线程',
+    tasks: '查询任务、查看日志并从失败断点重跑',
+  },
+  accounts: {
+    active: '查询、筛选和批量维护活跃账号',
+    archived: '集中查看和恢复已归档账号',
+  },
+  codex: {
+    credentials: '管理 OAuth 凭证、归档与导出状态',
+    sub2: '筛选本地凭证并同步到 sub2api',
+  },
+  outlook: {
+    overview: '查看邮箱供给、使用情况与 Email Butler 租约',
+    list: '查询、导入和批量维护邮箱素材',
+  },
+};
+function setModuleView(module, view) {
+  const tab = document.getElementById(`tab-${module}`);
+  if (!tab || !MODULE_VIEW_META[module]?.[view]) return;
+  tab.dataset.moduleView = view;
+  localStorage.setItem(`gpt_console_module_view_${module}`, view);
+  tab.querySelectorAll('.module-subnav [data-view]').forEach(btn => btn.classList.toggle('is-active', btn.dataset.view === view));
+  if ($('#topbarDescription')) $('#topbarDescription').textContent = MODULE_VIEW_META[module][view];
+  if (module === 'accounts' && SHOW_ARCHIVED_ACCOUNTS !== (view === 'archived')) applyAccountsArchivedFilter(view === 'archived');
+  if (module === 'register' && view === 'tasks') refreshJobs();
+  if (module === 'codex') loadCodex();
+  if (module === 'outlook') view === 'overview' ? loadMailResources() : loadOutlook();
+}
+$$('.module-subnav').forEach(nav => nav.addEventListener('click', event => {
+  const btn = event.target.closest('[data-view]');
+  if (btn) setModuleView(nav.dataset.moduleSubnav, btn.dataset.view);
+}));
+function restoreModuleViewState() {
+  Object.entries(MODULE_VIEW_META).forEach(([module, views]) => {
+    const saved = localStorage.getItem(`gpt_console_module_view_${module}`);
+    if (!saved || !views[saved]) return;
+    const tab = document.getElementById(`tab-${module}`);
+    if (!tab) return;
+    tab.dataset.moduleView = saved;
+    tab.querySelectorAll('.module-subnav [data-view]').forEach(btn => btn.classList.toggle('is-active', btn.dataset.view === saved));
+    if (module === 'accounts') SHOW_ARCHIVED_ACCOUNTS = saved === 'archived';
+  });
+}
 
 // ---------- 概览 ----------
 async function loadSummary() {
@@ -3189,6 +3562,82 @@ async function loadSummary() {
     $('#statFailed').textContent = s.outlook_failed;
   } catch(e) {}
 }
+
+function dashboardMetric(label, value, hint, color) {
+  return `<article class="overview-metric" style="--metric-color:${attrEsc(color)}">
+    <div class="overview-metric-top"><span>${esc(label)}</span><i class="overview-metric-dot" aria-hidden="true"></i></div>
+    <strong>${esc(value)}</strong><small>${esc(hint)}</small>
+  </article>`;
+}
+function jobStatusLabel(status) {
+  return ({pending:'排队',running:'运行中',success:'成功',failed:'失败',partial_success:'部分成功',stopped:'已停止',cancelled:'已取消'})[status] || status || '未知';
+}
+function renderDashboard(data) {
+  const accounts = data.accounts || {};
+  const email = data.email || {};
+  const jobs = data.jobs || {};
+  const proxy = data.proxy || {};
+  const codex = data.codex || {};
+  const jobCounts = jobs.counts || {};
+  const activeJobs = Number(jobCounts.running || 0) + Number(jobCounts.pending || 0) + Number(jobCounts.stopping || 0);
+  $('#overviewMetrics').innerHTML = [
+    dashboardMetric('有效账号', accounts.active || 0, `归档 ${accounts.archived || 0}`, '#5b5ce2'),
+    dashboardMetric('可用邮箱', email.local_available || 0, `本地资源 ${email.local_total || 0}`, '#2dbb8a'),
+    dashboardMetric('运行任务', activeJobs, `累计任务 ${jobs.total || 0}`, '#e6a23c'),
+    dashboardMetric('Codex 凭证', codex.total || 0, `待导出 ${codex.pending || 0}`, '#377dff'),
+    dashboardMetric('活跃出口', proxy.active_leases || 0, `代理平台 ${proxy.platform || 'none'}`, '#a855f7'),
+  ].join('');
+
+  const sources = email.sources || [];
+  $('#overviewEmailSources').innerHTML = sources.map(source => {
+    const onDemand = source.kind === 'on_demand';
+    return `<article class="overview-source">
+      <div class="overview-source-top"><span class="overview-source-name" title="${attrEsc(source.label)}">${esc(source.label)}</span><i class="overview-source-state${source.enabled ? ' is-on' : ''}"></i></div>
+      <strong>${onDemand ? (source.enabled ? '按需' : '未启用') : esc(source.available || 0)}</strong>
+      <small>${onDemand ? '运行时租用' : `总数 ${esc(source.total || 0)} · 已用 ${esc(source.used || 0)}`}</small>
+    </article>`;
+  }).join('') || '<div class="muted">暂无邮箱来源</div>';
+
+  const proxyPlatformLabel = ({'1024':'1024Proxy',pool:'静态代理池',none:'直连',direct:'直连'})[proxy.platform] || proxy.platform || '未配置';
+  const leases = proxy.leases || [];
+  $('#overviewProxy').innerHTML = `<div class="overview-proxy-grid">
+    <div class="overview-proxy-item"><span>系统代理平台</span><strong>${esc(proxyPlatformLabel)}</strong></div>
+    <div class="overview-proxy-item"><span>活跃出口</span><strong>${esc(proxy.active_leases || 0)} 个</strong></div>
+  </div><div class="overview-exit-list">${leases.map(lease => `<div class="overview-exit-row">
+    <i aria-hidden="true"></i><span title="${attrEsc(lease.endpoint || lease.exit_ip || '')}">${esc(lease.endpoint || lease.exit_ip || '活跃出口')}</span><small>${esc(lease.region || lease.provider || '')}</small>
+  </div>`).join('') || '<div class="muted">当前没有活跃代理出口</div>'}</div>`;
+
+  const todayCounts = jobs.today_counts || {};
+  const todayRows = [
+    ['success', '成功', todayCounts.success || 0],
+    ['partial_success', '部分成功', todayCounts.partial_success || 0],
+    ['failed', '失败', todayCounts.failed || 0],
+  ];
+  $('#overviewRecentJobs').innerHTML = todayRows.map(([status, label, count]) => `<div class="overview-job-row">
+    ${pill(status)}<div class="overview-job-main"><strong>${esc(count)} 个任务</strong><small>${esc(jobs.today || '今天')} · ${esc(label)}</small></div>
+  </div>`).join('');
+
+  const plans = Object.entries(accounts.plans || {}).sort((a,b) => Number(b[1]) - Number(a[1]));
+  const planMax = Math.max(1, ...plans.map(([,count]) => Number(count || 0)));
+  const planLabels = {free:'Free',free_trial_eligible:'Free · 可领 Plus 试用',plus:'Plus',pro:'Pro',team:'Team',go:'Go',unknown:'未检测'};
+  $('#overviewPlans').innerHTML = plans.map(([plan,count]) => `<div class="overview-plan-row">
+    <span>${esc(planLabels[plan] || plan)}</span><div class="overview-plan-bar"><i style="width:${Math.max(4, Math.round(Number(count || 0) / planMax * 100))}%"></i></div><strong>${esc(count)}</strong>
+  </div>`).join('') || '<div class="muted">暂无套餐信息</div>';
+}
+async function loadDashboard() {
+  const button = $('#btnRefreshOverview');
+  if (button) button.disabled = true;
+  try { renderDashboard(await api('/api/dashboard')); }
+  catch(e) { showToast('总览加载失败: ' + e.message); }
+  finally { if (button) button.disabled = false; }
+}
+$('#btnRefreshOverview')?.addEventListener('click', loadDashboard);
+$('#tab-overview')?.addEventListener('click', e => {
+  const go = e.target.closest('[data-overview-go]');
+  if (go) { activateTab(go.dataset.overviewGo); return; }
+  const config = e.target.closest('[data-overview-config]');
+  if (config) openConfigGroup(config.dataset.overviewConfig);
+});
 
 // ---------- 注册 / 任务 ----------
 function registrationEmailSourceLabel(value) {
@@ -3216,6 +3665,13 @@ async function loadRegistrationEmailSources() {
     select.innerHTML = '<option value="">请选择本次邮箱来源</option>' + REGISTRATION_EMAIL_SOURCES.map(item =>
       `<option value="${esc(item.value)}" ${item.enabled === false ? 'disabled' : ''} title="${esc(item.reason || '')}">${esc(item.label)}${item.enabled === false ? '（未配置）' : ''}</option>`
     ).join('');
+    const taskSourceFilter = $('#jobEmailSourceFilterV2');
+    if (taskSourceFilter) {
+      taskSourceFilter.innerHTML = '<option value="">全部邮箱来源</option>' + REGISTRATION_EMAIL_SOURCES.map(item =>
+        `<option value="${esc(item.value)}">${esc(item.label)}</option>`
+      ).join('');
+      taskSourceFilter.value = JOB_EMAIL_SOURCE_FILTER;
+    }
   } catch (error) {
     select.innerHTML = '<option value="">邮箱来源加载失败</option>';
     select.disabled = true;
@@ -3538,13 +3994,67 @@ function updateJobsSelectionUi(pageRows = null) {
   }
 }
 
+function updateJobStatusFilters() {
+  const counts = JOB_STATUS_COUNTS || {};
+  const select = $('#jobStatusFilterV2');
+  if (!select) return;
+  const values = {
+    '': Object.entries(counts).filter(([key]) => key !== 'active').reduce((sum, [, value]) => sum + Number(value || 0), 0),
+    running: Number(counts.running || 0) + Number(counts.pending || 0) + Number(counts.stopping || 0),
+    failed: Number(counts.failed || 0),
+    partial_success: Number(counts.partial_success || 0),
+    success: Number(counts.success || 0),
+    stopped: Number(counts.stopped || 0),
+  };
+  [...select.options].forEach(option => {
+    option.textContent = `${option.dataset.label} · ${values[option.value] || 0}`;
+  });
+  select.value = JOB_STATUS_FILTER;
+}
+$('#jobStatusFilterV2')?.addEventListener('change', event => {
+  JOB_STATUS_FILTER = event.target.value || '';
+  PAGERS.jobs.page = 1;
+  JOB_SELECTED.clear();
+  jobsRenderSignature = '';
+  refreshJobs();
+});
+$('#qJobsV2')?.addEventListener('input', debounce(event => {
+  JOB_QUERY = event.target.value.trim();
+  PAGERS.jobs.page = 1;
+  JOB_SELECTED.clear();
+  refreshJobs();
+}, 250));
+$('#jobEmailSourceFilterV2')?.addEventListener('change', event => {
+  JOB_EMAIL_SOURCE_FILTER = event.target.value || '';
+  PAGERS.jobs.page = 1;
+  JOB_SELECTED.clear();
+  refreshJobs();
+});
+['jobDateFromV2', 'jobDateToV2'].forEach(id => document.getElementById(id)?.addEventListener('change', event => {
+  if (id === 'jobDateFromV2') JOB_DATE_FROM = event.target.value || '';
+  else JOB_DATE_TO = event.target.value || '';
+  PAGERS.jobs.page = 1;
+  JOB_SELECTED.clear();
+  refreshJobs();
+}));
+$('#btnResetJobFiltersV2')?.addEventListener('click', () => {
+  JOB_QUERY = ''; JOB_EMAIL_SOURCE_FILTER = ''; JOB_DATE_FROM = ''; JOB_DATE_TO = ''; JOB_STATUS_FILTER = '';
+  ['qJobsV2', 'jobEmailSourceFilterV2', 'jobDateFromV2', 'jobDateToV2', 'jobStatusFilterV2'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.value = '';
+  });
+  PAGERS.jobs.page = 1;
+  JOB_SELECTED.clear();
+  refreshJobs();
+});
+
 async function refreshJobs() {
   try {
     const p = PAGERS.jobs;
-    const res = await api(`/api/jobs?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}`);
+    const res = await api(`/api/jobs?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&status=${encodeURIComponent(JOB_STATUS_FILTER)}&q=${encodeURIComponent(JOB_QUERY)}&email_source=${encodeURIComponent(JOB_EMAIL_SOURCE_FILTER)}&date_from=${encodeURIComponent(JOB_DATE_FROM)}&date_to=${encodeURIComponent(JOB_DATE_TO)}`);
     const nextJobs = res.items || [];
     JOBS_TOTAL = Number(res.total || nextJobs.length || 0);
     JOB_STATUS_COUNTS = res.status_counts || {};
+    updateJobStatusFilters();
     JOB_PROGRESS_BATCH = res.progress_batch || null;
     const totalPages = Math.max(1, Math.ceil(JOBS_TOTAL / p.size));
     if (p.page > totalPages) { p.page = totalPages; return refreshJobs(); }
@@ -5209,6 +5719,54 @@ function poolKey(r) { return `${r.source || getPoolSource() || 'outlook'}|${r.em
 function poolLabel(src) {
   return ({outlook:'Outlook', generic_api:'通用API', cloudflare_domain:'域名邮箱', icloud_hide:'iCloud 隐藏邮箱'})[src] || src || '-';
 }
+function renderMailSourceCards(sources) {
+  const root = $('#mailSourceCards');
+  if (!root) return;
+  root.innerHTML = (sources || []).map(source => {
+    const onDemand = source.kind === 'on_demand';
+    return `<article class="mail-source-card${source.enabled ? ' is-enabled' : ''}">
+      <div class="mail-source-card-head"><strong title="${attrEsc(source.label)}">${esc(source.label)}</strong><span>${source.enabled ? '已启用' : '未启用'}</span></div>
+      <div class="mail-source-card-value">${onDemand ? '按需' : esc(source.available || 0)}</div>
+      <div class="mail-source-card-meta">${onDemand ? '运行时租用 / 创建' : `总数 ${esc(source.total || 0)} · 已用 ${esc(source.used || 0)} · 失败 ${esc(source.failed || 0)}`}</div>
+    </article>`;
+  }).join('') || '<div class="muted">暂无邮箱平台</div>';
+}
+function renderButlerLeases(items) {
+  const root = $('#butlerLeaseList');
+  if (!root) return;
+  root.innerHTML = (items || []).map(item => `<div class="butler-lease-row">
+    <div class="butler-lease-row-main"><strong>${esc(item.email)}</strong><small>${esc(item.provider || 'Email Butler')}${item.leased_until ? ` · 至 ${esc(formatDateTime(item.leased_until))}` : ''}</small></div>
+    <button type="button" data-butler-release="${attrEsc(item.email)}">释放</button>
+  </div>`).join('') || '<div class="butler-lease-empty">当前进程没有手动或注册中租约</div>';
+}
+async function loadMailResources() {
+  try {
+    const [dashboard, leases] = await Promise.all([api('/api/dashboard'), api('/api/email-butler/leases')]);
+    renderMailSourceCards((dashboard.email || {}).sources || []);
+    renderButlerLeases(leases.items || []);
+  } catch(e) { showToast('邮箱资源加载失败: ' + e.message); }
+}
+$('#btnRefreshMailResources')?.addEventListener('click', loadMailResources);
+$('#btnLeaseButlerMailbox')?.addEventListener('click', async e => {
+  e.currentTarget.disabled = true;
+  try {
+    const result = await api('/api/email-butler/leases', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    showToast(`已租用 ${result.item?.email || '邮箱'}`);
+    await loadMailResources();
+  } catch(err) { showToast('租用失败: ' + err.message); }
+  finally { e.currentTarget.disabled = false; }
+});
+$('#butlerLeaseList')?.addEventListener('click', async e => {
+  const btn = e.target.closest('[data-butler-release]');
+  if (!btn) return;
+  btn.disabled = true;
+  try {
+    await api('/api/email-butler/leases/release', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({email:btn.dataset.butlerRelease,status:'available'})});
+    showToast('Email Butler 租约已释放');
+    await loadMailResources();
+  } catch(err) { showToast('释放失败: ' + err.message); btn.disabled = false; }
+});
+
 async function loadOutlook() {
   try {
     const source = getPoolSource();
@@ -5624,13 +6182,15 @@ async function loadCodex() {
 const CODEX_SELECTED = new Set();
 function _codexUpdateSelectedHint() {
   const none = CODEX_SELECTED.size === 0;
+  const syncCount = document.getElementById('codexSyncSelectedV2');
+  if (syncCount) syncCount.textContent = String(CODEX_SELECTED.size);
   const archiveBtn = document.getElementById('btnCodexArchiveBulkV2');
   if (archiveBtn) {
     archiveBtn.disabled = none;
     archiveBtn.textContent = CODEX_SHOW_ARCHIVED ? '恢复选中' : '归档选中';
     archiveBtn.title = CODEX_SHOW_ARCHIVED ? '把选中的归档凭证恢复到默认列表' : '归档选中的 Codex 授权凭证；默认列表不再显示';
   }
-  ['btnCodexDownloadBulkV2', 'btnCodexDownloadBulkCpaV2', 'btnCodexDeleteBulkV2'].forEach(id => {
+  ['btnCodexDownloadBulkV2', 'btnCodexDownloadBulkCpaV2', 'btnCodexDeleteBulkV2', 'btnCodexUploadSub2V2', 'btnCodexUploadSub2HeroV2'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.disabled = none;
   });
@@ -5681,6 +6241,7 @@ function renderCodex() {
     const exported = (r.exported_count || 0) > 0;
     const moreItems = [
       `<button type="button" class="good" data-codex-download-cpa="${esc(r.filename)}" title="按邮箱从 CPA auth-files 下载真实 Codex JSON">从CPA下载</button>`,
+      `<button type="button" class="good" data-codex-upload-sub2="${esc(r.filename)}" title="把这份本地 Codex OAuth 凭证上传到 sub2api">上传 sub2api</button>`,
       exported ? `<button type="button" data-codex-reset="${esc(r.filename)}" title="重新标记为未导出">重置标记</button>` : '',
       `<button type="button" class="${r.archived ? 'good' : ''}" data-codex-archive="${esc(r.filename)}" data-archived="${r.archived ? '0' : '1'}" title="${r.archived ? '恢复到默认 Codex 列表' : '归档后默认列表不再显示'}">${r.archived ? '恢复' : '归档'}</button>`,
     ].filter(Boolean).join('');
@@ -5742,6 +6303,12 @@ async function onCodexBodyClick(e) {
     return;
   }
   if (e.target.closest('.acc-v2-more-menu')) closeCodexV2MoreMenus();
+
+  const uploadSub2 = e.target.closest('[data-codex-upload-sub2]');
+  if (uploadSub2) {
+    await codexUploadSub2([uploadSub2.dataset.codexUploadSub2]);
+    return;
+  }
 
   const dlCpa = e.target.closest('[data-codex-download-cpa]');
   if (dlCpa) {
@@ -5920,6 +6487,28 @@ async function codexDownloadBulkCpa() {
     _codexUpdateSelectedHint();
   }
 }
+async function codexUploadSub2(filenames = null) {
+  const selected = Array.isArray(filenames) ? filenames.filter(Boolean) : Array.from(CODEX_SELECTED);
+  if (!selected.length) return;
+  if (!confirm(`把选中的 ${selected.length} 个 Codex OAuth 凭证上传到 sub2api？\n\n同名账号将按 sub2api 的导入策略更新。`)) return;
+  ['btnCodexUploadSub2V2', 'btnCodexUploadSub2HeroV2'].forEach(id => {
+    const btn = document.getElementById(id); if (btn) btn.disabled = true;
+  });
+  try {
+    const r = await api('/api/codex/upload-sub2-bulk', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({filenames: selected}),
+    });
+    (r.uploaded || []).forEach(item => CODEX_SELECTED.delete(item.filename));
+    const issues = Number(r.failed_count || 0) + Number(r.skipped_count || 0);
+    showToast(issues ? `已上传 ${r.uploaded_count || 0} 个，${issues} 个未完成` : `已上传 ${r.uploaded_count || 0} 个到 sub2api`);
+    await loadCodex();
+  } catch(err) {
+    showToast('上传 sub2api 失败: ' + err.message);
+  } finally {
+    _codexUpdateSelectedHint();
+  }
+}
 async function codexDeleteBulk() {
   if (CODEX_SELECTED.size === 0) return;
   const filenames = Array.from(CODEX_SELECTED);
@@ -5967,6 +6556,8 @@ async function codexDeleteBulk() {
   const bind = (id, fn) => { const el = document.getElementById(id); if (el) el.addEventListener('click', fn); };
   bind('btnCodexDownloadBulkV2', codexDownloadBulkLocal);
   bind('btnCodexDownloadBulkCpaV2', codexDownloadBulkCpa);
+  bind('btnCodexUploadSub2V2', () => codexUploadSub2());
+  bind('btnCodexUploadSub2HeroV2', () => codexUploadSub2());
   bind('btnCodexArchiveBulkV2', codexArchiveSelected);
   bind('btnCodexDeleteBulkV2', codexDeleteBulk);
   document.addEventListener('click', (e) => {
@@ -5981,6 +6572,7 @@ async function codexDeleteBulk() {
 let CONFIG_EMAIL_ACTIVE_SECTION_V2 = '通用邮箱 / OTP';
 let CONFIG_SMS_ACTIVE_SECTION_V2 = '通用接码';
 let CONFIG_CODEX_ACTIVE_SECTION_V2 = '基础配置';
+let CONFIG_ACTIVE_GROUP_V2 = '';
 const CONFIG_PENDING_UPDATES = {};
 
 function configGroups() {
@@ -6802,13 +7394,16 @@ function renderConfigLayoutV2() {
     sections.innerHTML = '';
     return;
   }
-  nav.innerHTML = names.map((name, i) => `
-    <button type="button" class="config-nav-v2-item${i === 0 ? ' is-active' : ''}" data-config-nav="${esc(name)}" data-config-target="${esc(configGroupSlug(name))}">
+  const savedGroup = localStorage.getItem('gpt_console_config_group');
+  if (!CONFIG_ACTIVE_GROUP_V2 && savedGroup && names.includes(savedGroup)) CONFIG_ACTIVE_GROUP_V2 = savedGroup;
+  if (!CONFIG_ACTIVE_GROUP_V2 || !names.includes(CONFIG_ACTIVE_GROUP_V2)) CONFIG_ACTIVE_GROUP_V2 = names[0];
+  nav.innerHTML = names.map(name => `
+    <button type="button" class="config-nav-v2-item${name === CONFIG_ACTIVE_GROUP_V2 ? ' is-active' : ''}" data-config-nav="${esc(name)}" data-config-target="${esc(configGroupSlug(name))}">
       <svg viewBox="0 0 24 24" aria-hidden="true">${configNavIcon(name)}</svg>
       <span>${esc(configGroupDisplayName(name))}</span>
     </button>
   `).join('');
-  sections.innerHTML = names.map(name => renderConfigSectionV2(name, groups[name] || [])).join('');
+  sections.innerHTML = renderConfigSectionV2(CONFIG_ACTIVE_GROUP_V2, groups[CONFIG_ACTIVE_GROUP_V2] || []);
   renderRegistrationDriverCard();
   renderConfigOverviewCards();
   const sectionMount = document.getElementById('configRegistrationSelectV2');
@@ -6829,6 +7424,12 @@ function setActiveConfigNav(slug) {
     btn.classList.toggle('is-active', btn.dataset.configTarget === slug);
   });
 }
+function openConfigGroup(name) {
+  CONFIG_ACTIVE_GROUP_V2 = String(name || '');
+  localStorage.setItem('gpt_console_config_group', CONFIG_ACTIVE_GROUP_V2);
+  activateTab('config');
+  if (CONFIG.length) renderConfigLayoutV2();
+}
 function bindConfigLayoutV2() {
   const nav = document.getElementById('configNavV2');
   if (!nav || nav.dataset.bound) return;
@@ -6836,9 +7437,9 @@ function bindConfigLayoutV2() {
   nav.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-config-nav]');
     if (!btn) return;
-    const slug = btn.dataset.configTarget;
-    setActiveConfigNav(slug);
-    scrollToConfigSection(slug);
+    CONFIG_ACTIVE_GROUP_V2 = btn.dataset.configNav;
+    localStorage.setItem('gpt_console_config_group', CONFIG_ACTIVE_GROUP_V2);
+    renderConfigLayoutV2();
   });
   const layout = document.getElementById('configLayoutV2');
   if (layout && !layout.dataset.epBound) {
@@ -7036,9 +7637,11 @@ document.addEventListener('click', (e) => {
 // ---------- 初始化 ----------
 loadSummary();
 loadCapabilities();
-activateTab(localStorage.getItem('gpt_console_active_tab') || 'register', false);
+restoreModuleViewState();
+activateTab(localStorage.getItem('gpt_console_active_tab') || 'overview', false);
 jobsTimer = setInterval(() => { if (!$('#tab-register').classList.contains('hidden')) refreshJobs(); }, 3000);
 setInterval(loadSummary, 5000);
+setInterval(() => { if (!$('#tab-overview').classList.contains('hidden')) loadDashboard(); }, 15000);
 setInterval(() => { if (!$('#tab-accounts').classList.contains('hidden')) pollAccountPlanStatuses(); }, 2000);
 </script>
 </body>

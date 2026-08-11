@@ -14,6 +14,7 @@ import logging
 import threading
 import time
 import uuid
+from datetime import datetime
 from urllib.parse import urlparse
 
 from flask import Flask, Response, jsonify, make_response, redirect, render_template, request, url_for
@@ -328,6 +329,95 @@ def create_app(auth_code: str | None = None) -> Flask:
             "domain_available": domain_pool.get("available", 0),
             "domain_used": domain_pool.get("used", 0),
             "domain_failed": domain_pool.get("failed", 0),
+        })
+
+    @app.get("/api/dashboard")
+    def api_dashboard():
+        """平台总览：仅返回聚合、配置状态与脱敏的运行中租约。"""
+        from config import email as email_cfg
+        from core.email_provider import EMAIL_SOURCE_LABELS, parse_email_sources
+        from core.proxy_provider import active_proxy_leases, registration_proxy_mode
+
+        accounts = db.list_accounts(limit=1_000_000, archived="all")
+        active_accounts = [row for row in accounts if not bool(row.get("archived"))]
+        plan_counts: dict[str, int] = {}
+        for row in active_accounts:
+            plan = str(row.get("current_plan_type") or row.get("plan_type") or "unknown").strip().lower()
+            if plan == "free" and bool(row.get("plus_trial_eligible")):
+                plan_key = "free_trial_eligible"
+            elif plan in {"", "unknown", "none", "null"}:
+                plan_key = "unknown"
+            else:
+                plan_key = plan
+            plan_counts[plan_key] = plan_counts.get(plan_key, 0) + 1
+
+        jobs = db.list_jobs(limit=1_000_000)
+        job_counts = _job_status_counts(jobs)
+        today = datetime.now().date().isoformat()
+        today_counts = {"success": 0, "partial_success": 0, "failed": 0}
+        for row in jobs:
+            created_day = str(row.get("created_at") or row.get("started_at") or "")[:10]
+            if created_day != today:
+                continue
+            try:
+                display_status = str(svc.get_retry_info(row).get("display_status") or row.get("status") or "")
+            except Exception:
+                display_status = str(row.get("display_status") or row.get("status") or "")
+            if display_status in today_counts:
+                today_counts[display_status] += 1
+        local_pools = [
+            ("outlook", "Outlook", db.outlook_pool_summary()),
+            ("generic_api", "通用 API", db.generic_api_email_pool_summary()),
+            ("cloudflare_domain", "域名邮箱", db.domain_email_pool_summary()),
+            ("icloud_hide", "iCloud 隐藏邮箱", db.icloud_hide_email_pool_summary()),
+        ]
+        enabled_sources = set(parse_email_sources(email_cfg.EMAIL_SOURCE))
+        pool_rows = [
+            {
+                "source": source,
+                "label": label,
+                "kind": "local_pool",
+                "enabled": source in enabled_sources,
+                **{key: int(summary.get(key, 0) or 0) for key in ("total", "available", "used", "failed", "disabled")},
+            }
+            for source, label, summary in local_pools
+        ]
+        on_demand_sources = ("email_butler", "gptmail", "mailnest", "cloudmail", "cloudflare")
+        pool_rows.extend({
+            "source": source,
+            "label": EMAIL_SOURCE_LABELS.get(source, source),
+            "kind": "on_demand",
+            "enabled": source in enabled_sources,
+        } for source in on_demand_sources)
+
+        active_leases = active_proxy_leases()
+        return jsonify({
+            "ok": True,
+            "accounts": {
+                "total": len(accounts),
+                "active": len(active_accounts),
+                "archived": len(accounts) - len(active_accounts),
+                "codex_ready": sum(1 for row in active_accounts if str(row.get("codex_status") or "") == "success"),
+                "plans": plan_counts,
+            },
+            "jobs": {
+                "total": len(jobs),
+                "counts": job_counts,
+                "today": today,
+                "today_counts": today_counts,
+            },
+            "email": {
+                "sources": pool_rows,
+                "local_total": sum(int(item.get("total", 0) or 0) for item in pool_rows),
+                "local_available": sum(int(item.get("available", 0) or 0) for item in pool_rows),
+                "enabled_count": len(enabled_sources),
+            },
+            "proxy": {
+                "platform": registration_proxy_mode(),
+                "active_leases": len(active_leases),
+                "leases": active_leases,
+            },
+            "codex": db.codex_accounts_summary(),
         })
 
     @app.get("/api/capabilities")
@@ -943,17 +1033,10 @@ def create_app(auth_code: str | None = None) -> Flask:
             raise RuntimeError("Codex 状态已通过，但本地未找到对应 OAuth JSON")
         return db.read_codex_credential(str(match.get("filename") or ""))
 
-    def _upload_account_codex_to_sub2(acc: dict) -> dict:
-        """把账号的 Codex OAuth JSON 上传到 sub2api。"""
-        import json as _json
+    def _upload_codex_auth_to_sub2(auth_json: dict, filename: str) -> dict:
+        """把一份已解析的 Codex OAuth JSON 上传到 sub2api。"""
         from config import sub2api as sub2api_cfg
         from core.sub2api_client import upload_codex_oauth_credential
-
-        text, filename = _codex_oauth_auth_for_account(acc)
-        try:
-            auth_json = _json.loads(text)
-        except Exception as exc:
-            raise RuntimeError(f"Codex 凭证 JSON 无效: {exc}") from exc
 
         api_url = _sub2_codex_session_import_url()
         api_token = str(getattr(sub2api_cfg, "SUB2API_API_KEY", "") or getattr(sub2api_cfg, "SUB2API_API_TOKEN", "") or "").strip()
@@ -972,6 +1055,28 @@ def create_app(auth_code: str | None = None) -> Flask:
         result["filename"] = filename
         db.mark_codex_exported(filename)
         return result
+
+    def _upload_codex_filename_to_sub2(filename: str) -> dict:
+        """按 Codex 凭证文件名上传到 sub2api。"""
+        import json as _json
+
+        text, actual_filename = db.read_codex_credential(filename)
+        try:
+            auth_json = _json.loads(text)
+        except Exception as exc:
+            raise RuntimeError(f"Codex 凭证 JSON 无效: {exc}") from exc
+        return _upload_codex_auth_to_sub2(auth_json, actual_filename)
+
+    def _upload_account_codex_to_sub2(acc: dict) -> dict:
+        """把账号的 Codex OAuth JSON 上传到 sub2api。"""
+        import json as _json
+
+        text, filename = _codex_oauth_auth_for_account(acc)
+        try:
+            auth_json = _json.loads(text)
+        except Exception as exc:
+            raise RuntimeError(f"Codex 凭证 JSON 无效: {exc}") from exc
+        return _upload_codex_auth_to_sub2(auth_json, filename)
 
     @app.post("/api/accounts/<int:acc_id>/codex/upload-sub2")
     def api_account_codex_upload_sub2(acc_id: int):
@@ -1030,6 +1135,48 @@ def create_app(auth_code: str | None = None) -> Flask:
                 })
             except Exception as exc:
                 failed.append({"id": acc_id, "email": email, "error": f"{type(exc).__name__}: {exc}"})
+        return jsonify({
+            "ok": True,
+            "uploaded": uploaded,
+            "uploaded_count": len(uploaded),
+            "failed": failed,
+            "failed_count": len(failed),
+            "skipped": skipped,
+            "skipped_count": len(skipped),
+        })
+
+    @app.post("/api/codex/upload-sub2-bulk")
+    def api_codex_upload_sub2_bulk():
+        """从 Codex 管理页批量上传 OAuth 凭证。Body {filenames:[...]}。"""
+        unavailable = _feature_unavailable("sub2_upload")
+        if unavailable:
+            return unavailable
+        data = request.get_json(silent=True) or {}
+        filenames = data.get("filenames") or []
+        if not isinstance(filenames, list) or not filenames:
+            return jsonify({"ok": False, "error": "filenames 必须是非空数组"}), 400
+        if len(filenames) > 500:
+            return jsonify({"ok": False, "error": "单次最多提交 500 个凭证"}), 400
+
+        uploaded, failed, skipped = [], [], []
+        seen = set()
+        for raw in filenames:
+            filename = str(raw or "").strip() if isinstance(raw, str) else ""
+            if not filename:
+                skipped.append({"filename": str(raw), "reason": "文件名非法"})
+                continue
+            if filename in seen:
+                continue
+            seen.add(filename)
+            try:
+                result = _upload_codex_filename_to_sub2(filename)
+                uploaded.append({
+                    "filename": result.get("filename") or filename,
+                    "url": result.get("url"),
+                    "status_code": result.get("status_code"),
+                })
+            except Exception as exc:
+                failed.append({"filename": filename, "error": f"{type(exc).__name__}: {exc}"})
         return jsonify({
             "ok": True,
             "uploaded": uploaded,
@@ -2048,23 +2195,49 @@ def create_app(auth_code: str | None = None) -> Flask:
     @app.get("/api/jobs")
     def api_jobs():
         limit = request.args.get("limit", default=100, type=int)
+        status_filter = str(request.args.get("status", default="") or "").strip().lower()
+        query = str(request.args.get("q", default="") or "").strip()
+        email_source_filter = str(request.args.get("email_source", default="") or "").strip().lower()
+        date_from = str(request.args.get("date_from", default="") or "").strip()
+        date_to = str(request.args.get("date_to", default="") or "").strip()
         paged = str(request.args.get("paged", default="") or "").lower() in {"1", "true", "yes"}
         page_arg = request.args.get("page", default=None, type=int)
         page_size_arg = request.args.get("page_size", default=None, type=int)
         fetch_limit = 1_000_000 if (paged or page_arg is not None or page_size_arg is not None) else limit
         from config import email as _email_cfg
         manual_otp_required = not bool(getattr(_email_cfg, "USE_EMAIL_SERVICE", True))
-        rows = db.list_jobs(limit=fetch_limit)
-        for row in rows:
+        all_rows = db.list_jobs(limit=fetch_limit)
+        for row in all_rows:
             row["manual_otp_required"] = manual_otp_required
             row.update(svc.get_retry_info(row))
+        base_rows = [row for row in all_rows if _matches_query(row, query)]
+        if email_source_filter:
+            base_rows = [
+                row for row in base_rows
+                if str(row.get("email_source") or "").strip().lower() == email_source_filter
+            ]
+        if date_from:
+            base_rows = [row for row in base_rows if str(row.get("created_at") or row.get("started_at") or "")[:10] >= date_from]
+        if date_to:
+            base_rows = [row for row in base_rows if str(row.get("created_at") or row.get("started_at") or "")[:10] <= date_to]
+        rows = [
+            row for row in base_rows
+            if str(row.get("display_status") or row.get("status") or "").lower() == status_filter
+        ] if status_filter else base_rows
         if paged or page_arg is not None or page_size_arg is not None:
             page = max(1, int(page_arg or 1))
             page_size = max(1, min(500, int(page_size_arg or limit or 50)))
             result = _paginate_items(rows, page=page, page_size=page_size)
             result["items"] = [_compact_job_for_list(r) for r in (result.get("items") or [])]
-            result["status_counts"] = _job_status_counts(rows)
-            result["progress_batch"] = _latest_progress_batch(rows)
+            list_counts: dict[str, int] = {}
+            for row in base_rows:
+                list_status = str(row.get("display_status") or row.get("status") or "unknown")
+                list_counts[list_status] = list_counts.get(list_status, 0) + 1
+            list_counts["active"] = sum(
+                1 for row in all_rows if str(row.get("status") or "") in {"pending", "running", "stopping"}
+            )
+            result["status_counts"] = list_counts
+            result["progress_batch"] = _latest_progress_batch(all_rows)
             result["compact"] = True
             return jsonify(result)
         return jsonify(rows)
@@ -2508,6 +2681,42 @@ def create_app(auth_code: str | None = None) -> Flask:
                 api_key=str(data.get("api_key") or "").strip() or None,
             )
             return jsonify(result)
+        except Exception as exc:
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:260]}"}), 400
+
+    @app.get("/api/email-butler/leases")
+    def api_email_butler_leases():
+        """列出当前 WebUI 进程持有的 Email Butler 租约。"""
+        from core.email_butler_client import active_mailbox_leases
+        return jsonify({"ok": True, "items": active_mailbox_leases()})
+
+    @app.post("/api/email-butler/leases")
+    def api_email_butler_lease_create():
+        """手动租用一个邮箱，供资源页检查平台供给情况。"""
+        try:
+            from core.email_butler_client import active_mailbox_leases, pick_account
+            account = pick_account()
+            item = next(
+                (row for row in active_mailbox_leases() if row.get("email") == account.email),
+                {"email": account.email, "mailbox_id": account.mailbox_id},
+            )
+            return jsonify({"ok": True, "item": item})
+        except Exception as exc:
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:260]}"}), 400
+
+    @app.post("/api/email-butler/leases/release")
+    def api_email_butler_lease_release():
+        """释放一个由当前 WebUI 进程持有的 Email Butler 租约。"""
+        data = request.get_json(silent=True) or {}
+        email = str(data.get("email") or "").strip().lower()
+        if not email or "@" not in email:
+            return jsonify({"ok": False, "error": "email 参数无效"}), 400
+        try:
+            from core.email_butler_client import get_account_context, release_account
+            if get_account_context(email) is None:
+                return jsonify({"ok": False, "error": "当前进程未持有该邮箱租约"}), 404
+            release_account(email, status=str(data.get("status") or "available"), note="WebUI 手动释放")
+            return jsonify({"ok": True, "email": email})
         except Exception as exc:
             return jsonify({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:260]}"}), 400
 

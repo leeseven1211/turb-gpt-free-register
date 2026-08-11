@@ -202,6 +202,21 @@ def get_account_context(email: str) -> EmailButlerAccount | None:
     return _CONTEXT_CACHE.get(_cache_key(email))
 
 
+def active_mailbox_leases() -> list[dict]:
+    """返回当前 WebUI 进程持有的 Email Butler 租约，不包含 API Key。"""
+    return [
+        {
+            "email": account.email,
+            "mailbox_id": account.mailbox_id,
+            "lease_id": account.lease_id,
+            "leased_until": account.leased_until,
+            "provider": account.provider,
+            "mailbox_email": account.mailbox_email,
+        }
+        for account in sorted(_CONTEXT_CACHE.values(), key=lambda item: item.email.lower())
+    ]
+
+
 def restore_account_context(email: str, *, purpose: str = "live-check") -> EmailButlerAccount:
     """按邮箱从 Butler 精确租用并恢复进程内上下文。"""
     key = _cache_key(email)

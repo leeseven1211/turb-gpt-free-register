@@ -104,6 +104,34 @@ class Sub2ApiWebUploadTests(unittest.TestCase):
         self.assertEqual(upload.call_args.args[0]["refresh_token"], "refresh-token")
         mark_exported.assert_called_once_with("codex-codex@example.com-free.json")
 
+    def test_codex_management_bulk_uploads_selected_credentials(self):
+        credential = json.dumps({
+            "type": "codex",
+            "email": "manage@example.com",
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+        })
+        with (
+            patch("core.feature_availability.require_feature", return_value=(True, "")),
+            patch("webui.app.db.read_codex_credential", return_value=(credential, "codex-manage@example.com-free.json")),
+            patch("webui.app.db.mark_codex_exported") as mark_exported,
+            patch("core.sub2api_client.upload_codex_oauth_credential", return_value={
+                "ok": True,
+                "url": "https://sub2.example/api/v1/admin/accounts/import/codex-session",
+                "status_code": 200,
+            }) as upload,
+        ):
+            response = self.client.post(
+                "/api/codex/upload-sub2-bulk",
+                json={"filenames": ["codex-manage@example.com-free.json"]},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(body["uploaded_count"], 1)
+        self.assertEqual(upload.call_args.args[0]["email"], "manage@example.com")
+        mark_exported.assert_called_once_with("codex-manage@example.com-free.json")
+
     def test_removed_agent_routes_are_not_registered(self):
         self.assertEqual(self.client.post("/api/accounts/codex-agent", json={"account_id": 23}).status_code, 404)
         self.assertEqual(self.client.post("/api/accounts/codex-agent-bulk", json={"account_ids": [23]}).status_code, 404)
