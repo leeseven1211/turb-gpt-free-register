@@ -134,13 +134,7 @@ def _generate_password(length: int = 14) -> str:
 
 
 def _registration_password() -> str:
-    try:
-        from config import register as _register_cfg
-        configured = str(getattr(_register_cfg, "REGISTER_PASSWORD", "") or "").strip()
-        if configured:
-            return configured
-    except Exception:
-        pass
+    """Every password-based registration gets an independent random password."""
     return _generate_password()
 
 
@@ -614,7 +608,12 @@ def _fill_password_if_present(page, email: str, timeout: int = 25, context=None)
                 return None
             time.sleep(0.15 if _fast_mode() else 0.4)
             continue
-        if _click_passwordless_signup_if_present(page):
+        try:
+            from config import register as _register_cfg
+            auth_mode = str(getattr(_register_cfg, "REGISTRATION_AUTH_MODE", "otp") or "otp").strip().lower()
+        except Exception:
+            auth_mode = "otp"
+        if auth_mode != "password" and _click_passwordless_signup_if_present(page):
             logger.info("[BrowserUse] 检测到密码页，已点击一次性验证码入口：state=%s email=%s", state, email)
             wait_end = time.time() + 20
             while time.time() < wait_end:

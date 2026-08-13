@@ -5,8 +5,10 @@ import unittest
 from unittest.mock import patch
 
 from config import codex as codex_config
+from config import register as register_config
 from config import env_loader
 from webui import config_editor
+from core import roxy_registration
 
 
 class ConfigDefaultFallbackTests(unittest.TestCase):
@@ -85,6 +87,49 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         finally:
             env_loader._LOADED = old_loaded
             importlib.reload(codex_config)
+
+    def test_account_batch_workers_are_managed_in_general_config(self):
+        fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
+        self.assertIn("ACCOUNT_BATCH_WORKERS", fields)
+        self.assertEqual(fields["ACCOUNT_BATCH_WORKERS"]["group"], "通用配置")
+
+        old_loaded = env_loader._LOADED
+        env_loader._LOADED = True
+        try:
+            with patch.dict(os.environ, {"ACCOUNT_BATCH_WORKERS": "7"}, clear=False):
+                reloaded = importlib.reload(codex_config)
+                self.assertEqual(reloaded.ACCOUNT_BATCH_WORKERS, 7)
+        finally:
+            env_loader._LOADED = old_loaded
+            importlib.reload(codex_config)
+
+    def test_registration_password_mode_is_webui_editable_and_env_driven(self):
+        fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
+        self.assertEqual(fields["REGISTRATION_AUTH_MODE"]["group"], "注册方式")
+        self.assertNotIn("REGISTER_PASSWORD", fields)
+
+        old_loaded = env_loader._LOADED
+        env_loader._LOADED = True
+        try:
+            with patch.dict(os.environ, {"REGISTRATION_AUTH_MODE": "password"}, clear=False):
+                reloaded = importlib.reload(register_config)
+                self.assertEqual(reloaded.REGISTRATION_AUTH_MODE, "password")
+        finally:
+            env_loader._LOADED = old_loaded
+            importlib.reload(register_config)
+
+    def test_password_mode_always_generates_independent_random_passwords(self):
+        first = roxy_registration._registration_password()
+        second = roxy_registration._registration_password()
+        self.assertEqual(len(first), 14)
+        self.assertEqual(len(second), 14)
+        self.assertNotEqual(first, second)
+
+    def test_registration_auth_mode_defaults_safely_and_accepts_password(self):
+        with patch.object(register_config, "REGISTRATION_AUTH_MODE", "password"):
+            self.assertEqual(roxy_registration._registration_auth_mode(), "password")
+        with patch.object(register_config, "REGISTRATION_AUTH_MODE", "unexpected"):
+            self.assertEqual(roxy_registration._registration_auth_mode(), "otp")
 
     def test_1024proxy_fields_are_webui_editable(self):
         fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}

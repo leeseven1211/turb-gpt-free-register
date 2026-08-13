@@ -30,6 +30,7 @@ from core import (
 )
 from webui.auth import init_auth, register_auth_routes
 from core import registration_service as svc
+from config import codex as codex_config
 from webui import config_editor
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,53 @@ def _matches_query(row: dict, q: str | None) -> bool:
         return False
 
 
+def _contains_value(row: dict, keys: tuple[str, ...], value: str | None) -> bool:
+    needle = str(value or "").strip().lower()
+    if not needle:
+        return True
+    return any(needle in str(row.get(key) or "").lower() for key in keys)
+
+
+def _matches_account_columns(row: dict, filters: dict[str, str]) -> bool:
+    if not _contains_value(row, ("id",), filters.get("id")):
+        return False
+    if not _contains_value(row, ("email", "user_name"), filters.get("email")):
+        return False
+    if not _contains_value(row, ("email_source",), filters.get("source")):
+        return False
+    if not _contains_value(row, ("note",), filters.get("note")):
+        return False
+    token = filters.get("token")
+    if token == "has" and not str(row.get("access_token") or "").strip():
+        return False
+    if token == "none" and str(row.get("access_token") or "").strip():
+        return False
+    password = filters.get("password")
+    has_password = bool(_account_registration_password(row))
+    if password == "has" and not has_password:
+        return False
+    if password == "none" and has_password:
+        return False
+    totp = filters.get("totp")
+    has_totp = bool(row.get("totp_secret") or row.get("totp_enabled"))
+    if totp == "enabled" and not has_totp:
+        return False
+    if totp == "disabled" and has_totp:
+        return False
+    risk = filters.get("risk")
+    risk_status = str(row.get("deactivation_mail_scan_status") or "")
+    if risk == "detected" and row.get("deactivation_mail_detected") is not True:
+        return False
+    if risk == "clear" and not (risk_status == "success" and row.get("deactivation_mail_detected") is not True):
+        return False
+    if risk == "pending" and risk_status in {"success"}:
+        return False
+    codex = filters.get("codex")
+    if codex and str(row.get("codex_status") or "").lower() != codex:
+        return False
+    return True
+
+
 def _paginate_items(items: list[dict], *, page: int, page_size: int) -> dict:
     page = max(1, int(page or 1))
     page_size = max(1, min(500, int(page_size or 50)))
@@ -90,6 +138,27 @@ def _paginate_items(items: list[dict], *, page: int, page_size: int) -> dict:
     }
 
 
+def _facet_values(rows: list[dict], value_getter) -> list[dict]:
+    """Return stable, data-backed select options for a list column."""
+    counts: dict[str, int] = {}
+    for row in rows:
+        value = str(value_getter(row) or "").strip().lower()
+        if value:
+            counts[value] = counts.get(value, 0) + 1
+    return [
+        {"value": value, "count": counts[value]}
+        for value in sorted(counts, key=lambda item: (-counts[item], item))
+    ]
+
+
+def _account_risk_value(row: dict) -> str:
+    if row.get("deactivation_mail_detected") is True:
+        return "detected"
+    if str(row.get("deactivation_mail_scan_status") or "") == "success":
+        return "clear"
+    return "pending"
+
+
 def _compact_account_for_list(row: dict) -> dict:
     """账号列表轻量对象：只返回当前表格渲染和按钮判断必需字段。
 
@@ -102,6 +171,7 @@ def _compact_account_for_list(row: dict) -> dict:
         "id": row.get("id"),
         "email": row.get("email"),
         "has_access_token": bool(str(row.get("access_token") or "").strip()),
+        "has_registration_password": bool(_account_registration_password(row)),
         "totp_enabled": bool(row.get("totp_secret")),
     }
 
@@ -157,7 +227,23 @@ def _account_secret_value(row: dict, field: str) -> str:
         return str(row.get("access_token") or "")
     if field == "copy_line":
         return str(row.get("copy_line") or "")
-    raise ValueError("field 仅支持 access_token/copy_line")
+    if field == "registration_password":
+        return _account_registration_password(row)
+    if field == "registration_password_line":
+        password = _account_registration_password(row)
+        return f"{row.get('email') or ''}----{password}" if password else ""
+    raise ValueError("field 仅支持 access_token/copy_line/registration_password/registration_password_line")
+
+
+def _account_registration_password(row: dict) -> str:
+    extra = row.get("extra_json") or {}
+    if isinstance(extra, str):
+        try:
+            import json
+            extra = json.loads(extra)
+        except (TypeError, ValueError):
+            extra = {}
+    return str(extra.get("registration_password") or "") if isinstance(extra, dict) else ""
 
 
 def _compact_job_for_list(row: dict) -> dict:
@@ -435,19 +521,38 @@ def create_app(auth_code: str | None = None) -> Flask:
         archived = str(request.args.get("archived", default="0") or "0").lower()
         plan_filter = str(request.args.get("plan", default="") or "").lower()
         q = str(request.args.get("q", default="") or "").strip()
+        column_filters = {
+            key: str(request.args.get(key, default="") or "").strip().lower()
+            for key in ("id", "email", "source", "token", "password", "note", "totp", "risk", "codex")
+        }
         date_from = str(request.args.get("date_from", default="") or "").strip() or None
         date_to = str(request.args.get("date_to", default="") or "").strip() or None
         # 新分页接口：传 page/page_size 或 paged=1 时返回 {items,total,page,page_size,...}
         paged = str(request.args.get("paged", default="") or "").lower() in {"1", "true", "yes"}
         page_arg = request.args.get("page", default=None, type=int)
         page_size_arg = request.args.get("page_size", default=None, type=int)
+        facet_rows = db.list_accounts(limit=1_000_000, archived=archived)
+        facets = {
+            "source": _facet_values(facet_rows, lambda row: row.get("email_source")),
+            "token": _facet_values(facet_rows, lambda row: "has" if str(row.get("access_token") or "").strip() else "none"),
+            "password": _facet_values(facet_rows, lambda row: "has" if _account_registration_password(row) else "none"),
+            "plan": _facet_values(facet_rows, lambda row: row.get("current_plan_type") or row.get("plan_type")),
+            "totp": _facet_values(facet_rows, lambda row: "enabled" if bool(row.get("totp_secret") or row.get("totp_enabled")) else "disabled"),
+            "risk": _facet_values(facet_rows, _account_risk_value),
+            "codex": _facet_values(facet_rows, lambda row: row.get("codex_status")),
+        }
         if paged or page_arg is not None or page_size_arg is not None:
             page = max(1, int(page_arg or 1))
             page_size = max(1, min(500, int(page_size_arg or limit or 50)))
             offset = (page - 1) * page_size
-            result = db.list_accounts_page(limit=page_size, offset=offset, archived=archived, plan_filter=plan_filter, q=q, date_from=date_from, date_to=date_to)
+            if any(column_filters.values()):
+                rows = db.list_accounts(limit=1_000_000, archived=archived, plan_filter=plan_filter, q=q, date_from=date_from, date_to=date_to)
+                rows = [row for row in rows if _matches_account_columns(row, column_filters)]
+                result = _paginate_items(rows, page=page, page_size=page_size)
+            else:
+                result = db.list_accounts_page(limit=page_size, offset=offset, archived=archived, plan_filter=plan_filter, q=q, date_from=date_from, date_to=date_to)
             result["items"] = [_compact_account_for_list(r) for r in (result.get("items") or [])]
-            result.update({"ok": True, "page": page, "page_size": page_size, "compact": True})
+            result.update({"ok": True, "page": page, "page_size": page_size, "compact": True, "facets": facets})
             return jsonify(result)
         return jsonify(db.list_accounts(limit=limit, archived=archived, plan_filter=plan_filter, q=q, date_from=date_from, date_to=date_to))
 
@@ -1362,31 +1467,43 @@ def create_app(auth_code: str | None = None) -> Flask:
         limit = request.args.get("limit", default=500, type=int)
         source = _pool_source_arg()
         q = str(request.args.get("q", default="") or "").strip()
+        token_filter = str(request.args.get("token", default="") or "").strip().lower()
+        imported_date = str(request.args.get("imported_date", default="") or "").strip()
+        used_date = str(request.args.get("used_date", default="") or "").strip()
         paged = str(request.args.get("paged", default="") or "").lower() in {"1", "true", "yes"}
         page_arg = request.args.get("page", default=None, type=int)
         page_size_arg = request.args.get("page_size", default=None, type=int)
         fetch_limit = 1_000_000 if (paged or q) else limit
-        if source == "all":
-            rows = []
-            rows += _with_pool_source(db.list_outlook_pool(status=status, limit=fetch_limit), "outlook")
-            rows += _with_pool_source(db.list_generic_api_email_pool(status=status, limit=fetch_limit), "generic_api")
-            rows += _with_pool_source(db.list_domain_email_pool(status=status, limit=fetch_limit), "cloudflare_domain")
-            rows += _with_pool_source(db.list_icloud_hide_email_pool(status=status, limit=fetch_limit), "icloud_hide")
-            rows = sorted(rows, key=lambda x: str(x.get("created_at") or x.get("imported_at") or x.get("used_at") or ""), reverse=True)
-        elif source == "generic_api":
-            rows = _with_pool_source(db.list_generic_api_email_pool(status=status, limit=fetch_limit), "generic_api")
-        elif source == "cloudflare_domain":
-            rows = _with_pool_source(db.list_domain_email_pool(status=status, limit=fetch_limit), "cloudflare_domain")
-        elif source == "icloud_hide":
-            rows = _with_pool_source(db.list_icloud_hide_email_pool(status=status, limit=fetch_limit), "icloud_hide")
-        else:
-            rows = _with_pool_source(db.list_outlook_pool(status=status, limit=fetch_limit), "outlook")
+        all_rows = []
+        all_rows += _with_pool_source(db.list_outlook_pool(status=None, limit=1_000_000), "outlook")
+        all_rows += _with_pool_source(db.list_generic_api_email_pool(status=None, limit=1_000_000), "generic_api")
+        all_rows += _with_pool_source(db.list_domain_email_pool(status=None, limit=1_000_000), "cloudflare_domain")
+        all_rows += _with_pool_source(db.list_icloud_hide_email_pool(status=None, limit=1_000_000), "icloud_hide")
+        facets = {
+            "source": _facet_values(all_rows, lambda row: row.get("source")),
+            "status": _facet_values(all_rows, lambda row: row.get("status")),
+            "token": _facet_values(all_rows, lambda row: "has" if str(row.get("access_token") or "").strip() else "none"),
+        }
+        rows = [row for row in all_rows if source == "all" or row.get("source") == source]
+        if status:
+            rows = [row for row in rows if str(row.get("status") or "").lower() == str(status).lower()]
+        rows = sorted(rows, key=lambda x: str(x.get("created_at") or x.get("imported_at") or x.get("used_at") or ""), reverse=True)
         if q:
             rows = [r for r in rows if _matches_query(r, q)]
+        if token_filter == "has":
+            rows = [r for r in rows if str(r.get("access_token") or "").strip()]
+        elif token_filter == "none":
+            rows = [r for r in rows if not str(r.get("access_token") or "").strip()]
+        if imported_date:
+            rows = [r for r in rows if str(r.get("imported_at") or r.get("created_at") or "").startswith(imported_date)]
+        if used_date:
+            rows = [r for r in rows if str(r.get("used_at") or "").startswith(used_date)]
         if paged or page_arg is not None or page_size_arg is not None:
             page = max(1, int(page_arg or 1))
             page_size = max(1, min(500, int(page_size_arg or limit or 50)))
-            return jsonify(_paginate_items(rows, page=page, page_size=page_size))
+            result = _paginate_items(rows, page=page, page_size=page_size)
+            result["facets"] = facets
+            return jsonify(result)
         return jsonify(rows[:limit])
 
     @app.post("/api/outlook/import")
@@ -1626,6 +1743,14 @@ def create_app(auth_code: str | None = None) -> Flask:
     # ----------------------------------------------------------
     @app.get("/api/codex")
     def api_codex_list():
+        facet_rows = db.list_codex_accounts(archived="all")
+        facets = {
+            "plan": _facet_values(facet_rows, lambda row: row.get("plan")),
+            "status": _facet_values(
+                facet_rows,
+                lambda row: "archived" if row.get("archived") else ("exported" if int(row.get("exported_count") or 0) > 0 else "unexported"),
+            ),
+        }
         rows = db.list_codex_accounts(
             archived=str(request.args.get("archived", default="0") or "0").lower(),
             date_from=str(request.args.get("date_from", default="") or "").strip() or None,
@@ -1634,6 +1759,20 @@ def create_app(auth_code: str | None = None) -> Flask:
         q = str(request.args.get("q", default="") or "").strip()
         if q:
             rows = [r for r in rows if _matches_query(r, q)]
+        plan_filter = str(request.args.get("plan", default="") or "").strip().lower()
+        status_filter = str(request.args.get("status", default="") or "").strip().lower()
+        account_filter = str(request.args.get("account_id", default="") or "").strip()
+        expired_date = str(request.args.get("expired_date", default="") or "").strip()
+        if plan_filter:
+            rows = [r for r in rows if str(r.get("plan") or "").strip().lower() == plan_filter]
+        if status_filter == "exported":
+            rows = [r for r in rows if int(r.get("exported_count") or 0) > 0]
+        elif status_filter == "unexported":
+            rows = [r for r in rows if int(r.get("exported_count") or 0) == 0]
+        if account_filter:
+            rows = [r for r in rows if account_filter.lower() in str(r.get("account_id") or "").lower()]
+        if expired_date:
+            rows = [r for r in rows if str(r.get("expired") or "").startswith(expired_date)]
         limit = request.args.get("limit", default=500, type=int)
         paged = str(request.args.get("paged", default="") or "").lower() in {"1", "true", "yes"}
         page_arg = request.args.get("page", default=None, type=int)
@@ -1644,10 +1783,12 @@ def create_app(auth_code: str | None = None) -> Flask:
             result = _paginate_items(rows, page=page, page_size=page_size)
             result["accounts"] = result.pop("items")
             result["summary"] = db.codex_accounts_summary()
+            result["facets"] = facets
             return jsonify(result)
         return jsonify({
             "summary": db.codex_accounts_summary(),
             "accounts": rows[:limit],
+            "facets": facets,
         })
 
     @app.post("/api/codex/archive")
@@ -2068,7 +2209,7 @@ def create_app(auth_code: str | None = None) -> Flask:
 
         data = request.get_json(silent=True) or {}
         ids = data.get("account_ids") or data.get("ids") or []
-        workers = data.get("workers", 1)
+        workers = data.get("workers", codex_config.ACCOUNT_BATCH_WORKERS)
         if not isinstance(ids, list) or not ids:
             return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
         try:
@@ -2197,7 +2338,11 @@ def create_app(auth_code: str | None = None) -> Flask:
         limit = request.args.get("limit", default=100, type=int)
         status_filter = str(request.args.get("status", default="") or "").strip().lower()
         query = str(request.args.get("q", default="") or "").strip()
+        id_filter = str(request.args.get("id", default="") or "").strip().lstrip("#")
+        email_filter = str(request.args.get("email", default="") or "").strip().lower()
         email_source_filter = str(request.args.get("email_source", default="") or "").strip().lower()
+        proxy_filter = str(request.args.get("proxy", default="") or "").strip().lower()
+        error_filter = str(request.args.get("error", default="") or "").strip().lower()
         date_from = str(request.args.get("date_from", default="") or "").strip()
         date_to = str(request.args.get("date_to", default="") or "").strip()
         paged = str(request.args.get("paged", default="") or "").lower() in {"1", "true", "yes"}
@@ -2211,15 +2356,26 @@ def create_app(auth_code: str | None = None) -> Flask:
             row["manual_otp_required"] = manual_otp_required
             row.update(svc.get_retry_info(row))
         base_rows = [row for row in all_rows if _matches_query(row, query)]
+        if id_filter:
+            base_rows = [row for row in base_rows if id_filter in str(row.get("id") or "")]
+        if email_filter:
+            base_rows = [row for row in base_rows if email_filter in str(row.get("email") or "").lower()]
         if email_source_filter:
             base_rows = [
                 row for row in base_rows
                 if str(row.get("email_source") or "").strip().lower() == email_source_filter
             ]
+        if proxy_filter:
+            base_rows = [
+                row for row in base_rows
+                if proxy_filter in " ".join(str(row.get(key) or "") for key in ("proxy_provider", "proxy_endpoint", "proxy_region", "proxy_status")).lower()
+            ]
+        if error_filter:
+            base_rows = [row for row in base_rows if error_filter in str(row.get("error_message") or "").lower()]
         if date_from:
-            base_rows = [row for row in base_rows if str(row.get("created_at") or row.get("started_at") or "")[:10] >= date_from]
+            base_rows = [row for row in base_rows if str(row.get("started_at") or row.get("created_at") or "")[:10] >= date_from]
         if date_to:
-            base_rows = [row for row in base_rows if str(row.get("created_at") or row.get("started_at") or "")[:10] <= date_to]
+            base_rows = [row for row in base_rows if str(row.get("completed_at") or row.get("created_at") or "")[:10] <= date_to]
         rows = [
             row for row in base_rows
             if str(row.get("display_status") or row.get("status") or "").lower() == status_filter
@@ -2237,6 +2393,10 @@ def create_app(auth_code: str | None = None) -> Flask:
                 1 for row in all_rows if str(row.get("status") or "") in {"pending", "running", "stopping"}
             )
             result["status_counts"] = list_counts
+            result["facets"] = {
+                "status": _facet_values(all_rows, lambda row: row.get("display_status") or row.get("status")),
+                "email_source": _facet_values(all_rows, lambda row: row.get("email_source")),
+            }
             result["progress_batch"] = _latest_progress_batch(all_rows)
             result["compact"] = True
             return jsonify(result)

@@ -60,7 +60,8 @@ class DeactivationMailTests(unittest.TestCase):
         html = (
             Path(__file__).resolve().parents[1] / "webui" / "templates" / "index.html"
         ).read_text("utf-8")
-        self.assertIn('<th class="col-risk-mail">封号邮件</th>', html)
+        self.assertIn('class="col-risk-mail column-filter-header"', html)
+        self.assertIn('data-column-filter="accountRiskFilterV2"', html)
         self.assertIn("data-deactivation-mail-check", html)
         self.assertIn("btnCheckSelectedDeactivationMailV2", html)
 

@@ -29,6 +29,11 @@ EXPLICIT_EMPTY_LIST_KEYS = {"PROXY_POOL"}
 # ============================================================
 
 EDITABLE_FIELDS = [
+    # ---- 通用配置 ----
+    {
+        "key": "ACCOUNT_BATCH_WORKERS", "file": "codex.py", "type": "int", "group": "通用配置",
+        "label": "账号批量操作并发数", "help": "账号页查活、查套餐和 Codex 批量补跑等操作使用的默认并发数，范围 1-16；建议先保持 3",
+    },
     # ---- WebUI 授权 ----
     {
         "key": "WEBUI_AUTH_CODE", "file": "codex.py", "type": "str", "group": "WebUI 授权",
@@ -48,6 +53,10 @@ EDITABLE_FIELDS = [
     {
         "key": "REGISTRATION_DRIVER", "file": "roxybrowser.py", "type": "str", "group": "注册方式",
         "label": "注册驱动", "help": "默认推荐 roxy；protocol=纯协议，容易封号不建议；roxy=RoxyBrowser；cloak=CloakBrowser；browser_use=Browser Use Cloud+Playwright；skyvern=Skyvern Browser Sessions+Playwright",
+    },
+    {
+        "key": "REGISTRATION_AUTH_MODE", "file": "register.py", "type": "str", "group": "注册方式",
+        "label": "账号认证模式", "help": "otp=优先使用邮箱一次性验证码；password=遇到注册密码页时设置密码。密码模式仍可能需要邮箱验证码",
     },
 
     # ---- CloakBrowser ----

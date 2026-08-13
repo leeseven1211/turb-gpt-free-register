@@ -1661,14 +1661,17 @@ def _generate_roxy_password() -> str:
 
 
 def _registration_password() -> str:
+    """Every password-based registration gets an independent random password."""
+    return _generate_roxy_password()
+
+
+def _registration_auth_mode() -> str:
     try:
         from config import register as _register_cfg
-        configured = str(getattr(_register_cfg, 'REGISTER_PASSWORD', '') or '').strip()
-        if configured:
-            return configured
+        mode = str(getattr(_register_cfg, 'REGISTRATION_AUTH_MODE', 'otp') or 'otp').strip().lower()
     except Exception:
-        pass
-    return _generate_roxy_password()
+        mode = 'otp'
+    return mode if mode in {'otp', 'password'} else 'otp'
 
 
 def _password_page_state(driver) -> dict:
@@ -1806,7 +1809,7 @@ def _fill_password_page_if_present(driver, email: str, timeout: int = 25) -> str
         if not (is_signup_password or is_login_password):
             time.sleep(0.5)
             continue
-        passwordless = _click_passwordless_signup_if_present(driver)
+        passwordless = _click_passwordless_signup_if_present(driver) if _registration_auth_mode() == 'otp' else {"ok": False, "reason": "password_mode"}
         if passwordless.get('ok'):
             logger.info("%s 检测到 password 页，已点击一次性验证码入口：email=%s detail=%s", _log_prefix(driver), email, passwordless)
             wait_end = time.time() + 20

@@ -270,6 +270,7 @@
     }
     .sidebar-nav {
       flex: 1; overflow-y: auto; overflow-x: hidden;
+      overscroll-behavior-y: contain;
       padding: 12px 10px 20px; display: flex; flex-direction: column; gap: 2px;
       background: transparent; border: none; width: auto; max-width: none;
     }
@@ -593,6 +594,137 @@
     .jobs-table-v2 .col-actions {
       width: 168px; overflow: visible; text-overflow: clip; white-space: nowrap;
     }
+    .jobs-table-v2 { min-width: 1420px; }
+    .column-filter-header {
+      overflow: visible !important; text-overflow: clip !important;
+      transition: color .16s ease, box-shadow .16s ease;
+    }
+    .column-filter-header.has-filter-value { box-shadow: inset 0 -2px #6869e8; }
+    .column-filter-trigger {
+      width: 100%; min-width: 0; height: 100%; display: flex; align-items: center; gap: 5px;
+      padding: 0; border: 0; color: inherit; background: transparent; font: inherit; font-weight: inherit;
+      text-align: left; cursor: pointer; white-space: nowrap;
+    }
+    .column-filter-trigger:hover { color: #4f51be; }
+    .column-filter-trigger-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .column-filter-trigger-icon {
+      width: 12px; height: 12px; flex: 0 0 auto; color: #a2a9b7;
+      fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+      transition: color .16s ease, transform .16s ease;
+    }
+    .column-filter-header.has-filter-value .column-filter-trigger { color: #5557cf; }
+    .column-filter-header.has-filter-value .column-filter-trigger-icon { color: #6264e8; }
+    .column-filter-header.is-filter-open .column-filter-trigger-icon[data-filter-chevron] { transform: rotate(180deg); }
+    .column-filter-search {
+      width: 100%; min-width: 0; height: 28px; display: none; align-items: center; gap: 3px;
+      padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none;
+    }
+    .column-filter-header.is-searching .column-filter-trigger { display: none; }
+    .column-filter-header.is-searching .column-filter-search { display: flex; }
+    .column-filter-search-icon {
+      width: 12px; height: 12px; flex: 0 0 auto; color: #7779dc;
+      fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round;
+    }
+    .column-filter-search input {
+      width: 100% !important; min-width: 0 !important; height: 27px !important; min-height: 27px !important;
+      margin: 0 !important; padding: 0 6px !important; border: 1px solid #bfc2f6 !important; border-radius: 5px !important;
+      color: #363d4d !important; background: #fff !important; box-shadow: 0 0 0 2px rgba(91,92,226,.08) !important;
+      font: inherit !important; font-size: 11px !important; font-weight: 650 !important; outline: none !important;
+      user-select: text;
+    }
+    .column-filter-search input:focus { border-color: #6869e8 !important; box-shadow: 0 0 0 2px rgba(91,92,226,.14) !important; }
+    .column-filter-header.is-searching { padding-top: 4px !important; padding-bottom: 4px !important; }
+    .column-filter-header.is-searching .column-filter-search-icon { display: none; }
+    .column-filter-search input::-webkit-search-cancel-button { display: none; }
+    .column-filter-clear-inline {
+      width: 22px; height: 22px; min-width: 22px; min-height: 22px; display: inline-flex; align-items: center; justify-content: center;
+      padding: 0; border: 0; border-radius: 5px; color: #9aa1af; background: transparent;
+      font: inherit; font-size: 15px; line-height: 1; cursor: pointer;
+    }
+    .column-filter-clear-inline:hover { color: #5052bd; background: #f0f0ff; }
+    .column-filter-popover {
+      position: fixed; z-index: 4200; display: none; width: min(208px, calc(100vw - 20px));
+      padding: 6px; border: 1px solid #e0e3ea; border-radius: 10px; background: #fff;
+      box-shadow: 0 14px 32px rgba(28,34,52,.16), 0 2px 7px rgba(28,34,52,.07);
+      color: #4f586b; text-align: left;
+    }
+    .column-filter-header.is-filter-open .column-filter-popover { display: grid; gap: 5px; }
+    .column-filter-native { display: none !important; }
+    .column-filter-options { max-height: min(312px, calc(100vh - 40px)); overflow: auto; overscroll-behavior: contain; }
+    .column-filter-option {
+      width: 100%; min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      padding: 7px 9px; border: 0; border-radius: 7px; color: #596274; background: transparent;
+      font: inherit; font-size: 11px; font-weight: 680; text-align: left; cursor: pointer; white-space: nowrap;
+    }
+    .column-filter-option:hover, .column-filter-option:focus-visible { color: #4244aa; background: #f4f4ff; outline: none; }
+    .column-filter-option[aria-checked="true"] { color: #4f51be; background: #efefff; }
+    .column-filter-option-check {
+      width: 14px; height: 14px; flex: 0 0 auto; color: #5b5ce2; opacity: 0;
+      fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round;
+    }
+    .column-filter-option[aria-checked="true"] .column-filter-option-check { opacity: 1; }
+    .column-filter-popover--date { padding: 9px; }
+    .column-filter-popover--range { grid-template-columns: 1fr 1fr; width: min(292px, calc(100vw - 20px)); }
+    .column-filter-date-field { min-width: 0; display: grid; gap: 4px; }
+    .column-filter-date-field span { color: #8b93a3; font-size: 9px; font-weight: 760; }
+    .column-filter-date-field input {
+      width: 100% !important; min-width: 0 !important; height: 32px !important; min-height: 32px !important;
+      margin: 0 !important; padding: 0 7px !important; border: 1px solid #dfe2e9 !important; border-radius: 7px !important;
+      color: #4e5769 !important; background: #fafbfc !important; box-shadow: none !important;
+      font: inherit !important; font-size: 10px !important; font-weight: 650 !important; outline: none !important;
+    }
+    .column-filter-date-field input:focus { border-color: #7b7df0 !important; background: #fff !important; box-shadow: 0 0 0 3px rgba(91,92,226,.08) !important; }
+    .column-filter-date-clear {
+      min-height: 28px; padding: 0 8px; border: 0; border-radius: 6px; color: #777f8e; background: #f5f6f8;
+      font: inherit; font-size: 10px; font-weight: 700; cursor: pointer;
+    }
+    .column-filter-date-clear:hover { color: #4f51be; background: #efefff; }
+    .column-filter-popover--range .column-filter-date-clear { grid-column: 1 / -1; justify-self: end; }
+    .column-filter-popover--date:not(.column-filter-popover--range) .column-filter-date-clear { width: 100%; }
+    .column-filters-reset {
+      min-height: 26px; padding: 0 8px; border: 1px solid #dde2ea; border-radius: 6px;
+      color: #788194; background: #fff; font: inherit; font-size: 9px; font-weight: 750; cursor: pointer; white-space: nowrap;
+    }
+    .column-filters-reset:hover { color: #4f51be; border-color: #cfd0fa; background: #f7f7ff; }
+    .column-filter-summary {
+      min-height: 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+      padding: 8px 14px; border-bottom: 1px solid #eceef3; background: #fbfbfd;
+    }
+    .column-filter-summary[hidden] { display: none !important; }
+    .column-filter-summary-label { margin-right: 2px; color: #8b93a3; font-size: 10px; font-weight: 750; }
+    .column-filter-chip {
+      min-height: 26px; display: inline-flex; align-items: center; gap: 5px; padding: 0 8px;
+      border: 1px solid #d9daf8; border-radius: 999px; color: #5052bd; background: #f3f3ff;
+      font: inherit; font-size: 10px; font-weight: 700; cursor: pointer;
+    }
+    .column-filter-chip:hover { border-color: #bfc1f2; background: #ebebff; }
+    .column-filter-chip-close { color: #8586d9; font-size: 13px; line-height: 1; }
+    .column-filter-summary-clear {
+      min-height: 26px; margin-left: 2px; padding: 0 7px; border: 0; color: #7c8494; background: transparent;
+      font: inherit; font-size: 10px; font-weight: 700; cursor: pointer;
+    }
+    .column-filter-summary-clear:hover { color: #4f51be; }
+    .column-actions-heading { display: flex; align-items: center; justify-content: space-between; gap: 7px; }
+    .list-selection-hint {
+      min-width: 54px; flex: 0 0 auto; color: #737c8e; font-size: 11px; font-weight: 750; white-space: nowrap;
+    }
+    .list-toolbar-utilities {
+      display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; margin-left: auto;
+      padding-left: 10px; border-left: 1px solid #e5e8ef;
+    }
+    table[data-resizable-table] { width: 100%; min-width: 100% !important; table-layout: fixed; }
+    table[data-resizable-table] thead tr:first-child th:not(.col-check) { position: sticky; }
+    .table-col-resizer {
+      position: absolute; top: 7px; right: -4px; z-index: 15;
+      width: 9px; height: 29px; cursor: col-resize; touch-action: none;
+    }
+    .table-col-resizer::after {
+      content: ""; position: absolute; top: 4px; bottom: 4px; left: 4px; width: 1px;
+      background: transparent; transition: background .12s;
+    }
+    table[data-resizable-table] thead tr:first-child th:hover .table-col-resizer::after,
+    .table-col-resizer.is-dragging::after { background: #6b6de8; }
+    body.is-resizing-table-column { cursor: col-resize; user-select: none; }
     .jobs-table-v2 td.col-error {
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
@@ -738,6 +870,16 @@
       margin-top: 6px; color: #8a8f98; font-size: 12px; line-height: 1.5;
     }
     .batch-progress-v2-time { margin-top: 0; white-space: nowrap; text-align: right; }
+    .batch-progress-v2-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+    .batch-progress-v2-action {
+      min-height: 28px; padding: 0 9px; border: 1px solid #dfe4ea; border-radius: 7px;
+      color: #667085; background: #fff; font: inherit; font-size: 11px; font-weight: 700; cursor: pointer;
+    }
+    .batch-progress-v2-action:hover:not(:disabled) { color: #4f51be; border-color: #c9cbf4; background: #f7f7ff; }
+    .batch-progress-v2-action--stop { color: #c77a26; border-color: #f1d7ae; background: #fffaf2; }
+    .batch-progress-v2-action--stop:hover:not(:disabled) { color: #a96114; border-color: #e8be81; background: #fff5e6; }
+    .batch-progress-v2-action--retry { color: #4f51be; border-color: #d5d6f8; background: #f7f7ff; }
+    .batch-progress-v2-action:disabled { color: #b5bbc5; border-color: #e7e9ee; background: #f7f8fa; cursor: not-allowed; }
     .batch-progress-v2-list { display: grid; gap: 10px; }
     .batch-progress-v2-card {
       padding: 13px 14px 12px; border: 1px solid #d9eee9; border-radius: 10px;
@@ -804,14 +946,14 @@
       display: block; margin-top: 7px; color: inherit; font-size: 11px; line-height: 1.3;
       white-space: nowrap;
     }
+    .batch-progress-v2-step-duration { display: block; margin-top: 2px; color: #a0a7b0; font-size: 9px; font-weight: 600; }
+    .batch-progress-v2-step.is-running .batch-progress-v2-step-duration { color: #6e9df3; }
+    .batch-progress-v2-step.is-failed .batch-progress-v2-step-duration,
+    .batch-progress-v2-step.is-stopped .batch-progress-v2-step-duration { color: #d98383; }
     .batch-progress-v2-step.is-success, .batch-progress-v2-step.is-skipped { color: #168f73; }
     .batch-progress-v2-step.is-running { color: #377dff; font-weight: 600; }
     .batch-progress-v2-step.is-failed, .batch-progress-v2-step.is-stopped { color: #e45656; font-weight: 600; }
     .batch-progress-v2-steps-scroll { overflow-x: auto; padding: 1px 2px 2px; }
-    .batch-progress-v2-error {
-      margin-top: 9px; padding: 7px 9px; border-radius: 6px; background: #fff1f1;
-      color: #cf4b4b; font-size: 12px; line-height: 1.45;
-    }
     .jobs-history-v2-label {
       padding: 0 16px 9px; color: #606266; font-size: 13px; font-weight: 600;
     }
@@ -822,6 +964,7 @@
     @media (max-width: 700px) {
       .batch-progress-v2 { margin-left: 10px; margin-right: 10px; padding: 12px; }
       .batch-progress-v2-head, .batch-progress-v2-card-top { align-items: flex-start; flex-direction: column; }
+      .batch-progress-v2-actions { width: 100%; justify-content: flex-start; }
       .batch-progress-v2-time { text-align: left; }
       .batch-progress-v2-meta { width: 100%; flex-wrap: wrap; }
     }
@@ -1057,6 +1200,15 @@
     #accountsToolbarV2 .jobs-tb-btn {
       min-height: 32px; padding: 0 12px; font-size: 13px;
     }
+    #accountsToolbarV2 .acc-v2-selected {
+      color: #727b8d; font-size: 12px; font-weight: 700; white-space: nowrap; padding: 0 4px;
+    }
+    #accountsToolbarV2 .acc-v2-inline {
+      display: inline-flex; align-items: center; gap: 6px;
+      color: #606266; font-size: 12px; white-space: nowrap;
+    }
+    #accountsToolbarV2 .el-input-number { width: 92px; height: 32px; }
+    #accountsToolbarV2 .el-input-number input { min-height: 0 !important; height: 32px !important; margin: 0 !important; padding: 0 26px 0 0 !important; text-align: center; }
     .accounts-filter-v2 {
       display: flex; align-items: stretch; gap: 8px; flex-wrap: wrap;
       padding: 16px 16px 0;
@@ -1202,10 +1354,7 @@
     .codex-filter-v2 .jobs-tb-btn:hover:not(:disabled) {
       color: #409eff; border-color: #c6e2ff; background: #ecf5ff;
     }
-    #codexToolbarV2 {
-      padding: 12px 16px 16px;
-      justify-content: flex-start;
-    }
+    #codexToolbarV2 { padding: 12px 16px; justify-content: flex-start; align-items: center; }
     #codexToolbarV2 .jobs-tb-btn {
       min-height: 32px; padding: 0 12px; font-size: 13px;
     }
@@ -2053,11 +2202,11 @@
       --sidebar-accent: #8b8cf8;
       --sidebar-accent-soft: rgba(139, 140, 248, .13);
       --topbar-height: 76px;
-      --module-subnav-height: 48px;
+      --module-subnav-height: 0px;
       --shadow-sm: 0 1px 2px rgba(16, 24, 40, .03), 0 8px 24px rgba(16, 24, 40, .04);
     }
     body {
-      min-height: 100vh; padding-left: var(--sidebar-width);
+      min-height: 0; padding-left: var(--sidebar-width);
       background:
         radial-gradient(circle at 72% -10%, rgba(91, 92, 226, .08), transparent 30rem),
         var(--bg);
@@ -2109,6 +2258,30 @@
       border-radius: 999px; color: #aeb5c6; background: rgba(255,255,255,.07); font-size: 10px; font-weight: 800;
     }
     .sidebar-item.active .sidebar-item-meta { color: #dedeff; background: rgba(139,140,248,.2); }
+    .sidebar-module { display: grid; gap: 2px; }
+    .sidebar-subnav {
+      display: none; position: relative; gap: 2px; padding: 2px 0 6px;
+    }
+    .sidebar-module.is-open .sidebar-subnav { display: grid; }
+    .sidebar-subnav::before {
+      content: ""; position: absolute; left: 21px; top: 4px; bottom: 9px; width: 1px;
+      background: rgba(255,255,255,.09);
+    }
+    .app-sidebar .sidebar-nav .sidebar-subnav button {
+      min-height: 30px; padding: 6px 10px 6px 42px; border-radius: 7px;
+      color: #747d93; font-size: 11px; font-weight: 650;
+    }
+    .app-sidebar .sidebar-nav .sidebar-subnav button::before {
+      content: ""; position: absolute; left: 18px; width: 7px; height: 7px;
+      border: 2px solid #111321; border-radius: 50%; background: #555e73;
+    }
+    .app-sidebar .sidebar-nav .sidebar-subnav button:hover { color: #d8dbea; background: rgba(255,255,255,.04); }
+    .app-sidebar .sidebar-nav .sidebar-subnav button.is-active {
+      color: #fff; background: rgba(91,92,226,.14);
+    }
+    .app-sidebar .sidebar-nav .sidebar-subnav button.is-active::before {
+      background: #8b8cf8; box-shadow: 0 0 0 3px rgba(139,140,248,.13);
+    }
     .sidebar-footer { padding: 12px 2px 2px; border-color: rgba(255,255,255,.08); gap: 1px; }
     .sidebar-footer a, .sidebar-logout button {
       min-height: 38px; padding: 8px 12px; border-radius: 8px; color: #7f879d; font-size: 12px;
@@ -2142,7 +2315,7 @@
     .topbar-clock { color: #8a92a3; font-size: 11px; font-variant-numeric: tabular-nums; }
     .sidebar-scrim { display: none; }
     main {
-      width: calc(100% - var(--page-gutter) * 2); margin: calc(var(--topbar-height) + 26px) var(--page-gutter) 52px;
+      width: calc(100% - var(--page-gutter) * 2); margin: calc(var(--topbar-height) + 26px) var(--page-gutter) 28px;
       gap: 16px;
     }
     main > div { min-width: 0; max-width: 100%; width: 100%; }
@@ -2215,7 +2388,7 @@
     .jobs-history-v2-label { padding: 18px 20px 12px; color: #4f586b; font-size: 12px; font-weight: 760; }
     .batch-progress-v2 { margin: 18px 20px 0; border-radius: 11px; border-color: #bde7dc; background: #f5fcfa; }
     .jobs-table-v2-wrap, .accounts-table-v2-wrap, .codex-table-v2-wrap, .outlook-table-v2-wrap {
-      max-height: min(620px, calc(100vh - var(--topbar-height) - var(--module-subnav-height) - 250px));
+      max-height: min(720px, calc(100vh - var(--topbar-height) - var(--module-subnav-height) - 160px));
       overflow: auto; scrollbar-color: #ccd1dc transparent; overscroll-behavior: contain;
     }
     .jobs-table-v2 thead th, .accounts-table-v2 thead th, .codex-table-v2 thead th, .outlook-table-v2 thead th {
@@ -2336,60 +2509,29 @@
     #tab-register[data-module-view="tasks"] #jobsToolbarV2 { display: none; }
     #tab-outlook[data-module-view="overview"] #outlookPanelV2 { display: none; }
     #tab-outlook[data-module-view="list"] .mail-resource-overview { display: none; }
-    .codex-sync-callout { display: none; }
-    #tab-codex[data-module-view="sub2"] .codex-sync-callout {
-      display: flex; align-items: center; justify-content: space-between; gap: 22px; padding: 18px 20px;
-      border: 1px solid #dcdcf8; border-radius: 13px; background: linear-gradient(135deg,#f7f7ff,#fff); box-shadow: var(--shadow-sm);
-    }
-    .codex-sync-callout h2 { margin-top: 4px; font-size: 17px; }
-    .codex-sync-callout p { margin-top: 5px; color: #7c8495; font-size: 11px; }
-    .codex-sync-callout .jobs-tb-btn { min-height: 38px; flex: 0 0 auto; }
     .task-records-command-deck {
       position: sticky; top: calc(var(--topbar-height) + var(--module-subnav-height) + 10px); z-index: 42;
-      display: flex; align-items: center; gap: 10px; min-width: 0; padding: 12px 20px;
-      overflow-x: auto; overflow-y: hidden; border-bottom: 1px solid #edf0f5;
+      display: flex; align-items: center; justify-content: flex-start; gap: 10px; min-width: 0; padding: 10px 20px;
+      border-bottom: 1px solid #edf0f5;
       background: rgba(255,255,255,.97); box-shadow: 0 10px 24px rgba(17,24,39,.06);
       backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
-      scrollbar-width: thin; scrollbar-color: #d9dce5 transparent;
     }
     .task-records-command-deck .job-batch-actions {
-      order: 3; flex: 0 0 auto; flex-wrap: nowrap; gap: 6px; padding: 0;
+      flex: 0 0 auto; flex-wrap: nowrap; gap: 6px; padding: 0;
     }
     .task-records-command-deck .job-batch-actions-label { display: none; }
     .task-records-command-deck .jobs-tb-btn { min-height: 34px; padding: 0 11px; border: 1px solid #dfe2e9; border-radius: 8px; background: #fff; font: inherit; font-size: 11px; font-weight: 700; cursor: pointer; }
     .task-records-command-deck .jobs-tb-btn--retry { color: #4f51be; border-color: #d6d7fa; background: #f7f7ff; }
     .task-records-command-deck .jobs-tb-btn--danger { color: #c43d47; border-color: #efc7ca; }
-    .task-records-tools {
-      order: 2; flex: 1 0 auto; display: flex; align-items: center; gap: 7px; min-width: 0; padding: 0;
-    }
-    .task-records-tools label { display: block; flex: 0 0 auto; color: #7c8495; font-size: 10px; font-weight: 750; }
-    .task-records-tools label > span { display: none; }
-    .task-records-tools label:first-child { flex: 1 0 210px; }
-    .task-records-tools label:nth-child(2) { width: 150px; }
-    .task-records-tools label:nth-child(3), .task-records-tools label:nth-child(4) { width: 120px; }
-    .task-records-tools input, .task-records-tools select { width: 100%; min-height: 34px; margin: 0; border-color: #e0e3ea; background: #fff; font-size: 11px; }
-    .task-records-tools .jobs-tb-btn { min-height: 34px; padding-inline: 9px; white-space: nowrap; }
-    .job-status-filters {
-      order: 1; flex: 0 0 138px; width: 138px; padding: 0;
-    }
-    .job-status-filters label { display: block; }
-    .job-status-filters label > span { display: none; }
-    .job-status-filters select {
-      width: 100%; min-height: 34px; margin: 0; padding: 0 30px 0 11px;
-      border: 1px solid #e0e3ea; border-radius: 8px; color: #626b7d; background: #fff;
-      font: inherit; font-size: 11px; font-weight: 700; cursor: pointer;
-    }
-    .job-status-filters select:hover, .job-status-filters select:focus { border-color: #cfd0fa; outline: none; }
     .accounts-command-deck {
-      position: sticky; top: calc(var(--topbar-height) + var(--module-subnav-height) + 10px); z-index: 35;
+      position: relative; top: auto; z-index: 35;
       border-bottom: 1px solid #e7e9ef; background: rgba(255,255,255,.95);
       backdrop-filter: blur(15px); -webkit-backdrop-filter: blur(15px);
       box-shadow: 0 10px 24px rgba(17,24,39,.07);
     }
     .accounts-command-deck .accounts-filter-v2 { padding-top: 12px; }
     .accounts-command-deck #accountsToolbarV2 {
-      max-height: none; flex-wrap: nowrap; align-items: center; overflow-x: auto; overflow-y: hidden; padding-block: 8px;
-      scrollbar-width: thin;
+      max-height: none; flex-wrap: wrap; align-items: center; overflow: visible; padding-block: 8px;
     }
     .accounts-command-deck #accountsToolbarV2 .acc-v2-btn-group { flex: 0 0 auto; flex-wrap: nowrap; padding-block: 4px; }
     .accounts-command-deck #accountsToolbarV2 .acc-v2-btn-group-title { flex-basis: auto; }
@@ -2398,18 +2540,143 @@
       border-bottom: 1px solid #e7e9ef; background: rgba(255,255,255,.96);
       box-shadow: 0 10px 24px rgba(17,24,39,.07); backdrop-filter: blur(15px); -webkit-backdrop-filter: blur(15px);
     }
-    .outlook-filter-v2 {
+    .outlook-filter-v2, #outlookToolbarV2 {
       position: sticky; top: calc(var(--topbar-height) + var(--module-subnav-height) + 10px); z-index: 35;
       background: rgba(255,255,255,.97); box-shadow: 0 10px 24px rgba(17,24,39,.06);
       backdrop-filter: blur(15px); -webkit-backdrop-filter: blur(15px);
     }
+    #outlookToolbarV2 { flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
+    #codexToolbarV2 { flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
+    .task-records-command-deck .jobs-tb-btn,
+    #accountsToolbarV2 .jobs-tb-btn,
+    #codexToolbarV2 .jobs-tb-btn,
+    #outlookToolbarV2 .jobs-tb-btn {
+      height: 34px; min-height: 34px; padding: 0 11px; border-radius: 8px;
+      font-size: 11px; font-weight: 700;
+    }
+    .accounts-command-deck #accountsToolbarV2 .acc-v2-btn-group {
+      gap: 6px; padding: 0 9px 0 0; border: 0; border-right: 1px solid #e5e8ef;
+      border-radius: 0; background: transparent;
+    }
+    .accounts-command-deck #accountsToolbarV2 .acc-v2-btn-group-title { color: #8a92a2; font-size: 10px; }
     #jobsPanelV2, #codexPanelV2, #outlookPanelV2 { overflow: visible; }
+
+    /* 四类数据列表共用同一套面板、操作栏、按钮和表头规格。 */
+    #jobsPanelV2, #accountsPanelV2, #codexPanelV2, #outlookPanelV2 {
+      border: 1px solid var(--line); border-radius: 13px; background: #fff;
+      box-shadow: var(--shadow-sm); overflow: visible;
+    }
+    .task-records-command-deck, .accounts-command-deck, .codex-command-deck, #outlookToolbarV2 {
+      position: sticky; top: calc(var(--topbar-height) + var(--module-subnav-height) + 10px); z-index: 42;
+      border: 0; background: rgba(255,255,255,.98); box-shadow: none;
+      backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    }
+    .list-action-toolbar {
+      min-height: 56px; display: flex; align-items: center; align-content: center;
+      gap: 8px; padding: 10px 16px; flex-wrap: wrap; overflow: visible;
+      border-bottom: 1px solid #e7eaf0; background: rgba(255,255,255,.98);
+    }
+    .task-records-command-deck.list-action-toolbar { justify-content: flex-start; }
+    .list-action-toolbar .list-selection-hint {
+      min-width: 52px; padding-right: 4px; color: #737c8e; font-size: 11px; font-weight: 750;
+    }
+    .list-action-toolbar .jobs-tb-btn {
+      height: 34px; min-height: 34px; padding: 0 12px; display: inline-flex; align-items: center; justify-content: center;
+      border: 1px solid #dfe2e9; border-radius: 8px; background: #fff; color: #5f687a;
+      box-shadow: none; font: inherit; font-size: 11px; font-weight: 700; line-height: 1; white-space: nowrap;
+    }
+    .list-action-toolbar .jobs-tb-btn--primary {
+      color: #fff; border-color: #5b5ce2; background: #5b5ce2; box-shadow: none;
+    }
+    .list-action-toolbar .jobs-tb-btn--retry { color: #fff; border-color: #5b5ce2; background: #5b5ce2; }
+    .list-action-toolbar .jobs-tb-btn--good { color: #39795d; border-color: #cee5d8; background: #f5faf7; }
+    .list-action-toolbar .jobs-tb-btn--danger { color: #c84b54; border-color: #f0c5c9; background: #fff7f7; }
+    .list-action-toolbar .jobs-tb-btn:disabled { opacity: .48; cursor: not-allowed; }
+    .list-action-toolbar .list-toolbar-utilities {
+      min-height: 34px; margin-left: auto; padding-left: 12px; border-left: 1px solid #e5e8ef;
+    }
+    .accounts-command-deck #accountsToolbarV2,
+    #codexToolbarV2, #outlookToolbarV2 { padding: 10px 16px; }
+    #outlookToolbarV2.list-action-toolbar { border-bottom: 1px solid #e7eaf0; }
+    .accounts-command-deck #accountsToolbarV2 .acc-v2-btn-group {
+      gap: 6px; padding: 0 10px 0 0; border: 0; border-right: 1px solid #e5e8ef;
+      border-radius: 0; background: transparent;
+    }
+    .accounts-command-deck #accountsToolbarV2 .acc-v2-btn-group-title { display: none; }
+    .list-action-toolbar .selection-only { display: none !important; }
+    .list-action-toolbar.has-selection .selection-only { display: inline-flex !important; }
+    .list-action-toolbar .list-selection-hint {
+      min-width: 122px; display: inline-flex; align-items: center; gap: 7px; color: #858d9d;
+    }
+    .list-action-toolbar .list-selection-hint::before {
+      content: ""; width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%;
+      background: #c4c9d2; box-shadow: 0 0 0 3px rgba(151,158,172,.1);
+    }
+    .list-action-toolbar.has-selection .list-selection-hint { color: #4f51be; }
+    .list-action-toolbar.has-selection .list-selection-hint::before {
+      background: #6264e8; box-shadow: 0 0 0 3px rgba(98,100,232,.12);
+    }
+    .accounts-command-deck #accountsToolbarV2 .toolbar-selection-primary { border-right: 0; padding-right: 0; }
+    .accounts-command-deck #accountsToolbarV2 .toolbar-page-actions { display: inline-flex; }
+    .accounts-command-deck #accountsToolbarV2.has-selection .toolbar-page-actions { display: none; }
+    .accounts-command-deck #accountsToolbarV2 .toolbar-page-actions .acc-v2-btn-group-title {
+      display: inline !important; color: #8b93a3; font-size: 10px;
+    }
+    .toolbar-overflow {
+      position: relative; flex: 0 0 auto; align-self: center;
+    }
+    .list-action-toolbar.has-selection .toolbar-overflow.selection-only { display: block !important; }
+    .toolbar-overflow > summary {
+      height: 34px; display: inline-flex; align-items: center; gap: 6px; padding: 0 11px;
+      border: 1px solid #dfe2e9; border-radius: 8px; color: #5f687a; background: #fff;
+      font-size: 11px; font-weight: 700; cursor: pointer; list-style: none; user-select: none;
+    }
+    .toolbar-overflow > summary::-webkit-details-marker { display: none; }
+    .toolbar-overflow > summary::after {
+      content: ""; width: 5px; height: 5px; margin-top: -2px;
+      border-right: 1.5px solid #8b93a3; border-bottom: 1.5px solid #8b93a3; transform: rotate(45deg);
+      transition: transform .16s ease;
+    }
+    .toolbar-overflow[open] > summary { color: #4f51be; border-color: #cfd0fa; background: #f7f7ff; }
+    .toolbar-overflow[open] > summary::after { margin-top: 2px; transform: rotate(225deg); }
+    .toolbar-overflow-menu {
+      position: absolute; z-index: 4300; top: calc(100% + 7px); left: 0;
+      width: min(420px, calc(100vw - 32px)); display: grid; grid-template-columns: 1fr 1fr; gap: 7px;
+      padding: 9px; border: 1px solid #e0e3ea; border-radius: 11px; background: #fff;
+      box-shadow: 0 18px 38px rgba(28,34,52,.17), 0 2px 7px rgba(28,34,52,.06);
+    }
+    .toolbar-overflow-section {
+      min-width: 0; display: flex; align-content: flex-start; gap: 6px; flex-wrap: wrap;
+      padding: 9px; border: 1px solid #eceef3; border-radius: 9px; background: #fafbfc;
+    }
+    .toolbar-overflow-section--wide { grid-column: 1 / -1; }
+    .toolbar-overflow-section-title {
+      flex: 0 0 100%; color: #9299a8; font-size: 9px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase;
+    }
+    .toolbar-overflow-menu .jobs-tb-btn { height: 31px; min-height: 31px; padding-inline: 9px; }
+    .toolbar-overflow-section--danger { border-color: #f1dfe1; background: #fffafa; }
+    .jobs-table-v2-wrap, .accounts-table-v2-wrap, .codex-table-v2-wrap, .outlook-table-v2-wrap {
+      border-radius: 0 0 13px 13px;
+    }
+    .jobs-table-v2 thead th, .accounts-table-v2 thead th,
+    .codex-table-v2 thead th, .outlook-table-v2 thead th {
+      height: 42px; padding: 0 12px; border-bottom: 1px solid #e8ebf1;
+      background: #f7f8fa; color: #788194; font-size: 11px; font-weight: 760;
+    }
+    .jobs-table-v2 thead th.col-id { padding-left: 12px; }
+    .column-filter-header .table-col-resizer { right: -4px; }
 
     /* 配置页：导航保持固定，只滚动右侧配置内容。 */
     #tab-config .config-layout-v2 {
       height: calc(100vh - var(--topbar-height) - 54px); min-height: 460px; margin-top: 0; overflow: hidden;
     }
-    #tab-config .config-nav-v2 { position: sticky; top: 0; max-height: 100%; overflow-y: auto; }
+    #tab-config .config-nav-v2 {
+      position: sticky; top: 0; max-height: 100%; overflow-y: auto; overscroll-behavior-y: contain;
+      padding: 10px 8px;
+    }
+    #tab-config .config-nav-v2-title { margin: 0 8px 6px; }
+    #tab-config .config-nav-v2-list { gap: 1px; }
+    #tab-config .config-nav-v2-item { min-height: 32px; padding: 6px 10px; }
     #tab-config .config-main-v2 { max-height: 100%; overflow-y: auto; padding: 0 6px 28px 0; overscroll-behavior: contain; }
 
     /* ---- 邮箱资源平台 ---- */
@@ -2479,7 +2746,7 @@
       .overview-grid { grid-template-columns: 1fr; }
       .overview-panel--wide { grid-column: auto; }
       .overview-source-grid, .mail-source-cards { grid-template-columns: repeat(2,minmax(0,1fr)); }
-      .accounts-command-deck, .codex-command-deck, .outlook-filter-v2, .task-records-command-deck { top: calc(var(--topbar-height) + var(--module-subnav-height)); }
+      .codex-command-deck, .outlook-filter-v2, .task-records-command-deck { top: calc(var(--topbar-height) + var(--module-subnav-height)); }
       .config-layout-v2 { grid-template-columns: 1fr; }
       #tab-config .config-layout-v2 { height: auto; min-height: 0; overflow: visible; }
       #tab-config .config-nav-v2 { position: sticky; top: var(--topbar-height); z-index: 45; max-height: 210px; }
@@ -2498,6 +2765,13 @@
       .butler-lease-panel { grid-template-columns: 1fr; }
       .butler-lease-list { grid-column: auto; }
       .accounts-command-deck #accountsToolbarV2 { max-height: none; }
+      .toolbar-overflow-menu {
+        position: fixed; top: calc(var(--topbar-height) + var(--module-subnav-height) + 58px);
+        right: 12px; left: 12px; width: auto;
+        max-height: calc(100vh - var(--topbar-height) - var(--module-subnav-height) - 82px);
+        grid-template-columns: 1fr; overflow-y: auto; overscroll-behavior: contain;
+      }
+      .toolbar-overflow-section--wide { grid-column: auto; }
       .stat { min-height: 100px; padding: 14px; }
       .stat strong { font-size: 22px; }
       .job-launcher { padding: 11px; }
@@ -2505,7 +2779,6 @@
       .job-launcher .jobs-tb-field:first-of-type { flex-basis: 100%; }
       .job-launcher .jobs-tb-btn--primary { flex: 1; }
       .task-records-command-deck { padding-inline: 14px; }
-      #tab-codex[data-module-view="sub2"] .codex-sync-callout { align-items: stretch; flex-direction: column; }
       .jobs-panel-v2-header { padding: 16px 14px 0; }
       .jobs-toolbar-v2 { padding: 14px; }
       .batch-progress-v2 { margin-inline: 14px; }
@@ -2542,31 +2815,40 @@
       </svg>
       <span class="sidebar-item-label">总览</span>
     </button>
-    <button type="button" data-tab="register" class="sidebar-item">
-      <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M12 5v14M5 12h14"/>
-      </svg>
-      <span class="sidebar-item-label">注册</span>
-      <span class="sidebar-item-meta">Live</span>
-    </button>
-    <button type="button" data-tab="accounts" class="sidebar-item">
-      <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-      </svg>
-      <span class="sidebar-item-label">账号</span>
-    </button>
+    <div class="sidebar-module" data-sidebar-module="register">
+      <button type="button" data-tab="register" class="sidebar-item">
+        <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        <span class="sidebar-item-label">注册</span><span class="sidebar-item-meta">Live</span>
+      </button>
+      <div class="sidebar-subnav" data-module-subnav="register" aria-label="注册中心子菜单">
+        <button type="button" class="is-active" data-view="launch">发起注册</button>
+        <button type="button" data-view="tasks">任务记录</button>
+      </div>
+    </div>
+    <div class="sidebar-module" data-sidebar-module="accounts">
+      <button type="button" data-tab="accounts" class="sidebar-item">
+        <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        <span class="sidebar-item-label">账号</span>
+      </button>
+      <div class="sidebar-subnav" data-module-subnav="accounts" aria-label="账号资产子菜单">
+        <button type="button" class="is-active" data-view="active">活跃账号</button>
+        <button type="button" data-view="archived">归档账号</button>
+      </div>
+    </div>
     <button type="button" data-tab="codex" class="sidebar-item">
-      <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-      </svg>
+      <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
       <span class="sidebar-item-label">Codex 授权</span>
     </button>
-    <button type="button" data-tab="outlook" class="sidebar-item">
-      <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><path d="M22 6l-10 7L2 6"/>
-      </svg>
-      <span class="sidebar-item-label">邮箱池</span>
-    </button>
+    <div class="sidebar-module" data-sidebar-module="outlook">
+      <button type="button" data-tab="outlook" class="sidebar-item">
+        <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><path d="M22 6l-10 7L2 6"/></svg>
+        <span class="sidebar-item-label">邮箱池</span>
+      </button>
+      <div class="sidebar-subnav" data-module-subnav="outlook" aria-label="邮箱资源池子菜单">
+        <button type="button" class="is-active" data-view="overview">资源总览</button>
+        <button type="button" data-view="list">邮箱列表</button>
+      </div>
+    </div>
     <div class="sidebar-nav-group-label">系统</div>
     <button type="button" data-tab="config" class="sidebar-item">
       <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -2654,10 +2936,6 @@
 
   <!-- ============ 注册 ============ -->
   <div id="tab-register" class="hidden" data-module-view="launch">
-    <nav class="module-subnav" data-module-subnav="register" aria-label="注册中心子菜单">
-      <button type="button" class="is-active" data-view="launch">发起注册</button>
-      <button type="button" data-view="tasks">任务记录</button>
-    </nav>
     <div class="register-overview module-launch-only">
       <h1 class="register-title">注册机</h1>
       <div class="stats">
@@ -2710,13 +2988,6 @@
     </div>
 
     <section class="jobs-panel-v2" id="jobsPanelV2" aria-label="注册任务">
-      <div class="jobs-panel-v2-header module-launch-only">
-        <div>
-          <div class="data-panel-kicker">Automation queue</div>
-          <h2 class="data-panel-title">注册任务</h2>
-          <p class="data-panel-copy">配置本次批次，运行过程会自动刷新在下方</p>
-        </div>
-      </div>
       <div class="jobs-toolbar-v2" id="jobsToolbarV2">
         <div class="job-launcher module-launch-only">
           <div class="job-launcher-label">新建运行批次</div>
@@ -2750,31 +3021,15 @@
           <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnStartV2">开始注册</button>
         </div>
       </div>
-      <div class="task-records-command-deck module-tasks-only">
-      <div class="job-batch-actions">
-        <div class="job-batch-actions-label">任务操作</div>
-        <button type="button" class="jobs-tb-btn jobs-tb-btn--retry" id="btnRetrySelectedJobsV2" disabled title="重试选中的失败、已停止或已取消任务">重试选中</button>
-        <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnDeleteSelectedJobsV2" disabled title="删除选中的非运行中任务，并同时删除对应日志">删除选中</button>
-        <button type="button" class="jobs-tb-btn" id="btnCancelPendingV2" title="把所有排队任务标记为已取消">取消排队</button>
-        <button type="button" class="jobs-tb-btn" id="btnRefreshJobsV2" title="手动刷新任务列表">刷新</button>
-      </div>
-      <div class="task-records-tools module-tasks-only" aria-label="任务记录查询">
-        <label><span>关键词</span><input id="qJobsV2" type="search" placeholder="任务 ID、邮箱、错误或代理…" autocomplete="off"></label>
-        <label><span>邮箱来源</span><select id="jobEmailSourceFilterV2" aria-label="按邮箱来源筛选"><option value="">全部邮箱来源</option></select></label>
-        <label><span>开始日期</span><input id="jobDateFromV2" type="date" aria-label="任务开始日期"></label>
-        <label><span>结束日期</span><input id="jobDateToV2" type="date" aria-label="任务结束日期"></label>
-        <button type="button" class="jobs-tb-btn" id="btnResetJobFiltersV2">重置筛选</button>
-      </div>
-      <div class="job-status-filters module-tasks-only" id="jobStatusFilters" aria-label="按任务状态筛选">
-        <label><span>任务状态</span><select id="jobStatusFilterV2" aria-label="按任务状态筛选">
-          <option value="" data-label="全部状态">全部状态 · 0</option>
-          <option value="running" data-label="运行中">运行中 · 0</option>
-          <option value="failed" data-label="失败">失败 · 0</option>
-          <option value="partial_success" data-label="部分成功">部分成功 · 0</option>
-          <option value="success" data-label="成功">成功 · 0</option>
-          <option value="stopped" data-label="已停止">已停止 · 0</option>
-        </select></label>
-      </div>
+      <div class="task-records-command-deck list-action-toolbar module-tasks-only">
+        <span class="list-selection-hint" id="jobsSelectedHintV2">选择任务后批量操作</span>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--retry selection-only" id="btnRetrySelectedJobsV2" disabled title="重试选中的失败、已停止或已取消任务">重试</button>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--danger selection-only" id="btnDeleteSelectedJobsV2" disabled title="删除选中的非运行中任务，并同时删除对应日志">删除</button>
+        <button type="button" class="jobs-tb-btn" id="btnCancelPendingV2" title="取消所有仍在排队、尚未开始的任务">取消</button>
+        <div class="list-toolbar-utilities">
+          <button type="button" class="jobs-tb-btn" id="btnResetJobsColumnsV2" title="恢复任务列表默认列宽">恢复列宽</button>
+          <button type="button" class="jobs-tb-btn" id="btnRefreshJobsV2" title="手动刷新任务列表">刷新</button>
+        </div>
       </div>
       <div id="regWarnV2"></div>
       <section class="batch-progress-v2 hidden module-launch-only" id="batchProgressV2" aria-label="当前批次进度">
@@ -2786,29 +3041,34 @@
             </div>
             <div class="batch-progress-v2-summary" id="batchProgressSummaryV2"></div>
           </div>
-          <div class="batch-progress-v2-time" id="batchProgressTimeV2"></div>
+          <div class="batch-progress-v2-actions">
+            <span class="batch-progress-v2-time" id="batchProgressTimeV2"></span>
+            <button type="button" class="batch-progress-v2-action batch-progress-v2-action--stop" id="btnBatchStopV2" disabled title="停止当前批次中正在运行的任务">停止</button>
+            <button type="button" class="batch-progress-v2-action" id="btnBatchCancelV2" disabled title="取消当前批次中尚未开始的排队任务">取消</button>
+            <button type="button" class="batch-progress-v2-action batch-progress-v2-action--retry" id="btnBatchRetryV2" disabled title="重跑当前批次中可重试的失败任务">重跑失败</button>
+          </div>
         </div>
         <div class="batch-progress-v2-list" id="batchProgressListV2"></div>
       </section>
-      <div class="jobs-history-v2-label module-tasks-only">任务列表</div>
+      <div class="column-filter-summary module-tasks-only" data-filter-summary="jobs" hidden></div>
       <div class="jobs-table-v2-wrap module-tasks-only">
-        <table class="jobs-table-v2">
+        <table class="jobs-table-v2" data-resizable-table="jobs">
           <colgroup>
-            <col class="col-check"><col class="col-id"><col class="col-status"><col class="col-email"><col class="col-source"><col class="col-proxy">
+            <col class="col-check"><col class="col-id"><col class="col-email"><col class="col-source"><col class="col-proxy"><col class="col-status">
             <col class="col-time"><col class="col-time"><col class="col-error"><col class="col-actions">
           </colgroup>
           <thead>
             <tr>
               <th class="col-check"><input type="checkbox" id="jobsSelectAllV2" title="全选/取消全选当前页可删除任务"></th>
-              <th class="col-id">ID</th>
-              <th class="col-status">状态</th>
-              <th class="col-email">邮箱</th>
-              <th class="col-source">邮箱来源</th>
-              <th class="col-proxy">代理</th>
-              <th class="col-time">开始</th>
-              <th class="col-time">完成</th>
-              <th class="col-error">错误</th>
-              <th class="col-actions">操作</th>
+              <th class="col-id column-filter-header" data-column-filter="jobIdFilterV2" data-filter-type="search" data-filter-placeholder="#" data-filter-label="按任务 ID 筛选" data-filter-inputmode="numeric">ID</th>
+              <th class="col-email column-filter-header" data-column-filter="jobEmailFilterV2" data-filter-type="search" data-filter-placeholder="输入邮箱" data-filter-label="按邮箱筛选">邮箱</th>
+              <th class="col-source column-filter-header" data-column-filter="jobSourceColumnFilterV2" data-filter-type="select" data-filter-label="按邮箱来源筛选">邮箱来源</th>
+              <th class="col-proxy column-filter-header" data-column-filter="jobProxyFilterV2" data-filter-type="search" data-filter-placeholder="输入代理" data-filter-label="按代理筛选">代理</th>
+              <th class="col-status column-filter-header" data-column-filter="jobStatusColumnFilterV2" data-filter-type="select" data-filter-label="按任务状态筛选">状态</th>
+              <th class="col-time column-filter-header" data-column-filter="jobDateFromV2" data-filter-type="date" data-filter-label="按开始日期筛选">开始</th>
+              <th class="col-time column-filter-header" data-column-filter="jobDateToV2" data-filter-type="date" data-filter-label="按完成日期筛选">完成</th>
+              <th class="col-error column-filter-header" data-column-filter="jobErrorFilterV2" data-filter-type="search" data-filter-placeholder="输入错误信息" data-filter-label="按错误筛选">错误</th>
+              <th class="col-actions"><div class="column-actions-heading"><span>操作</span><button type="button" class="column-filters-reset" id="btnResetJobFiltersV2" title="清除全部列筛选">清筛</button></div></th>
             </tr>
           </thead>
           <tbody id="jobsBodyV2"></tbody>
@@ -2820,98 +3080,76 @@
 
   <!-- ============ 账号 ============ -->
   <div id="tab-accounts" class="hidden" data-module-view="active">
-    <nav class="module-subnav" data-module-subnav="accounts" aria-label="账号资产子菜单">
-      <button type="button" class="is-active" data-view="active">活跃账号</button>
-      <button type="button" data-view="archived">归档账号</button>
-    </nav>
     <h1 class="register-title">账号</h1>
     <section class="accounts-panel-v2" id="accountsPanelV2" aria-label="账号列表">
       <div class="accounts-command-deck" id="accountsCommandDeck">
-      <div class="accounts-filter-v2" id="accountsFilterV2">
-        <div class="acc-v2-btn-group acc-v2-search-wrap">
-          <input id="qAccountsV2" type="search" placeholder="搜索邮箱、token、来源…" autocomplete="off">
-        </div>
-
-        <div class="acc-v2-btn-group">
-          <span class="acc-v2-selected" id="accountsSelectedHintV2">已选 0</span>
-          <label class="acc-v2-inline" title="批量补跑 Codex 的并发线程数">线程
-            <span class="el-input-number">
-              <input id="codexBulkWorkersV2" type="number" min="1" max="16" value="3" inputmode="numeric">
-              <button type="button" class="el-input-number__increase" data-step-for="codexBulkWorkersV2" data-step="1" aria-label="增加">
-                <svg viewBox="0 0 24 24"><polyline points="6 14 12 8 18 14"/></svg>
-              </button>
-              <button type="button" class="el-input-number__decrease" data-step-for="codexBulkWorkersV2" data-step="-1" aria-label="减少">
-                <svg viewBox="0 0 24 24"><polyline points="6 10 12 16 18 10"/></svg>
-              </button>
-            </span>
-          </label>
-          <button type="button" class="acc-v2-toggle hidden" id="showArchivedAccountsV2" aria-pressed="false" title="默认只显示未归档账号；开启后单独查看归档账号">查看归档</button>
-          <button type="button" class="acc-v2-toggle" id="showPlusAccountsOnlyV2" aria-pressed="false" title="只查询/显示已开通 Plus 的账号">已开通Plus</button>
-          <div class="acc-v2-date-select" id="dateSelectAccountsV2">
-            <button type="button" class="acc-v2-date-select-btn" id="btnDateFilterAccountsV2" title="按注册时间筛选日期范围">📅 日期筛选</button>
-            <div class="acc-v2-date-select-menu" id="dateFilterPanelAccountsV2"></div>
-          </div>
-          <div class="hidden">
-            <input type="date" id="dateFromAccountsV2">
-            <input type="date" id="dateToAccountsV2">
-          </div>
-          <button type="button" class="jobs-tb-btn" id="btnRefreshAccountsV2" title="重新加载当前筛选条件和当前页账号列表">刷新账号</button>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedLiveTopV2" onclick="checkSelectedLive()" title="重新登录选中账号；成功且未封号则标记正常，并刷新最新 AT/accessToken">查活</button>
-
-        </div>
-      </div>
-      <div class="jobs-toolbar-v2" id="accountsToolbarV2">
-        <div class="acc-v2-btn-group">
-          <span class="acc-v2-btn-group-title">套餐/提链</span>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedLiveV2" onclick="checkSelectedLive()" title="重新登录选中账号；成功且未封号则标记正常，并刷新最新 AT/accessToken">查活</button>
+      <div class="jobs-toolbar-v2 list-action-toolbar" id="accountsToolbarV2">
+        <span class="list-selection-hint" id="accountsSelectedHintV2">选择账号后批量操作</span>
+        <div class="acc-v2-btn-group toolbar-selection-primary selection-only">
+          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedLiveV2" onclick="checkSelectedLive()" disabled title="重新登录选中账号；成功且未封号则标记正常，并刷新最新 AT/accessToken">查活</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedPlansV2" disabled title="查询选中账号当前套餐；free 账号会检查 Plus 试用资格">查套餐</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnExtractSelectedLinksV2" disabled title="给选中的 free(可Plus试用) 账号批量提链，类型按配置 PIX/UPI/KAKAO_PAY/IDEAL">提链</button>
-        </div>
-        <div class="acc-v2-btn-group">
-          <span class="acc-v2-btn-group-title">Codex</span>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnRetrySelectedCodexV2" disabled title="给选中的账号批量补跑 Codex 授权">补跑</button>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnDownloadSelectedCpaV2" disabled title="从 CPA auth-files 下载选中账号的 Codex JSON，并打包 ZIP">下载CPA</button>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnUploadSelectedCodexSub2V2" disabled title="把选中账号已通过的 Codex OAuth 凭证上传到 sub2api">上传sub2</button>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnStopSelectedCodexV2" disabled title="停止选中账号中正在补跑的 Codex 授权">停止</button>
-        </div>
-        <div class="acc-v2-btn-group">
-          <span class="acc-v2-btn-group-title">批量</span>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedDeactivationMailV2" disabled title="扫描 Email Butler / Cloudflare / iCloud 转发邮箱中的 OpenAI 封号通知；不会刷新 AT">查封号邮件</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnNoteSelectedAccountsV2" disabled title="给选中的账号统一设置备注，留空可清空备注">备注</button>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedLinesV2" disabled title="复制选中账号的完整整行，每个账号一行">复制行</button>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedEmailsV2" disabled title="复制选中账号的邮箱，每个账号一行">复制邮箱</button>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnDownloadSelectedTxtV2" disabled title="把选中账号的完整整行保存为 TXT 文件，每个账号一行">下载TXT</button>
-          <button type="button" class="jobs-tb-btn" id="btnArchiveSelectedAccountsV2" disabled title="归档选中的账号；默认账号列表将不再查询/显示这些账号">归档选中</button>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnDeleteSelectedAccountsV2" disabled title="删除选中的本地账号/token记录">删除</button>
         </div>
-        <div class="acc-v2-btn-group">
-          <span class="acc-v2-btn-group-title">全部</span>
+        <details class="toolbar-overflow selection-only" id="accountsMoreActionsV2">
+          <summary>更多操作</summary>
+          <div class="toolbar-overflow-menu">
+            <div class="toolbar-overflow-section">
+              <span class="toolbar-overflow-section-title">Codex</span>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnRetrySelectedCodexV2" disabled title="给选中的账号批量补跑 Codex 授权">补跑</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnDownloadSelectedCpaV2" disabled title="从 CPA auth-files 下载选中账号的 Codex JSON，并打包 ZIP">下载 CPA</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnUploadSelectedCodexSub2V2" disabled title="把选中账号已通过的 Codex OAuth 凭证上传到 sub2api">上传 sub2</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnStopSelectedCodexV2" disabled title="停止选中账号中正在补跑的 Codex 授权">停止</button>
+            </div>
+            <div class="toolbar-overflow-section">
+              <span class="toolbar-overflow-section-title">检查与复制</span>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedDeactivationMailV2" disabled title="扫描 Email Butler / Cloudflare / iCloud 转发邮箱中的 OpenAI 封号通知；不会刷新 AT">查封号邮件</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedLinesV2" disabled title="复制选中账号的完整整行，每个账号一行">复制行</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedEmailsV2" disabled title="复制选中账号的邮箱，每个账号一行">复制邮箱</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedPasswordsV2" disabled title="复制选中账号中已设置的随机登录密码，格式为 邮箱----密码">复制密码</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnDownloadSelectedTxtV2" disabled title="把选中账号的完整整行保存为 TXT 文件，每个账号一行">下载 TXT</button>
+            </div>
+            <div class="toolbar-overflow-section toolbar-overflow-section--wide toolbar-overflow-section--danger">
+              <span class="toolbar-overflow-section-title">资产管理</span>
+              <button type="button" class="jobs-tb-btn" id="btnArchiveSelectedAccountsV2" disabled title="归档选中的账号；默认账号列表将不再查询/显示这些账号">归档选中</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnDeleteSelectedAccountsV2" disabled title="删除选中的本地账号/token记录">删除</button>
+            </div>
+          </div>
+        </details>
+        <div class="acc-v2-btn-group toolbar-page-actions">
+          <span class="acc-v2-btn-group-title">当前页</span>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCopyAllTokensV2" title="复制当前页所有 Token，每个账号一行">复制Token</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopyAllLinesV2" title="复制当前页所有账号整行，每个账号一行">复制整行</button>
         </div>
+        <div class="list-toolbar-utilities">
+          <button type="button" class="jobs-tb-btn" id="btnResetAccountsColumnsV2" title="恢复账号列表默认列宽">恢复列宽</button>
+          <button type="button" class="jobs-tb-btn" id="btnRefreshAccountsV2" title="重新加载当前筛选条件和当前页账号列表">刷新</button>
+        </div>
       </div>
       </div>
+      <div class="column-filter-summary" data-filter-summary="accounts" hidden></div>
       <div class="accounts-table-v2-wrap">
-        <table class="accounts-table-v2">
+        <table class="accounts-table-v2" data-resizable-table="accounts">
           <colgroup>
             <col class="col-check"><col class="col-id"><col class="col-email"><col class="col-source">
-            <col class="col-token"><col class="col-plan"><col class="col-note"><col class="col-small">
+            <col class="col-token"><col class="col-small"><col class="col-plan"><col class="col-note"><col class="col-small">
             <col class="col-risk-mail"><col class="col-status"><col class="col-time"><col class="col-actions">
           </colgroup>
           <thead>
             <tr>
               <th class="col-check"><input type="checkbox" id="accountsSelectAllV2" title="全选/取消全选当前页账号" disabled></th>
-              <th class="col-id">ID</th>
-              <th class="col-email">邮箱</th>
-              <th class="col-source">来源</th>
-              <th class="col-token">Token</th>
-              <th class="col-plan">套餐</th>
-              <th class="col-note">备注</th>
-              <th class="col-small">2FA</th>
-              <th class="col-risk-mail">封号邮件</th>
-              <th class="col-status">Codex</th>
-              <th class="col-time">创建时间</th>
-              <th class="col-actions">操作</th>
+              <th class="col-id column-filter-header" data-column-filter="accountIdFilterV2" data-filter-type="search" data-filter-placeholder="#" data-filter-label="按账号 ID 筛选" data-filter-inputmode="numeric">ID</th>
+              <th class="col-email column-filter-header" data-column-filter="qAccountsV2" data-filter-type="search" data-filter-placeholder="邮箱或姓名" data-filter-label="按邮箱或姓名筛选">邮箱 / 姓名</th>
+              <th class="col-source column-filter-header" data-column-filter="accountSourceFilterV2" data-filter-type="select" data-filter-label="按邮箱来源筛选">来源</th>
+              <th class="col-token column-filter-header" data-column-filter="accountTokenFilterV2" data-filter-type="select" data-filter-label="按 Token 状态筛选">Token</th>
+              <th class="col-small column-filter-header" data-column-filter="accountPasswordFilterV2" data-filter-type="select" data-filter-label="按登录密码状态筛选">登录密码</th>
+              <th class="col-plan column-filter-header" data-column-filter="accountPlanFilterV2" data-filter-type="select" data-filter-label="按套餐筛选">套餐</th>
+              <th class="col-note column-filter-header" data-column-filter="accountNoteFilterV2" data-filter-type="search" data-filter-placeholder="输入备注" data-filter-label="按备注筛选">备注</th>
+              <th class="col-small column-filter-header" data-column-filter="accountTotpFilterV2" data-filter-type="select" data-filter-label="按 2FA 状态筛选">2FA</th>
+              <th class="col-risk-mail column-filter-header" data-column-filter="accountRiskFilterV2" data-filter-type="select" data-filter-label="按封号邮件状态筛选">封号邮件</th>
+              <th class="col-status column-filter-header" data-column-filter="accountCodexFilterV2" data-filter-type="select" data-filter-label="按 Codex 状态筛选">Codex</th>
+              <th class="col-time column-filter-header" data-column-filter="dateFromAccountsV2" data-filter-end-id="dateToAccountsV2" data-filter-type="date-range" data-filter-label="按创建日期范围筛选">创建时间</th>
+              <th class="col-actions"><div class="column-actions-heading"><span>操作</span><button type="button" class="column-filters-reset" id="btnResetAccountFiltersV2" title="清除全部列筛选">清筛</button></div></th>
             </tr>
           </thead>
           <tbody id="accountsBodyV2"></tbody>
@@ -2934,72 +3172,26 @@
   </div>
 
   <!-- ============ Codex 授权 ============ -->
-  <div id="tab-codex" class="hidden" data-module-view="credentials">
-    <nav class="module-subnav" data-module-subnav="codex" aria-label="Codex 管理子菜单">
-      <button type="button" class="is-active" data-view="credentials">凭证管理</button>
-      <button type="button" data-view="sub2">同步 sub2api</button>
-    </nav>
+  <div id="tab-codex" class="hidden">
     <h1 class="register-title">Codex 授权</h1>
-    <div class="codex-stats-v2" id="codexStatsV2" aria-label="Codex 统计">
-      <div class="codex-stat-card codex-stat-card--total">
-        <div class="codex-stat-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-        </div>
-        <div class="codex-stat-meta">
-          <span>总数</span>
-          <strong id="codexStatTotalV2">0</strong>
-        </div>
-      </div>
-      <div class="codex-stat-card codex-stat-card--exported">
-        <div class="codex-stat-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-        </div>
-        <div class="codex-stat-meta">
-          <span>已导出</span>
-          <strong id="codexStatExportedV2">0</strong>
-        </div>
-      </div>
-      <div class="codex-stat-card codex-stat-card--pending">
-        <div class="codex-stat-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-        </div>
-        <div class="codex-stat-meta">
-          <span>未导出</span>
-          <strong id="codexStatPendingV2">0</strong>
-        </div>
-      </div>
-    </div>
-    <section class="codex-sync-callout" aria-label="同步 sub2api">
-      <div><span class="data-panel-kicker">Sub2api sync</span><h2>把本地 Codex OAuth 凭证同步到 sub2api</h2><p>使用同一份凭证列表筛选和选择，避免在账号页来回切换。已选 <strong id="codexSyncSelectedV2">0</strong> 个凭证。</p></div>
-      <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCodexUploadSub2HeroV2" disabled>上传选中凭证</button>
-    </section>
     <section class="codex-panel-v2" id="codexPanelV2" aria-label="Codex 授权">
       <div class="codex-command-deck">
-      <div class="codex-filter-v2" id="codexFilterV2">
-        <div class="acc-v2-btn-group acc-v2-search-wrap">
-          <input id="qCodexV2" type="search" placeholder="搜索邮箱、plan、account_id…" autocomplete="off">
+      <div class="jobs-toolbar-v2 list-action-toolbar" id="codexToolbarV2">
+        <span class="list-selection-hint" id="codexSelectedHintV2">选择凭证后批量操作</span>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--primary selection-only" id="btnCodexDownloadBulkV2" disabled title="把选中的多个本地凭证打包成一个 JSON 文件下载（备份/迁移用，CPA 不能直接读，需先解包）">下载本地</button>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--good selection-only" id="btnCodexDownloadBulkCpaV2" disabled title="从 CPA auth-files 下载选中账号的真实 Codex JSON，并打包成 ZIP（可直接解压放入 CPA auth-dir）">从 CPA 下载</button>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--good selection-only" id="btnCodexUploadSub2V2" disabled title="把选中的本地 Codex OAuth 凭证上传到 sub2api">上传 sub2api</button>
+        <button type="button" class="jobs-tb-btn selection-only" id="btnCodexArchiveBulkV2" disabled title="归档选中的 Codex 授权凭证；默认列表不再显示">归档选中</button>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--danger selection-only" id="btnCodexDeleteBulkV2" disabled title="删除选中的本地 Codex JSON 凭证文件">删除选中</button>
+        <div class="list-toolbar-utilities">
+          <button type="button" class="jobs-tb-btn" id="btnResetCodexColumnsV2" title="恢复 Codex 列表默认列宽">恢复列宽</button>
+          <button type="button" class="jobs-tb-btn" id="btnRefreshCodexV2" title="重新加载 Codex 凭证列表">刷新</button>
         </div>
-        <div class="acc-v2-date-select" id="dateSelectCodexV2">
-          <button type="button" class="acc-v2-date-select-btn" id="btnDateFilterCodexV2" title="按凭证文件修改时间筛选日期范围">📅 日期筛选</button>
-          <div class="acc-v2-date-select-menu" id="dateFilterPanelCodexV2"></div>
-        </div>
-        <div class="hidden">
-          <input type="date" id="dateFromCodexV2">
-          <input type="date" id="dateToCodexV2">
-        </div>
-        <button type="button" class="jobs-tb-btn" id="btnRefreshCodexV2" title="重新加载 Codex 凭证列表">刷新</button>
-      </div>
-      <div class="jobs-toolbar-v2" id="codexToolbarV2">
-        <button type="button" class="jobs-tb-btn" id="showArchivedCodexV2" aria-pressed="false" title="默认只显示未归档凭证；开启后单独查看归档凭证">查看归档</button>
-        <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCodexDownloadBulkV2" disabled title="把选中的多个本地凭证打包成一个 JSON 文件下载（备份/迁移用，CPA 不能直接读，需先解包）">下载本地</button>
-        <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCodexDownloadBulkCpaV2" disabled title="从 CPA auth-files 下载选中账号的真实 Codex JSON，并打包成 ZIP（可直接解压放入 CPA auth-dir）">从CPA下载</button>
-        <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCodexUploadSub2V2" disabled title="把选中的本地 Codex OAuth 凭证上传到 sub2api">上传 sub2api</button>
-        <button type="button" class="jobs-tb-btn" id="btnCodexArchiveBulkV2" disabled title="归档选中的 Codex 授权凭证；默认列表不再显示">归档选中</button>
-        <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnCodexDeleteBulkV2" disabled title="删除选中的本地 Codex JSON 凭证文件">删除选中</button>
       </div>
       </div>
+      <div class="column-filter-summary" data-filter-summary="codex" hidden></div>
       <div class="codex-table-v2-wrap">
-        <table class="codex-table-v2">
+        <table class="codex-table-v2" data-resizable-table="codex">
           <colgroup>
             <col class="col-check"><col class="col-email"><col class="col-plan"><col class="col-status">
             <col class="col-account"><col class="col-time"><col class="col-time"><col class="col-actions">
@@ -3007,13 +3199,13 @@
           <thead>
             <tr>
               <th class="col-check"><input type="checkbox" id="codexSelectAllV2" title="全选/取消全选当前页" disabled></th>
-              <th class="col-email">邮箱</th>
-              <th class="col-plan">Plan</th>
-              <th class="col-status">状态</th>
-              <th class="col-account">Account ID</th>
-              <th class="col-time">更新时间</th>
-              <th class="col-time">过期时间</th>
-              <th class="col-actions">操作</th>
+              <th class="col-email column-filter-header" data-column-filter="qCodexV2" data-filter-type="search" data-filter-placeholder="邮箱或文件名" data-filter-label="按邮箱或文件名筛选">邮箱 / 文件</th>
+              <th class="col-plan column-filter-header" data-column-filter="codexPlanFilterV2" data-filter-type="select" data-filter-label="按 Plan 筛选">Plan</th>
+              <th class="col-status column-filter-header" data-column-filter="codexStatusFilterV2" data-filter-type="select" data-filter-label="按凭证状态筛选">状态</th>
+              <th class="col-account column-filter-header" data-column-filter="codexAccountFilterV2" data-filter-type="search" data-filter-placeholder="输入 Account ID" data-filter-label="按 Account ID 筛选">Account ID</th>
+              <th class="col-time column-filter-header" data-column-filter="dateFromCodexV2" data-filter-end-id="dateToCodexV2" data-filter-type="date-range" data-filter-label="按更新日期范围筛选">更新时间</th>
+              <th class="col-time column-filter-header" data-column-filter="codexExpiredFilterV2" data-filter-type="date" data-filter-label="按过期日期筛选">过期时间</th>
+              <th class="col-actions"><div class="column-actions-heading"><span>操作</span><button type="button" class="column-filters-reset" id="btnResetCodexFiltersV2" title="清除全部列筛选">清筛</button></div></th>
             </tr>
           </thead>
           <tbody id="codexBodyV2"></tbody>
@@ -3025,10 +3217,6 @@
 
   <!-- ============ 邮箱池 ============ -->
   <div id="tab-outlook" class="hidden" data-module-view="overview">
-    <nav class="module-subnav" data-module-subnav="outlook" aria-label="邮箱资源池子菜单">
-      <button type="button" class="is-active" data-view="overview">资源总览</button>
-      <button type="button" data-view="list">邮箱列表</button>
-    </nav>
     <h1 class="register-title">邮箱池</h1>
     <section class="mail-resource-overview" aria-label="邮箱资源平台">
       <div class="mail-resource-head">
@@ -3049,30 +3237,22 @@
       </div>
     </section>
     <section class="outlook-panel-v2" id="outlookPanelV2" aria-label="邮箱池">
-      <div class="outlook-filter-v2" id="outlookFilterV2">
-        <div class="outlook-v2-select" id="poolSourceV2Wrap">
-          <button type="button" class="outlook-v2-select-btn" id="poolSourceV2Btn" aria-haspopup="listbox" aria-expanded="false">全部邮箱池</button>
-          <div class="outlook-v2-select-menu" role="listbox">
-            <button type="button" class="outlook-v2-select-item is-active" data-value="all" role="option">全部邮箱池</button>
-            <button type="button" class="outlook-v2-select-item" data-value="outlook" role="option">Outlook 邮箱池</button>
-            <button type="button" class="outlook-v2-select-item" data-value="generic_api" role="option">通用 API 邮箱池</button>
-            <button type="button" class="outlook-v2-select-item" data-value="cloudflare_domain" role="option">域名邮箱池</button>
-            <button type="button" class="outlook-v2-select-item" data-value="icloud_hide" role="option">iCloud 隐藏邮箱池</button>
-          </div>
-          <input type="hidden" id="poolSourceV2" value="all">
-        </div>
-        <div class="acc-v2-btn-group acc-v2-search-wrap">
-          <input id="qOutlookV2" type="search" placeholder="搜索邮箱、状态…" autocomplete="off">
-        </div>
-        <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnMarkSelectedOutlookAvailableV2" disabled title="把选中的邮箱批量标记为未使用/可用">标记未使用</button>
-        <button type="button" class="jobs-tb-btn" id="btnDisableSelectedOutlookV2" disabled title="批量停用选中的邮箱；停用后不会被注册任务领取">停用选中</button>
-        <button type="button" class="jobs-tb-btn" id="btnFailSelectedOutlookV2" disabled title="批量标记选中的邮箱为失败">标失败</button>
-        <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnDeleteSelectedOutlookV2" disabled title="批量删除选中的邮箱素材">删除选中</button>
+      <div class="jobs-toolbar-v2 list-action-toolbar" id="outlookToolbarV2">
+        <span class="list-selection-hint" id="outlookSelectedHintV2">选择邮箱后批量操作</span>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--good selection-only" id="btnMarkSelectedOutlookAvailableV2" disabled title="把选中的邮箱批量标记为未使用/可用">标记未使用</button>
+        <button type="button" class="jobs-tb-btn selection-only" id="btnDisableSelectedOutlookV2" disabled title="批量停用选中的邮箱；停用后不会被注册任务领取">停用选中</button>
+        <button type="button" class="jobs-tb-btn selection-only" id="btnFailSelectedOutlookV2" disabled title="批量标记选中的邮箱为失败">标失败</button>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--danger selection-only" id="btnDeleteSelectedOutlookV2" disabled title="批量删除选中的邮箱素材">删除选中</button>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="copyAllEmailsV2" title="复制当前页全部邮箱素材">复制全部邮箱素材</button>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnImportOutlookV2" title="导入邮箱素材">导入</button>
+        <div class="list-toolbar-utilities">
+          <button type="button" class="jobs-tb-btn" id="btnResetOutlookColumnsV2" title="恢复邮箱列表默认列宽">恢复列宽</button>
+          <button type="button" class="jobs-tb-btn" id="btnRefreshOutlookV2" title="重新加载邮箱列表">刷新</button>
+        </div>
       </div>
+      <div class="column-filter-summary" data-filter-summary="outlook" hidden></div>
       <div class="outlook-table-v2-wrap">
-        <table class="outlook-table-v2">
+        <table class="outlook-table-v2" data-resizable-table="outlook">
           <colgroup>
             <col class="col-check"><col class="col-email"><col class="col-source"><col class="col-status">
             <col class="col-token"><col class="col-time"><col class="col-time"><col class="col-actions">
@@ -3080,13 +3260,13 @@
           <thead>
             <tr>
               <th class="col-check"><input type="checkbox" id="outlookSelectAllV2" title="全选/取消全选当前页邮箱" disabled></th>
-              <th class="col-email">邮箱</th>
-              <th class="col-source">类型</th>
-              <th class="col-status">状态</th>
-              <th class="col-token">Token</th>
-              <th class="col-time">导入时间</th>
-              <th class="col-time">已用时间</th>
-              <th class="col-actions">操作</th>
+              <th class="col-email column-filter-header" data-column-filter="qOutlookV2" data-filter-type="search" data-filter-placeholder="输入邮箱" data-filter-label="按邮箱筛选">邮箱</th>
+              <th class="col-source column-filter-header" data-column-filter="poolSourceV2" data-filter-type="select" data-filter-label="按邮箱池类型筛选" data-filter-empty-value="all">类型</th>
+              <th class="col-status column-filter-header" data-column-filter="outlookStatusFilterV2" data-filter-type="select" data-filter-label="按邮箱状态筛选">状态</th>
+              <th class="col-token column-filter-header" data-column-filter="outlookTokenFilterV2" data-filter-type="select" data-filter-label="按 Token 状态筛选">Token</th>
+              <th class="col-time column-filter-header" data-column-filter="outlookImportedFilterV2" data-filter-type="date" data-filter-label="按导入日期筛选">导入时间</th>
+              <th class="col-time column-filter-header" data-column-filter="outlookUsedFilterV2" data-filter-type="date" data-filter-label="按已用日期筛选">已用时间</th>
+              <th class="col-actions"><div class="column-actions-heading"><span>操作</span><button type="button" class="column-filters-reset" id="btnResetOutlookFiltersV2" title="清除全部列筛选">清筛</button></div></th>
             </tr>
           </thead>
           <tbody id="outlookBodyV2"></tbody>
@@ -3204,14 +3384,50 @@ let JOBS_TOTAL = 0;
 let JOB_STATUS_COUNTS = {};
 let JOB_PROGRESS_BATCH = null;
 let JOB_STATUS_FILTER = '';
-let JOB_QUERY = '';
+let JOB_ID_FILTER = '';
+let JOB_EMAIL_FILTER = '';
 let JOB_EMAIL_SOURCE_FILTER = '';
+let JOB_PROXY_FILTER = '';
+let JOB_ERROR_FILTER = '';
 let JOB_DATE_FROM = '';
 let JOB_DATE_TO = '';
 let jobsRenderSignature = '';
+let batchProgressRenderSignature = '';
 const JOB_SELECTED = new Set();
 let REGISTRATION_EMAIL_SOURCES = [];
 let activeLogJob = null, logTimer = null, jobsTimer = null;
+
+const LIST_FACET_LABELS = {
+  status: {running:'运行中', pending:'排队中', stopping:'停止中', failed:'失败', partial_success:'部分成功', success:'成功', stopped:'已停止', cancelled:'已取消', available:'可用', used:'已使用', disabled:'停用', exported:'已导出', unexported:'未导出', archived:'已归档'},
+  source: {
+    outlook:'Outlook', generic_api:'通用 API', cloudflare_domain:'域名邮箱', cloudflare_temp:'Cloudflare 临时邮箱',
+    icloud_hide:'iCloud 隐藏邮箱', email_butler:'Email Butler', gptmail:'GPTMail', mailnest:'MailNest', cloudmail:'CloudMail',
+  },
+  token: {has:'有 Token', none:'无 Token'},
+  password: {has:'已设置', none:'未设置'},
+  totp: {enabled:'已启用', disabled:'未启用'},
+  risk: {detected:'已收到', clear:'未发现', pending:'待处理'},
+  codex: {success:'已通过', retrying:'进行中', failed:'失败', stopped:'已停止', deactivated:'已停用', skipped:'已跳过', missing:'缺失'},
+};
+function facetLabel(group, value) {
+  const key = String(value || '').toLowerCase();
+  if (group === 'plan') return key ? key.charAt(0).toUpperCase() + key.slice(1) : '-';
+  return LIST_FACET_LABELS[group]?.[key] || key || '-';
+}
+function syncFacetSelect(id, items, {group='', allValue='', allLabel='全部'} = {}) {
+  const select = document.getElementById(id);
+  if (!select) return;
+  const current = select.value;
+  const rows = Array.isArray(items) ? items : [];
+  const options = [{value: allValue, label: allLabel}].concat(rows.map(item => ({
+    value: String(item.value || ''),
+    label: `${facetLabel(group, item.value)} · ${Number(item.count || 0)}`,
+  })));
+  select.innerHTML = options.map(item => `<option value="${attrEsc(item.value)}">${esc(item.label)}</option>`).join('');
+  select.value = options.some(item => item.value === current) ? current : allValue;
+  refreshColumnFilterState(select);
+  renderColumnFilterOptions(select);
+}
 
 // ---------- 分页状态 ----------
 const PAGERS = {
@@ -3332,6 +3548,405 @@ function pagerSetSize(id, val) {
   _reloadPagedList(id);
 }
 
+// ---------- 统一列表列宽 ----------
+const TABLE_DEFAULT_WIDTHS = {
+  jobs:     [4, 6, 15, 9, 11, 8, 9, 9, 13, 16],
+  accounts: [4, 5, 14, 7, 6, 7, 8, 8, 6, 8, 8, 9, 10],
+  codex:    [4, 18, 9, 10, 13, 12, 13, 21],
+  outlook:  [4, 24, 9, 9, 8, 14, 14, 18],
+};
+const TABLE_WIDTH_STORAGE_PREFIX = 'gpt_console_table_widths_';
+
+function applyResizableTableWidths(table, widths) {
+  const cols = Array.from(table.querySelectorAll('colgroup col'));
+  if (!cols.length || !Array.isArray(widths) || widths.length !== cols.length) return;
+  const total = widths.reduce((sum, value) => sum + Math.max(0, Number(value) || 0), 0) || 100;
+  cols.forEach((col, index) => { col.style.width = `${Math.max(0, Number(widths[index]) || 0) / total * 100}%`; });
+}
+
+function readSavedTableWidths(key, expectedLength) {
+  try {
+    const widths = JSON.parse(localStorage.getItem(TABLE_WIDTH_STORAGE_PREFIX + key) || 'null');
+    return Array.isArray(widths) && widths.length === expectedLength ? widths : null;
+  } catch(e) { return null; }
+}
+
+function saveTableWidths(key, widths) {
+  localStorage.setItem(TABLE_WIDTH_STORAGE_PREFIX + key, JSON.stringify(widths.map(value => Number(value.toFixed(4)))));
+}
+
+function resetResizableTable(key) {
+  const table = document.querySelector(`table[data-resizable-table="${key}"]`);
+  if (!table) return;
+  localStorage.removeItem(TABLE_WIDTH_STORAGE_PREFIX + key);
+  applyResizableTableWidths(table, TABLE_DEFAULT_WIDTHS[key]);
+  showToast('已恢复默认列宽');
+}
+
+function initResizableTable(table) {
+  if (!table || table.dataset.resizableReady === '1') return;
+  const key = table.dataset.resizableTable;
+  const cols = Array.from(table.querySelectorAll('colgroup col'));
+  const headers = Array.from(table.querySelectorAll('thead tr:first-child th'));
+  if (!key || !cols.length || cols.length !== headers.length) return;
+  table.dataset.resizableReady = '1';
+  applyResizableTableWidths(table, readSavedTableWidths(key, cols.length) || TABLE_DEFAULT_WIDTHS[key]);
+
+  headers.forEach((header, index) => {
+    if (index === 0 || index >= headers.length - 1) return;
+    const handle = document.createElement('span');
+    handle.className = 'table-col-resizer';
+    handle.title = '拖动调整列宽';
+    handle.setAttribute('aria-hidden', 'true');
+    header.appendChild(handle);
+    handle.addEventListener('pointerdown', event => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const tableWidth = Math.max(1, table.getBoundingClientRect().width);
+      const startX = event.clientX;
+      const startWidths = headers.map(item => item.getBoundingClientRect().width);
+      const nextIndex = index + 1;
+      const minCurrent = 64;
+      const minNext = headers[nextIndex].classList.contains('col-actions') ? 108 : 64;
+      handle.classList.add('is-dragging');
+      document.body.classList.add('is-resizing-table-column');
+
+      const onMove = moveEvent => {
+        let delta = moveEvent.clientX - startX;
+        delta = Math.max(minCurrent - startWidths[index], Math.min(delta, startWidths[nextIndex] - minNext));
+        const nextWidths = [...startWidths];
+        nextWidths[index] += delta;
+        nextWidths[nextIndex] -= delta;
+        applyResizableTableWidths(table, nextWidths.map(value => value / tableWidth));
+      };
+      const onUp = () => {
+        document.removeEventListener('pointermove', onMove);
+        document.removeEventListener('pointerup', onUp);
+        document.removeEventListener('pointercancel', onUp);
+        handle.classList.remove('is-dragging');
+        document.body.classList.remove('is-resizing-table-column');
+        const finalWidth = Math.max(1, table.getBoundingClientRect().width);
+        saveTableWidths(key, headers.map(item => item.getBoundingClientRect().width / finalWidth));
+      };
+      document.addEventListener('pointermove', onMove);
+      document.addEventListener('pointerup', onUp);
+      document.addEventListener('pointercancel', onUp);
+    });
+  });
+}
+
+function initResizableTables() {
+  document.querySelectorAll('table[data-resizable-table]').forEach(initResizableTable);
+  const resetButtons = {
+    btnResetJobsColumnsV2: 'jobs',
+    btnResetAccountsColumnsV2: 'accounts',
+    btnResetCodexColumnsV2: 'codex',
+    btnResetOutlookColumnsV2: 'outlook',
+  };
+  Object.entries(resetButtons).forEach(([id, key]) => {
+    document.getElementById(id)?.addEventListener('click', () => resetResizableTable(key));
+  });
+}
+
+// ---------- 统一列表表头筛选 ----------
+const COLUMN_FILTER_RESET_IDS = {
+  jobs: 'btnResetJobFiltersV2',
+  accounts: 'btnResetAccountFiltersV2',
+  codex: 'btnResetCodexFiltersV2',
+  outlook: 'btnResetOutlookFiltersV2',
+};
+
+function columnFilterIcon(type) {
+  if (type === 'search') {
+    return `<svg class="column-filter-trigger-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="3.75"></circle><path d="m10 10 3 3"></path></svg>`;
+  }
+  if (type === 'date' || type === 'date-range') {
+    return `<svg class="column-filter-trigger-icon" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="3.5" width="11" height="10" rx="2"></rect><path d="M5 2v3M11 2v3M2.5 6.5h11"></path></svg>`;
+  }
+  return `<svg class="column-filter-trigger-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.5h11L9.3 8.3v3.4l-2.6 1.2V8.3z"></path></svg>`;
+}
+
+function columnFilterControls(header) {
+  if (!header) return [];
+  return Array.from(header.querySelectorAll('.column-filter-search input, .column-filter-native, .column-filter-date-field input'));
+}
+
+function columnFilterEmptyValue(header, control) {
+  return control?.id === header?.dataset.columnFilter ? (header.dataset.filterEmptyValue || '') : '';
+}
+
+function refreshColumnFilterState(control) {
+  const header = control?.closest?.('[data-column-filter]');
+  if (!header) return;
+  const hasValue = columnFilterControls(header).some(item => String(item.value ?? '') !== columnFilterEmptyValue(header, item));
+  header.classList.toggle('has-filter-value', hasValue);
+  if (control.matches?.('select')) renderColumnFilterOptions(control);
+  renderColumnFilterSummaryForTable(header.closest('table[data-resizable-table]'));
+}
+
+function refreshColumnFilterStates() {
+  document.querySelectorAll('[data-column-filter]').forEach(header => {
+    const control = document.getElementById(header.dataset.columnFilter);
+    if (control) refreshColumnFilterState(control);
+  });
+  document.querySelectorAll('table[data-resizable-table]').forEach(renderColumnFilterSummaryForTable);
+}
+
+function closeColumnFilterPopovers(exceptHeader = null) {
+  document.querySelectorAll('.column-filter-header.is-filter-open').forEach(header => {
+    if (header === exceptHeader) return;
+    header.classList.remove('is-filter-open');
+    header.querySelector('[data-column-filter-trigger]')?.setAttribute('aria-expanded', 'false');
+  });
+}
+
+function closeColumnFilterSearches(exceptHeader = null, restoreFocus = false) {
+  document.querySelectorAll('.column-filter-header.is-searching').forEach(header => {
+    if (header === exceptHeader) return;
+    header.classList.remove('is-searching');
+    if (restoreFocus) header.querySelector('[data-column-filter-trigger]')?.focus({preventScroll:true});
+  });
+}
+
+function positionColumnFilterPopover(header) {
+  const trigger = header?.querySelector('[data-column-filter-trigger]');
+  const popover = header?.querySelector('.column-filter-popover');
+  if (!trigger || !popover) return;
+  const rect = trigger.getBoundingClientRect();
+  const type = header.dataset.filterType || 'search';
+  const preferredWidth = type === 'date-range'
+    ? 292
+    : type === 'date'
+      ? 202
+      : Math.min(220, Math.max(148, rect.width + 42));
+  const width = Math.min(preferredWidth, Math.max(148, window.innerWidth - 20));
+  const left = Math.max(10, Math.min(rect.left, window.innerWidth - width - 10));
+  popover.style.width = `${width}px`;
+  const estimatedHeight = Math.max(48, popover.offsetHeight || 48);
+  const below = rect.bottom + 6;
+  const top = below + estimatedHeight <= window.innerHeight - 10
+    ? below
+    : Math.max(10, rect.top - estimatedHeight - 6);
+  popover.style.left = `${left}px`;
+  popover.style.top = `${top}px`;
+}
+
+function renderColumnFilterOptions(select) {
+  const header = select?.closest?.('.column-filter-header');
+  const list = header?.querySelector('[data-column-filter-options]');
+  if (!header || !list) return;
+  list.innerHTML = Array.from(select.options).map(option => `
+    <button type="button" class="column-filter-option" role="menuitemradio"
+      data-column-filter-option="${attrEsc(option.value)}" aria-checked="${option.selected ? 'true' : 'false'}">
+      <span>${esc(option.textContent || option.label || '全部')}</span>
+      <svg class="column-filter-option-check" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8.3 3.1 3L13 4.7"></path></svg>
+    </button>`).join('');
+}
+
+function columnFilterDisplayValue(header) {
+  const type = header.dataset.filterType || 'search';
+  const primary = document.getElementById(header.dataset.columnFilter);
+  if (!primary) return '';
+  if (type === 'select') {
+    const selected = primary.options?.[primary.selectedIndex];
+    return selected ? String(selected.textContent || '').replace(/\s*·\s*\d+\s*$/, '') : '';
+  }
+  if (type === 'date-range') {
+    const end = document.getElementById(header.dataset.filterEndId || '');
+    return [primary.value, end?.value].filter(Boolean).join(' → ');
+  }
+  return String(primary.value || '').trim();
+}
+
+function renderColumnFilterSummaryForTable(table) {
+  if (!table) return;
+  const scope = table.dataset.resizableTable;
+  const summary = document.querySelector(`[data-filter-summary="${scope}"]`);
+  if (!summary) return;
+  const active = Array.from(table.querySelectorAll('[data-column-filter].has-filter-value')).map(header => ({
+    id: header.dataset.columnFilter,
+    label: header.dataset.filterTitle || '',
+    value: columnFilterDisplayValue(header),
+  })).filter(item => item.value);
+  summary.hidden = active.length === 0;
+  if (!active.length) {
+    summary.innerHTML = '';
+    return;
+  }
+  summary.innerHTML = `
+    <span class="column-filter-summary-label">当前筛选</span>
+    ${active.map(item => `<button type="button" class="column-filter-chip" data-clear-filter-id="${attrEsc(item.id)}" title="清除 ${attrEsc(item.label)} 筛选"><span>${esc(item.label)}：${esc(item.value)}</span><span class="column-filter-chip-close" aria-hidden="true">×</span></button>`).join('')}
+    <button type="button" class="column-filter-summary-clear" data-clear-all-column-filters="${attrEsc(scope)}">清除全部</button>`;
+}
+
+function clearColumnFilterHeader(header, {focus=false, close=false} = {}) {
+  if (!header) return;
+  const controls = columnFilterControls(header);
+  const primary = document.getElementById(header.dataset.columnFilter);
+  controls.forEach(control => { control.value = columnFilterEmptyValue(header, control); });
+  if (primary) {
+    refreshColumnFilterState(primary);
+    const eventName = primary.matches('input[type="search"]') ? 'input' : 'change';
+    primary.dispatchEvent(new Event(eventName, {bubbles:true}));
+  }
+  if (close) {
+    closeColumnFilterPopovers();
+    closeColumnFilterSearches();
+  }
+  if (focus) primary?.focus({preventScroll:true});
+}
+
+function initColumnFilters() {
+  document.querySelectorAll('[data-column-filter]').forEach(header => {
+    if (header.dataset.columnFilterReady === '1') return;
+    const id = header.dataset.columnFilter;
+    const type = header.dataset.filterType || 'search';
+    const label = header.textContent.trim();
+    const filterLabel = header.dataset.filterLabel || `按${label}筛选`;
+    const emptyValue = header.dataset.filterEmptyValue || '';
+    const inputmode = header.dataset.filterInputmode ? ` inputmode="${attrEsc(header.dataset.filterInputmode)}"` : '';
+    const placeholder = header.dataset.filterPlaceholder ? ` placeholder="${attrEsc(header.dataset.filterPlaceholder)}"` : '';
+    const trigger = `<button type="button" class="column-filter-trigger" data-column-filter-trigger aria-expanded="false" aria-label="${attrEsc(filterLabel)}"><span class="column-filter-trigger-label">${esc(label)}</span>${columnFilterIcon(type)}</button>`;
+    header.dataset.columnFilterReady = '1';
+    header.dataset.filterTitle = label;
+    if (type === 'search') {
+      header.innerHTML = `${trigger}
+        <div class="column-filter-search" data-column-filter-search>
+          <svg class="column-filter-search-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="3.75"></circle><path d="m10 10 3 3"></path></svg>
+          <input id="${attrEsc(id)}" type="search"${inputmode}${placeholder} aria-label="${attrEsc(filterLabel)}" autocomplete="off">
+          <button type="button" class="column-filter-clear-inline" data-clear-column-filter aria-label="清空${attrEsc(label)}筛选" title="清空">×</button>
+        </div>`;
+      return;
+    }
+    if (type === 'select') {
+      header.innerHTML = `${trigger}
+        <select id="${attrEsc(id)}" class="column-filter-native" hidden tabindex="-1" aria-hidden="true"><option value="${attrEsc(emptyValue)}">全部</option></select>
+        <div class="column-filter-popover column-filter-popover--select" role="menu" aria-label="${attrEsc(filterLabel)}">
+          <div class="column-filter-options" data-column-filter-options></div>
+        </div>`;
+      header.querySelector('[data-column-filter-trigger]')?.setAttribute('aria-haspopup', 'menu');
+      renderColumnFilterOptions(document.getElementById(id));
+      return;
+    }
+    const endId = header.dataset.filterEndId || '';
+    const isRange = type === 'date-range' && endId;
+    header.innerHTML = `${trigger}
+      <div class="column-filter-popover column-filter-popover--date${isRange ? ' column-filter-popover--range' : ''}" role="dialog" aria-label="${attrEsc(filterLabel)}">
+        <label class="column-filter-date-field"><span>${isRange ? '从' : '选择日期'}</span><input id="${attrEsc(id)}" type="date" aria-label="${attrEsc(filterLabel)}${isRange ? '开始' : ''}"></label>
+        ${isRange ? `<label class="column-filter-date-field"><span>至</span><input id="${attrEsc(endId)}" type="date" aria-label="${attrEsc(filterLabel)}结束"></label>` : ''}
+        <button type="button" class="column-filter-date-clear" data-clear-column-filter>清除日期</button>
+      </div>`;
+    header.querySelector('[data-column-filter-trigger]')?.setAttribute('aria-haspopup', 'dialog');
+  });
+
+  document.addEventListener('click', event => {
+    const chip = event.target.closest('[data-clear-filter-id]');
+    if (chip) {
+      const control = document.getElementById(chip.dataset.clearFilterId || '');
+      clearColumnFilterHeader(control?.closest?.('[data-column-filter]'));
+      return;
+    }
+    const clearAll = event.target.closest('[data-clear-all-column-filters]');
+    if (clearAll) {
+      document.getElementById(COLUMN_FILTER_RESET_IDS[clearAll.dataset.clearAllColumnFilters])?.click();
+      return;
+    }
+    const trigger = event.target.closest('[data-column-filter-trigger]');
+    if (trigger) {
+      event.preventDefault();
+      event.stopPropagation();
+      document.querySelectorAll('.toolbar-overflow[open]').forEach(item => item.removeAttribute('open'));
+      closeAccountsV2MoreMenus();
+      const header = trigger.closest('.column-filter-header');
+      const type = header.dataset.filterType || 'search';
+      if (type === 'search') {
+        closeColumnFilterPopovers();
+        closeColumnFilterSearches(header);
+        header.classList.add('is-searching');
+        requestAnimationFrame(() => {
+          const input = document.getElementById(header.dataset.columnFilter);
+          input?.focus({preventScroll:true});
+          input?.select();
+        });
+        return;
+      }
+      const willOpen = !header.classList.contains('is-filter-open');
+      closeColumnFilterSearches();
+      closeColumnFilterPopovers(willOpen ? header : null);
+      header.classList.toggle('is-filter-open', willOpen);
+      trigger.setAttribute('aria-expanded', String(willOpen));
+      if (willOpen) {
+        requestAnimationFrame(() => {
+          positionColumnFilterPopover(header);
+          if (type === 'select') {
+            renderColumnFilterOptions(document.getElementById(header.dataset.columnFilter));
+            header.querySelector('.column-filter-option[aria-checked="true"], .column-filter-option')?.focus({preventScroll:true});
+          } else {
+            header.querySelector('.column-filter-date-field input')?.focus({preventScroll:true});
+          }
+        });
+      }
+      return;
+    }
+    const option = event.target.closest('[data-column-filter-option]');
+    if (option) {
+      event.preventDefault();
+      event.stopPropagation();
+      const header = option.closest('.column-filter-header');
+      const select = document.getElementById(header?.dataset.columnFilter || '');
+      if (!select) return;
+      select.value = option.dataset.columnFilterOption ?? '';
+      refreshColumnFilterState(select);
+      select.dispatchEvent(new Event('change', {bubbles:true}));
+      closeColumnFilterPopovers();
+      header.querySelector('[data-column-filter-trigger]')?.focus({preventScroll:true});
+      return;
+    }
+    const clear = event.target.closest('[data-clear-column-filter]');
+    if (clear) {
+      event.preventDefault();
+      event.stopPropagation();
+      const header = clear.closest('.column-filter-header');
+      const type = header?.dataset.filterType || 'search';
+      clearColumnFilterHeader(header, {focus:type === 'search', close:type !== 'search'});
+      return;
+    }
+    if (!event.target.closest('.column-filter-popover')) closeColumnFilterPopovers();
+    if (!event.target.closest('.column-filter-header.is-searching')) closeColumnFilterSearches();
+    if (!event.target.closest('.toolbar-overflow')) document.querySelectorAll('.toolbar-overflow[open]').forEach(item => item.removeAttribute('open'));
+    else if (event.target.closest('.toolbar-overflow-menu button')) event.target.closest('.toolbar-overflow')?.removeAttribute('open');
+  });
+  document.addEventListener('keydown', event => {
+    const search = event.target.closest?.('.column-filter-search input');
+    if (search && (event.key === 'Enter' || event.key === 'Escape')) {
+      event.preventDefault();
+      closeColumnFilterSearches(null, true);
+      return;
+    }
+    if (event.key === 'Escape' && event.target.closest?.('.column-filter-popover')) {
+      const header = event.target.closest('.column-filter-header');
+      closeColumnFilterPopovers();
+      header?.querySelector('[data-column-filter-trigger]')?.focus({preventScroll:true});
+    }
+  });
+  document.addEventListener('input', event => refreshColumnFilterState(event.target), true);
+  document.addEventListener('change', event => {
+    refreshColumnFilterState(event.target);
+    const header = event.target.closest?.('.column-filter-header');
+    if (header?.dataset.filterType === 'date') closeColumnFilterPopovers();
+  }, true);
+  window.addEventListener('resize', () => closeColumnFilterPopovers());
+  window.addEventListener('scroll', event => {
+    if (event.target?.closest?.('.column-filter-options')) return;
+    closeColumnFilterPopovers();
+    closeColumnFilterSearches();
+  }, true);
+  refreshColumnFilterStates();
+}
+
+initColumnFilters();
+
 // ---------- 工具 ----------
 function fmt(v) { return v == null || v === '' ? '-' : String(v); }
 function esc(v) { return fmt(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
@@ -3402,7 +4017,7 @@ const FEATURE_SELECTORS = {
   live_check: '#btnCheckSelectedLiveTopV2,#btnCheckSelectedLiveV2,#btnCheckSelectedLiveTop,#btnCheckSelectedLive,[data-account-live-check]',
   plan_check: '#btnCheckSelectedPlansV2,#btnCheckSelectedPlans,[data-plan-check]',
   extract_link: '#btnExtractSelectedLinksV2,#btnExtractSelectedLinks,[data-extract-link]',
-  sub2_upload: '#btnUploadSelectedCodexSub2V2,#btnUploadSelectedCodexSub2,#btnCodexUploadSub2V2,#btnCodexUploadSub2HeroV2,[data-codex-upload-sub2]',
+  sub2_upload: '#btnUploadSelectedCodexSub2V2,#btnUploadSelectedCodexSub2,#btnCodexUploadSub2V2,[data-codex-upload-sub2]',
   codex_retry: '#btnRetrySelectedCodexV2,#btnRetrySelectedCodex,[data-codex-retry]',
   cpa_download: '#btnDownloadSelectedCpaV2,#btnDownloadSelectedCpa,#btnCodexDownloadBulkCpaV2,#btnCodexDownloadBulkCpa,[data-codex-download-cpa]',
   deactivation_mail: '#btnCheckSelectedDeactivationMailV2,#btnCheckSelectedDeactivationMail,[data-account-deactivation-mail]',
@@ -3464,6 +4079,20 @@ function toggleMobileSidebar() {
   const toggle = $('#mobileNavToggle');
   if (toggle) toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
 }
+function containVerticalScroll(el) {
+  if (!el || el.dataset.scrollContained === '1') return;
+  el.dataset.scrollContained = '1';
+  el.addEventListener('wheel', event => {
+    const canScroll = el.scrollHeight > el.clientHeight + 1;
+    const atTop = el.scrollTop <= 0;
+    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+    if (!canScroll || (event.deltaY < 0 && atTop) || (event.deltaY > 0 && atBottom)) {
+      event.preventDefault();
+    }
+  }, { passive: false });
+}
+containVerticalScroll(document.querySelector('.sidebar-nav'));
+containVerticalScroll(document.querySelector('.config-nav-v2'));
 $('#mobileNavToggle')?.addEventListener('click', toggleMobileSidebar);
 $('#sidebarScrim')?.addEventListener('click', closeMobileSidebar);
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeMobileSidebar(); });
@@ -3486,10 +4115,15 @@ function activateTab(tab, persist=true) {
     if (active) x.setAttribute('aria-current', 'page');
     else x.removeAttribute('aria-current');
   });
+  $$('.sidebar-module[data-sidebar-module]').forEach(item => {
+    item.classList.toggle('is-open', item.dataset.sidebarModule === tab);
+  });
   allowed.forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== tab));
   const meta = TAB_META[tab];
+  const currentView = document.getElementById(`tab-${tab}`)?.dataset.moduleView;
+  const description = MODULE_VIEW_META[tab]?.[currentView] || meta.description;
   if ($('#topbarTitle')) $('#topbarTitle').textContent = meta.title;
-  if ($('#topbarDescription')) $('#topbarDescription').textContent = meta.description;
+  if ($('#topbarDescription')) $('#topbarDescription').textContent = description;
   document.title = `${meta.title} · Turb Console`;
   closeMobileSidebar();
   if (persist) localStorage.setItem('gpt_console_active_tab', tab);
@@ -3514,10 +4148,6 @@ const MODULE_VIEW_META = {
     active: '查询、筛选和批量维护活跃账号',
     archived: '集中查看和恢复已归档账号',
   },
-  codex: {
-    credentials: '管理 OAuth 凭证、归档与导出状态',
-    sub2: '筛选本地凭证并同步到 sub2api',
-  },
   outlook: {
     overview: '查看邮箱供给、使用情况与 Email Butler 租约',
     list: '查询、导入和批量维护邮箱素材',
@@ -3528,16 +4158,22 @@ function setModuleView(module, view) {
   if (!tab || !MODULE_VIEW_META[module]?.[view]) return;
   tab.dataset.moduleView = view;
   localStorage.setItem(`gpt_console_module_view_${module}`, view);
-  tab.querySelectorAll('.module-subnav [data-view]').forEach(btn => btn.classList.toggle('is-active', btn.dataset.view === view));
+  document.querySelectorAll(`[data-module-subnav="${module}"] [data-view]`).forEach(btn => {
+    btn.classList.toggle('is-active', btn.dataset.view === view);
+  });
   if ($('#topbarDescription')) $('#topbarDescription').textContent = MODULE_VIEW_META[module][view];
   if (module === 'accounts' && SHOW_ARCHIVED_ACCOUNTS !== (view === 'archived')) applyAccountsArchivedFilter(view === 'archived');
   if (module === 'register' && view === 'tasks') refreshJobs();
   if (module === 'codex') loadCodex();
   if (module === 'outlook') view === 'overview' ? loadMailResources() : loadOutlook();
+  closeMobileSidebar();
 }
-$$('.module-subnav').forEach(nav => nav.addEventListener('click', event => {
+$$('[data-module-subnav]').forEach(nav => nav.addEventListener('click', event => {
   const btn = event.target.closest('[data-view]');
-  if (btn) setModuleView(nav.dataset.moduleSubnav, btn.dataset.view);
+  if (!btn) return;
+  const module = nav.dataset.moduleSubnav;
+  if (document.getElementById(`tab-${module}`)?.classList.contains('hidden')) activateTab(module);
+  setModuleView(module, btn.dataset.view);
 }));
 function restoreModuleViewState() {
   Object.entries(MODULE_VIEW_META).forEach(([module, views]) => {
@@ -3546,7 +4182,9 @@ function restoreModuleViewState() {
     const tab = document.getElementById(`tab-${module}`);
     if (!tab) return;
     tab.dataset.moduleView = saved;
-    tab.querySelectorAll('.module-subnav [data-view]').forEach(btn => btn.classList.toggle('is-active', btn.dataset.view === saved));
+    document.querySelectorAll(`[data-module-subnav="${module}"] [data-view]`).forEach(btn => {
+      btn.classList.toggle('is-active', btn.dataset.view === saved);
+    });
     if (module === 'accounts') SHOW_ARCHIVED_ACCOUNTS = saved === 'archived';
   });
 }
@@ -3665,13 +4303,6 @@ async function loadRegistrationEmailSources() {
     select.innerHTML = '<option value="">请选择本次邮箱来源</option>' + REGISTRATION_EMAIL_SOURCES.map(item =>
       `<option value="${esc(item.value)}" ${item.enabled === false ? 'disabled' : ''} title="${esc(item.reason || '')}">${esc(item.label)}${item.enabled === false ? '（未配置）' : ''}</option>`
     ).join('');
-    const taskSourceFilter = $('#jobEmailSourceFilterV2');
-    if (taskSourceFilter) {
-      taskSourceFilter.innerHTML = '<option value="">全部邮箱来源</option>' + REGISTRATION_EMAIL_SOURCES.map(item =>
-        `<option value="${esc(item.value)}">${esc(item.label)}</option>`
-      ).join('');
-      taskSourceFilter.value = JOB_EMAIL_SOURCE_FILTER;
-    }
   } catch (error) {
     select.innerHTML = '<option value="">邮箱来源加载失败</option>';
     select.disabled = true;
@@ -3732,6 +4363,49 @@ async function cancelAllPendingJobs(btn) {
     const b2 = $('#btnCancelPendingV2'); if (b2) b2.disabled = false;
   }
 }
+
+function currentBatchJobs() {
+  return Array.isArray(JOB_PROGRESS_BATCH?.items) ? JOB_PROGRESS_BATCH.items : [];
+}
+
+async function batchStopJobs() {
+  const ids = currentBatchJobs().filter(job => ['running', 'stopping'].includes(String(job.status || ''))).map(job => Number(job.id));
+  if (!ids.length) { showToast('当前批次没有正在运行的任务'); return; }
+  if (!confirm('确定停止当前批次的 ' + ids.length + ' 个运行中任务吗？任务会在当前步骤检查点退出。')) return;
+  const btn = $('#btnBatchStopV2');
+  if (btn) btn.disabled = true;
+  try {
+    const results = await Promise.all(ids.map(id => api('/api/jobs/' + id + '/stop', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'})));
+    showToast('已向 ' + results.filter(item => item.ok !== false).length + ' 个任务发送停止信号');
+    refreshJobs();
+  } catch (e) { showToast('批次停止失败: ' + e.message); }
+}
+
+async function batchCancelJobs() {
+  const ids = currentBatchJobs().filter(job => String(job.status || '') === 'pending').map(job => Number(job.id));
+  if (!ids.length) { showToast('当前批次没有排队任务'); return; }
+  if (!confirm('确定取消当前批次的 ' + ids.length + ' 个排队任务吗？运行中的任务不受影响。')) return;
+  const btn = $('#btnBatchCancelV2');
+  if (btn) btn.disabled = true;
+  try {
+    const results = await Promise.all(ids.map(id => api('/api/jobs/' + id + '/stop', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'})));
+    showToast('已取消 ' + results.filter(item => item.ok !== false).length + ' 个排队任务');
+    refreshJobs();
+  } catch (e) { showToast('批次取消失败: ' + e.message); }
+}
+
+async function retryBatchFailedJobs() {
+  const ids = currentBatchJobs().filter(job => ['failed', 'stopped', 'cancelled'].includes(String(job.status || '')) && job.retryable).map(job => Number(job.id));
+  if (!ids.length) { showToast('当前批次没有可重跑的失败任务'); return; }
+  if (!confirm('确定重跑当前批次的 ' + ids.length + ' 个失败任务吗？已创建账号的任务会只补跑 Codex。')) return;
+  const btn = $('#btnBatchRetryV2');
+  if (btn) btn.disabled = true;
+  try {
+    const result = await api('/api/jobs/retry-bulk', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({job_ids: ids})});
+    showToast('已提交 ' + (result.started_count || 0) + ' 个失败任务' + (result.skipped?.length ? '，跳过 ' + result.skipped.length + ' 个' : ''));
+    refreshJobs();
+  } catch (e) { showToast('批次重跑失败: ' + e.message); }
+}
 function syncJobsSelectAll(checked) {
   const pageRows = JOBS.filter(j => !['running','stopping'].includes(j.status));
   if (checked) pageRows.forEach(j => JOB_SELECTED.add(Number(j.id)));
@@ -3791,6 +4465,9 @@ function bindJobsBodyEvents(bodyEl) {
   if (retryV2) retryV2.addEventListener('click', retrySelectedJobs);
   const cancelV2 = $('#btnCancelPendingV2');
   if (cancelV2) cancelV2.addEventListener('click', () => cancelAllPendingJobs(cancelV2));
+  $('#btnBatchStopV2')?.addEventListener('click', batchStopJobs);
+  $('#btnBatchCancelV2')?.addEventListener('click', batchCancelJobs);
+  $('#btnBatchRetryV2')?.addEventListener('click', retryBatchFailedJobs);
   const refreshV2 = $('#btnRefreshJobsV2');
   if (refreshV2) refreshV2.addEventListener('click', refreshJobs);
 
@@ -3804,7 +4481,7 @@ function bindJobsBodyEvents(bodyEl) {
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
   }
-  document.querySelectorAll('#jobsToolbarV2 [data-step-for], #accountsFilterV2 [data-step-for]').forEach((btn) => {
+  document.querySelectorAll('#jobsToolbarV2 [data-step-for], #accountsToolbarV2 [data-step-for]').forEach((btn) => {
     btn.addEventListener('click', (e) => {
       e.preventDefault();
       stepInputNumber(btn.dataset.stepFor, parseInt(btn.dataset.step, 10) || 0);
@@ -3817,6 +4494,8 @@ function bindJobsBodyEvents(bodyEl) {
   if (progressListV2) progressListV2.addEventListener('click', (e) => {
     const logBtn = e.target.closest('[data-progress-log-job]');
     if (logBtn) openLog(parseInt(logBtn.dataset.progressLogJob, 10));
+    const retryBtn = e.target.closest('[data-progress-retry-job]');
+    if (retryBtn) retryJob(parseInt(retryBtn.dataset.progressRetryJob, 10), retryBtn);
   });
 })();
 
@@ -3850,6 +4529,13 @@ function progressJobResult(job) {
   return { label: '等待中', cls: 'is-waiting' };
 }
 
+function refreshBatchProgressDurations() {
+  $$('#batchProgressListV2 [data-progress-duration-start]').forEach(el => {
+    const duration = formatProgressDuration(el.dataset.progressDurationStart, el.dataset.progressDurationEnd || '');
+    el.textContent = duration ? `${el.dataset.progressDurationPrefix || ''}${duration}` : '';
+  });
+}
+
 function renderBatchProgress() {
   const panel = $('#batchProgressV2');
   if (!panel) return;
@@ -3857,6 +4543,7 @@ function renderBatchProgress() {
   const items = batch && Array.isArray(batch.items) ? batch.items : [];
   const stages = batch && Array.isArray(batch.stages) ? batch.stages : [];
   if (!batch || !items.length || !stages.length) {
+    batchProgressRenderSignature = '';
     panel.classList.add('hidden');
     return;
   }
@@ -3884,15 +4571,32 @@ function renderBatchProgress() {
   const timeEl = $('#batchProgressTimeV2');
   if (timeEl) timeEl.textContent = batchDuration ? `批次耗时 ${batchDuration}` : '';
 
+  const runningIds = items.filter(job => ['running', 'stopping'].includes(String(job.status || ''))).map(job => Number(job.id));
+  const pendingIds = items.filter(job => String(job.status || '') === 'pending').map(job => Number(job.id));
+  const retryIds = items.filter(job => ['failed', 'stopped', 'cancelled'].includes(String(job.status || '')) && job.retryable).map(job => Number(job.id));
+  const stopBtn = $('#btnBatchStopV2');
+  const cancelBtn = $('#btnBatchCancelV2');
+  const retryBtn = $('#btnBatchRetryV2');
+  if (stopBtn) stopBtn.disabled = runningIds.length === 0;
+  if (cancelBtn) cancelBtn.disabled = pendingIds.length === 0;
+  if (retryBtn) retryBtn.disabled = retryIds.length === 0;
+
   const list = $('#batchProgressListV2');
   if (!list) return;
+  const nextRenderSignature = JSON.stringify({batch_id: batch.batch_id, stages, items});
+  if (nextRenderSignature === batchProgressRenderSignature) {
+    // 只更新计时文字，避免轮询重建 DOM 后打断失败节点的悬浮报错。
+    refreshBatchProgressDurations();
+    return;
+  }
+  batchProgressRenderSignature = nextRenderSignature;
   list.innerHTML = items.map((job, itemIndex) => {
     const steps = job.progress_steps && typeof job.progress_steps === 'object' ? job.progress_steps : {};
     const terminal = ['success', 'failed', 'cancelled', 'stopped'].includes(String(job.status || ''));
     const duration = formatProgressDuration(job.started_at || job.created_at, terminal ? job.completed_at : '');
-    const failedStep = stages.map(stage => steps[stage.key]).find(step => step && ['failed', 'stopped'].includes(step.state));
+    const failedStageIndex = stages.findIndex(stage => ['failed', 'stopped'].includes(String((steps[stage.key] || {}).state || '')));
+    const failedStep = failedStageIndex >= 0 ? (steps[stages[failedStageIndex].key] || {}) : null;
     const result = failedStep ? { label: '部分失败', cls: 'is-failed' } : progressJobResult(job);
-    const error = job.error_message || (failedStep && failedStep.detail) || '';
     const cardFailed = ['failed', 'cancelled', 'stopped'].includes(String(job.status || '')) || Boolean(failedStep);
     const stepHtml = stages.map((stage, index) => {
       const step = steps[stage.key] || {};
@@ -3905,10 +4609,13 @@ function renderBatchProgress() {
         : state === 'stopped' ? '!'
         : String(index + 1);
       const stateTitle = state === 'skipped' ? '（已跳过）' : '';
-      const detailTitle = step.detail ? ` title="${esc(step.detail)}"` : '';
+      const stageError = ['failed', 'stopped'].includes(state) ? (step.detail || job.error_message || '') : '';
+      const detailTitle = stageError ? ` title="${esc(stageError)}" aria-label="${esc(stage.label)}失败：${esc(stageError)}"` : '';
+      const stepDuration = formatProgressDuration(step.started_at, ['success', 'failed', 'skipped', 'stopped'].includes(state) ? step.completed_at : '');
+      const stepDurationEnd = ['success', 'failed', 'skipped', 'stopped'].includes(state) ? (step.completed_at || '') : '';
       return `<div class="batch-progress-v2-step is-${esc(state)}${reached ? ' is-reached' : ''}"${detailTitle}>
         <span class="batch-progress-v2-node">${symbol}</span>
-        <span class="batch-progress-v2-step-label">${esc(stage.label)}${stateTitle}</span>
+        <span class="batch-progress-v2-step-label">${esc(stage.label)}${stateTitle}${stepDuration ? `<span class="batch-progress-v2-step-duration" data-progress-duration-start="${attrEsc(step.started_at)}" data-progress-duration-end="${attrEsc(stepDurationEnd)}">${esc(stepDuration)}</span>` : ''}</span>
       </div>`;
     }).join('');
     const batchIndex = Number(job.batch_index || itemIndex + 1);
@@ -3922,15 +4629,16 @@ function renderBatchProgress() {
           <span class="sub-cell">${esc(sourceLabel)}</span>
         </div>
         <div class="batch-progress-v2-meta">
-          ${duration ? `<span>耗时 ${esc(duration)}</span>` : ''}
+          ${duration ? `<span data-progress-duration-start="${attrEsc(job.started_at || job.created_at)}" data-progress-duration-end="${attrEsc(terminal ? (job.completed_at || '') : '')}" data-progress-duration-prefix="耗时 ">耗时 ${esc(duration)}</span>` : ''}
           <span class="batch-progress-v2-result ${result.cls}">${result.label}</span>
+          ${job.retryable ? `<button type="button" class="batch-progress-v2-log" data-progress-retry-job="${esc(job.id)}" title="${esc(job.retry_label || '重跑该任务')}">重跑</button>` : ''}
           <button type="button" class="batch-progress-v2-log" data-progress-log-job="${esc(job.id)}">查看日志</button>
         </div>
       </div>
       <div class="batch-progress-v2-steps-scroll"><div class="batch-progress-v2-steps">${stepHtml}</div></div>
-      ${error ? `<div class="batch-progress-v2-error" title="${esc(error)}">${esc(short(error, 180))}</div>` : ''}
     </article>`;
   }).join('');
+  refreshBatchProgressDurations();
 }
 
 function renderJobs() {
@@ -3951,10 +4659,10 @@ function renderJobs() {
       <tr>
         <td class="col-check"><input type="checkbox" class="job-row-check" data-job-id="${esc(j.id)}" ${JOB_SELECTED.has(Number(j.id)) ? 'checked' : ''} ${running ? 'disabled title="运行中的任务不能选择"' : ''}></td>
         <td class="col-id">#${esc(j.id)}${j.parent_job_id ? `<div class="sub-cell" title="重试自任务 #${esc(j.parent_job_id)}">↳ #${esc(j.parent_job_id)} · ${esc(j.retry_attempt || 1)}</div>` : ''}</td>
-        <td class="col-status">${pillV2(j.display_status || j.status)}</td>
         <td class="col-email" title="${esc(j.email || '-')}">${esc(j.email || '-')}</td>
         <td class="col-source" title="${esc(registrationEmailSourceLabel(j.email_source))}">${esc(registrationEmailSourceLabel(j.email_source))}</td>
         <td class="col-proxy" title="${esc(proxyLabel)} · ${esc(j.proxy_status || '-')}">${esc(proxyLabel)}</td>
+        <td class="col-status">${pillV2(j.display_status || j.status)}</td>
         <td class="col-time" title="${esc(started)}">${esc(started)}</td>
         <td class="col-time" title="${esc(completed)}">${esc(completed)}</td>
         <td class="col-error" title="${esc(err)}">${esc(err ? short(err, 60) : '-')}</td>
@@ -3980,6 +4688,10 @@ function renderJobs() {
 function updateJobsSelectionUi(pageRows = null) {
   const bulkBtnV2 = $('#btnDeleteSelectedJobsV2');
   const bulkRetryBtnV2 = $('#btnRetrySelectedJobsV2');
+  const hintV2 = $('#jobsSelectedHintV2');
+  const toolbarV2 = hintV2?.closest('.list-action-toolbar');
+  toolbarV2?.classList.toggle('has-selection', JOB_SELECTED.size > 0);
+  if (hintV2) hintV2.textContent = JOB_SELECTED.size ? `已选 ${JOB_SELECTED.size} 个任务` : '选择任务后批量操作';
   if (bulkBtnV2) bulkBtnV2.disabled = JOB_SELECTED.size === 0;
   if (bulkRetryBtnV2) bulkRetryBtnV2.disabled = JOB_SELECTED.size === 0;
 
@@ -3994,37 +4706,34 @@ function updateJobsSelectionUi(pageRows = null) {
   }
 }
 
-function updateJobStatusFilters() {
-  const counts = JOB_STATUS_COUNTS || {};
-  const select = $('#jobStatusFilterV2');
-  if (!select) return;
-  const values = {
-    '': Object.entries(counts).filter(([key]) => key !== 'active').reduce((sum, [, value]) => sum + Number(value || 0), 0),
-    running: Number(counts.running || 0) + Number(counts.pending || 0) + Number(counts.stopping || 0),
-    failed: Number(counts.failed || 0),
-    partial_success: Number(counts.partial_success || 0),
-    success: Number(counts.success || 0),
-    stopped: Number(counts.stopped || 0),
-  };
-  [...select.options].forEach(option => {
-    option.textContent = `${option.dataset.label} · ${values[option.value] || 0}`;
-  });
-  select.value = JOB_STATUS_FILTER;
+function updateJobStatusFilters(facets = {}) {
+  syncFacetSelect('jobStatusColumnFilterV2', facets.status, {group:'status'});
+  syncFacetSelect('jobSourceColumnFilterV2', facets.email_source, {group:'source'});
+  const status = $('#jobStatusColumnFilterV2'); if (status) status.value = JOB_STATUS_FILTER;
+  const source = $('#jobSourceColumnFilterV2'); if (source) source.value = JOB_EMAIL_SOURCE_FILTER;
+  if (status) refreshColumnFilterState(status);
+  if (source) refreshColumnFilterState(source);
 }
-$('#jobStatusFilterV2')?.addEventListener('change', event => {
+$('#jobStatusColumnFilterV2')?.addEventListener('change', event => {
   JOB_STATUS_FILTER = event.target.value || '';
   PAGERS.jobs.page = 1;
   JOB_SELECTED.clear();
   jobsRenderSignature = '';
   refreshJobs();
 });
-$('#qJobsV2')?.addEventListener('input', debounce(event => {
-  JOB_QUERY = event.target.value.trim();
+[
+  ['jobIdFilterV2', value => { JOB_ID_FILTER = value; }],
+  ['jobEmailFilterV2', value => { JOB_EMAIL_FILTER = value; }],
+  ['jobProxyFilterV2', value => { JOB_PROXY_FILTER = value; }],
+  ['jobErrorFilterV2', value => { JOB_ERROR_FILTER = value; }],
+].forEach(([id, assign]) => document.getElementById(id)?.addEventListener('input', debounce(event => {
+  assign(event.target.value.trim());
   PAGERS.jobs.page = 1;
   JOB_SELECTED.clear();
+  refreshColumnFilterStates();
   refreshJobs();
-}, 250));
-$('#jobEmailSourceFilterV2')?.addEventListener('change', event => {
+}, 250)));
+$('#jobSourceColumnFilterV2')?.addEventListener('change', event => {
   JOB_EMAIL_SOURCE_FILTER = event.target.value || '';
   PAGERS.jobs.page = 1;
   JOB_SELECTED.clear();
@@ -4038,23 +4747,25 @@ $('#jobEmailSourceFilterV2')?.addEventListener('change', event => {
   refreshJobs();
 }));
 $('#btnResetJobFiltersV2')?.addEventListener('click', () => {
-  JOB_QUERY = ''; JOB_EMAIL_SOURCE_FILTER = ''; JOB_DATE_FROM = ''; JOB_DATE_TO = ''; JOB_STATUS_FILTER = '';
-  ['qJobsV2', 'jobEmailSourceFilterV2', 'jobDateFromV2', 'jobDateToV2', 'jobStatusFilterV2'].forEach(id => {
+  JOB_ID_FILTER = ''; JOB_EMAIL_FILTER = ''; JOB_EMAIL_SOURCE_FILTER = ''; JOB_PROXY_FILTER = ''; JOB_ERROR_FILTER = '';
+  JOB_DATE_FROM = ''; JOB_DATE_TO = ''; JOB_STATUS_FILTER = '';
+  ['jobIdFilterV2', 'jobEmailFilterV2', 'jobSourceColumnFilterV2', 'jobProxyFilterV2', 'jobStatusColumnFilterV2', 'jobDateFromV2', 'jobDateToV2', 'jobErrorFilterV2'].forEach(id => {
     const el = document.getElementById(id); if (el) el.value = '';
   });
   PAGERS.jobs.page = 1;
   JOB_SELECTED.clear();
+  refreshColumnFilterStates();
   refreshJobs();
 });
 
 async function refreshJobs() {
   try {
     const p = PAGERS.jobs;
-    const res = await api(`/api/jobs?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&status=${encodeURIComponent(JOB_STATUS_FILTER)}&q=${encodeURIComponent(JOB_QUERY)}&email_source=${encodeURIComponent(JOB_EMAIL_SOURCE_FILTER)}&date_from=${encodeURIComponent(JOB_DATE_FROM)}&date_to=${encodeURIComponent(JOB_DATE_TO)}`);
+    const res = await api(`/api/jobs?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&status=${encodeURIComponent(JOB_STATUS_FILTER)}&id=${encodeURIComponent(JOB_ID_FILTER)}&email=${encodeURIComponent(JOB_EMAIL_FILTER)}&email_source=${encodeURIComponent(JOB_EMAIL_SOURCE_FILTER)}&proxy=${encodeURIComponent(JOB_PROXY_FILTER)}&error=${encodeURIComponent(JOB_ERROR_FILTER)}&date_from=${encodeURIComponent(JOB_DATE_FROM)}&date_to=${encodeURIComponent(JOB_DATE_TO)}`);
     const nextJobs = res.items || [];
     JOBS_TOTAL = Number(res.total || nextJobs.length || 0);
     JOB_STATUS_COUNTS = res.status_counts || {};
-    updateJobStatusFilters();
+    updateJobStatusFilters(res.facets || {});
     JOB_PROGRESS_BATCH = res.progress_batch || null;
     const totalPages = Math.max(1, Math.ceil(JOBS_TOTAL / p.size));
     if (p.page > totalPages) { p.page = totalPages; return refreshJobs(); }
@@ -4209,7 +4920,8 @@ async function deleteSelectedJobs() {
 }
 
 async function retryJob(jobId, btn) {
-  const job = JOBS.find(j => Number(j.id) === Number(jobId));
+  const job = JOBS.find(j => Number(j.id) === Number(jobId))
+    || currentBatchJobs().find(j => Number(j.id) === Number(jobId));
   if (!job || !job.retryable) { showToast('该任务当前不可重试'); return; }
   const actionText = job.retry_action === 'codex' ? '仅补跑 Codex 授权' : '创建新的完整注册任务';
   if (!confirm(`确定${job.retry_label || '重试'}任务 #${jobId}？\n\n${actionText}\n原任务记录和日志会保留。`)) return;
@@ -4276,34 +4988,74 @@ async function pollLog() {
 
 // ---------- 账号 ----------
 let accountsLoading = false;
+let accountsReloadQueued = false;
 let planStatusLoading = false;
 let planStatusRevision = '';
+let ACCOUNT_BATCH_WORKERS = 3;
 function getAccountsQuery() {
   const el = document.getElementById('qAccountsV2');
   return (el ? el.value : '').trim();
 }
 function getCodexBulkWorkers() {
-  const el = document.getElementById('codexBulkWorkersV2');
-  return Math.max(1, Math.min(16, Number((el && el.value) || 3)));
+  const configured = CONFIG.find(item => item.key === 'ACCOUNT_BATCH_WORKERS');
+  return Math.max(1, Math.min(16, Number(configured?.value ?? ACCOUNT_BATCH_WORKERS) || 3));
+}
+async function loadRuntimeUiSettings() {
+  try {
+    const items = await api('/api/config');
+    if (Array.isArray(items)) {
+      CONFIG = items;
+      const field = items.find(item => item.key === 'ACCOUNT_BATCH_WORKERS');
+      ACCOUNT_BATCH_WORKERS = Math.max(1, Math.min(16, Number(field?.value) || 3));
+    }
+  } catch(e) {}
 }
 async function loadAccounts() {
-  if (accountsLoading) return;
+  if (accountsLoading) {
+    accountsReloadQueued = true;
+    return;
+  }
   accountsLoading = true;
+  accountsReloadQueued = false;
   try {
     const archived = SHOW_ARCHIVED_ACCOUNTS ? 'only' : '0';
-    const plan = SHOW_PLUS_ACCOUNTS_ONLY ? 'plus' : '';
+    const plan = document.getElementById('accountPlanFilterV2')?.value || (SHOW_PLUS_ACCOUNTS_ONLY ? 'plus' : '');
     const q = getAccountsQuery();
     const dateFrom = document.getElementById('dateFromAccountsV2')?.value || '';
     const dateTo = document.getElementById('dateToAccountsV2')?.value || '';
     const p = PAGERS.accounts;
-    const res = await api(`/api/accounts?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&archived=${encodeURIComponent(archived)}&plan=${encodeURIComponent(plan)}&q=${encodeURIComponent(q)}&date_from=${encodeURIComponent(dateFrom)}&date_to=${encodeURIComponent(dateTo)}`);
+    const params = new URLSearchParams({paged:'1', page:String(p.page), page_size:String(p.size), archived, plan, email:q, date_from:dateFrom, date_to:dateTo});
+    const accountFilters = {
+      id: 'accountIdFilterV2', source: 'accountSourceFilterV2', token: 'accountTokenFilterV2',
+      password: 'accountPasswordFilterV2', note: 'accountNoteFilterV2', totp: 'accountTotpFilterV2', risk: 'accountRiskFilterV2', codex: 'accountCodexFilterV2',
+    };
+    Object.entries(accountFilters).forEach(([key, id]) => params.set(key, document.getElementById(id)?.value || ''));
+    const res = await api(`/api/accounts?${params.toString()}`);
+    const facets = res.facets || {};
+    syncFacetSelect('accountSourceFilterV2', facets.source, {group:'source'});
+    syncFacetSelect('accountTokenFilterV2', facets.token, {group:'token'});
+    syncFacetSelect('accountPasswordFilterV2', facets.password, {group:'password'});
+    syncFacetSelect('accountPlanFilterV2', facets.plan, {group:'plan'});
+    syncFacetSelect('accountTotpFilterV2', facets.totp, {group:'totp'});
+    syncFacetSelect('accountRiskFilterV2', facets.risk, {group:'risk'});
+    syncFacetSelect('accountCodexFilterV2', facets.codex, {group:'codex'});
     ACCOUNTS = res.items || [];
     ACCOUNTS_TOTAL = Number(res.total || ACCOUNTS.length || 0);
     const totalPages = Math.max(1, Math.ceil(ACCOUNTS_TOTAL / p.size));
-    if (p.page > totalPages) { p.page = totalPages; accountsLoading = false; return loadAccounts(); }
+    if (p.page > totalPages) {
+      p.page = totalPages;
+      accountsReloadQueued = true;
+      return;
+    }
     renderAccounts();
   } catch(e) { showToast('加载账号失败: ' + e.message); }
-  finally { accountsLoading = false; }
+  finally {
+    accountsLoading = false;
+    if (accountsReloadQueued) {
+      accountsReloadQueued = false;
+      void loadAccounts();
+    }
+  }
 }
 async function pollAccountPlanStatuses() {
   if (planStatusLoading || accountsLoading) return;
@@ -4530,6 +5282,10 @@ function _tokenCellV2(r) {
   }
   return `<span class="pill status-failed">无Token</span>${liveHtml}`;
 }
+function _passwordCellV2(r) {
+  if (!r.has_registration_password) return '<span class="acc-v2-muted">未设置</span>';
+  return `<button type="button" class="acc-v2-token-copy" data-account-copy-secret="registration_password" data-account-id="${esc(r.id)}" title="复制该账号的随机登录密码">复制</button>`;
+}
 function _deactivationMailCell(r) {
   const detected = r.deactivation_mail_detected === true;
   const status = r.deactivation_mail_scan_status || '';
@@ -4565,6 +5321,7 @@ function _deactivationMailCell(r) {
 function _accountsV2MoreMenu(r) {
   const parts = [
     `<button type="button" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button>`,
+    r.has_registration_password ? `<button type="button" data-account-copy-secret="registration_password" data-account-id="${esc(r.id)}">复制登录密码</button>` : '',
     `<button type="button" data-account-note="${esc(r.id)}" title="设置/清空该账号备注">备注</button>`,
     `<button type="button" onclick="checkSelectedLive([Number('${esc(r.id)}')], this); return false;" title="重新登录该账号，成功则刷新最新 AT/accessToken">查活刷新AT</button>`,
     `<button type="button" data-account-live-log="${esc(r.email)}" title="查看该账号最近一次查活日志">查活日志</button>`,
@@ -4611,6 +5368,7 @@ function renderAccounts() {
       </td>
       <td class="col-source">${esc(r.email_source || '-')}</td>
       <td class="col-token">${_tokenCellV2(r)}</td>
+      <td class="col-small">${_passwordCellV2(r)}</td>
       <td class="col-plan">${_planCell(r)}<div class="acc-v2-sub">${_extractLinkCell(r)}</div></td>
       <td class="col-note" title="${esc(r.note || '')}">${r.note ? esc(short(r.note, 80)) : '<span class="acc-v2-muted">-</span>'}</td>
       <td class="col-small">${r.totp_enabled ? '已启用' : '<span class="acc-v2-muted">未启用</span>'}</td>
@@ -4630,7 +5388,7 @@ function renderAccounts() {
 
   const bodyV2 = $('#accountsBodyV2');
   if (bodyV2) {
-    bodyV2.innerHTML = rows.map(rowHtmlV2).join('') || '<tr><td colspan="12" style="text-align:center;color:#909399;padding:28px;">暂无账号</td></tr>';
+    bodyV2.innerHTML = rows.map(rowHtmlV2).join('') || '<tr><td colspan="13" style="text-align:center;color:#909399;padding:28px;">暂无账号</td></tr>';
   }
   updateAccountSelectionUi(rows);
   _renderPager('accounts', total);
@@ -4639,14 +5397,17 @@ function renderAccounts() {
 function updateAccountSelectionUi(pageRows = null) {
   const none = ACCOUNT_SELECTED.size === 0;
   const hintV2 = $('#accountsSelectedHintV2');
-  if (hintV2) hintV2.textContent = `已选 ${ACCOUNT_SELECTED.size}`;
+  const toolbarV2 = $('#accountsToolbarV2');
+  toolbarV2?.classList.toggle('has-selection', !none);
+  if (hintV2) hintV2.textContent = none ? '选择账号后批量操作' : `已选 ${ACCOUNT_SELECTED.size} 个账号`;
 
   const archiveLabel = SHOW_ARCHIVED_ACCOUNTS ? '恢复选中' : '归档选中';
   const archiveTitle = SHOW_ARCHIVED_ACCOUNTS ? '把选中的归档账号恢复到默认账号列表' : '归档选中的账号；默认账号列表将不再查询/显示这些账号';
   const v2Ids = [
-    'btnCheckSelectedPlansV2', 'btnCheckSelectedDeactivationMailV2', 'btnExtractSelectedLinksV2',
+    'btnCheckSelectedLiveV2', 'btnCheckSelectedPlansV2', 'btnCheckSelectedDeactivationMailV2', 'btnExtractSelectedLinksV2',
     'btnUploadSelectedCodexSub2V2', 'btnRetrySelectedCodexV2', 'btnDownloadSelectedCpaV2', 'btnStopSelectedCodexV2',
     'btnNoteSelectedAccountsV2', 'btnCopySelectedLinesV2', 'btnCopySelectedEmailsV2',
+    'btnCopySelectedPasswordsV2',
     'btnDownloadSelectedTxtV2', 'btnArchiveSelectedAccountsV2', 'btnDeleteSelectedAccountsV2',
   ];
   v2Ids.forEach(id => {
@@ -4759,7 +5520,7 @@ async function onAccountsBodyClick(e) {
       const value = await fetchOneAccountSecret(id, field);
       if (!value) { showToast('可复制内容为空'); return; }
       copyText(value);
-      showToast(field === 'access_token' ? 'Token 已复制' : '账号整行已复制');
+      showToast(field === 'access_token' ? 'Token 已复制' : (field === 'registration_password' ? '随机登录密码已复制' : '账号整行已复制'));
     } catch(err) {
       showToast('复制失败: ' + err.message);
     } finally {
@@ -4956,30 +5717,29 @@ async function refreshAccountsList(btn) {
   }
 }
 (function bindAccountsFilterV2() {
-  const qV2 = $('#qAccountsV2');
-  if (qV2) qV2.addEventListener('input', debounce(() => {
+  const reload = debounce(() => {
     ACCOUNT_SELECTED.clear();
     PAGERS.accounts.page = 1;
     loadAccounts();
-  }, 250));
+  }, 250);
+  ['accountIdFilterV2','qAccountsV2','accountNoteFilterV2'].forEach(id => {
+    document.getElementById(id)?.addEventListener('input', reload);
+  });
+  ['accountSourceFilterV2','accountTokenFilterV2','accountPasswordFilterV2','accountPlanFilterV2','accountTotpFilterV2','accountRiskFilterV2','accountCodexFilterV2','dateFromAccountsV2','dateToAccountsV2'].forEach(id => {
+    document.getElementById(id)?.addEventListener('change', reload);
+  });
 
   const archivedV2 = $('#showArchivedAccountsV2');
   if (archivedV2) archivedV2.addEventListener('click', () => {
     applyAccountsArchivedFilter(!SHOW_ARCHIVED_ACCOUNTS);
   });
-  const plusV2 = $('#showPlusAccountsOnlyV2');
-  if (plusV2) plusV2.addEventListener('click', () => {
-    applyAccountsPlusFilter(!SHOW_PLUS_ACCOUNTS_ONLY);
-  });
   const refreshV2 = $('#btnRefreshAccountsV2');
   if (refreshV2) refreshV2.addEventListener('click', () => refreshAccountsList(refreshV2));
-
-  bindDateFilterPanel({
-    btnId: 'btnDateFilterAccountsV2',
-    panelId: 'dateFilterPanelAccountsV2',
-    fromId: 'dateFromAccountsV2',
-    toId: 'dateToAccountsV2',
-    onApply: () => { ACCOUNT_SELECTED.clear(); PAGERS.accounts.page = 1; loadAccounts(); },
+  $('#btnResetAccountFiltersV2')?.addEventListener('click', () => {
+    ['accountIdFilterV2','qAccountsV2','accountSourceFilterV2','accountTokenFilterV2','accountPasswordFilterV2','accountPlanFilterV2','accountNoteFilterV2','accountTotpFilterV2','accountRiskFilterV2','accountCodexFilterV2','dateFromAccountsV2','dateToAccountsV2'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.value = '';
+    });
+    ACCOUNT_SELECTED.clear(); PAGERS.accounts.page = 1; refreshColumnFilterStates(); loadAccounts();
   });
 })();
 
@@ -5007,6 +5767,17 @@ async function copySelectedAccountLines() {
     copyText(lines.join('\n'));
     showToast(`已复制 ${lines.length} 行`);
   } catch(err) { showToast('复制失败: ' + err.message); }
+}
+
+async function copySelectedAccountPasswords() {
+  const ids = Array.from(ACCOUNT_SELECTED).map(Number);
+  if (!ids.length) { showToast('请先选择账号'); return; }
+  try {
+    const lines = await fetchAccountSecrets(ids, 'registration_password_line');
+    if (!lines.length) { showToast('选中账号均未设置登录密码'); return; }
+    copyText(lines.join('\n'));
+    showToast(`已复制 ${lines.length} 个随机登录密码；未设置密码的账号已跳过`);
+  } catch(err) { showToast('复制密码失败: ' + err.message); }
 }
 
 function bindDateFilterPanel({ btnId, panelId, fromId, toId, onApply }) {
@@ -5607,8 +6378,6 @@ async function retrySelectedCodex() {
   const ids = Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
   const workers = getCodexBulkWorkers();
-  const workersElV2 = $('#codexBulkWorkersV2');
-  if (workersElV2) workersElV2.value = workers;
   const selectedAccounts = ids.map(id => ACCOUNTS.find(a => Number(a.id) === Number(id))).filter(Boolean);
   const retryingCount = selectedAccounts.filter(a => (a.codex_status || '') === 'retrying').length;
   const deactivatedCount = selectedAccounts.filter(a => (a.codex_status || '') === 'deactivated').length;
@@ -5678,6 +6447,7 @@ async function copySelectedAccountTokens() {
   bind('btnNoteSelectedAccountsV2', noteSelectedAccounts);
   bind('btnCopySelectedLinesV2', copySelectedAccountLines);
   bind('btnCopySelectedEmailsV2', copySelectedAccountEmails);
+  bind('btnCopySelectedPasswordsV2', copySelectedAccountPasswords);
   bind('btnCopyAllTokensV2', copyCurrentPageTokens);
   bind('btnCopyAllLinesV2', copyCurrentPageLines);
   bind('btnDownloadSelectedTxtV2', downloadSelectedAccountTxt);
@@ -5772,7 +6542,16 @@ async function loadOutlook() {
     const source = getPoolSource();
     const q = getOutlookQuery();
     const p = PAGERS.outlook;
-    const res = await api(`/api/outlook?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&source=${encodeURIComponent(source)}&q=${encodeURIComponent(q)}`);
+    const params = new URLSearchParams({paged:'1', page:String(p.page), page_size:String(p.size), source, q});
+    params.set('status', document.getElementById('outlookStatusFilterV2')?.value || '');
+    params.set('token', document.getElementById('outlookTokenFilterV2')?.value || '');
+    params.set('imported_date', document.getElementById('outlookImportedFilterV2')?.value || '');
+    params.set('used_date', document.getElementById('outlookUsedFilterV2')?.value || '');
+    const res = await api(`/api/outlook?${params.toString()}`);
+    const facets = res.facets || {};
+    syncFacetSelect('poolSourceV2', facets.source, {group:'source', allValue:'all'});
+    syncFacetSelect('outlookStatusFilterV2', facets.status, {group:'status'});
+    syncFacetSelect('outlookTokenFilterV2', facets.token, {group:'token'});
     OUTLOOK = res.items || [];
     OUTLOOK_TOTAL = Number(res.total || OUTLOOK.length || 0);
     const totalPages = Math.max(1, Math.ceil(OUTLOOK_TOTAL / p.size));
@@ -5855,6 +6634,9 @@ function renderOutlook() {
 }
 function updateOutlookSelectionUi(pageRows = null) {
   const none = OUTLOOK_SELECTED.size === 0;
+  const hintV2 = document.getElementById('outlookSelectedHintV2');
+  document.getElementById('outlookToolbarV2')?.classList.toggle('has-selection', !none);
+  if (hintV2) hintV2.textContent = none ? '选择邮箱后批量操作' : `已选 ${OUTLOOK_SELECTED.size} 个邮箱`;
   [
     'btnDeleteSelectedOutlookV2',
     'btnMarkSelectedOutlookAvailableV2',
@@ -5966,6 +6748,10 @@ async function onOutlookBodyClick(e) {
       if (btn) btn.setAttribute('aria-expanded', 'false');
     });
   }
+  if (srcHidden && !srcWrap) srcHidden.addEventListener('change', () => onPoolSourceChange(srcHidden));
+  ['outlookStatusFilterV2','outlookTokenFilterV2','outlookImportedFilterV2','outlookUsedFilterV2'].forEach(id => {
+    document.getElementById(id)?.addEventListener('change', () => { PAGERS.outlook.page = 1; OUTLOOK_SELECTED.clear(); loadOutlook(); });
+  });
   const selectAllV2 = $('#outlookSelectAllV2');
   if (selectAllV2) selectAllV2.addEventListener('change', (e) => syncOutlookSelectAll(e.target.checked));
   const bodyV2 = $('#outlookBodyV2');
@@ -5980,6 +6766,11 @@ async function onOutlookBodyClick(e) {
   bind('btnDeleteSelectedOutlookV2', deleteSelectedOutlook);
   bind('btnImportOutlookV2', openOutlookImportModal);
   bind('copyAllEmailsV2', () => copyText(OUTLOOK.map(r=>r.copy_line).filter(Boolean).join('\n')));
+  bind('btnRefreshOutlookV2', loadOutlook);
+  bind('btnResetOutlookFiltersV2', () => {
+    ['qOutlookV2','outlookStatusFilterV2','outlookTokenFilterV2','outlookImportedFilterV2','outlookUsedFilterV2'].forEach(id => { const el=document.getElementById(id); if (el) el.value=''; });
+    setPoolSourceV2('all'); OUTLOOK_SELECTED.clear(); PAGERS.outlook.page = 1; refreshColumnFilterStates(); loadOutlook();
+  });
   document.addEventListener('click', (e) => {
     if (e.target.closest('.outlook-table-v2 .acc-v2-more')) return;
     closeOutlookV2MoreMenus();
@@ -6164,33 +6955,41 @@ async function loadCodex() {
   try {
     const p = PAGERS.codex;
     const q = getCodexQuery();
+    const status = document.getElementById('codexStatusFilterV2')?.value || '';
+    CODEX_SHOW_ARCHIVED = status === 'archived';
     const archived = CODEX_SHOW_ARCHIVED ? 'only' : '0';
     const dateFrom = document.getElementById('dateFromCodexV2')?.value || '';
     const dateTo = document.getElementById('dateToCodexV2')?.value || '';
-    const r = await api(`/api/codex?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&q=${encodeURIComponent(q)}&archived=${encodeURIComponent(archived)}&date_from=${encodeURIComponent(dateFrom)}&date_to=${encodeURIComponent(dateTo)}`);
+    const params = new URLSearchParams({paged:'1', page:String(p.page), page_size:String(p.size), q, archived, date_from:dateFrom, date_to:dateTo});
+    params.set('plan', document.getElementById('codexPlanFilterV2')?.value || '');
+    params.set('status', status === 'archived' ? '' : status);
+    params.set('account_id', document.getElementById('codexAccountFilterV2')?.value || '');
+    params.set('expired_date', document.getElementById('codexExpiredFilterV2')?.value || '');
+    const r = await api(`/api/codex?${params.toString()}`);
+    const facets = r.facets || {};
+    syncFacetSelect('codexPlanFilterV2', facets.plan, {group:'plan'});
+    syncFacetSelect('codexStatusFilterV2', facets.status, {group:'status', allLabel:'未归档'});
     CODEX = r.accounts || [];
     CODEX_TOTAL = Number(r.total || CODEX.length || 0);
     const totalPages = Math.max(1, Math.ceil(CODEX_TOTAL / p.size));
     if (p.page > totalPages) { p.page = totalPages; return loadCodex(); }
     const st = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-    st('codexStatTotalV2', r.summary?.total ?? 0);
-    st('codexStatExportedV2', r.summary?.exported ?? 0);
-    st('codexStatPendingV2', r.summary?.pending ?? 0);
     renderCodex();
   } catch(e) { showToast('加载 Codex 列表失败: ' + e.message); }
 }
 const CODEX_SELECTED = new Set();
 function _codexUpdateSelectedHint() {
   const none = CODEX_SELECTED.size === 0;
-  const syncCount = document.getElementById('codexSyncSelectedV2');
-  if (syncCount) syncCount.textContent = String(CODEX_SELECTED.size);
+  const hint = document.getElementById('codexSelectedHintV2');
+  document.getElementById('codexToolbarV2')?.classList.toggle('has-selection', !none);
+  if (hint) hint.textContent = none ? '选择凭证后批量操作' : `已选 ${CODEX_SELECTED.size} 个凭证`;
   const archiveBtn = document.getElementById('btnCodexArchiveBulkV2');
   if (archiveBtn) {
     archiveBtn.disabled = none;
     archiveBtn.textContent = CODEX_SHOW_ARCHIVED ? '恢复选中' : '归档选中';
     archiveBtn.title = CODEX_SHOW_ARCHIVED ? '把选中的归档凭证恢复到默认列表' : '归档选中的 Codex 授权凭证；默认列表不再显示';
   }
-  ['btnCodexDownloadBulkV2', 'btnCodexDownloadBulkCpaV2', 'btnCodexDeleteBulkV2', 'btnCodexUploadSub2V2', 'btnCodexUploadSub2HeroV2'].forEach(id => {
+  ['btnCodexDownloadBulkV2', 'btnCodexDownloadBulkCpaV2', 'btnCodexDeleteBulkV2', 'btnCodexUploadSub2V2'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.disabled = none;
   });
@@ -6491,7 +7290,7 @@ async function codexUploadSub2(filenames = null) {
   const selected = Array.isArray(filenames) ? filenames.filter(Boolean) : Array.from(CODEX_SELECTED);
   if (!selected.length) return;
   if (!confirm(`把选中的 ${selected.length} 个 Codex OAuth 凭证上传到 sub2api？\n\n同名账号将按 sub2api 的导入策略更新。`)) return;
-  ['btnCodexUploadSub2V2', 'btnCodexUploadSub2HeroV2'].forEach(id => {
+  ['btnCodexUploadSub2V2'].forEach(id => {
     const btn = document.getElementById(id); if (btn) btn.disabled = true;
   });
   try {
@@ -6535,6 +7334,11 @@ async function codexDeleteBulk() {
   if (qV2) qV2.addEventListener('input', debounce(() => {
     PAGERS.codex.page = 1; loadCodex();
   }, 250));
+  const codexTextReload = debounce(() => { PAGERS.codex.page = 1; loadCodex(); }, 250);
+  $('#codexAccountFilterV2')?.addEventListener('input', codexTextReload);
+  ['codexPlanFilterV2','codexStatusFilterV2','dateFromCodexV2','dateToCodexV2','codexExpiredFilterV2'].forEach(id => {
+    document.getElementById(id)?.addEventListener('change', () => { CODEX_SELECTED.clear(); PAGERS.codex.page = 1; loadCodex(); });
+  });
   const selectAllV2 = $('#codexSelectAllV2');
   if (selectAllV2) selectAllV2.addEventListener('change', (e) => syncCodexSelectAll(e.target.checked));
   const bodyV2 = $('#codexBodyV2');
@@ -6544,22 +7348,16 @@ async function codexDeleteBulk() {
   }
   const refreshV2 = $('#btnRefreshCodexV2');
   if (refreshV2) refreshV2.addEventListener('click', loadCodex);
-  const archivedV2 = $('#showArchivedCodexV2');
-  if (archivedV2) archivedV2.addEventListener('click', () => applyCodexArchivedFilter(!CODEX_SHOW_ARCHIVED));
-  bindDateFilterPanel({
-    btnId: 'btnDateFilterCodexV2',
-    panelId: 'dateFilterPanelCodexV2',
-    fromId: 'dateFromCodexV2',
-    toId: 'dateToCodexV2',
-    onApply: () => { PAGERS.codex.page = 1; loadCodex(); },
-  });
   const bind = (id, fn) => { const el = document.getElementById(id); if (el) el.addEventListener('click', fn); };
   bind('btnCodexDownloadBulkV2', codexDownloadBulkLocal);
   bind('btnCodexDownloadBulkCpaV2', codexDownloadBulkCpa);
   bind('btnCodexUploadSub2V2', () => codexUploadSub2());
-  bind('btnCodexUploadSub2HeroV2', () => codexUploadSub2());
   bind('btnCodexArchiveBulkV2', codexArchiveSelected);
   bind('btnCodexDeleteBulkV2', codexDeleteBulk);
+  bind('btnResetCodexFiltersV2', () => {
+    ['qCodexV2','codexPlanFilterV2','codexStatusFilterV2','codexAccountFilterV2','dateFromCodexV2','dateToCodexV2','codexExpiredFilterV2'].forEach(id => { const el=document.getElementById(id); if (el) el.value=''; });
+    CODEX_SHOW_ARCHIVED = false; CODEX_SELECTED.clear(); PAGERS.codex.page = 1; refreshColumnFilterStates(); loadCodex();
+  });
   document.addEventListener('click', (e) => {
     if (e.target.closest('.codex-table-v2 .acc-v2-more')) return;
     closeCodexV2MoreMenus();
@@ -6878,7 +7676,10 @@ function renderFeatureSwitchField(f, opts = {}) {
 function renderConfigPlainFieldV2(f) {
   const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
   let control = '';
-  if (f.key === 'REGISTRATION_PROXY_MODE') {
+  if (f.key === 'REGISTRATION_AUTH_MODE') {
+    const options = [['otp','邮箱一次性验证码（推荐）'],['password','设置账号密码']];
+    control = `<select data-key="${attrEsc(f.key)}">${options.map(([v,l]) => `<option value="${v}"${String(fv)===v?' selected':''}>${l}</option>`).join('')}</select>`;
+  } else if (f.key === 'REGISTRATION_PROXY_MODE') {
     const options = [['pool','静态代理池'],['1024','1024Proxy 平台 API'],['none','直连']];
     control = `<select data-key="${attrEsc(f.key)}">${options.map(([v,l]) => `<option value="${v}"${String(fv)===v?' selected':''}>${l} (${v})</option>`).join('')}</select>`;
   } else if (f.key === 'PROXY_1024_REGION') {
@@ -7345,12 +8146,14 @@ function renderConfigSectionV2(name, fields) {
     `;
   }
   if (name === '注册方式') {
-    const field = fields.find(f => f.key === 'REGISTRATION_DRIVER') || fields[0];
+    const driver = fields.find(f => f.key === 'REGISTRATION_DRIVER');
+    const otherFields = fields.filter(f => f.key !== 'REGISTRATION_DRIVER');
     return `
       <section class="config-section-v2" id="${esc(slug)}" data-config-section="${esc(name)}">
         ${renderConfigSectionHead(name, configSectionIntro(name))}
-        <div class="config-section-v2-body config-section-v2-body--single">
-          ${field ? renderRegistrationDriverField(field) : '<div class="banner warn">未找到注册方式配置项</div>'}
+        <div class="config-section-v2-body${otherFields.length ? '' : ' config-section-v2-body--single'}">
+          ${driver ? renderRegistrationDriverField(driver) : '<div class="banner warn">未找到注册方式配置项</div>'}
+          ${otherFields.map(renderConfigPlainFieldV2).join('')}
         </div>
         <div class="config-section-v2-actions">
           <button type="button" class="btn primary" data-save-config-v2>保存</button>
@@ -7635,6 +8438,8 @@ document.addEventListener('click', (e) => {
 });
 
 // ---------- 初始化 ----------
+initResizableTables();
+loadRuntimeUiSettings();
 loadSummary();
 loadCapabilities();
 restoreModuleViewState();

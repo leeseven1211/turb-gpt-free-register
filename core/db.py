@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-本地文件持久化层。
+业务数据持久化层。
+
+配置 DATABASE_URL 后以 PostgreSQL 为主存储；现有 JSON/TXT 继续作为兼容导出。
 
 根目录文件分工：
     - 用于注册的邮箱.txt      仅保留可继续注册的邮箱素材
@@ -11,6 +13,7 @@
 """
 import hashlib
 import json
+import logging
 import sqlite3
 import threading
 import uuid
@@ -18,6 +21,8 @@ from datetime import datetime
 from html import escape
 from pathlib import Path
 from typing import Any
+
+from core import postgres_store
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DATA_DIR = _PROJECT_ROOT
@@ -39,6 +44,7 @@ _CODEX_DIR = _PROJECT_ROOT / "codex_accounts"
 # 导出状态单独存：{ "codex-邮箱-plan.json": {"exported_at": "...", "exported_count": N} }
 # 不污染 CPA 兼容的原文件
 _CODEX_EXPORT_STATE = _PROJECT_ROOT / "codex_导出状态.json"
+_CODEX_CREDENTIALS_COLLECTION = "codex_credentials"
 
 _LEGACY_SQLITE = _LEGACY_DATA_DIR / "registrations.db"
 _LEGACY_OUTLOOK_JSON = _LEGACY_DATA_DIR / "outlook_accounts.json"
@@ -71,22 +77,45 @@ def _ensure_storage() -> None:
 
 def _read_json(path: Path, default: Any) -> Any:
     _ensure_storage()
+    collection = _collection_name(path)
+    if postgres_store.enabled():
+        try:
+            found, payload = postgres_store.load_collection(collection)
+            if found:
+                return payload
+        except Exception as exc:
+            logging.getLogger(__name__).warning("PostgreSQL 读取失败，回退兼容文件 %s: %s", collection, exc)
     if not path.exists():
         return default
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if postgres_store.enabled():
+            try:
+                postgres_store.save_collection(collection, payload)
+            except Exception as exc:
+                logging.getLogger(__name__).warning("PostgreSQL 首次导入失败 %s: %s", collection, exc)
+        return payload
     except Exception:
         return default
 
 
 def _write_json(path: Path, data: Any) -> None:
     _ensure_storage()
+    if postgres_store.enabled():
+        postgres_store.save_collection(_collection_name(path), data)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(
         json.dumps(data, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     tmp.replace(path)
+
+
+def _collection_name(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(_PROJECT_ROOT.resolve()).as_posix()
+    except ValueError:
+        return path.name
 
 
 def _next_id(items: list[dict]) -> int:
@@ -1871,6 +1900,40 @@ def get_generic_api_email_by_email(email: str) -> dict | None:
 # Codex 授权账号（来自 codex_accounts/codex-邮箱-plan.json）
 # ============================================================
 
+def _sync_codex_credentials_collection() -> dict:
+    """Keep CPA-compatible credential files mirrored in PostgreSQL."""
+    local_records: dict[str, dict] = {}
+    if _CODEX_DIR.exists():
+        for path in _CODEX_DIR.glob("codex-*.json"):
+            try:
+                local_records[path.name] = {
+                    "content": json.loads(path.read_text(encoding="utf-8")),
+                    "mtime": datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"),
+                }
+            except Exception:
+                continue
+    if not postgres_store.enabled():
+        return local_records
+    found, stored = postgres_store.load_collection(_CODEX_CREDENTIALS_COLLECTION)
+    records = stored if found and isinstance(stored, dict) else {}
+    changed = False
+    for filename, record in local_records.items():
+        if records.get(filename) != record:
+            records[filename] = record
+            changed = True
+    if changed or not found:
+        postgres_store.save_collection(_CODEX_CREDENTIALS_COLLECTION, records)
+    return records
+
+
+def save_codex_credential_record(filename: str, content: dict) -> None:
+    """Mirror a newly written CPA-compatible credential into PostgreSQL."""
+    if not postgres_store.enabled():
+        return
+    records = _sync_codex_credentials_collection()
+    records[filename] = {"content": content, "mtime": _now()}
+    postgres_store.save_collection(_CODEX_CREDENTIALS_COLLECTION, records)
+
 def _load_codex_export_state() -> dict:
     """读导出状态映射 {filename: {exported_at, exported_count}}。不存在返回 {}。"""
     data = _read_json(_CODEX_EXPORT_STATE, {})
@@ -1890,6 +1953,7 @@ def list_codex_accounts(archived: str | bool | None = "0", date_from: str | None
     """
     with _LOCK:
         out = []
+        _sync_codex_credentials_collection()
         if not _CODEX_DIR.exists():
             return out
         export_state = _load_codex_export_state()
@@ -1988,6 +2052,12 @@ def read_codex_credential(filename: str) -> tuple[str, str]:
         if "/" in filename or "\\" in filename or ".." in filename:
             raise ValueError(f"非法文件名: {filename}")
         path = _CODEX_DIR / filename
+        if postgres_store.enabled():
+            records = _sync_codex_credentials_collection()
+            record = records.get(filename) or {}
+            content = record.get("content")
+            if isinstance(content, dict):
+                return json.dumps(content, ensure_ascii=False, indent=2) + "\n", filename
         if not path.exists() or not path.is_file():
             raise ValueError(f"文件不存在: {filename}")
         return path.read_text(encoding="utf-8"), filename
@@ -2028,6 +2098,11 @@ def delete_codex_credential(filename: str) -> bool:
         if not path.exists() or not path.is_file():
             return False
         path.unlink()
+        if postgres_store.enabled():
+            records = _sync_codex_credentials_collection()
+            if filename in records:
+                del records[filename]
+                postgres_store.save_collection(_CODEX_CREDENTIALS_COLLECTION, records)
         state = _load_codex_export_state()
         if filename in state:
             del state[filename]

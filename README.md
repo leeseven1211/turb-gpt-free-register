@@ -74,20 +74,23 @@ WebUI 启动注册前会显示“本次注册邮箱来源”下拉框，操作�
   - GrizzlySMS
   - 本地 L 取号服务，见 `L_API.md`
 - 手机验证支持自动取号、填号、收码、提交、失败换号重试。
-- Codex 凭证落盘到 `codex_accounts/`。
+- Codex 凭证保存到 PostgreSQL，并同步生成 `codex_accounts/` CPA 兼容文件。
 - 账号页与 Codex 管理页都可把已经完成的 Codex OAuth 凭证单个或批量上传到 sub2api；旧的 Codex Agent Token 生成链路已经移除，OAuth 凭证是唯一的 Codex 授权产物。
 
 ### WebUI
 
 - 默认进入平台总览，一屏查看账号、套餐、邮箱资源、注册任务、Codex 凭证、代理模式和当前脱敏租约。
 - 批量启动注册任务。
-- 注册中心拆分为「发起注册 / 任务记录」；任务记录支持关键词、邮箱来源和状态组合筛选，并可查看日志或按原断点语义重试。
-- 页面刷新会恢复当前大菜单、二级菜单和配置分组，不会自动跳回总览；任务记录另支持开始/结束日期筛选和一键重置。
+- 左侧主导航会在当前大菜单下展开二级菜单；注册中心拆分为「发起注册 / 任务记录」，任务记录可在 ID、邮箱、邮箱来源、代理、状态、开始/完成日期和错误列内直接组合筛选，并可查看日志或按原断点语义重试。
+- 任务记录、账号、Codex 凭证和邮箱池列表采用统一结构：文字列点击列名后直接在表头输入搜索；状态、来源、套餐等枚举列使用基于后端真实数据的紧凑选项菜单；日期列使用单日或起止日期控件。支持多列组合筛选、条件标签回显、单列清空和一键清筛，不再额外占用第二行表头。
+- 页面刷新会恢复当前大菜单、二级菜单和配置分组，不会自动跳回总览；列表表头保持固定，长列表滚动时筛选条件和列名不会丢失。
+- 四类列表保留原有全部功能，并统一面板外框、操作栏、按钮和表头样式；批量动作只在选中记录后出现，低频动作收进「更多操作」。列宽可拖动、自动记忆，也可一键恢复默认宽度。账号批量操作并发数移至「配置 → 通用配置」。
+- 主侧栏与配置分组导航保持固定，滚轮不会串动主内容；仅在菜单或页面内容确实超过可用高度时出现纵向滚动。
 - 动态调整注册线程数，提交后新任务立即使用最新值。
 - 批量补跑 Codex，补跑线程数每次提交即时生效。
 - 管理账号、邮箱池、Codex 凭证；模块子菜单与列表操作区保持吸顶，选中下方记录后无需回到页首。
 - 邮箱资源池拆分为「资源总览 / 邮箱列表」，区分本地库存与按需平台，并可查看、手动租用和释放当前 WebUI 进程的 Email Butler 租约。
-- Codex 管理拆分为「凭证管理 / 同步 sub2api」，两种工作流复用同一份可筛选凭证列表。
+- Codex 授权只保留一个凭证管理页面；同步 sub2api 是列表批量动作，不再重复占用二级菜单。
 - 配置页顶部只保留一处页面身份信息，每次只展示一个配置分组，避免重复标题和长页面误滑；保存后继续支持热加载。
 - 桌面端配置页固定左侧分组导航，超长配置只在右侧内容区滚动。
 - 总览套餐分布会单独统计「Free」和「Free · 可领 Plus 试用」；网络出口只显示当前代理平台与活跃出口，注册流水线显示当天成功、部分成功和失败任务数。
@@ -105,6 +108,7 @@ WebUI 启动注册前会显示“本次注册邮箱来源”下拉框，操作�
 - 如使用 Roxy 注册：需要本机 RoxyBrowser API 可访问
 - 如使用 Cloak 注册：首次运行会自动下载 Cloak Chromium binary；`CLOAK_GEOIP=True` 需要 `cloakbrowser[geoip]` 依赖
 - 如启用 Codex 自动授权：需要接码平台配置
+- PostgreSQL 16（本地可直接使用 Docker Compose 启动）
 
 推荐在项目内创建虚拟环境安装依赖：
 
@@ -152,6 +156,28 @@ cp .env.example .env
 - `H_ADMIN_AUTH_CODE`
 
 WebUI 配置页保存这些字段时会写入 `.env`（不是 config 源码）。
+
+### PostgreSQL 主存储
+
+账号、邮箱池、注册任务、Codex 凭证和导出/归档状态统一写入 PostgreSQL。原有 JSON/TXT 与 `codex_accounts/` 仍会同步生成，作为 CLI、CPA 和人工导出的兼容产物，不再是唯一数据源。日志、浏览器缓存与批次文件仍保留在文件系统。
+
+本地启动：
+
+```bash
+docker compose -f compose.postgres.yml up -d
+```
+
+然后在 `.env` 配置：
+
+```dotenv
+DATABASE_URL=postgresql://turb:turb_local_dev@127.0.0.1:55432/turb_console
+```
+
+首次读取现有 JSON 数据时会自动导入 PostgreSQL；迁移过程不会删除兼容文件。查看状态：
+
+```bash
+docker compose -f compose.postgres.yml ps
+```
 
 ---
 
@@ -653,9 +679,9 @@ WebUI 页面说明：
 |---|---|
 | 总览 | 查看账号、邮箱资源、任务、Codex 和代理平台整体状态 |
 | 注册 | 「发起注册 / 任务记录」子菜单；设置批次参数，组合查询任务，查看进度、日志和断点重试 |
-| 账号 | 「活跃账号 / 归档账号」子菜单；吸顶批量操作区支持复制 token、补跑 Codex、查套餐/查活、上传 OAuth 凭证、归档或删除 |
-| Codex 授权 | 「凭证管理 / 同步 sub2api」子菜单；查看、下载、上传、归档或删除 `codex_accounts/` 凭证 |
-| 邮箱池 | 「资源总览 / 邮箱列表」子菜单；管理 Email Butler 当前进程租约，导入、筛选和更新本地邮箱库存 |
+| 账号 | 「活跃账号 / 归档账号」子菜单；上方集中批量操作，表头按 ID、邮箱、来源、Token、套餐、备注、2FA、封号邮件、Codex 状态和创建日期组合筛选 |
+| Codex 授权 | 单一凭证管理页；列表上方集中下载、上传 sub2api、归档和删除，表头按邮箱、Plan、导出/归档状态、Account ID、更新及过期日期筛选 |
+| 邮箱池 | 「资源总览 / 邮箱列表」子菜单；管理 Email Butler 当前进程租约；邮箱列表上方集中导入和批量操作，表头按邮箱、类型、状态、Token 和日期筛选 |
 | 配置 | 左侧分组切换独立配置页，顶部不再重复显示“运行配置”，修改当前分组并热加载 |
 
 ### 线程数说明
@@ -864,22 +890,21 @@ Roxy 注册如果遇到新版流程：
 /create-account/password
 ```
 
-会自动设置密码。
+是否设置密码由「配置 → 注册方式 → 账号认证模式」决定：
 
-密码来源：
+- `otp`：优先点击一次性验证码入口（默认）。
+- `password`：遇到注册密码页时设置密码，不主动切换到 passwordless 流程。
 
-1. 优先使用 `config/register.py`：
+邮箱验证码是 OpenAI 的邮箱所有权验证步骤；即使选择 `password`，设置密码后仍可能需要邮箱 OTP。若 OpenAI 本次没有展示注册密码页，程序不会伪造或强行设置密码。
 
-```python
-REGISTER_PASSWORD = "你的固定密码"
-```
-
-2. 如果为空，自动生成 14 位强密码，包含大写、小写、数字、符号。
+密码始终按账号独立随机生成：14 位，包含大写、小写、数字和符号。配置页不提供固定密码输入，避免一批账号共用同一个密码。
 
 保存位置：
 
 - 账号 `extra_json.registration_password`
 - 批次归档 `accounts/YYYYMMDD-.../注册成功账号.json` 的 `extra.registration_password`
+
+账号页提供“登录密码”状态列和真实数据筛选。已设置密码的账号可以单独复制；批量选择后可用“复制密码”导出 `邮箱----密码`，未设置密码的账号会自动跳过。
 
 注意：账号表里的 `password` 字段仍用于 Outlook 邮箱素材密码，不会被 OpenAI 注册密码覆盖。
 
@@ -894,7 +919,8 @@ REGISTER_PASSWORD = "你的固定密码"
 | `config/codex.py` | Codex OAuth、授权驱动、CPA 管理接口、接码平台 |
 | `config/email.py` | 邮箱来源、OTP 轮询、Email Butler、QQ IMAP、iCloud HME、Cloudflare 临时邮箱及封号信号 |
 | `config/proxy.py` | 代理池 |
-| `config/register.py` | 默认邮箱、密码、显示名 |
+| `config/register.py` | 默认邮箱、认证模式、显示名 |
+| `compose.postgres.yml` | 本地 PostgreSQL 16 容器与持久化卷 |
 | `config/twofa.py` | 2FA 开关 |
 | `config/humanize.py` | 随机停顿/人工节奏 |
 | `config/flow_trigger.py` | 注册成功后触发 Flow |
@@ -906,6 +932,8 @@ WebUI 配置页保存后会调用热加载；Roxy、Codex、邮箱、代理、�
 ---
 
 ## 数据与产物
+
+核心业务数据以 PostgreSQL 为主存储；下表文件均为兼容导出或运行产物。
 
 | 路径 | 内容 |
 |---|---|
@@ -1069,7 +1097,8 @@ ENABLE_CODEX_AUTO = False
 │   ├── cf_temp_mail_client.py      # Cloudflare Worker 临时邮箱
 │   ├── sms_provider.py             # 接码平台
 │   ├── account_export.py           # 保存账号/批次归档
-│   └── db.py                       # 文件数据库
+│   ├── db.py                       # 业务数据访问与兼容文件导出
+│   └── postgres_store.py           # PostgreSQL JSONB 主存储
 ├── webui/
 │   ├── app.py                      # Flask API
 │   ├── config_editor.py            # 配置读写/热加载

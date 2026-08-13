@@ -1167,6 +1167,8 @@ def save_codex_credential(storage: dict, email: str, plan_type: str) -> Path:
         json.dumps(storage, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    from core import db
+    db.save_codex_credential_record(fname, storage)
     return path
 
 
