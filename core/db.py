@@ -703,6 +703,13 @@ def insert_account(
             "codex_error": codex_error if codex_error is not None else row.get("codex_error"),
             "updated_at": _now(),
         })
+        if access_token:
+            # expires_at 是 ChatGPT Session 到期时间；AT 自身到期时间来自 JWT exp，
+            # 两者分开保存，避免页面和刷新调度误判。
+            from core.chatgpt_plan import token_claims
+            claims = token_claims(access_token)
+            row["token_expires_at"] = claims.get("token_expires_at")
+            row["token_expired"] = claims.get("token_expired")
 
         if outlook_row:
             row["password"] = outlook_row.get("password")
@@ -738,6 +745,54 @@ def update_account_codex_status(email: str, codex_status: str, codex_error: str 
         row["updated_at"] = _now()
         _save_accounts(accounts)
         return True
+
+
+def update_account_token_metadata(acc_id: int, access_token: str) -> bool:
+    """只同步当前 AT 的 JWT 到期信息，不改动账号状态或 Token 内容。"""
+    from core.chatgpt_plan import token_claims
+    claims = token_claims(access_token)
+    with _LOCK:
+        accounts = _load_accounts()
+        row = next((r for r in accounts if int(r.get("id") or 0) == int(acc_id)), None)
+        if row is None or str(row.get("access_token") or "").strip() != str(access_token or "").strip():
+            return False
+        expires_at = claims.get("token_expires_at")
+        expired = claims.get("token_expired")
+        if row.get("token_expires_at") == expires_at and row.get("token_expired") == expired:
+            return True
+        row["token_expires_at"] = expires_at
+        row["token_expired"] = expired
+        row["updated_at"] = _now()
+        _save_accounts(accounts)
+        return True
+
+
+def sync_account_token_metadata(items: list[tuple[int, str]]) -> int:
+    """批量回填 AT 到期信息，只在内容变化时写一次账号文件。"""
+    from core.chatgpt_plan import token_claims
+    tokens = {int(acc_id): str(token or "").strip() for acc_id, token in items if str(token or "").strip()}
+    if not tokens:
+        return 0
+    with _LOCK:
+        accounts = _load_accounts()
+        changed = 0
+        for row in accounts:
+            acc_id = int(row.get("id") or 0)
+            token = tokens.get(acc_id)
+            if not token or str(row.get("access_token") or "").strip() != token:
+                continue
+            claims = token_claims(token)
+            expires_at = claims.get("token_expires_at")
+            expired = claims.get("token_expired")
+            if row.get("token_expires_at") == expires_at and row.get("token_expired") == expired:
+                continue
+            row["token_expires_at"] = expires_at
+            row["token_expired"] = expired
+            row["updated_at"] = _now()
+            changed += 1
+        if changed:
+            _save_accounts(accounts)
+        return changed
 
 
 def claim_account_plan_check(
@@ -1300,6 +1355,10 @@ def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
             token = str(result.get("access_token") or "").strip()
             if token:
                 row["access_token"] = token
+                from core.chatgpt_plan import token_claims
+                claims = token_claims(token)
+                row["token_expires_at"] = claims.get("token_expires_at")
+                row["token_expired"] = claims.get("token_expired")
             session = result.get("session") or {}
             user = session.get("user") or {}
             account = session.get("account") or {}

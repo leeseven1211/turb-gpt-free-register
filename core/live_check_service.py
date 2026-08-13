@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
-from core import db
+from core import account_task_store, db
 from core.account_liveness import check_account_liveness, log_path
 from core.chatgpt_plan import check_account_plan, token_claims
 from core.openai_auth import detect_account_unusable_text
@@ -53,7 +54,21 @@ def _token_probe_retryable(result: dict) -> bool:
     return status in {403, 408, 409, 425, 429} or status >= 500
 
 
-def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: str) -> dict:
+def _roxy_fallback_enabled() -> bool:
+    return str(os.environ.get("LIVE_CHECK_ROXY_FALLBACK_ENABLED", "1")).strip().lower() not in {
+        "0", "false", "no", "off",
+    }
+
+
+def _run_live_check(
+    *,
+    account_id: int,
+    email: str,
+    proxy: str | None,
+    trigger: str,
+    task_id: int | None = None,
+    force_refresh: bool = False,
+) -> dict:
     account_route = None
     route: dict = {}
     try:
@@ -61,7 +76,13 @@ def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: 
             _RUNNING.add(int(account_id))
         if not db.mark_account_live_check_running(account_id):
             _append_log(email, "[查活] 账号已删除或查活状态已被重置，取消执行")
+            account_task_store.finish_task(
+                task_id,
+                status="cancelled",
+                message="账号已删除或查活状态已被重置",
+            )
             return {"ok": False, "status": "failed", "error": "账号已删除或查活状态已被重置"}
+        account_task_store.start_task(task_id, message="开始验证账号 accessToken")
         from core.account_proxy import acquire_account_proxy
 
         def acquire_retry_route(attempt: int) -> str:
@@ -81,6 +102,12 @@ def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: 
                 f"network_route={route.get('network_route')} proxy_mode={route.get('proxy_mode')} "
                 f"proxy_used={route.get('proxy_used') or '-'} "
                 f"fallback_reason={route.get('proxy_fallback_reason') or '-'}",
+            )
+            account_task_store.append_event(
+                task_id,
+                stage="network_route",
+                message=f"已选择查活线路（第 {attempt}/4 次）",
+                detail=route,
             )
             return account_route.proxy_url
 
@@ -103,9 +130,15 @@ def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: 
         saved_access_token = str(account.get("access_token") or "").strip()
         saved_claims = token_claims(saved_access_token) if saved_access_token else {}
         result = None
-        if saved_access_token and saved_claims.get("token_expired") is not True:
+        if saved_access_token and saved_claims.get("token_expired") is not True and not force_refresh:
             probe_attempts = 4 if proxy is None else 1
             _append_log(email, "[查活] 优先验证现有 accessToken；有效则无需重复发送邮箱验证码")
+            account_task_store.append_event(
+                task_id,
+                stage="access_token",
+                message="优先在线验证现有 AT；有效则不发送邮箱验证码",
+                detail={"token_expires_at": saved_claims.get("token_expires_at")},
+            )
             for attempt in range(1, probe_attempts + 1):
                 selected_proxy = acquire_retry_route(attempt) if proxy is None else acquire_explicit_route()
                 probe = check_account_plan(
@@ -130,6 +163,15 @@ def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: 
                         f"[查活] accessToken 验证成功：HTTP {probe.get('http_status') or 200} "
                         f"plan={probe.get('current_plan_type') or 'unknown'}",
                     )
+                    account_task_store.append_event(
+                        task_id,
+                        stage="access_token",
+                        message="AT 在线验证成功",
+                        detail={
+                            "http_status": probe.get("http_status") or 200,
+                            "plan": probe.get("current_plan_type") or "unknown",
+                        },
+                    )
                     break
 
                 unusable_code = detect_account_unusable_text(
@@ -150,9 +192,27 @@ def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: 
                     f"[查活] accessToken 验证未通过（{attempt}/{probe_attempts}）："
                     f"{str(probe.get('error') or '未知错误')[:220]}",
                 )
+                account_task_store.append_event(
+                    task_id,
+                    stage="access_token",
+                    level="WARNING",
+                    message=f"AT 在线验证未通过（{attempt}/{probe_attempts}）",
+                    detail={"http_status": probe.get("http_status"), "error": probe.get("error")},
+                )
                 if not _token_probe_retryable(probe) or attempt >= probe_attempts:
                     _append_log(email, "[查活] 现有 Token 无法确认状态，转邮箱 OTP 重新登录刷新")
                     break
+
+        if result is None:
+            account_task_store.append_event(
+                task_id,
+                stage="reauth",
+                message=(
+                    "AT 即将过期，按计划转邮箱 OTP 登录刷新"
+                    if force_refresh
+                    else "AT 已失效或无法确认，转邮箱 OTP 重新登录刷新"
+                ),
+            )
 
         if result is None and proxy is None:
             # WebUI 默认调用由账号代理配置选路，重试时允许真正轮换线路。
@@ -174,6 +234,26 @@ def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: 
                 f"fallback_reason={route.get('proxy_fallback_reason') or '-'}",
             )
             result = check_account_liveness(email, proxy=selected_proxy, clear_log=False)
+        if (
+            not result.get("ok")
+            and result.get("status") != "deactivated"
+            and bool(saved_access_token)
+            and _roxy_fallback_enabled()
+        ):
+            from core.roxy_liveness import available as roxy_available, refresh_access_token
+            if roxy_available():
+                account_task_store.append_event(
+                    task_id,
+                    stage="roxy_fallback",
+                    level="WARNING",
+                    message="协议登录未通过，启用 Roxy 浏览器 NextAuth 兜底",
+                    detail={"protocol_error": result.get("error")},
+                )
+                _append_log(email, "[查活] 协议登录未通过，启用 Roxy 浏览器 NextAuth 兜底")
+                result = refresh_access_token(
+                    email,
+                    proxy=account_route.proxy_url if account_route is not None else proxy,
+                )
         result.update({
             "proxy_provider": route.get("proxy_provider"),
             "proxy_region": route.get("proxy_region"),
@@ -190,6 +270,31 @@ def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: 
             _append_log(email, f"[查活] 完成：账号已废 {result.get('error') or ''}")
         else:
             _append_log(email, f"[查活] 完成：失败 {result.get('error') or ''}")
+        final_status = "success" if result.get("ok") else (
+            "deactivated" if result.get("status") == "deactivated" else "failed"
+        )
+        account_task_store.finish_task(
+            task_id,
+            status=final_status,
+            message=(
+                "账号正常，AT 在线验证成功"
+                if result.get("ok") and result.get("validation_method") == "access_token"
+                else "账号正常，已通过邮箱登录刷新 AT"
+                if result.get("ok")
+                else "账号已确认停用"
+                if final_status == "deactivated"
+                else "查活失败"
+            ),
+            error=result.get("error") if not result.get("ok") else None,
+            result_summary={
+                "ok": bool(result.get("ok")),
+                "status": result.get("status"),
+                "checked_at": result.get("checked_at"),
+                "plan": (result.get("session") or {}).get("account", {}).get("planType"),
+            },
+            route={**route, **{key: result.get(key) for key in ("network_route", "proxy_provider", "proxy_region", "proxy_used")}},
+            validation_method=result.get("validation_method"),
+        )
         return result
     except Exception as exc:
         result = {
@@ -207,6 +312,13 @@ def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: 
             _append_log(email, f"[查活] 后台异常：{result['error']}")
         except Exception:
             pass
+        account_task_store.finish_task(
+            task_id,
+            status="failed",
+            message="查活后台执行异常",
+            error=result["error"],
+            route=route,
+        )
         return result
     finally:
         if account_route is not None:
@@ -216,7 +328,15 @@ def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: 
         _QUEUE_SLOTS.release()
 
 
-def enqueue_account_live_check(*, account_id: int, email: str, trigger: str = "manual", proxy: str | None = None) -> dict:
+def enqueue_account_live_check(
+    *,
+    account_id: int,
+    email: str,
+    trigger: str = "manual",
+    proxy: str | None = None,
+    batch_id: str | None = None,
+    force_refresh: bool = False,
+) -> dict:
     account_id = int(account_id)
     email = str(email or "").strip()
     if not email:
@@ -228,6 +348,14 @@ def enqueue_account_live_check(*, account_id: int, email: str, trigger: str = "m
         return {"accepted": False, "busy": True, "error": "该账号正在查活"}
 
     _append_log(email, f"[查活] 已入队 account_id={account_id} trigger={trigger}", clear=True)
+    task_type = "token_refresh" if str(trigger or "").startswith("token_refresh") else "live_check"
+    task_id = account_task_store.create_task(
+        task_type=task_type,
+        account_id=account_id,
+        email=email,
+        trigger=str(trigger or "manual"),
+        batch_id=batch_id,
+    )
     try:
         _EXECUTOR.submit(
             _run_live_check,
@@ -235,6 +363,8 @@ def enqueue_account_live_check(*, account_id: int, email: str, trigger: str = "m
             email=email,
             proxy=proxy,
             trigger=str(trigger or "manual"),
+            task_id=task_id,
+            force_refresh=bool(force_refresh),
         )
     except Exception as exc:
         _QUEUE_SLOTS.release()
@@ -246,6 +376,12 @@ def enqueue_account_live_check(*, account_id: int, email: str, trigger: str = "m
         }
         db.update_account_liveness(account_id, result)
         _append_log(email, result["error"])
+        account_task_store.finish_task(
+            task_id,
+            status="failed",
+            message="查活任务入队失败",
+            error=result["error"],
+        )
         return {"accepted": False, "busy": False, "error": result["error"]}
 
     return {
@@ -255,6 +391,7 @@ def enqueue_account_live_check(*, account_id: int, email: str, trigger: str = "m
         "email": email,
         "status": "queued",
         "trigger": str(trigger or "manual"),
+        "task_id": task_id,
     }
 
 

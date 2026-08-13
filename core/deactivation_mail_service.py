@@ -12,7 +12,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-from core import db
+from core import account_task_store, db
 from core.cf_temp_mail_client import CFTempMailError
 from core.cf_temp_mail_client import scan_openai_deactivation as scan_cloudflare_deactivation
 from core.email_butler_client import EmailButlerClientError, scan_openai_deactivation
@@ -58,10 +58,15 @@ def _parse_time(value: object) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
-def _scan(account_id: int, trigger: str) -> None:
+def _scan(account_id: int, trigger: str, task_id: int | None = None) -> None:
     try:
         account = db.get_account(account_id)
         if not account:
+            account_task_store.finish_task(
+                task_id,
+                status="cancelled",
+                message="账号已删除，取消封号邮件扫描",
+            )
             return
         source = str(account.get("email_source") or "").strip().lower()
         if source not in _SUPPORTED_SOURCES:
@@ -70,8 +75,22 @@ def _scan(account_id: int, trigger: str) -> None:
                 "trigger": trigger,
                 "error": "该账号邮箱来源暂不支持封号邮件扫描",
             })
+            account_task_store.finish_task(
+                task_id,
+                status="unsupported",
+                message="该账号邮箱来源暂不支持封号邮件扫描",
+                result_summary={"email_source": source},
+                validation_method="mailbox_cache",
+            )
             return
         db.update_account_deactivation_mail(account_id, {"status": "running", "trigger": trigger})
+        account_task_store.start_task(task_id, message="开始扫描封号邮件信号")
+        account_task_store.append_event(
+            task_id,
+            stage="mailbox_scan",
+            message=f"读取 {source} 邮箱缓存，回溯 {_LOOKBACK_DAYS} 天",
+            detail={"email_source": source, "lookback_days": _LOOKBACK_DAYS},
+        )
         if source == "email_butler":
             result = scan_openai_deactivation(account.get("email") or "", lookback_days=_LOOKBACK_DAYS)
         elif source == "icloud_hide":
@@ -83,11 +102,33 @@ def _scan(account_id: int, trigger: str) -> None:
             "trigger": trigger,
             **result,
         })
+        account_task_store.finish_task(
+            task_id,
+            status="success",
+            message="发现高置信度封号邮件" if result.get("detected") else "未发现封号邮件",
+            result_summary={
+                "detected": bool(result.get("detected")),
+                "checked_at": result.get("checked_at"),
+                "received_at": result.get("received_at"),
+                "subject": result.get("subject"),
+                "sender": result.get("sender"),
+                "confidence": result.get("confidence"),
+                "email_source": source,
+            },
+            validation_method="mailbox_cache",
+        )
     except (EmailButlerClientError, CFTempMailError, ForwardIMAPError) as exc:
         db.update_account_deactivation_mail(account_id, {
             "status": "failed", "trigger": trigger, "error": str(exc),
         })
         logger.warning("[DeactivationMail] account=%s scan failed: %s", account_id, exc)
+        account_task_store.finish_task(
+            task_id,
+            status="failed",
+            message="封号邮件扫描失败",
+            error=str(exc),
+            validation_method="mailbox_cache",
+        )
     except Exception as exc:
         db.update_account_deactivation_mail(account_id, {
             "status": "failed",
@@ -95,37 +136,69 @@ def _scan(account_id: int, trigger: str) -> None:
             "error": f"{type(exc).__name__}: {exc}",
         })
         logger.exception("[DeactivationMail] account=%s unexpected failure", account_id)
+        account_task_store.finish_task(
+            task_id,
+            status="failed",
+            message="封号邮件扫描异常",
+            error=f"{type(exc).__name__}: {exc}",
+            validation_method="mailbox_cache",
+        )
     finally:
         with _LOCK:
             _IN_FLIGHT.discard(int(account_id))
 
 
-def enqueue(account_id: int, trigger: str = "manual") -> dict:
+def enqueue(account_id: int, trigger: str = "manual", batch_id: str | None = None) -> dict:
     account = db.get_account(account_id)
     if not account:
         return {"accepted": False, "error": "账号不存在"}
+    task_id = account_task_store.create_task(
+        task_type="deactivation_mail",
+        account_id=int(account_id),
+        email=str(account.get("email") or ""),
+        trigger=str(trigger or "manual"),
+        batch_id=batch_id,
+    )
     if str(account.get("email_source") or "").strip().lower() not in _SUPPORTED_SOURCES:
         db.update_account_deactivation_mail(account_id, {
             "status": "unsupported",
             "trigger": trigger,
             "error": "该账号邮箱来源暂不支持封号邮件扫描",
         })
-        return {"accepted": False, "unsupported": True, "error": "该账号邮箱来源不支持邮件扫描"}
+        account_task_store.finish_task(
+            task_id,
+            status="unsupported",
+            message="该账号邮箱来源不支持邮件扫描",
+            result_summary={"email_source": account.get("email_source")},
+            validation_method="mailbox_cache",
+        )
+        return {"accepted": False, "unsupported": True, "task_id": task_id, "error": "该账号邮箱来源不支持邮件扫描"}
     with _LOCK:
         if int(account_id) in _IN_FLIGHT:
+            account_task_store.finish_task(
+                task_id,
+                status="cancelled",
+                message="同账号封号邮件扫描已在进行",
+            )
             return {"accepted": False, "busy": True, "error": "封号邮件扫描正在进行"}
         _IN_FLIGHT.add(int(account_id))
     db.update_account_deactivation_mail(account_id, {"status": "queued", "trigger": trigger})
     try:
-        _EXECUTOR.submit(_scan, int(account_id), trigger)
+        _EXECUTOR.submit(_scan, int(account_id), trigger, task_id)
     except Exception as exc:
         with _LOCK:
             _IN_FLIGHT.discard(int(account_id))
         db.update_account_deactivation_mail(account_id, {
             "status": "failed", "trigger": trigger, "error": str(exc),
         })
-        return {"accepted": False, "error": "扫描任务入队失败"}
-    return {"accepted": True, "account_id": int(account_id)}
+        account_task_store.finish_task(
+            task_id,
+            status="failed",
+            message="封号邮件扫描任务入队失败",
+            error=str(exc),
+        )
+        return {"accepted": False, "task_id": task_id, "error": "扫描任务入队失败"}
+    return {"accepted": True, "account_id": int(account_id), "task_id": task_id}
 
 
 def enqueue_due_accounts() -> dict:

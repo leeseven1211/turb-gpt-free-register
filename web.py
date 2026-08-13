@@ -95,10 +95,13 @@ def main() -> None:
 
     # 浏览器、线程池和代理租约都属于进程内资源。异常退出后不能继续把旧任务
     # 显示成 running，也不能把独立运行的 Roxy 临时环境留在桌面和额度中。
-    from core import db
+    from core import account_task_store, db
     recovered_jobs = db.recover_interrupted_registration_jobs()
     if recovered_jobs:
         logger.warning("已恢复 %s 个因 WebUI 重启中断的注册/Codex 任务", recovered_jobs)
+    recovered_account_tasks = account_task_store.recover_interrupted()
+    if recovered_account_tasks:
+        logger.warning("已恢复 %s 个因 WebUI 重启中断的账号任务实例", recovered_account_tasks)
     try:
         from core.roxybrowser_client import cleanup_orphaned_profiles
         orphan_result = cleanup_orphaned_profiles()
@@ -114,7 +117,9 @@ def main() -> None:
 
     app = create_app(auth_code=args.auth_code)
     from core.deactivation_mail_service import start_periodic_scanner
+    from core.token_refresh_service import start_periodic_refresher
     start_periodic_scanner()
+    start_periodic_refresher()
     url = f"http://{'127.0.0.1' if args.host in ('0.0.0.0', '::') else args.host}:{args.port}"
     logger.info(f"WebUI 已启动：{url}")
     if is_generated_code():

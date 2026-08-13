@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 from config import proxy as proxy_cfg
-from core import db
+from core import account_task_store, db
 from core.chatgpt_plan import check_account_plan
 
 logger = logging.getLogger(__name__)
@@ -129,11 +129,18 @@ def _run_plan_check(
     trigger: str,
     proxy: str | None,
     timezone_offset_min: str,
+    task_id: int | None = None,
 ) -> dict:
     account_route = None
     try:
         if not db.mark_account_plan_check_running(account_id):
+            account_task_store.finish_task(
+                task_id,
+                status="cancelled",
+                message="账号已删除或套餐查询状态已被重置",
+            )
             return {"ok": False, "error": "账号已删除或套餐查询状态已被重置"}
+        account_task_store.start_task(task_id, message="开始查询账号套餐")
 
         from core.account_proxy import acquire_account_proxy
         account_route = acquire_account_proxy(
@@ -142,7 +149,14 @@ def _run_plan_check(
             purpose="plan-check",
             explicit_proxy=proxy,
         )
+        account_task_store.append_event(
+            task_id,
+            stage="network_route",
+            message="已选择套餐查询线路",
+            detail=account_route.public_dict(),
+        )
 
+        account_task_store.append_event(task_id, stage="plan_request", message="请求 ChatGPT 套餐接口")
         result = _query_account_plan(
             email=email,
             access_token=access_token,
@@ -157,6 +171,22 @@ def _run_plan_check(
         })
         db.update_account_plan_check(acc_id=account_id, result=result)
         _log_plan_result(email, trigger, result)
+        account_task_store.finish_task(
+            task_id,
+            status="success" if result.get("ok") else "failed",
+            message="套餐查询成功" if result.get("ok") else "套餐查询失败",
+            error=result.get("error") if not result.get("ok") else None,
+            result_summary={
+                "ok": bool(result.get("ok")),
+                "http_status": result.get("http_status"),
+                "current_plan_type": result.get("current_plan_type"),
+                "plus_trial_eligible": result.get("plus_trial_eligible"),
+                "checked_at": result.get("checked_at"),
+                "token_expires_at": result.get("token_expires_at"),
+            },
+            route=account_route.public_dict(),
+            validation_method="access_token",
+        )
         return result
     except Exception as exc:
         result = {
@@ -169,6 +199,14 @@ def _run_plan_check(
         except Exception:
             logger.exception("[Plan] 写入后台查询异常状态失败: account_id=%s", account_id)
         logger.exception("[Plan] 后台查询异常: %s", email)
+        account_task_store.finish_task(
+            task_id,
+            status="failed",
+            message="套餐查询后台执行异常",
+            error=result["error"],
+            route=account_route.public_dict() if account_route is not None else None,
+            validation_method="access_token",
+        )
         return result
     finally:
         if account_route is not None:
@@ -189,9 +227,22 @@ def check_registration_account_plan(
     trigger = "registration_auto"
     if not db.claim_account_plan_check(acc_id=account_id, trigger=trigger):
         return {"ok": False, "busy": True, "error": "该账号正在查询套餐"}
+    task_id = account_task_store.create_task(
+        task_type="plan_check",
+        account_id=account_id,
+        email=str(email or "").strip(),
+        trigger=trigger,
+    )
     try:
         if not db.mark_account_plan_check_running(account_id):
+            account_task_store.finish_task(
+                task_id,
+                status="cancelled",
+                message="账号已删除或套餐查询状态已被重置",
+            )
             return {"ok": False, "error": "账号已删除或套餐查询状态已被重置"}
+        account_task_store.start_task(task_id, message="注册完成，开始自动查询套餐")
+        account_task_store.append_event(task_id, stage="plan_request", message="复用注册线路请求套餐接口")
         result = _query_account_plan(
             email=str(email or "").strip(),
             access_token=str(access_token or "").strip(),
@@ -201,6 +252,22 @@ def check_registration_account_plan(
         )
         db.update_account_plan_check(acc_id=account_id, result=result)
         _log_plan_result(str(email or "").strip(), trigger, result)
+        account_task_store.finish_task(
+            task_id,
+            status="success" if result.get("ok") else "failed",
+            message="注册后套餐查询成功" if result.get("ok") else "注册后套餐查询失败",
+            error=result.get("error") if not result.get("ok") else None,
+            result_summary={
+                "ok": bool(result.get("ok")),
+                "http_status": result.get("http_status"),
+                "current_plan_type": result.get("current_plan_type"),
+                "plus_trial_eligible": result.get("plus_trial_eligible"),
+                "checked_at": result.get("checked_at"),
+                "token_expires_at": result.get("token_expires_at"),
+            },
+            route={"network_route": "registration_proxy", "proxy_used": proxy},
+            validation_method="access_token",
+        )
         return result
     except Exception as exc:
         result = {
@@ -213,6 +280,14 @@ def check_registration_account_plan(
         except Exception:
             logger.exception("[Plan] 写入同步查询异常状态失败: account_id=%s", account_id)
         logger.exception("[Plan] 注册代理同步查询异常: %s", email)
+        account_task_store.finish_task(
+            task_id,
+            status="failed",
+            message="注册后套餐查询异常",
+            error=result["error"],
+            route={"network_route": "registration_proxy", "proxy_used": proxy},
+            validation_method="access_token",
+        )
         return result
 
 
@@ -224,6 +299,7 @@ def enqueue_account_plan_check(
     trigger: str,
     proxy: str | None = None,
     timezone_offset_min: str = "-",
+    batch_id: str | None = None,
 ) -> dict:
     """把查询放入统一线程池；重复查询或队列满时不提交。"""
     account_id = int(account_id)
@@ -238,6 +314,13 @@ def enqueue_account_plan_check(
         _QUEUE_SLOTS.release()
         return {"accepted": False, "busy": True, "error": "该账号正在查询套餐"}
 
+    task_id = account_task_store.create_task(
+        task_type="plan_check",
+        account_id=account_id,
+        email=email,
+        trigger=str(trigger or "manual"),
+        batch_id=batch_id,
+    )
     try:
         _EXECUTOR.submit(
             _run_plan_check,
@@ -247,6 +330,7 @@ def enqueue_account_plan_check(
             trigger=str(trigger or "manual"),
             proxy=proxy,
             timezone_offset_min=str(timezone_offset_min or "-"),
+            task_id=task_id,
         )
     except Exception as exc:
         _QUEUE_SLOTS.release()
@@ -256,6 +340,12 @@ def enqueue_account_plan_check(
             "error": f"套餐查询入队失败: {type(exc).__name__}: {str(exc)[:160]}",
         }
         db.update_account_plan_check(acc_id=account_id, result=result)
+        account_task_store.finish_task(
+            task_id,
+            status="failed",
+            message="套餐查询任务入队失败",
+            error=result["error"],
+        )
         return {"accepted": False, "busy": False, "error": result["error"]}
 
     return {
@@ -265,6 +355,7 @@ def enqueue_account_plan_check(
         "email": email,
         "status": "queued",
         "trigger": str(trigger or "manual"),
+        "task_id": task_id,
     }
 
 

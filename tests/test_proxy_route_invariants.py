@@ -71,7 +71,6 @@ class ProxyRouteInvariantTests(unittest.TestCase):
         session = MagicMock()
         with (
             patch("core.account_liveness.BrowserSession", return_value=session) as browser_session,
-            patch("core.account_liveness.get_providers"),
             patch("core.account_liveness.get_csrf_token", return_value="csrf"),
             patch("core.account_liveness.signin_openai", return_value="https://auth.example/authorize"),
         ):
@@ -93,8 +92,7 @@ class ProxyRouteInvariantTests(unittest.TestCase):
         supplier = MagicMock(side_effect=["http://first.example:8080", "http://second.example:8080"])
         with (
             patch("core.account_liveness.BrowserSession", side_effect=[first_session, second_session]) as browser_session,
-            patch("core.account_liveness.get_providers", side_effect=[RuntimeError("HTTP 403"), None]),
-            patch("core.account_liveness.get_csrf_token", return_value="csrf"),
+            patch("core.account_liveness.get_csrf_token", side_effect=[RuntimeError("HTTP 403"), "csrf"]),
             patch("core.account_liveness.signin_openai", return_value="https://auth.example/authorize"),
             patch("core.account_liveness.time.sleep"),
         ):
@@ -214,6 +212,43 @@ class ProxyRouteInvariantTests(unittest.TestCase):
         self.assertTrue(persisted["ok"])
         self.assertEqual("access_token", persisted["validation_method"])
         route.release.assert_called_once_with(reason="live-check-85")
+
+    def test_expired_token_uses_roxy_after_protocol_login_failure(self):
+        from core import live_check_service
+
+        refreshed = {
+            "ok": True,
+            "status": "live",
+            "access_token": "fresh-token",
+            "session": {"account": {"planType": "free"}},
+            "validation_method": "roxy_email_otp",
+        }
+        with (
+            patch.object(live_check_service.db, "mark_account_live_check_running", return_value=True),
+            patch.object(live_check_service.db, "get_account", return_value={"access_token": "expired-token"}),
+            patch.object(live_check_service.db, "update_account_liveness") as updated,
+            patch.object(live_check_service, "token_claims", return_value={"token_expired": True}),
+            patch.object(
+                live_check_service,
+                "check_account_liveness",
+                return_value={"ok": False, "status": "failed", "error": "HTTP 403"},
+            ),
+            patch.object(live_check_service, "_append_log"),
+            patch.object(live_check_service._QUEUE_SLOTS, "release"),
+            patch("core.roxy_liveness.available", return_value=True),
+            patch("core.roxy_liveness.refresh_access_token", return_value=refreshed) as roxy_refresh,
+        ):
+            result = live_check_service._run_live_check(
+                account_id=85,
+                email="first@example.com",
+                proxy=None,
+                trigger="manual",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("roxy_email_otp", result["validation_method"])
+        roxy_refresh.assert_called_once_with("first@example.com", proxy=None)
+        self.assertEqual("fresh-token", updated.call_args.args[1]["access_token"])
 
     def test_immediate_browser_oauth_reuses_proxy_and_login_state(self):
         from core.cloakbrowser_registration import run_cloak_registration

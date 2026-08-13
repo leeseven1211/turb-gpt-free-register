@@ -57,6 +57,10 @@ class RegistrationPlanCheckTests(unittest.TestCase):
             patch.object(plan_check_service.db, "mark_account_plan_check_running", return_value=True) as mark,
             patch.object(plan_check_service.db, "update_account_plan_check", return_value=True) as update,
             patch.object(plan_check_service, "_query_account_plan", return_value=expected) as query,
+            patch.object(plan_check_service.account_task_store, "create_task", return_value=101),
+            patch.object(plan_check_service.account_task_store, "start_task"),
+            patch.object(plan_check_service.account_task_store, "append_event"),
+            patch.object(plan_check_service.account_task_store, "finish_task"),
         ):
             result = plan_check_service.check_registration_account_plan(
                 account_id=7,

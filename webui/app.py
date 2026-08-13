@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 from flask import Flask, Response, jsonify, make_response, redirect, render_template, request, url_for
 
 from core import (
+    account_task_store,
     codex_retry_service,
     db,
     plan_check_service,
@@ -213,6 +214,12 @@ def _compact_account_for_list(row: dict) -> dict:
         value = row.get(key)
         if value is not None and value != "":
             out[key] = value
+    if out["has_access_token"] and not out.get("token_expires_at"):
+        from core.chatgpt_plan import token_claims
+        claims = token_claims(str(row.get("access_token") or ""))
+        if claims.get("token_expires_at"):
+            out["token_expires_at"] = claims.get("token_expires_at")
+            out["token_expired"] = claims.get("token_expired")
     plan = str(row.get("current_plan_type") or row.get("plan_type") or "").lower()
     if any(x in plan for x in ("plus", "pro", "team", "go")):
         expire = row.get("expires_at")
@@ -625,6 +632,64 @@ def create_app(auth_code: str | None = None) -> Flask:
         snapshot["queue"] = plan_check_service.queue_settings()
         return jsonify(snapshot)
 
+    @app.get("/api/account-tasks")
+    def api_account_tasks():
+        """账号操作任务实例列表；结果与事件均不包含账号凭据。"""
+        result = account_task_store.list_tasks(
+            page=request.args.get("page", default=1, type=int),
+            page_size=request.args.get("page_size", default=50, type=int),
+            task_type=str(request.args.get("type") or "").strip(),
+            status=str(request.args.get("status") or "").strip(),
+            q=str(request.args.get("q") or "").strip(),
+        )
+        from core.token_refresh_service import settings as token_refresh_settings
+        result["token_refresh"] = token_refresh_settings()
+        return jsonify(result)
+
+    @app.get("/api/account-tasks/<int:task_id>")
+    def api_account_task_detail(task_id: int):
+        task = account_task_store.get_task(task_id)
+        if not task:
+            return jsonify({"ok": False, "error": "任务实例不存在"}), 404
+        return jsonify({"ok": True, "task": task})
+
+    @app.post("/api/account-tasks/<int:task_id>/retry")
+    def api_account_task_retry(task_id: int):
+        task = account_task_store.get_task(task_id)
+        if not task:
+            return jsonify({"ok": False, "error": "任务实例不存在"}), 404
+        if task.get("status") in {"queued", "running"}:
+            return jsonify({"ok": False, "error": "任务仍在执行"}), 409
+        account = db.get_account(int(task.get("account_id") or 0))
+        if not account:
+            return jsonify({"ok": False, "error": "关联账号不存在"}), 404
+        task_type = str(task.get("task_type") or "")
+        if task_type in {"live_check", "token_refresh"}:
+            queued = live_check_service.enqueue_account_live_check(
+                account_id=int(account["id"]),
+                email=str(account.get("email") or ""),
+                trigger="manual_retry",
+                proxy=None,
+                force_refresh=task_type == "token_refresh",
+            )
+        elif task_type == "plan_check":
+            queued = plan_check_service.enqueue_account_plan_check(
+                account_id=int(account["id"]),
+                email=str(account.get("email") or ""),
+                access_token=str(account.get("access_token") or ""),
+                trigger="manual_retry",
+                proxy=None,
+            )
+        elif task_type == "deactivation_mail":
+            queued = deactivation_mail_service.enqueue(int(account["id"]), trigger="manual_retry")
+        else:
+            return jsonify({"ok": False, "error": "该任务类型暂不支持重跑"}), 400
+        if queued.get("busy"):
+            return jsonify({"ok": False, **queued}), 409
+        if not queued.get("accepted"):
+            return jsonify({"ok": False, **queued}), 400
+        return jsonify({"ok": True, **queued}), 202
+
 
     @app.post("/api/accounts/<int:acc_id>/check-deactivation-mail")
     def api_account_check_deactivation_mail(acc_id: int):
@@ -655,6 +720,21 @@ def create_app(auth_code: str | None = None) -> Flask:
             return jsonify({"ok": False, "error": "单次最多扫描 500 个账号"}), 400
         started, busy, skipped = [], [], []
         seen = set()
+        valid_ids = []
+        for raw in ids:
+            try:
+                acc_id = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if acc_id not in seen:
+                seen.add(acc_id)
+                valid_ids.append(acc_id)
+        seen.clear()
+        batch_id = account_task_store.create_batch(
+            action_type="deactivation_mail",
+            trigger="manual_bulk",
+            total_count=len(valid_ids),
+        ) if valid_ids else None
         for raw in ids:
             try:
                 acc_id = int(raw)
@@ -664,7 +744,7 @@ def create_app(auth_code: str | None = None) -> Flask:
             if acc_id in seen:
                 continue
             seen.add(acc_id)
-            result = deactivation_mail_service.enqueue(acc_id, trigger="manual_bulk")
+            result = deactivation_mail_service.enqueue(acc_id, trigger="manual_bulk", batch_id=batch_id)
             item = {"id": acc_id, **result}
             if result.get("accepted"):
                 started.append(item)
@@ -681,6 +761,7 @@ def create_app(auth_code: str | None = None) -> Flask:
             "skipped": skipped,
             "skipped_count": len(skipped),
             "queue": deactivation_mail_service.queue_settings(),
+            "batch_id": batch_id,
         }), 202
 
 
@@ -896,6 +977,11 @@ def create_app(auth_code: str | None = None) -> Flask:
                 continue
             accounts.append(acc)
 
+        batch_id = account_task_store.create_batch(
+            action_type="live_check",
+            trigger="manual_bulk",
+            total_count=len(accounts),
+        ) if accounts else None
         started = []
         busy_count = 0
         failed = []
@@ -905,10 +991,11 @@ def create_app(auth_code: str | None = None) -> Flask:
             queued = live_check_service.enqueue_account_live_check(
                 account_id=acc_id,
                 email=email,
-                trigger="manual",
+                trigger="manual_bulk",
                 # 未显式传入时，由账号代理服务按注册国家申请新的平台租约，
                 # 或按 ACCOUNT_ACTION_PROXY_MODE 使用静态代理池/直连。
                 proxy=None,
+                batch_id=batch_id,
             )
             if queued.get("accepted"):
                 started.append({"id": acc_id, "email": email, "status": "queued"})
@@ -928,6 +1015,7 @@ def create_app(auth_code: str | None = None) -> Flask:
             "failed_count": len(failed),
             "skipped": skipped,
             "queue": live_check_service.queue_settings(),
+            "batch_id": batch_id,
         }), 202
 
 
@@ -1006,6 +1094,11 @@ def create_app(auth_code: str | None = None) -> Flask:
         started = []
         busy = []
         failed = []
+        batch_id = account_task_store.create_batch(
+            action_type="plan_check",
+            trigger="manual_bulk",
+            total_count=len(items),
+        ) if items else None
         for acc in items:
             queued = plan_check_service.enqueue_account_plan_check(
                 account_id=int(acc.get("id")),
@@ -1014,6 +1107,7 @@ def create_app(auth_code: str | None = None) -> Flask:
                 trigger="manual_bulk",
                 proxy=None,
                 timezone_offset_min=timezone_offset_min,
+                batch_id=batch_id,
             )
             item = {"id": acc.get("id"), "email": acc.get("email"), **queued}
             if queued.get("accepted"):
@@ -1032,6 +1126,7 @@ def create_app(auth_code: str | None = None) -> Flask:
             "failed_count": len(failed),
             "skipped": skipped,
             "skipped_count": len(skipped),
+            "batch_id": batch_id,
         }), 202
 
     @app.get("/api/extract-link/cdk")

@@ -200,8 +200,8 @@
       width: 100%; max-width: 100%; min-width: 0;
       max-height: 320px; overflow: auto; line-height: 1.5;
     }
-    #logPanel, #retryLogPanel, #liveLogPanel, #qrPanel { min-width: 0; max-width: 100%; overflow-x: hidden; }
-    #logPanel:not(.hidden), #retryLogPanel:not(.hidden), #liveLogPanel:not(.hidden), #qrPanel:not(.hidden) {
+    #logPanel, #retryLogPanel, #liveLogPanel, #accountTaskLogPanel, #qrPanel { min-width: 0; max-width: 100%; overflow-x: hidden; }
+    #logPanel:not(.hidden), #retryLogPanel:not(.hidden), #liveLogPanel:not(.hidden), #accountTaskLogPanel:not(.hidden), #qrPanel:not(.hidden) {
       position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
       z-index: 1000; display: block; width: min(1100px, calc(100vw - 48px));
       max-height: min(760px, calc(100vh - 48px)); overflow: hidden;
@@ -209,9 +209,9 @@
       background: var(--surface); box-shadow: 0 0 0 9999px rgba(15,23,42,.45), 0 24px 70px rgba(15,23,42,.34);
     }
     #qrPanel:not(.hidden) { width: min(520px, calc(100vw - 48px)); text-align: center; }
-    #logPanel h3, #retryLogPanel h3, #liveLogPanel h3, #qrPanel h3 { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
-    #logPanel h3 .btn, #retryLogPanel h3 .btn, #liveLogPanel h3 .btn, #qrPanel h3 .btn { margin-left:auto; float:none !important; }
-    #logPanel .log, #retryLogPanel .log, #liveLogPanel .log { max-height: calc(min(760px, calc(100vh - 48px)) - 74px); margin-top:0; }
+    #logPanel h3, #retryLogPanel h3, #liveLogPanel h3, #accountTaskLogPanel h3, #qrPanel h3 { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+    #logPanel h3 .btn, #retryLogPanel h3 .btn, #liveLogPanel h3 .btn, #accountTaskLogPanel h3 .btn, #qrPanel h3 .btn { margin-left:auto; float:none !important; }
+    #logPanel .log, #retryLogPanel .log, #liveLogPanel .log, #accountTaskLogPanel .log { max-height: calc(min(760px, calc(100vh - 48px)) - 74px); margin-top:0; }
     #qrPanel img { display:block; max-width:min(360px, calc(100vw - 96px)); max-height:420px; margin:12px auto; border:1px solid var(--line); border-radius:10px; background:#fff; }
     #qrPanel .qr-link { display:block; word-break:break-all; white-space:normal; font-size:12px; color:var(--muted); margin-top:8px; }
     .hidden { display: none !important; }
@@ -978,6 +978,25 @@
       border: 1px solid #ebeef5; border-radius: 10px; background: #fff;
       box-shadow: 0 0 12px rgba(0,0,0,.04); overflow: hidden;
     }
+    #tab-accounts[data-module-view="tasks"] #accountsPanelV2 { display: none; }
+    #tab-accounts:not([data-module-view="tasks"]) #accountTasksPanel { display: none; }
+    .account-tasks-panel {
+      border: 1px solid #ebeef5; border-radius: 10px; background: #fff;
+      box-shadow: 0 0 12px rgba(0,0,0,.04); overflow: hidden;
+    }
+    .account-tasks-toolbar { display:flex; align-items:center; gap:10px; padding:14px 16px; border-bottom:1px solid #ebeef5; flex-wrap:wrap; }
+    .account-tasks-toolbar input, .account-tasks-toolbar select { width:auto; min-width:150px; margin:0; min-height:34px; }
+    .account-tasks-toolbar input { flex:1; max-width:340px; }
+    .account-tasks-table-wrap { overflow:auto; }
+    .account-tasks-table { min-width:1120px; }
+    .account-tasks-table th, .account-tasks-table td { padding:11px 12px; }
+    .account-tasks-table .task-error { max-width:280px; color:#8a6070; }
+    .account-task-events { display:grid; gap:8px; }
+    .account-task-event { padding:9px 11px; border-left:3px solid #596579; border-radius:5px; background:#111a2c; }
+    .account-task-event.is-error { border-left-color:#f56c6c; }
+    .account-task-event-head { display:flex; gap:10px; color:#8491a8; font-size:10px; }
+    .account-task-event-message { margin-top:3px; color:#d6deeb; }
+    .account-task-event-detail { margin-top:4px; color:#95a4bd; font-size:10px; white-space:pre-wrap; }
     .accounts-table-v2-wrap { overflow: auto; padding: 0; }
     .accounts-table-v2 {
       width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 14px;
@@ -2836,6 +2855,7 @@
       <div class="sidebar-subnav" data-module-subnav="accounts" aria-label="账号资产子菜单">
         <button type="button" class="is-active" data-view="active">活跃账号</button>
         <button type="button" data-view="archived">归档账号</button>
+        <button type="button" data-view="tasks">任务实例</button>
       </div>
     </div>
     <button type="button" data-tab="codex" class="sidebar-item">
@@ -3160,6 +3180,34 @@
       </div>
       <div class="jobs-v2-pager" id="pager-accounts-v2"></div>
     </section>
+    <section class="account-tasks-panel" id="accountTasksPanel" aria-label="账号任务实例">
+      <div class="account-tasks-toolbar">
+        <input id="accountTaskSearch" type="search" placeholder="任务 ID、账号 ID 或邮箱">
+        <select id="accountTaskTypeFilter" aria-label="任务类型">
+          <option value="">全部类型</option>
+          <option value="live_check">查活</option>
+          <option value="token_refresh">AT 刷新</option>
+          <option value="plan_check">查套餐</option>
+          <option value="deactivation_mail">查封号邮件</option>
+        </select>
+        <select id="accountTaskStatusFilter" aria-label="任务状态">
+          <option value="">全部状态</option>
+          <option value="queued">排队中</option><option value="running">运行中</option>
+          <option value="success">成功</option><option value="failed">失败</option>
+          <option value="deactivated">已停用</option><option value="unsupported">不支持</option>
+          <option value="interrupted">已中断</option><option value="cancelled">已取消</option>
+        </select>
+        <button type="button" class="jobs-tb-btn" id="btnRefreshAccountTasks">刷新</button>
+        <span class="sub-cell" id="accountTaskRefreshHint"></span>
+      </div>
+      <div class="account-tasks-table-wrap">
+        <table class="account-tasks-table">
+          <thead><tr><th>ID</th><th>类型</th><th>账号</th><th>状态</th><th>触发</th><th>验证方式</th><th>线路</th><th>耗时</th><th>创建 / 完成</th><th>结果 / 错误</th><th>操作</th></tr></thead>
+          <tbody id="accountTasksBody"></tbody>
+        </table>
+      </div>
+      <div class="jobs-v2-pager" id="pager-accountTasks-v2"></div>
+    </section>
     <div class="body hidden" id="retryLogPanel">
       <h3>补跑日志：<span id="retryLogEmail" style="font-size:13px;font-weight:400;color:var(--muted);"></span>
         <button class="btn" id="btnCloseRetryLog" style="float:right;min-height:28px;">关闭</button>
@@ -3171,6 +3219,12 @@
         <button class="btn" id="btnCloseLiveLog" style="float:right;min-height:28px;">关闭</button>
       </h3>
       <div class="log" id="liveLogContent">加载中…</div>
+    </div>
+    <div class="body hidden" id="accountTaskLogPanel">
+      <h3>任务实例 #<span id="accountTaskLogId"></span>
+        <button class="btn" id="btnCloseAccountTaskLog" style="float:right;min-height:28px;">关闭</button>
+      </h3>
+      <div class="log account-task-events" id="accountTaskLogContent">加载中…</div>
     </div>
   </div>
 
@@ -3376,6 +3430,7 @@ const $$ = (s) => Array.from(document.querySelectorAll(s));
 let copySeq = 0;
 const copyStore = new Map();
 let ACCOUNTS = [], OUTLOOK = [], CONFIG = [];
+let ACCOUNT_TASKS = [], ACCOUNT_TASKS_TOTAL = 0;
 let ACCOUNTS_TOTAL = 0;
 let OUTLOOK_TOTAL = 0;
 let SHOW_ARCHIVED_ACCOUNTS = false;
@@ -3438,6 +3493,7 @@ const PAGERS = {
   accounts: { page: 1, size: 20 },
   outlook:  { page: 1, size: 20 },
   codex:    { page: 1, size: 20 },
+  accountTasks: { page: 1, size: 20 },
 };
 
 function _renderPager(id, total) {
@@ -3457,17 +3513,19 @@ function _renderPager(id, total) {
   const el = document.getElementById('pager-' + id);
   if (el) el.innerHTML = html;
 
-  if (id === 'jobs' || id === 'accounts' || id === 'codex' || id === 'outlook') {
+  if (id === 'jobs' || id === 'accounts' || id === 'codex' || id === 'outlook' || id === 'accountTasks') {
     const elV2 = document.getElementById(
       id === 'jobs' ? 'pager-jobs-v2'
         : id === 'accounts' ? 'pager-accounts-v2'
         : id === 'codex' ? 'pager-codex-v2'
+        : id === 'accountTasks' ? 'pager-accountTasks-v2'
         : 'pager-outlook-v2'
     );
     if (elV2) {
       const sizeWrapId = id === 'jobs' ? 'jobsPagerSize'
         : id === 'accounts' ? 'accountsPagerSize'
         : id === 'codex' ? 'codexPagerSize'
+        : id === 'accountTasks' ? 'accountTasksPagerSize'
         : 'outlookPagerSize';
       const v2Sizes = [10, 20, 30, 50, 100];
       const pages = [];
@@ -3529,6 +3587,7 @@ function pagerGoTo(id, page) {
     : id === 'accounts' ? ACCOUNTS_TOTAL
     : id === 'outlook' ? OUTLOOK_TOTAL
     : id === 'codex' ? CODEX_TOTAL
+    : id === 'accountTasks' ? ACCOUNT_TASKS_TOTAL
     : (p.size || 20);
   const totalPages = Math.max(1, Math.ceil(Number(total || 0) / p.size) || 1);
   p.page = Math.max(1, Math.min(parseInt(page, 10) || 1, totalPages));
@@ -3539,7 +3598,7 @@ function pagerJump(id, val) {
 }
 
 function _reloadPagedList(id) {
-  ({ jobs: refreshJobs, accounts: loadAccounts, outlook: loadOutlook, codex: loadCodex })[id]?.();
+  ({ jobs: refreshJobs, accounts: loadAccounts, outlook: loadOutlook, codex: loadCodex, accountTasks: loadAccountTasks })[id]?.();
 }
 function pagerGo(id, dir) {
   PAGERS[id].page = Math.max(1, PAGERS[id].page + dir);
@@ -3972,12 +4031,12 @@ function pill(status) {
 }
 function pillV2(status) {
   const s = String(status || '');
-  const map = { available:'可用', used:'已用', failed:'失败', partial_success:'部分成功', disabled:'已停用', pending:'排队', running:'运行中', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消' };
+  const map = { available:'可用', used:'已用', failed:'失败', partial_success:'部分成功', disabled:'已停用', pending:'排队', queued:'排队中', running:'运行中', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消', interrupted:'已中断', unsupported:'不支持', deactivated:'已停用' };
   let cls = 'jobs-v2-pill--muted';
   if (s === 'success') cls = 'jobs-v2-pill--success';
-  else if (s === 'failed') cls = 'jobs-v2-pill--failed';
+  else if (s === 'failed' || s === 'interrupted' || s === 'deactivated') cls = 'jobs-v2-pill--failed';
   else if (s === 'running' || s === 'stopping') cls = 'jobs-v2-pill--running';
-  else if (s === 'pending' || s === 'cancelled' || s === 'stopped') cls = 'jobs-v2-pill--muted';
+  else if (s === 'pending' || s === 'queued' || s === 'cancelled' || s === 'stopped' || s === 'unsupported') cls = 'jobs-v2-pill--muted';
   return `<span class="jobs-v2-pill ${cls}">${esc(map[s]||s||'-')}</span>`;
 }
 function formatDateTime(v) {
@@ -4131,7 +4190,10 @@ function activateTab(tab, persist=true) {
   closeMobileSidebar();
   if (persist) localStorage.setItem('gpt_console_active_tab', tab);
   if (tab === 'overview') loadDashboard();
-  if (tab === 'accounts') loadAccounts();
+  if (tab === 'accounts') {
+    const view = $('#tab-accounts')?.dataset.moduleView || 'active';
+    if (view === 'tasks') loadAccountTasks(); else loadAccounts();
+  }
   if (tab === 'codex') loadCodex();
   if (tab === 'outlook') {
     const view = $('#tab-outlook')?.dataset.moduleView || 'overview';
@@ -4150,6 +4212,7 @@ const MODULE_VIEW_META = {
   accounts: {
     active: '查询、筛选和批量维护活跃账号',
     archived: '集中查看和恢复已归档账号',
+    tasks: '查看查活、AT 刷新、查套餐和封号邮件任务日志',
   },
   outlook: {
     overview: '查看邮箱供给、使用情况与 Email Butler 租约',
@@ -4165,7 +4228,8 @@ function setModuleView(module, view) {
     btn.classList.toggle('is-active', btn.dataset.view === view);
   });
   if ($('#topbarDescription')) $('#topbarDescription').textContent = MODULE_VIEW_META[module][view];
-  if (module === 'accounts' && SHOW_ARCHIVED_ACCOUNTS !== (view === 'archived')) applyAccountsArchivedFilter(view === 'archived');
+  if (module === 'accounts' && view === 'tasks') loadAccountTasks();
+  else if (module === 'accounts' && SHOW_ARCHIVED_ACCOUNTS !== (view === 'archived')) applyAccountsArchivedFilter(view === 'archived');
   if (module === 'register' && view === 'tasks') refreshJobs();
   if (module === 'codex') loadCodex();
   if (module === 'outlook') view === 'overview' ? loadMailResources() : loadOutlook();
@@ -4791,6 +4855,7 @@ function updateModalScrollLock() {
   const opened = !$('#logPanel').classList.contains('hidden')
     || !$('#retryLogPanel').classList.contains('hidden')
     || !$('#liveLogPanel').classList.contains('hidden')
+    || !$('#accountTaskLogPanel').classList.contains('hidden')
     || !$('#qrPanel').classList.contains('hidden')
     || !$('#outlookImportModal').classList.contains('hidden');
   const locked = document.body.classList.contains('modal-open');
@@ -4824,6 +4889,10 @@ function closeLiveLogModal() {
   $('#liveLogPanel').classList.add('hidden');
   updateModalScrollLock();
 }
+function closeAccountTaskLogModal() {
+  $('#accountTaskLogPanel').classList.add('hidden');
+  updateModalScrollLock();
+}
 function openQrModal(url) {
   $('#qrImage').src = url;
   $('#qrOpenLink').href = url;
@@ -4838,6 +4907,7 @@ function closeQrModal() {
 }
 
 $('#btnCloseLog').addEventListener('click', closeLogModal);
+$('#btnCloseAccountTaskLog')?.addEventListener('click', closeAccountTaskLogModal);
 
 async function submitManualOtpForJob(btn) {
   const jobId = parseInt(btn.dataset.submitOtpJob, 10);
@@ -4996,6 +5066,118 @@ let accountsReloadQueued = false;
 let planStatusLoading = false;
 let planStatusRevision = '';
 let ACCOUNT_BATCH_WORKERS = 3;
+const ACCOUNT_TASK_TYPE_LABELS = {
+  live_check:'查活', token_refresh:'AT 刷新', plan_check:'查套餐', deactivation_mail:'查封号邮件'
+};
+const ACCOUNT_TASK_TRIGGER_LABELS = {
+  manual:'手动', manual_bulk:'手动批量', manual_retry:'失败重跑', scheduled:'定时',
+  registration_auto:'注册后自动', token_refresh_scheduled:'AT 定时刷新'
+};
+function formatTaskDuration(ms) {
+  if (ms == null || ms === '') return '-';
+  const value = Number(ms);
+  if (!Number.isFinite(value) || value < 0) return '-';
+  if (value < 1000) return `${Math.round(value)}ms`;
+  const seconds = Math.round(value / 100) / 10;
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${Math.round(seconds % 60)}s`;
+}
+function accountTaskResultText(task) {
+  if (task.error) return task.error;
+  const result = task.result_summary || {};
+  if (task.task_type === 'plan_check') return result.current_plan_type ? `套餐 ${result.current_plan_type}${result.plus_trial_eligible ? ' · 可 Plus 试用' : ''}` : '查询完成';
+  if (task.task_type === 'deactivation_mail') {
+    if (!Object.prototype.hasOwnProperty.call(result, 'detected')) return '-';
+    return result.detected ? '发现封号邮件' : '未发现封号邮件';
+  }
+  if (task.task_type === 'live_check' || task.task_type === 'token_refresh') return result.ok ? '账号正常' : (result.status || '-');
+  return Object.keys(result).length ? JSON.stringify(result) : '-';
+}
+function renderAccountTasks() {
+  const body = $('#accountTasksBody');
+  if (!body) return;
+  body.innerHTML = ACCOUNT_TASKS.map(task => {
+    const route = [task.network_route, task.proxy_provider, task.proxy_region].filter(Boolean).join(' · ') || '-';
+    const result = accountTaskResultText(task);
+    const retryable = !['queued','running','success'].includes(String(task.status || ''));
+    return `<tr>
+      <td>#${esc(task.id)}</td>
+      <td>${esc(ACCOUNT_TASK_TYPE_LABELS[task.task_type] || task.task_type)}</td>
+      <td title="${esc(task.email_snapshot)}"><strong>#${esc(task.account_id || '-')}</strong><div class="sub-cell">${esc(task.email_snapshot || '-')}</div></td>
+      <td>${pillV2(task.status)}</td>
+      <td>${esc(ACCOUNT_TASK_TRIGGER_LABELS[task.trigger] || task.trigger || '-')}</td>
+      <td>${esc(task.validation_method || '-')}</td>
+      <td title="${esc(task.proxy_used || route)}">${esc(route)}</td>
+      <td>${esc(formatTaskDuration(task.duration_ms))}</td>
+      <td title="${esc(formatDateTime(task.queued_at))} → ${esc(formatDateTime(task.finished_at))}">${esc(formatDateTime(task.queued_at))}<div class="sub-cell">${esc(formatDateTime(task.finished_at))}</div></td>
+      <td class="task-error" title="${esc(result)}">${esc(short(result, 90))}</td>
+      <td><button type="button" class="jobs-tb-btn" data-account-task-log="${esc(task.id)}">日志</button>${retryable ? ` <button type="button" class="jobs-tb-btn" data-account-task-retry="${esc(task.id)}">重跑</button>` : ''}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="11" style="text-align:center;color:#909399;padding:28px;">暂无任务实例</td></tr>';
+  _renderPager('accountTasks', ACCOUNT_TASKS_TOTAL);
+}
+async function loadAccountTasks() {
+  const p = PAGERS.accountTasks;
+  const type = $('#accountTaskTypeFilter')?.value || '';
+  const status = $('#accountTaskStatusFilter')?.value || '';
+  const q = ($('#accountTaskSearch')?.value || '').trim();
+  try {
+    const result = await api(`/api/account-tasks?page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&type=${encodeURIComponent(type)}&status=${encodeURIComponent(status)}&q=${encodeURIComponent(q)}`);
+    ACCOUNT_TASKS = result.items || [];
+    ACCOUNT_TASKS_TOTAL = Number(result.total || 0);
+    const totalPages = Math.max(1, Math.ceil(ACCOUNT_TASKS_TOTAL / p.size));
+    if (p.page > totalPages) { p.page = totalPages; return loadAccountTasks(); }
+    const refresh = result.token_refresh || {};
+    if ($('#accountTaskRefreshHint')) $('#accountTaskRefreshHint').textContent = refresh.enabled ? `AT 到期前 ${refresh.refresh_before_hours || 24} 小时自动刷新` : 'AT 自动刷新已关闭';
+    renderAccountTasks();
+  } catch (e) {
+    showToast('加载任务实例失败: ' + e.message);
+  }
+}
+async function openAccountTaskLog(taskId) {
+  $('#accountTaskLogId').textContent = taskId;
+  $('#accountTaskLogContent').textContent = '加载中…';
+  $('#accountTaskLogPanel').classList.remove('hidden');
+  updateModalScrollLock();
+  try {
+    const result = await api(`/api/account-tasks/${encodeURIComponent(taskId)}`);
+    const task = result.task || {};
+    const events = task.events || [];
+    $('#accountTaskLogContent').innerHTML = events.map(event => `<div class="account-task-event${event.level === 'ERROR' ? ' is-error' : ''}">
+      <div class="account-task-event-head"><span>${esc(formatDateTime(event.created_at))}</span><span>${esc(event.level)}</span><span>${esc(event.stage)}</span></div>
+      <div class="account-task-event-message">${esc(event.message)}</div>
+      ${event.detail ? `<div class="account-task-event-detail">${esc(JSON.stringify(event.detail, null, 2))}</div>` : ''}
+    </div>`).join('') || '(暂无事件)';
+  } catch (e) {
+    $('#accountTaskLogContent').textContent = '加载失败: ' + e.message;
+  }
+}
+async function retryAccountTask(taskId, button) {
+  button.disabled = true;
+  try {
+    await api(`/api/account-tasks/${encodeURIComponent(taskId)}/retry`, {method:'POST'});
+    showToast('任务已重新入队');
+    loadAccountTasks();
+  } catch (e) {
+    showToast('重跑失败: ' + e.message);
+    button.disabled = false;
+  }
+}
+let accountTaskSearchTimer = null;
+$('#btnRefreshAccountTasks')?.addEventListener('click', loadAccountTasks);
+$('#accountTaskTypeFilter')?.addEventListener('change', () => { PAGERS.accountTasks.page = 1; loadAccountTasks(); });
+$('#accountTaskStatusFilter')?.addEventListener('change', () => { PAGERS.accountTasks.page = 1; loadAccountTasks(); });
+$('#accountTaskSearch')?.addEventListener('input', () => {
+  clearTimeout(accountTaskSearchTimer);
+  accountTaskSearchTimer = setTimeout(() => { PAGERS.accountTasks.page = 1; loadAccountTasks(); }, 260);
+});
+$('#accountTasksPanel')?.addEventListener('click', event => {
+  const logBtn = event.target.closest('[data-account-task-log]');
+  if (logBtn) { openAccountTaskLog(Number(logBtn.dataset.accountTaskLog)); return; }
+  const retryBtn = event.target.closest('[data-account-task-retry]');
+  if (retryBtn) retryAccountTask(Number(retryBtn.dataset.accountTaskRetry), retryBtn);
+});
 function getAccountsQuery() {
   const el = document.getElementById('qAccountsV2');
   return (el ? el.value : '').trim();
@@ -5282,7 +5464,19 @@ function _tokenCellV2(r) {
   else if (live === 'deactivated') liveHtml = `<div class="acc-v2-sub" title="${esc(liveErr || liveAt)}" style="color:#f56c6c">查活: 已废</div>`;
   else if (live === 'failed') liveHtml = `<div class="acc-v2-sub" title="${esc(liveErr || liveAt)}" style="color:#e6a23c">查活: 失败</div>`;
   if (r.has_access_token) {
-    return `<button type="button" class="acc-v2-token-copy" data-account-copy-secret="access_token" data-account-id="${esc(r.id)}" title="复制完整 Token">复制</button>${liveHtml}`;
+    const expiresAt = r.token_expires_at || '';
+    const expires = expiresAt ? new Date(expiresAt) : null;
+    const leftMs = expires && !Number.isNaN(expires.getTime()) ? expires.getTime() - Date.now() : null;
+    let expiryLabel = 'AT 到期未知', expiryColor = '#909399';
+    if (r.token_expired === true || (leftMs != null && leftMs <= 0)) {
+      expiryLabel = 'AT 已过期'; expiryColor = '#f56c6c';
+    } else if (leftMs != null) {
+      const hours = Math.max(1, Math.ceil(leftMs / 3600000));
+      expiryLabel = hours >= 48 ? `AT 剩余 ${Math.ceil(hours / 24)}天` : `AT 剩余 ${hours}小时`;
+      expiryColor = hours <= 24 ? '#e6a23c' : '#67c23a';
+    }
+    const expiryHtml = `<div class="acc-v2-sub" title="AT 到期：${esc(formatDateTime(expiresAt))}" style="color:${expiryColor}">${esc(expiryLabel)}</div>`;
+    return `<button type="button" class="acc-v2-token-copy" data-account-copy-secret="access_token" data-account-id="${esc(r.id)}" title="复制完整 Token">复制</button>${expiryHtml}${liveHtml}`;
   }
   return `<span class="pill status-failed">无Token</span>${liveHtml}`;
 }
@@ -5298,7 +5492,7 @@ function _deactivationMailCell(r) {
   const subject = r.deactivation_mail_subject || '';
   const sender = r.deactivation_mail_sender || '';
   const err = r.deactivation_mail_error || '';
-  const supported = ['email_butler','cloudflare'].includes((r.email_source || '').toString().toLowerCase());
+  const supported = ['email_butler','cloudflare','icloud_hide'].includes((r.email_source || '').toString().toLowerCase());
   let badge = '<span class="pill status-used">待扫描</span>';
   let title = '尚未扫描';
   if (!supported || status === 'unsupported') {
@@ -5328,7 +5522,7 @@ function _accountsV2MoreMenu(r) {
     r.has_registration_password ? `<button type="button" data-account-copy-secret="registration_password" data-account-id="${esc(r.id)}">复制登录密码</button>` : '',
     `<button type="button" data-account-note="${esc(r.id)}" title="设置/清空该账号备注">备注</button>`,
     `<button type="button" onclick="checkSelectedLive([Number('${esc(r.id)}')], this); return false;" title="优先在线验证现有 Token；失效时才通过邮箱 OTP 登录刷新">查活/刷新AT</button>`,
-    `<button type="button" data-account-live-log="${esc(r.email)}" title="查看该账号最近一次查活日志">查活日志</button>`,
+    `<button type="button" data-account-task-history="${esc(r.email)}" title="在任务实例中查看该账号的查活、AT 刷新、套餐和封号邮件历史">任务记录</button>`,
     _planAction(r),
     _extractLinkAction(r),
     _codexAction(r),
@@ -5551,9 +5745,12 @@ async function onAccountsBodyClick(e) {
     return;
   }
 
-  const liveLogBtn = e.target.closest('[data-account-live-log]');
-  if (liveLogBtn) {
-    openLiveLog(liveLogBtn.dataset.accountLiveLog);
+  const taskHistoryBtn = e.target.closest('[data-account-task-history]');
+  if (taskHistoryBtn) {
+    const search = $('#accountTaskSearch');
+    if (search) search.value = String(taskHistoryBtn.dataset.accountTaskHistory || '');
+    PAGERS.accountTasks.page = 1;
+    setModuleView('accounts', 'tasks');
     return;
   }
 
@@ -8453,7 +8650,12 @@ activateTab(localStorage.getItem('gpt_console_active_tab') || 'overview', false)
 jobsTimer = setInterval(() => { if (!$('#tab-register').classList.contains('hidden')) refreshJobs(); }, 3000);
 setInterval(loadSummary, 5000);
 setInterval(() => { if (!$('#tab-overview').classList.contains('hidden')) loadDashboard(); }, 15000);
-setInterval(() => { if (!$('#tab-accounts').classList.contains('hidden')) pollAccountPlanStatuses(); }, 2000);
+setInterval(() => {
+  if (!$('#tab-accounts').classList.contains('hidden') && $('#tab-accounts')?.dataset.moduleView !== 'tasks') pollAccountPlanStatuses();
+}, 2000);
+setInterval(() => {
+  if (!$('#tab-accounts').classList.contains('hidden') && $('#tab-accounts')?.dataset.moduleView === 'tasks') loadAccountTasks();
+}, 3000);
 </script>
 </body>
 </html>

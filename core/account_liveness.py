@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 from core.session import BrowserSession
-from core.chatgpt_auth import get_providers, get_csrf_token, signin_openai
+from core.chatgpt_auth import get_csrf_token, signin_openai
 from core.openai_auth import (
     follow_authorize,
     send_email_otp,
@@ -48,7 +48,11 @@ def _network_preflight_with_retry(
     *,
     proxy_supplier: Callable[[int], str | None] | None = None,
 ) -> tuple[BrowserSession, str]:
-    """Providers → CSRF → Signin 网络预检；每轮建新会话，并在可用时获取新代理。"""
+    """CSRF → Signin 网络预检；每轮建新会话，并在可用时获取新代理。
+
+    /api/auth/providers 只是 NextAuth 的能力发现接口，登录流程并不依赖它；
+    该接口又更容易被 Cloudflare 单独拦截，因此查活刷新 AT 时直接从 CSRF 开始。
+    """
     session: BrowserSession | None = None
     last_exc: BaseException | None = None
     for attempt in range(1, max_attempts + 1):
@@ -65,7 +69,6 @@ def _network_preflight_with_retry(
             session.proxy or "配置随机/直连", session.device_id, attempt, max_attempts,
         )
         try:
-            get_providers(session)
             csrf = get_csrf_token(session)
             authorize_url = signin_openai(session, csrf, email)
             return session, authorize_url
@@ -187,7 +190,7 @@ def check_account_liveness(
 
         logger.info("[查活] 日志文件：%s", path)
         logger.info("[查活] 开始重新登录：%s", email)
-        logger.info("[查活] 流程：Providers → CSRF → Signin → Authorize → 邮箱 OTP → OAuth callback → Session/AT")
+        logger.info("[查活] 流程：CSRF → Signin → Authorize → 邮箱 OTP → OAuth callback → Session/AT")
         session, authorize_url = _network_preflight_with_retry(
             email,
             proxy,
@@ -234,6 +237,7 @@ def check_account_liveness(
             "session": session_info,
             "device_id": session.device_id,
             "proxy_used": session.proxy or None,
+            "validation_method": "email_otp",
         }
     except AccountUnusableError as exc:
         code = getattr(exc, "error_code", "") or detect_account_unusable_text(str(exc)) or "account_deactivated"
