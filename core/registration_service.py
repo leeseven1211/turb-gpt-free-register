@@ -453,8 +453,9 @@ def _run_codex_retry_job(job_id: int, log_file: str, email: str, account_id: int
         return
 
     db.update_job(job_id, status="running", started_at=datetime.now().isoformat(timespec="seconds"))
-    for stage, _label in db.JOB_PROGRESS_STAGES[:-1]:
-        db.update_job_progress(job_id, stage, state="skipped", detail="Codex 补跑任务")
+    for stage, _label in db.JOB_PROGRESS_STAGES:
+        if stage not in {"codex", "complete"}:
+            db.update_job_progress(job_id, stage, state="skipped", detail="Codex 补跑任务")
     db.update_job_progress(job_id, "codex", state="running", detail="正在补跑 Codex 授权")
     try:
         result = codex_retry_service.run_worker(

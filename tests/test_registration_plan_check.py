@@ -125,6 +125,28 @@ class RegistrationPlanCheckTests(unittest.TestCase):
             trigger="registration_auto",
         )
 
+    def test_save_account_treats_empty_registration_proxy_as_explicit_direct(self):
+        with (
+            patch("core.db.insert_account", return_value=14),
+            patch.object(account_export, "_append_batch_archive", return_value="batch"),
+            patch.object(plan_check_service, "check_registration_account_plan", return_value={"ok": True}) as sync_check,
+            patch.object(plan_check_service, "enqueue_account_plan_check") as enqueue,
+        ):
+            row_id = account_export.save_account_data(
+                email="direct@example.com",
+                access_token="token",
+                plan_check_proxy="",
+            )
+
+        self.assertEqual(row_id, 14)
+        sync_check.assert_called_once_with(
+            account_id=14,
+            email="direct@example.com",
+            access_token="token",
+            proxy="",
+        )
+        enqueue.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

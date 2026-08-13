@@ -913,8 +913,8 @@
     }
     .batch-progress-v2-log:hover { text-decoration: underline; }
     .batch-progress-v2-steps {
-      display: grid; grid-template-columns: repeat(9, minmax(74px, 1fr));
-      min-width: 750px; overflow: visible;
+      display: grid; grid-template-columns: repeat(11, minmax(74px, 1fr));
+      min-width: 910px; overflow: visible;
     }
     .batch-progress-v2-step { position: relative; text-align: center; color: #a6abb2; }
     .batch-progress-v2-step::before {
@@ -930,9 +930,11 @@
       width: 28px; height: 28px; border: 2px solid #dce1e5; border-radius: 50%;
       background: #fff; color: #a6abb2; box-sizing: border-box; font-size: 12px; font-weight: 700;
     }
-    .batch-progress-v2-step.is-success .batch-progress-v2-node,
-    .batch-progress-v2-step.is-skipped .batch-progress-v2-node {
+    .batch-progress-v2-step.is-success .batch-progress-v2-node {
       border-color: #25bd96; background: #25bd96; color: #fff;
+    }
+    .batch-progress-v2-step.is-skipped .batch-progress-v2-node {
+      border-color: #a7adb5; background: #a7adb5; color: #fff;
     }
     .batch-progress-v2-step.is-running .batch-progress-v2-node {
       border-color: #377dff; background: #377dff; color: #fff;
@@ -950,7 +952,8 @@
     .batch-progress-v2-step.is-running .batch-progress-v2-step-duration { color: #6e9df3; }
     .batch-progress-v2-step.is-failed .batch-progress-v2-step-duration,
     .batch-progress-v2-step.is-stopped .batch-progress-v2-step-duration { color: #d98383; }
-    .batch-progress-v2-step.is-success, .batch-progress-v2-step.is-skipped { color: #168f73; }
+    .batch-progress-v2-step.is-success { color: #168f73; }
+    .batch-progress-v2-step.is-skipped { color: #7d848d; }
     .batch-progress-v2-step.is-running { color: #377dff; font-weight: 600; }
     .batch-progress-v2-step.is-failed, .batch-progress-v2-step.is-stopped { color: #e45656; font-weight: 600; }
     .batch-progress-v2-steps-scroll { overflow-x: auto; padding: 1px 2px 2px; }
@@ -4603,19 +4606,20 @@ function renderBatchProgress() {
       const state = String(step.state || 'pending');
       const previous = index > 0 ? (steps[stages[index - 1].key] || {}) : {};
       const reached = index > 0 && ['success', 'skipped'].includes(String(previous.state || ''));
-      const symbol = state === 'success' || state === 'skipped' ? '✓'
+      const symbol = state === 'success' ? '✓'
+        : state === 'skipped' ? '–'
         : state === 'running' ? '…'
         : state === 'failed' ? '×'
         : state === 'stopped' ? '!'
         : String(index + 1);
-      const stateTitle = state === 'skipped' ? '（已跳过）' : '';
       const stageError = ['failed', 'stopped'].includes(state) ? (step.detail || job.error_message || '') : '';
-      const detailTitle = stageError ? ` title="${esc(stageError)}" aria-label="${esc(stage.label)}失败：${esc(stageError)}"` : '';
+      const stageDetail = stageError || (state === 'skipped' ? (step.detail || '已跳过') : '');
+      const detailTitle = stageDetail ? ` title="${esc(stageDetail)}" aria-label="${esc(stage.label)}：${esc(stageDetail)}"` : '';
       const stepDuration = formatProgressDuration(step.started_at, ['success', 'failed', 'skipped', 'stopped'].includes(state) ? step.completed_at : '');
       const stepDurationEnd = ['success', 'failed', 'skipped', 'stopped'].includes(state) ? (step.completed_at || '') : '';
       return `<div class="batch-progress-v2-step is-${esc(state)}${reached ? ' is-reached' : ''}"${detailTitle}>
         <span class="batch-progress-v2-node">${symbol}</span>
-        <span class="batch-progress-v2-step-label">${esc(stage.label)}${stateTitle}${stepDuration ? `<span class="batch-progress-v2-step-duration" data-progress-duration-start="${attrEsc(step.started_at)}" data-progress-duration-end="${attrEsc(stepDurationEnd)}">${esc(stepDuration)}</span>` : ''}</span>
+        <span class="batch-progress-v2-step-label">${esc(stage.label)}${stepDuration ? `<span class="batch-progress-v2-step-duration" data-progress-duration-start="${attrEsc(step.started_at)}" data-progress-duration-end="${attrEsc(stepDurationEnd)}">${esc(stepDuration)}</span>` : ''}</span>
       </div>`;
     }).join('');
     const batchIndex = Number(job.batch_index || itemIndex + 1);
@@ -4629,7 +4633,7 @@ function renderBatchProgress() {
           <span class="sub-cell">${esc(sourceLabel)}</span>
         </div>
         <div class="batch-progress-v2-meta">
-          ${duration ? `<span data-progress-duration-start="${attrEsc(job.started_at || job.created_at)}" data-progress-duration-end="${attrEsc(terminal ? (job.completed_at || '') : '')}" data-progress-duration-prefix="耗时 ">耗时 ${esc(duration)}</span>` : ''}
+          ${!terminal && duration ? `<span data-progress-duration-start="${attrEsc(job.started_at || job.created_at)}" data-progress-duration-end="" data-progress-duration-prefix="耗时 ">耗时 ${esc(duration)}</span>` : ''}
           <span class="batch-progress-v2-result ${result.cls}">${result.label}</span>
           ${job.retryable ? `<button type="button" class="batch-progress-v2-log" data-progress-retry-job="${esc(job.id)}" title="${esc(job.retry_label || '重跑该任务')}">重跑</button>` : ''}
           <button type="button" class="batch-progress-v2-log" data-progress-log-job="${esc(job.id)}">查看日志</button>

@@ -516,6 +516,8 @@ def run_registration(
             totp_secret=totp_secret,
             email_source=resolve_email_source(email),
             proxy_used=session.proxy or None,
+            # 即使明确走直连（空字符串），也同步查完套餐再结束当前任务。
+            plan_check_proxy=session.proxy,
             batch_dir=batch_dir,
             extra={
                 "user": session_info.get("user"),

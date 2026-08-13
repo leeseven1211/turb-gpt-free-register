@@ -43,6 +43,9 @@ class JobProgressTests(unittest.TestCase):
                 row = db.get_job(job["id"])
                 self.assertEqual(row["progress_steps"]["codex"]["state"], "failed")
                 self.assertEqual(row["progress_steps"]["codex"]["detail"], "OAuth 超时")
+                self.assertEqual(row["progress_steps"]["complete"]["state"], "success")
+                self.assertEqual(row["progress_steps"]["complete"]["started_at"], row["created_at"])
+                self.assertEqual(row["progress_stage"], "complete")
 
     def test_failed_job_lands_on_current_stage(self):
         with tempfile.TemporaryDirectory() as td:
@@ -54,6 +57,24 @@ class JobProgressTests(unittest.TestCase):
                 row = db.get_job(job["id"])
                 self.assertEqual(row["progress_steps"]["email_otp"]["state"], "failed")
                 self.assertEqual(row["progress_steps"]["email_otp"]["detail"], "验证码超时")
+                self.assertEqual(row["progress_steps"]["complete"]["state"], "failed")
+
+    def test_failed_codex_is_not_moved_to_successful_plan_check(self):
+        with tempfile.TemporaryDirectory() as td:
+            patches = self._storage_patches(Path(td))
+            with patches[0], patches[1], patches[2], patches[3]:
+                job = db.create_job("icloud_hide")
+                db.update_job_progress(job["id"], "codex", "failed", "OAuth 失败")
+                db.update_job_progress(job["id"], "plan_check", "running", "正在查套餐")
+                db.update_job_progress(job["id"], "plan_check", "success", "free")
+
+                db.finish_job_progress(job["id"], success=False, detail="Codex 未完成")
+
+                row = db.get_job(job["id"])
+                self.assertEqual(row["progress_steps"]["codex"]["state"], "failed")
+                self.assertEqual(row["progress_steps"]["codex"]["detail"], "OAuth 失败")
+                self.assertEqual(row["progress_steps"]["plan_check"]["state"], "success")
+                self.assertEqual(row["progress_steps"]["complete"]["state"], "failed")
 
     def test_historical_job_marks_new_auth_redirect_stage_skipped(self):
         row = {
@@ -77,6 +98,30 @@ class JobProgressTests(unittest.TestCase):
             "2026-08-13T12:00:20",
         )
         self.assertNotIn("auth_redirect", row["progress_steps"])
+
+    def test_historical_terminal_job_gets_plan_and_total_duration_stages(self):
+        row = {
+            "id": 2,
+            "status": "success",
+            "created_at": "2026-08-13T12:00:00",
+            "started_at": "2026-08-13T12:00:02",
+            "completed_at": "2026-08-13T12:01:30",
+            "progress_steps": {
+                "codex": {
+                    "state": "success",
+                    "started_at": "2026-08-13T12:01:00",
+                    "completed_at": "2026-08-13T12:01:20",
+                },
+            },
+        }
+
+        compact = _compact_job_for_list(row)
+
+        self.assertEqual(compact["progress_steps"]["plan_check"]["state"], "skipped")
+        self.assertEqual(compact["progress_steps"]["complete"]["state"], "success")
+        self.assertEqual(compact["progress_steps"]["complete"]["started_at"], row["started_at"])
+        self.assertEqual(compact["progress_steps"]["complete"]["completed_at"], row["completed_at"])
+        self.assertNotIn("plan_check", row["progress_steps"])
 
     def test_startup_recovers_interrupted_jobs_and_codex_account(self):
         with tempfile.TemporaryDirectory() as td:

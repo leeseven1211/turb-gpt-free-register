@@ -39,6 +39,7 @@ def _append_log(email: str, line: str, *, clear: bool = False) -> None:
 
 def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: str) -> dict:
     account_route = None
+    route: dict = {}
     try:
         with _LOCK:
             _RUNNING.add(int(account_id))
@@ -46,22 +47,53 @@ def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: 
             _append_log(email, "[查活] 账号已删除或查活状态已被重置，取消执行")
             return {"ok": False, "status": "failed", "error": "账号已删除或查活状态已被重置"}
         from core.account_proxy import acquire_account_proxy
-        account_route = acquire_account_proxy(
-            account_id=account_id,
-            email=email,
-            purpose="live-check",
-            explicit_proxy=proxy,
-        )
-        route = account_route.public_dict()
-        selected_proxy = account_route.proxy_url
-        _append_log(
-            email,
-            "[查活] 开始后台执行 "
-            f"trigger={trigger} network_route={route.get('network_route')} "
-            f"proxy_mode={route.get('proxy_mode')} proxy_used={route.get('proxy_used') or '-'} "
-            f"fallback_reason={route.get('proxy_fallback_reason') or '-'}"
-        )
-        result = check_account_liveness(email, proxy=selected_proxy, clear_log=False)
+
+        def acquire_retry_route(attempt: int) -> str:
+            """网络预检每次重试都释放旧租约并申请新线路。"""
+            nonlocal account_route, route
+            if account_route is not None:
+                account_route.release(reason=f"live-check-{account_id}-preflight-rotate")
+            account_route = acquire_account_proxy(
+                account_id=account_id,
+                email=email,
+                purpose="live-check",
+            )
+            route = account_route.public_dict()
+            _append_log(
+                email,
+                f"[查活] 网络预检线路 {attempt}/4 "
+                f"network_route={route.get('network_route')} proxy_mode={route.get('proxy_mode')} "
+                f"proxy_used={route.get('proxy_used') or '-'} "
+                f"fallback_reason={route.get('proxy_fallback_reason') or '-'}",
+            )
+            return account_route.proxy_url
+
+        if proxy is None:
+            # WebUI 默认调用由账号代理配置选路，重试时允许真正轮换线路。
+            _append_log(email, f"[查活] 开始后台执行 trigger={trigger}，网络预检失败时将轮换代理")
+            result = check_account_liveness(
+                email,
+                proxy=None,
+                clear_log=False,
+                proxy_supplier=acquire_retry_route,
+            )
+        else:
+            # API 显式传入的代理（包括空字符串直连）尊重调用方选择，不擅自改线。
+            account_route = acquire_account_proxy(
+                account_id=account_id,
+                email=email,
+                purpose="live-check",
+                explicit_proxy=proxy,
+            )
+            route = account_route.public_dict()
+            _append_log(
+                email,
+                "[查活] 开始后台执行 "
+                f"trigger={trigger} network_route={route.get('network_route')} "
+                f"proxy_mode={route.get('proxy_mode')} proxy_used={route.get('proxy_used') or '-'} "
+                f"fallback_reason={route.get('proxy_fallback_reason') or '-'}",
+            )
+            result = check_account_liveness(email, proxy=account_route.proxy_url, clear_log=False)
         result.update({
             "proxy_provider": route.get("proxy_provider"),
             "proxy_region": route.get("proxy_region"),

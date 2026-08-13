@@ -85,6 +85,84 @@ class ProxyRouteInvariantTests(unittest.TestCase):
         self.assertEqual("https://auth.example/authorize", url)
         browser_session.assert_called_once_with(proxy="")
 
+    def test_live_check_preflight_uses_fresh_proxy_from_supplier(self):
+        from core import account_liveness
+
+        first_session = MagicMock(proxy="http://first.example:8080", device_id="first-device")
+        second_session = MagicMock(proxy="http://second.example:8080", device_id="second-device")
+        supplier = MagicMock(side_effect=["http://first.example:8080", "http://second.example:8080"])
+        with (
+            patch("core.account_liveness.BrowserSession", side_effect=[first_session, second_session]) as browser_session,
+            patch("core.account_liveness.get_providers", side_effect=[RuntimeError("HTTP 403"), None]),
+            patch("core.account_liveness.get_csrf_token", return_value="csrf"),
+            patch("core.account_liveness.signin_openai", return_value="https://auth.example/authorize"),
+            patch("core.account_liveness.time.sleep"),
+        ):
+            returned, url = account_liveness._network_preflight_with_retry(
+                "account@example.com",
+                None,
+                max_attempts=2,
+                proxy_supplier=supplier,
+            )
+
+        self.assertIs(second_session, returned)
+        self.assertEqual("https://auth.example/authorize", url)
+        self.assertEqual([unittest.mock.call(1), unittest.mock.call(2)], supplier.call_args_list)
+        self.assertEqual(
+            [
+                unittest.mock.call(proxy="http://first.example:8080"),
+                unittest.mock.call(proxy="http://second.example:8080"),
+            ],
+            browser_session.call_args_list,
+        )
+        first_session.session.close.assert_called_once()
+
+    def test_live_check_service_releases_old_route_before_retry(self):
+        from core import live_check_service
+
+        def make_route(proxy_url: str):
+            return SimpleNamespace(
+                proxy_url=proxy_url,
+                public_dict=lambda: {
+                    "proxy_mode": "1024",
+                    "network_route": "proxy",
+                    "proxy_provider": "1024proxy",
+                    "proxy_used": proxy_url,
+                    "proxy_region": "US",
+                },
+                release=MagicMock(),
+            )
+
+        first_route = make_route("http://first.example:8080")
+        second_route = make_route("http://second.example:8080")
+
+        def fake_check(_email, *, proxy, clear_log, proxy_supplier):
+            self.assertIsNone(proxy)
+            self.assertFalse(clear_log)
+            self.assertEqual("http://first.example:8080", proxy_supplier(1))
+            self.assertEqual("http://second.example:8080", proxy_supplier(2))
+            return {"ok": False, "status": "failed", "error": "HTTP 403"}
+
+        with (
+            patch.object(live_check_service.db, "mark_account_live_check_running", return_value=True),
+            patch.object(live_check_service.db, "update_account_liveness"),
+            patch.object(live_check_service, "_append_log"),
+            patch.object(live_check_service, "check_account_liveness", side_effect=fake_check),
+            patch("core.account_proxy.acquire_account_proxy", side_effect=[first_route, second_route]) as acquire,
+            patch.object(live_check_service._QUEUE_SLOTS, "release"),
+        ):
+            result = live_check_service._run_live_check(
+                account_id=8,
+                email="account@example.com",
+                proxy=None,
+                trigger="manual",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(2, acquire.call_count)
+        first_route.release.assert_called_once_with(reason="live-check-8-preflight-rotate")
+        second_route.release.assert_called_once_with(reason="live-check-8")
+
     def test_immediate_browser_oauth_reuses_proxy_and_login_state(self):
         from core.cloakbrowser_registration import run_cloak_registration
         from core.roxy_registration import run_roxy_registration

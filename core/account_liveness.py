@@ -5,6 +5,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 from core.session import BrowserSession
 from core.chatgpt_auth import get_providers, get_csrf_token, signin_openai
@@ -40,8 +41,14 @@ def _is_retryable_network_error(exc: BaseException) -> bool:
     return any(h in text for h in _RETRYABLE_NETWORK_HINTS)
 
 
-def _network_preflight_with_retry(email: str, proxy: str | None, max_attempts: int = 4) -> tuple[BrowserSession, str]:
-    """Providers → CSRF → Signin 网络预检；失败换新 IP 重试（每轮新会话新代理）。"""
+def _network_preflight_with_retry(
+    email: str,
+    proxy: str | None,
+    max_attempts: int = 4,
+    *,
+    proxy_supplier: Callable[[int], str | None] | None = None,
+) -> tuple[BrowserSession, str]:
+    """Providers → CSRF → Signin 网络预检；每轮建新会话，并在可用时获取新代理。"""
     session: BrowserSession | None = None
     last_exc: BaseException | None = None
     for attempt in range(1, max_attempts + 1):
@@ -50,8 +57,9 @@ def _network_preflight_with_retry(email: str, proxy: str | None, max_attempts: i
                 session.session.close()
             except Exception:
                 pass
+        selected_proxy = proxy_supplier(attempt) if proxy_supplier is not None else proxy
         # 空字符串是账号代理服务明确选择“直连”，不能转成 None 后又静默回退 PROXY_POOL。
-        session = BrowserSession(proxy=proxy)
+        session = BrowserSession(proxy=selected_proxy)
         logger.info(
             "[查活] 会话创建完成：proxy=%s device_id=%s（网络预检第 %s/%s 次）",
             session.proxy or "配置随机/直连", session.device_id, attempt, max_attempts,
@@ -64,10 +72,16 @@ def _network_preflight_with_retry(email: str, proxy: str | None, max_attempts: i
         except Exception as exc:
             last_exc = exc
             if attempt >= max_attempts or not _is_retryable_network_error(exc):
+                try:
+                    session.session.close()
+                except Exception:
+                    pass
                 raise
             logger.warning(
-                "[查活] 网络预检失败（%s/%s），换新 IP 重试：%s",
-                attempt, max_attempts, str(exc)[:200],
+                "[查活] 网络预检失败（%s/%s），%s：%s",
+                attempt, max_attempts,
+                "释放当前线路并换新代理重试" if proxy_supplier is not None else "同一线路创建新会话重试",
+                str(exc)[:200],
             )
             time.sleep(2)
     raise RuntimeError(f"网络预检多次失败：{last_exc}")
@@ -124,7 +138,13 @@ def _validate_with_retry(session: BrowserSession, email: str, otp_after_ts: floa
     raise last_exc if last_exc else RuntimeError("OTP 验证失败")
 
 
-def check_account_liveness(email: str, proxy: str | None = None, *, clear_log: bool = True) -> dict:
+def check_account_liveness(
+    email: str,
+    proxy: str | None = None,
+    *,
+    clear_log: bool = True,
+    proxy_supplier: Callable[[int], str | None] | None = None,
+) -> dict:
     """
     重新登录账号并刷新最新 accessToken。
 
@@ -150,6 +170,7 @@ def check_account_liveness(email: str, proxy: str | None = None, *, clear_log: b
         path.write_text("", encoding="utf-8")
 
     fh: logging.FileHandler | None = None
+    session: BrowserSession | None = None
     root_logger = logging.getLogger()
     thread_name = threading.current_thread().name
     with _RUNNING_LOCK:
@@ -167,7 +188,11 @@ def check_account_liveness(email: str, proxy: str | None = None, *, clear_log: b
         logger.info("[查活] 日志文件：%s", path)
         logger.info("[查活] 开始重新登录：%s", email)
         logger.info("[查活] 流程：Providers → CSRF → Signin → Authorize → 邮箱 OTP → OAuth callback → Session/AT")
-        session, authorize_url = _network_preflight_with_retry(email, proxy)
+        session, authorize_url = _network_preflight_with_retry(
+            email,
+            proxy,
+            proxy_supplier=proxy_supplier,
+        )
 
         otp_after_ts = time.time()
         final_url = follow_authorize(session, authorize_url)
@@ -224,6 +249,11 @@ def check_account_liveness(email: str, proxy: str | None = None, *, clear_log: b
     finally:
         try:
             logger.info("[查活] 结束：%s", email)
+            if session is not None:
+                try:
+                    session.session.close()
+                except Exception:
+                    pass
             if fh is not None:
                 root_logger.removeHandler(fh)
                 fh.close()

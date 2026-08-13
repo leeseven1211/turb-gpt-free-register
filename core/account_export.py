@@ -432,12 +432,17 @@ def save_account_data(
     )
     logger.info(f"[Save] 账号已写入 DB, id={row_id}, email={email}")
     logger.info(f"[Save] 批次归档目录: {batch_folder}")
+
+    # WebUI 注册线程会把这个阶段写入当前任务；CLI 或非任务调用中会自动忽略。
+    from core.registration_service import report_job_progress
+    report_job_progress("plan_check", "running", "正在查询账号套餐与 Plus 试用资格")
+
     # session 中的 account.planType 不能说明 Plus 试用资格。
     # 有注册任务代理时必须同步查完再返回，让上层随后释放代理租约；没有可复用代理时
     # 保持原来的后台队列行为，按套餐查询网络配置选择线路。
     try:
         explicit_proxy = str(plan_check_proxy or "").strip()
-        if explicit_proxy:
+        if plan_check_proxy is not None:
             from core.plan_check_service import check_registration_account_plan
 
             logger.info(f"[Plan] 使用本次注册代理同步查询，完成后再释放租约: id={row_id}, email={email}")
@@ -448,11 +453,23 @@ def save_account_data(
                 proxy=explicit_proxy,
             )
             if result.get("ok"):
+                plan_type = str(result.get("current_plan_type") or "unknown")
+                plus_trial = "可用" if result.get("plus_trial_eligible") else "不可用"
+                report_job_progress(
+                    "plan_check",
+                    "success",
+                    f"套餐查询完成：{plan_type}，Plus 试用{plus_trial}",
+                )
                 logger.info(
                     f"[Plan] 注册代理同步查询完成: id={row_id}, email={email}, "
                     f"plus_trial={bool(result.get('plus_trial_eligible'))}"
                 )
             else:
+                report_job_progress(
+                    "plan_check",
+                    "failed",
+                    f"套餐查询失败（不影响注册）：{str(result.get('error') or '未知错误')[:240]}",
+                )
                 logger.warning(f"[Plan] 注册代理同步查询失败（不影响注册结果）: {email}, {result.get('error')}")
         else:
             from core.plan_check_service import enqueue_account_plan_check
@@ -464,12 +481,24 @@ def save_account_data(
                 trigger="registration_auto",
             )
             if queued.get("accepted"):
+                report_job_progress("plan_check", "skipped", "套餐查询已加入后台队列")
                 logger.info(f"[Plan] 注册后自动查询已入队: id={row_id}, email={email}")
             elif queued.get("busy"):
+                report_job_progress("plan_check", "skipped", "该账号已有套餐查询正在执行")
                 logger.info(f"[Plan] 账号已有套餐查询，注册流程不重复入队: id={row_id}, email={email}")
             else:
+                report_job_progress(
+                    "plan_check",
+                    "failed",
+                    f"套餐查询入队失败（不影响注册）：{str(queued.get('error') or '未知错误')[:230]}",
+                )
                 logger.warning(f"[Plan] 注册后自动查询入队失败（不影响注册结果）: {email}, {queued.get('error')}")
     except Exception as exc:
+        report_job_progress(
+            "plan_check",
+            "failed",
+            f"套餐查询异常（不影响注册）：{type(exc).__name__}: {str(exc)[:200]}",
+        )
         logger.warning(
             f"[Plan] 注册后自动查询入队异常（不影响注册结果）: "
             f"{email}, {type(exc).__name__}: {str(exc)[:180]}"

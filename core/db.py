@@ -62,6 +62,8 @@ JOB_PROGRESS_STAGES = (
     ("profile", "填写资料"),
     ("token", "获取 Token"),
     ("codex", "Codex 授权"),
+    ("plan_check", "查套餐"),
+    ("complete", "完成"),
 )
 _JOB_PROGRESS_KEYS = tuple(key for key, _label in JOB_PROGRESS_STAGES)
 _JOB_PROGRESS_STATES = {"pending", "running", "success", "failed", "skipped", "stopped"}
@@ -2364,7 +2366,7 @@ def finish_job_progress(
     detail: str | None = None,
     failure_state: str = "failed",
 ) -> None:
-    """收口任务进度：失败落在当前节点；成功补齐未上报节点。"""
+    """收口任务进度：保留具体失败节点，并用“完成”节点展示任务总耗时。"""
     with _LOCK:
         rows = _load_jobs()
         row = next((r for r in rows if int(r.get("id") or 0) == int(job_id)), None)
@@ -2378,8 +2380,11 @@ def finish_job_progress(
         if current not in _JOB_PROGRESS_KEYS:
             current = "email"
 
+        overall_started_at = row.get("started_at") or row.get("created_at") or now
+        work_stage_keys = tuple(key for key in _JOB_PROGRESS_KEYS if key != "complete")
+
         if success:
-            for key in _JOB_PROGRESS_KEYS:
+            for key in work_stage_keys:
                 item = steps.get(key)
                 if not isinstance(item, dict):
                     item = {"started_at": now}
@@ -2389,18 +2394,42 @@ def finish_job_progress(
                     item["state"] = "success"
                 item["completed_at"] = item.get("completed_at") or now
                 steps[key] = item
-            row["progress_stage"] = _JOB_PROGRESS_KEYS[-1]
         else:
-            item = steps.get(current)
+            terminal_state = "stopped" if failure_state == "stopped" else "failed"
+            # 套餐查询可能在 Codex 失败后继续成功。此时当前节点已经是 plan_check，
+            # 不能把它误改成失败；优先保留流程中真正失败/停止的节点。
+            failed_key = next((
+                key for key in work_stage_keys
+                if isinstance(steps.get(key), dict)
+                and steps[key].get("state") in {"failed", "stopped"}
+            ), None)
+            target_key = failed_key or (current if current != "complete" else "email")
+            item = steps.get(target_key)
             if not isinstance(item, dict):
                 item = {"started_at": now}
-            terminal_state = "stopped" if failure_state == "stopped" else "failed"
             if item.get("state") not in {"failed", "stopped"}:
                 item["state"] = terminal_state
             item["completed_at"] = now
-            if detail is not None:
+            if detail is not None and not item.get("detail"):
                 item["detail"] = str(detail)[:300]
-            steps[current] = item
+            steps[target_key] = item
+
+        complete_state = "success" if success else ("stopped" if failure_state == "stopped" else "failed")
+        complete_item = steps.get("complete")
+        if not isinstance(complete_item, dict):
+            complete_item = {}
+        complete_item.update({
+            "state": complete_state,
+            "started_at": overall_started_at,
+            "completed_at": now,
+            "detail": (
+                "任务已完成"
+                if success
+                else str(detail or ("任务已停止" if complete_state == "stopped" else "任务失败"))[:300]
+            ),
+        })
+        steps["complete"] = complete_item
+        row["progress_stage"] = "complete"
         row["progress_steps"] = steps
         row["progress_updated_at"] = now
         _save_jobs(rows)
