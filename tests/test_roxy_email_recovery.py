@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from core import roxy_registration
 
@@ -46,6 +46,64 @@ class RoxyEmailRecoveryTests(unittest.TestCase):
             result = roxy_registration._wait_email_submit_next_state(driver, "test@example.com", timeout=20)
 
         self.assertEqual(result, "blank_shell")
+
+    def test_submit_wait_ignores_transient_shell_until_otp_arrives(self):
+        driver = _FakeDriver()
+        with patch.object(
+            roxy_registration,
+            "_email_submit_advanced_state",
+            side_effect=[None, "otp"],
+        ), patch.object(
+            roxy_registration,
+            "_email_input_value_state",
+            return_value={"url": driver.current_url, "inputs": []},
+        ), patch.object(
+            roxy_registration,
+            "_is_blank_chatgpt_auth_shell",
+            return_value=True,
+        ), patch.object(roxy_registration.time, "sleep"):
+            result = roxy_registration._wait_email_submit_next_state(
+                driver,
+                "test@example.com",
+                timeout=20,
+                wait_through_transient=True,
+            )
+
+        self.assertEqual(result, "otp")
+
+    def test_submit_settle_does_not_resubmit_cleared_email_form(self):
+        driver = _FakeDriver()
+        fake_time = Mock()
+        fake_time.time.side_effect = [100.0, 100.0, 103.0, 104.0, 106.0, 107.0]
+        cleared_state = {
+            "url": "https://chatgpt.com/auth/login?email=test%40example.com",
+            "inputs": [{"value": ""}],
+        }
+        with patch.object(
+            roxy_registration,
+            "_email_submit_advanced_state",
+            side_effect=[None, None, "otp"],
+        ), patch.object(
+            roxy_registration,
+            "_email_input_value_state",
+            return_value=cleared_state,
+        ), patch.object(
+            roxy_registration,
+            "_is_blank_chatgpt_auth_shell",
+            return_value=False,
+        ), patch.object(
+            roxy_registration,
+            "_recover_email_submit_if_stuck",
+        ) as recover, patch.object(roxy_registration, "time", fake_time):
+            result = roxy_registration._wait_email_submit_next_state(
+                driver,
+                "test@example.com",
+                timeout=20,
+                wait_through_transient=True,
+            )
+
+        self.assertEqual(result, "otp")
+        recover.assert_not_called()
 
     def test_stuck_email_page_uses_nextauth_fallback(self):
         driver = _FakeDriver()
@@ -99,6 +157,104 @@ class RoxyEmailRecoveryTests(unittest.TestCase):
         reload_shell.assert_not_called()
         nextauth.assert_called_once_with(driver, "test@example.com")
 
+    def test_nextauth_fallback_accepts_otp_that_arrived_during_race(self):
+        driver = _FakeDriver()
+        email_state = {
+            "url": "https://chatgpt.com/auth/login",
+            "inputs": [{"value": "test@example.com"}],
+        }
+        with patch.object(roxy_registration, "_type_email_address"), patch.object(
+            roxy_registration, "_email_input_value_state", return_value=email_state
+        ), patch.object(roxy_registration, "human_delay"), patch.object(
+            roxy_registration, "_submit_email_step"
+        ), patch.object(
+            roxy_registration,
+            "_wait_email_submit_next_state",
+            return_value="blank_shell",
+        ) as wait_next, patch.object(
+            roxy_registration,
+            "_log_blank_auth_shell_diagnostics",
+        ), patch.object(
+            roxy_registration,
+            "_submit_email_via_browser_nextauth",
+            return_value={"ok": True, "stage": "already_advanced", "state": "otp"},
+        ):
+            result = roxy_registration._submit_email_and_wait_next(driver, "test@example.com")
+
+        self.assertEqual(result, "otp")
+        wait_next.assert_called_once_with(driver, "test@example.com", timeout=20)
+
+    def test_retry_stops_when_page_reaches_otp_before_email_refill(self):
+        driver = _FakeDriver()
+        with patch.object(
+            roxy_registration,
+            "_type_email_address",
+            return_value="otp",
+        ) as type_email, patch.object(
+            roxy_registration,
+            "_submit_email_step",
+        ) as submit_email:
+            result = roxy_registration._submit_email_and_wait_next(driver, "test@example.com")
+
+        self.assertEqual(result, "otp")
+        type_email.assert_called_once_with(
+            driver,
+            "test@example.com",
+            timeout=20,
+            stop_on_advanced=True,
+        )
+        submit_email.assert_not_called()
+
+    def test_nextauth_skips_navigation_when_page_already_reached_otp(self):
+        driver = _FakeDriver()
+        driver.current_url = "https://auth.openai.com/email-verification"
+        with patch.object(
+            roxy_registration,
+            "_email_submit_advanced_state",
+            return_value="otp",
+        ):
+            result = roxy_registration._submit_email_via_browser_nextauth(
+                driver,
+                "test@example.com",
+            )
+
+        self.assertEqual(result["state"], "otp")
+        self.assertEqual(result["stage"], "already_advanced")
+        self.assertTrue(result["ok"])
+
+    def test_nextauth_does_not_treat_chatgpt_login_as_final_landing(self):
+        driver = _FakeDriver()
+        driver.set_script_timeout = lambda _timeout: None
+        driver.execute_async_script = lambda *_args: {
+            "ok": True,
+            "url": "https://chatgpt.com/api/auth/signin?csrf=true",
+        }
+
+        def _land_back_on_login(current_driver, *_args, **_kwargs):
+            current_driver.current_url = "https://chatgpt.com/auth/login?callbackUrl=https%3A%2F%2Fchatgpt.com%2F"
+
+        with patch.object(
+            roxy_registration,
+            "_email_submit_advanced_state",
+            return_value=None,
+        ), patch.object(
+            roxy_registration,
+            "_safe_get",
+            side_effect=_land_back_on_login,
+        ), patch.object(roxy_registration, "human_delay"), patch.object(
+            roxy_registration,
+            "_page_warmup",
+        ):
+            result = roxy_registration._submit_email_via_browser_nextauth(
+                driver,
+                "test@example.com",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "redirect_not_landed")
+        self.assertEqual(result["url"], "https://chatgpt.com/auth/login")
+        self.assertEqual(result["target_url"], "https://chatgpt.com/api/auth/signin")
+
     def test_submit_callback_runs_once_when_ui_is_retried(self):
         driver = _FakeDriver()
         email_state = {
@@ -143,7 +299,11 @@ class RoxyEmailRecoveryTests(unittest.TestCase):
         ), patch.object(
             roxy_registration,
             "_is_blank_chatgpt_auth_shell",
-            side_effect=[True, False],
+            side_effect=[True, True, False],
+        ), patch.object(
+            roxy_registration,
+            "_email_submit_advanced_state",
+            return_value=None,
         ), patch.object(
             roxy_registration,
             "_click_email_entry_option",

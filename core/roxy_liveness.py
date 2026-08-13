@@ -60,9 +60,16 @@ def _enter_existing_account_otp(driver, email: str) -> str:
     state = _wait_email_submit_next_state(driver, email, timeout=30)
     if state in {"blank_shell", "email_page", "email_cleared", "unknown"}:
         fallback = _submit_email_via_browser_nextauth(driver, email)
-        if not fallback.get("ok"):
+        state = str(fallback.get("state") or "")
+        if not state:
+            state = _wait_email_submit_next_state(
+                driver,
+                email,
+                timeout=35,
+                wait_through_transient=True,
+            )
+        if not fallback.get("ok") and state not in {"otp", "password", "login_password", "logged_in"}:
             raise RuntimeError(f"浏览器 NextAuth 登录导航失败: {fallback}")
-        state = _wait_email_submit_next_state(driver, email, timeout=35)
     if state == "logged_in" or _has_access_token(driver):
         return "logged_in"
     if state == "password" and not _is_login_password_page(driver):

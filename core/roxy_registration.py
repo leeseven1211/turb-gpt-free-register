@@ -577,6 +577,16 @@ def _is_blank_chatgpt_auth_shell(driver, state: dict | None = None) -> bool:
 
 def _reload_blank_chatgpt_auth_shell(driver) -> None:
     """刷新异常空壳登录页，使 React 登录表单重新挂载。"""
+    advanced_state = _email_submit_advanced_state(driver)
+    if advanced_state:
+        logger.info(
+            "%s 登录空壳刷新前页面已进入下一步，取消刷新：%s",
+            _log_prefix(driver), advanced_state,
+        )
+        return
+    if not _is_blank_chatgpt_auth_shell(driver):
+        logger.info("%s 页面已离开 ChatGPT 登录空壳，取消刷新", _log_prefix(driver))
+        return
     logger.warning("%s 检测到 ChatGPT 登录空壳页，刷新后重新进入邮箱步骤", _log_prefix(driver))
     try:
         driver.refresh()
@@ -605,17 +615,44 @@ def _reload_blank_chatgpt_auth_shell(driver) -> None:
         _page_warmup(driver, reason="reload_blank_auth_shell_hard")
 
 
-def _type_email_address(driver, email: str, timeout: int | None = None) -> None:
+def _email_submit_advanced_state(driver) -> str | None:
+    """识别邮箱提交后已经到达的稳定下一步，避免按过期页面状态继续重试。"""
+    if _has_access_token(driver):
+        return "logged_in"
+    if _is_login_password_page(driver):
+        return "login_password"
+    if _is_email_verification_page(driver):
+        return "otp"
+    if _is_signup_password_page(driver):
+        return "password"
+    return None
+
+
+def _type_email_address(
+    driver,
+    email: str,
+    timeout: int | None = None,
+    *,
+    stop_on_advanced: bool = False,
+) -> str | None:
     """进入邮箱登录/注册方式并填写邮箱。全程不依赖页面可见文字，避免非日本出口本地化后误点 Google。"""
     end = time.time() + (timeout or int(_cfg.ROXY_SELENIUM_TIMEOUT))
     last_state = None
     clicked_email_option = False
     reloaded_blank_shell = False
     while time.time() < end:
+        if stop_on_advanced:
+            advanced_state = _email_submit_advanced_state(driver)
+            if advanced_state:
+                logger.info(
+                    "%s 重填邮箱前页面已进入下一步，停止重填：%s",
+                    _log_prefix(driver), advanced_state,
+                )
+                return advanced_state
         el = _find_visible_email_input_js(driver)
         if el:
             _human_type_text(driver, el, email, clear=True)
-            return
+            return "email"
         last_state = _email_entry_state(driver)
         if not reloaded_blank_shell and _is_blank_chatgpt_auth_shell(driver, last_state):
             _reload_blank_chatgpt_auth_shell(driver)
@@ -628,6 +665,14 @@ def _type_email_address(driver, email: str, timeout: int | None = None) -> None:
             _assert_not_external_idp(driver, "点击邮箱入口后")
             continue
         time.sleep(0.4)
+    if stop_on_advanced:
+        advanced_state = _email_submit_advanced_state(driver)
+        if advanced_state:
+            logger.info(
+                "%s 邮箱入口等待结束时页面已进入下一步：%s",
+                _log_prefix(driver), advanced_state,
+            )
+            return advanced_state
     raise RuntimeError(f"找不到邮箱输入框/邮箱入口（未使用文字识别），state={last_state}")
 
 
@@ -917,10 +962,18 @@ def _submit_email_via_browser_nextauth(driver, email: str) -> dict:
     这里改走浏览器页面内 fetch，仍使用当前 Roxy 浏览器的 cookie / 指纹环境，
     拿到 auth.openai.com authorize URL 后让浏览器跳转。
     """
+    advanced_state = _email_submit_advanced_state(driver)
+    if advanced_state:
+        return {
+            "ok": True,
+            "stage": "already_advanced",
+            "state": advanced_state,
+            "url": _diagnostic_url(getattr(driver, "current_url", "")),
+        }
     try:
         current = str(getattr(driver, "current_url", "") or "")
         if "chatgpt.com" not in current:
-            return {"ok": False, "reason": "not_on_chatgpt", "url": current[:180]}
+            return {"ok": False, "reason": "not_on_chatgpt", "url": _diagnostic_url(current)}
     except Exception:
         current = ""
 
@@ -1018,7 +1071,7 @@ def _submit_email_via_browser_nextauth(driver, email: str) -> dict:
         except Exception:
             parsed = None
         if not parsed or parsed.scheme != "https" or parsed.hostname not in ("auth.openai.com", "chatgpt.com"):
-            return {"ok": False, "reason": "unsafe_redirect_url", "url": target_url[:260]}
+            return {"ok": False, "reason": "unsafe_redirect_url", "url": _diagnostic_url(target_url)}
 
         _safe_get(
             driver,
@@ -1029,7 +1082,33 @@ def _submit_email_via_browser_nextauth(driver, email: str) -> dict:
         )
         human_delay("navigate")
         _page_warmup(driver, reason="nextauth_email_fallback")
-        return {"ok": True, "stage": "redirected", "url": target_url[:260]}
+        landing_url = str(getattr(driver, "current_url", "") or "")
+        advanced_state = _email_submit_advanced_state(driver)
+        if advanced_state:
+            return {
+                "ok": True,
+                "stage": "landed",
+                "state": advanced_state,
+                "url": _diagnostic_url(landing_url),
+                "target_url": _diagnostic_url(target_url),
+            }
+        try:
+            landing_host = str(urlsplit(landing_url).hostname or "").lower()
+        except Exception:
+            landing_host = ""
+        if landing_host == "auth.openai.com":
+            return {
+                "ok": True,
+                "stage": "auth_landed",
+                "url": _diagnostic_url(landing_url),
+                "target_url": _diagnostic_url(target_url),
+            }
+        return {
+            "ok": False,
+            "reason": "redirect_not_landed",
+            "url": _diagnostic_url(landing_url),
+            "target_url": _diagnostic_url(target_url),
+        }
     except Exception as exc:
         return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
     finally:
@@ -1131,8 +1210,17 @@ def _log_blank_auth_shell_diagnostics(driver, state: dict | None = None) -> None
     logger.warning("%s 登录空白壳诊断：%s", _log_prefix(driver), snapshot)
 
 
-def _wait_email_submit_next_state(driver, email: str, timeout: int = 18) -> str:
+def _wait_email_submit_next_state(
+    driver,
+    email: str,
+    timeout: int = 18,
+    *,
+    wait_through_transient: bool = False,
+) -> str:
     """邮箱提交后等待进入 password / otp / logged_in；仍停留邮箱页则返回 email_page。
+
+    ``wait_through_transient`` 用于 NextAuth 已发起导航后的最终落点确认：此时登录空壳
+    和被清空的邮箱框都只视为过渡态，持续等到明确下一步或整体超时。
 
     Cloak/Playwright 路径里，点击 submit 后页面经常先发生一次 SPA 导航：
     `chatgpt.com/auth/login?email=...`，同时 React 会短暂把 email input 清空。
@@ -1146,22 +1234,22 @@ def _wait_email_submit_next_state(driver, email: str, timeout: int = 18) -> str:
     cleared_seen_at: float | None = None
     cleared_last_log_at = 0.0
     cleared_recover_done = False
+    transient_shell_logged = False
     expected_email = str(email or "").strip().lower()
     while time.time() < end:
-        if _has_access_token(driver):
-            return "logged_in"
-        if _is_login_password_page(driver):
-            return "login_password"
-        if _is_email_verification_page(driver):
-            return "otp"
-        if _is_signup_password_page(driver):
-            return "password"
+        advanced_state = _email_submit_advanced_state(driver)
+        if advanced_state:
+            return advanced_state
         state = _email_input_value_state(driver)
         last = state
         inputs = state.get("inputs") or []
         if not inputs and _is_blank_chatgpt_auth_shell(driver):
-            logger.warning("%s 邮箱提交后进入 ChatGPT 登录空壳页，立即切换认证兜底", _log_prefix(driver))
-            return "blank_shell"
+            if not wait_through_transient:
+                logger.warning("%s 邮箱提交后进入 ChatGPT 登录空壳页，立即切换认证兜底", _log_prefix(driver))
+                return "blank_shell"
+            if not transient_shell_logged:
+                logger.info("%s 认证兜底后仍在登录过渡页，继续等待最终跳转", _log_prefix(driver))
+                transient_shell_logged = True
         if inputs:
             values = [str(i.get("value") or "") for i in inputs]
             url = str(state.get("url") or "")
@@ -1181,6 +1269,7 @@ def _wait_email_submit_next_state(driver, email: str, timeout: int = 18) -> str:
                     cleared_last_log_at = now
                 if (
                     not cleared_recover_done
+                    and not wait_through_transient
                     and "/auth/login" in url
                     and "email=" in url
                     and now - cleared_seen_at >= 2.0
@@ -1188,7 +1277,7 @@ def _wait_email_submit_next_state(driver, email: str, timeout: int = 18) -> str:
                     recover = _recover_email_submit_if_stuck(driver, email)
                     cleared_recover_done = True
                     logger.info("%s 邮箱提交后仍停留在 login?email，中途补交一次表单：%s", _log_prefix(driver), recover)
-                if now - cleared_seen_at >= debounce:
+                if now - cleared_seen_at >= debounce and not wait_through_transient:
                     return "email_cleared"
             else:
                 cleared_seen_at = None
@@ -1203,8 +1292,20 @@ def _submit_email_and_wait_next(driver, email: str, attempts: int = 3, on_submit
     last_state = None
     nextauth_fallback_done = False
     submitted_reported = False
+
+    def _accept_advanced_state(state_name: str | None, source: str) -> str | None:
+        if state_name == "login_password":
+            raise RuntimeError(f"邮箱提交后进入登录密码页，按已注册/不可用邮箱处理并停用: url={getattr(driver, 'current_url', '') or 'https://auth.openai.com/log-in/password'}")
+        if state_name in ("password", "otp", "logged_in"):
+            logger.info("%s %s已进入下一步：%s", _log_prefix(driver), source, state_name)
+            return state_name
+        return None
+
     for attempt in range(1, attempts + 1):
-        _type_email_address(driver, email, timeout=20)
+        entry_state = _type_email_address(driver, email, timeout=20, stop_on_advanced=True)
+        accepted = _accept_advanced_state(entry_state, "重填邮箱前页面")
+        if accepted:
+            return accepted
         state = _email_input_value_state(driver)
         last_state = state
         values = [str(i.get("value") or "") for i in (state.get("inputs") or [])]
@@ -1223,11 +1324,10 @@ def _submit_email_and_wait_next(driver, email: str, attempts: int = 3, on_submit
             submitted_reported = True
         logger.info("%s 已提交邮箱，等待进入密码页或验证码页（%s/%s）", _log_prefix(driver), attempt, attempts)
         state_name = _wait_email_submit_next_state(driver, email, timeout=20)
-        if state_name == "login_password":
-            raise RuntimeError(f"邮箱提交后进入登录密码页，按已注册/不可用邮箱处理并停用: url={getattr(driver, 'current_url', '') or 'https://auth.openai.com/log-in/password'}")
-        if state_name in ("password", "otp", "logged_in"):
-            logger.info("%s 邮箱提交后已进入下一步：%s", _log_prefix(driver), state_name)
-            return state_name
+        accepted = _accept_advanced_state(state_name, "邮箱提交后")
+        if accepted:
+            return accepted
+        retry_state_name = state_name
         if state_name == "blank_shell":
             _log_blank_auth_shell_diagnostics(driver, last_state)
             logger.info("%s 首次确认登录空壳，立即切换 NextAuth 导航兜底", _log_prefix(driver))
@@ -1240,19 +1340,34 @@ def _submit_email_and_wait_next(driver, email: str, attempts: int = 3, on_submit
                 _log_prefix(driver),
                 {k: v for k, v in fallback.items() if k != "url"} | ({"url": str(fallback.get("url") or "")[:180]} if fallback.get("url") else {}),
             )
-            if fallback.get("ok"):
-                fallback_state = _wait_email_submit_next_state(driver, email, timeout=30)
-                if fallback_state == "login_password":
-                    raise RuntimeError(f"邮箱提交后进入登录密码页，按已注册/不可用邮箱处理并停用: url={getattr(driver, 'current_url', '') or 'https://auth.openai.com/log-in/password'}")
-                if fallback_state in ("password", "otp", "logged_in"):
-                    logger.info("%s NextAuth 兜底后已进入下一步：%s", _log_prefix(driver), fallback_state)
-                    return fallback_state
-                if fallback_state == "blank_shell":
+            fallback_state = str(fallback.get("state") or "")
+            accepted = _accept_advanced_state(fallback_state, "NextAuth 兜底前页面")
+            if accepted:
+                return accepted
+            should_settle = bool(fallback.get("ok")) or fallback.get("reason") == "redirect_not_landed"
+            if should_settle:
+                fallback_state = _wait_email_submit_next_state(
+                    driver,
+                    email,
+                    timeout=35,
+                    wait_through_transient=True,
+                )
+                retry_state_name = fallback_state or retry_state_name
+                accepted = _accept_advanced_state(fallback_state, "NextAuth 兜底后")
+                if accepted:
+                    return accepted
+                if fallback_state in ("blank_shell", "unknown") and _is_blank_chatgpt_auth_shell(driver):
                     _reload_blank_chatgpt_auth_shell(driver)
-            elif state_name == "blank_shell":
+            elif state_name == "blank_shell" and _is_blank_chatgpt_auth_shell(driver):
                 # NextAuth 自身也失败时才刷新页面，保留一次 UI 重试机会。
                 _reload_blank_chatgpt_auth_shell(driver)
-        logger.warning("%s 邮箱提交后仍未进入下一步：%s，准备重填重试 state=%s", _log_prefix(driver), state_name, _email_input_value_state(driver))
+        late_state = _email_submit_advanced_state(driver)
+        accepted = _accept_advanced_state(late_state, "重试前页面")
+        if accepted:
+            return accepted
+        current_state = _email_input_value_state(driver)
+        last_state = current_state
+        logger.warning("%s 邮箱提交后仍未进入下一步：%s，准备重填重试 state=%s", _log_prefix(driver), retry_state_name, current_state)
         time.sleep(1.0)
     raise RuntimeError(f"邮箱提交后未进入密码页/验证码页，最后状态={last_state}")
 
