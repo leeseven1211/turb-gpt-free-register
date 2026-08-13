@@ -47,11 +47,20 @@ def run_cloak_registration(email: str, name: str, birthday: str, proxy: str = No
         _check_manual_stop()
 
         report_job_progress("submit_email", "running", "正在填写并提交邮箱")
-        next_state = _submit_email_and_wait_next(driver, email, attempts=3)
+        def _mark_email_submitted() -> None:
+            report_job_progress("submit_email", "success", "邮箱表单已提交")
+            report_job_progress("auth_redirect", "running", "正在等待 OpenAI 认证页并处理异常跳转")
+
+        next_state = _submit_email_and_wait_next(
+            driver,
+            email,
+            attempts=3,
+            on_submitted=_mark_email_submitted,
+        )
         _check_manual_stop()
 
         openai_password = None if next_state == "otp" else _fill_password_page_if_present(driver, email, timeout=25)
-        report_job_progress("submit_email", "success", "邮箱已提交")
+        report_job_progress("auth_redirect", "success", f"已进入认证下一步：{next_state}")
         _check_manual_stop()
 
         report_job_progress("email_otp", "running", "正在等待并验证邮箱验证码")

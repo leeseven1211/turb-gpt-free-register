@@ -96,7 +96,7 @@ WebUI 启动注册前会显示“本次注册邮箱来源”下拉框，操作�
 - 总览套餐分布会单独统计「Free」和「Free · 可领 Plus 试用」；网络出口只显示当前代理平台与活跃出口，注册流水线显示当天成功、部分成功和失败任务数。
 - Roxy 团队/项目可在配置页获取并保存。
 - 根据当前邮箱、代理、浏览器、Codex、提链和 sub2api 配置动态判断功能是否可用；缺少必要配置时，前端按钮会禁用，后端接口也会拒绝执行并返回具体原因。
-- 批次进度按邮箱逐行展示，包含拉邮箱、打开浏览器、打开注册页、提交邮箱、邮箱验证码、填写资料、获取 Token、Codex 等阶段；顶部显示成功/失败/运行/等待和总耗时。
+- 批次进度按邮箱逐行展示，包含准备邮箱、打开浏览器、打开注册页、提交邮箱、认证跳转、邮箱验证码、填写资料、获取 Token、Codex 等阶段；顶部显示成功/失败/运行/等待和总耗时。
 
 ---
 
@@ -738,7 +738,7 @@ ACCOUNT_ACTION_PROXY_MODE=registration
 USE_EMAIL_SERVICE=True
 EMAIL_SOURCE=email_butler,icloud_hide
 OTP_POLL_INTERVAL=3
-OTP_MAX_WAIT=180
+OTP_MAX_WAIT=240
 EMAIL_BUTLER_API_BASE=https://codex-auth.leeseven.com/email-butler/v1
 EMAIL_BUTLER_API_KEY=请从生产客户端配置安全同步，禁止提交
 EMAIL_BUTLER_REQUEST_TIMEOUT=20
@@ -971,6 +971,8 @@ accounts/20260709-10个-3线程/
 按 DOM 技术属性定位邮箱输入框，避免误点 Google/Apple/Microsoft
   ↓
 提交邮箱表单
+  ↓
+等待 OpenAI 认证跳转；首次确认空白壳时立即切换 NextAuth 兜底
   ↓
 如进入 create-account/password：设置密码并提交
   ↓

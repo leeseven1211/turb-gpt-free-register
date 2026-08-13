@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import string
 import time
 import uuid
@@ -1059,6 +1060,77 @@ def _is_email_login_page_still_present(driver) -> bool:
     return bool(state.get("inputs"))
 
 
+def _diagnostic_url(value: object) -> str:
+    """诊断日志只保留 URL 路径，避免记录授权 state、code 等查询参数。"""
+    text = str(value or "").strip()
+    try:
+        parsed = urlsplit(text)
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+    except Exception:
+        pass
+    return text[:240]
+
+
+def _redact_diagnostic_text(value: object) -> str:
+    text = str(value or "")
+    text = re.sub(r"https?://[^\s\"'<>]+", lambda m: _diagnostic_url(m.group(0)), text)
+    text = re.sub(
+        r"(?i)\b(access[_-]?token|csrf[_-]?token|state|code)=([^\s&]+)",
+        lambda m: f"{m.group(1)}=<redacted>",
+        text,
+    )
+    return text[:500]
+
+
+def _log_blank_auth_shell_diagnostics(driver, state: dict | None = None) -> None:
+    """记录空白认证壳的轻量现场，供区分页面渲染失败和请求失败。"""
+    snapshot: dict = {}
+    try:
+        snapshot = driver.execute_script(r"""
+        const safeUrl = value => {
+          try { const u = new URL(String(value || ''), location.href); return `${u.origin}${u.pathname}`; }
+          catch (_) { return String(value || '').slice(0, 240); }
+        };
+        const resources = (performance.getEntriesByType('resource') || []).slice(-20).map(item => ({
+          url: safeUrl(item.name),
+          type: item.initiatorType || '',
+          duration_ms: Math.round(Number(item.duration || 0)),
+          transfer_size: Number(item.transferSize || 0)
+        }));
+        return {
+          url: safeUrl(location.href),
+          title: document.title || '',
+          ready_state: document.readyState || '',
+          body_text_length: (document.body?.innerText || '').length,
+          html_length: (document.documentElement?.outerHTML || '').length,
+          script_count: document.scripts?.length || 0,
+          resources
+        };
+        """) or {}
+    except Exception as exc:
+        snapshot = {"snapshot_error": f"{type(exc).__name__}: {exc}"}
+
+    console_errors: list[dict] = []
+    try:
+        for item in (driver.get_log("browser") or [])[-20:]:
+            level = str(item.get("level") or "").upper()
+            if level not in {"WARNING", "SEVERE"}:
+                continue
+            console_errors.append({
+                "level": level,
+                "message": _redact_diagnostic_text(item.get("message")),
+            })
+    except Exception:
+        # debuggerAddress 模式不一定开启 browser log，缺失不影响注册流程。
+        pass
+
+    if state and not snapshot.get("url"):
+        snapshot["url"] = _diagnostic_url(state.get("url"))
+    snapshot["console"] = console_errors
+    logger.warning("%s 登录空白壳诊断：%s", _log_prefix(driver), snapshot)
+
+
 def _wait_email_submit_next_state(driver, email: str, timeout: int = 18) -> str:
     """邮箱提交后等待进入 password / otp / logged_in；仍停留邮箱页则返回 email_page。
 
@@ -1088,7 +1160,7 @@ def _wait_email_submit_next_state(driver, email: str, timeout: int = 18) -> str:
         last = state
         inputs = state.get("inputs") or []
         if not inputs and _is_blank_chatgpt_auth_shell(driver):
-            logger.warning("%s 邮箱提交后进入 ChatGPT 登录空壳页，立即恢复", _log_prefix(driver))
+            logger.warning("%s 邮箱提交后进入 ChatGPT 登录空壳页，立即切换认证兜底", _log_prefix(driver))
             return "blank_shell"
         if inputs:
             values = [str(i.get("value") or "") for i in inputs]
@@ -1126,10 +1198,11 @@ def _wait_email_submit_next_state(driver, email: str, timeout: int = 18) -> str:
     return "email_page" if _is_email_login_page_still_present(driver) else "unknown"
 
 
-def _submit_email_and_wait_next(driver, email: str, attempts: int = 3) -> str:
+def _submit_email_and_wait_next(driver, email: str, attempts: int = 3, on_submitted=None) -> str:
     """填写并提交邮箱，必须确认进入 password/otp/logged_in 才返回。"""
     last_state = None
     nextauth_fallback_done = False
+    submitted_reported = False
     for attempt in range(1, attempts + 1):
         _type_email_address(driver, email, timeout=20)
         state = _email_input_value_state(driver)
@@ -1142,6 +1215,12 @@ def _submit_email_and_wait_next(driver, email: str, attempts: int = 3) -> str:
         logger.info("%s 已填写邮箱并校验通过：%s", _log_prefix(driver), email)
         human_delay("form")
         _submit_email_step(driver, email)
+        if not submitted_reported and on_submitted is not None:
+            try:
+                on_submitted()
+            except Exception:
+                logger.exception("%s 上报邮箱提交阶段失败", _log_prefix(driver))
+            submitted_reported = True
         logger.info("%s 已提交邮箱，等待进入密码页或验证码页（%s/%s）", _log_prefix(driver), attempt, attempts)
         state_name = _wait_email_submit_next_state(driver, email, timeout=20)
         if state_name == "login_password":
@@ -1150,12 +1229,8 @@ def _submit_email_and_wait_next(driver, email: str, attempts: int = 3) -> str:
             logger.info("%s 邮箱提交后已进入下一步：%s", _log_prefix(driver), state_name)
             return state_name
         if state_name == "blank_shell":
-            _reload_blank_chatgpt_auth_shell(driver)
-            logger.info("%s 登录空壳页已执行恢复，准备重新填写邮箱（%s/%s）", _log_prefix(driver), attempt, attempts)
-            # 首次空壳先走轻量刷新；若再次出现，说明该出口下 UI 流程持续异常，
-            # 直接切换 NextAuth 导航兜底，避免刷新三次后仍然失败。
-            if attempt == 1:
-                continue
+            _log_blank_auth_shell_diagnostics(driver, last_state)
+            logger.info("%s 首次确认登录空壳，立即切换 NextAuth 导航兜底", _log_prefix(driver))
         if state_name in ("email_page", "email_cleared", "unknown", "blank_shell") and not nextauth_fallback_done:
             nextauth_fallback_done = True
             logger.warning("%s UI 提交邮箱后未跳转，启用一次 NextAuth 导航兜底", _log_prefix(driver))
@@ -1174,6 +1249,9 @@ def _submit_email_and_wait_next(driver, email: str, attempts: int = 3) -> str:
                     return fallback_state
                 if fallback_state == "blank_shell":
                     _reload_blank_chatgpt_auth_shell(driver)
+            elif state_name == "blank_shell":
+                # NextAuth 自身也失败时才刷新页面，保留一次 UI 重试机会。
+                _reload_blank_chatgpt_auth_shell(driver)
         logger.warning("%s 邮箱提交后仍未进入下一步：%s，准备重填重试 state=%s", _log_prefix(driver), state_name, _email_input_value_state(driver))
         time.sleep(1.0)
     raise RuntimeError(f"邮箱提交后未进入密码页/验证码页，最后状态={last_state}")
@@ -2174,13 +2252,22 @@ def run_roxy_registration(email: str, name: str, birthday: str, proxy: str = Non
         # 填邮箱。OpenAI UI 会随出口 IP/语言变化；这里只按 DOM 技术属性找邮箱入口，
         # 并排除 Google/Apple/Microsoft 等第三方入口，不依赖按钮可见文字。
         report_job_progress("submit_email", "running", "正在填写并提交邮箱")
-        next_state = _submit_email_and_wait_next(driver, email, attempts=3)
+        def _mark_email_submitted() -> None:
+            report_job_progress("submit_email", "success", "邮箱表单已提交")
+            report_job_progress("auth_redirect", "running", "正在等待 OpenAI 认证页并处理异常跳转")
+
+        next_state = _submit_email_and_wait_next(
+            driver,
+            email,
+            attempts=3,
+            on_submitted=_mark_email_submitted,
+        )
         _check_manual_stop()
 
         # 新版注册流可能先进入 /create-account/password；参考 FlowPilot 的 fill-password 步骤，
         # 先设置密码并提交，然后再等待邮箱验证码页。
         openai_password = None if next_state == "otp" else _fill_password_page_if_present(driver, email, timeout=25)
-        report_job_progress("submit_email", "success", "邮箱已提交")
+        report_job_progress("auth_redirect", "success", f"已进入认证下一步：{next_state}")
         _check_manual_stop()
 
         report_job_progress("email_otp", "running", "正在等待并验证邮箱验证码")
@@ -2194,23 +2281,10 @@ def run_roxy_registration(email: str, name: str, birthday: str, proxy: str = Non
                 except Exception as exc:
                     if otp_attempt >= max_otp_attempts:
                         raise
-                    # 兜底：OpenAI 重发验证码时常常是同一封邮件（时间戳不变），
-                    # after_ts 过滤会把它当成旧邮件忽略。先宽松取最新一条验证码，
-                    # 取到就直接用它重试提交，避免误点“重新发送”后死等。
-                    fallback_otp = None
-                    try:
-                        fallback_otp = wait_for_otp(email, after_ts=0.0, max_wait=15, poll_interval=3)
-                    except Exception:
-                        fallback_otp = None
-                    if fallback_otp:
-                        logger.info(
-                            "[Roxy注册][OTP] 取码接口超时但宽松取到最新验证码，直接重试提交：%s (fallback)",
-                            fallback_otp,
-                        )
-                        current_otp = fallback_otp
-                        continue
+                    # 不再用 after_ts=0 宽松捞旧码。高并发/重发场景下，旧码可能
+                    # 属于同一邮箱的上一轮认证，提交后只会造成额外等待和再次重发。
                     logger.warning(
-                        "[Roxy注册][OTP] 一直未收到验证码，点击“重新发送电子邮件”后继续等待（下一轮 %s/%s）：%s: %s",
+                        "[Roxy注册][OTP] 单轮等待结束仍未收到新验证码，重新发送后只等待新邮件（下一轮 %s/%s）：%s: %s",
                         otp_attempt + 1,
                         max_otp_attempts,
                         type(exc).__name__,

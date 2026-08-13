@@ -49,7 +49,10 @@ OUTLOOK_API_BASE = "https://mail.chatai.codes"
 # ============================================================
 
 OTP_POLL_INTERVAL = 3
-OTP_MAX_WAIT = 90
+# Email Butler 的 PG 接口是长轮询：邮件入库后会立即返回，但 iCloud 转发到
+# Gmail/PG 的上游链路在高并发时 P90 可超过 3 分钟。默认等待 240 秒，避免
+# 90 秒过早超时后立即重发，制造多封验证码和错误码竞争。
+OTP_MAX_WAIT = 240
 
 # Outlook 双协议取件：抓到一封 OTP 后再多等多少秒看是否有更晚到达的邮件。
 OTP_SETTLE_SECONDS = 5

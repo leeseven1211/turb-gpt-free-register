@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from core import db
-from webui.app import _latest_progress_batch, create_app
+from webui.app import _compact_job_for_list, _latest_progress_batch, create_app
 
 
 class JobProgressTests(unittest.TestCase):
@@ -54,6 +54,29 @@ class JobProgressTests(unittest.TestCase):
                 row = db.get_job(job["id"])
                 self.assertEqual(row["progress_steps"]["email_otp"]["state"], "failed")
                 self.assertEqual(row["progress_steps"]["email_otp"]["detail"], "验证码超时")
+
+    def test_historical_job_marks_new_auth_redirect_stage_skipped(self):
+        row = {
+            "id": 1,
+            "status": "success",
+            "progress_steps": {
+                "submit_email": {
+                    "state": "success",
+                    "started_at": "2026-08-13T12:00:00",
+                    "completed_at": "2026-08-13T12:00:20",
+                },
+                "email_otp": {"state": "success"},
+            },
+        }
+
+        compact = _compact_job_for_list(row)
+
+        self.assertEqual(compact["progress_steps"]["auth_redirect"]["state"], "skipped")
+        self.assertEqual(
+            compact["progress_steps"]["auth_redirect"]["started_at"],
+            "2026-08-13T12:00:20",
+        )
+        self.assertNotIn("auth_redirect", row["progress_steps"])
 
     def test_startup_recovers_interrupted_jobs_and_codex_account(self):
         with tempfile.TemporaryDirectory() as td:

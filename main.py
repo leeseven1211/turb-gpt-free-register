@@ -283,8 +283,10 @@ def run_registration(
         report_job_progress("page", "success", "注册页状态已初始化")
 
         # 步骤3: 发起 OAuth signin
-        report_job_progress("submit_email", "running", "正在提交邮箱并触发验证码")
+        report_job_progress("submit_email", "running", "正在提交邮箱")
         authorize_url = signin_openai(session, csrf_token, email)
+        report_job_progress("submit_email", "success", "邮箱已提交")
+        report_job_progress("auth_redirect", "running", "正在跟随 OpenAI 认证跳转")
         human_delay("api")
 
         # 记录"OTP 触发"前的时间戳，自动取信箱时只看此后的邮件，
@@ -298,7 +300,7 @@ def run_registration(
         # 不需要 /create-account/password、register_user、单独 send_email_otp 调用。
         follow_authorize(session, authorize_url)
         human_delay("navigate")
-        report_job_progress("submit_email", "success", "邮箱已提交")
+        report_job_progress("auth_redirect", "success", "已进入邮箱验证码页")
 
         # ==================== 阶段3: 验证码验证 ====================
         # Sentinel Token 不提前生成；等 OTP 到手后紧贴 validate 请求生成，

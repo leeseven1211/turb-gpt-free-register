@@ -353,7 +353,9 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     region=proxy_lease.region,
                 )
             if is_stop_requested(job_id):
-                _release_unconsumed_job_email(email, "用户手动停止")
+                # run_registration 正常返回前，各注册驱动已经完成邮箱状态收口。
+                # 这里不能再次释放：失败邮箱可能已经被下一任务重新领取，二次释放
+                # 会把别的线程正在使用的租约错误改回 available。
                 db.finish_job_progress(job_id, success=False, detail="用户手动停止", failure_state="stopped")
                 db.update_job(
                     job_id,
@@ -389,8 +391,9 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 email_to_handle = str(result_email or email or "").strip()
                 if _should_disable_failed_registration_email(err):
                     _disable_job_email(email_to_handle, str(err))
-                else:
-                    _release_unconsumed_job_email(email_to_handle, str(err))
+                # 普通失败的邮箱已经由 run_registration/具体驱动释放。
+                # 只有 run_registration 直接抛出、没有正常返回时，才由下面的
+                # except 分支调用 _release_unconsumed_job_email 做服务层兜底。
                 log_logger.error(f"[Job {job_id}] 失败: {err}")
     except StopRequested as exc:
         _release_unconsumed_job_email(email, str(exc))

@@ -320,6 +320,7 @@ def fetch_inbound_otp(
     anchor = float(after_ts if after_ts is not None else time.time()) - 30
     since = datetime.fromtimestamp(anchor, tz=timezone.utc).isoformat().replace("+00:00", "Z")
     logger.info("[EmailButler] 等待 PG 入站验证码：%s，最长 %ss", target, wait_seconds)
+    started = time.monotonic()
     payload = _request(
         "POST",
         "/inbound/code",
@@ -333,10 +334,12 @@ def fetch_inbound_otp(
         # 立即重连一次即可继续等待，不需要重新扫描 Gmail。
         retry_connection_error=True,
     )
+    elapsed = time.monotonic() - started
     otp = _message_otp(payload)
     if otp:
-        logger.info("[EmailButler] 已从 PG 入站缓存取得 OTP")
+        logger.info("[EmailButler] 已从 PG 入站缓存取得 OTP，接口等待 %.1fs", elapsed)
         return otp
+    logger.warning("[EmailButler] PG 入站等待结束但没有 OTP，接口等待 %.1fs", elapsed)
     raise EmailButlerClientError(
         f"等待 Email Butler 入站验证码超时（>{wait_seconds}s）：{target}"
     )

@@ -71,7 +71,7 @@ class RoxyEmailRecoveryTests(unittest.TestCase):
         self.assertEqual(result, "otp")
         nextauth.assert_called_once_with(driver, "test@example.com")
 
-    def test_repeated_blank_shell_switches_to_nextauth_fallback(self):
+    def test_first_blank_shell_switches_to_nextauth_without_reload(self):
         driver = _FakeDriver()
         email_state = {
             "url": "https://chatgpt.com/auth/login",
@@ -84,7 +84,10 @@ class RoxyEmailRecoveryTests(unittest.TestCase):
         ), patch.object(
             roxy_registration,
             "_wait_email_submit_next_state",
-            side_effect=["blank_shell", "blank_shell", "otp"],
+            side_effect=["blank_shell", "otp"],
+        ), patch.object(
+            roxy_registration,
+            "_log_blank_auth_shell_diagnostics",
         ), patch.object(roxy_registration, "_reload_blank_chatgpt_auth_shell") as reload_shell, patch.object(
             roxy_registration,
             "_submit_email_via_browser_nextauth",
@@ -93,8 +96,37 @@ class RoxyEmailRecoveryTests(unittest.TestCase):
             result = roxy_registration._submit_email_and_wait_next(driver, "test@example.com")
 
         self.assertEqual(result, "otp")
-        self.assertEqual(reload_shell.call_count, 2)
+        reload_shell.assert_not_called()
         nextauth.assert_called_once_with(driver, "test@example.com")
+
+    def test_submit_callback_runs_once_when_ui_is_retried(self):
+        driver = _FakeDriver()
+        email_state = {
+            "url": "https://chatgpt.com/auth/login?email=test%40example.com",
+            "inputs": [{"value": "test@example.com"}],
+        }
+        submitted = []
+        with patch.object(roxy_registration, "_type_email_address"), patch.object(
+            roxy_registration, "_email_input_value_state", return_value=email_state
+        ), patch.object(roxy_registration, "human_delay"), patch.object(
+            roxy_registration, "_submit_email_step"
+        ), patch.object(
+            roxy_registration,
+            "_wait_email_submit_next_state",
+            side_effect=["email_page", "otp"],
+        ), patch.object(
+            roxy_registration,
+            "_submit_email_via_browser_nextauth",
+            return_value={"ok": False, "stage": "signin"},
+        ):
+            result = roxy_registration._submit_email_and_wait_next(
+                driver,
+                "test@example.com",
+                on_submitted=lambda: submitted.append(True),
+            )
+
+        self.assertEqual(result, "otp")
+        self.assertEqual(submitted, [True])
 
     def test_missing_email_form_reloads_blank_auth_shell_once(self):
         driver = _FakeDriver()

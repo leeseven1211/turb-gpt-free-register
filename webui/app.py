@@ -268,6 +268,25 @@ def _compact_job_for_list(row: dict) -> dict:
     if err:
         # 列表只需要摘要；完整错误和堆栈看“任务日志”。
         out["error_message"] = err[:240] + ("…" if len(err) > 240 else "")
+    steps = out.get("progress_steps")
+    if isinstance(steps, dict) and "auth_redirect" not in steps:
+        submit_step = steps.get("submit_email")
+        reached_later_stage = any(
+            isinstance(steps.get(key), dict)
+            for key in ("email_otp", "profile", "token", "codex")
+        )
+        if isinstance(submit_step, dict) and reached_later_stage:
+            # 兼容新增“认证跳转”阶段之前的历史任务，避免已完成批次中间
+            # 永久出现一个 pending 节点；历史数据没有独立耗时，只能标记跳过。
+            steps = {key: dict(value) if isinstance(value, dict) else value for key, value in steps.items()}
+            completed_at = submit_step.get("completed_at") or submit_step.get("started_at")
+            steps["auth_redirect"] = {
+                "state": "skipped",
+                "detail": "历史任务未单独记录认证跳转耗时",
+                "started_at": completed_at,
+                "completed_at": completed_at,
+            }
+            out["progress_steps"] = steps
     return out
 
 

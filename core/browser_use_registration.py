@@ -408,16 +408,31 @@ def _wait_after_email_submit_transition(page, context=None, timeout: int = 14) -
     return last_state
 
 
-def _submit_email_until_transition(page, context, email: str, *, attempts: int = 2, timeout_ms: int | None = None) -> str:
+def _submit_email_until_transition(
+    page,
+    context,
+    email: str,
+    *,
+    attempts: int = 2,
+    timeout_ms: int | None = None,
+    on_submitted=None,
+) -> str:
     """
     填写并提交邮箱，并确认进入 password/OTP/后续页面。
     若仍停留 chatgpt.com/auth/login?email=...，重试一次，避免无效等待邮箱验证码。
     """
     last_state = "other"
+    submitted_reported = False
     for attempt in range(1, max(1, attempts) + 1):
         _check_manual_stop()
         logger.info("[BrowserUse] 提交邮箱尝试 %s/%s：%s", attempt, attempts, email)
         _type_email(page, email, timeout_ms=timeout_ms)
+        if not submitted_reported and on_submitted is not None:
+            try:
+                on_submitted()
+            except Exception:
+                logger.exception("[BrowserUse] 上报邮箱提交阶段失败")
+            submitted_reported = True
         _check_manual_stop()
         last_state = _wait_after_email_submit_transition(page, context=context, timeout=10 if _fast_mode() else 16)
         logger.info("[BrowserUse] 邮箱提交后状态：%s url=%s", last_state, _page_url(page) or "-")
@@ -1719,7 +1734,18 @@ def run_browser_use_registration(
             # OpenAI 可能在点击提交后立刻发 OTP，甚至邮件 ReceivedDateTime 早于 Playwright
             # 点击函数返回的本地时间；先记录时间戳，配合 _is_after 的时钟容忍，避免过滤掉首次验证码。
             otp_after_ts = time.time()
-            _submit_email_until_transition(page, context, email, attempts=2, timeout_ms=20000)
+            def _mark_email_submitted() -> None:
+                report_job_progress("submit_email", "success", "邮箱表单已提交")
+                report_job_progress("auth_redirect", "running", "正在等待 OpenAI 认证页并处理异常跳转")
+
+            next_state = _submit_email_until_transition(
+                page,
+                context,
+                email,
+                attempts=2,
+                timeout_ms=20000,
+                on_submitted=_mark_email_submitted,
+            )
             _t_email.done()
             logger.info("[BrowserUse] 已提交邮箱：%s", email)
             _assert_not_external_idp(page, "提交邮箱后")
@@ -1729,7 +1755,7 @@ def run_browser_use_registration(
             try:
                 openai_password = _fill_password_if_present(page, email, timeout=8 if _fast_mode() else 15, context=context)
                 _t_pwd.done("password_set=yes" if openai_password else "password_set=no")
-                report_job_progress("submit_email", "success", "邮箱已提交")
+                report_job_progress("auth_redirect", "success", f"已进入认证下一步：{next_state}")
             except Exception as exc:
                 _t_pwd.done(f"failed={type(exc).__name__}: {str(exc)[:160]}")
                 raise
