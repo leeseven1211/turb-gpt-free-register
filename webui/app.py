@@ -859,7 +859,7 @@ def create_app(auth_code: str | None = None) -> Flask:
 
     @app.post("/api/accounts/check-live-bulk")
     def api_accounts_check_live_bulk():
-        """批量查活：加入后台队列；协议 BrowserSession 指纹环境重新登录并刷新最新 AT。"""
+        """批量查活：优先在线验证现有 AT，失效时再通过邮箱 OTP 登录刷新。"""
         unavailable = _feature_unavailable("live_check")
         if unavailable:
             return unavailable

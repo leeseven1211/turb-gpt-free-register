@@ -145,6 +145,7 @@ class ProxyRouteInvariantTests(unittest.TestCase):
 
         with (
             patch.object(live_check_service.db, "mark_account_live_check_running", return_value=True),
+            patch.object(live_check_service.db, "get_account", return_value={}),
             patch.object(live_check_service.db, "update_account_liveness"),
             patch.object(live_check_service, "_append_log"),
             patch.object(live_check_service, "check_account_liveness", side_effect=fake_check),
@@ -162,6 +163,57 @@ class ProxyRouteInvariantTests(unittest.TestCase):
         self.assertEqual(2, acquire.call_count)
         first_route.release.assert_called_once_with(reason="live-check-8-preflight-rotate")
         second_route.release.assert_called_once_with(reason="live-check-8")
+
+    def test_live_check_uses_valid_saved_token_before_email_login(self):
+        from core import live_check_service
+
+        route = SimpleNamespace(
+            proxy_url="http://fresh.example:8080",
+            public_dict=lambda: {
+                "proxy_mode": "1024",
+                "network_route": "proxy",
+                "proxy_provider": "1024proxy",
+                "proxy_used": "http://fresh.example:8080",
+                "proxy_region": "US",
+            },
+            release=MagicMock(),
+        )
+        updated = MagicMock()
+        with (
+            patch.object(live_check_service.db, "mark_account_live_check_running", return_value=True),
+            patch.object(live_check_service.db, "get_account", return_value={"access_token": "valid-token"}),
+            patch.object(live_check_service.db, "update_account_liveness", updated),
+            patch.object(live_check_service, "token_claims", return_value={"token_expired": False}),
+            patch.object(
+                live_check_service,
+                "check_account_plan",
+                return_value={"ok": True, "http_status": 200, "current_plan_type": "free"},
+            ) as probe,
+            patch.object(live_check_service, "check_account_liveness") as email_login,
+            patch.object(live_check_service, "_append_log"),
+            patch("core.account_proxy.acquire_account_proxy", return_value=route),
+            patch.object(live_check_service._QUEUE_SLOTS, "release"),
+        ):
+            result = live_check_service._run_live_check(
+                account_id=85,
+                email="first@example.com",
+                proxy=None,
+                trigger="manual",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("live", result["status"])
+        self.assertEqual("access_token", result["validation_method"])
+        probe.assert_called_once_with(
+            "valid-token",
+            proxy="http://fresh.example:8080",
+            max_attempts=1,
+        )
+        email_login.assert_not_called()
+        persisted = updated.call_args.args[1]
+        self.assertTrue(persisted["ok"])
+        self.assertEqual("access_token", persisted["validation_method"])
+        route.release.assert_called_once_with(reason="live-check-85")
 
     def test_immediate_browser_oauth_reuses_proxy_and_login_state(self):
         from core.cloakbrowser_registration import run_cloak_registration

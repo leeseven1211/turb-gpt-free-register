@@ -3089,7 +3089,7 @@
       <div class="jobs-toolbar-v2 list-action-toolbar" id="accountsToolbarV2">
         <span class="list-selection-hint" id="accountsSelectedHintV2">选择账号后批量操作</span>
         <div class="acc-v2-btn-group toolbar-selection-primary selection-only">
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedLiveV2" onclick="checkSelectedLive()" disabled title="重新登录选中账号；成功且未封号则标记正常，并刷新最新 AT/accessToken">查活</button>
+          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedLiveV2" onclick="checkSelectedLive()" disabled title="优先在线验证现有 Token；失效时才通过邮箱 OTP 登录刷新">查活</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedPlansV2" disabled title="查询选中账号当前套餐；free 账号会检查 Plus 试用资格">查套餐</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnExtractSelectedLinksV2" disabled title="给选中的 free(可Plus试用) 账号批量提链，类型按配置 PIX/UPI/KAKAO_PAY/IDEAL">提链</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnNoteSelectedAccountsV2" disabled title="给选中的账号统一设置备注，留空可清空备注">备注</button>
@@ -5327,7 +5327,7 @@ function _accountsV2MoreMenu(r) {
     `<button type="button" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button>`,
     r.has_registration_password ? `<button type="button" data-account-copy-secret="registration_password" data-account-id="${esc(r.id)}">复制登录密码</button>` : '',
     `<button type="button" data-account-note="${esc(r.id)}" title="设置/清空该账号备注">备注</button>`,
-    `<button type="button" onclick="checkSelectedLive([Number('${esc(r.id)}')], this); return false;" title="重新登录该账号，成功则刷新最新 AT/accessToken">查活刷新AT</button>`,
+    `<button type="button" onclick="checkSelectedLive([Number('${esc(r.id)}')], this); return false;" title="优先在线验证现有 Token；失效时才通过邮箱 OTP 登录刷新">查活/刷新AT</button>`,
     `<button type="button" data-account-live-log="${esc(r.email)}" title="查看该账号最近一次查活日志">查活日志</button>`,
     _planAction(r),
     _extractLinkAction(r),
@@ -6182,9 +6182,11 @@ async function checkSelectedLive(idsArg = null, btnArg = null) {
   const ids = idsArg || Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
   const workers = getCodexBulkWorkers();
-  const msg = idsArg ? `确定查活这个账号并刷新最新 AT/accessToken 吗？` : `确定查活选中的 ${ids.length} 个账号吗？
+  const msg = idsArg ? `确定查活这个账号吗？
 
-会重新登录邮箱 OTP；登录成功且未封号则标记正常，并刷新最新 AT/accessToken。
+会优先在线验证现有 accessToken；仅在 Token 失效时通过邮箱 OTP 重新登录刷新。` : `确定查活选中的 ${ids.length} 个账号吗？
+
+会优先在线验证现有 accessToken；仅在 Token 失效时通过邮箱 OTP 重新登录刷新。
 
 并发线程数：${workers}`;
   if (!confirm(msg)) return;
