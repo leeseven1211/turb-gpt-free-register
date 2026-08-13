@@ -6,7 +6,7 @@ import threading
 import time
 from pathlib import Path
 
-from core import db
+from core import account_task_store, db
 
 logger = logging.getLogger(__name__)
 
@@ -168,18 +168,32 @@ def run_worker(
     batch_label: str | None = None,
     clear_log: bool = True,
     target_log_path: str | Path | None = None,
+    task_id: int | None = None,
+    task_trigger: str = "manual",
 ) -> dict:
-    """执行一次 Codex 补跑。调用前必须先 reserve，结束时会自动 release。"""
+    """执行一次 Codex 补跑，并把脱敏后的关键阶段写入统一任务实例。"""
     fh: logging.FileHandler | None = None
     root_logger = logging.getLogger()
     result: dict = {"status": "failed", "ok": False, "message": "Codex 补跑未返回结果"}
     account_route = None
+    route_summary: dict = {}
+    oauth_driver = ""
     key = (email or "").strip().lower()
     try:
+        if task_id is None:
+            account = db.get_account_by_email(email) or {}
+            task_id = account_task_store.create_task(
+                task_type="codex_retry",
+                account_id=int(account.get("id") or 0) or None,
+                email=email,
+                trigger=str(task_trigger or "manual"),
+            )
         with _RETRYING_LOCK:
             _RUNNING_THREADS[key] = threading.get_ident()
             _RESERVED_AT[key] = time.time()
         check_stop_requested(email)
+
+        account_task_store.start_task(task_id, message="开始补跑 Codex OAuth 授权")
 
         from core.codex_oauth import run_codex_oauth
 
@@ -222,6 +236,12 @@ def run_worker(
         oauth_driver = str(getattr(codex_cfg, "CODEX_OAUTH_DRIVER", "protocol") or "protocol").strip().lower()
         if oauth_driver == "same_as_registration":
             oauth_driver = str(getattr(roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
+        account_task_store.append_event(
+            task_id,
+            stage="driver",
+            message=f"使用 {oauth_driver or 'protocol'} 驱动执行 Codex OAuth",
+            detail={"oauth_driver": oauth_driver or "protocol"},
+        )
         # Browser Use / Skyvern 的浏览器运行在云端，只能使用云服务自身的代理设置；
         # protocol / Roxy / Cloak 才能注入本地申请的 1024Proxy 或静态代理池。
         if oauth_driver not in {"browser_use", "browseruse", "browser-use", "bu", "skyvern", "sv"}:
@@ -232,6 +252,7 @@ def run_worker(
                 email=email,
                 purpose="codex-oauth",
             )
+            route_summary = account_route.public_dict()
             logger.info(
                 "[Codex 补跑] 账号网络：provider=%s region=%s route=%s proxy=%s",
                 account_route.provider,
@@ -239,6 +260,31 @@ def run_worker(
                 account_route.public_dict().get("network_route"),
                 account_route.public_dict().get("proxy_used") or "-",
             )
+            account_task_store.append_event(
+                task_id,
+                stage="network",
+                message="已分配账号补跑线路",
+                detail={
+                    "network_route": route_summary.get("network_route"),
+                    "proxy_mode": account_route.mode,
+                    "proxy_provider": account_route.provider,
+                    "proxy_region": account_route.region,
+                    "proxy_used": route_summary.get("proxy_used"),
+                },
+            )
+        else:
+            route_summary = {"network_route": "cloud_driver"}
+            account_task_store.append_event(
+                task_id,
+                stage="network",
+                message="云端浏览器驱动使用平台线路",
+                detail={"network_route": "cloud_driver"},
+            )
+        account_task_store.append_event(
+            task_id,
+            stage="oauth",
+            message="开始获取授权地址并完成邮箱、短信与 callback 流程",
+        )
         result = run_codex_oauth(
             email,
             proxy=(account_route.proxy_url if account_route is not None else None),
@@ -253,6 +299,18 @@ def run_worker(
         logger.info(
             "[Codex 补跑] 结果：status=%s ok=%s file=%s callback=%s",
             result.get("status"), result.get("ok"), result.get("file_path"), result.get("callback_url"),
+        )
+        account_task_store.append_event(
+            task_id,
+            stage="oauth_result",
+            message="Codex OAuth 已返回成功结果" if result.get("ok") else "Codex OAuth 返回失败结果",
+            level="INFO" if result.get("ok") else "ERROR",
+            detail={
+                "ok": bool(result.get("ok")),
+                "status": result.get("status"),
+                "message": result.get("message"),
+                "credential_saved": bool(result.get("file_path")),
+            },
         )
         result_status = result.get("status", "failed")
         if result.get("ok"):
@@ -294,3 +352,40 @@ def run_worker(
             with _RETRYING_LOCK:
                 if key:
                     _STOP_REQUESTED.discard(key)
+            result_status = str(result.get("status") or "failed").lower()
+            task_status = (
+                "success" if result.get("ok")
+                else "deactivated" if result_status == "deactivated"
+                else "cancelled" if result_status in {"stopped", "cancelled"}
+                else "failed"
+            )
+            route = {
+                "network_route": route_summary.get("network_route"),
+                "proxy_mode": result.get("proxy_mode") or getattr(account_route, "mode", None),
+                "proxy_provider": result.get("proxy_provider") or getattr(account_route, "provider", None),
+                "proxy_region": result.get("proxy_region") or getattr(account_route, "region", None),
+                "proxy_used": route_summary.get("proxy_used"),
+            }
+            try:
+                account_task_store.finish_task(
+                    task_id,
+                    status=task_status,
+                    message=(
+                        "Codex 补跑成功" if task_status == "success"
+                        else "Codex 补跑已停止" if task_status == "cancelled"
+                        else "账号已停用" if task_status == "deactivated"
+                        else "Codex 补跑失败"
+                    ),
+                    error=None if task_status == "success" else str(result.get("message") or "Codex 补跑失败"),
+                    result_summary={
+                        "ok": bool(result.get("ok")),
+                        "status": result_status,
+                        "message": result.get("message"),
+                        "credential_saved": bool(result.get("file_path")),
+                        "oauth_driver": oauth_driver or None,
+                    },
+                    route=route,
+                    validation_method=f"codex_oauth:{oauth_driver or 'unknown'}",
+                )
+            except Exception:
+                logger.exception("[Codex 补跑] 写入任务实例失败：task_id=%s email=%s", task_id or "-", email)

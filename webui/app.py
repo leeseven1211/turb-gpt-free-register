@@ -682,6 +682,11 @@ def create_app(auth_code: str | None = None) -> Flask:
             )
         elif task_type == "deactivation_mail":
             queued = deactivation_mail_service.enqueue(int(account["id"]), trigger="manual_retry")
+        elif task_type == "codex_retry":
+            queued = _enqueue_codex_retry(
+                email=str(account.get("email") or ""),
+                trigger="manual_retry",
+            )
         else:
             return jsonify({"ok": False, "error": "该任务类型暂不支持重跑"}), 400
         if queued.get("busy"):
@@ -2214,9 +2219,79 @@ def create_app(auth_code: str | None = None) -> Flask:
     def _release_codex_retry(email: str) -> None:
         codex_retry_service.release(email)
 
-    def _run_codex_retry_worker(email: str, *, batch_label: str | None = None, clear_log: bool = True) -> None:
+    def _run_codex_retry_worker(
+        email: str,
+        *,
+        batch_label: str | None = None,
+        clear_log: bool = True,
+        task_id: int | None = None,
+        task_trigger: str = "manual",
+    ) -> None:
         """执行一个账号的 Codex 补跑。调用前必须已经 reserve。"""
-        codex_retry_service.run_worker(email, batch_label=batch_label, clear_log=clear_log)
+        codex_retry_service.run_worker(
+            email,
+            batch_label=batch_label,
+            clear_log=clear_log,
+            task_id=task_id,
+            task_trigger=task_trigger,
+        )
+
+    def _enqueue_codex_retry(email: str, *, trigger: str = "manual") -> dict:
+        """给单账号创建统一任务实例，并启动 Codex 补跑线程。"""
+        email = str(email or "").strip()
+        acc = db.get_account_by_email(email)
+        if acc is None:
+            return {"accepted": False, "error": f"账号不存在: {email}"}
+        if (acc.get("codex_status") or "") == "deactivated":
+            return {"accepted": False, "error": "账号已废号，不能补跑 Codex"}
+        if not _reserve_codex_retry(email):
+            return {"accepted": False, "busy": True, "error": "该账号正在补跑中，请稍候"}
+
+        try:
+            task_id = account_task_store.create_task(
+                task_type="codex_retry",
+                account_id=int(acc.get("id") or 0) or None,
+                email=email,
+                trigger=str(trigger or "manual"),
+            )
+        except Exception as exc:
+            _release_codex_retry(email)
+            logger.exception("创建 Codex 补跑任务实例失败：email=%s", email)
+            return {"accepted": False, "error": f"任务实例创建失败：{type(exc).__name__}: {exc}"}
+        db.update_account_codex_status(email, "retrying", None)
+        worker = threading.Thread(
+            target=_run_codex_retry_worker,
+            kwargs={
+                "email": email,
+                "clear_log": True,
+                "task_id": task_id,
+                "task_trigger": trigger,
+            },
+            name=f"codex-retry-{email}",
+            daemon=True,
+        )
+        try:
+            worker.start()
+        except Exception as exc:
+            _release_codex_retry(email)
+            error = f"补跑任务启动失败：{type(exc).__name__}: {exc}"
+            db.update_account_codex_status(email, "failed", error[:500])
+            account_task_store.finish_task(
+                task_id,
+                status="failed",
+                message="Codex 补跑任务启动失败",
+                error=error,
+            )
+            return {"accepted": False, "task_id": task_id, "error": error}
+        return {
+            "accepted": True,
+            "busy": False,
+            "task_id": task_id,
+            "account_id": int(acc.get("id") or 0) or None,
+            "email": email,
+            "status": "queued",
+            "trigger": str(trigger or "manual"),
+        }
 
 
     @app.post("/api/codex/stop")
@@ -2325,22 +2400,17 @@ def create_app(auth_code: str | None = None) -> Flask:
         email = (data.get("email") or "").strip()
         if not email:
             return jsonify({"ok": False, "error": "email 为空"}), 400
-        acc = db.get_account_by_email(email)
-        if acc is None:
-            return jsonify({"ok": False, "error": f"账号不存在: {email}"}), 404
-        if (acc.get("codex_status") or "") == "deactivated":
-            return jsonify({"ok": False, "error": "账号已废号，不能补跑 Codex"}), 409
-        if not _reserve_codex_retry(email):
-            return jsonify({"ok": False, "error": "该账号正在补跑中，请稍候"}), 409
-
-        db.update_account_codex_status(email, "retrying", None)
-        threading.Thread(
-            target=_run_codex_retry_worker,
-            kwargs={"email": email, "clear_log": True},
-            name=f"codex-retry-{email}",
-            daemon=True,
-        ).start()
-        return jsonify({"ok": True, "message": "已在后台开始补跑，~1-2 分钟后刷新查看"})
+        queued = _enqueue_codex_retry(email, trigger="manual")
+        if queued.get("busy"):
+            return jsonify({"ok": False, **queued}), 409
+        if not queued.get("accepted"):
+            status = 404 if str(queued.get("error") or "").startswith("账号不存在") else 409
+            return jsonify({"ok": False, **queued}), status
+        return jsonify({
+            "ok": True,
+            **queued,
+            "message": f"已创建任务实例 #{queued['task_id']}，后台开始补跑",
+        }), 202
 
     @app.post("/api/codex/retry-bulk")
     def api_codex_retry_bulk():
@@ -2394,21 +2464,43 @@ def create_app(auth_code: str | None = None) -> Flask:
         if not selected:
             return jsonify({"ok": False, "error": "没有可补跑的账号", "skipped": skipped}), 409
 
-        batch_id = _dt.now().strftime("%Y%m%d-%H%M%S")
+        batch_id = account_task_store.create_batch(
+            action_type="codex_retry",
+            trigger="manual_bulk",
+            total_count=len(selected),
+        )
+        batch_label = f"{_dt.now().strftime('%Y%m%d-%H%M%S')}-{batch_id[:8]}"
         for item in selected:
             email = item["email"]
+            item["task_id"] = account_task_store.create_task(
+                task_type="codex_retry",
+                account_id=int(item["id"]),
+                email=email,
+                trigger="manual_bulk",
+                batch_id=batch_id,
+            )
             db.update_account_codex_status(email, "retrying", None)
             log_path = codex_retry_service.log_path(email)
             log_path.parent.mkdir(parents=True, exist_ok=True)
             log_path.write_text(
-                f"{_dt.now().strftime('%H:%M:%S')} [INFO] [Codex 批量补跑] 已加入批量任务 batch={batch_id} workers={workers}，等待线程执行\n",
+                f"{_dt.now().strftime('%H:%M:%S')} [INFO] [Codex 批量补跑] 已加入批量任务 batch={batch_label} workers={workers}，等待线程执行\n",
                 encoding="utf-8",
             )
 
         def _bulk_runner(items: list[dict], max_workers: int, batch: str):
             logger.info(f"[Codex 批量补跑] 启动 batch={batch} count={len(items)} workers={max_workers}")
             with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"codex-bulk-{batch}") as ex:
-                futures = [ex.submit(_run_codex_retry_worker, it["email"], batch_label=f"{batch} #{idx}/{len(items)}", clear_log=False) for idx, it in enumerate(items, 1)]
+                futures = [
+                    ex.submit(
+                        _run_codex_retry_worker,
+                        it["email"],
+                        batch_label=f"{batch} #{idx}/{len(items)}",
+                        clear_log=False,
+                        task_id=it["task_id"],
+                        task_trigger="manual_bulk",
+                    )
+                    for idx, it in enumerate(items, 1)
+                ]
                 for fut in as_completed(futures):
                     try:
                         fut.result()
@@ -2418,8 +2510,8 @@ def create_app(auth_code: str | None = None) -> Flask:
 
         threading.Thread(
             target=_bulk_runner,
-            args=(selected, workers, batch_id),
-            name=f"codex-bulk-dispatch-{batch_id}",
+            args=(selected, workers, batch_label),
+            name=f"codex-bulk-dispatch-{batch_label}",
             daemon=True,
         ).start()
         return jsonify({

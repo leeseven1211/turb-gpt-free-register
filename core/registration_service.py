@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from core import codex_retry_service, db
+from core import account_task_store, codex_retry_service, db
 
 logger = logging.getLogger(__name__)
 
@@ -443,11 +443,22 @@ def _run_one_job(job_id: int, log_file: str) -> None:
         _deactivate_job(job_id)
 
 
-def _run_codex_retry_job(job_id: int, log_file: str, email: str, account_id: int) -> None:
+def _run_codex_retry_job(
+    job_id: int,
+    log_file: str,
+    email: str,
+    account_id: int,
+    account_task_id: int | None = None,
+) -> None:
     """把 Codex 补跑作为标准任务执行，并复用任务状态、日志和停止入口。"""
     _activate_job(job_id)
     current = db.get_job(job_id)
     if not current or current.get("status") == "cancelled":
+        account_task_store.finish_task(
+            account_task_id,
+            status="cancelled",
+            message="注册重试任务已取消，Codex 补跑未执行",
+        )
         codex_retry_service.release(email)
         _deactivate_job(job_id)
         return
@@ -462,6 +473,8 @@ def _run_codex_retry_job(job_id: int, log_file: str, email: str, account_id: int
             email,
             clear_log=False,
             target_log_path=log_file,
+            task_id=account_task_id,
+            task_trigger="registration_job_retry",
         )
         now_iso = datetime.now().isoformat(timespec="seconds")
         proxy_fields = {}
@@ -670,19 +683,40 @@ def retry_job(job_id: int, workers: int | None = None) -> dict:
             "job": job,
         }
 
+    account_task_id = None
     try:
         if action == "codex":
+            account_task_id = account_task_store.create_task(
+                task_type="codex_retry",
+                account_id=int(account_id),
+                email=email,
+                trigger="registration_job_retry",
+            )
             db.update_account_codex_status(email, "retrying", None)
         with _executor_lock:
             executor = get_executor(max_workers=workers)
             if action == "codex":
-                executor.submit(_run_codex_retry_job, job["id"], job["log_file"], email, int(account_id))
+                executor.submit(
+                    _run_codex_retry_job,
+                    job["id"],
+                    job["log_file"],
+                    email,
+                    int(account_id),
+                    account_task_id,
+                )
             else:
                 executor.submit(_run_one_job, job["id"], job["log_file"])
     except Exception as exc:
         if reserved_codex:
             codex_retry_service.release(email)
             db.update_account_codex_status(email, "failed", f"队列提交失败：{type(exc).__name__}: {exc}"[:500])
+        if account_task_id:
+            account_task_store.finish_task(
+                account_task_id,
+                status="failed",
+                message="Codex 补跑任务入队失败",
+                error=f"{type(exc).__name__}: {exc}",
+            )
         db.update_job(
             int(job["id"]),
             status="failed",
