@@ -240,6 +240,14 @@ EDITABLE_FIELDS = [
         "label": "保留浏览器", "help": "调试时可开启，任务结束后不自动关闭 Roxy 环境",
     },
     {
+        "key": "ROXY_WINDOW_WAIT_TIMEOUT", "file": "roxybrowser.py", "type": "int", "group": "RoxyBrowser",
+        "label": "窗口满等待上限(秒)", "help": "Roxy 返回窗口额度不足时保持当前任务等待的最长时间；默认 900 秒，避免快速失败并启动全部排队任务",
+    },
+    {
+        "key": "ROXY_WINDOW_WAIT_INTERVAL", "file": "roxybrowser.py", "type": "int", "group": "RoxyBrowser",
+        "label": "窗口满重试间隔(秒)", "help": "等待 Roxy 空闲窗口时重新尝试创建环境的间隔；默认 10 秒",
+    },
+    {
         "key": "ROXY_ONE_PROFILE_PER_ACCOUNT", "file": "roxybrowser.py", "type": "bool", "group": "RoxyBrowser",
         "label": "一号一环境", "help": "每个账号强制创建新 Roxy Profile，用完关闭并删除，禁止复用固定环境",
     },

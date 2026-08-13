@@ -602,6 +602,7 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 #### Roxy 环境与登录态
 
 - `ROXY_ONE_PROFILE_PER_ACCOUNT=True` 时，每个注册任务创建一个唯一临时 Profile；创建请求超时或断连属于“结果未知”，客户端会先按唯一环境名查询是否已经创建成功，不能盲目重试并制造孤儿环境。
+- Roxy 明确返回“窗口额度不足”时，当前 worker 会停留在“启动浏览器”阶段等待并重试，不会失败后继续消费后续排队任务。默认最多等待 `ROXY_WINDOW_WAIT_TIMEOUT=900` 秒，每 `ROXY_WINDOW_WAIT_INTERVAL=10` 秒重试；其他创建错误不进入容量等待。
 - 默认在任务结束时关闭浏览器，并在 `ROXY_DELETE_PROFILE_AFTER_RUN=True` 时删除临时 Profile。停止任务不等于用户手动关闭窗口；清理逻辑仍应执行。只有调试时才开启 `ROXY_KEEP_BROWSER_OPEN=True`，调试完成后必须关闭。
 - 注册后紧接着执行 Codex OAuth 时，复用同一个 driver、Profile、代理和 ChatGPT 登录态，授权 URL 不强制 `prompt=login`；若出现账号选择器，只允许选择与当前任务邮箱完全匹配的账号。
 - 从账号页独立补跑 Codex 时没有可信的注册浏览器上下文，因此使用新环境和账号功能代理重新登录。这与“注册后立即 OAuth 复用登录态”是两个不同场景。

@@ -2211,13 +2211,94 @@ def _check_manual_stop() -> None:
         return
 
 
+def _is_roxy_window_capacity_error(error: object) -> bool:
+    """只识别明确的窗口容量错误，避免把网络/配置故障误当成可等待状态。"""
+    text = str(error or "").strip().lower()
+    if not text:
+        return False
+    markers = (
+        "窗口额度不足",
+        "窗口数量已达上限",
+        "窗口数已达上限",
+        "窗口达到上限",
+        "window quota",
+        "window limit",
+        "maximum number of windows",
+        "too many windows",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _wait_for_roxy_window_retry(seconds: float) -> None:
+    """可被手动停止打断的容量等待，最多每秒检查一次停止信号。"""
+    deadline = time.monotonic() + max(0.0, float(seconds))
+    while True:
+        _check_manual_stop()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(1.0, remaining))
+
+
+def _open_roxy_profile_with_capacity_wait(client, proxy_url: str | None, progress_callback=None) -> RoxyOpenResult:
+    """窗口满时保持当前 worker 等待，防止失败槽位快速消费整个任务队列。"""
+    timeout = max(0, int(getattr(_cfg, "ROXY_WINDOW_WAIT_TIMEOUT", 900) or 0))
+    interval = max(1, int(getattr(_cfg, "ROXY_WINDOW_WAIT_INTERVAL", 10) or 10))
+    started = time.monotonic()
+    attempt = 0
+
+    while True:
+        _check_manual_stop()
+        attempt += 1
+        try:
+            opened = client.open_profile(proxy_url=proxy_url)
+            if attempt > 1:
+                logger.info(
+                    "[Roxy注册] 已等到空闲窗口并成功启动环境：attempt=%s waited=%.1fs profile=%s",
+                    attempt,
+                    time.monotonic() - started,
+                    opened.profile_id,
+                )
+            return opened
+        except Exception as exc:
+            if not _is_roxy_window_capacity_error(exc) or timeout <= 0:
+                raise
+
+            elapsed = time.monotonic() - started
+            remaining = timeout - elapsed
+            if remaining <= 0:
+                raise RuntimeError(
+                    f"等待 Roxy 空闲窗口超时（>{timeout}s），最后错误: {str(exc)[:180]}"
+                ) from exc
+
+            delay = min(float(interval), remaining)
+            detail = (
+                f"Roxy 窗口已满，等待空闲名额：已等 {int(elapsed)}s，"
+                f"{int(delay)}s 后重试，最长 {timeout}s"
+            )
+            if progress_callback is not None:
+                progress_callback("browser", "running", detail)
+            logger.warning(
+                "[Roxy注册] %s（attempt=%s，剩余 %.1fs）：%s",
+                detail,
+                attempt,
+                remaining,
+                str(exc)[:180],
+            )
+            _wait_for_roxy_window_retry(delay)
+
+
 def run_roxy_registration(email: str, name: str, birthday: str, proxy: str = None, otp_code: str = None, batch_dir: Path | None = None) -> dict:
     """Roxy 指纹浏览器自动化注册入口。"""
     from core.registration_service import report_job_progress
 
     report_job_progress("browser", "running", "正在创建并启动 Roxy 浏览器环境")
     client = RoxyBrowserClient()
-    opened = client.open_profile(proxy_url=proxy)
+    opened = _open_roxy_profile_with_capacity_wait(
+        client,
+        proxy,
+        progress_callback=report_job_progress,
+    )
     driver = None
     create_acknowledged = False
     openai_password: str | None = None

@@ -149,6 +149,12 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         self.assertIn("CLOAK_HUMAN_PRESET", fields)
         self.assertEqual(fields["CLOAK_HUMAN_PRESET"]["group"], "CloakBrowser")
 
+    def test_roxy_capacity_wait_fields_are_webui_editable(self):
+        fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
+        self.assertIn("ROXY_WINDOW_WAIT_TIMEOUT", fields)
+        self.assertIn("ROXY_WINDOW_WAIT_INTERVAL", fields)
+        self.assertEqual(fields["ROXY_WINDOW_WAIT_TIMEOUT"]["group"], "RoxyBrowser")
+
     def test_icloud_hme_fields_are_webui_editable(self):
         fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
         expected = {
