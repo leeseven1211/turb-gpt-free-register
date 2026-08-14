@@ -91,3 +91,4 @@ run/
 *.bak-*
 *.bak.*
 *.orig
+*.bak[0-9]*
