@@ -129,6 +129,38 @@ class RegistrationPlanCheckTests(unittest.TestCase):
             trigger="registration_auto",
         )
 
+    def test_save_account_reuses_captured_browser_plan_without_query(self):
+        captured = {
+            "ok": True,
+            "current_plan_type": "free",
+            "plus_trial_eligible": True,
+            "plus_trial_campaign_id": "plus-trial",
+            "eligible_offer_ids": ["offer-1"],
+            "checked_at": "2026-08-14T00:00:00Z",
+        }
+        with (
+            patch("core.db.insert_account", return_value=15),
+            patch.object(account_export, "_append_batch_archive", return_value="batch"),
+            patch.object(plan_check_service, "check_registration_account_plan") as sync_check,
+            patch.object(plan_check_service, "enqueue_account_plan_check") as enqueue,
+            patch("core.db.update_account_plan_check", return_value=True) as update,
+        ):
+            row_id = account_export.save_account_data(
+                email="captured@example.com",
+                access_token="token",
+                captured_plan_result=captured,
+            )
+
+        self.assertEqual(row_id, 15)
+        sync_check.assert_not_called()
+        enqueue.assert_not_called()
+        update.assert_called_once()
+        self.assertEqual(update.call_args.kwargs["acc_id"], 15)
+        self.assertEqual(
+            update.call_args.kwargs["result"]["trigger"],
+            "registration_browser_response",
+        )
+
     def test_save_account_treats_empty_registration_proxy_as_explicit_direct(self):
         with (
             patch("core.db.insert_account", return_value=14),

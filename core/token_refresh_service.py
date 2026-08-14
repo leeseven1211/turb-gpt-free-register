@@ -52,6 +52,9 @@ def enqueue_due_accounts() -> dict:
     for account in db.list_accounts(limit=5000, archived=False):
         if started >= _MAX_PER_CYCLE:
             break
+        if db.account_is_deactivated(account):
+            skipped += 1
+            continue
         if str(account.get("codex_status") or "").lower() == "deactivated":
             skipped += 1
             continue

@@ -34,6 +34,8 @@ def run_cloak_registration(email: str, name: str, birthday: str, proxy: str = No
     try:
         report_job_progress("browser", "running", "正在启动 CloakBrowser")
         driver, opened = build_cloak_driver(proxy=proxy)
+        from core import registration_plan_capture
+        registration_plan_capture.install_selenium(driver)
         report_job_progress("browser", "success", "CloakBrowser 已启动")
         logger.info("[Cloak注册] 开始：%s，profile=%s", email, opened.profile_id)
 
@@ -118,6 +120,7 @@ def run_cloak_registration(email: str, name: str, birthday: str, proxy: str = No
         report_job_progress("token", "running", "正在等待登录态并获取 Token")
         session_info = _fetch_chatgpt_session(driver, timeout=120)
         access_token = session_info["accessToken"]
+        captured_plan_result = registration_plan_capture.read_selenium(driver, access_token)
         report_job_progress("token", "success", "已获取 accessToken")
         logger.info("[Cloak注册] 已拿到 accessToken：%s", email)
 
@@ -163,6 +166,7 @@ def run_cloak_registration(email: str, name: str, birthday: str, proxy: str = No
             email_source=resolve_email_source(email),
             proxy_used=((opened.raw or {}).get("proxy") if opened else None) or proxy or None,
             plan_check_proxy=proxy or None,
+            captured_plan_result=captured_plan_result,
             batch_dir=batch_dir,
             extra={
                 "user": session_info.get("user"),

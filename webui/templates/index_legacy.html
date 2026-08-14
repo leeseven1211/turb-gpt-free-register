@@ -120,7 +120,7 @@
     .col-email { width: 260px; }
     .col-source { width: 96px; }
     .col-token { width: 220px; }
-    .col-note { width: 180px; }
+    .col-trial { width: 112px; }
     .col-small { width: 78px; }
     .col-plan { width: 82px; }
     .col-account { width: 180px; }
@@ -131,7 +131,7 @@
     .jobs-table .col-actions { width: 330px; }
     .accounts-table .col-token { width: 92px; }
     .accounts-table .col-plan { width: 340px; }
-    .accounts-table .col-note { width: 180px; }
+    .accounts-table .col-trial { width: 112px; }
     .accounts-table .col-actions { width: 360px; }
     .accounts-table td:nth-child(6), .accounts-table th:nth-child(6) { overflow: visible; text-overflow: clip; }
     .accounts-table td:nth-child(10), .accounts-table th:nth-child(10) { overflow: visible; text-overflow: clip; }
@@ -221,7 +221,7 @@
     .accounts-table .col-source { width: 80px; }
     .accounts-table .col-token { width: 92px; }
     .accounts-table .col-plan { width: 300px; }
-    .accounts-table .col-note { width: 150px; }
+    .accounts-table .col-trial { width: 112px; }
     .accounts-table .col-small { width: 76px; }
     .accounts-table .col-status { width: 88px; }
     .accounts-table .col-time { width: 170px; }
@@ -472,13 +472,15 @@
               <input id="showPlusAccountsOnly" type="checkbox" style="width:auto;min-height:auto;"> 已开通Plus
             </label>
             <button class="btn" id="btnRefreshAccounts" title="重新加载当前筛选条件和当前页账号列表">刷新账号</button>
-            <button class="btn primary" id="btnCheckSelectedLiveTop" data-live-check-selected="1" title="重新登录选中账号；成功且未封号则标记正常，并刷新最新 AT/accessToken">查活</button>
+            <button class="btn primary" id="btnCheckSelectedLiveTop" data-live-check-selected="1" title="只在线验证现有 Token；不会发送邮箱验证码或刷新 AT">查活</button>
+            <button class="btn primary" id="btnRefreshSelectedTokenTop" data-token-refresh-selected="1" title="通过邮箱 OTP 重新登录并刷新最新 AT">刷新AT</button>
           </div>
         </div>
         <div class="accounts-actionbar">
           <div class="btn-group">
             <span class="btn-group-title">套餐/提链</span>
-            <button class="btn primary" id="btnCheckSelectedLive" data-live-check-selected="1" title="重新登录选中账号；成功且未封号则标记正常，并刷新最新 AT/accessToken">查活</button>
+            <button class="btn primary" id="btnCheckSelectedLive" data-live-check-selected="1" title="只在线验证现有 Token；不会发送邮箱验证码或刷新 AT">查活</button>
+            <button class="btn primary" id="btnRefreshSelectedToken" data-token-refresh-selected="1" title="通过邮箱 OTP 重新登录并刷新最新 AT">刷新AT</button>
             <button class="btn primary" id="btnCheckSelectedPlans" disabled title="查询选中账号当前套餐；free 账号会检查 Plus 试用资格">查套餐</button>
             <button class="btn good" id="btnExtractSelectedLinks" disabled title="给选中的 free(可Plus试用) 账号批量提链，类型按配置 PIX/UPI/KAKAO_PAY/IDEAL">提链</button>
           </div>
@@ -491,7 +493,6 @@
           </div>
           <div class="btn-group">
             <span class="btn-group-title">批量</span>
-            <button class="btn good" id="btnNoteSelectedAccounts" disabled title="给选中的账号统一设置备注，留空可清空备注">备注</button>
             <button class="btn good" id="btnCopySelectedLines" disabled title="复制选中账号的完整整行，每个账号一行">复制行</button>
             <button class="btn good" id="btnDownloadSelectedTxt" disabled title="把选中账号的完整整行保存为 TXT 文件，每个账号一行">下载TXT</button>
             <button class="btn" id="btnArchiveSelectedAccounts" disabled title="归档选中的账号；默认账号列表将不再查询/显示这些账号">归档</button>
@@ -506,10 +507,10 @@
       </div>
       <div class="table-wrap">
         <table class="accounts-table">
-          <colgroup><col class="col-check"><col class="col-id"><col class="col-email"><col class="col-source"><col class="col-token"><col class="col-plan"><col class="col-note"><col class="col-small"><col class="col-status"><col class="col-time"><col class="col-actions"></colgroup>
+          <colgroup><col class="col-check"><col class="col-id"><col class="col-email"><col class="col-source"><col class="col-token"><col class="col-plan"><col class="col-trial"><col class="col-small"><col class="col-status"><col class="col-time"><col class="col-actions"></colgroup>
           <thead><tr>
             <th><input type="checkbox" id="accountsSelectAll" title="全选/取消全选当前页账号"></th>
-            <th>ID</th><th>邮箱</th><th>来源</th><th>Token</th><th>套餐</th><th>备注</th><th>2FA</th><th>Codex</th><th>创建时间</th><th>操作</th>
+            <th>ID</th><th>邮箱</th><th>来源</th><th>Token</th><th>套餐</th><th>Plus 试用</th><th>2FA</th><th>Codex</th><th>创建时间</th><th>操作</th>
           </tr></thead>
           <tbody id="accountsBody"></tbody>
         </table>
@@ -758,7 +759,7 @@ async function api(url, opts) {
 let CAPABILITIES = {features:{}, email_sources:{}};
 const FEATURE_SELECTORS = {
   register: '#btnStartV2,#btnStart',
-  live_check: '#btnCheckSelectedLiveTopV2,#btnCheckSelectedLiveV2,#btnCheckSelectedLiveTop,#btnCheckSelectedLive,[data-account-live-check]',
+  live_check: '#btnCheckSelectedLiveTopV2,#btnCheckSelectedLiveV2,#btnRefreshSelectedTokenV2,#btnRefreshSelectedTokenTopV2,#btnCheckSelectedLiveTop,#btnRefreshSelectedTokenTop,#btnCheckSelectedLive,#btnRefreshSelectedToken,[data-account-live-check],[data-account-token-refresh]',
   plan_check: '#btnCheckSelectedPlansV2,#btnCheckSelectedPlans,[data-plan-check]',
   extract_link: '#btnExtractSelectedLinksV2,#btnExtractSelectedLinks,[data-extract-link]',
   sub2_upload: '#btnUploadSelectedCodexSub2V2,#btnUploadSelectedCodexSub2',
@@ -1293,6 +1294,7 @@ async function pollAccountPlanStatuses() {
   finally { planStatusLoading = false; }
 }
 function _codexCell(r) {
+  if ((r.account_status || '').toLowerCase() === 'deactivated') return '<span class="pill status-failed" title="账号已确认停用/封禁">封号</span>';
   const s = r.codex_status || '';
   const err = r.codex_error || '';
   const titleAttr = err ? ` title="${esc(err)}"` : '';
@@ -1346,37 +1348,16 @@ function _planCell(r) {
   const registrationRoute = r.registration_proxy_region
     ? `注册出口: ${esc(r.registration_proxy_provider || '代理')} / ${esc(r.registration_proxy_region)}` : '';
   const title = [err ? esc(err) : checked, registrationRoute, routeLabel].filter(Boolean).join('；');
-  if (['queued','running'].includes(r.plan_check_status)) {
-    const automatic = r.plan_check_trigger === 'registration_auto';
-    const queued = r.plan_check_status === 'queued';
-    const label = automatic ? (queued ? '自动查询排队中' : '自动查询中') : (queued ? '查询排队中' : '查询中');
-    const stamp = queued ? r.plan_check_queued_at : r.plan_check_started_at;
-    const detail = stamp ? `${queued ? '入队' : '开始'}: ${esc(stamp)}` : '';
-    return `<span class="pill status-running" title="${detail}">${label}</span>`;
-  }
-  if (err || r.plan_check_status === 'failed') {
-    const reason = err || '套餐查询失败，未返回具体原因';
-    const hasLastSuccess = Boolean(r.plan_last_success_at);
-    const lastPlan = hasLastSuccess ? `${plan}${r.plus_trial_eligible ? '/可Plus试用' : ''}` : '';
-    const lastText = lastPlan ? `（上次: ${lastPlan}）` : '';
-    const lastTitle = hasLastSuccess ? `上次成功: ${esc(r.plan_last_success_at)}` : '';
-    return `<div class="extract-link-cell"><span class="pill status-failed" title="${[esc(reason), lastTitle].filter(Boolean).join('；')}">查询失败${esc(lastText)}</span><div class="extract-link-error" title="${esc(reason)}">${esc(reason)}</div></div>`;
-  }
   const lower = plan.toLowerCase();
 
   if (lower === 'free') {
-    const checkedOk = ok === true || r.plan_check_status === 'success';
-    if (!checkedOk) {
-      return `<span class="pill status-running" title="${title}">${esc(plan)}（待查资格）</span>`;
-    }
-    const text = r.plus_trial_eligible ? '当前 Free｜可领 Plus 试用' : '当前 Free';
-    const cls = r.plus_trial_eligible ? 'status-success' : 'status-used';
-    const t = r.plus_trial_eligible ? `${title}；Plus 试用资格可用` : title;
-    return `<span class="pill ${cls}" title="${t}">${esc(text)}</span>`;
+    const text = plan;
+    const cls = 'status-success';
+    return `<span class="pill ${cls}" title="${title}">${esc(text)}</span>`;
   }
 
   const isPaid = lower.includes('plus') || lower.includes('pro') || lower.includes('team') || lower.includes('go');
-  const cls = isPaid ? 'status-success' : 'status-running';
+  const cls = lower === '-' ? 'status-used' : (isPaid ? 'status-success' : 'status-running');
   const expireRaw = r.plan_expires_at || r.expires_at || r.plan_renews_at || r.renews_at || '';
   const expire = _fmtPlanTime(expireRaw, true);
   const parts = [];
@@ -1393,6 +1374,25 @@ function _planCell(r) {
   if (r.discount_expires_at) detail.push(`折扣结束: ${r.discount_expires_at}`);
   if (r.discount_promo_campaign_id) detail.push(`优惠: ${r.discount_promo_campaign_id}`);
   return `<span class="pill ${cls}" title="${esc(detail.join('；'))}">${esc(text)}</span>`;
+}
+function _trialCell(r) {
+  const plan = (r.current_plan_type || r.plan_type || '').toString().toLowerCase();
+  const status = (r.plan_check_status || '').toString().toLowerCase();
+  const err = r.plan_check_error || '';
+  if (plan && plan !== 'free') return '<span class="muted">-</span>';
+  if (!plan) return '<span class="pill status-running">待查询</span>';
+  if (status === 'queued' || status === 'running') return '<span class="pill status-running">待查询</span>';
+  if (status === 'failed') {
+    if (r.plan_last_success_at) {
+      const label = r.plus_trial_eligible ? '可用' : '不可用';
+      return `<span class="pill ${r.plus_trial_eligible ? 'status-success' : 'status-used'}" title="上次成功查询: ${esc(r.plan_last_success_at)}；本次查询失败: ${esc(err || '未知错误')}">${label}</span>`;
+    }
+    return `<span class="pill status-failed" title="${esc(err || '套餐查询失败')}">查询失败</span>`;
+  }
+  if (status !== 'success' && r.plan_check_ok !== true) return '<span class="pill status-running">待查询</span>';
+  return r.plus_trial_eligible
+    ? '<span class="pill status-success">可用</span>'
+    : '<span class="pill status-used">不可用</span>';
 }
 function _planAction(r) {
   if (['queued','running'].includes(r.plan_check_status)) {
@@ -1447,6 +1447,7 @@ function _extractLinkAction(r) {
   return `<button class="good" data-extract-link="${esc(r.id)}" title="${esc(failedReason ? '重新提链；上次失败原因：' + failedReason : '为该 free(可Plus试用) 账号创建 PIX/UPI/KAKAO_PAY/IDEAL 提链任务')}">提链</button>`;
 }
 function _codexAction(r) {
+  if ((r.account_status || '').toLowerCase() === 'deactivated') return '';
   const s = r.codex_status || '';
   if (s === 'retrying') {
     return `<button class="danger" data-codex-stop="${esc(r.email)}" title="停止该账号正在进行的 Codex 补跑">停止补跑</button> <button data-codex-reset-retrying="${esc(r.email)}" title="只重置状态；不会向运行线程发送停止信号">重置状态</button>`;
@@ -1478,14 +1479,14 @@ function renderAccounts() {
       <td>${esc(r.email_source || '-')}</td>
       <td><span class="mono" title="列表仅显示预览，完整 Token 请点复制">${r.has_access_token ? '有Token' : '<span class="muted">无Token</span>'}</span>${_liveStatusSub(r)}</td>
       <td>${_planCell(r)}<div class="sub-cell">${_extractLinkCell(r)}</div></td>
-      <td class="wrap" title="${esc(r.note || '')}">${r.note ? esc(short(r.note, 80)) : '<span class="muted">-</span>'}</td>
+      <td>${_trialCell(r)}</td>
       <td>${r.totp_enabled ? '已启用' : '<span class="muted">未启用</span>'}</td>
       <td>${_codexCell(r)}</td>
       <td class="muted">${esc(r.created_at || '-')}</td>
       <td class="actions actions-cell">
         <div class="account-row-actions">
           <div class="account-action-group"><button class="primary" data-account-copy-secret="access_token" data-account-id="${esc(r.id)}" ${r.has_access_token ? '' : 'disabled'}>复制Token</button> <button class="good" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button></div>
-          <div class="account-action-group"><button data-account-note="${esc(r.id)}" title="设置/清空该账号备注">备注</button> <button data-account-live-check="${esc(r.id)}" title="重新登录该账号，成功则刷新最新 AT/accessToken">查活</button> <button data-account-live-log="${esc(r.email)}" title="查看该账号最近一次查活日志">查活日志</button> ${_planAction(r)} ${_extractLinkAction(r)}</div>
+          <div class="account-action-group">${r.account_status === 'deactivated' ? '' : `<button data-account-live-check="${esc(r.id)}" title="只在线验证现有 Token；不会发送邮箱验证码或刷新 AT">查活</button> <button data-account-token-refresh="${esc(r.id)}" title="通过邮箱 OTP 重新登录并刷新最新 AT">刷新AT</button>`} <button data-account-live-log="${esc(r.email)}" title="查看该账号最近一次查活日志">查活日志</button> ${_planAction(r)} ${_extractLinkAction(r)}</div>
           <div class="account-action-group">${_codexAction(r)} <button data-codex-log="${esc(r.email)}" title="查看该账号最近一次 Codex 补跑日志">补跑日志</button></div>
           <div class="account-action-group danger-zone"><button data-account-archive="${esc(r.id)}" data-archived="${r.archived ? '0' : '1'}" title="${r.archived ? '恢复到默认账号列表' : '归档后默认账号列表不再显示'}">${r.archived ? '恢复' : '归档'}</button> <button class="danger" data-account-delete="${esc(r.id)}" data-email="${esc(r.email)}">删除</button></div>
         </div>
@@ -1506,7 +1507,7 @@ function updateAccountSelectionUi(pageRows = null) {
   const checkPlanBtn = $('#btnCheckSelectedPlans');
   const copySelectedBtn = $('#btnCopySelectedLines');
   const downloadTxtBtn = $('#btnDownloadSelectedTxt');
-  const noteSelectedBtn = $('#btnNoteSelectedAccounts');
+  const refreshTokenBtn = $('#btnRefreshSelectedToken');
   const archiveSelectedBtn = $('#btnArchiveSelectedAccounts');
   if (hint) hint.textContent = `已选 ${ACCOUNT_SELECTED.size}`;
   if (bulkBtn) bulkBtn.disabled = ACCOUNT_SELECTED.size === 0;
@@ -1518,7 +1519,7 @@ function updateAccountSelectionUi(pageRows = null) {
   if (checkPlanBtn) checkPlanBtn.disabled = ACCOUNT_SELECTED.size === 0;
   if (copySelectedBtn) copySelectedBtn.disabled = ACCOUNT_SELECTED.size === 0;
   if (downloadTxtBtn) downloadTxtBtn.disabled = ACCOUNT_SELECTED.size === 0;
-  if (noteSelectedBtn) noteSelectedBtn.disabled = ACCOUNT_SELECTED.size === 0;
+  if (refreshTokenBtn) refreshTokenBtn.disabled = ACCOUNT_SELECTED.size === 0;
   if (archiveSelectedBtn) {
     archiveSelectedBtn.disabled = ACCOUNT_SELECTED.size === 0;
     archiveSelectedBtn.textContent = SHOW_ARCHIVED_ACCOUNTS ? '恢复选中' : '归档选中';
@@ -1604,6 +1605,13 @@ document.addEventListener('click', async (e) => {
     await checkSelectedLive(null, bulkBtn);
     return;
   }
+  const refreshBulkBtn = e.target.closest('[data-token-refresh-selected]');
+  if (refreshBulkBtn) {
+    e.preventDefault();
+    e.stopPropagation();
+    await refreshSelectedToken(null, refreshBulkBtn);
+    return;
+  }
   const oneBtn = e.target.closest('[data-account-live-check]');
   if (oneBtn) {
     e.preventDefault();
@@ -1638,6 +1646,11 @@ $('#accountsBody').addEventListener('click', async (e) => {
     return;
   }
 
+  const refreshBtn = e.target.closest('[data-account-token-refresh]');
+  if (refreshBtn) {
+    await refreshSelectedToken([Number(refreshBtn.dataset.accountTokenRefresh)], refreshBtn);
+    return;
+  }
   const liveBtn = e.target.closest('[data-account-live-check]');
   if (liveBtn) {
     await checkSelectedLive([Number(liveBtn.dataset.accountLiveCheck)], liveBtn);
@@ -1659,12 +1672,6 @@ $('#accountsBody').addEventListener('click', async (e) => {
   const archiveBtn = e.target.closest('[data-account-archive]');
   if (archiveBtn) {
     await archiveOneAccount(Number(archiveBtn.dataset.accountArchive), archiveBtn.dataset.archived === '1', archiveBtn);
-    return;
-  }
-
-  const noteBtn = e.target.closest('[data-account-note]');
-  if (noteBtn) {
-    await editAccountNote(Number(noteBtn.dataset.accountNote), noteBtn);
     return;
   }
 
@@ -1763,7 +1770,6 @@ $('#btnDeleteSelectedAccounts').addEventListener('click', deleteSelectedAccounts
 $('#btnArchiveSelectedAccounts').addEventListener('click', archiveSelectedAccounts);
 $('#btnCopySelectedLines').addEventListener('click', copySelectedAccountLines);
 $('#btnDownloadSelectedTxt').addEventListener('click', downloadSelectedAccountTxt);
-$('#btnNoteSelectedAccounts').addEventListener('click', noteSelectedAccounts);
 $('#btnExtractSelectedLinks').addEventListener('click', extractSelectedLinks);
 $('#btnUploadSelectedCodexSub2').addEventListener('click', uploadSelectedCodexSub2);
 $('#btnRetrySelectedCodex').addEventListener('click', retrySelectedCodex);
@@ -2025,9 +2031,9 @@ async function checkSelectedLive(idsArg = null, btnArg = null) {
   const ids = idsArg || Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
   const workers = getCodexBulkWorkers();
-  const msg = idsArg ? `确定查活这个账号并刷新最新 AT/accessToken 吗？` : `确定查活选中的 ${ids.length} 个账号吗？
+  const msg = idsArg ? `确定查活这个账号吗？` : `确定查活选中的 ${ids.length} 个账号吗？
 
-会重新登录邮箱 OTP；登录成功且未封号则标记正常，并刷新最新 AT/accessToken。
+只在线验证现有 accessToken，不会发送邮箱验证码，也不会刷新 AT。
 
 并发线程数：${workers}`;
   if (!confirm(msg)) return;
@@ -2059,6 +2065,37 @@ async function checkSelectedLive(idsArg = null, btnArg = null) {
       btn.textContent = old;
       btn.disabled = false;
     }
+  }
+}
+
+async function refreshSelectedToken(idsArg = null, btnArg = null) {
+  const ids = idsArg || Array.from(ACCOUNT_SELECTED);
+  if (ids.length === 0) { showToast('请先选择账号'); return; }
+  const workers = getCodexBulkWorkers();
+  const msg = idsArg ? `确定刷新这个账号的 AT 吗？\n\n会通过邮箱 OTP 重新登录并保存最新 accessToken。` : `确定刷新选中的 ${ids.length} 个账号的 AT 吗？\n\n会通过邮箱 OTP 重新登录并保存最新 accessToken。\n\n并发线程数：${workers}`;
+  if (!confirm(msg)) return;
+  const firstAcc = ACCOUNTS.find(a => Number(a.id) === Number(ids[0]));
+  const btn = btnArg || $('#btnRefreshSelectedToken') || $('#btnRefreshSelectedTokenTop');
+  const old = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '刷新中…'; }
+  try {
+    const r = await api('/api/accounts/refresh-token-bulk', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({account_ids: ids, workers}),
+    });
+    const skipped = (r.skipped || []).length;
+    showToast(`刷新AT已入队 ${r.started_count || 0} 个，忙碌 ${r.busy_count || 0} 个，失败 ${r.failed_count || 0}${skipped ? `，跳过 ${skipped}` : ''}`);
+    const firstStarted = (r.started || [])[0];
+    if (firstStarted?.email) openLiveLog(firstStarted.email);
+    else if (firstAcc && firstAcc.email) openLiveLog(firstAcc.email);
+    await loadAccounts();
+    loadSummary();
+  } catch(err) {
+    showToast('刷新AT失败: ' + err.message);
+    updateAccountSelectionUi();
+  } finally {
+    if (btn) { btn.textContent = old; btn.disabled = false; }
   }
 }
 
@@ -2148,51 +2185,6 @@ async function deleteSelectedAccounts() {
     updateAccountSelectionUi();
   }
 }
-
-async function editAccountNote(id, btn) {
-  const acc = ACCOUNTS.find(a => Number(a.id) === Number(id));
-  if (!acc) { showToast('账号不存在'); return; }
-  const note = prompt(`设置账号备注（留空可清空）\n\n${acc.email || ('#' + id)}`, acc.note || '');
-  if (note === null) return;
-  if (note.length > 2000) { showToast('备注最多 2000 个字符'); return; }
-  btn.disabled = true;
-  try {
-    await api(`/api/accounts/${id}/note`, {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({note}),
-    });
-    showToast(note ? '备注已保存' : '备注已清空');
-    loadAccounts();
-  } catch(err) {
-    showToast('保存备注失败: ' + err.message);
-    btn.disabled = false;
-  }
-}
-
-async function noteSelectedAccounts() {
-  const ids = Array.from(ACCOUNT_SELECTED);
-  if (ids.length === 0) { showToast('请先选择账号'); return; }
-  const note = prompt(`给选中的 ${ids.length} 个账号设置统一备注（留空可清空）`, '');
-  if (note === null) return;
-  if (note.length > 2000) { showToast('备注最多 2000 个字符'); return; }
-  const btn = $('#btnNoteSelectedAccounts');
-  btn.disabled = true;
-  try {
-    const r = await api('/api/accounts/note-bulk', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids, note}),
-    });
-    const skippedCount = (r.skipped || []).length;
-    showToast(skippedCount ? `已备注 ${r.updated_count || 0} 个，跳过 ${skippedCount} 个` : `已备注 ${r.updated_count || 0} 个`);
-    loadAccounts();
-  } catch(err) {
-    showToast('批量备注失败: ' + err.message);
-    updateAccountSelectionUi();
-  }
-}
-
 
 async function stopSelectedCodex() {
   const ids = Array.from(ACCOUNT_SELECTED);

@@ -1348,6 +1348,9 @@ def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
         row["updated_at"] = now
 
         if status == "deactivated":
+            row["account_status"] = "deactivated"
+            row["account_status_reason"] = result.get("error") or "账号已删除/停用/封禁"
+            row["account_status_at"] = result.get("checked_at") or now
             row["codex_status"] = "deactivated"
             row["codex_error"] = result.get("error") or "账号已删除/停用/封禁"
 
@@ -1381,12 +1384,19 @@ def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
         return True
 
 
+def account_is_deactivated(account: dict | None) -> bool:
+    """判断账号是否已被明确标记为封号/停用；历史记录缺字段时视为正常。"""
+    return str((account or {}).get("account_status") or "").strip().lower() == "deactivated"
+
+
 def claim_account_live_check(acc_id: int, trigger: str = "manual") -> bool:
     """原子占用账号查活任务；已有 queued/running 时返回 False。"""
     with _LOCK:
         rows = _load_accounts()
         row = next((r for r in rows if int(r.get("id") or 0) == int(acc_id)), None)
         if row is None:
+            return False
+        if account_is_deactivated(row):
             return False
         if row.get("live_check_status") in {"queued", "running"}:
             try:

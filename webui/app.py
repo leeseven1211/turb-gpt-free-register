@@ -180,7 +180,7 @@ def _compact_account_for_list(row: dict) -> dict:
     for key in (
         "user_name", "email_source", "note", "archived", "created_at",
         "plan_type", "current_plan_type", "plus_trial_eligible",
-        "plan_check_status", "codex_status",
+        "plan_check_status", "codex_status", "account_status",
         "registration_proxy_provider", "registration_proxy_region",
         "deactivation_mail_detected", "deactivation_mail_scan_status",
     ):
@@ -193,10 +193,11 @@ def _compact_account_for_list(row: dict) -> dict:
     # 下面字段仅在有值时返回，避免每行堆满 null/空字符串/内部状态。
     optional_keys = (
         # 套餐展示补充：付费到期/折扣/失败原因。
-        "plan_check_error", "plan_expires_at", "plan_renews_at", "renews_at",
+        "plan_check_error", "plan_check_trigger", "plan_check_queued_at", "plan_check_started_at",
+        "plan_last_success_at", "plan_expires_at", "plan_renews_at", "renews_at",
         "billing_period", "billing_currency", "discount_amount", "discount_type",
         "discount_expires_at", "discount_promo_campaign_id",
-        "token_expired", "token_expires_at",
+        "token_expired", "token_expires_at", "account_status_reason", "account_status_at",
         # 查活状态。
         "live_check_status", "live_check_error", "live_checked_at",
         # 提链成功/失败时才需要。
@@ -579,7 +580,7 @@ def create_app(auth_code: str | None = None) -> Flask:
         q = str(request.args.get("q", default="") or "").strip()
         column_filters = {
             key: str(request.args.get(key, default="") or "").strip().lower()
-            for key in ("id", "email", "source", "token", "password", "note", "totp", "risk", "codex")
+            for key in ("id", "email", "source", "token", "password", "totp", "risk", "codex")
         }
         date_from = str(request.args.get("date_from", default="") or "").strip() or None
         date_to = str(request.args.get("date_to", default="") or "").strip() or None
@@ -596,6 +597,7 @@ def create_app(auth_code: str | None = None) -> Flask:
             "totp": _facet_values(facet_rows, lambda row: "enabled" if bool(row.get("totp_secret") or row.get("totp_enabled")) else "disabled"),
             "risk": _facet_values(facet_rows, _account_risk_value),
             "codex": _facet_values(facet_rows, lambda row: row.get("codex_status")),
+            "account_status": _facet_values(facet_rows, lambda row: row.get("account_status") or "active"),
         }
         if paged or page_arg is not None or page_size_arg is not None:
             page = max(1, int(page_arg or 1))
@@ -668,7 +670,7 @@ def create_app(auth_code: str | None = None) -> Flask:
             queued = live_check_service.enqueue_account_live_check(
                 account_id=int(account["id"]),
                 email=str(account.get("email") or ""),
-                trigger="manual_retry",
+                trigger="token_refresh_manual_retry" if task_type == "token_refresh" else "manual_retry",
                 proxy=None,
                 force_refresh=task_type == "token_refresh",
             )
@@ -945,7 +947,7 @@ def create_app(auth_code: str | None = None) -> Flask:
 
     @app.post("/api/accounts/check-live-bulk")
     def api_accounts_check_live_bulk():
-        """批量查活：优先在线验证现有 AT，失效时再通过邮箱 OTP 登录刷新。"""
+        """批量查活：只在线验证现有 AT，不发送邮箱 OTP、不刷新 AT。"""
         unavailable = _feature_unavailable("live_check")
         if unavailable:
             return unavailable
@@ -980,6 +982,9 @@ def create_app(auth_code: str | None = None) -> Flask:
             if not email:
                 skipped.append({"id": acc_id, "reason": "邮箱为空"})
                 continue
+            if db.account_is_deactivated(acc):
+                skipped.append({"id": acc_id, "email": email, "reason": "账号已标记为封号"})
+                continue
             accounts.append(acc)
 
         batch_id = account_task_store.create_batch(
@@ -1001,6 +1006,7 @@ def create_app(auth_code: str | None = None) -> Flask:
                 # 或按 ACCOUNT_ACTION_PROXY_MODE 使用静态代理池/直连。
                 proxy=None,
                 batch_id=batch_id,
+                force_refresh=False,
             )
             if queued.get("accepted"):
                 started.append({"id": acc_id, "email": email, "status": "queued"})
@@ -1013,6 +1019,89 @@ def create_app(auth_code: str | None = None) -> Flask:
         return jsonify({
             "ok": True,
             "message": f"已入队 {len(started)} 个查活任务",
+            "started": started,
+            "started_count": len(started),
+            "busy_count": busy_count,
+            "failed": failed,
+            "failed_count": len(failed),
+            "skipped": skipped,
+            "queue": live_check_service.queue_settings(),
+            "batch_id": batch_id,
+        }), 202
+
+
+    @app.post("/api/accounts/refresh-token-bulk")
+    def api_accounts_refresh_token_bulk():
+        """批量刷新 AT：明确通过邮箱登录重新获取并保存最新 accessToken。"""
+        unavailable = _feature_unavailable("live_check")
+        if unavailable:
+            return unavailable
+        data = request.get_json(silent=True) or {}
+        ids = data.get("account_ids") or data.get("ids") or []
+        if not isinstance(ids, list) or not ids:
+            return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
+        if len(ids) > 500:
+            return jsonify({"ok": False, "error": "单次最多刷新 500 个账号"}), 400
+
+        account_ids: list[int] = []
+        skipped: list[dict] = []
+        seen = set()
+        for raw in ids:
+            try:
+                acc_id = int(raw)
+            except (TypeError, ValueError):
+                skipped.append({"id": raw, "reason": "ID 非法"})
+                continue
+            if acc_id in seen:
+                continue
+            seen.add(acc_id)
+            account_ids.append(acc_id)
+
+        accounts = []
+        for acc_id in account_ids:
+            acc = db.get_account(acc_id)
+            if not acc:
+                skipped.append({"id": acc_id, "reason": "账号不存在"})
+                continue
+            email = str(acc.get("email") or "").strip()
+            if not email:
+                skipped.append({"id": acc_id, "reason": "邮箱为空"})
+                continue
+            if db.account_is_deactivated(acc):
+                skipped.append({"id": acc_id, "email": email, "reason": "账号已标记为封号"})
+                continue
+            accounts.append(acc)
+
+        batch_id = account_task_store.create_batch(
+            action_type="token_refresh",
+            trigger="manual_bulk",
+            total_count=len(accounts),
+        ) if accounts else None
+        started = []
+        busy_count = 0
+        failed = []
+        for acc in accounts:
+            acc_id = int(acc.get("id") or 0)
+            email = str(acc.get("email") or "")
+            queued = live_check_service.enqueue_account_live_check(
+                account_id=acc_id,
+                email=email,
+                trigger="token_refresh_manual",
+                proxy=None,
+                batch_id=batch_id,
+                force_refresh=True,
+            )
+            if queued.get("accepted"):
+                started.append({"id": acc_id, "email": email, "status": "queued"})
+            elif queued.get("busy"):
+                busy_count += 1
+                skipped.append({"id": acc_id, "email": email, "reason": queued.get("error") or "账号操作进行中"})
+            else:
+                failed.append({"id": acc_id, "email": email, "error": queued.get("error") or "入队失败"})
+
+        return jsonify({
+            "ok": True,
+            "message": f"已入队 {len(started)} 个刷新AT任务",
             "started": started,
             "started_count": len(started),
             "busy_count": busy_count,
@@ -1043,6 +1132,8 @@ def create_app(auth_code: str | None = None) -> Flask:
             acc = db.get_account_by_email(email)
         if not acc:
             return jsonify({"ok": False, "error": "账号不存在"}), 404
+        if db.account_is_deactivated(acc):
+            return jsonify({"ok": False, "deactivated": True, "error": "账号已标记为封号，停止查活/刷新 AT"}), 409
         token = (acc.get("access_token") or "").strip()
         if not token:
             return jsonify({"ok": False, "error": "该账号没有 access_token"}), 400

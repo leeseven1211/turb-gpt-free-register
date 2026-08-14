@@ -131,7 +131,7 @@ class DashboardApiTests(unittest.TestCase):
         self.assertNotIn('id="codexFilterV2"', html)
         self.assertNotIn('id="accountsFilterV2"', html)
         self.assertIn('id="outlookToolbarV2"', html)
-        self.assertEqual(html.count('data-column-filter="'), 31)
+        self.assertEqual(html.count('data-column-filter="'), 30)
         self.assertIn('class="column-filter-trigger"', html)
         self.assertIn('class="column-filter-search"', html)
         self.assertIn('data-column-filter-options', html)
@@ -142,6 +142,9 @@ class DashboardApiTests(unittest.TestCase):
         self.assertNotIn('select.innerHTML = options.map(item => `<option value="${esc(item.value)}">', html)
         self.assertNotIn('class="list-column-filters"', html)
         self.assertIn('data-column-filter="accountPlanFilterV2"', html)
+        self.assertIn('>Plus 试用</th>', html)
+        self.assertNotIn('data-column-filter="accountNoteFilterV2"', html)
+        self.assertNotIn('>备注</th>', html)
         self.assertIn('data-column-filter="codexStatusFilterV2"', html)
         self.assertIn('data-column-filter="outlookStatusFilterV2"', html)
         self.assertNotIn('id="configOverviewV2"', html)
@@ -172,9 +175,9 @@ class DashboardApiTests(unittest.TestCase):
             # 任务记录
             "btnRetrySelectedJobsV2", "btnDeleteSelectedJobsV2", "btnCancelPendingV2", "btnRefreshJobsV2",
             # 账号
-            "btnCheckSelectedLiveV2", "btnCheckSelectedPlansV2", "btnExtractSelectedLinksV2",
+            "btnCheckSelectedLiveV2", "btnRefreshSelectedTokenV2", "btnCheckSelectedPlansV2", "btnExtractSelectedLinksV2",
             "btnRetrySelectedCodexV2", "btnDownloadSelectedCpaV2", "btnUploadSelectedCodexSub2V2",
-            "btnStopSelectedCodexV2", "btnCheckSelectedDeactivationMailV2", "btnNoteSelectedAccountsV2",
+            "btnStopSelectedCodexV2", "btnCheckSelectedDeactivationMailV2",
             "btnCopySelectedLinesV2", "btnCopySelectedEmailsV2", "btnCopySelectedPasswordsV2", "btnDownloadSelectedTxtV2",
             "btnArchiveSelectedAccountsV2", "btnDeleteSelectedAccountsV2", "btnCopyAllTokensV2",
             "btnCopyAllLinesV2", "btnRefreshAccountsV2",

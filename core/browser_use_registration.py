@@ -1708,6 +1708,8 @@ def run_browser_use_registration(
             else:
                 context = browser.new_context()
             page = context.pages[0] if context.pages else context.new_page()
+            from core import registration_plan_capture
+            registration_plan_capture.install_playwright(context, page)
             page.set_default_timeout(_timeout_ms())
             page.set_default_navigation_timeout(_timeout_ms(getattr(_cfg, "BROWSER_USE_NAVIGATION_TIMEOUT", 90)))
 
@@ -1888,6 +1890,7 @@ def run_browser_use_registration(
             access_token = session_info.get("accessToken")
             if not access_token:
                 raise RuntimeError("注册流程结束但未拿到 accessToken")
+            captured_plan_result = registration_plan_capture.read_playwright(context, page, access_token)
             create_acknowledged = True
             report_job_progress("token", "success", "已获取 accessToken")
             logger.info("[BrowserUse] 已拿到 accessToken：%s", email)
@@ -1945,6 +1948,7 @@ def run_browser_use_registration(
                 email_source=resolve_email_source(email),
                 proxy_used=proxy or f"{provider_prefix}:{session_info_open.proxy_country_code or 'default'}",
                 plan_check_proxy=proxy or None,
+                captured_plan_result=captured_plan_result,
                 batch_dir=batch_dir,
                 extra={
                     "user": session_info.get("user"),

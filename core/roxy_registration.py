@@ -2419,6 +2419,8 @@ def run_roxy_registration(email: str, name: str, birthday: str, proxy: str = Non
     openai_password: str | None = None
     try:
         driver = _build_driver(opened)
+        from core import registration_plan_capture
+        registration_plan_capture.install_selenium(driver)
         report_job_progress("browser", "success", "Roxy 浏览器环境已启动")
         _center_browser_window(driver)
         driver.set_page_load_timeout(int(_cfg.ROXY_SELENIUM_TIMEOUT))
@@ -2533,6 +2535,7 @@ def run_roxy_registration(email: str, name: str, birthday: str, proxy: str = Non
         _check_manual_stop()
         session_info = _fetch_chatgpt_session(driver, timeout=120)
         access_token = session_info["accessToken"]
+        captured_plan_result = registration_plan_capture.read_selenium(driver, access_token)
         report_job_progress("token", "success", "已获取 accessToken")
         logger.info("[Roxy注册] 已拿到 accessToken：%s", email)
         _check_manual_stop()
@@ -2585,6 +2588,7 @@ def run_roxy_registration(email: str, name: str, birthday: str, proxy: str = Non
             email_source=resolve_email_source(email),
             proxy_used=proxy or None,
             plan_check_proxy=proxy or None,
+            captured_plan_result=captured_plan_result,
             batch_dir=batch_dir,
             extra={
                 "user": session_info.get("user"),

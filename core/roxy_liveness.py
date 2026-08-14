@@ -53,10 +53,33 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def _page_account_unusable_code(driver) -> str:
+    """从 Roxy 当前页面识别明确的账号停用/封禁文案。"""
+    try:
+        url = str(driver.current_url or "")
+    except Exception:
+        url = ""
+    try:
+        title = str(driver.title or "")
+    except Exception:
+        title = ""
+    try:
+        text = str(driver.execute_script("return document.body ? document.body.innerText : '';" ) or "")
+    except Exception:
+        text = ""
+    return detect_account_unusable_text("\n".join((url, title, text)))
+
+
 def _enter_existing_account_otp(driver, email: str) -> str:
     """提交邮箱并进入已有账号 OTP；返回 otp/logged_in。"""
+    code = _page_account_unusable_code(driver)
+    if code:
+        raise AccountUnusableError(f"登录页确认账号已停用/封禁: {code}", error_code=code)
     _type_email_address(driver, email, timeout=25)
     _submit_email_step(driver, email)
+    code = _page_account_unusable_code(driver)
+    if code:
+        raise AccountUnusableError(f"邮箱提交后页面确认账号已停用/封禁: {code}", error_code=code)
     state = _wait_email_submit_next_state(driver, email, timeout=30)
     if state in {"blank_shell", "email_page", "email_cleared", "unknown"}:
         fallback = _submit_email_via_browser_nextauth(driver, email)
@@ -139,10 +162,28 @@ def refresh_access_token(email: str, *, proxy: str | None = None) -> dict:
         )
         _page_warmup(driver, reason="live_check_login")
         _maybe_accept(driver)
+        code = _page_account_unusable_code(driver)
+        if code:
+            return {
+                "ok": False,
+                "status": "deactivated",
+                "checked_at": checked_at,
+                "error": code,
+                "validation_method": "roxy_email_otp",
+            }
         otp_after_ts = time.time()
         state = _enter_existing_account_otp(driver, email)
         if state == "otp":
             _complete_otp(driver, email, otp_after_ts)
+        code = _page_account_unusable_code(driver)
+        if code:
+            return {
+                "ok": False,
+                "status": "deactivated",
+                "checked_at": checked_at,
+                "error": code,
+                "validation_method": "roxy_email_otp",
+            }
         session_info = _fetch_chatgpt_session(driver, timeout=120)
         access_token = str(session_info.get("accessToken") or "").strip()
         if not access_token:

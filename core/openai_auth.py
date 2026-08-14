@@ -59,12 +59,17 @@ _ACCOUNT_DEAD_TEXT_MARKERS = (
     "your account has been deleted",
     "your account was deactivated",
     "your account was deleted",
+    "your account has been suspended",
+    "your account was suspended",
+    "account suspended",
     "账号已停用",
     "账号已禁用",
     "账号已删除",
+    "账号已封禁",
     "账户已停用",
     "账户已禁用",
     "账户已删除",
+    "账户已封禁",
 )
 
 

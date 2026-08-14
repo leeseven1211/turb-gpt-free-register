@@ -388,6 +388,7 @@ def save_account_data(
     email_source: str | None = None,
     proxy_used: str | None = None,
     plan_check_proxy: str | None = None,
+    captured_plan_result: dict | None = None,
     batch_dir: Path | None = None,
 ) -> int:
     """
@@ -436,6 +437,29 @@ def save_account_data(
     # WebUI 注册线程会把这个阶段写入当前任务；CLI 或非任务调用中会自动忽略。
     from core.registration_service import report_job_progress
     report_job_progress("plan_check", "running", "正在查询账号套餐与 Plus 试用资格")
+
+    # 注册浏览器若已经收到完整 accounts/check 权益响应，直接复用它，
+    # 避免再发一次相同的套餐请求。原始响应只保留在浏览器内存，
+    # 这里仅接收已经解析且不含凭据的结果。
+    if isinstance(captured_plan_result, dict) and captured_plan_result.get("ok"):
+        from core import db
+
+        captured = dict(captured_plan_result)
+        captured["trigger"] = "registration_browser_response"
+        db.update_account_plan_check(acc_id=row_id, result=captured)
+        report_job_progress(
+            "plan_check",
+            "success",
+            f"复用浏览器权益数据：{captured.get('current_plan_type') or 'unknown'}，"
+            f"Plus 试用{'可用' if captured.get('plus_trial_eligible') else '不可用'}",
+        )
+        logger.info(
+            "[Plan] 复用注册浏览器权益响应: id=%s, email=%s, plus_trial=%s",
+            row_id,
+            email,
+            bool(captured.get("plus_trial_eligible")),
+        )
+        return row_id
 
     # session 中的 account.planType 不能说明 Plus 试用资格。
     # 有注册任务代理时必须同步查完再返回，让上层随后释放代理租约；没有可复用代理时

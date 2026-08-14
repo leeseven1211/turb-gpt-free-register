@@ -3,11 +3,13 @@ import base64
 import json
 import tempfile
 import unittest
+from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from core import account_task_store, codex_retry_service, token_refresh_service
+from core import account_task_store, codex_retry_service, live_check_service, token_refresh_service
+from webui import app as webui_app
 from webui.app import create_app
 
 
@@ -72,6 +74,69 @@ class AccountTaskStoreTests(unittest.TestCase):
 
 
 class TokenRefreshServiceTests(unittest.TestCase):
+    def test_deactivated_account_is_skipped_by_scheduled_refresh(self):
+        now = datetime.now(timezone.utc)
+        accounts = [
+            {"id": 1, "email": "dead@example.com", "account_status": "deactivated", "access_token": _jwt_with_exp(now + timedelta(hours=3))},
+            {"id": 2, "email": "live@example.com", "access_token": _jwt_with_exp(now + timedelta(hours=3))},
+        ]
+        with (
+            patch.object(token_refresh_service.db, "list_accounts", return_value=accounts),
+            patch.object(token_refresh_service.db, "sync_account_token_metadata", return_value=2),
+            patch("core.live_check_service.enqueue_account_live_check", return_value={"accepted": True}) as enqueue,
+            patch.object(token_refresh_service, "_REFRESH_BEFORE_HOURS", 24),
+        ):
+            result = token_refresh_service.enqueue_due_accounts()
+        self.assertEqual(1, result["started"])
+        enqueue.assert_called_once()
+        self.assertEqual(2, enqueue.call_args.kwargs["account_id"])
+
+
+class AccountStatusTests(unittest.TestCase):
+    def test_deactivated_liveness_result_persists_independent_account_status(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            patches = [
+                patch.object(webui_app.db, "_ACCOUNTS_JSON", root / "registered.json"),
+                patch.object(webui_app.db, "_OUTLOOK_JSON", root / "outlook.json"),
+                patch.object(webui_app.db, "_ACCOUNTS_TXT", root / "registered.txt"),
+                patch.object(webui_app.db, "_TOKENS_TXT", root / "tokens.txt"),
+                patch.object(webui_app.db, "_OUTLOOK_TXT", root / "outlook.txt"),
+                patch.object(webui_app.db, "_VIEWER_HTML", root / "viewer.html"),
+            ]
+            with ExitStack() as stack:
+                for item in patches:
+                    stack.enter_context(item)
+                webui_app.db._save_accounts([{"id": 7, "email": "dead@example.com", "access_token": "old"}])
+                self.assertTrue(webui_app.db.update_account_liveness(7, {
+                    "ok": False,
+                    "status": "deactivated",
+                    "checked_at": "2026-08-14T12:00:00",
+                    "error": "account_deactivated",
+                }))
+                row = webui_app.db.get_account(7)
+        self.assertEqual("deactivated", row["account_status"])
+        self.assertEqual("account_deactivated", row["account_status_reason"])
+        self.assertTrue(webui_app.db.account_is_deactivated(row))
+
+    def test_non_deactivated_failure_does_not_mark_account(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            patches = [
+                patch.object(webui_app.db, "_ACCOUNTS_JSON", root / "registered.json"),
+                patch.object(webui_app.db, "_OUTLOOK_JSON", root / "outlook.json"),
+                patch.object(webui_app.db, "_ACCOUNTS_TXT", root / "registered.txt"),
+                patch.object(webui_app.db, "_TOKENS_TXT", root / "tokens.txt"),
+                patch.object(webui_app.db, "_OUTLOOK_TXT", root / "outlook.txt"),
+                patch.object(webui_app.db, "_VIEWER_HTML", root / "viewer.html"),
+            ]
+            with ExitStack() as stack:
+                for item in patches:
+                    stack.enter_context(item)
+                webui_app.db._save_accounts([{"id": 7, "email": "maybe@example.com", "access_token": "old"}])
+                webui_app.db.update_account_liveness(7, {"ok": False, "status": "failed", "error": "OTP timeout"})
+                row = webui_app.db.get_account(7)
+        self.assertNotEqual("deactivated", row.get("account_status"))
     def test_only_due_token_is_force_refreshed(self):
         now = datetime.now(timezone.utc)
         accounts = [
@@ -132,6 +197,29 @@ class CodexRetryTaskTests(unittest.TestCase):
 
 
 class AccountTaskApiTests(unittest.TestCase):
+    def test_live_check_and_token_refresh_are_separate_api_actions(self):
+        app = create_app(auth_code="test-auth")
+        client = app.test_client()
+        client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
+        account = {"id": 7, "email": "a@example.com", "access_token": "saved-token"}
+        with (
+            patch("core.feature_availability.require_feature", return_value=(True, "")),
+            patch.object(account_task_store, "create_batch", side_effect=["live-batch", "refresh-batch"]),
+            patch.object(live_check_service, "enqueue_account_live_check", return_value={"accepted": True}) as enqueue,
+            patch.object(webui_app.db, "get_account", return_value=account),
+        ):
+            live_response = client.post("/api/accounts/check-live-bulk", json={"account_ids": [7]})
+            refresh_response = client.post("/api/accounts/refresh-token-bulk", json={"account_ids": [7]})
+
+        self.assertEqual(202, live_response.status_code)
+        self.assertEqual(202, refresh_response.status_code)
+        self.assertEqual(2, enqueue.call_count)
+        live_call, refresh_call = enqueue.call_args_list
+        self.assertEqual("manual_bulk", live_call.kwargs["trigger"])
+        self.assertFalse(live_call.kwargs["force_refresh"])
+        self.assertEqual("token_refresh_manual", refresh_call.kwargs["trigger"])
+        self.assertTrue(refresh_call.kwargs["force_refresh"])
+
     def test_list_api_returns_task_instances(self):
         app = create_app(auth_code="test-auth")
         client = app.test_client()

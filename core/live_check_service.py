@@ -41,7 +41,7 @@ def _append_log(email: str, line: str, *, clear: bool = False) -> None:
 
 
 def _token_probe_retryable(result: dict) -> bool:
-    """只有网络/风控类结果才值得换线路；Token 失效直接转邮箱重新登录。"""
+    """只有网络/风控类结果才值得换线路；查活不会因 Token 失效自动重登录。"""
     if result.get("needs_live_check") or result.get("token_expired") is True:
         return False
     status = result.get("http_status")
@@ -124,13 +124,15 @@ def _run_live_check(
                 route = account_route.public_dict()
             return account_route.proxy_url
 
-        # 先验证数据库里现有 AT。accounts/check 是已登录接口，返回 200 足以确认
-        # 账号仍可正常访问；只有 AT 过期/失效时才需要走容易受 CF 影响的邮箱重登录。
+        # 查活和刷新 AT 是两个不同动作：
+        # - 查活只验证数据库里的现有 AT，不发送邮箱 OTP，也不偷偷刷新 AT。
+        # - 刷新 AT（force_refresh=True）才跳过旧 AT，执行邮箱 OTP 重登录。
         account = db.get_account(account_id) or {}
         saved_access_token = str(account.get("access_token") or "").strip()
         saved_claims = token_claims(saved_access_token) if saved_access_token else {}
         result = None
-        if saved_access_token and saved_claims.get("token_expired") is not True and not force_refresh:
+        last_probe_error = ""
+        if saved_access_token and not force_refresh:
             probe_attempts = 4 if proxy is None else 1
             _append_log(email, "[查活] 优先验证现有 accessToken；有效则无需重复发送邮箱验证码")
             account_task_store.append_event(
@@ -192,6 +194,7 @@ def _run_live_check(
                     f"[查活] accessToken 验证未通过（{attempt}/{probe_attempts}）："
                     f"{str(probe.get('error') or '未知错误')[:220]}",
                 )
+                last_probe_error = str(probe.get("error") or "现有 accessToken 无法验证")[:220]
                 account_task_store.append_event(
                     task_id,
                     stage="access_token",
@@ -200,8 +203,26 @@ def _run_live_check(
                     detail={"http_status": probe.get("http_status"), "error": probe.get("error")},
                 )
                 if not _token_probe_retryable(probe) or attempt >= probe_attempts:
-                    _append_log(email, "[查活] 现有 Token 无法确认状态，转邮箱 OTP 重新登录刷新")
+                    _append_log(email, "[查活] 现有 Token 无法确认状态；不会自动登录，请单独点击“刷新AT”")
                     break
+
+            if result is None:
+                result = {
+                    "ok": False,
+                    "status": "failed",
+                    "checked_at": datetime.now().isoformat(timespec="seconds"),
+                    "error": "现有 accessToken 已过期或失效，请点击“刷新AT”",
+                    "validation_method": "access_token",
+                    "probe_error": last_probe_error,
+                }
+        elif not force_refresh:
+            result = {
+                "ok": False,
+                "status": "failed",
+                "checked_at": datetime.now().isoformat(timespec="seconds"),
+                "error": "账号没有 accessToken，请点击“刷新AT”后再查活",
+                "validation_method": "access_token",
+            }
 
         if result is None:
             account_task_store.append_event(
@@ -210,7 +231,7 @@ def _run_live_check(
                 message=(
                     "AT 即将过期，按计划转邮箱 OTP 登录刷新"
                     if force_refresh
-                    else "AT 已失效或无法确认，转邮箱 OTP 重新登录刷新"
+                    else "查活未通过；如需获取新 AT，请单独点击“刷新AT”"
                 ),
             )
 
@@ -238,6 +259,7 @@ def _run_live_check(
             not result.get("ok")
             and result.get("status") != "deactivated"
             and bool(saved_access_token)
+            and force_refresh
             and _roxy_fallback_enabled()
         ):
             from core.roxy_liveness import available as roxy_available, refresh_access_token
@@ -341,13 +363,22 @@ def enqueue_account_live_check(
     email = str(email or "").strip()
     if not email:
         return {"accepted": False, "busy": False, "error": "email 为空"}
+    account = db.get_account(account_id)
+    if db.account_is_deactivated(account):
+        return {
+            "accepted": False,
+            "busy": False,
+            "deactivated": True,
+            "error": "账号已标记为封号，停止查活/刷新 AT",
+        }
     if not _QUEUE_SLOTS.acquire(blocking=False):
         return {"accepted": False, "busy": False, "queue_full": True, "error": "查活队列已满，请稍后重试"}
     if not db.claim_account_live_check(acc_id=account_id, trigger=trigger):
         _QUEUE_SLOTS.release()
         return {"accepted": False, "busy": True, "error": "该账号正在查活"}
 
-    _append_log(email, f"[查活] 已入队 account_id={account_id} trigger={trigger}", clear=True)
+    action_label = "刷新AT" if str(trigger or "").startswith("token_refresh") else "查活"
+    _append_log(email, f"[{action_label}] 已入队 account_id={account_id} trigger={trigger}", clear=True)
     task_type = "token_refresh" if str(trigger or "").startswith("token_refresh") else "live_check"
     task_id = account_task_store.create_task(
         task_type=task_type,

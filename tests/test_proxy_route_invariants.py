@@ -115,7 +115,7 @@ class ProxyRouteInvariantTests(unittest.TestCase):
         )
         first_session.session.close.assert_called_once()
 
-    def test_live_check_service_releases_old_route_before_retry(self):
+    def test_live_check_without_saved_token_does_not_login_or_acquire_route(self):
         from core import live_check_service
 
         def make_route(proxy_url: str):
@@ -134,19 +134,12 @@ class ProxyRouteInvariantTests(unittest.TestCase):
         first_route = make_route("http://first.example:8080")
         second_route = make_route("http://second.example:8080")
 
-        def fake_check(_email, *, proxy, clear_log, proxy_supplier):
-            self.assertIsNone(proxy)
-            self.assertFalse(clear_log)
-            self.assertEqual("http://first.example:8080", proxy_supplier(1))
-            self.assertEqual("http://second.example:8080", proxy_supplier(2))
-            return {"ok": False, "status": "failed", "error": "HTTP 403"}
-
         with (
             patch.object(live_check_service.db, "mark_account_live_check_running", return_value=True),
             patch.object(live_check_service.db, "get_account", return_value={}),
-            patch.object(live_check_service.db, "update_account_liveness"),
+            patch.object(live_check_service.db, "update_account_liveness") as updated,
             patch.object(live_check_service, "_append_log"),
-            patch.object(live_check_service, "check_account_liveness", side_effect=fake_check),
+            patch.object(live_check_service, "check_account_liveness") as email_login,
             patch("core.account_proxy.acquire_account_proxy", side_effect=[first_route, second_route]) as acquire,
             patch.object(live_check_service._QUEUE_SLOTS, "release"),
         ):
@@ -158,9 +151,10 @@ class ProxyRouteInvariantTests(unittest.TestCase):
             )
 
         self.assertFalse(result["ok"])
-        self.assertEqual(2, acquire.call_count)
-        first_route.release.assert_called_once_with(reason="live-check-8-preflight-rotate")
-        second_route.release.assert_called_once_with(reason="live-check-8")
+        self.assertIn("没有 accessToken", result["error"])
+        acquire.assert_not_called()
+        email_login.assert_not_called()
+        self.assertNotIn("access_token", updated.call_args.args[1])
 
     def test_live_check_uses_valid_saved_token_before_email_login(self):
         from core import live_check_service
@@ -213,7 +207,54 @@ class ProxyRouteInvariantTests(unittest.TestCase):
         self.assertEqual("access_token", persisted["validation_method"])
         route.release.assert_called_once_with(reason="live-check-85")
 
-    def test_expired_token_uses_roxy_after_protocol_login_failure(self):
+    def test_expired_token_live_check_does_not_login_or_refresh(self):
+        from core import live_check_service
+
+        route = SimpleNamespace(
+            proxy_url="http://fresh.example:8080",
+            public_dict=lambda: {
+                "proxy_mode": "1024",
+                "network_route": "proxy",
+                "proxy_provider": "1024proxy",
+                "proxy_used": "http://fresh.example:8080",
+                "proxy_region": "US",
+            },
+            release=MagicMock(),
+        )
+        with (
+            patch.object(live_check_service.db, "mark_account_live_check_running", return_value=True),
+            patch.object(live_check_service.db, "get_account", return_value={"access_token": "expired-token"}),
+            patch.object(live_check_service.db, "update_account_liveness") as updated,
+            patch.object(live_check_service, "token_claims", return_value={"token_expired": True}),
+            patch.object(
+                live_check_service,
+                "check_account_plan",
+                return_value={"ok": False, "token_expired": True, "http_status": 401, "error": "AT expired"},
+            ) as probe,
+            patch.object(live_check_service, "check_account_liveness") as email_login,
+            patch.object(live_check_service, "_append_log"),
+            patch("core.account_proxy.acquire_account_proxy", return_value=route),
+            patch.object(live_check_service._QUEUE_SLOTS, "release"),
+        ):
+            result = live_check_service._run_live_check(
+                account_id=85,
+                email="first@example.com",
+                proxy="http://fresh.example:8080",
+                trigger="manual",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("failed", result["status"])
+        self.assertIn("刷新AT", result["error"])
+        probe.assert_called_once_with(
+            "expired-token",
+            proxy="http://fresh.example:8080",
+            max_attempts=1,
+        )
+        email_login.assert_not_called()
+        self.assertNotIn("access_token", updated.call_args.args[1])
+
+    def test_force_refresh_uses_roxy_after_protocol_login_failure(self):
         from core import live_check_service
 
         refreshed = {
@@ -242,7 +283,8 @@ class ProxyRouteInvariantTests(unittest.TestCase):
                 account_id=85,
                 email="first@example.com",
                 proxy=None,
-                trigger="manual",
+                trigger="token_refresh_manual",
+                force_refresh=True,
             )
 
         self.assertTrue(result["ok"])
