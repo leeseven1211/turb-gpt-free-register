@@ -98,29 +98,13 @@ class CloakElement:
             except Exception:
                 self.page.keyboard.press("Control+A")
             return
-        if "\ue003" in text or "backspace" in lower:
-            # Selenium Keys.BACKSPACE：真实退格键。
-            self.page.keyboard.press("Backspace")
-            return
-        if "\ue007" in text or "enter" in lower:
-            self.page.keyboard.press("Enter")
-            return
-        # 关键修复：不能用 fill()——它是覆盖式填入，逐字符调用会互相覆盖；
-        # 改用真实键盘输入逐字符追加，行为与 Selenium send_keys 一致。
         try:
-            self.page.keyboard.press("End")
+            if self.locator is not None:
+                self.locator.fill(text, timeout=10000)
+            else:
+                self.handle.fill(text, timeout=10000)
         except Exception:
-            pass
-        try:
             self.page.keyboard.type(text, delay=35)
-        except Exception:
-            try:
-                if self.locator is not None:
-                    self.locator.fill(text, timeout=10000)
-                else:
-                    self.handle.fill(text, timeout=10000)
-            except Exception:
-                pass
 
     def get_attribute(self, name: str) -> str | None:
         try:
@@ -265,17 +249,8 @@ class CloakSeleniumDriver:
                 cleaned.append(item)
         return first_el, cleaned
 
-    @classmethod
-    def _unwrap_js_result(cls, page, handle: Any, *, _depth: int = 0) -> Any:
-        """把 Playwright JSHandle 递归转换成 Selenium 风格返回值。
-
-        Selenium 的 ``execute_script`` 可以返回嵌套在 dict/list 里的 WebElement；
-        Playwright 对这类对象直接调用 ``json_value()`` 时会把 DOM 节点静默变成
-        空对象。密码页会返回 ``{input: element, button: element}``，因此必须逐项
-        解包并把其中的 ElementHandle 转成 CloakElement。
-        """
-        if _depth > 12:
-            raise RuntimeError("execute_script 返回值嵌套过深")
+    @staticmethod
+    def _unwrap_js_result(page, handle: Any) -> Any:
         try:
             element = handle.as_element()
         except Exception:
@@ -283,26 +258,7 @@ class CloakSeleniumDriver:
         if element is not None:
             return CloakElement(page, handle=element)
         try:
-            value_type = handle.evaluate("v => v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v")
-            if value_type not in ("array", "object"):
-                return handle.json_value()
-
-            keys = handle.evaluate("v => Object.keys(v)") or []
-            properties = handle.get_properties()
-            if value_type == "array":
-                indexed = []
-                for key in keys:
-                    if str(key).isdigit():
-                        indexed.append((int(key), properties[str(key)]))
-                indexed.sort(key=lambda item: item[0])
-                return [cls._unwrap_js_result(page, child, _depth=_depth + 1) for _, child in indexed]
-
-            result = {}
-            for key in keys:
-                child = properties.get(str(key))
-                if child is not None:
-                    result[str(key)] = cls._unwrap_js_result(page, child, _depth=_depth + 1)
-            return result
+            return handle.json_value()
         except Exception as exc:
             msg = str(exc)
             if "Execution context was destroyed" in msg or "navigation" in msg.lower():
@@ -436,7 +392,7 @@ def _build_cloak_locale_options(proxy_url: str | None = None) -> dict:
     return {k: v for k, v in out.items() if v}
 
 
-def build_cloak_driver(proxy: str | None = None) -> tuple[CloakSeleniumDriver, CloakOpenResult]:
+def _build_cloak_driver_base(proxy: str | None = None) -> tuple[CloakSeleniumDriver, CloakOpenResult]:
     """启动 CloakBrowser 并返回 Selenium 风格 driver。
 
     proxy=None  时按 config.proxy.PROXY_POOL 随机抽取；
@@ -512,3 +468,31 @@ def build_cloak_driver(proxy: str | None = None) -> tuple[CloakSeleniumDriver, C
     driver._registration_log_prefix = "[Cloak注册]"
     driver.set_page_load_timeout(int(getattr(_cfg, "CLOAK_SELENIUM_TIMEOUT", 90) or 90))
     return driver, CloakOpenResult(raw={"driver": "cloakbrowser", "proxy": proxy_url, "locale": locale_opts, "options": {k: v for k, v in opts.items() if k != "license_key"}})
+
+
+
+def build_cloak_driver(proxy: str | None = None, max_retries: int = 3):
+    import logging, time
+    logger = logging.getLogger(__name__)
+    for attempt in range(max_retries):
+        try:
+            drv, opened = _build_cloak_driver_base(proxy=proxy)
+            return drv, opened
+        except Exception as e:
+            err = str(e).lower()
+            is_retryable = any(k in err for k in (
+                'err_socks', 'socks_connection', 'ssl_protocol',
+                'execution context', 'destroyed', 'connection refused',
+                'tunnel connection failed'
+            ))
+            if is_retryable and attempt < max_retries - 1:
+                from config.proxy import pick_proxy
+                proxy = pick_proxy()
+                logger.warning(
+                    'build_cloak_driver retry %d/%d: %s, switching proxy',
+                    attempt + 2, max_retries, str(e)[:100]
+                )
+                time.sleep(2.0)
+                continue
+            raise
+    raise RuntimeError(f'build_cloak_driver failed after {max_retries} attempts')

@@ -47,9 +47,19 @@ PLAN_CHECK_MIN_INTERVAL = 0.4
 PLAN_CHECK_JITTER = 0.3
 
 
+import threading
+_pick_lock = threading.Lock()
+_pick_index = 0
+
 def pick_proxy() -> str:
-    """从代理池中随机抽取一个代理 URL；池为空时返回空串（即不使用代理）。"""
-    return random.choice(PROXY_POOL) if PROXY_POOL else ""
+    """轮询抽取，保证并发任务彼此独占代理，不撞出口 IP。"""
+    global _pick_index
+    if not PROXY_POOL:
+        return ""
+    with _pick_lock:
+        idx = _pick_index % len(PROXY_POOL)
+        _pick_index += 1
+    return PROXY_POOL[idx]
 
 
 # 兼容入口：默认每次进程启动随机选一个，作为本次注册全程的固定代理

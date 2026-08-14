@@ -85,3 +85,9 @@ webui.log
 webui.pid
 logs/
 run/
+
+# 编辑前的备份副本，只在机器上保留
+*.bak
+*.bak-*
+*.bak.*
+*.orig

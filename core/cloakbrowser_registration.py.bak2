@@ -13,7 +13,6 @@ from core.cloakbrowser_driver import build_cloak_driver
 from core.email_provider import wait_for_otp, resolve_email_source
 from core.humanize import delay as human_delay
 from core.flaresolverr_warm import get_cf_cookies, inject_cookies_via_cdp
-from core.proxy_lease import lease_proxy, release_proxy, ProxyLeaseError
 
 # 复用 Roxy 注册流程里已维护好的页面操作函数。
 from core.roxy_registration import (  # noqa: F401
@@ -31,17 +30,7 @@ def run_cloak_registration(email: str, name: str, birthday: str, proxy: str = No
     opened = None
     create_acknowledged = False
     openai_password: str | None = None
-    proxy_leased = False
     try:
-        if proxy is None:
-            # 从 proxy-pool 自动租用家宽代理
-            try:
-                proxy = lease_proxy(country="US", region="Rand", rotate_minutes=10, timeout=30)
-                proxy_leased = True
-                logger.info("[Cloak注册] 自动租用家宽代理: %s", proxy)
-            except ProxyLeaseError as e:
-                logger.warning("[Cloak注册] 租用代理失败: %s，回退直连", e)
-                proxy = None
         driver, opened = build_cloak_driver(proxy=proxy)
         logger.info("[Cloak注册] 开始：%s，profile=%s", email, opened.profile_id)
 
@@ -171,12 +160,6 @@ def run_cloak_registration(email: str, name: str, birthday: str, proxy: str = No
             pass
         return {"success": False, "email": email, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
     finally:
-        if proxy_leased and proxy:
-            try:
-                release_proxy(proxy)
-                logger.info("[Cloak注册] 归还家宽代理: %s", proxy)
-            except Exception as e:
-                logger.warning("[Cloak注册] 归还代理异常: %s", e)
         if driver and not bool(_cfg.CLOAK_KEEP_BROWSER_OPEN):
             try:
                 driver.quit()

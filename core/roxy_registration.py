@@ -983,7 +983,7 @@ def _is_email_login_page_still_present(driver) -> bool:
     return bool(state.get("inputs"))
 
 
-def _wait_email_submit_next_state(driver, email: str, timeout: int = 18) -> str:
+def _wait_email_submit_next_state(driver, email: str, timeout: int = 30) -> str:
     """邮箱提交后等待进入 password / otp / logged_in；仍停留邮箱页则返回 email_page。
 
     Cloak/Playwright 路径里，点击 submit 后页面经常先发生一次 SPA 导航：
@@ -1031,7 +1031,7 @@ def _wait_email_submit_next_state(driver, email: str, timeout: int = 18) -> str:
                 if cleared_seen_at is None:
                     cleared_seen_at = now
                 # URL 已带 email 查询参数时更像是提交后的中间态，给它更长观察窗口。
-                debounce = 18.0 if ("/auth/login" in url and "email=" in url) else 5.0
+                debounce = 12.0 if ("/auth/login" in url and "email=" in url) else 6.0
                 if now - cleared_last_log_at > 2.0:
                     logger.info(
                         "%s 邮箱提交后检测到输入框短暂清空，继续等待跳转：elapsed=%.1fs debounce=%.1fs url=%s",
@@ -1039,13 +1039,27 @@ def _wait_email_submit_next_state(driver, email: str, timeout: int = 18) -> str:
                     )
                     cleared_last_log_at = now
                 if (
-                    not cleared_recover_done
-                    and "/auth/login" in url
+                    "/auth/login" in url
                     and "email=" in url
-                    and now - cleared_seen_at >= 2.0
+                    and now - cleared_seen_at >= 5.0
+                    and now - (getattr(driver, "_last_recover_at", 0) or 0) >= 15.0
                 ):
                     recover = _recover_email_submit_if_stuck(driver, email)
                     cleared_recover_done = True
+                    try:
+                        driver._last_recover_at = now
+                    except Exception:
+                        pass
+                if ("/auth/login" in url and "email=" in url
+                        and now - cleared_seen_at >= 10.0):
+                    logger.warning(
+                        "%s CF silent block: stuck at login?email= for >=10s, fast exit",
+                        _log_prefix(driver))
+                    return "cf_silent_block"
+                    try:
+                        driver._last_recover_at = now
+                    except Exception:
+                        pass
                     logger.info("%s 邮箱提交后仍停留在 login?email，中途补交一次表单：%s", _log_prefix(driver), recover)
                 if now - cleared_seen_at >= debounce:
                     return "email_cleared"
@@ -1073,7 +1087,11 @@ def _submit_email_and_wait_next(driver, email: str, attempts: int = 3) -> str:
         human_delay("form")
         _submit_email_step(driver, email)
         logger.info("%s 已提交邮箱，等待进入密码页或验证码页（%s/%s）", _log_prefix(driver), attempt, attempts)
-        state_name = _wait_email_submit_next_state(driver, email, timeout=20)
+        state_name = _wait_email_submit_next_state(driver, email, timeout=30)
+        if state_name == "cf_silent_block":
+            raise RuntimeError(
+                "CF silent block: email submitted but page did not advance, IP likely flagged, retry with different proxy"
+            )
         if state_name == "cloudflare_blocked":
             raise RuntimeError(
                 f"邮箱提交后被 Cloudflare 人机验证拦截且未自动通过（IP 可能已被标记），"
