@@ -145,6 +145,8 @@ class DashboardApiTests(unittest.TestCase):
         self.assertIn("syncFacetSelect('accountTrialFilterV2'", html)
         self.assertIn('data-column-filter="accountTrialFilterV2"', html)
         self.assertIn('>Plus 试用</th>', html)
+        self.assertIn('data-account-more-id="${esc(r.id)}"', html)
+        self.assertIn('function restoreAccountsV2MoreMenu(accountId)', html)
         self.assertNotIn('data-column-filter="accountNoteFilterV2"', html)
         self.assertNotIn('>备注</th>', html)
         self.assertIn('data-column-filter="codexStatusFilterV2"', html)

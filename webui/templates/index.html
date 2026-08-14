@@ -5606,7 +5606,22 @@ function positionAccountsV2MoreMenu(wrap) {
   menu.style.left = `${left}px`;
   menu.style.top = `${top}px`;
 }
+function getOpenAccountsV2MoreId() {
+  const open = document.querySelector('.accounts-table-v2 .acc-v2-more.open');
+  return open?.dataset.accountMoreId || '';
+}
+function restoreAccountsV2MoreMenu(accountId) {
+  if (!accountId) return;
+  const wrap = Array.from(document.querySelectorAll('.accounts-table-v2 .acc-v2-more'))
+    .find(item => String(item.dataset.accountMoreId || '') === String(accountId));
+  if (!wrap) return;
+  const button = wrap.querySelector('.acc-v2-more-btn');
+  wrap.classList.add('open');
+  button?.setAttribute('aria-expanded', 'true');
+  positionAccountsV2MoreMenu(wrap);
+}
 function renderAccounts() {
+  const openMoreId = getOpenAccountsV2MoreId();
   const total = ACCOUNTS_TOTAL;
   const rows = ACCOUNTS;
   const rowHtmlV2 = (r) => `
@@ -5629,7 +5644,7 @@ function renderAccounts() {
       <td class="col-actions">
         <div class="acc-v2-actions">
           <button type="button" class="danger" data-account-delete="${esc(r.id)}" data-email="${esc(r.email)}">删除</button>
-          <div class="acc-v2-more">
+          <div class="acc-v2-more" data-account-more-id="${esc(r.id)}">
             <button type="button" class="acc-v2-more-btn" data-acc-more-toggle aria-haspopup="true" aria-expanded="false">更多</button>
             <div class="acc-v2-more-menu" role="menu">${_accountsV2MoreMenu(r)}</div>
           </div>
@@ -5640,6 +5655,7 @@ function renderAccounts() {
   const bodyV2 = $('#accountsBodyV2');
   if (bodyV2) {
     bodyV2.innerHTML = rows.map(rowHtmlV2).join('') || '<tr><td colspan="13" style="text-align:center;color:#909399;padding:28px;">暂无账号</td></tr>';
+    if (openMoreId) requestAnimationFrame(() => restoreAccountsV2MoreMenu(openMoreId));
   }
   updateAccountSelectionUi(rows);
   _renderPager('accounts', total);
