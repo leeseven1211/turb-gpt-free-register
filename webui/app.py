@@ -92,6 +92,9 @@ def _matches_account_columns(row: dict, filters: dict[str, str]) -> bool:
         return False
     if not _contains_value(row, ("note",), filters.get("note")):
         return False
+    trial = filters.get("trial")
+    if trial and _account_trial_value(row) != trial:
+        return False
     token = filters.get("token")
     if token == "has" and not str(row.get("access_token") or "").strip():
         return False
@@ -158,6 +161,24 @@ def _account_risk_value(row: dict) -> str:
     if str(row.get("deactivation_mail_scan_status") or "") == "success":
         return "clear"
     return "pending"
+
+
+def _account_trial_value(row: dict) -> str:
+    """Return the normalized Plus trial state used by the account list filter."""
+    plan = str(row.get("current_plan_type") or row.get("plan_type") or "").strip().lower()
+    if plan and plan != "free":
+        return "not_applicable"
+    if not plan or str(row.get("plan_check_status") or "").lower() in {"queued", "running"}:
+        return "pending"
+
+    status = str(row.get("plan_check_status") or "").lower()
+    if status == "failed":
+        return "eligible" if row.get("plan_last_success_at") and bool(row.get("plus_trial_eligible")) else (
+            "ineligible" if row.get("plan_last_success_at") else "failed"
+        )
+    if status != "success" and row.get("plan_check_ok") is not True:
+        return "pending"
+    return "eligible" if bool(row.get("plus_trial_eligible")) else "ineligible"
 
 
 def _compact_account_for_list(row: dict) -> dict:
@@ -580,7 +601,7 @@ def create_app(auth_code: str | None = None) -> Flask:
         q = str(request.args.get("q", default="") or "").strip()
         column_filters = {
             key: str(request.args.get(key, default="") or "").strip().lower()
-            for key in ("id", "email", "source", "token", "password", "totp", "risk", "codex")
+            for key in ("id", "email", "source", "token", "password", "trial", "totp", "risk", "codex")
         }
         date_from = str(request.args.get("date_from", default="") or "").strip() or None
         date_to = str(request.args.get("date_to", default="") or "").strip() or None
@@ -594,6 +615,7 @@ def create_app(auth_code: str | None = None) -> Flask:
             "token": _facet_values(facet_rows, lambda row: "has" if str(row.get("access_token") or "").strip() else "none"),
             "password": _facet_values(facet_rows, lambda row: "has" if _account_registration_password(row) else "none"),
             "plan": _facet_values(facet_rows, lambda row: row.get("current_plan_type") or row.get("plan_type")),
+            "trial": _facet_values(facet_rows, _account_trial_value),
             "totp": _facet_values(facet_rows, lambda row: "enabled" if bool(row.get("totp_secret") or row.get("totp_enabled")) else "disabled"),
             "risk": _facet_values(facet_rows, _account_risk_value),
             "codex": _facet_values(facet_rows, lambda row: row.get("codex_status")),

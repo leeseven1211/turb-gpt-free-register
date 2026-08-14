@@ -131,7 +131,7 @@ class DashboardApiTests(unittest.TestCase):
         self.assertNotIn('id="codexFilterV2"', html)
         self.assertNotIn('id="accountsFilterV2"', html)
         self.assertIn('id="outlookToolbarV2"', html)
-        self.assertEqual(html.count('data-column-filter="'), 30)
+        self.assertEqual(html.count('data-column-filter="'), 31)
         self.assertIn('class="column-filter-trigger"', html)
         self.assertIn('class="column-filter-search"', html)
         self.assertIn('data-column-filter-options', html)
@@ -142,6 +142,8 @@ class DashboardApiTests(unittest.TestCase):
         self.assertNotIn('select.innerHTML = options.map(item => `<option value="${esc(item.value)}">', html)
         self.assertNotIn('class="list-column-filters"', html)
         self.assertIn('data-column-filter="accountPlanFilterV2"', html)
+        self.assertIn("syncFacetSelect('accountTrialFilterV2'", html)
+        self.assertIn('data-column-filter="accountTrialFilterV2"', html)
         self.assertIn('>Plus 试用</th>', html)
         self.assertNotIn('data-column-filter="accountNoteFilterV2"', html)
         self.assertNotIn('>备注</th>', html)
@@ -219,12 +221,12 @@ class DashboardApiTests(unittest.TestCase):
         self.assertIn("event.preventDefault();", html)
 
     @patch("webui.app.db.list_accounts", return_value=[
-        {"id": 1, "email": "target@example.com", "email_source": "outlook", "access_token": "token", "totp_secret": "JBSWY3DPEHPK3PXP", "codex_status": "success", "extra_json": '{"registration_password":"Random123!abcd"}'},
-        {"id": 2, "email": "other@example.com", "email_source": "icloud_hide", "access_token": "", "totp_enabled": False, "codex_status": "failed"},
+        {"id": 1, "email": "target@example.com", "email_source": "outlook", "access_token": "token", "totp_secret": "JBSWY3DPEHPK3PXP", "codex_status": "success", "plan_type": "free", "current_plan_type": "free", "plan_check_status": "success", "plus_trial_eligible": True, "extra_json": '{"registration_password":"Random123!abcd"}'},
+        {"id": 2, "email": "other@example.com", "email_source": "icloud_hide", "access_token": "", "totp_enabled": False, "codex_status": "failed", "plan_type": "plus", "current_plan_type": "plus"},
     ])
     def test_accounts_column_filters_are_combined(self, _list_accounts):
         response = self.client.get(
-            "/api/accounts?paged=1&page=1&page_size=20&email=target&source=outlook&token=has&password=has&totp=enabled&codex=success",
+            "/api/accounts?paged=1&page=1&page_size=20&email=target&source=outlook&token=has&password=has&trial=eligible&totp=enabled&codex=success",
             headers=self.headers,
         )
         payload = response.get_json()
@@ -233,8 +235,25 @@ class DashboardApiTests(unittest.TestCase):
         self.assertEqual({item["value"] for item in payload["facets"]["source"]}, {"outlook", "icloud_hide"})
         self.assertEqual({item["value"] for item in payload["facets"]["codex"]}, {"success", "failed"})
         self.assertEqual({item["value"] for item in payload["facets"]["password"]}, {"has", "none"})
+        self.assertEqual({item["value"] for item in payload["facets"]["trial"]}, {"eligible", "not_applicable"})
         self.assertTrue(payload["items"][0]["has_registration_password"])
         self.assertTrue(payload["items"][0]["totp_enabled"])
+
+    @patch("webui.app.db.list_accounts", return_value=[
+        {"id": 1, "email": "eligible@example.com", "plan_type": "free", "current_plan_type": "free", "plan_check_status": "success", "plus_trial_eligible": True},
+        {"id": 2, "email": "used@example.com", "plan_type": "free", "current_plan_type": "free", "plan_check_status": "success", "plus_trial_eligible": False},
+        {"id": 3, "email": "plus@example.com", "plan_type": "plus", "current_plan_type": "plus"},
+    ])
+    def test_accounts_trial_filter_is_applied(self, _list_accounts):
+        response = self.client.get(
+            "/api/accounts?paged=1&page=1&page_size=20&trial=eligible",
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["items"][0]["email"], "eligible@example.com")
+        self.assertEqual({item["value"] for item in payload["facets"]["trial"]}, {"eligible", "ineligible", "not_applicable"})
 
     @patch("webui.app.db.get_account", return_value={
         "id": 1,

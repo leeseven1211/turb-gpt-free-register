@@ -3188,7 +3188,7 @@
               <th class="col-token column-filter-header" data-column-filter="accountTokenFilterV2" data-filter-type="select" data-filter-label="按 Token 状态筛选">Token</th>
               <th class="col-small column-filter-header" data-column-filter="accountPasswordFilterV2" data-filter-type="select" data-filter-label="按登录密码状态筛选">登录密码</th>
               <th class="col-plan column-filter-header" data-column-filter="accountPlanFilterV2" data-filter-type="select" data-filter-label="按套餐筛选">套餐</th>
-              <th class="col-trial">Plus 试用</th>
+              <th class="col-trial column-filter-header" data-column-filter="accountTrialFilterV2" data-filter-type="select" data-filter-label="按 Plus 试用资格筛选">Plus 试用</th>
               <th class="col-small column-filter-header" data-column-filter="accountTotpFilterV2" data-filter-type="select" data-filter-label="按 2FA 状态筛选">2FA</th>
               <th class="col-risk-mail column-filter-header" data-column-filter="accountRiskFilterV2" data-filter-type="select" data-filter-label="按封号邮件状态筛选">封号邮件</th>
               <th class="col-status column-filter-header" data-column-filter="accountCodexFilterV2" data-filter-type="select" data-filter-label="按 Codex 状态筛选">Codex</th>
@@ -3497,6 +3497,7 @@ const LIST_FACET_LABELS = {
   password: {has:'已设置', none:'未设置'},
   totp: {enabled:'已启用', disabled:'未启用'},
   risk: {detected:'已收到', clear:'未发现', pending:'待处理'},
+  trial: {eligible:'可用', ineligible:'不可用', pending:'待查询', failed:'查询失败', not_applicable:'不适用'},
   codex: {success:'已通过', retrying:'进行中', failed:'失败', stopped:'已停止', deactivated:'已停用', skipped:'已跳过', missing:'缺失'},
 };
 function facetLabel(group, value) {
@@ -5260,7 +5261,7 @@ async function loadAccounts() {
     const params = new URLSearchParams({paged:'1', page:String(p.page), page_size:String(p.size), archived, plan, email:q, date_from:dateFrom, date_to:dateTo});
     const accountFilters = {
       id: 'accountIdFilterV2', source: 'accountSourceFilterV2', token: 'accountTokenFilterV2',
-      password: 'accountPasswordFilterV2', totp: 'accountTotpFilterV2', risk: 'accountRiskFilterV2', codex: 'accountCodexFilterV2',
+      password: 'accountPasswordFilterV2', trial: 'accountTrialFilterV2', totp: 'accountTotpFilterV2', risk: 'accountRiskFilterV2', codex: 'accountCodexFilterV2',
     };
     Object.entries(accountFilters).forEach(([key, id]) => params.set(key, document.getElementById(id)?.value || ''));
     const res = await api(`/api/accounts?${params.toString()}`);
@@ -5269,6 +5270,7 @@ async function loadAccounts() {
     syncFacetSelect('accountTokenFilterV2', facets.token, {group:'token'});
     syncFacetSelect('accountPasswordFilterV2', facets.password, {group:'password'});
     syncFacetSelect('accountPlanFilterV2', facets.plan, {group:'plan'});
+    syncFacetSelect('accountTrialFilterV2', facets.trial, {group:'trial'});
     syncFacetSelect('accountTotpFilterV2', facets.totp, {group:'totp'});
     syncFacetSelect('accountRiskFilterV2', facets.risk, {group:'risk'});
     syncFacetSelect('accountCodexFilterV2', facets.codex, {group:'codex'});
@@ -5931,7 +5933,7 @@ async function refreshAccountsList(btn) {
   ['accountIdFilterV2','qAccountsV2'].forEach(id => {
     document.getElementById(id)?.addEventListener('input', reload);
   });
-  ['accountSourceFilterV2','accountTokenFilterV2','accountPasswordFilterV2','accountPlanFilterV2','accountTotpFilterV2','accountRiskFilterV2','accountCodexFilterV2','dateFromAccountsV2','dateToAccountsV2'].forEach(id => {
+  ['accountSourceFilterV2','accountTokenFilterV2','accountPasswordFilterV2','accountPlanFilterV2','accountTrialFilterV2','accountTotpFilterV2','accountRiskFilterV2','accountCodexFilterV2','dateFromAccountsV2','dateToAccountsV2'].forEach(id => {
     document.getElementById(id)?.addEventListener('change', reload);
   });
 
@@ -5942,7 +5944,7 @@ async function refreshAccountsList(btn) {
   const refreshV2 = $('#btnRefreshAccountsV2');
   if (refreshV2) refreshV2.addEventListener('click', () => refreshAccountsList(refreshV2));
   $('#btnResetAccountFiltersV2')?.addEventListener('click', () => {
-    ['accountIdFilterV2','qAccountsV2','accountSourceFilterV2','accountTokenFilterV2','accountPasswordFilterV2','accountPlanFilterV2','accountTotpFilterV2','accountRiskFilterV2','accountCodexFilterV2','dateFromAccountsV2','dateToAccountsV2'].forEach(id => {
+    ['accountIdFilterV2','qAccountsV2','accountSourceFilterV2','accountTokenFilterV2','accountPasswordFilterV2','accountPlanFilterV2','accountTrialFilterV2','accountTotpFilterV2','accountRiskFilterV2','accountCodexFilterV2','dateFromAccountsV2','dateToAccountsV2'].forEach(id => {
       const el = document.getElementById(id); if (el) el.value = '';
     });
     ACCOUNT_SELECTED.clear(); PAGERS.accounts.page = 1; refreshColumnFilterStates(); loadAccounts();
