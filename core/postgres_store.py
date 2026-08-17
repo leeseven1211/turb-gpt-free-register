@@ -28,6 +28,13 @@ _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def database_url() -> str:
+    # 在读取 env 的唯一入口收口加载 .env：`ensure_loaded()` 有 _LOADED 标记，重复
+    # 调用几乎无成本。否则每个调用方都得记得"先 import config 再用存储层"。
+    try:
+        from config.env_loader import ensure_loaded
+        ensure_loaded()
+    except Exception:
+        pass
     return str(os.getenv("DATABASE_URL") or "").strip()
 
 
@@ -72,12 +79,6 @@ def require_ready() -> None:
 
     本项目不再支持纯文件模式。让它在启动时响亮失败，好过运行中静默把数据写丢。
     """
-    # 自己加载 .env，不依赖"调用方在此之前恰好 import 过 config"这种隐式顺序。
-    try:
-        from config.env_loader import load_env
-        load_env(override=False)
-    except Exception:
-        pass
     url = database_url()
     if not url:
         raise SystemExit(
