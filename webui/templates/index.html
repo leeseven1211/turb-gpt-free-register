@@ -3486,6 +3486,10 @@ let batchProgressRenderSignature = '';
 const JOB_SELECTED = new Set();
 let REGISTRATION_EMAIL_SOURCES = [];
 let activeLogJob = null, logTimer = null, jobsTimer = null;
+let summaryLoading = false;
+let dashboardLoading = false;
+let jobsLoading = false;
+let accountTasksLoading = false;
 
 const LIST_FACET_LABELS = {
   status: {running:'运行中', pending:'排队中', stopping:'停止中', failed:'失败', partial_success:'部分成功', success:'成功', stopped:'已停止', cancelled:'已取消', available:'可用', used:'已使用', disabled:'停用', exported:'已导出', unexported:'未导出', archived:'已归档'},
@@ -4291,6 +4295,8 @@ function restoreModuleViewState() {
 
 // ---------- 概览 ----------
 async function loadSummary() {
+  if (summaryLoading) return;
+  summaryLoading = true;
   try {
     const s = await api('/api/summary');
     $('#statAccounts').textContent = s.accounts;
@@ -4299,6 +4305,7 @@ async function loadSummary() {
     $('#statUsed').textContent = s.outlook_used;
     $('#statFailed').textContent = s.outlook_failed;
   } catch(e) {}
+  finally { summaryLoading = false; }
 }
 
 function dashboardMetric(label, value, hint, color) {
@@ -4363,11 +4370,16 @@ function renderDashboard(data) {
   </div>`).join('') || '<div class="muted">暂无套餐信息</div>';
 }
 async function loadDashboard() {
+  if (dashboardLoading) return;
+  dashboardLoading = true;
   const button = $('#btnRefreshOverview');
   if (button) button.disabled = true;
   try { renderDashboard(await api('/api/dashboard')); }
   catch(e) { showToast('总览加载失败: ' + e.message); }
-  finally { if (button) button.disabled = false; }
+  finally {
+    dashboardLoading = false;
+    if (button) button.disabled = false;
+  }
 }
 $('#btnRefreshOverview')?.addEventListener('click', loadDashboard);
 $('#tab-overview')?.addEventListener('click', e => {
@@ -4860,6 +4872,8 @@ $('#btnResetJobFiltersV2')?.addEventListener('click', () => {
 });
 
 async function refreshJobs() {
+  if (jobsLoading) return;
+  jobsLoading = true;
   try {
     const p = PAGERS.jobs;
     const res = await api(`/api/jobs?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&status=${encodeURIComponent(JOB_STATUS_FILTER)}&id=${encodeURIComponent(JOB_ID_FILTER)}&email=${encodeURIComponent(JOB_EMAIL_FILTER)}&email_source=${encodeURIComponent(JOB_EMAIL_SOURCE_FILTER)}&proxy=${encodeURIComponent(JOB_PROXY_FILTER)}&error=${encodeURIComponent(JOB_ERROR_FILTER)}&date_from=${encodeURIComponent(JOB_DATE_FROM)}&date_to=${encodeURIComponent(JOB_DATE_TO)}`);
@@ -4869,7 +4883,11 @@ async function refreshJobs() {
     updateJobStatusFilters(res.facets || {});
     JOB_PROGRESS_BATCH = res.progress_batch || null;
     const totalPages = Math.max(1, Math.ceil(JOBS_TOTAL / p.size));
-    if (p.page > totalPages) { p.page = totalPages; return refreshJobs(); }
+    if (p.page > totalPages) {
+      p.page = totalPages;
+      jobsLoading = false;
+      return refreshJobs();
+    }
     const nextSignature = JSON.stringify({items: nextJobs, total: JOBS_TOTAL, status_counts: JOB_STATUS_COUNTS, progress_batch: JOB_PROGRESS_BATCH, page: p.page, size: p.size});
     JOBS = nextJobs;
     if (nextSignature !== jobsRenderSignature) {
@@ -4879,8 +4897,8 @@ async function refreshJobs() {
       // 数据不变时也刷新耗时文本。
       renderBatchProgress();
     }
-    loadSummary();
   } catch(e) {}
+  finally { jobsLoading = false; }
 }
 
 let modalScrollY = 0;
@@ -5150,6 +5168,8 @@ function renderAccountTasks() {
   _renderPager('accountTasks', ACCOUNT_TASKS_TOTAL);
 }
 async function loadAccountTasks() {
+  if (accountTasksLoading) return;
+  accountTasksLoading = true;
   const p = PAGERS.accountTasks;
   const type = $('#accountTaskTypeFilter')?.value || '';
   const status = $('#accountTaskStatusFilter')?.value || '';
@@ -5159,13 +5179,18 @@ async function loadAccountTasks() {
     ACCOUNT_TASKS = result.items || [];
     ACCOUNT_TASKS_TOTAL = Number(result.total || 0);
     const totalPages = Math.max(1, Math.ceil(ACCOUNT_TASKS_TOTAL / p.size));
-    if (p.page > totalPages) { p.page = totalPages; return loadAccountTasks(); }
+    if (p.page > totalPages) {
+      p.page = totalPages;
+      accountTasksLoading = false;
+      return loadAccountTasks();
+    }
     const refresh = result.token_refresh || {};
     if ($('#accountTaskRefreshHint')) $('#accountTaskRefreshHint').textContent = refresh.enabled ? `AT 到期前 ${refresh.refresh_before_hours || 24} 小时自动刷新` : 'AT 自动刷新已关闭';
     renderAccountTasks();
   } catch (e) {
     showToast('加载任务实例失败: ' + e.message);
   }
+  finally { accountTasksLoading = false; }
 }
 let activeAccountTaskId = null, accountTaskLogTimer = null;
 function openAccountTaskLog(taskId) {
@@ -8655,15 +8680,19 @@ loadSummary();
 loadCapabilities();
 restoreModuleViewState();
 activateTab(localStorage.getItem('gpt_console_active_tab') || 'overview', false);
-jobsTimer = setInterval(() => { if (!$('#tab-register').classList.contains('hidden')) refreshJobs(); }, 3000);
-setInterval(loadSummary, 5000);
-setInterval(() => { if (!$('#tab-overview').classList.contains('hidden')) loadDashboard(); }, 15000);
+jobsTimer = setInterval(() => {
+  if (!document.hidden && !$('#tab-register').classList.contains('hidden')) refreshJobs();
+}, 5000);
+setInterval(() => { if (!document.hidden) loadSummary(); }, 10000);
 setInterval(() => {
-  if (!$('#tab-accounts').classList.contains('hidden') && $('#tab-accounts')?.dataset.moduleView !== 'tasks') pollAccountPlanStatuses();
-}, 2000);
+  if (!document.hidden && !$('#tab-overview').classList.contains('hidden')) loadDashboard();
+}, 15000);
 setInterval(() => {
-  if (!$('#tab-accounts').classList.contains('hidden') && $('#tab-accounts')?.dataset.moduleView === 'tasks') loadAccountTasks();
-}, 3000);
+  if (!document.hidden && !$('#tab-accounts').classList.contains('hidden') && $('#tab-accounts')?.dataset.moduleView !== 'tasks') pollAccountPlanStatuses();
+}, 5000);
+setInterval(() => {
+  if (!document.hidden && !$('#tab-accounts').classList.contains('hidden') && $('#tab-accounts')?.dataset.moduleView === 'tasks') loadAccountTasks();
+}, 5000);
 </script>
 </body>
 </html>

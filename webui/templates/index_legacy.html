@@ -681,6 +681,8 @@ let REGISTRATION_EMAIL_SOURCES = [];
 let jobsRenderSignature = '';
 const JOB_SELECTED = new Set();
 let activeLogJob = null, logTimer = null, jobsTimer = null;
+let summaryLoading = false;
+let jobsLoading = false;
 
 // ---------- 分页状态 ----------
 const PAGERS = {
@@ -822,6 +824,8 @@ $$('nav button').forEach(b => b.addEventListener('click', () => activateTab(b.da
 
 // ---------- 概览 ----------
 async function loadSummary() {
+  if (summaryLoading) return;
+  summaryLoading = true;
   try {
     const s = await api('/api/summary');
     $('#statAccounts').textContent = s.accounts;
@@ -831,6 +835,7 @@ async function loadSummary() {
     $('#statFailed').textContent = s.outlook_failed;
     $('#updatedAt').textContent = new Date().toLocaleTimeString();
   } catch(e) {}
+  finally { summaryLoading = false; }
 }
 
 // ---------- 注册 / 任务 ----------
@@ -970,6 +975,8 @@ function updateJobsSelectionUi(pageRows = null) {
 }
 
 async function refreshJobs() {
+  if (jobsLoading) return;
+  jobsLoading = true;
   try {
     const p = PAGERS.jobs;
     const res = await api(`/api/jobs?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}`);
@@ -977,15 +984,19 @@ async function refreshJobs() {
     JOBS_TOTAL = Number(res.total || nextJobs.length || 0);
     JOB_STATUS_COUNTS = res.status_counts || {};
     const totalPages = Math.max(1, Math.ceil(JOBS_TOTAL / p.size));
-    if (p.page > totalPages) { p.page = totalPages; return refreshJobs(); }
+    if (p.page > totalPages) {
+      p.page = totalPages;
+      jobsLoading = false;
+      return refreshJobs();
+    }
     const nextSignature = JSON.stringify({items: nextJobs, total: JOBS_TOTAL, status_counts: JOB_STATUS_COUNTS, page: p.page, size: p.size});
     JOBS = nextJobs;
     if (nextSignature !== jobsRenderSignature) {
       jobsRenderSignature = nextSignature;
       renderJobs();
     }
-    loadSummary();
   } catch(e) {}
+  finally { jobsLoading = false; }
 }
 
 let modalScrollY = 0;
@@ -3209,9 +3220,13 @@ loadSummary();
 loadCapabilities();
 loadRegistrationEmailSources();
 activateTab(localStorage.getItem('gpt_console_active_tab') || 'register', false);
-jobsTimer = setInterval(() => { if (!$('#tab-register').classList.contains('hidden')) refreshJobs(); }, 3000);
-setInterval(loadSummary, 5000);
-setInterval(() => { if (!$('#tab-accounts').classList.contains('hidden')) pollAccountPlanStatuses(); }, 2000);
+jobsTimer = setInterval(() => {
+  if (!document.hidden && !$('#tab-register').classList.contains('hidden')) refreshJobs();
+}, 5000);
+setInterval(() => { if (!document.hidden) loadSummary(); }, 10000);
+setInterval(() => {
+  if (!document.hidden && !$('#tab-accounts').classList.contains('hidden')) pollAccountPlanStatuses();
+}, 5000);
 </script>
 </body>
 </html>

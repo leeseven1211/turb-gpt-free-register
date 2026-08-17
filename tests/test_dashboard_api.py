@@ -172,6 +172,19 @@ class DashboardApiTests(unittest.TestCase):
         self.assertNotIn("TG 交流群", html)
         self.assertNotIn("切换老 UI", html)
 
+    def test_modern_ui_polling_avoids_overlapping_requests_and_duplicate_summary_refresh(self):
+        response = self.client.get("/", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn("if (summaryLoading) return;", html)
+        self.assertIn("if (dashboardLoading) return;", html)
+        self.assertIn("if (jobsLoading) return;", html)
+        self.assertIn("if (accountTasksLoading) return;", html)
+        self.assertNotIn("    loadSummary();\n  } catch(e) {}\n}", html)
+        self.assertIn("}, 10000);", html)
+        self.assertIn("}, 5000);", html)
+        self.assertIn("!document.hidden", html)
+
     def test_all_list_actions_remain_available_with_resizable_columns(self):
         response = self.client.get("/", headers=self.headers)
         html = response.get_data(as_text=True)
