@@ -1,0 +1,709 @@
+<title>Turb Console 界面体检</title>
+<style>
+  /* ============ tokens: light (bare :root = complete palette) ============ */
+  :root {
+    --paper:      #F4F6F4;
+    --surface:    #FFFFFF;
+    --surface-2:  #EDF0EE;
+    --ink:        #0E1A1C;
+    --ink-2:      #22302E;
+    --muted:      #5C6B68;
+    --rule:       #D3DAD7;
+    --rule-soft:  #E4E9E6;
+    --accent:     #0F6E63;
+    --accent-2:   #0B5750;
+    --accent-wash:#E2EFEC;
+    --crit:       #A8321F;
+    --crit-wash:  #F6E7E3;
+    --warn:       #8A5D0C;
+    --warn-wash:  #F5EDDD;
+    --ok:         #2E6B3F;
+    --ok-wash:    #E4EEE6;
+    --shadow:     0 1px 2px rgba(14,26,28,.05);
+
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+
+    --s1: .6875rem;  /* 11 */
+    --s2: .8125rem;  /* 13 */
+    --s3: .9375rem;  /* 15 */
+    --s4: 1.1875rem; /* 19 */
+    --s5: 1.625rem;  /* 26 */
+    --s6: 2.5rem;    /* 40 */
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #0D1413;
+      --surface:    #141D1C;
+      --surface-2:  #1B2624;
+      --ink:        #E7EDEA;
+      --ink-2:      #C6D2CE;
+      --muted:      #93A29E;
+      --rule:       #2B3835;
+      --rule-soft:  #212C2A;
+      --accent:     #4FC4B2;
+      --accent-2:   #7BD8C8;
+      --accent-wash:#152B28;
+      --crit:       #F0907A;
+      --crit-wash:  #2B1A16;
+      --warn:       #DFB259;
+      --warn-wash:  #2A2214;
+      --ok:         #7FC493;
+      --ok-wash:    #16261B;
+      --shadow:     0 1px 2px rgba(0,0,0,.3);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:      #0D1413;
+    --surface:    #141D1C;
+    --surface-2:  #1B2624;
+    --ink:        #E7EDEA;
+    --ink-2:      #C6D2CE;
+    --muted:      #93A29E;
+    --rule:       #2B3835;
+    --rule-soft:  #212C2A;
+    --accent:     #4FC4B2;
+    --accent-2:   #7BD8C8;
+    --accent-wash:#152B28;
+    --crit:       #F0907A;
+    --crit-wash:  #2B1A16;
+    --warn:       #DFB259;
+    --warn-wash:  #2A2214;
+    --ok:         #7FC493;
+    --ok-wash:    #16261B;
+    --shadow:     0 1px 2px rgba(0,0,0,.3);
+  }
+
+  /* ============ base ============ */
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: var(--s3);
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 62rem; margin: 0 auto; padding: 0 1.5rem 6rem; }
+  h1,h2,h3,h4 { text-wrap: balance; line-height: 1.2; font-weight: 600; }
+  p { max-width: 68ch; }
+  a { color: var(--accent); text-underline-offset: .2em; }
+  code, .m { font-family: var(--mono); font-size: .92em; }
+  code {
+    background: var(--surface-2); padding: .1em .38em;
+    border-radius: 2px; color: var(--ink-2);
+  }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+  .eyebrow {
+    font-family: var(--mono); font-size: var(--s1); font-weight: 500;
+    letter-spacing: .13em; text-transform: uppercase; color: var(--muted);
+  }
+
+  /* ============ masthead ============ */
+  .mast { border-bottom: 2px solid var(--ink); padding: 4rem 0 1.5rem; margin-bottom: 2.5rem; }
+  .mast h1 {
+    font-family: var(--mono); font-size: var(--s6); font-weight: 500;
+    letter-spacing: -.02em; margin: .75rem 0 .5rem;
+  }
+  .mast .lede { font-size: var(--s4); color: var(--ink-2); line-height: 1.5; }
+  .mast-meta {
+    display: flex; flex-wrap: wrap; gap: .5rem 2rem; margin-top: 1.75rem;
+    font-family: var(--mono); font-size: var(--s1); color: var(--muted);
+  }
+  .mast-meta b { color: var(--ink-2); font-weight: 500; }
+
+  /* ============ scoreboard ============ */
+  .board {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+    gap: 1px; background: var(--rule); border: 1px solid var(--rule);
+    margin: 0 0 3.5rem;
+  }
+  .board > div { background: var(--surface); padding: 1rem 1.1rem 1.1rem; }
+  .board dt { font-family: var(--mono); font-size: var(--s1); color: var(--muted); letter-spacing: .06em; text-transform: uppercase; }
+  .board dd {
+    margin: .45rem 0 0; font-family: var(--mono); font-size: 1.75rem;
+    font-variant-numeric: tabular-nums; line-height: 1; letter-spacing: -.03em;
+  }
+  .board dd small { font-size: var(--s2); color: var(--muted); letter-spacing: 0; }
+  .board .is-crit dd { color: var(--crit); }
+  .board .is-warn dd { color: var(--warn); }
+
+  /* ============ sections ============ */
+  section { margin: 0 0 4rem; scroll-margin-top: 1.5rem; }
+  section > h2 {
+    font-size: var(--s5); letter-spacing: -.015em;
+    padding-bottom: .6rem; border-bottom: 1px solid var(--rule);
+    margin: 0 0 .5rem;
+  }
+  .sec-sub { color: var(--muted); font-size: var(--s2); margin: 0 0 2rem; }
+  h3 { font-size: var(--s4); margin: 2.5rem 0 .6rem; }
+  h4 { font-family: var(--mono); font-size: var(--s2); font-weight: 600; letter-spacing: .02em; margin: 1.75rem 0 .5rem; }
+
+  /* ============ findings ============ */
+  .finding { border-top: 1px solid var(--rule-soft); padding: 1.35rem 0; }
+  .finding:last-child { border-bottom: 1px solid var(--rule-soft); }
+  .f-head { display: flex; align-items: baseline; gap: .7rem; flex-wrap: wrap; margin-bottom: .4rem; }
+  .f-head h4 { margin: 0; font-family: var(--sans); font-size: var(--s3); font-weight: 600; letter-spacing: 0; }
+  .chip {
+    flex: none; font-family: var(--mono); font-size: var(--s1); font-weight: 600;
+    letter-spacing: .07em; text-transform: uppercase;
+    padding: .15em .5em; border-radius: 2px; white-space: nowrap;
+  }
+  .chip.c1 { color: var(--crit); background: var(--crit-wash); }
+  .chip.c2 { color: var(--warn); background: var(--warn-wash); }
+  .chip.c3 { color: var(--muted); background: var(--surface-2); }
+  .ref { margin-left: auto; font-family: var(--mono); font-size: var(--s1); color: var(--muted); }
+  .finding p { margin: .35rem 0; font-size: var(--s2); line-height: 1.6; }
+  .finding p.fix { color: var(--ink-2); }
+  .finding p.fix::before {
+    content: "修"; font-family: var(--mono); font-size: var(--s1); font-weight: 600;
+    color: var(--accent); background: var(--accent-wash);
+    padding: .1em .4em; border-radius: 2px; margin-right: .5rem;
+  }
+
+  /* ============ tables ============ */
+  .tw { overflow-x: auto; margin: 1.25rem 0; border: 1px solid var(--rule); background: var(--surface); }
+  table { width: 100%; border-collapse: collapse; font-size: var(--s2); }
+  th, td { padding: .55rem .8rem; text-align: left; border-bottom: 1px solid var(--rule-soft); vertical-align: top; }
+  thead th {
+    font-family: var(--mono); font-size: var(--s1); font-weight: 600; color: var(--muted);
+    letter-spacing: .06em; text-transform: uppercase; white-space: nowrap;
+    background: var(--surface-2); border-bottom: 1px solid var(--rule);
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.n, th.n { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+  td.mono { font-family: var(--mono); white-space: nowrap; }
+  .bad { color: var(--crit); font-weight: 600; }
+  .warn { color: var(--warn); font-weight: 600; }
+  .good { color: var(--ok); font-weight: 600; }
+
+  /* ============ swatch strip ============ */
+  .swatches { display: flex; flex-wrap: wrap; gap: 2px; margin: 1.25rem 0 .5rem; }
+  .sw { width: 3.05rem; }
+  .sw i { display: block; height: 2.5rem; border: 1px solid rgba(0,0,0,.08); }
+  .sw span {
+    display: block; font-family: var(--mono); font-size: 9px; color: var(--muted);
+    text-align: center; padding-top: 3px; letter-spacing: -.02em;
+  }
+  .cap { font-size: var(--s2); color: var(--muted); margin: .5rem 0 0; }
+
+  /* ============ compare (two-column) ============ */
+  .cmp { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--rule); border: 1px solid var(--rule); margin: 1.5rem 0; }
+  .cmp > div { background: var(--surface); padding: 1.1rem 1.2rem 1.3rem; }
+  .cmp h4 { margin: 0 0 .7rem; }
+  .cmp ul { margin: 0; padding-left: 1.1rem; font-size: var(--s2); line-height: 1.6; }
+  .cmp li { margin-bottom: .3rem; }
+  .cmp .tag { font-family: var(--mono); font-size: var(--s1); letter-spacing: .06em; text-transform: uppercase; }
+  .cmp .has { color: var(--ok); }
+  .cmp .lacks { color: var(--crit); }
+  @media (max-width: 40rem) { .cmp { grid-template-columns: 1fr; } }
+
+  /* ============ step track demo ============ */
+  .track { display: flex; gap: 0; margin: 1rem 0 .25rem; overflow-x: auto; padding-bottom: .35rem; }
+  .track > div { flex: 1 0 5.5rem; text-align: center; position: relative; padding-top: 1.1rem; }
+  .track > div::before {
+    content: ""; position: absolute; top: .38rem; left: -50%; width: 100%; height: 2px; background: var(--rule);
+  }
+  .track > div:first-child::before { display: none; }
+  .track .dot {
+    position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+    width: .85rem; height: .85rem; border-radius: 50%;
+    background: var(--surface); border: 2px solid var(--rule);
+  }
+  .track .done .dot { background: var(--ok); border-color: var(--ok); }
+  .track .done::before { background: var(--ok); }
+  .track .now .dot { background: var(--accent); border-color: var(--accent); }
+  .track .now::before { background: var(--ok); }
+  .track b { display: block; font-size: var(--s1); font-weight: 500; color: var(--ink-2); }
+  .track .done b, .track .now b { color: var(--ink); font-weight: 600; }
+  .track s { display: block; font-family: var(--mono); font-size: 10px; color: var(--muted); text-decoration: none; font-variant-numeric: tabular-nums; }
+
+  /* ============ phases ============ */
+  .phase { border-top: 1px solid var(--rule); padding: 1.5rem 0 .5rem; }
+  .phase-head { display: flex; align-items: baseline; gap: .8rem; flex-wrap: wrap; }
+  .phase-n {
+    font-family: var(--mono); font-size: var(--s5); font-weight: 500;
+    color: var(--accent); line-height: 1; letter-spacing: -.03em;
+  }
+  .phase-head h3 { margin: 0; font-size: var(--s4); }
+  .phase-cost { margin-left: auto; font-family: var(--mono); font-size: var(--s1); color: var(--muted); }
+  .phase > p { font-size: var(--s2); color: var(--muted); margin: .4rem 0 .9rem; }
+  .phase ol { font-size: var(--s2); padding-left: 1.3rem; line-height: 1.7; }
+  .phase li { margin-bottom: .3rem; }
+
+  .note {
+    border-left: 2px solid var(--accent); background: var(--accent-wash);
+    padding: .85rem 1.1rem; margin: 1.5rem 0; font-size: var(--s2);
+  }
+  .note b { font-weight: 600; }
+  .note p { margin: 0; max-width: none; }
+  .note p + p { margin-top: .5rem; }
+
+  hr.end { border: none; border-top: 2px solid var(--ink); margin: 4rem 0 1.25rem; }
+  .foot { font-family: var(--mono); font-size: var(--s1); color: var(--muted); line-height: 1.8; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+  }
+</style>
+
+<div class="wrap">
+
+<header class="mast">
+  <div class="eyebrow">webui/templates/index.html · 8,719 行 · 449 KB</div>
+  <h1>Turb Console 界面体检</h1>
+  <p class="lede">一份基于源码静态分析的界面评估：视觉系统的漂移、可访问性缺口、密度与滚动模型，以及任务执行进度的结构性缺失。</p>
+  <div class="mast-meta">
+    <span>评估日期 <b>2026-08-14</b></span>
+    <span>方法 <b>静态源码分析（未启动服务）</b></span>
+    <span>范围 <b>CSS 2,827 行 / HTML 620 行 / JS 5,250 行</b></span>
+  </div>
+</header>
+
+<section id="board">
+  <dl class="board">
+    <div class="is-crit"><dt>单元格截断</dt><dd>32<small>%</small></dd></div>
+    <div class="is-crit"><dt>API 请求</dt><dd>30<small> /分</small></dd></div>
+    <div class="is-crit"><dt>唯一色值</dt><dd>270<small> 个</small></dd></div>
+    <div class="is-warn"><dt>主色蓝调</dt><dd>25<small> 种</small></dd></div>
+    <div class="is-warn"><dt>字号档位</dt><dd>19<small> 档</small></dd></div>
+    <div class="is-warn"><dt>一页需滚</dt><dd>2.8<small> 屏</small></dd></div>
+  </dl>
+
+  <div class="note">
+    <p><b>一句话结论：</b>这不是「不好看」的问题，是<b>没有单一事实来源</b>的问题。18 个 CSS 变量只被引用了 103 次，而硬编码色值出现了 <b>1,045 次</b>——设计系统名存实亡。每加一个功能就新调一次颜色、字号和圆角，界面在按功能分叉而不是按系统收敛。</p>
+    <p>下面的所有问题，八成都是这一个根因的表现。</p>
+  </div>
+</section>
+
+<!-- ======================================================== -->
+<section id="live">
+  <h2>零 · 实机复核</h2>
+  <p class="sec-sub">2026-08-14 14:44 · 已连接运行中的实例（127.0.0.1:8000）· 1440×900 视口</p>
+
+  <div class="note">
+    <p><b>先更正三处静态分析的误判。</b>实机跑下来，界面整体质量<b>明显好于</b>纯 CSS 统计给人的印象——总览页和注册页的排版、层次、步骤轨都做得相当完整。下面是纠正与新增。</p>
+  </div>
+
+  <h3>更正</h3>
+  <div class="tw">
+  <table>
+    <thead><tr><th>原结论</th><th>实测</th><th>状态</th></tr></thead>
+    <tbody>
+      <tr><td>账号表「必然横向滚动，邮箱列会滚出视野，存在误操作风险」</td><td>1440px 下横向仅溢出 <b>9px</b>。<code>table[data-resizable-table]{min-width:100%!important}</code> 覆盖了 <code>min-width:1280px</code></td><td class="bad">已推翻</td></tr>
+      <tr><td><code>--bg: #f8f9fa</code></td><td>第 12 行的值是死代码，<b>第 2233 行重新定义为 <code>#f4f6f9</code></b>。整个 <code>:root</code> token 块被定义了两次</td><td class="warn">修正（更印证「无单一事实来源」）</td></tr>
+      <tr><td>行高 52px，每页约 12.7 行可见</td><td>实测行高 <b>83px</b>（双行单元格），可视区 608px，<b>仅 7.3 行可见</b></td><td class="bad">低估了</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>新增：最严重的问题是「截断」</h3>
+  <div class="finding">
+    <div class="f-head"><span class="chip c1">严重</span><h4>账号表 32% 的单元格被省略号截断，12 个列头有 11 个自己也被截断</h4><span class="ref">实测</span></div>
+    <p>284 个单元格里 <b>91 个（32%）</b> 的内容放不下。连列头本身都在截断——<code>ID</code>（55px）、<code>来源</code>（77px）、<code>2FA</code>（66px）、<code>套餐</code>（88px）这些两三个字的标题都显示不全，表头渲染成 <code>To…</code>、<code>登录…</code>、<code>Plus …</code>。</p>
+    <p>最典型的是创建时间：内容需要 <b>170px</b>，列宽只有 <b>99px</b>，于是 <code>2026-08-14T09:46:46</code> 全部显示为 <code>2026-08-…</code>——<b>整列 20 行没有一行能看出具体时间</b>。ID 列同理，只有 <code>#151</code> 这种三位数勉强完整，<code>#1…</code> 是常态。</p>
+    <p class="fix">这是 13 列平分 1130px 的必然结果，每列平均只有 87px。真正的解法不是调列宽，是<b>减少列数</b>：加列显隐开关，默认只显示 6 列；时间列改为相对时间（<code>2小时前</code>）并在 tooltip 给完整值；ID 列用等宽数字并右对齐。</p>
+  </div>
+
+  <h3>新增：轮询强度</h3>
+  <div class="finding">
+    <div class="f-head"><span class="chip c1">严重</span><h4>30 次请求／分钟，页面开着一小时 ≈ 1,800 次</h4><span class="ref">实测 493 秒窗口</span></div>
+    <p>实测 8 ��钟内 249 次 <code>/api/</code> 调用：<code>/api/summary</code> <b>140 次</b>（每 5 秒，<b>无条件执行</b>，切到别的标签页照跑）、<code>/api/jobs</code> <b>90 次</b>、<code>/api/dashboard</code> 15 次。DevTools 面板累计已记录 <b>1,452 次</b>请求。</p>
+    <p class="fix">这条的修复优先级要提到阶段 1：<code>document.hidden</code> 时暂停轮询，是十几行代码的事，能立刻砍掉大部分无效请求。</p>
+  </div>
+
+  <h3>新增：嵌套滚动实测确认</h3>
+  <div class="finding">
+    <div class="f-head"><span class="chip c1">严重</span><h4>一页 20 条需要在内层容器里滚 2.8 屏</h4><span class="ref">实测</span></div>
+    <p>表格容器 <code>clientHeight 608px</code>，内容 <code>scrollHeight 1703px</code>——<b>2.8 倍</b>。同时 <code>document.scrollHeight &gt; innerHeight</code>，页面外层也在滚。<code>overscroll-behavior: contain</code> 实测生效，滚到底后滚动链被切断。</p>
+    <p>复选框实测 <b>16×16px</b>（WCAG 2.5.8 要求 ≥24），冻结列 <b>0 个</b>——两项静态结论均确认。</p>
+  </div>
+
+  <h3>新增：无加载态的实际观感</h3>
+  <div class="finding">
+    <div class="f-head"><span class="chip c2">中</span><h4>切到账号页时表格是一片空白，无任何提示</h4><span class="ref">实测</span></div>
+    <p>切换到「账号」时表格渲染为 0 行且没有骨架屏、没有 spinner、没有「加载中」文案——只有一条空白横条。在数据到达前，<b>「正在加载」和「一条都没有」在视觉上完全一样</b>。</p>
+  </div>
+</section>
+
+<!-- ======================================================== -->
+<section id="visual">
+  <h2>一 · 视觉系统漂移</h2>
+  <p class="sec-sub">样式 / 大小 / 格式 —— 同一个概念存在多套并行实现</p>
+
+  <div class="finding">
+    <div class="f-head"><span class="chip c1">严重</span><h4>主色有 25 种蓝，没有一种是 token</h4><span class="ref">CSS 全域</span></div>
+    <p><code>--blue: #2563eb</code> 定义了，但真正在用的是 <code>#377dff</code>（69 次）、<code>#409eff</code>（20 次）、<code>#5b5ce2</code>（15 次）、<code>#4f51be</code>（13 次）、<code>#5a94ff</code>（12 次）……侧边栏用 <code>#5b5ce2</code> 系，表格用 <code>#377dff</code> 系，stat 卡片用 Element Plus 的 <code>#409eff</code> 系。三套视觉语言同屏出现。</p>
+    <div class="swatches">
+      <div class="sw"><i style="background:#377dff"></i><span>377dff</span></div>
+      <div class="sw"><i style="background:#409eff"></i><span>409eff</span></div>
+      <div class="sw"><i style="background:#5b5ce2"></i><span>5b5ce2</span></div>
+      <div class="sw"><i style="background:#4f51be"></i><span>4f51be</span></div>
+      <div class="sw"><i style="background:#5a94ff"></i><span>5a94ff</span></div>
+      <div class="sw"><i style="background:#3a7fff"></i><span>3a7fff</span></div>
+      <div class="sw"><i style="background:#3b66f5"></i><span>3b66f5</span></div>
+      <div class="sw"><i style="background:#2563eb"></i><span>2563eb</span></div>
+      <div class="sw"><i style="background:#1d4ed8"></i><span>1d4ed8</span></div>
+      <div class="sw"><i style="background:#6869e8"></i><span>6869e8</span></div>
+      <div class="sw"><i style="background:#6264e8"></i><span>6264e8</span></div>
+      <div class="sw"><i style="background:#8b8cf8"></i><span>8b8cf8</span></div>
+      <div class="sw"><i style="background:#5052bd"></i><span>5052bd</span></div>
+      <div class="sw"><i style="background:#9bbeff"></i><span>9bbeff</span></div>
+      <div class="sw"><i style="background:#9cbfff"></i><span>9cbfff</span></div>
+      <div class="sw"><i style="background:#9bbcff"></i><span>9bbcff</span></div>
+    </div>
+    <p class="cap">上面 16 个色值全部出现在同一个文件里，全部承担「主色/强调」职责。<code>#9bbeff</code> / <code>#9cbfff</code> / <code>#9bbcff</code> 三者肉眼无法区分。</p>
+    <p class="fix">建立 <code>--brand-50…900</code> 九级色阶，一次性替换。灰阶同理——当前有 <b>134 个</b>中性灰，混用了 Element Plus（<code>#606266</code>）、Tailwind（<code>#64748b</code>）、Untitled UI（<code>#667085</code>）三套体系。</p>
+  </div>
+
+  <div class="finding">
+    <div class="f-head"><span class="chip c2">中</span><h4>19 档字号，其中 175 处挤在 9–14px</h4><span class="ref">CSS 全域</span></div>
+    <p>字号分布：12px（59 处）、13px（52）、14px（32）、11px（31）、10px（25）、9px（8）。<b>5px 的区间里塞了 6 个档位</b>，视觉上无法形成层级——所有文字都是「小字」，只有更小和最小的区别。15px 以上的档位加起来才 20 处。</p>
+    <p class="fix">收敛到 6 档：<code>11 / 13 / 15 / 20 / 26 / 34</code>。9px 和 10px 全部上移到 11px 起步。</p>
+  </div>
+
+  <div class="finding">
+    <div class="f-head"><span class="chip c2">中</span><h4>字重 650 / 680 / 750 / 760 在中文下是无效档位</h4><span class="ref">CSS 全域</span></div>
+    <p>当前用了 9 种字重，其中 <code>650</code>、<code>680</code>、<code>750</code>、<code>760</code> 是非标准值。字体栈里拉丁文走 <code>-apple-system</code>（SF Pro，可变字体，能渲染 750），中文走 <code>PingFang SC</code>（<b>非可变字体，会吸附到 700</b>）。结果：同一个标签里，英文比中文重——<code>.jobs-table-v2 thead th</code> 的「Codex」和「套餐」不等重。</p>
+    <p class="fix">只保留 <code>400 / 500 / 600 / 700</code> 四档。顺带：按钮当前是 <code>font-weight: 800</code> + 13px，整个界面偏「吵」，降到 500–600 会明显安静。</p>
+  </div>
+
+  <div class="finding">
+    <div class="f-head"><span class="chip c3">低</span><h4>13 档圆角、94 种不重复的 padding</h4><span class="ref">CSS 全域</span></div>
+    <p>圆角用了 <code>4 5 6 7 8 9 10 11 12 13 14 16 999</code> px。<code>6px</code>（37 次）和 <code>8px</code>（30 次）主导，但 <code>7px</code>、<code>9px</code>、<code>11px</code>、<code>13px</code> 也各有几处——这些 1px 差异只会产生「对不齐」的感觉，不会被识别为设计意图。</p>
+    <p class="fix">三档即可：<code>4px</code>（输入/小按钮）、<code>8px</code>（卡片/面板）、<code>999px</code>（pill）。间距统一到 4px 栅格：<code>4 / 8 / 12 / 16 / 24 / 32</code>。</p>
+  </div>
+
+  <div class="finding">
+    <div class="f-head"><span class="chip c2">中</span><h4>侧边栏被完整定义了两次</h4><span class="ref">L253 与 L2265</span></div>
+    <p><code>.app-sidebar</code> 在第 253 行定义为白底浅色样式，又在第 2265 行整体覆盖为深色（<code>background:#111321</code>）。第一套的 <code>.sidebar-brand-title{color:#0f172a}</code>、<code>.sidebar-footer a</code> 等规则全部是死代码，但仍在参与级联计算。</p>
+    <p class="fix">删除 L252–L324 整段旧定义。同类问题会散布在其他「v2」组件上——文件里 <code>-v2</code> 后缀的组件说明存在新旧两代并存。</p>
+  </div>
+</section>
+
+<!-- ======================================================== -->
+<section id="a11y">
+  <h2>二 · 对比度与可读性</h2>
+  <p class="sec-sub">按 WCAG 2.1 AA（正文 4.5:1）实测，已排除深色底的误报</p>
+
+  <p>在 2,827 行 CSS 中，同时声明了 <code>color</code> 与 <code>font-size</code> 的规则里，<b>约 72 条实际不达标</b>。最集中的是一个颜色：</p>
+
+  <div class="tw">
+  <table>
+    <thead><tr><th>色值</th><th class="n">对比度</th><th class="n">用量</th><th class="n">字号</th><th>典型位置</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">#909399</td><td class="n bad">3.08:1</td><td class="n">42</td><td class="n">12–13px</td><td>表格副行、配置项说明、stat 标签、导入提示</td></tr>
+      <tr><td class="mono">#9299aa</td><td class="n bad">2.85:1</td><td class="n">6</td><td class="n">9–10px</td><td>总览页 kicker、topbar eyebrow、代理出口</td></tr>
+      <tr><td class="mono">#969dae</td><td class="n bad">2.72:1</td><td class="n">6</td><td class="n">9–11px</td><td>总览指标副文案、租约列表</td></tr>
+      <tr><td class="mono">#989faf</td><td class="n bad">2.65:1</td><td class="n">1</td><td class="n">9px</td><td>今日任务结果 副标题</td></tr>
+      <tr><td class="mono">#95a4bd</td><td class="n bad">2.52:1</td><td class="n">1</td><td class="n">10px</td><td>任务事件 detail</td></tr>
+      <tr><td class="mono">#a6abb2</td><td class="n bad">2.31:1</td><td class="n">1</td><td class="n">12px</td><td>批次进度 未到达步骤</td></tr>
+      <tr><td class="mono">#808093</td><td class="n bad">3.87:1</td><td class="n">4</td><td class="n">14px</td><td><b>四张主表的表头</b></td></tr>
+      <tr><td class="mono">#7d8596</td><td class="n bad">3.71:1</td><td class="n">2</td><td class="n">11px</td><td>表头（后续覆盖）、总览指标</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="finding">
+    <div class="f-head"><span class="chip c1">严重</span><h4>四张主表的表头全部不达标</h4><span class="ref">L2437 / L2704</span></div>
+    <p>jobs / accounts / codex / outlook 四张表的 <code>thead th</code> 是 <code>#788194</code> @ 11px（3.91:1）。表头是<b>扫描表格时最先读的东西</b>，13 列宽表尤其依赖它定位。这一条的修复收益最高。</p>
+    <p class="fix">改为 <code>#5C6470</code> 起（≥5:1），字号 11px → 12px。</p>
+  </div>
+
+  <div class="finding">
+    <div class="f-head"><span class="chip c2">中</span><h4>9–10px 文字承载了真实信息</h4><span class="ref">33 处</span></div>
+    <p>不只是装饰性 label：<code>.batch-progress-v2-step-duration</code>（每步耗时，9px）、<code>.account-task-event-detail</code>（任务详情，10px）、<code>.overview-job-main small</code>（任务副信息，9px）都是<b>需要读的数据</b>，却用了最小字号 + 最浅灰色的组合。</p>
+    <p class="fix">数据类文字最低 11px，且必须过 4.5:1。纯装饰 label（如 <code>OPERATIONS OVERVIEW</code> 这类 eyebrow）可放宽到 3:1，但也建议 11px。</p>
+  </div>
+
+  <h3>结构性可访问性缺口</h3>
+  <div class="tw">
+  <table>
+    <thead><tr><th>项</th><th class="n">现状</th><th>影响</th></tr></thead>
+    <tbody>
+      <tr><td><code>aria-live</code> 区域</td><td class="n bad">0</td><td>toast、批量操作结果、轮询更新对读屏完全静默</td></tr>
+      <tr><td><code>&lt;th scope&gt;</code></td><td class="n bad">0 / 55</td><td>13 列宽表无法被读屏正确关联行列</td></tr>
+      <tr><td><code>aria-sort</code></td><td class="n bad">0</td><td>可排序表头不暴露排序状态</td></tr>
+      <tr><td><code>&lt;label for&gt;</code></td><td class="n bad">4 / 16</td><td>多数表单控件无程序化关联</td></tr>
+      <tr><td><code>:focus-visible</code></td><td class="n bad">7 / 167 按钮</td><td>键盘操作时大部分按钮无可见焦点</td></tr>
+      <tr><td><code>prefers-reduced-motion</code></td><td class="n bad">0</td><td>20 处 transition 无法被用户关闭</td></tr>
+      <tr><td><code>prefers-color-scheme</code></td><td class="n">0</td><td>无暗色模式（长时间盯盘工具的常见诉求）</td></tr>
+      <tr><td><code>&lt;dialog&gt;</code> / <code>aria-modal</code></td><td class="n bad">0 / 1</td><td>见下节「弹层」</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- ======================================================== -->
+<section id="density">
+  <h2>三 · 密度、滚动与列表</h2>
+  <p class="sec-sub">滑动 / 列表 —— 这是日常使用中最耗神的部分</p>
+
+  <div class="finding">
+    <div class="f-head"><span class="chip c1">严重</span><h4>嵌套滚动容器 + <code>overscroll-behavior: contain</code></h4><span class="ref">L2433</span></div>
+    <p>表格外层 <code>.accounts-table-v2-wrap</code> 被限高为 <code>min(720px, 100vh − 236px)</code> 并 <code>overflow:auto</code>，同时页面本身也可纵向滚动。于是出现<b>双层纵向滚动条</b>：鼠标在表格上滚动表格，滚到底之后由于 <code>overscroll-behavior: contain</code>，滚动链被<b>切断</b>，页面不会继续滚——必须把鼠标移出表格区域才能继续。</p>
+    <p>叠加密度问题：行高 <code>52px</code>，每页 <code>20 条</code>，即 1,040px 内容塞进约 660px 视口 —— <b>每一页都必须在内层容器里滚动</b>，无一例外。</p>
+    <p class="fix">二选一。① 让表格随页面自然流动（去掉 wrap 限高），表头用 <code>position:sticky; top: 顶栏高度</code> 吸附到视口；② 保留内层滚动，但把工具栏 + 分页也纳入同一个固定框架，做成真正的「全高数据面板」（表格区域 = <code>100vh − chrome</code>），并去掉 <code>overscroll-behavior: contain</code>。</p>
+  </div>
+
+  <div class="finding">
+    <div class="f-head"><span class="chip c3">低</span><h4>13 列无冻结列（实测后降级）</h4><span class="ref">L3176–3197</span></div>
+    <p><b>实机复核后此条已降级。</b>原判断「必然横向滚动、邮箱列滚出视野导致误操作」不成立——<code>table[data-resizable-table]{min-width:100%!important}</code> 覆盖了 <code>min-width:1280px</code>，1440px 下横向仅溢出 9px。</p>
+    <p>但代价转移到了截断：13 列平分 1130px，每列均宽 87px，导致 <b>32% 单元格和 11/12 列头被省略号截断</b>（见第零节）。冻结列仍值得加，因为用户会手动拉宽列（已有列宽持久化机制），拉宽后横滚就会变成真问题。</p>
+    <p class="fix">优先级低于「减列数」。先做列显隐开关，再考虑冻结前三列。</p>
+  </div>
+
+  <div class="finding">
+    <div class="f-head"><span class="chip c1">严重</span><h4>复选框被 <code>!important</code> 锁死在 16×16px</h4><span class="ref">L563 / 1053 / 1462 / 1728 / 1895</span></div>
+    <p>五处表格各用 6 条 <code>!important</code> 把复选框钉死在 16px（<code>width/height/min-/max-</code> 全锁）。WCAG 2.5.8 的最小目标尺寸是 <b>24×24px</b>，移动端建议 44px。而复选框正是所有批量操作（查活、刷新 AT、提链、删除）的入口。因为用了 <code>!important</code>，连响应式断点都无法放大它。</p>
+    <p class="fix">复选框本体保持 16px 视觉尺寸，但用 <code>padding</code> 或伪元素把<b>点击热区</b>撑到 ≥24px，并移除全部 <code>!important</code>。整行可点选中会更好。</p>
+  </div>
+
+  <div class="finding">
+    <div class="f-head"><span class="chip c2">中</span><h4>四层吸附结构吃掉约 180px 垂直空间</h4><span class="ref">L2336 / 2538 / 2556 / 2437</span></div>
+    <p>顶栏 <code>fixed</code> 76px → 模块子导航 <code>sticky</code> → 命令甲板 <code>sticky</code> → 表头 <code>sticky</code>，四层叠加，z-index 分别是 150 / 55 / 42 / 8。数据开始之前已经消耗掉近 1/4 的笔记本屏高。</p>
+    <p class="fix">子导航与命令甲板合并为一行；顶栏 76px → 56px；或在表格滚动时自动收起顶栏。</p>
+  </div>
+
+  <div class="finding">
+    <div class="f-head"><span class="chip c3">低</span><h4>z-index 有 22 个离散值，最高 5000</h4><span class="ref">CSS 全域</span></div>
+    <p><code>0 1 2 8 15 20 30 35 40 42 45 55 150 190 200 300 1000 1200 4000 4200 4300 5000</code>。<code>42</code> 和 <code>45</code>、<code>4200</code> 和 <code>4300</code> 这类相邻值说明是靠试错调出来的。</p>
+    <p class="fix">定义 6 层语义常量：<code>base(0) / sticky(100) / dropdown(200) / topbar(300) / modal(400) / toast(500)</code>。</p>
+  </div>
+</section>
+
+<!-- ======================================================== -->
+<section id="interaction">
+  <h2>四 · 交互与反馈</h2>
+  <p class="sec-sub">这是「感觉不够专业」的主要来源</p>
+
+  <div class="finding">
+    <div class="f-head"><span class="chip c1">严重</span><h4>35 处原生 <code>confirm()</code> 承担全部高危确认</h4><span class="ref">JS 全域</span></div>
+    <p>包括删除账号、批量删除、停止任务、提链（消耗 CDK）、补跑 Codex（消耗接码费用）。原生 confirm 的问题：① 阻塞主线程；② 显示为「127.0.0.1:5000 显示」，观感廉价；③ 无法排版——现在靠 <code>\n\n</code> 拼多行文本；④ <b>浏览器在连续弹出后会提供「阻止此页面创建更多对话框」，用户一旦勾选，后续所有确认会静默返回 false，操作会「点了没反应」</b>。批量操作场景极易触发。</p>
+    <p class="fix">做一个统一的确认弹层组件：标题 + 影响范围（列出受影响账号）+ 成本预估（「将消耗 12 次 CDK / 约 $1.56」）+ 危险操作需输入数量确认。这一项对「专业感」的提升最大。</p>
+  </div>
+
+  <div class="finding">
+    <div class="f-head"><span class="chip c1">严重</span><h4>没有任何加载态</h4><span class="ref">JS 全域</span></div>
+    <p>全文 <code>skeleton</code> / <code>spinner</code> / <code>loading</code> 各 <b>0 处</b>，只有 6 处纯文本「加载中…」。表格数据在切换筛选、翻页、切 tab 时是<b>直接跳变</b>的——旧数据停留，然后突然被替换，用户无法判断「是在加载还是没数据」。</p>
+    <p class="fix">表格加 skeleton 行（保持行高，避免布局跳动）；按钮点击后进入 pending 态并禁用；配合 <code>aria-busy</code>。</p>
+  </div>
+
+  <div class="finding">
+    <div class="f-head"><span class="chip c2">中</span><h4>Toast 1.4 秒、单条、无角色</h4><span class="ref">L4093</span></div>
+    <p><code>setTimeout(()=&gt;el.classList.remove('show'), 1400)</code>，且是<b>单例</b>——后一条会顶掉前一条。批量操作返回的长错误信息（例如「12 个成功，3 个失败：xxx@yyy 线路超时…」）1.4 秒根本读不完，且无法复制、无历史记录。</p>
+    <p class="fix">按类型分级：成功 2s 自动消失；<b>错误不自动消失</b>，需手动关闭且可复制。支持堆叠。加 <code>role="status"</code> / <code>role="alert"</code>。</p>
+  </div>
+
+  <div class="finding">
+    <div class="f-head"><span class="chip c2">中</span><h4>弹层是 CSS 伪装的，不是真 dialog</h4><span class="ref">L203–L215</span></div>
+    <p>日志/二维码面板用 <code>.hidden</code> 类切换，靠 <code>#logPanel:not(.hidden)</code> 提升为 <code>position:fixed</code>，遮罩是 <code>box-shadow: 0 0 0 9999px rgba(...)</code> 撑出来的。没有 <code>&lt;dialog&gt;</code>、没有焦点陷阱、没有焦点回归、<code>aria-modal</code> 仅 1 处。关闭按钮还在用 <code>float:right</code>。</p>
+    <p class="fix">换用原生 <code>&lt;dialog&gt;</code> + <code>showModal()</code>，免费获得焦点陷阱、Esc 关闭、<code>::backdrop</code> 和惰性背景。</p>
+  </div>
+
+  <div class="finding">
+    <div class="f-head"><span class="chip c2">中</span><h4>账号工具栏挤了 17 个按钮，语义全靠 <code>title</code></h4><span class="ref">L3130–3172</span></div>
+    <p>4 个主操作 + 「更多操作」内 11 个 + 2 个当页操作 + 2 个工具 = 17。区分「查活 / 刷新AT / 查套餐 / 查封号邮件」完全依赖原生 tooltip——需悬停约 1 秒、触屏不可用、键盘不可达、无法换行排版。</p>
+    <p class="fix">按对象分组（账号状态 / 凭证 / 导出 / 资产管理），主操作保留 2–3 个，其余进下拉。tooltip 换成自建组件，支持标题 + 说明 + 成本提示。</p>
+  </div>
+
+  <div class="finding">
+    <div class="f-head"><span class="chip c2">中</span><h4>5 个轮询定时器，无可见性判断、无请求取消</h4><span class="ref">L8640–8648</span></div>
+    <p><code>setInterval(loadSummary, 5000)</code> <b>无条件执行</b>，标签页切到后台也在跑。全文 <code>visibilityState</code> 0 处、<code>AbortController</code> 0 处。快速切 tab 或连续翻页时，先发的请求可能后返回，把旧数据写回界面。</p>
+    <p class="fix">统一轮询调度器：<code>document.hidden</code> 时暂停；每个列表持有 <code>AbortController</code>，新请求发出前 abort 旧的；失败时指数退避。</p>
+  </div>
+</section>
+
+<!-- ======================================================== -->
+<section id="tasks">
+  <h2>五 · 任务执行：两套并行的任务体系</h2>
+  <p class="sec-sub">你提的问题——为什么只有注册有步骤和耗时</p>
+
+  <p>先说结论：<b>不是账号任务缺数据，是缺「步骤模型」。</b>注册任务有一份<b>预先声明的有序步骤表</b>，账号任务只有<b>事后追加的流水事件</b>。前者能画进度条，后者只能打日志。</p>
+
+  <div class="cmp">
+    <div>
+      <h4>注册任务 <span class="tag has">有步骤</span></h4>
+      <ul>
+        <li><code>db.JOB_PROGRESS_STAGES</code> 声明 11 个有序步骤（key + 中文 label）</li>
+        <li><code>progress_steps</code> 存 <code>{stage: {state, started_at, completed_at, detail}}</code></li>
+        <li>状态机含 <code>pending/running/success/failed/skipped/stopped</code></li>
+        <li>切换到 running 时自动结算前序步骤</li>
+        <li>前端渲染横向步骤轨 + 每步耗时</li>
+      </ul>
+    </div>
+    <div>
+      <h4>账号任务 <span class="tag lacks">无步骤</span></h4>
+      <ul>
+        <li>无步骤声明，<b>不知道总共有几步</b></li>
+        <li><code>account_action_events</code> 只有 <code>created_at</code>，<b>无 started/finished</b></li>
+        <li><code>duration_ms</code> <b>只在任务级</b>，没有分步耗时</li>
+        <li>stage 命名不统一：<code>network_route</code>（查活/查套餐）vs <code>network</code>（Codex）</li>
+        <li><code>token_refresh_service</code> <b>一个事件都不发</b></li>
+        <li>前端把 <code>detail</code> 直接 <code>JSON.stringify</code> 铺在深色日志里</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>当前各服务实际发出的 stage</h3>
+  <div class="tw">
+  <table>
+    <thead><tr><th>任务类型</th><th>已发出的 stage</th><th class="n">数量</th><th>问题</th></tr></thead>
+    <tbody>
+      <tr><td>查活 <code>live_check</code></td><td class="mono">network_route, access_token×3, reauth, roxy_fallback</td><td class="n">4</td><td><code>access_token</code> 发 3 次同名事件，无法当步骤用</td></tr>
+      <tr><td>查套餐 <code>plan_check</code></td><td class="mono">network_route, plan_request×2</td><td class="n">2</td><td>缺「试用资格判定」这一实际存在的阶段</td></tr>
+      <tr><td>刷新AT <code>token_refresh</code></td><td class="mono bad">（无）</td><td class="n bad">0</td><td>纯调度器，实际走 live_check 的 reauth 路径，完全没有自己的可观测性</td></tr>
+      <tr><td>Codex 补跑 <code>codex_retry</code></td><td class="mono">driver, network×2, oauth, oauth_result</td><td class="n">4</td><td><code>oauth</code>/<code>oauth_result</code> 是「步骤 + 结果」拆成了两个 stage</td></tr>
+      <tr><td>查封号邮件 <code>deactivation_mail</code></td><td class="mono">mailbox_scan</td><td class="n">1</td><td>单步，无进度可言</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>建议：给每种任务声明步骤表</h3>
+  <p>完全复用注册那套模式，在 <code>account_task_store.py</code> 里加一份 <code>ACCOUNT_TASK_STAGES: dict[action_type, tuple[(key, label)]]</code>：</p>
+
+  <div class="tw">
+  <table>
+    <thead><tr><th>任务类型</th><th>建议步骤序列</th></tr></thead>
+    <tbody>
+      <tr><td>查活</td><td class="mono">排队 → 选择线路 → 验证 Token → 判定结果</td></tr>
+      <tr><td>刷新AT</td><td class="mono">排队 → 选择线路 → 收取邮箱 OTP → 重新登录 → 获取新 AT → 写入</td></tr>
+      <tr><td>查套餐</td><td class="mono">排队 → 选择线路 → 请求套餐接口 → 试用资格判定 → 写入</td></tr>
+      <tr><td>Codex 补跑</td><td class="mono">排队 → 启动驱动 → 选择线路 → OAuth 授权 → 回调校验 → 写入凭证</td></tr>
+      <tr><td>查封号邮件</td><td class="mono">排队 → 定位邮箱通道 → 扫描信号 → 判定</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>再加一个 <code>set_stage(task_id, stage, state, detail=None)</code>——<b>同时</b>写步骤状态表和追加事件。这样每个 service 只需把现有的 <code>append_event(...)</code> 改成 <code>set_stage(...)</code>，一行换一行，就同时获得了进度轨和分步耗时。分支步骤（<code>roxy_fallback</code> 线路回退、<code>reauth</code> OTP 重登）标记为 <code>skipped</code> 或条件插入即可。</p>
+
+  <h4>目标效果</h4>
+  <div class="track">
+    <div class="done"><span class="dot"></span><b>排队</b><s>0.2s</s></div>
+    <div class="done"><span class="dot"></span><b>选择线路</b><s>1.4s</s></div>
+    <div class="done"><span class="dot"></span><b>收取 OTP</b><s>18.6s</s></div>
+    <div class="now"><span class="dot"></span><b>重新登录</b><s>运行中</s></div>
+    <div><span class="dot"></span><b>获取新 AT</b><s>—</s></div>
+    <div><span class="dot"></span><b>写入</b><s>—</s></div>
+  </div>
+  <p class="cap">刷新 AT 任务的目标形态。样式可直接复用现有的 <code>.batch-progress-v2-step</code> / <code>-node</code> / <code>-step-duration</code>，无需新写组件。</p>
+
+  <div class="note">
+    <p><b>额外收益：</b>有了分步耗时，「哪一步最慢」就成了可量化的问题。上面这个例子里「收取 OTP 18.6s」一眼可见是瓶颈——现在这个信息埋在事件时间戳里，没人会去手工做差。</p>
+  </div>
+
+  <h3>更上层的问题：两套任务系统应该合并</h3>
+  <p>现在有两个「任务」概念，分属两个模块、两套数据模型、两套 UI、两个轮询循环、两个分页器：</p>
+  <div class="tw">
+  <table>
+    <thead><tr><th></th><th>注册 › 任务记录</th><th>账号 › 任务实例</th></tr></thead>
+    <tbody>
+      <tr><td>存储</td><td class="mono">JSON 文件（db.py）</td><td class="mono">SQLite（account_task_store）</td></tr>
+      <tr><td>进度</td><td class="mono good">步骤表 + 分步耗时</td><td class="mono bad">流水事件</td></tr>
+      <tr><td>日志</td><td class="mono">独立日志文件 + 轮询</td><td class="mono">事件表</td></tr>
+      <tr><td>批次</td><td class="mono">批次进度面板</td><td class="mono">batch 表但无 UI</td></tr>
+      <tr><td>重试</td><td class="mono">单个 / 批量 / 批次级</td><td class="mono">单个</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>用户视角里这两者都是「我发起的一个后台操作」。建议中期收敛成<b>统一的任务中心</b>：一个列表、一套状态机、一套步骤模型、一个详情抽屉。注册只是 <code>action_type</code> 的一种。<code>account_action_batches</code> 表已经存在但前端没用——批量操作的批次视图可以直接复用注册那套批次进度面板。</p>
+</section>
+
+<!-- ======================================================== -->
+<section id="plan">
+  <h2>六 · 优化方案</h2>
+  <p class="sec-sub">按「投入产出比」排序，每阶段可独立交付</p>
+
+  <div class="phase">
+    <div class="phase-head"><span class="phase-n">1</span><h3>止血：可读性与安全</h3><span class="phase-cost">纯 CSS + 少量 JS · 低风险</span></div>
+    <p>不动结构，只改值。改完立刻能感知，且几乎不可能改坏。</p>
+    <ol>
+      <li><b>轮询加 <code>document.hidden</code> 判断</b>——十几行代码，立刻砍掉大部分无效请求（当前 30 次/分）</li>
+      <li><b>创建时间列改相对时间</b>（<code>2小时前</code>），完整值放 tooltip——单这一项就消掉最严重的截断</li>
+      <li><b>ID 列改等宽数字 + 右对齐</b>，宽度给足 5 位</li>
+      <li>四张主表表头颜色提到 ≥5:1，字号 11 → 12px</li>
+      <li>全局替换 <code>#909399</code> → <code>#6B7280</code>（4.83:1），覆盖 42 处</li>
+      <li>9px / 10px 数据类文字统一上移到 11px（尤其注册步骤轨的分步耗时）</li>
+      <li>复选框点击热区撑到 24px，移除 30 条 <code>!important</code></li>
+      <li>跳过的步骤显示「跳过」而不是「0秒」</li>
+      <li>补 <code>:focus-visible</code> 全局样式与 <code>prefers-reduced-motion</code></li>
+      <li>删掉 L252–324 的旧侧边栏死代码</li>
+    </ol>
+  </div>
+
+  <div class="phase">
+    <div class="phase-head"><span class="phase-n">2</span><h3>建立单一事实来源</h3><span class="phase-cost">机械替换 · 中等工作量</span></div>
+    <p>这是所有后续工作的地基。建议先把 <code>&lt;style&gt;</code> 拆到 <code>static/app.css</code>，否则 2,827 行内联 CSS 无法维护，也拿不到浏览器缓存。</p>
+    <ol>
+      <li>定义 <code>--brand-50…900</code>、<code>--gray-50…900</code> 两套色阶 + 语义色（success/warn/danger/info）</li>
+      <li>25 种蓝 → 一套色阶；134 种灰 → 一套灰阶</li>
+      <li>字号收敛到 6 档，字重收敛到 4 档（去掉 650/680/750/760）</li>
+      <li>圆角收敛到 3 档，间距统一 4px 栅格</li>
+      <li>z-index 改为 6 个语义常量</li>
+      <li>顺带即可支持暗色模式（token 化之后只需重定义变量）</li>
+    </ol>
+  </div>
+
+  <div class="phase">
+    <div class="phase-head"><span class="phase-n">3</span><h3>滚动与列表模型</h3><span class="phase-cost">需要设计决策 · 中高风险</span></div>
+    <p>先定「整页滚动」还是「全高面板」，再动手——这两条路的实现完全不同。</p>
+    <ol>
+      <li>消除双层纵向滚动，去掉 <code>overscroll-behavior: contain</code></li>
+      <li>冻结账号表前三列（勾选 / ID / 邮箱）</li>
+      <li>加列显隐开关，默认只显示 6 列，配置持久化到 localStorage（复用已有的列宽持久化机制）</li>
+      <li>顶栏 76 → 56px，子导航与命令甲板合并</li>
+      <li>行高 52 → 44px，并提供「紧凑 / 舒适」密度切换</li>
+      <li>移动端：13 列表格降级为卡片列表</li>
+    </ol>
+  </div>
+
+  <div class="phase">
+    <div class="phase-head"><span class="phase-n">4</span><h3>反馈系统</h3><span class="phase-cost">新组件 · 独立可交付</span></div>
+    <ol>
+      <li>统一确认弹层：影响范围 + 成本预估 + 危险操作二次输入，替换全部 35 处 <code>confirm()</code></li>
+      <li>Toast 分级：错误不自动消失、可复制、可堆叠、带 <code>role</code></li>
+      <li>表格 skeleton + 按钮 pending 态</li>
+      <li>弹层改用原生 <code>&lt;dialog&gt;</code></li>
+      <li>轮询调度器：<code>document.hidden</code> 暂停 + <code>AbortController</code> + 退避</li>
+      <li>账号工具栏 17 按钮按对象重组</li>
+    </ol>
+  </div>
+
+  <div class="phase">
+    <div class="phase-head"><span class="phase-n">5</span><h3>任务中心</h3><span class="phase-cost">前后端联动 · 最大工作量</span></div>
+    <ol>
+      <li><code>ACCOUNT_TASK_STAGES</code> 步骤表 + <code>set_stage()</code> 写入器</li>
+      <li>五个 service 把 <code>append_event</code> 换成 <code>set_stage</code>，统一 stage 命名</li>
+      <li><code>token_refresh_service</code> 补齐可观测性</li>
+      <li>任务实例表格内嵌紧凑步骤轨（不用开弹层就能看到卡在哪一步）</li>
+      <li>详情抽屉：步骤轨 + 分步耗时 + 结构化 detail（替换裸 JSON）</li>
+      <li>启用 <code>account_action_batches</code> 的批次视图</li>
+      <li>中期：与注册任务合并为统一任务中心</li>
+    </ol>
+  </div>
+
+  <div class="note">
+    <p><b>建议顺序：</b>1 → 2 → 4 → 5 → 3。把阶段 3 放最后，是因为它需要你先决定滚动模型这个产品级问题；而阶段 4 的确认弹层和阶段 5 的步骤轨是<b>用户最能直接感知「变专业了」</b>的两项。</p>
+  </div>
+</section>
+
+<section id="scope">
+  <h2>七 · 本次评估的边界</h2>
+  <p class="sec-sub">哪些结论是实测的，哪些不是</p>
+  <ul style="font-size:var(--s2); line-height:1.7; padding-left:1.2rem; max-width:68ch;">
+    <li><b>实测（静态）：</b>色值统计、字号/字重/圆角分布、CSS 规则位置、DOM 结构、后端 stage 发出点。</li>
+    <li><b>实测（实机）：</b>已连接运行中的实例（127.0.0.1:8000，1440×900），实地走查总览 / 注册 / 账号三个模块，实测对比度、截断率、滚动容器尺寸、复选框尺寸、轮询频率。<b>第零节的更正即来自此。</b></li>
+    <li><b>未走查：</b>Codex 授权、邮箱池、配置三个模块，以及账号页的「归档账号 / 任务实例」子视图、各类弹层与移动端断点——本次未逐一打开。</li>
+    <li><b>推断：</b>阶段 5 的步骤序列是基于现有 stage 命名的建议，未与你确认过实际流程是否还有其他分支。</li>
+    <li><b>未覆盖：</b><code>index_legacy.html</code>（3,274 行）与 <code>config_editor.py</code>（1,082 行）；<code>login.html</code> 仅粗看。</li>
+    <li><b>注意：</b>评估期间 <code>index.html</code> 被改动过（12:21 的 8,719 行 → 13:02 的 8,669 行），行号引用可能有小幅偏移。</li>
+  </ul>
+</section>
+
+<hr class="end">
+<p class="foot">
+  Turb Console 界面体检 · 2026-08-14<br>
+  基于 webui/templates/index.html @ c1da227 的静态分析
+</p>
+
+</div>
