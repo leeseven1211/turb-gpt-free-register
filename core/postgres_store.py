@@ -33,12 +33,20 @@ def enabled() -> bool:
     return bool(database_url())
 
 
-def _connect():
+def connect(url: str | None = None, **kwargs):
+    """Open a PostgreSQL connection for storage modules."""
     try:
         import psycopg
     except ImportError as exc:  # pragma: no cover - only possible in incomplete installs
         raise RuntimeError("已配置 DATABASE_URL，但缺少 psycopg；请重新安装 requirements.txt") from exc
-    return psycopg.connect(database_url(), connect_timeout=5)
+    target = str(url or database_url()).strip()
+    if not target:
+        raise RuntimeError("DATABASE_URL 未配置")
+    return psycopg.connect(target, connect_timeout=5, **kwargs)
+
+
+def _connect():
+    return connect()
 
 
 def ensure_schema() -> None:

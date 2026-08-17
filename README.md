@@ -121,7 +121,7 @@ WebUI 启动注册前会显示“本次注册邮箱来源”下拉框，操作�
 - 如使用 Roxy 注册：需要本机 RoxyBrowser API 可访问
 - 如使用 Cloak 注册：首次运行会自动下载 Cloak Chromium binary；`CLOAK_GEOIP=True` 需要 `cloakbrowser[geoip]` 依赖
 - 如启用 Codex 自动授权：需要接码平台配置
-- PostgreSQL 16（本地可直接使用 Docker Compose 启动）
+- PostgreSQL 16（本机统一由 `shared-services/postgres` 管理）
 
 推荐在项目内创建虚拟环境安装依赖：
 
@@ -174,10 +174,10 @@ WebUI 配置页保存这些字段时会写入 `.env`（不是 config 源码）�
 
 账号、邮箱池、注册任务、Codex 凭证和导出/归档状态统一写入 PostgreSQL。原有 JSON/TXT 与 `codex_accounts/` 仍会同步生成，作为 CLI、CPA 和人工导出的兼容产物，不再是唯一数据源。日志、浏览器缓存与批次文件仍保留在文件系统。
 
-本地启动：
+本机 PostgreSQL 已从项目目录拆分为公共服务。启动：
 
 ```bash
-docker compose -f compose.postgres.yml up -d
+/Users/lihongwei/code/personal/shared-services/postgres/postgres.sh start
 ```
 
 然后在 `.env` 配置：
@@ -189,8 +189,10 @@ DATABASE_URL=postgresql://turb:turb_local_dev@127.0.0.1:55432/turb_console
 首次读取现有 JSON 数据时会自动导入 PostgreSQL；迁移过程不会删除兼容文件。查看状态：
 
 ```bash
-docker compose -f compose.postgres.yml ps
+/Users/lihongwei/code/personal/shared-services/postgres/postgres.sh status
 ```
+
+其他本机项目需要使用 PostgreSQL 时，应在同一个实例中创建独立数据库和用户，不要共用 `turb_console`。具体用法见 `/Users/lihongwei/code/personal/shared-services/postgres/README.md`。
 
 ---
 
@@ -601,7 +603,7 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 
 - iCloud 隐藏邮箱转发到 Gmail 时，生产链路固定为 `Gmail IMAP IDLE → Email Butler PostgreSQL → turb HTTP API`。每封新邮件由 Oracle 通知进程主动写入 PG；注册任务只按邮箱地址和时间窗口查询已入库事件，不再为每个账号重复连接或扫描 Gmail IMAP。
 - `ICLOUD_HME_INBOX_MODE=forward_butler` 是当前配置；旧值 `forward_imap` 只作为兼容别名映射到 Butler，不代表 OTP 会重新直连 IMAP。
-- SQLite 只用于导入项目早期遗留数据，不得作为生产 Email Butler/OTP 事件库。turb 自身的账号、邮箱池和任务状态目前仍由 `core/db.py` 管理本地 JSON/TXT 文件；不要把这两类存储混为一谈。
+- turb 的账号、邮箱池、注册任务和账号操作任务均以本机 PostgreSQL 为主存储；JSON/TXT 只作为兼容导出或输入文件。项目运行时不再使用 SQLite。
 - OTP 查询必须携带任务开始时间并按目标别名精确匹配，避免并发任务互相拿错验证码。轮询间隔由 `OTP_POLL_INTERVAL` 控制，Butler 已经接收到邮件时只做轻量查询。
 
 #### 代理与地区
@@ -963,7 +965,7 @@ Roxy 注册如果遇到新版流程：
 | `config/email.py` | 邮箱来源、OTP 轮询、Email Butler、QQ IMAP、iCloud HME、Cloudflare 临时邮箱及封号信号 |
 | `config/proxy.py` | 代理池 |
 | `config/register.py` | 默认邮箱、认证模式、显示名 |
-| `compose.postgres.yml` | 本地 PostgreSQL 16 容器与持久化卷 |
+| 外部共享 PostgreSQL | 本机由 `/Users/lihongwei/code/personal/shared-services/postgres` 统一管理 |
 | `config/twofa.py` | 2FA 开关 |
 | `config/humanize.py` | 随机停顿/人工节奏 |
 | `config/flow_trigger.py` | 注册成功后触发 Flow |
@@ -987,7 +989,7 @@ WebUI 配置页保存后会调用热加载；Roxy、Codex、邮箱、代理、�
 | `accounts/` | 每次运行的批次归档 |
 | `codex_accounts/` | Codex OAuth 凭证 JSON |
 | `注册任务.json` | WebUI 注册任务表 |
-| `data/account_tasks.db` | 账号操作任务实例及脱敏阶段事件 |
+| PostgreSQL `account_action_batches/account_action_tasks/account_action_events` | 账号操作任务实例及脱敏阶段事件 |
 | `注册日志/` | 注册任务日志、兼容用 Codex 补跑文件日志 |
 | `accounts_viewer.html` | 本地账号查看页 |
 

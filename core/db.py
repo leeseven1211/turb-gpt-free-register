@@ -14,7 +14,6 @@
 import hashlib
 import json
 import logging
-import sqlite3
 import threading
 import uuid
 from datetime import datetime
@@ -46,7 +45,6 @@ _CODEX_DIR = _PROJECT_ROOT / "codex_accounts"
 _CODEX_EXPORT_STATE = _PROJECT_ROOT / "codex_导出状态.json"
 _CODEX_CREDENTIALS_COLLECTION = "codex_credentials"
 
-_LEGACY_SQLITE = _LEGACY_DATA_DIR / "registrations.db"
 _LEGACY_OUTLOOK_JSON = _LEGACY_DATA_DIR / "outlook_accounts.json"
 _LEGACY_ACCOUNTS_JSON = _LEGACY_DATA_DIR / "registered_accounts.json"
 _LEGACY_JOBS_JSON = _LEGACY_DATA_DIR / "registration_jobs.json"
@@ -2617,76 +2615,17 @@ def delete_job(job_id: int, *, delete_log: bool = True, allow_running: bool = Fa
 # 迁移与路径
 # ============================================================
 
-def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    row = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-        (name,),
-    ).fetchone()
-    return row is not None
-
-
-def _migrate_legacy_sqlite() -> dict:
-    summary = {"sqlite_accounts_imported": 0, "sqlite_outlook_imported": 0, "sqlite_outlook_skipped": 0}
-    if not _LEGACY_SQLITE.exists():
-        return summary
-    try:
-        conn = sqlite3.connect(str(_LEGACY_SQLITE))
-        conn.row_factory = sqlite3.Row
-        if _table_exists(conn, "outlook_pool"):
-            records = []
-            statuses = []
-            for row in conn.execute("SELECT * FROM outlook_pool").fetchall():
-                records.append({
-                    "email": row["email"],
-                    "password": row["password"],
-                    "client_id": row["client_id"],
-                    "refresh_token": row["refresh_token"],
-                })
-                statuses.append({
-                    "email": row["email"],
-                    "status": row["status"],
-                    "note": row["note"],
-                })
-            ins, skip = import_outlook_accounts(records)
-            for item in statuses:
-                if item["status"] != "available":
-                    release_outlook(item["email"], status=item["status"], note=item["note"])
-            summary["sqlite_outlook_imported"] += ins
-            summary["sqlite_outlook_skipped"] += skip
-        if _table_exists(conn, "registered_accounts"):
-            for row in conn.execute("SELECT * FROM registered_accounts").fetchall():
-                insert_account(
-                    email=row["email"],
-                    access_token=row["access_token"],
-                    totp_secret=row["totp_secret"],
-                    user_id=row["user_id"],
-                    user_name=row["user_name"],
-                    plan_type=row["plan_type"],
-                    expires_at=row["expires_at"],
-                    device_id=row["device_id"],
-                    proxy_used=row["proxy_used"],
-                    email_source=row["email_source"],
-                    extra=json.loads(row["extra_json"]) if row["extra_json"] else None,
-                )
-                summary["sqlite_accounts_imported"] += 1
-        conn.close()
-    except Exception as exc:
-        summary["sqlite_error"] = f"{type(exc).__name__}: {exc}"
-    return summary
-
 
 def migrate_legacy_files() -> dict:
     """
-    把历史 SQLite、accounts/*.json、outlook_accounts.txt、outlook_accounts_used.json
-    迁移到当前 JSON/TXT 文件存储。多次调用是幂等的。
+    把历史 accounts/*.json、outlook_accounts.txt、outlook_accounts_used.json
+    迁移到当前 PostgreSQL 主存储及兼容导出文件。多次调用是幂等的。
     """
     summary = {
         "accounts_imported": 0,
         "outlook_imported": 0,
         "outlook_skipped": 0,
     }
-    summary.update(_migrate_legacy_sqlite())
-
     accounts_dir = _PROJECT_ROOT / "accounts"
     if accounts_dir.exists():
         for jf in accounts_dir.glob("*.json"):

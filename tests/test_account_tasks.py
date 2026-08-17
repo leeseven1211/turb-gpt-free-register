@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
 import base64
 import json
+import os
 import tempfile
 import unittest
+import uuid
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from core import account_task_store, codex_retry_service, live_check_service, token_refresh_service
+from core import account_task_store, codex_retry_service, live_check_service, postgres_store, token_refresh_service
 from webui import app as webui_app
 from webui.app import create_app
 
@@ -22,14 +24,28 @@ def _jwt_with_exp(exp: datetime) -> str:
 
 class AccountTaskStoreTests(unittest.TestCase):
     def setUp(self):
+        if not os.getenv("DATABASE_URL"):
+            self.skipTest("需要本机 PostgreSQL DATABASE_URL")
         self.tempdir = tempfile.TemporaryDirectory()
-        self.path_patch = patch.object(account_task_store, "_DB_PATH", Path(self.tempdir.name) / "tasks.db")
-        self.path_patch.start()
-        account_task_store._READY_PATH = None
+        self.schema = f"test_account_tasks_{uuid.uuid4().hex[:12]}"
+        self.schema_patch = patch.object(account_task_store, "_SCHEMA", self.schema)
+        self.schema_patch.start()
+        self.ready_patch = patch.object(account_task_store, "_READY_KEY", "")
+        self.ready_patch.start()
+        self.url_patch = patch.object(postgres_store, "database_url", return_value=os.environ["DATABASE_URL"])
+        self.url_patch.start()
+        self.enabled_patch = patch.object(postgres_store, "enabled", return_value=True)
+        self.enabled_patch.start()
 
     def tearDown(self):
-        account_task_store._READY_PATH = None
-        self.path_patch.stop()
+        try:
+            with postgres_store.connect() as conn, conn.cursor() as cur:
+                cur.execute(f'DROP SCHEMA "{self.schema}" CASCADE')
+        finally:
+            self.enabled_patch.stop()
+            self.url_patch.stop()
+            self.ready_patch.stop()
+            self.schema_patch.stop()
         self.tempdir.cleanup()
 
     def test_task_events_are_persisted_and_credentials_are_redacted(self):
