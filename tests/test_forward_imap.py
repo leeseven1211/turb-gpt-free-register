@@ -38,14 +38,15 @@ class ForwardIMAPTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
 
     @patch("core.email_butler_client.fetch_inbound_otp", return_value="123456")
-    def test_fetch_latest_otp_delegates_to_pg_cache(self, fetch):
-        result = client.fetch_latest_otp(
-            "alias@icloud.com",
-            after_ts=123.0,
-            max_wait=10,
-            poll_interval=2,
-            settle_seconds=0,
-        )
+    def test_fetch_latest_otp_delegates_to_pg_cache_when_imap_unavailable(self, fetch):
+        with patch.object(client, "_connect", side_effect=client.ForwardIMAPError("offline")):
+            result = client.fetch_latest_otp(
+                "alias@icloud.com",
+                after_ts=123.0,
+                max_wait=10,
+                poll_interval=2,
+                settle_seconds=0,
+            )
         self.assertEqual(result, "123456")
         fetch.assert_called_once_with(
             "alias@icloud.com",
@@ -53,7 +54,44 @@ class ForwardIMAPTests(unittest.TestCase):
             max_wait=10,
             poll_interval=2,
             settle_seconds=0,
+            local_probe=None,
         )
+
+    @patch("core.email_butler_client.fetch_inbound_otp")
+    def test_fetch_latest_otp_passes_direct_imap_probe(self, fetch):
+        class Mail:
+            def noop(self):
+                return "OK", []
+
+            def logout(self):
+                return None
+
+        message = {
+            "from": "ChatGPT <noreply@openai.com>",
+            "subject": "Your ChatGPT code is 654321",
+            "date": "2026-08-17T04:41:25Z",
+        }
+
+        def use_probe(_email, **kwargs):
+            return kwargs["local_probe"]()
+
+        fetch.side_effect = use_probe
+        with (
+            patch.object(client, "_connect", return_value=Mail()),
+            patch.object(
+                client,
+                "_messages_for_recipient",
+                return_value=[(message, "alias@icloud.com", "1479")],
+            ),
+        ):
+            result = client.fetch_latest_otp(
+                "alias@icloud.com",
+                after_ts=0,
+                max_wait=10,
+            )
+
+        self.assertEqual(result, "654321")
+        self.assertIsNotNone(fetch.call_args.kwargs["local_probe"])
 
     def test_deactivation_scan_matches_forwarded_alias_without_returning_body(self):
         class Mail:

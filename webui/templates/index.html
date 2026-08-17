@@ -3212,6 +3212,7 @@
           <select class="jobs-tb-select" id="accountTaskTypeFilter" aria-label="任务类型">
             <option value="">全部类型</option>
             <option value="codex_retry">Codex 补跑</option>
+            <option value="codex_token_refresh">Codex Token 刷新</option>
             <option value="live_check">查活</option>
             <option value="token_refresh">AT 刷新</option>
             <option value="plan_check">查套餐</option>
@@ -3267,6 +3268,8 @@
       <div class="codex-command-deck">
       <div class="jobs-toolbar-v2 list-action-toolbar" id="codexToolbarV2">
         <span class="list-selection-hint" id="codexSelectedHintV2">选择凭证后批量操作</span>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--primary selection-only" id="btnCodexRefreshTokenBulkV2" disabled title="使用 refresh_token 刷新选中凭证，不需要邮箱验证码或短信">刷新 OAuth Token</button>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--retry selection-only" id="btnCodexReauthorizeBulkV2" disabled title="为选中的账号重新执行 Codex OAuth 授权；每个账号会消耗邮箱 OTP 和接码短信">重跑 Codex 授权</button>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--primary selection-only" id="btnCodexDownloadBulkV2" disabled title="把选中的多个本地凭证打包成一个 JSON 文件下载（备份/迁移用，CPA 不能直接读，需先解包）">下载本地</button>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--good selection-only" id="btnCodexDownloadBulkCpaV2" disabled title="从 CPA auth-files 下载选中账号的真实 Codex JSON，并打包成 ZIP（可直接解压放入 CPA auth-dir）">从 CPA 下载</button>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--good selection-only" id="btnCodexUploadSub2V2" disabled title="把选中的本地 Codex OAuth 凭证上传到 sub2api">上传 sub2api</button>
@@ -3282,7 +3285,7 @@
       <div class="codex-table-v2-wrap">
         <table class="codex-table-v2" data-resizable-table="codex">
           <colgroup>
-            <col class="col-check"><col class="col-email"><col class="col-plan"><col class="col-status">
+            <col class="col-check"><col class="col-email"><col class="col-plan"><col class="col-status"><col class="col-status">
             <col class="col-account"><col class="col-time"><col class="col-time"><col class="col-actions">
           </colgroup>
           <thead>
@@ -3291,6 +3294,7 @@
               <th class="col-email column-filter-header" data-column-filter="qCodexV2" data-filter-type="search" data-filter-placeholder="邮箱或文件名" data-filter-label="按邮箱或文件名筛选">邮箱 / 文件</th>
               <th class="col-plan column-filter-header" data-column-filter="codexPlanFilterV2" data-filter-type="select" data-filter-label="按 Plan 筛选">Plan</th>
               <th class="col-status column-filter-header" data-column-filter="codexStatusFilterV2" data-filter-type="select" data-filter-label="按凭证状态筛选">状态</th>
+              <th class="col-status column-filter-header" data-column-filter="codexOauthFilterV2" data-filter-type="select" data-filter-label="按 OAuth 状态筛选">OAuth 状态</th>
               <th class="col-account column-filter-header" data-column-filter="codexAccountFilterV2" data-filter-type="search" data-filter-placeholder="输入 Account ID" data-filter-label="按 Account ID 筛选">Account ID</th>
               <th class="col-time column-filter-header" data-column-filter="dateFromCodexV2" data-filter-end-id="dateToCodexV2" data-filter-type="date-range" data-filter-label="按更新日期范围筛选">更新时间</th>
               <th class="col-time column-filter-header" data-column-filter="codexExpiredFilterV2" data-filter-type="date" data-filter-label="按过期日期筛选">过期时间</th>
@@ -4117,7 +4121,7 @@ const FEATURE_SELECTORS = {
   plan_check: '#btnCheckSelectedPlansV2,#btnCheckSelectedPlans,[data-plan-check]',
   extract_link: '#btnExtractSelectedLinksV2,#btnExtractSelectedLinks,[data-extract-link]',
   sub2_upload: '#btnUploadSelectedCodexSub2V2,#btnUploadSelectedCodexSub2,#btnCodexUploadSub2V2,[data-codex-upload-sub2]',
-  codex_retry: '#btnRetrySelectedCodexV2,#btnRetrySelectedCodex,[data-codex-retry]',
+  codex_retry: '#btnRetrySelectedCodexV2,#btnRetrySelectedCodex,#btnCodexReauthorizeBulkV2,[data-codex-retry],[data-codex-reauthorize]',
   cpa_download: '#btnDownloadSelectedCpaV2,#btnDownloadSelectedCpa,#btnCodexDownloadBulkCpaV2,#btnCodexDownloadBulkCpa,[data-codex-download-cpa]',
   deactivation_mail: '#btnCheckSelectedDeactivationMailV2,#btnCheckSelectedDeactivationMail,[data-account-deactivation-mail]',
   proxy_provider_test: '#btnTestProxy1024V2,#btnTestProxy1024',
@@ -5113,11 +5117,12 @@ let planStatusLoading = false;
 let planStatusRevision = '';
 let ACCOUNT_BATCH_WORKERS = 3;
 const ACCOUNT_TASK_TYPE_LABELS = {
-  codex_retry:'Codex 补跑', live_check:'查活', token_refresh:'AT 刷新', plan_check:'查套餐', deactivation_mail:'查封号邮件'
+  codex_retry:'Codex 补跑', codex_token_refresh:'Codex Token 刷新', live_check:'查活', token_refresh:'AT 刷新', plan_check:'查套餐', deactivation_mail:'查封号邮件'
 };
 const ACCOUNT_TASK_TRIGGER_LABELS = {
   manual:'手动', manual_bulk:'手动批量', manual_retry:'失败重跑', scheduled:'定时',
-  registration_auto:'注册后自动', registration_job_retry:'注册任务重试', token_refresh_scheduled:'AT 定时刷新'
+  registration_auto:'注册后自动', registration_job_retry:'注册任务重试', token_refresh_scheduled:'AT 定时刷新',
+  codex_token_refresh_scheduled:'Codex 定时刷新'
 };
 function formatTaskDuration(ms) {
   if (ms == null || ms === '') return '-';
@@ -5130,6 +5135,9 @@ function formatTaskDuration(ms) {
   return `${minutes}m ${Math.round(seconds % 60)}s`;
 }
 function accountTaskResultText(task) {
+  const status = String(task.status || '');
+  if (status === 'queued') return '等待执行';
+  if (status === 'running') return '执行中';
   if (task.error) return task.error;
   const result = task.result_summary || {};
   if (task.task_type === 'plan_check') return result.current_plan_type ? `套餐 ${result.current_plan_type}${result.plus_trial_eligible ? ' · 可 Plus 试用' : ''}` : '查询完成';
@@ -5141,6 +5149,10 @@ function accountTaskResultText(task) {
   if (task.task_type === 'codex_retry') {
     if (result.ok) return result.credential_saved ? '授权成功 · 凭证已保存' : '授权成功';
     return result.message || result.status || '补跑失败';
+  }
+  if (task.task_type === 'codex_token_refresh') {
+    if (!result.ok) return 'OAuth Token 刷新失败';
+    return result.sub2_sync === 'failed' ? 'Token 已刷新 · sub2 同步失败' : 'OAuth Token 已刷新';
   }
   return Object.keys(result).length ? JSON.stringify(result) : '-';
 }
@@ -7199,12 +7211,14 @@ async function loadCodex() {
     const params = new URLSearchParams({paged:'1', page:String(p.page), page_size:String(p.size), q, archived, date_from:dateFrom, date_to:dateTo});
     params.set('plan', document.getElementById('codexPlanFilterV2')?.value || '');
     params.set('status', status === 'archived' ? '' : status);
+    params.set('oauth_status', document.getElementById('codexOauthFilterV2')?.value || '');
     params.set('account_id', document.getElementById('codexAccountFilterV2')?.value || '');
     params.set('expired_date', document.getElementById('codexExpiredFilterV2')?.value || '');
     const r = await api(`/api/codex?${params.toString()}`);
     const facets = r.facets || {};
     syncFacetSelect('codexPlanFilterV2', facets.plan, {group:'plan'});
     syncFacetSelect('codexStatusFilterV2', facets.status, {group:'status', allLabel:'未归档'});
+    syncFacetSelect('codexOauthFilterV2', facets.oauth_status, {group:'oauth_status'});
     CODEX = r.accounts || [];
     CODEX_TOTAL = Number(r.total || CODEX.length || 0);
     const totalPages = Math.max(1, Math.ceil(CODEX_TOTAL / p.size));
@@ -7225,7 +7239,7 @@ function _codexUpdateSelectedHint() {
     archiveBtn.textContent = CODEX_SHOW_ARCHIVED ? '恢复选中' : '归档选中';
     archiveBtn.title = CODEX_SHOW_ARCHIVED ? '把选中的归档凭证恢复到默认列表' : '归档选中的 Codex 授权凭证；默认列表不再显示';
   }
-  ['btnCodexDownloadBulkV2', 'btnCodexDownloadBulkCpaV2', 'btnCodexDeleteBulkV2', 'btnCodexUploadSub2V2'].forEach(id => {
+  ['btnCodexRefreshTokenBulkV2', 'btnCodexReauthorizeBulkV2', 'btnCodexDownloadBulkV2', 'btnCodexDownloadBulkCpaV2', 'btnCodexDeleteBulkV2', 'btnCodexUploadSub2V2'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.disabled = none;
   });
@@ -7235,6 +7249,24 @@ function _codexStatusBadge(r) {
   return exported
     ? `<span class="pill status-used" title="导出 ${esc(r.exported_count)} 次，最近 ${esc(r.exported_at || '-')}">已导出</span>`
     : `<span class="pill status-available">未导出</span>`;
+}
+function _codexOauthBadge(r) {
+  const status = String(r.oauth_status || 'unknown');
+  const seconds = Number(r.oauth_seconds_left);
+  let remaining = '';
+  if (Number.isFinite(seconds)) {
+    const absolute = Math.abs(seconds);
+    const days = Math.floor(absolute / 86400);
+    const hours = Math.floor((absolute % 86400) / 3600);
+    remaining = seconds < 0 ? `已过期 ${days}天${hours}小时` : `剩余 ${days}天${hours}小时`;
+  }
+  const details = [r.oauth_expires_at ? `过期：${r.oauth_expires_at}` : '', remaining, r.oauth_refreshable ? '存在 refresh_token，可尝试自动刷新' : '缺少 refresh_token', Number(r.sub2_uploaded_count || 0) > 0 ? '已纳入 sub2 自动同步' : '未记录 sub2 自动同步', r.oauth_refresh_error ? `最近刷新失败：${r.oauth_refresh_error}` : '', r.sub2_sync_error ? `sub2 同步失败：${r.sub2_sync_error}` : ''].filter(Boolean).join('；');
+  if (r.oauth_reauth_required) return `<span class="pill status-failed" title="${esc(details)}">需重授权</span>`;
+  if (status === 'valid') return `<span class="pill status-success" title="${esc(details)}">有效</span>`;
+  if (status === 'expiring') return `<span class="pill status-running" title="${esc(details)}">即将过期</span>`;
+  if (status === 'expired') return `<span class="pill status-failed" title="${esc(details)}">${r.oauth_refreshable ? '已过期' : '已过期·需重授权'}</span>`;
+  if (status === 'missing') return `<span class="pill status-failed" title="${esc(details)}">缺少令牌</span>`;
+  return `<span class="pill status-used" title="${esc(details)}">未知</span>`;
 }
 function closeCodexV2MoreMenus() {
   document.querySelectorAll('.codex-table-v2 .acc-v2-more.open').forEach(el => el.classList.remove('open'));
@@ -7275,6 +7307,7 @@ function renderCodex() {
     const checked = CODEX_SELECTED.has(r.filename) ? 'checked' : '';
     const exported = (r.exported_count || 0) > 0;
     const moreItems = [
+      `<button type="button" class="good" data-codex-refresh-token="${esc(r.filename)}" title="使用 refresh_token 换新 access token，不需要邮箱或短信验证码">刷新 OAuth Token</button>`,
       `<button type="button" class="good" data-codex-download-cpa="${esc(r.filename)}" title="按邮箱从 CPA auth-files 下载真实 Codex JSON">从CPA下载</button>`,
       `<button type="button" class="good" data-codex-upload-sub2="${esc(r.filename)}" title="把这份本地 Codex OAuth 凭证上传到 sub2api">上传 sub2api</button>`,
       exported ? `<button type="button" data-codex-reset="${esc(r.filename)}" title="重新标记为未导出">重置标记</button>` : '',
@@ -7289,11 +7322,13 @@ function renderCodex() {
       </td>
       <td class="col-plan">${esc(r.plan || '-')}</td>
       <td class="col-status">${_codexStatusBadge(r)}</td>
+      <td class="col-status">${_codexOauthBadge(r)}</td>
       <td class="col-account" title="${esc(r.account_id || '-')}">${esc(r.account_id || '-')}</td>
       <td class="col-time" title="${esc(r.mtime || '-')}">${esc(r.mtime || '-')}</td>
       <td class="col-time" title="${esc(r.expired || '-')}">${esc(r.expired || '-')}</td>
       <td class="col-actions">
         <div class="acc-v2-actions">
+          <button type="button" data-codex-reauthorize="${esc(r.filename)}" title="重新执行 Codex OAuth 授权；会消耗邮箱 OTP 和接码短信">重跑授权</button>
           <button type="button" class="primary" data-codex-download="${esc(r.filename)}" title="下载本地 codex_accounts/ 中的 JSON/回执">本地下载</button>
           <button type="button" class="danger" data-codex-delete="${esc(r.filename)}" title="删除本地 Codex JSON 凭证文件">删除</button>
           <div class="acc-v2-more">
@@ -7303,7 +7338,7 @@ function renderCodex() {
         </div>
       </td>
     </tr>`;
-  }).join('') || '<tr><td colspan="8" style="text-align:center;color:#909399;padding:28px;">还没有 Codex 凭证</td></tr>';
+  }).join('') || '<tr><td colspan="9" style="text-align:center;color:#909399;padding:28px;">还没有 Codex 凭证</td></tr>';
   syncCodexSelectAllUi(rows);
   _codexUpdateSelectedHint();
   _renderPager('codex', total);
@@ -7338,6 +7373,18 @@ async function onCodexBodyClick(e) {
     return;
   }
   if (e.target.closest('.acc-v2-more-menu')) closeCodexV2MoreMenus();
+
+  const reauthorize = e.target.closest('[data-codex-reauthorize]');
+  if (reauthorize) {
+    await codexReauthorize([reauthorize.dataset.codexReauthorize]);
+    return;
+  }
+
+  const refreshToken = e.target.closest('[data-codex-refresh-token]');
+  if (refreshToken) {
+    await codexRefreshTokens([refreshToken.dataset.codexRefreshToken]);
+    return;
+  }
 
   const uploadSub2 = e.target.closest('[data-codex-upload-sub2]');
   if (uploadSub2) {
@@ -7522,6 +7569,70 @@ async function codexDownloadBulkCpa() {
     _codexUpdateSelectedHint();
   }
 }
+async function codexReauthorize(filenames = null) {
+  const selected = Array.isArray(filenames) ? filenames.filter(Boolean) : Array.from(CODEX_SELECTED);
+  if (!selected.length) return;
+  const workers = getCodexBulkWorkers();
+  const note = `确定为选中的 ${selected.length} 个账号重新执行 Codex OAuth 授权吗？\n\n` +
+               `每个账号将消耗：\n  • 1 封邮箱 OTP\n  • 1 个接码短信\n\n` +
+               `授权成功后会更新本地 Codex 凭证；如需同步到 sub2api，请等待成功后再点击“上传 sub2api”。`;
+  if (!confirm(note)) return;
+  const btn = document.getElementById('btnCodexReauthorizeBulkV2');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api('/api/codex/retry-bulk', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({filenames: selected, workers}),
+    });
+    const startedFilenames = new Set((r.started || []).map(item => item.filename).filter(Boolean));
+    startedFilenames.forEach(filename => CODEX_SELECTED.delete(filename));
+    const skipped = (r.skipped || []).length;
+    showToast(skipped ? `已开始重跑 ${r.started_count || 0} 个，跳过 ${skipped} 个` : (r.message || '已开始重跑 Codex 授权'));
+    const search = document.getElementById('accountTaskSearch');
+    const typeFilter = document.getElementById('accountTaskTypeFilter');
+    if (search) search.value = '';
+    if (typeFilter) typeFilter.value = 'codex_retry';
+    PAGERS.accountTasks.page = 1;
+    setModuleView('accounts', 'tasks');
+  } catch(err) {
+    showToast('重跑 Codex 授权失败: ' + err.message);
+  } finally {
+    _codexUpdateSelectedHint();
+  }
+}
+async function codexRefreshTokens(filenames = null) {
+  const selected = Array.isArray(filenames) ? filenames.filter(Boolean) : Array.from(CODEX_SELECTED);
+  if (!selected.length) return;
+  const legacyUntracked = selected.some(filename => {
+    const row = CODEX.find(item => item.filename === filename);
+    return row && Number(row.exported_count || 0) > 0 && Number(row.sub2_uploaded_count || 0) === 0;
+  });
+  let note = `使用 refresh_token 刷新选中的 ${selected.length} 个 Codex OAuth 凭证？\n\n` +
+             `这个操作不发邮箱验证码、不用接码短信。刷新成功后，本地凭证会更新；已记录为上传过 sub2api 的凭证也会自动同步。`;
+  if (legacyUntracked) note += `\n\n⚠ 检测到旧版“已导出”记录，无法区分当时是下载还是上传 sub2api。如果这些凭证正在 sub2api 使用，建议先取消并点一次“上传 sub2api”，建立自动同步记录。`;
+  if (!confirm(note)) return;
+  const btn = document.getElementById('btnCodexRefreshTokenBulkV2');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api('/api/codex/refresh-token-bulk', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({filenames: selected}),
+    });
+    (r.started || []).forEach(item => CODEX_SELECTED.delete(item.filename));
+    const skipped = (r.skipped || []).length;
+    showToast(skipped ? `已开始刷新 ${r.started_count || 0} 个，跳过 ${skipped} 个` : (r.message || '已开始刷新 OAuth Token'));
+    const search = document.getElementById('accountTaskSearch');
+    const typeFilter = document.getElementById('accountTaskTypeFilter');
+    if (search) search.value = '';
+    if (typeFilter) typeFilter.value = 'codex_token_refresh';
+    PAGERS.accountTasks.page = 1;
+    setModuleView('accounts', 'tasks');
+  } catch(err) {
+    showToast('刷新 OAuth Token 失败: ' + err.message);
+  } finally {
+    _codexUpdateSelectedHint();
+  }
+}
 async function codexUploadSub2(filenames = null) {
   const selected = Array.isArray(filenames) ? filenames.filter(Boolean) : Array.from(CODEX_SELECTED);
   if (!selected.length) return;
@@ -7572,7 +7683,7 @@ async function codexDeleteBulk() {
   }, 250));
   const codexTextReload = debounce(() => { PAGERS.codex.page = 1; loadCodex(); }, 250);
   $('#codexAccountFilterV2')?.addEventListener('input', codexTextReload);
-  ['codexPlanFilterV2','codexStatusFilterV2','dateFromCodexV2','dateToCodexV2','codexExpiredFilterV2'].forEach(id => {
+  ['codexPlanFilterV2','codexStatusFilterV2','codexOauthFilterV2','dateFromCodexV2','dateToCodexV2','codexExpiredFilterV2'].forEach(id => {
     document.getElementById(id)?.addEventListener('change', () => { CODEX_SELECTED.clear(); PAGERS.codex.page = 1; loadCodex(); });
   });
   const selectAllV2 = $('#codexSelectAllV2');
@@ -7587,11 +7698,13 @@ async function codexDeleteBulk() {
   const bind = (id, fn) => { const el = document.getElementById(id); if (el) el.addEventListener('click', fn); };
   bind('btnCodexDownloadBulkV2', codexDownloadBulkLocal);
   bind('btnCodexDownloadBulkCpaV2', codexDownloadBulkCpa);
+  bind('btnCodexRefreshTokenBulkV2', () => codexRefreshTokens());
+  bind('btnCodexReauthorizeBulkV2', () => codexReauthorize());
   bind('btnCodexUploadSub2V2', () => codexUploadSub2());
   bind('btnCodexArchiveBulkV2', codexArchiveSelected);
   bind('btnCodexDeleteBulkV2', codexDeleteBulk);
   bind('btnResetCodexFiltersV2', () => {
-    ['qCodexV2','codexPlanFilterV2','codexStatusFilterV2','codexAccountFilterV2','dateFromCodexV2','dateToCodexV2','codexExpiredFilterV2'].forEach(id => { const el=document.getElementById(id); if (el) el.value=''; });
+    ['qCodexV2','codexPlanFilterV2','codexStatusFilterV2','codexOauthFilterV2','codexAccountFilterV2','dateFromCodexV2','dateToCodexV2','codexExpiredFilterV2'].forEach(id => { const el=document.getElementById(id); if (el) el.value=''; });
     CODEX_SHOW_ARCHIVED = false; CODEX_SELECTED.clear(); PAGERS.codex.page = 1; refreshColumnFilterStates(); loadCodex();
   });
   document.addEventListener('click', (e) => {
@@ -7643,6 +7756,9 @@ function smsConfigSectionForKey(key) {
 function codexConfigSectionForKey(key) {
   if (['CODEX_OAUTH_DRIVER','CODEX_AUTH_URL_SOURCE'].includes(key)) {
     return ['基础配置', 'Codex 授权驱动和授权地址来源配置'];
+  }
+  if (key.startsWith('CODEX_TOKEN_')) {
+    return ['Token 自动刷新', '使用 refresh_token 提前换新 Codex access token，不重新登录、不消耗邮箱 OTP 或短信'];
   }
   if (key.startsWith('CPA_')) {
     return ['CPA配置', 'CPA 授权链接生成、回调上传和管理接口配置'];

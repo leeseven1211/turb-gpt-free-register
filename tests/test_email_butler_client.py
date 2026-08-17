@@ -99,6 +99,65 @@ class EmailButlerClientTests(unittest.TestCase):
         self.assertEqual(request_mock.call_count, 2)
         sleep_mock.assert_called_once_with(0.5)
 
+    def test_inbound_wait_continues_after_gateway_524(self):
+        with patch.object(
+            client,
+            "_request",
+            side_effect=[
+                client.EmailButlerClientError(
+                    "Email Butler 请求失败 (/inbound/code): HTTP 524; None"
+                ),
+                {"code": 200, "verification_code": "246810"},
+            ],
+        ) as request_mock, patch.object(client.time, "sleep"):
+            otp = client.fetch_inbound_otp(
+                "alias@icloud.com",
+                after_ts=100.0,
+                max_wait=160,
+                poll_interval=1,
+            )
+
+        self.assertEqual(otp, "246810")
+        self.assertEqual(request_mock.call_count, 2)
+        for request_call in request_mock.call_args_list:
+            self.assertLessEqual(
+                request_call.kwargs["json"]["timeout_seconds"],
+                client._INBOUND_WAIT_CHUNK_SECONDS,
+            )
+            self.assertLessEqual(
+                request_call.kwargs["timeout"],
+                client._INBOUND_WAIT_CHUNK_SECONDS + 10,
+            )
+
+    def test_inbound_wait_does_not_retry_auth_error(self):
+        with patch.object(
+            client,
+            "_request",
+            side_effect=client.EmailButlerClientError(
+                "Email Butler API Key 非法、已停用或已轮换"
+            ),
+        ) as request_mock:
+            with self.assertRaises(client.EmailButlerClientError):
+                client.fetch_inbound_otp(
+                    "alias@icloud.com",
+                    after_ts=100.0,
+                    max_wait=160,
+                )
+
+        request_mock.assert_called_once()
+
+    def test_inbound_wait_uses_local_probe_after_remote_miss(self):
+        with patch.object(client, "_request", return_value={"code": 200}) as request_mock:
+            otp = client.fetch_inbound_otp(
+                "alias@icloud.com",
+                after_ts=100.0,
+                max_wait=160,
+                local_probe=lambda: "135790",
+            )
+
+        self.assertEqual(otp, "135790")
+        request_mock.assert_called_once()
+
     def test_non_idempotent_request_does_not_retry_connection_error(self):
         with patch.object(
             client.requests,

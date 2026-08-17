@@ -127,11 +127,12 @@ class DashboardApiTests(unittest.TestCase):
         self.assertIn('id="btnCodexUploadSub2V2"', html)
         self.assertIn("syncFacetSelect('accountPlanFilterV2'", html)
         self.assertIn("syncFacetSelect('codexStatusFilterV2'", html)
+        self.assertIn("syncFacetSelect('codexOauthFilterV2'", html)
         self.assertIn("syncFacetSelect('outlookStatusFilterV2'", html)
         self.assertNotIn('id="codexFilterV2"', html)
         self.assertNotIn('id="accountsFilterV2"', html)
         self.assertIn('id="outlookToolbarV2"', html)
-        self.assertEqual(html.count('data-column-filter="'), 31)
+        self.assertEqual(html.count('data-column-filter="'), 32)
         self.assertIn('class="column-filter-trigger"', html)
         self.assertIn('class="column-filter-search"', html)
         self.assertIn('data-column-filter-options', html)
@@ -199,8 +200,8 @@ class DashboardApiTests(unittest.TestCase):
             "btnArchiveSelectedAccountsV2", "btnDeleteSelectedAccountsV2", "btnCopyAllTokensV2",
             "btnCopyAllLinesV2", "btnRefreshAccountsV2",
             # Codex 凭证
-            "btnCodexDownloadBulkV2", "btnCodexDownloadBulkCpaV2", "btnCodexUploadSub2V2",
-            "btnCodexArchiveBulkV2", "btnCodexDeleteBulkV2", "btnRefreshCodexV2",
+            "btnCodexReauthorizeBulkV2", "btnCodexDownloadBulkV2", "btnCodexDownloadBulkCpaV2", "btnCodexUploadSub2V2",
+            "btnCodexRefreshTokenBulkV2", "btnCodexArchiveBulkV2", "btnCodexDeleteBulkV2", "btnRefreshCodexV2",
             # 邮箱池
             "btnMarkSelectedOutlookAvailableV2", "btnDisableSelectedOutlookV2",
             "btnFailSelectedOutlookV2", "btnDeleteSelectedOutlookV2", "copyAllEmailsV2",
@@ -221,6 +222,9 @@ class DashboardApiTests(unittest.TestCase):
         self.assertNotIn('class="codex-sync-callout"', html)
         self.assertNotIn('id="btnCodexUploadSub2HeroV2"', html)
         self.assertIn('id="btnCodexUploadSub2V2"', html)
+        self.assertIn('data-codex-reauthorize="${esc(r.filename)}"', html)
+        self.assertIn("if (status === 'queued') return '等待执行';", html)
+        self.assertIn("if (status === 'running') return '执行中';", html)
         self.assertIn(">重试</button>", html)
         self.assertIn(">删除</button>", html)
         self.assertIn(">取消</button>", html)

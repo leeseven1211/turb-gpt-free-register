@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """Hide My Email 转发收件适配层。
 
-OTP 由 Oracle Email Butler 的事件入库与 PostgreSQL 缓存提供；直接 IMAP
-仅保留给尚未迁移的历史封号邮件扫描功能。
+OTP 优先使用 Oracle Email Butler 的事件入库与 PostgreSQL 缓存；同时通过
+直接 IMAP 探测已到达 Gmail、但尚未写入 PG 的邮件，避免重复发送验证码。
 """
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from email.utils import parseaddr
 
 from config import email as _email_cfg
+from core.otp_utils import extract_otp, looks_like_openai_email
 from core.qqmail_client import _msg_to_dict
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,38 @@ def _messages_for_recipient(
     return out
 
 
+def _message_timestamp(item: dict) -> float:
+    raw = str(item.get("date") or item.get("receivedDateTime") or "").strip()
+    if not raw:
+        return 0.0
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _latest_forwarded_otp(mail: imaplib.IMAP4_SSL, target: str, after_ts: float) -> str | None:
+    """从已打开的转发收件箱中读取目标别名最新的新 OTP。"""
+    try:
+        mail.noop()
+    except Exception:
+        # 部分 IMAP mock/旧服务没有 NOOP；后续 SEARCH 仍可能正常工作。
+        pass
+    cutoff = float(after_ts if after_ts is not None else time.time()) - 30
+    for item, recipient_headers, _message_id in _messages_for_recipient(mail, target, cutoff, limit=80):
+        if target not in recipient_headers:
+            continue
+        received_at = _message_timestamp(item)
+        if received_at and received_at < cutoff:
+            continue
+        if not looks_like_openai_email(item):
+            continue
+        otp = extract_otp(item)
+        if otp:
+            return otp
+    return None
+
+
 def scan_openai_deactivation(email: str, *, lookback_days: int = 120) -> dict:
     """扫描转发收件箱中的高置信度 OpenAI 封号通知，不访问 OpenAI AT。"""
     target = str(email or "").strip().lower()
@@ -168,15 +201,44 @@ def fetch_latest_otp(
     poll_interval: int | None = None,
     settle_seconds: int | None = None,
 ) -> str:
+    target = str(email or "").strip().lower()
+    if not target or "@" not in target:
+        raise ForwardIMAPError("待查询的转发邮箱地址无效")
+    anchor = float(after_ts if after_ts is not None else time.time())
+    mail = None
     try:
         from core.email_butler_client import fetch_inbound_otp
 
+        try:
+            mail = _connect()
+        except Exception as exc:
+            logger.warning(
+                "[HME Forward IMAP] 本机 IMAP 兜底不可用，仅等待 Email Butler PG：%s: %s",
+                type(exc).__name__,
+                str(exc)[:180],
+            )
+
+        def _probe() -> str | None:
+            if mail is None:
+                return None
+            otp = _latest_forwarded_otp(mail, target, anchor)
+            if otp:
+                logger.info("[HME Forward IMAP] 已直接取得新 OTP：%s", target)
+            return otp
+
         return fetch_inbound_otp(
-            email,
+            target,
             after_ts=after_ts,
             max_wait=max_wait,
             poll_interval=poll_interval,
             settle_seconds=settle_seconds,
+            local_probe=_probe if mail is not None else None,
         )
     except Exception as exc:
         raise ForwardIMAPError(f"Email Butler PG 缓存取码失败: {exc}") from exc
+    finally:
+        if mail is not None:
+            try:
+                mail.logout()
+            except Exception:
+                pass

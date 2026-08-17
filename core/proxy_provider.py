@@ -23,6 +23,7 @@ _ACQUIRE_LOCK = threading.RLock()
 _STATE_LOCK = threading.RLock()
 _ACTIVE_ENDPOINTS: dict[str, "ProxyLease"] = {}
 _RECENT_ENDPOINTS: dict[str, float] = {}
+_PENDING_ENDPOINTS: set[str] = set()
 _LAST_ACQUIRE_AT = 0.0
 
 
@@ -244,16 +245,19 @@ def acquire_1024_proxy(
 
     global _LAST_ACQUIRE_AT
     errors: list[str] = []
-    with _ACQUIRE_LOCK:
-        for attempt in range(1, attempts + 1):
-            endpoint = ""
-            proxy_url = ""
-            request_minutes = request_minutes_for_attempt(attempt)
-            request_url = _build_api_url(configured_url, request_minutes, configured_region)
-            wait_for = interval - (time.monotonic() - _LAST_ACQUIRE_AT)
-            if wait_for > 0:
-                time.sleep(wait_for)
-            try:
+    for attempt in range(1, attempts + 1):
+        endpoint = ""
+        proxy_url = ""
+        endpoint_reserved = False
+        request_minutes = request_minutes_for_attempt(attempt)
+        request_url = _build_api_url(configured_url, request_minutes, configured_region)
+        try:
+            # 只串行化平台提取请求和全局请求间隔。出口检测可能耗时十几秒，
+            # 放在锁外并行执行，避免一个慢代理阻塞所有注册任务。
+            with _ACQUIRE_LOCK:
+                wait_for = interval - (time.monotonic() - _LAST_ACQUIRE_AT)
+                if wait_for > 0:
+                    time.sleep(wait_for)
                 response = _direct_session().get(
                     request_url,
                     timeout=max(3.0, min(timeout, 30.0)),
@@ -263,64 +267,83 @@ def acquire_1024_proxy(
                 response.raise_for_status()
                 endpoint = parse_proxy_response(response.text)
                 proxy_url = f"{proxy_protocol}://{endpoint}"
-                exit_ip = region = None
-                if should_validate:
-                    exit_ip, region = _validate_proxy(proxy_url, timeout)
-                    expected_region = _normalize_region(configured_region)
-                    if expected_region and expected_region != "Rand" and region != expected_region:
-                        raise RuntimeError(
-                            f"代理实际出口地区不匹配：请求 {expected_region}，检测到 {region or '-'} "
-                            f"({mask_ip(exit_ip) or '-'})"
-                        )
-
-                now = time.time()
-                uniqueness_key = exit_ip or endpoint
+                # 端点在检测前先占位。下一任务如果拿到相同粘性代理，可立即
+                # 重试，不再浪费一次 IPInfo 检测，也不会并发验证同一端点。
                 with _STATE_LOCK:
-                    _cleanup_recent(now)
-                    duplicate = (
+                    _cleanup_recent(time.time())
+                    endpoint_duplicate = (
                         endpoint in _ACTIVE_ENDPOINTS
-                        or uniqueness_key in _RECENT_ENDPOINTS
-                        or any(exit_ip and lease.exit_ip == exit_ip for lease in _ACTIVE_ENDPOINTS.values())
+                        or endpoint in _RECENT_ENDPOINTS
+                        or endpoint in _PENDING_ENDPOINTS
                     )
-                    if duplicate:
+                    if endpoint_duplicate:
                         raise RuntimeError(f"提取到正在使用或隔离期内的重复代理: {mask_endpoint(endpoint)}")
-                    lease = ProxyLease(
-                        lease_id=str(uuid.uuid4()),
-                        provider="1024proxy",
-                        proxy_url=proxy_url,
-                        endpoint=endpoint,
-                        exit_ip=exit_ip,
-                        region=region,
-                        acquired_at=datetime.now(),
-                        expires_at=datetime.now() + timedelta(minutes=request_minutes),
-                        metadata={
-                            "job_id": job_id,
-                            "recent_ttl": recent_ttl,
-                            "uniqueness_key": uniqueness_key,
-                            "session_minutes": request_minutes,
-                        },
+                    _PENDING_ENDPOINTS.add(endpoint)
+                    endpoint_reserved = True
+
+            exit_ip = region = None
+            if should_validate:
+                exit_ip, region = _validate_proxy(proxy_url, timeout)
+                expected_region = _normalize_region(configured_region)
+                if expected_region and expected_region != "Rand" and region != expected_region:
+                    raise RuntimeError(
+                        f"代理实际出口地区不匹配：请求 {expected_region}，检测到 {region or '-'} "
+                        f"({mask_ip(exit_ip) or '-'})"
                     )
-                    _ACTIVE_ENDPOINTS[endpoint] = lease
-                logger.info(
-                    "[代理平台] 已获取 1024Proxy 租约：job=%s endpoint=%s exit=%s region=%s expires=%s",
-                    job_id or "-", mask_endpoint(endpoint), mask_ip(exit_ip) or "-", region or "-",
-                    lease.expires_at.isoformat(timespec="seconds") if lease.expires_at else "-",
+
+            now = time.time()
+            uniqueness_key = exit_ip or endpoint
+            with _STATE_LOCK:
+                _cleanup_recent(now)
+                duplicate = (
+                    endpoint in _ACTIVE_ENDPOINTS
+                    or uniqueness_key in _RECENT_ENDPOINTS
+                    or any(exit_ip and lease.exit_ip == exit_ip for lease in _ACTIVE_ENDPOINTS.values())
                 )
-                return lease
-            except Exception as exc:
-                safe_error = str(exc)
-                for secret, replacement in (
-                    (request_url, "<1024Proxy API>"),
-                    (str(configured_url or ""), "<1024Proxy API>"),
-                    (proxy_url, mask_proxy_url(proxy_url)),
-                    (endpoint, mask_endpoint(endpoint)),
-                ):
-                    if secret:
-                        safe_error = safe_error.replace(secret, replacement)
-                errors.append(f"{type(exc).__name__}: {safe_error[:180]}")
-                logger.warning("[代理平台] 第 %s/%s 次获取 1024Proxy 失败：%s", attempt, attempts, errors[-1])
-                if attempt < attempts:
-                    time.sleep(min(2.0, 0.4 * attempt))
+                if duplicate:
+                    raise RuntimeError(f"提取到正在使用或隔离期内的重复代理: {mask_endpoint(endpoint)}")
+                lease = ProxyLease(
+                    lease_id=str(uuid.uuid4()),
+                    provider="1024proxy",
+                    proxy_url=proxy_url,
+                    endpoint=endpoint,
+                    exit_ip=exit_ip,
+                    region=region,
+                    acquired_at=datetime.now(),
+                    expires_at=datetime.now() + timedelta(minutes=request_minutes),
+                    metadata={
+                        "job_id": job_id,
+                        "recent_ttl": recent_ttl,
+                        "uniqueness_key": uniqueness_key,
+                        "session_minutes": request_minutes,
+                    },
+                )
+                _ACTIVE_ENDPOINTS[endpoint] = lease
+                _PENDING_ENDPOINTS.discard(endpoint)
+                endpoint_reserved = False
+            logger.info(
+                "[代理平台] 已获取 1024Proxy 租约：job=%s endpoint=%s exit=%s region=%s expires=%s",
+                job_id or "-", mask_endpoint(endpoint), mask_ip(exit_ip) or "-", region or "-",
+                lease.expires_at.isoformat(timespec="seconds") if lease.expires_at else "-",
+            )
+            return lease
+        except Exception as exc:
+            if endpoint_reserved:
+                with _STATE_LOCK:
+                    _PENDING_ENDPOINTS.discard(endpoint)
+            safe_error = str(exc)
+            for secret, replacement in (
+                (request_url, "<1024Proxy API>"),
+                (str(configured_url or ""), "<1024Proxy API>"),
+                (proxy_url, mask_proxy_url(proxy_url)),
+                (endpoint, mask_endpoint(endpoint)),
+            ):
+                if secret:
+                    safe_error = safe_error.replace(secret, replacement)
+            errors.append(f"{type(exc).__name__}: {safe_error[:180]}")
+            logger.warning("[代理平台] 第 %s/%s 次获取 1024Proxy 失败：%s", attempt, attempts, errors[-1])
+            if attempt < attempts:
+                time.sleep(min(2.0, 0.4 * attempt))
     raise RuntimeError("1024Proxy 获取失败：" + "；".join(errors[-3:]))
 
 

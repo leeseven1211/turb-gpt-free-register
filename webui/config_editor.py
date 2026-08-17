@@ -288,6 +288,30 @@ EDITABLE_FIELDS = [
         "label": "Codex授权驱动", "help": "默认推荐 roxy；protocol=原协议授权；roxy=用 RoxyBrowser；cloak=用 CloakBrowser；browser_use=用 Browser Use Cloud；skyvern=用 Skyvern；same_as_registration=跟随注册驱动",
     },
     {
+        "key": "CODEX_TOKEN_AUTO_REFRESH_ENABLED", "file": "codex.py", "type": "bool", "group": "Codex",
+        "label": "自动刷新 OAuth Token", "help": "进入到期窗口后使用 refresh_token 换新 access token；不重新登录，不收邮箱或短信验证码",
+    },
+    {
+        "key": "CODEX_TOKEN_REFRESH_BEFORE_HOURS", "file": "codex.py", "type": "int", "group": "Codex",
+        "label": "提前刷新(小时)", "help": "Codex access token 距离过期多少小时开始自动刷新，默认 24",
+    },
+    {
+        "key": "CODEX_TOKEN_REFRESH_SCAN_INTERVAL_SECONDS", "file": "codex.py", "type": "int", "group": "Codex",
+        "label": "刷新巡检间隔(秒)", "help": "后台检查 Codex OAuth 到期状态的间隔，默认 86400 秒（每天一次），最小按 300 秒执行",
+    },
+    {
+        "key": "CODEX_TOKEN_REFRESH_INITIAL_DELAY_SECONDS", "file": "codex.py", "type": "int", "group": "Codex",
+        "label": "启动后首次巡检(秒)", "help": "WebUI 启动后等待多久执行第一次 Codex OAuth 到期巡检",
+    },
+    {
+        "key": "CODEX_TOKEN_REFRESH_MAX_PER_CYCLE", "file": "codex.py", "type": "int", "group": "Codex",
+        "label": "单轮最多刷新", "help": "每轮自动巡检最多加入队列的 Codex 凭证数量",
+    },
+    {
+        "key": "CODEX_TOKEN_AUTO_SYNC_SUB2API", "file": "codex.py", "type": "bool", "group": "Codex",
+        "label": "刷新后同步 sub2api", "help": "仅对曾由当前页面成功上传过 sub2api 的凭证自动更新，避免 refresh_token 轮换后 sub2api 仍使用旧值",
+    },
+    {
         "key": "ROXY_CODEX_CALLBACK_TIMEOUT", "file": "roxybrowser.py", "type": "int", "group": "RoxyBrowser",
         "label": "Codex回调超时", "help": "Roxy Codex OAuth 等待 localhost:1455 callback 的最长秒数",
     },

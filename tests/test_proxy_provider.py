@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 from core import proxy_provider
@@ -30,15 +32,30 @@ class _FakeSession:
         return _FakeResponse(text="1.2.3.4:8080\n")
 
 
+class _SequenceSession:
+    def __init__(self, endpoints):
+        self.endpoints = iter(endpoints)
+        self.calls = []
+        self.lock = threading.Lock()
+
+    def get(self, url, **kwargs):
+        with self.lock:
+            self.calls.append((url, kwargs))
+            endpoint = next(self.endpoints)
+        return _FakeResponse(text=f"{endpoint}\n")
+
+
 class ProxyProviderTests(unittest.TestCase):
     def setUp(self):
         proxy_provider._ACTIVE_ENDPOINTS.clear()
         proxy_provider._RECENT_ENDPOINTS.clear()
+        proxy_provider._PENDING_ENDPOINTS.clear()
         proxy_provider._LAST_ACQUIRE_AT = 0.0
 
     def tearDown(self):
         proxy_provider._ACTIVE_ENDPOINTS.clear()
         proxy_provider._RECENT_ENDPOINTS.clear()
+        proxy_provider._PENDING_ENDPOINTS.clear()
 
     def test_parse_proxy_response_supports_txt_and_json(self):
         self.assertEqual(proxy_provider.parse_proxy_response("1.2.3.4:8080\n"), "1.2.3.4:8080")
@@ -128,6 +145,79 @@ class ProxyProviderTests(unittest.TestCase):
         self.assertEqual(lease.metadata["session_minutes"], 42)
 
     @patch("core.proxy_provider.time.sleep", return_value=None)
+    @patch("core.proxy_provider._validate_proxy", return_value=("8.8.8.8", "US"))
+    @patch("core.proxy_provider._direct_session")
+    def test_known_duplicate_endpoint_retries_before_validation(self, direct_session, validate_proxy, _sleep):
+        duplicate = "1.2.3.4:8080"
+        fresh = "5.6.7.8:9000"
+        proxy_provider._RECENT_ENDPOINTS[duplicate] = float("inf")
+        direct_session.return_value = _SequenceSession([duplicate, fresh])
+        with patch.multiple(
+            "config.proxy",
+            PROXY_1024_API_TIMEOUT=5.0,
+            PROXY_1024_MAX_ATTEMPTS=2,
+            PROXY_1024_RECENT_TTL=1800,
+            PROXY_1024_ACQUIRE_INTERVAL=0.0,
+            PROXY_1024_ROTATE_SESSION_TIME=False,
+        ):
+            lease = proxy_provider.acquire_1024_proxy(
+                api_url="https://white.1024proxy.com/white/api?region=US&type=txt",
+                protocol="http",
+                region="US",
+                validate=True,
+                job_id=21,
+            )
+
+        self.assertEqual(lease.endpoint, fresh)
+        validate_proxy.assert_called_once_with("http://5.6.7.8:9000", 5.0)
+        self.assertFalse(proxy_provider._PENDING_ENDPOINTS)
+
+    @patch("core.proxy_provider._direct_session")
+    def test_concurrent_acquires_validate_different_endpoints_in_parallel(self, direct_session):
+        direct_session.return_value = _SequenceSession(["1.2.3.4:8080", "5.6.7.8:9000"])
+        barrier = threading.Barrier(2)
+        state_lock = threading.Lock()
+        active_validations = 0
+        max_active_validations = 0
+
+        def validate(proxy_url, _timeout):
+            nonlocal active_validations, max_active_validations
+            with state_lock:
+                active_validations += 1
+                max_active_validations = max(max_active_validations, active_validations)
+            try:
+                barrier.wait(timeout=2)
+                exit_ip = "8.8.8.8" if "1.2.3.4" in proxy_url else "9.9.9.9"
+                return exit_ip, "US"
+            finally:
+                with state_lock:
+                    active_validations -= 1
+
+        with patch.multiple(
+            "config.proxy",
+            PROXY_1024_API_TIMEOUT=5.0,
+            PROXY_1024_MAX_ATTEMPTS=1,
+            PROXY_1024_RECENT_TTL=1800,
+            PROXY_1024_ACQUIRE_INTERVAL=0.0,
+            PROXY_1024_ROTATE_SESSION_TIME=False,
+        ), patch("core.proxy_provider._validate_proxy", side_effect=validate):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                leases = list(executor.map(
+                    lambda job_id: proxy_provider.acquire_1024_proxy(
+                        api_url="https://white.1024proxy.com/white/api?region=US&type=txt",
+                        protocol="http",
+                        region="US",
+                        validate=True,
+                        job_id=job_id,
+                    ),
+                    (31, 32),
+                ))
+
+        self.assertEqual(max_active_validations, 2)
+        self.assertEqual({lease.endpoint for lease in leases}, {"1.2.3.4:8080", "5.6.7.8:9000"})
+        self.assertFalse(proxy_provider._PENDING_ENDPOINTS)
+
+    @patch("core.proxy_provider.time.sleep", return_value=None)
     @patch("core.proxy_provider._validate_proxy", side_effect=[("1.1.1.1", "CA"), ("8.8.8.8", "US")])
     @patch("core.proxy_provider._direct_session")
     def test_acquire_rejects_actual_country_mismatch(self, direct_session, validate_proxy, _sleep):
@@ -152,6 +242,7 @@ class ProxyProviderTests(unittest.TestCase):
         self.assertEqual(validate_proxy.call_count, 2)
         self.assertEqual(lease.region, "US")
         self.assertEqual(lease.exit_ip, "8.8.8.8")
+        self.assertFalse(proxy_provider._PENDING_ENDPOINTS)
 
     def test_public_values_are_masked(self):
         self.assertEqual(proxy_provider.mask_endpoint("1.2.3.4:8080"), "1.2.*.*:8080")

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Callable
 from urllib.parse import quote
 
 import requests
@@ -17,6 +19,25 @@ from core.otp_utils import extract_otp
 logger = logging.getLogger(__name__)
 
 _OTP_RE = re.compile(r"^\d{6}$")
+_INBOUND_WAIT_CHUNK_SECONDS = 75
+_TRANSIENT_INBOUND_ERROR_MARKERS = (
+    "ConnectionError",
+    "ConnectTimeout",
+    "ReadTimeout",
+    "SSLError",
+    "Timeout",
+    "HTTP 408",
+    "HTTP 425",
+    "HTTP 429",
+    "HTTP 500",
+    "HTTP 502",
+    "HTTP 503",
+    "HTTP 504",
+    "HTTP 520",
+    "HTTP 522",
+    "HTTP 523",
+    "HTTP 524",
+)
 
 
 class EmailButlerClientError(RuntimeError):
@@ -296,19 +317,31 @@ def _message_otp(payload: dict) -> str | None:
     return None
 
 
+def _is_transient_inbound_error(exc: Exception) -> bool:
+    message = str(exc or "")
+    return any(marker in message for marker in _TRANSIENT_INBOUND_ERROR_MARKERS)
+
+
 def fetch_inbound_otp(
     email: str,
     after_ts: float | None = None,
     max_wait: int | None = None,
     poll_interval: int | None = None,
     settle_seconds: int | None = None,
+    local_probe: Callable[[], str | None] | None = None,
 ) -> str:
     """Wait on Email Butler's PG-backed forwarded-mail cache.
 
     The server performs one initial exact query and then waits on PostgreSQL
-    LISTEN/NOTIFY. This client does not connect to Gmail or poll the API in a
-    loop; ``poll_interval``/``settle_seconds`` remain accepted for the common
-    mail-provider interface.
+    LISTEN/NOTIFY. Long waits are split into gateway-safe chunks because the
+    public endpoint can be behind Cloudflare, whose timeout is shorter than the
+    configured OTP wait. Every chunk uses the same ``since`` anchor, so a
+    notification received between requests is found by the next exact query.
+    Callers that own the forwarding mailbox may also provide ``local_probe``.
+    Email Butler remains the primary source; after each remote miss or
+    transient failure the local mailbox is probed once before the next remote
+    wait. The probe only loops for the lifetime of this OTP wait and never
+    becomes a process-wide mailbox scanner.
     """
     target = _cache_key(email)
     if "@" not in target:
@@ -319,29 +352,76 @@ def fetch_inbound_otp(
     )
     anchor = float(after_ts if after_ts is not None else time.time()) - 30
     since = datetime.fromtimestamp(anchor, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    interval = max(0, int(poll_interval if poll_interval is not None else 1))
     logger.info("[EmailButler] 等待 PG 入站验证码：%s，最长 %ss", target, wait_seconds)
     started = time.monotonic()
-    payload = _request(
-        "POST",
-        "/inbound/code",
-        json={
-            "email": target,
-            "since": since,
-            "timeout_seconds": wait_seconds,
-        },
-        timeout=max(_request_timeout(), wait_seconds + 10),
-        # 等待入站通知是只读、幂等操作；Oracle/Nginx 偶发在建连阶段断开时，
-        # 立即重连一次即可继续等待，不需要重新扫描 Gmail。
-        retry_connection_error=True,
-    )
+    deadline = started + wait_seconds
+    last_error = "尚未收到新的 OpenAI 验证码邮件"
+    chunk_index = 0
+    while time.monotonic() < deadline:
+        remaining = max(0.0, deadline - time.monotonic())
+        # 有本机探测时缩短远端等待段，避免邮件已到 Gmail 但尚未入 PG 时
+        # 仍被一个长请求挡住很久；纯远端模式继续使用 75 秒网关安全段。
+        chunk_limit = 15 if local_probe is not None else _INBOUND_WAIT_CHUNK_SECONDS
+        chunk_seconds = max(1, min(chunk_limit, int(math.ceil(remaining))))
+        chunk_index += 1
+        try:
+            payload = _request(
+                "POST",
+                "/inbound/code",
+                json={
+                    "email": target,
+                    "since": since,
+                    "timeout_seconds": chunk_seconds,
+                },
+                timeout=max(_request_timeout(), chunk_seconds + 10),
+                # 等待入站通知是只读、幂等操作；Oracle/Nginx 偶发在建连阶段断开时，
+                # 立即重连一次即可继续等待，不需要重新扫描 Gmail。
+                retry_connection_error=True,
+            )
+            otp = _message_otp(payload)
+            if otp:
+                elapsed = time.monotonic() - started
+                logger.info("[EmailButler] 已从 PG 入站缓存取得 OTP，接口等待 %.1fs", elapsed)
+                return otp
+            last_error = "PG 入站等待结束但没有 OTP"
+        except EmailButlerClientError as exc:
+            if not _is_transient_inbound_error(exc):
+                raise
+            last_error = str(exc)
+            logger.warning(
+                "[EmailButler] PG 入站等待第 %s 段瞬时失败，继续剩余等待：%s",
+                chunk_index,
+                str(exc)[:220],
+            )
+
+        # 接口优先。只有这一段没有拿到验证码时才探测本地转发邮箱；下一轮
+        # 仍会先请求接口，因此 Butler 恢复或 PG 完成入库后会回到主链路。
+        if local_probe is not None:
+            try:
+                local_otp = str(local_probe() or "").strip()
+            except Exception as exc:
+                logger.warning(
+                    "[EmailButler] 本机收件兜底探测失败，继续等待 PG：%s: %s",
+                    type(exc).__name__,
+                    str(exc)[:180],
+                )
+            else:
+                if _OTP_RE.fullmatch(local_otp):
+                    elapsed = time.monotonic() - started
+                    logger.info("[EmailButler] 接口未命中，已从本机收件兜底取得 OTP，等待 %.1fs", elapsed)
+                    return local_otp
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        if interval:
+            time.sleep(min(interval, remaining))
+
     elapsed = time.monotonic() - started
-    otp = _message_otp(payload)
-    if otp:
-        logger.info("[EmailButler] 已从 PG 入站缓存取得 OTP，接口等待 %.1fs", elapsed)
-        return otp
-    logger.warning("[EmailButler] PG 入站等待结束但没有 OTP，接口等待 %.1fs", elapsed)
+    logger.warning("[EmailButler] PG 入站等待结束但没有 OTP，累计等待 %.1fs", elapsed)
     raise EmailButlerClientError(
-        f"等待 Email Butler 入站验证码超时（>{wait_seconds}s）：{target}"
+        f"等待 Email Butler 入站验证码超时（>{wait_seconds}s）：{target}; {last_error}"
     )
 
 

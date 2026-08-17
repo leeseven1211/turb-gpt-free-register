@@ -2004,6 +2004,24 @@ def save_codex_credential_record(filename: str, content: dict) -> None:
     records[filename] = {"content": content, "mtime": _now()}
     postgres_store.save_collection(_CODEX_CREDENTIALS_COLLECTION, records)
 
+
+def write_codex_credential(filename: str, content: dict) -> None:
+    """安全覆盖一份现有 Codex 凭证，并同步 PostgreSQL 镜像。"""
+    with _LOCK:
+        if not filename.startswith("codex-") or not filename.endswith(".json"):
+            raise ValueError(f"非法文件名: {filename}")
+        if "/" in filename or "\\" in filename or ".." in filename:
+            raise ValueError(f"非法文件名: {filename}")
+        if not isinstance(content, dict):
+            raise ValueError("Codex 凭证必须是 JSON 对象")
+        path = _CODEX_DIR / filename
+        if not path.exists() or not path.is_file():
+            raise ValueError(f"文件不存在: {filename}")
+        temporary = path.with_name(path.name + ".tmp")
+        temporary.write_text(json.dumps(content, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(path)
+        save_codex_credential_record(filename, content)
+
 def _load_codex_export_state() -> dict:
     """读导出状态映射 {filename: {exported_at, exported_count}}。不存在返回 {}。"""
     data = _read_json(_CODEX_EXPORT_STATE, {})
@@ -2021,6 +2039,8 @@ def list_codex_accounts(archived: str | bool | None = "0", date_from: str | None
     archived: '0'=仅未归档（默认）/ 'only'=仅归档 / 'all'=全部；
     date_from/date_to 按文件修改时间（mtime）筛选（ISO 或 YYYY-MM-DD）。
     """
+    from core.codex_token_refresh_service import oauth_metadata, refresh_error_requires_reauth
+
     with _LOCK:
         out = []
         _sync_codex_credentials_collection()
@@ -2070,6 +2090,8 @@ def list_codex_accounts(archived: str | bool | None = "0", date_from: str | None
                 tail = without_prefix.rsplit("-", 1)[-1].lower()
                 if tail in ("free", "plus", "team", "pro", "enterprise"):
                     plan = tail
+            oauth = oauth_metadata(content)
+            oauth["oauth_reauth_required"] = refresh_error_requires_reauth(es.get("oauth_refresh_error"))
             out.append({
                 "filename": fname,
                 "path": str(path),
@@ -2084,8 +2106,14 @@ def list_codex_accounts(archived: str | bool | None = "0", date_from: str | None
                 "mtime": mtime_dt.isoformat(timespec="seconds"),
                 "exported_at": es.get("exported_at"),
                 "exported_count": es.get("exported_count", 0),
+                "sub2_uploaded_at": es.get("sub2_uploaded_at"),
+                "sub2_uploaded_count": es.get("sub2_uploaded_count", 0),
+                "sub2_sync_error": es.get("sub2_sync_error"),
+                "oauth_refresh_attempted_at": es.get("oauth_refresh_attempted_at"),
+                "oauth_refresh_error": es.get("oauth_refresh_error"),
                 "archived": rec_archived,
                 "archived_at": es.get("archived_at"),
+                **oauth,
             })
         return out
 
@@ -2148,12 +2176,53 @@ def mark_codex_exported(filename: str) -> dict:
         return rec
 
 
+def mark_codex_sub2_uploaded(filename: str) -> dict:
+    """记录凭证曾成功上传 sub2api，供后续 token 刷新后定向同步。"""
+    with _LOCK:
+        state = _load_codex_export_state()
+        rec = state.get(filename) or {}
+        rec["sub2_uploaded_count"] = int(rec.get("sub2_uploaded_count", 0)) + 1
+        rec["sub2_uploaded_at"] = _now()
+        rec["sub2_sync_error"] = None
+        state[filename] = rec
+        _save_codex_export_state(state)
+        return rec
+
+
+def mark_codex_sub2_sync_error(filename: str, error: str | None) -> dict:
+    with _LOCK:
+        state = _load_codex_export_state()
+        rec = state.get(filename) or {}
+        rec["sub2_sync_error"] = str(error or "")[:500] or None
+        state[filename] = rec
+        _save_codex_export_state(state)
+        return rec
+
+
+def mark_codex_oauth_refresh(filename: str, *, error: str | None = None) -> dict:
+    """保存刷新尝试时间和脱敏错误；token 本身只保存在凭证文件中。"""
+    with _LOCK:
+        state = _load_codex_export_state()
+        rec = state.get(filename) or {}
+        rec["oauth_refresh_attempted_at"] = _now()
+        rec["oauth_refresh_error"] = str(error or "")[:500] or None
+        state[filename] = rec
+        _save_codex_export_state(state)
+        return rec
+
+
 def reset_codex_exported(filename: str) -> None:
-    """清掉某个 codex 凭证的导出状态（用户想重置时用）。"""
+    """只清掉导出计数，保留归档、OAuth 刷新和 sub2 同步元数据。"""
     with _LOCK:
         state = _load_codex_export_state()
         if filename in state:
-            del state[filename]
+            rec = state.get(filename) or {}
+            rec.pop("exported_at", None)
+            rec.pop("exported_count", None)
+            if rec:
+                state[filename] = rec
+            else:
+                del state[filename]
             _save_codex_export_state(state)
 
 

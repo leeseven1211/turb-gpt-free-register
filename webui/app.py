@@ -21,6 +21,7 @@ from flask import Flask, Response, jsonify, make_response, redirect, render_temp
 
 from core import (
     account_task_store,
+    codex_token_refresh_service,
     codex_retry_service,
     db,
     plan_check_service,
@@ -668,6 +669,7 @@ def create_app(auth_code: str | None = None) -> Flask:
         )
         from core.token_refresh_service import settings as token_refresh_settings
         result["token_refresh"] = token_refresh_settings()
+        result["codex_token_refresh"] = codex_token_refresh_service.settings()
         return jsonify(result)
 
     @app.get("/api/account-tasks/<int:task_id>")
@@ -709,6 +711,12 @@ def create_app(auth_code: str | None = None) -> Flask:
         elif task_type == "codex_retry":
             queued = _enqueue_codex_retry(
                 email=str(account.get("email") or ""),
+                trigger="manual_retry",
+            )
+        elif task_type == "codex_token_refresh":
+            filename = str((task.get("result_summary") or {}).get("filename") or "")
+            queued = codex_token_refresh_service.enqueue_refresh(
+                filename,
                 trigger="manual_retry",
             )
         else:
@@ -1402,25 +1410,12 @@ def create_app(auth_code: str | None = None) -> Flask:
 
     def _upload_codex_auth_to_sub2(auth_json: dict, filename: str) -> dict:
         """把一份已解析的 Codex OAuth JSON 上传到 sub2api。"""
-        from config import sub2api as sub2api_cfg
-        from core.sub2api_client import upload_codex_oauth_credential
+        from core.sub2api_client import upload_configured_codex_oauth_credential
 
-        api_url = _sub2_codex_session_import_url()
-        api_token = str(getattr(sub2api_cfg, "SUB2API_API_KEY", "") or getattr(sub2api_cfg, "SUB2API_API_TOKEN", "") or "").strip()
-        auth_header = str(getattr(sub2api_cfg, "SUB2API_API_AUTH_HEADER", "x-api-key") or "x-api-key").strip()
-        auth_prefix = str(getattr(sub2api_cfg, "SUB2API_API_AUTH_PREFIX", "") or "").strip()
-        timeout = float(getattr(sub2api_cfg, "SUB2API_API_TIMEOUT", 20) or 20)
-
-        result = upload_codex_oauth_credential(
-            auth_json,
-            api_url,
-            api_token=api_token,
-            auth_header=auth_header,
-            auth_prefix=auth_prefix,
-            timeout=timeout,
-        )
+        result = upload_configured_codex_oauth_credential(auth_json)
         result["filename"] = filename
         db.mark_codex_exported(filename)
+        db.mark_codex_sub2_uploaded(filename)
         return result
 
     def _upload_codex_filename_to_sub2(filename: str) -> dict:
@@ -2005,24 +2000,36 @@ def create_app(auth_code: str | None = None) -> Flask:
     # ----------------------------------------------------------
     @app.get("/api/codex")
     def api_codex_list():
-        facet_rows = db.list_codex_accounts(archived="all")
+        facet_rows = [
+            codex_token_refresh_service.decorate_row(row)
+            for row in db.list_codex_accounts(archived="all")
+        ]
         facets = {
             "plan": _facet_values(facet_rows, lambda row: row.get("plan")),
             "status": _facet_values(
                 facet_rows,
                 lambda row: "archived" if row.get("archived") else ("exported" if int(row.get("exported_count") or 0) > 0 else "unexported"),
             ),
+            "oauth_status": _facet_values(facet_rows, lambda row: row.get("oauth_status")),
         }
-        rows = db.list_codex_accounts(
-            archived=str(request.args.get("archived", default="0") or "0").lower(),
-            date_from=str(request.args.get("date_from", default="") or "").strip() or None,
-            date_to=str(request.args.get("date_to", default="") or "").strip() or None,
-        )
+        archived_mode = str(request.args.get("archived", default="0") or "0").lower()
+        rows = [row for row in facet_rows if (
+            archived_mode in {"all", "include"}
+            or (archived_mode in {"1", "true", "yes", "only"} and row.get("archived"))
+            or (archived_mode not in {"1", "true", "yes", "only", "all", "include"} and not row.get("archived"))
+        )]
+        date_from = str(request.args.get("date_from", default="") or "").strip()
+        date_to = str(request.args.get("date_to", default="") or "").strip()
+        if date_from:
+            rows = [r for r in rows if str(r.get("mtime") or "")[:10] >= date_from]
+        if date_to:
+            rows = [r for r in rows if str(r.get("mtime") or "")[:10] <= date_to]
         q = str(request.args.get("q", default="") or "").strip()
         if q:
             rows = [r for r in rows if _matches_query(r, q)]
         plan_filter = str(request.args.get("plan", default="") or "").strip().lower()
         status_filter = str(request.args.get("status", default="") or "").strip().lower()
+        oauth_filter = str(request.args.get("oauth_status", default="") or "").strip().lower()
         account_filter = str(request.args.get("account_id", default="") or "").strip()
         expired_date = str(request.args.get("expired_date", default="") or "").strip()
         if plan_filter:
@@ -2031,6 +2038,8 @@ def create_app(auth_code: str | None = None) -> Flask:
             rows = [r for r in rows if int(r.get("exported_count") or 0) > 0]
         elif status_filter == "unexported":
             rows = [r for r in rows if int(r.get("exported_count") or 0) == 0]
+        if oauth_filter:
+            rows = [r for r in rows if str(r.get("oauth_status") or "").lower() == oauth_filter]
         if account_filter:
             rows = [r for r in rows if account_filter.lower() in str(r.get("account_id") or "").lower()]
         if expired_date:
@@ -2052,6 +2061,50 @@ def create_app(auth_code: str | None = None) -> Flask:
             "accounts": rows[:limit],
             "facets": facets,
         })
+
+    @app.post("/api/codex/refresh-token-bulk")
+    def api_codex_refresh_token_bulk():
+        """手动刷新选中的 Codex OAuth token，不触发邮箱/短信授权。"""
+        data = request.get_json(silent=True) or {}
+        filenames = data.get("filenames") or []
+        if not isinstance(filenames, list) or not filenames:
+            return jsonify({"ok": False, "error": "filenames 必须是非空数组"}), 400
+        if len(filenames) > 500:
+            return jsonify({"ok": False, "error": "单次最多刷新 500 个凭证"}), 400
+
+        unique = []
+        seen = set()
+        for raw in filenames:
+            filename = str(raw or "").strip()
+            if filename and filename not in seen:
+                seen.add(filename)
+                unique.append(filename)
+        batch_id = account_task_store.create_batch(
+            action_type="codex_token_refresh",
+            trigger="manual_bulk",
+            total_count=len(unique),
+        )
+        started, skipped = [], []
+        for filename in unique:
+            result = codex_token_refresh_service.enqueue_refresh(
+                filename,
+                trigger="manual_bulk",
+                batch_id=batch_id,
+            )
+            if result.get("accepted"):
+                started.append(result)
+            else:
+                skipped.append({"filename": filename, "reason": result.get("error") or "无法刷新"})
+        if not started:
+            return jsonify({"ok": False, "error": "没有可刷新的凭证", "skipped": skipped}), 409
+        return jsonify({
+            "ok": True,
+            "message": f"已创建 {len(started)} 个 OAuth Token 刷新任务",
+            "started": started,
+            "started_count": len(started),
+            "skipped": skipped,
+            "batch_id": batch_id,
+        }), 202
 
     @app.post("/api/codex/archive")
     def api_codex_archive():
@@ -2527,7 +2580,7 @@ def create_app(auth_code: str | None = None) -> Flask:
 
     @app.post("/api/codex/retry-bulk")
     def api_codex_retry_bulk():
-        """批量补跑 Codex。Body {account_ids:[...], workers: 1-16}。"""
+        """批量补跑 Codex。Body {account_ids:[...]} 或 {filenames:[...]}。"""
         unavailable = _feature_unavailable("codex_retry")
         if unavailable:
             return unavailable
@@ -2536,24 +2589,54 @@ def create_app(auth_code: str | None = None) -> Flask:
 
         data = request.get_json(silent=True) or {}
         ids = data.get("account_ids") or data.get("ids") or []
+        filenames = data.get("filenames") or []
         workers = data.get("workers", codex_config.ACCOUNT_BATCH_WORKERS)
-        if not isinstance(ids, list) or not ids:
-            return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
+        if not isinstance(ids, list) or not isinstance(filenames, list):
+            return jsonify({"ok": False, "error": "account_ids 和 filenames 必须是数组"}), 400
+        if not ids and not filenames:
+            return jsonify({"ok": False, "error": "account_ids 或 filenames 必须是非空数组"}), 400
         try:
             workers = max(1, min(16, int(workers)))
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "workers 必须是数字"}), 400
-        if len(ids) > 500:
+        if len(ids) + len(filenames) > 500:
             return jsonify({"ok": False, "error": "单次最多选择 500 个账号"}), 400
 
         selected = []
         skipped = []
+        targets = [{"id": raw, "filename": None} for raw in ids]
+        if filenames:
+            credentials = {
+                str(item.get("filename") or ""): item
+                for item in db.list_codex_accounts(archived="all")
+            }
+            seen_filenames = set()
+            for raw in filenames:
+                filename = str(raw or "").strip()
+                if not filename or filename in seen_filenames:
+                    continue
+                seen_filenames.add(filename)
+                credential = credentials.get(filename)
+                if not credential:
+                    skipped.append({"filename": filename, "reason": "Codex 凭证不存在"})
+                    continue
+                email = str(credential.get("email") or "").strip()
+                if not email:
+                    skipped.append({"filename": filename, "reason": "凭证邮箱为空"})
+                    continue
+                account = db.get_account_by_email(email)
+                if not account:
+                    skipped.append({"filename": filename, "email": email, "reason": "未找到对应的已注册账号"})
+                    continue
+                targets.append({"id": account.get("id"), "filename": filename})
+
         seen_ids = set()
-        for raw in ids:
+        for target in targets:
+            raw = target.get("id")
             try:
                 acc_id = int(raw)
             except (TypeError, ValueError):
-                skipped.append({"id": raw, "reason": "ID 非法"})
+                skipped.append({"id": raw, "filename": target.get("filename"), "reason": "ID 非法"})
                 continue
             if acc_id in seen_ids:
                 continue
@@ -2572,7 +2655,7 @@ def create_app(auth_code: str | None = None) -> Flask:
             if not _reserve_codex_retry(email):
                 skipped.append({"id": acc_id, "email": email, "reason": "正在补跑中"})
                 continue
-            selected.append({"id": acc_id, "email": email})
+            selected.append({"id": acc_id, "email": email, "filename": target.get("filename")})
 
         if not selected:
             return jsonify({"ok": False, "error": "没有可补跑的账号", "skipped": skipped}), 409

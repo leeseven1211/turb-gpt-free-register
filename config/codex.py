@@ -34,6 +34,21 @@ CODEX_OUTPUT_DIRNAME: str = "codex_accounts"
 # 请求超时（秒）
 CODEX_REQUEST_TIMEOUT: int = 30
 
+# Codex OAuth access token 自动刷新。refresh token 仍有效时无需重新跑完整
+# OAuth 登录、邮箱 OTP 和短信验证。
+CODEX_TOKEN_AUTO_REFRESH_ENABLED: bool = True
+
+# 在 access token 到期前多少小时进入自动刷新窗口。
+CODEX_TOKEN_REFRESH_BEFORE_HOURS: int = 24
+
+# 后台扫描间隔、WebUI 启动后的首次扫描延迟，以及单轮最多入队数量。
+CODEX_TOKEN_REFRESH_SCAN_INTERVAL_SECONDS: int = 86400
+CODEX_TOKEN_REFRESH_INITIAL_DELAY_SECONDS: int = 120
+CODEX_TOKEN_REFRESH_MAX_PER_CYCLE: int = 20
+
+# 只有曾由当前版本上传到 sub2api 的凭证才会在刷新后自动同步。
+CODEX_TOKEN_AUTO_SYNC_SUB2API: bool = True
+
 
 # ============================================================
 # Codex 授权方式（2026-06-15 改造）
@@ -166,4 +181,4 @@ L_ADMIN_AUTH_CODE: str = env_str("L_ADMIN_AUTH_CODE", "")
 L_PHONE_PREFIX: str = ""
 
 # ---- .env overrides for WebUI editable fields ----
-apply_env_overrides(globals(), {'ENABLE_CODEX_AUTO': 'bool', 'ACCOUNT_BATCH_WORKERS': 'int', 'CODEX_OAUTH_DRIVER': 'str', 'CODEX_AUTH_URL_SOURCE': 'str', 'CPA_MANAGEMENT_URL': 'str', 'CPA_MANAGEMENT_KEY': 'str', 'CPA_REQUEST_TIMEOUT': 'int', 'CPA_CALLBACK_SUBMIT_RETRIES': 'int', 'CPA_CALLBACK_SUBMIT_RETRY_DELAY': 'int', 'CPA_SAVE_CALLBACK_RECEIPT': 'bool', 'SMS_PROVIDER': 'str', 'SMS_COUNTRY': 'str', 'SMS_SERVICE': 'str', 'SMS_MAX_PRICE': 'str', 'SMS_MAX_RETRIES': 'int', 'SMS_CODE_WAIT': 'int', 'SMS_API_KEY': 'str', 'H_API_BASE': 'str', 'H_ADMIN_AUTH_CODE': 'str', 'H_PHONE_PREFIX': 'str', 'H_PHONE_ACQUIRE_MODE': 'str', 'L_API_BASE': 'str', 'L_ADMIN_AUTH_CODE': 'str', 'L_PHONE_PREFIX': 'str'})
+apply_env_overrides(globals(), {'ENABLE_CODEX_AUTO': 'bool', 'ACCOUNT_BATCH_WORKERS': 'int', 'CODEX_TOKEN_AUTO_REFRESH_ENABLED': 'bool', 'CODEX_TOKEN_REFRESH_BEFORE_HOURS': 'int', 'CODEX_TOKEN_REFRESH_SCAN_INTERVAL_SECONDS': 'int', 'CODEX_TOKEN_REFRESH_INITIAL_DELAY_SECONDS': 'int', 'CODEX_TOKEN_REFRESH_MAX_PER_CYCLE': 'int', 'CODEX_TOKEN_AUTO_SYNC_SUB2API': 'bool', 'CODEX_OAUTH_DRIVER': 'str', 'CODEX_AUTH_URL_SOURCE': 'str', 'CPA_MANAGEMENT_URL': 'str', 'CPA_MANAGEMENT_KEY': 'str', 'CPA_REQUEST_TIMEOUT': 'int', 'CPA_CALLBACK_SUBMIT_RETRIES': 'int', 'CPA_CALLBACK_SUBMIT_RETRY_DELAY': 'int', 'CPA_SAVE_CALLBACK_RECEIPT': 'bool', 'SMS_PROVIDER': 'str', 'SMS_COUNTRY': 'str', 'SMS_SERVICE': 'str', 'SMS_MAX_PRICE': 'str', 'SMS_MAX_RETRIES': 'int', 'SMS_CODE_WAIT': 'int', 'SMS_API_KEY': 'str', 'H_API_BASE': 'str', 'H_ADMIN_AUTH_CODE': 'str', 'H_PHONE_PREFIX': 'str', 'H_PHONE_ACQUIRE_MODE': 'str', 'L_API_BASE': 'str', 'L_ADMIN_AUTH_CODE': 'str', 'L_PHONE_PREFIX': 'str'})

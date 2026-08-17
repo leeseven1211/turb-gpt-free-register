@@ -103,6 +103,33 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             env_loader._LOADED = old_loaded
             importlib.reload(codex_config)
 
+    def test_codex_token_refresh_fields_are_webui_editable_and_env_driven(self):
+        fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
+        expected = {
+            "CODEX_TOKEN_AUTO_REFRESH_ENABLED",
+            "CODEX_TOKEN_REFRESH_BEFORE_HOURS",
+            "CODEX_TOKEN_REFRESH_SCAN_INTERVAL_SECONDS",
+            "CODEX_TOKEN_REFRESH_INITIAL_DELAY_SECONDS",
+            "CODEX_TOKEN_REFRESH_MAX_PER_CYCLE",
+            "CODEX_TOKEN_AUTO_SYNC_SUB2API",
+        }
+        self.assertTrue(expected.issubset(fields))
+        self.assertTrue(all(fields[key]["group"] == "Codex" for key in expected))
+
+        old_loaded = env_loader._LOADED
+        env_loader._LOADED = True
+        try:
+            with patch.dict(os.environ, {
+                "CODEX_TOKEN_AUTO_REFRESH_ENABLED": "False",
+                "CODEX_TOKEN_REFRESH_BEFORE_HOURS": "36",
+            }, clear=False):
+                reloaded = importlib.reload(codex_config)
+                self.assertFalse(reloaded.CODEX_TOKEN_AUTO_REFRESH_ENABLED)
+                self.assertEqual(reloaded.CODEX_TOKEN_REFRESH_BEFORE_HOURS, 36)
+        finally:
+            env_loader._LOADED = old_loaded
+            importlib.reload(codex_config)
+
     def test_registration_password_mode_is_webui_editable_and_env_driven(self):
         fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
         self.assertEqual(fields["REGISTRATION_AUTH_MODE"]["group"], "注册方式")

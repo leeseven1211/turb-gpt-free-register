@@ -91,6 +91,7 @@ class Sub2ApiWebUploadTests(unittest.TestCase):
             }]),
             patch("webui.app.db.read_codex_credential", return_value=(credential, "codex-codex@example.com-free.json")),
             patch("webui.app.db.mark_codex_exported") as mark_exported,
+            patch("webui.app.db.mark_codex_sub2_uploaded") as mark_sub2_uploaded,
             patch("core.sub2api_client.upload_codex_oauth_credential", return_value={
                 "ok": True,
                 "url": "https://sub2.example/api/v1/admin/accounts/import/codex-session",
@@ -103,6 +104,7 @@ class Sub2ApiWebUploadTests(unittest.TestCase):
         body = response.get_json()
         self.assertEqual(upload.call_args.args[0]["refresh_token"], "refresh-token")
         mark_exported.assert_called_once_with("codex-codex@example.com-free.json")
+        mark_sub2_uploaded.assert_called_once_with("codex-codex@example.com-free.json")
 
     def test_codex_management_bulk_uploads_selected_credentials(self):
         credential = json.dumps({
@@ -115,6 +117,7 @@ class Sub2ApiWebUploadTests(unittest.TestCase):
             patch("core.feature_availability.require_feature", return_value=(True, "")),
             patch("webui.app.db.read_codex_credential", return_value=(credential, "codex-manage@example.com-free.json")),
             patch("webui.app.db.mark_codex_exported") as mark_exported,
+            patch("webui.app.db.mark_codex_sub2_uploaded") as mark_sub2_uploaded,
             patch("core.sub2api_client.upload_codex_oauth_credential", return_value={
                 "ok": True,
                 "url": "https://sub2.example/api/v1/admin/accounts/import/codex-session",
@@ -131,6 +134,7 @@ class Sub2ApiWebUploadTests(unittest.TestCase):
         self.assertEqual(body["uploaded_count"], 1)
         self.assertEqual(upload.call_args.args[0]["email"], "manage@example.com")
         mark_exported.assert_called_once_with("codex-manage@example.com-free.json")
+        mark_sub2_uploaded.assert_called_once_with("codex-manage@example.com-free.json")
 
     def test_removed_agent_routes_are_not_registered(self):
         self.assertEqual(self.client.post("/api/accounts/codex-agent", json={"account_id": 23}).status_code, 404)

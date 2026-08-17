@@ -829,6 +829,26 @@ AT_REFRESH_INITIAL_DELAY_SECONDS=120
 AT_REFRESH_MAX_PER_CYCLE=20
 ```
 
+### Codex OAuth Token 生命周期
+
+「Codex 授权」列表会把凭证导出状态和 OAuth 状态分开显示。OAuth 状态依据凭证的
+`expired`（必要时回退 access token 的 `exp`）计算为有效、即将过期、已过期或未知；
+同时显示是否存在 `refresh_token`。手动“刷新 OAuth Token”和后台定时刷新都只执行
+refresh-token grant，不重新登录，也不会请求邮箱 OTP 或接码短信。只有 refresh token
+本身失效、被撤销或缺失时，才需要“重跑 Codex 授权”。
+
+```dotenv
+CODEX_TOKEN_AUTO_REFRESH_ENABLED=True
+CODEX_TOKEN_REFRESH_BEFORE_HOURS=24
+CODEX_TOKEN_REFRESH_SCAN_INTERVAL_SECONDS=86400
+CODEX_TOKEN_REFRESH_INITIAL_DELAY_SECONDS=120
+CODEX_TOKEN_REFRESH_MAX_PER_CYCLE=20
+CODEX_TOKEN_AUTO_SYNC_SUB2API=True
+```
+
+为避免 refresh token 轮换后 sub2api 仍持有旧凭证，曾由当前页面成功上传过 sub2api
+的凭证会在本地刷新成功后自动同步；仅本地保存、从未由当前页面上传的凭证不会被自动上传。
+
 ### 查封号邮件
 
 WebUI「账号」页提供单账号“复查”和批量“查封号邮件”。该功能只读取邮箱服务返回的高置信度 OpenAI 封号通知信号，不登录 OpenAI、不读取或刷新 AT/accessToken，也不保存邮件正文。

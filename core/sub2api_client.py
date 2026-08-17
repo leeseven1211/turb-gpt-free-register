@@ -8,6 +8,36 @@ from typing import Any
 import requests
 
 
+def configured_codex_import_url() -> str:
+    """返回当前配置的 sub2api Codex Session 导入地址。"""
+    from config import sub2api as sub2api_cfg
+
+    api_base = str(getattr(sub2api_cfg, "SUB2API_API_BASE", "") or "").strip()
+    if api_base:
+        return api_base.rstrip("/") + "/api/v1/admin/accounts/import/codex-session"
+    return str(getattr(sub2api_cfg, "SUB2API_API_URL", "") or "").strip()
+
+
+def upload_configured_codex_oauth_credential(auth_json: dict[str, Any]) -> dict[str, Any]:
+    """使用项目当前 sub2api 配置上传一份 Codex OAuth 凭证。"""
+    from config import sub2api as sub2api_cfg
+
+    return upload_codex_oauth_credential(
+        auth_json,
+        configured_codex_import_url(),
+        api_token=str(
+            getattr(sub2api_cfg, "SUB2API_API_KEY", "")
+            or getattr(sub2api_cfg, "SUB2API_API_TOKEN", "")
+            or ""
+        ).strip(),
+        auth_header=str(
+            getattr(sub2api_cfg, "SUB2API_API_AUTH_HEADER", "x-api-key") or "x-api-key"
+        ).strip(),
+        auth_prefix=str(getattr(sub2api_cfg, "SUB2API_API_AUTH_PREFIX", "") or "").strip(),
+        timeout=float(getattr(sub2api_cfg, "SUB2API_API_TIMEOUT", 20) or 20),
+    )
+
+
 def upload_codex_oauth_credential(
     auth_json: dict[str, Any],
     api_url: str,

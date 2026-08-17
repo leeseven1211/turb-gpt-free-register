@@ -282,6 +282,37 @@ class AccountTaskApiTests(unittest.TestCase):
         )
         thread_cls.return_value.start.assert_called_once_with()
 
+    def test_codex_retry_bulk_accepts_selected_credential_filenames(self):
+        app = create_app(auth_code="test-auth")
+        client = app.test_client()
+        client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
+        account = {"id": 7, "email": "a@example.com", "codex_status": "success"}
+        with (
+            patch("core.feature_availability.require_feature", return_value=(True, "")),
+            patch.object(webui_app.db, "list_codex_accounts", return_value=[{
+                "filename": "codex-a@example.com-free.json",
+                "email": "a@example.com",
+            }]),
+            patch.object(webui_app.db, "get_account_by_email", return_value=account),
+            patch.object(webui_app.db, "get_account", return_value=account),
+            patch.object(codex_retry_service, "reserve", return_value=True),
+            patch.object(webui_app.db, "update_account_codex_status"),
+            patch.object(account_task_store, "create_batch", return_value="batch-1"),
+            patch.object(account_task_store, "create_task", return_value=89),
+            patch("webui.app.threading.Thread") as thread_cls,
+        ):
+            response = client.post("/api/codex/retry-bulk", json={
+                "filenames": ["codex-a@example.com-free.json"],
+                "workers": 2,
+            })
+
+        self.assertEqual(200, response.status_code)
+        payload = response.get_json()
+        self.assertEqual(1, payload["started_count"])
+        self.assertEqual("codex-a@example.com-free.json", payload["started"][0]["filename"])
+        self.assertEqual(89, payload["started"][0]["task_id"])
+        thread_cls.return_value.start.assert_called_once_with()
+
 
 if __name__ == "__main__":
     unittest.main()
