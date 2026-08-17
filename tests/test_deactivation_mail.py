@@ -6,9 +6,10 @@ from unittest.mock import patch
 
 from core import db, deactivation_mail_service
 from webui.app import create_app
+from tests.support_pg import PostgresTestCase
 
 
-class DeactivationMailTests(unittest.TestCase):
+class DeactivationMailTests(PostgresTestCase):
     def _db_patches(self, root: Path):
         return (
             patch.object(db, "_ACCOUNTS_JSON", root / "accounts.json"),

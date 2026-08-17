@@ -77,33 +77,30 @@ def _ensure_storage() -> None:
 
 
 def _read_json(path: Path, default: Any) -> Any:
+    """从 PostgreSQL 读取集合。PG 不可用时直接抛错，不回退兼容文件。
+
+    回退看起来更"健壮"，实际是让两份副本悄悄分叉——读到旧文件、写回 PG，
+    中间的变更就没了。宁可响亮失败。
+    """
     _ensure_storage()
     collection = _collection_name(path)
-    if postgres_store.enabled():
-        try:
-            found, payload = postgres_store.load_collection(collection)
-            if found:
-                return payload
-        except Exception as exc:
-            logging.getLogger(__name__).warning("PostgreSQL 读取失败，回退兼容文件 %s: %s", collection, exc)
+    found, payload = postgres_store.load_collection(collection)
+    if found:
+        return payload
+    # PG 里还没有这个集合：用兼容文件做一次性种子。迁移完成后此路径会移除。
     if not path.exists():
         return default
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-        if postgres_store.enabled():
-            try:
-                postgres_store.save_collection(collection, payload)
-            except Exception as exc:
-                logging.getLogger(__name__).warning("PostgreSQL 首次导入失败 %s: %s", collection, exc)
-        return payload
     except Exception:
         return default
+    postgres_store.save_collection(collection, payload)
+    return payload
 
 
 def _write_json(path: Path, data: Any) -> None:
     _ensure_storage()
-    if postgres_store.enabled():
-        postgres_store.save_collection(_collection_name(path), data)
+    postgres_store.save_collection(_collection_name(path), data)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(
         json.dumps(data, ensure_ascii=False, indent=2),
@@ -1982,8 +1979,6 @@ def _sync_codex_credentials_collection() -> dict:
                 }
             except Exception:
                 continue
-    if not postgres_store.enabled():
-        return local_records
     found, stored = postgres_store.load_collection(_CODEX_CREDENTIALS_COLLECTION)
     records = stored if found and isinstance(stored, dict) else {}
     changed = False
@@ -1998,8 +1993,6 @@ def _sync_codex_credentials_collection() -> dict:
 
 def save_codex_credential_record(filename: str, content: dict) -> None:
     """Mirror a newly written CPA-compatible credential into PostgreSQL."""
-    if not postgres_store.enabled():
-        return
     records = _sync_codex_credentials_collection()
     records[filename] = {"content": content, "mtime": _now()}
     postgres_store.save_collection(_CODEX_CREDENTIALS_COLLECTION, records)
@@ -2150,12 +2143,11 @@ def read_codex_credential(filename: str) -> tuple[str, str]:
         if "/" in filename or "\\" in filename or ".." in filename:
             raise ValueError(f"非法文件名: {filename}")
         path = _CODEX_DIR / filename
-        if postgres_store.enabled():
-            records = _sync_codex_credentials_collection()
-            record = records.get(filename) or {}
-            content = record.get("content")
-            if isinstance(content, dict):
-                return json.dumps(content, ensure_ascii=False, indent=2) + "\n", filename
+        records = _sync_codex_credentials_collection()
+        record = records.get(filename) or {}
+        content = record.get("content")
+        if isinstance(content, dict):
+            return json.dumps(content, ensure_ascii=False, indent=2) + "\n", filename
         if not path.exists() or not path.is_file():
             raise ValueError(f"文件不存在: {filename}")
         return path.read_text(encoding="utf-8"), filename
@@ -2237,11 +2229,10 @@ def delete_codex_credential(filename: str) -> bool:
         if not path.exists() or not path.is_file():
             return False
         path.unlink()
-        if postgres_store.enabled():
-            records = _sync_codex_credentials_collection()
-            if filename in records:
-                del records[filename]
-                postgres_store.save_collection(_CODEX_CREDENTIALS_COLLECTION, records)
+        records = _sync_codex_credentials_collection()
+        if filename in records:
+            del records[filename]
+            postgres_store.save_collection(_CODEX_CREDENTIALS_COLLECTION, records)
         state = _load_codex_export_state()
         if filename in state:
             del state[filename]

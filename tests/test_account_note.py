@@ -5,9 +5,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from core import db
+from tests.support_pg import PostgresTestCase
 
 
-class AccountNoteTests(unittest.TestCase):
+class AccountNoteTests(PostgresTestCase):
     def test_update_account_note_single_and_bulk(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

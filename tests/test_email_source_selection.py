@@ -5,9 +5,10 @@ from unittest.mock import patch
 from config import email as email_config
 from core import email_provider
 from webui.app import create_app
+from tests.support_pg import PostgresTestCase
 
 
-class EmailSourceSelectionTests(unittest.TestCase):
+class EmailSourceSelectionTests(PostgresTestCase):
     def setUp(self):
         self.client = create_app(auth_code="test-auth").test_client()
         self.client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"

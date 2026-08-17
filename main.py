@@ -615,6 +615,10 @@ def main():
     args = parser.parse_args()
     configure_logging(args.verbose)
 
+    # CLI 与 WebUI 写同一份数据；PostgreSQL 连不上就直接退出，避免半路写丢。
+    from core import postgres_store
+    postgres_store.require_ready()
+
     if args.count < 1:
         logger.error("注册数量必须大于 0")
         sys.exit(1)

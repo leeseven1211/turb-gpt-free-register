@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 
 from core import codex_token_refresh_service as service, db
 from webui.app import create_app
+from tests.support_pg import PostgresTestCase
 
 
 class CodexOauthMetadataTests(unittest.TestCase):
@@ -104,7 +105,7 @@ class CodexOauthMetadataTests(unittest.TestCase):
         enqueue.assert_called_once_with("codex-due.json", trigger="codex_token_refresh_scheduled")
 
 
-class CodexOauthRefreshApiTests(unittest.TestCase):
+class CodexOauthRefreshApiTests(PostgresTestCase):
     def setUp(self):
         self.client = create_app(auth_code="test-auth").test_client()
         self.client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"

@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 
 from core.sub2api_client import upload_codex_oauth_credential
 from webui.app import create_app
+from tests.support_pg import PostgresTestCase
 
 
 class Sub2ApiUploadTests(unittest.TestCase):
@@ -65,7 +66,7 @@ class Sub2ApiUploadTests(unittest.TestCase):
             )
 
 
-class Sub2ApiWebUploadTests(unittest.TestCase):
+class Sub2ApiWebUploadTests(PostgresTestCase):
     def setUp(self):
         self.client = create_app(auth_code="test-auth").test_client()
         self.client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"

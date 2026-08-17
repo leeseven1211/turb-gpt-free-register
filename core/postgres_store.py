@@ -1,15 +1,18 @@
 # -*- coding: utf-8 -*-
 """PostgreSQL-backed storage for JSON-compatible application collections.
 
-The existing text/JSON files remain compatibility exports. When DATABASE_URL is
-configured, reads prefer PostgreSQL and writes commit there before refreshing the
-compatibility file. A missing database row is bootstrapped from the existing file.
+PostgreSQL 是唯一事实来源，没有"纯文件模式"回退：DATABASE_URL 缺失或连不上时
+调用方应当直接失败，而不是静默改用兼容文件——静默降级会让数据在两份副本之间分叉。
+现存的 text/JSON 文件只是兼容导出，以及首次导入时的种子。
+
+所有表都限定在 `TURB_DB_SCHEMA`（默认 public）下，测试通过指向临时 schema 隔离。
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -18,19 +21,74 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 _LOCK = threading.RLock()
-_SCHEMA_READY_URL = ""
+_SCHEMA_READY_KEY = ""
 _CACHE: dict[str, tuple[float, Any]] = {}
 _CACHE_TTL_SECONDS = 1.0
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def database_url() -> str:
-    if "unittest" in sys.modules and os.getenv("TURB_ALLOW_DATABASE_IN_TESTS") != "1":
-        return ""
     return str(os.getenv("DATABASE_URL") or "").strip()
 
 
 def enabled() -> bool:
     return bool(database_url())
+
+
+def schema_name() -> str:
+    """当前 PostgreSQL schema。测试通过 TURB_DB_SCHEMA 指向临时 schema 做隔离。"""
+    return str(os.getenv("TURB_DB_SCHEMA") or "public").strip() or "public"
+
+
+def _guard_production_schema() -> None:
+    """测试进程严禁碰生产 schema。
+
+    这不是"判断数据库是否可用"（那种嗅探会导致静默降级、两份副本分叉），
+    而是一道只会响亮报错的护栏：测试要么显式指向临时 schema，要么直接失败。
+    """
+    if "unittest" not in sys.modules:
+        return
+    if schema_name() == "public":
+        raise RuntimeError(
+            "测试进程不允许使用 public schema（会写坏真实账号数据）。\n"
+            "请让用到数据库的测试继承 tests.support_pg.PostgresTestCase，"
+            "或运行测试时设置 TURB_DB_SCHEMA=test_xxx。"
+        )
+
+
+def quote_identifier(name: str) -> str:
+    if not _IDENTIFIER_RE.fullmatch(name):
+        raise ValueError(f"非法 PostgreSQL 标识符: {name!r}")
+    return f'"{name}"'
+
+
+def qualified(table: str) -> str:
+    """把表名限定到当前 schema，供本模块与 record_store 共用。"""
+    return f"{quote_identifier(schema_name())}.{quote_identifier(table)}"
+
+
+def require_ready() -> None:
+    """启动自检：DATABASE_URL 缺失或库连不上就直接终止进程。
+
+    本项目不再支持纯文件模式。让它在启动时响亮失败，好过运行中静默把数据写丢。
+    """
+    # 自己加载 .env，不依赖"调用方在此之前恰好 import 过 config"这种隐式顺序。
+    try:
+        from config.env_loader import load_env
+        load_env(override=False)
+    except Exception:
+        pass
+    url = database_url()
+    if not url:
+        raise SystemExit(
+            "DATABASE_URL 未配置。本项目以 PostgreSQL 为唯一主存储，不再支持纯文件模式。\n"
+            "请先启动共享实例并在 .env 配置 DATABASE_URL：\n"
+            "  /Users/lihongwei/code/personal/shared-services/postgres/postgres.sh start"
+        )
+    try:
+        ensure_schema()
+    except Exception as exc:
+        raise SystemExit(f"PostgreSQL 不可用（{type(exc).__name__}: {exc}）；请检查 DATABASE_URL 与共享实例状态") from exc
 
 
 def connect(url: str | None = None, **kwargs):
@@ -50,53 +108,57 @@ def _connect():
 
 
 def ensure_schema() -> None:
-    global _SCHEMA_READY_URL
-    if not enabled():
-        return
+    global _SCHEMA_READY_KEY
     url = database_url()
+    if not url:
+        raise RuntimeError("DATABASE_URL 未配置")
+    _guard_production_schema()
+    ready_key = f"{url}::{schema_name()}"
     with _LOCK:
-        if _SCHEMA_READY_URL == url:
+        if _SCHEMA_READY_KEY == ready_key:
             return
         with _connect() as conn, conn.cursor() as cur:
+            cur.execute(f"CREATE SCHEMA IF NOT EXISTS {quote_identifier(schema_name())}")
             cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS app_collections (
+                f"""
+                CREATE TABLE IF NOT EXISTS {qualified("app_collections")} (
                     name text PRIMARY KEY,
                     payload jsonb NOT NULL,
                     updated_at timestamptz NOT NULL DEFAULT now()
                 )
                 """
             )
-        _SCHEMA_READY_URL = url
+        _SCHEMA_READY_KEY = ready_key
+
+
+def _cache_key(name: str) -> str:
+    return f"{schema_name()}::{name}"
 
 
 def load_collection(name: str) -> tuple[bool, Any]:
-    if not enabled():
-        return False, None
     ensure_schema()
+    key = _cache_key(name)
     with _LOCK:
-        cached = _CACHE.get(name)
+        cached = _CACHE.get(key)
         if cached and time.monotonic() - cached[0] <= _CACHE_TTL_SECONDS:
             return True, deepcopy(cached[1])
     with _connect() as conn, conn.cursor() as cur:
-        cur.execute("SELECT payload FROM app_collections WHERE name = %s", (name,))
+        cur.execute(f"SELECT payload FROM {qualified('app_collections')} WHERE name = %s", (name,))
         row = cur.fetchone()
     if row is None:
         return False, None
     with _LOCK:
-        _CACHE[name] = (time.monotonic(), row[0])
+        _CACHE[key] = (time.monotonic(), row[0])
     return True, deepcopy(row[0])
 
 
 def save_collection(name: str, payload: Any) -> None:
-    if not enabled():
-        return
     ensure_schema()
     serialized = json.dumps(payload, ensure_ascii=False)
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
-            """
-            INSERT INTO app_collections(name, payload, updated_at)
+            f"""
+            INSERT INTO {qualified("app_collections")}(name, payload, updated_at)
             VALUES (%s, %s::jsonb, now())
             ON CONFLICT (name) DO UPDATE
             SET payload = EXCLUDED.payload, updated_at = now()
@@ -104,7 +166,17 @@ def save_collection(name: str, payload: Any) -> None:
             (name, serialized),
         )
     with _LOCK:
-        _CACHE[name] = (time.monotonic(), deepcopy(payload))
+        _CACHE[_cache_key(name)] = (time.monotonic(), deepcopy(payload))
+
+
+def reset_cache() -> None:
+    """丢弃集合读缓存。外部直接改库后调用。
+
+    不重置 `_SCHEMA_READY_KEY`：它已经按 `url::schema` 做键，切 schema 会自动失效，
+    没必要每次都重跑一遍建表 DDL。
+    """
+    with _LOCK:
+        _CACHE.clear()
 
 
 def healthcheck() -> dict:
@@ -113,7 +185,7 @@ def healthcheck() -> dict:
     try:
         ensure_schema()
         with _connect() as conn, conn.cursor() as cur:
-            cur.execute("SELECT current_database(), current_user, count(*) FROM app_collections")
+            cur.execute(f"SELECT current_database(), current_user, count(*) FROM {qualified('app_collections')}")
             database, user, collections = cur.fetchone()
         return {"enabled": True, "ok": True, "database": database, "user": user, "collections": collections}
     except Exception as exc:

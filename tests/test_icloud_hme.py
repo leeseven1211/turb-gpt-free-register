@@ -8,9 +8,10 @@ from unittest.mock import patch
 from core import db
 from core import icloud_hme_client as client
 from core import email_provider
+from tests.support_pg import PostgresTestCase
 
 
-class ICloudHidePoolTests(unittest.TestCase):
+class ICloudHidePoolTests(PostgresTestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.pool_path = Path(self.tmp.name) / "icloud-pool.json"

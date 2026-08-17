@@ -6,9 +6,10 @@ from unittest.mock import patch
 
 from core import db
 from webui.app import _compact_job_for_list, _latest_progress_batch, create_app
+from tests.support_pg import PostgresTestCase
 
 
-class JobProgressTests(unittest.TestCase):
+class JobProgressTests(PostgresTestCase):
     def _storage_patches(self, root: Path):
         return (
             patch.object(db, "_DATA_DIR", root),

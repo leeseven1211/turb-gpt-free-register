@@ -4,9 +4,10 @@ from unittest.mock import patch
 
 from core import feature_availability
 from webui.app import create_app
+from tests.support_pg import PostgresTestCase
 
 
-class FeatureAvailabilityTests(unittest.TestCase):
+class FeatureAvailabilityTests(PostgresTestCase):
     def test_account_features_disabled_when_1024_api_missing(self):
         with (
             patch("core.account_proxy.registration_proxy_mode", return_value="1024"),

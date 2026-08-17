@@ -5,9 +5,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from webui.app import create_app
+from tests.support_pg import PostgresTestCase
 
 
-class DashboardApiTests(unittest.TestCase):
+class DashboardApiTests(PostgresTestCase):
     def setUp(self):
         self.app = create_app(auth_code="test-auth")
         self.client = self.app.test_client()
@@ -321,7 +322,7 @@ class DashboardApiTests(unittest.TestCase):
         self.assertEqual({item["value"] for item in payload["facets"]["status"]}, {"available", "used"})
 
 
-class EmailButlerLeaseApiTests(unittest.TestCase):
+class EmailButlerLeaseApiTests(PostgresTestCase):
     def setUp(self):
         self.app = create_app(auth_code="test-auth")
         self.client = self.app.test_client()

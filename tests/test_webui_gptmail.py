@@ -4,9 +4,10 @@ from unittest.mock import patch
 
 from config import email as email_config
 from webui.app import create_app
+from tests.support_pg import PostgresTestCase
 
 
-class GPTMailWebUiTests(unittest.TestCase):
+class GPTMailWebUiTests(PostgresTestCase):
     def setUp(self):
         self.client = create_app(auth_code="test-auth").test_client()
         self.client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"

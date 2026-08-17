@@ -93,6 +93,10 @@ def main() -> None:
         logger.error(str(exc))
         raise SystemExit(2) from exc
 
+    # PostgreSQL 是唯一主存储；连不上就在这里终止，不要带着"会静默丢数据"的状态启动。
+    from core import postgres_store
+    postgres_store.require_ready()
+
     # 浏览器、线程池和代理租约都属于进程内资源。异常退出后不能继续把旧任务
     # 显示成 running，也不能把独立运行的 Roxy 临时环境留在桌面和额度中。
     from core import account_task_store, db

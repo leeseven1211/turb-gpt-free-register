@@ -13,6 +13,7 @@ from unittest.mock import patch
 from core import account_task_store, codex_retry_service, live_check_service, postgres_store, token_refresh_service
 from webui import app as webui_app
 from webui.app import create_app
+from tests.support_pg import PostgresTestCase
 
 
 def _jwt_with_exp(exp: datetime) -> str:
@@ -108,7 +109,7 @@ class TokenRefreshServiceTests(unittest.TestCase):
         self.assertEqual(2, enqueue.call_args.kwargs["account_id"])
 
 
-class AccountStatusTests(unittest.TestCase):
+class AccountStatusTests(PostgresTestCase):
     def test_deactivated_liveness_result_persists_independent_account_status(self):
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)
@@ -212,7 +213,7 @@ class CodexRetryTaskTests(unittest.TestCase):
         self.assertNotIn("callback_url", finish_task.call_args.kwargs["result_summary"])
 
 
-class AccountTaskApiTests(unittest.TestCase):
+class AccountTaskApiTests(PostgresTestCase):
     def test_live_check_and_token_refresh_are_separate_api_actions(self):
         app = create_app(auth_code="test-auth")
         client = app.test_client()

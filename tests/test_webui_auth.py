@@ -4,9 +4,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from webui.app import create_app
+from tests.support_pg import PostgresTestCase
 
 
-class WebUiAuthTests(unittest.TestCase):
+class WebUiAuthTests(PostgresTestCase):
     def setUp(self):
         self.app = create_app(auth_code="test-auth")
         self.client = self.app.test_client()

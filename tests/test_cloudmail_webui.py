@@ -3,9 +3,10 @@ import unittest
 from unittest.mock import patch
 
 from webui.app import create_app
+from tests.support_pg import PostgresTestCase
 
 
-class CloudMailWebUiTests(unittest.TestCase):
+class CloudMailWebUiTests(PostgresTestCase):
     def setUp(self):
         self.client = create_app(auth_code="test-auth").test_client()
         self.client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
