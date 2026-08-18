@@ -16,12 +16,12 @@ import json
 import logging
 import threading
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from html import escape
 from pathlib import Path
 from typing import Any
 
-from core import postgres_store
+from core import postgres_store, record_store
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DATA_DIR = _PROJECT_ROOT
@@ -114,6 +114,65 @@ def _collection_name(path: Path) -> str:
         return path.resolve().relative_to(_PROJECT_ROOT.resolve()).as_posix()
     except ValueError:
         return path.name
+
+
+# ============================================================
+# 表接缝：_load_X / _save_X 底下由 record_store 的行级表支撑
+#
+# 保留"整表 list[dict] 进出"的形状，是为了让 60 多个调用方不必改写；但落库时
+# 只写真正变化的行，而不是把整个集合重新序列化一遍。真正需要行级语义的地方
+# （抢占、热点单字段更新、跨表事务）另有直连 record_store 的实现。
+# ============================================================
+
+def _load_table(spec) -> list[dict]:
+    return record_store.list_rows(spec, order_by="id")
+
+
+def _row_signature(row: dict) -> str:
+    """用于判断一行是否变化。派生字段不参与，避免它自己触发一次写。"""
+    return json.dumps(
+        {k: v for k, v in row.items() if k != "copy_line"},
+        ensure_ascii=False, sort_keys=True, default=str,
+    )
+
+
+def _sync_table(spec, rows: list[dict], *, conn=None) -> None:
+    """把整表快照落到行级表，只写差异行。
+
+    这是旧"读全量→改→写全量"调用方与行级存储之间的桥。相比原来每次重写
+    2 MB+ JSONB，这里通常只发一条 UPDATE。
+
+    传入 conn 可以把多张表的写入并入同一个事务——insert_account 之类要同时改
+    账号和邮箱池，分两次提交会留下"账号建好了但邮箱没标记 used"的中间态。
+    """
+    current = {int(r["id"]): r for r in record_store.list_rows(spec, order_by="id")
+               if r.get("id") is not None}
+    seen: set[int] = set()
+
+    def _apply(active) -> None:
+        for row in rows:
+            rid = row.get("id")
+            if rid is None:
+                new_id = record_store.insert_row(spec, row, conn=active)
+                row["id"] = new_id
+                seen.add(int(new_id))
+                continue
+            rid = int(rid)
+            seen.add(rid)
+            existing = current.get(rid)
+            if existing is None:
+                record_store.insert_row(spec, row, conn=active)
+            elif _row_signature(existing) != _row_signature(row):
+                record_store.patch_row(spec, rid, row, conn=active)
+        removed = [rid for rid in current if rid not in seen]
+        if removed:
+            record_store.delete_rows(spec, removed, conn=active)
+
+    if conn is not None:
+        _apply(conn)
+        return
+    with record_store.transaction() as own:
+        _apply(own)
 
 
 def _next_id(items: list[dict]) -> int:
@@ -499,55 +558,83 @@ render();
 
 
 def _load_outlook() -> list[dict]:
-    rows = _read_json(_OUTLOOK_JSON, None)
-    if not isinstance(rows, list):
-        rows = _read_json(_LEGACY_OUTLOOK_JSON, [])
-    return rows if isinstance(rows, list) else []
+    return _load_table(record_store.OUTLOOK_POOL)
 
 
-def _save_outlook(rows: list[dict]) -> None:
+def _export_outlook(rows: list[dict]) -> None:
+    """兼容导出。第 4 步会改成去抖后台任务。"""
     _write_json(_OUTLOOK_JSON, rows)
     _sync_outlook_txt(rows)
     _render_static_viewer(outlook_rows=rows)
 
 
+def _save_outlook(rows: list[dict]) -> None:
+    _sync_table(record_store.OUTLOOK_POOL, rows)
+    _export_outlook(rows)
+
+
 def _load_generic_api_emails() -> list[dict]:
-    rows = _read_json(_GENERIC_API_EMAIL_JSON, [])
-    return rows if isinstance(rows, list) else []
+    return _load_table(record_store.GENERIC_API_POOL)
+
+
+def _export_generic_api_emails(rows: list[dict]) -> None:
+    _write_json(_GENERIC_API_EMAIL_JSON, rows)
+    _sync_generic_api_email_txt(rows)
 
 
 def _save_generic_api_emails(rows: list[dict]) -> None:
     for row in rows:
         row["copy_line"] = _generic_api_email_line(row)
-    _write_json(_GENERIC_API_EMAIL_JSON, rows)
-    _sync_generic_api_email_txt(rows)
+    _sync_table(record_store.GENERIC_API_POOL, rows)
+    _export_generic_api_emails(rows)
 
 
 def _load_accounts() -> list[dict]:
-    rows = _read_json(_ACCOUNTS_JSON, None)
-    if not isinstance(rows, list):
-        rows = _read_json(_LEGACY_ACCOUNTS_JSON, [])
-    return rows if isinstance(rows, list) else []
+    return _load_table(record_store.ACCOUNTS)
 
 
-def _save_accounts(rows: list[dict]) -> None:
-    for row in rows:
-        row["copy_line"] = _account_line(row)
+def _export_accounts(rows: list[dict]) -> None:
     _write_json(_ACCOUNTS_JSON, rows)
     _sync_accounts_txt(rows)
     _sync_tokens_txt(rows)
     _render_static_viewer(account_rows=rows)
 
 
+def _save_accounts(rows: list[dict]) -> None:
+    for row in rows:
+        row["copy_line"] = _account_line(row)
+    _sync_table(record_store.ACCOUNTS, rows)
+    _export_accounts(rows)
+
+
 def _load_jobs() -> list[dict]:
-    rows = _read_json(_JOBS_JSON, None)
-    if not isinstance(rows, list):
-        rows = _read_json(_LEGACY_JOBS_JSON, [])
-    return rows if isinstance(rows, list) else []
+    return _load_table(record_store.JOBS)
+
+
+def _export_jobs(rows: list[dict]) -> None:
+    _write_json(_JOBS_JSON, rows)
 
 
 def _save_jobs(rows: list[dict]) -> None:
-    _write_json(_JOBS_JSON, rows)
+    _sync_table(record_store.JOBS, rows)
+    _export_jobs(rows)
+
+
+def _save_together(*pairs) -> None:
+    """把多张表的写入并进同一个事务，再统一做兼容导出。
+
+    用于 insert_account / import_registered_email_accounts /
+    recover_interrupted_registration_jobs 这三个跨集合操作：它们原先是两次独立
+    落盘，中间失败会留下"账号已创建但邮箱池没标记 used"这种半完成状态。
+
+    每个 pair 是 (spec, rows, export_fn)。
+    """
+    with record_store.transaction() as conn:
+        for spec, rows, _export in pairs:
+            _sync_table(spec, rows, conn=conn)
+    for _spec, rows, export in pairs:
+        if export is not None:
+            export(rows)
 
 
 def _find_by_email(rows: list[dict], email: str) -> dict | None:
@@ -790,59 +877,83 @@ def sync_account_token_metadata(items: list[tuple[int, str]]) -> int:
         return changed
 
 
+def _stage_claim_guard(prefix: str, *, require_alive: bool = False) -> tuple[str, list]:
+    """构造"未被占用，或占用已超时"的 SQL 判据。
+
+    改造前这段是"读出来判断状态，再写回去"，两个进程会同时读到 idle 然后都以为
+    抢到了——`threading.RLock` 只在进程内有效，而 CLI 与 WebUI 是两个进程。
+    改成条件 UPDATE 后，判据和写入在同一条语句里，由数据库保证互斥。
+
+    时间戳是 ISO 字符串，字典序即时间序，可以直接比较。缺失、空串或不像时间戳
+    的值一律视为已超时——这保留了原实现"解析失败就放行"的语义，否则一行脏数据
+    会让这个账号永远无法再被领取。
+    """
+    now = datetime.now()
+    queue_before = (now - timedelta(seconds=_PLAN_CHECK_QUEUE_STALE_SECONDS)).isoformat(timespec="seconds")
+    run_before = (now - timedelta(seconds=_PLAN_CHECK_STALE_SECONDS)).isoformat(timespec="seconds")
+    status = f'"{prefix}_status"'
+    guard = (
+        f"(COALESCE({status}, '') NOT IN ('queued', 'running')"
+        f" OR ({status} = 'queued' AND (COALESCE(data->>'{prefix}_queued_at', '') !~ '^[0-9]{{4}}-'"
+        f"      OR data->>'{prefix}_queued_at' < %s))"
+        f" OR ({status} = 'running' AND (COALESCE(data->>'{prefix}_started_at', '') !~ '^[0-9]{{4}}-'"
+        f"      OR data->>'{prefix}_started_at' < %s)))"
+    )
+    params = [queue_before, run_before]
+    if require_alive:
+        guard = f"deactivated = FALSE AND {guard}"
+    return guard, params
+
+
+def _claim_account_stage(acc_id: int, prefix: str, changes: dict, *, require_alive: bool = False) -> bool:
+    guard, params = _stage_claim_guard(prefix, require_alive=require_alive)
+    return record_store.claim_row(
+        record_store.ACCOUNTS, int(acc_id),
+        changes=changes, guard=guard, guard_params=params,
+    )
+
+
+def _mark_account_stage_running(acc_id: int, prefix: str, changes: dict) -> bool:
+    """仅当该阶段确实处于 queued/running 时才置为 running。"""
+    return record_store.claim_row(
+        record_store.ACCOUNTS, int(acc_id),
+        changes=changes,
+        guard=f"COALESCE(\"{prefix}_status\", '') IN ('queued', 'running')",
+    )
+
+
 def claim_account_plan_check(
     acc_id: int | None = None,
     email: str | None = None,
     trigger: str = "manual",
 ) -> bool:
     """原子占用账号的套餐查询；已有未超时查询时返回 False。"""
-    with _LOCK:
-        accounts = _load_accounts()
-        target_email = (email or "").lower()
-        row = next((
-            r for r in accounts
-            if (acc_id is not None and int(r.get("id") or 0) == int(acc_id))
-            or (target_email and (r.get("email") or "").lower() == target_email)
-        ), None)
+    if acc_id is None:
+        row = get_account_by_email(email or "")
         if row is None:
             return False
-
-        current_status = row.get("plan_check_status")
-        if current_status in {"queued", "running"}:
-            try:
-                stamp_key = "plan_check_queued_at" if current_status == "queued" else "plan_check_started_at"
-                stale_after = _PLAN_CHECK_QUEUE_STALE_SECONDS if current_status == "queued" else _PLAN_CHECK_STALE_SECONDS
-                started_at = datetime.fromisoformat(str(row.get(stamp_key) or ""))
-                if (datetime.now() - started_at).total_seconds() < stale_after:
-                    return False
-            except (TypeError, ValueError):
-                pass
-
-        now = _now()
-        row["plan_check_status"] = "queued"
-        row["plan_check_trigger"] = str(trigger or "manual")
-        row["plan_check_queued_at"] = now
-        row["plan_check_started_at"] = None
-        row["plan_check_completed_at"] = None
-        row["plan_check_error"] = None
-        row["updated_at"] = now
-        _save_accounts(accounts)
-        return True
+        acc_id = int(row["id"])
+    now = _now()
+    return _claim_account_stage(acc_id, "plan_check", {
+        "plan_check_status": "queued",
+        "plan_check_trigger": str(trigger or "manual"),
+        "plan_check_queued_at": now,
+        "plan_check_started_at": None,
+        "plan_check_completed_at": None,
+        "plan_check_error": None,
+        "updated_at": now,
+    })
 
 
 def mark_account_plan_check_running(acc_id: int) -> bool:
     """把已排队的套餐查询标记为执行中。"""
-    with _LOCK:
-        accounts = _load_accounts()
-        row = next((r for r in accounts if int(r.get("id") or 0) == int(acc_id)), None)
-        if row is None or row.get("plan_check_status") not in {"queued", "running"}:
-            return False
-        row["plan_check_status"] = "running"
-        row["plan_check_started_at"] = _now()
-        row["plan_check_error"] = None
-        row["updated_at"] = _now()
-        _save_accounts(accounts)
-        return True
+    now = _now()
+    return _mark_account_stage_running(acc_id, "plan_check", {
+        "plan_check_status": "running",
+        "plan_check_started_at": now,
+        "plan_check_error": None,
+        "updated_at": now,
+    })
 
 
 def recover_interrupted_plan_checks() -> int:
@@ -947,50 +1058,31 @@ def update_account_plan_check(acc_id: int | None = None, email: str | None = Non
 
 def claim_account_extract(acc_id: int, trigger: str = "manual", link_type: str = "pix") -> bool:
     """原子占用账号提链任务；已有未超时任务时返回 False。"""
-    with _LOCK:
-        accounts = _load_accounts()
-        row = next((r for r in accounts if int(r.get("id") or 0) == int(acc_id)), None)
-        if row is None:
-            return False
-        current_status = row.get("extract_link_status")
-        if current_status in {"queued", "running"}:
-            try:
-                stamp_key = "extract_link_queued_at" if current_status == "queued" else "extract_link_started_at"
-                stale_after = _PLAN_CHECK_QUEUE_STALE_SECONDS if current_status == "queued" else _PLAN_CHECK_STALE_SECONDS
-                started_at = datetime.fromisoformat(str(row.get(stamp_key) or ""))
-                if (datetime.now() - started_at).total_seconds() < stale_after:
-                    return False
-            except (TypeError, ValueError):
-                pass
-        now = _now()
-        row["extract_link_status"] = "queued"
-        row["extract_link_ok"] = False
-        row["extract_link_trigger"] = str(trigger or "manual")
-        row["extract_link_type"] = str(link_type or "pix").lower()
-        row["extract_link_queued_at"] = now
-        row["extract_link_started_at"] = None
-        row["extract_link_completed_at"] = None
-        row["extract_link_error"] = None
-        row["extract_link_message"] = "已入队"
-        row["updated_at"] = now
-        _save_accounts(accounts)
-        return True
+    now = _now()
+    return _claim_account_stage(acc_id, "extract_link", {
+        "extract_link_status": "queued",
+        "extract_link_ok": False,
+        "extract_link_trigger": str(trigger or "manual"),
+        "extract_link_type": str(link_type or "pix").lower(),
+        "extract_link_queued_at": now,
+        "extract_link_started_at": None,
+        "extract_link_completed_at": None,
+        "extract_link_error": None,
+        "extract_link_message": "已入队",
+        "updated_at": now,
+    })
 
 
 def mark_account_extract_running(acc_id: int) -> bool:
     """把提链任务标记为运行中。"""
-    with _LOCK:
-        accounts = _load_accounts()
-        row = next((r for r in accounts if int(r.get("id") or 0) == int(acc_id)), None)
-        if row is None or row.get("extract_link_status") not in {"queued", "running"}:
-            return False
-        row["extract_link_status"] = "running"
-        row["extract_link_started_at"] = _now()
-        row["extract_link_error"] = None
-        row["extract_link_message"] = "任务运行中"
-        row["updated_at"] = _now()
-        _save_accounts(accounts)
-        return True
+    now = _now()
+    return _mark_account_stage_running(acc_id, "extract_link", {
+        "extract_link_status": "running",
+        "extract_link_started_at": now,
+        "extract_link_error": None,
+        "extract_link_message": "任务运行中",
+        "updated_at": now,
+    })
 
 
 def update_account_extract(acc_id: int, result: dict | None = None) -> bool:
@@ -1385,34 +1477,18 @@ def account_is_deactivated(account: dict | None) -> bool:
 
 
 def claim_account_live_check(acc_id: int, trigger: str = "manual") -> bool:
-    """原子占用账号查活任务；已有 queued/running 时返回 False。"""
-    with _LOCK:
-        rows = _load_accounts()
-        row = next((r for r in rows if int(r.get("id") or 0) == int(acc_id)), None)
-        if row is None:
-            return False
-        if account_is_deactivated(row):
-            return False
-        if row.get("live_check_status") in {"queued", "running"}:
-            try:
-                stamp_key = "live_check_queued_at" if row.get("live_check_status") == "queued" else "live_check_started_at"
-                stale_after = _PLAN_CHECK_QUEUE_STALE_SECONDS if row.get("live_check_status") == "queued" else _PLAN_CHECK_STALE_SECONDS
-                started_at = datetime.fromisoformat(str(row.get(stamp_key) or ""))
-                if (datetime.now() - started_at).total_seconds() < stale_after:
-                    return False
-            except (TypeError, ValueError):
-                pass
-        now = _now()
-        row["live_check_status"] = "queued"
-        row["live_check_ok"] = False
-        row["live_check_trigger"] = str(trigger or "manual")
-        row["live_check_queued_at"] = now
-        row["live_check_started_at"] = None
-        row["live_checked_at"] = None
-        row["live_check_error"] = None
-        row["updated_at"] = now
-        _save_accounts(rows)
-        return True
+    """原子占用账号查活任务；已有未超时任务或账号已封时返回 False。"""
+    now = _now()
+    return _claim_account_stage(acc_id, "live_check", {
+        "live_check_status": "queued",
+        "live_check_ok": False,
+        "live_check_trigger": str(trigger or "manual"),
+        "live_check_queued_at": now,
+        "live_check_started_at": None,
+        "live_checked_at": None,
+        "live_check_error": None,
+        "updated_at": now,
+    }, require_alive=True)
 
 
 def recover_interrupted_live_checks() -> int:
@@ -1437,18 +1513,13 @@ def recover_interrupted_live_checks() -> int:
 
 def mark_account_live_check_running(acc_id: int) -> bool:
     """把账号查活任务标记为运行中。"""
-    with _LOCK:
-        rows = _load_accounts()
-        row = next((r for r in rows if int(r.get("id") or 0) == int(acc_id)), None)
-        if row is None or row.get("live_check_status") not in {"queued", "running"}:
-            return False
-        now = _now()
-        row["live_check_status"] = "running"
-        row["live_check_started_at"] = now
-        row["live_check_error"] = None
-        row["updated_at"] = now
-        _save_accounts(rows)
-        return True
+    now = _now()
+    return _mark_account_stage_running(acc_id, "live_check", {
+        "live_check_status": "running",
+        "live_check_started_at": now,
+        "live_check_error": None,
+        "updated_at": now,
+    })
 
 
 def update_accounts_note(account_ids: list[int] | None, note: str) -> tuple[list[dict], list[dict]]:
