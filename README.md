@@ -172,7 +172,13 @@ WebUI 配置页保存这些字段时会写入 `.env`（不是 config 源码）�
 
 ### PostgreSQL 主存储
 
-账号、邮箱池、注册任务、Codex 凭证和导出/归档状态统一写入 PostgreSQL。原有 JSON/TXT 与 `codex_accounts/` 仍会同步生成，作为 CLI、CPA 和人工导出的兼容产物，不再是唯一数据源。日志、浏览器缓存与批次文件仍保留在文件系统。
+PostgreSQL 是**唯一事实来源**，没有纯文件模式回退：`DATABASE_URL` 缺失或库连不上时进程会在启动时直接终止，而不是静默改用文件（那会让两份副本悄悄分叉）。
+
+账号、注册任务和邮箱池存在行级表里（`registered_accounts` / `registration_jobs` / `email_pool_*`），可行级更新、可跨进程原子抢占。Codex 凭证等尚未拆表的集合仍走 `app_collections`。
+
+根目录的 JSON/TXT 与 `accounts_viewer.html` 是**兼容产物**，供 CLI、CPA 和人工导出使用；它们由后台去抖任务生成，不在写入主路径上。日志、浏览器缓存与批次文件仍保留在文件系统。
+
+结构、迁移步骤与开发约定见 [`docs/storage-architecture.md`](docs/storage-architecture.md)。
 
 本机 PostgreSQL 已从项目目录拆分为公共服务。启动：
 
