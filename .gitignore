@@ -95,3 +95,6 @@ webui.log
 webui.pid
 logs/
 run/
+
+# Claude Code 的会话产物与 worktree（worktree 是嵌入仓库，不能被外层跟踪）
+.claude/
