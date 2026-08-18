@@ -528,7 +528,9 @@ PROXY_1024_SESSION_MINUTES=30
 PROXY_1024_ROTATE_SESSION_TIME=True
 PROXY_1024_API_TIMEOUT=12
 PROXY_1024_MAX_ATTEMPTS=5
+PROXY_1024_ACQUIRE_TIMEOUT=60
 PROXY_1024_VALIDATE=True
+PROXY_1024_VALIDATE_ATTEMPTS=2
 PROXY_1024_RECENT_TTL=1800
 PROXY_1024_ACQUIRE_INTERVAL=0.6
 ACCOUNT_ACTION_PROXY_MODE=registration
@@ -536,6 +538,7 @@ ACCOUNT_ACTION_PROXY_MODE=registration
 
 - 客户端会强制 `num=1`，保证一个注册任务只领取一个代理端点。
 - 平台返回代理后会检测实际出口国家；实际国家与请求国家不一致时会拒绝并重新提取。
+- 已占用/隔离期内的重复粘性 IP 不再消耗“有效失败次数”，会在 60 秒总预算内快速重取；出口检测的超时、连接和 SSL 瞬时错误会先对同一端点重试一次。
 - `PROXY_1024_ROTATE_SESSION_TIME=True` 会按任务 ID 在基础时长到 120 分钟间派生不同的 `time` 参数，避免平台在相同 `region/time` 窗口内返回同一粘性会话。任务结束只释放本地租约；白名单 API 没有单独的远程释放调用。
 - OpenAI 注册实测优先固定 `region=US`。`Rand` 可能落到画像不完整或高风控地区，增加挑战概率。
 - 粘性时间延长本身不产生流量，只有浏览器实际发出请求才消耗代理流量。30 分钟是注册 + 邮件等待的最低建议值，必要时可设更长。
@@ -572,9 +575,12 @@ SMS_PROVIDER = "l"        # 可选 grizzly / l / h
 SMS_API_KEY = "你的 GrizzlySMS key"  # 仅 GrizzlySMS 需要
 SMS_SERVICE = "openai"
 SMS_COUNTRY = "117,2,148" # Grizzly 可按顺序配置备用国家；无号/超价时自动切换
-SMS_MAX_PRICE = ""       # 最高可接受单号价格，留空=不限；GrizzlySMS/L 会透传 maxPrice
+SMS_MAX_PRICE = ""       # 单号价格上限（不是固定成交价），留空=不限；实际价以平台返回为准
+SMS_AUTO_SELECT_COUNTRY = True      # Grizzly 每批次按价格上限内的短信成功率自动选国
+SMS_AUTO_COUNTRY_MIN_RATIO = 25     # 排除成功率高但统计量太少的国家
 SMS_MAX_RETRIES = 10
-SMS_CODE_WAIT = 120
+SMS_CODE_WAIT = 120                 # 单个号码等待短信的硬上限
+CODEX_PHONE_TOTAL_TIMEOUT = 300     # 手机验证整段硬预算
 SMS_POLL_INTERVAL = 5
 
 # 若 SMS_PROVIDER="h"，H 固定复用：
@@ -584,8 +590,8 @@ H_API_BASE = "http://localhost:8788"
 H_ADMIN_AUTH_CODE = "你的H后台授权码"
 ```
 
-`SMS_CODE_WAIT` 是常规等待时长。使用 GrizzlySMS 时，为避免旧号码在换号后才收到迟到验证码，
-程序会继续守候当前号码到约 5 分钟取消窗口，并确认旧订单已取消或自然终止后才申请下一个号码。
+`SMS_CODE_WAIT` 是单个号码等待短信的硬上限，`CODEX_PHONE_TOTAL_TIMEOUT` 是取号、页面操作、
+等待短信和换号合计的整段硬预算。号码超时后，取消任务会交给后台持久化队列，不再阻塞注册线程。
 
 GrizzlySMS 的订单取消不是“取号后立即取消”：程序会把待取消订单持久化到
 `run/sms_cancel_queue.json`，由单一后台 worker 根据平台允许的时间执行取消。
@@ -634,7 +640,7 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 
 - Codex 的标准产物是 `codex_accounts/` 下的 OAuth JSON。旧 Codex Agent Token 生成、下载和上传接口已经移除；sub2api 导入直接上传 OAuth JSON，并支持按账号更新已有凭证。
 - 注册成功不因 Codex 失败而回滚；账号正常保存，Codex 标记失败并允许单独补跑。补跑停止信号必须贯穿邮箱 OTP、取号、短信等待和浏览器流程，不能被普通换号异常吞掉。
-- GrizzlySMS 支持在 `SMS_COUNTRY` 中按顺序配置备用国家，并透传 `SMS_MAX_PRICE`。只有无号、超价、号码被拒或通道不匹配时才切换；同一旧订单未确认结束前不得并行申请新号码。
+- GrizzlySMS 支持在 `SMS_COUNTRY` 中配置备用国家，并透传 `SMS_MAX_PRICE`（它只是购买上限，不是固定成交价）。开启 `SMS_AUTO_SELECT_COUNTRY` 后，每个批次首次接码会结合正式价格/库存接口与价格页短信成功率统计，在价格上限内选出统计量足够且成功率最高的国家；同一国家连续失败两次会自动切到排名中的下一候选。统计接口异常时自动回退 `SMS_COUNTRY`。实际成交价、国家和价格上限会写入本地运行日志与取消队列，便于复盘。
 - sub2api、CPA 和短信平台是第三方控制面请求，默认直连；它们的鉴权字段必须放在 `.env`，不得写入源码、README、日志或数据库导出。
 
 #### WebUI 与配置变更
@@ -752,7 +758,9 @@ PROXY_1024_SESSION_MINUTES=30
 PROXY_1024_ROTATE_SESSION_TIME=True
 PROXY_1024_API_TIMEOUT=12
 PROXY_1024_MAX_ATTEMPTS=5
+PROXY_1024_ACQUIRE_TIMEOUT=60
 PROXY_1024_VALIDATE=True
+PROXY_1024_VALIDATE_ATTEMPTS=2
 PROXY_1024_RECENT_TTL=1800
 PROXY_1024_ACQUIRE_INTERVAL=0.6
 ACCOUNT_ACTION_PROXY_MODE=registration
@@ -955,7 +963,7 @@ python tools/test_codex_oauth.py --email <已注册邮箱> --verbose
 
 ## 注册密码说明
 
-Roxy 注册如果遇到新版流程：
+OpenAI 新版注册通常先展示邮箱验证码页；新账号页面同时提供：
 
 ```text
 /create-account/password
@@ -963,10 +971,12 @@ Roxy 注册如果遇到新版流程：
 
 是否设置密码由「配置 → 注册方式 → 账号认证模式」决定：
 
-- `otp`：优先点击一次性验证码入口（默认）。
-- `password`：遇到注册密码页时设置密码，不主动切换到 passwordless 流程。
+- `otp`：直接使用邮箱一次性验证码完成无密码注册（默认）。
+- `password`：在验证码页主动进入 `/create-account/password`，设置随机密码后再完成邮箱验证。
 
-邮箱验证码是 OpenAI 的邮箱所有权验证步骤；即使选择 `password`，设置密码后仍可能需要邮箱 OTP。若 OpenAI 本次没有展示注册密码页，程序不会伪造或强行设置密码。
+邮箱验证码是 OpenAI 的邮箱所有权验证步骤；即使选择 `password`，设置密码后仍然需要邮箱 OTP。若 password 模式下页面没有提供创建密码入口，任务会明确失败，避免把无密码账号误报为密码注册成功。
+
+密码设置成功后，OpenAI 登录页仍可能默认先展示邮箱验证码；此时可通过 `/log-in/password` 的“使用密码继续”入口改用密码登录。
 
 密码始终按账号独立随机生成：14 位，包含大写、小写、数字和符号。配置页不提供固定密码输入，避免一批账号共用同一个密码。
 

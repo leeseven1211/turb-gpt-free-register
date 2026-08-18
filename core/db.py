@@ -60,6 +60,7 @@ JOB_PROGRESS_STAGES = (
     ("profile", "填写资料"),
     ("token", "获取 Token"),
     ("codex", "Codex 授权"),
+    ("twofa", "设置 2FA"),
     ("plan_check", "查套餐"),
     ("complete", "完成"),
 )
@@ -862,6 +863,52 @@ def update_account_codex_status(email: str, codex_status: str, codex_error: str 
         "codex_error": codex_error,
         "updated_at": _now(),
     })
+
+
+def update_account_totp_secret(
+    email: str,
+    totp_secret: str,
+    *,
+    setup_pending: bool | None = None,
+) -> bool:
+    """只更新账号的 TOTP secret/设置检查点，并同步关联邮箱素材。"""
+    secret = str(totp_secret or "").strip()
+    if not secret:
+        return False
+    with _LOCK:
+        row = record_store.get_row_by(record_store.ACCOUNTS, "email", email, lower=True)
+        if row is None:
+            return False
+
+        changes: dict = {"totp_secret": secret, "updated_at": _now()}
+        if setup_pending is not None:
+            raw_extra = row.get("extra_json") or {}
+            if isinstance(raw_extra, str):
+                try:
+                    raw_extra = json.loads(raw_extra)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    raw_extra = {}
+            extra = dict(raw_extra) if isinstance(raw_extra, dict) else {}
+            if setup_pending:
+                extra["totp_setup_pending"] = True
+            else:
+                extra.pop("totp_setup_pending", None)
+            changes["extra_json"] = json.dumps(extra, ensure_ascii=False) if extra else None
+
+        pool_row = record_store.get_row_by(record_store.OUTLOOK_POOL, "email", email, lower=True)
+        # 账号和邮箱素材必须一起提交：TOTP secret 只写进一边的话，人工用邮箱
+        # 素材登录时会因为缺 2FA 密钥而进不去。
+        with record_store.transaction() as conn:
+            record_store.patch_row(record_store.ACCOUNTS, int(row["id"]), changes, conn=conn)
+            if pool_row is not None:
+                record_store.patch_row(
+                    record_store.OUTLOOK_POOL, int(pool_row["id"]),
+                    {"totp_secret": secret}, conn=conn,
+                )
+        compat_export.schedule("accounts")
+        if pool_row is not None:
+            compat_export.schedule("outlook")
+        return True
 
 
 def update_account_token_metadata(acc_id: int, access_token: str) -> bool:
@@ -2453,7 +2500,7 @@ def create_retry_job(
         source = next((r for r in rows if int(r.get("id") or 0) == int(source_job_id)), None)
         if source is None:
             raise LookupError("任务不存在")
-        if source.get("status") not in ("failed", "stopped", "cancelled"):
+        if source.get("status") not in ("failed", "partial_success", "stopped", "cancelled"):
             raise ValueError(f"当前状态不支持重试：{source.get('status')}")
 
         root_id = int(source.get("root_job_id") or source.get("id"))

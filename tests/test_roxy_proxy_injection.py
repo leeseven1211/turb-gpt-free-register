@@ -237,6 +237,8 @@ class RoxyProxyInjectionTests(unittest.TestCase):
             with patch.object(
                 roxybrowser_client, "_PROFILE_REGISTRY_PATH", registry
             ), patch.object(
+                roxybrowser_client._cfg, "ROXY_KEEP_BROWSER_OPEN", False
+            ), patch.object(
                 roxybrowser_client.RoxyBrowserClient, "close_profile", return_value=True
             ) as close_profile, patch.object(
                 roxybrowser_client.RoxyBrowserClient, "delete_profile", return_value=True
@@ -248,6 +250,27 @@ class RoxyProxyInjectionTests(unittest.TestCase):
             delete_profile.assert_called_once_with("orphan-1")
             payload = json.loads(registry.read_text(encoding="utf-8"))
             self.assertEqual(payload["items"], [])
+
+    def test_startup_preserves_registered_profiles_when_keep_open(self):
+        with tempfile.TemporaryDirectory() as td:
+            registry = Path(td) / "profiles.json"
+            registry.write_text(json.dumps({"items": [{"profile_id": "debug-1"}]}), encoding="utf-8")
+            with patch.object(
+                roxybrowser_client, "_PROFILE_REGISTRY_PATH", registry
+            ), patch.object(
+                roxybrowser_client._cfg, "ROXY_KEEP_BROWSER_OPEN", True
+            ), patch.object(
+                roxybrowser_client.RoxyBrowserClient, "close_profile", return_value=True
+            ) as close_profile, patch.object(
+                roxybrowser_client.RoxyBrowserClient, "delete_profile", return_value=True
+            ) as delete_profile:
+                result = roxybrowser_client.cleanup_orphaned_profiles()
+
+            self.assertEqual(result, {"found": 1, "cleaned": 0, "failed": 0, "kept": 1})
+            close_profile.assert_not_called()
+            delete_profile.assert_not_called()
+            payload = json.loads(registry.read_text(encoding="utf-8"))
+            self.assertEqual(payload["items"], [{"profile_id": "debug-1"}])
 
     def test_explicit_task_proxy_rejects_fixed_profile(self):
         client = roxybrowser_client.RoxyBrowserClient()

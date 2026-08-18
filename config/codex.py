@@ -133,12 +133,21 @@ SMS_COUNTRY: str = "10"
 # 单个号愿意支付的最高价格（留空=不限）。透传给 getNumber 的 maxPrice。
 SMS_MAX_PRICE: str = ""
 
+# GrizzlySMS 每个注册批次第一次接码前，按价格页的短信成功率自动选择国家；
+# 同一批次后续任务优先沿用该国家。统计/价格接口不可用时回退 SMS_COUNTRY。
+SMS_AUTO_SELECT_COUNTRY: bool = True
+
+# GrizzlySMS 价格页统计量的最低门槛。用于排除“成功率 100% 但样本极少”的国家。
+SMS_AUTO_COUNTRY_MIN_RATIO: int = 25
+
 # 一个号收不到短信/被拒时，换号重试的最大次数
 SMS_MAX_RETRIES: int = 10
 
-# 单个号常规等待短信秒数。Grizzly 会继续守候迟到验证码到约 5 分钟取消窗口，
-# 确认旧订单终止后才换下一个号码；其它平台仍以此值为最长等待时间。
+# 单个号等待短信的硬上限。超时后取消任务交给后台队列，不阻塞注册线程。
 SMS_CODE_WAIT: int = 120
+
+# Codex 手机验证整段硬预算（含取号、页面操作、等短信和换号），避免多次换号无限拉长。
+CODEX_PHONE_TOTAL_TIMEOUT: int = 300
 
 # 轮询接码平台查短信的间隔（秒）
 SMS_POLL_INTERVAL: int = 5
@@ -181,4 +190,4 @@ L_ADMIN_AUTH_CODE: str = env_str("L_ADMIN_AUTH_CODE", "")
 L_PHONE_PREFIX: str = ""
 
 # ---- .env overrides for WebUI editable fields ----
-apply_env_overrides(globals(), {'ENABLE_CODEX_AUTO': 'bool', 'ACCOUNT_BATCH_WORKERS': 'int', 'CODEX_TOKEN_AUTO_REFRESH_ENABLED': 'bool', 'CODEX_TOKEN_REFRESH_BEFORE_HOURS': 'int', 'CODEX_TOKEN_REFRESH_SCAN_INTERVAL_SECONDS': 'int', 'CODEX_TOKEN_REFRESH_INITIAL_DELAY_SECONDS': 'int', 'CODEX_TOKEN_REFRESH_MAX_PER_CYCLE': 'int', 'CODEX_TOKEN_AUTO_SYNC_SUB2API': 'bool', 'CODEX_OAUTH_DRIVER': 'str', 'CODEX_AUTH_URL_SOURCE': 'str', 'CPA_MANAGEMENT_URL': 'str', 'CPA_MANAGEMENT_KEY': 'str', 'CPA_REQUEST_TIMEOUT': 'int', 'CPA_CALLBACK_SUBMIT_RETRIES': 'int', 'CPA_CALLBACK_SUBMIT_RETRY_DELAY': 'int', 'CPA_SAVE_CALLBACK_RECEIPT': 'bool', 'SMS_PROVIDER': 'str', 'SMS_COUNTRY': 'str', 'SMS_SERVICE': 'str', 'SMS_MAX_PRICE': 'str', 'SMS_MAX_RETRIES': 'int', 'SMS_CODE_WAIT': 'int', 'SMS_API_KEY': 'str', 'H_API_BASE': 'str', 'H_ADMIN_AUTH_CODE': 'str', 'H_PHONE_PREFIX': 'str', 'H_PHONE_ACQUIRE_MODE': 'str', 'L_API_BASE': 'str', 'L_ADMIN_AUTH_CODE': 'str', 'L_PHONE_PREFIX': 'str'})
+apply_env_overrides(globals(), {'ENABLE_CODEX_AUTO': 'bool', 'ACCOUNT_BATCH_WORKERS': 'int', 'CODEX_TOKEN_AUTO_REFRESH_ENABLED': 'bool', 'CODEX_TOKEN_REFRESH_BEFORE_HOURS': 'int', 'CODEX_TOKEN_REFRESH_SCAN_INTERVAL_SECONDS': 'int', 'CODEX_TOKEN_REFRESH_INITIAL_DELAY_SECONDS': 'int', 'CODEX_TOKEN_REFRESH_MAX_PER_CYCLE': 'int', 'CODEX_TOKEN_AUTO_SYNC_SUB2API': 'bool', 'CODEX_OAUTH_DRIVER': 'str', 'CODEX_AUTH_URL_SOURCE': 'str', 'CPA_MANAGEMENT_URL': 'str', 'CPA_MANAGEMENT_KEY': 'str', 'CPA_REQUEST_TIMEOUT': 'int', 'CPA_CALLBACK_SUBMIT_RETRIES': 'int', 'CPA_CALLBACK_SUBMIT_RETRY_DELAY': 'int', 'CPA_SAVE_CALLBACK_RECEIPT': 'bool', 'SMS_PROVIDER': 'str', 'SMS_COUNTRY': 'str', 'SMS_SERVICE': 'str', 'SMS_MAX_PRICE': 'str', 'SMS_AUTO_SELECT_COUNTRY': 'bool', 'SMS_AUTO_COUNTRY_MIN_RATIO': 'int', 'SMS_MAX_RETRIES': 'int', 'SMS_CODE_WAIT': 'int', 'CODEX_PHONE_TOTAL_TIMEOUT': 'int', 'SMS_API_KEY': 'str', 'H_API_BASE': 'str', 'H_ADMIN_AUTH_CODE': 'str', 'H_PHONE_PREFIX': 'str', 'H_PHONE_ACQUIRE_MODE': 'str', 'L_API_BASE': 'str', 'L_ADMIN_AUTH_CODE': 'str', 'L_PHONE_PREFIX': 'str'})

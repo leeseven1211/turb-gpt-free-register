@@ -18,6 +18,30 @@ class _FakeDriver:
 
 
 class RoxyEmailRecoveryTests(unittest.TestCase):
+    def test_type_otp_waits_for_delayed_input(self):
+        field = Mock()
+        field.is_displayed.return_value = True
+        field.is_enabled.return_value = True
+
+        class DelayedOtpDriver(_FakeDriver):
+            def __init__(self):
+                super().__init__()
+                self.calls = 0
+
+            def find_elements(self, *_args):
+                self.calls += 1
+                return [field] if self.calls == 6 else []
+
+        driver = DelayedOtpDriver()
+        with patch.object(
+            roxy_registration.time, "monotonic", side_effect=[100.0, 100.0, 101.0]
+        ), patch.object(roxy_registration.time, "sleep"), patch.object(
+            roxy_registration, "_human_type_text"
+        ) as type_text:
+            roxy_registration._type_otp(driver, "123456", timeout=2)
+
+        type_text.assert_called_once_with(driver, field, "123456", clear=True)
+
     def test_blank_auth_shell_uses_logged_dom_state_as_fallback(self):
         driver = _FakeDriver()
         state = {

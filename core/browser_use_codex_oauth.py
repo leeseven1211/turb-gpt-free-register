@@ -1188,8 +1188,13 @@ def _do_phone_verification_if_present(page) -> None:
 
     http = sms_provider._http()
     max_retries = int(getattr(sms_provider._cfg, "SMS_MAX_RETRIES", 10) or 10) if hasattr(sms_provider, "_cfg") else 10
+    total_budget = max(30, int(getattr(sms_provider._cfg, "CODEX_PHONE_TOTAL_TIMEOUT", 300) or 300))
+    deadline = time.monotonic() + total_budget
     last_error = ""
     for attempt in range(1, max_retries + 1):
+        remaining = max(0, int(deadline - time.monotonic()))
+        if remaining <= 0:
+            break
         activation_id = None
         try:
             _t_phone_ready = _StepTimer(f"手机页准备 attempt={attempt}")
@@ -1206,12 +1211,23 @@ def _do_phone_verification_if_present(page) -> None:
             _t_phone_send.done(f"state={send_state}")
             logger.info("[Codex][BrowserUse] 手机号提交后状态：%s phone=%s", send_state, phone_e164)
             if send_state == "callback":
+                sms_provider.cancel(activation_id, http, background=True)
                 return
             if send_state != "code_page":
                 raise RuntimeError(f"提交手机号后未确认发送短信/进入验证码页：state={send_state}, page={_current_state_for_log(page)}")
             sms_provider.set_status(activation_id, 1, http=http)
             _t_sms = _StepTimer(f"等待手机短信 attempt={attempt}")
-            sms_code = sms_provider.wait_for_sms_code(activation_id, http)
+            remaining = max(0, int(deadline - time.monotonic()))
+            if remaining <= 0:
+                raise sms_provider.SmsCodeTimeout("手机验证整段预算已耗尽")
+            sms_code = sms_provider.wait_for_sms_code(
+                activation_id,
+                http,
+                max_wait=min(
+                    int(getattr(sms_provider._cfg, "SMS_CODE_WAIT", 120) or 120),
+                    remaining,
+                ),
+            )
             _t_sms.done()
             logger.info("[Codex][BrowserUse] 手机 OTP 收到：%s", sms_code)
             _clear_otp_inputs(page)
@@ -1233,10 +1249,11 @@ def _do_phone_verification_if_present(page) -> None:
             logger.warning("[Codex][BrowserUse] 手机验证失败（%s/%s）：%s", attempt, max_retries, last_error)
             if activation_id:
                 try:
+                    sms_provider.report_activation_failure(activation_id, last_error)
                     sms_provider.cancel(
                         activation_id,
                         http,
-                        background=not isinstance(exc, sms_provider.SmsCodeTimeout),
+                        background=True,
                     )
                 except Exception:
                     pass
@@ -1248,7 +1265,11 @@ def _do_phone_verification_if_present(page) -> None:
                 _ensure_add_phone_form(page, reason=f"after-fail-{attempt}")
             except Exception:
                 pass
-            time.sleep(min(1 + attempt, 4))
+            time.sleep(min(1 + attempt, 4, max(0, deadline - time.monotonic())))
+    if time.monotonic() >= deadline:
+        raise RuntimeError(
+            f"手机验证超过整段预算 {total_budget} 秒，已停止继续买号：{last_error}"
+        )
     raise RuntimeError(f"手机验证失败，已重试 {max_retries} 次：{last_error}")
 
 

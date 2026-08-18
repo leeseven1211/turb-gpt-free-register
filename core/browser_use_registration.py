@@ -138,6 +138,15 @@ def _registration_password() -> str:
     return _generate_password()
 
 
+def _registration_auth_mode() -> str:
+    try:
+        from config import register as _register_cfg
+        mode = str(getattr(_register_cfg, "REGISTRATION_AUTH_MODE", "otp") or "otp").strip().lower()
+    except Exception:
+        mode = "otp"
+    return mode if mode in {"otp", "password"} else "otp"
+
+
 def _timeout_ms(seconds: int | None = None) -> int:
     value = int(seconds or getattr(_cfg, "BROWSER_USE_TIMEOUT", 90) or 90)
     return max(5, value) * 1000
@@ -587,11 +596,46 @@ def _click_passwordless_signup_if_present(page) -> bool:
         return False
 
 
+def _click_signup_password_from_otp_if_present(page, timeout: int = 15) -> bool:
+    """从新账号邮箱 OTP 页切换到 create-account/password。"""
+    clicked = _click_first(
+        page,
+        [
+            "a[href='/create-account/password']",
+            "a[href^='/create-account/password?']",
+            "a[href*='/create-account/password']",
+            "button[name='intent'][value='passwordless_signup_use_password']",
+            "input[type='submit'][name='intent'][value='passwordless_signup_use_password']",
+            "a:has-text('Continue with password')",
+            "button:has-text('Continue with password')",
+            "a:has-text('パスワードで続行')",
+            "button:has-text('パスワードで続行')",
+            "a:has-text('使用密码继续')",
+            "button:has-text('使用密码继续')",
+            "a:has-text('继续使用密码')",
+            "button:has-text('继续使用密码')",
+            "a:has-text('使用密碼繼續')",
+            "button:has-text('使用密碼繼續')",
+        ],
+        timeout_ms=max(1000, int(timeout * 1000)),
+    )
+    if not clicked:
+        return False
+    wait_end = time.time() + max(1, timeout)
+    while time.time() < wait_end:
+        if _quick_auth_state(page).get("state") == "password":
+            return True
+        time.sleep(0.15 if _fast_mode() else 0.4)
+    return False
+
+
 def _fill_password_if_present(page, email: str, timeout: int = 25, context=None) -> str | None:
     started = time.time()
     end = time.time() + timeout
     last_heartbeat = 0.0
     last_log = 0.0
+    auth_mode = _registration_auth_mode()
+    switched_from_otp = False
     while time.time() < end:
         if time.time() - last_heartbeat > 3:
             try:
@@ -611,7 +655,20 @@ def _fill_password_if_present(page, email: str, timeout: int = 25, context=None)
             logger.info("[BrowserUse] 检测密码/验证码页：state=%s url=%s", state, state_info.get("url") or "-")
             last_log = time.time()
         if state == "email_verification":
-            return None
+            if auth_mode != "password":
+                return None
+            if switched_from_otp:
+                time.sleep(0.15 if _fast_mode() else 0.4)
+                continue
+            switched_from_otp = True
+            if not _click_signup_password_from_otp_if_present(page, timeout=min(15, timeout)):
+                raise RuntimeError(
+                    "密码注册模式下已进入验证码页，但无法切换到创建密码页："
+                    f"url={state_info.get('url') or _page_url(page) or '-'}"
+                )
+            logger.info("[BrowserUse] 已从邮箱验证码页切换到创建密码页：%s", email)
+            end = max(end, time.time() + min(10, max(3, timeout)))
+            continue
         if state not in ("password", "login_password"):
             # 提交邮箱后如果仍显示 /auth/login 但页面其实已经渲染验证码输入框，
             # 某些 Browser Use target 上 DOM 状态会短暂滞后。不要在“密码页检测”里长等，
@@ -623,11 +680,6 @@ def _fill_password_if_present(page, email: str, timeout: int = 25, context=None)
                 return None
             time.sleep(0.15 if _fast_mode() else 0.4)
             continue
-        try:
-            from config import register as _register_cfg
-            auth_mode = str(getattr(_register_cfg, "REGISTRATION_AUTH_MODE", "otp") or "otp").strip().lower()
-        except Exception:
-            auth_mode = "otp"
         if auth_mode != "password" and _click_passwordless_signup_if_present(page):
             logger.info("[BrowserUse] 检测到密码页，已点击一次性验证码入口：state=%s email=%s", state, email)
             wait_end = time.time() + 20
@@ -1897,6 +1949,9 @@ def run_browser_use_registration(
 
             if _twofa_cfg.ENABLE_2FA:
                 logger.warning("[BrowserUse] 当前路径暂不自动设置 2FA，已跳过")
+                report_job_progress("twofa", "skipped", "当前浏览器路径暂不支持自动设置 2FA")
+            else:
+                report_job_progress("twofa", "skipped", "未启用 Authenticator 2FA")
             totp_secret = None
 
             codex_result = {

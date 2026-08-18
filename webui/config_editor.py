@@ -596,11 +596,19 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "PROXY_1024_MAX_ATTEMPTS", "file": "proxy.py", "type": "int", "group": "代理平台",
-        "label": "最大提取次数", "help": "遇到空响应、不可用代理或重复 IP 时重新提取；建议 3 次",
+        "label": "最大有效失败次数", "help": "空响应、不可用代理或地区不符的最大次数；重复粘性 IP 另有快速重取额度，不消耗该次数",
+    },
+    {
+        "key": "PROXY_1024_ACQUIRE_TIMEOUT", "file": "proxy.py", "type": "float", "group": "代理平台",
+        "label": "代理获取总预算(秒)", "help": "包含重复 IP 重取和出口检测的整段硬上限；建议 60 秒",
     },
     {
         "key": "PROXY_1024_VALIDATE", "file": "proxy.py", "type": "bool", "group": "代理平台",
         "label": "使用前检测出口", "help": "领取邮箱前先通过该代理访问 IPInfo，确认代理可用并记录出口地区",
+    },
+    {
+        "key": "PROXY_1024_VALIDATE_ATTEMPTS", "file": "proxy.py", "type": "int", "group": "代理平台",
+        "label": "同端点检测次数", "help": "出口检测遇到超时、连接或 SSL 瞬时错误时，先重试同一代理；建议 2",
     },
     {
         "key": "PROXY_1024_RECENT_TTL", "file": "proxy.py", "type": "int", "group": "代理平台",
@@ -733,7 +741,15 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "SMS_MAX_PRICE", "file": "codex.py", "type": "str", "group": "接码平台",
-        "label": "最高价格", "help": "单个接码号码愿意支付的最高价格；留空表示不限制，GrizzlySMS/L 会作为 maxPrice 传给取号接口",
+        "label": "最高价格上限", "help": "这是允许购买的单号价格上限，不是固定成交价；留空表示不限，实际价格以平台返回为准",
+    },
+    {
+        "key": "SMS_AUTO_SELECT_COUNTRY", "file": "codex.py", "type": "bool", "group": "接码平台",
+        "label": "按成功率选国家", "help": "GrizzlySMS 每批次首次接码前，在价格上限内按短信成功率自动选国；同批次后续任务优先沿用",
+    },
+    {
+        "key": "SMS_AUTO_COUNTRY_MIN_RATIO", "file": "codex.py", "type": "int", "group": "接码平台",
+        "label": "成功率最低统计量", "help": "过滤成功率看似很高但统计量太少的国家；建议保持 25 或更高",
     },
     {
         "key": "SMS_MAX_RETRIES", "file": "codex.py", "type": "int", "group": "接码平台",
@@ -741,7 +757,11 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "SMS_CODE_WAIT", "file": "codex.py", "type": "int", "group": "接码平台",
-        "label": "常规等短信(秒)", "help": "常规等待时长；Grizzly 超过此值后仍会守候迟到验证码到约5分钟，并确认旧订单终止后才换号",
+        "label": "单号等短信上限(秒)", "help": "单个号码等待短信的硬上限；超时后后台取消，不再阻塞注册线程",
+    },
+    {
+        "key": "CODEX_PHONE_TOTAL_TIMEOUT", "file": "codex.py", "type": "int", "group": "接码平台",
+        "label": "手机验证总预算(秒)", "help": "整段手机验证的硬上限，包含取号、页面操作、等待短信和换号；建议 300",
     },
     {
         "key": "SMS_API_KEY", "file": "codex.py", "type": "str", "group": "接码平台",

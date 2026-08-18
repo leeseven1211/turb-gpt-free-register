@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import inspect
+import json
 import random
 import time
 from contextvars import ContextVar
@@ -31,6 +33,8 @@ from core.roxy_registration import (
     _is_email_verification_page,
     _is_login_password_page,
     _click_passwordless_signup_if_present,
+    _human_click,
+    _human_type_text,
 )
 
 _base_logger = logging.getLogger(__name__)
@@ -135,6 +139,11 @@ def _extract_callback_url_from_any_window(driver) -> str:
     found = _extract_callback_url_from_page(driver)
     if found:
         return found
+    original_handle = None
+    try:
+        original_handle = driver.current_window_handle
+    except Exception:
+        pass
     try:
         for handle in list(getattr(driver, "window_handles", []) or []):
             try:
@@ -146,6 +155,11 @@ def _extract_callback_url_from_any_window(driver) -> str:
                 continue
     except Exception:
         pass
+    if original_handle is not None:
+        try:
+            driver.switch_to.window(original_handle)
+        except Exception:
+            pass
     return ""
 
 
@@ -173,6 +187,277 @@ def _click_if_present(driver, selectors: list[str], timeout: int = 3) -> bool:
         return True
     except Exception:
         return False
+
+
+def _account_login_credentials(email: str) -> tuple[str, str]:
+    """Return the saved OpenAI password and TOTP secret without logging either value."""
+    try:
+        from core import db
+
+        account = db.get_account_by_email(email) or {}
+    except Exception:
+        logger.debug("[Codex][Browser] 读取账号登录凭据失败", exc_info=True)
+        return "", ""
+
+    raw_extra = account.get("extra_json") or {}
+    if isinstance(raw_extra, str):
+        try:
+            raw_extra = json.loads(raw_extra)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw_extra = {}
+    password = str(raw_extra.get("registration_password") or "").strip() if isinstance(raw_extra, dict) else ""
+    totp_secret = str(account.get("totp_secret") or "").strip()
+    return password, totp_secret
+
+
+def _login_challenge_state(driver) -> dict:
+    try:
+        return driver.execute_script(r"""
+        const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+          && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+        const inputs = [...document.querySelectorAll('input')].filter(visible).map(el => ({
+          type: el.getAttribute('type') || '', name: el.getAttribute('name') || '', id: el.id || '',
+          autocomplete: el.getAttribute('autocomplete') || '', inputmode: el.getAttribute('inputmode') || '',
+          ariaInvalid: el.getAttribute('aria-invalid') || ''
+        }));
+        const buttons = [...document.querySelectorAll('button,input[type="submit"]')].filter(visible).map(el => {
+          const r = el.getBoundingClientRect();
+          return {
+            tag: el.tagName, type: el.getAttribute('type') || '', name: el.getAttribute('name') || '',
+            value: el.getAttribute('value') || '', aria: el.getAttribute('aria-label') || '',
+            testid: el.getAttribute('data-testid') || '', action: el.getAttribute('data-dd-action-name') || '',
+            text: (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 100),
+            top: Math.round(r.top), bottom: Math.round(r.bottom), left: Math.round(r.left), right: Math.round(r.right)
+          };
+        });
+        const errors = [...document.querySelectorAll('.react-aria-FieldError,[slot="errorMessage"],[role="alert"],[aria-invalid="true"] + *,[class*="error"]')]
+          .filter(visible).map(el => (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+        return {
+          url: location.href,
+          inputs,
+          buttons,
+          errors,
+          text: (document.body?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 1200)
+        };
+        """) or {}
+    except Exception as exc:
+        return {"url": getattr(driver, "current_url", ""), "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _is_totp_login_page(driver, state: dict | None = None) -> bool:
+    state = state or _login_challenge_state(driver)
+    url = str(state.get("url") or "").lower()
+    if "email-verification" in url:
+        return False
+    inputs = state.get("inputs") or []
+    attrs = " ".join(
+        " ".join(str(item.get(key) or "") for key in ("type", "name", "id", "autocomplete", "inputmode"))
+        for item in inputs
+    ).lower()
+    has_code_input = any(marker in attrs for marker in ("one-time-code", "otp", "code", "numeric", "tel"))
+    has_password_input = any(
+        str(item.get("type") or "").lower() == "password"
+        or str(item.get("autocomplete") or "").lower() == "current-password"
+        or "password" in str(item.get("name") or "").lower()
+        for item in inputs
+    )
+    if has_password_input:
+        return False
+    if "totp" in attrs or any(marker in url for marker in ("/mfa", "/totp", "/authenticator")):
+        return has_code_input
+    text = str(state.get("text") or "").lower()
+    authenticator_markers = (
+        "authenticator app", "authentication app", "two-factor authentication",
+        "身份验证器", "身份驗證器", "验证器应用", "驗證器應用",
+        "認証アプリ", "認証システム", "인증 앱",
+    )
+    if has_code_input and any(marker in text for marker in authenticator_markers):
+        return True
+    # OpenAI occasionally swaps the password form for the Authenticator challenge
+    # without changing /log-in/password. A code input with no password input on that
+    # stale URL is the post-password TOTP step, not an email OTP request.
+    return has_code_input and "/log-in/password" in url
+
+
+def _login_password_targets(driver) -> dict:
+    try:
+        return driver.execute_script(r"""
+        const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+          && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none'
+          && !el.disabled && !el.readOnly;
+        const input = [...document.querySelectorAll('input[type="password"],input[autocomplete="current-password"],input[name*="password" i]')]
+          .find(visible);
+        if (!input) return {ok:false, reason:'missing_password_input'};
+        const form = input.closest('form');
+        const buttons = [...(form || document).querySelectorAll('button,input[type="submit"]')]
+          .filter(el => visible(el) && !el.disabled && String(el.getAttribute('aria-disabled') || '').toLowerCase() !== 'true');
+        const submitter = buttons.find(el =>
+          String(el.getAttribute('name') || '').toLowerCase() === 'intent'
+          && String(el.getAttribute('value') || '').toLowerCase() === 'validate')
+          || buttons.find(el => String(el.getAttribute('data-dd-action-name') || '').toLowerCase() === 'continue')
+          || buttons.find(el => String(el.getAttribute('type') || '').toLowerCase() === 'submit');
+        if (!form || !submitter) return {ok:false, reason:'missing_password_form_submitter'};
+        return {ok:true, input, submitter};
+        """) or {}
+    except Exception as exc:
+        return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
+
+
+def _submit_saved_login_password(driver, email: str, password: str) -> None:
+    if not password:
+        raise RuntimeError("账号已进入登录密码页，但本地没有保存注册密码，已在手机号验证前停止")
+    targets = _login_password_targets(driver)
+    password_input = targets.pop("input", None)
+    submitter = targets.pop("submitter", None)
+    if not targets.get("ok") or password_input is None or submitter is None:
+        raise RuntimeError(f"登录密码页控件识别失败：{targets}")
+    _human_type_text(driver, password_input, password, clear=True)
+    human_delay("form", minimum=0.4, maximum=1.2)
+    submitted = bool(driver.execute_script(r"""
+    const input = arguments[0], submitter = arguments[1];
+    const form = input?.closest('form');
+    if (!form || !submitter) return false;
+    if (typeof form.requestSubmit === 'function') form.requestSubmit(submitter);
+    else form.dispatchEvent(new Event('submit', {bubbles:true, cancelable:true}));
+    return true;
+    """, password_input, submitter))
+    if not submitted:
+        password_input.send_keys("\ue007")
+    logger.info(
+        "[Codex][Browser] 已使用本地保存的注册密码提交登录：email=%s method=%s",
+        email,
+        "form_request_submit" if submitted else "password_enter",
+    )
+
+
+def _submit_saved_login_totp(driver, email: str, totp_secret: str) -> None:
+    if not totp_secret:
+        raise RuntimeError("登录要求 Authenticator 验证，但本地没有 TOTP 密钥，已在手机号验证前停止")
+    import pyotp
+
+    remaining = 30 - (int(time.time()) % 30)
+    if remaining < 6:
+        time.sleep(remaining + 1)
+    _type_otp(driver, pyotp.TOTP(totp_secret).now(), timeout=15)
+    if not _click_if_present(driver, [
+        "button[type='submit']",
+        "input[type='submit']",
+        "//button[contains(., 'Continue')]",
+        "//button[contains(., '继续')]",
+        "//button[contains(., 'Verify')]",
+        "//button[contains(., '验证')]",
+        "//button[contains(., '確認')]",
+    ], timeout=8):
+        raise RuntimeError("Authenticator 验证页缺少提交按钮")
+    logger.info("[Codex][Browser] 已使用本地 TOTP 提交 Authenticator 登录：email=%s", email)
+
+
+def _is_login_advanced(driver, state: dict | None = None) -> bool:
+    state = state or _login_challenge_state(driver)
+    url = str(state.get("url") or "").lower()
+    if _is_callback_url(url):
+        return True
+    if any(marker in url for marker in ("/add-phone", "/workspace", "/consent")):
+        return True
+    if url.startswith("https://chatgpt.com/") and "/auth/login" not in url:
+        return True
+    if "/oauth/authorize" in url and not state.get("inputs"):
+        return True
+    return False
+
+
+def _complete_login_challenge_after_email(
+    driver,
+    email: str,
+    password: str,
+    totp_secret: str,
+    *,
+    timeout: int = 45,
+) -> str:
+    """Resolve password/TOTP challenges and return ``email_otp`` or ``advanced``."""
+    end = time.time() + max(5, int(timeout))
+    password_submitted_at = 0.0
+    totp_submitted_at = 0.0
+    passwordless_clicked = False
+    last_state: dict = {}
+    last_url = ""
+    while time.time() < end:
+        state = _login_challenge_state(driver)
+        last_state = state
+        url = str(state.get("url") or "")
+        if url != last_url:
+            logger.info("[Codex][Browser] 邮箱提交后登录分支：url=%s", url or "-")
+            last_url = url
+
+        # TOTP may be rendered in-place while the stale URL still ends in
+        # /log-in/password, so inspect the live controls before trusting the URL.
+        if _is_totp_login_page(driver, state):
+            if totp_submitted_at:
+                if state.get("errors") or any(
+                    str(item.get("ariaInvalid") or "").lower() == "true" for item in (state.get("inputs") or [])
+                ):
+                    raise RuntimeError(f"本地 TOTP 未通过页面校验：errors={(state.get('errors') or [])[:3]}")
+                if time.time() - totp_submitted_at > 20:
+                    raise RuntimeError("提交本地 TOTP 后页面 20 秒未继续，已在手机号验证前停止")
+                time.sleep(0.5)
+                continue
+            _submit_saved_login_totp(driver, email, totp_secret)
+            totp_submitted_at = time.time()
+            end = max(end, totp_submitted_at + 25)
+            human_delay("form")
+            continue
+
+        if _is_login_password_page(driver):
+            if password_submitted_at:
+                if state.get("errors") or any(
+                    str(item.get("ariaInvalid") or "").lower() == "true" for item in (state.get("inputs") or [])
+                ):
+                    raise RuntimeError(f"本地保存的注册密码未通过页面校验：errors={(state.get('errors') or [])[:3]}")
+                if time.time() - password_submitted_at > 20:
+                    safe_state = {
+                        "url": state.get("url"),
+                        "inputs": state.get("inputs"),
+                        "buttons": state.get("buttons"),
+                        "errors": (state.get("errors") or [])[:3],
+                        "text": str(state.get("text") or "")[:400],
+                    }
+                    logger.warning("[Codex][Browser] 密码提交未推进页面诊断（不含输入值）：%s", safe_state)
+                    raise RuntimeError(
+                        f"提交本地注册密码后页面 20 秒未继续，已在手机号验证前停止：state={safe_state}"
+                    )
+                time.sleep(0.5)
+                continue
+            if password:
+                _submit_saved_login_password(driver, email, password)
+                password_submitted_at = time.time()
+                # Slow OpenAI edges can consume nearly the entire outer budget
+                # before the password page appears. Give this submitted step its
+                # own bounded settle window.
+                end = max(end, password_submitted_at + 25)
+                human_delay("form")
+                continue
+            if not passwordless_clicked:
+                result = _click_passwordless_signup_if_present(driver)
+                if result.get("ok"):
+                    passwordless_clicked = True
+                    logger.info("[Codex][Browser] 本地无注册密码，已切换到邮箱一次性验证码：email=%s", email)
+                    human_delay("form")
+                    continue
+            raise RuntimeError("账号进入登录密码页，本地无注册密码且页面无邮箱验证码入口，已在手机号验证前停止")
+
+        if _is_email_verification_page(driver):
+            logger.info("[Codex][Browser] 页面明确进入邮箱验证码分支：email=%s", email)
+            return "email_otp"
+        if _is_login_advanced(driver, state):
+            return "advanced"
+        time.sleep(0.5)
+
+    safe_state = {
+        "url": last_state.get("url"),
+        "inputs": last_state.get("inputs"),
+        "errors": (last_state.get("errors") or [])[:3],
+    }
+    raise RuntimeError(f"邮箱提交后未识别到密码、TOTP 或邮箱验证码分支：state={safe_state}")
 
 
 def _maybe_click_passwordless_after_email(driver, email: str, timeout: int = 18) -> None:
@@ -272,6 +557,7 @@ def _select_existing_account_if_present(driver, email: str) -> bool:
 
 def _fill_email_and_otp(driver, email: str, otp_provider, auth_url: str) -> None:
     otp_after_ts = time.time()
+    password, totp_secret = _account_login_credentials(email)
     logger.info("[Codex][Browser] 打开授权地址")
     logger.info("[Codex][Browser] 完整授权地址: %s", auth_url)
     driver.get(auth_url)
@@ -288,10 +574,27 @@ def _fill_email_and_otp(driver, email: str, otp_provider, auth_url: str) -> None
         logger.info("[Codex][Browser] 已填写邮箱：%s", email)
         human_delay("form")
         _submit_email_step(driver)
-        logger.info("[Codex][Browser] 已提交邮箱，等待邮箱 OTP 页面")
-        _maybe_click_passwordless_after_email(driver, email, timeout=18)
+        logger.info("[Codex][Browser] 已提交邮箱，识别密码、TOTP 或邮箱 OTP 分支")
     except Exception as exc:
-        logger.info("[Codex][Browser] 未检测到邮箱输入框，可能已登录或进入下一步：%s", str(exc)[:120])
+        state = _login_challenge_state(driver)
+        if _is_login_password_page(driver) or _is_totp_login_page(driver, state) or _is_email_verification_page(driver):
+            logger.info("[Codex][Browser] 邮箱输入阶段页面已进入下一登录分支，继续按页面状态处理")
+        elif _is_login_advanced(driver, state):
+            logger.info("[Codex][Browser] 当前会话已越过登录挑战，无需邮箱 OTP")
+            return
+        else:
+            logger.info("[Codex][Browser] 未检测到邮箱输入框，可能已登录或进入下一步：%s", str(exc)[:120])
+            return
+
+    next_state = _complete_login_challenge_after_email(
+        driver,
+        email,
+        password,
+        totp_secret,
+        timeout=45,
+    )
+    if next_state == "advanced":
+        logger.info("[Codex][Browser] 密码/TOTP 登录已完成，无需邮箱 OTP")
         return
 
     # 提交邮箱后不再执行任何全局“继续/授权/分支”兜底点击；后续只等待验证码页。
@@ -300,7 +603,7 @@ def _fill_email_and_otp(driver, email: str, otp_provider, auth_url: str) -> None
     used_codes: set[str] = set()
     max_otp_attempts = 3
 
-    def _restart_email_otp_flow(reason: str) -> None:
+    def _restart_email_otp_flow(reason: str) -> str:
         """Codex Auth 上直接点 resend 可能触发服务端 500；这里改为重新打开授权地址并提交邮箱。"""
         nonlocal otp_after_ts
         logger.info("[Codex][Browser] 重新触发邮箱 OTP：%s", reason)
@@ -312,15 +615,24 @@ def _fill_email_and_otp(driver, email: str, otp_provider, auth_url: str) -> None
             _type_email_address(driver, email, timeout=12)
             human_delay("form")
             _submit_email_step(driver)
-            logger.info("[Codex][Browser] 已重新提交邮箱触发 OTP")
-            _maybe_click_passwordless_after_email(driver, email, timeout=12)
+            logger.info("[Codex][Browser] 已重新提交邮箱，重新识别登录分支")
+            restart_state = _complete_login_challenge_after_email(
+                driver,
+                email,
+                password,
+                totp_secret,
+                timeout=45,
+            )
+            if restart_state == "advanced":
+                return "advanced"
         except Exception as exc:
             # 如果重进授权地址后已经停在验证码/下一步页面，就不要再强行提交。
             if not _is_email_verification_page(driver):
-                logger.warning("[Codex][Browser] 重新提交邮箱失败，继续按当前页面轮询：%s", str(exc)[:180])
+                raise
             else:
                 logger.info("[Codex][Browser] 重开授权后已在邮箱 OTP 页面")
         human_delay("api")
+        return "email_otp"
 
     for otp_attempt in range(1, max_otp_attempts + 1):
         logger.info("[Codex][Browser] 等待邮箱 OTP：%s（第 %s/%s 次）", email, otp_attempt, max_otp_attempts)
@@ -342,7 +654,8 @@ def _fill_email_and_otp(driver, email: str, otp_provider, auth_url: str) -> None
                 type(exc).__name__,
                 str(exc)[:180],
             )
-            _restart_email_otp_flow("等待验证码超时，避免点击 resend 导致 500")
+            if _restart_email_otp_flow("等待验证码超时，避免点击 resend 导致 500") == "advanced":
+                return
             continue
         used_codes.add(str(code))
         logger.info("[Codex][Browser] 邮箱 OTP 收到：%s", code)
@@ -380,7 +693,8 @@ def _fill_email_and_otp(driver, email: str, otp_provider, auth_url: str) -> None
             otp_attempt + 1,
             max_otp_attempts,
         )
-        _restart_email_otp_flow("验证码错误/过期或页面未跳转，避免点击 resend 导致 500")
+        if _restart_email_otp_flow("验证码错误/过期或页面未跳转，避免点击 resend 导致 500") == "advanced":
+            return
 
 
 
@@ -394,7 +708,15 @@ def _wait_for_fresh_email_otp(otp_provider, email: str, after_ts: float, used_co
     end = time.time() + timeout
     last_code = ""
     while True:
-        code = str(otp_provider(email, after_ts=after_ts) or "").strip()
+        remaining = max(1, int(end - time.time()))
+        kwargs = {"after_ts": after_ts}
+        try:
+            params = inspect.signature(otp_provider).parameters.values()
+            if any(p.name == "max_wait" or p.kind == inspect.Parameter.VAR_KEYWORD for p in params):
+                kwargs["max_wait"] = remaining
+        except (TypeError, ValueError):
+            pass
+        code = str(otp_provider(email, **kwargs) or "").strip()
         if code and code not in used_codes:
             return code
         last_code = code or last_code
@@ -555,8 +877,8 @@ def _phone_page_state(driver) -> dict:
     try:
         return driver.execute_script(r"""
         const visible = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
-        const radios = [...document.querySelectorAll('input[type=radio]')].filter(visible).map(el => ({
-          name: el.name || '', value: el.value || '', checked: !!el.checked, id: el.id || ''
+        const radios = [...document.querySelectorAll('input[type=radio]')].map(el => ({
+          name: el.name || '', value: el.value || '', checked: !!el.checked, id: el.id || '', visible: visible(el)
         }));
         const inputs = [...document.querySelectorAll('input,select,textarea')].filter(visible).map(el => ({
           tag: el.tagName, type: el.getAttribute('type') || '', name: el.getAttribute('name') || '',
@@ -568,6 +890,8 @@ def _phone_page_state(driver) -> dict:
             tag: el.tagName, role: el.getAttribute('role') || '',
             text: (el.innerText || el.textContent || el.getAttribute('aria-label') || '').trim().slice(0, 160),
             ariaChecked: el.getAttribute('aria-checked') || '',
+            ariaSelected: el.getAttribute('aria-selected') || '',
+            dataState: el.getAttribute('data-state') || '',
           }));
         const forms = [...document.querySelectorAll('form')].map(f => ({action: f.getAttribute('action') || ''}));
         const bodyText = (document.body?.innerText || '').slice(0, 1200);
@@ -596,12 +920,74 @@ def _body_indicates_whatsapp_only(state: dict) -> bool:
     return not has_sms_radio and not has_sms_control and not _has_sms_word(body)
 
 
+def _phone_channel_selection(state: dict) -> dict:
+    """从 React/native 控件状态判断 SMS/WhatsApp 是否真的被选中。"""
+    radios = state.get('radios') or []
+    controls = state.get('controls') or []
+
+    def radio_kind(item: dict) -> str:
+        value = str(item.get('value') or '').lower().replace(' ', '_').replace('-', '_')
+        if value in ('sms', 'text', 'text_message'):
+            return 'sms'
+        if 'whatsapp' in value:
+            return 'whatsapp'
+        return ''
+
+    def control_kind(item: dict) -> str:
+        text = str(item.get('text') or '')
+        if _has_sms_word(text):
+            return 'sms'
+        if 'whatsapp' in text.lower():
+            return 'whatsapp'
+        return ''
+
+    def control_selected(item: dict) -> bool:
+        values = (
+            item.get('ariaChecked'),
+            item.get('ariaSelected'),
+            item.get('dataState'),
+        )
+        return any(str(value or '').strip().lower() in ('true', 'checked', 'selected', 'on') for value in values)
+
+    radio_rows = [(radio_kind(item), bool(item.get('checked'))) for item in radios]
+    control_rows = [(control_kind(item), control_selected(item)) for item in controls]
+    rows = radio_rows + control_rows
+    return {
+        'has_sms': any(kind == 'sms' for kind, _selected in rows),
+        'has_whatsapp': any(kind == 'whatsapp' for kind, _selected in rows),
+        'selected_sms': any(kind == 'sms' and selected for kind, selected in rows),
+        'selected_whatsapp': any(kind == 'whatsapp' and selected for kind, selected in rows),
+    }
+
+
+def _verify_sms_channel_selected(driver, *, timeout: float = 4.0) -> dict:
+    """提交手机号前确认 React 最终状态确实选择了 SMS。"""
+    end = time.time() + max(0.2, float(timeout or 4.0))
+    last_state = {}
+    last_selection = {}
+    while time.time() < end:
+        last_state = _phone_page_state(driver)
+        last_selection = _phone_channel_selection(last_state)
+        if last_selection.get('selected_sms') and not last_selection.get('selected_whatsapp'):
+            return last_selection
+        if not last_selection.get('has_sms') and not last_selection.get('has_whatsapp'):
+            if _body_indicates_whatsapp_only(last_state):
+                raise RuntimeError(f"whatsapp_channel: 页面仅提供 WhatsApp 通道 state={last_state}")
+            # 没有显式通道控件的旧页面默认就是 SMS。
+            return {**last_selection, 'implicit_sms': True}
+        time.sleep(0.15)
+
+    if last_selection.get('selected_whatsapp'):
+        raise RuntimeError(f"whatsapp_channel: 点击 SMS 后实际仍选中 WhatsApp state={last_state}")
+    raise RuntimeError(f"sms_channel_not_selected: 点击 SMS 后控件未确认选中 state={last_state}")
+
+
 def _select_sms_channel_or_raise(driver) -> None:
     state = _phone_page_state(driver)
-    radios = state.get('radios') or []
     # 如果存在 WhatsApp 且没有 SMS/text 可选，当前接码平台无法读取 WhatsApp，直接换号。
-    has_whatsapp = any('whatsapp' in str(r.get('value','')).lower().replace(' ', '') for r in radios)
-    has_sms = any(str(r.get('value','')).lower() in ('sms', 'text', 'text_message', 'text-message') for r in radios)
+    selection = _phone_channel_selection(state)
+    has_whatsapp = bool(selection.get('has_whatsapp'))
+    has_sms = bool(selection.get('has_sms'))
     if has_whatsapp and not has_sms:
         raise RuntimeError(f"whatsapp_channel: 页面仅提供 WhatsApp 通道 state={state}")
     # 选择 SMS/text radio；新版页面也可能用 role=radio/tab、button 或 label。
@@ -609,6 +995,8 @@ def _select_sms_channel_or_raise(driver) -> None:
     const radios = [...document.querySelectorAll('input[type=radio]')];
     const sms = radios.find(el => /^(sms|text|text_message|text-message)$/i.test(el.value || ''));
     if (sms) {
+      // 使用此前稳定的原生 radio 点击。点击 label 后再手工派发事件会让
+      // React-Aria 在部分页面重复切换状态，并可能重建/清空手机号输入框。
       sms.click();
       sms.dispatchEvent(new Event('input', {bubbles:true}));
       sms.dispatchEvent(new Event('change', {bubbles:true}));
@@ -1079,6 +1467,64 @@ def _verify_add_phone_value_before_submit(driver, expected_e164: str) -> dict:
     return result
 
 
+def _prepare_phone_form_for_submit(driver, phone: str, *, attempts: int = 2) -> dict:
+    """稳定 add-phone 表单，并保证最后一次交互后手机号和 SMS 通道同时有效。
+
+    OpenAI 的 React-Aria 表单在切换 SMS/WhatsApp 通道时可能重建手机号输入框。
+    因此不能只在切换通道前验证号码；若切换后号码消失，使用同一个接码订单
+    重新填写一次，而不是把页面状态问题误判成号码失败并重新买号。
+    """
+    attempts = max(1, min(2, int(attempts or 1)))
+    last_exc: Exception | None = None
+    for form_attempt in range(1, attempts + 1):
+        _ensure_add_phone_input(driver, reason=f"same-number-form-attempt-{form_attempt}")
+        phone_fill = _set_phone_value(driver, phone, timeout=10)
+        logger.info(
+            "[Codex][Browser] 已重新设置手机号：e164=%s visible=%s hidden=%s dialCode=%s country=%s",
+            phone_fill.get("e164"),
+            phone_fill.get("actualVisible"),
+            phone_fill.get("hiddenValue") or "-",
+            phone_fill.get("dialCode") or "-",
+            str(phone_fill.get("selectedText") or "-")
+            + (" [changed]" if phone_fill.get("selectedChanged") else ""),
+        )
+        _blur_active_input_and_wait(driver, label="手机号输入完成")
+        expected_e164 = str(phone_fill.get("e164") or phone)
+        phone_verify = _verify_add_phone_value_before_submit(driver, expected_e164)
+        logger.info(
+            "[Codex][Browser] 手机号通道选择前校验通过：visible=%s hidden=%s",
+            phone_verify.get("visibleValue"),
+            phone_verify.get("hiddenValue") or "-",
+        )
+
+        logger.info("[Codex][Browser] 检查并选择 SMS 短信通道")
+        _select_sms_channel_or_raise(driver)
+        _blur_active_input_and_wait(driver, label="短信通道确认完成")
+        channel_selection = _verify_sms_channel_selected(driver, timeout=4)
+        logger.info("[Codex][Browser] SMS 短信通道实际选中状态已确认：%s", channel_selection)
+        try:
+            final_verify = _verify_add_phone_value_before_submit(driver, expected_e164)
+        except Exception as exc:
+            last_exc = exc
+            if form_attempt < attempts:
+                logger.warning(
+                    "[Codex][Browser] SMS 通道切换后手机号状态丢失，使用同一号码重填（%s/%s）：%s",
+                    form_attempt + 1,
+                    attempts,
+                    str(exc)[:220],
+                )
+                continue
+            break
+        logger.info(
+            "[Codex][Browser] 最终提交前手机号校验通过：visible=%s hidden=%s",
+            final_verify.get("visibleValue"),
+            final_verify.get("hiddenValue") or "-",
+        )
+        return {"phone_fill": phone_fill, "phone_verify": final_verify, "channel": channel_selection}
+
+    raise RuntimeError(f"phone_form_unstable: SMS 通道切换后手机号状态仍不稳定；{last_exc}")
+
+
 def _wait_page_settle_after_submit() -> None:
     """点击提交后先等待页面处理，再检查发送状态。"""
     seconds = random.uniform(2.0, 4.0)
@@ -1191,6 +1637,12 @@ def _force_submit_add_phone_form(driver) -> dict:
 
 
 def _wait_after_phone_send(driver, timeout: int = 12) -> str:
+    """等待手机号提交结果。
+
+    只有页面出现明确的号码拒绝/发送失败文案时才抛出换号错误。单独的
+    ``aria-invalid``、"需要电话号码" 或仍停留在 add-phone 都可能只是 React
+    重渲染/路由延迟；这类不确定状态交给上层继续守住当前接码订单，不能立即买新号。
+    """
     end = time.time() + timeout
     last = {}
     force_submitted = False
@@ -1205,11 +1657,7 @@ def _wait_after_phone_send(driver, timeout: int = 12) -> str:
         reason = _classify_phone_page_failure(last)
         if reason:
             raise RuntimeError(f"{reason}: {body[:240]}")
-        # 仍在 add-phone 且字段有 aria-invalid，认为号码被拒。
         if _is_add_phone_page(driver):
-            invalid = any(str(i.get('ariaInvalid') or '').lower() == 'true' for i in (last.get('inputs') or []))
-            if invalid:
-                raise RuntimeError(f"invalid_phone: add-phone input aria-invalid state={last}")
             # Cloak/React-Aria 场景下 btn.click 可能只聚焦没触发表单提交；补一次 requestSubmit。
             if not force_submitted and time.time() > end - timeout + 3:
                 info = _force_submit_add_phone_form(driver)
@@ -1219,8 +1667,43 @@ def _wait_after_phone_send(driver, timeout: int = 12) -> str:
     if _is_phone_code_state(last) or _is_phone_code_page(driver):
         return 'code_page'
     if _is_add_phone_page(driver):
-        raise RuntimeError(f"send_not_accepted: 提交后仍停留在 add-phone state={last}")
+        logger.warning(
+            "[Codex][Browser] 手机号提交后页面状态仍不确定，将继续等待当前号码短信，"
+            "不立即换号：state=%s",
+            last,
+        )
+        return 'submission_uncertain'
     return 'unknown'
+
+
+def _ensure_phone_code_page_after_sms(driver, *, timeout: int = 15) -> None:
+    """短信已经到达时，确保浏览器进入验证码页；失败时由上层止损，禁止再买号。"""
+    if _is_phone_code_page(driver):
+        return
+    end = time.time() + max(2, int(timeout or 15))
+    while time.time() < end:
+        if _is_phone_code_page(driver):
+            return
+        time.sleep(0.5)
+
+    target = _auth_origin(driver).rstrip("/") + "/phone-verification"
+    logger.warning(
+        "[Codex][Browser] 当前号码已收到短信但页面尚未跳转，尝试恢复验证码页：%s",
+        target,
+    )
+    try:
+        driver.get(target)
+    except Exception as exc:
+        logger.warning("[Codex][Browser] 恢复手机验证码页导航异常，继续检查 DOM：%s", str(exc)[:180])
+    end = time.time() + max(5, min(15, int(timeout or 15)))
+    while time.time() < end:
+        if _is_phone_code_page(driver):
+            return
+        time.sleep(0.5)
+    raise RuntimeError(
+        "sms_received_but_phone_code_page_missing: 当前号码已经收到短信，"
+        "但浏览器无法恢复验证码页；已停止继续购买号码"
+    )
 
 
 def _wait_after_phone_otp_submit(driver, timeout: int = 20) -> str:
@@ -1274,7 +1757,16 @@ def _classify_phone_page_failure(state: dict) -> str:
     # WhatsApp 可能是选中的 input radio，也可能是新版页面唯一提供的正文通道。
     # 若页面同时出现 SMS 选项/文字，则不能仅凭 bodyText 含 WhatsApp 判失败。
     radios = state.get('radios') or []
-    if any('whatsapp' in str(r.get('value','')).lower().replace(' ', '') and r.get('checked') for r in radios):
+    checked_whatsapp = any(
+        'whatsapp' in str(r.get('value', '')).lower().replace(' ', '') and r.get('checked')
+        for r in radios
+    )
+    if checked_whatsapp:
+        # 页面同时提供 SMS 时，提交后回到 WhatsApp 选中态通常是 React 表单
+        # 重渲染导致的通道回退；它不是号码失败，也不应该触发购买新号码。
+        selection = _phone_channel_selection(state)
+        if selection.get('has_sms'):
+            return 'sms_channel_reset'
         return 'whatsapp_channel'
     if _body_indicates_whatsapp_only(state):
         return 'whatsapp_channel'
@@ -1294,7 +1786,7 @@ def _classify_phone_page_failure(state: dict) -> str:
     return ''
 
 
-def _is_codex_retry_stopped_exception(exc: Exception) -> bool:
+def _is_codex_retry_stopped_exception(exc: BaseException) -> bool:
     """识别 WebUI Codex 补跑的异步停止信号，避免被换号重试捕获后继续买号。"""
     try:
         from core.codex_retry_service import CodexRetryStopped
@@ -1302,11 +1794,55 @@ def _is_codex_retry_stopped_exception(exc: Exception) -> bool:
         return False
     return isinstance(exc, CodexRetryStopped)
 
-def _sleep_before_phone_retry(attempt: int, max_retries: int, *, prefix: str = "[Codex][Browser]") -> None:
+
+def _phone_error_allows_number_rotation(exc: Exception) -> bool:
+    """只有明确的号码/发送失败才允许购买下一个号码。"""
+    if isinstance(exc, sms_provider.SmsCodeTimeout):
+        return True
+    text = str(exc or "").strip().lower()
+    return text.startswith((
+        "invalid_phone:",
+        "delivery_refused:",
+        "send_limited:",
+    )) or "激活已被取消" in text or "status_cancel" in text
+
+
+def _phone_error_counts_country_failure(exc: Exception) -> bool:
+    """页面自动化/会话限流不污染接码国家成功率，只统计号码侧失败。"""
+    if isinstance(exc, sms_provider.SmsCodeTimeout):
+        return True
+    text = str(exc or "").strip().lower()
+    return text.startswith((
+        "invalid_phone:",
+        "delivery_refused:",
+    ))
+
+
+def _report_phone_progress(detail: str) -> None:
+    """给 WebUI 写手机验证心跳；CLI/独立补跑没有注册任务上下文时自动忽略。"""
+    try:
+        from core.registration_service import report_job_progress
+
+        report_job_progress("codex", "running", detail)
+    except Exception:
+        logger.debug("[Codex][Browser] 手机验证进度上报失败", exc_info=True)
+
+
+def _sleep_before_phone_retry(
+    attempt: int,
+    max_retries: int,
+    *,
+    prefix: str = "[Codex][Browser]",
+    deadline: float | None = None,
+) -> None:
     """换号前随机等待，至少 3 秒，避免连续提交号码过快。"""
     if attempt >= max_retries:
         return
     seconds = random.uniform(3.0, 8.0)
+    if deadline is not None:
+        seconds = min(seconds, max(0.0, deadline - time.monotonic()))
+    if seconds <= 0:
+        return
     logger.info("%s 换号前随机等待 %.1f 秒", prefix, seconds)
     time.sleep(seconds)
 
@@ -1316,6 +1852,8 @@ def _do_phone_verification_if_present(driver) -> None:
     provider = str(getattr(sms_provider._cfg, "SMS_PROVIDER", "") or "").strip().lower() if hasattr(sms_provider, "_cfg") else ""
     http = sms_provider._http()
     max_retries = int(getattr(sms_provider._cfg, "SMS_MAX_RETRIES", 10) or 10) if hasattr(sms_provider, "_cfg") else 10
+    total_budget = max(30, int(getattr(sms_provider._cfg, "CODEX_PHONE_TOTAL_TIMEOUT", 300) or 300))
+    deadline = time.monotonic() + total_budget
     try:
         # 如果页面没有手机号输入框，直接返回。
         try:
@@ -1331,41 +1869,87 @@ def _do_phone_verification_if_present(driver) -> None:
             logger.info("[Codex][Browser] 未检测到手机号验证页，跳过手机步骤")
             return
 
+        # 通道是整个授权页的能力，不是某个接码号码的属性。若页面明确只提供
+        # WhatsApp，在购买 SMS 号码之前就终止；换国家/换号也无法解决。
+        initial_phone_state = _phone_page_state(driver)
+        if _body_indicates_whatsapp_only(initial_phone_state):
+            raise RuntimeError(
+                "whatsapp_channel: 当前授权页仅提供 WhatsApp，已在取号前停止，避免购买 SMS 号码"
+            )
+
         last_err = None
         for attempt in range(1, max_retries + 1):
+            remaining = max(0, int(deadline - time.monotonic()))
+            if remaining <= 0:
+                break
             activation_id = None
+            sms_received = False
             try:
+                _report_phone_progress(
+                    f"手机验证第 {attempt}/{max_retries} 次，整段剩余约 {remaining} 秒，正在取号"
+                )
                 activation_id, phone = sms_provider.acquire_number(http)
                 logger.info("[Codex][Browser] 手机验证尝试 %s/%s，provider=%s，号码=+%s", attempt, max_retries, provider, phone)
-                logger.info("[Codex][Browser] 准备手机号输入页，重新设置新手机号")
-                _ensure_add_phone_input(driver, reason=f"attempt-{attempt}")
-                phone_fill = _set_phone_value(driver, f"+{phone}", timeout=10)
-                logger.info(
-                    "[Codex][Browser] 已重新设置手机号：e164=%s visible=%s hidden=%s dialCode=%s country=%s",
-                    phone_fill.get("e164"), phone_fill.get("actualVisible"), phone_fill.get("hiddenValue") or "-",
-                    phone_fill.get("dialCode") or "-", (str(phone_fill.get("selectedText") or "-") + (" [changed]" if phone_fill.get("selectedChanged") else "")),
-                )
-                _blur_active_input_and_wait(driver, label="手机号输入完成")
-                phone_verify = _verify_add_phone_value_before_submit(driver, str(phone_fill.get("e164") or f"+{phone}"))
-                logger.info("[Codex][Browser] 手机号提交前校验通过：visible=%s hidden=%s", phone_verify.get("visibleValue"), phone_verify.get("hiddenValue") or "-")
-                logger.info("[Codex][Browser] 检查并选择 SMS 短信通道")
-                _select_sms_channel_or_raise(driver)
-                _blur_active_input_and_wait(driver, label="短信通道确认完成")
+                logger.info("[Codex][Browser] 准备手机号输入页，稳定同一个号码与 SMS 通道")
+                _prepare_phone_form_for_submit(driver, f"+{phone}", attempts=2)
                 submit_info = _click_add_phone_continue_button(driver, timeout=10)
                 logger.info("[Codex][Browser] 已点击手机号 Continue/続行 按钮：%s，等待进入短信验证码页", submit_info)
-                _wait_page_settle_after_submit()
 
-                # 等待页面进入 phone-verification；若号码无效/无法发送/WhatsApp 通道，立即换号。
-                _wait_after_phone_send(driver, timeout=15)
-                logger.info("[Codex][Browser] 已进入手机验证码页")
+                # 明确的号码拒绝会直接抛错并换号；页面暂态则继续守住当前接码订单。
+                remaining = max(1, int(deadline - time.monotonic()))
+                try:
+                    send_outcome = _wait_after_phone_send(driver, timeout=min(15, remaining))
+                except RuntimeError as send_exc:
+                    # 新版 React 表单偶尔会在首次 submit 后把通道重置回 WhatsApp。
+                    # 复用当前已购买的号码重选 SMS，并用 requestSubmit 补交一次；
+                    # 仍失败则交给外层取消该订单并终止，绝不购买第二个号码。
+                    if not str(send_exc).strip().lower().startswith("sms_channel_reset:"):
+                        raise
+                    logger.warning(
+                        "[Codex][Browser] 首次提交后 SMS 通道被页面重置，使用同一号码重选并补交一次"
+                    )
+                    _prepare_phone_form_for_submit(driver, f"+{phone}", attempts=2)
+                    retry_submit = _force_submit_add_phone_form(driver)
+                    if not retry_submit.get("ok"):
+                        raise RuntimeError(
+                            f"sms_channel_reset: 同号重选 SMS 后补交失败 info={retry_submit}"
+                        ) from send_exc
+                    _wait_page_settle_after_submit()
+                    remaining = max(1, int(deadline - time.monotonic()))
+                    send_outcome = _wait_after_phone_send(driver, timeout=min(15, remaining))
+                if send_outcome == "code_page":
+                    logger.info("[Codex][Browser] 已进入手机验证码页")
+                else:
+                    logger.warning(
+                        "[Codex][Browser] 手机号页面尚未确认跳转（%s），继续等待当前号码短信，禁止立即换号",
+                        send_outcome,
+                    )
 
                 sms_provider.set_status(activation_id, 1, http=http)
                 logger.info(
-                    "[Codex][Browser] 短信已发送，开始轮询验证码 activation_id=%s wait=%ss interval=%ss",
+                    "[Codex][Browser] 手机号已提交并设置接码订单就绪，开始轮询验证码 "
+                    "activation_id=%s wait=%ss interval=%ss",
                     activation_id, sms_provider._cfg.SMS_CODE_WAIT, sms_provider._cfg.SMS_POLL_INTERVAL
                 )
-                sms_code = sms_provider.wait_for_sms_code(activation_id, http)
+                remaining = max(0, int(deadline - time.monotonic()))
+                if remaining <= 0:
+                    raise TimeoutError("phone_total_timeout: 手机验证整段预算已耗尽")
+                wait_limit = min(
+                    int(getattr(sms_provider._cfg, "SMS_CODE_WAIT", 120) or 120),
+                    remaining,
+                )
+                sms_code = sms_provider.wait_for_sms_code(
+                    activation_id,
+                    http,
+                    max_wait=wait_limit,
+                    progress_callback=lambda elapsed, left, _round: _report_phone_progress(
+                        f"手机验证第 {attempt}/{max_retries} 次，已等短信 {elapsed} 秒，"
+                        f"本号码剩余约 {left} 秒，整段剩余约 {max(0, int(deadline - time.monotonic()))} 秒"
+                    ),
+                )
+                sms_received = True
                 logger.info("[Codex][Browser] 手机 OTP 收到：%s", sms_code)
+                _ensure_phone_code_page_after_sms(driver, timeout=15)
                 _type_otp(driver, sms_code)
                 logger.info("[Codex][Browser] 已填写手机 OTP")
                 human_delay("otp_input")
@@ -1379,23 +1963,32 @@ def _do_phone_verification_if_present(driver) -> None:
             except Exception as exc:
                 last_err = exc
                 err_text = str(exc) or ""
-                logger.warning("[Codex][Browser] 手机验证尝试失败，换号：%s", err_text[:240])
-                if activation_id:
-                    try:
-                        # 短信已发出但最终超时的号码，必须确认取消完成后才能买下一个，
-                        # 避免旧号码迟到验证码与新号码重叠。其它立即拒绝错误可后台取消。
-                        sms_provider.cancel(
-                            activation_id,
-                            http,
-                            background=not isinstance(exc, sms_provider.SmsCodeTimeout),
-                        )
-                    except Exception:
-                        pass
                 # 用户点击停止时，先释放本轮已取号码，再立即退出；不能把停止异常
                 # 当成普通手机号错误继续进入下一轮，否则会继续产生接码订单。
                 if _is_codex_retry_stopped_exception(exc):
+                    if activation_id:
+                        try:
+                            sms_provider.cancel(activation_id, http, background=True)
+                        except Exception:
+                            pass
                     logger.info("[Codex][Browser] 收到补跑停止信号，已停止继续换号")
                     raise
+
+                # 号码已经收到短信就已经产生费用。后续即使浏览器无法恢复，也必须
+                # 终止本任务的购号循环，绝不能再买第二个号码制造重复扣费。
+                if activation_id and sms_received:
+                    try:
+                        sms_provider.complete(activation_id, http)
+                    except Exception:
+                        pass
+                    logger.error(
+                        "[Codex][Browser] 当前号码已收到短信但后续页面处理失败，已停止继续买号：%s",
+                        err_text[:240],
+                    )
+                    raise RuntimeError(
+                        f"当前号码已收到短信但浏览器流程未完成，已停止继续买号：{err_text[:180]}"
+                    ) from exc
+
                 # 余额不足 / 无可用号码：重试多少次都不会成功，立即失败止损，
                 # 避免白等 N 轮换号重试（每轮还要刷新页面 + 随机等待）。
                 if any(k in err_text for k in (
@@ -1410,8 +2003,44 @@ def _do_phone_verification_if_present(driver) -> None:
                         "手机号流程进入 invalid_auth_step，说明授权状态还未从 email-verification 正常跳转或已失效；"
                         "已停止继续换号，避免继续消耗号码"
                     ) from exc
-                # WhatsApp/SMS 通道会随号码国家改变，并非整个 OAuth session 固定。
-                # 当前号只支持 WhatsApp 时取消本号，继续让接码国家轮换到下一项。
+
+                # WhatsApp/SMS 通道由当前 OAuth 页面决定，换接码国家和号码不会
+                # 修复通道错误。当前订单进入取消队列后立即终止，最多只产生一单。
+                if err_text.strip().lower().startswith("whatsapp_channel:"):
+                    if activation_id:
+                        try:
+                            sms_provider.cancel(activation_id, http, background=True)
+                        except Exception:
+                            pass
+                    logger.error(
+                        "[Codex][Browser] 当前 OAuth 页面不接受 SMS，已停止换号并取消当前订单：%s",
+                        err_text[:240],
+                    )
+                    raise RuntimeError(
+                        "当前 OAuth 页面不接受 SMS，已停止继续买号；当前接码订单已进入取消队列"
+                    ) from exc
+
+                rotate_number = _phone_error_allows_number_rotation(exc)
+                if activation_id:
+                    try:
+                        if rotate_number and _phone_error_counts_country_failure(exc):
+                            sms_provider.report_activation_failure(activation_id, err_text)
+                        # 明确号码失败可立即换号，取消继续放后台；页面/自动化故障也
+                        # 会尝试回收当前订单，但下面会终止购号循环。
+                        sms_provider.cancel(activation_id, http, background=True)
+                    except Exception:
+                        pass
+
+                if not rotate_number:
+                    logger.error(
+                        "[Codex][Browser] 手机页面/自动化状态异常，未计入国家失败并停止继续买号：%s",
+                        err_text[:240],
+                    )
+                    raise RuntimeError(
+                        f"手机号页面状态异常，已停止继续买号：{err_text[:180]}"
+                    ) from exc
+
+                logger.warning("[Codex][Browser] 已确认号码或发送失败，允许直接换号：%s", err_text[:240])
                 # 如果已经离开手机号/验证码相关页面，认为通过或不再需要；
                 # 如果仍在 phone-verification，则下一轮必须回 add-phone 重新填新号码再提交。
                 try:
@@ -1427,7 +2056,11 @@ def _do_phone_verification_if_present(driver) -> None:
                         return
                 if attempt < max_retries:
                     _refresh_add_phone_for_retry(driver, reason=str(exc)[:120])
-                _sleep_before_phone_retry(attempt, max_retries)
+                _sleep_before_phone_retry(attempt, max_retries, deadline=deadline)
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"Roxy 手机验证超过整段预算 {total_budget} 秒，已停止继续买号，最后错误：{last_err}"
+            )
         raise RuntimeError(f"Roxy 手机验证重试 {max_retries} 次仍失败，最后错误：{last_err}")
     finally:
         try:
@@ -1437,13 +2070,24 @@ def _do_phone_verification_if_present(driver) -> None:
 
 
 def _finish_consent_workspace(driver, email: str = "") -> str:
-    """点击 Codex consent/workspace 页面里的继续/允许按钮，直到 callback。"""
+    """点击 Codex consent/workspace 页面里的继续/允许按钮，直到 callback。
+
+    手机验证页可能在最初 8 秒探测窗口之后才出现。Callback 循环必须持续识别
+    add-phone/phone-verification，不能在该页面空等到 180 秒超时。
+    """
     end = time.time() + int(_roxy_cfg.ROXY_CODEX_CALLBACK_TIMEOUT)
     while time.time() < end:
         callback = _extract_callback_url_from_any_window(driver)
         if callback:
             return callback
         current = str(driver.current_url or "")
+        if _has_strict_add_phone_form(driver) or _is_phone_code_page(driver):
+            logger.info(
+                "[Codex][Browser] Callback 等待期间检测到延迟出现的手机号验证页，立即处理：url=%s",
+                current,
+            )
+            _do_phone_verification_if_present(driver)
+            continue
         clicked = False
         if email and _select_existing_account_if_present(driver, email):
             clicked = True
@@ -1513,6 +2157,7 @@ def _run_roxy_codex_oauth_once(
     existing_opened=None,
     reuse_existing_profile: bool = False,
     clear_existing_state: bool = True,
+    before_oauth_setup=None,
 ) -> dict:
     """指纹浏览器 Codex OAuth 入口。
 
@@ -1565,6 +2210,19 @@ def _run_roxy_codex_oauth_once(
         if reuse_existing_profile and clear_existing_state:
             clear_roxy_browser_auth_state(driver)
 
+        if before_oauth_setup is not None:
+            # Codex OAuth 的 auth.openai.com 登录态本身不会建立 ChatGPT 的
+            # NextAuth session，直接打开安全设置只会得到没有控件的登录空壳。
+            # 缺 2FA 时先独立完成一次 ChatGPT 登录，确认 session 后再设置 2FA；
+            # 全程还没有进入手机号页面，因此失败也不会产生接码费用。
+            logger.info("[Codex][Browser] 账号缺少 2FA，先建立 ChatGPT 登录态")
+            _fill_email_and_otp(driver, email, otp_provider, "https://chatgpt.com/auth/login")
+            from core.roxy_registration import _fetch_chatgpt_session
+
+            _fetch_chatgpt_session(driver, timeout=90, auto_jump_wait=10)
+            setup_changed = bool(before_oauth_setup(driver))
+            if setup_changed:
+                logger.info("[Codex][Browser] 2FA 已补齐，重新打开授权地址继续 OAuth")
         _fill_email_and_otp(driver, email, otp_provider, auth_url)
         human_delay("api")
         logger.info("[Codex][Browser] 检查是否需要手机号验证")
@@ -1668,6 +2326,7 @@ def run_roxy_codex_oauth(
     existing_opened=None,
     reuse_existing_profile: bool = False,
     clear_existing_state: bool = True,
+    before_oauth_setup=None,
 ) -> dict:
     """指纹浏览器 Codex OAuth 入口；可恢复错误时重新开启一轮授权。"""
     from core import codex_oauth as proto
@@ -1689,6 +2348,7 @@ def run_roxy_codex_oauth(
             existing_opened=existing_opened,
             reuse_existing_profile=reuse_existing_profile,
             clear_existing_state=clear_existing_state,
+            before_oauth_setup=before_oauth_setup,
         )
         last_result = result
         if result.get("ok"):

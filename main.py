@@ -460,14 +460,18 @@ def run_registration(
         totp_secret = None
         if _twofa_cfg.ENABLE_2FA:
             # 步骤14-20: 重认证（要再收一次邮箱 OTP）→ enroll TOTP → activate
+            report_job_progress("twofa", "running", "正在设置 Authenticator 2FA")
             try:
                 totp_secret = setup_2fa(session, email)
+                report_job_progress("twofa", "success", "Authenticator 2FA 已启用")
             except Exception as exc:
                 logger.error(f"2FA 设置失败: {exc}")
                 logger.debug("2FA 错误详情:", exc_info=True)
                 logger.warning("将继续保存账号信息（不含 TOTP secret），可后续手动设置")
+                report_job_progress("twofa", "failed", f"2FA 设置失败: {type(exc).__name__}: {str(exc)[:180]}")
         else:
             logger.debug("已跳过 2FA 设置 (config.ENABLE_2FA=False)")
+            report_job_progress("twofa", "skipped", "未启用 Authenticator 2FA")
 
         # ==================== 阶段 7.5: Codex OAuth（注册成功→拿回调/CPA凭证）====================
         # 用全新干净 session 从头登录该邮箱，走 邮箱OTP→手机短信验证(接码)→选workspace
@@ -696,6 +700,10 @@ def run_one_batch_item(index: int, total: int, batch_dir=None) -> dict:
     """执行批量注册中的一个任务，返回结构化结果。"""
     logger.info(f"[批量] 开始第 {index + 1}/{total} 个注册")
     proxy_lease = None
+    from core import sms_provider
+
+    if batch_dir is not None:
+        sms_provider.set_sms_batch_context(f"cli:{batch_dir}")
     try:
         from core.proxy_provider import acquire_registration_proxy
 
@@ -717,6 +725,7 @@ def run_one_batch_item(index: int, total: int, batch_dir=None) -> dict:
             from core.proxy_provider import release_proxy
 
             release_proxy(proxy_lease, reason="cli_task_finished")
+        sms_provider.clear_sms_batch_context()
 
 
 def run_serial_batch(count: int, delay: float, continue_on_fail: bool, batch_dir=None) -> list[dict]:

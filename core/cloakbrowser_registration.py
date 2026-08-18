@@ -61,7 +61,7 @@ def run_cloak_registration(email: str, name: str, birthday: str, proxy: str = No
         )
         _check_manual_stop()
 
-        openai_password = None if next_state == "otp" else _fill_password_page_if_present(driver, email, timeout=25)
+        openai_password = _fill_password_page_if_present(driver, email, timeout=25)
         report_job_progress("auth_redirect", "success", f"已进入认证下一步：{next_state}")
         _check_manual_stop()
 
@@ -126,6 +126,9 @@ def run_cloak_registration(email: str, name: str, birthday: str, proxy: str = No
 
         if _twofa_cfg.ENABLE_2FA:
             logger.warning("[Cloak注册] 当前 CloakBrowser 自动化路径暂不执行 2FA 设置，已跳过")
+            report_job_progress("twofa", "skipped", "CloakBrowser 路径暂不支持自动设置 2FA")
+        else:
+            report_job_progress("twofa", "skipped", "未启用 Authenticator 2FA")
         totp_secret = None
 
         codex_result = {

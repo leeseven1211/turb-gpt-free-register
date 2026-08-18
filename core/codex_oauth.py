@@ -845,11 +845,21 @@ def _sms_provider_name() -> str:
     return str(getattr(_cfg, "SMS_PROVIDER", "grizzly") or "grizzly").strip().lower()
 
 
-def _sleep_before_phone_retry(attempt: int, max_retries: int, *, prefix: str = "[Codex]") -> None:
+def _sleep_before_phone_retry(
+    attempt: int,
+    max_retries: int,
+    *,
+    prefix: str = "[Codex]",
+    deadline: float | None = None,
+) -> None:
     """换号前随机等待，至少 3 秒，避免连续提交号码过快。"""
     if attempt >= max_retries:
         return
     seconds = random.uniform(3.0, 8.0)
+    if deadline is not None:
+        seconds = min(seconds, max(0.0, deadline - time.monotonic()))
+    if seconds <= 0:
+        return
     logger.info(f"{prefix} 换号前随机等待 {seconds:.1f} 秒")
     time.sleep(seconds)
 
@@ -866,9 +876,14 @@ def _do_phone_verification(session: BrowserSession) -> None:
     http = sms_provider._http()
     max_retries = _cfg.SMS_MAX_RETRIES
     provider = _sms_provider_name()
+    total_budget = max(30, int(getattr(_cfg, "CODEX_PHONE_TOTAL_TIMEOUT", 300) or 300))
+    deadline = time.monotonic() + total_budget
     try:
         last_err = None
         for attempt in range(1, max_retries + 1):
+            remaining = max(0, int(deadline - time.monotonic()))
+            if remaining <= 0:
+                break
             activation_id = None
             try:
                 activation_id, phone = sms_provider.acquire_number(http)
@@ -892,28 +907,35 @@ def _do_phone_verification(session: BrowserSession) -> None:
                         f"[Codex] add-phone/send 未成功 reason={send_reason or 'unknown'}, "
                         f"status={send_resp.status_code}: {send_text[:240]}，换号重试"
                     )
+                    sms_provider.report_activation_failure(activation_id, send_reason or "send_failed")
                     sms_provider.cancel(activation_id, http)
-                    _sleep_before_phone_retry(attempt, max_retries)
+                    _sleep_before_phone_retry(attempt, max_retries, deadline=deadline)
                     continue
 
                 # 通知平台短信已发出（status=1）
                 sms_provider.set_status(activation_id, 1, http=http)
 
-                # 定时轮询接码平台获取短信。Grizzly 在 SMS_CODE_WAIT 后继续守候迟到码
-                # 到计划取消时间；超时后确认旧订单终止，才允许换下一个号码。
+                # 定时轮询接码平台获取短信；单号与整段手机验证均受硬预算限制。
                 try:
                     logger.info(
                         f"[Codex] 短信已发送，开始轮询验证码 activation_id={activation_id}, "
                         f"wait={_cfg.SMS_CODE_WAIT}s, interval={_cfg.SMS_POLL_INTERVAL}s"
                     )
-                    sms_code = sms_provider.wait_for_sms_code(activation_id, http)
+                    remaining = max(0, int(deadline - time.monotonic()))
+                    if remaining <= 0:
+                        raise sms_provider.SmsCodeTimeout("手机验证整段预算已耗尽")
+                    sms_code = sms_provider.wait_for_sms_code(
+                        activation_id,
+                        http,
+                        max_wait=min(int(_cfg.SMS_CODE_WAIT), remaining),
+                    )
                 except sms_provider.SmsCodeTimeout:
                     logger.warning(
-                        f"[Codex] 号码 +{phone} 在迟到码保护窗口内仍未收到短信，"
-                        "确认旧号码取消后再换号"
+                        f"[Codex] 号码 +{phone} 在单号等待上限内未收到短信，后台取消后换号"
                     )
-                    sms_provider.cancel(activation_id, http, background=False)
-                    _sleep_before_phone_retry(attempt, max_retries)
+                    sms_provider.report_activation_failure(activation_id, "sms_timeout")
+                    sms_provider.cancel(activation_id, http, background=True)
+                    _sleep_before_phone_retry(attempt, max_retries, deadline=deadline)
                     continue
 
                 # 验手机码
@@ -930,8 +952,9 @@ def _do_phone_verification(session: BrowserSession) -> None:
                         f"[Codex] phone-otp/validate 失败 reason={val_reason}, status={val_resp.status_code}: "
                         f"{val_text[:240]}，换号重试"
                     )
+                    sms_provider.report_activation_failure(activation_id, val_reason)
                     sms_provider.cancel(activation_id, http)
-                    _sleep_before_phone_retry(attempt, max_retries)
+                    _sleep_before_phone_retry(attempt, max_retries, deadline=deadline)
                     continue
 
                 # 成功
@@ -946,10 +969,16 @@ def _do_phone_verification(session: BrowserSession) -> None:
                 last_err = exc
                 logger.warning(f"[Codex] 接码尝试 {attempt} 失败：{exc}")
                 if activation_id:
+                    sms_provider.report_activation_failure(activation_id, str(exc))
                     sms_provider.cancel(activation_id, http)
-                _sleep_before_phone_retry(attempt, max_retries)
+                _sleep_before_phone_retry(attempt, max_retries, deadline=deadline)
                 continue
 
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"[Codex] 手机验证超过整段预算 {total_budget} 秒，已停止继续买号"
+                + (f"，最后错误：{last_err}" if last_err else "")
+            )
         raise RuntimeError(
             f"[Codex] 手机号验证重试 {max_retries} 次仍失败（provider={provider}）"
             + (f"，最后错误：{last_err}" if last_err else "")

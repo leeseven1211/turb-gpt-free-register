@@ -911,8 +911,9 @@
     }
     .batch-progress-v2-log:hover { text-decoration: underline; }
     .batch-progress-v2-steps {
-      display: grid; grid-template-columns: repeat(11, minmax(74px, 1fr));
-      min-width: 910px; overflow: visible;
+      display: grid;
+      grid-template-columns: repeat(var(--batch-progress-step-count, 1), minmax(64px, 1fr));
+      min-width: 768px; overflow: visible;
     }
     .batch-progress-v2-step { position: relative; text-align: center; color: #a6abb2; }
     .batch-progress-v2-step::before {
@@ -4511,7 +4512,7 @@ async function batchCancelJobs() {
 }
 
 async function retryBatchFailedJobs() {
-  const ids = currentBatchJobs().filter(job => ['failed', 'stopped', 'cancelled'].includes(String(job.status || '')) && job.retryable).map(job => Number(job.id));
+  const ids = currentBatchJobs().filter(job => ['failed', 'partial_success', 'stopped', 'cancelled'].includes(String(job.status || '')) && job.retryable).map(job => Number(job.id));
   if (!ids.length) { showToast('当前批次没有可重跑的失败任务'); return; }
   if (!confirm('确定重跑当前批次的 ' + ids.length + ' 个失败任务吗？已创建账号的任务会只补跑 Codex。')) return;
   const btn = $('#btnBatchRetryV2');
@@ -4689,7 +4690,7 @@ function renderBatchProgress() {
 
   const runningIds = items.filter(job => ['running', 'stopping'].includes(String(job.status || ''))).map(job => Number(job.id));
   const pendingIds = items.filter(job => String(job.status || '') === 'pending').map(job => Number(job.id));
-  const retryIds = items.filter(job => ['failed', 'stopped', 'cancelled'].includes(String(job.status || '')) && job.retryable).map(job => Number(job.id));
+  const retryIds = items.filter(job => ['failed', 'partial_success', 'stopped', 'cancelled'].includes(String(job.status || '')) && job.retryable).map(job => Number(job.id));
   const stopBtn = $('#btnBatchStopV2');
   const cancelBtn = $('#btnBatchCancelV2');
   const retryBtn = $('#btnBatchRetryV2');
@@ -4708,7 +4709,7 @@ function renderBatchProgress() {
   batchProgressRenderSignature = nextRenderSignature;
   list.innerHTML = items.map((job, itemIndex) => {
     const steps = job.progress_steps && typeof job.progress_steps === 'object' ? job.progress_steps : {};
-    const terminal = ['success', 'failed', 'cancelled', 'stopped'].includes(String(job.status || ''));
+    const terminal = ['success', 'partial_success', 'failed', 'cancelled', 'stopped'].includes(String(job.status || ''));
     const duration = formatProgressDuration(job.started_at || job.created_at, terminal ? job.completed_at : '');
     const failedStageIndex = stages.findIndex(stage => ['failed', 'stopped'].includes(String((steps[stage.key] || {}).state || '')));
     const failedStep = failedStageIndex >= 0 ? (steps[stages[failedStageIndex].key] || {}) : null;
@@ -4752,7 +4753,7 @@ function renderBatchProgress() {
           <button type="button" class="batch-progress-v2-log" data-progress-log-job="${esc(job.id)}">查看日志</button>
         </div>
       </div>
-      <div class="batch-progress-v2-steps-scroll"><div class="batch-progress-v2-steps">${stepHtml}</div></div>
+      <div class="batch-progress-v2-steps-scroll"><div class="batch-progress-v2-steps" style="--batch-progress-step-count:${Math.max(stages.length, 1)}">${stepHtml}</div></div>
     </article>`;
   }).join('');
   refreshBatchProgressDurations();
@@ -5106,7 +5107,7 @@ async function pollLog() {
     const atBottom = c.scrollTop + c.clientHeight >= c.scrollHeight - 30;
     c.textContent = r.log || '(暂无日志)';
     if (atBottom) c.scrollTop = c.scrollHeight;
-    if (r.job && ['success','failed','stopped','cancelled'].includes(r.job.status)) clearInterval(logTimer);
+    if (r.job && ['success','partial_success','failed','stopped','cancelled'].includes(r.job.status)) clearInterval(logTimer);
   } catch(e) {}
 }
 
@@ -7744,8 +7745,8 @@ function emailConfigSectionForKey(key) {
 }
 
 function smsConfigSectionForKey(key) {
-  if (['SMS_PROVIDER','SMS_COUNTRY','SMS_SERVICE','SMS_MAX_PRICE','SMS_MAX_RETRIES','SMS_CODE_WAIT'].includes(key)) {
-    return ['通用接码', '接码通道选择、国家/服务代码、等待和重试参数；H 通道可复用 SMS_SERVICE/SMS_COUNTRY 作为 projectId/country'];
+  if (['SMS_PROVIDER','SMS_COUNTRY','SMS_SERVICE','SMS_MAX_PRICE','SMS_AUTO_SELECT_COUNTRY','SMS_AUTO_COUNTRY_MIN_RATIO','SMS_MAX_RETRIES','SMS_CODE_WAIT','CODEX_PHONE_TOTAL_TIMEOUT'].includes(key)) {
+    return ['通用接码', '接码通道选择、国家/服务代码、批次成功率选国、等待和重试参数；H 通道可复用 SMS_SERVICE/SMS_COUNTRY 作为 projectId/country'];
   }
   if (key === 'SMS_API_KEY') return ['GrizzlySMS', 'GrizzlySMS 平台 API Key 配置'];
   if (key.startsWith('H_')) return ['H 接码', 'H_API.md 本地 H 取号服务配置；项目ID/国家留空时复用通用字段'];

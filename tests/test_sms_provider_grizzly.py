@@ -22,6 +22,78 @@ class GrizzlySmsProviderTests(unittest.TestCase):
         sms_provider._ACQUIRED_AT.clear()
         sms_provider._ACTIVATION_META.clear()
         sms_provider._GRIZZLY_COUNTRY_CURSOR = 0
+        sms_provider._GRIZZLY_BATCH_COUNTRY_SELECTIONS.clear()
+        sms_provider.clear_sms_batch_context()
+
+    def tearDown(self):
+        sms_provider.clear_sms_batch_context()
+
+    def test_rank_country_filters_tiny_sample_and_respects_max_price(self):
+        prices = {
+            "1": {"dr": {"price": 0.05, "count": 20}},
+            "33": {"dr": {"price": 0.05, "count": 300000}},
+            "151": {"dr": {"price": 0.06, "count": 48000}},
+            "187": {"dr": {"price": 0.13, "count": 3000000}},
+        }
+        stats = [
+            {"country_id": "1", "conversion_sms": "100.00", "ratio": "1"},
+            {"country_id": "33", "conversion_sms": "16.03", "ratio": "1033"},
+            {"country_id": "151", "conversion_sms": "13.93", "ratio": "366"},
+            {"country_id": "187", "conversion_sms": "61.68", "ratio": "3927"},
+        ]
+
+        ranked = sms_provider._rank_grizzly_countries(
+            prices,
+            stats,
+            service="dr",
+            max_price="0.06",
+            min_ratio=25,
+        )
+
+        self.assertEqual([item["country"] for item in ranked], ["33", "151"])
+
+    def test_batch_auto_country_is_selected_once_and_reused(self):
+        http = _Http()
+        number_calls = []
+        number_seq = iter((1001, 1002))
+
+        def fake_request(_http, params):
+            number_calls.append(dict(params))
+            activation_id = next(number_seq)
+            return json.dumps({
+                "activationId": activation_id,
+                "phoneNumber": f"57{activation_id}12345",
+                "countryCode": params["country"],
+            })
+
+        selected = {
+            "country": "33",
+            "success_rate": 16.03,
+            "ratio": 1033.0,
+            "stock": 300000,
+            "price": 0.05,
+            "eligible_count": 2,
+            "min_ratio": 25,
+        }
+        with tempfile.TemporaryDirectory() as td:
+            with (
+                patch.object(codex_config, "SMS_PROVIDER", "grizzly"),
+                patch.object(codex_config, "SMS_SERVICE", "dr"),
+                patch.object(codex_config, "SMS_COUNTRY", "117,148"),
+                patch.object(codex_config, "SMS_MAX_PRICE", "0.06"),
+                patch.object(codex_config, "SMS_AUTO_SELECT_COUNTRY", True),
+                patch.object(sms_provider, "_CANCEL_QUEUE_PATH", Path(td) / "queue.json"),
+                patch.object(sms_provider, "start_cancel_worker"),
+                patch.object(sms_provider, "_fetch_grizzly_batch_country", return_value=selected) as fetch,
+                patch.object(sms_provider, "_request_grizzly", side_effect=fake_request),
+            ):
+                sms_provider.set_sms_batch_context("batch-1")
+                sms_provider.acquire_number(http=http)
+                sms_provider.acquire_number(http=http)
+
+        fetch.assert_called_once_with(http, service="dr")
+        self.assertEqual([call["country"] for call in number_calls], ["33", "33"])
+        self.assertTrue(all(call["maxPrice"] == "0.06" for call in number_calls))
 
     def test_parse_get_number_v2_includes_activation_time(self):
         raw = json.dumps({
@@ -176,13 +248,69 @@ class GrizzlySmsProviderTests(unittest.TestCase):
         http = _Http()
         with (
             patch.object(sms_provider, "_http", return_value=http),
-            patch.object(sms_provider, "_request_grizzly", return_value="EARLY_CANCEL_DENIED"),
+            patch.object(
+                sms_provider,
+                "_request_grizzly",
+                side_effect=lambda _http, params: (
+                    "STATUS_WAIT_CODE" if params["action"] == "getStatus" else "EARLY_CANCEL_DENIED"
+                ),
+            ),
         ):
             outcome, raw = sms_provider._cancel_grizzly_once("12345")
 
         self.assertEqual(outcome, "early")
         self.assertEqual(raw, "EARLY_CANCEL_DENIED")
         self.assertTrue(http.closed)
+
+    def test_cancel_worker_stops_when_activation_already_received_sms(self):
+        http = _Http()
+        with (
+            patch.object(sms_provider, "_http", return_value=http),
+            patch.object(sms_provider, "_request_grizzly", return_value="STATUS_OK:123456") as request,
+        ):
+            outcome, raw = sms_provider._cancel_grizzly_once("12345")
+
+        self.assertEqual(outcome, "received")
+        self.assertEqual(raw, "STATUS_OK:<redacted>")
+        self.assertEqual(request.call_count, 1)
+        self.assertTrue(http.closed)
+
+    def test_bad_action_is_reconciled_with_late_sms_status(self):
+        http = _Http()
+        statuses = iter(("STATUS_WAIT_CODE", "STATUS_OK:654321"))
+
+        def request(_http, params):
+            if params["action"] == "getStatus":
+                return next(statuses)
+            raise sms_provider.SmsProviderError("接码平台请求参数错误：BAD_ACTION")
+
+        with (
+            patch.object(sms_provider, "_http", return_value=http),
+            patch.object(sms_provider, "_request_grizzly", side_effect=request),
+        ):
+            outcome, raw = sms_provider._cancel_grizzly_once("12345")
+
+        self.assertEqual((outcome, raw), ("received", "STATUS_OK:<redacted>"))
+
+    def test_received_sms_removes_persisted_cancel_job(self):
+        with tempfile.TemporaryDirectory() as td:
+            queue_path = Path(td) / "sms_cancel_queue.json"
+            sms_provider._ACTIVATION_META["12345"] = {
+                "acquired_at": 1000.0,
+                "cancel_at": 1305.0,
+            }
+            with (
+                patch.object(sms_provider, "_CANCEL_QUEUE_PATH", queue_path),
+                patch.object(sms_provider.time, "time", return_value=1400.0),
+            ):
+                sms_provider._enqueue_grizzly_cancel("12345")
+                done = sms_provider._update_cancel_job_after_attempt(
+                    "12345", "received", "STATUS_OK:<redacted>"
+                )
+
+            self.assertTrue(done)
+            payload = json.loads(queue_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["items"], [])
 
     def test_uses_cancel_time_when_api_returns_one(self):
         meta = {"cancel_at_hint": 1700000300}
@@ -196,7 +324,7 @@ class GrizzlySmsProviderTests(unittest.TestCase):
 
         self.assertEqual(retry_at, 1700000090)
 
-    def test_default_sms_wait_extends_to_cancel_boundary(self):
+    def test_default_sms_wait_is_a_hard_limit(self):
         sms_provider._ACTIVATION_META["12345"] = {"cancel_at": 1305.0}
         with (
             patch.object(codex_config, "SMS_PROVIDER", "grizzly"),
@@ -206,7 +334,7 @@ class GrizzlySmsProviderTests(unittest.TestCase):
             configured, effective = sms_provider._sms_code_wait_window("12345")
 
         self.assertEqual(configured, 120)
-        self.assertEqual(effective, 285)
+        self.assertEqual(effective, 120)
 
     def test_explicit_test_wait_is_not_extended(self):
         sms_provider._ACTIVATION_META["12345"] = {"cancel_at": 1305.0}
@@ -217,6 +345,38 @@ class GrizzlySmsProviderTests(unittest.TestCase):
             configured, effective = sms_provider._sms_code_wait_window("12345", max_wait=10)
 
         self.assertEqual((configured, effective), (10, 10))
+
+    def test_batch_auto_country_advances_after_two_failures(self):
+        # 自动选国只在 grizzly 下生效；显式声明，否则这个用例只在开发机
+        # .env 恰好是 SMS_PROVIDER=grizzly 时才通过（同文件其余用例都这么做）。
+        self.enterContext(patch.object(codex_config, "SMS_PROVIDER", "grizzly"))
+        sms_provider.set_sms_batch_context("batch-switch")
+        sms_provider._GRIZZLY_BATCH_COUNTRY_SELECTIONS["batch-switch"] = {
+            "country": "39",
+            "active_index": 0,
+            "country_failures": {},
+            "ranked_candidates": [
+                {"country": "39", "success_rate": 64.12, "ratio": 361, "stock": 22000, "price": 0.09},
+                {"country": "31", "success_rate": 22.31, "ratio": 54, "stock": 15000, "price": 0.07},
+            ],
+        }
+        sms_provider._ACTIVATION_META["a1"] = {
+            "batch_id": "batch-switch", "requested_country": "39",
+        }
+        sms_provider._ACTIVATION_META["a2"] = {
+            "batch_id": "batch-switch", "requested_country": "39",
+        }
+
+        sms_provider.report_activation_failure("a1", "sms_timeout")
+        self.assertEqual(
+            sms_provider._GRIZZLY_BATCH_COUNTRY_SELECTIONS["batch-switch"]["country"],
+            "39",
+        )
+        sms_provider.report_activation_failure("a2", "delivery_refused")
+
+        selected = sms_provider._GRIZZLY_BATCH_COUNTRY_SELECTIONS["batch-switch"]
+        self.assertEqual(selected["country"], "31")
+        self.assertEqual(selected["active_index"], 1)
 
     def test_natural_terminal_order_is_removed_from_cancel_queue(self):
         with tempfile.TemporaryDirectory() as td:

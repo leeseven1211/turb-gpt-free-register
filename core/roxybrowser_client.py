@@ -791,11 +791,18 @@ class RoxyBrowserClient:
 
 
 def cleanup_orphaned_profiles() -> dict:
-    """关闭并软删除上次 WebUI 异常退出后遗留的临时环境。"""
+    """关闭并软删除上次 WebUI 异常退出后遗留的临时环境。
+
+    调试时显式开启 ROXY_KEEP_BROWSER_OPEN，重启也必须保留现场；否则为了热加载
+    代码而重启 WebUI 会反过来销毁用户要求保留的浏览器。
+    """
     with _PROFILE_REGISTRY_LOCK:
         items = _load_profile_registry_locked()
     if not items:
         return {"found": 0, "cleaned": 0, "failed": 0}
+    if bool(getattr(_cfg, "ROXY_KEEP_BROWSER_OPEN", False)):
+        logger.info("[Roxy] ROXY_KEEP_BROWSER_OPEN=True，启动恢复保留 %s 个环境", len(items))
+        return {"found": len(items), "cleaned": 0, "failed": 0, "kept": len(items)}
 
     client = RoxyBrowserClient()
     cleaned = 0

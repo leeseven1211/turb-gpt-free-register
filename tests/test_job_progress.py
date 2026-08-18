@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core import db
+from core import db, registration_service
 from webui.app import _compact_job_for_list, _latest_progress_batch, create_app
 from tests.support_pg import PostgresTestCase
 
@@ -76,6 +76,70 @@ class JobProgressTests(PostgresTestCase):
                 self.assertEqual(row["progress_steps"]["codex"]["detail"], "OAuth 失败")
                 self.assertEqual(row["progress_steps"]["plan_check"]["state"], "success")
                 self.assertEqual(row["progress_steps"]["complete"]["state"], "failed")
+
+    def test_partial_success_can_create_codex_retry_job(self):
+        with tempfile.TemporaryDirectory() as td:
+            patches = self._storage_patches(Path(td))
+            with patches[0], patches[1], patches[2], patches[3]:
+                source = db.create_job("icloud_hide")
+                db.update_job(
+                    source["id"],
+                    status="partial_success",
+                    email="demo@example.com",
+                    account_id=42,
+                )
+
+                retry, created = db.create_retry_job(
+                    source["id"],
+                    job_type="codex_retry",
+                    email_source="icloud_hide",
+                    email="demo@example.com",
+                    account_id=42,
+                )
+
+                self.assertTrue(created)
+                self.assertEqual(retry["retry_action"], "codex")
+                self.assertEqual(retry["parent_job_id"], source["id"])
+
+    def test_partial_success_with_codex_failure_is_retryable(self):
+        job = {
+            "id": 9,
+            "status": "partial_success",
+            "account_id": 42,
+            "progress_steps": {
+                "codex": {"state": "failed"},
+                "twofa": {"state": "success"},
+            },
+        }
+        account = {"id": 42, "email": "demo@example.com", "codex_status": "failed"}
+        with patch.object(db, "get_successful_retry_for_job", return_value=None), patch.object(
+            registration_service, "_account_for_job", return_value=account
+        ):
+            info = registration_service.get_retry_info(job)
+
+        self.assertEqual(info["display_status"], "partial_success")
+        self.assertTrue(info["retryable"])
+        self.assertEqual(info["retry_action"], "codex")
+
+    def test_twofa_only_failure_stays_partial_without_wrong_codex_retry(self):
+        job = {
+            "id": 10,
+            "status": "partial_success",
+            "account_id": 43,
+            "progress_steps": {
+                "codex": {"state": "success"},
+                "twofa": {"state": "failed"},
+            },
+        }
+        account = {"id": 43, "email": "twofa@example.com", "codex_status": "success"}
+        with patch.object(db, "get_successful_retry_for_job", return_value=None), patch.object(
+            registration_service, "_account_for_job", return_value=account
+        ):
+            info = registration_service.get_retry_info(job)
+
+        self.assertEqual(info["display_status"], "partial_success")
+        self.assertFalse(info["retryable"])
+        self.assertIn("2FA", info["retry_reason"])
 
     def test_historical_job_marks_new_auth_redirect_stage_skipped(self):
         row = {

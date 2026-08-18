@@ -6,6 +6,7 @@
   2. 三个 claim_* 跨连接互斥，且超时能回收
   3. 单字段更新只写变化的那一行，不再重写整个集合
 """
+import json
 import threading
 import unittest
 from datetime import datetime, timedelta
@@ -216,6 +217,45 @@ class StartupRecoveryTests(PostgresTestCase):
         finished = {self.job_ids[0], self.job_ids[1], self.job_ids[4]}
         self.assertFalse(rewritten & finished,
                          f"已完成的任务被重写了: {sorted(rewritten & finished)}")
+
+
+class TotpSecretTests(PostgresTestCase):
+    """TOTP secret 必须同时落到账号和邮箱素材上。
+
+    只写进一边的话，人工拿邮箱素材登录时会因为缺 2FA 密钥而进不去。
+    """
+
+    def setUp(self):
+        rs.reset_ready()
+        rs.init()
+        rs.insert_row(ACCOUNTS, {"email": "totp@example.test"})
+        rs.insert_row(OUTLOOK_POOL, {"email": "totp@example.test", "status": "used"})
+
+    def test_secret_lands_on_both_account_and_mailbox(self):
+        self.assertTrue(db.update_account_totp_secret("totp@example.test", "SECRET123"))
+        self.assertEqual(
+            rs.get_row_by(ACCOUNTS, "email", "totp@example.test")["totp_secret"], "SECRET123")
+        self.assertEqual(
+            rs.get_row_by(OUTLOOK_POOL, "email", "totp@example.test")["totp_secret"], "SECRET123")
+
+    def test_missing_mailbox_still_updates_the_account(self):
+        rs.insert_row(ACCOUNTS, {"email": "lonely@example.test"})
+        self.assertTrue(db.update_account_totp_secret("lonely@example.test", "ONLYACC"))
+        self.assertEqual(
+            rs.get_row_by(ACCOUNTS, "email", "lonely@example.test")["totp_secret"], "ONLYACC")
+
+    def test_setup_pending_flag_round_trips_through_extra_json(self):
+        db.update_account_totp_secret("totp@example.test", "S1", setup_pending=True)
+        row = rs.get_row_by(ACCOUNTS, "email", "totp@example.test")
+        self.assertIn("totp_setup_pending", json.loads(row["extra_json"]))
+
+        db.update_account_totp_secret("totp@example.test", "S1", setup_pending=False)
+        row = rs.get_row_by(ACCOUNTS, "email", "totp@example.test")
+        self.assertIsNone(row["extra_json"])
+
+    def test_empty_secret_and_unknown_email_are_rejected(self):
+        self.assertFalse(db.update_account_totp_secret("totp@example.test", "  "))
+        self.assertFalse(db.update_account_totp_secret("nobody@example.test", "X"))
 
 
 if __name__ == "__main__":

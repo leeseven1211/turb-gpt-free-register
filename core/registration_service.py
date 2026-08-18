@@ -43,6 +43,13 @@ class StopRequested(RuntimeError):
 
 def _activate_job(job_id: int) -> None:
     _THREAD_CTX.job_id = int(job_id)
+    try:
+        from core import sms_provider
+
+        job = db.get_job(int(job_id)) or {}
+        sms_provider.set_sms_batch_context(str(job.get("batch_id") or f"job-{job_id}"))
+    except Exception:
+        logger.exception("[Job %s] 设置接码批次上下文失败", job_id)
     with _STOP_LOCK:
         _STOP_EVENTS.setdefault(int(job_id), threading.Event())
         _ACTIVE_JOBS.add(int(job_id))
@@ -54,6 +61,12 @@ def _deactivate_job(job_id: int) -> None:
         _ACTIVE_JOBS.discard(int(job_id))
     try:
         delattr(_THREAD_CTX, "job_id")
+    except Exception:
+        pass
+    try:
+        from core import sms_provider
+
+        sms_provider.clear_sms_batch_context()
     except Exception:
         pass
 
@@ -86,6 +99,21 @@ def report_job_progress(stage: str, state: str = "running", detail: str | None =
         db.update_job_progress(int(job_id), stage, state=state, detail=detail)
     except Exception:
         logger.exception("[Job %s] 写入进度失败: stage=%s state=%s", job_id, stage, state)
+
+
+def report_registered_account(account_id: int) -> None:
+    """注册主体一旦落库，立即把账号绑定到当前任务。
+
+    2FA、Codex 或 WebUI 进程随后中断时，启动恢复逻辑仍能定位并保留这个账号。
+    CLI 场景没有 job_id 时自动忽略。
+    """
+    job_id = getattr(_THREAD_CTX, "job_id", None)
+    if not job_id:
+        return
+    try:
+        db.update_job(int(job_id), account_id=int(account_id))
+    except Exception:
+        logger.exception("[Job %s] 绑定注册账号失败: account_id=%s", job_id, account_id)
 
 
 def _append_job_log(job_id: int, message: str) -> None:
@@ -315,7 +343,15 @@ def _run_one_job(job_id: int, log_file: str) -> None:
 
             log_logger.info(f"[Job {job_id}] 开始注册任务")
             db.update_job(job_id, proxy_status="acquiring")
-            proxy_lease = acquire_registration_proxy(job_id=job_id)
+            proxy_lease = acquire_registration_proxy(
+                job_id=job_id,
+                progress_callback=lambda detail: db.update_job_progress(
+                    job_id,
+                    "email",
+                    state="running",
+                    detail=detail,
+                ),
+            )
             db.update_job(
                 job_id,
                 proxy_provider=proxy_lease.provider,
@@ -365,16 +401,43 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 )
                 log_logger.warning(f"[Job {job_id}] 已按用户请求停止")
                 return
-            if isinstance(result, dict) and result.get("success"):
+            result_is_dict = isinstance(result, dict)
+            registration_succeeded = bool(
+                result_is_dict
+                and (
+                    result.get("registration_success")
+                    or result.get("success")
+                    or result.get("account_id")
+                )
+            )
+            partial_success = bool(
+                registration_succeeded
+                and (
+                    result.get("partial_success")
+                    or result.get("postprocess_success") is False
+                    or not result.get("success")
+                )
+            )
+            if registration_succeeded:
                 db.finish_job_progress(job_id, success=True)
+                final_status = "partial_success" if partial_success else "success"
+                warning = str(result.get("error") or "").strip()
                 db.update_job(
                     job_id,
-                    status="success",
+                    status=final_status,
                     email=result.get("email"),
                     account_id=result.get("account_id"),
+                    error=warning[:500] if warning else None,
                     completed_at=datetime.now().isoformat(timespec="seconds"),
                 )
-                log_logger.info(f"[Job {job_id}] 成功: {result.get('email')}")
+                if partial_success:
+                    log_logger.warning(
+                        "[Job %s] 注册主体成功，后置步骤部分未完成: %s",
+                        job_id,
+                        warning or "请查看 Codex/2FA 子步骤",
+                    )
+                else:
+                    log_logger.info(f"[Job {job_id}] 成功: {result.get('email')}")
             else:
                 # 注意：失败也可能伴随 account_id（如 Codex 失败但账号已注册成功）
                 err = (result or {}).get("error") if isinstance(result, dict) else "unknown"
@@ -594,7 +657,7 @@ def get_retry_info(job: dict) -> dict:
         "retry_reason": None,
         "display_status": status,
     }
-    if status not in ("failed", "stopped", "cancelled"):
+    if status not in ("failed", "partial_success", "stopped", "cancelled"):
         return info
 
     successful_retry = db.get_successful_retry_for_job(int(job.get("id") or 0))
@@ -604,8 +667,25 @@ def get_retry_info(job: dict) -> dict:
         return info
 
     account = _account_for_job(job)
-    if account and job.get("account_id") is not None and status in ("failed", "stopped"):
-        info["display_status"] = "success" if (account.get("codex_status") or "") == "success" else "partial_success"
+    steps = job.get("progress_steps") if isinstance(job.get("progress_steps"), dict) else {}
+    twofa_step = steps.get("twofa") if isinstance(steps.get("twofa"), dict) else {}
+    twofa_failed = str(twofa_step.get("state") or "") == "failed"
+    if not twofa_failed and account:
+        try:
+            import json
+
+            extra = json.loads(str(account.get("extra_json") or "{}"))
+            twofa = extra.get("twofa") if isinstance(extra, dict) else None
+            twofa_failed = isinstance(twofa, dict) and str(twofa.get("status") or "") == "failed"
+        except Exception:
+            pass
+
+    if account and job.get("account_id") is not None:
+        info["display_status"] = (
+            "success"
+            if (account.get("codex_status") or "") == "success" and not twofa_failed
+            else "partial_success"
+        )
 
     if account:
         codex_status = str(account.get("codex_status") or "")
@@ -613,7 +693,11 @@ def get_retry_info(job: dict) -> dict:
             info["retry_reason"] = "账号已废号，不能补跑 Codex"
             return info
         if codex_status == "success":
-            info["retry_reason"] = "账号和 Codex 授权均已完成"
+            info["retry_reason"] = (
+                "账号和 Codex 授权已完成，但 2FA 未完成；当前仅支持自动补跑 Codex"
+                if twofa_failed
+                else "账号和 Codex 授权均已完成"
+            )
             return info
         info.update({
             "retryable": True,
@@ -772,7 +856,7 @@ def request_stop_job(job_id: int) -> dict:
         db.update_job(job_id, status="cancelled", completed_at=now_iso, error="用户手动停止/取消排队")
         _append_job_log(job_id, "用户手动停止：任务尚未运行，已取消排队。")
         return {"ok": True, "message": "排队任务已取消", "job_id": job_id, "state": "cancelled"}
-    if status in ("success", "failed", "cancelled", "stopped"):
+    if status in ("success", "partial_success", "failed", "cancelled", "stopped"):
         return {"ok": True, "message": f"任务已结束：{status}", "job_id": job_id, "state": status}
     if status in ("running", "stopping"):
         with _STOP_LOCK:
