@@ -21,7 +21,7 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
-from core import postgres_store, record_store
+from core import compat_export, postgres_store, record_store
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DATA_DIR = _PROJECT_ROOT
@@ -561,8 +561,10 @@ def _load_outlook() -> list[dict]:
     return _load_table(record_store.OUTLOOK_POOL)
 
 
-def _export_outlook(rows: list[dict]) -> None:
-    """兼容导出。第 4 步会改成去抖后台任务。"""
+def _export_outlook() -> None:
+    rows = _load_outlook()
+    for row in rows:
+        row["copy_line"] = _outlook_line(row)
     _write_json(_OUTLOOK_JSON, rows)
     _sync_outlook_txt(rows)
     _render_static_viewer(outlook_rows=rows)
@@ -570,30 +572,36 @@ def _export_outlook(rows: list[dict]) -> None:
 
 def _save_outlook(rows: list[dict]) -> None:
     _sync_table(record_store.OUTLOOK_POOL, rows)
-    _export_outlook(rows)
+    compat_export.schedule("outlook")
 
 
 def _load_generic_api_emails() -> list[dict]:
     return _load_table(record_store.GENERIC_API_POOL)
 
 
-def _export_generic_api_emails(rows: list[dict]) -> None:
+def _export_generic_api_emails() -> None:
+    rows = _load_generic_api_emails()
+    for row in rows:
+        row["copy_line"] = _generic_api_email_line(row)
     _write_json(_GENERIC_API_EMAIL_JSON, rows)
     _sync_generic_api_email_txt(rows)
 
 
 def _save_generic_api_emails(rows: list[dict]) -> None:
-    for row in rows:
-        row["copy_line"] = _generic_api_email_line(row)
     _sync_table(record_store.GENERIC_API_POOL, rows)
-    _export_generic_api_emails(rows)
+    compat_export.schedule("generic_api_emails")
 
 
 def _load_accounts() -> list[dict]:
     return _load_table(record_store.ACCOUNTS)
 
 
-def _export_accounts(rows: list[dict]) -> None:
+def _export_accounts() -> None:
+    # copy_line 是派生字段，不入库：读路径由 _decorate_account 现算，
+    # 这里只为保持兼容文件的历史字段不变而补上。
+    rows = _load_accounts()
+    for row in rows:
+        row["copy_line"] = _account_line(row)
     _write_json(_ACCOUNTS_JSON, rows)
     _sync_accounts_txt(rows)
     _sync_tokens_txt(rows)
@@ -601,40 +609,65 @@ def _export_accounts(rows: list[dict]) -> None:
 
 
 def _save_accounts(rows: list[dict]) -> None:
-    for row in rows:
-        row["copy_line"] = _account_line(row)
     _sync_table(record_store.ACCOUNTS, rows)
-    _export_accounts(rows)
+    compat_export.schedule("accounts")
 
 
 def _load_jobs() -> list[dict]:
     return _load_table(record_store.JOBS)
 
 
-def _export_jobs(rows: list[dict]) -> None:
-    _write_json(_JOBS_JSON, rows)
+def _export_jobs() -> None:
+    _write_json(_JOBS_JSON, _load_jobs())
 
 
 def _save_jobs(rows: list[dict]) -> None:
     _sync_table(record_store.JOBS, rows)
-    _export_jobs(rows)
+    compat_export.schedule("jobs")
+
+
+compat_export.register("accounts", _export_accounts)
+compat_export.register("jobs", _export_jobs)
+compat_export.register("outlook", _export_outlook)
+compat_export.register("generic_api_emails", _export_generic_api_emails)
+
+
+def _patch_row_and_export(spec, row_id: int, changes: dict, kind: str) -> bool:
+    """单行更新的快路径。
+
+    走 _load_X/_save_X 那条接缝要读全表并逐行比对签名（243 个账号约 210 ms）；
+    只改一行时没必要——直接发一条 UPDATE 即可（约 18 ms）。热路径用这个，
+    需要整表语义的地方（批量导入、跨表事务）仍走接缝。
+    """
+    changed = record_store.patch_row(spec, int(row_id), changes)
+    if changed:
+        compat_export.schedule(kind)
+    return changed
+
+
+def _patch_account(acc_id: int, changes: dict) -> bool:
+    return _patch_row_and_export(record_store.ACCOUNTS, acc_id, changes, "accounts")
+
+
+def _patch_job(job_id: int, changes: dict) -> bool:
+    return _patch_row_and_export(record_store.JOBS, job_id, changes, "jobs")
 
 
 def _save_together(*pairs) -> None:
-    """把多张表的写入并进同一个事务，再统一做兼容导出。
+    """把多张表的写入并进同一个事务，再各自排队兼容导出。
 
     用于 insert_account / import_registered_email_accounts /
     recover_interrupted_registration_jobs 这三个跨集合操作：它们原先是两次独立
     落盘，中间失败会留下"账号已创建但邮箱池没标记 used"这种半完成状态。
 
-    每个 pair 是 (spec, rows, export_fn)。
+    每个 pair 是 (spec, rows, 导出种类名)。
     """
     with record_store.transaction() as conn:
-        for spec, rows, _export in pairs:
+        for spec, rows, _kind in pairs:
             _sync_table(spec, rows, conn=conn)
-    for _spec, rows, export in pairs:
-        if export is not None:
-            export(rows)
+    for _spec, _rows, kind in pairs:
+        if kind:
+            compat_export.schedule(kind)
 
 
 def _find_by_email(rows: list[dict], email: str) -> dict | None:
@@ -810,8 +843,8 @@ def insert_account(
         # 账号和邮箱池必须一起提交：分两次落盘时，中间失败会留下"账号已创建
         # 但邮箱没标记 used"，这个邮箱之后会被再领一次、重复注册。
         _save_together(
-            (record_store.ACCOUNTS, accounts, _export_accounts),
-            (record_store.OUTLOOK_POOL, outlook_rows, _export_outlook),
+            (record_store.ACCOUNTS, accounts, "accounts"),
+            (record_store.OUTLOOK_POOL, outlook_rows, "outlook"),
         )
         return row_id
 
@@ -821,36 +854,32 @@ def update_account_codex_status(email: str, codex_status: str, codex_error: str 
     单独更新某账号的 codex_status / codex_error（手动补跑 Codex 时用）。
     返回是否找到该账号。
     """
-    with _LOCK:
-        accounts = _load_accounts()
-        row = _find_by_email(accounts, email)
-        if row is None:
-            return False
-        row["codex_status"] = codex_status
-        row["codex_error"] = codex_error
-        row["updated_at"] = _now()
-        _save_accounts(accounts)
-        return True
+    row = record_store.get_row_by(record_store.ACCOUNTS, "email", email, lower=True)
+    if row is None:
+        return False
+    return _patch_account(int(row["id"]), {
+        "codex_status": codex_status,
+        "codex_error": codex_error,
+        "updated_at": _now(),
+    })
 
 
 def update_account_token_metadata(acc_id: int, access_token: str) -> bool:
     """只同步当前 AT 的 JWT 到期信息，不改动账号状态或 Token 内容。"""
     from core.chatgpt_plan import token_claims
     claims = token_claims(access_token)
-    with _LOCK:
-        accounts = _load_accounts()
-        row = next((r for r in accounts if int(r.get("id") or 0) == int(acc_id)), None)
-        if row is None or str(row.get("access_token") or "").strip() != str(access_token or "").strip():
-            return False
-        expires_at = claims.get("token_expires_at")
-        expired = claims.get("token_expired")
-        if row.get("token_expires_at") == expires_at and row.get("token_expired") == expired:
-            return True
-        row["token_expires_at"] = expires_at
-        row["token_expired"] = expired
-        row["updated_at"] = _now()
-        _save_accounts(accounts)
-        return True
+    row = record_store.get_row(record_store.ACCOUNTS, int(acc_id))
+    if row is None or str(row.get("access_token") or "").strip() != str(access_token or "").strip():
+        return False
+    expires_at = claims.get("token_expires_at")
+    expired = claims.get("token_expired")
+    if row.get("token_expires_at") == expires_at and row.get("token_expired") == expired:
+        return True   # 内容没变就不写，避免无谓地触发一次兼容导出
+    return _patch_account(acc_id, {
+        "token_expires_at": expires_at,
+        "token_expired": expired,
+        "updated_at": _now(),
+    })
 
 
 def sync_account_token_metadata(items: list[tuple[int, str]]) -> int:
@@ -1308,17 +1337,12 @@ def get_account_by_email(email: str) -> dict | None:
 
 def update_account_note(acc_id: int, note: str) -> bool:
     """更新单个已注册账号备注。note 为空字符串时表示清空备注。"""
-    with _LOCK:
-        rows = _load_accounts()
-        row = next((r for r in rows if int(r.get("id") or 0) == int(acc_id)), None)
-        if row is None:
-            return False
-        now = _now()
-        row["note"] = str(note or "")
-        row["note_updated_at"] = now
-        row["updated_at"] = now
-        _save_accounts(rows)
-        return True
+    now = _now()
+    return _patch_account(acc_id, {
+        "note": str(note or ""),
+        "note_updated_at": now,
+        "updated_at": now,
+    })
 
 
 def update_account_registration_proxy(
@@ -1821,9 +1845,9 @@ def import_registered_email_accounts(records: list[dict], source: str | None) ->
         for row in accounts:
             row["copy_line"] = _account_line(row)
         _save_together(
-            (record_store.OUTLOOK_POOL, outlook_rows, _export_outlook),
-            (record_store.GENERIC_API_POOL, generic_rows, _export_generic_api_emails),
-            (record_store.ACCOUNTS, accounts, _export_accounts),
+            (record_store.OUTLOOK_POOL, outlook_rows, "outlook"),
+            (record_store.GENERIC_API_POOL, generic_rows, "generic_api_emails"),
+            (record_store.ACCOUNTS, accounts, "accounts"),
         )
         return inserted, skipped
 
@@ -2532,8 +2556,7 @@ def update_job_progress(
         raise ValueError(f"未知阶段状态: {state}")
 
     with _LOCK:
-        rows = _load_jobs()
-        row = next((r for r in rows if int(r.get("id") or 0) == int(job_id)), None)
+        row = record_store.get_row(record_store.JOBS, int(job_id))
         if row is None:
             return
         now = _now()
@@ -2561,10 +2584,11 @@ def update_job_progress(
         if detail is not None:
             item["detail"] = str(detail)[:300]
         steps[stage] = item
-        row["progress_steps"] = steps
-        row["progress_stage"] = stage
-        row["progress_updated_at"] = now
-        _save_jobs(rows)
+        _patch_job(job_id, {
+            "progress_steps": steps,
+            "progress_stage": stage,
+            "progress_updated_at": now,
+        })
 
 
 def finish_job_progress(
@@ -2692,11 +2716,11 @@ def recover_interrupted_registration_jobs() -> int:
         if recovered or account_changed:
             pairs = []
             if recovered:
-                pairs.append((record_store.JOBS, rows, _export_jobs))
+                pairs.append((record_store.JOBS, rows, "jobs"))
             if account_changed:
                 for account in accounts:
                     account["copy_line"] = _account_line(account)
-                pairs.append((record_store.ACCOUNTS, accounts, _export_accounts))
+                pairs.append((record_store.ACCOUNTS, accounts, "accounts"))
             _save_together(*pairs)
         return recovered
 

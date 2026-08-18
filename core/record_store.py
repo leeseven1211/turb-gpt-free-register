@@ -194,6 +194,11 @@ def reset_ready() -> None:
 # 行 <-> 扁平 dict
 # ============================================================
 
+# 读时现算的派生字段，永不入库。在这里统一拦掉，好过指望十几个调用点都记得
+# 不要把它塞进来；它们仍会把值放在返回给接口的 dict 上，那是对的。
+_NEVER_PERSIST = {"copy_line", "account_copy_line"}
+
+
 def _split(spec: TableSpec, payload: dict, *, partial: bool) -> tuple[dict[str, Any], dict[str, Any]]:
     """把扁平 payload 拆成 (提升列, data)。
 
@@ -209,7 +214,7 @@ def _split(spec: TableSpec, payload: dict, *, partial: bool) -> tuple[dict[str, 
         elif col in payload:
             promoted[col] = payload[col]
     rest = {k: v for k, v in payload.items()
-            if k not in spec.promoted and k not in ("id", "data")}
+            if k not in spec.promoted and k not in ("id", "data") and k not in _NEVER_PERSIST}
     return promoted, rest
 
 

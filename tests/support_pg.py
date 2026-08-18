@@ -85,6 +85,7 @@ class PostgresTestCase(unittest.TestCase):
 
     schema: str = ""
     _previous_schema: str | None = None
+    _previous_export_mode: str | None = None
 
     # db 里那些指向仓库根目录真实文件的常量
     _REDIRECTED_PATHS = (
@@ -103,6 +104,10 @@ class PostgresTestCase(unittest.TestCase):
         cls.schema = temporary_schema_name(cls.__name__)
         cls._previous_schema = os.environ.get("TURB_DB_SCHEMA")
         os.environ["TURB_DB_SCHEMA"] = cls.schema
+        # 兼容导出在测试里同步执行：后台去抖会让"写完立刻断言文件"变成竞态。
+        # 去抖本身由 tests/test_compat_export.py 专门覆盖。
+        cls._previous_export_mode = os.environ.get("COMPAT_EXPORT_MODE")
+        os.environ["COMPAT_EXPORT_MODE"] = "sync"
         postgres_store.reset_cache()
         postgres_store.ensure_schema()
 
@@ -127,6 +132,10 @@ class PostgresTestCase(unittest.TestCase):
                 os.environ.pop("TURB_DB_SCHEMA", None)
             else:
                 os.environ["TURB_DB_SCHEMA"] = cls._previous_schema
+            if getattr(cls, "_previous_export_mode", None) is None:
+                os.environ.pop("COMPAT_EXPORT_MODE", None)
+            else:
+                os.environ["COMPAT_EXPORT_MODE"] = cls._previous_export_mode
             postgres_store.reset_cache()
             super().tearDownClass()
 

@@ -13,6 +13,7 @@ WebUI 启动入口。
 import argparse
 import logging
 import os
+import signal
 import tempfile
 import webbrowser
 from pathlib import Path
@@ -138,10 +139,25 @@ def main() -> None:
     if args.open_browser:
         Timer(1.0, lambda: webbrowser.open(url)).start()
 
+    # webui.sh stop 发的是 SIGTERM，而 Python 默认直接终止进程：finally 和 atexit
+    # 都不会执行，去抖窗口里没落盘的兼容导出就丢了。转成 SystemExit 走正常退出路径。
+    def _graceful_exit(signum, _frame):
+        logger.info("收到信号 %s，正在优雅退出", signum)
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, _graceful_exit)
+
     # debug=False：避免 reloader 双进程导致线程池/定时器重复
     try:
         app.run(host=args.host, port=args.port, debug=False, threaded=True)
+    except SystemExit:
+        pass
     finally:
+        # 把去抖窗口里还没落盘的兼容导出补上，避免文件停留在旧内容
+        from core import compat_export
+        flushed = compat_export.flush()
+        if flushed:
+            logger.info("退出前已补写兼容导出：%s", "、".join(flushed))
         _release_single_instance(instance_lock)
 
 
