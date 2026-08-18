@@ -42,6 +42,34 @@ def enabled() -> bool:
     return bool(database_url())
 
 
+# 生产库名。开发分支/开发目录一律不准连它——这条护栏的由来是一次真实事故：
+# 未完成的存储层代码被线上服务加载，把 361 条注册任务写成了 5 条。
+# 需要在生产库上跑（例如正式迁移当天）必须显式设 TURB_ALLOW_PRODUCTION_DB=1。
+_PRODUCTION_DATABASES = {"turb_console"}
+
+
+def _database_name(url: str) -> str:
+    from urllib.parse import urlparse
+    try:
+        return (urlparse(url).path or "").lstrip("/").strip()
+    except Exception:
+        return ""
+
+
+def _guard_production_database(url: str) -> None:
+    name = _database_name(url)
+    if name not in _PRODUCTION_DATABASES:
+        return
+    if os.getenv("TURB_ALLOW_PRODUCTION_DB") == "1":
+        return
+    raise SystemExit(
+        f"拒绝连接生产数据库 {name!r}。\n"
+        "本分支的存储层仍在改造中，连生产库有覆盖真实数据的风险。\n"
+        "开发请指向测试库：DATABASE_URL=...:55432/turb_dev\n"
+        "确实要对生产库执行（如正式迁移）：TURB_ALLOW_PRODUCTION_DB=1"
+    )
+
+
 def schema_name() -> str:
     """当前 PostgreSQL schema。测试通过 TURB_DB_SCHEMA 指向临时 schema 做隔离。"""
     return str(os.getenv("TURB_DB_SCHEMA") or "public").strip() or "public"
@@ -101,6 +129,8 @@ def connect(url: str | None = None, **kwargs):
     target = str(url or database_url()).strip()
     if not target:
         raise RuntimeError("DATABASE_URL 未配置")
+    # 挂在唯一的连接出口上：任何代码路径都绕不过这道检查
+    _guard_production_database(target)
     return psycopg.connect(target, connect_timeout=5, **kwargs)
 
 
