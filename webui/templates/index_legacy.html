@@ -1239,7 +1239,7 @@ async function pollLog() {
     const atBottom = c.scrollTop + c.clientHeight >= c.scrollHeight - 30;
     c.textContent = r.log || '(暂无日志)';
     if (atBottom) c.scrollTop = c.scrollHeight;
-    if (r.job && ['success','failed','stopped','cancelled'].includes(r.job.status)) clearInterval(logTimer);
+    if (r.job && ['success','partial_success','failed','stopped','cancelled'].includes(r.job.status)) clearInterval(logTimer);
   } catch(e) {}
 }
 
@@ -2780,8 +2780,8 @@ function emailConfigSectionForKey(key) {
 
 
 function smsConfigSectionForKey(key) {
-  if (['SMS_PROVIDER','SMS_COUNTRY','SMS_SERVICE','SMS_MAX_PRICE','SMS_MAX_RETRIES','SMS_CODE_WAIT'].includes(key)) {
-    return ['通用接码', '接码通道选择、国家/服务代码、等待和重试参数；H 通道可复用 SMS_SERVICE/SMS_COUNTRY 作为 projectId/country'];
+  if (['SMS_PROVIDER','SMS_COUNTRY','SMS_SERVICE','SMS_MAX_PRICE','SMS_AUTO_SELECT_COUNTRY','SMS_AUTO_COUNTRY_MIN_RATIO','SMS_MAX_RETRIES','SMS_CODE_WAIT','CODEX_PHONE_TOTAL_TIMEOUT'].includes(key)) {
+    return ['通用接码', '接码通道选择、国家/服务代码、批次成功率选国、等待和重试参数；H 通道可复用 SMS_SERVICE/SMS_COUNTRY 作为 projectId/country'];
   }
   if (key === 'SMS_API_KEY') return ['GrizzlySMS', 'GrizzlySMS 平台 API Key 配置'];
   if (key.startsWith('H_')) return ['H 接码', 'H_API.md 本地 H 取号服务配置；项目ID/国家留空时复用通用字段'];

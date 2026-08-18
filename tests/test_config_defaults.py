@@ -88,6 +88,41 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             env_loader._LOADED = old_loaded
             importlib.reload(codex_config)
 
+    def test_grizzly_auto_country_fields_are_env_editable(self):
+        fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
+        self.assertIn("SMS_AUTO_SELECT_COUNTRY", fields)
+        self.assertIn("SMS_AUTO_COUNTRY_MIN_RATIO", fields)
+        self.assertEqual(fields["SMS_AUTO_SELECT_COUNTRY"]["group"], "接码平台")
+
+        old_loaded = env_loader._LOADED
+        env_loader._LOADED = True
+        try:
+            with patch.dict(os.environ, {
+                "SMS_AUTO_SELECT_COUNTRY": "False",
+                "SMS_AUTO_COUNTRY_MIN_RATIO": "50",
+            }, clear=False):
+                reloaded = importlib.reload(codex_config)
+                self.assertFalse(reloaded.SMS_AUTO_SELECT_COUNTRY)
+                self.assertEqual(reloaded.SMS_AUTO_COUNTRY_MIN_RATIO, 50)
+        finally:
+            env_loader._LOADED = old_loaded
+            importlib.reload(codex_config)
+
+    def test_codex_phone_total_timeout_is_env_editable(self):
+        fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
+        self.assertIn("CODEX_PHONE_TOTAL_TIMEOUT", fields)
+        self.assertEqual(fields["CODEX_PHONE_TOTAL_TIMEOUT"]["group"], "接码平台")
+
+        old_loaded = env_loader._LOADED
+        env_loader._LOADED = True
+        try:
+            with patch.dict(os.environ, {"CODEX_PHONE_TOTAL_TIMEOUT": "240"}, clear=False):
+                reloaded = importlib.reload(codex_config)
+                self.assertEqual(reloaded.CODEX_PHONE_TOTAL_TIMEOUT, 240)
+        finally:
+            env_loader._LOADED = old_loaded
+            importlib.reload(codex_config)
+
     def test_account_batch_workers_are_managed_in_general_config(self):
         fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
         self.assertIn("ACCOUNT_BATCH_WORKERS", fields)
@@ -163,7 +198,8 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         expected = {
             "REGISTRATION_PROXY_MODE", "PROXY_1024_API_URL", "PROXY_1024_REGION", "PROXY_1024_PROTOCOL",
             "PROXY_1024_SESSION_MINUTES", "PROXY_1024_ROTATE_SESSION_TIME", "PROXY_1024_API_TIMEOUT",
-            "PROXY_1024_MAX_ATTEMPTS", "PROXY_1024_VALIDATE",
+            "PROXY_1024_MAX_ATTEMPTS", "PROXY_1024_ACQUIRE_TIMEOUT", "PROXY_1024_VALIDATE",
+            "PROXY_1024_VALIDATE_ATTEMPTS",
             "PROXY_1024_RECENT_TTL", "PROXY_1024_ACQUIRE_INTERVAL",
             "ACCOUNT_ACTION_PROXY_MODE", "ACCOUNT_ACTION_PROXY",
         }

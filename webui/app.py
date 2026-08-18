@@ -310,7 +310,7 @@ def _compact_job_for_list(row: dict) -> dict:
         submit_step = steps.get("submit_email")
         reached_later_stage = any(
             isinstance(steps.get(key), dict)
-            for key in ("email_otp", "profile", "token", "codex")
+            for key in ("email_otp", "profile", "token", "twofa", "codex")
         )
         if isinstance(submit_step, dict) and reached_later_stage:
             # 兼容新增“认证跳转”阶段之前的历史任务，避免已完成批次中间
@@ -324,8 +324,18 @@ def _compact_job_for_list(row: dict) -> dict:
             }
             changed = True
     terminal_status = str(row.get("status") or "")
-    if isinstance(steps, dict) and terminal_status in {"success", "failed", "cancelled", "stopped"}:
+    if isinstance(steps, dict) and terminal_status in {"success", "partial_success", "failed", "cancelled", "stopped"}:
         completed_at = row.get("completed_at")
+        if "twofa" not in steps:
+            prior = steps.get("token") if isinstance(steps.get("token"), dict) else {}
+            twofa_timestamp = prior.get("completed_at") or completed_at
+            steps["twofa"] = {
+                "state": "skipped",
+                "detail": "历史任务未单独记录 2FA 设置耗时",
+                "started_at": twofa_timestamp,
+                "completed_at": twofa_timestamp,
+            }
+            changed = True
         if "plan_check" not in steps:
             prior = steps.get("codex") if isinstance(steps.get("codex"), dict) else {}
             plan_timestamp = prior.get("completed_at") or completed_at
@@ -337,7 +347,7 @@ def _compact_job_for_list(row: dict) -> dict:
             }
             changed = True
         if "complete" not in steps:
-            complete_state = "success" if terminal_status == "success" else "stopped" if terminal_status in {"cancelled", "stopped"} else "failed"
+            complete_state = "success" if terminal_status in {"success", "partial_success"} else "stopped" if terminal_status in {"cancelled", "stopped"} else "failed"
             steps["complete"] = {
                 "state": complete_state,
                 "detail": "历史任务已完成" if complete_state == "success" else "历史任务已结束",

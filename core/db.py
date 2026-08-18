@@ -60,6 +60,7 @@ JOB_PROGRESS_STAGES = (
     ("profile", "填写资料"),
     ("token", "获取 Token"),
     ("codex", "Codex 授权"),
+    ("twofa", "设置 2FA"),
     ("plan_check", "查套餐"),
     ("complete", "完成"),
 )
@@ -742,6 +743,47 @@ def update_account_codex_status(email: str, codex_status: str, codex_error: str 
         row["codex_error"] = codex_error
         row["updated_at"] = _now()
         _save_accounts(accounts)
+        return True
+
+
+def update_account_totp_secret(
+    email: str,
+    totp_secret: str,
+    *,
+    setup_pending: bool | None = None,
+) -> bool:
+    """只更新账号的 TOTP secret/设置检查点，并同步关联邮箱素材。"""
+    secret = str(totp_secret or "").strip()
+    if not secret:
+        return False
+    with _LOCK:
+        accounts = _load_accounts()
+        row = _find_by_email(accounts, email)
+        if row is None:
+            return False
+        row["totp_secret"] = secret
+        if setup_pending is not None:
+            raw_extra = row.get("extra_json") or {}
+            if isinstance(raw_extra, str):
+                try:
+                    raw_extra = json.loads(raw_extra)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    raw_extra = {}
+            extra = dict(raw_extra) if isinstance(raw_extra, dict) else {}
+            if setup_pending:
+                extra["totp_setup_pending"] = True
+            else:
+                extra.pop("totp_setup_pending", None)
+            row["extra_json"] = json.dumps(extra, ensure_ascii=False) if extra else None
+        row["updated_at"] = _now()
+        row["copy_line"] = _account_line(row)
+        _save_accounts(accounts)
+
+        outlook_rows = _load_outlook()
+        outlook_row = _find_by_email(outlook_rows, email)
+        if outlook_row is not None:
+            outlook_row["totp_secret"] = secret
+            _save_outlook(outlook_rows)
         return True
 
 
@@ -2357,7 +2399,7 @@ def create_retry_job(
         source = next((r for r in rows if int(r.get("id") or 0) == int(source_job_id)), None)
         if source is None:
             raise LookupError("任务不存在")
-        if source.get("status") not in ("failed", "stopped", "cancelled"):
+        if source.get("status") not in ("failed", "partial_success", "stopped", "cancelled"):
             raise ValueError(f"当前状态不支持重试：{source.get('status')}")
 
         root_id = int(source.get("root_job_id") or source.get("id"))

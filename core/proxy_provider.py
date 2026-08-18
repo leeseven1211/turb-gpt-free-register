@@ -27,6 +27,10 @@ _PENDING_ENDPOINTS: set[str] = set()
 _LAST_ACQUIRE_AT = 0.0
 
 
+class DuplicateProxyError(RuntimeError):
+    """平台返回了正在使用或仍处隔离期的重复代理；应快速重取，不做出口检测。"""
+
+
 @dataclass
 class ProxyLease:
     lease_id: str
@@ -204,6 +208,42 @@ def _validate_proxy(proxy_url: str, timeout: float) -> tuple[str | None, str | N
     return exit_ip, region
 
 
+def _validate_proxy_with_retries(
+    proxy_url: str,
+    timeout: float,
+    *,
+    attempts: int = 2,
+) -> tuple[str | None, str | None]:
+    """同一端点的瞬时网络/SSL 校验失败先原地重试，避免立刻浪费一条新代理。"""
+    attempts = max(1, min(3, int(attempts or 1)))
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return _validate_proxy(proxy_url, timeout)
+        except Exception as exc:
+            last_error = exc
+            text = str(exc).lower()
+            transient = isinstance(
+                exc,
+                (requests.Timeout, requests.ConnectionError),
+            ) or any(marker in text for marker in (
+                "timed out", "timeout", "connection reset", "connection aborted",
+                "remote disconnected", "ssl", "temporarily unavailable",
+            ))
+            if not transient or attempt >= attempts:
+                raise
+            delay = min(1.0, 0.35 * attempt)
+            logger.warning(
+                "[代理平台] 出口检测瞬时失败，同一端点 %.2fs 后重试（%s/%s）：%s",
+                delay,
+                attempt + 1,
+                attempts,
+                f"{type(exc).__name__}: {str(exc)[:140]}",
+            )
+            time.sleep(delay)
+    raise last_error or RuntimeError("代理出口检测失败")
+
+
 def _cleanup_recent(now: float) -> None:
     expired = [endpoint for endpoint, until in _RECENT_ENDPOINTS.items() if until <= now]
     for endpoint in expired:
@@ -218,6 +258,7 @@ def acquire_1024_proxy(
     session_minutes: int | None = None,
     validate: bool | None = None,
     job_id: int | str | None = None,
+    progress_callback=None,
 ) -> ProxyLease:
     from config import proxy as cfg
 
@@ -228,6 +269,8 @@ def acquire_1024_proxy(
     rotate_session_time = bool(getattr(cfg, "PROXY_1024_ROTATE_SESSION_TIME", True))
     timeout = float(getattr(cfg, "PROXY_1024_API_TIMEOUT", 12.0) or 12.0)
     attempts = max(1, min(10, int(getattr(cfg, "PROXY_1024_MAX_ATTEMPTS", 3) or 3)))
+    validate_attempts = max(1, min(3, int(getattr(cfg, "PROXY_1024_VALIDATE_ATTEMPTS", 2) or 2)))
+    acquire_timeout = max(timeout, float(getattr(cfg, "PROXY_1024_ACQUIRE_TIMEOUT", 60.0) or 60.0))
     should_validate = bool(getattr(cfg, "PROXY_1024_VALIDATE", True)) if validate is None else bool(validate)
     recent_ttl = max(0, int(getattr(cfg, "PROXY_1024_RECENT_TTL", minutes * 60) or 0))
     interval = max(0.0, float(getattr(cfg, "PROXY_1024_ACQUIRE_INTERVAL", 0.6) or 0.0))
@@ -245,7 +288,14 @@ def acquire_1024_proxy(
 
     global _LAST_ACQUIRE_AT
     errors: list[str] = []
-    for attempt in range(1, attempts + 1):
+    # 重复端点是平台粘性会话碰撞，不应消耗真正的失败次数；给它额外的快速重取额度，
+    # 但仍受整段获取超时约束，避免无限占用 worker。
+    max_requests = max(attempts, min(30, attempts * 3))
+    substantive_failures = 0
+    deadline = time.monotonic() + acquire_timeout
+    for attempt in range(1, max_requests + 1):
+        if time.monotonic() >= deadline:
+            break
         endpoint = ""
         proxy_url = ""
         endpoint_reserved = False
@@ -277,13 +327,17 @@ def acquire_1024_proxy(
                         or endpoint in _PENDING_ENDPOINTS
                     )
                     if endpoint_duplicate:
-                        raise RuntimeError(f"提取到正在使用或隔离期内的重复代理: {mask_endpoint(endpoint)}")
+                        raise DuplicateProxyError(f"提取到正在使用或隔离期内的重复代理: {mask_endpoint(endpoint)}")
                     _PENDING_ENDPOINTS.add(endpoint)
                     endpoint_reserved = True
 
             exit_ip = region = None
             if should_validate:
-                exit_ip, region = _validate_proxy(proxy_url, timeout)
+                exit_ip, region = _validate_proxy_with_retries(
+                    proxy_url,
+                    timeout,
+                    attempts=validate_attempts,
+                )
                 expected_region = _normalize_region(configured_region)
                 if expected_region and expected_region != "Rand" and region != expected_region:
                     raise RuntimeError(
@@ -301,7 +355,7 @@ def acquire_1024_proxy(
                     or any(exit_ip and lease.exit_ip == exit_ip for lease in _ACTIVE_ENDPOINTS.values())
                 )
                 if duplicate:
-                    raise RuntimeError(f"提取到正在使用或隔离期内的重复代理: {mask_endpoint(endpoint)}")
+                    raise DuplicateProxyError(f"提取到正在使用或隔离期内的重复代理: {mask_endpoint(endpoint)}")
                 lease = ProxyLease(
                     lease_id=str(uuid.uuid4()),
                     provider="1024proxy",
@@ -331,6 +385,10 @@ def acquire_1024_proxy(
             if endpoint_reserved:
                 with _STATE_LOCK:
                     _PENDING_ENDPOINTS.discard(endpoint)
+            # Codex 补跑通过异步异常立即停止线程。它属于控制流信号，不能被代理平台的
+            # 普通重试捕获，否则用户点停止后任务仍会继续申请代理并打开登录页。
+            if type(exc).__name__ == "CodexRetryStopped" and type(exc).__module__ == "core.codex_retry_service":
+                raise
             safe_error = str(exc)
             for secret, replacement in (
                 (request_url, "<1024Proxy API>"),
@@ -341,13 +399,40 @@ def acquire_1024_proxy(
                 if secret:
                     safe_error = safe_error.replace(secret, replacement)
             errors.append(f"{type(exc).__name__}: {safe_error[:180]}")
-            logger.warning("[代理平台] 第 %s/%s 次获取 1024Proxy 失败：%s", attempt, attempts, errors[-1])
-            if attempt < attempts:
-                time.sleep(min(2.0, 0.4 * attempt))
+            duplicate_error = isinstance(exc, DuplicateProxyError)
+            if not duplicate_error:
+                substantive_failures += 1
+            remaining = max(0, int(deadline - time.monotonic()))
+            logger.warning(
+                "[代理平台] 第 %s/%s 次提取失败（有效失败 %s/%s，剩余约 %ss）：%s",
+                attempt,
+                max_requests,
+                substantive_failures,
+                attempts,
+                remaining,
+                errors[-1],
+            )
+            if progress_callback is not None:
+                try:
+                    progress_callback(
+                        f"正在获取代理：提取 {attempt}/{max_requests}，"
+                        f"有效失败 {substantive_failures}/{attempts}，剩余约 {remaining} 秒"
+                    )
+                except Exception:
+                    logger.debug("[代理平台] 进度上报失败", exc_info=True)
+            can_retry = (
+                attempt < max_requests
+                and time.monotonic() < deadline
+                and (duplicate_error or substantive_failures < attempts)
+            )
+            if not can_retry:
+                break
+            delay = min(0.5 if duplicate_error else 2.0, 0.2 * attempt if duplicate_error else 0.4 * substantive_failures)
+            time.sleep(max(0.05, delay))
     raise RuntimeError("1024Proxy 获取失败：" + "；".join(errors[-3:]))
 
 
-def acquire_registration_proxy(*, job_id: int | str | None = None) -> ProxyLease:
+def acquire_registration_proxy(*, job_id: int | str | None = None, progress_callback=None) -> ProxyLease:
     from config import proxy as cfg
 
     mode = registration_proxy_mode()
@@ -357,7 +442,7 @@ def acquire_registration_proxy(*, job_id: int | str | None = None) -> ProxyLease
         driver = str(getattr(roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
         if driver in {"browser_use", "browseruse", "browser-use", "bu", "skyvern", "sv"}:
             raise RuntimeError("1024Proxy 暂不支持 Browser Use/Skyvern 云端浏览器，请改用 protocol、cloak 或 roxy")
-        return acquire_1024_proxy(job_id=job_id)
+        return acquire_1024_proxy(job_id=job_id, progress_callback=progress_callback)
     if mode == "none":
         return ProxyLease(str(uuid.uuid4()), "direct", "", "", datetime.now(), state="leased")
     if mode != "pool":

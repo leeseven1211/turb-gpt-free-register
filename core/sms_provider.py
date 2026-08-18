@@ -53,6 +53,12 @@ _CANCEL_WAKE_EVENT = threading.Event()
 _CANCEL_WORKER: threading.Thread | None = None
 _GRIZZLY_COUNTRY_LOCK = threading.Lock()
 _GRIZZLY_COUNTRY_CURSOR = 0
+_GRIZZLY_PUBLIC_API_BASE = "https://grizzlysms.com/api"
+_SMS_BATCH_CONTEXT = threading.local()
+_GRIZZLY_BATCH_COUNTRY_LOCK = threading.RLock()
+_GRIZZLY_BATCH_COUNTRY_SELECTIONS: dict[str, dict] = {}
+_GRIZZLY_BATCH_COUNTRY_CACHE_LIMIT = 64
+_GRIZZLY_COUNTRY_FAILURE_THRESHOLD = 2
 
 
 class SmsProviderError(RuntimeError):
@@ -96,6 +102,26 @@ def _grizzly_country_candidates(value: str | None = None) -> list[str]:
     return items
 
 
+def set_sms_batch_context(batch_id: str | None) -> None:
+    """把当前线程的接码请求绑定到一个批次；同批次共享 Grizzly 自动选国结果。"""
+    key = str(batch_id or "").strip()
+    if key:
+        _SMS_BATCH_CONTEXT.batch_id = key
+    else:
+        clear_sms_batch_context()
+
+
+def clear_sms_batch_context() -> None:
+    try:
+        delattr(_SMS_BATCH_CONTEXT, "batch_id")
+    except AttributeError:
+        pass
+
+
+def _sms_batch_id() -> str:
+    return str(getattr(_SMS_BATCH_CONTEXT, "batch_id", "") or "").strip()
+
+
 def _request_grizzly(http: CurlSession, params: dict) -> str:
     """
     发一个 GrizzlySMS API 请求，返回去空白的响应文本。
@@ -132,6 +158,248 @@ def _request_grizzly(http: CurlSession, params: dict) -> str:
         raise SmsProviderError(f"该服务被平台禁售：{text}")
 
     return text
+
+
+def _response_json(resp, *, label: str):
+    text = (getattr(resp, "text", "") or "").strip()
+    if int(getattr(resp, "status_code", 0) or 0) != 200:
+        raise SmsProviderError(
+            f"GrizzlySMS {label} HTTP {getattr(resp, 'status_code', '?')}: {text[:200]}"
+        )
+    try:
+        return resp.json()
+    except Exception:
+        try:
+            return json.loads(text)
+        except Exception as exc:
+            raise SmsProviderError(f"GrizzlySMS {label} 返回非 JSON：{text[:200]}") from exc
+
+
+def _as_finite_number(value, *, default: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return number if math.isfinite(number) else default
+
+
+def _rank_grizzly_countries(
+    prices: dict,
+    stats: list,
+    *,
+    service: str,
+    max_price: str,
+    min_ratio: int,
+) -> list[dict]:
+    """合并正式价格/库存与价格页成功率统计，并返回可购买国家排名。"""
+    price_limit = None
+    raw_limit = str(max_price or "").strip()
+    if raw_limit:
+        price_limit = _as_finite_number(raw_limit, default=-1)
+        if price_limit < 0:
+            raise SmsProviderError(f"SMS_MAX_PRICE 不是有效价格：{raw_limit!r}")
+
+    stats_by_country = {
+        str(item.get("country_id") or "").strip(): item
+        for item in (stats or [])
+        if isinstance(item, dict) and str(item.get("country_id") or "").strip()
+    }
+    ranked = []
+    for country, services in (prices or {}).items():
+        if not isinstance(services, dict):
+            continue
+        offer = services.get(service)
+        if not isinstance(offer, dict):
+            continue
+        price = _as_finite_number(offer.get("price"), default=-1)
+        stock = int(_as_finite_number(offer.get("count"), default=0))
+        if price < 0 or stock <= 0 or (price_limit is not None and price > price_limit):
+            continue
+        stat = stats_by_country.get(str(country)) or {}
+        conversion = _as_finite_number(stat.get("conversion_sms"), default=0)
+        ratio = _as_finite_number(stat.get("ratio"), default=0)
+        if conversion <= 0 or ratio < max(0, int(min_ratio or 0)):
+            continue
+        ranked.append({
+            "country": str(country),
+            "success_rate": conversion,
+            "ratio": ratio,
+            "stock": stock,
+            "price": price,
+        })
+
+    ranked.sort(key=lambda item: (
+        -item["success_rate"],
+        -item["ratio"],
+        -item["stock"],
+        item["price"],
+        item["country"],
+    ))
+    return ranked
+
+
+def _fetch_grizzly_batch_country(http: CurlSession, *, service: str) -> dict:
+    """查询一次 Grizzly 正式报价与网页成功率统计，选择当前批次国家。"""
+    prices_text = _request_grizzly(http, {
+        "action": "getPricesV3",
+        "service": service,
+    })
+    try:
+        prices = json.loads(prices_text)
+    except Exception as exc:
+        raise SmsProviderError(f"GrizzlySMS getPricesV3 返回非 JSON：{prices_text[:200]}") from exc
+    if not isinstance(prices, dict):
+        raise SmsProviderError("GrizzlySMS getPricesV3 未返回国家报价对象")
+
+    services_resp = http.get(
+        f"{_GRIZZLY_PUBLIC_API_BASE}/service/all",
+        params={"fields": "id,name,external_id"},
+    )
+    services = _response_json(services_resp, label="服务列表")
+    if not isinstance(services, list):
+        raise SmsProviderError("GrizzlySMS 价格页服务列表格式异常")
+    service_item = next((
+        item for item in services
+        if isinstance(item, dict) and str(item.get("external_id") or "") == service
+    ), None)
+    service_id = str((service_item or {}).get("id") or "").strip()
+    if not service_id:
+        raise SmsProviderError(f"GrizzlySMS 价格页找不到服务代码 {service!r}")
+
+    stats_resp = http.get(
+        f"{_GRIZZLY_PUBLIC_API_BASE}/country/get-prices-activation-stat/{service_id}"
+    )
+    stats = _response_json(stats_resp, label="成功率统计")
+    if not isinstance(stats, list):
+        raise SmsProviderError("GrizzlySMS 成功率统计格式异常")
+
+    min_ratio = max(0, int(getattr(_cfg, "SMS_AUTO_COUNTRY_MIN_RATIO", 25) or 0))
+    ranked = _rank_grizzly_countries(
+        prices,
+        stats,
+        service=service,
+        max_price=str(getattr(_cfg, "SMS_MAX_PRICE", "") or ""),
+        min_ratio=min_ratio,
+    )
+    if not ranked:
+        raise SmsProviderError(
+            "GrizzlySMS 没有同时满足价格、库存和成功率统计门槛的国家"
+        )
+    selected = dict(ranked[0])
+    selected["eligible_count"] = len(ranked)
+    selected["min_ratio"] = min_ratio
+    # 缓存完整排名。同一批次当前国家连续失败时可以直接切到下一名，避免再次请求
+    # 价格/统计接口，也避免整批任务一直被一个高成功率但临时失效的国家拖住。
+    selected["ranked_candidates"] = [dict(item) for item in ranked]
+    selected["active_index"] = 0
+    selected["country_failures"] = {}
+    return selected
+
+
+def _grizzly_batch_country(http: CurlSession, *, service: str) -> str:
+    if not bool(getattr(_cfg, "SMS_AUTO_SELECT_COUNTRY", False)):
+        return ""
+    batch_id = _sms_batch_id()
+    if not batch_id:
+        return ""
+
+    with _GRIZZLY_BATCH_COUNTRY_LOCK:
+        cached = _GRIZZLY_BATCH_COUNTRY_SELECTIONS.get(batch_id)
+        if cached is not None:
+            return str(cached.get("country") or "")
+        try:
+            selected = _fetch_grizzly_batch_country(http, service=service)
+            logger.info(
+                "[SMS] 批次自动选国：batch=%s country=%s success=%.2f%% ratio=%.0f price=%.4f stock=%s eligible=%s",
+                batch_id,
+                selected["country"],
+                selected["success_rate"],
+                selected["ratio"],
+                selected["price"],
+                selected["stock"],
+                selected["eligible_count"],
+            )
+        except Exception as exc:
+            selected = {"country": "", "error": f"{type(exc).__name__}: {exc}"}
+            logger.warning(
+                "[SMS] 批次自动选国失败，回退 SMS_COUNTRY：batch=%s error=%s",
+                batch_id,
+                str(exc)[:240],
+            )
+        while len(_GRIZZLY_BATCH_COUNTRY_SELECTIONS) >= _GRIZZLY_BATCH_COUNTRY_CACHE_LIMIT:
+            _GRIZZLY_BATCH_COUNTRY_SELECTIONS.pop(next(iter(_GRIZZLY_BATCH_COUNTRY_SELECTIONS)))
+        _GRIZZLY_BATCH_COUNTRY_SELECTIONS[batch_id] = selected
+        return str(selected.get("country") or "")
+
+
+def _report_grizzly_country_outcome(
+    activation_id: str,
+    *,
+    success: bool,
+    reason: str = "",
+) -> None:
+    """记录自动选国结果；连续失败达到阈值时把同批次切到下一候选国家。"""
+    meta = dict(_ACTIVATION_META.get(str(activation_id)) or {})
+    batch_id = str(meta.get("batch_id") or "").strip()
+    country = str(meta.get("requested_country") or "").strip()
+    if not batch_id or not country:
+        return
+
+    with _GRIZZLY_BATCH_COUNTRY_LOCK:
+        selected = _GRIZZLY_BATCH_COUNTRY_SELECTIONS.get(batch_id)
+        if not isinstance(selected, dict):
+            return
+        failures = selected.setdefault("country_failures", {})
+        if success:
+            failures[country] = 0
+            logger.info("[SMS] 自动选国结果：batch=%s country=%s success", batch_id, country)
+            return
+
+        count = int(failures.get(country) or 0) + 1
+        failures[country] = count
+        candidates = selected.get("ranked_candidates") or [selected]
+        current_index = int(selected.get("active_index") or 0)
+        logger.warning(
+            "[SMS] 自动选国失败计数：batch=%s country=%s failures=%s/%s reason=%s",
+            batch_id,
+            country,
+            count,
+            _GRIZZLY_COUNTRY_FAILURE_THRESHOLD,
+            str(reason or "unknown")[:160],
+        )
+        if (
+            country == str(selected.get("country") or "")
+            and count >= _GRIZZLY_COUNTRY_FAILURE_THRESHOLD
+            and current_index + 1 < len(candidates)
+        ):
+            next_index = current_index + 1
+            next_candidate = dict(candidates[next_index])
+            selected["active_index"] = next_index
+            selected["country"] = str(next_candidate.get("country") or "")
+            for key in ("success_rate", "ratio", "stock", "price"):
+                if key in next_candidate:
+                    selected[key] = next_candidate[key]
+            logger.warning(
+                "[SMS] 当前国家连续失败，批次动态换国：batch=%s from=%s to=%s "
+                "success=%.2f%% price=%.4f",
+                batch_id,
+                country,
+                selected["country"],
+                float(selected.get("success_rate") or 0),
+                float(selected.get("price") or 0),
+            )
+
+
+def report_activation_failure(activation_id: str, reason: str = "") -> None:
+    """供手机验证流程回报号码失败，自动选国可据此在批次内降级。"""
+    if _provider() == "grizzly":
+        _report_grizzly_country_outcome(activation_id, success=False, reason=reason)
+
+
+def report_activation_success(activation_id: str) -> None:
+    """供完成流程回报号码成功并清零该国家的连续失败计数。"""
+    if _provider() == "grizzly":
+        _report_grizzly_country_outcome(activation_id, success=True)
 
 
 def _l_url(path: str) -> str:
@@ -505,13 +773,24 @@ def acquire_number(
             )
             return activation_id, phone
 
+        service_code = str(service or _cfg.SMS_SERVICE).strip()
         countries = _grizzly_country_candidates(country)
+        auto_country = ""
+        # 显式传 country 时尊重调用方；普通批次请求才启用自动选国。
+        if country is None:
+            auto_country = _grizzly_batch_country(http, service=service_code)
+            if auto_country:
+                countries = [auto_country] + [item for item in countries if item != auto_country]
         if not countries:
             raise SmsProviderError("GrizzlySMS country 不能为空：请填写 SMS_COUNTRY")
         global _GRIZZLY_COUNTRY_CURSOR
-        with _GRIZZLY_COUNTRY_LOCK:
-            start_index = _GRIZZLY_COUNTRY_CURSOR % len(countries)
-        ordered = countries[start_index:] + countries[:start_index]
+        if auto_country:
+            # 自动国家必须是同批次每次取号的首选，不参与旧的备用国家轮转。
+            ordered = list(countries)
+        else:
+            with _GRIZZLY_COUNTRY_LOCK:
+                start_index = _GRIZZLY_COUNTRY_CURSOR % len(countries)
+            ordered = countries[start_index:] + countries[:start_index]
         last_country_error = None
         activation_id = phone = ""
         meta = {}
@@ -519,7 +798,7 @@ def acquire_number(
         for candidate in ordered:
             params = {
                 "action": "getNumberV2",
-                "service": service or _cfg.SMS_SERVICE,
+                "service": service_code,
                 "country": candidate,
             }
             if _cfg.SMS_MAX_PRICE:
@@ -528,8 +807,9 @@ def acquire_number(
                 text = _request_grizzly(http, params)
                 activation_id, phone, meta = _parse_grizzly_number_response(text)
                 chosen_country = candidate
-                with _GRIZZLY_COUNTRY_LOCK:
-                    _GRIZZLY_COUNTRY_CURSOR = (countries.index(candidate) + 1) % len(countries)
+                if not auto_country:
+                    with _GRIZZLY_COUNTRY_LOCK:
+                        _GRIZZLY_COUNTRY_CURSOR = (countries.index(candidate) + 1) % len(countries)
                 break
             except (SmsNoNumbersError, SmsPriceLimitError) as exc:
                 last_country_error = exc
@@ -547,14 +827,18 @@ def acquire_number(
         _ACTIVATION_META[activation_id] = {
             **meta,
             "requested_country": chosen_country,
+            "batch_id": _sms_batch_id(),
             "acquired_at": acquired_at,
             "cancel_at": _planned_cancel_at(meta, acquired_at),
         }
         logger.info(
-            "[SMS] 取号成功：activation_id=%s, phone=+%s, country=%s, activation_time=%s, planned_cancel_at=%s",
+            "[SMS] 取号成功：activation_id=%s, phone=+%s, country=%s, actual_cost=%s, "
+            "max_price=%s, activation_time=%s, planned_cancel_at=%s",
             activation_id,
             phone,
             chosen_country,
+            meta.get("activation_cost") if meta.get("activation_cost") not in (None, "") else "-",
+            str(getattr(_cfg, "SMS_MAX_PRICE", "") or "不限"),
             meta.get("activation_time") or "-",
             datetime.fromtimestamp(_ACTIVATION_META[activation_id]["cancel_at"]).isoformat(timespec="seconds"),
         )
@@ -573,21 +857,16 @@ def acquire_number(
 # ============================================================
 
 def _sms_code_wait_window(activation_id: str, max_wait: int | None = None) -> tuple[int, int]:
-    """返回 (配置等待秒数, 实际等待秒数)；Grizzly 会延长到计划取消时间。"""
-    configured_wait = int(max_wait or _cfg.SMS_CODE_WAIT)
-    total_wait = configured_wait
-    if _provider() == "grizzly" and max_wait is None:
-        meta = _ACTIVATION_META.get(str(activation_id)) or {}
-        cancel_at = float(meta.get("cancel_at") or 0)
-        remaining_until_cancel = math.ceil(cancel_at - time.time()) if cancel_at else 0
-        total_wait = max(total_wait, remaining_until_cancel)
-    return configured_wait, total_wait
+    """返回 (配置等待秒数, 实际等待秒数)；SMS_CODE_WAIT 是严格的单号上限。"""
+    configured_wait = max(1, int(max_wait if max_wait is not None else _cfg.SMS_CODE_WAIT))
+    return configured_wait, configured_wait
 
 def wait_for_sms_code(
     activation_id: str,
     http: CurlSession | None = None,
     max_wait: int | None = None,
     poll_interval: int | None = None,
+    progress_callback=None,
 ) -> str:
     """
     轮询 getStatus 直到拿到短信验证码。
@@ -603,14 +882,6 @@ def wait_for_sms_code(
     http = http or _http()
     provider = _provider()
     configured_wait, total_wait = _sms_code_wait_window(activation_id, max_wait)
-    # Grizzly 号码在配置的 120s 后仍可能收到迟到验证码。只要这是正常业务调用
-    # （未显式传 max_wait），就继续守住当前号码直到计划可取消时间，避免提前换号。
-    if total_wait > configured_wait:
-        logger.info(
-            "[SMS] 启用迟到验证码保护：activation_id=%s configured_wait=%ss effective_wait=%ss，"
-            "期间不申请新号码",
-            activation_id, configured_wait, total_wait,
-        )
     deadline = time.time() + total_wait
     interval = poll_interval or _cfg.SMS_POLL_INTERVAL
     try:
@@ -629,6 +900,11 @@ def wait_for_sms_code(
                 f"[SMS] 第 {round_no} 轮获取验证码 activation_id={activation_id}，"
                 f"已等 {elapsed}s，剩余约 {remaining_before}s"
             )
+            if progress_callback is not None:
+                try:
+                    progress_callback(elapsed, remaining_before, round_no)
+                except Exception:
+                    logger.debug("[SMS] 进度回调失败", exc_info=True)
             if provider == "l":
                 data = _post_l_json(http, "/api/admin/l/fetch-code", {"id": activation_id})
                 code = str(data.get("code") or "").strip()
@@ -674,12 +950,12 @@ def wait_for_sms_code(
             logger.info(f"[SMS] 第 {round_no} 轮未收到验证码，状态={text}，{interval}s 后重试（剩余 {remaining}s）")
             time.sleep(interval)
 
-        # 截止点再查一次，尽量接住恰好在最后一次 sleep 期间到达的迟到验证码。
+        # 截止点再查一次，尽量接住恰好在最后一次 sleep 期间到达的验证码。
         if provider == "grizzly":
             text = _request_grizzly(http, {"action": "getStatus", "id": activation_id})
             if text.startswith("STATUS_OK:"):
                 code = text.split(":", 1)[1].strip()
-                logger.info("[SMS] 截止取消前收到迟到验证码：activation_id=%s code=%s", activation_id, code)
+                logger.info("[SMS] 截止点收到验证码：activation_id=%s code=%s", activation_id, code)
                 return code
             if text == "STATUS_CANCEL":
                 raise SmsProviderError("激活已被取消（STATUS_CANCEL）")
@@ -731,6 +1007,7 @@ def complete(activation_id: str, http: CurlSession | None = None) -> None:
     try:
         set_status(activation_id, 6, http=http)
         logger.info(f"[SMS] 已标记完成 activation_id={activation_id}")
+        report_activation_success(activation_id)
         _remove_grizzly_cancel(activation_id)
         _ACQUIRED_AT.pop(activation_id, None)
         _ACTIVATION_META.pop(activation_id, None)
@@ -792,6 +1069,9 @@ def _enqueue_grizzly_cancel(activation_id: str, *, safety_delay: int = 0) -> dic
             existing = {
                 "activation_id": activation_id,
                 "activation_time": str(meta.get("activation_time") or ""),
+                "activation_cost": meta.get("activation_cost"),
+                "requested_country": str(meta.get("requested_country") or ""),
+                "max_price": str(getattr(_cfg, "SMS_MAX_PRICE", "") or ""),
                 "acquired_at": acquired_at,
                 "cancel_at": cancel_at,
                 "next_attempt_at": next_attempt_at,
@@ -813,14 +1093,35 @@ def _enqueue_grizzly_cancel(activation_id: str, *, safety_delay: int = 0) -> dic
 
 
 def _cancel_grizzly_once(activation_id: str) -> tuple[str, str]:
-    """只发送一次取消请求；返回 (outcome, raw)。"""
+    """只执行一轮取消协调；返回 ``(outcome, raw)``。
+
+    先查询订单状态：验证码已经到达的订单无法再退款，必须作为终态移出取消
+    队列，不能持续用 setStatus=8 重试 BAD_ACTION。取消请求本身若返回异常，再查
+    一次状态以覆盖“查询后、取消前”恰好收到短信的竞态。
+    """
     http = _http()
     try:
-        raw = _request_grizzly(http, {
-            "action": "setStatus",
-            "status": "8",
-            "id": activation_id,
-        })
+        status = _request_grizzly(http, {"action": "getStatus", "id": activation_id})
+        if status.startswith("STATUS_OK:"):
+            return "received", "STATUS_OK:<redacted>"
+        if status == "STATUS_CANCEL":
+            return "cancelled", status
+        try:
+            raw = _request_grizzly(http, {
+                "action": "setStatus",
+                "status": "8",
+                "id": activation_id,
+            })
+        except Exception as cancel_exc:
+            try:
+                status_after = _request_grizzly(http, {"action": "getStatus", "id": activation_id})
+            except Exception:
+                raise cancel_exc
+            if status_after.startswith("STATUS_OK:"):
+                return "received", "STATUS_OK:<redacted>"
+            if status_after == "STATUS_CANCEL":
+                return "cancelled", status_after
+            raise cancel_exc
         if raw == "ACCESS_CANCEL":
             return "cancelled", raw
         if raw == "EARLY_CANCEL_DENIED" or raw.startswith("EARLY_CANCEL_DENIED:"):
@@ -847,17 +1148,24 @@ def _update_cancel_job_after_attempt(activation_id: str, outcome: str, raw: str)
         items = _load_cancel_queue_locked()
         job = next((item for item in items if str(item.get("activation_id")) == activation_id), None)
         if job is None:
-            return outcome == "cancelled"
+            return outcome in ("cancelled", "gone", "received")
         job["attempts"] = int(job.get("attempts") or 0) + 1
         job["last_attempt_at"] = now
         job["last_result"] = raw[:300]
-        if outcome in ("cancelled", "gone"):
+        if outcome in ("cancelled", "gone", "received"):
             items.remove(job)
             _save_cancel_queue_locked(items)
             _ACQUIRED_AT.pop(activation_id, None)
             _ACTIVATION_META.pop(activation_id, None)
             if outcome == "cancelled":
                 logger.info("[SMS] 已取消 activation_id=%s response=%s", activation_id, raw)
+            elif outcome == "received":
+                logger.warning(
+                    "[SMS] 待取消订单已收到短信，无法再退款，已停止无意义重试："
+                    "activation_id=%s response=%s",
+                    activation_id,
+                    raw,
+                )
             else:
                 logger.info("[SMS] 订单已自然终止，无需再取消：activation_id=%s response=%s", activation_id, raw)
             return True

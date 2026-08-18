@@ -4,7 +4,10 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
+import requests
+
 from core import proxy_provider
+from core.codex_retry_service import CodexRetryStopped
 
 
 class _FakeResponse:
@@ -63,6 +66,33 @@ class ProxyProviderTests(unittest.TestCase):
             proxy_provider.parse_proxy_response('{"data":[{"ip":"5.6.7.8","port":9000}]}'),
             "5.6.7.8:9000",
         )
+
+    @patch("core.proxy_provider.time.sleep", return_value=None)
+    @patch("core.proxy_provider._direct_session")
+    def test_codex_stop_signal_is_not_swallowed_by_proxy_retry(self, direct_session, _sleep):
+        class StoppedSession:
+            def get(self, *_args, **_kwargs):
+                raise CodexRetryStopped("stop")
+
+        direct_session.return_value = StoppedSession()
+        with patch.multiple(
+            "config.proxy",
+            PROXY_1024_API_TIMEOUT=5.0,
+            PROXY_1024_MAX_ATTEMPTS=5,
+            PROXY_1024_RECENT_TTL=1800,
+            PROXY_1024_ACQUIRE_INTERVAL=0.0,
+            PROXY_1024_ROTATE_SESSION_TIME=False,
+        ):
+            with self.assertRaises(CodexRetryStopped):
+                proxy_provider.acquire_1024_proxy(
+                    api_url="https://white.1024proxy.com/white/api?region=US&type=txt",
+                    protocol="http",
+                    region="US",
+                    validate=False,
+                    job_id="stop-test",
+                )
+
+        self.assertFalse(proxy_provider._PENDING_ENDPOINTS)
 
     def test_build_api_url_forces_one_ip_and_configured_session(self):
         url = proxy_provider._build_api_url(
@@ -171,6 +201,37 @@ class ProxyProviderTests(unittest.TestCase):
         self.assertEqual(lease.endpoint, fresh)
         validate_proxy.assert_called_once_with("http://5.6.7.8:9000", 5.0)
         self.assertFalse(proxy_provider._PENDING_ENDPOINTS)
+
+    @patch("core.proxy_provider.time.sleep", return_value=None)
+    @patch(
+        "core.proxy_provider._validate_proxy",
+        side_effect=[requests.Timeout("temporary timeout"), ("8.8.8.8", "US")],
+    )
+    @patch("core.proxy_provider._direct_session")
+    def test_transient_validation_error_retries_same_endpoint(
+        self, direct_session, validate_proxy, _sleep
+    ):
+        direct_session.return_value = _SequenceSession(["1.2.3.4:8080"])
+        with patch.multiple(
+            "config.proxy",
+            PROXY_1024_API_TIMEOUT=5.0,
+            PROXY_1024_MAX_ATTEMPTS=1,
+            PROXY_1024_VALIDATE_ATTEMPTS=2,
+            PROXY_1024_RECENT_TTL=0,
+            PROXY_1024_ACQUIRE_INTERVAL=0.0,
+            PROXY_1024_ROTATE_SESSION_TIME=False,
+        ):
+            lease = proxy_provider.acquire_1024_proxy(
+                api_url="https://white.1024proxy.com/white/api?region=US&type=txt",
+                protocol="http",
+                region="US",
+                validate=True,
+                job_id=22,
+            )
+
+        self.assertEqual(lease.endpoint, "1.2.3.4:8080")
+        self.assertEqual(validate_proxy.call_count, 2)
+        self.assertEqual(len(direct_session.return_value.calls), 1)
 
     @patch("core.proxy_provider._direct_session")
     def test_concurrent_acquires_validate_different_endpoints_in_parallel(self, direct_session):

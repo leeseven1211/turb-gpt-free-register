@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Codex 授权补跑服务，供账号页和注册任务队列共同使用。"""
 import ctypes
+import json
 import logging
 import threading
 import time
@@ -18,8 +19,18 @@ _RUNNING_THREADS: dict[str, int] = {}
 _RESERVED_AT: dict[str, float] = {}
 
 
-class CodexRetryStopped(Exception):
+class CodexRetryStopped(BaseException):
     """用户手动停止 Codex 补跑。"""
+
+
+def _totp_setup_pending(account: dict) -> bool:
+    raw_extra = account.get("extra_json") or {}
+    if isinstance(raw_extra, str):
+        try:
+            raw_extra = json.loads(raw_extra)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw_extra = {}
+    return bool(raw_extra.get("totp_setup_pending")) if isinstance(raw_extra, dict) else False
 
 
 def _thread_alive(thread_id: int | None) -> bool:
@@ -97,6 +108,73 @@ def is_stop_requested(email: str) -> bool:
 def check_stop_requested(email: str) -> None:
     if is_stop_requested(email):
         raise CodexRetryStopped("用户手动停止 Codex 补跑")
+
+
+def _build_roxy_twofa_setup(email: str, task_id: int):
+    """为缺少 TOTP 的 Codex 补跑构造一次性 2FA 前置步骤。"""
+    state = {"secret": ""}
+
+    def _setup(driver) -> bool:
+        current = db.get_account_by_email(email) or {}
+        existing_secret = str(current.get("totp_secret") or state["secret"] or "").strip()
+        setup_pending = _totp_setup_pending(current)
+        if existing_secret and not setup_pending:
+            state["secret"] = existing_secret
+            logger.info("[Codex 补跑][2FA] 本地已存在 Authenticator key，跳过重复设置：%s", email)
+            return False
+
+        check_stop_requested(email)
+        account_task_store.append_event(
+            task_id,
+            stage="twofa",
+            message="账号未设置 2FA，先启用 Authenticator 再执行 Codex OAuth",
+        )
+        logger.info("[Codex 补跑][2FA] 账号缺少 Authenticator key，开始前置设置：%s", email)
+
+        def _checkpoint(secret: str) -> None:
+            normalized = str(secret or "").strip()
+            if not normalized or not db.update_account_totp_secret(email, normalized, setup_pending=True):
+                raise RuntimeError("Authenticator key 写入账号检查点失败")
+            state["secret"] = normalized
+            logger.info("[Codex 补跑][2FA] Authenticator key 已在激活前写入账号检查点")
+
+        try:
+            from core.roxy_registration import setup_roxy_2fa
+
+            secret = setup_roxy_2fa(
+                driver,
+                email,
+                on_secret=_checkpoint,
+                existing_secret=existing_secret or None,
+            )
+            if not state["secret"]:
+                _checkpoint(secret)
+            if not db.update_account_totp_secret(email, state["secret"], setup_pending=False):
+                raise RuntimeError("Authenticator 完成状态写入账号失败")
+            check_stop_requested(email)
+            account_task_store.append_event(
+                task_id,
+                stage="twofa_result",
+                message="Authenticator 2FA 已启用，继续 Codex OAuth",
+                detail={"enabled": True},
+            )
+            logger.info("[Codex 补跑][2FA] Authenticator 2FA 已启用：%s", email)
+            return True
+        except CodexRetryStopped:
+            raise
+        except Exception as exc:
+            account_task_store.append_event(
+                task_id,
+                stage="twofa_result",
+                message="Authenticator 2FA 设置失败，已停止进入 Codex OAuth",
+                level="ERROR",
+                detail={"enabled": False, "error": f"{type(exc).__name__}: {str(exc)[:220]}"},
+            )
+            raise RuntimeError(
+                f"2FA 设置失败，已停止进入 Codex OAuth：{type(exc).__name__}: {str(exc)[:180]}"
+            ) from exc
+
+    return _setup
 
 
 def _async_raise(thread_id: int, exc_type: type[BaseException]) -> bool:
@@ -179,6 +257,13 @@ def run_worker(
     route_summary: dict = {}
     oauth_driver = ""
     key = (email or "").strip().lower()
+    sms_batch_bound = False
+    if batch_label:
+        from core import sms_provider
+
+        # WebUI 会在同一批次标签后追加“#序号/总数”；去掉序号后共享一次选国结果。
+        sms_provider.set_sms_batch_context(f"codex-retry:{batch_label.split(' #', 1)[0]}")
+        sms_batch_bound = True
     try:
         if task_id is None:
             account = db.get_account_by_email(email) or {}
@@ -229,7 +314,10 @@ def run_worker(
         if batch_label:
             logger.info("[Codex 补跑] 批量任务：%s", batch_label)
         logger.info("[Codex 补跑] 开始：%s", email)
-        logger.info("[Codex 补跑] 阶段说明：获取授权地址 → 登录邮箱 → 邮箱 OTP → 手机验证 → 捕获 callback → 提交/保存凭证")
+        logger.info(
+            "[Codex 补跑] 阶段说明：获取授权地址 → 登录邮箱 → 邮箱 OTP → "
+            "缺失时先设置 2FA → 手机验证 → 捕获 callback → 提交/保存凭证"
+        )
         check_stop_requested(email)
         from config import codex as codex_cfg
         from config import roxybrowser as roxy_cfg
@@ -280,16 +368,35 @@ def run_worker(
                 message="云端浏览器驱动使用平台线路",
                 detail={"network_route": "cloud_driver"},
             )
+        account = db.get_account_by_email(email) or {}
+        needs_twofa = (
+            not bool(str(account.get("totp_secret") or "").strip())
+            or _totp_setup_pending(account)
+        )
         account_task_store.append_event(
             task_id,
             stage="oauth",
-            message="开始获取授权地址并完成邮箱、短信与 callback 流程",
+            message=(
+                "账号缺少 2FA，将先设置 Authenticator 再完成 OAuth"
+                if needs_twofa and oauth_driver in {"roxy", "roxybrowser", "fingerprint", "browser"}
+                else "开始获取授权地址并完成邮箱、短信与 callback 流程"
+            ),
         )
-        result = run_codex_oauth(
-            email,
-            proxy=(account_route.proxy_url if account_route is not None else None),
-            force=True,
-        )
+        if needs_twofa and oauth_driver in {"roxy", "roxybrowser", "fingerprint", "browser"}:
+            from core.roxy_codex_oauth import run_roxy_codex_oauth
+
+            result = run_roxy_codex_oauth(
+                email,
+                proxy=(account_route.proxy_url if account_route is not None else None),
+                force=True,
+                before_oauth_setup=_build_roxy_twofa_setup(email, task_id),
+            )
+        else:
+            result = run_codex_oauth(
+                email,
+                proxy=(account_route.proxy_url if account_route is not None else None),
+                force=True,
+            )
         if account_route is not None:
             # 标准任务页需要展示补跑实际使用的平台/地区；只写公开元数据，绝不落代理凭据。
             result["proxy_provider"] = account_route.provider
@@ -389,3 +496,7 @@ def run_worker(
                 )
             except Exception:
                 logger.exception("[Codex 补跑] 写入任务实例失败：task_id=%s email=%s", task_id or "-", email)
+            if sms_batch_bound:
+                from core import sms_provider
+
+                sms_provider.clear_sms_batch_context()
