@@ -84,7 +84,13 @@ class EmailButlerClientTests(unittest.TestCase):
         response = Mock()
         response.status_code = 200
         response.json.return_value = {"code": 200, "verification_code": "123456"}
+        # fetch_inbound_otp 不接受 api_base，只能从配置读；显式给出，避免这个用例
+        # 依赖开发机 .env 里恰好配了 EMAIL_BUTLER_API_BASE。
         with patch.object(
+            client._email_cfg, "EMAIL_BUTLER_API_BASE", "http://example.test/v1", create=True
+        ), patch.object(
+            client._email_cfg, "EMAIL_BUTLER_API_KEY", "test-key", create=True
+        ), patch.object(
             client.requests,
             "request",
             side_effect=[client.requests.ConnectionError("TLS closed"), response],

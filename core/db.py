@@ -807,8 +807,12 @@ def insert_account(
                 outlook_row["totp_secret"] = totp_secret
 
         row["copy_line"] = _account_line(row)
-        _save_accounts(accounts)
-        _save_outlook(outlook_rows)
+        # 账号和邮箱池必须一起提交：分两次落盘时，中间失败会留下"账号已创建
+        # 但邮箱没标记 used"，这个邮箱之后会被再领一次、重复注册。
+        _save_together(
+            (record_store.ACCOUNTS, accounts, _export_accounts),
+            (record_store.OUTLOOK_POOL, outlook_rows, _export_outlook),
+        )
         return row_id
 
 
@@ -1812,9 +1816,15 @@ def import_registered_email_accounts(records: list[dict], source: str | None) ->
                 pool_row["totp_secret"] = totp_secret
             inserted += 1
 
-        _save_outlook(outlook_rows)
-        _save_generic_api_emails(generic_rows)
-        _save_accounts(accounts)
+        for row in generic_rows:
+            row["copy_line"] = _generic_api_email_line(row)
+        for row in accounts:
+            row["copy_line"] = _account_line(row)
+        _save_together(
+            (record_store.OUTLOOK_POOL, outlook_rows, _export_outlook),
+            (record_store.GENERIC_API_POOL, generic_rows, _export_generic_api_emails),
+            (record_store.ACCOUNTS, accounts, _export_accounts),
+        )
         return inserted, skipped
 
 
@@ -2679,10 +2689,15 @@ def recover_interrupted_registration_jobs() -> int:
                     account_changed = True
             recovered += 1
 
-        if recovered:
-            _save_jobs(rows)
-        if account_changed:
-            _save_accounts(accounts)
+        if recovered or account_changed:
+            pairs = []
+            if recovered:
+                pairs.append((record_store.JOBS, rows, _export_jobs))
+            if account_changed:
+                for account in accounts:
+                    account["copy_line"] = _account_line(account)
+                pairs.append((record_store.ACCOUNTS, accounts, _export_accounts))
+            _save_together(*pairs)
         return recovered
 
 

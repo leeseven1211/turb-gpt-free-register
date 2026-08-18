@@ -18,8 +18,12 @@
 from __future__ import annotations
 
 import os
+import pathlib
+import tempfile
 import unittest
 import uuid
+from contextlib import ExitStack
+from unittest.mock import patch
 
 from core import postgres_store
 
@@ -73,10 +77,23 @@ def truncate_schema(name: str) -> None:
 
 
 class PostgresTestCase(unittest.TestCase):
-    """给每个测试类分配独立 schema；没有 DATABASE_URL 时跳过。"""
+    """给每个测试类分配独立 schema；没有 DATABASE_URL 时跳过。
+
+    另外把 db 的兼容导出路径重定向到临时目录：这些导出仍会在每次写入时触发，
+    不重定向的话测试会覆盖仓库根目录下的真实账号文件。
+    """
 
     schema: str = ""
     _previous_schema: str | None = None
+
+    # db 里那些指向仓库根目录真实文件的常量
+    _REDIRECTED_PATHS = (
+        "_ACCOUNTS_JSON", "_ACCOUNTS_TXT", "_TOKENS_TXT", "_VIEWER_HTML",
+        "_JOBS_JSON", "_OUTLOOK_JSON", "_OUTLOOK_TXT",
+        "_GENERIC_API_EMAIL_JSON", "_GENERIC_API_EMAIL_TXT",
+        "_DOMAIN_EMAIL_JSON", "_ICLOUD_HIDE_EMAIL_JSON",
+        "_LEGACY_ACCOUNTS_JSON", "_LEGACY_JOBS_JSON", "_LEGACY_OUTLOOK_JSON",
+    )
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -88,6 +105,17 @@ class PostgresTestCase(unittest.TestCase):
         os.environ["TURB_DB_SCHEMA"] = cls.schema
         postgres_store.reset_cache()
         postgres_store.ensure_schema()
+
+    def seed(self, spec, records: list[dict]) -> list[int]:
+        """往行级表里写测试数据。
+
+        取代改造前"往临时 JSON 文件里塞一段 payload"的做法——那时 db 从文件读，
+        现在 db 从表读。
+        """
+        from core import record_store
+        record_store.reset_ready()
+        record_store.init()
+        return [record_store.insert_row(spec, dict(r)) for r in records]
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -108,4 +136,14 @@ class PostgresTestCase(unittest.TestCase):
         if self.schema:
             truncate_schema(self.schema)
         postgres_store.reset_cache()
-        return super().run(result)
+
+        from core import db, record_store
+        record_store.reset_ready()
+        with tempfile.TemporaryDirectory() as td, ExitStack() as stack:
+            root = pathlib.Path(td)
+            for name in self._REDIRECTED_PATHS:
+                if hasattr(db, name):
+                    stack.enter_context(
+                        patch.object(db, name, root / f"{name.strip('_').lower()}.json"))
+            return super().run(result)
+
