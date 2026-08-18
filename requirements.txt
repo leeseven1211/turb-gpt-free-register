@@ -1,7 +1,7 @@
 curl_cffi>=0.15.0
 pyotp>=2.9.0
 flask>=3.0.0
-psycopg[binary]>=3.2,<4
+psycopg[binary,pool]>=3.2,<4
 requests>=2.31.0
 pycryptodome>=3.23.0
 selenium>=4.20.0

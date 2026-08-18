@@ -1371,15 +1371,15 @@ def list_accounts_page(limit: int = 50, offset: int = 0, archived: str | bool | 
 
 
 def get_account(acc_id: int) -> dict | None:
-    with _LOCK:
-        row = next((r for r in _load_accounts() if int(r.get("id") or 0) == int(acc_id)), None)
-        return _decorate_account(row) if row else None
+    # 单行查询而不是加载全表：get_retry_info 之类会对每条任务调一次，
+    # 全表读会退化成 N+1。
+    row = record_store.get_row(record_store.ACCOUNTS, int(acc_id))
+    return _decorate_account(row) if row else None
 
 
 def get_account_by_email(email: str) -> dict | None:
-    with _LOCK:
-        row = _find_by_email(_load_accounts(), email)
-        return _decorate_account(row) if row else None
+    row = record_store.get_row_by(record_store.ACCOUNTS, "email", email, lower=True)
+    return _decorate_account(row) if row else None
 
 
 def update_account_note(acc_id: int, note: str) -> bool:
@@ -1667,8 +1667,7 @@ def archive_accounts(account_ids: list[int] | None, archived: bool = True) -> tu
 
 
 def count_accounts() -> int:
-    with _LOCK:
-        return len(_load_accounts())
+    return record_store.count_rows(record_store.ACCOUNTS)
 
 
 def delete_account(acc_id: int | None = None, email: str | None = None) -> bool:
@@ -2773,34 +2772,31 @@ def recover_interrupted_registration_jobs() -> int:
 
 
 def list_jobs(limit: int = 100) -> list[dict]:
-    with _LOCK:
-        rows = sorted(_load_jobs(), key=lambda x: int(x.get("id") or 0), reverse=True)
-        return [dict(r) for r in rows[:limit]]
+    return record_store.list_rows(record_store.JOBS, order_by="id DESC", limit=max(1, int(limit)))
 
 
 def get_job(job_id: int) -> dict | None:
-    with _LOCK:
-        row = next((r for r in _load_jobs() if int(r.get("id") or 0) == int(job_id)), None)
-        return dict(row) if row else None
+    return record_store.get_row(record_store.JOBS, int(job_id))
 
 
 def get_successful_retry_for_job(job_id: int) -> dict | None:
-    """返回同一任务链中已成功的其他重试任务，用于保留原任务历史状态并阻止重复重试。"""
-    with _LOCK:
-        rows = _load_jobs()
-        source = next((r for r in rows if int(r.get("id") or 0) == int(job_id)), None)
-        if source is None:
-            return None
-        root_id = int(source.get("root_job_id") or source.get("id") or 0)
-        matches = [
-            r for r in rows
-            if int(r.get("id") or 0) != int(job_id)
-            and int(r.get("root_job_id") or 0) == root_id
-            and r.get("status") == "success"
-        ]
-        if not matches:
-            return None
-        return dict(max(matches, key=lambda r: int(r.get("id") or 0)))
+    """返回同一任务链中已成功的其他重试任务，用于保留原任务历史状态并阻止重复重试。
+
+    条件下推到 SQL：get_retry_info 会对列表里每一条任务调用本函数，全表扫描
+    在这里会退化成 N+1。root_job_id 上有索引。
+    """
+    source = record_store.get_row(record_store.JOBS, int(job_id))
+    if source is None:
+        return None
+    root_id = int(source.get("root_job_id") or source.get("id") or 0)
+    matches = record_store.list_rows(
+        record_store.JOBS,
+        where='"root_job_id" = %s AND "status" = %s AND id <> %s',
+        params=(root_id, "success", int(job_id)),
+        order_by="id DESC",
+        limit=1,
+    )
+    return matches[0] if matches else None
 
 
 def delete_job(job_id: int, *, delete_log: bool = True, allow_running: bool = False) -> bool:
