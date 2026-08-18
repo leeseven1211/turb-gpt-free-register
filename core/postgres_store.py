@@ -42,9 +42,13 @@ def enabled() -> bool:
     return bool(database_url())
 
 
-# 生产库名。开发分支/开发目录一律不准连它——这条护栏的由来是一次真实事故：
-# 未完成的存储层代码被线上服务加载，把 361 条注册任务写成了 5 条。
-# 需要在生产库上跑（例如正式迁移当天）必须显式设 TURB_ALLOW_PRODUCTION_DB=1。
+# 生产库名单。默认拒绝连接，生产环境必须在自己的 .env 里显式声明
+# TURB_ALLOW_PRODUCTION_DB=1 才放行。
+#
+# 为什么是"默认拒绝"而不是"默认允许"：这条护栏的由来是一次真实事故——未完成的
+# 存储层代码被线上服务加载，把 361 条注册任务写成了 5 条。默认拒绝意味着任何新
+# 建的 worktree、新 clone、临时脚本天然连不上生产库，忘记配置的后果是启动报错，
+# 而不是悄悄写坏真实数据。
 _PRODUCTION_DATABASES = {"turb_console"}
 
 
@@ -63,10 +67,9 @@ def _guard_production_database(url: str) -> None:
     if os.getenv("TURB_ALLOW_PRODUCTION_DB") == "1":
         return
     raise SystemExit(
-        f"拒绝连接生产数据库 {name!r}。\n"
-        "本分支的存储层仍在改造中，连生产库有覆盖真实数据的风险。\n"
-        "开发请指向测试库：DATABASE_URL=...:55432/turb_dev\n"
-        "确实要对生产库执行（如正式迁移）：TURB_ALLOW_PRODUCTION_DB=1"
+        f"拒绝连接生产数据库 {name!r}：当前环境没有声明允许。\n"
+        "生产环境请在 .env 中加上：TURB_ALLOW_PRODUCTION_DB=1\n"
+        "开发/测试请指向独立库，例如：DATABASE_URL=...:55432/turb_dev"
     )
 
 
