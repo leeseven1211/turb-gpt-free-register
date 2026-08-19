@@ -12,7 +12,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-from core import account_task_store, db
+from core import account_task_store, db, scheduler_state
 from core.cf_temp_mail_client import CFTempMailError
 from core.cf_temp_mail_client import scan_openai_deactivation as scan_cloudflare_deactivation
 from core.email_butler_client import EmailButlerClientError, scan_openai_deactivation
@@ -220,22 +220,35 @@ def enqueue_due_accounts() -> dict:
     return {"started": started, "skipped": skipped}
 
 
+SCHEDULER_TASK = "deactivation_mail_scan"
+
+
+def scheduler_enabled() -> bool:
+    """每轮重新读配置：WebUI 改完走 config.reload_all()，不应要求重启。"""
+    from config import email as _email_cfg
+    return bool(getattr(_email_cfg, "EMAIL_BUTLER_RISK_SCAN_ENABLED", True))
+
+
+def scheduler_interval_seconds() -> int:
+    from config import email as _email_cfg
+    raw = int(getattr(_email_cfg, "EMAIL_BUTLER_RISK_SCAN_INTERVAL_SECONDS", 21600) or 21600)
+    return max(900, min(604800, raw))
+
+
 def _scheduler_loop() -> None:
-    stop = threading.Event()
-    if stop.wait(_INITIAL_DELAY_SECONDS):
-        return
-    while True:
-        try:
-            result = enqueue_due_accounts()
-            logger.info("[DeactivationMail] scheduled scan: %s", result)
-        except Exception:
-            logger.exception("[DeactivationMail] scheduled cycle failed")
-        stop.wait(_INTERVAL_SECONDS)
+    scheduler_state.run_periodic(
+        task=SCHEDULER_TASK,
+        label="DeactivationMail",
+        work=enqueue_due_accounts,
+        enabled=scheduler_enabled,
+        interval_seconds=scheduler_interval_seconds,
+        initial_delay_seconds=_INITIAL_DELAY_SECONDS,
+    )
 
 
 def start_periodic_scanner() -> bool:
     global _SCHEDULER_STARTED
-    if not _ENABLED:
+    if not scheduler_enabled():
         logger.info("[DeactivationMail] periodic scanner disabled")
         return False
     with _LOCK:

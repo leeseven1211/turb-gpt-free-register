@@ -2114,14 +2114,27 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
     }
 
 
-def _fill_password_page_if_present(driver, email: str, timeout: int = 25) -> str | None:
-    """邮箱提交后兼容 create-account/password。返回本次设置的 OpenAI 账号密码；未遇到密码页返回 None。"""
+def _fill_password_page_if_present(
+    driver,
+    email: str,
+    timeout: int = 25,
+    *,
+    existing_password: str | None = None,
+) -> str | None:
+    """处理注册/登录密码页，并返回本次确认可用的 OpenAI 账号密码。
+
+    首次注册时生成随机密码；如果本地已有 ``email_verification_pending`` 检查点，
+    则使用当时保存的密码登录同一个 OpenAI 身份，继续完成邮箱验证。
+    """
     end = time.time() + timeout
     last = {}
     auth_mode = _registration_auth_mode()
     switched_from_otp = False
     while time.time() < end:
         if _is_email_verification_page(driver):
+            if existing_password:
+                logger.info("%s 待验证账号已进入邮箱验证码页，沿用已保存登录密码：email=%s", _log_prefix(driver), email)
+                return existing_password
             if auth_mode != 'password':
                 return None
             if switched_from_otp:
@@ -2145,7 +2158,11 @@ def _fill_password_page_if_present(driver, email: str, timeout: int = 25) -> str
         if not (is_signup_password or is_login_password):
             time.sleep(0.5)
             continue
-        passwordless = _click_passwordless_signup_if_present(driver) if auth_mode == 'otp' else {"ok": False, "reason": "password_mode"}
+        passwordless = (
+            _click_passwordless_signup_if_present(driver)
+            if auth_mode == 'otp' and not existing_password
+            else {"ok": False, "reason": "password_mode_or_saved_password"}
+        )
         if passwordless.get('ok'):
             logger.info("%s 检测到 password 页，已点击一次性验证码入口：email=%s detail=%s", _log_prefix(driver), email, passwordless)
             wait_end = time.time() + 20
@@ -2159,11 +2176,18 @@ def _fill_password_page_if_present(driver, email: str, timeout: int = 25) -> str
                 time.sleep(0.5)
             logger.info("%s 已点击一次性验证码入口，未立即检测到 OTP 页，交给后续 OTP 阶段继续处理", _log_prefix(driver))
             return None
-        if is_login_password:
+        if is_login_password and not existing_password:
             logger.info("%s 当前是登录密码页但未找到一次性验证码入口，跳过密码填写并交给 OTP 阶段：state=%s", _log_prefix(driver), last)
             return None
-        password = _registration_password()
-        logger.info("%s 检测到 create-account/password，准备设置密码（%s 位）：email=%s", _log_prefix(driver), len(password), email)
+        password = str(existing_password or _registration_password())
+        logger.info(
+            "%s 检测到%s，准备%s密码（%s 位）：email=%s",
+            _log_prefix(driver),
+            "log-in/password" if is_login_password else "create-account/password",
+            "提交已保存" if existing_password else "设置",
+            len(password),
+            email,
+        )
         result = driver.execute_script(r"""
         const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
           && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none'
@@ -2191,7 +2215,7 @@ def _fill_password_page_if_present(driver, email: str, timeout: int = 25) -> str
         _human_type_text(driver, result.get("input"), password, clear=True)
         human_delay("form", minimum=0.4, maximum=1.4)
         _human_click(driver, result.get("button"), label="password_submit")
-        logger.info("%s 已填写并提交密码页", _log_prefix(driver))
+        logger.info("%s 已填写并提交%s密码页", _log_prefix(driver), "登录" if is_login_password else "注册")
         # 提交密码后通常进入邮箱验证码页，最多等一段时间。
         wait_end = time.time() + 20
         while time.time() < wait_end:
@@ -2201,7 +2225,7 @@ def _fill_password_page_if_present(driver, email: str, timeout: int = 25) -> str
             if _has_access_token(driver):
                 logger.info("%s 密码提交后已检测到登录态", _log_prefix(driver))
                 return password
-            if not _is_signup_password_page(driver):
+            if not (_is_signup_password_page(driver) or _is_login_password_page(driver)):
                 return password
             time.sleep(0.5)
         return password
@@ -2556,12 +2580,29 @@ _MFA_TOTP_CODE_SELECTOR = 'input[name="totp_otp"]'
 
 def _totp_secret_candidate(value: object) -> str | None:
     """Normalize the manual Authenticator key without ever logging it."""
-    raw = re.sub(r"[\s-]+", "", str(value or "").strip()).upper()
-    if not 24 <= len(raw) <= 128 or len(raw) % 8 != 0:
+    text = str(value or "").strip()
+    if not text:
         return None
-    if not re.fullmatch(r"[A-Z2-7]+", raw):
-        return None
-    return raw
+
+    # Some versions expose an otpauth URI rather than a separate <code> node.
+    uri_match = re.search(r"(?:[?&]|\b)secret=([A-Z2-7]{16,128})", text, re.IGNORECASE)
+    if uri_match:
+        return uri_match.group(1).upper()
+
+    # Compact keys are unambiguous. Grouped keys must contain at least four
+    # groups, which avoids treating ordinary UI prose as a Base32 secret.
+    compact = re.search(r"(?<![A-Z2-7])([A-Z2-7]{20,128})(?![A-Z2-7])", text)
+    if compact:
+        return compact.group(1).upper()
+    grouped = re.search(
+        r"(?<![A-Z2-7])((?:[A-Z2-7]{4,8}[\s-]+){3,}[A-Z2-7]{4,8})(?![A-Z2-7])",
+        text,
+    )
+    if grouped:
+        normalized = re.sub(r"[\s-]+", "", grouped.group(1)).upper()
+        if 20 <= len(normalized) <= 128:
+            return normalized
+    return None
 
 
 def _first_visible_css(driver, selector: str):
@@ -2747,29 +2788,81 @@ def _button_after_input(driver, field, *, before: bool = False):
     """, field, bool(before))
 
 
+def _read_totp_secret_from_dialog(driver, field) -> str | None:
+    """Read an Authenticator secret without activating any external-protocol link."""
+    values = driver.execute_script(r"""
+    const input = arguments[0];
+    const root = input.closest('[role="dialog"]') || document;
+    const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+      && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+    const nodes = [root, ...root.querySelectorAll(
+      '[aria-label],[data-secret],[data-value],[data-uri],[data-otpauth],code,pre,input,div,span,a,img,svg'
+    )].filter(visible).slice(0, 1000);
+
+    // The QR-code fallback is sometimes an otpauth:// link. Clicking it opens a
+    // Chrome-level “Open Passwords/Key?” prompt that Selenium cannot inspect.
+    // Its href already contains the secret, so make the link inert and read it.
+    for (const el of nodes) {
+      const link = el.matches?.('a[href]') ? el : el.closest?.('a[href]');
+      const href = String(link?.getAttribute('href') || '').trim();
+      if (/^(?:otpauth|web\+otpauth|authenticator):/i.test(href)
+          && link && link.dataset.codexExternalProtocolBlocked !== '1') {
+        link.addEventListener('click', event => event.preventDefault(), true);
+        link.dataset.codexExternalProtocolBlocked = '1';
+      }
+    }
+
+    return nodes.flatMap(el => [
+      el.getAttribute?.('data-secret'), el.getAttribute?.('data-value'),
+      el.getAttribute?.('data-uri'), el.getAttribute?.('data-otpauth'),
+      el.getAttribute?.('value'), el.getAttribute?.('href'),
+      el.getAttribute?.('src'), el.getAttribute?.('srcset'),
+      el.getAttribute?.('aria-label'), el.innerText, el.textContent
+    ]).map(value => String(value || '').trim()).filter(Boolean);
+    """, field) or []
+    for value in values:
+        secret = _totp_secret_candidate(value)
+        if secret:
+            return secret
+    return None
+
+
 def _manual_totp_secret(driver, field, *, timeout: int = 20) -> str:
-    """Switch the setup dialog from QR to manual key and return the Base32 secret."""
-    manual_button = _button_after_input(driver, field, before=True)
+    """Read the QR binding URI, or safely switch the dialog to a manual key."""
+    secret = _read_totp_secret_from_dialog(driver, field)
+    if secret:
+        logger.info("%s[2FA] 已从二维码绑定信息读取 Authenticator key，未打开外部应用", _log_prefix(driver))
+        return secret
+
+    manual_button = driver.execute_script(r"""
+    const input = arguments[0];
+    const root = input.closest('[role="dialog"]') || input.closest('form') || document;
+    const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+      && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+    const enabled = el => !el.disabled && String(el.getAttribute('aria-disabled') || '').toLowerCase() !== 'true';
+    const candidates = [...root.querySelectorAll('button,a,[role="button"]')].filter(el =>
+      visible(el) && enabled(el) && el.getAttribute('data-testid') !== 'close-button');
+    const attrs = el => [
+      el.innerText, el.textContent, el.getAttribute('aria-label'), el.getAttribute('data-testid'),
+      el.getAttribute('name'), el.getAttribute('value'), el.getAttribute('href')
+    ].filter(Boolean).join(' ').toLowerCase();
+    const external = el => /^(?:otpauth|web\+otpauth|authenticator):/i.test(
+      String((el.closest('a[href]') || el).getAttribute('href') || '').trim()
+    );
+    const wanted = /manual|setup.?key|secret.?key|enter.?key|can.?t.?scan|unable.?to.?scan|trouble.*scan|scan.?code|手動|手动|設定キー|セットアップキー|スキャンでき|読み込み.*問題|スキャン.*問題/;
+    const unwanted = /cancel|close|back|previous|キャンセル|閉じる|戻る|取消|关闭|返回/;
+    return candidates.find(el => wanted.test(attrs(el)) && !unwanted.test(attrs(el)) && !external(el)) || null;
+    """, field)
     if not manual_button:
-        raise RuntimeError("TOTP 设置弹窗缺少手动密钥入口")
+        raise RuntimeError("TOTP 设置弹窗未提供安全可点击的手动密钥入口")
     _human_click(driver, manual_button, label="totp_show_manual_secret")
 
     end = time.time() + max(2, int(timeout))
     while time.time() < end:
         _check_manual_stop()
-        values = driver.execute_script(r"""
-        const input = arguments[0];
-        const root = input.closest('[role="dialog"]') || document;
-        const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
-          && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
-        return [...root.querySelectorAll('[aria-label],code,pre,div,span')]
-          .filter(visible).slice(0, 800)
-          .map(el => (el.innerText || el.textContent || '').trim()).filter(Boolean);
-        """, field) or []
-        for value in values:
-            secret = _totp_secret_candidate(value)
-            if secret:
-                return secret
+        secret = _read_totp_secret_from_dialog(driver, field)
+        if secret:
+            return secret
         time.sleep(0.35)
     raise RuntimeError("TOTP 设置弹窗未显示可读取的手动密钥")
 
@@ -2826,7 +2919,9 @@ def setup_roxy_2fa(driver, email: str, *, on_secret=None, existing_secret: str |
         raise RuntimeError("TOTP 设置弹窗缺少验证按钮")
     _human_click(driver, verify_button, label="totp_verify")
 
-    end = time.time() + 35
+    end = time.time() + 45
+    resubmitted = False
+    submitted_code = totp_code
     while time.time() < end:
         _check_manual_stop()
         current_toggle = _first_visible_css(driver, '[data-testid="mfa-authenticator-toggle"]')
@@ -2837,8 +2932,29 @@ def setup_roxy_2fa(driver, email: str, *, on_secret=None, existing_secret: str |
         if enabled and _first_visible_css(driver, 'input[name="totp_otp"]') is None:
             logger.info("%s[2FA] Authenticator 2FA 已启用", _log_prefix(driver))
             return secret
+        current_field = _first_visible_css(driver, _MFA_TOTP_CODE_SELECTOR)
+        # The code can cross a 30-second boundary while ChatGPT is processing
+        # the first click. If the dialog is still present, submit one fresh
+        # code instead of waiting until the whole step times out.
+        fresh_code = pyotp.TOTP(secret).now()
+        if current_field is not None and not resubmitted and fresh_code != submitted_code:
+            _human_type_text(driver, current_field, fresh_code, clear=True)
+            retry_button = _button_after_input(driver, current_field)
+            if retry_button is not None:
+                _human_click(driver, retry_button, label="totp_verify_retry")
+                logger.warning("%s[2FA] 首次 TOTP 提交后页面未确认，已使用新时段验证码补交一次", _log_prefix(driver))
+                resubmitted = True
+                submitted_code = fresh_code
+                end = max(end, time.time() + 35)
         time.sleep(0.5)
     raise RuntimeError("TOTP 验证提交后未确认 Authenticator 开关已启用")
+
+
+def _registration_otp_attempt_wait_seconds(deadline: float, attempt: int, max_attempts: int) -> int:
+    """Split one total OTP budget across remaining resend attempts."""
+    remaining = max(0.0, float(deadline) - time.monotonic())
+    attempts_left = max(1, int(max_attempts) - int(attempt) + 1)
+    return int(math.ceil(remaining / attempts_left)) if remaining > 0 else 0
 
 
 def _save_roxy_account_checkpoint(
@@ -2871,6 +2987,12 @@ def _save_roxy_account_checkpoint(
         "codex": codex_result,
         "twofa": twofa_result,
     }
+    twofa_status = str((twofa_result or {}).get("status") or "").strip().lower()
+    if totp_secret and twofa_status in {"running", "failed"}:
+        # The key is already persisted, but OpenAI has not yet been confirmed
+        # enabled. Keep this checkpoint explicit so a later browser retry can
+        # verify/finish enrollment instead of assuming the secret is active.
+        extra["totp_setup_pending"] = True
     return insert_account(
         email=email,
         access_token=access_token,
@@ -2884,6 +3006,35 @@ def _save_roxy_account_checkpoint(
         extra=extra,
         codex_status=codex_status,
         codex_error=codex_error,
+    )
+
+
+def _save_pending_email_verification_checkpoint(
+    *,
+    email: str,
+    openai_password: str,
+    opened: RoxyOpenResult,
+    proxy: str | None,
+) -> int:
+    """密码提交成功后立即保存待邮箱验证账号。
+
+    OpenAI 在密码提交时已经创建邮箱身份；即使验证码邮件没有到达，本地也必须保存
+    这组邮箱/密码，后续重试才能走登录流程继续收码。空 access_token 明确表示账号
+    尚未完成邮箱验证，不能被套餐查询或 Codex 当成完整账号使用。
+    """
+    from core.db import insert_account
+
+    return insert_account(
+        email=email,
+        access_token="",
+        proxy_used=proxy or None,
+        email_source=resolve_email_source(email),
+        extra={
+            "registration_password": openai_password,
+            "registration_checkpoint": "email_verification_pending",
+            "registration_pending_reason": "email_otp_pending",
+            "roxybrowser": {"profile_id": opened.profile_id, "open_result": opened.raw},
+        },
     )
 
 
@@ -2968,7 +3119,15 @@ def _run_in_isolated_browser_tab(driver, callback, *, label: str):
             raise RuntimeError(f"{label} 结束后无法恢复原 ChatGPT 标签页：{exc}") from exc
 
 
-def run_roxy_registration(email: str, name: str, birthday: str, proxy: str = None, otp_code: str = None, batch_dir: Path | None = None) -> dict:
+def run_roxy_registration(
+    email: str,
+    name: str,
+    birthday: str,
+    proxy: str = None,
+    otp_code: str = None,
+    batch_dir: Path | None = None,
+    existing_password: str | None = None,
+) -> dict:
     """Roxy 指纹浏览器自动化注册入口。"""
     from core.registration_service import report_job_progress, report_registered_account
 
@@ -3032,18 +3191,58 @@ def run_roxy_registration(email: str, name: str, birthday: str, proxy: str = Non
 
         # 新版注册流可能先进入 /create-account/password；参考 FlowPilot 的 fill-password 步骤，
         # 先设置密码并提交，然后再等待邮箱验证码页。
-        openai_password = _fill_password_page_if_present(driver, email, timeout=25)
+        openai_password = _fill_password_page_if_present(
+            driver,
+            email,
+            timeout=25,
+            existing_password=existing_password,
+        )
+        if openai_password:
+            account_id = _save_pending_email_verification_checkpoint(
+                email=email,
+                openai_password=openai_password,
+                opened=opened,
+                proxy=proxy,
+            )
+            report_registered_account(account_id)
+            create_acknowledged = True
+            logger.info(
+                "[Roxy注册] 密码已提交，待邮箱验证账号检查点已保存：id=%s email=%s resume=%s",
+                account_id,
+                email,
+                bool(existing_password),
+            )
         report_job_progress("auth_redirect", "success", f"已进入认证下一步：{next_state}")
         _check_manual_stop()
 
         report_job_progress("email_otp", "running", "正在等待并验证邮箱验证码")
         current_otp = otp_code
         max_otp_attempts = 3
+        try:
+            from config import email as _email_cfg
+            otp_total_wait = max(1, int(getattr(_email_cfg, "OTP_MAX_WAIT", 240) or 240))
+        except Exception:
+            otp_total_wait = 240
+        otp_wait_deadline = time.monotonic() + otp_total_wait
+        otp_already_complete = _has_access_token(driver)
         for otp_attempt in range(1, max_otp_attempts + 1):
+            if otp_already_complete:
+                break
             if current_otp is None:
                 logger.info("[Roxy注册][OTP] 等待验证码：%s（第 %s/%s 次）", email, otp_attempt, max_otp_attempts)
                 try:
-                    current_otp = wait_for_otp(email, after_ts=otp_after_ts)
+                    attempt_wait = _registration_otp_attempt_wait_seconds(
+                        otp_wait_deadline,
+                        otp_attempt,
+                        max_otp_attempts,
+                    )
+                    if attempt_wait <= 0:
+                        raise TimeoutError(f"邮箱验证码总等待已达到 {otp_total_wait}s")
+                    current_otp = wait_for_otp(
+                        email,
+                        after_ts=otp_after_ts,
+                        max_wait=attempt_wait,
+                    )
                 except Exception as exc:
                     if otp_attempt >= max_otp_attempts:
                         raise
@@ -3084,7 +3283,11 @@ def run_roxy_registration(email: str, name: str, birthday: str, proxy: str = Non
             human_delay("api")
             current_otp = None
 
-        report_job_progress("email_otp", "success", "邮箱验证码已通过")
+        report_job_progress(
+            "email_otp",
+            "skipped" if otp_already_complete else "success",
+            "已有登录态，无需再次验证邮箱" if otp_already_complete else "邮箱验证码已通过",
+        )
         # about-you / profile 信息页：必须完成或确认已有登录态，不能静默跳过。
         report_job_progress("profile", "running", "正在填写账号资料")
         logger.info("[Roxy注册] 开始等待资料页/登录态")
@@ -3103,7 +3306,7 @@ def run_roxy_registration(email: str, name: str, birthday: str, proxy: str = Non
         _check_manual_stop()
         session_info = _fetch_chatgpt_session(driver, timeout=120)
         access_token = session_info["accessToken"]
-        captured_plan_result = registration_plan_capture.read_selenium(driver, access_token)
+        captured_plan_result = registration_plan_capture.read_or_fetch_selenium(driver, access_token)
         report_job_progress("token", "success", "已获取 accessToken")
         logger.info("[Roxy注册] 已拿到 accessToken：%s", email)
         _check_manual_stop()
@@ -3244,8 +3447,14 @@ def run_roxy_registration(email: str, name: str, birthday: str, proxy: str = Non
                 "expires": session_info.get("expires"),
                 "roxybrowser": {"profile_id": opened.profile_id, "open_result": opened.raw},
                 "registration_password": openai_password,
+                "registration_checkpoint": "registered",
                 "codex": codex_result,
                 "twofa": twofa_result,
+                **(
+                    {"totp_setup_pending": True}
+                    if totp_secret and str(twofa_result.get("status") or "").lower() == "failed"
+                    else {}
+                ),
             },
         )
         codex_ok = codex_result.get("ok") or codex_result.get("status") == "skipped"
@@ -3290,6 +3499,7 @@ def run_roxy_registration(email: str, name: str, birthday: str, proxy: str = Non
             pass
         return {
             "success": False,
+            "registration_pending": bool(account_id and not access_token),
             "email": email,
             "account_id": account_id,
             "access_token": access_token,

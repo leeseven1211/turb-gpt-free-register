@@ -151,6 +151,8 @@ def _build_roxy_twofa_setup(email: str, task_id: int):
                 _checkpoint(secret)
             if not db.update_account_totp_secret(email, state["secret"], setup_pending=False):
                 raise RuntimeError("Authenticator 完成状态写入账号失败")
+            if not db.update_account_twofa_status(email, "success", "Authenticator 2FA 已启用"):
+                raise RuntimeError("Authenticator 结果状态写入账号失败")
             check_stop_requested(email)
             account_task_store.append_event(
                 task_id,
@@ -163,6 +165,11 @@ def _build_roxy_twofa_setup(email: str, task_id: int):
         except CodexRetryStopped:
             raise
         except Exception as exc:
+            db.update_account_twofa_status(
+                email,
+                "failed",
+                f"{type(exc).__name__}: {str(exc)[:220]}",
+            )
             account_task_store.append_event(
                 task_id,
                 stage="twofa_result",
@@ -238,6 +245,145 @@ def request_stop(email: str) -> dict:
     except Exception:
         logger.exception("写入 Codex 停止日志失败")
     return {"ok": True, "message": "已发送停止信号", "state": "stopped", "running": True, "injected": injected}
+
+
+def run_twofa_worker(
+    email: str,
+    *,
+    clear_log: bool = True,
+    target_log_path: str | Path | None = None,
+    task_id: int | None = None,
+    task_trigger: str = "manual",
+) -> dict:
+    """只重新登录并检查/补齐 Authenticator 2FA，不重复执行 Codex OAuth。"""
+    fh: logging.FileHandler | None = None
+    root_logger = logging.getLogger()
+    result: dict = {"status": "failed", "ok": False, "message": "2FA 重试未返回结果"}
+    account_route = None
+    route_summary: dict = {}
+    key = (email or "").strip().lower()
+    try:
+        account = db.get_account_by_email(email) or {}
+        if task_id is None:
+            task_id = account_task_store.create_task(
+                task_type="twofa_retry",
+                account_id=int(account.get("id") or 0) or None,
+                email=email,
+                trigger=str(task_trigger or "manual"),
+            )
+        with _RETRYING_LOCK:
+            _RUNNING_THREADS[key] = threading.get_ident()
+            _RESERVED_AT[key] = time.time()
+        check_stop_requested(email)
+        account_task_store.start_task(task_id, message="开始重新检查并补齐 Authenticator 2FA")
+
+        path = Path(target_log_path) if target_log_path else log_path(email)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if clear_log:
+            path.write_text("", encoding="utf-8")
+        thread_name = threading.current_thread().name
+        fh = logging.FileHandler(str(path), encoding="utf-8")
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
+        fh.addFilter(lambda record: record.threadName == thread_name)
+        root_logger.addHandler(fh)
+
+        import config as config_pkg
+
+        config_pkg.reload_all()
+        from config import codex as codex_cfg
+        from config import roxybrowser as roxy_cfg
+
+        oauth_driver = str(getattr(codex_cfg, "CODEX_OAUTH_DRIVER", "protocol") or "protocol").strip().lower()
+        if oauth_driver == "same_as_registration":
+            oauth_driver = str(getattr(roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
+        if oauth_driver not in {"roxy", "roxybrowser", "fingerprint", "browser"}:
+            raise RuntimeError(f"2FA 自动重试当前仅支持 Roxy 驱动，当前驱动={oauth_driver or 'protocol'}")
+
+        from core.account_proxy import acquire_account_proxy
+
+        account_route = acquire_account_proxy(
+            account_id=int(account.get("id") or 0) or None,
+            email=email,
+            purpose="twofa-retry",
+        )
+        route_summary = account_route.public_dict()
+        account_task_store.append_event(
+            task_id,
+            stage="network",
+            message="已分配 2FA 重试线路",
+            detail={
+                "network_route": route_summary.get("network_route"),
+                "proxy_mode": account_route.mode,
+                "proxy_provider": account_route.provider,
+                "proxy_region": account_route.region,
+            },
+        )
+        account_task_store.append_event(
+            task_id,
+            stage="twofa",
+            message="重新登录 ChatGPT，先检查远端开关，未开启时重新 enrollment",
+        )
+        from core.roxy_codex_oauth import run_roxy_chatgpt_account_action
+
+        run_roxy_chatgpt_account_action(
+            email,
+            proxy=account_route.proxy_url,
+            action=_build_roxy_twofa_setup(email, task_id),
+        )
+        check_stop_requested(email)
+        result = {
+            "status": "success",
+            "ok": True,
+            "message": "Authenticator 2FA 远端状态已确认启用",
+            "proxy_provider": account_route.provider,
+            "proxy_region": account_route.region,
+            "proxy_mode": account_route.mode,
+        }
+        return result
+    except CodexRetryStopped as exc:
+        result = {"status": "stopped", "ok": False, "message": str(exc) or "用户手动停止 2FA 重试"}
+        return result
+    except Exception as exc:
+        result = {"status": "failed", "ok": False, "message": f"{type(exc).__name__}: {exc}"}
+        logger.exception("[2FA 重试] %s 异常", email)
+        return result
+    finally:
+        if fh is not None:
+            try:
+                root_logger.removeHandler(fh)
+                fh.close()
+            except Exception:
+                pass
+        if account_route is not None:
+            account_route.release(reason=f"twofa-retry-{email}")
+        release(email)
+        with _RETRYING_LOCK:
+            if key:
+                _STOP_REQUESTED.discard(key)
+        task_status = "success" if result.get("ok") else "cancelled" if result.get("status") == "stopped" else "failed"
+        try:
+            account_task_store.finish_task(
+                task_id,
+                status=task_status,
+                message=(
+                    "Authenticator 2FA 已确认启用"
+                    if task_status == "success"
+                    else "2FA 重试已停止" if task_status == "cancelled" else "2FA 重试失败"
+                ),
+                error=None if task_status == "success" else str(result.get("message") or "2FA 重试失败"),
+                result_summary={"ok": bool(result.get("ok")), "status": result.get("status"), "message": result.get("message")},
+                route={
+                    "network_route": route_summary.get("network_route"),
+                    "proxy_mode": result.get("proxy_mode") or getattr(account_route, "mode", None),
+                    "proxy_provider": result.get("proxy_provider") or getattr(account_route, "provider", None),
+                    "proxy_region": result.get("proxy_region") or getattr(account_route, "region", None),
+                    "proxy_used": route_summary.get("proxy_used"),
+                },
+                validation_method="chatgpt_security_settings",
+            )
+        except Exception:
+            logger.exception("[2FA 重试] 写入任务实例失败：task_id=%s email=%s", task_id or "-", email)
 
 
 def run_worker(

@@ -7,7 +7,7 @@ import os
 import threading
 from datetime import datetime, timezone
 
-from core import db
+from core import db, scheduler_state
 from core.chatgpt_plan import token_claims
 
 logger = logging.getLogger(__name__)
@@ -91,22 +91,35 @@ def enqueue_due_accounts() -> dict:
     return {"started": started, "skipped": skipped, "invalid": invalid}
 
 
+SCHEDULER_TASK = "at_refresh"
+
+
+def scheduler_enabled() -> bool:
+    """每轮重新读配置：WebUI 改完走 config.reload_all()，不应要求重启。"""
+    from config import codex as _codex_cfg
+    return bool(getattr(_codex_cfg, "AT_AUTO_REFRESH_ENABLED", True))
+
+
+def scheduler_interval_seconds() -> int:
+    from config import codex as _codex_cfg
+    raw = int(getattr(_codex_cfg, "AT_REFRESH_SCAN_INTERVAL_SECONDS", 3600) or 3600)
+    return max(300, min(86400, raw))
+
+
 def _scheduler_loop() -> None:
-    stop = threading.Event()
-    if stop.wait(_INITIAL_DELAY_SECONDS):
-        return
-    while True:
-        try:
-            result = enqueue_due_accounts()
-            logger.info("[AT Refresh] scheduled scan: %s", result)
-        except Exception:
-            logger.exception("[AT Refresh] scheduled cycle failed")
-        stop.wait(_SCAN_INTERVAL_SECONDS)
+    scheduler_state.run_periodic(
+        task=SCHEDULER_TASK,
+        label="AT Refresh",
+        work=enqueue_due_accounts,
+        enabled=scheduler_enabled,
+        interval_seconds=scheduler_interval_seconds,
+        initial_delay_seconds=_INITIAL_DELAY_SECONDS,
+    )
 
 
 def start_periodic_refresher() -> bool:
     global _SCHEDULER_STARTED
-    if not _ENABLED:
+    if not scheduler_enabled():
         logger.info("[AT Refresh] periodic refresher disabled")
         return False
     with _LOCK:
@@ -115,18 +128,20 @@ def start_periodic_refresher() -> bool:
         _SCHEDULER_STARTED = True
     threading.Thread(target=_scheduler_loop, name="at-refresh-scheduler", daemon=True).start()
     logger.info(
-        "[AT Refresh] enabled interval=%ss before=%sh max_per_cycle=%s",
-        _SCAN_INTERVAL_SECONDS,
+        "[AT Refresh] enabled interval=%ss before=%sh max_per_cycle=%s next_due_in=%ss",
+        scheduler_interval_seconds(),
         _REFRESH_BEFORE_HOURS,
         _MAX_PER_CYCLE,
+        int(scheduler_state.seconds_until_due(SCHEDULER_TASK, scheduler_interval_seconds())),
     )
     return True
 
 
 def settings() -> dict:
     return {
-        "enabled": _ENABLED,
+        "enabled": scheduler_enabled(),
         "refresh_before_hours": _REFRESH_BEFORE_HOURS,
-        "scan_interval_seconds": _SCAN_INTERVAL_SECONDS,
+        "scan_interval_seconds": scheduler_interval_seconds(),
         "max_per_cycle": _MAX_PER_CYCLE,
+        "schedule": scheduler_state.describe(SCHEDULER_TASK, scheduler_interval_seconds()),
     }

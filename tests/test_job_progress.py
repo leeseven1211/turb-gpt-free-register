@@ -48,6 +48,23 @@ class JobProgressTests(PostgresTestCase):
                 self.assertEqual(row["progress_steps"]["complete"]["started_at"], row["created_at"])
                 self.assertEqual(row["progress_stage"], "complete")
 
+    def test_successful_closeout_marks_never_started_stages_skipped(self):
+        with tempfile.TemporaryDirectory() as td:
+            patches = self._storage_patches(Path(td))
+            with patches[0], patches[1], patches[2], patches[3]:
+                job = db.create_job("icloud_hide")
+                db.update_job_progress(job["id"], "email_otp", "success", "邮箱验证码已通过")
+                db.update_job_progress(job["id"], "profile", "pending", "尚未开始")
+
+                db.finish_job_progress(job["id"], success=True)
+
+                row = db.get_job(job["id"])
+                self.assertEqual(row["progress_steps"]["email_otp"]["state"], "success")
+                self.assertEqual(row["progress_steps"]["profile"]["state"], "skipped")
+                self.assertEqual(row["progress_steps"]["token"]["state"], "skipped")
+                self.assertEqual(row["progress_steps"]["plan_check"]["state"], "skipped")
+                self.assertEqual(row["progress_steps"]["complete"]["state"], "success")
+
     def test_failed_job_lands_on_current_stage(self):
         with tempfile.TemporaryDirectory() as td:
             patches = self._storage_patches(Path(td))
@@ -58,6 +75,8 @@ class JobProgressTests(PostgresTestCase):
                 row = db.get_job(job["id"])
                 self.assertEqual(row["progress_steps"]["email_otp"]["state"], "failed")
                 self.assertEqual(row["progress_steps"]["email_otp"]["detail"], "验证码超时")
+                self.assertEqual(row["progress_steps"]["profile"]["state"], "skipped")
+                self.assertEqual(row["progress_steps"]["plan_check"]["state"], "skipped")
                 self.assertEqual(row["progress_steps"]["complete"]["state"], "failed")
 
     def test_failed_codex_is_not_moved_to_successful_plan_check(self):
@@ -121,7 +140,7 @@ class JobProgressTests(PostgresTestCase):
         self.assertTrue(info["retryable"])
         self.assertEqual(info["retry_action"], "codex")
 
-    def test_twofa_only_failure_stays_partial_without_wrong_codex_retry(self):
+    def test_twofa_only_failure_offers_dedicated_twofa_retry(self):
         job = {
             "id": 10,
             "status": "partial_success",
@@ -138,8 +157,34 @@ class JobProgressTests(PostgresTestCase):
             info = registration_service.get_retry_info(job)
 
         self.assertEqual(info["display_status"], "partial_success")
-        self.assertFalse(info["retryable"])
-        self.assertIn("2FA", info["retry_reason"])
+        self.assertTrue(info["retryable"])
+        self.assertEqual(info["retry_action"], "twofa")
+        self.assertEqual(info["retry_label"], "重试 2FA")
+
+    def test_pending_email_verification_account_resumes_saved_login(self):
+        job = {
+            "id": 11,
+            "status": "partial_success",
+            "account_id": 44,
+            "progress_steps": {"email_otp": {"state": "failed"}},
+        }
+        account = {
+            "id": 44,
+            "email": "pending@example.com",
+            "access_token": "",
+            "extra_json": (
+                '{"registration_checkpoint":"email_verification_pending",'
+                '"registration_password":"StoredPassword!123"}'
+            ),
+        }
+        with patch.object(db, "get_successful_retry_for_job", return_value=None), patch.object(
+            registration_service, "_account_for_job", return_value=account
+        ):
+            info = registration_service.get_retry_info(job)
+
+        self.assertTrue(info["retryable"])
+        self.assertEqual(info["retry_action"], "registration_resume")
+        self.assertEqual(info["retry_label"], "继续邮箱验证")
 
     def test_historical_job_marks_new_auth_redirect_stage_skipped(self):
         row = {

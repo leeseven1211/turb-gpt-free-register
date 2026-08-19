@@ -14,7 +14,7 @@ from typing import Any
 import requests
 
 from config import codex as _cfg
-from core import account_task_store, db
+from core import account_task_store, db, scheduler_state
 
 logger = logging.getLogger(__name__)
 
@@ -357,18 +357,28 @@ def enqueue_due_credentials() -> dict[str, int]:
     return {"started": started, "skipped": skipped}
 
 
+SCHEDULER_TASK = "codex_token_refresh"
+
+
+def scheduler_enabled() -> bool:
+    return bool(getattr(_cfg, "CODEX_TOKEN_AUTO_REFRESH_ENABLED", True))
+
+
+def scheduler_interval_seconds() -> int:
+    raw = int(getattr(_cfg, "CODEX_TOKEN_REFRESH_SCAN_INTERVAL_SECONDS", 86400) or 86400)
+    return max(300, min(86400, raw))
+
+
 def _scheduler_loop() -> None:
-    stop = threading.Event()
     initial = max(10, min(3600, int(getattr(_cfg, "CODEX_TOKEN_REFRESH_INITIAL_DELAY_SECONDS", 120) or 120)))
-    if stop.wait(initial):
-        return
-    while True:
-        try:
-            logger.info("[Codex Token Refresh] scheduled scan: %s", enqueue_due_credentials())
-        except Exception:
-            logger.exception("[Codex Token Refresh] scheduled cycle failed")
-        interval = max(300, min(86400, int(getattr(_cfg, "CODEX_TOKEN_REFRESH_SCAN_INTERVAL_SECONDS", 86400) or 86400)))
-        stop.wait(interval)
+    scheduler_state.run_periodic(
+        task=SCHEDULER_TASK,
+        label="Codex Token Refresh",
+        work=enqueue_due_credentials,
+        enabled=scheduler_enabled,
+        interval_seconds=scheduler_interval_seconds,
+        initial_delay_seconds=initial,
+    )
 
 
 def start_periodic_refresher() -> bool:
@@ -382,10 +392,11 @@ def start_periodic_refresher() -> bool:
         _SCHEDULER_STARTED = True
     threading.Thread(target=_scheduler_loop, name="codex-token-refresh-scheduler", daemon=True).start()
     logger.info(
-        "[Codex Token Refresh] enabled interval=%ss before=%sh max_per_cycle=%s",
-        getattr(_cfg, "CODEX_TOKEN_REFRESH_SCAN_INTERVAL_SECONDS", 86400),
+        "[Codex Token Refresh] enabled interval=%ss before=%sh max_per_cycle=%s next_due_in=%ss",
+        scheduler_interval_seconds(),
         getattr(_cfg, "CODEX_TOKEN_REFRESH_BEFORE_HOURS", 24),
         getattr(_cfg, "CODEX_TOKEN_REFRESH_MAX_PER_CYCLE", 20),
+        int(scheduler_state.seconds_until_due(SCHEDULER_TASK, scheduler_interval_seconds())),
     )
     return True
 

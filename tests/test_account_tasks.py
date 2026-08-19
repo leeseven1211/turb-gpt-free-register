@@ -243,6 +243,7 @@ class CodexRetryTaskTests(unittest.TestCase):
             tempfile.TemporaryDirectory() as tempdir,
             patch.object(codex_retry_service.db, "get_account_by_email", return_value=account),
             patch.object(codex_retry_service.db, "update_account_totp_secret", return_value=True) as save_totp,
+            patch.object(codex_retry_service.db, "update_account_twofa_status", return_value=True) as save_twofa_status,
             patch.object(codex_retry_service.db, "update_account_codex_status"),
             patch.object(codex_retry_service.account_task_store, "start_task"),
             patch.object(codex_retry_service.account_task_store, "append_event") as append_event,
@@ -270,6 +271,7 @@ class CodexRetryTaskTests(unittest.TestCase):
             ],
         )
         self.assertTrue(any(call.kwargs.get("stage") == "twofa_result" for call in append_event.call_args_list))
+        save_twofa_status.assert_called_once_with("a@example.com", "success", "Authenticator 2FA 已启用")
         route.release.assert_called_once_with(reason="codex-oauth-a@example.com")
 
 

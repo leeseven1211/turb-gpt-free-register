@@ -370,15 +370,36 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 # 兼容改造前已经存在的多来源历史任务；新任务 API 不再允许这种值。
                 from core.email_provider import parse_email_sources
                 selected_source = parse_email_sources(selected_source)[0]
-            email, name, birthday = _prepare_registration_args(selected_source)
+            existing_password = ""
+            if str(current.get("job_type") or "") == "registration_resume":
+                resume_account = _account_for_job(current)
+                email = str((resume_account or {}).get("email") or current.get("email") or "").strip()
+                existing_password = _pending_registration_password(resume_account)
+                if not email or not existing_password:
+                    raise RuntimeError("待邮箱验证账号缺少邮箱或已保存登录密码，无法继续验证")
+                from core.profile_utils import generate_random_birthday
+
+                name = _random_display_name()
+                birthday = generate_random_birthday()
+                db.update_job_progress(
+                    job_id,
+                    "email",
+                    state="success",
+                    detail="已复用待邮箱验证账号和保存的登录密码",
+                )
+                log_logger.info("[Job %s] 继续验证已保存账号：account_id=%s", job_id, (resume_account or {}).get("id"))
+            else:
+                email, name, birthday = _prepare_registration_args(selected_source)
             db.update_job(job_id, email=email)
-            db.update_job_progress(job_id, "email", state="success", detail=f"已从 {selected_source} 领取邮箱")
+            if not existing_password:
+                db.update_job_progress(job_id, "email", state="success", detail=f"已从 {selected_source} 领取邮箱")
             check_stop_requested()
             result = run_registration(
                 email=email,
                 name=name,
                 birthday=birthday,
                 proxy=proxy_lease.proxy_url,
+                existing_password=existing_password or None,
             )
             # Codex 失败时注册账号可能已经创建并保存。代理地区属于账号注册事实，
             # 不能只在整项任务 success 时落库，否则后续补跑/查套餐无法稳定沿用地区。
@@ -419,9 +440,31 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 )
             )
             if registration_succeeded:
+                warning = str(result.get("error") or "").strip()
+                registration_pending = bool(
+                    not result.get("success")
+                    and result.get("account_id")
+                    and (
+                        result.get("registration_pending")
+                        or not str(result.get("access_token") or "").strip()
+                    )
+                )
+                if registration_pending:
+                    # 密码已经保存只能说明账号进入了“待邮箱验证”，不能把当前
+                    # 验证码节点及后续未执行节点涂成绿色。先保留真实失败节点，
+                    # finish_job_progress 再把从未上报的后续节点收口为 skipped。
+                    progress = db.get_job(job_id) or {}
+                    failed_stage = str(progress.get("progress_stage") or "email_otp")
+                    if failed_stage not in {key for key, _label in db.JOB_PROGRESS_STAGES} or failed_stage == "complete":
+                        failed_stage = "email_otp"
+                    db.update_job_progress(
+                        job_id,
+                        failed_stage,
+                        state="failed",
+                        detail=(warning or "账号已保存，邮箱验证尚未完成")[:300],
+                    )
                 db.finish_job_progress(job_id, success=True)
                 final_status = "partial_success" if partial_success else "success"
-                warning = str(result.get("error") or "").strip()
                 db.update_job(
                     job_id,
                     status=final_status,
@@ -585,6 +628,73 @@ def _run_codex_retry_job(
         _deactivate_job(job_id)
 
 
+def _run_twofa_retry_job(
+    job_id: int,
+    log_file: str,
+    email: str,
+    account_id: int,
+    account_task_id: int | None = None,
+) -> None:
+    """把 2FA 检查/补齐作为标准注册重试任务执行。"""
+    _activate_job(job_id)
+    current = db.get_job(job_id)
+    if not current or current.get("status") == "cancelled":
+        account_task_store.finish_task(
+            account_task_id,
+            status="cancelled",
+            message="注册重试任务已取消，2FA 重试未执行",
+        )
+        codex_retry_service.release(email)
+        _deactivate_job(job_id)
+        return
+
+    db.update_job(job_id, status="running", started_at=datetime.now().isoformat(timespec="seconds"))
+    for stage, _label in db.JOB_PROGRESS_STAGES:
+        if stage not in {"twofa", "complete"}:
+            db.update_job_progress(job_id, stage, state="skipped", detail="2FA 重试任务")
+    db.update_job_progress(job_id, "twofa", state="running", detail="正在检查并补齐 Authenticator 2FA")
+    try:
+        result = codex_retry_service.run_twofa_worker(
+            email,
+            clear_log=False,
+            target_log_path=log_file,
+            task_id=account_task_id,
+            task_trigger="registration_job_retry",
+        )
+        now_iso = datetime.now().isoformat(timespec="seconds")
+        proxy_fields = {}
+        if result.get("proxy_provider"):
+            proxy_fields = {
+                "proxy_provider": result.get("proxy_provider"),
+                "proxy_region": result.get("proxy_region") or "-",
+                "proxy_status": "released",
+            }
+        if is_stop_requested(job_id) or result.get("status") == "stopped":
+            db.finish_job_progress(job_id, success=False, detail=str(result.get("message") or "用户手动停止")[:300], failure_state="stopped")
+            db.update_job(job_id, status="stopped", email=email, account_id=account_id, error=str(result.get("message") or "用户手动停止")[:500], completed_at=now_iso, **proxy_fields)
+        elif result.get("ok"):
+            db.update_job_progress(job_id, "twofa", state="success", detail="Authenticator 2FA 已确认启用")
+            db.finish_job_progress(job_id, success=True)
+            db.update_job(job_id, status="success", email=email, account_id=account_id, completed_at=now_iso, **proxy_fields)
+        else:
+            db.update_job_progress(job_id, "twofa", state="failed", detail=str(result.get("message") or "2FA 重试失败")[:300])
+            db.finish_job_progress(job_id, success=False, detail=str(result.get("message") or "2FA 重试失败")[:300])
+            db.update_job(job_id, status="failed", email=email, account_id=account_id, error=str(result.get("message") or "2FA 重试失败")[:500], completed_at=now_iso, **proxy_fields)
+    except Exception as exc:
+        db.update_job_progress(job_id, "twofa", state="failed", detail=f"{type(exc).__name__}: {exc}"[:300])
+        db.finish_job_progress(job_id, success=False, detail=f"{type(exc).__name__}: {exc}"[:300])
+        db.update_job(
+            job_id,
+            status="failed",
+            error=f"{type(exc).__name__}: {exc}"[:500],
+            completed_at=datetime.now().isoformat(timespec="seconds"),
+        )
+        codex_retry_service.release(email)
+        logger.exception("[Job %s] 2FA 重试异常", job_id)
+    finally:
+        _deactivate_job(job_id)
+
+
 # ============================================================
 # 公共接口
 # ============================================================
@@ -647,6 +757,29 @@ def _account_for_job(job: dict) -> dict | None:
     return db.get_account_by_email(email) if email else None
 
 
+def _account_extra(account: dict | None) -> dict:
+    if not account:
+        return {}
+    raw = account.get("extra_json") or {}
+    if isinstance(raw, str):
+        try:
+            import json
+
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            raw = {}
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def _pending_registration_password(account: dict | None) -> str:
+    extra = _account_extra(account)
+    if str(extra.get("registration_checkpoint") or "").strip() != "email_verification_pending":
+        return ""
+    if str((account or {}).get("access_token") or "").strip():
+        return ""
+    return str(extra.get("registration_password") or "").strip()
+
+
 def get_retry_info(job: dict) -> dict:
     """返回给 API/UI 的重试能力描述，不依赖前端猜测错误阶段。"""
     status = str(job.get("status") or "")
@@ -667,6 +800,17 @@ def get_retry_info(job: dict) -> dict:
         return info
 
     account = _account_for_job(job)
+    pending_password = _pending_registration_password(account)
+    if account and pending_password:
+        info.update({
+            "display_status": "partial_success",
+            "retryable": True,
+            "retry_action": "registration_resume",
+            "retry_label": "继续邮箱验证",
+            "retry_reason": "OpenAI 密码已创建并保存在本地，继续登录同一账号完成邮箱验证",
+        })
+        return info
+
     steps = job.get("progress_steps") if isinstance(job.get("progress_steps"), dict) else {}
     twofa_step = steps.get("twofa") if isinstance(steps.get("twofa"), dict) else {}
     twofa_failed = str(twofa_step.get("state") or "") == "failed"
@@ -693,11 +837,15 @@ def get_retry_info(job: dict) -> dict:
             info["retry_reason"] = "账号已废号，不能补跑 Codex"
             return info
         if codex_status == "success":
-            info["retry_reason"] = (
-                "账号和 Codex 授权已完成，但 2FA 未完成；当前仅支持自动补跑 Codex"
-                if twofa_failed
-                else "账号和 Codex 授权均已完成"
-            )
+            if twofa_failed:
+                info.update({
+                    "retryable": True,
+                    "retry_action": "twofa",
+                    "retry_label": "重试 2FA",
+                    "retry_reason": "账号和 Codex 已完成，重新登录检查并补齐 Authenticator 2FA",
+                })
+                return info
+            info["retry_reason"] = "账号和 Codex 授权均已完成"
             return info
         info.update({
             "retryable": True,
@@ -729,33 +877,38 @@ def retry_job(job_id: int, workers: int | None = None) -> dict:
     account = _account_for_job(source)
     email = str((account or {}).get("email") or source.get("email") or "").strip()
     account_id = int(account["id"]) if account and account.get("id") is not None else None
-    reserved_codex = False
-    if action == "codex":
+    reserved_account_action = False
+    if action in {"codex", "twofa"}:
         if not email or account_id is None:
-            return {"ok": False, "error": "已注册账号信息不完整，无法补跑 Codex", "status": 409}
+            return {"ok": False, "error": "已保存账号信息不完整，无法执行账号补跑", "status": 409}
         if not codex_retry_service.reserve(email):
-            return {"ok": False, "error": "该账号正在补跑 Codex，请稍候", "status": 409}
-        reserved_codex = True
+            return {"ok": False, "error": "该账号正在执行 Codex/2FA 补跑，请稍候", "status": 409}
+        reserved_account_action = True
 
     try:
+        job_type = {
+            "codex": "codex_retry",
+            "twofa": "twofa_retry",
+            "registration_resume": "registration_resume",
+        }.get(action, "registration")
         job, created = db.create_retry_job(
             int(job_id),
-            job_type="codex_retry" if action == "codex" else "registration",
+            job_type=job_type,
             email_source=str(source.get("email_source") or "outlook"),
-            email=email if action == "codex" else None,
-            account_id=account_id if action == "codex" else None,
+            email=email if action in {"codex", "twofa", "registration_resume"} else None,
+            account_id=account_id if action in {"codex", "twofa", "registration_resume"} else None,
         )
     except LookupError as exc:
-        if reserved_codex:
+        if reserved_account_action:
             codex_retry_service.release(email)
         return {"ok": False, "error": str(exc), "status": 404}
     except ValueError as exc:
-        if reserved_codex:
+        if reserved_account_action:
             codex_retry_service.release(email)
         return {"ok": False, "error": str(exc), "status": 409}
 
     if not created:
-        if reserved_codex:
+        if reserved_account_action:
             codex_retry_service.release(email)
         return {
             "ok": True,
@@ -769,13 +922,14 @@ def retry_job(job_id: int, workers: int | None = None) -> dict:
 
     account_task_id = None
     try:
-        if action == "codex":
+        if action in {"codex", "twofa"}:
             account_task_id = account_task_store.create_task(
-                task_type="codex_retry",
+                task_type="codex_retry" if action == "codex" else "twofa_retry",
                 account_id=int(account_id),
                 email=email,
                 trigger="registration_job_retry",
             )
+        if action == "codex":
             db.update_account_codex_status(email, "retrying", None)
         with _executor_lock:
             executor = get_executor(max_workers=workers)
@@ -788,17 +942,27 @@ def retry_job(job_id: int, workers: int | None = None) -> dict:
                     int(account_id),
                     account_task_id,
                 )
+            elif action == "twofa":
+                executor.submit(
+                    _run_twofa_retry_job,
+                    job["id"],
+                    job["log_file"],
+                    email,
+                    int(account_id),
+                    account_task_id,
+                )
             else:
                 executor.submit(_run_one_job, job["id"], job["log_file"])
     except Exception as exc:
-        if reserved_codex:
+        if reserved_account_action:
             codex_retry_service.release(email)
+        if action == "codex":
             db.update_account_codex_status(email, "failed", f"队列提交失败：{type(exc).__name__}: {exc}"[:500])
         if account_task_id:
             account_task_store.finish_task(
                 account_task_id,
                 status="failed",
-                message="Codex 补跑任务入队失败",
+                message="账号补跑任务入队失败",
                 error=f"{type(exc).__name__}: {exc}",
             )
         db.update_job(
@@ -814,7 +978,7 @@ def retry_job(job_id: int, workers: int | None = None) -> dict:
         "ok": True,
         "created": True,
         "reused": False,
-        "message": f"已创建重试任务 #{job['id']}（{'Codex 补跑' if action == 'codex' else '完整注册'}）",
+        "message": f"已创建重试任务 #{job['id']}（{ {'codex': 'Codex 补跑', 'twofa': '2FA 重试', 'registration_resume': '继续邮箱验证'}.get(action, '完整注册') }）",
         "source_job_id": int(job_id),
         "retry_action": action,
         "job": job,

@@ -911,6 +911,32 @@ def update_account_totp_secret(
         return True
 
 
+def update_account_twofa_status(email: str, status: str, message: str) -> bool:
+    """更新账号 2FA 结果，并在成功时清除待激活检查点。"""
+    row = record_store.get_row_by(record_store.ACCOUNTS, "email", email, lower=True)
+    if row is None:
+        return False
+    raw_extra = row.get("extra_json") or {}
+    if isinstance(raw_extra, str):
+        try:
+            raw_extra = json.loads(raw_extra)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw_extra = {}
+    extra = dict(raw_extra) if isinstance(raw_extra, dict) else {}
+    normalized = str(status or "").strip().lower() or "failed"
+    extra["twofa"] = {
+        "status": normalized,
+        "ok": normalized == "success",
+        "message": str(message or "")[:300],
+    }
+    if normalized == "success":
+        extra.pop("totp_setup_pending", None)
+    return _patch_account(int(row["id"]), {
+        "extra_json": json.dumps(extra, ensure_ascii=False),
+        "updated_at": _now(),
+    })
+
+
 def update_account_token_metadata(acc_id: int, access_token: str) -> bool:
     """只同步当前 AT 的 JWT 到期信息，不改动账号状态或 Token 内容。"""
     from core.chatgpt_plan import token_claims
@@ -2527,7 +2553,11 @@ def create_retry_job(
             parent_job_id=int(source_job_id),
             root_job_id=root_id,
             retry_attempt=(max(attempts) if attempts else 0) + 1,
-            retry_action=("codex" if job_type == "codex_retry" else "registration"),
+            retry_action={
+                "codex_retry": "codex",
+                "twofa_retry": "twofa",
+                "registration_resume": "registration_resume",
+            }.get(job_type, "registration"),
             email=email,
             account_id=account_id,
         )
@@ -2664,8 +2694,18 @@ def finish_job_progress(
         if success:
             for key in work_stage_keys:
                 item = steps.get(key)
-                if not isinstance(item, dict):
-                    item = {"started_at": now}
+                if not isinstance(item, dict) or item.get("state") in {None, "pending"}:
+                    # 没有任何流程上报的节点就是没有执行，不能因为任务整体
+                    # 成功/部分成功就在 UI 上伪装成“成功 0 秒”。
+                    item = {
+                        **(item if isinstance(item, dict) else {}),
+                        "state": "skipped",
+                        "started_at": now,
+                        "completed_at": now,
+                        "detail": "该步骤未执行",
+                    }
+                    steps[key] = item
+                    continue
                 # 已由具体流程上报的终态不能被任务级 success 覆盖；例如账号
                 # 注册成功但 Codex 授权失败时，仍应保留失败节点供 UI 提示。
                 if item.get("state") not in {"skipped", "success", "failed", "stopped"}:
@@ -2691,6 +2731,21 @@ def finish_job_progress(
             if detail is not None and not item.get("detail"):
                 item["detail"] = str(detail)[:300]
             steps[target_key] = item
+
+            # 失败节点之后、又没有流程上报的步骤均未执行。显式补成 skipped，
+            # 避免终态任务仍显示一串“待执行”的编号节点。
+            target_index = work_stage_keys.index(target_key)
+            for key in work_stage_keys[target_index + 1:]:
+                later = steps.get(key)
+                if isinstance(later, dict) and later.get("state") not in {None, "pending"}:
+                    continue
+                steps[key] = {
+                    **(later if isinstance(later, dict) else {}),
+                    "state": "skipped",
+                    "started_at": now,
+                    "completed_at": now,
+                    "detail": "前置步骤未完成，未执行",
+                }
 
         complete_state = "success" if success else ("stopped" if failure_state == "stopped" else "failed")
         complete_item = steps.get("complete")

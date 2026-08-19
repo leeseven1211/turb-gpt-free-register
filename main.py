@@ -161,6 +161,7 @@ def run_registration(
     proxy: str = None,
     otp_code: str = None,
     batch_dir=None,
+    existing_password: str | None = None,
 ):
     """
     执行完整的 ChatGPT 注册流程（OTP-only，无密码）。
@@ -176,6 +177,7 @@ def run_registration(
         proxy: 代理地址；WebUI/CLI 批任务会先按当前模式领取租约后显式传入。
                仅静态池模式允许底层在不传时从 PROXY_POOL 抽取。
         otp_code: 邮箱验证码（如果为None，会等待手动输入）
+        existing_password: 待邮箱验证账号已保存的登录密码；仅 Roxy 恢复注册使用。
     """
     from core.registration_service import report_job_progress
 
@@ -195,6 +197,11 @@ def run_registration(
             proxy=proxy,
             otp_code=otp_code,
             batch_dir=batch_dir,
+            existing_password=existing_password,
+        )
+    if existing_password:
+        raise RuntimeError(
+            f"待邮箱验证账号续跑当前仅支持 Roxy 注册驱动，当前 REGISTRATION_DRIVER={driver_mode!r}"
         )
     if driver_mode in ("cloak", "cloakbrowser"):
         from core.cloakbrowser_registration import run_cloak_registration

@@ -246,6 +246,48 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         self.assertTrue(fields["EMAIL_BUTLER_API_KEY"]["secret"])
         self.assertTrue(fields["CLOUDFLARE_SIGNAL_API_KEY"]["secret"])
 
+    def test_scheduled_task_fields_are_webui_editable(self):
+        """三个定时任务的开关与间隔都必须能在 WebUI 改。
+
+        改造前它们只能通过环境变量控制，UI 上完全找不到。
+        """
+        from webui.config_editor import EDITABLE_FIELDS
+        keys = {f["key"] for f in EDITABLE_FIELDS if f.get("group") == "定时任务"}
+        self.assertEqual(keys, {
+            "EMAIL_BUTLER_RISK_SCAN_ENABLED", "EMAIL_BUTLER_RISK_SCAN_INTERVAL_SECONDS",
+            "AT_AUTO_REFRESH_ENABLED", "AT_REFRESH_SCAN_INTERVAL_SECONDS",
+            "CODEX_TOKEN_AUTO_REFRESH_ENABLED", "CODEX_TOKEN_REFRESH_SCAN_INTERVAL_SECONDS",
+        })
+
+    def test_scheduled_task_switches_are_env_overridable(self):
+        for key, module in [
+            ("EMAIL_BUTLER_RISK_SCAN_ENABLED", "config.email"),
+            ("AT_AUTO_REFRESH_ENABLED", "config.codex"),
+            ("CODEX_TOKEN_AUTO_REFRESH_ENABLED", "config.codex"),
+        ]:
+            with self.subTest(key=key):
+                with patch.dict(os.environ, {key: "False"}):
+                    module_obj = importlib.reload(importlib.import_module(module))
+                    self.assertFalse(getattr(module_obj, key))
+                importlib.reload(importlib.import_module(module))
+
+    def test_scheduler_reads_config_at_call_time_not_import_time(self):
+        """间隔必须每轮重新读，否则 WebUI 改完要重启才生效。"""
+        from core import token_refresh_service as svc
+        from config import codex as codex_cfg
+        with patch.object(codex_cfg, "AT_REFRESH_SCAN_INTERVAL_SECONDS", 7200):
+            self.assertEqual(svc.scheduler_interval_seconds(), 7200)
+        with patch.object(codex_cfg, "AT_AUTO_REFRESH_ENABLED", False):
+            self.assertFalse(svc.scheduler_enabled())
+
+    def test_scheduler_interval_is_clamped_to_a_sane_range(self):
+        from core import token_refresh_service as svc
+        from config import codex as codex_cfg
+        with patch.object(codex_cfg, "AT_REFRESH_SCAN_INTERVAL_SECONDS", 1):
+            self.assertGreaterEqual(svc.scheduler_interval_seconds(), 300)
+        with patch.object(codex_cfg, "AT_REFRESH_SCAN_INTERVAL_SECONDS", 10 ** 9):
+            self.assertLessEqual(svc.scheduler_interval_seconds(), 86400)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,6 +14,7 @@ from typing import Any
 
 from core.chatgpt_plan import parse_accounts_check
 _CAPTURE_KEY = "__turb_registration_plan_response"
+_ACCOUNTS_CHECK_PATH = "/backend-api/accounts/check/v4-2023-04-27"
 
 CAPTURE_SCRIPT = r"""
 (() => {
@@ -155,3 +156,76 @@ def read_selenium(driver: Any, token: str, wait_seconds: float = 2.5) -> dict | 
         if time.monotonic() >= deadline:
             return None
         time.sleep(0.1)
+
+
+def fetch_selenium(driver: Any, token: str, timeout_seconds: float = 12.0) -> dict | None:
+    """Query entitlements inside the signed-in ChatGPT browser session.
+
+    A standalone requests session can receive a 403 even when the registration
+    browser is already authenticated, because its cookies/browser fingerprint
+    do not match. This fallback keeps the request in the real page and returns
+    only the normalized, credential-free result.
+    """
+    token = str(token or "").strip()
+    if not token:
+        return None
+    try:
+        try:
+            driver.set_script_timeout(max(1.0, float(timeout_seconds)))
+        except Exception:
+            pass
+        raw = driver.execute_async_script(
+            r"""
+            const token = arguments[0];
+            const path = arguments[1];
+            const done = arguments[arguments.length - 1];
+            const finish = value => { try { done(value); } catch (_) {} };
+            const headers = {
+              accept: '*/*',
+              authorization: `Bearer ${token}`,
+              'oai-language': navigator.language || 'en-US',
+              'x-openai-target-path': path,
+              'x-openai-target-route': path,
+            };
+            try {
+              const deviceId = localStorage.getItem('oai-device-id')
+                || localStorage.getItem('oai-did')
+                || localStorage.getItem('device_id');
+              if (deviceId) headers['oai-device-id'] = deviceId;
+            } catch (_) {}
+            fetch(`${path}?timezone_offset_min=-`, {
+              method: 'GET',
+              credentials: 'include',
+              headers,
+            }).then(async response => {
+              let data = null;
+              try { data = await response.json(); } catch (_) {}
+              finish({
+                status: Number(response.status || 0),
+                data,
+                captured_at: new Date().toISOString(),
+              });
+            }).catch(error => finish({error: String(error || 'browser fetch failed')}));
+            """,
+            token,
+            _ACCOUNTS_CHECK_PATH,
+        )
+    except Exception:
+        return None
+    result = _normalize_capture(raw, token)
+    if result:
+        result["source"] = "browser_fallback_request"
+    return result
+
+
+def read_or_fetch_selenium(
+    driver: Any,
+    token: str,
+    wait_seconds: float = 2.5,
+    fetch_timeout_seconds: float = 12.0,
+) -> dict | None:
+    """Prefer a naturally captured response, then query in the same browser."""
+    captured = read_selenium(driver, token, wait_seconds=wait_seconds)
+    if captured:
+        return captured
+    return fetch_selenium(driver, token, timeout_seconds=fetch_timeout_seconds)

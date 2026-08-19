@@ -34,6 +34,32 @@ EDITABLE_FIELDS = [
         "key": "ACCOUNT_BATCH_WORKERS", "file": "codex.py", "type": "int", "group": "通用配置",
         "label": "账号批量操作并发数", "help": "账号页查活、查套餐和 Codex 批量补跑等操作使用的默认并发数，范围 1-16；建议先保持 3",
     },
+    # ---- 定时任务 ----
+    {
+        "key": "EMAIL_BUTLER_RISK_SCAN_ENABLED", "file": "email.py", "type": "bool", "group": "定时任务",
+        "label": "自动查封号邮件", "help": "周期扫描支持的邮箱来源，识别 OpenAI 封号通知；关闭后仍可在账号页手动触发",
+    },
+    {
+        "key": "EMAIL_BUTLER_RISK_SCAN_INTERVAL_SECONDS", "file": "email.py", "type": "int", "group": "定时任务",
+        "label": "查封号邮件间隔（秒）", "help": "两轮扫描之间的最短间隔，范围 900-604800；默认 21600（6 小时）",
+    },
+    {
+        "key": "AT_AUTO_REFRESH_ENABLED", "file": "codex.py", "type": "bool", "group": "定时任务",
+        "label": "自动刷新账号 AT", "help": "临近过期时自动刷新 ChatGPT accessToken；关闭后仍可在账号页手动刷新",
+    },
+    {
+        "key": "AT_REFRESH_SCAN_INTERVAL_SECONDS", "file": "codex.py", "type": "int", "group": "定时任务",
+        "label": "刷新账号 AT 间隔（秒）", "help": "两轮扫描之间的最短间隔，范围 300-86400；默认 3600（1 小时）",
+    },
+    {
+        "key": "CODEX_TOKEN_AUTO_REFRESH_ENABLED", "file": "codex.py", "type": "bool", "group": "定时任务",
+        "label": "自动刷新 Codex Token", "help": "用 refresh token 续期 Codex 凭证，无需重跑 OAuth 与接码；关闭后仍可手动刷新",
+    },
+    {
+        "key": "CODEX_TOKEN_REFRESH_SCAN_INTERVAL_SECONDS", "file": "codex.py", "type": "int", "group": "定时任务",
+        "label": "刷新 Codex Token 间隔（秒）", "help": "两轮扫描之间的最短间隔，范围 300-86400；默认 86400（1 天）",
+    },
+
     # ---- WebUI 授权 ----
     {
         "key": "WEBUI_AUTH_CODE", "file": "codex.py", "type": "str", "group": "WebUI 授权",

@@ -21,7 +21,47 @@ class RoxyTwoFactorTests(unittest.TestCase):
 
     def test_totp_secret_candidate_rejects_page_text(self):
         self.assertIsNone(roxy_registration._totp_secret_candidate("Authenticator app"))
+        self.assertIsNone(roxy_registration._totp_secret_candidate("UseAuthenticatorApplication"))
         self.assertIsNone(roxy_registration._totp_secret_candidate("ABC123"))
+
+    def test_totp_secret_candidate_accepts_unpadded_and_otpauth_keys(self):
+        unpadded = "JBSWY3DPEHPK3PXPJBSWY3DPEH"
+        self.assertEqual(roxy_registration._totp_secret_candidate(unpadded), unpadded)
+        self.assertEqual(
+            roxy_registration._totp_secret_candidate(
+                f"otpauth://totp/OpenAI?issuer=OpenAI&secret={unpadded}"
+            ),
+            unpadded,
+        )
+
+    def test_manual_totp_secret_reads_otpauth_link_without_clicking_it(self):
+        secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+        driver = Mock()
+        driver.execute_script.return_value = [
+            f"otpauth://totp/OpenAI:test@example.com?issuer=OpenAI&secret={secret}"
+        ]
+
+        with patch.object(roxy_registration, "_human_click") as click:
+            result = roxy_registration._manual_totp_secret(driver, object())
+
+        self.assertEqual(result, secret)
+        click.assert_not_called()
+        self.assertEqual(driver.execute_script.call_count, 1)
+
+    def test_registration_otp_attempts_share_one_total_budget(self):
+        with patch.object(roxy_registration.time, "monotonic", return_value=100.0):
+            self.assertEqual(
+                roxy_registration._registration_otp_attempt_wait_seconds(340.0, 1, 3),
+                80,
+            )
+            self.assertEqual(
+                roxy_registration._registration_otp_attempt_wait_seconds(340.0, 2, 3),
+                120,
+            )
+            self.assertEqual(
+                roxy_registration._registration_otp_attempt_wait_seconds(100.0, 3, 3),
+                0,
+            )
 
     def test_mfa_enrollment_detects_direct_qr_totp_step(self):
         totp_field = object()
@@ -79,7 +119,54 @@ class RoxyTwoFactorTests(unittest.TestCase):
             )
         self.assertEqual(row_id, 17)
         self.assertEqual(insert.call_args.kwargs["extra"]["registration_password"], "RandomPassword!123")
+        self.assertEqual(insert.call_args.kwargs["extra"]["registration_checkpoint"], "registered")
         self.assertEqual(insert.call_args.kwargs["access_token"], "token")
+
+    def test_password_submission_saves_pending_email_verification_account(self):
+        opened = SimpleNamespace(profile_id="profile-1", raw={"ok": True})
+        with patch("core.db.insert_account", return_value=19) as insert, patch.object(
+            roxy_registration, "resolve_email_source", return_value="icloud_hide"
+        ):
+            row_id = roxy_registration._save_pending_email_verification_checkpoint(
+                email="pending@example.com",
+                openai_password="StoredPassword!123",
+                opened=opened,
+                proxy="http://proxy.example",
+            )
+
+        self.assertEqual(row_id, 19)
+        self.assertEqual(insert.call_args.kwargs["access_token"], "")
+        self.assertEqual(
+            insert.call_args.kwargs["extra"]["registration_checkpoint"],
+            "email_verification_pending",
+        )
+        self.assertEqual(
+            insert.call_args.kwargs["extra"]["registration_password"],
+            "StoredPassword!123",
+        )
+
+    def test_failed_activation_checkpoint_marks_totp_pending(self):
+        session_info = {
+            "accessToken": "token",
+            "user": {"id": "user-1", "name": "Demo"},
+            "account": {"planType": "free"},
+            "expires": "later",
+        }
+        opened = SimpleNamespace(profile_id="profile-1", raw={"ok": True})
+        with patch("core.db.insert_account", return_value=18) as insert, patch.object(
+            roxy_registration, "resolve_email_source", return_value="generic_api"
+        ):
+            roxy_registration._save_roxy_account_checkpoint(
+                email="new@example.com",
+                access_token="token",
+                session_info=session_info,
+                opened=opened,
+                openai_password="RandomPassword!123",
+                proxy="http://proxy.example",
+                totp_secret="JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP",
+                twofa_result={"status": "failed", "ok": False},
+            )
+        self.assertTrue(insert.call_args.kwargs["extra"]["totp_setup_pending"])
 
     def test_setup_persists_secret_before_activation(self):
         secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
@@ -130,6 +217,46 @@ class RoxyTwoFactorTests(unittest.TestCase):
         self.assertEqual(result, secret)
         self.assertEqual(saved, [])
         click.assert_not_called()
+
+    def test_setup_retries_with_fresh_totp_when_dialog_stays_open(self):
+        secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+        toggle = Mock()
+        toggle.enabled = False
+        toggle.get_attribute.side_effect = lambda name: (
+            "true" if name == "aria-checked" and toggle.enabled else "false"
+        )
+        totp_field = object()
+        verify_button = object()
+
+        def click(_driver, _element, label=""):
+            if label == "totp_verify_retry":
+                toggle.enabled = True
+
+        def visible(_driver, selector):
+            if selector == '[data-testid="mfa-authenticator-toggle"]':
+                return toggle
+            if selector == roxy_registration._MFA_TOTP_CODE_SELECTOR:
+                return None if toggle.enabled else totp_field
+            return None
+
+        totp = Mock()
+        totp.now.side_effect = ["111111", "222222"]
+        with patch.object(roxy_registration, "_open_chatgpt_security_settings", return_value=toggle), patch.object(
+            roxy_registration, "_wait_mfa_enrollment_step", return_value=("totp", totp_field)
+        ), patch.object(roxy_registration, "_manual_totp_secret", return_value=secret), patch.object(
+            roxy_registration, "_human_click", side_effect=click
+        ) as click_mock, patch.object(roxy_registration, "_human_type_text"), patch.object(
+            roxy_registration, "_button_after_input", return_value=verify_button
+        ), patch.object(roxy_registration, "_first_visible_css", side_effect=visible), patch(
+            "pyotp.TOTP", return_value=totp
+        ):
+            result = roxy_registration.setup_roxy_2fa(object(), "new@example.com")
+
+        self.assertEqual(result, secret)
+        self.assertIn(
+            "totp_verify_retry",
+            [call.kwargs.get("label") for call in click_mock.call_args_list],
+        )
 
     def test_codex_isolated_tab_restores_registration_tab_after_failure(self):
         class SwitchTo:

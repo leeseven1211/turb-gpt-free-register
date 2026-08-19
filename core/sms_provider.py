@@ -59,6 +59,12 @@ _GRIZZLY_BATCH_COUNTRY_LOCK = threading.RLock()
 _GRIZZLY_BATCH_COUNTRY_SELECTIONS: dict[str, dict] = {}
 _GRIZZLY_BATCH_COUNTRY_CACHE_LIMIT = 64
 _GRIZZLY_COUNTRY_FAILURE_THRESHOLD = 2
+_GRIZZLY_TRANSIENT_HTTP_STATUSES = {
+    429, 500, 502, 503, 504,
+    520, 521, 522, 523, 524, 525, 526,
+}
+_GRIZZLY_IDEMPOTENT_ACTIONS = {"getPricesV3", "getStatus", "setStatus"}
+_GRIZZLY_TRANSIENT_RETRY_DELAYS = (0.5, 1.0)
 
 
 class SmsProviderError(RuntimeError):
@@ -129,7 +135,35 @@ def _request_grizzly(http: CurlSession, params: dict) -> str:
     """
     base_params = {"api_key": _cfg.SMS_API_KEY}
     base_params.update(params)
-    resp = http.get(_cfg.SMS_API_BASE, params=base_params)
+    action = str(params.get("action") or "").strip()
+    retry_delays = (
+        _GRIZZLY_TRANSIENT_RETRY_DELAYS
+        if action in _GRIZZLY_IDEMPOTENT_ACTIONS
+        else ()
+    )
+    resp = None
+    for request_attempt in range(len(retry_delays) + 1):
+        resp = http.get(_cfg.SMS_API_BASE, params=base_params)
+        status_code = int(getattr(resp, "status_code", 0) or 0)
+        if status_code == 200:
+            break
+        if (
+            status_code in _GRIZZLY_TRANSIENT_HTTP_STATUSES
+            and request_attempt < len(retry_delays)
+        ):
+            delay = retry_delays[request_attempt]
+            logger.warning(
+                "[SMS] GrizzlySMS %s 瞬时返回 HTTP %s，同一请求 %.1fs 后重试（%s/%s）",
+                action or "request",
+                status_code,
+                delay,
+                request_attempt + 2,
+                len(retry_delays) + 1,
+            )
+            time.sleep(delay)
+            continue
+        break
+    assert resp is not None
     if resp.status_code != 200:
         raise SmsProviderError(
             f"GrizzlySMS HTTP {resp.status_code}: {(resp.text or '')[:200]}"

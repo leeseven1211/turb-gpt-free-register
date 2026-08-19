@@ -943,7 +943,7 @@ function renderJobs() {
             <button class="good" data-submit-otp-job="${esc(j.id)}" data-email="${esc(j.email)}">提交验证码</button>
           ` : ''}
           ${['pending','running','stopping'].includes(j.status) ? `<button class="danger" data-stop-job="${esc(j.id)}">${j.status === 'stopping' ? '停止/修复' : '停止'}</button>` : ''}
-          ${j.retryable ? `<button class="good" data-retry-job="${esc(j.id)}" title="${esc(j.retry_action === 'codex' ? '账号已创建，仅补跑 Codex 授权' : '创建新的注册任务，不覆盖原任务')}">${esc(j.retry_label || '重试')}</button>` : ''}
+          ${j.retryable ? `<button class="good" data-retry-job="${esc(j.id)}" title="${esc(j.retry_action === 'codex' ? '账号已创建，仅补跑 Codex 授权' : (j.retry_action === 'twofa' ? '重新登录检查并补齐 2FA' : (j.retry_action === 'registration_resume' ? '使用已保存密码继续邮箱验证' : '创建新的注册任务，不覆盖原任务')))}">${esc(j.retry_label || '重试')}</button>` : ''}
           <button class="danger" data-delete-job="${esc(j.id)}" ${['running','stopping'].includes(j.status) ? 'disabled title="运行中的任务不能删除；如需删除请先停止"' : ''}>删除</button>
         </div>
       </td>
@@ -1180,7 +1180,13 @@ async function deleteSelectedJobs() {
 async function retryJob(jobId, btn) {
   const job = JOBS.find(j => Number(j.id) === Number(jobId));
   if (!job || !job.retryable) { showToast('该任务当前不可重试'); return; }
-  const actionText = job.retry_action === 'codex' ? '仅补跑 Codex 授权' : '创建新的完整注册任务';
+  const actionText = job.retry_action === 'codex'
+    ? '仅补跑 Codex 授权'
+    : (job.retry_action === 'twofa'
+      ? '重新登录检查并补齐 Authenticator 2FA'
+      : (job.retry_action === 'registration_resume'
+        ? '使用已保存账号密码继续邮箱验证'
+        : '创建新的完整注册任务'));
   if (!confirm(`确定${job.retry_label || '重试'}任务 #${jobId}？\n\n${actionText}\n原任务记录和日志会保留。`)) return;
   btn.disabled = true;
   try {

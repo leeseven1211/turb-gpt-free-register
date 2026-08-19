@@ -814,6 +814,111 @@ def _read_email_otp_validate_dead_code(driver) -> str:
     return ""
 
 
+def _install_phone_submit_probe(driver) -> None:
+    """在手机号提交前捕获 fetch/XHR、资源状态和浏览器脚本错误。"""
+    script = r"""
+    (() => {
+      window.__codexPhoneSubmitProbe = {responses: [], resources: [], errors: [], forms: [], installedAt: Date.now()};
+      if (window.__codexPhoneSubmitHooked) return true;
+      window.__codexPhoneSubmitHooked = true;
+      const probe = () => window.__codexPhoneSubmitProbe || null;
+      const push = (key, value) => {
+        try {
+          const target = probe();
+          if (!target || !Array.isArray(target[key])) return;
+          target[key].push(value);
+          if (target[key].length > 30) target[key].splice(0, target[key].length - 30);
+        } catch (e) {}
+      };
+      const shouldCapture = (method, url) => {
+        const m = String(method || 'GET').toUpperCase();
+        const u = String(url || '');
+        return m !== 'GET' || /phone|verification|accounts/i.test(u);
+      };
+      const saveResponse = (kind, method, url, status, body) => {
+        if (!shouldCapture(method, url)) return;
+        push('responses', {
+          kind: String(kind || ''), method: String(method || 'GET').toUpperCase(),
+          url: String(url || '').slice(0, 500), status: Number(status || 0),
+          body: String(body || '').slice(0, 3000), ts: Date.now()
+        });
+      };
+      const origFetch = window.fetch;
+      if (origFetch) {
+        window.fetch = async function(input, init) {
+          const method = String(init?.method || input?.method || 'GET');
+          const url = (typeof input === 'string') ? input : (input && input.url);
+          try {
+            const resp = await origFetch.apply(this, arguments);
+            if (shouldCapture(method, url)) {
+              resp.clone().text().then(t => saveResponse('fetch', method, url, resp.status, t)).catch(() => {
+                saveResponse('fetch', method, url, resp.status, '');
+              });
+            }
+            return resp;
+          } catch (error) {
+            saveResponse('fetch_error', method, url, 0, String(error?.message || error || 'fetch failed'));
+            throw error;
+          }
+        };
+      }
+      const origOpen = XMLHttpRequest.prototype.open;
+      const origSend = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.open = function(method, url) {
+        this.__codexPhoneMethod = method;
+        this.__codexPhoneUrl = url;
+        return origOpen.apply(this, arguments);
+      };
+      XMLHttpRequest.prototype.send = function() {
+        try {
+          this.addEventListener('loadend', function() {
+            try {
+              saveResponse('xhr', this.__codexPhoneMethod, this.__codexPhoneUrl, this.status, this.responseText);
+            } catch (e) {}
+          });
+        } catch (e) {}
+        return origSend.apply(this, arguments);
+      };
+      try {
+        new PerformanceObserver(list => {
+          for (const entry of list.getEntries()) {
+            if (!entry || !/fetch|xmlhttprequest|navigation/i.test(String(entry.initiatorType || entry.entryType || ''))) continue;
+            push('resources', {
+              url: String(entry.name || '').slice(0, 500),
+              type: String(entry.initiatorType || entry.entryType || ''),
+              status: Number(entry.responseStatus || 0), duration: Math.round(Number(entry.duration || 0)),
+              ts: Date.now()
+            });
+          }
+        }).observe({type: 'resource', buffered: true});
+      } catch (e) {}
+      window.addEventListener('error', event => push('errors', {
+        type: 'error', message: String(event?.message || event?.error?.message || '').slice(0, 1000), ts: Date.now()
+      }), true);
+      window.addEventListener('unhandledrejection', event => push('errors', {
+        type: 'unhandledrejection', message: String(event?.reason?.message || event?.reason || '').slice(0, 1000), ts: Date.now()
+      }), true);
+      document.addEventListener('submit', event => {
+        try {
+          const form = event.target;
+          if (!(form instanceof HTMLFormElement) || !/add-phone/i.test(form.action || '')) return;
+          const invalid = [...form.querySelectorAll('input,select,textarea')]
+            .filter(el => !el.checkValidity()).map(el => ({
+              name: el.name || '', type: el.type || '', ariaInvalid: el.getAttribute('aria-invalid') || '',
+              validationMessage: String(el.validationMessage || '').slice(0, 500)
+            }));
+          push('forms', {action: form.action || '', valid: form.checkValidity(), invalid, ts: Date.now()});
+        } catch (e) {}
+      }, true);
+      return true;
+    })();
+    """
+    try:
+        driver.execute_script(script)
+    except Exception as exc:
+        logger.warning("[Codex][Browser] 注入手机号提交诊断 hook 失败：%s", str(exc)[:180])
+
+
 # 邮箱验证码页判断复用 roxy_registration 的强版本（URL + 输入框属性识别，
 # 且明确排除 /log-in/password），不使用本地弱化版，避免点完一次性验证码后
 # 页面已渲染 OTP 输入框却因 URL 不含 email-verification 而识别失败。
@@ -883,7 +988,9 @@ def _phone_page_state(driver) -> dict:
         const inputs = [...document.querySelectorAll('input,select,textarea')].filter(visible).map(el => ({
           tag: el.tagName, type: el.getAttribute('type') || '', name: el.getAttribute('name') || '',
           id: el.id || '', autocomplete: el.getAttribute('autocomplete') || '', placeholder: el.getAttribute('placeholder') || '',
-          ariaInvalid: el.getAttribute('aria-invalid') || '', value: el.value || ''
+          ariaInvalid: el.getAttribute('aria-invalid') || '', value: el.value || '',
+          valid: typeof el.checkValidity === 'function' ? el.checkValidity() : true,
+          validationMessage: String(el.validationMessage || '').slice(0, 500)
         }));
         const controls = [...document.querySelectorAll('button,a,label,[role=radio],[role=tab]')]
           .filter(visible).map(el => ({
@@ -894,8 +1001,22 @@ def _phone_page_state(driver) -> dict:
             dataState: el.getAttribute('data-state') || '',
           }));
         const forms = [...document.querySelectorAll('form')].map(f => ({action: f.getAttribute('action') || ''}));
-        const bodyText = (document.body?.innerText || '').slice(0, 1200);
-        return {url: location.href, radios, inputs, controls, forms, bodyText};
+        const errorSelectors = [
+          '[role="alert"]', '[aria-live="assertive"]', '[data-error]', '[data-testid*="error" i]',
+          '[class*="error" i]', '[class*="invalid" i]'
+        ];
+        const errors = [...new Set(errorSelectors.flatMap(selector => [...document.querySelectorAll(selector)])
+          .filter(visible)
+          .map(el => String(el.innerText || el.textContent || el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim())
+          .filter(Boolean))].slice(0, 30);
+        for (const input of inputs) {
+          if (input.validationMessage) errors.push(input.validationMessage);
+        }
+        const allBodyText = document.body?.innerText || '';
+        const bodyText = allBodyText.slice(0, 1600);
+        const bodyTextTail = allBodyText.length > 1600 ? allBodyText.slice(-1600) : '';
+        const submitProbe = window.__codexPhoneSubmitProbe || {};
+        return {url: location.href, radios, inputs, controls, forms, errors, bodyText, bodyTextTail, submitProbe};
         """) or {}
     except Exception as exc:
         return {"error": f"{type(exc).__name__}: {exc}", "url": getattr(driver, 'current_url', '')}
@@ -1178,6 +1299,31 @@ def _select_phone_country_by_calling_code(driver, phone: str, *, timeout: int = 
         button.click()
     except Exception:
         driver.execute_script("arguments[0].click();", button)
+
+    # React Aria 会在同一授权流程的换号页面保留虚拟列表 scrollTop。上一轮若把列表
+    # 滚到了底部，旧逻辑只会继续向下扫描，目标区号即使存在也永远不会进入 DOM。
+    # 每次打开列表都先显式回到顶部，再开始逐屏扫描。
+    reset_end = time.time() + 2.0
+    reset_state = {}
+    while time.time() < reset_end:
+        reset_state = driver.execute_script(r"""
+        const phoneCountryListReset = true;
+        const visible = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+        const list = [...document.querySelectorAll('[role="listbox"]')].find(visible);
+        if (!list) return {ready:false};
+        const before = list.scrollTop;
+        const max = Math.max(0, list.scrollHeight - list.clientHeight);
+        list.scrollTop = 0;
+        list.dispatchEvent(new Event('scroll', {bubbles:true}));
+        return {ready:true, before, after:list.scrollTop, max};
+        """) or {}
+        if reset_state.get("ready"):
+            logger.info("[Codex][Browser] 手机号国家列表已复位到顶部：%s", reset_state)
+            time.sleep(0.12)
+            break
+        time.sleep(0.08)
+    if not reset_state.get("ready"):
+        raise RuntimeError(f"手机号国家列表打开后未就绪：{reset_state}")
 
     end = time.time() + max(2, int(timeout or 8))
     last = {}
@@ -1553,12 +1699,40 @@ def _refresh_add_phone_for_retry(driver, *, reason: str = "") -> None:
         logger.info("[Codex][Browser] 刷新手机号页失败，下一轮会再次尝试回到 add-phone：%s", str(exc)[:180])
 
 
+def _rebuild_add_phone_page(driver, *, reason: str = "") -> None:
+    """保留当前授权 Cookie，重新创建一份 add-phone 页面文档。
+
+    ``driver.refresh()`` 可能继续复用 React 当前页面里的异常表单状态。这里显式导航到
+    add-phone，使浏览器重新加载文档和前端状态，但不清 Cookie、不重启 OAuth，也不购买
+    新号码。调用方会在新页面里重新填写同一个号码并再提交一次。
+    """
+    target = _auth_origin(driver).rstrip("/") + "/add-phone"
+    logger.warning(
+        "[Codex][Browser] 同一号码重复提交后页面仍异常，保留授权状态并重建 add-phone："
+        "reason=%s target=%s",
+        reason or "sms_channel_reset",
+        target,
+    )
+    try:
+        driver.get(target)
+        human_delay("navigate")
+        _find_any(driver, _PHONE_INPUT_SELECTORS, timeout=12)
+        if not _has_strict_add_phone_form(driver):
+            raise RuntimeError(f"重建后未检测到严格 add-phone 表单 state={_phone_page_state(driver)}")
+        logger.info("[Codex][Browser] add-phone 页面已重建，将使用当前号码重新提交")
+    except Exception as exc:
+        raise RuntimeError(
+            f"phone_page_rebuild_failed: 无法重建 add-phone 页面；{type(exc).__name__}: {exc}"
+        ) from exc
+
+
 def _click_add_phone_continue_button(driver, *, timeout: int = 10) -> dict:
     """点击 add-phone 表单里的 Continue/続行 按钮。
 
     参考 FlowPilot 的 getAddPhoneSubmitButton + simulateClick：优先在 add-phone form 内找
     enabled submit，点击失败时用 form.requestSubmit(button) 兜底。
     """
+    _install_phone_submit_probe(driver)
     end = time.time() + timeout
     last = None
     while time.time() < end:
@@ -1615,37 +1789,16 @@ def _click_add_phone_continue_button(driver, *, timeout: int = 10) -> dict:
     raise RuntimeError(f"submit_missing: add-phone Continue/続行 submit button not found last={last} state={_phone_page_state(driver)}")
 
 
-def _force_submit_add_phone_form(driver) -> dict:
-    """add-phone 页面点击按钮没生效时，直接 requestSubmit 当前 form。"""
-    try:
-        return driver.execute_script(r"""
-        const visible = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
-        const form = document.querySelector('form[action*="/add-phone" i]')
-          || [...document.querySelectorAll('form')].find(f => /add-phone/i.test(f.getAttribute('action') || ''));
-        if (!form) return {ok:false, reason:'missing_form', url: location.href};
-        const btn = [...form.querySelectorAll('button[type="submit"],input[type="submit"]')]
-          .find(el => visible(el) && !el.disabled && String(el.getAttribute('aria-disabled') || '').toLowerCase() !== 'true')
-          || form.querySelector('button[type="submit"],input[type="submit"]');
-        if (btn) btn.scrollIntoView({block:'center'});
-        if (typeof form.requestSubmit === 'function') form.requestSubmit(btn || undefined);
-        else if (btn && typeof btn.click === 'function') btn.click();
-        else form.submit();
-        return {ok:true, method: btn ? 'requestSubmit(button)' : 'requestSubmit(form)', url: location.href};
-        """) or {}
-    except Exception as exc:
-        return {ok:false, reason:f'{type(exc).__name__}: {exc}', url:getattr(driver, 'current_url', '')}
-
-
 def _wait_after_phone_send(driver, timeout: int = 12) -> str:
     """等待手机号提交结果。
 
     只有页面出现明确的号码拒绝/发送失败文案时才抛出换号错误。单独的
     ``aria-invalid``、"需要电话号码" 或仍停留在 add-phone 都可能只是 React
-    重渲染/路由延迟；这类不确定状态交给上层继续守住当前接码订单，不能立即买新号。
+    重渲染/路由延迟；这类不确定状态交给上层使用同一号码再做一次真实 UI 提交，
+    不能在尚未进入验证码页时直接开始轮询短信。
     """
     end = time.time() + timeout
     last = {}
-    force_submitted = False
     while time.time() < end:
         time.sleep(1)
         last = _phone_page_state(driver)
@@ -1655,25 +1808,39 @@ def _wait_after_phone_send(driver, timeout: int = 12) -> str:
             return 'code_page'
         body = str(last.get('bodyText') or '')
         reason = _classify_phone_page_failure(last)
-        if reason:
-            raise RuntimeError(f"{reason}: {body[:240]}")
-        if _is_add_phone_page(driver):
-            # Cloak/React-Aria 场景下 btn.click 可能只聚焦没触发表单提交；补一次 requestSubmit。
-            if not force_submitted and time.time() > end - timeout + 3:
-                info = _force_submit_add_phone_form(driver)
-                logger.info("[Codex][Browser] add-phone 点击后仍停留本页，补执行 form.requestSubmit：%s", info)
-                force_submitted = True
-                time.sleep(2)
+        if reason and reason != 'sms_channel_reset':
+            errors = [str(item) for item in (last.get('errors') or []) if str(item).strip()]
+            probe = last.get('submitProbe') if isinstance(last.get('submitProbe'), dict) else {}
+            responses = probe.get('responses') if isinstance(probe.get('responses'), list) else []
+            response_detail = [
+                {
+                    'status': item.get('status'),
+                    'url': str(item.get('url') or '')[:180],
+                    'body': str(item.get('body') or '')[:500],
+                }
+                for item in responses[-3:] if isinstance(item, dict)
+            ]
+            detail = {
+                'errors': errors[:5],
+                'responses': response_detail,
+                'body_tail': str(last.get('bodyTextTail') or '')[-500:],
+                'body_head': body[:240],
+            }
+            raise RuntimeError(f"{reason}: {detail}")
     if _is_phone_code_state(last) or _is_phone_code_page(driver):
         return 'code_page'
     if _is_add_phone_page(driver):
         logger.warning(
-            "[Codex][Browser] 手机号提交后页面状态仍不确定，将继续等待当前号码短信，"
-            "不立即换号：state=%s",
+            "[Codex][Browser] 手机号提交后仍停留 add-phone，尚未确认短信已发送：state=%s",
             last,
         )
         return 'submission_uncertain'
-    return 'unknown'
+    logger.warning(
+        "[Codex][Browser] 手机号提交后已离开 add-phone，但尚未稳定到验证码页；"
+        "视为页面仍在跳转，继续守住当前号码：state=%s",
+        last,
+    )
+    return 'navigation_pending'
 
 
 def _ensure_phone_code_page_after_sms(driver, *, timeout: int = 15) -> None:
@@ -1754,6 +1921,51 @@ def _wait_after_phone_otp_submit(driver, timeout: int = 20) -> str:
 def _classify_phone_page_failure(state: dict) -> str:
     if _is_phone_code_state(state):
         return ''
+    # 明确的服务端/页面错误必须优先于通道选中状态。发送失败时页面会自动把
+    # WhatsApp 设为选中；如果先看 radio，就会把真实的号码拒绝误判成 React 重置。
+    probe = state.get('submitProbe') if isinstance(state.get('submitProbe'), dict) else {}
+    responses = probe.get('responses') if isinstance(probe.get('responses'), list) else []
+    response_text = ' '.join(
+        str(item.get('body') or '')
+        for item in responses if isinstance(item, dict)
+    )
+    errors_text = ' '.join(str(item or '') for item in (state.get('errors') or []))
+    text = ' '.join((
+        str(state.get('bodyText') or ''),
+        str(state.get('bodyTextTail') or ''),
+        errors_text,
+        response_text,
+    )).lower()
+    if 'invalid_auth_step' in text or 'invalid auth step' in text:
+        return 'invalid_auth_step'
+    if any(k in text for k in (
+        'invalid phone', 'not a valid phone', 'phone number is not valid',
+        '号码无效', '手机号无效',
+    )):
+        return 'invalid_phone'
+    if any(k in text for k in (
+        'cannot send', 'could not send', 'unable to send', 'failed to send', 'send failed',
+        "couldn't send a text message", 'could not send a text message',
+        '发送失败', '发送失败了', '无法发送', '不能发送', '无法向',
+        '送信できません', '送信に失敗', '送信できなかった',
+    )):
+        return 'delivery_refused'
+    if any(k in text for k in ('too many', 'rate limit', 'throttle', '频繁', '限流')):
+        return 'send_limited'
+
+    statuses = [
+        int(item.get('status') or 0)
+        for item in responses if isinstance(item, dict) and str(item.get('status') or '').isdigit()
+    ]
+    if 429 in statuses:
+        return 'send_limited'
+    rejected = next((status for status in reversed(statuses) if status >= 400), 0)
+    if rejected:
+        return f'phone_submit_http_{rejected}'
+    probe_errors = probe.get('errors') if isinstance(probe.get('errors'), list) else []
+    if probe_errors:
+        return 'phone_submit_script_error'
+
     # WhatsApp 可能是选中的 input radio，也可能是新版页面唯一提供的正文通道。
     # 若页面同时出现 SMS 选项/文字，则不能仅凭 bodyText 含 WhatsApp 判失败。
     radios = state.get('radios') or []
@@ -1770,19 +1982,6 @@ def _classify_phone_page_failure(state: dict) -> str:
         return 'whatsapp_channel'
     if _body_indicates_whatsapp_only(state):
         return 'whatsapp_channel'
-    text = str(state.get('bodyText') or '').lower()
-    if 'invalid_auth_step' in text or 'invalid auth step' in text:
-        return 'invalid_auth_step'
-    if any(k in text for k in ('invalid phone', 'not a valid phone', 'phone number is not valid', '号码无效', '手机号无效')):
-        return 'invalid_phone'
-    if any(k in text for k in (
-        'cannot send', 'could not send', 'unable to send', 'failed to send', 'send failed',
-        '发送失败', '发送失败了', '无法发送', '不能发送', '无法向',
-        '送信できません', '送信に失敗', '送信できなかった',
-    )):
-        return 'delivery_refused'
-    if any(k in text for k in ('too many', 'rate limit', 'throttle', '频繁', '限流')):
-        return 'send_limited'
     return ''
 
 
@@ -1895,34 +2094,91 @@ def _do_phone_verification_if_present(driver) -> None:
                 submit_info = _click_add_phone_continue_button(driver, timeout=10)
                 logger.info("[Codex][Browser] 已点击手机号 Continue/続行 按钮：%s，等待进入短信验证码页", submit_info)
 
-                # 明确的号码拒绝会直接抛错并换号；页面暂态则继续守住当前接码订单。
+                # 明确的号码拒绝会直接抛错并换号。若首次提交仍停留 add-phone，
+                # 或 React 把 SMS 通道重置，则先在当前页面复用同一号码真实点击一次。
+                # 第二次仍未进入验证码页时，保留授权 Cookie 重建 add-phone，并在新页面
+                # 最后提交同一个号码一次；页面重建仍失败才止损，不能把页面故障归因于号码。
                 remaining = max(1, int(deadline - time.monotonic()))
+                retry_same_number_reason = ""
                 try:
                     send_outcome = _wait_after_phone_send(driver, timeout=min(15, remaining))
                 except RuntimeError as send_exc:
-                    # 新版 React 表单偶尔会在首次 submit 后把通道重置回 WhatsApp。
-                    # 复用当前已购买的号码重选 SMS，并用 requestSubmit 补交一次；
-                    # 仍失败则交给外层取消该订单并终止，绝不购买第二个号码。
                     if not str(send_exc).strip().lower().startswith("sms_channel_reset:"):
                         raise
+                    retry_same_number_reason = "SMS 通道被页面重置"
+                else:
+                    if send_outcome == "navigation_pending":
+                        logger.warning(
+                            "[Codex][Browser] 手机号提交后页面仍在跳转，禁止重复提交或换号；"
+                            "继续等待当前号码短信"
+                        )
+                    elif send_outcome != "code_page":
+                        retry_same_number_reason = f"首次提交结果={send_outcome}"
+
+                if retry_same_number_reason:
                     logger.warning(
-                        "[Codex][Browser] 首次提交后 SMS 通道被页面重置，使用同一号码重选并补交一次"
+                        "[Codex][Browser] %s，使用同一号码重新填写并真实点击一次",
+                        retry_same_number_reason,
                     )
                     _prepare_phone_form_for_submit(driver, f"+{phone}", attempts=2)
-                    retry_submit = _force_submit_add_phone_form(driver)
-                    if not retry_submit.get("ok"):
-                        raise RuntimeError(
-                            f"sms_channel_reset: 同号重选 SMS 后补交失败 info={retry_submit}"
-                        ) from send_exc
-                    _wait_page_settle_after_submit()
+                    retry_submit = _click_add_phone_continue_button(driver, timeout=10)
+                    logger.info(
+                        "[Codex][Browser] 同一号码已再次点击 Continue/続行：%s，等待进入短信验证码页",
+                        retry_submit,
+                    )
                     remaining = max(1, int(deadline - time.monotonic()))
-                    send_outcome = _wait_after_phone_send(driver, timeout=min(15, remaining))
+                    rebuild_reason = ""
+                    try:
+                        send_outcome = _wait_after_phone_send(driver, timeout=min(15, remaining))
+                    except RuntimeError as retry_exc:
+                        if not str(retry_exc).strip().lower().startswith("sms_channel_reset:"):
+                            raise
+                        rebuild_reason = "同一号码两次提交后 SMS 通道仍被页面重置"
+                    else:
+                        if send_outcome == "navigation_pending":
+                            logger.warning(
+                                "[Codex][Browser] 同一号码再次提交后页面仍在跳转，"
+                                "禁止重建或换号；继续等待当前号码短信"
+                            )
+                        elif send_outcome != "code_page":
+                            rebuild_reason = (
+                                "同一号码两次提交仍未进入短信验证码页，"
+                                f"最后状态={send_outcome}"
+                            )
+
+                    if rebuild_reason:
+                        _rebuild_add_phone_page(driver, reason=rebuild_reason)
+                        _prepare_phone_form_for_submit(driver, f"+{phone}", attempts=2)
+                        rebuilt_submit = _click_add_phone_continue_button(driver, timeout=10)
+                        logger.info(
+                            "[Codex][Browser] 页面重建后已用同一号码点击 Continue/続行：%s，"
+                            "等待进入短信验证码页",
+                            rebuilt_submit,
+                        )
+                        remaining = max(1, int(deadline - time.monotonic()))
+                        try:
+                            send_outcome = _wait_after_phone_send(driver, timeout=min(15, remaining))
+                        except RuntimeError as rebuilt_exc:
+                            if str(rebuilt_exc).strip().lower().startswith("sms_channel_reset:"):
+                                raise RuntimeError(
+                                    "phone_page_rebuild_exhausted: add-phone 页面重建后，"
+                                    "同一号码的 SMS 通道仍被重置；已停止继续买号"
+                                ) from rebuilt_exc
+                            # 重建后的明确号码错误继续交给外层原有换号白名单处理。
+                            raise
+                        if send_outcome not in ("code_page", "navigation_pending"):
+                            raise RuntimeError(
+                                "phone_page_rebuild_exhausted: add-phone 页面重建后，"
+                                f"同一号码仍未进入短信验证码页，最后状态={send_outcome}；"
+                                "已停止继续买号"
+                            )
+
                 if send_outcome == "code_page":
                     logger.info("[Codex][Browser] 已进入手机验证码页")
                 else:
                     logger.warning(
-                        "[Codex][Browser] 手机号页面尚未确认跳转（%s），继续等待当前号码短信，禁止立即换号",
-                        send_outcome,
+                        "[Codex][Browser] 页面仍在跳转且没有明确发送错误，"
+                        "将只轮询当前号码短信，不重复提交、不换号"
                     )
 
                 sms_provider.set_status(activation_id, 1, http=http)
@@ -1956,8 +2212,16 @@ def _do_phone_verification_if_present(driver) -> None:
                 if not _click_if_present(driver, ["button[type='submit']", "input[type='submit']"], timeout=10):
                     raise RuntimeError(f"verify_submit_missing: phone verification submit not found state={_phone_page_state(driver)}")
                 logger.info("[Codex][Browser] 已提交手机 OTP，等待验证结果")
-                otp_outcome = _wait_after_phone_otp_submit(driver, timeout=25)
+                otp_outcome = _wait_after_phone_otp_submit(driver, timeout=45)
                 logger.info("[Codex][Browser] 手机 OTP 提交后状态：%s", otp_outcome)
+                if otp_outcome not in ("callback", "left_phone_flow"):
+                    # 已经收到短信并提交 OTP 后，仍停在验证码页只能算结果不确定。
+                    # 绝不能把它当成手机步骤完成并让 callback 循环再次进入本函数，
+                    # 否则会在原页面仍可能跳转时购买第二个号码。
+                    raise RuntimeError(
+                        "phone_otp_submission_pending: 手机 OTP 已提交，但页面仍未确认离开"
+                        f"验证码流程，最后状态={otp_outcome}；已停止继续买号"
+                    )
                 sms_provider.complete(activation_id, http)
                 return
             except Exception as exc:
@@ -2310,6 +2574,56 @@ def _run_roxy_codex_oauth_once(
             except Exception:
                 pass
         if owns_driver and client and not bool(_roxy_cfg.ROXY_KEEP_BROWSER_OPEN):
+            client.cleanup_profile(opened)
+        try:
+            _CODEX_BROWSER_KIND.reset(browser_kind_token)
+        except Exception:
+            pass
+
+
+def run_roxy_chatgpt_account_action(
+    email: str,
+    *,
+    proxy: str | None = None,
+    otp_provider=None,
+    action=None,
+):
+    """新建一次性 Roxy 环境，登录 ChatGPT 后执行账号级操作。
+
+    用于 2FA 恢复检查：先使用已保存密码/TOTP 或邮箱 OTP 建立真实 ChatGPT
+    session，再检查安全设置。它不会进入 Codex OAuth，也不会触发手机号购买。
+    """
+    if not email:
+        raise ValueError("email 为空")
+    if action is None:
+        raise ValueError("account action 为空")
+    if otp_provider is None:
+        otp_provider = wait_for_otp
+
+    client = RoxyBrowserClient()
+    opened = client.open_profile(proxy_url=proxy)
+    browser_kind_token = _CODEX_BROWSER_KIND.set(_detect_browser_kind(opened))
+    driver = None
+    try:
+        driver = _build_driver(opened)
+        _center_browser_window(driver)
+        driver.set_page_load_timeout(int(_roxy_cfg.ROXY_SELENIUM_TIMEOUT))
+        clear_roxy_browser_auth_state(driver)
+        logger.info("[Codex][Browser] 开始建立 ChatGPT 账号会话：%s", email)
+        _fill_email_and_otp(driver, email, otp_provider, "https://chatgpt.com/auth/login")
+        from core.roxy_registration import _fetch_chatgpt_session
+
+        _fetch_chatgpt_session(driver, timeout=90, auto_jump_wait=10)
+        result = action(driver)
+        logger.info("[Codex][Browser] ChatGPT 账号操作已完成：%s", email)
+        return result
+    finally:
+        if driver and not bool(_roxy_cfg.ROXY_KEEP_BROWSER_OPEN):
+            try:
+                driver.quit()
+            except Exception:
+                pass
+        if not bool(_roxy_cfg.ROXY_KEEP_BROWSER_OPEN):
             client.cleanup_profile(opened)
         try:
             _CODEX_BROWSER_KIND.reset(browser_kind_token)

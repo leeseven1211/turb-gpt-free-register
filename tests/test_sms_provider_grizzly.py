@@ -203,6 +203,36 @@ class GrizzlySmsProviderTests(unittest.TestCase):
             with self.assertRaisesRegex(sms_provider.SmsPriceLimitError, "SMS_MAX_PRICE"):
                 sms_provider._request_grizzly(http, {"action": "getNumberV2"})
 
+    def test_get_status_retries_transient_525_on_same_order(self):
+        http = MagicMock()
+        failed = MagicMock(status_code=525, text="cloudflare origin ssl error")
+        recovered = MagicMock(status_code=200, text="STATUS_WAIT_CODE")
+        http.get.side_effect = [failed, recovered]
+
+        with (
+            patch.object(codex_config, "SMS_API_KEY", "test-key"),
+            patch.object(sms_provider.time, "sleep") as sleep,
+        ):
+            result = sms_provider._request_grizzly(
+                http,
+                {"action": "getStatus", "id": "12345"},
+            )
+
+        self.assertEqual(result, "STATUS_WAIT_CODE")
+        self.assertEqual(http.get.call_count, 2)
+        sleep.assert_called_once_with(0.5)
+
+    def test_get_number_does_not_retry_transient_525(self):
+        http = MagicMock()
+        http.get.return_value.status_code = 525
+        http.get.return_value.text = "cloudflare origin ssl error"
+
+        with patch.object(codex_config, "SMS_API_KEY", "test-key"):
+            with self.assertRaisesRegex(sms_provider.SmsProviderError, "HTTP 525"):
+                sms_provider._request_grizzly(http, {"action": "getNumberV2"})
+
+        http.get.assert_called_once()
+
     def test_early_cancel_is_persisted_with_backoff_then_success_is_removed(self):
         with tempfile.TemporaryDirectory() as td:
             queue_path = Path(td) / "sms_cancel_queue.json"

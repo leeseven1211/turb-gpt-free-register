@@ -49,6 +49,7 @@ class _CountryDriver:
         self.clicked = []
         self.keys = []
         self.scan_count = 0
+        self.reset_count = 0
         self.switch_to = _SwitchTo(self)
         self.button = _Element(self, "button")
         self.option = _Element(self, "option-cl")
@@ -59,6 +60,9 @@ class _CountryDriver:
             return {"hasButton": True, "text": text, "dialCode": self.current_code, "expanded": "false"}
         if "return form?.querySelector('button[aria-haspopup=" in script:
             return self.button
+        if "phoneCountryListReset" in script:
+            self.reset_count += 1
+            return {"ready": True, "before": 8811, "after": 0, "max": 8811}
         if "const candidates =" in script:
             self.scan_count += 1
             if self.scan_count == 1:
@@ -251,6 +255,7 @@ class RoxyPhoneCountryTests(unittest.TestCase):
         self.assertEqual(result["countryKey"], "CL")
         self.assertEqual(driver.clicked, ["button"])
         self.assertIn(("option-cl", ("\ue007",)), driver.keys)
+        self.assertEqual(driver.reset_count, 1)
 
     def test_keeps_country_when_calling_code_already_matches(self):
         driver = _CountryDriver(current_code="56")
@@ -295,6 +300,51 @@ class RoxyPhoneCountryTests(unittest.TestCase):
         }
 
         self.assertEqual(_classify_phone_page_failure(state), "sms_channel_reset")
+
+    def test_explicit_japanese_sms_delivery_failure_overrides_whatsapp_reset(self):
+        state = {
+            "url": "https://auth.openai.com/add-phone",
+            "radios": [
+                {"value": "sms", "checked": False},
+                {"value": "whatsapp", "checked": True},
+            ],
+            "controls": [],
+            "bodyText": (
+                "この電話番号にはテキストメッセージを送信できなかったため、"
+                "WhatsApp に切り替えました。続行すると、WhatsApp で認証コードを送信します。"
+            ),
+        }
+
+        reason = _classify_phone_page_failure(state)
+
+        self.assertEqual(reason, "delivery_refused")
+        self.assertTrue(_phone_error_allows_number_rotation(RuntimeError(f"{reason}: rejected")))
+        self.assertTrue(_phone_error_counts_country_failure(RuntimeError(f"{reason}: rejected")))
+
+    def test_phone_error_at_end_of_long_country_list_is_not_truncated(self):
+        state = {
+            "url": "https://auth.openai.com/add-phone",
+            "bodyText": "国家列表 " * 500,
+            "bodyTextTail": "この電話番号にはテキストメッセージを送信できません",
+            "errors": [],
+            "submitProbe": {},
+        }
+
+        self.assertEqual(_classify_phone_page_failure(state), "delivery_refused")
+
+    def test_phone_submit_http_response_is_reported(self):
+        state = {
+            "url": "https://auth.openai.com/add-phone",
+            "bodyText": "Phone number required",
+            "errors": [],
+            "submitProbe": {
+                "responses": [
+                    {"status": 403, "url": "/api/accounts/phone", "body": '{"error":"request rejected"}'}
+                ]
+            },
+        }
+
+        self.assertEqual(_classify_phone_page_failure(state), "phone_submit_http_403")
 
     def test_whatsapp_only_body_without_radio_is_rejected(self):
         state = {
@@ -404,12 +454,38 @@ class RoxyPhoneCountryTests(unittest.TestCase):
             patch("core.roxy_codex_oauth._phone_page_state", return_value=state),
             patch("core.roxy_codex_oauth._is_add_phone_page", return_value=True),
             patch("core.roxy_codex_oauth._is_phone_code_page", return_value=False),
-            patch("core.roxy_codex_oauth._force_submit_add_phone_form", return_value={"ok": True}),
         ):
             outcome = _wait_after_phone_send(object(), timeout=1)
 
         self.assertEqual(outcome, "submission_uncertain")
         self.assertFalse(_phone_error_allows_number_rotation(RuntimeError("phone_form_unstable")))
+
+    def test_navigation_pending_waits_instead_of_rotating(self):
+        state = {
+            "url": "https://auth.openai.com/oauth/authorize/loading",
+            "inputs": [],
+            "forms": [],
+            "radios": [],
+            "controls": [],
+            "bodyText": "",
+        }
+        clock = {"value": 0.0}
+
+        def now():
+            clock["value"] += 0.4
+            return clock["value"]
+
+        with (
+            patch("core.roxy_codex_oauth.time.time", side_effect=now),
+            patch("core.roxy_codex_oauth.time.sleep"),
+            patch("core.roxy_codex_oauth._phone_page_state", return_value=state),
+            patch("core.roxy_codex_oauth._is_add_phone_page", return_value=False),
+            patch("core.roxy_codex_oauth._is_phone_code_page", return_value=False),
+        ):
+            outcome = _wait_after_phone_send(object(), timeout=1)
+
+        self.assertEqual(outcome, "navigation_pending")
+        self.assertFalse(_phone_error_allows_number_rotation(RuntimeError("phone_navigation_pending")))
 
     def test_explicit_number_failure_still_allows_immediate_rotation(self):
         error = RuntimeError("invalid_phone: phone number is not valid")
@@ -417,6 +493,8 @@ class RoxyPhoneCountryTests(unittest.TestCase):
         self.assertTrue(_phone_error_allows_number_rotation(error))
         self.assertTrue(_phone_error_counts_country_failure(error))
         self.assertTrue(_phone_error_allows_number_rotation(sms_provider.SmsCodeTimeout("timeout")))
+        self.assertFalse(_phone_error_allows_number_rotation(RuntimeError("send_not_accepted: retry exhausted")))
+        self.assertFalse(_phone_error_counts_country_failure(RuntimeError("send_not_accepted: retry exhausted")))
         self.assertFalse(_phone_error_counts_country_failure(RuntimeError("send_limited: rate limit")))
 
     def test_whatsapp_channel_never_rotates_or_penalizes_country(self):
@@ -490,13 +568,11 @@ class RoxyPhoneCountryTests(unittest.TestCase):
             patch.object(sms_provider, "_http", return_value=http),
             patch.object(sms_provider, "acquire_number", return_value=("a1", "56954364095")) as acquire,
             patch("core.roxy_codex_oauth._prepare_phone_form_for_submit", return_value={}) as prepare,
-            patch("core.roxy_codex_oauth._click_add_phone_continue_button", return_value={"ok": True}),
+            patch("core.roxy_codex_oauth._click_add_phone_continue_button", return_value={"ok": True}) as click_submit,
             patch(
                 "core.roxy_codex_oauth._wait_after_phone_send",
                 side_effect=[RuntimeError("sms_channel_reset: React reset"), "code_page"],
             ),
-            patch("core.roxy_codex_oauth._force_submit_add_phone_form", return_value={"ok": True}) as force_submit,
-            patch("core.roxy_codex_oauth._wait_page_settle_after_submit"),
             patch.object(sms_provider, "set_status"),
             patch.object(sms_provider, "wait_for_sms_code", return_value="123456"),
             patch("core.roxy_codex_oauth._ensure_phone_code_page_after_sms"),
@@ -512,7 +588,81 @@ class RoxyPhoneCountryTests(unittest.TestCase):
         acquire.assert_called_once()
         self.assertEqual(prepare.call_count, 2)
         self.assertTrue(all(call.args[1] == "+56954364095" for call in prepare.call_args_list))
-        force_submit.assert_called_once_with(driver)
+        self.assertEqual(click_submit.call_count, 2)
+        complete.assert_called_once_with("a1", http)
+        cancel.assert_not_called()
+
+    def test_navigation_pending_polls_current_number_without_resubmit_or_rotation(self):
+        http = MagicMock()
+        driver = object()
+        state = {
+            "url": "https://auth.openai.com/add-phone",
+            "radios": [{"value": "sms", "checked": True}],
+            "controls": [],
+            "bodyText": "SMS",
+        }
+        with (
+            patch("core.roxy_codex_oauth._has_strict_add_phone_form", return_value=True),
+            patch("core.roxy_codex_oauth._is_phone_code_page", return_value=False),
+            patch("core.roxy_codex_oauth._phone_page_state", return_value=state),
+            patch.object(sms_provider, "_http", return_value=http),
+            patch.object(sms_provider, "acquire_number", return_value=("a1", "56954364095")) as acquire,
+            patch("core.roxy_codex_oauth._prepare_phone_form_for_submit", return_value={}) as prepare,
+            patch("core.roxy_codex_oauth._click_add_phone_continue_button", return_value={"ok": True}) as click_submit,
+            patch("core.roxy_codex_oauth._wait_after_phone_send", return_value="navigation_pending"),
+            patch("core.roxy_codex_oauth._rebuild_add_phone_page") as rebuild,
+            patch.object(sms_provider, "set_status") as set_status,
+            patch.object(sms_provider, "wait_for_sms_code", return_value="123456"),
+            patch("core.roxy_codex_oauth._ensure_phone_code_page_after_sms"),
+            patch("core.roxy_codex_oauth._type_otp"),
+            patch("core.roxy_codex_oauth.human_delay"),
+            patch("core.roxy_codex_oauth._click_if_present", return_value=True),
+            patch("core.roxy_codex_oauth._wait_after_phone_otp_submit", return_value="left_phone_flow"),
+            patch.object(sms_provider, "complete") as complete,
+            patch.object(sms_provider, "cancel") as cancel,
+        ):
+            _do_phone_verification_if_present(driver)
+
+        acquire.assert_called_once()
+        prepare.assert_called_once()
+        click_submit.assert_called_once()
+        rebuild.assert_not_called()
+        set_status.assert_called_once_with("a1", 1, http=http)
+        complete.assert_called_once_with("a1", http)
+        cancel.assert_not_called()
+
+    def test_sms_received_but_otp_page_still_pending_never_buys_second_number(self):
+        http = MagicMock()
+        driver = object()
+        state = {
+            "url": "https://auth.openai.com/add-phone",
+            "radios": [{"value": "sms", "checked": True}],
+            "controls": [],
+            "bodyText": "SMS",
+        }
+        with (
+            patch("core.roxy_codex_oauth._has_strict_add_phone_form", return_value=True),
+            patch("core.roxy_codex_oauth._is_phone_code_page", return_value=False),
+            patch("core.roxy_codex_oauth._phone_page_state", return_value=state),
+            patch.object(sms_provider, "_http", return_value=http),
+            patch.object(sms_provider, "acquire_number", return_value=("a1", "56954364095")) as acquire,
+            patch("core.roxy_codex_oauth._prepare_phone_form_for_submit", return_value={}),
+            patch("core.roxy_codex_oauth._click_add_phone_continue_button", return_value={"ok": True}),
+            patch("core.roxy_codex_oauth._wait_after_phone_send", return_value="code_page"),
+            patch.object(sms_provider, "set_status"),
+            patch.object(sms_provider, "wait_for_sms_code", return_value="123456"),
+            patch("core.roxy_codex_oauth._ensure_phone_code_page_after_sms"),
+            patch("core.roxy_codex_oauth._type_otp"),
+            patch("core.roxy_codex_oauth.human_delay"),
+            patch("core.roxy_codex_oauth._click_if_present", return_value=True),
+            patch("core.roxy_codex_oauth._wait_after_phone_otp_submit", return_value="still_code_page"),
+            patch.object(sms_provider, "complete") as complete,
+            patch.object(sms_provider, "cancel") as cancel,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "已停止继续买号"):
+                _do_phone_verification_if_present(driver)
+
+        acquire.assert_called_once()
         complete.assert_called_once_with("a1", http)
         cancel.assert_not_called()
 
@@ -554,32 +704,76 @@ class RoxyPhoneCountryTests(unittest.TestCase):
         cancel.assert_called_once_with("a1", http, background=True)
         report_failure.assert_not_called()
 
-    def test_sms_received_then_browser_failure_never_buys_second_number(self):
+    def test_submission_uncertain_rebuilds_page_and_reuses_same_number(self):
         http = MagicMock()
+        driver = object()
         with (
             patch("core.roxy_codex_oauth._has_strict_add_phone_form", return_value=True),
             patch("core.roxy_codex_oauth._is_phone_code_page", return_value=False),
             patch.object(sms_provider, "_http", return_value=http),
             patch.object(sms_provider, "acquire_number", return_value=("a1", "542325597108")) as acquire,
-            patch("core.roxy_codex_oauth._prepare_phone_form_for_submit", return_value={}),
-            patch("core.roxy_codex_oauth._click_add_phone_continue_button", return_value={"ok": True}),
-            patch("core.roxy_codex_oauth._wait_after_phone_send", return_value="submission_uncertain"),
-            patch.object(sms_provider, "set_status"),
-            patch.object(sms_provider, "wait_for_sms_code", return_value="123456"),
+            patch("core.roxy_codex_oauth._prepare_phone_form_for_submit", return_value={}) as prepare,
+            patch("core.roxy_codex_oauth._click_add_phone_continue_button", return_value={"ok": True}) as click_submit,
             patch(
-                "core.roxy_codex_oauth._ensure_phone_code_page_after_sms",
-                side_effect=RuntimeError("sms_received_but_phone_code_page_missing"),
+                "core.roxy_codex_oauth._wait_after_phone_send",
+                side_effect=["submission_uncertain", "submission_uncertain", "code_page"],
             ),
+            patch("core.roxy_codex_oauth._rebuild_add_phone_page") as rebuild,
+            patch.object(sms_provider, "set_status") as set_status,
+            patch.object(sms_provider, "wait_for_sms_code", return_value="123456"),
+            patch("core.roxy_codex_oauth._ensure_phone_code_page_after_sms"),
+            patch("core.roxy_codex_oauth._type_otp"),
+            patch("core.roxy_codex_oauth.human_delay"),
+            patch("core.roxy_codex_oauth._click_if_present", return_value=True),
+            patch("core.roxy_codex_oauth._wait_after_phone_otp_submit", return_value="left_phone_flow"),
             patch.object(sms_provider, "complete") as complete,
             patch.object(sms_provider, "cancel") as cancel,
             patch.object(sms_provider, "report_activation_failure") as report_failure,
         ):
-            with self.assertRaisesRegex(RuntimeError, "已停止继续买号"):
-                _do_phone_verification_if_present(object())
+            _do_phone_verification_if_present(driver)
 
         acquire.assert_called_once()
-        complete.assert_called_once_with("a1", http)
+        self.assertEqual(
+            [call.args[1] for call in prepare.call_args_list],
+            ["+542325597108", "+542325597108", "+542325597108"],
+        )
+        self.assertEqual(click_submit.call_count, 3)
+        rebuild.assert_called_once()
         cancel.assert_not_called()
+        set_status.assert_called_once_with("a1", 1, http=http)
+        complete.assert_called_once_with("a1", http)
+        report_failure.assert_not_called()
+
+    def test_persistent_sms_reset_after_page_rebuild_stops_without_second_number(self):
+        http = MagicMock()
+        driver = object()
+        with (
+            patch("core.roxy_codex_oauth._has_strict_add_phone_form", return_value=True),
+            patch("core.roxy_codex_oauth._is_phone_code_page", return_value=False),
+            patch.object(sms_provider, "_http", return_value=http),
+            patch.object(sms_provider, "acquire_number", return_value=("a1", "542325597108")) as acquire,
+            patch("core.roxy_codex_oauth._prepare_phone_form_for_submit", return_value={}) as prepare,
+            patch("core.roxy_codex_oauth._click_add_phone_continue_button", return_value={"ok": True}) as click_submit,
+            patch(
+                "core.roxy_codex_oauth._wait_after_phone_send",
+                side_effect=[
+                    RuntimeError("sms_channel_reset: first reset"),
+                    RuntimeError("sms_channel_reset: second reset"),
+                    RuntimeError("sms_channel_reset: rebuilt reset"),
+                ],
+            ),
+            patch("core.roxy_codex_oauth._rebuild_add_phone_page") as rebuild,
+            patch.object(sms_provider, "cancel") as cancel,
+            patch.object(sms_provider, "report_activation_failure") as report_failure,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "已停止继续买号"):
+                _do_phone_verification_if_present(driver)
+
+        acquire.assert_called_once()
+        self.assertEqual(prepare.call_count, 3)
+        self.assertEqual(click_submit.call_count, 3)
+        rebuild.assert_called_once()
+        cancel.assert_called_once_with("a1", http, background=True)
         report_failure.assert_not_called()
 
     def test_explicit_invalid_phone_rotates_and_second_number_can_succeed(self):
