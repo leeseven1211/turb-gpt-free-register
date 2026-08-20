@@ -176,7 +176,7 @@ from config.email import (
 )
 
 # ---------- 2FA ----------
-from config.twofa import ENABLE_2FA
+from config.twofa import ENABLE_2FA, TWOFA_DRIVER
 
 
 # ---------- 热加载支持 ----------
@@ -288,5 +288,5 @@ __all__ = [
     "ICLOUD_HME_REQUEST_TIMEOUT", "ICLOUD_HME_SYNC_TTL", "ICLOUD_HME_AUTO_CREATE",
     "ICLOUD_HME_CREATE_LABEL_PREFIX",
     # twofa
-    "ENABLE_2FA",
+    "ENABLE_2FA", "TWOFA_DRIVER",
 ]

@@ -14,10 +14,11 @@ from urllib.parse import urlsplit
 
 from config import roxybrowser as _cfg
 from config import twofa as _twofa_cfg
-from core.account_export import save_account_data
+from core.account_export import save_account_data, setup_2fa_protocol
 from core.email_provider import wait_for_otp, resolve_email_source
 from core.humanize import delay as human_delay
 from core.roxybrowser_client import RoxyBrowserClient, RoxyOpenResult
+from core.session import BrowserSession
 
 logger = logging.getLogger(__name__)
 
@@ -3407,8 +3408,18 @@ def run_roxy_registration(
                     report_registered_account(account_id)
                     logger.info("[Roxy注册][2FA] Authenticator key 已写入账号检查点，准备激活")
 
-                totp_secret = setup_roxy_2fa(driver, email, on_secret=_checkpoint_totp_secret)
-                twofa_result = {"status": "success", "ok": True, "message": "Authenticator 2FA 已启用"}
+                twofa_driver = _twofa_cfg.get_twofa_driver()
+                if twofa_driver == "protocol":
+                    protocol_session = BrowserSession(proxy=proxy or "")
+                    totp_secret = setup_2fa_protocol(
+                        protocol_session,
+                        access_token,
+                        on_secret=_checkpoint_totp_secret,
+                    )
+                    twofa_result = {"status": "success", "ok": True, "message": "协议 2FA 已启用"}
+                else:
+                    totp_secret = setup_roxy_2fa(driver, email, on_secret=_checkpoint_totp_secret)
+                    twofa_result = {"status": "success", "ok": True, "message": "浏览器 2FA 已启用"}
                 report_job_progress("twofa", "success", twofa_result["message"])
             except Exception as exc:
                 message = f"{type(exc).__name__}: {str(exc)[:180]}"

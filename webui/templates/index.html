@@ -1150,6 +1150,13 @@
     .accounts-table-v2 .extract-link-cell button:disabled {
       opacity: .55; cursor: not-allowed;
     }
+    .accounts-table-v2 .acc-v2-totp-code {
+      color: #303133; font: 700 14px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 1px; white-space: nowrap;
+    }
+    .accounts-table-v2 .acc-v2-totp-ttl {
+      color: #909399; font-size: 11px; white-space: nowrap;
+    }
     .accounts-table-v2 .acc-v2-actions {
       display: flex; flex-wrap: nowrap; gap: 6px; align-items: center;
     }
@@ -2191,6 +2198,19 @@
     }
     .config-switch-v2-help {
       margin: 0; font-size: 12px; color: #909399; line-height: 1.55;
+    }
+    .config-twofa-driver-v2 {
+      display: grid; gap: 6px; margin-top: 2px; padding-top: 10px;
+      border-top: 1px solid #ebeef5;
+    }
+    .config-twofa-driver-v2-label {
+      font-size: 12px; font-weight: 600; color: #606266;
+    }
+    .config-twofa-driver-v2 select {
+      width: 100%; min-width: 0; max-width: 100%;
+    }
+    .config-twofa-driver-v2-help {
+      margin: 0; font-size: 12px; color: #909399; line-height: 1.5;
     }
     @media (max-width: 1100px) {
       .config-switches-v2 { grid-template-columns: 1fr; gap: 16px; }
@@ -5582,6 +5602,18 @@ function _passwordCellV2(r) {
   if (!r.has_registration_password) return '<span class="acc-v2-muted">未设置</span>';
   return `<button type="button" class="acc-v2-token-copy" data-account-copy-secret="registration_password" data-account-id="${esc(r.id)}" title="复制该账号的随机登录密码">复制</button>`;
 }
+function _totpCellV2(r) {
+  if (!r.totp_enabled) return '<span class="acc-v2-muted">未启用</span>';
+  return `
+    <div class="status-action-cell" data-account-totp-cell="${esc(r.id)}">
+      <span class="pill status-success">已启用</span>
+      <button type="button" data-account-totp-code="${esc(r.id)}" title="查询当前 6 位 TOTP 验证码">查询验证码</button>
+      <span class="acc-v2-totp-code" data-account-totp-value hidden></span>
+      <span class="acc-v2-totp-ttl" data-account-totp-ttl hidden></span>
+      <button type="button" data-account-totp-copy="${esc(r.id)}" data-totp-code="" title="复制当前 TOTP 验证码" hidden>复制</button>
+    </div>
+  `;
+}
 function _deactivationMailCell(r) {
   const detected = r.deactivation_mail_detected === true;
   const status = r.deactivation_mail_scan_status || '';
@@ -5681,7 +5713,7 @@ function renderAccounts() {
       <td class="col-small">${_passwordCellV2(r)}</td>
       <td class="col-plan">${_planCell(r)}<div class="acc-v2-sub">${_extractLinkCell(r)}</div></td>
       <td class="col-trial">${_trialCell(r)}</td>
-      <td class="col-small">${r.totp_enabled ? '已启用' : '<span class="acc-v2-muted">未启用</span>'}</td>
+      <td class="col-small">${_totpCellV2(r)}</td>
       <td class="col-risk-mail">${_deactivationMailCell(r)}</td>
       <td class="col-status">${_codexCellV2(r)}</td>
       <td class="col-time" title="${esc(r.created_at || '-')}">${esc(r.created_at || '-')}</td>
@@ -5793,6 +5825,38 @@ async function onAccountsBodyClick(e) {
     closeAccountsV2MoreMenus();
   }
 
+  const totpQueryBtn = e.target.closest('[data-account-totp-code]');
+  if (totpQueryBtn) {
+    const id = Number(totpQueryBtn.dataset.accountTotpCode);
+    const cell = totpQueryBtn.closest('[data-account-totp-cell]');
+    totpQueryBtn.disabled = true;
+    try {
+      const result = await api(`/api/accounts/${encodeURIComponent(id)}/totp-code`);
+      const value = cell?.querySelector('[data-account-totp-value]');
+      const ttl = cell?.querySelector('[data-account-totp-ttl]');
+      const copy = cell?.querySelector('[data-account-totp-copy]');
+      if (value) { value.textContent = result.code || ''; value.hidden = false; }
+      if (ttl) { ttl.textContent = result.remaining_seconds ? `剩余 ${result.remaining_seconds}s` : ''; ttl.hidden = false; }
+      if (copy) { copy.dataset.totpCode = result.code || ''; copy.hidden = !result.code; }
+      totpQueryBtn.textContent = '刷新验证码';
+      showToast(`验证码已查询，剩余 ${result.remaining_seconds || 0} 秒`);
+    } catch(err) {
+      showToast('查询验证码失败: ' + err.message);
+    } finally {
+      totpQueryBtn.disabled = false;
+    }
+    return;
+  }
+
+  const totpCopyBtn = e.target.closest('[data-account-totp-copy]');
+  if (totpCopyBtn) {
+    const code = String(totpCopyBtn.dataset.totpCode || '');
+    if (!code) { showToast('请先查询验证码'); return; }
+    copyText(code);
+    showToast('验证码已复制');
+    return;
+  }
+
   const copySecretBtn = e.target.closest('[data-account-copy-secret]');
   if (copySecretBtn) {
     const id = Number(copySecretBtn.dataset.accountId);
@@ -5802,7 +5866,7 @@ async function onAccountsBodyClick(e) {
       const value = await fetchOneAccountSecret(id, field);
       if (!value) { showToast('可复制内容为空'); return; }
       copyText(value);
-      showToast(field === 'access_token' ? 'Token 已复制' : (field === 'registration_password' ? '随机登录密码已复制' : '账号整行已复制'));
+      showToast(field === 'access_token' ? 'Token 已复制' : (field === 'registration_password' ? '随机登录密码已复制' : (field === 'totp_secret' ? 'TOTP 密钥已复制' : '账号整行已复制')));
     } catch(err) {
       showToast('复制失败: ' + err.message);
     } finally {
@@ -8030,6 +8094,26 @@ function renderFeatureSwitchField(f, opts = {}) {
       </div>` : `<div class="config-switch-v2-label">${esc(f.label)}</div>`}
       <input class="config-switch-v2-toggle" type="checkbox" role="switch" data-key="${attrEsc(f.key)}"${on ? ' checked' : ''} aria-label="${attrEsc(f.label)}">
       <p class="config-switch-v2-help">${esc(f.help || '')}</p>
+      ${opts.extraHtml || ''}
+    </div>
+  `;
+}
+function twofaDriverChoices() {
+  return [
+    { value: 'protocol', label: '协议直开（新鲜 AT）' },
+    { value: 'browser', label: '浏览器页面（RoxyBrowser）' },
+  ];
+}
+function renderTwofaDriverControl(f) {
+  const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
+  const current = String(fv == null ? 'protocol' : fv).trim().toLowerCase() || 'protocol';
+  return `
+    <div class="config-twofa-driver-v2">
+      <div class="config-twofa-driver-v2-label">${esc(f.label)}</div>
+      <select data-key="${attrEsc(f.key)}" aria-label="${attrEsc(f.label)}">
+        ${twofaDriverChoices().map(item => `<option value="${attrEsc(item.value)}"${current === item.value ? ' selected' : ''}>${esc(item.label)}</option>`).join('')}
+      </select>
+      <p class="config-twofa-driver-v2-help">${esc(f.help || '')}</p>
     </div>
   `;
 }
@@ -8493,12 +8577,19 @@ function renderConfigSectionV2(name, fields) {
       .map(k => fields.find(f => f.key === k))
       .filter(Boolean)
       .concat(fields.filter(f => !preferred.includes(f.key)));
+    const twofaDriver = ordered.find(f => f.key === 'TWOFA_DRIVER');
+    const switches = ordered.filter(f => f.type === 'bool');
+    const otherFields = ordered.filter(f => f.type !== 'bool' && f.key !== 'TWOFA_DRIVER');
     return `
       <section class="config-section-v2" id="${esc(slug)}" data-config-section="${esc(name)}">
         ${renderConfigSectionHead(name, '')}
         <div class="config-switches-v2">
-          ${ordered.map(f => renderFeatureSwitchField(f, { withIcon: true })).join('')}
+          ${switches.map(f => renderFeatureSwitchField(f, {
+            withIcon: true,
+            extraHtml: f.key === 'ENABLE_2FA' && twofaDriver ? renderTwofaDriverControl(twofaDriver) : '',
+          })).join('')}
         </div>
+        ${otherFields.length ? `<div class="config-section-v2-body">${otherFields.map(renderConfigPlainFieldV2).join('')}</div>` : ''}
         <div class="config-section-v2-actions">
           <button type="button" class="btn primary" data-save-config-v2>保存</button>
         </div>

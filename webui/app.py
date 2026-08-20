@@ -17,6 +17,7 @@ import uuid
 from datetime import datetime
 from urllib.parse import urlparse
 
+import pyotp
 from flask import Flask, Response, jsonify, make_response, redirect, render_template, request, url_for
 
 from core import (
@@ -262,7 +263,9 @@ def _account_secret_value(row: dict, field: str) -> str:
     if field == "registration_password_line":
         password = _account_registration_password(row)
         return f"{row.get('email') or ''}----{password}" if password else ""
-    raise ValueError("field 仅支持 access_token/copy_line/registration_password/registration_password_line")
+    if field == "totp_secret":
+        return str(row.get("totp_secret") or "")
+    raise ValueError("field 仅支持 access_token/copy_line/registration_password/registration_password_line/totp_secret")
 
 
 def _account_registration_password(row: dict) -> str:
@@ -824,6 +827,27 @@ def create_app(auth_code: str | None = None) -> Flask:
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
         return jsonify({"ok": True, "id": acc_id, "field": field, "value": value})
+
+    @app.get("/api/accounts/<int:acc_id>/totp-code")
+    def api_account_totp_code(acc_id: int):
+        """按需生成当前 TOTP 验证码，不向前端返回原始密钥。"""
+        acc = db.get_account(acc_id)
+        if not acc:
+            return jsonify({"ok": False, "error": "账号不存在"}), 404
+        secret = str(acc.get("totp_secret") or "").strip()
+        if not secret:
+            return jsonify({"ok": False, "error": "该账号未设置 TOTP"}), 400
+        now = int(time.time())
+        try:
+            code = pyotp.TOTP(secret).at(now)
+        except Exception:
+            return jsonify({"ok": False, "error": "该账号的 TOTP 密钥无效"}), 400
+        return jsonify({
+            "ok": True,
+            "id": acc_id,
+            "code": code,
+            "remaining_seconds": 30 - (now % 30),
+        })
 
     @app.post("/api/accounts/secret-bulk")
     def api_accounts_secret_bulk():

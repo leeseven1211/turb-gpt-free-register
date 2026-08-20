@@ -346,6 +346,10 @@ EDITABLE_FIELDS = [
         "label": "启用 2FA(TOTP)", "help": "注册完成后自动设置动态口令（会多收一封 OTP 邮件）",
     },
     {
+        "key": "TWOFA_DRIVER", "file": "twofa.py", "type": "str", "group": "功能开关",
+        "label": "2FA 开通方式", "help": "protocol=用新鲜 AT 直接开通；browser=用 RoxyBrowser 安全设置页面开通",
+    },
+    {
         "key": "ENABLE_FLOW_TRIGGER", "file": "flow_trigger.py", "type": "bool", "group": "功能开关",
         "label": "启用 Flow 触发", "help": "注册成功后自动调用内部 Flow 接口（不影响注册结果）",
     },

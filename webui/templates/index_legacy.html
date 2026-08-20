@@ -1497,7 +1497,7 @@ function renderAccounts() {
       <td><span class="mono" title="列表仅显示预览，完整 Token 请点复制">${r.has_access_token ? '有Token' : '<span class="muted">无Token</span>'}</span>${_liveStatusSub(r)}</td>
       <td>${_planCell(r)}<div class="sub-cell">${_extractLinkCell(r)}</div></td>
       <td>${_trialCell(r)}</td>
-      <td>${r.totp_enabled ? '已启用' : '<span class="muted">未启用</span>'}</td>
+      <td>${r.totp_enabled ? `<div data-account-totp-cell="${esc(r.id)}"><span class="pill status-success">已启用</span> <button class="good" data-account-totp-code="${esc(r.id)}" title="查询当前 6 位 TOTP 验证码">查询验证码</button> <span class="mono" data-account-totp-value hidden></span> <span class="muted" data-account-totp-ttl hidden></span> <button class="good" data-account-totp-copy="${esc(r.id)}" data-totp-code="" title="复制当前 TOTP 验证码" hidden>复制</button></div>` : '<span class="muted">未启用</span>'}</td>
       <td>${_codexCell(r)}</td>
       <td class="muted">${esc(r.created_at || '-')}</td>
       <td class="actions actions-cell">
@@ -1639,6 +1639,38 @@ document.addEventListener('click', async (e) => {
 
 // 账号操作按钮（事件委托）
 $('#accountsBody').addEventListener('click', async (e) => {
+  const totpQueryBtn = e.target.closest('[data-account-totp-code]');
+  if (totpQueryBtn) {
+    const id = Number(totpQueryBtn.dataset.accountTotpCode);
+    const cell = totpQueryBtn.closest('[data-account-totp-cell]');
+    totpQueryBtn.disabled = true;
+    try {
+      const result = await api(`/api/accounts/${encodeURIComponent(id)}/totp-code`);
+      const value = cell?.querySelector('[data-account-totp-value]');
+      const ttl = cell?.querySelector('[data-account-totp-ttl]');
+      const copy = cell?.querySelector('[data-account-totp-copy]');
+      if (value) { value.textContent = result.code || ''; value.hidden = false; }
+      if (ttl) { ttl.textContent = result.remaining_seconds ? `剩余 ${result.remaining_seconds}s` : ''; ttl.hidden = false; }
+      if (copy) { copy.dataset.totpCode = result.code || ''; copy.hidden = !result.code; }
+      totpQueryBtn.textContent = '刷新验证码';
+      showToast(`验证码已查询，剩余 ${result.remaining_seconds || 0} 秒`);
+    } catch(err) {
+      showToast('查询验证码失败: ' + err.message);
+    } finally {
+      totpQueryBtn.disabled = false;
+    }
+    return;
+  }
+
+  const totpCopyBtn = e.target.closest('[data-account-totp-copy]');
+  if (totpCopyBtn) {
+    const code = String(totpCopyBtn.dataset.totpCode || '');
+    if (!code) { showToast('请先查询验证码'); return; }
+    copyText(code);
+    showToast('验证码已复制');
+    return;
+  }
+
   const copySecretBtn = e.target.closest('[data-account-copy-secret]');
   if (copySecretBtn) {
     const id = Number(copySecretBtn.dataset.accountId);
@@ -1648,7 +1680,7 @@ $('#accountsBody').addEventListener('click', async (e) => {
       const value = await fetchOneAccountSecret(id, field);
       if (!value) { showToast('可复制内容为空'); return; }
       copyText(value);
-      showToast(field === 'access_token' ? 'Token 已复制' : '账号整行已复制');
+      showToast(field === 'access_token' ? 'Token 已复制' : (field === 'totp_secret' ? 'TOTP 密钥已复制' : '账号整行已复制'));
     } catch(err) {
       showToast('复制失败: ' + err.message);
     } finally {
@@ -2747,6 +2779,9 @@ function renderConfigField(f) {
     const current = String(fv == null ? '' : fv);
     if (current && !regions.some(([v]) => v === current)) regions.splice(1, 0, [current, '当前配置']);
     html += `<select data-key="${attrEsc(f.key)}">${regions.map(([v,l]) => `<option value="${attrEsc(v)}"${current===v?' selected':''}>${esc(l)}${v ? ` (${esc(v)})` : ''}</option>`).join('')}</select>`;
+  } else if (f.key === 'TWOFA_DRIVER') {
+    const options = [['protocol','协议直开（新鲜 AT）'],['browser','浏览器页面（RoxyBrowser）']];
+    html += `<select data-key="${attrEsc(f.key)}">${options.map(([v,l]) => `<option value="${v}"${String(fv)===v?' selected':''}>${l}</option>`).join('')}</select>`;
   } else if (f.key === 'PROXY_1024_PROTOCOL') {
     html += `<select data-key="${attrEsc(f.key)}">${['http','https','socks5','socks5h'].map(v => `<option value="${v}"${String(fv)===v?' selected':''}>${v}</option>`).join('')}</select>`;
   } else if (f.type === 'bool') {

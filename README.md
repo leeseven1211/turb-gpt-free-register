@@ -1002,7 +1002,7 @@ OpenAI 新版注册通常先展示邮箱验证码页；新账号页面同时提�
 | `config/proxy.py` | 代理池 |
 | `config/register.py` | 默认邮箱、认证模式、显示名 |
 | 外部共享 PostgreSQL | 本机由 `/Users/lihongwei/code/personal/shared-services/postgres` 统一管理 |
-| `config/twofa.py` | 2FA 开关 |
+| `config/twofa.py` | 2FA 开关与开通方式（`protocol` / `browser`） |
 | `config/humanize.py` | 随机停顿/人工节奏 |
 | `config/flow_trigger.py` | 注册成功后触发 Flow |
 | `config/browser.py` | 协议模式浏览器指纹 |

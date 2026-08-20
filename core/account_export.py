@@ -323,6 +323,25 @@ def _activate_totp(
     return True
 
 
+def setup_2fa_protocol(session: BrowserSession, access_token: str, *, on_secret=None) -> str:
+    """使用新鲜 accessToken 直接完成 TOTP enrollment 和激活。"""
+    token = str(access_token or "").strip()
+    if not token:
+        raise ValueError("协议开通 2FA 缺少 accessToken")
+
+    secret, session_id = _enroll_totp(session, token)
+    if on_secret is not None:
+        on_secret(secret)
+
+    # 避免在 TOTP 窗口即将切换时提交刚生成的验证码。
+    remaining = 30 - (int(time.time()) % 30)
+    if remaining < 6:
+        time.sleep(remaining + 1)
+    _activate_totp(session, token, secret, session_id)
+    logger.info("[2FA] 协议模式设置完成")
+    return secret
+
+
 def setup_2fa(session: BrowserSession, email: str, otp_code: str | None = None) -> str:
     """
     完整的 2FA 设置流程。

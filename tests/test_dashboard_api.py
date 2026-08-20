@@ -4,6 +4,7 @@ from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pyotp
 from webui.app import create_app
 from tests.support_pg import PostgresTestCase
 
@@ -290,6 +291,36 @@ class DashboardApiTests(PostgresTestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["value"], "Random123!abcd")
+
+    @patch("webui.app.db.get_account", return_value={
+        "id": 1,
+        "email": "target@example.com",
+        "totp_secret": "JBSWY3DPEHPK3PXP",
+    })
+    def test_account_totp_secret_is_only_returned_by_secret_endpoint(self, _get_account):
+        response = self.client.get(
+            "/api/accounts/1/secret?field=totp_secret",
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["value"], "JBSWY3DPEHPK3PXP")
+
+    @patch("webui.app.time.time", return_value=1710000010)
+    @patch("webui.app.db.get_account", return_value={
+        "id": 1,
+        "email": "target@example.com",
+        "totp_secret": "JBSWY3DPEHPK3PXP",
+    })
+    def test_current_totp_code_endpoint_returns_code_without_secret(self, _get_account, _time):
+        response = self.client.get(
+            "/api/accounts/1/totp-code",
+            headers=self.headers,
+        )
+        payload = response.get_json()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["code"], pyotp.TOTP("JBSWY3DPEHPK3PXP").at(1710000010))
+        self.assertEqual(payload["remaining_seconds"], 20)
+        self.assertNotIn("secret", payload)
 
     @patch("webui.app.db.list_codex_accounts", return_value=[
         {"filename": "codex-a-free.json", "email": "a@example.com", "plan": "free", "account_id": "acc-a", "exported_count": 0, "expired": "2026-08-31T00:00:00"},

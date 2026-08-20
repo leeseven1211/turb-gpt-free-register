@@ -21,10 +21,11 @@ from typing import Any
 
 from config import browser_use as _cfg
 from config import twofa as _twofa_cfg
-from core.account_export import save_account_data
+from core.account_export import save_account_data, setup_2fa_protocol
 from core.browser_use_client import BrowserUseClient
 from core.email_provider import resolve_email_source, wait_for_otp
 from core.humanize import delay as human_delay
+from core.session import BrowserSession
 
 logger = logging.getLogger(__name__)
 
@@ -1947,12 +1948,23 @@ def run_browser_use_registration(
             report_job_progress("token", "success", "已获取 accessToken")
             logger.info("[BrowserUse] 已拿到 accessToken：%s", email)
 
+            totp_secret = None
             if _twofa_cfg.ENABLE_2FA:
-                logger.warning("[BrowserUse] 当前路径暂不自动设置 2FA，已跳过")
-                report_job_progress("twofa", "skipped", "当前浏览器路径暂不支持自动设置 2FA")
+                try:
+                    twofa_driver = _twofa_cfg.get_twofa_driver()
+                    if twofa_driver == "protocol":
+                        protocol_session = BrowserSession(proxy=proxy or "")
+                        totp_secret = setup_2fa_protocol(protocol_session, access_token)
+                        report_job_progress("twofa", "success", "协议 2FA 已启用")
+                    else:
+                        logger.warning("[BrowserUse] browser 2FA 目前仅支持 RoxyBrowser 页面流程，已跳过")
+                        report_job_progress("twofa", "skipped", "Browser Use 暂不支持 browser 2FA")
+                except Exception as exc:
+                    message = f"{type(exc).__name__}: {str(exc)[:180]}"
+                    logger.error("[BrowserUse][2FA] 设置失败：%s", message)
+                    report_job_progress("twofa", "failed", f"2FA 设置失败: {message}")
             else:
                 report_job_progress("twofa", "skipped", "未启用 Authenticator 2FA")
-            totp_secret = None
 
             codex_result = {
                 "status": "skipped",

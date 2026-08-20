@@ -6,7 +6,9 @@ from unittest.mock import patch
 
 from config import codex as codex_config
 from config import register as register_config
+from config import twofa as twofa_config
 from config import env_loader
+from core import account_export
 from webui import config_editor
 from core import roxy_registration
 
@@ -87,6 +89,44 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         finally:
             env_loader._LOADED = old_loaded
             importlib.reload(codex_config)
+
+    def test_twofa_driver_is_webui_editable_and_env_driven(self):
+        fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
+        self.assertEqual(fields["TWOFA_DRIVER"]["group"], "功能开关")
+        self.assertEqual(fields["TWOFA_DRIVER"]["type"], "str")
+        self.assertEqual(twofa_config.get_twofa_driver("roxy"), "browser")
+
+        old_loaded = env_loader._LOADED
+        env_loader._LOADED = True
+        try:
+            with patch.dict(os.environ, {"TWOFA_DRIVER": "browser"}, clear=False):
+                reloaded = importlib.reload(twofa_config)
+                self.assertEqual(reloaded.TWOFA_DRIVER, "browser")
+                self.assertEqual(reloaded.get_twofa_driver(), "browser")
+        finally:
+            env_loader._LOADED = old_loaded
+            importlib.reload(twofa_config)
+
+    def test_protocol_twofa_checkpoints_secret_before_activation(self):
+        events = []
+        secret = "JBSWY3DPEHPK3PXP"
+        with patch.object(
+            account_export,
+            "_enroll_totp",
+            side_effect=lambda *_: (events.append("enroll") or (secret, "session-1")),
+        ), patch.object(
+            account_export,
+            "_activate_totp",
+            side_effect=lambda *_: events.append("activate"),
+        ), patch.object(account_export.time, "time", return_value=100.0):
+            result = account_export.setup_2fa_protocol(
+                object(),
+                "fresh-token",
+                on_secret=lambda _secret: events.append("checkpoint"),
+            )
+
+        self.assertEqual(result, secret)
+        self.assertEqual(events, ["enroll", "checkpoint", "activate"])
 
     def test_grizzly_auto_country_fields_are_env_editable(self):
         fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}

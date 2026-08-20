@@ -31,7 +31,7 @@ from core.openai_auth import (
 from core.account_export import (
     follow_oauth_callback,
     fetch_session,
-    setup_2fa,
+    setup_2fa_protocol,
     save_account_data,
     create_batch_archive_dir,
 )
@@ -466,11 +466,13 @@ def run_registration(
         # ==================== 阶段7: 设置 2FA（受 config.ENABLE_2FA 控制）====================
         totp_secret = None
         if _twofa_cfg.ENABLE_2FA:
-            # 步骤14-20: 重认证（要再收一次邮箱 OTP）→ enroll TOTP → activate
             report_job_progress("twofa", "running", "正在设置 Authenticator 2FA")
             try:
-                totp_secret = setup_2fa(session, email)
-                report_job_progress("twofa", "success", "Authenticator 2FA 已启用")
+                twofa_driver = _twofa_cfg.get_twofa_driver()
+                if twofa_driver != "protocol":
+                    raise RuntimeError("协议注册驱动只支持 protocol 2FA；browser 模式请切换到 RoxyBrowser 注册")
+                totp_secret = setup_2fa_protocol(session, access_token)
+                report_job_progress("twofa", "success", "协议 2FA 已启用")
             except Exception as exc:
                 logger.error(f"2FA 设置失败: {exc}")
                 logger.debug("2FA 错误详情:", exc_info=True)
