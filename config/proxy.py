@@ -26,7 +26,7 @@ PROXY_POOL = [
 REGISTRATION_PROXY_MODE = "pool"
 
 # 1024Proxy 白名单 API。完整 URL 仅保存到 .env，源码默认留空。
-# 客户端会保留 URL 中的筛选参数，并强制 num=1、使用下面配置的粘性时长。
+# 客户端会保留 URL 中的筛选参数；单任务强制 num=1，注册批次按并发量批量设置 num，均使用下面配置的粘性时长。
 PROXY_1024_API_URL = ""
 # 国家/地区代码；留空时沿用 API URL 中原有的 region 参数。
 # 1024Proxy 使用 ISO 3166-1 两位代码，例如 US / JP / GB；Rand 表示随机地区。
@@ -45,6 +45,8 @@ PROXY_1024_VALIDATE = True
 PROXY_1024_VALIDATE_ATTEMPTS = 2
 PROXY_1024_RECENT_TTL = 1800
 PROXY_1024_ACQUIRE_INTERVAL = 0.6
+# 跨进程代理端点租约。关闭后仅保留当前进程内的去重，默认保持开启。
+PROXY_1024_PERSIST_LEASES = True
 
 # 旧版/CLI 直接调用 check_account_plan() 时使用的兼容网络策略。
 # WebUI 账号功能统一由下方 ACCOUNT_ACTION_PROXY_MODE 管理。
@@ -107,6 +109,7 @@ apply_env_overrides(globals(), {
     'PROXY_1024_VALIDATE_ATTEMPTS': 'int',
     'PROXY_1024_RECENT_TTL': 'int',
     'PROXY_1024_ACQUIRE_INTERVAL': 'float',
+    'PROXY_1024_PERSIST_LEASES': 'bool',
     'PLAN_CHECK_PROXY_MODE': 'str',
     'PLAN_CHECK_PROXY': 'str',
     'ACCOUNT_ACTION_PROXY_MODE': 'str',

@@ -705,7 +705,7 @@ def main():
     sys.exit(0 if success_count == args.count else 1)
 
 
-def run_one_batch_item(index: int, total: int, batch_dir=None) -> dict:
+def run_one_batch_item(index: int, total: int, batch_dir=None, batch_id: str | None = None, batch_workers: int = 1) -> dict:
     """执行批量注册中的一个任务，返回结构化结果。"""
     logger.info(f"[批量] 开始第 {index + 1}/{total} 个注册")
     proxy_lease = None
@@ -716,7 +716,12 @@ def run_one_batch_item(index: int, total: int, batch_dir=None) -> dict:
     try:
         from core.proxy_provider import acquire_registration_proxy
 
-        proxy_lease = acquire_registration_proxy(job_id=f"cli-{index + 1}")
+        proxy_lease = acquire_registration_proxy(
+            job_id=f"cli-{index + 1}",
+            batch_id=batch_id if total > 1 else None,
+            batch_size=total,
+            batch_workers=batch_workers,
+        )
         email, name, birthday = prepare_registration_inputs()
         return run_registration(
             email=email,
@@ -734,22 +739,33 @@ def run_one_batch_item(index: int, total: int, batch_dir=None) -> dict:
             from core.proxy_provider import release_proxy
 
             release_proxy(proxy_lease, reason="cli_task_finished")
+        if batch_id and total > 1:
+            from core.proxy_provider import finalize_registration_proxy_batch
+
+            finalize_registration_proxy_batch(batch_id)
         sms_provider.clear_sms_batch_context()
 
 
 def run_serial_batch(count: int, delay: float, continue_on_fail: bool, batch_dir=None) -> list[dict]:
     """按原有串行方式执行批量注册。"""
     results = []
-    for index in range(count):
-        result = run_one_batch_item(index, count, batch_dir)
-        results.append(result)
-        if not _is_success(result) and not continue_on_fail:
-            logger.error("[批量] 当前账号失败，已停止。需要继续跑可加 --continue-on-fail")
-            break
+    batch_id = f"cli:{batch_dir or time.time_ns()}"
+    try:
+        for index in range(count):
+            result = run_one_batch_item(index, count, batch_dir, batch_id, 1)
+            results.append(result)
+            if not _is_success(result) and not continue_on_fail:
+                logger.error("[批量] 当前账号失败，已停止。需要继续跑可加 --continue-on-fail")
+                break
 
-        if delay > 0 and index < count - 1:
-            logger.info(f"[批量] 等待 {delay} 秒后继续")
-            time.sleep(delay)
+            if delay > 0 and index < count - 1:
+                logger.info(f"[批量] 等待 {delay} 秒后继续")
+                time.sleep(delay)
+    finally:
+        if count > 1:
+            from core.proxy_provider import discard_registration_proxy_batch
+
+            discard_registration_proxy_batch(batch_id)
     return results
 
 
@@ -766,6 +782,7 @@ def run_parallel_batch(
         logger.info(f"[批量] 并发模式下 --delay={delay} 表示提交任务之间的错峰间隔")
 
     results: list[dict] = []
+    batch_id = f"cli:{batch_dir or time.time_ns()}"
     future_to_index = {}
     next_index = 0
     stop_submitting = False
@@ -774,35 +791,41 @@ def run_parallel_batch(
         nonlocal next_index
         if stop_submitting or next_index >= count:
             return False
-        future = executor.submit(run_one_batch_item, next_index, count, batch_dir)
+        future = executor.submit(run_one_batch_item, next_index, count, batch_dir, batch_id, workers)
         future_to_index[future] = next_index
         next_index += 1
         if delay > 0 and next_index < count:
             time.sleep(delay)
         return True
 
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="reg-cli") as executor:
-        while len(future_to_index) < workers and submit_next(executor):
-            pass
-
-        while future_to_index:
-            done, _ = wait(future_to_index, return_when=FIRST_COMPLETED)
-            for future in done:
-                index = future_to_index.pop(future)
-                try:
-                    result = future.result()
-                except Exception as exc:
-                    logger.error(f"[批量] 第 {index + 1}/{count} 个注册线程异常: {type(exc).__name__}: {exc}")
-                    logger.debug("线程错误详情:", exc_info=True)
-                    result = {"success": False, "error": str(exc)}
-                results.append(result)
-
-                if not _is_success(result) and not continue_on_fail:
-                    stop_submitting = True
-                    logger.error("[批量] 当前账号失败，已停止提交新任务。已开始的任务会继续跑完。")
-
+    try:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="reg-cli") as executor:
             while len(future_to_index) < workers and submit_next(executor):
                 pass
+
+            while future_to_index:
+                done, _ = wait(future_to_index, return_when=FIRST_COMPLETED)
+                for future in done:
+                    index = future_to_index.pop(future)
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        logger.error(f"[批量] 第 {index + 1}/{count} 个注册线程异常: {type(exc).__name__}: {exc}")
+                        logger.debug("线程错误详情:", exc_info=True)
+                        result = {"success": False, "error": str(exc)}
+                    results.append(result)
+
+                    if not _is_success(result) and not continue_on_fail:
+                        stop_submitting = True
+                        logger.error("[批量] 当前账号失败，已停止提交新任务。已开始的任务会继续跑完。")
+
+                while len(future_to_index) < workers and submit_next(executor):
+                    pass
+    finally:
+        if count > 1:
+            from core.proxy_provider import discard_registration_proxy_batch
+
+            discard_registration_proxy_batch(batch_id)
 
     return results
 

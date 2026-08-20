@@ -53,6 +53,7 @@ class TableSpec:
     promoted: dict[str, str]
     unique: tuple[str, ...] = ()
     indexes: tuple[tuple[str, ...], ...] = ()
+    partial_unique: tuple[tuple[tuple[str, ...], str], ...] = ()
     derived: dict[str, tuple[tuple[str, ...], Any]] = field(default_factory=dict)
 
 
@@ -132,7 +133,41 @@ GENERIC_API_POOL = TableSpec(
     indexes=(("status", "id"),),
 )
 
-ALL_TABLES: tuple[TableSpec, ...] = (ACCOUNTS, JOBS, OUTLOOK_POOL, GENERIC_API_POOL)
+PROXY_LEASES = TableSpec(
+    name="proxy_leases",
+    promoted={
+        "lease_id": "TEXT NOT NULL",
+        "provider": "TEXT NOT NULL",
+        "endpoint": "TEXT NOT NULL",
+        "proxy_url": "TEXT",
+        "exit_ip": "TEXT",
+        "region": "TEXT",
+        "state": "TEXT NOT NULL",
+        "acquired_at": "TEXT NOT NULL",
+        "expires_at": "TEXT",
+        "recent_until": "TEXT",
+        "released_at": "TEXT",
+        "batch_id": "TEXT",
+        "job_id": "TEXT",
+        "release_reason": "TEXT",
+        "created_at": "TEXT NOT NULL",
+        "updated_at": "TEXT NOT NULL",
+    },
+    unique=("lease_id",),
+    indexes=(("state", "recent_until"), ("batch_id",), ("job_id",)),
+    partial_unique=(
+        (("endpoint",), '"state" IN (\'pending\', \'leased\', \'recent\')'),
+        (("exit_ip",), '"exit_ip" IS NOT NULL AND "state" IN (\'leased\', \'recent\')'),
+    ),
+)
+
+ALL_TABLES: tuple[TableSpec, ...] = (
+    ACCOUNTS,
+    JOBS,
+    OUTLOOK_POOL,
+    GENERIC_API_POOL,
+    PROXY_LEASES,
+)
 _BY_NAME = {spec.name: spec for spec in ALL_TABLES}
 
 
@@ -178,6 +213,15 @@ def init() -> None:
                     idx = postgres_store.quote_identifier(f"idx_{spec.name}_{'_'.join(cols)}")
                     rendered = ", ".join(postgres_store.quote_identifier(c) for c in cols)
                     cur.execute(f"CREATE INDEX IF NOT EXISTS {idx} ON {_qualified(spec)} ({rendered})")
+                for cols, predicate in spec.partial_unique:
+                    idx = postgres_store.quote_identifier(
+                        f"uq_{spec.name}_{'_'.join(cols)}_partial"
+                    )
+                    rendered = ", ".join(postgres_store.quote_identifier(c) for c in cols)
+                    cur.execute(
+                        f"CREATE UNIQUE INDEX IF NOT EXISTS {idx} ON {_qualified(spec)} ({rendered}) "
+                        f"WHERE {predicate}"
+                    )
                 gin = postgres_store.quote_identifier(f"idx_{spec.name}_data_gin")
                 cur.execute(f"CREATE INDEX IF NOT EXISTS {gin} ON {_qualified(spec)} USING gin(data)")
         _READY_KEY = ready_key
@@ -379,6 +423,32 @@ def patch_row(table: str | TableSpec, row_id: int, changes: dict, *, conn=None) 
     def _run(cur):
         cur.execute(sql, args)
         return cur.rowcount > 0
+
+    if conn is not None:
+        with conn.cursor() as cur:
+            return _run(cur)
+    with _connect() as own, own.cursor() as cur:
+        return _run(cur)
+
+
+def patch_rows_where(
+    table: str | TableSpec,
+    *,
+    changes: dict,
+    where: str,
+    params: Iterable[Any] = (),
+    conn=None,
+) -> int:
+    """Update rows matching a trusted SQL predicate and return affected count."""
+    spec = _resolve(table)
+    init()
+    sets, args = _build_set_clause(spec, changes, partial=True)
+    args.extend(params)
+    sql = f"UPDATE {_qualified(spec)} SET {', '.join(sets)} WHERE {where}"
+
+    def _run(cur):
+        cur.execute(sql, args)
+        return int(cur.rowcount)
 
     if conn is not None:
         with conn.cursor() as cur:

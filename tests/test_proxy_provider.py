@@ -2,6 +2,7 @@
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from unittest.mock import patch
 
 import requests
@@ -48,23 +49,104 @@ class _SequenceSession:
         return _FakeResponse(text=f"{endpoint}\n")
 
 
+class _BatchSession:
+    def __init__(self):
+        self.endpoints = [
+            "1.2.3.4:8080",
+            "5.6.7.8:9000",
+            "9.10.11.12:10000",
+        ]
+        self.exit_ips = {
+            "1.2.3.4:8080": "8.8.8.8",
+            "5.6.7.8:9000": "9.9.9.9",
+            "9.10.11.12:10000": "1.1.1.1",
+        }
+        self.calls = []
+        self.lock = threading.Lock()
+        self.api_call_count = 0
+
+    def get(self, url, **kwargs):
+        with self.lock:
+            self.calls.append((url, kwargs))
+        if "ipinfo.io" in url:
+            proxy_url = str((kwargs.get("proxies") or {}).get("http") or "")
+            endpoint = proxy_url.rsplit("://", 1)[-1]
+            return _FakeResponse(payload={"ip": self.exit_ips[endpoint], "country": "US"})
+        self.api_call_count += 1
+        endpoints = self.endpoints if self.api_call_count == 1 else ["13.14.15.16:11000"]
+        self.exit_ips.setdefault("13.14.15.16:11000", "4.4.4.4")
+        return _FakeResponse(text="\n".join(endpoints) + "\n")
+
+
 class ProxyProviderTests(unittest.TestCase):
     def setUp(self):
+        from core import session as browser_session
+
+        self._persist_patcher = patch("config.proxy.PROXY_1024_PERSIST_LEASES", False)
+        self._persist_patcher.start()
         proxy_provider._ACTIVE_ENDPOINTS.clear()
         proxy_provider._RECENT_ENDPOINTS.clear()
         proxy_provider._PENDING_ENDPOINTS.clear()
         proxy_provider._LAST_ACQUIRE_AT = 0.0
+        proxy_provider._BATCH_STATES.clear()
+        browser_session._GEO_CACHE.clear()
 
     def tearDown(self):
+        from core import session as browser_session
+
+        self._persist_patcher.stop()
         proxy_provider._ACTIVE_ENDPOINTS.clear()
         proxy_provider._RECENT_ENDPOINTS.clear()
         proxy_provider._PENDING_ENDPOINTS.clear()
+        proxy_provider._BATCH_STATES.clear()
+        browser_session._GEO_CACHE.clear()
+
+    @patch("core.proxy_provider._direct_session")
+    @patch("core.proxy_lease_store.release")
+    @patch("core.proxy_lease_store.activate")
+    @patch("core.proxy_lease_store.reserve_pending")
+    def test_persistent_lease_lifecycle_is_written_around_validation(
+        self, reserve_pending, activate, release, direct_session
+    ):
+        direct_session.return_value = _FakeSession()
+        with patch.multiple(
+            "config.proxy",
+            PROXY_1024_PERSIST_LEASES=True,
+            PROXY_1024_API_TIMEOUT=5.0,
+            PROXY_1024_MAX_ATTEMPTS=1,
+            PROXY_1024_RECENT_TTL=1800,
+            PROXY_1024_ACQUIRE_INTERVAL=0.0,
+            PROXY_1024_ROTATE_SESSION_TIME=False,
+        ):
+            lease = proxy_provider.acquire_1024_proxy(
+                api_url="https://white.1024proxy.com/white/api?region=US&type=txt",
+                protocol="http",
+                region="US",
+                validate=True,
+                job_id="persistent-test",
+            )
+            proxy_provider.release_proxy(lease, reason="test")
+
+        reserve_pending.assert_called_once()
+        activate.assert_called_once()
+        release.assert_called_once()
+        self.assertTrue(lease.metadata["persistent_lease"])
 
     def test_parse_proxy_response_supports_txt_and_json(self):
         self.assertEqual(proxy_provider.parse_proxy_response("1.2.3.4:8080\n"), "1.2.3.4:8080")
         self.assertEqual(
             proxy_provider.parse_proxy_response('{"data":[{"ip":"5.6.7.8","port":9000}]}'),
             "5.6.7.8:9000",
+        )
+        self.assertEqual(
+            proxy_provider.parse_proxy_responses("1.2.3.4:8080\n5.6.7.8:9000\n1.2.3.4:8080\n"),
+            ["1.2.3.4:8080", "5.6.7.8:9000"],
+        )
+        self.assertEqual(
+            proxy_provider.parse_proxy_responses(
+                '{"data":[{"ip":"5.6.7.8","port":9000},{"ip":"9.10.11.12","port":10000}]}'
+            ),
+            ["5.6.7.8:9000", "9.10.11.12:10000"],
         )
 
     @patch("core.proxy_provider.time.sleep", return_value=None)
@@ -150,6 +232,61 @@ class ProxyProviderTests(unittest.TestCase):
         proxy_provider.release_proxy(lease, reason="test")
         self.assertEqual(lease.state, "released")
         self.assertNotIn("1.2.3.4:8080", proxy_provider._ACTIVE_ENDPOINTS)
+
+    @patch("core.proxy_provider.time.sleep", return_value=None)
+    @patch("core.proxy_provider._direct_session")
+    def test_validation_seeds_browser_session_geo_cache(self, direct_session, _sleep):
+        from core import session as browser_session
+
+        direct_session.return_value = _FakeSession()
+        with patch.multiple(
+            "config.proxy",
+            PROXY_1024_API_TIMEOUT=5.0,
+            PROXY_1024_MAX_ATTEMPTS=1,
+            PROXY_1024_RECENT_TTL=0,
+            PROXY_1024_ACQUIRE_INTERVAL=0.0,
+            PROXY_1024_ROTATE_SESSION_TIME=False,
+        ):
+            lease = proxy_provider.acquire_1024_proxy(
+                api_url="https://white.1024proxy.com/white/api?region=US&type=txt",
+                protocol="http",
+                region="US",
+                validate=True,
+                job_id="geo-cache-test",
+            )
+
+        self.assertEqual(
+            browser_session._GEO_CACHE[lease.proxy_url],
+            {
+                "ip": "8.8.8.8",
+                "country": "US",
+                "region": None,
+                "city": None,
+                "timezone": "",
+                "org": None,
+            },
+        )
+        proxy_provider.release_proxy(lease, reason="test")
+
+    def test_browser_session_uses_seeded_geo_without_second_request(self):
+        from core import session as browser_session
+
+        proxy_url = "http://1.2.3.4:8080"
+        browser_session.seed_exit_geo(
+            proxy_url,
+            {
+                "ip": "8.8.8.8",
+                "country": "US",
+                "city": "Mountain View",
+                "timezone": "America/Los_Angeles",
+                "org": "Example ISP",
+            },
+        )
+        instance = object.__new__(browser_session.BrowserSession)
+        instance.proxy = proxy_url
+
+        self.assertEqual(instance._detect_exit_geo()["country"], "US")
+        self.assertEqual(instance._detect_exit_geo()["timezone"], "America/Los_Angeles")
 
     @patch("core.proxy_provider.time.sleep", return_value=None)
     @patch("core.proxy_provider._direct_session")
@@ -277,6 +414,122 @@ class ProxyProviderTests(unittest.TestCase):
         self.assertEqual(max_active_validations, 2)
         self.assertEqual({lease.endpoint for lease in leases}, {"1.2.3.4:8080", "5.6.7.8:9000"})
         self.assertFalse(proxy_provider._PENDING_ENDPOINTS)
+
+    @patch("core.proxy_provider.time.sleep", return_value=None)
+    @patch("core.proxy_provider._direct_session")
+    def test_batch_acquire_requests_num_and_validates_candidates_in_parallel(self, direct_session, _sleep):
+        fake = _BatchSession()
+        direct_session.return_value = fake
+        with patch.multiple(
+            "config.proxy",
+            PROXY_1024_API_TIMEOUT=5.0,
+            PROXY_1024_VALIDATE_ATTEMPTS=1,
+            PROXY_1024_RECENT_TTL=0,
+            PROXY_1024_ACQUIRE_INTERVAL=0.0,
+            PROXY_1024_ROTATE_SESSION_TIME=False,
+        ):
+            leases = proxy_provider.acquire_1024_proxy_batch(
+                count=3,
+                api_url="https://white.1024proxy.com/white/api?region=US&type=txt",
+                protocol="http",
+                region="US",
+                session_minutes=30,
+                validate=True,
+                job_id="batch-test",
+            )
+
+        self.assertEqual(len(leases), 3)
+        self.assertEqual({lease.exit_ip for lease in leases}, {"8.8.8.8", "9.9.9.9", "1.1.1.1"})
+        api_calls = [url for url, _kwargs in fake.calls if "white.1024proxy.com" in url]
+        self.assertEqual(len(api_calls), 1)
+        self.assertIn("num=3", api_calls[0])
+        self.assertTrue(all(lease.region == "US" for lease in leases))
+        self.assertFalse(proxy_provider._PENDING_ENDPOINTS)
+        for lease in leases:
+            proxy_provider.release_proxy(lease, reason="test")
+
+    @patch("core.proxy_provider.time.sleep", return_value=None)
+    @patch("core.proxy_provider._validate_proxy_with_retries")
+    @patch("core.proxy_provider._direct_session")
+    def test_batch_acquire_refills_validation_gap(self, direct_session, validate_proxy, _sleep):
+        fake = _BatchSession()
+        direct_session.return_value = fake
+
+        def validate(proxy_url, _timeout, *, attempts):
+            if "9.10.11.12" in proxy_url:
+                raise RuntimeError("temporary SSL failure")
+            endpoint = proxy_url.rsplit("://", 1)[-1]
+            return fake.exit_ips[endpoint], "US"
+
+        validate_proxy.side_effect = validate
+        with patch.multiple(
+            "config.proxy",
+            PROXY_1024_API_TIMEOUT=5.0,
+            PROXY_1024_VALIDATE_ATTEMPTS=1,
+            PROXY_1024_RECENT_TTL=0,
+            PROXY_1024_ACQUIRE_INTERVAL=0.0,
+            PROXY_1024_ROTATE_SESSION_TIME=False,
+        ):
+            leases = proxy_provider.acquire_1024_proxy_batch(
+                count=3,
+                api_url="https://white.1024proxy.com/white/api?region=US&type=txt",
+                protocol="http",
+                region="US",
+                session_minutes=30,
+                validate=True,
+                job_id="batch-refill-test",
+            )
+
+        self.assertEqual(len(leases), 3)
+        api_calls = [url for url, _kwargs in fake.calls if "white.1024proxy.com" in url]
+        self.assertEqual(len(api_calls), 2)
+        self.assertIn("num=3", api_calls[0])
+        self.assertIn("num=1", api_calls[1])
+        for lease in leases:
+            proxy_provider.release_proxy(lease, reason="test")
+
+    @patch("core.proxy_provider.acquire_1024_proxy_batch")
+    def test_registration_batch_shares_prefetched_leases_and_releases_leftovers(self, acquire_batch):
+        leases = [
+            proxy_provider.ProxyLease(
+                lease_id=f"lease-{index}",
+                provider="1024proxy",
+                proxy_url=f"http://1.2.3.{index}:8080",
+                endpoint=f"1.2.3.{index}:8080",
+                acquired_at=datetime.now(),
+                exit_ip=f"8.8.8.{index}",
+                metadata={"uniqueness_key": f"8.8.8.{index}"},
+            )
+            for index in (1, 2, 3, 4)
+        ]
+        acquire_batch.return_value = leases
+
+        with patch.multiple(
+            "config.proxy",
+            REGISTRATION_PROXY_MODE="1024",
+        ), patch.multiple(
+            "config.roxybrowser",
+            REGISTRATION_DRIVER="protocol",
+        ), ThreadPoolExecutor(max_workers=3) as executor:
+            acquired = list(executor.map(
+                lambda job_id: proxy_provider.acquire_registration_proxy(
+                    job_id=job_id,
+                    batch_id="batch-1",
+                    batch_size=3,
+                    batch_workers=3,
+                ),
+                (101, 102, 103),
+            ))
+
+        self.assertEqual(acquire_batch.call_count, 1)
+        self.assertEqual(acquire_batch.call_args.kwargs["count"], 3)
+        self.assertEqual({lease.metadata["job_id"] for lease in acquired}, {101, 102, 103})
+        for _ in acquired:
+            proxy_provider.finalize_registration_proxy_batch("batch-1")
+        self.assertNotIn("batch-1", proxy_provider._BATCH_STATES)
+        self.assertEqual([lease.state for lease in leases], ["leased", "leased", "leased", "released"])
+        for lease in acquired:
+            proxy_provider.release_proxy(lease, reason="test")
 
     @patch("core.proxy_provider.time.sleep", return_value=None)
     @patch("core.proxy_provider._validate_proxy", side_effect=[("1.1.1.1", "CA"), ("8.8.8.8", "US")])

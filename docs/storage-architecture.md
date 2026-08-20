@@ -39,6 +39,7 @@ core/account_task_store.py  账号操作任务的三张关系表（更早就已�
 | `registration_jobs` | 注册/Codex 任务 |
 | `email_pool_outlook` | Outlook 邮箱池 |
 | `email_pool_generic_api` | 通用 API 邮箱池 |
+| `proxy_leases` | 1024Proxy 端点、出口 IP 和隔离期的跨进程租约 |
 | `account_action_batches` / `_tasks` / `_events` | 账号操作任务（早于本次改造） |
 | `app_collections` | 尚未拆表的集合：codex 凭证、导出状态、域名邮箱池、iCloud 别名池 |
 

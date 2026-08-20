@@ -26,6 +26,37 @@ _GEO_CACHE_LOCK = threading.Lock()
 _CF_COOKIE_NAMES = ("cf_clearance", "__cf_bm", "__cfseq", "cf_chl_rc_i", "cf_chl_rc_ni", "cf_chl_rc_m")
 
 
+def _normalize_geo_payload(data: dict) -> dict:
+    """Normalize common GeoIP response shapes before caching or using them."""
+    if not isinstance(data, dict):
+        return {}
+    timezone = data.get("timezone")
+    if isinstance(timezone, dict):
+        timezone = timezone.get("id") or timezone.get("name")
+    connection = data.get("connection")
+    connection_org = connection.get("org") if isinstance(connection, dict) else None
+    return {
+        "ip": data.get("ip") or data.get("query"),
+        "country": (data.get("country") or data.get("country_code") or data.get("countryCode") or "").upper(),
+        "region": data.get("region") or data.get("regionName"),
+        "city": data.get("city"),
+        "timezone": timezone or "",
+        "org": data.get("org") or data.get("isp") or connection_org,
+    }
+
+
+def seed_exit_geo(proxy_url: str | None, data: dict | None) -> None:
+    """Seed the GeoIP cache with a result already verified through a proxy."""
+    key = str(proxy_url or "").strip()
+    if not key:
+        return
+    geo = _normalize_geo_payload(data or {})
+    if not any(geo.get(field) for field in ("ip", "country", "timezone")):
+        return
+    with _GEO_CACHE_LOCK:
+        _GEO_CACHE[key] = geo
+
+
 class BrowserSession:
     """
     模拟 Chrome 浏览器的 HTTP 会话管理器。
@@ -227,19 +258,7 @@ class BrowserSession:
     @staticmethod
     def _normalize_geo_response(data: dict) -> dict:
         """兼容 ipinfo / ipapi / ipwho.is 等常见 JSON 字段。"""
-        if not isinstance(data, dict):
-            return {}
-        timezone = data.get("timezone")
-        if isinstance(timezone, dict):
-            timezone = timezone.get("id") or timezone.get("name")
-        return {
-            "ip": data.get("ip") or data.get("query"),
-            "country": (data.get("country") or data.get("country_code") or data.get("countryCode") or "").upper(),
-            "region": data.get("region") or data.get("regionName"),
-            "city": data.get("city"),
-            "timezone": timezone or "",
-            "org": data.get("org") or data.get("isp") or data.get("connection", {}).get("org"),
-        }
+        return _normalize_geo_payload(data)
 
     def _get_common_headers(self) -> dict:
         """获取通用请求头，优先使用本 BrowserSession 的稳定画像。"""

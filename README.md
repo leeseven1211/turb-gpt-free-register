@@ -533,13 +533,14 @@ PROXY_1024_VALIDATE=True
 PROXY_1024_VALIDATE_ATTEMPTS=2
 PROXY_1024_RECENT_TTL=1800
 PROXY_1024_ACQUIRE_INTERVAL=0.6
+PROXY_1024_PERSIST_LEASES=True
 ACCOUNT_ACTION_PROXY_MODE=registration
 ```
 
-- 客户端会强制 `num=1`，保证一个注册任务只领取一个代理端点。
+- 单任务会使用 `num=1`；注册批次会按待执行任务数批量设置 `num`，再并行检测并分配给任务。
 - 平台返回代理后会检测实际出口国家；实际国家与请求国家不一致时会拒绝并重新提取。
 - 已占用/隔离期内的重复粘性 IP 不再消耗“有效失败次数”，会在 60 秒总预算内快速重取；出口检测的超时、连接和 SSL 瞬时错误会先对同一端点重试一次。
-- `PROXY_1024_ROTATE_SESSION_TIME=True` 会按任务 ID 在基础时长到 120 分钟间派生不同的 `time` 参数，避免平台在相同 `region/time` 窗口内返回同一粘性会话。任务结束只释放本地租约；白名单 API 没有单独的远程释放调用。
+- `PROXY_1024_ROTATE_SESSION_TIME=True` 会按任务 ID 在基础时长到 120 分钟间派生不同的 `time` 参数，避免平台在相同 `region/time` 窗口内返回同一粘性会话。`PROXY_1024_PERSIST_LEASES=True` 时，租约会在 PostgreSQL 中记录 pending/leased/recent 状态，多个 WebUI/CLI 进程共享端点和出口 IP 去重；白名单 API 没有单独的远程释放调用。
 - OpenAI 注册实测优先固定 `region=US`。`Rand` 可能落到画像不完整或高风控地区，增加挑战概率。
 - 粘性时间延长本身不产生流量，只有浏览器实际发出请求才消耗代理流量。30 分钟是注册 + 邮件等待的最低建议值，必要时可设更长。
 - 日志和 UI 只应显示脱敏后的代理端点/出口 IP；完整 API URL 属于私密配置，只放 `.env`。
@@ -763,6 +764,7 @@ PROXY_1024_VALIDATE=True
 PROXY_1024_VALIDATE_ATTEMPTS=2
 PROXY_1024_RECENT_TTL=1800
 PROXY_1024_ACQUIRE_INTERVAL=0.6
+PROXY_1024_PERSIST_LEASES=True
 ACCOUNT_ACTION_PROXY_MODE=registration
 
 # WebUI 启用 Email Butler 与 iCloud 两个可选邮箱来源；本地通过 HTTPS 直连生产 Butler，不需要 SSH 隧道

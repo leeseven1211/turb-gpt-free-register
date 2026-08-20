@@ -326,8 +326,24 @@ def _run_one_job(job_id: int, log_file: str) -> None:
         log_logger.info(f"[Job {job_id}] 任务记录已删除，跳过执行")
         _deactivate_job(job_id)
         return
+    batch_id = str(current.get("batch_id") or "").strip()
+    try:
+        batch_size = max(1, int(current.get("batch_size") or 1))
+    except (TypeError, ValueError):
+        batch_size = 1
+    try:
+        batch_workers = max(1, int(current.get("batch_workers") or 1))
+    except (TypeError, ValueError):
+        batch_workers = 1
     if current.get("status") == "cancelled":
         log_logger.info(f"[Job {job_id}] 已被用户取消，跳过执行")
+        if batch_id and batch_size > 1:
+            try:
+                from core.proxy_provider import finalize_registration_proxy_batch
+
+                finalize_registration_proxy_batch(batch_id)
+            except Exception:
+                logger.exception("[Job %s] 收口已取消注册批次失败", job_id)
         _deactivate_job(job_id)
         return
 
@@ -345,6 +361,9 @@ def _run_one_job(job_id: int, log_file: str) -> None:
             db.update_job(job_id, proxy_status="acquiring")
             proxy_lease = acquire_registration_proxy(
                 job_id=job_id,
+                batch_id=batch_id if batch_size > 1 else None,
+                batch_size=batch_size,
+                batch_workers=batch_workers,
                 progress_callback=lambda detail: db.update_job_progress(
                     job_id,
                     "email",
@@ -546,6 +565,13 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 db.update_job(job_id, proxy_status="released")
             except Exception:
                 logger.exception("[Job %s] 释放代理租约失败", job_id)
+        if batch_id and batch_size > 1:
+            try:
+                from core.proxy_provider import finalize_registration_proxy_batch
+
+                finalize_registration_proxy_batch(batch_id)
+            except Exception:
+                logger.exception("[Job %s] 收口注册代理批次失败", job_id)
         _deactivate_job(job_id)
 
 

@@ -601,7 +601,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "PROXY_1024_API_URL", "file": "proxy.py", "type": "str", "group": "代理平台",
-        "label": "1024Proxy 提取 API", "help": "粘贴白名单 API 完整 URL；任务会强制 num=1，并用下方粘性时长覆盖 URL 的 time 参数；仅保存到 .env",
+        "label": "1024Proxy 提取 API", "help": "粘贴白名单 API 完整 URL；单任务使用 num=1，注册批次会按待执行任务数批量提取，并用下方粘性时长覆盖 URL 的 time 参数；仅保存到 .env",
         "storage": "env", "secret": True,
     },
     {
