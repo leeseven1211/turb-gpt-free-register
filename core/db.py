@@ -2583,38 +2583,80 @@ def update_job(
     proxy_acquired_at: str | None = None,
     proxy_expires_at: str | None = None,
 ) -> None:
-    with _LOCK:
-        rows = _load_jobs()
-        row = next((r for r in rows if int(r.get("id") or 0) == int(job_id)), None)
-        if row is None:
-            return
-        if status is not None:
-            row["status"] = status
-        if email is not None:
-            row["email"] = email
-        if error is not None:
-            row["error_message"] = error
-        if started_at is not None:
-            row["started_at"] = started_at
-        if completed_at is not None:
-            row["completed_at"] = completed_at
-        if account_id is not None:
-            row["account_id"] = account_id
-        if proxy_provider is not None:
-            row["proxy_provider"] = proxy_provider
-        if proxy_status is not None:
-            row["proxy_status"] = proxy_status
-        if proxy_endpoint is not None:
-            row["proxy_endpoint"] = proxy_endpoint
-        if proxy_exit_ip is not None:
-            row["proxy_exit_ip"] = proxy_exit_ip
-        if proxy_region is not None:
-            row["proxy_region"] = proxy_region
-        if proxy_acquired_at is not None:
-            row["proxy_acquired_at"] = proxy_acquired_at
-        if proxy_expires_at is not None:
-            row["proxy_expires_at"] = proxy_expires_at
-        _save_jobs(rows)
+    changes = {
+        key: value
+        for key, value in {
+            "status": status,
+            "email": email,
+            "error_message": error,
+            "started_at": started_at,
+            "completed_at": completed_at,
+            "account_id": account_id,
+            "proxy_provider": proxy_provider,
+            "proxy_status": proxy_status,
+            "proxy_endpoint": proxy_endpoint,
+            "proxy_exit_ip": proxy_exit_ip,
+            "proxy_region": proxy_region,
+            "proxy_acquired_at": proxy_acquired_at,
+            "proxy_expires_at": proxy_expires_at,
+        }.items()
+        if value is not None
+    }
+    if changes:
+        # 任务状态和进度由多个线程同时更新，不能再用全量快照写回；否则停止请求
+        # 可能刚写入 stopping，就被另一个线程的旧快照覆盖回 running。
+        _patch_job(job_id, changes)
+
+
+def transition_job_status(
+    job_id: int,
+    from_statuses: tuple[str, ...] | list[str] | set[str],
+    to_status: str,
+    **changes,
+) -> bool:
+    """只在当前状态仍属于 from_statuses 时完成一次状态转换。"""
+    allowed = tuple(str(item) for item in from_statuses if str(item))
+    if not allowed:
+        return False
+    placeholders = ", ".join("%s" for _ in allowed)
+    changes = dict(changes)
+    changes["status"] = str(to_status)
+    return record_store.claim_row(
+        record_store.JOBS,
+        int(job_id),
+        changes=changes,
+        guard=f'"status" IN ({placeholders})',
+        guard_params=allowed,
+    )
+
+
+def claim_job_for_execution(job_id: int, *, started_at: str | None = None) -> bool:
+    """原子领取排队任务；停止/取消先落库时，工作线程不得再启动。"""
+    return transition_job_status(
+        job_id,
+        ("pending",),
+        "running",
+        started_at=started_at or _now(),
+    )
+
+
+def cancel_pending_jobs(*, batch_id: str | None = None) -> int:
+    """一次性取消排队任务；可限定到某个批次。"""
+    where = '"status" = %s'
+    params: list[Any] = ["pending"]
+    if batch_id:
+        where += ' AND "batch_id" = %s'
+        params.append(str(batch_id))
+    return record_store.patch_rows_where(
+        record_store.JOBS,
+        changes={
+            "status": "cancelled",
+            "completed_at": _now(),
+            "error_message": "用户手动取消",
+        },
+        where=where,
+        params=params,
+    )
 
 
 def update_job_progress(
@@ -2762,10 +2804,11 @@ def finish_job_progress(
             ),
         })
         steps["complete"] = complete_item
-        row["progress_stage"] = "complete"
-        row["progress_steps"] = steps
-        row["progress_updated_at"] = now
-        _save_jobs(rows)
+        _patch_job(job_id, {
+            "progress_stage": "complete",
+            "progress_steps": steps,
+            "progress_updated_at": now,
+        })
 
 
 def recover_interrupted_registration_jobs() -> int:

@@ -37,6 +37,8 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
         ) as update_progress, patch.object(
             svc.db, "finish_job_progress"
         ) as finish_progress, patch.object(
+            svc.db, "claim_job_for_execution", return_value=True
+        ), patch.object(
             svc.db, "update_account_registration_proxy"
         ), patch.object(
             svc, "_prepare_registration_args", return_value=("alias@icloud.com", "Test", "1990-01-01")

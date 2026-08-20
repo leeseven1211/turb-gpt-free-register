@@ -3093,6 +3093,24 @@ def create_app(auth_code: str | None = None) -> Flask:
         cancelled = svc.cancel_pending_jobs()
         return jsonify({"ok": True, "cancelled": cancelled})
 
+    @app.post("/api/jobs/batches/<batch_id>/cancel")
+    def api_batch_jobs_cancel(batch_id: str):
+        """只取消指定批次中尚未启动的任务。"""
+        cancelled = svc.cancel_pending_jobs(batch_id=batch_id)
+        return jsonify({"ok": True, "batch_id": batch_id, "cancelled": cancelled})
+
+    @app.post("/api/jobs/batches/<batch_id>/stop")
+    def api_batch_jobs_stop(batch_id: str):
+        """一次停止指定批次的运行中任务，避免前端逐任务并发请求。"""
+        data = request.get_json(silent=True) or {}
+        result = svc.request_stop_batch(
+            batch_id,
+            cancel_pending=bool(data.get("cancel_pending", False)),
+        )
+        if not result.get("ok"):
+            return jsonify(result), int(result.get("status") or 400)
+        return jsonify(result)
+
     @app.post("/api/jobs/<int:job_id>/stop")
     def api_job_stop(job_id: int):
         """手动停止单个注册任务。pending 取消；running 发送停止信号。"""

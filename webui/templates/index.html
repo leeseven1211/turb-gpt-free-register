@@ -4506,29 +4506,37 @@ function currentBatchJobs() {
 }
 
 async function batchStopJobs() {
-  const ids = currentBatchJobs().filter(job => ['running', 'stopping'].includes(String(job.status || ''))).map(job => Number(job.id));
-  if (!ids.length) { showToast('当前批次没有正在运行的任务'); return; }
+  const batchId = String(JOB_PROGRESS_BATCH?.batch_id || '').trim();
+  const ids = currentBatchJobs().filter(job => ['running', 'stopping'].includes(String(job.status || '')));
+  if (!batchId || !ids.length) { showToast('当前批次没有正在运行的任务'); return; }
   if (!confirm('确定停止当前批次的 ' + ids.length + ' 个运行中任务吗？任务会在当前步骤检查点退出。')) return;
   const btn = $('#btnBatchStopV2');
   if (btn) btn.disabled = true;
   try {
-    const results = await Promise.all(ids.map(id => api('/api/jobs/' + id + '/stop', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'})));
-    showToast('已向 ' + results.filter(item => item.ok !== false).length + ' 个任务发送停止信号');
-    refreshJobs();
+    const result = await api('/api/jobs/batches/' + encodeURIComponent(batchId) + '/stop', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'
+    });
+    showToast(result.message || '已请求停止当前批次');
+    await refreshJobs();
   } catch (e) { showToast('批次停止失败: ' + e.message); }
+  finally { if (btn) btn.disabled = false; }
 }
 
 async function batchCancelJobs() {
-  const ids = currentBatchJobs().filter(job => String(job.status || '') === 'pending').map(job => Number(job.id));
-  if (!ids.length) { showToast('当前批次没有排队任务'); return; }
+  const batchId = String(JOB_PROGRESS_BATCH?.batch_id || '').trim();
+  const ids = currentBatchJobs().filter(job => String(job.status || '') === 'pending');
+  if (!batchId || !ids.length) { showToast('当前批次没有排队任务'); return; }
   if (!confirm('确定取消当前批次的 ' + ids.length + ' 个排队任务吗？运行中的任务不受影响。')) return;
   const btn = $('#btnBatchCancelV2');
   if (btn) btn.disabled = true;
   try {
-    const results = await Promise.all(ids.map(id => api('/api/jobs/' + id + '/stop', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'})));
-    showToast('已取消 ' + results.filter(item => item.ok !== false).length + ' 个排队任务');
-    refreshJobs();
+    const result = await api('/api/jobs/batches/' + encodeURIComponent(batchId) + '/cancel', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'
+    });
+    showToast('已取消 ' + Number(result.cancelled || 0) + ' 个排队任务');
+    await refreshJobs();
   } catch (e) { showToast('批次取消失败: ' + e.message); }
+  finally { if (btn) btn.disabled = false; }
 }
 
 async function retryBatchFailedJobs() {

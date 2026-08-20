@@ -301,6 +301,51 @@ class JobProgressTests(PostgresTestCase):
         self.assertEqual(payload["progress_batch"]["batch_id"], "new-batch")
         self.assertEqual(len(payload["progress_batch"]["items"]), 2)
 
+    def test_job_stop_state_survives_unrelated_worker_update(self):
+        job = db.create_job(
+            "icloud_hide",
+            batch_id="stop-race",
+            batch_index=1,
+            batch_size=1,
+        )
+        self.assertTrue(db.claim_job_for_execution(job["id"]))
+        self.assertTrue(
+            db.transition_job_status(
+                job["id"],
+                ("running",),
+                "stopping",
+                error_message="用户手动停止中",
+            )
+        )
+
+        # 线程停止前仍可能写入代理/邮箱字段，不能把 stopping 覆盖回 running。
+        db.update_job(job["id"], proxy_status="leased", email="race@example.com")
+        db.finish_job_progress(job["id"], success=False, detail="用户手动停止", failure_state="stopped")
+        row = db.get_job(job["id"])
+        self.assertEqual(row["status"], "stopping")
+        self.assertEqual(row["proxy_status"], "leased")
+        self.assertEqual(row["email"], "race@example.com")
+        self.assertFalse(db.claim_job_for_execution(job["id"]))
+
+    def test_batch_control_only_changes_target_batch(self):
+        first = db.create_job("icloud_hide", batch_id="batch-a", batch_index=1, batch_size=2)
+        second = db.create_job("icloud_hide", batch_id="batch-a", batch_index=2, batch_size=2)
+        other = db.create_job("icloud_hide", batch_id="batch-b", batch_index=1, batch_size=1)
+        self.assertTrue(db.claim_job_for_execution(first["id"]))
+        self.assertTrue(db.claim_job_for_execution(other["id"]))
+
+        stopped = registration_service.request_stop_batch("batch-a")
+        self.assertTrue(stopped["ok"])
+        self.assertEqual(stopped["stopped"], 1)
+        self.assertEqual(db.get_job(first["id"])["status"], "stopped")
+        self.assertEqual(db.get_job(second["id"])["status"], "pending")
+        self.assertEqual(db.get_job(other["id"])["status"], "running")
+
+        cancelled = registration_service.cancel_pending_jobs(batch_id="batch-a")
+        self.assertEqual(cancelled, 1)
+        self.assertEqual(db.get_job(second["id"])["status"], "cancelled")
+        self.assertEqual(db.get_job(other["id"])["status"], "running")
+
 
 if __name__ == "__main__":
     unittest.main()
