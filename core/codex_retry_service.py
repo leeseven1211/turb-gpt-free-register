@@ -33,6 +33,82 @@ def _totp_setup_pending(account: dict) -> bool:
     return bool(raw_extra.get("totp_setup_pending")) if isinstance(raw_extra, dict) else False
 
 
+def _account_login_password(account: dict | None) -> str:
+    """读取账号当前密码；旧账号兼容历史字段。"""
+    raw_extra = (account or {}).get("extra_json") or {}
+    if isinstance(raw_extra, str):
+        try:
+            raw_extra = json.loads(raw_extra)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw_extra = {}
+    if not isinstance(raw_extra, dict):
+        return ""
+    return str(
+        raw_extra.get("account_password")
+        or raw_extra.get("login_password")
+        or raw_extra.get("registration_password")
+        or ""
+    ).strip()
+
+
+def _run_retry_plan_check(
+    email: str,
+    account: dict,
+    account_route,
+    task_id: int | None,
+    *,
+    trigger: str,
+) -> dict | None:
+    """补跑前同步补查套餐；失败只记事件，不阻断后续账号动作。"""
+    if str(account.get("plan_check_status") or "").lower() == "success":
+        account_task_store.append_event(task_id, stage="plan_check", message="账号已有成功套餐记录，跳过重复查询")
+        return None
+    token = str(account.get("access_token") or "").strip()
+    if not token:
+        account_task_store.append_event(task_id, stage="plan_check", message="账号缺少 access_token，暂时无法补查套餐", level="WARNING")
+        return None
+    account_task_store.append_event(task_id, stage="plan_check", message="账号缺少成功套餐记录，开始补查套餐")
+    try:
+        from core.plan_check_service import check_registration_account_plan
+
+        result = check_registration_account_plan(
+            account_id=int(account.get("id") or 0),
+            email=email,
+            access_token=token,
+            proxy=(getattr(account_route, "proxy_url", None) if account_route is not None else None),
+            trigger=str(trigger or "retry_plan_check"),
+        )
+        if result.get("ok"):
+            account_task_store.append_event(
+                task_id,
+                stage="plan_check_result",
+                message="套餐查询完成",
+                detail={
+                    "current_plan_type": result.get("current_plan_type"),
+                    "plus_trial_eligible": bool(result.get("plus_trial_eligible")),
+                },
+            )
+        else:
+            account_task_store.append_event(
+                task_id,
+                stage="plan_check_result",
+                message="套餐查询失败，继续执行其它补跑步骤",
+                level="WARNING",
+                detail={"error": result.get("error")},
+            )
+        return result
+    except Exception as exc:
+        account_task_store.append_event(
+            task_id,
+            stage="plan_check_result",
+            message="套餐查询异常，继续执行其它补跑步骤",
+            level="WARNING",
+            detail={"error": f"{type(exc).__name__}: {str(exc)[:180]}"},
+        )
+        logger.warning("[补跑][套餐] %s 补查异常：%s: %s", email, type(exc).__name__, str(exc)[:180])
+        return None
+
+
 def _thread_alive(thread_id: int | None) -> bool:
     if not thread_id:
         return False
@@ -110,8 +186,8 @@ def check_stop_requested(email: str) -> None:
         raise CodexRetryStopped("用户手动停止 Codex 补跑")
 
 
-def _build_roxy_twofa_setup(email: str, task_id: int):
-    """为缺少 TOTP 的 Codex 补跑构造一次性 2FA 前置步骤。"""
+def _build_roxy_twofa_setup(email: str, task_id: int, *, proxy: str | None = None):
+    """为缺少 TOTP 的补跑构造一次性 2FA 前置步骤。"""
     state = {"secret": ""}
 
     def _setup(driver) -> bool:
@@ -139,14 +215,37 @@ def _build_roxy_twofa_setup(email: str, task_id: int):
             logger.info("[Codex 补跑][2FA] Authenticator key 已在激活前写入账号检查点")
 
         try:
-            from core.roxy_registration import setup_roxy_2fa
+            from config import twofa as twofa_cfg
 
-            secret = setup_roxy_2fa(
-                driver,
-                email,
-                on_secret=_checkpoint,
-                existing_secret=existing_secret or None,
-            )
+            twofa_driver = twofa_cfg.get_twofa_driver()
+            if twofa_driver == "protocol":
+                # Roxy 负责登录和拿到本次新鲜 session；enroll/activate 直接走协议，
+                # 不再依赖不同地区的安全设置页面布局。
+                from core.account_export import setup_2fa_protocol
+                from core.roxy_registration import _fetch_chatgpt_session
+                from core.session import BrowserSession
+
+                session_info = _fetch_chatgpt_session(driver, timeout=60, auto_jump_wait=5)
+                access_token = str(session_info.get("accessToken") or "").strip()
+                if not access_token:
+                    raise RuntimeError("协议开通 2FA 未拿到新鲜 accessToken")
+                protocol_session = BrowserSession(proxy=proxy)
+                secret = setup_2fa_protocol(
+                    protocol_session,
+                    access_token,
+                    on_secret=_checkpoint,
+                )
+                logger.info("[账号补跑][2FA] 使用 protocol 直接开通 Authenticator：%s", email)
+            else:
+                from core.roxy_registration import setup_roxy_2fa
+
+                secret = setup_roxy_2fa(
+                    driver,
+                    email,
+                    on_secret=_checkpoint,
+                    existing_secret=existing_secret or None,
+                )
+                logger.info("[账号补跑][2FA] 使用 browser 安全设置页开通 Authenticator：%s", email)
             if not state["secret"]:
                 _checkpoint(secret)
             if not db.update_account_totp_secret(email, state["secret"], setup_pending=False):
@@ -180,6 +279,55 @@ def _build_roxy_twofa_setup(email: str, task_id: int):
             raise RuntimeError(
                 f"2FA 设置失败，已停止进入 Codex OAuth：{type(exc).__name__}: {str(exc)[:180]}"
             ) from exc
+
+    return _setup
+
+
+def _build_roxy_account_setup(email: str, task_id: int, *, proxy: str | None = None):
+    """在同一 ChatGPT 会话中按顺序补账号密码和 Authenticator 2FA。"""
+    twofa_setup = _build_roxy_twofa_setup(email, task_id, proxy=proxy)
+
+    def _setup(driver) -> bool:
+        changed = False
+        account = db.get_account_by_email(email) or {}
+        # 没有完整 AT 的历史检查点不能安全判断账号已完成注册，交给外层登录流程处理。
+        if str(account.get("access_token") or "").strip() and not _account_login_password(account):
+            from core.roxy_registration import _registration_password, set_roxy_login_password
+
+            password = _registration_password()
+            account_task_store.append_event(
+                task_id,
+                stage="login_password",
+                message="账号缺少账号密码，先在安全设置中补充随机密码",
+            )
+            try:
+                set_roxy_login_password(driver, email, password)
+                if not db.update_account_login_password(email, password, source="retry"):
+                    raise RuntimeError("账号密码写入账号失败")
+            except CodexRetryStopped:
+                raise
+            except Exception as exc:
+                account_task_store.append_event(
+                    task_id,
+                    stage="login_password_result",
+                    message="账号密码补充失败，停止后续账号配置",
+                    level="ERROR",
+                    detail={"error": f"{type(exc).__name__}: {str(exc)[:220]}"},
+                )
+                raise RuntimeError(
+                    f"账号密码补充失败，已停止后续账号配置：{type(exc).__name__}: {str(exc)[:180]}"
+                ) from exc
+            account_task_store.append_event(
+                task_id,
+                stage="login_password_result",
+                message="账号密码已补充并保存",
+                detail={"saved": True},
+            )
+            changed = True
+
+        if twofa_setup(driver):
+            changed = True
+        return changed
 
     return _setup
 
@@ -255,10 +403,10 @@ def run_twofa_worker(
     task_id: int | None = None,
     task_trigger: str = "manual",
 ) -> dict:
-    """只重新登录并检查/补齐 Authenticator 2FA，不重复执行 Codex OAuth。"""
+    """重新登录并补齐账号配置，不重复执行 Codex OAuth。"""
     fh: logging.FileHandler | None = None
     root_logger = logging.getLogger()
-    result: dict = {"status": "failed", "ok": False, "message": "2FA 重试未返回结果"}
+    result: dict = {"status": "failed", "ok": False, "message": "账号配置重试未返回结果"}
     account_route = None
     route_summary: dict = {}
     key = (email or "").strip().lower()
@@ -275,7 +423,7 @@ def run_twofa_worker(
             _RUNNING_THREADS[key] = threading.get_ident()
             _RESERVED_AT[key] = time.time()
         check_stop_requested(email)
-        account_task_store.start_task(task_id, message="开始重新检查并补齐 Authenticator 2FA")
+        account_task_store.start_task(task_id, message="开始补齐账号密码、套餐和 Authenticator 2FA")
 
         path = Path(target_log_path) if target_log_path else log_path(email)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -298,7 +446,7 @@ def run_twofa_worker(
         if oauth_driver == "same_as_registration":
             oauth_driver = str(getattr(roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
         if oauth_driver not in {"roxy", "roxybrowser", "fingerprint", "browser"}:
-            raise RuntimeError(f"2FA 自动重试当前仅支持 Roxy 驱动，当前驱动={oauth_driver or 'protocol'}")
+            raise RuntimeError(f"账号配置重试当前仅支持 Roxy 驱动，当前驱动={oauth_driver or 'protocol'}")
 
         from core.account_proxy import acquire_account_proxy
 
@@ -311,7 +459,7 @@ def run_twofa_worker(
         account_task_store.append_event(
             task_id,
             stage="network",
-            message="已分配 2FA 重试线路",
+            message="已分配账号配置重试线路",
             detail={
                 "network_route": route_summary.get("network_route"),
                 "proxy_mode": account_route.mode,
@@ -319,34 +467,45 @@ def run_twofa_worker(
                 "proxy_region": account_route.region,
             },
         )
+        _run_retry_plan_check(
+            email,
+            account,
+            account_route,
+            task_id,
+            trigger=str(task_trigger or "manual") + "_plan_check",
+        )
         account_task_store.append_event(
             task_id,
             stage="twofa",
-            message="重新登录 ChatGPT，先检查远端开关，未开启时重新 enrollment",
+            message="重新登录 ChatGPT，补齐账号密码并检查 Authenticator 开关",
         )
         from core.roxy_codex_oauth import run_roxy_chatgpt_account_action
 
         run_roxy_chatgpt_account_action(
             email,
             proxy=account_route.proxy_url,
-            action=_build_roxy_twofa_setup(email, task_id),
+            action=_build_roxy_account_setup(
+                email,
+                task_id,
+                proxy=(account_route.proxy_url if account_route is not None else None),
+            ),
         )
         check_stop_requested(email)
         result = {
             "status": "success",
             "ok": True,
-            "message": "Authenticator 2FA 远端状态已确认启用",
+            "message": "账号密码、套餐和 Authenticator 2FA 已补齐或确认",
             "proxy_provider": account_route.provider,
             "proxy_region": account_route.region,
             "proxy_mode": account_route.mode,
         }
         return result
     except CodexRetryStopped as exc:
-        result = {"status": "stopped", "ok": False, "message": str(exc) or "用户手动停止 2FA 重试"}
+        result = {"status": "stopped", "ok": False, "message": str(exc) or "用户手动停止账号配置重试"}
         return result
     except Exception as exc:
         result = {"status": "failed", "ok": False, "message": f"{type(exc).__name__}: {exc}"}
-        logger.exception("[2FA 重试] %s 异常", email)
+        logger.exception("[账号配置重试] %s 异常", email)
         return result
     finally:
         if fh is not None:
@@ -367,11 +526,11 @@ def run_twofa_worker(
                 task_id,
                 status=task_status,
                 message=(
-                    "Authenticator 2FA 已确认启用"
+                    "账号密码、套餐和 Authenticator 2FA 已补齐或确认"
                     if task_status == "success"
-                    else "2FA 重试已停止" if task_status == "cancelled" else "2FA 重试失败"
+                    else "账号配置重试已停止" if task_status == "cancelled" else "账号配置重试失败"
                 ),
-                error=None if task_status == "success" else str(result.get("message") or "2FA 重试失败"),
+                error=None if task_status == "success" else str(result.get("message") or "账号配置重试失败"),
                 result_summary={"ok": bool(result.get("ok")), "status": result.get("status"), "message": result.get("message")},
                 route={
                     "network_route": route_summary.get("network_route"),
@@ -380,10 +539,10 @@ def run_twofa_worker(
                     "proxy_region": result.get("proxy_region") or getattr(account_route, "region", None),
                     "proxy_used": route_summary.get("proxy_used"),
                 },
-                validation_method="chatgpt_security_settings",
+                validation_method="chatgpt_account_setup",
             )
         except Exception:
-            logger.exception("[2FA 重试] 写入任务实例失败：task_id=%s email=%s", task_id or "-", email)
+            logger.exception("[账号配置重试] 写入任务实例失败：task_id=%s email=%s", task_id or "-", email)
 
 
 def run_worker(
@@ -462,7 +621,7 @@ def run_worker(
         logger.info("[Codex 补跑] 开始：%s", email)
         logger.info(
             "[Codex 补跑] 阶段说明：获取授权地址 → 登录邮箱 → 邮箱 OTP → "
-            "缺失时先设置 2FA → 手机验证 → 捕获 callback → 提交/保存凭证"
+            "缺失时先补账号密码/套餐/2FA → 手机验证 → 捕获 callback → 提交/保存凭证"
         )
         check_stop_requested(email)
         from config import codex as codex_cfg
@@ -515,27 +674,40 @@ def run_worker(
                 detail={"network_route": "cloud_driver"},
             )
         account = db.get_account_by_email(email) or {}
+        _run_retry_plan_check(
+            email,
+            account,
+            account_route,
+            task_id,
+            trigger=str(task_trigger or "manual") + "_plan_check",
+        )
         needs_twofa = (
             not bool(str(account.get("totp_secret") or "").strip())
             or _totp_setup_pending(account)
         )
+        needs_login_password = bool(str(account.get("access_token") or "").strip()) and not _account_login_password(account)
+        needs_roxy_setup = needs_twofa or needs_login_password
         account_task_store.append_event(
             task_id,
             stage="oauth",
             message=(
-                "账号缺少 2FA，将先设置 Authenticator 再完成 OAuth"
-                if needs_twofa and oauth_driver in {"roxy", "roxybrowser", "fingerprint", "browser"}
+                "账号缺少账号密码/2FA，将先补齐账号配置再完成 OAuth"
+                if needs_roxy_setup and oauth_driver in {"roxy", "roxybrowser", "fingerprint", "browser"}
                 else "开始获取授权地址并完成邮箱、短信与 callback 流程"
             ),
         )
-        if needs_twofa and oauth_driver in {"roxy", "roxybrowser", "fingerprint", "browser"}:
+        if needs_roxy_setup and oauth_driver in {"roxy", "roxybrowser", "fingerprint", "browser"}:
             from core.roxy_codex_oauth import run_roxy_codex_oauth
 
             result = run_roxy_codex_oauth(
                 email,
                 proxy=(account_route.proxy_url if account_route is not None else None),
                 force=True,
-                before_oauth_setup=_build_roxy_twofa_setup(email, task_id),
+                before_oauth_setup=_build_roxy_account_setup(
+                    email,
+                    task_id,
+                    proxy=(account_route.proxy_url if account_route is not None else None),
+                ),
             )
         else:
             result = run_codex_oauth(

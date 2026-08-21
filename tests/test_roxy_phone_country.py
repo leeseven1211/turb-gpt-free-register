@@ -92,6 +92,20 @@ class RoxyPhoneCountryTests(unittest.TestCase):
         self.assertEqual(password, "StoredPassword!123")
         self.assertEqual(secret, "JBSWY3DPEHPK3PXP")
 
+    def test_new_login_password_takes_precedence_over_registration_password(self):
+        account = {
+            "extra_json": (
+                '{"registration_password":"SignupPassword!123",'
+                '"login_password":"PostRegistrationPassword!456"}'
+            ),
+            "totp_secret": "",
+        }
+        with patch("core.db.get_account_by_email", return_value=account):
+            password, secret = _account_login_credentials("a@example.com")
+
+        self.assertEqual(password, "PostRegistrationPassword!456")
+        self.assertEqual(secret, "")
+
     def test_login_challenge_uses_saved_password_then_totp_without_email_otp(self):
         driver = MagicMock()
         driver.step = "password"

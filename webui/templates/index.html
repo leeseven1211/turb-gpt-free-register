@@ -3160,6 +3160,10 @@
           <summary>更多操作</summary>
           <div class="toolbar-overflow-menu">
             <div class="toolbar-overflow-section">
+              <span class="toolbar-overflow-section-title">账号配置</span>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnSetupSelectedAccountsV2" disabled title="只补齐账号密码、套餐和 Authenticator 2FA，不执行 Codex">补齐配置</button>
+            </div>
+            <div class="toolbar-overflow-section">
               <span class="toolbar-overflow-section-title">Codex</span>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnRetrySelectedCodexV2" disabled title="给选中的账号批量补跑 Codex 授权">补跑</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnDownloadSelectedCpaV2" disabled title="从 CPA auth-files 下载选中账号的 Codex JSON，并打包 ZIP">下载 CPA</button>
@@ -3171,7 +3175,7 @@
               <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedDeactivationMailV2" disabled title="扫描 Email Butler / Cloudflare / iCloud 转发邮箱中的 OpenAI 封号通知；不会刷新 AT">查封号邮件</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedLinesV2" disabled title="复制选中账号的完整整行，每个账号一行">复制行</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedEmailsV2" disabled title="复制选中账号的邮箱，每个账号一行">复制邮箱</button>
-              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedPasswordsV2" disabled title="复制选中账号中已设置的随机登录密码，格式为 邮箱----密码">复制密码</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedPasswordsV2" disabled title="复制选中账号中已设置的账号密码，格式为 邮箱----密码">复制密码</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnDownloadSelectedTxtV2" disabled title="把选中账号的完整整行保存为 TXT 文件，每个账号一行">下载 TXT</button>
             </div>
             <div class="toolbar-overflow-section toolbar-overflow-section--wide toolbar-overflow-section--danger">
@@ -3207,7 +3211,7 @@
               <th class="col-email column-filter-header" data-column-filter="qAccountsV2" data-filter-type="search" data-filter-placeholder="邮箱或姓名" data-filter-label="按邮箱或姓名筛选">邮箱 / 姓名</th>
               <th class="col-source column-filter-header" data-column-filter="accountSourceFilterV2" data-filter-type="select" data-filter-label="按邮箱来源筛选">来源</th>
               <th class="col-token column-filter-header" data-column-filter="accountTokenFilterV2" data-filter-type="select" data-filter-label="按 Token 状态筛选">Token</th>
-              <th class="col-small column-filter-header" data-column-filter="accountPasswordFilterV2" data-filter-type="select" data-filter-label="按登录密码状态筛选">登录密码</th>
+              <th class="col-small column-filter-header" data-column-filter="accountPasswordFilterV2" data-filter-type="select" data-filter-label="按账号密码状态筛选">账号密码</th>
               <th class="col-plan column-filter-header" data-column-filter="accountPlanFilterV2" data-filter-type="select" data-filter-label="按套餐筛选">套餐</th>
               <th class="col-trial column-filter-header" data-column-filter="accountTrialFilterV2" data-filter-type="select" data-filter-label="按 Plus 试用资格筛选">Plus 试用</th>
               <th class="col-small column-filter-header" data-column-filter="accountTotpFilterV2" data-filter-type="select" data-filter-label="按 2FA 状态筛选">2FA</th>
@@ -3232,6 +3236,7 @@
         <label class="jobs-tb-field">任务类型
           <select class="jobs-tb-select" id="accountTaskTypeFilter" aria-label="任务类型">
             <option value="">全部类型</option>
+            <option value="account_setup_retry">账号配置补跑</option>
             <option value="codex_retry">Codex 补跑</option>
             <option value="codex_token_refresh">Codex Token 刷新</option>
             <option value="live_check">查活</option>
@@ -5152,7 +5157,7 @@ let planStatusLoading = false;
 let planStatusRevision = '';
 let ACCOUNT_BATCH_WORKERS = 3;
 const ACCOUNT_TASK_TYPE_LABELS = {
-  codex_retry:'Codex 补跑', codex_token_refresh:'Codex Token 刷新', live_check:'查活', token_refresh:'AT 刷新', plan_check:'查套餐', deactivation_mail:'查封号邮件'
+  account_setup_retry:'账号配置补跑', codex_retry:'Codex 补跑', codex_token_refresh:'Codex Token 刷新', live_check:'查活', token_refresh:'AT 刷新', plan_check:'查套餐', deactivation_mail:'查封号邮件'
 };
 const ACCOUNT_TASK_TRIGGER_LABELS = {
   manual:'手动', manual_bulk:'手动批量', manual_retry:'失败重跑', scheduled:'定时',
@@ -5181,6 +5186,7 @@ function accountTaskResultText(task) {
     return result.detected ? '发现封号邮件' : '未发现封号邮件';
   }
   if (task.task_type === 'live_check' || task.task_type === 'token_refresh') return result.ok ? '账号正常' : (result.status || '-');
+  if (task.task_type === 'account_setup_retry') return result.ok ? '账号密码、套餐和 2FA 已补齐或确认' : (result.message || result.status || '账号配置补跑失败');
   if (task.task_type === 'codex_retry') {
     if (result.ok) return result.credential_saved ? '授权成功 · 凭证已保存' : '授权成功';
     return result.message || result.status || '补跑失败';
@@ -5607,8 +5613,8 @@ function _tokenCellV2(r) {
   return `<span class="pill status-failed">无Token</span>${liveHtml}`;
 }
 function _passwordCellV2(r) {
-  if (!r.has_registration_password) return '<span class="acc-v2-muted">未设置</span>';
-  return `<button type="button" class="acc-v2-token-copy" data-account-copy-secret="registration_password" data-account-id="${esc(r.id)}" title="复制该账号的随机登录密码">复制</button>`;
+  if (!r.has_account_password) return '<span class="acc-v2-muted">未设置</span>';
+  return `<button type="button" class="acc-v2-token-copy" data-account-copy-secret="account_password" data-account-id="${esc(r.id)}" title="复制该账号密码">复制</button>`;
 }
 function _totpCellV2(r) {
   if (!r.totp_enabled) return '<span class="acc-v2-muted">未启用</span>';
@@ -5657,7 +5663,8 @@ function _deactivationMailCell(r) {
 function _accountsV2MoreMenu(r) {
   const parts = [
     `<button type="button" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button>`,
-    r.has_registration_password ? `<button type="button" data-account-copy-secret="registration_password" data-account-id="${esc(r.id)}">复制登录密码</button>` : '',
+    r.has_account_password ? `<button type="button" data-account-copy-secret="account_password" data-account-id="${esc(r.id)}">复制账号密码</button>` : '',
+    (r.account_status || '').toLowerCase() === 'deactivated' ? '' : `<button type="button" data-account-setup="${esc(r.id)}" title="只补齐账号密码、套餐和 Authenticator 2FA，不执行 Codex">补齐账号配置</button>`,
     (r.account_status || '').toLowerCase() === 'deactivated' ? '' : `<button type="button" onclick="checkSelectedLive([Number('${esc(r.id)}')], this); return false;" title="只在线验证现有 Token；不会发送邮箱验证码或刷新 AT">查活</button>`,
     (r.account_status || '').toLowerCase() === 'deactivated' ? '' : `<button type="button" onclick="refreshSelectedToken([Number('${esc(r.id)}')], this); return false;" title="通过邮箱 OTP 重新登录并刷新最新 AT">刷新AT</button>`,
     `<button type="button" data-account-task-history="${esc(r.email)}" title="在任务实例中查看该账号的 Codex 补跑、查活、AT 刷新、套餐和封号邮件历史">任务记录</button>`,
@@ -5756,7 +5763,7 @@ function updateAccountSelectionUi(pageRows = null) {
   const archiveTitle = SHOW_ARCHIVED_ACCOUNTS ? '把选中的归档账号恢复到默认账号列表' : '归档选中的账号；默认账号列表将不再查询/显示这些账号';
   const v2Ids = [
     'btnCheckSelectedLiveV2', 'btnRefreshSelectedTokenV2', 'btnCheckSelectedPlansV2', 'btnCheckSelectedDeactivationMailV2', 'btnExtractSelectedLinksV2',
-    'btnUploadSelectedCodexSub2V2', 'btnRetrySelectedCodexV2', 'btnDownloadSelectedCpaV2', 'btnStopSelectedCodexV2',
+    'btnSetupSelectedAccountsV2', 'btnUploadSelectedCodexSub2V2', 'btnRetrySelectedCodexV2', 'btnDownloadSelectedCpaV2', 'btnStopSelectedCodexV2',
     'btnCopySelectedLinesV2', 'btnCopySelectedEmailsV2',
     'btnCopySelectedPasswordsV2',
     'btnDownloadSelectedTxtV2', 'btnArchiveSelectedAccountsV2', 'btnDeleteSelectedAccountsV2',
@@ -5874,11 +5881,39 @@ async function onAccountsBodyClick(e) {
       const value = await fetchOneAccountSecret(id, field);
       if (!value) { showToast('可复制内容为空'); return; }
       copyText(value);
-      showToast(field === 'access_token' ? 'Token 已复制' : (field === 'registration_password' ? '随机登录密码已复制' : (field === 'totp_secret' ? 'TOTP 密钥已复制' : '账号整行已复制')));
+      showToast(field === 'access_token' ? 'Token 已复制' : (field === 'account_password' ? '账号密码已复制' : (field === 'totp_secret' ? 'TOTP 密钥已复制' : '账号整行已复制')));
     } catch(err) {
       showToast('复制失败: ' + err.message);
     } finally {
       copySecretBtn.disabled = false;
+    }
+    return;
+  }
+
+  const accountSetupBtn = e.target.closest('[data-account-setup]');
+  if (accountSetupBtn) {
+    const id = Number(accountSetupBtn.dataset.accountSetup);
+    const row = ACCOUNTS.find(item => Number(item.id) === id);
+    const email = row?.email || `账号 #${id}`;
+    if (!confirm(`补齐账号配置？\n\n${email}\n\n只执行账号密码、套餐查询和 Authenticator 2FA，不执行 Codex 授权。`)) return;
+    accountSetupBtn.disabled = true;
+    try {
+      const result = await api(`/api/accounts/${encodeURIComponent(id)}/setup`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: '{}',
+      });
+      showToast(result.message || '已开始补齐账号配置');
+      loadAccounts();
+      const search = $('#accountTaskSearch');
+      const typeFilter = $('#accountTaskTypeFilter');
+      if (search) search.value = email;
+      if (typeFilter) typeFilter.value = 'account_setup_retry';
+      PAGERS.accountTasks.page = 1;
+      setModuleView('accounts', 'tasks');
+    } catch(err) {
+      showToast('补齐账号配置失败: ' + err.message);
+      accountSetupBtn.disabled = false;
     }
     return;
   }
@@ -6113,10 +6148,10 @@ async function copySelectedAccountPasswords() {
   const ids = Array.from(ACCOUNT_SELECTED).map(Number);
   if (!ids.length) { showToast('请先选择账号'); return; }
   try {
-    const lines = await fetchAccountSecrets(ids, 'registration_password_line');
-    if (!lines.length) { showToast('选中账号均未设置登录密码'); return; }
+    const lines = await fetchAccountSecrets(ids, 'account_password_line');
+    if (!lines.length) { showToast('选中账号均未设置密码'); return; }
     copyText(lines.join('\n'));
-    showToast(`已复制 ${lines.length} 个随机登录密码；未设置密码的账号已跳过`);
+    showToast(`已复制 ${lines.length} 个账号密码；未设置密码的账号已跳过`);
   } catch(err) { showToast('复制密码失败: ' + err.message); }
 }
 
@@ -6740,6 +6775,34 @@ async function retrySelectedCodex() {
   }
 }
 
+async function setupSelectedAccounts() {
+  const ids = Array.from(ACCOUNT_SELECTED).map(Number);
+  if (!ids.length) { showToast('请先选择账号'); return; }
+  if (!confirm(`确定补齐选中的 ${ids.length} 个账号配置吗？\n\n只执行：账号密码、套餐查询、Authenticator 2FA。\n不会执行 Codex 授权。`)) return;
+  const btn = $('#btnSetupSelectedAccountsV2');
+  if (!btn) return;
+  btn.disabled = true;
+  try {
+    const r = await api('/api/accounts/setup-bulk', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({account_ids: ids}),
+    });
+    const skippedCount = (r.skipped || []).length;
+    showToast(skippedCount ? `已开始补齐 ${r.started_count || 0} 个，跳过 ${skippedCount} 个` : `已开始补齐 ${r.started_count || 0} 个账号配置`);
+    loadAccounts();
+    const search = $('#accountTaskSearch');
+    const typeFilter = $('#accountTaskTypeFilter');
+    if (search) search.value = '';
+    if (typeFilter) typeFilter.value = 'account_setup_retry';
+    PAGERS.accountTasks.page = 1;
+    setModuleView('accounts', 'tasks');
+  } catch(err) {
+    showToast('补齐账号配置失败: ' + err.message);
+    updateAccountSelectionUi();
+  }
+}
+
 async function copyCurrentPageTokens() {
   const ids = ACCOUNTS.filter(r => r.has_access_token).map(r => Number(r.id));
   if (!ids.length) { showToast('当前页没有 Token'); return; }
@@ -6768,6 +6831,7 @@ async function copySelectedAccountTokens() {
   bind('btnCheckSelectedPlansV2', checkSelectedPlans);
   bind('btnCheckSelectedDeactivationMailV2', checkSelectedDeactivationMail);
   bind('btnExtractSelectedLinksV2', extractSelectedLinks);
+  bind('btnSetupSelectedAccountsV2', setupSelectedAccounts);
   bind('btnUploadSelectedCodexSub2V2', uploadSelectedCodexSub2);
   bind('btnRetrySelectedCodexV2', retrySelectedCodex);
   bind('btnDownloadSelectedCpaV2', downloadSelectedCpa);

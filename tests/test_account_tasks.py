@@ -250,6 +250,7 @@ class CodexRetryTaskTests(unittest.TestCase):
             patch.object(codex_retry_service.account_task_store, "finish_task"),
             patch("config.reload_all"),
             patch("config.codex.CODEX_OAUTH_DRIVER", "roxy"),
+            patch("config.twofa.get_twofa_driver", return_value="browser"),
             patch("core.account_proxy.acquire_account_proxy", return_value=route),
             patch("core.roxy_registration.setup_roxy_2fa", side_effect=setup_twofa),
             patch("core.roxy_codex_oauth.run_roxy_codex_oauth", side_effect=run_roxy),
@@ -273,6 +274,58 @@ class CodexRetryTaskTests(unittest.TestCase):
         self.assertTrue(any(call.kwargs.get("stage") == "twofa_result" for call in append_event.call_args_list))
         save_twofa_status.assert_called_once_with("a@example.com", "success", "Authenticator 2FA 已启用")
         route.release.assert_called_once_with(reason="codex-oauth-a@example.com")
+
+    def test_roxy_retry_uses_protocol_twofa_when_configured(self):
+        secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+        account = {"id": 9, "email": "a@example.com", "totp_secret": ""}
+        route = Mock(proxy_url="http://proxy.example", provider="test", region="AR", mode="pool")
+        route.public_dict.return_value = {
+            "network_route": "test-route",
+            "proxy_used": "http://proxy.example",
+        }
+
+        def setup_protocol(_session, access_token, *, on_secret):
+            self.assertEqual(access_token, "fresh-chatgpt-token")
+            on_secret(secret)
+            return secret
+
+        def run_roxy(_email, **kwargs):
+            kwargs["before_oauth_setup"](object())
+            return {"ok": True, "status": "success", "file_path": "/tmp/credential.json"}
+
+        with (
+            tempfile.TemporaryDirectory() as tempdir,
+            patch.object(codex_retry_service.db, "get_account_by_email", return_value=account),
+            patch.object(codex_retry_service.db, "update_account_totp_secret", return_value=True) as save_totp,
+            patch.object(codex_retry_service.db, "update_account_twofa_status", return_value=True),
+            patch.object(codex_retry_service.db, "update_account_codex_status"),
+            patch.object(codex_retry_service.account_task_store, "start_task"),
+            patch.object(codex_retry_service.account_task_store, "append_event"),
+            patch.object(codex_retry_service.account_task_store, "finish_task"),
+            patch("config.reload_all"),
+            patch("config.codex.CODEX_OAUTH_DRIVER", "roxy"),
+            patch("config.twofa.get_twofa_driver", return_value="protocol"),
+            patch("core.account_proxy.acquire_account_proxy", return_value=route),
+            patch("core.roxy_registration._fetch_chatgpt_session", return_value={"accessToken": "fresh-chatgpt-token"}),
+            patch("core.session.BrowserSession"),
+            patch("core.account_export.setup_2fa_protocol", side_effect=setup_protocol),
+            patch("core.roxy_codex_oauth.run_roxy_codex_oauth", side_effect=run_roxy),
+        ):
+            result = codex_retry_service.run_worker(
+                "a@example.com",
+                target_log_path=Path(tempdir) / "codex.log",
+                task_id=101,
+                task_trigger="manual",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            save_totp.call_args_list,
+            [
+                call("a@example.com", secret, setup_pending=True),
+                call("a@example.com", secret, setup_pending=False),
+            ],
+        )
 
 
 class AccountTaskApiTests(PostgresTestCase):

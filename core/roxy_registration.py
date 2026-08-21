@@ -2457,12 +2457,24 @@ def _fetch_chatgpt_session(driver, timeout: int = 90, auto_jump_wait: int = 15) 
         except Exception:
             current = ''
 
-        if 'chatgpt.com' not in current:
+        current_lower = current.lower()
+        needs_chatgpt_home = any(
+            marker in current_lower
+            for marker in (
+                'chatgpt.com/auth/error',
+                'chatgpt.com/auth/login',
+                'chatgpt.com/login',
+            )
+        )
+        if 'chatgpt.com' not in current or (needs_chatgpt_home and not forced_chatgpt_open):
             if _switch_to_chatgpt_window_if_any(driver):
                 current = str(getattr(driver, "current_url", "") or "")
-            elif time.time() >= auto_jump_end and not forced_chatgpt_open:
+            if not forced_chatgpt_open and (needs_chatgpt_home or time.time() >= auto_jump_end):
                 try:
-                    logger.info("%s 未在 %ss 内观察到当前窗口跳转 chatgpt.com，主动打开 ChatGPT 内读取 session", _log_prefix(driver), int(auto_jump_wait or 15))
+                    logger.info(
+                        "%s 当前页面需要回到 ChatGPT 首页读取 session：path=%s",
+                        _log_prefix(driver), current_lower[:180],
+                    )
                     _safe_get(driver, "https://chatgpt.com/", timeout=35, attempts=2, accept_hosts=("chatgpt.com",))
                     forced_chatgpt_open = True
                     time.sleep(3)
@@ -2571,7 +2583,9 @@ def _open_roxy_profile_with_capacity_wait(client, proxy_url: str | None, progres
             _wait_for_roxy_window_retry(delay)
 
 
+_CHATGPT_HOME_URL = "https://chatgpt.com/"
 _CHATGPT_SECURITY_SETTINGS_URL = "https://chatgpt.com/#settings/Security"
+_CHATGPT_PASSWORD_SETTINGS_URL = _CHATGPT_HOME_URL
 _MFA_EMAIL_CODE_SELECTOR = (
     'input[name="code"][autocomplete="one-time-code"], '
     'input[autocomplete="one-time-code"]:not([name="totp_otp"])'
@@ -2735,26 +2749,85 @@ def _dismiss_single_action_dialog(driver) -> bool:
         return False
 
 
+def _dismiss_chatgpt_pricing_modal(driver) -> bool:
+    """Close the automatic plan/offer modal that can cover the profile menu."""
+    try:
+        button = driver.execute_script(r"""
+        const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+          && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none'
+          && !el.disabled && String(el.getAttribute('aria-disabled') || '').toLowerCase() !== 'true';
+        const label = el => [el.innerText, el.textContent, el.getAttribute('aria-label'),
+          el.getAttribute('title'), el.getAttribute('data-testid')].filter(Boolean)
+          .join(' ').replace(/\s+/g, ' ').trim();
+        const modals = [...document.querySelectorAll('[data-testid="modal-account-payment"],[role="dialog"]')]
+          .filter(visible);
+        const modal = modals.find(el => /pricing|payment|offer|plan|升级|套餐|プラン|オファー/i.test(label(el)));
+        if (!modal) return null;
+        return [...modal.querySelectorAll('button,a,[role="button"]')].filter(visible).find(el => {
+          const text = label(el);
+          return el.getAttribute('data-testid') === 'close-button'
+            || /close|dismiss|关闭|閉じる|クローズ|닫기|закрыть/i.test(text);
+        }) || null;
+        """)
+        if not button:
+            return False
+        _human_click(driver, button, label="chatgpt_pricing_modal_close")
+        logger.info("%s 已关闭套餐优惠弹窗", _log_prefix(driver))
+        time.sleep(0.8)
+        return True
+    except Exception:
+        return False
+
+
+def _click_chatgpt_settings_control(driver, element, *, label: str = "") -> None:
+    """Click ChatGPT's Radix settings controls, whose DIV buttons may ignore CDP clicks."""
+    testid = ""
+    try:
+        testid = str(element.get_attribute("data-testid") or "")
+    except Exception:
+        pass
+    if testid not in {"accounts-profile-button", "settings-menu-item", "security-tab", "password-setting"}:
+        _human_click(driver, element, label=label)
+        return
+    driver.execute_script(r"""
+    const el = arguments[0];
+    if (!el) return;
+    const point = el.getBoundingClientRect();
+    const init = {bubbles:true, cancelable:true, view:window, pointerType:'mouse',
+      clientX:point.left + point.width * 0.5, clientY:point.top + point.height * 0.5,
+      button:0, buttons:1};
+    el.dispatchEvent(new PointerEvent('pointerdown', init));
+    el.dispatchEvent(new MouseEvent('mousedown', init));
+    el.dispatchEvent(new MouseEvent('mouseup', {...init, buttons:0}));
+    el.dispatchEvent(new MouseEvent('click', {...init, buttons:0}));
+    """, element)
+
+
 def _open_chatgpt_security_settings(driver, *, timeout: int = 75):
     """Open Security settings and return the stable Authenticator toggle."""
     _safe_get(
         driver,
-        _CHATGPT_SECURITY_SETTINGS_URL,
+        _CHATGPT_HOME_URL,
         timeout=min(45, int(getattr(_cfg, "ROXY_SELENIUM_TIMEOUT", 90) or 90)),
         attempts=2,
         accept_hosts=("chatgpt.com",),
     )
     end = time.time() + max(10, int(timeout))
     dismissed_welcome = False
+    profile_clicks = 0
+    settings_clicks = 0
+    security_clicks = 0
     last_url = ""
     while time.time() < end:
         _check_manual_stop()
+        if _dismiss_chatgpt_pricing_modal(driver):
+            continue
         if not dismissed_welcome and _dismiss_single_action_dialog(driver):
             dismissed_welcome = True
             time.sleep(3.0)
             _safe_get(
                 driver,
-                _CHATGPT_SECURITY_SETTINGS_URL,
+                _CHATGPT_HOME_URL,
                 timeout=min(45, int(getattr(_cfg, "ROXY_SELENIUM_TIMEOUT", 90) or 90)),
                 attempts=2,
                 accept_hosts=("chatgpt.com",),
@@ -2765,12 +2838,321 @@ def _open_chatgpt_security_settings(driver, *, timeout: int = 75):
         toggle = _first_visible_css(driver, '[data-testid="mfa-authenticator-toggle"]')
         if toggle is not None:
             return toggle
+        navigation = driver.execute_script(r"""
+        const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+          && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none'
+          && !el.disabled && String(el.getAttribute('aria-disabled') || '').toLowerCase() !== 'true';
+        const label = el => [el.innerText, el.textContent, el.getAttribute('aria-label'),
+          el.getAttribute('title'), el.getAttribute('data-testid'), el.getAttribute('href')]
+          .filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+        const nodes = [...document.querySelectorAll('button,a,[role="button"],[role="menuitem"],[role="tab"]')]
+          .filter(visible);
+        const settings = /settings|设置|設定|설정|paramètres|configurações|definições|definicoes/i;
+        const security = /security|安全|セキュリティ|보안|sécurité|seguridad|segurança|sicherheit|безопас/i;
+        const profile = /profile|account|avatar|user|账户|账号|个人资料|プロフィール|アカウント|プロファイル/i;
+        const text = el => label(el);
+        return {
+          profile: nodes.filter(el => el.getAttribute('data-testid') === 'accounts-profile-button')
+            .find(el => text(el).length > 20)
+            || [...nodes].reverse().find(el => el.getAttribute('data-testid') === 'accounts-profile-button')
+            || nodes.find(el => profile.test(text(el)) && !settings.test(text(el)) && !security.test(text(el))),
+          settings: nodes.find(el => el.getAttribute('data-testid') === 'settings-menu-item')
+            || nodes.find(el => settings.test(text(el)) || /#settings\/(?:account|general)|\/settings\/(?:account|general)/i.test(String(el.getAttribute('href') || ''))),
+          security: nodes.find(el => el.getAttribute('data-testid') === 'security-tab')
+            || nodes.find(el => security.test(text(el)) || /#settings\/security|\/settings\/security/i.test(String(el.getAttribute('href') || ''))),
+        };
+        """) or {}
+        try:
+            if navigation.get("security") is not None and security_clicks < 1:
+                _click_chatgpt_settings_control(driver, navigation["security"], label="chatgpt_security_navigation")
+                security_clicks += 1
+                time.sleep(1.2)
+                continue
+            if navigation.get("settings") is not None and settings_clicks < 1:
+                _click_chatgpt_settings_control(driver, navigation["settings"], label="chatgpt_settings_navigation")
+                settings_clicks += 1
+                time.sleep(1.2)
+                continue
+            if navigation.get("profile") is not None and profile_clicks < 1:
+                _click_chatgpt_settings_control(driver, navigation["profile"], label="chatgpt_profile_menu")
+                profile_clicks += 1
+                time.sleep(0.8)
+                continue
+        except Exception:
+            pass
         try:
             last_url = str(driver.current_url or "")
         except Exception:
             last_url = ""
         time.sleep(0.5)
-    raise RuntimeError(f"ChatGPT 安全设置页未出现 Authenticator 开关，当前页面={last_url[:180]}")
+    raise RuntimeError(
+        f"ChatGPT 安全设置页未出现 Authenticator 开关，当前页面={last_url[:180]} "
+        f"settings_clicks={settings_clicks} security_clicks={security_clicks}"
+    )
+
+
+def set_roxy_login_password(driver, email: str, password: str, *, timeout: int = 45) -> str:
+    """在已登录的 ChatGPT 账号设置中补充账号密码。
+
+    无密码账号从“账户安全与登录”里的密码“添加”入口进入新密码页；
+    Security 页上的其它密码修改入口可能会要求当前密码，不能用于这类账号。
+    """
+    normalized = str(password or "").strip()
+    if not normalized:
+        raise ValueError("账号密码不能为空")
+
+    _safe_get(
+        driver,
+        _CHATGPT_PASSWORD_SETTINGS_URL,
+        timeout=min(45, int(getattr(_cfg, "ROXY_SELENIUM_TIMEOUT", 90) or 90)),
+        attempts=2,
+        accept_hosts=("chatgpt.com",),
+    )
+    end = time.time() + max(10, int(timeout))
+    password_inputs = []
+    action = None
+    settings_action = None
+    security_action = None
+    profile_action = None
+    settings_clicks = 0
+    security_clicks = 0
+    profile_clicks = 0
+    reauth_attempts = 0
+    last_url = ""
+    last_password_controls = []
+    last_password_lines = []
+    last_page_meta = {}
+
+    def _complete_settings_email_reauth() -> None:
+        """Complete the email re-authentication that Settings may require."""
+        otp_after_ts = time.time()
+        logger.info("%s 设置页要求邮箱重认证，等待邮箱验证码：email=%s", _log_prefix(driver), email)
+        email_code = wait_for_otp(email, after_ts=otp_after_ts)
+        _clear_otp_inputs(driver)
+        _type_otp(driver, email_code, timeout=30)
+        field = _first_visible_css(
+            driver,
+            'input[autocomplete="one-time-code"],input[name="code"],input[inputmode="numeric"],input[type="tel"]',
+        )
+        submit = _button_after_input(driver, field) if field is not None else None
+        if submit is not None:
+            _human_click(driver, submit, label="chatgpt_settings_reauth_submit")
+        elif field is not None:
+            driver.execute_script(r"""
+            const input = arguments[0];
+            const form = input?.closest('form');
+            if (form && typeof form.requestSubmit === 'function') form.requestSubmit();
+            else if (form) form.submit();
+            """, field)
+        else:
+            raise RuntimeError("设置页邮箱重认证缺少验证码提交按钮")
+        deadline = time.time() + 45
+        while time.time() < deadline:
+            _check_manual_stop()
+            if not _is_email_verification_page(driver):
+                logger.info("%s 设置页邮箱重认证已完成", _log_prefix(driver))
+                return
+            time.sleep(0.5)
+        raise RuntimeError(f"设置页邮箱重认证后未返回 ChatGPT 设置页：{str(driver.current_url or '')[:180]}")
+
+    def _is_current_password(field) -> bool:
+        autocomplete = str(field.get_attribute("autocomplete") or "").lower()
+        name = str(field.get_attribute("name") or "").lower()
+        field_id = str(field.get_attribute("id") or "").lower()
+        return autocomplete == "current-password" or any(
+            marker in f"{name} {field_id}" for marker in ("current", "old", "existing")
+        )
+
+    while time.time() < end:
+        _check_manual_stop()
+        if _dismiss_chatgpt_pricing_modal(driver):
+            continue
+        if _dismiss_single_action_dialog(driver):
+            time.sleep(1.0)
+            continue
+        try:
+            current_url = str(driver.current_url or "").lower()
+        except Exception:
+            current_url = ""
+        if "email-verification" in current_url:
+            if reauth_attempts >= 1:
+                raise RuntimeError("设置页邮箱重认证重复出现，已停止避免重复提交")
+            reauth_attempts += 1
+            _complete_settings_email_reauth()
+            end = max(end, time.time() + 45)
+            continue
+        state = driver.execute_script(r"""
+        const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+          && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none'
+          && !el.disabled && !el.readOnly;
+        const label = el => [el.innerText, el.textContent, el.getAttribute('aria-label'),
+          el.getAttribute('title'), el.getAttribute('data-testid'), el.getAttribute('name'),
+          el.getAttribute('value')].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+        const testId = el => String(el.getAttribute('data-testid') || '').trim();
+        const passwordMarker = /password|密码|パスワード|비밀번호|mot\s+de\s+passe|contraseña|senha|passwort|пароль/i;
+        const passwordSettingTestId = /(?:^|[-_:])password[-_:]?setting(?:$|[-_:])/i;
+        const addPassword = /(?:add|set|create)\s+.{0,30}password|password\s+.{0,30}(?:add|set|create)|添加密码|设置密码|新增密码|パスワード.{0,30}(?:追加|設定)|(?:追加|設定).{0,30}パスワード|비밀번호.{0,30}(?:추가|설정)|(?:추가|설정).{0,30}비밀번호|(?:ajouter|définir|configurer).{0,30}(?:mot\s+de\s+passe|password)|(?:mot\s+de\s+passe|password).{0,30}(?:ajouter|définir|configurer)|(?:agregar|añadir|establecer|configurar).{0,30}(?:contraseña|password)|(?:contraseña|password).{0,30}(?:agregar|añadir|establecer|configurar)|(?:adicionar|definir|configurar).{0,30}(?:senha|password)|(?:senha|password).{0,30}(?:adicionar|definir|configurar)|(?:hinzufügen|festlegen|einstellen).{0,30}(?:passwort|password)|(?:passwort|password).{0,30}(?:hinzufügen|festlegen|einstellen)|(?:добавить|установить|настроить).{0,30}(?:пароль|password)|(?:пароль|password).{0,30}(?:добавить|установить|настроить)/i;
+        const addAction = /^(?:add|set|create|添加|设置|新增|追加|設定|추가|설정|ajouter|définir|configurer|agregar|añadir|establecer|adicionar|hinzufügen|festlegen|einstellen|добавить|установить|настроить)$/i;
+        const negative = /forgot|reset|log.?in|sign.?in|one.?time|otp|忘记|重置|一次性|验证码/i;
+        const buttons = [...document.querySelectorAll('button,a,[role="button"],[role="menuitem"],[role="tab"]')].filter(visible);
+        const settingsMarker = /settings|设置|設定|설정|paramètres|configurações|definições|definicoes/i;
+        const securityMarker = /security|安全|セキュリティ|보안|sécurité|seguridad|segurança|sicherheit|безопас/i;
+        const profileMarker = /profile|account|avatar|user|账户|账号|个人资料|プロフィール|アカウント/i;
+        const href = el => String(el.getAttribute('href') || '');
+        const profileAction = buttons.filter(el =>
+          el.getAttribute('data-testid') === 'accounts-profile-button'
+        ).find(el => label(el).length > 20)
+        || [...buttons].reverse().find(el => el.getAttribute('data-testid') === 'accounts-profile-button')
+        || buttons.find(el =>
+          profileMarker.test(label(el)) && !settingsMarker.test(label(el))
+            && !securityMarker.test(label(el))
+            && !/new.?chat|chat|conversation|logout|退出/i.test(label(el))
+        );
+        const settingsAction = buttons.find(el => el.getAttribute('data-testid') === 'settings-menu-item')
+          || buttons.find(el => settingsMarker.test(label(el)) || /#settings\/(?:account|general)|\/settings\/(?:account|general)/i.test(href(el)));
+        const securityAction = buttons.find(el => el.getAttribute('data-testid') === 'security-tab')
+          || buttons.find(el => securityMarker.test(label(el)) || /#settings\/security|\/settings\/security/i.test(href(el)));
+        const passwordSettingNode = [...document.querySelectorAll('[data-testid]')]
+          .filter(visible).find(el => passwordSettingTestId.test(testId(el)));
+        let target = passwordSettingNode && (passwordSettingNode.matches('button,a,[role="button"]')
+          ? passwordSettingNode
+          : passwordSettingNode.querySelector('button,a,[role="button"]')
+            || passwordSettingNode.closest('button,a,[role="button"]'));
+        if (!target) target = buttons.find(el => addPassword.test(label(el)) && !negative.test(label(el)));
+        if (!target) {
+          const roots = [...document.querySelectorAll('section,article,li,div')]
+            .filter(el => visible(el) && passwordMarker.test(label(el)) && label(el).length <= 500)
+            .sort((a, b) => label(a).length - label(b).length);
+          for (const root of roots) {
+            const candidate = [...root.querySelectorAll('button,a,[role="button"]')]
+              .filter(visible).find(el => {
+                const text = label(el);
+                return !negative.test(text) && (addPassword.test(text) || (addAction.test(text) && text.length <= 120));
+              });
+            if (candidate) { target = candidate; break; }
+          }
+        }
+        const inputs = [...document.querySelectorAll('input[type="password"],input[autocomplete*="password" i],input[name*="password" i]')]
+          .filter(visible);
+        const lines = (document.body?.innerText || '').split(/\n+/).map(line => line.replace(/\s+/g, ' ').trim())
+          .filter(line => line && (passwordMarker.test(line) || addAction.test(line)))
+          .slice(0, 20).map(line => line.slice(0, 240));
+        const controls = buttons.map(label)
+          .filter(text => text && (passwordMarker.test(text) || addAction.test(text)))
+          .slice(0, 30);
+        const pageMeta = {
+          ready_state: String(document.readyState || ''),
+          title: String(document.title || '').slice(0, 120),
+          body_text_length: String(document.body?.innerText || '').length,
+          html_length: String(document.documentElement?.outerHTML || '').length,
+          testids: [...document.querySelectorAll('[data-testid]')].filter(visible)
+            .map(el => String(el.getAttribute('data-testid') || '').slice(0, 120)).filter(Boolean).slice(0, 30),
+          aria_labels: [...document.querySelectorAll('[aria-label]')].filter(visible)
+            .map(el => String(el.getAttribute('aria-label') || '').slice(0, 120)).filter(Boolean).slice(0, 30),
+        };
+        return {
+          action: target,
+          inputs,
+          url: String(location.href || ''),
+          password_controls: controls,
+          password_lines: lines,
+          profile_action: profileAction,
+          settings_action: settingsAction,
+          security_action: securityAction,
+          page_meta: JSON.stringify(pageMeta),
+        };
+        """) or {}
+        password_inputs = list(state.get("inputs") or [])
+        action = state.get("action")
+        profile_action = state.get("profile_action")
+        settings_action = state.get("settings_action")
+        security_action = state.get("security_action")
+        last_url = str(state.get("url") or "")
+        last_password_controls = [str(value)[:120] for value in (state.get("password_controls") or []) if value]
+        last_password_lines = [str(value)[:240] for value in (state.get("password_lines") or []) if value]
+        last_page_meta = str(state.get("page_meta") or "")[:1200]
+        new_inputs = [field for field in password_inputs if not _is_current_password(field)]
+        if new_inputs:
+            break
+        if action is not None:
+            _click_chatgpt_settings_control(driver, action, label="account_password_settings")
+            action = None
+            time.sleep(0.8)
+        elif security_action is not None and security_clicks < 1:
+            _click_chatgpt_settings_control(driver, security_action, label="chatgpt_security_navigation")
+            security_clicks += 1
+            time.sleep(1.2)
+        elif settings_action is not None and settings_clicks < 1:
+            _click_chatgpt_settings_control(driver, settings_action, label="chatgpt_settings_navigation")
+            settings_clicks += 1
+            time.sleep(1.2)
+        elif profile_action is not None and profile_clicks < 1:
+            _click_chatgpt_settings_control(driver, profile_action, label="chatgpt_profile_menu")
+            profile_clicks += 1
+            time.sleep(0.8)
+        else:
+            time.sleep(0.5)
+
+    if not password_inputs:
+        diagnostic = (
+            f"url={last_url[:180]} controls={last_password_controls[:12]} "
+            f"text={last_password_lines[:12]} settings_clicks={settings_clicks} meta={last_page_meta}"
+        )
+        logger.warning("%s 账号设置密码入口诊断：%s", _log_prefix(driver), diagnostic)
+        raise RuntimeError(f"账号设置中未找到“Add password/设置密码”入口；页面诊断：{diagnostic}")
+
+    new_inputs = []
+    for field in password_inputs:
+        if _is_current_password(field):
+            continue
+        new_inputs.append(field)
+    if not new_inputs:
+        diagnostic = (
+            f"url={last_url[:180]} controls={last_password_controls[:12]} "
+            f"text={last_password_lines[:12]} settings_clicks={settings_clicks} meta={last_page_meta}"
+        )
+        logger.warning("%s 账号设置密码表单诊断：%s", _log_prefix(driver), diagnostic)
+        raise RuntimeError(
+            f"账号设置只提供当前密码输入框，未进入“Add password/设置密码”流程；页面诊断：{diagnostic}"
+        )
+
+    for field in new_inputs:
+        _human_type_text(driver, field, normalized, clear=True)
+    submit = _button_after_input(driver, new_inputs[-1])
+    if submit is not None:
+        _human_click(driver, submit, label="account_password_submit")
+    else:
+        submitted = bool(driver.execute_script(r"""
+        const input = arguments[0];
+        const form = input?.closest('form');
+        if (!form) return false;
+        if (typeof form.requestSubmit === 'function') form.requestSubmit();
+        else form.submit();
+        return true;
+        """, new_inputs[-1]))
+        if not submitted:
+            raise RuntimeError("账号密码设置页缺少提交按钮")
+
+    end = time.time() + max(8, int(timeout))
+    last_text = ""
+    while time.time() < end:
+        _check_manual_stop()
+        state = driver.execute_script(r"""
+        const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+          && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+        const inputs = [...document.querySelectorAll('input[type="password"],input[autocomplete*="password" i],input[name*="password" i]')].filter(visible);
+        const errors = [...document.querySelectorAll('[role="alert"],[aria-invalid="true"],[class*="error" i]')]
+          .filter(visible).map(el => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim()).filter(Boolean);
+        return {inputs, errors, body: (document.body?.innerText || '').replace(/\\s+/g, ' ').slice(0, 1200)};
+        """) or {}
+        last_text = "; ".join((state.get("errors") or [])[:3]) or str(state.get("body") or "")[-400:]
+        if state.get("errors"):
+            raise RuntimeError(f"账号密码设置失败：{last_text}")
+        if not state.get("inputs"):
+            logger.info("%s 已补充 ChatGPT 账号密码：email=%s length=%s", _log_prefix(driver), email, len(normalized))
+            return normalized
+        time.sleep(0.5)
+    raise RuntimeError(f"提交账号密码后页面未确认完成：{last_text[:300]}")
 
 
 def _button_after_input(driver, field, *, before: bool = False):
@@ -2783,9 +3165,15 @@ def _button_after_input(driver, field, *, before: bool = False):
     const enabled = el => !el.disabled && String(el.getAttribute('aria-disabled') || '').toLowerCase() !== 'true';
     const buttons = [...root.querySelectorAll('button,input[type="submit"]')].filter(el =>
       visible(el) && enabled(el) && el.getAttribute('data-testid') !== 'close-button');
+    const explicitSubmit = buttons.filter(el =>
+      String(el.getAttribute('type') || '').toLowerCase() === 'submit'
+      || String(el.getAttribute('name') || '').toLowerCase() === 'submit'
+      || String(el.getAttribute('data-testid') || '').toLowerCase().includes('submit')
+    );
+    const ordered = [...explicitSubmit, ...buttons.filter(el => !explicitSubmit.includes(el))];
     const flag = Node.DOCUMENT_POSITION_FOLLOWING;
-    if (wantBefore) return buttons.find(el => (el.compareDocumentPosition(input) & flag) !== 0) || null;
-    return buttons.find(el => (input.compareDocumentPosition(el) & flag) !== 0) || null;
+    if (wantBefore) return ordered.find(el => (el.compareDocumentPosition(input) & flag) !== 0) || null;
+    return ordered.find(el => (input.compareDocumentPosition(el) & flag) !== 0) || null;
     """, field, bool(before))
 
 
@@ -2983,7 +3371,7 @@ def _save_roxy_account_checkpoint(
         "account": account,
         "expires": session_info.get("expires"),
         "roxybrowser": {"profile_id": opened.profile_id, "open_result": opened.raw},
-        "registration_password": openai_password,
+        "account_password": openai_password,
         "registration_checkpoint": "registered",
         "codex": codex_result,
         "twofa": twofa_result,
@@ -3031,7 +3419,7 @@ def _save_pending_email_verification_checkpoint(
         proxy_used=proxy or None,
         email_source=resolve_email_source(email),
         extra={
-            "registration_password": openai_password,
+            "account_password": openai_password,
             "registration_checkpoint": "email_verification_pending",
             "registration_pending_reason": "email_otp_pending",
             "roxybrowser": {"profile_id": opened.profile_id, "open_result": opened.raw},
@@ -3457,7 +3845,7 @@ def run_roxy_registration(
                 "account": session_info.get("account"),
                 "expires": session_info.get("expires"),
                 "roxybrowser": {"profile_id": opened.profile_id, "open_result": opened.raw},
-                "registration_password": openai_password,
+                "account_password": openai_password,
                 "registration_checkpoint": "registered",
                 "codex": codex_result,
                 "twofa": twofa_result,

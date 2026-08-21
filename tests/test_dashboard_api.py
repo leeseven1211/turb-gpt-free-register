@@ -127,6 +127,8 @@ class DashboardApiTests(PostgresTestCase):
         self.assertNotIn('<nav class="module-subnav"', html)
         self.assertIn("$$('[data-module-subnav]').forEach", html)
         self.assertIn('id="btnCodexUploadSub2V2"', html)
+        self.assertIn('id="btnSetupSelectedAccountsV2"', html)
+        self.assertIn("/api/accounts/setup-bulk", html)
         self.assertIn("syncFacetSelect('accountPlanFilterV2'", html)
         self.assertIn("syncFacetSelect('codexStatusFilterV2'", html)
         self.assertIn("syncFacetSelect('codexOauthFilterV2'", html)
@@ -177,6 +179,24 @@ class DashboardApiTests(PostgresTestCase):
         self.assertIn(".accounts-command-deck {\n      position: relative; top: auto;", html)
         self.assertNotIn("TG 交流群", html)
         self.assertNotIn("切换老 UI", html)
+
+    @patch("webui.app.threading.Thread")
+    @patch("webui.app.account_task_store.create_task", return_value=901)
+    @patch("webui.app.codex_retry_service.reserve", return_value=True)
+    @patch("webui.app.db.get_account", return_value={
+        "id": 1,
+        "email": "setup@example.com",
+        "account_status": "active",
+    })
+    def test_account_setup_endpoint_queues_configuration_without_codex(self, _get_account, _reserve, _create_task, thread_cls):
+        response = self.client.post("/api/accounts/1/setup", headers=self.headers, json={})
+        self.assertEqual(response.status_code, 202)
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["task_id"], 901)
+        self.assertEqual(thread_cls.call_args.kwargs["kwargs"]["task_id"], 901)
+        self.assertEqual(thread_cls.call_args.kwargs["kwargs"]["task_trigger"], "manual_account_setup")
+        self.assertEqual(thread_cls.call_args.kwargs["target"].__name__, "_run_account_setup_worker")
 
     def test_modern_ui_polling_avoids_overlapping_requests_and_duplicate_summary_refresh(self):
         response = self.client.get("/", headers=self.headers)
@@ -245,7 +265,7 @@ class DashboardApiTests(PostgresTestCase):
         self.assertIn("event.preventDefault();", html)
 
     @patch("webui.app.db.list_accounts", return_value=[
-        {"id": 1, "email": "target@example.com", "email_source": "outlook", "access_token": "token", "totp_secret": "JBSWY3DPEHPK3PXP", "codex_status": "success", "plan_type": "free", "current_plan_type": "free", "plan_check_status": "success", "plus_trial_eligible": True, "extra_json": '{"registration_password":"Random123!abcd"}'},
+        {"id": 1, "email": "target@example.com", "email_source": "outlook", "access_token": "token", "totp_secret": "JBSWY3DPEHPK3PXP", "codex_status": "success", "plan_type": "free", "current_plan_type": "free", "plan_check_status": "success", "plus_trial_eligible": True, "extra_json": '{"account_password":"Account123!abcd"}'},
         {"id": 2, "email": "other@example.com", "email_source": "icloud_hide", "access_token": "", "totp_enabled": False, "codex_status": "failed", "plan_type": "plus", "current_plan_type": "plus"},
     ])
     def test_accounts_column_filters_are_combined(self, _list_accounts):
@@ -260,7 +280,7 @@ class DashboardApiTests(PostgresTestCase):
         self.assertEqual({item["value"] for item in payload["facets"]["codex"]}, {"success", "failed"})
         self.assertEqual({item["value"] for item in payload["facets"]["password"]}, {"has", "none"})
         self.assertEqual({item["value"] for item in payload["facets"]["trial"]}, {"eligible", "not_applicable"})
-        self.assertTrue(payload["items"][0]["has_registration_password"])
+        self.assertTrue(payload["items"][0]["has_account_password"])
         self.assertTrue(payload["items"][0]["totp_enabled"])
 
     @patch("webui.app.db.list_accounts", return_value=[
@@ -282,15 +302,31 @@ class DashboardApiTests(PostgresTestCase):
     @patch("webui.app.db.get_account", return_value={
         "id": 1,
         "email": "target@example.com",
-        "extra_json": '{"registration_password":"Random123!abcd"}',
+        "extra_json": '{"account_password":"Account123!abcd"}',
     })
-    def test_account_registration_password_is_only_returned_by_secret_endpoint(self, _get_account):
+    def test_account_password_is_only_returned_by_secret_endpoint(self, _get_account):
         response = self.client.get(
-            "/api/accounts/1/secret?field=registration_password",
+            "/api/accounts/1/secret?field=account_password",
             headers=self.headers,
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json()["value"], "Random123!abcd")
+        self.assertEqual(response.get_json()["value"], "Account123!abcd")
+
+    @patch("webui.app.db.get_account", return_value={
+        "id": 1,
+        "email": "target@example.com",
+        "extra_json": (
+            '{"registration_password":"Signup123!",'
+            '"login_password":"Login456!"}'
+        ),
+    })
+    def test_legacy_password_fields_are_read_as_one_account_password(self, _get_account):
+        response = self.client.get(
+            "/api/accounts/1/secret?field=account_password",
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["value"], "Login456!")
 
     @patch("webui.app.db.get_account", return_value={
         "id": 1,

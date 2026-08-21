@@ -161,6 +161,56 @@ class JobProgressTests(PostgresTestCase):
         self.assertEqual(info["retry_action"], "twofa")
         self.assertEqual(info["retry_label"], "重试 2FA")
 
+    def test_successful_codex_account_with_missing_setup_offers_account_setup_retry(self):
+        job = {
+            "id": 12,
+            "status": "success",
+            "account_id": 45,
+            "progress_steps": {"codex": {"state": "success"}},
+        }
+        account = {
+            "id": 45,
+            "email": "setup@example.com",
+            "access_token": "saved-token",
+            "codex_status": "success",
+            "plan_check_status": "failed",
+            "totp_secret": "",
+            "extra_json": "{}",
+        }
+        with patch.object(db, "get_successful_retry_for_job", return_value=None), patch.object(
+            registration_service, "_account_for_job", return_value=account
+        ):
+            info = registration_service.get_retry_info(job)
+
+        self.assertEqual(info["display_status"], "partial_success")
+        self.assertTrue(info["retryable"])
+        self.assertEqual(info["retry_action"], "twofa")
+        self.assertEqual(info["retry_label"], "补齐账号配置")
+
+    def test_account_password_counts_as_current_password(self):
+        job = {
+            "id": 13,
+            "status": "partial_success",
+            "account_id": 46,
+            "progress_steps": {"codex": {"state": "success"}, "twofa": {"state": "success"}},
+        }
+        account = {
+            "id": 46,
+            "email": "new-password@example.com",
+            "access_token": "saved-token",
+            "codex_status": "success",
+            "plan_check_status": "success",
+            "totp_secret": "JBSWY3DPEHPK3PXP",
+            "extra_json": '{"account_password":"AccountPassword!123"}',
+        }
+        with patch.object(db, "get_successful_retry_for_job", return_value=None), patch.object(
+            registration_service, "_account_for_job", return_value=account
+        ):
+            info = registration_service.get_retry_info(job)
+
+        self.assertFalse(info["retryable"])
+        self.assertEqual(info["retry_reason"], "账号和 Codex 授权均已完成")
+
     def test_pending_email_verification_account_resumes_saved_login(self):
         job = {
             "id": 11,

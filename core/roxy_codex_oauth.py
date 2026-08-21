@@ -26,6 +26,8 @@ from core.roxy_registration import (
     _type_any,
     _type_email_address,
     _submit_email_step,
+    _recover_email_submit_if_stuck,
+    _submit_email_via_browser_nextauth,
     _click_email_entry_option,
     _type_otp,
     _clear_otp_inputs,
@@ -205,7 +207,15 @@ def _account_login_credentials(email: str) -> tuple[str, str]:
             raw_extra = json.loads(raw_extra)
         except (TypeError, ValueError, json.JSONDecodeError):
             raw_extra = {}
-    password = str(raw_extra.get("registration_password") or "").strip() if isinstance(raw_extra, dict) else ""
+    password = ""
+    if isinstance(raw_extra, dict):
+        # 新账号只保存 account_password；旧账号继续兼容两个历史字段。
+        password = str(
+            raw_extra.get("account_password")
+            or raw_extra.get("login_password")
+            or raw_extra.get("registration_password")
+            or ""
+        ).strip()
     totp_secret = str(account.get("totp_secret") or "").strip()
     return password, totp_secret
 
@@ -241,7 +251,12 @@ def _login_challenge_state(driver) -> dict:
         };
         """) or {}
     except Exception as exc:
-        return {"url": getattr(driver, "current_url", ""), "error": f"{type(exc).__name__}: {exc}"}
+        # driver 失效时再次读取 current_url 也可能抛 InvalidSessionId，不能让诊断覆盖原始错误。
+        try:
+            fallback_url = str(driver.current_url or "")
+        except Exception:
+            fallback_url = ""
+        return {"url": fallback_url, "error": f"{type(exc).__name__}: {exc}"}
 
 
 def _is_totp_login_page(driver, state: dict | None = None) -> bool:
@@ -379,6 +394,9 @@ def _complete_login_challenge_after_email(
     password_submitted_at = 0.0
     totp_submitted_at = 0.0
     passwordless_clicked = False
+    email_shell_seen_at = 0.0
+    email_resubmit_done = False
+    nextauth_fallback_done = False
     last_state: dict = {}
     last_url = ""
     while time.time() < end:
@@ -388,6 +406,57 @@ def _complete_login_challenge_after_email(
         if url != last_url:
             logger.info("[Codex][Browser] 邮箱提交后登录分支：url=%s", url or "-")
             last_url = url
+
+        # Roxy/Chrome occasionally leaves the SPA at /auth/login?email=... after
+        # the first submit. Re-submit the same email form once after a short
+        # debounce so the normal password/OTP branch can continue.
+        inputs = state.get("inputs") or []
+        has_email_input = any(
+            str(item.get("type") or "").lower() == "email"
+            or "email" in str(item.get("autocomplete") or "").lower()
+            or str(item.get("name") or "").lower() in {"email", "username"}
+            for item in inputs
+        )
+        has_challenge_input = any(
+            str(item.get("type") or "").lower() == "password"
+            or any(marker in " ".join(
+                str(item.get(key) or "") for key in ("name", "id", "autocomplete", "inputmode")
+            ).lower() for marker in ("password", "one-time-code", "otp", "totp", "code"))
+            for item in inputs
+        )
+        if "/auth/login" in url.lower() and "email=" in url.lower() and has_email_input and not has_challenge_input:
+            now = time.time()
+            if not email_shell_seen_at:
+                email_shell_seen_at = now
+            elif not nextauth_fallback_done and now - email_shell_seen_at >= 2.0:
+                # UI 提交可能只更新 URL，不触发真正的 Auth 分支。先使用当前
+                # Roxy 会话调用 ChatGPT NextAuth，避免在同一个 SPA 壳里反复等待。
+                fallback = _submit_email_via_browser_nextauth(driver, email)
+                nextauth_fallback_done = True
+                safe_fallback = {
+                    key: fallback.get(key)
+                    for key in ("ok", "stage", "state", "reason")
+                    if key in fallback
+                }
+                logger.warning("[Codex][Browser] 登录页停留在 login?email，已启用 NextAuth 兜底：%s", safe_fallback)
+                if fallback.get("ok"):
+                    end = max(end, now + 45)
+                    human_delay("form")
+                    continue
+
+            if not email_resubmit_done and nextauth_fallback_done and now - email_shell_seen_at >= 8.0:
+                recovery = _recover_email_submit_if_stuck(driver, email)
+                email_resubmit_done = True
+                safe_recovery = {
+                    key: recovery.get(key)
+                    for key in ("ok", "reason", "hasForm", "hasSubmit")
+                    if key in recovery
+                }
+                logger.warning("[Codex][Browser] 邮箱提交后停留在 login?email，已补交邮箱表单：%s", safe_recovery)
+                if recovery.get("ok"):
+                    end = max(end, now + 45)
+                    human_delay("form")
+                    continue
 
         # TOTP may be rendered in-place while the stale URL still ends in
         # /log-in/password, so inspect the live controls before trusting the URL.
@@ -2477,16 +2546,16 @@ def _run_roxy_codex_oauth_once(
         if before_oauth_setup is not None:
             # Codex OAuth 的 auth.openai.com 登录态本身不会建立 ChatGPT 的
             # NextAuth session，直接打开安全设置只会得到没有控件的登录空壳。
-            # 缺 2FA 时先独立完成一次 ChatGPT 登录，确认 session 后再设置 2FA；
+            # 缺登录密码或 2FA 时先独立完成一次 ChatGPT 登录，确认 session 后再补配置；
             # 全程还没有进入手机号页面，因此失败也不会产生接码费用。
-            logger.info("[Codex][Browser] 账号缺少 2FA，先建立 ChatGPT 登录态")
+            logger.info("[Codex][Browser] 账号缺少登录密码/2FA，先建立 ChatGPT 登录态")
             _fill_email_and_otp(driver, email, otp_provider, "https://chatgpt.com/auth/login")
             from core.roxy_registration import _fetch_chatgpt_session
 
             _fetch_chatgpt_session(driver, timeout=90, auto_jump_wait=10)
             setup_changed = bool(before_oauth_setup(driver))
             if setup_changed:
-                logger.info("[Codex][Browser] 2FA 已补齐，重新打开授权地址继续 OAuth")
+                logger.info("[Codex][Browser] 账号前置配置已补齐，重新打开授权地址继续 OAuth")
         _fill_email_and_otp(driver, email, otp_provider, auth_url)
         human_delay("api")
         logger.info("[Codex][Browser] 检查是否需要手机号验证")

@@ -221,10 +221,11 @@ def check_registration_account_plan(
     access_token: str,
     proxy: str,
     timezone_offset_min: str = "-",
+    trigger: str = "registration_auto",
 ) -> dict:
     """用注册任务的同一代理同步查询套餐，返回后调用方才可释放代理租约。"""
     account_id = int(account_id)
-    trigger = "registration_auto"
+    trigger = str(trigger or "registration_auto")
     if not db.claim_account_plan_check(acc_id=account_id, trigger=trigger):
         return {"ok": False, "busy": True, "error": "该账号正在查询套餐"}
     task_id = account_task_store.create_task(

@@ -963,7 +963,7 @@ python tools/test_codex_oauth.py --email <已注册邮箱> --verbose
 
 ---
 
-## 注册密码说明
+## 账号密码说明
 
 OpenAI 新版注册通常先展示邮箱验证码页；新账号页面同时提供：
 
@@ -978,18 +978,19 @@ OpenAI 新版注册通常先展示邮箱验证码页；新账号页面同时提�
 
 邮箱验证码是 OpenAI 的邮箱所有权验证步骤；即使选择 `password`，设置密码后仍然需要邮箱 OTP。若 password 模式下页面没有提供创建密码入口，任务会明确失败，避免把无密码账号误报为密码注册成功。
 
-密码设置成功后，OpenAI 登录页仍可能默认先展示邮箱验证码；此时可通过 `/log-in/password` 的“使用密码继续”入口改用密码登录。
+密码设置成功后，OpenAI 登录页仍可能默认先展示邮箱验证码；此时可通过 `/log-in/password` 的“使用密码继续”入口改用密码登录。无密码注册的账号可以在账号配置补跑时设置一次密码；已有密码的账号不会修改密码。
 
 密码始终按账号独立随机生成：14 位，包含大写、小写、数字和符号。配置页不提供固定密码输入，避免一批账号共用同一个密码。
 
 保存位置：
 
-- 账号 `extra_json.registration_password`
-- 批次归档 `accounts/YYYYMMDD-.../注册成功账号.json` 的 `extra.registration_password`
+- 账号 `extra_json.account_password`：账号唯一密码。注册时或账号配置补跑时设置后都写入这里，后续补跑只会读取，不会改密码。
+- 旧数据中的 `extra_json.registration_password` / `extra_json.login_password` 仅作为兼容读取来源，新写入不会再生成这两个字段。
+- 批次归档 `accounts/YYYYMMDD-.../注册成功账号.json` 的 `extra.account_password`
 
-账号页提供“登录密码”状态列和真实数据筛选。已设置密码的账号可以单独复制；批量选择后可用“复制密码”导出 `邮箱----密码`，未设置密码的账号会自动跳过。
+账号页提供“账号密码”状态列和真实数据筛选。已设置密码的账号可以单独复制；批量选择后可用“复制密码”导出 `邮箱----密码`，未设置密码的账号会自动跳过。
 
-注意：账号表里的 `password` 字段仍用于 Outlook 邮箱素材密码，不会被 OpenAI 注册密码覆盖。
+注意：账号表里的 `password` 字段仍用于 Outlook 邮箱素材密码，不会被 OpenAI 账号密码覆盖。
 
 ---
 

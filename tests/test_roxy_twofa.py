@@ -6,6 +6,60 @@ from core import db, roxy_registration
 
 
 class RoxyTwoFactorTests(unittest.TestCase):
+    def test_password_setup_uses_account_add_password_flow(self):
+        driver = Mock()
+        new_input = Mock()
+        new_input.get_attribute.side_effect = lambda name: {
+            "autocomplete": "new-password",
+            "name": "password",
+            "id": "new-password",
+        }.get(name, "")
+        confirm_input = Mock()
+        confirm_input.get_attribute.side_effect = lambda name: {
+            "autocomplete": "new-password",
+            "name": "confirm_password",
+            "id": "confirm-password",
+        }.get(name, "")
+        add_password = object()
+        submit = object()
+        driver.execute_script.side_effect = [
+            {"action": add_password, "inputs": [], "body": "密码 添加"},
+            {"action": None, "inputs": [new_input, confirm_input], "body": "新密码 重新输入新密码"},
+            {"inputs": [], "errors": [], "body": "Password added"},
+        ]
+
+        with patch.object(roxy_registration, "_safe_get") as safe_get, patch.object(
+            roxy_registration, "_check_manual_stop"
+        ), patch.object(roxy_registration, "_dismiss_single_action_dialog", return_value=False), patch.object(
+            roxy_registration, "_dismiss_chatgpt_pricing_modal", return_value=False
+        ), patch.object(
+            roxy_registration, "_human_type_text"
+        ) as type_text, patch.object(
+            roxy_registration, "_button_after_input", return_value=submit
+        ), patch.object(roxy_registration, "_human_click") as click, patch.object(
+            roxy_registration.time, "sleep"
+        ):
+            result = roxy_registration.set_roxy_login_password(
+                driver, "new@example.com", "AccountPassword!123", timeout=10
+            )
+
+        self.assertEqual(result, "AccountPassword!123")
+        self.assertEqual(safe_get.call_args.args[1], roxy_registration._CHATGPT_PASSWORD_SETTINGS_URL)
+        self.assertEqual(
+            type_text.call_args_list,
+            [
+                unittest.mock.call(driver, new_input, "AccountPassword!123", clear=True),
+                unittest.mock.call(driver, confirm_input, "AccountPassword!123", clear=True),
+            ],
+        )
+        self.assertEqual(
+            click.call_args_list,
+            [
+                unittest.mock.call(driver, add_password, label="account_password_settings"),
+                unittest.mock.call(driver, submit, label="account_password_submit"),
+            ],
+        )
+
     def test_job_progress_runs_codex_before_twofa(self):
         stages = [key for key, _label in db.JOB_PROGRESS_STAGES]
         self.assertIn("twofa", stages)
@@ -118,7 +172,7 @@ class RoxyTwoFactorTests(unittest.TestCase):
                 proxy="http://proxy.example",
             )
         self.assertEqual(row_id, 17)
-        self.assertEqual(insert.call_args.kwargs["extra"]["registration_password"], "RandomPassword!123")
+        self.assertEqual(insert.call_args.kwargs["extra"]["account_password"], "RandomPassword!123")
         self.assertEqual(insert.call_args.kwargs["extra"]["registration_checkpoint"], "registered")
         self.assertEqual(insert.call_args.kwargs["access_token"], "token")
 
@@ -141,7 +195,7 @@ class RoxyTwoFactorTests(unittest.TestCase):
             "email_verification_pending",
         )
         self.assertEqual(
-            insert.call_args.kwargs["extra"]["registration_password"],
+            insert.call_args.kwargs["extra"]["account_password"],
             "StoredPassword!123",
         )
 

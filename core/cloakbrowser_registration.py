@@ -188,7 +188,7 @@ def run_cloak_registration(email: str, name: str, birthday: str, proxy: str = No
                 "account": session_info.get("account"),
                 "expires": session_info.get("expires"),
                 "cloakbrowser": {"profile_id": opened.profile_id, "open_result": opened.raw},
-                "registration_password": openai_password,
+                "account_password": openai_password,
                 "codex": codex_result,
             },
         )

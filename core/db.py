@@ -865,6 +865,31 @@ def update_account_codex_status(email: str, codex_status: str, codex_error: str 
     })
 
 
+def update_account_login_password(email: str, password: str, *, source: str = "post_registration") -> bool:
+    """保存账号当前 OpenAI 密码；旧函数名保留以兼容调用方。"""
+    normalized = str(password or "").strip()
+    if not normalized:
+        return False
+    row = record_store.get_row_by(record_store.ACCOUNTS, "email", email, lower=True)
+    if row is None:
+        return False
+    raw_extra = row.get("extra_json") or {}
+    if isinstance(raw_extra, str):
+        try:
+            raw_extra = json.loads(raw_extra)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw_extra = {}
+    extra = dict(raw_extra) if isinstance(raw_extra, dict) else {}
+    extra["account_password"] = normalized
+    extra.pop("login_password", None)
+    extra.pop("login_password_source", None)
+    extra.pop("registration_password", None)
+    return _patch_account(int(row["id"]), {
+        "extra_json": json.dumps(extra, ensure_ascii=False),
+        "updated_at": _now(),
+    })
+
+
 def update_account_totp_secret(
     email: str,
     totp_secret: str,
@@ -2525,7 +2550,7 @@ def create_retry_job(
         source = next((r for r in rows if int(r.get("id") or 0) == int(source_job_id)), None)
         if source is None:
             raise LookupError("任务不存在")
-        if source.get("status") not in ("failed", "partial_success", "stopped", "cancelled"):
+        if source.get("status") not in ("success", "failed", "partial_success", "stopped", "cancelled"):
             raise ValueError(f"当前状态不支持重试：{source.get('status')}")
 
         root_id = int(source.get("root_job_id") or source.get("id"))

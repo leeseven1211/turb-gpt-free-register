@@ -103,7 +103,7 @@ def _matches_account_columns(row: dict, filters: dict[str, str]) -> bool:
     if token == "none" and str(row.get("access_token") or "").strip():
         return False
     password = filters.get("password")
-    has_password = bool(_account_registration_password(row))
+    has_password = bool(_account_login_password(row))
     if password == "has" and not has_password:
         return False
     if password == "none" and has_password:
@@ -195,7 +195,7 @@ def _compact_account_for_list(row: dict) -> dict:
         "id": row.get("id"),
         "email": row.get("email"),
         "has_access_token": bool(str(row.get("access_token") or "").strip()),
-        "has_registration_password": bool(_account_registration_password(row)),
+        "has_account_password": bool(_account_password(row)),
         "totp_enabled": bool(row.get("totp_secret")),
     }
 
@@ -258,17 +258,17 @@ def _account_secret_value(row: dict, field: str) -> str:
         return str(row.get("access_token") or "")
     if field == "copy_line":
         return str(row.get("copy_line") or "")
-    if field == "registration_password":
-        return _account_registration_password(row)
-    if field == "registration_password_line":
-        password = _account_registration_password(row)
+    if field in {"account_password", "registration_password", "login_password"}:
+        return _account_password(row)
+    if field in {"account_password_line", "registration_password_line", "login_password_line"}:
+        password = _account_password(row)
         return f"{row.get('email') or ''}----{password}" if password else ""
     if field == "totp_secret":
         return str(row.get("totp_secret") or "")
-    raise ValueError("field 仅支持 access_token/copy_line/registration_password/registration_password_line/totp_secret")
+    raise ValueError("field 仅支持 access_token/copy_line/account_password/account_password_line/totp_secret")
 
 
-def _account_registration_password(row: dict) -> str:
+def _account_password(row: dict) -> str:
     extra = row.get("extra_json") or {}
     if isinstance(extra, str):
         try:
@@ -276,7 +276,24 @@ def _account_registration_password(row: dict) -> str:
             extra = json.loads(extra)
         except (TypeError, ValueError):
             extra = {}
-    return str(extra.get("registration_password") or "") if isinstance(extra, dict) else ""
+    if not isinstance(extra, dict):
+        return ""
+    return str(
+        extra.get("account_password")
+        or extra.get("login_password")
+        or extra.get("registration_password")
+        or ""
+    )
+
+
+def _account_registration_password(row: dict) -> str:
+    """旧字段兼容别名；新账号统一使用 account_password。"""
+    return _account_password(row)
+
+
+def _account_login_password(row: dict) -> str:
+    """旧字段兼容别名；新账号统一使用 account_password。"""
+    return _account_password(row)
 
 
 def _compact_job_for_list(row: dict) -> dict:
@@ -627,7 +644,7 @@ def create_app(auth_code: str | None = None) -> Flask:
         facets = {
             "source": _facet_values(facet_rows, lambda row: row.get("email_source")),
             "token": _facet_values(facet_rows, lambda row: "has" if str(row.get("access_token") or "").strip() else "none"),
-            "password": _facet_values(facet_rows, lambda row: "has" if _account_registration_password(row) else "none"),
+            "password": _facet_values(facet_rows, lambda row: "has" if _account_login_password(row) else "none"),
             "plan": _facet_values(facet_rows, lambda row: row.get("current_plan_type") or row.get("plan_type")),
             "trial": _facet_values(facet_rows, _account_trial_value),
             "totp": _facet_values(facet_rows, lambda row: "enabled" if bool(row.get("totp_secret") or row.get("totp_enabled")) else "disabled"),
@@ -726,6 +743,11 @@ def create_app(auth_code: str | None = None) -> Flask:
                 email=str(account.get("email") or ""),
                 trigger="manual_retry",
             )
+        elif task_type == "account_setup_retry":
+            queued = _enqueue_account_setup(
+                int(account["id"]),
+                trigger="manual_retry",
+            )
         elif task_type == "codex_token_refresh":
             filename = str((task.get("result_summary") or {}).get("filename") or "")
             queued = codex_token_refresh_service.enqueue_refresh(
@@ -739,6 +761,56 @@ def create_app(auth_code: str | None = None) -> Flask:
         if not queued.get("accepted"):
             return jsonify({"ok": False, **queued}), 400
         return jsonify({"ok": True, **queued}), 202
+
+    @app.post("/api/accounts/<int:acc_id>/setup")
+    def api_account_setup(acc_id: int):
+        """只补齐账号密码、套餐和 Authenticator 2FA，不执行 Codex。"""
+        queued = _enqueue_account_setup(acc_id, trigger="manual_account_setup")
+        if queued.get("busy"):
+            return jsonify({"ok": False, **queued}), 409
+        if not queued.get("accepted"):
+            status = 404 if queued.get("error") == "账号不存在" else 400
+            return jsonify({"ok": False, **queued}), status
+        return jsonify({"ok": True, **queued}), 202
+
+    @app.post("/api/accounts/setup-bulk")
+    def api_accounts_setup_bulk():
+        """批量只补齐账号密码、套餐和 Authenticator 2FA，不执行 Codex。"""
+        data = request.get_json(silent=True) or {}
+        raw_ids = data.get("account_ids") or data.get("ids") or []
+        if not isinstance(raw_ids, list) or not raw_ids:
+            return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
+        if len(raw_ids) > 500:
+            return jsonify({"ok": False, "error": "单次最多补齐 500 个账号"}), 400
+        started, reused, skipped = [], [], []
+        seen = set()
+        for raw_id in raw_ids:
+            try:
+                acc_id = int(raw_id)
+            except (TypeError, ValueError):
+                skipped.append({"id": raw_id, "reason": "ID 非法"})
+                continue
+            if acc_id in seen:
+                continue
+            seen.add(acc_id)
+            result = _enqueue_account_setup(acc_id, trigger="manual_account_setup_bulk")
+            if result.get("busy"):
+                skipped.append({"id": acc_id, "reason": result.get("error") or "账号正在执行其它操作"})
+            elif not result.get("accepted"):
+                skipped.append({"id": acc_id, "reason": result.get("error") or "不能补齐账号配置"})
+            else:
+                started.append(result)
+        if not started and not skipped:
+            return jsonify({"ok": False, "error": "没有可补齐的账号"}), 409
+        return jsonify({
+            "ok": True,
+            "started": started,
+            "started_count": len(started),
+            "reused": reused,
+            "reused_count": len(reused),
+            "skipped": skipped,
+            "skipped_count": len(skipped),
+        }), 202
 
 
     @app.post("/api/accounts/<int:acc_id>/check-deactivation-mail")
@@ -2491,6 +2563,65 @@ def create_app(auth_code: str | None = None) -> Flask:
             "email": email,
             "status": "queued",
             "trigger": str(trigger or "manual"),
+        }
+
+    def _run_account_setup_worker(email: str, *, task_id: int, task_trigger: str) -> None:
+        """执行只补账号配置的任务，不触发 Codex OAuth。"""
+        codex_retry_service.run_twofa_worker(
+            email,
+            task_id=task_id,
+            task_trigger=task_trigger,
+        )
+
+    def _enqueue_account_setup(account_id: int, *, trigger: str = "manual_account_setup") -> dict:
+        """给账号单独排队账号密码、套餐和 2FA 配置补跑。"""
+        try:
+            acc = db.get_account(int(account_id))
+        except (TypeError, ValueError):
+            acc = None
+        if acc is None:
+            return {"accepted": False, "error": "账号不存在"}
+        email = str(acc.get("email") or "").strip()
+        if not email:
+            return {"accepted": False, "error": "账号邮箱为空"}
+        if str(acc.get("account_status") or "").lower() == "deactivated":
+            return {"accepted": False, "error": "账号已废号，不能补齐配置"}
+        if not codex_retry_service.reserve(email):
+            return {"accepted": False, "busy": True, "error": "该账号正在执行账号操作，请稍候"}
+
+        try:
+            task_id = account_task_store.create_task(
+                task_type="account_setup_retry",
+                account_id=int(acc.get("id") or 0) or None,
+                email=email,
+                trigger=str(trigger or "manual_account_setup"),
+            )
+        except Exception as exc:
+            codex_retry_service.release(email)
+            logger.exception("创建账号配置补跑任务实例失败：email=%s", email)
+            return {"accepted": False, "error": f"任务实例创建失败：{type(exc).__name__}: {exc}"}
+
+        worker = threading.Thread(
+            target=_run_account_setup_worker,
+            kwargs={"email": email, "task_id": task_id, "task_trigger": str(trigger or "manual_account_setup")},
+            name=f"account-setup-{email}",
+            daemon=True,
+        )
+        try:
+            worker.start()
+        except Exception as exc:
+            codex_retry_service.release(email)
+            error = f"账号配置补跑启动失败：{type(exc).__name__}: {exc}"
+            account_task_store.finish_task(task_id, status="failed", message="账号配置补跑启动失败", error=error)
+            return {"accepted": False, "task_id": task_id, "error": error}
+        return {
+            "accepted": True,
+            "busy": False,
+            "task_id": task_id,
+            "account_id": int(acc.get("id") or 0) or None,
+            "email": email,
+            "status": "queued",
+            "trigger": str(trigger or "manual_account_setup"),
         }
 
 

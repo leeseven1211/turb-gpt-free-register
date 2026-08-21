@@ -2027,7 +2027,7 @@ def run_browser_use_registration(
                         "session_id": getattr(session_info_open, "session_id", ""),
                         "connect": session_info_open.raw,
                     },
-                    "registration_password": openai_password,
+                    "account_password": openai_password,
                     "codex": codex_result,
                 },
             )
