@@ -439,6 +439,14 @@ def _complete_login_challenge_after_email(
                     if key in fallback
                 }
                 logger.warning("[Codex][Browser] 登录页停留在 login?email，已启用 NextAuth 兜底：%s", safe_fallback)
+                # NextAuth 导航可能已经落到 OTP 页，但当前 Selenium 句柄的
+                # SPA 状态仍短暂保留旧的 login?email 壳。优先消费兜底返回的
+                # 稳定状态，避免再次读取旧 DOM 等到总超时。
+                fallback_state = str(fallback.get("state") or "").strip().lower()
+                if fallback.get("ok") and fallback_state == "otp":
+                    return "email_otp"
+                if fallback.get("ok") and fallback_state == "advanced":
+                    return "advanced"
                 if fallback.get("ok"):
                     end = max(end, now + 45)
                     human_delay("form")

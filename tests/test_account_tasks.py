@@ -3,6 +3,7 @@ import base64
 import json
 import os
 import tempfile
+import threading
 import unittest
 import uuid
 from contextlib import ExitStack
@@ -326,6 +327,88 @@ class CodexRetryTaskTests(unittest.TestCase):
                 call("a@example.com", secret, setup_pending=False),
             ],
         )
+
+    def test_account_setup_runs_password_and_protocol_twofa_in_parallel(self):
+        secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+        account = {
+            "id": 9,
+            "email": "a@example.com",
+            "access_token": "saved-token",
+            "totp_secret": "",
+            "extra_json": "{}",
+        }
+        barrier = threading.Barrier(2)
+
+        def set_password(_driver, _email, _password):
+            barrier.wait(timeout=2)
+
+        def setup_protocol(_session, access_token, *, on_secret):
+            self.assertEqual(access_token, "fresh-chatgpt-token")
+            barrier.wait(timeout=2)
+            on_secret(secret)
+            return secret
+
+        with (
+            patch.object(codex_retry_service.db, "get_account_by_email", return_value=account),
+            patch.object(codex_retry_service.db, "update_account_login_password", return_value=True),
+            patch.object(codex_retry_service.db, "update_account_totp_secret", return_value=True) as save_totp,
+            patch.object(codex_retry_service.db, "update_account_twofa_status", return_value=True),
+            patch.object(codex_retry_service.account_task_store, "append_event"),
+            patch("config.twofa.get_twofa_driver", return_value="protocol"),
+            patch("core.roxy_registration._registration_password", return_value="AccountPassword!123"),
+            patch("core.roxy_registration.set_roxy_login_password", side_effect=set_password),
+            patch("core.roxy_registration._fetch_chatgpt_session", return_value={"accessToken": "fresh-chatgpt-token"}),
+            patch("core.session.BrowserSession"),
+            patch("core.account_export.setup_2fa_protocol", side_effect=setup_protocol),
+        ):
+            setup = codex_retry_service._build_roxy_account_setup(
+                "a@example.com", 101, proxy="http://proxy.example"
+            )
+            self.assertTrue(setup(object()))
+
+        self.assertEqual(
+            save_totp.call_args_list,
+            [
+                call("a@example.com", secret, setup_pending=True),
+                call("a@example.com", secret, setup_pending=False),
+            ],
+        )
+
+    def test_account_setup_continues_twofa_when_password_step_fails(self):
+        secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+        account = {
+            "id": 9,
+            "email": "a@example.com",
+            "access_token": "saved-token",
+            "totp_secret": "",
+            "extra_json": "{}",
+        }
+        setup_order = []
+
+        def fail_password(_driver, _email, _password):
+            setup_order.append("password")
+            raise RuntimeError("password page unavailable")
+
+        def setup_twofa(_driver, _email, *, on_secret, existing_secret=None):
+            setup_order.append("twofa")
+            on_secret(secret)
+            return secret
+
+        with (
+            patch.object(codex_retry_service.db, "get_account_by_email", return_value=account),
+            patch.object(codex_retry_service.db, "update_account_totp_secret", return_value=True),
+            patch.object(codex_retry_service.db, "update_account_twofa_status", return_value=True),
+            patch.object(codex_retry_service.account_task_store, "append_event"),
+            patch("config.twofa.get_twofa_driver", return_value="browser"),
+            patch("core.roxy_registration._registration_password", return_value="AccountPassword!123"),
+            patch("core.roxy_registration.set_roxy_login_password", side_effect=fail_password),
+            patch("core.roxy_registration.setup_roxy_2fa", side_effect=setup_twofa),
+        ):
+            setup = codex_retry_service._build_roxy_account_setup("a@example.com", 101)
+            with self.assertRaisesRegex(RuntimeError, "账号密码"):
+                setup(object())
+
+        self.assertEqual(setup_order, ["password", "twofa"])
 
 
 class AccountTaskApiTests(PostgresTestCase):

@@ -17,6 +17,7 @@ _RETRYING_LOCK = threading.Lock()
 _STOP_REQUESTED: set[str] = set()
 _RUNNING_THREADS: dict[str, int] = {}
 _RESERVED_AT: dict[str, float] = {}
+_ACCOUNT_SETUP_DB_LOCK = threading.RLock()
 
 
 class CodexRetryStopped(BaseException):
@@ -186,7 +187,13 @@ def check_stop_requested(email: str) -> None:
         raise CodexRetryStopped("用户手动停止 Codex 补跑")
 
 
-def _build_roxy_twofa_setup(email: str, task_id: int, *, proxy: str | None = None):
+def _build_roxy_twofa_setup(
+    email: str,
+    task_id: int,
+    *,
+    proxy: str | None = None,
+    access_token: str | None = None,
+):
     """为缺少 TOTP 的补跑构造一次性 2FA 前置步骤。"""
     state = {"secret": ""}
 
@@ -203,14 +210,17 @@ def _build_roxy_twofa_setup(email: str, task_id: int, *, proxy: str | None = Non
         account_task_store.append_event(
             task_id,
             stage="twofa",
-            message="账号未设置 2FA，先启用 Authenticator 再执行 Codex OAuth",
+            message="账号未设置 2FA，开始启用 Authenticator",
         )
         logger.info("[Codex 补跑][2FA] 账号缺少 Authenticator key，开始前置设置：%s", email)
 
         def _checkpoint(secret: str) -> None:
             normalized = str(secret or "").strip()
-            if not normalized or not db.update_account_totp_secret(email, normalized, setup_pending=True):
+            if not normalized:
                 raise RuntimeError("Authenticator key 写入账号检查点失败")
+            with _ACCOUNT_SETUP_DB_LOCK:
+                if not db.update_account_totp_secret(email, normalized, setup_pending=True):
+                    raise RuntimeError("Authenticator key 写入账号检查点失败")
             state["secret"] = normalized
             logger.info("[Codex 补跑][2FA] Authenticator key 已在激活前写入账号检查点")
 
@@ -225,14 +235,16 @@ def _build_roxy_twofa_setup(email: str, task_id: int, *, proxy: str | None = Non
                 from core.roxy_registration import _fetch_chatgpt_session
                 from core.session import BrowserSession
 
-                session_info = _fetch_chatgpt_session(driver, timeout=60, auto_jump_wait=5)
-                access_token = str(session_info.get("accessToken") or "").strip()
-                if not access_token:
+                fresh_access_token = str(access_token or "").strip()
+                if not fresh_access_token:
+                    session_info = _fetch_chatgpt_session(driver, timeout=60, auto_jump_wait=5)
+                    fresh_access_token = str(session_info.get("accessToken") or "").strip()
+                if not fresh_access_token:
                     raise RuntimeError("协议开通 2FA 未拿到新鲜 accessToken")
                 protocol_session = BrowserSession(proxy=proxy)
                 secret = setup_2fa_protocol(
                     protocol_session,
-                    access_token,
+                    fresh_access_token,
                     on_secret=_checkpoint,
                 )
                 logger.info("[账号补跑][2FA] 使用 protocol 直接开通 Authenticator：%s", email)
@@ -248,15 +260,16 @@ def _build_roxy_twofa_setup(email: str, task_id: int, *, proxy: str | None = Non
                 logger.info("[账号补跑][2FA] 使用 browser 安全设置页开通 Authenticator：%s", email)
             if not state["secret"]:
                 _checkpoint(secret)
-            if not db.update_account_totp_secret(email, state["secret"], setup_pending=False):
-                raise RuntimeError("Authenticator 完成状态写入账号失败")
-            if not db.update_account_twofa_status(email, "success", "Authenticator 2FA 已启用"):
-                raise RuntimeError("Authenticator 结果状态写入账号失败")
+            with _ACCOUNT_SETUP_DB_LOCK:
+                if not db.update_account_totp_secret(email, state["secret"], setup_pending=False):
+                    raise RuntimeError("Authenticator 完成状态写入账号失败")
+                if not db.update_account_twofa_status(email, "success", "Authenticator 2FA 已启用"):
+                    raise RuntimeError("Authenticator 结果状态写入账号失败")
             check_stop_requested(email)
             account_task_store.append_event(
                 task_id,
                 stage="twofa_result",
-                message="Authenticator 2FA 已启用，继续 Codex OAuth",
+                message="Authenticator 2FA 已启用",
                 detail={"enabled": True},
             )
             logger.info("[Codex 补跑][2FA] Authenticator 2FA 已启用：%s", email)
@@ -264,15 +277,16 @@ def _build_roxy_twofa_setup(email: str, task_id: int, *, proxy: str | None = Non
         except CodexRetryStopped:
             raise
         except Exception as exc:
-            db.update_account_twofa_status(
-                email,
-                "failed",
-                f"{type(exc).__name__}: {str(exc)[:220]}",
-            )
+            with _ACCOUNT_SETUP_DB_LOCK:
+                db.update_account_twofa_status(
+                    email,
+                    "failed",
+                    f"{type(exc).__name__}: {str(exc)[:220]}",
+                )
             account_task_store.append_event(
                 task_id,
                 stage="twofa_result",
-                message="Authenticator 2FA 设置失败，已停止进入 Codex OAuth",
+                message="Authenticator 2FA 设置失败，已停止后续账号流程",
                 level="ERROR",
                 detail={"enabled": False, "error": f"{type(exc).__name__}: {str(exc)[:220]}"},
             )
@@ -284,14 +298,62 @@ def _build_roxy_twofa_setup(email: str, task_id: int, *, proxy: str | None = Non
 
 
 def _build_roxy_account_setup(email: str, task_id: int, *, proxy: str | None = None):
-    """在同一 ChatGPT 会话中按顺序补账号密码和 Authenticator 2FA。"""
-    twofa_setup = _build_roxy_twofa_setup(email, task_id, proxy=proxy)
+    """补账号密码和 Authenticator 2FA；protocol 模式下使用独立会话并发。"""
 
     def _setup(driver) -> bool:
-        changed = False
         account = db.get_account_by_email(email) or {}
-        # 没有完整 AT 的历史检查点不能安全判断账号已完成注册，交给外层登录流程处理。
-        if str(account.get("access_token") or "").strip() and not _account_login_password(account):
+        account_token = str(account.get("access_token") or "").strip()
+        needs_password = bool(account_token) and not _account_login_password(account)
+        needs_twofa = (
+            not bool(str(account.get("totp_secret") or "").strip())
+            or _totp_setup_pending(account)
+        )
+        if not needs_password and not needs_twofa:
+            return False
+
+        from config import twofa as twofa_cfg
+
+        twofa_driver = twofa_cfg.get_twofa_driver()
+        parallel_setup = bool(needs_password and needs_twofa and twofa_driver == "protocol")
+        protocol_access_token = None
+        if parallel_setup:
+            # protocol 2FA 不触碰 Selenium 页面，可以和密码设置并发；先在
+            # 主线程取得一次新鲜 token，避免两个线程同时操作同一个 driver。
+            from core.roxy_registration import _fetch_chatgpt_session
+
+            try:
+                session_info = _fetch_chatgpt_session(driver, timeout=60, auto_jump_wait=5)
+                protocol_access_token = str(session_info.get("accessToken") or "").strip()
+                if not protocol_access_token:
+                    parallel_setup = False
+                    account_task_store.append_event(
+                        task_id,
+                        stage="account_setup",
+                        message="协议 2FA 未拿到新鲜会话，改为串行补配置",
+                        level="WARNING",
+                    )
+            except Exception as exc:
+                account_task_store.append_event(
+                    task_id,
+                    stage="account_setup",
+                    message="协议 2FA 未能预取新鲜会话，改为串行补配置",
+                    level="WARNING",
+                    detail={"error": f"{type(exc).__name__}: {str(exc)[:180]}"},
+                )
+                parallel_setup = False
+
+        twofa_setup = _build_roxy_twofa_setup(
+            email,
+            task_id,
+            proxy=proxy,
+            access_token=protocol_access_token,
+        )
+
+        def _setup_password() -> tuple[bool, str | None]:
+            # 没有完整 AT 的历史检查点不能安全判断账号已完成注册，交给
+            # 外层登录流程处理；有 AT 但没有密码时才进入“添加密码”流程。
+            if not needs_password:
+                return False, None
             from core.roxy_registration import _registration_password, set_roxy_login_password
 
             password = _registration_password()
@@ -302,8 +364,9 @@ def _build_roxy_account_setup(email: str, task_id: int, *, proxy: str | None = N
             )
             try:
                 set_roxy_login_password(driver, email, password)
-                if not db.update_account_login_password(email, password, source="retry"):
-                    raise RuntimeError("账号密码写入账号失败")
+                with _ACCOUNT_SETUP_DB_LOCK:
+                    if not db.update_account_login_password(email, password, source="retry"):
+                        raise RuntimeError("账号密码写入账号失败")
             except CodexRetryStopped:
                 raise
             except Exception as exc:
@@ -314,19 +377,66 @@ def _build_roxy_account_setup(email: str, task_id: int, *, proxy: str | None = N
                     level="ERROR",
                     detail={"error": f"{type(exc).__name__}: {str(exc)[:220]}"},
                 )
-                raise RuntimeError(
-                    f"账号密码补充失败，已停止后续账号配置：{type(exc).__name__}: {str(exc)[:180]}"
-                ) from exc
+                return False, f"{type(exc).__name__}: {str(exc)[:180]}"
             account_task_store.append_event(
                 task_id,
                 stage="login_password_result",
                 message="账号密码已补充并保存",
                 detail={"saved": True},
             )
-            changed = True
+            return True, None
 
-        if twofa_setup(driver):
-            changed = True
+        def _setup_twofa() -> tuple[bool, str | None]:
+            if not needs_twofa:
+                return False, None
+            return bool(twofa_setup(driver)), None
+
+        changed = False
+        errors: list[str] = []
+
+        def _collect(label: str, future_or_result) -> None:
+            nonlocal changed
+            try:
+                if hasattr(future_or_result, "result"):
+                    step_changed, error = future_or_result.result()
+                else:
+                    step_changed, error = future_or_result
+            except CodexRetryStopped:
+                raise
+            except Exception as exc:
+                step_changed, error = False, f"{type(exc).__name__}: {str(exc)[:180]}"
+            changed = changed or bool(step_changed)
+            if error:
+                errors.append(f"{label}：{error}")
+
+        if parallel_setup:
+            from concurrent.futures import ThreadPoolExecutor
+
+            account_task_store.append_event(
+                task_id,
+                stage="account_setup",
+                message="密码设置与 protocol 2FA 并发执行",
+                detail={"parallel": True, "twofa_driver": "protocol"},
+            )
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="account-setup-step") as executor:
+                password_future = executor.submit(_setup_password)
+                twofa_future = executor.submit(_setup_twofa)
+                _collect("账号密码", password_future)
+                _collect("Authenticator 2FA", twofa_future)
+        else:
+            # browser 2FA 和密码都依赖同一个 Selenium 页面，必须串行。
+            _collect("账号密码", _setup_password())
+            _collect("Authenticator 2FA", _setup_twofa())
+
+        if errors:
+            account_task_store.append_event(
+                task_id,
+                stage="account_setup_result",
+                message="账号配置部分完成，存在失败步骤，可重跑补齐",
+                level="ERROR",
+                detail={"errors": errors, "parallel": parallel_setup},
+            )
+            raise RuntimeError("账号配置部分失败：" + "；".join(errors))
         return changed
 
     return _setup
