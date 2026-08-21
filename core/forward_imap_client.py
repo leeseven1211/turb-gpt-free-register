@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """Hide My Email 转发收件适配层。
 
-OTP 优先使用 Oracle Email Butler 的事件入库与 PostgreSQL 缓存；同时通过
-直接 IMAP 探测已到达 Gmail、但尚未写入 PG 的邮件，避免重复发送验证码。
+支持两种 Gmail 转发收件模式：``forward_imap`` 本机直接读取 Gmail，或
+``forward_butler`` 使用 Oracle Email Butler 的 PostgreSQL 缓存；两者都复用
+同一套目标别名过滤和 OTP 提取逻辑。
 """
 from __future__ import annotations
 
@@ -66,6 +67,23 @@ def test_connection() -> dict:
         }
     except Exception as exc:
         raise ForwardIMAPError(f"Email Butler 入站缓存不可用: {exc}") from exc
+
+
+def test_local_connection() -> dict:
+    """Check the local Gmail IMAP path without touching Email Butler."""
+    mail = _connect()
+    try:
+        return {
+            "method": "local_forward_imap",
+            "status": "ok",
+            "server": str(getattr(_email_cfg, "ICLOUD_HME_FORWARD_IMAP_SERVER", "") or ""),
+            "mailbox": "INBOX",
+        }
+    finally:
+        try:
+            mail.logout()
+        except Exception:
+            pass
 
 
 def _recipient_headers(msg) -> str:
@@ -205,6 +223,15 @@ def fetch_latest_otp(
     if not target or "@" not in target:
         raise ForwardIMAPError("待查询的转发邮箱地址无效")
     anchor = float(after_ts if after_ts is not None else time.time())
+
+    if str(getattr(_email_cfg, "ICLOUD_HME_INBOX_MODE", "") or "").strip().lower() == "forward_imap":
+        return _fetch_latest_otp_local(
+            target,
+            anchor,
+            max_wait=max_wait,
+            poll_interval=poll_interval,
+        )
+
     mail = None
     try:
         from core.email_butler_client import fetch_inbound_otp
@@ -242,3 +269,56 @@ def fetch_latest_otp(
                 mail.logout()
             except Exception:
                 pass
+
+
+def _fetch_latest_otp_local(
+    target: str,
+    anchor: float,
+    *,
+    max_wait: int | None = None,
+    poll_interval: int | None = None,
+) -> str:
+    """Poll Gmail directly for local ``forward_imap`` mode."""
+    wait_seconds = max(1, int(max_wait if max_wait is not None else _email_cfg.OTP_MAX_WAIT))
+    interval = max(1, int(poll_interval if poll_interval is not None else _email_cfg.OTP_POLL_INTERVAL))
+    deadline = time.monotonic() + wait_seconds
+    mail = None
+    last_error = "尚未收到新的 OpenAI 验证码邮件"
+    logger.info("[HME Forward IMAP] 本机 Gmail IMAP 等待验证码：%s，最长 %ss", target, wait_seconds)
+    try:
+        while time.monotonic() < deadline:
+            if mail is None:
+                try:
+                    mail = _connect()
+                except Exception as exc:
+                    last_error = f"{type(exc).__name__}: {exc}"
+                    logger.warning("[HME Forward IMAP] 本机 Gmail IMAP 建连失败，将重试：%s", str(exc)[:180])
+                    remaining = deadline - time.monotonic()
+                    if remaining > 0:
+                        time.sleep(min(interval, remaining))
+                    continue
+            try:
+                otp = _latest_forwarded_otp(mail, target, anchor)
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                logger.warning("[HME Forward IMAP] 本机 Gmail IMAP 读取失败，将重连：%s", str(exc)[:180])
+                try:
+                    mail.logout()
+                except Exception:
+                    pass
+                mail = None
+            else:
+                if otp:
+                    logger.info("[HME Forward IMAP] 本机已取得新 OTP：%s", target)
+                    return otp
+
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(interval, remaining))
+    finally:
+        if mail is not None:
+            try:
+                mail.logout()
+            except Exception:
+                pass
+    raise ForwardIMAPError(f"本机 Gmail IMAP 等待验证码超时（>{wait_seconds}s）：{target}; {last_error}")

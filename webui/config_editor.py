@@ -551,7 +551,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "ICLOUD_HME_INBOX_MODE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
-        "label": "隐藏邮箱收件模式", "help": "sidecar=iCloud IMAP；forward_butler=Oracle 自动接收 Gmail 并从 Email Butler PG 缓存取码（forward_imap 旧值自动兼容）",
+        "label": "隐藏邮箱收件模式", "help": "sidecar=iCloud IMAP；forward_imap=本机直接读取 Gmail；forward_butler=Oracle 接收 Gmail 并从 Email Butler PG 缓存取码",
     },
     {
         "key": "ICLOUD_HME_FORWARD_IMAP_SERVER", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
@@ -568,7 +568,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "ICLOUD_HME_FORWARD_IMAP_PASSWORD", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
-        "label": "旧版 IMAP 应用密码", "help": "仅历史封号邮件直接 IMAP 扫描使用；OTP 已改走 Email Butler PG，可留空",
+        "label": "Gmail IMAP 应用密码", "help": "forward_imap 模式用于本机直接读取 Gmail；请填写 Gmail 应用专用密码",
         "storage": "env", "secret": True,
     },
     {

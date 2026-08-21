@@ -24,7 +24,7 @@ USE_EMAIL_SERVICE = False
 #   "gptmail"           — GPTMail 临时邮箱 API（运行时随机生成邮箱并自动收码）
 #   "mailnest"          — MailNest/迈巢临时邮箱 API（运行时购买邮箱并自动收码）
 #   "cloudmail"         — CloudMail/Cloud Mail API（自动从平台获取域名并随机生成邮箱）
-#   "icloud_hide"       — iCloud Hide My Email 别名池（转发邮件由 Email Butler 缓存收码）
+#   "icloud_hide"       — iCloud Hide My Email 别名池（可用本机 Gmail IMAP 或 Email Butler 收码）
 EMAIL_SOURCE = "outlook,generic_api,mailnest"
 
 
@@ -189,8 +189,8 @@ ICLOUD_HME_SYNC_TTL = 300
 
 # 隐藏邮箱验证码实际收件方式：
 #   sidecar     = sidecar 读取 iCloud IMAP（forwardToEmail 必须是 iCloud 邮箱）
-#   forward_butler = Oracle 监听 Gmail 并写入 Email Butler PG，适合转发到 Gmail
-#   forward_imap = 旧配置名，自动兼容为 forward_butler
+#   forward_imap = 本机直接连接转发目标 Gmail，注册任务本地取 OTP
+#   forward_butler = Oracle 监听 Gmail 并写入 Email Butler PG
 ICLOUD_HME_INBOX_MODE = "sidecar"
 ICLOUD_HME_FORWARD_IMAP_SERVER = "imap.gmail.com"
 ICLOUD_HME_FORWARD_IMAP_PORT = 993

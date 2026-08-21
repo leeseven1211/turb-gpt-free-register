@@ -39,7 +39,10 @@ class ForwardIMAPTests(unittest.TestCase):
 
     @patch("core.email_butler_client.fetch_inbound_otp", return_value="123456")
     def test_fetch_latest_otp_delegates_to_pg_cache_when_imap_unavailable(self, fetch):
-        with patch.object(client, "_connect", side_effect=client.ForwardIMAPError("offline")):
+        with (
+            patch.object(client._email_cfg, "ICLOUD_HME_INBOX_MODE", "forward_butler"),
+            patch.object(client, "_connect", side_effect=client.ForwardIMAPError("offline")),
+        ):
             result = client.fetch_latest_otp(
                 "alias@icloud.com",
                 after_ts=123.0,
@@ -77,6 +80,7 @@ class ForwardIMAPTests(unittest.TestCase):
 
         fetch.side_effect = use_probe
         with (
+            patch.object(client._email_cfg, "ICLOUD_HME_INBOX_MODE", "forward_butler"),
             patch.object(client, "_connect", return_value=Mail()),
             patch.object(
                 client,
@@ -92,6 +96,27 @@ class ForwardIMAPTests(unittest.TestCase):
 
         self.assertEqual(result, "654321")
         self.assertIsNotNone(fetch.call_args.kwargs["local_probe"])
+
+    def test_forward_imap_mode_reads_local_mailbox_without_butler(self):
+        class Mail:
+            def logout(self):
+                return None
+
+        with (
+            patch.object(client._email_cfg, "ICLOUD_HME_INBOX_MODE", "forward_imap"),
+            patch.object(client, "_connect", return_value=Mail()),
+            patch.object(client, "_latest_forwarded_otp", return_value="246810"),
+            patch("core.email_butler_client.fetch_inbound_otp") as fetch,
+        ):
+            result = client.fetch_latest_otp(
+                "alias@icloud.com",
+                after_ts=123.0,
+                max_wait=10,
+                poll_interval=2,
+            )
+
+        self.assertEqual(result, "246810")
+        fetch.assert_not_called()
 
     def test_deactivation_scan_matches_forwarded_alias_without_returning_body(self):
         class Mail:

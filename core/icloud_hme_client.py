@@ -3,7 +3,7 @@
 
 依赖本机 icloud-hme 服务完成：
   - 同步/创建 Hide My Email 别名
-  - iCloud 直收走 sidecar；Gmail 转发走 Email Butler PG 入站缓存
+  - iCloud 直收走 sidecar；Gmail 转发可走本机 IMAP 或 Email Butler PG
 
 turb 只保存别名领取状态，不保存 Apple Cookie 或 App 专用密码。
 """
@@ -69,9 +69,7 @@ def _is_icloud_mailbox(value: str | None) -> bool:
 
 def _inbox_mode() -> str:
     value = _cfg_str("ICLOUD_HME_INBOX_MODE", "sidecar").lower()
-    if value == "forward_imap":
-        return "forward_butler"
-    return value if value in {"sidecar", "forward_butler"} else "sidecar"
+    return value if value in {"sidecar", "forward_imap", "forward_butler"} else "sidecar"
 
 
 def _prepare_imap_aliases(
@@ -347,7 +345,7 @@ def fetch_latest_otp(
     poll_interval: int | None = None,
     settle_seconds: int | None = None,
 ) -> str:
-    if _inbox_mode() == "forward_butler":
+    if _inbox_mode() in {"forward_imap", "forward_butler"}:
         from core.forward_imap_client import fetch_latest_otp as fetch_forwarded_otp
         return fetch_forwarded_otp(
             email,
@@ -443,7 +441,10 @@ def test_connection(
     from core import db
     sync = db.sync_icloud_hide_aliases(prepared, selected)
     mode = _inbox_mode()
-    if mode == "forward_butler":
+    if mode == "forward_imap":
+        from core.forward_imap_client import test_local_connection
+        inbox = test_local_connection()
+    elif mode == "forward_butler":
         from core.forward_imap_client import test_connection as test_forward_imap
         inbox = test_forward_imap()
     else:
@@ -457,14 +458,14 @@ def test_connection(
     pool = db.icloud_hide_email_pool_summary()
     if routing["forward_incompatible"] and not routing["remote_usable"]:
         domains = ", ".join(routing["forward_domains"]) or "非 iCloud 邮箱"
-        if mode == "forward_butler":
+        if mode in {"forward_imap", "forward_butler"}:
             raise ICloudHMEError(
                 f"隐藏邮箱实际转发到 {domains}，与配置的转发目标邮箱不一致；"
                 "请确认 Gmail 地址后重新同步"
             )
         raise ICloudHMEError(
             f"隐藏邮箱当前转发到 {domains}，但 sidecar 读取的是 iCloud IMAP；"
-            "可改为 iCloud 转发，或把收件模式设为 forward_butler 并配置 Email Butler"
+            "可改为 iCloud 转发，或把收件模式设为 forward_imap 并配置本机 Gmail IMAP"
         )
     return {
         "account_id": selected,

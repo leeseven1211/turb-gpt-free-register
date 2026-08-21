@@ -305,28 +305,29 @@ ICLOUD_HME_ACCOUNT_ID=你的_sidecar_账号ID
 ICLOUD_HME_AUTO_CREATE=False
 ```
 
-turb 只保存别名库存与领取状态；Apple Cookie 和 iCloud App 专用密码保留在 sidecar 中。若使用 Gmail 转发收码，Oracle 上的 `goimapnotify` 会自动接收新邮件并写入 Email Butler PostgreSQL，注册任务不再各自登录 Gmail IMAP。每个注册任务领取一个别名，注册成功后永久占用；明确未消耗的失败任务才会把别名退回可用池。默认只复用已同步别名，库存为空时不会自动创建；确需自动补充时再开启 `ICLOUD_HME_AUTO_CREATE`。
+turb 只保存别名库存与领取状态；Apple Cookie 和 iCloud App 专用密码保留在 sidecar 中。Gmail 转发收码支持本机 `forward_imap` 直连和生产 `forward_butler` 两种模式；本机调试/注册可直接连接 Gmail，生产链路仍由 Oracle Email Butler 接收。每个注册任务领取一个别名，注册成功后永久占用；明确未消耗的失败任务才会把别名退回可用池。默认只复用已同步别名，库存为空时不会自动创建；确需自动补充时再开启 `ICLOUD_HME_AUTO_CREATE`。
 
 收码前必须确认以下链路一致：
 
 ```text
-隐藏邮箱别名 → Apple“转发到”Gmail → Oracle IMAP IDLE → Email Butler PG
+隐藏邮箱别名 → Apple“转发到”Gmail → 本机 Gmail IMAP
+                                  或 → Oracle IMAP IDLE → Email Butler PG
 ```
 
 - sidecar 使用 Apple App 专用密码连接 `imap.mail.me.com` 时，设置 `ICLOUD_HME_INBOX_MODE=sidecar`，且 Apple“隐藏邮件地址 → 转发到”必须选择同一个 `@icloud.com` 邮箱。
-- 如果隐藏邮箱实际转发到 Gmail，使用 `ICLOUD_HME_INBOX_MODE=forward_butler`，并配置 Gmail 转发目标和 Email Butler API：
+- 如果隐藏邮箱实际转发到 Gmail，本机直接收码使用 `ICLOUD_HME_INBOX_MODE=forward_imap`：
 
 ```dotenv
-ICLOUD_HME_INBOX_MODE=forward_butler
+ICLOUD_HME_INBOX_MODE=forward_imap
 ICLOUD_HME_FORWARD_IMAP_EMAIL=你的_Gmail_地址
-EMAIL_BUTLER_API_BASE=https://你的服务/email-butler/v1
-EMAIL_BUTLER_API_KEY=你的客户端_Key
+ICLOUD_HME_FORWARD_IMAP_PASSWORD=你的_Gmail_应用专用密码
 ```
 
-- Gmail 应用专用密码只保存在 Oracle 的 IMAP 通知服务中；turb 的 OTP 流程不再需要这份密码。
+- `forward_butler` 仍表示 Oracle 接收 Gmail 后写入 Email Butler PG；生产切换时再单独配置该模式。
+- `forward_imap` 的 Gmail 应用专用密码只保存在本机 `.env`，不会写入仓库或日志。
 - Apple 账号页面“隐藏邮件地址 → 转发到”的已选地址和 sidecar 返回的 `forwardToEmail` 才是转发目标的依据，不要根据当前浏览器登录的是哪个 Gmail 账号推断。
 - 新版 sidecar 会在别名列表返回 `forwardToEmail`。turb 同步时只启用与当前收件模式匹配的别名，避免把验证码发到 Gmail 却轮询 iCloud IMAP 的假成功。
-- 连接测试应返回 `inbox_method=email_butler_pg`，同时确认同步结果的 `forward_incompatible=0`。投产前再用一个真实注册任务验证别名转发、事件入库、OTP 匹配和账号落库全链路。
+- 连接测试在 `forward_imap` 下应返回 `inbox_method=local_forward_imap`；在 `forward_butler` 下才返回 `email_butler_pg`。两种模式都要确认同步结果的 `forward_incompatible=0`。
 - iCloud 创建别名有频率/数量限制。批量运行建议预先同步库存并保持 `ICLOUD_HME_AUTO_CREATE=False`，不要在遇到限流后高频重试。
 
 sidecar 本地启动示例（具体账号导入方式以 sidecar 自带 README 为准）：
@@ -614,8 +615,8 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 
 #### 邮件验证码
 
-- iCloud 隐藏邮箱转发到 Gmail 时，生产链路固定为 `Gmail IMAP IDLE → Email Butler PostgreSQL → turb HTTP API`。每封新邮件由 Oracle 通知进程主动写入 PG；注册任务只按邮箱地址和时间窗口查询已入库事件，不再为每个账号重复连接或扫描 Gmail IMAP。
-- `ICLOUD_HME_INBOX_MODE=forward_butler` 是当前配置；旧值 `forward_imap` 只作为兼容别名映射到 Butler，不代表 OTP 会重新直连 IMAP。
+- iCloud 隐藏邮箱转发到 Gmail 时，本机可使用 `Gmail IMAP → turb` 直接取码；生产 `forward_butler` 链路仍是 `Gmail IMAP IDLE → Email Butler PostgreSQL → turb HTTP API`。
+- 当前本机配置使用 `ICLOUD_HME_INBOX_MODE=forward_imap`，OTP 直接读取本机 Gmail；`forward_butler` 保留为生产 Email Butler 链路。
 - turb 的账号、邮箱池、注册任务和账号操作任务均以本机 PostgreSQL 为主存储；JSON/TXT 只作为兼容导出或输入文件。项目运行时不再使用 SQLite。
 - OTP 查询必须携带任务开始时间并按目标别名精确匹配，避免并发任务互相拿错验证码。轮询间隔由 `OTP_POLL_INTERVAL` 控制，Butler 已经接收到邮件时只做轻量查询。
 
@@ -782,11 +783,11 @@ ICLOUD_HME_ACCOUNT_ID=请替换
 ICLOUD_HME_API_TOKEN=
 ICLOUD_HME_REQUEST_TIMEOUT=45
 ICLOUD_HME_SYNC_TTL=300
-ICLOUD_HME_INBOX_MODE=forward_butler
+ICLOUD_HME_INBOX_MODE=forward_imap
 ICLOUD_HME_FORWARD_IMAP_SERVER=imap.gmail.com
 ICLOUD_HME_FORWARD_IMAP_PORT=993
 ICLOUD_HME_FORWARD_IMAP_EMAIL=请替换为实际转发_Gmail
-ICLOUD_HME_FORWARD_IMAP_PASSWORD=
+ICLOUD_HME_FORWARD_IMAP_PASSWORD=请填写Gmail应用专用密码
 ICLOUD_HME_AUTO_CREATE=False
 ICLOUD_HME_CREATE_LABEL_PREFIX=turb
 ```
