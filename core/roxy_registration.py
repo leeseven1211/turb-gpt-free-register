@@ -3533,6 +3533,7 @@ def run_roxy_registration(
     access_token: str | None = None
     account_id: int | None = None
     totp_secret: str | None = None
+    plan_check_session = None
     try:
         driver = _build_driver(opened)
         from core import registration_plan_capture
@@ -3799,6 +3800,7 @@ def run_roxy_registration(
                 twofa_driver = _twofa_cfg.get_twofa_driver()
                 if twofa_driver == "protocol":
                     protocol_session = BrowserSession(proxy=proxy or "")
+                    plan_check_session = protocol_session
                     totp_secret = setup_2fa_protocol(
                         protocol_session,
                         access_token,
@@ -3840,6 +3842,7 @@ def run_roxy_registration(
             plan_check_proxy=proxy or None,
             captured_plan_result=captured_plan_result,
             batch_dir=batch_dir,
+            plan_check_session=plan_check_session,
             extra={
                 "user": session_info.get("user"),
                 "account": session_info.get("account"),
@@ -3913,3 +3916,8 @@ def run_roxy_registration(
                 pass
         if not bool(_cfg.ROXY_KEEP_BROWSER_OPEN):
             client.cleanup_profile(opened)
+        if plan_check_session is not None:
+            try:
+                plan_check_session.session.close()
+            except Exception:
+                pass

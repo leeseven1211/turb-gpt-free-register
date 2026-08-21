@@ -65,14 +65,17 @@ def _query_account_plan(
     trigger: str,
     proxy: str | None,
     timezone_offset_min: str,
+    session=None,
 ) -> dict:
     """执行套餐查询和新注册账号复查，不负责队列/数据库状态流转。"""
     _wait_for_rate_slot()
-    result = check_account_plan(
-        access_token,
-        proxy=proxy,
-        timezone_offset_min=timezone_offset_min,
-    )
+    query_kwargs = {
+        "proxy": proxy,
+        "timezone_offset_min": timezone_offset_min,
+    }
+    if session is not None:
+        query_kwargs["session"] = session
+    result = check_account_plan(access_token, **query_kwargs)
 
     recheck_delay = _registration_recheck_delay()
     should_recheck = (
@@ -86,12 +89,14 @@ def _query_account_plan(
         logger.info("[Plan] 新账号暂未发现 Plus 试用资格，%.1fs 后复查一次: %s", recheck_delay, email)
         time.sleep(recheck_delay)
         _wait_for_rate_slot()
-        recheck_result = check_account_plan(
-            access_token,
-            proxy=proxy,
-            timezone_offset_min=timezone_offset_min,
-            max_attempts=1,
-        )
+        recheck_kwargs = {
+            "proxy": proxy,
+            "timezone_offset_min": timezone_offset_min,
+            "max_attempts": 1,
+        }
+        if session is not None:
+            recheck_kwargs["session"] = session
+        recheck_result = check_account_plan(access_token, **recheck_kwargs)
         if recheck_result.get("ok"):
             result = recheck_result
         else:
@@ -220,6 +225,7 @@ def check_registration_account_plan(
     email: str,
     access_token: str,
     proxy: str,
+    session=None,
     timezone_offset_min: str = "-",
     trigger: str = "registration_auto",
 ) -> dict:
@@ -244,12 +250,17 @@ def check_registration_account_plan(
             return {"ok": False, "error": "账号已删除或套餐查询状态已被重置"}
         account_task_store.start_task(task_id, message="注册完成，开始自动查询套餐")
         account_task_store.append_event(task_id, stage="plan_request", message="复用注册线路请求套餐接口")
+        query_kwargs = {
+            "email": str(email or "").strip(),
+            "access_token": str(access_token or "").strip(),
+            "trigger": trigger,
+            "proxy": str(proxy or "").strip(),
+            "timezone_offset_min": str(timezone_offset_min or "-"),
+        }
+        if session is not None:
+            query_kwargs["session"] = session
         result = _query_account_plan(
-            email=str(email or "").strip(),
-            access_token=str(access_token or "").strip(),
-            trigger=trigger,
-            proxy=str(proxy or "").strip(),
-            timezone_offset_min=str(timezone_offset_min or "-"),
+            **query_kwargs,
         )
         db.update_account_plan_check(acc_id=account_id, result=result)
         _log_plan_result(str(email or "").strip(), trigger, result)

@@ -32,6 +32,7 @@ def run_cloak_registration(email: str, name: str, birthday: str, proxy: str = No
     opened = None
     create_acknowledged = False
     openai_password: str | None = None
+    plan_check_session = None
     try:
         report_job_progress("browser", "running", "正在启动 CloakBrowser")
         driver, opened = build_cloak_driver(proxy=proxy)
@@ -131,6 +132,7 @@ def run_cloak_registration(email: str, name: str, birthday: str, proxy: str = No
                 twofa_driver = _twofa_cfg.get_twofa_driver()
                 if twofa_driver == "protocol":
                     protocol_session = BrowserSession(proxy=proxy or "")
+                    plan_check_session = protocol_session
                     totp_secret = setup_2fa_protocol(protocol_session, access_token)
                     report_job_progress("twofa", "success", "协议 2FA 已启用")
                 else:
@@ -182,6 +184,7 @@ def run_cloak_registration(email: str, name: str, birthday: str, proxy: str = No
             proxy_used=((opened.raw or {}).get("proxy") if opened else None) or proxy or None,
             plan_check_proxy=proxy or None,
             captured_plan_result=captured_plan_result,
+            plan_check_session=plan_check_session,
             batch_dir=batch_dir,
             extra={
                 "user": session_info.get("user"),
@@ -207,5 +210,10 @@ def run_cloak_registration(email: str, name: str, birthday: str, proxy: str = No
         if driver and not bool(_cfg.CLOAK_KEEP_BROWSER_OPEN):
             try:
                 driver.quit()
+            except Exception:
+                pass
+        if plan_check_session is not None:
+            try:
+                plan_check_session.session.close()
             except Exception:
                 pass

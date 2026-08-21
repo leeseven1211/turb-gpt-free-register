@@ -409,6 +409,7 @@ def save_account_data(
     plan_check_proxy: str | None = None,
     captured_plan_result: dict | None = None,
     batch_dir: Path | None = None,
+    plan_check_session: BrowserSession | None = None,
 ) -> int:
     """
     将账号信息保存到本地 JSON/TXT 文件存储。
@@ -489,12 +490,17 @@ def save_account_data(
             from core.plan_check_service import check_registration_account_plan
 
             logger.info(f"[Plan] 使用本次注册代理同步查询，完成后再释放租约: id={row_id}, email={email}")
-            result = check_registration_account_plan(
-                account_id=row_id,
-                email=email,
-                access_token=access_token,
-                proxy=explicit_proxy,
-            )
+            if plan_check_session is not None:
+                logger.info("[Plan] 复用 2FA 协议会话查询套餐，保留同一设备与 CF Cookie: id=%s", row_id)
+            query_kwargs = {
+                "account_id": row_id,
+                "email": email,
+                "access_token": access_token,
+                "proxy": explicit_proxy,
+            }
+            if plan_check_session is not None:
+                query_kwargs["session"] = plan_check_session
+            result = check_registration_account_plan(**query_kwargs)
             if result.get("ok"):
                 plan_type = str(result.get("current_plan_type") or "unknown")
                 plus_trial = "可用" if result.get("plus_trial_eligible") else "不可用"

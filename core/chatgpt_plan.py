@@ -172,20 +172,22 @@ def token_claims(token: str) -> dict:
     }
 
 
-def _common_headers(env: BrowserSession, token: str) -> dict[str, str]:
-    headers = env._get_common_headers()
+def _common_headers(
+    env: BrowserSession,
+    token: str,
+    claims: dict | None = None,
+) -> dict[str, str]:
+    """Build the same frontend API context used by protocol 2FA requests."""
+    headers = env.get_chatgpt_headers(referer="https://chatgpt.com/")
+    claims = claims or token_claims(token)
     headers.update({
-        "accept": "*/*",
         "authorization": f"Bearer {normalize_token(token)}",
-        "oai-device-id": env.device_id,
-        "oai-language": env.navigator_language(),
-        "referer": "https://chatgpt.com/",
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "same-origin",
         "x-openai-target-path": ACCOUNTS_CHECK_PATH,
-        "x-openai-target-route": ACCOUNTS_CHECK_PATH,
+        "x-openai-target-route": "/backend-api/accounts/check/{version}",
     })
+    account_id = str(claims.get("account_id") or "").strip()
+    if account_id:
+        headers["chatgpt-account-id"] = account_id
     return headers
 
 
@@ -310,6 +312,7 @@ def check_account_plan(
     token: str,
     *,
     proxy: Optional[str] = None,
+    session: BrowserSession | None = None,
     timezone_offset_min: str = "-",
     timeout: float | None = None,
     max_attempts: int | None = None,
@@ -340,7 +343,6 @@ def check_account_plan(
             **{k: v for k, v in claims.items() if k != "payload"},
         }
     route_meta = {k: v for k, v in route.items() if k != "proxy"}
-    url = f"https://chatgpt.com{ACCOUNTS_CHECK_PATH}?timezone_offset_min={quote(str(timezone_offset_min))}"
     try:
         timeout_seconds, attempts, base_delay = _plan_check_settings(timeout, max_attempts, retry_delay)
     except Exception as exc:
@@ -358,12 +360,17 @@ def check_account_plan(
     for attempt in range(1, attempts + 1):
         env = None
         resp = None
+        owns_session = session is None
         try:
             # 套餐查询只需要稳定的请求头，不需要额外访问 IP 地理信息接口。
-            env = BrowserSession(proxy=route["proxy"], detect_exit_geo=False)
-            resp = env.session.get(
+            env = session or BrowserSession(proxy=route["proxy"], detect_exit_geo=False)
+            request_timezone = timezone_offset_min
+            if str(request_timezone or "").strip() == "-":
+                request_timezone = env.js_timezone_offset_min()
+            url = f"https://chatgpt.com{ACCOUNTS_CHECK_PATH}?timezone_offset_min={quote(str(request_timezone))}"
+            resp = env.get(
                 url,
-                headers=_common_headers(env, token),
+                headers=_common_headers(env, token, claims),
                 allow_redirects=False,
                 timeout=timeout_seconds,
             )
@@ -414,7 +421,7 @@ def check_account_plan(
                 "retryable": True,
             }
         finally:
-            if env is not None:
+            if env is not None and owns_session:
                 try:
                     env.session.close()
                 except Exception:

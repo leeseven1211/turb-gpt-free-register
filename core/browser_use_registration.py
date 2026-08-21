@@ -1735,6 +1735,7 @@ def run_browser_use_registration(
     browser = None
     context = None
     page = None
+    plan_check_session = None
 
     logger.info(
         "[%s] 开始注册：%s proxyCountry=%s profileId=%s local_proxy_arg=%s",
@@ -1954,6 +1955,7 @@ def run_browser_use_registration(
                     twofa_driver = _twofa_cfg.get_twofa_driver()
                     if twofa_driver == "protocol":
                         protocol_session = BrowserSession(proxy=proxy or "")
+                        plan_check_session = protocol_session
                         totp_secret = setup_2fa_protocol(protocol_session, access_token)
                         report_job_progress("twofa", "success", "协议 2FA 已启用")
                     else:
@@ -2016,6 +2018,7 @@ def run_browser_use_registration(
                 proxy_used=proxy or f"{provider_prefix}:{session_info_open.proxy_country_code or 'default'}",
                 plan_check_proxy=proxy or None,
                 captured_plan_result=captured_plan_result,
+                plan_check_session=plan_check_session,
                 batch_dir=batch_dir,
                 extra={
                     "user": session_info.get("user"),
@@ -2078,4 +2081,9 @@ def run_browser_use_registration(
                     client.close_browser_session(session_info_open.session_id)
                 except Exception:
                     pass
+        if plan_check_session is not None:
+            try:
+                plan_check_session.session.close()
+            except Exception:
+                pass
         _set_log_provider_label("BrowserUse")
