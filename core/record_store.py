@@ -133,6 +133,42 @@ GENERIC_API_POOL = TableSpec(
     indexes=(("status", "id"),),
 )
 
+DOMAIN_POOL = TableSpec(
+    name="email_pool_domain",
+    promoted=dict(_POOL_PROMOTED),
+    unique=("email",),
+    indexes=(("status", "id"),),
+)
+
+ICLOUD_HIDE_POOL = TableSpec(
+    name="email_pool_icloud_hide",
+    promoted={
+        **_POOL_PROMOTED,
+        "account_id": "TEXT",
+    },
+    unique=("email",),
+    indexes=(("status", "id"), ("account_id", "id")),
+)
+
+CODEX_CREDENTIALS = TableSpec(
+    name="codex_credentials",
+    promoted={
+        "filename": "TEXT NOT NULL",
+        "email": "TEXT",
+        "plan": "TEXT",
+        "account_id": "TEXT",
+        "created_at": "TEXT NOT NULL",
+        "updated_at": "TEXT NOT NULL",
+        "mtime": "TEXT",
+        "archived": "BOOLEAN NOT NULL DEFAULT FALSE",
+        "exported_count": "BIGINT NOT NULL DEFAULT 0",
+        "oauth_status": "TEXT",
+        "oauth_expires_at": "TEXT",
+    },
+    unique=("filename",),
+    indexes=(("archived", "id"), ("email",), ("account_id",), ("oauth_status",)),
+)
+
 PROXY_LEASES = TableSpec(
     name="proxy_leases",
     promoted={
@@ -166,6 +202,9 @@ ALL_TABLES: tuple[TableSpec, ...] = (
     JOBS,
     OUTLOOK_POOL,
     GENERIC_API_POOL,
+    DOMAIN_POOL,
+    ICLOUD_HIDE_POOL,
+    CODEX_CREDENTIALS,
     PROXY_LEASES,
 )
 _BY_NAME = {spec.name: spec for spec in ALL_TABLES}
@@ -202,6 +241,13 @@ def init() -> None:
                             for col, sql in spec.promoted.items()]
                 columns.append("data JSONB NOT NULL DEFAULT '{}'::jsonb")
                 cur.execute(f"CREATE TABLE IF NOT EXISTS {_qualified(spec)} ({', '.join(columns)})")
+                # CREATE TABLE IF NOT EXISTS 不会给已存在的表补新提升列。存储层允许
+                # 稀疏字段后续提升为可筛选列，因此这里必须把 schema 演进也做成幂等。
+                for col, column_sql in spec.promoted.items():
+                    cur.execute(
+                        f"ALTER TABLE {_qualified(spec)} ADD COLUMN IF NOT EXISTS "
+                        f"{postgres_store.quote_identifier(col)} {column_sql}"
+                    )
                 for col in spec.unique:
                     idx = postgres_store.quote_identifier(f"uq_{spec.name}_{col}")
                     cur.execute(
@@ -297,6 +343,11 @@ def _merge(spec: TableSpec, row: dict | None) -> dict | None:
             continue
         out[col] = row.get(col)
     return out
+
+
+def merge_row(table: str | TableSpec, row: dict | None) -> dict | None:
+    """把 SQL 返回行恢复成业务扁平字典，供只读仓储复用。"""
+    return _merge(_resolve(table), row)
 
 
 def _resolve(table: str | TableSpec) -> TableSpec:
@@ -409,6 +460,102 @@ def insert_row(table: str | TableSpec, payload: dict, *, conn=None) -> int:
         return _run(cur)
 
 
+def upsert_row_by(
+    table: str | TableSpec,
+    key: str,
+    payload: dict,
+    *,
+    conn=None,
+) -> int:
+    """按唯一提升列原子新增或合并一行，返回行 ID。
+
+    更新分支只覆盖本次 payload 明确给出的提升列，JSONB 则在数据库端合并；
+    ``created_at`` 保留原值。它用于凭证、邮箱导入等天然幂等的写路径，避免
+    ``SELECT`` 后 ``INSERT`` 的竞态窗口。
+    """
+    spec = _resolve(table)
+    if key not in spec.unique:
+        raise ValueError(f"{spec.name} 的 {key!r} 不是唯一提升列")
+    init()
+    body = dict(payload or {})
+    if body.get(key) is None:
+        raise ValueError(f"{key} 不能为空")
+    now = _now()
+    body.setdefault("created_at", now)
+    body.setdefault("updated_at", now)
+    promoted, rest = _split(spec, body, partial=False)
+
+    cols = list(promoted) + ["data"]
+    vals = [promoted[col] for col in promoted] + [json.dumps(rest, ensure_ascii=False)]
+    rendered = ", ".join(postgres_store.quote_identifier(col) for col in cols)
+    placeholders = ", ".join("%s::jsonb" if col == "data" else "%s" for col in cols)
+    target = postgres_store.quote_identifier("target")
+    updates = []
+    for col in promoted:
+        if col in {key, "created_at"}:
+            continue
+        quoted = postgres_store.quote_identifier(col)
+        updates.append(f"{quoted} = EXCLUDED.{quoted}")
+    updates.append(f"data = {target}.data || EXCLUDED.data")
+    quoted_key = postgres_store.quote_identifier(key)
+    sql = (
+        f"INSERT INTO {_qualified(spec)} AS {target} ({rendered}) VALUES ({placeholders}) "
+        f"ON CONFLICT ({quoted_key}) WHERE {quoted_key} IS NOT NULL DO UPDATE SET "
+        f"{', '.join(updates)} RETURNING id"
+    )
+
+    def _run(cur):
+        cur.execute(sql, vals)
+        return int(cur.fetchone()["id"])
+
+    if conn is not None:
+        with conn.cursor() as cur:
+            return _run(cur)
+    with _connect() as own, own.cursor() as cur:
+        return _run(cur)
+
+
+def insert_row_if_absent(
+    table: str | TableSpec,
+    key: str,
+    payload: dict,
+    *,
+    conn=None,
+) -> int | None:
+    """按唯一提升列新增；已存在时返回 ``None``，不会覆盖原记录。"""
+    spec = _resolve(table)
+    if key not in spec.unique:
+        raise ValueError(f"{spec.name} 的 {key!r} 不是唯一提升列")
+    init()
+    body = dict(payload or {})
+    if body.get(key) is None:
+        raise ValueError(f"{key} 不能为空")
+    now = _now()
+    body.setdefault("created_at", now)
+    body.setdefault("updated_at", body["created_at"])
+    promoted, rest = _split(spec, body, partial=False)
+    cols = list(promoted) + ["data"]
+    vals = [promoted[col] for col in promoted] + [json.dumps(rest, ensure_ascii=False)]
+    rendered = ", ".join(postgres_store.quote_identifier(col) for col in cols)
+    placeholders = ", ".join("%s::jsonb" if col == "data" else "%s" for col in cols)
+    quoted_key = postgres_store.quote_identifier(key)
+    sql = (
+        f"INSERT INTO {_qualified(spec)} ({rendered}) VALUES ({placeholders}) "
+        f"ON CONFLICT ({quoted_key}) WHERE {quoted_key} IS NOT NULL DO NOTHING RETURNING id"
+    )
+
+    def _run(cur):
+        cur.execute(sql, vals)
+        row = cur.fetchone()
+        return int(row["id"]) if row else None
+
+    if conn is not None:
+        with conn.cursor() as cur:
+            return _run(cur)
+    with _connect() as own, own.cursor() as cur:
+        return _run(cur)
+
+
 def patch_row(table: str | TableSpec, row_id: int, changes: dict, *, conn=None) -> bool:
     """只更新 changes 里出现的字段。
 
@@ -457,6 +604,32 @@ def patch_rows_where(
         return _run(cur)
 
 
+def patch_rows_where_returning(
+    table: str | TableSpec,
+    *,
+    changes: dict,
+    where: str,
+    params: Iterable[Any] = (),
+    conn=None,
+) -> list[dict]:
+    """批量部分更新并返回真正命中的业务行。"""
+    spec = _resolve(table)
+    init()
+    sets, args = _build_set_clause(spec, changes, partial=True)
+    args.extend(params)
+    sql = f"UPDATE {_qualified(spec)} SET {', '.join(sets)} WHERE {where} RETURNING *"
+
+    def _run(cur):
+        cur.execute(sql, args)
+        return [_merge(spec, row) for row in cur.fetchall()]
+
+    if conn is not None:
+        with conn.cursor() as cur:
+            return _run(cur)
+    with _connect() as own, own.cursor() as cur:
+        return _run(cur)
+
+
 def claim_row(
     table: str | TableSpec,
     row_id: int,
@@ -490,6 +663,30 @@ def claim_row(
         return _run(cur)
 
 
+def claim_next_row(
+    table: str | TableSpec,
+    *,
+    changes: dict,
+    where: str,
+    params: Iterable[Any] = (),
+    order_by: str = "id",
+) -> dict | None:
+    """用 ``FOR UPDATE SKIP LOCKED`` 原子领取一个符合条件的最早记录。"""
+    spec = _resolve(table)
+    init()
+    sets, set_args = _build_set_clause(spec, changes, partial=True)
+    args = [*params, *set_args]
+    sql = (
+        f"WITH candidate AS (SELECT id FROM {_qualified(spec)} WHERE {where} "
+        f"ORDER BY {order_by} FOR UPDATE SKIP LOCKED LIMIT 1) "
+        f"UPDATE {_qualified(spec)} AS target SET {', '.join(sets)} "
+        "FROM candidate WHERE target.id = candidate.id RETURNING target.*"
+    )
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(sql, args)
+        return _merge(spec, cur.fetchone())
+
+
 def delete_rows(table: str | TableSpec, ids: Iterable[int], *, conn=None) -> int:
     spec = _resolve(table)
     init()
@@ -501,6 +698,29 @@ def delete_rows(table: str | TableSpec, ids: Iterable[int], *, conn=None) -> int
     def _run(cur):
         cur.execute(sql, (wanted,))
         return cur.rowcount
+
+    if conn is not None:
+        with conn.cursor() as cur:
+            return _run(cur)
+    with _connect() as own, own.cursor() as cur:
+        return _run(cur)
+
+
+def delete_rows_where_returning(
+    table: str | TableSpec,
+    *,
+    where: str,
+    params: Iterable[Any] = (),
+    conn=None,
+) -> list[dict]:
+    """删除命中行并返回删除前内容，便于 API 准确报告和清理单个附属文件。"""
+    spec = _resolve(table)
+    init()
+    sql = f"DELETE FROM {_qualified(spec)} WHERE {where} RETURNING *"
+
+    def _run(cur):
+        cur.execute(sql, list(params))
+        return [_merge(spec, row) for row in cur.fetchall()]
 
     if conn is not None:
         with conn.cursor() as cur:

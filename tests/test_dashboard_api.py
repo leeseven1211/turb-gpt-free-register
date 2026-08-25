@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pyotp
+from core import db, record_store
 from webui.app import create_app
 from tests.support_pg import PostgresTestCase
 
@@ -15,25 +16,24 @@ class DashboardApiTests(PostgresTestCase):
         self.client = self.app.test_client()
         self.headers = {"X-Auth-Code": "test-auth"}
 
-    @patch("webui.app.svc.get_retry_info", side_effect=lambda row: {
-        "display_status": "partial_success" if row.get("status") == "failed" else row.get("status")
-    })
     @patch("core.proxy_provider.registration_proxy_mode", return_value="1024")
     @patch("core.proxy_provider.active_proxy_leases", return_value=[{"provider": "1024proxy", "endpoint": "1.2.*.*:80"}])
-    @patch("webui.app.db.codex_accounts_summary", return_value={"total": 2, "exported": 1, "pending": 1})
-    @patch("webui.app.db.icloud_hide_email_pool_summary", return_value={"total": 4, "available": 3, "used": 1})
-    @patch("webui.app.db.domain_email_pool_summary", return_value={"total": 3, "available": 2, "used": 1})
-    @patch("webui.app.db.generic_api_email_pool_summary", return_value={"total": 2, "available": 2})
-    @patch("webui.app.db.outlook_pool_summary", return_value={"total": 5, "available": 4, "used": 1})
-    @patch("webui.app.db.list_jobs", return_value=[
-        {"id": 8, "status": "success", "email": "a@example.com", "created_at": datetime.now().isoformat()},
-        {"id": 7, "status": "failed", "created_at": datetime.now().isoformat()},
-    ])
-    @patch("webui.app.db.list_accounts", return_value=[
-        {"id": 1, "plan_type": "free", "codex_status": "success"},
-        {"id": 2, "plan_type": "free", "plus_trial_eligible": True},
-        {"id": 3, "plan_type": "plus", "archived": True},
-    ])
+    @patch("webui.app.admin_repository.dashboard_aggregates", return_value={
+        "accounts": {"total": 3, "active": 2, "archived": 1, "codex_ready": 1,
+                     "plans": {"free": 1, "free_trial_eligible": 1}},
+        "jobs": {"total": 2, "counts": {"success": 1, "partial_success": 1},
+                 "today_counts": {"success": 1, "partial_success": 1}},
+        "email_status_rows": [
+            {"source": "outlook", "status": "available", "count": 4},
+            {"source": "outlook", "status": "used", "count": 1},
+            {"source": "generic_api", "status": "available", "count": 2},
+            {"source": "cloudflare_domain", "status": "available", "count": 2},
+            {"source": "cloudflare_domain", "status": "used", "count": 1},
+            {"source": "icloud_hide", "status": "available", "count": 3},
+            {"source": "icloud_hide", "status": "used", "count": 1},
+        ],
+        "codex": {"total": 2, "exported": 1, "pending": 1},
+    })
     def test_dashboard_returns_aggregates_without_account_secrets(self, *_mocks):
         response = self.client.get("/api/dashboard", headers=self.headers)
         self.assertEqual(response.status_code, 200)
@@ -48,13 +48,12 @@ class DashboardApiTests(PostgresTestCase):
         self.assertNotIn("access_token", str(payload))
         self.assertNotIn("api_key", str(payload).lower())
 
-    @patch("webui.app.svc.get_retry_info", side_effect=lambda row: {})
-    @patch("webui.app.db.list_jobs", return_value=[
-        {"id": 3, "status": "success"},
-        {"id": 2, "status": "failed"},
-        {"id": 1, "status": "failed"},
-    ])
-    def test_jobs_status_filter_keeps_global_counts(self, *_mocks):
+    def test_jobs_status_filter_keeps_global_counts(self):
+        self.seed(record_store.JOBS, [
+            {"job_uuid": "j3", "status": "success"},
+            {"job_uuid": "j2", "status": "failed"},
+            {"job_uuid": "j1", "status": "failed"},
+        ])
         response = self.client.get(
             "/api/jobs?paged=1&page=1&page_size=20&status=failed",
             headers=self.headers,
@@ -66,13 +65,12 @@ class DashboardApiTests(PostgresTestCase):
         self.assertEqual(payload["status_counts"], {"success": 1, "failed": 2, "active": 0})
         self.assertEqual({item["value"] for item in payload["facets"]["status"]}, {"success", "failed"})
 
-    @patch("webui.app.svc.get_retry_info", side_effect=lambda row: {})
-    @patch("webui.app.db.list_jobs", return_value=[
-        {"id": 3, "status": "failed", "email": "target@example.com", "email_source": "email_butler"},
-        {"id": 2, "status": "success", "email": "other@example.com", "email_source": "email_butler"},
-        {"id": 1, "status": "failed", "email": "target@elsewhere.com", "email_source": "outlook"},
-    ])
-    def test_jobs_query_and_email_source_filters(self, *_mocks):
+    def test_jobs_query_and_email_source_filters(self):
+        self.seed(record_store.JOBS, [
+            {"job_uuid": "j3", "status": "failed", "email": "target@example.com", "email_source": "email_butler"},
+            {"job_uuid": "j2", "status": "success", "email": "other@example.com", "email_source": "email_butler"},
+            {"job_uuid": "j1", "status": "failed", "email": "target@elsewhere.com", "email_source": "outlook"},
+        ])
         response = self.client.get(
             "/api/jobs?paged=1&page=1&page_size=20&q=target&email_source=email_butler",
             headers=self.headers,
@@ -83,26 +81,24 @@ class DashboardApiTests(PostgresTestCase):
         self.assertEqual(payload["items"][0]["email"], "target@example.com")
         self.assertEqual(payload["status_counts"], {"failed": 1, "active": 0})
 
-    @patch("webui.app.svc.get_retry_info", side_effect=lambda row: {})
-    @patch("webui.app.db.list_jobs", return_value=[
-        {"id": 3, "status": "success", "created_at": "2026-08-11T10:00:00"},
-        {"id": 2, "status": "failed", "created_at": "2026-08-10T10:00:00"},
-    ])
-    def test_jobs_date_range_filter(self, *_mocks):
+    def test_jobs_date_range_filter(self):
+        self.seed(record_store.JOBS, [
+            {"job_uuid": "j3", "status": "success", "created_at": "2026-08-11T10:00:00"},
+            {"job_uuid": "j2", "status": "failed", "created_at": "2026-08-10T10:00:00"},
+        ])
         response = self.client.get(
             "/api/jobs?paged=1&page=1&page_size=20&date_from=2026-08-11&date_to=2026-08-11",
             headers=self.headers,
         )
         payload = response.get_json()
         self.assertEqual(payload["total"], 1)
-        self.assertEqual(payload["items"][0]["id"], 3)
+        self.assertEqual(payload["items"][0]["status"], "success")
 
-    @patch("webui.app.svc.get_retry_info", side_effect=lambda row: {})
-    @patch("webui.app.db.list_jobs", return_value=[
-        {"id": 31, "status": "failed", "email": "target@example.com", "proxy_provider": "1024proxy", "proxy_region": "JP", "error_message": "OTP timeout"},
-        {"id": 32, "status": "failed", "email": "other@example.com", "proxy_provider": "1024proxy", "proxy_region": "US", "error_message": "browser timeout"},
-    ])
-    def test_jobs_column_filters_can_be_combined(self, *_mocks):
+    def test_jobs_column_filters_can_be_combined(self):
+        self.seed(record_store.JOBS, [
+            {"id": 31, "job_uuid": "j31", "status": "failed", "email": "target@example.com", "proxy_provider": "1024proxy", "proxy_region": "JP", "error_message": "OTP timeout"},
+            {"id": 32, "job_uuid": "j32", "status": "failed", "email": "other@example.com", "proxy_provider": "1024proxy", "proxy_region": "US", "error_message": "browser timeout"},
+        ])
         response = self.client.get(
             "/api/jobs?paged=1&page=1&page_size=20&id=31&email=target&proxy=jp&error=otp",
             headers=self.headers,
@@ -204,7 +200,9 @@ class DashboardApiTests(PostgresTestCase):
         html = response.get_data(as_text=True)
         self.assertIn("if (summaryLoading) return;", html)
         self.assertIn("if (dashboardLoading) return;", html)
-        self.assertIn("if (jobsLoading) return;", html)
+        self.assertIn("if (jobsLoading) { jobsReloadQueued = true; return; }", html)
+        self.assertIn("if (outlookLoading) { outlookReloadQueued = true; return; }", html)
+        self.assertIn("if (codexLoading) { codexReloadQueued = true; return; }", html)
         self.assertIn("if (accountTasksLoading) return;", html)
         self.assertNotIn("    loadSummary();\n  } catch(e) {}\n}", html)
         self.assertIn("}, 10000);", html)
@@ -264,11 +262,11 @@ class DashboardApiTests(PostgresTestCase):
         self.assertIn("function containVerticalScroll(el)", html)
         self.assertIn("event.preventDefault();", html)
 
-    @patch("webui.app.db.list_accounts", return_value=[
-        {"id": 1, "email": "target@example.com", "email_source": "outlook", "access_token": "token", "totp_secret": "JBSWY3DPEHPK3PXP", "codex_status": "success", "plan_type": "free", "current_plan_type": "free", "plan_check_status": "success", "plus_trial_eligible": True, "extra_json": '{"account_password":"Account123!abcd"}'},
-        {"id": 2, "email": "other@example.com", "email_source": "icloud_hide", "access_token": "", "totp_enabled": False, "codex_status": "failed", "plan_type": "plus", "current_plan_type": "plus"},
-    ])
-    def test_accounts_column_filters_are_combined(self, _list_accounts):
+    def test_accounts_column_filters_are_combined(self):
+        self.seed(record_store.ACCOUNTS, [
+            {"email": "target@example.com", "email_source": "outlook", "access_token": "token", "totp_secret": "JBSWY3DPEHPK3PXP", "codex_status": "success", "plan_type": "free", "current_plan_type": "free", "plan_check_status": "success", "plus_trial_eligible": True, "extra_json": '{"account_password":"Account123!abcd"}'},
+            {"email": "other@example.com", "email_source": "icloud_hide", "access_token": "", "totp_enabled": False, "codex_status": "failed", "plan_type": "plus", "current_plan_type": "plus"},
+        ])
         response = self.client.get(
             "/api/accounts?paged=1&page=1&page_size=20&email=target&source=outlook&token=has&password=has&trial=eligible&totp=enabled&codex=success",
             headers=self.headers,
@@ -283,12 +281,12 @@ class DashboardApiTests(PostgresTestCase):
         self.assertTrue(payload["items"][0]["has_account_password"])
         self.assertTrue(payload["items"][0]["totp_enabled"])
 
-    @patch("webui.app.db.list_accounts", return_value=[
-        {"id": 1, "email": "eligible@example.com", "plan_type": "free", "current_plan_type": "free", "plan_check_status": "success", "plus_trial_eligible": True},
-        {"id": 2, "email": "used@example.com", "plan_type": "free", "current_plan_type": "free", "plan_check_status": "success", "plus_trial_eligible": False},
-        {"id": 3, "email": "plus@example.com", "plan_type": "plus", "current_plan_type": "plus"},
-    ])
-    def test_accounts_trial_filter_is_applied(self, _list_accounts):
+    def test_accounts_trial_filter_is_applied(self):
+        self.seed(record_store.ACCOUNTS, [
+            {"email": "eligible@example.com", "plan_type": "free", "current_plan_type": "free", "plan_check_status": "success", "plus_trial_eligible": True},
+            {"email": "used@example.com", "plan_type": "free", "current_plan_type": "free", "plan_check_status": "success", "plus_trial_eligible": False},
+            {"email": "plus@example.com", "plan_type": "plus", "current_plan_type": "plus"},
+        ])
         response = self.client.get(
             "/api/accounts?paged=1&page=1&page_size=20&trial=eligible",
             headers=self.headers,
@@ -358,12 +356,17 @@ class DashboardApiTests(PostgresTestCase):
         self.assertEqual(payload["remaining_seconds"], 20)
         self.assertNotIn("secret", payload)
 
-    @patch("webui.app.db.list_codex_accounts", return_value=[
-        {"filename": "codex-a-free.json", "email": "a@example.com", "plan": "free", "account_id": "acc-a", "exported_count": 0, "expired": "2026-08-31T00:00:00"},
-        {"filename": "codex-b-plus.json", "email": "b@example.com", "plan": "plus", "account_id": "acc-b", "exported_count": 2, "expired": "2026-09-30T00:00:00"},
-    ])
-    @patch("webui.app.db.codex_accounts_summary", return_value={"total": 2, "exported": 1, "pending": 1})
-    def test_codex_column_filters_are_combined(self, *_mocks):
+    def test_codex_column_filters_are_combined(self):
+        db.save_codex_credential_record("codex-a@example.com-free.json", {
+            "email": "a@example.com", "account_id": "acc-a", "access_token": "a",
+            "expired": "2026-08-31T00:00:00Z",
+        })
+        db.save_codex_credential_record("codex-b@example.com-plus.json", {
+            "email": "b@example.com", "account_id": "acc-b", "access_token": "b",
+            "expired": "2026-09-30T00:00:00Z",
+        })
+        second = record_store.get_row_by(record_store.CODEX_CREDENTIALS, "filename", "codex-b@example.com-plus.json")
+        record_store.patch_row(record_store.CODEX_CREDENTIALS, second["id"], {"exported_count": 2})
         response = self.client.get(
             "/api/codex?paged=1&page=1&page_size=20&plan=plus&status=exported&account_id=acc-b&expired_date=2026-09-30",
             headers=self.headers,
@@ -374,14 +377,11 @@ class DashboardApiTests(PostgresTestCase):
         self.assertEqual({item["value"] for item in payload["facets"]["plan"]}, {"free", "plus"})
         self.assertEqual({item["value"] for item in payload["facets"]["status"]}, {"unexported", "exported"})
 
-    @patch("webui.app.db.list_icloud_hide_email_pool", return_value=[])
-    @patch("webui.app.db.list_domain_email_pool", return_value=[])
-    @patch("webui.app.db.list_generic_api_email_pool", return_value=[])
-    @patch("webui.app.db.list_outlook_pool", return_value=[
-        {"email": "used@example.com", "status": "used", "access_token": "token", "imported_at": "2026-08-10T10:00:00", "used_at": "2026-08-11T09:00:00"},
-        {"email": "free@example.com", "status": "available", "access_token": "", "imported_at": "2026-08-09T10:00:00"},
-    ])
-    def test_outlook_column_filters_are_combined(self, *_mocks):
+    def test_outlook_column_filters_are_combined(self):
+        self.seed(record_store.OUTLOOK_POOL, [
+            {"email": "used@example.com", "status": "used", "access_token": "token", "imported_at": "2026-08-10T10:00:00", "used_at": "2026-08-11T09:00:00"},
+            {"email": "free@example.com", "status": "available", "access_token": "", "imported_at": "2026-08-09T10:00:00"},
+        ])
         response = self.client.get(
             "/api/outlook?paged=1&page=1&page_size=20&source=outlook&status=used&token=has&used_date=2026-08-11",
             headers=self.headers,

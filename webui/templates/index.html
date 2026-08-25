@@ -3495,6 +3495,8 @@ let ACCOUNTS = [], OUTLOOK = [], CONFIG = [];
 let ACCOUNT_TASKS = [], ACCOUNT_TASKS_TOTAL = 0;
 let ACCOUNTS_TOTAL = 0;
 let OUTLOOK_TOTAL = 0;
+let outlookLoading = false;
+let outlookReloadQueued = false;
 let SHOW_ARCHIVED_ACCOUNTS = false;
 let SHOW_PLUS_ACCOUNTS_ONLY = false;
 const ACCOUNT_SELECTED = new Set();
@@ -3519,6 +3521,7 @@ let activeLogJob = null, logTimer = null, jobsTimer = null;
 let summaryLoading = false;
 let dashboardLoading = false;
 let jobsLoading = false;
+let jobsReloadQueued = false;
 let accountTasksLoading = false;
 
 const LIST_FACET_LABELS = {
@@ -4619,7 +4622,7 @@ function bindJobsBodyEvents(bodyEl) {
   $('#btnBatchCancelV2')?.addEventListener('click', batchCancelJobs);
   $('#btnBatchRetryV2')?.addEventListener('click', retryBatchFailedJobs);
   const refreshV2 = $('#btnRefreshJobsV2');
-  if (refreshV2) refreshV2.addEventListener('click', refreshJobs);
+  if (refreshV2) refreshV2.addEventListener('click', () => refreshJobsManual(refreshV2));
 
   function stepInputNumber(inputId, delta) {
     const el = document.getElementById(inputId);
@@ -4910,7 +4913,7 @@ $('#btnResetJobFiltersV2')?.addEventListener('click', () => {
 });
 
 async function refreshJobs() {
-  if (jobsLoading) return;
+  if (jobsLoading) { jobsReloadQueued = true; return; }
   jobsLoading = true;
   try {
     const p = PAGERS.jobs;
@@ -4926,7 +4929,7 @@ async function refreshJobs() {
       jobsLoading = false;
       return refreshJobs();
     }
-    const nextSignature = JSON.stringify({items: nextJobs, total: JOBS_TOTAL, status_counts: JOB_STATUS_COUNTS, progress_batch: JOB_PROGRESS_BATCH, page: p.page, size: p.size});
+    const nextSignature = `${res.revision || ''}|${p.page}|${p.size}|${JSON.stringify(JOB_PROGRESS_BATCH || {})}`;
     JOBS = nextJobs;
     if (nextSignature !== jobsRenderSignature) {
       jobsRenderSignature = nextSignature;
@@ -4936,7 +4939,20 @@ async function refreshJobs() {
       renderBatchProgress();
     }
   } catch(e) {}
-  finally { jobsLoading = false; }
+  finally {
+    jobsLoading = false;
+    if (jobsReloadQueued) {
+      jobsReloadQueued = false;
+      queueMicrotask(refreshJobs);
+    }
+  }
+}
+async function refreshJobsManual(btn) {
+  const old = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '刷新中…';
+  try { await refreshJobs(); showToast('任务列表已刷新'); }
+  finally { btn.textContent = old; btn.disabled = false; }
 }
 
 let modalScrollY = 0;
@@ -6929,6 +6945,8 @@ $('#butlerLeaseList')?.addEventListener('click', async e => {
 });
 
 async function loadOutlook() {
+  if (outlookLoading) { outlookReloadQueued = true; return; }
+  outlookLoading = true;
   try {
     const source = getPoolSource();
     const q = getOutlookQuery();
@@ -6948,7 +6966,21 @@ async function loadOutlook() {
     const totalPages = Math.max(1, Math.ceil(OUTLOOK_TOTAL / p.size));
     if (p.page > totalPages) { p.page = totalPages; return loadOutlook(); }
     renderOutlook();
-  } catch(e) {}
+  } catch(e) { showToast('加载邮箱池失败: ' + e.message); }
+  finally {
+    outlookLoading = false;
+    if (outlookReloadQueued) {
+      outlookReloadQueued = false;
+      queueMicrotask(loadOutlook);
+    }
+  }
+}
+async function refreshOutlookManual(btn) {
+  const old = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '刷新中…';
+  try { await loadOutlook(); showToast('邮箱池已刷新'); }
+  finally { btn.textContent = old; btn.disabled = false; }
 }
 function closeOutlookV2MoreMenus() {
   document.querySelectorAll('.outlook-table-v2 .acc-v2-more.open').forEach(el => el.classList.remove('open'));
@@ -6970,18 +7002,35 @@ function positionOutlookV2MoreMenu(wrap) {
   menu.style.top = `${top}px`;
 }
 function _outlookTokenCell(r) {
-  if (r.access_token) {
-    const id = copyId(r.access_token);
-    return `<button type="button" class="acc-v2-token-copy" data-copy-id="${id}" title="复制 Token">复制</button>`;
+  if (r.has_access_token) {
+    return `<button type="button" class="acc-v2-token-copy" data-pool-copy="access_token" data-email="${esc(r.email)}" data-source="${esc(r.source || 'outlook')}" title="按需读取并复制 Token">复制</button>`;
   }
   return `<span class="acc-v2-token-none">无Token</span>`;
+}
+function _poolCopyButton(label, r, field, cls='') {
+  return `<button type="button" class="${cls}" data-pool-copy="${esc(field)}" data-email="${esc(r.email)}" data-source="${esc(r.source || 'outlook')}">${esc(label)}</button>`;
+}
+async function copyPoolSecret(source, email, field) {
+  const params = new URLSearchParams({source, email, field});
+  const result = await api(`/api/outlook/secret?${params.toString()}`);
+  if (!result.value) throw new Error('对应内容为空');
+  await copyText(result.value);
+}
+async function copyPoolSecrets(rows, field='copy_line') {
+  const result = await api('/api/outlook/secret-bulk', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({items: rows.map(r => ({source:r.source || 'outlook', email:r.email})), field}),
+  });
+  const text = (result.values || []).map(item => item.value).filter(Boolean).join('\n');
+  if (!text) throw new Error('当前页没有可复制内容');
+  await copyText(text);
 }
 function _outlookMoreMenu(r) {
   const src = esc(r.source || 'outlook');
   const email = esc(r.email);
   const items = [
-    cbtn('复制Token', r.access_token, 'good'),
-    cbtn('复制整行', r.account_copy_line, 'good'),
+    r.has_access_token ? _poolCopyButton('复制Token', r, 'access_token', 'good') : '',
+    r.registered_account_id ? _poolCopyButton('复制账号整行', r, 'account_copy_line', 'good') : '',
     r.status !== 'available' ? `<button type="button" data-pool-act="available" data-email="${email}" data-source="${src}">恢复可用</button>` : '',
     r.status !== 'disabled' ? `<button type="button" data-pool-act="disabled" data-email="${email}" data-source="${src}">停用</button>` : '',
     r.status !== 'failed' ? `<button type="button" data-pool-act="failed" data-email="${email}" data-source="${src}">标失败</button>` : '',
@@ -7001,7 +7050,7 @@ function renderOutlook() {
       <td class="col-check"><input type="checkbox" class="outlook-row-check" data-email="${email}" data-source="${src}" ${OUTLOOK_SELECTED.has(poolKey(r)) ? 'checked' : ''}></td>
       <td class="col-email" title="${email}">
         <div class="acc-v2-email">${email || '-'}</div>
-        <div class="acc-v2-sub" title="${esc(r.copy_line || '')}">${esc(short(r.copy_line, 70))}</div>
+        <div class="acc-v2-sub">${r.has_password ? '含密码 · ' : ''}${r.has_refresh_token ? '含刷新凭证 · ' : ''}${r.has_code_url ? '含取码地址' : '按需读取素材'}</div>
       </td>
       <td class="col-source">${esc(poolLabel(r.source))}</td>
       <td class="col-status">${pill(r.status)}</td>
@@ -7010,7 +7059,7 @@ function renderOutlook() {
       <td class="col-time" title="${esc(r.used_at || '-')}">${esc(r.used_at || '-')}</td>
       <td class="col-actions">
         <div class="acc-v2-actions">
-          ${cbtn('复制邮箱', r.copy_line, 'primary')}
+          ${_poolCopyButton('复制素材', r, 'copy_line', 'primary')}
           <button type="button" class="danger" data-pool-act="delete" data-email="${email}" data-source="${src}" title="删除邮箱素材">删除</button>
           <div class="acc-v2-more">
             <button type="button" class="acc-v2-more-btn" data-outlook-more-toggle aria-haspopup="true">更多</button>
@@ -7090,6 +7139,15 @@ async function onOutlookBodyClick(e) {
   }
   if (e.target.closest('.acc-v2-more-menu')) closeOutlookV2MoreMenus();
 
+  const copyTarget = e.target.closest('[data-pool-copy]');
+  if (copyTarget) {
+    try {
+      await copyPoolSecret(copyTarget.dataset.source || 'outlook', copyTarget.dataset.email || '', copyTarget.dataset.poolCopy || 'copy_line');
+      showToast('已复制');
+    } catch (err) { showToast('复制失败: ' + err.message); }
+    return;
+  }
+
   const t = e.target.closest('[data-pool-act]');
   if (!t) return;
   const { poolAct, email } = t.dataset;
@@ -7156,8 +7214,11 @@ async function onOutlookBodyClick(e) {
   bind('btnFailSelectedOutlookV2', () => bulkMarkOutlookStatus('failed'));
   bind('btnDeleteSelectedOutlookV2', deleteSelectedOutlook);
   bind('btnImportOutlookV2', openOutlookImportModal);
-  bind('copyAllEmailsV2', () => copyText(OUTLOOK.map(r=>r.copy_line).filter(Boolean).join('\n')));
-  bind('btnRefreshOutlookV2', loadOutlook);
+  bind('copyAllEmailsV2', async () => {
+    try { await copyPoolSecrets(OUTLOOK, 'copy_line'); showToast('已复制当前页邮箱素材'); }
+    catch (err) { showToast('复制失败: ' + err.message); }
+  });
+  bind('btnRefreshOutlookV2', () => refreshOutlookManual(document.getElementById('btnRefreshOutlookV2')));
   bind('btnResetOutlookFiltersV2', () => {
     ['qOutlookV2','outlookStatusFilterV2','outlookTokenFilterV2','outlookImportedFilterV2','outlookUsedFilterV2'].forEach(id => { const el=document.getElementById(id); if (el) el.value=''; });
     setPoolSourceV2('all'); OUTLOOK_SELECTED.clear(); PAGERS.outlook.page = 1; refreshColumnFilterStates(); loadOutlook();
@@ -7337,12 +7398,16 @@ async function deleteSelectedOutlook() {
 // ---------- Codex 授权 ----------
 let CODEX = [];
 let CODEX_TOTAL = 0;
+let codexLoading = false;
+let codexReloadQueued = false;
 function getCodexQuery() {
   const el = document.getElementById('qCodexV2');
   return (el ? el.value : '').trim();
 }
 let CODEX_SHOW_ARCHIVED = false;
 async function loadCodex() {
+  if (codexLoading) { codexReloadQueued = true; return; }
+  codexLoading = true;
   try {
     const p = PAGERS.codex;
     const q = getCodexQuery();
@@ -7369,6 +7434,20 @@ async function loadCodex() {
     const st = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
     renderCodex();
   } catch(e) { showToast('加载 Codex 列表失败: ' + e.message); }
+  finally {
+    codexLoading = false;
+    if (codexReloadQueued) {
+      codexReloadQueued = false;
+      queueMicrotask(loadCodex);
+    }
+  }
+}
+async function refreshCodexManual(btn) {
+  const old = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '刷新中…';
+  try { await loadCodex(); showToast('Codex 凭证已刷新'); }
+  finally { btn.textContent = old; btn.disabled = false; }
 }
 const CODEX_SELECTED = new Set();
 function _codexUpdateSelectedHint() {
@@ -7837,7 +7916,7 @@ async function codexDeleteBulk() {
     bodyV2.addEventListener('click', onCodexBodyClick);
   }
   const refreshV2 = $('#btnRefreshCodexV2');
-  if (refreshV2) refreshV2.addEventListener('click', loadCodex);
+  if (refreshV2) refreshV2.addEventListener('click', () => refreshCodexManual(refreshV2));
   const bind = (id, fn) => { const el = document.getElementById(id); if (el) el.addEventListener('click', fn); };
   bind('btnCodexDownloadBulkV2', codexDownloadBulkLocal);
   bind('btnCodexDownloadBulkCpaV2', codexDownloadBulkCpa);

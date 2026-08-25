@@ -341,7 +341,18 @@ class JobProgressTests(PostgresTestCase):
 
         app = create_app(auth_code="test-auth")
         client = app.test_client()
-        with patch.object(db, "list_jobs", return_value=rows):
+        repository_payload = {
+            "ok": True,
+            "items": rows,
+            "total": len(rows),
+            "page": 1,
+            "page_size": 20,
+            "revision": "2:test",
+            "facets": {},
+            "status_counts": {"success": 1, "running": 1, "active": 1},
+            "progress_rows": rows,
+        }
+        with patch("webui.app.admin_repository.list_jobs", return_value=repository_payload):
             response = client.get(
                 "/api/jobs?paged=1&page=1&page_size=20",
                 headers={"X-Auth-Code": "test-auth"},

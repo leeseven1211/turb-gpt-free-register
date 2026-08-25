@@ -916,8 +916,13 @@ def _account_plan_ready(account: dict | None) -> bool:
     return bool(account and str(account.get("plan_check_status") or "").strip().lower() == "success")
 
 
-def get_retry_info(job: dict) -> dict:
-    """返回给 API/UI 的重试能力描述，不依赖前端猜测错误阶段。"""
+def _build_retry_info(
+    job: dict,
+    *,
+    account: dict | None,
+    successful_retry: dict | None,
+) -> dict:
+    """纯函数版本的任务重试投影；列表页可批量准备关联数据后复用。"""
     status = str(job.get("status") or "")
     info = {
         "retryable": False,
@@ -929,13 +934,11 @@ def get_retry_info(job: dict) -> dict:
     if status not in ("success", "failed", "partial_success", "stopped", "cancelled"):
         return info
 
-    successful_retry = db.get_successful_retry_for_job(int(job.get("id") or 0))
     if successful_retry is not None:
         info["retry_reason"] = f"后续重试任务 #{successful_retry.get('id')} 已成功"
         info["successful_retry_job_id"] = successful_retry.get("id")
         return info
 
-    account = _account_for_job(job)
     if status == "success" and account is None:
         return info
     pending_password = _pending_registration_password(account)
@@ -1008,6 +1011,40 @@ def get_retry_info(job: dict) -> dict:
         "retry_label": "重试",
     })
     return info
+
+
+def get_retry_info(job: dict) -> dict:
+    """返回给 API/UI 的重试能力描述，不依赖前端猜测错误阶段。"""
+    status = str(job.get("status") or "")
+    if status not in ("success", "failed", "partial_success", "stopped", "cancelled"):
+        return _build_retry_info(job, account=None, successful_retry=None)
+    successful_retry = db.get_successful_retry_for_job(int(job.get("id") or 0))
+    account = None if successful_retry is not None else _account_for_job(job)
+    return _build_retry_info(
+        job,
+        account=account,
+        successful_retry=successful_retry,
+    )
+
+
+def get_retry_info_bulk(jobs: list[dict]) -> dict[int, dict]:
+    """批量生成列表重试信息，查询次数固定，不随当前页行数增长。"""
+    rows = [dict(job) for job in (jobs or [])]
+    terminal = [
+        job for job in rows
+        if str(job.get("status") or "") in ("success", "failed", "partial_success", "stopped", "cancelled")
+    ]
+    successful_by_job = db.get_successful_retries_for_jobs(terminal)
+    needs_accounts = [job for job in terminal if int(job.get("id") or 0) not in successful_by_job]
+    accounts_by_job = db.get_accounts_for_jobs(needs_accounts)
+    return {
+        int(job.get("id") or 0): _build_retry_info(
+            job,
+            account=accounts_by_job.get(int(job.get("id") or 0)),
+            successful_retry=successful_by_job.get(int(job.get("id") or 0)),
+        )
+        for job in rows
+    }
 
 
 def retry_job(job_id: int, workers: int | None = None) -> dict:

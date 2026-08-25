@@ -1187,15 +1187,10 @@ def _credential_file_name(email: str, plan_type: str) -> str:
 
 
 def save_codex_credential(storage: dict, email: str, plan_type: str) -> Path:
-    """落盘到 {PROJECT_ROOT}/{CODEX_OUTPUT_DIRNAME}/codex-{email}.json。"""
+    """保存 Codex 凭证到数据库；返回对应的 CPA 兼容导出路径。"""
     out_dir = _PROJECT_ROOT / _cfg.CODEX_OUTPUT_DIRNAME
-    out_dir.mkdir(parents=True, exist_ok=True)
     fname = _credential_file_name(email, plan_type)
     path = out_dir / fname
-    path.write_text(
-        json.dumps(storage, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
     from core import db
     db.save_codex_credential_record(fname, storage)
     return path

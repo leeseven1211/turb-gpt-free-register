@@ -698,6 +698,11 @@ def _decorate_account(row: dict) -> dict:
     return out
 
 
+def decorate_account(row: dict) -> dict:
+    """管理读模型使用的稳定账号装饰入口。"""
+    return _decorate_account(row)
+
+
 def _account_matches_plan_filter(row: dict, plan_filter: str | None = None) -> bool:
     """账号套餐过滤。plus 表示已开通 Plus（兼容 plus/chatgpt_plus/plus_trial 等标记）。"""
     f = str(plan_filter or "").strip().lower()
@@ -1654,66 +1659,71 @@ def update_accounts_note(account_ids: list[int] | None, note: str) -> tuple[list
     返回 (updated, skipped)，updated/skipped 元素含 id/email。
     """
     ids = {int(x) for x in (account_ids or []) if str(x).strip().lstrip("-").isdigit()}
-    updated: list[dict] = []
-    skipped: list[dict] = []
-    with _LOCK:
-        rows = _load_accounts()
-        seen_ids: set[int] = set()
-        now = _now()
-        text = str(note or "")
-        for row in rows:
-            row_id = int(row.get("id") or 0)
-            if row_id not in ids:
-                continue
-            row["note"] = text
-            row["note_updated_at"] = now
-            row["updated_at"] = now
-            updated.append({"id": row_id, "email": row.get("email"), "note": text, "note_updated_at": now})
-            seen_ids.add(row_id)
-        for item in ids - seen_ids:
-            skipped.append({"id": item, "reason": "账号不存在"})
-        if updated:
-            _save_accounts(rows)
+    if not ids:
+        return [], []
+    now = _now()
+    text = str(note or "")
+    rows = record_store.patch_rows_where_returning(
+        record_store.ACCOUNTS,
+        changes={"note": text, "note_updated_at": now, "updated_at": now},
+        where="id = ANY(%s)",
+        params=(sorted(ids),),
+    )
+    rows.sort(key=lambda row: int(row.get("id") or 0))
+    seen_ids = {int(row["id"]) for row in rows}
+    updated = [
+        {"id": int(row["id"]), "email": row.get("email"), "note": text, "note_updated_at": now}
+        for row in rows
+    ]
+    skipped = [{"id": item, "reason": "账号不存在"} for item in sorted(ids - seen_ids)]
+    if updated:
+        compat_export.schedule("accounts")
     return updated, skipped
 
 
 def archive_account(acc_id: int, archived: bool = True) -> bool:
     """归档/取消归档单个已注册账号。归档不会删除 token，只影响默认账号列表查询。"""
-    with _LOCK:
-        rows = _load_accounts()
-        row = next((r for r in rows if int(r.get("id") or 0) == int(acc_id)), None)
-        if row is None:
-            return False
-        now = _now()
-        row["archived"] = bool(archived)
-        row["archived_at"] = now if archived else None
-        row["updated_at"] = now
-        _save_accounts(rows)
-        return True
+    now = _now()
+    changed = record_store.patch_row(record_store.ACCOUNTS, int(acc_id), {
+        "archived": bool(archived),
+        "archived_at": now if archived else None,
+        "updated_at": now,
+    })
+    if changed:
+        compat_export.schedule("accounts")
+    return changed
 
 
 def archive_accounts(account_ids: list[int] | None, archived: bool = True) -> tuple[list[dict], list[dict]]:
     """批量归档/取消归档账号。返回 (updated, skipped)。"""
     ids = {int(x) for x in (account_ids or []) if str(x).strip().lstrip("-").isdigit()}
-    updated: list[dict] = []
-    skipped: list[dict] = []
-    with _LOCK:
-        rows = _load_accounts()
-        seen_ids: set[int] = set()
-        now = _now()
-        for row in rows:
-            row_id = int(row.get("id") or 0)
-            if row_id not in ids:
-                continue
-            row["archived"] = bool(archived)
-            row["archived_at"] = now if archived else None
-            row["updated_at"] = now
-            updated.append({"id": row_id, "email": row.get("email"), "archived": bool(archived), "archived_at": row.get("archived_at")})
-            seen_ids.add(row_id)
-        for item in ids - seen_ids:
-            skipped.append({"id": item, "reason": "账号不存在"})
-        if updated:
-            _save_accounts(rows)
+    if not ids:
+        return [], []
+    now = _now()
+    rows = record_store.patch_rows_where_returning(
+        record_store.ACCOUNTS,
+        changes={
+            "archived": bool(archived),
+            "archived_at": now if archived else None,
+            "updated_at": now,
+        },
+        where="id = ANY(%s)",
+        params=(sorted(ids),),
+    )
+    rows.sort(key=lambda row: int(row.get("id") or 0))
+    seen_ids = {int(row["id"]) for row in rows}
+    updated = [
+        {
+            "id": int(row["id"]),
+            "email": row.get("email"),
+            "archived": bool(archived),
+            "archived_at": now if archived else None,
+        }
+        for row in rows
+    ]
+    skipped = [{"id": item, "reason": "账号不存在"} for item in sorted(ids - seen_ids)]
+    if updated:
+        compat_export.schedule("accounts")
     return updated, skipped
 
 
@@ -1723,22 +1733,11 @@ def count_accounts() -> int:
 
 def delete_account(acc_id: int | None = None, email: str | None = None) -> bool:
     """删除一个已注册账号记录，并同步刷新 注册成功的邮箱.txt / token.txt / 静态查看页。"""
-    with _LOCK:
-        rows = _load_accounts()
-        target_email = (email or "").lower()
-        new_rows = []
-        deleted = False
-        for row in rows:
-            match_id = acc_id is not None and int(row.get("id") or 0) == int(acc_id)
-            match_email = bool(target_email) and (row.get("email") or "").lower() == target_email
-            if match_id or match_email:
-                deleted = True
-                continue
-            new_rows.append(row)
-        if not deleted:
-            return False
-        _save_accounts(new_rows)
-        return True
+    deleted, _ = delete_accounts(
+        account_ids=[acc_id] if acc_id is not None else None,
+        emails=[email] if email else None,
+    )
+    return bool(deleted)
 
 
 def delete_accounts(account_ids: list[int] | None = None, emails: list[str] | None = None) -> tuple[list[dict], list[dict]]:
@@ -1748,28 +1747,28 @@ def delete_accounts(account_ids: list[int] | None = None, emails: list[str] | No
     """
     ids = {int(x) for x in (account_ids or []) if str(x).strip().isdigit()}
     email_set = {(e or "").lower() for e in (emails or []) if e}
-    deleted: list[dict] = []
-    skipped: list[dict] = []
-    with _LOCK:
-        rows = _load_accounts()
-        new_rows = []
-        seen_ids: set[int] = set()
-        seen_emails: set[str] = set()
-        for row in rows:
-            row_id = int(row.get("id") or 0)
-            row_email = (row.get("email") or "").lower()
-            if row_id in ids or row_email in email_set:
-                deleted.append({"id": row_id, "email": row.get("email")})
-                seen_ids.add(row_id)
-                seen_emails.add(row_email)
-                continue
-            new_rows.append(row)
-        for item in ids - seen_ids:
-            skipped.append({"id": item, "reason": "账号不存在"})
-        for item in email_set - seen_emails:
-            skipped.append({"email": item, "reason": "账号不存在"})
-        if deleted:
-            _save_accounts(new_rows)
+    clauses, params = [], []
+    if ids:
+        clauses.append("id = ANY(%s)")
+        params.append(sorted(ids))
+    if email_set:
+        clauses.append("lower(email) = ANY(%s)")
+        params.append(sorted(email_set))
+    if not clauses:
+        return [], []
+    rows = record_store.delete_rows_where_returning(
+        record_store.ACCOUNTS,
+        where=" OR ".join(f"({clause})" for clause in clauses),
+        params=params,
+    )
+    rows.sort(key=lambda row: int(row.get("id") or 0))
+    deleted = [{"id": int(row["id"]), "email": row.get("email")} for row in rows]
+    seen_ids = {int(row["id"]) for row in rows}
+    seen_emails = {str(row.get("email") or "").lower() for row in rows}
+    skipped = [{"id": item, "reason": "账号不存在"} for item in sorted(ids - seen_ids)]
+    skipped += [{"email": item, "reason": "账号不存在"} for item in sorted(email_set - seen_emails)]
+    if deleted:
+        compat_export.schedule("accounts")
     return deleted, skipped
 
 
@@ -1777,39 +1776,127 @@ def delete_accounts(account_ids: list[int] | None = None, emails: list[str] | No
 # outlook_pool
 # ============================================================
 
+_POOL_EXPORT_KINDS = {
+    record_store.OUTLOOK_POOL.name: "outlook",
+    record_store.GENERIC_API_POOL.name: "generic_api_emails",
+    record_store.DOMAIN_POOL.name: "domain_emails",
+    record_store.ICLOUD_HIDE_POOL.name: "icloud_hide_emails",
+}
+
+_POOL_SOURCE_SPECS = {
+    "outlook": record_store.OUTLOOK_POOL,
+    "generic_api": record_store.GENERIC_API_POOL,
+    "cloudflare_domain": record_store.DOMAIN_POOL,
+    "icloud_hide": record_store.ICLOUD_HIDE_POOL,
+}
+
+
+def _pool_row_by_email(spec, email: str) -> dict | None:
+    return record_store.get_row_by(spec, "email", str(email or "").strip(), lower=True)
+
+
+def _release_pool_email(spec, email: str, *, status: str, note: str | None = None, extra: dict | None = None) -> bool:
+    row = _pool_row_by_email(spec, email)
+    if row is None:
+        return False
+    changes = dict(extra or {})
+    changes["status"] = status
+    changes["used_at"] = None if status == "available" else row.get("used_at") or _now()
+    if note is not None:
+        changes["note"] = note
+    changed = record_store.patch_row(spec, int(row["id"]), changes)
+    if changed:
+        compat_export.schedule(_POOL_EXPORT_KINDS[spec.name])
+    return changed
+
+
+def _delete_pool_email(spec, email: str) -> bool:
+    rows = record_store.delete_rows_where_returning(
+        spec,
+        where="lower(email) = lower(%s)",
+        params=(str(email or "").strip(),),
+    )
+    if rows:
+        compat_export.schedule(_POOL_EXPORT_KINDS[spec.name])
+    return bool(rows)
+
+
+def _pool_summary(spec, statuses: tuple[str, ...]) -> dict:
+    result = {status: 0 for status in statuses}
+    table = postgres_store.qualified(spec.name)
+    from psycopg.rows import dict_row
+    record_store.init()
+    with postgres_store.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT COALESCE(status, 'available') AS status, COUNT(*) AS count FROM {table} GROUP BY 1")
+        rows = cur.fetchall()
+    for row in rows:
+        result[str(row["status"])] = int(row["count"])
+    result["total"] = sum(int(row["count"]) for row in rows)
+    return result
+
+
+def email_pool_secret(source: str, email: str, field: str) -> str:
+    """按需读取一条邮箱素材的敏感字段；普通列表永不调用。"""
+    spec = _POOL_SOURCE_SPECS.get(str(source or "").strip())
+    if spec is None:
+        raise ValueError("邮箱来源非法")
+    row = _pool_row_by_email(spec, email)
+    if row is None:
+        raise LookupError("邮箱不存在")
+    account = None
+    if row.get("registered_account_id"):
+        account = record_store.get_row(record_store.ACCOUNTS, int(row["registered_account_id"]))
+    if account is None:
+        account = record_store.get_row_by(record_store.ACCOUNTS, "email", row.get("email"), lower=True)
+    key = str(field or "").strip()
+    if key == "access_token":
+        return str((account or {}).get("access_token") or row.get("access_token") or "")
+    if key == "account_copy_line":
+        return _account_line(account) if account else ""
+    if key == "copy_line":
+        if spec is record_store.OUTLOOK_POOL:
+            return _outlook_line(row)
+        if spec is record_store.GENERIC_API_POOL:
+            return _generic_api_email_line(row)
+        return str(row.get("email") or "")
+    if key in {"password", "client_id", "refresh_token", "code_url"}:
+        return str(row.get(key) or "")
+    raise ValueError("不支持的敏感字段")
+
 def import_outlook_accounts(records: list[dict]) -> tuple[int, int]:
     """
     批量导入 Outlook 账号。
     records 元素：{email, password, client_id, refresh_token}
     返回 (新增数, 跳过数)。
     """
-    with _LOCK:
-        rows = _load_outlook()
-        inserted = skipped = 0
+    inserted = skipped = 0
+    with record_store.transaction() as conn:
         for raw in records:
             email = (raw.get("email") or "").strip()
             if not email:
                 skipped += 1
                 continue
-            if _find_by_email(rows, email):
-                skipped += 1
-                continue
-            row = {
-                "id": _next_id(rows),
+            now = _now()
+            row_id = record_store.insert_row_if_absent(record_store.OUTLOOK_POOL, "email", {
                 "email": email,
                 "password": (raw.get("password") or "").strip(),
                 "client_id": (raw.get("client_id") or raw.get("clientId") or "").strip(),
                 "refresh_token": (raw.get("refresh_token") or raw.get("refreshToken") or "").strip(),
+                "access_token": (raw.get("access_token") or "").strip(),
+                "totp_secret": (raw.get("totp_secret") or "").strip(),
                 "status": "available",
                 "used_at": None,
                 "note": None,
-                "imported_at": _now(),
-            }
-            row["copy_line"] = _outlook_line(row)
-            rows.append(row)
-            inserted += 1
-        _save_outlook(rows)
-        return inserted, skipped
+                "imported_at": now,
+                "created_at": now,
+            }, conn=conn)
+            if row_id is None:
+                skipped += 1
+            else:
+                inserted += 1
+    if inserted:
+        compat_export.schedule("outlook")
+    return inserted, skipped
 
 
 def import_registered_email_accounts(records: list[dict], source: str | None) -> tuple[int, int]:
@@ -1951,33 +2038,20 @@ def import_registered_email_accounts(records: list[dict], source: str | None) ->
 
 def claim_next_outlook() -> dict | None:
     """原子领取一个可用 Outlook 账号并标记为 used。"""
-    with _LOCK:
-        rows = sorted(_load_outlook(), key=lambda x: int(x.get("id") or 0))
-        row = next((r for r in rows if r.get("status") == "available"), None)
-        if row is None:
-            return None
-        row["status"] = "used"
-        row["used_at"] = _now()
-        row["note"] = None
-        _save_outlook(rows)
-        return _decorate_outlook(row)
+    row = record_store.claim_next_row(
+        record_store.OUTLOOK_POOL,
+        changes={"status": "used", "used_at": _now(), "note": None},
+        where="status = %s",
+        params=("available",),
+    )
+    if row:
+        compat_export.schedule("outlook")
+    return _decorate_outlook(row) if row else None
 
 
-def release_outlook(email: str, status: str = "available", note: str | None = None) -> None:
+def release_outlook(email: str, status: str = "available", note: str | None = None) -> bool:
     """把账号状态改回 available，或标记为 used/failed/disabled。"""
-    with _LOCK:
-        rows = _load_outlook()
-        row = _find_by_email(rows, email)
-        if row is None:
-            return
-        row["status"] = status
-        if status == "available":
-            row["used_at"] = None
-        elif status in ("used", "failed", "disabled"):
-            row["used_at"] = row.get("used_at") or _now()
-        if note is not None:
-            row["note"] = note
-        _save_outlook(rows)
+    return _release_pool_email(record_store.OUTLOOK_POOL, email, status=status, note=note)
 
 
 def release_unconsumed_outlook(email: str, note: str | None = None) -> bool:
@@ -1999,14 +2073,7 @@ def release_unconsumed_outlook(email: str, note: str | None = None) -> bool:
 
 def delete_outlook(email: str) -> bool:
     """从邮箱池彻底删除一个邮箱（按 email 匹配）。返回是否删到。"""
-    with _LOCK:
-        rows = _load_outlook()
-        target = (email or "").lower()
-        new_rows = [r for r in rows if (r.get("email") or "").lower() != target]
-        if len(new_rows) == len(rows):
-            return False
-        _save_outlook(new_rows)
-        return True
+    return _delete_pool_email(record_store.OUTLOOK_POOL, email)
 
 
 def list_outlook_pool(status: str | None = None, limit: int = 500) -> list[dict]:
@@ -2023,19 +2090,12 @@ def list_outlook_pool(status: str | None = None, limit: int = 500) -> list[dict]
 
 
 def outlook_pool_summary() -> dict:
-    with _LOCK:
-        out = {"available": 0, "used": 0, "failed": 0}
-        for row in _load_outlook():
-            status = row.get("status") or "available"
-            out[status] = out.get(status, 0) + 1
-        out["total"] = sum(v for k, v in out.items() if k != "total")
-        return out
+    return _pool_summary(record_store.OUTLOOK_POOL, ("available", "used", "failed"))
 
 
 def get_outlook_by_email(email: str) -> dict | None:
-    with _LOCK:
-        row = _find_by_email(_load_outlook(), email)
-        return _decorate_outlook(row) if row else None
+    row = _pool_row_by_email(record_store.OUTLOOK_POOL, email)
+    return _decorate_outlook(row) if row else None
 
 
 # ============================================================
@@ -2048,63 +2108,51 @@ def import_generic_api_emails(records: list[dict]) -> tuple[int, int]:
     records 元素：{email, code_url}
     返回 (新增数, 跳过数)。
     """
-    with _LOCK:
-        rows = _load_generic_api_emails()
-        inserted = skipped = 0
+    inserted = skipped = 0
+    with record_store.transaction() as conn:
         for raw in records:
             email = (raw.get("email") or "").strip()
             code_url = (raw.get("code_url") or raw.get("url") or "").strip()
             if not email or not code_url:
                 skipped += 1
                 continue
-            if _find_by_email(rows, email):
-                skipped += 1
-                continue
-            row = {
-                "id": _next_id(rows),
+            now = _now()
+            row_id = record_store.insert_row_if_absent(record_store.GENERIC_API_POOL, "email", {
                 "email": email,
                 "code_url": code_url,
+                "access_token": (raw.get("access_token") or "").strip(),
+                "totp_secret": (raw.get("totp_secret") or "").strip(),
                 "status": "available",
                 "used_at": None,
                 "note": None,
-                "imported_at": _now(),
-            }
-            row["copy_line"] = _generic_api_email_line(row)
-            rows.append(row)
-            inserted += 1
-        _save_generic_api_emails(rows)
-        return inserted, skipped
+                "imported_at": now,
+                "created_at": now,
+            }, conn=conn)
+            if row_id is None:
+                skipped += 1
+            else:
+                inserted += 1
+    if inserted:
+        compat_export.schedule("generic_api_emails")
+    return inserted, skipped
 
 
 def claim_next_generic_api_email() -> dict | None:
     """原子领取一个可用通用 API 邮箱并标记为 used。"""
-    with _LOCK:
-        rows = sorted(_load_generic_api_emails(), key=lambda x: int(x.get("id") or 0))
-        row = next((r for r in rows if r.get("status") == "available"), None)
-        if row is None:
-            return None
-        row["status"] = "used"
-        row["used_at"] = _now()
-        row["note"] = None
-        _save_generic_api_emails(rows)
-        return _decorate_generic_api_email(row)
+    row = record_store.claim_next_row(
+        record_store.GENERIC_API_POOL,
+        changes={"status": "used", "used_at": _now(), "note": None},
+        where="status = %s",
+        params=("available",),
+    )
+    if row:
+        compat_export.schedule("generic_api_emails")
+    return _decorate_generic_api_email(row) if row else None
 
 
-def release_generic_api_email(email: str, status: str = "available", note: str | None = None) -> None:
+def release_generic_api_email(email: str, status: str = "available", note: str | None = None) -> bool:
     """把通用 API 邮箱状态改回 available，或标记为 failed/used。"""
-    with _LOCK:
-        rows = _load_generic_api_emails()
-        row = _find_by_email(rows, email)
-        if row is None:
-            return
-        row["status"] = status
-        if status == "available":
-            row["used_at"] = None
-        elif status in ("used", "failed", "disabled"):
-            row["used_at"] = row.get("used_at") or _now()
-        if note is not None:
-            row["note"] = note
-        _save_generic_api_emails(rows)
+    return _release_pool_email(record_store.GENERIC_API_POOL, email, status=status, note=note)
 
 
 def release_unconsumed_generic_api_email(email: str, note: str | None = None) -> bool:
@@ -2126,14 +2174,7 @@ def release_unconsumed_generic_api_email(email: str, note: str | None = None) ->
 
 def delete_generic_api_email(email: str) -> bool:
     """从通用 API 邮箱池彻底删除一个邮箱。"""
-    with _LOCK:
-        rows = _load_generic_api_emails()
-        target = (email or "").lower()
-        new_rows = [r for r in rows if (r.get("email") or "").lower() != target]
-        if len(new_rows) == len(rows):
-            return False
-        _save_generic_api_emails(new_rows)
-        return True
+    return _delete_pool_email(record_store.GENERIC_API_POOL, email)
 
 
 def list_generic_api_email_pool(status: str | None = None, limit: int = 500) -> list[dict]:
@@ -2150,309 +2191,311 @@ def list_generic_api_email_pool(status: str | None = None, limit: int = 500) -> 
 
 
 def generic_api_email_pool_summary() -> dict:
-    with _LOCK:
-        out = {"available": 0, "used": 0, "failed": 0}
-        for row in _load_generic_api_emails():
-            status = row.get("status") or "available"
-            out[status] = out.get(status, 0) + 1
-        out["total"] = sum(v for k, v in out.items() if k != "total")
-        return out
+    return _pool_summary(record_store.GENERIC_API_POOL, ("available", "used", "failed"))
 
 
 def get_generic_api_email_by_email(email: str) -> dict | None:
-    with _LOCK:
-        row = _find_by_email(_load_generic_api_emails(), email)
-        return _decorate_generic_api_email(row) if row else None
+    row = _pool_row_by_email(record_store.GENERIC_API_POOL, email)
+    return _decorate_generic_api_email(row) if row else None
 
 
 # ============================================================
-# Codex 授权账号（来自 codex_accounts/codex-邮箱-plan.json）
+# Codex 授权账号（PostgreSQL 是事实来源，codex_accounts/ 仅为兼容导出）
 # ============================================================
+
+_CODEX_PLANS = {"free", "plus", "team", "pro", "enterprise"}
+_CODEX_STATE_FIELDS = (
+    "exported_at", "exported_count", "sub2_uploaded_at", "sub2_uploaded_count",
+    "sub2_sync_error", "oauth_refresh_attempted_at", "oauth_refresh_error",
+    "archived", "archived_at",
+)
+
+
+def _validate_codex_filename(filename: str) -> str:
+    name = str(filename or "").strip()
+    if not name.startswith("codex-") or not name.endswith(".json"):
+        raise ValueError(f"非法文件名: {filename}")
+    if "/" in name or "\\" in name or ".." in name:
+        raise ValueError(f"非法文件名: {filename}")
+    return name
+
+
+def _codex_identity(filename: str, content: dict) -> tuple[str, str]:
+    without_prefix = Path(filename).stem.removeprefix("codex-")
+    parts = without_prefix.rsplit("-", 1)
+    inferred_plan = parts[1].lower() if len(parts) == 2 and parts[1].lower() in _CODEX_PLANS else ""
+    fallback_email = parts[0] if inferred_plan else without_prefix
+    return str(content.get("email") or fallback_email), inferred_plan
+
+
+def _codex_payload(filename: str, content: dict) -> dict:
+    from core.codex_token_refresh_service import oauth_metadata
+
+    rendered = json.dumps(content, ensure_ascii=False, indent=2) + "\n"
+    email, plan = _codex_identity(filename, content)
+    oauth = oauth_metadata(content)
+    now = _now()
+    return {
+        "filename": filename,
+        "email": email,
+        "plan": plan,
+        "account_id": str(content.get("account_id") or ""),
+        "mtime": now,
+        "updated_at": now,
+        "oauth_status": oauth.get("oauth_status"),
+        "oauth_expires_at": oauth.get("oauth_expires_at"),
+        "content": content,
+        "type": content.get("type", "codex"),
+        "last_refresh": content.get("last_refresh", ""),
+        "expired": content.get("expired", ""),
+        "access_token_preview": str(content.get("access_token") or "")[:32],
+        "size": len(rendered.encode("utf-8")),
+        "oauth_seconds_left": oauth.get("oauth_seconds_left"),
+        "oauth_refreshable": oauth.get("oauth_refreshable"),
+        "oauth_auto_refresh": oauth.get("oauth_auto_refresh"),
+    }
+
+
+def _codex_public_row(row: dict) -> dict:
+    from core.codex_token_refresh_service import oauth_metadata, refresh_error_requires_reauth
+
+    content = row.get("content") if isinstance(row.get("content"), dict) else {}
+    oauth = oauth_metadata(content)
+    return {
+        "filename": row.get("filename"),
+        "path": str(_CODEX_DIR / str(row.get("filename") or "")),
+        "email": row.get("email") or content.get("email") or "",
+        "plan": row.get("plan") or "",
+        "account_id": row.get("account_id") or content.get("account_id") or "",
+        "type": row.get("type") or content.get("type", "codex"),
+        "last_refresh": row.get("last_refresh") or content.get("last_refresh", ""),
+        "expired": row.get("expired") or content.get("expired", ""),
+        "access_token_preview": row.get("access_token_preview") or str(content.get("access_token") or "")[:32],
+        "size": int(row.get("size") or 0),
+        "mtime": row.get("mtime") or row.get("updated_at"),
+        "exported_at": row.get("exported_at"),
+        "exported_count": int(row.get("exported_count") or 0),
+        "sub2_uploaded_at": row.get("sub2_uploaded_at"),
+        "sub2_uploaded_count": int(row.get("sub2_uploaded_count") or 0),
+        "sub2_sync_error": row.get("sub2_sync_error"),
+        "oauth_refresh_attempted_at": row.get("oauth_refresh_attempted_at"),
+        "oauth_refresh_error": row.get("oauth_refresh_error"),
+        "archived": bool(row.get("archived")),
+        "archived_at": row.get("archived_at"),
+        **oauth,
+        "oauth_reauth_required": refresh_error_requires_reauth(row.get("oauth_refresh_error")),
+    }
+
 
 def _sync_codex_credentials_collection() -> dict:
-    """Keep CPA-compatible credential files mirrored in PostgreSQL."""
-    local_records: dict[str, dict] = {}
-    if _CODEX_DIR.exists():
-        for path in _CODEX_DIR.glob("codex-*.json"):
-            try:
-                local_records[path.name] = {
-                    "content": json.loads(path.read_text(encoding="utf-8")),
-                    "mtime": datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"),
-                }
-            except Exception:
-                continue
-    found, stored = postgres_store.load_collection(_CODEX_CREDENTIALS_COLLECTION)
-    records = stored if found and isinstance(stored, dict) else {}
-    changed = False
-    for filename, record in local_records.items():
-        if records.get(filename) != record:
-            records[filename] = record
-            changed = True
-    if changed or not found:
-        postgres_store.save_collection(_CODEX_CREDENTIALS_COLLECTION, records)
-    return records
+    """兼容旧调用：返回数据库行映射；不会扫描目录，也不会在 GET 中写数据。"""
+    return {
+        str(row.get("filename")): row
+        for row in record_store.list_rows(record_store.CODEX_CREDENTIALS, order_by="id")
+    }
 
 
-def save_codex_credential_record(filename: str, content: dict) -> None:
-    """Mirror a newly written CPA-compatible credential into PostgreSQL."""
-    records = _sync_codex_credentials_collection()
-    records[filename] = {"content": content, "mtime": _now()}
-    postgres_store.save_collection(_CODEX_CREDENTIALS_COLLECTION, records)
-
-
-def write_codex_credential(filename: str, content: dict) -> None:
-    """安全覆盖一份现有 Codex 凭证，并同步 PostgreSQL 镜像。"""
-    with _LOCK:
-        if not filename.startswith("codex-") or not filename.endswith(".json"):
-            raise ValueError(f"非法文件名: {filename}")
-        if "/" in filename or "\\" in filename or ".." in filename:
-            raise ValueError(f"非法文件名: {filename}")
+def _export_codex_credentials() -> None:
+    """从数据库重建 CPA 兼容文件和旧导出状态文件。"""
+    _CODEX_DIR.mkdir(parents=True, exist_ok=True)
+    state: dict[str, dict] = {}
+    for row in record_store.list_rows(record_store.CODEX_CREDENTIALS, order_by="id"):
+        filename = _validate_codex_filename(str(row.get("filename") or ""))
+        content = row.get("content")
         if not isinstance(content, dict):
-            raise ValueError("Codex 凭证必须是 JSON 对象")
+            continue
         path = _CODEX_DIR / filename
-        if not path.exists() or not path.is_file():
-            raise ValueError(f"文件不存在: {filename}")
-        temporary = path.with_name(path.name + ".tmp")
+        temporary = path.with_name(path.name + f".tmp.{uuid.uuid4().hex}")
         temporary.write_text(json.dumps(content, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         temporary.replace(path)
-        save_codex_credential_record(filename, content)
-
-def _load_codex_export_state() -> dict:
-    """读导出状态映射 {filename: {exported_at, exported_count}}。不存在返回 {}。"""
-    data = _read_json(_CODEX_EXPORT_STATE, {})
-    return data if isinstance(data, dict) else {}
-
-
-def _save_codex_export_state(state: dict) -> None:
+        metadata = {field: row.get(field) for field in _CODEX_STATE_FIELDS if row.get(field) not in (None, False, 0, "")}
+        if metadata:
+            state[filename] = metadata
     _write_json(_CODEX_EXPORT_STATE, state)
 
 
-def list_codex_accounts(archived: str | bool | None = "0", date_from: str | None = None, date_to: str | None = None) -> list[dict]:
-    """
-    扫 codex_accounts/ 目录，每个 codex-*.json 是一条 CPA 兼容凭证。
-    返回带元信息的列表（含导出状态、文件大小、token 预览等）。
-    archived: '0'=仅未归档（默认）/ 'only'=仅归档 / 'all'=全部；
-    date_from/date_to 按文件修改时间（mtime）筛选（ISO 或 YYYY-MM-DD）。
-    """
-    from core.codex_token_refresh_service import oauth_metadata, refresh_error_requires_reauth
+compat_export.register("codex_credentials", _export_codex_credentials)
 
-    with _LOCK:
-        out = []
-        _sync_codex_credentials_collection()
-        if not _CODEX_DIR.exists():
-            return out
-        export_state = _load_codex_export_state()
-        d_from = _parse_iso_dt(date_from)
-        d_to = _parse_iso_dt(date_to, end_of_day=True)
-        for path in sorted(_CODEX_DIR.glob("codex-*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-            try:
-                content = json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            fname = path.name
-            es = export_state.get(fname) or {}
-            rec_archived = bool(es.get("archived"))
-            if archived in (True, "1", "true", "yes", "only"):
-                if not rec_archived:
-                    continue
-            elif archived in ("all", "include"):
-                pass
-            else:
-                if rec_archived:
-                    continue
-            mtime_dt = datetime.fromtimestamp(path.stat().st_mtime)
-            if d_from and mtime_dt < d_from:
-                continue
-            if d_to and mtime_dt > d_to:
-                continue
-            # 从文件名抽 email 和 plan：codex-{email}.json 或 codex-{email}-{plan}.json
-            stem = path.stem  # codex-邮箱-plan
-            without_prefix = stem[len("codex-"):] if stem.startswith("codex-") else stem
-            # plan 可能为空。简单做法：直接读 JSON 里的 email（更准），文件名只做 fallback
-            email = content.get("email") or ""
-            if not email:
-                # JSON 里 email 为空（旧 bug 产物），从文件名兜底
-                # 文件名格式 codex-{email}-{plan}.json，email 里可能有 - 但是常见邮箱不会有
-                # 简单做法：去掉末尾 -plan（如 -free / -plus / -team），剩下的当 email
-                parts = without_prefix.rsplit("-", 1)
-                if len(parts) == 2 and parts[1].lower() in ("free", "plus", "team", "pro", "enterprise"):
-                    email = parts[0]
-                else:
-                    email = without_prefix
-            # 推断 plan
-            plan = ""
-            if "-" in without_prefix:
-                tail = without_prefix.rsplit("-", 1)[-1].lower()
-                if tail in ("free", "plus", "team", "pro", "enterprise"):
-                    plan = tail
-            oauth = oauth_metadata(content)
-            oauth["oauth_reauth_required"] = refresh_error_requires_reauth(es.get("oauth_refresh_error"))
-            out.append({
-                "filename": fname,
-                "path": str(path),
-                "email": email,
-                "plan": plan,
-                "account_id": content.get("account_id", ""),
-                "type": content.get("type", "codex"),
-                "last_refresh": content.get("last_refresh", ""),
-                "expired": content.get("expired", ""),
-                "access_token_preview": (content.get("access_token", "") or "")[:32],
-                "size": path.stat().st_size,
-                "mtime": mtime_dt.isoformat(timespec="seconds"),
-                "exported_at": es.get("exported_at"),
-                "exported_count": es.get("exported_count", 0),
-                "sub2_uploaded_at": es.get("sub2_uploaded_at"),
-                "sub2_uploaded_count": es.get("sub2_uploaded_count", 0),
-                "sub2_sync_error": es.get("sub2_sync_error"),
-                "oauth_refresh_attempted_at": es.get("oauth_refresh_attempted_at"),
-                "oauth_refresh_error": es.get("oauth_refresh_error"),
-                "archived": rec_archived,
-                "archived_at": es.get("archived_at"),
-                **oauth,
-            })
-        return out
+
+def save_codex_credential_record(filename: str, content: dict) -> None:
+    """原子写入凭证行；兼容文件由后台去抖导出。"""
+    name = _validate_codex_filename(filename)
+    if not isinstance(content, dict):
+        raise ValueError("Codex 凭证必须是 JSON 对象")
+    record_store.upsert_row_by(record_store.CODEX_CREDENTIALS, "filename", _codex_payload(name, content))
+    compat_export.schedule("codex_credentials")
+
+
+def write_codex_credential(filename: str, content: dict) -> None:
+    """覆盖一份数据库中的 Codex 凭证，不依赖兼容文件是否存在。"""
+    name = _validate_codex_filename(filename)
+    if record_store.get_row_by(record_store.CODEX_CREDENTIALS, "filename", name) is None:
+        raise ValueError(f"凭证不存在: {name}")
+    save_codex_credential_record(name, content)
+
+
+def _load_codex_export_state() -> dict:
+    """兼容旧测试/内部调用：导出状态同样从凭证行投影。"""
+    result = {}
+    for row in record_store.list_rows(record_store.CODEX_CREDENTIALS, order_by="id"):
+        state = {field: row.get(field) for field in _CODEX_STATE_FIELDS if field not in {"archived"} and row.get(field) not in (None, "")}
+        state["archived"] = bool(row.get("archived"))
+        result[str(row.get("filename"))] = state
+    return result
+
+
+def _save_codex_export_state(state: dict) -> None:
+    """兼容入口：只更新已存在的凭证行，不再保存独立事实副本。"""
+    for filename, changes in (state or {}).items():
+        row = record_store.get_row_by(record_store.CODEX_CREDENTIALS, "filename", filename)
+        if row:
+            record_store.patch_row(record_store.CODEX_CREDENTIALS, int(row["id"]), dict(changes or {}))
+    compat_export.schedule("codex_credentials")
+
+
+def list_codex_accounts(archived: str | bool | None = "0", date_from: str | None = None, date_to: str | None = None) -> list[dict]:
+    """读取数据库中的 Codex 凭证元数据；列表请求不访问兼容目录。"""
+    where = []
+    params: list[Any] = []
+    if archived in (True, "1", "true", "yes", "only"):
+        where.append("archived IS TRUE")
+    elif archived not in ("all", "include"):
+        where.append("archived IS FALSE")
+    if date_from:
+        where.append("LEFT(COALESCE(mtime, updated_at), 10) >= %s")
+        params.append(str(date_from)[:10])
+    if date_to:
+        where.append("LEFT(COALESCE(mtime, updated_at), 10) <= %s")
+        params.append(str(date_to)[:10])
+    rows = record_store.list_rows(
+        record_store.CODEX_CREDENTIALS,
+        where=" AND ".join(where),
+        params=params,
+        order_by="COALESCE(mtime, updated_at) DESC, id DESC",
+    )
+    return [_codex_public_row(row) for row in rows]
+
+
+def _codex_row(filename: str) -> dict | None:
+    return record_store.get_row_by(record_store.CODEX_CREDENTIALS, "filename", _validate_codex_filename(filename))
+
+
+def _patch_codex(filename: str, changes: dict) -> dict | None:
+    row = _codex_row(filename)
+    if row is None:
+        return None
+    record_store.patch_row(record_store.CODEX_CREDENTIALS, int(row["id"]), changes)
+    compat_export.schedule("codex_credentials")
+    return {**row, **changes}
 
 
 def archive_codex(filename: str, archived: bool = True) -> dict | None:
-    """归档/取消归档一条 Codex 授权凭证（状态记录在导出状态文件）。不存在返回 None。"""
-    with _LOCK:
-        if not filename.startswith("codex-") or not filename.endswith(".json"):
-            raise ValueError(f"非法文件名: {filename}")
-        if "/" in filename or "\\" in filename or ".." in filename:
-            raise ValueError(f"非法文件名: {filename}")
-        path = _CODEX_DIR / filename
-        if not path.exists() or not path.is_file():
-            return None
-        state = _load_codex_export_state()
-        rec = state.get(filename) or {}
-        rec["archived"] = bool(archived)
-        rec["archived_at"] = _now() if archived else None
-        state[filename] = rec
-        _save_codex_export_state(state)
-        return rec
+    now = _now() if archived else None
+    row = _patch_codex(filename, {"archived": bool(archived), "archived_at": now})
+    return None if row is None else {"archived": bool(archived), "archived_at": now}
 
 
 def read_codex_credential(filename: str) -> tuple[str, str]:
-    """
-    读取一个 codex-*.json 文件原始内容。
-    Returns: (content_string, filename)
-    抛 ValueError：文件名不合法（防目录穿越）/ 不存在。
-    """
-    with _LOCK:
-        # 防注入：只允许 codex-*.json 模式，不允许路径分隔符
-        if not filename.startswith("codex-") or not filename.endswith(".json"):
-            raise ValueError(f"非法文件名: {filename}")
-        if "/" in filename or "\\" in filename or ".." in filename:
-            raise ValueError(f"非法文件名: {filename}")
-        path = _CODEX_DIR / filename
-        records = _sync_codex_credentials_collection()
-        record = records.get(filename) or {}
-        content = record.get("content")
-        if isinstance(content, dict):
-            return json.dumps(content, ensure_ascii=False, indent=2) + "\n", filename
-        if not path.exists() or not path.is_file():
-            raise ValueError(f"文件不存在: {filename}")
-        return path.read_text(encoding="utf-8"), filename
+    name = _validate_codex_filename(filename)
+    row = record_store.get_row_by(record_store.CODEX_CREDENTIALS, "filename", name)
+    content = row.get("content") if row else None
+    if not isinstance(content, dict):
+        raise ValueError(f"凭证不存在: {name}")
+    return json.dumps(content, ensure_ascii=False, indent=2) + "\n", name
+
+
+def _increment_codex_state(filename: str, *, counter: str, timestamp: str, extra: dict | None = None) -> dict:
+    """数据库端原子递增状态计数，避免并发下载互相覆盖。"""
+    from psycopg.rows import dict_row
+
+    name = _validate_codex_filename(filename)
+    now = _now()
+    table = postgres_store.qualified(record_store.CODEX_CREDENTIALS.name)
+    promoted_counter = counter == "exported_count"
+    extra = dict(extra or {})
+    extra[timestamp] = now
+    record_store.init()
+    with postgres_store.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
+        if promoted_counter:
+            cur.execute(
+                f"UPDATE {table} SET exported_count = exported_count + 1, "
+                "data = data || %s::jsonb, updated_at = %s WHERE filename = %s RETURNING *",
+                (json.dumps(extra, ensure_ascii=False), now, name),
+            )
+        else:
+            extra_without_counter = dict(extra)
+            cur.execute(
+                f"UPDATE {table} SET data = data || jsonb_build_object(%s, "
+                f"COALESCE(NULLIF(data->>%s, '')::BIGINT, 0) + 1) || %s::jsonb, "
+                "updated_at = %s WHERE filename = %s RETURNING *",
+                (counter, counter, json.dumps(extra_without_counter, ensure_ascii=False), now, name),
+            )
+        raw = cur.fetchone()
+    if raw is None:
+        raise ValueError(f"凭证不存在: {name}")
+    compat_export.schedule("codex_credentials")
+    return record_store.merge_row(record_store.CODEX_CREDENTIALS, raw)
 
 
 def mark_codex_exported(filename: str) -> dict:
-    """
-    标记某个 codex 凭证已导出（导出计数 +1，记录最近导出时间）。
-    Returns: 该 filename 当前的导出状态记录。
-    """
-    with _LOCK:
-        state = _load_codex_export_state()
-        rec = state.get(filename) or {"exported_count": 0}
-        rec["exported_count"] = int(rec.get("exported_count", 0)) + 1
-        rec["exported_at"] = _now()
-        state[filename] = rec
-        _save_codex_export_state(state)
-        return rec
+    return _increment_codex_state(filename, counter="exported_count", timestamp="exported_at")
 
 
 def mark_codex_sub2_uploaded(filename: str) -> dict:
-    """记录凭证曾成功上传 sub2api，供后续 token 刷新后定向同步。"""
-    with _LOCK:
-        state = _load_codex_export_state()
-        rec = state.get(filename) or {}
-        rec["sub2_uploaded_count"] = int(rec.get("sub2_uploaded_count", 0)) + 1
-        rec["sub2_uploaded_at"] = _now()
-        rec["sub2_sync_error"] = None
-        state[filename] = rec
-        _save_codex_export_state(state)
-        return rec
+    return _increment_codex_state(
+        filename,
+        counter="sub2_uploaded_count",
+        timestamp="sub2_uploaded_at",
+        extra={"sub2_sync_error": None},
+    )
 
 
 def mark_codex_sub2_sync_error(filename: str, error: str | None) -> dict:
-    with _LOCK:
-        state = _load_codex_export_state()
-        rec = state.get(filename) or {}
-        rec["sub2_sync_error"] = str(error or "")[:500] or None
-        state[filename] = rec
-        _save_codex_export_state(state)
-        return rec
+    row = _patch_codex(filename, {"sub2_sync_error": str(error or "")[:500] or None})
+    if row is None:
+        raise ValueError(f"凭证不存在: {filename}")
+    return row
 
 
 def mark_codex_oauth_refresh(filename: str, *, error: str | None = None) -> dict:
-    """保存刷新尝试时间和脱敏错误；token 本身只保存在凭证文件中。"""
-    with _LOCK:
-        state = _load_codex_export_state()
-        rec = state.get(filename) or {}
-        rec["oauth_refresh_attempted_at"] = _now()
-        rec["oauth_refresh_error"] = str(error or "")[:500] or None
-        state[filename] = rec
-        _save_codex_export_state(state)
-        return rec
+    row = _patch_codex(filename, {
+        "oauth_refresh_attempted_at": _now(),
+        "oauth_refresh_error": str(error or "")[:500] or None,
+    })
+    if row is None:
+        raise ValueError(f"凭证不存在: {filename}")
+    return row
 
 
 def reset_codex_exported(filename: str) -> None:
-    """只清掉导出计数，保留归档、OAuth 刷新和 sub2 同步元数据。"""
-    with _LOCK:
-        state = _load_codex_export_state()
-        if filename in state:
-            rec = state.get(filename) or {}
-            rec.pop("exported_at", None)
-            rec.pop("exported_count", None)
-            if rec:
-                state[filename] = rec
-            else:
-                del state[filename]
-            _save_codex_export_state(state)
+    row = _patch_codex(filename, {"exported_count": 0, "exported_at": None})
+    if row is None:
+        raise ValueError(f"凭证不存在: {filename}")
 
 
 def delete_codex_credential(filename: str) -> bool:
-    """删除一个本地 codex-*.json 凭证文件，并清理导出状态。"""
+    """删除数据库凭证，并精确删除同名兼容文件；不会递归操作目录。"""
+    name = _validate_codex_filename(filename)
+    path = _CODEX_DIR / name
     with _LOCK:
-        if not filename.startswith("codex-") or not filename.endswith(".json"):
-            raise ValueError(f"非法文件名: {filename}")
-        if "/" in filename or "\\" in filename or ".." in filename:
-            raise ValueError(f"非法文件名: {filename}")
-        path = _CODEX_DIR / filename
-        if not path.exists() or not path.is_file():
+        row = record_store.get_row_by(record_store.CODEX_CREDENTIALS, "filename", name)
+        if row is None:
             return False
-        path.unlink()
-        records = _sync_codex_credentials_collection()
-        if filename in records:
-            del records[filename]
-            postgres_store.save_collection(_CODEX_CREDENTIALS_COLLECTION, records)
-        state = _load_codex_export_state()
-        if filename in state:
-            del state[filename]
-            _save_codex_export_state(state)
+        with record_store.transaction() as conn:
+            record_store.delete_rows(record_store.CODEX_CREDENTIALS, [int(row["id"])], conn=conn)
+            if path.exists() and path.is_file():
+                path.unlink()
+        compat_export.schedule("codex_credentials")
         return True
 
 
 def codex_accounts_summary() -> dict:
-    """codex 账号汇总：总数 / 已导出 / 未导出。"""
-    with _LOCK:
-        rows = list_codex_accounts()
-        total = len(rows)
-        exported = sum(1 for r in rows if r.get("exported_count", 0) > 0)
-        return {
-            "total": total,
-            "exported": exported,
-            "pending": total - exported,
-        }
+    total = record_store.count_rows(record_store.CODEX_CREDENTIALS, where="archived IS FALSE")
+    exported = record_store.count_rows(
+        record_store.CODEX_CREDENTIALS,
+        where="archived IS FALSE AND exported_count > 0",
+    )
+    return {"total": total, "exported": exported, "pending": total - exported}
 
 
 # ============================================================
@@ -2922,29 +2965,125 @@ def get_successful_retry_for_job(job_id: int) -> dict | None:
     return matches[0] if matches else None
 
 
+def get_successful_retries_for_jobs(jobs: list[dict]) -> dict[int, dict]:
+    """一次查询返回每条任务同链上的成功重试，供管理列表批量投影。"""
+    rows = [row for row in (jobs or []) if row.get("id") is not None]
+    if not rows:
+        return {}
+    roots = sorted({int(row.get("root_job_id") or row.get("id") or 0) for row in rows})
+    successes = record_store.list_rows(
+        record_store.JOBS,
+        where='"root_job_id" = ANY(%s) AND "status" = %s',
+        params=(roots, "success"),
+        order_by="id DESC",
+    )
+    by_root: dict[int, list[dict]] = {}
+    for success in successes:
+        root_id = int(success.get("root_job_id") or success.get("id") or 0)
+        by_root.setdefault(root_id, []).append(success)
+    out: dict[int, dict] = {}
+    for row in rows:
+        job_id = int(row["id"])
+        root_id = int(row.get("root_job_id") or job_id)
+        match = next((item for item in by_root.get(root_id, []) if int(item.get("id") or 0) != job_id), None)
+        if match is not None:
+            out[job_id] = match
+    return out
+
+
+def get_accounts_for_jobs(jobs: list[dict]) -> dict[int, dict]:
+    """按 account_id / email 批量关联账号；最多两次 SQL，不做逐任务查找。"""
+    rows = [row for row in (jobs or []) if row.get("id") is not None]
+    if not rows:
+        return {}
+    account_ids = sorted({int(row["account_id"]) for row in rows if row.get("account_id") is not None})
+    emails = sorted({str(row.get("email") or "").strip().lower() for row in rows if str(row.get("email") or "").strip()})
+    accounts: list[dict] = []
+    if account_ids:
+        accounts.extend(record_store.list_rows(
+            record_store.ACCOUNTS,
+            where="id = ANY(%s)",
+            params=(account_ids,),
+            order_by="id DESC",
+        ))
+    # emails 是排序后的 list；用集合差避免已经按 id 找到的账号重复查询。
+    found_emails = {str(account.get("email") or "").strip().lower() for account in accounts}
+    missing_emails = [email for email in emails if email not in found_emails]
+    if missing_emails:
+        accounts.extend(record_store.list_rows(
+            record_store.ACCOUNTS,
+            where="lower(email) = ANY(%s)",
+            params=(missing_emails,),
+            order_by="id DESC",
+        ))
+    decorated = [_decorate_account(account) for account in accounts]
+    by_id = {int(account["id"]): account for account in decorated}
+    by_email = {str(account.get("email") or "").strip().lower(): account for account in decorated}
+    out: dict[int, dict] = {}
+    for row in rows:
+        account = by_id.get(int(row["account_id"])) if row.get("account_id") is not None else None
+        if account is None:
+            account = by_email.get(str(row.get("email") or "").strip().lower())
+        if account is not None:
+            out[int(row["id"])] = account
+    return out
+
+
 def delete_job(job_id: int, *, delete_log: bool = True, allow_running: bool = False) -> bool:
     """
     删除一个注册任务记录；默认同时删除该任务日志文件。返回是否删除到记录。
     默认不删除 running 任务，避免后台线程仍在执行但前端记录消失。
     """
-    with _LOCK:
-        rows = _load_jobs()
-        idx = next((i for i, r in enumerate(rows) if int(r.get("id") or 0) == int(job_id)), None)
-        if idx is None:
-            return False
-        if not allow_running and rows[idx].get("status") in ("running", "stopping"):
-            return False
-        row = rows.pop(idx)
-        _save_jobs(rows)
+    deleted, _skipped = delete_jobs(
+        [job_id], delete_log=delete_log, allow_running=allow_running
+    )
+    return bool(deleted)
 
+
+def delete_jobs(job_ids: list[int], *, delete_log: bool = True, allow_running: bool = False) -> tuple[list[dict], list[dict]]:
+    """一条 SQL 批量删除任务；状态判断与删除原子完成。"""
+    ids = {int(value) for value in (job_ids or [])}
+    if not ids:
+        return [], []
+    where = "id = ANY(%s)"
+    params: list[Any] = [sorted(ids)]
+    if not allow_running:
+        where += " AND COALESCE(status, '') NOT IN ('running', 'stopping')"
+    rows = record_store.delete_rows_where_returning(
+        record_store.JOBS,
+        where=where,
+        params=params,
+    )
+    seen = {int(row["id"]) for row in rows}
+    missing = ids - seen
+    current = {
+        int(row["id"]): row
+        for row in record_store.list_rows(
+            record_store.JOBS,
+            where="id = ANY(%s)",
+            params=(sorted(missing),),
+            order_by="id",
+        )
+    } if missing else {}
+    skipped = [
+        {
+            "id": job_id,
+            "reason": "运行中，不能删除" if current.get(job_id, {}).get("status") in {"running", "stopping"} else "任务不存在",
+        }
+        for job_id in sorted(missing)
+    ]
+    if rows:
+        compat_export.schedule("jobs")
     if delete_log:
-        log_file = row.get("log_file")
-        if log_file:
+        for row in rows:
+            log_file = row.get("log_file")
+            if not log_file:
+                continue
             try:
-                Path(log_file).unlink(missing_ok=True)
+                Path(str(log_file)).unlink(missing_ok=True)
             except Exception:
                 pass
-    return True
+    return rows, skipped
 
 
 # ============================================================
@@ -3061,12 +3200,17 @@ _DOMAIN_EMAIL_JSON = _PROJECT_ROOT / "用于注册的域名邮箱.json"
 
 
 def _load_domain_pool() -> list[dict]:
-    rows = _read_json(_DOMAIN_EMAIL_JSON, [])
-    return rows if isinstance(rows, list) else []
+    return _load_table(record_store.DOMAIN_POOL)
+
+
+def _export_domain_pool() -> None:
+    rows = _load_domain_pool()
+    _write_json(_DOMAIN_EMAIL_JSON, rows)
 
 
 def _save_domain_pool(rows: list[dict]) -> None:
-    _write_json(_DOMAIN_EMAIL_JSON, rows)
+    _sync_table(record_store.DOMAIN_POOL, rows)
+    compat_export.schedule("domain_emails")
 
 
 def _find_domain_email(rows: list[dict], email: str) -> dict | None:
@@ -3076,40 +3220,24 @@ def _find_domain_email(rows: list[dict], email: str) -> dict | None:
 
 def claim_next_domain_email(email: str) -> dict:
     """记录一个新的域名邮箱地址到池中（标记为 available）。"""
-    with _LOCK:
-        rows = _load_domain_pool()
-        if _find_domain_email(rows, email):
-            # 已存在，直接返回
-            row = _find_domain_email(rows, email)
-            return row
-        row = {
-            "id": _next_id(rows),
-            "email": email,
-            "status": "available",
-            "used_at": None,
-            "note": None,
-            "created_at": _now(),
-        }
-        rows.append(row)
-        _save_domain_pool(rows)
-        return dict(row)
+    target = str(email or "").strip()
+    existing = _pool_row_by_email(record_store.DOMAIN_POOL, target)
+    if existing:
+        return existing
+    row_id = record_store.upsert_row_by(record_store.DOMAIN_POOL, "email", {
+        "email": target,
+        "status": "available",
+        "used_at": None,
+        "note": None,
+        "created_at": _now(),
+    })
+    compat_export.schedule("domain_emails")
+    return record_store.get_row(record_store.DOMAIN_POOL, row_id) or {}
 
 
-def release_domain_email(email: str, status: str = "available", note: str | None = None) -> None:
+def release_domain_email(email: str, status: str = "available", note: str | None = None) -> bool:
     """更新域名邮箱状态。"""
-    with _LOCK:
-        rows = _load_domain_pool()
-        row = _find_domain_email(rows, email)
-        if row is None:
-            return
-        row["status"] = status
-        if status == "available":
-            row["used_at"] = None
-        elif status in ("used", "failed", "disabled"):
-            row["used_at"] = row.get("used_at") or _now()
-        if note is not None:
-            row["note"] = note
-        _save_domain_pool(rows)
+    return _release_pool_email(record_store.DOMAIN_POOL, email, status=status, note=note)
 
 
 def release_unconsumed_domain_email(email: str, note: str | None = None) -> bool:
@@ -3130,9 +3258,7 @@ def release_unconsumed_domain_email(email: str, note: str | None = None) -> bool
 
 
 def get_domain_email_by_email(email: str) -> dict | None:
-    with _LOCK:
-        row = _find_domain_email(_load_domain_pool(), email)
-        return dict(row) if row else None
+    return _pool_row_by_email(record_store.DOMAIN_POOL, email)
 
 
 def list_domain_email_pool(status: str | None = None, limit: int = 500) -> list[dict]:
@@ -3144,25 +3270,12 @@ def list_domain_email_pool(status: str | None = None, limit: int = 500) -> list[
 
 
 def domain_email_pool_summary() -> dict:
-    with _LOCK:
-        out: dict[str, int] = {"available": 0, "used": 0, "failed": 0}
-        for row in _load_domain_pool():
-            s = row.get("status") or "available"
-            out[s] = out.get(s, 0) + 1
-        out["total"] = sum(v for k, v in out.items() if k != "total")
-        return out
+    return _pool_summary(record_store.DOMAIN_POOL, ("available", "used", "failed"))
 
 
 def delete_domain_email(email: str) -> bool:
     """从域名邮箱池删除一个邮箱。"""
-    with _LOCK:
-        rows = _load_domain_pool()
-        target = (email or "").lower()
-        new_rows = [r for r in rows if (r.get("email") or "").lower() != target]
-        if len(new_rows) == len(rows):
-            return False
-        _save_domain_pool(new_rows)
-        return True
+    return _delete_pool_email(record_store.DOMAIN_POOL, email)
 
 
 # ============================================================
@@ -3173,12 +3286,17 @@ _ICLOUD_HIDE_EMAIL_JSON = _PROJECT_ROOT / "用于注册的iCloud隐藏邮箱.jso
 
 
 def _load_icloud_hide_pool() -> list[dict]:
-    rows = _read_json(_ICLOUD_HIDE_EMAIL_JSON, [])
-    return rows if isinstance(rows, list) else []
+    return _load_table(record_store.ICLOUD_HIDE_POOL)
+
+
+def _export_icloud_hide_pool() -> None:
+    rows = _load_icloud_hide_pool()
+    _write_json(_ICLOUD_HIDE_EMAIL_JSON, rows)
 
 
 def _save_icloud_hide_pool(rows: list[dict]) -> None:
-    _write_json(_ICLOUD_HIDE_EMAIL_JSON, rows)
+    _sync_table(record_store.ICLOUD_HIDE_POOL, rows)
+    compat_export.schedule("icloud_hide_emails")
 
 
 def _find_icloud_hide_email(rows: list[dict], email: str) -> dict | None:
@@ -3265,41 +3383,26 @@ def sync_icloud_hide_aliases(aliases: list[dict], account_id: str, *, full_snaps
 
 def claim_next_icloud_hide_email(account_id: str | None = None) -> dict | None:
     """原子领取一个已同步且仍激活的 iCloud 隐藏邮箱。"""
-    with _LOCK:
-        rows = sorted(_load_icloud_hide_pool(), key=lambda x: int(x.get("id") or 0))
-        row = next((
-            item for item in rows
-            if item.get("status") == "available"
-            and item.get("remote_active", True) is not False
-            and (not account_id or str(item.get("account_id") or "") == str(account_id))
-        ), None)
-        if row is None:
-            return None
-        row["status"] = "used"
-        row["used_at"] = _now()
-        row["note"] = None
-        _save_icloud_hide_pool(rows)
-        return dict(row)
+    where = ["status = %s", "COALESCE(data->>'remote_active', 'true') <> 'false'"]
+    params: list[Any] = ["available"]
+    if account_id:
+        where.append("account_id = %s")
+        params.append(str(account_id))
+    row = record_store.claim_next_row(
+        record_store.ICLOUD_HIDE_POOL,
+        changes={"status": "used", "used_at": _now(), "note": None},
+        where=" AND ".join(where),
+        params=params,
+    )
+    if row:
+        compat_export.schedule("icloud_hide_emails")
+    return row
 
 
-def release_icloud_hide_email(email: str, status: str = "available", note: str | None = None) -> None:
+def release_icloud_hide_email(email: str, status: str = "available", note: str | None = None) -> bool:
     """更新 HME 别名的本地池状态；不会停用或删除 Apple 侧地址。"""
-    with _LOCK:
-        rows = _load_icloud_hide_pool()
-        row = _find_icloud_hide_email(rows, email)
-        if row is None:
-            return
-        row["status"] = status
-        if status == "available":
-            row["used_at"] = None
-            row.pop("disabled_reason", None)
-        elif status in ("used", "failed", "disabled"):
-            row["used_at"] = row.get("used_at") or _now()
-            if status == "disabled":
-                row["disabled_reason"] = "manual"
-        if note is not None:
-            row["note"] = note
-        _save_icloud_hide_pool(rows)
+    extra = {"disabled_reason": "manual" if status == "disabled" else None}
+    return _release_pool_email(record_store.ICLOUD_HIDE_POOL, email, status=status, note=note, extra=extra)
 
 
 def release_unconsumed_icloud_hide_email(email: str, note: str | None = None) -> bool:
@@ -3320,9 +3423,7 @@ def release_unconsumed_icloud_hide_email(email: str, note: str | None = None) ->
 
 
 def get_icloud_hide_email_by_email(email: str) -> dict | None:
-    with _LOCK:
-        row = _find_icloud_hide_email(_load_icloud_hide_pool(), email)
-        return dict(row) if row else None
+    return _pool_row_by_email(record_store.ICLOUD_HIDE_POOL, email)
 
 
 def list_icloud_hide_email_pool(status: str | None = None, limit: int = 500) -> list[dict]:
@@ -3334,22 +3435,13 @@ def list_icloud_hide_email_pool(status: str | None = None, limit: int = 500) -> 
 
 
 def icloud_hide_email_pool_summary() -> dict:
-    with _LOCK:
-        out: dict[str, int] = {"available": 0, "used": 0, "failed": 0, "disabled": 0}
-        for row in _load_icloud_hide_pool():
-            status = row.get("status") or "available"
-            out[status] = out.get(status, 0) + 1
-        out["total"] = sum(value for key, value in out.items() if key != "total")
-        return out
+    return _pool_summary(record_store.ICLOUD_HIDE_POOL, ("available", "used", "failed", "disabled"))
 
 
 def delete_icloud_hide_email(email: str) -> bool:
     """只删除 turb 的本地镜像；Apple 侧别名不受影响，下次同步可能重新出现。"""
-    with _LOCK:
-        rows = _load_icloud_hide_pool()
-        target = (email or "").strip().lower()
-        new_rows = [r for r in rows if (r.get("email") or "").strip().lower() != target]
-        if len(new_rows) == len(rows):
-            return False
-        _save_icloud_hide_pool(new_rows)
-        return True
+    return _delete_pool_email(record_store.ICLOUD_HIDE_POOL, email)
+
+
+compat_export.register("domain_emails", _export_domain_pool)
+compat_export.register("icloud_hide_emails", _export_icloud_hide_pool)

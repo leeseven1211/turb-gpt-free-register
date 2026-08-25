@@ -93,6 +93,7 @@ class PostgresTestCase(unittest.TestCase):
         "_JOBS_JSON", "_OUTLOOK_JSON", "_OUTLOOK_TXT",
         "_GENERIC_API_EMAIL_JSON", "_GENERIC_API_EMAIL_TXT",
         "_DOMAIN_EMAIL_JSON", "_ICLOUD_HIDE_EMAIL_JSON",
+        "_CODEX_DIR", "_CODEX_EXPORT_STATE",
         "_LEGACY_ACCOUNTS_JSON", "_LEGACY_JOBS_JSON", "_LEGACY_OUTLOOK_JSON",
     )
 
@@ -155,4 +156,3 @@ class PostgresTestCase(unittest.TestCase):
                     stack.enter_context(
                         patch.object(db, name, root / f"{name.strip('_').lower()}.json"))
             return super().run(result)
-

@@ -11,24 +11,19 @@ from tests.support_pg import PostgresTestCase
 
 class CodexOauthMetadataTests(unittest.TestCase):
     def test_reset_export_keeps_oauth_and_sub2_tracking(self):
-        state = {
-            "codex-a@example.com-free.json": {
-                "exported_at": "2026-08-17T12:00:00",
-                "exported_count": 2,
-                "sub2_uploaded_count": 1,
-                "oauth_refresh_error": "invalid_grant",
-            }
+        existing = {
+            "filename": "codex-a@example.com-free.json",
+            "exported_at": "2026-08-17T12:00:00",
+            "exported_count": 2,
+            "sub2_uploaded_count": 1,
+            "oauth_refresh_error": "invalid_grant",
         }
-        with (
-            patch.object(db, "_load_codex_export_state", return_value=state),
-            patch.object(db, "_save_codex_export_state") as save,
-        ):
+        with patch.object(db, "_patch_codex", return_value=existing) as save:
             db.reset_codex_exported("codex-a@example.com-free.json")
-
-        saved = save.call_args.args[0]["codex-a@example.com-free.json"]
-        self.assertNotIn("exported_count", saved)
-        self.assertEqual(1, saved["sub2_uploaded_count"])
-        self.assertEqual("invalid_grant", saved["oauth_refresh_error"])
+        self.assertEqual(
+            save.call_args.args,
+            ("codex-a@example.com-free.json", {"exported_count": 0, "exported_at": None}),
+        )
 
     def test_status_uses_expired_and_refresh_token_independently(self):
         now = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)

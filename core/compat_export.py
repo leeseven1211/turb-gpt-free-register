@@ -35,6 +35,7 @@ _DEADLINE: float = 0.0
 _WORKER: threading.Thread | None = None
 _STOPPING = False
 _DEFAULT_DEBOUNCE = 5.0
+_RUN_LOCK = threading.RLock()
 
 
 def mode() -> str:
@@ -91,7 +92,10 @@ def _run_one(kind: str) -> None:
     if exporter is None:
         return
     try:
-        exporter()
+        # sync 模式和 flush/后台线程可能同时到达；文件导出必须串行，否则两个
+        # 渲染器会争抢同一个临时文件。业务数据库写入不受这把锁影响。
+        with _RUN_LOCK:
+            exporter()
     except Exception:
         # 兼容文件不是事实来源，导出失败不该影响业务写入；但必须留下完整堆栈，
         # 否则文件会悄悄变旧。这里不重试：持续失败时重试只会刷屏。
