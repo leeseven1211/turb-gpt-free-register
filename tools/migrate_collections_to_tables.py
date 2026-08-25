@@ -49,6 +49,9 @@ MIGRATIONS = [
 
 # 写时派生、读时会重算的字段，不入库（见 db._decorate_account）
 DROP_FIELDS = {"copy_line"}
+# Codex 迁移投影每次读取都会重新计算这两个运行时字段：updated_at 是本次投影时间，
+# oauth_seconds_left 会随时钟递减。它们不是旧集合里的源字段，不能参与逐字段对账。
+CODEX_VOLATILE_FIELDS = {"updated_at", "oauth_seconds_left"}
 
 
 def load_collection_readonly(name: str) -> tuple[bool, object]:
@@ -177,6 +180,7 @@ def do_apply(collection: str, spec, rows: list[dict], origin: str) -> tuple[int,
 def do_verify(collection: str, spec, rows: list[dict], origin: str) -> list[str]:
     """逐条比对：表里的记录必须能完整还原出源 blob 的每个字段。"""
     problems = []
+    ignored_fields = DROP_FIELDS | (CODEX_VOLATILE_FIELDS if spec is CODEX_CREDENTIALS else set())
     stored = record_store.list_rows(spec, order_by="id")
     unique_col = spec.unique[0] if spec.unique else None
     use_unique = bool(unique_col and rows and all(row.get("id") is None for row in rows))
@@ -194,7 +198,7 @@ def do_verify(collection: str, spec, rows: list[dict], origin: str) -> list[str]
             problems.append(f"{spec.name} id={rid}: 表里缺失")
             continue
         for key, want in record.items():
-            if key in DROP_FIELDS:
+            if key in ignored_fields:
                 continue
             have = got.get(key)
             if have != want:

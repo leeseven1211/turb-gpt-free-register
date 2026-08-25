@@ -52,6 +52,16 @@ class CollectionMigrationTests(PostgresTestCase):
         self.assertEqual(stored["exported_count"], 3)
         self.assertEqual(stored["content"]["access_token"], "secret")
 
+        # 这两个值随迁移运行时钟变化，不属于旧集合的事实字段。
+        rows[0]["updated_at"] = "2099-01-01T00:00:00"
+        rows[0]["oauth_seconds_left"] = -999
+        self.assertEqual(
+            migration.do_verify(
+                "codex_credentials", record_store.CODEX_CREDENTIALS, rows, origin
+            ),
+            [],
+        )
+
 
 if __name__ == "__main__":
     import unittest
