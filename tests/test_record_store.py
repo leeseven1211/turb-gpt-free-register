@@ -57,6 +57,38 @@ class RecordStoreSchemaTests(PostgresTestCase):
         rs.patch_row(ACCOUNTS, acc_id, {"note": "改个备注"})
         self.assertEqual(rs.count_rows(ACCOUNTS, where="deactivated"), 1)
 
+    def test_generated_account_facets_follow_json_updates(self):
+        acc_id = rs.insert_row(ACCOUNTS, {
+            "email": "facets@example.test",
+            "access_token": "token",
+            "extra_json": '{"account_password":"secret"}',
+            "totp_secret": "totp",
+            "deactivation_mail_detected": True,
+        })
+        with rs._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT account_has_access_token, account_has_password, "
+                f"account_totp_enabled, account_deactivation_detected "
+                f"FROM {rs._qualified(ACCOUNTS)} WHERE id = %s",
+                (acc_id,),
+            )
+            self.assertEqual(tuple(cur.fetchone().values()), (True, True, True, True))
+
+        rs.patch_row(ACCOUNTS, acc_id, {
+            "access_token": "",
+            "extra_json": "{}",
+            "totp_secret": "",
+            "deactivation_mail_detected": False,
+        })
+        with rs._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT account_has_access_token, account_has_password, "
+                f"account_totp_enabled, account_deactivation_detected "
+                f"FROM {rs._qualified(ACCOUNTS)} WHERE id = %s",
+                (acc_id,),
+            )
+            self.assertEqual(tuple(cur.fetchone().values()), (False, False, False, False))
+
 
 class PartialUpdateTests(PostgresTestCase):
     def setUp(self):

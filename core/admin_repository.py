@@ -78,18 +78,9 @@ def _revision(total: int, latest: Any, visible_state: Any = None) -> str:
     return f"{base}:{hashlib.sha1(payload.encode('utf-8')).hexdigest()[:12]}"
 
 
-_ACCOUNT_PASSWORD_PRESENT = """(
-    NULLIF(BTRIM(COALESCE(a.data->>'password', '')), '') IS NOT NULL
-    OR NULLIF(BTRIM(COALESCE(a.data->>'login_password', '')), '') IS NOT NULL
-    OR NULLIF(BTRIM(COALESCE(a.data->>'registration_password', '')), '') IS NOT NULL
-    OR COALESCE(a.data->>'extra_json', '') ~
-       '"(account_password|login_password|registration_password)"[[:space:]]*:[[:space:]]*"[^"[:space:]]+'
-)"""
-
-_ACCOUNT_TOTP_PRESENT = """(
-    NULLIF(BTRIM(COALESCE(a.data->>'totp_secret', '')), '') IS NOT NULL
-    OR LOWER(COALESCE(a.data->>'totp_enabled', 'false')) IN ('true', '1', 'yes')
-)"""
+_ACCOUNT_ACCESS_TOKEN_PRESENT = "COALESCE(a.account_has_access_token, FALSE)"
+_ACCOUNT_PASSWORD_PRESENT = "COALESCE(a.account_has_password, FALSE)"
+_ACCOUNT_TOTP_PRESENT = "COALESCE(a.account_totp_enabled, FALSE)"
 
 _ACCOUNT_TRIAL_VALUE = """CASE
     WHEN COALESCE(a.current_plan_type, a.plan_type, '') <> ''
@@ -112,7 +103,7 @@ _ACCOUNT_TRIAL_VALUE = """CASE
 END"""
 
 _ACCOUNT_RISK_VALUE = """CASE
-    WHEN LOWER(COALESCE(a.data->>'deactivation_mail_detected', 'false')) IN ('true', '1', 'yes') THEN 'detected'
+    WHEN COALESCE(a.account_deactivation_detected, FALSE) THEN 'detected'
     WHEN COALESCE(a.deactivation_mail_scan_status, '') = 'success' THEN 'clear'
     ELSE 'pending'
 END"""
@@ -164,7 +155,7 @@ def _account_where(
         params.append(value)
     value = _text(filters.get("token")).lower()
     if value in {"has", "none"}:
-        predicate = "NULLIF(BTRIM(COALESCE(a.data->>'access_token', '')), '') IS NOT NULL"
+        predicate = _ACCOUNT_ACCESS_TOKEN_PRESENT
         where.append(predicate if value == "has" else f"NOT ({predicate})")
     value = _text(filters.get("password")).lower()
     if value in {"has", "none"}:
@@ -203,38 +194,45 @@ def list_accounts(
     clause = f" WHERE {' AND '.join(where)}" if where else ""
     base_where, base_params = _account_where(archived, "", "", "", "", {})
     base_clause = f" WHERE {' AND '.join(base_where)}" if base_where else ""
+    # 旧写法用 9 段 UNION ALL 重复扫描账号表，生产数据里的 extra_json 较大时，
+    # facets 一项就要约 200 ms。这里先物化一次轻量投影，再展开九个维度聚合；
+    # 复杂 JSON/正则表达式只计算一遍。
     facet_sql = f"""
-        SELECT 'source' AS facet, LOWER(COALESCE(a.email_source, '')) AS value, COUNT(*) AS count
-          FROM {accounts} a{base_clause} GROUP BY value
-        UNION ALL
-        SELECT 'token', CASE WHEN NULLIF(BTRIM(COALESCE(a.data->>'access_token', '')), '') IS NULL THEN 'none' ELSE 'has' END, COUNT(*)
-          FROM {accounts} a{base_clause} GROUP BY 2
-        UNION ALL
-        SELECT 'password', CASE WHEN {_ACCOUNT_PASSWORD_PRESENT} THEN 'has' ELSE 'none' END, COUNT(*)
-          FROM {accounts} a{base_clause} GROUP BY 2
-        UNION ALL
-        SELECT 'plan', LOWER(COALESCE(a.current_plan_type, a.plan_type, '')), COUNT(*)
-          FROM {accounts} a{base_clause} GROUP BY 2
-        UNION ALL
-        SELECT 'trial', {_ACCOUNT_TRIAL_VALUE}, COUNT(*) FROM {accounts} a{base_clause} GROUP BY 2
-        UNION ALL
-        SELECT 'totp', CASE WHEN {_ACCOUNT_TOTP_PRESENT} THEN 'enabled' ELSE 'disabled' END, COUNT(*)
-          FROM {accounts} a{base_clause} GROUP BY 2
-        UNION ALL
-        SELECT 'risk', {_ACCOUNT_RISK_VALUE}, COUNT(*) FROM {accounts} a{base_clause} GROUP BY 2
-        UNION ALL
-        SELECT 'codex', LOWER(COALESCE(a.codex_status, '')), COUNT(*) FROM {accounts} a{base_clause} GROUP BY 2
-        UNION ALL
-        SELECT 'account_status', LOWER(COALESCE(a.data->>'account_status', 'active')), COUNT(*)
-          FROM {accounts} a{base_clause} GROUP BY 2
+        WITH base AS MATERIALIZED (
+            SELECT
+                LOWER(COALESCE(a.email_source, '')) AS source,
+                CASE WHEN {_ACCOUNT_ACCESS_TOKEN_PRESENT} THEN 'has' ELSE 'none' END AS token,
+                CASE WHEN {_ACCOUNT_PASSWORD_PRESENT} THEN 'has' ELSE 'none' END AS password,
+                LOWER(COALESCE(a.current_plan_type, a.plan_type, '')) AS plan,
+                {_ACCOUNT_TRIAL_VALUE} AS trial,
+                CASE WHEN {_ACCOUNT_TOTP_PRESENT} THEN 'enabled' ELSE 'disabled' END AS totp,
+                {_ACCOUNT_RISK_VALUE} AS risk,
+                LOWER(COALESCE(a.codex_status, '')) AS codex,
+                LOWER(COALESCE(a.data->>'account_status', 'active')) AS account_status
+              FROM {accounts} a{base_clause}
+        )
+        SELECT f.facet, f.value, COUNT(*) AS count
+          FROM base b
+          CROSS JOIN LATERAL (VALUES
+              ('source', b.source),
+              ('token', b.token),
+              ('password', b.password),
+              ('plan', b.plan),
+              ('trial', b.trial),
+              ('totp', b.totp),
+              ('risk', b.risk),
+              ('codex', b.codex),
+              ('account_status', b.account_status)
+          ) AS f(facet, value)
+         WHERE NULLIF(f.value, '') IS NOT NULL
+         GROUP BY f.facet, f.value
     """
-    repeated_base_params = base_params * 9
     promoted = ["id", *record_store.ACCOUNTS.promoted]
     selected = ", ".join(f"a.{postgres_store.quote_identifier(column)}" for column in promoted)
     safe_data = (
         "a.data - ARRAY['access_token','id_token','refresh_token','password','login_password',"
         "'registration_password','totp_secret','extra_json','copy_line','original_email_line']::text[] "
-        f"|| jsonb_build_object('has_access_token', NULLIF(BTRIM(COALESCE(a.data->>'access_token', '')), '') IS NOT NULL, "
+        f"|| jsonb_build_object('has_access_token', {_ACCOUNT_ACCESS_TOKEN_PRESENT}, "
         f"'has_account_password', {_ACCOUNT_PASSWORD_PRESENT}, 'totp_enabled', {_ACCOUNT_TOTP_PRESENT})"
     )
     with _connect() as conn, conn.cursor() as cur:
@@ -245,7 +243,7 @@ def list_accounts(
             (*params, request.limit, request.offset),
         )
         rows = [db.decorate_account(record_store.merge_row(record_store.ACCOUNTS, row)) for row in cur.fetchall()]
-        cur.execute(facet_sql, repeated_base_params)
+        cur.execute(facet_sql, base_params)
         facets = _facet_dict(cur.fetchall())
     total = int(aggregate["total"] or 0)
     return {
@@ -280,7 +278,7 @@ def list_account_statuses(
         ", (a.data - ARRAY['access_token','id_token','refresh_token','password','login_password',"
         "'registration_password','totp_secret','extra_json']::text[] "
         "|| jsonb_build_object('has_access_token', "
-        "NULLIF(BTRIM(COALESCE(a.data->>'access_token', '')), '') IS NOT NULL)) AS data"
+        f"{_ACCOUNT_ACCESS_TOKEN_PRESENT})) AS data"
     )
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(f"SELECT COUNT(*) AS total, MAX(a.updated_at) AS latest FROM {accounts} a{clause}", params)
