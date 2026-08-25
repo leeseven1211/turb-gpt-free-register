@@ -513,6 +513,8 @@ class AccountTaskApiTests(PostgresTestCase):
         html = (Path(__file__).resolve().parents[1] / "webui" / "templates" / "index.html").read_text("utf-8")
         self.assertIn('data-tab="tasks"', html)
         self.assertIn('任务中心', html)
+        self.assertLess(html.index('data-tab="codex"'), html.index('data-tab="tasks"'))
+        self.assertLess(html.index('data-tab="tasks"'), html.index('data-tab="outlook"'))
         self.assertIn('id="accountTasksPanel"', html)
         self.assertIn('<option value="registration">注册</option>', html)
         self.assertIn('<option value="codex_retry">Codex 补跑</option>', html)
