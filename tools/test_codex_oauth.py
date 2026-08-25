@@ -29,7 +29,7 @@ from pathlib import Path
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 
-from core.codex_oauth import run_codex_oauth
+from core import codex_operation_service, operation_task_store, postgres_store
 
 logger = logging.getLogger("codex_test")
 
@@ -68,7 +68,28 @@ def main() -> int:
     logger.info(f"[测试] 单独补跑 Codex 授权：{args.email}")
     logger.info("=" * 60)
 
-    result = run_codex_oauth(args.email, proxy=args.proxy, force=True)
+    if args.proxy:
+        logger.warning("--proxy 已弃用；CLI 与 Web 统一使用账号代理策略，避免绕过租约")
+    postgres_store.require_ready()
+    queued = codex_operation_service.submit(args.email, trigger="cli")
+    if not queued.get("accepted"):
+        logger.error("任务入队失败：%s", queued.get("error"))
+        return 1
+    run_id = int(queued["run_id"])
+    logger.info("已创建 operation task=%s run=%s", queued["task_id"], run_id)
+    import time
+    while True:
+        run = operation_task_store.get_run(run_id) or {}
+        if str(run.get("status") or "") not in {"queued", "running", "cancelling", "settling"}:
+            break
+        time.sleep(0.5)
+    summary = run.get("result_summary") or {}
+    result = {
+        **summary,
+        "status": run.get("status"),
+        "ok": run.get("status") == "success",
+        "message": run.get("error_message") or summary.get("message"),
+    }
 
     logger.info("-" * 60)
     logger.info(f"[测试] 结果：status={result.get('status')}, ok={result.get('ok')}")

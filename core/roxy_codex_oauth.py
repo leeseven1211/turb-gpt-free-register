@@ -7,6 +7,7 @@ import inspect
 import json
 import random
 import time
+import uuid
 from contextvars import ContextVar
 from urllib.parse import urlparse
 
@@ -14,6 +15,7 @@ from config import roxybrowser as _roxy_cfg
 from core.email_provider import wait_for_otp
 from core.humanize import delay as human_delay
 from core import sms_provider
+from core.operation_runtime import OperationCancelled, call_cancellable, cancellable_sleep, check_cancelled, report_stage
 from core.openai_auth import AccountUnusableError, detect_account_unusable_response_body
 from core.roxybrowser_client import RoxyBrowserClient
 from core.roxy_registration import (
@@ -169,6 +171,7 @@ def _wait_for_callback(driver, timeout: int | None = None) -> str:
     end = time.time() + (timeout or int(_roxy_cfg.ROXY_CODEX_CALLBACK_TIMEOUT))
     last_url = ""
     while time.time() < end:
+        check_cancelled()
         try:
             current = str(driver.current_url or "")
             if current != last_url:
@@ -179,7 +182,7 @@ def _wait_for_callback(driver, timeout: int | None = None) -> str:
                 return callback
         except Exception:
             pass
-        time.sleep(0.5)
+        cancellable_sleep(0.5)
     raise RuntimeError(f"等待 Codex callback 超时，最后 URL={last_url}")
 
 
@@ -537,6 +540,24 @@ def _complete_login_challenge_after_email(
     raise RuntimeError(f"邮箱提交后未识别到密码、TOTP 或邮箱验证码分支：state={safe_state}")
 
 
+def complete_openai_login_challenge(
+    driver,
+    email: str,
+    password: str,
+    totp_secret: str,
+    *,
+    timeout: int = 45,
+) -> str:
+    """注册恢复与 Codex OAuth 共用的密码/TOTP/邮箱 OTP 状态机。"""
+    return _complete_login_challenge_after_email(
+        driver,
+        email,
+        password,
+        totp_secret,
+        timeout=timeout,
+    )
+
+
 def _maybe_click_passwordless_after_email(driver, email: str, timeout: int = 18) -> None:
     """
     Codex OAuth 提交邮箱后也可能跳到 /log-in/password 或 /create-account/password。
@@ -633,6 +654,8 @@ def _select_existing_account_if_present(driver, email: str) -> bool:
 
 
 def _fill_email_and_otp(driver, email: str, otp_provider, auth_url: str) -> None:
+    check_cancelled()
+    report_stage("login", "打开 OpenAI 登录授权页")
     otp_after_ts = time.time()
     password, totp_secret = _account_login_credentials(email)
     logger.info("[Codex][Browser] 打开授权地址")
@@ -651,6 +674,7 @@ def _fill_email_and_otp(driver, email: str, otp_provider, auth_url: str) -> None
         logger.info("[Codex][Browser] 已填写邮箱：%s", email)
         human_delay("form")
         _submit_email_step(driver)
+        report_stage("login", "已提交 OpenAI 登录邮箱", state="success")
         logger.info("[Codex][Browser] 已提交邮箱，识别密码、TOTP 或邮箱 OTP 分支")
     except Exception as exc:
         state = _login_challenge_state(driver)
@@ -663,7 +687,7 @@ def _fill_email_and_otp(driver, email: str, otp_provider, auth_url: str) -> None
             logger.info("[Codex][Browser] 未检测到邮箱输入框，可能已登录或进入下一步：%s", str(exc)[:120])
             return
 
-    next_state = _complete_login_challenge_after_email(
+    next_state = complete_openai_login_challenge(
         driver,
         email,
         password,
@@ -693,7 +717,7 @@ def _fill_email_and_otp(driver, email: str, otp_provider, auth_url: str) -> None
             human_delay("form")
             _submit_email_step(driver)
             logger.info("[Codex][Browser] 已重新提交邮箱，重新识别登录分支")
-            restart_state = _complete_login_challenge_after_email(
+            restart_state = complete_openai_login_challenge(
                 driver,
                 email,
                 password,
@@ -712,6 +736,8 @@ def _fill_email_and_otp(driver, email: str, otp_provider, auth_url: str) -> None
         return "email_otp"
 
     for otp_attempt in range(1, max_otp_attempts + 1):
+        check_cancelled()
+        report_stage("email_otp", f"等待邮箱验证码（{otp_attempt}/{max_otp_attempts}）")
         logger.info("[Codex][Browser] 等待邮箱 OTP：%s（第 %s/%s 次）", email, otp_attempt, max_otp_attempts)
         try:
             code = _wait_for_fresh_email_otp(
@@ -721,6 +747,8 @@ def _fill_email_and_otp(driver, email: str, otp_provider, auth_url: str) -> None
                 used_codes=used_codes,
                 timeout=90,
             )
+        except OperationCancelled:
+            raise
         except Exception as exc:
             if otp_attempt >= max_otp_attempts:
                 raise
@@ -757,6 +785,7 @@ def _fill_email_and_otp(driver, email: str, otp_provider, auth_url: str) -> None
         outcome = _wait_after_email_otp_submit(driver, timeout=45)
         logger.info("[Codex][Browser] 邮箱 OTP 提交后状态：%s", outcome)
         if outcome == "accepted":
+            report_stage("email_otp", "邮箱验证码已通过", state="success")
             return
         if str(outcome).startswith("deactivated:"):
             error_code = str(outcome).split(":", 1)[1] or "account_deactivated"
@@ -785,6 +814,7 @@ def _wait_for_fresh_email_otp(otp_provider, email: str, after_ts: float, used_co
     end = time.time() + timeout
     last_code = ""
     while True:
+        check_cancelled()
         remaining = max(1, int(end - time.time()))
         kwargs = {"after_ts": after_ts}
         try:
@@ -793,7 +823,7 @@ def _wait_for_fresh_email_otp(otp_provider, email: str, after_ts: float, used_co
                 kwargs["max_wait"] = remaining
         except (TypeError, ValueError):
             pass
-        code = str(otp_provider(email, **kwargs) or "").strip()
+        code = str(call_cancellable(otp_provider, email, **kwargs) or "").strip()
         if code and code not in used_codes:
             return code
         last_code = code or last_code
@@ -1012,6 +1042,7 @@ def _wait_after_email_otp_submit(driver, timeout: int = 45) -> str:
     last_url = ""
     last_log = 0.0
     while time.time() < end:
+        check_cancelled()
         try:
             dead_code = _read_email_otp_validate_dead_code(driver)
             if dead_code:
@@ -2065,10 +2096,11 @@ def _classify_phone_page_failure(state: dict) -> str:
 def _is_codex_retry_stopped_exception(exc: BaseException) -> bool:
     """识别 WebUI Codex 补跑的异步停止信号，避免被换号重试捕获后继续买号。"""
     try:
+        from core.operation_runtime import OperationCancelled
         from core.codex_retry_service import CodexRetryStopped
     except Exception:
         return False
-    return isinstance(exc, CodexRetryStopped)
+    return isinstance(exc, (CodexRetryStopped, OperationCancelled))
 
 
 def _phone_error_allows_number_rotation(exc: Exception) -> bool:
@@ -2120,7 +2152,8 @@ def _sleep_before_phone_retry(
     if seconds <= 0:
         return
     logger.info("%s 换号前随机等待 %.1f 秒", prefix, seconds)
-    time.sleep(seconds)
+    from core.operation_runtime import cancellable_sleep
+    cancellable_sleep(seconds)
 
 
 def _do_phone_verification_if_present(driver) -> None:
@@ -2131,16 +2164,22 @@ def _do_phone_verification_if_present(driver) -> None:
     total_budget = max(30, int(getattr(sms_provider._cfg, "CODEX_PHONE_TOTAL_TIMEOUT", 300) or 300))
     deadline = time.monotonic() + total_budget
     try:
+        from core.operation_runtime import OperationCancelled, check_cancelled, report_stage
+        check_cancelled()
         # 如果页面没有手机号输入框，直接返回。
         try:
             end_detect = time.time() + 8
             while time.time() < end_detect and not _has_strict_add_phone_form(driver):
+                check_cancelled()
                 # 如果已经在验证码页，说明手机步骤之前已提交过；继续处理验证码页，不应当跳过。
                 if _is_phone_code_page(driver):
                     break
-                time.sleep(0.5)
+                from core.operation_runtime import cancellable_sleep
+                cancellable_sleep(0.5)
             if not (_has_strict_add_phone_form(driver) or _is_phone_code_page(driver)):
                 raise RuntimeError("not_phone_flow")
+        except OperationCancelled:
+            raise
         except Exception:
             logger.info("[Codex][Browser] 未检测到手机号验证页，跳过手机步骤")
             return
@@ -2155,6 +2194,7 @@ def _do_phone_verification_if_present(driver) -> None:
 
         last_err = None
         for attempt in range(1, max_retries + 1):
+            check_cancelled()
             remaining = max(0, int(deadline - time.monotonic()))
             if remaining <= 0:
                 break
@@ -2165,6 +2205,7 @@ def _do_phone_verification_if_present(driver) -> None:
                     f"手机验证第 {attempt}/{max_retries} 次，整段剩余约 {remaining} 秒，正在取号"
                 )
                 activation_id, phone = sms_provider.acquire_number(http)
+                report_stage("phone_otp", "号码已提交，等待短信验证码")
                 logger.info("[Codex][Browser] 手机验证尝试 %s/%s，provider=%s，号码=+%s", attempt, max_retries, provider, phone)
                 logger.info("[Codex][Browser] 准备手机号输入页，稳定同一个号码与 SMS 通道")
                 _prepare_phone_form_for_submit(driver, f"+{phone}", attempts=2)
@@ -2281,6 +2322,7 @@ def _do_phone_verification_if_present(driver) -> None:
                     ),
                 )
                 sms_received = True
+                report_stage("phone_otp", "短信验证码已收到", state="success")
                 logger.info("[Codex][Browser] 手机 OTP 收到：%s", sms_code)
                 _ensure_phone_code_page_after_sms(driver, timeout=15)
                 _type_otp(driver, sms_code)
@@ -2418,6 +2460,7 @@ def _finish_consent_workspace(driver, email: str = "") -> str:
     """
     end = time.time() + int(_roxy_cfg.ROXY_CODEX_CALLBACK_TIMEOUT)
     while time.time() < end:
+        check_cancelled()
         callback = _extract_callback_url_from_any_window(driver)
         if callback:
             return callback
@@ -2444,7 +2487,7 @@ def _finish_consent_workspace(driver, email: str = "") -> str:
                 human_delay("form")
                 break
         if not clicked:
-            time.sleep(0.8)
+            cancellable_sleep(0.8)
     return _wait_for_callback(driver, timeout=5)
 
 
@@ -2522,7 +2565,9 @@ def _run_roxy_codex_oauth_once(
     try:
         auth_source = proto._codex_auth_url_source()
         code_verifier = None
+        cpa_baseline = None
         if auth_source == "cpa":
+            cpa_baseline = proto._capture_cpa_credential_baseline(email)
             cpa_auth = proto._request_cpa_authorize_url()
             state = cpa_auth["state"]
             auth_url = cpa_auth["auth_url"]
@@ -2542,6 +2587,7 @@ def _run_roxy_codex_oauth_once(
             logger.info("[Codex][Browser] 当前使用本地 PKCE 授权地址: %s", auth_url)
         else:
             raise RuntimeError(f"[Codex][Browser] 不支持的 CODEX_AUTH_URL_SOURCE={auth_source!r}")
+        report_stage("auth_url", "Codex 授权地址已准备", state="success", detail={"source": auth_source})
 
         if not driver:
             driver = _build_driver(opened)
@@ -2567,29 +2613,22 @@ def _run_roxy_codex_oauth_once(
         _fill_email_and_otp(driver, email, otp_provider, auth_url)
         human_delay("api")
         logger.info("[Codex][Browser] 检查是否需要手机号验证")
+        report_stage("phone_check", "检查是否需要手机验证")
         _do_phone_verification_if_present(driver)
+        report_stage("phone_check", "手机验证已完成或无需验证", state="success")
         logger.info("[Codex][Browser] 手机验证处理完成/无需处理，等待授权确认和 callback")
         callback_url = _finish_consent_workspace(driver, email=email)
+        report_stage("callback", "已捕获 OAuth callback", state="success")
         code = proto._extract_code(callback_url, state)
         logger.info("[Codex][Browser] 已捕获 callback code：%s...", code[:24])
 
         if auth_source == "cpa":
             submit_payload = proto._submit_cpa_callback(callback_url)
-            path = proto._save_cpa_local_record(
-                email=email,
-                callback_url=callback_url,
-                auth_url=auth_url,
-                state=state,
-                submit_payload=submit_payload,
-            )
-            msg = submit_payload.get("message") or submit_payload.get("status_message") or "CPA callback submitted"
-            return proto._codex_result(
-                status="success",
-                ok=True,
-                email=email,
-                file_path=str(path) if path else None,
-                callback_url=callback_url,
-                message=f"{_codex_driver_name()}: {msg}",
+            return proto._remote_callback_result(
+                source="cpa", email=email, callback_url=callback_url,
+                auth_url=auth_url, state=state, submit_payload=submit_payload,
+                driver_message=_codex_driver_name(),
+                cpa_baseline=cpa_baseline,
             )
 
         if auth_source == "sub2":
@@ -2598,21 +2637,10 @@ def _run_roxy_codex_oauth_once(
                 session_id=(sub2_auth or {}).get("session_id", ""),
                 redirect_uri=(proto.parse_qs(proto.urlparse(auth_url or "").query).get("redirect_uri") or [""])[0],
             )
-            path = proto._save_sub2_local_record(
-                email=email,
-                callback_url=callback_url,
-                auth_url=auth_url,
-                state=state,
-                submit_payload=submit_payload,
-            )
-            msg = submit_payload.get("message") or submit_payload.get("status_message") or "sub2 callback uploaded"
-            return proto._codex_result(
-                status="success",
-                ok=True,
-                email=email,
-                file_path=str(path) if path else None,
-                callback_url=callback_url,
-                message=f"{_codex_driver_name()}: {msg}",
+            return proto._remote_callback_result(
+                source="sub2", email=email, callback_url=callback_url,
+                auth_url=auth_url, state=state, submit_payload=submit_payload,
+                driver_message=_codex_driver_name(),
             )
 
         if not code_verifier:
@@ -2623,6 +2651,7 @@ def _run_roxy_codex_oauth_once(
         effective_email = id_claims.get("email") or email
         storage = proto.build_codex_storage(token_resp, id_claims)
         path = proto.save_codex_credential(storage, effective_email, id_claims.get("plan_type", ""))
+        report_stage("credential_persist", "Codex 凭证已写入数据库", state="success")
         return proto._codex_result(
             status="success",
             ok=True,
@@ -2630,7 +2659,10 @@ def _run_roxy_codex_oauth_once(
             file_path=str(path),
             callback_url=callback_url,
             message=f"{_codex_driver_name()} plan={id_claims.get('plan_type') or 'unknown'}",
+            credential_confirmed=True,
         )
+    except OperationCancelled:
+        raise
     except AccountUnusableError as exc:
         logger.warning("[Codex][Browser] 账号已废：%s，%s", email, exc.error_code)
         return proto._codex_result(
@@ -2688,10 +2720,21 @@ def run_roxy_chatgpt_account_action(
         clear_roxy_browser_auth_state(driver)
         logger.info("[Codex][Browser] 开始建立 ChatGPT 账号会话：%s", email)
         _fill_email_and_otp(driver, email, otp_provider, "https://chatgpt.com/auth/login")
-        from core.roxy_registration import _fetch_chatgpt_session
+        from core.roxy_registration import _complete_profile_page, _fetch_chatgpt_session
 
-        _fetch_chatgpt_session(driver, timeout=90, auto_jump_wait=10)
-        result = action(driver)
+        # 待邮箱验证账号通过 OTP 后会落在 about-you。账号操作过去把“离开 OTP 页”
+        # 误判成已登录，随后等待 session 超时。这里把账号级登录和注册恢复统一到同一
+        # 个资料页处理函数，避免“补齐账号配置”误入口把半成品账号继续留在半成品状态。
+        current_url = str(getattr(driver, "current_url", "") or "").lower()
+        if any(marker in current_url for marker in ("about-you", "profile", "create-account/about")):
+            from core.profile_utils import generate_random_birthday
+
+            display_name = f"User{uuid.uuid4().hex[:8]}"
+            if not _complete_profile_page(driver, display_name, generate_random_birthday(), timeout=60):
+                raise RuntimeError("邮箱验证后进入账号资料页，但资料未能完成")
+            logger.info("[Codex][Browser] 已从待验证检查点完成账号资料页：%s", email)
+        session_info = _fetch_chatgpt_session(driver, timeout=90, auto_jump_wait=10)
+        result = action(driver, session_info)
         logger.info("[Codex][Browser] ChatGPT 账号操作已完成：%s", email)
         return result
     finally:

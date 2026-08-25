@@ -159,6 +159,14 @@ class DashboardApiTests(PostgresTestCase):
         self.assertIn('id="btnBatchStopV2"', html)
         self.assertIn('id="btnBatchCancelV2"', html)
         self.assertIn('id="btnBatchRetryV2"', html)
+        self.assertIn('id="registrationBatchSelectV2"', html)
+        self.assertIn('progress_batch_id=${encodeURIComponent(JOB_PROGRESS_BATCH_ID)}', html)
+        self.assertIn('id="accountTaskStageProgress"', html)
+        self.assertIn('function renderAccountTaskStageProgress(task)', html)
+        self.assertIn('function accountTaskEventStepState(event)', html)
+        self.assertIn("const latestRunId = String(task?.last_run_id", html)
+        self.assertIn("skipped:'已跳过'", html)
+        self.assertNotIn("stage.seen ? 'success'", html)
         self.assertIn('data-progress-retry-job', html)
         self.assertIn('batch-progress-v2-step-duration', html)
         self.assertIn('data-progress-duration-start', html)
@@ -296,6 +304,49 @@ class DashboardApiTests(PostgresTestCase):
         self.assertEqual(payload["total"], 1)
         self.assertEqual(payload["items"][0]["email"], "eligible@example.com")
         self.assertEqual({item["value"] for item in payload["facets"]["trial"]}, {"eligible", "ineligible", "not_applicable"})
+
+    def test_accounts_token_filter_distinguishes_valid_expired_and_missing(self):
+        self.seed(record_store.ACCOUNTS, [
+            {
+                "email": "valid@example.com",
+                "access_token": "valid-token",
+                "token_expires_at": "2099-01-01T00:00:00Z",
+                "token_expired": False,
+            },
+            {
+                "email": "expired-by-time@example.com",
+                "access_token": "expired-token",
+                "token_expires_at": "2000-01-01T00:00:00Z",
+                "token_expired": False,
+            },
+            {
+                "email": "expired-by-flag@example.com",
+                "access_token": "rejected-token",
+                "token_expires_at": "2099-01-01T00:00:00Z",
+                "token_expired": True,
+            },
+            {"email": "missing@example.com", "access_token": ""},
+        ])
+
+        expected = {
+            "has": {"valid@example.com"},
+            "expired": {"expired-by-time@example.com", "expired-by-flag@example.com"},
+            "none": {"missing@example.com"},
+        }
+        for token_filter, emails in expected.items():
+            with self.subTest(token_filter=token_filter):
+                response = self.client.get(
+                    f"/api/accounts?paged=1&page=1&page_size=20&token={token_filter}",
+                    headers=self.headers,
+                )
+                self.assertEqual(response.status_code, 200)
+                payload = response.get_json()
+                self.assertEqual(payload["total"], len(emails))
+                self.assertEqual({item["email"] for item in payload["items"]}, emails)
+                self.assertEqual(
+                    {item["value"]: item["count"] for item in payload["facets"]["token"]},
+                    {"has": 1, "expired": 2, "none": 1},
+                )
 
     @patch("webui.app.db.get_account", return_value={
         "id": 1,

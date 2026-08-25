@@ -79,6 +79,8 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
         self.assertIn("SMS_MAX_PRICE", fields)
         self.assertEqual(fields["SMS_MAX_PRICE"]["group"], "接码平台")
+        self.assertIn("CPA_CREDENTIAL_CONFIRM_TIMEOUT", fields)
+        self.assertEqual(fields["CPA_CREDENTIAL_CONFIRM_TIMEOUT"]["group"], "Codex")
 
         old_loaded = env_loader._LOADED
         env_loader._LOADED = True
@@ -241,6 +243,7 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             "PROXY_1024_MAX_ATTEMPTS", "PROXY_1024_ACQUIRE_TIMEOUT", "PROXY_1024_VALIDATE",
             "PROXY_1024_VALIDATE_ATTEMPTS",
             "PROXY_1024_RECENT_TTL", "PROXY_1024_ACQUIRE_INTERVAL",
+            "REGISTRATION_PROXY_RETRIES", "REGISTRATION_PROXY_RETRY_DELAY",
             "ACCOUNT_ACTION_PROXY_MODE", "ACCOUNT_ACTION_PROXY",
         }
         self.assertTrue(expected.issubset(fields))

@@ -16,6 +16,7 @@ from datetime import datetime
 from typing import Any
 
 from core import postgres_store
+from core.task_stages import normalize_step_state
 
 _LOCK = threading.RLock()
 _SCHEMA = str(os.getenv("ACCOUNT_TASK_DB_SCHEMA") or "public").strip() or "public"
@@ -51,6 +52,24 @@ def _index(name: str) -> str:
 def _connect():
     from psycopg.rows import dict_row
     return postgres_store.connect(row_factory=dict_row)
+
+
+def _sync_operation_task(task_id: int | None) -> None:
+    """迁移期兼容桥：账号任务旧投影更新后刷新统一任务中心。"""
+    if not task_id:
+        return
+    # 旧账号任务测试会单独 monkeypatch _SCHEMA。两套模型不在同一 schema 时不能
+    # 跨到 public 或其它测试 schema 写投影；正式运行时二者都是 public。
+    if _SCHEMA != postgres_store.schema_name():
+        return
+    try:
+        from core import operation_task_store
+
+        operation_task_store.sync_account_task(int(task_id))
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception("同步统一任务中心失败：account_task_id=%s", task_id)
 
 
 def init() -> None:
@@ -238,20 +257,37 @@ def create_task(*, task_type: str, account_id: int | None, email: str, trigger: 
             (task_id, now, "任务已加入队列"),
         )
         _refresh_batch(cur, batch_id)
+    _sync_operation_task(task_id)
     return task_id
 
 
-def append_event(task_id: int | None, *, stage: str, message: str, level: str = "INFO", detail: dict | None = None) -> None:
+def append_event(
+    task_id: int | None,
+    *,
+    stage: str,
+    message: str,
+    level: str = "INFO",
+    detail: dict | None = None,
+    state: str | None = None,
+) -> None:
+    """写入脱敏事件；流程节点必须用 ``state`` 明确表达五态。"""
     if not task_id:
         return
     init()
+    clean_detail = dict(detail or {})
+    if state is not None:
+        normalized_state = normalize_step_state(state)
+        if normalized_state is None:
+            raise ValueError(f"不支持的任务步骤状态: {state!r}")
+        clean_detail["step_state"] = normalized_state
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
             f"INSERT INTO {_table('account_action_events')} (task_id, created_at, level, stage, message, detail) "
             "VALUES (%s, %s, %s, %s, %s, %s::jsonb)",
             (int(task_id), _now(), str(level or "INFO").upper()[:16], str(stage or "event")[:80],
-             _redact_text(message, 1200), _json(detail)),
+             _redact_text(message, 1200), _json(clean_detail)),
         )
+    _sync_operation_task(int(task_id))
 
 
 def start_task(task_id: int | None, *, message: str = "开始执行") -> None:
@@ -273,6 +309,7 @@ def start_task(task_id: int | None, *, message: str = "开始执行") -> None:
             (int(task_id), now, _redact_text(message, 1200)),
         )
         _refresh_batch(cur, row["batch_id"])
+    _sync_operation_task(int(task_id))
 
 
 def _duration_ms(started_at: str | None, finished_at: str) -> int | None:
@@ -322,6 +359,7 @@ def finish_task(task_id: int | None, *, status: str, message: str, error: str | 
              _redact_text(message, 1200), _json(result_summary)),
         )
         _refresh_batch(cur, row["batch_id"])
+    _sync_operation_task(int(task_id))
 
 
 def _refresh_batch(cur, batch_id: str | None) -> None:
@@ -363,6 +401,8 @@ def recover_interrupted() -> int:
             )
         for batch_id in {row["batch_id"] for row in rows if row["batch_id"]}:
             _refresh_batch(cur, batch_id)
+    for row in rows:
+        _sync_operation_task(int(row["id"]))
     return len(rows)
 
 

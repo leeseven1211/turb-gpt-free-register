@@ -1313,12 +1313,15 @@ async function pollAccountPlanStatuses() {
 function _codexCell(r) {
   if ((r.account_status || '').toLowerCase() === 'deactivated') return '<span class="pill status-failed" title="账号已确认停用/封禁">封号</span>';
   const s = r.codex_status || '';
+  const exec = r.codex_execution_status || '';
   const err = r.codex_error || '';
   const titleAttr = err ? ` title="${esc(err)}"` : '';
+  if (['queued','running','cancelling'].includes(exec)) return `<span class="pill status-running">${exec === 'queued' ? '排队中' : exec === 'cancelling' ? '停止中' : '补跑中'}</span>`;
   if (s === 'success') return `<span class="pill status-success">成功</span>`;
   if (s === 'retrying') return `<span class="pill status-running">补跑中</span>`;
   if (s === 'stopped') return `<span class="pill status-used"${titleAttr}>已停止</span>`;
   if (s === 'failed') return `<span class="pill status-failed"${titleAttr}>失败</span>`;
+  if (s === 'pending_confirmation' || r.codex_credential_state === 'pending_confirmation') return `<span class="pill status-used"${titleAttr}>待确认</span>`;
   if (s === 'skipped') return `<span class="pill status-used">已跳过</span>`;
   if (s === 'deactivated') return `<span class="pill status-failed" title="账号已被 OpenAI 删除/停用/封禁，无法授权">已废号</span>`;
   return `<span class="muted">-</span>`;
@@ -1466,8 +1469,9 @@ function _extractLinkAction(r) {
 function _codexAction(r) {
   if ((r.account_status || '').toLowerCase() === 'deactivated') return '';
   const s = r.codex_status || '';
-  if (s === 'retrying') {
-    return `<button class="danger" data-codex-stop="${esc(r.email)}" title="停止该账号正在进行的 Codex 补跑">停止补跑</button> <button data-codex-reset-retrying="${esc(r.email)}" title="只重置状态；不会向运行线程发送停止信号">重置状态</button>`;
+  const exec = r.codex_execution_status || '';
+  if (['queued','running','cancelling'].includes(exec) || s === 'retrying') {
+    return `<button class="danger" data-codex-stop="${esc(r.email)}" title="协作式停止该账号正在进行的 Codex 补跑">${exec === 'cancelling' ? '停止中…' : '停止补跑'}</button>`;
   }
   if (s === 'deactivated') return '';
   const label = s === 'success' ? '重新补跑 Codex' : '补跑 Codex';
@@ -1793,7 +1797,7 @@ $('#accountsBody').addEventListener('click', async (e) => {
     openRetryLog(email);
     const poll = setInterval(async () => {
       const acc = ACCOUNTS.find(a => a.email === email);
-      if (!acc || acc.codex_status !== 'retrying') clearInterval(poll);
+      if (!acc || (!['queued','running','cancelling'].includes(acc.codex_execution_status || '') && acc.codex_status !== 'retrying')) clearInterval(poll);
     }, 5000);
     setTimeout(() => clearInterval(poll), 5 * 60 * 1000);
   } catch(err) {
@@ -2239,7 +2243,7 @@ async function stopSelectedCodex() {
   const ids = Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
   const selectedAccounts = ids.map(id => ACCOUNTS.find(a => Number(a.id) === Number(id))).filter(Boolean);
-  const retrying = selectedAccounts.filter(a => (a.codex_status || '') === 'retrying');
+  const retrying = selectedAccounts.filter(a => ['queued','running','cancelling'].includes(a.codex_execution_status || '') || (a.codex_status || '') === 'retrying');
   if (retrying.length === 0) { showToast('选中账号里没有正在补跑的 Codex'); return; }
   if (!confirm(`确定停止选中的 ${retrying.length} 个 Codex 补跑吗？\n\n会发送停止信号，并将状态标记为“已停止”。`)) return;
   const btn = $('#btnStopSelectedCodex');
@@ -2267,7 +2271,7 @@ async function retrySelectedCodex() {
   const workers = Math.max(1, Math.min(16, Number(workersEl?.value || 1)));
   if (workersEl) workersEl.value = workers;
   const selectedAccounts = ids.map(id => ACCOUNTS.find(a => Number(a.id) === Number(id))).filter(Boolean);
-  const retryingCount = selectedAccounts.filter(a => (a.codex_status || '') === 'retrying').length;
+  const retryingCount = selectedAccounts.filter(a => ['queued','running','cancelling'].includes(a.codex_execution_status || '') || (a.codex_status || '') === 'retrying').length;
   const deactivatedCount = selectedAccounts.filter(a => (a.codex_status || '') === 'deactivated').length;
   let msg = `批量补跑选中的 ${ids.length} 个账号 Codex 授权？
 

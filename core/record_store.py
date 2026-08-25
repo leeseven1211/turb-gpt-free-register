@@ -74,6 +74,11 @@ ACCOUNTS = TableSpec(
         "current_plan_type": "TEXT",
         "plus_trial_eligible": "BOOLEAN",
         "codex_status": "TEXT",
+        # Codex 凭证资产、当前执行和最近结果是三条正交状态；codex_status 仅保留为兼容投影。
+        "codex_credential_state": "TEXT",
+        "codex_execution_status": "TEXT",
+        "codex_last_run_status": "TEXT",
+        "codex_active_run_id": "BIGINT",
         "plan_check_status": "TEXT",
         "live_check_status": "TEXT",
         "extract_link_status": "TEXT",
@@ -107,6 +112,8 @@ ACCOUNTS = TableSpec(
     indexes=(
         ("archived", "id"),
         ("plan_check_status",),
+        ("codex_credential_state",),
+        ("codex_execution_status",),
         ("live_check_status",),
         ("extract_link_status",),
         ("token_expires_at",),

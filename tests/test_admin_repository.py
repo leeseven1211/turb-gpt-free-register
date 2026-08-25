@@ -83,6 +83,19 @@ class AdminRepositoryTests(PostgresTestCase):
         self.assertEqual(len(result["items"]), 20)
         self.assertLessEqual(counter.count, 8, counter.count)
         self.assertEqual(result["progress_rows"][-1]["batch_id"], "latest-batch")
+        self.assertEqual([batch["batch_id"] for batch in result["progress_batches"][:2]], ["latest-batch", "older-batch"])
+
+    def test_job_progress_can_select_an_older_batch(self):
+        result = repo.list_jobs(
+            repo.PageRequest(page=1, page_size=20, filters={}),
+            progress_batch_id="older-batch",
+        )
+
+        self.assertEqual(len(result["progress_rows"]), 40)
+        self.assertTrue(all(row["batch_id"] == "older-batch" for row in result["progress_rows"]))
+        older = next(batch for batch in result["progress_batches"] if batch["batch_id"] == "older-batch")
+        self.assertEqual(older["total"], 40)
+        self.assertEqual(older["kind"], "registration")
 
     def test_email_pool_is_unified_and_does_not_return_secrets(self):
         result = repo.list_email_pool(repo.PageRequest(page=1, page_size=20, filters={"source": "all"}))

@@ -229,6 +229,33 @@ class RoxyEmailRecoveryTests(unittest.TestCase):
         )
         submit_email.assert_not_called()
 
+    def test_new_registration_rejects_existing_login_password_page(self):
+        driver = _FakeDriver()
+        driver.current_url = "https://auth.openai.com/log-in/password"
+        with patch.object(
+            roxy_registration,
+            "_type_email_address",
+            return_value="login_password",
+        ):
+            with self.assertRaisesRegex(RuntimeError, "已注册/不可用邮箱"):
+                roxy_registration._submit_email_and_wait_next(driver, "test@example.com")
+
+    def test_pending_account_resume_accepts_login_password_page(self):
+        driver = _FakeDriver()
+        driver.current_url = "https://auth.openai.com/log-in/password"
+        with patch.object(
+            roxy_registration,
+            "_type_email_address",
+            return_value="login_password",
+        ):
+            result = roxy_registration._submit_email_and_wait_next(
+                driver,
+                "test@example.com",
+                allow_login_password=True,
+            )
+
+        self.assertEqual(result, "login_password")
+
     def test_nextauth_skips_navigation_when_page_already_reached_otp(self):
         driver = _FakeDriver()
         driver.current_url = "https://auth.openai.com/email-verification"

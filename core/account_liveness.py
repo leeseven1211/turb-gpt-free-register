@@ -7,10 +7,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from config import openai_protocol as _protocol_cfg
 from core.session import BrowserSession
 from core.chatgpt_auth import get_csrf_token, signin_openai
 from core.openai_auth import (
     follow_authorize,
+    network_preflight,
     send_email_otp,
     validate_email_otp,
     EmailOtpInvalidError,
@@ -19,6 +21,7 @@ from core.openai_auth import (
 )
 from core.account_export import follow_oauth_callback, fetch_session
 from core.email_provider import wait_for_otp
+from core.humanize import delay as human_delay
 
 logger = logging.getLogger(__name__)
 _LOG_DIR = Path(__file__).resolve().parent.parent / "注册日志"
@@ -41,6 +44,20 @@ def _is_retryable_network_error(exc: BaseException) -> bool:
     return any(h in text for h in _RETRYABLE_NETWORK_HINTS)
 
 
+def _warm_protocol_login_context(session: BrowserSession) -> None:
+    """按注册协议流建立页面、Cookie 和匿名态前端上下文后再请求 CSRF。"""
+    network_preflight(session)
+    human_delay("navigate")
+    if getattr(_protocol_cfg, "CHATGPT_ANON_BOOTSTRAP_ENABLED", True):
+        from core.chatgpt_bootstrap import anonymous_bootstrap
+
+        anonymous_bootstrap(
+            session,
+            strict=bool(getattr(_protocol_cfg, "CHATGPT_BOOTSTRAP_STRICT", False)),
+        )
+        human_delay("navigate")
+
+
 def _network_preflight_with_retry(
     email: str,
     proxy: str | None,
@@ -48,7 +65,7 @@ def _network_preflight_with_retry(
     *,
     proxy_supplier: Callable[[int], str | None] | None = None,
 ) -> tuple[BrowserSession, str]:
-    """CSRF → Signin 网络预检；每轮建新会话，并在可用时获取新代理。
+    """页面/匿名态预热 → CSRF → Signin；每轮建新会话并可换新代理。
 
     /api/auth/providers 只是 NextAuth 的能力发现接口，登录流程并不依赖它；
     该接口又更容易被 Cloudflare 单独拦截，因此查活刷新 AT 时直接从 CSRF 开始。
@@ -69,7 +86,9 @@ def _network_preflight_with_retry(
             session.proxy or "配置随机/直连", session.device_id, attempt, max_attempts,
         )
         try:
+            _warm_protocol_login_context(session)
             csrf = get_csrf_token(session)
+            human_delay("api")
             authorize_url = signin_openai(session, csrf, email)
             return session, authorize_url
         except Exception as exc:
@@ -190,7 +209,10 @@ def check_account_liveness(
 
         logger.info("[查活] 日志文件：%s", path)
         logger.info("[查活] 开始重新登录：%s", email)
-        logger.info("[查活] 流程：CSRF → Signin → Authorize → 邮箱 OTP → OAuth callback → Session/AT")
+        logger.info(
+            "[查活] 流程：浏览器指纹会话 → 页面/匿名态预热 → CSRF → Signin → "
+            "Authorize → 邮箱 OTP → OAuth callback → Session/AT"
+        )
         session, authorize_url = _network_preflight_with_retry(
             email,
             proxy,

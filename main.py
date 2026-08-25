@@ -162,6 +162,7 @@ def run_registration(
     otp_code: str = None,
     batch_dir=None,
     existing_password: str | None = None,
+    existing_totp_secret: str | None = None,
 ):
     """
     执行完整的 ChatGPT 注册流程（OTP-only，无密码）。
@@ -178,6 +179,7 @@ def run_registration(
                仅静态池模式允许底层在不传时从 PROXY_POOL 抽取。
         otp_code: 邮箱验证码（如果为None，会等待手动输入）
         existing_password: 待邮箱验证账号已保存的登录密码；仅 Roxy 恢复注册使用。
+        existing_totp_secret: 账号已启用 2FA 时保存的 TOTP 密钥；与密码恢复共用。
     """
     from core.registration_service import report_job_progress
 
@@ -198,6 +200,7 @@ def run_registration(
             otp_code=otp_code,
             batch_dir=batch_dir,
             existing_password=existing_password,
+            existing_totp_secret=existing_totp_secret,
         )
     if existing_password:
         raise RuntimeError(
@@ -494,13 +497,20 @@ def run_registration(
             from config import codex as _codex_cfg
             if bool(getattr(_codex_cfg, "ENABLE_CODEX_AUTO", False)):
                 report_job_progress("codex", "running", "正在执行 Codex OAuth")
-            # 自动 Codex 必须继续使用本账号注册阶段的同一出口，避免一个任务内 IP 漂移。
-            codex_result = run_codex_oauth(email, proxy=session.proxy)
-            report_job_progress(
-                "codex",
-                "success" if codex_result.get("ok") else "skipped" if codex_result.get("status") == "skipped" else "failed",
-                str(codex_result.get("message") or "Codex OAuth 已完成")[:300],
-            )
+                # 自动 Codex 必须继续使用本账号注册阶段的同一出口，避免一个任务内 IP 漂移。
+                codex_result = run_codex_oauth(email, proxy=session.proxy)
+                report_job_progress(
+                    "codex",
+                    "success" if codex_result.get("ok") else "skipped" if codex_result.get("status") == "skipped" else "failed",
+                    str(codex_result.get("message") or "Codex OAuth 已完成")[:300],
+                )
+            else:
+                codex_result = {
+                    "status": "skipped",
+                    "ok": True,
+                    "message": "ENABLE_CODEX_AUTO=False，跳过 Codex",
+                }
+                report_job_progress("codex", "skipped", codex_result["message"])
         except Exception as exc:
             codex_result = {
                 "status": "failed",

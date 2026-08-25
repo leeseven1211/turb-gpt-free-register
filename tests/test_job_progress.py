@@ -114,11 +114,44 @@ class JobProgressTests(PostgresTestCase):
                     email_source="icloud_hide",
                     email="demo@example.com",
                     account_id=42,
+                    batch_id="retry-batch-demo",
+                    batch_index=2,
+                    batch_size=3,
+                    batch_workers=4,
                 )
 
                 self.assertTrue(created)
                 self.assertEqual(retry["retry_action"], "codex")
                 self.assertEqual(retry["parent_job_id"], source["id"])
+                self.assertEqual(retry["batch_id"], "retry-batch-demo")
+                self.assertEqual(retry["batch_index"], 2)
+                self.assertEqual(retry["batch_size"], 3)
+                self.assertEqual(retry["batch_workers"], 4)
+
+    def test_registration_codex_retry_delegates_to_native_operation_without_legacy_job(self):
+        source = {"id": 17, "status": "partial_success", "email": "native@example.com", "account_id": 42}
+        account = {"id": 42, "email": "native@example.com", "codex_status": "failed"}
+        with (
+            patch.object(db, "get_job", return_value=source),
+            patch.object(registration_service, "get_retry_info", return_value={
+                "retryable": True, "retry_action": "codex",
+            }),
+            patch.object(registration_service, "_account_for_job", return_value=account),
+            patch("core.operation_task_store.find_task_by_source", return_value={"id": 700}),
+            patch("core.codex_operation_service.submit", return_value={
+                "accepted": True, "task_id": 701, "run_id": 702,
+            }) as submit,
+            patch.object(db, "create_retry_job") as legacy_create,
+        ):
+            result = registration_service.retry_job(17)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(701, result["operation_task_id"])
+        self.assertEqual(702, result["run_id"])
+        submit.assert_called_once_with(
+            "native@example.com", trigger="registration_job_retry", parent_task_id=700,
+        )
+        legacy_create.assert_not_called()
 
     def test_partial_success_with_codex_failure_is_retryable(self):
         job = {
@@ -361,6 +394,58 @@ class JobProgressTests(PostgresTestCase):
         payload = response.get_json()
         self.assertEqual(payload["progress_batch"]["batch_id"], "new-batch")
         self.assertEqual(len(payload["progress_batch"]["items"]), 2)
+
+    def test_jobs_api_passes_selected_progress_batch_to_repository(self):
+        app = create_app(auth_code="test-auth")
+        client = app.test_client()
+        repository_payload = {
+            "ok": True,
+            "items": [],
+            "total": 0,
+            "page": 1,
+            "page_size": 20,
+            "revision": "0:test",
+            "facets": {},
+            "status_counts": {"active": 0},
+            "progress_rows": [],
+            "progress_batches": [],
+        }
+        with patch("webui.app.admin_repository.list_jobs", return_value=repository_payload) as list_jobs:
+            response = client.get(
+                "/api/jobs?paged=1&page=1&page_size=20&progress_batch_id=older-batch",
+                headers={"X-Auth-Code": "test-auth"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(list_jobs.call_args.kwargs["progress_batch_id"], "older-batch")
+
+    def test_bulk_retry_uses_one_shared_batch(self):
+        app = create_app(auth_code="test-auth")
+        client = app.test_client()
+
+        def fake_retry(job_id, workers=None, **kwargs):
+            return {
+                "ok": True,
+                "created": True,
+                "job": {"id": job_id + 100, "batch_id": kwargs["batch_id"]},
+                "batch": kwargs,
+            }
+
+        with patch("webui.app.svc.retry_job", side_effect=fake_retry) as retry_job:
+            response = client.post(
+                "/api/jobs/retry-bulk",
+                json={"job_ids": [11, 12], "workers": 3},
+                headers={"X-Auth-Code": "test-auth"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["started_count"], 2)
+        self.assertTrue(payload["batch_id"])
+        calls = retry_job.call_args_list
+        self.assertEqual(calls[0].kwargs["batch_id"], calls[1].kwargs["batch_id"])
+        self.assertEqual([call.kwargs["batch_index"] for call in calls], [1, 2])
+        self.assertTrue(all(call.kwargs["batch_size"] == 2 for call in calls))
 
     def test_job_stop_state_survives_unrelated_worker_update(self):
         job = db.create_job(

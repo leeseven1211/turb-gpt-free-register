@@ -633,6 +633,14 @@ EDITABLE_FIELDS = [
         "label": "代理获取总预算(秒)", "help": "包含重复 IP 重取和出口检测的整段硬上限；建议 60 秒",
     },
     {
+        "key": "REGISTRATION_PROXY_RETRIES", "file": "proxy.py", "type": "int", "group": "代理平台",
+        "label": "注册代理换线重试次数", "help": "只对隧道、连接重置和认证跳转超时等明确代理瞬时错误换线重试；不改变并发数，也不重试密码入口缺失",
+    },
+    {
+        "key": "REGISTRATION_PROXY_RETRY_DELAY", "file": "proxy.py", "type": "float", "group": "代理平台",
+        "label": "注册换线重试间隔(秒)", "help": "换线前的短暂间隔，避免连续请求同一代理平台窗口",
+    },
+    {
         "key": "PROXY_1024_VALIDATE", "file": "proxy.py", "type": "bool", "group": "代理平台",
         "label": "使用前检测出口", "help": "领取邮箱前先通过该代理访问 IPInfo，确认代理可用并记录出口地区",
     },
@@ -751,6 +759,10 @@ EDITABLE_FIELDS = [
     {
         "key": "CPA_REQUEST_TIMEOUT", "file": "codex.py", "type": "int", "group": "Codex",
         "label": "CPA 超时(秒)", "help": "请求 CPA 管理接口的超时时间",
+    },
+    {
+        "key": "CPA_CREDENTIAL_CONFIRM_TIMEOUT", "file": "codex.py", "type": "int", "group": "Codex",
+        "label": "CPA 凭证确认等待(秒)", "help": "Callback 接收后等待 CPA 生成真实 auth JSON 的最长时间；超时则标记待确认。",
     },
     {
         "key": "CPA_SAVE_CALLBACK_RECEIPT", "file": "codex.py", "type": "bool", "group": "Codex",

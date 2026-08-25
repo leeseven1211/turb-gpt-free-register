@@ -1,5 +1,6 @@
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from core import browser_use_registration
 from core import roxy_registration
@@ -17,6 +18,30 @@ class _RoxyDriver:
 
     def execute_script(self, _script):
         return {"ok": True, "input": object(), "button": object()}
+
+
+class _RefreshableOtpDriver(_RoxyDriver):
+    def __init__(self):
+        super().__init__()
+        self.refresh_count = 0
+        self.scan_count = 0
+
+    def refresh(self):
+        self.refresh_count += 1
+
+    def execute_script(self, _script):
+        self.scan_count += 1
+        if self.refresh_count:
+            return {
+                "ok": True,
+                "reason": "create_account_password_target",
+                "target": object(),
+            }
+        return {
+            "ok": False,
+            "reason": "missing_create_account_password_target",
+            "candidates": [{"text": "Resend email", "href": "", "name": "intent", "value": "resend", "aria": ""}],
+        }
 
 
 class _BrowserUsePage:
@@ -111,6 +136,61 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["reason"], "missing_create_account_password_target_after_wait")
         self.assertEqual(result["candidates"], [candidate])
+
+    def test_roxy_password_target_refreshes_once_before_classifying_otp_only_flow(self):
+        driver = _RefreshableOtpDriver()
+        target = object()
+        driver.execute_script = lambda _script: (
+            {"ok": True, "reason": "create_account_password_target", "target": target}
+            if driver.refresh_count
+            else {"ok": False, "reason": "missing_create_account_password_target", "candidates": [
+                {"text": "Resend email", "href": "", "name": "intent", "value": "resend", "aria": ""}
+            ]}
+        )
+
+        def click_target(_driver, element, label=""):
+            self.assertIs(element, target)
+            self.assertEqual(label, "signup_use_password")
+            driver.state = "password"
+
+        with (
+            patch.object(roxy_registration, "_human_click", side_effect=click_target),
+            patch.object(roxy_registration, "_is_signup_password_page", side_effect=lambda _driver: driver.state == "password"),
+            patch.object(roxy_registration, "_has_access_token", return_value=False),
+            patch.object(
+                roxy_registration,
+                "time",
+                SimpleNamespace(time=Mock(side_effect=[0, 0, 10] + [0] * 30), sleep=Mock()),
+            ),
+        ):
+            result = roxy_registration._click_signup_password_from_otp_if_present(driver, timeout=2)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["reason"], "entered_create_account_password")
+        self.assertEqual(driver.refresh_count, 1)
+
+    def test_roxy_password_submit_does_not_advance_while_password_page_is_stuck(self):
+        driver = _RoxyDriver()
+        password = "ValidPass123!"
+        with (
+            patch.object(roxy_registration, "_registration_auth_mode", return_value="password"),
+            patch.object(roxy_registration, "_is_email_verification_page", return_value=False),
+            patch.object(roxy_registration, "_has_access_token", return_value=False),
+            patch.object(roxy_registration, "_password_page_state", return_value={"url": driver.current_url}),
+            patch.object(roxy_registration, "_is_signup_password_page", return_value=True),
+            patch.object(roxy_registration, "_is_login_password_page", return_value=False),
+            patch.object(roxy_registration, "_registration_password", return_value=password),
+            patch.object(roxy_registration, "_human_type_text"),
+            patch.object(roxy_registration, "_human_click"),
+            patch.object(roxy_registration, "human_delay"),
+            patch.object(
+                roxy_registration,
+                "time",
+                SimpleNamespace(time=Mock(side_effect=[0, 0, 0, 31]), sleep=Mock()),
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "仍停留在密码页"):
+                roxy_registration._fill_password_page_if_present(driver, "new@example.com", timeout=2)
 
     def test_roxy_password_mode_switches_from_otp_before_filling_password(self):
         driver = _RoxyDriver()

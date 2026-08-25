@@ -8,6 +8,7 @@ from core.roxy_codex_oauth import (
     _body_indicates_whatsapp_only,
     _classify_phone_page_failure,
     _complete_login_challenge_after_email,
+    complete_openai_login_challenge,
     _do_phone_verification_if_present,
     _finish_consent_workspace,
     _is_codex_retry_stopped_exception,
@@ -81,6 +82,29 @@ class _CountryDriver:
 
 
 class RoxyPhoneCountryTests(unittest.TestCase):
+    def test_public_login_challenge_reuses_shared_state_machine(self):
+        driver = object()
+        with patch(
+            "core.roxy_codex_oauth._complete_login_challenge_after_email",
+            return_value="advanced",
+        ) as shared:
+            result = complete_openai_login_challenge(
+                driver,
+                "a@example.com",
+                "Password!123",
+                "TOTPSECRET",
+                timeout=17,
+            )
+
+        self.assertEqual(result, "advanced")
+        shared.assert_called_once_with(
+            driver,
+            "a@example.com",
+            "Password!123",
+            "TOTPSECRET",
+            timeout=17,
+        )
+
     def test_saved_login_credentials_are_loaded_without_changing_values(self):
         account = {
             "extra_json": '{"registration_password":"StoredPassword!123"}',
@@ -246,6 +270,7 @@ class RoxyPhoneCountryTests(unittest.TestCase):
 
         with (
             patch("core.codex_oauth._codex_auth_url_source", return_value="cpa"),
+            patch("core.codex_oauth._capture_cpa_credential_baseline", return_value={"captured": False}),
             patch(
                 "core.codex_oauth._request_cpa_authorize_url",
                 return_value={"state": "state-1", "auth_url": "https://auth.openai.com/oauth/authorize?state=state-1"},
@@ -280,7 +305,10 @@ class RoxyPhoneCountryTests(unittest.TestCase):
                 before_oauth_setup=setup,
             )
 
-        self.assertTrue(result["ok"])
+        # CPA 只确认 callback、未返回 auth JSON 时是待确认，不再伪装为凭证成功。
+        self.assertFalse(result["ok"])
+        self.assertEqual("attention_required", result["status"])
+        self.assertTrue(result["callback_submitted"])
         self.assertEqual(
             order,
             ["chatgpt_login", "chatgpt_session", "twofa", "oauth_login", "phone", "callback"],

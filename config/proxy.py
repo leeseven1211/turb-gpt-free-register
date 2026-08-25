@@ -48,6 +48,11 @@ PROXY_1024_ACQUIRE_INTERVAL = 0.6
 # 跨进程代理端点租约。关闭后仅保留当前进程内的去重，默认保持开启。
 PROXY_1024_PERSIST_LEASES = True
 
+# 注册浏览器遇到明确的代理瞬时错误时，释放当前租约并换一条线路重试。
+# 这里只控制额外重试次数，不改变注册线程池并发数。
+REGISTRATION_PROXY_RETRIES = 2
+REGISTRATION_PROXY_RETRY_DELAY = 1.0
+
 # 旧版/CLI 直接调用 check_account_plan() 时使用的兼容网络策略。
 # WebUI 账号功能统一由下方 ACCOUNT_ACTION_PROXY_MODE 管理。
 #   auto   = 优先使用 PLAN_CHECK_PROXY 或代理池；本地代理端口未监听时回退直连
@@ -110,6 +115,8 @@ apply_env_overrides(globals(), {
     'PROXY_1024_RECENT_TTL': 'int',
     'PROXY_1024_ACQUIRE_INTERVAL': 'float',
     'PROXY_1024_PERSIST_LEASES': 'bool',
+    'REGISTRATION_PROXY_RETRIES': 'int',
+    'REGISTRATION_PROXY_RETRY_DELAY': 'float',
     'PLAN_CHECK_PROXY_MODE': 'str',
     'PLAN_CHECK_PROXY': 'str',
     'ACCOUNT_ACTION_PROXY_MODE': 'str',

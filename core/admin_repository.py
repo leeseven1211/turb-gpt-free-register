@@ -79,6 +79,23 @@ def _revision(total: int, latest: Any, visible_state: Any = None) -> str:
 
 
 _ACCOUNT_ACCESS_TOKEN_PRESENT = "COALESCE(a.account_has_access_token, FALSE)"
+_ACCOUNT_TOKEN_EXPIRED = f"""(
+    {_ACCOUNT_ACCESS_TOKEN_PRESENT}
+    AND (
+        LOWER(COALESCE(a.data->>'token_expired', 'false')) IN ('true', '1', 'yes')
+        OR CASE
+            WHEN COALESCE(a.token_expires_at, '') ~
+                 '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}T[0-9]{{2}}:[0-9]{{2}}:[0-9]{{2}}'
+              THEN a.token_expires_at::TIMESTAMPTZ <= CURRENT_TIMESTAMP
+            ELSE FALSE
+        END
+    )
+)"""
+_ACCOUNT_TOKEN_STATE = f"""CASE
+    WHEN NOT ({_ACCOUNT_ACCESS_TOKEN_PRESENT}) THEN 'none'
+    WHEN {_ACCOUNT_TOKEN_EXPIRED} THEN 'expired'
+    ELSE 'has'
+END"""
 _ACCOUNT_PASSWORD_PRESENT = "COALESCE(a.account_has_password, FALSE)"
 _ACCOUNT_TOTP_PRESENT = "COALESCE(a.account_totp_enabled, FALSE)"
 
@@ -154,9 +171,9 @@ def _account_where(
         where.append("LOWER(COALESCE(a.email_source, '')) = %s")
         params.append(value)
     value = _text(filters.get("token")).lower()
-    if value in {"has", "none"}:
-        predicate = _ACCOUNT_ACCESS_TOKEN_PRESENT
-        where.append(predicate if value == "has" else f"NOT ({predicate})")
+    if value in {"has", "expired", "none"}:
+        where.append(f"({_ACCOUNT_TOKEN_STATE}) = %s")
+        params.append(value)
     value = _text(filters.get("password")).lower()
     if value in {"has", "none"}:
         where.append(_ACCOUNT_PASSWORD_PRESENT if value == "has" else f"NOT {_ACCOUNT_PASSWORD_PRESENT}")
@@ -201,7 +218,7 @@ def list_accounts(
         WITH base AS MATERIALIZED (
             SELECT
                 LOWER(COALESCE(a.email_source, '')) AS source,
-                CASE WHEN {_ACCOUNT_ACCESS_TOKEN_PRESENT} THEN 'has' ELSE 'none' END AS token,
+                {_ACCOUNT_TOKEN_STATE} AS token,
                 CASE WHEN {_ACCOUNT_PASSWORD_PRESENT} THEN 'has' ELSE 'none' END AS password,
                 LOWER(COALESCE(a.current_plan_type, a.plan_type, '')) AS plan,
                 {_ACCOUNT_TRIAL_VALUE} AS trial,
@@ -271,7 +288,9 @@ def list_account_statuses(
     clause = f" WHERE {' AND '.join(where)}" if where else ""
     fields = (
         "id", "email", "archived", "plan_type", "current_plan_type", "plus_trial_eligible",
-        "codex_status", "plan_check_status", "extract_link_status", "updated_at", "data",
+        "codex_status", "codex_credential_state", "codex_execution_status",
+        "codex_last_run_status", "codex_active_run_id",
+        "plan_check_status", "extract_link_status", "updated_at", "data",
     )
     selected = ", ".join(f"a.{postgres_store.quote_identifier(name)}" for name in fields)
     selected += (
@@ -297,6 +316,7 @@ def list_account_statuses(
         "discount_promo_campaign_id", "extract_link_status", "extract_link_ok", "extract_link_type",
         "extract_link_message", "extract_link_error", "extract_link_long_url", "extract_link_copy_paste",
         "extract_link_image_url_png", "extract_link_image_url_svg", "extract_link_expires_at", "codex_status",
+        "codex_credential_state", "codex_execution_status", "codex_last_run_status", "codex_active_run_id",
         "codex_error", "access_token",
     }
     items = []
@@ -375,7 +395,7 @@ def _job_where(filters: dict[str, str]) -> tuple[list[str], list[Any]]:
     return where, params
 
 
-def list_jobs(request: PageRequest) -> dict:
+def list_jobs(request: PageRequest, *, progress_batch_id: str = "") -> dict:
     from core import registration_service as service
 
     jobs = _q(record_store.JOBS)
@@ -405,22 +425,71 @@ def list_jobs(request: PageRequest) -> dict:
             facet_params * 2,
         )
         facets = _facet_dict(cur.fetchall())
+        selected_batch_id = _text(progress_batch_id)
+        if selected_batch_id:
+            cur.execute(
+                f"""
+                SELECT j.* FROM {jobs} j
+                 WHERE j.batch_id = %s
+                 ORDER BY COALESCE((j.data->>'batch_index')::int, 0), j.id
+                """,
+                (selected_batch_id,),
+            )
+        else:
+            cur.execute(
+                f"""
+                WITH latest AS (
+                    SELECT batch_id FROM {jobs}
+                     WHERE NULLIF(batch_id, '') IS NOT NULL
+                     ORDER BY id DESC LIMIT 1
+                )
+                SELECT j.* FROM {jobs} j JOIN latest l ON l.batch_id = j.batch_id
+                 ORDER BY COALESCE((j.data->>'batch_index')::int, 0), j.id
+                """
+            )
+        progress_rows = [record_store.merge_row(record_store.JOBS, row) for row in cur.fetchall()]
         cur.execute(
             f"""
-            WITH latest AS (
-                SELECT batch_id FROM {jobs}
-                 WHERE NULLIF(batch_id, '') IS NOT NULL
-                 ORDER BY id DESC LIMIT 1
-            )
-            SELECT j.* FROM {jobs} j JOIN latest l ON l.batch_id = j.batch_id
-             ORDER BY COALESCE((j.data->>'batch_index')::int, 0), j.id
+            SELECT j.batch_id,
+                   MAX(j.id) AS latest_job_id,
+                   MIN(j.created_at) AS created_at,
+                   COUNT(*) AS total,
+                   COUNT(*) FILTER (WHERE j.status = 'success') AS success,
+                   COUNT(*) FILTER (WHERE j.status = 'failed') AS failed,
+                   COUNT(*) FILTER (WHERE j.status = 'partial_success') AS partial_success,
+                   COUNT(*) FILTER (WHERE j.status = 'stopped') AS stopped,
+                   COUNT(*) FILTER (WHERE j.status = 'cancelled') AS cancelled,
+                   COUNT(*) FILTER (WHERE j.status = 'running') AS running,
+                   COUNT(*) FILTER (WHERE j.status = 'stopping') AS stopping,
+                   COUNT(*) FILTER (WHERE j.status = 'pending') AS pending,
+                   BOOL_OR(j.parent_job_id IS NOT NULL) AS is_retry
+              FROM {jobs} j
+             WHERE NULLIF(j.batch_id, '') IS NOT NULL
+             GROUP BY j.batch_id
+             ORDER BY MAX(j.id) DESC
+             LIMIT 30
             """
         )
-        progress_rows = [record_store.merge_row(record_store.JOBS, row) for row in cur.fetchall()]
+        progress_batches = []
+        for batch in cur.fetchall():
+            counts = {
+                key: int(batch.get(key) or 0)
+                for key in ("success", "failed", "partial_success", "stopped", "cancelled", "running", "stopping", "pending")
+            }
+            counts["active"] = sum(counts[key] for key in ("running", "stopping", "pending"))
+            progress_batches.append({
+                "batch_id": str(batch.get("batch_id") or ""),
+                "latest_job_id": int(batch.get("latest_job_id") or 0),
+                "created_at": str(batch.get("created_at") or ""),
+                "total": int(batch.get("total") or 0),
+                "kind": "retry" if bool(batch.get("is_retry")) else "registration",
+                "status_counts": counts,
+            })
     page_rows = [record_store.merge_row(record_store.JOBS, row) for row in raw_page]
     projected = {int(raw["id"]): str(raw.get("projected_display_status") or "") for raw in raw_page}
-    retry = service.get_retry_info_bulk(page_rows)
-    for row in page_rows:
+    retry_rows = {int(row.get("id") or 0): row for row in [*page_rows, *progress_rows]}
+    retry = service.get_retry_info_bulk(list(retry_rows.values()))
+    for row in retry_rows.values():
         info = retry.get(int(row.get("id") or 0), {})
         row.update(info)
         if not info.get("display_status"):
@@ -440,6 +509,7 @@ def list_jobs(request: PageRequest) -> dict:
         "facets": facets,
         "status_counts": status_counts,
         "progress_rows": progress_rows,
+        "progress_batches": progress_batches,
     }
 
 

@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, call, patch
 
-from core import account_task_store, codex_retry_service, live_check_service, postgres_store, token_refresh_service
+from core import account_task_store, codex_retry_service, live_check_service, postgres_store, roxy_codex_oauth, token_refresh_service
 from webui import app as webui_app
 from webui.app import create_app
 from tests.support_pg import PostgresTestCase
@@ -195,7 +195,7 @@ class CodexRetryTaskTests(unittest.TestCase):
                 return_value={"ok": True, "status": "success", "file_path": "/tmp/credential.json", "callback_url": "sensitive"},
             ),
         ):
-            result = codex_retry_service.run_worker(
+            result = codex_retry_service._run_worker_legacy(
                 "a@example.com",
                 target_log_path=Path(tempdir) / "codex.log",
                 task_trigger="manual",
@@ -256,7 +256,7 @@ class CodexRetryTaskTests(unittest.TestCase):
             patch("core.roxy_registration.setup_roxy_2fa", side_effect=setup_twofa),
             patch("core.roxy_codex_oauth.run_roxy_codex_oauth", side_effect=run_roxy),
         ):
-            result = codex_retry_service.run_worker(
+            result = codex_retry_service._run_worker_legacy(
                 "a@example.com",
                 target_log_path=Path(tempdir) / "codex.log",
                 task_id=101,
@@ -312,7 +312,7 @@ class CodexRetryTaskTests(unittest.TestCase):
             patch("core.account_export.setup_2fa_protocol", side_effect=setup_protocol),
             patch("core.roxy_codex_oauth.run_roxy_codex_oauth", side_effect=run_roxy),
         ):
-            result = codex_retry_service.run_worker(
+            result = codex_retry_service._run_worker_legacy(
                 "a@example.com",
                 target_log_path=Path(tempdir) / "codex.log",
                 task_id=101,
@@ -410,6 +410,67 @@ class CodexRetryTaskTests(unittest.TestCase):
 
         self.assertEqual(setup_order, ["password", "twofa"])
 
+    def test_account_setup_persists_fresh_session_before_reporting_success(self):
+        pending = {
+            "id": 9,
+            "email": "a@example.com",
+            "access_token": "",
+            "totp_secret": "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP",
+            "extra_json": json.dumps({
+                "account_password": "saved-password",
+                "registration_checkpoint": "email_verification_pending",
+            }),
+        }
+        completed = {**pending, "access_token": "fresh-chatgpt-token"}
+        with (
+            patch.object(codex_retry_service.db, "get_account_by_email", side_effect=[pending, completed]),
+            patch.object(codex_retry_service.db, "update_account_session", return_value=True) as save_session,
+            patch.object(codex_retry_service.account_task_store, "append_event") as append_event,
+            patch("config.twofa.get_twofa_driver", return_value="browser"),
+        ):
+            setup = codex_retry_service._build_roxy_account_setup("a@example.com", 101)
+            self.assertFalse(setup(object(), {
+                "accessToken": "fresh-chatgpt-token",
+                "expires": "2026-09-01T00:00:00Z",
+            }))
+
+        save_session.assert_called_once_with(
+            "a@example.com",
+            "fresh-chatgpt-token",
+            expires_at="2026-09-01T00:00:00Z",
+        )
+        self.assertTrue(any(call.kwargs.get("stage") == "token" for call in append_event.call_args_list))
+
+
+class AccountActionLoginTests(unittest.TestCase):
+    def test_about_you_is_completed_and_session_is_passed_to_action(self):
+        opened = Mock(profile_id="profile-1")
+        driver = Mock(current_url="https://auth.openai.com/about-you")
+        client = Mock()
+        client.open_profile.return_value = opened
+        session = {"accessToken": "fresh-token", "expires": "2026-09-01T00:00:00Z"}
+        action = Mock(return_value=True)
+        with (
+            patch.object(roxy_codex_oauth, "RoxyBrowserClient", return_value=client),
+            patch.object(roxy_codex_oauth, "_build_driver", return_value=driver),
+            patch.object(roxy_codex_oauth, "_detect_browser_kind", return_value="Roxy"),
+            patch.object(roxy_codex_oauth, "_center_browser_window"),
+            patch.object(roxy_codex_oauth, "clear_roxy_browser_auth_state"),
+            patch.object(roxy_codex_oauth, "_fill_email_and_otp"),
+            patch("core.roxy_registration._complete_profile_page", return_value=True) as complete_profile,
+            patch("core.roxy_registration._fetch_chatgpt_session", return_value=session),
+            patch("core.profile_utils.generate_random_birthday", return_value="1995-01-02"),
+            patch.object(roxy_codex_oauth._roxy_cfg, "ROXY_KEEP_BROWSER_OPEN", False),
+        ):
+            self.assertTrue(roxy_codex_oauth.run_roxy_chatgpt_account_action(
+                "a@example.com", action=action,
+            ))
+
+        complete_profile.assert_called_once()
+        action.assert_called_once_with(driver, session)
+        driver.quit.assert_called_once_with()
+        client.cleanup_profile.assert_called_once_with(opened)
+
 
 class AccountTaskApiTests(PostgresTestCase):
     def test_live_check_and_token_refresh_are_separate_api_actions(self):
@@ -448,10 +509,12 @@ class AccountTaskApiTests(PostgresTestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual("live_check", response.get_json()["items"][0]["task_type"])
 
-    def test_ui_contains_task_submenu_and_at_expiry(self):
+    def test_ui_contains_unified_task_center_and_at_expiry(self):
         html = (Path(__file__).resolve().parents[1] / "webui" / "templates" / "index.html").read_text("utf-8")
-        self.assertIn('data-view="tasks">任务实例', html)
+        self.assertIn('data-tab="tasks"', html)
+        self.assertIn('任务中心', html)
         self.assertIn('id="accountTasksPanel"', html)
+        self.assertIn('<option value="registration">注册</option>', html)
         self.assertIn('<option value="codex_retry">Codex 补跑</option>', html)
         self.assertNotIn('data-codex-log=', html)
         self.assertIn("AT 剩余", html)
@@ -460,26 +523,19 @@ class AccountTaskApiTests(PostgresTestCase):
         app = create_app(auth_code="test-auth")
         client = app.test_client()
         client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
-        account = {"id": 7, "email": "a@example.com", "codex_status": "failed"}
         with (
             patch("core.feature_availability.require_feature", return_value=(True, "")),
-            patch.object(codex_retry_service, "reserve", return_value=True),
-            patch.object(codex_retry_service.db, "get_account_by_email", return_value=account),
-            patch.object(codex_retry_service.db, "update_account_codex_status"),
-            patch.object(account_task_store, "create_task", return_value=88) as create_task,
-            patch("webui.app.threading.Thread") as thread_cls,
+            patch.object(webui_app.codex_operation_service, "submit", return_value={
+                "accepted": True, "task_id": 88, "run_id": 99,
+                "account_id": 7, "email": "a@example.com", "status": "queued",
+            }) as submit,
         ):
             response = client.post("/api/codex/retry", json={"email": "a@example.com"})
 
         self.assertEqual(202, response.status_code)
         self.assertEqual(88, response.get_json()["task_id"])
-        create_task.assert_called_once_with(
-            task_type="codex_retry",
-            account_id=7,
-            email="a@example.com",
-            trigger="manual",
-        )
-        thread_cls.return_value.start.assert_called_once_with()
+        self.assertEqual(99, response.get_json()["run_id"])
+        submit.assert_called_once_with("a@example.com", trigger="manual")
 
     def test_codex_retry_bulk_accepts_selected_credential_filenames(self):
         app = create_app(auth_code="test-auth")
@@ -493,24 +549,25 @@ class AccountTaskApiTests(PostgresTestCase):
                 "email": "a@example.com",
             }]),
             patch.object(webui_app.db, "get_account_by_email", return_value=account),
-            patch.object(webui_app.db, "get_account", return_value=account),
-            patch.object(codex_retry_service, "reserve", return_value=True),
-            patch.object(webui_app.db, "update_account_codex_status"),
-            patch.object(account_task_store, "create_batch", return_value="batch-1"),
-            patch.object(account_task_store, "create_task", return_value=89),
-            patch("webui.app.threading.Thread") as thread_cls,
+            patch.object(webui_app.codex_operation_service, "submit_bulk", return_value={
+                "accepted": True,
+                "batch_id": 1,
+                "batch_uuid": "batch-1",
+                "started": [{"account_id": 7, "email": "a@example.com", "task_id": 89, "run_id": 90}],
+                "started_count": 1,
+                "skipped": [],
+            }) as submit_bulk,
         ):
             response = client.post("/api/codex/retry-bulk", json={
                 "filenames": ["codex-a@example.com-free.json"],
                 "workers": 2,
             })
 
-        self.assertEqual(200, response.status_code)
+        self.assertEqual(202, response.status_code)
         payload = response.get_json()
         self.assertEqual(1, payload["started_count"])
-        self.assertEqual("codex-a@example.com-free.json", payload["started"][0]["filename"])
         self.assertEqual(89, payload["started"][0]["task_id"])
-        thread_cls.return_value.start.assert_called_once_with()
+        submit_bulk.assert_called_once_with([7], trigger="manual_bulk", workers=2)
 
 
 if __name__ == "__main__":

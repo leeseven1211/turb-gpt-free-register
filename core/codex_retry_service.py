@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 """Codex 授权补跑服务，供账号页和注册任务队列共同使用。"""
-import ctypes
 import json
 import logging
 import threading
@@ -20,7 +19,7 @@ _RESERVED_AT: dict[str, float] = {}
 _ACCOUNT_SETUP_DB_LOCK = threading.RLock()
 
 
-class CodexRetryStopped(BaseException):
+class CodexRetryStopped(RuntimeError):
     """用户手动停止 Codex 补跑。"""
 
 
@@ -62,13 +61,29 @@ def _run_retry_plan_check(
 ) -> dict | None:
     """补跑前同步补查套餐；失败只记事件，不阻断后续账号动作。"""
     if str(account.get("plan_check_status") or "").lower() == "success":
-        account_task_store.append_event(task_id, stage="plan_check", message="账号已有成功套餐记录，跳过重复查询")
+        account_task_store.append_event(
+            task_id,
+            stage="plan_check",
+            message="账号已有成功套餐记录，跳过重复查询",
+            state="skipped",
+        )
         return None
     token = str(account.get("access_token") or "").strip()
     if not token:
-        account_task_store.append_event(task_id, stage="plan_check", message="账号缺少 access_token，暂时无法补查套餐", level="WARNING")
+        account_task_store.append_event(
+            task_id,
+            stage="plan_check",
+            message="账号缺少 access_token，暂时无法补查套餐",
+            level="WARNING",
+            state="skipped",
+        )
         return None
-    account_task_store.append_event(task_id, stage="plan_check", message="账号缺少成功套餐记录，开始补查套餐")
+    account_task_store.append_event(
+        task_id,
+        stage="plan_check",
+        message="账号缺少成功套餐记录，开始补查套餐",
+        state="running",
+    )
     try:
         from core.plan_check_service import check_registration_account_plan
 
@@ -88,6 +103,7 @@ def _run_retry_plan_check(
                     "current_plan_type": result.get("current_plan_type"),
                     "plus_trial_eligible": bool(result.get("plus_trial_eligible")),
                 },
+                state="success",
             )
         else:
             account_task_store.append_event(
@@ -96,6 +112,7 @@ def _run_retry_plan_check(
                 message="套餐查询失败，继续执行其它补跑步骤",
                 level="WARNING",
                 detail={"error": result.get("error")},
+                state="failed",
             )
         return result
     except Exception as exc:
@@ -105,6 +122,7 @@ def _run_retry_plan_check(
             message="套餐查询异常，继续执行其它补跑步骤",
             level="WARNING",
             detail={"error": f"{type(exc).__name__}: {str(exc)[:180]}"},
+            state="failed",
         )
         logger.warning("[补跑][套餐] %s 补查异常：%s: %s", email, type(exc).__name__, str(exc)[:180])
         return None
@@ -203,6 +221,12 @@ def _build_roxy_twofa_setup(
         setup_pending = _totp_setup_pending(current)
         if existing_secret and not setup_pending:
             state["secret"] = existing_secret
+            account_task_store.append_event(
+                task_id,
+                stage="twofa",
+                message="账号已有 Authenticator 2FA，跳过重复设置",
+                state="skipped",
+            )
             logger.info("[Codex 补跑][2FA] 本地已存在 Authenticator key，跳过重复设置：%s", email)
             return False
 
@@ -211,6 +235,7 @@ def _build_roxy_twofa_setup(
             task_id,
             stage="twofa",
             message="账号未设置 2FA，开始启用 Authenticator",
+            state="running",
         )
         logger.info("[Codex 补跑][2FA] 账号缺少 Authenticator key，开始前置设置：%s", email)
 
@@ -271,6 +296,7 @@ def _build_roxy_twofa_setup(
                 stage="twofa_result",
                 message="Authenticator 2FA 已启用",
                 detail={"enabled": True},
+                state="success",
             )
             logger.info("[Codex 补跑][2FA] Authenticator 2FA 已启用：%s", email)
             return True
@@ -289,6 +315,7 @@ def _build_roxy_twofa_setup(
                 message="Authenticator 2FA 设置失败，已停止后续账号流程",
                 level="ERROR",
                 detail={"enabled": False, "error": f"{type(exc).__name__}: {str(exc)[:220]}"},
+                state="failed",
             )
             raise RuntimeError(
                 f"2FA 设置失败，已停止进入 Codex OAuth：{type(exc).__name__}: {str(exc)[:180]}"
@@ -300,14 +327,44 @@ def _build_roxy_twofa_setup(
 def _build_roxy_account_setup(email: str, task_id: int, *, proxy: str | None = None):
     """补账号密码和 Authenticator 2FA；protocol 模式下使用独立会话并发。"""
 
-    def _setup(driver) -> bool:
+    def _setup(driver, session_info: dict | None = None) -> bool:
         account = db.get_account_by_email(email) or {}
+        fresh_access_token = str((session_info or {}).get("accessToken") or "").strip()
+        if fresh_access_token:
+            if not db.update_account_session(
+                email,
+                fresh_access_token,
+                expires_at=str((session_info or {}).get("expires") or "") or None,
+            ):
+                raise RuntimeError("重新登录已取得 ChatGPT Token，但写回账号失败")
+            account_task_store.append_event(
+                task_id,
+                stage="token",
+                message="重新登录取得的 ChatGPT Token 已写回账号",
+                detail={"saved": True},
+                state="success",
+            )
+            account = db.get_account_by_email(email) or account
         account_token = str(account.get("access_token") or "").strip()
         needs_password = bool(account_token) and not _account_login_password(account)
         needs_twofa = (
             not bool(str(account.get("totp_secret") or "").strip())
             or _totp_setup_pending(account)
         )
+        if not needs_password:
+            account_task_store.append_event(
+                task_id,
+                stage="login_password",
+                message="账号密码无需补充，跳过此步骤",
+                state="skipped",
+            )
+        if not needs_twofa:
+            account_task_store.append_event(
+                task_id,
+                stage="twofa",
+                message="账号已有 Authenticator 2FA，跳过此步骤",
+                state="skipped",
+            )
         if not needs_password and not needs_twofa:
             return False
 
@@ -315,7 +372,7 @@ def _build_roxy_account_setup(email: str, task_id: int, *, proxy: str | None = N
 
         twofa_driver = twofa_cfg.get_twofa_driver()
         parallel_setup = bool(needs_password and needs_twofa and twofa_driver == "protocol")
-        protocol_access_token = None
+        protocol_access_token = fresh_access_token or None
         if parallel_setup:
             # protocol 2FA 不触碰 Selenium 页面，可以和密码设置并发；先在
             # 主线程取得一次新鲜 token，避免两个线程同时操作同一个 driver。
@@ -361,6 +418,7 @@ def _build_roxy_account_setup(email: str, task_id: int, *, proxy: str | None = N
                 task_id,
                 stage="login_password",
                 message="账号缺少账号密码，先在安全设置中补充随机密码",
+                state="running",
             )
             try:
                 set_roxy_login_password(driver, email, password)
@@ -376,6 +434,7 @@ def _build_roxy_account_setup(email: str, task_id: int, *, proxy: str | None = N
                     message="账号密码补充失败，停止后续账号配置",
                     level="ERROR",
                     detail={"error": f"{type(exc).__name__}: {str(exc)[:220]}"},
+                    state="failed",
                 )
                 return False, f"{type(exc).__name__}: {str(exc)[:180]}"
             account_task_store.append_event(
@@ -383,6 +442,7 @@ def _build_roxy_account_setup(email: str, task_id: int, *, proxy: str | None = N
                 stage="login_password_result",
                 message="账号密码已补充并保存",
                 detail={"saved": True},
+                state="success",
             )
             return True, None
 
@@ -442,24 +502,13 @@ def _build_roxy_account_setup(email: str, task_id: int, *, proxy: str | None = N
     return _setup
 
 
-def _async_raise(thread_id: int, exc_type: type[BaseException]) -> bool:
-    """向指定 Python 线程注入异常，用于尽快中断阻塞中的补跑流程。"""
-    if not thread_id:
-        return False
-    res = ctypes.pythonapi.PyThreadState_SetAsyncExc(
-        ctypes.c_long(thread_id),
-        ctypes.py_object(exc_type),
-    )
-    if res == 0:
-        return False
-    if res != 1:
-        ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_long(thread_id), None)
-        return False
-    return True
-
-
 def request_stop(email: str) -> dict:
-    """请求停止单个 Codex 补跑。运行中会注入停止异常；排队中会在启动前退出。"""
+    """兼容入口：原生 Codex run 使用数据库取消令牌；旧账号配置任务只置停止位。"""
+    from core import codex_operation_service
+
+    native = codex_operation_service.request_cancel(email=email)
+    if native.get("run_id") or native.get("state") != "empty":
+        return native
     key = (email or "").strip().lower()
     if not key:
         return {"ok": False, "error": "email 为空", "status": 400}
@@ -471,38 +520,19 @@ def request_stop(email: str) -> dict:
         db.update_account_codex_status(email, "stopped", "用户手动停止（未发现运行中的补跑）")
         return {"ok": True, "message": "未发现运行中的补跑，已标记为已停止", "state": "stopped", "running": False}
 
-    injected = bool(thread_id and _async_raise(int(thread_id), CodexRetryStopped))
     db.update_account_codex_status(email, "stopped", "用户手动停止 Codex 补跑")
-    # 如果没有可注入的存活线程，立即释放进程内占位，避免 UI 显示已停止但再次补跑仍 409。
     with _RETRYING_LOCK:
         if not _thread_alive(thread_id):
             _clear_state_locked(key)
-    if injected:
-        # 异常注入通常会很快让线程进入 finally/release；若浏览器/CDP/短信等待阻塞导致线程
-        # 短时间内仍未退出，延迟清理占位，避免 UI 已显示“已停止”但再次补跑仍 409。
-        def _delayed_release() -> None:
-            time.sleep(5)
-            with _RETRYING_LOCK:
-                if key in _RETRYING and key in _STOP_REQUESTED:
-                    try:
-                        acc = db.get_account_by_email(email)
-                        status = str((acc or {}).get("codex_status") or "").lower()
-                    except Exception:
-                        status = ""
-                    if status == "stopped":
-                        logger.warning("[Codex 补跑] 停止后延迟释放占位：email=%s thread_id=%s", email, thread_id or "-")
-                        _clear_state_locked(key)
-
-        threading.Thread(target=_delayed_release, name=f"codex-stop-release-{key}", daemon=True).start()
     try:
         p = log_path(email)
         p.parent.mkdir(parents=True, exist_ok=True)
         from datetime import datetime as _dt
         with p.open("a", encoding="utf-8") as f:
-            f.write(f"{_dt.now().strftime('%H:%M:%S')} [WARNING] [Codex 补跑] 用户手动停止，已发送停止信号 injected={injected}\n")
+            f.write(f"{_dt.now().strftime('%H:%M:%S')} [WARNING] [账号配置补跑] 用户手动停止，已记录协作式停止信号\n")
     except Exception:
         logger.exception("写入 Codex 停止日志失败")
-    return {"ok": True, "message": "已发送停止信号", "state": "stopped", "running": True, "injected": injected}
+    return {"ok": True, "message": "已记录停止请求，将在安全检查点退出", "state": "cancelling", "running": True}
 
 
 def run_twofa_worker(
@@ -519,6 +549,8 @@ def run_twofa_worker(
     result: dict = {"status": "failed", "ok": False, "message": "账号配置重试未返回结果"}
     account_route = None
     route_summary: dict = {}
+    browser_stage_started = False
+    browser_stage_finished = False
     key = (email or "").strip().lower()
     try:
         account = db.get_account_by_email(email) or {}
@@ -576,6 +608,7 @@ def run_twofa_worker(
                 "proxy_provider": account_route.provider,
                 "proxy_region": account_route.region,
             },
+            state="success",
         )
         _run_retry_plan_check(
             email,
@@ -586,9 +619,11 @@ def run_twofa_worker(
         )
         account_task_store.append_event(
             task_id,
-            stage="twofa",
+            stage="browser",
             message="重新登录 ChatGPT，补齐账号密码并检查 Authenticator 开关",
+            state="running",
         )
+        browser_stage_started = True
         from core.roxy_codex_oauth import run_roxy_chatgpt_account_action
 
         run_roxy_chatgpt_account_action(
@@ -600,6 +635,13 @@ def run_twofa_worker(
                 proxy=(account_route.proxy_url if account_route is not None else None),
             ),
         )
+        account_task_store.append_event(
+            task_id,
+            stage="browser",
+            message="ChatGPT 重新登录与账号配置检查已完成",
+            state="success",
+        )
+        browser_stage_finished = True
         check_stop_requested(email)
         result = {
             "status": "success",
@@ -611,9 +653,26 @@ def run_twofa_worker(
         }
         return result
     except CodexRetryStopped as exc:
+        if browser_stage_started and not browser_stage_finished:
+            account_task_store.append_event(
+                task_id,
+                stage="browser",
+                message="ChatGPT 重新登录流程已被用户停止",
+                level="ERROR",
+                state="failed",
+            )
         result = {"status": "stopped", "ok": False, "message": str(exc) or "用户手动停止账号配置重试"}
         return result
     except Exception as exc:
+        if browser_stage_started and not browser_stage_finished:
+            account_task_store.append_event(
+                task_id,
+                stage="browser",
+                message="ChatGPT 重新登录与账号配置检查失败",
+                level="ERROR",
+                detail={"error": f"{type(exc).__name__}: {str(exc)[:220]}"},
+                state="failed",
+            )
         result = {"status": "failed", "ok": False, "message": f"{type(exc).__name__}: {exc}"}
         logger.exception("[账号配置重试] %s 异常", email)
         return result
@@ -655,7 +714,7 @@ def run_twofa_worker(
             logger.exception("[账号配置重试] 写入任务实例失败：task_id=%s email=%s", task_id or "-", email)
 
 
-def run_worker(
+def _run_worker_legacy(
     email: str,
     *,
     batch_label: str | None = None,
@@ -744,6 +803,7 @@ def run_worker(
             stage="driver",
             message=f"使用 {oauth_driver or 'protocol'} 驱动执行 Codex OAuth",
             detail={"oauth_driver": oauth_driver or "protocol"},
+            state="success",
         )
         # Browser Use / Skyvern 的浏览器运行在云端，只能使用云服务自身的代理设置；
         # protocol / Roxy / Cloak 才能注入本地申请的 1024Proxy 或静态代理池。
@@ -774,6 +834,7 @@ def run_worker(
                     "proxy_region": account_route.region,
                     "proxy_used": route_summary.get("proxy_used"),
                 },
+                state="success",
             )
         else:
             route_summary = {"network_route": "cloud_driver"}
@@ -782,6 +843,7 @@ def run_worker(
                 stage="network",
                 message="云端浏览器驱动使用平台线路",
                 detail={"network_route": "cloud_driver"},
+                state="success",
             )
         account = db.get_account_by_email(email) or {}
         _run_retry_plan_check(
@@ -805,6 +867,7 @@ def run_worker(
                 if needs_roxy_setup and oauth_driver in {"roxy", "roxybrowser", "fingerprint", "browser"}
                 else "开始获取授权地址并完成邮箱、短信与 callback 流程"
             ),
+            state="running",
         )
         if needs_roxy_setup and oauth_driver in {"roxy", "roxybrowser", "fingerprint", "browser"}:
             from core.roxy_codex_oauth import run_roxy_codex_oauth
@@ -846,6 +909,7 @@ def run_worker(
                 "message": result.get("message"),
                 "credential_saved": bool(result.get("file_path")),
             },
+            state="success" if result.get("ok") else "failed",
         )
         result_status = result.get("status", "failed")
         if result.get("ok"):
@@ -928,3 +992,45 @@ def run_worker(
                 from core import sms_provider
 
                 sms_provider.clear_sms_batch_context()
+
+
+def run_worker(
+    email: str,
+    *,
+    batch_label: str | None = None,
+    clear_log: bool = True,
+    target_log_path: str | Path | None = None,
+    task_id: int | None = None,
+    task_trigger: str = "manual",
+) -> dict:
+    """旧同步入口的兼容委托；业务执行统一由 Codex operation 协调器完成。"""
+    from core import codex_operation_service, operation_task_store
+
+    queued = codex_operation_service.submit(email, trigger=task_trigger)
+    if not queued.get("accepted"):
+        if queued.get("busy") and queued.get("run_id"):
+            run_id = int(queued["run_id"])
+        else:
+            return {
+                "status": "failed",
+                "ok": False,
+                "message": str(queued.get("error") or "Codex operation 入队失败"),
+            }
+    else:
+        run_id = int(queued["run_id"])
+    try:
+        while True:
+            run = operation_task_store.get_run(run_id) or {}
+            status = str(run.get("status") or "")
+            if status not in {"queued", "running", "cancelling", "settling"}:
+                summary = run.get("result_summary") or {}
+                return {
+                    **summary,
+                    "status": status or "failed",
+                    "ok": status == "success",
+                    "message": run.get("error_message") or summary.get("message") or status,
+                }
+            time.sleep(0.25)
+    finally:
+        # 兼容调用方可能在调用前执行过旧 reserve；它不再参与 Codex 并发事实。
+        release(email)

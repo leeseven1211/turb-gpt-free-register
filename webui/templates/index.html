@@ -198,6 +198,22 @@
       width: 100%; max-width: 100%; min-width: 0;
       max-height: 320px; overflow: auto; line-height: 1.5;
     }
+    .task-error-summary {
+      display:flex; align-items:flex-start; gap:8px; margin:-2px 0 10px; padding:9px 11px;
+      border:1px solid #f0d8dc; border-radius:8px; background:#fff8f8;
+      color:#7c3f4b; font-size:12px; line-height:1.45;
+    }
+    .task-error-badge {
+      display:inline-flex; align-items:center; flex:0 0 auto; padding:2px 7px;
+      border:1px solid #e7c4ca; border-radius:999px; background:#fff;
+      color:#b34b5d; font-size:10px; font-weight:750; white-space:nowrap;
+    }
+    .task-error-badge[data-source="external"] { border-color:#f0c99c; color:#a85d13; background:#fffaf2; }
+    .task-error-badge[data-source="internal"] { border-color:#f0adb4; color:#b42336; background:#fff5f6; }
+    .task-error-badge[data-source="configuration"] { border-color:#b9c9f1; color:#315da8; background:#f5f8ff; }
+    .task-error-badge[data-source="workflow"] { border-color:#d9c5f1; color:#7044a0; background:#faf7ff; }
+    .task-error-badge[data-source="user"] { border-color:#ccd1d8; color:#667085; background:#f8f9fa; }
+    .task-error-cell-text { display:block; margin-top:4px; color:#8a6070; }
     #logPanel, #liveLogPanel, #accountTaskLogPanel, #qrPanel { min-width: 0; max-width: 100%; overflow-x: hidden; }
     #logPanel:not(.hidden), #liveLogPanel:not(.hidden), #accountTaskLogPanel:not(.hidden), #qrPanel:not(.hidden) {
       position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
@@ -858,6 +874,11 @@
     }
     .batch-progress-v2-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
     .batch-progress-v2-title { color: #303133; font-size: 15px; font-weight: 650; }
+    .batch-progress-v2-select {
+      max-width: min(430px, 48vw); min-height: 30px; padding: 4px 28px 4px 9px;
+      border: 1px solid #d6e7e2; border-radius: 7px; background: #fff;
+      color: #4b5563; font: inherit; font-size: 12px; cursor: pointer;
+    }
     .batch-progress-v2-state {
       padding: 2px 8px; border-radius: 999px; background: #e8faf5;
       color: #18a985; font-size: 12px; font-weight: 600;
@@ -969,6 +990,7 @@
       .batch-progress-v2-actions { width: 100%; justify-content: flex-start; }
       .batch-progress-v2-time { text-align: left; }
       .batch-progress-v2-meta { width: 100%; flex-wrap: wrap; }
+      .batch-progress-v2-select { max-width: 100%; width: 100%; }
     }
 
     /* ---- 新版账号表（追加在下方，旧区不改；样式对齐注册页） ---- */
@@ -1013,6 +1035,35 @@
     }
     .account-tasks-table .task-row-action:hover:not(:disabled) { color:#4f51be; border-color:#c9cafa; background:#f6f6ff; }
     .account-tasks-table .task-row-action--retry { color:#4f51be; border-color:#d8d8fb; background:#f8f8ff; }
+    .account-task-stage-progress {
+      display:flex; align-items:flex-start; gap:0; margin:0 0 10px; padding:12px 10px 10px;
+      border:1px solid #dfe7ef; border-radius:8px; background:#f8fafc; overflow-x:auto;
+    }
+    .account-task-stage-step {
+      position:relative; flex:1 0 92px; min-width:92px; padding-top:25px;
+      color:#8a93a2; font-size:10px; font-weight:650; text-align:center;
+    }
+    .account-task-stage-step::before {
+      content:""; position:absolute; top:10px; left:0; width:100%; height:2px; background:#dfe4ea;
+    }
+    .account-task-stage-step:first-child::before { left:50%; width:50%; }
+    .account-task-stage-step:last-child::before { width:50%; }
+    .account-task-stage-node {
+      position:absolute; z-index:1; top:4px; left:50%; width:14px; height:14px; margin-left:-7px;
+      border:2px solid #cbd3dd; border-radius:50%; background:#fff; box-sizing:border-box;
+    }
+    .account-task-stage-step.is-success { color:#168f73; }
+    .account-task-stage-step.is-success::before { background:#36bf9d; }
+    .account-task-stage-step.is-success .account-task-stage-node { border-color:#25bd96; background:#25bd96; }
+    .account-task-stage-step.is-running { color:#377dff; }
+    .account-task-stage-step.is-running .account-task-stage-node { border-color:#377dff; box-shadow:0 0 0 4px rgba(55,125,255,.12); }
+    .account-task-stage-step.is-skipped { color:#7f8998; }
+    .account-task-stage-step.is-skipped .account-task-stage-node { border-color:#aeb7c4; background:#e7ebf0; }
+    .account-task-stage-step.is-failed { color:#d64755; }
+    .account-task-stage-step.is-failed::before { background:#ef9aa3; }
+    .account-task-stage-step.is-failed .account-task-stage-node { border-color:#e35d6a; background:#e35d6a; }
+    .account-task-stage-label, .account-task-stage-state { display:block; }
+    .account-task-stage-state { margin-top:2px; font-size:9px; font-weight:550; opacity:.82; }
     .account-task-events { display:grid; gap:8px; }
     .account-task-event { padding:9px 11px; border-left:3px solid #596579; border-radius:5px; background:#111a2c; }
     .account-task-event.is-error { border-left-color:#f56c6c; }
@@ -2722,6 +2773,28 @@
     .jobs-table-v2-wrap, .accounts-table-v2-wrap, .codex-table-v2-wrap, .outlook-table-v2-wrap {
       border-radius: 0 0 13px 13px;
     }
+    /* 账号列表占满可用视口：筛选摘要出现时缩短表格滚动区，不再把分页推到屏幕外。 */
+    #tab-accounts:not([data-module-view="tasks"]) #accountsPanelV2 {
+      height: calc(100vh - var(--topbar-height) - 42px);
+      height: calc(100dvh - var(--topbar-height) - 42px);
+      display: flex; flex-direction: column;
+    }
+    #accountsPanelV2 > .accounts-command-deck,
+    #accountsPanelV2 > .column-filter-summary,
+    #accountsPanelV2 > .jobs-v2-pager { flex: 0 0 auto; }
+    #accountsPanelV2 > .accounts-table-v2-wrap {
+      flex: 1 1 auto; min-height: 180px; max-height: none;
+      border-radius: 0;
+    }
+    #accountsPanelV2 > .column-filter-summary {
+      min-width: 0; min-height: 38px; flex-wrap: nowrap;
+      padding-block: 5px; overflow-x: auto; overflow-y: hidden;
+      overscroll-behavior-x: contain; scrollbar-width: thin;
+    }
+    #accountsPanelV2 > .column-filter-summary > * { flex: 0 0 auto; }
+    #accountsPanelV2 > .jobs-v2-pager {
+      padding-bottom: max(16px, env(safe-area-inset-bottom));
+    }
     .jobs-table-v2 thead th, .accounts-table-v2 thead th,
     .codex-table-v2 thead th, .outlook-table-v2 thead th {
       height: 42px; padding: 0 12px; border-bottom: 1px solid #e8ebf1;
@@ -2886,9 +2959,12 @@
       </button>
       <div class="sidebar-subnav" data-module-subnav="register" aria-label="注册中心子菜单">
         <button type="button" class="is-active" data-view="launch">发起注册</button>
-        <button type="button" data-view="tasks">任务记录</button>
       </div>
     </div>
+    <button type="button" data-tab="tasks" class="sidebar-item">
+      <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5h11M9 12h11M9 19h11"/><circle cx="4" cy="5" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="19" r="1"/></svg>
+      <span class="sidebar-item-label">任务中心</span><span class="sidebar-item-meta">统一</span>
+    </button>
     <div class="sidebar-module" data-sidebar-module="accounts">
       <button type="button" data-tab="accounts" class="sidebar-item">
         <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
@@ -2897,7 +2973,6 @@
       <div class="sidebar-subnav" data-module-subnav="accounts" aria-label="账号资产子菜单">
         <button type="button" class="is-active" data-view="active">活跃账号</button>
         <button type="button" data-view="archived">归档账号</button>
-        <button type="button" data-view="tasks">任务实例</button>
       </div>
     </div>
     <button type="button" data-tab="codex" class="sidebar-item">
@@ -3097,16 +3172,17 @@
         </div>
       </div>
       <div id="regWarnV2"></div>
-      <section class="batch-progress-v2 hidden module-launch-only" id="batchProgressV2" aria-label="当前批次进度">
+      <section class="batch-progress-v2 hidden module-launch-only" id="batchProgressV2" aria-label="任务批次进度">
         <div class="batch-progress-v2-head">
           <div>
             <div class="batch-progress-v2-title-row">
-              <span class="batch-progress-v2-title">当前批次进度</span>
+              <span class="batch-progress-v2-title">任务批次进度</span>
               <span class="batch-progress-v2-state" id="batchProgressStateV2">等待任务</span>
             </div>
             <div class="batch-progress-v2-summary" id="batchProgressSummaryV2"></div>
           </div>
           <div class="batch-progress-v2-actions">
+            <select class="batch-progress-v2-select" id="registrationBatchSelectV2" aria-label="选择要查看的任务批次" title="切换注册或批量重跑批次"></select>
             <span class="batch-progress-v2-time" id="batchProgressTimeV2"></span>
             <button type="button" class="batch-progress-v2-action batch-progress-v2-action--stop" id="btnBatchStopV2" disabled title="停止当前批次中正在运行的任务">停止</button>
             <button type="button" class="batch-progress-v2-action" id="btnBatchCancelV2" disabled title="取消当前批次中尚未开始的排队任务">取消</button>
@@ -3226,17 +3302,20 @@
       </div>
       <div class="jobs-v2-pager" id="pager-accounts-v2"></div>
     </section>
-    <section class="account-tasks-panel" id="accountTasksPanel" aria-label="账号任务实例">
+    <section class="account-tasks-panel" id="accountTasksPanel" aria-label="统一任务中心">
       <div class="account-tasks-command-deck">
       <div class="jobs-toolbar-v2 list-action-toolbar account-tasks-toolbar">
-        <span class="list-selection-hint">任务实例</span>
+        <span class="list-selection-hint">注册、补跑与账号操作统一记录</span>
         <label class="jobs-tb-field account-task-search-field">搜索
-          <input class="jobs-tb-select" id="accountTaskSearch" type="search" placeholder="任务 ID、账号 ID 或邮箱">
+          <input class="jobs-tb-select" id="accountTaskSearch" type="search" placeholder="任务 ID、账号 ID、邮箱或错误">
         </label>
         <label class="jobs-tb-field">任务类型
           <select class="jobs-tb-select" id="accountTaskTypeFilter" aria-label="任务类型">
             <option value="">全部类型</option>
+            <option value="registration">注册</option>
+            <option value="registration_resume">继续邮箱验证</option>
             <option value="account_setup_retry">账号配置补跑</option>
+            <option value="twofa_retry">2FA / 配置补跑</option>
             <option value="codex_retry">Codex 补跑</option>
             <option value="codex_token_refresh">Codex Token 刷新</option>
             <option value="live_check">查活</option>
@@ -3249,9 +3328,10 @@
           <select class="jobs-tb-select" id="accountTaskStatusFilter" aria-label="任务状态">
             <option value="">全部状态</option>
             <option value="queued">排队中</option><option value="running">运行中</option>
-            <option value="success">成功</option><option value="failed">失败</option>
+            <option value="success">成功</option><option value="partial_success">部分成功</option><option value="failed">失败</option>
             <option value="deactivated">已停用</option><option value="unsupported">不支持</option>
-            <option value="interrupted">已中断</option><option value="cancelled">已取消</option>
+            <option value="attention_required">需处理</option><option value="interrupted">已中断</option>
+            <option value="stopped">已停止</option><option value="cancelled">已取消</option>
           </select>
         </label>
         <div class="list-toolbar-utilities">
@@ -3267,7 +3347,7 @@
             <col class="task-col-trigger"><col class="task-col-method"><col class="task-col-route"><col class="task-col-duration">
             <col class="task-col-time"><col class="task-col-result"><col class="task-col-actions">
           </colgroup>
-          <thead><tr><th>ID</th><th>类型</th><th>账号</th><th>状态</th><th>触发</th><th>验证方式</th><th>线路</th><th>耗时</th><th>创建 / 完成</th><th>结果 / 错误</th><th>操作</th></tr></thead>
+          <thead><tr><th>ID</th><th>类型</th><th>目标</th><th>执行状态</th><th>目标状态</th><th>批次 / 触发</th><th>运行次数</th><th>当前步骤</th><th>创建 / 完成</th><th>结果 / 错误</th><th>操作</th></tr></thead>
           <tbody id="accountTasksBody"></tbody>
         </table>
       </div>
@@ -3280,9 +3360,11 @@
       <div class="log" id="liveLogContent">加载中…</div>
     </div>
     <div class="body hidden" id="accountTaskLogPanel">
-      <h3>任务实例 #<span id="accountTaskLogId"></span>
+      <h3>任务 #<span id="accountTaskLogId"></span>
         <button class="btn" id="btnCloseAccountTaskLog" style="float:right;min-height:28px;">关闭</button>
       </h3>
+      <div class="task-error-summary hidden" id="accountTaskLogErrorSummary"></div>
+      <div class="account-task-stage-progress hidden" id="accountTaskStageProgress"></div>
       <div class="log account-task-events" id="accountTaskLogContent">加载中…</div>
     </div>
   </div>
@@ -3478,6 +3560,7 @@
 </div>
 <div class="body hidden" id="logPanel">
   <h3>任务 #<span id="logJobId"></span> 日志 <button class="btn" id="btnCloseLog" style="float:right;min-height:28px;">关闭</button></h3>
+  <div class="task-error-summary hidden" id="logErrorSummary"></div>
   <div class="log" id="logContent">加载中…</div>
 </div>
 <div id="qrPanel" class="body hidden">
@@ -3505,6 +3588,8 @@ let JOBS = [];
 let JOBS_TOTAL = 0;
 let JOB_STATUS_COUNTS = {};
 let JOB_PROGRESS_BATCH = null;
+let JOB_PROGRESS_BATCHES = [];
+let JOB_PROGRESS_BATCH_ID = localStorage.getItem('gpt_console_registration_batch_id') || '';
 let JOB_STATUS_FILTER = '';
 let JOB_ID_FILTER = '';
 let JOB_EMAIL_FILTER = '';
@@ -3531,6 +3616,7 @@ const LIST_FACET_LABELS = {
     icloud_hide:'iCloud 隐藏邮箱', email_butler:'Email Butler', gptmail:'GPTMail', mailnest:'MailNest', cloudmail:'CloudMail',
   },
   token: {has:'有 Token', none:'无 Token'},
+  account_token: {has:'有可用 Token', expired:'Token 已过期', none:'无 Token'},
   password: {has:'已设置', none:'未设置'},
   totp: {enabled:'已启用', disabled:'未启用'},
   risk: {detected:'已收到', clear:'未发现', pending:'待处理'},
@@ -3542,11 +3628,17 @@ function facetLabel(group, value) {
   if (group === 'plan') return key ? key.charAt(0).toUpperCase() + key.slice(1) : '-';
   return LIST_FACET_LABELS[group]?.[key] || key || '-';
 }
-function syncFacetSelect(id, items, {group='', allValue='', allLabel='全部'} = {}) {
+function syncFacetSelect(id, items, {group='', allValue='', allLabel='全部', values=[]} = {}) {
   const select = document.getElementById(id);
   if (!select) return;
   const current = select.value;
-  const rows = Array.isArray(items) ? items : [];
+  const sourceRows = Array.isArray(items) ? items : [];
+  const counts = new Map(sourceRows.map(item => [String(item.value || ''), Number(item.count || 0)]));
+  const orderedValues = Array.isArray(values) ? values.map(String) : [];
+  const rows = orderedValues.length
+    ? orderedValues.map(value => ({value, count: counts.get(value) || 0}))
+      .concat(sourceRows.filter(item => !orderedValues.includes(String(item.value || ''))))
+    : sourceRows;
   const options = [{value: allValue, label: allLabel}].concat(rows.map(item => ({
     value: String(item.value || ''),
     label: `${facetLabel(group, item.value)} · ${Number(item.count || 0)}`,
@@ -4101,11 +4193,11 @@ function pill(status) {
 }
 function pillV2(status) {
   const s = String(status || '');
-  const map = { available:'可用', used:'已用', failed:'失败', partial_success:'部分成功', disabled:'已停用', pending:'排队', queued:'排队中', running:'运行中', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消', interrupted:'已中断', unsupported:'不支持', deactivated:'已停用' };
+  const map = { available:'可用', used:'已用', failed:'失败', partial_success:'部分成功', disabled:'已停用', pending:'排队', queued:'排队中', running:'运行中', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消', interrupted:'已中断', unsupported:'不支持', deactivated:'已停用', attention_required:'需要处理', not_created:'尚未创建', in_progress:'处理中', email_verification_pending:'待邮箱验证 / 资料', account_available:'账号可用', unknown:'状态待确认' };
   let cls = 'jobs-v2-pill--muted';
-  if (s === 'success') cls = 'jobs-v2-pill--success';
-  else if (s === 'failed' || s === 'interrupted' || s === 'deactivated') cls = 'jobs-v2-pill--failed';
-  else if (s === 'running' || s === 'stopping') cls = 'jobs-v2-pill--running';
+  if (s === 'success' || s === 'account_available' || s === 'available') cls = 'jobs-v2-pill--success';
+  else if (s === 'failed' || s === 'interrupted' || s === 'deactivated' || s === 'attention_required') cls = 'jobs-v2-pill--failed';
+  else if (s === 'running' || s === 'stopping' || s === 'in_progress' || s === 'email_verification_pending') cls = 'jobs-v2-pill--running';
   else if (s === 'pending' || s === 'queued' || s === 'cancelled' || s === 'stopped' || s === 'unsupported') cls = 'jobs-v2-pill--muted';
   return `<span class="jobs-v2-pill ${cls}">${esc(map[s]||s||'-')}</span>`;
 }
@@ -4118,6 +4210,23 @@ function formatDateTime(v) {
   }
   const p = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+function taskErrorBadge(info) {
+  if (!info) return '';
+  return `<span class="task-error-badge" data-source="${attrEsc(info.source || 'unknown')}" title="${attrEsc(info.title || '')}">${esc(info.source_label || '未分类')} · ${esc(info.kind_label || '待归类')}</span>`;
+}
+function renderTaskLogErrorSummary(id, task) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const info = task?.error_info;
+  const raw = task?.error_message || task?.error || '';
+  if (!info && !raw) {
+    el.classList.add('hidden');
+    el.innerHTML = '';
+    return;
+  }
+  el.innerHTML = `${taskErrorBadge(info)}<span>${esc(info?.summary || raw)}</span>`;
+  el.classList.remove('hidden');
 }
 function jobsV2OpIcons() {
   return {
@@ -4196,6 +4305,7 @@ function debounce(fn, wait=250) {
 const TAB_META = {
   overview: { title: '平台总览', description: '账号、邮箱、任务和网络资源运行状态' },
   register: { title: '注册中心', description: '发起批次并追踪自动化注册流程' },
+  tasks: { title: '任务中心', description: '统一查看注册、恢复、Codex 补跑和账号操作的任务链路' },
   accounts: { title: '账号资产', description: '查询、筛选和批量维护已注册账号' },
   codex: { title: 'Codex 授权', description: '管理 OAuth 凭证、归档与导出状态' },
   outlook: { title: '邮箱资源池', description: '统一维护注册邮箱素材及可用状态' },
@@ -4239,7 +4349,7 @@ updateTopbarClock();
 setInterval(updateTopbarClock, 30000);
 
 function activateTab(tab, persist=true) {
-  const allowed = ['overview','register','accounts','codex','outlook','config'];
+  const allowed = ['overview','register','tasks','accounts','codex','outlook','config'];
   if (!allowed.includes(tab)) tab = 'overview';
   $$('.sidebar-nav button[data-tab]').forEach(x => {
     const active = x.dataset.tab === tab;
@@ -4250,9 +4360,16 @@ function activateTab(tab, persist=true) {
   $$('.sidebar-module[data-sidebar-module]').forEach(item => {
     item.classList.toggle('is-open', item.dataset.sidebarModule === tab);
   });
-  allowed.forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== tab));
+  const contentTabs = ['overview','register','accounts','codex','outlook','config'];
+  const accountTab = $('#tab-accounts');
+  if (tab === 'tasks' && accountTab) accountTab.dataset.moduleView = 'tasks';
+  if (tab === 'accounts' && accountTab?.dataset.moduleView === 'tasks') {
+    accountTab.dataset.moduleView = SHOW_ARCHIVED_ACCOUNTS ? 'archived' : 'active';
+  }
+  const contentTab = tab === 'tasks' ? 'accounts' : tab;
+  contentTabs.forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== contentTab));
   const meta = TAB_META[tab];
-  const currentView = document.getElementById(`tab-${tab}`)?.dataset.moduleView;
+  const currentView = document.getElementById(`tab-${contentTab}`)?.dataset.moduleView;
   const description = MODULE_VIEW_META[tab]?.[currentView] || meta.description;
   if ($('#topbarTitle')) $('#topbarTitle').textContent = meta.title;
   if ($('#topbarDescription')) $('#topbarDescription').textContent = description;
@@ -4260,6 +4377,7 @@ function activateTab(tab, persist=true) {
   closeMobileSidebar();
   if (persist) localStorage.setItem('gpt_console_active_tab', tab);
   if (tab === 'overview') loadDashboard();
+  if (tab === 'tasks') loadAccountTasks();
   if (tab === 'accounts') {
     const view = $('#tab-accounts')?.dataset.moduleView || 'active';
     if (view === 'tasks') loadAccountTasks(); else loadAccounts();
@@ -4277,12 +4395,10 @@ $$('.sidebar-nav button[data-tab]').forEach(b => b.addEventListener('click', () 
 const MODULE_VIEW_META = {
   register: {
     launch: '配置邮箱来源、批次数量与并发线程',
-    tasks: '查询任务、查看日志并从失败断点重跑',
   },
   accounts: {
     active: '查询、筛选和批量维护活跃账号',
     archived: '集中查看和恢复已归档账号',
-    tasks: '查看 Codex 补跑、查活、AT 刷新、查套餐和封号邮件任务日志',
   },
   outlook: {
     overview: '查看邮箱供给、使用情况与 Email Butler 租约',
@@ -4480,6 +4596,7 @@ async function startRegistrationFromInputs(countEl, workersEl, sourceEl, startBt
   const b2 = $('#btnStartV2'); if (b2) b2.disabled = true;
   try {
     const r = await api('/api/jobs', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({count, workers, email_source:emailSource}) });
+    setJobProgressBatch(r.jobs?.[0]?.batch_id || '');
     const sourceLabel = registrationEmailSourceLabel(r.email_source || emailSource);
     const warnHtml = r.warning ? `<div class="banner warn">${esc(r.warning)}（邮箱 ${esc(sourceLabel)} · 并发 ${r.workers || workers}）</div>` : `<div class="banner info">已提交 ${r.submitted} 个任务 · 邮箱 ${esc(sourceLabel)} · 并发 ${r.workers || workers}</div>`;
     const warnEl = $('#regWarnV2'); if (warnEl) warnEl.innerHTML = warnHtml;
@@ -4555,6 +4672,7 @@ async function retryBatchFailedJobs() {
   if (btn) btn.disabled = true;
   try {
     const result = await api('/api/jobs/retry-bulk', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({job_ids: ids})});
+    if (result.batch_id) setJobProgressBatch(result.batch_id);
     showToast('已提交 ' + (result.started_count || 0) + ' 个失败任务' + (result.skipped?.length ? '，跳过 ' + result.skipped.length + ' 个' : ''));
     refreshJobs();
   } catch (e) { showToast('批次重跑失败: ' + e.message); }
@@ -4621,6 +4739,11 @@ function bindJobsBodyEvents(bodyEl) {
   $('#btnBatchStopV2')?.addEventListener('click', batchStopJobs);
   $('#btnBatchCancelV2')?.addEventListener('click', batchCancelJobs);
   $('#btnBatchRetryV2')?.addEventListener('click', retryBatchFailedJobs);
+  $('#registrationBatchSelectV2')?.addEventListener('change', event => {
+    setJobProgressBatch(event.target.value || '');
+    batchProgressRenderSignature = '';
+    refreshJobs();
+  });
   const refreshV2 = $('#btnRefreshJobsV2');
   if (refreshV2) refreshV2.addEventListener('click', () => refreshJobsManual(refreshV2));
 
@@ -4689,9 +4812,43 @@ function refreshBatchProgressDurations() {
   });
 }
 
+function setJobProgressBatch(batchId) {
+  JOB_PROGRESS_BATCH_ID = String(batchId || '').trim();
+  if (JOB_PROGRESS_BATCH_ID) localStorage.setItem('gpt_console_registration_batch_id', JOB_PROGRESS_BATCH_ID);
+  else localStorage.removeItem('gpt_console_registration_batch_id');
+}
+
+function renderRegistrationBatchSelector() {
+  const select = $('#registrationBatchSelectV2');
+  if (!select) return;
+  const batches = Array.isArray(JOB_PROGRESS_BATCHES) ? [...JOB_PROGRESS_BATCHES] : [];
+  if (JOB_PROGRESS_BATCH?.batch_id && !batches.some(batch => batch.batch_id === JOB_PROGRESS_BATCH.batch_id)) {
+    batches.unshift({
+      batch_id: JOB_PROGRESS_BATCH.batch_id,
+      created_at: JOB_PROGRESS_BATCH.created_at,
+      total: JOB_PROGRESS_BATCH.total,
+      kind: currentBatchJobs().some(job => job.parent_job_id) ? 'retry' : 'registration',
+      status_counts: JOB_PROGRESS_BATCH.status_counts || {},
+    });
+  }
+  select.innerHTML = batches.map(batch => {
+    const counts = batch.status_counts || {};
+    const active = Number(counts.active || 0);
+    const failures = Number(counts.failed || 0) + Number(counts.partial_success || 0) + Number(counts.stopped || 0) + Number(counts.cancelled || 0);
+    const state = active > 0 ? `进行中 ${active}` : (failures > 0 ? `异常 ${failures}` : '已完成');
+    const kind = batch.kind === 'retry' ? '批量重跑' : '发起注册';
+    const time = formatDateTime(batch.created_at).replace(/:\d{2}$/, '');
+    const label = `${time} · ${kind} · ${Number(batch.total || 0)} 个 · ${state}`;
+    return `<option value="${attrEsc(batch.batch_id)}">${esc(label)}</option>`;
+  }).join('');
+  select.value = JOB_PROGRESS_BATCH_ID;
+  select.disabled = batches.length < 2;
+}
+
 function renderBatchProgress() {
   const panel = $('#batchProgressV2');
   if (!panel) return;
+  renderRegistrationBatchSelector();
   const batch = JOB_PROGRESS_BATCH;
   const items = batch && Array.isArray(batch.items) ? batch.items : [];
   const stages = batch && Array.isArray(batch.stages) ? batch.stages : [];
@@ -4819,7 +4976,7 @@ function renderJobs() {
         <td class="col-status">${pillV2(j.display_status || j.status)}</td>
         <td class="col-time" title="${esc(started)}">${esc(started)}</td>
         <td class="col-time" title="${esc(completed)}">${esc(completed)}</td>
-        <td class="col-error" title="${esc(err)}">${esc(err ? short(err, 60) : '-')}</td>
+        <td class="col-error" title="${esc(err)}">${err ? `${taskErrorBadge(j.error_info)}<span class="task-error-cell-text">${esc(short(j.error_info?.summary || err, 60))}</span>` : '-'}</td>
         <td class="col-actions">
           <div class="jobs-v2-ops">
             <button type="button" class="jobs-v2-op jobs-v2-op--view" data-log-job="${esc(j.id)}" title="查看日志">${icons.view}</button>
@@ -4917,19 +5074,29 @@ async function refreshJobs() {
   jobsLoading = true;
   try {
     const p = PAGERS.jobs;
-    const res = await api(`/api/jobs?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&status=${encodeURIComponent(JOB_STATUS_FILTER)}&id=${encodeURIComponent(JOB_ID_FILTER)}&email=${encodeURIComponent(JOB_EMAIL_FILTER)}&email_source=${encodeURIComponent(JOB_EMAIL_SOURCE_FILTER)}&proxy=${encodeURIComponent(JOB_PROXY_FILTER)}&error=${encodeURIComponent(JOB_ERROR_FILTER)}&date_from=${encodeURIComponent(JOB_DATE_FROM)}&date_to=${encodeURIComponent(JOB_DATE_TO)}`);
+    const res = await api(`/api/jobs?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&status=${encodeURIComponent(JOB_STATUS_FILTER)}&id=${encodeURIComponent(JOB_ID_FILTER)}&email=${encodeURIComponent(JOB_EMAIL_FILTER)}&email_source=${encodeURIComponent(JOB_EMAIL_SOURCE_FILTER)}&proxy=${encodeURIComponent(JOB_PROXY_FILTER)}&error=${encodeURIComponent(JOB_ERROR_FILTER)}&date_from=${encodeURIComponent(JOB_DATE_FROM)}&date_to=${encodeURIComponent(JOB_DATE_TO)}&progress_batch_id=${encodeURIComponent(JOB_PROGRESS_BATCH_ID)}`);
     const nextJobs = res.items || [];
     JOBS_TOTAL = Number(res.total || nextJobs.length || 0);
     JOB_STATUS_COUNTS = res.status_counts || {};
     updateJobStatusFilters(res.facets || {});
+    JOB_PROGRESS_BATCHES = res.progress_batches || [];
     JOB_PROGRESS_BATCH = res.progress_batch || null;
+    if (JOB_PROGRESS_BATCH_ID && !JOB_PROGRESS_BATCH) {
+      setJobProgressBatch(JOB_PROGRESS_BATCHES[0]?.batch_id || '');
+      if (JOB_PROGRESS_BATCH_ID) {
+        jobsLoading = false;
+        return refreshJobs();
+      }
+    } else if (!JOB_PROGRESS_BATCH_ID && JOB_PROGRESS_BATCH?.batch_id) {
+      setJobProgressBatch(JOB_PROGRESS_BATCH.batch_id);
+    }
     const totalPages = Math.max(1, Math.ceil(JOBS_TOTAL / p.size));
     if (p.page > totalPages) {
       p.page = totalPages;
       jobsLoading = false;
       return refreshJobs();
     }
-    const nextSignature = `${res.revision || ''}|${p.page}|${p.size}|${JSON.stringify(JOB_PROGRESS_BATCH || {})}`;
+    const nextSignature = `${res.revision || ''}|${p.page}|${p.size}|${JSON.stringify(JOB_PROGRESS_BATCH || {})}|${JSON.stringify(JOB_PROGRESS_BATCHES)}`;
     JOBS = nextJobs;
     if (nextSignature !== jobsRenderSignature) {
       jobsRenderSignature = nextSignature;
@@ -5132,6 +5299,7 @@ async function retrySelectedJobs() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({job_ids: ids}),
     });
+    if (r.batch_id) setJobProgressBatch(r.batch_id);
     ids.forEach(id => JOB_SELECTED.delete(Number(id)));
     const skippedCount = (r.skipped || []).length;
     const reusedCount = r.reused_count || 0;
@@ -5150,6 +5318,7 @@ function openLog(jobId) {
   $('#logPanel').classList.remove('hidden');
   updateModalScrollLock();
   $('#logContent').textContent = '加载中…';
+  renderTaskLogErrorSummary('logErrorSummary', null);
   pollLog();
   clearInterval(logTimer);
   logTimer = setInterval(pollLog, 2000);
@@ -5159,6 +5328,7 @@ async function pollLog() {
   try {
     const r = await api(`/api/jobs/${activeLogJob}/log`);
     const c = $('#logContent');
+    renderTaskLogErrorSummary('logErrorSummary', r.job || null);
     const atBottom = c.scrollTop + c.clientHeight >= c.scrollHeight - 30;
     c.textContent = r.log || '(暂无日志)';
     if (atBottom) c.scrollTop = c.scrollHeight;
@@ -5173,12 +5343,30 @@ let planStatusLoading = false;
 let planStatusRevision = '';
 let ACCOUNT_BATCH_WORKERS = 3;
 const ACCOUNT_TASK_TYPE_LABELS = {
+  registration:'注册', registration_resume:'继续邮箱验证', twofa_retry:'2FA / 配置补跑',
   account_setup_retry:'账号配置补跑', codex_retry:'Codex 补跑', codex_token_refresh:'Codex Token 刷新', live_check:'查活', token_refresh:'AT 刷新', plan_check:'查套餐', deactivation_mail:'查封号邮件'
 };
 const ACCOUNT_TASK_TRIGGER_LABELS = {
   manual:'手动', manual_bulk:'手动批量', manual_retry:'失败重跑', scheduled:'定时',
   registration_auto:'注册后自动', registration_job_retry:'注册任务重试', token_refresh_scheduled:'AT 定时刷新',
   codex_token_refresh_scheduled:'Codex 定时刷新'
+};
+const ACCOUNT_TASK_STAGE_LABELS = {
+  queued:'排队', running:'开始', preflight:'配置预检', network:'网络线路', network_route:'网络线路', driver:'启动浏览器',
+  email:'准备邮箱', browser:'启动浏览器', page:'打开页面', submit_email:'提交邮箱', auth_redirect:'进入认证',
+  email_otp:'邮箱验证', profile:'账号资料', token:'获取 Token', codex:'Codex 授权',
+  login_password:'账号登录', account_setup:'账号配置', access_token:'Token 验证', reauth:'重新登录',
+  roxy_fallback:'浏览器回退', oauth:'Codex 授权', auth_url:'获取授权地址', login:'登录 OpenAI',
+  phone_check:'检查手机验证', phone_acquire:'申请接码号码', phone_otp:'短信验证', consent:'确认授权',
+  callback:'接收 OAuth 回调', credential_confirm:'确认远端凭证', credential_persist:'保存凭证', cancelling:'正在停止',
+  twofa:'设置 2FA', plan_check:'查询套餐',
+  plan_request:'请求套餐', refresh_token:'刷新 Token', mailbox_scan:'扫描邮件', complete:'完成'
+};
+const OPERATION_TARGET_LABELS = {
+  not_created:'尚未创建', in_progress:'处理中', email_verification_pending:'待邮箱验证 / 资料',
+  account_available:'账号可用', credential_valid:'凭证有效', credential_pending_confirmation:'凭证待确认',
+  attention_required:'需要人工处理', deactivated:'账号已停用', account_deactivated:'账号已停用',
+  cancelled:'已取消', failed:'失败', pending:'等待执行', unknown:'状态待确认'
 };
 function formatTaskDuration(ms) {
   if (ms == null || ms === '') return '-';
@@ -5194,8 +5382,11 @@ function accountTaskResultText(task) {
   const status = String(task.status || '');
   if (status === 'queued') return '等待执行';
   if (status === 'running') return '执行中';
-  if (task.error) return task.error;
+  if (task.error_message) return task.error_message;
   const result = task.result_summary || {};
+  if (task.task_type === 'registration' || task.task_type === 'registration_resume') {
+    return OPERATION_TARGET_LABELS[task.target_status] || task.target_status || '注册执行已结束';
+  }
   if (task.task_type === 'plan_check') return result.current_plan_type ? `套餐 ${result.current_plan_type}${result.plus_trial_eligible ? ' · 可 Plus 试用' : ''}` : '查询完成';
   if (task.task_type === 'deactivation_mail') {
     if (!Object.prototype.hasOwnProperty.call(result, 'detected')) return '-';
@@ -5204,7 +5395,8 @@ function accountTaskResultText(task) {
   if (task.task_type === 'live_check' || task.task_type === 'token_refresh') return result.ok ? '账号正常' : (result.status || '-');
   if (task.task_type === 'account_setup_retry') return result.ok ? '账号密码、套餐和 2FA 已补齐或确认' : (result.message || result.status || '账号配置补跑失败');
   if (task.task_type === 'codex_retry') {
-    if (result.ok) return result.credential_saved ? '授权成功 · 凭证已保存' : '授权成功';
+    if (result.ok) return result.credential_confirmed ? '授权成功 · 凭证已确认' : '授权成功';
+    if (result.status === 'attention_required') return 'Callback 已接收 · 凭证待确认';
     return result.message || result.status || '补跑失败';
   }
   if (task.task_type === 'codex_token_refresh') {
@@ -5213,25 +5405,82 @@ function accountTaskResultText(task) {
   }
   return Object.keys(result).length ? JSON.stringify(result) : '-';
 }
+function normalizeAccountTaskStage(stage) {
+  const value = String(stage || 'event').replace(/_result$/, '');
+  return value === 'network_route' ? 'network' : value;
+}
+const ACCOUNT_TASK_STEP_STATE_LABELS = {
+  pending:'未开始', running:'执行中', success:'已完成', skipped:'已跳过', failed:'失败'
+};
+function accountTaskEventStepState(event) {
+  const detail = event?.detail && typeof event.detail === 'object' ? event.detail : {};
+  const eventType = String(event?.event_type || '');
+  const fromType = eventType.startsWith('stage.') ? eventType.slice(6) : '';
+  const explicit = String(detail.step_state || fromType || '').toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(ACCOUNT_TASK_STEP_STATE_LABELS, explicit)) return explicit;
+  if (String(event?.level || '').toUpperCase() === 'ERROR') return 'failed';
+  return null;
+}
+function renderAccountTaskStageProgress(task) {
+  const panel = $('#accountTaskStageProgress');
+  if (!panel) return;
+  const runs = Array.isArray(task?.runs) ? task.runs : [];
+  const latestRunId = String(task?.last_run_id || runs[runs.length - 1]?.id || '');
+  const observed = new Map();
+  (task?.events || []).filter(event => !latestRunId || String(event.run_id || '') === latestRunId).forEach(event => {
+    const key = normalizeAccountTaskStage(event.stage);
+    const state = accountTaskEventStepState(event);
+    if (state) observed.set(key, {state});
+  });
+  const stages = (task?.flow || []).map(item => ({
+    key: item.key,
+    label: item.label,
+    ...(observed.get(item.key) || {state:'pending'}),
+  }));
+  observed.forEach((value, key) => {
+    if (!['queued','complete'].includes(key) && !stages.some(item => item.key === key)) stages.push({key, label:ACCOUNT_TASK_STAGE_LABELS[key] || key, ...value});
+  });
+  if (!stages.length) {
+    panel.classList.add('hidden');
+    panel.innerHTML = '';
+    return;
+  }
+  const taskStatus = String(task.status || '');
+  const active = ['queued','running','cancelling','settling'].includes(taskStatus);
+  panel.innerHTML = stages.map(stage => {
+    let state = stage.state || 'pending';
+    if (state === 'pending' && active && stage.key === normalizeAccountTaskStage(task.current_stage)) state = taskStatus === 'running' ? 'running' : 'pending';
+    if (stage.key === 'complete' && state === 'pending' && !active) state = taskStatus === 'success' ? 'success' : 'failed';
+    const label = stage.label || ACCOUNT_TASK_STAGE_LABELS[stage.key] || stage.key;
+    return `<div class="account-task-stage-step is-${attrEsc(state)}"><span class="account-task-stage-node"></span><span class="account-task-stage-label">${esc(label)}</span><span class="account-task-stage-state">${esc(ACCOUNT_TASK_STEP_STATE_LABELS[state] || state)}</span></div>`;
+  }).join('');
+  panel.classList.remove('hidden');
+}
 function renderAccountTasks() {
   const body = $('#accountTasksBody');
   if (!body) return;
   body.innerHTML = ACCOUNT_TASKS.map(task => {
-    const route = [task.network_route, task.proxy_provider, task.proxy_region].filter(Boolean).join(' · ') || '-';
     const result = accountTaskResultText(task);
-    const retryable = !['queued','running','success'].includes(String(task.status || ''));
+    const active = ['queued','running','stopping','cancelling','settling','waiting'].includes(String(task.status || ''));
+    const retryable = Array.isArray(task.next_actions) && task.next_actions.length > 0 && !active;
+    const cancellable = task.source_system === 'native_operations' && active;
+    const target = task.account_id ? `账号 #${task.account_id}` : (task.attempt_id ? `注册尝试 #${task.attempt_id}` : '-');
+    const batch = task.batch_title || (task.batch_uuid ? short(task.batch_uuid, 12) : '单任务');
+    const trigger = ACCOUNT_TASK_TRIGGER_LABELS[task.trigger] || task.trigger || '-';
+    const stage = ACCOUNT_TASK_STAGE_LABELS[normalizeAccountTaskStage(task.current_stage)] || task.current_stage || '-';
+    const error = task.error_message || '';
     return `<tr>
       <td>#${esc(task.id)}</td>
       <td>${esc(ACCOUNT_TASK_TYPE_LABELS[task.task_type] || task.task_type)}</td>
-      <td title="${esc(task.email_snapshot)}"><strong>#${esc(task.account_id || '-')}</strong><div class="sub-cell">${esc(task.email_snapshot || '-')}</div></td>
+      <td title="${esc(task.email_snapshot)}"><strong>${esc(target)}</strong><div class="sub-cell">${esc(task.email_snapshot || '-')}</div></td>
       <td>${pillV2(task.status)}</td>
-      <td>${esc(ACCOUNT_TASK_TRIGGER_LABELS[task.trigger] || task.trigger || '-')}</td>
-      <td>${esc(task.validation_method || '-')}</td>
-      <td title="${esc(task.proxy_used || route)}">${esc(route)}</td>
-      <td>${esc(formatTaskDuration(task.duration_ms))}</td>
-      <td title="${esc(formatDateTime(task.queued_at))} → ${esc(formatDateTime(task.finished_at))}">${esc(formatDateTime(task.queued_at))}<div class="sub-cell">${esc(formatDateTime(task.finished_at))}</div></td>
-      <td class="task-error" title="${esc(result)}">${esc(short(result, 90))}</td>
-      <td><div class="task-row-actions"><button type="button" class="task-row-action" data-account-task-log="${esc(task.id)}">日志</button>${retryable ? `<button type="button" class="task-row-action task-row-action--retry" data-account-task-retry="${esc(task.id)}">重跑</button>` : ''}</div></td>
+      <td>${pillV2(task.target_status)}</td>
+      <td title="${esc(batch)} · ${esc(trigger)}">${esc(short(batch, 26))}<div class="sub-cell">${esc(trigger)}</div></td>
+      <td>${esc(task.run_count || 0)} 次<div class="sub-cell">最近 #${esc(task.last_run_no || '-')}</div></td>
+      <td>${esc(stage)}<div class="sub-cell">${esc(formatTaskDuration(task.duration_ms))}</div></td>
+      <td title="${esc(formatDateTime(task.created_at))} → ${esc(formatDateTime(task.completed_at))}">${esc(formatDateTime(task.created_at))}<div class="sub-cell">${esc(formatDateTime(task.completed_at))}</div></td>
+      <td class="task-error" title="${esc(error || result)}">${error ? `${taskErrorBadge(task.error_info)}<span class="task-error-cell-text">${esc(short(task.error_info?.summary || result, 90))}</span>` : esc(short(result, 90))}</td>
+      <td><div class="task-row-actions"><button type="button" class="task-row-action" data-account-task-log="${esc(task.id)}">日志</button>${cancellable ? `<button type="button" class="task-row-action danger" data-account-task-cancel="${esc(task.id)}">停止</button>` : ''}${retryable ? `<button type="button" class="task-row-action task-row-action--retry" data-account-task-retry="${esc(task.id)}">重跑</button>` : ''}</div></td>
     </tr>`;
   }).join('') || '<tr><td colspan="11" style="text-align:center;color:#909399;padding:28px;">暂无任务实例</td></tr>';
   _renderPager('accountTasks', ACCOUNT_TASKS_TOTAL);
@@ -5244,7 +5493,7 @@ async function loadAccountTasks() {
   const status = $('#accountTaskStatusFilter')?.value || '';
   const q = ($('#accountTaskSearch')?.value || '').trim();
   try {
-    const result = await api(`/api/account-tasks?page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&type=${encodeURIComponent(type)}&status=${encodeURIComponent(status)}&q=${encodeURIComponent(q)}`);
+    const result = await api(`/api/operations?page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&type=${encodeURIComponent(type)}&status=${encodeURIComponent(status)}&q=${encodeURIComponent(q)}`);
     ACCOUNT_TASKS = result.items || [];
     ACCOUNT_TASKS_TOTAL = Number(result.total || 0);
     const totalPages = Math.max(1, Math.ceil(ACCOUNT_TASKS_TOTAL / p.size));
@@ -5253,11 +5502,10 @@ async function loadAccountTasks() {
       accountTasksLoading = false;
       return loadAccountTasks();
     }
-    const refresh = result.token_refresh || {};
-    if ($('#accountTaskRefreshHint')) $('#accountTaskRefreshHint').textContent = refresh.enabled ? `AT 到期前 ${refresh.refresh_before_hours || 24} 小时自动刷新` : 'AT 自动刷新已关闭';
+    if ($('#accountTaskRefreshHint')) $('#accountTaskRefreshHint').textContent = `最近批次 ${Number((result.batches || []).length)} 个 · 共 ${ACCOUNT_TASKS_TOTAL} 个任务`;
     renderAccountTasks();
   } catch (e) {
-    showToast('加载任务实例失败: ' + e.message);
+    showToast('加载任务中心失败: ' + e.message);
   }
   finally { accountTasksLoading = false; }
 }
@@ -5266,6 +5514,8 @@ function openAccountTaskLog(taskId) {
   activeAccountTaskId = Number(taskId);
   $('#accountTaskLogId').textContent = taskId;
   $('#accountTaskLogContent').textContent = '加载中…';
+  renderTaskLogErrorSummary('accountTaskLogErrorSummary', null);
+  renderAccountTaskStageProgress(null);
   $('#accountTaskLogPanel').classList.remove('hidden');
   updateModalScrollLock();
   clearInterval(accountTaskLogTimer);
@@ -5275,18 +5525,20 @@ function openAccountTaskLog(taskId) {
 async function pollAccountTaskLog() {
   if (!activeAccountTaskId) return;
   try {
-    const result = await api(`/api/account-tasks/${encodeURIComponent(activeAccountTaskId)}`);
+    const result = await api(`/api/operations/${encodeURIComponent(activeAccountTaskId)}`);
     const task = result.task || {};
+    renderTaskLogErrorSummary('accountTaskLogErrorSummary', task);
+    renderAccountTaskStageProgress(task);
     const events = task.events || [];
     const content = $('#accountTaskLogContent');
     const atBottom = content.scrollTop + content.clientHeight >= content.scrollHeight - 30;
     content.innerHTML = events.map(event => `<div class="account-task-event${String(event.level || '').toUpperCase() === 'ERROR' ? ' is-error' : ''}">
-      <div class="account-task-event-head"><span>${esc(formatDateTime(event.created_at))}</span><span>${esc(event.level)}</span><span>${esc(event.stage)}</span></div>
+      <div class="account-task-event-head"><span>${esc(formatDateTime(event.created_at))}</span><span>${esc(event.level)}</span><span>${esc(ACCOUNT_TASK_STAGE_LABELS[normalizeAccountTaskStage(event.stage)] || event.stage)}</span><span>${event.run_no ? `第 ${esc(event.run_no)} 次运行` : ''}</span></div>
       <div class="account-task-event-message">${esc(event.message)}</div>
       ${event.detail ? `<div class="account-task-event-detail">${esc(JSON.stringify(event.detail, null, 2))}</div>` : ''}
     </div>`).join('') || '(暂无事件)';
     if (atBottom) content.scrollTop = content.scrollHeight;
-    if (!['queued','running'].includes(String(task.status || ''))) {
+    if (!['queued','running','cancelling','settling'].includes(String(task.status || ''))) {
       clearInterval(accountTaskLogTimer);
       loadAccountTasks();
       loadAccounts();
@@ -5298,11 +5550,22 @@ async function pollAccountTaskLog() {
 async function retryAccountTask(taskId, button) {
   button.disabled = true;
   try {
-    await api(`/api/account-tasks/${encodeURIComponent(taskId)}/retry`, {method:'POST'});
+    await api(`/api/operations/${encodeURIComponent(taskId)}/retry`, {method:'POST'});
     showToast('任务已重新入队');
     loadAccountTasks();
   } catch (e) {
     showToast('重跑失败: ' + e.message);
+    button.disabled = false;
+  }
+}
+async function cancelAccountTask(taskId, button) {
+  button.disabled = true;
+  try {
+    await api(`/api/operations/${encodeURIComponent(taskId)}/cancel`, {method:'POST'});
+    showToast('已请求停止，任务将在安全检查点收口');
+    loadAccountTasks();
+  } catch (e) {
+    showToast('停止失败: ' + e.message);
     button.disabled = false;
   }
 }
@@ -5318,7 +5581,9 @@ $('#accountTasksPanel')?.addEventListener('click', event => {
   const logBtn = event.target.closest('[data-account-task-log]');
   if (logBtn) { openAccountTaskLog(Number(logBtn.dataset.accountTaskLog)); return; }
   const retryBtn = event.target.closest('[data-account-task-retry]');
-  if (retryBtn) retryAccountTask(Number(retryBtn.dataset.accountTaskRetry), retryBtn);
+  if (retryBtn) { retryAccountTask(Number(retryBtn.dataset.accountTaskRetry), retryBtn); return; }
+  const cancelBtn = event.target.closest('[data-account-task-cancel]');
+  if (cancelBtn) cancelAccountTask(Number(cancelBtn.dataset.accountTaskCancel), cancelBtn);
 });
 function getAccountsQuery() {
   const el = document.getElementById('qAccountsV2');
@@ -5361,7 +5626,7 @@ async function loadAccounts() {
     const res = await api(`/api/accounts?${params.toString()}`);
     const facets = res.facets || {};
     syncFacetSelect('accountSourceFilterV2', facets.source, {group:'source'});
-    syncFacetSelect('accountTokenFilterV2', facets.token, {group:'token'});
+    syncFacetSelect('accountTokenFilterV2', facets.token, {group:'account_token', values:['has','expired','none']});
     syncFacetSelect('accountPasswordFilterV2', facets.password, {group:'password'});
     syncFacetSelect('accountPlanFilterV2', facets.plan, {group:'plan'});
     syncFacetSelect('accountTrialFilterV2', facets.trial, {group:'trial'});
@@ -5424,12 +5689,15 @@ async function pollAccountPlanStatuses() {
 }
 function _codexCell(r) {
   const s = r.codex_status || '';
+  const exec = r.codex_execution_status || '';
   const err = r.codex_error || '';
   const titleAttr = err ? ` title="${esc(err)}"` : '';
+  if (['queued','running','cancelling'].includes(exec)) return `<span class="pill status-running">${exec === 'queued' ? '排队中' : exec === 'cancelling' ? '停止中' : '补跑中'}</span>`;
   if (s === 'success') return `<span class="pill status-success">成功</span>`;
   if (s === 'retrying') return `<span class="pill status-running">补跑中</span>`;
   if (s === 'stopped') return `<span class="pill status-used"${titleAttr}>已停止</span>`;
   if (s === 'failed') return `<span class="pill status-failed"${titleAttr}>失败</span>`;
+  if (s === 'pending_confirmation' || r.codex_credential_state === 'pending_confirmation') return `<span class="pill status-used"${titleAttr}>待确认</span>`;
   if (s === 'skipped') return `<span class="pill status-used">已跳过</span>`;
   if (s === 'deactivated') return `<span class="pill status-failed" title="账号已被 OpenAI 删除/停用/封禁，无法授权">已废号</span>`;
   return `<span class="muted">-</span>`;
@@ -5437,12 +5705,15 @@ function _codexCell(r) {
 function _codexCellV2(r) {
   if ((r.account_status || '').toLowerCase() === 'deactivated') return '<span class="acc-v2-codex is-fail" title="账号已确认停用/封禁">封号</span>';
   const s = r.codex_status || '';
+  const exec = r.codex_execution_status || '';
   const err = r.codex_error || '';
   const titleAttr = err ? ` title="${esc(err)}"` : '';
+  if (['queued','running','cancelling'].includes(exec)) return `<span class="acc-v2-codex is-run"${titleAttr}>${exec === 'queued' ? '排队中' : exec === 'cancelling' ? '停止中' : '补跑中'}</span>`;
   if (s === 'success') return `<span class="acc-v2-codex is-ok"${titleAttr}>已通过</span>`;
   if (s === 'retrying') return `<span class="acc-v2-codex is-run"${titleAttr}>补跑中</span>`;
   if (s === 'stopped') return `<span class="acc-v2-codex is-mute"${titleAttr}>已停止</span>`;
   if (s === 'failed') return `<span class="acc-v2-codex is-fail"${titleAttr}>失败</span>`;
+  if (s === 'pending_confirmation' || r.codex_credential_state === 'pending_confirmation') return `<span class="acc-v2-codex is-mute"${titleAttr}>待确认</span>`;
   if (s === 'skipped') return `<span class="acc-v2-codex is-skip"${titleAttr}>已跳过</span>`;
   if (s === 'deactivated') return `<span class="acc-v2-codex is-fail" title="账号已被 OpenAI 删除/停用/封禁，无法授权">已废号</span>`;
   return `<span class="acc-v2-muted">-</span>`;
@@ -5594,8 +5865,9 @@ function _extractLinkAction(r) {
 function _codexAction(r) {
   if ((r.account_status || '').toLowerCase() === 'deactivated') return '';
   const s = r.codex_status || '';
-  if (s === 'retrying') {
-    return `<button class="danger" data-codex-stop="${esc(r.email)}" title="停止该账号正在进行的 Codex 补跑">停止补跑</button> <button data-codex-reset-retrying="${esc(r.email)}" title="只重置状态；不会向运行线程发送停止信号">重置状态</button>`;
+  const exec = r.codex_execution_status || '';
+  if (['queued','running','cancelling'].includes(exec) || s === 'retrying') {
+    return `<button class="danger" data-codex-stop="${esc(r.email)}" title="协作式停止该账号正在进行的 Codex 补跑">${exec === 'cancelling' ? '停止中…' : '停止补跑'}</button>`;
   }
   if (s === 'deactivated') return '';
   const label = s === 'success' ? '重新补跑 Codex' : '补跑 Codex';
@@ -5926,7 +6198,7 @@ async function onAccountsBodyClick(e) {
       if (search) search.value = email;
       if (typeFilter) typeFilter.value = 'account_setup_retry';
       PAGERS.accountTasks.page = 1;
-      setModuleView('accounts', 'tasks');
+      activateTab('tasks');
     } catch(err) {
       showToast('补齐账号配置失败: ' + err.message);
       accountSetupBtn.disabled = false;
@@ -5957,7 +6229,7 @@ async function onAccountsBodyClick(e) {
     const search = $('#accountTaskSearch');
     if (search) search.value = String(taskHistoryBtn.dataset.accountTaskHistory || '');
     PAGERS.accountTasks.page = 1;
-    setModuleView('accounts', 'tasks');
+    activateTab('tasks');
     return;
   }
 
@@ -6033,7 +6305,7 @@ async function onAccountsBodyClick(e) {
     if (search) search.value = email;
     if (typeFilter) typeFilter.value = 'codex_retry';
     PAGERS.accountTasks.page = 1;
-    setModuleView('accounts', 'tasks');
+    activateTab('tasks');
   } catch(err) {
     showToast('触发补跑失败: ' + err.message);
     btn.disabled = false;
@@ -6730,7 +7002,7 @@ async function stopSelectedCodex() {
   const ids = Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
   const selectedAccounts = ids.map(id => ACCOUNTS.find(a => Number(a.id) === Number(id))).filter(Boolean);
-  const retrying = selectedAccounts.filter(a => (a.codex_status || '') === 'retrying');
+  const retrying = selectedAccounts.filter(a => ['queued','running','cancelling'].includes(a.codex_execution_status || '') || (a.codex_status || '') === 'retrying');
   if (retrying.length === 0) { showToast('选中账号里没有正在补跑的 Codex'); return; }
   if (!confirm(`确定停止选中的 ${retrying.length} 个 Codex 补跑吗？\n\n会发送停止信号，并将状态标记为“已停止”。`)) return;
   const btn = $('#btnStopSelectedCodexV2');
@@ -6756,7 +7028,7 @@ async function retrySelectedCodex() {
   if (ids.length === 0) { showToast('请先选择账号'); return; }
   const workers = getCodexBulkWorkers();
   const selectedAccounts = ids.map(id => ACCOUNTS.find(a => Number(a.id) === Number(id))).filter(Boolean);
-  const retryingCount = selectedAccounts.filter(a => (a.codex_status || '') === 'retrying').length;
+  const retryingCount = selectedAccounts.filter(a => ['queued','running','cancelling'].includes(a.codex_execution_status || '') || (a.codex_status || '') === 'retrying').length;
   const deactivatedCount = selectedAccounts.filter(a => (a.codex_status || '') === 'deactivated').length;
   let msg = `批量补跑选中的 ${ids.length} 个账号 Codex 授权？
 
@@ -6784,7 +7056,7 @@ async function retrySelectedCodex() {
     if (search) search.value = '';
     if (typeFilter) typeFilter.value = 'codex_retry';
     PAGERS.accountTasks.page = 1;
-    setModuleView('accounts', 'tasks');
+    activateTab('tasks');
   } catch(err) {
     showToast('批量补跑失败: ' + err.message);
     updateAccountSelectionUi();
@@ -6812,7 +7084,7 @@ async function setupSelectedAccounts() {
     if (search) search.value = '';
     if (typeFilter) typeFilter.value = 'account_setup_retry';
     PAGERS.accountTasks.page = 1;
-    setModuleView('accounts', 'tasks');
+    activateTab('tasks');
   } catch(err) {
     showToast('补齐账号配置失败: ' + err.message);
     updateAccountSelectionUi();
@@ -7815,7 +8087,7 @@ async function codexReauthorize(filenames = null) {
     if (search) search.value = '';
     if (typeFilter) typeFilter.value = 'codex_retry';
     PAGERS.accountTasks.page = 1;
-    setModuleView('accounts', 'tasks');
+    activateTab('tasks');
   } catch(err) {
     showToast('重跑 Codex 授权失败: ' + err.message);
   } finally {
@@ -7848,7 +8120,7 @@ async function codexRefreshTokens(filenames = null) {
     if (search) search.value = '';
     if (typeFilter) typeFilter.value = 'codex_token_refresh';
     PAGERS.accountTasks.page = 1;
-    setModuleView('accounts', 'tasks');
+    activateTab('tasks');
   } catch(err) {
     showToast('刷新 OAuth Token 失败: ' + err.message);
   } finally {

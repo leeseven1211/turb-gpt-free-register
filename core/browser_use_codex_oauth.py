@@ -12,6 +12,7 @@ from config import roxybrowser as _roxy_cfg
 from core import sms_provider
 from core.browser_use_client import BrowserUseClient
 from core.openai_auth import AccountUnusableError, detect_account_unusable_response_body
+from core.operation_runtime import OperationCancelled, call_cancellable, cancellable_sleep, check_cancelled, report_stage
 from core.browser_use_registration import (
     _timeout_ms,
     _page_url,
@@ -69,7 +70,7 @@ def _bu_delay(kind: str, seconds: float | None = None) -> None:
                 "post_auth": 0.2,
             }.get(kind, 0.1)
         if seconds > 0:
-            time.sleep(seconds)
+            cancellable_sleep(seconds)
         return
     human_delay(kind)
 
@@ -152,6 +153,7 @@ def _wait_for_callback(context, page, timeout: int | None = None) -> str:
     end = time.time() + (timeout or int(getattr(_roxy_cfg, "ROXY_CODEX_CALLBACK_TIMEOUT", 180) or 180))
     last_url = ""
     while time.time() < end:
+        check_cancelled()
         try:
             current = str(page.url or "")
             if current != last_url:
@@ -162,7 +164,7 @@ def _wait_for_callback(context, page, timeout: int | None = None) -> str:
                 return callback
         except Exception:
             pass
-        time.sleep(0.25 if _fast_mode() else 0.5)
+        cancellable_sleep(0.25 if _fast_mode() else 0.5)
     raise RuntimeError(f"等待 Codex callback 超时，最后 URL={last_url}")
 
 
@@ -172,12 +174,13 @@ def _wait_for_fresh_email_otp(otp_provider, email: str, after_ts: float, used_co
     end = time.time() + timeout
     last_code = ""
     while time.time() < end:
-        code = str(otp_provider(email, after_ts=after_ts) or "").strip()
+        check_cancelled()
+        code = str(call_cancellable(otp_provider, email, after_ts=after_ts) or "").strip()
         if code:
             last_code = code
             if code not in used_codes:
                 return code
-        time.sleep(1 if _fast_mode() else 2)
+        cancellable_sleep(1 if _fast_mode() else 2)
     if last_code:
         raise RuntimeError(f"等待邮箱 OTP 超时，最后只拿到已使用验证码：{last_code}")
     raise RuntimeError("等待邮箱 OTP 超时")
@@ -649,6 +652,8 @@ def _maybe_click_passwordless_after_email(page, email: str, timeout: int = 18) -
 
 
 def _fill_email_and_otp(page, email: str, otp_provider, auth_url: str, dead_tracker: dict | None = None) -> None:
+    check_cancelled()
+    report_stage("login", "打开 OpenAI 登录授权页")
     otp_after_ts = time.time()
     logger.info("[Codex][BrowserUse] 打开授权地址")
     logger.info("[Codex][BrowserUse] 完整授权地址: %s", auth_url)
@@ -668,6 +673,7 @@ def _fill_email_and_otp(page, email: str, otp_provider, auth_url: str, dead_trac
         _fill_email_for_codex(page, email)
         _t_email.done()
         logger.info("[Codex][BrowserUse] 已提交邮箱：%s", email)
+        report_stage("login", "已提交 OpenAI 登录邮箱", state="success")
         _maybe_click_passwordless_after_email(page, email, timeout=18)
     except Exception as exc:
         if _looks_next_step_after_login(page):
@@ -693,21 +699,28 @@ def _fill_email_and_otp(page, email: str, otp_provider, auth_url: str, dead_trac
             _fill_email_for_codex(page, email)
             logger.info("[Codex][BrowserUse] 已重新提交邮箱触发 OTP")
             _maybe_click_passwordless_after_email(page, email, timeout=12)
+        except OperationCancelled:
+            raise
         except Exception as exc:
             logger.warning("[Codex][BrowserUse] 重新提交邮箱失败，继续按当前页面轮询：%s", str(exc)[:180])
         _bu_delay("api")
 
     for attempt in range(1, 4):
+        check_cancelled()
         wait_end = time.time() + 35
         while time.time() < wait_end and not _looks_email_otp_page(page):
+            check_cancelled()
             if any(x in _page_url(page).lower() for x in ("phone", "workspace", "consent", "localhost:1455")):
                 return
-            time.sleep(0.4)
+            cancellable_sleep(0.4)
         logger.info("[Codex][BrowserUse] 等待邮箱 OTP：%s（%s/3）", email, attempt)
+        report_stage("email_otp", f"等待邮箱验证码（{attempt}/3）")
         _t_otp_wait = _StepTimer("等待邮箱 OTP")
         try:
             code = _wait_for_fresh_email_otp(otp_provider, email, after_ts=otp_after_ts, used_codes=used_codes, timeout=90)
             _t_otp_wait.done()
+        except OperationCancelled:
+            raise
         except Exception as exc:
             _t_otp_wait.done(f"failed={type(exc).__name__}: {str(exc)[:160]}")
             if attempt >= 3:
@@ -748,6 +761,7 @@ def _fill_email_and_otp(page, email: str, otp_provider, auth_url: str, dead_trac
             error_code = str(outcome).split(":", 1)[1] or "account_deactivated"
             raise AccountUnusableError(f"账号已废（{error_code}）", error_code=error_code)
         if outcome in ("accepted", "callback", "unknown"):
+            report_stage("email_otp", "邮箱验证码已通过", state="success")
             return
         if attempt >= 3:
             raise RuntimeError("Codex 邮箱验证码连续错误/过期")
@@ -1175,13 +1189,14 @@ def _do_phone_verification_if_present(page) -> None:
     # 给页面一点时间从邮箱 OTP 后跳到手机号页；没有就跳过。
     end = time.time() + 20
     while time.time() < end:
+        check_cancelled()
         if _is_callback_url(_page_url(page)):
             return
         if _has_phone_prompt(page):
             break
         if any(x in _page_url(page).lower() for x in ("workspace", "consent", "authorize")):
             return
-        time.sleep(0.5)
+        cancellable_sleep(0.5)
     if not _has_phone_prompt(page):
         logger.info("[Codex][BrowserUse] 未检测到手机号验证页，跳过")
         return
@@ -1192,6 +1207,7 @@ def _do_phone_verification_if_present(page) -> None:
     deadline = time.monotonic() + total_budget
     last_error = ""
     for attempt in range(1, max_retries + 1):
+        check_cancelled()
         remaining = max(0, int(deadline - time.monotonic()))
         if remaining <= 0:
             break
@@ -1244,6 +1260,10 @@ def _do_phone_verification_if_present(page) -> None:
                 sms_provider.complete(activation_id, http)
                 return
             raise RuntimeError(f"手机验证码未通过：{outcome}")
+        except OperationCancelled:
+            if activation_id:
+                sms_provider.cancel(activation_id, http, background=True)
+            raise
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {str(exc)[:220]}"
             logger.warning("[Codex][BrowserUse] 手机验证失败（%s/%s）：%s", attempt, max_retries, last_error)
@@ -1265,7 +1285,7 @@ def _do_phone_verification_if_present(page) -> None:
                 _ensure_add_phone_form(page, reason=f"after-fail-{attempt}")
             except Exception:
                 pass
-            time.sleep(min(1 + attempt, 4, max(0, deadline - time.monotonic())))
+            cancellable_sleep(min(1 + attempt, 4, max(0, deadline - time.monotonic())))
     if time.monotonic() >= deadline:
         raise RuntimeError(
             f"手机验证超过整段预算 {total_budget} 秒，已停止继续买号：{last_error}"
@@ -1276,6 +1296,7 @@ def _do_phone_verification_if_present(page) -> None:
 def _finish_consent_workspace(context, page) -> str:
     end = time.time() + int(getattr(_roxy_cfg, "ROXY_CODEX_CALLBACK_TIMEOUT", 180) or 180)
     while time.time() < end:
+        check_cancelled()
         callback = _extract_callback_url_from_context(context, page)
         if callback:
             return callback
@@ -1297,7 +1318,7 @@ def _finish_consent_workspace(context, page) -> str:
         )
         if clicked:
             _bu_delay("form")
-        time.sleep(0.7)
+        cancellable_sleep(0.7)
     return _wait_for_callback(context, page, timeout=5)
 
 
@@ -1332,7 +1353,9 @@ def _run_browser_use_codex_oauth_once(email: str, otp_provider=None, proxy: str 
     page = None
     try:
         auth_source = proto._codex_auth_url_source()
+        cpa_baseline = None
         if auth_source == "cpa":
+            cpa_baseline = proto._capture_cpa_credential_baseline(email)
             cpa_auth = proto._request_cpa_authorize_url()
             auth_url = cpa_auth["auth_url"]
             state = cpa_auth["state"]
@@ -1348,6 +1371,7 @@ def _run_browser_use_codex_oauth_once(email: str, otp_provider=None, proxy: str 
             auth_url = proto._build_authorize_url(state, code_challenge, prompt="login")
         else:
             raise RuntimeError(f"[Codex][BrowserUse] 不支持的 CODEX_AUTH_URL_SOURCE={auth_source!r}")
+        report_stage("auth_url", "Codex 授权地址已准备", state="success", detail={"source": auth_source})
 
         logger.info(
             "[Codex][%s] 开始授权：%s proxyCountry=%s profileId=%s local_proxy_arg=%s",
@@ -1371,33 +1395,26 @@ def _run_browser_use_codex_oauth_once(email: str, otp_provider=None, proxy: str 
             dead_tracker = _install_account_dead_response_tracker(page)
 
             _fill_email_and_otp(page, email, otp_provider, auth_url, dead_tracker=dead_tracker)
+            report_stage("phone_check", "检查是否需要手机验证")
             _do_phone_verification_if_present(page)
+            report_stage("phone_check", "手机验证已完成或无需验证", state="success")
             logger.info("[Codex][BrowserUse] 手机验证处理完成/无需处理，等待授权确认和 callback")
             _t_callback = _StepTimer("等待 consent/workspace/callback")
             callback_url = _finish_consent_workspace(context, page)
+            report_stage("callback", "已捕获 OAuth callback", state="success")
             _t_callback.done()
             code = proto._extract_code(callback_url, state)
             logger.info("[Codex][BrowserUse] 已捕获 callback code：%s...", code[:24])
 
             if auth_source == "cpa":
                 submit_payload = proto._submit_cpa_callback(callback_url)
-                file_path = proto._save_cpa_local_record(
-                    email=email,
-                    callback_url=callback_url,
-                    auth_url=auth_url,
-                    state=state,
-                    submit_payload=submit_payload,
+                result = proto._remote_callback_result(
+                    source="cpa", email=email, callback_url=callback_url,
+                    auth_url=auth_url, state=state, submit_payload=submit_payload,
+                    cpa_baseline=cpa_baseline,
                 )
-                msg = submit_payload.get("message") or submit_payload.get("status_message") or "CPA callback submitted"
-                _t_all.done("success")
-                return proto._codex_result(
-                    status="success",
-                    ok=True,
-                    email=email,
-                    file_path=str(file_path) if file_path else None,
-                    callback_url=callback_url,
-                    message=str(msg),
-                )
+                _t_all.done(result["status"])
+                return result
 
             if auth_source == "sub2":
                 submit_payload = proto._submit_sub2_callback(
@@ -1405,29 +1422,24 @@ def _run_browser_use_codex_oauth_once(email: str, otp_provider=None, proxy: str 
                     session_id=(sub2_auth or {}).get("session_id", ""),
                     redirect_uri=(proto.parse_qs(proto.urlparse(auth_url or "").query).get("redirect_uri") or [""])[0],
                 )
-                file_path = proto._save_sub2_local_record(
-                    email=email,
-                    callback_url=callback_url,
-                    auth_url=auth_url,
-                    state=state,
-                    submit_payload=submit_payload,
+                result = proto._remote_callback_result(
+                    source="sub2", email=email, callback_url=callback_url,
+                    auth_url=auth_url, state=state, submit_payload=submit_payload,
                 )
-                msg = submit_payload.get("message") or submit_payload.get("status_message") or "sub2 callback uploaded"
-                _t_all.done("success")
-                return proto._codex_result(
-                    status="success",
-                    ok=True,
-                    email=email,
-                    file_path=str(file_path) if file_path else None,
-                    callback_url=callback_url,
-                    message=str(msg),
-                )
+                _t_all.done(result["status"])
+                return result
 
             token_payload = proto._exchange_codex_token(code, code_verifier)
             storage = proto._build_codex_storage(token_payload)
             path = proto._save_codex_credential(email, storage)
+            report_stage("credential_persist", "Codex 凭证已写入数据库", state="success")
             _t_all.done("success")
-            return proto._codex_result(status="success", ok=True, email=email, file_path=str(path), callback_url=callback_url)
+            return proto._codex_result(
+                status="success", ok=True, email=email, file_path=str(path),
+                callback_url=callback_url, credential_confirmed=True,
+            )
+    except OperationCancelled:
+        raise
     except AccountUnusableError as exc:
         logger.warning("[Codex][BrowserUse] 账号已废：%s，%s", email, exc.error_code)
         return proto._codex_result(

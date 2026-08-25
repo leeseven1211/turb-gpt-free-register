@@ -11,6 +11,7 @@
 """
 import logging
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -213,6 +214,25 @@ def _disable_job_email(email: str | None, reason: str) -> bool:
     """把本次任务邮箱停用，避免后续再次领取。"""
     if not email:
         return False
+
+
+def _mark_completed_resume_email(email: str | None, account_id: int | None) -> bool:
+    """恢复任务成功后把曾被失败分支标记的邮箱重新收口为已使用。"""
+    if not email:
+        return False
+    try:
+        from core.email_provider import release_email
+
+        source = release_email(
+            email,
+            status="used",
+            note=f"继续注册已完成，已绑定账号 #{account_id or '-'}",
+        )
+        logger.info("[Service] 已收口恢复账号邮箱: source=%s account_id=%s", source, account_id)
+        return True
+    except Exception:
+        logger.exception("[Service] 收口恢复账号邮箱失败: account_id=%s", account_id)
+        return False
     try:
         from core.email_provider import release_email
 
@@ -222,6 +242,68 @@ def _disable_job_email(email: str | None, reason: str) -> bool:
     except Exception:
         logger.exception("[Service] 自动停用邮箱失败: %s", email)
         return False
+
+
+def _registration_proxy_retry_limit() -> int:
+    """读取注册换线重试次数；只允许有限次数，避免任务无限占用线程。"""
+    try:
+        from config import proxy as proxy_config
+
+        value = int(getattr(proxy_config, "REGISTRATION_PROXY_RETRIES", 2) or 0)
+    except (TypeError, ValueError, ImportError):
+        value = 2
+    return max(0, min(3, value))
+
+
+def _registration_proxy_retry_delay() -> float:
+    try:
+        from config import proxy as proxy_config
+
+        value = float(getattr(proxy_config, "REGISTRATION_PROXY_RETRY_DELAY", 1.0) or 0)
+    except (TypeError, ValueError, ImportError):
+        value = 1.0
+    return max(0.0, min(10.0, value))
+
+
+def _is_transient_registration_proxy_error(error: object) -> bool:
+    """只识别线路级瞬时错误，不把页面状态错误伪装成可重试。"""
+    text = str(error or "").lower()
+    if not text:
+        return False
+    markers = (
+        "err_tunnel_connection_failed",
+        "err_proxy_connection_failed",
+        "err_connection_reset",
+        "err_connection_closed",
+        "err_timed_out",
+        "proxy connection",
+        "ssl_error_syscall",
+        "unexpected eof while reading",
+        "remote end closed connection",
+        "connection aborted",
+        "chrome-error://chromewebdata/",
+    )
+    return any(marker in text for marker in markers) or "邮箱提交/认证跳转超过总预算" in str(error or "")
+
+
+def _should_retry_registration_with_new_proxy(
+    result: object,
+    proxy_lease: object,
+    retry_attempt: int,
+) -> bool:
+    """决定是否释放当前线路并用新线路重新执行整段浏览器注册。"""
+    if retry_attempt >= _registration_proxy_retry_limit():
+        return False
+    if not isinstance(result, dict):
+        return False
+    # 已落库的账号、待邮箱验证检查点或 access token 都不能再从头注册。
+    if result.get("account_id") is not None or result.get("registration_pending"):
+        return False
+    if str(result.get("access_token") or "").strip():
+        return False
+    if str(getattr(proxy_lease, "provider", "") or "").strip().lower() != "1024proxy":
+        return False
+    return _is_transient_registration_proxy_error(result.get("error"))
 
 
 def _normalize_workers(max_workers: int | None) -> int:
@@ -380,7 +462,19 @@ def _run_one_job(job_id: int, log_file: str) -> None:
     try:
         with _JobLogContext(log_file):
             from main import run_registration
-            from core.proxy_provider import acquire_registration_proxy, mask_endpoint, mask_ip
+            from core.proxy_provider import acquire_registration_proxy, mask_endpoint, mask_ip, release_proxy
+
+            def _bind_proxy_lease(lease) -> None:
+                db.update_job(
+                    job_id,
+                    proxy_provider=lease.provider,
+                    proxy_status="leased",
+                    proxy_endpoint=mask_endpoint(lease.endpoint),
+                    proxy_exit_ip=mask_ip(lease.exit_ip) or "-",
+                    proxy_region=lease.region or "-",
+                    proxy_acquired_at=lease.acquired_at.isoformat(timespec="seconds"),
+                    proxy_expires_at=lease.expires_at.isoformat(timespec="seconds") if lease.expires_at else "-",
+                )
 
             log_logger.info(f"[Job {job_id}] 开始注册任务")
             db.update_job(job_id, proxy_status="acquiring")
@@ -396,16 +490,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     detail=detail,
                 ),
             )
-            db.update_job(
-                job_id,
-                proxy_provider=proxy_lease.provider,
-                proxy_status="leased",
-                proxy_endpoint=mask_endpoint(proxy_lease.endpoint),
-                proxy_exit_ip=mask_ip(proxy_lease.exit_ip) or "-",
-                proxy_region=proxy_lease.region or "-",
-                proxy_acquired_at=proxy_lease.acquired_at.isoformat(timespec="seconds"),
-                proxy_expires_at=proxy_lease.expires_at.isoformat(timespec="seconds") if proxy_lease.expires_at else "-",
-            )
+            _bind_proxy_lease(proxy_lease)
             selected_source = str(current.get("email_source") or "").strip()
             try:
                 from core.email_provider import validate_email_source
@@ -415,10 +500,12 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 from core.email_provider import parse_email_sources
                 selected_source = parse_email_sources(selected_source)[0]
             existing_password = ""
+            existing_totp_secret = ""
             if str(current.get("job_type") or "") == "registration_resume":
                 resume_account = _account_for_job(current)
                 email = str((resume_account or {}).get("email") or current.get("email") or "").strip()
                 existing_password = _pending_registration_password(resume_account)
+                existing_totp_secret = str((resume_account or {}).get("totp_secret") or "").strip()
                 if not email or not existing_password:
                     raise RuntimeError("待邮箱验证账号缺少邮箱或已保存账号密码，无法继续验证")
                 from core.profile_utils import generate_random_birthday
@@ -438,13 +525,72 @@ def _run_one_job(job_id: int, log_file: str) -> None:
             if not existing_password:
                 db.update_job_progress(job_id, "email", state="success", detail=f"已从 {selected_source} 领取邮箱")
             check_stop_requested()
-            result = run_registration(
-                email=email,
-                name=name,
-                birthday=birthday,
-                proxy=proxy_lease.proxy_url,
-                existing_password=existing_password or None,
-            )
+            retry_attempt = 0
+            while True:
+                check_stop_requested()
+                result = run_registration(
+                    email=email,
+                    name=name,
+                    birthday=birthday,
+                    proxy=proxy_lease.proxy_url,
+                    existing_password=existing_password or None,
+                    existing_totp_secret=existing_totp_secret or None,
+                )
+                if not _should_retry_registration_with_new_proxy(result, proxy_lease, retry_attempt):
+                    break
+
+                retry_attempt += 1
+                retry_error = str((result or {}).get("error") or "代理线路瞬时失败")[:220]
+                log_logger.warning(
+                    "[Job %s] 注册遇到代理瞬时错误，释放旧线路并换线重试 (%s/%s): %s",
+                    job_id,
+                    retry_attempt,
+                    _registration_proxy_retry_limit(),
+                    retry_error,
+                )
+                release_proxy(proxy_lease, reason=f"registration_proxy_retry_{retry_attempt}")
+                proxy_lease = None
+                db.update_job(
+                    job_id,
+                    proxy_status="acquiring",
+                    error=f"代理线路瞬时失败，准备换线重试: {retry_error}",
+                )
+                db.update_job_progress(
+                    job_id,
+                    "auth_redirect",
+                    state="running",
+                    detail=f"认证线路瞬时失败，正在更换代理重试 ({retry_attempt}/{_registration_proxy_retry_limit()})",
+                )
+                retry_delay = _registration_proxy_retry_delay()
+                if retry_delay:
+                    time.sleep(retry_delay)
+                check_stop_requested()
+                proxy_lease = acquire_registration_proxy(
+                    job_id=job_id,
+                    # 批次首轮租约已经释放；重试必须单独申请新线路，不能消耗批次剩余槽位。
+                    batch_id=None,
+                    batch_size=1,
+                    batch_workers=1,
+                    progress_callback=lambda detail: db.update_job_progress(
+                        job_id,
+                        "auth_redirect",
+                        state="running",
+                        detail=detail,
+                    ),
+                )
+                _bind_proxy_lease(proxy_lease)
+                if not existing_password:
+                    # Roxy 失败后会把未建号邮箱释放回池；重试不能继续持有已释放的
+                    # 字符串，否则可能被另一个并发任务抢走。仍使用同一个已选来源，
+                    # 不引入第二邮箱供应商或兜底来源。
+                    email, name, birthday = _prepare_registration_args(selected_source)
+                    db.update_job(job_id, email=email)
+                    db.update_job_progress(
+                        job_id,
+                        "email",
+                        state="success",
+                        detail=f"换线重试已从 {selected_source} 重新领取邮箱",
+                    )
             # Codex 失败时注册账号可能已经创建并保存。代理地区属于账号注册事实，
             # 不能只在整项任务 success 时落库，否则后续补跑/查套餐无法稳定沿用地区。
             if isinstance(result, dict) and result.get("account_id"):
@@ -493,6 +639,14 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                         or not str(result.get("access_token") or "").strip()
                     )
                 )
+                if (
+                    str(current.get("job_type") or "") == "registration_resume"
+                    and not registration_pending
+                ):
+                    _mark_completed_resume_email(
+                        str(result.get("email") or email or "").strip(),
+                        int(result.get("account_id")) if result.get("account_id") else None,
+                    )
                 if registration_pending:
                     # 密码已经保存只能说明账号进入了“待邮箱验证”，不能把当前
                     # 验证码节点及后续未执行节点涂成绿色。先保留真实失败节点，
@@ -1047,7 +1201,14 @@ def get_retry_info_bulk(jobs: list[dict]) -> dict[int, dict]:
     }
 
 
-def retry_job(job_id: int, workers: int | None = None) -> dict:
+def retry_job(
+    job_id: int,
+    workers: int | None = None,
+    *,
+    batch_id: str | None = None,
+    batch_index: int | None = None,
+    batch_size: int | None = None,
+) -> dict:
     """智能重试终态任务：未生成账号则重新注册，已有账号则仅补跑 Codex。"""
     source = db.get_job(job_id)
     if source is None:
@@ -1062,8 +1223,37 @@ def retry_job(job_id: int, workers: int | None = None) -> dict:
     account = _account_for_job(source)
     email = str((account or {}).get("email") or source.get("email") or "").strip()
     account_id = int(account["id"]) if account and account.get("id") is not None else None
+    if action == "codex":
+        # 注册任务只提供父上下文；Codex 补跑本身由原生 operation run 执行，
+        # 不再额外创建 registration_job + account_action_task 两份重复记录。
+        from core import codex_operation_service, operation_task_store
+
+        parent = operation_task_store.find_task_by_source("registration_jobs", str(job_id))
+        queued = codex_operation_service.submit(
+            email,
+            trigger="registration_job_retry",
+            parent_task_id=int(parent["id"]) if parent else None,
+        )
+        if not queued.get("accepted"):
+            return {
+                "ok": False,
+                "error": queued.get("error") or "Codex 补跑入队失败",
+                "status": 503 if queued.get("unavailable") else 409,
+                **queued,
+            }
+        return {
+            "ok": True,
+            "created": True,
+            "reused": False,
+            "message": f"已创建 Codex 子任务 #{queued['task_id']}，attempt #{queued['run_id']}",
+            "source_job_id": int(job_id),
+            "retry_action": action,
+            "operation_task_id": queued["task_id"],
+            "run_id": queued["run_id"],
+            "job": source,
+        }
     reserved_account_action = False
-    if action in {"codex", "twofa"}:
+    if action == "twofa":
         if not email or account_id is None:
             return {"ok": False, "error": "已保存账号信息不完整，无法执行账号补跑", "status": 409}
         if not codex_retry_service.reserve(email):
@@ -1082,6 +1272,10 @@ def retry_job(job_id: int, workers: int | None = None) -> dict:
             email_source=str(source.get("email_source") or "outlook"),
             email=email if action in {"codex", "twofa", "registration_resume"} else None,
             account_id=account_id if action in {"codex", "twofa", "registration_resume"} else None,
+            batch_id=batch_id,
+            batch_index=batch_index,
+            batch_size=batch_size,
+            batch_workers=workers,
         )
     except LookupError as exc:
         if reserved_account_action:

@@ -71,8 +71,10 @@ class ProxyRouteInvariantTests(unittest.TestCase):
         session = MagicMock()
         with (
             patch("core.account_liveness.BrowserSession", return_value=session) as browser_session,
+            patch("core.account_liveness._warm_protocol_login_context") as warm_context,
             patch("core.account_liveness.get_csrf_token", return_value="csrf"),
             patch("core.account_liveness.signin_openai", return_value="https://auth.example/authorize"),
+            patch("core.account_liveness.human_delay"),
         ):
             returned, url = account_liveness._network_preflight_with_retry(
                 "account@example.com",
@@ -83,6 +85,27 @@ class ProxyRouteInvariantTests(unittest.TestCase):
         self.assertIs(session, returned)
         self.assertEqual("https://auth.example/authorize", url)
         browser_session.assert_called_once_with(proxy="")
+        warm_context.assert_called_once_with(session)
+
+    def test_live_check_warms_browser_like_context_before_csrf(self):
+        from core import account_liveness
+
+        session = MagicMock()
+        with (
+            patch("core.account_liveness.network_preflight") as network_preflight,
+            patch("core.chatgpt_bootstrap.anonymous_bootstrap") as anonymous_bootstrap,
+            patch("core.account_liveness.human_delay") as human_delay,
+            patch.object(account_liveness._protocol_cfg, "CHATGPT_ANON_BOOTSTRAP_ENABLED", True),
+            patch.object(account_liveness._protocol_cfg, "CHATGPT_BOOTSTRAP_STRICT", False),
+        ):
+            account_liveness._warm_protocol_login_context(session)
+
+        network_preflight.assert_called_once_with(session)
+        anonymous_bootstrap.assert_called_once_with(session, strict=False)
+        self.assertEqual(
+            [unittest.mock.call("navigate"), unittest.mock.call("navigate")],
+            human_delay.call_args_list,
+        )
 
     def test_live_check_preflight_uses_fresh_proxy_from_supplier(self):
         from core import account_liveness
@@ -92,8 +115,10 @@ class ProxyRouteInvariantTests(unittest.TestCase):
         supplier = MagicMock(side_effect=["http://first.example:8080", "http://second.example:8080"])
         with (
             patch("core.account_liveness.BrowserSession", side_effect=[first_session, second_session]) as browser_session,
+            patch("core.account_liveness._warm_protocol_login_context"),
             patch("core.account_liveness.get_csrf_token", side_effect=[RuntimeError("HTTP 403"), "csrf"]),
             patch("core.account_liveness.signin_openai", return_value="https://auth.example/authorize"),
+            patch("core.account_liveness.human_delay"),
             patch("core.account_liveness.time.sleep"),
         ):
             returned, url = account_liveness._network_preflight_with_retry(

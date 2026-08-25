@@ -23,6 +23,7 @@ from flask import Flask, Response, jsonify, make_response, redirect, render_temp
 from core import (
     admin_repository,
     account_task_store,
+    codex_operation_service,
     codex_token_refresh_service,
     codex_retry_service,
     db,
@@ -30,10 +31,12 @@ from core import (
     extract_link_service,
     live_check_service,
     deactivation_mail_service,
+    operation_task_store,
     sms_provider,
 )
 from webui.auth import init_auth, register_auth_routes
 from core import registration_service as svc
+from core.task_errors import classify_task_error
 from config import codex as codex_config
 from webui import config_editor
 
@@ -204,7 +207,8 @@ def _compact_account_for_list(row: dict) -> dict:
     for key in (
         "user_name", "email_source", "note", "archived", "created_at",
         "plan_type", "current_plan_type", "plus_trial_eligible",
-        "plan_check_status", "codex_status", "account_status",
+        "plan_check_status", "codex_status", "codex_credential_state",
+        "codex_execution_status", "codex_last_run_status", "codex_active_run_id", "account_status",
         "registration_proxy_provider", "registration_proxy_region",
         "deactivation_mail_detected", "deactivation_mail_scan_status",
     ):
@@ -319,6 +323,11 @@ def _compact_job_for_list(row: dict) -> dict:
     if err:
         # 列表只需要摘要；完整错误和堆栈看“任务日志”。
         out["error_message"] = err[:240] + ("…" if len(err) > 240 else "")
+        out["error_info"] = classify_task_error(
+            err,
+            stage=str(row.get("progress_stage") or ""),
+            task_type=str(row.get("job_type") or "registration"),
+        )
     raw_steps = out.get("progress_steps")
     if isinstance(raw_steps, dict):
         # 列表兼容字段只应作用于返回副本，不能改写历史任务原始数据。
@@ -676,6 +685,14 @@ def create_app(auth_code: str | None = None) -> Flask:
             status=str(request.args.get("status") or "").strip(),
             q=str(request.args.get("q") or "").strip(),
         )
+        for task in result.get("items") or []:
+            error_info = classify_task_error(
+                task.get("error"),
+                stage="complete",
+                task_type=str(task.get("task_type") or ""),
+            )
+            if error_info:
+                task["error_info"] = error_info
         from core.token_refresh_service import settings as token_refresh_settings
         result["token_refresh"] = token_refresh_settings()
         result["codex_token_refresh"] = codex_token_refresh_service.settings()
@@ -686,18 +703,24 @@ def create_app(auth_code: str | None = None) -> Flask:
         task = account_task_store.get_task(task_id)
         if not task:
             return jsonify({"ok": False, "error": "任务实例不存在"}), 404
+        error_info = classify_task_error(
+            task.get("error"),
+            stage="complete",
+            task_type=str(task.get("task_type") or ""),
+        )
+        if error_info:
+            task["error_info"] = error_info
         return jsonify({"ok": True, "task": task})
 
-    @app.post("/api/account-tasks/<int:task_id>/retry")
-    def api_account_task_retry(task_id: int):
+    def _retry_account_task_result(task_id: int) -> tuple[dict, int]:
         task = account_task_store.get_task(task_id)
         if not task:
-            return jsonify({"ok": False, "error": "任务实例不存在"}), 404
+            return {"ok": False, "error": "任务实例不存在"}, 404
         if task.get("status") in {"queued", "running"}:
-            return jsonify({"ok": False, "error": "任务仍在执行"}), 409
+            return {"ok": False, "error": "任务仍在执行"}, 409
         account = db.get_account(int(task.get("account_id") or 0))
         if not account:
-            return jsonify({"ok": False, "error": "关联账号不存在"}), 404
+            return {"ok": False, "error": "关联账号不存在"}, 404
         task_type = str(task.get("task_type") or "")
         if task_type in {"live_check", "token_refresh"}:
             queued = live_check_service.enqueue_account_live_check(
@@ -734,12 +757,105 @@ def create_app(auth_code: str | None = None) -> Flask:
                 trigger="manual_retry",
             )
         else:
-            return jsonify({"ok": False, "error": "该任务类型暂不支持重跑"}), 400
+            return {"ok": False, "error": "该任务类型暂不支持重跑"}, 400
         if queued.get("busy"):
-            return jsonify({"ok": False, **queued}), 409
+            return {"ok": False, **queued}, 409
         if not queued.get("accepted"):
-            return jsonify({"ok": False, **queued}), 400
-        return jsonify({"ok": True, **queued}), 202
+            return {"ok": False, **queued}, 400
+        return {"ok": True, **queued}, 202
+
+    @app.post("/api/account-tasks/<int:task_id>/retry")
+    def api_account_task_retry(task_id: int):
+        payload, status = _retry_account_task_result(task_id)
+        return jsonify(payload), status
+
+    @app.get("/api/operations")
+    def api_operations():
+        """统一任务中心列表：注册、恢复、Codex 与账号操作共用一个读模型。"""
+        result = operation_task_store.list_tasks(
+            page=request.args.get("page", default=1, type=int),
+            page_size=request.args.get("page_size", default=50, type=int),
+            task_type=str(request.args.get("type") or "").strip(),
+            status=str(request.args.get("status") or "").strip(),
+            source=str(request.args.get("source") or "").strip(),
+            q=str(request.args.get("q") or "").strip(),
+            batch_id=request.args.get("batch_id", default=None, type=int),
+        )
+        for task in result.get("items") or []:
+            if task.get("error_message"):
+                task["error_info"] = classify_task_error(
+                    task.get("error_message"),
+                    stage=str(task.get("current_stage") or ""),
+                    task_type=str(task.get("task_type") or ""),
+                )
+        result["batches"] = operation_task_store.list_batches(limit=50)
+        return jsonify(result)
+
+    @app.get("/api/operations/<int:task_id>")
+    def api_operation_detail(task_id: int):
+        task = operation_task_store.get_task(task_id)
+        if not task:
+            return jsonify({"ok": False, "error": "任务不存在"}), 404
+        if task.get("error_message"):
+            task["error_info"] = classify_task_error(
+                task.get("error_message"),
+                stage=str(task.get("current_stage") or ""),
+                task_type=str(task.get("task_type") or ""),
+            )
+        return jsonify({"ok": True, "task": task})
+
+    @app.post("/api/operations/<int:task_id>/retry")
+    def api_operation_retry(task_id: int):
+        """由服务端 next_actions 和来源映射选择重跑入口，前端不猜流程。"""
+        task = operation_task_store.get_task(task_id)
+        if not task:
+            return jsonify({"ok": False, "error": "任务不存在"}), 404
+        if task.get("status") in {"queued", "running", "stopping", "cancelling", "settling", "waiting"}:
+            return jsonify({"ok": False, "error": "任务仍在执行"}), 409
+        if str(task.get("source_system") or "") == "native_operations":
+            queued = codex_operation_service.retry_task(int(task_id), trigger="manual_retry")
+            if queued.get("busy"):
+                return jsonify({"ok": False, **queued}), 409
+            if not queued.get("accepted"):
+                return jsonify({"ok": False, **queued}), 503 if queued.get("unavailable") else 409
+            return jsonify({"ok": True, **queued}), 202
+        next_action = (task.get("next_actions") or [{}])[0]
+        source_job_id = next_action.get("source_job_id") if isinstance(next_action, dict) else None
+        if str((next_action or {}).get("action") or "") in {"registration_resume", "registration_retry"} and source_job_id:
+            result = svc.retry_job(int(source_job_id))
+            status = int(result.pop("status", 200 if result.get("ok") else 400))
+            return jsonify(result), status
+        runs = task.get("runs") or []
+        latest = runs[-1] if runs else {}
+        source_system = str(latest.get("source_system") or "")
+        source_id = str(latest.get("source_id") or "")
+        if source_system == "registration_jobs" and source_id.isdigit():
+            result = svc.retry_job(int(source_id))
+            status = int(result.pop("status", 200 if result.get("ok") else 400))
+            return jsonify(result), status
+        if source_system == "account_action_tasks" and source_id.isdigit():
+            payload, status = _retry_account_task_result(int(source_id))
+            return jsonify(payload), status
+        return jsonify({"ok": False, "error": "该历史任务没有可用的重跑来源"}), 409
+
+    @app.post("/api/operations/<int:task_id>/cancel")
+    def api_operation_cancel(task_id: int):
+        task = operation_task_store.get_task(task_id)
+        if not task:
+            return jsonify({"ok": False, "error": "任务不存在"}), 404
+        if str(task.get("source_system") or "") != "native_operations":
+            return jsonify({"ok": False, "error": "历史兼容任务请使用原任务停止入口"}), 409
+        active = next(
+            (
+                run for run in reversed(task.get("runs") or [])
+                if run.get("status") in {"queued", "running", "cancelling", "settling"}
+            ),
+            None,
+        )
+        if not active:
+            return jsonify({"ok": True, "state": "empty", "message": "任务没有活跃 attempt"})
+        result = codex_operation_service.request_cancel(run_id=int(active["id"]))
+        return jsonify(result), 200 if result.get("ok") else 409
 
     @app.post("/api/accounts/<int:acc_id>/setup")
     def api_account_setup(acc_id: int):
@@ -1600,6 +1716,10 @@ def create_app(auth_code: str | None = None) -> Flask:
             return unavailable
         data = request.get_json(silent=True) or {}
         filenames = data.get("filenames") or []
+        try:
+            workers = max(1, min(16, int(data.get("workers", codex_config.ACCOUNT_BATCH_WORKERS))))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "workers 必须是数字"}), 400
         if not isinstance(filenames, list) or not filenames:
             return jsonify({"ok": False, "error": "filenames 必须是非空数组"}), 400
         if len(filenames) > 500:
@@ -2492,61 +2612,8 @@ def create_app(auth_code: str | None = None) -> Flask:
         )
 
     def _enqueue_codex_retry(email: str, *, trigger: str = "manual") -> dict:
-        """给单账号创建统一任务实例，并启动 Codex 补跑线程。"""
-        email = str(email or "").strip()
-        acc = db.get_account_by_email(email)
-        if acc is None:
-            return {"accepted": False, "error": f"账号不存在: {email}"}
-        if (acc.get("codex_status") or "") == "deactivated":
-            return {"accepted": False, "error": "账号已废号，不能补跑 Codex"}
-        if not _reserve_codex_retry(email):
-            return {"accepted": False, "busy": True, "error": "该账号正在补跑中，请稍候"}
-
-        try:
-            task_id = account_task_store.create_task(
-                task_type="codex_retry",
-                account_id=int(acc.get("id") or 0) or None,
-                email=email,
-                trigger=str(trigger or "manual"),
-            )
-        except Exception as exc:
-            _release_codex_retry(email)
-            logger.exception("创建 Codex 补跑任务实例失败：email=%s", email)
-            return {"accepted": False, "error": f"任务实例创建失败：{type(exc).__name__}: {exc}"}
-        db.update_account_codex_status(email, "retrying", None)
-        worker = threading.Thread(
-            target=_run_codex_retry_worker,
-            kwargs={
-                "email": email,
-                "clear_log": True,
-                "task_id": task_id,
-                "task_trigger": trigger,
-            },
-            name=f"codex-retry-{email}",
-            daemon=True,
-        )
-        try:
-            worker.start()
-        except Exception as exc:
-            _release_codex_retry(email)
-            error = f"补跑任务启动失败：{type(exc).__name__}: {exc}"
-            db.update_account_codex_status(email, "failed", error[:500])
-            account_task_store.finish_task(
-                task_id,
-                status="failed",
-                message="Codex 补跑任务启动失败",
-                error=error,
-            )
-            return {"accepted": False, "task_id": task_id, "error": error}
-        return {
-            "accepted": True,
-            "busy": False,
-            "task_id": task_id,
-            "account_id": int(acc.get("id") or 0) or None,
-            "email": email,
-            "status": "queued",
-            "trigger": str(trigger or "manual"),
-        }
+        """兼容旧调用名；实际只委托统一 Codex operation 协调器。"""
+        return codex_operation_service.submit(email, trigger=trigger)
 
     def _run_account_setup_worker(email: str, *, task_id: int, task_trigger: str) -> None:
         """执行只补账号配置的任务，不触发 Codex OAuth。"""
@@ -2618,7 +2685,7 @@ def create_app(auth_code: str | None = None) -> Flask:
         acc = db.get_account_by_email(email)
         if acc is None:
             return jsonify({"ok": False, "error": f"账号不存在: {email}"}), 404
-        result = codex_retry_service.request_stop(email)
+        result = codex_operation_service.request_cancel(email=email)
         status = int(result.pop("status", 200) or 200)
         return jsonify(result), status
 
@@ -2655,12 +2722,12 @@ def create_app(auth_code: str | None = None) -> Flask:
             if acc is None:
                 skipped.append({"email": email, "reason": "账号不存在"})
                 continue
-            if (acc.get("codex_status") or "") != "retrying" and not codex_retry_service.is_retrying(email):
+            if not codex_operation_service.is_retrying(email):
                 skipped.append({"email": email, "reason": "未处于补跑中"})
                 continue
-            r = codex_retry_service.request_stop(email)
+            r = codex_operation_service.request_cancel(email=email)
             if r.get("ok"):
-                stopped.append({"email": email, "injected": r.get("injected"), "running": r.get("running")})
+                stopped.append({"email": email, "run_id": r.get("run_id"), "running": r.get("running")})
             else:
                 skipped.append({"email": email, "reason": r.get("error") or "停止失败"})
         return jsonify({"ok": True, "stopped": stopped, "stopped_count": len(stopped), "skipped": skipped})
@@ -2690,10 +2757,11 @@ def create_app(auth_code: str | None = None) -> Flask:
         if not ok:
             return jsonify({"ok": False, "error": f"账号不存在: {email}"}), 404
 
-        _release_codex_retry(email)
+        if codex_operation_service.is_retrying(email):
+            return jsonify({"ok": False, "error": "任务仍在数据库队列或运行中，请先停止并等待收口"}), 409
 
         try:
-            log_path = codex_retry_service.log_path(email)
+            log_path = codex_operation_service.log_path(email)
             log_path.parent.mkdir(parents=True, exist_ok=True)
             with log_path.open("a", encoding="utf-8") as f:
                 ts = _dt.now().strftime("%H:%M:%S")
@@ -2732,27 +2800,24 @@ def create_app(auth_code: str | None = None) -> Flask:
         unavailable = _feature_unavailable("codex_retry")
         if unavailable:
             return unavailable
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        from datetime import datetime as _dt
-
         data = request.get_json(silent=True) or {}
         ids = data.get("account_ids") or data.get("ids") or []
         filenames = data.get("filenames") or []
-        workers = data.get("workers", codex_config.ACCOUNT_BATCH_WORKERS)
         if not isinstance(ids, list) or not isinstance(filenames, list):
             return jsonify({"ok": False, "error": "account_ids 和 filenames 必须是数组"}), 400
         if not ids and not filenames:
             return jsonify({"ok": False, "error": "account_ids 或 filenames 必须是非空数组"}), 400
-        try:
-            workers = max(1, min(16, int(workers)))
-        except (TypeError, ValueError):
-            return jsonify({"ok": False, "error": "workers 必须是数字"}), 400
         if len(ids) + len(filenames) > 500:
             return jsonify({"ok": False, "error": "单次最多选择 500 个账号"}), 400
+        try:
+            workers = int(data.get("workers") or getattr(codex_config, "ACCOUNT_BATCH_WORKERS", 3) or 3)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "workers 必须是整数"}), 400
+        if workers < 1 or workers > 16:
+            return jsonify({"ok": False, "error": "workers 必须在 1 到 16 之间"}), 400
 
-        selected = []
         skipped = []
-        targets = [{"id": raw, "filename": None} for raw in ids]
+        selected_ids = list(ids)
         if filenames:
             credentials = {
                 str(item.get("filename") or ""): item
@@ -2776,96 +2841,32 @@ def create_app(auth_code: str | None = None) -> Flask:
                 if not account:
                     skipped.append({"filename": filename, "email": email, "reason": "未找到对应的已注册账号"})
                     continue
-                targets.append({"id": account.get("id"), "filename": filename})
+                selected_ids.append(account.get("id"))
 
         seen_ids = set()
-        for target in targets:
-            raw = target.get("id")
+        normalized_ids = []
+        for raw in selected_ids:
             try:
                 acc_id = int(raw)
             except (TypeError, ValueError):
-                skipped.append({"id": raw, "filename": target.get("filename"), "reason": "ID 非法"})
+                skipped.append({"id": raw, "reason": "ID 非法"})
                 continue
             if acc_id in seen_ids:
                 continue
             seen_ids.add(acc_id)
-            acc = db.get_account(acc_id)
-            if not acc:
-                skipped.append({"id": acc_id, "reason": "账号不存在"})
-                continue
-            email = (acc.get("email") or "").strip()
-            if not email:
-                skipped.append({"id": acc_id, "reason": "邮箱为空"})
-                continue
-            if (acc.get("codex_status") or "") == "deactivated":
-                skipped.append({"id": acc_id, "email": email, "reason": "账号已废号"})
-                continue
-            if not _reserve_codex_retry(email):
-                skipped.append({"id": acc_id, "email": email, "reason": "正在补跑中"})
-                continue
-            selected.append({"id": acc_id, "email": email, "filename": target.get("filename")})
+            normalized_ids.append(acc_id)
 
-        if not selected:
+        if not normalized_ids:
             return jsonify({"ok": False, "error": "没有可补跑的账号", "skipped": skipped}), 409
-
-        batch_id = account_task_store.create_batch(
-            action_type="codex_retry",
-            trigger="manual_bulk",
-            total_count=len(selected),
-        )
-        batch_label = f"{_dt.now().strftime('%Y%m%d-%H%M%S')}-{batch_id[:8]}"
-        for item in selected:
-            email = item["email"]
-            item["task_id"] = account_task_store.create_task(
-                task_type="codex_retry",
-                account_id=int(item["id"]),
-                email=email,
-                trigger="manual_bulk",
-                batch_id=batch_id,
-            )
-            db.update_account_codex_status(email, "retrying", None)
-            log_path = codex_retry_service.log_path(email)
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_path.write_text(
-                f"{_dt.now().strftime('%H:%M:%S')} [INFO] [Codex 批量补跑] 已加入批量任务 batch={batch_label} workers={workers}，等待线程执行\n",
-                encoding="utf-8",
-            )
-
-        def _bulk_runner(items: list[dict], max_workers: int, batch: str):
-            logger.info(f"[Codex 批量补跑] 启动 batch={batch} count={len(items)} workers={max_workers}")
-            with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"codex-bulk-{batch}") as ex:
-                futures = [
-                    ex.submit(
-                        _run_codex_retry_worker,
-                        it["email"],
-                        batch_label=f"{batch} #{idx}/{len(items)}",
-                        clear_log=False,
-                        task_id=it["task_id"],
-                        task_trigger="manual_bulk",
-                    )
-                    for idx, it in enumerate(items, 1)
-                ]
-                for fut in as_completed(futures):
-                    try:
-                        fut.result()
-                    except Exception:
-                        logger.exception(f"[Codex 批量补跑] 子任务异常 batch={batch}")
-            logger.info(f"[Codex 批量补跑] 完成 batch={batch}")
-
-        threading.Thread(
-            target=_bulk_runner,
-            args=(selected, workers, batch_label),
-            name=f"codex-bulk-dispatch-{batch_label}",
-            daemon=True,
-        ).start()
+        result = codex_operation_service.submit_bulk(normalized_ids, trigger="manual_bulk", workers=workers)
+        result["skipped"] = skipped + list(result.get("skipped") or [])
+        if not result.get("accepted"):
+            return jsonify({"ok": False, **result}), 503 if result.get("unavailable") else 409
         return jsonify({
             "ok": True,
-            "message": f"已开始批量补跑 {len(selected)} 个账号，并发 {workers}",
-            "started": selected,
-            "started_count": len(selected),
-            "skipped": skipped,
-            "batch_id": batch_id,
-        })
+            **result,
+            "message": f"已创建 {result['started_count']} 个数据库执行实例",
+        }), 202
 
     @app.get("/api/codex/retry-log")
     def api_codex_retry_log():
@@ -2873,7 +2874,7 @@ def create_app(auth_code: str | None = None) -> Flask:
         email = (request.args.get("email") or "").strip()
         if not email:
             return jsonify({"ok": False, "error": "email 为空"}), 400
-        p = codex_retry_service.log_path(email)
+        p = codex_operation_service.log_path(email)
         if not p.exists():
             return jsonify({"ok": True, "log": "", "running": False})
         max_bytes = 50_000
@@ -2885,7 +2886,7 @@ def create_app(auth_code: str | None = None) -> Flask:
         return jsonify({
             "ok": True,
             "log": content,
-            "running": codex_retry_service.is_retrying(email),
+            "running": codex_operation_service.is_retrying(email),
         })
 
     @app.get("/api/accounts/live-check-log")
@@ -2925,6 +2926,7 @@ def create_app(auth_code: str | None = None) -> Flask:
         error_filter = str(request.args.get("error", default="") or "").strip().lower()
         date_from = str(request.args.get("date_from", default="") or "").strip()
         date_to = str(request.args.get("date_to", default="") or "").strip()
+        progress_batch_id = str(request.args.get("progress_batch_id", default="") or "").strip()
         paged = str(request.args.get("paged", default="") or "").lower() in {"1", "true", "yes"}
         page_arg = request.args.get("page", default=None, type=int)
         page_size_arg = request.args.get("page_size", default=None, type=int)
@@ -2932,21 +2934,24 @@ def create_app(auth_code: str | None = None) -> Flask:
         manual_otp_required = not bool(getattr(_email_cfg, "USE_EMAIL_SERVICE", True))
         page = max(1, int(page_arg or 1))
         page_size = max(1, min(500, int(page_size_arg or limit or 50)))
-        result = admin_repository.list_jobs(admin_repository.PageRequest(
-            page=page,
-            page_size=page_size,
-            filters={
-                "status": status_filter,
-                "q": query,
-                "id": id_filter,
-                "email": email_filter,
-                "email_source": email_source_filter,
-                "proxy": proxy_filter,
-                "error": error_filter,
-                "date_from": date_from,
-                "date_to": date_to,
-            },
-        ))
+        result = admin_repository.list_jobs(
+            admin_repository.PageRequest(
+                page=page,
+                page_size=page_size,
+                filters={
+                    "status": status_filter,
+                    "q": query,
+                    "id": id_filter,
+                    "email": email_filter,
+                    "email_source": email_source_filter,
+                    "proxy": proxy_filter,
+                    "error": error_filter,
+                    "date_from": date_from,
+                    "date_to": date_to,
+                },
+            ),
+            progress_batch_id=progress_batch_id,
+        )
         rows = result.get("items") or []
         for row in rows:
             row["manual_otp_required"] = manual_otp_required
@@ -3238,7 +3243,10 @@ def create_app(auth_code: str | None = None) -> Flask:
         started: list[dict] = []
         reused: list[dict] = []
         skipped: list[dict] = []
+        retry_batch_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-retry-{uuid.uuid4().hex[:8]}"
+        created_in_batch = 0
         seen: set[int] = set()
+        normalized_ids: list[int] = []
         for raw_id in job_ids:
             try:
                 one_id = int(raw_id)
@@ -3248,7 +3256,18 @@ def create_app(auth_code: str | None = None) -> Flask:
             if one_id in seen:
                 continue
             seen.add(one_id)
-            result = svc.retry_job(one_id, workers=workers)
+            normalized_ids.append(one_id)
+        for one_id in normalized_ids:
+            result = svc.retry_job(
+                one_id,
+                workers=workers,
+                batch_id=retry_batch_id,
+                batch_index=created_in_batch + 1,
+                batch_size=len(normalized_ids),
+            )
+            result_job = result.get("job") or {}
+            if str(result_job.get("batch_id") or "") == retry_batch_id:
+                created_in_batch += 1
             if not result.get("ok"):
                 skipped.append({"id": one_id, "reason": result.get("error") or "不能重试"})
             elif result.get("reused"):
@@ -3264,6 +3283,7 @@ def create_app(auth_code: str | None = None) -> Flask:
             "skipped": skipped,
             "skipped_count": len(skipped),
             "workers": workers,
+            "batch_id": retry_batch_id if created_in_batch else "",
         })
 
     @app.post("/api/jobs/<int:job_id>/delete")
@@ -3310,6 +3330,13 @@ def create_app(auth_code: str | None = None) -> Flask:
         job = db.get_job(job_id)
         if not job:
             return jsonify({"ok": False, "error": "任务不存在"}), 404
+        error_info = classify_task_error(
+            job.get("error_message"),
+            stage=str(job.get("progress_stage") or ""),
+            task_type=str(job.get("job_type") or "registration"),
+        )
+        if error_info:
+            job["error_info"] = error_info
         return jsonify({
             "ok": True,
             "job": job,

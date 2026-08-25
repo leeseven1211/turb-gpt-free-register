@@ -9,6 +9,17 @@ from core import registration_service as svc
 
 
 class RegistrationEmailReleaseTests(unittest.TestCase):
+    def test_completed_resume_marks_email_used_again(self):
+        with patch("core.email_provider.release_email", return_value="icloud_hide") as release:
+            changed = svc._mark_completed_resume_email("alias@icloud.com", 347)
+
+        self.assertTrue(changed)
+        release.assert_called_once_with(
+            "alias@icloud.com",
+            status="used",
+            note="继续注册已完成，已绑定账号 #347",
+        )
+
     def _run_job(self, result=None, error=None):
         job = {
             "id": 1,
@@ -87,6 +98,73 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
             detail="验证码等待超时",
         )
         finish_progress.assert_called_with(1, success=True)
+
+    def test_transient_proxy_failure_reacquires_fresh_lease(self):
+        job = {
+            "id": 1,
+            "status": "pending",
+            "email_source": "icloud_hide",
+        }
+        proxy1 = SimpleNamespace(
+            provider="1024proxy",
+            endpoint="1.1.1.1:8080",
+            exit_ip="1.1.1.1",
+            region="US",
+            acquired_at=SimpleNamespace(isoformat=lambda **_kwargs: "2026-08-13T00:00:00"),
+            expires_at=None,
+            proxy_url="http://1.1.1.1:8080",
+        )
+        proxy2 = SimpleNamespace(
+            provider="1024proxy",
+            endpoint="2.2.2.2:8080",
+            exit_ip="2.2.2.2",
+            region="US",
+            acquired_at=SimpleNamespace(isoformat=lambda **_kwargs: "2026-08-13T00:00:01"),
+            expires_at=None,
+            proxy_url="http://2.2.2.2:8080",
+        )
+        transient = {
+            "success": False,
+            "email": "alias@icloud.com",
+            "error": "RuntimeError: 邮箱提交/认证跳转超过总预算 60 秒，ERR_TUNNEL_CONNECTION_FAILED",
+        }
+        success = {
+            "success": True,
+            "registration_success": True,
+            "postprocess_success": True,
+            "email": "alias@icloud.com",
+            "account_id": 42,
+            "access_token": "token",
+        }
+
+        with tempfile.TemporaryDirectory() as td, patch.object(
+            svc.db, "get_job", return_value=job
+        ), patch.object(svc.db, "update_job"), patch.object(
+            svc.db, "update_job_progress"
+        ), patch.object(svc.db, "finish_job_progress"), patch.object(
+            svc.db, "claim_job_for_execution", return_value=True
+        ), patch.object(svc.db, "update_account_registration_proxy"), patch.object(
+            svc, "_prepare_registration_args", return_value=("alias@icloud.com", "Test", "1990-01-01")
+        ), patch.object(svc, "_registration_proxy_retry_limit", return_value=1), patch.object(
+            svc, "_registration_proxy_retry_delay", return_value=0
+        ), patch(
+            "core.proxy_provider.acquire_registration_proxy", side_effect=[proxy1, proxy2]
+        ) as acquire_proxy, patch(
+            "core.proxy_provider.release_proxy"
+        ) as release_proxy, patch(
+            "core.proxy_provider.mask_endpoint", return_value="masked"
+        ), patch(
+            "core.proxy_provider.mask_ip", return_value="masked"
+        ), patch(
+            "main.run_registration", side_effect=[transient, success]
+        ) as run_registration:
+            svc._run_one_job(1, str(Path(td) / "job.log"))
+
+        self.assertEqual(run_registration.call_count, 2)
+        self.assertEqual(acquire_proxy.call_count, 2)
+        self.assertEqual(acquire_proxy.call_args_list[1].kwargs["batch_id"], None)
+        release_proxy.assert_any_call(proxy1, reason="registration_proxy_retry_1")
+        release_proxy.assert_any_call(proxy2, reason="pending")
 
 
 if __name__ == "__main__":

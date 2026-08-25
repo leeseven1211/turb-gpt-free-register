@@ -23,6 +23,8 @@ from typing import Any
 
 from core import compat_export, postgres_store, record_store
 
+logger = logging.getLogger(__name__)
+
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DATA_DIR = _PROJECT_ROOT
 _LEGACY_DATA_DIR = _PROJECT_ROOT / "data"
@@ -650,8 +652,25 @@ def _patch_account(acc_id: int, changes: dict) -> bool:
     return _patch_row_and_export(record_store.ACCOUNTS, acc_id, changes, "accounts")
 
 
+def _sync_operation_job(job_id: int) -> None:
+    """迁移期兼容桥：旧注册执行写入后，立即刷新统一任务投影。
+
+    旧表仍是回滚落点，因此投影异常不能反过来覆盖或删除旧数据；异常会完整记录，
+    `migrate_unified_task_center.py --apply` 可随时幂等修复。
+    """
+    try:
+        from core import operation_task_store
+
+        operation_task_store.sync_registration_job(int(job_id))
+    except Exception:
+        logger.exception("同步统一任务中心失败：registration_job_id=%s", job_id)
+
+
 def _patch_job(job_id: int, changes: dict) -> bool:
-    return _patch_row_and_export(record_store.JOBS, job_id, changes, "jobs")
+    changed = _patch_row_and_export(record_store.JOBS, job_id, changes, "jobs")
+    if changed:
+        _sync_operation_job(job_id)
+    return changed
 
 
 def _save_together(*pairs) -> None:
@@ -870,6 +889,52 @@ def update_account_codex_status(email: str, codex_status: str, codex_error: str 
     })
 
 
+def update_account_codex_operation_state(
+    email: str,
+    *,
+    credential_state: str | None = None,
+    execution_status: str | None = None,
+    last_run_status: str | None = None,
+    error: str | None = None,
+    active_run_id: int | None = None,
+) -> bool:
+    """更新 Codex 三轴状态，同时维护旧 codex_status 的只读兼容语义。
+
+    一次重新授权失败不能抹掉此前有效的凭证资产；因此仅凭证确认成功、明确过期或
+    账号停用时才改变资产态。active_run_id=0 表示清空当前执行引用。
+    """
+    row = record_store.get_row_by(record_store.ACCOUNTS, "email", email, lower=True)
+    if row is None:
+        return False
+    changes: dict[str, Any] = {"updated_at": _now()}
+    if credential_state is not None:
+        changes["codex_credential_state"] = str(credential_state)
+    if execution_status is not None:
+        changes["codex_execution_status"] = str(execution_status)
+    if last_run_status is not None:
+        changes["codex_last_run_status"] = str(last_run_status)
+    if active_run_id is not None:
+        changes["codex_active_run_id"] = None if int(active_run_id or 0) <= 0 else int(active_run_id)
+    if error is not None or last_run_status == "success":
+        changes["codex_error"] = error
+
+    asset = str(credential_state if credential_state is not None else row.get("codex_credential_state") or "").lower()
+    legacy = str(row.get("codex_status") or "").lower()
+    result = str(last_run_status or "").lower()
+    if asset == "valid":
+        changes["codex_status"] = "success"
+    elif asset == "pending_confirmation":
+        changes["codex_status"] = "pending_confirmation"
+    elif asset == "deactivated" or result == "deactivated":
+        changes["codex_status"] = "deactivated"
+    elif legacy != "success":
+        if result in {"failed", "cancelled", "interrupted", "attention_required"}:
+            changes["codex_status"] = "stopped" if result == "cancelled" else result
+        elif execution_status in {"queued", "running", "cancelling"}:
+            changes["codex_status"] = "retrying"
+    return _patch_account(int(row["id"]), changes)
+
+
 def update_account_login_password(email: str, password: str, *, source: str = "post_registration") -> bool:
     """保存账号当前 OpenAI 密码；旧函数名保留以兼容调用方。"""
     normalized = str(password or "").strip()
@@ -983,6 +1048,52 @@ def update_account_token_metadata(acc_id: int, access_token: str) -> bool:
         "token_expired": expired,
         "updated_at": _now(),
     })
+
+
+def update_account_session(email: str, access_token: str, *, expires_at: str | None = None) -> bool:
+    """保存重新登录取得的新 ChatGPT 会话，并把注册检查点推进到已注册。
+
+    账号配置补跑过去只在浏览器里取得 session，却没有写回本地，导致任务显示成功而
+    账号仍无 Token。这里作为所有账号级重新登录的统一收口，保留原密码/2FA 信息，
+    只更新会话字段和注册检查点。
+    """
+    normalized_email = str(email or "").strip()
+    normalized_token = str(access_token or "").strip()
+    if not normalized_email or not normalized_token:
+        return False
+    row = record_store.get_row_by(record_store.ACCOUNTS, "email", normalized_email, lower=True)
+    if row is None:
+        return False
+    raw_extra = row.get("extra_json") or {}
+    if isinstance(raw_extra, str):
+        try:
+            raw_extra = json.loads(raw_extra)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw_extra = {}
+    extra = dict(raw_extra) if isinstance(raw_extra, dict) else {}
+    extra["registration_checkpoint"] = "registered"
+    extra.pop("registration_pending_reason", None)
+    from core.chatgpt_plan import token_claims
+
+    claims = token_claims(normalized_token)
+    changed = _patch_account(int(row["id"]), {
+        "access_token": normalized_token,
+        "expires_at": expires_at if expires_at is not None else row.get("expires_at"),
+        "token_expires_at": claims.get("token_expires_at"),
+        "token_expired": claims.get("token_expired"),
+        "extra_json": json.dumps(extra, ensure_ascii=False),
+        "updated_at": _now(),
+    })
+    if changed:
+        jobs = record_store.list_rows(
+            record_store.JOBS,
+            where='"account_id"=%s OR lower("email")=lower(%s)',
+            params=(int(row["id"]), normalized_email),
+            order_by="id",
+        )
+        for job in jobs:
+            _sync_operation_job(int(job["id"]))
+    return changed
 
 
 def sync_account_token_metadata(items: list[tuple[int, str]]) -> int:
@@ -2576,6 +2687,7 @@ def create_job(
         )
         rows.append(row)
         _save_jobs(rows)
+        _sync_operation_job(int(row["id"]))
         return dict(row)
 
 
@@ -2586,6 +2698,10 @@ def create_retry_job(
     email_source: str,
     email: str | None = None,
     account_id: int | None = None,
+    batch_id: str | None = None,
+    batch_index: int | None = None,
+    batch_size: int | None = None,
+    batch_workers: int | None = None,
 ) -> tuple[dict, bool]:
     """原子创建重试子任务；同一任务链已有活跃任务时直接复用。"""
     with _LOCK:
@@ -2628,9 +2744,14 @@ def create_retry_job(
             }.get(job_type, "registration"),
             email=email,
             account_id=account_id,
+            batch_id=batch_id,
+            batch_index=batch_index,
+            batch_size=batch_size,
+            batch_workers=batch_workers,
         )
         rows.append(row)
         _save_jobs(rows)
+        _sync_operation_job(int(row["id"]))
         return dict(row), True
 
 
@@ -2689,13 +2810,16 @@ def transition_job_status(
     placeholders = ", ".join("%s" for _ in allowed)
     changes = dict(changes)
     changes["status"] = str(to_status)
-    return record_store.claim_row(
+    changed = record_store.claim_row(
         record_store.JOBS,
         int(job_id),
         changes=changes,
         guard=f'"status" IN ({placeholders})',
         guard_params=allowed,
     )
+    if changed:
+        _sync_operation_job(job_id)
+    return changed
 
 
 def claim_job_for_execution(job_id: int, *, started_at: str | None = None) -> bool:
@@ -2715,7 +2839,13 @@ def cancel_pending_jobs(*, batch_id: str | None = None) -> int:
     if batch_id:
         where += ' AND "batch_id" = %s'
         params.append(str(batch_id))
-    return record_store.patch_rows_where(
+    candidates = record_store.list_rows(
+        record_store.JOBS,
+        where=where,
+        params=params,
+        order_by="id",
+    )
+    changed = record_store.patch_rows_where(
         record_store.JOBS,
         changes={
             "status": "cancelled",
@@ -2725,6 +2855,9 @@ def cancel_pending_jobs(*, batch_id: str | None = None) -> int:
         where=where,
         params=params,
     )
+    for row in candidates:
+        _sync_operation_job(int(row["id"]))
+    return changed
 
 
 def update_job_progress(
@@ -2934,6 +3067,9 @@ def recover_interrupted_registration_jobs() -> int:
                     account["copy_line"] = _account_line(account)
                 pairs.append((record_store.ACCOUNTS, accounts, "accounts"))
             _save_together(*pairs)
+            for row in rows:
+                if str(row.get("status") or "") == "failed" and str(row.get("error_message") or "").startswith("WebUI 进程重启"):
+                    _sync_operation_job(int(row["id"]))
         return recovered
 
 
@@ -3074,6 +3210,12 @@ def delete_jobs(job_ids: list[int], *, delete_log: bool = True, allow_running: b
     ]
     if rows:
         compat_export.schedule("jobs")
+        try:
+            from core import operation_task_store
+
+            operation_task_store.mark_registration_jobs_deleted(int(row["id"]) for row in rows)
+        except Exception:
+            logger.exception("标记统一任务来源已删除失败：job_ids=%s", sorted(seen))
     if delete_log:
         for row in rows:
             log_file = row.get("log_file")

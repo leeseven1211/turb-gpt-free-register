@@ -47,6 +47,7 @@ _CANCEL_QUEUE_PATH = Path(__file__).resolve().parent.parent / "run" / "sms_cance
 # 避免影响现有调用方。持久化取消队列只保存 activation_id/时间，不含 API key/手机号。
 _ACQUIRED_AT: dict[str, float] = {}
 _ACTIVATION_META: dict[str, dict] = {}
+_OPERATION_RESOURCE_IDS: dict[str, int] = {}
 _CANCEL_QUEUE_LOCK = threading.RLock()
 _CANCEL_WORKER_LOCK = threading.Lock()
 _CANCEL_WAKE_EVENT = threading.Event()
@@ -85,6 +86,44 @@ class SmsPriceLimitError(SmsProviderError):
 
 class SmsCodeTimeout(SmsProviderError):
     """单个号等短信超时（OpenAI 没发或没到达）。"""
+
+
+def _track_operation_resource(activation_id: str, provider: str) -> None:
+    """把付费接码资源登记到当前 operation run；不记录手机号。"""
+    try:
+        from core.operation_runtime import current_token
+        from core import operation_task_store
+
+        token = current_token()
+        if token is None:
+            return
+        row = operation_task_store.register_resource(
+            token.run_id,
+            resource_type="sms_activation",
+            provider=provider,
+            external_id=str(activation_id),
+        )
+        _OPERATION_RESOURCE_IDS[str(activation_id)] = int(row["id"])
+        operation_task_store.append_runtime_event(
+            token.run_id,
+            stage="phone_acquire",
+            message="已申请接码号码",
+            state="success",
+            detail={"provider": provider},
+        )
+    except Exception:
+        logger.debug("[SMS] 登记 operation 资源失败", exc_info=True)
+
+
+def _release_operation_resource(activation_id: str, state: str) -> None:
+    try:
+        from core import operation_task_store
+
+        resource_id = _OPERATION_RESOURCE_IDS.pop(str(activation_id), None)
+        if resource_id:
+            operation_task_store.release_resource(resource_id, state=state)
+    except Exception:
+        logger.debug("[SMS] 更新 operation 资源失败", exc_info=True)
 
 
 def _http() -> CurlSession:
@@ -770,6 +809,7 @@ def acquire_number(
                 raise SmsProviderError(f"L take-phone 响应缺少 item.id/item.phone：{str(data)[:200]}")
             _ACQUIRED_AT[activation_id] = time.time()
             logger.info(f"[SMS:L] 取号成功：id={activation_id}, phone=+{phone}")
+            _track_operation_resource(activation_id, "l")
             return activation_id, phone
 
         if _provider() == "h":
@@ -805,6 +845,7 @@ def acquire_number(
                 f"[SMS:H] 取号成功：mode={mode}, api={api_path}, id={activation_id}, phone=+{phone}, "
                 f"reused={bool(data.get('reused'))}, duplicate={bool(data.get('duplicate'))}"
             )
+            _track_operation_resource(activation_id, "h")
             return activation_id, phone
 
         service_code = str(service or _cfg.SMS_SERVICE).strip()
@@ -880,6 +921,7 @@ def acquire_number(
         # 被重启/杀掉，订单仍会由新进程恢复并在可取消时间到达后回收。
         _enqueue_grizzly_cancel(activation_id, safety_delay=15)
         start_cancel_worker()
+        _track_operation_resource(activation_id, "grizzly")
         return activation_id, phone
     finally:
         if own_http:
@@ -922,6 +964,8 @@ def wait_for_sms_code(
         logger.info(f"[SMS] 等待短信验证码 activation_id={activation_id}，最长 {total_wait}s...")
         round_no = 0
         while time.time() < deadline:
+            from core.operation_runtime import check_cancelled
+            check_cancelled()
             try:
                 from core.registration_service import check_stop_requested
                 check_stop_requested()
@@ -952,7 +996,8 @@ def wait_for_sms_code(
                     f"[SMS:L] 第 {round_no} 轮未收到验证码，状态={status or raw or 'WAIT'}，"
                     f"{interval}s 后重试（剩余 {remaining}s）"
                 )
-                time.sleep(interval)
+                from core.operation_runtime import cancellable_sleep
+                cancellable_sleep(interval)
                 continue
 
             if provider == "h":
@@ -968,7 +1013,8 @@ def wait_for_sms_code(
                     f"[SMS:H] 第 {round_no} 轮未收到验证码，状态={status or raw or 'WAIT'}，"
                     f"{interval}s 后重试（剩余 {remaining}s）"
                 )
-                time.sleep(interval)
+                from core.operation_runtime import cancellable_sleep
+                cancellable_sleep(interval)
                 continue
 
             text = _request_grizzly(http, {"action": "getStatus", "id": activation_id})
@@ -982,7 +1028,8 @@ def wait_for_sms_code(
             # STATUS_WAIT_CODE / STATUS_WAIT_RETRY:* / STATUS_WAIT_RESEND → 继续等
             remaining = max(0, int(deadline - time.time()))
             logger.info(f"[SMS] 第 {round_no} 轮未收到验证码，状态={text}，{interval}s 后重试（剩余 {remaining}s）")
-            time.sleep(interval)
+            from core.operation_runtime import cancellable_sleep
+            cancellable_sleep(interval)
 
         # 截止点再查一次，尽量接住恰好在最后一次 sleep 期间到达的验证码。
         if provider == "grizzly":
@@ -1031,12 +1078,14 @@ def complete(activation_id: str, http: CurlSession | None = None) -> None:
         logger.info(f"[SMS:L] 已完成 id={activation_id}")
         _ACQUIRED_AT.pop(activation_id, None)
         _ACTIVATION_META.pop(activation_id, None)
+        _release_operation_resource(activation_id, "completed")
         return
     if _provider() == "h":
         # H 成功 fetch-code 后后台会自动按多次收码策略重取；这里不 release。
         logger.info(f"[SMS:H] 已完成 id={activation_id}")
         _ACQUIRED_AT.pop(activation_id, None)
         _ACTIVATION_META.pop(activation_id, None)
+        _release_operation_resource(activation_id, "completed")
         return
     try:
         set_status(activation_id, 6, http=http)
@@ -1045,6 +1094,7 @@ def complete(activation_id: str, http: CurlSession | None = None) -> None:
         _remove_grizzly_cancel(activation_id)
         _ACQUIRED_AT.pop(activation_id, None)
         _ACTIVATION_META.pop(activation_id, None)
+        _release_operation_resource(activation_id, "completed")
     except Exception as exc:
         logger.warning(f"[SMS] 标记完成失败（不影响结果）：{exc}")
 
@@ -1314,6 +1364,7 @@ def cancel(activation_id: str, http: CurlSession | None = None, background: bool
             logger.warning(f"[SMS:L] 释放号码失败（不影响主流程）：id={activation_id}, {type(exc).__name__}: {exc}")
             _ACQUIRED_AT.pop(activation_id, None)
             _ACTIVATION_META.pop(activation_id, None)
+        _release_operation_resource(activation_id, "cancelled")
         return
     if _provider() == "h":
         try:
@@ -1322,11 +1373,14 @@ def cancel(activation_id: str, http: CurlSession | None = None, background: bool
             logger.warning(f"[SMS:H] 释放号码失败（不影响主流程）：id={activation_id}, {type(exc).__name__}: {exc}")
             _ACQUIRED_AT.pop(activation_id, None)
             _ACTIVATION_META.pop(activation_id, None)
+        _release_operation_resource(activation_id, "cancelled")
         return
 
     if not background:
         _do_cancel_sync(activation_id)
+        _release_operation_resource(activation_id, "cancelled")
         return
     _enqueue_grizzly_cancel(activation_id)
     start_cancel_worker()
+    _release_operation_resource(activation_id, "cancel_pending")
     logger.debug("[SMS] 取消任务已进入持久化队列：activation_id=%s", activation_id)

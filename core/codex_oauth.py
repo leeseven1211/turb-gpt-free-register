@@ -46,6 +46,7 @@ from core.openai_auth import (
     network_preflight,
 )
 from core import sms_provider
+from core.operation_runtime import OperationCancelled, call_cancellable, check_cancelled, current_token, report_stage
 from curl_cffi import requests as curl_requests
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,9 @@ def _codex_result(
     file_path: str | None = None,
     callback_url: str | None = None,
     message: str = "",
+    credential_confirmed: bool = False,
+    callback_submitted: bool = False,
+    receipt_path: str | None = None,
 ) -> dict:
     """构造与 flow_trigger._flow_result 同形态的结构化结果。"""
     return {
@@ -103,6 +107,9 @@ def _codex_result(
         "file_path": file_path,
         "callback_url": callback_url,
         "message": message,
+        "credential_confirmed": bool(credential_confirmed),
+        "callback_submitted": bool(callback_submitted),
+        "receipt_path": receipt_path,
     }
 
 
@@ -520,6 +527,49 @@ def download_cpa_codex_auth_text(*, cpa_name: str | None = None, email: str = ""
         raise RuntimeError(f"[Codex][CPA] CPA 下载内容不是 JSON 对象: {name}")
     return json.dumps(parsed, ensure_ascii=False, indent=2) + "\n", name, (meta or {"name": name})
 
+
+def _capture_cpa_credential_baseline(email: str) -> dict:
+    """在开始新授权前记录 CPA 凭证内容指纹，用于排除旧凭证假阳性。"""
+    try:
+        meta = find_cpa_codex_auth_file(email=email)
+        if not meta:
+            return {"captured": True, "fingerprint": "", "name": ""}
+        text, name, _ = download_cpa_codex_auth_text(cpa_name=str(meta.get("name") or ""))
+        return {
+            "captured": True,
+            "fingerprint": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            "name": name,
+        }
+    except Exception as exc:
+        logger.warning("[Codex][CPA] 授权前凭证基线读取失败，本次不做自动成功确认：%s", str(exc)[:180])
+        return {"captured": False, "fingerprint": "", "name": ""}
+
+
+def _confirm_cpa_credential_after_callback(email: str, baseline: dict) -> Path | None:
+    """有界轮询 CPA，下载、校验并保存本次新产生的真实凭证。"""
+    if not baseline or not baseline.get("captured"):
+        return None
+    timeout = max(0, min(30, int(getattr(_cfg, "CPA_CREDENTIAL_CONFIRM_TIMEOUT", 12) or 12)))
+    deadline = time.monotonic() + timeout
+    baseline_hash = str(baseline.get("fingerprint") or "")
+    while True:
+        try:
+            text, _name, _meta = download_cpa_codex_auth_text(email=email)
+            fingerprint = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            payload = json.loads(text)
+            usable = _extract_cpa_auth_json({"auth_json": payload})
+            if usable and fingerprint != baseline_hash:
+                effective_email = str(usable.get("email") or email)
+                plan = str(usable.get("plan_type") or usable.get("chatgpt_plan_type") or "")
+                return save_codex_credential(usable, effective_email, plan)
+        except Exception as exc:
+            logger.debug("[Codex][CPA] 等待远端凭证确认：%s", str(exc)[:160])
+        if time.monotonic() >= deadline:
+            return None
+        # Callback 已经交给远端，此处故意完成有界对账再响应取消，避免把未知远端状态
+        # 错报成“完全取消”。最长等待由 CPA_CREDENTIAL_CONFIRM_TIMEOUT 限制。
+        time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+
 def _first_non_empty(*values) -> str:
     for value in values:
         text = str(value or "").strip()
@@ -861,7 +911,8 @@ def _sleep_before_phone_retry(
     if seconds <= 0:
         return
     logger.info(f"{prefix} 换号前随机等待 {seconds:.1f} 秒")
-    time.sleep(seconds)
+    from core.operation_runtime import cancellable_sleep
+    cancellable_sleep(seconds)
 
 
 def _do_phone_verification(session: BrowserSession) -> None:
@@ -886,6 +937,7 @@ def _do_phone_verification(session: BrowserSession) -> None:
                 break
             activation_id = None
             try:
+                check_cancelled()
                 activation_id, phone = sms_provider.acquire_number(http)
                 logger.info(
                     f"[Codex] 手机验证尝试 {attempt}/{max_retries}，"
@@ -962,6 +1014,10 @@ def _do_phone_verification(session: BrowserSession) -> None:
                 logger.info("[Codex] 手机号验证通过")
                 return
 
+            except OperationCancelled:
+                if activation_id:
+                    sms_provider.cancel(activation_id, http, background=True)
+                raise
             except (sms_provider.SmsNoBalanceError, sms_provider.SmsPriceLimitError):
                 # 余额不足/价格上限不满足，重复相同请求无意义，直接抛。
                 raise
@@ -1314,6 +1370,67 @@ def _save_sub2_local_record(
     return path
 
 
+def _remote_callback_result(
+    *, source: str, email: str, callback_url: str, auth_url: str, state: str,
+    submit_payload: dict, driver_message: str = "", cpa_baseline: dict | None = None,
+) -> dict:
+    """将 CPA/sub2 callback 与凭证确认分开。
+
+    管理端接受 callback 只说明交接完成；只有响应中带有完整 auth JSON 并已写入
+    codex_credentials，才允许把本次执行标记为 success。
+    """
+    auth_json = _extract_cpa_auth_json(submit_payload)
+    if source == "cpa":
+        path = _save_cpa_local_record(
+            email=email, callback_url=callback_url, auth_url=auth_url,
+            state=state, submit_payload=submit_payload,
+        )
+        default_message = "CPA callback submitted"
+    elif source == "sub2":
+        path = _save_sub2_local_record(
+            email=email, callback_url=callback_url, auth_url=auth_url,
+            state=state, submit_payload=submit_payload,
+        )
+        default_message = "sub2 callback uploaded"
+    else:
+        raise ValueError(f"不支持的远端 callback 来源: {source}")
+    confirmed = auth_json is not None
+    if source == "cpa" and not confirmed and cpa_baseline is not None:
+        token = current_token()
+        if token is not None:
+            from core import operation_task_store
+
+            operation_task_store.mark_run_settling(token.run_id)
+        confirmed_path = _confirm_cpa_credential_after_callback(email, cpa_baseline)
+        if confirmed_path is not None:
+            path = confirmed_path
+            confirmed = True
+    message = str(
+        submit_payload.get("message")
+        or submit_payload.get("status_message")
+        or default_message
+    )
+    if driver_message:
+        message = f"{driver_message}: {message}"
+    report_stage(
+        "credential_confirm",
+        "远端凭证已确认" if confirmed else "Callback 已接收，等待远端凭证确认",
+        state="success" if confirmed else "failed",
+        level="INFO" if confirmed else "WARNING",
+    )
+    return _codex_result(
+        status="success" if confirmed else "attention_required",
+        ok=confirmed,
+        email=str((auth_json or {}).get("email") or email),
+        file_path=str(path) if confirmed and path else None,
+        receipt_path=str(path) if (not confirmed) and path else None,
+        callback_url=callback_url,
+        callback_submitted=True,
+        credential_confirmed=confirmed,
+        message=(message if confirmed else f"{message}；callback 已接收，等待远端凭证确认"),
+    )
+
+
 # ============================================================
 # 入口
 # ============================================================
@@ -1433,16 +1550,20 @@ def run_codex_oauth(
 
     session = BrowserSession(proxy=proxy)
     try:
+        check_cancelled()
         logger.info(f"[Codex] 开始授权（全新 session）：{email}")
 
         # 1. 授权地址
         #    默认由 CPA 生成（本地不生成 PKCE/state）；local 模式保留旧代码用于兼容。
         auth_source = _codex_auth_url_source()
+        report_stage("auth_url", "开始获取 Codex 授权地址")
         cpa_auth = None
+        cpa_baseline = None
         code_verifier = None
         code_challenge = None
         auth_url = None
         if auth_source == "cpa":
+            cpa_baseline = _capture_cpa_credential_baseline(email)
             cpa_auth = _request_cpa_authorize_url()
             state = cpa_auth["state"]
             auth_url = cpa_auth["auth_url"]
@@ -1458,10 +1579,12 @@ def run_codex_oauth(
             logger.info("[Codex] 当前使用本地 PKCE 生成授权地址，完整 URL 将在 bootstrap 阶段输出")
         else:
             raise RuntimeError(f"[Codex] 不支持的 CODEX_AUTH_URL_SOURCE={auth_source!r}")
+        report_stage("auth_url", "Codex 授权地址已准备", state="success", detail={"source": auth_source})
 
         # 2. 网络预检 + 建立会话。预检不携带邮箱，不触发 OTP；
         #    真正烧邮箱的 authorize/continue 只在预检成功后执行。
         network_preflight(session)
+        report_stage("network", "OAuth 网络预检通过", state="success")
         human_delay("navigate")
 
         _bootstrap_authorize(session, state, code_challenge, auth_url=auth_url)
@@ -1470,16 +1593,21 @@ def run_codex_oauth(
         # 3. 提交邮箱（触发邮箱 OTP）
         otp_after_ts = time.time()
         _submit_email(session, email)
+        report_stage("login", "已提交 OpenAI 登录邮箱", state="success")
         human_delay("form")
 
         # 4. 收邮箱 OTP + 提交；若一直未收到，协议模式下重新提交邮箱触发重发。
         email_otp = None
         max_email_otp_attempts = 3
         for email_otp_attempt in range(1, max_email_otp_attempts + 1):
+            check_cancelled()
+            report_stage("email_otp", f"等待邮箱验证码（{email_otp_attempt}/{max_email_otp_attempts}）")
             logger.info(f"[Codex] 等待邮箱 OTP：{email}（第 {email_otp_attempt}/{max_email_otp_attempts} 次）")
             try:
-                email_otp = otp_provider(email, after_ts=otp_after_ts)
+                email_otp = call_cancellable(otp_provider, email, after_ts=otp_after_ts)
                 break
+            except OperationCancelled:
+                raise
             except Exception as exc:
                 if email_otp_attempt >= max_email_otp_attempts:
                     raise
@@ -1496,14 +1624,18 @@ def run_codex_oauth(
         logger.info(f"[Codex] 邮箱 OTP 收到：{email_otp}")
         human_delay("otp_input")
         _submit_email_otp(session, email_otp)
+        report_stage("email_otp", "邮箱验证码已通过", state="success")
         human_delay("api")
 
         # 5. 手机号验证（接码，自动重试换号）
+        report_stage("phone_check", "检查是否需要手机验证")
         _do_phone_verification(session)
+        report_stage("phone_check", "手机验证已完成或无需验证", state="success")
         human_delay("post_auth")
 
         # 6. 选 workspace → 拿 callback code
         callback_url = _select_workspace_and_get_callback(session, state)
+        report_stage("callback", "已捕获 OAuth callback", state="success")
         code = _extract_code(callback_url, state)
         logger.info(f"[Codex] 已拿到 authorization code：{code[:24]}...")
 
@@ -1511,23 +1643,13 @@ def run_codex_oauth(
         #     本地不再用 code 换 token；仅保存 CPA 返回的授权文件或回调回执。
         if auth_source == "cpa":
             submit_payload = _submit_cpa_callback(callback_url)
-            path = _save_cpa_local_record(
-                email=email,
-                callback_url=callback_url,
-                auth_url=auth_url or "",
-                state=state,
-                submit_payload=submit_payload,
+            result = _remote_callback_result(
+                source="cpa", email=email, callback_url=callback_url,
+                auth_url=auth_url or "", state=state, submit_payload=submit_payload,
+                cpa_baseline=cpa_baseline,
             )
-            msg = submit_payload.get("message") or submit_payload.get("status_message") or "CPA callback submitted"
-            logger.info(f"[Codex][CPA] 成功：{email}，{msg}，本地记录={path or 'disabled'}")
-            return _codex_result(
-                status="success",
-                ok=True,
-                email=email,
-                file_path=str(path) if path else None,
-                callback_url=callback_url,
-                message=str(msg),
-            )
+            logger.info("[Codex][CPA] callback 处理完成：%s status=%s", email, result["status"])
+            return result
 
         # 7A-sub2. sub2 模式：把 callback URL 上传给 sub2。
         if auth_source == "sub2":
@@ -1536,23 +1658,12 @@ def run_codex_oauth(
                 session_id=(sub2_auth or {}).get("session_id", ""),
                 redirect_uri=(parse_qs(urlparse(auth_url or "").query).get("redirect_uri") or [""])[0],
             )
-            path = _save_sub2_local_record(
-                email=email,
-                callback_url=callback_url,
-                auth_url=auth_url or "",
-                state=state,
-                submit_payload=submit_payload,
+            result = _remote_callback_result(
+                source="sub2", email=email, callback_url=callback_url,
+                auth_url=auth_url or "", state=state, submit_payload=submit_payload,
             )
-            msg = submit_payload.get("message") or submit_payload.get("status_message") or "sub2 callback uploaded"
-            logger.info(f"[Codex][sub2] 成功：{email}，{msg}，本地记录={path or 'disabled'}")
-            return _codex_result(
-                status="success",
-                ok=True,
-                email=email,
-                file_path=str(path) if path else None,
-                callback_url=callback_url,
-                message=str(msg),
-            )
+            logger.info("[Codex][sub2] callback 处理完成：%s status=%s", email, result["status"])
+            return result
 
         # 7B. local 模式：保留旧实现，用本地 verifier 换 token 并保存 CPA 兼容授权文件。
         if not code_verifier:
@@ -1564,6 +1675,7 @@ def run_codex_oauth(
         effective_email = id_claims.get("email") or email
         storage = build_codex_storage(token_resp, id_claims)
         path = save_codex_credential(storage, effective_email, id_claims.get("plan_type", ""))
+        report_stage("credential_persist", "Codex 凭证已写入数据库", state="success")
 
         logger.info(
             f"[Codex] 成功：{effective_email}，plan={id_claims.get('plan_type') or 'unknown'}, "
@@ -1576,7 +1688,10 @@ def run_codex_oauth(
             file_path=str(path),
             callback_url=callback_url,
             message=f"plan={id_claims.get('plan_type') or 'unknown'}",
+            credential_confirmed=True,
         )
+    except OperationCancelled:
+        raise
     except AccountUnusableError as exc:
         logger.warning(f"[Codex] 账号已废（{exc.error_code}）：{email}")
         return _codex_result(
