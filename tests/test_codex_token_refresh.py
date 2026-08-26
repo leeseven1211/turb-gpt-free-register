@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 
 from core import codex_token_refresh_service as service, db
 from webui.app import create_app
+from webui.routes import codex as codex_routes
 from tests.support_pg import PostgresTestCase
 
 
@@ -129,7 +130,7 @@ class CodexOauthRefreshApiTests(PostgresTestCase):
 
     def test_bulk_endpoint_creates_token_refresh_tasks(self):
         with (
-            patch.object(service.account_task_store, "create_batch", return_value="batch-1"),
+            patch.object(codex_routes.account_task_store, "create_batch", return_value="batch-1"),
             patch.object(service, "enqueue_refresh", return_value={
                 "accepted": True,
                 "task_id": 901,
