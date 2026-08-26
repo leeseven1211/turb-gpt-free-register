@@ -23,9 +23,9 @@ WebUI 是两个进程，都通过 `db.insert_account` 写同一份数据，读�
 ## 现在的结构
 
 ```
-core/postgres_store.py   连接、schema、app_collections（整块 blob，仍用于
-                         codex 凭证等尚未拆表的集合）
-core/record_store.py     行级表：可行级 UPDATE、可跨进程原子抢占、可跨表事务
+core/postgres_store.py   连接、schema、app_collections（调度状态、兼容集合和
+                         迁移期旧数据）
+core/record_store.py     全部正常业务行级表：可行级 UPDATE、可跨进程原子抢占、可跨表事务
 core/compat_export.py    兼容文件的去抖导出器（后台，不在写入主路径上）
 core/db.py               业务数据层，建在上面三者之上
 core/account_task_store.py  账号操作任务的三张关系表（更早就已拆表）
@@ -39,9 +39,12 @@ core/account_task_store.py  账号操作任务的三张关系表（更早就已�
 | `registration_jobs` | 注册/Codex 任务 |
 | `email_pool_outlook` | Outlook 邮箱池 |
 | `email_pool_generic_api` | 通用 API 邮箱池 |
+| `email_pool_domain` | 域名邮箱池 |
+| `email_pool_icloud_hide` | iCloud Hide My Email 别名池 |
+| `codex_credentials` | Codex OAuth 凭证 |
 | `proxy_leases` | 1024Proxy 端点、出口 IP 和隔离期的跨进程租约 |
 | `account_action_batches` / `_tasks` / `_events` | 账号操作任务（早于本次改造） |
-| `app_collections` | 尚未拆表的集合：codex 凭证、导出状态、域名邮箱池、iCloud 别名池 |
+| `app_collections` | 调度状态、兼容集合、迁移期旧数据；不是正常账号/邮箱/Codex 列表的事实来源 |
 
 ### 字段策略：提升列 + JSONB
 
@@ -154,8 +157,8 @@ python tools/migrate_collections_to_tables.py --apply     # 导入（幂等）
 python tools/migrate_collections_to_tables.py --verify    # 逐字段对账
 ```
 
-- 数据源是 `app_collections`（当前主存储），不是根目录的文件——文件可能落后于库。
-  库里没有对应集合时才回退读文件。
+- 这是历史/一次性迁移工具：优先读取 `app_collections`，对应集合不存在时才读取根目录兼容文件。
+  该输入顺序不代表运行时事实来源；迁移完成后，正常业务读取行级表。
 - **id 原样保留**：现有 id 被 `codex_accounts/` 的文件名和
   `account_action_tasks.account_id` 引用，重排会打断这些引用。导入后
   `sync_identity` 把序列推到 `max(id)` 之后。
@@ -184,10 +187,10 @@ python tools/migrate_collections_to_tables.py --verify    # 逐字段对账
 
 ## 后续
 
-尚未入库、仍以文件为事实来源的：
+仍保留文件形态、但不作为 Codex 凭证事实来源的兼容产物：
 
-- `codex_accounts/*.json` —— `list_codex_accounts` 直接 glob 目录。有真实外部
-  消费者（CPA 按此格式读），入库后需保留"按需生成 CPA 文件"的能力。
+- `codex_accounts/*.json` —— PostgreSQL `codex_credentials` 的 CPA 兼容输出。有真实外部
+  消费者（CPA 按此格式读），因此必须保留按需生成和导出能力。
 - `run/sms_cancel_queue.json` —— 待取消的接码订单队列，带退避重试。这是**欠外部
   平台的动作**，崩溃后必须恢复，本质上和 `account_action_tasks` 同类。
 - `run/roxy_active_profiles.json` —— 孤儿浏览器环境登记表，崩溃恢复用。

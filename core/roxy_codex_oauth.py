@@ -18,27 +18,27 @@ from core import sms_provider
 from core.operation_runtime import OperationCancelled, call_cancellable, cancellable_sleep, check_cancelled, report_stage
 from core.openai_auth import AccountUnusableError, detect_account_unusable_response_body
 from core.roxybrowser_client import RoxyBrowserClient
-from core.roxy_registration import (
-    _build_driver,
-    _center_browser_window,
-    _click_any,
-    _click_continue,
-    _find_any,
-    _maybe_accept,
-    _type_any,
-    _type_email_address,
-    _submit_email_step,
-    _recover_email_submit_if_stuck,
-    _submit_email_via_browser_nextauth,
-    _click_email_entry_option,
-    _type_otp,
-    _clear_otp_inputs,
-    _email_otp_page_state,
-    _is_email_verification_page,
-    _is_login_password_page,
-    _click_passwordless_signup_if_present,
-    _human_click,
-    _human_type_text,
+from core.registration.selenium_auth import (
+    build_driver as _build_driver,
+    center_browser_window as _center_browser_window,
+    click_any as _click_any,
+    click_continue as _click_continue,
+    find_any as _find_any,
+    maybe_accept as _maybe_accept,
+    type_any as _type_any,
+    type_email_address as _type_email_address,
+    submit_email_step as _submit_email_step,
+    recover_email_submit_if_stuck as _recover_email_submit_if_stuck,
+    submit_email_via_browser_nextauth as _submit_email_via_browser_nextauth,
+    click_email_entry_option as _click_email_entry_option,
+    type_otp as _type_otp,
+    clear_otp_inputs as _clear_otp_inputs,
+    email_otp_page_state as _email_otp_page_state,
+    is_email_verification_page as _is_email_verification_page,
+    is_login_password_page as _is_login_password_page,
+    click_passwordless_signup_if_present as _click_passwordless_signup_if_present,
+    human_click as _human_click,
+    human_type_text as _human_type_text,
 )
 
 _base_logger = logging.getLogger(__name__)
@@ -2604,7 +2604,7 @@ def _run_roxy_codex_oauth_once(
             # 全程还没有进入手机号页面，因此失败也不会产生接码费用。
             logger.info("[Codex][Browser] 账号缺少登录密码/2FA，先建立 ChatGPT 登录态")
             _fill_email_and_otp(driver, email, otp_provider, "https://chatgpt.com/auth/login")
-            from core.roxy_registration import _fetch_chatgpt_session
+            from core.registration.selenium_auth import fetch_chatgpt_session as _fetch_chatgpt_session
 
             _fetch_chatgpt_session(driver, timeout=90, auto_jump_wait=10)
             setup_changed = bool(before_oauth_setup(driver))
@@ -2720,7 +2720,10 @@ def run_roxy_chatgpt_account_action(
         clear_roxy_browser_auth_state(driver)
         logger.info("[Codex][Browser] 开始建立 ChatGPT 账号会话：%s", email)
         _fill_email_and_otp(driver, email, otp_provider, "https://chatgpt.com/auth/login")
-        from core.roxy_registration import _complete_profile_page, _fetch_chatgpt_session
+        from core.registration.selenium_auth import (
+            complete_profile_page as _complete_profile_page,
+            fetch_chatgpt_session as _fetch_chatgpt_session,
+        )
 
         # 待邮箱验证账号通过 OTP 后会落在 about-you。账号操作过去把“离开 OTP 页”
         # 误判成已登录，随后等待 session 超时。这里把账号级登录和注册恢复统一到同一

@@ -510,7 +510,16 @@ class AccountTaskApiTests(PostgresTestCase):
         self.assertEqual("live_check", response.get_json()["items"][0]["task_type"])
 
     def test_ui_contains_unified_task_center_and_at_expiry(self):
-        html = (Path(__file__).resolve().parents[1] / "webui" / "templates" / "index.html").read_text("utf-8")
+        app = create_app(auth_code="test-auth")
+        client = app.test_client()
+        html = client.get("/", headers={"X-Auth-Code": "test-auth"}).get_data(as_text=True)
+        for asset in ("js/modern/common.js", "js/modern/accounts.js"):
+            response = client.get(f"/static/{asset}")
+            try:
+                self.assertEqual(response.status_code, 200, asset)
+                html += "\n" + response.get_data(as_text=True)
+            finally:
+                response.close()
         self.assertIn('data-tab="tasks"', html)
         self.assertIn('任务中心', html)
         self.assertLess(html.index('data-tab="codex"'), html.index('data-tab="tasks"'))

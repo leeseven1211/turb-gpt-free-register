@@ -9,7 +9,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
-from core import account_task_store, db
+from core.operations import task_gateway as account_task_store
+from core.storage import accounts as db
 from core.account_liveness import check_account_liveness, log_path
 from core.chatgpt_plan import check_account_plan, token_claims
 from core.openai_auth import detect_account_unusable_text

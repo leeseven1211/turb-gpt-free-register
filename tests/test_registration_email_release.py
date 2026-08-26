@@ -9,6 +9,23 @@ from core import registration_service as svc
 
 
 class RegistrationEmailReleaseTests(unittest.TestCase):
+    def test_disable_job_email_marks_email_disabled(self):
+        with patch("core.email_provider.release_email", return_value="icloud_hide") as release:
+            changed = svc._disable_job_email("alias@icloud.com", "password page")
+
+        self.assertTrue(changed)
+        release.assert_called_once_with(
+            "alias@icloud.com",
+            status="disabled",
+            note="自动停用: password page",
+        )
+
+    def test_disable_job_email_without_email_is_noop(self):
+        with patch("core.email_provider.release_email") as release:
+            self.assertFalse(svc._disable_job_email("", "reason"))
+
+        release.assert_not_called()
+
     def test_completed_resume_marks_email_used_again(self):
         with patch("core.email_provider.release_email", return_value="icloud_hide") as release:
             changed = svc._mark_completed_resume_email("alias@icloud.com", 347)
@@ -64,7 +81,7 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
         ), patch(
             "core.proxy_provider.mask_ip", return_value="masked"
         ), patch(
-            "main.run_registration", side_effect=run_registration
+            "core.registration.dispatcher.run_registration", side_effect=run_registration
         ):
             svc._run_one_job(1, str(Path(td) / "job.log"))
         return release_email, update_progress, finish_progress
@@ -156,7 +173,7 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
         ), patch(
             "core.proxy_provider.mask_ip", return_value="masked"
         ), patch(
-            "main.run_registration", side_effect=[transient, success]
+            "core.registration.dispatcher.run_registration", side_effect=[transient, success]
         ) as run_registration:
             svc._run_one_job(1, str(Path(td) / "job.log"))
 

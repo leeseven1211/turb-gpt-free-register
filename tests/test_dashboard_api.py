@@ -11,10 +11,64 @@ from tests.support_pg import PostgresTestCase
 
 
 class DashboardApiTests(PostgresTestCase):
+    MODERN_ASSETS = (
+        "css/modern.css",
+        "js/modern/common.js",
+        "js/modern/dashboard.js",
+        "js/modern/jobs.js",
+        "js/modern/accounts.js",
+        "js/modern/email.js",
+        "js/modern/codex.js",
+        "js/modern/config.js",
+        "js/modern/bootstrap.js",
+    )
+
     def setUp(self):
         self.app = create_app(auth_code="test-auth")
         self.client = self.app.test_client()
         self.headers = {"X-Auth-Code": "test-auth"}
+
+    def _page_source(self, response, assets=()):
+        source = response.get_data(as_text=True)
+        for asset in assets:
+            asset_response = self.client.get(f"/static/{asset}")
+            try:
+                self.assertEqual(asset_response.status_code, 200, asset)
+                source += "\n" + asset_response.get_data(as_text=True)
+            finally:
+                asset_response.close()
+        return source
+
+    def _modern_page_source(self, response):
+        return self._page_source(response, self.MODERN_ASSETS)
+
+    def test_frontend_static_assets_are_referenced_and_served(self):
+        assets = self.MODERN_ASSETS + (
+            "css/legacy.css",
+            "css/login.css",
+            "js/legacy/common.js",
+            "js/legacy/dashboard.js",
+            "js/legacy/jobs.js",
+            "js/legacy/accounts.js",
+            "js/legacy/email.js",
+            "js/legacy/codex.js",
+            "js/legacy/config.js",
+            "js/legacy/bootstrap.js",
+            "js/login.js",
+        )
+        for asset in assets:
+            response = self.client.get(f"/static/{asset}")
+            try:
+                self.assertEqual(response.status_code, 200, asset)
+            finally:
+                response.close()
+
+        modern = self.client.get("/", headers=self.headers).get_data(as_text=True)
+        legacy = self.client.get("/?ui=legacy", headers=self.headers).get_data(as_text=True)
+        login = self.client.get("/login").get_data(as_text=True)
+        self.assertIn("/static/js/modern/common.js", modern)
+        self.assertIn("/static/js/legacy/common.js", legacy)
+        self.assertIn("/static/js/login.js", login)
 
     @patch("core.proxy_provider.registration_proxy_mode", return_value="1024")
     @patch("core.proxy_provider.active_proxy_leases", return_value=[{"provider": "1024proxy", "endpoint": "1.2.*.*:80"}])
@@ -110,7 +164,7 @@ class DashboardApiTests(PostgresTestCase):
     def test_modern_ui_contains_overview_and_no_external_sidebar_links(self):
         response = self.client.get("/", headers=self.headers)
         self.assertEqual(response.status_code, 200)
-        html = response.get_data(as_text=True)
+        html = self._modern_page_source(response)
         self.assertIn('id="tab-overview"', html)
         self.assertIn('class="accounts-command-deck"', html)
         self.assertIn('id="butlerLeasePanel"', html)
@@ -210,7 +264,7 @@ class DashboardApiTests(PostgresTestCase):
     def test_modern_ui_polling_avoids_overlapping_requests_and_duplicate_summary_refresh(self):
         response = self.client.get("/", headers=self.headers)
         self.assertEqual(response.status_code, 200)
-        html = response.get_data(as_text=True)
+        html = self._modern_page_source(response)
         self.assertIn("if (summaryLoading) return;", html)
         self.assertIn("if (dashboardLoading) return;", html)
         self.assertIn("if (jobsLoading) { jobsReloadQueued = true; return; }", html)
@@ -224,7 +278,7 @@ class DashboardApiTests(PostgresTestCase):
 
     def test_all_list_actions_remain_available_with_resizable_columns(self):
         response = self.client.get("/", headers=self.headers)
-        html = response.get_data(as_text=True)
+        html = self._modern_page_source(response)
         action_ids = {
             # 任务记录
             "btnRetrySelectedJobsV2", "btnDeleteSelectedJobsV2", "btnCancelPendingV2", "btnRefreshJobsV2",
@@ -267,7 +321,7 @@ class DashboardApiTests(PostgresTestCase):
 
     def test_navigation_avoids_unnecessary_vertical_scrolling(self):
         response = self.client.get("/", headers=self.headers)
-        html = response.get_data(as_text=True)
+        html = self._modern_page_source(response)
         self.assertIn("min-height: 0; padding-left: var(--sidebar-width);", html)
         self.assertIn("overscroll-behavior-y: contain;", html)
         self.assertIn("#tab-config .config-nav-v2-item { min-height: 32px; padding: 6px 10px; }", html)

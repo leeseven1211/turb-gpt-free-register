@@ -12,7 +12,9 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-from core import account_task_store, db, scheduler_state
+from core import scheduler_state
+from core.operations import task_gateway as account_task_store
+from core.storage import accounts as db
 from core.cf_temp_mail_client import CFTempMailError
 from core.cf_temp_mail_client import scan_openai_deactivation as scan_cloudflare_deactivation
 from core.email_butler_client import EmailButlerClientError, scan_openai_deactivation

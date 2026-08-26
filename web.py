@@ -21,6 +21,7 @@ from threading import Timer
 
 from webui.app import create_app
 from webui.auth import is_generated_code
+from webui.runtime import start_runtime
 
 
 def _acquire_single_instance(port: int):
@@ -98,45 +99,8 @@ def main() -> None:
     from core import postgres_store
     postgres_store.require_ready()
 
-    # 浏览器、线程池和代理租约都属于进程内资源。异常退出后不能继续把旧任务
-    # 显示成 running，也不能把独立运行的 Roxy 临时环境留在桌面和额度中。
-    from core import account_task_store, db, operation_task_store
-    recovered_jobs = db.recover_interrupted_registration_jobs()
-    if recovered_jobs:
-        logger.warning("已恢复 %s 个因 WebUI 重启中断的注册/Codex 任务", recovered_jobs)
-    recovered_account_tasks = account_task_store.recover_interrupted()
-    if recovered_account_tasks:
-        logger.warning("已恢复 %s 个因 WebUI 重启中断的账号任务实例", recovered_account_tasks)
-    # 统一任务中心是新读模型；历史数据由部署前迁移脚本回填，启动阶段只做幂等
-    # schema 检查，避免每次重启扫描上万条历史事件。
-    operation_task_store.init()
-    recovered_operation_runs = operation_task_store.recover_interrupted_runtime_runs()
-    if recovered_operation_runs:
-        logger.warning("已收口 %s 个因 WebUI 重启中断的原生账号操作", recovered_operation_runs)
-    try:
-        from core.roxybrowser_client import cleanup_orphaned_profiles
-        orphan_result = cleanup_orphaned_profiles()
-        if orphan_result.get("found"):
-            logger.warning(
-                "Roxy 孤儿环境恢复完成：found=%s cleaned=%s failed=%s",
-                orphan_result.get("found"),
-                orphan_result.get("cleaned"),
-                orphan_result.get("failed"),
-            )
-    except Exception:
-        logger.exception("Roxy 孤儿环境启动恢复失败；登记会保留到下次启动继续重试")
-
     app = create_app(auth_code=args.auth_code)
-    from core import codex_operation_service
-    resumed_codex_runs = codex_operation_service.resume_queued()
-    if resumed_codex_runs:
-        logger.info("已恢复调度 %s 个数据库队列中的 Codex attempt", resumed_codex_runs)
-    from core.deactivation_mail_service import start_periodic_scanner
-    from core.token_refresh_service import start_periodic_refresher
-    from core.codex_token_refresh_service import start_periodic_refresher as start_codex_token_refresher
-    start_periodic_scanner()
-    start_periodic_refresher()
-    start_codex_token_refresher()
+    start_runtime(logger)
     url = f"http://{'127.0.0.1' if args.host in ('0.0.0.0', '::') else args.host}:{args.port}"
     logger.info(f"WebUI 已启动：{url}")
     if is_generated_code():

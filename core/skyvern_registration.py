@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from core.browser_use_registration import run_browser_use_registration
+from core.registration.browser_use import run_browser_use_registration
 
 
 def run_skyvern_registration(

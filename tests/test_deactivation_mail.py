@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 from core import db, deactivation_mail_service
@@ -48,9 +47,15 @@ class DeactivationMailTests(PostgresTestCase):
         self.assertTrue(response.get_json()["ok"])
 
     def test_account_management_ui_has_mail_scan_controls(self):
-        html = (
-            Path(__file__).resolve().parents[1] / "webui" / "templates" / "index.html"
-        ).read_text("utf-8")
+        app = create_app(auth_code="test-auth")
+        client = app.test_client()
+        html = client.get("/", headers={"X-Auth-Code": "test-auth"}).get_data(as_text=True)
+        response = client.get("/static/js/modern/accounts.js")
+        try:
+            self.assertEqual(response.status_code, 200)
+            html += "\n" + response.get_data(as_text=True)
+        finally:
+            response.close()
         self.assertIn('class="col-risk-mail column-filter-header"', html)
         self.assertIn('data-column-filter="accountRiskFilterV2"', html)
         self.assertIn("data-deactivation-mail-check", html)

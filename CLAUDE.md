@@ -16,10 +16,14 @@ python3 -m venv .venv
 .venv/bin/python -m pip install --only-binary=:all: 'cryptography>=41,<50'
 .venv/bin/python -m pip install -r requirements.txt
 
-# Tests (stdlib unittest, no pytest; ~325 tests, ~30s; storage tests need DATABASE_URL)
+# Tests (stdlib unittest, no pytest; current baseline is 504 tests; storage tests need DATABASE_URL)
 .venv/bin/python -m unittest discover -s tests -p 'test_*.py'
 .venv/bin/python -m unittest tests.test_config_defaults          # single module
 .venv/bin/python -m unittest tests.test_dashboard_api.DashboardApiTests.test_jobs_date_range_filter  # single test
+
+# Static checks (blocking baseline + advisory legacy report)
+ruff check .
+ruff check --select E4,E7,E9,F --exit-zero .
 
 # WebUI — prefer PORT=8000 locally; macOS Control Center may hold 5000
 PORT=8000 ./webui.sh start | stop | restart | status | logs
@@ -38,13 +42,13 @@ Node 18+ is required at runtime: `core/sentinel_runner.py` shells out to `node s
 
 ### Layers
 
-`config/` (declarative defaults) → `core/` (drivers + services) → `webui/app.py` (Flask API) and `main.py` (CLI). `core/` never imports from `webui/`.
+`config/` (declarative defaults) → `core/` (drivers + services) → `webui/routes/` (Flask API) and `main.py` (CLI). `webui/app.py` only assembles the application; `core/` never imports from `webui/`.
 
 ### Driver dispatch
 
 Both major flows are strategy-dispatched on a config string; adding a driver means adding a branch plus a `core/<name>_registration.py` / `core/<name>_codex_oauth.py` module:
 
-- `main.run_registration()` (`main.py:157`) switches on `config.roxybrowser.REGISTRATION_DRIVER`: `protocol` (curl_cffi + Sentinel PoW), `roxy` (RoxyBrowser + Selenium), `cloak` (CloakBrowser + Playwright via `core/cloakbrowser_driver.py`, a Playwright→Selenium-style shim), `browser_use`, `skyvern`.
+- `core.registration.dispatcher.run_registration()` switches on `config.roxybrowser.REGISTRATION_DRIVER`: `protocol` (curl_cffi + Sentinel PoW), `roxy` (RoxyBrowser + Selenium), `cloak` (CloakBrowser + Playwright via `core/cloakbrowser_driver.py`, a Playwright→Selenium-style shim), `browser_use`, `skyvern`. `main.run_registration()` remains a CLI compatibility façade.
 - `core.codex_oauth.run_codex_oauth()` (`core/codex_oauth.py:1297`) switches on `config.codex.CODEX_OAUTH_DRIVER`, which also accepts `same_as_registration`.
 
 All drivers take the same `(email, name, birthday, proxy, otp_code, batch_dir)` signature and report progress through `core.registration_service.report_job_progress()`, which writes into the job's stage table (`db.JOB_PROGRESS_STAGES`).
@@ -71,8 +75,8 @@ Secrets are declared in `SECRET_ENV_KEYS` (`config/env_loader.py`) and live only
 
 PostgreSQL is the only source of truth — there is no file-mode fallback. `postgres_store.require_ready()` (called from `web.py` and `main.py`) kills the process at startup if `DATABASE_URL` is missing or unreachable; silently degrading to files lets the two copies diverge. Full design and the development rules that came out of a real data-loss incident: `docs/storage-architecture.md`.
 
-- `core/record_store.py` — row-level tables (`registered_accounts`, `registration_jobs`, `email_pool_outlook`, `email_pool_generic_api`). Hybrid schema: only columns used in `WHERE`/`ORDER BY`/claim guards are promoted, everything else lives in `data jsonb`, so adding a sparse field needs no migration. Provides `patch_row` (JSONB `||` server-side merge), `claim_row` (conditional `UPDATE ... RETURNING` — real cross-process mutual exclusion, which `threading.RLock` never gave), and `transaction()` for cross-table writes.
-- `core/postgres_store.py` — connections, schema (`TURB_DB_SCHEMA`), and the generic JSONB `app_collections` table still used by collections not yet split into tables (Codex credentials, domain/iCloud pools).
+- `core/record_store.py` — all normal row-level tables (`registered_accounts`, `registration_jobs`, four email pools, `codex_credentials`, and `proxy_leases`). Hybrid schema: only columns used in `WHERE`/`ORDER BY`/claim guards are promoted, everything else lives in `data jsonb`, so adding a sparse field needs no migration. Provides `patch_row` (JSONB `||` server-side merge), `claim_row` (conditional `UPDATE ... RETURNING` — real cross-process mutual exclusion, which `threading.RLock` never gave), and `transaction()` for cross-table writes.
+- `core/postgres_store.py` — connections, schema (`TURB_DB_SCHEMA`), and the generic JSONB `app_collections` table for scheduler state, compatibility collections, and migration-era legacy data. It is not the normal source for account, mailbox, proxy, or Codex credential lists.
 - `core/db.py` — the business data layer. `_load_X`/`_save_X` are the seam: sixty-odd callers keep their "read all → mutate → write all" shape, while `_sync_table` writes only the rows whose signature changed. Hot single-row paths bypass the seam via `_patch_account`/`_patch_job`.
 - `core/compat_export.py` — root-level JSON/TXT and `accounts_viewer.html` are compatibility artifacts, generated by a debounced background task rather than on the write path. Export failures are logged, never raised: they must not take down a business write.
 - `core/account_task_store.py` — account-operation tasks in `account_action_batches`/`_tasks`/`_events` (schema via `ACCOUNT_TASK_DB_SCHEMA`). Redacts on write: passwords, access tokens, OTPs, mail bodies, JWTs and credentialed proxy URLs must never be persisted here.
@@ -87,7 +91,7 @@ Tests that touch storage must inherit `tests.support_pg.PostgresTestCase`, which
 
 `core/registration_service.py` runs jobs on a rebuildable `ThreadPoolExecutor` (1–16 workers), with per-job stop events (`StopRequested`), per-job log files under `注册日志/`, and thread-local job context used by `report_job_progress`.
 
-Every process-scoped resource — browser profiles, proxy leases, in-flight jobs — is reconciled at startup in `web.py`, which calls `db.recover_interrupted_registration_jobs()`, `account_task_store.recover_interrupted()` and `cleanup_orphaned_profiles()`; `create_app` adds `recover_interrupted_plan_checks/extract_links/live_checks`. When adding a new long-running task type, add its recovery pass here — otherwise a restart leaves rows stuck in `running`.
+Every process-scoped resource — browser profiles, proxy leases, in-flight jobs — is reconciled at startup by `webui.runtime.start_runtime()`, called by `web.py`. It runs the registration/account/operation recovery passes, cleans orphaned profiles, resumes queued Codex attempts, starts the SMS and periodic workers, and is guarded to run once per process. When adding a new long-running task type, add its recovery pass there — otherwise a restart leaves rows stuck in `running`.
 
 Proxies are leased per job by `core/proxy_provider.py` (`acquire_registration_proxy` / `release_proxy`), which tracks active and recently-used endpoints and masks credentials before anything reaches logs or the API.
 
@@ -95,9 +99,9 @@ Background loops started by the WebUI: `deactivation_mail_service.start_periodic
 
 ### WebUI
 
-`webui/app.py` is a single 3.3k-line `create_app()` factory with all routes nested inside it (no blueprints); `webui/auth.py` gates everything except `/login` on an auth code (session cookie, or `X-Auth-Code` / `Authorization: Bearer` headers). `web.py` holds a per-port file lock so two instances cannot share a port, and runs with `debug=False` so the reloader does not duplicate thread pools and timers.
+`webui/app.py` is the application assembly point. Domain routes are grouped as Blueprint factories under `webui/routes/` (`dashboard`, `config`, `email_pool`, `accounts`, `jobs`, `operations`, `codex`, `integrations`); `webui/blueprint.py` preserves the legacy endpoint names required by the route contract, and `webui/runtime.py` owns process-scoped recovery and worker startup. `webui/auth.py` gates everything except `/login` on an auth code (session cookie, or `X-Auth-Code` / `Authorization: Bearer` headers). `web.py` holds a per-port file lock so two instances cannot share a port, and runs with `debug=False` so the reloader does not duplicate thread pools and timers.
 
-Two single-page templates — `index.html` (modern, default) and `index_legacy.html` — selected by `?ui=modern|legacy` and a `ui_mode` cookie. Both carry large inline JS blocks, and `tests/test_dashboard_api.py` asserts on that rendered JS by substring; editing polling or refresh logic in a template will break those tests until the assertions are updated.
+Two single-page templates — `index.html` (modern, default) and `index_legacy.html` — selected by `?ui=modern|legacy` and a `ui_mode` cookie. Their CSS and JavaScript are served from `webui/static/`: each page loads ordered `common`, `dashboard`, `jobs`, `accounts`, `email`, `codex`, `config`, and `bootstrap` scripts. `tests/test_dashboard_api.py` combines the rendered template with the actual static assets when asserting UI behavior, so resource loading and script order remain covered.
 
 ## Constraints
 

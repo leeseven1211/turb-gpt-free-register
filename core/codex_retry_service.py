@@ -6,7 +6,8 @@ import threading
 import time
 from pathlib import Path
 
-from core import account_task_store, db
+from core import db
+from core.operations import task_gateway as account_task_store
 
 logger = logging.getLogger(__name__)
 
@@ -257,7 +258,7 @@ def _build_roxy_twofa_setup(
                 # Roxy 负责登录和拿到本次新鲜 session；enroll/activate 直接走协议，
                 # 不再依赖不同地区的安全设置页面布局。
                 from core.account_export import setup_2fa_protocol
-                from core.roxy_registration import _fetch_chatgpt_session
+                from core.registration.selenium_auth import fetch_chatgpt_session as _fetch_chatgpt_session
                 from core.session import BrowserSession
 
                 fresh_access_token = str(access_token or "").strip()
@@ -274,7 +275,7 @@ def _build_roxy_twofa_setup(
                 )
                 logger.info("[账号补跑][2FA] 使用 protocol 直接开通 Authenticator：%s", email)
             else:
-                from core.roxy_registration import setup_roxy_2fa
+                from core.registration.selenium_auth import setup_roxy_2fa
 
                 secret = setup_roxy_2fa(
                     driver,
@@ -376,7 +377,7 @@ def _build_roxy_account_setup(email: str, task_id: int, *, proxy: str | None = N
         if parallel_setup:
             # protocol 2FA 不触碰 Selenium 页面，可以和密码设置并发；先在
             # 主线程取得一次新鲜 token，避免两个线程同时操作同一个 driver。
-            from core.roxy_registration import _fetch_chatgpt_session
+            from core.registration.selenium_auth import fetch_chatgpt_session as _fetch_chatgpt_session
 
             try:
                 session_info = _fetch_chatgpt_session(driver, timeout=60, auto_jump_wait=5)
@@ -411,9 +412,9 @@ def _build_roxy_account_setup(email: str, task_id: int, *, proxy: str | None = N
             # 外层登录流程处理；有 AT 但没有密码时才进入“添加密码”流程。
             if not needs_password:
                 return False, None
-            from core.roxy_registration import _registration_password, set_roxy_login_password
+            from core.registration.selenium_auth import registration_password, set_login_password
 
-            password = _registration_password()
+            password = registration_password()
             account_task_store.append_event(
                 task_id,
                 stage="login_password",
@@ -421,7 +422,7 @@ def _build_roxy_account_setup(email: str, task_id: int, *, proxy: str | None = N
                 state="running",
             )
             try:
-                set_roxy_login_password(driver, email, password)
+                set_login_password(driver, email, password)
                 with _ACCOUNT_SETUP_DB_LOCK:
                     if not db.update_account_login_password(email, password, source="retry"):
                         raise RuntimeError("账号密码写入账号失败")

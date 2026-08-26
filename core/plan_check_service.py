@@ -10,7 +10,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 from config import proxy as proxy_cfg
-from core import account_task_store, db
+from core.operations import task_gateway as account_task_store
+from core.storage import accounts as db
 from core.chatgpt_plan import check_account_plan
 
 logger = logging.getLogger(__name__)
