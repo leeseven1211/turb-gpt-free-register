@@ -49,6 +49,28 @@ class CodexOauthMetadataTests(unittest.TestCase):
         self.assertEqual("expired", expired["oauth_status"])
         self.assertFalse(expired["oauth_refreshable"])
 
+    def test_invalidated_refresh_token_requires_reauthorization(self):
+        self.assertTrue(
+            service.refresh_error_requires_reauth(
+                "refresh_token_invalidated: Your session has ended. Please log in again."
+            )
+        )
+        self.assertTrue(service.refresh_error_requires_reauth("session has ended"))
+
+    def test_refresh_error_extracts_top_level_code(self):
+        response = Mock(status_code=400)
+        response.json.return_value = {
+            "message": "Your session has ended. Please log in again.",
+            "type": "invalid_request_error",
+            "param": None,
+            "code": "refresh_token_invalidated",
+        }
+
+        self.assertEqual(
+            "refresh_token_invalidated: Your session has ended. Please log in again.",
+            service._refresh_error(response),
+        )
+
     def test_refresh_preserves_old_refresh_token_when_server_does_not_rotate_it(self):
         original = {
             "type": "codex",

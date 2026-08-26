@@ -852,7 +852,8 @@ AT_REFRESH_MAX_PER_CYCLE=20
 `expired`（必要时回退 access token 的 `exp`）计算为有效、即将过期、已过期或未知；
 同时显示是否存在 `refresh_token`。手动“刷新 OAuth Token”和后台定时刷新都只执行
 refresh-token grant，不重新登录，也不会请求邮箱 OTP 或接码短信。只有 refresh token
-本身失效、被撤销或缺失时，才需要“重跑 Codex 授权”。
+本身失效、被撤销或缺失时，才需要“重跑 Codex 授权”。这类刷新失败会额外标记为“需重授权”；
+本地 access token 的过期时间尚未到，并不代表服务端仍接受已被撤销的 refresh token。
 
 ```dotenv
 CODEX_TOKEN_AUTO_REFRESH_ENABLED=True

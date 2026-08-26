@@ -29,9 +29,13 @@ _EXECUTOR = ThreadPoolExecutor(
 _REAUTH_ERROR_MARKERS = (
     "invalid_grant",
     "invalid refresh token",
+    "refresh_token_invalidated",
+    "refresh token invalidated",
     "refresh token expired",
     "refresh token revoked",
     "token has been revoked",
+    "your session has ended",
+    "session has ended",
 )
 
 
@@ -138,8 +142,19 @@ def _refresh_error(response: requests.Response) -> str:
     except Exception:
         payload = {}
     if isinstance(payload, dict):
-        code = str(payload.get("error") or "").strip()
-        description = str(payload.get("error_description") or payload.get("message") or "").strip()
+        raw_error = payload.get("error")
+        nested_error = raw_error if isinstance(raw_error, dict) else {}
+        code = str(
+            nested_error.get("code")
+            or payload.get("code")
+            or (raw_error if isinstance(raw_error, str) else "")
+        ).strip()
+        description = str(
+            nested_error.get("message")
+            or payload.get("error_description")
+            or payload.get("message")
+            or ""
+        ).strip()
         detail = ": ".join(part for part in (code, description) if part)
         if detail:
             return detail[:500]
