@@ -621,7 +621,7 @@ pending -> cancelled
 | CLI/兼容入口 | `main.py:run_registration()` |
 | 统一驱动分发 | `core/registration/dispatcher.py:run_registration()` |
 | 协议注册主体 | `core/registration/protocol.py`、`core/openai_auth.py` |
-| WebUI 任务提交 | `webui/app.py:api_jobs_create()` |
+| WebUI 任务提交 | `webui/routes/jobs.py:api_jobs_create()` |
 | 单任务编排和清理 | `core/registration_service.py:_run_one_job()` |
 | 任务状态和阶段进度 | `core/db.py` 的 `claim_job_for_execution()`、`update_job_progress()`、`finish_job_progress()` |
 | 邮箱领取/OTP/释放 | `core/email_provider.py` |

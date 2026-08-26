@@ -42,7 +42,7 @@ Node 18+ is required at runtime: `core/sentinel_runner.py` shells out to `node s
 
 ### Layers
 
-`config/` (declarative defaults) → `core/` (drivers + services) → `webui/app.py` (Flask API) and `main.py` (CLI). `core/` never imports from `webui/`.
+`config/` (declarative defaults) → `core/` (drivers + services) → `webui/routes/` (Flask API) and `main.py` (CLI). `webui/app.py` only assembles the application; `core/` never imports from `webui/`.
 
 ### Driver dispatch
 
@@ -91,7 +91,7 @@ Tests that touch storage must inherit `tests.support_pg.PostgresTestCase`, which
 
 `core/registration_service.py` runs jobs on a rebuildable `ThreadPoolExecutor` (1–16 workers), with per-job stop events (`StopRequested`), per-job log files under `注册日志/`, and thread-local job context used by `report_job_progress`.
 
-Every process-scoped resource — browser profiles, proxy leases, in-flight jobs — is reconciled at startup in `web.py`, which calls `db.recover_interrupted_registration_jobs()`, `account_task_store.recover_interrupted()` and `cleanup_orphaned_profiles()`; `create_app` adds `recover_interrupted_plan_checks/extract_links/live_checks`. When adding a new long-running task type, add its recovery pass here — otherwise a restart leaves rows stuck in `running`.
+Every process-scoped resource — browser profiles, proxy leases, in-flight jobs — is reconciled at startup by `webui.runtime.start_runtime()`, called by `web.py`. It runs the registration/account/operation recovery passes, cleans orphaned profiles, resumes queued Codex attempts, starts the SMS and periodic workers, and is guarded to run once per process. When adding a new long-running task type, add its recovery pass there — otherwise a restart leaves rows stuck in `running`.
 
 Proxies are leased per job by `core/proxy_provider.py` (`acquire_registration_proxy` / `release_proxy`), which tracks active and recently-used endpoints and masks credentials before anything reaches logs or the API.
 
@@ -99,7 +99,7 @@ Background loops started by the WebUI: `deactivation_mail_service.start_periodic
 
 ### WebUI
 
-`webui/app.py` is a single 3.3k-line `create_app()` factory with all routes nested inside it (no blueprints); `webui/auth.py` gates everything except `/login` on an auth code (session cookie, or `X-Auth-Code` / `Authorization: Bearer` headers). `web.py` holds a per-port file lock so two instances cannot share a port, and runs with `debug=False` so the reloader does not duplicate thread pools and timers.
+`webui/app.py` is the application assembly point. Domain routes are grouped as Blueprint factories under `webui/routes/` (`dashboard`, `config`, `email_pool`, `accounts`, `jobs`, `operations`, `codex`, `integrations`); `webui/blueprint.py` preserves the legacy endpoint names required by the route contract, and `webui/runtime.py` owns process-scoped recovery and worker startup. `webui/auth.py` gates everything except `/login` on an auth code (session cookie, or `X-Auth-Code` / `Authorization: Bearer` headers). `web.py` holds a per-port file lock so two instances cannot share a port, and runs with `debug=False` so the reloader does not duplicate thread pools and timers.
 
 Two single-page templates — `index.html` (modern, default) and `index_legacy.html` — selected by `?ui=modern|legacy` and a `ui_mode` cookie. Both carry large inline JS blocks, and `tests/test_dashboard_api.py` asserts on that rendered JS by substring; editing polling or refresh logic in a template will break those tests until the assertions are updated.
 

@@ -31,7 +31,7 @@
 | 0 | 隔离环境和基线 | 已完成 | 独立 worktree、测试基线、路由契约、三份治理文档 |
 | 1 | 文档校准和工具规范 | 已完成 | README/旧文档准确，低风险静态检查可运行 |
 | 2 | 注册分发移出 `main.py` | 已完成 | `core` 不再导入 `main`，五类驱动契约不变 |
-| 3 | Flask Blueprint 拆分 | 待开始 | 路由契约不变，`app.py` 只保留应用装配 |
+| 3 | Flask Blueprint 拆分 | 已完成 | 路由契约不变，`app.py` 只保留应用装配 |
 | 4 | 前端静态模块拆分 | 待开始 | HTML/CSS/JS 分离，页面行为不变 |
 | 5 | `core/` 领域边界整理 | 待开始 | 不再跨驱动导入私有 helper |
 | 6 | 存储层内部拆分 | 待开始 | façade 兼容、逐字段对账、行数不变 |
@@ -82,6 +82,15 @@
 随后把启动恢复和后台 worker 从 `create_app()` 移入显式 runtime 生命周期模块。
 
 完成门槛：路由契约测试不变，关键 API 契约测试通过，`webui/app.py` 只保留应用装配。
+
+本阶段实际落地：
+
+- 新增 `webui/blueprint.py` 的兼容注册器，保留旧 endpoint 名称，不让 Flask Blueprint 默认前缀改变内部契约；
+- 新增 `webui/routes/`，按上述八个领域注册 Blueprint，路由函数只迁移原有参数校验、service 调用和响应转换；
+- 新增 `webui/route_helpers.py`，集中复用账号/任务列表脱敏、分页、邮箱来源和功能可用性辅助函数；
+- 新增 `webui/runtime.py`，承载短期下载缓存、账号操作 worker、启动恢复和周期 worker，并由 `web.py` 显式、幂等调用；
+- 保留 `webui.app` 中既有 core/service 导入作为测试和外部集成的兼容属性，不改变业务对象身份；
+- 完整测试 514 项通过，路由契约仍为 96 条，阻断 Ruff、编译检查和 `git diff --check` 通过。
 
 ### 阶段 4：现代前端拆分
 
@@ -195,3 +204,13 @@
 - 新增 8 项注册分发契约测试，覆盖 protocol/roxy/cloak/browser_use/skyvern、别名、参数透传、恢复密码限制和未知驱动错误；
 - 完整测试：513 项通过，约 58 秒；阻断 Ruff 和模块编译检查通过；
 - 未修改路由、数据库 schema、驱动内部流程或运行时私有数据。
+
+### 2026-08-26：阶段 3 完成
+
+- 按 dashboard/config/email_pool/accounts/jobs/operations/codex/integrations 建立 `webui/routes/` Blueprint 路由组，`webui/app.py` 从 3,613 行收敛为 70 行应用装配代码；
+- 新增 endpoint 兼容 Blueprint，路由契约保持 96 条 URL、HTTP 方法和 endpoint 哈希不变；
+- 将下载缓存、账号配置 worker 和账号任务重试的闭包依赖收敛到 `WebUIContext`，原有 service 调用和接口响应语义不变；
+- 将启动恢复、Codex 队列恢复、SMS 取消 worker 和周期刷新 worker 收敛到 `webui.runtime.start_runtime()`，由 `web.py` 显式且幂等调用；
+- 新增 runtime 幂等启动回归测试；关键 WebUI 测试 120 项通过，完整测试 514 项通过（52.337 秒），Ruff、编译检查和 `git diff --check` 通过；
+- 迁移脚本首轮漏取函数装饰器，导致路由暂未注册；已改为从 Git 基线按 AST 同时提取 decorator 和函数体，最终契约验证通过。该问题未进入提交结果；
+- 未修改数据库 schema、业务状态机、前端模板或运行时私有数据。

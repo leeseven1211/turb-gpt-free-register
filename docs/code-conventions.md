@@ -37,7 +37,9 @@ CLI / Web routes
 
 | 后缀/目录 | 职责 |
 | --- | --- |
-| `routes/` | HTTP 参数、鉴权结果、状态码和响应 |
+| `webui/routes/` | 按领域注册 Flask Blueprint；只处理 HTTP 参数、鉴权结果、状态码和响应 |
+| `webui/blueprint.py` | Blueprint 注册兼容层；不得在这里放业务逻辑 |
+| `webui/route_helpers.py` | 多个路由组共享的查询、分页、脱敏和能力判断辅助函数 |
 | `service.py` | 业务编排、事务边界、资源收口 |
 | `repository.py` / `store.py` | PostgreSQL 查询和写入 |
 | `client.py` | 一个外部服务的协议封装 |
@@ -103,6 +105,8 @@ CLI / Web routes
 - 批量接口必须返回 accepted/skipped/failed 的可对账数量。
 - 敏感字段不进入普通列表响应，通过专用 secret/download 接口按需读取。
 - 目录整理期间 URL、HTTP 方法、endpoint、状态码和既有响应字段保持兼容。
+- Blueprint 的 endpoint 默认会带模块前缀；本项目必须使用兼容注册器或显式契约测试，不能让旧 endpoint 意外变化。
+- `webui/app.py` 只负责 Flask 实例、鉴权、上下文和 Blueprint 装配；启动恢复和后台 worker 由 `webui/runtime.py` 显式初始化。
 
 ## 9. 前端规范
 

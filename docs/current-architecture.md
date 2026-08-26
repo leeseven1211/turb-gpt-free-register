@@ -26,6 +26,7 @@
 | 阶段 0 未修改代码完整测试 | 501 项，66.502 秒，全部通过 |
 | 阶段 0 加入路由契约保护后完整测试 | 502 项，65.032 秒，全部通过 |
 | 当前阶段 2 完整测试 | 513 项，57.537 秒，全部通过 |
+| 当前阶段 3 完整测试 | 514 项，52.337 秒，全部通过 |
 | Flask 路由规则 | 96 |
 
 主要大文件：
@@ -35,7 +36,11 @@
 | `webui/templates/index.html` | 9,642 | 现代 UI 的 HTML、CSS、JavaScript |
 | `core/roxy_registration.py` | 4,019 | Roxy 注册及大量 Selenium 页面能力 |
 | `core/registration/protocol.py` | 456 | 纯协议注册主体和 OAuth 回调收口 |
-| `webui/app.py` | 3,613 | Flask 应用工厂和全部业务路由 |
+| `webui/app.py` | 70 | Flask 应用工厂和 Blueprint 装配 |
+| `webui/routes/accounts.py` | 1,176 | 账号列表、账号操作、提链和 CPA/Sub2 上传路由 |
+| `webui/routes/codex.py` | 611 | Codex 凭证、补跑、下载和停止路由 |
+| `webui/routes/jobs.py` | 476 | 注册任务提交、重试、停止和日志路由 |
+| `webui/runtime.py` | 266 | WebUI 请求上下文、启动恢复和后台 worker 生命周期 |
 | `core/db.py` | 3,589 | 业务数据门面、状态命令和兼容导出接缝 |
 | `webui/templates/index_legacy.html` | 3,279 | 兼容版 UI |
 | `core/roxy_codex_oauth.py` | 2,802 | Roxy Codex OAuth 页面流程 |
@@ -85,19 +90,18 @@ Codex 补跑已经使用原生统一任务运行模型；其他账号操作仍�
 
 - 参数解析、日志和单实例文件锁；
 - PostgreSQL 启动自检；
-- 注册任务、账号任务、原生 operation 和 Roxy 环境的中断恢复；
-- 启动 Token 刷新、封号扫描等周期任务；
+- 调用 `webui.runtime.start_runtime()`，统一执行注册任务、账号任务、原生 operation、Roxy 环境和业务状态的中断恢复；
+- 由 runtime 统一启动 SMS 取消、AT/Codex Token 刷新和封号扫描等后台 worker；
 - 运行 Flask 服务并在退出前 flush 兼容导出。
 
-`webui.app.create_app()` 当前同时负责：
+`webui.app.create_app()` 当前只负责：
 
 - 创建 Flask app 和注册鉴权；
-- 启动 SMS 取消 worker；
-- 恢复套餐、提链、查活状态并执行历史字段回填；
-- 注册全部页面和 API 路由；
-- 部分下载缓存和业务辅助逻辑。
+- 创建每个请求上下文持有的短期下载缓存和共享 service 依赖；
+- 按 `dashboard -> config -> email_pool -> accounts -> jobs -> operations -> codex -> integrations` 注册 Blueprint。
 
-应用工厂并非纯工厂，测试创建 app 时也会触发部分启动恢复逻辑。
+应用工厂不再启动恢复流程或后台 worker；需要进程级资源时只能由显式的
+`start_runtime()` 初始化，并且同一进程只执行一次。
 
 ## 4. 当前目录职责
 
@@ -106,6 +110,10 @@ Codex 补跑已经使用原生统一任务运行模型；其他账号操作仍�
 | `config/` | 默认配置、`.env` 覆盖、热重载和历史顶层导出 |
 | `core/` | 注册、Codex、账号、邮箱、浏览器、代理、任务和存储 |
 | `webui/` | Flask API、鉴权、配置编辑器、现代/兼容版页面 |
+| `webui/app.py` | Flask app 工厂和 Blueprint 装配，不承载业务路由 |
+| `webui/routes/` | 按领域组织的 Blueprint 路由组，保留原 URL/方法/endpoint |
+| `webui/route_helpers.py` | 查询、分页、脱敏和功能可用性共享辅助函数 |
+| `webui/runtime.py` | 请求上下文、下载缓存和进程级恢复/worker 生命周期 |
 | `sentinel/` | 纯协议注册使用的 Node.js Sentinel/PoW 运行环境 |
 | `tests/` | stdlib `unittest` 单元和 PostgreSQL 集成测试 |
 | `tools/` | 数据迁移、协议分析和真实链路调试工具 |
@@ -171,16 +179,15 @@ CLI/WebUI 必须在启动阶段终止。
 
 ## 6. 当前边界问题
 
-1. `webui/app.py` 集中了 96 条 Flask 路由规则中的绝大部分。
-2. 现代前端仍是单个 9,642 行模板。
-3. `core/` 仍有大量平铺模块，领域包边界还未稳定。
-4. Cloak、查活和 Browser Use Codex 等模块直接导入其他驱动的私有函数。
-5. `db.py` 和 `operation_task_store.py` 同时承担 schema、命令、查询、兼容和迁移职责。
-6. `create_app()` 带启动副作用，应用生命周期边界不清晰。
-7. `core/mail_password_change.py` 引用仓库内不存在的 `core.mailcom_client`，且没有发现
+1. 现代前端仍是单个 9,642 行模板。
+2. `core/` 仍有大量平铺模块，领域包边界还未稳定。
+3. Cloak、查活和 Browser Use Codex 等模块直接导入其他驱动的私有函数。
+4. `db.py` 和 `operation_task_store.py` 同时承担 schema、命令、查询、兼容和迁移职责。
+5. `webui/routes/accounts.py` 和 `webui/routes/codex.py` 仍偏大，后续可在不改变 Blueprint 契约的前提下继续按子领域拆分。
+6. `core/mail_password_change.py` 引用仓库内不存在的 `core.mailcom_client`，且没有发现
    其他源码调用方，属于待确认的孤儿兼容模块。
-8. 历史专项架构文档中的切换结果和当前实现必须明确标注时间，避免把历史测试数量当成当前基线。
-9. 已建立最小 `pyproject.toml` / Ruff 阻断基线，但仓库仍没有可复现依赖锁；更宽的历史 lint 问题暂按 advisory 管理。
+7. 历史专项架构文档中的切换结果和当前实现必须明确标注时间，避免把历史测试数量当成当前基线。
+8. 已建立最小 `pyproject.toml` / Ruff 阻断基线，但仓库仍没有可复现依赖锁；更宽的历史 lint 问题暂按 advisory 管理。
 
 ## 7. 不可破坏的不变量
 

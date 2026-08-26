@@ -1180,7 +1180,14 @@ ENABLE_CODEX_AUTO = False
 │   ├── proxy_provider.py           # 代理租约与释放
 │   └── *_registration.py / *_oauth.py / *_client.py # 各驱动和客户端
 ├── webui/
-│   ├── app.py                      # Flask API 与当前路由装配
+│   ├── app.py                      # Flask 应用装配
+│   ├── blueprint.py                # 保留旧 endpoint 名称的 Blueprint 基础类
+│   ├── route_helpers.py             # 路由共享的查询/脱敏/分页辅助函数
+│   ├── runtime.py                   # WebUI 启动恢复、worker 和请求上下文
+│   ├── routes/                      # 按领域拆分的 Flask Blueprint
+│   │   ├── dashboard.py / config.py / email_pool.py
+│   │   ├── accounts.py / jobs.py / operations.py
+│   │   └── codex.py / integrations.py
 │   ├── auth.py                     # 登录鉴权
 │   ├── config_editor.py            # 配置白名单、.env 写入与热加载
 │   ├── templates/                  # modern / legacy / login 模板
