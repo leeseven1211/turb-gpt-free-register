@@ -4,7 +4,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
-from core import codex_token_refresh_service as service, db
+from core import admin_repository, codex_token_refresh_service as service, db, record_store
 from webui.app import create_app
 from webui.routes import codex as codex_routes
 from tests.support_pg import PostgresTestCase
@@ -150,6 +150,41 @@ class CodexOauthRefreshApiTests(PostgresTestCase):
             trigger="manual_bulk",
             batch_id="batch-1",
         )
+
+    def test_full_oauth_save_clears_stale_refresh_error(self):
+        filename = "codex-a@example.com-free.json"
+        db.save_codex_credential_record(filename, {
+            "email": "a@example.com",
+            "type": "codex",
+            "access_token": "old-access",
+            "refresh_token": "old-refresh",
+            "account_id": "acct-a",
+            "expired": "2026-09-05T00:00:00Z",
+        })
+        row = record_store.get_row_by(record_store.CODEX_CREDENTIALS, "filename", filename)
+        record_store.patch_row(record_store.CODEX_CREDENTIALS, row["id"], {
+            "oauth_refresh_attempted_at": "2026-08-26T13:41:40",
+            "oauth_refresh_error": "refresh_token_invalidated: session has ended",
+        })
+
+        db.save_codex_credential_record(filename, {
+            "email": "a@example.com",
+            "type": "codex",
+            "access_token": "new-access",
+            "refresh_token": "new-refresh",
+            "account_id": "acct-a",
+            "expired": "2026-09-05T06:23:54Z",
+        })
+
+        stored = record_store.get_row_by(record_store.CODEX_CREDENTIALS, "filename", filename)
+        self.assertIsNone(stored.get("oauth_refresh_attempted_at"))
+        self.assertIsNone(stored.get("oauth_refresh_error"))
+        listing = admin_repository.list_codex(
+            admin_repository.PageRequest(page=1, page_size=20, filters={"archived": "0"})
+        )
+        item = listing["accounts"][0]
+        self.assertEqual("valid", item["oauth_status"])
+        self.assertFalse(item["oauth_reauth_required"])
 
 
 if __name__ == "__main__":

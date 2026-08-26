@@ -2355,6 +2355,11 @@ def _codex_payload(filename: str, content: dict) -> dict:
         "updated_at": now,
         "oauth_status": oauth.get("oauth_status"),
         "oauth_expires_at": oauth.get("oauth_expires_at"),
+        # 写入全新的 OAuth 凭证代表完整授权已经成功完成；清掉此前
+        # refresh_token 失效留下的重授权标记，避免新凭证仍被显示为“需重授权”。
+        # 这些字段位于 JSONB 中，upsert 时会用 null 覆盖旧值。
+        "oauth_refresh_attempted_at": None,
+        "oauth_refresh_error": None,
         "content": content,
         "type": content.get("type", "codex"),
         "last_refresh": content.get("last_refresh", ""),
