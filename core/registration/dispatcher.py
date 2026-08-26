@@ -22,7 +22,7 @@ def run_registration(
     driver_mode = str(getattr(_roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
 
     if driver_mode in ("roxy", "roxybrowser", "fingerprint", "browser"):
-        from core.roxy_registration import run_roxy_registration
+        from core.registration.roxy import run_roxy_registration
 
         return run_roxy_registration(
             email=email,
@@ -53,7 +53,7 @@ def run_registration(
         )
 
     if driver_mode in ("browser_use", "browseruse", "browser-use", "bu"):
-        from core.browser_use_registration import run_browser_use_registration
+        from core.registration.browser_use import run_browser_use_registration
 
         return run_browser_use_registration(
             email=email,

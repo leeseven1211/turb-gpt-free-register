@@ -1,7 +1,7 @@
 """Selenium 登录、OTP、资料和 ChatGPT session 能力的公开边界。
 
-实现暂时保留在 ``core.roxy_registration``，本模块只负责隔离调用方与旧驱动
-模块的私有函数名。后续移动实现时，调用方和测试契约不需要再次批量修改。
+实现位于同领域包的 :mod:`core.registration.roxy`；本模块负责隔离注册、查活和
+Codex 调用方与具体驱动实现的私有函数名。
 """
 from __future__ import annotations
 
@@ -47,9 +47,9 @@ __all__ = [
 
 def _legacy(name: str) -> Callable[..., Any]:
     """Resolve a legacy implementation lazily to avoid registration import cycles."""
-    from core import roxy_registration
+    from core.registration import roxy
 
-    return getattr(roxy_registration, name)
+    return getattr(roxy, name)
 
 
 def build_driver(opened: Any) -> Any:

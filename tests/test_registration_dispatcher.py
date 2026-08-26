@@ -61,7 +61,7 @@ class RegistrationDispatcherTests(unittest.TestCase):
         with (
             patch.object(dispatcher._roxy_cfg, "REGISTRATION_DRIVER", "roxybrowser"),
             patch.object(dispatcher, "generate_random_birthday", return_value="1990-01-01"),
-            patch("core.roxy_registration.run_roxy_registration", return_value=expected) as run_roxy,
+            patch("core.registration.roxy.run_roxy_registration", return_value=expected) as run_roxy,
         ):
             result = dispatcher.run_registration(
                 **{
@@ -99,7 +99,7 @@ class RegistrationDispatcherTests(unittest.TestCase):
         expected = {"success": True}
         with (
             patch.object(dispatcher._roxy_cfg, "REGISTRATION_DRIVER", "bu"),
-            patch("core.browser_use_registration.run_browser_use_registration", return_value=expected) as run_browser,
+            patch("core.registration.browser_use.run_browser_use_registration", return_value=expected) as run_browser,
         ):
             result = dispatcher.run_registration(**self.args)
 

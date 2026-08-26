@@ -35,7 +35,7 @@
 | 文件 | 行数 | 当前职责 |
 | --- | ---: | --- |
 | `webui/templates/index.html` | 671 | 现代 UI HTML；CSS/JavaScript 外置到 `webui/static/` |
-| `core/roxy_registration.py` | 4,019 | Roxy 注册兼容实现及 Selenium 页面流程 |
+| `core/registration/roxy.py` | 4,019 | Roxy 注册实现及 Selenium 页面流程；旧路径为兼容别名 |
 | `core/registration/protocol.py` | 456 | 纯协议注册主体和 OAuth 回调收口 |
 | `webui/app.py` | 70 | Flask 应用工厂和 Blueprint 装配 |
 | `webui/routes/accounts.py` | 1,176 | 账号列表、账号操作、提链和 CPA/Sub2 上传路由 |
@@ -49,7 +49,7 @@
 | `webui/static/css/{modern,legacy,login}.css` | 3,593 | 页面专属 CSS；共享样式仍在 `ui-foundation.css` |
 | `core/roxy_codex_oauth.py` | 2,802 | Roxy Codex OAuth 页面流程 |
 | `core/operation_task_store.py` | 2,094 | 统一任务中心投影、读写、运行时和迁移 |
-| `core/browser_use_registration.py` | 2,089 | Browser Use/Skyvern 注册兼容实现及页面流程 |
+| `core/registration/browser_use.py` | 2,089 | Browser Use/Skyvern 注册实现及页面流程；旧路径为兼容别名 |
 | `core/codex_oauth.py` | 1,721 | Codex OAuth 调度与协议实现 |
 
 ## 3. 当前调用链
@@ -123,7 +123,7 @@ Codex 补跑已经使用原生统一任务运行模型；其他账号操作仍�
 | `tests/` | stdlib `unittest` 单元和 PostgreSQL 集成测试 |
 | `tools/` | 数据迁移、协议分析和真实链路调试工具 |
 | `docs/` | 当前架构、专项设计、迁移方案和协议分析 |
-| `core/registration/` | 注册公共签名、驱动分发和纯协议注册流程 |
+| `core/registration/` | 注册公共能力、驱动实现、驱动分发和纯协议注册流程 |
 | `core/registration/selenium_auth.py` | Selenium 登录挑战、OTP、资料和 ChatGPT session 公共能力边界 |
 | `core/registration/browser_use_auth.py` | Browser Use/Skyvern 登录挑战和 OTP 公共能力边界 |
 | `main.py` | CLI 和 `run_registration` 兼容门面 |
@@ -188,7 +188,7 @@ CLI/WebUI 必须在启动阶段终止。
 
 1. 现代前端模板已收敛为 671 行 HTML，CSS/JavaScript 已拆到 `webui/static/`，但前端模块仍使用普通脚本和全局兼容接口。
 2. `core/` 仍有大量平铺模块，领域包边界还未稳定。
-3. 浏览器公共能力的调用边界已建立；旧实现仍位于 Roxy/BrowserUse 注册模块，后续需物理搬迁并收薄旧模块。
+3. 浏览器公共能力边界已建立，Roxy/BrowserUse 实现已移入 `core/registration/`；旧路径仍保留模块级兼容别名，后续观察期后再讨论删除。
 4. `db.py` 和 `operation_task_store.py` 同时承担 schema、命令、查询、兼容和迁移职责。
 5. `webui/routes/accounts.py` 和 `webui/routes/codex.py` 仍偏大，后续可在不改变 Blueprint 契约的前提下继续按子领域拆分。
 6. `core/mail_password_change.py` 引用仓库内不存在的 `core.mailcom_client`，且没有发现

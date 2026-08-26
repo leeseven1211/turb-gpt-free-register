@@ -18,9 +18,9 @@ __all__ = [
 
 def _legacy(name: str) -> Callable[..., Any]:
     """Resolve a legacy implementation lazily to avoid registration import cycles."""
-    from core import browser_use_registration
+    from core.registration import browser_use
 
-    return getattr(browser_use_registration, name)
+    return getattr(browser_use, name)
 
 
 def timeout_ms(seconds: int | None = None) -> int:
