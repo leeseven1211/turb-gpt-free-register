@@ -1188,9 +1188,9 @@ table[data-resizable-table="accounts"] {
   }
 
   #accountsPanelV2 table[data-resizable-table="accounts"] {
-    width: 100% !important;
-    min-width: 0 !important;
-    max-width: 100% !important;
+    width: max-content !important;
+    min-width: 1280px !important;
+    max-width: none !important;
     table-layout: fixed !important;
   }
 
@@ -1201,7 +1201,6 @@ table[data-resizable-table="accounts"] {
     overflow: hidden !important;
     text-overflow: ellipsis !important;
     white-space: nowrap !important;
-    font-size: 11px;
   }
 
   #accountsPanelV2 table[data-resizable-table="accounts"] th:first-child,
@@ -1238,19 +1237,6 @@ table[data-resizable-table="accounts"] {
     gap: 2px;
     max-width: 100%;
     overflow: hidden;
-  }
-
-  #accountsPanelV2 table[data-resizable-table="accounts"] .pill,
-  #accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-token-copy,
-  #accountsPanelV2 table[data-resizable-table="accounts"] .status-action-cell button,
-  #accountsPanelV2 table[data-resizable-table="accounts"] .extract-link-cell button,
-  #accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-actions > button,
-  #accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-more-btn {
-    height: 22px;
-    min-height: 22px;
-    padding-left: 5px;
-    padding-right: 5px;
-    font-size: 10px;
   }
 
   #accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-actions {
