@@ -18,7 +18,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from core import account_task_store, codex_retry_service, db
+from core import codex_retry_service, db
+from core.operations import task_gateway as account_task_store
 
 logger = logging.getLogger(__name__)
 

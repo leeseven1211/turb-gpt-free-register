@@ -50,9 +50,11 @@ CLI / Web routes
 | `compat.py` | 有明确删除条件的兼容入口 |
 | `core/registration/selenium_auth.py` | Selenium 登录挑战、OTP、资料和 ChatGPT session 公共能力 |
 | `core/registration/browser_use_auth.py` | Browser Use/Skyvern 登录挑战和 OTP 公共能力 |
+| `core/storage/` | PostgreSQL 领域仓储、统一 operation schema/projection/runtime 入口 |
+| `core/operations/task_gateway.py` | 账号任务兼容写入、事件和终态收口；统一投影由存储层负责 |
 
-浏览器能力模块是注册、Codex 和查活之间的调用边界。当前实现仍由旧驱动模块延迟提供，
-目的是先稳定公开函数名和测试契约；新增调用方不得再直接导入旧驱动的私有函数。
+浏览器能力模块是注册、Codex 和查活之间的调用边界；新增调用方不得直接导入驱动私有函数。
+存储和任务服务只依赖领域入口，旧 façade 仅用于兼容期。
 
 ## 4. 配置规范
 

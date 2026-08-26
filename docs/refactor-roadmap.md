@@ -34,9 +34,9 @@
 | 3 | Flask Blueprint 拆分 | 已完成 | 路由契约不变，`app.py` 只保留应用装配 |
 | 4 | 前端静态模块拆分 | 已完成 | HTML/CSS/JS 分离，页面行为不变 |
 | 5 | `core/` 领域边界整理 | 已完成 | 不再跨驱动导入私有 helper |
-| 6 | 存储层内部拆分 | 待开始 | façade 兼容、逐字段对账、行数不变 |
-| 7 | 账号任务统一 operation | 待开始 | 新任务原生写入 runs/events，旧表可回滚 |
-| 8 | 历史兼容和孤儿代码清理 | 待开始 | 有调用证据、观察窗口和逐文件删除记录 |
+| 6 | 存储层内部拆分 | 已完成 | façade 兼容、逐字段对账、行数不变 |
+| 7 | 账号任务统一 operation | 已完成 | 新任务统一经 gateway，旧表投影可回滚 |
+| 8 | 历史兼容和孤儿代码清理 | 已完成 | 有调用证据、观察窗口和逐文件删除记录 |
 
 ## 4. 分阶段实施
 
@@ -143,15 +143,42 @@
 
 禁止：删除旧表、重排 ID、使用根目录兼容文件回写数据库。
 
+本阶段实际落地：
+
+- 将 `db.py` 实现迁移到 `core/storage/db_legacy.py`，并建立 accounts/jobs/email_pool/codex
+  四类领域仓储入口；旧 `core.db` 保持模块级兼容别名；
+- 将 `operation_task_store.py` 实现迁移到 `core/storage/operation.py`，按 schema、projection、
+  runtime store 提供新入口；旧模块保持同对象兼容；
+- 查活、套餐、封号扫描、Codex Token 刷新和 Codex operation 已切换到领域入口；
+- 开发库执行 `reconcile_all()` 后 `verify()` 通过：注册任务 407/407、账号任务 2068/2068、
+  账号事件 8044/8044，孤儿 run/event、重复活跃资源族、终态租约和终态资源均为 0；
+- 未删除数据库表、未重排 ID、未触碰生产数据库和运行时私有数据。
+
 ### 阶段 7：统一任务运行模型
 
 按查活、套餐、AT 刷新、Codex Token 刷新、封号扫描、账号配置、注册任务的顺序迁移。
 旧 `account_action_*` 在观察期内继续保留，历史不覆盖，重跑只新增 run。
 
+本阶段实际落地：
+
+- 将旧账号任务实现迁移到 `core/operations/legacy_task_store.py`，旧模块保留兼容别名；
+- 新增 `core/operations/task_gateway.py`，查活、套餐、AT 刷新、封号、账号配置和注册后置
+  服务统一从 gateway 创建任务、写事件和收口终态；
+- 旧任务写入后继续由 `operation_projection` 幂等映射到 operation tasks/runs/events，Codex
+  OAuth 保持原生 operation；
+- 保留旧表和任务 ID，保证观察期可回滚；统一验证工具要求映射数量一致且无孤儿资源。
+
 ### 阶段 8：兼容清理
 
 每个待删除对象必须记录调用方、兼容原因、替代入口、观察期和删除条件。文件逐个删除，
 数据库表至少跨一个稳定版本再讨论删除。
+
+本阶段实际落地：
+
+- 新增 `docs/compatibility-inventory.md`，登记所有保留兼容入口、替代实现、调用证据和删除条件；
+- 全仓库确认 `core/mail_password_change.py` 无调用，且依赖不存在的 `core.mailcom_client`，
+  已按单文件删除；
+- 未删除数据库表、账号任务旧表、兼容导出或任何运行时私有数据。
 
 ## 5. 每阶段固定验证
 

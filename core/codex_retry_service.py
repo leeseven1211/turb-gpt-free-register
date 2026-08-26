@@ -6,7 +6,8 @@ import threading
 import time
 from pathlib import Path
 
-from core import account_task_store, db
+from core import db
+from core.operations import task_gateway as account_task_store
 
 logger = logging.getLogger(__name__)
 

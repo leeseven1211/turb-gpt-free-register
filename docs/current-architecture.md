@@ -20,14 +20,14 @@
 
 | 项目 | 当前值 |
 | --- | ---: |
-| Git 跟踪的 Python 文件 | 176 |
-| Python 总行数 | 61,606 |
-| `tests/test_*.py` 模块 | 64 |
+| Git 跟踪的 Python 文件 | 188 |
+| Python 总行数 | 61,650 |
+| `tests/test_*.py` 模块 | 65 |
 | 阶段 0 未修改代码完整测试 | 501 项，66.502 秒，全部通过 |
 | 阶段 0 加入路由契约保护后完整测试 | 502 项，65.032 秒，全部通过 |
 | 当前阶段 2 完整测试 | 513 项，57.537 秒，全部通过 |
 | 当前阶段 3 完整测试 | 514 项，52.337 秒，全部通过 |
-| 当前阶段 5 完整测试 | 345 项，5.587 秒，全部通过（跳过 41 项） |
+| 当前阶段 5-8 完整测试 | 349 项，5.581 秒，全部通过（跳过 41 项） |
 | Flask 路由规则 | 96 |
 
 主要大文件：
@@ -42,13 +42,13 @@
 | `webui/routes/codex.py` | 611 | Codex 凭证、补跑、下载和停止路由 |
 | `webui/routes/jobs.py` | 476 | 注册任务提交、重试、停止和日志路由 |
 | `webui/runtime.py` | 266 | WebUI 请求上下文、启动恢复和后台 worker 生命周期 |
-| `core/db.py` | 3,589 | 业务数据门面、状态命令和兼容导出接缝 |
+| `core/storage/db_legacy.py` | 3,589 | 业务存储迁移期实现；`core.db` 为兼容别名 |
 | `webui/templates/index_legacy.html` | 322 | 兼容版 UI HTML；CSS/JavaScript 外置到 `webui/static/` |
 | `webui/static/js/modern/*.js` | 6,059 | 现代页公共、总览、任务、账号、邮箱、Codex、配置和初始化脚本 |
 | `webui/static/js/legacy/*.js` | 2,609 | 兼容页对应业务脚本 |
 | `webui/static/css/{modern,legacy,login}.css` | 3,593 | 页面专属 CSS；共享样式仍在 `ui-foundation.css` |
 | `core/roxy_codex_oauth.py` | 2,802 | Roxy Codex OAuth 页面流程 |
-| `core/operation_task_store.py` | 2,094 | 统一任务中心投影、读写、运行时和迁移 |
+| `core/storage/operation.py` | 2,094 | 统一任务中心投影、读写、运行时和迁移；旧模块为兼容别名 |
 | `core/registration/browser_use.py` | 2,089 | Browser Use/Skyvern 注册实现及页面流程；旧路径为兼容别名 |
 | `core/codex_oauth.py` | 1,721 | Codex OAuth 调度与协议实现 |
 
@@ -126,6 +126,9 @@ Codex 补跑已经使用原生统一任务运行模型；其他账号操作仍�
 | `core/registration/` | 注册公共能力、驱动实现、驱动分发和纯协议注册流程 |
 | `core/registration/selenium_auth.py` | Selenium 登录挑战、OTP、资料和 ChatGPT session 公共能力边界 |
 | `core/registration/browser_use_auth.py` | Browser Use/Skyvern 登录挑战和 OTP 公共能力边界 |
+| `core/storage/` | 账号、注册任务、邮箱池、Codex 和统一 operation 存储入口 |
+| `core/operations/` | 账号任务兼容存储、统一 task gateway 和 operation 投影边界 |
+| `docs/compatibility-inventory.md` | 兼容入口、孤儿代码和观察期删除条件 |
 | `main.py` | CLI 和 `run_registration` 兼容门面 |
 | `web.py` | Web 进程生命周期入口 |
 
@@ -168,7 +171,7 @@ CLI/WebUI 必须在启动阶段终止。
 - `account_operation_leases`
 - `registration_attempts`
 
-迁移期保留旧写入口，并通过 `operation_task_store` 幂等投影到统一任务中心。
+迁移期保留旧写入口，并通过 `core.storage.operation_projection` 幂等投影到统一任务中心。
 
 ### 5.3 兼容数据
 
@@ -189,10 +192,9 @@ CLI/WebUI 必须在启动阶段终止。
 1. 现代前端模板已收敛为 671 行 HTML，CSS/JavaScript 已拆到 `webui/static/`，但前端模块仍使用普通脚本和全局兼容接口。
 2. `core/` 仍有大量平铺模块，领域包边界还未稳定。
 3. 浏览器公共能力边界已建立，Roxy/BrowserUse 实现已移入 `core/registration/`；旧路径仍保留模块级兼容别名，后续观察期后再讨论删除。
-4. `db.py` 和 `operation_task_store.py` 同时承担 schema、命令、查询、兼容和迁移职责。
+4. `core/storage/db_legacy.py` 和 `core/storage/operation.py` 仍保留迁移期集中实现，领域入口已经稳定，后续可继续下沉具体 SQL。
 5. `webui/routes/accounts.py` 和 `webui/routes/codex.py` 仍偏大，后续可在不改变 Blueprint 契约的前提下继续按子领域拆分。
-6. `core/mail_password_change.py` 引用仓库内不存在的 `core.mailcom_client`，且没有发现
-   其他源码调用方，属于待确认的孤儿兼容模块。
+6. `account_action_*` 仍处于兼容观察期，原生 operation 已覆盖 Codex，其他任务由 task gateway + projection 保持双模型对账。
 7. 历史专项架构文档中的切换结果和当前实现必须明确标注时间，避免把历史测试数量当成当前基线。
 8. 已建立最小 `pyproject.toml` / Ruff 阻断基线，但仓库仍没有可复现依赖锁；更宽的历史 lint 问题暂按 advisory 管理。
 

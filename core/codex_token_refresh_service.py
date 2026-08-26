@@ -14,7 +14,9 @@ from typing import Any
 import requests
 
 from config import codex as _cfg
-from core import account_task_store, db, scheduler_state
+from core import scheduler_state
+from core.operations import task_gateway as account_task_store
+from core.storage import codex as db
 
 logger = logging.getLogger(__name__)
 

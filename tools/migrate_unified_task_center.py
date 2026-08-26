@@ -18,7 +18,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from config.env_loader import ensure_loaded  # noqa: E402
-from core import operation_task_store, postgres_store  # noqa: E402
+from core import postgres_store  # noqa: E402
+from core.storage import operation, operation_projection  # noqa: E402
 
 
 def legacy_report() -> dict:
@@ -42,7 +43,7 @@ def legacy_report() -> dict:
                 'account_operation_leases', 'operation_resources'
             )
             """,
-            (operation_task_store._schema_name(),),
+            (operation._schema_name(),),
         )
         unified_table_count = int(cur.fetchone()["n"])
     return {
@@ -65,10 +66,10 @@ def main() -> int:
     ensure_loaded()
     postgres_store.require_ready()
     if args.apply:
-        migrated = operation_task_store.reconcile_all()
-        result = {"mode": "apply", "migrated": migrated, "verification": operation_task_store.verify()}
+        migrated = operation_projection.reconcile_all()
+        result = {"mode": "apply", "migrated": migrated, "verification": operation_projection.verify()}
     elif args.verify:
-        result = {"mode": "verify", "verification": operation_task_store.verify()}
+        result = {"mode": "verify", "verification": operation_projection.verify()}
     else:
         result = legacy_report()
     print(json.dumps(result, ensure_ascii=False, indent=None if args.json else 2, default=str))

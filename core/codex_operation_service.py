@@ -14,7 +14,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Iterable
 
-from core import db, operation_task_store
+from core.storage import accounts as db
+from core.storage import operation_runtime_store as operation_task_store
 from core.operation_runtime import CancellationToken, OperationCancelled, operation_context
 
 logger = logging.getLogger(__name__)
