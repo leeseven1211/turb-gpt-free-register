@@ -48,6 +48,11 @@ CLI / Web routes
 | `errors.py` | 稳定领域异常和错误分类 |
 | `runtime.py` | 线程、取消、心跳、恢复和生命周期 |
 | `compat.py` | 有明确删除条件的兼容入口 |
+| `core/registration/selenium_auth.py` | Selenium 登录挑战、OTP、资料和 ChatGPT session 公共能力 |
+| `core/registration/browser_use_auth.py` | Browser Use/Skyvern 登录挑战和 OTP 公共能力 |
+
+浏览器能力模块是注册、Codex 和查活之间的调用边界。当前实现仍由旧驱动模块延迟提供，
+目的是先稳定公开函数名和测试契约；新增调用方不得再直接导入旧驱动的私有函数。
 
 ## 4. 配置规范
 

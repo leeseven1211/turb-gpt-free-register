@@ -20,13 +20,14 @@
 
 | 项目 | 当前值 |
 | --- | ---: |
-| Git 跟踪的 Python 文件 | 163 |
-| Python 总行数 | 60,993 |
-| `tests/test_*.py` 模块 | 62 |
+| Git 跟踪的 Python 文件 | 176 |
+| Python 总行数 | 61,606 |
+| `tests/test_*.py` 模块 | 64 |
 | 阶段 0 未修改代码完整测试 | 501 项，66.502 秒，全部通过 |
 | 阶段 0 加入路由契约保护后完整测试 | 502 项，65.032 秒，全部通过 |
 | 当前阶段 2 完整测试 | 513 项，57.537 秒，全部通过 |
 | 当前阶段 3 完整测试 | 514 项，52.337 秒，全部通过 |
+| 当前阶段 5 完整测试 | 345 项，5.587 秒，全部通过（跳过 41 项） |
 | Flask 路由规则 | 96 |
 
 主要大文件：
@@ -34,7 +35,7 @@
 | 文件 | 行数 | 当前职责 |
 | --- | ---: | --- |
 | `webui/templates/index.html` | 671 | 现代 UI HTML；CSS/JavaScript 外置到 `webui/static/` |
-| `core/roxy_registration.py` | 4,019 | Roxy 注册及大量 Selenium 页面能力 |
+| `core/roxy_registration.py` | 4,019 | Roxy 注册兼容实现及 Selenium 页面流程 |
 | `core/registration/protocol.py` | 456 | 纯协议注册主体和 OAuth 回调收口 |
 | `webui/app.py` | 70 | Flask 应用工厂和 Blueprint 装配 |
 | `webui/routes/accounts.py` | 1,176 | 账号列表、账号操作、提链和 CPA/Sub2 上传路由 |
@@ -48,7 +49,7 @@
 | `webui/static/css/{modern,legacy,login}.css` | 3,593 | 页面专属 CSS；共享样式仍在 `ui-foundation.css` |
 | `core/roxy_codex_oauth.py` | 2,802 | Roxy Codex OAuth 页面流程 |
 | `core/operation_task_store.py` | 2,094 | 统一任务中心投影、读写、运行时和迁移 |
-| `core/browser_use_registration.py` | 2,089 | Browser Use/Skyvern 注册页面流程 |
+| `core/browser_use_registration.py` | 2,089 | Browser Use/Skyvern 注册兼容实现及页面流程 |
 | `core/codex_oauth.py` | 1,721 | Codex OAuth 调度与协议实现 |
 
 ## 3. 当前调用链
@@ -123,6 +124,8 @@ Codex 补跑已经使用原生统一任务运行模型；其他账号操作仍�
 | `tools/` | 数据迁移、协议分析和真实链路调试工具 |
 | `docs/` | 当前架构、专项设计、迁移方案和协议分析 |
 | `core/registration/` | 注册公共签名、驱动分发和纯协议注册流程 |
+| `core/registration/selenium_auth.py` | Selenium 登录挑战、OTP、资料和 ChatGPT session 公共能力边界 |
+| `core/registration/browser_use_auth.py` | Browser Use/Skyvern 登录挑战和 OTP 公共能力边界 |
 | `main.py` | CLI 和 `run_registration` 兼容门面 |
 | `web.py` | Web 进程生命周期入口 |
 
@@ -183,9 +186,9 @@ CLI/WebUI 必须在启动阶段终止。
 
 ## 6. 当前边界问题
 
-1. 现代前端仍是单个 9,642 行模板。
+1. 现代前端模板已收敛为 671 行 HTML，CSS/JavaScript 已拆到 `webui/static/`，但前端模块仍使用普通脚本和全局兼容接口。
 2. `core/` 仍有大量平铺模块，领域包边界还未稳定。
-3. Cloak、查活和 Browser Use Codex 等模块直接导入其他驱动的私有函数。
+3. 浏览器公共能力的调用边界已建立；旧实现仍位于 Roxy/BrowserUse 注册模块，后续需物理搬迁并收薄旧模块。
 4. `db.py` 和 `operation_task_store.py` 同时承担 schema、命令、查询、兼容和迁移职责。
 5. `webui/routes/accounts.py` 和 `webui/routes/codex.py` 仍偏大，后续可在不改变 Blueprint 契约的前提下继续按子领域拆分。
 6. `core/mail_password_change.py` 引用仓库内不存在的 `core.mailcom_client`，且没有发现

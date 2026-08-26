@@ -13,26 +13,26 @@ from datetime import datetime
 from config import roxybrowser as cfg
 from core.email_provider import wait_for_otp
 from core.openai_auth import AccountUnusableError, detect_account_unusable_text
-from core.roxy_registration import (
-    _build_driver,
-    _center_browser_window,
-    _clear_otp_inputs,
-    _click_continue,
-    _click_passwordless_signup_if_present,
-    _click_resend_email_otp,
-    _fetch_chatgpt_session,
-    _has_access_token,
-    _is_email_verification_page,
-    _is_login_password_page,
-    _maybe_accept,
-    _page_warmup,
-    _safe_get,
-    _submit_email_step,
-    _submit_email_via_browser_nextauth,
-    _type_email_address,
-    _type_otp,
-    _wait_after_email_otp_submit,
-    _wait_email_submit_next_state,
+from core.registration.selenium_auth import (
+    build_driver as _build_driver,
+    center_browser_window as _center_browser_window,
+    clear_otp_inputs as _clear_otp_inputs,
+    click_continue as _click_continue,
+    click_passwordless_signup_if_present as _click_passwordless_signup_if_present,
+    click_resend_email_otp as _click_resend_email_otp,
+    fetch_chatgpt_session as _fetch_chatgpt_session,
+    has_access_token as _has_access_token,
+    is_email_verification_page as _is_email_verification_page,
+    is_login_password_page as _is_login_password_page,
+    maybe_accept as _maybe_accept,
+    page_warmup as _page_warmup,
+    safe_get as _safe_get,
+    submit_email_step as _submit_email_step,
+    submit_email_via_browser_nextauth as _submit_email_via_browser_nextauth,
+    type_email_address as _type_email_address,
+    type_otp as _type_otp,
+    wait_after_email_otp_submit as _wait_after_email_otp_submit,
+    wait_email_submit_next_state as _wait_email_submit_next_state,
 )
 from core.roxybrowser_client import RoxyBrowserClient
 

@@ -33,7 +33,7 @@
 | 2 | 注册分发移出 `main.py` | 已完成 | `core` 不再导入 `main`，五类驱动契约不变 |
 | 3 | Flask Blueprint 拆分 | 已完成 | 路由契约不变，`app.py` 只保留应用装配 |
 | 4 | 前端静态模块拆分 | 已完成 | HTML/CSS/JS 分离，页面行为不变 |
-| 5 | `core/` 领域边界整理 | 待开始 | 不再跨驱动导入私有 helper |
+| 5 | `core/` 领域边界整理 | 进行中 | 不再跨驱动导入私有 helper |
 | 6 | 存储层内部拆分 | 待开始 | façade 兼容、逐字段对账、行数不变 |
 | 7 | 账号任务统一 operation | 待开始 | 新任务原生写入 runs/events，旧表可回滚 |
 | 8 | 历史兼容和孤儿代码清理 | 待开始 | 有调用证据、观察窗口和逐文件删除记录 |
@@ -118,6 +118,20 @@
 
 完成门槛：不存在跨驱动私有 helper 导入；`core` 不依赖 `main`/`webui`；所有驱动通过
 统一 contract tests。
+
+本阶段第一批实际落地：
+
+- 新增 `core/registration/selenium_auth.py` 和 `browser_use_auth.py`，建立 Selenium 与
+  Browser Use/Skyvern 的公开能力边界；能力包含邮箱登录跳转、OTP、资料页、session 和
+  登录密码/2FA 等调用方已经共享的入口；
+- Cloak、Roxy 查活、Roxy Codex、Browser Use Codex 和 Codex 补跑服务改从能力边界取函数，
+  `core` 不再直接从注册驱动模块导入私有 helper；
+- 门面采用懒解析，保留旧模块作为兼容实现源，现有测试对旧函数的 patch 点继续有效；
+- 新增能力边界契约测试，静态检查 `core` 中不得出现从 Roxy/BrowserUse 注册模块导入私有函数；
+- 本批完整测试：345 项通过、41 项跳过；`ruff check .`、模块编译和 `git diff --check` 通过。
+
+尚未宣称阶段完成：下一批将把 session/profile 等实现从旧注册模块实际移动到能力模块，
+再将旧模块收敛为薄转发层，并补齐五类驱动统一的注册 contract tests。
 
 ### 阶段 6：存储内部拆分
 
@@ -223,3 +237,12 @@
 - 新增 runtime 幂等启动回归测试；关键 WebUI 测试 120 项通过，完整测试 514 项通过（52.337 秒），Ruff、编译检查和 `git diff --check` 通过；
 - 迁移脚本首轮漏取函数装饰器，导致路由暂未注册；已改为从 Git 基线按 AST 同时提取 decorator 和函数体，最终契约验证通过。该问题未进入提交结果；
 - 未修改数据库 schema、业务状态机、前端模板或运行时私有数据。
+
+### 2026-08-26：阶段 5 第一批完成
+
+- 新增 Selenium 和 Browser Use/Skyvern 浏览器能力公共边界，迁移 Cloak、查活、Codex
+  OAuth 和账号补跑服务，解除跨驱动私有 helper 直连；
+- 保留旧注册模块作为兼容实现源，避免改变既有测试 patch 点和运行时流程；
+- 新增能力边界回归测试，并在完整测试中验证 345 项通过、41 项跳过；Ruff、编译检查和
+  `git diff --check` 通过；
+- 阶段 5 继续进行，下一批执行能力实现物理搬迁和旧模块收薄。

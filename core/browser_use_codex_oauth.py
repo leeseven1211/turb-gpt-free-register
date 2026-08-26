@@ -13,16 +13,16 @@ from core import sms_provider
 from core.browser_use_client import BrowserUseClient
 from core.openai_auth import AccountUnusableError, detect_account_unusable_response_body
 from core.operation_runtime import OperationCancelled, call_cancellable, cancellable_sleep, check_cancelled, report_stage
-from core.browser_use_registration import (
-    _timeout_ms,
-    _page_url,
-    _fill_first,
-    _click_first,
-    _maybe_accept_cookies,
-    _type_otp,
-    _clear_otp_inputs,
-    _wait_after_otp,
-    _click_passwordless_signup_if_present,
+from core.registration.browser_use_auth import (
+    timeout_ms as _timeout_ms,
+    page_url as _page_url,
+    fill_first as _fill_first,
+    click_first as _click_first,
+    maybe_accept_cookies as _maybe_accept_cookies,
+    type_otp as _type_otp,
+    clear_otp_inputs as _clear_otp_inputs,
+    wait_after_otp as _wait_after_otp,
+    click_passwordless_signup_if_present as _click_passwordless_signup_if_present,
 )
 from core.humanize import delay as human_delay
 

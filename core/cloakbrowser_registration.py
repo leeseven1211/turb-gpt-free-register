@@ -13,12 +13,18 @@ from core.cloakbrowser_driver import build_cloak_driver
 from core.email_provider import wait_for_otp, resolve_email_source
 from core.humanize import delay as human_delay
 from core.session import BrowserSession
-
-# 复用 Roxy 注册流程里已维护好的页面操作函数。
-from core.roxy_registration import (  # noqa: F401
-    _maybe_accept, _submit_email_and_wait_next, _fill_password_page_if_present,
-    _clear_otp_inputs, _type_otp, _click_continue, _wait_after_email_otp_submit,
-    _click_resend_email_otp, _complete_profile_page, _fetch_chatgpt_session, _check_manual_stop,
+from core.registration.selenium_auth import (
+    check_manual_stop as _check_manual_stop,
+    clear_otp_inputs as _clear_otp_inputs,
+    click_continue as _click_continue,
+    click_resend_email_otp as _click_resend_email_otp,
+    complete_profile_page as _complete_profile_page,
+    fetch_chatgpt_session as _fetch_chatgpt_session,
+    fill_password_page_if_present as _fill_password_page_if_present,
+    maybe_accept as _maybe_accept,
+    submit_email_and_wait_next as _submit_email_and_wait_next,
+    type_otp as _type_otp,
+    wait_after_email_otp_submit as _wait_after_email_otp_submit,
 )
 
 logger = logging.getLogger(__name__)
