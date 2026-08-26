@@ -1191,7 +1191,9 @@ ENABLE_CODEX_AUTO = False
 │   ├── auth.py                     # 登录鉴权
 │   ├── config_editor.py            # 配置白名单、.env 写入与热加载
 │   ├── templates/                  # modern / legacy / login 模板
-│   └── static/                     # 静态资源
+│   └── static/                     # CSS、按页面/领域拆分的普通 JavaScript、favicon
+│       ├── css/                   # foundation、modern、legacy、login 样式
+│       └── js/                    # modern/legacy 八段业务脚本 + login.js
 ├── tests/                          # unittest、存储隔离和契约测试
 ├── tools/                          # 迁移、诊断和单独补跑工具
 ├── docs/                           # 架构、流程、规范和路线图

@@ -33,7 +33,7 @@
 
 | 文件 | 行数 | 当前职责 |
 | --- | ---: | --- |
-| `webui/templates/index.html` | 9,642 | 现代 UI 的 HTML、CSS、JavaScript |
+| `webui/templates/index.html` | 671 | 现代 UI HTML；CSS/JavaScript 外置到 `webui/static/` |
 | `core/roxy_registration.py` | 4,019 | Roxy 注册及大量 Selenium 页面能力 |
 | `core/registration/protocol.py` | 456 | 纯协议注册主体和 OAuth 回调收口 |
 | `webui/app.py` | 70 | Flask 应用工厂和 Blueprint 装配 |
@@ -42,7 +42,10 @@
 | `webui/routes/jobs.py` | 476 | 注册任务提交、重试、停止和日志路由 |
 | `webui/runtime.py` | 266 | WebUI 请求上下文、启动恢复和后台 worker 生命周期 |
 | `core/db.py` | 3,589 | 业务数据门面、状态命令和兼容导出接缝 |
-| `webui/templates/index_legacy.html` | 3,279 | 兼容版 UI |
+| `webui/templates/index_legacy.html` | 322 | 兼容版 UI HTML；CSS/JavaScript 外置到 `webui/static/` |
+| `webui/static/js/modern/*.js` | 6,059 | 现代页公共、总览、任务、账号、邮箱、Codex、配置和初始化脚本 |
+| `webui/static/js/legacy/*.js` | 2,609 | 兼容页对应业务脚本 |
+| `webui/static/css/{modern,legacy,login}.css` | 3,593 | 页面专属 CSS；共享样式仍在 `ui-foundation.css` |
 | `core/roxy_codex_oauth.py` | 2,802 | Roxy Codex OAuth 页面流程 |
 | `core/operation_task_store.py` | 2,094 | 统一任务中心投影、读写、运行时和迁移 |
 | `core/browser_use_registration.py` | 2,089 | Browser Use/Skyvern 注册页面流程 |
@@ -114,6 +117,7 @@ Codex 补跑已经使用原生统一任务运行模型；其他账号操作仍�
 | `webui/routes/` | 按领域组织的 Blueprint 路由组，保留原 URL/方法/endpoint |
 | `webui/route_helpers.py` | 查询、分页、脱敏和功能可用性共享辅助函数 |
 | `webui/runtime.py` | 请求上下文、下载缓存和进程级恢复/worker 生命周期 |
+| `webui/static/` | 页面 CSS、普通 JavaScript 和 favicon；不引入构建步骤 |
 | `sentinel/` | 纯协议注册使用的 Node.js Sentinel/PoW 运行环境 |
 | `tests/` | stdlib `unittest` 单元和 PostgreSQL 集成测试 |
 | `tools/` | 数据迁移、协议分析和真实链路调试工具 |

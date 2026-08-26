@@ -101,7 +101,7 @@ Background loops started by the WebUI: `deactivation_mail_service.start_periodic
 
 `webui/app.py` is the application assembly point. Domain routes are grouped as Blueprint factories under `webui/routes/` (`dashboard`, `config`, `email_pool`, `accounts`, `jobs`, `operations`, `codex`, `integrations`); `webui/blueprint.py` preserves the legacy endpoint names required by the route contract, and `webui/runtime.py` owns process-scoped recovery and worker startup. `webui/auth.py` gates everything except `/login` on an auth code (session cookie, or `X-Auth-Code` / `Authorization: Bearer` headers). `web.py` holds a per-port file lock so two instances cannot share a port, and runs with `debug=False` so the reloader does not duplicate thread pools and timers.
 
-Two single-page templates — `index.html` (modern, default) and `index_legacy.html` — selected by `?ui=modern|legacy` and a `ui_mode` cookie. Both carry large inline JS blocks, and `tests/test_dashboard_api.py` asserts on that rendered JS by substring; editing polling or refresh logic in a template will break those tests until the assertions are updated.
+Two single-page templates — `index.html` (modern, default) and `index_legacy.html` — selected by `?ui=modern|legacy` and a `ui_mode` cookie. Their CSS and JavaScript are served from `webui/static/`: each page loads ordered `common`, `dashboard`, `jobs`, `accounts`, `email`, `codex`, `config`, and `bootstrap` scripts. `tests/test_dashboard_api.py` combines the rendered template with the actual static assets when asserting UI behavior, so resource loading and script order remain covered.
 
 ## Constraints
 

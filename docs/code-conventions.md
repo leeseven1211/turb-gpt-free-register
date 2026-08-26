@@ -117,6 +117,21 @@ CLI / Web routes
 - 页面模块负责自己的加载、渲染、事件和销毁逻辑。
 - 第一轮拆分不引入构建系统；使用普通静态脚本维持现有部署方式。
 
+静态资源按页面和业务边界组织：
+
+```text
+webui/static/
+├── css/modern.css  legacy.css  login.css  ui-foundation.css  legacy-bridge.css
+└── js/
+    ├── modern/{common,dashboard,jobs,accounts,email,codex,config,bootstrap}.js
+    ├── legacy/{common,dashboard,jobs,accounts,email,codex,config,bootstrap}.js
+    └── login.js
+```
+
+现代页和兼容页均使用普通 `<script>` 按 `common -> dashboard -> jobs -> accounts -> email -> codex -> config -> bootstrap`
+顺序加载。第一轮迁移保留顶层全局函数、全局状态和 HTML 内联事件接口；新代码不得依赖未声明的加载顺序，
+也不得把业务代码重新塞回模板。后续迁移事件委托或 ES module 时，必须先增加浏览器验收并评估全局 API 兼容范围。
+
 ## 10. 测试规范
 
 - 纯函数和错误分类使用单元测试。
