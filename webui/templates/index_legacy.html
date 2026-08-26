@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
-  <title>GPT 注册控制台</title>
+  <title>Turb Console · 兼容版</title>
   <style>
     * { box-sizing: border-box; }
     html { max-width: 100%; overflow-x: hidden; }
@@ -358,16 +358,18 @@
     }
     .roxy-invite-link:hover { background: #e0ebff; }
   </style>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/ui-foundation.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/legacy-bridge.css') }}">
 </head>
 <body>
 <header>
   <div class="header-inner">
     <div>
-      <h1>GPT 注册控制台</h1>
-      <p class="meta">本地 Web 控制台 · 数据更新于 <span id="updatedAt">-</span></p>
+      <h1>Turb Console · 兼容版</h1>
+      <p class="meta">兼容操作界面 · 数据更新于 <span id="updatedAt">-</span></p>
       <div class="header-links">
         <a href="https://t.me/+gu_cvEKq_vcyZWRl" target="_blank" rel="noopener noreferrer">TG 交流群</a>
-        <a href="/?ui=modern" title="切换到新版侧边栏 UI">切换新 UI</a>
+        <a href="/?ui=modern" title="切换到新版侧边栏 UI">切换新版</a>
         <form method="post" action="/logout"><button type="submit">退出</button></form>
       </div>
     </div>
@@ -381,7 +383,7 @@
   </div>
 </header>
 
-<nav>
+<nav aria-label="兼容版主导航">
   <div class="nav-inner">
     <button data-tab="register" class="active">注册</button>
     <button data-tab="accounts">账号</button>
@@ -447,8 +449,8 @@
         </table>
       </div>
       <div class="pager-bar" id="pager-jobs"></div>
-      <div class="body hidden" id="logPanel">
-        <h3>任务 #<span id="logJobId"></span> 日志 <button class="btn" id="btnCloseLog" style="float:right;min-height:28px;">关闭</button></h3>
+      <div class="body hidden" id="logPanel" role="dialog" aria-modal="true" aria-labelledby="legacyJobLogTitle">
+        <h3 id="legacyJobLogTitle">任务 #<span id="logJobId"></span> 日志 <button class="btn" id="btnCloseLog" style="float:right;min-height:28px;">关闭</button></h3>
         <div class="log" id="logContent">加载中…</div>
       </div>
     </section>
@@ -522,8 +524,8 @@
         </h3>
         <div class="log" id="retryLogContent">加载中…</div>
       </div>
-      <div class="body hidden" id="liveLogPanel">
-        <h3>查活日志：<span id="liveLogEmail" style="font-size:13px;font-weight:400;color:var(--muted);"></span>
+      <div class="body hidden" id="liveLogPanel" role="dialog" aria-modal="true" aria-labelledby="legacyLiveLogTitle">
+        <h3 id="legacyLiveLogTitle">查活日志：<span id="liveLogEmail" style="font-size:13px;font-weight:400;color:var(--muted);"></span>
           <button class="btn" id="btnCloseLiveLog" style="float:right;min-height:28px;">关闭</button>
         </h3>
         <div class="log" id="liveLogContent">加载中…</div>
@@ -655,9 +657,9 @@
   </div>
 </main>
 
-<div id="toast"></div>
-<div id="qrPanel" class="body hidden">
-  <h3>支付二维码 <button class="btn" onclick="closeQrModal()">关闭</button></h3>
+<div id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+<div id="qrPanel" class="body hidden" role="dialog" aria-modal="true" aria-labelledby="legacyQrPanelTitle">
+  <h3 id="legacyQrPanelTitle">支付二维码 <button class="btn" onclick="closeQrModal()">关闭</button></h3>
   <img id="qrImage" alt="支付二维码">
   <a id="qrOpenLink" class="qr-link" href="#" target="_blank" rel="noopener noreferrer"></a>
 </div>

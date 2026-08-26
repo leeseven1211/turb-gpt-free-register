@@ -119,6 +119,34 @@ class OperationTaskStoreTests(PostgresTestCase):
         self.assertTrue(payload["flow"])
         self.assertNotIn("never-expose-this", json.dumps(payload, ensure_ascii=False))
 
+    def test_unified_task_list_supports_column_filters_and_facets(self):
+        failed = operation_task_store.create_runtime_task(
+            task_type="live_check", account_id=101, email="column-filter@example.com", trigger="manual_bulk",
+        )
+        operation_task_store.finish_run(
+            failed["run"]["id"], status="failed", message="OTP timeout", error="OTP timeout",
+        )
+        success = operation_task_store.create_runtime_task(
+            task_type="plan_check", account_id=202, email="other@example.com", trigger="scheduled",
+        )
+        operation_task_store.finish_run(
+            success["run"]["id"], status="success", message="套餐查询完成", result_summary={"current_plan_type": "free"},
+        )
+
+        result = operation_task_store.list_tasks(
+            page_size=20,
+            task_id=str(failed["id"]),
+            target="101",
+            target_status="failed",
+            run_count="1",
+            stage="complete",
+            result="OTP",
+        )
+        self.assertEqual(1, result["total"])
+        self.assertEqual(failed["id"], result["items"][0]["id"])
+        self.assertEqual({"task_type", "status", "target_status", "stage", "run_count"}, set(result["facets"]))
+        self.assertIn({"value": "live_check", "count": 1}, result["facets"]["task_type"])
+
     def test_account_step_states_are_projected_without_treating_running_as_success(self):
         legacy_task_id = account_task_store.create_task(
             task_type="account_setup_retry",

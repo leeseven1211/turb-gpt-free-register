@@ -780,6 +780,15 @@ def create_app(auth_code: str | None = None) -> Flask:
             source=str(request.args.get("source") or "").strip(),
             q=str(request.args.get("q") or "").strip(),
             batch_id=request.args.get("batch_id", default=None, type=int),
+            task_id=str(request.args.get("task_id") or "").strip(),
+            target=str(request.args.get("target") or "").strip(),
+            target_status=str(request.args.get("target_status") or "").strip(),
+            batch=str(request.args.get("batch") or "").strip(),
+            run_count=str(request.args.get("run_count") or "").strip(),
+            stage=str(request.args.get("stage") or "").strip(),
+            created_from=str(request.args.get("created_from") or "").strip(),
+            created_to=str(request.args.get("created_to") or "").strip(),
+            result=str(request.args.get("result") or "").strip(),
         )
         for task in result.get("items") or []:
             if task.get("error_message"):

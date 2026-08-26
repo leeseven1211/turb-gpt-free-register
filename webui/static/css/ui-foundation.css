@@ -1,0 +1,1356 @@
+/*
+ * Turb Console UI foundation
+ *
+ * This file is the single source of truth for the shared visual language.
+ * The current page is still a large legacy template, so the compatibility
+ * aliases below let existing module selectors migrate without changing their
+ * DOM ids or JavaScript contracts.
+ */
+
+:root {
+  /* Color roles */
+  --ui-color-brand: #5b5ce2;
+  --ui-color-brand-hover: #4f51be;
+  --ui-color-brand-soft: #f1f1ff;
+  --ui-color-bg: #f4f6f9;
+  --ui-color-surface: #ffffff;
+  --ui-color-surface-subtle: #f8f9fb;
+  --ui-color-border: #e5e8ef;
+  --ui-color-border-strong: #d7dbe5;
+  --ui-color-text: #172033;
+  --ui-color-text-secondary: #596274;
+  --ui-color-text-muted: #7d8596;
+  --ui-color-text-subtle: #969dae;
+  --ui-color-success: #1f9d75;
+  --ui-color-success-soft: #eefaf5;
+  --ui-color-warning: #c98216;
+  --ui-color-warning-soft: #fff8eb;
+  --ui-color-danger: #db4b55;
+  --ui-color-danger-soft: #fff5f6;
+  --ui-color-info: #377dff;
+  --ui-color-info-soft: #f0f5ff;
+  --ui-color-sidebar: #111321;
+  --ui-color-sidebar-text: #9da5b8;
+  --ui-color-sidebar-muted: #626a81;
+
+  /* Typography */
+  --ui-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --ui-font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --ui-font-size-xs: 12px;
+  --ui-font-size-sm: 13px;
+  --ui-font-size-md: 14px;
+  --ui-font-size-lg: 16px;
+  --ui-font-size-xl: 20px;
+  --ui-font-size-page: 24px;
+  --ui-line-height-tight: 1.25;
+  --ui-line-height-normal: 1.5;
+
+  /* Spacing and shape */
+  --ui-space-1: 4px;
+  --ui-space-2: 8px;
+  --ui-space-3: 12px;
+  --ui-space-4: 16px;
+  --ui-space-5: 20px;
+  --ui-space-6: 24px;
+  --ui-space-8: 32px;
+  --ui-radius-sm: 6px;
+  --ui-radius-md: 8px;
+  --ui-radius-lg: 12px;
+  --ui-radius-xl: 16px;
+  --ui-radius-pill: 999px;
+  --ui-shadow-sm: 0 1px 2px rgba(16, 24, 40, .03), 0 8px 24px rgba(16, 24, 40, .04);
+  --ui-shadow-md: 0 16px 38px rgba(28, 34, 52, .14), 0 2px 8px rgba(28, 34, 52, .06);
+
+  /* Shared legacy aliases. New CSS should use the --ui-* roles above. */
+  --bg: var(--ui-color-bg);
+  --surface: var(--ui-color-surface);
+  --soft: var(--ui-color-surface-subtle);
+  --text: var(--ui-color-text);
+  --muted: var(--ui-color-text-secondary);
+  --line: var(--ui-color-border);
+  --blue: var(--ui-color-brand);
+  --green: var(--ui-color-success);
+  --red: var(--ui-color-danger);
+  --amber: var(--ui-color-warning);
+  --sidebar-accent: #8b8cf8;
+  --sidebar-accent-soft: rgba(139, 140, 248, .13);
+}
+
+html {
+  color-scheme: light;
+  text-size-adjust: 100%;
+}
+
+body {
+  font-family: var(--ui-font-sans);
+  font-size: var(--ui-font-size-md);
+  line-height: var(--ui-line-height-normal);
+  color: var(--ui-color-text);
+  background: var(--ui-color-bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
+}
+
+button,
+select {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--ui-color-brand) 24%, transparent);
+  outline-offset: 2px;
+}
+
+input,
+textarea,
+select {
+  color: var(--ui-color-text);
+  border-color: var(--ui-color-border-strong);
+  background: var(--ui-color-surface);
+  border-radius: var(--ui-radius-md);
+  transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--ui-color-text-subtle);
+}
+
+input:hover:not(:disabled),
+textarea:hover:not(:disabled),
+select:hover:not(:disabled) {
+  border-color: #b9bfce;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: #a7a8f4;
+  box-shadow: 0 0 0 3px rgba(91, 92, 226, .10);
+  outline: none;
+}
+
+/* App shell */
+.app-sidebar {
+  width: var(--sidebar-width);
+  padding: var(--ui-space-3);
+  background: var(--ui-color-sidebar);
+  color: #fff;
+  border: 0;
+  box-shadow: 14px 0 40px rgba(17, 19, 33, .09);
+}
+
+.sidebar-brand {
+  min-height: 64px;
+  height: auto;
+  padding: 0 10px 12px;
+  border-bottom-color: rgba(255, 255, 255, .09);
+}
+
+.sidebar-brand-title {
+  font-size: 15px;
+  line-height: var(--ui-line-height-tight);
+}
+
+.sidebar-brand-subtitle,
+.sidebar-nav-group-label {
+  color: var(--ui-color-sidebar-muted);
+}
+
+.sidebar-nav {
+  padding: var(--ui-space-6) 2px;
+  gap: var(--ui-space-1);
+}
+
+.app-sidebar .sidebar-nav button,
+.app-sidebar .sidebar-nav button.sidebar-item {
+  min-height: 44px;
+  padding: 10px 12px;
+  border-radius: var(--ui-radius-md);
+  color: var(--ui-color-sidebar-text);
+  font-size: var(--ui-font-size-sm);
+  font-weight: 650;
+}
+
+.app-sidebar .sidebar-nav button:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, .06);
+}
+
+.app-sidebar .sidebar-nav button.active {
+  color: #fff;
+  background: linear-gradient(100deg, rgba(91, 92, 226, .34), rgba(91, 92, 226, .14));
+  box-shadow: inset 0 0 0 1px rgba(151, 152, 255, .14);
+}
+
+.sidebar-item-meta {
+  min-width: 22px;
+  height: 20px;
+  border-radius: var(--ui-radius-pill);
+  font-size: 10px;
+}
+
+.app-topbar {
+  height: var(--topbar-height);
+  padding-inline: var(--page-gutter);
+  border-bottom-color: rgba(224, 228, 237, .92);
+  background: rgba(248, 249, 252, .90);
+}
+
+.topbar-eyebrow,
+.data-panel-kicker {
+  color: var(--ui-color-text-subtle);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .11em;
+}
+
+.topbar-title {
+  color: var(--ui-color-text);
+  font-size: var(--ui-font-size-xl);
+  line-height: var(--ui-line-height-tight);
+}
+
+.topbar-description {
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-xs);
+}
+
+.system-health {
+  min-height: 36px;
+  border-color: var(--ui-color-border);
+  border-radius: var(--ui-radius-pill);
+  color: var(--ui-color-text-secondary);
+  font-size: var(--ui-font-size-xs);
+}
+
+main {
+  margin-top: calc(var(--topbar-height) + var(--ui-space-6));
+  margin-bottom: var(--ui-space-8);
+}
+
+/* Shared surfaces */
+section.card,
+.jobs-panel-v2,
+.accounts-panel-v2,
+.account-tasks-panel,
+.codex-panel-v2,
+.outlook-panel-v2,
+.config-card-v2,
+.config-section-v2,
+.overview-panel,
+.overview-metric,
+.mail-resource-overview {
+  border-color: var(--ui-color-border);
+  border-radius: var(--ui-radius-lg);
+  box-shadow: var(--ui-shadow-sm);
+}
+
+.data-panel-title,
+.overview-panel-head h3,
+.mail-resource-head h2 {
+  color: var(--ui-color-text);
+  font-size: var(--ui-font-size-lg);
+  line-height: var(--ui-line-height-tight);
+}
+
+.data-panel-copy,
+.overview-panel-head span,
+.mail-resource-head p {
+  color: var(--ui-color-text-muted);
+}
+
+/* Shared control hierarchy */
+button.btn,
+.jobs-tb-btn,
+.actions button,
+.pager-bar button,
+.batch-progress-v2-action,
+.overview-panel-head button,
+.mail-resource-head .jobs-tb-btn,
+.butler-lease-actions .jobs-tb-btn {
+  min-height: 36px;
+  padding-inline: 12px;
+  border: 1px solid var(--ui-color-border-strong);
+  border-radius: var(--ui-radius-md);
+  color: var(--ui-color-text-secondary);
+  background: var(--ui-color-surface);
+  font-size: var(--ui-font-size-xs);
+  font-weight: 700;
+  transition: border-color .16s ease, background .16s ease, color .16s ease, box-shadow .16s ease;
+}
+
+button.btn:hover:not(:disabled),
+.jobs-tb-btn:hover:not(:disabled),
+.actions button:hover:not(:disabled),
+.pager-bar button:hover:not(:disabled),
+.batch-progress-v2-action:hover:not(:disabled),
+.overview-panel-head button:hover:not(:disabled) {
+  border-color: #b9bfce;
+  color: var(--ui-color-text);
+  background: var(--ui-color-surface-subtle);
+}
+
+button.btn.primary,
+.jobs-tb-btn--primary,
+.jobs-tb-btn--retry,
+.overview-refresh,
+.butler-lease-actions .jobs-tb-btn--primary {
+  border-color: var(--ui-color-brand);
+  color: #fff;
+  background: var(--ui-color-brand);
+  box-shadow: 0 7px 16px rgba(91, 92, 226, .16);
+}
+
+button.btn.primary:hover:not(:disabled),
+.jobs-tb-btn--primary:hover:not(:disabled),
+.jobs-tb-btn--retry:hover:not(:disabled),
+.overview-refresh:hover:not(:disabled) {
+  border-color: var(--ui-color-brand-hover);
+  background: var(--ui-color-brand-hover);
+}
+
+button.btn.good,
+.jobs-tb-btn--good,
+.actions button.good {
+  border-color: #cce5d8;
+  color: #39795d;
+  background: var(--ui-color-success-soft);
+}
+
+button.btn.danger,
+.jobs-tb-btn--danger,
+.actions button.danger {
+  border-color: #efc5c9;
+  color: var(--ui-color-danger);
+  background: var(--ui-color-danger-soft);
+}
+
+button:disabled,
+button.btn:disabled,
+.jobs-tb-btn:disabled,
+.actions button:disabled {
+  color: #a8afbd;
+  background: #f4f5f7;
+  border-color: var(--ui-color-border);
+  box-shadow: none;
+}
+
+/* Shared status language */
+.pill {
+  min-height: 24px;
+  padding: 3px 9px;
+  border-radius: var(--ui-radius-pill) !important;
+  font-size: var(--ui-font-size-xs);
+  font-weight: 700 !important;
+  line-height: 1.2;
+}
+
+.status-success,
+.status-available {
+  color: var(--ui-color-success) !important;
+  background: var(--ui-color-success-soft) !important;
+}
+
+.status-running,
+.status-stopping,
+.status-pending {
+  color: var(--ui-color-warning) !important;
+  background: var(--ui-color-warning-soft) !important;
+}
+
+.status-failed {
+  color: var(--ui-color-danger) !important;
+  background: var(--ui-color-danger-soft) !important;
+}
+
+.status-used,
+.status-cancelled,
+.status-stopped,
+.status-disabled,
+.status-skipped {
+  color: var(--ui-color-text-muted) !important;
+  background: #f1f3f6 !important;
+}
+
+/* Tables and list scaffolding */
+.table-wrap,
+.jobs-table-v2-wrap,
+.accounts-table-v2-wrap,
+.codex-table-v2-wrap,
+.outlook-table-v2-wrap {
+  border-top-color: var(--ui-color-border);
+  scrollbar-color: #c8ceda transparent;
+}
+
+table {
+  font-size: var(--ui-font-size-sm);
+}
+
+th,
+td {
+  border-bottom-color: #edf0f4;
+}
+
+th,
+.jobs-table-v2 thead th,
+.accounts-table-v2 thead th,
+.codex-table-v2 thead th,
+.outlook-table-v2 thead th {
+  color: var(--ui-color-text-muted);
+  background: var(--ui-color-surface-subtle);
+  font-size: var(--ui-font-size-xs);
+  font-weight: 750;
+}
+
+tr:hover td,
+.jobs-table-v2 tbody tr:hover td,
+.accounts-table-v2 tbody tr:hover td,
+.codex-table-v2 tbody tr:hover td,
+.outlook-table-v2 tbody tr:hover td {
+  background: #fbfbff;
+}
+
+.list-state-row:hover .table-state-cell,
+.list-state-row .table-state-cell {
+  height: 210px !important;
+  padding: 28px !important;
+  overflow: visible !important;
+  color: var(--ui-color-text-secondary);
+  background: var(--ui-color-surface) !important;
+  text-align: center;
+  text-overflow: clip !important;
+  white-space: normal !important;
+}
+
+.table-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 7px;
+  min-height: 150px;
+}
+
+.table-state strong {
+  color: var(--ui-color-text);
+  font-size: var(--ui-font-size-md);
+  font-weight: 750;
+}
+
+.table-state small {
+  max-width: 360px;
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-xs);
+  line-height: 1.55;
+}
+
+.table-state-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  margin-bottom: 3px;
+  border-radius: var(--ui-radius-lg);
+  color: var(--ui-color-text-subtle);
+  background: var(--ui-color-surface-subtle);
+}
+
+.table-state-icon svg {
+  width: 21px;
+  height: 21px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.table-state.is-error .table-state-icon {
+  color: var(--ui-color-danger);
+  background: var(--ui-color-danger-soft);
+}
+
+.table-state-spinner {
+  width: 24px;
+  height: 24px;
+  margin-bottom: 8px;
+  border: 2px solid #e2e4fb;
+  border-top-color: var(--ui-color-brand);
+  border-radius: 50%;
+  animation: table-state-spin .8s linear infinite;
+}
+
+@keyframes table-state-spin {
+  to { transform: rotate(360deg); }
+}
+
+.main-cell {
+  color: var(--ui-color-text);
+}
+
+.sub-cell,
+.muted,
+.pager-bar .pager-info {
+  color: var(--ui-color-text-muted);
+}
+
+.mono {
+  font-family: var(--ui-font-mono);
+}
+
+/* List pages: make the page title, selection actions, and row content read as
+   one deliberate hierarchy instead of a wall of controls. */
+.list-panel-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--ui-space-4);
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--ui-color-border);
+  background: linear-gradient(180deg, #fff 0%, #fbfbfe 100%);
+}
+
+.list-panel-heading .data-panel-title {
+  margin-top: 4px;
+}
+
+.list-panel-heading .data-panel-copy {
+  margin-top: 4px;
+}
+
+.list-panel-summary {
+  flex: 0 0 auto;
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-xs);
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+/* Account assets: keep the heading in the fixed-height list layout. */
+#accountsPanelV2 > .accounts-panel-heading {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--ui-space-4);
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--ui-color-border);
+  background: linear-gradient(180deg, #fff 0%, #fbfbfe 100%);
+}
+
+.accounts-panel-heading .data-panel-title {
+  margin-top: 4px;
+}
+
+.accounts-panel-heading .data-panel-copy {
+  margin-top: 4px;
+}
+
+.accounts-panel-summary {
+  flex: 0 0 auto;
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-xs);
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.acc-v2-email-link {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.acc-v2-email-link:hover .acc-v2-email {
+  color: var(--ui-color-brand-hover);
+}
+
+.acc-v2-email-link:focus-visible {
+  outline: 2px solid var(--ui-color-brand);
+  outline-offset: 3px;
+}
+
+/* Keep secondary actions visually quieter than the primary selection actions. */
+#accountsToolbarV2 .toolbar-page-actions .jobs-tb-btn--primary,
+#accountsToolbarV2 .toolbar-selection-primary .jobs-tb-btn--primary {
+  border-color: var(--ui-color-border-strong);
+  color: var(--ui-color-text-secondary);
+  background: var(--ui-color-surface);
+  box-shadow: none;
+}
+
+#accountsToolbarV2 .toolbar-selection-primary .jobs-tb-btn--primary:hover:not(:disabled),
+#accountsToolbarV2 .toolbar-page-actions .jobs-tb-btn--primary:hover:not(:disabled) {
+  border-color: #b9bfce;
+  color: var(--ui-color-text);
+  background: var(--ui-color-surface-subtle);
+}
+
+/* Account detail drawer */
+.account-detail-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 4800;
+  background: rgba(15, 23, 42, .42);
+  backdrop-filter: blur(2px);
+}
+
+.account-detail-drawer {
+  position: fixed;
+  z-index: 4900;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  width: min(520px, calc(100vw - 24px));
+  padding: 24px;
+  overflow: auto;
+  border-left: 1px solid var(--ui-color-border);
+  background: var(--ui-color-surface);
+  box-shadow: -18px 0 40px rgba(15, 23, 42, .18);
+}
+
+.account-detail-drawer.hidden,
+.account-detail-backdrop.hidden {
+  display: none !important;
+}
+
+.account-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--ui-space-4);
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--ui-color-border);
+}
+
+.account-detail-head h2 {
+  max-width: 420px;
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--ui-color-text);
+  font-size: 20px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-detail-head p {
+  margin-top: 5px;
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-xs);
+}
+
+.account-detail-close {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--ui-color-border-strong);
+  border-radius: var(--ui-radius-md);
+  color: var(--ui-color-text-secondary);
+  background: var(--ui-color-surface);
+  font-size: 22px;
+  line-height: 1;
+}
+
+.account-detail-close:hover {
+  color: var(--ui-color-text);
+  background: var(--ui-color-surface-subtle);
+}
+
+.account-detail-body {
+  display: grid;
+  gap: 20px;
+  padding-top: 20px;
+}
+
+.account-detail-section {
+  display: grid;
+  gap: 10px;
+}
+
+.account-detail-section-title {
+  color: var(--ui-color-text-muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.account-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.account-detail-state {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #edf0f4;
+  border-radius: var(--ui-radius-md);
+  background: #fafbfc;
+}
+
+.account-detail-label {
+  color: var(--ui-color-text-muted);
+  font-size: 11px;
+}
+
+.account-detail-state-value {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  margin-top: 6px;
+}
+
+.account-detail-state-value strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ui-color-text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-detail-state small {
+  display: block;
+  margin-top: 5px;
+  overflow: hidden;
+  color: var(--ui-color-text-subtle);
+  font-size: 11px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-detail-dot {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #aeb5c1;
+}
+
+.account-detail-dot--success { background: var(--ui-color-success); }
+.account-detail-dot--info { background: var(--ui-color-brand); }
+.account-detail-dot--warning { background: var(--ui-color-warning); }
+.account-detail-dot--danger { background: var(--ui-color-danger); }
+
+@media (max-width: 560px) {
+  .list-panel-heading,
+  #accountsPanelV2 > .accounts-panel-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    padding: 16px 14px 12px;
+  }
+
+  .account-detail-drawer {
+    width: 100%;
+    padding: 18px 14px;
+  }
+
+  .account-detail-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Configuration workspace */
+#tab-config .config-nav-v2 {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  border-color: var(--ui-color-border);
+  border-radius: var(--ui-radius-lg);
+  box-shadow: var(--ui-shadow-sm);
+}
+
+.config-nav-v2-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ui-space-2);
+  margin: 0 6px 10px;
+}
+
+#tab-config .config-nav-v2-head .config-nav-v2-title {
+  margin: 0;
+  color: var(--ui-color-text-secondary);
+  font-size: var(--ui-font-size-xs);
+  font-weight: 750;
+}
+
+.config-nav-v2-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 20px;
+  padding-inline: 6px;
+  border-radius: var(--ui-radius-pill);
+  color: var(--ui-color-text-muted);
+  background: var(--ui-color-surface-subtle);
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.config-nav-search-v2 {
+  position: relative;
+  display: block;
+  margin: 0 2px 10px;
+}
+
+.config-nav-search-v2 svg {
+  position: absolute;
+  z-index: 1;
+  top: 50%;
+  left: 10px;
+  width: 14px;
+  height: 14px;
+  color: var(--ui-color-text-subtle);
+  fill: none;
+  stroke: currentColor;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.config-nav-search-v2 input {
+  width: 100%;
+  min-height: 36px;
+  padding: 0 28px 0 32px;
+  border-color: var(--ui-color-border);
+  background: var(--ui-color-surface-subtle);
+  font-size: var(--ui-font-size-xs);
+}
+
+#tab-config .config-nav-v2-list {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-width: thin;
+}
+
+#tab-config .config-nav-v2-item {
+  border-radius: var(--ui-radius-md);
+  color: var(--ui-color-text-secondary);
+}
+
+#tab-config .config-nav-v2-item:hover {
+  color: var(--ui-color-text);
+  background: var(--ui-color-surface-subtle);
+}
+
+#tab-config .config-nav-v2-item.is-active {
+  color: var(--ui-color-brand);
+  background: var(--ui-color-brand-soft);
+}
+
+#tab-config .config-nav-v2-item[hidden],
+.config-nav-empty-v2[hidden],
+.config-dirty-badge[hidden] {
+  display: none;
+}
+
+.config-nav-empty-v2 {
+  padding: 22px 8px;
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-xs);
+  line-height: 1.5;
+  text-align: center;
+}
+
+.config-dirty-badge {
+  color: #ffd28d;
+  background: rgba(201, 130, 22, .18);
+}
+
+.app-sidebar .sidebar-item.active .config-dirty-badge {
+  color: #ffe0a8;
+  background: rgba(201, 130, 22, .25);
+}
+
+#tab-config .config-card-v2,
+#tab-config .config-section-v2 {
+  border-color: var(--ui-color-border);
+  border-radius: var(--ui-radius-lg);
+  box-shadow: var(--ui-shadow-sm);
+}
+
+#tab-config .config-section-v2-body label.fld {
+  padding: 13px 14px;
+  border: 1px solid #edf0f4;
+  border-radius: var(--ui-radius-md);
+  background: #fafbfc;
+}
+
+#tab-config .config-section-v2-body label.fld > input,
+#tab-config .config-section-v2-body label.fld > select,
+#tab-config .config-section-v2-body label.fld > textarea,
+#tab-config .config-section-v2-body label.fld > .config-ep-select {
+  margin-top: 8px;
+  background: var(--ui-color-surface);
+}
+
+#tab-config .config-section-v2-actions {
+  align-items: center;
+  justify-content: space-between;
+  min-height: 58px;
+  margin: 20px -22px -20px;
+  padding: 10px 22px;
+  border-top: 1px solid var(--ui-color-border);
+  border-radius: 0 0 var(--ui-radius-lg) var(--ui-radius-lg);
+  background: #fbfcfd;
+}
+
+.config-save-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-xs);
+}
+
+.config-save-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ui-color-text-subtle);
+}
+
+.config-save-state.is-saved .config-save-dot { background: var(--ui-color-success); }
+.config-save-state.is-dirty { color: var(--ui-color-warning); }
+.config-save-state.is-dirty .config-save-dot { background: var(--ui-color-warning); }
+.config-save-state.is-saving { color: var(--ui-color-info); }
+.config-save-state.is-saving .config-save-dot {
+  background: var(--ui-color-info);
+  animation: config-save-pulse 1s ease-in-out infinite;
+}
+.config-save-state.is-error { color: var(--ui-color-danger); }
+.config-save-state.is-error .config-save-dot { background: var(--ui-color-danger); }
+
+#tab-config [data-save-config-v2] {
+  min-width: 104px;
+}
+
+#tab-config [data-save-config-v2]:disabled {
+  color: var(--ui-color-text-muted);
+  border-color: var(--ui-color-border);
+  background: #eef0f4;
+  box-shadow: none;
+  cursor: default;
+  opacity: 1;
+}
+
+@keyframes config-save-pulse {
+  50% { opacity: .35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .table-state-spinner { animation: none; }
+  .config-save-state.is-saving .config-save-dot { animation: none; }
+}
+
+@media (max-width: 860px) {
+  .jobs-table-v2-wrap,
+  .accounts-table-v2-wrap,
+  .codex-table-v2-wrap,
+  .outlook-table-v2-wrap {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    touch-action: pan-x pan-y;
+  }
+
+  table[data-resizable-table="jobs"] { min-width: 1120px !important; }
+  table[data-resizable-table="accounts"] { min-width: 1180px !important; }
+  table[data-resizable-table="codex"] { min-width: 980px !important; }
+  table[data-resizable-table="outlook"] { min-width: 860px !important; }
+
+  #tab-config .config-nav-v2 {
+    max-height: 260px;
+    padding: 12px 10px;
+  }
+}
+
+@media (max-width: 560px) {
+  .list-state-row:hover .table-state-cell,
+  .list-state-row .table-state-cell {
+    height: 180px !important;
+    padding: 20px !important;
+  }
+
+  .table-state {
+    align-items: flex-start;
+    min-height: 120px;
+    text-align: left;
+  }
+
+  #tab-config .config-section-v2 {
+    padding: 18px 14px;
+  }
+
+  #tab-config .config-section-v2-body {
+    gap: 10px;
+  }
+
+  #tab-config .config-section-v2-body label.fld {
+    padding: 12px;
+  }
+
+  #tab-config .config-section-v2-actions {
+    min-height: 62px;
+    margin: 18px -14px -18px;
+    padding: 10px 14px;
+  }
+
+  .config-save-state {
+    max-width: calc(100% - 118px);
+  }
+}
+
+/* Dense data workspaces: keep the action bar and pager in view while the
+   table body owns the scroll area. */
+#tab-register[data-module-view="tasks"] #jobsPanelV2,
+#tab-accounts:not([data-module-view="tasks"]) #accountsPanelV2,
+#tab-accounts[data-module-view="tasks"] #accountTasksPanel,
+#tab-codex #codexPanelV2,
+#tab-outlook[data-module-view="list"] #outlookPanelV2 {
+  min-height: 0;
+  height: calc(100vh - var(--topbar-height) - 42px);
+  height: calc(100dvh - var(--topbar-height) - 42px);
+  display: flex;
+  flex-direction: column;
+}
+
+#tab-register[data-module-view="tasks"] #jobsPanelV2 > .jobs-toolbar-v2,
+#tab-register[data-module-view="tasks"] #jobsPanelV2 > .task-records-command-deck,
+#tab-register[data-module-view="tasks"] #jobsPanelV2 > .column-filter-summary,
+#tab-register[data-module-view="tasks"] #jobsPanelV2 > .jobs-v2-pager,
+#tab-accounts #accountsPanelV2 > .accounts-command-deck,
+#tab-accounts #accountsPanelV2 > .column-filter-summary,
+#tab-accounts #accountsPanelV2 > .jobs-v2-pager,
+#tab-accounts[data-module-view="tasks"] #accountTasksPanel > .account-tasks-command-deck,
+#tab-accounts[data-module-view="tasks"] #accountTasksPanel > .column-filter-summary,
+#tab-accounts[data-module-view="tasks"] #accountTasksPanel > .jobs-v2-pager,
+#tab-codex #codexPanelV2 > .codex-command-deck,
+#tab-codex #codexPanelV2 > .column-filter-summary,
+#tab-codex #codexPanelV2 > .jobs-v2-pager,
+#tab-outlook[data-module-view="list"] #outlookPanelV2 > #outlookToolbarV2,
+#tab-outlook[data-module-view="list"] #outlookPanelV2 > .column-filter-summary,
+#tab-outlook[data-module-view="list"] #outlookPanelV2 > .jobs-v2-pager {
+  flex: 0 0 auto;
+}
+
+#tab-register[data-module-view="tasks"] #jobsPanelV2 > .jobs-table-v2-wrap,
+#tab-accounts:not([data-module-view="tasks"]) #accountsPanelV2 > .accounts-table-v2-wrap,
+#tab-accounts[data-module-view="tasks"] #accountTasksPanel > .account-tasks-table-wrap,
+#tab-codex #codexPanelV2 > .codex-table-v2-wrap,
+#tab-outlook[data-module-view="list"] #outlookPanelV2 > .outlook-table-v2-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+}
+
+/* Make horizontal overflow discoverable on desktop and mobile. */
+.jobs-table-v2-wrap,
+.accounts-table-v2-wrap,
+.codex-table-v2-wrap,
+.outlook-table-v2-wrap,
+.account-tasks-table-wrap {
+  scrollbar-width: auto;
+  scrollbar-color: #aeb7c6 #edf0f5;
+  scrollbar-gutter: stable;
+}
+
+.jobs-table-v2-wrap::-webkit-scrollbar,
+.accounts-table-v2-wrap::-webkit-scrollbar,
+.codex-table-v2-wrap::-webkit-scrollbar,
+.outlook-table-v2-wrap::-webkit-scrollbar,
+.account-tasks-table-wrap::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.jobs-table-v2-wrap::-webkit-scrollbar-track,
+.accounts-table-v2-wrap::-webkit-scrollbar-track,
+.codex-table-v2-wrap::-webkit-scrollbar-track,
+.outlook-table-v2-wrap::-webkit-scrollbar-track,
+.account-tasks-table-wrap::-webkit-scrollbar-track {
+  background: #edf0f5;
+}
+
+.jobs-table-v2-wrap::-webkit-scrollbar-thumb,
+.accounts-table-v2-wrap::-webkit-scrollbar-thumb,
+.codex-table-v2-wrap::-webkit-scrollbar-thumb,
+.outlook-table-v2-wrap::-webkit-scrollbar-thumb,
+.account-tasks-table-wrap::-webkit-scrollbar-thumb {
+  border: 2px solid #edf0f5;
+  border-radius: 999px;
+  background: #aeb7c6;
+}
+
+/* Account rows carry rich state, but the list itself should scan at one line
+   per account; the detail drawer remains the place for full metadata. */
+.accounts-table-v2 th,
+.accounts-table-v2 td {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.accounts-table-v2 tbody tr,
+.accounts-table-v2 tbody td {
+  height: 50px;
+}
+
+.accounts-table-v2 .acc-v2-email-link,
+.accounts-table-v2 .acc-v2-email {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+}
+
+.accounts-table-v2 .acc-v2-email-link {
+  width: auto;
+  max-width: 100%;
+}
+
+.accounts-table-v2 .acc-v2-sub {
+  display: none;
+}
+
+.accounts-table-v2 .status-action-cell,
+.accounts-table-v2 .extract-link-cell {
+  flex-wrap: nowrap;
+  gap: 5px;
+  margin-top: 0;
+  white-space: nowrap;
+}
+
+.accounts-table-v2 .extract-link-expire,
+.accounts-table-v2 .extract-link-error {
+  display: none;
+}
+
+/* Codex rows use a single scan line and reserve just enough space for the
+   action cluster; all longer values keep their full text in title tooltips. */
+.codex-table-v2 {
+  width: 100% !important;
+  min-width: 100% !important;
+  table-layout: auto;
+}
+
+table[data-resizable-table="jobs"],
+table[data-resizable-table="accounts"],
+table[data-resizable-table="codex"],
+table[data-resizable-table="outlook"] {
+  width: max-content;
+  min-width: 100% !important;
+}
+
+table[data-resizable-table="accounts"] {
+  min-width: 1280px !important;
+}
+
+/* Desktop account rows fit the panel; narrow screens keep the full-width
+   table and its horizontal scrollbar so no account field is removed. */
+@media (min-width: 1101px) {
+  #accountsPanelV2 > .accounts-table-v2-wrap {
+    overflow-x: auto;
+  }
+
+  #accountsPanelV2 table[data-resizable-table="accounts"] {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    table-layout: fixed !important;
+  }
+
+  #accountsPanelV2 table[data-resizable-table="accounts"] th,
+  #accountsPanelV2 table[data-resizable-table="accounts"] td {
+    padding-left: 6px !important;
+    padding-right: 6px !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+    font-size: 11px;
+  }
+
+  #accountsPanelV2 table[data-resizable-table="accounts"] th:first-child,
+  #accountsPanelV2 table[data-resizable-table="accounts"] td:first-child {
+    padding-left: 8px !important;
+  }
+
+  #accountsPanelV2 table[data-resizable-table="accounts"] th:last-child,
+  #accountsPanelV2 table[data-resizable-table="accounts"] td:last-child {
+    padding-right: 8px !important;
+  }
+
+  #accountsPanelV2 table[data-resizable-table="accounts"] .col-email,
+  #accountsPanelV2 table[data-resizable-table="accounts"] .col-plan,
+  #accountsPanelV2 table[data-resizable-table="accounts"] .col-trial,
+  #accountsPanelV2 table[data-resizable-table="accounts"] .col-actions {
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+  }
+
+  #accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-email-link,
+  #accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-email {
+    display: block !important;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  #accountsPanelV2 table[data-resizable-table="accounts"] .status-action-cell,
+  #accountsPanelV2 table[data-resizable-table="accounts"] .extract-link-cell {
+    flex-wrap: nowrap;
+    gap: 2px;
+    max-width: 100%;
+    overflow: hidden;
+  }
+
+  #accountsPanelV2 table[data-resizable-table="accounts"] .pill,
+  #accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-token-copy,
+  #accountsPanelV2 table[data-resizable-table="accounts"] .status-action-cell button,
+  #accountsPanelV2 table[data-resizable-table="accounts"] .extract-link-cell button,
+  #accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-actions > button,
+  #accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-more-btn {
+    height: 22px;
+    min-height: 22px;
+    padding-left: 5px;
+    padding-right: 5px;
+    font-size: 10px;
+  }
+
+  #accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-actions {
+    gap: 2px;
+    max-width: 100%;
+    overflow: hidden;
+  }
+}
+
+table[data-resizable-table="codex"] {
+  width: 100% !important;
+  min-width: 100% !important;
+  table-layout: auto;
+}
+
+.codex-table-v2 .acc-v2-email {
+  display: block;
+  max-width: 100%;
+  margin-top: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.codex-table-v2 .acc-v2-sub {
+  display: none;
+}
+
+.codex-table-v2 tbody td {
+  white-space: nowrap;
+}
+
+.codex-table-v2 tbody tr,
+.codex-table-v2 tbody td {
+  height: 50px;
+}
+
+@media (max-width: 860px) {
+  #tab-register[data-module-view="tasks"] #jobsPanelV2,
+  #tab-accounts:not([data-module-view="tasks"]) #accountsPanelV2,
+  #tab-accounts[data-module-view="tasks"] #accountTasksPanel,
+  #tab-codex #codexPanelV2,
+  #tab-outlook[data-module-view="list"] #outlookPanelV2 {
+    height: calc(100dvh - var(--topbar-height) - 26px);
+  }
+
+}
+
+/* Dialogs and feedback */
+#logPanel:not(.hidden),
+#liveLogPanel:not(.hidden),
+#accountTaskLogPanel:not(.hidden),
+#qrPanel:not(.hidden) {
+  border-color: var(--ui-color-border-strong);
+  border-radius: var(--ui-radius-lg);
+  box-shadow: 0 0 0 9999px rgba(15, 23, 42, .46), var(--ui-shadow-md);
+}
+
+#toast {
+  border-radius: var(--ui-radius-md);
+  background: #171927;
+  box-shadow: var(--ui-shadow-md);
+}
+
+@media (max-width: 860px) {
+  /* The desktop width token is 0 on mobile; keep the drawer's real width so
+     translateX(-110%) hides the whole sidebar, including its padding. */
+  .app-sidebar {
+    width: 252px;
+    transform: translateX(-110%);
+  }
+
+  body.sidebar-open .app-sidebar {
+    transform: translateX(0);
+  }
+
+  .app-topbar {
+    padding-inline: var(--page-gutter);
+  }
+
+  .mobile-nav-toggle {
+    border-color: var(--ui-color-border);
+    border-radius: var(--ui-radius-md);
+  }
+
+  main {
+    margin-top: calc(var(--topbar-height) + var(--ui-space-4));
+  }
+}
+
+@media (max-width: 560px) {
+  body {
+    font-size: var(--ui-font-size-sm);
+  }
+
+  .topbar-title {
+    font-size: 18px;
+  }
+
+  main {
+    margin-bottom: var(--ui-space-6);
+  }
+}

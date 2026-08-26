@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
-  <title>GPT Registrator · 授权码登录</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/ui-foundation.css') }}">
+  <title>Turb Console · 安全登录</title>
   <style>
     * { box-sizing: border-box; }
 
@@ -14,8 +15,8 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      background: #f4f6fb;
-      color: #1e293b;
+      background: var(--ui-color-bg);
+      color: var(--ui-color-text);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
       overflow: hidden;
     }
@@ -30,7 +31,7 @@
     .bg-circle {
       position: absolute;
       border-radius: 50%;
-      background: radial-gradient(circle, rgba(59, 102, 245, 0.12) 0%, rgba(59, 102, 245, 0) 70%);
+      background: radial-gradient(circle, rgba(91, 92, 226, 0.12) 0%, rgba(91, 92, 226, 0) 70%);
     }
 
     .bg-circle--tl {
@@ -103,15 +104,29 @@
       font-size: 22px;
       font-weight: 800;
       letter-spacing: -0.01em;
-      color: #0f172a;
+      color: var(--ui-color-text);
+    }
+
+    .brand-copy {
+      display: grid;
+      gap: 2px;
+    }
+
+    .brand-subtitle {
+      color: var(--ui-color-text-subtle);
+      font-size: 10px;
+      font-weight: 750;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
     }
 
     .card {
       width: 100%;
       padding: 36px 32px 32px;
-      border-radius: 16px;
-      background: #fff;
-      box-shadow: 0 20px 60px rgba(15, 23, 42, 0.08), 0 1px 3px rgba(15, 23, 42, 0.04);
+      border: 1px solid var(--ui-color-border);
+      border-radius: var(--ui-radius-xl);
+      background: var(--ui-color-surface);
+      box-shadow: var(--ui-shadow-md);
     }
 
     .card h1 {
@@ -119,14 +134,14 @@
       text-align: center;
       font-size: 24px;
       font-weight: 800;
-      color: #0f172a;
+      color: var(--ui-color-text);
       letter-spacing: -0.02em;
     }
 
     .desc {
       margin: 10px 0 0;
       text-align: center;
-      color: #64748b;
+      color: var(--ui-color-text-muted);
       font-size: 13px;
       line-height: 1.55;
     }
@@ -134,10 +149,10 @@
     .err {
       margin: 18px 0 0;
       padding: 10px 14px;
-      border: 1px solid #fecaca;
+      border: 1px solid color-mix(in srgb, var(--ui-color-danger) 28%, white);
       border-radius: 10px;
-      background: #fef2f2;
-      color: #dc2626;
+      background: var(--ui-color-danger-soft);
+      color: var(--ui-color-danger);
       font-size: 13px;
       line-height: 1.45;
     }
@@ -157,7 +172,7 @@
       transform: translateY(-50%);
       width: 18px;
       height: 18px;
-      color: #94a3b8;
+      color: var(--ui-color-text-subtle);
       pointer-events: none;
     }
 
@@ -173,14 +188,14 @@
       border: 0;
       border-radius: 8px;
       background: transparent;
-      color: #94a3b8;
+      color: var(--ui-color-text-subtle);
       cursor: pointer;
       padding: 0;
     }
 
     .toggle-password:hover {
-      color: #64748b;
-      background: #f1f5f9;
+      color: var(--ui-color-text-secondary);
+      background: var(--ui-color-surface-subtle);
     }
 
     .toggle-password svg {
@@ -195,24 +210,24 @@
     .input-wrap input {
       width: 100%;
       min-height: 48px;
-      border: 1px solid #e2e8f0;
-      border-radius: 10px;
+      border: 1px solid var(--ui-color-border-strong);
+      border-radius: var(--ui-radius-lg);
       padding: 0 44px 0 42px;
       font: inherit;
       font-size: 14px;
-      color: #0f172a;
-      background: #fff;
+      color: var(--ui-color-text);
+      background: var(--ui-color-surface);
       transition: border-color 0.15s, box-shadow 0.15s;
     }
 
     .input-wrap input::placeholder {
-      color: #94a3b8;
+      color: var(--ui-color-text-subtle);
     }
 
     .input-wrap input:focus {
       outline: none;
-      border-color: #3b66f5;
-      box-shadow: 0 0 0 3px rgba(59, 102, 245, 0.12);
+      border-color: #a7a8f4;
+      box-shadow: 0 0 0 3px rgba(91, 92, 226, 0.12);
     }
 
     .remember {
@@ -220,7 +235,7 @@
       align-items: center;
       gap: 8px;
       margin-top: 14px;
-      color: #64748b;
+      color: var(--ui-color-text-muted);
       font-size: 13px;
       user-select: none;
       cursor: pointer;
@@ -230,7 +245,7 @@
       width: 16px;
       height: 16px;
       margin: 0;
-      accent-color: #3b66f5;
+      accent-color: var(--ui-color-brand);
       cursor: pointer;
     }
 
@@ -239,8 +254,8 @@
       min-height: 48px;
       margin-top: 20px;
       border: 0;
-      border-radius: 10px;
-      background: #3b66f5;
+      border-radius: var(--ui-radius-lg);
+      background: var(--ui-color-brand);
       color: #fff;
       font: inherit;
       font-size: 15px;
@@ -250,11 +265,74 @@
     }
 
     .submit:hover {
-      background: #2f55d4;
+      background: var(--ui-color-brand-hover);
     }
 
     .submit:active {
       transform: scale(0.99);
+    }
+
+    .submit:disabled {
+      cursor: wait;
+      opacity: 0.78;
+    }
+
+    .security-note {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      color: var(--ui-color-text-subtle);
+      font-size: 11px;
+      text-align: center;
+    }
+
+    .security-note svg {
+      width: 13px;
+      height: 13px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.8;
+    }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    @media (max-width: 520px) {
+      body {
+        align-items: flex-start;
+        overflow-y: auto;
+      }
+
+      .page {
+        width: min(100% - 24px, 440px);
+        padding: max(42px, env(safe-area-inset-top)) 0 32px;
+        gap: 22px;
+      }
+
+      .card {
+        padding: 30px 22px 24px;
+      }
+
+      .bg-dots { display: none; }
+    }
+
+    @media (max-height: 620px) {
+      body {
+        align-items: flex-start;
+        overflow-y: auto;
+      }
+
+      .page { padding-block: 28px; }
     }
   </style>
 </head>
@@ -272,27 +350,28 @@
       <svg class="brand-icon" viewBox="0 0 44 48" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
         <defs>
           <linearGradient id="logoGrad" x1="10" y1="4" x2="34" y2="44" gradientUnits="userSpaceOnUse">
-            <stop stop-color="#3b66f5"/>
-            <stop offset="1" stop-color="#7c3aed"/>
+            <stop stop-color="#5b5ce2"/>
+            <stop offset="1" stop-color="#7c5cff"/>
           </linearGradient>
         </defs>
         <path d="M22 3L38.928 12.75V35.25L22 45L5.072 35.25V12.75L22 3Z" fill="url(#logoGrad)"/>
         <path d="M22 13L30.928 18.25V29.75L22 35L13.072 29.75V18.25L22 13Z" fill="white" fill-opacity="0.92"/>
       </svg>
-      <span class="brand-title">GPT Registrator</span>
+      <span class="brand-copy"><span class="brand-title">Turb Console</span><span class="brand-subtitle">Registration ops</span></span>
     </div>
 
-    <form class="card" method="post" action="{{ login_url }}">
-      <h1>授权码登录</h1>
-      <p class="desc">请输入启动命令或配置文件中设置的授权码</p>
-      {% if error %}<div class="err">{{ error }}</div>{% endif %}
+    <form class="card" method="post" action="{{ login_url }}" aria-describedby="loginDescription">
+      <h1>安全访问</h1>
+      <p class="desc" id="loginDescription">请输入启动命令或配置文件中设置的授权码</p>
+      {% if error %}<div class="err" role="alert">{{ error }}</div>{% endif %}
 
       <div class="field">
+        <label class="sr-only" for="authCodeInput">授权码</label>
         <div class="input-wrap">
           <svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
           </svg>
-          <input id="authCodeInput" name="auth_code" type="password" autocomplete="current-password" autofocus placeholder="请输入授权码">
+          <input id="authCodeInput" name="auth_code" type="password" autocomplete="current-password" autofocus required placeholder="请输入授权码">
           <button class="toggle-password" id="togglePassword" type="button" aria-label="显示授权码" title="显示/隐藏">
             <svg class="icon-show" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
@@ -313,8 +392,9 @@
       </div>
 
       <input name="next" type="hidden" value="{{ next_url }}">
-      <button class="submit" type="submit">登录</button>
+      <button class="submit" id="loginSubmit" type="submit">进入控制台</button>
     </form>
+    <div class="security-note"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><span>本地安全访问 · 授权码仅用于控制台鉴权</span></div>
   </div>
 
   <script>
@@ -323,11 +403,14 @@
       const input = document.getElementById('authCodeInput');
       const remember = document.getElementById('rememberAuthCode');
       const toggle = document.getElementById('togglePassword');
+      const submit = document.getElementById('loginSubmit');
       const saved = localStorage.getItem(key) || '';
       if (saved) { input.value = saved; remember.checked = true; }
       document.querySelector('form').addEventListener('submit', () => {
         if (remember.checked) localStorage.setItem(key, input.value || '');
         else localStorage.removeItem(key);
+        submit.disabled = true;
+        submit.textContent = '验证中…';
       });
       toggle.addEventListener('click', () => {
         const show = input.type === 'password';

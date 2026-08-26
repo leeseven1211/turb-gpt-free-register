@@ -1113,34 +1113,108 @@ def list_batches(*, limit: int = 50) -> list[dict]:
         return [_row(dict(row)) or {} for row in cur.fetchall()]
 
 
+def _operation_task_where(
+    *, task_type: str = "", status: str = "", source: str = "", q: str = "",
+    batch_id: int | None = None, task_id: str = "", target: str = "",
+    target_status: str = "", batch: str = "", run_count: str = "",
+    stage: str = "", created_from: str = "", created_to: str = "", result: str = "",
+    exclude: str = "",
+) -> tuple[list[str], list[Any]]:
+    """Build the shared task-list predicate, optionally leaving one facet unfiltered."""
+    where: list[str] = []
+    params: list[Any] = []
+
+    def add(name: str, expression: str, *values: Any) -> None:
+        if exclude != name:
+            where.append(expression)
+            params.extend(values)
+
+    add("task_type", "t.task_type=%s", str(task_type)) if task_type else None
+    add("status", "t.status=%s", str(status)) if status else None
+    add("source", "t.source_system=%s", str(source)) if source else None
+    add("batch_id", "t.batch_id=%s", int(batch_id)) if batch_id else None
+
+    if q:
+        needle = f"%{str(q).strip()}%"
+        add(
+            "q",
+            "("
+            "t.email_snapshot ILIKE %s OR CAST(t.account_id AS TEXT) ILIKE %s "
+            "OR CAST(t.attempt_id AS TEXT) ILIKE %s OR CAST(t.target_id AS TEXT) ILIKE %s "
+            "OR CAST(t.id AS TEXT) ILIKE %s OR COALESCE(t.error_message, '') ILIKE %s "
+            "OR COALESCE(b.title, '') ILIKE %s OR COALESCE(t.trigger, '') ILIKE %s "
+            "OR COALESCE(r.result_summary::text, '') ILIKE %s"
+            ")",
+            needle, needle, needle, needle, needle, needle, needle, needle, needle,
+        )
+    if task_id:
+        value = str(task_id).strip().lstrip("#")
+        add("task_id", "CAST(t.id AS TEXT) ILIKE %s", f"%{value}%") if value else None
+    if target:
+        needle = f"%{str(target).strip()}%"
+        add(
+            "target",
+            "("
+            "COALESCE(t.email_snapshot, '') ILIKE %s OR CAST(t.account_id AS TEXT) ILIKE %s "
+            "OR CAST(t.attempt_id AS TEXT) ILIKE %s OR CAST(t.target_id AS TEXT) ILIKE %s"
+            ")",
+            needle, needle, needle, needle,
+        )
+    if target_status:
+        add("target_status", "t.target_status=%s", str(target_status))
+    if batch:
+        needle = f"%{str(batch).strip()}%"
+        add(
+            "batch",
+            "(COALESCE(b.title, '') ILIKE %s OR COALESCE(b.batch_uuid, '') ILIKE %s OR COALESCE(t.trigger, '') ILIKE %s)",
+            needle, needle, needle,
+        )
+    if run_count:
+        value = str(run_count).strip().lower()
+        run_count_expr = f"(SELECT COUNT(*) FROM {_table('operation_runs')} rr WHERE rr.task_id=t.id)"
+        if value in {"4+", "4plus", "4_plus"}:
+            add("run_count", f"{run_count_expr} >= %s", 4)
+        elif value.isdigit():
+            add("run_count", f"{run_count_expr} = %s", int(value))
+    if stage:
+        add("stage", "LOWER(COALESCE(t.current_stage, ''))=%s", str(stage).lower())
+    if created_from:
+        add("created_from", "t.created_at::date >= %s", str(created_from)[:10])
+    if created_to:
+        add("created_to", "t.created_at::date <= %s", str(created_to)[:10])
+    if result:
+        needle = f"%{str(result).strip()}%"
+        add(
+            "result",
+            "(COALESCE(t.error_message, '') ILIKE %s OR COALESCE(r.result_summary::text, '') ILIKE %s)",
+            needle, needle,
+        )
+    return where, params
+
+
 def list_tasks(
     *, page: int = 1, page_size: int = 50, task_type: str = "", status: str = "",
-    source: str = "", q: str = "", batch_id: int | None = None,
+    source: str = "", q: str = "", batch_id: int | None = None, task_id: str = "",
+    target: str = "", target_status: str = "", batch: str = "", run_count: str = "",
+    stage: str = "", created_from: str = "", created_to: str = "", result: str = "",
 ) -> dict:
     init()
     page = max(1, int(page or 1))
     page_size = max(1, min(200, int(page_size or 50)))
-    where: list[str] = []
-    params: list[Any] = []
-    if task_type:
-        where.append("t.task_type=%s")
-        params.append(str(task_type))
-    if status:
-        where.append("t.status=%s")
-        params.append(str(status))
-    if source:
-        where.append("t.source_system=%s")
-        params.append(str(source))
-    if batch_id:
-        where.append("t.batch_id=%s")
-        params.append(int(batch_id))
-    if q:
-        needle = f"%{str(q).strip()}%"
-        where.append("(t.email_snapshot ILIKE %s OR CAST(t.account_id AS TEXT) ILIKE %s OR CAST(t.id AS TEXT) ILIKE %s OR t.error_message ILIKE %s)")
-        params.extend((needle, needle, needle, needle))
+    where, params = _operation_task_where(
+        task_type=task_type, status=status, source=source, q=q, batch_id=batch_id,
+        task_id=task_id, target=target, target_status=target_status, batch=batch,
+        run_count=run_count, stage=stage, created_from=created_from,
+        created_to=created_to, result=result,
+    )
     clause = f" WHERE {' AND '.join(where)}" if where else ""
+    from_sql = (
+        f"FROM {_table('operation_tasks')} t "
+        f"LEFT JOIN {_table('operation_batches')} b ON b.id=t.batch_id "
+        f"LEFT JOIN {_table('operation_runs')} r ON r.id=t.last_run_id"
+    )
     with _connect() as conn, conn.cursor() as cur:
-        cur.execute(f"SELECT COUNT(*) AS n FROM {_table('operation_tasks')} t{clause}", params)
+        cur.execute(f"SELECT COUNT(*) AS n {from_sql}{clause}", params)
         total = int(cur.fetchone()["n"])
         cur.execute(
             f"""
@@ -1148,16 +1222,45 @@ def list_tasks(
                    r.run_no AS last_run_no, r.duration_ms, r.result_summary,
                    r.source_system AS run_source_system, r.source_id AS run_source_id,
                    (SELECT COUNT(*) FROM {_table('operation_runs')} rr WHERE rr.task_id=t.id) AS run_count
-            FROM {_table('operation_tasks')} t
-            LEFT JOIN {_table('operation_batches')} b ON b.id=t.batch_id
-            LEFT JOIN {_table('operation_runs')} r ON r.id=t.last_run_id
+            {from_sql}
             {clause}
             ORDER BY t.updated_at DESC, t.id DESC LIMIT %s OFFSET %s
             """,
             (*params, page_size, (page - 1) * page_size),
         )
         items = [_row(dict(row)) or {} for row in cur.fetchall()]
-    return {"ok": True, "items": items, "total": total, "page": page, "page_size": page_size}
+        facet_specs = (
+            ("task_type", "t.task_type", "task_type"),
+            ("status", "t.status", "status"),
+            ("target_status", "t.target_status", "target_status"),
+            ("stage", "LOWER(COALESCE(t.current_stage, ''))", "stage"),
+            (
+                "run_count",
+                f"CASE WHEN (SELECT COUNT(*) FROM {_table('operation_runs')} rr WHERE rr.task_id=t.id) >= 4 "
+                f"THEN '4+' ELSE CAST((SELECT COUNT(*) FROM {_table('operation_runs')} rr WHERE rr.task_id=t.id) AS TEXT) END",
+                "run_count",
+            ),
+        )
+        facets: dict[str, list[dict[str, Any]]] = {}
+        for facet_name, expression, exclude in facet_specs:
+            facet_where, facet_params = _operation_task_where(
+                task_type=task_type, status=status, source=source, q=q, batch_id=batch_id,
+                task_id=task_id, target=target, target_status=target_status, batch=batch,
+                run_count=run_count, stage=stage, created_from=created_from,
+                created_to=created_to, result=result, exclude=exclude,
+            )
+            facet_where.append(f"NULLIF({expression}, '') IS NOT NULL")
+            facet_clause = f" WHERE {' AND '.join(facet_where)}"
+            cur.execute(
+                f"SELECT {facet_name!r} AS facet, {expression} AS value, COUNT(*) AS count "
+                f"{from_sql}{facet_clause} GROUP BY 2 ORDER BY 2",
+                facet_params,
+            )
+            facets[facet_name] = [
+                {"value": str(row["value"] or ""), "count": int(row["count"] or 0)}
+                for row in cur.fetchall()
+            ]
+    return {"ok": True, "items": items, "total": total, "page": page, "page_size": page_size, "facets": facets}
 
 
 def get_task(task_id: int) -> dict | None:

@@ -1732,7 +1732,7 @@
       width: 48px; padding-left: 16px; padding-right: 8px;
       text-align: left; vertical-align: middle;
     }
-    .outlook-table-v2 .col-email { width: 280px; white-space: normal; overflow: visible; }
+    .outlook-table-v2 .col-email { width: 240px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .outlook-table-v2 .col-source { width: 100px; }
     .outlook-table-v2 .col-status { width: 100px; }
     .outlook-table-v2 .col-token { width: 100px; }
@@ -1742,10 +1742,6 @@
     }
     .outlook-table-v2 .acc-v2-email {
       font-weight: 700; color: #303133; line-height: 1.35;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    }
-    .outlook-table-v2 .acc-v2-sub {
-      margin-top: 2px; color: #909399; font-size: 12px; line-height: 1.3;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
     .outlook-table-v2 .pill {
@@ -2510,7 +2506,8 @@
       position: sticky; top: 0; z-index: 8; height: 42px;
       background: #f8f9fb; color: #7d8596; font-size: 11px; font-weight: 760; letter-spacing: .02em;
     }
-    .jobs-table-v2 td, .accounts-table-v2 td, .codex-table-v2 td, .outlook-table-v2 td { height: 52px; color: #4c5568; }
+    .jobs-table-v2 td, .accounts-table-v2 td, .codex-table-v2 td { height: 52px; color: #4c5568; }
+    .outlook-table-v2 td { height: 44px; color: #4c5568; }
     .jobs-table-v2 tbody tr:hover td, .accounts-table-v2 tbody tr:hover td,
     .codex-table-v2 tbody tr:hover td, .outlook-table-v2 tbody tr:hover td { background: #fafaff; }
     .pill { border-radius: 999px !important; font-weight: 700 !important; }
@@ -2925,6 +2922,8 @@
     }
 
   </style>
+  <!-- Shared UI foundation. Keep module-specific styles above while pages migrate to these tokens. -->
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/ui-foundation.css') }}">
 </head>
 <body>
 <aside class="app-sidebar" aria-label="主导航">
@@ -2995,6 +2994,7 @@
         <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
       </svg>
       <span class="sidebar-item-label">配置</span>
+      <span class="sidebar-item-meta config-dirty-badge" id="configDirtyBadge" hidden>0</span>
     </button>
   </nav>
   <div class="sidebar-footer">
@@ -3200,7 +3200,7 @@
           </colgroup>
           <thead>
             <tr>
-              <th class="col-check"><input type="checkbox" id="jobsSelectAllV2" title="全选/取消全选当前页可删除任务"></th>
+              <th class="col-check"><input type="checkbox" id="jobsSelectAllV2" title="全选/取消全选当前页可删除任务" aria-label="全选当前页可删除任务"></th>
               <th class="col-id column-filter-header" data-column-filter="jobIdFilterV2" data-filter-type="search" data-filter-placeholder="#" data-filter-label="按任务 ID 筛选" data-filter-inputmode="numeric">ID</th>
               <th class="col-email column-filter-header" data-column-filter="jobEmailFilterV2" data-filter-type="search" data-filter-placeholder="输入邮箱" data-filter-label="按邮箱筛选">邮箱</th>
               <th class="col-source column-filter-header" data-column-filter="jobSourceColumnFilterV2" data-filter-type="select" data-filter-label="按邮箱来源筛选">邮箱来源</th>
@@ -3212,7 +3212,7 @@
               <th class="col-actions"><div class="column-actions-heading"><span>操作</span><button type="button" class="column-filters-reset" id="btnResetJobFiltersV2" title="清除全部列筛选">清筛</button></div></th>
             </tr>
           </thead>
-          <tbody id="jobsBodyV2"></tbody>
+          <tbody id="jobsBodyV2"><tr class="list-state-row"><td class="table-state-cell" colspan="10"><div class="table-state is-loading" role="status"><span class="table-state-spinner" aria-hidden="true"></span><strong>正在加载任务</strong><small>正在同步最新注册批次与执行状态</small></div></td></tr></tbody>
         </table>
       </div>
       <div class="jobs-v2-pager module-tasks-only" id="pager-jobs-v2"></div>
@@ -3282,7 +3282,7 @@
           </colgroup>
           <thead>
             <tr>
-              <th class="col-check"><input type="checkbox" id="accountsSelectAllV2" title="全选/取消全选当前页账号" disabled></th>
+              <th class="col-check"><input type="checkbox" id="accountsSelectAllV2" title="全选/取消全选当前页账号" aria-label="全选当前页账号" disabled></th>
               <th class="col-id column-filter-header" data-column-filter="accountIdFilterV2" data-filter-type="search" data-filter-placeholder="#" data-filter-label="按账号 ID 筛选" data-filter-inputmode="numeric">ID</th>
               <th class="col-email column-filter-header" data-column-filter="qAccountsV2" data-filter-type="search" data-filter-placeholder="邮箱或姓名" data-filter-label="按邮箱或姓名筛选">邮箱 / 姓名</th>
               <th class="col-source column-filter-header" data-column-filter="accountSourceFilterV2" data-filter-type="select" data-filter-label="按邮箱来源筛选">来源</th>
@@ -3297,70 +3297,70 @@
               <th class="col-actions"><div class="column-actions-heading"><span>操作</span><button type="button" class="column-filters-reset" id="btnResetAccountFiltersV2" title="清除全部列筛选">清筛</button></div></th>
             </tr>
           </thead>
-          <tbody id="accountsBodyV2"></tbody>
+          <tbody id="accountsBodyV2"><tr class="list-state-row"><td class="table-state-cell" colspan="13"><div class="table-state is-loading" role="status"><span class="table-state-spinner" aria-hidden="true"></span><strong>正在加载账号</strong><small>正在同步账号状态和授权信息</small></div></td></tr></tbody>
         </table>
       </div>
       <div class="jobs-v2-pager" id="pager-accounts-v2"></div>
     </section>
+    <div class="account-detail-backdrop hidden" id="accountDetailBackdrop" aria-hidden="true"></div>
+    <aside class="account-detail-drawer hidden" id="accountDetailDrawer" role="dialog" aria-modal="true" aria-labelledby="accountDetailTitle">
+      <div class="account-detail-head">
+        <div>
+          <div class="data-panel-kicker">ACCOUNT DETAIL</div>
+          <h2 id="accountDetailTitle">账号详情</h2>
+          <p id="accountDetailSubtitle"></p>
+        </div>
+        <button type="button" class="account-detail-close" id="btnCloseAccountDetail" aria-label="关闭账号详情">×</button>
+      </div>
+      <div class="account-detail-body" id="accountDetailBody"></div>
+    </aside>
     <section class="account-tasks-panel" id="accountTasksPanel" aria-label="统一任务中心">
       <div class="account-tasks-command-deck">
       <div class="jobs-toolbar-v2 list-action-toolbar account-tasks-toolbar">
         <span class="list-selection-hint">注册、补跑与账号操作统一记录</span>
-        <label class="jobs-tb-field account-task-search-field">搜索
-          <input class="jobs-tb-select" id="accountTaskSearch" type="search" placeholder="任务 ID、账号 ID、邮箱或错误">
-        </label>
-        <label class="jobs-tb-field">任务类型
-          <select class="jobs-tb-select" id="accountTaskTypeFilter" aria-label="任务类型">
-            <option value="">全部类型</option>
-            <option value="registration">注册</option>
-            <option value="registration_resume">继续邮箱验证</option>
-            <option value="account_setup_retry">账号配置补跑</option>
-            <option value="twofa_retry">2FA / 配置补跑</option>
-            <option value="codex_retry">Codex 补跑</option>
-            <option value="codex_token_refresh">Codex Token 刷新</option>
-            <option value="live_check">查活</option>
-            <option value="token_refresh">AT 刷新</option>
-            <option value="plan_check">查套餐</option>
-            <option value="deactivation_mail">查封号邮件</option>
-          </select>
-        </label>
-        <label class="jobs-tb-field">任务状态
-          <select class="jobs-tb-select" id="accountTaskStatusFilter" aria-label="任务状态">
-            <option value="">全部状态</option>
-            <option value="queued">排队中</option><option value="running">运行中</option>
-            <option value="success">成功</option><option value="partial_success">部分成功</option><option value="failed">失败</option>
-            <option value="deactivated">已停用</option><option value="unsupported">不支持</option>
-            <option value="attention_required">需处理</option><option value="interrupted">已中断</option>
-            <option value="stopped">已停止</option><option value="cancelled">已取消</option>
-          </select>
-        </label>
         <div class="list-toolbar-utilities">
           <span class="account-task-refresh-meta" id="accountTaskRefreshHint"></span>
+          <button type="button" class="jobs-tb-btn" id="btnResetAccountTaskColumnsV2" title="恢复任务中心默认列宽">恢复列宽</button>
           <button type="button" class="jobs-tb-btn" id="btnRefreshAccountTasks">刷新</button>
         </div>
       </div>
       </div>
+      <div class="column-filter-summary" data-filter-summary="accountTasks" hidden></div>
       <div class="account-tasks-table-wrap accounts-table-v2-wrap">
-        <table class="account-tasks-table accounts-table-v2">
+        <table class="account-tasks-table accounts-table-v2" data-resizable-table="accountTasks">
           <colgroup>
             <col class="task-col-id"><col class="task-col-type"><col class="task-col-account"><col class="task-col-status">
             <col class="task-col-trigger"><col class="task-col-method"><col class="task-col-route"><col class="task-col-duration">
             <col class="task-col-time"><col class="task-col-result"><col class="task-col-actions">
           </colgroup>
-          <thead><tr><th>ID</th><th>类型</th><th>目标</th><th>执行状态</th><th>目标状态</th><th>批次 / 触发</th><th>运行次数</th><th>当前步骤</th><th>创建 / 完成</th><th>结果 / 错误</th><th>操作</th></tr></thead>
-          <tbody id="accountTasksBody"></tbody>
+          <thead>
+            <tr>
+              <th class="task-col-id column-filter-header" data-column-filter="accountTaskIdFilterV2" data-filter-type="search" data-filter-placeholder="#" data-filter-label="按任务 ID 筛选" data-filter-inputmode="numeric">ID</th>
+              <th class="task-col-type column-filter-header" data-column-filter="accountTaskTypeFilterV2" data-filter-type="select" data-filter-label="按任务类型筛选">类型</th>
+              <th class="task-col-account column-filter-header" data-column-filter="accountTaskTargetFilterV2" data-filter-type="search" data-filter-placeholder="账号、邮箱或尝试" data-filter-label="按目标筛选">目标</th>
+              <th class="task-col-status column-filter-header" data-column-filter="accountTaskStatusFilterV2" data-filter-type="select" data-filter-label="按执行状态筛选">执行状态</th>
+              <th class="task-col-trigger column-filter-header" data-column-filter="accountTaskTargetStatusFilterV2" data-filter-type="select" data-filter-label="按目标状态筛选">目标状态</th>
+              <th class="task-col-method column-filter-header" data-column-filter="accountTaskBatchFilterV2" data-filter-type="search" data-filter-placeholder="批次或触发" data-filter-label="按批次或触发筛选">批次 / 触发</th>
+              <th class="task-col-route column-filter-header" data-column-filter="accountTaskRunCountFilterV2" data-filter-type="select" data-filter-label="按运行次数筛选">运行次数</th>
+              <th class="task-col-duration column-filter-header" data-column-filter="accountTaskStageFilterV2" data-filter-type="select" data-filter-label="按当前步骤筛选">当前步骤</th>
+              <th class="task-col-time column-filter-header" data-column-filter="accountTaskDateFromV2" data-filter-end-id="accountTaskDateToV2" data-filter-type="date-range" data-filter-label="按创建日期范围筛选">创建 / 完成</th>
+              <th class="task-col-result column-filter-header" data-column-filter="accountTaskResultFilterV2" data-filter-type="search" data-filter-placeholder="结果或错误" data-filter-label="按结果或错误筛选">结果 / 错误</th>
+              <th class="task-col-actions"><div class="column-actions-heading"><span>操作</span><button type="button" class="column-filters-reset" id="btnResetAccountTaskFiltersV2" title="清除全部列筛选">清筛</button></div></th>
+            </tr>
+          </thead>
+          <tbody id="accountTasksBody"><tr class="list-state-row"><td class="table-state-cell" colspan="11"><div class="table-state is-loading" role="status"><span class="table-state-spinner" aria-hidden="true"></span><strong>正在加载任务记录</strong><small>正在同步统一任务链路</small></div></td></tr></tbody>
         </table>
       </div>
       <div class="jobs-v2-pager" id="pager-accountTasks-v2"></div>
     </section>
-    <div class="body hidden" id="liveLogPanel">
-      <h3>查活日志：<span id="liveLogEmail" style="font-size:13px;font-weight:400;color:var(--muted);"></span>
+    <div class="body hidden" id="liveLogPanel" role="dialog" aria-modal="true" aria-labelledby="liveLogTitle">
+      <h3 id="liveLogTitle">查活日志：<span id="liveLogEmail" style="font-size:13px;font-weight:400;color:var(--muted);"></span>
         <button class="btn" id="btnCloseLiveLog" style="float:right;min-height:28px;">关闭</button>
       </h3>
       <div class="log" id="liveLogContent">加载中…</div>
     </div>
-    <div class="body hidden" id="accountTaskLogPanel">
-      <h3>任务 #<span id="accountTaskLogId"></span>
+    <div class="body hidden" id="accountTaskLogPanel" role="dialog" aria-modal="true" aria-labelledby="accountTaskLogTitle">
+      <h3 id="accountTaskLogTitle">任务 #<span id="accountTaskLogId"></span>
         <button class="btn" id="btnCloseAccountTaskLog" style="float:right;min-height:28px;">关闭</button>
       </h3>
       <div class="task-error-summary hidden" id="accountTaskLogErrorSummary"></div>
@@ -3398,7 +3398,7 @@
           </colgroup>
           <thead>
             <tr>
-              <th class="col-check"><input type="checkbox" id="codexSelectAllV2" title="全选/取消全选当前页" disabled></th>
+              <th class="col-check"><input type="checkbox" id="codexSelectAllV2" title="全选/取消全选当前页" aria-label="全选当前页 Codex 凭证" disabled></th>
               <th class="col-email column-filter-header" data-column-filter="qCodexV2" data-filter-type="search" data-filter-placeholder="邮箱或文件名" data-filter-label="按邮箱或文件名筛选">邮箱 / 文件</th>
               <th class="col-plan column-filter-header" data-column-filter="codexPlanFilterV2" data-filter-type="select" data-filter-label="按 Plan 筛选">Plan</th>
               <th class="col-status column-filter-header" data-column-filter="codexStatusFilterV2" data-filter-type="select" data-filter-label="按凭证状态筛选">状态</th>
@@ -3409,7 +3409,7 @@
               <th class="col-actions"><div class="column-actions-heading"><span>操作</span><button type="button" class="column-filters-reset" id="btnResetCodexFiltersV2" title="清除全部列筛选">清筛</button></div></th>
             </tr>
           </thead>
-          <tbody id="codexBodyV2"></tbody>
+          <tbody id="codexBodyV2"><tr class="list-state-row"><td class="table-state-cell" colspan="9"><div class="table-state is-loading" role="status"><span class="table-state-spinner" aria-hidden="true"></span><strong>正在加载授权凭证</strong><small>正在同步 OAuth 与导出状态</small></div></td></tr></tbody>
         </table>
       </div>
       <div class="jobs-v2-pager" id="pager-codex-v2"></div>
@@ -3460,7 +3460,7 @@
           </colgroup>
           <thead>
             <tr>
-              <th class="col-check"><input type="checkbox" id="outlookSelectAllV2" title="全选/取消全选当前页邮箱" disabled></th>
+              <th class="col-check"><input type="checkbox" id="outlookSelectAllV2" title="全选/取消全选当前页邮箱" aria-label="全选当前页邮箱素材" disabled></th>
               <th class="col-email column-filter-header" data-column-filter="qOutlookV2" data-filter-type="search" data-filter-placeholder="输入邮箱" data-filter-label="按邮箱筛选">邮箱</th>
               <th class="col-source column-filter-header" data-column-filter="poolSourceV2" data-filter-type="select" data-filter-label="按邮箱池类型筛选" data-filter-empty-value="all">类型</th>
               <th class="col-status column-filter-header" data-column-filter="outlookStatusFilterV2" data-filter-type="select" data-filter-label="按邮箱状态筛选">状态</th>
@@ -3470,7 +3470,7 @@
               <th class="col-actions"><div class="column-actions-heading"><span>操作</span><button type="button" class="column-filters-reset" id="btnResetOutlookFiltersV2" title="清除全部列筛选">清筛</button></div></th>
             </tr>
           </thead>
-          <tbody id="outlookBodyV2"></tbody>
+          <tbody id="outlookBodyV2"><tr class="list-state-row"><td class="table-state-cell" colspan="8"><div class="table-state is-loading" role="status"><span class="table-state-spinner" aria-hidden="true"></span><strong>正在加载邮箱素材</strong><small>正在同步邮箱池状态与 Token 信息</small></div></td></tr></tbody>
         </table>
       </div>
       <div class="jobs-v2-pager" id="pager-outlook-v2"></div>
@@ -3482,8 +3482,16 @@
     <!-- 配置布局：左侧导航 + 右侧卡片/分区 -->
     <div class="config-layout-v2" id="configLayoutV2">
       <aside class="config-nav-v2" aria-label="配置分组">
-        <div class="config-nav-v2-title">配置分组</div>
+        <div class="config-nav-v2-head">
+          <div class="config-nav-v2-title">配置分组</div>
+          <span class="config-nav-v2-count" id="configNavCountV2">0</span>
+        </div>
+        <label class="config-nav-search-v2">
+          <svg viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+          <input id="configNavSearchV2" type="search" placeholder="搜索配置分组" aria-label="搜索配置分组" autocomplete="off">
+        </label>
         <div class="config-nav-v2-list" id="configNavV2"></div>
+        <div class="config-nav-empty-v2" id="configNavEmptyV2" hidden>没有匹配的配置分组</div>
       </aside>
       <div class="config-main-v2">
         <div class="config-cards-v2" id="configCardsV2" aria-label="配置概览卡片">
@@ -3519,7 +3527,7 @@
   </div>
 </main>
 
-<div id="toast"></div>
+<div id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 <div id="outlookImportModal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="outlookImportTitle">
   <div class="outlook-import-dialog" role="document">
     <div class="outlook-import-head">
@@ -3558,13 +3566,13 @@
     </div>
   </div>
 </div>
-<div class="body hidden" id="logPanel">
-  <h3>任务 #<span id="logJobId"></span> 日志 <button class="btn" id="btnCloseLog" style="float:right;min-height:28px;">关闭</button></h3>
+<div class="body hidden" id="logPanel" role="dialog" aria-modal="true" aria-labelledby="jobLogTitle">
+  <h3 id="jobLogTitle">任务 #<span id="logJobId"></span> 日志 <button class="btn" id="btnCloseLog" style="float:right;min-height:28px;">关闭</button></h3>
   <div class="task-error-summary hidden" id="logErrorSummary"></div>
   <div class="log" id="logContent">加载中…</div>
 </div>
-<div id="qrPanel" class="body hidden">
-  <h3>支付二维码 <button class="btn" onclick="closeQrModal()">关闭</button></h3>
+<div id="qrPanel" class="body hidden" role="dialog" aria-modal="true" aria-labelledby="qrPanelTitle">
+  <h3 id="qrPanelTitle">支付二维码 <button class="btn" id="btnCloseQrPanel" onclick="closeQrModal()">关闭</button></h3>
   <img id="qrImage" alt="支付二维码">
   <a id="qrOpenLink" class="qr-link" href="#" target="_blank" rel="noopener noreferrer"></a>
 </div>
@@ -3622,6 +3630,29 @@ const LIST_FACET_LABELS = {
   risk: {detected:'已收到', clear:'未发现', pending:'待处理'},
   trial: {eligible:'可用', ineligible:'不可用', pending:'待查询', failed:'查询失败', not_applicable:'不适用'},
   codex: {success:'已通过', retrying:'进行中', failed:'失败', stopped:'已停止', deactivated:'已停用', skipped:'已跳过', missing:'缺失'},
+  task_type: {
+    registration:'注册', registration_resume:'继续邮箱验证', twofa_retry:'2FA / 配置补跑',
+    account_setup_retry:'账号配置补跑', codex_retry:'Codex 补跑', codex_token_refresh:'Codex Token 刷新',
+    live_check:'查活', token_refresh:'AT 刷新', plan_check:'查套餐', deactivation_mail:'查封号邮件',
+  },
+  target_status: {
+    not_created:'尚未创建', in_progress:'处理中', email_verification_pending:'待邮箱验证 / 资料',
+    account_available:'账号可用', credential_valid:'凭证有效', credential_pending_confirmation:'凭证待确认',
+    attention_required:'需要人工处理', deactivated:'账号已停用', account_deactivated:'账号已停用',
+    cancelled:'已取消', failed:'失败', pending:'等待执行', unknown:'状态待确认',
+  },
+  stage: {
+    queued:'排队', running:'开始', preflight:'配置预检', network:'网络线路', network_route:'网络线路',
+    driver:'启动浏览器', email:'准备邮箱', browser:'启动浏览器', page:'打开页面', submit_email:'提交邮箱',
+    auth_redirect:'进入认证', email_otp:'邮箱验证', profile:'账号资料', token:'获取 Token', codex:'Codex 授权',
+    login_password:'账号登录', account_setup:'账号配置', access_token:'Token 验证', reauth:'重新登录',
+    roxy_fallback:'浏览器回退', oauth:'Codex 授权', auth_url:'获取授权地址', login:'登录 OpenAI',
+    phone_check:'检查手机验证', phone_acquire:'申请接码号码', phone_otp:'短信验证', consent:'确认授权',
+    callback:'接收 OAuth 回调', credential_confirm:'确认远端凭证', credential_persist:'保存凭证', cancelling:'正在停止',
+    twofa:'设置 2FA', plan_check:'查询套餐', plan_request:'请求套餐', refresh_token:'刷新 Token',
+    mailbox_scan:'扫描邮件', complete:'完成',
+  },
+  run_count: {'0':'0 次', '1':'1 次', '2':'2 次', '3':'3 次', '4+':'4 次及以上'},
 };
 function facetLabel(group, value) {
   const key = String(value || '').toLowerCase();
@@ -3775,9 +3806,12 @@ function pagerSetSize(id, val) {
 // ---------- 统一列表列宽 ----------
 const TABLE_DEFAULT_WIDTHS = {
   jobs:     [4, 6, 15, 9, 11, 8, 9, 9, 13, 16],
-  accounts: [4, 5, 14, 7, 6, 7, 8, 8, 6, 8, 8, 9, 10],
-  codex:    [4, 18, 9, 10, 13, 12, 13, 21],
-  outlook:  [4, 24, 9, 9, 8, 14, 14, 18],
+  // Desktop account rows need to scan in one viewport; long values keep
+  // their full text in the cell title and the detail drawer.
+  accounts: [3, 4, 17, 7, 6, 6, 7, 7, 10, 9, 8, 8, 8],
+  codex:    [4, 19, 7, 9, 9, 11, 11, 11, 19],
+  outlook:  [4, 20, 9, 9, 8, 14, 14, 18],
+  accountTasks: [6, 9, 18, 10, 11, 13, 10, 11, 17, 15, 10],
 };
 const TABLE_WIDTH_STORAGE_PREFIX = 'gpt_console_table_widths_';
 
@@ -3867,6 +3901,7 @@ function initResizableTables() {
     btnResetAccountsColumnsV2: 'accounts',
     btnResetCodexColumnsV2: 'codex',
     btnResetOutlookColumnsV2: 'outlook',
+    btnResetAccountTaskColumnsV2: 'accountTasks',
   };
   Object.entries(resetButtons).forEach(([id, key]) => {
     document.getElementById(id)?.addEventListener('click', () => resetResizableTable(key));
@@ -3879,6 +3914,7 @@ const COLUMN_FILTER_RESET_IDS = {
   accounts: 'btnResetAccountFiltersV2',
   codex: 'btnResetCodexFiltersV2',
   outlook: 'btnResetOutlookFiltersV2',
+  accountTasks: 'btnResetAccountTaskFiltersV2',
 };
 
 function columnFilterIcon(type) {
@@ -4237,7 +4273,25 @@ function jobsV2OpIcons() {
     del: `<svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`,
   };
 }
-function showToast(t) { const el=$('#toast'); el.textContent=t; el.classList.add('show'); clearTimeout(showToast.t); showToast.t=setTimeout(()=>el.classList.remove('show'),1400); }
+function renderTableStateRow(colspan, title, description, kind = 'empty') {
+  const visual = kind === 'loading'
+    ? '<span class="table-state-spinner" aria-hidden="true"></span>'
+    : `<span class="table-state-icon" aria-hidden="true"><svg viewBox="0 0 24 24">${kind === 'error'
+        ? '<circle cx="12" cy="12" r="9"/><path d="M12 7v6"/><path d="M12 17h.01"/>'
+        : '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M8 10h8"/><path d="M8 14h5"/>'}</svg></span>`;
+  return `<tr class="list-state-row"><td class="table-state-cell" colspan="${Number(colspan) || 1}"><div class="table-state is-${attrEsc(kind)}" role="status">${visual}<strong>${esc(title)}</strong>${description ? `<small>${esc(description)}</small>` : ''}</div></td></tr>`;
+}
+function setListBusy(panelId, busy) {
+  const panel = document.getElementById(panelId);
+  if (panel) panel.setAttribute('aria-busy', busy ? 'true' : 'false');
+}
+function showToast(t) {
+  const el = $('#toast');
+  el.textContent = t;
+  el.classList.add('show');
+  clearTimeout(showToast.t);
+  showToast.t = setTimeout(() => el.classList.remove('show'), 2200);
+}
 async function copyText(text) {
   if (!text) return;
   try {
@@ -4987,11 +5041,13 @@ function renderJobs() {
           </div>
         </td>
       </tr>`;
-    }).join('') || '<tr><td colspan="10" style="text-align:center;color:#909399;padding:28px;">暂无任务</td></tr>';
+    }).join('') || renderTableStateRow(10, '暂无匹配任务', '调整筛选条件，或发起新的注册批次。');
   }
 
 
   renderBatchProgress();
+  const summary = $('#jobsPageSummary');
+  if (summary) summary.textContent = `${total || 0} 个任务 · 当前页 ${rows.length} 条`;
   updateJobsSelectionUi(rows);
   _renderPager('jobs', total);
 }
@@ -5072,6 +5128,7 @@ $('#btnResetJobFiltersV2')?.addEventListener('click', () => {
 async function refreshJobs() {
   if (jobsLoading) { jobsReloadQueued = true; return; }
   jobsLoading = true;
+  setListBusy('jobsPanelV2', true);
   try {
     const p = PAGERS.jobs;
     const res = await api(`/api/jobs?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&status=${encodeURIComponent(JOB_STATUS_FILTER)}&id=${encodeURIComponent(JOB_ID_FILTER)}&email=${encodeURIComponent(JOB_EMAIL_FILTER)}&email_source=${encodeURIComponent(JOB_EMAIL_SOURCE_FILTER)}&proxy=${encodeURIComponent(JOB_PROXY_FILTER)}&error=${encodeURIComponent(JOB_ERROR_FILTER)}&date_from=${encodeURIComponent(JOB_DATE_FROM)}&date_to=${encodeURIComponent(JOB_DATE_TO)}&progress_batch_id=${encodeURIComponent(JOB_PROGRESS_BATCH_ID)}`);
@@ -5105,9 +5162,12 @@ async function refreshJobs() {
       // 数据不变时也刷新耗时文本。
       renderBatchProgress();
     }
-  } catch(e) {}
+  } catch(e) {
+    if (!JOBS.length) $('#jobsBodyV2').innerHTML = renderTableStateRow(10, '任务加载失败', '服务暂时不可用，系统会自动重试。', 'error');
+  }
   finally {
     jobsLoading = false;
+    setListBusy('jobsPanelV2', false);
     if (jobsReloadQueued) {
       jobsReloadQueued = false;
       queueMicrotask(refreshJobs);
@@ -5128,7 +5188,8 @@ function updateModalScrollLock() {
     || !$('#liveLogPanel').classList.contains('hidden')
     || !$('#accountTaskLogPanel').classList.contains('hidden')
     || !$('#qrPanel').classList.contains('hidden')
-    || !$('#outlookImportModal').classList.contains('hidden');
+    || !$('#outlookImportModal').classList.contains('hidden')
+    || !$('#accountDetailDrawer').classList.contains('hidden');
   const locked = document.body.classList.contains('modal-open');
   if (opened && !locked) {
     modalScrollY = window.scrollY || document.documentElement.scrollTop || 0;
@@ -5166,6 +5227,7 @@ function openQrModal(url) {
   $('#qrOpenLink').textContent = url;
   $('#qrPanel').classList.remove('hidden');
   updateModalScrollLock();
+  $('#btnCloseQrPanel')?.focus({preventScroll:true});
 }
 function closeQrModal() {
   $('#qrPanel').classList.add('hidden');
@@ -5175,6 +5237,13 @@ function closeQrModal() {
 
 $('#btnCloseLog').addEventListener('click', closeLogModal);
 $('#btnCloseAccountTaskLog')?.addEventListener('click', closeAccountTaskLogModal);
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Escape') return;
+  if (!$('#logPanel').classList.contains('hidden')) closeLogModal();
+  else if (!$('#liveLogPanel').classList.contains('hidden')) closeLiveLogModal();
+  else if (!$('#accountTaskLogPanel').classList.contains('hidden')) closeAccountTaskLogModal();
+  else if (!$('#qrPanel').classList.contains('hidden')) closeQrModal();
+});
 
 async function submitManualOtpForJob(btn) {
   const jobId = parseInt(btn.dataset.submitOtpJob, 10);
@@ -5317,6 +5386,7 @@ function openLog(jobId) {
   $('#logJobId').textContent = jobId;
   $('#logPanel').classList.remove('hidden');
   updateModalScrollLock();
+  $('#btnCloseLog')?.focus({preventScroll:true});
   $('#logContent').textContent = '加载中…';
   renderTaskLogErrorSummary('logErrorSummary', null);
   pollLog();
@@ -5482,18 +5552,34 @@ function renderAccountTasks() {
       <td class="task-error" title="${esc(error || result)}">${error ? `${taskErrorBadge(task.error_info)}<span class="task-error-cell-text">${esc(short(task.error_info?.summary || result, 90))}</span>` : esc(short(result, 90))}</td>
       <td><div class="task-row-actions"><button type="button" class="task-row-action" data-account-task-log="${esc(task.id)}">日志</button>${cancellable ? `<button type="button" class="task-row-action danger" data-account-task-cancel="${esc(task.id)}">停止</button>` : ''}${retryable ? `<button type="button" class="task-row-action task-row-action--retry" data-account-task-retry="${esc(task.id)}">重跑</button>` : ''}</div></td>
     </tr>`;
-  }).join('') || '<tr><td colspan="11" style="text-align:center;color:#909399;padding:28px;">暂无任务实例</td></tr>';
+  }).join('') || renderTableStateRow(11, '暂无任务记录', '调整搜索或筛选条件后再试。');
+  const summary = $('#accountTaskPageSummary');
+  if (summary) summary.textContent = `${ACCOUNT_TASKS_TOTAL || 0} 个任务 · 当前页 ${ACCOUNT_TASKS.length} 条`;
   _renderPager('accountTasks', ACCOUNT_TASKS_TOTAL);
 }
 async function loadAccountTasks() {
   if (accountTasksLoading) return;
   accountTasksLoading = true;
+  setListBusy('accountTasksPanel', true);
   const p = PAGERS.accountTasks;
-  const type = $('#accountTaskTypeFilter')?.value || '';
-  const status = $('#accountTaskStatusFilter')?.value || '';
-  const q = ($('#accountTaskSearch')?.value || '').trim();
+  const params = new URLSearchParams({
+    page: String(p.page),
+    page_size: String(p.size),
+    task_id: $('#accountTaskIdFilterV2')?.value.trim() || '',
+    type: $('#accountTaskTypeFilterV2')?.value || '',
+    target: $('#accountTaskTargetFilterV2')?.value.trim() || '',
+    status: $('#accountTaskStatusFilterV2')?.value || '',
+    target_status: $('#accountTaskTargetStatusFilterV2')?.value || '',
+    batch: $('#accountTaskBatchFilterV2')?.value.trim() || '',
+    run_count: $('#accountTaskRunCountFilterV2')?.value || '',
+    stage: $('#accountTaskStageFilterV2')?.value || '',
+    created_from: $('#accountTaskDateFromV2')?.value || '',
+    created_to: $('#accountTaskDateToV2')?.value || '',
+    result: $('#accountTaskResultFilterV2')?.value.trim() || '',
+  });
   try {
-    const result = await api(`/api/operations?page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&type=${encodeURIComponent(type)}&status=${encodeURIComponent(status)}&q=${encodeURIComponent(q)}`);
+    const result = await api(`/api/operations?${params.toString()}`);
+    updateAccountTaskFilters(result.facets || {});
     ACCOUNT_TASKS = result.items || [];
     ACCOUNT_TASKS_TOTAL = Number(result.total || 0);
     const totalPages = Math.max(1, Math.ceil(ACCOUNT_TASKS_TOTAL / p.size));
@@ -5505,9 +5591,13 @@ async function loadAccountTasks() {
     if ($('#accountTaskRefreshHint')) $('#accountTaskRefreshHint').textContent = `最近批次 ${Number((result.batches || []).length)} 个 · 共 ${ACCOUNT_TASKS_TOTAL} 个任务`;
     renderAccountTasks();
   } catch (e) {
+    if (!ACCOUNT_TASKS.length) $('#accountTasksBody').innerHTML = renderTableStateRow(11, '任务记录加载失败', '请检查服务状态后刷新列表。', 'error');
     showToast('加载任务中心失败: ' + e.message);
   }
-  finally { accountTasksLoading = false; }
+  finally {
+    accountTasksLoading = false;
+    setListBusy('accountTasksPanel', false);
+  }
 }
 let activeAccountTaskId = null, accountTaskLogTimer = null;
 function openAccountTaskLog(taskId) {
@@ -5518,6 +5608,7 @@ function openAccountTaskLog(taskId) {
   renderAccountTaskStageProgress(null);
   $('#accountTaskLogPanel').classList.remove('hidden');
   updateModalScrollLock();
+  $('#btnCloseAccountTaskLog')?.focus({preventScroll:true});
   clearInterval(accountTaskLogTimer);
   pollAccountTaskLog();
   accountTaskLogTimer = setInterval(pollAccountTaskLog, 2000);
@@ -5569,13 +5660,45 @@ async function cancelAccountTask(taskId, button) {
     button.disabled = false;
   }
 }
-let accountTaskSearchTimer = null;
+function updateAccountTaskFilters(facets = {}) {
+  syncFacetSelect('accountTaskTypeFilterV2', facets.task_type, {
+    group: 'task_type',
+    values: ['registration', 'registration_resume', 'account_setup_retry', 'twofa_retry', 'codex_retry', 'codex_token_refresh', 'live_check', 'token_refresh', 'plan_check', 'deactivation_mail'],
+  });
+  syncFacetSelect('accountTaskStatusFilterV2', facets.status, {
+    group: 'status',
+    values: ['queued', 'running', 'success', 'partial_success', 'failed', 'deactivated', 'unsupported', 'attention_required', 'interrupted', 'stopped', 'cancelled'],
+  });
+  syncFacetSelect('accountTaskTargetStatusFilterV2', facets.target_status, {group: 'target_status'});
+  syncFacetSelect('accountTaskRunCountFilterV2', facets.run_count, {group: 'run_count', values: ['0', '1', '2', '3', '4+']});
+  syncFacetSelect('accountTaskStageFilterV2', facets.stage, {group: 'stage'});
+}
+
+let accountTaskFilterTimer = null;
+function scheduleAccountTaskFilterReload(immediate = false) {
+  PAGERS.accountTasks.page = 1;
+  refreshColumnFilterStates();
+  clearTimeout(accountTaskFilterTimer);
+  if (immediate) {
+    loadAccountTasks();
+    return;
+  }
+  accountTaskFilterTimer = setTimeout(loadAccountTasks, 260);
+}
 $('#btnRefreshAccountTasks')?.addEventListener('click', loadAccountTasks);
-$('#accountTaskTypeFilter')?.addEventListener('change', () => { PAGERS.accountTasks.page = 1; loadAccountTasks(); });
-$('#accountTaskStatusFilter')?.addEventListener('change', () => { PAGERS.accountTasks.page = 1; loadAccountTasks(); });
-$('#accountTaskSearch')?.addEventListener('input', () => {
-  clearTimeout(accountTaskSearchTimer);
-  accountTaskSearchTimer = setTimeout(() => { PAGERS.accountTasks.page = 1; loadAccountTasks(); }, 260);
+['accountTaskIdFilterV2', 'accountTaskTargetFilterV2', 'accountTaskBatchFilterV2', 'accountTaskResultFilterV2'].forEach(id => {
+  document.getElementById(id)?.addEventListener('input', () => scheduleAccountTaskFilterReload());
+});
+['accountTaskTypeFilterV2', 'accountTaskStatusFilterV2', 'accountTaskTargetStatusFilterV2', 'accountTaskRunCountFilterV2', 'accountTaskStageFilterV2', 'accountTaskDateFromV2', 'accountTaskDateToV2'].forEach(id => {
+  document.getElementById(id)?.addEventListener('change', () => scheduleAccountTaskFilterReload(true));
+});
+$('#btnResetAccountTaskFiltersV2')?.addEventListener('click', () => {
+  clearTimeout(accountTaskFilterTimer);
+  ['accountTaskIdFilterV2', 'accountTaskTypeFilterV2', 'accountTaskTargetFilterV2', 'accountTaskStatusFilterV2', 'accountTaskTargetStatusFilterV2', 'accountTaskBatchFilterV2', 'accountTaskRunCountFilterV2', 'accountTaskStageFilterV2', 'accountTaskDateFromV2', 'accountTaskDateToV2', 'accountTaskResultFilterV2'].forEach(id => {
+    const control = document.getElementById(id);
+    if (control) control.value = '';
+  });
+  scheduleAccountTaskFilterReload(true);
 });
 $('#accountTasksPanel')?.addEventListener('click', event => {
   const logBtn = event.target.closest('[data-account-task-log]');
@@ -5610,6 +5733,7 @@ async function loadAccounts() {
   }
   accountsLoading = true;
   accountsReloadQueued = false;
+  setListBusy('accountsPanelV2', true);
   try {
     const archived = SHOW_ARCHIVED_ACCOUNTS ? 'only' : '0';
     const plan = document.getElementById('accountPlanFilterV2')?.value || (SHOW_PLUS_ACCOUNTS_ONLY ? 'plus' : '');
@@ -5642,9 +5766,13 @@ async function loadAccounts() {
       return;
     }
     renderAccounts();
-  } catch(e) { showToast('加载账号失败: ' + e.message); }
+  } catch(e) {
+    if (!ACCOUNTS.length) $('#accountsBodyV2').innerHTML = renderTableStateRow(13, '账号加载失败', '请检查服务状态后刷新列表。', 'error');
+    showToast('加载账号失败: ' + e.message);
+  }
   finally {
     accountsLoading = false;
+    setListBusy('accountsPanelV2', false);
     if (accountsReloadQueued) {
       accountsReloadQueued = false;
       void loadAccounts();
@@ -5909,7 +6037,7 @@ function _totpCellV2(r) {
   return `
     <div class="status-action-cell" data-account-totp-cell="${esc(r.id)}">
       <span class="pill status-success">已启用</span>
-      <button type="button" data-account-totp-code="${esc(r.id)}" title="查询当前 6 位 TOTP 验证码">查询验证码</button>
+      <button type="button" data-account-totp-code="${esc(r.id)}" title="查询当前 6 位 TOTP 验证码">查码</button>
       <span class="acc-v2-totp-code" data-account-totp-value hidden></span>
       <span class="acc-v2-totp-ttl" data-account-totp-ttl hidden></span>
       <button type="button" data-account-totp-copy="${esc(r.id)}" data-totp-code="" title="复制当前 TOTP 验证码" hidden>复制</button>
@@ -5963,6 +6091,82 @@ function _accountsV2MoreMenu(r) {
   ].filter(html => String(html || '').trim());
   return parts.join('');
 }
+function _accountDetailState(label, value, tone = 'neutral', detail = '') {
+  return `<div class="account-detail-state">
+    <span class="account-detail-label">${esc(label)}</span>
+    <div class="account-detail-state-value"><span class="account-detail-dot account-detail-dot--${esc(tone)}"></span><strong>${esc(value || '-')}</strong></div>
+    ${detail ? `<small>${esc(detail)}</small>` : ''}
+  </div>`;
+}
+function _accountDetailMarkup(r) {
+  const tokenState = !r.has_access_token ? '无 Token' : (r.token_expired ? 'Token 已过期' : 'Token 可用');
+  const tokenTone = !r.has_access_token || r.token_expired ? 'danger' : 'success';
+  const liveState = r.live_check_status === 'live' ? '查活正常' : (r.live_check_status === 'failed' ? '查活失败' : (r.live_check_status === 'running' ? '查活中' : '未查活'));
+  const liveTone = r.live_check_status === 'live' ? 'success' : (r.live_check_status === 'failed' ? 'danger' : (r.live_check_status === 'running' ? 'warning' : 'neutral'));
+  const plan = (r.current_plan_type || r.plan_type || '未查询').toString();
+  const trial = plan.toLowerCase() === 'free' ? (r.plus_trial_eligible ? 'Plus 试用可用' : 'Plus 试用不可用') : '不适用';
+  const trialTone = trial === 'Plus 试用可用' ? 'success' : (trial === 'Plus 试用不可用' ? 'neutral' : 'neutral');
+  const codexRaw = (r.codex_status || r.codex_execution_status || '').toString().toLowerCase();
+  const codexLabels = { success: '已通过', completed: '已通过', failed: '失败', deactivated: '已废号', running: '补跑中', queued: '排队中', cancelling: '停止中', retrying: '补跑中', stopped: '已停止', pending_confirmation: '待确认', skipped: '已跳过' };
+  const codex = codexLabels[codexRaw] || '未授权';
+  const codexTone = ['success', 'completed'].includes(codexRaw) ? 'success' : (['failed', 'deactivated'].includes(codexRaw) ? 'danger' : (['running', 'queued', 'cancelling', 'retrying'].includes(codexRaw) ? 'warning' : 'neutral'));
+  const risk = r.deactivation_mail_detected ? '发现封号邮件' : (r.deactivation_mail_scan_status === 'success' ? '未发现封号邮件' : '待扫描');
+  const riskTone = r.deactivation_mail_detected ? 'danger' : (r.deactivation_mail_scan_status === 'success' ? 'success' : 'neutral');
+  return `<div class="account-detail-section">
+    <div class="account-detail-section-title">身份信息</div>
+    <div class="account-detail-grid">
+      ${_accountDetailState('账号 ID', `#${r.id}`, 'info')}
+      ${_accountDetailState('邮箱来源', r.email_source || '未知')}
+      ${_accountDetailState('姓名', r.user_name || '未设置')}
+      ${_accountDetailState('创建时间', _fmtPlanTime(r.created_at) || '-')}
+    </div>
+  </div>
+  <div class="account-detail-section">
+    <div class="account-detail-section-title">健康与安全</div>
+    <div class="account-detail-grid">
+      ${_accountDetailState('访问 Token', tokenState, tokenTone, r.token_expires_at ? `到期 ${_fmtPlanTime(r.token_expires_at)}` : '')}
+      ${_accountDetailState('在线状态', liveState, liveTone, r.live_checked_at ? `检查于 ${_fmtPlanTime(r.live_checked_at)}` : '')}
+      ${_accountDetailState('账号密码', r.has_account_password ? '已设置' : '未设置', r.has_account_password ? 'success' : 'neutral')}
+      ${_accountDetailState('Authenticator 2FA', r.totp_enabled ? '已启用' : '未启用', r.totp_enabled ? 'success' : 'neutral')}
+      ${_accountDetailState('封号邮件', risk, riskTone)}
+      ${_accountDetailState('归档状态', r.archived ? '已归档' : '活跃', r.archived ? 'neutral' : 'success')}
+    </div>
+  </div>
+  <div class="account-detail-section">
+    <div class="account-detail-section-title">套餐与授权</div>
+    <div class="account-detail-grid">
+      ${_accountDetailState('当前套餐', plan, plan.toLowerCase() === 'free' ? 'info' : 'success', r.plan_checked_at ? `检查于 ${_fmtPlanTime(r.plan_checked_at)}` : '')}
+      ${_accountDetailState('Plus 试用', trial, trialTone)}
+      ${_accountDetailState('Codex', codex, codexTone)}
+      ${_accountDetailState('注册时间', _fmtPlanTime(r.created_at, true) || '-', 'neutral')}
+    </div>
+  </div>`;
+}
+function openAccountDetail(id) {
+  const account = ACCOUNTS.find(item => Number(item.id) === Number(id));
+  if (!account) { showToast('账号详情暂不可用，请先刷新列表'); return; }
+  $('#accountDetailTitle').textContent = account.email || `账号 #${account.id}`;
+  $('#accountDetailSubtitle').textContent = `账号 #${account.id} · ${account.email_source || '未知来源'}`;
+  $('#accountDetailBody').innerHTML = _accountDetailMarkup(account);
+  $('#accountDetailDrawer').classList.remove('hidden');
+  $('#accountDetailBackdrop').classList.remove('hidden');
+  $('#accountDetailBackdrop').setAttribute('aria-hidden', 'false');
+  updateModalScrollLock();
+  $('#btnCloseAccountDetail')?.focus({preventScroll:true});
+}
+function closeAccountDetail() {
+  $('#accountDetailDrawer')?.classList.add('hidden');
+  $('#accountDetailBackdrop')?.classList.add('hidden');
+  $('#accountDetailBackdrop')?.setAttribute('aria-hidden', 'true');
+  updateModalScrollLock();
+}
+$('#btnCloseAccountDetail')?.addEventListener('click', closeAccountDetail);
+$('#accountDetailBackdrop')?.addEventListener('click', closeAccountDetail);
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && !$('#accountDetailDrawer')?.classList.contains('hidden')) {
+    closeAccountDetail();
+  }
+});
 function closeAccountsV2MoreMenus(except = null) {
   document.querySelectorAll('.accounts-table-v2 .acc-v2-more.open').forEach(el => {
     if (except && el === except) return;
@@ -6007,8 +6211,10 @@ function renderAccounts() {
     <tr>
       <td class="col-check"><input type="checkbox" class="account-row-check" data-account-id="${esc(r.id)}" ${ACCOUNT_SELECTED.has(Number(r.id)) ? 'checked' : ''}></td>
       <td class="col-id">#${esc(r.id)}</td>
-      <td class="col-email" title="${esc(r.email || '')}">
-        <div class="acc-v2-email">${esc(r.email)}${r.archived ? ' <span class="pill status-used" title="该账号已归档">归档</span>' : ''}</div>
+      <td class="col-email" title="${esc([r.email || '-', r.user_name || ''].filter(Boolean).join(' · '))}">
+        <button type="button" class="acc-v2-email-link" data-account-detail-id="${esc(r.id)}" title="查看账号详情">
+          <span class="acc-v2-email">${esc(r.email)}${r.archived ? ' <span class="pill status-used" title="该账号已归档">归档</span>' : ''}</span>
+        </button>
         <div class="acc-v2-sub">${esc(r.user_name || '-')}</div>
       </td>
       <td class="col-source">${esc(r.email_source || '-')}</td>
@@ -6033,9 +6239,11 @@ function renderAccounts() {
 
   const bodyV2 = $('#accountsBodyV2');
   if (bodyV2) {
-    bodyV2.innerHTML = rows.map(rowHtmlV2).join('') || '<tr><td colspan="13" style="text-align:center;color:#909399;padding:28px;">暂无账号</td></tr>';
+    bodyV2.innerHTML = rows.map(rowHtmlV2).join('') || renderTableStateRow(13, '暂无匹配账号', '调整筛选条件，或切换活跃与归档账号视图。');
     if (openMoreId) requestAnimationFrame(() => restoreAccountsV2MoreMenu(openMoreId));
   }
+  const summary = $('#accountsPageSummary');
+  if (summary) summary.textContent = `${total || 0} 个账号 · 当前页 ${rows.length} 条`;
   updateAccountSelectionUi(rows);
   _renderPager('accounts', total);
 }
@@ -6085,6 +6293,7 @@ function openLiveLog(email) {
   $('#liveLogEmail').textContent = email;
   $('#liveLogPanel').classList.remove('hidden');
   updateModalScrollLock();
+  $('#btnCloseLiveLog')?.focus({preventScroll:true});
   $('#liveLogContent').textContent = '加载中…';
   pollLiveLog();
   clearInterval(liveLogTimer);
@@ -6108,6 +6317,12 @@ $('#btnCloseLiveLog').addEventListener('click', closeLiveLogModal);
 
 // 账号操作按钮（事件委托）
 async function onAccountsBodyClick(e) {
+  const detailBtn = e.target.closest('[data-account-detail-id]');
+  if (detailBtn) {
+    e.preventDefault();
+    openAccountDetail(Number(detailBtn.dataset.accountDetailId));
+    return;
+  }
   const moreToggle = e.target.closest('[data-acc-more-toggle]');
   if (moreToggle) {
     e.preventDefault();
@@ -6193,8 +6408,8 @@ async function onAccountsBodyClick(e) {
       });
       showToast(result.message || '已开始补齐账号配置');
       loadAccounts();
-      const search = $('#accountTaskSearch');
-      const typeFilter = $('#accountTaskTypeFilter');
+      const search = $('#accountTaskTargetFilterV2');
+      const typeFilter = $('#accountTaskTypeFilterV2');
       if (search) search.value = email;
       if (typeFilter) typeFilter.value = 'account_setup_retry';
       PAGERS.accountTasks.page = 1;
@@ -6226,7 +6441,7 @@ async function onAccountsBodyClick(e) {
 
   const taskHistoryBtn = e.target.closest('[data-account-task-history]');
   if (taskHistoryBtn) {
-    const search = $('#accountTaskSearch');
+    const search = $('#accountTaskTargetFilterV2');
     if (search) search.value = String(taskHistoryBtn.dataset.accountTaskHistory || '');
     PAGERS.accountTasks.page = 1;
     activateTab('tasks');
@@ -6300,8 +6515,8 @@ async function onAccountsBodyClick(e) {
     const r = await api('/api/codex/retry', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email}) });
     showToast(r.message || '已开始补跑');
     loadAccounts();
-    const search = $('#accountTaskSearch');
-    const typeFilter = $('#accountTaskTypeFilter');
+    const search = $('#accountTaskTargetFilterV2');
+    const typeFilter = $('#accountTaskTypeFilterV2');
     if (search) search.value = email;
     if (typeFilter) typeFilter.value = 'codex_retry';
     PAGERS.accountTasks.page = 1;
@@ -7051,8 +7266,8 @@ async function retrySelectedCodex() {
     const skippedCount = (r.skipped || []).length;
     showToast(skippedCount ? `已开始 ${r.started_count || 0} 个，跳过 ${skippedCount} 个` : (r.message || '已开始批量补跑'));
     loadAccounts();
-    const search = $('#accountTaskSearch');
-    const typeFilter = $('#accountTaskTypeFilter');
+    const search = $('#accountTaskTargetFilterV2');
+    const typeFilter = $('#accountTaskTypeFilterV2');
     if (search) search.value = '';
     if (typeFilter) typeFilter.value = 'codex_retry';
     PAGERS.accountTasks.page = 1;
@@ -7079,8 +7294,8 @@ async function setupSelectedAccounts() {
     const skippedCount = (r.skipped || []).length;
     showToast(skippedCount ? `已开始补齐 ${r.started_count || 0} 个，跳过 ${skippedCount} 个` : `已开始补齐 ${r.started_count || 0} 个账号配置`);
     loadAccounts();
-    const search = $('#accountTaskSearch');
-    const typeFilter = $('#accountTaskTypeFilter');
+    const search = $('#accountTaskTargetFilterV2');
+    const typeFilter = $('#accountTaskTypeFilterV2');
     if (search) search.value = '';
     if (typeFilter) typeFilter.value = 'account_setup_retry';
     PAGERS.accountTasks.page = 1;
@@ -7219,6 +7434,7 @@ $('#butlerLeaseList')?.addEventListener('click', async e => {
 async function loadOutlook() {
   if (outlookLoading) { outlookReloadQueued = true; return; }
   outlookLoading = true;
+  setListBusy('outlookPanelV2', true);
   try {
     const source = getPoolSource();
     const q = getOutlookQuery();
@@ -7238,9 +7454,13 @@ async function loadOutlook() {
     const totalPages = Math.max(1, Math.ceil(OUTLOOK_TOTAL / p.size));
     if (p.page > totalPages) { p.page = totalPages; return loadOutlook(); }
     renderOutlook();
-  } catch(e) { showToast('加载邮箱池失败: ' + e.message); }
+  } catch(e) {
+    if (!OUTLOOK.length) $('#outlookBodyV2').innerHTML = renderTableStateRow(8, '邮箱素材加载失败', '请检查服务状态后刷新列表。', 'error');
+    showToast('加载邮箱池失败: ' + e.message);
+  }
   finally {
     outlookLoading = false;
+    setListBusy('outlookPanelV2', false);
     if (outlookReloadQueued) {
       outlookReloadQueued = false;
       queueMicrotask(loadOutlook);
@@ -7322,7 +7542,6 @@ function renderOutlook() {
       <td class="col-check"><input type="checkbox" class="outlook-row-check" data-email="${email}" data-source="${src}" ${OUTLOOK_SELECTED.has(poolKey(r)) ? 'checked' : ''}></td>
       <td class="col-email" title="${email}">
         <div class="acc-v2-email">${email || '-'}</div>
-        <div class="acc-v2-sub">${r.has_password ? '含密码 · ' : ''}${r.has_refresh_token ? '含刷新凭证 · ' : ''}${r.has_code_url ? '含取码地址' : '按需读取素材'}</div>
       </td>
       <td class="col-source">${esc(poolLabel(r.source))}</td>
       <td class="col-status">${pill(r.status)}</td>
@@ -7340,8 +7559,10 @@ function renderOutlook() {
         </div>
       </td>
     </tr>`;
-    }).join('') || '<tr><td colspan="8" style="text-align:center;color:#909399;padding:28px;">邮箱池为空</td></tr>';
+  }).join('') || renderTableStateRow(8, '暂无邮箱素材', '调整筛选条件，或导入新的邮箱素材。');
   updateOutlookSelectionUi(rows);
+  const summary = $('#outlookPageSummary');
+  if (summary) summary.textContent = `${total || 0} 个邮箱 · 当前页 ${rows.length} 条`;
   _renderPager('outlook', total);
 }
 function updateOutlookSelectionUi(pageRows = null) {
@@ -7680,6 +7901,7 @@ let CODEX_SHOW_ARCHIVED = false;
 async function loadCodex() {
   if (codexLoading) { codexReloadQueued = true; return; }
   codexLoading = true;
+  setListBusy('codexPanelV2', true);
   try {
     const p = PAGERS.codex;
     const q = getCodexQuery();
@@ -7705,9 +7927,13 @@ async function loadCodex() {
     if (p.page > totalPages) { p.page = totalPages; return loadCodex(); }
     const st = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
     renderCodex();
-  } catch(e) { showToast('加载 Codex 列表失败: ' + e.message); }
+  } catch(e) {
+    if (!CODEX.length) $('#codexBodyV2').innerHTML = renderTableStateRow(9, '授权凭证加载失败', '请检查服务状态后刷新列表。', 'error');
+    showToast('加载 Codex 列表失败: ' + e.message);
+  }
   finally {
     codexLoading = false;
+    setListBusy('codexPanelV2', false);
     if (codexReloadQueued) {
       codexReloadQueued = false;
       queueMicrotask(loadCodex);
@@ -7810,9 +8036,8 @@ function renderCodex() {
     return `
     <tr>
       <td class="col-check"><input type="checkbox" class="codex-row-check" data-fname="${esc(r.filename)}" ${checked}></td>
-      <td class="col-email" title="${esc(r.email || '')}">
+      <td class="col-email" title="${esc(r.email || '')} · 文件：${esc(r.filename || '')}">
         <div class="acc-v2-email">${esc(r.email || '-')}${r.archived ? ' <span class="pill status-used" title="已归档">归档</span>' : ''}</div>
-        <div class="acc-v2-sub" title="${esc(r.filename)}">${esc(r.filename)}</div>
       </td>
       <td class="col-plan">${esc(r.plan || '-')}</td>
       <td class="col-status">${_codexStatusBadge(r)}</td>
@@ -7832,8 +8057,10 @@ function renderCodex() {
         </div>
       </td>
     </tr>`;
-  }).join('') || '<tr><td colspan="9" style="text-align:center;color:#909399;padding:28px;">还没有 Codex 凭证</td></tr>';
+  }).join('') || renderTableStateRow(9, '暂无授权凭证', '调整筛选条件，或从账号页发起 Codex 授权。');
   syncCodexSelectAllUi(rows);
+  const summary = $('#codexPageSummary');
+  if (summary) summary.textContent = `${total || 0} 个凭证 · 当前页 ${rows.length} 条`;
   _codexUpdateSelectedHint();
   _renderPager('codex', total);
 }
@@ -8082,8 +8309,8 @@ async function codexReauthorize(filenames = null) {
     startedFilenames.forEach(filename => CODEX_SELECTED.delete(filename));
     const skipped = (r.skipped || []).length;
     showToast(skipped ? `已开始重跑 ${r.started_count || 0} 个，跳过 ${skipped} 个` : (r.message || '已开始重跑 Codex 授权'));
-    const search = document.getElementById('accountTaskSearch');
-    const typeFilter = document.getElementById('accountTaskTypeFilter');
+    const search = document.getElementById('accountTaskTargetFilterV2');
+    const typeFilter = document.getElementById('accountTaskTypeFilterV2');
     if (search) search.value = '';
     if (typeFilter) typeFilter.value = 'codex_retry';
     PAGERS.accountTasks.page = 1;
@@ -8115,8 +8342,8 @@ async function codexRefreshTokens(filenames = null) {
     (r.started || []).forEach(item => CODEX_SELECTED.delete(item.filename));
     const skipped = (r.skipped || []).length;
     showToast(skipped ? `已开始刷新 ${r.started_count || 0} 个，跳过 ${skipped} 个` : (r.message || '已开始刷新 OAuth Token'));
-    const search = document.getElementById('accountTaskSearch');
-    const typeFilter = document.getElementById('accountTaskTypeFilter');
+    const search = document.getElementById('accountTaskTargetFilterV2');
+    const typeFilter = document.getElementById('accountTaskTypeFilterV2');
     if (search) search.value = '';
     if (typeFilter) typeFilter.value = 'codex_token_refresh';
     PAGERS.accountTasks.page = 1;
@@ -8214,7 +8441,65 @@ let CONFIG_EMAIL_ACTIVE_SECTION_V2 = '通用邮箱 / OTP';
 let CONFIG_SMS_ACTIVE_SECTION_V2 = '通用接码';
 let CONFIG_CODEX_ACTIVE_SECTION_V2 = '基础配置';
 let CONFIG_ACTIVE_GROUP_V2 = '';
+let CONFIG_NAV_QUERY_V2 = '';
 const CONFIG_PENDING_UPDATES = {};
+
+function configValuesEqual(a, b) {
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return JSON.stringify(Array.isArray(a) ? a : []) === JSON.stringify(Array.isArray(b) ? b : []);
+  }
+  if (typeof a === 'boolean' || typeof b === 'boolean') return Boolean(a) === Boolean(b);
+  if (typeof a === 'number' || typeof b === 'number') return Number(a) === Number(b);
+  return String(a ?? '') === String(b ?? '');
+}
+
+function setPendingConfigValue(key, value) {
+  const field = CONFIG.find(item => item.key === key);
+  if (field && configValuesEqual(value, field.value)) delete CONFIG_PENDING_UPDATES[key];
+  else CONFIG_PENDING_UPDATES[key] = value;
+}
+
+function configPendingCount() {
+  return Object.keys(CONFIG_PENDING_UPDATES).length;
+}
+
+function renderConfigSaveActions() {
+  const count = configPendingCount();
+  return `
+    <div class="config-section-v2-actions">
+      <div class="config-save-state ${count ? 'is-dirty' : 'is-saved'}" data-config-save-state role="status" aria-live="polite">
+        <span class="config-save-dot" aria-hidden="true"></span>
+        <span data-config-save-copy>${count ? `${count} 项更改未保存` : '所有更改已保存'}</span>
+      </div>
+      <button type="button" class="btn primary" data-save-config-v2${count ? '' : ' disabled'}>${count ? '保存更改' : '已保存'}</button>
+    </div>
+  `;
+}
+
+function updateConfigSaveUi(mode = 'idle') {
+  const count = configPendingCount();
+  let copy = count ? `${count} 项更改未保存` : '所有更改已保存';
+  if (mode === 'saving') copy = `正在保存 ${count} 项更改…`;
+  if (mode === 'error') copy = '保存失败，请重试';
+  document.querySelectorAll('#tab-config [data-config-save-state]').forEach(state => {
+    state.classList.toggle('is-saved', mode === 'idle' && count === 0);
+    state.classList.toggle('is-dirty', mode === 'idle' && count > 0);
+    state.classList.toggle('is-saving', mode === 'saving');
+    state.classList.toggle('is-error', mode === 'error');
+    const copyEl = state.querySelector('[data-config-save-copy]');
+    if (copyEl) copyEl.textContent = copy;
+  });
+  document.querySelectorAll('#tab-config [data-save-config-v2]').forEach(btn => {
+    btn.disabled = mode === 'saving' || count === 0;
+    btn.textContent = mode === 'saving' ? '保存中…' : (count ? '保存更改' : '已保存');
+  });
+  const badge = document.getElementById('configDirtyBadge');
+  if (badge) {
+    badge.hidden = count === 0;
+    badge.textContent = count > 99 ? '99+' : String(count);
+    badge.setAttribute('aria-label', `${count} 项配置更改未保存`);
+  }
+}
 
 function configGroups() {
   const groups = {};
@@ -8426,13 +8711,14 @@ function toggleConfigEpSelect(wrapId, e) {
 }
 function setRegistrationDriverValue(value) {
   const cur = String(value || 'protocol').trim().toLowerCase() || 'protocol';
-  CONFIG_PENDING_UPDATES.REGISTRATION_DRIVER = cur;
+  setPendingConfigValue('REGISTRATION_DRIVER', cur);
   closeConfigEpSelects();
   renderRegistrationDriverCard();
   const sectionMount = document.getElementById('configRegistrationSelectV2');
   if (sectionMount) renderRegistrationEpSelect(sectionMount, 'configRegistrationSelectV2');
   bindRoxyWorkspaceToolsV2();
   bindCloudMailToolsV2();
+  updateConfigSaveUi();
 }
 function renderRegistrationEpSelect(mount, wrapId) {
   if (!mount) return;
@@ -8645,9 +8931,7 @@ function renderMixedConfigSectionV2(name, fields, intro) {
       ${extra}
       ${switches.length ? `<div class="config-switches-v2">${switches.map(f => renderFeatureSwitchField(f, { withIcon: false })).join('')}</div>` : ''}
       ${inputs.length ? `<div class="config-section-v2-body">${inputs.map(renderConfigPlainFieldV2).join('')}</div>` : ''}
-      <div class="config-section-v2-actions">
-        <button type="button" class="btn primary" data-save-config-v2>保存</button>
-      </div>
+      ${renderConfigSaveActions()}
     </section>
   `;
 }
@@ -8675,7 +8959,7 @@ function codexOauthDriverLabel(value) {
 }
 function setCodexOauthDriverValue(value) {
   const cur = String(value || 'protocol').trim().toLowerCase() || 'protocol';
-  CONFIG_PENDING_UPDATES.CODEX_OAUTH_DRIVER = cur;
+  setPendingConfigValue('CODEX_OAUTH_DRIVER', cur);
   closeConfigEpSelects();
   renderConfigLayoutV2();
 }
@@ -8745,9 +9029,7 @@ function renderSectionedConfigSectionV2(name, fields, sectionForKey, preferred, 
       ${switches.length ? `<div class="config-switches-v2">${switches.map(f => renderFeatureSwitchField(f, { withIcon: false })).join('')}</div>` : ''}
       ${inputs.length ? `<div class="config-section-v2-body">${inputs.map(renderConfigPlainFieldV2).join('')}</div>` : ''}
       ${extra}
-      <div class="config-section-v2-actions">
-        <button type="button" class="btn primary" data-save-config-v2>保存</button>
-      </div>
+      ${renderConfigSaveActions()}
     </section>
   `;
 }
@@ -8972,9 +9254,7 @@ function renderCodexSectionV2(fields) {
       ${current.help ? `<p class="config-section-v2-subhelp">${esc(current.help)}</p>` : ''}
       ${switches.length ? `<div class="config-switches-v2">${switches.map(f => renderFeatureSwitchField(f, { withIcon: false })).join('')}</div>` : ''}
       ${orderedInputs.length ? `<div class="config-section-v2-body">${orderedInputs.map(renderCodexFieldV2).join('')}</div>` : ''}
-      <div class="config-section-v2-actions">
-        <button type="button" class="btn primary" data-save-config-v2>保存</button>
-      </div>
+      ${renderConfigSaveActions()}
     </section>
   `;
 }
@@ -8988,9 +9268,7 @@ function renderConfigSectionV2(name, fields) {
         <div class="config-section-v2-body">
           ${fields.map(renderConfigPlainFieldV2).join('')}
         </div>
-        <div class="config-section-v2-actions">
-          <button type="button" class="btn primary" data-save-config-v2>保存</button>
-        </div>
+        ${renderConfigSaveActions()}
       </section>
     `;
   }
@@ -9013,9 +9291,7 @@ function renderConfigSectionV2(name, fields) {
           })).join('')}
         </div>
         ${otherFields.length ? `<div class="config-section-v2-body">${otherFields.map(renderConfigPlainFieldV2).join('')}</div>` : ''}
-        <div class="config-section-v2-actions">
-          <button type="button" class="btn primary" data-save-config-v2>保存</button>
-        </div>
+        ${renderConfigSaveActions()}
       </section>
     `;
   }
@@ -9029,9 +9305,7 @@ function renderConfigSectionV2(name, fields) {
           ${driver ? renderRegistrationDriverField(driver) : '<div class="banner warn">未找到注册方式配置项</div>'}
           ${otherFields.map(renderConfigPlainFieldV2).join('')}
         </div>
-        <div class="config-section-v2-actions">
-          <button type="button" class="btn primary" data-save-config-v2>保存</button>
-        </div>
+        ${renderConfigSaveActions()}
       </section>
     `;
   }
@@ -9060,6 +9334,24 @@ function renderConfigSectionV2(name, fields) {
   }
   return renderMixedConfigSectionV2(name, fields, configSectionIntro(name));
 }
+function applyConfigNavFilter() {
+  const query = CONFIG_NAV_QUERY_V2.trim().toLowerCase();
+  const items = Array.from(document.querySelectorAll('#configNavV2 [data-config-nav]'));
+  let shown = 0;
+  items.forEach(btn => {
+    const haystack = `${btn.dataset.configNav || ''} ${btn.textContent || ''}`.toLowerCase();
+    const matches = !query || haystack.includes(query);
+    btn.hidden = !matches;
+    if (matches) shown += 1;
+  });
+  const count = document.getElementById('configNavCountV2');
+  if (count) {
+    count.textContent = query ? `${shown}/${items.length}` : String(items.length);
+    count.title = query ? `共 ${items.length} 个分组，当前显示 ${shown} 个` : `共 ${items.length} 个配置分组`;
+  }
+  const empty = document.getElementById('configNavEmptyV2');
+  if (empty) empty.hidden = shown > 0 || items.length === 0;
+}
 function renderConfigLayoutV2() {
   const nav = document.getElementById('configNavV2');
   const sections = document.getElementById('configSectionsV2');
@@ -9069,6 +9361,9 @@ function renderConfigLayoutV2() {
   if (!names.length) {
     nav.innerHTML = '<div class="muted" style="padding:8px 12px;font-size:13px;">暂无分组</div>';
     sections.innerHTML = '';
+    const count = document.getElementById('configNavCountV2');
+    if (count) count.textContent = '0';
+    updateConfigSaveUi();
     return;
   }
   const savedGroup = localStorage.getItem('gpt_console_config_group');
@@ -9080,6 +9375,7 @@ function renderConfigLayoutV2() {
       <span>${esc(configGroupDisplayName(name))}</span>
     </button>
   `).join('');
+  applyConfigNavFilter();
   sections.innerHTML = renderConfigSectionV2(CONFIG_ACTIVE_GROUP_V2, groups[CONFIG_ACTIVE_GROUP_V2] || []);
   renderRegistrationDriverCard();
   renderConfigOverviewCards();
@@ -9090,6 +9386,7 @@ function renderConfigLayoutV2() {
   bindCloudMailToolsV2();
   bindICloudHMEToolsV2();
   bindProxyProviderToolsV2();
+  updateConfigSaveUi();
 }
 function scrollToConfigSection(slug) {
   const el = document.getElementById(slug);
@@ -9109,6 +9406,15 @@ function openConfigGroup(name) {
 }
 function bindConfigLayoutV2() {
   const nav = document.getElementById('configNavV2');
+  const search = document.getElementById('configNavSearchV2');
+  if (search && !search.dataset.bound) {
+    search.dataset.bound = '1';
+    search.value = CONFIG_NAV_QUERY_V2;
+    search.addEventListener('input', () => {
+      CONFIG_NAV_QUERY_V2 = search.value;
+      applyConfigNavFilter();
+    });
+  }
   if (!nav || nav.dataset.bound) return;
   nav.dataset.bound = '1';
   nav.addEventListener('click', (e) => {
@@ -9272,22 +9578,20 @@ function trackConfigFieldChange(e) {
   if (!el || !el.closest('#tab-config')) return;
   const f = CONFIG.find(x => x.key === el.dataset.key);
   if (!f) return;
-  CONFIG_PENDING_UPDATES[f.key] = readConfigElementValue(el, f);
+  setPendingConfigValue(f.key, readConfigElementValue(el, f));
+  renderConfigOverviewCards();
+  updateConfigSaveUi();
 }
 $('#tab-config').addEventListener('input', trackConfigFieldChange);
 $('#tab-config').addEventListener('change', trackConfigFieldChange);
 
 async function saveConfigUpdates(triggerBtn) {
   const updates = {...CONFIG_PENDING_UPDATES};
-  const seen = new Set();
-  $$('#configCardsV2 [data-key], #configSectionsV2 [data-key]').forEach(el => {
-    const f = CONFIG.find(x => x.key === el.dataset.key);
-    if (!f || seen.has(f.key)) return;
-    seen.add(f.key);
-    updates[f.key] = readConfigElementValue(el, f);
-  });
-  const buttons = [triggerBtn, ...$$('#tab-config [data-save-config-v2]')].filter(Boolean);
-  buttons.forEach(btn => { btn.disabled = true; });
+  if (!Object.keys(updates).length) {
+    updateConfigSaveUi();
+    return;
+  }
+  updateConfigSaveUi('saving');
   try {
     const r = await api('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({updates}) });
     for (const [k, v] of Object.entries(updates)) { const f = CONFIG.find(x => x.key === k); if (f) f.value = v; delete CONFIG_PENDING_UPDATES[k]; }
@@ -9295,8 +9599,10 @@ async function saveConfigUpdates(triggerBtn) {
     await loadCapabilities();
     await loadRegistrationEmailSources();
     showToast(r.reloaded ? '配置已生效' : '配置已保存（需重启）');
-  } catch(e) { showToast('保存失败: ' + e.message); }
-  finally { buttons.forEach(btn => { btn.disabled = false; }); }
+  } catch(e) {
+    updateConfigSaveUi('error');
+    showToast('保存失败: ' + e.message);
+  }
 }
 $('#tab-config').addEventListener('click', (e) => {
   const btn = e.target.closest('[data-save-config-v2]');
