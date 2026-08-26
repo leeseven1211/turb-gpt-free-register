@@ -1896,7 +1896,7 @@ def _generate_roxy_password() -> str:
     upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
     lower = 'abcdefghjkmnpqrstuvwxyz'
     digits = '23456789'
-    symbols = '!@#$%^&*?_-+=' 
+    symbols = '!@#$%^&*?_-='
     groups = [upper, lower, digits, symbols]
     all_chars = ''.join(groups)
     chars = [random.choice(g) for g in groups]
