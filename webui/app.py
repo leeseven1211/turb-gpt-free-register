@@ -3,11 +3,12 @@
 Flask 本地控制台。
 
 复用现有后端：
-    core.db                     —— 账号 / 邮箱池 / 任务的文件持久化与查询
+    core.db                     —— 账号 / 邮箱池 / 任务业务门面，负责 PostgreSQL 行存储和兼容导出编排
+    core.admin_repository       —— 管理台查询读模型
     core.registration_service   —— 线程池批量注册 + 任务日志
-    webui.config_editor         —— 安全读写 config/*.py
+    webui.config_editor         —— 配置白名单、.env 写入和热加载
 
-所有接口返回 JSON；前端是单文件 templates/index.html（原生 JS + fetch）。
+所有接口返回 JSON；modern/legacy 模板使用原生 JS + fetch。
 默认绑定 127.0.0.1，仅本地访问。
 """
 import logging

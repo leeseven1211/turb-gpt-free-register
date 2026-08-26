@@ -214,6 +214,15 @@ def _disable_job_email(email: str | None, reason: str) -> bool:
     """把本次任务邮箱停用，避免后续再次领取。"""
     if not email:
         return False
+    try:
+        from core.email_provider import release_email
+
+        source = release_email(email, status="disabled", note=f"自动停用: {reason[:180]}")
+        logger.warning("[Service] 已自动停用邮箱: source=%s email=%s reason=%s", source, email, reason[:220])
+        return True
+    except Exception:
+        logger.exception("[Service] 自动停用邮箱失败: %s", email)
+        return False
 
 
 def _mark_completed_resume_email(email: str | None, account_id: int | None) -> bool:
@@ -232,15 +241,6 @@ def _mark_completed_resume_email(email: str | None, account_id: int | None) -> b
         return True
     except Exception:
         logger.exception("[Service] 收口恢复账号邮箱失败: account_id=%s", account_id)
-        return False
-    try:
-        from core.email_provider import release_email
-
-        source = release_email(email, status="disabled", note=f"自动停用: {reason[:180]}")
-        logger.warning("[Service] 已自动停用邮箱: source=%s email=%s reason=%s", source, email, reason[:220])
-        return True
-    except Exception:
-        logger.exception("[Service] 自动停用邮箱失败: %s", email)
         return False
 
 

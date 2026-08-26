@@ -576,7 +576,11 @@ pending -> cancelled
   registration_jobs
   email_pool_outlook
   email_pool_generic_api
-  app_collections（尚未拆表的域名/iCloud/Codex 等集合）
+  email_pool_domain
+  email_pool_icloud_hide
+  codex_credentials
+  proxy_leases
+  app_collections（调度状态、兼容集合和迁移期旧数据，不是正常列表事实来源）
 
 兼容输出：根目录 JSON/TXT、accounts_viewer.html、批次 accounts/ 目录
 ```

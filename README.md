@@ -174,7 +174,7 @@ WebUI 配置页保存这些字段时会写入 `.env`（不是 config 源码）�
 
 PostgreSQL 是**唯一事实来源**，没有纯文件模式回退：`DATABASE_URL` 缺失或库连不上时进程会在启动时直接终止，而不是静默改用文件（那会让两份副本悄悄分叉）。
 
-账号、注册任务和邮箱池存在行级表里（`registered_accounts` / `registration_jobs` / `email_pool_*`），可行级更新、可跨进程原子抢占。Codex 凭证等尚未拆表的集合仍走 `app_collections`。
+账号、注册任务、四类邮箱池、代理租约和 Codex 凭证均由 PostgreSQL 行级表支撑（`registered_accounts` / `registration_jobs` / `email_pool_*` / `proxy_leases` / `codex_credentials`），可行级更新、可跨进程原子抢占。`app_collections` 仅保留调度状态、兼容集合和迁移期旧数据，不是正常列表的事实来源。
 
 根目录的 JSON/TXT 与 `accounts_viewer.html` 是**兼容产物**，供 CLI、CPA 和人工导出使用；它们由后台去抖任务生成，不在写入主路径上。日志、浏览器缓存与批次文件仍保留在文件系统。
 
@@ -192,7 +192,7 @@ PostgreSQL 是**唯一事实来源**，没有纯文件模式回退：`DATABASE_U
 DATABASE_URL=postgresql://turb:turb_local_dev@127.0.0.1:55432/turb_console
 ```
 
-首次读取现有 JSON 数据时会自动导入 PostgreSQL；迁移过程不会删除兼容文件。查看状态：
+历史兼容 JSON 只会在对应 PostgreSQL 记录不存在且经过兼容入口时作为一次性种子读取；正常运行不从兼容文件回退。迁移过程不会删除兼容文件。查看状态：
 
 ```bash
 /Users/lihongwei/code/personal/shared-services/postgres/postgres.sh status
@@ -640,7 +640,7 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 
 #### Codex、接码与 sub2api
 
-- Codex 的标准产物是 `codex_accounts/` 下的 OAuth JSON。旧 Codex Agent Token 生成、下载和上传接口已经移除；sub2api 导入直接上传 OAuth JSON，并支持按账号更新已有凭证。
+- Codex 的事实记录在 PostgreSQL 的 `codex_credentials`，`codex_accounts/` 下的 OAuth JSON 是为 CPA/sub2api 保留的兼容产物。旧 Codex Agent Token 生成、下载和上传接口已经移除；sub2api 导入直接上传 OAuth JSON，并支持按账号更新已有凭证。
 - 注册成功不因 Codex 失败而回滚；账号正常保存，Codex 标记失败并允许单独补跑。补跑停止信号必须贯穿邮箱 OTP、取号、短信等待和浏览器流程，不能被普通换号异常吞掉。
 - GrizzlySMS 支持在 `SMS_COUNTRY` 中配置备用国家，并透传 `SMS_MAX_PRICE`（它只是购买上限，不是固定成交价）。开启 `SMS_AUTO_SELECT_COUNTRY` 后，每个批次首次接码会结合正式价格/库存接口与价格页短信成功率统计，在价格上限内选出统计量足够且成功率最高的国家；同一国家连续失败两次会自动切到排名中的下一候选。统计接口异常时自动回退 `SMS_COUNTRY`。实际成交价、国家和价格上限会写入本地运行日志与取消队列，便于复盘。
 - sub2api、CPA 和短信平台是第三方控制面请求，默认直连；它们的鉴权字段必须放在 `.env`，不得写入源码、README、日志或数据库导出。
@@ -1098,7 +1098,7 @@ accounts/20260709-10个-3线程/
   ↓
 提交 callback 给 CPA 或本地换 token
   ↓
-保存 codex_accounts/codex-邮箱*.json
+保存 PostgreSQL `codex_credentials`，并生成 `codex_accounts/codex-邮箱*.json` CPA 兼容文件
 ```
 
 ---
@@ -1109,7 +1109,7 @@ accounts/20260709-10个-3线程/
 
 WebUI 配置页保存后会热加载。Codex 补跑线程启动前也会重新热加载一次配置。
 
-如果你直接手改 `config/*.py`，CLI 进程需要重启；WebUI 建议在配置页修改。
+`config/*.py` 保存配置默认值；直接修改后 CLI 进程需要重启。运行时配置建议通过 WebUI 配置页写入 `.env`，以便热加载。
 
 ### Roxy 无头保存后仍弹窗口？
 
@@ -1162,44 +1162,35 @@ ENABLE_CODEX_AUTO = False
 
 ```text
 .
-├── main.py                         # CLI 入口
-├── web.py                          # WebUI 入口
-├── config/                         # 配置
-│   ├── roxybrowser.py              # RoxyBrowser 注册/Codex 驱动
-│   ├── cloakbrowser.py             # CloakBrowser 注册驱动配置
-│   ├── browser_use.py              # Browser Use Cloud 配置
-│   ├── codex.py                    # Codex OAuth / 授权驱动 / CPA / 接码
-│   ├── email.py                    # 邮箱来源/OTP
-│   ├── proxy.py                    # 代理池
-│   ├── register.py                 # 默认注册信息
-│   └── ...
+├── main.py                         # CLI 入口与注册兼容门面
+├── web.py                          # WebUI 启动入口
+├── config/                         # 配置默认值、环境覆盖和模块配置
 ├── core/
-│   ├── roxy_registration.py        # Roxy / 浏览器注册页面流程
-│   ├── cloakbrowser_registration.py # Cloak 注册入口
-│   ├── cloakbrowser_driver.py      # Cloak Playwright→Selenium 风格适配层
-│   ├── browser_use_registration.py # Browser Use + Playwright 注册流程
-│   ├── browser_use_client.py       # Browser Use CDP 客户端
-│   ├── roxy_codex_oauth.py         # Roxy / Cloak 浏览器 Codex OAuth 页面流程
-│   ├── roxybrowser_client.py       # Roxy API 客户端
-│   ├── registration_service.py     # WebUI 注册线程池
-│   ├── codex_oauth.py              # Codex 协议/Roxy/Cloak 调度
+│   ├── registration_service.py     # 注册任务线程池与生命周期
+│   ├── admin_repository.py         # 管理台查询读模型
+│   ├── db.py                       # 业务数据门面与兼容导出编排
+│   ├── record_store.py             # PostgreSQL 行级记录存储
+│   ├── postgres_store.py           # 连接、schema 和兼容集合存储
+│   ├── operation_task_store.py     # 统一账号操作任务存储
+│   ├── account_task_store.py       # 历史账号操作任务兼容层
+│   ├── codex_operation_service.py  # Codex 操作编排
 │   ├── email_provider.py           # 邮箱来源调度
-│   ├── cf_temp_mail_client.py      # Cloudflare Worker 临时邮箱
-│   ├── sms_provider.py             # 接码平台
-│   ├── account_export.py           # 保存账号/批次归档
-│   ├── db.py                       # 业务数据访问与兼容文件导出
-│   └── postgres_store.py           # PostgreSQL JSONB 主存储
+│   ├── sms_provider.py             # 接码平台调度
+│   ├── proxy_provider.py           # 代理租约与释放
+│   └── *_registration.py / *_oauth.py / *_client.py # 各驱动和客户端
 ├── webui/
-│   ├── app.py                      # Flask API
-│   ├── config_editor.py            # 配置读写/热加载
-│   └── templates/index.html        # 单页控制台
-├── sentinel/
-│   ├── sdk.js
-│   └── sentinel-runner.js
-├── tools/
-│   └── test_codex_oauth.py         # Codex 单独补跑
-└── L_API.md                        # 本地 L 接码接口说明
+│   ├── app.py                      # Flask API 与当前路由装配
+│   ├── auth.py                     # 登录鉴权
+│   ├── config_editor.py            # 配置白名单、.env 写入与热加载
+│   ├── templates/                  # modern / legacy / login 模板
+│   └── static/                     # 静态资源
+├── tests/                          # unittest、存储隔离和契约测试
+├── tools/                          # 迁移、诊断和单独补跑工具
+├── docs/                           # 架构、流程、规范和路线图
+└── sentinel/                       # Sentinel Node.js 子进程
 ```
+
+`accounts/`、`codex_accounts/`、`注册日志/`、`run/`、`logs/`、`.env` 和 `.venv/` 等是本地运行时数据或凭证目录，故意不列入代码结构，也不得提交。
 
 ---
 
