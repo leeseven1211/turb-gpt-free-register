@@ -45,6 +45,14 @@ class StopRequested(RuntimeError):
 
 def _activate_job(job_id: int) -> None:
     _THREAD_CTX.job_id = int(job_id)
+    _THREAD_CTX.debug_token = None
+    try:
+        from core import registration_debug
+
+        debug_job = db.get_job(int(job_id)) or {}
+        _THREAD_CTX.debug_token = registration_debug.activate_for_job(debug_job)
+    except Exception:
+        logger.exception("[Job %s] 启动注册调试记录器失败；注册流程继续执行", job_id)
     try:
         from core import sms_provider
 
@@ -58,11 +66,25 @@ def _activate_job(job_id: int) -> None:
 
 
 def _deactivate_job(job_id: int) -> None:
+    try:
+        from core import registration_debug
+
+        final_job = db.get_job(int(job_id)) or {}
+        registration_debug.deactivate_for_job(
+            getattr(_THREAD_CTX, "debug_token", None),
+            status=str(final_job.get("status") or ""),
+        )
+    except Exception:
+        logger.exception("[Job %s] 收口注册调试记录器失败", job_id)
     with _STOP_LOCK:
         _STOP_EVENTS.pop(int(job_id), None)
         _ACTIVE_JOBS.discard(int(job_id))
     try:
         delattr(_THREAD_CTX, "job_id")
+    except Exception:
+        pass
+    try:
+        delattr(_THREAD_CTX, "debug_token")
     except Exception:
         pass
     try:
@@ -97,6 +119,12 @@ def report_job_progress(stage: str, state: str = "running", detail: str | None =
     job_id = getattr(_THREAD_CTX, "job_id", None)
     if not job_id:
         return
+    try:
+        from core import registration_debug
+
+        registration_debug.update_current_stage(stage, state=state, detail=detail)
+    except Exception:
+        logger.exception("[Job %s] 写入调试阶段标记失败: stage=%s state=%s", job_id, stage, state)
     try:
         db.update_job_progress(int(job_id), stage, state=state, detail=detail)
     except Exception:
@@ -963,7 +991,13 @@ def _run_twofa_retry_job(
 # 公共接口
 # ============================================================
 
-def submit_registration(count: int = 1, email_source: str | None = None, workers: int | None = None) -> list[dict]:
+def submit_registration(
+    count: int = 1,
+    email_source: str | None = None,
+    workers: int | None = None,
+    *,
+    debug_enabled: bool = False,
+) -> list[dict]:
     """
     创建 N 个注册任务并提交到线程池。
     email_source 会写入每个任务，任务执行时严格使用该来源，不跨平台兜底。
@@ -993,6 +1027,19 @@ def submit_registration(count: int = 1, email_source: str | None = None, workers
                 batch_size=count,
                 batch_workers=effective_workers,
             )
+            if debug_enabled:
+                from core.registration_debug import patch_job
+                patch_job(
+                    int(job["id"]),
+                    debug_enabled=True,
+                    debug_state="pending",
+                    debug_policy={
+                        "capture_network": True,
+                        "hold_on_failure": True,
+                        "preserve_success_browser": False,
+                    },
+                )
+                job = db.get_job(int(job["id"])) or job
             try:
                 executor.submit(_run_one_job, job["id"], job["log_file"])
             except Exception as exc:
@@ -1004,7 +1051,13 @@ def submit_registration(count: int = 1, email_source: str | None = None, workers
                 )
                 logger.exception("[Service] 注册任务 #%s 提交线程池失败", job["id"])
             jobs.append(db.get_job(int(job["id"])) or job)
-    logger.info(f"[Service] 已提交 {count} 个注册任务，源={email_source}，workers={effective_workers}")
+    logger.info(
+        "[Service] 已提交 %s 个注册任务，源=%s，workers=%s，debug=%s",
+        count,
+        email_source,
+        effective_workers,
+        bool(debug_enabled),
+    )
     return jobs
 
 
@@ -1299,6 +1352,20 @@ def retry_job(
             "retry_action": action,
             "job": job,
         }
+
+    if bool(source.get("debug_enabled", False)) and action in {"registration", "registration_resume"}:
+        from core.registration_debug import patch_job
+        patch_job(
+            int(job["id"]),
+            debug_enabled=True,
+            debug_state="pending",
+            debug_policy=dict(source.get("debug_policy") or {
+                "capture_network": True,
+                "hold_on_failure": True,
+                "preserve_success_browser": False,
+            }),
+        )
+        job = db.get_job(int(job["id"])) or job
 
     account_task_id = None
     try:

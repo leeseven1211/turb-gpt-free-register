@@ -279,6 +279,8 @@ def _compact_job_for_list(row: dict) -> dict:
         "proxy_exit_ip", "proxy_region", "proxy_acquired_at", "proxy_expires_at",
         "batch_id", "batch_index", "batch_size", "batch_workers",
         "progress_stage", "progress_updated_at", "progress_steps",
+        "debug_enabled", "debug_state", "debug_hold_until", "debug_pause_reason",
+        "debug_capture_summary",
     ):
         value = row.get(key)
         if value is not None and value != "" and value is not False:

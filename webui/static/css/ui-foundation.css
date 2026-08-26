@@ -1295,6 +1295,70 @@ table[data-resizable-table="codex"] {
   box-shadow: 0 0 0 9999px rgba(15, 23, 42, .46), var(--ui-shadow-md);
 }
 
+.jobs-debug-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--border, #d8dee8);
+  border-radius: 8px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.jobs-debug-toggle input { width: 16px; height: 16px; margin: 0; }
+.debug-capture-panel {
+  margin: 10px 0;
+  padding: 12px;
+  border: 1px solid var(--border, #d8dee8);
+  border-radius: 10px;
+  background: var(--panel-soft, rgba(15, 23, 42, .035));
+}
+.debug-capture-head,
+.debug-capture-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.debug-capture-head { justify-content: space-between; margin-bottom: 10px; }
+#debugCaptureSummary { margin-left: 8px; color: var(--muted, #64748b); font-size: 12px; }
+.debug-network-list {
+  max-height: 310px;
+  overflow: auto;
+  border: 1px solid var(--border, #d8dee8);
+  border-radius: 8px;
+  background: var(--panel, #fff);
+}
+.debug-network-row {
+  display: grid;
+  grid-template-columns: 72px 64px minmax(220px, 1fr) 72px;
+  gap: 8px;
+  align-items: start;
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.debug-network-row:last-child { border-bottom: 0; }
+.debug-network-row.is-error { background: rgba(220, 38, 38, .07); }
+.debug-network-url { overflow-wrap: anywhere; }
+.debug-network-detail { grid-column: 1 / -1; color: var(--muted, #64748b); white-space: pre-wrap; overflow-wrap: anywhere; }
+.debug-capture-compare {
+  max-height: 220px;
+  overflow: auto;
+  margin-bottom: 10px;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(245, 158, 11, .08);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 720px) {
+  .debug-network-row { grid-template-columns: 62px 54px minmax(150px, 1fr); }
+  .debug-network-row > :nth-child(4) { display: none; }
+}
+
 #toast {
   border-radius: var(--ui-radius-md);
   background: #171927;

@@ -110,8 +110,9 @@ def create_jobs_blueprint(context: WebUIContext):
 
     @bp.post("/api/jobs")
     def api_jobs_create():
-        """启动批量注册：body {count, workers, email_source}。"""
+        """启动批量注册：body {count, workers, email_source, debug_enabled}。"""
         data = request.get_json(silent=True) or {}
+        debug_enabled = bool(data.get("debug_enabled", False))
         try:
             count = int(data.get("count", 1))
         except (TypeError, ValueError):
@@ -124,6 +125,15 @@ def create_jobs_blueprint(context: WebUIContext):
             workers = max(1, min(16, int(data.get("workers", 3))))
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "workers 非法"}), 400
+
+        if debug_enabled:
+            from config import roxybrowser as _roxy_cfg
+            driver_mode = str(getattr(_roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
+            if driver_mode not in {"protocol", "api", "http", "roxy", "roxybrowser", "fingerprint", "browser"}:
+                return jsonify({
+                    "ok": False,
+                    "error": f"调试抓包当前仅支持 Roxy 和 protocol，当前注册驱动为 {driver_mode}",
+                }), 400
 
         # 提交前先确认池里有足够可用邮箱，给前端一个温和提示（不阻断）
         from config import email as _email_cfg
@@ -141,13 +151,17 @@ def create_jobs_blueprint(context: WebUIContext):
                     "ok": False,
                     "error": "手动模式建议每次只跑 1 个任务（同一 REGISTER_EMAIL）。请把数量设为 1。",
                 }), 400
-            jobs = svc.submit_registration(count=count, workers=workers)
+            submit_kwargs = {"count": count, "workers": workers}
+            if debug_enabled:
+                submit_kwargs["debug_enabled"] = True
+            jobs = svc.submit_registration(**submit_kwargs)
             return jsonify({
                 "ok": True,
                 "submitted": len(jobs),
                 "jobs": jobs,
                 "warning": f"手动 OTP 模式：将使用 {reg_email}；验证码请在任务页提交",
                 "workers": workers,
+                "debug_enabled": debug_enabled,
             })
         try:
             selected_source = validate_email_source(data.get("email_source"))
@@ -275,7 +289,10 @@ def create_jobs_blueprint(context: WebUIContext):
             warning = ""
             if pool.get("available", 0) < count:
                 warning = f"可用邮箱仅 {pool.get('available', 0)} 个，少于任务数 {count}，不足的会失败"
-        jobs = svc.submit_registration(count=count, email_source=selected_source, workers=workers)
+        submit_kwargs = {"count": count, "email_source": selected_source, "workers": workers}
+        if debug_enabled:
+            submit_kwargs["debug_enabled"] = True
+        jobs = svc.submit_registration(**submit_kwargs)
         return jsonify({
             "ok": True,
             "submitted": len(jobs),
@@ -283,6 +300,7 @@ def create_jobs_blueprint(context: WebUIContext):
             "warning": warning,
             "workers": workers,
             "email_source": selected_source,
+            "debug_enabled": debug_enabled,
         })
 
     @bp.get("/api/manual-otp/waiting")
@@ -418,11 +436,18 @@ def create_jobs_blueprint(context: WebUIContext):
     @bp.post("/api/jobs/<int:job_id>/delete")
     def api_job_delete(job_id: int):
         """删除一个任务记录。运行中的任务不允许删除；排队任务删除后执行前会自动跳过。"""
+        debug_job = db.get_job(job_id)
         deleted, skipped = db.delete_jobs([job_id], delete_log=True, allow_running=False)
         if not deleted:
             reason = skipped[0]["reason"] if skipped else "任务不存在"
             status_code = 409 if "运行中" in reason else 404
             return jsonify({"ok": False, "error": reason}), status_code
+        if debug_job:
+            try:
+                from core.registration_debug import delete_job_artifacts
+                delete_job_artifacts(debug_job)
+            except Exception:
+                logger.exception("删除任务 #%s 的调试产物失败", job_id)
         return jsonify({"ok": True, "deleted": True})
 
     @bp.post("/api/jobs/delete-bulk")
@@ -449,10 +474,103 @@ def create_jobs_blueprint(context: WebUIContext):
             seen.add(job_id)
             valid_ids.append(job_id)
 
+        debug_jobs = {job_id: db.get_job(job_id) for job_id in valid_ids}
         deleted_rows, skipped = db.delete_jobs(valid_ids, delete_log=True, allow_running=False)
         skipped = invalid + skipped
         deleted = [int(row["id"]) for row in deleted_rows]
+        try:
+            from core.registration_debug import delete_job_artifacts
+            for deleted_id in deleted:
+                debug_job = debug_jobs.get(deleted_id)
+                if debug_job:
+                    delete_job_artifacts(debug_job)
+        except Exception:
+            logger.exception("批量删除注册任务调试产物失败")
         return jsonify({"ok": True, "deleted": deleted, "deleted_count": len(deleted), "skipped": skipped})
+
+    @bp.get("/api/jobs/<int:job_id>/debug")
+    def api_job_debug(job_id: int):
+        job = db.get_job(job_id)
+        if not job:
+            return jsonify({"ok": False, "error": "任务不存在"}), 404
+        if not bool(job.get("debug_enabled", False)):
+            return jsonify({"ok": True, "enabled": False, "job_id": job_id, "events": []})
+        from core.registration_debug import active_summary, read_events
+        errors_only = str(request.args.get("errors_only", "") or "").lower() in {"1", "true", "yes"}
+        try:
+            limit = max(1, min(1000, int(request.args.get("limit", 300) or 300)))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "limit 必须是整数"}), 400
+        try:
+            events = read_events(job, limit=limit, errors_only=errors_only)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 409
+        return jsonify({
+            "ok": True,
+            "enabled": True,
+            "job_id": job_id,
+            "state": job.get("debug_state") or "",
+            "hold_until": job.get("debug_hold_until") or "",
+            "pause_reason": job.get("debug_pause_reason") or "",
+            "summary": active_summary(job_id) or job.get("debug_capture_summary") or {},
+            "events": events,
+        })
+
+    @bp.post("/api/jobs/<int:job_id>/debug/release")
+    def api_job_debug_release(job_id: int):
+        data = request.get_json(silent=True) or {}
+        from core.registration_debug import release_job
+        result = release_job(job_id, action=str(data.get("action") or "finish"))
+        if not result.get("ok"):
+            return jsonify(result), int(result.get("status") or 409)
+        return jsonify(result)
+
+    @bp.get("/api/jobs/<int:job_id>/debug/har")
+    def api_job_debug_har(job_id: int):
+        job = db.get_job(job_id)
+        if not job:
+            return jsonify({"ok": False, "error": "任务不存在"}), 404
+        if not bool(job.get("debug_enabled", False)):
+            return jsonify({"ok": False, "error": "该任务未开启调试抓包"}), 409
+        from core.registration_debug import build_har
+        try:
+            har = build_har(job)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 409
+        payload = json.dumps(har, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        response = Response(payload, mimetype="application/json")
+        response.headers["Content-Disposition"] = f'attachment; filename="registration-job-{job_id}-sanitized.har"'
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @bp.get("/api/jobs/<int:job_id>/debug/compare")
+    def api_job_debug_compare(job_id: int):
+        job = db.get_job(job_id)
+        if not job:
+            return jsonify({"ok": False, "error": "任务不存在"}), 404
+        if not bool(job.get("debug_enabled", False)):
+            return jsonify({"ok": False, "error": "该任务未开启调试抓包"}), 409
+        baseline_id = request.args.get("baseline_job_id", default=None, type=int)
+        baseline = db.get_job(baseline_id) if baseline_id else None
+        if baseline is not None and (
+            not bool(baseline.get("debug_enabled", False))
+            or str(baseline.get("batch_id") or "") != str(job.get("batch_id") or "")
+            or str(baseline.get("status") or "") not in {"success", "partial_success"}
+        ):
+            return jsonify({"ok": False, "error": "对比任务必须是同批次的成功调试任务"}), 400
+        if baseline is None:
+            same_batch = [
+                row for row in db.list_jobs(limit=2000)
+                if int(row.get("id") or 0) != job_id
+                and str(row.get("batch_id") or "") == str(job.get("batch_id") or "")
+                and str(row.get("status") or "") in {"success", "partial_success"}
+                and bool(row.get("debug_enabled", False))
+            ]
+            baseline = same_batch[0] if same_batch else None
+        if baseline is None:
+            return jsonify({"ok": False, "error": "同批次没有可用于对比的成功调试任务"}), 409
+        from core.registration_debug import compare_jobs
+        return jsonify({"ok": True, **compare_jobs(job, baseline)})
 
     @bp.get("/api/jobs/<int:job_id>/log")
     def api_job_log(job_id: int):

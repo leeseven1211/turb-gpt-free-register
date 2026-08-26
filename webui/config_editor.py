@@ -84,6 +84,35 @@ EDITABLE_FIELDS = [
         "key": "REGISTRATION_AUTH_MODE", "file": "register.py", "type": "str", "group": "注册方式",
         "label": "账号认证模式", "help": "otp=优先使用邮箱一次性验证码；password=遇到注册密码页时设置密码。密码模式仍可能需要邮箱验证码",
     },
+    # ---- 注册调试 ----
+    {
+        "key": "REGISTRATION_DEBUG_HOLD_TIMEOUT_SECONDS", "file": "registration_debug.py", "type": "int", "group": "注册调试",
+        "label": "失败现场保留（秒）", "help": "调试任务最终失败后保留浏览器和代理的最长时间；默认 1800（30 分钟）",
+    },
+    {
+        "key": "REGISTRATION_DEBUG_MAX_HELD_SESSIONS", "file": "registration_debug.py", "type": "int", "group": "注册调试",
+        "label": "最大保留现场数", "help": "允许同时暂停保留的失败浏览器数量；超出后仍保存抓包但自动关闭现场",
+    },
+    {
+        "key": "REGISTRATION_DEBUG_BODY_MAX_KB", "file": "registration_debug.py", "type": "int", "group": "注册调试",
+        "label": "单正文上限（KB）", "help": "单个文本、HTML 或 JSON 请求/响应正文的最大保存大小",
+    },
+    {
+        "key": "REGISTRATION_DEBUG_BODY_BUDGET_MB", "file": "registration_debug.py", "type": "int", "group": "注册调试",
+        "label": "单任务正文预算（MB）", "help": "达到预算后继续记录全部请求元数据，但不再保存正文",
+    },
+    {
+        "key": "REGISTRATION_DEBUG_GLOBAL_BUDGET_MB", "file": "registration_debug.py", "type": "int", "group": "注册调试",
+        "label": "抓包总预算（MB）", "help": "调试目录超过软上限后，新任务自动降级为只记录请求元数据",
+    },
+    {
+        "key": "REGISTRATION_DEBUG_RETENTION_DAYS", "file": "registration_debug.py", "type": "int", "group": "注册调试",
+        "label": "抓包保留天数", "help": "WebUI 启动时逐文件清理超过此天数的调试产物",
+    },
+    {
+        "key": "REGISTRATION_DEBUG_QUEUE_SIZE", "file": "registration_debug.py", "type": "int", "group": "注册调试",
+        "label": "单任务事件队列", "help": "默认 20000；队列满时丢弃后续抓包事件并计数，不阻塞注册线程",
+    },
 
     # ---- CloakBrowser ----
     {

@@ -40,6 +40,7 @@ OpenAI 注册主体完成：邮箱 OTP -> 资料 -> OAuth 回调 -> accessToken
 3. 邮箱领取后先变为 `used`。只有能确认“没有创建账号”的失败才允许回到 `available`；已经消耗邮箱或已经创建账号的失败会标记为 `failed` 或 `disabled`，避免重复注册。
 4. 2FA、Codex、套餐查询是注册后的后置能力。后置步骤失败时，账号可能已经保存在 `registered_accounts`，但任务仍可能是 `partial_success` 或 `failed`。
 5. PostgreSQL 是运行时事实来源；根目录 JSON/TXT 和 `accounts_viewer.html` 只是兼容导出，不参与核心状态判断。
+6. 注册调试只支持当前实际使用的 `protocol` 和 Roxy 驱动。每条并发任务有独立抓包会话；Cloak、Browser Use 和 Skyvern 不进入本调试链路。
 
 ## 1. 一眼看懂的主流程
 
@@ -130,7 +131,27 @@ ThreadPoolExecutor.submit(_run_one_job)
 
 手动 OTP 模式要求配置 `REGISTER_EMAIL`，且 WebUI 限制一次只提交一个任务，避免多个任务共用同一个手动邮箱。
 
-### 2.2 任务服务入口
+### 2.2 注册调试入口
+
+`POST /api/jobs` 的 `debug_enabled=true` 是批次级显式开关，服务在每条任务被执行器激活时创建独立 `RegistrationDebugSession`。这不是全局浏览器开关，因此可以同时跑多个调试任务，也不会影响未开启调试的批次。
+
+调试会话按驱动采集：
+
+- `protocol`：记录 `BrowserSession` 的 HTTP 请求、重定向、响应、耗时和异常。
+- Roxy：除 protocol 后置请求外，通过 Roxy 的 DevTools 地址为 page、iframe、worker 和 service worker 建立旁路 CDP 连接，记录请求/响应、失败、文本正文、WebSocket 帧、控制台错误和页面异常。
+
+所有事件先脱敏再进入有界异步队列，写入 `注册日志/debug/<job_uuid>/network.jsonl.gz`。密码、OTP、Token、Cookie、Authorization、邮箱和 URL 查询值不落明文；正文有单条和单任务上限，全局目录有软容量上限。容量或队列达到上限时只降级或丢弃调试数据，不得阻塞注册主流程。
+
+Roxy 调试任务会强制显示浏览器。任务最终失败时，注册线程进入 `debug_state=paused`，保留该任务自己的窗口并等待以下任一事件：
+
+1. 用户在任务日志点击「释放现场」。
+2. 用户停止任务。
+3. 达到 `REGISTRATION_DEBUG_HOLD_TIMEOUT_SECONDS`。
+4. 同时保留数量已经达到 `REGISTRATION_DEBUG_MAX_HELD_SESSIONS`，本任务跳过暂停。
+
+暂停只发生在最终失败处，不会在中间步骤逐步等待；因此并发任务彼此独立，其他任务继续执行。释放或超时后走原有关闭窗口、释放代理和删除临时 Profile 的清理链路。任务日志接口可读取实时摘要和事件、下载脱敏 HAR，也可以自动选择同批成功调试任务，按阶段、方法和无查询参数的 URL 对齐差异。
+
+### 2.3 任务服务入口
 
 `submit_registration()`：
 
@@ -150,7 +171,7 @@ WHERE id = ? AND status = 'pending'
 
 抢占失败说明取消请求或其他执行者已经改变了状态，当前线程必须退出，不能把任务重新启动。
 
-### 2.3 CLI 入口
+### 2.4 CLI 入口
 
 CLI 通过 `main.run_registration()` 兼容门面调用 `core.registration.dispatcher`。没有 WebUI `job_id` 时，`report_job_progress()` 自动忽略，因此 CLI 复用注册主体但没有 WebUI 任务进度和停止控制。
 
@@ -623,6 +644,7 @@ pending -> cancelled
 | 统一驱动分发 | `core/registration/dispatcher.py:run_registration()` |
 | 协议注册主体 | `core/registration/protocol.py`、`core/openai_auth.py` |
 | WebUI 任务提交 | `webui/routes/jobs.py:api_jobs_create()` |
+| 调试会话、CDP 抓包、HAR 与对比 | `core/registration_debug.py` |
 | 单任务编排和清理 | `core/registration_service.py:_run_one_job()` |
 | 任务状态和阶段进度 | `core/db.py` 的 `claim_job_for_execution()`、`update_job_progress()`、`finish_job_progress()` |
 | 邮箱领取/OTP/释放 | `core/email_provider.py` |
@@ -638,13 +660,14 @@ pending -> cancelled
 ```text
 1. 看 registration_jobs.status / job_type / account_id
 2. 看 progress_stage 和 progress_steps，定位第一个 failed/stopped 节点
-3. 看任务日志 注册日志/<job_uuid>.log
-4. 如果 account_id 非空，优先检查 registered_accounts.access_token
-5. 检查账号 extra_json.registration_checkpoint
-6. 检查 codex_status、twofa、plan_check_status
-7. 检查邮箱池 status，确认是否 available / used / failed / disabled
-8. 检查 proxy_status 和代理租约记录
-9. 根据 get_retry_info() 选择 registration / registration_resume / codex / twofa
+3. 若该任务开启调试，在任务日志查看网络摘要、请求差异、控制台错误；Roxy 仍暂停时先查看现场，再点击释放
+4. 看任务日志 注册日志/<job_uuid>.log
+5. 如果 account_id 非空，优先检查 registered_accounts.access_token
+6. 检查账号 extra_json.registration_checkpoint
+7. 检查 codex_status、twofa、plan_check_status
+8. 检查邮箱池 status，确认是否 available / used / failed / disabled
+9. 检查 proxy_status 和代理租约记录
+10. 根据 get_retry_info() 选择 registration / registration_resume / codex / twofa
 ```
 
 一句话总结：先以 `registration_jobs` 看任务运行到哪一步，再以 `registered_accounts.access_token` 判断账号事实，最后结合邮箱状态和后置状态决定是否重试；不要只凭任务最终文字状态判断注册是否成功。

@@ -261,6 +261,24 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         self.assertIn("ROXY_WINDOW_WAIT_INTERVAL", fields)
         self.assertEqual(fields["ROXY_WINDOW_WAIT_TIMEOUT"]["group"], "RoxyBrowser")
 
+    def test_registration_debug_limits_are_webui_editable_and_env_driven(self):
+        fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
+        expected = {
+            "REGISTRATION_DEBUG_HOLD_TIMEOUT_SECONDS",
+            "REGISTRATION_DEBUG_MAX_HELD_SESSIONS",
+            "REGISTRATION_DEBUG_BODY_MAX_KB",
+            "REGISTRATION_DEBUG_BODY_BUDGET_MB",
+            "REGISTRATION_DEBUG_GLOBAL_BUDGET_MB",
+            "REGISTRATION_DEBUG_RETENTION_DAYS",
+            "REGISTRATION_DEBUG_QUEUE_SIZE",
+        }
+        self.assertTrue(expected.issubset(fields))
+        self.assertTrue(all(fields[key]["group"] == "注册调试" for key in expected))
+        with patch.dict(os.environ, {"REGISTRATION_DEBUG_HOLD_TIMEOUT_SECONDS": "45"}):
+            module = importlib.reload(importlib.import_module("config.registration_debug"))
+            self.assertEqual(module.REGISTRATION_DEBUG_HOLD_TIMEOUT_SECONDS, 45)
+        importlib.reload(importlib.import_module("config.registration_debug"))
+
     def test_icloud_hme_fields_are_webui_editable(self):
         fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
         expected = {

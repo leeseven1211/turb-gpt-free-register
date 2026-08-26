@@ -238,6 +238,19 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
         except Exception:
             active_logger.exception("Roxy 孤儿环境启动恢复失败；登记会保留到下次启动继续重试")
 
+        try:
+            from core.registration_debug import cleanup_expired_artifacts
+
+            debug_cleanup = cleanup_expired_artifacts()
+            if debug_cleanup.get("removed_files") or debug_cleanup.get("removed_dirs"):
+                active_logger.info(
+                    "注册调试产物过期清理完成：files=%s dirs=%s",
+                    debug_cleanup.get("removed_files", 0),
+                    debug_cleanup.get("removed_dirs", 0),
+                )
+        except Exception:
+            active_logger.exception("注册调试产物过期清理失败；不影响 WebUI 启动")
+
         sms_provider.start_cancel_worker()
         recovered_plan_checks = db.recover_interrupted_plan_checks()
         if recovered_plan_checks:

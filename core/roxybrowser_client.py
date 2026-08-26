@@ -622,7 +622,13 @@ class RoxyBrowserClient:
             return ""
         return text
 
-    def open_profile(self, profile_id: str | None = None, *, proxy_url: str | None = None) -> RoxyOpenResult:
+    def open_profile(
+        self,
+        profile_id: str | None = None,
+        *,
+        proxy_url: str | None = None,
+        headless: bool | None = None,
+    ) -> RoxyOpenResult:
         one_profile = bool(getattr(_cfg, "ROXY_ONE_PROFILE_PER_ACCOUNT", True))
         configured_pid = self._normalize_profile_id(profile_id if profile_id is not None else getattr(_cfg, "ROXY_PROFILE_ID", ""))
         if proxy_url and configured_pid:
@@ -655,7 +661,11 @@ class RoxyBrowserClient:
         params.setdefault("forceOpen", True)
         # ROXY_OPEN_HEADLESS 是显式开关，优先级应高于 ROXY_OPEN_EXTRA_PARAMS，
         # 否则 extra 里残留 headless=False 会导致 WebUI 保存无头后仍弹窗口。
-        params["headless"] = bool(getattr(_cfg, "ROXY_OPEN_HEADLESS", False))
+        params["headless"] = (
+            bool(getattr(_cfg, "ROXY_OPEN_HEADLESS", False))
+            if headless is None
+            else bool(headless)
+        )
         logger.info("[Roxy] open 参数：profile=%s headless=%s keep_open=%s", pid, params.get("headless"), getattr(_cfg, "ROXY_KEEP_BROWSER_OPEN", False))
         # Roxy 本地 API 并发打开多个环境时会长时间阻塞，严重时 API 服务直接退出。
         # 这里只串行发送 open 并等待浏览器就绪；已打开的窗口不会因此被串行使用。
@@ -793,8 +803,8 @@ class RoxyBrowserClient:
 def cleanup_orphaned_profiles() -> dict:
     """关闭并软删除上次 WebUI 异常退出后遗留的临时环境。
 
-    调试时显式开启 ROXY_KEEP_BROWSER_OPEN，重启也必须保留现场；否则为了热加载
-    代码而重启 WebUI 会反过来销毁用户要求保留的浏览器。
+    任务级调试现场在进程存活期间由 registration_debug 管理；只有显式设置
+    ROXY_KEEP_BROWSER_OPEN 时，才把进程重启前登记的环境视为用户要求长期保留。
     """
     with _PROFILE_REGISTRY_LOCK:
         items = _load_profile_registry_locked()

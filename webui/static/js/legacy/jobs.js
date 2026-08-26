@@ -33,6 +33,7 @@ $('#btnStart').addEventListener('click', async () => {
   const count = parseInt($('#regCount').value || '1', 10);
   const workers = parseInt($('#regWorkers').value || '3', 10);
   const emailSource = $('#regEmailSource').disabled ? '' : $('#regEmailSource').value;
+  const debugEnabled = Boolean($('#regDebug')?.checked);
   if (!$('#regEmailSource').disabled && !emailSource) {
     $('#regWarn').innerHTML = '<div class="banner warn">请先选择本次注册使用的邮箱来源</div>';
     $('#regEmailSource').focus();
@@ -50,9 +51,10 @@ $('#btnStart').addEventListener('click', async () => {
   $('#btnStart').disabled = true;
   const restoreBtn = () => { $('#btnStart').disabled = false; };
   try {
-    const r = await api('/api/jobs', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({count, workers, email_source:emailSource}) });
+    const r = await api('/api/jobs', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({count, workers, email_source:emailSource, debug_enabled:debugEnabled}) });
     const sourceLabel = registrationEmailSourceLabel(r.email_source || emailSource);
-    $('#regWarn').innerHTML = r.warning ? `<div class="banner warn">${esc(r.warning)}（邮箱来源：${esc(sourceLabel)}；本次并发 ${r.workers || workers}）</div>` : `<div class="banner info">已提交 ${r.submitted} 个任务，邮箱来源：${esc(sourceLabel)}，本次并发 ${r.workers || workers}</div>`;
+    const debugLabel = debugEnabled ? '；网络调试已开启' : '';
+    $('#regWarn').innerHTML = r.warning ? `<div class="banner warn">${esc(r.warning)}（邮箱来源：${esc(sourceLabel)}；本次并发 ${r.workers || workers}${debugLabel}）</div>` : `<div class="banner info">已提交 ${r.submitted} 个任务，邮箱来源：${esc(sourceLabel)}，本次并发 ${r.workers || workers}${debugLabel}</div>`;
     refreshJobs();
   } catch(e) { $('#regWarn').innerHTML = `<div class="banner warn">${esc(e.message)}</div>`; }
   finally { setTimeout(restoreBtn, 3000); }
@@ -88,7 +90,7 @@ function renderJobs() {
     <tr>
       <td><input type="checkbox" class="job-row-check" data-job-id="${esc(j.id)}" ${JOB_SELECTED.has(Number(j.id)) ? 'checked' : ''} ${['running','stopping'].includes(j.status) ? 'disabled title="运行中的任务不能选择"' : ''}></td>
       <td class="muted">#${esc(j.id)}${j.parent_job_id ? `<div class="sub-cell" title="重试自任务 #${esc(j.parent_job_id)}">↳ #${esc(j.parent_job_id)} · ${esc(j.retry_attempt || 1)}</div>` : ''}</td>
-      <td>${pill(j.display_status || j.status)}</td>
+      <td>${pill(j.debug_state === 'paused' ? 'debug_paused' : (j.display_status || j.status))}</td>
       <td title="${esc(j.email || '-')}">${esc(j.email || '-')}</td>
       <td title="${esc(registrationEmailSourceLabel(j.email_source))}">${esc(registrationEmailSourceLabel(j.email_source))}</td>
       <td title="${esc(j.proxy_status || '-')}">${esc(j.proxy_provider ? `${j.proxy_provider}${j.proxy_endpoint && j.proxy_endpoint !== '-' ? ' · ' + j.proxy_endpoint : ''}` : '-')}</td>
@@ -393,6 +395,8 @@ function openLog(jobId) {
   $('#logPanel').classList.remove('hidden');
   updateModalScrollLock();
   $('#logContent').textContent = '加载中…';
+  $('#debugCapturePanel')?.classList.add('hidden');
+  $('#debugCaptureCompare')?.classList.add('hidden');
   pollLog();
   clearInterval(logTimer);
   logTimer = setInterval(pollLog, 2000);
@@ -405,6 +409,71 @@ async function pollLog() {
     const atBottom = c.scrollTop + c.clientHeight >= c.scrollHeight - 30;
     c.textContent = r.log || '(暂无日志)';
     if (atBottom) c.scrollTop = c.scrollHeight;
+    await pollRegistrationDebug(activeLogJob);
     if (r.job && ['success','partial_success','failed','stopped','cancelled'].includes(r.job.status)) clearInterval(logTimer);
   } catch(e) {}
 }
+
+function debugBodySnippet(value) {
+  if (value == null || value === '') return '';
+  let text = '';
+  try { text = typeof value === 'string' ? value : JSON.stringify(value); }
+  catch (_) { text = String(value); }
+  return short(text, 320);
+}
+
+function renderRegistrationDebug(data) {
+  const panel = $('#debugCapturePanel');
+  if (!panel) return;
+  if (!data?.enabled) { panel.classList.add('hidden'); return; }
+  panel.classList.remove('hidden');
+  const summary = data.summary || {};
+  const state = data.state || summary.state || 'recording';
+  $('#debugCaptureSummary').textContent = `状态 ${state} · 请求 ${summary.request_count || 0} · HTTP错误 ${summary.http_error_count || 0} · 网络失败 ${summary.failed_count || 0}` + (data.hold_until ? ` · 保留至 ${data.hold_until}` : '');
+  $('#btnDebugRelease')?.classList.toggle('hidden', state !== 'paused');
+  const har = $('#btnDebugHar');
+  if (har) har.href = `/api/jobs/${encodeURIComponent(data.job_id)}/debug/har`;
+  const rows = Array.isArray(data.events) ? data.events : [];
+  $('#debugNetworkList').innerHTML = rows.map(item => {
+    const status = Number(item.status || 0);
+    const isError = Boolean(item.failure) || status >= 400;
+    const detail = item.failure || debugBodySnippet(item.response_body);
+    return `<div class="debug-network-row${isError ? ' is-error' : ''}">
+      <span>${esc(item.stage || '-')}</span><strong>${esc(item.method || '-')}</strong>
+      <span class="debug-network-url" title="${esc(item.url || '')}">${esc(item.url || '-')}</span>
+      <span>${esc(status || (item.failure ? 'FAIL' : '-'))}${item.duration_ms != null ? ` · ${esc(Math.round(Number(item.duration_ms)))}ms` : ''}</span>
+      ${detail ? `<span class="debug-network-detail">${esc(detail)}</span>` : ''}
+    </div>`;
+  }).join('') || '<div class="debug-network-row"><span class="debug-network-detail">抓包已启动，暂时还没有可显示的请求。</span></div>';
+}
+
+async function pollRegistrationDebug(jobId) {
+  if (jobId == null) return;
+  try { renderRegistrationDebug(await api(`/api/jobs/${jobId}/debug?limit=300`)); }
+  catch (_) {}
+}
+
+$('#btnDebugRelease')?.addEventListener('click', async () => {
+  if (activeLogJob == null || !confirm('确定结束调试现场并让任务按原失败结果收口吗？浏览器和代理将被释放。')) return;
+  try {
+    await api(`/api/jobs/${activeLogJob}/debug/release`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action:'finish'})});
+    showToast('已请求结束调试现场');
+    pollLog();
+  } catch (e) { showToast('结束调试失败: ' + e.message); }
+});
+
+$('#btnDebugCompare')?.addEventListener('click', async () => {
+  if (activeLogJob == null) return;
+  const out = $('#debugCaptureCompare');
+  out.classList.remove('hidden');
+  out.textContent = '正在对齐同批成功任务的请求序列…';
+  try {
+    const data = await api(`/api/jobs/${activeLogJob}/debug/compare`);
+    out.textContent = `基线任务 #${data.baseline_job_id} · 差异 ${data.difference_count}\n` +
+      (data.differences || []).slice(0, 100).map(diff => {
+        const left = diff.baseline ? `${diff.baseline.status || '-'}${diff.baseline.failure ? ' ' + diff.baseline.failure : ''}` : '缺失';
+        const right = diff.target ? `${diff.target.status || '-'}${diff.target.failure ? ' ' + diff.target.failure : ''}` : '缺失';
+        return `${diff.stage || '-'} ${diff.method} ${diff.host}${diff.path} [${diff.ordinal}]\n  成功: ${left}\n  当前: ${right}`;
+      }).join('\n');
+  } catch (e) { out.textContent = '对比失败：' + e.message; }
+});

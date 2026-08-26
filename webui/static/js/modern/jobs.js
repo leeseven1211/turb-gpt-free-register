@@ -33,6 +33,7 @@ async function startRegistrationFromInputs(countEl, workersEl, sourceEl, startBt
   const count = parseInt((countEl?.value || '1'), 10);
   const workers = parseInt((workersEl?.value || '3'), 10);
   const emailSource = String(sourceEl?.value || '').trim();
+  const debugEnabled = Boolean($('#regDebugV2')?.checked);
   if (!emailSource) {
     const warnEl = $('#regWarnV2');
     if (warnEl) warnEl.innerHTML = '<div class="banner warn">请选择本次注册使用的邮箱来源</div>';
@@ -55,10 +56,11 @@ async function startRegistrationFromInputs(countEl, workersEl, sourceEl, startBt
   };
   const b2 = $('#btnStartV2'); if (b2) b2.disabled = true;
   try {
-    const r = await api('/api/jobs', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({count, workers, email_source:emailSource}) });
+    const r = await api('/api/jobs', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({count, workers, email_source:emailSource, debug_enabled:debugEnabled}) });
     setJobProgressBatch(r.jobs?.[0]?.batch_id || '');
     const sourceLabel = registrationEmailSourceLabel(r.email_source || emailSource);
-    const warnHtml = r.warning ? `<div class="banner warn">${esc(r.warning)}（邮箱 ${esc(sourceLabel)} · 并发 ${r.workers || workers}）</div>` : `<div class="banner info">已提交 ${r.submitted} 个任务 · 邮箱 ${esc(sourceLabel)} · 并发 ${r.workers || workers}</div>`;
+    const debugLabel = debugEnabled ? ' · 网络调试已开启' : '';
+    const warnHtml = r.warning ? `<div class="banner warn">${esc(r.warning)}（邮箱 ${esc(sourceLabel)} · 并发 ${r.workers || workers}${debugLabel}）</div>` : `<div class="banner info">已提交 ${r.submitted} 个任务 · 邮箱 ${esc(sourceLabel)} · 并发 ${r.workers || workers}${debugLabel}</div>`;
     const warnEl = $('#regWarnV2'); if (warnEl) warnEl.innerHTML = warnHtml;
     const c2 = $('#regCountV2'); if (c2) c2.value = count;
     const w2 = $('#regWorkersV2'); if (w2) w2.value = workers;
@@ -433,7 +435,7 @@ function renderJobs() {
         <td class="col-email" title="${esc(j.email || '-')}">${esc(j.email || '-')}</td>
         <td class="col-source" title="${esc(registrationEmailSourceLabel(j.email_source))}">${esc(registrationEmailSourceLabel(j.email_source))}</td>
         <td class="col-proxy" title="${esc(proxyLabel)} · ${esc(j.proxy_status || '-')}">${esc(proxyLabel)}</td>
-        <td class="col-status">${pillV2(j.display_status || j.status)}</td>
+        <td class="col-status">${pillV2(j.debug_state === 'paused' ? 'debug_paused' : (j.display_status || j.status))}</td>
         <td class="col-time" title="${esc(started)}">${esc(started)}</td>
         <td class="col-time" title="${esc(completed)}">${esc(completed)}</td>
         <td class="col-error" title="${esc(err)}">${err ? `${taskErrorBadge(j.error_info)}<span class="task-error-cell-text">${esc(short(j.error_info?.summary || err, 60))}</span>` : '-'}</td>
@@ -794,6 +796,10 @@ function openLog(jobId) {
   updateModalScrollLock();
   $('#btnCloseLog')?.focus({preventScroll:true});
   $('#logContent').textContent = '加载中…';
+  const debugPanel = $('#debugCapturePanel');
+  if (debugPanel) debugPanel.classList.add('hidden');
+  const comparePanel = $('#debugCaptureCompare');
+  if (comparePanel) comparePanel.classList.add('hidden');
   renderTaskLogErrorSummary('logErrorSummary', null);
   pollLog();
   clearInterval(logTimer);
@@ -808,6 +814,90 @@ async function pollLog() {
     const atBottom = c.scrollTop + c.clientHeight >= c.scrollHeight - 30;
     c.textContent = r.log || '(暂无日志)';
     if (atBottom) c.scrollTop = c.scrollHeight;
+    await pollRegistrationDebug(activeLogJob);
     if (r.job && ['success','partial_success','failed','stopped','cancelled'].includes(r.job.status)) clearInterval(logTimer);
   } catch(e) {}
 }
+
+function debugBodySnippet(value) {
+  if (value == null || value === '') return '';
+  let text = '';
+  try { text = typeof value === 'string' ? value : JSON.stringify(value); }
+  catch (_) { text = String(value); }
+  return short(text, 320);
+}
+
+function renderRegistrationDebug(data) {
+  const panel = $('#debugCapturePanel');
+  if (!panel) return;
+  if (!data?.enabled) {
+    panel.classList.add('hidden');
+    return;
+  }
+  panel.classList.remove('hidden');
+  const summary = data.summary || {};
+  const state = data.state || summary.state || 'recording';
+  const summaryEl = $('#debugCaptureSummary');
+  if (summaryEl) {
+    summaryEl.textContent = `状态 ${state} · 请求 ${summary.request_count || 0} · HTTP错误 ${summary.http_error_count || 0} · 网络失败 ${summary.failed_count || 0}` +
+      (data.hold_until ? ` · 保留至 ${formatDateTime(data.hold_until)}` : '');
+  }
+  const releaseBtn = $('#btnDebugRelease');
+  if (releaseBtn) releaseBtn.classList.toggle('hidden', state !== 'paused');
+  const har = $('#btnDebugHar');
+  if (har) har.href = `/api/jobs/${encodeURIComponent(data.job_id)}/debug/har`;
+  const rows = Array.isArray(data.events) ? data.events : [];
+  const list = $('#debugNetworkList');
+  if (list) list.innerHTML = rows.map(item => {
+    const status = Number(item.status || 0);
+    const isError = Boolean(item.failure) || status >= 400;
+    const detail = item.failure || debugBodySnippet(item.response_body);
+    return `<div class="debug-network-row${isError ? ' is-error' : ''}">
+      <span>${esc(item.stage || '-')}</span>
+      <strong>${esc(item.method || '-')}</strong>
+      <span class="debug-network-url" title="${esc(item.url || '')}">${esc(item.url || '-')}</span>
+      <span>${esc(status || (item.failure ? 'FAIL' : '-'))}${item.duration_ms != null ? ` · ${esc(Math.round(Number(item.duration_ms)))}ms` : ''}</span>
+      ${detail ? `<span class="debug-network-detail">${esc(detail)}</span>` : ''}
+    </div>`;
+  }).join('') || '<div class="debug-network-row"><span class="debug-network-detail">抓包已启动，暂时还没有可显示的请求。</span></div>';
+}
+
+async function pollRegistrationDebug(jobId) {
+  if (jobId == null) return;
+  try {
+    const data = await api(`/api/jobs/${jobId}/debug?limit=300`);
+    renderRegistrationDebug(data);
+  } catch (_) {}
+}
+
+async function releaseRegistrationDebug() {
+  if (activeLogJob == null || !confirm('确定结束调试现场并让任务按原失败结果收口吗？浏览器和代理将被释放。')) return;
+  const btn = $('#btnDebugRelease');
+  if (btn) btn.disabled = true;
+  try {
+    await api(`/api/jobs/${activeLogJob}/debug/release`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action:'finish'})});
+    showToast('已请求结束调试现场');
+    pollLog();
+  } catch (e) { showToast('结束调试失败: ' + e.message); }
+  finally { if (btn) btn.disabled = false; }
+}
+
+async function compareRegistrationDebug() {
+  if (activeLogJob == null) return;
+  const out = $('#debugCaptureCompare');
+  if (!out) return;
+  out.classList.remove('hidden');
+  out.textContent = '正在对齐同批成功任务的请求序列…';
+  try {
+    const data = await api(`/api/jobs/${activeLogJob}/debug/compare`);
+    out.textContent = `基线任务 #${data.baseline_job_id} · 差异 ${data.difference_count}\n` +
+      (data.differences || []).slice(0, 100).map(diff => {
+        const left = diff.baseline ? `${diff.baseline.status || '-'}${diff.baseline.failure ? ' ' + diff.baseline.failure : ''}` : '缺失';
+        const right = diff.target ? `${diff.target.status || '-'}${diff.target.failure ? ' ' + diff.target.failure : ''}` : '缺失';
+        return `${diff.stage || '-'} ${diff.method} ${diff.host}${diff.path} [${diff.ordinal}]\n  成功: ${left}\n  当前: ${right}`;
+      }).join('\n');
+  } catch (e) { out.textContent = '对比失败：' + e.message; }
+}
+
+$('#btnDebugRelease')?.addEventListener('click', releaseRegistrationDebug);
+$('#btnDebugCompare')?.addEventListener('click', compareRegistrationDebug);

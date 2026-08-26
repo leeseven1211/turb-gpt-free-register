@@ -523,12 +523,69 @@ class BrowserSession:
         """发送 GET 请求"""
         self._raise_if_circuit_open()
         headers = self._attach_openai_target_headers_for_url(url, headers)
-        resp = self.session.get(url, headers=headers, **kwargs)
+        debug_started = time.perf_counter()
+        try:
+            resp = self.session.get(url, headers=headers, **kwargs)
+        except BaseException as exc:
+            try:
+                from core.registration_debug import record_protocol_exchange
+                record_protocol_exchange(
+                    method="GET",
+                    url=url,
+                    started_at=debug_started,
+                    request_headers=headers,
+                    response=None,
+                    error=exc,
+                )
+            except Exception:
+                logger.debug("[Debug] 记录协议 GET 失败", exc_info=True)
+            raise
+        try:
+            from core.registration_debug import record_protocol_exchange
+            record_protocol_exchange(
+                method="GET",
+                url=url,
+                started_at=debug_started,
+                request_headers=headers,
+                response=resp,
+            )
+        except Exception:
+            logger.debug("[Debug] 记录协议 GET 响应失败", exc_info=True)
         return self._observe_response_for_circuit_breaker(resp, url)
 
     def post(self, url: str, headers: dict = None, **kwargs):
         """发送 POST 请求"""
         self._raise_if_circuit_open()
         headers = self._attach_openai_target_headers_for_url(url, headers)
-        resp = self.session.post(url, headers=headers, **kwargs)
+        debug_started = time.perf_counter()
+        request_body = kwargs.get("json") if "json" in kwargs else kwargs.get("data")
+        try:
+            resp = self.session.post(url, headers=headers, **kwargs)
+        except BaseException as exc:
+            try:
+                from core.registration_debug import record_protocol_exchange
+                record_protocol_exchange(
+                    method="POST",
+                    url=url,
+                    started_at=debug_started,
+                    request_headers=headers,
+                    request_body=request_body,
+                    response=None,
+                    error=exc,
+                )
+            except Exception:
+                logger.debug("[Debug] 记录协议 POST 失败", exc_info=True)
+            raise
+        try:
+            from core.registration_debug import record_protocol_exchange
+            record_protocol_exchange(
+                method="POST",
+                url=url,
+                started_at=debug_started,
+                request_headers=headers,
+                request_body=request_body,
+                response=resp,
+            )
+        except Exception:
+            logger.debug("[Debug] 记录协议 POST 响应失败", exc_info=True)
         return self._observe_response_for_circuit_breaker(resp, url)

@@ -2616,7 +2616,17 @@ def _open_roxy_profile_with_capacity_wait(client, proxy_url: str | None, progres
         _check_manual_stop()
         attempt += 1
         try:
-            opened = client.open_profile(proxy_url=proxy_url)
+            debug_headless = None
+            try:
+                from core.registration_debug import current_session
+                if current_session() is not None:
+                    debug_headless = False
+            except Exception:
+                pass
+            open_kwargs = {"proxy_url": proxy_url}
+            if debug_headless is not None:
+                open_kwargs["headless"] = debug_headless
+            opened = client.open_profile(**open_kwargs)
             if attempt > 1:
                 logger.info(
                     "[Roxy注册] 已等到空闲窗口并成功启动环境：attempt=%s waited=%.1fs profile=%s",
@@ -3662,6 +3672,11 @@ def run_roxy_registration(
     totp_secret: str | None = None
     plan_check_session = None
     try:
+        try:
+            from core.registration_debug import attach_current_roxy
+            attach_current_roxy(opened.debugger_address)
+        except Exception:
+            logger.exception("[Roxy注册][Debug] 启动浏览器网络抓包失败；注册流程继续执行")
         driver = _build_driver(opened)
         from core import registration_plan_capture
         registration_plan_capture.install_selenium(driver)
@@ -4053,6 +4068,17 @@ def run_roxy_registration(
     except Exception as exc:
         logger.error("[Roxy注册] 失败：%s: %s", type(exc).__name__, exc)
         logger.debug("[Roxy注册] 失败详情", exc_info=True)
+        try:
+            from core.registration_service import is_stop_requested
+            stopped = is_stop_requested()
+        except Exception:
+            stopped = False
+        if not stopped:
+            try:
+                from core.registration_debug import pause_current_failure
+                pause_current_failure(driver, f"{type(exc).__name__}: {str(exc)[:500]}")
+            except Exception:
+                logger.exception("[Roxy注册][Debug] 保留失败现场失败；继续按原失败流程收口")
         # 未确认创建前通常可以回收邮箱；但 password 模式下缺少创建密码入口时，
         # 该地址可能已经在 OpenAI 侧进入已有账号/半成品账号状态。继续放回池里只会
         # 让后续任务反复命中登录 OTP 页，永远无法完成“账号+密码”注册。

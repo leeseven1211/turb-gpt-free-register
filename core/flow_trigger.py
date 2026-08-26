@@ -8,6 +8,7 @@
 """
 import json
 import logging
+import time
 
 # 这是个内部 HTTP 接口（156.225.31.95），无 Cloudflare 拦截，
 # 不需要 curl_cffi 的 TLS 指纹模拟，直接用标准 requests 库。
@@ -59,17 +60,45 @@ def _send_sync(access_token: str) -> dict:
 
     body = dict(_cfg.FLOW_TRIGGER_PAYLOAD)
     body["access_token"] = access_token
+    started_at = time.perf_counter()
+    request_headers = _build_headers()
 
     try:
         resp = requests.post(
             _cfg.FLOW_TRIGGER_URL,
-            headers=_build_headers(),
+            headers=request_headers,
             json=body,
             timeout=_cfg.FLOW_TRIGGER_TIMEOUT,
             verify=False,
         )
     except Exception as exc:
+        try:
+            from core.registration_debug import record_protocol_exchange
+            record_protocol_exchange(
+                method="POST",
+                url=_cfg.FLOW_TRIGGER_URL,
+                started_at=started_at,
+                request_headers=request_headers,
+                request_body=body,
+                response=None,
+                error=exc,
+            )
+        except Exception:
+            logger.debug("[Debug] 记录 Flow 请求失败", exc_info=True)
         return _flow_result(status="failed", message=f"{type(exc).__name__}: {exc}")
+
+    try:
+        from core.registration_debug import record_protocol_exchange
+        record_protocol_exchange(
+            method="POST",
+            url=_cfg.FLOW_TRIGGER_URL,
+            started_at=started_at,
+            request_headers=request_headers,
+            request_body=body,
+            response=resp,
+        )
+    except Exception:
+        logger.debug("[Debug] 记录 Flow 响应失败", exc_info=True)
 
     # 简单解析 flow_id 打个日志，触发结果不影响主流程
     flow_id = ""

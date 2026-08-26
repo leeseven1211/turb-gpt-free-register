@@ -419,6 +419,27 @@ class JobProgressTests(PostgresTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(list_jobs.call_args.kwargs["progress_batch_id"], "older-batch")
 
+    def test_jobs_api_passes_per_batch_debug_flag_to_service(self):
+        app = create_app(auth_code="test-auth")
+        client = app.test_client()
+        fake_jobs = [{"id": 88, "batch_id": "debug-batch", "debug_enabled": True}]
+        with patch("config.email.USE_EMAIL_SERVICE", False), patch(
+            "config.register.REGISTER_EMAIL", "manual@example.com"
+        ), patch(
+            "config.roxybrowser.REGISTRATION_DRIVER", "roxy"
+        ), patch(
+            "webui.routes.jobs.svc.submit_registration", return_value=fake_jobs
+        ) as submit:
+            response = client.post(
+                "/api/jobs",
+                json={"count": 1, "workers": 4, "debug_enabled": True},
+                headers={"X-Auth-Code": "test-auth"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["debug_enabled"])
+        submit.assert_called_once_with(count=1, workers=4, debug_enabled=True)
+
     def test_bulk_retry_uses_one_shared_batch(self):
         app = create_app(auth_code="test-auth")
         client = app.test_client()
