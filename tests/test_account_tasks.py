@@ -516,8 +516,9 @@ class AccountTaskApiTests(PostgresTestCase):
         self.assertLess(html.index('data-tab="codex"'), html.index('data-tab="tasks"'))
         self.assertLess(html.index('data-tab="tasks"'), html.index('data-tab="outlook"'))
         self.assertIn('id="accountTasksPanel"', html)
-        self.assertIn('<option value="registration">注册</option>', html)
-        self.assertIn('<option value="codex_retry">Codex 补跑</option>', html)
+        self.assertIn('data-column-filter="accountTaskTypeFilterV2"', html)
+        self.assertIn("values: ['registration', 'registration_resume'", html)
+        self.assertIn("codex_retry:'Codex 补跑'", html)
         self.assertNotIn('data-codex-log=', html)
         self.assertIn("AT 剩余", html)
 
