@@ -30,7 +30,7 @@
 | --- | --- | --- | --- |
 | 0 | 隔离环境和基线 | 已完成 | 独立 worktree、测试基线、路由契约、三份治理文档 |
 | 1 | 文档校准和工具规范 | 已完成 | README/旧文档准确，低风险静态检查可运行 |
-| 2 | 注册分发移出 `main.py` | 待开始 | `core` 不再导入 `main`，五类驱动契约不变 |
+| 2 | 注册分发移出 `main.py` | 已完成 | `core` 不再导入 `main`，五类驱动契约不变 |
 | 3 | Flask Blueprint 拆分 | 待开始 | 路由契约不变，`app.py` 只保留应用装配 |
 | 4 | 前端静态模块拆分 | 待开始 | HTML/CSS/JS 分离，页面行为不变 |
 | 5 | `core/` 领域边界整理 | 待开始 | 不再跨驱动导入私有 helper |
@@ -186,3 +186,12 @@
 - 修复 `core/registration_service.py` 中 `_disable_job_email()` 函数体错位导致的未定义变量问题，并新增 2 个回归测试；
 - 完整测试：504 项通过，约 58 秒；`git diff --check` 和阻断 Ruff 检查通过；
 - 未升级依赖、未执行全仓库格式化、未修改数据库 schema 或运行时私有数据。
+
+### 2026-08-26：阶段 2 完成
+
+- 新增 `core/registration/dispatcher.py`，统一承接五类注册驱动的选择、别名和公共参数签名；
+- 新增 `core/registration/protocol.py`，迁移原 `main.py` 中的纯协议注册主体和 OAuth 回调收口逻辑；
+- `main.py` 保留 `run_registration()` 兼容门面，CLI 行为不变；`core/registration_service.py` 直接调用 dispatcher，不再反向导入 `main.py`；
+- 新增 8 项注册分发契约测试，覆盖 protocol/roxy/cloak/browser_use/skyvern、别名、参数透传、恢复密码限制和未知驱动错误；
+- 完整测试：513 项通过，约 58 秒；阻断 Ruff 和模块编译检查通过；
+- 未修改路由、数据库 schema、驱动内部流程或运行时私有数据。

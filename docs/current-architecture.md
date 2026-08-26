@@ -20,11 +20,12 @@
 
 | 项目 | 当前值 |
 | --- | ---: |
-| Git 跟踪的 Python 文件 | 158 |
-| Python 总行数 | 60,790 |
-| `tests/test_*.py` 模块 | 60 |
-| 未修改代码完整测试 | 501 项，66.502 秒，全部通过 |
-| 加入路由契约保护后完整测试 | 502 项，65.032 秒，全部通过 |
+| Git 跟踪的 Python 文件 | 163 |
+| Python 总行数 | 60,993 |
+| `tests/test_*.py` 模块 | 62 |
+| 阶段 0 未修改代码完整测试 | 501 项，66.502 秒，全部通过 |
+| 阶段 0 加入路由契约保护后完整测试 | 502 项，65.032 秒，全部通过 |
+| 当前阶段 2 完整测试 | 513 项，57.537 秒，全部通过 |
 | Flask 路由规则 | 96 |
 
 主要大文件：
@@ -33,7 +34,8 @@
 | --- | ---: | --- |
 | `webui/templates/index.html` | 9,642 | 现代 UI 的 HTML、CSS、JavaScript |
 | `core/roxy_registration.py` | 4,019 | Roxy 注册及大量 Selenium 页面能力 |
-| `webui/app.py` | 3,612 | Flask 应用工厂和全部业务路由 |
+| `core/registration/protocol.py` | 456 | 纯协议注册主体和 OAuth 回调收口 |
+| `webui/app.py` | 3,613 | Flask 应用工厂和全部业务路由 |
 | `core/db.py` | 3,589 | 业务数据门面、状态命令和兼容导出接缝 |
 | `webui/templates/index_legacy.html` | 3,279 | 兼容版 UI |
 | `core/roxy_codex_oauth.py` | 2,802 | Roxy Codex OAuth 页面流程 |
@@ -50,17 +52,17 @@ WebUI POST /api/jobs
   -> core.registration_service.submit_registration
   -> ThreadPoolExecutor
   -> core.registration_service._run_one_job
-  -> main.run_registration
+  -> core.registration.dispatcher.run_registration
   -> protocol / roxy / cloak / browser_use / skyvern
   -> 保存账号、收口邮箱和代理、执行 Codex/2FA/套餐后置步骤
 
 CLI main.py
-  -> main.run_registration
+  -> main.run_registration（兼容门面）
+  -> core.registration.dispatcher.run_registration
   -> 同一组注册驱动
 ```
 
-当前最明显的分层倒置是 `core.registration_service` 反向导入 CLI 模块
-`main.run_registration`。这是第一项需要解除的结构依赖。
+`core` 不再反向导入 CLI 模块；`main.run_registration` 只为已有 CLI/外部调用保留兼容门面。
 
 ### 3.2 Codex operation
 
@@ -108,7 +110,8 @@ Codex 补跑已经使用原生统一任务运行模型；其他账号操作仍�
 | `tests/` | stdlib `unittest` 单元和 PostgreSQL 集成测试 |
 | `tools/` | 数据迁移、协议分析和真实链路调试工具 |
 | `docs/` | 当前架构、专项设计、迁移方案和协议分析 |
-| `main.py` | CLI，以及当前仍放在入口中的注册分发/协议主体 |
+| `core/registration/` | 注册公共签名、驱动分发和纯协议注册流程 |
+| `main.py` | CLI 和 `run_registration` 兼容门面 |
 | `web.py` | Web 进程生命周期入口 |
 
 ## 5. 数据与存储
@@ -168,17 +171,16 @@ CLI/WebUI 必须在启动阶段终止。
 
 ## 6. 当前边界问题
 
-1. `core` 反向依赖 `main.py`。
-2. `webui/app.py` 集中了 96 条 Flask 路由规则中的绝大部分。
-3. 现代前端仍是单个 9,642 行模板。
-4. `core/` 有 68 个平铺模块，没有稳定领域包边界。
-5. Cloak、查活和 Browser Use Codex 等模块直接导入其他驱动的私有函数。
-6. `db.py` 和 `operation_task_store.py` 同时承担 schema、命令、查询、兼容和迁移职责。
-7. `create_app()` 带启动副作用，应用生命周期边界不清晰。
-8. `core/mail_password_change.py` 引用仓库内不存在的 `core.mailcom_client`，且没有发现
+1. `webui/app.py` 集中了 96 条 Flask 路由规则中的绝大部分。
+2. 现代前端仍是单个 9,642 行模板。
+3. `core/` 仍有大量平铺模块，领域包边界还未稳定。
+4. Cloak、查活和 Browser Use Codex 等模块直接导入其他驱动的私有函数。
+5. `db.py` 和 `operation_task_store.py` 同时承担 schema、命令、查询、兼容和迁移职责。
+6. `create_app()` 带启动副作用，应用生命周期边界不清晰。
+7. `core/mail_password_change.py` 引用仓库内不存在的 `core.mailcom_client`，且没有发现
    其他源码调用方，属于待确认的孤儿兼容模块。
-9. 历史专项架构文档中的切换结果和当前实现必须明确标注时间，避免把历史测试数量当成当前基线。
-10. 已建立最小 `pyproject.toml` / Ruff 阻断基线，但仓库仍没有可复现依赖锁；更宽的历史 lint 问题暂按 advisory 管理。
+8. 历史专项架构文档中的切换结果和当前实现必须明确标注时间，避免把历史测试数量当成当前基线。
+9. 已建立最小 `pyproject.toml` / Ruff 阻断基线，但仓库仍没有可复现依赖锁；更宽的历史 lint 问题暂按 advisory 管理。
 
 ## 7. 不可破坏的不变量
 

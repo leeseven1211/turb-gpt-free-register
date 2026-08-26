@@ -1166,6 +1166,7 @@ ENABLE_CODEX_AUTO = False
 ├── web.py                          # WebUI 启动入口
 ├── config/                         # 配置默认值、环境覆盖和模块配置
 ├── core/
+│   ├── registration/                # 注册公共入口、驱动分发和协议流程
 │   ├── registration_service.py     # 注册任务线程池与生命周期
 │   ├── admin_repository.py         # 管理台查询读模型
 │   ├── db.py                       # 业务数据门面与兼容导出编排

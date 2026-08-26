@@ -13,9 +13,9 @@ WebUI / CLI
 registration_service.py       任务编排、并发、停止、资源释放、终态判断
     |
     v
-main.run_registration()       统一注册入口，按 REGISTRATION_DRIVER 分发
+core.registration.dispatcher  统一注册入口，按 REGISTRATION_DRIVER 分发
     |
-    +--> protocol               纯 HTTP/curl_cffi + Sentinel/PoW
+    +--> core.registration.protocol  纯 HTTP/curl_cffi + Sentinel/PoW
     +--> roxy                   RoxyBrowser + Selenium
     +--> cloak                  CloakBrowser + Playwright/Selenium 适配
     +--> browser_use            Browser Use Cloud + Playwright
@@ -152,7 +152,7 @@ WHERE id = ? AND status = 'pending'
 
 ### 2.3 CLI 入口
 
-CLI 直接调用 `main.run_registration()`。没有 WebUI `job_id` 时，`report_job_progress()` 自动忽略，因此 CLI 复用注册主体但没有 WebUI 任务进度和停止控制。
+CLI 通过 `main.run_registration()` 兼容门面调用 `core.registration.dispatcher`。没有 WebUI `job_id` 时，`report_job_progress()` 自动忽略，因此 CLI 复用注册主体但没有 WebUI 任务进度和停止控制。
 
 ## 3. 每个步骤的实现与容错
 
@@ -240,13 +240,13 @@ email_butler / gptmail / mailnest / cloudmail / icloud_hide
 
 ### 步骤 4：启动注册驱动
 
-实现位置：`main.py:run_registration()`。
+实现位置：`core/registration/dispatcher.py:run_registration()`。
 
 分发关系：
 
 | `REGISTRATION_DRIVER` | 实现 | 注册会话 |
 | --- | --- | --- |
-| `protocol` / `api` / `http` | `main.py` 内置流程 | `BrowserSession` + HTTP |
+| `protocol` / `api` / `http` | `core/registration/protocol.py` | `BrowserSession` + HTTP |
 | `roxy` 等别名 | `core/roxy_registration.py` | RoxyBrowser + Selenium |
 | `cloak` | `core/cloakbrowser_registration.py` | CloakBrowser + 适配后的 Selenium 操作 |
 | `browser_use` | `core/browser_use_registration.py` | Browser Use Cloud + Playwright/CDP |
@@ -262,7 +262,7 @@ email_butler / gptmail / mailnest / cloudmail / icloud_hide
 
 ### 步骤 5A：协议驱动初始化和网络预检
 
-实现位置：`main.py:run_registration()`、`core/openai_auth.py`。
+实现位置：`core/registration/protocol.py`、`core/openai_auth.py`。
 
 执行顺序：
 
@@ -618,8 +618,9 @@ pending -> cancelled
 
 | 关注点 | 文件和入口 |
 | --- | --- |
-| CLI/统一驱动分发 | `main.py:run_registration()` |
-| 协议注册主体 | `main.py:run_registration()`、`core/openai_auth.py` |
+| CLI/兼容入口 | `main.py:run_registration()` |
+| 统一驱动分发 | `core/registration/dispatcher.py:run_registration()` |
+| 协议注册主体 | `core/registration/protocol.py`、`core/openai_auth.py` |
 | WebUI 任务提交 | `webui/app.py:api_jobs_create()` |
 | 单任务编排和清理 | `core/registration_service.py:_run_one_job()` |
 | 任务状态和阶段进度 | `core/db.py` 的 `claim_job_for_execution()`、`update_job_progress()`、`finish_job_progress()` |

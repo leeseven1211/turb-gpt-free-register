@@ -48,7 +48,7 @@ Node 18+ is required at runtime: `core/sentinel_runner.py` shells out to `node s
 
 Both major flows are strategy-dispatched on a config string; adding a driver means adding a branch plus a `core/<name>_registration.py` / `core/<name>_codex_oauth.py` module:
 
-- `main.run_registration()` (`main.py:157`) switches on `config.roxybrowser.REGISTRATION_DRIVER`: `protocol` (curl_cffi + Sentinel PoW), `roxy` (RoxyBrowser + Selenium), `cloak` (CloakBrowser + Playwright via `core/cloakbrowser_driver.py`, a Playwright→Selenium-style shim), `browser_use`, `skyvern`.
+- `core.registration.dispatcher.run_registration()` switches on `config.roxybrowser.REGISTRATION_DRIVER`: `protocol` (curl_cffi + Sentinel PoW), `roxy` (RoxyBrowser + Selenium), `cloak` (CloakBrowser + Playwright via `core/cloakbrowser_driver.py`, a Playwright→Selenium-style shim), `browser_use`, `skyvern`. `main.run_registration()` remains a CLI compatibility façade.
 - `core.codex_oauth.run_codex_oauth()` (`core/codex_oauth.py:1297`) switches on `config.codex.CODEX_OAUTH_DRIVER`, which also accepts `same_as_registration`.
 
 All drivers take the same `(email, name, birthday, proxy, otp_code, batch_dir)` signature and report progress through `core.registration_service.report_job_progress()`, which writes into the job's stage table (`db.JOB_PROGRESS_STAGES`).

@@ -81,7 +81,7 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
         ), patch(
             "core.proxy_provider.mask_ip", return_value="masked"
         ), patch(
-            "main.run_registration", side_effect=run_registration
+            "core.registration.dispatcher.run_registration", side_effect=run_registration
         ):
             svc._run_one_job(1, str(Path(td) / "job.log"))
         return release_email, update_progress, finish_progress
@@ -173,7 +173,7 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
         ), patch(
             "core.proxy_provider.mask_ip", return_value="masked"
         ), patch(
-            "main.run_registration", side_effect=[transient, success]
+            "core.registration.dispatcher.run_registration", side_effect=[transient, success]
         ) as run_registration:
             svc._run_one_job(1, str(Path(td) / "job.log"))
 

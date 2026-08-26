@@ -461,7 +461,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
     proxy_lease = None
     try:
         with _JobLogContext(log_file):
-            from main import run_registration
+            from core.registration.dispatcher import run_registration
             from core.proxy_provider import acquire_registration_proxy, mask_endpoint, mask_ip, release_proxy
 
             def _bind_proxy_lease(lease) -> None:
