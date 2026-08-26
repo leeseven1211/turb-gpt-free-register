@@ -347,7 +347,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "TWOFA_DRIVER", "file": "twofa.py", "type": "str", "group": "功能开关",
-        "label": "2FA 开通方式", "help": "protocol=用新鲜 AT 直接开通；browser=用 RoxyBrowser 安全设置页面开通",
+        "label": "2FA 开通方式", "help": "protocol=优先用新鲜 AT，Roxy 中失败会自动回退浏览器 UI；browser=直接用 RoxyBrowser 安全设置页面",
     },
     {
         "key": "ENABLE_FLOW_TRIGGER", "file": "flow_trigger.py", "type": "bool", "group": "功能开关",

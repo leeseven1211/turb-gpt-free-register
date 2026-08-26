@@ -42,6 +42,7 @@ __all__ = [
     "registration_password",
     "set_login_password",
     "setup_roxy_2fa",
+    "setup_protocol_2fa_with_browser_fallback",
 ]
 
 
@@ -186,3 +187,19 @@ def set_login_password(driver: Any, email: str, password: str, **kwargs: Any) ->
 
 def setup_roxy_2fa(driver: Any, email: str, **kwargs: Any) -> str:
     return _legacy("setup_roxy_2fa")(driver, email, **kwargs)
+
+
+def setup_protocol_2fa_with_browser_fallback(
+    driver: Any,
+    email: str,
+    protocol_session: Any,
+    access_token: str,
+    **kwargs: Any,
+) -> tuple[str, bool]:
+    return _legacy("setup_protocol_2fa_with_browser_fallback")(
+        driver,
+        email,
+        protocol_session,
+        access_token,
+        **kwargs,
+    )

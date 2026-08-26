@@ -7,7 +7,8 @@
     False: 跳过整个 2FA 流程，只保存 邮箱 + accessToken
 
 TWOFA_DRIVER:
-    protocol: 使用当前新鲜 accessToken 直接调用 enroll/activate，速度更快
+    protocol: 使用当前新鲜 accessToken 直接调用 enroll/activate，速度更快；
+              Roxy 注册中协议失败会复用当前登录态回退到浏览器安全设置页
     browser:   使用 RoxyBrowser 的安全设置页面开通，兼容页面交互流程
 
 关掉 2FA 不会影响账号可用性，仅意味着账号没有动态口令保护，且少收一封 OTP 邮件。

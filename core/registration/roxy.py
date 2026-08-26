@@ -3409,6 +3409,62 @@ def setup_roxy_2fa(driver, email: str, *, on_secret=None, existing_secret: str |
     raise RuntimeError("TOTP 验证提交后未确认 Authenticator 开关已启用")
 
 
+def setup_protocol_2fa_with_browser_fallback(
+    driver,
+    email: str,
+    protocol_session: BrowserSession,
+    access_token: str,
+    *,
+    on_secret=None,
+    existing_secret: str | None = None,
+) -> tuple[str, bool]:
+    """优先协议开通 2FA，失败时复用当前登录态改走安全设置页。
+
+    返回 ``(secret, fallback_used)``。协议 enroll 可能已经返回 secret、但在
+    activate 阶段失败，因此这里会同时记住协议和页面流程产生的最新 secret，
+    并在 UI 回退时把检查点 secret 传给页面流程确认远端开关状态。
+    """
+    checkpoint = {"secret": str(existing_secret or "").strip()}
+
+    def _remember_secret(secret: str) -> None:
+        normalized = str(secret or "").strip()
+        if not normalized:
+            raise RuntimeError("Authenticator key 检查点为空")
+        checkpoint["secret"] = normalized
+        if on_secret is not None:
+            on_secret(normalized)
+
+    try:
+        secret = setup_2fa_protocol(
+            protocol_session,
+            access_token,
+            on_secret=_remember_secret,
+        )
+        return str(secret or checkpoint["secret"]).strip(), False
+    except Exception as protocol_exc:
+        protocol_error = f"{type(protocol_exc).__name__}: {str(protocol_exc)[:180]}"
+        logger.warning(
+            "%s[2FA] 协议开通失败，复用当前登录态改走浏览器安全设置页：%s",
+            _log_prefix(driver),
+            protocol_error,
+        )
+        try:
+            secret = setup_roxy_2fa(
+                driver,
+                email,
+                on_secret=_remember_secret,
+                existing_secret=checkpoint["secret"] or None,
+            )
+        except Exception as browser_exc:
+            browser_error = f"{type(browser_exc).__name__}: {str(browser_exc)[:180]}"
+            raise RuntimeError(
+                f"协议 2FA 失败且浏览器 UI 回退也失败；"
+                f"protocol={protocol_error}；browser={browser_error}"
+            ) from browser_exc
+        logger.info("%s[2FA] 协议失败后已通过浏览器安全设置页启用 Authenticator", _log_prefix(driver))
+        return str(secret or checkpoint["secret"]).strip(), True
+
+
 def _registration_otp_attempt_wait_seconds(deadline: float, attempt: int, max_attempts: int) -> int:
     """Split one total OTP budget across remaining resend attempts."""
     remaining = max(0.0, float(deadline) - time.monotonic())
@@ -3897,15 +3953,31 @@ def run_roxy_registration(
                 if twofa_driver == "protocol":
                     protocol_session = BrowserSession(proxy=proxy or "")
                     plan_check_session = protocol_session
-                    totp_secret = setup_2fa_protocol(
+                    totp_secret, fallback_used = setup_protocol_2fa_with_browser_fallback(
+                        driver,
+                        email,
                         protocol_session,
                         access_token,
                         on_secret=_checkpoint_totp_secret,
                     )
-                    twofa_result = {"status": "success", "ok": True, "message": "协议 2FA 已启用"}
+                    twofa_result = {
+                        "status": "success",
+                        "ok": True,
+                        "message": (
+                            "协议失败后已通过浏览器 UI 启用 2FA"
+                            if fallback_used
+                            else "协议 2FA 已启用"
+                        ),
+                        "driver": "browser_fallback" if fallback_used else "protocol",
+                    }
                 else:
                     totp_secret = setup_roxy_2fa(driver, email, on_secret=_checkpoint_totp_secret)
-                    twofa_result = {"status": "success", "ok": True, "message": "浏览器 2FA 已启用"}
+                    twofa_result = {
+                        "status": "success",
+                        "ok": True,
+                        "message": "浏览器 2FA 已启用",
+                        "driver": "browser",
+                    }
                 report_job_progress("twofa", "success", twofa_result["message"])
             except Exception as exc:
                 message = f"{type(exc).__name__}: {str(exc)[:180]}"

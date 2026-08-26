@@ -414,6 +414,7 @@ Roxy/Cloak/Browser Use/Skyvern：
 2. 获取 secret。
 3. 等待 TOTP 窗口剩余时间足够，再生成验证码。
 4. 调用 activate 完成启用。
+5. Roxy 注册中若协议调用失败，复用当前已登录浏览器会话，自动回退到安全设置页完成开启；无需重新登录补跑。
 
 Roxy 的 browser 2FA：
 
@@ -421,7 +422,7 @@ Roxy 的 browser 2FA：
 - secret 在激活前先写入账号检查点，并记录 `totp_setup_pending`，防止进程在“已拿到 key、尚未确认启用”时丢失恢复材料。
 - 首次 TOTP 提交跨过 30 秒窗口时会用新验证码补交一次。
 
-Cloak/Browser Use/Skyvern 当前主要支持协议 2FA；配置为 browser 2FA 时记录为跳过或失败，不会抹掉已取得的 Token。2FA 失败通常保留账号，后续可走账号配置/2FA 补跑。
+Cloak/Browser Use/Skyvern 当前主要支持协议 2FA；配置为 browser 2FA 时记录为跳过或失败，不会抹掉已取得的 Token。Roxy 已支持协议失败自动回退 browser 2FA；只有两条路径都失败时才保留账号并标记为待补跑。
 
 ### 步骤 12：可选执行 Codex OAuth
 

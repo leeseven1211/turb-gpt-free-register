@@ -272,6 +272,79 @@ class RoxyTwoFactorTests(unittest.TestCase):
         self.assertEqual(saved, [])
         click.assert_not_called()
 
+    def test_protocol_twofa_success_does_not_open_browser_settings(self):
+        secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+        saved = []
+        with patch.object(
+            roxy_registration,
+            "setup_2fa_protocol",
+            side_effect=lambda _session, _token, *, on_secret: (on_secret(secret), secret)[1],
+        ), patch.object(roxy_registration, "setup_roxy_2fa") as browser_setup:
+            result, fallback_used = roxy_registration.setup_protocol_2fa_with_browser_fallback(
+                object(),
+                "new@example.com",
+                object(),
+                "access-token",
+                on_secret=saved.append,
+            )
+
+        self.assertEqual(result, secret)
+        self.assertFalse(fallback_used)
+        self.assertEqual(saved, [secret])
+        browser_setup.assert_not_called()
+
+    def test_protocol_twofa_failure_falls_back_to_browser_with_checkpoint_secret(self):
+        secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+        saved = []
+
+        def fail_after_enroll(_session, _token, *, on_secret):
+            on_secret(secret)
+            raise RuntimeError("activate rejected")
+
+        with patch.object(
+            roxy_registration, "setup_2fa_protocol", side_effect=fail_after_enroll
+        ), patch.object(
+            roxy_registration, "setup_roxy_2fa", return_value=secret
+        ) as browser_setup:
+            result, fallback_used = roxy_registration.setup_protocol_2fa_with_browser_fallback(
+                object(),
+                "new@example.com",
+                object(),
+                "access-token",
+                on_secret=saved.append,
+            )
+
+        self.assertEqual(result, secret)
+        self.assertTrue(fallback_used)
+        self.assertEqual(saved, [secret])
+        browser_setup.assert_called_once_with(
+            unittest.mock.ANY,
+            "new@example.com",
+            on_secret=unittest.mock.ANY,
+            existing_secret=secret,
+        )
+
+    def test_protocol_and_browser_twofa_failures_are_both_reported(self):
+        with patch.object(
+            roxy_registration,
+            "setup_2fa_protocol",
+            side_effect=RuntimeError("protocol blocked"),
+        ), patch.object(
+            roxy_registration,
+            "setup_roxy_2fa",
+            side_effect=RuntimeError("settings unavailable"),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "协议 2FA 失败且浏览器 UI 回退也失败.*protocol blocked.*settings unavailable",
+            ):
+                roxy_registration.setup_protocol_2fa_with_browser_fallback(
+                    object(),
+                    "new@example.com",
+                    object(),
+                    "access-token",
+                )
+
     def test_setup_retries_with_fresh_totp_when_dialog_stays_open(self):
         secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
         toggle = Mock()
