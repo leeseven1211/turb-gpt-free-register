@@ -1188,8 +1188,8 @@ table[data-resizable-table="accounts"] {
   }
 
   #accountsPanelV2 table[data-resizable-table="accounts"] {
-    width: max-content !important;
-    min-width: 1280px !important;
+    width: max(100%, 1100px) !important;
+    min-width: 0 !important;
     max-width: none !important;
     table-layout: fixed !important;
   }
