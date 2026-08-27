@@ -332,6 +332,10 @@ function renderBatchProgress() {
   if (success === total && total > 0) { stateLabel = '全部成功'; stateClass = ''; }
   else if (active > 0) { stateLabel = '进行中'; stateClass = ''; }
   else if (failed > 0) { stateLabel = success > 0 ? '部分失败' : '批次失败'; stateClass = 'is-failed'; }
+  if (batch.projection_delayed) {
+    stateLabel += ' · 投影延迟';
+    if (!stateClass) stateClass = 'is-waiting';
+  }
   if (stateEl) {
     stateEl.textContent = stateLabel;
     stateEl.className = `batch-progress-v2-state ${stateClass}`.trim();

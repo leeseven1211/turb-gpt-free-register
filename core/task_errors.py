@@ -9,6 +9,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from core.task_stages import normalize_stage
+
 
 _RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
     (
@@ -95,6 +97,67 @@ _SOURCE_LABELS = {
     "unknown": "未分类错误",
 }
 
+# These values are intentionally strings rather than booleans.  A retry can be
+# technically possible while still being unsafe after an irreversible remote
+# request, so consumers need the distinction for recovery UX.
+_ERROR_METADATA: dict[str, dict[str, str]] = {
+    "configuration.missing": {
+        "retryability": "not_retryable",
+        "remote_state_impact": "not_started",
+        "next_action": "fix_configuration",
+    },
+    "user.interrupted": {
+        "retryability": "manual_only",
+        "remote_state_impact": "unknown",
+        "next_action": "resume_or_reconcile",
+    },
+    "external.proxy": {
+        "retryability": "retryable",
+        "remote_state_impact": "not_started_or_unknown",
+        "next_action": "retry_with_new_proxy",
+    },
+    "external.email": {
+        "retryability": "retryable",
+        "remote_state_impact": "unchanged_or_unknown",
+        "next_action": "retry_email_wait",
+    },
+    "external.openai": {
+        "retryability": "conditional",
+        "remote_state_impact": "unknown",
+        "next_action": "reconcile_session",
+    },
+    "internal.storage": {
+        "retryability": "retryable",
+        "remote_state_impact": "remote_unchanged",
+        "next_action": "retry_persistence",
+    },
+    "internal.browser": {
+        "retryability": "retryable",
+        "remote_state_impact": "unknown",
+        "next_action": "resume_or_reconcile",
+    },
+    "workflow.verification": {
+        "retryability": "conditional",
+        "remote_state_impact": "remote_may_be_confirmed",
+        "next_action": "resume_email_verification",
+    },
+    "workflow.page_state": {
+        "retryability": "conditional",
+        "remote_state_impact": "unknown",
+        "next_action": "reconcile_session",
+    },
+    "external.network": {
+        "retryability": "retryable",
+        "remote_state_impact": "unknown",
+        "next_action": "retry_request_or_reconcile",
+    },
+    "unknown.unclassified": {
+        "retryability": "manual_only",
+        "remote_state_impact": "unknown",
+        "next_action": "manual_reconcile",
+    },
+}
+
 
 def _summary(message: str, limit: int = 160) -> str:
     value = re.sub(r"\s+", " ", str(message or "")).strip()
@@ -102,7 +165,13 @@ def _summary(message: str, limit: int = 160) -> str:
     return value[:limit] + ("…" if len(value) > limit else "")
 
 
-def classify_task_error(message: Any, *, stage: str = "", task_type: str = "") -> dict[str, str] | None:
+def classify_task_error(
+    message: Any,
+    *,
+    stage: str = "",
+    task_type: str = "",
+    error_code: str = "",
+) -> dict[str, str] | None:
     """把原始错误投影成前端可读的稳定分类；空错误返回 ``None``。"""
     raw = str(message or "").strip()
     if not raw:
@@ -112,19 +181,32 @@ def classify_task_error(message: Any, *, stage: str = "", task_type: str = "") -
     haystack = f"{stage} {raw}".lower()
     for code, source, source_label, kind_label, needles in _RULES:
         if any(needle in haystack for needle in needles):
-            return {
+            result = {
                 "code": code,
+                "error_code": code,
                 "source": source,
                 "source_label": source_label,
                 "kind_label": kind_label,
                 "title": f"{source_label} · {kind_label}",
                 "summary": _summary(raw),
             }
-    return {
+            result.update(_ERROR_METADATA.get(code, {}))
+            result["error_code"] = str(error_code or code)
+            result["stage"] = normalize_stage(stage) if stage else "unknown"
+            if error_code:
+                result["original_error_code"] = str(error_code)
+            return result
+    result = {
         "code": "unknown.unclassified",
+        "error_code": "unknown.unclassified",
         "source": "unknown",
         "source_label": _SOURCE_LABELS["unknown"],
         "kind_label": "待归类",
         "title": "未分类错误 · 待归类",
         "summary": _summary(raw),
     }
+    result.update(_ERROR_METADATA["unknown.unclassified"])
+    result["stage"] = normalize_stage(stage) if stage else "unknown"
+    if error_code:
+        result["original_error_code"] = str(error_code)
+    return result

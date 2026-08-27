@@ -505,7 +505,18 @@ class JobProgressTests(PostgresTestCase):
             "status_counts": {"success": 1, "running": 1, "active": 1},
             "progress_rows": rows,
         }
-        with patch("webui.app.admin_repository.list_jobs", return_value=repository_payload):
+        with patch("webui.app.admin_repository.list_jobs", return_value=repository_payload), patch(
+            "webui.routes.jobs.operation_task_store.list_batches",
+            return_value=[{
+                "source_system": "registration_batches",
+                "source_id": "new-batch",
+                "projection_status": "queued",
+                "projection_delayed": True,
+                "projection_lag_ms": 1200,
+                "projection_queue_error": None,
+                "projection_queue_next_retry_at": None,
+            }],
+        ):
             response = client.get(
                 "/api/jobs?paged=1&page=1&page_size=20",
                 headers={"X-Auth-Code": "test-auth"},
@@ -514,6 +525,8 @@ class JobProgressTests(PostgresTestCase):
         payload = response.get_json()
         self.assertEqual(payload["progress_batch"]["batch_id"], "new-batch")
         self.assertEqual(len(payload["progress_batch"]["items"]), 2)
+        self.assertTrue(payload["progress_batch"]["projection_delayed"])
+        self.assertEqual(1200, payload["progress_batch"]["projection_lag_ms"])
 
     def test_jobs_api_passes_selected_progress_batch_to_repository(self):
         app = create_app(auth_code="test-auth")
