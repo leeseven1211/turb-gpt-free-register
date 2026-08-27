@@ -2,7 +2,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from core import db, registration_service
 from webui.app import _compact_job_for_list, _latest_progress_batch, create_app
@@ -127,6 +127,126 @@ class JobProgressTests(PostgresTestCase):
                 self.assertEqual(retry["batch_index"], 2)
                 self.assertEqual(retry["batch_size"], 3)
                 self.assertEqual(retry["batch_workers"], 4)
+
+    def test_registration_batch_email_claim_is_unique_but_cross_batch_reusable(self):
+        with tempfile.TemporaryDirectory() as td:
+            patches = self._storage_patches(Path(td))
+            with patches[0], patches[1], patches[2], patches[3]:
+                self.assertTrue(
+                    db.claim_registration_batch_email(
+                        "batch-a", "Same@Example.com", job_id=1, email_source="icloud_hide"
+                    )
+                )
+                self.assertFalse(
+                    db.claim_registration_batch_email(
+                        "batch-a", "same@example.com", job_id=2, email_source="icloud_hide"
+                    )
+                )
+                self.assertTrue(
+                    db.claim_registration_batch_email(
+                        "batch-b", "same@example.com", job_id=3, email_source="icloud_hide"
+                    )
+                )
+
+    def test_registration_batch_email_claim_blocks_existing_job_email(self):
+        with tempfile.TemporaryDirectory() as td:
+            patches = self._storage_patches(Path(td))
+            with patches[0], patches[1], patches[2], patches[3]:
+                job = db.create_job("icloud_hide", batch_id="batch-existing")
+                db.update_job(job["id"], email="already@example.com")
+                self.assertFalse(
+                    db.claim_registration_batch_email(
+                        "batch-existing", "already@example.com", job_id=job["id"] + 1
+                    )
+                )
+
+    def test_prepare_registration_args_releases_duplicate_candidate_after_new_claim(self):
+        from config import email as email_config, register as register_config
+
+        with (
+            patch.object(register_config, "REGISTER_EMAIL", ""),
+            patch.object(email_config, "USE_EMAIL_SERVICE", True),
+            patch.object(registration_service, "_random_display_name", return_value="Test User"),
+            patch("core.profile_utils.generate_random_birthday", return_value="1990-01-01"),
+            patch("core.email_provider.acquire_email", side_effect=["same@example.com", "new@example.com"]),
+            patch.object(db, "claim_registration_batch_email", side_effect=[False, True]),
+            patch("core.email_provider.release_email") as release_email,
+        ):
+            result = registration_service._prepare_registration_args(
+                "icloud_hide", batch_id="batch-a", job_id=2
+            )
+
+        self.assertEqual(result, ("new@example.com", "Test User", "1990-01-01"))
+        release_email.assert_called_once_with(
+            "same@example.com", status="available", note=ANY
+        )
+
+    def test_prepare_registration_args_stops_if_provider_repeats_rejected_email(self):
+        from config import email as email_config, register as register_config
+
+        with (
+            patch.object(register_config, "REGISTER_EMAIL", ""),
+            patch.object(email_config, "USE_EMAIL_SERVICE", True),
+            patch.object(registration_service, "_random_display_name", return_value="Test User"),
+            patch("core.profile_utils.generate_random_birthday", return_value="1990-01-01"),
+            patch("core.email_provider.acquire_email", side_effect=["same@example.com", "SAME@example.com"]),
+            patch.object(db, "claim_registration_batch_email", return_value=False),
+            patch("core.email_provider.release_email") as release_email,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "重复返回同一候选"):
+                registration_service._prepare_registration_args(
+                    "icloud_hide", batch_id="batch-a", job_id=2
+                )
+
+        release_email.assert_called_once_with(
+            "same@example.com", status="available", note=ANY
+        )
+
+    def test_account_lookup_does_not_cross_match_duplicate_batch_email(self):
+        job = {
+            "id": 10,
+            "batch_id": "batch-a",
+            "email": "same@example.com",
+            "account_id": None,
+        }
+        with (
+            patch.object(db, "count_registration_jobs_by_batch_email", return_value=2),
+            patch.object(db, "get_account_by_email") as lookup,
+        ):
+            account = registration_service._account_for_job(job)
+
+        self.assertIsNone(account)
+        lookup.assert_not_called()
+
+    def test_skipped_codex_is_not_offered_as_codex_retry(self):
+        job = {
+            "id": 11,
+            "status": "success",
+            "account_id": 42,
+            "progress_steps": {
+                "codex": {"state": "skipped"},
+                "twofa": {"state": "success"},
+            },
+        }
+        account = {
+            "id": 42,
+            "email": "skipped@example.com",
+            "access_token": "saved-token",
+            # 兼容历史上误写成 failed 的账号字段：任务进度明确 skipped 时，
+            # UI 仍不能把它展示成 Codex 失败。
+            "codex_status": "failed",
+            "plan_check_status": "success",
+            "totp_secret": "JBSWY3DPEHPK3PXP",
+            "extra_json": '{"account_password":"AccountPassword!123"}',
+        }
+        with patch.object(db, "get_successful_retry_for_job", return_value=None), patch.object(
+            registration_service, "_account_for_job", return_value=account
+        ):
+            info = registration_service.get_retry_info(job)
+
+        self.assertFalse(info["retryable"])
+        self.assertEqual(info["retry_action"], None)
+        self.assertIn("跳过", info["retry_reason"])
 
     def test_registration_codex_retry_delegates_to_native_operation_without_legacy_job(self):
         source = {"id": 17, "status": "partial_success", "email": "native@example.com", "account_id": 42}

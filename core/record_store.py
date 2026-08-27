@@ -143,6 +143,25 @@ JOBS = TableSpec(
     indexes=(("status", "id"), ("batch_id",), ("account_id",), ("root_job_id",)),
 )
 
+# 注册批次内的邮箱领取历史。邮箱池在注册未消费时会回收到 available；如果同一批次
+# 还有排队任务，后续任务不能再次领取这个地址，否则一个远端账号可能被两个任务并行
+# 操作。这个表只记录批次内的历史，不改变邮箱池跨批次复用的既有语义。
+REGISTRATION_BATCH_EMAIL_CLAIMS = TableSpec(
+    name="registration_batch_email_claims",
+    promoted={
+        "claim_key": "TEXT NOT NULL",
+        "batch_id": "TEXT NOT NULL",
+        "email": "TEXT NOT NULL",
+        "job_id": "BIGINT",
+        "email_source": "TEXT",
+        "claimed_at": "TEXT NOT NULL",
+        "created_at": "TEXT NOT NULL",
+        "updated_at": "TEXT NOT NULL",
+    },
+    unique=("claim_key",),
+    indexes=(("batch_id", "id"), ("email",)),
+)
+
 _POOL_PROMOTED = {
     "email": "TEXT NOT NULL",
     "created_at": "TEXT NOT NULL",
@@ -233,6 +252,7 @@ PROXY_LEASES = TableSpec(
 ALL_TABLES: tuple[TableSpec, ...] = (
     ACCOUNTS,
     JOBS,
+    REGISTRATION_BATCH_EMAIL_CLAIMS,
     OUTLOOK_POOL,
     GENERIC_API_POOL,
     DOMAIN_POOL,

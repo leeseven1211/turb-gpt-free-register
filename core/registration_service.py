@@ -167,7 +167,31 @@ def _random_display_name() -> str:
     return random_display_name()
 
 
-def _prepare_registration_args(email_source: str | None = None) -> tuple[str, str, str]:
+def _release_rejected_batch_email(email: str, *, batch_id: str, job_id: int) -> None:
+    """释放本次领取但已被批次去重拒绝的邮箱租约。"""
+    try:
+        from core.email_provider import release_email
+
+        release_email(
+            email,
+            status="available",
+            note=f"注册批次 {batch_id} 已使用该邮箱，任务 #{job_id} 改领新邮箱",
+        )
+    except Exception:
+        logger.exception(
+            "[Service] 释放批次重复邮箱失败: batch_id=%s job_id=%s email=%s",
+            batch_id,
+            job_id,
+            email,
+        )
+
+
+def _prepare_registration_args(
+    email_source: str | None = None,
+    *,
+    batch_id: str | None = None,
+    job_id: int | None = None,
+) -> tuple[str, str, str]:
     """复用 CLI 的默认规则，为旧 Web 任务入口补齐注册参数。"""
     # 用模块属性读，支持 WebUI 热加载
     from config import register as _r, email as _e
@@ -187,13 +211,75 @@ def _prepare_registration_args(email_source: str | None = None) -> tuple[str, st
     birthday = generate_random_birthday()
 
     # 邮箱领取会把池状态置为 used，因此放在所有其他准备逻辑之后。
-    if not email:
-        if _e.USE_EMAIL_SERVICE:
-            email = acquire_email(email_source)
+    # 同一注册批次的 claim 历史即使任务失败也保留，避免释放回池的邮箱被批次内
+    # 后续任务再次领取。重复候选暂时保持租约，先领取到新地址后再释放，避免本地
+    # 邮箱池按 id 排序时反复拿到同一候选。
+    normalized_batch_id = str(batch_id or "").strip()
+    rejected: list[str] = []
+    rejected_keys: set[str] = set()
+    try:
+        if email:
+            if normalized_batch_id and not db.claim_registration_batch_email(
+                normalized_batch_id,
+                email,
+                job_id=job_id,
+                email_source=email_source,
+            ):
+                raise RuntimeError(
+                    f"注册批次 {normalized_batch_id} 已使用邮箱，不能重复提交：{email}"
+                )
+        elif _e.USE_EMAIL_SERVICE:
+            attempt = 0
+            while not email:
+                attempt += 1
+                candidate = str(acquire_email(email_source) or "").strip()
+                if not candidate:
+                    raise RuntimeError("邮箱来源返回空地址，无法继续注册")
+                try:
+                    accepted = not normalized_batch_id or db.claim_registration_batch_email(
+                        normalized_batch_id,
+                        candidate,
+                        job_id=job_id,
+                        email_source=email_source,
+                    )
+                except Exception:
+                    _release_rejected_batch_email(
+                        candidate,
+                        batch_id=normalized_batch_id or f"job-{job_id or 0}",
+                        job_id=int(job_id or 0),
+                    )
+                    raise
+                if accepted:
+                    email = candidate
+                    break
+                candidate_key = str(candidate or "").strip().lower()
+                if candidate_key in rejected_keys:
+                    raise RuntimeError(
+                        f"注册批次 {normalized_batch_id} 的邮箱来源重复返回同一候选，"
+                        f"无法领取新邮箱：{candidate}"
+                    )
+                rejected_keys.add(candidate_key)
+                rejected.append(candidate)
+                logger.warning(
+                    "[Job %s] 批次邮箱重复，改领新邮箱: batch_id=%s email=%s attempt=%s",
+                    job_id or "-",
+                    normalized_batch_id,
+                    candidate,
+                    attempt,
+                )
+                # 拒绝的候选会保持 used，直到拿到新地址后才释放，因此邮箱池不会
+                # 反复返回同一个地址；循环会一直尝试到池确实没有可用邮箱为止。
         else:
             raise RuntimeError(
                 "手动模式未配置邮箱。请在 WebUI 配置页设置 REGISTER_EMAIL，"
                 "或开启 USE_EMAIL_SERVICE 并从邮箱池领取。"
+            )
+    finally:
+        for duplicate in rejected:
+            _release_rejected_batch_email(
+                duplicate,
+                batch_id=normalized_batch_id or f"job-{job_id or 0}",
+                job_id=int(job_id or 0),
             )
 
     return email, name, birthday
@@ -549,7 +635,11 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 )
                 log_logger.info("[Job %s] 继续验证已保存账号：account_id=%s", job_id, (resume_account or {}).get("id"))
             else:
-                email, name, birthday = _prepare_registration_args(selected_source)
+                email, name, birthday = _prepare_registration_args(
+                    selected_source,
+                    batch_id=batch_id,
+                    job_id=job_id,
+                )
             db.update_job(job_id, email=email)
             if not existing_password:
                 db.update_job_progress(job_id, "email", state="success", detail=f"已从 {selected_source} 领取邮箱")
@@ -612,7 +702,11 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     # Roxy 失败后会把未建号邮箱释放回池；重试不能继续持有已释放的
                     # 字符串，否则可能被另一个并发任务抢走。仍使用同一个已选来源，
                     # 不引入第二邮箱供应商或兜底来源。
-                    email, name, birthday = _prepare_registration_args(selected_source)
+                    email, name, birthday = _prepare_registration_args(
+                        selected_source,
+                        batch_id=batch_id,
+                        job_id=job_id,
+                    )
                     db.update_job(job_id, email=email)
                     db.update_job_progress(
                         job_id,
@@ -1081,6 +1175,26 @@ def _account_for_job(job: dict) -> dict | None:
         except (TypeError, ValueError):
             pass
     email = str(job.get("email") or "").strip()
+    batch_id = str(job.get("batch_id") or "").strip()
+    if batch_id and email:
+        try:
+            # 同批次重复邮箱说明当前任务无法唯一对应到账号；不能因为另一个任务
+            # 后来用同一地址建号，就把本任务误判成“已有账号，仅补跑 Codex”。
+            if db.count_registration_jobs_by_batch_email(batch_id, email) > 1:
+                logger.warning(
+                    "[Service] 同批次邮箱关联不唯一，忽略按邮箱回查账号: batch_id=%s email=%s job_id=%s",
+                    batch_id,
+                    email,
+                    job.get("id"),
+                )
+                return None
+        except Exception:
+            logger.exception(
+                "[Service] 检查同批次邮箱唯一性失败，忽略按邮箱回查账号: batch_id=%s job_id=%s",
+                batch_id,
+                job.get("id"),
+            )
+            return None
     return db.get_account_by_email(email) if email else None
 
 
@@ -1171,6 +1285,14 @@ def _build_retry_info(
         return info
 
     steps = job.get("progress_steps") if isinstance(job.get("progress_steps"), dict) else {}
+    codex_step = steps.get("codex") if isinstance(steps.get("codex"), dict) else {}
+    codex_step_state = str(codex_step.get("state") or "").strip().lower()
+    codex_status = str((account or {}).get("codex_status") or "").strip().lower()
+    # 注册任务明确记录为 skipped 时，以任务运行事实为准。历史上曾在注册已
+    # 跳过 Codex 后误创建补跑任务，随后把账号的兼容字段写成 failed；不能让
+    # 这个旧字段再次把“跳过”展示成 Codex 失败。
+    if codex_step_state == "skipped" and codex_status != "deactivated":
+        codex_status = "skipped"
     twofa_step = steps.get("twofa") if isinstance(steps.get("twofa"), dict) else {}
     twofa_failed = str(twofa_step.get("state") or "") == "failed"
     if not twofa_failed and account:
@@ -1190,18 +1312,18 @@ def _build_retry_info(
     )
 
     if account and job.get("account_id") is not None:
+        codex_complete = codex_status in {"success", "skipped"}
         info["display_status"] = (
             "success"
-            if (account.get("codex_status") or "") == "success" and not setup_missing
+            if codex_complete and not setup_missing
             else "partial_success"
         )
 
     if account:
-        codex_status = str(account.get("codex_status") or "")
         if codex_status == "deactivated":
             info["retry_reason"] = "账号已废号，不能补跑 Codex"
             return info
-        if codex_status == "success":
+        if codex_status in {"success", "skipped"}:
             if setup_missing:
                 config_only = not twofa_failed and (
                     not _account_login_password(account)
@@ -1211,10 +1333,18 @@ def _build_retry_info(
                     "retryable": True,
                     "retry_action": "twofa",
                     "retry_label": "补齐账号配置" if config_only else "重试 2FA",
-                    "retry_reason": "账号和 Codex 已完成，重新登录补齐账号密码、套餐和 Authenticator 2FA",
+                    "retry_reason": (
+                        "账号和 Codex 已完成，重新登录补齐账号密码、套餐和 Authenticator 2FA"
+                        if codex_status == "success"
+                        else "账号已创建，Codex 当前为跳过状态，重新登录补齐账号配置"
+                    ),
                 })
                 return info
-            info["retry_reason"] = "账号和 Codex 授权均已完成"
+            info["retry_reason"] = (
+                "账号和 Codex 授权均已完成"
+                if codex_status == "success"
+                else "账号已完成，Codex 自动授权已跳过"
+            )
             return info
         info.update({
             "retryable": True,

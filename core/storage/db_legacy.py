@@ -3086,6 +3086,61 @@ def get_job(job_id: int) -> dict | None:
     return record_store.get_row(record_store.JOBS, int(job_id))
 
 
+def count_registration_jobs_by_batch_email(batch_id: str, email: str) -> int:
+    """统计一个批次里已经写入某邮箱的注册任务数。
+
+    这一步用于兼容批次邮箱去重表上线前已经存在的任务：即使旧任务没有对应的
+    claim 行，也不能再把同一个邮箱发给当前批次的新任务。
+    """
+    batch = str(batch_id or "").strip()
+    address = str(email or "").strip().lower()
+    if not batch or not address:
+        return 0
+    return record_store.count_rows(
+        record_store.JOBS,
+        where='"batch_id" = %s AND lower("email") = %s',
+        params=(batch, address),
+    )
+
+
+def claim_registration_batch_email(
+    batch_id: str,
+    email: str,
+    *,
+    job_id: int | None = None,
+    email_source: str | None = None,
+) -> bool:
+    """原子登记批次邮箱，返回该邮箱是否首次出现在此批次。
+
+    领取失败后邮箱池仍可回收，但 claim 记录故意保留到批次结束，避免后续排队任务
+    再拿到同一地址。claim_key 使用规范化邮箱，大小写差异也视为重复。
+    """
+    batch = str(batch_id or "").strip()
+    address = str(email or "").strip().lower()
+    if not batch or not address:
+        return True
+
+    # 先检查历史 registration_jobs，覆盖该保护上线前已经产生的重复任务。
+    if count_registration_jobs_by_batch_email(batch, address) > 0:
+        return False
+
+    claimed_at = _now()
+    claim_key = f"{batch}\x1f{address}"
+    row_id = record_store.insert_row_if_absent(
+        record_store.REGISTRATION_BATCH_EMAIL_CLAIMS,
+        "claim_key",
+        {
+            "claim_key": claim_key,
+            "batch_id": batch,
+            "email": address,
+            "job_id": int(job_id) if job_id is not None else None,
+            "email_source": str(email_source or "").strip() or None,
+            "claimed_at": claimed_at,
+        },
+    )
+    return row_id is not None
+
+
 def get_successful_retry_for_job(job_id: int) -> dict | None:
     """返回同一任务链中已成功的其他重试任务，用于保留原任务历史状态并阻止重复重试。
 

@@ -37,6 +37,7 @@ core/account_task_store.py  账号操作任务的三张关系表（更早就已�
 |---|---|
 | `registered_accounts` | 注册成功的账号 |
 | `registration_jobs` | 注册/Codex 任务 |
+| `registration_batch_email_claims` | 注册批次内邮箱领取历史；失败任务释放邮箱后仍保留去重记录 |
 | `email_pool_outlook` | Outlook 邮箱池 |
 | `email_pool_generic_api` | 通用 API 邮箱池 |
 | `email_pool_domain` | 域名邮箱池 |

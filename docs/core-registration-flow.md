@@ -622,6 +622,10 @@ pending -> cancelled
 - `codex`：账号已存在，只执行 Codex OAuth；同一邮箱通过 `codex_retry_service.reserve()` 防止并发补跑。
 - `twofa`：账号已存在，补齐密码、套餐和 Authenticator 2FA。
 
+批量注册在领取邮箱后会写入 `registration_batch_email_claims`。邮箱因注册失败被释放回池
+时，批次领取记录不会删除；同批次后续任务会跳过该邮箱并继续领取新地址。`codex=skipped`
+表示按配置明确跳过 Codex，不会被投影成 Codex 重试任务。
+
 同一任务链用 `root_job_id / parent_job_id / retry_attempt` 关联；已有活跃的同类型任务时直接返回已有任务。账号操作任务还会写入 `account_action_batches`、`account_action_tasks`、`account_action_events`，并对密码、OTP、Token、邮件正文和代理凭据做脱敏。
 
 ## 7. 各驱动当前实现对比

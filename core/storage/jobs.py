@@ -6,7 +6,8 @@ from typing import Any, Callable
 _NAMES = {
     "create_job", "create_retry_job", "update_job", "transition_job_status", "claim_job_for_execution",
     "cancel_pending_jobs", "update_job_progress", "finish_job_progress", "recover_interrupted_registration_jobs",
-    "list_jobs", "get_job", "get_successful_retry_for_job", "get_successful_retries_for_jobs",
+    "list_jobs", "get_job", "count_registration_jobs_by_batch_email", "claim_registration_batch_email",
+    "get_successful_retry_for_job", "get_successful_retries_for_jobs",
     "get_accounts_for_jobs", "delete_job", "delete_jobs", "migrate_legacy_files",
 }
 
