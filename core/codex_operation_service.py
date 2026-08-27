@@ -358,34 +358,31 @@ def _execute_run(run_id: int) -> dict:
             token.checkpoint()
 
             driver = str(snapshot.get("oauth_driver") or "protocol")
-            if driver not in {"browser_use", "browseruse", "browser-use", "bu", "skyvern", "sv"}:
-                from core.account_proxy import acquire_account_proxy
+            from core.account_proxy import acquire_account_proxy
 
-                report(stage="network", message="正在申请账号 OAuth 网络线路")
-                route = acquire_account_proxy(account_id=account_id, email=email, purpose="codex-oauth")
-                public = route.public_dict()
-                resource = operation_task_store.register_resource(
-                    run_id,
-                    resource_type="proxy_lease",
-                    provider=str(route.provider or ""),
-                    detail={
-                        "proxy_mode": route.mode,
-                        "proxy_region": route.region,
-                        "network_route": public.get("network_route"),
-                    },
-                )
-                route_resource_id = int(resource["id"])
-                report(
-                    stage="network", message="账号 OAuth 网络线路已就绪", state="success",
-                    detail={
-                        "proxy_mode": route.mode,
-                        "proxy_provider": route.provider,
-                        "proxy_region": route.region,
-                        "network_route": public.get("network_route"),
-                    },
-                )
-            else:
-                report(stage="network", message="云浏览器使用平台网络线路", state="success", detail={"network_route": "cloud_driver"})
+            report(stage="network", message="正在申请账号 OAuth 网络线路")
+            route = acquire_account_proxy(account_id=account_id, email=email, purpose="codex-oauth")
+            public = route.public_dict()
+            resource = operation_task_store.register_resource(
+                run_id,
+                resource_type="proxy_lease",
+                provider=str(route.provider or ""),
+                detail={
+                    "proxy_mode": route.mode,
+                    "proxy_region": route.region,
+                    "network_route": public.get("network_route"),
+                },
+            )
+            route_resource_id = int(resource["id"])
+            report(
+                stage="network", message="账号 OAuth 网络线路已就绪", state="success",
+                detail={
+                    "proxy_mode": route.mode,
+                    "proxy_provider": route.provider,
+                    "proxy_region": route.region,
+                    "network_route": public.get("network_route"),
+                },
+            )
 
             report(stage="browser", message=f"启动 {driver} OAuth 驱动", state="running", detail={"oauth_driver": driver})
             from core.codex_oauth import run_codex_oauth

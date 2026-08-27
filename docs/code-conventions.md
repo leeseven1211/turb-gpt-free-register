@@ -49,7 +49,7 @@ CLI / Web routes
 | `runtime.py` | 线程、取消、心跳、恢复和生命周期 |
 | `compat.py` | 有明确删除条件的兼容入口 |
 | `core/registration/selenium_auth.py` | Selenium 登录挑战、OTP、资料和 ChatGPT session 公共能力 |
-| `core/registration/browser_use_auth.py` | Browser Use/Skyvern 登录挑战和 OTP 公共能力 |
+| `core/registration/browser_use_auth.py` | 已停用的 Browser Use/Skyvern 历史兼容模块，不得作为新流程依赖 |
 | `core/storage/` | PostgreSQL 领域仓储、统一 operation schema/projection/runtime 入口 |
 | `core/operations/task_gateway.py` | 账号任务兼容写入、事件和终态收口；统一投影由存储层负责 |
 

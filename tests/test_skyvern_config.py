@@ -9,14 +9,12 @@ from core.skyvern_client import SkyvernClient
 
 class SkyvernConfigTests(unittest.TestCase):
     def test_secret_registry_includes_skyvern_api_key(self):
-        self.assertIn("SKYVERN_API_KEY", env_loader.SECRET_ENV_KEYS)
+        self.assertNotIn("SKYVERN_API_KEY", env_loader.SECRET_ENV_KEYS)
 
     def test_webui_exposes_skyvern_fields(self):
         fields = {f["key"]: f for f in config_editor.EDITABLE_FIELDS}
-        self.assertIn("SKYVERN_API_KEY", fields)
-        self.assertTrue(fields["SKYVERN_API_KEY"].get("secret"))
-        self.assertEqual(fields["SKYVERN_API_KEY"].get("storage"), "env")
-        self.assertIn("SKYVERN_BROWSER_SESSION_TIMEOUT", fields)
+        self.assertNotIn("SKYVERN_API_KEY", fields)
+        self.assertNotIn("SKYVERN_BROWSER_SESSION_TIMEOUT", fields)
 
     def test_cdp_headers_include_api_key(self):
         headers = SkyvernClient(api_key="key-123").cdp_headers()

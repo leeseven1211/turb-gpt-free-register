@@ -84,38 +84,11 @@ class RegistrationDispatcherTests(unittest.TestCase):
             existing_totp_secret="saved-totp",
         )
 
-    def test_cloak_driver_alias_forwards_common_contract(self):
-        expected = {"success": True}
-        with (
-            patch.object(dispatcher._roxy_cfg, "REGISTRATION_DRIVER", "cloakbrowser"),
-            patch("core.cloakbrowser_registration.run_cloak_registration", return_value=expected) as run_cloak,
-        ):
-            result = dispatcher.run_registration(**self.args)
-
-        self.assertIs(expected, result)
-        run_cloak.assert_called_once_with(**self.args)
-
-    def test_browser_use_driver_alias_forwards_common_contract(self):
-        expected = {"success": True}
-        with (
-            patch.object(dispatcher._roxy_cfg, "REGISTRATION_DRIVER", "bu"),
-            patch("core.registration.browser_use.run_browser_use_registration", return_value=expected) as run_browser,
-        ):
-            result = dispatcher.run_registration(**self.args)
-
-        self.assertIs(expected, result)
-        run_browser.assert_called_once_with(**self.args)
-
-    def test_skyvern_driver_alias_forwards_common_contract(self):
-        expected = {"success": True}
-        with (
-            patch.object(dispatcher._roxy_cfg, "REGISTRATION_DRIVER", "sv"),
-            patch("core.skyvern_registration.run_skyvern_registration", return_value=expected) as run_skyvern,
-        ):
-            result = dispatcher.run_registration(**self.args)
-
-        self.assertIs(expected, result)
-        run_skyvern.assert_called_once_with(**self.args)
+    def test_removed_browser_drivers_are_rejected(self):
+        for driver in ("cloak", "browser_use", "skyvern"):
+            with self.subTest(driver=driver), patch.object(dispatcher._roxy_cfg, "REGISTRATION_DRIVER", driver):
+                with self.assertRaisesRegex(RuntimeError, "仅支持 protocol / roxy"):
+                    dispatcher.run_registration(**self.args)
 
     def test_non_roxy_resume_is_rejected_before_driver_import(self):
         with patch.object(dispatcher._roxy_cfg, "REGISTRATION_DRIVER", "cloak"):
@@ -124,7 +97,7 @@ class RegistrationDispatcherTests(unittest.TestCase):
 
     def test_unknown_driver_fails_with_available_driver_names(self):
         with patch.object(dispatcher._roxy_cfg, "REGISTRATION_DRIVER", "unknown"):
-            with self.assertRaisesRegex(RuntimeError, "protocol / roxy / cloak / browser_use / skyvern"):
+            with self.assertRaisesRegex(RuntimeError, "仅支持 protocol / roxy"):
                 dispatcher.run_registration(**self.args)
 
 

@@ -930,11 +930,6 @@ def acquire_registration_proxy(
 
     mode = registration_proxy_mode()
     if mode == "1024":
-        from config import roxybrowser as roxy_cfg
-
-        driver = str(getattr(roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
-        if driver in {"browser_use", "browseruse", "browser-use", "bu", "skyvern", "sv"}:
-            raise RuntimeError("1024Proxy 暂不支持 Browser Use/Skyvern 云端浏览器，请改用 protocol、cloak 或 roxy")
         if batch_id and int(batch_size or 1) > 1:
             return _acquire_registration_proxy_from_batch(
                 batch_id=batch_id,

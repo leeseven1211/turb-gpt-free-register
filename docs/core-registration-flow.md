@@ -15,11 +15,8 @@ registration_service.py       任务编排、并发、停止、资源释放、�
     v
 core.registration.dispatcher  统一注册入口，按 REGISTRATION_DRIVER 分发
     |
-    +--> core.registration.protocol  纯 HTTP/curl_cffi + Sentinel/PoW
-    +--> roxy                   RoxyBrowser + Selenium
-    +--> cloak                  CloakBrowser + Playwright/Selenium 适配
-    +--> browser_use            Browser Use Cloud + Playwright
-    +--> skyvern                Skyvern Browser Session + Playwright
+    +--> core.registration.roxy       RoxyBrowser + Selenium（主流程）
+    +--> core.registration.protocol   纯 HTTP/curl_cffi + Sentinel/PoW（辅助/回退）
     |
     v
 OpenAI 注册主体完成：邮箱 OTP -> 资料 -> OAuth 回调 -> accessToken
@@ -40,7 +37,7 @@ OpenAI 注册主体完成：邮箱 OTP -> 资料 -> OAuth 回调 -> accessToken
 3. 邮箱领取后先变为 `used`。只有能确认“没有创建账号”的失败才允许回到 `available`；已经消耗邮箱或已经创建账号的失败会标记为 `failed` 或 `disabled`，避免重复注册。
 4. 2FA、Codex、套餐查询是注册后的后置能力。后置步骤失败时，账号可能已经保存在 `registered_accounts`，但任务仍可能是 `partial_success` 或 `failed`。
 5. PostgreSQL 是运行时事实来源；根目录 JSON/TXT 和 `accounts_viewer.html` 只是兼容导出，不参与核心状态判断。
-6. 注册调试只支持当前实际使用的 `protocol` 和 Roxy 驱动。每条并发任务有独立抓包会话；Cloak、Browser Use 和 Skyvern 不进入本调试链路。
+6. 注册调试只支持当前实际使用的 `protocol` 和 Roxy 驱动。每条并发任务有独立抓包会话。
 
 ## 1. 一眼看懂的主流程
 
@@ -232,7 +229,6 @@ WebUI 启动时先调用 `postgres_store.require_ready()`。缺少 `DATABASE_URL
 - 请求失败和验证失败会清理 pending 租约。
 - 释放后按 `recent_ttl` 进入短暂隔离期，避免立即复用。
 - 代理 URL、账号密码、完整端点在日志和任务记录中脱敏。
-- `browser_use / skyvern` 当前不支持 `1024` 注册代理模式，启动任务时直接拒绝。
 
 代理获取失败属于任务级失败；邮箱此时通常还没有领取，不需要回收邮箱。
 
@@ -272,10 +268,7 @@ email_butler / gptmail / mailnest / cloudmail / icloud_hide
 | `REGISTRATION_DRIVER` | 实现 | 注册会话 |
 | --- | --- | --- |
 | `protocol` / `api` / `http` | `core/registration/protocol.py` | `BrowserSession` + HTTP |
-| `roxy` 等别名 | `core/roxy_registration.py` | RoxyBrowser + Selenium |
-| `cloak` | `core/cloakbrowser_registration.py` | CloakBrowser + 适配后的 Selenium 操作 |
-| `browser_use` | `core/browser_use_registration.py` | Browser Use Cloud + Playwright/CDP |
-| `skyvern` | `core/skyvern_registration.py` | Skyvern Browser Session + Playwright/CDP |
+| `roxy` 等别名 | `core/registration/roxy.py` | RoxyBrowser + Selenium |
 
 所有驱动接收相同的核心参数：
 
@@ -628,19 +621,19 @@ pending -> cancelled
 
 同一任务链用 `root_job_id / parent_job_id / retry_attempt` 关联；已有活跃的同类型任务时直接返回已有任务。账号操作任务还会写入 `account_action_batches`、`account_action_tasks`、`account_action_events`，并对密码、OTP、Token、邮件正文和代理凭据做脱敏。
 
-## 7. 各驱动当前实现对比
+## 7. 当前驱动实现对比
 
-| 项目 | protocol | Roxy | Cloak | Browser Use / Skyvern |
-| --- | --- | --- | --- | --- |
-| 注册方式 | HTTP 接口 | Selenium 页面 | 页面自动化 | Playwright/CDP 页面 |
-| OTP 重试 | validate 失败后 API resend | 页面 resend，新时间边界 | 页面 resend | 重新打开入口提交邮箱，避免 resend 500 |
-| 密码页 | 当前明确拒绝旧密码路径 | 支持，先保存待验证检查点 | 页面辅助处理 | 页面辅助处理 |
-| 资料页 | about-you + Sentinel + create_account | 页面填写 | 页面填写 | 页面填写或跳过 |
-| Token 获取 | OAuth callback + `/api/auth/session` | 页面登录态 + session | 页面登录态 + session | 页面登录态 + session |
-| 2FA | protocol | protocol 或 browser | 主要 protocol | 主要 protocol |
-| Codex | 同一 proxy 的独立 OAuth | 同 Profile 新标签页 | 复用当前窗口 | 关闭注册 CDP 后独立执行 |
-| 账号检查点 | 最终落库 | 密码提交、Token 后、Codex/2FA 中间多次落库 | 最终落库 | 最终落库 |
-| 后置失败语义 | 账号保存，但 `success` 可能因 Codex 失败为 false | 返回 `registration_success=True` + `partial_success` | `success` 取决于 Codex | 当前返回主体成功，需结合 Codex 阶段查看 |
+| 项目 | protocol | Roxy |
+| --- | --- | --- |
+| 注册方式 | HTTP 接口 | Selenium 页面 |
+| OTP 重试 | validate 失败后 API resend | 页面 resend，新时间边界 |
+| 密码页 | 当前明确拒绝旧密码路径 | 支持，先保存待验证检查点 |
+| 资料页 | about-you + Sentinel + create_account | 页面填写 |
+| Token 获取 | OAuth callback + `/api/auth/session` | 页面登录态 + session |
+| 2FA | protocol | protocol 或 browser |
+| Codex | 独立 OAuth | 同 Profile 新标签页 |
+| 账号检查点 | 最终落库 | 密码提交、Token 后、Codex/2FA 中间多次落库 |
+| 后置失败语义 | 账号保存，但 `success` 可能因 Codex 失败为 false | 返回 `registration_success=True` + `partial_success` |
 
 最后一行是当前代码的真实差异，排查任务时不要假设所有驱动返回值完全一致。判断事实时以 `account_id`、账号表、阶段进度和 `codex_status` 为准。
 
@@ -659,8 +652,6 @@ pending -> cancelled
 | 代理获取/释放 | `core/proxy_provider.py` |
 | OAuth 回调、Session、账号保存 | `core/account_export.py` |
 | Roxy 页面注册和检查点 | `core/roxy_registration.py` |
-| Cloak 注册 | `core/cloakbrowser_registration.py` |
-| Browser Use/Skyvern 注册 | `core/browser_use_registration.py`、`core/skyvern_registration.py` |
 | PostgreSQL 行级存储 | `core/record_store.py`、`core/postgres_store.py` |
 
 ## 9. 排查一条失败任务的推荐顺序

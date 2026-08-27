@@ -189,7 +189,18 @@ class CodexRetryTaskTests(unittest.TestCase):
             patch.object(codex_retry_service.account_task_store, "append_event") as append_event,
             patch.object(codex_retry_service.account_task_store, "finish_task") as finish_task,
             patch("config.reload_all"),
-            patch("config.codex.CODEX_OAUTH_DRIVER", "browser_use"),
+            patch("config.codex.CODEX_OAUTH_DRIVER", "protocol"),
+            patch(
+                "core.account_proxy.acquire_account_proxy",
+                return_value=Mock(
+                    proxy_url="http://proxy.example",
+                    provider="test",
+                    region="US",
+                    mode="pool",
+                    public_dict=lambda: {"network_route": "test", "proxy_used": True},
+                    release=Mock(),
+                ),
+            ),
             patch(
                 "core.codex_oauth.run_codex_oauth",
                 return_value={"ok": True, "status": "success", "file_path": "/tmp/credential.json", "callback_url": "sensitive"},

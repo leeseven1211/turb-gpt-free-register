@@ -10,7 +10,7 @@
 | 入口 | 真实实现 | 保留原因 | 删除条件 |
 | --- | --- | --- | --- |
 | `core.roxy_registration` | `core.registration.roxy` | 外部脚本、历史测试和旧日志工具可能导入旧路径 | 连续一个稳定版本无源码/工具/部署脚本调用，并完成导入兼容检查 |
-| `core.browser_use_registration` | `core.registration.browser_use` | BrowserUse/Skyvern 历史调用路径 | 连续一个稳定版本无调用，并完成 BrowserUse/Skyvern 运行验收 |
+| `core.browser_use_registration` | `core.registration.browser_use` | Browser Use/Skyvern 历史调用路径；当前入口已禁用，仅保留兼容导入观察 | 稳定版本确认无外部调用后，单文件删除 |
 | `core.db` | `core.storage.db_legacy` 及领域仓储 | 业务模块、工具和测试仍使用统一旧 façade | 账号/任务/邮箱/Codex 调用全部迁移到领域仓储，完成字段对账 |
 | `core.operation_task_store` | `core.storage.operation` | 统一任务中心旧导入和测试 patch 点 | 所有运行时调用改用 storage operation 子模块，并完成观察期对账 |
 | `core.account_task_store` | `core.operations.legacy_task_store` | 旧 `account_action_*` 任务在兼容观察期内继续写入 | 统一 operation 原生 run 覆盖全部任务类型至少一个稳定版本 |

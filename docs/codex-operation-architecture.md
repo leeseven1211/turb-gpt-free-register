@@ -14,7 +14,7 @@ OAuth 驱动不再自行维护“补跑中”集合、线程终止和成功状�
        ├─ account_operation_leases
        ├─ operation_resources   代理、接码等有生命周期资源
        └─ operation_events      结构化阶段、取消和终态事件
-            └─ run_codex_oauth → protocol / roxy / browser_use / skyvern
+            └─ run_codex_oauth → protocol / roxy
 ```
 
 ## 不变量

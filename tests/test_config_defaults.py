@@ -250,10 +250,10 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         self.assertEqual(fields["PROXY_1024_API_URL"]["group"], "代理平台")
         self.assertTrue(fields["PROXY_1024_API_URL"]["secret"])
 
-    def test_cloak_human_preset_is_webui_editable(self):
+    def test_retired_browser_driver_fields_are_not_webui_editable(self):
         fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
-        self.assertIn("CLOAK_HUMAN_PRESET", fields)
-        self.assertEqual(fields["CLOAK_HUMAN_PRESET"]["group"], "CloakBrowser")
+        for key in ("CLOAK_HUMAN_PRESET", "BROWSER_USE_API_KEY", "SKYVERN_API_KEY"):
+            self.assertNotIn(key, fields)
 
     def test_roxy_capacity_wait_fields_are_webui_editable(self):
         fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}

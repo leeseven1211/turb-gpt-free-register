@@ -86,24 +86,6 @@ def _registration_driver_status() -> dict[str, Any]:
             ("ROXY_WORKSPACE_ID", getattr(roxy, "ROXY_WORKSPACE_ID", "")),
         ])
         return _feature(ok, reason) | {"driver": driver}
-    if driver in {"browser_use", "browseruse", "browser-use", "bu"}:
-        from config import browser_use as cfg
-        ok, reason = _all_present([
-            ("BROWSER_USE_API_KEY", getattr(cfg, "BROWSER_USE_API_KEY", "")),
-            ("BROWSER_USE_PROXY_COUNTRY_CODE", getattr(cfg, "BROWSER_USE_PROXY_COUNTRY_CODE", "")),
-        ])
-        if ok and not bool(getattr(cfg, "BROWSER_USE_USE_PROXY", True)):
-            ok, reason = False, "Browser Use 内置代理未开启"
-        return _feature(ok, reason) | {"driver": driver}
-    if driver in {"skyvern", "sv"}:
-        from config import skyvern as cfg
-        ok, reason = _all_present([
-            ("SKYVERN_API_KEY", getattr(cfg, "SKYVERN_API_KEY", "")),
-            ("SKYVERN_PROXY_LOCATION", getattr(cfg, "SKYVERN_PROXY_LOCATION", "")),
-        ])
-        return _feature(ok, reason) | {"driver": driver}
-    if driver in {"cloak", "cloakbrowser"}:
-        return _feature(True) | {"driver": driver}
     return _feature(False, f"不支持的注册驱动 {driver}") | {"driver": driver}
 
 
@@ -129,21 +111,7 @@ def _codex_retry_status() -> dict[str, Any]:
     driver = str(getattr(codex, "CODEX_OAUTH_DRIVER", "protocol") or "protocol").strip().lower()
     if driver == "same_as_registration":
         driver = str(getattr(roxy, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
-    if driver in {"browser_use", "browseruse", "browser-use", "bu"}:
-        from config import browser_use as cloud
-        ok, reason = _all_present([
-            ("BROWSER_USE_API_KEY", getattr(cloud, "BROWSER_USE_API_KEY", "")),
-            ("BROWSER_USE_PROXY_COUNTRY_CODE", getattr(cloud, "BROWSER_USE_PROXY_COUNTRY_CODE", "")),
-        ])
-        if ok and not bool(getattr(cloud, "BROWSER_USE_USE_PROXY", True)):
-            ok, reason = False, "Browser Use 内置代理未开启"
-    elif driver in {"skyvern", "sv"}:
-        from config import skyvern as cloud
-        ok, reason = _all_present([
-            ("SKYVERN_API_KEY", getattr(cloud, "SKYVERN_API_KEY", "")),
-            ("SKYVERN_PROXY_LOCATION", getattr(cloud, "SKYVERN_PROXY_LOCATION", "")),
-        ])
-    elif driver in {"roxy", "roxybrowser", "fingerprint", "browser"}:
+    if driver in {"roxy", "roxybrowser", "fingerprint", "browser"}:
         ok, reason = _all_present([
             ("ROXY_API_BASE", getattr(roxy, "ROXY_API_BASE", "")),
             ("ROXY_API_TOKEN", getattr(roxy, "ROXY_API_TOKEN", "")),
@@ -213,11 +181,6 @@ def feature_availability() -> dict[str, Any]:
         email_ready = bool(enabled_sources)
         email_reason = "没有已配置且可用的邮箱来源"
     register_ok = bool(driver.get("enabled") and registration_proxy.get("enabled") and email_ready)
-    if driver.get("driver") in {"browser_use", "browseruse", "browser-use", "bu", "skyvern", "sv"} and registration_proxy.get("mode") == "1024":
-        register_ok = False
-        driver = dict(driver)
-        driver["enabled"] = False
-        driver["reason"] = "Browser Use / Skyvern 云端浏览器不能注入 1024Proxy，请使用各自的内置代理"
     register_reason = next((
         reason for ready, reason in (
             (driver.get("enabled"), driver.get("reason")),

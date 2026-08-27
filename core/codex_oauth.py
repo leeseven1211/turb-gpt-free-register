@@ -1465,43 +1465,35 @@ def run_codex_oauth(
 
     # 独立调用也必须遵守统一账号代理策略。以前 proxy=None 会在 BrowserSession
     # 里静默抽取 PROXY_POOL，导致已启用 1024Proxy 时仍命中 127.0.0.1 静态代理。
-    # 云浏览器使用云端自身代理，不领取本地租约。
+    # Protocol/Roxy OAuth 均使用统一账号代理策略。
     if proxy is None:
-        from config import codex as _codex_cfg
-        from config import roxybrowser as _roxy_cfg
+        from core import db
+        from core.account_proxy import acquire_account_proxy
 
-        managed_driver = str(getattr(_codex_cfg, "CODEX_OAUTH_DRIVER", "protocol") or "protocol").strip().lower()
-        if managed_driver == "same_as_registration":
-            managed_driver = str(getattr(_roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
-        if managed_driver not in {"browser_use", "browseruse", "browser-use", "bu", "skyvern", "sv"}:
-            from core import db
-            from core.account_proxy import acquire_account_proxy
-
-            account = db.get_account_by_email(email) or {}
-            route = acquire_account_proxy(
-                account_id=int(account.get("id") or 0) or None,
-                email=email,
-                purpose="codex-oauth",
+        account = db.get_account_by_email(email) or {}
+        route = acquire_account_proxy(
+            account_id=int(account.get("id") or 0) or None,
+            email=email,
+            purpose="codex-oauth",
+        )
+        try:
+            logger.info(
+                "[Codex] 统一账号网络：provider=%s region=%s route=%s",
+                route.provider,
+                route.region or "-",
+                route.public_dict().get("network_route"),
             )
-            try:
-                logger.info(
-                    "[Codex] 统一账号网络：provider=%s region=%s route=%s",
-                    route.provider,
-                    route.region or "-",
-                    route.public_dict().get("network_route"),
-                )
-                return run_codex_oauth(
-                    email,
-                    otp_provider=otp_provider,
-                    proxy=route.proxy_url,
-                    force=force,
-                    _cpa_reauth_round=_cpa_reauth_round,
-                )
-            finally:
-                route.release(reason=f"codex-oauth-{email}")
+            return run_codex_oauth(
+                email,
+                otp_provider=otp_provider,
+                proxy=route.proxy_url,
+                force=force,
+                _cpa_reauth_round=_cpa_reauth_round,
+            )
+        finally:
+            route.release(reason=f"codex-oauth-{email}")
 
-    # Codex OAuth 支持多种驱动：
-    # protocol：原纯协议；roxy/cloak/browser_use：用真实浏览器跑页面并捕获 localhost callback。
+    # Codex OAuth 只保留 protocol 与 Roxy；Roxy 用真实浏览器捕获 localhost callback。
     try:
         from config import codex as _codex_cfg
         from config import roxybrowser as _roxy_cfg
@@ -1511,36 +1503,8 @@ def run_codex_oauth(
         if oauth_driver in ("roxy", "roxybrowser", "fingerprint", "browser"):
             from core.roxy_codex_oauth import run_roxy_codex_oauth
             return run_roxy_codex_oauth(email, otp_provider=otp_provider, proxy=proxy, force=True)
-        if oauth_driver in ("browser_use", "browseruse", "browser-use", "bu"):
-            from core.browser_use_codex_oauth import run_browser_use_codex_oauth
-            return run_browser_use_codex_oauth(email, otp_provider=otp_provider, proxy=proxy, force=True)
-        if oauth_driver in ("skyvern", "sv"):
-            from core.skyvern_codex_oauth import run_skyvern_codex_oauth
-            return run_skyvern_codex_oauth(email, otp_provider=otp_provider, proxy=proxy, force=True)
-        if oauth_driver in ("cloak", "cloakbrowser"):
-            from config import cloakbrowser as _cloak_cfg
-            from core.cloakbrowser_driver import build_cloak_driver
-            from core.roxy_codex_oauth import run_roxy_codex_oauth
-            driver, opened = build_cloak_driver(proxy=proxy)
-            try:
-                return run_roxy_codex_oauth(
-                    email,
-                    otp_provider=otp_provider,
-                    proxy=proxy,
-                    force=True,
-                    existing_driver=driver,
-                    existing_opened=opened,
-                    reuse_existing_profile=True,
-                    clear_existing_state=True,
-                )
-            finally:
-                if not bool(getattr(_cloak_cfg, "CLOAK_KEEP_BROWSER_OPEN", False)):
-                    try:
-                        driver.quit()
-                    except Exception:
-                        pass
         if oauth_driver not in ("protocol", "api", "http"):
-            raise RuntimeError(f"[Codex] 不支持的 CODEX_OAUTH_DRIVER={oauth_driver!r}，可选 protocol / roxy / cloak / browser_use / skyvern")
+            raise RuntimeError(f"[Codex] 不支持的 CODEX_OAUTH_DRIVER={oauth_driver!r}，当前仅支持 protocol / roxy / same_as_registration")
     except ImportError:
         # 没装 selenium / 未提供 roxy 配置时继续走协议模式，保持旧行为。
         pass

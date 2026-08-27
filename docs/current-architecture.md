@@ -49,7 +49,7 @@
 | `webui/static/css/{modern,legacy,login}.css` | 3,593 | 页面专属 CSS；共享样式仍在 `ui-foundation.css` |
 | `core/roxy_codex_oauth.py` | 2,802 | Roxy Codex OAuth 页面流程 |
 | `core/storage/operation.py` | 2,094 | 统一任务中心投影、读写、运行时和迁移；旧模块为兼容别名 |
-| `core/registration/browser_use.py` | 2,089 | Browser Use/Skyvern 注册实现及页面流程；旧路径为兼容别名 |
+| `core/registration/browser_use.py` | 2,089 | 已停用的 Browser Use/Skyvern 历史实现；不作为新流程依赖 |
 | `core/codex_oauth.py` | 1,721 | Codex OAuth 调度与协议实现 |
 
 ## 3. 当前调用链
@@ -62,7 +62,7 @@ WebUI POST /api/jobs
   -> ThreadPoolExecutor
   -> core.registration_service._run_one_job
   -> core.registration.dispatcher.run_registration
-  -> protocol / roxy / cloak / browser_use / skyvern
+  -> roxy / protocol
   -> 保存账号、收口邮箱和代理、执行 Codex/2FA/套餐后置步骤
 
 CLI main.py
@@ -81,7 +81,7 @@ Web/API/注册后置步骤
   -> operation_tasks / operation_runs
   -> 账号资源租约和 operation_resources
   -> core.codex_oauth.run_codex_oauth
-  -> protocol / roxy / browser_use / skyvern
+  -> roxy / protocol
   -> operation_events 和凭证状态收口
 ```
 
@@ -125,7 +125,7 @@ Codex 补跑已经使用原生统一任务运行模型；其他账号操作仍�
 | `docs/` | 当前架构、专项设计、迁移方案和协议分析 |
 | `core/registration/` | 注册公共能力、驱动实现、驱动分发和纯协议注册流程 |
 | `core/registration/selenium_auth.py` | Selenium 登录挑战、OTP、资料和 ChatGPT session 公共能力边界 |
-| `core/registration/browser_use_auth.py` | Browser Use/Skyvern 登录挑战和 OTP 公共能力边界 |
+| `core/registration/browser_use_auth.py` | 已停用的 Browser Use/Skyvern 历史兼容能力 |
 | `core/storage/` | 账号、注册任务、邮箱池、Codex 和统一 operation 存储入口 |
 | `core/operations/` | 账号任务兼容存储、统一 task gateway 和 operation 投影边界 |
 | `docs/compatibility-inventory.md` | 兼容入口、孤儿代码和观察期删除条件 |

@@ -806,46 +806,34 @@ def _run_worker_legacy(
             detail={"oauth_driver": oauth_driver or "protocol"},
             state="success",
         )
-        # Browser Use / Skyvern 的浏览器运行在云端，只能使用云服务自身的代理设置；
-        # protocol / Roxy / Cloak 才能注入本地申请的 1024Proxy 或静态代理池。
-        if oauth_driver not in {"browser_use", "browseruse", "browser-use", "bu", "skyvern", "sv"}:
-            from core.account_proxy import acquire_account_proxy
-            account = db.get_account_by_email(email) or {}
-            account_route = acquire_account_proxy(
-                account_id=int(account.get("id") or 0) or None,
-                email=email,
-                purpose="codex-oauth",
-            )
-            route_summary = account_route.public_dict()
-            logger.info(
-                "[Codex 补跑] 账号网络：provider=%s region=%s route=%s proxy=%s",
-                account_route.provider,
-                account_route.region or "-",
-                account_route.public_dict().get("network_route"),
-                account_route.public_dict().get("proxy_used") or "-",
-            )
-            account_task_store.append_event(
-                task_id,
-                stage="network",
-                message="已分配账号补跑线路",
-                detail={
-                    "network_route": route_summary.get("network_route"),
-                    "proxy_mode": account_route.mode,
-                    "proxy_provider": account_route.provider,
-                    "proxy_region": account_route.region,
-                    "proxy_used": route_summary.get("proxy_used"),
-                },
-                state="success",
-            )
-        else:
-            route_summary = {"network_route": "cloud_driver"}
-            account_task_store.append_event(
-                task_id,
-                stage="network",
-                message="云端浏览器驱动使用平台线路",
-                detail={"network_route": "cloud_driver"},
-                state="success",
-            )
+        from core.account_proxy import acquire_account_proxy
+        account = db.get_account_by_email(email) or {}
+        account_route = acquire_account_proxy(
+            account_id=int(account.get("id") or 0) or None,
+            email=email,
+            purpose="codex-oauth",
+        )
+        route_summary = account_route.public_dict()
+        logger.info(
+            "[Codex 补跑] 账号网络：provider=%s region=%s route=%s proxy=%s",
+            account_route.provider,
+            account_route.region or "-",
+            account_route.public_dict().get("network_route"),
+            account_route.public_dict().get("proxy_used") or "-",
+        )
+        account_task_store.append_event(
+            task_id,
+            stage="network",
+            message="已分配账号补跑线路",
+            detail={
+                "network_route": route_summary.get("network_route"),
+                "proxy_mode": account_route.mode,
+                "proxy_provider": account_route.provider,
+                "proxy_region": account_route.region,
+                "proxy_used": route_summary.get("proxy_used"),
+            },
+            state="success",
+        )
         account = db.get_account_by_email(email) or {}
         _run_retry_plan_check(
             email,
