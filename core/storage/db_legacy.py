@@ -666,6 +666,30 @@ def _sync_operation_job(job_id: int) -> None:
         logger.exception("同步统一任务中心失败：registration_job_id=%s", job_id)
 
 
+def _ensure_registration_attempt_job(row: dict) -> None:
+    """Create/link the durable Attempt before the compatibility projection.
+
+    ``registration_jobs`` remains the legacy execution row, but every new job and
+    retry must carry an explicit Attempt link.  Failures here are surfaced to the
+    caller: silently creating an unlinked execution would make recovery unsafe.
+    """
+    from core.storage import registration
+
+    attempt = registration.ensure_attempt_for_job(int(row["id"]))
+    attempt_id = int(attempt["id"])
+    row["attempt_id"] = attempt_id
+    record_store.patch_row(record_store.JOBS, int(row["id"]), {"attempt_id": attempt_id})
+    # A legacy job is still one concrete execution.  Persist its Run #1 at the
+    # same compatibility boundary; retries receive another Run under this Attempt.
+    registration.start_run(
+        attempt_id,
+        job_id=int(row["id"]),
+        action_type=str(row.get("job_type") or "registration"),
+        execution_id=row.get("execution_id"),
+        worker_pid=row.get("worker_pid"),
+    )
+
+
 def _patch_job(job_id: int, changes: dict) -> bool:
     changed = _patch_row_and_export(record_store.JOBS, job_id, changes, "jobs")
     if changed:
@@ -2692,6 +2716,7 @@ def create_job(
         )
         rows.append(row)
         _save_jobs(rows)
+        _ensure_registration_attempt_job(row)
         _sync_operation_job(int(row["id"]))
         return dict(row)
 
@@ -2756,6 +2781,7 @@ def create_retry_job(
         )
         rows.append(row)
         _save_jobs(rows)
+        _ensure_registration_attempt_job(row)
         _sync_operation_job(int(row["id"]))
         return dict(row), True
 
@@ -3075,6 +3101,12 @@ def recover_interrupted_registration_jobs() -> int:
             for row in rows:
                 if str(row.get("status") or "") == "failed" and str(row.get("error_message") or "").startswith("WebUI 进程重启"):
                     _sync_operation_job(int(row["id"]))
+        try:
+            from core.storage import registration
+
+            registration.recover_interrupted_runs()
+        except Exception:
+            logger.exception("恢复 RegistrationRun 失败")
         return recovered
 
 

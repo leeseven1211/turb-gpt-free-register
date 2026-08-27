@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from core import registration_debug as debug
+from core.task_stages import EVENT_TYPES
 
 
 class _FakeResponse:
@@ -118,7 +119,7 @@ class RegistrationDebugTests(unittest.TestCase):
         self.assertEqual(session.debug_state, "hold_skipped")
         session.finalize("failed")
 
-    def test_failure_only_session_is_lazy_and_captures_redacted_page_snapshot(self):
+    def test_failure_only_session_is_lazy_and_captures_raw_page_snapshot(self):
         session = debug.RegistrationDebugSession(self.job(10), capture_mode="failure_only")
         self.assertFalse((self.root / "job-10").exists())
         session.update_stage("page")
@@ -140,7 +141,7 @@ class RegistrationDebugTests(unittest.TestCase):
         state = json.loads((artifact_dir / "last-page.json").read_text(encoding="utf-8"))
         self.assertEqual(state["failure_category"], "network_or_proxy")
         self.assertEqual(state["dom"]["input_count"], 0)
-        self.assertNotIn("user@example.com", json.dumps(state, ensure_ascii=False))
+        self.assertIn("user@example.com", json.dumps(state, ensure_ascii=False))
         rows = debug.read_events({**self.job(10), "failure_diagnostics_artifact_dir": str(artifact_dir)}, errors_only=True)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["status"], 503)
@@ -220,7 +221,7 @@ class RegistrationDebugTests(unittest.TestCase):
         self.assertEqual(first.summary()["request_count"], 1)
         self.assertEqual(second.summary()["http_error_count"], 1)
 
-    def test_protocol_exchange_is_sanitized_and_recorded(self):
+    def test_protocol_exchange_is_raw_and_recorded(self):
         session = debug.RegistrationDebugSession(self.job(3))
         token = debug._CURRENT_SESSION.set(session)
         try:
@@ -240,9 +241,9 @@ class RegistrationDebugTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         row = rows[0]
         self.assertEqual(row["status"], 403)
-        self.assertNotIn("raw-password", str(row))
-        self.assertNotIn("very-secret-token", str(row))
-        self.assertNotIn("session=private", str(row))
+        self.assertIn("raw-password", str(row))
+        self.assertIn("very-secret-token", str(row))
+        self.assertIn("session=private", str(row))
         self.assertIn("blocked", str(row))
 
     def test_roxy_cdp_events_become_one_isolated_network_record(self):
@@ -288,8 +289,8 @@ class RegistrationDebugTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["status"], 429)
         self.assertIn("ERR_FAILED", rows[0]["failure"])
-        self.assertNotIn("123456", str(rows[0]))
-        self.assertNotIn("session=private", str(rows[0]))
+        self.assertIn("123456", str(rows[0]))
+        self.assertIn("session=private", str(rows[0]))
 
     def test_failure_hold_can_be_released(self):
         session = debug.RegistrationDebugSession(self.job(4))
@@ -326,6 +327,77 @@ class RegistrationDebugTests(unittest.TestCase):
         self.assertEqual(comparison["difference_count"], 1)
         self.assertEqual(comparison["differences"][0]["baseline"]["status"], 200)
         self.assertEqual(comparison["differences"][0]["target"]["status"], 429)
+
+    def test_partial_success_finalization_captures_context_evidence_and_timings(self):
+        job = self.job(14)
+        job.update({
+            "debug_enabled": False,
+            "attempt_id": 41,
+            "run_id": 42,
+            "email_evidence": {
+                "email": "person@example.com",
+                "source": "gptmail",
+                "otp_received": True,
+                "account_created": True,
+                "persisted": True,
+                "release_result": "released",
+            },
+            "error": "2FA post-processing failed",
+        })
+        session = debug.RegistrationDebugSession(job, capture_mode="failure_only")
+        session.update_stage("email_otp", wait_reason="email_wait")
+        session.update_stage("twofa", state="failed", wait_reason="driver_command")
+        session.finalize("partial_success")
+
+        artifact_dir = self.root / "job-14"
+        manifest = json.loads((artifact_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["attempt_id"], 41)
+        self.assertEqual(manifest["run_id"], 42)
+        self.assertEqual(manifest["trigger_stage"], "twofa")
+        self.assertEqual(manifest["email_evidence"]["email"], "person@example.com")
+        timings = manifest["summary"]["stage_timings"]
+        self.assertTrue(any(item["stage"] == "email_otp" and item["wait_reason"] == "email_wait" for item in timings))
+        self.assertTrue(any(item["stage"] == "twofa" and item["duration_ms"] >= 0 for item in timings))
+        stage_event = next(item for item in debug.read_timeline({**job, "failure_diagnostics_artifact_dir": str(artifact_dir)}) if item.get("event_type") == "stage" and item.get("stage") == "twofa")
+        self.assertEqual(stage_event["state_before"], "pending")
+        self.assertEqual(stage_event["state_after"], "failed")
+        self.assertIn(stage_event["wait_reason"], {"driver_command"})
+        self.assertIn(stage_event["event_type"], EVENT_TYPES)
+        timeline = debug.read_timeline({**job, "failure_diagnostics_artifact_dir": str(artifact_dir)})
+        self.assertTrue(any(item.get("kind") == "failure_diagnostics" and item.get("status") == "partial_success" for item in timeline))
+
+    def test_unknown_state_is_captured_and_no_network_error_is_explicit(self):
+        job = self.job(15)
+        job.update({"debug_enabled": False, "attempt_id": 51, "run_id": 52})
+        session = debug.RegistrationDebugSession(job, capture_mode="failure_only")
+        session.update_context(last_confirmed_state="UNKNOWN")
+        session.update_stage("auth_redirect", wait_reason="page_transition")
+        session.finalize("failed")
+        summary = session.summary()
+        self.assertFalse(summary["network_error_observed"])
+        self.assertEqual(summary["last_confirmed_state"], "UNKNOWN")
+        timeline = debug.read_timeline({**job, "failure_diagnostics_artifact_dir": str(session.artifact_dir)})
+        event = next(item for item in timeline if item.get("kind") == "failure_diagnostics")
+        self.assertEqual(event["last_confirmed_state"], "UNKNOWN")
+        self.assertFalse(event["network_error_observed"])
+
+    def test_b_attempt_run_and_execution_aliases_are_carried_by_events(self):
+        job = self.job(16)
+        job.update({
+            "debug_enabled": False,
+            "attempt_id": 61,
+            "active_run_id": 62,
+            "execution_id": "exec-62",
+        })
+        session = debug.RegistrationDebugSession(job, capture_mode="failure_only")
+        session.update_stage("account_request_started", wait_reason="driver_command")
+        session.pause_failure(None, "remote account request returned unknown")
+        session.finalize("failed")
+        timeline = debug.read_timeline({**job, "failure_diagnostics_artifact_dir": str(session.artifact_dir)})
+        event = next(item for item in timeline if item.get("event_type") == "failure_diagnostics")
+        self.assertEqual(event["attempt_id"], 61)
+        self.assertEqual(event["run_id"], 62)
+        self.assertEqual(event["execution_id"], "exec-62")
 
 
 if __name__ == "__main__":

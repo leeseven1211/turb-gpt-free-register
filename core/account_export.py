@@ -398,34 +398,29 @@ def setup_2fa(session: BrowserSession, email: str, otp_code: str | None = None) 
     return secret
 
 
-def save_account_data(
+def persist_account_core(
     email: str,
     access_token: str,
     totp_secret: str | None = None,
     extra: dict | None = None,
-    output_path: Path | None = None,  # 兼容老接口，已废弃
     email_source: str | None = None,
     proxy_used: str | None = None,
-    plan_check_proxy: str | None = None,
-    captured_plan_result: dict | None = None,
     batch_dir: Path | None = None,
-    plan_check_session: BrowserSession | None = None,
 ) -> int:
-    """
-    将账号信息保存到本地 JSON/TXT 文件存储。
-    返回新插入/更新的 row id。
+    """Persist the registration core without running any post-processing.
+
+    Token acquisition is the registration boundary.  This helper intentionally
+    stops after the account row and batch archive are durable; callers can then
+    run 2FA, Codex, or plan checks independently and record their outcomes.
     """
     from core.db import insert_account
+
     extra = extra or {}
     user = extra.get("user") or {}
     account = extra.get("account") or {}
-    # 从 extra.codex 抽出顶层 codex 状态/错误，方便 WebUI 直接读账号字段
     codex = extra.get("codex") or {}
-    codex_status = codex.get("status")  # success / failed / skipped
-    codex_error = None
-    if codex_status == "failed":
-        codex_error = codex.get("message")
-
+    codex_status = codex.get("status")
+    codex_error = codex.get("message") if codex_status == "failed" else None
     row_id = insert_account(
         email=email,
         access_token=access_token,
@@ -451,8 +446,38 @@ def save_account_data(
         extra=extra,
         batch_dir=batch_dir,
     )
-    logger.info(f"[Save] 账号已写入 DB, id={row_id}, email={email}")
-    logger.info(f"[Save] 批次归档目录: {batch_folder}")
+    logger.info("[Save] 账号核心已写入 DB, id=%s, email=%s", row_id, email)
+    logger.info("[Save] 批次归档目录: %s", batch_folder)
+    return row_id
+
+
+def save_account_data(
+    email: str,
+    access_token: str,
+    totp_secret: str | None = None,
+    extra: dict | None = None,
+    output_path: Path | None = None,  # 兼容老接口，已废弃
+    email_source: str | None = None,
+    proxy_used: str | None = None,
+    plan_check_proxy: str | None = None,
+    captured_plan_result: dict | None = None,
+    batch_dir: Path | None = None,
+    plan_check_session: BrowserSession | None = None,
+) -> int:
+    """
+    将账号信息保存到本地 JSON/TXT 文件存储。
+    返回新插入/更新的 row id。
+    """
+    extra = extra or {}
+    row_id = persist_account_core(
+        email=email,
+        access_token=access_token,
+        totp_secret=totp_secret,
+        extra=extra,
+        email_source=email_source,
+        proxy_used=proxy_used,
+        batch_dir=batch_dir,
+    )
 
     # WebUI 注册线程会把这个阶段写入当前任务；CLI 或非任务调用中会自动忽略。
     from core.registration_service import report_job_progress
