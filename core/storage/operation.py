@@ -29,6 +29,16 @@ _TERMINAL_STATUSES = {
     "success", "partial_success", "failed", "stopped", "cancelled", "interrupted",
     "deactivated", "unsupported", "attention_required",
 }
+_REGISTRATION_CHECKPOINTS = (
+    "created", "email_claimed", "auth_started", "password_request_started",
+    "password_confirmed", "otp_started", "otp_confirmed", "account_request_started",
+    "account_confirmed", "token_obtained", "core_persisted", "postprocessing",
+    "completed", "manual_reconcile", "failed",
+)
+_LEGACY_REGISTRATION_CHECKPOINT_MAP = {
+    "registered": "core_persisted",
+    "email_verification_pending": "account_request_started",
+}
 _SECRET_PARTS = ("password", "otp", "secret", "authorization", "cookie", "token")
 _JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{8,}\b")
 _PROXY_RE = re.compile(r"(?P<scheme>https?://)[^/@\s]+@", re.IGNORECASE)
@@ -412,28 +422,30 @@ def _account_extra(account: dict | None) -> dict:
 def _account_state(account: dict | None) -> dict[str, str]:
     if not account:
         return {
-            "checkpoint": "unknown", "remote_identity_state": "unknown",
-            "remote_account_state": "unknown", "local_account_state": "missing",
+            "checkpoint": "created", "remote_identity_state": "not_started",
+            "remote_account_state": "not_started", "local_account_state": "none",
             "target_status": "not_created",
         }
     extra = _account_extra(account)
-    checkpoint = str(extra.get("registration_checkpoint") or "unknown")
+    legacy_checkpoint = str(extra.get("registration_checkpoint") or "").strip().lower()
+    checkpoint = _LEGACY_REGISTRATION_CHECKPOINT_MAP.get(legacy_checkpoint, legacy_checkpoint)
     has_token = bool(str(account.get("access_token") or "").strip())
     if has_token:
         return {
-            "checkpoint": checkpoint if checkpoint != "unknown" else "registered",
-            "remote_identity_state": "verified", "remote_account_state": "created",
-            "local_account_state": "saved", "target_status": "account_available",
+            "checkpoint": checkpoint if checkpoint in _REGISTRATION_CHECKPOINTS else "core_persisted",
+            "remote_identity_state": "confirmed", "remote_account_state": "confirmed",
+            "local_account_state": "persisted", "target_status": "account_available",
         }
-    if checkpoint == "email_verification_pending":
+    if legacy_checkpoint == "email_verification_pending":
         return {
-            "checkpoint": checkpoint, "remote_identity_state": "created_unverified",
-            "remote_account_state": "pending_profile", "local_account_state": "checkpoint_saved",
+            "checkpoint": "account_request_started", "remote_identity_state": "confirmed",
+            "remote_account_state": "request_unknown", "local_account_state": "none",
             "target_status": "email_verification_pending",
         }
     return {
-        "checkpoint": checkpoint, "remote_identity_state": "unknown",
-        "remote_account_state": "unknown", "local_account_state": "checkpoint_saved",
+        "checkpoint": checkpoint if checkpoint in _REGISTRATION_CHECKPOINTS else "created",
+        "remote_identity_state": "not_started", "remote_account_state": "not_started",
+        "local_account_state": "none",
         "target_status": "attention_required",
     }
 
@@ -506,6 +518,19 @@ def _upsert_batch(
 
 def _upsert_attempt(cur, *, root_job_id: int, job: dict, account: dict | None) -> int:
     state = _account_state(account)
+    extra = _account_extra(account)
+    raw_checkpoint = str(extra.get("registration_checkpoint") or "").strip().lower()
+    attempt_data = {"legacy_root_job_id": root_job_id}
+    if raw_checkpoint in _LEGACY_REGISTRATION_CHECKPOINT_MAP:
+        attempt_data.update({
+            "legacy_registration_checkpoint": raw_checkpoint,
+            "legacy_checkpoint": raw_checkpoint,
+            "checkpoint_migration": {
+                "from": raw_checkpoint,
+                "to": _LEGACY_REGISTRATION_CHECKPOINT_MAP[raw_checkpoint],
+                "source": "operation_projection",
+            },
+        })
     cur.execute(
         f"""
         INSERT INTO {_table('registration_attempts')} (
@@ -535,7 +560,7 @@ def _upsert_attempt(cur, *, root_job_id: int, job: dict, account: dict | None) -
             state["local_account_state"], state["target_status"], job.get("created_at") or _now(),
             job.get("updated_at") or job.get("completed_at") or _now(),
             job.get("completed_at") if state["target_status"] == "account_available" else None,
-            _json({"legacy_root_job_id": root_job_id}),
+            _json(attempt_data),
         ),
     )
     return int(cur.fetchone()["id"])
@@ -588,6 +613,10 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
     if account is None and job.get("email"):
         account = accounts_by_email.get(str(job.get("email") or "").strip().lower())
     attempt_id = _upsert_attempt(cur, root_job_id=root_job_id, job=job, account=account)
+    cur.execute(
+        f"UPDATE {postgres_store.qualified('registration_jobs')} SET attempt_id=%s WHERE id=%s",
+        (attempt_id, job_id),
+    )
     state = _account_state(account)
     batch_id = None
     legacy_batch_id = str(job.get("batch_id") or "").strip()
