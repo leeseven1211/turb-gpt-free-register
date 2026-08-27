@@ -221,10 +221,10 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
         if recovered_account_tasks:
             active_logger.warning("已恢复 %s 个因 WebUI 重启中断的账号任务实例", recovered_account_tasks)
         operation_task_store.init()
-        operation_task_store.start_projection_worker()
         recovered_operation_runs = operation_task_store.recover_interrupted_runtime_runs()
         if recovered_operation_runs:
             active_logger.warning("已收口 %s 个因 WebUI 重启中断的原生账号操作", recovered_operation_runs)
+        operation_task_store.start_projection_worker()
         try:
             from core.roxybrowser_client import cleanup_orphaned_profiles
 

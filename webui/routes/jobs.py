@@ -57,6 +57,39 @@ def _diagnostic_event_contract() -> dict:
         "error_fields": sorted(ERROR_FIELDS),
     }
 
+
+def _attach_projection_status(result: dict) -> dict:
+    """把统一批次的异步投影状态附到旧 jobs 进度响应。
+
+    统一投影表不可用时保留旧响应形状，避免迁移期间阻断注册任务列表。
+    """
+    try:
+        batches = operation_task_store.list_batches(limit=50)
+    except Exception:
+        logger.debug("读取统一批次投影状态失败", exc_info=True)
+        return result
+    by_source_id = {
+        str(item.get("source_id")): item
+        for item in batches
+        if str(item.get("source_system") or "") == "registration_batches"
+    }
+    fields = (
+        "projection_status", "projection_delayed", "projection_lag_ms",
+        "projection_queue_error", "projection_queue_next_retry_at",
+    )
+
+    def merge(batch: dict | None) -> None:
+        if not batch:
+            return
+        projected = by_source_id.get(str(batch.get("batch_id") or ""))
+        if projected:
+            batch.update({key: projected.get(key) for key in fields})
+
+    merge(result.get("progress_batch"))
+    for batch in result.get("progress_batches") or []:
+        merge(batch)
+    return result
+
 def create_jobs_blueprint(context: WebUIContext):
     bp = LegacyEndpointBlueprint("jobs", __name__)
     logger = context.logger
@@ -105,6 +138,7 @@ def create_jobs_blueprint(context: WebUIContext):
             row["manual_otp_required"] = manual_otp_required
         result["items"] = [_compact_job_for_list(row) for row in rows]
         result["progress_batch"] = _latest_progress_batch(result.pop("progress_rows", []))
+        result = _attach_projection_status(result)
         result["compact"] = True
         if not (paged or page_arg is not None or page_size_arg is not None):
             return jsonify(result["items"])

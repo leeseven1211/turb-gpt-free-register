@@ -39,6 +39,7 @@ _SECRET_PARTS = ("password", "otp", "secret", "authorization", "cookie", "token"
 _JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{8,}\b")
 _PROXY_RE = re.compile(r"(?P<scheme>https?://)[^/@\s]+@", re.IGNORECASE)
 _PROJECTION_RETRY_BASE_SECONDS = 5.0
+_PROJECTION_LEASE_TIMEOUT_SECONDS = 15 * 60
 
 
 def _schema_name() -> str:
@@ -346,6 +347,30 @@ def init() -> None:
                     UNIQUE(batch_id)
                 )
                 """
+            )
+            for column_sql in (
+                f"batch_id BIGINT REFERENCES {_table('operation_batches')}(id) ON DELETE CASCADE",
+                "reason TEXT NOT NULL DEFAULT 'event'",
+                "source_system TEXT NOT NULL DEFAULT ''",
+                "source_id TEXT NOT NULL DEFAULT ''",
+                "status TEXT NOT NULL DEFAULT 'queued'",
+                "attempts INTEGER NOT NULL DEFAULT 0",
+                "requested_at TIMESTAMPTZ NOT NULL DEFAULT now()",
+                "available_at TIMESTAMPTZ NOT NULL DEFAULT now()",
+                "started_at TIMESTAMPTZ",
+                "completed_at TIMESTAMPTZ",
+                "worker_id TEXT",
+                "dirty BOOLEAN NOT NULL DEFAULT FALSE",
+                "last_error TEXT",
+                "created_at TIMESTAMPTZ NOT NULL DEFAULT now()",
+                "updated_at TIMESTAMPTZ NOT NULL DEFAULT now()",
+            ):
+                cur.execute(
+                    f"ALTER TABLE {_table('operation_projection_queue')} ADD COLUMN IF NOT EXISTS {column_sql}"
+                )
+            cur.execute(
+                f"CREATE UNIQUE INDEX IF NOT EXISTS {_quote('uq_operation_projection_queue_batch')} "
+                f"ON {_table('operation_projection_queue')} (batch_id)"
             )
             cur.execute(
                 f"""
@@ -1105,7 +1130,7 @@ def _enqueue_batch_projection_cur(
     # writer is running marks the row dirty so the writer runs once more.
     cur.execute(
         f"""
-        INSERT INTO {_table('operation_projection_queue')} (
+        INSERT INTO {_table('operation_projection_queue')} AS queue (
             batch_id, reason, source_system, source_id, status, requested_at, available_at
         ) VALUES (%s,%s,%s,%s,'queued',%s,%s)
         ON CONFLICT (batch_id) DO UPDATE SET
@@ -1113,16 +1138,16 @@ def _enqueue_batch_projection_cur(
             source_system=EXCLUDED.source_system,
             source_id=EXCLUDED.source_id,
             requested_at=EXCLUDED.requested_at,
-            status=CASE WHEN {_table('operation_projection_queue')}.status='running'
+            status=CASE WHEN queue.status='running'
                         THEN 'running' ELSE 'queued' END,
-            dirty=CASE WHEN {_table('operation_projection_queue')}.status='running'
+            dirty=CASE WHEN queue.status='running'
                        THEN TRUE ELSE FALSE END,
-            available_at=CASE WHEN {_table('operation_projection_queue')}.status='running'
-                              THEN {_table('operation_projection_queue')}.available_at ELSE EXCLUDED.available_at END,
-            completed_at=CASE WHEN {_table('operation_projection_queue')}.status='running'
-                              THEN {_table('operation_projection_queue')}.completed_at ELSE NULL END,
-            last_error=CASE WHEN {_table('operation_projection_queue')}.status='running'
-                            THEN {_table('operation_projection_queue')}.last_error ELSE NULL END,
+            available_at=CASE WHEN queue.status='running'
+                              THEN queue.available_at ELSE EXCLUDED.available_at END,
+            completed_at=CASE WHEN queue.status='running'
+                              THEN queue.completed_at ELSE NULL END,
+            last_error=CASE WHEN queue.status='running'
+                            THEN queue.last_error ELSE NULL END,
             updated_at=now()
         RETURNING *
         """,
@@ -1165,6 +1190,19 @@ def enqueue_batch_projection(
 
 def _claim_projection_cur(cur, *, worker_id: str) -> dict | None:
     # Fixed lock order: projection_queue row -> operation_batches row.
+    # A process crash can leave a queue row in ``running`` forever.  Reclassify
+    # only expired leases before claiming so a later worker can retry it.
+    cur.execute(
+        f"""
+        UPDATE {_table('operation_projection_queue')}
+        SET status='failed', available_at=now(), worker_id=NULL,
+            last_error=COALESCE(last_error, 'projection worker lease expired'), updated_at=now()
+        WHERE status='running'
+          AND started_at IS NOT NULL
+          AND started_at < now() - (%s * interval '1 second')
+        """,
+        (_PROJECTION_LEASE_TIMEOUT_SECONDS,),
+    )
     cur.execute(
         f"""
         SELECT q.*, b.batch_uuid, b.source_system AS batch_source_system,
@@ -1250,6 +1288,7 @@ def _complete_projection(batch_id: int, queue_id: int) -> dict:
                 """,
                 (now, now, int(queue_id)),
             )
+            updated_queue = dict(cur.fetchone())
             cur.execute(
                 f"""
                 UPDATE {_table('operation_batches')}
@@ -1269,6 +1308,7 @@ def _complete_projection(batch_id: int, queue_id: int) -> dict:
                 """,
                 (now, now, int(queue_id)),
             )
+            updated_queue = dict(cur.fetchone())
             cur.execute(
                 f"""
                 UPDATE {_table('operation_batches')}
@@ -1278,7 +1318,7 @@ def _complete_projection(batch_id: int, queue_id: int) -> dict:
                 """,
                 (now, int(batch_id)),
             )
-        return _row(dict(cur.fetchone())) or {}
+        return _row(updated_queue) or {}
 
 
 def _fail_projection(batch_id: int, queue_id: int, error: BaseException) -> dict:
@@ -1309,6 +1349,7 @@ def _fail_projection(batch_id: int, queue_id: int, error: BaseException) -> dict
             """,
             (retry_at, message, now, int(queue_id)),
         )
+        updated_queue = dict(cur.fetchone())
         cur.execute(
             f"""
             UPDATE {_table('operation_batches')}
@@ -1318,7 +1359,7 @@ def _fail_projection(batch_id: int, queue_id: int, error: BaseException) -> dict
             """,
             (now, retry_at, message, int(batch_id)),
         )
-        return _row(dict(cur.fetchone())) or {}
+        return _row(updated_queue) or {}
 
 
 def _compat_registration_event_detail(event: dict) -> tuple[str, str, dict, str | None, str | None]:
@@ -1427,6 +1468,35 @@ def _project_registration_fact_events(cur, batch_id: int) -> int:
     return projected
 
 
+def _repair_terminal_task_projection(cur, batch_id: int) -> int:
+    """收口已有终态 Run 对应的卡住任务，只修改统一投影表。"""
+    terminal_statuses = tuple(sorted(_TERMINAL_STATUSES))
+    placeholders = ", ".join("%s" for _ in terminal_statuses)
+    cur.execute(
+        f"""
+        WITH latest AS (
+            SELECT DISTINCT ON (run.task_id)
+                   run.task_id, run.status, run.completed_at, run.error_message
+            FROM {_table('operation_runs')} run
+            JOIN {_table('operation_tasks')} task ON task.id=run.task_id
+            WHERE task.batch_id=%s
+            ORDER BY run.task_id, run.run_no DESC, run.id DESC
+        )
+        UPDATE {_table('operation_tasks')} task
+        SET status=latest.status, current_stage='complete',
+            completed_at=COALESCE(task.completed_at, latest.completed_at),
+            error_message=COALESCE(task.error_message, latest.error_message), updated_at=now()
+        FROM latest
+        WHERE task.id=latest.task_id
+          AND latest.status IN ({placeholders})
+          AND task.status IN ('queued','running','stopping','cancelling','settling','waiting')
+        RETURNING task.id
+        """,
+        (int(batch_id), *terminal_statuses),
+    )
+    return len(cur.fetchall())
+
+
 def _project_claimed_batch(claimed: dict) -> None:
     batch_id = int(claimed["batch_id"])
     if str(claimed.get("batch_source_system") or "") == "registration_batches":
@@ -1439,6 +1509,7 @@ def _project_claimed_batch(claimed: dict) -> None:
             # anyway and let the queue retry when the additive tables appear.
             logger.debug("注册事实表尚未就绪，跳过事实事件投影", exc_info=True)
     with _connect() as conn, conn.cursor() as cur:
+        _repair_terminal_task_projection(cur, batch_id)
         _project_registration_fact_events(cur, batch_id)
         _refresh_batches(cur, [batch_id])
 
@@ -2631,6 +2702,8 @@ def verify() -> dict[str, Any]:
             "duplicate_active_account_families": f"SELECT COUNT(*) FROM (SELECT account_id, resource_family FROM {_table('operation_runs')} WHERE account_id IS NOT NULL AND status IN ('queued','running','cancelling','settling') GROUP BY account_id, resource_family HAVING COUNT(*) > 1) AS duplicates",
             "terminal_run_leases": f"SELECT COUNT(*) FROM {_table('account_operation_leases')} lease JOIN {_table('operation_runs')} run ON run.id=lease.run_id WHERE run.status NOT IN ('queued','running','cancelling','settling')",
             "terminal_acquired_resources": f"SELECT COUNT(*) FROM {_table('operation_resources')} resource JOIN {_table('operation_runs')} run ON run.id=resource.run_id WHERE run.status NOT IN ('queued','running','cancelling','settling') AND resource.state='acquired'",
+            "projection_queue_invalid_status": f"SELECT COUNT(*) FROM {_table('operation_projection_queue')} WHERE status NOT IN ('queued','running','succeeded','failed')",
+            "projection_queue_orphans": f"SELECT COUNT(*) FROM {_table('operation_projection_queue')} q LEFT JOIN {_table('operation_batches')} b ON b.id=q.batch_id WHERE b.id IS NULL",
         }
         for key, sql in queries.items():
             cur.execute(sql)
@@ -2648,5 +2721,7 @@ def verify() -> dict[str, Any]:
         and checks["duplicate_active_account_families"] == 0
         and checks["terminal_run_leases"] == 0
         and checks["terminal_acquired_resources"] == 0
+        and checks["projection_queue_invalid_status"] == 0
+        and checks["projection_queue_orphans"] == 0
     )
     return {"ok": ok, "checks": checks}
