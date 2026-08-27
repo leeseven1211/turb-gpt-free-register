@@ -14,7 +14,6 @@ from config import twofa as _twofa_cfg
 from core.account_export import (
     fetch_session,
     follow_oauth_callback,
-    save_account_data,
     setup_2fa_protocol,
 )
 from core.chatgpt_auth import get_csrf_token, get_providers, signin_openai
@@ -353,6 +352,30 @@ def run_protocol_registration(
                 )
             human_delay("post_auth")
 
+        # Token is the registration boundary.  Persist the core account before
+        # entering any independent 2FA/Codex/plan work.  This is outside the
+        # page-shape branches so the existing-session OAuth path is covered too.
+        from core.registration_service import persist_registration_core
+        from core.email_provider import resolve_email_source
+
+        account_id = persist_registration_core(
+            email=email,
+            access_token=access_token,
+            email_source=resolve_email_source(email),
+            proxy_used=session.proxy or None,
+            batch_dir=batch_dir,
+            extra={
+                "user": session_info.get("user"),
+                "account": session_info.get("account"),
+                "expires": session_info.get("expires"),
+                "device_id": session.device_id,
+                "sentinel_sid": getattr(session, "sentinel_sid", None),
+                "browser_profile": getattr(session, "browser_profile", None),
+                "registration_checkpoint": "core_persisted",
+            },
+        )
+        logger.info(f"[核心完成] {email}，账号ID={account_id}，Token={access_token[:16]}...")
+
         # ==================== 阶段7: 设置 2FA ====================
         totp_secret = None
         if _twofa_cfg.ENABLE_2FA:
@@ -415,30 +438,43 @@ def run_protocol_registration(
         else:
             logger.warning(f"[Codex] 失败：{email}，原因={codex_result.get('message')}")
 
-        # ==================== 阶段8: 持久化账号 ====================
-        from core.email_provider import resolve_email_source
+        # Post-processing is deliberately outside the core persistence call.
+        # Keep the existing status projections for account setup/retry views.
+        from core import db
+        if codex_result.get("status") in {"success", "failed", "skipped"}:
+            codex_status = "success" if codex_result.get("ok") and codex_result.get("status") != "skipped" else codex_result.get("status")
+            db.update_account_codex_status(
+                email,
+                codex_status,
+                None if codex_status in {"success", "skipped"} else str(codex_result.get("message") or "")[:500],
+            )
+        if totp_secret:
+            db.update_account_totp_secret(email, totp_secret)
+            db.update_account_twofa_status(email, "success", "协议 2FA 已启用")
+        elif _twofa_cfg.ENABLE_2FA:
+            db.update_account_twofa_status(email, "failed", "Authenticator 2FA 尚未完成")
 
-        account_id = save_account_data(
-            email=email,
-            access_token=access_token,
-            totp_secret=totp_secret,
-            email_source=resolve_email_source(email),
-            proxy_used=session.proxy or None,
-            plan_check_proxy=session.proxy,
-            plan_check_session=session,
-            batch_dir=batch_dir,
-            extra={
-                "user": session_info.get("user"),
-                "account": session_info.get("account"),
-                "expires": session_info.get("expires"),
-                "device_id": session.device_id,
-                "sentinel_sid": getattr(session, "sentinel_sid", None),
-                "browser_profile": getattr(session, "browser_profile", None),
-                "codex": codex_result,
-            },
-        )
+        # 套餐查询独立入队；注册主体不再等待它完成。
+        plan_result = {"status": "pending", "ok": False, "message": "套餐查询已独立入队"}
+        try:
+            from core.plan_check_service import enqueue_account_plan_check
 
-        logger.info(f"[完成] {email}，账号ID={account_id}，Token={access_token[:16]}...")
+            queued = enqueue_account_plan_check(
+                account_id=account_id,
+                email=email,
+                access_token=access_token,
+                trigger="registration_auto",
+            )
+            plan_result = {
+                "status": "pending" if queued.get("accepted") or queued.get("busy") else "failed",
+                # Enqueued/busy means the capability is not confirmed yet;
+                # keep it visible as a plan_check next action until its worker
+                # records a successful result.
+                "ok": False,
+                "message": "套餐查询已入队" if queued.get("accepted") else str(queued.get("error") or "套餐查询未入队"),
+            }
+        except Exception as exc:
+            plan_result = {"status": "failed", "ok": False, "message": f"{type(exc).__name__}: {str(exc)[:180]}"}
 
         # ==================== 阶段9: 后置自动触发 flow ====================
         flow_result = {"status": "skipped", "ok": False, "message": "未触发"}
@@ -465,20 +501,40 @@ def run_protocol_registration(
         logger.debug(f"[完成] TOTP Secret: {totp_secret or '(未设置)'}")
 
         codex_ok = codex_result.get("ok") or codex_result.get("status") == "skipped"
-        task_success = codex_ok
-        task_error = None
-        if not task_success:
-            task_error = f"Codex 未完成: {codex_result.get('message', '未知')}"
-            logger.warning(f"[任务结果] {email} 账号已保存但任务标失败，原因: {task_error}")
+        twofa_ok = (not _twofa_cfg.ENABLE_2FA) or bool(totp_secret)
+        postprocess_success = bool(codex_ok and twofa_ok and plan_result.get("ok"))
+        task_error = None if postprocess_success else "; ".join(
+            item for item in (
+                None if codex_ok else f"Codex 未完成: {codex_result.get('message', '未知')}",
+                None if twofa_ok else "2FA 未完成",
+                None if plan_result.get("ok") else "套餐查询待重试",
+            ) if item
+        )
+        from core.registration_postprocess import summarize_postprocess
+        readiness = summarize_postprocess(
+            core_success=True,
+            password_present=True,
+            outcomes={"twofa": {"status": "success" if twofa_ok else "failed", "ok": twofa_ok},
+                      "codex": codex_result, "plan_check": plan_result},
+            twofa_required=bool(_twofa_cfg.ENABLE_2FA),
+            codex_enabled=True,
+            plan_check_required=True,
+        )
 
         return {
-            "success": task_success,
+            "success": True,
+            "registration_success": True,
+            "postprocess_success": postprocess_success,
+            "partial_success": not postprocess_success,
             "email": email,
             "account_id": account_id,
             "access_token": access_token,
             "totp_secret": totp_secret,
             "flow": flow_result,
             "codex": codex_result,
+            "plan_check": plan_result,
+            "next_actions": [action.as_dict() for action in readiness.next_actions],
+            "account_readiness": readiness.account_readiness,
             "error": task_error,
         }
 

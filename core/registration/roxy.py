@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 from config import roxybrowser as _cfg
 from config import twofa as _twofa_cfg
-from core.account_export import save_account_data, setup_2fa_protocol
+from core.account_export import setup_2fa_protocol
 from core.email_provider import wait_for_otp, resolve_email_source
 from core.humanize import delay as human_delay
 from core.roxybrowser_client import RoxyBrowserClient, RoxyOpenResult
@@ -4025,15 +4025,23 @@ def run_roxy_registration(
 
         # 注册主体到这里已经成功。先保存账号、随机登录密码和 Token，并立即绑定任务；
         # 后续 Codex/2FA 或 WebUI 进程即使中断，也不能把已创建账号当成注册失败丢掉。
-        account_id = _save_roxy_account_checkpoint(
+        from core.registration_service import persist_registration_core
+
+        account_id = persist_registration_core(
             email=email,
             access_token=access_token,
-            session_info=session_info,
-            opened=opened,
-            openai_password=openai_password,
-            proxy=proxy,
+            email_source=resolve_email_source(email),
+            proxy_used=proxy or None,
+            batch_dir=batch_dir,
+            extra={
+                "user": session_info.get("user"),
+                "account": session_info.get("account"),
+                "expires": session_info.get("expires"),
+                "roxybrowser": {"profile_id": opened.profile_id, "open_result": opened.raw},
+                "account_password": openai_password,
+                "registration_checkpoint": "core_persisted",
+            },
         )
-        report_registered_account(account_id)
         logger.info("[Roxy注册] 注册主体已保存检查点：id=%s email=%s", account_id, email)
 
         codex_result = {
@@ -4171,32 +4179,33 @@ def run_roxy_registration(
         )
         report_registered_account(account_id)
 
-        account_id = save_account_data(
-            email=email,
-            access_token=access_token,
-            totp_secret=totp_secret,
-            email_source=resolve_email_source(email),
-            proxy_used=proxy or None,
-            plan_check_proxy=proxy or None,
-            captured_plan_result=captured_plan_result,
-            batch_dir=batch_dir,
-            plan_check_session=plan_check_session,
-            extra={
-                "user": session_info.get("user"),
-                "account": session_info.get("account"),
-                "expires": session_info.get("expires"),
-                "roxybrowser": {"profile_id": opened.profile_id, "open_result": opened.raw},
-                "account_password": openai_password,
-                "registration_checkpoint": "registered",
-                "codex": codex_result,
-                "twofa": twofa_result,
-                **(
-                    {"totp_setup_pending": True}
-                    if totp_secret and str(twofa_result.get("status") or "").lower() == "failed"
-                    else {}
-                ),
-            },
-        )
+        # Final account metadata is updated by the existing checkpoint helper.
+        # Plan lookup is independent work and is queued after the core account
+        # has already been persisted, so a network failure cannot roll back
+        # registration success.
+        plan_result = {"status": "pending", "ok": False, "message": "套餐查询已独立入队"}
+        try:
+            from core import db
+            if isinstance(captured_plan_result, dict) and captured_plan_result.get("ok"):
+                captured = dict(captured_plan_result)
+                captured["trigger"] = "registration_browser_response"
+                db.update_account_plan_check(acc_id=account_id, result=captured)
+                plan_result = {"status": "success", "ok": True, "message": "复用浏览器权益数据"}
+            else:
+                from core.plan_check_service import enqueue_account_plan_check
+                queued = enqueue_account_plan_check(
+                    account_id=account_id,
+                    email=email,
+                    access_token=access_token,
+                    trigger="registration_auto",
+                )
+                plan_result = {
+                    "status": "pending" if queued.get("accepted") or queued.get("busy") else "failed",
+                    "ok": False,
+                    "message": "套餐查询已入队" if queued.get("accepted") else str(queued.get("error") or "套餐查询未入队"),
+                }
+        except Exception as exc:
+            plan_result = {"status": "failed", "ok": False, "message": f"{type(exc).__name__}: {str(exc)[:180]}"}
         codex_ok = codex_result.get("ok") or codex_result.get("status") == "skipped"
         twofa_ok = twofa_result.get("ok") or twofa_result.get("status") == "skipped"
         errors = []
@@ -4204,7 +4213,18 @@ def run_roxy_registration(
             errors.append(f"Codex 未完成: {codex_result.get('message')}")
         if not twofa_ok:
             errors.append(f"2FA 未完成: {twofa_result.get('message')}")
-        postprocess_ok = bool(codex_ok and twofa_ok)
+        if not plan_result.get("ok"):
+            errors.append(f"套餐查询待处理: {plan_result.get('message')}")
+        postprocess_ok = bool(codex_ok and twofa_ok and plan_result.get("ok"))
+        from core.registration_postprocess import summarize_postprocess
+        readiness = summarize_postprocess(
+            core_success=True,
+            password_present=bool(openai_password),
+            outcomes={"twofa": twofa_result, "codex": codex_result, "plan_check": plan_result},
+            twofa_required=bool(_twofa_cfg.ENABLE_2FA),
+            codex_enabled=True,
+            plan_check_required=True,
+        )
         return {
             # 账号和 Token 已在前面的检查点落库，注册主体就是成功。Codex/2FA
             # 属于后置能力，失败时返回部分成功，不能让服务层误判为“没注册出账号”。
@@ -4218,6 +4238,9 @@ def run_roxy_registration(
             "totp_secret": totp_secret,
             "codex": codex_result,
             "twofa": twofa_result,
+            "plan_check": plan_result,
+            "next_actions": [action.as_dict() for action in readiness.next_actions],
+            "account_readiness": readiness.account_readiness,
             "error": None if not errors else "; ".join(errors),
         }
     except Exception as exc:
