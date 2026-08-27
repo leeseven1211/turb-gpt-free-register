@@ -712,6 +712,11 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 # 注意：失败也可能伴随 account_id（如 Codex 失败但账号已注册成功）
                 err = (result or {}).get("error") if isinstance(result, dict) else "unknown"
                 result_email = (result or {}).get("email") if isinstance(result, dict) else None
+                try:
+                    from core.registration_debug import capture_current_failure
+                    capture_current_failure(str(err)[:1000])
+                except Exception:
+                    logger.exception("[Job %s] 保存失败诊断现场失败", job_id)
                 db.finish_job_progress(job_id, success=False, detail=str(err)[:300])
                 db.update_job(
                     job_id,
@@ -740,6 +745,11 @@ def _run_one_job(job_id: int, log_file: str) -> None:
         )
     except Exception as exc:
         err_text = f"{type(exc).__name__}: {exc}"
+        try:
+            from core.registration_debug import capture_current_failure
+            capture_current_failure(err_text[:1000])
+        except Exception:
+            logger.exception("[Job %s] 保存失败诊断现场失败", job_id)
         if _should_disable_failed_registration_email(err_text):
             _disable_job_email(email, err_text)
         else:

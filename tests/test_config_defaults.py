@@ -264,6 +264,9 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
     def test_registration_debug_limits_are_webui_editable_and_env_driven(self):
         fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
         expected = {
+            "REGISTRATION_FAILURE_DIAGNOSTICS_ENABLED",
+            "REGISTRATION_FAILURE_DIAGNOSTICS_RESOURCE_LIMIT",
+            "REGISTRATION_FAILURE_DIAGNOSTICS_TEXT_MAX_KB",
             "REGISTRATION_DEBUG_HOLD_TIMEOUT_SECONDS",
             "REGISTRATION_DEBUG_MAX_HELD_SESSIONS",
             "REGISTRATION_DEBUG_BODY_MAX_KB",

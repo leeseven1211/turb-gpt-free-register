@@ -62,6 +62,15 @@ _FORM_SECRET_RE = re.compile(
     r"(?i)(password|passwd|otp|totp|verification_code|access_token|refresh_token|id_token|code_verifier|client_secret|secret|state)=([^&\s]+)"
 )
 
+_FAILURE_CATEGORY_LABELS = {
+    "network_or_proxy": "网络或代理线路",
+    "challenge_or_captcha": "验证挑战或验证码",
+    "page_not_hydrated": "页面未完成渲染",
+    "element_not_found": "页面元素缺失",
+    "upstream_http_error": "上游 HTTP 错误",
+    "unknown": "未分类",
+}
+
 
 def _now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="milliseconds")
@@ -227,16 +236,26 @@ def _cached_artifact_size() -> int:
 
 
 class RegistrationDebugSession:
-    def __init__(self, job: dict):
+    """按任务隔离的采集会话。
+
+    ``full`` 用于显式调试：从任务启动就旁路采集网络并支持失败暂停。
+    ``failure_only`` 用于普通模式：只在最终失败时创建文件并保存现场，成功任务
+    不启动写入线程，也不连接 Roxy CDP，避免改变正常注册路径的时序。
+    """
+
+    def __init__(self, job: dict, *, capture_mode: str = "full"):
         self.job_id = int(job["id"])
         self.job_uuid = str(job.get("job_uuid") or f"job-{self.job_id}")
         self.batch_id = str(job.get("batch_id") or "")
         self.artifact_dir = _safe_artifact_dir(job)
-        self.artifact_dir.mkdir(parents=True, exist_ok=True)
         self.events_path = self.artifact_dir / "network.jsonl.gz"
         self.manifest_path = self.artifact_dir / "manifest.json"
         self.snapshot_path = self.artifact_dir / "last-page.png"
         self.page_state_path = self.artifact_dir / "last-page.json"
+        self.capture_mode = "failure_only" if capture_mode == "failure_only" else "full"
+        self.capture_started = False
+        self.failure_captured = False
+        self.failure_category = ""
         self.current_stage = str(job.get("progress_stage") or "browser")
         self.started_at = _now_iso()
         self.debug_state = "recording"
@@ -246,8 +265,10 @@ class RegistrationDebugSession:
         self._release_event = threading.Event()
         self._closed = threading.Event()
         self._queue: queue.Queue = queue.Queue(maxsize=max(1000, int(getattr(_cfg, "REGISTRATION_DEBUG_QUEUE_SIZE", 20000) or 20000)))
-        self._writer = threading.Thread(target=self._writer_loop, name=f"debug-writer-{self.job_id}", daemon=True)
+        self._writer: threading.Thread | None = None
         self._collectors: list[Any] = []
+        self._pending_network: deque[dict] = deque(maxlen=100)
+        self._failure_network_seen: deque[dict] = deque(maxlen=100)
         self._lock = threading.RLock()
         self.request_count = 0
         self.failed_count = 0
@@ -255,22 +276,49 @@ class RegistrationDebugSession:
         self.websocket_frame_count = 0
         self.dropped_event_count = 0
         self.body_bytes_saved = 0
-        self.body_budget_bytes = max(0, int(getattr(_cfg, "REGISTRATION_DEBUG_BODY_BUDGET_MB", 128) or 128)) * 1024 * 1024
-        global_budget = max(0, int(getattr(_cfg, "REGISTRATION_DEBUG_GLOBAL_BUDGET_MB", 5120) or 5120)) * 1024 * 1024
-        self.body_capture_enabled = not global_budget or _cached_artifact_size() < global_budget
+        if self.capture_mode == "failure_only":
+            # 失败诊断不保存正文，也无需扫描历史抓包目录计算正文预算。
+            self.body_budget_bytes = 0
+            self.body_capture_enabled = False
+        else:
+            self.body_budget_bytes = max(0, int(getattr(_cfg, "REGISTRATION_DEBUG_BODY_BUDGET_MB", 128) or 128)) * 1024 * 1024
+            global_budget = max(0, int(getattr(_cfg, "REGISTRATION_DEBUG_GLOBAL_BUDGET_MB", 5120) or 5120)) * 1024 * 1024
+            self.body_capture_enabled = not global_budget or _cached_artifact_size() < global_budget
+        if self.capture_mode == "full":
+            self._start_capture()
+
+    def _start_capture(self) -> None:
+        """初始化产物目录和异步写入器；普通模式只在失败路径调用。"""
+        if self.capture_started:
+            return
+        self.capture_started = True
+        self.artifact_dir.mkdir(parents=True, exist_ok=True)
+        self._writer = threading.Thread(target=self._writer_loop, name=f"debug-writer-{self.job_id}", daemon=True)
         self._writer.start()
         self.record({
             "kind": "capture_started",
             "job_id": self.job_id,
             "batch_id": self.batch_id,
+            "capture_mode": self.capture_mode,
             "body_capture_enabled": self.body_capture_enabled,
         })
-        self._patch_job(
-            debug_state="recording",
-            debug_artifact_dir=str(self.artifact_dir),
-            debug_capture_started_at=self.started_at,
-            debug_capture_summary=self.summary(),
-        )
+        if self.capture_mode == "full":
+            self._patch_job(
+                debug_state="recording",
+                debug_artifact_dir=str(self.artifact_dir),
+                debug_capture_started_at=self.started_at,
+                debug_capture_summary=self.summary(),
+            )
+        else:
+            self._patch_job(
+                failure_diagnostics_state="recording",
+                failure_diagnostics_artifact_dir=str(self.artifact_dir),
+                failure_diagnostics_capture_started_at=self.started_at,
+                failure_diagnostics_summary=self.summary(),
+            )
+        for item in list(self._pending_network):
+            self.record(item)
+        self._pending_network.clear()
 
     def _patch_job(self, **changes: Any) -> None:
         try:
@@ -303,7 +351,7 @@ class RegistrationDebugSession:
             logger.exception("[Job %s][Debug] 写入抓包文件失败", self.job_id)
 
     def record(self, event: dict) -> None:
-        if self._closed.is_set():
+        if self._closed.is_set() or not self.capture_started:
             return
         item = dict(event or {})
         item.setdefault("captured_at", _now_iso())
@@ -324,6 +372,8 @@ class RegistrationDebugSession:
     def update_stage(self, stage: str, state: str = "running", detail: str | None = None) -> None:
         if stage:
             self.current_stage = str(stage)
+        if self.capture_mode == "failure_only":
+            return
         self.record({
             "kind": "stage",
             "stage": self.current_stage,
@@ -349,6 +399,25 @@ class RegistrationDebugSession:
     def record_network(self, record: dict) -> None:
         item = dict(record or {})
         item["kind"] = "network_request"
+        if self.capture_mode == "failure_only":
+            # 普通模式只在失败现场落盘失败请求元数据；成功请求不进入队列，
+            # 请求/响应正文也不保存，避免把正常流程变成隐式抓包。
+            status = int(item.get("status") or 0)
+            if not item.get("failure") and status < 400:
+                return
+            item.pop("request_body", None)
+            item.pop("response_body", None)
+            item["capture_mode"] = self.capture_mode
+            with self._lock:
+                self.request_count += 1
+                self.failed_count += 1 if item.get("failure") else 0
+                self.http_error_count += 1 if status >= 400 else 0
+                self._failure_network_seen.append(dict(item))
+                if not self.capture_started:
+                    self._pending_network.append(item)
+                    return
+            self.record(item)
+            return
         request_body = item.get("request_body")
         response_body = item.get("response_body")
         if request_body is not None and not self.reserve_body(request_body):
@@ -367,6 +436,8 @@ class RegistrationDebugSession:
         self.record(item)
 
     def attach_roxy(self, debugger_address: str | None) -> None:
+        if self.capture_mode == "failure_only":
+            return
         if not debugger_address:
             self.record({"kind": "capture_warning", "reason": "roxy_debugger_address_missing"})
             return
@@ -374,32 +445,151 @@ class RegistrationDebugSession:
         self._collectors.append(collector)
         collector.start()
 
+    @staticmethod
+    def _failure_category(reason: str, state: dict, network: list[dict] | None = None) -> str:
+        """把失败现场归到稳定的排查分类，原始异常仍保留在任务日志中。"""
+        text = str(reason or "").lower()
+        url = str(state.get("url") or "").lower()
+        dom = state.get("dom") if isinstance(state.get("dom"), dict) else {}
+        if any(item.get("failure") for item in (network or [])) or any(
+            marker in text for marker in ("proxy", "tunnel", "connection", "timed out", "timeout", "chrome-error")
+        ):
+            return "network_or_proxy"
+        if "cloudflare" in text or "challenge" in text or "captcha" in text:
+            return "challenge_or_captcha"
+        if "chatgpt.com/auth" in url and not int(dom.get("input_count") or 0) and not int(dom.get("action_count") or 0):
+            return "page_not_hydrated"
+        if "找不到" in str(reason or "") or "not found" in text or "missing" in text:
+            return "element_not_found"
+        if any(int(item.get("status") or 0) >= 400 for item in (network or [])):
+            return "upstream_http_error"
+        return "unknown"
+
+    @staticmethod
+    def _failure_category_label(category: str) -> str:
+        return _FAILURE_CATEGORY_LABELS.get(str(category or ""), _FAILURE_CATEGORY_LABELS["unknown"])
+
+    @staticmethod
+    def _browser_logs(driver: Any) -> list[dict]:
+        if driver is None or not hasattr(driver, "get_log"):
+            return []
+        try:
+            rows = driver.get_log("browser") or []
+        except Exception:
+            return []
+        out = []
+        for row in rows[:100]:
+            if isinstance(row, dict):
+                out.append({
+                    "level": str(row.get("level") or "")[:40],
+                    "message": _redact_text(row.get("message") or "")[:2000],
+                    "timestamp": row.get("timestamp"),
+                })
+            else:
+                out.append({"message": _redact_text(row)[:2000]})
+        return out
+
     def capture_page_snapshot(self, driver: Any, reason: str) -> None:
         if driver is None:
             return
+        self._start_capture()
         try:
             driver.save_screenshot(str(self.snapshot_path))
         except Exception as exc:
             self.record({"kind": "snapshot_error", "operation": "screenshot", "error": f"{type(exc).__name__}: {exc}"})
         try:
             raw = driver.execute_script(
-                """return {
-                  url: location.href,
-                  title: document.title || '',
-                  readyState: document.readyState || '',
-                  bodyText: (document.body && document.body.innerText || '').slice(0, 20000),
-                  htmlLength: (document.documentElement && document.documentElement.outerHTML || '').length
-                };"""
+                """return (function() {
+                  const visible = el => {
+                    if (!el) return false;
+                    const style = window.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style.display !== 'none' && style.visibility !== 'hidden' &&
+                      rect.width > 0 && rect.height > 0;
+                  };
+                  const text = el => String(el.innerText || el.value || el.getAttribute('aria-label') || '').trim().slice(0, 240);
+                  const describe = el => ({
+                    tag: el.tagName || '',
+                    type: el.getAttribute('type') || '',
+                    name: el.getAttribute('name') || '',
+                    id: el.id || '',
+                    placeholder: el.getAttribute('placeholder') || '',
+                    aria: el.getAttribute('aria-label') || '',
+                    text: text(el),
+                    disabled: !!el.disabled,
+                  });
+                  const inputs = Array.from(document.querySelectorAll('input,textarea,select')).filter(visible);
+                  const actions = Array.from(document.querySelectorAll('button,a,[role="button"],input[type="submit"]')).filter(visible);
+                  const resources = (performance.getEntriesByType('resource') || []).map(entry => ({
+                    name: entry.name || '',
+                    initiatorType: entry.initiatorType || '',
+                    duration: entry.duration || 0,
+                    transferSize: entry.transferSize || 0,
+                    encodedBodySize: entry.encodedBodySize || 0,
+                    decodedBodySize: entry.decodedBodySize || 0,
+                    responseStatus: entry.responseStatus || 0,
+                  }));
+                  const navigation = performance.getEntriesByType('navigation')[0] || {};
+                  return {
+                    url: location.href,
+                    title: document.title || '',
+                    readyState: document.readyState || '',
+                    bodyText: (document.body && document.body.innerText || '').slice(0, 50000),
+                    htmlLength: (document.documentElement && document.documentElement.outerHTML || '').length,
+                    dom: {
+                      input_count: inputs.length,
+                      inputs: inputs.slice(0, 50).map(describe),
+                      action_count: actions.length,
+                      actions: actions.slice(0, 80).map(describe),
+                    },
+                    resources: resources,
+                    navigation: {
+                      domContentLoaded: navigation.domContentLoadedEventEnd || 0,
+                      loadEventEnd: navigation.loadEventEnd || 0,
+                      responseEnd: navigation.responseEnd || 0,
+                      transferSize: navigation.transferSize || 0,
+                    },
+                  };
+                })();"""
             ) or {}
+            raw_dom = raw.get("dom") if isinstance(raw.get("dom"), dict) else {}
+            dom = {
+                "input_count": int(raw_dom.get("input_count") or 0),
+                "inputs": [_redact_value(item) for item in (raw_dom.get("inputs") or [])[:50]],
+                "action_count": int(raw_dom.get("action_count") or 0),
+                "actions": [_redact_value(item) for item in (raw_dom.get("actions") or [])[:80]],
+            }
+            resource_limit = max(1, int(getattr(_cfg, "REGISTRATION_FAILURE_DIAGNOSTICS_RESOURCE_LIMIT", 80) or 80))
+            resources = []
+            for item in (raw.get("resources") or [])[-resource_limit:]:
+                if not isinstance(item, dict):
+                    continue
+                resources.append({
+                    "url": sanitize_url(item.get("name")),
+                    "initiator_type": str(item.get("initiatorType") or "")[:60],
+                    "duration_ms": round(float(item.get("duration") or 0), 2),
+                    "transfer_size": int(item.get("transferSize") or 0),
+                    "encoded_body_size": int(item.get("encodedBodySize") or 0),
+                    "decoded_body_size": int(item.get("decodedBodySize") or 0),
+                    "response_status": int(item.get("responseStatus") or 0),
+                })
+            text_limit = max(1, int(getattr(_cfg, "REGISTRATION_FAILURE_DIAGNOSTICS_TEXT_MAX_KB", 32) or 32)) * 1024
             state = {
                 "captured_at": _now_iso(),
                 "reason": _redact_text(reason)[:1000],
                 "url": sanitize_url(raw.get("url")),
                 "title": _redact_text(raw.get("title"))[:500],
                 "ready_state": raw.get("readyState"),
-                "body_text": _redact_text(raw.get("bodyText"))[:20000],
+                "body_text": _redact_text(raw.get("bodyText"))[:text_limit],
                 "html_length": raw.get("htmlLength"),
+                "dom": dom,
+                "resources": resources,
+                "navigation": _redact_value(raw.get("navigation") or {}),
+                "browser_logs": self._browser_logs(driver),
             }
+            self.failure_category = self._failure_category(reason, state, list(self._failure_network_seen))
+            state["failure_category"] = self.failure_category
+            state["failure_category_label"] = self._failure_category_label(self.failure_category)
             self.page_state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
             self.record({"kind": "page_snapshot", **state})
         except Exception as exc:
@@ -407,6 +597,37 @@ class RegistrationDebugSession:
 
     def pause_failure(self, driver: Any, reason: str) -> str:
         """在 Roxy 最终失败、进入 finally 清理之前保留现场。"""
+        if self.capture_mode == "failure_only":
+            self.failure_captured = True
+            if driver is not None:
+                self.capture_page_snapshot(driver, reason)
+            else:
+                # 协议驱动或浏览器尚未启动时仍落盘失败请求元数据和错误原因。
+                self._start_capture()
+                category = self._failure_category(reason, {}, list(self._failure_network_seen))
+                self.failure_category = category
+                self.record({
+                    "kind": "failure_diagnostics",
+                    "reason": _redact_text(reason)[:1000],
+                    "failure_category": category,
+                    "failure_category_label": self._failure_category_label(category),
+                    "page_snapshot": False,
+                })
+            self.debug_state = "captured"
+            self._patch_job(
+                failure_diagnostics_state="captured",
+                failure_diagnostics_failure_reason=_redact_text(reason)[:1000],
+                failure_diagnostics_category=self.failure_category or "unknown",
+                failure_diagnostics_category_label=self._failure_category_label(self.failure_category),
+                failure_diagnostics_summary=self.summary(),
+            )
+            logger.info(
+                "[Job %s][FailureDiagnostics] 已保存失败现场：category=%s artifact=%s",
+                self.job_id,
+                self.failure_category or "unknown",
+                self.artifact_dir,
+            )
+            return self.debug_state
         self.capture_page_snapshot(driver, reason)
         if driver is None and not self._collectors:
             self.debug_state = "hold_skipped"
@@ -474,6 +695,8 @@ class RegistrationDebugSession:
     def summary(self) -> dict:
         return {
             "state": self.debug_state,
+            "capture_mode": self.capture_mode,
+            "captured": bool(self.capture_started),
             "request_count": int(self.request_count),
             "failed_count": int(self.failed_count),
             "http_error_count": int(self.http_error_count),
@@ -488,6 +711,11 @@ class RegistrationDebugSession:
     def finalize(self, status: str = "") -> None:
         if self._closed.is_set():
             return
+        if not self.capture_started:
+            self._closed.set()
+            with _ACTIVE_LOCK:
+                _ACTIVE.pop(self.job_id, None)
+            return
         for collector in self._collectors:
             try:
                 collector.stop()
@@ -496,8 +724,9 @@ class RegistrationDebugSession:
         self.debug_state = "completed" if self.debug_state not in {"expired", "stopped"} else self.debug_state
         self.record({"kind": "capture_finished", "status": status, "summary": self.summary()})
         try:
-            self._queue.put(_SENTINEL, timeout=2)
-            self._writer.join(timeout=10)
+            if self._writer is not None:
+                self._queue.put(_SENTINEL, timeout=2)
+                self._writer.join(timeout=10)
         except Exception:
             logger.exception("[Job %s][Debug] 等待抓包写入完成失败", self.job_id)
         self._closed.set()
@@ -506,9 +735,11 @@ class RegistrationDebugSession:
             "job_id": self.job_id,
             "job_uuid": self.job_uuid,
             "batch_id": self.batch_id,
+            "capture_mode": self.capture_mode,
             "started_at": self.started_at,
             "finished_at": _now_iso(),
             "status": status,
+            "failure_category": self.failure_category,
             "summary": summary,
             "files": {
                 "network": self.events_path.name if self.events_path.exists() else "",
@@ -521,9 +752,19 @@ class RegistrationDebugSession:
         except Exception:
             logger.exception("[Job %s][Debug] 写入 manifest 失败", self.job_id)
         self._patch_job(
-            debug_state=self.debug_state,
-            debug_capture_completed_at=_now_iso(),
-            debug_capture_summary=summary,
+            **(
+                {
+                    "debug_state": self.debug_state,
+                    "debug_capture_completed_at": _now_iso(),
+                    "debug_capture_summary": summary,
+                }
+                if self.capture_mode == "full"
+                else {
+                    "failure_diagnostics_state": self.debug_state,
+                    "failure_diagnostics_capture_completed_at": _now_iso(),
+                    "failure_diagnostics_summary": summary,
+                }
+            ),
         )
         with _ACTIVE_LOCK:
             _ACTIVE.pop(self.job_id, None)
@@ -824,9 +1065,14 @@ class RoxyCDPCollector:
 
 
 def activate_for_job(job: dict) -> contextvars.Token | None:
-    if not bool(job.get("debug_enabled", False)):
+    debug_enabled = bool(job.get("debug_enabled", False))
+    failure_diagnostics_enabled = bool(getattr(_cfg, "REGISTRATION_FAILURE_DIAGNOSTICS_ENABLED", True))
+    if not debug_enabled and not failure_diagnostics_enabled:
         return None
-    session = RegistrationDebugSession(job)
+    session = RegistrationDebugSession(
+        job,
+        capture_mode="full" if debug_enabled else "failure_only",
+    )
     with _ACTIVE_LOCK:
         _ACTIVE[session.job_id] = session
     return _CURRENT_SESSION.set(session)
@@ -877,6 +1123,14 @@ def pause_current_failure(driver: Any, reason: str) -> str:
     return session.pause_failure(driver, reason)
 
 
+def capture_current_failure(reason: str, driver: Any = None) -> str:
+    """普通模式失败收口入口；调试模式由原有暂停逻辑负责，不重复保留现场。"""
+    session = current_session()
+    if session is None or session.capture_mode != "failure_only" or session.failure_captured:
+        return "disabled"
+    return session.pause_failure(driver, reason)
+
+
 def release_job(job_id: int, action: str = "finish") -> dict:
     with _ACTIVE_LOCK:
         session = _ACTIVE.get(int(job_id))
@@ -905,18 +1159,23 @@ def record_protocol_exchange(
     if session is None:
         return
     elapsed_ms = round(max(0.0, time.perf_counter() - started_at) * 1000, 2)
+    response_status = int(getattr(response, "status_code", 0) or 0) if response is not None else 0
+    if session.capture_mode == "failure_only" and not error and response_status < 400:
+        # 普通模式不读取成功响应正文，也不把成功请求放进内存；失败收口时
+        # 只保留 HTTP 错误或传输异常的元数据。
+        return
     content_type = ""
     response_headers: dict = {}
     response_body = None
     status = 0
     final_url = url
     if response is not None:
-        status = int(getattr(response, "status_code", 0) or 0)
+        status = response_status
         response_headers = dict(getattr(response, "headers", {}) or {})
         content_type = str(response_headers.get("content-type") or "")
         final_url = str(getattr(response, "url", "") or url)
         lowered = content_type.lower()
-        if any(marker in lowered for marker in ("json", "text/", "html", "xml", "x-www-form-urlencoded")):
+        if session.capture_mode == "full" and any(marker in lowered for marker in ("json", "text/", "html", "xml", "x-www-form-urlencoded")):
             try:
                 response_body, response_truncated = sanitize_body(getattr(response, "text", ""), content_type)
             except Exception:
@@ -925,7 +1184,10 @@ def record_protocol_exchange(
             response_truncated = False
     else:
         response_truncated = False
-    safe_request_body, request_truncated = sanitize_body(request_body, str((request_headers or {}).get("content-type") or ""))
+    if session.capture_mode == "failure_only":
+        safe_request_body, request_truncated = None, False
+    else:
+        safe_request_body, request_truncated = sanitize_body(request_body, str((request_headers or {}).get("content-type") or ""))
     session.record_network({
         "segment": "registration_protocol",
         "stage": session.current_stage,
@@ -959,7 +1221,11 @@ def record_protocol_exchange(
 
 
 def _artifact_dir_for_job(job: dict) -> Path:
-    configured = str(job.get("debug_artifact_dir") or "").strip()
+    configured = str(
+        job.get("debug_artifact_dir")
+        or job.get("failure_diagnostics_artifact_dir")
+        or ""
+    ).strip()
     path = Path(configured) if configured else _safe_artifact_dir(job)
     resolved_root = _ARTIFACT_ROOT.resolve()
     resolved = path.resolve()
@@ -991,6 +1257,24 @@ def read_events(job: dict, *, limit: int = 300, errors_only: bool = False) -> li
     except OSError:
         logger.warning("[Job %s][Debug] 读取抓包文件失败", job.get("id"), exc_info=True)
     return list(selected)
+
+
+def read_page_state(job: dict) -> dict:
+    """读取脱敏页面现场；不存在时返回空对象。"""
+    path = _artifact_dir_for_job(job) / "last-page.json"
+    if not path.exists():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def screenshot_path(job: dict) -> Path | None:
+    """返回经过产物目录校验的失败截图路径。"""
+    path = _artifact_dir_for_job(job) / "last-page.png"
+    return path if path.is_file() else None
 
 
 def build_har(job: dict) -> dict:

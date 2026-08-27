@@ -107,14 +107,16 @@
         <h3 id="legacyJobLogTitle">任务 #<span id="logJobId"></span> 日志 <button class="btn" id="btnCloseLog" style="float:right;min-height:28px;">关闭</button></h3>
         <section class="debug-capture-panel hidden" id="debugCapturePanel">
           <div class="debug-capture-head">
-            <div><strong>网络调试</strong><span id="debugCaptureSummary"></span></div>
+            <div><strong id="debugCaptureTitle">网络调试</strong><span id="debugCaptureSummary"></span></div>
             <div class="debug-capture-actions">
               <button type="button" class="btn" id="btnDebugCompare">与同批成功任务对比</button>
               <a class="btn" id="btnDebugHar" href="#" download>下载脱敏 HAR</a>
               <button type="button" class="btn danger hidden" id="btnDebugRelease">结束调试并收口</button>
+              <a class="btn hidden" id="btnFailureDiagnosticScreenshot" href="#" target="_blank" rel="noopener noreferrer">打开失败截图</a>
             </div>
           </div>
           <div class="debug-capture-compare hidden" id="debugCaptureCompare"></div>
+          <pre class="debug-capture-page-state hidden" id="debugCapturePageState"></pre>
           <div class="debug-network-list" id="debugNetworkList"></div>
         </section>
         <div class="log" id="logContent">加载中…</div>

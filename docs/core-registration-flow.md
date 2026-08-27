@@ -135,10 +135,14 @@ ThreadPoolExecutor.submit(_run_one_job)
 
 `POST /api/jobs` 的 `debug_enabled=true` 是批次级显式开关，服务在每条任务被执行器激活时创建独立 `RegistrationDebugSession`。这不是全局浏览器开关，因此可以同时跑多个调试任务，也不会影响未开启调试的批次。
 
+未勾选调试模式时，默认也会创建 `failure_only` 诊断会话。它只保留当前阶段和失败请求元数据；成功任务不创建产物，不连接 Roxy CDP，也不暂停浏览器。
+
 调试会话按驱动采集：
 
 - `protocol`：记录 `BrowserSession` 的 HTTP 请求、重定向、响应、耗时和异常。
 - Roxy：除 protocol 后置请求外，通过 Roxy 的 DevTools 地址为 page、iframe、worker 和 service worker 建立旁路 CDP 连接，记录请求/响应、失败、文本正文、WebSocket 帧、控制台错误和页面异常。
+
+普通模式失败现场写入同一任务目录 `注册日志/debug/<job_uuid>/`，但只在失败时创建：`last-page.png`、`last-page.json` 和仅含失败请求元数据的 `network.jsonl.gz`。页面快照包含 URL、标题、readyState、可见输入/操作元素摘要、资源时序、导航耗时和浏览器错误；不会保存请求/响应正文、Cookie、Token 或密码。任务日志面板中的「失败诊断」区域可查看分类、页面状态、失败请求和截图。
 
 所有事件先脱敏再进入有界异步队列，写入 `注册日志/debug/<job_uuid>/network.jsonl.gz`。密码、OTP、Token、Cookie、Authorization、邮箱和 URL 查询值不落明文；正文有单条和单任务上限，全局目录有软容量上限。容量或队列达到上限时只降级或丢弃调试数据，不得阻塞注册主流程。
 

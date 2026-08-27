@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import threading
 import time
@@ -16,6 +17,41 @@ class _FakeResponse:
     headers = {"content-type": "application/json", "set-cookie": "session=private"}
     text = '{"error":"blocked","access_token":"very-secret-token"}'
     history = []
+
+
+class _FailureDriver:
+    current_url = "https://chatgpt.com/auth/login"
+
+    def save_screenshot(self, path):
+        Path(path).write_bytes(b"png")
+
+    def execute_script(self, _script):
+        return {
+            "url": self.current_url,
+            "title": "開始する | ChatGPT",
+            "readyState": "complete",
+            "bodyText": "登录页面加载完成",
+            "htmlLength": 1200,
+            "dom": {
+                "input_count": 0,
+                "inputs": [],
+                "action_count": 0,
+                "actions": [],
+            },
+            "resources": [{
+                "name": "https://auth.openai.com/assets/app.js?email=user@example.com",
+                "initiatorType": "script",
+                "duration": 41000,
+                "transferSize": 0,
+                "encodedBodySize": 0,
+                "decodedBodySize": 0,
+                "responseStatus": 0,
+            }],
+            "navigation": {"loadEventEnd": 0},
+        }
+
+    def get_log(self, _kind):
+        return [{"level": "SEVERE", "message": "resource failed for user@example.com", "timestamp": 1}]
 
 
 class RegistrationDebugTests(unittest.TestCase):
@@ -81,6 +117,83 @@ class RegistrationDebugTests(unittest.TestCase):
         self.assertEqual(session.pause_failure(None, "driver startup failed"), "hold_skipped")
         self.assertEqual(session.debug_state, "hold_skipped")
         session.finalize("failed")
+
+    def test_failure_only_session_is_lazy_and_captures_redacted_page_snapshot(self):
+        session = debug.RegistrationDebugSession(self.job(10), capture_mode="failure_only")
+        self.assertFalse((self.root / "job-10").exists())
+        session.update_stage("page")
+        session.record_network({"method": "GET", "url": "https://chatgpt.com/app.js", "status": 200})
+        session.record_network({
+            "method": "GET",
+            "url": "https://chatgpt.com/app.js",
+            "status": 503,
+            "failure": "upstream unavailable",
+        })
+        self.assertEqual(session.request_count, 1)
+        session.pause_failure(_FailureDriver(), "找不到邮箱输入框")
+        session.finalize("failed")
+
+        artifact_dir = self.root / "job-10"
+        self.assertTrue((artifact_dir / "last-page.png").exists())
+        self.assertTrue((artifact_dir / "last-page.json").exists())
+        self.assertTrue((artifact_dir / "manifest.json").exists())
+        state = json.loads((artifact_dir / "last-page.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["failure_category"], "network_or_proxy")
+        self.assertEqual(state["dom"]["input_count"], 0)
+        self.assertNotIn("user@example.com", json.dumps(state, ensure_ascii=False))
+        rows = debug.read_events({**self.job(10), "failure_diagnostics_artifact_dir": str(artifact_dir)}, errors_only=True)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], 503)
+
+    def test_failure_only_success_does_not_create_artifact(self):
+        session = debug.RegistrationDebugSession(self.job(11), capture_mode="failure_only")
+        session.finalize("success")
+        self.assertFalse((self.root / "job-11").exists())
+
+    def test_activation_arms_failure_diagnostics_without_full_capture(self):
+        job = self.job(13)
+        job["debug_enabled"] = False
+        token = debug.activate_for_job(job)
+        try:
+            session = debug.current_session()
+            self.assertIsNotNone(session)
+            self.assertEqual(session.capture_mode, "failure_only")
+            self.assertFalse(session.capture_started)
+            session.attach_roxy("127.0.0.1:9222")
+            self.assertEqual(session._collectors, [])
+        finally:
+            debug.deactivate_for_job(token, status="success")
+        self.assertFalse((self.root / "job-13").exists())
+
+    def test_failure_only_protocol_capture_ignores_success(self):
+        session = debug.RegistrationDebugSession(self.job(12), capture_mode="failure_only")
+        token = debug._CURRENT_SESSION.set(session)
+        try:
+            successful = _FakeResponse()
+            successful.status_code = 200
+            debug.record_protocol_exchange(
+                method="GET",
+                url="https://auth.openai.com/session",
+                started_at=time.perf_counter(),
+                response=successful,
+            )
+            self.assertEqual(session.request_count, 0)
+            failed = _FakeResponse()
+            failed.status_code = 503
+            debug.record_protocol_exchange(
+                method="GET",
+                url="https://auth.openai.com/session",
+                started_at=time.perf_counter(),
+                response=failed,
+            )
+            self.assertEqual(session.request_count, 1)
+            session.pause_failure(None, "协议请求失败")
+        finally:
+            debug._CURRENT_SESSION.reset(token)
+            session.finalize("failed")
+        rows = debug.read_events({**self.job(12), "failure_diagnostics_artifact_dir": str(session.artifact_dir)}, errors_only=True)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], 503)
 
     @patch("core.record_store.patch_row", return_value=True)
     def test_patch_job_uses_atomic_jsonb_row_patch(self, patch_row):

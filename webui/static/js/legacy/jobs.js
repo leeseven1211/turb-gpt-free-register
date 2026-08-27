@@ -397,6 +397,11 @@ function openLog(jobId) {
   $('#logContent').textContent = '加载中…';
   $('#debugCapturePanel')?.classList.add('hidden');
   $('#debugCaptureCompare')?.classList.add('hidden');
+  $('#debugCaptureTitle').textContent = '网络调试';
+  const screenshot = $('#btnFailureDiagnosticScreenshot');
+  if (screenshot) { screenshot.classList.add('hidden'); screenshot.removeAttribute('href'); }
+  const pageState = $('#debugCapturePageState');
+  if (pageState) { pageState.classList.add('hidden'); pageState.textContent = ''; }
   pollLog();
   clearInterval(logTimer);
   logTimer = setInterval(pollLog, 2000);
@@ -426,13 +431,17 @@ function renderRegistrationDebug(data) {
   const panel = $('#debugCapturePanel');
   if (!panel) return;
   if (!data?.enabled) { panel.classList.add('hidden'); return; }
+  $('#debugCaptureTitle').textContent = '网络调试';
+  $('#btnFailureDiagnosticScreenshot')?.classList.add('hidden');
+  $('#debugCapturePageState')?.classList.add('hidden');
   panel.classList.remove('hidden');
   const summary = data.summary || {};
   const state = data.state || summary.state || 'recording';
   $('#debugCaptureSummary').textContent = `状态 ${state} · 请求 ${summary.request_count || 0} · HTTP错误 ${summary.http_error_count || 0} · 网络失败 ${summary.failed_count || 0}` + (data.hold_until ? ` · 保留至 ${data.hold_until}` : '');
   $('#btnDebugRelease')?.classList.toggle('hidden', state !== 'paused');
+  $('#btnDebugCompare')?.classList.remove('hidden');
   const har = $('#btnDebugHar');
-  if (har) har.href = `/api/jobs/${encodeURIComponent(data.job_id)}/debug/har`;
+  if (har) { har.classList.remove('hidden'); har.href = `/api/jobs/${encodeURIComponent(data.job_id)}/debug/har`; }
   const rows = Array.isArray(data.events) ? data.events : [];
   $('#debugNetworkList').innerHTML = rows.map(item => {
     const status = Number(item.status || 0);
@@ -447,9 +456,55 @@ function renderRegistrationDebug(data) {
   }).join('') || '<div class="debug-network-row"><span class="debug-network-detail">抓包已启动，暂时还没有可显示的请求。</span></div>';
 }
 
+function renderRegistrationDiagnostics(data) {
+  const panel = $('#debugCapturePanel');
+  if (!panel) return;
+  if (!data?.enabled || !data?.captured) { panel.classList.add('hidden'); return; }
+  panel.classList.remove('hidden');
+  $('#debugCaptureTitle').textContent = '失败诊断';
+  const summary = data.summary || {};
+  const page = data.page_state || {};
+  const dom = page.dom || {};
+  $('#debugCaptureSummary').textContent = `分类 ${data.category_label || data.category || page.failure_category || '未分类'} · 输入框 ${Number(dom.input_count || 0)} · 操作 ${Number(dom.action_count || 0)} · 失败请求 ${Number(summary.failed_count || 0)} · HTTP错误 ${Number(summary.http_error_count || 0)}`;
+  $('#btnDebugRelease')?.classList.add('hidden');
+  $('#btnDebugCompare')?.classList.add('hidden');
+  $('#btnDebugHar')?.classList.add('hidden');
+  $('#debugCaptureCompare')?.classList.add('hidden');
+  const screenshot = $('#btnFailureDiagnosticScreenshot');
+  if (screenshot) {
+    screenshot.classList.toggle('hidden', !data.screenshot_url);
+    if (data.screenshot_url) screenshot.href = data.screenshot_url;
+  }
+  const pageState = $('#debugCapturePageState');
+  if (pageState) {
+    pageState.textContent = [
+      `URL: ${page.url || '-'}`,
+      `标题: ${page.title || '-'} · readyState: ${page.ready_state || '-'}`,
+      `原因: ${data.failure_reason || page.reason || '-'}`,
+      `资源: ${Array.isArray(page.resources) ? page.resources.length : 0} 条 · 浏览器错误: ${Array.isArray(page.browser_logs) ? page.browser_logs.length : 0} 条`,
+      `页面文本: ${short(page.body_text || '', 800) || '-'}`,
+    ].join('\n');
+    pageState.classList.remove('hidden');
+  }
+  const rows = Array.isArray(data.events) ? data.events : [];
+  $('#debugNetworkList').innerHTML = rows.map(item => {
+    const status = Number(item.status || 0);
+    return `<div class="debug-network-row is-error">
+      <span>${esc(item.stage || '-')}</span><strong>${esc(item.method || '-')}</strong>
+      <span class="debug-network-url" title="${esc(item.url || '')}">${esc(item.url || '-')}</span>
+      <span>${esc(status || 'FAIL')}${item.duration_ms != null ? ` · ${esc(Math.round(Number(item.duration_ms)))}ms` : ''}</span>
+      <span class="debug-network-detail">${esc(item.failure || 'HTTP错误')}</span>
+    </div>`;
+  }).join('') || '<div class="debug-network-row"><span class="debug-network-detail">已保存页面失败现场，未捕获到独立的失败请求。</span></div>';
+}
+
 async function pollRegistrationDebug(jobId) {
   if (jobId == null) return;
-  try { renderRegistrationDebug(await api(`/api/jobs/${jobId}/debug?limit=300`)); }
+  try {
+    const data = await api(`/api/jobs/${jobId}/debug?limit=300`);
+    if (data?.enabled) renderRegistrationDebug(data);
+    else renderRegistrationDiagnostics(await api(`/api/jobs/${jobId}/diagnostics?limit=100`));
+  }
   catch (_) {}
 }
 

@@ -90,6 +90,18 @@ EDITABLE_FIELDS = [
         "label": "失败现场保留（秒）", "help": "调试任务最终失败后保留浏览器和代理的最长时间；默认 1800（30 分钟）",
     },
     {
+        "key": "REGISTRATION_FAILURE_DIAGNOSTICS_ENABLED", "file": "registration_debug.py", "type": "bool", "group": "注册调试",
+        "label": "普通模式失败诊断", "help": "普通注册失败时保存脱敏页面现场、失败请求元数据和浏览器错误；不会抓取成功请求或暂停浏览器",
+    },
+    {
+        "key": "REGISTRATION_FAILURE_DIAGNOSTICS_RESOURCE_LIMIT", "file": "registration_debug.py", "type": "int", "group": "注册调试",
+        "label": "失败资源记录上限", "help": "普通模式失败现场最多保存的资源时序条数；默认 80",
+    },
+    {
+        "key": "REGISTRATION_FAILURE_DIAGNOSTICS_TEXT_MAX_KB", "file": "registration_debug.py", "type": "int", "group": "注册调试",
+        "label": "失败页面文本上限（KB）", "help": "普通模式失败现场最多保存的页面可见文本大小；默认 32",
+    },
+    {
         "key": "REGISTRATION_DEBUG_MAX_HELD_SESSIONS", "file": "registration_debug.py", "type": "int", "group": "注册调试",
         "label": "最大保留现场数", "help": "允许同时暂停保留的失败浏览器数量；超出后仍保存抓包但自动关闭现场",
     },

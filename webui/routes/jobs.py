@@ -13,7 +13,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import pyotp
-from flask import Response, jsonify, make_response, redirect, render_template, request, url_for
+from flask import Response, jsonify, make_response, redirect, render_template, request, send_file, url_for
 
 from core import (
     account_task_store,
@@ -515,6 +515,61 @@ def create_jobs_blueprint(context: WebUIContext):
             "summary": active_summary(job_id) or job.get("debug_capture_summary") or {},
             "events": events,
         })
+
+    @bp.get("/api/jobs/<int:job_id>/diagnostics")
+    def api_job_diagnostics(job_id: int):
+        """读取普通模式失败现场；不会把它伪装成全量调试抓包。"""
+        job = db.get_job(job_id)
+        if not job:
+            return jsonify({"ok": False, "error": "任务不存在"}), 404
+        from config import registration_debug as diagnostics_config
+        diagnostics_enabled = bool(getattr(diagnostics_config, "REGISTRATION_FAILURE_DIAGNOSTICS_ENABLED", True))
+        summary = job.get("failure_diagnostics_summary") or {}
+        state = str(job.get("failure_diagnostics_state") or "")
+        captured = bool(summary) or state in {"captured", "completed"}
+        if not captured:
+            return jsonify({"ok": True, "enabled": diagnostics_enabled, "captured": False, "job_id": job_id})
+        from core.registration_debug import read_events, read_page_state, screenshot_path
+        try:
+            limit = max(1, min(300, int(request.args.get("limit", 100) or 100)))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "limit 必须是整数"}), 400
+        try:
+            page_state = read_page_state(job)
+            events = read_events(job, limit=limit, errors_only=True)
+            screenshot = screenshot_path(job)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 409
+        return jsonify({
+            "ok": True,
+            "enabled": diagnostics_enabled,
+            "captured": True,
+            "job_id": job_id,
+            "state": state or str(summary.get("state") or "captured"),
+            "category": job.get("failure_diagnostics_category") or page_state.get("failure_category") or "unknown",
+            "category_label": job.get("failure_diagnostics_category_label") or page_state.get("failure_category_label") or "未分类",
+            "failure_reason": job.get("failure_diagnostics_failure_reason") or page_state.get("reason") or "",
+            "summary": summary,
+            "page_state": page_state,
+            "screenshot_url": f"/api/jobs/{job_id}/diagnostics/screenshot" if screenshot else "",
+            "events": events,
+        })
+
+    @bp.get("/api/jobs/<int:job_id>/diagnostics/screenshot")
+    def api_job_diagnostics_screenshot(job_id: int):
+        job = db.get_job(job_id)
+        if not job:
+            return jsonify({"ok": False, "error": "任务不存在"}), 404
+        from core.registration_debug import screenshot_path
+        try:
+            path = screenshot_path(job)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 409
+        if path is None:
+            return jsonify({"ok": False, "error": "失败现场截图不存在"}), 404
+        response = send_file(path, mimetype="image/png", as_attachment=False, max_age=0)
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @bp.post("/api/jobs/<int:job_id>/debug/release")
     def api_job_debug_release(job_id: int):

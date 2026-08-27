@@ -281,6 +281,8 @@ def _compact_job_for_list(row: dict) -> dict:
         "progress_stage", "progress_updated_at", "progress_steps",
         "debug_enabled", "debug_state", "debug_hold_until", "debug_pause_reason",
         "debug_capture_summary",
+        "failure_diagnostics_state", "failure_diagnostics_category",
+        "failure_diagnostics_failure_reason", "failure_diagnostics_summary",
     ):
         value = row.get(key)
         if value is not None and value != "" and value is not False:
