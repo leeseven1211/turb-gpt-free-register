@@ -1472,6 +1472,40 @@ def _repair_terminal_task_projection(cur, batch_id: int) -> int:
     """收口已有终态 Run 对应的卡住任务，只修改统一投影表。"""
     terminal_statuses = tuple(sorted(_TERMINAL_STATUSES))
     placeholders = ", ".join("%s" for _ in terminal_statuses)
+    cur.execute("SELECT to_regclass(%s) AS name", (f"{_schema_name()}.registration_runs",))
+    if cur.fetchone()["name"]:
+        fact_statuses = (
+            "success", "partial_success", "failed", "stopped", "cancelled", "interrupted",
+            "request_unknown", "manual_reconcile",
+        )
+        fact_placeholders = ", ".join("%s" for _ in fact_statuses)
+        cur.execute(
+            f"""
+            WITH latest_fact AS (
+                SELECT DISTINCT ON (task.id)
+                       task.id AS task_id, run.id AS operation_run_id,
+                       rr.status AS fact_status, rr.completed_at AS fact_completed_at,
+                       rr.error_message AS fact_error_message
+                FROM {_table('operation_tasks')} task
+                JOIN {_table('registration_runs')} rr ON rr.attempt_id=task.attempt_id
+                JOIN {_table('operation_runs')} run ON run.task_id=task.id
+                WHERE task.batch_id=%s
+                  AND rr.status IN ({fact_placeholders})
+                ORDER BY task.id, rr.run_no DESC, rr.id DESC, run.run_no DESC, run.id DESC
+            )
+            UPDATE {_table('operation_runs')} run
+            SET status=CASE latest_fact.fact_status
+                           WHEN 'request_unknown' THEN 'attention_required'
+                           WHEN 'manual_reconcile' THEN 'attention_required'
+                           ELSE latest_fact.fact_status END,
+                completed_at=COALESCE(run.completed_at, latest_fact.fact_completed_at, now()),
+                error_message=COALESCE(run.error_message, latest_fact.fact_error_message), heartbeat_at=now()
+            FROM latest_fact
+            WHERE run.id=latest_fact.operation_run_id
+              AND run.status IN ('queued','running','cancelling','settling')
+            """,
+            (int(batch_id), *fact_statuses),
+        )
     cur.execute(
         f"""
         WITH latest AS (
