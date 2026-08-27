@@ -35,6 +35,13 @@ CHECKPOINTS = (
     "failed",
 )
 CHECKPOINT_RANK = {value: index for index, value in enumerate(CHECKPOINTS)}
+# Values emitted by the pre-B operation projection.  These are data migrations,
+# not aliases accepted by runtime state transitions: after init() every Attempt
+# has a value from CHECKPOINTS and the original value is retained in data.
+LEGACY_CHECKPOINT_MAP = {
+    "registered": "core_persisted",
+    "email_verification_pending": "account_request_started",
+}
 REMOTE_STATES = {"not_started", "request_unknown", "confirmed", "rejected"}
 LOCAL_ACCOUNT_STATES = {"none", "token_obtained", "persisted"}
 RUN_STATUSES = {
@@ -45,6 +52,7 @@ TERMINAL_RUN_STATUSES = RUN_STATUSES - {"queued", "running"}
 ACTIVE_RUN_STATUSES = ("queued", "running")
 
 _READY_KEY = ""
+_LAST_LEGACY_CHECKPOINT_MIGRATED = 0
 _SENSITIVE_PARTS = ("password", "otp", "secret", "authorization", "cookie", "token")
 
 
@@ -110,13 +118,149 @@ def _row(row: dict | None) -> dict | None:
 
 
 def reset_ready() -> None:
-    global _READY_KEY
+    global _READY_KEY, _LAST_LEGACY_CHECKPOINT_MIGRATED
     _READY_KEY = ""
+    _LAST_LEGACY_CHECKPOINT_MIGRATED = 0
+
+
+def _migrate_legacy_checkpoints(cur) -> int:
+    """Normalize old projection defaults and append one deterministic audit event."""
+    attempts = _table("registration_attempts")
+    cur.execute(
+        f"""
+        WITH candidates AS (
+            SELECT id, checkpoint AS old_checkpoint,
+                   remote_identity_state AS old_remote_identity_state,
+                   remote_account_state AS old_remote_account_state,
+                   local_account_state AS old_local_account_state,
+                   target_status AS old_target_status
+            FROM {attempts}
+            WHERE checkpoint IS NULL OR checkpoint='' OR checkpoint NOT IN (
+                'created','email_claimed','auth_started','password_request_started',
+                'password_confirmed','otp_started','otp_confirmed','account_request_started',
+                'account_confirmed','token_obtained','core_persisted','postprocessing',
+                'completed','manual_reconcile','failed'
+            ) OR remote_identity_state IS NULL OR remote_identity_state='' OR remote_identity_state NOT IN (
+                'not_started','request_unknown','confirmed','rejected'
+            ) OR remote_account_state IS NULL OR remote_account_state='' OR remote_account_state NOT IN (
+                'not_started','request_unknown','confirmed','rejected'
+            ) OR local_account_state IS NULL OR local_account_state='' OR local_account_state NOT IN (
+                'none','token_obtained','persisted'
+            )
+        )
+        UPDATE {attempts} AS current
+        SET checkpoint=CASE
+                WHEN candidates.old_checkpoint='registered' THEN 'core_persisted'
+                WHEN candidates.old_checkpoint='email_verification_pending' THEN 'account_request_started'
+                WHEN candidates.old_checkpoint IS NULL OR candidates.old_checkpoint IN ('','unknown') THEN
+                    CASE candidates.old_target_status
+                        WHEN 'email_verification_pending' THEN 'account_request_started'
+                        WHEN 'account_available' THEN 'core_persisted'
+                        ELSE 'created'
+                    END
+                WHEN candidates.old_checkpoint IN (
+                    'created','email_claimed','auth_started','password_request_started',
+                    'password_confirmed','otp_started','otp_confirmed','account_request_started',
+                    'account_confirmed','token_obtained','core_persisted','postprocessing',
+                    'completed','manual_reconcile','failed'
+                ) THEN candidates.old_checkpoint
+                ELSE 'created'
+            END,
+            remote_identity_state=CASE
+                WHEN candidates.old_checkpoint IN ('registered','email_verification_pending') THEN 'confirmed'
+                WHEN candidates.old_remote_identity_state IN ('verified','created','created_unverified') THEN 'confirmed'
+                WHEN candidates.old_remote_identity_state IN ('not_started','request_unknown','confirmed','rejected') THEN candidates.old_remote_identity_state
+                ELSE CASE WHEN candidates.old_target_status='email_verification_pending' THEN 'confirmed' ELSE 'not_started' END
+            END,
+            remote_account_state=CASE
+                WHEN candidates.old_checkpoint='registered' THEN 'confirmed'
+                WHEN candidates.old_checkpoint='email_verification_pending' THEN 'request_unknown'
+                WHEN candidates.old_remote_account_state IN ('created','pending_profile') THEN 'confirmed'
+                WHEN candidates.old_remote_account_state IN ('not_started','request_unknown','confirmed','rejected') THEN candidates.old_remote_account_state
+                ELSE CASE
+                    WHEN candidates.old_target_status='email_verification_pending' THEN 'request_unknown'
+                    WHEN candidates.old_target_status='account_available' THEN 'confirmed'
+                    ELSE 'not_started'
+                END
+            END,
+            local_account_state=CASE
+                WHEN candidates.old_checkpoint='registered' THEN 'persisted'
+                WHEN candidates.old_checkpoint='email_verification_pending' THEN 'none'
+                WHEN candidates.old_local_account_state IN ('saved','checkpoint_saved') THEN
+                    CASE WHEN candidates.old_target_status='account_available' THEN 'persisted' ELSE 'none' END
+                WHEN candidates.old_local_account_state IN ('none','token_obtained','persisted') THEN candidates.old_local_account_state
+                ELSE CASE WHEN candidates.old_target_status='account_available' THEN 'persisted' ELSE 'none' END
+            END,
+            data=COALESCE(current.data, '{{}}'::jsonb) || jsonb_strip_nulls(jsonb_build_object(
+                'legacy_checkpoint', CASE WHEN candidates.old_checkpoint IS NULL OR candidates.old_checkpoint='' OR candidates.old_checkpoint NOT IN (
+                    'created','email_claimed','auth_started','password_request_started','password_confirmed',
+                    'otp_started','otp_confirmed','account_request_started','account_confirmed','token_obtained',
+                    'core_persisted','postprocessing','completed','manual_reconcile','failed'
+                ) THEN candidates.old_checkpoint END,
+                'legacy_registration_checkpoint', CASE WHEN candidates.old_checkpoint IS NULL OR candidates.old_checkpoint='' OR candidates.old_checkpoint NOT IN (
+                    'created','email_claimed','auth_started','password_request_started','password_confirmed',
+                    'otp_started','otp_confirmed','account_request_started','account_confirmed','token_obtained',
+                    'core_persisted','postprocessing','completed','manual_reconcile','failed'
+                ) THEN candidates.old_checkpoint END,
+                'legacy_remote_identity_state', CASE WHEN candidates.old_remote_identity_state NOT IN ('not_started','request_unknown','confirmed','rejected') THEN candidates.old_remote_identity_state END,
+                'legacy_remote_account_state', CASE WHEN candidates.old_remote_account_state NOT IN ('not_started','request_unknown','confirmed','rejected') THEN candidates.old_remote_account_state END,
+                'legacy_local_account_state', CASE WHEN candidates.old_local_account_state NOT IN ('none','token_obtained','persisted') THEN candidates.old_local_account_state END,
+                'checkpoint_migration', jsonb_build_object(
+                    'from', candidates.old_checkpoint,
+                    'to', CASE candidates.old_checkpoint
+                        WHEN 'registered' THEN 'core_persisted'
+                        WHEN 'email_verification_pending' THEN 'account_request_started'
+                        WHEN 'unknown' THEN CASE candidates.old_target_status
+                            WHEN 'email_verification_pending' THEN 'account_request_started'
+                            WHEN 'account_available' THEN 'core_persisted'
+                            ELSE 'created'
+                        END
+                        ELSE CASE
+                            WHEN candidates.old_checkpoint IN (
+                                'created','email_claimed','auth_started','password_request_started',
+                                'password_confirmed','otp_started','otp_confirmed','account_request_started',
+                                'account_confirmed','token_obtained','core_persisted','postprocessing',
+                                'completed','manual_reconcile','failed'
+                            ) THEN candidates.old_checkpoint
+                            ELSE 'created'
+                        END
+                    END,
+                    'migrated_at', now()
+                )
+            )),
+            updated_at=now()
+        FROM candidates
+        WHERE current.id=candidates.id
+        RETURNING current.id, candidates.old_checkpoint, current.checkpoint, current.data
+        """
+    )
+    migrated = cur.fetchall()
+    for item in migrated:
+        migrated_data = _decode(item["data"])
+        migrated_data = migrated_data if isinstance(migrated_data, dict) else {}
+        old_value = item.get("old_checkpoint")
+        if old_value is None:
+            old_value = migrated_data.get("legacy_checkpoint", "")
+        new_value = str(item["checkpoint"])
+        _insert_event(
+            cur,
+            attempt_id=int(item["id"]),
+            run_id=None,
+            job_id=None,
+            checkpoint=new_value,
+            event_type="checkpoint_migrated",
+            level="INFO",
+            message=f"兼容检查点已映射: {old_value} -> {new_value}",
+            detail={"legacy_checkpoint": old_value, "mapped_checkpoint": new_value},
+            execution_id=None,
+            event_uuid=str(uuid.uuid5(uuid.NAMESPACE_URL, f"turb-registration-checkpoint-migration:{item['id']}:{old_value}")),
+        )
+    return len(migrated)
 
 
 def init() -> None:
     """Create/upgrade registration facts without touching or deleting legacy rows."""
-    global _READY_KEY
+    global _READY_KEY, _LAST_LEGACY_CHECKPOINT_MIGRATED
     if not postgres_store.enabled():
         raise RuntimeError("注册事实存储需要配置可用的 DATABASE_URL")
     record_store.init()
@@ -274,6 +418,7 @@ def init() -> None:
             f'CREATE INDEX IF NOT EXISTS "registration_runs_attempt_idx" '
             f"ON {_table('registration_runs')} (attempt_id, run_no)"
         )
+        _LAST_LEGACY_CHECKPOINT_MIGRATED = _migrate_legacy_checkpoints(cur)
     _READY_KEY = ready_key
 
 
@@ -623,8 +768,20 @@ def start_run(
     execution_id: str | None = None,
     worker_pid: int | None = None,
     data: dict | None = None,
+    initial_status: str = "queued",
+    started_at: Any = None,
+    completed_at: Any = None,
+    error_code: str | None = None,
+    error_message: str | None = None,
+    result_summary: dict | None = None,
+    historical: bool = False,
 ) -> dict:
     """Start one execution for an existing Attempt; retries add a Run only."""
+    status_value = str(initial_status or "queued").strip().lower()
+    if status_value not in RUN_STATUSES:
+        raise ValueError(f"未知 RegistrationRun 初始状态: {initial_status!r}")
+    if status_value in TERMINAL_RUN_STATUSES and completed_at is None:
+        completed_at = _now()
     init()
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(f"SELECT id FROM {_table('registration_attempts')} WHERE id=%s FOR UPDATE", (int(attempt_id),))
@@ -641,6 +798,26 @@ def start_run(
             cur.execute(f"SELECT * FROM {_table('registration_runs')} WHERE job_id=%s", (int(job_id),))
             existing_job_run = cur.fetchone()
             if existing_job_run:
+                if historical and status_value in TERMINAL_RUN_STATUSES:
+                    # A previous backfill may have created a queued Run for a
+                    # job that was already terminal.  Reconcile that one row
+                    # in place so repeated --apply remains idempotent.
+                    cur.execute(
+                        f"""
+                        UPDATE {_table('registration_runs')}
+                        SET status=%s, started_at=COALESCE(started_at,%s), completed_at=COALESCE(%s,completed_at),
+                            heartbeat_at=NULL, error_code=COALESCE(%s,error_code),
+                            error_message=COALESCE(%s,error_message),
+                            data=data || %s::jsonb
+                        WHERE id=%s
+                        RETURNING *
+                        """,
+                        (
+                            status_value, started_at, completed_at, error_code, error_message,
+                            _json({"legacy_job_status": str(initial_status or "")}), int(existing_job_run["id"]),
+                        ),
+                    )
+                    return _row(cur.fetchone()) or {}
                 return _row(existing_job_run) or {}
         cur.execute(
             f"SELECT * FROM {_table('registration_runs')} WHERE attempt_id=%s AND status IN ('queued','running') ORDER BY run_no DESC LIMIT 1",
@@ -648,7 +825,19 @@ def start_run(
         )
         active = cur.fetchone()
         if active:
-            return _row(active) or {}
+            if not historical:
+                return _row(active) or {}
+            if status_value in ACTIVE_RUN_STATUSES:
+                # Historical rows must each have a unique Run.  If two legacy
+                # rows claim to be active under one Attempt, preserve both
+                # histories and make the later one explicitly interrupted
+                # rather than violating the one-active-Run invariant.
+                status_value = "interrupted"
+                completed_at = completed_at or _now()
+                error_code = error_code or "legacy_active_run_conflict"
+                error_message = error_message or "历史任务与同一 Attempt 的活动 Run 冲突"
+            # A historical terminal row is a distinct execution.  Preserve its
+            # terminal state and insert a new Run for this job.
         cur.execute(f"SELECT COALESCE(MAX(run_no),0)+1 AS n FROM {_table('registration_runs')} WHERE attempt_id=%s", (int(attempt_id),))
         run_no = int(cur.fetchone()["n"])
         now = _now()
@@ -656,13 +845,17 @@ def start_run(
             f"""
             INSERT INTO {_table('registration_runs')} (
                 run_uuid, attempt_id, job_id, run_no, action_type, status,
-                execution_id, worker_pid, heartbeat_at, created_at, data
-            ) VALUES (%s,%s,%s,%s,%s,'queued',%s,%s,%s,%s,%s::jsonb)
+                execution_id, worker_pid, heartbeat_at, started_at, completed_at,
+                error_code, error_message, result_summary, created_at, data
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
             RETURNING *
             """,
             (str(uuid.uuid4()), int(attempt_id), int(job_id) if job_id is not None else None, run_no,
-             str(action_type or "registration"), str(execution_id or "").strip() or None,
-             int(worker_pid) if worker_pid is not None else None, now, now, _json(data or {})),
+             str(action_type or "registration"), status_value, str(execution_id or "").strip() or None,
+             int(worker_pid) if worker_pid is not None else None,
+             now if status_value in ACTIVE_RUN_STATUSES else None, started_at, completed_at,
+             error_code, str(error_message or "")[:2000] or None, _json(result_summary or {}), now,
+             _json(data or {})),
         )
         return _row(cur.fetchone()) or {}
 
@@ -856,20 +1049,33 @@ record_checkpoint = advance_checkpoint
 persist_account_core = persist_core_account
 
 
+def _legacy_run_status(value: Any) -> str:
+    status = str(value or "failed").strip().lower()
+    if status == "pending":
+        return "queued"
+    if status == "stopping":
+        return "interrupted"
+    if status in RUN_STATUSES:
+        return status
+    return "interrupted"
+
+
 def backfill(*, apply: bool = True) -> dict[str, int | bool]:
     """Backfill one Attempt and one Run per historical registration job, idempotently."""
     # A dry-run must remain read-only with respect to the new schema.  The legacy
     # row tables already exist through record_store; only --apply installs facts.
+    migrated_checkpoints = 0
     if not apply:
         record_store.init()
     else:
         init()
+        migrated_checkpoints = _LAST_LEGACY_CHECKPOINT_MIGRATED
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(f"SELECT * FROM {_table('registration_jobs')} ORDER BY id")
         jobs = [_row(item) for item in cur.fetchall()]
     if not apply:
         roots = {int(item.get("root_job_id") or item.get("id")) for item in jobs}
-        return {"jobs": len(jobs), "attempts": len(roots), "runs": len(jobs), "applied": False}
+        return {"jobs": len(jobs), "attempts": len(roots), "runs": len(jobs), "legacy_checkpoint_migrated": 0, "applied": False}
     created_attempts = 0
     created_runs = 0
     for job in jobs:
@@ -879,10 +1085,26 @@ def backfill(*, apply: bool = True) -> dict[str, int | bool]:
         if before is None:
             created_attempts += 1
         runs_before = list_runs(int(attempt["id"]), limit=10000)
-        start_run(int(attempt["id"]), job_id=job_id, action_type=str(job.get("job_type") or "registration"), execution_id=job.get("execution_id"), worker_pid=job.get("worker_pid"))
+        start_run(
+            int(attempt["id"]),
+            job_id=job_id,
+            action_type=str(job.get("job_type") or "registration"),
+            execution_id=job.get("execution_id"),
+            worker_pid=job.get("worker_pid"),
+            initial_status=_legacy_run_status(job.get("status")),
+            started_at=job.get("started_at"),
+            completed_at=job.get("completed_at"),
+            error_code="legacy_job_error" if job.get("error_message") else None,
+            error_message=job.get("error_message"),
+            data={"legacy_job_status": str(job.get("status") or "")},
+            historical=True,
+        )
         if len(list_runs(int(attempt["id"]), limit=10000)) > len(runs_before):
             created_runs += 1
-    return {"jobs": len(jobs), "attempts": created_attempts, "runs": created_runs, "applied": True}
+    return {
+        "jobs": len(jobs), "attempts": created_attempts, "runs": created_runs,
+        "legacy_checkpoint_migrated": migrated_checkpoints, "applied": True,
+    }
 
 
 def verify() -> dict[str, Any]:
@@ -895,7 +1117,12 @@ def verify() -> dict[str, Any]:
             "orphan_runs": f"SELECT COUNT(*) AS n FROM {_table('registration_runs')} r LEFT JOIN {_table('registration_attempts')} a ON a.id=r.attempt_id WHERE a.id IS NULL",
             "orphan_events": f"SELECT COUNT(*) AS n FROM {_table('registration_events')} e LEFT JOIN {_table('registration_attempts')} a ON a.id=e.attempt_id WHERE a.id IS NULL",
             "invalid_checkpoints": f"SELECT COUNT(*) AS n FROM {_table('registration_attempts')} WHERE checkpoint NOT IN ({','.join(repr(item) for item in CHECKPOINTS)})",
+            "legacy_registered_checkpoints": f"SELECT COUNT(*) AS n FROM {_table('registration_attempts')} WHERE checkpoint='registered'",
+            "invalid_remote_identity_states": f"SELECT COUNT(*) AS n FROM {_table('registration_attempts')} WHERE remote_identity_state NOT IN ({','.join(repr(item) for item in REMOTE_STATES)})",
+            "invalid_remote_account_states": f"SELECT COUNT(*) AS n FROM {_table('registration_attempts')} WHERE remote_account_state NOT IN ({','.join(repr(item) for item in REMOTE_STATES)})",
+            "invalid_local_account_states": f"SELECT COUNT(*) AS n FROM {_table('registration_attempts')} WHERE local_account_state NOT IN ({','.join(repr(item) for item in LOCAL_ACCOUNT_STATES)})",
             "duplicate_active_runs": f"SELECT COUNT(*) AS n FROM (SELECT attempt_id FROM {_table('registration_runs')} WHERE status IN ('queued','running') GROUP BY attempt_id HAVING COUNT(*)>1) x",
+            "terminal_jobs_with_active_run": f"SELECT COUNT(*) AS n FROM {_table('registration_jobs')} j JOIN {_table('registration_runs')} r ON r.job_id=j.id WHERE LOWER(COALESCE(j.status,'')) IN ('success','partial_success','failed','stopped','cancelled','interrupted','deactivated','unsupported','attention_required') AND r.status IN ('queued','running')",
             "jobs_without_run": f"SELECT COUNT(*) AS n FROM {_table('registration_jobs')} j LEFT JOIN {_table('registration_runs')} r ON r.job_id=j.id WHERE r.id IS NULL",
         }
         checks: dict[str, int] = {}
@@ -908,7 +1135,7 @@ def verify() -> dict[str, Any]:
 
 
 __all__ = [
-    "CHECKPOINTS", "CHECKPOINT_RANK", "REMOTE_STATES", "LOCAL_ACCOUNT_STATES", "RUN_STATUSES",
+    "CHECKPOINTS", "CHECKPOINT_RANK", "LEGACY_CHECKPOINT_MAP", "REMOTE_STATES", "LOCAL_ACCOUNT_STATES", "RUN_STATUSES",
     "init", "reset_ready", "create_attempt", "ensure_attempt_for_job", "get_attempt", "get_attempt_by_job",
     "list_attempts", "advance_checkpoint", "mark_request_unknown", "mark_manual_reconcile", "start_run",
     "retry_run", "list_runs", "get_run", "finish_run", "persist_core_account", "events", "list_events",
