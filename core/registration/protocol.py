@@ -33,6 +33,7 @@ from core.openai_auth import (
 )
 from core.profile_utils import generate_random_birthday
 from core.session import BrowserSession
+from core.registration.state_machine import PageState, StageBudget, StageTimeout, classify_page
 
 logger = logging.getLogger(__name__)
 
@@ -40,26 +41,67 @@ _FINALIZE_SESSION_MAX_ATTEMPTS = 5
 _FINALIZE_SESSION_BACKOFF_BASE = 2.0
 
 
+def _protocol_terminal_state(value: object) -> PageState | None:
+    """Map callback/session errors to terminal states instead of polling blindly."""
+    response = getattr(value, "response", None)
+    if response is not None:
+        response_url = str(getattr(response, "url", "") or "").lower()
+        response_text = str(getattr(response, "text", "") or "").lower()
+        try:
+            status = int(getattr(response, "status_code", 0) or 0)
+        except (TypeError, ValueError):
+            status = 0
+        if "callback" in response_url and status in (400, 401, 403, 422):
+            return PageState.AUTH_ERROR
+        if any(marker in response_text for marker in ("oauth callback error", "invalid_grant", "session has ended")):
+            return PageState.AUTH_ERROR
+    if isinstance(value, dict):
+        error_text = " ".join(str(value.get(key) or "") for key in ("error", "error_code", "message", "detail", "url"))
+        if any(marker in error_text.lower() for marker in (
+            "oauthcallback", "oauth callback error", "callback error", "session has ended",
+            "logged out", "unauthorized", "invalid_grant",
+        )):
+            state = classify_page({"url": value.get("url"), "text": error_text})
+            return state if state in (PageState.AUTH_ERROR, PageState.LOGGED_OUT) else PageState.AUTH_ERROR
+        return classify_page(value)
+    text = str(value or "")
+    if not text:
+        return None
+    state = classify_page({"url": getattr(value, "url", "") or (text if text.startswith("http") else ""), "text": text})
+    return state if state in (PageState.AUTH_ERROR, PageState.LOGGED_OUT) else None
+
+
 def _finalize_registration_session(
     session: BrowserSession,
     continue_url: str,
     email: str,
     callback_referer: str = "https://auth.openai.com/about-you",
+    *,
+    total_timeout: float = 90.0,
+    budget: StageBudget | None = None,
 ) -> tuple[dict, str]:
-    """完成 OAuth 回调并拉取 accessToken。"""
+    """完成 OAuth 回调并拉取 accessToken under one shared stage budget."""
     if not continue_url:
         raise RuntimeError("create_account 响应缺少 continue_url，无法完成 OAuth 回调")
 
+    budget = budget or StageBudget.start(total_timeout)
     last_exc: Exception | None = None
     for attempt in range(1, _FINALIZE_SESSION_MAX_ATTEMPTS + 1):
+        budget.require("OAuth callback/session")
         try:
             logger.info(
                 f"[登录态] 完成 OAuth 回调并拉取 Token：{email} "
                 f"(尝试 {attempt}/{_FINALIZE_SESSION_MAX_ATTEMPTS})"
             )
-            follow_oauth_callback(session, continue_url, referer=callback_referer)
+            callback_url = follow_oauth_callback(session, continue_url, referer=callback_referer)
+            terminal = _protocol_terminal_state(callback_url)
+            if terminal in (PageState.AUTH_ERROR, PageState.LOGGED_OUT):
+                raise RuntimeError(f"OAuth callback reached terminal state: {terminal.value}")
             human_delay("post_auth")
             session_info = fetch_session(session)
+            terminal = _protocol_terminal_state(session_info)
+            if terminal in (PageState.AUTH_ERROR, PageState.LOGGED_OUT):
+                raise RuntimeError(f"ChatGPT session reached terminal state: {terminal.value}")
             access_token = session_info.get("accessToken")
             if not access_token:
                 raise RuntimeError("session 响应缺少 accessToken")
@@ -67,15 +109,27 @@ def _finalize_registration_session(
             return session_info, access_token
         except Exception as exc:
             last_exc = exc
+            terminal = _protocol_terminal_state(exc)
+            if terminal in (PageState.AUTH_ERROR, PageState.LOGGED_OUT):
+                raise RuntimeError(
+                    f"OAuth callback/session entered terminal state {terminal.value}: {str(exc)[:240]}"
+                ) from exc
             if attempt >= _FINALIZE_SESSION_MAX_ATTEMPTS:
                 break
             backoff = _FINALIZE_SESSION_BACKOFF_BASE ** (attempt - 1)
+            remaining = budget.remaining()
+            if remaining <= 0:
+                break
             logger.warning(
                 f"[登录态] 回调或拉取 Token 失败：{email}，"
                 f"{type(exc).__name__}: {str(exc)[:180]}，{backoff:.1f}s 后重试"
             )
-            time.sleep(backoff)
+            time.sleep(min(backoff, remaining))
 
+    if budget.expired():
+        raise StageTimeout(
+            f"OAuth callback/session exceeded shared stage timeout {int(total_timeout)} seconds"
+        ) from last_exc
     raise RuntimeError(
         f"OAuth 回调/拉取 Token 重试耗尽：{email}，"
         f"最后错误：{type(last_exc).__name__ if last_exc else 'Unknown'}: {last_exc}"
@@ -283,7 +337,11 @@ def run_protocol_registration(
                 raise RuntimeError(f"create_account 响应缺少 continue_url，无法继续: {create_result}")
 
             report_job_progress("token", "running", "正在完成 OAuth 回调并获取 Token")
-            session_info, access_token = _finalize_registration_session(session, continue_url, email)
+            session_info, access_token = _finalize_registration_session(
+                session,
+                continue_url,
+                email,
+            )
             report_job_progress("token", "success", "已获取 accessToken")
             if getattr(_protocol_cfg, "CHATGPT_AUTH_BOOTSTRAP_ENABLED", True):
                 from core.chatgpt_bootstrap import authenticated_bootstrap
