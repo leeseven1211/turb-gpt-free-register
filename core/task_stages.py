@@ -33,14 +33,14 @@ EVENT_TYPES = frozenset({
 })
 DIAGNOSTIC_TRIGGER_STATUSES = frozenset({"failed", "partial_success", "unknown"})
 DIAGNOSTIC_CONTEXT_FIELDS = frozenset({
-    "job_id", "attempt_id", "run_id", "trigger_stage", "last_confirmed_state",
+    "job_id", "attempt_id", "run_id", "execution_id", "trigger_stage", "last_confirmed_state",
     "failure_stage", "email_evidence",
 })
 ERROR_FIELDS = frozenset({
     "error_code", "source", "stage", "retryability", "remote_state_impact", "next_action",
 })
 EVENT_BASE_FIELDS = frozenset({
-    "event_type", "kind", "captured_at", "job_id", "attempt_id", "run_id",
+    "event_type", "kind", "captured_at", "job_id", "attempt_id", "run_id", "execution_id",
     "trigger_stage", "last_confirmed_state", "failure_stage", "stage", "error",
 })
 STAGE_EVENT_FIELDS = frozenset({

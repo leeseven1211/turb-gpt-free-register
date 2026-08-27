@@ -381,6 +381,24 @@ class RegistrationDebugTests(unittest.TestCase):
         self.assertEqual(event["last_confirmed_state"], "UNKNOWN")
         self.assertFalse(event["network_error_observed"])
 
+    def test_b_attempt_run_and_execution_aliases_are_carried_by_events(self):
+        job = self.job(16)
+        job.update({
+            "debug_enabled": False,
+            "attempt_id": 61,
+            "active_run_id": 62,
+            "execution_id": "exec-62",
+        })
+        session = debug.RegistrationDebugSession(job, capture_mode="failure_only")
+        session.update_stage("account_request_started", wait_reason="driver_command")
+        session.pause_failure(None, "remote account request returned unknown")
+        session.finalize("failed")
+        timeline = debug.read_timeline({**job, "failure_diagnostics_artifact_dir": str(session.artifact_dir)})
+        event = next(item for item in timeline if item.get("event_type") == "failure_diagnostics")
+        self.assertEqual(event["attempt_id"], 61)
+        self.assertEqual(event["run_id"], 62)
+        self.assertEqual(event["execution_id"], "exec-62")
+
 
 if __name__ == "__main__":
     unittest.main()

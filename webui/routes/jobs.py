@@ -577,6 +577,7 @@ def create_jobs_blueprint(context: WebUIContext):
             "job_id": job_id,
             "attempt_id": summary.get("attempt_id", job.get("attempt_id") or job.get("registration_attempt_id")),
             "run_id": summary.get("run_id", job.get("run_id") or job.get("registration_run_id")),
+            "execution_id": summary.get("execution_id", job.get("execution_id")),
             "trigger_stage": summary.get("trigger_stage") or page_state.get("trigger_stage") or job.get("trigger_stage") or job.get("progress_stage") or "",
             "last_confirmed_state": summary.get("last_confirmed_state") or page_state.get("last_confirmed_state") or job.get("last_confirmed_state") or "",
             "failure_stage": summary.get("failure_stage") or page_state.get("failure_stage") or job.get("failure_stage") or job.get("progress_stage") or "",

@@ -317,7 +317,8 @@ class RegistrationDebugSession:
         self.batch_id = str(job.get("batch_id") or "")
         context = job.get("diagnostic_context") if isinstance(job.get("diagnostic_context"), dict) else {}
         self.attempt_id = job.get("attempt_id") or job.get("registration_attempt_id") or context.get("attempt_id")
-        self.run_id = job.get("run_id") or job.get("registration_run_id") or context.get("run_id")
+        self.run_id = job.get("run_id") or job.get("registration_run_id") or job.get("active_run_id") or job.get("last_run_id") or context.get("run_id")
+        self.execution_id = job.get("execution_id") or context.get("execution_id")
         self.trigger_stage = normalize_stage(job.get("trigger_stage") or context.get("trigger_stage") or job.get("progress_stage") or "browser")
         self.last_confirmed_state = str(job.get("last_confirmed_state") or context.get("last_confirmed_state") or job.get("remote_state") or "")
         self.failure_stage = normalize_stage(job.get("failure_stage") or context.get("failure_stage") or self.trigger_stage)
@@ -412,6 +413,7 @@ class RegistrationDebugSession:
             "job_id": self.job_id,
             "attempt_id": self.attempt_id,
             "run_id": self.run_id,
+            "execution_id": self.execution_id,
             "trigger_stage": self.trigger_stage,
             "last_confirmed_state": self.last_confirmed_state,
             "failure_stage": self.failure_stage,
@@ -428,6 +430,7 @@ class RegistrationDebugSession:
         *,
         attempt_id: Any = None,
         run_id: Any = None,
+        execution_id: Any = None,
         trigger_stage: Any = None,
         last_confirmed_state: Any = None,
         failure_stage: Any = None,
@@ -438,6 +441,8 @@ class RegistrationDebugSession:
             self.attempt_id = attempt_id
         if run_id is not None:
             self.run_id = run_id
+        if execution_id is not None:
+            self.execution_id = execution_id
         if trigger_stage is not None:
             self.trigger_stage = normalize_stage(trigger_stage)
         if last_confirmed_state is not None:
@@ -483,9 +488,32 @@ class RegistrationDebugSession:
             return
         self.job.update(latest)
         context = latest.get("diagnostic_context") if isinstance(latest.get("diagnostic_context"), dict) else {}
+        attempt_id = latest.get("attempt_id") or latest.get("registration_attempt_id") or context.get("attempt_id") or self.attempt_id
+        run_id = latest.get("run_id") or latest.get("registration_run_id") or latest.get("active_run_id") or latest.get("last_run_id") or context.get("run_id") or self.run_id
+        execution_id = latest.get("execution_id") or context.get("execution_id") or self.execution_id
+        # B creates the Run after the legacy job row and intentionally keeps
+        # ``registration_jobs`` as a compatibility table.  Resolve the Run by
+        # its durable Attempt/job link only when IDs are absent; failures are
+        # ignored so diagnostics remain independent of database availability.
+        if attempt_id and not run_id:
+            try:
+                from core.storage import registration
+
+                runs = registration.list_runs(int(attempt_id), limit=100)
+                matching = [
+                    row for row in runs
+                    if int(row.get("job_id") or 0) == self.job_id
+                    or (execution_id and str(row.get("execution_id") or "") == str(execution_id))
+                ]
+                candidate = (matching or runs or [None])[0]
+                if candidate:
+                    run_id = candidate.get("id") or candidate.get("run_id")
+            except Exception:
+                logger.debug("[Job %s][Debug] 解析 RegistrationRun 失败，继续使用已有诊断上下文", self.job_id, exc_info=True)
         self.update_context(
-            attempt_id=latest.get("attempt_id") or latest.get("registration_attempt_id") or context.get("attempt_id") or self.attempt_id,
-            run_id=latest.get("run_id") or latest.get("registration_run_id") or context.get("run_id") or self.run_id,
+            attempt_id=attempt_id,
+            run_id=run_id,
+            execution_id=execution_id,
             last_confirmed_state=latest.get("last_confirmed_state") or context.get("last_confirmed_state") or self.last_confirmed_state,
             email_evidence=_email_evidence_from_job(latest, context),
         )
