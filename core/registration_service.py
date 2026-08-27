@@ -10,6 +10,7 @@
     → 创建 5 个任务，丢入线程池，立即返回 [job_dict, ...]
 """
 import logging
+import os
 import threading
 import time
 import uuid
@@ -20,6 +21,7 @@ from typing import Any
 
 from core import codex_retry_service, db
 from core.operations import task_gateway as account_task_store
+from core.registration_postprocess import summarize_postprocess, decide_recovery
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +41,23 @@ _STOP_LOCK = threading.Lock()
 _THREAD_CTX = threading.local()
 
 
+# Workflow B owns these facts.  This adapter only translates the existing job
+# progress vocabulary into one-way checkpoints; it never creates a parallel
+# state store or guesses an Attempt from an email address.
+_PROGRESS_CHECKPOINTS = {
+    ("email", "success"): "email_claimed",
+    ("auth_redirect", "running"): "auth_started",
+    ("auth_redirect", "success"): "auth_started",
+    ("password", "running"): "password_request_started",
+    ("password", "success"): "password_confirmed",
+    ("email_otp", "running"): "otp_started",
+    ("email_otp", "success"): "otp_confirmed",
+    ("profile", "running"): "account_request_started",
+    ("profile", "success"): "account_confirmed",
+    ("token", "success"): "token_obtained",
+}
+
+
 class StopRequested(RuntimeError):
     """用户手动停止注册任务。"""
 
@@ -46,6 +65,11 @@ class StopRequested(RuntimeError):
 def _activate_job(job_id: int) -> None:
     _THREAD_CTX.job_id = int(job_id)
     _THREAD_CTX.debug_token = None
+    # A worker thread can be reused by the executor.  Never leak a previous
+    # registration's Attempt/Run identifiers into the next task.
+    _THREAD_CTX.attempt_id = None
+    _THREAD_CTX.run_id = None
+    _THREAD_CTX.execution_id = None
     try:
         from core import registration_debug
 
@@ -87,6 +111,11 @@ def _deactivate_job(job_id: int) -> None:
         delattr(_THREAD_CTX, "debug_token")
     except Exception:
         pass
+    for attr in ("attempt_id", "run_id", "execution_id"):
+        try:
+            delattr(_THREAD_CTX, attr)
+        except Exception:
+            pass
     try:
         from core import sms_provider
 
@@ -114,6 +143,235 @@ def check_stop_requested() -> None:
         raise StopRequested(f"任务 #{job_id} 已被用户手动停止")
 
 
+def _ensure_registration_run_context(job: dict | None) -> dict | None:
+    """Bind the current worker to B's Attempt/Run when the job carries it.
+
+    Older unit tests and CLI callers use lightweight job dictionaries without
+    ``attempt_id``.  Those callers retain the old behavior and do not trigger a
+    database import.  Real jobs created by ``core.storage.jobs`` always carry
+    the field and therefore get durable lifecycle facts.
+    """
+    if not isinstance(job, dict) or "attempt_id" not in job:
+        return None
+    job_id = getattr(_THREAD_CTX, "job_id", None)
+    if not job_id:
+        return None
+    try:
+        from core.storage import registration
+
+        attempt_id = job.get("attempt_id")
+        attempt = (
+            registration.get_attempt(int(attempt_id))
+            if attempt_id is not None
+            else registration.ensure_attempt_for_job(int(job_id))
+        )
+        if not attempt:
+            attempt = registration.ensure_attempt_for_job(int(job_id))
+        attempt_id = int(attempt["id"])
+        execution_id = str(job.get("execution_id") or uuid.uuid4())
+        run = registration.start_run(
+            attempt_id,
+            job_id=int(job_id),
+            action_type=str(job.get("job_type") or job.get("action_type") or "registration"),
+            execution_id=execution_id,
+            worker_pid=os.getpid(),
+        )
+        _THREAD_CTX.attempt_id = attempt_id
+        _THREAD_CTX.run_id = int(run["id"]) if run.get("id") is not None else None
+        _THREAD_CTX.execution_id = execution_id
+        return {"attempt_id": attempt_id, "run_id": getattr(_THREAD_CTX, "run_id", None), "execution_id": execution_id}
+    except Exception:
+        # Storage availability must not turn compatibility/test jobs into a
+        # second failure path.  The job's legacy lifecycle remains authoritative
+        # until the next worker/recovery pass can persist the B facts.
+        logger.exception("[Job %s] 绑定 RegistrationAttempt/Run 失败，沿用旧任务生命周期", job_id)
+        return None
+
+
+def _advance_registration_checkpoint(stage: str, state: str, detail: str | None = None) -> None:
+    attempt_id = getattr(_THREAD_CTX, "attempt_id", None)
+    if attempt_id is None:
+        return
+    checkpoint = _PROGRESS_CHECKPOINTS.get((str(stage or "").strip().lower(), str(state or "").strip().lower()))
+    if checkpoint is None:
+        return
+    try:
+        from core.storage import registration
+
+        registration.advance_checkpoint(
+            int(attempt_id),
+            checkpoint,
+            run_id=getattr(_THREAD_CTX, "run_id", None),
+            job_id=getattr(_THREAD_CTX, "job_id", None),
+            execution_id=getattr(_THREAD_CTX, "execution_id", None),
+            message=detail,
+        )
+    except Exception:
+        # Checkpoint writes are additive audit facts.  A transient storage
+        # outage should be visible in logs but cannot erase the legacy task.
+        logger.exception("[Job %s] 写入 Registration checkpoint 失败: %s/%s", getattr(_THREAD_CTX, "job_id", None), stage, state)
+
+
+def _finish_registration_run(status: str, *, error_message: str | None = None, result_summary: dict | None = None) -> None:
+    run_id = getattr(_THREAD_CTX, "run_id", None)
+    if run_id is None:
+        return
+    try:
+        from core.storage import registration
+
+        registration.finish_run(
+            int(run_id),
+            status=str(status or "failed"),
+            error_message=error_message,
+            result_summary=result_summary or {},
+        )
+    except Exception:
+        logger.exception("[Job %s] 收口 RegistrationRun 失败: run_id=%s", getattr(_THREAD_CTX, "job_id", None), run_id)
+
+
+def _mark_registration_result(result: dict | None) -> None:
+    """Advance Attempt after a driver result without changing legacy status rules."""
+    attempt_id = getattr(_THREAD_CTX, "attempt_id", None)
+    if attempt_id is None or not isinstance(result, dict):
+        return
+    checkpoint = "completed" if result.get("postprocess_success") and not result.get("next_actions") else "postprocessing"
+    try:
+        from core.storage import registration
+
+        registration.advance_checkpoint(
+            int(attempt_id),
+            checkpoint,
+            run_id=getattr(_THREAD_CTX, "run_id", None),
+            job_id=getattr(_THREAD_CTX, "job_id", None),
+            execution_id=getattr(_THREAD_CTX, "execution_id", None),
+            message="注册核心与后处理结果已记录" if checkpoint == "completed" else "注册核心成功，仍有后处理动作",
+            detail={
+                "next_actions": result.get("next_actions") or [],
+                "account_readiness": result.get("account_readiness"),
+            },
+            target_status="completed" if checkpoint == "completed" else "account_available",
+        )
+    except Exception:
+        logger.exception("[Job %s] 写入注册结果 checkpoint 失败", getattr(_THREAD_CTX, "job_id", None))
+
+
+def registration_fact_context() -> dict[str, int | str | None]:
+    """Expose the current B identifiers to registration drivers."""
+    return {
+        "attempt_id": getattr(_THREAD_CTX, "attempt_id", None),
+        "run_id": getattr(_THREAD_CTX, "run_id", None),
+        "execution_id": getattr(_THREAD_CTX, "execution_id", None),
+        "job_id": getattr(_THREAD_CTX, "job_id", None),
+    }
+
+
+def bind_registration_email(email: str, *, email_source: str | None = None) -> None:
+    """Refresh B's Attempt email snapshot after the provider lease is claimed."""
+    attempt_id = getattr(_THREAD_CTX, "attempt_id", None)
+    job_id = getattr(_THREAD_CTX, "job_id", None)
+    address = str(email or "").strip()
+    if attempt_id is None or not job_id or not address:
+        return
+    try:
+        from core.storage import registration
+
+        # ``create_attempt`` is idempotent for the root job and updates only
+        # additive metadata when the Attempt already exists.  The logical lease
+        # identifier is scoped to this job because the email providers expose a
+        # release-by-address API rather than a durable lease id.
+        registration.create_attempt(
+            address,
+            email_source=email_source,
+            root_job_id=int(job_id),
+            data={"email_lease_id": f"job:{int(job_id)}:{address.lower()}"},
+        )
+    except Exception:
+        logger.exception("[Job %s] 绑定 Attempt 邮箱租约快照失败", job_id)
+
+
+def persist_registration_core(
+    *,
+    email: str,
+    access_token: str,
+    totp_secret: str | None = None,
+    extra: dict | None = None,
+    email_source: str | None = None,
+    proxy_used: str | None = None,
+    batch_dir=None,
+) -> int:
+    """Save the core account and mirror it into B's Attempt atomically where available."""
+    from core.account_export import persist_account_core
+
+    account_id = persist_account_core(
+        email=email,
+        access_token=access_token,
+        totp_secret=totp_secret,
+        extra=extra,
+        email_source=email_source,
+        proxy_used=proxy_used,
+        batch_dir=batch_dir,
+    )
+    attempt_id = getattr(_THREAD_CTX, "attempt_id", None)
+    if attempt_id is not None:
+        try:
+            from core.storage import registration
+
+            payload = dict(extra or {})
+            payload.update({"id": account_id, "email": email})
+            result = registration.persist_core_account(
+                int(attempt_id),
+                access_token=access_token,
+                account=payload,
+                run_id=getattr(_THREAD_CTX, "run_id", None),
+                job_id=getattr(_THREAD_CTX, "job_id", None),
+                execution_id=getattr(_THREAD_CTX, "execution_id", None),
+            )
+            account_id = int(result.get("account_id") or account_id)
+            # The account is now durable; any remaining work is explicitly
+            # post-processing and can be recovered without re-registering.
+            try:
+                registration.advance_checkpoint(
+                    int(attempt_id),
+                    "postprocessing",
+                    run_id=getattr(_THREAD_CTX, "run_id", None),
+                    job_id=getattr(_THREAD_CTX, "job_id", None),
+                    execution_id=getattr(_THREAD_CTX, "execution_id", None),
+                    message="核心账号已持久化，进入独立后处理",
+                )
+            except Exception:
+                logger.exception("[Job %s] 标记后处理 checkpoint 失败", getattr(_THREAD_CTX, "job_id", None))
+        except Exception:
+            logger.exception("[Job %s] 核心账号已写入兼容表，但 Attempt 核心持久化失败", getattr(_THREAD_CTX, "job_id", None))
+    report_registered_account(account_id)
+    return account_id
+
+
+def recover_registration_attempts(*, limit: int = 100) -> list[dict]:
+    """Recover interrupted Runs and return storage-neutral decisions.
+
+    This is intentionally an adapter boundary: it does not mutate leases or
+    create jobs.  Callers can schedule the returned action on the same Attempt.
+    """
+    from core.storage import registration
+
+    registration.recover_interrupted_runs()
+    decisions = []
+    for attempt in registration.list_attempts(limit=limit):
+        snapshot = {
+            "checkpoint": attempt.get("checkpoint"),
+            "remote_identity_state": attempt.get("remote_identity_state"),
+            "remote_account_state": attempt.get("remote_account_state"),
+            "local_account_state": attempt.get("local_account_state"),
+            "email_resume_capability": (attempt.get("data") or {}).get("email_resume_capability", "manual_only"),
+            "has_password": bool((attempt.get("data") or {}).get("has_password")),
+            "has_access_token": bool((attempt.get("data") or {}).get("has_access_token")),
+            "account_id": attempt.get("account_id"),
+            "active_execution": bool(attempt.get("active_execution_id")),
+        }
+        decisions.append({"attempt": attempt, "decision": decide_recovery(snapshot).as_dict()})
+    return decisions
+
+
 def report_job_progress(stage: str, state: str = "running", detail: str | None = None) -> None:
     """注册驱动调用的轻量进度上报；CLI 场景没有 job_id 时自动忽略。"""
     job_id = getattr(_THREAD_CTX, "job_id", None)
@@ -129,6 +387,7 @@ def report_job_progress(stage: str, state: str = "running", detail: str | None =
         db.update_job_progress(int(job_id), stage, state=state, detail=detail)
     except Exception:
         logger.exception("[Job %s] 写入进度失败: stage=%s state=%s", job_id, stage, state)
+    _advance_registration_checkpoint(stage, state, detail)
 
 
 def report_registered_account(account_id: int) -> None:
@@ -570,6 +829,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
             )
         _deactivate_job(job_id)
         return
+    _ensure_registration_run_context(db.get_job(job_id) or current)
     db.update_job_progress(job_id, "email", state="running", detail="正在准备代理并领取邮箱")
 
     email: str | None = None
@@ -580,6 +840,11 @@ def _run_one_job(job_id: int, log_file: str) -> None:
             from core.proxy_provider import acquire_registration_proxy, mask_endpoint, mask_ip, release_proxy
 
             def _bind_proxy_lease(lease) -> None:
+                attempt_id = getattr(_THREAD_CTX, "attempt_id", None)
+                if attempt_id is not None:
+                    metadata = getattr(lease, "metadata", None)
+                    if isinstance(metadata, dict):
+                        metadata["attempt_id"] = int(attempt_id)
                 db.update_job(
                     job_id,
                     proxy_provider=lease.provider,
@@ -640,6 +905,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     batch_id=batch_id,
                     job_id=job_id,
                 )
+            bind_registration_email(email, email_source=selected_source)
             db.update_job(job_id, email=email)
             if not existing_password:
                 db.update_job_progress(job_id, "email", state="success", detail=f"已从 {selected_source} 领取邮箱")
@@ -707,6 +973,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                         batch_id=batch_id,
                         job_id=job_id,
                     )
+                    bind_registration_email(email, email_source=selected_source)
                     db.update_job(job_id, email=email)
                     db.update_job_progress(
                         job_id,
@@ -753,6 +1020,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 )
             )
             if registration_succeeded:
+                _mark_registration_result(result)
                 warning = str(result.get("error") or "").strip()
                 registration_pending = bool(
                     not result.get("success")
@@ -868,11 +1136,21 @@ def _run_one_job(job_id: int, log_file: str) -> None:
             completed_at=datetime.now().isoformat(timespec="seconds"),
         )
     finally:
+        final_job = db.get_job(job_id) or {}
+        final_status = str(final_job.get("status") or "failed").strip().lower()
+        if final_status not in {"queued", "running", "success", "partial_success", "failed", "stopped", "cancelled", "interrupted", "request_unknown", "manual_reconcile"}:
+            final_status = "failed"
+        if final_status in {"queued", "running"}:
+            final_status = "failed"
+        _finish_registration_run(
+            final_status,
+            error_message=str(final_job.get("error") or "")[:2000] or None,
+            result_summary={"job_id": job_id, "status": final_status},
+        )
         if proxy_lease is not None:
             try:
                 from core.proxy_provider import release_proxy
 
-                final_job = db.get_job(job_id) or {}
                 release_proxy(proxy_lease, reason=str(final_job.get("status") or "completed"))
                 db.update_job(job_id, proxy_status="released")
             except Exception:
@@ -937,6 +1215,7 @@ def _run_codex_retry_job(
         codex_retry_service.release(email)
         _deactivate_job(job_id)
         return
+    _ensure_registration_run_context(db.get_job(job_id) or current)
     for stage, _label in db.JOB_PROGRESS_STAGES:
         if stage not in {"codex", "complete"}:
             db.update_job_progress(job_id, stage, state="skipped", detail="Codex 补跑任务")
@@ -992,6 +1271,17 @@ def _run_codex_retry_job(
         codex_retry_service.release(email)
         logger.exception("[Job %s] Codex 补跑异常", job_id)
     finally:
+        final_job = db.get_job(job_id) or {}
+        final_status = str(final_job.get("status") or "failed").strip().lower()
+        if final_status in {"queued", "running"} or final_status not in {
+            "success", "partial_success", "failed", "stopped", "cancelled", "interrupted", "request_unknown", "manual_reconcile"
+        }:
+            final_status = "failed"
+        _finish_registration_run(
+            final_status,
+            error_message=str(final_job.get("error") or "")[:2000] or None,
+            result_summary={"job_id": job_id, "action": "retry_codex", "status": final_status},
+        )
         _deactivate_job(job_id)
 
 
@@ -1045,6 +1335,7 @@ def _run_twofa_retry_job(
         codex_retry_service.release(email)
         _deactivate_job(job_id)
         return
+    _ensure_registration_run_context(db.get_job(job_id) or current)
     for stage, _label in db.JOB_PROGRESS_STAGES:
         if stage not in {"twofa", "complete"}:
             db.update_job_progress(job_id, stage, state="skipped", detail="账号配置重试任务")
@@ -1088,6 +1379,17 @@ def _run_twofa_retry_job(
         codex_retry_service.release(email)
         logger.exception("[Job %s] 账号配置重试异常", job_id)
     finally:
+        final_job = db.get_job(job_id) or {}
+        final_status = str(final_job.get("status") or "failed").strip().lower()
+        if final_status in {"queued", "running"} or final_status not in {
+            "success", "partial_success", "failed", "stopped", "cancelled", "interrupted", "request_unknown", "manual_reconcile"
+        }:
+            final_status = "failed"
+        _finish_registration_run(
+            final_status,
+            error_message=str(final_job.get("error") or "")[:2000] or None,
+            result_summary={"job_id": job_id, "action": "retry_twofa", "status": final_status},
+        )
         _deactivate_job(job_id)
 
 
@@ -1262,6 +1564,7 @@ def _build_retry_info(
         "retry_label": None,
         "retry_reason": None,
         "display_status": status,
+        "next_actions": [],
     }
     if status not in ("success", "failed", "partial_success", "stopped", "cancelled"):
         return info
@@ -1281,6 +1584,11 @@ def _build_retry_info(
             "retry_action": "registration_resume",
             "retry_label": "继续邮箱验证",
             "retry_reason": "OpenAI 密码已创建并保存在本地，继续登录同一账号完成邮箱验证",
+            "next_actions": [{
+                "action": "registration_resume",
+                "reason": "同一 Attempt 继续完成邮箱验证",
+                "retryable": True,
+            }],
         })
         return info
 
@@ -1319,9 +1627,45 @@ def _build_retry_info(
             else "partial_success"
         )
 
+    # Expose the durable action vocabulary alongside the legacy single-action
+    # projection.  A single account can legitimately need more than one
+    # independent follow-up (for example Codex plus plan check).
+    if account:
+        twofa_state = "failed" if twofa_failed else "success" if _account_twofa_ready(account) else "pending"
+        twofa_required = str(twofa_step.get("state") or "").strip().lower() != "skipped"
+        codex_state = codex_status or "failed"
+        plan_state = "success" if _account_plan_ready(account) else "pending"
+        summary = summarize_postprocess(
+            core_success=True,
+            password_present=bool(_account_login_password(account)),
+            outcomes={
+                "twofa": {"status": twofa_state, "ok": twofa_state == "success"},
+                "codex": {"status": codex_state, "ok": codex_state in {"success", "skipped"}},
+                "plan_check": {"status": plan_state, "ok": plan_state == "success"},
+            },
+            twofa_required=twofa_required,
+            codex_enabled=codex_state != "skipped",
+            plan_check_required=True,
+        )
+        info["next_actions"] = [action.as_dict() for action in summary.next_actions]
+
     if account:
         if codex_status == "deactivated":
             info["retry_reason"] = "账号已废号，不能补跑 Codex"
+            return info
+        if (
+            setup_missing
+            and codex_status in {"success", "skipped"}
+            and bool(_account_login_password(account))
+            and _account_twofa_ready(account, twofa_failed)
+            and not _account_plan_ready(account)
+        ):
+            info.update({
+                "retryable": True,
+                "retry_action": "plan_check",
+                "retry_label": "重试套餐查询",
+                "retry_reason": "账号核心、密码和 2FA 已就绪，仅套餐状态待确认",
+            })
             return info
         if codex_status in {"success", "skipped"}:
             if setup_missing:
@@ -1357,6 +1701,11 @@ def _build_retry_info(
         "retryable": True,
         "retry_action": "registration",
         "retry_label": "重试",
+        "next_actions": [{
+            "action": "registration_new",
+            "reason": "未发现已持久化账号，可按 Attempt 恢复策略重新开始",
+            "retryable": True,
+        }],
     })
     return info
 
@@ -1417,6 +1766,32 @@ def retry_job(
     account = _account_for_job(source)
     email = str((account or {}).get("email") or source.get("email") or "").strip()
     account_id = int(account["id"]) if account and account.get("id") is not None else None
+    if action == "plan_check":
+        if not email or account_id is None:
+            return {"ok": False, "error": "已保存账号信息不完整，无法查询套餐", "status": 409}
+        try:
+            from core.plan_check_service import enqueue_account_plan_check
+
+            queued = enqueue_account_plan_check(
+                account_id=account_id,
+                email=email,
+                access_token=str((account or {}).get("access_token") or ""),
+                trigger="registration_retry_plan_check",
+            )
+        except Exception as exc:
+            return {"ok": False, "error": f"套餐查询入队异常：{type(exc).__name__}: {exc}", "status": 503}
+        if not queued.get("accepted") and not queued.get("busy"):
+            return {"ok": False, "error": queued.get("error") or "套餐查询入队失败", "status": 409}
+        return {
+            "ok": True,
+            "created": bool(queued.get("accepted")),
+            "reused": bool(queued.get("busy")),
+            "retry_action": action,
+            "source_job_id": int(job_id),
+            "operation_task_id": queued.get("task_id"),
+            "run_id": queued.get("run_id"),
+            "message": "套餐查询已入队" if queued.get("accepted") else "已有套餐查询正在执行",
+        }
     if action == "codex":
         # 注册任务只提供父上下文；Codex 补跑本身由原生 operation run 执行，
         # 不再额外创建 registration_job + account_action_task 两份重复记录。

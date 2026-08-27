@@ -136,6 +136,15 @@ JOBS = TableSpec(
         "job_type": "TEXT",
         "batch_id": "TEXT",
         "account_id": "BIGINT",
+        # RegistrationAttempt is the durable business intent.  Keep the legacy
+        # registration_jobs row as an execution record, linked explicitly rather
+        # than inferring the relationship from email/root_job_id.
+        "attempt_id": "BIGINT",
+        "execution_id": "TEXT",
+        "action_type": "TEXT",
+        "worker_pid": "INTEGER",
+        "heartbeat_at": "TEXT",
+        "interrupted_at": "TEXT",
         "root_job_id": "BIGINT",
         "parent_job_id": "BIGINT",
     },
