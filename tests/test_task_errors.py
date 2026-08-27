@@ -8,6 +8,11 @@ class TaskErrorClassificationTests(unittest.TestCase):
     def test_proxy_failure_is_external(self):
         info = classify_task_error("RuntimeError: 1024Proxy 获取失败：上游超时")
         self.assertEqual(info["code"], "external.proxy")
+        self.assertEqual(info["error_code"], "external.proxy")
+        self.assertEqual(info["stage"], "unknown")
+        self.assertEqual(info["retryability"], "retryable")
+        self.assertEqual(info["remote_state_impact"], "not_started_or_unknown")
+        self.assertEqual(info["next_action"], "retry_with_new_proxy")
         self.assertEqual(info["source_label"], "外部错误")
         self.assertNotIn("RuntimeError:", info["summary"])
 
@@ -30,6 +35,16 @@ class TaskErrorClassificationTests(unittest.TestCase):
 
     def test_empty_error_has_no_projection(self):
         self.assertIsNone(classify_task_error(""))
+
+    def test_explicit_error_code_is_preserved_with_structured_metadata(self):
+        info = classify_task_error(
+            "OpenAI account was deactivated",
+            stage="codex_result",
+            error_code="account_deactivated",
+        )
+        self.assertEqual(info["error_code"], "account_deactivated")
+        self.assertEqual(info["stage"], "codex")
+        self.assertIn("retryability", info)
 
 
 if __name__ == "__main__":

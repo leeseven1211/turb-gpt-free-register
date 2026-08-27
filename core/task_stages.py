@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""统一任务阶段定义。
+"""统一任务阶段定义和 D 窗口诊断事件契约。
 
 任务执行器仍可使用自己的内部函数，但写事件和展示时必须映射到这里的稳定阶段。
 这样注册、继续注册、Codex 补跑和账号配置补跑复用同一套术语，前端不再从日志文本猜步骤。
@@ -10,6 +10,42 @@ from typing import Any
 
 
 STEP_STATES = frozenset({"pending", "running", "success", "skipped", "failed"})
+
+# Wait reasons are deliberately finite so duration reports can be aggregated
+# without parsing driver log prose.  ``unknown`` is explicit rather than an
+# omitted field: a missing reason and a measured non-waiting stage are distinct.
+WAIT_REASONS = frozenset({
+    "resource_wait", "driver_command", "page_transition", "email_wait",
+    "human_delay", "db_write", "projection", "cleanup", "unknown",
+})
+
+# Public event contract consumed by the task-center projection (window E).
+# Every diagnostic event carries the correlation fields and ``event_type``;
+# stage transitions additionally carry state_before/state_after and timing.
+EVENT_TYPES = frozenset({
+    "diagnostic",
+    "capture_started", "capture_finished", "stage", "stage_timing",
+    "network_request", "email_evidence", "failure_diagnostics",
+    "page_snapshot", "page_error", "console", "websocket_open",
+    "websocket_frame", "websocket_close", "capture_warning",
+    "capture_degraded", "snapshot_error", "collector_started", "debug_paused",
+    "debug_released", "debug_hold_skipped",
+})
+DIAGNOSTIC_TRIGGER_STATUSES = frozenset({"failed", "partial_success", "unknown"})
+DIAGNOSTIC_CONTEXT_FIELDS = frozenset({
+    "job_id", "attempt_id", "run_id", "trigger_stage", "last_confirmed_state",
+    "failure_stage", "email_evidence",
+})
+ERROR_FIELDS = frozenset({
+    "error_code", "source", "stage", "retryability", "remote_state_impact", "next_action",
+})
+EVENT_BASE_FIELDS = frozenset({
+    "event_type", "kind", "captured_at", "job_id", "attempt_id", "run_id",
+    "trigger_stage", "last_confirmed_state", "failure_stage", "stage", "error",
+})
+STAGE_EVENT_FIELDS = frozenset({
+    "state_before", "state_after", "duration_ms", "wait_reason",
+})
 
 
 STAGES: dict[str, dict[str, str]] = {
@@ -90,6 +126,11 @@ def normalize_step_state(state: Any) -> str | None:
     """返回任务步骤协议允许的五态；无效值不进入事件投影。"""
     value = str(state or "").strip().lower()
     return value if value in STEP_STATES else None
+
+
+def normalize_wait_reason(reason: Any) -> str:
+    value = str(reason or "").strip().lower()
+    return value if value in WAIT_REASONS else "unknown"
 
 
 def stage_label(stage: Any) -> str:

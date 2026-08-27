@@ -30,6 +30,14 @@ from core import (
 )
 from core import registration_service as svc
 from core.task_errors import classify_task_error
+from core.task_stages import (
+    DIAGNOSTIC_CONTEXT_FIELDS,
+    ERROR_FIELDS,
+    EVENT_BASE_FIELDS,
+    EVENT_TYPES,
+    STAGE_EVENT_FIELDS,
+    WAIT_REASONS,
+)
 from config import codex as codex_config
 from webui import config_editor
 from webui.blueprint import LegacyEndpointBlueprint
@@ -37,6 +45,17 @@ from webui.runtime import WebUIContext
 from webui.route_helpers import _compact_job_for_list, _latest_progress_batch
 
 logger = logging.getLogger(__name__)
+
+
+def _diagnostic_event_contract() -> dict:
+    return {
+        "event_types": sorted(EVENT_TYPES),
+        "base_fields": sorted(EVENT_BASE_FIELDS),
+        "context_fields": sorted(DIAGNOSTIC_CONTEXT_FIELDS),
+        "stage_fields": sorted(STAGE_EVENT_FIELDS),
+        "wait_reasons": sorted(WAIT_REASONS),
+        "error_fields": sorted(ERROR_FIELDS),
+    }
 
 def create_jobs_blueprint(context: WebUIContext):
     bp = LegacyEndpointBlueprint("jobs", __name__)
@@ -528,8 +547,14 @@ def create_jobs_blueprint(context: WebUIContext):
         state = str(job.get("failure_diagnostics_state") or "")
         captured = bool(summary) or state in {"captured", "completed"}
         if not captured:
-            return jsonify({"ok": True, "enabled": diagnostics_enabled, "captured": False, "job_id": job_id})
-        from core.registration_debug import read_events, read_page_state, screenshot_path
+            return jsonify({
+                "ok": True,
+                "enabled": diagnostics_enabled,
+                "captured": False,
+                "job_id": job_id,
+                "event_contract": _diagnostic_event_contract(),
+            })
+        from core.registration_debug import read_events, read_page_state, read_timeline, screenshot_path
         try:
             limit = max(1, min(300, int(request.args.get("limit", 100) or 100)))
         except (TypeError, ValueError):
@@ -537,9 +562,25 @@ def create_jobs_blueprint(context: WebUIContext):
         try:
             page_state = read_page_state(job)
             events = read_events(job, limit=limit, errors_only=True)
+            timeline = read_timeline(job, limit=limit)
             screenshot = screenshot_path(job)
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 409
+        error_info = classify_task_error(
+            job.get("error_message") or job.get("error") or page_state.get("reason") or "",
+            stage=str(job.get("progress_stage") or page_state.get("failure_stage") or ""),
+            task_type=str(job.get("job_type") or "registration"),
+            error_code=str(job.get("error_code") or ""),
+        )
+        summary = dict(summary) if isinstance(summary, dict) else {}
+        context = {
+            "job_id": job_id,
+            "attempt_id": summary.get("attempt_id", job.get("attempt_id") or job.get("registration_attempt_id")),
+            "run_id": summary.get("run_id", job.get("run_id") or job.get("registration_run_id")),
+            "trigger_stage": summary.get("trigger_stage") or page_state.get("trigger_stage") or job.get("trigger_stage") or job.get("progress_stage") or "",
+            "last_confirmed_state": summary.get("last_confirmed_state") or page_state.get("last_confirmed_state") or job.get("last_confirmed_state") or "",
+            "failure_stage": summary.get("failure_stage") or page_state.get("failure_stage") or job.get("failure_stage") or job.get("progress_stage") or "",
+        }
         return jsonify({
             "ok": True,
             "enabled": diagnostics_enabled,
@@ -550,9 +591,17 @@ def create_jobs_blueprint(context: WebUIContext):
             "category_label": job.get("failure_diagnostics_category_label") or page_state.get("failure_category_label") or "未分类",
             "failure_reason": job.get("failure_diagnostics_failure_reason") or page_state.get("reason") or "",
             "summary": summary,
+            "context": context,
+            "email_evidence": summary.get("email_evidence") or page_state.get("email_evidence") or job.get("email_evidence") or {},
+            "stage_timings": summary.get("stage_timings") or page_state.get("stage_timings") or [],
+            "network_error_observed": bool(summary.get("network_error_observed", page_state.get("network_error_observed", False))),
+            "error_info": summary.get("error_info") or page_state.get("error_info") or error_info or {},
+            "error": summary.get("error") or page_state.get("error") or error_info or {},
             "page_state": page_state,
             "screenshot_url": f"/api/jobs/{job_id}/diagnostics/screenshot" if screenshot else "",
             "events": events,
+            "timeline": timeline,
+            "event_contract": _diagnostic_event_contract(),
         })
 
     @bp.get("/api/jobs/<int:job_id>/diagnostics/screenshot")
@@ -594,7 +643,7 @@ def create_jobs_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error": str(exc)}), 409
         payload = json.dumps(har, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         response = Response(payload, mimetype="application/json")
-        response.headers["Content-Disposition"] = f'attachment; filename="registration-job-{job_id}-sanitized.har"'
+        response.headers["Content-Disposition"] = f'attachment; filename="registration-job-{job_id}-raw.har"'
         response.headers["Cache-Control"] = "no-store"
         return response
 
