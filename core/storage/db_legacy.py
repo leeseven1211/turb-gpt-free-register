@@ -58,6 +58,7 @@ JOB_PROGRESS_STAGES = (
     ("page", "打开注册页"),
     ("submit_email", "提交邮箱"),
     ("auth_redirect", "认证跳转"),
+    ("login_password", "账号密码"),
     ("email_otp", "邮箱验证码"),
     ("profile", "填写资料"),
     ("token", "获取 Token"),

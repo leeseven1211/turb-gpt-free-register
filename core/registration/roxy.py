@@ -29,6 +29,43 @@ from core.registration.state_machine import (
 
 logger = logging.getLogger(__name__)
 
+# These failures happen before a local account checkpoint exists. Keeping the
+# temporary Profile for them only consumes a Roxy slot; failures after a
+# password/OTP submit are deliberately excluded by the state guards below.
+_DISPOSABLE_PRE_ACCOUNT_FAILURE_MARKERS = (
+    "err_tunnel_connection_failed",
+    "err_proxy_connection_failed",
+    "chrome-error://chromewebdata/",
+    "邮箱提交/认证跳转超过总预算",
+    "roxy registration stage timeout exhausted",
+    "email otp input budget exhausted",
+    "page_not_hydrated",
+)
+
+
+def _is_disposable_pre_account_failure(
+    error_text: str,
+    *,
+    create_acknowledged: bool,
+    account_id: int | None,
+) -> bool:
+    """Return whether a run-created Profile can be discarded safely."""
+    if create_acknowledged or account_id is not None:
+        return False
+    normalized = str(error_text or "").lower()
+    if any(marker in normalized for marker in _DISPOSABLE_PRE_ACCOUNT_FAILURE_MARKERS):
+        return True
+    # The page-not-hydrated classifier is persisted separately from the raw
+    # exception. Match its characteristic empty ChatGPT auth snapshot too.
+    empty_actions = "'actions': []" in normalized or '"actions": []' in normalized
+    empty_inputs = "'inputs': []" in normalized or '"inputs": []' in normalized
+    return (
+        "找不到邮箱输入框/邮箱入口" in normalized
+        and "chatgpt.com/auth/login" in normalized
+        and empty_actions
+        and empty_inputs
+    )
+
 
 def _log_prefix(driver=None) -> str:
     """按当前浏览器实现返回注册日志前缀。
@@ -634,7 +671,19 @@ def _is_blank_chatgpt_auth_shell(driver, state: dict | None = None) -> bool:
         for action in (shell_state.get("actions") or [])
         if isinstance(action, dict)
     )
-    return "/?slm=1" in action_attrs and "dismiss-welcome" in action_attrs
+    if "/?slm=1" in action_attrs and "dismiss-welcome" in action_attrs:
+        return True
+    if shell_state.get("actions"):
+        return False
+    # A second blank-shell variant has no actions at all. It is still the
+    # ChatGPT auth route, but React never mounted the login form; refreshing
+    # this state is equivalent to the user's manual refresh recovery.
+    title = str(shell_state.get("title") or "").strip().lower()
+    return title in {
+        "开始使用 | chatgpt",
+        "開始する | chatgpt",
+        "get started | chatgpt",
+    }
 
 
 def _reload_blank_chatgpt_auth_shell(driver) -> None:
@@ -1423,6 +1472,16 @@ def _submit_email_and_wait_next(
         logger.info("%s 已填写邮箱并校验通过：%s", _log_prefix(driver), email)
         human_delay("form")
         _submit_email_step(driver, email)
+        # Selenium click/submit may itself block until the browser finishes a slow
+        # navigation.  Once the form has been dispatched, waiting for the remote
+        # auth result is a new request and must receive a fresh budget.  Otherwise
+        # the first state check can fail immediately even though the page is still
+        # legitimately transitioning (observed with a 91-second proxy response).
+        budget = StageBudget.start(max(10, int(total_timeout or 60)))
+        try:
+            setattr(driver, "_registration_stage_budget", budget)
+        except Exception:
+            pass
         if not submitted_reported and on_submitted is not None:
             try:
                 on_submitted()
@@ -2030,6 +2089,24 @@ def _registration_auth_mode() -> str:
     return mode if mode in {'otp', 'password'} else 'otp'
 
 
+def _password_transition_timeout_seconds() -> float:
+    """Return the independent budget used after submitting a password form."""
+    try:
+        from config import register as _register_cfg
+
+        value = float(
+            getattr(_register_cfg, 'REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS', 60)
+            or 60
+        )
+    except (TypeError, ValueError, ImportError):
+        value = 60.0
+    return max(20.0, min(180.0, value))
+
+
+class _PasswordTransitionTimeout(RuntimeError):
+    """Password submit was dispatched but the remote result is still unknown."""
+
+
 def _password_page_state(driver) -> dict:
     try:
         return driver.execute_script(r"""
@@ -2204,10 +2281,11 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
             attrs.includes('繼續使用密碼') ||
             attrs.includes('비밀번호로계속')
           );
+          const conflictingLoginPath = path === '/log-in/password';
           return path === '/create-account/password'
-            || (path.includes('/password') && passwordLabel)
+            || (!conflictingLoginPath && path.includes('/password') && passwordLabel)
             || (name === 'intent' && value === 'passwordless_signup_use_password')
-            || passwordLabel;
+            || (!conflictingLoginPath && passwordLabel);
         });
         if (!target) return {
           ok:false,
@@ -2302,6 +2380,7 @@ def _fill_password_page_if_present(
     timeout: int = 25,
     *,
     existing_password: str | None = None,
+    on_password_submitted=None,
 ) -> str | None:
     """处理注册/登录密码页，并返回本次确认可用的 OpenAI 账号密码。
 
@@ -2398,13 +2477,14 @@ def _fill_password_page_if_present(
         human_delay("form", minimum=0.4, maximum=1.4)
         _human_click(driver, result.get("button"), label="password_submit")
         logger.info("%s 已填写并提交%s密码页", _log_prefix(driver), "登录" if is_login_password else "注册")
-        # 提交密码后必须确认已经离开密码页，不能因等待结束就直接进入 OTP 阶段。
-        # 这是状态正确性等待，不是把所有失败都粗暴延长；默认最多给页面 25 秒完成跳转。
-        transition_timeout = min(30.0, max(20.0, float(timeout or 25)))
-        # Keep the original password-stage deadline.  The transition wait is
-        # part of that budget, rather than a second timeout appended to it.
-        wait_end = min(end, time.time() + transition_timeout)
+        if on_password_submitted is not None:
+            on_password_submitted(password)
+        # 密码页识别/切换已经消耗了外层 timeout 的一部分。表单提交属于新的远端请求，
+        # 必须从点击成功后使用独立预算；否则慢代理下页面会在任务判失败后才迟到进入 OTP。
+        transition_timeout = _password_transition_timeout_seconds()
+        wait_end = time.time() + transition_timeout
         while time.time() < wait_end:
+            _check_manual_stop()
             if _is_email_verification_page(driver):
                 logger.info("%s 密码提交后已进入邮箱验证码页", _log_prefix(driver))
                 return password
@@ -2415,8 +2495,8 @@ def _fill_password_page_if_present(
                 return password
             time.sleep(0.5)
         stuck_state = _password_page_state(driver)
-        raise RuntimeError(
-            f"密码提交后页面仍停留在密码页，未进入验证码页或登录态："
+        raise _PasswordTransitionTimeout(
+            f"密码提交后等待 {int(transition_timeout)} 秒仍未确认远端结果，页面仍停留在密码页："
             f"url={getattr(driver, 'current_url', '')} state={stuck_state}"
         )
     logger.info("%s 未检测到密码页，继续后续流程 last=%s", _log_prefix(driver), last)
@@ -3688,7 +3768,7 @@ def _save_pending_email_verification_checkpoint(
     opened: RoxyOpenResult,
     proxy: str | None,
 ) -> int:
-    """密码提交成功后立即保存待邮箱验证账号。
+    """密码提交请求发出后立即保存待邮箱验证账号。
 
     OpenAI 在密码提交时已经创建邮箱身份；即使验证码邮件没有到达，本地也必须保存
     这组邮箱/密码，后续重试才能走登录流程继续收码。空 access_token 明确表示账号
@@ -3812,6 +3892,7 @@ def run_roxy_registration(
         progress_callback=report_job_progress,
     )
     driver = None
+    profile_discarded = False
     create_acknowledged = False
     openai_password: str | None = None
     access_token: str | None = None
@@ -3868,16 +3949,60 @@ def run_roxy_registration(
             allow_login_password=bool(existing_password),
         )
         _check_manual_stop()
+        # 只要已经到达 OpenAI 的密码/OTP 等下一页，认证跳转就已经完成。密码创建是
+        # 独立业务阶段，不能继续挂在 auth_redirect 上导致失败原因误导。
+        report_job_progress("auth_redirect", "success", f"已进入认证下一步：{next_state}")
 
         # 新版注册流可能先进入 /create-account/password；参考 FlowPilot 的 fill-password 步骤，
         # 先设置密码并提交，然后再等待邮箱验证码页。
-        openai_password = _fill_password_page_if_present(
-            driver,
-            email,
-            timeout=25,
-            existing_password=existing_password,
+        password_stage_expected = _registration_auth_mode() == 'password' or bool(existing_password)
+        report_job_progress(
+            "login_password",
+            "running" if password_stage_expected else "skipped",
+            "正在创建并确认账号密码" if password_stage_expected else "一次性验证码模式，无需创建账号密码",
         )
-        if openai_password:
+
+        def _checkpoint_submitted_password(password: str) -> None:
+            nonlocal account_id, create_acknowledged
+            if existing_password or account_id is not None:
+                return
+            account_id = _save_pending_email_verification_checkpoint(
+                email=email,
+                openai_password=password,
+                opened=opened,
+                proxy=proxy,
+            )
+            report_registered_account(account_id)
+            create_acknowledged = True
+            logger.info(
+                "[Roxy注册] 密码提交请求已发出，先保存可恢复检查点：id=%s email=%s",
+                account_id,
+                email,
+            )
+
+        try:
+            openai_password = _fill_password_page_if_present(
+                driver,
+                email,
+                timeout=25,
+                existing_password=existing_password,
+                on_password_submitted=_checkpoint_submitted_password,
+            )
+        except _PasswordTransitionTimeout:
+            report_job_progress("login_password", "failed", "密码已提交，但远端结果仍待确认")
+            raise
+        except Exception as exc:
+            if password_stage_expected:
+                report_job_progress("login_password", "failed", f"账号密码处理失败: {type(exc).__name__}: {str(exc)[:180]}")
+            raise
+        else:
+            if password_stage_expected:
+                report_job_progress(
+                    "login_password",
+                    "success" if openai_password else "skipped",
+                    "账号密码已提交并进入下一步" if openai_password else "已有登录态，无需再次提交密码",
+                )
+        if openai_password and account_id is None:
             account_id = _save_pending_email_verification_checkpoint(
                 email=email,
                 openai_password=openai_password,
@@ -3910,7 +4035,6 @@ def run_roxy_registration(
                 email,
                 resume_login_state,
             )
-        report_job_progress("auth_redirect", "success", f"已进入认证下一步：{next_state}")
         _check_manual_stop()
 
         report_job_progress("email_otp", "running", "正在等待并验证邮箱验证码")
@@ -4260,13 +4384,29 @@ def run_roxy_registration(
         # 未确认创建前通常可以回收邮箱；但 password 模式下缺少创建密码入口时，
         # 该地址可能已经在 OpenAI 侧进入已有账号/半成品账号状态。继续放回池里只会
         # 让后续任务反复命中登录 OTP 页，永远无法完成“账号+密码”注册。
+        password_result_unknown = isinstance(exc, _PasswordTransitionTimeout)
+        error_text = str(exc)
+        disposable_proxy_failure = _is_disposable_pre_account_failure(
+            error_text,
+            create_acknowledged=create_acknowledged,
+            account_id=account_id,
+        )
+        if disposable_proxy_failure and opened.created_by_run:
+            try:
+                client.discard_profile(opened)
+                profile_discarded = True
+                logger.info(
+                    "[Roxy注册] 注册前阶段失败且未产生远端账号状态，已软删除临时环境释放重试额度：profile=%s",
+                    opened.profile_id,
+                )
+            except Exception:
+                logger.exception("[Roxy注册] 释放代理失败临时环境时出错；保留原失败结果")
         try:
             from core.email_provider import release_email
-            error_text = str(exc)
             password_target_missing = "missing_create_account_password_target_after_wait" in error_text
             release_email(
                 email,
-                status="failed" if create_acknowledged or password_target_missing else "available",
+                status="failed" if create_acknowledged or password_target_missing or password_result_unknown else "available",
                 note=f"Roxy注册失败: {error_text[:180]}",
             )
         except Exception:
@@ -4278,15 +4418,16 @@ def run_roxy_registration(
             "account_id": account_id,
             "access_token": access_token,
             "totp_secret": totp_secret,
+            "request_unknown": password_result_unknown,
             "error": f"{type(exc).__name__}: {str(exc)[:300]}",
         }
     finally:
-        if driver and not bool(_cfg.ROXY_KEEP_BROWSER_OPEN):
+        if driver and not profile_discarded and not bool(_cfg.ROXY_KEEP_BROWSER_OPEN):
             try:
                 driver.quit()
             except Exception:
                 pass
-        if not bool(_cfg.ROXY_KEEP_BROWSER_OPEN):
+        if not profile_discarded and not bool(_cfg.ROXY_KEEP_BROWSER_OPEN):
             client.cleanup_profile(opened)
         if plan_check_session is not None:
             try:

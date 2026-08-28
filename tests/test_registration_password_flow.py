@@ -49,6 +49,48 @@ class _BrowserUsePage:
         self.state = "email_verification"
 
 
+class RegistrationFailureClassificationTests(unittest.TestCase):
+    def test_pre_account_shell_failures_are_disposable_but_checkpointed_failures_are_not(self):
+        disposable_errors = (
+            "Roxy registration stage timeout exhausted",
+            "email OTP input budget exhausted",
+            "page_not_hydrated: blank shell",
+        )
+        for error in disposable_errors:
+            with self.subTest(error=error):
+                self.assertTrue(
+                    roxy_registration._is_disposable_pre_account_failure(
+                        error,
+                        create_acknowledged=False,
+                        account_id=None,
+                    )
+                )
+
+        self.assertTrue(
+            roxy_registration._is_disposable_pre_account_failure(
+                '找不到邮箱输入框/邮箱入口，state={"actions": [], "inputs": [], '
+                '"title": "開始する | ChatGPT", "url": "https://chatgpt.com/auth/login"}',
+                create_acknowledged=False,
+                account_id=None,
+            )
+        )
+
+        self.assertFalse(
+            roxy_registration._is_disposable_pre_account_failure(
+                "Roxy registration stage timeout exhausted",
+                create_acknowledged=True,
+                account_id=None,
+            )
+        )
+        self.assertFalse(
+            roxy_registration._is_disposable_pre_account_failure(
+                "Roxy registration stage timeout exhausted",
+                create_acknowledged=False,
+                account_id=501,
+            )
+        )
+
+
 class RegistrationPasswordFlowTests(unittest.TestCase):
     def test_roxy_waits_for_delayed_create_password_target(self):
         driver = _RoxyDriver()
@@ -86,6 +128,7 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
 
         def text_only_target(script):
             self.assertIn("パスワードで続行", script)
+            self.assertIn("conflictingLoginPath", script)
             return {
                 "ok": True,
                 "reason": "create_account_password_target",
@@ -180,6 +223,7 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
             patch.object(roxy_registration, "_is_signup_password_page", return_value=True),
             patch.object(roxy_registration, "_is_login_password_page", return_value=False),
             patch.object(roxy_registration, "_registration_password", return_value=password),
+            patch.object(roxy_registration, "_password_transition_timeout_seconds", return_value=20),
             patch.object(roxy_registration, "_human_type_text"),
             patch.object(roxy_registration, "_human_click"),
             patch.object(roxy_registration, "human_delay"),
@@ -191,6 +235,70 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "仍停留在密码页"):
                 roxy_registration._fill_password_page_if_present(driver, "new@example.com", timeout=2)
+
+    def test_roxy_password_submit_uses_independent_transition_budget(self):
+        driver = _RoxyDriver()
+        driver.state = "password"
+        password = "ValidPass123!"
+        with (
+            patch.object(roxy_registration, "_registration_auth_mode", return_value="password"),
+            patch.object(roxy_registration, "_is_email_verification_page", side_effect=[False, True]),
+            patch.object(roxy_registration, "_has_access_token", return_value=False),
+            patch.object(roxy_registration, "_password_page_state", return_value={"url": driver.current_url}),
+            patch.object(roxy_registration, "_is_signup_password_page", return_value=True),
+            patch.object(roxy_registration, "_is_login_password_page", return_value=False),
+            patch.object(roxy_registration, "_registration_password", return_value=password),
+            patch.object(roxy_registration, "_password_transition_timeout_seconds", return_value=60),
+            patch.object(roxy_registration, "_human_type_text"),
+            patch.object(roxy_registration, "_human_click"),
+            patch.object(roxy_registration, "_check_manual_stop"),
+            patch.object(roxy_registration, "human_delay"),
+            patch.object(
+                roxy_registration,
+                "time",
+                SimpleNamespace(time=Mock(side_effect=[0, 0, 0, 30]), sleep=Mock()),
+            ),
+        ):
+            result = roxy_registration._fill_password_page_if_present(
+                driver,
+                "new@example.com",
+                timeout=2,
+            )
+
+        self.assertEqual(result, password)
+
+    def test_roxy_password_is_checkpointed_immediately_after_submit_click(self):
+        driver = _RoxyDriver()
+        driver.state = "password"
+        password = "ValidPass123!"
+        order = []
+
+        def submit_password(_driver, _element, label=""):
+            self.assertEqual(label, "password_submit")
+            order.append("click")
+            driver.state = "otp"
+
+        with (
+            patch.object(roxy_registration, "_registration_auth_mode", return_value="password"),
+            patch.object(roxy_registration, "_is_email_verification_page", side_effect=lambda _driver: driver.state == "otp"),
+            patch.object(roxy_registration, "_has_access_token", return_value=False),
+            patch.object(roxy_registration, "_password_page_state", return_value={"url": driver.current_url}),
+            patch.object(roxy_registration, "_is_signup_password_page", side_effect=lambda _driver: driver.state == "password"),
+            patch.object(roxy_registration, "_is_login_password_page", return_value=False),
+            patch.object(roxy_registration, "_registration_password", return_value=password),
+            patch.object(roxy_registration, "_human_type_text"),
+            patch.object(roxy_registration, "_human_click", side_effect=submit_password),
+            patch.object(roxy_registration, "human_delay"),
+        ):
+            result = roxy_registration._fill_password_page_if_present(
+                driver,
+                "new@example.com",
+                timeout=2,
+                on_password_submitted=lambda value: order.append(("checkpoint", value)),
+            )
+
+        self.assertEqual(result, password)
+        self.assertEqual(order, ["click", ("checkpoint", password)])
 
     def test_roxy_password_mode_switches_from_otp_before_filling_password(self):
         driver = _RoxyDriver()

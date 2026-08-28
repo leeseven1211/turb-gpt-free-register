@@ -787,16 +787,20 @@ class RegistrationDebugSession:
                       rect.width > 0 && rect.height > 0;
                   };
                   const text = el => String(el.innerText || el.value || el.getAttribute('aria-label') || '').trim().slice(0, 240);
-                  const describe = el => ({
+                  const describe = el => {
+                    const type = el.getAttribute('type') || '';
+                    const autocomplete = String(el.getAttribute('autocomplete') || '').toLowerCase();
+                    const secretInput = type.toLowerCase() === 'password' || autocomplete.includes('password');
+                    return ({
                     tag: el.tagName || '',
-                    type: el.getAttribute('type') || '',
+                    type,
                     name: el.getAttribute('name') || '',
                     id: el.id || '',
                     placeholder: el.getAttribute('placeholder') || '',
                     aria: el.getAttribute('aria-label') || '',
-                    text: text(el),
+                    text: secretInput ? '<redacted:password>' : text(el),
                     disabled: !!el.disabled,
-                  });
+                  });};
                   const inputs = Array.from(document.querySelectorAll('input,textarea,select')).filter(visible);
                   const actions = Array.from(document.querySelectorAll('button,a,[role="button"],input[type="submit"]')).filter(visible);
                   const resources = (performance.getEntriesByType('resource') || []).map(entry => ({
@@ -832,9 +836,20 @@ class RegistrationDebugSession:
                 })();"""
             ) or {}
             raw_dom = raw.get("dom") if isinstance(raw.get("dom"), dict) else {}
+            inputs = []
+            for item in (raw_dom.get("inputs") or [])[:50]:
+                if not isinstance(item, dict):
+                    continue
+                sanitized = dict(item)
+                input_type = str(sanitized.get("type") or "").lower()
+                autocomplete = str(sanitized.get("autocomplete") or "").lower()
+                if input_type == "password" or "password" in autocomplete:
+                    sanitized["text"] = "<redacted:password>"
+                    sanitized.pop("value", None)
+                inputs.append(sanitized)
             dom = {
                 "input_count": int(raw_dom.get("input_count") or 0),
-                "inputs": list((raw_dom.get("inputs") or [])[:50]),
+                "inputs": inputs,
                 "action_count": int(raw_dom.get("action_count") or 0),
                 "actions": list((raw_dom.get("actions") or [])[:80]),
             }

@@ -770,6 +770,31 @@ def acquire_1024_proxy_batch(
                     accepted_exit_ips.add(exit_ip)
 
         if not accepted:
+            # A batch can contain only invalid-region or transiently unreachable
+            # endpoints. Treat that as a validation gap and fetch replacement
+            # endpoints before failing the waiting registration job.
+            if _refill_depth < 2:
+                try:
+                    replacement = acquire_1024_proxy_batch(
+                        count=requested_count,
+                        api_url=configured_url,
+                        protocol=configured_protocol,
+                        region=configured_region,
+                        session_minutes=minutes,
+                        validate=should_validate,
+                        job_id=job_id,
+                        rotation_index=rotation_index + 1,
+                        _refill_depth=_refill_depth + 1,
+                        progress_callback=progress_callback,
+                    )
+                    logger.warning(
+                        "[代理平台] 批量候选全部未通过出口检测，已换取 %s 条替代线路：requested=%s",
+                        len(replacement),
+                        requested_count,
+                    )
+                    return replacement
+                except Exception as refill_error:
+                    errors.append(f"replacement: {type(refill_error).__name__}: {str(refill_error)[:180]}")
             raise RuntimeError("1024Proxy 批量检测后没有可用代理：" + "；".join(errors[-3:]))
         if len(accepted) < requested_count and _refill_depth < 2:
             deficit = requested_count - len(accepted)

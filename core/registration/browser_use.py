@@ -148,6 +148,23 @@ def _registration_auth_mode() -> str:
     return mode if mode in {"otp", "password"} else "otp"
 
 
+def _password_transition_timeout_seconds() -> float:
+    try:
+        from config import register as _register_cfg
+
+        value = float(
+            getattr(_register_cfg, "REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS", 60)
+            or 60
+        )
+    except (TypeError, ValueError, ImportError):
+        value = 60.0
+    return max(20.0, min(180.0, value))
+
+
+class _PasswordTransitionTimeout(RuntimeError):
+    """Password submit was dispatched but the remote result is still unknown."""
+
+
 def _timeout_ms(seconds: int | None = None) -> int:
     value = int(seconds or getattr(_cfg, "BROWSER_USE_TIMEOUT", 90) or 90)
     return max(5, value) * 1000
@@ -607,15 +624,15 @@ def _click_signup_password_from_otp_if_present(page, timeout: int = 15) -> bool:
             "a[href*='/create-account/password']",
             "button[name='intent'][value='passwordless_signup_use_password']",
             "input[type='submit'][name='intent'][value='passwordless_signup_use_password']",
-            "a:has-text('Continue with password')",
+            "a:not([href^='/log-in/password']):has-text('Continue with password')",
             "button:has-text('Continue with password')",
-            "a:has-text('パスワードで続行')",
+            "a:not([href^='/log-in/password']):has-text('パスワードで続行')",
             "button:has-text('パスワードで続行')",
-            "a:has-text('使用密码继续')",
+            "a:not([href^='/log-in/password']):has-text('使用密码继续')",
             "button:has-text('使用密码继续')",
-            "a:has-text('继续使用密码')",
+            "a:not([href^='/log-in/password']):has-text('继续使用密码')",
             "button:has-text('继续使用密码')",
-            "a:has-text('使用密碼繼續')",
+            "a:not([href^='/log-in/password']):has-text('使用密碼繼續')",
             "button:has-text('使用密碼繼續')",
         ],
         timeout_ms=max(1000, int(timeout * 1000)),
@@ -729,7 +746,27 @@ def _fill_password_if_present(page, email: str, timeout: int = 25, context=None)
         ):
             page.keyboard.press("Enter")
         _bu_delay("form")
-        return password
+        transition_timeout = _password_transition_timeout_seconds()
+        transition_end = time.time() + transition_timeout
+        while time.time() < transition_end:
+            _check_manual_stop()
+            page = _browser_use_heartbeat(page, context=context, label="password-submit-transition")
+            state_after = _quick_auth_state(page)
+            next_state = str(state_after.get("state") or "other")
+            if next_state == "email_verification":
+                logger.info("[BrowserUse] 密码提交后已进入邮箱验证码页")
+                return password
+            if next_state in {"chatgpt", "profile"}:
+                logger.info("[BrowserUse] 密码提交后已进入下一步：%s", next_state)
+                return password
+            if next_state not in {"password", "login_password"}:
+                return password
+            time.sleep(0.2 if _fast_mode() else 0.5)
+        state_after = _quick_auth_state(page)
+        raise _PasswordTransitionTimeout(
+            f"密码提交后等待 {int(transition_timeout)} 秒仍未确认远端结果，页面仍停留在密码页："
+            f"state={state_after.get('state') or 'other'} url={state_after.get('url') or _page_url(page) or '-'}"
+        )
     return None
 
 
@@ -1806,14 +1843,34 @@ def run_browser_use_registration(
             logger.info("[BrowserUse] 已提交邮箱：%s", email)
             _assert_not_external_idp(page, "提交邮箱后")
             _check_manual_stop()
+            report_job_progress("auth_redirect", "success", f"已进入认证下一步：{next_state}")
 
             _t_pwd = _StepTimer("检测/处理密码页")
+            password_stage_expected = _registration_auth_mode() == "password"
+            report_job_progress(
+                "login_password",
+                "running" if password_stage_expected else "skipped",
+                "正在创建并确认账号密码" if password_stage_expected else "一次性验证码模式，无需创建账号密码",
+            )
             try:
                 openai_password = _fill_password_if_present(page, email, timeout=8 if _fast_mode() else 15, context=context)
                 _t_pwd.done("password_set=yes" if openai_password else "password_set=no")
-                report_job_progress("auth_redirect", "success", f"已进入认证下一步：{next_state}")
+                if password_stage_expected:
+                    report_job_progress(
+                        "login_password",
+                        "success" if openai_password else "skipped",
+                        "账号密码已提交并进入下一步" if openai_password else "已有登录态，无需再次提交密码",
+                    )
             except Exception as exc:
                 _t_pwd.done(f"failed={type(exc).__name__}: {str(exc)[:160]}")
+                if password_stage_expected:
+                    report_job_progress(
+                        "login_password",
+                        "failed",
+                        "密码已提交，但远端结果仍待确认"
+                        if isinstance(exc, _PasswordTransitionTimeout)
+                        else f"账号密码处理失败: {type(exc).__name__}: {str(exc)[:180]}",
+                    )
                 raise
             _check_manual_stop()
 
@@ -2047,11 +2104,12 @@ def run_browser_use_registration(
     except Exception as exc:
         logger.error("[BrowserUse] 注册失败：%s: %s", type(exc).__name__, exc)
         logger.debug("[BrowserUse] 失败详情", exc_info=True)
+        password_result_unknown = isinstance(exc, _PasswordTransitionTimeout)
         try:
             from core.email_provider import release_email
             release_email(
                 email,
-                status="failed" if create_acknowledged else "available",
+                status="failed" if create_acknowledged or password_result_unknown else "available",
                 note=f"BrowserUse注册失败: {str(exc)[:180]}",
             )
         except Exception:
@@ -2059,6 +2117,7 @@ def run_browser_use_registration(
         return {
             "success": False,
             "email": email,
+            "request_unknown": password_result_unknown,
             "error": f"{type(exc).__name__}: {str(exc)[:300]}",
         }
     finally:

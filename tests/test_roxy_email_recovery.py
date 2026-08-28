@@ -18,6 +18,57 @@ class _FakeDriver:
 
 
 class RoxyEmailRecoveryTests(unittest.TestCase):
+    def test_email_transition_gets_fresh_budget_after_slow_submit_dispatch(self):
+        driver = _FakeDriver()
+
+        class Budget:
+            def __init__(self, remaining):
+                self.value = remaining
+
+            def remaining(self):
+                return self.value
+
+            def expired(self):
+                return self.value <= 0
+
+            def require(self, _action="stage"):
+                if self.value <= 0:
+                    raise AssertionError("stale pre-submit budget was reused")
+                return self.value
+
+        pre_submit = Budget(60)
+        transition = Budget(60)
+
+        def slow_submit(_driver, _email):
+            pre_submit.value = 0
+
+        email_state = {
+            "url": "https://chatgpt.com/auth/login",
+            "inputs": [{"value": "test@example.com"}],
+        }
+        with patch.object(
+            roxy_registration.StageBudget,
+            "start",
+            side_effect=[pre_submit, transition],
+        ) as start_budget, patch.object(
+            roxy_registration, "_type_email_address"
+        ), patch.object(
+            roxy_registration, "_email_input_value_state", return_value=email_state
+        ), patch.object(roxy_registration, "human_delay"), patch.object(
+            roxy_registration, "_submit_email_step", side_effect=slow_submit
+        ), patch.object(
+            roxy_registration, "_wait_email_submit_next_state", return_value="otp"
+        ) as wait_next:
+            result = roxy_registration._submit_email_and_wait_next(
+                driver,
+                "test@example.com",
+                total_timeout=60,
+            )
+
+        self.assertEqual(result, "otp")
+        self.assertEqual(start_budget.call_count, 2)
+        wait_next.assert_called_once_with(driver, "test@example.com", timeout=20)
+
     def test_type_otp_waits_for_delayed_input(self):
         field = Mock()
         field.is_displayed.return_value = True
@@ -52,6 +103,17 @@ class RoxyEmailRecoveryTests(unittest.TestCase):
                 {"attrs": "/?slm=1", "tag": "A", "type": ""},
                 {"attrs": "dismiss-welcome #", "tag": "A", "type": ""},
             ],
+        }
+
+        self.assertTrue(roxy_registration._is_blank_chatgpt_auth_shell(driver, state))
+
+    def test_blank_auth_shell_without_actions_is_detected_by_start_title(self):
+        driver = _FakeDriver()
+        state = {
+            "url": "https://chatgpt.com/auth/login",
+            "title": "開始する | ChatGPT",
+            "inputs": [],
+            "actions": [],
         }
 
         self.assertTrue(roxy_registration._is_blank_chatgpt_auth_shell(driver, state))

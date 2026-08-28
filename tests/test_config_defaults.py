@@ -210,14 +210,22 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
     def test_registration_password_mode_is_webui_editable_and_env_driven(self):
         fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
         self.assertEqual(fields["REGISTRATION_AUTH_MODE"]["group"], "注册方式")
+        self.assertEqual(
+            fields["REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS"]["group"],
+            "注册方式",
+        )
         self.assertNotIn("REGISTER_PASSWORD", fields)
 
         old_loaded = env_loader._LOADED
         env_loader._LOADED = True
         try:
-            with patch.dict(os.environ, {"REGISTRATION_AUTH_MODE": "password"}, clear=False):
+            with patch.dict(os.environ, {
+                "REGISTRATION_AUTH_MODE": "password",
+                "REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS": "75",
+            }, clear=False):
                 reloaded = importlib.reload(register_config)
                 self.assertEqual(reloaded.REGISTRATION_AUTH_MODE, "password")
+                self.assertEqual(reloaded.REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS, 75)
         finally:
             env_loader._LOADED = old_loaded
             importlib.reload(register_config)

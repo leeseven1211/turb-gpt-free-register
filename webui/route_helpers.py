@@ -321,8 +321,27 @@ def _compact_job_for_list(row: dict) -> dict:
                 "completed_at": completed_at,
             }
             changed = True
+    if isinstance(steps, dict) and "login_password" not in steps:
+        auth_step = steps.get("auth_redirect")
+        reached_later_stage = any(
+            isinstance(steps.get(key), dict)
+            for key in ("email_otp", "profile", "token", "twofa", "codex")
+        )
+        if isinstance(auth_step, dict) and reached_later_stage:
+            completed_at = (
+                auth_step.get("completed_at")
+                or auth_step.get("started_at")
+                or row.get("completed_at")
+            )
+            steps["login_password"] = {
+                "state": "skipped",
+                "detail": "历史任务未单独记录账号密码阶段",
+                "started_at": completed_at,
+                "completed_at": completed_at,
+            }
+            changed = True
     terminal_status = str(row.get("status") or "")
-    if isinstance(steps, dict) and terminal_status in {"success", "partial_success", "failed", "cancelled", "stopped"}:
+    if isinstance(steps, dict) and terminal_status in {"success", "partial_success", "failed", "cancelled", "stopped", "request_unknown"}:
         completed_at = row.get("completed_at")
         if "twofa" not in steps:
             prior = steps.get("token") if isinstance(steps.get("token"), dict) else {}
@@ -348,7 +367,11 @@ def _compact_job_for_list(row: dict) -> dict:
             complete_state = "success" if terminal_status in {"success", "partial_success"} else "stopped" if terminal_status in {"cancelled", "stopped"} else "failed"
             steps["complete"] = {
                 "state": complete_state,
-                "detail": "历史任务已完成" if complete_state == "success" else "历史任务已结束",
+                "detail": (
+                    "远端提交结果待确认，请复用当前会话对账"
+                    if terminal_status == "request_unknown"
+                    else "历史任务已完成" if complete_state == "success" else "历史任务已结束"
+                ),
                 "started_at": row.get("started_at") or row.get("created_at") or completed_at,
                 "completed_at": completed_at,
             }

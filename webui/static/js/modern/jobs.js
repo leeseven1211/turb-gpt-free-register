@@ -259,6 +259,7 @@ function formatProgressDuration(startValue, endValue = '') {
 function progressJobResult(job) {
   const status = String(job.status || 'pending');
   if (status === 'success') return { label: '成功', cls: '' };
+  if (status === 'request_unknown') return { label: '待确认', cls: 'is-failed' };
   if (status === 'failed') return { label: '失败', cls: 'is-failed' };
   if (status === 'cancelled') return { label: '已取消', cls: 'is-failed' };
   if (status === 'stopped') return { label: '已停止', cls: 'is-failed' };
@@ -296,7 +297,7 @@ function renderRegistrationBatchSelector() {
   select.innerHTML = batches.map(batch => {
     const counts = batch.status_counts || {};
     const active = Number(counts.active || 0);
-    const failures = Number(counts.failed || 0) + Number(counts.partial_success || 0) + Number(counts.stopped || 0) + Number(counts.cancelled || 0);
+    const failures = Number(counts.failed || 0) + Number(counts.partial_success || 0) + Number(counts.request_unknown || 0) + Number(counts.stopped || 0) + Number(counts.cancelled || 0);
     const state = active > 0 ? `进行中 ${active}` : (failures > 0 ? `异常 ${failures}` : '已完成');
     const kind = batch.kind === 'retry' ? '批量重跑' : '发起注册';
     const time = formatDateTime(batch.created_at).replace(/:\d{2}$/, '');
@@ -368,12 +369,14 @@ function renderBatchProgress() {
   batchProgressRenderSignature = nextRenderSignature;
   list.innerHTML = items.map((job, itemIndex) => {
     const steps = job.progress_steps && typeof job.progress_steps === 'object' ? job.progress_steps : {};
-    const terminal = ['success', 'partial_success', 'failed', 'cancelled', 'stopped'].includes(String(job.status || ''));
+    const terminal = ['success', 'partial_success', 'failed', 'cancelled', 'stopped', 'request_unknown'].includes(String(job.status || ''));
     const duration = formatProgressDuration(job.started_at || job.created_at, terminal ? job.completed_at : '');
     const failedStageIndex = stages.findIndex(stage => ['failed', 'stopped'].includes(String((steps[stage.key] || {}).state || '')));
     const failedStep = failedStageIndex >= 0 ? (steps[stages[failedStageIndex].key] || {}) : null;
-    const result = failedStep ? { label: '部分失败', cls: 'is-failed' } : progressJobResult(job);
-    const cardFailed = ['failed', 'cancelled', 'stopped'].includes(String(job.status || '')) || Boolean(failedStep);
+    const result = String(job.status || '') === 'request_unknown'
+      ? progressJobResult(job)
+      : failedStep ? { label: '部分失败', cls: 'is-failed' } : progressJobResult(job);
+    const cardFailed = ['failed', 'cancelled', 'stopped', 'request_unknown'].includes(String(job.status || '')) || Boolean(failedStep);
     const stepHtml = stages.map((stage, index) => {
       const step = steps[stage.key] || {};
       const state = String(step.state || 'pending');
@@ -825,7 +828,7 @@ async function pollLog() {
     c.textContent = r.log || '(暂无日志)';
     if (atBottom) c.scrollTop = c.scrollHeight;
     await pollRegistrationDebug(activeLogJob);
-    if (r.job && ['success','partial_success','failed','stopped','cancelled'].includes(r.job.status)) clearInterval(logTimer);
+    if (r.job && ['success','partial_success','failed','stopped','cancelled','request_unknown'].includes(r.job.status)) clearInterval(logTimer);
   } catch(e) {}
 }
 

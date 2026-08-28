@@ -420,6 +420,9 @@ PROXY_1024_VALIDATE_ATTEMPTS=2
 PROXY_1024_RECENT_TTL=1800
 PROXY_1024_ACQUIRE_INTERVAL=0.6
 PROXY_1024_PERSIST_LEASES=True
+# 注册页遇到线路级瞬时失败时，最多释放旧租约并换线重试 2 次
+REGISTRATION_PROXY_RETRIES=2
+REGISTRATION_PROXY_RETRY_DELAY=1
 ACCOUNT_ACTION_PROXY_MODE=registration
 ```
 
@@ -507,7 +510,7 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 
 #### 代理与地区
 
-- `REGISTRATION_PROXY_MODE=1024` 时必须“失败即停止”：提取、出口检测或地区校验失败后不得静默回退到 `PROXY_POOL`、`127.0.0.1` 或直连。
+- `REGISTRATION_PROXY_MODE=1024` 时不得静默回退到 `PROXY_POOL`、`127.0.0.1` 或直连；提取、出口检测或地区校验失败会在有限预算内自动补取/换线，耗尽重试后才停止并保留明确错误。
 - 1024Proxy 每个注册任务领取独立租约；实际出口国家会写入任务和账号。注册结束后的查套餐、查活和独立 Codex OAuth 由 `ACCOUNT_ACTION_PROXY_MODE` 统一管理，默认按账号注册国家领取新的短期租约。
 - 注册完成后立即查套餐时，优先复用仍有效的注册代理并在释放前同步落库，从而保证套餐/Plus 资格查询与注册出口一致；历史账号或手动操作再按账号已保存地区领取线路。
 - 住宅代理只用于访问 OpenAI/ChatGPT 的账号功能。邮箱、短信、CPA、sub2api、提链服务、Roxy 控制 API 和其他本地接口保持直连，不得套用住宅代理，也不得把系统 `HTTP_PROXY/HTTPS_PROXY` 意外注入这些客户端。
@@ -845,6 +848,8 @@ OpenAI 新版注册通常先展示邮箱验证码页；新账号页面同时提�
 
 - `otp`：直接使用邮箱一次性验证码完成无密码注册（默认）。
 - `password`：在验证码页主动进入 `/create-account/password`，设置随机密码后再完成邮箱验证。
+
+`REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS` 控制密码提交后等待验证码页、资料页或登录态的独立预算，默认 `60` 秒。该预算从点击密码页“继续”后重新计时，不占用前面的密码页识别/填写时间；密码提交请求一发出就会先保存可恢复检查点，超时且没有明确远端结果时，不会丢失已生成的密码或把邮箱重新放回注册池。邮箱表单提交后的认证跳转也会重新获得独立预算；纯代理隧道、空登录壳、页面未水合或注册前阶段预算耗尽且未产生账号状态时，会先自动刷新/强制新导航，仍为空壳才软删除本轮临时 Roxy Profile、释放代理租约并换新 IP 重试。普通页面识别失败仍保留现场，已保存账号检查点的失败不会触发这项回收。
 
 邮箱验证码是 OpenAI 的邮箱所有权验证步骤；即使选择 `password`，设置密码后仍然需要邮箱 OTP。若 password 模式下页面没有提供创建密码入口，任务会明确失败，避免把无密码账号误报为密码注册成功。
 

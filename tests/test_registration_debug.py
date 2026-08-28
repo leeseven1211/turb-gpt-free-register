@@ -55,6 +55,23 @@ class _FailureDriver:
         return [{"level": "SEVERE", "message": "resource failed for user@example.com", "timestamp": 1}]
 
 
+class _PasswordFailureDriver(_FailureDriver):
+    def execute_script(self, _script):
+        state = super().execute_script(_script)
+        state["dom"] = {
+            "input_count": 1,
+            "inputs": [{
+                "type": "password",
+                "name": "new-password",
+                "text": "NeverPersistThisPassword!",
+                "value": "NeverPersistThisPassword!",
+            }],
+            "action_count": 1,
+            "actions": [{"type": "submit", "text": "Continue"}],
+        }
+        return state
+
+
 class RegistrationDebugTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -150,6 +167,17 @@ class RegistrationDebugTests(unittest.TestCase):
         session = debug.RegistrationDebugSession(self.job(11), capture_mode="failure_only")
         session.finalize("success")
         self.assertFalse((self.root / "job-11").exists())
+
+    def test_page_snapshot_redacts_password_input_values(self):
+        session = debug.RegistrationDebugSession(self.job(14), capture_mode="failure_only")
+        session.pause_failure(_PasswordFailureDriver(), "密码提交结果待确认")
+        session.finalize("failed")
+
+        state = json.loads((self.root / "job-14" / "last-page.json").read_text(encoding="utf-8"))
+        serialized = json.dumps(state, ensure_ascii=False)
+        self.assertNotIn("NeverPersistThisPassword!", serialized)
+        self.assertEqual(state["dom"]["inputs"][0]["text"], "<redacted:password>")
+        self.assertNotIn("value", state["dom"]["inputs"][0])
 
     def test_activation_arms_failure_diagnostics_without_full_capture(self):
         job = self.job(13)

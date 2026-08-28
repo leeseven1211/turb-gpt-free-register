@@ -84,6 +84,10 @@ EDITABLE_FIELDS = [
         "key": "REGISTRATION_AUTH_MODE", "file": "register.py", "type": "str", "group": "注册方式",
         "label": "账号认证模式", "help": "otp=优先使用邮箱一次性验证码；password=遇到注册密码页时设置密码。密码模式仍可能需要邮箱验证码",
     },
+    {
+        "key": "REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS", "file": "register.py", "type": "int", "group": "注册方式",
+        "label": "密码提交跳转等待(秒)", "help": "从点击创建密码页的继续按钮后独立计时；默认 60 秒，避免慢代理下页面迟到进入邮箱验证码页却被提前判失败",
+    },
     # ---- 注册调试 ----
     {
         "key": "REGISTRATION_DEBUG_HOLD_TIMEOUT_SECONDS", "file": "registration_debug.py", "type": "int", "group": "注册调试",

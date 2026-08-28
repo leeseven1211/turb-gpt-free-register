@@ -8,6 +8,22 @@ from urllib.parse import parse_qs, urlparse
 
 
 class ProxyRouteInvariantTests(unittest.TestCase):
+    def test_blank_auth_shell_error_is_eligible_for_fresh_registration_proxy(self):
+        from core.registration_service import _is_transient_registration_proxy_error
+
+        self.assertTrue(
+            _is_transient_registration_proxy_error(
+                "找不到邮箱输入框/邮箱入口，state={'actions': [], 'inputs': [], "
+                "'url': 'https://chatgpt.com/auth/login'}"
+            )
+        )
+        self.assertTrue(
+            _is_transient_registration_proxy_error(
+                '找不到邮箱输入框/邮箱入口，state={"actions": [], "inputs": [], '
+                '"url": "https://chatgpt.com/auth/login"}'
+            )
+        )
+
     @staticmethod
     def _codex_call_keywords(func) -> dict[str, ast.AST]:
         tree = ast.parse(textwrap.dedent(inspect.getsource(func)))

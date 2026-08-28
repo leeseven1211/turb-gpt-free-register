@@ -14,6 +14,10 @@ REGISTER_EMAIL = ""
 # 即使选择 password，OpenAI 仍可能在后续要求邮箱验证码。
 REGISTRATION_AUTH_MODE = "otp"
 
+# 密码提交后的页面跳转使用独立预算。慢代理下 OpenAI 可能在表单提交后数十秒才
+# 进入邮箱验证码页，不能继续消耗“检测/填写密码页”的剩余时间。
+REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS = 60
+
 # 用户名（注册完成后设置的显示名称，留空会自动生成 "Foo Bar" 形式）
 # OpenAI 限制：name_invalid_chars —— 只允许字母和空格
 REGISTER_NAME = ""
@@ -22,5 +26,6 @@ REGISTER_NAME = ""
 apply_env_overrides(globals(), {
     'REGISTER_EMAIL': 'str',
     'REGISTRATION_AUTH_MODE': 'str',
+    'REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS': 'int',
     'REGISTER_NAME': 'str',
 })

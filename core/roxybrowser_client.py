@@ -765,6 +765,20 @@ class RoxyBrowserClient:
             if self.delete_profile(opened.profile_id):
                 _untrack_created_profile(opened.profile_id)
 
+    def discard_profile(self, opened: RoxyOpenResult | None) -> None:
+        """Close and soft-delete one disposable run-created profile.
+
+        This intentionally ignores ``ROXY_KEEP_BROWSER_OPEN``.  It is reserved
+        for failures such as an unusable proxy tunnel where no registration
+        state exists to preserve and retaining the temporary profile would block
+        the bounded proxy retry from acquiring another Roxy slot.
+        """
+        if not opened or not opened.profile_id or not opened.created_by_run:
+            return
+        self.close_profile(opened.profile_id)
+        if self.delete_profile(opened.profile_id):
+            _untrack_created_profile(opened.profile_id)
+
     @staticmethod
     def _extract_debugger_address(payload: dict) -> str | None:
         value = _first(payload, [

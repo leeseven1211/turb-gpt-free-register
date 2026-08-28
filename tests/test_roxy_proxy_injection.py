@@ -272,6 +272,30 @@ class RoxyProxyInjectionTests(unittest.TestCase):
             payload = json.loads(registry.read_text(encoding="utf-8"))
             self.assertEqual(payload["items"], [{"profile_id": "debug-1"}])
 
+    def test_discard_profile_ignores_keep_open_and_untracks_exact_profile(self):
+        client = roxybrowser_client.RoxyBrowserClient()
+        opened = roxybrowser_client.RoxyOpenResult(
+            profile_id="disposable-1",
+            raw={},
+            created_by_run=True,
+        )
+        with tempfile.TemporaryDirectory() as td:
+            registry = Path(td) / "profiles.json"
+            registry.write_text(json.dumps({"items": [{"profile_id": "disposable-1"}]}), encoding="utf-8")
+            with patch.object(
+                roxybrowser_client, "_PROFILE_REGISTRY_PATH", registry
+            ), patch.object(
+                roxybrowser_client._cfg, "ROXY_KEEP_BROWSER_OPEN", True
+            ), patch.object(client, "close_profile", return_value=True) as close_profile, patch.object(
+                client, "delete_profile", return_value=True
+            ) as delete_profile:
+                client.discard_profile(opened)
+
+            close_profile.assert_called_once_with("disposable-1")
+            delete_profile.assert_called_once_with("disposable-1")
+            payload = json.loads(registry.read_text(encoding="utf-8"))
+            self.assertEqual(payload["items"], [])
+
     def test_explicit_task_proxy_rejects_fixed_profile(self):
         client = roxybrowser_client.RoxyBrowserClient()
         with patch.multiple(

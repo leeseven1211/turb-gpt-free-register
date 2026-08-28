@@ -50,6 +50,8 @@ _PROGRESS_CHECKPOINTS = {
     ("auth_redirect", "success"): "auth_started",
     ("password", "running"): "password_request_started",
     ("password", "success"): "password_confirmed",
+    ("login_password", "running"): "password_request_started",
+    ("login_password", "success"): "password_confirmed",
     ("email_otp", "running"): "otp_started",
     ("email_otp", "success"): "otp_confirmed",
     ("profile", "running"): "account_request_started",
@@ -210,6 +212,27 @@ def _advance_registration_checkpoint(stage: str, state: str, detail: str | None 
         # Checkpoint writes are additive audit facts.  A transient storage
         # outage should be visible in logs but cannot erase the legacy task.
         logger.exception("[Job %s] 写入 Registration checkpoint 失败: %s/%s", getattr(_THREAD_CTX, "job_id", None), stage, state)
+
+
+def _mark_registration_request_unknown(message: str) -> None:
+    """Persist an ambiguous password submit without allowing a fresh registration."""
+    attempt_id = getattr(_THREAD_CTX, "attempt_id", None)
+    if attempt_id is None:
+        return
+    try:
+        from core.storage import registration
+
+        registration.mark_request_unknown(
+            int(attempt_id),
+            target="identity",
+            run_id=getattr(_THREAD_CTX, "run_id", None),
+            job_id=getattr(_THREAD_CTX, "job_id", None),
+            execution_id=getattr(_THREAD_CTX, "execution_id", None),
+            message=str(message or "密码提交结果待确认")[:1000],
+            detail={"next_action": "reconcile_session"},
+        )
+    except Exception:
+        logger.exception("[Job %s] 写入密码提交 request_unknown 失败", getattr(_THREAD_CTX, "job_id", None))
 
 
 def _finish_registration_run(status: str, *, error_message: str | None = None, result_summary: dict | None = None) -> None:
@@ -657,7 +680,19 @@ def _is_transient_registration_proxy_error(error: object) -> bool:
         "connection aborted",
         "chrome-error://chromewebdata/",
     )
-    return any(marker in text for marker in markers) or "邮箱提交/认证跳转超过总预算" in str(error or "")
+    if any(marker in text for marker in markers) or "邮箱提交/认证跳转超过总预算" in str(error or ""):
+        return True
+    # A blank ChatGPT auth shell is recorded as an element-not-found error,
+    # but it is a recoverable line-level failure when no account checkpoint
+    # exists. The empty state snapshot is safe to retry with a new IP.
+    empty_actions = "'actions': []" in text or '"actions": []' in text
+    empty_inputs = "'inputs': []" in text or '"inputs": []' in text
+    return (
+        "找不到邮箱输入框/邮箱入口" in text
+        and "chatgpt.com/auth/login" in text
+        and empty_actions
+        and empty_inputs
+    )
 
 
 def _should_retry_registration_with_new_proxy(
@@ -1074,6 +1109,9 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 # 注意：失败也可能伴随 account_id（如 Codex 失败但账号已注册成功）
                 err = (result or {}).get("error") if isinstance(result, dict) else "unknown"
                 result_email = (result or {}).get("email") if isinstance(result, dict) else None
+                request_unknown = bool(isinstance(result, dict) and result.get("request_unknown"))
+                if request_unknown:
+                    _mark_registration_request_unknown(str(err or "密码提交结果待确认"))
                 try:
                     from core.registration_debug import capture_current_failure
                     capture_current_failure(str(err)[:1000])
@@ -1082,7 +1120,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 db.finish_job_progress(job_id, success=False, detail=str(err)[:300])
                 db.update_job(
                     job_id,
-                    status="failed",
+                    status="request_unknown" if request_unknown else "failed",
                     email=result_email,
                     account_id=(result or {}).get("account_id") if isinstance(result, dict) else None,
                     error=str(err)[:500],
@@ -1094,7 +1132,10 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 # 普通失败的邮箱已经由 run_registration/具体驱动释放。
                 # 只有 run_registration 直接抛出、没有正常返回时，才由下面的
                 # except 分支调用 _release_unconsumed_job_email 做服务层兜底。
-                log_logger.error(f"[Job {job_id}] 失败: {err}")
+                if request_unknown:
+                    log_logger.warning("[Job %s] 密码提交结果待确认，已保留为可对账状态: %s", job_id, err)
+                else:
+                    log_logger.error(f"[Job {job_id}] 失败: {err}")
     except StopRequested as exc:
         _release_unconsumed_job_email(email, str(exc))
         db.finish_job_progress(job_id, success=False, detail="用户手动停止", failure_state="stopped")

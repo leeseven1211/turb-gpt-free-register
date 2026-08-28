@@ -488,6 +488,47 @@ class ProxyProviderTests(unittest.TestCase):
         for lease in leases:
             proxy_provider.release_proxy(lease, reason="test")
 
+    @patch("core.proxy_provider.time.sleep", return_value=None)
+    @patch("core.proxy_provider._validate_proxy_with_retries")
+    @patch("core.proxy_provider._direct_session")
+    def test_batch_replaces_batch_when_every_candidate_fails_validation(
+        self, direct_session, validate_proxy, _sleep
+    ):
+        fake = _BatchSession()
+        direct_session.return_value = fake
+
+        def validate(proxy_url, _timeout, *, attempts):
+            endpoint = proxy_url.rsplit("://", 1)[-1]
+            if endpoint in fake.endpoints:
+                raise RuntimeError("代理实际出口地区不匹配")
+            return "4.4.4.4", "US"
+
+        validate_proxy.side_effect = validate
+        with patch.multiple(
+            "config.proxy",
+            PROXY_1024_API_TIMEOUT=5.0,
+            PROXY_1024_VALIDATE_ATTEMPTS=1,
+            PROXY_1024_RECENT_TTL=0,
+            PROXY_1024_ACQUIRE_INTERVAL=0.0,
+            PROXY_1024_ROTATE_SESSION_TIME=False,
+        ):
+            leases = proxy_provider.acquire_1024_proxy_batch(
+                count=1,
+                api_url="https://white.1024proxy.com/white/api?region=US&type=txt",
+                protocol="http",
+                region="US",
+                session_minutes=30,
+                validate=True,
+                job_id="batch-all-invalid-test",
+            )
+
+        self.assertEqual(len(leases), 1)
+        self.assertEqual(leases[0].endpoint, "13.14.15.16:11000")
+        api_calls = [url for url, _kwargs in fake.calls if "white.1024proxy.com" in url]
+        self.assertEqual(len(api_calls), 2)
+        for lease in leases:
+            proxy_provider.release_proxy(lease, reason="test")
+
     @patch("core.proxy_provider.acquire_1024_proxy_batch")
     def test_registration_batch_shares_prefetched_leases_and_releases_leftovers(self, acquire_batch):
         leases = [
