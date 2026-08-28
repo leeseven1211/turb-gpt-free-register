@@ -12,7 +12,7 @@ import os
 import re
 import threading
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from core import postgres_store
@@ -153,7 +153,9 @@ def init() -> None:
 
 
 def _now() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    # 这些兼容表仍用 text 保存时间。必须带上时区，否则统一任务中心把本机时间
+    # 写入 TIMESTAMPTZ 时会按数据库会话的 UTC 解释，前端再转本地时间就会多加 8 小时。
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def _redact_text(value: object, limit: int = 1000) -> str:

@@ -296,10 +296,11 @@ class CodexRetryTaskTests(unittest.TestCase):
             "proxy_used": "http://proxy.example",
         }
 
-        def setup_protocol(_session, access_token, *, on_secret):
+        def setup_protocol(_driver, _email, _session, access_token, *, on_secret, existing_secret=None):
             self.assertEqual(access_token, "fresh-chatgpt-token")
+            self.assertIsNone(existing_secret)
             on_secret(secret)
-            return secret
+            return secret, False
 
         def run_roxy(_email, **kwargs):
             kwargs["before_oauth_setup"](object())
@@ -320,7 +321,7 @@ class CodexRetryTaskTests(unittest.TestCase):
             patch("core.account_proxy.acquire_account_proxy", return_value=route),
             patch("core.roxy_registration._fetch_chatgpt_session", return_value={"accessToken": "fresh-chatgpt-token"}),
             patch("core.session.BrowserSession"),
-            patch("core.account_export.setup_2fa_protocol", side_effect=setup_protocol),
+            patch("core.registration.selenium_auth.setup_protocol_2fa_with_browser_fallback", side_effect=setup_protocol),
             patch("core.roxy_codex_oauth.run_roxy_codex_oauth", side_effect=run_roxy),
         ):
             result = codex_retry_service._run_worker_legacy(
@@ -353,11 +354,12 @@ class CodexRetryTaskTests(unittest.TestCase):
         def set_password(_driver, _email, _password):
             barrier.wait(timeout=2)
 
-        def setup_protocol(_session, access_token, *, on_secret):
+        def setup_protocol(_driver, _email, _session, access_token, *, on_secret, existing_secret=None):
             self.assertEqual(access_token, "fresh-chatgpt-token")
+            self.assertIsNone(existing_secret)
             barrier.wait(timeout=2)
             on_secret(secret)
-            return secret
+            return secret, False
 
         with (
             patch.object(codex_retry_service.db, "get_account_by_email", return_value=account),
@@ -370,7 +372,7 @@ class CodexRetryTaskTests(unittest.TestCase):
             patch("core.roxy_registration.set_roxy_login_password", side_effect=set_password),
             patch("core.roxy_registration._fetch_chatgpt_session", return_value={"accessToken": "fresh-chatgpt-token"}),
             patch("core.session.BrowserSession"),
-            patch("core.account_export.setup_2fa_protocol", side_effect=setup_protocol),
+            patch("core.registration.selenium_auth.setup_protocol_2fa_with_browser_fallback", side_effect=setup_protocol),
         ):
             setup = codex_retry_service._build_roxy_account_setup(
                 "a@example.com", 101, proxy="http://proxy.example"

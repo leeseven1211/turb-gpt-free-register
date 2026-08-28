@@ -727,11 +727,17 @@ def _fill_email_and_otp(driver, email: str, otp_provider, auth_url: str) -> None
             if restart_state == "advanced":
                 return "advanced"
         except Exception as exc:
-            # 如果重进授权地址后已经停在验证码/下一步页面，就不要再强行提交。
-            if not _is_email_verification_page(driver):
-                raise
-            else:
+            # 重进授权地址可能直接复用刚建立好的 session 落到 ChatGPT 首页。
+            # 这时找不到邮箱框是“已经前进”，不是登录失败。
+            restart_page_state = _login_challenge_state(driver)
+            if _is_login_advanced(driver, restart_page_state):
+                logger.info("[Codex][Browser] 重开授权地址后已进入登录态，无需重新提交邮箱")
+                return "advanced"
+            # 如果重进授权地址后已经停在验证码页，就不要再强行提交。
+            if _is_email_verification_page(driver):
                 logger.info("[Codex][Browser] 重开授权后已在邮箱 OTP 页面")
+            else:
+                raise
         human_delay("api")
         return "email_otp"
 
@@ -1060,19 +1066,31 @@ def _wait_after_email_otp_submit(driver, timeout: int = 45) -> str:
                 return "accepted"
 
             state = _email_otp_page_state(driver)
+            # SPA 可能在读取 current_url 与 DOM 之间完成跳转。以同一次 DOM 快照里的
+            # URL 再判一次，避免拿旧 email-verification URL 配上新页面的 alert 文本。
+            state_url = str(state.get("url") or url)
+            if "email-verification" not in state_url.lower():
+                return "accepted"
             invalid = any(str(i.get("ariaInvalid") or "").lower() == "true" for i in (state.get("inputs") or []))
             errors = [str(x) for x in (state.get("errors") or []) if str(x).strip()]
             body_text = str(state.get("text") or "").lower()
-            error_hit = any(x in body_text for x in (
+            error_markers = (
                 "invalid code", "incorrect code", "wrong code", "expired",
                 "验证码错误", "验证码无效", "验证码已过期", "コードが正しく", "無効", "期限",
-            ))
-            if invalid or errors or error_hit:
+            )
+            error_hit = any(x in body_text for x in error_markers)
+            explicit_error_hit = any(
+                any(marker in error.lower() for marker in error_markers)
+                for error in errors
+            )
+            # [role=alert]/[class*=error] 也会命中加载提示（本次现场是“思考”）。
+            # 只有输入框明确 invalid 或文本命中已知验证码错误时才判失败。
+            if invalid or error_hit or explicit_error_hit:
                 logger.warning(
                     "[Codex][Browser] 邮箱 OTP 提交后检测到错误/仍需验证码：errors=%s invalid=%s url=%s",
                     errors[:3],
                     invalid,
-                    url,
+                    state_url,
                 )
                 return "invalid"
 

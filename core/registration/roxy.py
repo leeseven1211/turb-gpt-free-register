@@ -1912,6 +1912,15 @@ def _select_or_type(driver, selectors: list[str], value: str, timeout: int = 3) 
                 driver.execute_script("arguments[0].dispatchEvent(new Event('change', {bubbles:true}));", el)
         else:
             _human_type_text(driver, el, str(value), clear=True)
+            # Roxy 的登录页会拦截 Selenium key events；send_keys 不抛异常但受控
+            # input 仍可能保持空值。必须读回验证，并在必要时用 React 原生 setter
+            # 兜底，不能把“调用成功”误当成“字段已填写”。
+            actual = str(el.get_attribute("value") or "")
+            if actual != str(value):
+                _set_element_value(driver, el, str(value))
+                actual = str(el.get_attribute("value") or "")
+            if actual != str(value):
+                return False
         return True
     except Exception as exc:
         logger.debug('%s 填写字段失败 selectors=%s value=%s err=%s', _log_prefix(driver), selectors, value, exc)
@@ -2580,6 +2589,17 @@ def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45) 
             continue
 
         logger.info('%s 检测到资料页，开始填写姓名生日：url=%s inputs=%s', _log_prefix(driver), snap.get('url'), snap.get('inputs'))
+
+        # 新版 about-you 在年龄变化时会重新渲染整个 form。现场确认先填姓名再填
+        # 年龄会把姓名清空，因此必须先处理年龄/生日，最后再填姓名。
+        birth_mode = _fill_birthday_or_age(driver, birthday, age)
+        birth_ok = bool(birth_mode)
+        if birth_ok:
+            if birth_mode == 'age':
+                logger.info("%s 已填写年龄字段：%s", _log_prefix(driver), age)
+            else:
+                logger.info("%s 已填写生日字段 mode=%s value=%s", _log_prefix(driver), birth_mode, birthday)
+
         name_ok = False
         # 常见单姓名字段
         for selectors in [
@@ -2599,24 +2619,50 @@ def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45) 
             last_ok = _select_or_type(driver, ["input[name='lastName']", "input[name='last_name']", "input[placeholder*='Last']", "input[aria-label*='Last']"], last, timeout=2)
             name_ok = first_ok or last_ok
 
-        birth_mode = _fill_birthday_or_age(driver, birthday, age)
-        birth_ok = bool(birth_mode)
-        if birth_ok:
-            if birth_mode == 'age':
-                logger.info("%s 已填写年龄字段：%s", _log_prefix(driver), age)
-            else:
-                logger.info("%s 已填写生日字段 mode=%s value=%s", _log_prefix(driver), birth_mode, birthday)
-
         if not name_ok or not birth_ok:
             logger.warning('%s 资料页字段未填完整 name_ok=%s birth_ok=%s snapshot=%s', _log_prefix(driver), name_ok, birth_ok, snap)
             continue
 
         _accept_profile_consents(driver)
         human_delay('form')
+        form_state = driver.execute_script(r"""
+        const form = [...document.querySelectorAll('form')].find(el =>
+          !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+        if (!form) return {valid:false, reason:'form_missing'};
+        const fields = [...form.querySelectorAll('input,select,textarea')].map(el => ({
+          name: el.name || '', type: el.type || '', valid: el.checkValidity(),
+          valuePresent: el.type === 'password' ? !!el.value : String(el.value || '').trim().length > 0,
+          validationMessage: String(el.validationMessage || '').slice(0, 200),
+        }));
+        return {valid:form.checkValidity(), fields};
+        """) or {}
+        if not form_state.get('valid'):
+            logger.warning('%s 资料页提交前表单校验未通过 state=%s', _log_prefix(driver), form_state)
+            continue
         for _ in range(3):
             if _click_if_enabled_submit(driver):
                 logger.info('%s 已点击资料页提交按钮，等待 OAuth 跳转', _log_prefix(driver))
-                return True
+                submit_end = time.time() + 45
+                while time.time() < submit_end:
+                    time.sleep(0.5)
+                    if _has_access_token(driver):
+                        return True
+                    submitted_snapshot = _page_snapshot(driver)
+                    if not _is_profile_like(submitted_snapshot):
+                        return True
+                    errors = driver.execute_script(r"""
+                    const visible = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+                    return [...document.querySelectorAll(
+                      '.react-aria-FieldError,[slot="errorMessage"],[role="alert"],[aria-invalid="true"] + *'
+                    )].filter(visible).map(el =>
+                      String(el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim()
+                    ).filter(Boolean).slice(0, 8);
+                    """) or []
+                    if errors:
+                        raise RuntimeError(f"资料页提交被拒绝：{errors[:3]}")
+                raise RuntimeError(
+                    f"资料页点击提交后 45 秒仍未离开：{_page_snapshot(driver)}"
+                )
             time.sleep(1)
         logger.warning('%s 找不到可点击的资料页提交按钮 snapshot=%s', _log_prefix(driver), _page_snapshot(driver))
     raise RuntimeError(f'等待/填写资料页超时，最后页面：{last_snapshot}')

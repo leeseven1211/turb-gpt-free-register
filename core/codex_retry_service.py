@@ -256,9 +256,12 @@ def _build_roxy_twofa_setup(
             twofa_driver = twofa_cfg.get_twofa_driver()
             if twofa_driver == "protocol":
                 # Roxy 负责登录和拿到本次新鲜 session；enroll/activate 直接走协议，
-                # 不再依赖不同地区的安全设置页面布局。
-                from core.account_export import setup_2fa_protocol
-                from core.registration.selenium_auth import fetch_chatgpt_session as _fetch_chatgpt_session
+                # 若 OpenAI 要求 recent_auth，则复用当前已登录浏览器完成邮箱重认证，
+                # 不能让整个账号配置任务直接失败。
+                from core.registration.selenium_auth import (
+                    fetch_chatgpt_session as _fetch_chatgpt_session,
+                    setup_protocol_2fa_with_browser_fallback,
+                )
                 from core.session import BrowserSession
 
                 fresh_access_token = str(access_token or "").strip()
@@ -268,12 +271,19 @@ def _build_roxy_twofa_setup(
                 if not fresh_access_token:
                     raise RuntimeError("协议开通 2FA 未拿到新鲜 accessToken")
                 protocol_session = BrowserSession(proxy=proxy)
-                secret = setup_2fa_protocol(
+                secret, fallback_used = setup_protocol_2fa_with_browser_fallback(
+                    driver,
+                    email,
                     protocol_session,
                     fresh_access_token,
                     on_secret=_checkpoint,
+                    existing_secret=existing_secret or None,
                 )
-                logger.info("[账号补跑][2FA] 使用 protocol 直接开通 Authenticator：%s", email)
+                logger.info(
+                    "[账号补跑][2FA] 已开通 Authenticator：%s driver=%s",
+                    email,
+                    "browser_fallback" if fallback_used else "protocol",
+                )
             else:
                 from core.registration.selenium_auth import setup_roxy_2fa
 

@@ -79,6 +79,26 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _legacy_account_timestamp(value: Any) -> datetime | None:
+    """Normalize account_action_* text timestamps before writing TIMESTAMPTZ.
+
+    Older rows were written with ``datetime.now().isoformat()`` and therefore
+    contain local wall-clock time without an offset.  Psycopg/PostgreSQL would
+    otherwise interpret those strings in the database session timezone (UTC),
+    making the browser add the local offset a second time.  New rows already
+    carry an explicit offset and pass through unchanged.
+    """
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
+    return parsed.astimezone(timezone.utc)
+
+
 def _uuid(kind: str, source: object) -> str:
     return uuid.uuid5(uuid.NAMESPACE_URL, f"turb-console:{kind}:{source}").hex
 
@@ -578,6 +598,7 @@ def _upsert_batch(
         ON CONFLICT (source_system, source_id) DO UPDATE SET
             batch_type=EXCLUDED.batch_type, title=EXCLUDED.title,
             requested_count=GREATEST({_table('operation_batches')}.requested_count, EXCLUDED.requested_count),
+            created_at=EXCLUDED.created_at,
             completed_at=COALESCE(EXCLUDED.completed_at, {_table('operation_batches')}.completed_at),
             data={_table('operation_batches')}.data || EXCLUDED.data
         RETURNING id
@@ -874,8 +895,8 @@ def _upsert_account_batch(cur, batch: dict) -> int:
         title=str(batch.get("action_type") or "账号操作批次"),
         requested_count=int(batch.get("total_count") or 0),
         created_by=str(batch.get("trigger") or "manual"),
-        created_at=batch.get("created_at"),
-        completed_at=batch.get("completed_at"),
+        created_at=_legacy_account_timestamp(batch.get("created_at")),
+        completed_at=_legacy_account_timestamp(batch.get("completed_at")),
         data={"legacy_action_type": batch.get("action_type")},
     )
 
@@ -912,6 +933,9 @@ def _upsert_account_task(
     elif status != "success":
         next_actions = [{"action": "retry", "label": "重新执行", "source_task_id": legacy_id}]
     source_id = str(legacy_id)
+    queued_at = _legacy_account_timestamp(task.get("queued_at")) or _now()
+    started_at = _legacy_account_timestamp(task.get("started_at"))
+    finished_at = _legacy_account_timestamp(task.get("finished_at"))
     cur.execute(
         f"""
         INSERT INTO {_table('operation_tasks')} (
@@ -927,7 +951,8 @@ def _upsert_account_task(
             status=EXCLUDED.status, target_status=EXCLUDED.target_status,
             current_stage=EXCLUDED.current_stage, next_actions=EXCLUDED.next_actions,
             error_category=EXCLUDED.error_category, error_code=EXCLUDED.error_code,
-            error_message=EXCLUDED.error_message, updated_at=EXCLUDED.updated_at,
+            error_message=EXCLUDED.error_message, created_at=EXCLUDED.created_at,
+            updated_at=EXCLUDED.updated_at,
             completed_at=EXCLUDED.completed_at,
             data={_table('operation_tasks')}.data || EXCLUDED.data
         RETURNING id
@@ -938,8 +963,8 @@ def _upsert_account_task(
             status, target_status, "complete" if status in _TERMINAL_STATUSES else status,
             _json(next_actions),
             category, code, error, str(task.get("trigger") or "manual"),
-            task.get("queued_at") or _now(), task.get("finished_at") or task.get("started_at") or task.get("queued_at") or _now(),
-            task.get("finished_at"), _json({"legacy_account_task_id": legacy_id}),
+            queued_at, finished_at or started_at or queued_at,
+            finished_at, _json({"legacy_account_task_id": legacy_id}),
         ),
     )
     operation_task_id = int(cur.fetchone()["id"])
@@ -957,6 +982,7 @@ def _upsert_account_task(
         ON CONFLICT (source_system, source_id) DO UPDATE SET
             task_id=EXCLUDED.task_id, status=EXCLUDED.status, progress_stage=EXCLUDED.progress_stage,
             started_at=EXCLUDED.started_at, completed_at=EXCLUDED.completed_at,
+            created_at=EXCLUDED.created_at,
             duration_ms=EXCLUDED.duration_ms, error_category=EXCLUDED.error_category,
             error_code=EXCLUDED.error_code, error_message=EXCLUDED.error_message,
             result_summary=EXCLUDED.result_summary, data={_table('operation_runs')}.data || EXCLUDED.data
@@ -965,9 +991,9 @@ def _upsert_account_task(
         (
             _uuid("run", f"account_action_tasks:{legacy_id}"), operation_task_id, source_id, status,
             "complete" if status in _TERMINAL_STATUSES else status,
-            task.get("started_at"), task.get("finished_at"), task.get("duration_ms"),
+            started_at, finished_at, task.get("duration_ms"),
             category, code, error, _json(task.get("result_summary") or {}),
-            task.get("queued_at") or _now(),
+            queued_at,
             _json({
                 "validation_method": task.get("validation_method"),
                 "network_route": task.get("network_route"),
@@ -1040,7 +1066,8 @@ def _upsert_account_event(cur, event: dict, task_map: dict[int, int]) -> None:
         """,
         (
             _uuid("event", f"account_action_events:{source_id}"), operation_task_id,
-            int(run["id"]) if run else None, source_id, event.get("created_at") or _now(),
+            int(run["id"]) if run else None, source_id,
+            _legacy_account_timestamp(event.get("created_at")) or _now(),
             level, stage, event_type, category, code, _text(event.get("message"), 1600),
             _json(detail),
         ),

@@ -745,8 +745,12 @@ async function deleteSelectedJobs() {
 }
 
 async function retryJob(jobId, btn) {
-  const job = JOBS.find(j => Number(j.id) === Number(jobId))
-    || currentBatchJobs().find(j => Number(j.id) === Number(jobId));
+  // The progress card carries the retry projection for the selected batch.
+  // Prefer it over the table row: the table can contain the same job without
+  // retry metadata, which would otherwise make an available retry look
+  // unavailable before the request reaches the backend.
+  const job = currentBatchJobs().find(j => Number(j.id) === Number(jobId))
+    || JOBS.find(j => Number(j.id) === Number(jobId));
   if (!job || !job.retryable) { showToast('该任务当前不可重试'); return; }
   const actionText = job.retry_action === 'codex'
     ? '仅补跑 Codex 授权'
