@@ -219,6 +219,8 @@ class DashboardApiTests(PostgresTestCase):
         self.assertIn('function renderAccountTaskStageProgress(task)', html)
         self.assertIn('function accountTaskEventStepState(event)', html)
         self.assertIn("const latestRunId = String(task?.last_run_id", html)
+        self.assertIn("legacyRegistration && !observed.has('network')", html)
+        self.assertIn("历史任务未单独记录网络阶段", html)
         self.assertIn("skipped:'已跳过'", html)
         self.assertNotIn("stage.seen ? 'success'", html)
         self.assertIn('data-progress-retry-job', html)
@@ -384,12 +386,37 @@ class DashboardApiTests(PostgresTestCase):
                 "token_expires_at": "2099-01-01T00:00:00Z",
                 "token_expired": True,
             },
+            {
+                "email": "invalid-401@example.com",
+                "access_token": "rejected-401-token",
+                "token_expires_at": "2099-01-01T00:00:00Z",
+                "live_check_status": "failed",
+                "live_check_http_status": 401,
+            },
+            {
+                "email": "invalid-403@example.com",
+                "access_token": "rejected-403-token",
+                "token_expires_at": "2000-01-01T00:00:00Z",
+                "token_expired": True,
+                "live_check_status": "failed",
+                "live_check_http_status": 403,
+            },
+            {
+                "email": "invalid-other@example.com",
+                "access_token": "rejected-other-token",
+                "token_expires_at": "2099-01-01T00:00:00Z",
+                "live_check_status": "failed",
+                "live_check_http_status": 429,
+            },
             {"email": "missing@example.com", "access_token": ""},
         ])
 
         expected = {
             "has": {"valid@example.com"},
             "expired": {"expired-by-time@example.com", "expired-by-flag@example.com"},
+            "invalid_401": {"invalid-401@example.com"},
+            "invalid_403": {"invalid-403@example.com"},
+            "invalid_other": {"invalid-other@example.com"},
             "none": {"missing@example.com"},
         }
         for token_filter, emails in expected.items():
@@ -404,7 +431,14 @@ class DashboardApiTests(PostgresTestCase):
                 self.assertEqual({item["email"] for item in payload["items"]}, emails)
                 self.assertEqual(
                     {item["value"]: item["count"] for item in payload["facets"]["token"]},
-                    {"has": 1, "expired": 2, "none": 1},
+                    {
+                        "has": 1,
+                        "expired": 2,
+                        "invalid_401": 1,
+                        "invalid_403": 1,
+                        "invalid_other": 1,
+                        "none": 1,
+                    },
                 )
 
     @patch("webui.app.db.get_account", return_value={

@@ -91,8 +91,19 @@ _ACCOUNT_TOKEN_EXPIRED = f"""(
         END
     )
 )"""
+_ACCOUNT_TOKEN_LIVE_FAILED = f"""(
+    {_ACCOUNT_ACCESS_TOKEN_PRESENT}
+    AND LOWER(COALESCE(a.live_check_status, '')) = 'failed'
+)"""
 _ACCOUNT_TOKEN_STATE = f"""CASE
     WHEN NOT ({_ACCOUNT_ACCESS_TOKEN_PRESENT}) THEN 'none'
+    WHEN {_ACCOUNT_TOKEN_LIVE_FAILED}
+         AND BTRIM(COALESCE(a.data->>'live_check_http_status', '')) = '401'
+      THEN 'invalid_401'
+    WHEN {_ACCOUNT_TOKEN_LIVE_FAILED}
+         AND BTRIM(COALESCE(a.data->>'live_check_http_status', '')) = '403'
+      THEN 'invalid_403'
+    WHEN {_ACCOUNT_TOKEN_LIVE_FAILED} THEN 'invalid_other'
     WHEN {_ACCOUNT_TOKEN_EXPIRED} THEN 'expired'
     ELSE 'has'
 END"""
@@ -171,7 +182,7 @@ def _account_where(
         where.append("LOWER(COALESCE(a.email_source, '')) = %s")
         params.append(value)
     value = _text(filters.get("token")).lower()
-    if value in {"has", "expired", "none"}:
+    if value in {"has", "expired", "invalid_401", "invalid_403", "invalid_other", "none"}:
         where.append(f"({_ACCOUNT_TOKEN_STATE}) = %s")
         params.append(value)
     value = _text(filters.get("password")).lower()
@@ -429,8 +440,10 @@ def list_jobs(request: PageRequest, *, progress_batch_id: str = "") -> dict:
         if selected_batch_id:
             cur.execute(
                 f"""
-                SELECT j.* FROM {jobs} j
-                 WHERE j.batch_id = %s
+                SELECT j.*, COALESCE(root.batch_id, j.batch_id) AS effective_batch_id
+                  FROM {jobs} j
+                  LEFT JOIN {jobs} root ON root.id = COALESCE(j.root_job_id, j.id)
+                 WHERE COALESCE(root.batch_id, j.batch_id) = %s
                  ORDER BY COALESCE((j.data->>'batch_index')::int, 0), j.id
                 """,
                 (selected_batch_id,),
@@ -438,35 +451,56 @@ def list_jobs(request: PageRequest, *, progress_batch_id: str = "") -> dict:
         else:
             cur.execute(
                 f"""
-                WITH latest AS (
-                    SELECT batch_id FROM {jobs}
-                     WHERE NULLIF(batch_id, '') IS NOT NULL
+                WITH mapped AS (
+                    SELECT j.*, COALESCE(root.batch_id, j.batch_id) AS effective_batch_id
+                      FROM {jobs} j
+                      LEFT JOIN {jobs} root ON root.id = COALESCE(j.root_job_id, j.id)
+                ), latest AS (
+                    SELECT effective_batch_id FROM mapped
+                     WHERE NULLIF(effective_batch_id, '') IS NOT NULL
                      ORDER BY id DESC LIMIT 1
                 )
-                SELECT j.* FROM {jobs} j JOIN latest l ON l.batch_id = j.batch_id
-                 ORDER BY COALESCE((j.data->>'batch_index')::int, 0), j.id
+                SELECT mapped.* FROM mapped JOIN latest l USING (effective_batch_id)
+                 ORDER BY COALESCE((mapped.data->>'batch_index')::int, 0), mapped.id
                 """
             )
-        progress_rows = [record_store.merge_row(record_store.JOBS, row) for row in cur.fetchall()]
+        progress_rows = []
+        for raw_progress in cur.fetchall():
+            merged_progress = record_store.merge_row(record_store.JOBS, raw_progress)
+            if raw_progress.get("effective_batch_id"):
+                merged_progress["effective_batch_id"] = str(raw_progress.get("effective_batch_id"))
+            progress_rows.append(merged_progress)
         cur.execute(
             f"""
-            SELECT j.batch_id,
-                   MAX(j.id) AS latest_job_id,
-                   MIN(j.created_at) AS created_at,
+            WITH mapped AS (
+                SELECT j.*, COALESCE(root.batch_id, j.batch_id) AS effective_batch_id,
+                       COALESCE(j.root_job_id, j.id) AS slot_root_id,
+                       COALESCE(root.created_at, j.created_at) AS slot_created_at
+                  FROM {jobs} j
+                  LEFT JOIN {jobs} root ON root.id = COALESCE(j.root_job_id, j.id)
+            ), current_slot AS (
+                SELECT DISTINCT ON (effective_batch_id, slot_root_id) *
+                  FROM mapped
+                 WHERE NULLIF(effective_batch_id, '') IS NOT NULL
+                 ORDER BY effective_batch_id, slot_root_id,
+                          COALESCE((data->>'retry_attempt')::int, 0) DESC, id DESC
+            )
+            SELECT effective_batch_id AS batch_id,
+                   MAX(id) AS latest_job_id,
+                   MIN(slot_created_at) AS created_at,
                    COUNT(*) AS total,
-                   COUNT(*) FILTER (WHERE j.status = 'success') AS success,
-                   COUNT(*) FILTER (WHERE j.status = 'failed') AS failed,
-                   COUNT(*) FILTER (WHERE j.status = 'partial_success') AS partial_success,
-                   COUNT(*) FILTER (WHERE j.status = 'stopped') AS stopped,
-                   COUNT(*) FILTER (WHERE j.status = 'cancelled') AS cancelled,
-                   COUNT(*) FILTER (WHERE j.status = 'running') AS running,
-                   COUNT(*) FILTER (WHERE j.status = 'stopping') AS stopping,
-                   COUNT(*) FILTER (WHERE j.status = 'pending') AS pending,
-                   BOOL_OR(j.parent_job_id IS NOT NULL) AS is_retry
-              FROM {jobs} j
-             WHERE NULLIF(j.batch_id, '') IS NOT NULL
-             GROUP BY j.batch_id
-             ORDER BY MAX(j.id) DESC
+                   COUNT(*) FILTER (WHERE status = 'success') AS success,
+                   COUNT(*) FILTER (WHERE status = 'failed') AS failed,
+                   COUNT(*) FILTER (WHERE status = 'partial_success') AS partial_success,
+                   COUNT(*) FILTER (WHERE status = 'stopped') AS stopped,
+                   COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled,
+                   COUNT(*) FILTER (WHERE status = 'running') AS running,
+                   COUNT(*) FILTER (WHERE status = 'stopping') AS stopping,
+                   COUNT(*) FILTER (WHERE status = 'pending') AS pending,
+                   BOOL_OR(parent_job_id IS NOT NULL) AS is_retry
+              FROM current_slot
+             GROUP BY effective_batch_id
+             ORDER BY MAX(id) DESC
              LIMIT 30
             """
         )
@@ -482,7 +516,8 @@ def list_jobs(request: PageRequest, *, progress_batch_id: str = "") -> dict:
                 "latest_job_id": int(batch.get("latest_job_id") or 0),
                 "created_at": str(batch.get("created_at") or ""),
                 "total": int(batch.get("total") or 0),
-                "kind": "retry" if bool(batch.get("is_retry")) else "registration",
+                "kind": "registration",
+                "has_retries": bool(batch.get("is_retry")),
                 "status_counts": counts,
             })
     page_rows = [record_store.merge_row(record_store.JOBS, row) for row in raw_page]

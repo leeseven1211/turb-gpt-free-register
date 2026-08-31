@@ -391,22 +391,43 @@ function renderBatchProgress() {
       const stageError = ['failed', 'stopped'].includes(state) ? (step.detail || job.error_message || '') : '';
       const stageDetail = stageError || (state === 'skipped' ? (step.detail || '已跳过') : '');
       const detailTitle = stageDetail ? ` title="${esc(stageDetail)}" aria-label="${esc(stage.label)}：${esc(stageDetail)}"` : '';
-      const stepDuration = formatProgressDuration(step.started_at, ['success', 'failed', 'skipped', 'stopped'].includes(state) ? step.completed_at : '');
+      const legacyMergedTiming = Boolean(job.legacy_retry_timing) && stage.key !== 'complete' && Boolean(step.started_at);
+      const stepDuration = legacyMergedTiming ? '' : formatProgressDuration(step.started_at, ['success', 'failed', 'skipped', 'stopped'].includes(state) ? step.completed_at : '');
       const stepDurationEnd = ['success', 'failed', 'skipped', 'stopped'].includes(state) ? (step.completed_at || '') : '';
       return `<div class="batch-progress-v2-step is-${esc(state)}${reached ? ' is-reached' : ''}"${detailTitle}>
         <span class="batch-progress-v2-node">${symbol}</span>
-        <span class="batch-progress-v2-step-label">${esc(stage.label)}${stepDuration ? `<span class="batch-progress-v2-step-duration" data-progress-duration-start="${attrEsc(step.started_at)}" data-progress-duration-end="${attrEsc(stepDurationEnd)}">${esc(stepDuration)}</span>` : ''}</span>
+        <span class="batch-progress-v2-step-label">${esc(stage.label)}${legacyMergedTiming ? '<span class="batch-progress-v2-step-duration is-legacy" title="历史自动换线任务未保存独立线路时间">重试前后合并</span>' : (stepDuration ? `<span class="batch-progress-v2-step-duration" data-progress-duration-start="${attrEsc(step.started_at)}" data-progress-duration-end="${attrEsc(stepDurationEnd)}">${esc(stepDuration)}</span>` : '')}</span>
       </div>`;
     }).join('');
     const batchIndex = Number(job.batch_index || itemIndex + 1);
     const email = job.email || (job.status === 'pending' ? '等待领取邮箱…' : '准备邮箱中…');
     const sourceLabel = registrationEmailSourceLabel(job.email_source);
+    const manualRetryCount = Number(job.retry_count || job.retry_attempt || 0);
+    const internalRetryCount = Number(job.internal_retry_count || 0);
+    const retryBadges = `${manualRetryCount > 0 ? `<span class="batch-progress-v2-retry-pill">人工重试 ${manualRetryCount} 次</span>` : ''}${internalRetryCount > 0 ? `<span class="batch-progress-v2-retry-pill is-auto">自动换线 ${internalRetryCount} 次</span>` : ''}`;
+    const attemptRows = Array.isArray(job.attempts) ? job.attempts : [];
+    const routeRows = Array.isArray(job.route_attempts) ? job.route_attempts : [];
+    const attemptHistory = (attemptRows.length > 1 || routeRows.length > 0 || internalRetryCount > 0) ? `<details class="batch-progress-v2-attempts">
+      <summary>尝试记录（${attemptRows.length || 1} 次执行${routeRows.length ? `，${routeRows.length + 1} 次线路尝试` : ''}）</summary>
+      <div class="batch-progress-v2-attempt-list">
+        ${attemptRows.map((attempt, attemptIndex) => {
+          const attemptResult = progressJobResult(attempt);
+          const attemptDuration = formatProgressDuration(attempt.started_at, attempt.completed_at || '');
+          const error = attempt.error_message ? ` · ${esc(attempt.error_message)}` : '';
+          const warning = attempt.warning_summary ? ` · 换线原因：${esc(attempt.warning_summary)}` : '';
+          return `<div><strong>第 ${attemptIndex + 1} 次执行 #${esc(attempt.id)}</strong><span class="batch-progress-v2-result ${attemptResult.cls}">${attemptResult.label}</span>${attemptDuration ? ` · ${esc(attemptDuration)}` : ''}${error}${warning}</div>`;
+        }).join('')}
+        ${routeRows.map(route => `<div><strong>线路尝试 ${esc(route.route_attempt_no || 1)}</strong><span class="batch-progress-v2-result is-failed">已换线</span>${route.retry_reason ? ` · ${esc(route.retry_reason)}` : ''}</div>`).join('')}
+        ${!routeRows.length && internalRetryCount > 0 ? `<div><strong>历史线路重试</strong><span class="batch-progress-v2-result is-failed">已换线 ${internalRetryCount} 次</span>${job.internal_retry_last_reason ? ` · ${esc(job.internal_retry_last_reason)}` : ''}</div>` : ''}
+      </div>
+    </details>` : '';
     return `<article class="batch-progress-v2-card${cardFailed ? ' is-failed' : ''}">
       <div class="batch-progress-v2-card-top">
         <div class="batch-progress-v2-identity">
           <span class="batch-progress-v2-index">#${esc(batchIndex)}</span>
           <span class="batch-progress-v2-email" title="${esc(email)}">${esc(email)}</span>
           <span class="sub-cell">${esc(sourceLabel)}</span>
+          ${retryBadges}
         </div>
         <div class="batch-progress-v2-meta">
           ${!terminal && duration ? `<span data-progress-duration-start="${attrEsc(job.started_at || job.created_at)}" data-progress-duration-end="" data-progress-duration-prefix="耗时 ">耗时 ${esc(duration)}</span>` : ''}
@@ -415,6 +436,7 @@ function renderBatchProgress() {
           <button type="button" class="batch-progress-v2-log" data-progress-log-job="${esc(job.id)}">查看日志</button>
         </div>
       </div>
+      ${attemptHistory}
       <div class="batch-progress-v2-steps-scroll"><div class="batch-progress-v2-steps" style="--batch-progress-step-count:${Math.max(stages.length, 1)}">${stepHtml}</div></div>
     </article>`;
   }).join('');

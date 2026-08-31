@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import ANY, patch
 
-from core import db, registration_service
+from core import admin_repository, db, registration_service
 from webui.app import _compact_job_for_list, _latest_progress_batch, create_app
 from tests.support_pg import PostgresTestCase
 
@@ -47,6 +47,49 @@ class JobProgressTests(PostgresTestCase):
                 self.assertEqual(row["progress_steps"]["complete"]["state"], "success")
                 self.assertEqual(row["progress_steps"]["complete"]["started_at"], row["created_at"])
                 self.assertEqual(row["progress_stage"], "complete")
+
+    def test_automatic_route_retry_resets_stage_timestamps_and_keeps_history(self):
+        job = db.create_job("icloud_hide", batch_id="route-batch")
+        with patch.object(db, "_now", side_effect=[
+            "2026-08-28T11:11:40", "2026-08-28T11:12:17", "2026-08-28T11:12:40",
+            "2026-08-28T11:16:18", "2026-08-28T11:16:19", "2026-08-28T11:16:27",
+            "2026-08-28T11:16:38", "2026-08-28T11:16:48",
+        ]):
+            db.update_job_progress(job["id"], "email", "running")
+            db.update_job_progress(job["id"], "browser", "running")
+            db.update_job_progress(job["id"], "browser", "success")
+            db.begin_job_route_attempt(
+                job["id"], retry_kind="proxy_rotation", retry_reason="login shell",
+            )
+            db.update_job_progress(job["id"], "email", "running")
+            db.update_job_progress(job["id"], "email", "success")
+            db.update_job_progress(job["id"], "browser", "running")
+            db.update_job_progress(job["id"], "browser", "success")
+
+        row = db.get_job(job["id"])
+        self.assertEqual(row["internal_retry_count"], 1)
+        self.assertEqual(row["route_attempt_no"], 2)
+        self.assertEqual(row["progress_steps"]["browser"]["started_at"], "2026-08-28T11:16:38")
+        self.assertEqual(row["progress_steps"]["browser"]["completed_at"], "2026-08-28T11:16:48")
+        self.assertEqual(row["route_attempts"][0]["progress_steps"]["browser"]["started_at"], "2026-08-28T11:12:17")
+        self.assertEqual(row["route_attempts"][0]["progress_steps"]["browser"]["completed_at"], "2026-08-28T11:12:40")
+
+    def test_otp_evidence_is_redacted_and_classified(self):
+        job = db.create_job("icloud_hide")
+        db.record_job_otp_evidence(
+            job["id"], request_kind="initial", ui_ack="confirmed", detail="验证码页已打开",
+        )
+        db.record_job_otp_evidence(
+            job["id"], request_kind="resend", ui_ack="unconfirmed", detail="点击重发",
+        )
+        db.record_job_otp_evidence(
+            job["id"], detail="验证码邮件未到达", failure_code="otp_delivery_missing",
+        )
+
+        row = db.get_job(job["id"])
+        self.assertEqual(row["otp_request_count"], 2)
+        self.assertEqual(row["otp_failure_code"], "otp_delivery_missing")
+        self.assertEqual(len(row["otp_evidence"]), 3)
 
     def test_successful_closeout_marks_never_started_stages_skipped(self):
         with tempfile.TemporaryDirectory() as td:
@@ -127,6 +170,66 @@ class JobProgressTests(PostgresTestCase):
                 self.assertEqual(retry["batch_index"], 2)
                 self.assertEqual(retry["batch_size"], 3)
                 self.assertEqual(retry["batch_workers"], 4)
+
+    def test_service_retry_inherits_original_batch_slot(self):
+        source = {
+            "id": 21, "status": "partial_success", "job_type": "registration",
+            "batch_id": "original-batch", "batch_index": 7, "batch_size": 10,
+            "batch_workers": 5, "email_source": "icloud_hide", "email": "pending@example.com",
+        }
+        account = {
+            "id": 44, "email": "pending@example.com", "access_token": "",
+            "extra_json": '{"registration_checkpoint":"email_verification_pending","registration_password":"Password!123"}',
+        }
+        retry_row = {
+            "id": 22, "status": "pending", "job_type": "registration_resume",
+            "batch_id": "original-batch", "batch_index": 7, "batch_size": 10,
+            "batch_workers": 5, "log_file": "/tmp/retry.log",
+        }
+        executor = unittest.mock.Mock()
+        with (
+            patch.object(db, "get_job", return_value=source),
+            patch.object(registration_service, "get_retry_info", return_value={
+                "retryable": True, "retry_action": "registration_resume",
+            }),
+            patch.object(registration_service, "_account_for_job", return_value=account),
+            patch.object(db, "create_retry_job", return_value=(retry_row, True)) as create_retry,
+            patch.object(registration_service, "get_executor", return_value=executor),
+        ):
+            result = registration_service.retry_job(21)
+
+        self.assertTrue(result["ok"])
+        kwargs = create_retry.call_args.kwargs
+        self.assertEqual(kwargs["batch_id"], "original-batch")
+        self.assertEqual(kwargs["batch_index"], 7)
+        self.assertEqual(kwargs["batch_size"], 10)
+        self.assertEqual(kwargs["batch_workers"], 5)
+        executor.submit.assert_called_once()
+
+    def test_repository_projects_legacy_retry_batch_back_to_root_batch(self):
+        root = db.create_job(
+            "icloud_hide", batch_id="root-batch", batch_index=1, batch_size=1, batch_workers=2,
+        )
+        db.update_job(root["id"], status="partial_success", completed_at="2026-08-28T11:00:00")
+        retry, _created = db.create_retry_job(
+            root["id"], job_type="registration_resume", email_source="icloud_hide",
+            email="pending@example.com", batch_id="legacy-child-batch", batch_index=1,
+            batch_size=1, batch_workers=2,
+        )
+        db.update_job(retry["id"], status="success", completed_at="2026-08-28T11:02:00")
+
+        payload = admin_repository.list_jobs(
+            admin_repository.PageRequest(page=1, page_size=20), progress_batch_id="root-batch",
+        )
+        batch = _latest_progress_batch(payload["progress_rows"])
+
+        self.assertEqual(batch["batch_id"], "root-batch")
+        self.assertEqual(batch["total"], 1)
+        self.assertEqual(batch["status_counts"]["success"], 1)
+        self.assertEqual([item["id"] for item in batch["items"][0]["attempts"]], [root["id"], retry["id"]])
+        summaries = {item["batch_id"]: item for item in payload["progress_batches"]}
+        self.assertEqual(summaries["root-batch"]["total"], 1)
+        self.assertNotIn("legacy-child-batch", summaries)
 
     def test_registration_batch_email_claim_is_unique_but_cross_batch_reusable(self):
         with tempfile.TemporaryDirectory() as td:
@@ -436,6 +539,60 @@ class JobProgressTests(PostgresTestCase):
         self.assertEqual(compact["progress_steps"]["complete"]["completed_at"], row["completed_at"])
         self.assertNotIn("plan_check", row["progress_steps"])
 
+    def test_progress_batch_groups_retry_job_into_original_slot(self):
+        rows = [
+            {
+                "id": 751, "status": "partial_success", "batch_id": "original-batch",
+                "batch_index": 7, "batch_size": 10, "retry_attempt": 0,
+                "created_at": "2026-08-28T11:11:36", "completed_at": "2026-08-28T11:20:45",
+                "progress_steps": {"email_otp": {"state": "failed"}},
+            },
+            {
+                "id": 755, "root_job_id": 751, "parent_job_id": 751,
+                "status": "success", "batch_id": "legacy-retry-batch", "batch_index": 1,
+                "retry_attempt": 1, "created_at": "2026-08-28T11:22:12",
+                "completed_at": "2026-08-28T11:24:19", "progress_steps": {"complete": {"state": "success"}},
+            },
+            {
+                "id": 752, "status": "success", "batch_id": "original-batch",
+                "batch_index": 8, "batch_size": 10, "retry_attempt": 0,
+                "created_at": "2026-08-28T11:11:36", "completed_at": "2026-08-28T11:19:00",
+                "progress_steps": {"complete": {"state": "success"}},
+            },
+        ]
+
+        batch = _latest_progress_batch(rows)
+
+        self.assertEqual(batch["batch_id"], "original-batch")
+        self.assertEqual(batch["total"], 2)
+        self.assertEqual(batch["status_counts"]["success"], 2)
+        slot = next(item for item in batch["items"] if item["batch_index"] == 7)
+        self.assertEqual(slot["id"], 755)
+        self.assertEqual(slot["retry_count"], 1)
+        self.assertEqual([item["id"] for item in slot["attempts"]], [751, 755])
+
+    def test_historical_successful_route_retry_hides_unreliable_stage_timing(self):
+        compact = _compact_job_for_list({
+            "id": 749,
+            "status": "success",
+            "error_message": "代理线路瞬时失败，准备换线重试: browser shell failed",
+            "progress_steps": {
+                "browser": {
+                    "state": "success",
+                    "started_at": "2026-08-28T11:12:17",
+                    "completed_at": "2026-08-28T11:16:38",
+                },
+            },
+        })
+
+        self.assertEqual(compact["internal_retry_count"], 1)
+        self.assertTrue(compact["legacy_retry_timing"])
+        self.assertNotIn("error_message", compact)
+        self.assertIn("换线重试", compact["warning_summary"])
+        self.assertEqual(compact["progress_steps"]["network"]["state"], "success")
+        self.assertTrue(compact["progress_steps"]["network"]["inferred"])
+        self.assertNotIn("started_at", compact["progress_steps"]["network"])
+
     def test_startup_recovers_interrupted_jobs_and_codex_account(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -573,7 +730,7 @@ class JobProgressTests(PostgresTestCase):
         self.assertTrue(response.get_json()["debug_enabled"])
         submit.assert_called_once_with(count=1, workers=4, debug_enabled=True)
 
-    def test_bulk_retry_uses_one_shared_batch(self):
+    def test_bulk_retry_keeps_each_task_in_its_source_batch(self):
         app = create_app(auth_code="test-auth")
         client = app.test_client()
 
@@ -581,8 +738,7 @@ class JobProgressTests(PostgresTestCase):
             return {
                 "ok": True,
                 "created": True,
-                "job": {"id": job_id + 100, "batch_id": kwargs["batch_id"]},
-                "batch": kwargs,
+                "job": {"id": job_id + 100, "batch_id": f"source-batch-{job_id}"},
             }
 
         with patch("webui.app.svc.retry_job", side_effect=fake_retry) as retry_job:
@@ -595,11 +751,10 @@ class JobProgressTests(PostgresTestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertEqual(payload["started_count"], 2)
-        self.assertTrue(payload["batch_id"])
+        self.assertEqual(payload["batch_id"], "")
+        self.assertEqual(payload["affected_batch_ids"], ["source-batch-11", "source-batch-12"])
         calls = retry_job.call_args_list
-        self.assertEqual(calls[0].kwargs["batch_id"], calls[1].kwargs["batch_id"])
-        self.assertEqual([call.kwargs["batch_index"] for call in calls], [1, 2])
-        self.assertTrue(all(call.kwargs["batch_size"] == 2 for call in calls))
+        self.assertTrue(all("batch_id" not in call.kwargs for call in calls))
 
     def test_job_stop_state_survives_unrelated_worker_update(self):
         job = db.create_job(

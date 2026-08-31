@@ -53,6 +53,7 @@ _LEGACY_JOBS_JSON = _LEGACY_DATA_DIR / "registration_jobs.json"
 _LOCK = threading.RLock()
 
 JOB_PROGRESS_STAGES = (
+    ("network", "分配网络"),
     ("email", "准备邮箱"),
     ("browser", "启动浏览器"),
     ("page", "打开注册页"),
@@ -1699,6 +1700,10 @@ def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
         row["live_check_ok"] = ok
         row["live_checked_at"] = result.get("checked_at") or now
         row["live_check_error"] = None if ok else result.get("error")
+        try:
+            row["live_check_http_status"] = int(result.get("http_status"))
+        except (TypeError, ValueError):
+            row["live_check_http_status"] = None
         row["updated_at"] = now
 
         if status == "deactivated":
@@ -1754,6 +1759,7 @@ def claim_account_live_check(acc_id: int, trigger: str = "manual") -> bool:
         "live_check_started_at": None,
         "live_checked_at": None,
         "live_check_error": None,
+        "live_check_http_status": None,
         "updated_at": now,
     }, require_alive=True)
 
@@ -1785,6 +1791,7 @@ def mark_account_live_check_running(acc_id: int) -> bool:
         "live_check_status": "running",
         "live_check_started_at": now,
         "live_check_error": None,
+        "live_check_http_status": None,
         "updated_at": now,
     })
 
@@ -2923,23 +2930,133 @@ def update_job_progress(
                     prior["state"] = "success"
                     prior["completed_at"] = now
 
+        route_attempt_no = max(1, int(row.get("route_attempt_no") or 1))
         item = steps.get(stage)
         if not isinstance(item, dict):
             item = {}
-        if state == "running" and not item.get("started_at"):
-            item["started_at"] = now
+        if state == "running" and (
+            item.get("state") != "running"
+            or int(item.get("route_attempt_no") or route_attempt_no) != route_attempt_no
+        ):
+            occurrences = item.get("occurrences")
+            if not isinstance(occurrences, list):
+                occurrences = []
+            if item.get("started_at"):
+                occurrences.append({
+                    key: item.get(key)
+                    for key in ("state", "started_at", "completed_at", "detail", "route_attempt_no")
+                    if item.get(key) is not None
+                })
+            item = {
+                "state": "running",
+                "started_at": now,
+                "route_attempt_no": route_attempt_no,
+            }
+            if occurrences:
+                item["occurrences"] = occurrences[-20:]
         elif state in {"success", "failed", "skipped", "stopped"}:
             item["started_at"] = item.get("started_at") or now
             item["completed_at"] = now
+            item["route_attempt_no"] = route_attempt_no
         item["state"] = state
         if detail is not None:
             item["detail"] = str(detail)[:300]
         steps[stage] = item
-        _patch_job(job_id, {
+        changes = {
             "progress_steps": steps,
             "progress_stage": stage,
             "progress_updated_at": now,
+        }
+        if not row.get("route_attempt_no"):
+            changes["route_attempt_no"] = route_attempt_no
+        _patch_job(job_id, changes)
+
+
+def begin_job_route_attempt(
+    job_id: int,
+    *,
+    retry_kind: str,
+    retry_reason: str | None = None,
+) -> int:
+    """Start another automatic route attempt without joining stage durations.
+
+    A registration job can rebuild its browser/proxy and execute the same stages
+    again.  Preserve the previous route as an immutable summary and clear the
+    current-stage projection so the next route receives fresh timestamps.
+    """
+    with _LOCK:
+        row = record_store.get_row(record_store.JOBS, int(job_id))
+        if row is None:
+            raise LookupError("任务不存在")
+        now = _now()
+        current_no = max(1, int(row.get("route_attempt_no") or 1))
+        steps = row.get("progress_steps")
+        if not isinstance(steps, dict):
+            steps = {}
+        history = row.get("route_attempts")
+        if not isinstance(history, list):
+            history = []
+        started_values = [
+            str(item.get("started_at"))
+            for item in steps.values()
+            if isinstance(item, dict) and item.get("started_at")
+        ]
+        fallback_started = row.get("started_at")
+        if isinstance(fallback_started, datetime):
+            fallback_started = fallback_started.isoformat()
+        history.append({
+            "route_attempt_no": current_no,
+            "status": "retried",
+            "started_at": min(started_values) if started_values else fallback_started,
+            "completed_at": now,
+            "retry_kind": str(retry_kind or "automatic_retry")[:80],
+            "retry_reason": str(retry_reason or "")[:300] or None,
+            "progress_steps": steps,
         })
+        next_no = current_no + 1
+        _patch_job(job_id, {
+            "route_attempt_no": next_no,
+            "internal_retry_count": max(0, int(row.get("internal_retry_count") or 0)) + 1,
+            "internal_retry_kind": str(retry_kind or "automatic_retry")[:80],
+            "internal_retry_last_reason": str(retry_reason or "")[:300] or None,
+            "route_attempts": history[-10:],
+            "progress_steps": {},
+            "progress_stage": None,
+            "progress_updated_at": now,
+        })
+        return next_no
+
+
+def record_job_otp_evidence(
+    job_id: int,
+    *,
+    request_kind: str | None = None,
+    ui_ack: str | None = None,
+    detail: str | None = None,
+    failure_code: str | None = None,
+) -> None:
+    """Append redacted OTP request/delivery evidence to one execution row."""
+    with _LOCK:
+        row = record_store.get_row(record_store.JOBS, int(job_id))
+        if row is None:
+            return
+        events = row.get("otp_evidence")
+        if not isinstance(events, list):
+            events = []
+        event = {
+            "recorded_at": _now(),
+            "request_kind": str(request_kind or "")[:40] or None,
+            "ui_ack": str(ui_ack or "")[:40] or None,
+            "detail": str(detail or "")[:240] or None,
+        }
+        events.append({key: value for key, value in event.items() if value is not None})
+        changes = {
+            "otp_evidence": events[-20:],
+            "otp_request_count": sum(1 for item in events if item.get("request_kind") in {"initial", "resend", "resume_login"}),
+        }
+        if failure_code:
+            changes["otp_failure_code"] = str(failure_code)[:80]
+        _patch_job(job_id, changes)
 
 
 def finish_job_progress(

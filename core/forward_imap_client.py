@@ -12,7 +12,7 @@ import imaplib
 import logging
 import time
 from datetime import datetime, timezone
-from email.utils import parseaddr
+from email.utils import parseaddr, parsedate_to_datetime
 
 from config import email as _email_cfg
 from core.otp_utils import extract_otp, looks_like_openai_email
@@ -117,13 +117,27 @@ def _messages_for_recipient(
     selected = sorted(ids, key=lambda value: int(value))[-max(1, limit):]
     out: list[tuple[dict, str, str]] = []
     for mid in reversed(selected):
-        status, data = mail.fetch(mid, "(RFC822)")
+        status, data = mail.fetch(mid, "(INTERNALDATE RFC822)")
         if status != "OK" or not data or not isinstance(data[0], tuple):
             continue
         try:
             msg = email_lib.message_from_bytes(data[0][1])
+            item = _msg_to_dict(msg)
+            meta = data[0][0]
+            if isinstance(meta, bytes):
+                meta = meta.decode("ascii", errors="ignore")
+            marker = 'INTERNALDATE "'
+            raw_internal = ""
+            if marker in str(meta or ""):
+                raw_internal = str(meta).split(marker, 1)[1].split('"', 1)[0]
+            if raw_internal:
+                try:
+                    internal_dt = parsedate_to_datetime(raw_internal)
+                    item["receivedDateTime"] = internal_dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+                except (TypeError, ValueError, OverflowError):
+                    pass
             out.append((
-                _msg_to_dict(msg),
+                item,
                 _recipient_headers(msg),
                 mid.decode("ascii", errors="ignore"),
             ))
@@ -133,7 +147,10 @@ def _messages_for_recipient(
 
 
 def _message_timestamp(item: dict) -> float:
-    raw = str(item.get("date") or item.get("receivedDateTime") or "").strip()
+    # IMAP INTERNALDATE is the actual mailbox delivery time.  The sender Date
+    # header can be minutes older after HME forwarding and must not exclude a
+    # message that arrived inside the current OTP request window.
+    raw = str(item.get("receivedDateTime") or item.get("date") or "").strip()
     if not raw:
         return 0.0
     try:

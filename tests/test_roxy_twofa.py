@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from core import db, roxy_registration
+from core.task_stages import flow_for
 
 
 class RoxyTwoFactorTests(unittest.TestCase):
@@ -62,9 +63,15 @@ class RoxyTwoFactorTests(unittest.TestCase):
 
     def test_job_progress_runs_codex_before_twofa(self):
         stages = [key for key, _label in db.JOB_PROGRESS_STAGES]
+        self.assertLess(stages.index("network"), stages.index("email"))
+        self.assertLess(stages.index("email"), stages.index("browser"))
         self.assertIn("twofa", stages)
         self.assertLess(stages.index("token"), stages.index("codex"))
         self.assertLess(stages.index("codex"), stages.index("twofa"))
+        self.assertEqual(
+            [item["key"] for item in flow_for("registration")[:3]],
+            ["network", "email", "browser"],
+        )
 
     def test_totp_secret_candidate_normalizes_manual_key(self):
         secret = "JBSW Y3DP-EHPK 3PXP JBSW Y3DP-EHPK 3PXP"

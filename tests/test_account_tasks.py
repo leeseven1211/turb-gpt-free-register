@@ -152,9 +152,15 @@ class AccountStatusTests(PostgresTestCase):
                 for item in patches:
                     stack.enter_context(item)
                 webui_app.db._save_accounts([{"id": 7, "email": "maybe@example.com", "access_token": "old"}])
-                webui_app.db.update_account_liveness(7, {"ok": False, "status": "failed", "error": "OTP timeout"})
+                webui_app.db.update_account_liveness(7, {
+                    "ok": False,
+                    "status": "failed",
+                    "http_status": 403,
+                    "error": "AT rejected",
+                })
                 row = webui_app.db.get_account(7)
         self.assertNotEqual("deactivated", row.get("account_status"))
+        self.assertEqual(403, row.get("live_check_http_status"))
     def test_only_due_token_is_force_refreshed(self):
         now = datetime.now(timezone.utc)
         accounts = [
@@ -542,7 +548,11 @@ class AccountTaskApiTests(PostgresTestCase):
         self.assertIn("values: ['registration', 'registration_resume'", html)
         self.assertIn("codex_retry:'Codex 补跑'", html)
         self.assertNotIn('data-codex-log=', html)
-        self.assertIn("AT 剩余", html)
+        self.assertIn("function _tokenDisplayState", html)
+        self.assertIn("label: '正常'", html)
+        self.assertIn("label: '过期'", html)
+        self.assertIn("label: `失效 · ${liveHttpStatus || '未知'}`", html)
+        self.assertIn('data-account-copy-secret="access_token"', html)
 
     def test_codex_retry_creates_account_task_instance(self):
         app = create_app(auth_code="test-auth")

@@ -674,7 +674,25 @@ def advance_checkpoint(
         if current_checkpoint not in CHECKPOINT_RANK:
             current_checkpoint = "created"
         if CHECKPOINT_RANK[target] < CHECKPOINT_RANK[current_checkpoint]:
-            raise ValueError(f"检查点只能向前推进: {current_checkpoint} -> {target}")
+            preserved_detail = dict(detail or {})
+            preserved_detail.update({
+                "attempt_checkpoint_preserved": current_checkpoint,
+                "run_checkpoint": target,
+            })
+            cur.execute(
+                f"""
+                UPDATE {_table('registration_attempts')}
+                   SET updated_at=%s, active_execution_id=COALESCE(%s, active_execution_id), heartbeat_at=%s
+                 WHERE id=%s
+                """,
+                (_now(), str(execution_id or "").strip() or None, _now(), int(attempt_id)),
+            )
+            _insert_event(
+                cur, attempt_id=int(attempt_id), run_id=run_id, job_id=job_id, checkpoint=target,
+                event_type=event_type, level=level, message=message, detail=preserved_detail,
+                execution_id=execution_id, event_uuid=event_uuid,
+            )
+            return _attempt_from_cursor(cur, int(attempt_id)) or {}
         current_identity = str(current.get("remote_identity_state") or "not_started")
         current_identity = current_identity if current_identity in REMOTE_STATES else "not_started"
         current_account = str(current.get("remote_account_state") or "not_started")
@@ -816,6 +834,21 @@ def start_run(
                             status_value, started_at, completed_at, error_code, error_message,
                             _json({"legacy_job_status": str(initial_status or "")}), int(existing_job_run["id"]),
                         ),
+                    )
+                    return _row(cur.fetchone()) or {}
+                if not historical and str(existing_job_run.get("status") or "") == "queued":
+                    now = _now()
+                    cur.execute(
+                        f"""
+                        UPDATE {_table('registration_runs')}
+                           SET status='running', started_at=COALESCE(started_at,%s),
+                               execution_id=COALESCE(%s,execution_id), worker_pid=COALESCE(%s,worker_pid),
+                               heartbeat_at=%s
+                         WHERE id=%s
+                         RETURNING *
+                        """,
+                        (started_at or now, str(execution_id or "").strip() or None,
+                         int(worker_pid) if worker_pid is not None else None, now, int(existing_job_run["id"])),
                     )
                     return _row(cur.fetchone()) or {}
                 return _row(existing_job_run) or {}

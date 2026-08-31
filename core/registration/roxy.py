@@ -1684,7 +1684,21 @@ def _click_resend_email_otp(driver, timeout: int = 20, *, budget: StageBudget | 
                     delay = min(delay, budget.remaining())
                 if delay > 0:
                     time.sleep(delay)
-                return {"ok": True, "text": text}
+                state_after = _email_otp_page_state(driver)
+                buttons_after = state_after.get("buttons") if isinstance(state_after, dict) else []
+                if not isinstance(buttons_after, list):
+                    buttons_after = []
+                resend_pattern = re.compile(r"resend|send.*new|send.*again|重新发送|重发|再次发送|再送信|届かない", re.I)
+                matching = [
+                    item for item in buttons_after
+                    if resend_pattern.search(" ".join(str(item.get(key) or "") for key in ("text", "action", "aria", "value")))
+                ]
+                ui_ack = "confirmed" if (
+                    not _is_email_verification_page(driver)
+                    or any(bool(item.get("disabled")) for item in matching)
+                ) else "unconfirmed"
+                logger.info("%s[OTP] 重发请求页面确认：%s", _log_prefix(driver), ui_ack)
+                return {"ok": True, "text": text, "ui_ack": ui_ack}
         except Exception as exc:
             last = exc
         time.sleep(min(0.5, max(0.0, budget.remaining())) if budget is not None else 0.5)
@@ -1706,6 +1720,17 @@ def _resend_email_otp_after_failure(driver, *, reason: str, budget: StageBudget 
             f"url={getattr(driver, 'current_url', '')} state={otp_state}"
         )
     return _click_resend_email_otp(driver, timeout=25, budget=budget)
+
+
+def _classify_otp_wait_failure(exc: Exception, *, last_ui_ack: str) -> tuple[str, str]:
+    """Classify a no-code result without claiming that a DOM click sent mail."""
+    text = str(exc or "")
+    mailbox_markers = ("登录失败", "连接失败", "建连失败", "读取失败", "IMAP 兜底不可用")
+    if any(marker in text for marker in mailbox_markers):
+        return "otp_mailbox_unavailable", "验证码收件链路不可用"
+    if str(last_ui_ack or "").strip().lower() != "confirmed":
+        return "otp_request_unconfirmed", "验证码请求缺少页面或网络确认；不能断言服务端已经发信"
+    return "otp_delivery_missing", "验证码请求已有页面确认，但预算内未收到匹配邮件"
 
 
 def _wait_after_email_otp_submit(
@@ -3928,7 +3953,7 @@ def run_roxy_registration(
     existing_totp_secret: str | None = None,
 ) -> dict:
     """Roxy 指纹浏览器自动化注册入口。"""
-    from core.registration_service import report_job_progress, report_registered_account
+    from core.registration_service import report_job_otp_evidence, report_job_progress, report_registered_account
 
     report_job_progress("browser", "running", "正在创建并启动 Roxy 浏览器环境")
     client = RoxyBrowserClient()
@@ -4084,6 +4109,12 @@ def run_roxy_registration(
         _check_manual_stop()
 
         report_job_progress("email_otp", "running", "正在等待并验证邮箱验证码")
+        report_job_otp_evidence(
+            request_kind="resume_login" if existing_password else "initial",
+            ui_ack="unconfirmed",
+            detail="页面已进入邮箱验证码步骤，但仅凭页面状态不能确认邮件请求已被接受",
+        )
+        last_otp_ui_ack = "unconfirmed"
         current_otp = otp_code
         max_otp_attempts = 3
         try:
@@ -4115,7 +4146,16 @@ def run_roxy_registration(
                     )
                 except Exception as exc:
                     if otp_attempt >= max_otp_attempts:
-                        raise
+                        failure_code, failure_detail = _classify_otp_wait_failure(
+                            exc,
+                            last_ui_ack=last_otp_ui_ack,
+                        )
+                        report_job_otp_evidence(
+                            detail=failure_detail,
+                            failure_code=failure_code,
+                        )
+                        report_job_progress("email_otp", "failed", f"{failure_code}: {failure_detail}")
+                        raise RuntimeError(f"{failure_code}: {failure_detail}") from exc
                     # 不再用 after_ts=0 宽松捞旧码。高并发/重发场景下，旧码可能
                     # 属于同一邮箱的上一轮认证，提交后只会造成额外等待和再次重发。
                     logger.warning(
@@ -4126,10 +4166,28 @@ def run_roxy_registration(
                         str(exc)[:180],
                     )
                     otp_after_ts = time.time()
-                    _resend_email_otp_after_failure(
-                        driver,
-                        reason="等待邮箱验证码超时/未收到新验证码",
-                        budget=otp_budget,
+                    try:
+                        resend_result = _resend_email_otp_after_failure(
+                            driver,
+                            reason="等待邮箱验证码超时/未收到新验证码",
+                            budget=otp_budget,
+                        )
+                    except Exception as resend_exc:
+                        failure_code = "otp_request_unconfirmed"
+                        failure_detail = "验证码重发控件未能完成或缺少确认；不能断言服务端已经发信"
+                        report_job_otp_evidence(
+                            request_kind="resend",
+                            ui_ack="rejected",
+                            detail=failure_detail,
+                            failure_code=failure_code,
+                        )
+                        report_job_progress("email_otp", "failed", f"{failure_code}: {failure_detail}")
+                        raise RuntimeError(f"{failure_code}: {failure_detail}") from resend_exc
+                    last_otp_ui_ack = str(resend_result.get("ui_ack") or "unconfirmed")
+                    report_job_otp_evidence(
+                        request_kind="resend",
+                        ui_ack=last_otp_ui_ack,
+                        detail="等待超时后请求重新发送验证码",
                     )
                     human_delay("api")
                     current_otp = None
@@ -4153,13 +4211,35 @@ def run_roxy_registration(
             if outcome in ('accepted', 'email_verified'):
                 break
             if otp_attempt >= max_otp_attempts:
-                raise RuntimeError("邮箱验证码连续错误/过期，已达到最大重试次数")
+                failure_code = "otp_invalid_or_expired"
+                failure_detail = "已取得并提交验证码，但页面未接受或验证码已过期"
+                report_job_otp_evidence(detail=failure_detail, failure_code=failure_code)
+                report_job_progress("email_otp", "failed", f"{failure_code}: {failure_detail}")
+                raise RuntimeError(f"{failure_code}: {failure_detail}")
             logger.warning("[Roxy注册][OTP] 验证码错误/过期，准备重新发送并重新获取验证码（%s/%s）", otp_attempt + 1, max_otp_attempts)
             otp_after_ts = time.time()
-            _resend_email_otp_after_failure(
-                driver,
-                reason="邮箱验证码提交后页面无效或卡住",
-                budget=otp_budget,
+            try:
+                resend_result = _resend_email_otp_after_failure(
+                    driver,
+                    reason="邮箱验证码提交后页面无效或卡住",
+                    budget=otp_budget,
+                )
+            except Exception as resend_exc:
+                failure_code = "otp_request_unconfirmed"
+                failure_detail = "验证码重发控件未能完成或缺少确认；不能断言服务端已经发信"
+                report_job_otp_evidence(
+                    request_kind="resend",
+                    ui_ack="rejected",
+                    detail=failure_detail,
+                    failure_code=failure_code,
+                )
+                report_job_progress("email_otp", "failed", f"{failure_code}: {failure_detail}")
+                raise RuntimeError(f"{failure_code}: {failure_detail}") from resend_exc
+            last_otp_ui_ack = str(resend_result.get("ui_ack") or "unconfirmed")
+            report_job_otp_evidence(
+                request_kind="resend",
+                ui_ack=last_otp_ui_ack,
+                detail="验证码无效或页面未推进后请求重新发送",
             )
             human_delay("api")
             current_otp = None

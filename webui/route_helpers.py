@@ -191,7 +191,7 @@ def _compact_account_for_list(row: dict) -> dict:
         "discount_expires_at", "discount_promo_campaign_id",
         "token_expired", "token_expires_at", "account_status_reason", "account_status_at",
         # 查活状态。
-        "live_check_status", "live_check_error", "live_checked_at",
+        "live_check_status", "live_check_error", "live_check_http_status", "live_checked_at",
         # 提链成功/失败时才需要。
         "extract_link_status", "extract_link_type", "extract_link_message", "extract_link_error",
         "extract_link_long_url", "extract_link_copy_paste", "extract_link_image_url_png",
@@ -272,13 +272,17 @@ def _compact_job_for_list(row: dict) -> dict:
         "status": row.get("status"),
     }
     for key in (
-        "parent_job_id", "retry_attempt", "email", "started_at", "completed_at",
+        "parent_job_id", "root_job_id", "retry_attempt", "email", "started_at", "completed_at",
         "email_source",
         "display_status", "retryable", "retry_action", "retry_label",
         "manual_otp_required", "proxy_provider", "proxy_status", "proxy_endpoint",
         "proxy_exit_ip", "proxy_region", "proxy_acquired_at", "proxy_expires_at",
         "batch_id", "batch_index", "batch_size", "batch_workers",
         "progress_stage", "progress_updated_at", "progress_steps",
+        "route_attempt_no", "route_attempts", "internal_retry_count",
+        "internal_retry_kind", "internal_retry_last_reason",
+        "legacy_retry_timing",
+        "otp_evidence", "otp_request_count", "otp_failure_code",
         "debug_enabled", "debug_state", "debug_hold_until", "debug_pause_reason",
         "debug_capture_summary",
         "failure_diagnostics_state", "failure_diagnostics_category",
@@ -296,6 +300,21 @@ def _compact_job_for_list(row: dict) -> dict:
             stage=str(row.get("progress_stage") or ""),
             task_type=str(row.get("job_type") or "registration"),
         )
+    if (
+        str(row.get("status") or "") == "success"
+        and "代理线路瞬时失败，准备换线重试" in err
+        and not int(row.get("internal_retry_count") or 0)
+    ):
+        # 兼容结构化自动重试字段上线前的成功任务（例如 #749）。
+        out["internal_retry_count"] = 1
+        out["internal_retry_kind"] = "proxy_rotation"
+        out["internal_retry_last_reason"] = err[:300]
+        out["warning_summary"] = err[:300]
+        # Older rows only kept one timestamp per stage and overwrote the end
+        # after route retry.  Those durations cannot be repaired reliably.
+        out["legacy_retry_timing"] = True
+        out.pop("error_message", None)
+        out.pop("error_info", None)
     raw_steps = out.get("progress_steps")
     if isinstance(raw_steps, dict):
         # 列表兼容字段只应作用于返回副本，不能改写历史任务原始数据。
@@ -304,6 +323,24 @@ def _compact_job_for_list(row: dict) -> dict:
     else:
         steps = None
         changed = False
+    if isinstance(steps, dict) and "network" not in steps:
+        reached_later_stage = any(
+            isinstance(steps.get(key), dict)
+            for key in (
+                "browser", "page", "submit_email", "auth_redirect", "login_password",
+                "email_otp", "profile", "token", "codex", "twofa", "plan_check", "complete",
+            )
+        )
+        if reached_later_stage:
+            # 独立 network 阶段上线前，注册任务把代理分配
+            # 记在 email 里。后续步骤已开始即可确定线路已分配；
+            # 但历史数据没有独立起止时间，因此只补状态不伪造耗时。
+            steps["network"] = {
+                "state": "success",
+                "detail": "历史任务未单独记录网络阶段，已根据后续步骤确认完成",
+                "inferred": True,
+            }
+            changed = True
     if isinstance(steps, dict) and "auth_redirect" not in steps:
         submit_step = steps.get("submit_email")
         reached_later_stage = any(
@@ -391,25 +428,80 @@ def _job_status_counts(rows: list[dict]) -> dict:
 
 
 def _latest_progress_batch(rows: list[dict]) -> dict | None:
-    """构造最新提交批次的邮箱级进度数据。旧任务没有 batch_id 时不展示。"""
-    latest = next((row for row in rows if row.get("batch_id")), None)
+    """构造批次 TaskSlot 进度；人工重试不重复增加批次任务数。"""
+    roots = {
+        int(row.get("id") or 0): row
+        for row in rows
+        if not row.get("root_job_id")
+    }
+
+    def effective_batch_id(row: dict) -> str:
+        if row.get("effective_batch_id"):
+            return str(row.get("effective_batch_id") or "")
+        root = roots.get(int(row.get("root_job_id") or row.get("id") or 0), row)
+        return str(root.get("batch_id") or row.get("batch_id") or "")
+
+    latest = next((row for row in rows if effective_batch_id(row)), None)
     if latest is None:
         return None
-    batch_id = str(latest.get("batch_id") or "")
-    batch_rows = [row for row in rows if str(row.get("batch_id") or "") == batch_id]
+    batch_id = effective_batch_id(latest)
+    batch_rows = [row for row in rows if effective_batch_id(row) == batch_id]
     if not batch_rows:
         return None
-    batch_rows.sort(key=lambda row: (int(row.get("batch_index") or 0), int(row.get("id") or 0)))
-    counts = _job_status_counts(batch_rows)
-    items = [_compact_job_for_list(row) for row in batch_rows]
+
+    slot_rows: dict[int, list[dict]] = {}
+    for row in batch_rows:
+        root_id = int(row.get("root_job_id") or row.get("id") or 0)
+        slot_rows.setdefault(root_id, []).append(row)
+
+    selected_rows: list[dict] = []
+    items: list[dict] = []
+    for root_id, attempts in slot_rows.items():
+        attempts.sort(key=lambda row: (int(row.get("retry_attempt") or 0), int(row.get("id") or 0)))
+        active = [row for row in attempts if str(row.get("status") or "") in {"pending", "running", "stopping"}]
+        current = active[-1] if active else attempts[-1]
+        root = roots.get(root_id) or attempts[0]
+        selected_rows.append(current)
+        compact = _compact_job_for_list(current)
+        attempt_items = []
+        for row in attempts:
+            attempt_compact = _compact_job_for_list(row)
+            attempt_items.append({
+                "id": int(row.get("id") or 0),
+                "retry_attempt": int(row.get("retry_attempt") or 0),
+                "job_type": str(row.get("job_type") or "registration"),
+                "status": str(row.get("status") or "pending"),
+                "started_at": row.get("started_at"),
+                "completed_at": row.get("completed_at"),
+                "error_message": str(attempt_compact.get("error_message") or "")[:240] or None,
+                "warning_summary": str(attempt_compact.get("warning_summary") or "")[:240] or None,
+                "internal_retry_count": int(attempt_compact.get("internal_retry_count") or 0),
+            })
+        compact.update({
+            "root_job_id": root_id,
+            "batch_id": batch_id,
+            "batch_index": int(root.get("batch_index") or current.get("batch_index") or 1),
+            "batch_size": int(root.get("batch_size") or len(slot_rows)),
+            "retry_count": max(int(row.get("retry_attempt") or 0) for row in attempts),
+            "attempts": attempt_items,
+        })
+        items.append(compact)
+
+    items.sort(key=lambda row: (int(row.get("batch_index") or 0), int(row.get("root_job_id") or 0)))
+    selected_rows.sort(key=lambda row: int((roots.get(int(row.get("root_job_id") or row.get("id") or 0)) or row).get("batch_index") or 0))
+    counts = _job_status_counts(selected_rows)
+    all_terminal = all(str(row.get("status") or "") not in {"pending", "running", "stopping"} for row in selected_rows)
     return {
         "batch_id": batch_id,
-        "total": len(batch_rows),
+        "total": len(slot_rows),
         "workers": int(latest.get("batch_workers") or 1),
         "created_at": min((str(row.get("created_at") or "") for row in batch_rows), default=""),
         "started_at": min((str(row.get("started_at") or "") for row in batch_rows if row.get("started_at")), default=""),
-        "completed_at": max((str(row.get("completed_at") or "") for row in batch_rows if row.get("completed_at")), default=""),
+        "completed_at": max((str(row.get("completed_at") or "") for row in selected_rows if row.get("completed_at")), default="") if all_terminal else "",
         "status_counts": counts,
-        "stages": [{"key": key, "label": label} for key, label in db.JOB_PROGRESS_STAGES],
+        "stages": [
+            {"key": key, "label": "本次总耗时" if key == "complete" else label}
+            for key, label in db.JOB_PROGRESS_STAGES
+        ],
         "items": items,
     }

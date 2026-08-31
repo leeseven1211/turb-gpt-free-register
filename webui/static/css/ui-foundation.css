@@ -1147,6 +1147,57 @@ tr:hover td,
   display: none;
 }
 
+/* Token 单元格只显示一个可点击状态；状态按钮本身负责复制完整 Token。 */
+.accounts-table-v2 .col-token {
+  width: 126px;
+}
+
+.accounts-table-v2 .acc-v2-token-state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 72px;
+  min-height: 26px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1;
+  vertical-align: middle;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.accounts-table-v2 .acc-v2-token-state.is-normal {
+  color: #237f71;
+  border-color: #a7ded5;
+  background: #eefbf8;
+}
+
+.accounts-table-v2 .acc-v2-token-state.is-expired {
+  color: #ad6800;
+  border-color: #ffd591;
+  background: #fff7e6;
+}
+
+.accounts-table-v2 .acc-v2-token-state.is-invalid {
+  color: #c83c48;
+  border-color: #f4b8bd;
+  background: #fff2f3;
+}
+
+.accounts-table-v2 .acc-v2-token-state:hover:not(:disabled) {
+  filter: brightness(.97);
+  box-shadow: 0 0 0 2px rgba(91,92,226,.08);
+}
+
+.accounts-table-v2 .acc-v2-token-state:disabled {
+  cursor: wait;
+  opacity: .62;
+}
+
 .accounts-table-v2 .status-action-cell,
 .accounts-table-v2 .extract-link-cell {
   flex-wrap: nowrap;

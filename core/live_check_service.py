@@ -133,6 +133,7 @@ def _run_live_check(
         saved_claims = token_claims(saved_access_token) if saved_access_token else {}
         result = None
         last_probe_error = ""
+        last_probe_http_status = None
         if saved_access_token and not force_refresh:
             probe_attempts = 4 if proxy is None else 1
             _append_log(email, "[查活] 优先验证现有 accessToken；有效则无需重复发送邮箱验证码")
@@ -149,11 +150,16 @@ def _run_live_check(
                     proxy=selected_proxy,
                     max_attempts=1,
                 )
+                try:
+                    last_probe_http_status = int(probe.get("http_status"))
+                except (TypeError, ValueError):
+                    last_probe_http_status = None
                 if probe.get("ok"):
                     result = {
                         "ok": True,
                         "status": "live",
                         "checked_at": datetime.now().isoformat(timespec="seconds"),
+                        "http_status": last_probe_http_status or 200,
                         "access_token": saved_access_token,
                         "session": {
                             "account": {"planType": probe.get("current_plan_type")},
@@ -186,6 +192,7 @@ def _run_live_check(
                         "status": "deactivated",
                         "checked_at": datetime.now().isoformat(timespec="seconds"),
                         "error": unusable_code,
+                        "http_status": last_probe_http_status,
                         "validation_method": "access_token",
                     }
                     break
@@ -213,6 +220,7 @@ def _run_live_check(
                     "status": "failed",
                     "checked_at": datetime.now().isoformat(timespec="seconds"),
                     "error": "现有 accessToken 已过期或失效，请点击“刷新AT”",
+                    "http_status": last_probe_http_status,
                     "validation_method": "access_token",
                     "probe_error": last_probe_error,
                 }
@@ -312,6 +320,7 @@ def _run_live_check(
             result_summary={
                 "ok": bool(result.get("ok")),
                 "status": result.get("status"),
+                "http_status": result.get("http_status"),
                 "checked_at": result.get("checked_at"),
                 "plan": (result.get("session") or {}).get("account", {}).get("planType"),
             },

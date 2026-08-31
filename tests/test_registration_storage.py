@@ -42,15 +42,38 @@ class RegistrationFactsTests(PostgresTestCase):
         self.assertEqual(len(runs), 1)
         self.assertEqual(int(runs[0]["job_id"]), int(job["id"]))
 
-    def test_checkpoint_is_monotonic_and_event_is_idempotent(self):
+    def test_attempt_checkpoint_stays_monotonic_while_run_event_can_resume_earlier_stage(self):
         attempt = registration.create_attempt("checkpoint@example.test")
         attempt_id = int(attempt["id"])
         registration.advance_checkpoint(attempt_id, "email_claimed", event_uuid="event-1")
         registration.advance_checkpoint(attempt_id, "auth_started", event_uuid="event-2")
-        with self.assertRaises(ValueError):
-            registration.advance_checkpoint(attempt_id, "created")
+        preserved = registration.advance_checkpoint(attempt_id, "created", event_uuid="event-3")
+        self.assertEqual(preserved["checkpoint"], "auth_started")
         registration.advance_checkpoint(attempt_id, "auth_started", event_uuid="event-2")
-        self.assertEqual(len(registration.events(attempt_id)), 2)
+        events = registration.events(attempt_id)
+        self.assertEqual(len(events), 3)
+        resumed = next(item for item in events if item["event_uuid"] == "event-3")
+        self.assertEqual(resumed["detail"]["attempt_checkpoint_preserved"], "auth_started")
+        self.assertEqual(resumed["detail"]["run_checkpoint"], "created")
+
+    def test_existing_queued_job_run_is_started_by_worker(self):
+        job_id = self._job("queued-run@example.test")
+        attempt = registration.ensure_attempt_for_job(job_id)
+        queued = registration.start_run(int(attempt["id"]), job_id=job_id)
+
+        running = registration.start_run(
+            int(attempt["id"]),
+            job_id=job_id,
+            initial_status="running",
+            started_at="2026-08-28T12:00:00+08:00",
+            execution_id="worker-execution",
+            worker_pid=123,
+        )
+
+        self.assertEqual(running["id"], queued["id"])
+        self.assertEqual(running["status"], "running")
+        self.assertIsNotNone(running["started_at"])
+        self.assertEqual(running["execution_id"], "worker-execution")
 
     def test_unknown_request_does_not_rewind_and_manual_reconcile_is_terminal(self):
         attempt = registration.create_attempt("unknown@example.test")

@@ -37,6 +37,17 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
             note="继续注册已完成，已绑定账号 #347",
         )
 
+    def test_completed_initial_registration_marks_email_used(self):
+        with patch("core.email_provider.release_email", return_value="email_butler") as release:
+            changed = svc._mark_completed_registration_email("alias@example.com", 348)
+
+        self.assertTrue(changed)
+        release.assert_called_once_with(
+            "alias@example.com",
+            status="used",
+            note="注册已完成，已绑定账号 #348",
+        )
+
     def _run_job(self, result=None, error=None):
         job = {
             "id": 1,
@@ -91,6 +102,25 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
             result={"success": False, "email": "alias@icloud.com", "error": "browser failed"}
         )
         release_email.assert_not_called()
+
+    def test_returned_success_closes_initial_registration_email(self):
+        with patch("core.email_provider.release_email", return_value="icloud_hide") as release:
+            self._run_job(
+                result={
+                    "success": True,
+                    "registration_success": True,
+                    "postprocess_success": True,
+                    "email": "alias@icloud.com",
+                    "account_id": 42,
+                    "access_token": "token",
+                }
+            )
+
+        release.assert_called_once_with(
+            "alias@icloud.com",
+            status="used",
+            note="注册已完成，已绑定账号 #42",
+        )
 
     def test_unhandled_registration_exception_uses_service_fallback(self):
         release_email, _update_progress, _finish_progress = self._run_job(error=RuntimeError("unexpected crash"))
@@ -158,7 +188,9 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
             svc.db, "get_job", return_value=job
         ), patch.object(svc.db, "update_job"), patch.object(
             svc.db, "update_job_progress"
-        ), patch.object(svc.db, "finish_job_progress"), patch.object(
+        ) as update_progress, patch.object(svc.db, "finish_job_progress"), patch.object(
+            svc.db, "begin_job_route_attempt"
+        ) as begin_route_attempt, patch.object(
             svc.db, "claim_job_for_execution", return_value=True
         ), patch.object(svc.db, "update_account_registration_proxy"), patch.object(
             svc, "_prepare_registration_args", return_value=("alias@icloud.com", "Test", "1990-01-01")
@@ -178,10 +210,25 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
             svc._run_one_job(1, str(Path(td) / "job.log"))
 
         self.assertEqual(run_registration.call_count, 2)
+        begin_route_attempt.assert_called_once()
         self.assertEqual(acquire_proxy.call_count, 2)
         self.assertEqual(acquire_proxy.call_args_list[1].kwargs["batch_id"], None)
         release_proxy.assert_any_call(proxy1, reason="registration_proxy_retry_1")
         release_proxy.assert_any_call(proxy2, reason="pending")
+        stage_transitions = [
+            (call.args[1], call.kwargs.get("state"))
+            for call in update_progress.call_args_list
+        ]
+        self.assertEqual(stage_transitions, [
+            ("network", "running"),
+            ("network", "success"),
+            ("email", "running"),
+            ("email", "success"),
+            ("network", "running"),
+            ("network", "success"),
+            ("email", "running"),
+            ("email", "success"),
+        ])
 
 
 if __name__ == "__main__":

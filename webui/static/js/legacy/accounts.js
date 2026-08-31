@@ -226,15 +226,44 @@ function _codexAction(r) {
   const label = s === 'success' ? '重新补跑 Codex' : '补跑 Codex';
   return `<button data-codex-retry="${esc(r.email)}" title="重新跑一次 Codex 授权（会消耗 1 封邮箱 OTP + 1 个接码短信）">${label}</button>`;
 }
+function _liveCheckHttpStatus(r) {
+  const direct = Number.parseInt(r?.live_check_http_status, 10);
+  if (Number.isFinite(direct) && direct >= 100 && direct <= 599) return direct;
+  const matched = String(r?.live_check_error || '').match(/\bHTTP\s*([1-5]\d{2})\b/i);
+  return matched ? Number.parseInt(matched[1], 10) : null;
+}
+function _tokenRejectedByLiveCheck(r) {
+  return (r?.live_check_status || '') === 'failed';
+}
+function _legacyTokenSummary(r) {
+  if (!r.has_access_token) return '<span class="muted">无 Token</span>';
+  const expiresAt = r.token_expires_at || '';
+  const expires = expiresAt ? new Date(expiresAt) : null;
+  const expiredByTime = expires && !Number.isNaN(expires.getTime()) && expires.getTime() <= Date.now();
+  const expiryText = _fmtPlanTime(expiresAt) || '未知';
+  const httpStatus = _liveCheckHttpStatus(r);
+  let state = 'normal', label = '正常', title = `Token 到期：${expiryText}；点击复制完整 Token`;
+  if (_tokenRejectedByLiveCheck(r)) {
+    state = 'invalid';
+    label = `失效 · ${httpStatus || '未知'}`;
+    title = `${httpStatus ? `HTTP ${httpStatus}` : '状态码未知'}；${r.live_check_error || '在线验证失败，未提供具体原因'}；JWT 标称到期：${expiryText}；点击复制完整 Token`;
+  } else if (r.token_expired === true || expiredByTime) {
+    state = 'expired'; label = '过期';
+  }
+  const tone = state === 'normal' ? 'status-success' : 'status-failed';
+  return `<button type="button" class="pill ${tone}" data-account-copy-secret="access_token" data-account-id="${esc(r.id)}" title="${esc(title)}">${esc(label)}</button>`;
+}
 function _liveStatusSub(r) {
   const s = r.live_check_status || '';
   const err = r.live_check_error || '';
   const at = r.live_checked_at || '';
+  const httpStatus = _liveCheckHttpStatus(r);
+  const httpLabel = httpStatus ? ` (HTTP ${httpStatus})` : '';
   if (s === 'live') return `<div class="sub-cell" title="${esc(at)}">查活: 正常</div>`;
   if (s === 'queued') return `<div class="sub-cell" style="color:#e6a23c">查活: 排队</div>`;
   if (s === 'running') return `<div class="sub-cell" style="color:#e6a23c">查活: 运行中</div>`;
-  if (s === 'deactivated') return `<div class="sub-cell" style="color:#f56c6c" title="${esc(err || at)}">查活: 已废</div>`;
-  if (s === 'failed') return `<div class="sub-cell" style="color:#e6a23c" title="${esc(err || at)}">查活: 失败</div>`;
+  if (s === 'deactivated') return `<div class="sub-cell" style="color:#f56c6c" title="${esc(err || at)}">查活: 已废${httpLabel}</div>`;
+  if (s === 'failed') return `<div class="sub-cell" style="color:#f56c6c" title="${esc(err || at)}">查活: 失败${httpLabel}</div>`;
   return '';
 }
 function renderAccounts() {
@@ -247,7 +276,7 @@ function renderAccounts() {
       <td class="muted">#${esc(r.id)}</td>
       <td><div class="main-cell">${esc(r.email)}${r.archived ? ' <span class="pill status-used" title="该账号已归档">归档</span>' : ''}</div><div class="sub-cell">${esc(r.user_name || '-')}</div></td>
       <td>${esc(r.email_source || '-')}</td>
-      <td><span class="mono" title="列表仅显示预览，完整 Token 请点复制">${r.has_access_token ? '有Token' : '<span class="muted">无Token</span>'}</span>${_liveStatusSub(r)}</td>
+      <td><span class="mono">${_legacyTokenSummary(r)}</span></td>
       <td>${_planCell(r)}<div class="sub-cell">${_extractLinkCell(r)}</div></td>
       <td>${_trialCell(r)}</td>
       <td>${r.totp_enabled ? `<div data-account-totp-cell="${esc(r.id)}"><span class="pill status-success">已启用</span> <button class="good" data-account-totp-code="${esc(r.id)}" title="查询当前 6 位 TOTP 验证码">查询验证码</button> <span class="mono" data-account-totp-value hidden></span> <span class="muted" data-account-totp-ttl hidden></span> <button class="good" data-account-totp-copy="${esc(r.id)}" data-totp-code="" title="复制当前 TOTP 验证码" hidden>复制</button></div>` : '<span class="muted">未启用</span>'}</td>
@@ -255,7 +284,7 @@ function renderAccounts() {
       <td class="muted">${esc(r.created_at || '-')}</td>
       <td class="actions actions-cell">
         <div class="account-row-actions">
-          <div class="account-action-group"><button class="primary" data-account-copy-secret="access_token" data-account-id="${esc(r.id)}" ${r.has_access_token ? '' : 'disabled'}>复制Token</button> <button class="good" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button></div>
+          <div class="account-action-group"><button class="good" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button></div>
           <div class="account-action-group">${r.account_status === 'deactivated' ? '' : `<button data-account-live-check="${esc(r.id)}" title="只在线验证现有 Token；不会发送邮箱验证码或刷新 AT">查活</button> <button data-account-token-refresh="${esc(r.id)}" title="通过邮箱 OTP 重新登录并刷新最新 AT">刷新AT</button>`} <button data-account-live-log="${esc(r.email)}" title="查看该账号最近一次查活日志">查活日志</button> ${_planAction(r)} ${_extractLinkAction(r)}</div>
           <div class="account-action-group">${_codexAction(r)} <button data-codex-log="${esc(r.email)}" title="查看该账号最近一次 Codex 补跑日志">补跑日志</button></div>
           <div class="account-action-group danger-zone"><button data-account-archive="${esc(r.id)}" data-archived="${r.archived ? '0' : '1'}" title="${r.archived ? '恢复到默认账号列表' : '归档后默认账号列表不再显示'}">${r.archived ? '恢复' : '归档'}</button> <button class="danger" data-account-delete="${esc(r.id)}" data-email="${esc(r.email)}">删除</button></div>

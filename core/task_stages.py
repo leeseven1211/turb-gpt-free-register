@@ -94,7 +94,7 @@ ALIASES = {
 
 TASK_FLOWS: dict[str, tuple[str, ...]] = {
     "registration": (
-        "email", "network", "browser", "page", "submit_email", "auth_redirect",
+        "network", "email", "browser", "page", "submit_email", "auth_redirect",
         "login_password", "email_otp", "profile", "token", "codex", "twofa",
         "plan_check", "complete",
     ),

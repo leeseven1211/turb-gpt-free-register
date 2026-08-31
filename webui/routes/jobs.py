@@ -6,9 +6,7 @@ import logging
 import os
 import threading
 import time
-import uuid
 import zipfile
-from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -443,8 +441,7 @@ def create_jobs_blueprint(context: WebUIContext):
         started: list[dict] = []
         reused: list[dict] = []
         skipped: list[dict] = []
-        retry_batch_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-retry-{uuid.uuid4().hex[:8]}"
-        created_in_batch = 0
+        affected_batch_ids: set[str] = set()
         seen: set[int] = set()
         normalized_ids: list[int] = []
         for raw_id in job_ids:
@@ -461,13 +458,10 @@ def create_jobs_blueprint(context: WebUIContext):
             result = svc.retry_job(
                 one_id,
                 workers=workers,
-                batch_id=retry_batch_id,
-                batch_index=created_in_batch + 1,
-                batch_size=len(normalized_ids),
             )
             result_job = result.get("job") or {}
-            if str(result_job.get("batch_id") or "") == retry_batch_id:
-                created_in_batch += 1
+            if result_job.get("batch_id"):
+                affected_batch_ids.add(str(result_job.get("batch_id")))
             if not result.get("ok"):
                 skipped.append({"id": one_id, "reason": result.get("error") or "不能重试"})
             elif result.get("reused"):
@@ -483,7 +477,8 @@ def create_jobs_blueprint(context: WebUIContext):
             "skipped": skipped,
             "skipped_count": len(skipped),
             "workers": workers,
-            "batch_id": retry_batch_id if created_in_batch else "",
+            "batch_id": next(iter(affected_batch_ids)) if len(affected_batch_ids) == 1 else "",
+            "affected_batch_ids": sorted(affected_batch_ids),
         })
 
     @bp.post("/api/jobs/<int:job_id>/delete")

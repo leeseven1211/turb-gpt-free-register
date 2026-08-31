@@ -286,6 +286,7 @@ class ProxyRouteInvariantTests(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertEqual("failed", result["status"])
+        self.assertEqual(401, result["http_status"])
         self.assertIn("刷新AT", result["error"])
         probe.assert_called_once_with(
             "expired-token",
@@ -294,6 +295,7 @@ class ProxyRouteInvariantTests(unittest.TestCase):
         )
         email_login.assert_not_called()
         self.assertNotIn("access_token", updated.call_args.args[1])
+        self.assertEqual(401, updated.call_args.args[1]["http_status"])
 
     def test_force_refresh_uses_roxy_after_protocol_login_failure(self):
         from core import live_check_service

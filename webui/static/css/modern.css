@@ -910,6 +910,11 @@
       background: #f1f3f5; color: #70757d; font-size: 12px; font-weight: 600;
     }
     .batch-progress-v2-email { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .batch-progress-v2-retry-pill {
+      flex: 0 0 auto; padding: 2px 7px; border: 1px solid #d8d9fb; border-radius: 999px;
+      background: #f7f7ff; color: #5658bd; font-size: 10px; font-weight: 700;
+    }
+    .batch-progress-v2-retry-pill.is-auto { border-color: #f2d6a8; background: #fff9ef; color: #ad6b1d; }
     .batch-progress-v2-meta {
       display: flex; align-items: center; gap: 9px; flex: 0 0 auto;
       color: #8a8f98; font-size: 12px;
@@ -923,6 +928,15 @@
       font: inherit; font-size: 12px; cursor: pointer;
     }
     .batch-progress-v2-log:hover { text-decoration: underline; }
+    .batch-progress-v2-attempts {
+      margin: -5px 0 12px; padding: 7px 9px; border: 1px solid #edf0f3; border-radius: 7px;
+      background: #fafbfc; color: #747b85; font-size: 11px;
+    }
+    .batch-progress-v2-attempts summary { cursor: pointer; color: #59616c; font-weight: 700; }
+    .batch-progress-v2-attempt-list { display: grid; gap: 5px; margin-top: 7px; }
+    .batch-progress-v2-attempt-list strong { margin-right: 7px; color: #454b54; }
+    .batch-progress-v2-attempt-list .batch-progress-v2-result { margin-right: 2px; }
+    .batch-progress-v2-step-duration.is-legacy { color: #ad6b1d; font-size: 10px; }
     .batch-progress-v2-steps {
       display: grid;
       grid-template-columns: repeat(var(--batch-progress-step-count, 1), minmax(64px, 1fr));

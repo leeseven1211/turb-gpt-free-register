@@ -94,6 +94,17 @@ function renderAccountTaskStageProgress(task) {
     const state = accountTaskEventStepState(event);
     if (state) observed.set(key, {state});
   });
+  // 旧注册任务把代理分配合并在 email 阶段，没有独立 network
+  // 事件。只要浏览器或后续注册步骤已经开始，就能确定该任务
+  // 已拿到网络线路；这里只做展示兼容，不伪造历史耗时。
+  const legacyRegistration = ['registration', 'registration_resume'].includes(String(task?.task_type || ''));
+  const registrationStartedAfterNetwork = [
+    'browser', 'page', 'submit_email', 'auth_redirect', 'login_password',
+    'email_otp', 'profile', 'token', 'codex', 'twofa', 'plan_check', 'complete',
+  ].some(key => observed.has(key));
+  if (legacyRegistration && !observed.has('network') && registrationStartedAfterNetwork) {
+    observed.set('network', {state:'success', inferred:true});
+  }
   const stages = (task?.flow || []).map(item => ({
     key: item.key,
     label: item.label,
@@ -114,7 +125,8 @@ function renderAccountTaskStageProgress(task) {
     if (state === 'pending' && active && stage.key === normalizeAccountTaskStage(task.current_stage)) state = taskStatus === 'running' ? 'running' : 'pending';
     if (stage.key === 'complete' && state === 'pending' && !active) state = taskStatus === 'success' ? 'success' : 'failed';
     const label = stage.label || ACCOUNT_TASK_STAGE_LABELS[stage.key] || stage.key;
-    return `<div class="account-task-stage-step is-${attrEsc(state)}"><span class="account-task-stage-node"></span><span class="account-task-stage-label">${esc(label)}</span><span class="account-task-stage-state">${esc(ACCOUNT_TASK_STEP_STATE_LABELS[state] || state)}</span></div>`;
+    const inferredTitle = stage.inferred ? ' title="历史任务未单独记录网络阶段；已根据后续执行步骤确认完成"' : '';
+    return `<div class="account-task-stage-step is-${attrEsc(state)}"${inferredTitle}><span class="account-task-stage-node"></span><span class="account-task-stage-label">${esc(label)}</span><span class="account-task-stage-state">${esc(ACCOUNT_TASK_STEP_STATE_LABELS[state] || state)}</span></div>`;
   }).join('');
   panel.classList.remove('hidden');
 }
@@ -342,7 +354,10 @@ async function loadAccounts() {
     const res = await api(`/api/accounts?${params.toString()}`);
     const facets = res.facets || {};
     syncFacetSelect('accountSourceFilterV2', facets.source, {group:'source'});
-    syncFacetSelect('accountTokenFilterV2', facets.token, {group:'account_token', values:['has','expired','none']});
+    syncFacetSelect('accountTokenFilterV2', facets.token, {
+      group:'account_token',
+      values:['has','expired','invalid_401','invalid_403','invalid_other','none'],
+    });
     syncFacetSelect('accountPasswordFilterV2', facets.password, {group:'password'});
     syncFacetSelect('accountPlanFilterV2', facets.plan, {group:'plan'});
     syncFacetSelect('accountTrialFilterV2', facets.trial, {group:'trial'});
@@ -593,32 +608,40 @@ function _codexAction(r) {
   const label = s === 'success' ? '重新补跑 Codex' : '补跑 Codex';
   return `<button data-codex-retry="${esc(r.email)}" title="重新跑一次 Codex 授权（会消耗 1 封邮箱 OTP + 1 个接码短信）">${label}</button>`;
 }
-function _tokenCellV2(r) {
-  const live = r.live_check_status || '';
-  const liveErr = r.live_check_error || '';
-  const liveAt = r.live_checked_at || '';
-  let liveHtml = '';
-  if (live === 'live') liveHtml = `<div class="acc-v2-sub" title="${esc(liveAt)}">查活: 正常</div>`;
-  else if (live === 'queued') liveHtml = `<div class="acc-v2-sub" title="${esc(liveAt)}" style="color:#e6a23c">查活: 排队</div>`;
-  else if (live === 'running') liveHtml = `<div class="acc-v2-sub" title="${esc(liveAt)}" style="color:#e6a23c">查活: 运行中</div>`;
-  else if (live === 'deactivated') liveHtml = `<div class="acc-v2-sub" title="${esc(liveErr || liveAt)}" style="color:#f56c6c">查活: 已废</div>`;
-  else if (live === 'failed') liveHtml = `<div class="acc-v2-sub" title="${esc(liveErr || liveAt)}" style="color:#e6a23c">查活: 失败</div>`;
-  if (r.has_access_token) {
-    const expiresAt = r.token_expires_at || '';
-    const expires = expiresAt ? new Date(expiresAt) : null;
-    const leftMs = expires && !Number.isNaN(expires.getTime()) ? expires.getTime() - Date.now() : null;
-    let expiryLabel = 'AT 到期未知', expiryColor = '#909399';
-    if (r.token_expired === true || (leftMs != null && leftMs <= 0)) {
-      expiryLabel = 'AT 已过期'; expiryColor = '#f56c6c';
-    } else if (leftMs != null) {
-      const hours = Math.max(1, Math.ceil(leftMs / 3600000));
-      expiryLabel = hours >= 48 ? `AT 剩余 ${Math.ceil(hours / 24)}天` : `AT 剩余 ${hours}小时`;
-      expiryColor = hours <= 24 ? '#e6a23c' : '#67c23a';
-    }
-    const expiryHtml = `<div class="acc-v2-sub" title="AT 到期：${esc(formatDateTime(expiresAt))}" style="color:${expiryColor}">${esc(expiryLabel)}</div>`;
-    return `<button type="button" class="acc-v2-token-copy" data-account-copy-secret="access_token" data-account-id="${esc(r.id)}" title="复制完整 Token">复制</button>${expiryHtml}${liveHtml}`;
+function _liveCheckHttpStatus(r) {
+  const direct = Number.parseInt(r?.live_check_http_status, 10);
+  if (Number.isFinite(direct) && direct >= 100 && direct <= 599) return direct;
+  const matched = String(r?.live_check_error || '').match(/\bHTTP\s*([1-5]\d{2})\b/i);
+  return matched ? Number.parseInt(matched[1], 10) : null;
+}
+function _tokenRejectedByLiveCheck(r) {
+  return (r?.live_check_status || '') === 'failed';
+}
+function _tokenDisplayState(r) {
+  if (!r?.has_access_token) return {key: 'missing', label: '无 Token', title: '账号没有 Token'};
+  const expiresAt = r.token_expires_at || '';
+  const expires = expiresAt ? new Date(expiresAt) : null;
+  const expiredByTime = expires && !Number.isNaN(expires.getTime()) && expires.getTime() <= Date.now();
+  const expiryText = formatDateTime(expiresAt) || '未知';
+  const liveHttpStatus = _liveCheckHttpStatus(r);
+  if (_tokenRejectedByLiveCheck(r)) {
+    const codeText = liveHttpStatus ? `HTTP ${liveHttpStatus}` : '状态码未知';
+    const reason = String(r.live_check_error || '在线验证失败，未提供具体原因');
+    return {
+      key: 'invalid',
+      label: `失效 · ${liveHttpStatus || '未知'}`,
+      title: `${codeText}；${reason}；JWT 标称到期：${expiryText}；点击复制完整 Token`,
+    };
   }
-  return `<span class="pill status-failed">无Token</span>${liveHtml}`;
+  if (r.token_expired === true || expiredByTime) {
+    return {key: 'expired', label: '过期', title: `Token 到期：${expiryText}；点击复制完整 Token`};
+  }
+  return {key: 'normal', label: '正常', title: `Token 到期：${expiryText}；点击复制完整 Token`};
+}
+function _tokenCellV2(r) {
+  const state = _tokenDisplayState(r);
+  if (state.key === 'missing') return `<span class="acc-v2-muted">${esc(state.label)}</span>`;
+  return `<button type="button" class="acc-v2-token-state is-${attrEsc(state.key)}" data-account-copy-secret="access_token" data-account-id="${esc(r.id)}" title="${esc(state.title)}">${esc(state.label)}</button>`;
 }
 function _passwordCellV2(r) {
   if (!r.has_account_password) return '<span class="acc-v2-muted">未设置</span>';
@@ -691,9 +714,13 @@ function _accountDetailState(label, value, tone = 'neutral', detail = '') {
   </div>`;
 }
 function _accountDetailMarkup(r) {
-  const tokenState = !r.has_access_token ? '无 Token' : (r.token_expired ? 'Token 已过期' : 'Token 可用');
-  const tokenTone = !r.has_access_token || r.token_expired ? 'danger' : 'success';
-  const liveState = r.live_check_status === 'live' ? '查活正常' : (r.live_check_status === 'failed' ? '查活失败' : (r.live_check_status === 'running' ? '查活中' : '未查活'));
+  const liveHttpStatus = _liveCheckHttpStatus(r);
+  const liveHttpLabel = liveHttpStatus ? ` (HTTP ${liveHttpStatus})` : '';
+  const tokenDisplay = _tokenDisplayState(r);
+  const tokenStateLabels = {missing: '无 Token', normal: 'Token 正常', expired: 'Token 已过期', invalid: `Token 已失效${liveHttpLabel}`};
+  const tokenState = tokenStateLabels[tokenDisplay.key] || tokenDisplay.label;
+  const tokenTone = tokenDisplay.key === 'normal' ? 'success' : 'danger';
+  const liveState = r.live_check_status === 'live' ? '查活正常' : (r.live_check_status === 'failed' ? `查活失败${liveHttpLabel}` : (r.live_check_status === 'running' ? '查活中' : '未查活'));
   const liveTone = r.live_check_status === 'live' ? 'success' : (r.live_check_status === 'failed' ? 'danger' : (r.live_check_status === 'running' ? 'warning' : 'neutral'));
   const plan = (r.current_plan_type || r.plan_type || '未查询').toString();
   const trial = plan.toLowerCase() === 'free' ? (r.plus_trial_eligible ? 'Plus 试用可用' : 'Plus 试用不可用') : '不适用';
@@ -716,7 +743,7 @@ function _accountDetailMarkup(r) {
   <div class="account-detail-section">
     <div class="account-detail-section-title">健康与安全</div>
     <div class="account-detail-grid">
-      ${_accountDetailState('访问 Token', tokenState, tokenTone, r.token_expires_at ? `到期 ${_fmtPlanTime(r.token_expires_at)}` : '')}
+      ${_accountDetailState('访问 Token', tokenState, tokenTone, r.token_expires_at ? `${tokenDisplay.key === 'invalid' ? 'JWT 标称到期' : '到期'} ${_fmtPlanTime(r.token_expires_at)}` : '')}
       ${_accountDetailState('在线状态', liveState, liveTone, r.live_checked_at ? `检查于 ${_fmtPlanTime(r.live_checked_at)}` : '')}
       ${_accountDetailState('账号密码', r.has_account_password ? '已设置' : '未设置', r.has_account_password ? 'success' : 'neutral')}
       ${_accountDetailState('Authenticator 2FA', r.totp_enabled ? '已启用' : '未启用', r.totp_enabled ? 'success' : 'neutral')}

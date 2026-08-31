@@ -18,6 +18,28 @@ class _FakeDriver:
 
 
 class RoxyEmailRecoveryTests(unittest.TestCase):
+    def test_otp_wait_failure_does_not_treat_dom_click_as_send_confirmation(self):
+        code, detail = roxy_registration._classify_otp_wait_failure(
+            TimeoutError("等待验证码超时"),
+            last_ui_ack="unconfirmed",
+        )
+
+        self.assertEqual(code, "otp_request_unconfirmed")
+        self.assertIn("不能断言", detail)
+
+    def test_otp_wait_failure_distinguishes_delivery_and_mailbox_failures(self):
+        delivery = roxy_registration._classify_otp_wait_failure(
+            TimeoutError("等待验证码超时"),
+            last_ui_ack="confirmed",
+        )
+        mailbox = roxy_registration._classify_otp_wait_failure(
+            RuntimeError("Email Butler PG 读取失败"),
+            last_ui_ack="confirmed",
+        )
+
+        self.assertEqual(delivery[0], "otp_delivery_missing")
+        self.assertEqual(mailbox[0], "otp_mailbox_unavailable")
+
     def test_email_transition_gets_fresh_budget_after_slow_submit_dispatch(self):
         driver = _FakeDriver()
 

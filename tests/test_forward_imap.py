@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import unittest
+from datetime import datetime, timezone
 from email.message import EmailMessage
 from unittest.mock import patch
 
@@ -7,6 +8,32 @@ from core import forward_imap_client as client
 
 
 class ForwardIMAPTests(unittest.TestCase):
+    def test_messages_use_imap_internaldate_as_received_time(self):
+        msg = EmailMessage()
+        msg["From"] = "OpenAI <noreply@openai.com>"
+        msg["To"] = "alias@icloud.com"
+        msg["Date"] = "Fri, 28 Aug 2026 03:10:00 +0000"
+        msg["Subject"] = "Your ChatGPT code is 123456"
+        msg.set_content("Your code is 123456")
+
+        class Mail:
+            def search(self, *_args):
+                return "OK", [b"42"]
+
+            def fetch(self, *_args):
+                return "OK", [(b'42 (INTERNALDATE "28-Aug-2026 03:22:57 +0000" RFC822 {1}', msg.as_bytes())]
+
+        rows = client._messages_for_recipient(Mail(), "alias@icloud.com", 0)
+
+        self.assertEqual(len(rows), 1)
+        item = rows[0][0]
+        self.assertEqual(item["date"], "2026-08-28T03:10:00Z")
+        self.assertEqual(item["receivedDateTime"], "2026-08-28T03:22:57Z")
+        self.assertEqual(
+            client._message_timestamp(item),
+            datetime(2026, 8, 28, 3, 22, 57, tzinfo=timezone.utc).timestamp(),
+        )
+
     def test_recipient_headers_include_hme_forwarding_headers(self):
         msg = EmailMessage()
         msg["To"] = "owner@gmail.com"
