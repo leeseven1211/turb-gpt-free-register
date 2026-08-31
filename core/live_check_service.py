@@ -12,6 +12,7 @@ from pathlib import Path
 from core.operations import task_gateway as account_task_store
 from core.storage import accounts as db
 from core.account_liveness import check_account_liveness, log_path
+from core.task_reporter import TaskReporter
 from core.chatgpt_plan import check_account_plan, token_claims
 from core.openai_auth import detect_account_unusable_text
 
@@ -72,18 +73,18 @@ def _run_live_check(
 ) -> dict:
     account_route = None
     route: dict = {}
+    reporter = TaskReporter(task_id)
     try:
         with _LOCK:
             _RUNNING.add(int(account_id))
         if not db.mark_account_live_check_running(account_id):
             _append_log(email, "[查活] 账号已删除或查活状态已被重置，取消执行")
-            account_task_store.finish_task(
-                task_id,
+            reporter.finish(
                 status="cancelled",
                 message="账号已删除或查活状态已被重置",
             )
             return {"ok": False, "status": "failed", "error": "账号已删除或查活状态已被重置"}
-        account_task_store.start_task(task_id, message="开始验证账号 accessToken")
+        reporter.start(message="开始刷新账号 AT" if force_refresh else "开始验证账号 accessToken")
         from core.account_proxy import acquire_account_proxy
 
         def acquire_retry_route(attempt: int) -> str:
@@ -104,12 +105,18 @@ def _run_live_check(
                 f"proxy_used={route.get('proxy_used') or '-'} "
                 f"fallback_reason={route.get('proxy_fallback_reason') or '-'}",
             )
-            account_task_store.append_event(
-                task_id,
-                stage="network_route",
+            reporter.resource(
+                "resource.acquired",
                 message=f"已选择查活线路（第 {attempt}/4 次）",
+                stage="network",
                 detail=route,
             )
+            reporter.stage("network", "success", "网络线路已就绪", detail={
+                key: route.get(key)
+                for key in ("network_route", "proxy_mode", "proxy_provider", "proxy_region")
+            })
+            if force_refresh:
+                reporter.stage("login_password", "running", "正在通过邮箱登录刷新 AT")
             return account_route.proxy_url
 
         def acquire_explicit_route() -> str:
@@ -123,6 +130,10 @@ def _run_live_check(
                     explicit_proxy=proxy,
                 )
                 route = account_route.public_dict()
+                reporter.resource("resource.acquired", "已选择指定账号线路", stage="network", detail=route)
+                reporter.stage("network", "success", "网络线路已就绪")
+                if force_refresh:
+                    reporter.stage("login_password", "running", "正在通过邮箱登录刷新 AT")
             return account_route.proxy_url
 
         # 查活和刷新 AT 是两个不同动作：
@@ -137,14 +148,17 @@ def _run_live_check(
         if saved_access_token and not force_refresh:
             probe_attempts = 4 if proxy is None else 1
             _append_log(email, "[查活] 优先验证现有 accessToken；有效则无需重复发送邮箱验证码")
-            account_task_store.append_event(
-                task_id,
-                stage="access_token",
-                message="优先在线验证现有 AT；有效则不发送邮箱验证码",
-                detail={"token_expires_at": saved_claims.get("token_expires_at")},
-            )
             for attempt in range(1, probe_attempts + 1):
                 selected_proxy = acquire_retry_route(attempt) if proxy is None else acquire_explicit_route()
+                reporter.stage(
+                    "access_token",
+                    "running",
+                    message="优先在线验证现有 AT；有效则不发送邮箱验证码",
+                    detail={
+                        "attempt_no": attempt,
+                        "token_expires_at": saved_claims.get("token_expires_at"),
+                    },
+                )
                 probe = check_account_plan(
                     saved_access_token,
                     proxy=selected_proxy,
@@ -172,9 +186,9 @@ def _run_live_check(
                         f"[查活] accessToken 验证成功：HTTP {probe.get('http_status') or 200} "
                         f"plan={probe.get('current_plan_type') or 'unknown'}",
                     )
-                    account_task_store.append_event(
-                        task_id,
-                        stage="access_token",
+                    reporter.stage(
+                        "access_token",
+                        "success",
                         message="AT 在线验证成功",
                         detail={
                             "http_status": probe.get("http_status") or 200,
@@ -203,8 +217,7 @@ def _run_live_check(
                     f"{str(probe.get('error') or '未知错误')[:220]}",
                 )
                 last_probe_error = str(probe.get("error") or "现有 accessToken 无法验证")[:220]
-                account_task_store.append_event(
-                    task_id,
+                reporter.note(
                     stage="access_token",
                     level="WARNING",
                     message=f"AT 在线验证未通过（{attempt}/{probe_attempts}）",
@@ -215,6 +228,10 @@ def _run_live_check(
                     break
 
             if result is None:
+                reporter.stage(
+                    "access_token", "failed", "AT 在线验证未通过",
+                    level="ERROR", detail={"http_status": last_probe_http_status, "error": last_probe_error},
+                )
                 result = {
                     "ok": False,
                     "status": "failed",
@@ -234,8 +251,7 @@ def _run_live_check(
             }
 
         if result is None:
-            account_task_store.append_event(
-                task_id,
+            reporter.note(
                 stage="reauth",
                 message=(
                     "AT 即将过期，按计划转邮箱 OTP 登录刷新"
@@ -273,8 +289,7 @@ def _run_live_check(
         ):
             from core.roxy_liveness import available as roxy_available, refresh_access_token
             if roxy_available():
-                account_task_store.append_event(
-                    task_id,
+                reporter.note(
                     stage="roxy_fallback",
                     level="WARNING",
                     message="协议登录未通过，启用 Roxy 浏览器 NextAuth 兜底",
@@ -284,6 +299,16 @@ def _run_live_check(
                 result = refresh_access_token(
                     email,
                     proxy=account_route.proxy_url if account_route is not None else proxy,
+                )
+        if force_refresh:
+            if result.get("ok"):
+                reporter.stage("login_password", "success", "邮箱登录已完成")
+                reporter.stage("email_otp", "success", "登录验证已通过")
+                reporter.stage("token", "success", "最新 AT 已获取并保存")
+            else:
+                reporter.stage(
+                    "login_password", "failed", "邮箱登录刷新 AT 未完成",
+                    level="ERROR", detail={"error": result.get("error")},
                 )
         result.update({
             "proxy_provider": route.get("proxy_provider"),
@@ -304,8 +329,7 @@ def _run_live_check(
         final_status = "success" if result.get("ok") else (
             "deactivated" if result.get("status") == "deactivated" else "failed"
         )
-        account_task_store.finish_task(
-            task_id,
+        reporter.finish(
             status=final_status,
             message=(
                 "账号正常，AT 在线验证成功"
@@ -344,8 +368,14 @@ def _run_live_check(
             _append_log(email, f"[查活] 后台异常：{result['error']}")
         except Exception:
             pass
-        account_task_store.finish_task(
-            task_id,
+        reporter.stage(
+            "login_password" if force_refresh else "access_token",
+            "failed",
+            "刷新 AT 后台异常" if force_refresh else "AT 验证后台异常",
+            level="ERROR",
+            detail={"error": result["error"]},
+        )
+        reporter.finish(
             status="failed",
             message="查活后台执行异常",
             error=result["error"],

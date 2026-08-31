@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, call, patch
 
-from core import account_task_store, codex_retry_service, live_check_service, postgres_store, roxy_codex_oauth, token_refresh_service
+from core import account_task_store, codex_retry_service, live_check_service, postgres_store, roxy_codex_oauth, task_run_log, token_refresh_service
 from webui import app as webui_app
 from webui.app import create_app
 from tests.support_pg import PostgresTestCase
@@ -29,6 +29,10 @@ class AccountTaskStoreTests(unittest.TestCase):
         if not os.getenv("DATABASE_URL"):
             self.skipTest("需要本机 PostgreSQL DATABASE_URL")
         self.tempdir = tempfile.TemporaryDirectory()
+        self.task_log_root_patch = patch.object(task_run_log, "_LOG_ROOT", Path(self.tempdir.name))
+        self.task_log_tasks_patch = patch.object(task_run_log, "_TASK_LOG_ROOT", Path(self.tempdir.name) / "tasks")
+        self.task_log_root_patch.start()
+        self.task_log_tasks_patch.start()
         self.schema = f"test_account_tasks_{uuid.uuid4().hex[:12]}"
         self.schema_patch = patch.object(account_task_store, "_SCHEMA", self.schema)
         self.schema_patch.start()
@@ -48,6 +52,8 @@ class AccountTaskStoreTests(unittest.TestCase):
             self.url_patch.stop()
             self.ready_patch.stop()
             self.schema_patch.stop()
+            self.task_log_tasks_patch.stop()
+            self.task_log_root_patch.stop()
         self.tempdir.cleanup()
 
     def test_task_events_are_persisted_and_credentials_are_redacted(self):
@@ -81,6 +87,9 @@ class AccountTaskStoreTests(unittest.TestCase):
         probe = next(event for event in task["events"] if event["stage"] == "probe")
         self.assertNotIn("access_token", probe["detail"])
         self.assertEqual("2026-08-20T00:00:00Z", probe["detail"]["token_expires_at"])
+        self.assertEqual("note.info", probe["event_type"])
+        self.assertTrue(Path(task["log_file"]).exists())
+        self.assertNotIn("secret", Path(task["log_file"]).read_text(encoding="utf-8"))
 
     def test_recover_marks_running_tasks_interrupted(self):
         task_id = account_task_store.create_task(
@@ -532,7 +541,7 @@ class AccountTaskApiTests(PostgresTestCase):
         app = create_app(auth_code="test-auth")
         client = app.test_client()
         html = client.get("/", headers={"X-Auth-Code": "test-auth"}).get_data(as_text=True)
-        for asset in ("js/modern/common.js", "js/modern/accounts.js"):
+        for asset in ("css/modern.css", "js/modern/common.js", "js/modern/accounts.js"):
             response = client.get(f"/static/{asset}")
             try:
                 self.assertEqual(response.status_code, 200, asset)
@@ -544,6 +553,10 @@ class AccountTaskApiTests(PostgresTestCase):
         self.assertLess(html.index('data-tab="codex"'), html.index('data-tab="tasks"'))
         self.assertLess(html.index('data-tab="tasks"'), html.index('data-tab="outlook"'))
         self.assertIn('id="accountTasksPanel"', html)
+        self.assertIn('id="accountTaskRunSelect"', html)
+        self.assertIn('data-account-task-detail-tab="events"', html)
+        self.assertIn('data-account-task-detail-tab="logs"', html)
+        self.assertIn('data-account-task-detail-tab="artifacts"', html)
         self.assertIn('data-column-filter="accountTaskTypeFilterV2"', html)
         self.assertIn("values: ['registration', 'registration_resume'", html)
         self.assertIn("codex_retry:'Codex 补跑'", html)
@@ -553,6 +566,9 @@ class AccountTaskApiTests(PostgresTestCase):
         self.assertIn("label: '过期'", html)
         self.assertIn("label: `失效 · ${liveHttpStatus || '未知'}`", html)
         self.assertIn('data-account-copy-secret="access_token"', html)
+        self.assertIn("function meaningfulTaskDetail", html)
+        self.assertIn("white-space:normal", html)
+        self.assertIn("flex:1 1 auto; min-height:0; overflow:auto", html)
 
     def test_codex_retry_creates_account_task_instance(self):
         app = create_app(auth_code="test-auth")

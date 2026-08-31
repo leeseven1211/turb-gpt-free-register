@@ -1,14 +1,21 @@
 # -*- coding: utf-8 -*-
 import json
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
-from core import account_task_store, db, operation_task_store, record_store
+from core import account_task_store, db, operation_task_store, record_store, task_run_log
 from tests.support_pg import PostgresTestCase
 from webui.app import create_app
 
 
 class OperationTaskStoreTests(PostgresTestCase):
     def setUp(self):
+        self.task_log_tempdir = tempfile.TemporaryDirectory()
+        self.task_log_root_patch = patch.object(task_run_log, "_LOG_ROOT", Path(self.task_log_tempdir.name))
+        self.task_log_tasks_patch = patch.object(task_run_log, "_TASK_LOG_ROOT", Path(self.task_log_tempdir.name) / "tasks")
+        self.task_log_root_patch.start()
+        self.task_log_tasks_patch.start()
         self.schema_patch = patch.object(account_task_store, "_SCHEMA", self.schema)
         self.ready_patch = patch.object(account_task_store, "_READY_KEY", "")
         self.schema_patch.start()
@@ -20,6 +27,9 @@ class OperationTaskStoreTests(PostgresTestCase):
     def tearDown(self):
         self.ready_patch.stop()
         self.schema_patch.stop()
+        self.task_log_tasks_patch.stop()
+        self.task_log_root_patch.stop()
+        self.task_log_tempdir.cleanup()
 
     def _seed_pending_registration(self):
         account_id = record_store.insert_row(record_store.ACCOUNTS, {
@@ -175,12 +185,52 @@ class OperationTaskStoreTests(PostgresTestCase):
         self.assertEqual("stage.success", projected["network"])
         self.assertEqual("stage.running", projected["browser"])
         self.assertEqual("stage.skipped", projected["plan_check"])
+        self.assertEqual("browser", detail["current_stage"])
+        self.assertTrue(any(event["event_type"] == "run.running" for event in detail["events"]))
         self.assertTrue(all(event["run_id"] == detail["last_run_id"] for event in detail["events"]))
 
         with self.assertRaisesRegex(ValueError, "步骤状态"):
             account_task_store.append_event(
                 legacy_task_id, stage="twofa", message="非法状态", state="done",
             )
+
+    def test_incremental_event_and_run_log_api_use_explicit_contract(self):
+        task = operation_task_store.create_runtime_task(
+            task_type="codex_retry", account_id=909, email="runtime-log@example.com", trigger="test",
+        )
+        run_id = int(task["run"]["id"])
+        note = operation_task_store.append_runtime_event(
+            run_id,
+            stage="preflight",
+            message="预检说明，不改变阶段状态",
+        )
+        self.assertEqual("note.info", note["event_type"])
+        self.assertEqual("queued", operation_task_store.get_task(task["id"], include_events=False)["current_stage"])
+        operation_task_store.append_runtime_event(
+            run_id,
+            stage="network",
+            state="success",
+            message="网络线路已就绪",
+            detail={"access_token": "never-store-this", "network_route": "proxy"},
+        )
+
+        app = create_app(auth_code="test-auth")
+        client = app.test_client()
+        client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
+        detail = client.get(f"/api/operations/{task['id']}?include_events=0")
+        events = client.get(f"/api/operations/{task['id']}/runs/{run_id}/events?limit=20")
+        logs = client.get(f"/api/operations/{task['id']}/runs/{run_id}/logs?limit=20")
+
+        self.assertEqual([], detail.get_json()["task"]["events"])
+        event_items = events.get_json()["items"]
+        self.assertEqual("stage.success", event_items[-1]["event_type"])
+        self.assertEqual("success", event_items[-1]["detail"]["step_state"])
+        self.assertTrue(event_items[-1]["has_detail"])
+        self.assertNotIn("never-store-this", json.dumps(event_items))
+        log_payload = logs.get_json()
+        self.assertTrue(log_payload["available"])
+        self.assertTrue(any(item.get("event_type") == "stage.success" for item in log_payload["items"]))
+        self.assertNotIn("never-store-this", json.dumps(log_payload))
 
     def _seed_runtime_account(self, email="runtime@example.com"):
         return record_store.insert_row(record_store.ACCOUNTS, {

@@ -16,6 +16,7 @@ import requests
 from config import codex as _cfg
 from core import scheduler_state
 from core.operations import task_gateway as account_task_store
+from core.task_reporter import TaskReporter
 from core.storage import codex as db
 
 logger = logging.getLogger(__name__)
@@ -270,10 +271,10 @@ def _sync_sub2_if_needed(filename: str) -> dict[str, Any]:
 
 
 def _run_worker(filename: str, task_id: int) -> None:
-    account_task_store.start_task(task_id, message="开始刷新 Codex OAuth Token")
-    account_task_store.append_event(
-        task_id,
-        stage="refresh_token",
+    reporter = TaskReporter(task_id)
+    reporter.start(message="开始刷新 Codex OAuth Token")
+    reporter.stage(
+        "refresh_token", "running",
         message="使用 refresh_token 换取新的 access token",
     )
     try:
@@ -285,8 +286,8 @@ def _run_worker(filename: str, task_id: int) -> None:
         message = "Codex OAuth Token 刷新成功"
         if sync_result.get("status") == "failed":
             message += "，但同步 sub2api 失败"
-        account_task_store.finish_task(
-            task_id,
+        reporter.stage("refresh_token", "success", message, detail={"sub2_sync": sync_result.get("status")})
+        reporter.finish(
             status="success",
             message=message,
             result_summary=result,
@@ -298,8 +299,8 @@ def _run_worker(filename: str, task_id: int) -> None:
             db.mark_codex_oauth_refresh(filename, error=error)
         except Exception:
             logger.exception("记录 Codex OAuth 刷新失败状态异常: filename=%s", filename)
-        account_task_store.finish_task(
-            task_id,
+        reporter.stage("refresh_token", "failed", "Codex OAuth Token 刷新失败", level="ERROR", detail={"error": error})
+        reporter.finish(
             status="failed",
             message="Codex OAuth Token 刷新失败",
             error=error,

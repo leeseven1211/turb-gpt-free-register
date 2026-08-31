@@ -654,6 +654,12 @@ function closeLiveLogModal() {
 }
 function closeAccountTaskLogModal() {
   activeAccountTaskId = null;
+  activeAccountTaskRunId = null;
+  accountTaskSnapshot = null;
+  accountTaskEventCursor = null;
+  accountTaskEventCache = [];
+  accountTaskRunLogCursor = null;
+  accountTaskRunLogLines = [];
   clearInterval(accountTaskLogTimer);
   $('#accountTaskLogPanel').classList.add('hidden');
   updateModalScrollLock();

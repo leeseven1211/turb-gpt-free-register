@@ -13,6 +13,7 @@ from config import proxy as proxy_cfg
 from core.operations import task_gateway as account_task_store
 from core.storage import accounts as db
 from core.chatgpt_plan import check_account_plan
+from core.task_reporter import TaskReporter
 
 logger = logging.getLogger(__name__)
 
@@ -138,15 +139,15 @@ def _run_plan_check(
     task_id: int | None = None,
 ) -> dict:
     account_route = None
+    reporter = TaskReporter(task_id)
     try:
         if not db.mark_account_plan_check_running(account_id):
-            account_task_store.finish_task(
-                task_id,
+            reporter.finish(
                 status="cancelled",
                 message="账号已删除或套餐查询状态已被重置",
             )
             return {"ok": False, "error": "账号已删除或套餐查询状态已被重置"}
-        account_task_store.start_task(task_id, message="开始查询账号套餐")
+        reporter.start(message="开始查询账号套餐")
 
         from core.account_proxy import acquire_account_proxy
         account_route = acquire_account_proxy(
@@ -155,14 +156,15 @@ def _run_plan_check(
             purpose="plan-check",
             explicit_proxy=proxy,
         )
-        account_task_store.append_event(
-            task_id,
-            stage="network_route",
+        reporter.resource(
+            "resource.acquired",
             message="已选择套餐查询线路",
+            stage="network",
             detail=account_route.public_dict(),
         )
+        reporter.stage("network", "success", "套餐查询线路已就绪")
 
-        account_task_store.append_event(task_id, stage="plan_request", message="请求 ChatGPT 套餐接口")
+        reporter.stage("plan_check", "running", "请求 ChatGPT 套餐接口")
         result = _query_account_plan(
             email=email,
             access_token=access_token,
@@ -177,8 +179,13 @@ def _run_plan_check(
         })
         db.update_account_plan_check(acc_id=account_id, result=result)
         _log_plan_result(email, trigger, result)
-        account_task_store.finish_task(
-            task_id,
+        reporter.stage(
+            "plan_check", "success" if result.get("ok") else "failed",
+            "套餐查询成功" if result.get("ok") else "套餐查询失败",
+            level="INFO" if result.get("ok") else "ERROR",
+            detail={"http_status": result.get("http_status"), "current_plan_type": result.get("current_plan_type")},
+        )
+        reporter.finish(
             status="success" if result.get("ok") else "failed",
             message="套餐查询成功" if result.get("ok") else "套餐查询失败",
             error=result.get("error") if not result.get("ok") else None,
@@ -205,8 +212,11 @@ def _run_plan_check(
         except Exception:
             logger.exception("[Plan] 写入后台查询异常状态失败: account_id=%s", account_id)
         logger.exception("[Plan] 后台查询异常: %s", email)
-        account_task_store.finish_task(
-            task_id,
+        reporter.stage(
+            "plan_check", "failed", "套餐查询后台执行异常",
+            level="ERROR", detail={"error": result["error"]},
+        )
+        reporter.finish(
             status="failed",
             message="套餐查询后台执行异常",
             error=result["error"],
@@ -241,16 +251,17 @@ def check_registration_account_plan(
         email=str(email or "").strip(),
         trigger=trigger,
     )
+    reporter = TaskReporter(task_id)
     try:
         if not db.mark_account_plan_check_running(account_id):
-            account_task_store.finish_task(
-                task_id,
+            reporter.finish(
                 status="cancelled",
                 message="账号已删除或套餐查询状态已被重置",
             )
             return {"ok": False, "error": "账号已删除或套餐查询状态已被重置"}
-        account_task_store.start_task(task_id, message="注册完成，开始自动查询套餐")
-        account_task_store.append_event(task_id, stage="plan_request", message="复用注册线路请求套餐接口")
+        reporter.start(message="注册完成，开始自动查询套餐")
+        reporter.stage("network", "success", "复用注册任务网络线路")
+        reporter.stage("plan_check", "running", "复用注册线路请求套餐接口")
         query_kwargs = {
             "email": str(email or "").strip(),
             "access_token": str(access_token or "").strip(),
@@ -265,8 +276,13 @@ def check_registration_account_plan(
         )
         db.update_account_plan_check(acc_id=account_id, result=result)
         _log_plan_result(str(email or "").strip(), trigger, result)
-        account_task_store.finish_task(
-            task_id,
+        reporter.stage(
+            "plan_check", "success" if result.get("ok") else "failed",
+            "注册后套餐查询成功" if result.get("ok") else "注册后套餐查询失败",
+            level="INFO" if result.get("ok") else "ERROR",
+            detail={"http_status": result.get("http_status"), "current_plan_type": result.get("current_plan_type")},
+        )
+        reporter.finish(
             status="success" if result.get("ok") else "failed",
             message="注册后套餐查询成功" if result.get("ok") else "注册后套餐查询失败",
             error=result.get("error") if not result.get("ok") else None,
@@ -293,8 +309,11 @@ def check_registration_account_plan(
         except Exception:
             logger.exception("[Plan] 写入同步查询异常状态失败: account_id=%s", account_id)
         logger.exception("[Plan] 注册代理同步查询异常: %s", email)
-        account_task_store.finish_task(
-            task_id,
+        reporter.stage(
+            "plan_check", "failed", "注册后套餐查询异常",
+            level="ERROR", detail={"error": result["error"]},
+        )
+        reporter.finish(
             status="failed",
             message="注册后套餐查询异常",
             error=result["error"],

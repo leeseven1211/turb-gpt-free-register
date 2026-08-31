@@ -6,7 +6,7 @@ import threading
 import time
 from pathlib import Path
 
-from core import db
+from core import db, task_run_log
 from core.operations import task_gateway as account_task_store
 
 logger = logging.getLogger(__name__)
@@ -538,9 +538,13 @@ def request_stop(email: str) -> dict:
     try:
         p = log_path(email)
         p.parent.mkdir(parents=True, exist_ok=True)
-        from datetime import datetime as _dt
-        with p.open("a", encoding="utf-8") as f:
-            f.write(f"{_dt.now().strftime('%H:%M:%S')} [WARNING] [账号配置补跑] 用户手动停止，已记录协作式停止信号\n")
+        task_run_log.append(
+            p,
+            level="WARNING",
+            message="用户手动停止，已记录协作式停止信号",
+            stage="cancelling",
+            event_type="run.cancel_requested",
+        )
     except Exception:
         logger.exception("写入 Codex 停止日志失败")
     return {"ok": True, "message": "已记录停止请求，将在安全检查点退出", "state": "cancelling", "running": True}
@@ -555,7 +559,7 @@ def run_twofa_worker(
     task_trigger: str = "manual",
 ) -> dict:
     """重新登录并补齐账号配置，不重复执行 Codex OAuth。"""
-    fh: logging.FileHandler | None = None
+    fh: logging.Handler | None = None
     root_logger = logging.getLogger()
     result: dict = {"status": "failed", "ok": False, "message": "账号配置重试未返回结果"}
     account_route = None
@@ -578,14 +582,14 @@ def run_twofa_worker(
         check_stop_requested(email)
         account_task_store.start_task(task_id, message="开始补齐账号密码、套餐和 Authenticator 2FA")
 
-        path = Path(target_log_path) if target_log_path else log_path(email)
+        task_row = account_task_store.get_task(task_id) or {}
+        path = Path(target_log_path) if target_log_path else Path(task_row.get("log_file") or log_path(email))
         path.parent.mkdir(parents=True, exist_ok=True)
         if clear_log:
             path.write_text("", encoding="utf-8")
         thread_name = threading.current_thread().name
-        fh = logging.FileHandler(str(path), encoding="utf-8")
+        fh = task_run_log.TaskRunLogHandler(str(path), task_id=task_id, stage="account_setup")
         fh.setLevel(logging.DEBUG)
-        fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
         fh.addFilter(lambda record: record.threadName == thread_name)
         root_logger.addHandler(fh)
 
@@ -735,7 +739,7 @@ def _run_worker_legacy(
     task_trigger: str = "manual",
 ) -> dict:
     """执行一次 Codex 补跑，并把脱敏后的关键阶段写入统一任务实例。"""
-    fh: logging.FileHandler | None = None
+    fh: logging.Handler | None = None
     root_logger = logging.getLogger()
     result: dict = {"status": "failed", "ok": False, "message": "Codex 补跑未返回结果"}
     account_route = None
@@ -767,18 +771,15 @@ def _run_worker_legacy(
 
         from core.codex_oauth import run_codex_oauth
 
-        path = Path(target_log_path) if target_log_path else log_path(email)
+        task_row = account_task_store.get_task(task_id) or {}
+        path = Path(target_log_path) if target_log_path else Path(task_row.get("log_file") or log_path(email))
         path.parent.mkdir(parents=True, exist_ok=True)
         if clear_log:
             path.write_text("", encoding="utf-8")
 
         thread_name = threading.current_thread().name
-        fh = logging.FileHandler(str(path), encoding="utf-8")
+        fh = task_run_log.TaskRunLogHandler(str(path), task_id=task_id, stage="codex")
         fh.setLevel(logging.DEBUG)
-        fh.setFormatter(logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(message)s",
-            datefmt="%H:%M:%S",
-        ))
         fh.addFilter(lambda record: record.threadName == thread_name)
         root_logger.addHandler(fh)
 

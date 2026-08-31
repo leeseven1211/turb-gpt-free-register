@@ -20,6 +20,7 @@ from core.cf_temp_mail_client import scan_openai_deactivation as scan_cloudflare
 from core.email_butler_client import EmailButlerClientError, scan_openai_deactivation
 from core.forward_imap_client import ForwardIMAPError
 from core.forward_imap_client import scan_openai_deactivation as scan_hme_deactivation
+from core.task_reporter import TaskReporter
 
 logger = logging.getLogger(__name__)
 
@@ -61,11 +62,11 @@ def _parse_time(value: object) -> datetime | None:
 
 
 def _scan(account_id: int, trigger: str, task_id: int | None = None) -> None:
+    reporter = TaskReporter(task_id)
     try:
         account = db.get_account(account_id)
         if not account:
-            account_task_store.finish_task(
-                task_id,
+            reporter.finish(
                 status="cancelled",
                 message="账号已删除，取消封号邮件扫描",
             )
@@ -77,8 +78,7 @@ def _scan(account_id: int, trigger: str, task_id: int | None = None) -> None:
                 "trigger": trigger,
                 "error": "该账号邮箱来源暂不支持封号邮件扫描",
             })
-            account_task_store.finish_task(
-                task_id,
+            reporter.finish(
                 status="unsupported",
                 message="该账号邮箱来源暂不支持封号邮件扫描",
                 result_summary={"email_source": source},
@@ -86,10 +86,9 @@ def _scan(account_id: int, trigger: str, task_id: int | None = None) -> None:
             )
             return
         db.update_account_deactivation_mail(account_id, {"status": "running", "trigger": trigger})
-        account_task_store.start_task(task_id, message="开始扫描封号邮件信号")
-        account_task_store.append_event(
-            task_id,
-            stage="mailbox_scan",
+        reporter.start(message="开始扫描封号邮件信号")
+        reporter.stage(
+            "mailbox_scan", "running",
             message=f"读取 {source} 邮箱缓存，回溯 {_LOOKBACK_DAYS} 天",
             detail={"email_source": source, "lookback_days": _LOOKBACK_DAYS},
         )
@@ -104,8 +103,12 @@ def _scan(account_id: int, trigger: str, task_id: int | None = None) -> None:
             "trigger": trigger,
             **result,
         })
-        account_task_store.finish_task(
-            task_id,
+        reporter.stage(
+            "mailbox_scan", "success",
+            "发现高置信度封号邮件" if result.get("detected") else "未发现封号邮件",
+            detail={"detected": bool(result.get("detected")), "email_source": source},
+        )
+        reporter.finish(
             status="success",
             message="发现高置信度封号邮件" if result.get("detected") else "未发现封号邮件",
             result_summary={
@@ -124,8 +127,8 @@ def _scan(account_id: int, trigger: str, task_id: int | None = None) -> None:
             "status": "failed", "trigger": trigger, "error": str(exc),
         })
         logger.warning("[DeactivationMail] account=%s scan failed: %s", account_id, exc)
-        account_task_store.finish_task(
-            task_id,
+        reporter.stage("mailbox_scan", "failed", "封号邮件扫描失败", level="ERROR", detail={"error": str(exc)})
+        reporter.finish(
             status="failed",
             message="封号邮件扫描失败",
             error=str(exc),
@@ -138,8 +141,11 @@ def _scan(account_id: int, trigger: str, task_id: int | None = None) -> None:
             "error": f"{type(exc).__name__}: {exc}",
         })
         logger.exception("[DeactivationMail] account=%s unexpected failure", account_id)
-        account_task_store.finish_task(
-            task_id,
+        reporter.stage(
+            "mailbox_scan", "failed", "封号邮件扫描异常",
+            level="ERROR", detail={"error": f"{type(exc).__name__}: {exc}"},
+        )
+        reporter.finish(
             status="failed",
             message="封号邮件扫描异常",
             error=f"{type(exc).__name__}: {exc}",

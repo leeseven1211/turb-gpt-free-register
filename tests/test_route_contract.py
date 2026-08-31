@@ -13,8 +13,8 @@ from webui.app import create_app
 
 
 class FlaskRouteContractTests(PostgresTestCase):
-    EXPECTED_ROUTE_COUNT = 102
-    EXPECTED_SHA256 = "96701bb81f0734f1f657fb252f72680c3ed0f73fcd453062eedd8d68e717e216"
+    EXPECTED_ROUTE_COUNT = 104
+    EXPECTED_SHA256 = "a301a0e0adec4818fa7b7046beab3733559d088c0ae8d0d2aba422aeb652c212"
 
     def test_public_route_map_matches_refactor_baseline(self):
         app = create_app(auth_code="route-contract")

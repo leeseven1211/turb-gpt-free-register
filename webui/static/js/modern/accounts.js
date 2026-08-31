@@ -83,11 +83,12 @@ function accountTaskEventStepState(event) {
   if (String(event?.level || '').toUpperCase() === 'ERROR') return 'failed';
   return null;
 }
-function renderAccountTaskStageProgress(task) {
+function renderAccountTaskStageProgress(task, selectedRunId = null) {
   const panel = $('#accountTaskStageProgress');
   if (!panel) return;
   const runs = Array.isArray(task?.runs) ? task.runs : [];
-  const latestRunId = String(task?.last_run_id || runs[runs.length - 1]?.id || '');
+  const latestRunId = String(selectedRunId || task?.last_run_id || runs[runs.length - 1]?.id || '');
+  const selectedRun = runs.find(run => String(run.id || '') === latestRunId) || runs[runs.length - 1] || {};
   const observed = new Map();
   (task?.events || []).filter(event => !latestRunId || String(event.run_id || '') === latestRunId).forEach(event => {
     const key = normalizeAccountTaskStage(event.stage);
@@ -118,11 +119,11 @@ function renderAccountTaskStageProgress(task) {
     panel.innerHTML = '';
     return;
   }
-  const taskStatus = String(task.status || '');
+  const taskStatus = String(selectedRun.status || task.status || '');
   const active = ['queued','running','cancelling','settling'].includes(taskStatus);
   panel.innerHTML = stages.map(stage => {
     let state = stage.state || 'pending';
-    if (state === 'pending' && active && stage.key === normalizeAccountTaskStage(task.current_stage)) state = taskStatus === 'running' ? 'running' : 'pending';
+    if (state === 'pending' && active && stage.key === normalizeAccountTaskStage(selectedRun.progress_stage || task.current_stage)) state = taskStatus === 'running' ? 'running' : 'pending';
     if (stage.key === 'complete' && state === 'pending' && !active) state = taskStatus === 'success' ? 'success' : 'failed';
     const label = stage.label || ACCOUNT_TASK_STAGE_LABELS[stage.key] || stage.key;
     const inferredTitle = stage.inferred ? ' title="历史任务未单独记录网络阶段；已根据后续执行步骤确认完成"' : '';
@@ -203,11 +204,134 @@ async function loadAccountTasks() {
     setListBusy('accountTasksPanel', false);
   }
 }
-let activeAccountTaskId = null, accountTaskLogTimer = null;
+let activeAccountTaskId = null, activeAccountTaskRunId = null, accountTaskLogTimer = null;
+let activeAccountTaskDetailView = 'events', accountTaskSnapshot = null, accountTaskPolling = false;
+let accountTaskEventCursor = null, accountTaskEventCache = [], accountTaskNewEventCount = 0;
+let accountTaskRunLogCursor = null, accountTaskRunLogLines = [];
+
+function meaningfulTaskDetail(detail) {
+  if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return null;
+  const cleaned = {};
+  Object.entries(detail).forEach(([key, value]) => {
+    if (['step_state'].includes(key) || value == null || value === '') return;
+    if (Array.isArray(value) && !value.length) return;
+    if (typeof value === 'object' && !Array.isArray(value) && !Object.keys(value).length) return;
+    cleaned[key] = value;
+  });
+  return Object.keys(cleaned).length ? cleaned : null;
+}
+
+function renderAccountTaskEvents() {
+  const content = $('#accountTaskLogContent');
+  if (!content) return;
+  content.innerHTML = accountTaskEventCache.map(event => {
+    const eventType = String(event.event_type || 'note.info');
+    const level = String(event.level || 'INFO').toUpperCase();
+    const state = accountTaskEventStepState(event);
+    const detail = meaningfulTaskDetail(event.detail);
+    const css = level === 'ERROR' || state === 'failed' ? ' is-error' : level === 'WARNING' ? ' is-warning' : state === 'success' ? ' is-success' : '';
+    return `<div class="account-task-event${css}" data-event-id="${attrEsc(event.id)}">
+      <div class="account-task-event-head"><span>${esc(formatDateTime(event.created_at))}</span><span>${esc(level)}</span><span>${esc(ACCOUNT_TASK_STAGE_LABELS[normalizeAccountTaskStage(event.stage)] || event.stage || '事件')}</span><span class="account-task-event-type">${esc(eventType)}</span></div>
+      <div class="account-task-event-message">${esc(event.message || '-')}</div>
+      ${detail ? `<details class="account-task-event-detail"><summary>查看技术详情</summary><pre>${esc(JSON.stringify(detail, null, 2))}</pre></details>` : ''}
+    </div>`;
+  }).join('') || '<div class="account-task-empty">暂无事件</div>';
+}
+
+function renderAccountTaskRunLog() {
+  const panel = $('#accountTaskRunLogContent');
+  if (!panel) return;
+  panel.textContent = accountTaskRunLogLines.map(item => {
+    const fields = meaningfulTaskDetail(item.fields);
+    return `${item.ts || ''} ${item.level || 'INFO'} ${item.stage || 'event'} ${item.message || ''}${fields ? `\n${JSON.stringify(fields, null, 2)}` : ''}`;
+  }).join('\n') || '(当前 Run 暂无技术日志；旧任务可能只有事件时间线)';
+}
+
+function renderAccountTaskArtifacts(task) {
+  const panel = $('#accountTaskArtifactContent');
+  if (!panel) return;
+  const resources = (task?.resources || []).filter(item => !activeAccountTaskRunId || String(item.run_id || '') === String(activeAccountTaskRunId));
+  panel.innerHTML = resources.map(item => `<div class="account-task-artifact"><strong>${esc(item.resource_type || '运行资源')}</strong><div>${esc(item.provider || item.state || '-')}</div><small>${esc(formatDateTime(item.acquired_at || item.created_at))}</small></div>`).join('') || '<div class="account-task-empty">当前 Run 没有诊断资源或产物</div>';
+}
+
+function setAccountTaskDetailView(view) {
+  activeAccountTaskDetailView = ['events','logs','artifacts'].includes(view) ? view : 'events';
+  document.querySelectorAll('[data-account-task-detail-tab]').forEach(button => {
+    button.classList.toggle('is-active', button.dataset.accountTaskDetailTab === activeAccountTaskDetailView);
+  });
+  document.querySelectorAll('[data-account-task-detail-view]').forEach(panel => {
+    panel.classList.toggle('hidden', panel.dataset.accountTaskDetailView !== activeAccountTaskDetailView);
+  });
+  $('#accountTaskNewEvents')?.classList.toggle('hidden', activeAccountTaskDetailView !== 'events' || accountTaskNewEventCount <= 0);
+  if (activeAccountTaskDetailView === 'logs' && activeAccountTaskRunId) pollAccountTaskRunLog();
+  if (activeAccountTaskDetailView === 'artifacts') renderAccountTaskArtifacts(accountTaskSnapshot);
+}
+
+function resetAccountTaskRunData(runId) {
+  activeAccountTaskRunId = runId ? Number(runId) : null;
+  accountTaskEventCursor = null;
+  accountTaskEventCache = [];
+  accountTaskNewEventCount = 0;
+  accountTaskRunLogCursor = null;
+  accountTaskRunLogLines = [];
+  $('#accountTaskLogContent').innerHTML = '<div class="account-task-empty">正在加载事件…</div>';
+  $('#accountTaskRunLogContent').textContent = '正在加载运行日志…';
+  $('#accountTaskNewEvents')?.classList.add('hidden');
+}
+
+function syncAccountTaskRunPicker(task) {
+  const select = $('#accountTaskRunSelect');
+  const runs = Array.isArray(task?.runs) ? task.runs : [];
+  const desired = Number(activeAccountTaskRunId || task?.last_run_id || runs[runs.length - 1]?.id || 0) || null;
+  select.innerHTML = runs.map(run => `<option value="${attrEsc(run.id)}">第 ${esc(run.run_no || '-')} 次 · ${esc(run.status || '-')}</option>`).join('');
+  if (desired && runs.some(run => Number(run.id) === desired)) select.value = String(desired);
+  const selected = Number(select.value || desired || 0) || null;
+  if (selected !== activeAccountTaskRunId) resetAccountTaskRunData(selected);
+  select.disabled = runs.length <= 1;
+}
+
+async function pollAccountTaskEvents(reset = false) {
+  if (!activeAccountTaskId || !activeAccountTaskRunId) return;
+  const scroller = $('#accountTaskLogContent')?.parentElement;
+  const atBottom = !scroller || scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 36;
+  const params = new URLSearchParams({limit:'500'});
+  if (!reset && accountTaskEventCursor != null) params.set('after_id', String(accountTaskEventCursor));
+  const result = await api(`/api/operations/${encodeURIComponent(activeAccountTaskId)}/runs/${encodeURIComponent(activeAccountTaskRunId)}/events?${params}`);
+  const incoming = result.items || [];
+  if (reset || accountTaskEventCursor == null) accountTaskEventCache = incoming;
+  else {
+    const known = new Set(accountTaskEventCache.map(item => String(item.id)));
+    accountTaskEventCache.push(...incoming.filter(item => !known.has(String(item.id))));
+  }
+  accountTaskEventCursor = Number(result.next_after_id || accountTaskEventCursor || 0);
+  renderAccountTaskEvents();
+  if (atBottom && scroller) scroller.scrollTop = scroller.scrollHeight;
+  else if (incoming.length) {
+    accountTaskNewEventCount += incoming.length;
+    const button = $('#accountTaskNewEvents');
+    button.textContent = `有 ${accountTaskNewEventCount} 条新事件，回到底部`;
+    button.classList.toggle('hidden', activeAccountTaskDetailView !== 'events');
+  }
+}
+
+async function pollAccountTaskRunLog(reset = false) {
+  if (!activeAccountTaskId || !activeAccountTaskRunId) return;
+  const params = new URLSearchParams({limit:'500'});
+  if (!reset && accountTaskRunLogCursor != null) params.set('cursor', String(accountTaskRunLogCursor));
+  const result = await api(`/api/operations/${encodeURIComponent(activeAccountTaskId)}/runs/${encodeURIComponent(activeAccountTaskRunId)}/logs?${params}`);
+  if (reset || accountTaskRunLogCursor == null) accountTaskRunLogLines = result.items || [];
+  else accountTaskRunLogLines.push(...(result.items || []));
+  accountTaskRunLogCursor = Number(result.next_cursor || 0);
+  renderAccountTaskRunLog();
+}
+
 function openAccountTaskLog(taskId) {
   activeAccountTaskId = Number(taskId);
+  accountTaskSnapshot = null;
+  resetAccountTaskRunData(null);
+  setAccountTaskDetailView('events');
   $('#accountTaskLogId').textContent = taskId;
-  $('#accountTaskLogContent').textContent = '加载中…';
+  $('#accountTaskDetailSummary').textContent = '正在加载任务摘要…';
   renderTaskLogErrorSummary('accountTaskLogErrorSummary', null);
   renderAccountTaskStageProgress(null);
   $('#accountTaskLogPanel').classList.remove('hidden');
@@ -217,31 +341,51 @@ function openAccountTaskLog(taskId) {
   pollAccountTaskLog();
   accountTaskLogTimer = setInterval(pollAccountTaskLog, 2000);
 }
+
 async function pollAccountTaskLog() {
-  if (!activeAccountTaskId) return;
+  if (!activeAccountTaskId || accountTaskPolling) return;
+  accountTaskPolling = true;
   try {
-    const result = await api(`/api/operations/${encodeURIComponent(activeAccountTaskId)}`);
+    const result = await api(`/api/operations/${encodeURIComponent(activeAccountTaskId)}?include_events=0`);
     const task = result.task || {};
+    accountTaskSnapshot = task;
     renderTaskLogErrorSummary('accountTaskLogErrorSummary', task);
-    renderAccountTaskStageProgress(task);
-    const events = task.events || [];
-    const content = $('#accountTaskLogContent');
-    const atBottom = content.scrollTop + content.clientHeight >= content.scrollHeight - 30;
-    content.innerHTML = events.map(event => `<div class="account-task-event${String(event.level || '').toUpperCase() === 'ERROR' ? ' is-error' : ''}">
-      <div class="account-task-event-head"><span>${esc(formatDateTime(event.created_at))}</span><span>${esc(event.level)}</span><span>${esc(ACCOUNT_TASK_STAGE_LABELS[normalizeAccountTaskStage(event.stage)] || event.stage)}</span><span>${event.run_no ? `第 ${esc(event.run_no)} 次运行` : ''}</span></div>
-      <div class="account-task-event-message">${esc(event.message)}</div>
-      ${event.detail ? `<div class="account-task-event-detail">${esc(JSON.stringify(event.detail, null, 2))}</div>` : ''}
-    </div>`).join('') || '(暂无事件)';
-    if (atBottom) content.scrollTop = content.scrollHeight;
+    const previousRunId = activeAccountTaskRunId;
+    syncAccountTaskRunPicker(task);
+    const selectedRun = (task.runs || []).find(run => Number(run.id) === Number(activeAccountTaskRunId)) || {};
+    $('#accountTaskDetailSummary').textContent = `${ACCOUNT_TASK_TYPE_LABELS[task.task_type] || task.task_type || '任务'} · ${selectedRun.status || task.status || '-'} · ${formatTaskDuration(selectedRun.duration_ms)}`;
+    if (previousRunId !== activeAccountTaskRunId || accountTaskEventCursor == null) {
+      await pollAccountTaskEvents(true);
+      if (activeAccountTaskDetailView === 'logs') await pollAccountTaskRunLog(true);
+    } else {
+      await pollAccountTaskEvents(false);
+      if (activeAccountTaskDetailView === 'logs') await pollAccountTaskRunLog(false);
+    }
+    renderAccountTaskStageProgress({...task, events:accountTaskEventCache}, activeAccountTaskRunId);
+    renderAccountTaskArtifacts(task);
     if (!['queued','running','cancelling','settling'].includes(String(task.status || ''))) {
       clearInterval(accountTaskLogTimer);
       loadAccountTasks();
       loadAccounts();
     }
   } catch (e) {
-    $('#accountTaskLogContent').textContent = '加载失败: ' + e.message;
+    $('#accountTaskLogContent').innerHTML = `<div class="account-task-empty">加载失败：${esc(e.message)}</div>`;
+  } finally {
+    accountTaskPolling = false;
   }
 }
+
+$('#accountTaskRunSelect')?.addEventListener('change', event => {
+  resetAccountTaskRunData(Number(event.target.value || 0) || null);
+  pollAccountTaskLog();
+});
+document.querySelectorAll('[data-account-task-detail-tab]').forEach(button => button.addEventListener('click', () => setAccountTaskDetailView(button.dataset.accountTaskDetailTab)));
+$('#accountTaskNewEvents')?.addEventListener('click', () => {
+  const scroller = $('#accountTaskLogContent')?.parentElement;
+  if (scroller) scroller.scrollTop = scroller.scrollHeight;
+  accountTaskNewEventCount = 0;
+  $('#accountTaskNewEvents').classList.add('hidden');
+});
 async function retryAccountTask(taskId, button) {
   button.disabled = true;
   try {

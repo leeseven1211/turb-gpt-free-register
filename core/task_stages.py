@@ -110,7 +110,7 @@ TASK_FLOWS: dict[str, tuple[str, ...]] = {
     "twofa_retry": ("network", "browser", "login_password", "twofa", "plan_check", "complete"),
     "account_setup_retry": ("network", "browser", "login_password", "twofa", "plan_check", "complete"),
     "live_check": ("network", "access_token", "complete"),
-    "token_refresh": ("network", "refresh_token", "complete"),
+    "token_refresh": ("network", "login_password", "email_otp", "token", "complete"),
     "codex_token_refresh": ("refresh_token", "complete"),
     "plan_check": ("network", "plan_check", "complete"),
     "deactivation_mail": ("mailbox_scan", "complete"),

@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from core import codex_retry_service, db
+from core import codex_retry_service, db, task_run_log
 from core.operations import task_gateway as account_task_store
 from core.registration_postprocess import summarize_postprocess, decide_recovery
 
@@ -459,10 +459,14 @@ def _append_job_log(job_id: int, message: str) -> None:
         log_file = job.get("log_file") if job else None
         if not log_file:
             return
-        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now().strftime("%H:%M:%S")
-        with Path(log_file).open("a", encoding="utf-8") as f:
-            f.write(f"{ts} [WARNING] [manual-stop] {message}\n")
+        task_run_log.append(
+            log_file,
+            level="WARNING",
+            message=message,
+            task_id=int(job_id),
+            stage="cancelling",
+            event_type="run.cancel_requested",
+        )
     except Exception:
         pass
 
@@ -820,20 +824,21 @@ def shutdown_executor(wait: bool = True) -> None:
 # ============================================================
 
 class _JobLogContext:
-    """让本线程的根 logger 多一个 FileHandler，结束后移除。"""
+    """让本线程的根 logger 多一个脱敏 Run JSONL handler，结束后移除。"""
 
-    def __init__(self, log_path: str):
+    def __init__(self, log_path: str, *, task_id: int | None = None):
         self.log_path = log_path
-        self.handler: logging.FileHandler | None = None
+        self.task_id = task_id
+        self.handler: logging.Handler | None = None
 
     def __enter__(self):
         Path(self.log_path).parent.mkdir(parents=True, exist_ok=True)
-        self.handler = logging.FileHandler(self.log_path, encoding="utf-8")
+        self.handler = task_run_log.TaskRunLogHandler(
+            self.log_path,
+            task_id=self.task_id,
+            stage="registration",
+        )
         self.handler.setLevel(logging.INFO)
-        self.handler.setFormatter(logging.Formatter(
-            "%(asctime)s [%(levelname)s] [%(threadName)s] %(message)s",
-            datefmt="%H:%M:%S",
-        ))
         # 仅给本线程过滤 —— 用 thread name 做区分，避免污染其他任务的日志
         thread_name = threading.current_thread().name
         self.handler.addFilter(lambda r: r.threadName == thread_name)
@@ -911,7 +916,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
     email: str | None = None
     proxy_lease = None
     try:
-        with _JobLogContext(log_file):
+        with _JobLogContext(log_file, task_id=job_id):
             from core.registration.dispatcher import run_registration
             from core.proxy_provider import acquire_registration_proxy, mask_endpoint, mask_ip, release_proxy
 
@@ -2216,9 +2221,16 @@ def read_job_log(job_id: int, max_bytes: int = 50_000) -> str:
     p = Path(job["log_file"])
     if not p.exists():
         return ""
-    size = p.stat().st_size
-    with p.open("rb") as f:
-        if size > max_bytes:
-            f.seek(size - max_bytes)
-        data = f.read()
-    return data.decode("utf-8", errors="replace")
+    payload = task_run_log.read_incremental(job.get("log_file"), limit=1000, max_bytes=max_bytes)
+    if payload.get("available"):
+        lines = []
+        for item in payload.get("items") or []:
+            if item.get("event_type") == "log.text":
+                lines.append(str(item.get("message") or ""))
+                continue
+            lines.append(
+                f"{item.get('ts') or ''} [{item.get('level') or 'INFO'}] "
+                f"{item.get('message') or ''}"
+            )
+        return "\n".join(lines)
+    return ""

@@ -21,7 +21,7 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
-from core import compat_export, postgres_store, record_store
+from core import compat_export, postgres_store, record_store, task_run_log
 
 logger = logging.getLogger(__name__)
 
@@ -2667,7 +2667,11 @@ def _new_job_row(
     batch_workers: int | None = None,
 ) -> dict:
     job_uuid = str(uuid.uuid4())
-    log_file = str(_LOG_DIR / f"{job_uuid}.log")
+    log_file = task_run_log.build_path(
+        task_uuid=job_uuid,
+        run_no=max(1, int(retry_attempt or 0) + 1),
+        run_uuid=job_uuid,
+    )
     Path(log_file).parent.mkdir(parents=True, exist_ok=True)
     return {
         "id": _next_id(rows),

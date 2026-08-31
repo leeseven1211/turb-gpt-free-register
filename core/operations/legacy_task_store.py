@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from core import postgres_store
+from core import task_run_log
 from core.task_stages import normalize_step_state
 
 _LOCK = threading.RLock()
@@ -125,6 +126,7 @@ def init() -> None:
                     started_at TEXT,
                     finished_at TEXT,
                     duration_ms INTEGER,
+                    log_file TEXT,
                     CONSTRAINT account_action_tasks_batch_fk FOREIGN KEY (batch_id)
                         REFERENCES {batches}(id)
                 )
@@ -140,6 +142,8 @@ def init() -> None:
                     stage TEXT NOT NULL,
                     message TEXT NOT NULL,
                     detail JSONB,
+                    event_type TEXT,
+                    visibility TEXT NOT NULL DEFAULT 'timeline',
                     CONSTRAINT account_action_events_task_fk FOREIGN KEY (task_id)
                         REFERENCES {tasks}(id) ON DELETE CASCADE
                 )
@@ -149,6 +153,18 @@ def init() -> None:
             cur.execute(f"CREATE INDEX IF NOT EXISTS {_index('idx_account_tasks_account')} ON {tasks}(account_id, id DESC)")
             cur.execute(f"CREATE INDEX IF NOT EXISTS {_index('idx_account_tasks_status')} ON {tasks}(status, id DESC)")
             cur.execute(f"CREATE INDEX IF NOT EXISTS {_index('idx_account_task_events_task')} ON {events}(task_id, id)")
+            cur.execute(f"ALTER TABLE {tasks} ADD COLUMN IF NOT EXISTS log_file TEXT")
+            cur.execute(f"ALTER TABLE {events} ADD COLUMN IF NOT EXISTS event_type TEXT")
+            cur.execute(f"ALTER TABLE {events} ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL DEFAULT 'timeline'")
+            # 历史账号任务没有日志路径时只补受控元数据；不回放旧任务，也不创建业务事件。
+            cur.execute(f"SELECT id, task_uuid FROM {tasks} WHERE NULLIF(log_file, '') IS NULL")
+            for row in cur.fetchall():
+                task_uuid = str(row.get("task_uuid") or uuid.uuid4().hex)
+                run_uuid = uuid.uuid5(uuid.NAMESPACE_URL, f"account-action-run:{task_uuid}").hex
+                cur.execute(
+                    f"UPDATE {tasks} SET log_file=%s WHERE id=%s AND NULLIF(log_file, '') IS NULL",
+                    (task_run_log.build_path(task_uuid=task_uuid, run_no=1, run_uuid=run_uuid), int(row["id"])),
+                )
         _READY_KEY = ready_key
 
 
@@ -242,23 +258,30 @@ def create_batch(*, action_type: str, trigger: str, total_count: int) -> str:
 def create_task(*, task_type: str, account_id: int | None, email: str, trigger: str, batch_id: str | None = None) -> int:
     init()
     now = _now()
+    task_uuid = uuid.uuid4().hex
+    run_uuid = uuid.uuid5(uuid.NAMESPACE_URL, f"account-action-run:{task_uuid}").hex
+    log_file = task_run_log.build_path(task_uuid=task_uuid, run_no=1, run_uuid=run_uuid)
     tasks = _table("account_action_tasks")
     events = _table("account_action_events")
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
-            f"INSERT INTO {tasks} (task_uuid, batch_id, task_type, account_id, email_snapshot, trigger, status, queued_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s, 'queued', %s) RETURNING id",
-            (uuid.uuid4().hex, batch_id, str(task_type or "unknown")[:60],
+            f"INSERT INTO {tasks} (task_uuid, batch_id, task_type, account_id, email_snapshot, trigger, status, queued_at, log_file) "
+            "VALUES (%s, %s, %s, %s, %s, %s, 'queued', %s, %s) RETURNING id",
+            (task_uuid, batch_id, str(task_type or "unknown")[:60],
              int(account_id) if account_id is not None else None, str(email or "")[:320],
-             str(trigger or "manual")[:80], now),
+             str(trigger or "manual")[:80], now, log_file),
         )
         task_id = int(cur.fetchone()["id"])
         cur.execute(
-            f"INSERT INTO {events} (task_id, created_at, level, stage, message) "
-            "VALUES (%s, %s, 'INFO', 'queued', %s)",
+            f"INSERT INTO {events} (task_id, created_at, level, stage, message, detail, event_type) "
+            "VALUES (%s, %s, 'INFO', 'queued', %s, '{}'::jsonb, 'run.queued')",
             (task_id, now, "任务已加入队列"),
         )
         _refresh_batch(cur, batch_id)
+    task_run_log.append(
+        log_file, level="INFO", message="任务已加入队列", task_id=task_id,
+        stage="queued", event_type="run.queued", created_at=now,
+    )
     _sync_operation_task(task_id)
     return task_id
 
@@ -271,24 +294,50 @@ def append_event(
     level: str = "INFO",
     detail: dict | None = None,
     state: str | None = None,
+    event_type: str | None = None,
+    visibility: str = "timeline",
 ) -> None:
     """写入脱敏事件；流程节点必须用 ``state`` 明确表达五态。"""
     if not task_id:
         return
     init()
     clean_detail = dict(detail or {})
+    normalized_state = None
     if state is not None:
         normalized_state = normalize_step_state(state)
         if normalized_state is None:
             raise ValueError(f"不支持的任务步骤状态: {state!r}")
         clean_detail["step_state"] = normalized_state
-    with _connect() as conn, conn.cursor() as cur:
-        cur.execute(
-            f"INSERT INTO {_table('account_action_events')} (task_id, created_at, level, stage, message, detail) "
-            "VALUES (%s, %s, %s, %s, %s, %s::jsonb)",
-            (int(task_id), _now(), str(level or "INFO").upper()[:16], str(stage or "event")[:80],
-             _redact_text(message, 1200), _json(clean_detail)),
+    level_value = str(level or "INFO").upper()[:16]
+    event_type_value = str(event_type or "").strip()
+    if not event_type_value:
+        event_type_value = (
+            f"stage.{normalized_state}"
+            if normalized_state is not None
+            else "note.error" if level_value == "ERROR"
+            else "note.warning" if level_value == "WARNING"
+            else "note.info"
         )
+    visibility_value = str(visibility or "timeline").strip().lower()
+    if visibility_value not in {"summary", "timeline", "debug"}:
+        visibility_value = "timeline"
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT log_file FROM {_table('account_action_tasks')} WHERE id=%s", (int(task_id),))
+        task = cur.fetchone()
+        if task is None:
+            return
+        cur.execute(
+            f"INSERT INTO {_table('account_action_events')} "
+            "(task_id, created_at, level, stage, message, detail, event_type, visibility) "
+            "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s)",
+            (int(task_id), _now(), level_value, str(stage or "event")[:80],
+             _redact_text(message, 1200), _json(clean_detail), event_type_value[:120], visibility_value),
+        )
+        log_file = task.get("log_file")
+    task_run_log.append(
+        log_file, level=level_value, message=message, task_id=int(task_id),
+        stage=str(stage or "event"), event_type=event_type_value, fields=clean_detail,
+    )
     _sync_operation_task(int(task_id))
 
 
@@ -300,17 +349,22 @@ def start_task(task_id: int | None, *, message: str = "开始执行") -> None:
     tasks = _table("account_action_tasks")
     events = _table("account_action_events")
     with _connect() as conn, conn.cursor() as cur:
-        cur.execute(f"SELECT batch_id FROM {tasks} WHERE id=%s", (int(task_id),))
+        cur.execute(f"SELECT batch_id, log_file FROM {tasks} WHERE id=%s", (int(task_id),))
         row = cur.fetchone()
         if row is None:
             return
         cur.execute(f"UPDATE {tasks} SET status='running', started_at=%s WHERE id=%s", (now, int(task_id)))
         cur.execute(
-            f"INSERT INTO {events} (task_id, created_at, level, stage, message) "
-            "VALUES (%s, %s, 'INFO', 'running', %s)",
+            f"INSERT INTO {events} (task_id, created_at, level, stage, message, detail, event_type) "
+            "VALUES (%s, %s, 'INFO', 'queued', %s, '{}'::jsonb, 'run.running')",
             (int(task_id), now, _redact_text(message, 1200)),
         )
         _refresh_batch(cur, row["batch_id"])
+        log_file = row.get("log_file")
+    task_run_log.append(
+        log_file, level="INFO", message=message, task_id=int(task_id),
+        stage="queued", event_type="run.running", created_at=now,
+    )
     _sync_operation_task(int(task_id))
 
 
@@ -337,7 +391,7 @@ def finish_task(task_id: int | None, *, status: str, message: str, error: str | 
     tasks = _table("account_action_tasks")
     events = _table("account_action_events")
     with _connect() as conn, conn.cursor() as cur:
-        cur.execute(f"SELECT batch_id, started_at FROM {tasks} WHERE id=%s", (int(task_id),))
+        cur.execute(f"SELECT batch_id, started_at, log_file FROM {tasks} WHERE id=%s", (int(task_id),))
         row = cur.fetchone()
         if row is None:
             return
@@ -355,12 +409,23 @@ def finish_task(task_id: int | None, *, status: str, message: str, error: str | 
              _duration_ms(row["started_at"], now), int(task_id)),
         )
         cur.execute(
-            f"INSERT INTO {events} (task_id, created_at, level, stage, message, detail) "
-            "VALUES (%s, %s, %s, 'complete', %s, %s::jsonb)",
+            f"INSERT INTO {events} (task_id, created_at, level, stage, message, detail, event_type) "
+            "VALUES (%s, %s, %s, 'complete', %s, %s::jsonb, %s)",
             (int(task_id), now, "ERROR" if final_status in {"failed", "interrupted"} else "INFO",
-             _redact_text(message, 1200), _json(result_summary)),
+             _redact_text(message, 1200), _json(result_summary), f"run.{final_status}"),
         )
         _refresh_batch(cur, row["batch_id"])
+        log_file = row.get("log_file")
+    task_run_log.append(
+        log_file,
+        level="ERROR" if final_status in {"failed", "interrupted"} else "INFO",
+        message=message,
+        task_id=int(task_id),
+        stage="complete",
+        event_type=f"run.{final_status}",
+        fields=result_summary or {},
+        created_at=now,
+    )
     _sync_operation_task(int(task_id))
 
 
@@ -398,7 +463,8 @@ def recover_interrupted() -> int:
                 ("WebUI 重启导致任务中断，请重新执行", now, _duration_ms(row["started_at"], now), int(row["id"])),
             )
             cur.execute(
-                f"INSERT INTO {events} (task_id, created_at, level, stage, message) VALUES (%s, %s, 'ERROR', 'interrupted', %s)",
+                f"INSERT INTO {events} (task_id, created_at, level, stage, message, detail, event_type) "
+                "VALUES (%s, %s, 'ERROR', 'interrupted', %s, '{}'::jsonb, 'run.interrupted')",
                 (int(row["id"]), now, "WebUI 重启导致任务中断，请重新执行"),
             )
         for batch_id in {row["batch_id"] for row in rows if row["batch_id"]}:
@@ -433,7 +499,7 @@ def list_tasks(*, page: int = 1, page_size: int = 50, task_type: str = "", statu
         cur.execute(
             f"SELECT id, task_uuid, batch_id, task_type, account_id, email_snapshot, trigger, status, "
             "validation_method, network_route, proxy_mode, proxy_provider, proxy_region, proxy_used, "
-            f"result_summary, error, queued_at, started_at, finished_at, duration_ms FROM {tasks}{clause} "
+            f"result_summary, error, queued_at, started_at, finished_at, duration_ms, log_file FROM {tasks}{clause} "
             "ORDER BY id DESC LIMIT %s OFFSET %s",
             (*params, page_size, offset),
         )
@@ -449,14 +515,15 @@ def get_task(task_id: int) -> dict | None:
         cur.execute(
             f"SELECT id, task_uuid, batch_id, task_type, account_id, email_snapshot, trigger, status, "
             "validation_method, network_route, proxy_mode, proxy_provider, proxy_region, proxy_used, "
-            f"result_summary, error, queued_at, started_at, finished_at, duration_ms FROM {tasks} WHERE id=%s",
+            f"result_summary, error, queued_at, started_at, finished_at, duration_ms, log_file FROM {tasks} WHERE id=%s",
             (int(task_id),),
         )
         task = cur.fetchone()
         if task is None:
             return None
         cur.execute(
-            f"SELECT id, task_id, created_at, level, stage, message, detail FROM {events} WHERE task_id=%s ORDER BY id",
+            f"SELECT id, task_id, created_at, level, stage, message, detail, event_type, visibility "
+            f"FROM {events} WHERE task_id=%s ORDER BY id",
             (int(task_id),),
         )
         event_rows = cur.fetchall()

@@ -16,6 +16,7 @@ from typing import Iterable
 
 from core.storage import accounts as db
 from core.storage import operation_runtime_store as operation_task_store
+from core import task_run_log
 from core.operation_runtime import CancellationToken, OperationCancelled, operation_context
 
 logger = logging.getLogger(__name__)
@@ -149,7 +150,10 @@ def submit(
         execution_status="queued",
         active_run_id=run_id,
     )
-    _append_log(email, f"[INFO] operation task={created['id']} run={run_id} 已进入数据库队列", clear=True)
+    task_run_log.append(
+        run.get("log_file"), level="INFO", message="Codex operation 已进入数据库队列",
+        task_id=int(created["id"]), run_id=run_id, stage="queued", event_type="note.info",
+    )
     if dispatch:
         _dispatch(run_id)
     return {
@@ -248,7 +252,10 @@ def retry_task(task_id: int, *, trigger: str = "manual_retry") -> dict:
     email = str(task.get("email_snapshot") or "")
     run_id = int(run["id"])
     db.update_account_codex_operation_state(email, execution_status="queued", active_run_id=run_id)
-    _append_log(email, f"[INFO] operation task={task_id} run={run_id} 作为新 attempt 进入队列", clear=True)
+    task_run_log.append(
+        run.get("log_file"), level="INFO", message="Codex operation 作为新 Run 进入队列",
+        task_id=int(task_id), run_id=run_id, stage="queued", event_type="retry.scheduled",
+    )
     _dispatch(run_id)
     return {"accepted": True, "task_id": int(task_id), "run_id": run_id, "account_id": account_id, "email": email, "status": "queued"}
 
@@ -285,7 +292,11 @@ def request_cancel(*, run_id: int | None = None, email: str = "", account_id: in
             error="用户手动停止 Codex 补跑",
             active_run_id=0 if terminal else int(run_id),
         )
-        _append_log(email, f"[WARNING] run={run_id} 已请求协作式取消")
+        task_run_log.append(
+            run.get("log_file"), level="WARNING", message="已请求协作式取消",
+            task_id=int(run.get("task_id") or 0) or None, run_id=int(run_id),
+            stage="cancelling", event_type="run.cancel_requested",
+        )
     return {
         "ok": True,
         "run_id": int(run_id),
@@ -328,7 +339,7 @@ def _execute_run(run_id: int) -> dict:
     route_resource_id: int | None = None
     result: dict = {"status": "failed", "ok": False, "message": "OAuth 未返回结果"}
     root_logger = logging.getLogger()
-    file_handler: logging.FileHandler | None = None
+    file_handler: logging.Handler | None = None
 
     def report(**event):
         return operation_task_store.append_runtime_event(run_id, **event)
@@ -336,12 +347,14 @@ def _execute_run(run_id: int) -> dict:
     with _LOCAL_TOKENS_LOCK:
         _LOCAL_TOKENS[run_id] = token
     try:
-        path = log_path(email)
-        path.parent.mkdir(parents=True, exist_ok=True)
         worker_name = threading.current_thread().name
-        file_handler = logging.FileHandler(str(path), encoding="utf-8")
+        file_handler = task_run_log.TaskRunLogHandler(
+            str(current.get("log_file") or ""),
+            task_id=int(current["task_id"]),
+            run_id=run_id,
+            stage="codex",
+        )
         file_handler.setLevel(logging.DEBUG)
-        file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
         file_handler.addFilter(lambda record: record.threadName == worker_name)
         root_logger.addHandler(file_handler)
         lease_token = operation_task_store.acquire_account_lease(account_id=account_id, run_id=run_id) or ""
@@ -349,7 +362,7 @@ def _execute_run(run_id: int) -> dict:
             raise RuntimeError("账号操作租约被另一执行占用")
         db.update_account_codex_operation_state(email, execution_status="running", active_run_id=run_id)
         with operation_context(token, reporter=report):
-            report(stage="preflight", message="开始执行统一配置预检")
+            report(stage="preflight", message="开始执行统一配置预检", state="running")
             enabled, reason = _feature_ready()
             if not enabled:
                 raise RuntimeError(f"配置预检失败：{reason}")
@@ -360,7 +373,7 @@ def _execute_run(run_id: int) -> dict:
             driver = str(snapshot.get("oauth_driver") or "protocol")
             from core.account_proxy import acquire_account_proxy
 
-            report(stage="network", message="正在申请账号 OAuth 网络线路")
+            report(stage="network", message="正在申请账号 OAuth 网络线路", state="running")
             route = acquire_account_proxy(account_id=account_id, email=email, purpose="codex-oauth")
             public = route.public_dict()
             resource = operation_task_store.register_resource(
@@ -447,7 +460,6 @@ def _execute_run(run_id: int) -> dict:
                 error=final_error,
                 active_run_id=0,
             )
-            _append_log(email, f"[INFO] run={run_id} 完成 status={final_status} credential_confirmed={confirmed}")
             return {**result, "status": final_status, "run_id": run_id}
     except OperationCancelled as exc:
         message = str(exc) or "用户手动停止 Codex 补跑"
@@ -456,7 +468,6 @@ def _execute_run(run_id: int) -> dict:
             email, execution_status="empty", last_run_status="cancelled",
             error=message, active_run_id=0,
         )
-        _append_log(email, f"[WARNING] run={run_id} 已在安全检查点取消")
         return {"status": "cancelled", "ok": False, "message": message, "run_id": run_id}
     except Exception as exc:
         message = f"{type(exc).__name__}: {exc}"
@@ -466,7 +477,6 @@ def _execute_run(run_id: int) -> dict:
             email, execution_status="empty", last_run_status="failed",
             error=message, active_run_id=0,
         )
-        _append_log(email, f"[ERROR] run={run_id} 失败：{message[:500]}")
         return {"status": "failed", "ok": False, "message": message, "run_id": run_id}
     finally:
         if file_handler is not None:

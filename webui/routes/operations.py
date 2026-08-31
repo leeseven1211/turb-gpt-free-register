@@ -117,7 +117,10 @@ def create_operations_blueprint(context: WebUIContext):
 
     @bp.get("/api/operations/<int:task_id>")
     def api_operation_detail(task_id: int):
-        task = operation_task_store.get_task(task_id)
+        include_events = str(request.args.get("include_events") or "1").strip().lower() not in {
+            "0", "false", "no", "off",
+        }
+        task = operation_task_store.get_task(task_id, include_events=include_events)
         if not task:
             return jsonify({"ok": False, "error": "任务不存在"}), 404
         if task.get("error_message"):
@@ -127,6 +130,32 @@ def create_operations_blueprint(context: WebUIContext):
                 task_type=str(task.get("task_type") or ""),
             )
         return jsonify({"ok": True, "task": task})
+
+    @bp.get("/api/operations/<int:task_id>/runs/<int:run_id>/events")
+    def api_operation_run_events(task_id: int, run_id: int):
+        try:
+            result = operation_task_store.list_task_events(
+                task_id,
+                run_id=run_id,
+                after_id=request.args.get("after_id", default=None, type=int),
+                limit=request.args.get("limit", default=200, type=int),
+            )
+        except LookupError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 404
+        return jsonify({"ok": True, **result})
+
+    @bp.get("/api/operations/<int:task_id>/runs/<int:run_id>/logs")
+    def api_operation_run_logs(task_id: int, run_id: int):
+        try:
+            result = operation_task_store.read_task_run_log(
+                task_id,
+                run_id,
+                cursor=request.args.get("cursor", default=None, type=int),
+                limit=request.args.get("limit", default=500, type=int),
+            )
+        except LookupError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 404
+        return jsonify({"ok": True, **result})
 
     @bp.post("/api/operations/<int:task_id>/retry")
     def api_operation_retry(task_id: int):
