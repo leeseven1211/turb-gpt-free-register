@@ -10,6 +10,7 @@ loadSummary();
 loadCapabilities();
 loadRegistrationEmailSources();
 activateTab(localStorage.getItem('gpt_console_active_tab') || 'register', false);
+initializeLegacyNavigationHistory(localStorage.getItem('gpt_console_active_tab') || 'register');
 jobsTimer = setInterval(() => {
   if (!document.hidden && !$('#tab-register').classList.contains('hidden')) refreshJobs();
 }, 5000);

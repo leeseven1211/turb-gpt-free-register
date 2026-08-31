@@ -778,7 +778,7 @@ function debounce(fn, wait=250) {
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), wait); };
 }
 
-// ---------- Tab 切换 ----------
+// ---------- Tab 切换与浏览器历史 ----------
 const TAB_META = {
   overview: { title: '平台总览', description: '账号、邮箱、任务和网络资源运行状态' },
   register: { title: '注册中心', description: '发起批次并追踪自动化注册流程' },
@@ -788,6 +788,93 @@ const TAB_META = {
   outlook: { title: '邮箱资源池', description: '统一维护注册邮箱素材及可用状态' },
   config: { title: '运行配置', description: '调整安全的运行参数与服务集成' },
 };
+const NAV_ALLOWED_TABS = ['overview','register','tasks','accounts','codex','outlook','config'];
+const NAV_HISTORY_KEY = 'gptConsoleNav';
+let ACTIVE_TAB = 'overview';
+let navigationHistoryBound = false;
+
+function navigationModuleForTab(tab) {
+  return ['register', 'accounts', 'outlook'].includes(tab) ? tab : null;
+}
+function normalizeNavigationState(raw) {
+  const tab = NAV_ALLOWED_TABS.includes(raw?.tab) ? raw.tab : 'overview';
+  const module = navigationModuleForTab(tab);
+  const view = raw?.view;
+  if (module && view && MODULE_VIEW_META[module]?.[view]) return {tab, module, view};
+  return {tab};
+}
+function currentNavigationState() {
+  const tab = NAV_ALLOWED_TABS.includes(ACTIVE_TAB) ? ACTIVE_TAB : 'overview';
+  const module = navigationModuleForTab(tab);
+  const view = module ? document.getElementById(`tab-${module}`)?.dataset.moduleView : null;
+  return normalizeNavigationState({tab, view});
+}
+function navigationHash(state) {
+  const nav = normalizeNavigationState(state);
+  return `#${nav.tab}${nav.module && nav.view ? `/${encodeURIComponent(nav.view)}` : ''}`;
+}
+function parseNavigationHash(hash) {
+  const parts = String(hash || '').replace(/^#/, '').split('/').filter(Boolean);
+  if (!parts.length || !NAV_ALLOWED_TABS.includes(parts[0]) || parts.length > 2) return null;
+  let view = '';
+  if (parts[1]) {
+    try { view = decodeURIComponent(parts[1]); } catch (_) { return null; }
+  }
+  const nav = normalizeNavigationState({tab: parts[0], view});
+  return parts[1] && !nav.view ? null : nav;
+}
+function historyNavigationState() {
+  if (history.state?.[NAV_HISTORY_KEY]) {
+    return normalizeNavigationState({tab: history.state.gptConsoleNavTab, view: history.state.gptConsoleNavView});
+  }
+  return parseNavigationHash(location.hash);
+}
+function updateNavigationBackButton() {
+  const button = $('#navHistoryBack');
+  if (!button) return;
+  const index = Number(history.state?.gptConsoleNavIndex || 0);
+  button.disabled = index <= 0;
+}
+function recordNavigationHistory(mode = 'push') {
+  const nav = currentNavigationState();
+  const hash = navigationHash(nav);
+  const current = historyNavigationState();
+  if (mode === 'push' && current && JSON.stringify(current) === JSON.stringify(nav) && location.hash === hash) {
+    updateNavigationBackButton();
+    return;
+  }
+  const currentIndex = history.state?.[NAV_HISTORY_KEY] ? Number(history.state.gptConsoleNavIndex || 0) : 0;
+  const nextIndex = mode === 'push' ? currentIndex + 1 : currentIndex;
+  const nextState = {
+    ...(history.state || {}),
+    [NAV_HISTORY_KEY]: true,
+    gptConsoleNavTab: nav.tab,
+    gptConsoleNavView: nav.view || '',
+    gptConsoleNavIndex: nextIndex,
+  };
+  history[mode === 'push' ? 'pushState' : 'replaceState'](nextState, '', hash);
+  updateNavigationBackButton();
+}
+function applyNavigationState(raw) {
+  const nav = normalizeNavigationState(raw);
+  activateTab(nav.tab, true, 'none');
+  if (nav.module && nav.view) setModuleView(nav.module, nav.view, true, 'none');
+  updateNavigationBackButton();
+}
+function initializeNavigationHistory(fallbackTab = 'overview') {
+  const fromLocation = parseNavigationHash(location.hash);
+  if (fromLocation) applyNavigationState(fromLocation);
+  else if (!NAV_ALLOWED_TABS.includes(ACTIVE_TAB)) activateTab(fallbackTab, true, 'none');
+  recordNavigationHistory('replace');
+  if (navigationHistoryBound) return;
+  navigationHistoryBound = true;
+  $('#navHistoryBack')?.addEventListener('click', () => {
+    if (!$('#navHistoryBack').disabled) history.back();
+  });
+  window.addEventListener('popstate', () => {
+    applyNavigationState(historyNavigationState() || {tab: 'overview'});
+  });
+}
 function closeMobileSidebar() {
   document.body.classList.remove('sidebar-open');
   const toggle = $('#mobileNavToggle');
@@ -825,9 +912,9 @@ function updateTopbarClock() {
 updateTopbarClock();
 setInterval(updateTopbarClock, 30000);
 
-function activateTab(tab, persist=true) {
-  const allowed = ['overview','register','tasks','accounts','codex','outlook','config'];
-  if (!allowed.includes(tab)) tab = 'overview';
+function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
+  if (!NAV_ALLOWED_TABS.includes(tab)) tab = 'overview';
+  ACTIVE_TAB = tab;
   $$('.sidebar-nav button[data-tab]').forEach(x => {
     const active = x.dataset.tab === tab;
     x.classList.toggle('active', active);
@@ -866,6 +953,8 @@ function activateTab(tab, persist=true) {
   }
   if (tab === 'config') loadConfig();
   if (tab === 'register') refreshJobs();
+  if (historyMode === 'push') recordNavigationHistory();
+  else updateNavigationBackButton();
 }
 $$('.sidebar-nav button[data-tab]').forEach(b => b.addEventListener('click', () => activateTab(b.dataset.tab)));
 
@@ -882,11 +971,11 @@ const MODULE_VIEW_META = {
     list: '查询、导入和批量维护邮箱素材',
   },
 };
-function setModuleView(module, view) {
+function setModuleView(module, view, persist=true, historyMode='push') {
   const tab = document.getElementById(`tab-${module}`);
   if (!tab || !MODULE_VIEW_META[module]?.[view]) return;
   tab.dataset.moduleView = view;
-  localStorage.setItem(`gpt_console_module_view_${module}`, view);
+  if (persist) localStorage.setItem(`gpt_console_module_view_${module}`, view);
   document.querySelectorAll(`[data-module-subnav="${module}"] [data-view]`).forEach(btn => {
     btn.classList.toggle('is-active', btn.dataset.view === view);
   });
@@ -897,12 +986,14 @@ function setModuleView(module, view) {
   if (module === 'codex') loadCodex();
   if (module === 'outlook') view === 'overview' ? loadMailResources() : loadOutlook();
   closeMobileSidebar();
+  if (historyMode === 'push') recordNavigationHistory();
+  else updateNavigationBackButton();
 }
 $$('[data-module-subnav]').forEach(nav => nav.addEventListener('click', event => {
   const btn = event.target.closest('[data-view]');
   if (!btn) return;
   const module = nav.dataset.moduleSubnav;
-  if (document.getElementById(`tab-${module}`)?.classList.contains('hidden')) activateTab(module);
+  if (document.getElementById(`tab-${module}`)?.classList.contains('hidden')) activateTab(module, true, 'none');
   setModuleView(module, btn.dataset.view);
 }));
 function restoreModuleViewState() {

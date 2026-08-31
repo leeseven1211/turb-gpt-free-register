@@ -95,9 +95,14 @@
 
 <div class="sidebar-scrim" id="sidebarScrim" aria-hidden="true"></div>
 <header class="app-topbar">
-  <button type="button" class="mobile-nav-toggle" id="mobileNavToggle" aria-label="打开导航" aria-expanded="false">
-    <svg viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
-  </button>
+  <div class="topbar-leading">
+    <button type="button" class="mobile-nav-toggle" id="mobileNavToggle" aria-label="打开导航" aria-expanded="false">
+      <svg viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+    </button>
+    <button type="button" class="nav-history-back" id="navHistoryBack" aria-label="返回上一个菜单" title="返回上一个菜单" disabled>
+      <svg viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
+    </button>
+  </div>
   <div class="topbar-heading">
     <div class="topbar-eyebrow">Turb workspace</div>
     <div class="topbar-title-row">

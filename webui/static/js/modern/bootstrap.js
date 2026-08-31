@@ -12,6 +12,7 @@ loadSummary();
 loadCapabilities();
 restoreModuleViewState();
 activateTab(localStorage.getItem('gpt_console_active_tab') || 'overview', false);
+initializeNavigationHistory(localStorage.getItem('gpt_console_active_tab') || 'overview');
 jobsTimer = setInterval(() => {
   if (!document.hidden && !$('#tab-register').classList.contains('hidden')) refreshJobs();
 }, 5000);

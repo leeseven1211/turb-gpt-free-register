@@ -142,17 +142,66 @@ function debounce(fn, wait=250) {
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), wait); };
 }
 
-// ---------- Tab 切换 ----------
-function activateTab(tab, persist=true) {
-  const allowed = ['register','accounts','codex','outlook','config'];
-  if (!allowed.includes(tab)) tab = 'register';
+// ---------- Tab 切换与浏览器历史 ----------
+const LEGACY_NAV_ALLOWED_TABS = ['register','accounts','codex','outlook','config'];
+const LEGACY_NAV_HISTORY_KEY = 'gptConsoleNav';
+let LEGACY_ACTIVE_TAB = 'register';
+let legacyNavigationHistoryBound = false;
+
+function legacyNavigationState(raw) {
+  return {tab: LEGACY_NAV_ALLOWED_TABS.includes(raw?.tab) ? raw.tab : 'register'};
+}
+function legacyNavigationHash(state) {
+  return `#${legacyNavigationState(state).tab}`;
+}
+function legacyNavigationFromHistory() {
+  if (history.state?.[LEGACY_NAV_HISTORY_KEY]) return legacyNavigationState({tab: history.state.gptConsoleNavTab});
+  const tab = String(location.hash || '').replace(/^#/, '');
+  return LEGACY_NAV_ALLOWED_TABS.includes(tab) ? {tab} : null;
+}
+function updateLegacyNavigationButton() {
+  const button = $('#legacyNavHistoryBack');
+  if (button) button.disabled = Number(history.state?.gptConsoleNavIndex || 0) <= 0;
+}
+function recordLegacyNavigationHistory(mode = 'push') {
+  const nav = legacyNavigationState({tab: LEGACY_ACTIVE_TAB});
+  const hash = legacyNavigationHash(nav);
+  const current = legacyNavigationFromHistory();
+  if (mode === 'push' && current?.tab === nav.tab && location.hash === hash) {
+    updateLegacyNavigationButton();
+    return;
+  }
+  const currentIndex = history.state?.[LEGACY_NAV_HISTORY_KEY] ? Number(history.state.gptConsoleNavIndex || 0) : 0;
+  history[mode === 'push' ? 'pushState' : 'replaceState']({
+    ...(history.state || {}), [LEGACY_NAV_HISTORY_KEY]: true,
+    gptConsoleNavTab: nav.tab, gptConsoleNavIndex: mode === 'push' ? currentIndex + 1 : currentIndex,
+  }, '', hash);
+  updateLegacyNavigationButton();
+}
+function initializeLegacyNavigationHistory(fallbackTab = 'register') {
+  const fromLocation = legacyNavigationFromHistory();
+  if (fromLocation) activateTab(fromLocation.tab, true, 'none');
+  else if (!LEGACY_NAV_ALLOWED_TABS.includes(LEGACY_ACTIVE_TAB)) activateTab(fallbackTab, true, 'none');
+  recordLegacyNavigationHistory('replace');
+  if (legacyNavigationHistoryBound) return;
+  legacyNavigationHistoryBound = true;
+  $('#legacyNavHistoryBack')?.addEventListener('click', () => {
+    if (!$('#legacyNavHistoryBack').disabled) history.back();
+  });
+  window.addEventListener('popstate', () => activateTab((legacyNavigationFromHistory() || {tab: 'register'}).tab, true, 'none'));
+}
+function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
+  if (!LEGACY_NAV_ALLOWED_TABS.includes(tab)) tab = 'register';
+  LEGACY_ACTIVE_TAB = tab;
   $$('nav button').forEach(x => x.classList.toggle('active', x.dataset.tab === tab));
-  allowed.forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== tab));
+  LEGACY_NAV_ALLOWED_TABS.forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== tab));
   if (persist) localStorage.setItem('gpt_console_active_tab', tab);
   if (tab === 'accounts') loadAccounts();
   if (tab === 'codex') loadCodex();
   if (tab === 'outlook') loadOutlook();
   if (tab === 'config') loadConfig();
   if (tab === 'register') refreshJobs();
+  if (historyMode === 'push') recordLegacyNavigationHistory();
+  else updateLegacyNavigationButton();
 }
 $$('nav button').forEach(b => b.addEventListener('click', () => activateTab(b.dataset.tab)));

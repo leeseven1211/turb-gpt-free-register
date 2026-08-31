@@ -2456,6 +2456,15 @@
       padding: 0 var(--page-gutter); border-bottom: 1px solid rgba(224,228,237,.9);
       background: rgba(248,249,252,.86); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
     }
+    .topbar-leading { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+    .nav-history-back {
+      width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center;
+      border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.8);
+      color: #586174; cursor: pointer; transition: color .16s ease, border-color .16s ease, background .16s ease, opacity .16s ease;
+    }
+    .nav-history-back:hover:not(:disabled) { color: var(--blue); border-color: #b9baf5; background: #fff; }
+    .nav-history-back:disabled { cursor: not-allowed; opacity: .42; }
+    .nav-history-back svg { width: 18px; height: 18px; fill: none; stroke: currentColor; }
     .mobile-nav-toggle {
       display: none; width: 38px; height: 38px; border: 1px solid var(--line); border-radius: 10px;
       align-items: center; justify-content: center; background: #fff; color: var(--text); cursor: pointer;
