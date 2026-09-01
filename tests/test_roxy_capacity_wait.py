@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from core import roxy_registration
+from core import registration_debug
 from core.roxybrowser_client import RoxyOpenResult
 
 
@@ -42,6 +44,36 @@ class RoxyCapacityWaitTests(unittest.TestCase):
 
         client.open_profile.assert_called_once_with(proxy_url=None)
         wait_retry.assert_not_called()
+
+    def test_failure_only_debug_context_keeps_headless_configuration(self):
+        opened = RoxyOpenResult(profile_id="profile-1", raw={})
+        client = Mock()
+        client.open_profile.return_value = opened
+
+        with patch.object(
+            registration_debug,
+            "current_session",
+            return_value=SimpleNamespace(capture_mode="failure_only"),
+        ):
+            result = roxy_registration._open_roxy_profile_with_capacity_wait(client, None)
+
+        self.assertIs(result, opened)
+        client.open_profile.assert_called_once_with(proxy_url=None)
+
+    def test_full_debug_context_forces_visible_window(self):
+        opened = RoxyOpenResult(profile_id="profile-1", raw={})
+        client = Mock()
+        client.open_profile.return_value = opened
+
+        with patch.object(
+            registration_debug,
+            "current_session",
+            return_value=SimpleNamespace(capture_mode="full"),
+        ):
+            result = roxy_registration._open_roxy_profile_with_capacity_wait(client, None)
+
+        self.assertIs(result, opened)
+        client.open_profile.assert_called_once_with(proxy_url=None, headless=False)
 
     def test_capacity_wait_has_bounded_timeout(self):
         client = Mock()

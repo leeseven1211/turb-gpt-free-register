@@ -182,17 +182,39 @@ class RegistrationDebugTests(unittest.TestCase):
     def test_activation_arms_failure_diagnostics_without_full_capture(self):
         job = self.job(13)
         job["debug_enabled"] = False
-        token = debug.activate_for_job(job)
-        try:
-            session = debug.current_session()
-            self.assertIsNotNone(session)
-            self.assertEqual(session.capture_mode, "failure_only")
-            self.assertFalse(session.capture_started)
-            session.attach_roxy("127.0.0.1:9222")
-            self.assertEqual(session._collectors, [])
-        finally:
-            debug.deactivate_for_job(token, status="success")
+        with patch.object(debug._cfg, "REGISTRATION_FAILURE_DIAGNOSTICS_ENABLED", True):
+            token = debug.activate_for_job(job)
+            try:
+                session = debug.current_session()
+                self.assertIsNotNone(session)
+                self.assertEqual(session.capture_mode, "failure_only")
+                self.assertFalse(session.capture_started)
+                session.attach_roxy("127.0.0.1:9222")
+                self.assertEqual(session._collectors, [])
+            finally:
+                debug.deactivate_for_job(token, status="success")
         self.assertFalse((self.root / "job-13").exists())
+
+    def test_disabled_activation_clears_stale_context(self):
+        stale = debug.RegistrationDebugSession(self.job(15))
+        debug._CURRENT_SESSION.set(stale)
+
+        job = self.job(16)
+        job["debug_enabled"] = False
+        with patch.object(debug._cfg, "REGISTRATION_FAILURE_DIAGNOSTICS_ENABLED", False):
+            token = debug.activate_for_job(job)
+
+        self.assertIsNone(token)
+        self.assertIsNone(debug.current_session())
+        self.assertTrue(stale._closed.is_set())
+
+    def test_deactivate_without_token_clears_current_context(self):
+        session = debug.RegistrationDebugSession(self.job(17))
+        debug._CURRENT_SESSION.set(session)
+
+        debug.deactivate_for_job(None, status="success")
+
+        self.assertIsNone(debug.current_session())
 
     def test_failure_only_protocol_capture_ignores_success(self):
         session = debug.RegistrationDebugSession(self.job(12), capture_mode="failure_only")

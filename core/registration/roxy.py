@@ -3019,7 +3019,11 @@ def _open_roxy_profile_with_capacity_wait(client, proxy_url: str | None, progres
             debug_headless = None
             try:
                 from core.registration_debug import current_session
-                if current_session() is not None:
+                debug_session = current_session()
+                # failure_only 只在最终失败时保存现场，不需要为了采集而
+                # 显示浏览器窗口；只有显式全量调试才强制可见。这样普通
+                # 诊断和线程池遗留的 failure_only 会话都不会覆盖无头配置。
+                if getattr(debug_session, "capture_mode", "") == "full":
                     debug_headless = False
             except Exception:
                 pass

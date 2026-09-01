@@ -1413,6 +1413,18 @@ class RoxyCDPCollector:
 
 
 def activate_for_job(job: dict) -> contextvars.Token | None:
+    # ThreadPoolExecutor 会复用工作线程。若上一个任务在异常/中断路径
+    # 没有成功 reset ContextVar，当前任务不能继承那个任务的调试会话；否则
+    # 即使本任务关闭了诊断，Roxy 启动逻辑仍会把它误判为调试任务。
+    stale_session = _CURRENT_SESSION.get()
+    if stale_session is not None:
+        try:
+            stale_session.finalize(status="interrupted")
+        except Exception:
+            logger.exception("清理遗留注册调试会话失败：job_id=%s", getattr(stale_session, "job_id", "-"))
+        finally:
+            _CURRENT_SESSION.set(None)
+
     debug_enabled = bool(job.get("debug_enabled", False))
     failure_diagnostics_enabled = bool(getattr(_cfg, "REGISTRATION_FAILURE_DIAGNOSTICS_ENABLED", True))
     if not debug_enabled and not failure_diagnostics_enabled:
@@ -1439,12 +1451,18 @@ def patch_job(job_id: int, **changes: Any) -> bool:
 
 def deactivate_for_job(token: contextvars.Token | None, status: str = "") -> None:
     session = _CURRENT_SESSION.get()
-    if session is not None:
-        session.finalize(status=status)
-    if token is not None:
-        try:
-            _CURRENT_SESSION.reset(token)
-        except Exception:
+    try:
+        if session is not None:
+            session.finalize(status=status)
+    finally:
+        # 没有 token 时表示本任务没有创建调试会话；也要清空当前线程可能
+        # 遗留的 ContextVar，不能让线程池把旧会话带给下一个任务。
+        if token is not None:
+            try:
+                _CURRENT_SESSION.reset(token)
+            except Exception:
+                _CURRENT_SESSION.set(None)
+        else:
             _CURRENT_SESSION.set(None)
 
 
