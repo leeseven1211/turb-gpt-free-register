@@ -13,6 +13,8 @@ const CONFIG_LIFECYCLE_SECTION_KEYS_V2 = {
     'REGISTRATION_DRIVER',
     'ACCOUNT_PASSWORD_DRIVER',
     'ACCOUNT_PLAN_CHECK_DRIVER',
+    'ACCOUNT_LIVE_CHECK_DRIVER',
+    'ACCOUNT_LIVE_CHECK_BROWSER_ENABLED',
     'TWOFA_DRIVER',
     'ACCOUNT_2FA_DRIVER',
     'CODEX_OAUTH_DRIVER',
@@ -535,6 +537,17 @@ function renderLifecycleExecutionSection(fields) {
   if (has('ACCOUNT_PLAN_CHECK_DRIVER')) {
     cards.push(renderLifecycleFixedDriver('套餐查询 / 补全', '纯协议', '套餐查询当前走协议接口，暂不需要填写执行方式。'));
   }
+  if (has('ACCOUNT_LIVE_CHECK_DRIVER')) {
+    cards.push(renderLifecycleDriverSelect(
+      'ACCOUNT_LIVE_CHECK_DRIVER', '普通查活', '阶段1仅保留现有协议型旧 AT 探测；浏览器 probe 和新协议完成验证后再开放切换。', liveCheckDriverChoices()
+    ));
+  }
+  if (has('ACCOUNT_LIVE_CHECK_BROWSER_ENABLED')) {
+    cards.push(renderFeatureSwitchField(
+      has('ACCOUNT_LIVE_CHECK_BROWSER_ENABLED'),
+      { withIcon: false }
+    ));
+  }
   if (has('TWOFA_DRIVER')) {
     cards.push(renderLifecycleDriverSelect(
       'TWOFA_DRIVER', '2FA 开通', '注册和账号补全的 2FA 执行方式统一维护；协议模式失败时仍按现有实现做浏览器兜底。', twofaDriverChoices(), ['ACCOUNT_2FA_DRIVER']
@@ -628,6 +641,15 @@ function twofaDriverChoices() {
     { value: 'browser', label: '浏览器页面（RoxyBrowser）' },
   ];
 }
+function liveCheckDriverChoices() {
+  const choices = [
+    { value: 'protocol_current', label: '现有协议（保持现状）' },
+  ];
+  const rawEnabled = lifecycleFieldValue('ACCOUNT_LIVE_CHECK_BROWSER_ENABLED', false);
+  const enabled = rawEnabled === true || ['1', 'true', 'yes', 'on'].includes(String(rawEnabled).trim().toLowerCase());
+  if (enabled) choices.push({ value: 'browser_roxy', label: 'Roxy 浏览器（旧 AT probe）' });
+  return choices;
+}
 function renderTwofaDriverControl(f) {
   const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
   const current = String(fv == null ? 'protocol' : fv).trim().toLowerCase() || 'protocol';
@@ -661,6 +683,7 @@ function configDriverChoices(f) {
   if (f.key === 'ACCOUNT_PLAN_CHECK_DRIVER') {
     return [{ value: 'protocol', label: '纯协议（当前唯一实现）' }];
   }
+  if (f.key === 'ACCOUNT_LIVE_CHECK_DRIVER') return liveCheckDriverChoices();
   if (f.key === 'ACCOUNT_2FA_DRIVER') return twofaDriverChoices();
   if (f.key === 'ACCOUNT_CODEX_DRIVER') return codexOauthDriverChoices();
   return null;
@@ -1452,7 +1475,7 @@ function trackConfigFieldChange(e) {
     if (CONFIG.some(item => item.key === key)) setPendingConfigValue(key, value);
   });
   renderConfigOverviewCards();
-  if (f.key === 'REGISTRATION_AUTH_MODE') renderConfigLayoutV2();
+  if (f.key === 'REGISTRATION_AUTH_MODE' || f.key === 'ACCOUNT_LIVE_CHECK_BROWSER_ENABLED') renderConfigLayoutV2();
   updateConfigSaveUi();
 }
 $('#tab-config').addEventListener('input', trackConfigFieldChange);

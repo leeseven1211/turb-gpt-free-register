@@ -16,6 +16,10 @@ function configDriverChoices(f) {
   if (f.key === 'REGISTRATION_AUTH_MODE') return [['otp', '不设置密码（邮箱验证码）'], ['password', '设置账号密码']];
   if (f.key === 'ACCOUNT_PASSWORD_DRIVER') return [['roxy', 'RoxyBrowser（当前唯一实现）']];
   if (f.key === 'ACCOUNT_PLAN_CHECK_DRIVER') return [['protocol', '纯协议（当前唯一实现）']];
+  if (f.key === 'ACCOUNT_LIVE_CHECK_DRIVER') return [
+    ['protocol_current', '现有协议（保持现状）'],
+    ['browser_roxy', 'Roxy 浏览器（需先开放灰度）'],
+  ];
   if (f.key === 'ACCOUNT_2FA_DRIVER' || f.key === 'TWOFA_DRIVER') {
     return [['protocol', '协议直开（新鲜 AT）'], ['browser', '浏览器页面（RoxyBrowser）']];
   }

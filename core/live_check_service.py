@@ -14,6 +14,7 @@ from core.storage import accounts as db
 from core.account_liveness import check_account_liveness, log_path
 from core.task_reporter import TaskReporter
 from core.chatgpt_plan import check_account_plan, token_claims
+from core.live_check_router import LiveCheckDriverError, resolve_driver, run_probe
 from core.openai_auth import detect_account_unusable_text
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,13 @@ def _roxy_fallback_enabled() -> bool:
     }
 
 
+def _browser_live_check_probe(*, token: str, proxy: str | None) -> dict:
+    """延迟加载 Roxy AT probe，避免 current 路径提前初始化浏览器依赖。"""
+    from core.live_check_browser import run_probe
+
+    return run_probe(token=token, proxy=proxy)
+
+
 def _run_live_check(
     *,
     account_id: int,
@@ -70,6 +78,7 @@ def _run_live_check(
     trigger: str,
     task_id: int | None = None,
     force_refresh: bool = False,
+    driver: str | None = None,
 ) -> dict:
     account_route = None
     route: dict = {}
@@ -84,7 +93,16 @@ def _run_live_check(
                 message="账号已删除或查活状态已被重置",
             )
             return {"ok": False, "status": "failed", "error": "账号已删除或查活状态已被重置"}
+        # 入队时已经解析并冻结了 driver；直接调用 worker 的旧测试/兼容入口
+        # 没有传值时才在这里读取当前配置，避免任务排队期间热改配置导致中途换路。
+        selected_live_check_driver = None if force_refresh else (driver or resolve_driver())
         reporter.start(message="开始刷新账号 AT" if force_refresh else "开始验证账号 accessToken")
+        if selected_live_check_driver:
+            reporter.note(
+                stage="access_token",
+                message=f"普通查活驱动：{selected_live_check_driver}",
+                detail={"live_check_driver": selected_live_check_driver},
+            )
         from core.account_proxy import acquire_account_proxy
 
         def acquire_retry_route(attempt: int) -> str:
@@ -159,10 +177,13 @@ def _run_live_check(
                         "token_expires_at": saved_claims.get("token_expires_at"),
                     },
                 )
-                probe = check_account_plan(
-                    saved_access_token,
+                probe = run_probe(
+                    driver=selected_live_check_driver,
+                    probe=check_account_plan,
+                    token=saved_access_token,
                     proxy=selected_proxy,
                     max_attempts=1,
+                    browser_probe=_browser_live_check_probe,
                 )
                 try:
                     last_probe_http_status = int(probe.get("http_status"))
@@ -260,6 +281,9 @@ def _run_live_check(
                 ),
             )
 
+        if not force_refresh and result is not None:
+            result.setdefault("live_check_driver", selected_live_check_driver)
+
         if result is None and proxy is None:
             # WebUI 默认调用由账号代理配置选路，重试时允许真正轮换线路。
             _append_log(email, f"[查活] 开始后台执行 trigger={trigger}，网络预检失败时将轮换代理")
@@ -347,6 +371,7 @@ def _run_live_check(
                 "http_status": result.get("http_status"),
                 "checked_at": result.get("checked_at"),
                 "plan": (result.get("session") or {}).get("account", {}).get("planType"),
+                "live_check_driver": result.get("live_check_driver"),
             },
             route={**route, **{key: result.get(key) for key in ("network_route", "proxy_provider", "proxy_region", "proxy_used")}},
             validation_method=result.get("validation_method"),
@@ -398,11 +423,18 @@ def enqueue_account_live_check(
     proxy: str | None = None,
     batch_id: str | None = None,
     force_refresh: bool = False,
+    driver: str | None = None,
 ) -> dict:
     account_id = int(account_id)
     email = str(email or "").strip()
     if not email:
         return {"accepted": False, "busy": False, "error": "email 为空"}
+    effective_live_check_driver = None
+    if not force_refresh:
+        try:
+            effective_live_check_driver = resolve_driver(driver)
+        except LiveCheckDriverError as exc:
+            return {"accepted": False, "busy": False, "error": str(exc)}
     account = db.get_account(account_id)
     if db.account_is_deactivated(account):
         return {
@@ -418,7 +450,8 @@ def enqueue_account_live_check(
         return {"accepted": False, "busy": True, "error": "该账号正在查活"}
 
     action_label = "刷新AT" if str(trigger or "").startswith("token_refresh") else "查活"
-    _append_log(email, f"[{action_label}] 已入队 account_id={account_id} trigger={trigger}", clear=True)
+    driver_suffix = f" driver={effective_live_check_driver}" if effective_live_check_driver else ""
+    _append_log(email, f"[{action_label}] 已入队 account_id={account_id} trigger={trigger}{driver_suffix}", clear=True)
     task_type = "token_refresh" if str(trigger or "").startswith("token_refresh") else "live_check"
     task_id = account_task_store.create_task(
         task_type=task_type,
@@ -436,6 +469,7 @@ def enqueue_account_live_check(
             trigger=str(trigger or "manual"),
             task_id=task_id,
             force_refresh=bool(force_refresh),
+            driver=effective_live_check_driver,
         )
     except Exception as exc:
         _QUEUE_SLOTS.release()
@@ -455,7 +489,7 @@ def enqueue_account_live_check(
         )
         return {"accepted": False, "busy": False, "error": result["error"]}
 
-    return {
+    response = {
         "accepted": True,
         "busy": False,
         "account_id": account_id,
@@ -464,6 +498,9 @@ def enqueue_account_live_check(
         "trigger": str(trigger or "manual"),
         "task_id": task_id,
     }
+    if effective_live_check_driver:
+        response["live_check_driver"] = effective_live_check_driver
+    return response
 
 
 def queue_settings() -> dict:

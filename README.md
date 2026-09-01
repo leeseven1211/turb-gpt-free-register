@@ -707,6 +707,14 @@ WebUI「账号 → 任务实例」统一保存以下账号操作：
 
 每个任务实例保存任务 ID、账号快照、触发方式、状态、验证方式、脱敏线路、开始/完成时间、耗时、结果摘要和阶段事件。账号密码、AT、验证码、邮箱正文、callback 和完整代理凭据不会写入任务库。WebUI 重启时，仍处于排队或运行状态的历史实例会标记为中断，可从实例列表重新执行。
 
+普通查活驱动在第一阶段通过 `ACCOUNT_LIVE_CHECK_DRIVER` 独立配置，缺失时保持当前协议型旧 AT 探测：
+
+```dotenv
+ACCOUNT_LIVE_CHECK_DRIVER=protocol_current
+```
+
+当前默认仍只开放 `protocol_current`。Roxy 浏览器旧 AT probe 还需要先通过真实契约测试，并由 `ACCOUNT_LIVE_CHECK_BROWSER_ENABLED=False` 灰度开关控制；GitHub 新协议 probe 通过独立阶段后再开放。普通查活无论使用哪种驱动，都不会登录、发送 OTP 或刷新 AT。该配置不影响 `ACCOUNT_PLAN_CHECK_DRIVER`（账号补全套餐步骤），也不影响刷新 AT 的现有路径。
+
 账号列表显示 AT 签发时间、过期时间和剩余时间。定时刷新只处理进入提前刷新窗口的账号；默认提前 24 小时检查，配置如下：
 
 ```dotenv

@@ -149,6 +149,28 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             env_loader._LOADED = old_loaded
             importlib.reload(account_config)
 
+    def test_live_check_driver_is_env_editable_and_defaults_to_current_protocol(self):
+        fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
+        self.assertIn("ACCOUNT_LIVE_CHECK_DRIVER", fields)
+        self.assertIn("ACCOUNT_LIVE_CHECK_BROWSER_ENABLED", fields)
+        self.assertEqual(fields["ACCOUNT_LIVE_CHECK_DRIVER"]["file"], "account.py")
+        self.assertEqual(account_config.ACCOUNT_LIVE_CHECK_DRIVER, "protocol_current")
+        self.assertFalse(account_config.ACCOUNT_LIVE_CHECK_BROWSER_ENABLED)
+
+        old_loaded = env_loader._LOADED
+        env_loader._LOADED = True
+        try:
+            with patch.dict(os.environ, {
+                "ACCOUNT_LIVE_CHECK_DRIVER": "protocol_current",
+                "ACCOUNT_LIVE_CHECK_BROWSER_ENABLED": "True",
+            }, clear=False):
+                reloaded = importlib.reload(account_config)
+                self.assertEqual("protocol_current", reloaded.ACCOUNT_LIVE_CHECK_DRIVER)
+                self.assertTrue(reloaded.ACCOUNT_LIVE_CHECK_BROWSER_ENABLED)
+        finally:
+            env_loader._LOADED = old_loaded
+            importlib.reload(account_config)
+
     def test_protocol_twofa_checkpoints_secret_before_activation(self):
         events = []
         secret = "JBSWY3DPEHPK3PXP"

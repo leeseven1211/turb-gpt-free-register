@@ -21,6 +21,13 @@ ACCOUNT_PLAN_CHECK_DRIVER = "protocol"
 ACCOUNT_2FA_DRIVER = "protocol"
 ACCOUNT_CODEX_DRIVER = "same_as_registration"
 
+# 普通“查活”单独维护驱动选择，不复用 ACCOUNT_PLAN_CHECK_DRIVER。
+# 阶段 1 默认解析为当前协议型旧 AT probe，保持现有行为；后续通过真实契约
+# 测试后再开放 browser_roxy / protocol_v2。
+ACCOUNT_LIVE_CHECK_DRIVER = "protocol_current"
+# 阶段 2 的 Roxy 旧 AT probe 默认关闭；真实契约测试通过后才允许开启。
+ACCOUNT_LIVE_CHECK_BROWSER_ENABLED = False
+
 
 apply_env_overrides(globals(), {
     "ACCOUNT_COMPLETION_PASSWORD_ENABLED": "bool",
@@ -32,6 +39,8 @@ apply_env_overrides(globals(), {
     "ACCOUNT_PLAN_CHECK_DRIVER": "str",
     "ACCOUNT_2FA_DRIVER": "str",
     "ACCOUNT_CODEX_DRIVER": "str",
+    "ACCOUNT_LIVE_CHECK_DRIVER": "str",
+    "ACCOUNT_LIVE_CHECK_BROWSER_ENABLED": "bool",
 })
 
 
