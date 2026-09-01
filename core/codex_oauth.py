@@ -1441,6 +1441,7 @@ def run_codex_oauth(
     proxy: str | None = None,
     force: bool = False,
     _cpa_reauth_round: int = 1,
+    driver_override: str | None = None,
 ) -> dict:
     """
     Codex OAuth 授权入口。独立补跑会新建会话；注册流程可把当前浏览器和代理
@@ -1489,6 +1490,7 @@ def run_codex_oauth(
                 proxy=route.proxy_url,
                 force=force,
                 _cpa_reauth_round=_cpa_reauth_round,
+                driver_override=driver_override,
             )
         finally:
             route.release(reason=f"codex-oauth-{email}")
@@ -1497,7 +1499,10 @@ def run_codex_oauth(
     try:
         from config import codex as _codex_cfg
         from config import roxybrowser as _roxy_cfg
-        oauth_driver = str(getattr(_codex_cfg, "CODEX_OAUTH_DRIVER", "protocol") or "protocol").strip().lower()
+        oauth_driver = str(
+            driver_override if driver_override is not None
+            else getattr(_codex_cfg, "CODEX_OAUTH_DRIVER", "protocol")
+        ).strip().lower()
         if oauth_driver == "same_as_registration":
             oauth_driver = str(getattr(_roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
         if oauth_driver in ("roxy", "roxybrowser", "fingerprint", "browser"):
@@ -1675,6 +1680,7 @@ def run_codex_oauth(
                 proxy=proxy,
                 force=force,
                 _cpa_reauth_round=_cpa_reauth_round + 1,
+                driver_override=driver_override,
             )
         logger.warning(f"[Codex] 失败：{email}，{type(exc).__name__}: {str(exc)[:200]}")
         logger.debug("[Codex] 失败详情:", exc_info=True)

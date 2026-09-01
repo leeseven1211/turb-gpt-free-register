@@ -37,6 +37,7 @@ from core.registration.selenium_auth import (
     is_email_verification_page as _is_email_verification_page,
     is_login_password_page as _is_login_password_page,
     click_passwordless_signup_if_present as _click_passwordless_signup_if_present,
+    safe_get as _safe_get,
     human_click as _human_click,
     human_type_text as _human_type_text,
 )
@@ -397,7 +398,11 @@ def _complete_login_challenge_after_email(
     password_submitted_at = 0.0
     totp_submitted_at = 0.0
     passwordless_clicked = False
+    passwordless_clicks = 0
+    passwordless_wait_started = 0.0
+    passwordless_last_result: dict = {}
     email_shell_seen_at = 0.0
+    blank_login_shell_seen_at = 0.0
     email_resubmit_done = False
     nextauth_fallback_done = False
     last_state: dict = {}
@@ -427,6 +432,40 @@ def _complete_login_challenge_after_email(
             ).lower() for marker in ("password", "one-time-code", "otp", "totp", "code"))
             for item in inputs
         )
+        # After the email form is submitted, ChatGPT can leave the browser at
+        # /auth/login?email=... with *no* mounted inputs at all.  The previous
+        # recovery only handled an empty-but-present email input, so this
+        # variant waited until the whole challenge budget expired.  Treat the
+        # route as a transient auth shell and use the same in-browser NextAuth
+        # navigation fallback before deciding that login is broken.
+        blank_login_shell = "/auth/login" in url.lower() and "email=" in url.lower() and not inputs
+        if blank_login_shell:
+            now = time.time()
+            if not blank_login_shell_seen_at:
+                blank_login_shell_seen_at = now
+            elif not nextauth_fallback_done and now - blank_login_shell_seen_at >= 1.0:
+                fallback = _submit_email_via_browser_nextauth(driver, email)
+                nextauth_fallback_done = True
+                safe_fallback = {
+                    key: fallback.get(key)
+                    for key in ("ok", "stage", "state", "reason")
+                    if key in fallback
+                }
+                logger.warning(
+                    "[Codex][Browser] 登录页停留在无控件 login?email 空壳，已启用 NextAuth 兜底：%s",
+                    safe_fallback,
+                )
+                fallback_state = str(fallback.get("state") or "").strip().lower()
+                if fallback.get("ok") and fallback_state == "otp":
+                    return "email_otp"
+                if fallback.get("ok") and fallback_state == "advanced":
+                    return "advanced"
+                if fallback.get("ok"):
+                    end = max(end, now + 45)
+                    human_delay("form")
+            time.sleep(0.5)
+            continue
+        blank_login_shell_seen_at = 0.0
         if "/auth/login" in url.lower() and "email=" in url.lower() and has_email_input and not has_challenge_input:
             now = time.time()
             if not email_shell_seen_at:
@@ -516,14 +555,72 @@ def _complete_login_challenge_after_email(
                 end = max(end, password_submitted_at + 25)
                 human_delay("form")
                 continue
-            if not passwordless_clicked:
+            if not passwordless_clicked and passwordless_clicks < 2:
+                if not passwordless_wait_started:
+                    passwordless_wait_started = time.monotonic()
                 result = _click_passwordless_signup_if_present(driver)
+                passwordless_last_result = result
                 if result.get("ok"):
-                    passwordless_clicked = True
+                    passwordless_clicks += 1
+                    passwordless_clicked = not bool(result.get("followup"))
                     logger.info("[Codex][Browser] 本地无注册密码，已切换到邮箱一次性验证码：email=%s", email)
                     human_delay("form")
                     continue
-            raise RuntimeError("账号进入登录密码页，本地无注册密码且页面无邮箱验证码入口，已在手机号验证前停止")
+                # Password input and the alternate email-code action are
+                # hydrated independently. Give the password page a bounded
+                # observation window instead of failing on the first scan.
+                if (
+                    time.monotonic() - passwordless_wait_started < 10
+                    and time.time() < end - 0.5
+                ):
+                    time.sleep(0.5)
+                    continue
+                # The old browser flow had one more recovery opportunity here:
+                # after landing on auth.openai.com/log-in/password, reopen the
+                # ChatGPT login shell and let the existing in-browser NextAuth
+                # fallback create a fresh authorization branch. This matters
+                # for accounts whose passwordless action is not rendered in
+                # the first auth-page variant.
+                if not nextauth_fallback_done:
+                    nextauth_fallback_done = True
+                    try:
+                        _safe_get(
+                            driver,
+                            "https://chatgpt.com/auth/login",
+                            timeout=30,
+                            attempts=2,
+                            accept_hosts=("chatgpt.com", "auth.openai.com"),
+                        )
+                        fallback = _submit_email_via_browser_nextauth(driver, email)
+                        safe_fallback = {
+                            key: fallback.get(key)
+                            for key in ("ok", "stage", "state", "reason")
+                            if key in fallback
+                        }
+                        logger.warning(
+                            "[Codex][Browser] 密码页未找到无密码入口，已执行一次 NextAuth 重新授权兜底：%s",
+                            safe_fallback,
+                        )
+                        fallback_state = str(fallback.get("state") or "").strip().lower()
+                        if fallback.get("ok") and fallback_state == "otp":
+                            return "email_otp"
+                        if fallback.get("ok") and fallback_state == "advanced":
+                            return "advanced"
+                        if fallback.get("ok"):
+                            passwordless_wait_started = 0.0
+                            end = max(end, time.time() + 45)
+                            human_delay("form")
+                            continue
+                        passwordless_last_result = fallback
+                    except Exception as exc:
+                        passwordless_last_result = {
+                            "ok": False,
+                            "reason": f"nextauth_fallback:{type(exc).__name__}: {str(exc)[:160]}",
+                        }
+            raise RuntimeError(
+                "账号进入登录密码页，本地无注册密码且页面无邮箱验证码入口，已在手机号验证前停止："
+                f"detail={passwordless_last_result}"
+            )
 
         if _is_email_verification_page(driver):
             logger.info("[Codex][Browser] 页面明确进入邮箱验证码分支：email=%s", email)

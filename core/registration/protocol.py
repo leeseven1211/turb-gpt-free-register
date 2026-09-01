@@ -9,6 +9,7 @@ import logging
 import time
 
 from config import email as _email_cfg
+from config import codex as _codex_cfg
 from config import openai_protocol as _protocol_cfg
 from config import twofa as _twofa_cfg
 from core.account_export import (
@@ -142,9 +143,22 @@ def run_protocol_registration(
     proxy: str | None = None,
     otp_code: str | None = None,
     batch_dir=None,
+    registration_options: dict | None = None,
 ) -> dict:
     """执行完整的纯协议 ChatGPT 注册流程。"""
     from core.registration_service import report_job_progress
+
+    options = dict(registration_options or {})
+    password_required = bool(options.get("password_enabled", False))
+    twofa_enabled = bool(options.get("twofa_enabled", _twofa_cfg.ENABLE_2FA))
+    # ``dict.get`` evaluates its default argument eagerly.  Read the live
+    # config only for legacy callers that did not provide a job snapshot.
+    codex_enabled = (
+        bool(options["codex_enabled"])
+        if "codex_enabled" in options
+        else bool(getattr(_codex_cfg, "ENABLE_CODEX_AUTO", False))
+    )
+    plan_check_enabled = bool(options.get("plan_check_enabled", True))
 
     report_job_progress("browser", "running", "正在初始化协议注册会话")
     session = BrowserSession(proxy=proxy)
@@ -378,7 +392,7 @@ def run_protocol_registration(
 
         # ==================== 阶段7: 设置 2FA ====================
         totp_secret = None
-        if _twofa_cfg.ENABLE_2FA:
+        if twofa_enabled:
             report_job_progress("twofa", "running", "正在设置 Authenticator 2FA")
             try:
                 twofa_driver = _twofa_cfg.get_twofa_driver()
@@ -398,10 +412,9 @@ def run_protocol_registration(
         # ==================== 阶段 7.5: Codex OAuth ====================
         codex_result = {"status": "skipped", "ok": False, "message": "未触发"}
         try:
-            from config import codex as _codex_cfg
             from core.codex_oauth import run_codex_oauth
 
-            if bool(getattr(_codex_cfg, "ENABLE_CODEX_AUTO", False)):
+            if codex_enabled:
                 report_job_progress("codex", "running", "正在执行 Codex OAuth")
                 codex_result = run_codex_oauth(email, proxy=session.proxy)
                 report_job_progress(
@@ -451,30 +464,33 @@ def run_protocol_registration(
         if totp_secret:
             db.update_account_totp_secret(email, totp_secret)
             db.update_account_twofa_status(email, "success", "协议 2FA 已启用")
-        elif _twofa_cfg.ENABLE_2FA:
+        elif twofa_enabled:
             db.update_account_twofa_status(email, "failed", "Authenticator 2FA 尚未完成")
 
         # 套餐查询独立入队；注册主体不再等待它完成。
         plan_result = {"status": "pending", "ok": False, "message": "套餐查询已独立入队"}
-        try:
-            from core.plan_check_service import enqueue_account_plan_check
+        if plan_check_enabled:
+            try:
+                from core.plan_check_service import enqueue_account_plan_check
 
-            queued = enqueue_account_plan_check(
-                account_id=account_id,
-                email=email,
-                access_token=access_token,
-                trigger="registration_auto",
-            )
-            plan_result = {
-                "status": "pending" if queued.get("accepted") or queued.get("busy") else "failed",
-                # Enqueued/busy means the capability is not confirmed yet;
-                # keep it visible as a plan_check next action until its worker
-                # records a successful result.
-                "ok": False,
-                "message": "套餐查询已入队" if queued.get("accepted") else str(queued.get("error") or "套餐查询未入队"),
-            }
-        except Exception as exc:
-            plan_result = {"status": "failed", "ok": False, "message": f"{type(exc).__name__}: {str(exc)[:180]}"}
+                queued = enqueue_account_plan_check(
+                    account_id=account_id,
+                    email=email,
+                    access_token=access_token,
+                    trigger="registration_auto",
+                )
+                plan_result = {
+                    "status": "pending" if queued.get("accepted") or queued.get("busy") else "failed",
+                    # Enqueued/busy means the capability is not confirmed yet;
+                    # keep it visible as a plan_check next action until its worker
+                    # records a successful result.
+                    "ok": False,
+                    "message": "套餐查询已入队" if queued.get("accepted") else str(queued.get("error") or "套餐查询未入队"),
+                }
+            except Exception as exc:
+                plan_result = {"status": "failed", "ok": False, "message": f"{type(exc).__name__}: {str(exc)[:180]}"}
+        else:
+            plan_result = {"status": "skipped", "ok": True, "message": "未启用注册后自动查套餐"}
 
         # ==================== 阶段9: 后置自动触发 flow ====================
         flow_result = {"status": "skipped", "ok": False, "message": "未触发"}
@@ -501,7 +517,7 @@ def run_protocol_registration(
         logger.debug(f"[完成] TOTP Secret: {totp_secret or '(未设置)'}")
 
         codex_ok = codex_result.get("ok") or codex_result.get("status") == "skipped"
-        twofa_ok = (not _twofa_cfg.ENABLE_2FA) or bool(totp_secret)
+        twofa_ok = (not twofa_enabled) or bool(totp_secret)
         postprocess_success = bool(codex_ok and twofa_ok and plan_result.get("ok"))
         task_error = None if postprocess_success else "; ".join(
             item for item in (
@@ -516,9 +532,10 @@ def run_protocol_registration(
             password_present=True,
             outcomes={"twofa": {"status": "success" if twofa_ok else "failed", "ok": twofa_ok},
                       "codex": codex_result, "plan_check": plan_result},
-            twofa_required=bool(_twofa_cfg.ENABLE_2FA),
-            codex_enabled=True,
-            plan_check_required=True,
+            password_required=password_required,
+            twofa_required=twofa_enabled,
+            codex_enabled=codex_enabled,
+            plan_check_required=plan_check_enabled,
         )
 
         return {

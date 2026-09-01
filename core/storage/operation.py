@@ -719,15 +719,28 @@ def _next_registration_actions(job: dict, account: dict | None, target_status: s
         return [{"action": "registration_resume", "label": "继续邮箱验证", "source_job_id": source_job_id}]
     if not account:
         return [{"action": "registration_retry", "label": "重新执行注册", "source_job_id": source_job_id}]
-    if str(account.get("codex_status") or "") != "success":
+    snapshot = job.get("config_snapshot")
+    if not isinstance(snapshot, dict):
+        raw_data = job.get("data")
+        snapshot = raw_data.get("config_snapshot") if isinstance(raw_data, dict) else None
+    has_snapshot = isinstance(snapshot, dict)
+    codex_enabled = bool(snapshot.get("codex_enabled", True)) if has_snapshot else True
+    if codex_enabled and str(account.get("codex_status") or "") != "success":
         return [{"action": "codex_retry", "label": "补跑 Codex", "source_job_id": source_job_id}]
     extra = _account_extra(account)
-    missing_setup = (
-        not str(extra.get("account_password") or extra.get("login_password") or "").strip()
-        or not str(account.get("totp_secret") or "").strip()
-        or bool(extra.get("totp_setup_pending"))
-        or str(account.get("plan_check_status") or "").lower() != "success"
-    )
+    missing_setup = False
+    if (not has_snapshot or bool(snapshot.get("password_enabled", True))) and not str(
+        extra.get("account_password") or extra.get("login_password") or ""
+    ).strip():
+        missing_setup = True
+    if (not has_snapshot or bool(snapshot.get("twofa_enabled", True))) and (
+        not str(account.get("totp_secret") or "").strip() or bool(extra.get("totp_setup_pending"))
+    ):
+        missing_setup = True
+    if (not has_snapshot or bool(snapshot.get("plan_check_enabled", True))) and str(
+        account.get("plan_check_status") or ""
+    ).lower() != "success":
+        missing_setup = True
     if missing_setup:
         return [{"action": "twofa_retry", "label": "补齐账号配置", "source_job_id": source_job_id}]
     return []
@@ -753,6 +766,12 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
     if account is None and job.get("email"):
         account = accounts_by_email.get(str(job.get("email") or "").strip().lower())
     attempt_id = _upsert_attempt(cur, root_job_id=root_job_id, job=job, account=account)
+    projection_data = {
+        "legacy_root_job_id": root_job_id,
+        "latest_legacy_job_id": job_id,
+    }
+    if isinstance(job.get("config_snapshot"), dict):
+        projection_data["config_snapshot"] = dict(job["config_snapshot"])
     cur.execute(
         f"UPDATE {postgres_store.qualified('registration_jobs')} SET attempt_id=%s WHERE id=%s",
         (attempt_id, job_id),
@@ -817,7 +836,7 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
             "manual_retry" if job.get("parent_job_id") else "manual",
             job.get("created_at") or _now(), job.get("updated_at") or job.get("completed_at") or _now(),
             job.get("completed_at") if status in _TERMINAL_STATUSES else None,
-            _json({"legacy_root_job_id": root_job_id, "latest_legacy_job_id": job_id}),
+            _json(projection_data),
         ),
     )
     task_id = int(cur.fetchone()["id"])
@@ -878,7 +897,11 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
             _duration(job.get("started_at"), job.get("completed_at")), error_category, error_code,
             error_message, _json({"account_id": (account or {}).get("id"), "retry_action": job.get("retry_action")}),
             run_log_file, job.get("created_at") or _now(),
-            _json({"legacy_job_id": job_id, "parent_job_id": job.get("parent_job_id")}),
+            _json({
+                "legacy_job_id": job_id,
+                "parent_job_id": job.get("parent_job_id"),
+                **({"config_snapshot": dict(job["config_snapshot"])} if isinstance(job.get("config_snapshot"), dict) else {}),
+            }),
         ),
     )
     run_id = int(cur.fetchone()["id"])

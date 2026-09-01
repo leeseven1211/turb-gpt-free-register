@@ -237,6 +237,68 @@ class RoxyPhoneCountryTests(unittest.TestCase):
 
         self.assertEqual(result, "email_otp")
 
+    def test_nextauth_fallback_recovers_login_shell_without_mounted_inputs(self):
+        driver = MagicMock()
+        clock = [100.0]
+        shell_state = {
+            "url": "https://chatgpt.com/auth/login?email=a%40example.com",
+            "inputs": [],
+            "errors": [],
+        }
+        with (
+            patch("core.roxy_codex_oauth._login_challenge_state", return_value=shell_state),
+            patch("core.roxy_codex_oauth._is_login_password_page", return_value=False),
+            patch("core.roxy_codex_oauth._is_totp_login_page", return_value=False),
+            patch("core.roxy_codex_oauth._is_email_verification_page", return_value=False),
+            patch("core.roxy_codex_oauth._is_login_advanced", return_value=False),
+            patch(
+                "core.roxy_codex_oauth._submit_email_via_browser_nextauth",
+                return_value={"ok": True, "stage": "landed", "state": "otp"},
+            ) as nextauth,
+            patch("core.roxy_codex_oauth.time.time", side_effect=lambda: clock[0]),
+            patch("core.roxy_codex_oauth.time.sleep", side_effect=lambda seconds: clock.__setitem__(0, clock[0] + 1.0)),
+            patch("core.roxy_codex_oauth.human_delay"),
+        ):
+            result = _complete_login_challenge_after_email(
+                driver, "a@example.com", "", "", timeout=5
+            )
+
+        self.assertEqual(result, "email_otp")
+        nextauth.assert_called_once_with(driver, "a@example.com")
+
+    def test_password_page_reopens_chatgpt_for_nextauth_fallback(self):
+        driver = MagicMock()
+        clock = [100.0]
+        password_state = {
+            "url": "https://auth.openai.com/log-in/password",
+            "inputs": [],
+            "errors": [],
+        }
+        with (
+            patch("core.roxy_codex_oauth._login_challenge_state", return_value=password_state),
+            patch("core.roxy_codex_oauth._is_login_password_page", return_value=True),
+            patch("core.roxy_codex_oauth._is_totp_login_page", return_value=False),
+            patch("core.roxy_codex_oauth._is_email_verification_page", return_value=False),
+            patch("core.roxy_codex_oauth._is_login_advanced", return_value=False),
+            patch("core.roxy_codex_oauth._click_passwordless_signup_if_present", return_value={"ok": False}),
+            patch("core.roxy_codex_oauth._safe_get") as safe_get,
+            patch(
+                "core.roxy_codex_oauth._submit_email_via_browser_nextauth",
+                return_value={"ok": True, "stage": "landed", "state": "otp"},
+            ) as nextauth,
+            patch("core.roxy_codex_oauth.time.time", side_effect=lambda: clock[0]),
+            patch("core.roxy_codex_oauth.time.monotonic", side_effect=lambda: clock[0]),
+            patch("core.roxy_codex_oauth.time.sleep", side_effect=lambda seconds: clock.__setitem__(0, clock[0] + 1.0)),
+            patch("core.roxy_codex_oauth.human_delay"),
+        ):
+            result = _complete_login_challenge_after_email(
+                driver, "a@example.com", "", "", timeout=30
+            )
+
+        self.assertEqual(result, "email_otp")
+        safe_get.assert_called_once()
+        nextauth.assert_called_once_with(driver, "a@example.com")
+
     def test_email_otp_provider_receives_codex_wait_budget(self):
         calls = []
 

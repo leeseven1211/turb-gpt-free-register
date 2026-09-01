@@ -677,7 +677,8 @@ def _ensure_registration_attempt_job(row: dict) -> None:
     """
     from core.storage import registration
 
-    attempt = registration.ensure_attempt_for_job(int(row["id"]))
+    job_data = row.get("data") if isinstance(row.get("data"), dict) else {}
+    attempt = registration.ensure_attempt_for_job(int(row["id"]), data=job_data)
     attempt_id = int(attempt["id"])
     row["attempt_id"] = attempt_id
     record_store.patch_row(record_store.JOBS, int(row["id"]), {"attempt_id": attempt_id})
@@ -689,6 +690,7 @@ def _ensure_registration_attempt_job(row: dict) -> None:
         action_type=str(row.get("job_type") or "registration"),
         execution_id=row.get("execution_id"),
         worker_pid=row.get("worker_pid"),
+        data=job_data,
     )
 
 
@@ -2665,6 +2667,7 @@ def _new_job_row(
     batch_index: int | None = None,
     batch_size: int | None = None,
     batch_workers: int | None = None,
+    data: dict | None = None,
 ) -> dict:
     job_uuid = str(uuid.uuid4())
     log_file = task_run_log.build_path(
@@ -2696,6 +2699,7 @@ def _new_job_row(
         "progress_stage": None,
         "progress_updated_at": None,
         "progress_steps": {},
+        "data": dict(data or {}),
         "proxy_provider": None,
         "proxy_status": None,
         "proxy_endpoint": None,
@@ -2714,6 +2718,7 @@ def create_job(
     batch_index: int | None = None,
     batch_size: int | None = None,
     batch_workers: int | None = None,
+    data: dict | None = None,
 ) -> dict:
     """创建一个首次执行的 pending 注册任务。"""
     with _LOCK:
@@ -2725,6 +2730,7 @@ def create_job(
             batch_index=batch_index,
             batch_size=batch_size,
             batch_workers=batch_workers,
+            data=data,
         )
         rows.append(row)
         _save_jobs(rows)
@@ -2744,6 +2750,7 @@ def create_retry_job(
     batch_index: int | None = None,
     batch_size: int | None = None,
     batch_workers: int | None = None,
+    data: dict | None = None,
 ) -> tuple[dict, bool]:
     """原子创建重试子任务；同一任务链已有活跃任务时直接复用。"""
     with _LOCK:
@@ -2790,6 +2797,7 @@ def create_retry_job(
             batch_index=batch_index,
             batch_size=batch_size,
             batch_workers=batch_workers,
+            data=data,
         )
         rows.append(row)
         _save_jobs(rows)

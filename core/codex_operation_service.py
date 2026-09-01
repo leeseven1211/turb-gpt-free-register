@@ -50,13 +50,16 @@ def _feature_ready() -> tuple[bool, str]:
     return require_feature("codex_retry")
 
 
-def _config_snapshot() -> dict:
+def _config_snapshot(driver_override: str | None = None) -> dict:
     """只保存可复现执行路径所需的非敏感配置。"""
     from config import codex as cfg
     from config import proxy as proxy_cfg
     from config import roxybrowser as roxy_cfg
 
-    driver = str(getattr(cfg, "CODEX_OAUTH_DRIVER", "protocol") or "protocol").strip().lower()
+    driver = str(
+        driver_override if driver_override is not None
+        else getattr(cfg, "CODEX_OAUTH_DRIVER", "protocol")
+    ).strip().lower()
     if driver == "same_as_registration":
         driver = str(getattr(roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
     return {
@@ -112,6 +115,7 @@ def submit(
     batch_id: int | None = None,
     batch_ordinal: int | None = None,
     dispatch: bool = True,
+    driver: str | None = None,
 ) -> dict:
     """提交一个 Codex OAuth 逻辑任务和第一次 attempt。"""
     email = str(email or "").strip()
@@ -135,7 +139,7 @@ def submit(
             parent_task_id=parent_task_id,
             batch_id=batch_id,
             batch_ordinal=batch_ordinal,
-            data={"config_snapshot": _config_snapshot()},
+            data={"config_snapshot": _config_snapshot(driver_override=driver)},
         )
     except Exception as exc:
         # 活跃 run 的部分唯一索引是跨进程防重事实；不再依赖进程内 email set。
@@ -366,7 +370,8 @@ def _execute_run(run_id: int) -> dict:
             enabled, reason = _feature_ready()
             if not enabled:
                 raise RuntimeError(f"配置预检失败：{reason}")
-            snapshot = _config_snapshot()
+            raw_data = current.get("data") if isinstance(current.get("data"), dict) else {}
+            snapshot = dict(raw_data.get("config_snapshot") or {}) if isinstance(raw_data.get("config_snapshot"), dict) else _config_snapshot()
             report(stage="preflight", message="配置预检通过", state="success", detail={"config_snapshot": snapshot})
             token.checkpoint()
 
@@ -404,6 +409,7 @@ def _execute_run(run_id: int) -> dict:
                 email,
                 proxy=route.proxy_url if route is not None else None,
                 force=True,
+                driver_override=driver,
             )
             confirmed = bool(result.get("credential_confirmed"))
             callback_submitted = bool(result.get("callback_submitted"))

@@ -177,7 +177,27 @@ class DashboardApiTests(PostgresTestCase):
         self.assertNotIn('<nav class="module-subnav"', html)
         self.assertIn("$$('[data-module-subnav]').forEach", html)
         self.assertIn('id="btnCodexUploadSub2V2"', html)
-        self.assertIn('id="btnSetupSelectedAccountsV2"', html)
+        self.assertIn('id="btnAddPasswordSelectedAccountsV2"', html)
+        self.assertIn('id="btnAddTwofaSelectedAccountsV2"', html)
+        self.assertIn('id="btnCompleteSelectedAccountsV2"', html)
+        self.assertIn('>刷新 AT</button>', html)
+        self.assertIn('>查封号邮件</button>', html)
+        self.assertIn('>补 Codex</button>', html)
+        self.assertIn('>复制 Token</button>', html)
+        self.assertNotIn('id="btnOpenAccountCompletionConfigTopV2"', html)
+        self.assertNotIn('>补全规则</button>', html)
+        self.assertNotIn('>补全配置</button>', html)
+        self.assertNotIn('旧版补齐配置', html)
+        self.assertIn("const CONFIG_LIFECYCLE_GROUP_V2 = '注册与账号';", html)
+        self.assertIn('data-lifecycle-section-v2', html)
+        self.assertIn('renderLifecycleDriverSelect', html)
+        self.assertIn('执行方式', html)
+        self.assertIn('注册调试', html)
+        operation_start = html.index('>操作</span>')
+        deactivation_mail = html.index('>查封号邮件</button>')
+        copy_export = html.index('>复制与导出</span>')
+        self.assertLess(operation_start, deactivation_mail)
+        self.assertLess(deactivation_mail, copy_export)
         self.assertIn("/api/accounts/setup-bulk", html)
         self.assertIn("syncFacetSelect('accountPlanFilterV2'", html)
         self.assertIn("syncFacetSelect('codexStatusFilterV2'", html)
@@ -289,8 +309,7 @@ class DashboardApiTests(PostgresTestCase):
             "btnRetrySelectedCodexV2", "btnDownloadSelectedCpaV2", "btnUploadSelectedCodexSub2V2",
             "btnStopSelectedCodexV2", "btnCheckSelectedDeactivationMailV2",
             "btnCopySelectedLinesV2", "btnCopySelectedEmailsV2", "btnCopySelectedPasswordsV2", "btnDownloadSelectedTxtV2",
-            "btnArchiveSelectedAccountsV2", "btnDeleteSelectedAccountsV2", "btnCopyAllTokensV2",
-            "btnCopyAllLinesV2", "btnRefreshAccountsV2",
+            "btnArchiveSelectedAccountsV2", "btnDeleteSelectedAccountsV2", "btnRefreshAccountsV2",
             # Codex 凭证
             "btnCodexReauthorizeBulkV2", "btnCodexDownloadBulkV2", "btnCodexDownloadBulkCpaV2", "btnCodexUploadSub2V2",
             "btnCodexRefreshTokenBulkV2", "btnCodexArchiveBulkV2", "btnCodexDeleteBulkV2", "btnRefreshCodexV2",
@@ -301,6 +320,7 @@ class DashboardApiTests(PostgresTestCase):
         }
         for action_id in action_ids:
             self.assertIn(f'id="{action_id}"', html, action_id)
+        self.assertIn("bind('btnRefreshSelectedTokenV2', () => refreshSelectedToken());", html)
         for table_name in ("jobs", "accounts", "codex", "outlook"):
             self.assertIn(f'data-resizable-table="{table_name}"', html)
             reset_id = f"btnReset{table_name.capitalize()}ColumnsV2"

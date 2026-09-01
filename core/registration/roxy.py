@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from config import roxybrowser as _cfg
+from config import codex as _codex_cfg
 from config import twofa as _twofa_cfg
 from core.account_export import setup_2fa_protocol
 from core.email_provider import wait_for_otp, resolve_email_source
@@ -473,6 +474,50 @@ def _page_warmup(driver, *, reason: str = "") -> None:
             })
     except Exception:
         pass
+
+
+def _refresh_chatgpt_settings_shell_if_needed(driver, *, reason: str = "") -> bool:
+    """Refresh a barely-mounted ChatGPT settings SPA once.
+
+    A successful document navigation can still leave the settings React tree as
+    a tiny locale/menu shell. This is especially easy to hit when a previous
+    settings route was ``Security/passkeys``. Treat that state as a page
+    hydration problem, not as a missing localized password label.
+    """
+    try:
+        state = driver.execute_script(r"""
+        const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+          && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+        const url = String(location.href || '').toLowerCase();
+        const text = String(document.body?.innerText || '').replace(/\s+/g, ' ').trim();
+        const interactive = [...document.querySelectorAll('button,a,[role="button"],input,select,textarea')]
+          .filter(visible).length;
+        const settingsRoute = /#settings\//i.test(url) || /\/settings\//i.test(url);
+        return {settings_route: settingsRoute, text_length: text.length, interactive};
+        """) or {}
+    except Exception:
+        return False
+
+    # A normal Security page contains substantially more than the single
+    # localized settings label. Keep this bounded to one refresh so a real
+    # remote outage is still reported by the caller's existing timeout.
+    if not state.get("settings_route") or int(state.get("text_length") or 0) >= 500:
+        return False
+    if int(state.get("interactive") or 0) > 4:
+        return False
+    logger.warning(
+        "%s 检测到 ChatGPT 设置页前端空壳，刷新一次等待安全设置挂载：reason=%s state=%s",
+        _log_prefix(driver), reason or "settings", state,
+    )
+    try:
+        driver.refresh()
+    except Exception:
+        try:
+            driver.execute_script("window.stop();")
+        except Exception:
+            pass
+    _page_warmup(driver, reason=f"settings_shell_refresh:{reason or 'settings'}")
+    return True
 
 
 def _find_any(driver, selectors: list[str], timeout: int | None = None):
@@ -2219,6 +2264,7 @@ def _click_passwordless_signup_if_present(driver) -> dict:
             el.getAttribute('data-testid'), el.getAttribute('data-dd-action-name'), el.className, el.textContent
           ].join(' ').toLowerCase();
           const text = norm(el.textContent || el.getAttribute('value') || '');
+          const compactAttrs = norm(attrs);
           return (
             (name === 'intent' && value.includes('passwordless') && value.includes('send_otp')) ||
             (name === 'intent' && value.includes('passwordless') && value.includes('otp')) ||
@@ -2235,8 +2281,36 @@ def _click_passwordless_signup_if_present(driver) -> dict:
             text.includes('一次性验证码') ||
             text.includes('一次性驗證碼') ||
             text.includes('メールでコード') ||
+            text.includes('メールでログイン') ||
+            text.includes('メールで続行') ||
+            text.includes('メールで認証') ||
+            text.includes('メールで確認') ||
+            text.includes('コードでログイン') ||
+            text.includes('コードを使ってログイン') ||
             text.includes('ワンタイムコード') ||
+            text.includes('ワンタイムパスワード') ||
+            text.includes('ワンタイムコードを使う') ||
+            text.includes('別の方法') ||
+            text.includes('パスワードを使わずにログイン') ||
+            text.includes('パスワードなしでログイン') ||
             text.includes('認証コード') ||
+            text.includes('使用其他方式') ||
+            text.includes('尝试其他方式') ||
+            text.includes('使用邮箱验证码') ||
+            text.includes('使用邮箱登录') ||
+            text.includes('邮箱验证码登录') ||
+            text.includes('改用邮箱') ||
+            text.includes('다른 방법') ||
+            text.includes('이메일로 로그인') ||
+            text.includes('일회용 코드') ||
+            compactAttrs.includes('tryanotherway') ||
+            compactAttrs.includes('useanothermethod') ||
+            compactAttrs.includes('useemailinstead') ||
+            compactAttrs.includes('continuewithemail') ||
+            compactAttrs.includes('emailmeacode') ||
+            compactAttrs.includes('sendmeacode') ||
+            compactAttrs.includes('loginwithemail') ||
+            compactAttrs.includes('useacodeinstead') ||
             text.includes('useonetimeregistrationcode') ||
             text.includes('useaone-timecodetosignup') ||
             text.includes('useaone-timecodetoregister') ||
@@ -2247,12 +2321,37 @@ def _click_passwordless_signup_if_present(driver) -> dict:
             text.includes('one-timecode')
           );
         };
-        const btn = candidates.find(isPasswordlessOtp);
-        if (!btn) return {ok:false, reason:'missing_passwordless_button'};
+        const isMethodPicker = el => {
+          const attrs = norm([
+            el.textContent, el.getAttribute('aria-label'), el.getAttribute('title'),
+            el.getAttribute('data-testid'), el.getAttribute('data-dd-action-name')
+          ].join(' '));
+          return attrs.includes('tryanotherway') || attrs.includes('useanothermethod')
+            || attrs.includes('別の方法') || attrs.includes('使用其他方式')
+            || attrs.includes('尝试其他方式') || attrs.includes('다른 방법');
+        };
+        const btn = candidates.find(isPasswordlessOtp) || candidates.find(isMethodPicker);
+        if (!btn) return {
+          ok:false,
+          reason:'missing_passwordless_button',
+          // 只记录技术属性和短文本，方便区分“入口未挂载”和“当前实验分支不提供 OTP”；
+          // 不读取 input value，也不把完整页面正文写入任务错误。
+          candidates: candidates.map(el => ({
+            tag: el.tagName,
+            name: el.getAttribute('name') || '',
+            value: el.getAttribute('value') || '',
+            testid: el.getAttribute('data-testid') || '',
+            action: el.getAttribute('data-dd-action-name') || '',
+            aria: el.getAttribute('aria-label') || '',
+            text: (el.textContent || el.getAttribute('value') || '').replace(/\\s+/g, ' ').trim().slice(0, 100)
+          })).slice(0, 30)
+        };
         btn.scrollIntoView({block:'center'});
         return {
           ok:true,
-          reason:'passwordless_send_otp_target',
+          reason: isMethodPicker(btn) && !isPasswordlessOtp(btn)
+            ? 'passwordless_method_picker' : 'passwordless_send_otp_target',
+          followup: isMethodPicker(btn) && !isPasswordlessOtp(btn),
           button: btn,
           name: btn.getAttribute('name') || '',
           value: btn.getAttribute('value') || '',
@@ -2261,7 +2360,10 @@ def _click_passwordless_signup_if_present(driver) -> dict:
         """) or {"ok": False, "reason": "empty_result"}
         if result.get("ok") and result.get("button"):
             _human_click(driver, result.get("button"), label="passwordless_otp")
-            result["reason"] = "clicked_passwordless_send_otp"
+            result["reason"] = (
+                "clicked_passwordless_method_picker"
+                if result.get("followup") else "clicked_passwordless_send_otp"
+            )
             result.pop("button", None)
         return result
     except Exception as exc:
@@ -2963,7 +3065,7 @@ def _open_roxy_profile_with_capacity_wait(client, proxy_url: str | None, progres
 
 _CHATGPT_HOME_URL = "https://chatgpt.com/"
 _CHATGPT_SECURITY_SETTINGS_URL = "https://chatgpt.com/#settings/Security"
-_CHATGPT_PASSWORD_SETTINGS_URL = _CHATGPT_HOME_URL
+_CHATGPT_PASSWORD_SETTINGS_URL = _CHATGPT_SECURITY_SETTINGS_URL
 _MFA_EMAIL_CODE_SELECTOR = (
     'input[name="code"][autocomplete="one-time-code"], '
     'input[autocomplete="one-time-code"]:not([name="totp_otp"])'
@@ -3185,11 +3287,13 @@ def _open_chatgpt_security_settings(driver, *, timeout: int = 75):
     """Open Security settings and return the stable Authenticator toggle."""
     _safe_get(
         driver,
-        _CHATGPT_HOME_URL,
+        _CHATGPT_SECURITY_SETTINGS_URL,
         timeout=min(45, int(getattr(_cfg, "ROXY_SELENIUM_TIMEOUT", 90) or 90)),
         attempts=2,
         accept_hosts=("chatgpt.com",),
     )
+    _page_warmup(driver, reason="chatgpt_security_settings")
+    _refresh_chatgpt_settings_shell_if_needed(driver, reason="chatgpt_security_settings")
     end = time.time() + max(10, int(timeout))
     dismissed_welcome = False
     profile_clicks = 0
@@ -3269,7 +3373,14 @@ def _open_chatgpt_security_settings(driver, *, timeout: int = 75):
     )
 
 
-def set_roxy_login_password(driver, email: str, password: str, *, timeout: int = 45) -> str:
+def set_roxy_login_password(
+    driver,
+    email: str,
+    password: str,
+    *,
+    timeout: int = 45,
+    on_password_submitted=None,
+) -> str:
     """在已登录的 ChatGPT 账号设置中补充账号密码。
 
     无密码账号从“账户安全与登录”里的密码“添加”入口进入新密码页；
@@ -3286,6 +3397,8 @@ def set_roxy_login_password(driver, email: str, password: str, *, timeout: int =
         attempts=2,
         accept_hosts=("chatgpt.com",),
     )
+    _page_warmup(driver, reason="chatgpt_password_settings")
+    _refresh_chatgpt_settings_shell_if_needed(driver, reason="chatgpt_password_settings")
     end = time.time() + max(10, int(timeout))
     password_inputs = []
     action = None
@@ -3371,7 +3484,7 @@ def set_roxy_login_password(driver, email: str, password: str, *, timeout: int =
         const passwordSettingTestId = /(?:^|[-_:])password[-_:]?setting(?:$|[-_:])/i;
         const addPassword = /(?:add|set|create)\s+.{0,30}password|password\s+.{0,30}(?:add|set|create)|添加密码|设置密码|新增密码|パスワード.{0,30}(?:追加|設定)|(?:追加|設定).{0,30}パスワード|비밀번호.{0,30}(?:추가|설정)|(?:추가|설정).{0,30}비밀번호|(?:ajouter|définir|configurer).{0,30}(?:mot\s+de\s+passe|password)|(?:mot\s+de\s+passe|password).{0,30}(?:ajouter|définir|configurer)|(?:agregar|añadir|establecer|configurar).{0,30}(?:contraseña|password)|(?:contraseña|password).{0,30}(?:agregar|añadir|establecer|configurar)|(?:adicionar|definir|configurar).{0,30}(?:senha|password)|(?:senha|password).{0,30}(?:adicionar|definir|configurar)|(?:hinzufügen|festlegen|einstellen).{0,30}(?:passwort|password)|(?:passwort|password).{0,30}(?:hinzufügen|festlegen|einstellen)|(?:добавить|установить|настроить).{0,30}(?:пароль|password)|(?:пароль|password).{0,30}(?:добавить|установить|настроить)/i;
         const addAction = /^(?:add|set|create|添加|设置|新增|追加|設定|추가|설정|ajouter|définir|configurer|agregar|añadir|establecer|adicionar|hinzufügen|festlegen|einstellen|добавить|установить|настроить)$/i;
-        const negative = /forgot|reset|log.?in|sign.?in|one.?time|otp|忘记|重置|一次性|验证码/i;
+        const negative = /forgot|reset|log.?in|sign.?in|one.?time|otp|忘记|重置|一次性|验证码|パスワードを忘れた|リセット|ログイン|サインイン|ワンタイム|認証コード|비밀번호.?찾기|로그인/i;
         const buttons = [...document.querySelectorAll('button,a,[role="button"],[role="menuitem"],[role="tab"]')].filter(visible);
         const settingsMarker = /settings|设置|設定|설정|paramètres|configurações|definições|definicoes/i;
         const securityMarker = /security|安全|セキュリティ|보안|sécurité|seguridad|segurança|sicherheit|безопас/i;
@@ -3511,6 +3624,12 @@ def set_roxy_login_password(driver, email: str, password: str, *, timeout: int =
         if not submitted:
             raise RuntimeError("账号密码设置页缺少提交按钮")
 
+    # 表单提交后远端结果可能需要较长时间才反映到 DOM；先把密码交给
+    # 调用方写入恢复检查点，避免后续诊断脚本/网络异常导致“远端已设置、
+    # 本地没有保存密码”。这和注册流程的提交后检查点策略保持一致。
+    if on_password_submitted is not None:
+        on_password_submitted(normalized)
+
     end = time.time() + max(8, int(timeout))
     last_text = ""
     while time.time() < end:
@@ -3519,8 +3638,14 @@ def set_roxy_login_password(driver, email: str, password: str, *, timeout: int =
         const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
           && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
         const inputs = [...document.querySelectorAll('input[type="password"],input[autocomplete*="password" i],input[name*="password" i]')].filter(visible);
-        const errors = [...document.querySelectorAll('[role="alert"],[aria-invalid="true"],[class*="error" i]')]
-          .filter(visible).map(el => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim()).filter(Boolean);
+        // Do not use [class*="error"] here. The ChatGPT app has unrelated
+        // loading/streaming classes whose text can be localized as “思考”; the
+        // old broad selector treated that normal state as a password failure.
+        const errors = [...document.querySelectorAll(
+          '[role="alert"],[aria-live="assertive"],[aria-invalid="true"],'
+          + '[data-testid*="error" i],[data-test-id*="error" i],[data-state="error"]'
+        )].filter(visible).map(el => (el.innerText || el.textContent || '')
+          .replace(/\\s+/g, ' ').trim()).filter(Boolean);
         return {inputs, errors, body: (document.body?.innerText || '').replace(/\\s+/g, ' ').slice(0, 1200)};
         """) or {}
         last_text = "; ".join((state.get("errors") or [])[:3]) or str(state.get("body") or "")[-400:]
@@ -3951,9 +4076,24 @@ def run_roxy_registration(
     batch_dir: Path | None = None,
     existing_password: str | None = None,
     existing_totp_secret: str | None = None,
+    registration_options: dict | None = None,
 ) -> dict:
     """Roxy 指纹浏览器自动化注册入口。"""
     from core.registration_service import report_job_otp_evidence, report_job_progress, report_registered_account
+
+    options = dict(registration_options or {})
+    password_required = bool(options.get("password_enabled", _registration_auth_mode() == "password"))
+    twofa_enabled = bool(options.get("twofa_enabled", _twofa_cfg.ENABLE_2FA))
+    # ``dict.get`` evaluates its default argument eagerly.  Read the live
+    # config only for legacy callers that did not provide a job snapshot; this
+    # keeps submitted choices authoritative and avoids touching Codex config
+    # while Codex is disabled.
+    codex_enabled = (
+        bool(options["codex_enabled"])
+        if "codex_enabled" in options
+        else bool(getattr(_codex_cfg, "ENABLE_CODEX_AUTO", False))
+    )
+    plan_check_enabled = bool(options.get("plan_check_enabled", True))
 
     report_job_progress("browser", "running", "正在创建并启动 Roxy 浏览器环境")
     client = RoxyBrowserClient()
@@ -4026,7 +4166,7 @@ def run_roxy_registration(
 
         # 新版注册流可能先进入 /create-account/password；参考 FlowPilot 的 fill-password 步骤，
         # 先设置密码并提交，然后再等待邮箱验证码页。
-        password_stage_expected = _registration_auth_mode() == 'password' or bool(existing_password)
+        password_stage_expected = password_required or bool(existing_password)
         report_job_progress(
             "login_password",
             "running" if password_stage_expected else "skipped",
@@ -4268,7 +4408,11 @@ def run_roxy_registration(
         token_budget = StageBudget.start(120)
         session_info = _fetch_chatgpt_session(driver, timeout=120, budget=token_budget)
         access_token = session_info["accessToken"]
-        captured_plan_result = registration_plan_capture.read_or_fetch_selenium(driver, access_token)
+        captured_plan_result = (
+            registration_plan_capture.read_or_fetch_selenium(driver, access_token)
+            if plan_check_enabled
+            else None
+        )
         report_job_progress("token", "success", "已获取 accessToken")
         logger.info("[Roxy注册] 已拿到 accessToken：%s", email)
         _check_manual_stop()
@@ -4300,8 +4444,7 @@ def run_roxy_registration(
             "message": "ENABLE_CODEX_AUTO=False，跳过 Codex",
         }
         try:
-            from config import codex as _codex_cfg
-            if bool(getattr(_codex_cfg, "ENABLE_CODEX_AUTO", False)):
+            if codex_enabled:
                 report_job_progress("codex", "running", "正在执行 Codex OAuth")
                 # 注册流程本身已创建 Roxy 一号一环境。这里不能再新建第二个 Roxy 环境；
                 # 复用当前注册窗口并保留刚建立的登录态，直接开始 Codex 授权。
@@ -4353,7 +4496,7 @@ def run_roxy_registration(
             "ok": True,
             "message": "ENABLE_2FA=False，跳过 Authenticator 2FA",
         }
-        if _twofa_cfg.ENABLE_2FA:
+        if twofa_enabled:
             report_job_progress("twofa", "running", "正在设置 Authenticator 2FA")
             try:
                 def _checkpoint_totp_secret(secret: str) -> None:
@@ -4434,28 +4577,31 @@ def run_roxy_registration(
         # has already been persisted, so a network failure cannot roll back
         # registration success.
         plan_result = {"status": "pending", "ok": False, "message": "套餐查询已独立入队"}
-        try:
-            from core import db
-            if isinstance(captured_plan_result, dict) and captured_plan_result.get("ok"):
-                captured = dict(captured_plan_result)
-                captured["trigger"] = "registration_browser_response"
-                db.update_account_plan_check(acc_id=account_id, result=captured)
-                plan_result = {"status": "success", "ok": True, "message": "复用浏览器权益数据"}
-            else:
-                from core.plan_check_service import enqueue_account_plan_check
-                queued = enqueue_account_plan_check(
-                    account_id=account_id,
-                    email=email,
-                    access_token=access_token,
-                    trigger="registration_auto",
-                )
-                plan_result = {
-                    "status": "pending" if queued.get("accepted") or queued.get("busy") else "failed",
-                    "ok": False,
-                    "message": "套餐查询已入队" if queued.get("accepted") else str(queued.get("error") or "套餐查询未入队"),
-                }
-        except Exception as exc:
-            plan_result = {"status": "failed", "ok": False, "message": f"{type(exc).__name__}: {str(exc)[:180]}"}
+        if plan_check_enabled:
+            try:
+                from core import db
+                if isinstance(captured_plan_result, dict) and captured_plan_result.get("ok"):
+                    captured = dict(captured_plan_result)
+                    captured["trigger"] = "registration_browser_response"
+                    db.update_account_plan_check(acc_id=account_id, result=captured)
+                    plan_result = {"status": "success", "ok": True, "message": "复用浏览器权益数据"}
+                else:
+                    from core.plan_check_service import enqueue_account_plan_check
+                    queued = enqueue_account_plan_check(
+                        account_id=account_id,
+                        email=email,
+                        access_token=access_token,
+                        trigger="registration_auto",
+                    )
+                    plan_result = {
+                        "status": "pending" if queued.get("accepted") or queued.get("busy") else "failed",
+                        "ok": False,
+                        "message": "套餐查询已入队" if queued.get("accepted") else str(queued.get("error") or "套餐查询未入队"),
+                    }
+            except Exception as exc:
+                plan_result = {"status": "failed", "ok": False, "message": f"{type(exc).__name__}: {str(exc)[:180]}"}
+        else:
+            plan_result = {"status": "skipped", "ok": True, "message": "未启用注册后自动查套餐"}
         codex_ok = codex_result.get("ok") or codex_result.get("status") == "skipped"
         twofa_ok = twofa_result.get("ok") or twofa_result.get("status") == "skipped"
         errors = []
@@ -4471,9 +4617,10 @@ def run_roxy_registration(
             core_success=True,
             password_present=bool(openai_password),
             outcomes={"twofa": twofa_result, "codex": codex_result, "plan_check": plan_result},
-            twofa_required=bool(_twofa_cfg.ENABLE_2FA),
-            codex_enabled=True,
-            plan_check_required=True,
+            password_required=password_required,
+            twofa_required=twofa_enabled,
+            codex_enabled=codex_enabled,
+            plan_check_required=plan_check_enabled,
         )
         return {
             # 账号和 Token 已在前面的检查点落库，注册主体就是成功。Codex/2FA

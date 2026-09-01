@@ -190,6 +190,34 @@ class RegistrationStateMachineContractTests(unittest.TestCase):
                 roxy._fetch_chatgpt_session(Driver(), timeout=30)
         read_session.assert_not_called()
 
+    def test_registration_snapshot_does_not_eagerly_read_codex_config(self):
+        try:
+            from core.registration import protocol, roxy
+        except ModuleNotFoundError as exc:
+            self.skipTest(f"optional registration dependency unavailable: {exc}")
+
+        class ExplodingCodexConfig:
+            def __getattr__(self, name):
+                raise AssertionError(f"live Codex config was read: {name}")
+
+        stop_before_browser = RuntimeError("stop before browser")
+        with (
+            patch.object(roxy, "_codex_cfg", ExplodingCodexConfig()),
+            patch.object(roxy, "RoxyBrowserClient", return_value=object()),
+            patch.object(roxy, "_open_roxy_profile_with_capacity_wait", side_effect=stop_before_browser),
+            patch("core.registration_service.report_job_progress"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "stop before browser"):
+                roxy.run_roxy_registration(
+                    "test@example.com",
+                    "Test User",
+                    birthday="1990-01-01",
+                    registration_options={"codex_enabled": False},
+                )
+
+        self.assertNotIn("_codex_cfg", roxy.run_roxy_registration.__code__.co_varnames)
+        self.assertNotIn("_codex_cfg", protocol.run_protocol_registration.__code__.co_varnames)
+
     def test_roxy_otp_wait_exposes_email_verified_terminal(self):
         try:
             from core.registration import roxy

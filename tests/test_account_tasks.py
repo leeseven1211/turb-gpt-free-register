@@ -3,7 +3,6 @@ import base64
 import json
 import os
 import tempfile
-import threading
 import unittest
 import uuid
 from contextlib import ExitStack
@@ -269,6 +268,7 @@ class CodexRetryTaskTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as tempdir,
             patch.object(codex_retry_service.db, "get_account_by_email", return_value=account),
+            patch.object(codex_retry_service.db, "update_account_session", return_value=True),
             patch.object(codex_retry_service.db, "update_account_totp_secret", return_value=True) as save_totp,
             patch.object(codex_retry_service.db, "update_account_twofa_status", return_value=True) as save_twofa_status,
             patch.object(codex_retry_service.db, "update_account_codex_status"),
@@ -324,6 +324,7 @@ class CodexRetryTaskTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as tempdir,
             patch.object(codex_retry_service.db, "get_account_by_email", return_value=account),
+            patch.object(codex_retry_service.db, "update_account_session", return_value=True),
             patch.object(codex_retry_service.db, "update_account_totp_secret", return_value=True) as save_totp,
             patch.object(codex_retry_service.db, "update_account_twofa_status", return_value=True),
             patch.object(codex_retry_service.db, "update_account_codex_status"),
@@ -355,7 +356,7 @@ class CodexRetryTaskTests(unittest.TestCase):
             ],
         )
 
-    def test_account_setup_runs_password_and_protocol_twofa_in_parallel(self):
+    def test_account_setup_runs_password_and_protocol_twofa_serially_on_shared_browser(self):
         secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
         account = {
             "id": 9,
@@ -364,20 +365,23 @@ class CodexRetryTaskTests(unittest.TestCase):
             "totp_secret": "",
             "extra_json": "{}",
         }
-        barrier = threading.Barrier(2)
+        setup_order = []
 
-        def set_password(_driver, _email, _password):
-            barrier.wait(timeout=2)
+        def set_password(_driver, _email, _password, *, on_password_submitted=None):
+            setup_order.append("password")
+            if on_password_submitted is not None:
+                on_password_submitted(_password)
 
         def setup_protocol(_driver, _email, _session, access_token, *, on_secret, existing_secret=None):
             self.assertEqual(access_token, "fresh-chatgpt-token")
             self.assertIsNone(existing_secret)
-            barrier.wait(timeout=2)
+            setup_order.append("twofa")
             on_secret(secret)
             return secret, False
 
         with (
             patch.object(codex_retry_service.db, "get_account_by_email", return_value=account),
+            patch.object(codex_retry_service.db, "update_account_session", return_value=True),
             patch.object(codex_retry_service.db, "update_account_login_password", return_value=True),
             patch.object(codex_retry_service.db, "update_account_totp_secret", return_value=True) as save_totp,
             patch.object(codex_retry_service.db, "update_account_twofa_status", return_value=True),
@@ -401,6 +405,7 @@ class CodexRetryTaskTests(unittest.TestCase):
                 call("a@example.com", secret, setup_pending=False),
             ],
         )
+        self.assertEqual(setup_order, ["password", "twofa"])
 
     def test_account_setup_continues_twofa_when_password_step_fails(self):
         secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
@@ -413,7 +418,7 @@ class CodexRetryTaskTests(unittest.TestCase):
         }
         setup_order = []
 
-        def fail_password(_driver, _email, _password):
+        def fail_password(_driver, _email, _password, **_kwargs):
             setup_order.append("password")
             raise RuntimeError("password page unavailable")
 

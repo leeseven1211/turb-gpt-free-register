@@ -349,16 +349,22 @@ def list_account_statuses(
 
 _JOB_PASSWORD_PRESENT = _ACCOUNT_PASSWORD_PRESENT
 _JOB_TOTP_PRESENT = _ACCOUNT_TOTP_PRESENT
+_JOB_PASSWORD_REQUIRED = "COALESCE((j.data#>>'{config_snapshot,password_enabled}')::boolean, TRUE)"
+_JOB_PLAN_CHECK_REQUIRED = "COALESCE((j.data#>>'{config_snapshot,plan_check_enabled}')::boolean, TRUE)"
+_JOB_TWOFA_REQUIRED = "COALESCE((j.data#>>'{config_snapshot,twofa_enabled}')::boolean, TRUE)"
+_JOB_CODEX_REQUIRED = "COALESCE((j.data#>>'{config_snapshot,codex_enabled}')::boolean, TRUE)"
 _JOB_SETUP_COMPLETE = f"""(
-    {_JOB_PASSWORD_PRESENT}
-    AND COALESCE(a.plan_check_status, '') = 'success'
-    AND {_JOB_TOTP_PRESENT}
-    AND COALESCE(j.data#>>'{{progress_steps,twofa,state}}', '') <> 'failed'
-    AND COALESCE(a.data->>'extra_json', '') !~ '"twofa"[[:space:]]*:[[:space:]]*\\{{[^}}]*"status"[[:space:]]*:[[:space:]]*"failed"'
+    (NOT {_JOB_PASSWORD_REQUIRED} OR {_JOB_PASSWORD_PRESENT})
+    AND (NOT {_JOB_PLAN_CHECK_REQUIRED} OR COALESCE(a.plan_check_status, '') = 'success')
+    AND (NOT {_JOB_TWOFA_REQUIRED} OR (
+        {_JOB_TOTP_PRESENT}
+        AND COALESCE(j.data#>>'{{progress_steps,twofa,state}}', '') <> 'failed'
+        AND COALESCE(a.data->>'extra_json', '') !~ '"twofa"[[:space:]]*:[[:space:]]*\\{{[^}}]*"status"[[:space:]]*:[[:space:]]*"failed"'
+    ))
 )"""
 _JOB_DISPLAY_STATUS = f"""CASE
     WHEN a.id IS NOT NULL AND j.account_id IS NOT NULL THEN
-      CASE WHEN COALESCE(a.codex_status, '') = 'success' AND {_JOB_SETUP_COMPLETE}
+      CASE WHEN (NOT {_JOB_CODEX_REQUIRED} OR COALESCE(a.codex_status, '') = 'success') AND {_JOB_SETUP_COMPLETE}
            THEN 'success' ELSE 'partial_success' END
     ELSE COALESCE(j.status, '')
 END"""

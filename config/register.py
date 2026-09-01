@@ -18,6 +18,10 @@ REGISTRATION_AUTH_MODE = "otp"
 # 进入邮箱验证码页，不能继续消耗“检测/填写密码页”的剩余时间。
 REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS = 60
 
+# 注册后套餐查询是独立后处理能力。默认保持原有行为，关闭后账号仍会保存，
+# 之后可在账号管理中手动查套餐或由“补全账号”按其自身配置处理。
+REGISTRATION_PLAN_CHECK_ENABLED = True
+
 # 用户名（注册完成后设置的显示名称，留空会自动生成 "Foo Bar" 形式）
 # OpenAI 限制：name_invalid_chars —— 只允许字母和空格
 REGISTER_NAME = ""
@@ -27,5 +31,6 @@ apply_env_overrides(globals(), {
     'REGISTER_EMAIL': 'str',
     'REGISTRATION_AUTH_MODE': 'str',
     'REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS': 'int',
+    'REGISTRATION_PLAN_CHECK_ENABLED': 'bool',
     'REGISTER_NAME': 'str',
 })

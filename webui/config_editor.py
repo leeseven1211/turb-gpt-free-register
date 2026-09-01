@@ -71,22 +71,63 @@ EDITABLE_FIELDS = [
         "label": "Session 签名密钥", "help": "可选，保存在 .env（WEBUI_SESSION_SECRET）；不填则从固定授权码派生，修改授权码会使已有登录失效",
         "storage": "env", "secret": True,
     },
-    # ---- 功能开关 ----
+    # ---- 注册主链路 ----
     {
-        "key": "ENABLE_CODEX_AUTO", "file": "codex.py", "type": "bool", "group": "功能开关",
+        "key": "ENABLE_CODEX_AUTO", "file": "codex.py", "type": "bool", "group": "注册主链路",
         "label": "启用 Codex OAuth", "help": "注册成功后自动跑 Codex 授权（全新session+接码），落盘 codex-邮箱.json",
     },
     {
-        "key": "REGISTRATION_DRIVER", "file": "roxybrowser.py", "type": "str", "group": "注册方式",
-        "label": "注册驱动", "help": "仅支持 roxy（主流程）或 protocol（协议辅助/回退）；默认推荐 roxy",
+        "key": "REGISTRATION_DRIVER", "file": "roxybrowser.py", "type": "str", "group": "注册主链路",
+        "label": "注册主流程驱动", "help": "选择注册所用的自动化方式：roxy=浏览器主流程，protocol=协议辅助/回退；默认推荐 roxy",
     },
     {
-        "key": "REGISTRATION_AUTH_MODE", "file": "register.py", "type": "str", "group": "注册方式",
-        "label": "账号认证模式", "help": "otp=优先使用邮箱一次性验证码；password=遇到注册密码页时设置密码。密码模式仍可能需要邮箱验证码",
+        "key": "REGISTRATION_AUTH_MODE", "file": "register.py", "type": "str", "group": "注册主链路",
+        "label": "注册认证方式", "help": "otp=只用邮箱一次性验证码；password=设置并保存账号密码。选择 password 才会执行密码注册，但仍可能需要邮箱验证码",
     },
     {
-        "key": "REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS", "file": "register.py", "type": "int", "group": "注册方式",
+        "key": "REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS", "file": "register.py", "type": "int", "group": "注册主链路",
         "label": "密码提交跳转等待(秒)", "help": "从点击创建密码页的继续按钮后独立计时；默认 60 秒，避免慢代理下页面迟到进入邮箱验证码页却被提前判失败",
+    },
+    {
+        "key": "REGISTRATION_PLAN_CHECK_ENABLED", "file": "register.py", "type": "bool", "group": "注册主链路",
+        "label": "注册后自动查套餐", "help": "注册核心保存后独立查询套餐；关闭后不影响账号落库，之后可在账号管理中手动查询或补全",
+    },
+    # ---- 账号补全策略 ----
+    {
+        "key": "ACCOUNT_COMPLETION_PASSWORD_ENABLED", "file": "account.py", "type": "bool", "group": "账号补全",
+        "label": "补全账号密码", "help": "“补全账号”发现账号缺少登录密码时补充；关闭后不会处理密码",
+    },
+    {
+        "key": "ACCOUNT_COMPLETION_PLAN_CHECK_ENABLED", "file": "account.py", "type": "bool", "group": "账号补全",
+        "label": "补全套餐状态", "help": "“补全账号”发现套餐未成功确认时补查；关闭后不会处理套餐",
+    },
+    {
+        "key": "ACCOUNT_COMPLETION_2FA_ENABLED", "file": "account.py", "type": "bool", "group": "账号补全",
+        "label": "补全 Authenticator 2FA", "help": "“补全账号”发现账号缺少 Authenticator 2FA 时启用；关闭后不会处理 2FA",
+    },
+    {
+        "key": "ACCOUNT_COMPLETION_CODEX_ENABLED", "file": "account.py", "type": "bool", "group": "账号补全",
+        "label": "补全 Codex", "help": "“补全账号”发现 Codex 未完成时提交 Codex OAuth；关闭后不会处理 Codex",
+    },
+    {
+        "key": "ACCOUNT_COMPLETION_REFRESH_AT_ENABLED", "file": "account.py", "type": "bool", "group": "账号补全",
+        "label": "补全时允许刷新 AT", "help": "默认关闭。开启后仅当补全确实缺少/无法使用 AT 时，才允许先执行刷新 AT；刷新 AT 本身仍属于独立操作",
+    },
+    {
+        "key": "ACCOUNT_PASSWORD_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
+        "label": "密码补全驱动", "help": "当前唯一实现为 RoxyBrowser，暂不可切换",
+    },
+    {
+        "key": "ACCOUNT_PLAN_CHECK_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
+        "label": "套餐补全驱动", "help": "当前唯一实现为纯协议，暂不可切换",
+    },
+    {
+        "key": "ACCOUNT_2FA_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
+        "label": "2FA 补全驱动", "help": "可选协议开通或浏览器安全设置页面；两种方式都已实现",
+    },
+    {
+        "key": "ACCOUNT_CODEX_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
+        "label": "Codex 补全驱动", "help": "可选纯协议、RoxyBrowser 或跟随注册主流程；三种路由都由 Codex OAuth 执行器处理",
     },
     # ---- 注册调试 ----
     {
@@ -216,8 +257,8 @@ EDITABLE_FIELDS = [
         "label": "删除接口路径", "help": "默认 /browser/delete；如 Roxy 版本不同可调整",
     },
     {
-        "key": "CODEX_OAUTH_DRIVER", "file": "codex.py", "type": "str", "group": "Codex",
-        "label": "Codex授权驱动", "help": "默认推荐 roxy；可选 protocol / roxy / same_as_registration（跟随注册驱动）",
+        "key": "CODEX_OAUTH_DRIVER", "file": "codex.py", "type": "str", "group": "注册主链路",
+        "label": "Codex 授权驱动", "help": "选择 Codex OAuth 所用的自动化方式：protocol=纯协议，roxy=浏览器，same_as_registration=跟随注册主流程驱动",
     },
     {
         "key": "CODEX_TOKEN_AUTO_REFRESH_ENABLED", "file": "codex.py", "type": "bool", "group": "Codex",
@@ -248,15 +289,15 @@ EDITABLE_FIELDS = [
         "label": "Codex回调超时", "help": "Roxy Codex OAuth 等待 localhost:1455 callback 的最长秒数",
     },
     {
-        "key": "ENABLE_2FA", "file": "twofa.py", "type": "bool", "group": "功能开关",
+        "key": "ENABLE_2FA", "file": "twofa.py", "type": "bool", "group": "注册主链路",
         "label": "启用 2FA(TOTP)", "help": "注册完成后自动设置动态口令（会多收一封 OTP 邮件）",
     },
     {
-        "key": "TWOFA_DRIVER", "file": "twofa.py", "type": "str", "group": "功能开关",
+        "key": "TWOFA_DRIVER", "file": "twofa.py", "type": "str", "group": "注册主链路",
         "label": "2FA 开通方式", "help": "protocol=优先用新鲜 AT，Roxy 中失败会自动回退浏览器 UI；browser=直接用 RoxyBrowser 安全设置页面",
     },
     {
-        "key": "ENABLE_FLOW_TRIGGER", "file": "flow_trigger.py", "type": "bool", "group": "功能开关",
+        "key": "ENABLE_FLOW_TRIGGER", "file": "flow_trigger.py", "type": "bool", "group": "注册主链路",
         "label": "启用 Flow 触发", "help": "注册成功后自动调用内部 Flow 接口（不影响注册结果）",
     },
     {

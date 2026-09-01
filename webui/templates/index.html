@@ -321,44 +321,39 @@
         <span class="list-selection-hint" id="accountsSelectedHintV2">选择账号后批量操作</span>
         <div class="acc-v2-btn-group toolbar-selection-primary selection-only">
           <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedLiveV2" onclick="checkSelectedLive()" disabled title="只在线验证现有 Token；不会发送邮箱验证码或刷新 AT">查活</button>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnRefreshSelectedTokenV2" onclick="refreshSelectedToken()" disabled title="通过邮箱 OTP 重新登录并刷新最新 AT">刷新AT</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedPlansV2" disabled title="查询选中账号当前套餐；free 账号会检查 Plus 试用资格">查套餐</button>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnExtractSelectedLinksV2" disabled title="给选中的 free(可Plus试用) 账号批量提链，类型按配置 PIX/UPI/KAKAO_PAY/IDEAL">提链</button>
         </div>
         <details class="toolbar-overflow selection-only" id="accountsMoreActionsV2">
           <summary>更多操作</summary>
           <div class="toolbar-overflow-menu">
-            <div class="toolbar-overflow-section">
-              <span class="toolbar-overflow-section-title">账号配置</span>
-              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnSetupSelectedAccountsV2" disabled title="只补齐账号密码、套餐和 Authenticator 2FA，不执行 Codex">补齐配置</button>
-            </div>
-            <div class="toolbar-overflow-section">
-              <span class="toolbar-overflow-section-title">Codex</span>
-              <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnRetrySelectedCodexV2" disabled title="给选中的账号批量补跑 Codex 授权">补跑</button>
-              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnDownloadSelectedCpaV2" disabled title="从 CPA auth-files 下载选中账号的 Codex JSON，并打包 ZIP">下载 CPA</button>
-              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnUploadSelectedCodexSub2V2" disabled title="把选中账号已通过的 Codex OAuth 凭证上传到 sub2api">上传 sub2</button>
-              <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnStopSelectedCodexV2" disabled title="停止选中账号中正在补跑的 Codex 授权">停止</button>
-            </div>
-            <div class="toolbar-overflow-section">
-              <span class="toolbar-overflow-section-title">检查与复制</span>
+            <div class="toolbar-overflow-section toolbar-overflow-section--wide">
+              <span class="toolbar-overflow-section-title">操作</span>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnRefreshSelectedTokenV2" disabled title="通过邮箱 OTP 重新登录并刷新最新 AT">刷新 AT</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedDeactivationMailV2" disabled title="扫描 Email Butler / Cloudflare / iCloud 转发邮箱中的 OpenAI 封号通知；不会刷新 AT">查封号邮件</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnAddPasswordSelectedAccountsV2" disabled title="只给选中账号补充登录密码">补密码</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnAddTwofaSelectedAccountsV2" disabled title="只给选中账号补充 Authenticator 2FA">补 2FA</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCompleteSelectedAccountsV2" disabled title="按配置补全账号密码、套餐、2FA、Codex；刷新 AT 是否包含由配置决定">补全账号</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnRetrySelectedCodexV2" disabled title="给选中的账号批量补跑 Codex 授权">补 Codex</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnExtractSelectedLinksV2" disabled title="给选中的 free(可Plus试用) 账号批量提链，类型按配置 PIX/UPI/KAKAO_PAY/IDEAL">提链</button>
+            </div>
+            <div class="toolbar-overflow-section toolbar-overflow-section--wide">
+              <span class="toolbar-overflow-section-title">复制与导出</span>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedTokensV2" disabled title="复制选中账号的 Token，每个账号一行">复制 Token</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedLinesV2" disabled title="复制选中账号的完整整行，每个账号一行">复制行</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedEmailsV2" disabled title="复制选中账号的邮箱，每个账号一行">复制邮箱</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedPasswordsV2" disabled title="复制选中账号中已设置的账号密码，格式为 邮箱----密码">复制密码</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnDownloadSelectedTxtV2" disabled title="把选中账号的完整整行保存为 TXT 文件，每个账号一行">下载 TXT</button>
             </div>
-            <div class="toolbar-overflow-section toolbar-overflow-section--wide toolbar-overflow-section--danger">
+            <div class="toolbar-overflow-section toolbar-overflow-section--wide">
               <span class="toolbar-overflow-section-title">资产管理</span>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnDownloadSelectedCpaV2" disabled title="从 CPA auth-files 下载选中账号的 Codex JSON，并打包 ZIP">下载 CPA</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnUploadSelectedCodexSub2V2" disabled title="把选中账号已通过的 Codex OAuth 凭证上传到 sub2api">上传 sub2</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnStopSelectedCodexV2" disabled title="停止选中账号中正在补跑的 Codex 授权">停止 Codex</button>
               <button type="button" class="jobs-tb-btn" id="btnArchiveSelectedAccountsV2" disabled title="归档选中的账号；默认账号列表将不再查询/显示这些账号">归档选中</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnDeleteSelectedAccountsV2" disabled title="删除选中的本地账号/token记录">删除</button>
             </div>
           </div>
         </details>
-        <div class="acc-v2-btn-group toolbar-page-actions">
-          <span class="acc-v2-btn-group-title">当前页</span>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCopyAllTokensV2" title="复制当前页所有 Token，每个账号一行">复制Token</button>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopyAllLinesV2" title="复制当前页所有账号整行，每个账号一行">复制整行</button>
-        </div>
         <div class="list-toolbar-utilities">
           <button type="button" class="jobs-tb-btn" id="btnResetAccountsColumnsV2" title="恢复账号列表默认列宽">恢复列宽</button>
           <button type="button" class="jobs-tb-btn" id="btnRefreshAccountsV2" title="重新加载当前筛选条件和当前页账号列表">刷新</button>
@@ -606,7 +601,7 @@
         <div class="config-cards-v2" id="configCardsV2" aria-label="配置概览卡片">
           <div class="config-card-v2" id="configCardRegistrationV2">
             <div class="config-card-v2-top">
-              <div class="config-card-v2-label">注册方式</div>
+              <div class="config-card-v2-label">注册主链路</div>
               <span class="config-card-v2-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24"><path d="M4 6h7"/><path d="M4 12h7"/><path d="M4 18h7"/><path d="M15 6l5 6-5 6"/></svg>
               </span>

@@ -6,7 +6,7 @@ let planStatusRevision = '';
 let ACCOUNT_BATCH_WORKERS = 3;
 const ACCOUNT_TASK_TYPE_LABELS = {
   registration:'注册', registration_resume:'继续邮箱验证', twofa_retry:'2FA / 配置补跑',
-  account_setup_retry:'账号配置补跑', codex_retry:'Codex 补跑', codex_token_refresh:'Codex Token 刷新', live_check:'查活', token_refresh:'AT 刷新', plan_check:'查套餐', deactivation_mail:'查封号邮件'
+  account_setup_retry:'账号配置补跑', password_setup:'补密码', twofa_setup:'补 2FA', account_completion:'补全账号', codex_retry:'Codex 补跑', codex_token_refresh:'Codex Token 刷新', live_check:'查活', token_refresh:'AT 刷新', plan_check:'查套餐', deactivation_mail:'查封号邮件'
 };
 const ACCOUNT_TASK_TRIGGER_LABELS = {
   manual:'手动', manual_bulk:'手动批量', manual_retry:'失败重跑', scheduled:'定时',
@@ -55,7 +55,7 @@ function accountTaskResultText(task) {
     return result.detected ? '发现封号邮件' : '未发现封号邮件';
   }
   if (task.task_type === 'live_check' || task.task_type === 'token_refresh') return result.ok ? '账号正常' : (result.status || '-');
-  if (task.task_type === 'account_setup_retry') return result.ok ? '账号密码、套餐和 2FA 已补齐或确认' : (result.message || result.status || '账号配置补跑失败');
+  if (['account_setup_retry','password_setup','twofa_setup','account_completion'].includes(task.task_type)) return result.ok ? (result.message || '账号配置操作已完成') : (result.message || result.status || '账号配置补跑失败');
   if (task.task_type === 'codex_retry') {
     if (result.ok) return result.credential_confirmed ? '授权成功 · 凭证已确认' : '授权成功';
     if (result.status === 'attention_required') return 'Callback 已接收 · 凭证待确认';
@@ -411,7 +411,7 @@ async function cancelAccountTask(taskId, button) {
 function updateAccountTaskFilters(facets = {}) {
   syncFacetSelect('accountTaskTypeFilterV2', facets.task_type, {
     group: 'task_type',
-    values: ['registration', 'registration_resume', 'account_setup_retry', 'twofa_retry', 'codex_retry', 'codex_token_refresh', 'live_check', 'token_refresh', 'plan_check', 'deactivation_mail'],
+    values: ['registration', 'registration_resume', 'account_setup_retry', 'password_setup', 'twofa_setup', 'account_completion', 'twofa_retry', 'codex_retry', 'codex_token_refresh', 'live_check', 'token_refresh', 'plan_check', 'deactivation_mail'],
   });
   syncFacetSelect('accountTaskStatusFilterV2', facets.status, {
     group: 'status',
@@ -839,7 +839,9 @@ function _accountsV2MoreMenu(r) {
   const parts = [
     `<button type="button" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button>`,
     r.has_account_password ? `<button type="button" data-account-copy-secret="account_password" data-account-id="${esc(r.id)}">复制账号密码</button>` : '',
-    (r.account_status || '').toLowerCase() === 'deactivated' ? '' : `<button type="button" data-account-setup="${esc(r.id)}" title="只补齐账号密码、套餐和 Authenticator 2FA，不执行 Codex">补齐账号配置</button>`,
+    (r.account_status || '').toLowerCase() === 'deactivated' ? '' : `<button type="button" data-account-action="password" data-account-id="${esc(r.id)}">补密码</button>`,
+    (r.account_status || '').toLowerCase() === 'deactivated' ? '' : `<button type="button" data-account-action="twofa" data-account-id="${esc(r.id)}">补 2FA</button>`,
+    (r.account_status || '').toLowerCase() === 'deactivated' ? '' : `<button type="button" data-account-action="complete" data-account-id="${esc(r.id)}">补全账号</button>`,
     (r.account_status || '').toLowerCase() === 'deactivated' ? '' : `<button type="button" onclick="checkSelectedLive([Number('${esc(r.id)}')], this); return false;" title="只在线验证现有 Token；不会发送邮箱验证码或刷新 AT">查活</button>`,
     (r.account_status || '').toLowerCase() === 'deactivated' ? '' : `<button type="button" onclick="refreshSelectedToken([Number('${esc(r.id)}')], this); return false;" title="通过邮箱 OTP 重新登录并刷新最新 AT">刷新AT</button>`,
     `<button type="button" data-account-task-history="${esc(r.email)}" title="在任务实例中查看该账号的 Codex 补跑、查活、AT 刷新、套餐和封号邮件历史">任务记录</button>`,
@@ -1022,8 +1024,8 @@ function updateAccountSelectionUi(pageRows = null) {
   const archiveTitle = SHOW_ARCHIVED_ACCOUNTS ? '把选中的归档账号恢复到默认账号列表' : '归档选中的账号；默认账号列表将不再查询/显示这些账号';
   const v2Ids = [
     'btnCheckSelectedLiveV2', 'btnRefreshSelectedTokenV2', 'btnCheckSelectedPlansV2', 'btnCheckSelectedDeactivationMailV2', 'btnExtractSelectedLinksV2',
-    'btnSetupSelectedAccountsV2', 'btnUploadSelectedCodexSub2V2', 'btnRetrySelectedCodexV2', 'btnDownloadSelectedCpaV2', 'btnStopSelectedCodexV2',
-    'btnCopySelectedLinesV2', 'btnCopySelectedEmailsV2',
+    'btnSetupSelectedAccountsV2', 'btnAddPasswordSelectedAccountsV2', 'btnAddTwofaSelectedAccountsV2', 'btnCompleteSelectedAccountsV2', 'btnUploadSelectedCodexSub2V2', 'btnRetrySelectedCodexV2', 'btnDownloadSelectedCpaV2', 'btnStopSelectedCodexV2',
+    'btnCopySelectedTokensV2', 'btnCopySelectedLinesV2', 'btnCopySelectedEmailsV2',
     'btnCopySelectedPasswordsV2',
     'btnDownloadSelectedTxtV2', 'btnArchiveSelectedAccountsV2', 'btnDeleteSelectedAccountsV2',
   ];
@@ -1180,6 +1182,36 @@ async function onAccountsBodyClick(e) {
     } catch(err) {
       showToast('补齐账号配置失败: ' + err.message);
       accountSetupBtn.disabled = false;
+    }
+    return;
+  }
+
+  const accountActionBtn = e.target.closest('[data-account-action]');
+  if (accountActionBtn) {
+    const id = Number(accountActionBtn.dataset.accountId);
+    const action = String(accountActionBtn.dataset.accountAction || '').trim().toLowerCase();
+    const row = ACCOUNTS.find(item => Number(item.id) === id);
+    const email = row?.email || `账号 #${id}`;
+    const labels = {password: '补密码', twofa: '补 2FA', complete: '补全账号'};
+    if (!labels[action]) return;
+    if (!confirm(`${labels[action]}？\n\n${email}`)) return;
+    accountActionBtn.disabled = true;
+    try {
+      const result = await api(`/api/accounts/${encodeURIComponent(id)}/action`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({action}),
+      });
+      showToast(result.message || `${labels[action]}已入队`);
+      loadAccounts();
+      const search = $('#accountTaskTargetFilterV2');
+      const typeFilter = $('#accountTaskTypeFilterV2');
+      if (search) search.value = email;
+      if (typeFilter) typeFilter.value = ({password: 'password_setup', twofa: 'twofa_setup', complete: 'account_completion'})[action];
+      PAGERS.accountTasks.page = 1;
+      activateTab('tasks');
+    } catch(err) {
+      showToast(`${labels[action]}失败: ` + err.message);
+      accountActionBtn.disabled = false;
     }
     return;
   }
@@ -2069,16 +2101,33 @@ async function setupSelectedAccounts() {
   }
 }
 
-async function copyCurrentPageTokens() {
-  const ids = ACCOUNTS.filter(r => r.has_access_token).map(r => Number(r.id));
-  if (!ids.length) { showToast('当前页没有 Token'); return; }
-  try { copyText((await fetchAccountSecrets(ids, 'access_token')).join('\n')); } catch(e) { showToast('复制失败: ' + e.message); }
+async function runSelectedAccountAction(action, label, taskType) {
+  const ids = Array.from(ACCOUNT_SELECTED).map(Number);
+  if (!ids.length) { showToast('请先选择账号'); return; }
+  if (!confirm(`确定${label}选中的 ${ids.length} 个账号吗？`)) return;
+  try {
+    const r = await api('/api/accounts/action-bulk', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({account_ids: ids, action}),
+    });
+    const skipped = (r.skipped || []).length;
+    showToast(skipped ? `已开始 ${r.started_count || 0} 个，跳过 ${skipped} 个` : (r.message || `${label}已入队`));
+    loadAccounts();
+    const search = $('#accountTaskTargetFilterV2');
+    const typeFilter = $('#accountTaskTypeFilterV2');
+    if (search) search.value = '';
+    if (typeFilter) typeFilter.value = taskType;
+    PAGERS.accountTasks.page = 1;
+    activateTab('tasks');
+  } catch(err) {
+    showToast(`${label}失败: ` + err.message);
+    updateAccountSelectionUi();
+  }
 }
-async function copyCurrentPageLines() {
-  const ids = ACCOUNTS.map(r => Number(r.id));
-  if (!ids.length) { showToast('当前页没有账号'); return; }
-  try { copyText((await fetchAccountSecrets(ids, 'copy_line')).join('\n')); } catch(e) { showToast('复制失败: ' + e.message); }
-}
+function addPasswordSelectedAccounts() { return runSelectedAccountAction('password', '补密码', 'password_setup'); }
+function addTwofaSelectedAccounts() { return runSelectedAccountAction('twofa', '补 2FA', 'twofa_setup'); }
+function completeSelectedAccounts() { return runSelectedAccountAction('complete', '补全账号', 'account_completion'); }
+
 async function copySelectedAccountTokens() {
   const ids = Array.from(ACCOUNT_SELECTED).map(Number);
   if (!ids.length) { showToast('请先选择账号'); return; }
@@ -2096,17 +2145,20 @@ async function copySelectedAccountTokens() {
   };
   bind('btnCheckSelectedPlansV2', checkSelectedPlans);
   bind('btnCheckSelectedDeactivationMailV2', checkSelectedDeactivationMail);
+  bind('btnRefreshSelectedTokenV2', () => refreshSelectedToken());
   bind('btnExtractSelectedLinksV2', extractSelectedLinks);
   bind('btnSetupSelectedAccountsV2', setupSelectedAccounts);
+  bind('btnAddPasswordSelectedAccountsV2', addPasswordSelectedAccounts);
+  bind('btnAddTwofaSelectedAccountsV2', addTwofaSelectedAccounts);
+  bind('btnCompleteSelectedAccountsV2', completeSelectedAccounts);
   bind('btnUploadSelectedCodexSub2V2', uploadSelectedCodexSub2);
   bind('btnRetrySelectedCodexV2', retrySelectedCodex);
   bind('btnDownloadSelectedCpaV2', downloadSelectedCpa);
   bind('btnStopSelectedCodexV2', stopSelectedCodex);
+  bind('btnCopySelectedTokensV2', copySelectedAccountTokens);
   bind('btnCopySelectedLinesV2', copySelectedAccountLines);
   bind('btnCopySelectedEmailsV2', copySelectedAccountEmails);
   bind('btnCopySelectedPasswordsV2', copySelectedAccountPasswords);
-  bind('btnCopyAllTokensV2', copyCurrentPageTokens);
-  bind('btnCopyAllLinesV2', copyCurrentPageLines);
   bind('btnDownloadSelectedTxtV2', downloadSelectedAccountTxt);
   bind('btnArchiveSelectedAccountsV2', archiveSelectedAccounts);
   bind('btnDeleteSelectedAccountsV2', deleteSelectedAccounts);

@@ -11,10 +11,31 @@ function configGroups() {
   return groups;
 }
 
+function configDriverChoices(f) {
+  if (f.key === 'REGISTRATION_DRIVER') return [['protocol', '纯协议注册'], ['roxy', 'RoxyBrowser']];
+  if (f.key === 'REGISTRATION_AUTH_MODE') return [['otp', '不设置密码（邮箱验证码）'], ['password', '设置账号密码']];
+  if (f.key === 'ACCOUNT_PASSWORD_DRIVER') return [['roxy', 'RoxyBrowser（当前唯一实现）']];
+  if (f.key === 'ACCOUNT_PLAN_CHECK_DRIVER') return [['protocol', '纯协议（当前唯一实现）']];
+  if (f.key === 'ACCOUNT_2FA_DRIVER' || f.key === 'TWOFA_DRIVER') {
+    return [['protocol', '协议直开（新鲜 AT）'], ['browser', '浏览器页面（RoxyBrowser）']];
+  }
+  if (f.key === 'ACCOUNT_CODEX_DRIVER' || f.key === 'CODEX_OAUTH_DRIVER') {
+    return [['protocol', '纯协议授权'], ['roxy', 'RoxyBrowser'], ['same_as_registration', '跟随注册驱动']];
+  }
+  return null;
+}
+
 function renderConfigField(f) {
   const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
   let html = `<label class="fld">${esc(f.label)}<span class="hint">${esc(f.help)} · <span class="mono">${esc(f.key)}</span></span>`;
-  if (f.key === 'REGISTRATION_PROXY_MODE') {
+  const driverChoices = configDriverChoices(f);
+  if (driverChoices) {
+    const current = String(fv == null ? '' : fv).trim().toLowerCase();
+    const options = driverChoices.slice();
+    if (current && !options.some(([value]) => value === current)) options.unshift([current, `当前配置（${current}）`]);
+    const disabled = options.length === 1 ? ' disabled' : '';
+    html += `<select data-key="${attrEsc(f.key)}"${disabled}>${options.map(([value, label]) => `<option value="${attrEsc(value)}"${current === value ? ' selected' : ''}>${esc(label)}</option>`).join('')}</select>`;
+  } else if (f.key === 'REGISTRATION_PROXY_MODE') {
     const options = [['pool','静态代理池'],['1024','1024Proxy 平台 API'],['none','直连']];
     html += `<select data-key="${attrEsc(f.key)}">${options.map(([v,l]) => `<option value="${v}"${String(fv)===v?' selected':''}>${l} (${v})</option>`).join('')}</select>`;
   } else if (f.key === 'PROXY_1024_REGION') {
@@ -28,9 +49,6 @@ function renderConfigField(f) {
     const current = String(fv == null ? '' : fv);
     if (current && !regions.some(([v]) => v === current)) regions.splice(1, 0, [current, '当前配置']);
     html += `<select data-key="${attrEsc(f.key)}">${regions.map(([v,l]) => `<option value="${attrEsc(v)}"${current===v?' selected':''}>${esc(l)}${v ? ` (${esc(v)})` : ''}</option>`).join('')}</select>`;
-  } else if (f.key === 'TWOFA_DRIVER') {
-    const options = [['protocol','协议直开（新鲜 AT）'],['browser','浏览器页面（RoxyBrowser）']];
-    html += `<select data-key="${attrEsc(f.key)}">${options.map(([v,l]) => `<option value="${v}"${String(fv)===v?' selected':''}>${l}</option>`).join('')}</select>`;
   } else if (f.key === 'PROXY_1024_PROTOCOL') {
     html += `<select data-key="${attrEsc(f.key)}">${['http','https','socks5','socks5h'].map(v => `<option value="${v}"${String(fv)===v?' selected':''}>${v}</option>`).join('')}</select>`;
   } else if (f.type === 'bool') {

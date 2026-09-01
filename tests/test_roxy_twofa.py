@@ -23,7 +23,9 @@ class RoxyTwoFactorTests(unittest.TestCase):
         }.get(name, "")
         add_password = object()
         submit = object()
+        submitted = []
         driver.execute_script.side_effect = [
+            {"settings_route": False},
             {"action": add_password, "inputs": [], "body": "密码 添加"},
             {"action": None, "inputs": [new_input, confirm_input], "body": "新密码 重新输入新密码"},
             {"inputs": [], "errors": [], "body": "Password added"},
@@ -41,7 +43,11 @@ class RoxyTwoFactorTests(unittest.TestCase):
             roxy_registration.time, "sleep"
         ):
             result = roxy_registration.set_roxy_login_password(
-                driver, "new@example.com", "AccountPassword!123", timeout=10
+                driver,
+                "new@example.com",
+                "AccountPassword!123",
+                timeout=10,
+                on_password_submitted=submitted.append,
             )
 
         self.assertEqual(result, "AccountPassword!123")
@@ -60,6 +66,7 @@ class RoxyTwoFactorTests(unittest.TestCase):
                 unittest.mock.call(driver, submit, label="account_password_submit"),
             ],
         )
+        self.assertEqual(submitted, ["AccountPassword!123"])
 
     def test_job_progress_runs_codex_before_twofa(self):
         stages = [key for key, _label in db.JOB_PROGRESS_STAGES]

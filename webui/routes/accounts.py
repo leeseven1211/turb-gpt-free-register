@@ -42,6 +42,7 @@ def create_accounts_blueprint(context: WebUIContext):
     bp = LegacyEndpointBlueprint("accounts", __name__)
     logger = context.logger
     _enqueue_account_setup = context.enqueue_account_setup
+    _enqueue_account_completion = context.enqueue_account_completion
     _put_prepared_download = context.put_prepared_download
     def _is_extract_eligible(acc: dict) -> bool:
         plan = str(acc.get("current_plan_type") or acc.get("plan_type") or "").lower()
@@ -204,6 +205,117 @@ def create_accounts_blueprint(context: WebUIContext):
             "started_count": len(started),
             "reused": reused,
             "reused_count": len(reused),
+            "skipped": skipped,
+            "skipped_count": len(skipped),
+        }), 202
+
+    def _account_action_result(acc_id: int, action: str, *, trigger: str):
+        action = str(action or "").strip().lower()
+        if action == "password":
+            queued = _enqueue_account_setup(acc_id, trigger=trigger, steps={"password"}, task_type="password_setup")
+        elif action == "twofa":
+            queued = _enqueue_account_setup(acc_id, trigger=trigger, steps={"twofa"}, task_type="twofa_setup")
+        elif action == "complete":
+            queued = _enqueue_account_completion(acc_id, trigger=trigger)
+        else:
+            return {"accepted": False, "error": "action 只支持 password、twofa、complete"}, 400
+        if queued.get("busy"):
+            return {"accepted": False, **queued}, 409
+        if queued.get("accepted"):
+            return {"accepted": True, **queued}, 202
+        # “补全”发现当前账号已经满足配置时是幂等成功，不应显示成异常。
+        if queued.get("ready"):
+            return {"accepted": False, "ready": True, **queued}, 200
+        return {"accepted": False, **queued}, 409 if queued.get("blocked") else 400
+
+    @bp.post("/api/accounts/<int:acc_id>/action")
+    def api_account_action(acc_id: int):
+        data = request.get_json(silent=True) or {}
+        payload, status = _account_action_result(
+            acc_id,
+            data.get("action"),
+            trigger=f"manual_account_{str(data.get('action') or 'action').strip().lower()}",
+        )
+        return jsonify({"ok": status < 400, **payload}), status
+
+    @bp.post("/api/accounts/complete-bulk")
+    def api_accounts_complete_bulk():
+        data = request.get_json(silent=True) or {}
+        raw_ids = data.get("account_ids") or data.get("ids") or []
+        if not isinstance(raw_ids, list) or not raw_ids:
+            return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
+        if len(raw_ids) > 500:
+            return jsonify({"ok": False, "error": "单次最多补全 500 个账号"}), 400
+        started, ready, skipped = [], [], []
+        seen = set()
+        for raw_id in raw_ids:
+            try:
+                acc_id = int(raw_id)
+            except (TypeError, ValueError):
+                skipped.append({"id": raw_id, "reason": "ID 非法"})
+                continue
+            if acc_id in seen:
+                continue
+            seen.add(acc_id)
+            payload, status = _account_action_result(
+                acc_id,
+                "complete",
+                trigger="manual_account_completion_bulk",
+            )
+            if status == 202 and payload.get("accepted"):
+                started.append(payload)
+            elif payload.get("ready"):
+                ready.append(payload)
+            else:
+                skipped.append({"id": acc_id, "reason": payload.get("error") or "不能补全账号"})
+        if not started and not ready and not skipped:
+            return jsonify({"ok": False, "error": "没有可补全的账号"}), 409
+        return jsonify({
+            "ok": True,
+            "started": started,
+            "started_count": len(started),
+            "ready": ready,
+            "ready_count": len(ready),
+            "skipped": skipped,
+            "skipped_count": len(skipped),
+        }), 202
+
+    @bp.post("/api/accounts/action-bulk")
+    def api_accounts_action_bulk():
+        data = request.get_json(silent=True) or {}
+        action = str(data.get("action") or "").strip().lower()
+        raw_ids = data.get("account_ids") or data.get("ids") or []
+        if action not in {"password", "twofa", "complete"}:
+            return jsonify({"ok": False, "error": "action 只支持 password、twofa、complete"}), 400
+        if not isinstance(raw_ids, list) or not raw_ids:
+            return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
+        if len(raw_ids) > 500:
+            return jsonify({"ok": False, "error": "单次最多操作 500 个账号"}), 400
+        started, ready, skipped = [], [], []
+        seen = set()
+        for raw_id in raw_ids:
+            try:
+                acc_id = int(raw_id)
+            except (TypeError, ValueError):
+                skipped.append({"id": raw_id, "reason": "ID 非法"})
+                continue
+            if acc_id in seen:
+                continue
+            seen.add(acc_id)
+            payload, status = _account_action_result(acc_id, action, trigger=f"manual_account_{action}_bulk")
+            if status == 202 and payload.get("accepted"):
+                started.append(payload)
+            elif payload.get("ready"):
+                ready.append(payload)
+            else:
+                skipped.append({"id": acc_id, "reason": payload.get("error") or "操作未入队"})
+        return jsonify({
+            "ok": True,
+            "action": action,
+            "started": started,
+            "started_count": len(started),
+            "ready": ready,
+            "ready_count": len(ready),
             "skipped": skipped,
             "skipped_count": len(skipped),
         }), 202

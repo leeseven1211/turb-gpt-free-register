@@ -231,6 +231,7 @@ def summarize_postprocess(
     *,
     core_success: bool,
     password_present: bool,
+    password_required: bool = True,
     outcomes: Mapping[str, Any] | None = None,
     twofa_required: bool = True,
     codex_enabled: bool = False,
@@ -254,7 +255,7 @@ def summarize_postprocess(
     if account_deactivated:
         readiness = "deactivated"
     else:
-        readiness_requirements = (password_present,)
+        readiness_requirements = (password_present,) if password_required else ()
         for result in results:
             if result.stage in {"twofa", "plan_check"}:
                 readiness_requirements += (result.completed,)

@@ -126,6 +126,7 @@ from config.register import (
     REGISTER_EMAIL,
     REGISTRATION_AUTH_MODE,
     REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS,
+    REGISTRATION_PLAN_CHECK_ENABLED,
     REGISTER_NAME,
 )
 
@@ -182,6 +183,19 @@ from config.email import (
 # ---------- 2FA ----------
 from config.twofa import ENABLE_2FA, TWOFA_DRIVER
 
+# ---------- 账号管理 / 补全策略 ----------
+from config.account import (
+    ACCOUNT_COMPLETION_PASSWORD_ENABLED,
+    ACCOUNT_COMPLETION_PLAN_CHECK_ENABLED,
+    ACCOUNT_COMPLETION_2FA_ENABLED,
+    ACCOUNT_COMPLETION_CODEX_ENABLED,
+    ACCOUNT_COMPLETION_REFRESH_AT_ENABLED,
+    ACCOUNT_PASSWORD_DRIVER,
+    ACCOUNT_PLAN_CHECK_DRIVER,
+    ACCOUNT_2FA_DRIVER,
+    ACCOUNT_CODEX_DRIVER,
+)
+
 
 # ---------- 热加载支持 ----------
 # WebUI 改配置后调 reload_all() 即可让所有运行时代码看到新值，无需重启进程。
@@ -195,6 +209,7 @@ _RELOADABLE_SUBMODULES = (
     "config.openai_protocol",
     "config.proxy",
     "config.register",
+    "config.account",
     "config.email",
     "config.twofa",
     "config.roxybrowser",
@@ -232,9 +247,9 @@ def reload_all() -> list[str]:
 def _refresh_top_level_constants() -> None:
     """把刚 reload 的子模块的常量重新拷一份到 config 包顶层。"""
     import config as _self
-    from config import browser, openai_protocol, proxy as _proxy, register, email, twofa, roxybrowser, codex, extract_link, sub2api, humanize, flow_trigger
+    from config import browser, openai_protocol, proxy as _proxy, register, account, email, twofa, roxybrowser, codex, extract_link, sub2api, humanize, flow_trigger
     # 简单粗暴：枚举一遍重要常量，覆盖到 _self
-    for src in (browser, openai_protocol, _proxy, register, email, twofa, roxybrowser, codex, extract_link, sub2api, humanize, flow_trigger):
+    for src in (browser, openai_protocol, _proxy, register, account, email, twofa, roxybrowser, codex, extract_link, sub2api, humanize, flow_trigger):
         for k in dir(src):
             if k.isupper() or k in ("pick_proxy", "pick_browser_profile", "build_browser_environment", "validate_browser_profile"):
                 setattr(_self, k, getattr(src, k))
@@ -271,7 +286,7 @@ __all__ = [
     "PLAN_CHECK_REGISTRATION_RECHECK_DELAY", "PLAN_CHECK_WORKERS", "PLAN_CHECK_QUEUE_LIMIT",
     "PLAN_CHECK_MIN_INTERVAL", "PLAN_CHECK_JITTER", "pick_proxy", "PROXY",
     # register
-    "REGISTER_EMAIL", "REGISTRATION_AUTH_MODE", "REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS", "REGISTER_NAME",
+    "REGISTER_EMAIL", "REGISTRATION_AUTH_MODE", "REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS", "REGISTRATION_PLAN_CHECK_ENABLED", "REGISTER_NAME",
     # email
     "USE_EMAIL_SERVICE", "EMAIL_SOURCE",
     "OUTLOOK_ACCOUNTS_FILE", "OUTLOOK_API_BASE",
@@ -291,4 +306,9 @@ __all__ = [
     "ICLOUD_HME_CREATE_LABEL_PREFIX",
     # twofa
     "ENABLE_2FA", "TWOFA_DRIVER",
+    # account completion
+    "ACCOUNT_COMPLETION_PASSWORD_ENABLED", "ACCOUNT_COMPLETION_PLAN_CHECK_ENABLED",
+    "ACCOUNT_COMPLETION_2FA_ENABLED", "ACCOUNT_COMPLETION_CODEX_ENABLED",
+    "ACCOUNT_COMPLETION_REFRESH_AT_ENABLED", "ACCOUNT_PASSWORD_DRIVER",
+    "ACCOUNT_PLAN_CHECK_DRIVER", "ACCOUNT_2FA_DRIVER", "ACCOUNT_CODEX_DRIVER",
 ]

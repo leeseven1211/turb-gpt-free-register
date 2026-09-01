@@ -7,6 +7,7 @@ from unittest.mock import patch
 from config import codex as codex_config
 from config import register as register_config
 from config import twofa as twofa_config
+from config import account as account_config
 from config import env_loader
 from core import account_export
 from webui import config_editor
@@ -94,7 +95,7 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
 
     def test_twofa_driver_is_webui_editable_and_env_driven(self):
         fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
-        self.assertEqual(fields["TWOFA_DRIVER"]["group"], "功能开关")
+        self.assertEqual(fields["TWOFA_DRIVER"]["group"], "注册主链路")
         self.assertEqual(fields["TWOFA_DRIVER"]["type"], "str")
         self.assertEqual(twofa_config.get_twofa_driver("roxy"), "browser")
 
@@ -108,6 +109,45 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         finally:
             env_loader._LOADED = old_loaded
             importlib.reload(twofa_config)
+
+    def test_registration_and_account_completion_switches_are_editable(self):
+        fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
+        registration_keys = {
+            "ENABLE_CODEX_AUTO",
+            "REGISTRATION_DRIVER",
+            "REGISTRATION_AUTH_MODE",
+            "REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS",
+            "REGISTRATION_PLAN_CHECK_ENABLED",
+            "ENABLE_2FA",
+            "TWOFA_DRIVER",
+            "ENABLE_FLOW_TRIGGER",
+            "CODEX_OAUTH_DRIVER",
+        }
+        self.assertTrue(registration_keys.issubset(fields))
+        self.assertTrue(all(fields[key]["group"] == "注册主链路" for key in registration_keys))
+        completion_keys = {
+            "ACCOUNT_COMPLETION_PASSWORD_ENABLED",
+            "ACCOUNT_COMPLETION_PLAN_CHECK_ENABLED",
+            "ACCOUNT_COMPLETION_2FA_ENABLED",
+            "ACCOUNT_COMPLETION_CODEX_ENABLED",
+            "ACCOUNT_COMPLETION_REFRESH_AT_ENABLED",
+        }
+        self.assertTrue(completion_keys.issubset(fields))
+        self.assertTrue(all(fields[key]["group"] == "账号补全" for key in completion_keys))
+
+        old_loaded = env_loader._LOADED
+        env_loader._LOADED = True
+        try:
+            with patch.dict(os.environ, {
+                "ACCOUNT_COMPLETION_CODEX_ENABLED": "False",
+                "ACCOUNT_COMPLETION_REFRESH_AT_ENABLED": "True",
+            }, clear=False):
+                reloaded = importlib.reload(account_config)
+                self.assertFalse(reloaded.ACCOUNT_COMPLETION_CODEX_ENABLED)
+                self.assertTrue(reloaded.ACCOUNT_COMPLETION_REFRESH_AT_ENABLED)
+        finally:
+            env_loader._LOADED = old_loaded
+            importlib.reload(account_config)
 
     def test_protocol_twofa_checkpoints_secret_before_activation(self):
         events = []
@@ -209,10 +249,10 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
 
     def test_registration_password_mode_is_webui_editable_and_env_driven(self):
         fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
-        self.assertEqual(fields["REGISTRATION_AUTH_MODE"]["group"], "注册方式")
+        self.assertEqual(fields["REGISTRATION_AUTH_MODE"]["group"], "注册主链路")
         self.assertEqual(
             fields["REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS"]["group"],
-            "注册方式",
+            "注册主链路",
         )
         self.assertNotIn("REGISTER_PASSWORD", fields)
 

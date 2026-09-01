@@ -542,7 +542,7 @@ def create_attempt(
         return _attempt_from_cursor(cur, attempt_id) or {}
 
 
-def ensure_attempt_for_job(job_id: int, *, conn=None) -> dict:
+def ensure_attempt_for_job(job_id: int, *, conn=None, data: dict | None = None) -> dict:
     """Link a legacy job to its root Attempt, preserving the Attempt on retries."""
     init()
     own = conn is None
@@ -553,7 +553,13 @@ def ensure_attempt_for_job(job_id: int, *, conn=None) -> dict:
             if not job:
                 raise LookupError(f"注册任务不存在: {job_id}")
             if job.get("attempt_id"):
-                attempt = _attempt_from_cursor(cur, int(job["attempt_id"]))
+                attempt_id = int(job["attempt_id"])
+                if data:
+                    cur.execute(
+                        f"UPDATE {_table('registration_attempts')} SET data=data || %s::jsonb, updated_at=%s WHERE id=%s",
+                        (_json(data), _now(), attempt_id),
+                    )
+                attempt = _attempt_from_cursor(cur, attempt_id)
             else:
                 root_id = int(job.get("root_job_id") or job_id)
                 cur.execute(
@@ -568,7 +574,7 @@ def ensure_attempt_for_job(job_id: int, *, conn=None) -> dict:
                     # additive columns, but never rewind an advanced checkpoint.
                     cur.execute(
                         f"""
-                        UPDATE {_table('registration_attempts')}
+                    UPDATE {_table('registration_attempts')}
                         SET root_job_id=COALESCE(root_job_id,%s),
                             email_snapshot=CASE WHEN email_snapshot='' THEN %s ELSE email_snapshot END,
                             email=COALESCE(NULLIF(email,''),%s),
@@ -578,11 +584,12 @@ def ensure_attempt_for_job(job_id: int, *, conn=None) -> dict:
                             remote_account_state=CASE WHEN remote_account_state IN ('unknown','') THEN 'not_started' ELSE remote_account_state END,
                             local_account_state=CASE WHEN local_account_state IN ('unknown','missing','') THEN 'none' ELSE local_account_state END,
                             target_status=CASE WHEN target_status IN ('unknown','') THEN 'pending' ELSE target_status END,
+                            data={_table('registration_attempts')}.data || %s::jsonb,
                             updated_at=%s
                         WHERE id=%s
                         """,
                         (root_id, str(job.get("email") or ""), str(job.get("email") or ""),
-                         str(job.get("email_source") or "").strip() or None, _now(), attempt_id),
+                         str(job.get("email_source") or "").strip() or None, _json(data or {}), _now(), attempt_id),
                     )
                 else:
                     now = _now()
@@ -599,7 +606,7 @@ def ensure_attempt_for_job(job_id: int, *, conn=None) -> dict:
                         (str(uuid.uuid5(uuid.NAMESPACE_URL, f"turb-registration-attempt:{root_id}")),
                          root_id, root_id, str(job.get("email") or ""), str(job.get("email") or ""),
                          str(job.get("email_source") or "").strip() or None, now, now,
-                         _json({"legacy_root_job_id": root_id})),
+                         _json({"legacy_root_job_id": root_id, **dict(data or {})})),
                     )
                     attempt_id = int(cur.fetchone()["id"])
                 cur.execute(

@@ -45,13 +45,180 @@ def _run_codex_retry_worker(
     )
 
 
-def _run_account_setup_worker(email: str, *, task_id: int, task_trigger: str) -> None:
-    """Execute account configuration repair without starting Codex OAuth."""
+def _run_account_setup_worker(
+    email: str,
+    *,
+    task_id: int,
+    task_trigger: str,
+    steps: set[str] | tuple[str, ...] | list[str] | None = None,
+) -> None:
+    """Execute selected account configuration repair without starting Codex OAuth."""
     codex_retry_service.run_twofa_worker(
         email,
         task_id=task_id,
         task_trigger=task_trigger,
+        steps=steps,
     )
+
+
+def _run_account_completion_worker(
+    email: str,
+    *,
+    account_id: int,
+    task_id: int,
+    task_trigger: str,
+    planned_steps: list[str],
+    settings: dict[str, object],
+) -> None:
+    """Execute a config-driven completion plan and record one coordinator task."""
+    from core.account_completion_service import STEP_LABELS
+
+    started = False
+    result_summary: dict[str, Any] = {"planned_steps": list(planned_steps)}
+    try:
+        account_task_store.start_task(
+            task_id,
+            message=f"开始补全账号：{'、'.join(STEP_LABELS.get(step, step) for step in planned_steps)}",
+        )
+        started = True
+        account_task_store.append_event(
+            task_id,
+            stage="plan",
+            message="已按当前配置生成账号补全计划",
+            detail={"steps": list(planned_steps)},
+            state="success",
+        )
+        remaining = set(planned_steps)
+
+        if "refresh_at" in remaining:
+            account = db.get_account(int(account_id)) or {}
+            queued = live_check_service.enqueue_account_live_check(
+                account_id=int(account_id),
+                email=str(account.get("email") or email),
+                trigger=f"{task_trigger}_refresh_at",
+                proxy=None,
+                force_refresh=True,
+            )
+            result_summary["refresh_at"] = {
+                "accepted": bool(queued.get("accepted")),
+                "busy": bool(queued.get("busy")),
+                "task_id": queued.get("task_id"),
+                "message": queued.get("error") or "刷新 AT 已入队",
+            }
+            account_task_store.append_event(
+                task_id,
+                stage="refresh_token",
+                message="补全计划中的刷新 AT 已作为独立操作入队",
+                detail={"accepted": bool(queued.get("accepted")), "busy": bool(queued.get("busy"))},
+                state="success" if queued.get("accepted") or queued.get("busy") else "failed",
+            )
+            remaining.discard("refresh_at")
+            if not queued.get("accepted") and not queued.get("busy"):
+                raise RuntimeError(queued.get("error") or "刷新 AT 入队失败")
+            if remaining:
+                result_summary["deferred_steps"] = [step for step in planned_steps if step in remaining]
+                account_task_store.append_event(
+                    task_id,
+                    stage="plan",
+                    message="等待刷新 AT 完成后再执行其余补全步骤，请在刷新完成后重新点击补全账号",
+                    detail={"deferred_steps": result_summary["deferred_steps"]},
+                    state="skipped",
+                )
+                account_task_store.finish_task(
+                    task_id,
+                    status="success",
+                    message="刷新 AT 已提交，其余补全步骤已安全延后",
+                    result_summary=result_summary,
+                    validation_method="account_completion_plan",
+                )
+                return
+
+        setup_steps = remaining & {"password", "plan_check", "twofa"}
+        if setup_steps:
+            account_task_store.append_event(
+                task_id,
+                stage="account_setup",
+                message=f"开始执行账号配置步骤：{'、'.join(STEP_LABELS[step] for step in planned_steps if step in setup_steps)}",
+                detail={"steps": sorted(setup_steps)},
+                state="running",
+            )
+            setup_result = codex_retry_service.run_twofa_worker(
+                email,
+                clear_log=False,
+                task_id=task_id,
+                task_trigger=task_trigger,
+                steps=setup_steps,
+                manage_task=False,
+                twofa_driver_override=str(settings.get("twofa_driver") or "protocol"),
+                password_driver_override=str(settings.get("password_driver") or "roxy"),
+                plan_driver_override=str(settings.get("plan_check_driver") or "protocol"),
+            )
+            result_summary["account_setup"] = {
+                "ok": bool(setup_result.get("ok")),
+                "status": setup_result.get("status"),
+                "message": setup_result.get("message"),
+                "plan_check": setup_result.get("plan_check"),
+            }
+            if not setup_result.get("ok"):
+                raise RuntimeError(setup_result.get("message") or "账号配置步骤未完成")
+            plan_outcome = setup_result.get("plan_check") or {}
+            if "plan_check" in setup_steps and not bool(plan_outcome.get("ok")):
+                raise RuntimeError(plan_outcome.get("message") or "套餐补全未完成")
+            remaining -= setup_steps
+
+        if "codex" in remaining:
+            account_task_store.append_event(
+                task_id,
+                stage="codex",
+                message="开始提交 Codex OAuth 独立操作",
+                state="running",
+            )
+            queued = codex_operation_service.submit(
+                email,
+                trigger=f"{task_trigger}_codex",
+                driver=str(settings.get("codex_driver") or "same_as_registration"),
+            )
+            result_summary["codex"] = {
+                "accepted": bool(queued.get("accepted")),
+                "busy": bool(queued.get("busy")),
+                "task_id": queued.get("task_id"),
+                "run_id": queued.get("run_id"),
+                "message": queued.get("error") or "Codex OAuth 已入队",
+            }
+            account_task_store.append_event(
+                task_id,
+                stage="codex",
+                message="Codex OAuth 已作为独立操作入队" if queued.get("accepted") or queued.get("busy") else "Codex OAuth 入队失败",
+                detail={"accepted": bool(queued.get("accepted")), "busy": bool(queued.get("busy"))},
+                state="success" if queued.get("accepted") or queued.get("busy") else "failed",
+            )
+            if not queued.get("accepted") and not queued.get("busy"):
+                raise RuntimeError(queued.get("error") or "Codex OAuth 入队失败")
+            remaining.discard("codex")
+
+        result_summary["completed_steps"] = [step for step in planned_steps if step not in remaining]
+        account_task_store.finish_task(
+            task_id,
+            status="success",
+            message="补全计划已提交，独立操作将在任务中心继续执行",
+            result_summary=result_summary,
+            validation_method="account_completion_plan",
+        )
+    except Exception as exc:
+        result_summary["error"] = f"{type(exc).__name__}: {str(exc)[:220]}"
+        account_task_store.finish_task(
+            task_id,
+            status="failed",
+            message="账号补全计划执行失败",
+            error=result_summary["error"],
+            result_summary=result_summary,
+            validation_method="account_completion_plan",
+        )
+        logger.exception("账号补全失败：email=%s", email)
+    finally:
+        # 统一释放父任务租约；账号配置子步骤在 manage_task=False 时会保留租约，
+        # 直到这里完成 Codex 入队或整个补全计划结束。
+        codex_retry_service.release(email)
 
 
 @dataclass
@@ -91,8 +258,10 @@ class WebUIContext:
         account_id: int,
         *,
         trigger: str = "manual_account_setup",
+        steps: set[str] | tuple[str, ...] | list[str] | None = None,
+        task_type: str | None = None,
     ) -> dict:
-        """Queue account password, plan and authenticator repair."""
+        """Queue selected account configuration repair (legacy setup by default)."""
         try:
             account = db.get_account(int(account_id))
         except (TypeError, ValueError):
@@ -107,9 +276,21 @@ class WebUIContext:
         if not codex_retry_service.reserve(email):
             return {"accepted": False, "busy": True, "error": "该账号正在执行账号操作，请稍候"}
 
+        requested_steps = {"password", "plan_check", "twofa"} if steps is None else {
+            str(item or "").strip().lower() for item in steps
+        }
+        requested_steps &= {"password", "plan_check", "twofa"}
+        if not requested_steps:
+            codex_retry_service.release(email)
+            return {"accepted": False, "error": "没有可执行的账号配置步骤"}
+        inferred_task_type = (
+            "password_setup" if requested_steps == {"password"}
+            else "twofa_setup" if requested_steps == {"twofa"}
+            else "account_setup_retry"
+        )
         try:
             task_id = account_task_store.create_task(
-                task_type="account_setup_retry",
+                task_type=str(task_type or inferred_task_type),
                 account_id=int(account.get("id") or 0) or None,
                 email=email,
                 trigger=str(trigger or "manual_account_setup"),
@@ -125,6 +306,7 @@ class WebUIContext:
                 "email": email,
                 "task_id": task_id,
                 "task_trigger": str(trigger or "manual_account_setup"),
+                "steps": requested_steps,
             },
             name=f"account-setup-{email}",
             daemon=True,
@@ -149,6 +331,77 @@ class WebUIContext:
             "email": email,
             "status": "queued",
             "trigger": str(trigger or "manual_account_setup"),
+            "steps": sorted(requested_steps),
+        }
+
+    def enqueue_account_completion(
+        self,
+        account_id: int,
+        *,
+        trigger: str = "manual_account_completion",
+    ) -> dict:
+        """Generate and queue the configured missing-account completion plan."""
+        from core.account_completion_service import completion_plan
+        from config.account import completion_settings
+
+        try:
+            account = db.get_account(int(account_id))
+        except (TypeError, ValueError):
+            account = None
+        if account is None:
+            return {"accepted": False, "error": "账号不存在"}
+        email = str(account.get("email") or "").strip()
+        if not email:
+            return {"accepted": False, "error": "账号邮箱为空"}
+        if str(account.get("account_status") or "").lower() == "deactivated":
+            return {"accepted": False, "error": "账号已废号，不能补全账号"}
+        settings = completion_settings()
+        plan = completion_plan(account, settings)
+        if plan["blocked"]:
+            return {"accepted": False, "blocked": plan["blocked"], "plan": plan, "error": plan["blocked"][0]["reason"]}
+        if not plan["missing_steps"]:
+            return {"accepted": False, "ready": True, "plan": plan, "message": "账号已满足当前补全配置"}
+        if not codex_retry_service.reserve(email):
+            return {"accepted": False, "busy": True, "error": "该账号正在执行账号操作，请稍候"}
+        try:
+            task_id = account_task_store.create_task(
+                task_type="account_completion",
+                account_id=int(account.get("id") or 0) or None,
+                email=email,
+                trigger=str(trigger or "manual_account_completion"),
+            )
+        except Exception as exc:
+            codex_retry_service.release(email)
+            return {"accepted": False, "error": f"任务实例创建失败：{type(exc).__name__}: {exc}"}
+        worker = threading.Thread(
+            target=_run_account_completion_worker,
+            kwargs={
+                "email": email,
+                "account_id": int(account["id"]),
+                "task_id": task_id,
+                "task_trigger": str(trigger or "manual_account_completion"),
+                "planned_steps": list(plan["missing_steps"]),
+                "settings": settings,
+            },
+            name=f"account-completion-{email}",
+            daemon=True,
+        )
+        try:
+            worker.start()
+        except Exception as exc:
+            codex_retry_service.release(email)
+            error = f"账号补全启动失败：{type(exc).__name__}: {exc}"
+            account_task_store.finish_task(task_id, status="failed", message="账号补全启动失败", error=error)
+            return {"accepted": False, "task_id": task_id, "error": error}
+        return {
+            "accepted": True,
+            "busy": False,
+            "task_id": task_id,
+            "account_id": int(account["id"]),
+            "email": email,
+            "status": "queued",
+            "trigger": str(trigger or "manual_account_completion"),
+            "plan": plan,
         }
 
     def retry_account_task_result(self, task_id: int) -> tuple[dict, int]:
@@ -185,10 +438,22 @@ class WebUIContext:
                 email=str(account.get("email") or ""),
                 trigger="manual_retry",
             )
-        elif task_type == "account_setup_retry":
+        elif task_type in {"account_setup_retry", "password_setup", "twofa_setup"}:
+            step_map = {
+                "account_setup_retry": None,
+                "password_setup": {"password"},
+                "twofa_setup": {"twofa"},
+            }
             queued = self.enqueue_account_setup(
                 int(account["id"]),
                 trigger="manual_retry",
+                steps=step_map[task_type],
+                task_type=task_type,
+            )
+        elif task_type == "account_completion":
+            queued = self.enqueue_account_completion(
+                int(account["id"]),
+                trigger="manual_retry_completion",
             )
         elif task_type == "codex_token_refresh":
             filename = str((task.get("result_summary") or {}).get("filename") or "")

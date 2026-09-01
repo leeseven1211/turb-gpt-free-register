@@ -41,6 +41,45 @@ _STOP_LOCK = threading.Lock()
 _THREAD_CTX = threading.local()
 
 
+def registration_config_snapshot() -> dict[str, object]:
+    """Return the non-sensitive registration choices captured per job.
+
+    A registration task must keep the choices it was submitted with even if
+    the WebUI configuration is changed while the worker is running.
+    """
+    from config import codex as codex_cfg
+    from config import register as register_cfg
+    from config import roxybrowser as roxy_cfg
+    from config import twofa as twofa_cfg
+
+    auth_mode = str(getattr(register_cfg, "REGISTRATION_AUTH_MODE", "otp") or "otp").strip().lower()
+    if auth_mode not in {"otp", "password"}:
+        auth_mode = "otp"
+    registration_driver = str(getattr(roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
+    return {
+        "registration_driver": registration_driver,
+        "password_enabled": auth_mode == "password",
+        "password_mode": auth_mode,
+        "twofa_enabled": bool(getattr(twofa_cfg, "ENABLE_2FA", False)),
+        "twofa_driver": str(getattr(twofa_cfg, "TWOFA_DRIVER", "protocol") or "protocol").strip().lower(),
+        "codex_enabled": bool(getattr(codex_cfg, "ENABLE_CODEX_AUTO", False)),
+        "codex_driver": str(getattr(codex_cfg, "CODEX_OAUTH_DRIVER", "same_as_registration") or "same_as_registration").strip().lower(),
+        "plan_check_enabled": bool(getattr(register_cfg, "REGISTRATION_PLAN_CHECK_ENABLED", True)),
+    }
+
+
+def registration_options_for_job(job: dict | None) -> dict[str, object]:
+    """Read a job snapshot, falling back to current config for old jobs."""
+    if isinstance(job, dict):
+        snapshot = job.get("config_snapshot")
+        if isinstance(snapshot, dict):
+            return dict(snapshot)
+        raw_data = job.get("data")
+        if isinstance(raw_data, dict) and isinstance(raw_data.get("config_snapshot"), dict):
+            return dict(raw_data["config_snapshot"])
+    return registration_config_snapshot()
+
+
 # Workflow B owns these facts.  This adapter only translates the existing job
 # progress vocabulary into one-way checkpoints; it never creates a parallel
 # state store or guesses an Attempt from an email address.
@@ -1011,6 +1050,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     proxy=proxy_lease.proxy_url,
                     existing_password=existing_password or None,
                     existing_totp_secret=existing_totp_secret or None,
+                    registration_options=registration_options_for_job(current),
                 )
                 if not _should_retry_registration_with_new_proxy(result, proxy_lease, retry_attempt):
                     break
@@ -1549,6 +1589,7 @@ def submit_registration(
                 batch_index=index + 1,
                 batch_size=count,
                 batch_workers=effective_workers,
+                data={"config_snapshot": registration_config_snapshot()},
             )
             if debug_enabled:
                 from core.registration_debug import patch_job
@@ -1730,14 +1771,23 @@ def _build_retry_info(
         except Exception:
             pass
 
+    registration_snapshot = job.get("config_snapshot") if isinstance(job.get("config_snapshot"), dict) else None
+    password_required = bool(registration_snapshot.get("password_enabled", True)) if registration_snapshot else True
+    plan_check_required = bool(registration_snapshot.get("plan_check_enabled", True)) if registration_snapshot else True
+    twofa_required = (
+        bool(registration_snapshot.get("twofa_enabled", True))
+        if registration_snapshot
+        else str(twofa_step.get("state") or "").strip().lower() != "skipped"
+    )
+    codex_required = bool(registration_snapshot.get("codex_enabled", True)) if registration_snapshot else codex_status != "skipped"
     setup_missing = bool(account) and (
-        not _account_login_password(account)
-        or not _account_plan_ready(account)
-        or not _account_twofa_ready(account, twofa_failed)
+        (password_required and not _account_login_password(account))
+        or (plan_check_required and not _account_plan_ready(account))
+        or (twofa_required and not _account_twofa_ready(account, twofa_failed))
     )
 
     if account and job.get("account_id") is not None:
-        codex_complete = codex_status in {"success", "skipped"}
+        codex_complete = (not codex_required) or codex_status in {"success", "skipped"}
         info["display_status"] = (
             "success"
             if codex_complete and not setup_missing
@@ -1749,20 +1799,20 @@ def _build_retry_info(
     # independent follow-up (for example Codex plus plan check).
     if account:
         twofa_state = "failed" if twofa_failed else "success" if _account_twofa_ready(account) else "pending"
-        twofa_required = str(twofa_step.get("state") or "").strip().lower() != "skipped"
         codex_state = codex_status or "failed"
         plan_state = "success" if _account_plan_ready(account) else "pending"
         summary = summarize_postprocess(
             core_success=True,
             password_present=bool(_account_login_password(account)),
+            password_required=password_required,
             outcomes={
                 "twofa": {"status": twofa_state, "ok": twofa_state == "success"},
                 "codex": {"status": codex_state, "ok": codex_state in {"success", "skipped"}},
                 "plan_check": {"status": plan_state, "ok": plan_state == "success"},
             },
             twofa_required=twofa_required,
-            codex_enabled=codex_state != "skipped",
-            plan_check_required=True,
+            codex_enabled=codex_required,
+            plan_check_required=plan_check_required,
         )
         info["next_actions"] = [action.as_dict() for action in summary.next_actions]
 
@@ -1970,6 +2020,7 @@ def retry_job(
             batch_index=batch_index,
             batch_size=batch_size,
             batch_workers=workers,
+            data={"config_snapshot": registration_options_for_job(source)},
         )
     except LookupError as exc:
         if reserved_account_action:
