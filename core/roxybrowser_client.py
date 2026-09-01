@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -16,6 +17,12 @@ import requests
 from config import roxybrowser as _cfg
 
 logger = logging.getLogger(__name__)
+
+_RETRYABLE_HTTP_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+_HTTP_STATUS_RE = re.compile(
+    r"\b(?:http|status\s+code|status)\s*[:=]?\s*(\d{3})\b",
+    re.IGNORECASE,
+)
 
 
 # Roxy 本地 API 同一时刻只接受一个 /browser/create；并发提交会返回
@@ -223,17 +230,15 @@ class RoxyBrowserClient:
     @staticmethod
     def _is_retryable_error(exc: Exception) -> bool:
         text = str(exc or "").lower()
-        return (
+        if (
             "timeout" in text
             or "timed out" in text
             or "connection" in text
             or "temporarily" in text
-            or "http 500" in text
-            or "http 502" in text
-            or "http 503" in text
-            or "http 504" in text
-            or "http 429" in text
-        )
+        ):
+            return True
+        statuses = {int(match) for match in _HTTP_STATUS_RE.findall(text)}
+        return bool(statuses & _RETRYABLE_HTTP_STATUS_CODES)
 
     def request(self, method: str, path: str, *, params: dict | None = None, json_body: dict | None = None) -> dict:
         url = _join_url(self.api_base, path)
@@ -578,7 +583,14 @@ class RoxyBrowserClient:
                 except Exception as exc:
                     # “返回失败”说明本地 API 已给出确定的业务响应；requests 自身
                     # timeout/connection error 属于结果未知，不能安全地重复 create。
-                    confirmed_failure = "Roxy API 返回失败" in str(exc)
+                    error_text = str(exc)
+                    confirmed_failure = (
+                        "Roxy API 返回失败" in error_text
+                        or (
+                            "Roxy API 请求失败" in error_text
+                            and bool(_HTTP_STATUS_RE.search(error_text))
+                        )
+                    )
                     if (
                         attempt >= max_create_attempts
                         or not confirmed_failure

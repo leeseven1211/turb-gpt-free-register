@@ -92,6 +92,47 @@ class RoxyProxyInjectionTests(unittest.TestCase):
         self.assertEqual([one[0] for one in calls], ["/browser/create", "/browser/list_v2", "/browser/create"])
         self.assertEqual(calls[0][2]["windowName"], calls[2][2]["windowName"])
 
+    def test_create_retries_after_roxy_status_code_503_when_unique_name_is_absent(self):
+        client = roxybrowser_client.RoxyBrowserClient()
+        calls = []
+
+        def fake_request(_method, path, *, params=None, json_body=None):
+            calls.append((path, params, json_body))
+            if path == "/browser/list_v2":
+                return {"code": 0, "data": {"rows": [], "total": 0}}
+            create_count = sum(1 for one in calls if one[0] == "/browser/create")
+            if create_count == 1:
+                raise RuntimeError(
+                    "Roxy API 返回失败 POST /browser/create: Request failed with status code 503"
+                )
+            return {"code": 0, "data": {"dirId": "created-after-status-retry"}}
+
+        with patch.multiple(
+            roxybrowser_client._cfg,
+            ROXY_PROFILE_CREATE_PAYLOAD={"windowName": "status-retry-name"},
+            ROXY_RANDOM_PROFILE_NAME_ON_CREATE=False,
+            ROXY_RANDOM_OS_ON_CREATE=False,
+            ROXY_DEFAULT_OS="macOS",
+            ROXY_DEFAULT_OS_VERSION="",
+            ROXY_WORKSPACE_ID="123",
+            ROXY_PROJECT_ID="456",
+            ROXY_CREATE_USE_PROXY_POOL=False,
+            ROXY_CREATE_METHOD="POST",
+            ROXY_CREATE_PATH="/browser/create",
+            ROXY_API_RETRIES=3,
+            ROXY_API_RETRY_DELAY=1,
+        ), patch.object(client, "request", side_effect=fake_request), patch.object(
+            roxybrowser_client.time, "sleep"
+        ):
+            profile_id = client.create_profile()
+
+        self.assertEqual(profile_id, "created-after-status-retry")
+        self.assertEqual(
+            [one[0] for one in calls],
+            ["/browser/create", "/browser/list_v2", "/browser/create"],
+        )
+        self.assertEqual(calls[0][2]["windowName"], calls[2][2]["windowName"])
+
     def test_create_reconciles_existing_profile_instead_of_duplicating(self):
         client = roxybrowser_client.RoxyBrowserClient()
         calls = []

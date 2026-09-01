@@ -799,6 +799,83 @@ def _should_retry_registration_with_new_proxy(
     return _is_transient_registration_proxy_error(result.get("error"))
 
 
+def _is_retryable_registration_proxy_acquisition_error(error: object) -> bool:
+    """识别代理申请阶段的可恢复错误，避免配置类错误被盲目重试。"""
+    text = str(error or "").lower()
+    if not text:
+        return False
+    if _is_transient_registration_proxy_error(error):
+        return True
+    # 1024Proxy 的底层异常会被 acquire_* 统一包成这两类错误；其中也包含
+    # 批次返回重复/隔离端点的情况，下一次请求会使用新的轮换序号。
+    return "1024proxy 获取失败" in text or "1024proxy 批量获取失败" in text
+
+
+def _acquire_registration_proxy_with_retries(
+    *,
+    acquire_proxy,
+    job_id: int,
+    batch_id: str | None,
+    batch_size: int,
+    batch_workers: int,
+    progress_callback,
+    log_logger: logging.Logger,
+    retry_kind: str = "proxy_acquisition",
+):
+    """申请注册代理；仅在代理平台/线路错误时有限重试。"""
+    retry_limit = _registration_proxy_retry_limit()
+    for attempt in range(retry_limit + 1):
+        try:
+            return acquire_proxy(
+                job_id=job_id,
+                batch_id=batch_id,
+                batch_size=batch_size,
+                batch_workers=batch_workers,
+                progress_callback=progress_callback,
+            )
+        except Exception as exc:
+            error_text = f"{type(exc).__name__}: {exc}"[:300]
+            if attempt >= retry_limit or not _is_retryable_registration_proxy_acquisition_error(exc):
+                raise
+
+            next_attempt = attempt + 1
+            log_logger.warning(
+                "[Job %s] 申请代理失败，准备重试 (%s/%s): %s",
+                job_id,
+                next_attempt,
+                retry_limit,
+                error_text,
+            )
+            db.update_job(
+                job_id,
+                proxy_status="acquiring",
+                error=f"申请代理失败，准备重试: {error_text}",
+            )
+            db.update_job_progress(
+                job_id,
+                "network",
+                state="failed",
+                detail=f"申请代理失败，准备重试 ({next_attempt}/{retry_limit}): {error_text}",
+            )
+            db.begin_job_route_attempt(
+                job_id,
+                retry_kind=retry_kind,
+                retry_reason=error_text,
+            )
+            db.update_job_progress(
+                job_id,
+                "network",
+                state="running",
+                detail=f"正在重试申请网络线路 ({next_attempt}/{retry_limit})",
+            )
+            retry_delay = _registration_proxy_retry_delay()
+            if retry_delay:
+                time.sleep(retry_delay)
+            check_stop_requested()
+
+    raise RuntimeError("代理申请重试流程异常结束")
+
+
 def _normalize_workers(max_workers: int | None) -> int:
     if max_workers is None:
         return _DEFAULT_MAX_WORKERS
@@ -915,13 +992,19 @@ def _run_one_job(job_id: int, log_file: str) -> None:
         batch_workers = max(1, int(current.get("batch_workers") or 1))
     except (TypeError, ValueError):
         batch_workers = 1
+    # 重试子任务要继续挂在原批次下，供 UI/统计合并展示；但它是一个新的
+    # 独立执行，不应再次加入原批次的代理预取和隔离状态。
+    is_retry_job = current.get("parent_job_id") is not None
+    proxy_batch_id = batch_id if batch_id and batch_size > 1 and not is_retry_job else None
+    proxy_batch_size = batch_size if proxy_batch_id else 1
+    proxy_batch_workers = batch_workers if proxy_batch_id else 1
     if current.get("status") == "cancelled":
         log_logger.info(f"[Job {job_id}] 已被用户取消，跳过执行")
-        if batch_id and batch_size > 1:
+        if proxy_batch_id:
             try:
                 from core.proxy_provider import finalize_registration_proxy_batch
 
-                finalize_registration_proxy_batch(batch_id)
+                finalize_registration_proxy_batch(proxy_batch_id)
             except Exception:
                 logger.exception("[Job %s] 收口已取消注册批次失败", job_id)
         _deactivate_job(job_id)
@@ -987,17 +1070,19 @@ def _run_one_job(job_id: int, log_file: str) -> None:
 
             log_logger.info(f"[Job {job_id}] 开始注册任务")
             db.update_job(job_id, proxy_status="acquiring")
-            proxy_lease = acquire_registration_proxy(
+            proxy_lease = _acquire_registration_proxy_with_retries(
+                acquire_proxy=acquire_registration_proxy,
                 job_id=job_id,
-                batch_id=batch_id if batch_size > 1 else None,
-                batch_size=batch_size,
-                batch_workers=batch_workers,
+                batch_id=proxy_batch_id,
+                batch_size=proxy_batch_size,
+                batch_workers=proxy_batch_workers,
                 progress_callback=lambda detail: db.update_job_progress(
                     job_id,
                     "network",
                     state="running",
                     detail=detail,
                 ),
+                log_logger=log_logger,
             )
             _bind_proxy_lease(proxy_lease)
             db.update_job_progress(job_id, "email", state="running", detail="正在领取或复用注册邮箱")
@@ -1086,7 +1171,8 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 if retry_delay:
                     time.sleep(retry_delay)
                 check_stop_requested()
-                proxy_lease = acquire_registration_proxy(
+                proxy_lease = _acquire_registration_proxy_with_retries(
+                    acquire_proxy=acquire_registration_proxy,
                     job_id=job_id,
                     # 批次首轮租约已经释放；重试必须单独申请新线路，不能消耗批次剩余槽位。
                     batch_id=None,
@@ -1098,6 +1184,8 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                         state="running",
                         detail=detail,
                     ),
+                    log_logger=log_logger,
+                    retry_kind="proxy_rotation_acquisition",
                 )
                 _bind_proxy_lease(proxy_lease)
                 db.update_job_progress(
@@ -1312,11 +1400,11 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 db.update_job(job_id, proxy_status="released")
             except Exception:
                 logger.exception("[Job %s] 释放代理租约失败", job_id)
-        if batch_id and batch_size > 1:
+        if proxy_batch_id:
             try:
                 from core.proxy_provider import finalize_registration_proxy_batch
 
-                finalize_registration_proxy_batch(batch_id)
+                finalize_registration_proxy_batch(proxy_batch_id)
             except Exception:
                 logger.exception("[Job %s] 收口注册代理批次失败", job_id)
         _deactivate_job(job_id)

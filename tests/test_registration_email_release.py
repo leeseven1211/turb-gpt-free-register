@@ -230,6 +230,113 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
             ("email", "success"),
         ])
 
+    def test_proxy_acquisition_retries_before_registration(self):
+        proxy = SimpleNamespace(
+            provider="1024proxy",
+            endpoint="1.1.1.1:8080",
+            exit_ip="1.1.1.1",
+            region="US",
+            proxy_url="http://1.1.1.1:8080",
+        )
+        acquire_proxy = unittest.mock.Mock(
+            side_effect=[RuntimeError("1024Proxy 获取失败：连接超时"), proxy]
+        )
+        with patch.object(svc.db, "update_job"), patch.object(
+            svc.db, "update_job_progress"
+        ) as update_progress, patch.object(
+            svc.db, "begin_job_route_attempt"
+        ) as begin_route_attempt, patch.object(
+            svc, "_registration_proxy_retry_limit", return_value=1
+        ), patch.object(
+            svc, "_registration_proxy_retry_delay", return_value=0
+        ), patch.object(
+            svc, "check_stop_requested"
+        ), patch.object(svc.time, "sleep"):
+            result = svc._acquire_registration_proxy_with_retries(
+                acquire_proxy=acquire_proxy,
+                job_id=17,
+                batch_id=None,
+                batch_size=1,
+                batch_workers=1,
+                progress_callback=None,
+                log_logger=svc.logger,
+            )
+
+        self.assertIs(result, proxy)
+        self.assertEqual(acquire_proxy.call_count, 2)
+        begin_route_attempt.assert_called_once_with(
+            17,
+            retry_kind="proxy_acquisition",
+            retry_reason="RuntimeError: 1024Proxy 获取失败：连接超时",
+        )
+        self.assertEqual(
+            [
+                (call.args[1], call.kwargs["state"])
+                for call in update_progress.call_args_list
+            ],
+            [("network", "failed"), ("network", "running")],
+        )
+
+    def test_manual_registration_retry_uses_independent_proxy_allocation(self):
+        job = {
+            "id": 2,
+            "status": "pending",
+            "job_type": "registration",
+            "parent_job_id": 1,
+            "root_job_id": 1,
+            "batch_id": "source-batch",
+            "batch_index": 3,
+            "batch_size": 5,
+            "batch_workers": 5,
+            "email_source": "icloud_hide",
+        }
+        proxy = SimpleNamespace(
+            provider="1024proxy",
+            endpoint="2.2.2.2:8080",
+            exit_ip="2.2.2.2",
+            region="US",
+            acquired_at=SimpleNamespace(isoformat=lambda **_kwargs: "2026-08-13T00:00:00"),
+            expires_at=None,
+            proxy_url="http://2.2.2.2:8080",
+        )
+        result = {
+            "success": True,
+            "registration_success": True,
+            "postprocess_success": True,
+            "email": "alias@icloud.com",
+            "account_id": 42,
+            "access_token": "token",
+        }
+
+        with tempfile.TemporaryDirectory() as td, patch.object(
+            svc.db, "get_job", return_value=job
+        ), patch.object(svc.db, "update_job"), patch.object(
+            svc.db, "update_job_progress"
+        ), patch.object(svc.db, "finish_job_progress"), patch.object(
+            svc.db, "claim_job_for_execution", return_value=True
+        ), patch.object(svc.db, "update_account_registration_proxy"), patch.object(
+            svc, "_prepare_registration_args", return_value=("alias@icloud.com", "Test", "1990-01-01")
+        ), patch.object(svc, "_release_unconsumed_job_email"), patch(
+            "core.proxy_provider.acquire_registration_proxy", return_value=proxy
+        ) as acquire_proxy, patch(
+            "core.proxy_provider.release_proxy"
+        ), patch(
+            "core.proxy_provider.finalize_registration_proxy_batch"
+        ) as finalize_batch, patch(
+            "core.proxy_provider.mask_endpoint", return_value="masked"
+        ), patch(
+            "core.proxy_provider.mask_ip", return_value="masked"
+        ), patch(
+            "core.registration.dispatcher.run_registration", return_value=result
+        ):
+            svc._run_one_job(2, str(Path(td) / "job.log"))
+
+        acquire_proxy.assert_called_once()
+        self.assertEqual(acquire_proxy.call_args.kwargs["batch_id"], None)
+        self.assertEqual(acquire_proxy.call_args.kwargs["batch_size"], 1)
+        self.assertEqual(acquire_proxy.call_args.kwargs["batch_workers"], 1)
+        finalize_batch.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
