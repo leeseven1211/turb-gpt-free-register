@@ -21,7 +21,7 @@
 - 真实错误密码测试：同一测试账号返回 `HTTP 401`，响应结构化错误码为 `invalid_username_or_password`；已分类为 `password_rejected` / `auth`，不会进入 Roxy、不会自动重试密码、默认不会发邮箱 OTP。
 - 真实邮箱兜底测试：仅进程内打开邮箱兜底，使用新 session 发起一次验证码请求并等待 45 秒；转发邮箱 IMAP 登录和 `INBOX` 打开正常，但未收到该别名的新 OpenAI OTP，最终为 `password_rejected_email_fallback_failed` / `email`。因此邮箱兜底仍未判定成功，也没有继续重发。
 - 本轮顺手为 `forward_imap` 增加 `ICLOUD_HME_REQUEST_TIMEOUT` socket 超时，避免收件链路卡死；对应单测已补齐。
-- 隔离 schema 全量回归：`672 passed, 24 subtests passed`，另有 1 个既有 `registration_debug` 测试失败（数据库终端上下文覆盖了测试内存中的 email evidence），与本轮协议/IMAP 修改无关，未混入修复。
+- 隔离 schema 全量回归：`673 passed, 24 subtests passed`；另修复一个独立的 `registration_debug` 终端上下文覆盖问题，该修复只在数据库缺少新 evidence 时保留会话内已有 evidence，不改变注册行为。
 
 相关背景：
 
