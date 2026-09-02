@@ -74,6 +74,29 @@ def validate_email_source(source: str) -> str:
     return selected
 
 
+def _registered_email_source(email: str) -> str | None:
+    """Return the source recorded for a completed account, if it is valid.
+
+    A registered account is the durable owner of an address.  OTP fallback must
+    not guess a different provider from process-local caches or the current
+    ``EMAIL_SOURCE`` ordering after a restart.
+    """
+    try:
+        from core import db
+
+        account = db.get_account_by_email(email)
+    except Exception:
+        return None
+    raw = str((account or {}).get("email_source") or "").strip()
+    if not raw:
+        return None
+    selected = raw.replace(";", ",").replace("|", ",").split(",", 1)[0].strip()
+    try:
+        return validate_email_source(selected)
+    except ValueError:
+        return None
+
+
 def _pick_from_source(source: str) -> str:
     if source == "gptmail":
         from core.gptmail_client import pick_account
@@ -126,6 +149,10 @@ def acquire_email(source: str | None = None) -> str:
 
 def resolve_email_source(email: str) -> str:
     """根据邮箱在各池中的归属判断实际来源。"""
+    registered_source = _registered_email_source(email)
+    if registered_source:
+        return registered_source
+
     from core.gptmail_client import get_account_context as get_gptmail_context
     if get_gptmail_context(email):
         return "gptmail"
