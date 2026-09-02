@@ -57,6 +57,8 @@ def _run_protocol_direct_twofa(
     account: dict,
     account_route,
     task_id: int | None,
+    *,
+    protocol_reauth_enabled: bool = True,
 ) -> dict:
     """Use the saved ChatGPT AT to enable 2FA without opening Roxy.
 
@@ -89,7 +91,11 @@ def _run_protocol_direct_twofa(
         task_id,
         stage="twofa",
         message="账号已有 access_token，先使用纯协议开通 Authenticator 2FA",
-        detail={"driver": "protocol_direct", "browser_opened": False},
+        detail={
+            "driver": "protocol_direct",
+            "browser_opened": False,
+            "protocol_reauth_enabled": bool(protocol_reauth_enabled),
+        },
         state="running",
     )
     state = {"secret": ""}
@@ -103,17 +109,55 @@ def _run_protocol_direct_twofa(
                 raise RuntimeError("Authenticator key 写入账号检查点失败")
         state["secret"] = normalized
 
-    from core.account_export import setup_2fa_protocol
+    from core.account_export import TwofaEnrollmentAuthRequired, setup_2fa, setup_2fa_protocol
     from core.session import BrowserSession
 
     protocol_session = BrowserSession(
         proxy=str(getattr(account_route, "proxy_url", "") or ""),
     )
-    secret = setup_2fa_protocol(
-        protocol_session,
-        access_token,
-        on_secret=_checkpoint,
-    )
+    driver_used = "protocol_direct"
+    try:
+        secret = setup_2fa_protocol(
+            protocol_session,
+            access_token,
+            on_secret=_checkpoint,
+        )
+    except TwofaEnrollmentAuthRequired as auth_exc:
+        if not protocol_reauth_enabled:
+            raise
+        account_task_store.append_event(
+            task_id,
+            stage="twofa",
+            message="已有 AT 可查活，但 MFA 要求近期认证，转为协议邮箱重认证",
+            detail={
+                "driver": "protocol_reauth",
+                "browser_opened": False,
+                "reason": str(auth_exc)[:180],
+            },
+            state="running",
+        )
+
+        def _save_refreshed_token(new_token: str) -> None:
+            normalized = str(new_token or "").strip()
+            if not normalized:
+                raise RuntimeError("协议重认证未返回新的 access_token")
+            if not db.update_account_session(email, normalized):
+                raise RuntimeError("协议重认证取得新 AT，但写回账号失败")
+            account_task_store.append_event(
+                task_id,
+                stage="token",
+                message="协议邮箱重认证取得的新 AT 已写回账号",
+                detail={"saved": True, "source": "protocol_reauth"},
+                state="success",
+            )
+
+        secret = setup_2fa(
+            protocol_session,
+            email,
+            on_secret=_checkpoint,
+            on_access_token=_save_refreshed_token,
+        )
+        driver_used = "protocol_reauth"
     if not state["secret"]:
         _checkpoint(secret)
     with _ACCOUNT_SETUP_DB_LOCK:
@@ -126,14 +170,14 @@ def _run_protocol_direct_twofa(
         task_id,
         stage="twofa_result",
         message="纯协议已启用 Authenticator 2FA，未打开浏览器",
-        detail={"enabled": True, "driver": "protocol_direct", "browser_opened": False},
+        detail={"enabled": True, "driver": driver_used, "browser_opened": False},
         state="success",
     )
     return {
         "status": "success",
         "ok": True,
         "message": "Authenticator 2FA 已通过纯协议启用",
-        "twofa_driver": "protocol_direct",
+        "twofa_driver": driver_used,
         "browser_opened": False,
     }
 
@@ -772,6 +816,9 @@ def run_twofa_worker(
         browser_fallback_enabled = bool(
             getattr(account_cfg, "ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED", True)
         )
+        protocol_reauth_enabled = bool(
+            getattr(account_cfg, "ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED", True)
+        )
 
         oauth_driver = str(getattr(codex_cfg, "CODEX_OAUTH_DRIVER", "protocol") or "protocol").strip().lower()
         if oauth_driver == "same_as_registration":
@@ -831,6 +878,7 @@ def run_twofa_worker(
                     account,
                     account_route,
                     task_id,
+                    protocol_reauth_enabled=protocol_reauth_enabled,
                 )
             except CodexRetryStopped:
                 raise
@@ -845,6 +893,7 @@ def run_twofa_worker(
                     detail={
                         "driver": "protocol_direct",
                         "browser_fallback_enabled": browser_fallback_enabled,
+                        "protocol_reauth_enabled": protocol_reauth_enabled,
                         "error": direct_error,
                     },
                     state="failed",

@@ -29,6 +29,12 @@ _ACCOUNTS_DIR = _PROJECT_ROOT / "accounts"
 _BATCH_ARCHIVE_LOCK = threading.RLock()
 
 
+class TwofaEnrollmentAuthRequired(RuntimeError):
+    """The MFA enrollment endpoint requires a fresh authentication step."""
+
+    status_code = 401
+
+
 def _account_material_line(email: str, row: dict | None = None) -> str:
     """优先输出 Outlook 原始素材；没有素材时退回邮箱地址。"""
     if row:
@@ -280,6 +286,10 @@ def _enroll_totp(session: BrowserSession, access_token: str) -> tuple[str, str]:
     resp = session.post(url, headers=headers, data=body)
     if resp.status_code != 200:
         logger.error("[2FA] enroll 失败 HTTP %s（响应原值不写日志）", resp.status_code)
+        if resp.status_code == 401:
+            raise TwofaEnrollmentAuthRequired(
+                "MFA enroll 要求近期重新认证，当前 access_token 不能直接开通"
+            )
         resp.raise_for_status()
     data = resp.json()
     secret = data.get("secret")
@@ -342,7 +352,14 @@ def setup_2fa_protocol(session: BrowserSession, access_token: str, *, on_secret=
     return secret
 
 
-def setup_2fa(session: BrowserSession, email: str, otp_code: str | None = None) -> str:
+def setup_2fa(
+    session: BrowserSession,
+    email: str,
+    otp_code: str | None = None,
+    *,
+    on_secret=None,
+    on_access_token=None,
+) -> str:
     """
     完整的 2FA 设置流程。
     会触发再发一份邮箱验证码：
@@ -353,6 +370,8 @@ def setup_2fa(session: BrowserSession, email: str, otp_code: str | None = None) 
         session: 已完成注册的会话
         email: 账号邮箱（用作 login_hint）
         otp_code: 邮箱验证码（None 则按上述策略获取）
+        on_secret: 在激活前拿到 TOTP secret 时调用，用于持久化检查点
+        on_access_token: 重认证换取新 accessToken 后调用，用于持久化新会话
 
     Returns:
         TOTP secret（Base32 字符串），可直接用于 pyotp.TOTP() 生成 6 位动态码
@@ -385,10 +404,14 @@ def setup_2fa(session: BrowserSession, email: str, otp_code: str | None = None) 
     continue_url = _validate_reauth_otp(session, otp_code)
     human_delay("api")
     new_token = _exchange_new_token(session, continue_url)
+    if on_access_token is not None:
+        on_access_token(new_token)
     human_delay("api")
 
     # 阶段二：enroll + activate
     secret, session_id = _enroll_totp(session, new_token)
+    if on_secret is not None:
+        on_secret(secret)
     human_delay("form")
     _activate_totp(session, new_token, secret, session_id)
 

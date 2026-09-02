@@ -23,6 +23,7 @@ const CONFIG_LIFECYCLE_SECTION_KEYS_V2 = {
     'ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS',
     'LIVE_CHECK_ROXY_FALLBACK_ENABLED',
     'ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED',
+    'ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED',
     'TWOFA_DRIVER',
     'ACCOUNT_2FA_DRIVER',
     'CODEX_OAUTH_DRIVER',
@@ -593,6 +594,9 @@ function renderLifecycleExecutionSection(fields) {
   }
   if (has('ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED')) {
     cards.push(renderFeatureSwitchField(has('ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED'), { withIcon: false }));
+  }
+  if (has('ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED')) {
+    cards.push(renderFeatureSwitchField(has('ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED'), { withIcon: false }));
   }
   if (has('CODEX_OAUTH_DRIVER')) {
     cards.push(renderLifecycleDriverSelect(

@@ -134,6 +134,7 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             "ACCOUNT_COMPLETION_REFRESH_AT_ENABLED",
             "ACCOUNT_2FA_DRIVER",
             "ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED",
+            "ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED",
         }
         self.assertTrue(completion_keys.issubset(fields))
         self.assertTrue(all(fields[key]["group"] == "账号补全" for key in completion_keys))
@@ -155,6 +156,7 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         self.assertEqual(30, account_config.ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS)
         self.assertEqual("protocol", account_config.ACCOUNT_2FA_DRIVER)
         self.assertTrue(account_config.ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED)
+        self.assertTrue(account_config.ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED)
 
         old_loaded = env_loader._LOADED
         env_loader._LOADED = True
@@ -170,6 +172,7 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
                 "ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS": "14",
                 "ACCOUNT_2FA_DRIVER": "protocol_direct",
                 "ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED": "False",
+                "ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED": "False",
             }, clear=False):
                 reloaded = importlib.reload(account_config)
                 self.assertFalse(reloaded.ACCOUNT_COMPLETION_CODEX_ENABLED)
@@ -182,6 +185,7 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
                 self.assertEqual(14, reloaded.ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS)
                 self.assertEqual("protocol_direct", reloaded.ACCOUNT_2FA_DRIVER)
                 self.assertFalse(reloaded.ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED)
+                self.assertFalse(reloaded.ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED)
         finally:
             env_loader._LOADED = old_loaded
             importlib.reload(account_config)
@@ -254,6 +258,36 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
 
         self.assertEqual(result, secret)
         self.assertEqual(events, ["enroll", "checkpoint", "activate"])
+
+    def test_reauth_twofa_callbacks_persist_new_token_before_secret(self):
+        events = []
+        secret = "JBSWY3DPEHPK3PXP"
+        with patch.object(account_export, "_trigger_reauth", return_value="https://auth.example/reauth"), patch.object(
+            account_export, "_follow_reauth"
+        ), patch.object(
+            account_export, "_validate_reauth_otp", return_value="https://auth.example/callback"
+        ), patch.object(
+            account_export, "_exchange_new_token", return_value="fresh-token"
+        ), patch.object(
+            account_export, "_enroll_totp", side_effect=lambda *_: (events.append("enroll") or (secret, "session-1"))
+        ), patch.object(
+            account_export, "_activate_totp", side_effect=lambda *_: events.append("activate")
+        ), patch.object(account_export, "human_delay"):
+            result = account_export.setup_2fa(
+                object(),
+                "a@example.com",
+                otp_code="123456",
+                on_access_token=lambda token: events.append(("token", token)),
+                on_secret=lambda value: events.append(("secret", value)),
+            )
+
+        self.assertEqual(result, secret)
+        self.assertEqual(events, [
+            ("token", "fresh-token"),
+            "enroll",
+            ("secret", secret),
+            "activate",
+        ])
 
     def test_grizzly_auto_country_fields_are_env_editable(self):
         fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}

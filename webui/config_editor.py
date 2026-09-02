@@ -166,6 +166,10 @@ EDITABLE_FIELDS = [
         "label": "2FA 协议失败后浏览器兜底", "help": "仅用于账号补全；protocol_direct/protocol 失败后是否允许打开 Roxy 安全设置页面，默认开启",
     },
     {
+        "key": "ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED", "file": "account.py", "type": "bool", "group": "账号补全",
+        "label": "2FA 401 后协议重认证", "help": "仅用于 protocol_direct；旧 AT 被 MFA 接口要求近期认证时，先走协议邮箱 OTP 换新 AT，再继续开通；默认开启",
+    },
+    {
         "key": "ACCOUNT_CODEX_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
         "label": "Codex 补全驱动", "help": "可选纯协议、RoxyBrowser 或跟随注册主流程；三种路由都由 Codex OAuth 执行器处理",
     },
