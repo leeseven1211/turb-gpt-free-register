@@ -895,6 +895,8 @@ OpenAI 新版注册通常先展示邮箱验证码页；新账号页面同时提�
 
 密码始终按账号独立随机生成：14 位，包含大写、小写、数字和符号。配置页不提供固定密码输入，避免一批账号共用同一个密码。
 
+注册、查活、刷新 AT、补密码和补 2FA 的完整支持矩阵见 [`docs/registration-auth-support-matrix.md`](docs/registration-auth-support-matrix.md)。
+
 保存位置：
 
 - 账号 `extra_json.account_password`：账号唯一密码。注册时或账号配置补跑时设置后都写入这里，后续补跑只会读取，不会改密码。

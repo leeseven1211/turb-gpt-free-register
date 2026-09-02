@@ -8,6 +8,7 @@ from pathlib import Path
 
 from core import db, task_run_log
 from core.operations import task_gateway as account_task_store
+from core.auth_challenge import auth_result_for_operation
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,25 @@ _STOP_REQUESTED: set[str] = set()
 _RUNNING_THREADS: dict[str, int] = {}
 _RESERVED_AT: dict[str, float] = {}
 _ACCOUNT_SETUP_DB_LOCK = threading.RLock()
+
+
+def _attach_auth_projection(
+    result: dict,
+    *,
+    auth_method: str,
+    remote_identity: str = "existing",
+) -> dict:
+    """Attach the shared safe authentication projection to account operations."""
+    if isinstance(result, dict):
+        result.setdefault(
+            "auth",
+            auth_result_for_operation(
+                result,
+                auth_method=auth_method,
+                remote_identity=remote_identity,
+            ).as_dict(),
+        )
+    return result
 
 
 class CodexRetryStopped(RuntimeError):
@@ -999,10 +1019,25 @@ def run_twofa_worker(
                 detail={"error": f"{type(exc).__name__}: {str(exc)[:220]}"},
                 state="failed",
             )
-        result = {"status": "failed", "ok": False, "message": f"{type(exc).__name__}: {exc}"}
+        result = {
+            "status": "failed",
+            "ok": False,
+            "message": f"{type(exc).__name__}: {exc}",
+            "error_code": str(
+                getattr(exc, "code", "") or getattr(exc, "error_code", "") or ""
+            ).strip() or None,
+        }
         logger.exception("[账号配置重试] %s 异常", email)
         return result
     finally:
+        _attach_auth_projection(
+            result,
+            auth_method=str(
+                result.get("auth_method")
+                or result.get("twofa_driver")
+                or ("roxy" if result.get("browser_opened") else "protocol")
+            ),
+        )
         if fh is not None:
             try:
                 root_logger.removeHandler(fh)

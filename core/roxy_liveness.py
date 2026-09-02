@@ -127,7 +127,13 @@ def _enter_existing_account_otp(
     raise RuntimeError(f"浏览器登录未进入已有账号 OTP，最后状态={state}")
 
 
-def _complete_otp(driver, email: str, after_ts: float) -> None:
+def _complete_otp(
+    driver,
+    email: str,
+    after_ts: float,
+    *,
+    totp_secret: str = "",
+) -> None:
     current_otp = None
     for attempt in range(1, 4):
         if current_otp is None:
@@ -138,8 +144,22 @@ def _complete_otp(driver, email: str, after_ts: float) -> None:
             _click_continue(driver)
         except Exception:
             pass
-        if _wait_after_email_otp_submit(driver, timeout=35) == "accepted":
+        outcome = _wait_after_email_otp_submit(driver, timeout=35)
+        if outcome == "accepted":
             return
+        if outcome == "totp_required":
+            from core.roxy_codex_oauth import complete_openai_login_challenge
+
+            challenge_state = complete_openai_login_challenge(
+                driver,
+                email,
+                "",
+                totp_secret,
+                timeout=45,
+            )
+            if challenge_state == "advanced":
+                return
+            raise RuntimeError(f"邮箱验证码后 TOTP 登录链未完成：state={challenge_state}")
         if attempt >= 3:
             break
         after_ts = time.time()
@@ -195,7 +215,7 @@ def refresh_access_token(email: str, *, proxy: str | None = None) -> dict:
             totp_secret=totp_secret,
         )
         if state == "otp":
-            _complete_otp(driver, email, otp_after_ts)
+            _complete_otp(driver, email, otp_after_ts, totp_secret=totp_secret)
         code = _page_account_unusable_code(driver)
         if code:
             return {

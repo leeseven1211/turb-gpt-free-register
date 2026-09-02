@@ -127,6 +127,23 @@ class ProtocolV2LivenessTests(unittest.TestCase):
         self.assertEqual("password_rejected", caught.exception.code)
         self.assertFalse(caught.exception.roxy_fallback_allowed)
 
+    def test_password_http_401_invalid_email_or_password_is_classified_as_rejected(self):
+        from core import protocol_v2_liveness as v2
+
+        class RejectedSession(_Session):
+            def post(self, url, headers, data, allow_redirects=False):
+                return _Response(401, {"error": "invalid email or password"}, text="invalid email or password")
+
+        with (
+            patch.object(v2, "request_sentinel_token", return_value={"token": "challenge"}),
+            patch.object(v2, "build_sentinel_header", return_value=("sentinel", None)),
+        ):
+            with self.assertRaises(v2.ProtocolV2AuthError) as caught:
+                v2._password_verify(RejectedSession(), "wrong")
+
+        self.assertEqual("password_rejected", caught.exception.code)
+        self.assertFalse(caught.exception.roxy_fallback_allowed)
+
     def test_password_rejection_is_classified_without_roxy_or_email_fallback_by_default(self):
         from core import protocol_v2_liveness as v2
 
@@ -190,6 +207,26 @@ class ProtocolV2LivenessTests(unittest.TestCase):
             clear_log=False,
             proxy_supplier=None,
         )
+
+    def test_missing_password_with_saved_totp_still_uses_email_refresh_path(self):
+        from core import protocol_v2_liveness as v2
+
+        legacy = {
+            "ok": True,
+            "status": "live",
+            "access_token": "fresh",
+            "validation_method": "email_otp",
+        }
+        with (
+            patch.object(v2, "get_account_login_credentials", return_value=("", "saved-totp")),
+            patch.object(v2, "check_account_liveness", return_value=legacy) as check,
+        ):
+            result = v2.refresh_access_token("account@example.com", proxy="")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("legacy_email_otp", result["auth_method"])
+        self.assertEqual(["email_otp"], result["auth"]["challenge_chain"])
+        check.assert_called_once()
 
     def test_password_email_challenge_uses_email_state_machine_then_returns_token(self):
         from core import protocol_v2_liveness as v2
@@ -291,6 +328,28 @@ class ProtocolV2LivenessTests(unittest.TestCase):
         self.assertEqual("password_mfa_totp", result["auth_method"])
         issue.assert_called_once_with(session, "factor-1")
         verify.assert_called_once_with(session, "factor-1", "123456")
+
+    def test_mfa_path_without_saved_totp_stops_without_submitting_a_code(self):
+        from core import protocol_v2_liveness as v2
+
+        session = _Session()
+        password_result = {
+            "page": {"type": "mfa_challenge", "payload": {"factor_id": "factor-1"}},
+            "continue_url": "https://auth.openai.com/mfa-challenge/factor-1",
+        }
+        with (
+            patch.object(v2, "get_account_login_credentials", return_value=("saved-password", "")),
+            patch.object(v2, "_network_preflight_with_retry", return_value=(session, "authorize")),
+            patch.object(v2, "follow_authorize", return_value="https://auth.openai.com/log-in/password"),
+            patch.object(v2, "_password_verify", return_value=password_result),
+            patch.object(v2, "_complete_mfa") as complete_mfa,
+        ):
+            result = v2.refresh_access_token("account@example.com", proxy="")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("mfa_secret_missing", result["error"])
+        self.assertEqual("mfa_secret_missing", result["auth"]["code"])
+        complete_mfa.assert_not_called()
 
     def test_password_rejection_can_use_one_fresh_email_session_when_explicitly_enabled(self):
         from config import account as account_config

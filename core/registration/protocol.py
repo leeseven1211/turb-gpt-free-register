@@ -33,11 +33,39 @@ from core.openai_auth import (
 )
 from core.profile_utils import generate_random_birthday
 from core.session import BrowserSession
+from core.auth_challenge import auth_result_for_registration
 from core.registration.state_machine import PageState, StageBudget, StageTimeout, classify_page
 
 logger = logging.getLogger(__name__)
 
 _FINALIZE_SESSION_MAX_ATTEMPTS = 5
+
+
+def _classify_registration_continuation(page_type: str, continue_url: str | None) -> str:
+    """Classify the remote account state before choosing create-account."""
+    normalized_type = str(page_type or "").strip().lower()
+    normalized_url = str(continue_url or "").strip().lower()
+    if normalized_type in {
+        "login_password",
+        "password_login",
+        "log_in_password",
+        "password_login_required",
+    } or "/log-in/password" in normalized_url:
+        return "existing"
+    if normalized_type == "external_url" or (
+        normalized_url
+        and "about-you" not in normalized_url
+        and (
+            "chatgpt.com/api/auth/callback" in normalized_url
+            or "auth.openai.com/authorize/continue" in normalized_url
+        )
+    ):
+        return "existing"
+    if normalized_type in {"about_you", "about-you"} or "about-you" in normalized_url:
+        return "new_candidate"
+    return "unknown"
+
+
 _FINALIZE_SESSION_BACKOFF_BASE = 2.0
 
 
@@ -184,6 +212,8 @@ def run_protocol_registration(
     logger.debug("[注册] 设备/会话标识已生成（原值不写日志）")
 
     create_acknowledged = False
+    remote_identity = "unknown"
+    auth_challenge_chain: list[str] = []
     try:
         report_job_progress("page", "running", "正在初始化 ChatGPT 注册页状态")
         # 网络预检必须在 signin/follow_authorize 之前完成；预检不带邮箱，不会触发 OTP。
@@ -262,6 +292,7 @@ def run_protocol_registration(
         if validate_result is None:
             raise RuntimeError("OTP 验证未完成")
         report_job_progress("email_otp", "success", "邮箱验证码已通过")
+        auth_challenge_chain.append("email_otp")
         human_delay("api")
 
         # OTP 校验后的下一步由服务端 auth session 决定。
@@ -283,16 +314,19 @@ def run_protocol_registration(
 
         # ==================== 阶段5/6: 完成注册或直接 OAuth 回调 ====================
         otp_continue_text = str(otp_continue_url or "")
-        direct_oauth_after_otp = bool(
-            otp_continue_text
-            and "about-you" not in otp_continue_text
-            and (
-                "chatgpt.com/api/auth/callback" in otp_continue_text
-                or "auth.openai.com/authorize/continue" in otp_continue_text
-                or page_type == "external_url"
-            )
-        )
-        if page_type == "external_url" or direct_oauth_after_otp:
+        continuation_identity = _classify_registration_continuation(page_type, otp_continue_text)
+        if continuation_identity == "existing":
+            if page_type in {
+                "login_password",
+                "password_login",
+                "log_in_password",
+                "password_login_required",
+            } or "/log-in/password" in otp_continue_text.lower():
+                remote_identity = "existing"
+                raise RuntimeError(
+                    "邮箱验证码后进入已有账号密码页；本地未保存该账号密码，已停止新注册并要求人工协调"
+                )
+            remote_identity = "existing"
             report_job_progress("profile", "skipped", "已有账号状态，无需填写资料")
             if not otp_continue_url:
                 raise RuntimeError(f"OTP external_url 响应缺少可跟随 URL，无法继续: {validate_result}")
@@ -315,18 +349,11 @@ def run_protocol_registration(
                     strict=bool(getattr(_protocol_cfg, "CHATGPT_BOOTSTRAP_STRICT", False)),
                 )
             human_delay("post_auth")
-        else:
+        elif continuation_identity == "new_candidate":
+            remote_identity = "new_candidate"
+            if password_required:
+                auth_challenge_chain.insert(0, "password")
             report_job_progress("profile", "running", "正在填写账号资料")
-            if page_type and page_type not in ("about_you", "about-you"):
-                if otp_continue_url and "about-you" not in str(otp_continue_url):
-                    raise RuntimeError(
-                        f"OTP 后续页面类型未知，不应盲目 create_account: "
-                        f"page_type={page_type}, resp={validate_result}"
-                    )
-                logger.warning(
-                    f"[步骤10] 未知 page_type={page_type}，但 continue_url 指向 about-you，继续 create_account"
-                )
-
             about_url = str(otp_continue_url) if otp_continue_url and "about-you" in str(otp_continue_url) else None
             navigate_about_you(session, about_url)
             human_delay("navigate")
@@ -344,7 +371,14 @@ def run_protocol_registration(
 
             logger.info(f"[注册] 创建接口已通过：{email}，继续完成 OAuth 回调")
             human_delay("post_auth")
+        else:
+            remote_identity = "unknown"
+            raise RuntimeError(
+                f"OTP 后续页面类型未知，不应盲目 create_account: "
+                f"page_type={page_type or '空'}, resp={validate_result}"
+            )
 
+        if continuation_identity == "new_candidate":
             continue_url = create_result.get("continue_url")
             if not continue_url:
                 raise RuntimeError(f"create_account 响应缺少 continue_url，无法继续: {create_result}")
@@ -552,6 +586,15 @@ def run_protocol_registration(
             "plan_check": plan_result,
             "next_actions": [action.as_dict() for action in readiness.next_actions],
             "account_readiness": readiness.account_readiness,
+            "remote_identity": remote_identity,
+            "remote_identity_state": "confirmed",
+            "registration_intent": "reconcile" if remote_identity == "existing" else "new",
+            "auth": auth_result_for_registration(
+                {"success": True},
+                auth_method="protocol",
+                remote_identity=remote_identity,
+                challenge_chain=auth_challenge_chain,
+            ).as_dict(),
             "error": task_error,
         }
 
@@ -559,6 +602,16 @@ def run_protocol_registration(
         logger.error(f"[失败] {email}: {type(exc).__name__}: {exc}")
         logger.debug("详细错误信息:", exc_info=True)
         from core.openai_auth import AccountUnusableError
+        error_text = str(exc)
+        request_unknown = any(marker in error_text for marker in (
+            "后续页面类型未知",
+            "响应缺少可跟随 URL",
+            "响应缺少 continue_url",
+            "session 响应缺少 accessToken",
+            "OAuth callback/session",
+        ))
+        remote_existing = remote_identity == "existing"
+        auth_error_code = "remote_existing" if remote_existing else "request_unknown" if request_unknown else "registration_failed"
 
         account_dead = isinstance(exc, AccountUnusableError)
         try:
@@ -572,7 +625,7 @@ def run_protocol_registration(
                         note=f"账号已废弃，邮箱不可用: {str(exc)[:180]}",
                     )
                     logger.warning(f"[邮箱:{src}] {email} 账号已废弃，标记为 failed，不再重新注册")
-                elif create_acknowledged:
+                elif create_acknowledged or request_unknown or remote_existing:
                     src = release_email(
                         email,
                         status="failed",
@@ -584,4 +637,20 @@ def run_protocol_registration(
                     logger.info(f"[邮箱:{src}] {email} 已恢复 available")
         except Exception:
             pass
-        return {"success": False, "email": email, "error": str(exc)}
+        return {
+            "success": False,
+            "email": email,
+            "request_unknown": request_unknown,
+            "manual_reconcile": remote_existing,
+            "remote_identity": remote_identity,
+            "remote_identity_state": "confirmed" if remote_existing else "unknown",
+            "remote_account_state": "confirmed" if remote_existing else "request_unknown" if request_unknown else "not_started",
+            "error_code": auth_error_code,
+            "auth": auth_result_for_registration(
+                {"success": False, "error_code": auth_error_code},
+                auth_method="protocol",
+                remote_identity="existing" if remote_existing else remote_identity,
+                challenge_chain=auth_challenge_chain,
+            ).as_dict(),
+            "error": error_text,
+        }

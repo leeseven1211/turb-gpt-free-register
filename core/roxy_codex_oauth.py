@@ -41,9 +41,30 @@ from core.registration.selenium_auth import (
     human_click as _human_click,
     human_type_text as _human_type_text,
 )
+from core.auth_challenge import MfaSecretMissingError, PasswordRejectedError
 
 _base_logger = logging.getLogger(__name__)
 _CODEX_BROWSER_KIND: ContextVar[str] = ContextVar("codex_browser_kind", default="Roxy")
+
+_PASSWORD_REJECTION_MARKERS = (
+    "incorrect password",
+    "invalid password",
+    "wrong password",
+    "password is incorrect",
+    "password_incorrect",
+    "invalid_password",
+    "wrong_password",
+    "password_invalid",
+    "password_rejected",
+    "invalid_username_or_password",
+    "invalid email or password",
+    "incorrect email or password",
+    "email or password is incorrect",
+    "login failed",
+    "密码错误",
+    "邮箱或密码错误",
+    "密码不正确",
+)
 
 
 def _codex_prefix() -> str:
@@ -243,6 +264,8 @@ def _login_challenge_state(driver) -> dict:
 
 def _is_totp_login_page(driver, state: dict | None = None) -> bool:
     state = state or _login_challenge_state(driver)
+    if not isinstance(state, dict):
+        return False
     url = str(state.get("url") or "").lower()
     if "email-verification" in url:
         return False
@@ -274,6 +297,19 @@ def _is_totp_login_page(driver, state: dict | None = None) -> bool:
     # without changing /log-in/password. A code input with no password input on that
     # stale URL is the post-password TOTP step, not an email OTP request.
     return has_code_input and "/log-in/password" in url
+
+
+def _is_explicit_password_rejection_state(state: dict | None) -> bool:
+    """Distinguish a confirmed wrong password from a page/transport timeout."""
+    if not isinstance(state, dict):
+        return False
+    text = " ".join(
+        (
+            str(state.get("text") or ""),
+            " ".join(str(item) for item in (state.get("errors") or [])),
+        )
+    ).lower()
+    return any(marker in text for marker in _PASSWORD_REJECTION_MARKERS)
 
 
 def _login_password_targets(driver) -> dict:
@@ -329,7 +365,9 @@ def _submit_saved_login_password(driver, email: str, password: str) -> None:
 
 def _submit_saved_login_totp(driver, email: str, totp_secret: str) -> None:
     if not totp_secret:
-        raise RuntimeError("登录要求 Authenticator 验证，但本地没有 TOTP 密钥，已在手机号验证前停止")
+        raise MfaSecretMissingError(
+            "登录要求 Authenticator 验证，但本地没有 TOTP 密钥，已在手机号验证前停止"
+        )
     import pyotp
 
     remaining = 30 - (int(time.time()) % 30)
@@ -506,6 +544,10 @@ def _complete_login_challenge_after_email(
 
         if _is_login_password_page(driver):
             if password_submitted_at:
+                if _is_explicit_password_rejection_state(state):
+                    raise PasswordRejectedError(
+                        "远端明确拒绝本地保存的账号密码；已停止重复提交"
+                    )
                 if state.get("errors") or any(
                     str(item.get("ariaInvalid") or "").lower() == "true" for item in (state.get("inputs") or [])
                 ):

@@ -38,6 +38,7 @@ from core.openai_auth import (
 )
 from core.account_credentials import get_account_login_credentials
 from core.auth_fingerprint import build_safe_fingerprint_summary
+from core.auth_challenge import auth_result_for_operation
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +56,12 @@ _AUTH_MARKERS = (
     "password_invalid",
     "password_rejected",
     "invalid_username_or_password",
+    "invalid email or password",
+    "incorrect email or password",
+    "email or password is incorrect",
     "login failed",
     "密码错误",
+    "邮箱或密码错误",
     "密码不正确",
 )
 _OTP_MARKERS = ("email-verification", "email_otp", "email otp", "one-time code", "验证码")
@@ -647,6 +652,15 @@ def _success(
         "fallback_used": bool(fallback_used),
         "live_check_driver": "protocol_v2",
         "roxy_fallback_allowed": password_auth_status != "rejected",
+        "auth": auth_result_for_operation(
+            {
+                "ok": True,
+                "auth_method": auth_method,
+                "password_auth_status": password_auth_status,
+                "roxy_fallback_allowed": password_auth_status != "rejected",
+            },
+            auth_method="protocol_v2",
+        ).as_dict(),
         "fingerprint": build_safe_fingerprint_summary(
             session,
             source="protocol",
@@ -669,13 +683,18 @@ def refresh_access_token(
     """Run the opt-in Protocol v2 refresh flow and return a safe result."""
     checked_at = _now()
     try:
-        return _refresh_with_password(
+        result = _refresh_with_password(
             email,
             proxy,
             proxy_supplier=proxy_supplier,
             identity=identity,
             context_recorder=context_recorder,
         )
+        result.setdefault(
+            "auth",
+            auth_result_for_operation(result, auth_method=str(result.get("auth_method") or "protocol_v2")).as_dict(),
+        )
+        return result
     except AccountUnusableError as exc:
         code = getattr(exc, "error_code", "") or "account_deactivated"
         return {
@@ -687,6 +706,10 @@ def refresh_access_token(
             "auth_method": "protocol_v2",
             "roxy_fallback_allowed": False,
             "live_check_driver": "protocol_v2",
+            "auth": auth_result_for_operation(
+                {"ok": False, "error": code, "roxy_fallback_allowed": False},
+                auth_method="protocol_v2",
+            ).as_dict(),
         }
     except ProtocolV2AuthError as exc:
         result = {
@@ -700,6 +723,7 @@ def refresh_access_token(
             "retryable": exc.retryable,
             "live_check_driver": "protocol_v2",
         }
+        result["auth"] = auth_result_for_operation(result, auth_method="protocol_v2").as_dict()
         if exc.code in {
             "password_rejected",
             "password_rejected_email_fallback_failed",
@@ -718,4 +742,8 @@ def refresh_access_token(
             "auth_method": "protocol_v2",
             "roxy_fallback_allowed": True,
             "live_check_driver": "protocol_v2",
+            "auth": auth_result_for_operation(
+                {"ok": False, "error": "protocol_v2_unknown_error", "roxy_fallback_allowed": True},
+                auth_method="protocol_v2",
+            ).as_dict(),
         }

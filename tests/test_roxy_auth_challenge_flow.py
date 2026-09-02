@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from core import roxy_codex_oauth
+from core.auth_challenge import MfaSecretMissingError
 from core.registration import roxy as roxy_registration
 
 
@@ -82,6 +83,62 @@ class RoxyEmailOtpChallengeTests(unittest.TestCase):
         self.assertEqual(2, resolver.call_count)
         self.assertEqual("totp-secret", resolver.call_args_list[1].args[3])
         self.assertEqual("account@example.com", resolver.call_args_list[1].args[1])
+
+    def test_registration_resolves_totp_after_email_otp_with_saved_credentials(self):
+        driver = MagicMock()
+        resolver = MagicMock(return_value="advanced")
+
+        with patch.object(roxy_codex_oauth, "complete_openai_login_challenge", resolver):
+            result = roxy_registration._complete_registration_totp_after_email_otp(
+                driver,
+                "account@example.com",
+                "saved-password",
+                "totp-secret",
+            )
+
+        self.assertEqual("advanced", result)
+        resolver.assert_called_once_with(
+            driver,
+            "account@example.com",
+            "saved-password",
+            "totp-secret",
+            timeout=45,
+        )
+
+    def test_registration_stops_after_email_otp_when_totp_credentials_are_missing(self):
+        with self.assertRaisesRegex(RuntimeError, "缺少可用密码或 TOTP"):
+            roxy_registration._complete_registration_totp_after_email_otp(
+                MagicMock(),
+                "account@example.com",
+                "saved-password",
+                "",
+            )
+
+    def test_explicit_password_error_is_not_treated_as_a_transient_page_error(self):
+        state = {
+            "text": "Incorrect password",
+            "errors": ["The password is incorrect"],
+            "inputs": [{"type": "password", "ariaInvalid": "true"}],
+        }
+
+        self.assertTrue(roxy_codex_oauth._is_explicit_password_rejection_state(state))
+
+    def test_email_or_password_error_is_classified_as_explicit_rejection(self):
+        self.assertTrue(
+            roxy_codex_oauth._is_explicit_password_rejection_state(
+                {"text": "Invalid email or password", "errors": []}
+            )
+        )
+
+    def test_missing_totp_is_a_typed_non_fallback_failure(self):
+        with self.assertRaises(MfaSecretMissingError) as caught:
+            roxy_codex_oauth._submit_saved_login_totp(
+                MagicMock(),
+                "account@example.com",
+                "",
+            )
+
+        self.assertEqual("mfa_secret_missing", caught.exception.code)
 
 
 if __name__ == "__main__":

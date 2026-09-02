@@ -1,6 +1,11 @@
 import unittest
 
-from core.auth_challenge import AuthAttemptResult, AuthStatus, normalize_auth_result
+from core.auth_challenge import (
+    AuthAttemptResult,
+    AuthStatus,
+    auth_result_for_registration,
+    normalize_auth_result,
+)
 from core.registration.state_machine import PageState, classify_page
 
 
@@ -16,6 +21,7 @@ class AuthChallengeContractTests(unittest.TestCase):
         self.assertEqual(
             {
                 "status": "authenticated",
+                "code": "",
                 "auth_method": "email_otp",
                 "challenge_chain": ["email_otp", "totp"],
                 "remote_identity": "existing",
@@ -51,6 +57,28 @@ class AuthChallengeContractTests(unittest.TestCase):
         self.assertNotIn("totp_secret", result.as_dict())
         self.assertNotIn("callback_url", result.as_dict())
         self.assertNotIn("detail", result.as_dict())
+
+    def test_registration_projection_uses_same_safe_contract(self):
+        result = auth_result_for_registration(
+            {"success": True},
+            auth_method="roxy",
+            remote_identity="new_candidate",
+            challenge_chain=("email_otp", "totp"),
+        )
+
+        self.assertEqual(
+            {
+                "status": "authenticated",
+                "code": "",
+                "auth_method": "roxy",
+                "challenge_chain": ["email_otp", "totp"],
+                "remote_identity": "new_candidate",
+                "retryable": False,
+                "roxy_fallback_allowed": True,
+                "next_action": "continue",
+            },
+            result.as_dict(),
+        )
 
     def test_protocol_error_codes_keep_safe_retry_and_fallback_policy(self):
         rejected = normalize_auth_result({"error": "password_rejected"})

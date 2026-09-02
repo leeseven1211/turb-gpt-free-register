@@ -27,6 +27,13 @@ from core.registration.state_machine import (
     can_resend_otp,
     classify_page,
 )
+from core.auth_challenge import (
+    MfaSecretMissingError,
+    PasswordRejectedError,
+    RemoteExistingAccountError,
+    auth_result_for_registration,
+    classify_registration_identity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +49,20 @@ _DISPOSABLE_PRE_ACCOUNT_FAILURE_MARKERS = (
     "email otp input budget exhausted",
     "page_not_hydrated",
 )
+
+_REGISTRATION_REQUEST_UNKNOWN_MARKERS = (
+    "邮箱提交后未识别到",
+    "邮箱提交/认证跳转超过总预算",
+    "注册页状态未知",
+    "后续页面类型未知",
+    "认证跳转结果未知",
+)
+
+
+def _is_registration_request_unknown(error_text: object) -> bool:
+    """Recognize an observed-but-unclassified remote registration state."""
+    text = str(error_text or "")
+    return any(marker in text for marker in _REGISTRATION_REQUEST_UNKNOWN_MARKERS)
 
 
 def _is_disposable_pre_account_failure(
@@ -1489,7 +1510,10 @@ def _submit_email_and_wait_next(
                     source,
                 )
                 return state_name
-            raise RuntimeError(f"邮箱提交后进入登录密码页，按已注册/不可用邮箱处理并停用: url={getattr(driver, 'current_url', '') or 'https://auth.openai.com/log-in/password'}")
+            raise RemoteExistingAccountError(
+                f"邮箱提交后进入登录密码页，已注册/不可用邮箱；检测到远端已有账号，进入人工协调: "
+                f"url={getattr(driver, 'current_url', '') or 'https://auth.openai.com/log-in/password'}"
+            )
         if state_name in ("password", "otp", "logged_in"):
             logger.info("%s %s已进入下一步：%s", _log_prefix(driver), source, state_name)
             return state_name
@@ -1776,6 +1800,33 @@ def _classify_otp_wait_failure(exc: Exception, *, last_ui_ack: str) -> tuple[str
     if str(last_ui_ack or "").strip().lower() != "confirmed":
         return "otp_request_unconfirmed", "验证码请求缺少页面或网络确认；不能断言服务端已经发信"
     return "otp_delivery_missing", "验证码请求已有页面确认，但预算内未收到匹配邮件"
+
+
+def _complete_registration_totp_after_email_otp(
+    driver,
+    email: str,
+    existing_password: str | None,
+    existing_totp_secret: str | None,
+    *,
+    timeout: int = 45,
+) -> str:
+    """Finish an existing-account login when email OTP is followed by TOTP."""
+    if not existing_password or not existing_totp_secret:
+        raise RuntimeError(
+            "邮箱验证码已通过，但远端继续要求 Authenticator TOTP；本地缺少可用密码或 TOTP，已停止"
+        )
+    from core.roxy_codex_oauth import complete_openai_login_challenge
+
+    state = complete_openai_login_challenge(
+        driver,
+        email,
+        existing_password,
+        str(existing_totp_secret),
+        timeout=timeout,
+    )
+    if state != "advanced":
+        raise RuntimeError(f"邮箱验证码后 TOTP 登录链未完成：state={state}")
+    return state
 
 
 def _wait_after_email_otp_submit(
@@ -4117,6 +4168,8 @@ def run_roxy_registration(
     account_id: int | None = None
     totp_secret: str | None = None
     plan_check_session = None
+    remote_identity = "unknown"
+    auth_challenge_chain: list[str] = []
     try:
         try:
             from core.registration_debug import attach_current_roxy
@@ -4166,6 +4219,7 @@ def run_roxy_registration(
             on_submitted=_mark_email_submitted,
             allow_login_password=bool(existing_password),
         )
+        remote_identity = classify_registration_identity(next_state)
         _check_manual_stop()
         # 只要已经到达 OpenAI 的密码/OTP 等下一页，认证跳转就已经完成。密码创建是
         # 独立业务阶段，不能继续挂在 auth_redirect 上导致失败原因误导。
@@ -4220,6 +4274,8 @@ def run_roxy_registration(
                     "success" if openai_password else "skipped",
                     "账号密码已提交并进入下一步" if openai_password else "已有登录态，无需再次提交密码",
                 )
+        if existing_password or openai_password:
+            auth_challenge_chain.append("password")
         if openai_password and account_id is None:
             account_id = _save_pending_email_verification_checkpoint(
                 email=email,
@@ -4356,24 +4412,25 @@ def run_roxy_registration(
 
             outcome = _wait_after_email_otp_submit(driver, timeout=30, budget=otp_budget)
             if outcome == "totp_required":
-                if not existing_password or not existing_totp_secret:
-                    raise RuntimeError(
-                        "邮箱验证码已通过，但远端继续要求 Authenticator TOTP；本地缺少可用密码或 TOTP，已停止"
-                    )
-                from core.roxy_codex_oauth import complete_openai_login_challenge
-
-                post_otp_state = complete_openai_login_challenge(
+                # A TOTP challenge after email verification proves that this
+                # address is continuing an existing account authentication;
+                # it must never fall through to the new-account profile page.
+                remote_identity = "existing"
+                post_otp_state = _complete_registration_totp_after_email_otp(
                     driver,
                     email,
                     existing_password,
-                    str(existing_totp_secret),
-                    timeout=45,
+                    existing_totp_secret,
                 )
-                if post_otp_state != "advanced":
-                    raise RuntimeError(f"邮箱验证码后 TOTP 登录链未完成：state={post_otp_state}")
+                if "email_otp" not in auth_challenge_chain:
+                    auth_challenge_chain.append("email_otp")
+                if "totp" not in auth_challenge_chain:
+                    auth_challenge_chain.append("totp")
                 resume_login_state = "advanced"
                 break
             if outcome in ('accepted', 'email_verified'):
+                if "email_otp" not in auth_challenge_chain:
+                    auth_challenge_chain.append("email_otp")
                 break
             if otp_attempt >= max_otp_attempts:
                 failure_code = "otp_invalid_or_expired"
@@ -4420,11 +4477,13 @@ def run_roxy_registration(
         _check_manual_stop()
         profile_submitted = _complete_profile_page(driver, name, birthday, timeout=60)
         if profile_submitted:
+            remote_identity = "new_candidate"
             create_acknowledged = True
             # 给 OAuth 回调 / session cookie 写入一点时间。
             human_delay("post_auth")
             report_job_progress("profile", "success", "账号资料已提交")
         else:
+            remote_identity = "existing"
             report_job_progress("profile", "skipped", "已有登录态，无需填写资料")
 
         report_job_progress("token", "running", "正在等待登录态并获取 Token")
@@ -4663,6 +4722,15 @@ def run_roxy_registration(
             "plan_check": plan_result,
             "next_actions": [action.as_dict() for action in readiness.next_actions],
             "account_readiness": readiness.account_readiness,
+            "remote_identity": remote_identity,
+            "remote_identity_state": "confirmed",
+            "registration_intent": "reconcile" if remote_identity == "existing" else "new",
+            "auth": auth_result_for_registration(
+                {"success": True},
+                auth_method="roxy",
+                remote_identity=remote_identity,
+                challenge_chain=auth_challenge_chain,
+            ).as_dict(),
             "error": None if not errors else "; ".join(errors),
         }
     except Exception as exc:
@@ -4684,6 +4752,15 @@ def run_roxy_registration(
         # 让后续任务反复命中登录 OTP 页，永远无法完成“账号+密码”注册。
         password_result_unknown = isinstance(exc, _PasswordTransitionTimeout)
         error_text = str(exc)
+        request_unknown = password_result_unknown or _is_registration_request_unknown(error_text)
+        remote_existing = isinstance(exc, RemoteExistingAccountError) or remote_identity == "existing"
+        password_rejected = isinstance(exc, PasswordRejectedError)
+        mfa_secret_missing = isinstance(exc, MfaSecretMissingError) or any(marker in error_text.lower() for marker in (
+            "缺少可用密码或 totp",
+            "没有 totp 密钥",
+            "没有可用 totp",
+            "mfa_secret_missing",
+        ))
         disposable_proxy_failure = _is_disposable_pre_account_failure(
             error_text,
             create_acknowledged=create_acknowledged,
@@ -4704,11 +4781,31 @@ def run_roxy_registration(
             password_target_missing = "missing_create_account_password_target_after_wait" in error_text
             release_email(
                 email,
-                status="failed" if create_acknowledged or password_target_missing or password_result_unknown else "available",
+                status=(
+                    "failed"
+                    if create_acknowledged
+                    or password_target_missing
+                    or request_unknown
+                    or remote_existing
+                    else "available"
+                ),
                 note=f"Roxy注册失败: {error_text[:180]}",
             )
         except Exception:
             pass
+        auth_remote_identity = "existing" if remote_existing else remote_identity
+        auth_error_code = (
+            "password_rejected"
+            if password_rejected
+            else "mfa_secret_missing"
+            if mfa_secret_missing
+            else
+            "remote_existing"
+            if remote_existing
+            else "request_unknown"
+            if request_unknown
+            else "registration_failed"
+        )
         return {
             "success": False,
             "registration_pending": bool(account_id and not access_token),
@@ -4716,7 +4813,18 @@ def run_roxy_registration(
             "account_id": account_id,
             "access_token": access_token,
             "totp_secret": totp_secret,
-            "request_unknown": password_result_unknown,
+            "request_unknown": request_unknown,
+            "manual_reconcile": remote_existing,
+            "remote_identity": "existing" if remote_existing else remote_identity,
+            "remote_identity_state": "confirmed" if remote_existing else "unknown",
+            "remote_account_state": "confirmed" if remote_existing else "request_unknown" if request_unknown else "not_started",
+            "error_code": auth_error_code,
+            "auth": auth_result_for_registration(
+                {"success": False, "error_code": auth_error_code},
+                auth_method="roxy",
+                remote_identity=auth_remote_identity,
+                challenge_chain=auth_challenge_chain,
+            ).as_dict(),
             "error": f"{type(exc).__name__}: {str(exc)[:300]}",
         }
     finally:

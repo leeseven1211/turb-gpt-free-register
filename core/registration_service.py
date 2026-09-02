@@ -276,6 +276,37 @@ def _mark_registration_request_unknown(message: str) -> None:
         logger.exception("[Job %s] 写入密码提交 request_unknown 失败", getattr(_THREAD_CTX, "job_id", None))
 
 
+def _mark_registration_manual_reconcile(message: str, *, detail: dict | None = None) -> None:
+    """Persist a remote-existing/ambiguous registration for operator reconciliation."""
+    attempt_id = getattr(_THREAD_CTX, "attempt_id", None)
+    if attempt_id is None:
+        return
+    try:
+        from core.storage import registration
+
+        registration.mark_manual_reconcile(
+            int(attempt_id),
+            run_id=getattr(_THREAD_CTX, "run_id", None),
+            job_id=getattr(_THREAD_CTX, "job_id", None),
+            execution_id=getattr(_THREAD_CTX, "execution_id", None),
+            message=str(message or "远端账号需要人工对账")[:1000],
+            detail=detail or {"next_action": "account_reconcile"},
+        )
+    except Exception:
+        logger.exception("[Job %s] 写入 manual_reconcile 失败", getattr(_THREAD_CTX, "job_id", None))
+
+
+def registration_result_status(result: dict | None) -> str:
+    """Map a driver result to the legacy job terminal status."""
+    if not isinstance(result, dict):
+        return "failed"
+    if result.get("manual_reconcile"):
+        return "manual_reconcile"
+    if result.get("request_unknown"):
+        return "request_unknown"
+    return "success" if result.get("success") or result.get("registration_success") else "failed"
+
+
 def _finish_registration_run(status: str, *, error_message: str | None = None, result_summary: dict | None = None) -> None:
     run_id = getattr(_THREAD_CTX, "run_id", None)
     if run_id is None:
@@ -796,6 +827,15 @@ def _should_retry_registration_with_new_proxy(
         return False
     if str(getattr(proxy_lease, "provider", "") or "").strip().lower() != "1024proxy":
         return False
+    try:
+        from core.auth_challenge import safe_to_start_new_registration
+
+        if not safe_to_start_new_registration(result):
+            return False
+    except Exception:
+        # Keep the existing conservative guards if the compatibility adapter
+        # cannot be imported during a legacy test/bootstrap path.
+        pass
     return _is_transient_registration_proxy_error(result.get("error"))
 
 
@@ -1314,8 +1354,14 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 err = (result or {}).get("error") if isinstance(result, dict) else "unknown"
                 result_email = (result or {}).get("email") if isinstance(result, dict) else None
                 request_unknown = bool(isinstance(result, dict) and result.get("request_unknown"))
+                manual_reconcile = bool(isinstance(result, dict) and result.get("manual_reconcile"))
                 if request_unknown:
                     _mark_registration_request_unknown(str(err or "密码提交结果待确认"))
+                if manual_reconcile:
+                    _mark_registration_manual_reconcile(
+                        str(err or "远端账号已存在，需要人工协调"),
+                        detail={"next_action": "account_reconcile", "remote_identity": "existing"},
+                    )
                 try:
                     from core.registration_debug import capture_current_failure
                     capture_current_failure(str(err)[:1000])
@@ -1324,19 +1370,21 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 db.finish_job_progress(job_id, success=False, detail=str(err)[:300])
                 db.update_job(
                     job_id,
-                    status="request_unknown" if request_unknown else "failed",
+                    status=registration_result_status(result),
                     email=result_email,
                     account_id=(result or {}).get("account_id") if isinstance(result, dict) else None,
                     error=str(err)[:500],
                     completed_at=datetime.now().isoformat(timespec="seconds"),
                 )
                 email_to_handle = str(result_email or email or "").strip()
-                if _should_disable_failed_registration_email(err):
+                if manual_reconcile or _should_disable_failed_registration_email(err):
                     _disable_job_email(email_to_handle, str(err))
                 # 普通失败的邮箱已经由 run_registration/具体驱动释放。
                 # 只有 run_registration 直接抛出、没有正常返回时，才由下面的
                 # except 分支调用 _release_unconsumed_job_email 做服务层兜底。
-                if request_unknown:
+                if manual_reconcile:
+                    log_logger.warning("[Job %s] 检测到远端已有账号，已转人工协调，禁止新注册重试: %s", job_id, err)
+                elif request_unknown:
                     log_logger.warning("[Job %s] 密码提交结果待确认，已保留为可对账状态: %s", job_id, err)
                 else:
                     log_logger.error(f"[Job {job_id}] 失败: {err}")

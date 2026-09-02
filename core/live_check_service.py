@@ -15,6 +15,7 @@ from core.task_reporter import TaskReporter
 from core.chatgpt_plan import check_account_plan, token_claims
 from core.live_check_router import LiveCheckDriverError, resolve_driver, run_probe
 from core.openai_auth import detect_account_unusable_text
+from core.auth_challenge import auth_result_for_operation
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,25 @@ _EXECUTOR = ThreadPoolExecutor(max_workers=_WORKERS, thread_name_prefix="live-ch
 _QUEUE_SLOTS = threading.BoundedSemaphore(_QUEUE_LIMIT)
 _RUNNING: set[int] = set()
 _LOCK = threading.Lock()
+
+
+def _attach_auth_projection(
+    result: dict,
+    *,
+    auth_method: str,
+    remote_identity: str = "existing",
+) -> dict:
+    """Attach the safe cross-driver authentication result to a task result."""
+    if isinstance(result, dict):
+        result.setdefault(
+            "auth",
+            auth_result_for_operation(
+                result,
+                auth_method=auth_method,
+                remote_identity=remote_identity,
+            ).as_dict(),
+        )
+    return result
 
 
 def is_checking(email: str) -> bool:
@@ -502,6 +522,15 @@ def _run_live_check(
                     email,
                     proxy=account_route.proxy_url if account_route is not None else proxy,
                 )
+        if isinstance(result, dict):
+            _attach_auth_projection(
+                result,
+                auth_method=str(
+                    result.get("auth_method")
+                    or result.get("live_check_driver")
+                    or ("legacy_email_otp" if force_refresh else "access_token")
+                ),
+            )
         if force_refresh:
             if selected_refresh_driver == "protocol_v2":
                 _report_protocol_v2_refresh(reporter, result)
@@ -571,7 +600,15 @@ def _run_live_check(
             "status": "failed",
             "checked_at": datetime.now().isoformat(timespec="seconds"),
             "error": f"{type(exc).__name__}: {str(exc)[:500]}",
+            "error_code": str(
+                getattr(exc, "code", "") or getattr(exc, "error_code", "") or ""
+            ).strip() or None,
+            "auth_method": "legacy_email_otp" if force_refresh else "access_token",
         }
+        _attach_auth_projection(
+            result,
+            auth_method=result["auth_method"],
+        )
         try:
             db.update_account_liveness(account_id, result)
         except Exception:
