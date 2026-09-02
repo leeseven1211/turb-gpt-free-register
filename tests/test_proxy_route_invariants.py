@@ -398,6 +398,52 @@ class ProxyRouteInvariantTests(unittest.TestCase):
         self.assertNotIn("access_token", updated.call_args.args[1])
         self.assertEqual(401, updated.call_args.args[1]["http_status"])
 
+    def test_ordinary_live_check_ignores_stable_auth_identity_and_raw_context(self):
+        from core import live_check_service
+
+        route = SimpleNamespace(
+            proxy_url="http://fresh.example:8080",
+            public_dict=lambda: {
+                "proxy_mode": "1024",
+                "network_route": "proxy",
+                "proxy_provider": "1024proxy",
+                "proxy_used": "http://fresh.example:8080",
+                "proxy_region": "US",
+            },
+            release=MagicMock(),
+        )
+        with (
+            patch.object(live_check_service.db, "mark_account_live_check_running", return_value=True),
+            patch.object(live_check_service.db, "get_account", return_value={"access_token": "valid-token"}),
+            patch.object(live_check_service.db, "update_account_liveness"),
+            patch.object(live_check_service, "token_claims", return_value={"token_expired": False}),
+            patch.object(
+                live_check_service,
+                "check_account_plan",
+                return_value={"ok": True, "http_status": 200, "current_plan_type": "free"},
+            ),
+            patch.object(live_check_service, "check_account_liveness") as email_login,
+            patch("core.storage.account_auth.ensure_account_protocol_identity") as ensure_identity,
+            patch("core.storage.account_auth.AuthContextRecorder.from_account_action_task") as recorder,
+            patch.object(live_check_service, "_append_log"),
+            patch("core.account_proxy.acquire_account_proxy", return_value=route),
+            patch.object(live_check_service._QUEUE_SLOTS, "release"),
+            patch("config.account.ACCOUNT_AUTH_PROFILE_MODE", "account_stable"),
+            patch("config.account.ACCOUNT_AUTH_RAW_CONTEXT_ENABLED", True),
+        ):
+            result = live_check_service._run_live_check(
+                account_id=85,
+                email="first@example.com",
+                proxy=None,
+                trigger="manual",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("access_token", result["validation_method"])
+        ensure_identity.assert_not_called()
+        recorder.assert_not_called()
+        email_login.assert_not_called()
+
     def test_force_refresh_uses_roxy_after_protocol_login_failure(self):
         from core import live_check_service
 
