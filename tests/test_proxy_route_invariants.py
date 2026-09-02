@@ -335,6 +335,58 @@ class ProxyRouteInvariantTests(unittest.TestCase):
         roxy_refresh.assert_called_once_with("first@example.com", proxy=None)
         self.assertEqual("fresh-token", updated.call_args.args[1]["access_token"])
 
+    def test_protocol_v2_password_rejection_never_enters_roxy_fallback(self):
+        from core import live_check_service
+
+        route = SimpleNamespace(
+            proxy_url="http://fresh.example:8080",
+            public_dict=lambda: {
+                "proxy_mode": "1024",
+                "network_route": "proxy",
+                "proxy_provider": "1024proxy",
+                "proxy_used": "http://fresh.example:8080",
+                "proxy_region": "US",
+            },
+            release=MagicMock(),
+        )
+        rejected = {
+            "ok": False,
+            "status": "failed",
+            "error": "password_rejected",
+            "error_category": "auth",
+            "password_auth_status": "rejected",
+            "roxy_fallback_allowed": False,
+            "live_check_driver": "protocol_v2",
+        }
+        with (
+            patch("config.account.ACCOUNT_AUTH_V2_ENABLED", True),
+            patch.object(live_check_service.db, "mark_account_live_check_running", return_value=True),
+            patch.object(live_check_service.db, "get_account", return_value={"access_token": "expired-token"}),
+            patch.object(live_check_service.db, "update_account_liveness") as updated,
+            patch.object(live_check_service, "token_claims", return_value={"token_expired": True}),
+            patch.object(live_check_service, "_append_log"),
+            patch.object(live_check_service._QUEUE_SLOTS, "release"),
+            patch("core.account_proxy.acquire_account_proxy", return_value=route),
+            patch("core.protocol_v2_liveness.refresh_access_token", return_value=rejected),
+            patch("core.roxy_liveness.available", return_value=True),
+            patch("core.roxy_liveness.refresh_access_token") as roxy_refresh,
+        ):
+            result = live_check_service._run_live_check(
+                account_id=85,
+                email="first@example.com",
+                proxy="",
+                trigger="token_refresh_manual",
+                force_refresh=True,
+                refresh_driver="protocol_v2",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("password_rejected", result["error"])
+        self.assertEqual("protocol_v2", result["token_refresh_driver"])
+        roxy_refresh.assert_not_called()
+        self.assertNotIn("access_token", updated.call_args.args[1])
+        route.release.assert_called_once_with(reason="live-check-85")
+
     def test_immediate_browser_oauth_reuses_proxy_and_login_state(self):
         from core.cloakbrowser_registration import run_cloak_registration
         from core.roxy_registration import run_roxy_registration
