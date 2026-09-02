@@ -18,7 +18,6 @@ from core.registration.selenium_auth import (
     center_browser_window as _center_browser_window,
     clear_otp_inputs as _clear_otp_inputs,
     click_continue as _click_continue,
-    click_passwordless_signup_if_present as _click_passwordless_signup_if_present,
     click_resend_email_otp as _click_resend_email_otp,
     fetch_chatgpt_session as _fetch_chatgpt_session,
     has_access_token as _has_access_token,
@@ -70,8 +69,14 @@ def _page_account_unusable_code(driver) -> str:
     return detect_account_unusable_text("\n".join((url, title, text)))
 
 
-def _enter_existing_account_otp(driver, email: str) -> str:
-    """提交邮箱并进入已有账号 OTP；返回 otp/logged_in。"""
+def _enter_existing_account_otp(
+    driver,
+    email: str,
+    *,
+    password: str = "",
+    totp_secret: str = "",
+) -> str:
+    """提交邮箱并完成已有账号登录挑战；返回 ``otp``/``logged_in``。"""
     code = _page_account_unusable_code(driver)
     if code:
         raise AccountUnusableError(f"登录页确认账号已停用/封禁: {code}", error_code=code)
@@ -98,17 +103,25 @@ def _enter_existing_account_otp(driver, email: str) -> str:
     if state == "password" and not _is_login_password_page(driver):
         raise RuntimeError("邮箱进入新账号创建密码页，查活已停止，未创建账号")
     if state == "login_password" or _is_login_password_page(driver):
-        passwordless = _click_passwordless_signup_if_present(driver)
-        if not passwordless.get("ok"):
-            raise RuntimeError(f"已有账号登录页没有可用的邮箱一次性验证码入口: {passwordless}")
-        end = time.time() + 30
-        while time.time() < end:
-            if _is_email_verification_page(driver):
-                return "otp"
-            if _has_access_token(driver):
-                return "logged_in"
-            time.sleep(0.5)
-        raise RuntimeError("点击一次性验证码登录后未进入验证码页")
+        # Keep the liveness flow aligned with the shared browser login state
+        # machine. Some existing accounts land on /log-in/password even when
+        # their saved credentials are valid; the old liveness-only path could
+        # only search for a passwordless button and therefore failed every
+        # such refresh before trying the saved password/TOTP.
+        from core.roxy_codex_oauth import complete_openai_login_challenge
+
+        challenge_state = complete_openai_login_challenge(
+            driver,
+            email,
+            password,
+            totp_secret,
+            timeout=45,
+        )
+        if challenge_state == "advanced":
+            return "logged_in"
+        if challenge_state == "email_otp":
+            return "otp"
+        raise RuntimeError(f"已有账号登录挑战未完成：state={challenge_state}")
     if state == "otp" or _is_email_verification_page(driver):
         return "otp"
     raise RuntimeError(f"浏览器登录未进入已有账号 OTP，最后状态={state}")
@@ -171,8 +184,16 @@ def refresh_access_token(email: str, *, proxy: str | None = None) -> dict:
                 "error": code,
                 "validation_method": "roxy_email_otp",
             }
+        from core.roxy_codex_oauth import _account_login_credentials
+
+        password, totp_secret = _account_login_credentials(email)
         otp_after_ts = time.time()
-        state = _enter_existing_account_otp(driver, email)
+        state = _enter_existing_account_otp(
+            driver,
+            email,
+            password=password,
+            totp_secret=totp_secret,
+        )
         if state == "otp":
             _complete_otp(driver, email, otp_after_ts)
         code = _page_account_unusable_code(driver)

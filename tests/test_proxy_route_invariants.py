@@ -335,6 +335,63 @@ class ProxyRouteInvariantTests(unittest.TestCase):
         roxy_refresh.assert_called_once_with("first@example.com", proxy=None)
         self.assertEqual("fresh-token", updated.call_args.args[1]["access_token"])
 
+    def test_roxy_liveness_reuses_saved_password_on_login_password_page(self):
+        from core import roxy_liveness
+
+        driver = MagicMock(current_url="https://auth.openai.com/log-in/password")
+        with (
+            patch.object(roxy_liveness, "_page_account_unusable_code", return_value=""),
+            patch.object(roxy_liveness, "_type_email_address"),
+            patch.object(roxy_liveness, "_submit_email_step"),
+            patch.object(roxy_liveness, "_wait_email_submit_next_state", return_value="login_password"),
+            patch.object(roxy_liveness, "_is_login_password_page", return_value=True),
+            patch.object(roxy_liveness, "_is_email_verification_page", return_value=False),
+            patch.object(roxy_liveness, "_has_access_token", return_value=False),
+            patch("core.roxy_codex_oauth.complete_openai_login_challenge", return_value="advanced") as challenge,
+        ):
+            result = roxy_liveness._enter_existing_account_otp(
+                driver,
+                "account@example.com",
+                password="saved-password",
+                totp_secret="saved-totp",
+            )
+
+        self.assertEqual("logged_in", result)
+        challenge.assert_called_once_with(
+            driver,
+            "account@example.com",
+            "saved-password",
+            "saved-totp",
+            timeout=45,
+        )
+
+    def test_force_refresh_rejects_account_without_existing_access_token(self):
+        from core import live_check_service
+
+        with (
+            patch.object(
+                live_check_service.db,
+                "get_account",
+                return_value={"id": 8, "email": "pending@example.com", "access_token": ""},
+            ),
+            patch.object(live_check_service.db, "account_is_deactivated", return_value=False),
+            patch.object(live_check_service._QUEUE_SLOTS, "acquire") as acquire_slot,
+            patch.object(live_check_service.db, "claim_account_live_check", return_value=True) as claim,
+            patch.object(live_check_service.account_task_store, "create_task", return_value=999),
+            patch.object(live_check_service._EXECUTOR, "submit"),
+        ):
+            result = live_check_service.enqueue_account_live_check(
+                account_id=8,
+                email="pending@example.com",
+                trigger="token_refresh_manual",
+                force_refresh=True,
+            )
+
+        self.assertFalse(result["accepted"])
+        self.assertIn("没有现有 access_token", result["error"])
+        acquire_slot.assert_not_called()
+        claim.assert_not_called()
+
     def test_immediate_browser_oauth_reuses_proxy_and_login_state(self):
         from core.cloakbrowser_registration import run_cloak_registration
         from core.roxy_registration import run_roxy_registration

@@ -404,12 +404,21 @@ def enqueue_account_live_check(
     if not email:
         return {"accepted": False, "busy": False, "error": "email 为空"}
     account = db.get_account(account_id)
+    if not account:
+        return {"accepted": False, "busy": False, "error": "账号不存在"}
     if db.account_is_deactivated(account):
         return {
             "accepted": False,
             "busy": False,
             "deactivated": True,
             "error": "账号已标记为封号，停止查活/刷新 AT",
+        }
+    if force_refresh and not str(account.get("access_token") or "").strip():
+        return {
+            "accepted": False,
+            "busy": False,
+            "not_registered": True,
+            "error": "账号没有现有 access_token，拒绝刷新 AT；请先完成账号注册或执行注册续跑",
         }
     if not _QUEUE_SLOTS.acquire(blocking=False):
         return {"accepted": False, "busy": False, "queue_full": True, "error": "查活队列已满，请稍后重试"}
