@@ -31,8 +31,15 @@ function configDriverChoices(f) {
     ['current', '当前会话画像（保持现状）'],
     ['account_stable', '账号稳定 Protocol 画像（懒创建）'],
   ];
-  if (f.key === 'ACCOUNT_2FA_DRIVER' || f.key === 'TWOFA_DRIVER') {
+  if (f.key === 'TWOFA_DRIVER') {
     return [['protocol', '协议直开（新鲜 AT）'], ['browser', '浏览器页面（RoxyBrowser）']];
+  }
+  if (f.key === 'ACCOUNT_2FA_DRIVER') {
+    return [
+      ['protocol', '浏览器前置 + 协议'],
+      ['protocol_direct', '已有 AT 纯协议优先'],
+      ['browser', '浏览器页面（RoxyBrowser）'],
+    ];
   }
   if (f.key === 'ACCOUNT_CODEX_DRIVER' || f.key === 'CODEX_OAUTH_DRIVER') {
     return [['protocol', '纯协议授权'], ['roxy', 'RoxyBrowser'], ['same_as_registration', '跟随注册驱动']];

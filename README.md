@@ -734,6 +734,15 @@ LIVE_CHECK_ROXY_FALLBACK_ENABLED=True
 `ACCOUNT_AUTH_RAW_CONTEXT_ENABLED` 默认关闭；开启后才会为 Protocol v2 的实际认证 session 按白名单保存受限 run context，包含原始 device/session 标识和当次代理上下文，不会作为后续任务的代理或会话来源。默认保留 30 天，`ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS=0` 关闭自动清理；这些原始值不进入普通账号 API、任务事件和导出。
 `LIVE_CHECK_ROXY_FALLBACK_ENABLED` 只控制 legacy 刷新 AT 失败后的既有 Roxy 登录兜底，不影响普通查活；普通查活是否使用浏览器由 `ACCOUNT_LIVE_CHECK_BROWSER_ENABLED` 与 `ACCOUNT_LIVE_CHECK_DRIVER` 独立控制。
 
+已有账号单独执行“补 2FA”时，`ACCOUNT_2FA_DRIVER` 独立于注册 `TWOFA_DRIVER`：
+
+```dotenv
+ACCOUNT_2FA_DRIVER=protocol
+ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED=True
+```
+
+`protocol` 保持现有“先打开 Roxy 登录，再在当前会话内优先协议、失败回浏览器设置页”；`browser` 直接走现有浏览器页面。需要让已有 AT 的账号在单独补 2FA 时不打开浏览器，可显式改为 `protocol_direct`：成功直接使用已保存 AT 完成 `enroll/activate`，并把 secret 先写检查点再写最终状态；协议失败时仅在 `ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED=True` 时进入 Roxy 兜底。组合“补全账号”同时缺密码时仍使用浏览器，因为密码设置本身需要登录页面。配置页“注册与账号 → 执行方式”会分别展示注册 2FA、账号补全 2FA 和浏览器兜底开关。
+
 已注册账号的 `email_source` 是后续 OTP 取码的权威来源；即使进程重启或 Outlook 池记录被清理，也会优先按账号来源取码，Outlook 账号凭据可从已注册账号快照恢复，不会因为当前 `EMAIL_SOURCE` 顺序变化而误走其他邮箱平台。
 
 账号列表显示 AT 签发时间、过期时间和剩余时间。定时刷新只处理进入提前刷新窗口的账号；默认提前 24 小时检查，配置如下：

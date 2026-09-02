@@ -22,6 +22,7 @@ const CONFIG_LIFECYCLE_SECTION_KEYS_V2 = {
     'ACCOUNT_AUTH_RAW_CONTEXT_ENABLED',
     'ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS',
     'LIVE_CHECK_ROXY_FALLBACK_ENABLED',
+    'ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED',
     'TWOFA_DRIVER',
     'ACCOUNT_2FA_DRIVER',
     'CODEX_OAUTH_DRIVER',
@@ -506,7 +507,7 @@ function renderLifecycleFixedDriver(label, value, help) {
 function renderLifecycleInheritedSummary() {
   const password = lifecycleChoiceLabel([{value: 'roxy', label: 'RoxyBrowser'}], lifecycleFieldValue('ACCOUNT_PASSWORD_DRIVER', 'roxy'));
   const plan = lifecycleChoiceLabel([{value: 'protocol', label: '纯协议'}], lifecycleFieldValue('ACCOUNT_PLAN_CHECK_DRIVER', 'protocol'));
-  const twofa = lifecycleChoiceLabel(twofaDriverChoices(), lifecycleFieldValue('ACCOUNT_2FA_DRIVER', lifecycleFieldValue('TWOFA_DRIVER', 'protocol')));
+  const twofa = lifecycleChoiceLabel(accountTwofaDriverChoices(), lifecycleFieldValue('ACCOUNT_2FA_DRIVER', lifecycleFieldValue('TWOFA_DRIVER', 'protocol')));
   const codex = lifecycleChoiceLabel(codexOauthDriverChoices(), lifecycleFieldValue('ACCOUNT_CODEX_DRIVER', lifecycleFieldValue('CODEX_OAUTH_DRIVER', 'same_as_registration')));
   return `
     <div class="config-lifecycle-inherited-v2">
@@ -582,8 +583,16 @@ function renderLifecycleExecutionSection(fields) {
   }
   if (has('TWOFA_DRIVER')) {
     cards.push(renderLifecycleDriverSelect(
-      'TWOFA_DRIVER', '2FA 开通', '注册和账号补全的 2FA 执行方式统一维护；协议模式失败时仍按现有实现做浏览器兜底。', twofaDriverChoices(), ['ACCOUNT_2FA_DRIVER']
+      'TWOFA_DRIVER', '注册 2FA 开通方式', '只影响注册主链路；protocol=注册会话内优先协议，失败按注册现有浏览器兜底；browser=注册流程直接使用浏览器安全设置页。', registrationTwofaDriverChoices()
     ));
+  }
+  if (has('ACCOUNT_2FA_DRIVER')) {
+    cards.push(renderLifecycleDriverSelect(
+      'ACCOUNT_2FA_DRIVER', '账号补全 2FA 开通方式', '只影响已有账号补全；protocol_direct=先用已保存 AT 直接协议开通，成功不打开浏览器；protocol=浏览器前置后协议；browser=直接浏览器。', accountTwofaDriverChoices()
+    ));
+  }
+  if (has('ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED')) {
+    cards.push(renderFeatureSwitchField(has('ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED'), { withIcon: false }));
   }
   if (has('CODEX_OAUTH_DRIVER')) {
     cards.push(renderLifecycleDriverSelect(
@@ -667,11 +676,21 @@ function renderRegistrationAccountSectionV2(fields) {
   return renderLifecycleExecutionSection(fields);
 }
 
-function twofaDriverChoices() {
+function registrationTwofaDriverChoices() {
   return [
     { value: 'protocol', label: '协议直开（新鲜 AT）' },
     { value: 'browser', label: '浏览器页面（RoxyBrowser）' },
   ];
+}
+function accountTwofaDriverChoices() {
+  return [
+    { value: 'protocol', label: '浏览器前置 + 协议' },
+    { value: 'protocol_direct', label: '已有 AT 纯协议优先' },
+    { value: 'browser', label: '浏览器页面（RoxyBrowser）' },
+  ];
+}
+function twofaDriverChoices() {
+  return accountTwofaDriverChoices();
 }
 function liveCheckDriverChoices() {
   const choices = [
@@ -701,7 +720,7 @@ function renderTwofaDriverControl(f) {
     <div class="config-twofa-driver-v2">
       <div class="config-twofa-driver-v2-label">${esc(f.label)}</div>
       <select data-key="${attrEsc(f.key)}" aria-label="${attrEsc(f.label)}">
-        ${twofaDriverChoices().map(item => `<option value="${attrEsc(item.value)}"${current === item.value ? ' selected' : ''}>${esc(item.label)}</option>`).join('')}
+        ${registrationTwofaDriverChoices().map(item => `<option value="${attrEsc(item.value)}"${current === item.value ? ' selected' : ''}>${esc(item.label)}</option>`).join('')}
       </select>
       <p class="config-twofa-driver-v2-help">${esc(f.help || '')}</p>
     </div>
@@ -730,7 +749,8 @@ function configDriverChoices(f) {
   if (f.key === 'ACCOUNT_LIVE_CHECK_DRIVER') return liveCheckDriverChoices();
   if (f.key === 'ACCOUNT_TOKEN_REFRESH_DRIVER') return refreshDriverChoices();
   if (f.key === 'ACCOUNT_AUTH_PROFILE_MODE') return authProfileModeChoices();
-  if (f.key === 'ACCOUNT_2FA_DRIVER') return twofaDriverChoices();
+  if (f.key === 'TWOFA_DRIVER') return registrationTwofaDriverChoices();
+  if (f.key === 'ACCOUNT_2FA_DRIVER') return accountTwofaDriverChoices();
   if (f.key === 'ACCOUNT_CODEX_DRIVER') return codexOauthDriverChoices();
   return null;
 }

@@ -180,6 +180,8 @@ def _run_account_completion_worker(
                 "status": setup_result.get("status"),
                 "message": setup_result.get("message"),
                 "plan_check": setup_result.get("plan_check"),
+                "twofa_driver": setup_result.get("twofa_driver"),
+                "browser_opened": setup_result.get("browser_opened"),
             }
             if not setup_result.get("ok"):
                 raise RuntimeError(setup_result.get("message") or "账号配置步骤未完成")

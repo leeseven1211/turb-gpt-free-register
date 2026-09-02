@@ -132,6 +132,8 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             "ACCOUNT_COMPLETION_2FA_ENABLED",
             "ACCOUNT_COMPLETION_CODEX_ENABLED",
             "ACCOUNT_COMPLETION_REFRESH_AT_ENABLED",
+            "ACCOUNT_2FA_DRIVER",
+            "ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED",
         }
         self.assertTrue(completion_keys.issubset(fields))
         self.assertTrue(all(fields[key]["group"] == "账号补全" for key in completion_keys))
@@ -151,6 +153,8 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         self.assertEqual("current", account_config.ACCOUNT_AUTH_PROFILE_MODE)
         self.assertFalse(account_config.ACCOUNT_AUTH_RAW_CONTEXT_ENABLED)
         self.assertEqual(30, account_config.ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS)
+        self.assertEqual("protocol", account_config.ACCOUNT_2FA_DRIVER)
+        self.assertTrue(account_config.ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED)
 
         old_loaded = env_loader._LOADED
         env_loader._LOADED = True
@@ -164,6 +168,8 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
                 "ACCOUNT_AUTH_PROFILE_MODE": "account_stable",
                 "ACCOUNT_AUTH_RAW_CONTEXT_ENABLED": "True",
                 "ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS": "14",
+                "ACCOUNT_2FA_DRIVER": "protocol_direct",
+                "ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED": "False",
             }, clear=False):
                 reloaded = importlib.reload(account_config)
                 self.assertFalse(reloaded.ACCOUNT_COMPLETION_CODEX_ENABLED)
@@ -174,6 +180,8 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
                 self.assertEqual("account_stable", reloaded.ACCOUNT_AUTH_PROFILE_MODE)
                 self.assertTrue(reloaded.ACCOUNT_AUTH_RAW_CONTEXT_ENABLED)
                 self.assertEqual(14, reloaded.ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS)
+                self.assertEqual("protocol_direct", reloaded.ACCOUNT_2FA_DRIVER)
+                self.assertFalse(reloaded.ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED)
         finally:
             env_loader._LOADED = old_loaded
             importlib.reload(account_config)

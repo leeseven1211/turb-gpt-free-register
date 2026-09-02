@@ -159,7 +159,11 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "ACCOUNT_2FA_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
-        "label": "2FA 补全驱动", "help": "可选协议开通或浏览器安全设置页面；两种方式都已实现",
+        "label": "2FA 补全驱动", "help": "protocol=浏览器前置后协议开通；protocol_direct=已有 AT 先直接协议开通，失败再按兜底开关切浏览器；browser=直接浏览器",
+    },
+    {
+        "key": "ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED", "file": "account.py", "type": "bool", "group": "账号补全",
+        "label": "2FA 协议失败后浏览器兜底", "help": "仅用于账号补全；protocol_direct/protocol 失败后是否允许打开 Roxy 安全设置页面，默认开启",
     },
     {
         "key": "ACCOUNT_CODEX_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",

@@ -19,6 +19,9 @@ ACCOUNT_COMPLETION_REFRESH_AT_ENABLED = False
 ACCOUNT_PASSWORD_DRIVER = "roxy"
 ACCOUNT_PLAN_CHECK_DRIVER = "protocol"
 ACCOUNT_2FA_DRIVER = "protocol"
+# 账号补全专用 2FA 兜底开关。protocol_direct 成功时不会打开 Roxy；只有
+# 协议明确失败且此开关开启时，才继续沿用现有浏览器安全设置流程。
+ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED = True
 ACCOUNT_CODEX_DRIVER = "same_as_registration"
 
 # 普通“查活”单独维护驱动选择，不复用 ACCOUNT_PLAN_CHECK_DRIVER。
@@ -53,6 +56,7 @@ apply_env_overrides(globals(), {
     "ACCOUNT_PASSWORD_DRIVER": "str",
     "ACCOUNT_PLAN_CHECK_DRIVER": "str",
     "ACCOUNT_2FA_DRIVER": "str",
+    "ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED": "bool",
     "ACCOUNT_CODEX_DRIVER": "str",
     "ACCOUNT_LIVE_CHECK_DRIVER": "str",
     "ACCOUNT_LIVE_CHECK_BROWSER_ENABLED": "bool",
@@ -82,5 +86,6 @@ def completion_settings() -> dict[str, object]:
         "auth_raw_context_enabled": bool(ACCOUNT_AUTH_RAW_CONTEXT_ENABLED),
         "auth_raw_context_retention_days": int(ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS or 0),
         "twofa_driver": str(ACCOUNT_2FA_DRIVER or "protocol").strip().lower() or "protocol",
+        "twofa_browser_fallback_enabled": bool(ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED),
         "codex_driver": str(ACCOUNT_CODEX_DRIVER or "same_as_registration").strip().lower() or "same_as_registration",
     }

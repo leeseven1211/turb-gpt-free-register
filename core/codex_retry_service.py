@@ -52,6 +52,92 @@ def _account_login_password(account: dict | None) -> str:
     ).strip()
 
 
+def _run_protocol_direct_twofa(
+    email: str,
+    account: dict,
+    account_route,
+    task_id: int | None,
+) -> dict:
+    """Use the saved ChatGPT AT to enable 2FA without opening Roxy.
+
+    ``BrowserSession`` here is the existing curl/cffi protocol client, not a
+    visible browser.  The caller is responsible for deciding whether a
+    protocol failure may continue into the legacy browser fallback.
+    """
+    existing_secret = str(account.get("totp_secret") or "").strip()
+    if existing_secret and not _totp_setup_pending(account):
+        account_task_store.append_event(
+            task_id,
+            stage="twofa",
+            message="账号已有 Authenticator 2FA，跳过重复设置",
+            detail={"driver": "protocol_direct", "browser_opened": False},
+            state="skipped",
+        )
+        return {
+            "status": "success",
+            "ok": True,
+            "message": "账号已有 Authenticator 2FA，无需重复设置",
+            "twofa_driver": "protocol_direct",
+            "browser_opened": False,
+        }
+
+    access_token = str(account.get("access_token") or "").strip()
+    if not access_token:
+        raise RuntimeError("协议直开 2FA 需要账号已有 access_token")
+
+    account_task_store.append_event(
+        task_id,
+        stage="twofa",
+        message="账号已有 access_token，先使用纯协议开通 Authenticator 2FA",
+        detail={"driver": "protocol_direct", "browser_opened": False},
+        state="running",
+    )
+    state = {"secret": ""}
+
+    def _checkpoint(secret: str) -> None:
+        normalized = str(secret or "").strip()
+        if not normalized:
+            raise RuntimeError("Authenticator key 检查点为空")
+        with _ACCOUNT_SETUP_DB_LOCK:
+            if not db.update_account_totp_secret(email, normalized, setup_pending=True):
+                raise RuntimeError("Authenticator key 写入账号检查点失败")
+        state["secret"] = normalized
+
+    from core.account_export import setup_2fa_protocol
+    from core.session import BrowserSession
+
+    protocol_session = BrowserSession(
+        proxy=str(getattr(account_route, "proxy_url", "") or ""),
+    )
+    secret = setup_2fa_protocol(
+        protocol_session,
+        access_token,
+        on_secret=_checkpoint,
+    )
+    if not state["secret"]:
+        _checkpoint(secret)
+    with _ACCOUNT_SETUP_DB_LOCK:
+        if not db.update_account_totp_secret(email, state["secret"], setup_pending=False):
+            raise RuntimeError("Authenticator 完成状态写入账号失败")
+        if not db.update_account_twofa_status(email, "success", "Authenticator 2FA 已启用"):
+            raise RuntimeError("Authenticator 结果状态写入账号失败")
+    check_stop_requested(email)
+    account_task_store.append_event(
+        task_id,
+        stage="twofa_result",
+        message="纯协议已启用 Authenticator 2FA，未打开浏览器",
+        detail={"enabled": True, "driver": "protocol_direct", "browser_opened": False},
+        state="success",
+    )
+    return {
+        "status": "success",
+        "ok": True,
+        "message": "Authenticator 2FA 已通过纯协议启用",
+        "twofa_driver": "protocol_direct",
+        "browser_opened": False,
+    }
+
+
 def _run_retry_plan_check(
     email: str,
     account: dict,
@@ -213,6 +299,7 @@ def _build_roxy_twofa_setup(
     proxy: str | None = None,
     access_token: str | None = None,
     twofa_driver: str | None = None,
+    browser_fallback_enabled: bool = True,
 ):
     """为缺少 TOTP 的补跑构造一次性 2FA 前置步骤。"""
     state = {"secret": ""}
@@ -259,10 +346,7 @@ def _build_roxy_twofa_setup(
                 # Roxy 负责登录和拿到本次新鲜 session；enroll/activate 直接走协议，
                 # 若 OpenAI 要求 recent_auth，则复用当前已登录浏览器完成邮箱重认证，
                 # 不能让整个账号配置任务直接失败。
-                from core.registration.selenium_auth import (
-                    fetch_chatgpt_session as _fetch_chatgpt_session,
-                    setup_protocol_2fa_with_browser_fallback,
-                )
+                from core.registration.selenium_auth import fetch_chatgpt_session as _fetch_chatgpt_session
                 from core.session import BrowserSession
 
                 # 补密码可能触发设置页邮箱重认证，重认证后旧的 ChatGPT AT
@@ -286,14 +370,26 @@ def _build_roxy_twofa_setup(
                 if not fresh_access_token:
                     raise RuntimeError("协议开通 2FA 未拿到新鲜 accessToken")
                 protocol_session = BrowserSession(proxy=proxy)
-                secret, fallback_used = setup_protocol_2fa_with_browser_fallback(
-                    driver,
-                    email,
-                    protocol_session,
-                    fresh_access_token,
-                    on_secret=_checkpoint,
-                    existing_secret=existing_secret or None,
-                )
+                if browser_fallback_enabled:
+                    from core.registration.selenium_auth import setup_protocol_2fa_with_browser_fallback
+
+                    secret, fallback_used = setup_protocol_2fa_with_browser_fallback(
+                        driver,
+                        email,
+                        protocol_session,
+                        fresh_access_token,
+                        on_secret=_checkpoint,
+                        existing_secret=existing_secret or None,
+                    )
+                else:
+                    from core.account_export import setup_2fa_protocol
+
+                    secret = setup_2fa_protocol(
+                        protocol_session,
+                        fresh_access_token,
+                        on_secret=_checkpoint,
+                    )
+                    fallback_used = False
                 logger.info(
                     "[账号补跑][2FA] 已开通 Authenticator：%s driver=%s",
                     email,
@@ -358,6 +454,7 @@ def _build_roxy_account_setup(
     include_password: bool = True,
     include_twofa: bool = True,
     twofa_driver: str | None = None,
+    browser_fallback_enabled: bool = True,
 ):
     """按步骤补账号密码/Authenticator 2FA；默认保持旧的组合行为。"""
 
@@ -431,6 +528,7 @@ def _build_roxy_account_setup(
             proxy=proxy,
             access_token=protocol_access_token,
             twofa_driver=selected_twofa_driver,
+            browser_fallback_enabled=browser_fallback_enabled,
         )
 
         def _setup_password() -> tuple[bool, str | None]:
@@ -667,8 +765,13 @@ def run_twofa_worker(
             if twofa_driver_override is not None
             else getattr(account_cfg, "ACCOUNT_2FA_DRIVER", "protocol")
         ).strip().lower()
-        if "twofa" in requested_steps and selected_twofa_driver not in {"protocol", "api", "http", "browser", "roxy", "roxybrowser"}:
+        if "twofa" in requested_steps and selected_twofa_driver not in {
+            "protocol", "protocol_direct", "api", "http", "browser", "roxy", "roxybrowser",
+        }:
             raise RuntimeError(f"2FA 补全驱动不支持：{selected_twofa_driver or '-'}")
+        browser_fallback_enabled = bool(
+            getattr(account_cfg, "ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED", True)
+        )
 
         oauth_driver = str(getattr(codex_cfg, "CODEX_OAUTH_DRIVER", "protocol") or "protocol").strip().lower()
         if oauth_driver == "same_as_registration":
@@ -718,6 +821,64 @@ def run_twofa_worker(
                 "proxy_mode": account_route.mode,
             }
             return result
+
+        browser_twofa_driver = selected_twofa_driver
+        direct_protocol_failed = False
+        if requested_steps == {"twofa"} and selected_twofa_driver == "protocol_direct":
+            try:
+                direct_result = _run_protocol_direct_twofa(
+                    email,
+                    account,
+                    account_route,
+                    task_id,
+                )
+            except CodexRetryStopped:
+                raise
+            except Exception as exc:
+                direct_protocol_failed = True
+                direct_error = f"{type(exc).__name__}: {str(exc)[:220]}"
+                account_task_store.append_event(
+                    task_id,
+                    stage="twofa_result",
+                    message="纯协议 2FA 开通失败",
+                    level="WARNING",
+                    detail={
+                        "driver": "protocol_direct",
+                        "browser_fallback_enabled": browser_fallback_enabled,
+                        "error": direct_error,
+                    },
+                    state="failed",
+                )
+                if not browser_fallback_enabled:
+                    db.update_account_twofa_status(email, "failed", direct_error)
+                    result = {
+                        "status": "failed",
+                        "ok": False,
+                        "message": f"协议直开 2FA 失败，且已关闭浏览器兜底：{direct_error}",
+                        "twofa_driver": "protocol_direct",
+                        "browser_opened": False,
+                        "proxy_provider": account_route.provider,
+                        "proxy_region": account_route.region,
+                        "proxy_mode": account_route.mode,
+                    }
+                    return result
+                account_task_store.append_event(
+                    task_id,
+                    stage="twofa",
+                    message="纯协议 2FA 未完成，按配置回退 Roxy 安全设置页面",
+                    detail={"driver": "browser_fallback", "protocol_error": direct_error},
+                    state="running",
+                )
+                browser_twofa_driver = "browser"
+            else:
+                result = {
+                    **direct_result,
+                    "plan_check": {"status": "skipped", "ok": True, "message": "本次未请求套餐补全"},
+                    "proxy_provider": account_route.provider,
+                    "proxy_region": account_route.region,
+                    "proxy_mode": account_route.mode,
+                }
+                return result
         account_task_store.append_event(
             task_id,
             stage="browser",
@@ -736,7 +897,8 @@ def run_twofa_worker(
                 proxy=(account_route.proxy_url if account_route is not None else None),
                 include_password="password" in requested_steps,
                 include_twofa="twofa" in requested_steps,
-                twofa_driver=selected_twofa_driver,
+                twofa_driver=browser_twofa_driver,
+                browser_fallback_enabled=browser_fallback_enabled,
             ),
         )
         account_task_store.append_event(
@@ -763,6 +925,8 @@ def run_twofa_worker(
             "proxy_provider": account_route.provider,
             "proxy_region": account_route.region,
             "proxy_mode": account_route.mode,
+            "twofa_driver": "browser_fallback" if direct_protocol_failed else selected_twofa_driver,
+            "browser_opened": True,
         }
         return result
     except CodexRetryStopped as exc:
@@ -817,7 +981,14 @@ def run_twofa_worker(
                         else "账号配置重试已停止" if task_status == "cancelled" else "账号配置重试失败"
                     ),
                     error=None if task_status == "success" else str(result.get("message") or "账号配置重试失败"),
-                    result_summary={"ok": bool(result.get("ok")), "status": result.get("status"), "message": result.get("message")},
+                    result_summary={
+                        "ok": bool(result.get("ok")),
+                        "status": result.get("status"),
+                        "message": result.get("message"),
+                        "plan_check": result.get("plan_check"),
+                        "twofa_driver": result.get("twofa_driver"),
+                        "browser_opened": result.get("browser_opened"),
+                    },
                     route={
                         "network_route": route_summary.get("network_route"),
                         "proxy_mode": result.get("proxy_mode") or getattr(account_route, "mode", None),

@@ -85,7 +85,7 @@ execution_methods:
 | 注册基础流程 | `REGISTRATION_DRIVER` | 直接沿用 |
 | 密码设置 | `ACCOUNT_PASSWORD_DRIVER` | 后端兼容保留，UI 只读 |
 | 套餐查询 | `ACCOUNT_PLAN_CHECK_DRIVER` | 后端兼容保留，UI 只读 |
-| 2FA 设置 | `TWOFA_DRIVER`、`ACCOUNT_2FA_DRIVER` | 兼容期集中展示但保留两个现有值；用户显式选择“统一”后再同步，后续合并为一个键 |
+| 2FA 设置 | `TWOFA_DRIVER`、`ACCOUNT_2FA_DRIVER`、`ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED` | 注册与账号补全分开选择；账号补全可显式选择已有 AT 纯协议优先，并独立控制浏览器兜底 |
 | Codex OAuth | `CODEX_OAUTH_DRIVER`、`ACCOUNT_CODEX_DRIVER` | 兼容期集中展示但不静默改值；新配置默认让补全跟随通用值 |
 | 刷新 AT | 当前固定策略 | 首版只展示，不新增无效选择 |
 
