@@ -52,7 +52,42 @@ class LiveCheckBrowserProbeTests(unittest.TestCase):
         self.assertTrue(result["needs_live_check"])
         self.assertTrue(result["token_expired"])
         self.assertEqual(401, result["http_status"])
+        self.assertEqual("auth", result["error_category"])
         self.assertEqual("access_token", result["validation_method"])
+
+    def test_profile_failure_is_classified_before_driver_creation(self):
+        client = MagicMock()
+        client.open_profile.side_effect = RuntimeError("proxy rejected")
+
+        with (
+            patch.object(live_check_browser, "available", return_value=True),
+            patch.object(live_check_browser, "RoxyBrowserClient", return_value=client),
+            patch.object(live_check_browser, "build_driver") as build_driver,
+        ):
+            result = live_check_browser.run_probe(token="test-at", proxy="http://127.0.0.1:1")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("profile", result["error_category"])
+        build_driver.assert_not_called()
+
+    def test_navigation_failure_is_classified_and_profile_is_cleaned(self):
+        opened = SimpleNamespace(profile_id="profile-1")
+        driver = MagicMock()
+        client = MagicMock()
+        client.open_profile.return_value = opened
+
+        with (
+            patch.object(live_check_browser, "available", return_value=True),
+            patch.object(live_check_browser, "RoxyBrowserClient", return_value=client),
+            patch.object(live_check_browser, "build_driver", return_value=driver),
+            patch.object(live_check_browser, "safe_get", side_effect=TimeoutError("proxy timeout")),
+        ):
+            result = live_check_browser.run_probe(token="test-at", proxy="http://127.0.0.1:1")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("browser_navigation", result["error_category"])
+        driver.quit.assert_called_once_with()
+        client.cleanup_profile.assert_called_once_with(opened)
 
     def test_run_probe_cleans_profile_after_success(self):
         opened = SimpleNamespace(profile_id="profile-1")

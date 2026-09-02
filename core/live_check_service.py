@@ -162,6 +162,7 @@ def _run_live_check(
         saved_claims = token_claims(saved_access_token) if saved_access_token else {}
         result = None
         last_probe_error = ""
+        last_probe_error_category = None
         last_probe_http_status = None
         if saved_access_token and not force_refresh:
             probe_attempts = 4 if proxy is None else 1
@@ -189,6 +190,7 @@ def _run_live_check(
                     last_probe_http_status = int(probe.get("http_status"))
                 except (TypeError, ValueError):
                     last_probe_http_status = None
+                last_probe_error_category = probe.get("error_category")
                 if probe.get("ok"):
                     result = {
                         "ok": True,
@@ -201,6 +203,7 @@ def _run_live_check(
                         },
                         "proxy_used": selected_proxy or None,
                         "validation_method": "access_token",
+                        "live_check_driver": probe.get("live_check_driver") or selected_live_check_driver,
                     }
                     _append_log(
                         email,
@@ -229,6 +232,8 @@ def _run_live_check(
                         "error": unusable_code,
                         "http_status": last_probe_http_status,
                         "validation_method": "access_token",
+                        "error_category": probe.get("error_category"),
+                        "live_check_driver": probe.get("live_check_driver") or selected_live_check_driver,
                     }
                     break
 
@@ -242,16 +247,26 @@ def _run_live_check(
                     stage="access_token",
                     level="WARNING",
                     message=f"AT 在线验证未通过（{attempt}/{probe_attempts}）",
-                    detail={"http_status": probe.get("http_status"), "error": probe.get("error")},
+                    detail={
+                        "http_status": probe.get("http_status"),
+                        "error_category": probe.get("error_category"),
+                        "error": probe.get("error"),
+                    },
                 )
                 if not _token_probe_retryable(probe) or attempt >= probe_attempts:
                     _append_log(email, "[查活] 现有 Token 无法确认状态；不会自动登录，请单独点击“刷新AT”")
                     break
 
             if result is None:
+                probe_driver = probe.get("live_check_driver") or selected_live_check_driver
                 reporter.stage(
                     "access_token", "failed", "AT 在线验证未通过",
-                    level="ERROR", detail={"http_status": last_probe_http_status, "error": last_probe_error},
+                    level="ERROR",
+                    detail={
+                        "http_status": last_probe_http_status,
+                        "error_category": last_probe_error_category,
+                        "error": last_probe_error,
+                    },
                 )
                 result = {
                     "ok": False,
@@ -261,6 +276,8 @@ def _run_live_check(
                     "http_status": last_probe_http_status,
                     "validation_method": "access_token",
                     "probe_error": last_probe_error,
+                    "error_category": probe.get("error_category"),
+                    "live_check_driver": probe_driver,
                 }
         elif not force_refresh:
             result = {
@@ -369,6 +386,7 @@ def _run_live_check(
                 "ok": bool(result.get("ok")),
                 "status": result.get("status"),
                 "http_status": result.get("http_status"),
+                "error_category": result.get("error_category"),
                 "checked_at": result.get("checked_at"),
                 "plan": (result.get("session") or {}).get("account", {}).get("planType"),
                 "live_check_driver": result.get("live_check_driver"),
