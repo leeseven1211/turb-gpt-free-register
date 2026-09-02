@@ -363,7 +363,7 @@ ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK=False
 
 `ACCOUNT_AUTH_RAW_CONTEXT_ENABLED=False` 时，identity、登录、查活和 fallback 行为完全不变，只跳过 P1/P2 原始 run context 写入并继续保存 P0 安全摘要。该开关不能被实现成“关闭后不用稳定 identity”。
 
-当前阶段只落地“刷新 AT 专用 Protocol v2”适配器：密码错误后的邮箱兜底仍是协议邮箱链，默认关闭，且不会自动转入 Roxy；通用密码登录、浏览器 passwordless fallback 和稳定 identity 按后续阶段独立实施。
+当前阶段只落地“刷新 AT 专用 Protocol v2”适配器：密码错误后的邮箱兜底只有在远端明确建立邮箱 challenge 时才进入协议邮箱链，默认关闭，且不会从密码页直接调用发送接口或自动转入 Roxy；通用密码登录、浏览器 passwordless fallback 和稳定 identity 按后续阶段独立实施。
 
 `ACCOUNT_AUTH_PROFILE_MODE=current` 时严格保持现状：不创建、不读取稳定 identity，向 `BrowserSession` 传 `identity=None`，每个 session 随机设备层；`account_stable` 时才懒调用 ensure。两个模式都可以独立保存安全摘要和 raw run context。
 
@@ -702,8 +702,8 @@ Protocol 没有“点击按钮”，它需要根据服务端返回的 `continue_
    - 跟随 allowlist 内的 send URL一次；
    - 以 HTTP/页面状态确认 send 是否已受理；
    - 不能只因为函数返回就宣称邮件已发出。
-7. 如果仍停在 password login，调用显式 passwordless OTP 协议路径一次。
-8. 仍无法进入 OTP 时，才考虑 Roxy fallback。
+7. 如果仍停在 password login，只有存在已验证、版本稳定的显式 passwordless OTP 协议动作时才调用一次；当前上游/真实样本未确认该协议动作，因此返回 `passwordless_fallback_unavailable`，不调用 `/api/accounts/email-otp/send`。
+8. 仍无法进入 OTP 时，按配置决定是否进入浏览器 fallback；浏览器必须从登录起点新建会话，并复用已有严格 passwordless 控件识别，不提交被拒绝的密码。
 
 同一刷新 run 最多启动一次邮箱 fallback；OTP 内部的“重发”属于同一 fallback，不重新开始整个认证链。
 

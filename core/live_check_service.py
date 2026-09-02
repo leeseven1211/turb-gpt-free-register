@@ -115,7 +115,14 @@ def _report_protocol_v2_refresh(reporter: TaskReporter, result: dict) -> None:
     """Project Protocol v2's actual auth method without inventing OTP success."""
     auth_method = str(result.get("auth_method") or "protocol_v2")
     password_status = str(result.get("password_auth_status") or "")
-    uses_email = "email" in auth_method or auth_method == "legacy_email_otp"
+    uses_email = (
+        "email" in auth_method
+        or auth_method == "legacy_email_otp"
+        or result.get("error") in {
+            "password_rejected_email_fallback_failed",
+            "passwordless_fallback_unavailable",
+        }
+    )
     uses_mfa = "mfa" in auth_method
 
     if password_status == "rejected":

@@ -7,6 +7,7 @@ OpenAI Auth 模块
 import json
 import logging
 import time
+from urllib.parse import urlsplit
 
 from core.session import BrowserSession
 from core.sentinel import (
@@ -118,6 +119,14 @@ def _extract_error_code(resp) -> str:
     if isinstance(err, dict):
         return str(err.get("code") or "")
     return ""
+
+
+def _url_path(value: object) -> str:
+    """Return only an URL path for safe response classification/logging."""
+    try:
+        return str(urlsplit(str(value or "")).path or "").rstrip("/") or "/"
+    except Exception:
+        return ""
 
 
 # 步骤4 网络层临时性错误（代理抽风 / TLS 握手失败 / 重置等）的重试参数
@@ -438,10 +447,42 @@ def send_email_otp(session: BrowserSession, referer: str = "https://auth.openai.
     headers["sec-fetch-user"] = "?1"
     logger.info("[OTP] 请求重新发送邮箱验证码...")
     resp = session.get(url, headers=headers, allow_redirects=True)
-    if resp.status_code >= 400:
-        logger.warning("[OTP] 重新发送验证码失败 status=%s: %s", resp.status_code, (resp.text or '')[:300])
-        resp.raise_for_status()
-    logger.info("[OTP] 重新发送验证码请求完成，status=%s", resp.status_code)
+    status = int(getattr(resp, "status_code", 0) or 0)
+    final_path = _url_path(getattr(resp, "url", ""))
+    history = list(getattr(resp, "history", []) or [])
+    redirect_paths = []
+    for item in history:
+        location = ""
+        try:
+            location = str((getattr(item, "headers", {}) or {}).get("location") or "")
+        except Exception:
+            location = ""
+        redirect_paths.append(_url_path(location) or _url_path(getattr(item, "url", "")))
+
+    # curl_cffi/requests exposes the final response after following redirects.
+    # A 302 -> /error therefore appears as a harmless 200 unless both the
+    # redirect chain and the final page are inspected.
+    if status >= 400:
+        logger.warning("[OTP] 重新发送验证码失败 status=%s path=%s", status, final_path or "-")
+        raise RuntimeError(f"email_otp_send_failed status={status} path={final_path or '-'}")
+    if "/error" in final_path.lower() or any("/error" in path.lower() for path in redirect_paths):
+        logger.warning(
+            "[OTP] 重新发送验证码被认证服务拒绝 status=%s path=%s redirect=%s",
+            status,
+            final_path or "-",
+            ",".join(redirect_paths[-3:]) or "-",
+        )
+        raise RuntimeError(f"email_otp_send_rejected status={status} path={final_path or '-'}")
+    content_type = str((getattr(resp, "headers", {}) or {}).get("content-type") or "").lower()
+    if content_type.startswith("text/html") and final_path.lower() != "/email-verification":
+        logger.warning(
+            "[OTP] 重新发送验证码未得到验证码页 status=%s path=%s content_type=%s",
+            status,
+            final_path or "-",
+            content_type.split(";", 1)[0] or "-",
+        )
+        raise RuntimeError(f"email_otp_send_unconfirmed status={status} path={final_path or '-'}")
+    logger.info("[OTP] 重新发送验证码请求完成，status=%s path=%s", status, final_path or "-")
 
 
 def validate_email_otp(session: BrowserSession, code: str, sentinel_header: str | None = None, so_header: str | None = None) -> dict:

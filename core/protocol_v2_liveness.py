@@ -35,7 +35,6 @@ from core.openai_auth import (
     detect_account_unusable_text,
     follow_authorize,
     request_sentinel_token,
-    send_email_otp,
 )
 from core.account_credentials import get_account_login_credentials
 from core.auth_fingerprint import build_safe_fingerprint_summary
@@ -87,6 +86,7 @@ class ProtocolV2AuthError(RuntimeError):
             "password_rejected",
             "password_result_unknown",
             "password_rejected_email_fallback_failed",
+            "passwordless_fallback_unavailable",
             "mfa_rejected",
             "mfa_secret_missing",
         }
@@ -408,12 +408,27 @@ def _start_email_session(email: str, proxy: str | None, *, identity=None, contex
         dead_code = detect_account_unusable_text(final_url)
         if dead_code:
             raise ProtocolV2AuthError("account_deactivated", category="account", roxy_fallback_allowed=False)
-        if "email-verification" not in str(final_url).lower():
-            # The password page may remain the visible route after rejection.  Ask
-            # for the one-time code explicitly instead of blindly clicking a page.
-            after_ts = time.time()
-            send_email_otp(session, referer=str(final_url or _PASSWORD_PATH))
-        return session, after_ts
+        final_url_text = str(final_url or "").lower()
+        if "email-verification" in final_url_text:
+            # The authorize flow has already established the email challenge.  Do
+            # not issue a second send request here; the OTP waiter starts from the
+            # timestamp captured before the redirect.
+            return session, after_ts
+        if "/log-in/password" in final_url_text:
+            # A password page is not an email challenge.  The browser UI may offer
+            # an explicit "use a one-time code" action, but the protocol adapter
+            # has no safe, version-stable action for that UI state.  In particular,
+            # /api/accounts/email-otp/send from this page can redirect to /error.
+            raise ProtocolV2AuthError(
+                "passwordless_fallback_unavailable",
+                category="auth",
+                roxy_fallback_allowed=False,
+            )
+        raise ProtocolV2AuthError(
+            "auth_page_unknown",
+            category="response",
+            roxy_fallback_allowed=False,
+        )
     except Exception:
         if context_recorder is not None and session is not None:
             context_recorder.finish_session(session, status="failed", result_code="email_session_start_failed")
@@ -519,6 +534,13 @@ def _refresh_with_password(
                     fallback_used=True,
                 )
             except Exception as fallback_exc:
+                if isinstance(fallback_exc, ProtocolV2AuthError) and fallback_exc.code == "passwordless_fallback_unavailable":
+                    raise ProtocolV2AuthError(
+                        fallback_exc.code,
+                        category=fallback_exc.category,
+                        retryable=fallback_exc.retryable,
+                        roxy_fallback_allowed=False,
+                    ) from fallback_exc
                 raise ProtocolV2AuthError(
                     "password_rejected_email_fallback_failed",
                     category="email",
@@ -678,7 +700,11 @@ def refresh_access_token(
             "retryable": exc.retryable,
             "live_check_driver": "protocol_v2",
         }
-        if exc.code in {"password_rejected", "password_rejected_email_fallback_failed"}:
+        if exc.code in {
+            "password_rejected",
+            "password_rejected_email_fallback_failed",
+            "passwordless_fallback_unavailable",
+        }:
             result["password_auth_status"] = "rejected"
         return result
     except Exception as exc:

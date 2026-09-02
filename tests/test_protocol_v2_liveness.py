@@ -29,6 +29,26 @@ class _Session:
         return _Response(200, {"continue_url": "https://auth.openai.com/authorize/continue?code=x"})
 
 
+class _OtpResponse:
+    def __init__(self, *, status_code=200, url="https://auth.openai.com/email-verification", headers=None, history=None):
+        self.status_code = status_code
+        self.url = url
+        self.headers = headers or {"content-type": "application/json"}
+        self.history = history or []
+        self.text = "{}"
+
+
+class _OtpSession:
+    def __init__(self, response):
+        self.response = response
+
+    def get_auth_navigate_headers(self, referer=""):
+        return {"referer": referer}
+
+    def get(self, *args, **kwargs):
+        return self.response
+
+
 class ProtocolV2LivenessTests(unittest.TestCase):
     def test_credentials_reader_never_uses_email_provider_password(self):
         from core import account_credentials
@@ -297,6 +317,84 @@ class ProtocolV2LivenessTests(unittest.TestCase):
         self.assertFalse(result["roxy_fallback_allowed"] if "roxy_fallback_allowed" in result else False)
         original.session.close.assert_called_once()
         fallback.session.close.assert_called_once()
+
+    def test_password_fallback_does_not_send_from_password_page(self):
+        from core import protocol_v2_liveness as v2
+
+        session = _Session()
+        with (
+            patch.object(v2, "_network_preflight_with_retry", return_value=(session, "authorize")),
+            patch.object(v2, "follow_authorize", return_value="https://auth.openai.com/log-in/password"),
+        ):
+            with self.assertRaises(v2.ProtocolV2AuthError) as caught:
+                v2._start_email_session("account@example.com", proxy="")
+
+        self.assertEqual("passwordless_fallback_unavailable", caught.exception.code)
+        session.session.close.assert_called_once()
+
+    def test_password_fallback_preserves_unavailable_reason_without_waiting_for_otp(self):
+        from config import account as account_config
+        from core import protocol_v2_liveness as v2
+
+        original = _Session()
+        rejected = v2.ProtocolV2AuthError("password_rejected", roxy_fallback_allowed=False)
+        unavailable = v2.ProtocolV2AuthError("passwordless_fallback_unavailable", category="auth", roxy_fallback_allowed=False)
+        with (
+            patch.object(account_config, "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK", True),
+            patch.object(v2, "get_account_login_credentials", return_value=("saved-password", "")),
+            patch.object(v2, "_network_preflight_with_retry", return_value=(original, "authorize")),
+            patch.object(v2, "follow_authorize", return_value="https://auth.openai.com/log-in/password"),
+            patch.object(v2, "_password_verify", side_effect=rejected),
+            patch.object(v2, "_start_email_session", side_effect=unavailable),
+            patch.object(v2, "_complete_email_otp") as complete_email,
+        ):
+            result = v2.refresh_access_token("account@example.com", proxy="")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("passwordless_fallback_unavailable", result["error"])
+        self.assertEqual("rejected", result["password_auth_status"])
+        self.assertFalse(result["roxy_fallback_allowed"])
+        complete_email.assert_not_called()
+        original.session.close.assert_called_once()
+
+    def test_password_fallback_accepts_authorize_email_challenge_without_resend(self):
+        from core import protocol_v2_liveness as v2
+
+        session = _Session()
+        with (
+            patch.object(v2, "_network_preflight_with_retry", return_value=(session, "authorize")),
+            patch.object(v2, "follow_authorize", return_value="https://auth.openai.com/email-verification"),
+        ):
+            result = v2._start_email_session("account@example.com", proxy="")
+
+        self.assertIs(session, result[0])
+        self.assertGreater(result[1], 0)
+        session.session.close.assert_not_called()
+
+    def test_email_otp_send_rejects_redirect_to_error_even_when_final_status_is_200(self):
+        from core import openai_auth
+
+        response = _OtpResponse(
+            url="https://auth.openai.com/error",
+            headers={"content-type": "text/html; charset=utf-8"},
+            history=[
+                SimpleNamespace(
+                    status_code=302,
+                    url="https://auth.openai.com/api/accounts/email-otp/send",
+                    headers={"location": "https://auth.openai.com/error"},
+                )
+            ],
+        )
+        with self.assertRaisesRegex(RuntimeError, "email_otp_send_rejected"):
+            openai_auth.send_email_otp(_OtpSession(response))
+
+    def test_email_otp_send_accepts_explicit_json_success(self):
+        from core import openai_auth
+
+        response = _OtpResponse(
+            headers={"content-type": "application/json"},
+        )
+        self.assertIsNone(openai_auth.send_email_otp(_OtpSession(response)))
 
     def test_password_result_unknown_never_becomes_password_rejected(self):
         from core import protocol_v2_liveness as v2
