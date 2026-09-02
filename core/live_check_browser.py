@@ -161,7 +161,13 @@ fetch(endpoint, {
     return parsed
 
 
-def run_probe(*, token: str, proxy: str | None = None) -> dict[str, Any]:
+def run_probe(
+    *,
+    token: str,
+    proxy: str | None = None,
+    context_recorder=None,
+    route_context: dict | None = None,
+) -> dict[str, Any]:
     """创建临时 Roxy 环境并执行一次旧 AT probe。"""
     checked_at = _now()
     if not normalize_token(token):
@@ -176,9 +182,17 @@ def run_probe(*, token: str, proxy: str | None = None) -> dict[str, Any]:
     client = RoxyBrowserClient()
     opened = None
     driver = None
+    probe_result = None
     try:
         try:
             opened = client.open_profile(proxy_url=proxy)
+            if context_recorder is not None:
+                context_recorder.open_roxy_profile(
+                    opened,
+                    route_attempt_no=1,
+                    proxy_url=proxy,
+                    proxy_context=route_context,
+                )
         except Exception as exc:
             return _failure(
                 f"Roxy Profile 创建/打开失败: {type(exc).__name__}: {str(exc)[:500]}",
@@ -216,7 +230,8 @@ def run_probe(*, token: str, proxy: str | None = None) -> dict[str, Any]:
                 checked_at=checked_at,
                 retryable=True,
             )
-        return _execute_probe(driver, token, proxy)
+        probe_result = _execute_probe(driver, token, proxy)
+        return probe_result
     except Exception as exc:
         logger.warning("[查活][Roxy] 旧 AT probe 失败: %s: %s", type(exc).__name__, str(exc)[:300])
         return _failure(
@@ -235,7 +250,16 @@ def run_probe(*, token: str, proxy: str | None = None) -> dict[str, Any]:
             try:
                 client.cleanup_profile(opened)
             except Exception:
-                logger.exception("[查活][Roxy] 临时环境清理失败：profile=%s", getattr(opened, "profile_id", "-"))
+                logger.exception("[查活][Roxy] 临时环境清理失败（profile 原值不写日志）")
+            if context_recorder is not None:
+                context_recorder.finish_roxy_profile(
+                    opened,
+                    status="success" if probe_result and probe_result.get("ok") else "failed",
+                    result_code=(
+                        "authenticated" if probe_result and probe_result.get("ok")
+                        else str((probe_result or {}).get("error_category") or "probe_failed")[:160]
+                    ),
+                )
 
 
 __all__ = ["available", "run_probe"]

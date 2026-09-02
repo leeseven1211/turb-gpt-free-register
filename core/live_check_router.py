@@ -68,6 +68,8 @@ def run_probe(
     proxy: str | None,
     max_attempts: int,
     browser_probe: Callable[..., dict[str, Any]] | None = None,
+    context_recorder=None,
+    route_context: dict | None = None,
 ) -> dict[str, Any]:
     """调用已经选定的普通查活 adapter。
 
@@ -76,11 +78,18 @@ def run_probe(
     """
     effective_driver = resolve_driver(driver)
     if effective_driver == CURRENT_PROTOCOL_DRIVER:
-        result = probe(token, proxy=proxy, max_attempts=max_attempts)
+        probe_kwargs = {"proxy": proxy, "max_attempts": max_attempts}
+        if context_recorder is not None:
+            probe_kwargs["context_recorder"] = context_recorder
+        result = probe(token, **probe_kwargs)
     elif effective_driver == BROWSER_ROXY_DRIVER:
         if browser_probe is None:
             raise LiveCheckDriverError("Roxy 浏览器普通查活 probe 尚未接入")
-        result = browser_probe(token=token, proxy=proxy)
+        browser_kwargs = {"token": token, "proxy": proxy}
+        if context_recorder is not None:
+            browser_kwargs["context_recorder"] = context_recorder
+            browser_kwargs["route_context"] = route_context
+        result = browser_probe(**browser_kwargs)
     else:
         raise LiveCheckDriverError(f"普通查活驱动未实现: {effective_driver}")
     if not isinstance(result, dict):

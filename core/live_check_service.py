@@ -159,11 +159,22 @@ def _report_protocol_v2_refresh(reporter: TaskReporter, result: dict) -> None:
         reporter.stage("token", "success", "最新 AT 已获取并保存")
 
 
-def _browser_live_check_probe(*, token: str, proxy: str | None) -> dict:
+def _browser_live_check_probe(
+    *,
+    token: str,
+    proxy: str | None,
+    context_recorder=None,
+    route_context: dict | None = None,
+) -> dict:
     """延迟加载 Roxy AT probe，避免 current 路径提前初始化浏览器依赖。"""
     from core.live_check_browser import run_probe
 
-    return run_probe(token=token, proxy=proxy)
+    return run_probe(
+        token=token,
+        proxy=proxy,
+        context_recorder=context_recorder,
+        route_context=route_context,
+    )
 
 
 def _run_live_check(
@@ -264,7 +275,7 @@ def _run_live_check(
         account = db.get_account(account_id) or {}
         protocol_identity = _resolve_protocol_identity(account_id, selected_refresh_driver)
         auth_context_recorder = None
-        if selected_refresh_driver == "protocol_v2":
+        if selected_refresh_driver == "protocol_v2" or selected_live_check_driver in {"protocol_current", "browser_roxy"}:
             from config import account as account_config
 
             if bool(getattr(account_config, "ACCOUNT_AUTH_RAW_CONTEXT_ENABLED", False)):
@@ -274,6 +285,8 @@ def _run_live_check(
                     task_id,
                     account_id=account_id,
                     protocol_identity=protocol_identity,
+                    action="token_refresh" if selected_refresh_driver == "protocol_v2" else "live_check",
+                    driver=selected_refresh_driver or selected_live_check_driver or "unknown",
                 )
         saved_access_token = str(account.get("access_token") or "").strip()
         saved_claims = token_claims(saved_access_token) if saved_access_token else {}
@@ -302,6 +315,8 @@ def _run_live_check(
                     proxy=selected_proxy,
                     max_attempts=1,
                     browser_probe=_browser_live_check_probe,
+                    context_recorder=auth_context_recorder,
+                    route_context=route,
                 )
                 try:
                     last_probe_http_status = int(probe.get("http_status"))

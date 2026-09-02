@@ -2,6 +2,7 @@
 import dataclasses
 import threading
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from core import record_store as rs
@@ -280,6 +281,50 @@ class AccountAuthRunContextStorageTests(PostgresTestCase):
         with patch.object(account_config, "ACCOUNT_AUTH_RAW_CONTEXT_ENABLED", False):
             self.assertIsNone(account_auth.get_auth_run_context(123))
             self.assertFalse(account_auth.finish_auth_run_context(123, status="failed"))
+
+    def test_roxy_context_recorder_keeps_profile_and_route_context_private(self):
+        from config import account as account_config
+        from core.storage import account_auth
+
+        opened = SimpleNamespace(
+            profile_id="profile-1",
+            debugger_address="127.0.0.1:9222",
+            webdriver_url="http://127.0.0.1:9515/session/private",
+            ws_endpoint="ws://127.0.0.1/devtools/private",
+            raw={"browserInstanceId": "browser-instance-1", "secret": "drop-me"},
+        )
+        with patch.object(account_config, "ACCOUNT_AUTH_RAW_CONTEXT_ENABLED", True):
+            recorder = account_auth.AuthContextRecorder(
+                self.run["id"],
+                account_id=self.account_id,
+                action="live_check",
+                driver="browser_roxy",
+            )
+            context_id = recorder.open_roxy_profile(
+                opened,
+                route_attempt_no=1,
+                proxy_url="http://user:proxy-password@example.test:8080",
+                proxy_context={
+                    "proxy_mode": "1024",
+                    "proxy_provider": "1024proxy",
+                    "proxy_region": "JP",
+                    "proxy_used": "http://***@example.test:8080",
+                    "proxy_password": "drop-me",
+                },
+            )
+            row = account_auth.get_auth_run_context(context_id)
+            recorder.finish_roxy_profile(opened, status="success", result_code="authenticated")
+            finished_row = account_auth.get_auth_run_context(context_id)
+
+        self.assertEqual("browser_roxy", row["driver"])
+        self.assertEqual("live_check", row["action"])
+        self.assertEqual("profile-1", row["roxy_profile_id"])
+        self.assertEqual("browser-instance-1", row["session_identifiers"]["roxy_browser_instance_id"])
+        self.assertNotIn("secret", row["session_identifiers"])
+        self.assertEqual("1024", row["proxy_context"]["mode"])
+        self.assertEqual("JP", row["proxy_context"]["region"])
+        self.assertNotIn("proxy_password", row["proxy_context"])
+        self.assertEqual("success", finished_row["status"])
 
 if __name__ == "__main__":
     unittest.main()

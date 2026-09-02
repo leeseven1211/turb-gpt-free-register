@@ -112,6 +112,39 @@ class LiveCheckBrowserProbeTests(unittest.TestCase):
         driver.quit.assert_called_once_with()
         client.cleanup_profile.assert_called_once_with(opened)
 
+    def test_optional_context_recorder_captures_and_closes_roxy_probe(self):
+        opened = SimpleNamespace(profile_id="profile-1")
+        driver = MagicMock()
+        client = MagicMock()
+        client.open_profile.return_value = opened
+        expected = {"ok": True, "status": "live", "live_check_driver": "browser_roxy"}
+        recorder = MagicMock()
+
+        with (
+            patch.object(live_check_browser, "available", return_value=True),
+            patch.object(live_check_browser, "RoxyBrowserClient", return_value=client),
+            patch.object(live_check_browser, "build_driver", return_value=driver),
+            patch.object(live_check_browser, "safe_get"),
+            patch.object(live_check_browser, "_execute_probe", return_value=expected),
+        ):
+            result = live_check_browser.run_probe(
+                token="test-at",
+                proxy="http://proxy.example:8080",
+                context_recorder=recorder,
+                route_context={"proxy_mode": "1024", "proxy_region": "JP"},
+            )
+
+        self.assertEqual(expected, result)
+        recorder.open_roxy_profile.assert_called_once_with(
+            opened,
+            route_attempt_no=1,
+            proxy_url="http://proxy.example:8080",
+            proxy_context={"proxy_mode": "1024", "proxy_region": "JP"},
+        )
+        recorder.finish_roxy_profile.assert_called_once_with(
+            opened, status="success", result_code="authenticated",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

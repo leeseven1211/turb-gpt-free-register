@@ -769,26 +769,52 @@ class AuthContextRecorder:
     operation_run_id: int
     account_id: int | None = None
     protocol_identity: Any = None
+    action: str = "token_refresh"
+    driver: str = "protocol_v2"
     _last_context_id: int | None = None
     _next_session_no: int = 1
     _contexts_by_session: dict[int, int] | None = None
+    _contexts_by_roxy_profile: dict[int, int] | None = None
 
     def __post_init__(self) -> None:
         if self._contexts_by_session is None:
             self._contexts_by_session = {}
+        if self._contexts_by_roxy_profile is None:
+            self._contexts_by_roxy_profile = {}
 
     @classmethod
-    def from_account_action_task(cls, task_id: int | None, *, account_id: int, protocol_identity=None):
+    def from_account_action_task(
+        cls,
+        task_id: int | None,
+        *,
+        account_id: int,
+        protocol_identity=None,
+        action: str = "token_refresh",
+        driver: str = "protocol_v2",
+    ):
         if not _raw_context_enabled():
             return None
         try:
             run_id = operation_run_id_for_account_action_task(task_id)
-            return cls(run_id, account_id=account_id, protocol_identity=protocol_identity) if run_id else None
+            return cls(
+                run_id,
+                account_id=account_id,
+                protocol_identity=protocol_identity,
+                action=str(action or "unknown")[:80],
+                driver=str(driver or "unknown")[:80],
+            ) if run_id else None
         except Exception as exc:
             logger.warning("[认证上下文] 无法关联 operation run，跳过原始上下文记录：%s", type(exc).__name__)
             return None
 
-    def open_protocol_session(self, session, *, route_attempt_no: int, parent_context_id: int | None = None) -> int | None:
+    def open_protocol_session(
+        self,
+        session,
+        *,
+        route_attempt_no: int,
+        parent_context_id: int | None = None,
+        auth_method: str | None = None,
+    ) -> int | None:
         identity = self.protocol_identity
         identity_id = getattr(identity, "identity_id", None)
         profile_ref = getattr(identity, "profile_ref", None)
@@ -801,9 +827,9 @@ class AuthContextRecorder:
                 operation_run_id=self.operation_run_id,
                 parent_context_id=parent_context_id or self._last_context_id,
                 account_id=self.account_id,
-                action="token_refresh",
-                driver="protocol_v2",
-                auth_method="password",
+                action=self.action,
+                driver=self.driver,
+                auth_method=auth_method or "password",
                 route_attempt_no=route_attempt_no,
                 session_no=self._next_session_no,
                 protocol_identity_id=identity_id,
@@ -822,6 +848,77 @@ class AuthContextRecorder:
             self._contexts_by_session[id(session)] = context_id
         return context_id
 
+    def open_roxy_profile(
+        self,
+        opened,
+        *,
+        route_attempt_no: int,
+        proxy_url: str | None = None,
+        proxy_context: dict | None = None,
+    ) -> int | None:
+        """Record a Roxy profile without copying its full response payload."""
+        if opened is None:
+            return None
+        raw = getattr(opened, "raw", {}) or {}
+        if not isinstance(raw, dict):
+            raw = {}
+
+        def _raw_value(*keys):
+            for key in keys:
+                value = raw.get(key)
+                if value is not None and value != "":
+                    return value
+                nested = raw.get("data")
+                if isinstance(nested, dict):
+                    value = nested.get(key)
+                    if value is not None and value != "":
+                        return value
+            return None
+
+        identifiers = {
+            "roxy_debugger_address": getattr(opened, "debugger_address", None),
+            "roxy_webdriver_url": getattr(opened, "webdriver_url", None),
+            "roxy_ws_endpoint": getattr(opened, "ws_endpoint", None),
+            "roxy_browser_instance_id": _raw_value(
+                "browser_instance_id", "browserInstanceId", "instance_id", "instanceId",
+            ),
+        }
+        route = proxy_context if isinstance(proxy_context, dict) else {}
+        route_context = {
+            "provider": route.get("proxy_provider") or route.get("provider"),
+            "mode": route.get("proxy_mode") or route.get("mode"),
+            "region": route.get("proxy_region") or route.get("region"),
+            "endpoint": route.get("proxy_endpoint") or route.get("endpoint") or route.get("proxy_used"),
+            "exit_ip": route.get("proxy_exit_ip") or route.get("exit_ip"),
+            "acquired_at": route.get("proxy_acquired_at") or route.get("acquired_at"),
+            "expires_at": route.get("proxy_expires_at") or route.get("expires_at"),
+            "recent_until": route.get("proxy_recent_until") or route.get("recent_until"),
+            "rotation_no": route.get("proxy_rotation_no") or route.get("rotation_no"),
+        }
+        try:
+            context_id = create_auth_run_context(
+                operation_run_id=self.operation_run_id,
+                parent_context_id=self._last_context_id,
+                account_id=self.account_id,
+                action=self.action,
+                driver=self.driver,
+                auth_method="access_token",
+                route_attempt_no=route_attempt_no,
+                session_no=self._next_session_no,
+                session_identifiers=identifiers,
+                proxy_url=proxy_url,
+                proxy_context=route_context,
+                roxy_profile_id=getattr(opened, "profile_id", None),
+            )
+        except Exception as exc:
+            logger.warning("[认证上下文] Roxy 环境记录失败，继续查活：%s", type(exc).__name__)
+            return None
+        self._next_session_no += 1
+        if context_id:
+            self._last_context_id = context_id
+            self._contexts_by_roxy_profile[id(opened)] = context_id
+        return context_id
+
     def finish_session(self, session, *, status: str, result_code: str | None = None) -> None:
         context_id = (self._contexts_by_session or {}).pop(id(session), None)
         if not context_id:
@@ -830,6 +927,15 @@ class AuthContextRecorder:
             finish_auth_run_context(context_id, status=status, result_code=result_code)
         except Exception as exc:
             logger.warning("[认证上下文] 会话收口失败：%s", type(exc).__name__)
+
+    def finish_roxy_profile(self, opened, *, status: str, result_code: str | None = None) -> None:
+        context_id = (self._contexts_by_roxy_profile or {}).pop(id(opened), None)
+        if not context_id:
+            return
+        try:
+            finish_auth_run_context(context_id, status=status, result_code=result_code)
+        except Exception as exc:
+            logger.warning("[认证上下文] Roxy 环境收口失败：%s", type(exc).__name__)
 
 
 __all__ = [

@@ -317,6 +317,7 @@ def check_account_plan(
     timeout: float | None = None,
     max_attempts: int | None = None,
     retry_delay: float | None = None,
+    context_recorder=None,
 ) -> dict:
     token = normalize_token(token)
     if not token:
@@ -360,10 +361,17 @@ def check_account_plan(
     for attempt in range(1, attempts + 1):
         env = None
         resp = None
+        probe_result = None
         owns_session = session is None
         try:
             # 套餐查询只需要稳定的请求头，不需要额外访问 IP 地理信息接口。
             env = session or BrowserSession(proxy=route["proxy"], detect_exit_geo=False)
+            if context_recorder is not None:
+                context_recorder.open_protocol_session(
+                    env,
+                    route_attempt_no=attempt,
+                    auth_method="access_token",
+                )
             request_timezone = timezone_offset_min
             if str(request_timezone or "").strip() == "-":
                 request_timezone = env.js_timezone_offset_min()
@@ -388,6 +396,7 @@ def check_account_plan(
                     "token_expired": True if is_auth_expired else claims.get("token_expired"),
                     "needs_live_check": True if is_auth_expired else False,
                 }
+                probe_result = last_result
             else:
                 try:
                     data: Any = resp.json()
@@ -402,6 +411,7 @@ def check_account_plan(
                         "response_preview": response_text[:500],
                         "retryable": True,
                     }
+                    probe_result = last_result
                 else:
                     parsed = parse_accounts_check(data, token=token)
                     parsed["http_status"] = http_status
@@ -410,6 +420,7 @@ def check_account_plan(
                     parsed["request_timeout"] = timeout_seconds
                     parsed["retryable"] = False
                     parsed.update(route_meta)
+                    probe_result = parsed
                     return parsed
         except Exception as exc:
             logger.debug("套餐查询失败: %s: %s", type(exc).__name__, exc, exc_info=True)
@@ -420,7 +431,17 @@ def check_account_plan(
                 "error": f"{type(exc).__name__}: {exc}",
                 "retryable": True,
             }
+            probe_result = last_result
         finally:
+            if context_recorder is not None and env is not None:
+                context_recorder.finish_session(
+                    env,
+                    status="success" if probe_result and probe_result.get("ok") else "failed",
+                    result_code=(
+                        "authenticated" if probe_result and probe_result.get("ok")
+                        else str((probe_result or {}).get("error") or "probe_failed")[:160]
+                    ),
+                )
             if env is not None and owns_session:
                 try:
                     env.session.close()
