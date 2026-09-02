@@ -587,6 +587,23 @@ class AccountTaskApiTests(PostgresTestCase):
         enqueue.assert_called_once()
         self.assertEqual("browser_roxy", enqueue.call_args.kwargs["driver"])
 
+    def test_live_check_bulk_rejects_invalid_driver_before_loading_accounts(self):
+        app = create_app(auth_code="test-auth")
+        client = app.test_client()
+        client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
+        with (
+            patch("core.feature_availability.require_feature", return_value=(True, "")),
+            patch.object(webui_app.db, "get_account") as get_account,
+        ):
+            response = client.post(
+                "/api/accounts/check-live-bulk",
+                json={"account_ids": [7], "driver": "protocol_v2"},
+            )
+
+        self.assertEqual(400, response.status_code)
+        self.assertIn("尚未开放", response.get_json()["error"])
+        get_account.assert_not_called()
+
     def test_list_api_returns_task_instances(self):
         app = create_app(auth_code="test-auth")
         client = app.test_client()
