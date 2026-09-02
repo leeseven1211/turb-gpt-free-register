@@ -38,6 +38,10 @@ ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK = False
 # Protocol v2 的设备画像默认继续沿用现有“每个 BrowserSession 随机画像”。只有
 # 明确选择 account_stable，且实际进入 Protocol v2 刷新时，才按账号懒创建私有身份。
 ACCOUNT_AUTH_PROFILE_MODE = "current"
+# 原始认证上下文（设备 ID、session 标识、完整代理）默认不保存；只有本地明确开启
+# 才创建受限 run context。0 表示关闭自动清理，不表示关闭手工逐行清理。
+ACCOUNT_AUTH_RAW_CONTEXT_ENABLED = False
+ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS = 30
 
 
 apply_env_overrides(globals(), {
@@ -56,6 +60,8 @@ apply_env_overrides(globals(), {
     "ACCOUNT_AUTH_V2_ENABLED": "bool",
     "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK": "bool",
     "ACCOUNT_AUTH_PROFILE_MODE": "str",
+    "ACCOUNT_AUTH_RAW_CONTEXT_ENABLED": "bool",
+    "ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS": "int",
 })
 
 
@@ -73,6 +79,8 @@ def completion_settings() -> dict[str, object]:
         "auth_v2_enabled": bool(ACCOUNT_AUTH_V2_ENABLED),
         "auth_password_email_fallback": bool(ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK),
         "auth_profile_mode": str(ACCOUNT_AUTH_PROFILE_MODE or "current").strip().lower() or "current",
+        "auth_raw_context_enabled": bool(ACCOUNT_AUTH_RAW_CONTEXT_ENABLED),
+        "auth_raw_context_retention_days": int(ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS or 0),
         "twofa_driver": str(ACCOUNT_2FA_DRIVER or "protocol").strip().lower() or "protocol",
         "codex_driver": str(ACCOUNT_CODEX_DRIVER or "same_as_registration").strip().lower() or "same_as_registration",
     }

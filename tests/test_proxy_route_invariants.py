@@ -175,6 +175,37 @@ class ProxyRouteInvariantTests(unittest.TestCase):
         )
         first_session.session.close.assert_called_once()
 
+    def test_protocol_preflight_records_rotation_without_reusing_session_ids(self):
+        from core import account_liveness
+
+        first_session = MagicMock(proxy="http://first.example:8080", device_id="first-device")
+        second_session = MagicMock(proxy="http://second.example:8080", device_id="second-device")
+        recorder = MagicMock()
+        supplier = MagicMock(side_effect=["http://first.example:8080", "http://second.example:8080"])
+        with (
+            patch("core.account_liveness.BrowserSession", side_effect=[first_session, second_session]),
+            patch("core.account_liveness._warm_protocol_login_context"),
+            patch("core.account_liveness.get_csrf_token", side_effect=[RuntimeError("HTTP 403"), "csrf"]),
+            patch("core.account_liveness.signin_openai", return_value="https://auth.example/authorize"),
+            patch("core.account_liveness.human_delay"),
+            patch("core.account_liveness.time.sleep"),
+        ):
+            returned, _ = account_liveness._network_preflight_with_retry(
+                "account@example.com",
+                None,
+                max_attempts=2,
+                proxy_supplier=supplier,
+                context_recorder=recorder,
+            )
+
+        self.assertIs(second_session, returned)
+        self.assertEqual(2, recorder.open_protocol_session.call_count)
+        recorder.finish_session.assert_called_once_with(
+            first_session,
+            status="rotated",
+            result_code="network_preflight_retry",
+        )
+
     def test_live_check_without_saved_token_does_not_login_or_acquire_route(self):
         from core import live_check_service
 

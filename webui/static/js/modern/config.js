@@ -19,6 +19,8 @@ const CONFIG_LIFECYCLE_SECTION_KEYS_V2 = {
     'ACCOUNT_AUTH_V2_ENABLED',
     'ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK',
     'ACCOUNT_AUTH_PROFILE_MODE',
+    'ACCOUNT_AUTH_RAW_CONTEXT_ENABLED',
+    'ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS',
     'TWOFA_DRIVER',
     'ACCOUNT_2FA_DRIVER',
     'CODEX_OAUTH_DRIVER',
@@ -567,6 +569,12 @@ function renderLifecycleExecutionSection(fields) {
     cards.push(renderLifecycleDriverSelect(
       'ACCOUNT_AUTH_PROFILE_MODE', 'Protocol 设备画像', '默认保持现状，每次会话随机画像；account_stable 只对明确开启的 Protocol v2 刷新懒创建账号级画像，不影响注册 device_id、普通查活或旧刷新。', authProfileModeChoices()
     ));
+  }
+  if (has('ACCOUNT_AUTH_RAW_CONTEXT_ENABLED')) {
+    cards.push(renderFeatureSwitchField(has('ACCOUNT_AUTH_RAW_CONTEXT_ENABLED'), { withIcon: false }));
+  }
+  if (has('ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS')) {
+    cards.push(renderConfigPlainFieldV2(has('ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS')));
   }
   if (has('TWOFA_DRIVER')) {
     cards.push(renderLifecycleDriverSelect(

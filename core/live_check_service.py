@@ -263,6 +263,18 @@ def _run_live_check(
         # - 刷新 AT（force_refresh=True）才跳过旧 AT，执行邮箱 OTP 重登录。
         account = db.get_account(account_id) or {}
         protocol_identity = _resolve_protocol_identity(account_id, selected_refresh_driver)
+        auth_context_recorder = None
+        if selected_refresh_driver == "protocol_v2":
+            from config import account as account_config
+
+            if bool(getattr(account_config, "ACCOUNT_AUTH_RAW_CONTEXT_ENABLED", False)):
+                from core.storage.account_auth import AuthContextRecorder
+
+                auth_context_recorder = AuthContextRecorder.from_account_action_task(
+                    task_id,
+                    account_id=account_id,
+                    protocol_identity=protocol_identity,
+                )
         saved_access_token = str(account.get("access_token") or "").strip()
         saved_claims = token_claims(saved_access_token) if saved_access_token else {}
         result = None
@@ -417,6 +429,7 @@ def _run_live_check(
                     proxy=None,
                     proxy_supplier=acquire_retry_route,
                     identity=protocol_identity,
+                    context_recorder=auth_context_recorder,
                 )
             else:
                 result = check_account_liveness(
@@ -442,6 +455,7 @@ def _run_live_check(
                     email,
                     proxy=selected_proxy,
                     identity=protocol_identity,
+                    context_recorder=auth_context_recorder,
                 )
             else:
                 result = check_account_liveness(email, proxy=selected_proxy, clear_log=False)

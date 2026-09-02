@@ -21,9 +21,9 @@
 - 真实错误密码测试：同一测试账号返回 `HTTP 401`，响应结构化错误码为 `invalid_username_or_password`；已分类为 `password_rejected` / `auth`，不会进入 Roxy、不会自动重试密码、默认不会发邮箱 OTP。
 - 真实邮箱兜底测试：仅进程内打开邮箱兜底，使用新 session 发起一次验证码请求并等待 45 秒；转发邮箱 IMAP 登录和 `INBOX` 打开正常，但未收到该别名的新 OpenAI OTP，最终为 `password_rejected_email_fallback_failed` / `email`。因此邮箱兜底仍未判定成功，也没有继续重发。
 - 本轮顺手为 `forward_imap` 增加 `ICLOUD_HME_REQUEST_TIMEOUT` socket 超时，避免收件链路卡死；对应单测已补齐。
-- 上一轮隔离 schema 全量回归为 `673 passed, 24 subtests passed`；本轮加入稳定 identity 后新的隔离 schema 全量回归为 `682 passed, 24 subtests passed`。另修复一个独立的 `registration_debug` 终端上下文覆盖问题，该修复只在数据库缺少新 evidence 时保留会话内已有 evidence，不改变注册行为。
+- 上一轮隔离 schema 全量回归为 `673 passed, 24 subtests passed`；加入稳定 identity 后为 `682 passed, 24 subtests passed`；加入受限 raw context 存储边界后新的隔离 schema 全量回归为 `686 passed, 24 subtests passed`。另修复一个独立的 `registration_debug` 终端上下文覆盖问题，该修复只在数据库缺少新 evidence 时保留会话内已有 evidence，不改变注册行为。
 - 阶段 8 第一小步：新增私有 `account_protocol_identities` 表、账号行锁保护的幂等创建、版本化 HMAC 派生和 `ACCOUNT_AUTH_PROFILE_MODE` 配置；只有 `account_stable + protocol_v2` 刷新才会懒创建并把同一身份传给每个 Protocol 会话。`current` 默认完全不建表行、不改变现有随机画像；稳定画像不保存 geo/locale/timezone、session/trace、Sentinel 或 Roxy 标识。
-- 稳定画像单测验证同一 key 的 device/profile 稳定、不同会话的 session/sentinel ID 仍变化、并发 ensure 只生成一行；相关隔离数据库和服务边界测试已通过。原始设备 ID、session/trace、代理凭据的 run context 仍按后续阶段设计，尚未写入。
+- 稳定画像单测验证同一 key 的 device/profile 稳定、不同会话的 session/sentinel ID 仍变化、并发 ensure 只生成一行；受限 run context 已完成白名单、保留期、编号锁和收口测试，但尚未接入 Roxy 或普通查活。
 
 相关背景：
 
@@ -77,7 +77,7 @@
 | 5 | 新协议密码登录 | 浏览器仍默认 | 已完成“刷新 AT 专用”子集；真实错误密码边界已验证；通用密码登录仍待执行 |
 | 6 | TOTP 与邮箱 OTP challenge | 浏览器仍默认 | 密码+TOTP 真实成功；邮箱兜底真实收件未达，暂不放行 |
 | 7 | 新协议 2FA 设置 | 浏览器仍默认 | 待执行 |
-| 8 | 稳定设备画像与受限原始上下文 | 默认保持 current；原始上下文未实施 | 部分完成：稳定 Protocol identity 已接入显式 v2 刷新，run context/原始值待后续 |
+| 8 | 稳定设备画像与受限原始上下文 | 默认保持 current；raw context 默认关闭 | 部分完成：稳定 identity 和 Protocol v2 session context 已接入；Roxy/普通查活 context、清理调度和访问审计待后续 |
 | 9 | 长期双实现维护 | 不删除旧实现 | 待执行 |
 
 ## 3. 阶段 0：冻结基线与隔离环境
@@ -365,8 +365,9 @@ ACCOUNT_2FA_SETUP_DRIVER=browser_current|protocol_current|protocol_v2
 
 - [x] 使用新增 nullable 表/字段，不覆盖注册 device ID。
 - [x] identity 创建使用账号行锁 + 数据库唯一约束，避免并发生成两套画像。
-- [ ] 原始上下文总开关默认关闭。
+- [x] 原始上下文总开关默认关闭。
 - [ ] 明确访问控制、加密/密钥来源、保留期限和清理机制后才能开启原始值保存。
+- [x] 设备 ID、session ID 和完整代理只通过显式白名单进入私有表，未知字段默认丢弃；不进入任务事件/普通账号 API/导出。
 - [ ] 日志 redaction 测试覆盖设备 ID、session ID、Cookie、Token 和代理密码。
 - [ ] 删除上下文诊断数据不影响账号、Token、密码、TOTP 和任务历史。
 
@@ -406,5 +407,6 @@ ACCOUNT_2FA_SETUP_DRIVER=browser_current|protocol_current|protocol_v2
 3. [ ] 如需验证密码错误后的邮箱兜底，单独开启 `ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK=True`，使用可牺牲测试账号，逐项确认发送、取码、MFA 和任务收口。
 4. [ ] 阶段 3 只有在发现并验证独立的 GitHub 普通查活协议接口后才继续；当前上游没有该独立实现，不将认证链冒充查活。
 5. [x] 稳定设备画像第一小步已完成：默认 `current` 不生效，显式 `account_stable + protocol_v2` 才懒创建并复用设备层；注册 `device_id`、普通查活、legacy 刷新和 Roxy fallback 未改。
-6. [ ] 继续实施受限 run context 前，先完成 operation run 关联、原始标识/代理凭据白名单、访问边界、保留清理和 redaction 测试；未完成前不保存这些原始值。
-7. [ ] 通用密码登录、浏览器 fallback 逐项按门禁推进，不与本轮 v2 刷新适配混合放量。
+6. [x] 受限 run context 的 operation run 关联、原始标识/代理凭据白名单、默认关闭、保留字段和收口已完成；当前只接 Protocol v2 刷新，Roxy/普通查活仍不写原始值。
+7. [ ] 补齐定时清理调度、访问审计、日志 redaction fixture，再考虑开放 raw context 到更多驱动。
+8. [ ] 通用密码登录、浏览器 fallback 逐项按门禁推进，不与本轮 v2 刷新适配混合放量。

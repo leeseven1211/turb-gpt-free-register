@@ -139,6 +139,8 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             "ACCOUNT_AUTH_V2_ENABLED",
             "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK",
             "ACCOUNT_AUTH_PROFILE_MODE",
+            "ACCOUNT_AUTH_RAW_CONTEXT_ENABLED",
+            "ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS",
         }
         self.assertTrue(auth_keys.issubset(fields))
         self.assertTrue(all(fields[key]["group"] == "账号补全" for key in auth_keys))
@@ -146,6 +148,8 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         self.assertFalse(account_config.ACCOUNT_AUTH_V2_ENABLED)
         self.assertFalse(account_config.ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK)
         self.assertEqual("current", account_config.ACCOUNT_AUTH_PROFILE_MODE)
+        self.assertFalse(account_config.ACCOUNT_AUTH_RAW_CONTEXT_ENABLED)
+        self.assertEqual(30, account_config.ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS)
 
         old_loaded = env_loader._LOADED
         env_loader._LOADED = True
@@ -157,6 +161,8 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
                 "ACCOUNT_AUTH_V2_ENABLED": "True",
                 "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK": "True",
                 "ACCOUNT_AUTH_PROFILE_MODE": "account_stable",
+                "ACCOUNT_AUTH_RAW_CONTEXT_ENABLED": "True",
+                "ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS": "14",
             }, clear=False):
                 reloaded = importlib.reload(account_config)
                 self.assertFalse(reloaded.ACCOUNT_COMPLETION_CODEX_ENABLED)
@@ -165,6 +171,8 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
                 self.assertTrue(reloaded.ACCOUNT_AUTH_V2_ENABLED)
                 self.assertTrue(reloaded.ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK)
                 self.assertEqual("account_stable", reloaded.ACCOUNT_AUTH_PROFILE_MODE)
+                self.assertTrue(reloaded.ACCOUNT_AUTH_RAW_CONTEXT_ENABLED)
+                self.assertEqual(14, reloaded.ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS)
         finally:
             env_loader._LOADED = old_loaded
             importlib.reload(account_config)

@@ -2,6 +2,7 @@
 import dataclasses
 import threading
 import unittest
+from unittest.mock import patch
 
 from core import record_store as rs
 from core.record_store import ACCOUNTS
@@ -119,6 +120,105 @@ class AccountAuthIdentityStorageTests(PostgresTestCase):
             cur.execute(f'SELECT count(*) AS n FROM "{self.schema}"."account_protocol_identities"')
             return int(cur.fetchone()["n"])
 
+    def test_raw_context_is_disabled_without_creating_a_context_row(self):
+        from core.storage import account_auth
+
+        with patch("config.account.ACCOUNT_AUTH_RAW_CONTEXT_ENABLED", False):
+            self.assertIsNone(
+                account_auth.create_auth_run_context(
+                    operation_run_id=999,
+                    account_id=self.account_id,
+                    action="token_refresh",
+                    driver="protocol_v2",
+                )
+            )
+        with rs._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT to_regclass(%s) AS name",
+                (f'"{self.schema}"."account_auth_run_contexts"',),
+            )
+            self.assertIsNone(cur.fetchone()["name"])
+
+
+class AccountAuthRunContextStorageTests(PostgresTestCase):
+    def setUp(self):
+        from core import record_store
+        from core.storage import account_auth, operation
+
+        record_store.reset_ready()
+        account_auth.reset_ready()
+        operation.reset_ready()
+        record_store.init()
+        self.account_id = rs.insert_row(ACCOUNTS, {"email": "context@example.test"})
+        self.run = operation.create_runtime_task(
+            task_type="token_refresh",
+            account_id=self.account_id,
+            email="context@example.test",
+            trigger="test",
+        )["run"]
+
+    def test_allowlists_raw_session_and_proxy_context_without_public_projection(self):
+        from config import account as account_config
+        from core.storage import account_auth
+
+        with patch.object(account_config, "ACCOUNT_AUTH_RAW_CONTEXT_ENABLED", True):
+            context_id = account_auth.create_auth_run_context(
+                operation_run_id=self.run["id"],
+                context_no=1,
+                account_id=self.account_id,
+                action="token_refresh",
+                driver="protocol_v2",
+                auth_method="password",
+                route_attempt_no=1,
+                session_no=1,
+                device_id="device-raw",
+                session_identifiers={
+                    "oai_session_id": "session-raw",
+                    "react_container_key": "react-raw",
+                    "password": "must-drop",
+                },
+                proxy_url="socks5h://user:secret@proxy.example:1080",
+                proxy_context={
+                    "provider": "1024proxy",
+                    "region": "JP",
+                    "exit_ip": "198.51.100.10",
+                    "proxy_password": "must-drop",
+                },
+            )
+            row = account_auth.get_auth_run_context(context_id)
+
+        self.assertIsNotNone(context_id)
+        self.assertEqual("device-raw", row["device_id"])
+        self.assertEqual({"oai_session_id": "session-raw", "react_container_key": "react-raw"}, row["session_identifiers"])
+        self.assertEqual({"provider": "1024proxy", "region": "JP", "exit_ip": "198.51.100.10"}, row["proxy_context"])
+        self.assertEqual("socks5h://user:secret@proxy.example:1080", row["proxy_url"])
+        self.assertNotIn("password", row["session_identifiers"])
+        self.assertNotIn("proxy_password", row["proxy_context"])
+        self.assertNotIn("account_auth_run_contexts", rs.get_row(ACCOUNTS, self.account_id))
+
+    def test_context_no_is_allocated_under_operation_run_lock_and_finish_is_idempotent(self):
+        from config import account as account_config
+        from core.storage import account_auth
+
+        with patch.object(account_config, "ACCOUNT_AUTH_RAW_CONTEXT_ENABLED", True):
+            first = account_auth.create_auth_run_context(
+                operation_run_id=self.run["id"], account_id=self.account_id,
+                action="token_refresh", driver="protocol_v2",
+            )
+            second = account_auth.create_auth_run_context(
+                operation_run_id=self.run["id"], account_id=self.account_id,
+                action="token_refresh", driver="protocol_v2", session_no=2,
+            )
+            self.assertTrue(account_auth.finish_auth_run_context(first, status="rotated", result_code="retry"))
+            self.assertTrue(account_auth.finish_auth_run_context(first, status="rotated", result_code="retry"))
+
+        self.assertNotEqual(first, second)
+        first_row = account_auth.get_auth_run_context(first)
+        second_row = account_auth.get_auth_run_context(second)
+        self.assertEqual(1, first_row["context_no"])
+        self.assertEqual(2, second_row["context_no"])
+        self.assertEqual("rotated", first_row["status"])
+        self.assertEqual("retry", first_row["result_code"])
 
 if __name__ == "__main__":
     unittest.main()

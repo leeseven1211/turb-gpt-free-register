@@ -390,25 +390,37 @@ def _complete_email_otp(session, email: str, after_ts: float, *, auth_method: st
         ) from exc
 
 
-def _start_email_session(email: str, proxy: str | None, *, identity=None):
+def _start_email_session(email: str, proxy: str | None, *, identity=None, context_recorder=None):
     """Start one fresh auth session for a controlled email fallback."""
-    session, authorize_url = _network_preflight_with_retry(
-        email,
-        proxy,
-        max_attempts=1,
-        identity=identity,
-    )
-    after_ts = time.time()
-    final_url = follow_authorize(session, authorize_url)
-    dead_code = detect_account_unusable_text(final_url)
-    if dead_code:
-        raise ProtocolV2AuthError("account_deactivated", category="account", roxy_fallback_allowed=False)
-    if "email-verification" not in str(final_url).lower():
-        # The password page may remain the visible route after rejection.  Ask
-        # for the one-time code explicitly instead of blindly clicking a page.
+    session = None
+    try:
+        session, authorize_url = _network_preflight_with_retry(
+            email,
+            proxy,
+            max_attempts=1,
+            identity=identity,
+            context_recorder=context_recorder,
+        )
         after_ts = time.time()
-        send_email_otp(session, referer=str(final_url or _PASSWORD_PATH))
-    return session, after_ts
+        final_url = follow_authorize(session, authorize_url)
+        dead_code = detect_account_unusable_text(final_url)
+        if dead_code:
+            raise ProtocolV2AuthError("account_deactivated", category="account", roxy_fallback_allowed=False)
+        if "email-verification" not in str(final_url).lower():
+            # The password page may remain the visible route after rejection.  Ask
+            # for the one-time code explicitly instead of blindly clicking a page.
+            after_ts = time.time()
+            send_email_otp(session, referer=str(final_url or _PASSWORD_PATH))
+        return session, after_ts
+    except Exception:
+        if context_recorder is not None and session is not None:
+            context_recorder.finish_session(session, status="failed", result_code="email_session_start_failed")
+        try:
+            if session is not None:
+                session.session.close()
+        except Exception:
+            pass
+        raise
 
 
 def _refresh_with_password(
@@ -417,6 +429,7 @@ def _refresh_with_password(
     *,
     proxy_supplier: Callable[[int], str | None] | None,
     identity=None,
+    context_recorder=None,
 ) -> dict:
     session = None
     fallback_session = None
@@ -443,6 +456,7 @@ def _refresh_with_password(
             proxy,
             proxy_supplier=proxy_supplier,
             identity=identity,
+            context_recorder=context_recorder,
         )
         otp_after_ts = time.time()
         final_url = follow_authorize(session, authorize_url)
@@ -460,10 +474,17 @@ def _refresh_with_password(
             # Do not reuse the rejected session.  The fallback starts a fresh
             # cookie jar, while keeping the original selected proxy.
             fallback_used = True
+            if context_recorder is not None:
+                context_recorder.finish_session(
+                    session,
+                    status="failed",
+                    result_code="password_rejected",
+                )
             fallback_session, fallback_after_ts = _start_email_session(
                 email,
                 getattr(session, "proxy", proxy),
                 identity=identity,
+                context_recorder=context_recorder,
             )
             try:
                 email_result, auth_method = _complete_email_otp(
@@ -548,6 +569,19 @@ def _refresh_with_password(
             fallback_used=fallback_used,
         )
     finally:
+        if context_recorder is not None:
+            if fallback_session is not None:
+                context_recorder.finish_session(
+                    fallback_session,
+                    status="success" if fallback_used and 'session_info' in locals() else "failed",
+                    result_code="password_fallback_email_otp" if fallback_used and 'session_info' in locals() else "password_fallback_failed",
+                )
+            if session is not None:
+                context_recorder.finish_session(
+                    session,
+                    status="success" if not fallback_used and 'session_info' in locals() else "failed",
+                    result_code="authenticated" if not fallback_used and 'session_info' in locals() else "protocol_v2_failed",
+                )
         for item in (fallback_session, session):
             try:
                 if item is not None:
@@ -598,6 +632,7 @@ def refresh_access_token(
     proxy: str | None = None,
     proxy_supplier: Callable[[int], str | None] | None = None,
     identity=None,
+    context_recorder=None,
 ) -> dict:
     """Run the opt-in Protocol v2 refresh flow and return a safe result."""
     checked_at = _now()
@@ -607,6 +642,7 @@ def refresh_access_token(
             proxy,
             proxy_supplier=proxy_supplier,
             identity=identity,
+            context_recorder=context_recorder,
         )
     except AccountUnusableError as exc:
         code = getattr(exc, "error_code", "") or "account_deactivated"
