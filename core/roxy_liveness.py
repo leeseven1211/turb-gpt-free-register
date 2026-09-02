@@ -222,4 +222,4 @@ def refresh_access_token(email: str, *, proxy: str | None = None) -> dict:
             try:
                 client.cleanup_profile(opened)
             except Exception:
-                logger.exception("[查活][Roxy] 清理临时环境失败：profile=%s", getattr(opened, "profile_id", "-"))
+                logger.exception("[查活][Roxy] 清理临时环境失败（profile 原值不写日志）")

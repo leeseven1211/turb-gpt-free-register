@@ -140,7 +140,7 @@ def follow_oauth_callback(session: BrowserSession, continue_url: str, referer: s
 
     logger.info(f"[OAuth回调] 跟随 continue_url 完成 OAuth 回调...")
     resp = session.get(continue_url, headers=headers, allow_redirects=True)
-    logger.info(f"[OAuth回调] 完成, 最终落点: {resp.url}")
+    logger.info("[OAuth回调] 完成（最终落点原值不写日志）")
     return resp.url
 
 
@@ -165,7 +165,7 @@ def fetch_session(session: BrowserSession) -> dict:
     data = resp.json()
 
     if not data.get("accessToken"):
-        logger.error(f"[Session] 响应中没有 accessToken: {data}")
+        logger.error("[Session] 响应中没有 accessToken（响应原值不写日志）")
         raise RuntimeError("未拿到 accessToken，登录态可能未建立")
 
     user = data.get("user") or {}
@@ -214,7 +214,7 @@ def _trigger_reauth(session: BrowserSession, email: str) -> str:
     resp.raise_for_status()
     auth_url = resp.json().get("url")
     if not auth_url:
-        raise RuntimeError(f"未拿到 reauth authorize URL: {resp.text}")
+        raise RuntimeError("未拿到 reauth authorize URL（原始响应未记录）")
     return auth_url
 
 
@@ -226,7 +226,7 @@ def _follow_reauth(session: BrowserSession, auth_url: str) -> None:
     headers = session.get_auth_navigate_headers(referer="https://chatgpt.com/")
     logger.info("[2FA] 跟随 authorize URL，触发 OTP 发送...")
     resp = session.get(auth_url, headers=headers, allow_redirects=True)
-    logger.info(f"[2FA] 落点 URL: {resp.url}")
+    logger.info("[2FA] 已到达邮箱验证页面（落点 URL 原值不写日志）")
 
 
 def _validate_reauth_otp(session: BrowserSession, code: str) -> str:
@@ -238,13 +238,13 @@ def _validate_reauth_otp(session: BrowserSession, code: str) -> str:
     headers = session.get_auth_headers(referer="https://auth.openai.com/email-verification")
     body = json.dumps({"code": code})
 
-    logger.info(f"[2FA] 提交重认证 OTP: {code}")
+    logger.info("[2FA] 提交重认证 OTP（验证码原值不写日志）")
     resp = session.post(url, headers=headers, data=body)
     resp.raise_for_status()
     data = resp.json()
     continue_url = data.get("continue_url")
     if not continue_url:
-        raise RuntimeError(f"OTP 验证响应缺少 continue_url: {data}")
+        raise RuntimeError("OTP 验证响应缺少 continue_url（原始响应未记录）")
     return continue_url
 
 
@@ -279,14 +279,14 @@ def _enroll_totp(session: BrowserSession, access_token: str) -> tuple[str, str]:
     logger.info("[2FA] 注册 TOTP...")
     resp = session.post(url, headers=headers, data=body)
     if resp.status_code != 200:
-        logger.error(f"[2FA] enroll 失败 {resp.status_code}: {resp.text}")
+        logger.error("[2FA] enroll 失败 HTTP %s（响应原值不写日志）", resp.status_code)
         resp.raise_for_status()
     data = resp.json()
     secret = data.get("secret")
     session_id = data.get("session_id")
     if not secret or not session_id:
-        raise RuntimeError(f"enroll 响应字段缺失: {data}")
-    logger.info(f"[2FA] TOTP secret 已获取: {secret[:4]}...{secret[-4:]}")
+        raise RuntimeError("enroll 响应字段缺失（原始响应未记录）")
+    logger.info("[2FA] TOTP secret 已获取（原值不写日志）")
     return secret, session_id
 
 
@@ -312,14 +312,14 @@ def _activate_totp(
         "session_id": session_id,
     })
 
-    logger.info(f"[2FA] 激活 enrollment, code={totp_code}")
+    logger.info("[2FA] 激活 enrollment（TOTP 原值不写日志）")
     resp = session.post(url, headers=headers, data=body)
     if resp.status_code != 200:
-        logger.error(f"[2FA] activate 失败 {resp.status_code}: {resp.text}")
+        logger.error("[2FA] activate 失败 HTTP %s（响应原值不写日志）", resp.status_code)
         resp.raise_for_status()
     data = resp.json()
     if not data.get("success"):
-        raise RuntimeError(f"激活返回 success=false: {data}")
+        raise RuntimeError("激活返回 success=false（原始响应未记录）")
     return True
 
 
@@ -393,7 +393,7 @@ def setup_2fa(session: BrowserSession, email: str, otp_code: str | None = None) 
     _activate_totp(session, new_token, secret, session_id)
 
     logger.info("=" * 60)
-    logger.info(f"✅ 2FA 设置完成! Secret: {secret[:4]}...{secret[-4:]}")
+    logger.info("✅ 2FA 设置完成（secret 原值不写日志）")
     logger.info("=" * 60)
     return secret
 
