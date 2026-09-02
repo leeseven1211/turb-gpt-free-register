@@ -220,5 +220,30 @@ class AccountAuthRunContextStorageTests(PostgresTestCase):
         self.assertEqual("rotated", first_row["status"])
         self.assertEqual("retry", first_row["result_code"])
 
+    def test_expired_context_cleanup_is_bounded_and_keeps_live_context(self):
+        from config import account as account_config
+        from core.storage import account_auth
+
+        with patch.object(account_config, "ACCOUNT_AUTH_RAW_CONTEXT_ENABLED", True), \
+             patch.object(account_config, "ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS", 30):
+            expired = account_auth.create_auth_run_context(
+                operation_run_id=self.run["id"], account_id=self.account_id,
+                action="token_refresh", driver="protocol_v2",
+            )
+            live = account_auth.create_auth_run_context(
+                operation_run_id=self.run["id"], account_id=self.account_id,
+                action="token_refresh", driver="protocol_v2", session_no=2,
+            )
+            with rs._connect() as conn, conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE \"{self.schema}\".\"account_auth_run_contexts\" "
+                    "SET expires_at = now() - interval '1 minute' WHERE id = %s",
+                    (expired,),
+                )
+            self.assertEqual(1, account_auth.cleanup_expired_auth_contexts(limit=1))
+
+        self.assertIsNone(account_auth.get_auth_run_context(expired))
+        self.assertIsNotNone(account_auth.get_auth_run_context(live))
+
 if __name__ == "__main__":
     unittest.main()

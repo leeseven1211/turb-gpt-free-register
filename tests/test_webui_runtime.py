@@ -30,6 +30,7 @@ class WebUIRuntimeTests(unittest.TestCase):
             patch("core.deactivation_mail_service.start_periodic_scanner") as start_risk_scan,
             patch("core.token_refresh_service.start_periodic_refresher") as start_at_refresh,
             patch("core.codex_token_refresh_service.start_periodic_refresher") as start_codex_refresh,
+            patch("core.account_auth_context_service.start_periodic_cleanup") as start_auth_context_cleanup,
         ):
             self.assertTrue(runtime.start_runtime(logging.getLogger("test-webui-runtime")))
             self.assertFalse(runtime.start_runtime(logging.getLogger("test-webui-runtime")))
@@ -50,6 +51,7 @@ class WebUIRuntimeTests(unittest.TestCase):
             start_risk_scan,
             start_at_refresh,
             start_codex_refresh,
+            start_auth_context_cleanup,
         ):
             self.assertEqual(1, mock.call_count)
 

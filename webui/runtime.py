@@ -541,5 +541,8 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
         start_periodic_scanner()
         start_periodic_refresher()
         start_codex_token_refresher()
+        from core.account_auth_context_service import start_periodic_cleanup
+
+        start_periodic_cleanup()
         _runtime_started = True
         return True

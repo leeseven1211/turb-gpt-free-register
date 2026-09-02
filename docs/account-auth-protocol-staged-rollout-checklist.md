@@ -3,7 +3,7 @@
 > 本文是本次改造唯一的实施顺序和放行依据。两份完整设计文档只作为技术背景；如果表述冲突，以本清单为准。
 
 - 基线：`main@d038f2a`
-- 当前状态：阶段 1 已落地；阶段 2 已完成代码接入并完成部分真实样本验证，默认仍关闭；本轮另完成阶段 5/6 的“刷新 AT 专用 Protocol v2”适配器和真实密码+TOTP 验证，默认仍关闭；错误密码与邮箱兜底的真实失败边界已补齐，邮箱兜底尚未放行；阶段 8 已完成稳定 Protocol identity、Protocol v2 run context 和安全指纹摘要的第一小步，原始上下文仍默认关闭，Roxy/普通查活接入、清理调度和访问审计待后续
+- 当前状态：阶段 1 已落地；阶段 2 已完成代码接入并完成部分真实样本验证，默认仍关闭；本轮另完成阶段 5/6 的“刷新 AT 专用 Protocol v2”适配器和真实密码+TOTP 验证，默认仍关闭；错误密码与邮箱兜底的真实失败边界已补齐，邮箱兜底尚未放行；阶段 8 已完成稳定 Protocol identity、Protocol v2 run context、安全指纹摘要和过期上下文清理调度的第一小步，原始上下文仍默认关闭，Roxy/普通查活接入和访问审计待后续
 - 总原则：现有能力先冻结，新能力只做平行增量；每一阶段独立验证、独立放行、独立回退
 
 ### 本轮执行记录（2026-09-02）
@@ -77,7 +77,7 @@
 | 5 | 新协议密码登录 | 浏览器仍默认 | 已完成“刷新 AT 专用”子集；真实错误密码边界已验证；通用密码登录仍待执行 |
 | 6 | TOTP 与邮箱 OTP challenge | 浏览器仍默认 | 密码+TOTP 真实成功；邮箱兜底真实收件未达，暂不放行 |
 | 7 | 新协议 2FA 设置 | 浏览器仍默认 | 待执行 |
-| 8 | 稳定设备画像与受限原始上下文 | 默认保持 current；raw context 默认关闭 | 部分完成：稳定 identity、Protocol v2 session context 和安全指纹摘要已接入；Roxy/普通查活 context、清理调度和访问审计待后续 |
+| 8 | 稳定设备画像与受限原始上下文 | 默认保持 current；raw context 默认关闭 | 部分完成：稳定 identity、Protocol v2 session context、安全指纹摘要和每日过期清理已接入；Roxy/普通查活 context 和访问审计待后续 |
 | 9 | 长期双实现维护 | 不删除旧实现 | 待执行 |
 
 ## 3. 阶段 0：冻结基线与隔离环境
@@ -369,7 +369,7 @@ ACCOUNT_2FA_SETUP_DRIVER=browser_current|protocol_current|protocol_v2
 - [ ] 明确访问控制、加密/密钥来源、保留期限和清理机制后才能开启原始值保存；当前只实现保留天数配置和显式关闭，尚未开放原始值读取。
 - [x] 设备 ID、session ID 和完整代理只通过显式白名单进入私有表，未知字段默认丢弃；不进入任务事件/普通账号 API/导出。
 - [ ] 日志 redaction 测试覆盖设备 ID、session ID、Cookie、Token 和代理密码。
-- [ ] 删除上下文诊断数据不影响账号、Token、密码、TOTP 和任务历史。
+- [x] 删除上下文诊断数据不影响账号、Token、密码、TOTP 和任务历史；清理按 500 行上限分批执行，仅删除已过期私有 context。
 
 ### 退出条件
 
@@ -409,5 +409,5 @@ ACCOUNT_2FA_SETUP_DRIVER=browser_current|protocol_current|protocol_v2
 5. [x] 稳定设备画像第一小步已完成：默认 `current` 不生效，显式 `account_stable + protocol_v2` 才懒创建并复用设备层；注册 `device_id`、普通查活、legacy 刷新和 Roxy fallback 未改。
 6. [x] 受限 run context 的 operation run 关联、原始标识/代理凭据白名单、默认关闭、保留字段和收口已完成；当前只接 Protocol v2 刷新，Roxy/普通查活仍不写原始值。
 7. [x] Protocol v2 成功认证的安全指纹摘要已按白名单生成，并写入账号最近认证摘要和任务结果；不包含 device/session ID、Cookie、Token、密码、邮箱或完整代理。
-8. [ ] 补齐定时清理调度、访问审计、日志 redaction fixture，再考虑开放 raw context 到更多驱动。
+8. [x] 已增加 raw context 启用时的启动清理和每日数据库调度；仍需补访问审计、日志 redaction fixture，再考虑开放 raw context 到更多驱动。
 9. [ ] 通用密码登录、浏览器 fallback 逐项按门禁推进，不与本轮 v2 刷新适配混合放量。
