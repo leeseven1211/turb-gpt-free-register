@@ -8,6 +8,7 @@ from config import codex as codex_config
 from config import register as register_config
 from config import twofa as twofa_config
 from config import account as account_config
+from config import proxy as proxy_config
 from config import env_loader
 from core import account_export
 from webui import config_editor
@@ -198,6 +199,22 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         finally:
             env_loader._LOADED = old_loaded
             importlib.reload(account_config)
+
+    def test_legacy_roxy_fallback_is_webui_editable_and_env_driven(self):
+        fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
+        self.assertIn("LIVE_CHECK_ROXY_FALLBACK_ENABLED", fields)
+        self.assertEqual(fields["LIVE_CHECK_ROXY_FALLBACK_ENABLED"]["group"], "账号补全")
+        self.assertTrue(proxy_config.LIVE_CHECK_ROXY_FALLBACK_ENABLED)
+
+        old_loaded = env_loader._LOADED
+        env_loader._LOADED = True
+        try:
+            with patch.dict(os.environ, {"LIVE_CHECK_ROXY_FALLBACK_ENABLED": "False"}, clear=False):
+                reloaded = importlib.reload(proxy_config)
+                self.assertFalse(reloaded.LIVE_CHECK_ROXY_FALLBACK_ENABLED)
+        finally:
+            env_loader._LOADED = old_loaded
+            importlib.reload(proxy_config)
 
     def test_protocol_twofa_checkpoints_secret_before_activation(self):
         events = []

@@ -726,11 +726,13 @@ ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK=False
 ACCOUNT_AUTH_PROFILE_MODE=current
 ACCOUNT_AUTH_RAW_CONTEXT_ENABLED=False
 ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS=30
+LIVE_CHECK_ROXY_FALLBACK_ENABLED=True
 ```
 
 `legacy` 保持现有协议邮箱 OTP → Roxy 兜底；只有把 `ACCOUNT_TOKEN_REFRESH_DRIVER` 设为 `protocol_v2` 且打开 `ACCOUNT_AUTH_V2_ENABLED`，才会尝试保存的 OpenAI 账号密码，并按远端响应进入直接回调、TOTP MFA 或邮箱验证码。账号没有保存密码时不会伪造密码提交，而是沿用旧邮箱认证；密码页/返回结果无法识别时会停止并记录明确失败，不盲点按钮。密码明确错误默认不发送邮箱验证码；打开 `ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK` 后最多另起一次会话走邮箱 OTP，结果仍保留“密码被拒绝”，不会重复提交密码。普通查活不会触达这条认证链。
 `ACCOUNT_AUTH_PROFILE_MODE=current` 保持现有每个会话随机设备画像；只有明确改为 `account_stable` 且实际使用 Protocol v2 刷新时，才按账号懒创建私有稳定 Protocol identity。它不修改注册时的 `device_id`，不影响普通查活、旧刷新或浏览器兜底；画像的原始 profile key 不进入账号 JSON、导出和普通 API。
 `ACCOUNT_AUTH_RAW_CONTEXT_ENABLED` 默认关闭；开启后才会为 Protocol v2 的实际认证 session 按白名单保存受限 run context，包含原始 device/session 标识和当次代理上下文，不会作为后续任务的代理或会话来源。默认保留 30 天，`ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS=0` 关闭自动清理；这些原始值不进入普通账号 API、任务事件和导出。
+`LIVE_CHECK_ROXY_FALLBACK_ENABLED` 只控制 legacy 刷新 AT 失败后的既有 Roxy 登录兜底，不影响普通查活；普通查活是否使用浏览器由 `ACCOUNT_LIVE_CHECK_BROWSER_ENABLED` 与 `ACCOUNT_LIVE_CHECK_DRIVER` 独立控制。
 
 已注册账号的 `email_source` 是后续 OTP 取码的权威来源；即使进程重启或 Outlook 池记录被清理，也会优先按账号来源取码，Outlook 账号凭据可从已注册账号快照恢复，不会因为当前 `EMAIL_SOURCE` 顺序变化而误走其他邮箱平台。
 
@@ -794,7 +796,6 @@ EMAIL_BUTLER_RISK_SCAN_INTERVAL_SECONDS=21600
 EMAIL_BUTLER_RISK_SCAN_INITIAL_DELAY_SECONDS=90
 EMAIL_BUTLER_RISK_SCAN_LOOKBACK_DAYS=120
 
-LIVE_CHECK_ROXY_FALLBACK_ENABLED=True
 ```
 
 手动接口：

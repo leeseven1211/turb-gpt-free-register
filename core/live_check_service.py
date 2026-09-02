@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -58,9 +57,10 @@ def _token_probe_retryable(result: dict) -> bool:
 
 
 def _roxy_fallback_enabled() -> bool:
-    return str(os.environ.get("LIVE_CHECK_ROXY_FALLBACK_ENABLED", "1")).strip().lower() not in {
-        "0", "false", "no", "off",
-    }
+    # 通过 config.proxy 读取，保证 WebUI 写入 .env 后 reload_all() 能立即生效。
+    from config import proxy as proxy_config
+
+    return bool(getattr(proxy_config, "LIVE_CHECK_ROXY_FALLBACK_ENABLED", True))
 
 
 def _resolve_refresh_driver(requested: str | None = None) -> str:

@@ -139,7 +139,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK", "file": "account.py", "type": "bool", "group": "账号补全",
-        "label": "密码错误后邮箱兜底", "help": "默认关闭；开启后密码明确错误时另起一次认证会话发送邮箱验证码，结果仍保留 password_rejected，不重试密码",
+        "label": "密码错误后邮箱兜底", "help": "默认关闭；开启后仅在新认证会话由远端明确进入邮箱验证码 challenge 时继续，不从密码页盲发 OTP；结果仍保留 password_rejected，不重试密码",
     },
     {
         "key": "ACCOUNT_AUTH_PROFILE_MODE", "file": "account.py", "type": "str", "group": "账号补全",
@@ -152,6 +152,10 @@ EDITABLE_FIELDS = [
     {
         "key": "ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS", "file": "account.py", "type": "int", "group": "账号补全",
         "label": "认证上下文保留天数", "help": "原始认证上下文的自动清理周期，默认 30 天；设置为 0 表示不自动清理，仍可手工逐行清理",
+    },
+    {
+        "key": "LIVE_CHECK_ROXY_FALLBACK_ENABLED", "file": "proxy.py", "type": "bool", "group": "账号补全",
+        "label": "旧刷新 Roxy 兜底", "help": "仅控制 legacy 刷新 AT 失败后的既有 Roxy 登录兜底；不影响普通查活，也不允许普通查活登录或发送 OTP",
     },
     {
         "key": "ACCOUNT_2FA_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
