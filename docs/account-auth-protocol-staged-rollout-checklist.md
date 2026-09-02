@@ -13,6 +13,7 @@
 - 阶段 1：`protocol_current` 默认路径、驱动冻结、任务事件/结果摘要记录和 WebUI 配置已完成。
 - 阶段 2：`browser_roxy` 已接入，但 `ACCOUNT_LIVE_CHECK_BROWSER_ENABLED` 默认仍为 `False`。
 - 真实样本：有效 AT 8 次均 HTTP 200；不可用 AT 3 次均 HTTP 401；不可用本地代理 2 次均归类为 `browser_navigation` 且可重试；每次临时 Profile 登记数均回到 0。
+- 本轮在隔离库同一测试账号上追加 4 次真实 Roxy 普通查活（首次验证 1 次、串行重复 3 次），4 次均 `ok=True / HTTP 200 / validation_method=access_token`，且每次执行后的临时 Profile 登记数均为 0；同一 AT 的 `protocol_current` 对比也为 `ok=True / HTTP 200`。
 - 另有 4 次 Roxy 创建/浏览器层瞬时失败，分别落在 Profile/浏览器执行/页面导航错误分类，说明本机 Roxy 服务稳定性门禁尚未通过；不据此放开浏览器默认路径。
 - 独立库端到端任务已验证：有效 AT 查活任务成功完成并写回 `live`；失效 AT 任务完成为 `failed`，结果摘要记录 HTTP 401 和 `error_category=auth`；两类任务均记录 `browser_roxy`。
 - 上游核对未发现独立的 `protocol_v2` 普通 AT probe；因此没有把密码/MFA 认证链冒充成普通查活，阶段 3（新协议查活）仍未放行。
