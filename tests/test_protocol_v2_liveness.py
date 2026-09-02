@@ -431,7 +431,15 @@ class ProtocolV2LivenessTests(unittest.TestCase):
         with (
             patch.object(account_config, "ACCOUNT_TOKEN_REFRESH_DRIVER", "protocol_v2"),
             patch.object(account_config, "ACCOUNT_AUTH_V2_ENABLED", True),
-            patch.object(live_check_service.db, "get_account", return_value={"id": 7, "email": "account@example.com"}),
+            patch.object(
+                live_check_service.db,
+                "get_account",
+                return_value={
+                    "id": 7,
+                    "email": "account@example.com",
+                    "access_token": "existing-token",
+                },
+            ),
             patch.object(live_check_service.db, "account_is_deactivated", return_value=False),
             patch.object(live_check_service.db, "claim_account_live_check", return_value=True),
             patch.object(live_check_service.account_task_store, "create_task", return_value=101),
