@@ -28,6 +28,14 @@ ACCOUNT_LIVE_CHECK_DRIVER = "protocol_current"
 # 阶段 2 的 Roxy 旧 AT probe 默认关闭；真实契约测试通过后才允许开启。
 ACCOUNT_LIVE_CHECK_BROWSER_ENABLED = False
 
+# 显式“刷新 AT”仍保持原有协议邮箱 OTP → Roxy 兜底顺序。只有用户同时选择
+# protocol_v2 并打开总开关时，才会尝试保存的 OpenAI 密码 / TOTP；普通查活不受影响。
+ACCOUNT_TOKEN_REFRESH_DRIVER = "legacy"
+ACCOUNT_AUTH_V2_ENABLED = False
+# 密码明确错误后是否允许另起认证会话发送一次邮箱 OTP。默认关闭，避免把
+# 过期/录错密码静默掩盖；开启后任务结果仍保留 password_rejected。
+ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK = False
+
 
 apply_env_overrides(globals(), {
     "ACCOUNT_COMPLETION_PASSWORD_ENABLED": "bool",
@@ -41,6 +49,9 @@ apply_env_overrides(globals(), {
     "ACCOUNT_CODEX_DRIVER": "str",
     "ACCOUNT_LIVE_CHECK_DRIVER": "str",
     "ACCOUNT_LIVE_CHECK_BROWSER_ENABLED": "bool",
+    "ACCOUNT_TOKEN_REFRESH_DRIVER": "str",
+    "ACCOUNT_AUTH_V2_ENABLED": "bool",
+    "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK": "bool",
 })
 
 
@@ -54,6 +65,9 @@ def completion_settings() -> dict[str, object]:
         "refresh_at_enabled": bool(ACCOUNT_COMPLETION_REFRESH_AT_ENABLED),
         "password_driver": str(ACCOUNT_PASSWORD_DRIVER or "roxy").strip().lower() or "roxy",
         "plan_check_driver": str(ACCOUNT_PLAN_CHECK_DRIVER or "protocol").strip().lower() or "protocol",
+        "token_refresh_driver": str(ACCOUNT_TOKEN_REFRESH_DRIVER or "legacy").strip().lower() or "legacy",
+        "auth_v2_enabled": bool(ACCOUNT_AUTH_V2_ENABLED),
+        "auth_password_email_fallback": bool(ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK),
         "twofa_driver": str(ACCOUNT_2FA_DRIVER or "protocol").strip().lower() or "protocol",
         "codex_driver": str(ACCOUNT_CODEX_DRIVER or "same_as_registration").strip().lower() or "same_as_registration",
     }

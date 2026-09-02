@@ -20,6 +20,10 @@ function configDriverChoices(f) {
     ['protocol_current', '现有协议（保持现状）'],
     ['browser_roxy', 'Roxy 浏览器（需先开放灰度）'],
   ];
+  if (f.key === 'ACCOUNT_TOKEN_REFRESH_DRIVER') return [
+    ['legacy', '现有刷新链路（保持现状）'],
+    ['protocol_v2', 'Protocol v2 密码/MFA（需开启总开关）'],
+  ];
   if (f.key === 'ACCOUNT_2FA_DRIVER' || f.key === 'TWOFA_DRIVER') {
     return [['protocol', '协议直开（新鲜 AT）'], ['browser', '浏览器页面（RoxyBrowser）']];
   }

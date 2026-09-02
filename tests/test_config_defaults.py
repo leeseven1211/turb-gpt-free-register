@@ -134,6 +134,16 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         }
         self.assertTrue(completion_keys.issubset(fields))
         self.assertTrue(all(fields[key]["group"] == "账号补全" for key in completion_keys))
+        auth_keys = {
+            "ACCOUNT_TOKEN_REFRESH_DRIVER",
+            "ACCOUNT_AUTH_V2_ENABLED",
+            "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK",
+        }
+        self.assertTrue(auth_keys.issubset(fields))
+        self.assertTrue(all(fields[key]["group"] == "账号补全" for key in auth_keys))
+        self.assertEqual("legacy", account_config.ACCOUNT_TOKEN_REFRESH_DRIVER)
+        self.assertFalse(account_config.ACCOUNT_AUTH_V2_ENABLED)
+        self.assertFalse(account_config.ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK)
 
         old_loaded = env_loader._LOADED
         env_loader._LOADED = True
@@ -141,10 +151,16 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             with patch.dict(os.environ, {
                 "ACCOUNT_COMPLETION_CODEX_ENABLED": "False",
                 "ACCOUNT_COMPLETION_REFRESH_AT_ENABLED": "True",
+                "ACCOUNT_TOKEN_REFRESH_DRIVER": "protocol_v2",
+                "ACCOUNT_AUTH_V2_ENABLED": "True",
+                "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK": "True",
             }, clear=False):
                 reloaded = importlib.reload(account_config)
                 self.assertFalse(reloaded.ACCOUNT_COMPLETION_CODEX_ENABLED)
                 self.assertTrue(reloaded.ACCOUNT_COMPLETION_REFRESH_AT_ENABLED)
+                self.assertEqual("protocol_v2", reloaded.ACCOUNT_TOKEN_REFRESH_DRIVER)
+                self.assertTrue(reloaded.ACCOUNT_AUTH_V2_ENABLED)
+                self.assertTrue(reloaded.ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK)
         finally:
             env_loader._LOADED = old_loaded
             importlib.reload(account_config)

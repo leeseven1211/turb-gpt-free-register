@@ -130,6 +130,18 @@ EDITABLE_FIELDS = [
         "label": "开放 Roxy 普通查活", "help": "阶段2灰度开关；默认关闭。只有确认浏览器只验证旧 AT、不进入登录/OTP 后才开启",
     },
     {
+        "key": "ACCOUNT_TOKEN_REFRESH_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
+        "label": "刷新 AT 驱动", "help": "legacy 保持现有协议邮箱 OTP→Roxy 兜底；protocol_v2 才尝试保存的账号密码/TOTP，需同时开启 Protocol v2 总开关",
+    },
+    {
+        "key": "ACCOUNT_AUTH_V2_ENABLED", "file": "account.py", "type": "bool", "group": "账号补全",
+        "label": "开启 Protocol v2", "help": "紧急总开关；关闭时即使刷新 AT 选择 protocol_v2，也会临时回到旧实现，不修改已保存的选择",
+    },
+    {
+        "key": "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK", "file": "account.py", "type": "bool", "group": "账号补全",
+        "label": "密码错误后邮箱兜底", "help": "默认关闭；开启后密码明确错误时另起一次认证会话发送邮箱验证码，结果仍保留 password_rejected，不重试密码",
+    },
+    {
         "key": "ACCOUNT_2FA_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
         "label": "2FA 补全驱动", "help": "可选协议开通或浏览器安全设置页面；两种方式都已实现",
     },

@@ -63,6 +63,79 @@ def _roxy_fallback_enabled() -> bool:
     }
 
 
+def _resolve_refresh_driver(requested: str | None = None) -> str:
+    """Resolve and freeze the explicit AT-refresh implementation for one task.
+
+    ``legacy`` is the compatibility route: current Protocol email/re-auth OTP,
+    followed by the existing Roxy fallback.  Protocol v2 is deliberately behind
+    both an explicit selection and a global kill switch.
+    """
+    from config import account as account_config
+
+    value = str(
+        requested
+        if requested is not None
+        else getattr(account_config, "ACCOUNT_TOKEN_REFRESH_DRIVER", "legacy")
+    ).strip().lower()
+    if value in {"current", "protocol", "protocol_current", "legacy", ""}:
+        return "legacy"
+    if value == "protocol_v2" and bool(getattr(account_config, "ACCOUNT_AUTH_V2_ENABLED", False)):
+        return "protocol_v2"
+    if value == "protocol_v2":
+        logger.warning("[查活] ACCOUNT_AUTH_V2_ENABLED 未开启，刷新 AT 回落旧实现")
+        return "legacy"
+    logger.warning("[查活] 不支持的刷新 AT 驱动 %r，回落旧实现", value)
+    return "legacy"
+
+
+def _report_protocol_v2_refresh(reporter: TaskReporter, result: dict) -> None:
+    """Project Protocol v2's actual auth method without inventing OTP success."""
+    auth_method = str(result.get("auth_method") or "protocol_v2")
+    password_status = str(result.get("password_auth_status") or "")
+    uses_email = "email" in auth_method or auth_method == "legacy_email_otp"
+    uses_mfa = "mfa" in auth_method
+
+    if password_status == "rejected":
+        reporter.stage(
+            "login_password",
+            "failed",
+            "保存的账号密码被拒绝，保留密码错误证据",
+            level="WARNING",
+            detail={"auth_method": auth_method},
+        )
+    elif password_status == "verified":
+        reporter.stage("login_password", "success", "账号密码验证通过")
+    elif auth_method == "legacy_email_otp":
+        reporter.stage("login_password", "skipped", "账号没有保存密码，沿用邮箱认证")
+    elif result.get("ok"):
+        reporter.stage("login_password", "success", "协议认证已完成", detail={"auth_method": auth_method})
+    else:
+        reporter.stage(
+            "login_password",
+            "failed",
+            "Protocol v2 密码认证未完成",
+            level="ERROR",
+            detail={"error": result.get("error"), "auth_method": auth_method},
+        )
+
+    reporter.stage(
+        "mfa_challenge",
+        "success" if uses_mfa and result.get("ok") else "skipped" if not uses_mfa else "failed",
+        "TOTP MFA 验证已完成" if uses_mfa and result.get("ok") else "本次认证未进入 TOTP MFA" if not uses_mfa else "TOTP MFA 未完成",
+        level="ERROR" if uses_mfa and not result.get("ok") else "INFO",
+        detail={"auth_method": auth_method},
+    )
+    reporter.stage(
+        "email_otp",
+        "success" if uses_email and result.get("ok") else "skipped" if not uses_email else "failed",
+        "邮箱验证码已通过" if uses_email and result.get("ok") else "本次认证未使用邮箱验证码" if not uses_email else "邮箱验证码未完成",
+        level="ERROR" if uses_email and not result.get("ok") else "INFO",
+        detail={"auth_method": auth_method, "fallback_used": bool(result.get("fallback_used"))},
+    )
+    if result.get("ok"):
+        reporter.stage("token", "success", "最新 AT 已获取并保存")
+
+
 def _browser_live_check_probe(*, token: str, proxy: str | None) -> dict:
     """延迟加载 Roxy AT probe，避免 current 路径提前初始化浏览器依赖。"""
     from core.live_check_browser import run_probe
@@ -79,6 +152,7 @@ def _run_live_check(
     task_id: int | None = None,
     force_refresh: bool = False,
     driver: str | None = None,
+    refresh_driver: str | None = None,
 ) -> dict:
     account_route = None
     route: dict = {}
@@ -96,12 +170,19 @@ def _run_live_check(
         # 入队时已经解析并冻结了 driver；直接调用 worker 的旧测试/兼容入口
         # 没有传值时才在这里读取当前配置，避免任务排队期间热改配置导致中途换路。
         selected_live_check_driver = None if force_refresh else (driver or resolve_driver())
+        selected_refresh_driver = _resolve_refresh_driver(refresh_driver) if force_refresh else None
         reporter.start(message="开始刷新账号 AT" if force_refresh else "开始验证账号 accessToken")
         if selected_live_check_driver:
             reporter.note(
                 stage="access_token",
                 message=f"普通查活驱动：{selected_live_check_driver}",
                 detail={"live_check_driver": selected_live_check_driver},
+            )
+        if selected_refresh_driver:
+            reporter.note(
+                stage="login_password",
+                message=f"刷新 AT 驱动：{selected_refresh_driver}",
+                detail={"token_refresh_driver": selected_refresh_driver},
             )
         from core.account_proxy import acquire_account_proxy
 
@@ -304,12 +385,21 @@ def _run_live_check(
         if result is None and proxy is None:
             # WebUI 默认调用由账号代理配置选路，重试时允许真正轮换线路。
             _append_log(email, f"[查活] 开始后台执行 trigger={trigger}，网络预检失败时将轮换代理")
-            result = check_account_liveness(
-                email,
-                proxy=None,
-                clear_log=False,
-                proxy_supplier=acquire_retry_route,
-            )
+            if selected_refresh_driver == "protocol_v2":
+                from core.protocol_v2_liveness import refresh_access_token
+
+                result = refresh_access_token(
+                    email,
+                    proxy=None,
+                    proxy_supplier=acquire_retry_route,
+                )
+            else:
+                result = check_account_liveness(
+                    email,
+                    proxy=None,
+                    clear_log=False,
+                    proxy_supplier=acquire_retry_route,
+                )
         elif result is None:
             # API 显式传入的代理（包括空字符串直连）尊重调用方选择，不擅自改线。
             selected_proxy = acquire_explicit_route()
@@ -320,13 +410,19 @@ def _run_live_check(
                 f"proxy_mode={route.get('proxy_mode')} proxy_used={route.get('proxy_used') or '-'} "
                 f"fallback_reason={route.get('proxy_fallback_reason') or '-'}",
             )
-            result = check_account_liveness(email, proxy=selected_proxy, clear_log=False)
+            if selected_refresh_driver == "protocol_v2":
+                from core.protocol_v2_liveness import refresh_access_token
+
+                result = refresh_access_token(email, proxy=selected_proxy)
+            else:
+                result = check_account_liveness(email, proxy=selected_proxy, clear_log=False)
         if (
             not result.get("ok")
             and result.get("status") != "deactivated"
             and bool(saved_access_token)
             and force_refresh
             and _roxy_fallback_enabled()
+            and result.get("roxy_fallback_allowed", True)
         ):
             from core.roxy_liveness import available as roxy_available, refresh_access_token
             if roxy_available():
@@ -342,7 +438,9 @@ def _run_live_check(
                     proxy=account_route.proxy_url if account_route is not None else proxy,
                 )
         if force_refresh:
-            if result.get("ok"):
+            if selected_refresh_driver == "protocol_v2":
+                _report_protocol_v2_refresh(reporter, result)
+            elif result.get("ok"):
                 reporter.stage("login_password", "success", "邮箱登录已完成")
                 reporter.stage("email_otp", "success", "登录验证已通过")
                 reporter.stage("token", "success", "最新 AT 已获取并保存")
@@ -351,6 +449,8 @@ def _run_live_check(
                     "login_password", "failed", "邮箱登录刷新 AT 未完成",
                     level="ERROR", detail={"error": result.get("error")},
                 )
+        if selected_refresh_driver:
+            result.setdefault("token_refresh_driver", selected_refresh_driver)
         result.update({
             "proxy_provider": route.get("proxy_provider"),
             "proxy_region": route.get("proxy_region"),
@@ -390,6 +490,10 @@ def _run_live_check(
                 "checked_at": result.get("checked_at"),
                 "plan": (result.get("session") or {}).get("account", {}).get("planType"),
                 "live_check_driver": result.get("live_check_driver"),
+                "token_refresh_driver": selected_refresh_driver,
+                "auth_method": result.get("auth_method"),
+                "password_auth_status": result.get("password_auth_status"),
+                "fallback_used": result.get("fallback_used"),
             },
             route={**route, **{key: result.get(key) for key in ("network_route", "proxy_provider", "proxy_region", "proxy_used")}},
             validation_method=result.get("validation_method"),
@@ -448,11 +552,14 @@ def enqueue_account_live_check(
     if not email:
         return {"accepted": False, "busy": False, "error": "email 为空"}
     effective_live_check_driver = None
+    effective_refresh_driver = None
     if not force_refresh:
         try:
             effective_live_check_driver = resolve_driver(driver)
         except LiveCheckDriverError as exc:
             return {"accepted": False, "busy": False, "error": str(exc)}
+    else:
+        effective_refresh_driver = _resolve_refresh_driver()
     account = db.get_account(account_id)
     if db.account_is_deactivated(account):
         return {
@@ -488,6 +595,7 @@ def enqueue_account_live_check(
             task_id=task_id,
             force_refresh=bool(force_refresh),
             driver=effective_live_check_driver,
+            refresh_driver=effective_refresh_driver,
         )
     except Exception as exc:
         _QUEUE_SLOTS.release()
@@ -518,6 +626,8 @@ def enqueue_account_live_check(
     }
     if effective_live_check_driver:
         response["live_check_driver"] = effective_live_check_driver
+    if force_refresh:
+        response["token_refresh_driver"] = effective_refresh_driver
     return response
 
 

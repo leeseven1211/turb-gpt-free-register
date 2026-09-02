@@ -356,12 +356,14 @@ roxy_browser_instance_id
 ACCOUNT_AUTH_RAW_CONTEXT_ENABLED=True
 ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS=30
 ACCOUNT_AUTH_PROFILE_MODE=current         # current / account_stable
-ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK=True
+ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK=False
 ```
 
 首版建议 run context 保留 30 天，稳定 identity 随账号长期保留。设置 `RETENTION_DAYS=0` 才表示不自动清理。
 
 `ACCOUNT_AUTH_RAW_CONTEXT_ENABLED=False` 时，identity、登录、查活和 fallback 行为完全不变，只跳过 P1/P2 原始 run context 写入并继续保存 P0 安全摘要。该开关不能被实现成“关闭后不用稳定 identity”。
+
+当前阶段只落地“刷新 AT 专用 Protocol v2”适配器：密码错误后的邮箱兜底仍是协议邮箱链，默认关闭，且不会自动转入 Roxy；通用密码登录、浏览器 passwordless fallback 和稳定 identity 按后续阶段独立实施。
 
 `ACCOUNT_AUTH_PROFILE_MODE=current` 时严格保持现状：不创建、不读取稳定 identity，向 `BrowserSession` 传 `identity=None`，每个 session 随机设备层；`account_stable` 时才懒调用 ensure。两个模式都可以独立保存安全摘要和 raw run context。
 

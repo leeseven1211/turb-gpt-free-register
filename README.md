@@ -715,6 +715,16 @@ ACCOUNT_LIVE_CHECK_DRIVER=protocol_current
 
 当前默认仍只开放 `protocol_current`。Roxy 浏览器旧 AT probe 还需要先通过真实契约测试，并由 `ACCOUNT_LIVE_CHECK_BROWSER_ENABLED=False` 灰度开关控制；GitHub 新协议 probe 通过独立阶段后再开放。普通查活无论使用哪种驱动，都不会登录、发送 OTP 或刷新 AT。该配置不影响 `ACCOUNT_PLAN_CHECK_DRIVER`（账号补全套餐步骤），也不影响刷新 AT 的现有路径。
 
+显式“刷新 AT”新增了独立的灰度选择，默认不改变现有流程：
+
+```dotenv
+ACCOUNT_TOKEN_REFRESH_DRIVER=legacy
+ACCOUNT_AUTH_V2_ENABLED=False
+ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK=False
+```
+
+`legacy` 保持现有协议邮箱 OTP → Roxy 兜底；只有把 `ACCOUNT_TOKEN_REFRESH_DRIVER` 设为 `protocol_v2` 且打开 `ACCOUNT_AUTH_V2_ENABLED`，才会尝试保存的 OpenAI 账号密码，并按远端响应进入直接回调、TOTP MFA 或邮箱验证码。密码明确错误默认不发送邮箱验证码；打开 `ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK` 后最多另起一次会话走邮箱 OTP，结果仍保留“密码被拒绝”，不会重复提交密码。普通查活不会触达这条认证链。
+
 账号列表显示 AT 签发时间、过期时间和剩余时间。定时刷新只处理进入提前刷新窗口的账号；默认提前 24 小时检查，配置如下：
 
 ```dotenv
