@@ -14,6 +14,7 @@
 - 阶段 2：`browser_roxy` 已接入并完成真实契约样本；`ACCOUNT_LIVE_CHECK_BROWSER_ENABLED` 默认仍为 `False`，需要本地明确开启。
 - 真实样本：有效 AT 8 次均 HTTP 200；不可用 AT 3 次均 HTTP 401；不可用本地代理 2 次均归类为 `browser_navigation` 且可重试；每次临时 Profile 登记数均回到 0。
 - 本轮在隔离库同一测试账号上追加 4 次真实 Roxy 普通查活（首次验证 1 次、串行重复 3 次），4 次均 `ok=True / HTTP 200 / validation_method=access_token`，且每次执行后的临时 Profile 登记数均为 0；同一 AT 的 `protocol_current` 对比也为 `ok=True / HTTP 200`。此前累计有效 Roxy 样本已超过 10 次。
+- 本次最终复核继续使用隔离库 `v2_refresh_e2e_20260902` 的测试账号：`browser_roxy` 连续 3 次均 `ok=True / HTTP 200 / validation_method=access_token`，每次 Roxy 临时 Profile 登记数均回到 0；未登录、未读取邮箱/密码/TOTP、未刷新 AT。
 - 在独立 `raw_context_real_20260902` schema 中完成一次真实 raw context 端到端验证：Roxy 查活成功后记录为 `live_check / browser_roxy / access_token`，`status=success`、`cleanup_status=done`，只落白名单 Profile/端点键和线路摘要；随后以 `local-validation / real-roxy-contract / identifiers` 完成审计读取。该 schema 仅用于本地验证，不改变项目 `.env` 的 `turb_console/public` 默认配置。
 - 另有 4 次 Roxy 创建/浏览器层瞬时失败，分别落在 Profile/浏览器执行/页面导航错误分类；这属于本机 Roxy 服务的运行稳定性门禁，不能通过代码测试消除，因此不放开浏览器默认路径，但不影响显式配置和失败收口。
 - 独立库端到端任务已验证：有效 AT 查活任务成功完成并写回 `live`；失效 AT 任务完成为 `failed`，结果摘要记录 HTTP 401 和 `error_category=auth`；两类任务均记录 `browser_roxy`。
@@ -21,6 +22,7 @@
 - 本轮新增刷新 AT 专用 `protocol_v2`：密码直达 callback、密码+TOTP MFA、邮箱 challenge、密码错误分类、未知响应分类和可选一次邮箱兜底均有独立状态机/单测；默认配置仍为 `legacy`，普通查活不触达。
 - 真实测试：在一个已有密码、TOTP 和 AT 的本地测试账号上执行一次真实 Protocol v2，结果为 `password_mfa_totp`、`authenticated_session`、`live`；未启用邮箱兜底，未写回数据库。
 - 真实错误密码测试：同一测试账号返回 `HTTP 401`，响应结构化错误码为 `invalid_username_or_password`；已分类为 `password_rejected` / `auth`，不会进入 Roxy、不会自动重试密码、默认不会发邮箱 OTP。
+- 本次最终复核的 Protocol v2 正确密码路径按账号功能正式申请 1024Proxy JP 租约，返回 `password_mfa_totp`、`authenticated_session`、`live`，`fallback_used=False`，租约已释放；错误密码复核返回 `password_rejected` / `auth`，`fallback_used=False`、`roxy_fallback_allowed=False`，没有重复提交或发送邮箱。
 - 真实邮箱兜底测试：仅进程内打开邮箱兜底，使用新 session 发起一次验证码请求并等待 45 秒；转发邮箱 IMAP 登录和 `INBOX` 打开正常，但未收到该别名的新 OpenAI OTP，最终为 `password_rejected_email_fallback_failed` / `email`。因此邮箱兜底仍未判定成功，也没有继续重发。
 - 本轮顺手为 `forward_imap` 增加 `ICLOUD_HME_REQUEST_TIMEOUT` socket 超时，避免收件链路卡死；对应单测已补齐。
 - 针对上游 `fd7766f` / `369d8eb` 的取码修复已按当前 PostgreSQL 架构最小移植：已注册账号优先使用落库的 `email_source`，Outlook 邮箱池记录被清理后可从已注册账号快照恢复；来源不一致时不会误读 Outlook 池。
