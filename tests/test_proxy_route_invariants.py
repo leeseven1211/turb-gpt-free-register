@@ -52,6 +52,7 @@ class ProxyRouteInvariantTests(unittest.TestCase):
 
         self.assertEqual(identity["device_id"], session.device_id)
         self.assertEqual(identity["profile_ref"], session.protocol_profile_ref)
+        self.assertEqual(identity["profile_version"], session.protocol_profile_version)
         self.assertEqual(identity["browser_profile"]["screen_width"], session.browser_profile["screen_width"])
         self.assertEqual(identity["browser_profile"]["hardware_concurrency"], session.browser_profile["hardware_concurrency"])
 

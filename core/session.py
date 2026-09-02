@@ -108,6 +108,10 @@ class BrowserSession:
             identity.get("profile_ref") if isinstance(identity, dict)
             else getattr(identity, "profile_ref", None)
         )
+        self.protocol_profile_version = (
+            identity.get("profile_version") if isinstance(identity, dict)
+            else getattr(identity, "profile_version", None)
+        )
 
         # 生成 auth_session_logging_id
         self.auth_session_logging_id = str(uuid.uuid4())

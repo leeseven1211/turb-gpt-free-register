@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, urlparse
 import pyotp
 
 from config import account as account_config
+from config.browser import IMPERSONATE
 from core.account_export import fetch_session, follow_oauth_callback
 from core.account_liveness import (
     _network_preflight_with_retry,
@@ -37,6 +38,7 @@ from core.openai_auth import (
     send_email_otp,
 )
 from core.account_credentials import get_account_login_credentials
+from core.auth_fingerprint import build_safe_fingerprint_summary
 
 logger = logging.getLogger(__name__)
 
@@ -623,6 +625,14 @@ def _success(
         "fallback_used": bool(fallback_used),
         "live_check_driver": "protocol_v2",
         "roxy_fallback_allowed": password_auth_status != "rejected",
+        "fingerprint": build_safe_fingerprint_summary(
+            session,
+            source="protocol",
+            profile_version=getattr(session, "protocol_profile_version", None),
+            profile_ref=getattr(session, "protocol_profile_ref", None),
+            route={"proxy_mode": "proxy" if getattr(session, "proxy", None) else "direct"},
+            transport_profile=f"curl_cffi:{IMPERSONATE}",
+        ),
     }
 
 

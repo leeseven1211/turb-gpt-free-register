@@ -119,6 +119,43 @@ class TokenRefreshServiceTests(unittest.TestCase):
 
 
 class AccountStatusTests(PostgresTestCase):
+    def test_liveness_persists_only_safe_auth_fingerprint_summary(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            patches = [
+                patch.object(webui_app.db, "_ACCOUNTS_JSON", root / "registered.json"),
+                patch.object(webui_app.db, "_OUTLOOK_JSON", root / "outlook.json"),
+                patch.object(webui_app.db, "_ACCOUNTS_TXT", root / "registered.txt"),
+                patch.object(webui_app.db, "_TOKENS_TXT", root / "tokens.txt"),
+                patch.object(webui_app.db, "_OUTLOOK_TXT", root / "outlook.txt"),
+                patch.object(webui_app.db, "_VIEWER_HTML", root / "viewer.html"),
+            ]
+            with ExitStack() as stack:
+                for item in patches:
+                    stack.enter_context(item)
+                webui_app.db._save_accounts([{"id": 7, "email": "safe@example.com", "access_token": "old"}])
+                self.assertTrue(webui_app.db.update_account_liveness(7, {
+                    "ok": True,
+                    "status": "live",
+                    "auth_method": "password_totp",
+                    "fingerprint": {
+                        "source": "protocol",
+                        "profile_ref": "abc123",
+                        "screen_width": 1440,
+                        "device_id": "private-device-id",
+                        "oai_session_id": "private-session-id",
+                        "proxy_url": "http://user:password@example.test:8080",
+                    },
+                }))
+                row = webui_app.db.get_account(7)
+
+        self.assertEqual("protocol", row["last_auth_fingerprint"]["source"])
+        self.assertEqual(1440, row["last_auth_fingerprint"]["screen_width"])
+        self.assertNotIn("device_id", row["last_auth_fingerprint"])
+        self.assertNotIn("oai_session_id", row["last_auth_fingerprint"])
+        self.assertNotIn("proxy_url", row["last_auth_fingerprint"])
+        self.assertNotIn("private-device-id", row["last_auth_fingerprint_text"])
+
     def test_deactivated_liveness_result_persists_independent_account_status(self):
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)

@@ -537,6 +537,7 @@ def _run_live_check(
                 "auth_method": result.get("auth_method"),
                 "password_auth_status": result.get("password_auth_status"),
                 "fallback_used": result.get("fallback_used"),
+                "fingerprint": result.get("fingerprint"),
             },
             route={**route, **{key: result.get(key) for key in ("network_route", "proxy_provider", "proxy_region", "proxy_used")}},
             validation_method=result.get("validation_method"),

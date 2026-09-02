@@ -1715,6 +1715,13 @@ def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
             row["last_auth_error_code"] = str(result.get("error"))[:100]
         elif result.get("ok") and result.get("auth_method"):
             row["last_auth_error_code"] = None
+        if result.get("fingerprint"):
+            from core.auth_fingerprint import clean_safe_fingerprint_summary, safe_fingerprint_summary_text
+
+            fingerprint = clean_safe_fingerprint_summary(result.get("fingerprint"))
+            if fingerprint:
+                row["last_auth_fingerprint"] = fingerprint
+                row["last_auth_fingerprint_text"] = safe_fingerprint_summary_text(fingerprint)
         try:
             row["live_check_http_status"] = int(result.get("http_status"))
         except (TypeError, ValueError):
