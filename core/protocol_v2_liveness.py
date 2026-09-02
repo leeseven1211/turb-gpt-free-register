@@ -53,6 +53,8 @@ _AUTH_MARKERS = (
     "wrong_password",
     "password_invalid",
     "password_rejected",
+    "invalid_username_or_password",
+    "login failed",
     "密码错误",
     "密码不正确",
 )

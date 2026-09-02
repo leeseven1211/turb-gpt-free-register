@@ -79,6 +79,34 @@ class ProtocolV2LivenessTests(unittest.TestCase):
         self.assertEqual("password_rejected", caught.exception.code)
         self.assertFalse(caught.exception.roxy_fallback_allowed)
 
+    def test_password_http_401_real_login_failure_code_is_classified_as_rejected(self):
+        from core import protocol_v2_liveness as v2
+
+        class RejectedSession(_Session):
+            def post(self, url, headers, data, allow_redirects=False):
+                return _Response(
+                    401,
+                    {
+                        "error": {
+                            "message": "Login failed. Please try again or seek help at https://help.openai.com/",
+                            "type": "invalid_request_error",
+                            "param": None,
+                            "code": "invalid_username_or_password",
+                        }
+                    },
+                    text='{"error":{"code":"invalid_username_or_password"}}',
+                )
+
+        with (
+            patch.object(v2, "request_sentinel_token", return_value={"token": "challenge"}),
+            patch.object(v2, "build_sentinel_header", return_value=("sentinel", None)),
+        ):
+            with self.assertRaises(v2.ProtocolV2AuthError) as caught:
+                v2._password_verify(RejectedSession(), "wrong")
+
+        self.assertEqual("password_rejected", caught.exception.code)
+        self.assertFalse(caught.exception.roxy_fallback_allowed)
+
     def test_password_rejection_is_classified_without_roxy_or_email_fallback_by_default(self):
         from core import protocol_v2_liveness as v2
 

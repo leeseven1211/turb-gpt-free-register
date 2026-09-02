@@ -40,7 +40,11 @@ def _settings() -> tuple[str, int, str, str]:
 def _connect() -> imaplib.IMAP4_SSL:
     server, port, username, password = _settings()
     try:
-        mail = imaplib.IMAP4_SSL(server, port)
+        timeout = max(3, int(getattr(_email_cfg, "ICLOUD_HME_REQUEST_TIMEOUT", 35) or 35))
+    except (TypeError, ValueError):
+        timeout = 35
+    try:
+        mail = imaplib.IMAP4_SSL(server, port, timeout=timeout)
         mail.login(username, password)
         status, _ = mail.select("INBOX", readonly=True)
         if status != "OK":

@@ -54,6 +54,23 @@ class ForwardIMAPTests(unittest.TestCase):
             with self.assertRaises(client.ForwardIMAPError):
                 client._settings()
 
+    @patch("core.forward_imap_client.imaplib.IMAP4_SSL")
+    def test_connect_applies_configured_socket_timeout(self, imap_cls):
+        mail = imap_cls.return_value
+        mail.select.return_value = ("OK", [])
+        with (
+            patch.object(client._email_cfg, "ICLOUD_HME_FORWARD_IMAP_SERVER", "imap.gmail.com"),
+            patch.object(client._email_cfg, "ICLOUD_HME_FORWARD_IMAP_PORT", 993),
+            patch.object(client._email_cfg, "ICLOUD_HME_FORWARD_IMAP_EMAIL", "owner@gmail.com"),
+            patch.object(client._email_cfg, "ICLOUD_HME_FORWARD_IMAP_PASSWORD", "app-password"),
+            patch.object(client._email_cfg, "ICLOUD_HME_REQUEST_TIMEOUT", 11),
+        ):
+            self.assertIs(client._connect(), mail)
+
+        imap_cls.assert_called_once_with("imap.gmail.com", 993, timeout=11)
+        mail.login.assert_called_once_with("owner@gmail.com", "app-password")
+        mail.select.assert_called_once_with("INBOX", readonly=True)
+
     @patch("core.email_butler_client.test_connection")
     def test_connection_uses_email_butler_pg_cache(self, test_butler):
         test_butler.return_value = {
