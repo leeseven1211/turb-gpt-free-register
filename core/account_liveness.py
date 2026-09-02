@@ -95,8 +95,8 @@ def _network_preflight_with_retry(
         if context_recorder is not None:
             context_recorder.open_protocol_session(session, route_attempt_no=attempt)
         logger.info(
-            "[查活] 会话创建完成：proxy=%s device_id=%s（网络预检第 %s/%s 次）",
-            session.proxy or "配置随机/直连", session.device_id, attempt, max_attempts,
+            "[查活] 会话创建完成：proxy=%s device_id=已隐藏（网络预检第 %s/%s 次）",
+            session.proxy or "配置随机/直连", attempt, max_attempts,
         )
         try:
             _warm_protocol_login_context(session)

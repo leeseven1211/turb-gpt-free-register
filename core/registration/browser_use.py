@@ -2046,7 +2046,7 @@ def run_browser_use_registration(
                     if provider_prefix == "skyvern" and hasattr(client, "close_browser_session") and getattr(session_info_open, "session_id", ""):
                         try:
                             client.close_browser_session(session_info_open.session_id)
-                            logger.info("[Skyvern] 已关闭注册 browser session：%s", session_info_open.session_id)
+                            logger.info("[Skyvern] 已关闭注册 browser session（原值不写日志）")
                         except Exception as exc:
                             logger.warning("[Skyvern] 关闭注册 browser session 失败：%s: %s", type(exc).__name__, str(exc)[:180])
                     browser = None

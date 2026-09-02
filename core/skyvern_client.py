@@ -119,6 +119,8 @@ class SkyvernClient:
         payload["ad_blocker"] = bool(getattr(_cfg, "SKYVERN_AD_BLOCKER", True))
 
         safe_payload = dict(payload)
+        if "browser_profile_id" in safe_payload:
+            safe_payload["browser_profile_id"] = "[REDACTED]"
         logger.info("[Skyvern] 创建 browser session: base=%s payload=%s", self.api_base, safe_payload)
         resp = requests.post(
             f"{self.api_base}/v1/browser_sessions",
@@ -190,7 +192,7 @@ class SkyvernClient:
         proxy_location = str(getattr(_cfg, "SKYVERN_PROXY_LOCATION", "") or "").strip()
         profile_id = str(getattr(_cfg, "SKYVERN_BROWSER_PROFILE_ID", "") or "").strip()
         safe_raw = dict(data)
-        logger.info("[Skyvern] browser session 已创建：session_id=%s browser_address=%s", session_id or "-", address)
+        logger.info("[Skyvern] browser session 已创建：session_id=已隐藏 browser_address=已隐藏")
         return SkyvernSession(
             connect_url=address,
             api_key_present=True,

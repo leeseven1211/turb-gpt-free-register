@@ -181,7 +181,7 @@ def run_protocol_registration(
 
     logger.info(f"[注册] 开始：{email}，代理={proxy_label}")
     logger.info(f"[注册] 本次随机生日: {birthday}")
-    logger.debug(f"[注册] 设备ID={session.device_id}，会话日志ID={session.auth_session_logging_id}")
+    logger.debug("[注册] 设备/会话标识已生成（原值不写日志）")
 
     create_acknowledged = False
     try:
@@ -388,7 +388,7 @@ def run_protocol_registration(
                 "registration_checkpoint": "core_persisted",
             },
         )
-        logger.info(f"[核心完成] {email}，账号ID={account_id}，Token={access_token[:16]}...")
+        logger.info("[核心完成] %s，账号ID=%s，Token 已获取（原值不写日志）", email, account_id)
 
         # ==================== 阶段7: 设置 2FA ====================
         totp_secret = None

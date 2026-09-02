@@ -101,7 +101,7 @@ def get_csrf_token(session: BrowserSession) -> str:
 
     data = resp.json()
     csrf_token = data.get("csrfToken", "")
-    logger.info(f"[步骤2] 获取 CSRF Token 成功: {csrf_token[:20]}...")
+    logger.info("[步骤2] 获取 CSRF Token 成功（原值不写日志）")
     return csrf_token
 
 

@@ -187,7 +187,7 @@ def _trigger_reauth(session: BrowserSession, email: str) -> str:
     csrf_resp = session.get(csrf_url, headers=session.get_nextauth_headers(referer="https://chatgpt.com/"))
     csrf_resp.raise_for_status()
     csrf_token = csrf_resp.json()["csrfToken"]
-    logger.info(f"[2FA] 重认证 CSRF: {csrf_token[:20]}...")
+    logger.info("[2FA] 重认证 CSRF 已获取（原值不写日志）")
 
     # POST /api/auth/signin/openai 带 reauth 参数
     query = {
@@ -260,7 +260,7 @@ def _exchange_new_token(session: BrowserSession, continue_url: str) -> str:
     # 拿新的 accessToken
     new_session = fetch_session(session)
     new_token = new_session["accessToken"]
-    logger.info(f"[2FA] 新 accessToken（含新鲜 pwd_auth_time）: {new_token[:40]}...")
+    logger.info("[2FA] 新 accessToken 已获取（原值不写日志）")
     return new_token
 
 
