@@ -566,6 +566,27 @@ class AccountTaskApiTests(PostgresTestCase):
         self.assertEqual("token_refresh_manual", refresh_call.kwargs["trigger"])
         self.assertTrue(refresh_call.kwargs["force_refresh"])
 
+    def test_live_check_bulk_forwards_explicit_driver_override_only_to_live_tasks(self):
+        app = create_app(auth_code="test-auth")
+        client = app.test_client()
+        client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
+        account = {"id": 7, "email": "a@example.com", "access_token": "saved-token"}
+        with (
+            patch("core.feature_availability.require_feature", return_value=(True, "")),
+            patch.object(account_task_store, "create_batch", return_value="live-batch"),
+            patch.object(live_check_service, "enqueue_account_live_check", return_value={"accepted": True}) as enqueue,
+            patch.object(webui_app.db, "get_account", return_value=account),
+            patch("config.account.ACCOUNT_LIVE_CHECK_BROWSER_ENABLED", True),
+        ):
+            response = client.post(
+                "/api/accounts/check-live-bulk",
+                json={"account_ids": [7], "driver": "browser_roxy"},
+            )
+
+        self.assertEqual(202, response.status_code)
+        enqueue.assert_called_once()
+        self.assertEqual("browser_roxy", enqueue.call_args.kwargs["driver"])
+
     def test_list_api_returns_task_instances(self):
         app = create_app(auth_code="test-auth")
         client = app.test_client()
@@ -608,6 +629,8 @@ class AccountTaskApiTests(PostgresTestCase):
         self.assertIn("label: '过期'", html)
         self.assertIn("label: `失效 · ${liveHttpStatus || '未知'}`", html)
         self.assertIn('data-account-copy-secret="access_token"', html)
+        self.assertIn("function configuredLiveCheckDriver", html)
+        self.assertIn("driver: configuredLiveCheckDriver()", html)
         self.assertIn("function meaningfulTaskDetail", html)
         self.assertIn("white-space:normal", html)
         self.assertIn("flex:1 1 auto; min-height:0; overflow:auto", html)

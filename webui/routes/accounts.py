@@ -30,6 +30,7 @@ from core import (
 )
 from core import registration_service as svc
 from core.task_errors import classify_task_error
+from core.live_check_router import LiveCheckDriverError
 from config import codex as codex_config
 from webui import config_editor
 from webui.blueprint import LegacyEndpointBlueprint
@@ -594,6 +595,15 @@ def create_accounts_blueprint(context: WebUIContext):
         if unavailable:
             return unavailable
         data = request.get_json(silent=True) or {}
+        requested_driver = data.get("driver")
+        if requested_driver is not None and not isinstance(requested_driver, str):
+            return jsonify({"ok": False, "error": "driver 必须是字符串"}), 400
+        requested_driver = str(requested_driver or "").strip().lower() or None
+        if requested_driver is not None:
+            try:
+                live_check_service.resolve_driver(requested_driver)
+            except LiveCheckDriverError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 400
         ids = data.get("account_ids") or data.get("ids") or []
         if not isinstance(ids, list) or not ids:
             return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
@@ -649,6 +659,7 @@ def create_accounts_blueprint(context: WebUIContext):
                 proxy=None,
                 batch_id=batch_id,
                 force_refresh=False,
+                driver=requested_driver,
             )
             if queued.get("accepted"):
                 started.append({"id": acc_id, "email": email, "status": "queued"})
@@ -669,6 +680,7 @@ def create_accounts_blueprint(context: WebUIContext):
             "skipped": skipped,
             "queue": live_check_service.queue_settings(),
             "batch_id": batch_id,
+            "live_check_driver": requested_driver or live_check_service.resolve_driver(),
         }), 202
 
     @bp.post("/api/accounts/refresh-token-bulk")
