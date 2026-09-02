@@ -24,6 +24,10 @@ function configDriverChoices(f) {
     ['legacy', '现有刷新链路（保持现状）'],
     ['protocol_v2', 'Protocol v2 密码/MFA（需开启总开关）'],
   ];
+  if (f.key === 'ACCOUNT_AUTH_PROFILE_MODE') return [
+    ['current', '当前会话画像（保持现状）'],
+    ['account_stable', '账号稳定 Protocol 画像（懒创建）'],
+  ];
   if (f.key === 'ACCOUNT_2FA_DRIVER' || f.key === 'TWOFA_DRIVER') {
     return [['protocol', '协议直开（新鲜 AT）'], ['browser', '浏览器页面（RoxyBrowser）']];
   }

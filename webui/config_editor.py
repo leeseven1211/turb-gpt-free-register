@@ -142,6 +142,10 @@ EDITABLE_FIELDS = [
         "label": "密码错误后邮箱兜底", "help": "默认关闭；开启后密码明确错误时另起一次认证会话发送邮箱验证码，结果仍保留 password_rejected，不重试密码",
     },
     {
+        "key": "ACCOUNT_AUTH_PROFILE_MODE", "file": "account.py", "type": "str", "group": "账号补全",
+        "label": "Protocol 设备画像", "help": "current 保持现状、每次会话随机设备画像；account_stable 仅在明确开启 Protocol v2 刷新时按账号懒创建稳定画像，不影响注册 device_id、普通查活和旧刷新链路",
+    },
+    {
         "key": "ACCOUNT_2FA_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
         "label": "2FA 补全驱动", "help": "可选协议开通或浏览器安全设置页面；两种方式都已实现",
     },

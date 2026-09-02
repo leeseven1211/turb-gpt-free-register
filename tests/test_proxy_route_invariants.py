@@ -42,6 +42,25 @@ class ProxyRouteInvariantTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "禁止.*PROXY_POOL"):
                 BrowserSession(proxy=None)
 
+    def test_browser_session_uses_stable_identity_only_when_explicitly_passed(self):
+        from core.session import BrowserSession
+        from core.storage.account_auth import _derive_identity
+
+        identity = _derive_identity("55" * 32)
+        with patch("core.session.Session"):
+            session = BrowserSession(proxy="", detect_exit_geo=False, identity=identity)
+
+        self.assertEqual(identity["device_id"], session.device_id)
+        self.assertEqual(identity["profile_ref"], session.protocol_profile_ref)
+        self.assertEqual(identity["browser_profile"]["screen_width"], session.browser_profile["screen_width"])
+        self.assertEqual(identity["browser_profile"]["hardware_concurrency"], session.browser_profile["hardware_concurrency"])
+
+        with patch("core.session.Session"):
+            second = BrowserSession(proxy="", detect_exit_geo=False, identity=identity)
+        self.assertEqual(session.device_id, second.device_id)
+        self.assertNotEqual(session.oai_session_id, second.oai_session_id)
+        self.assertNotEqual(session.sentinel_sid, second.sentinel_sid)
+
     def test_codex_standalone_call_acquires_platform_account_route(self):
         from core import codex_oauth
 
@@ -196,6 +215,56 @@ class ProxyRouteInvariantTests(unittest.TestCase):
         acquire.assert_not_called()
         email_login.assert_not_called()
         self.assertNotIn("access_token", updated.call_args.args[1])
+
+    def test_protocol_v2_refresh_loads_stable_identity_only_in_account_stable_mode(self):
+        from core import live_check_service
+
+        route = SimpleNamespace(
+            proxy_url="http://stable.example:8080",
+            public_dict=lambda: {
+                "proxy_mode": "explicit",
+                "network_route": "proxy",
+                "proxy_provider": "manual",
+                "proxy_used": "http://stable.example:8080",
+                "proxy_region": "US",
+            },
+            release=MagicMock(),
+        )
+        identity = SimpleNamespace(profile_ref="abc123def456", profile_version=1)
+        refreshed = {
+            "ok": True,
+            "status": "live",
+            "access_token": "fresh-token",
+            "session": {"account": {"planType": "free"}},
+            "validation_method": "authenticated_session",
+            "live_check_driver": "protocol_v2",
+        }
+        with (
+            patch("config.account.ACCOUNT_AUTH_V2_ENABLED", True),
+            patch("config.account.ACCOUNT_AUTH_PROFILE_MODE", "account_stable"),
+            patch.object(live_check_service.db, "mark_account_live_check_running", return_value=True),
+            patch.object(live_check_service.db, "get_account", return_value={"access_token": "expired-token"}),
+            patch.object(live_check_service.db, "update_account_liveness"),
+            patch.object(live_check_service, "token_claims", return_value={"token_expired": True}),
+            patch.object(live_check_service, "_append_log"),
+            patch.object(live_check_service._QUEUE_SLOTS, "release"),
+            patch("core.account_proxy.acquire_account_proxy", return_value=route),
+            patch("core.storage.account_auth.ensure_account_protocol_identity", return_value=identity) as ensure,
+            patch("core.protocol_v2_liveness.refresh_access_token", return_value=refreshed) as refresh,
+        ):
+            result = live_check_service._run_live_check(
+                account_id=85,
+                email="first@example.com",
+                proxy="",
+                trigger="token_refresh_manual",
+                force_refresh=True,
+                refresh_driver="protocol_v2",
+            )
+
+        self.assertTrue(result["ok"])
+        ensure.assert_called_once_with(85)
+        self.assertIs(identity, refresh.call_args.kwargs["identity"])
+        route.release.assert_called_once_with(reason="live-check-85")
 
     def test_live_check_uses_valid_saved_token_before_email_login(self):
         from core import live_check_service

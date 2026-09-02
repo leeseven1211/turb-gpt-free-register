@@ -390,9 +390,14 @@ def _complete_email_otp(session, email: str, after_ts: float, *, auth_method: st
         ) from exc
 
 
-def _start_email_session(email: str, proxy: str | None):
+def _start_email_session(email: str, proxy: str | None, *, identity=None):
     """Start one fresh auth session for a controlled email fallback."""
-    session, authorize_url = _network_preflight_with_retry(email, proxy, max_attempts=1)
+    session, authorize_url = _network_preflight_with_retry(
+        email,
+        proxy,
+        max_attempts=1,
+        identity=identity,
+    )
     after_ts = time.time()
     final_url = follow_authorize(session, authorize_url)
     dead_code = detect_account_unusable_text(final_url)
@@ -411,6 +416,7 @@ def _refresh_with_password(
     proxy: str | None,
     *,
     proxy_supplier: Callable[[int], str | None] | None,
+    identity=None,
 ) -> dict:
     session = None
     fallback_session = None
@@ -436,6 +442,7 @@ def _refresh_with_password(
             email,
             proxy,
             proxy_supplier=proxy_supplier,
+            identity=identity,
         )
         otp_after_ts = time.time()
         final_url = follow_authorize(session, authorize_url)
@@ -453,7 +460,11 @@ def _refresh_with_password(
             # Do not reuse the rejected session.  The fallback starts a fresh
             # cookie jar, while keeping the original selected proxy.
             fallback_used = True
-            fallback_session, fallback_after_ts = _start_email_session(email, getattr(session, "proxy", proxy))
+            fallback_session, fallback_after_ts = _start_email_session(
+                email,
+                getattr(session, "proxy", proxy),
+                identity=identity,
+            )
             try:
                 email_result, auth_method = _complete_email_otp(
                     fallback_session,
@@ -586,11 +597,17 @@ def refresh_access_token(
     *,
     proxy: str | None = None,
     proxy_supplier: Callable[[int], str | None] | None = None,
+    identity=None,
 ) -> dict:
     """Run the opt-in Protocol v2 refresh flow and return a safe result."""
     checked_at = _now()
     try:
-        return _refresh_with_password(email, proxy, proxy_supplier=proxy_supplier)
+        return _refresh_with_password(
+            email,
+            proxy,
+            proxy_supplier=proxy_supplier,
+            identity=identity,
+        )
     except AccountUnusableError as exc:
         code = getattr(exc, "error_code", "") or "account_deactivated"
         return {

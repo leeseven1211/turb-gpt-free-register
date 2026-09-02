@@ -35,6 +35,9 @@ ACCOUNT_AUTH_V2_ENABLED = False
 # 密码明确错误后是否允许另起认证会话发送一次邮箱 OTP。默认关闭，避免把
 # 过期/录错密码静默掩盖；开启后任务结果仍保留 password_rejected。
 ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK = False
+# Protocol v2 的设备画像默认继续沿用现有“每个 BrowserSession 随机画像”。只有
+# 明确选择 account_stable，且实际进入 Protocol v2 刷新时，才按账号懒创建私有身份。
+ACCOUNT_AUTH_PROFILE_MODE = "current"
 
 
 apply_env_overrides(globals(), {
@@ -52,6 +55,7 @@ apply_env_overrides(globals(), {
     "ACCOUNT_TOKEN_REFRESH_DRIVER": "str",
     "ACCOUNT_AUTH_V2_ENABLED": "bool",
     "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK": "bool",
+    "ACCOUNT_AUTH_PROFILE_MODE": "str",
 })
 
 
@@ -68,6 +72,7 @@ def completion_settings() -> dict[str, object]:
         "token_refresh_driver": str(ACCOUNT_TOKEN_REFRESH_DRIVER or "legacy").strip().lower() or "legacy",
         "auth_v2_enabled": bool(ACCOUNT_AUTH_V2_ENABLED),
         "auth_password_email_fallback": bool(ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK),
+        "auth_profile_mode": str(ACCOUNT_AUTH_PROFILE_MODE or "current").strip().lower() or "current",
         "twofa_driver": str(ACCOUNT_2FA_DRIVER or "protocol").strip().lower() or "protocol",
         "codex_driver": str(ACCOUNT_CODEX_DRIVER or "same_as_registration").strip().lower() or "same_as_registration",
     }

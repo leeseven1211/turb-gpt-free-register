@@ -18,6 +18,7 @@ const CONFIG_LIFECYCLE_SECTION_KEYS_V2 = {
     'ACCOUNT_TOKEN_REFRESH_DRIVER',
     'ACCOUNT_AUTH_V2_ENABLED',
     'ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK',
+    'ACCOUNT_AUTH_PROFILE_MODE',
     'TWOFA_DRIVER',
     'ACCOUNT_2FA_DRIVER',
     'CODEX_OAUTH_DRIVER',
@@ -562,6 +563,11 @@ function renderLifecycleExecutionSection(fields) {
   if (has('ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK')) {
     cards.push(renderFeatureSwitchField(has('ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK'), { withIcon: false }));
   }
+  if (has('ACCOUNT_AUTH_PROFILE_MODE')) {
+    cards.push(renderLifecycleDriverSelect(
+      'ACCOUNT_AUTH_PROFILE_MODE', 'Protocol 设备画像', '默认保持现状，每次会话随机画像；account_stable 只对明确开启的 Protocol v2 刷新懒创建账号级画像，不影响注册 device_id、普通查活或旧刷新。', authProfileModeChoices()
+    ));
+  }
   if (has('TWOFA_DRIVER')) {
     cards.push(renderLifecycleDriverSelect(
       'TWOFA_DRIVER', '2FA 开通', '注册和账号补全的 2FA 执行方式统一维护；协议模式失败时仍按现有实现做浏览器兜底。', twofaDriverChoices(), ['ACCOUNT_2FA_DRIVER']
@@ -670,6 +676,12 @@ function refreshDriverChoices() {
     { value: 'protocol_v2', label: 'Protocol v2 密码 / MFA（需开启总开关）' },
   ];
 }
+function authProfileModeChoices() {
+  return [
+    { value: 'current', label: '当前会话画像（保持现状）' },
+    { value: 'account_stable', label: '账号稳定 Protocol 画像（懒创建）' },
+  ];
+}
 function renderTwofaDriverControl(f) {
   const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
   const current = String(fv == null ? 'protocol' : fv).trim().toLowerCase() || 'protocol';
@@ -705,6 +717,7 @@ function configDriverChoices(f) {
   }
   if (f.key === 'ACCOUNT_LIVE_CHECK_DRIVER') return liveCheckDriverChoices();
   if (f.key === 'ACCOUNT_TOKEN_REFRESH_DRIVER') return refreshDriverChoices();
+  if (f.key === 'ACCOUNT_AUTH_PROFILE_MODE') return authProfileModeChoices();
   if (f.key === 'ACCOUNT_2FA_DRIVER') return twofaDriverChoices();
   if (f.key === 'ACCOUNT_CODEX_DRIVER') return codexOauthDriverChoices();
   return null;

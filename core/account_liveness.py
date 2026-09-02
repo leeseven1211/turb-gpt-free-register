@@ -64,6 +64,7 @@ def _network_preflight_with_retry(
     max_attempts: int = 4,
     *,
     proxy_supplier: Callable[[int], str | None] | None = None,
+    identity=None,
 ) -> tuple[BrowserSession, str]:
     """页面/匿名态预热 → CSRF → Signin；每轮建新会话并可换新代理。
 
@@ -80,7 +81,10 @@ def _network_preflight_with_retry(
                 pass
         selected_proxy = proxy_supplier(attempt) if proxy_supplier is not None else proxy
         # 空字符串是账号代理服务明确选择“直连”，不能转成 None 后又静默回退 PROXY_POOL。
-        session = BrowserSession(proxy=selected_proxy)
+        session_kwargs = {"proxy": selected_proxy}
+        if identity is not None:
+            session_kwargs["identity"] = identity
+        session = BrowserSession(**session_kwargs)
         logger.info(
             "[查活] 会话创建完成：proxy=%s device_id=%s（网络预检第 %s/%s 次）",
             session.proxy or "配置随机/直连", session.device_id, attempt, max_attempts,

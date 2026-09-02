@@ -16,7 +16,8 @@ from config import (
     SEC_CH_UA_FULL_VERSION_LIST, SEC_CH_UA_PLATFORM_VERSION, SEC_CH_UA_ARCH,
     SEC_CH_UA_BITNESS, SEC_CH_UA_MODEL, SEND_HIGH_ENTROPY_CLIENT_HINTS,
     ACCEPT_LANGUAGE, IMPERSONATE, OAI_CLIENT_BUILD_NUMBER, OAI_CLIENT_VERSION,
-    REQUEST_TIMEOUT, pick_proxy, pick_browser_profile, validate_browser_profile,
+    REQUEST_TIMEOUT, pick_proxy, pick_browser_profile, build_browser_environment,
+    validate_browser_profile,
 )
 
 
@@ -63,7 +64,7 @@ class BrowserSession:
     使用 curl_cffi 的 impersonate 功能绕过 Cloudflare TLS 指纹检测。
     """
 
-    def __init__(self, proxy: str = None, *, detect_exit_geo: bool = True):
+    def __init__(self, proxy: str = None, *, detect_exit_geo: bool = True, identity=None):
         """
         初始化会话。
 
@@ -73,6 +74,8 @@ class BrowserSession:
                    显式传 "" 表示禁用代理。
             detect_exit_geo: 是否探测出口 IP 并自动选择语言/时区画像。
                              套餐查询等短请求可关闭，避免额外网络等待。
+            identity: 可选的账号级稳定 Protocol identity。未传时完全保持
+                      现有每会话随机 device_id / 设备画像行为。
         """
         # proxy=None  → 仅静态池模式允许从池里随机抽；代理平台模式必须由
         #                registration/account_proxy 先领取租约并显式传入。
@@ -90,8 +93,21 @@ class BrowserSession:
         else:
             self.proxy = proxy
 
-        # 生成设备ID（oai-did），整个注册流程复用
-        self.device_id = str(uuid.uuid4())
+        # 生成设备ID（oai-did），整个注册流程复用。稳定 identity 只由显式
+        # 的 Protocol v2 刷新路径传入；注册、普通查活和旧刷新不传 identity。
+        identity_device_id = (
+            identity.get("device_id") if isinstance(identity, dict)
+            else getattr(identity, "device_id", None)
+        )
+        self.device_id = str(identity_device_id or uuid.uuid4())
+        self.protocol_identity_id = (
+            identity.get("identity_id") if isinstance(identity, dict)
+            else getattr(identity, "identity_id", None)
+        )
+        self.protocol_profile_ref = (
+            identity.get("profile_ref") if isinstance(identity, dict)
+            else getattr(identity, "profile_ref", None)
+        )
 
         # 生成 auth_session_logging_id
         self.auth_session_logging_id = str(uuid.uuid4())
@@ -133,7 +149,30 @@ class BrowserSession:
         # 这样 Accept-Language / navigator.language / timezone 可自动跟随出口地区。
         self.exit_geo = self._detect_exit_geo() if detect_exit_geo else {}
         self._enforce_proxy_quality()
-        self.browser_profile = pick_browser_profile(self.exit_geo)
+        identity_profile = (
+            identity.get("browser_profile") if isinstance(identity, dict)
+            else getattr(identity, "browser_profile", None)
+        )
+        if identity is not None:
+            if not identity_device_id or not isinstance(identity_profile, dict):
+                raise ValueError("Protocol identity 缺少稳定 device_id/browser_profile")
+            required_profile_fields = {
+                "screen_width", "screen_height", "device_pixel_ratio",
+                "hardware_concurrency", "device_memory", "js_heap_size_limit",
+            }
+            if not required_profile_fields.issubset(identity_profile):
+                raise ValueError("Protocol identity 的设备画像不完整")
+        if identity_profile:
+            # build_browser_environment overlays the current route's geo/locale
+            # on top of the immutable device layer.  Session/trace keys remain
+            # newly generated below, so fallback sessions get fresh cookies and
+            # request identifiers while keeping the same account identity.
+            self.browser_profile = build_browser_environment(
+                self.exit_geo,
+                base_profile=dict(identity_profile),
+            )
+        else:
+            self.browser_profile = pick_browser_profile(self.exit_geo)
         self.browser_profile["react_listening_key"] = self.react_listening_key
         self.browser_profile["react_container_key"] = self.react_container_key
         self.browser_profile["react_resources_key"] = self.react_resources_key

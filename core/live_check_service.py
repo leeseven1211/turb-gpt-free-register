@@ -88,6 +88,29 @@ def _resolve_refresh_driver(requested: str | None = None) -> str:
     return "legacy"
 
 
+def _resolve_protocol_identity(account_id: int, refresh_driver: str | None):
+    """Load the optional stable identity only for the explicit Protocol v2 path."""
+    if refresh_driver != "protocol_v2":
+        return None
+    from config import account as account_config
+
+    mode = str(getattr(account_config, "ACCOUNT_AUTH_PROFILE_MODE", "current") or "current").strip().lower()
+    if mode in {"", "current"}:
+        return None
+    if mode != "account_stable":
+        logger.warning("[查活] 不支持的 Protocol 设备画像模式 %r，保持当前会话随机画像", mode)
+        return None
+    from core.storage.account_auth import ensure_account_protocol_identity
+
+    identity = ensure_account_protocol_identity(account_id)
+    logger.info(
+        "[查活][Protocol v2] 使用账号稳定设备画像 profile_ref=%s version=%s",
+        identity.profile_ref,
+        identity.profile_version,
+    )
+    return identity
+
+
 def _report_protocol_v2_refresh(reporter: TaskReporter, result: dict) -> None:
     """Project Protocol v2's actual auth method without inventing OTP success."""
     auth_method = str(result.get("auth_method") or "protocol_v2")
@@ -239,6 +262,7 @@ def _run_live_check(
         # - 查活只验证数据库里的现有 AT，不发送邮箱 OTP，也不偷偷刷新 AT。
         # - 刷新 AT（force_refresh=True）才跳过旧 AT，执行邮箱 OTP 重登录。
         account = db.get_account(account_id) or {}
+        protocol_identity = _resolve_protocol_identity(account_id, selected_refresh_driver)
         saved_access_token = str(account.get("access_token") or "").strip()
         saved_claims = token_claims(saved_access_token) if saved_access_token else {}
         result = None
@@ -392,6 +416,7 @@ def _run_live_check(
                     email,
                     proxy=None,
                     proxy_supplier=acquire_retry_route,
+                    identity=protocol_identity,
                 )
             else:
                 result = check_account_liveness(
@@ -413,7 +438,11 @@ def _run_live_check(
             if selected_refresh_driver == "protocol_v2":
                 from core.protocol_v2_liveness import refresh_access_token
 
-                result = refresh_access_token(email, proxy=selected_proxy)
+                result = refresh_access_token(
+                    email,
+                    proxy=selected_proxy,
+                    identity=protocol_identity,
+                )
             else:
                 result = check_account_liveness(email, proxy=selected_proxy, clear_log=False)
         if (
