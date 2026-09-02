@@ -95,4 +95,3 @@ class AuthFingerprintSummaryTests(unittest.TestCase):
         self.assertIn("screen=1440x900@2", text)
         self.assertNotIn("private-device-id", text)
         self.assertNotIn("private-password", text)
-
