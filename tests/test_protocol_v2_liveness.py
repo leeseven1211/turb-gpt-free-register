@@ -146,6 +146,107 @@ class ProtocolV2LivenessTests(unittest.TestCase):
         self.assertEqual("http://proxy.example:8080", result["proxy_used"])
         session.session.close.assert_called_once()
 
+    def test_missing_password_uses_existing_email_refresh_path_without_password_post(self):
+        from core import protocol_v2_liveness as v2
+
+        legacy = {
+            "ok": True,
+            "status": "live",
+            "access_token": "fresh",
+            "validation_method": "email_otp",
+        }
+        with (
+            patch.object(v2, "get_account_login_credentials", return_value=("", "")),
+            patch.object(v2, "check_account_liveness", return_value=legacy) as check,
+        ):
+            result = v2.refresh_access_token("account@example.com", proxy="http://proxy.example:8080")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("legacy_email_otp", result["auth_method"])
+        self.assertEqual("protocol_v2", result["live_check_driver"])
+        check.assert_called_once_with(
+            "account@example.com",
+            proxy="http://proxy.example:8080",
+            clear_log=False,
+            proxy_supplier=None,
+        )
+
+    def test_password_email_challenge_uses_email_state_machine_then_returns_token(self):
+        from core import protocol_v2_liveness as v2
+
+        session = _Session()
+        password_result = {
+            "page": {"type": "email_verification"},
+            "continue_url": "https://auth.openai.com/email-verification",
+        }
+        with (
+            patch.object(v2, "get_account_login_credentials", return_value=("saved-password", "")),
+            patch.object(v2, "_network_preflight_with_retry", return_value=(session, "authorize")),
+            patch.object(v2, "follow_authorize", return_value="https://auth.openai.com/log-in/password"),
+            patch.object(v2, "_password_verify", return_value=password_result),
+            patch.object(v2, "_complete_email_otp", return_value=({"accessToken": "fresh"}, "password_email_otp")) as complete_email,
+        ):
+            result = v2.refresh_access_token("account@example.com", proxy="")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("password_email_otp", result["auth_method"])
+        complete_email.assert_called_once_with(
+            session,
+            "account@example.com",
+            unittest.mock.ANY,
+            auth_method="password_email_otp",
+        )
+
+    def test_password_email_challenge_can_continue_to_totp(self):
+        from core import protocol_v2_liveness as v2
+
+        session = _Session()
+        password_result = {
+            "page": {"type": "email_verification"},
+            "continue_url": "https://auth.openai.com/email-verification",
+        }
+        email_result = {
+            "page": {"type": "mfa_challenge", "payload": {"factor_id": "factor-1"}},
+            "continue_url": "https://auth.openai.com/mfa-challenge/factor-1",
+        }
+        with (
+            patch.object(v2, "get_account_login_credentials", return_value=("saved-password", "totp-secret")),
+            patch.object(v2, "_network_preflight_with_retry", return_value=(session, "authorize")),
+            patch.object(v2, "follow_authorize", return_value="https://auth.openai.com/log-in/password"),
+            patch.object(v2, "_password_verify", return_value=password_result),
+            patch.object(v2, "_complete_email_otp", return_value=(email_result, "password_email_otp")),
+            patch.object(v2, "_complete_mfa", return_value=({"accessToken": "fresh"}, "password_email_otp_mfa")) as complete_mfa,
+        ):
+            result = v2.refresh_access_token("account@example.com", proxy="")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("password_email_otp_mfa", result["auth_method"])
+        complete_mfa.assert_called_once_with(
+            session,
+            email_result,
+            "https://auth.openai.com/mfa-challenge/factor-1",
+            "totp-secret",
+        )
+
+    def test_password_page_without_continue_url_stops_without_clicking_or_following(self):
+        from core import protocol_v2_liveness as v2
+
+        session = _Session()
+        with (
+            patch.object(v2, "get_account_login_credentials", return_value=("saved-password", "")),
+            patch.object(v2, "_network_preflight_with_retry", return_value=(session, "authorize")),
+            patch.object(v2, "follow_authorize", return_value="https://auth.openai.com/log-in/password"),
+            patch.object(v2, "_password_verify", return_value={"page": {"type": "unknown"}}),
+            patch.object(v2, "_follow_and_fetch") as follow,
+            patch.object(v2, "_start_email_session") as start_email,
+        ):
+            result = v2.refresh_access_token("account@example.com", proxy="")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("auth_page_unknown", result["error"])
+        follow.assert_not_called()
+        start_email.assert_not_called()
+
     def test_mfa_path_requires_remote_challenge_and_saved_totp(self):
         from core import protocol_v2_liveness as v2
 
