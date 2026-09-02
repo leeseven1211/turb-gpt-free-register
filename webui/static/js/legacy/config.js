@@ -501,9 +501,13 @@ $('#btnSaveConfig').addEventListener('click', async () => {
   $('#btnSaveConfig').disabled = true;
   try {
     const r = await api('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({updates}) });
-    if (r.reloaded) {
+    const restartRequired = Array.isArray(r.restart_required) ? r.restart_required : [];
+    if (r.reloaded && !restartRequired.length) {
       $('#configBanner').className = 'banner info';
       $('#configBanner').innerHTML = `✅ 已保存 ${r.updated.length} 项，并完成热加载，<b>立即生效</b>，无需重启。${r.note ? `<br>${esc(r.note)}` : ''}`;
+    } else if (r.reloaded) {
+      $('#configBanner').className = 'banner warn';
+      $('#configBanner').innerHTML = `✅ 已保存 ${r.updated.length} 项并完成热加载；<b>${esc(restartRequired.join('、'))}</b> 需重启后完整生效。${r.note ? `<br>${esc(r.note)}` : ''}`;
     } else {
       $('#configBanner').className = 'banner warn';
       $('#configBanner').innerHTML = `已保存 ${r.updated.length} 项，但<b>热加载失败</b>（${esc(r.note||'')}），请重启 Web 服务后生效。`;
@@ -511,7 +515,11 @@ $('#btnSaveConfig').addEventListener('click', async () => {
     for (const [k, v] of Object.entries(updates)) { const f = CONFIG.find(x => x.key === k); if (f) f.value = v; delete CONFIG_PENDING_UPDATES[k]; }
     await loadCapabilities();
     await loadRegistrationEmailSources();
-    showToast(r.reloaded ? '配置已生效' : '配置已保存（需重启）');
+    showToast(!r.reloaded
+      ? '配置已保存（热加载失败，需重启）'
+      : restartRequired.length
+        ? `配置已热加载；${restartRequired.join('、')}需重启后完整生效`
+        : '配置已生效');
   } catch(e) { showToast('保存失败: ' + e.message); }
   finally { $('#btnSaveConfig').disabled = false; }
 });

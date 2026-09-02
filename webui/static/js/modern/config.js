@@ -1471,7 +1471,12 @@ async function saveConfigUpdates(triggerBtn) {
     renderConfigLayoutV2();
     await loadCapabilities();
     await loadRegistrationEmailSources();
-    showToast(r.reloaded ? '配置已生效' : '配置已保存（需重启）');
+    const restartRequired = Array.isArray(r.restart_required) ? r.restart_required : [];
+    showToast(!r.reloaded
+      ? '配置已保存（热加载失败，需重启）'
+      : restartRequired.length
+        ? `配置已热加载；${restartRequired.join('、')}需重启后完整生效`
+        : '配置已生效');
   } catch(e) {
     updateConfigSaveUi('error');
     showToast('保存失败: ' + e.message);

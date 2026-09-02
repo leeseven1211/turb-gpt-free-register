@@ -3248,6 +3248,18 @@ def get_job(job_id: int) -> dict | None:
     return record_store.get_row(record_store.JOBS, int(job_id))
 
 
+def get_latest_registration_job_for_account(account_id: int) -> dict | None:
+    """Find the newest registration execution that can be resumed for an account."""
+    rows = record_store.list_rows(
+        record_store.JOBS,
+        where='"account_id" = %s AND "job_type" IN (%s, %s)',
+        params=(int(account_id), "registration", "registration_resume"),
+        order_by='"id" DESC',
+        limit=1,
+    )
+    return rows[0] if rows else None
+
+
 def count_registration_jobs_by_batch_email(batch_id: str, email: str) -> int:
     """统计一个批次里已经写入某邮箱的注册任务数。
 

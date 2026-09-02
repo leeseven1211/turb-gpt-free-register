@@ -460,6 +460,18 @@ def get_attempt_by_job(job_id: int) -> dict | None:
         return _row(cur.fetchone())
 
 
+def get_latest_attempt_by_account(account_id: int) -> dict | None:
+    """Return the newest durable registration attempt for one account."""
+    init()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT * FROM {_table('registration_attempts')} "
+            "WHERE account_id=%s ORDER BY updated_at DESC, id DESC LIMIT 1",
+            (int(account_id),),
+        )
+        return _row(cur.fetchone())
+
+
 def list_attempts(*, limit: int = 100, checkpoint: str | None = None) -> list[dict]:
     init()
     params: list[Any] = []

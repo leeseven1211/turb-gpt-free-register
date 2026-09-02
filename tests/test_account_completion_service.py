@@ -63,6 +63,43 @@ class AccountCompletionPlanTests(unittest.TestCase):
         )
         self.assertEqual(["twofa"], plan["missing_steps"])
 
+    def test_pending_registration_never_plans_at_refresh(self):
+        account = {
+            "access_token": "",
+            "registration_target_status": "email_verification_pending",
+            "extra_json": '{"account_password":"Password!123"}',
+            "codex_status": "missing",
+        }
+        plan = completion_plan(account, {
+            "password_enabled": True,
+            "plan_check_enabled": True,
+            "twofa_enabled": True,
+            "codex_enabled": True,
+            "refresh_at_enabled": True,
+        })
+
+        self.assertEqual(["registration_resume"], plan["missing_steps"])
+        self.assertTrue(plan["registration_resume"])
+        self.assertFalse(plan["blocked"])
+
+    def test_normalized_pending_registration_state_is_used_without_legacy_checkpoint(self):
+        plan = completion_plan(
+            {
+                "access_token": "",
+                "registration_target_status": "email_verification_pending",
+                "extra_json": '{"account_password":"Password!123"}',
+            },
+            {
+                "password_enabled": True,
+                "plan_check_enabled": True,
+                "twofa_enabled": True,
+                "codex_enabled": True,
+                "refresh_at_enabled": True,
+            },
+        )
+
+        self.assertEqual(["registration_resume"], plan["missing_steps"])
+
 
 if __name__ == "__main__":
     unittest.main()

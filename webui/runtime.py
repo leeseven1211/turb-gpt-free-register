@@ -71,7 +71,7 @@ def _run_account_completion_worker(
     settings: dict[str, object],
 ) -> None:
     """Execute a config-driven completion plan and record one coordinator task."""
-    from core.account_completion_service import STEP_LABELS
+    from core.account_completion_service import STEP_LABELS, completion_plan
 
     started = False
     result_summary: dict[str, Any] = {"planned_steps": list(planned_steps)}
@@ -92,6 +92,27 @@ def _run_account_completion_worker(
 
         if "refresh_at" in remaining:
             account = db.get_account(int(account_id)) or {}
+            # A queued completion task contains a plan snapshot, but the
+            # destructive boundary is the actual refresh enqueue.  Recheck the
+            # current switch and registration state immediately before it so a
+            # config change cannot make an old task refresh a pending account.
+            from config.account import completion_settings
+
+            current_plan = completion_plan(account, completion_settings())
+            if "refresh_at" not in current_plan["missing_steps"]:
+                if current_plan.get("registration_resume"):
+                    stale_message = "账号注册尚未完成，旧补全计划已取消，请重新点击补全账号继续注册"
+                else:
+                    stale_message = "补全时刷新 AT 已关闭，旧补全计划已失效，请重新点击补全账号"
+                result_summary["stale_plan"] = True
+                account_task_store.finish_task(
+                    task_id,
+                    status="cancelled",
+                    message=stale_message,
+                    result_summary=result_summary,
+                    validation_method="account_completion_plan",
+                )
+                return
             queued = live_check_service.enqueue_account_live_check(
                 account_id=int(account_id),
                 email=str(account.get("email") or email),
@@ -124,14 +145,15 @@ def _run_account_completion_worker(
                     detail={"deferred_steps": result_summary["deferred_steps"]},
                     state="skipped",
                 )
-                account_task_store.finish_task(
-                    task_id,
-                    status="success",
-                    message="刷新 AT 已提交，其余补全步骤已安全延后",
-                    result_summary=result_summary,
-                    validation_method="account_completion_plan",
-                )
-                return
+            result_summary["awaiting_steps"] = ["refresh_at"]
+            account_task_store.finish_task(
+                task_id,
+                status="partial_success",
+                message="刷新 AT 已提交，结果以独立子任务为准；成功后请重新点击补全账号",
+                result_summary=result_summary,
+                validation_method="account_completion_plan",
+            )
+            return
 
         setup_steps = remaining & {"password", "plan_check", "twofa"}
         if setup_steps:
@@ -355,8 +377,63 @@ class WebUIContext:
             return {"accepted": False, "error": "账号邮箱为空"}
         if str(account.get("account_status") or "").lower() == "deactivated":
             return {"accepted": False, "error": "账号已废号，不能补全账号"}
+        # registered_accounts is created before registration is fully complete.
+        # Enrich the account row with the durable Attempt state so a missing
+        # Token cannot be mistaken for a refreshable, already-registered account.
+        try:
+            from core.storage import registration as registration_store
+
+            attempt = registration_store.get_latest_attempt_by_account(int(account["id"]))
+            if attempt:
+                account = dict(account)
+                account["registration_target_status"] = attempt.get("target_status")
+                account["registration_remote_account_state"] = attempt.get("remote_account_state")
+                account["registration_checkpoint"] = account.get("registration_checkpoint") or attempt.get("checkpoint")
+        except Exception:
+            logger.exception("读取账号注册 Attempt 状态失败：account_id=%s", account_id)
         settings = completion_settings()
         plan = completion_plan(account, settings)
+        if "registration_resume" in plan["missing_steps"]:
+            source_job = db.get_latest_registration_job_for_account(int(account["id"]))
+            if not source_job:
+                reason = "账号注册尚未完成，但找不到可继续的原注册任务；为避免误注册，请先从注册任务中心处理"
+                return {
+                    "accepted": False,
+                    "blocked": [{"step": "registration_resume", "reason": reason}],
+                    "plan": plan,
+                    "error": reason,
+                }
+            try:
+                from core import registration_service
+
+                resumed = registration_service.retry_job(int(source_job["id"]))
+            except Exception as exc:
+                logger.exception("账号补全转注册续跑失败：account_id=%s", account_id)
+                return {
+                    "accepted": False,
+                    "blocked": [{"step": "registration_resume", "reason": f"继续注册入队异常：{type(exc).__name__}"}],
+                    "plan": plan,
+                    "error": f"继续注册入队异常：{type(exc).__name__}: {exc}",
+                }
+            if not resumed.get("ok"):
+                reason = str(resumed.get("error") or "继续注册任务未能入队")
+                return {
+                    "accepted": False,
+                    "blocked": [{"step": "registration_resume", "reason": reason}],
+                    "plan": plan,
+                    "error": reason,
+                }
+            resume_job = resumed.get("job") or {}
+            return {
+                "accepted": True,
+                "busy": False,
+                "registration_resume": True,
+                "status": "queued" if resumed.get("created") else "running",
+                "job_id": resume_job.get("id"),
+                "source_job_id": resumed.get("source_job_id") or int(source_job["id"]),
+                "plan": plan,
+                "message": resumed.get("message") or "已继续原注册任务，不执行 AT 刷新",
+            }
         if plan["blocked"]:
             return {"accepted": False, "blocked": plan["blocked"], "plan": plan, "error": plan["blocked"][0]["reason"]}
         if not plan["missing_steps"]:

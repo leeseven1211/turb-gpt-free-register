@@ -158,16 +158,20 @@ def create_config_blueprint(context: WebUIContext):
             reload_err = f"{type(exc).__name__}: {exc}"
             logger.exception("配置热加载失败")
 
+        restart_required = result.get("restart_required", [])
+        if reload_ok and restart_required:
+            note = f"✅ 已保存并热加载；{', '.join(restart_required)} 需重启后完整生效"
+        elif reload_ok:
+            note = "✅ 已保存并热加载，新值立即生效"
+        else:
+            note = f"⚠️ 已写入文件但热加载失败（{reload_err}），需重启 Web 服务才能生效"
         return jsonify({
             "ok": True,
             "updated": result["updated"],
             "ignored": result["ignored"],
+            "restart_required": restart_required,
             "reloaded": reload_ok,
-            "note": (
-                "✅ 已保存并热加载，新值立即生效"
-                if reload_ok
-                else f"⚠️ 已写入文件但热加载失败（{reload_err}），需重启 Web 服务才能生效"
-            ),
+            "note": note,
         })
 
     return bp

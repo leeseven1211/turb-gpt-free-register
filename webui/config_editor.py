@@ -111,7 +111,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "ACCOUNT_COMPLETION_REFRESH_AT_ENABLED", "file": "account.py", "type": "bool", "group": "账号补全",
-        "label": "补全时允许刷新 AT", "help": "默认关闭。开启后仅当补全确实缺少/无法使用 AT 时，才允许先执行刷新 AT；刷新 AT 本身仍属于独立操作",
+        "label": "补全时允许刷新 AT", "help": "默认关闭。开启后仅对已完成注册但缺少/无法使用 AT 的账号允许刷新；注册尚未完成的账号会优先继续原注册任务，不会刷新 AT",
     },
     {
         "key": "ACCOUNT_PASSWORD_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
@@ -791,6 +791,19 @@ EDITABLE_FIELDS = [
 
 _FIELD_BY_KEY = {f["key"]: f for f in EDITABLE_FIELDS}
 
+# These values are read when a fixed worker pool or Flask auth context is
+# created.  config.reload_all() still updates the .env-backed module values,
+# but it cannot resize an existing pool or replace the active auth context.
+RESTART_REQUIRED_KEYS = frozenset({
+    "WEBUI_AUTH_CODE",
+    "WEBUI_SESSION_SECRET",
+    "ACCOUNT_BATCH_WORKERS",
+    "PLAN_CHECK_WORKERS",
+    "PLAN_CHECK_QUEUE_LIMIT",
+    "EXTRACT_LINK_WORKERS",
+    "EXTRACT_LINK_QUEUE_LIMIT",
+})
+
 
 # ============================================================
 # 读：解析源码取当前值（不 import，避免缓存/副作用）
@@ -959,6 +972,7 @@ def get_config() -> list[dict]:
             value = _normalize_config_value(value, field["type"])
         item = dict(field)
         item["storage"] = "env"
+        item["requires_restart"] = key in RESTART_REQUIRED_KEYS
         item["value"] = value
         out.append(item)
     return out
@@ -1112,4 +1126,9 @@ def update_config(updates: dict) -> dict:
     if env_updated:
         load_env(override=True)
 
-    return {"updated": updated, "ignored": ignored, "env_updated": env_updated}
+    return {
+        "updated": updated,
+        "ignored": ignored,
+        "env_updated": env_updated,
+        "restart_required": [key for key in updated if key in RESTART_REQUIRED_KEYS],
+    }

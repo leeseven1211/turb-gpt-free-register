@@ -1097,7 +1097,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
             existing_password = ""
             existing_totp_secret = ""
             if str(current.get("job_type") or "") == "registration_resume":
-                resume_account = _account_for_job(current)
+                resume_account = _enrich_account_registration_state(_account_for_job(current))
                 email = str((resume_account or {}).get("email") or current.get("email") or "").strip()
                 existing_password = _pending_registration_password(resume_account)
                 existing_totp_secret = str((resume_account or {}).get("totp_secret") or "").strip()
@@ -1746,6 +1746,33 @@ def _account_for_job(job: dict) -> dict | None:
     return db.get_account_by_email(email) if email else None
 
 
+def _enrich_account_registration_state(account: dict | None) -> dict | None:
+    """Attach normalized Attempt state for an actual resume decision.
+
+    This is deliberately opt-in at execution boundaries. Retry-info list
+    projections must stay query-bounded and therefore only use fields already
+    present on the account row.
+    """
+    if not account or str(account.get("access_token") or "").strip():
+        return account
+    account_id = account.get("id")
+    if account_id is None:
+        return account
+    try:
+        from core.storage import registration as registration_store
+
+        attempt = registration_store.get_latest_attempt_by_account(int(account_id))
+    except Exception:
+        return account
+    if not attempt:
+        return account
+    enriched = dict(account)
+    enriched["registration_target_status"] = attempt.get("target_status")
+    enriched["registration_remote_account_state"] = attempt.get("remote_account_state")
+    enriched["registration_checkpoint"] = enriched.get("registration_checkpoint") or attempt.get("checkpoint")
+    return enriched
+
+
 def _account_extra(account: dict | None) -> dict:
     if not account:
         return {}
@@ -1762,7 +1789,13 @@ def _account_extra(account: dict | None) -> dict:
 
 def _pending_registration_password(account: dict | None) -> str:
     extra = _account_extra(account)
-    if str(extra.get("registration_checkpoint") or "").strip() != "email_verification_pending":
+    checkpoint = str(extra.get("registration_checkpoint") or "").strip().lower()
+    target_status = str(
+        (account or {}).get("registration_target_status")
+        or (account or {}).get("target_status")
+        or ""
+    ).strip().lower()
+    if checkpoint != "email_verification_pending" and target_status != "email_verification_pending":
         return ""
     if str((account or {}).get("access_token") or "").strip():
         return ""
@@ -1965,13 +1998,15 @@ def _build_retry_info(
     return info
 
 
-def get_retry_info(job: dict) -> dict:
+def get_retry_info(job: dict, *, account_override: dict | None = None) -> dict:
     """返回给 API/UI 的重试能力描述，不依赖前端猜测错误阶段。"""
     status = str(job.get("status") or "")
     if status not in ("success", "failed", "partial_success", "stopped", "cancelled"):
         return _build_retry_info(job, account=None, successful_retry=None)
     successful_retry = db.get_successful_retry_for_job(int(job.get("id") or 0))
-    account = None if successful_retry is not None else _account_for_job(job)
+    account = None if successful_retry is not None else (
+        account_override if account_override is not None else _account_for_job(job)
+    )
     return _build_retry_info(
         job,
         account=account,
@@ -2012,7 +2047,8 @@ def retry_job(
     if source is None:
         return {"ok": False, "error": "任务不存在", "status": 404}
 
-    retry_info = get_retry_info(source)
+    account = _enrich_account_registration_state(_account_for_job(source))
+    retry_info = get_retry_info(source, account_override=account)
     if not retry_info["retryable"]:
         reason = retry_info.get("retry_reason") or f"当前状态不支持重试：{source.get('status')}"
         return {"ok": False, "error": reason, "status": 409}
@@ -2026,7 +2062,6 @@ def retry_job(
         batch_size = int(root_job.get("batch_size") or source.get("batch_size") or 1)
     if workers is None:
         workers = max(1, int(root_job.get("batch_workers") or source.get("batch_workers") or 1))
-    account = _account_for_job(source)
     email = str((account or {}).get("email") or source.get("email") or "").strip()
     account_id = int(account["id"]) if account and account.get("id") is not None else None
     if action == "plan_check":

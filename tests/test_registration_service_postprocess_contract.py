@@ -76,6 +76,25 @@ class RegistrationServicePostprocessContractTests(unittest.TestCase):
         self.assertEqual("registration_resume", info["retry_action"])
         self.assertEqual("registration_resume", info["next_actions"][0]["action"])
 
+    def test_normalized_attempt_can_make_pending_registration_resumeable(self):
+        with patch(
+            "core.storage.registration.get_latest_attempt_by_account",
+            return_value={"target_status": "email_verification_pending"},
+        ):
+            account = registration_service._enrich_account_registration_state({
+                "id": 45,
+                "email": "pending-normalized@example.com",
+                "access_token": "",
+                "extra_json": '{"account_password":"Password!123"}',
+            })
+            info = _build_retry_info(
+                {"status": "partial_success", "account_id": 45},
+                account=account,
+                successful_retry=None,
+            )
+
+        self.assertEqual("registration_resume", info["retry_action"])
+
     def test_attempt_run_adapter_uses_existing_attempt_id(self):
         registration_service._THREAD_CTX.job_id = 99
         with patch("core.storage.registration.get_attempt", return_value={"id": 7}) as get_attempt, patch(

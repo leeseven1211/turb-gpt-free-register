@@ -1206,7 +1206,9 @@ async function onAccountsBodyClick(e) {
       const search = $('#accountTaskTargetFilterV2');
       const typeFilter = $('#accountTaskTypeFilterV2');
       if (search) search.value = email;
-      if (typeFilter) typeFilter.value = ({password: 'password_setup', twofa: 'twofa_setup', complete: 'account_completion'})[action];
+      if (typeFilter) typeFilter.value = result.registration_resume
+        ? 'registration_resume'
+        : ({password: 'password_setup', twofa: 'twofa_setup', complete: 'account_completion'})[action];
       PAGERS.accountTasks.page = 1;
       activateTab('tasks');
     } catch(err) {
@@ -2116,7 +2118,9 @@ async function runSelectedAccountAction(action, label, taskType) {
     const search = $('#accountTaskTargetFilterV2');
     const typeFilter = $('#accountTaskTypeFilterV2');
     if (search) search.value = '';
-    if (typeFilter) typeFilter.value = taskType;
+    const started = Array.isArray(r.started) ? r.started : [];
+    const allRegistrationResume = started.length > 0 && started.every(item => item.registration_resume);
+    if (typeFilter) typeFilter.value = allRegistrationResume ? 'registration_resume' : taskType;
     PAGERS.accountTasks.page = 1;
     activateTab('tasks');
   } catch(err) {

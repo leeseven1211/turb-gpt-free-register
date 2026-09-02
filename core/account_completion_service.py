@@ -11,6 +11,7 @@ from collections.abc import Mapping
 
 
 STEP_LABELS = {
+    "registration_resume": "继续注册",
     "refresh_at": "刷新 AT",
     "password": "账号密码",
     "plan_check": "套餐状态",
@@ -59,6 +60,30 @@ def _token_needs_refresh(account: Mapping) -> bool:
     return bool(value)
 
 
+def needs_registration_resume(account: Mapping | None) -> bool:
+    """Whether this no-token row is a partially completed registration.
+
+    ``registration_target_status`` comes from the durable RegistrationAttempt
+    projection.  The legacy checkpoint in ``extra_json`` remains a fallback for
+    older rows and for callers that only have the account record.
+    """
+    account = account if isinstance(account, Mapping) else {}
+    if str(account.get("access_token") or "").strip():
+        return False
+    extra = _extra(account)
+    checkpoint = str(
+        account.get("registration_checkpoint")
+        or extra.get("registration_checkpoint")
+        or ""
+    ).strip().lower()
+    target_status = str(
+        account.get("registration_target_status")
+        or account.get("target_status")
+        or ""
+    ).strip().lower()
+    return checkpoint == "email_verification_pending" or target_status == "email_verification_pending"
+
+
 def _settings(settings: Mapping | None = None) -> dict:
     if settings is not None:
         return dict(settings)
@@ -80,17 +105,27 @@ def completion_plan(account: Mapping | None, settings: Mapping | None = None) ->
     }
     missing: list[str] = []
     blocked: list[dict] = []
-    if _token_needs_refresh(account):
-        if enabled["refresh_at"]:
-            missing.append("refresh_at")
+    registration_resume = needs_registration_resume(account)
+    if registration_resume:
+        if _password_present(account):
+            missing.append("registration_resume")
         else:
-            blocked.append({"step": "refresh_at", "reason": "账号缺少可用 access_token，请先单独执行刷新 AT"})
-    if enabled["password"] and not _password_present(account):
-        missing.append("password")
-    if enabled["plan_check"] and str(account.get("plan_check_status") or "").strip().lower() != "success":
-        missing.append("plan_check")
-    if enabled["twofa"] and not _twofa_present(account):
-        missing.append("twofa")
+            blocked.append({
+                "step": "registration_resume",
+                "reason": "账号注册尚未完成且缺少已保存密码，不能安全继续注册",
+            })
+    else:
+        if _token_needs_refresh(account):
+            if enabled["refresh_at"]:
+                missing.append("refresh_at")
+            else:
+                blocked.append({"step": "refresh_at", "reason": "账号缺少可用 access_token，请先单独执行刷新 AT"})
+        if enabled["password"] and not _password_present(account):
+            missing.append("password")
+        if enabled["plan_check"] and str(account.get("plan_check_status") or "").strip().lower() != "success":
+            missing.append("plan_check")
+        if enabled["twofa"] and not _twofa_present(account):
+            missing.append("twofa")
     execution_state = str(account.get("codex_execution_status") or "").strip().lower()
     legacy_codex_state = str(account.get("codex_status") or "").strip().lower()
     credential_state = str(account.get("codex_credential_state") or "").strip().lower()
@@ -100,7 +135,7 @@ def completion_plan(account: Mapping | None, settings: Mapping | None = None) ->
         codex_state = "success"
     else:
         codex_state = legacy_codex_state or credential_state or execution_state
-    if enabled["codex"] and codex_state not in {"success"}:
+    if not registration_resume and enabled["codex"] and codex_state not in {"success"}:
         missing.append("codex")
     return {
         "enabled": enabled,
@@ -108,8 +143,9 @@ def completion_plan(account: Mapping | None, settings: Mapping | None = None) ->
         "missing_steps": missing,
         "missing_labels": [STEP_LABELS[step] for step in missing],
         "blocked": blocked,
+        "registration_resume": registration_resume,
         "ready": not missing and not blocked,
     }
 
 
-__all__ = ["STEP_LABELS", "completion_plan"]
+__all__ = ["STEP_LABELS", "completion_plan", "needs_registration_resume"]

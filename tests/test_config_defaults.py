@@ -149,6 +149,16 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             env_loader._LOADED = old_loaded
             importlib.reload(account_config)
 
+    def test_config_reports_fields_that_need_restart(self):
+        self.assertTrue({
+            "WEBUI_AUTH_CODE",
+            "WEBUI_SESSION_SECRET",
+            "PLAN_CHECK_WORKERS",
+            "EXTRACT_LINK_WORKERS",
+        }.issubset(config_editor.RESTART_REQUIRED_KEYS))
+        result = config_editor.update_config({})
+        self.assertEqual([], result["restart_required"])
+
     def test_protocol_twofa_checkpoints_secret_before_activation(self):
         events = []
         secret = "JBSWY3DPEHPK3PXP"
