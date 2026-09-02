@@ -22,10 +22,10 @@ ACCOUNT_2FA_DRIVER = "protocol"
 ACCOUNT_CODEX_DRIVER = "same_as_registration"
 
 # 普通“查活”单独维护驱动选择，不复用 ACCOUNT_PLAN_CHECK_DRIVER。
-# 阶段 1 默认解析为当前协议型旧 AT probe，保持现有行为；后续通过真实契约
-# 测试后再开放 browser_roxy / protocol_v2。
+# 阶段 1 默认解析为当前协议型旧 AT probe，保持现有行为；browser_roxy 已完成
+# 契约接入但仍由独立 gate 控制；protocol_v2 不作为普通查活驱动。
 ACCOUNT_LIVE_CHECK_DRIVER = "protocol_current"
-# 阶段 2 的 Roxy 旧 AT probe 默认关闭；真实契约测试通过后才允许开启。
+# Roxy 旧 AT probe 默认关闭；本地明确开启 gate 后才允许使用。
 ACCOUNT_LIVE_CHECK_BROWSER_ENABLED = False
 
 # 显式“刷新 AT”仍保持原有协议邮箱 OTP → Roxy 兜底顺序。只有用户同时选择

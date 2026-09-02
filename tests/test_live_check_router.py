@@ -25,7 +25,7 @@ class LiveCheckRouterTests(unittest.TestCase):
 
     def test_browser_driver_requires_explicit_stage_two_gate(self):
         with patch("config.account.ACCOUNT_LIVE_CHECK_BROWSER_ENABLED", False):
-            with self.assertRaisesRegex(LiveCheckDriverError, "阶段 2"):
+            with self.assertRaisesRegex(LiveCheckDriverError, "ACCOUNT_LIVE_CHECK_BROWSER_ENABLED"):
                 resolve_driver("browser_roxy")
 
         with patch("config.account.ACCOUNT_LIVE_CHECK_BROWSER_ENABLED", True):

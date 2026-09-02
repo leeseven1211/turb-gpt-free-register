@@ -2,8 +2,8 @@
 """普通查活驱动路由。
 
 当前默认保持稳定的协议型 AT probe；Roxy 浏览器 probe 已作为独立 adapter
-接入，但仍由灰度开关保护，必须完成真实浏览器契约验证后才能开放。这里不
-做自动 fallback，也不承载任何登录逻辑。
+接入，但仍由灰度开关保护，必须本地明确开启后才能使用。这里不做自动
+fallback，也不承载任何登录逻辑。
 """
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ def resolve_driver(requested: str | None = None) -> str:
         )
     if value == BROWSER_ROXY_DRIVER and not _browser_driver_enabled():
         raise LiveCheckDriverError(
-            "Roxy 浏览器普通查活 probe 当前未开放，请先完成阶段 2 的真实验证"
+            "Roxy 浏览器普通查活 probe 当前未开启，请先将 ACCOUNT_LIVE_CHECK_BROWSER_ENABLED 设为 True"
         )
     return value
 
