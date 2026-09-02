@@ -648,6 +648,8 @@ class AccountTaskApiTests(PostgresTestCase):
         self.assertIn('data-account-copy-secret="access_token"', html)
         self.assertIn("function configuredLiveCheckDriver", html)
         self.assertIn("driver: configuredLiveCheckDriver()", html)
+        self.assertIn("配置驱动", html)
+        self.assertIn("实际驱动", html)
         self.assertIn("function meaningfulTaskDetail", html)
         self.assertIn("white-space:normal", html)
         self.assertIn("flex:1 1 auto; min-height:0; overflow:auto", html)
