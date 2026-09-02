@@ -1799,6 +1799,9 @@ def _wait_after_email_otp_submit(
         last = _email_otp_page_state(driver)
         if not isinstance(last, dict):
             last = {}
+        if classify_page(last) == PageState.MFA_TOTP:
+            logger.info("%s[OTP] 邮箱验证码后进入 Authenticator TOTP，交给公共登录状态机", _log_prefix(driver))
+            return "totp_required"
         if last.get("emailVerified"):
             return "email_verified"
         if not _is_email_verification_page(driver):
@@ -4352,6 +4355,24 @@ def run_roxy_registration(
                 logger.info("[Roxy注册][OTP] 未找到显式提交按钮，继续等待页面状态：%s", str(exc)[:120])
 
             outcome = _wait_after_email_otp_submit(driver, timeout=30, budget=otp_budget)
+            if outcome == "totp_required":
+                if not existing_password or not existing_totp_secret:
+                    raise RuntimeError(
+                        "邮箱验证码已通过，但远端继续要求 Authenticator TOTP；本地缺少可用密码或 TOTP，已停止"
+                    )
+                from core.roxy_codex_oauth import complete_openai_login_challenge
+
+                post_otp_state = complete_openai_login_challenge(
+                    driver,
+                    email,
+                    existing_password,
+                    str(existing_totp_secret),
+                    timeout=45,
+                )
+                if post_otp_state != "advanced":
+                    raise RuntimeError(f"邮箱验证码后 TOTP 登录链未完成：state={post_otp_state}")
+                resume_login_state = "advanced"
+                break
             if outcome in ('accepted', 'email_verified'):
                 break
             if otp_attempt >= max_otp_attempts:

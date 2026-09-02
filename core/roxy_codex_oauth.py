@@ -865,6 +865,18 @@ def _fill_email_and_otp(driver, email: str, otp_provider, auth_url: str) -> None
 
         outcome = _wait_after_email_otp_submit(driver, timeout=45)
         logger.info("[Codex][Browser] 邮箱 OTP 提交后状态：%s", outcome)
+        if outcome == "totp_required":
+            next_state = complete_openai_login_challenge(
+                driver,
+                email,
+                password,
+                totp_secret,
+                timeout=45,
+            )
+            if next_state == "advanced":
+                report_stage("email_otp", "邮箱验证码和后续 TOTP 已通过", state="success")
+                return
+            raise RuntimeError("邮箱验证码已通过，但后续仍要求邮箱验证码，停止重复提交")
         if outcome == "accepted":
             report_stage("email_otp", "邮箱验证码已通过", state="success")
             return
@@ -1136,6 +1148,12 @@ def _wait_after_email_otp_submit(driver, timeout: int = 45) -> str:
                 return "accepted"
             if _has_strict_add_phone_form(driver) or _is_phone_code_page(driver):
                 return "accepted"
+            # The browser can keep the stale /log-in/password URL after email OTP
+            # while mounting an Authenticator challenge. Classify live controls
+            # before treating every non-email URL as accepted.
+            challenge_state = _login_challenge_state(driver)
+            if _is_totp_login_page(driver, challenge_state):
+                return "totp_required"
             # 已经离开 email-verification，交给后续授权/手机号/consent 流程处理。
             if "email-verification" not in url.lower():
                 return "accepted"
