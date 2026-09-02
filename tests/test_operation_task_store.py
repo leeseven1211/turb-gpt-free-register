@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from core import account_task_store, db, operation_task_store, record_store, task_run_log
+from core import account_task_store, db, operation_task_store, postgres_store, record_store, task_run_log
 from tests.support_pg import PostgresTestCase
 from webui.app import create_app
 
@@ -285,6 +285,127 @@ class OperationTaskStoreTests(PostgresTestCase):
         detail = operation_task_store.get_task(int(task["id"]))
         self.assertEqual([1, 2], [run["run_no"] for run in detail["runs"]])
         self.assertEqual("queued", detail["status"])
+
+    def test_active_retry_wins_over_stale_terminal_task_projection(self):
+        account_id = self._seed_runtime_account("active-attempt@example.com")
+        task = operation_task_store.create_runtime_task(
+            task_type="codex_retry", account_id=account_id,
+            email="active-attempt@example.com", trigger="test",
+        )
+        first_run = int(task["run"]["id"])
+        operation_task_store.finish_run(first_run, status="failed", error="old failure")
+        second_run = operation_task_store.retry_runtime_task(int(task["id"]), trigger="manual_retry")
+        second_run_id = int(second_run["id"])
+
+        # Reproduce an older terminal write landing after the retry row was
+        # created.  The active run is the authoritative read state.
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE {postgres_store.qualified("operation_tasks")}
+                SET status='failed', current_stage='complete', completed_at='2026-08-25T10:02:00Z'
+                WHERE id=%s
+                """,
+                (int(task["id"]),),
+            )
+
+        listed = operation_task_store.list_tasks(page_size=10, q="active-attempt@example.com")
+        current = listed["items"][0]
+        self.assertEqual("queued", current["status"])
+        self.assertEqual("queued", current["current_stage"])
+        self.assertEqual(second_run_id, int(current["last_run_id"]))
+        self.assertIsNone(current["completed_at"])
+        self.assertEqual(1, operation_task_store.list_tasks(
+            page_size=10, q="active-attempt@example.com", status="queued",
+        )["total"])
+        self.assertEqual(1, operation_task_store.list_tasks(
+            page_size=10, q="active-attempt@example.com", stage="queued",
+        )["total"])
+        self.assertEqual(0, operation_task_store.list_tasks(
+            page_size=10, q="active-attempt@example.com", status="failed",
+        )["total"])
+
+        detail = operation_task_store.get_task(int(task["id"]), include_events=False)
+        self.assertEqual("queued", detail["status"])
+        self.assertEqual(second_run_id, int(detail["last_run_id"]))
+
+        operation_task_store.claim_run(second_run_id, execution_id="active-worker", worker_pid=123)
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE {postgres_store.qualified("operation_tasks")}
+                SET status='partial_success', current_stage='complete', completed_at='2026-08-25T10:03:00Z'
+                WHERE id=%s
+                """,
+                (int(task["id"]),),
+            )
+        running = operation_task_store.list_tasks(page_size=10, q="active-attempt@example.com")["items"][0]
+        self.assertEqual("running", running["status"])
+        self.assertEqual("preflight", running["current_stage"])
+        self.assertIsNone(running["completed_at"])
+
+    def test_compatibility_source_status_overrides_stale_operation_projection(self):
+        legacy_task_id = account_task_store.create_task(
+            task_type="deactivation_mail",
+            account_id=None,
+            email="compatibility-state@example.com",
+            trigger="manual",
+        )
+        account_task_store.start_task(legacy_task_id, message="开始扫描")
+        account_task_store.finish_task(
+            legacy_task_id, status="success", message="扫描完成", result_summary={"detected": False},
+        )
+        projected = operation_task_store.list_tasks(
+            page_size=10, q="compatibility-state@example.com",
+        )["items"][0]
+        run_id = int(projected["last_run_id"])
+
+        # Reproduce a compatibility callback that left the unified projection
+        # behind after the source task had already reached its terminal state.
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE {postgres_store.qualified('operation_runs')}
+                SET status='running', progress_stage='queued', completed_at=NULL,
+                    error_message='stale projection'
+                WHERE id=%s
+                """,
+                (run_id,),
+            )
+            cur.execute(
+                f"""
+                UPDATE {postgres_store.qualified('operation_tasks')}
+                SET status='running', current_stage='queued', completed_at=NULL
+                WHERE id=%s
+                """,
+                (int(projected["id"]),),
+            )
+
+        listed = operation_task_store.list_tasks(
+            page_size=10, q="compatibility-state@example.com",
+        )["items"][0]
+        self.assertEqual("success", listed["status"])
+        self.assertEqual("complete", listed["current_stage"])
+        self.assertTrue(listed["completed_at"])
+        self.assertEqual(1, operation_task_store.list_tasks(
+            page_size=10, q="compatibility-state@example.com", status="success",
+        )["total"])
+        self.assertEqual(0, operation_task_store.list_tasks(
+            page_size=10, q="compatibility-state@example.com", status="running",
+        )["total"])
+
+        detail = operation_task_store.get_task(int(projected["id"]), include_events=False)
+        self.assertEqual("success", detail["status"])
+        self.assertEqual("complete", detail["current_stage"])
+        self.assertEqual("success", detail["runs"][0]["status"])
+
+        self.assertEqual(1, operation_task_store.repair_stale_compatibility_projections())
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT status FROM {postgres_store.qualified('operation_runs')} WHERE id=%s",
+                (run_id,),
+            )
+            self.assertEqual("success", cur.fetchone()[0])
 
     def test_batch_accounts_for_items_rejected_before_run_creation(self):
         account_id = self._seed_runtime_account("batch@example.com")

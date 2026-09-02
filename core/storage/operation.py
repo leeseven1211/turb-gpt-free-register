@@ -36,6 +36,9 @@ _TERMINAL_STATUSES = {
     "success", "partial_success", "failed", "stopped", "cancelled", "interrupted",
     "deactivated", "unsupported", "attention_required",
 }
+_ACTIVE_RUN_STATUSES = frozenset({"queued", "running", "cancelling", "settling", "stopping"})
+_ACTIVE_RUN_STATUS_SQL = "'queued','running','cancelling','settling','stopping'"
+_TERMINAL_STATUS_SQL = "'success','partial_success','failed','stopped','cancelled','interrupted','deactivated','unsupported','attention_required'"
 _REGISTRATION_CHECKPOINTS = (
     "created", "email_claimed", "auth_started", "password_request_started",
     "password_confirmed", "otp_started", "otp_confirmed", "account_request_started",
@@ -512,6 +515,19 @@ def init() -> None:
             )
             for name, table, columns in indexes:
                 cur.execute(f"CREATE INDEX IF NOT EXISTS {_quote(name)} ON {_table(table)} ({columns})")
+            # Compatibility runs store the legacy identity as text.  These
+            # expression indexes keep source-backed status reads bounded when
+            # the task center contains thousands of historical rows.
+            cur.execute(
+                f"CREATE INDEX IF NOT EXISTS {_quote('idx_registration_jobs_id_text')} "
+                f"ON {postgres_store.qualified(record_store.JOBS.name)} ((id::text))"
+            )
+            cur.execute("SELECT to_regclass(%s) AS name", (f"{_schema_name()}.account_action_tasks",))
+            if cur.fetchone()["name"]:
+                cur.execute(
+                    f"CREATE INDEX IF NOT EXISTS {_quote('idx_account_action_tasks_id_text')} "
+                    f"ON {_table('account_action_tasks')} ((id::text))"
+                )
             cur.execute(
                 f"""
                 CREATE UNIQUE INDEX IF NOT EXISTS {_quote('uq_operation_runs_active_account_family')}
@@ -602,6 +618,123 @@ def _error_fields(message: Any, *, stage: str = "", task_type: str = "") -> tupl
 def _status(value: Any) -> str:
     status = str(value or "queued").strip().lower()
     return "queued" if status == "pending" else status
+
+
+def _select_current_run(runs: Iterable[dict]) -> dict | None:
+    """选择任务当前执行实例，活动 attempt 永远优先于历史终态。"""
+    candidates = [dict(run) for run in runs if run]
+    if not candidates:
+        return None
+    active = [run for run in candidates if str(run.get("status") or "").lower() in _ACTIVE_RUN_STATUSES]
+    candidates = active or candidates
+    return max(
+        candidates,
+        key=lambda run: (int(run.get("run_no") or 0), int(run.get("id") or 0)),
+    )
+
+
+def _compatibility_run_status_sql(
+    *, run_alias: str = "rr", registration_alias: str = "registration_job",
+    account_alias: str = "account_task",
+) -> str:
+    """Read the source status for compatibility runs before trusting projection rows."""
+    return (
+        f"CASE "
+        f"WHEN {run_alias}.source_system='registration_jobs' AND {registration_alias}.id IS NOT NULL "
+        f"THEN CASE WHEN {registration_alias}.status='pending' THEN 'queued' ELSE {registration_alias}.status END "
+        f"WHEN {run_alias}.source_system='account_action_tasks' AND {account_alias}.id IS NOT NULL "
+        f"THEN CASE WHEN {account_alias}.status='pending' THEN 'queued' ELSE {account_alias}.status END "
+        f"ELSE {run_alias}.status END"
+    )
+
+
+def _compatibility_run_projection_sql(
+    *, run_alias: str = "rr", registration_alias: str = "registration_job",
+    account_alias: str = "account_task",
+) -> str:
+    """Expose source-backed status fields without mutating historical rows on reads."""
+    status_sql = _compatibility_run_status_sql(
+        run_alias=run_alias, registration_alias=registration_alias, account_alias=account_alias,
+    )
+    stage_sql = (
+        f"CASE WHEN ({status_sql})='queued' THEN 'queued' "
+        f"WHEN ({status_sql}) IN ({_TERMINAL_STATUS_SQL}) THEN 'complete' "
+        f"ELSE {run_alias}.progress_stage END"
+    )
+    return (
+        f"{status_sql} AS effective_status, "
+        f"{stage_sql} AS effective_progress_stage, "
+        f"CASE "
+        f"WHEN {run_alias}.source_system='registration_jobs' AND {registration_alias}.id IS NOT NULL "
+        f"THEN NULLIF({registration_alias}.data->>'completed_at', '') "
+        f"WHEN {run_alias}.source_system='account_action_tasks' AND {account_alias}.id IS NOT NULL "
+        f"THEN NULLIF({account_alias}.finished_at, '') "
+        f"ELSE {run_alias}.completed_at::text END AS effective_completed_at, "
+        f"CASE "
+        f"WHEN {run_alias}.source_system='registration_jobs' AND {registration_alias}.id IS NOT NULL "
+        f"THEN {registration_alias}.data->>'error_message' "
+        f"WHEN {run_alias}.source_system='account_action_tasks' AND {account_alias}.id IS NOT NULL "
+        f"THEN {account_alias}.error "
+        f"ELSE {run_alias}.error_message END AS effective_error_message"
+    )
+
+
+def _compatibility_run_joins_sql(*, run_alias: str = "rr") -> str:
+    return (
+        f"LEFT JOIN {postgres_store.qualified(record_store.JOBS.name)} registration_job "
+        f"ON {run_alias}.source_system='registration_jobs' "
+        f"AND registration_job.id::text={run_alias}.source_id "
+        f"LEFT JOIN {_table('account_action_tasks')} account_task "
+        f"ON {run_alias}.source_system='account_action_tasks' "
+        f"AND account_task.id::text={run_alias}.source_id"
+    )
+
+
+def _normalize_compatibility_run(run: dict) -> dict:
+    """Overlay a compatibility run with its source row, if that row still exists."""
+    effective_status = run.pop("effective_status", None)
+    effective_stage = run.pop("effective_progress_stage", None)
+    effective_completed_at = run.pop("effective_completed_at", None)
+    effective_error_message = run.pop("effective_error_message", None)
+    if effective_status:
+        run["status"] = _status(effective_status)
+    if effective_stage is not None:
+        run["progress_stage"] = effective_stage
+    if effective_completed_at is not None:
+        run["completed_at"] = effective_completed_at
+    elif str(run.get("source_system") or "") in {"registration_jobs", "account_action_tasks"}:
+        run["completed_at"] = None
+    if str(run.get("source_system") or "") in {"registration_jobs", "account_action_tasks"}:
+        run["error_message"] = effective_error_message
+        if run.get("status") in _ACTIVE_RUN_STATUSES:
+            run["error_category"] = None
+            run["error_code"] = None
+    return run
+
+
+def _apply_current_run_projection(task: dict, run: dict | None) -> dict:
+    """把当前 attempt 的执行态覆盖到逻辑任务读模型上。"""
+    if not run:
+        return task
+    status = str(run.get("status") or task.get("status") or "queued").lower()
+    task["last_run_id"] = run.get("id")
+    task["status"] = status
+    if run.get("progress_stage"):
+        task["current_stage"] = run.get("progress_stage")
+    elif status == "queued":
+        task["current_stage"] = "queued"
+    if status in _ACTIVE_RUN_STATUSES:
+        task["completed_at"] = None
+        task["error_category"] = None
+        task["error_code"] = None
+        task["error_message"] = None
+        task["next_actions"] = []
+    else:
+        task["completed_at"] = run.get("completed_at")
+        task["error_category"] = run.get("error_category")
+        task["error_code"] = run.get("error_code")
+        task["error_message"] = run.get("error_message")
+    return task
 
 
 def _duration(started: Any, completed: Any, explicit: Any = None) -> int | None:
@@ -934,14 +1067,38 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
                 _json({"state": state_value, "started_at": step.get("started_at"), "completed_at": step.get("completed_at")}),
             ),
         )
+    # A retry shares the logical task with its parent.  An older sync callback
+    # may arrive after the newer attempt has started, so selecting by run_no
+    # alone can temporarily put the task back into a historical terminal state.
+    # Prefer any active run first, then fall back to the newest terminal run.
     cur.execute(
         f"""
-        SELECT id, status, progress_stage, error_category, error_code, error_message, completed_at
-        FROM {_table('operation_runs')} WHERE task_id=%s ORDER BY run_no DESC, id DESC LIMIT 1
+        SELECT id, run_no, source_id, status, progress_stage,
+               error_category, error_code, error_message, completed_at
+        FROM {_table('operation_runs')}
+        WHERE task_id=%s
+        ORDER BY CASE WHEN status IN ('queued','running','cancelling','settling') THEN 0 ELSE 1 END,
+                 run_no DESC, id DESC
+        LIMIT 1
         """,
         (task_id,),
     )
     latest = cur.fetchone()
+    latest_job = job
+    latest_source_id = str(latest.get("source_id") or "") if latest else ""
+    if latest and latest_source_id.isdigit() and latest_source_id != str(job_id):
+        cur.execute(
+            f"SELECT * FROM {postgres_store.qualified(record_store.JOBS.name)} WHERE id=%s",
+            (int(latest_source_id),),
+        )
+        raw_latest_job = cur.fetchone()
+        if raw_latest_job:
+            latest_job = record_store.merge_row(record_store.JOBS, dict(raw_latest_job)) or dict(raw_latest_job)
+    latest_status = str(latest["status"] or "queued") if latest else status
+    latest_next_actions = (
+        [] if latest_status in _ACTIVE_RUN_STATUSES
+        else _next_registration_actions(latest_job, account, state["target_status"])
+    )
     cur.execute(
         f"""
         UPDATE {_table('operation_tasks')} SET last_run_id=%s, status=%s, current_stage=%s,
@@ -950,9 +1107,9 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
         WHERE id=%s
         """,
         (
-            latest["id"], latest["status"], latest["progress_stage"], latest["error_category"],
+            latest["id"], latest_status, latest["progress_stage"], latest["error_category"],
             latest["error_code"], latest["error_message"], latest["completed_at"],
-            _json(_next_registration_actions(job, account, state["target_status"])), task_id,
+            _json(latest_next_actions), task_id,
         ),
     )
     return task_id
@@ -1813,6 +1970,56 @@ def reconcile_all() -> dict[str, int]:
         }
 
 
+def repair_stale_compatibility_projections(*, limit: int = 500) -> int:
+    """收口旧任务已结束、统一执行实例仍显示活动的投影。"""
+    init()
+    record_store.init()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT DISTINCT run.source_system, run.source_id
+            FROM {_table('operation_runs')} run
+            LEFT JOIN {_table('account_action_tasks')} account_task
+              ON run.source_system='account_action_tasks'
+             AND account_task.id::text=run.source_id
+            LEFT JOIN {postgres_store.qualified(record_store.JOBS.name)} registration_job
+              ON run.source_system='registration_jobs'
+             AND registration_job.id::text=run.source_id
+            WHERE run.status IN ({_ACTIVE_RUN_STATUS_SQL})
+              AND (
+                    (run.source_system='account_action_tasks'
+                     AND account_task.id IS NOT NULL
+                     AND account_task.status NOT IN ('queued','running'))
+                 OR (run.source_system='registration_jobs'
+                     AND registration_job.id IS NOT NULL
+                     AND registration_job.status NOT IN ('pending','queued','running','cancelling','settling','stopping'))
+              )
+            ORDER BY run.source_system, run.source_id
+            LIMIT %s
+            """,
+            (max(1, min(5000, int(limit or 500))),),
+        )
+        stale = [(str(row["source_system"]), str(row["source_id"])) for row in cur.fetchall()]
+
+    repaired = 0
+    for source_system, source_id in stale:
+        try:
+            if source_system == "account_action_tasks":
+                sync_account_task(int(source_id))
+            elif source_system == "registration_jobs":
+                sync_registration_job(int(source_id))
+            else:
+                continue
+            repaired += 1
+        except Exception:
+            logger.exception(
+                "收口兼容任务投影失败：source_system=%s source_id=%s",
+                source_system,
+                source_id,
+            )
+    return repaired
+
+
 def sync_registration_job(job_id: int) -> None:
     """同步一条注册执行。调用方可在每次旧表更新后调用，失败应显式暴露。"""
     init()
@@ -1951,7 +2158,9 @@ def _operation_task_where(
             params.extend(values)
 
     add("task_type", "t.task_type=%s", str(task_type)) if task_type else None
-    add("status", "t.status=%s", str(status)) if status else None
+    # ``r`` is the current run selected by the list query below.  Filtering on
+    # it keeps a logical task out of terminal facets while a retry is active.
+    add("status", "COALESCE(r.effective_status, t.status)=%s", str(status)) if status else None
     add("source", "t.source_system=%s", str(source)) if source else None
     add("batch_id", "t.batch_id=%s", int(batch_id)) if batch_id else None
 
@@ -1964,9 +2173,10 @@ def _operation_task_where(
             "OR CAST(t.attempt_id AS TEXT) ILIKE %s OR CAST(t.target_id AS TEXT) ILIKE %s "
             "OR CAST(t.id AS TEXT) ILIKE %s OR COALESCE(t.error_message, '') ILIKE %s "
             "OR COALESCE(b.title, '') ILIKE %s OR COALESCE(t.trigger, '') ILIKE %s "
+            "OR COALESCE(r.effective_error_message, '') ILIKE %s "
             "OR COALESCE(r.result_summary::text, '') ILIKE %s"
             ")",
-            needle, needle, needle, needle, needle, needle, needle, needle, needle,
+            needle, needle, needle, needle, needle, needle, needle, needle, needle, needle,
         )
     if task_id:
         value = str(task_id).strip().lstrip("#")
@@ -1998,7 +2208,11 @@ def _operation_task_where(
         elif value.isdigit():
             add("run_count", f"{run_count_expr} = %s", int(value))
     if stage:
-        add("stage", "LOWER(COALESCE(t.current_stage, ''))=%s", str(stage).lower())
+        add(
+            "stage",
+            "LOWER(COALESCE(r.effective_progress_stage, CASE WHEN r.effective_status='queued' THEN 'queued' ELSE t.current_stage END, ''))=%s",
+            str(stage).lower(),
+        )
     if created_from:
         add("created_from", "t.created_at::date >= %s", str(created_from)[:10])
     if created_to:
@@ -2007,8 +2221,9 @@ def _operation_task_where(
         needle = f"%{str(result).strip()}%"
         add(
             "result",
-            "(COALESCE(t.error_message, '') ILIKE %s OR COALESCE(r.result_summary::text, '') ILIKE %s)",
-            needle, needle,
+            "(COALESCE(t.error_message, '') ILIKE %s OR COALESCE(r.effective_error_message, '') ILIKE %s "
+            "OR COALESCE(r.result_summary::text, '') ILIKE %s)",
+            needle, needle, needle,
         )
     return where, params
 
@@ -2032,7 +2247,15 @@ def list_tasks(
     from_sql = (
         f"FROM {_table('operation_tasks')} t "
         f"LEFT JOIN {_table('operation_batches')} b ON b.id=t.batch_id "
-        f"LEFT JOIN {_table('operation_runs')} r ON r.id=t.last_run_id"
+        f"LEFT JOIN LATERAL ("
+        f"SELECT current_run.* FROM ("
+        f"SELECT rr.*, {_compatibility_run_projection_sql()} "
+        f"FROM {_table('operation_runs')} rr {_compatibility_run_joins_sql()} "
+        f"WHERE rr.task_id=t.id"
+        f") current_run "
+        f"ORDER BY CASE WHEN current_run.effective_status IN ({_ACTIVE_RUN_STATUS_SQL}) THEN 0 ELSE 1 END, "
+        f"current_run.run_no DESC, current_run.id DESC LIMIT 1"
+        f") r ON TRUE"
     )
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(f"SELECT COUNT(*) AS n {from_sql}{clause}", params)
@@ -2040,6 +2263,12 @@ def list_tasks(
         cur.execute(
             f"""
             SELECT t.*, b.batch_uuid, b.title AS batch_title, b.batch_type,
+                   r.id AS __current_run_id, r.effective_status AS __current_run_status,
+                   r.effective_progress_stage AS __current_run_stage,
+                   r.effective_completed_at AS __current_run_completed_at,
+                   r.error_category AS __current_run_error_category,
+                   r.error_code AS __current_run_error_code,
+                   r.effective_error_message AS __current_run_error_message,
                    r.run_no AS last_run_no, r.duration_ms, r.result_summary,
                    r.source_system AS run_source_system, r.source_id AS run_source_id,
                    (SELECT COUNT(*) FROM {_table('operation_runs')} rr WHERE rr.task_id=t.id) AS run_count
@@ -2049,12 +2278,30 @@ def list_tasks(
             """,
             (*params, page_size, (page - 1) * page_size),
         )
-        items = [_row(dict(row)) or {} for row in cur.fetchall()]
+        items = []
+        for raw_row in cur.fetchall():
+            item = _row(dict(raw_row)) or {}
+            current_run = {
+                "id": item.pop("__current_run_id", None),
+                "status": item.pop("__current_run_status", None),
+                "progress_stage": item.pop("__current_run_stage", None),
+                "completed_at": item.pop("__current_run_completed_at", None),
+                "error_category": item.pop("__current_run_error_category", None),
+                "error_code": item.pop("__current_run_error_code", None),
+                "error_message": item.pop("__current_run_error_message", None),
+            }
+            if current_run["id"] is not None:
+                _apply_current_run_projection(item, current_run)
+            items.append(item)
         facet_specs = (
             ("task_type", "t.task_type", "task_type"),
-            ("status", "t.status", "status"),
+            ("status", "COALESCE(r.effective_status, t.status)", "status"),
             ("target_status", "t.target_status", "target_status"),
-            ("stage", "LOWER(COALESCE(t.current_stage, ''))", "stage"),
+            (
+                "stage",
+                "LOWER(COALESCE(r.effective_progress_stage, CASE WHEN r.effective_status='queued' THEN 'queued' ELSE t.current_stage END, ''))",
+                "stage",
+            ),
             (
                 "run_count",
                 f"CASE WHEN (SELECT COUNT(*) FROM {_table('operation_runs')} rr WHERE rr.task_id=t.id) >= 4 "
@@ -2099,8 +2346,13 @@ def get_task(task_id: int, *, include_events: bool = True) -> dict | None:
         task = cur.fetchone()
         if not task:
             return None
-        cur.execute(f"SELECT * FROM {_table('operation_runs')} WHERE task_id=%s ORDER BY run_no, id", (int(task_id),))
-        runs = [_row(dict(row)) or {} for row in cur.fetchall()]
+        cur.execute(
+            f"SELECT rr.*, {_compatibility_run_projection_sql()} "
+            f"FROM {_table('operation_runs')} rr {_compatibility_run_joins_sql()} "
+            f"WHERE rr.task_id=%s ORDER BY rr.run_no, rr.id",
+            (int(task_id),),
+        )
+        runs = [_normalize_compatibility_run(_row(dict(row)) or {}) for row in cur.fetchall()]
         events: list[dict] = []
         if include_events:
             cur.execute(
@@ -2137,6 +2389,7 @@ def get_task(task_id: int, *, include_events: bool = True) -> dict | None:
             raw_parent = cur.fetchone()
             parent = _row(dict(raw_parent)) if raw_parent else None
     result = _row(dict(task)) or {}
+    _apply_current_run_projection(result, _select_current_run(runs))
     result.update({
         "runs": runs,
         "events": events,
