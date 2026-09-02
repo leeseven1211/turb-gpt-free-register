@@ -197,31 +197,9 @@ def _click_if_present(driver, selectors: list[str], timeout: int = 3) -> bool:
 
 def _account_login_credentials(email: str) -> tuple[str, str]:
     """Return the saved OpenAI password and TOTP secret without logging either value."""
-    try:
-        from core import db
+    from core.account_credentials import get_account_login_credentials
 
-        account = db.get_account_by_email(email) or {}
-    except Exception:
-        logger.debug("[Codex][Browser] 读取账号登录凭据失败", exc_info=True)
-        return "", ""
-
-    raw_extra = account.get("extra_json") or {}
-    if isinstance(raw_extra, str):
-        try:
-            raw_extra = json.loads(raw_extra)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            raw_extra = {}
-    password = ""
-    if isinstance(raw_extra, dict):
-        # 新账号只保存 account_password；旧账号继续兼容两个历史字段。
-        password = str(
-            raw_extra.get("account_password")
-            or raw_extra.get("login_password")
-            or raw_extra.get("registration_password")
-            or ""
-        ).strip()
-    totp_secret = str(account.get("totp_secret") or "").strip()
-    return password, totp_secret
+    return get_account_login_credentials(email)
 
 
 def _login_challenge_state(driver) -> dict:

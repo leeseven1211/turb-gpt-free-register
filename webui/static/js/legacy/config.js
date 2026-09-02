@@ -16,6 +16,21 @@ function configDriverChoices(f) {
   if (f.key === 'REGISTRATION_AUTH_MODE') return [['otp', '不设置密码（邮箱验证码）'], ['password', '设置账号密码']];
   if (f.key === 'ACCOUNT_PASSWORD_DRIVER') return [['roxy', 'RoxyBrowser（当前唯一实现）']];
   if (f.key === 'ACCOUNT_PLAN_CHECK_DRIVER') return [['protocol', '纯协议（当前唯一实现）']];
+  if (f.key === 'ACCOUNT_LIVE_CHECK_DRIVER') {
+    const choices = [['protocol_current', '现有协议（保持现状）']];
+    const gate = CONFIG.find(item => item.key === 'ACCOUNT_LIVE_CHECK_BROWSER_ENABLED');
+    const enabled = gate && (gate.value === true || ['1', 'true', 'yes', 'on'].includes(String(gate.value).trim().toLowerCase()));
+    if (enabled) choices.push(['browser_roxy', 'Roxy 浏览器（已开放灰度）']);
+    return choices;
+  }
+  if (f.key === 'ACCOUNT_TOKEN_REFRESH_DRIVER') return [
+    ['legacy', '现有刷新链路（保持现状）'],
+    ['protocol_v2', 'Protocol v2 密码/MFA（需开启总开关）'],
+  ];
+  if (f.key === 'ACCOUNT_AUTH_PROFILE_MODE') return [
+    ['current', '当前会话画像（保持现状）'],
+    ['account_stable', '账号稳定 Protocol 画像（懒创建）'],
+  ];
   if (f.key === 'ACCOUNT_2FA_DRIVER' || f.key === 'TWOFA_DRIVER') {
     return [['protocol', '协议直开（新鲜 AT）'], ['browser', '浏览器页面（RoxyBrowser）']];
   }

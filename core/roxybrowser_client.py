@@ -662,7 +662,7 @@ class RoxyBrowserClient:
             # Roxy 浏览器独立于 WebUI 进程。先持久化登记临时环境；如果 WebUI
             # 被 SIGTERM 或崩溃，下一次启动可以主动关闭并软删除孤儿环境。
             _track_created_profile(pid)
-            logger.info("[Roxy] 已创建临时环境：%s", pid)
+            logger.info("[Roxy] 已创建临时环境（profile 原值不写日志）")
 
         path = str(_cfg.ROXY_OPEN_PATH).format(profile_id=pid)
         params = dict(getattr(_cfg, "ROXY_OPEN_EXTRA_PARAMS", {}) or {})
@@ -678,7 +678,7 @@ class RoxyBrowserClient:
             if headless is None
             else bool(headless)
         )
-        logger.info("[Roxy] open 参数：profile=%s headless=%s keep_open=%s", pid, params.get("headless"), getattr(_cfg, "ROXY_KEEP_BROWSER_OPEN", False))
+        logger.info("[Roxy] open 参数：profile=已隐藏 headless=%s keep_open=%s", params.get("headless"), getattr(_cfg, "ROXY_KEEP_BROWSER_OPEN", False))
         # Roxy 本地 API 并发打开多个环境时会长时间阻塞，严重时 API 服务直接退出。
         # 这里只串行发送 open 并等待浏览器就绪；已打开的窗口不会因此被串行使用。
         with _PROFILE_OPEN_LOCK:
@@ -689,7 +689,10 @@ class RoxyBrowserClient:
                 json_body=params if _cfg.ROXY_OPEN_METHOD.upper() != "GET" else None,
             )
         debugger_address = self._extract_debugger_address(result)
-        logger.info("[Roxy] open 返回摘要: debugger=%s raw=%s", debugger_address, json.dumps(result, ensure_ascii=False)[:800])
+        logger.info(
+            "[Roxy] open 返回摘要: debugger_present=%s response_keys=%s",
+            bool(debugger_address), sorted(result.keys()) if isinstance(result, dict) else [],
+        )
         webdriver_url = _first(result, [
             ("webdriver",), ("webDriver",), ("webdriver_url",), ("webdriverUrl",),
             ("selenium",), ("selenium_url",), ("seleniumUrl",),
@@ -726,7 +729,7 @@ class RoxyBrowserClient:
                 params=body if str(_cfg.ROXY_CLOSE_METHOD).upper() == "GET" else None,
                 json_body=body if str(_cfg.ROXY_CLOSE_METHOD).upper() != "GET" else None,
             )
-            logger.info("[Roxy] 已关闭环境：%s", profile_id)
+            logger.info("[Roxy] 已关闭环境（profile 原值不写日志）")
             return True
         except Exception as exc:
             logger.warning("[Roxy] 关闭环境失败：%s", exc)
@@ -750,7 +753,7 @@ class RoxyBrowserClient:
                 params=body if method.upper() == "GET" else None,
                 json_body=body if method.upper() != "GET" else None,
             )
-            logger.info("[Roxy] 已删除环境：%s", profile_id)
+            logger.info("[Roxy] 已删除环境（profile 原值不写日志）")
             return True
         except Exception as exc:
             logger.warning("[Roxy] 删除环境失败：%s", exc)
@@ -772,7 +775,7 @@ class RoxyBrowserClient:
         if should_delete:
             # 删除前尽量确保已关闭；若 keep_open=True 则不删除，便于调试保留现场。
             if keep_open:
-                logger.info("[Roxy] ROXY_KEEP_BROWSER_OPEN=True，跳过删除环境：%s", opened.profile_id)
+                logger.info("[Roxy] ROXY_KEEP_BROWSER_OPEN=True，跳过删除环境")
                 return
             if self.delete_profile(opened.profile_id):
                 _untrack_created_profile(opened.profile_id)

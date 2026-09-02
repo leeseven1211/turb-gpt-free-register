@@ -20,9 +20,35 @@ _LOG_ROOT = Path(os.getenv("TASK_RUN_LOG_ROOT") or _DEFAULT_LOG_ROOT)
 _TASK_LOG_ROOT = _LOG_ROOT / "tasks"
 _LOCK = threading.RLock()
 _SECRET_PARTS = ("password", "otp", "secret", "authorization", "cookie", "token")
+_PRIVATE_IDENTIFIER_KEYS = frozenset({
+    "device_id",
+    "session_id",
+    "session_identifiers",
+    "sentinel_sid",
+    "oai_session_id",
+    "auth_session_logging_id",
+    "datadog_trace_id",
+    "datadog_parent_id",
+    "react_listening_key",
+    "react_container_key",
+    "react_resources_key",
+    "proxy_lease_id",
+    "profile_key",
+    "roxy_profile_id",
+    "roxy_debugger_address",
+    "roxy_webdriver_url",
+    "roxy_ws_endpoint",
+    "roxy_browser_instance_id",
+})
 _JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{8,}\b")
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/-]{12,}")
 _PROXY_RE = re.compile(r"(?P<scheme>https?://)[^/@\s]+@", re.IGNORECASE)
+_TEXT_IDENTIFIER_RE = re.compile(
+    r"(?i)\b(device[_ -]?id|session[_ -]?id|sentinel[_ -]?sid|"
+    r"(?:oai|auth[_ -]?session|datadog)[_ -]?(?:session|parent|trace)[_ -]?id|"
+    r"proxy[_ -]?lease[_ -]?id|profile[_ -]?key|roxy[_ -]?(?:profile|debugger|webdriver|ws)[_ -]?(?:id|address|url|endpoint))\b"
+    r"\s*[:=]\s*([^\s,;]+)"
+)
 _TEXT_SECRET_RE = re.compile(
     r"(?i)\b(password|passcode|otp|one[-_ ]time[ -]code|secret|token|access[_ -]?token|refresh[_ -]?token|authorization|cookie)\b"
     r"\s*[:=]\s*([^\s,;]+)"
@@ -50,6 +76,7 @@ def redact_text(value: Any, limit: int = 4000) -> str:
     text = _JWT_RE.sub("[REDACTED_TOKEN]", text)
     text = _BEARER_RE.sub("Bearer [REDACTED]", text)
     text = _PROXY_RE.sub(r"\g<scheme>***@", text)
+    text = _TEXT_IDENTIFIER_RE.sub(lambda match: f"{match.group(1)}=[REDACTED]", text)
     text = _TEXT_SECRET_RE.sub(lambda match: f"{match.group(1)}=[REDACTED]", text)
     return text[: max(0, int(limit))]
 
@@ -62,7 +89,7 @@ def scrub(value: Any, depth: int = 0) -> Any:
         for raw_key, raw_value in list(value.items())[:100]:
             key = str(raw_key)[:100]
             lowered = key.lower()
-            if any(part in lowered for part in _SECRET_PARTS):
+            if lowered in _PRIVATE_IDENTIFIER_KEYS or any(part in lowered for part in _SECRET_PARTS):
                 continue
             if lowered in {"proxy", "proxy_url", "proxy_used"}:
                 result[key] = redact_text(raw_value, 500)

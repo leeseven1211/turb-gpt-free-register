@@ -30,6 +30,22 @@ class EmailSourceSelectionTests(PostgresTestCase):
 
         pick.assert_called_once_with("email_butler")
 
+    def test_registered_account_source_wins_over_runtime_email_context(self):
+        with (
+            patch(
+                "core.db.get_account_by_email",
+                return_value={"email_source": "cloudmail"},
+            ),
+            patch("core.gptmail_client.get_account_context") as gptmail,
+            patch("core.cf_temp_mail_client.get_account_context") as cloudflare,
+            patch("core.email_butler_client.get_account_context") as butler,
+        ):
+            self.assertEqual("cloudmail", email_provider.resolve_email_source("account@example.com"))
+
+        gptmail.assert_not_called()
+        cloudflare.assert_not_called()
+        butler.assert_not_called()
+
     def test_email_sources_endpoint_returns_enabled_choices_without_default_selection(self):
         with patch.object(email_config, "USE_EMAIL_SERVICE", True), patch.object(
             email_config, "EMAIL_SOURCE", "email_butler,icloud_hide"

@@ -464,6 +464,11 @@ function getCodexBulkWorkers() {
   const configured = CONFIG.find(item => item.key === 'ACCOUNT_BATCH_WORKERS');
   return Math.max(1, Math.min(16, Number(configured?.value ?? ACCOUNT_BATCH_WORKERS) || 3));
 }
+function configuredLiveCheckDriver() {
+  const configured = CONFIG.find(item => item.key === 'ACCOUNT_LIVE_CHECK_DRIVER');
+  const value = String(configured?.value ?? '').trim().toLowerCase();
+  return value || null;
+}
 async function loadRuntimeUiSettings() {
   try {
     const items = await api('/api/config');
@@ -1872,10 +1877,12 @@ async function checkSelectedLive(idsArg = null, btnArg = null) {
     const r = await api('/api/accounts/check-live-bulk', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids, workers}),
+      body: JSON.stringify({account_ids: ids, workers, driver: configuredLiveCheckDriver()}),
     });
     const skipped = (r.skipped || []).length;
-    showToast(`查活已入队 ${r.started_count || 0} 个，忙碌 ${r.busy_count || 0} 个，失败 ${r.failed_count || 0}${skipped ? `，跳过 ${skipped}` : ''}`);
+    const configuredDriver = configuredLiveCheckDriver() || '默认';
+    const effectiveDriver = r.live_check_driver || '未知';
+    showToast(`查活已入队 ${r.started_count || 0} 个，忙碌 ${r.busy_count || 0} 个，失败 ${r.failed_count || 0}${skipped ? `，跳过 ${skipped}` : ''}（配置驱动：${configuredDriver}，实际驱动：${effectiveDriver}）`);
     const firstStarted = (r.started || [])[0];
     if (firstStarted?.email) openLiveLog(firstStarted.email);
     else if (firstAcc && firstAcc.email) openLiveLog(firstAcc.email);

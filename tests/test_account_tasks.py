@@ -119,6 +119,43 @@ class TokenRefreshServiceTests(unittest.TestCase):
 
 
 class AccountStatusTests(PostgresTestCase):
+    def test_liveness_persists_only_safe_auth_fingerprint_summary(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            patches = [
+                patch.object(webui_app.db, "_ACCOUNTS_JSON", root / "registered.json"),
+                patch.object(webui_app.db, "_OUTLOOK_JSON", root / "outlook.json"),
+                patch.object(webui_app.db, "_ACCOUNTS_TXT", root / "registered.txt"),
+                patch.object(webui_app.db, "_TOKENS_TXT", root / "tokens.txt"),
+                patch.object(webui_app.db, "_OUTLOOK_TXT", root / "outlook.txt"),
+                patch.object(webui_app.db, "_VIEWER_HTML", root / "viewer.html"),
+            ]
+            with ExitStack() as stack:
+                for item in patches:
+                    stack.enter_context(item)
+                webui_app.db._save_accounts([{"id": 7, "email": "safe@example.com", "access_token": "old"}])
+                self.assertTrue(webui_app.db.update_account_liveness(7, {
+                    "ok": True,
+                    "status": "live",
+                    "auth_method": "password_totp",
+                    "fingerprint": {
+                        "source": "protocol",
+                        "profile_ref": "abc123",
+                        "screen_width": 1440,
+                        "device_id": "private-device-id",
+                        "oai_session_id": "private-session-id",
+                        "proxy_url": "http://user:password@example.test:8080",
+                    },
+                }))
+                row = webui_app.db.get_account(7)
+
+        self.assertEqual("protocol", row["last_auth_fingerprint"]["source"])
+        self.assertEqual(1440, row["last_auth_fingerprint"]["screen_width"])
+        self.assertNotIn("device_id", row["last_auth_fingerprint"])
+        self.assertNotIn("oai_session_id", row["last_auth_fingerprint"])
+        self.assertNotIn("proxy_url", row["last_auth_fingerprint"])
+        self.assertNotIn("private-device-id", row["last_auth_fingerprint_text"])
+
     def test_deactivated_liveness_result_persists_independent_account_status(self):
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)
@@ -529,6 +566,44 @@ class AccountTaskApiTests(PostgresTestCase):
         self.assertEqual("token_refresh_manual", refresh_call.kwargs["trigger"])
         self.assertTrue(refresh_call.kwargs["force_refresh"])
 
+    def test_live_check_bulk_forwards_explicit_driver_override_only_to_live_tasks(self):
+        app = create_app(auth_code="test-auth")
+        client = app.test_client()
+        client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
+        account = {"id": 7, "email": "a@example.com", "access_token": "saved-token"}
+        with (
+            patch("core.feature_availability.require_feature", return_value=(True, "")),
+            patch.object(account_task_store, "create_batch", return_value="live-batch"),
+            patch.object(live_check_service, "enqueue_account_live_check", return_value={"accepted": True}) as enqueue,
+            patch.object(webui_app.db, "get_account", return_value=account),
+            patch("config.account.ACCOUNT_LIVE_CHECK_BROWSER_ENABLED", True),
+        ):
+            response = client.post(
+                "/api/accounts/check-live-bulk",
+                json={"account_ids": [7], "driver": "browser_roxy"},
+            )
+
+        self.assertEqual(202, response.status_code)
+        enqueue.assert_called_once()
+        self.assertEqual("browser_roxy", enqueue.call_args.kwargs["driver"])
+
+    def test_live_check_bulk_rejects_invalid_driver_before_loading_accounts(self):
+        app = create_app(auth_code="test-auth")
+        client = app.test_client()
+        client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
+        with (
+            patch("core.feature_availability.require_feature", return_value=(True, "")),
+            patch.object(webui_app.db, "get_account") as get_account,
+        ):
+            response = client.post(
+                "/api/accounts/check-live-bulk",
+                json={"account_ids": [7], "driver": "protocol_v2"},
+            )
+
+        self.assertEqual(400, response.status_code)
+        self.assertIn("尚未开放", response.get_json()["error"])
+        get_account.assert_not_called()
+
     def test_list_api_returns_task_instances(self):
         app = create_app(auth_code="test-auth")
         client = app.test_client()
@@ -571,6 +646,10 @@ class AccountTaskApiTests(PostgresTestCase):
         self.assertIn("label: '过期'", html)
         self.assertIn("label: `失效 · ${liveHttpStatus || '未知'}`", html)
         self.assertIn('data-account-copy-secret="access_token"', html)
+        self.assertIn("function configuredLiveCheckDriver", html)
+        self.assertIn("driver: configuredLiveCheckDriver()", html)
+        self.assertIn("配置驱动", html)
+        self.assertIn("实际驱动", html)
         self.assertIn("function meaningfulTaskDetail", html)
         self.assertIn("white-space:normal", html)
         self.assertIn("flex:1 1 auto; min-height:0; overflow:auto", html)

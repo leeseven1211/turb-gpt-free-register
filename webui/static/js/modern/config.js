@@ -13,6 +13,15 @@ const CONFIG_LIFECYCLE_SECTION_KEYS_V2 = {
     'REGISTRATION_DRIVER',
     'ACCOUNT_PASSWORD_DRIVER',
     'ACCOUNT_PLAN_CHECK_DRIVER',
+    'ACCOUNT_LIVE_CHECK_DRIVER',
+    'ACCOUNT_LIVE_CHECK_BROWSER_ENABLED',
+    'ACCOUNT_TOKEN_REFRESH_DRIVER',
+    'ACCOUNT_AUTH_V2_ENABLED',
+    'ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK',
+    'ACCOUNT_AUTH_PROFILE_MODE',
+    'ACCOUNT_AUTH_RAW_CONTEXT_ENABLED',
+    'ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS',
+    'LIVE_CHECK_ROXY_FALLBACK_ENABLED',
     'TWOFA_DRIVER',
     'ACCOUNT_2FA_DRIVER',
     'CODEX_OAUTH_DRIVER',
@@ -535,6 +544,42 @@ function renderLifecycleExecutionSection(fields) {
   if (has('ACCOUNT_PLAN_CHECK_DRIVER')) {
     cards.push(renderLifecycleFixedDriver('套餐查询 / 补全', '纯协议', '套餐查询当前走协议接口，暂不需要填写执行方式。'));
   }
+  if (has('ACCOUNT_LIVE_CHECK_DRIVER')) {
+    cards.push(renderLifecycleDriverSelect(
+      'ACCOUNT_LIVE_CHECK_DRIVER', '普通查活', '阶段1仅保留现有协议型旧 AT 探测；浏览器 probe 和新协议完成验证后再开放切换。', liveCheckDriverChoices()
+    ));
+  }
+  if (has('ACCOUNT_LIVE_CHECK_BROWSER_ENABLED')) {
+    cards.push(renderFeatureSwitchField(
+      has('ACCOUNT_LIVE_CHECK_BROWSER_ENABLED'),
+      { withIcon: false }
+    ));
+  }
+  if (has('LIVE_CHECK_ROXY_FALLBACK_ENABLED')) {
+    cards.push(renderFeatureSwitchField(has('LIVE_CHECK_ROXY_FALLBACK_ENABLED'), { withIcon: false }));
+  }
+  if (has('ACCOUNT_TOKEN_REFRESH_DRIVER')) {
+    cards.push(renderLifecycleDriverSelect(
+      'ACCOUNT_TOKEN_REFRESH_DRIVER', '刷新 AT', '默认保持现有刷新链路；Protocol v2 仅在明确选择且总开关开启时使用，失败是否进入现有 Roxy 兜底仍按原规则。', refreshDriverChoices()
+    ));
+  }
+  if (has('ACCOUNT_AUTH_V2_ENABLED')) {
+    cards.push(renderFeatureSwitchField(has('ACCOUNT_AUTH_V2_ENABLED'), { withIcon: false }));
+  }
+  if (has('ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK')) {
+    cards.push(renderFeatureSwitchField(has('ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK'), { withIcon: false }));
+  }
+  if (has('ACCOUNT_AUTH_PROFILE_MODE')) {
+    cards.push(renderLifecycleDriverSelect(
+      'ACCOUNT_AUTH_PROFILE_MODE', 'Protocol 设备画像', '默认保持现状，每次会话随机画像；account_stable 只对明确开启的 Protocol v2 刷新懒创建账号级画像，不影响注册 device_id、普通查活或旧刷新。', authProfileModeChoices()
+    ));
+  }
+  if (has('ACCOUNT_AUTH_RAW_CONTEXT_ENABLED')) {
+    cards.push(renderFeatureSwitchField(has('ACCOUNT_AUTH_RAW_CONTEXT_ENABLED'), { withIcon: false }));
+  }
+  if (has('ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS')) {
+    cards.push(renderConfigPlainFieldV2(has('ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS')));
+  }
   if (has('TWOFA_DRIVER')) {
     cards.push(renderLifecycleDriverSelect(
       'TWOFA_DRIVER', '2FA 开通', '注册和账号补全的 2FA 执行方式统一维护；协议模式失败时仍按现有实现做浏览器兜底。', twofaDriverChoices(), ['ACCOUNT_2FA_DRIVER']
@@ -547,7 +592,7 @@ function renderLifecycleExecutionSection(fields) {
   }
   return `
     <section class="config-section-v2" id="cfg-registration-account" data-config-section="${CONFIG_LIFECYCLE_GROUP_V2}">
-      ${renderConfigSectionHead('执行方式', '所有链路共用的浏览器 / 协议选择；密码和套餐当前为唯一实现方式。')}
+      ${renderConfigSectionHead('执行方式', '浏览器和现有稳定链路保持可用；Protocol v2 仅作为显式灰度选项。')}
       ${renderLifecycleSubtabs('执行方式')}
       <div class="config-lifecycle-note-v2">这里仅配置“怎么执行”。是否在注册主链路或账号补全中执行，请分别到对应小菜单打开开关。</div>
       <div class="config-lifecycle-driver-grid-v2">${cards.join('')}</div>
@@ -628,6 +673,27 @@ function twofaDriverChoices() {
     { value: 'browser', label: '浏览器页面（RoxyBrowser）' },
   ];
 }
+function liveCheckDriverChoices() {
+  const choices = [
+    { value: 'protocol_current', label: '现有协议（保持现状）' },
+  ];
+  const rawEnabled = lifecycleFieldValue('ACCOUNT_LIVE_CHECK_BROWSER_ENABLED', false);
+  const enabled = rawEnabled === true || ['1', 'true', 'yes', 'on'].includes(String(rawEnabled).trim().toLowerCase());
+  if (enabled) choices.push({ value: 'browser_roxy', label: 'Roxy 浏览器（旧 AT probe）' });
+  return choices;
+}
+function refreshDriverChoices() {
+  return [
+    { value: 'legacy', label: '现有刷新链路（保持现状）' },
+    { value: 'protocol_v2', label: 'Protocol v2 密码 / MFA（需开启总开关）' },
+  ];
+}
+function authProfileModeChoices() {
+  return [
+    { value: 'current', label: '当前会话画像（保持现状）' },
+    { value: 'account_stable', label: '账号稳定 Protocol 画像（懒创建）' },
+  ];
+}
 function renderTwofaDriverControl(f) {
   const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
   const current = String(fv == null ? 'protocol' : fv).trim().toLowerCase() || 'protocol';
@@ -661,6 +727,9 @@ function configDriverChoices(f) {
   if (f.key === 'ACCOUNT_PLAN_CHECK_DRIVER') {
     return [{ value: 'protocol', label: '纯协议（当前唯一实现）' }];
   }
+  if (f.key === 'ACCOUNT_LIVE_CHECK_DRIVER') return liveCheckDriverChoices();
+  if (f.key === 'ACCOUNT_TOKEN_REFRESH_DRIVER') return refreshDriverChoices();
+  if (f.key === 'ACCOUNT_AUTH_PROFILE_MODE') return authProfileModeChoices();
   if (f.key === 'ACCOUNT_2FA_DRIVER') return twofaDriverChoices();
   if (f.key === 'ACCOUNT_CODEX_DRIVER') return codexOauthDriverChoices();
   return null;
@@ -1452,7 +1521,7 @@ function trackConfigFieldChange(e) {
     if (CONFIG.some(item => item.key === key)) setPendingConfigValue(key, value);
   });
   renderConfigOverviewCards();
-  if (f.key === 'REGISTRATION_AUTH_MODE') renderConfigLayoutV2();
+  if (f.key === 'REGISTRATION_AUTH_MODE' || f.key === 'ACCOUNT_LIVE_CHECK_BROWSER_ENABLED') renderConfigLayoutV2();
   updateConfigSaveUi();
 }
 $('#tab-config').addEventListener('input', trackConfigFieldChange);

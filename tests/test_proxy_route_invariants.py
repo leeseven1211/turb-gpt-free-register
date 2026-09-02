@@ -42,6 +42,26 @@ class ProxyRouteInvariantTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "禁止.*PROXY_POOL"):
                 BrowserSession(proxy=None)
 
+    def test_browser_session_uses_stable_identity_only_when_explicitly_passed(self):
+        from core.session import BrowserSession
+        from core.storage.account_auth import _derive_identity
+
+        identity = _derive_identity("55" * 32)
+        with patch("core.session.Session"):
+            session = BrowserSession(proxy="", detect_exit_geo=False, identity=identity)
+
+        self.assertEqual(identity["device_id"], session.device_id)
+        self.assertEqual(identity["profile_ref"], session.protocol_profile_ref)
+        self.assertEqual(identity["profile_version"], session.protocol_profile_version)
+        self.assertEqual(identity["browser_profile"]["screen_width"], session.browser_profile["screen_width"])
+        self.assertEqual(identity["browser_profile"]["hardware_concurrency"], session.browser_profile["hardware_concurrency"])
+
+        with patch("core.session.Session"):
+            second = BrowserSession(proxy="", detect_exit_geo=False, identity=identity)
+        self.assertEqual(session.device_id, second.device_id)
+        self.assertNotEqual(session.oai_session_id, second.oai_session_id)
+        self.assertNotEqual(session.sentinel_sid, second.sentinel_sid)
+
     def test_codex_standalone_call_acquires_platform_account_route(self):
         from core import codex_oauth
 
@@ -156,6 +176,37 @@ class ProxyRouteInvariantTests(unittest.TestCase):
         )
         first_session.session.close.assert_called_once()
 
+    def test_protocol_preflight_records_rotation_without_reusing_session_ids(self):
+        from core import account_liveness
+
+        first_session = MagicMock(proxy="http://first.example:8080", device_id="first-device")
+        second_session = MagicMock(proxy="http://second.example:8080", device_id="second-device")
+        recorder = MagicMock()
+        supplier = MagicMock(side_effect=["http://first.example:8080", "http://second.example:8080"])
+        with (
+            patch("core.account_liveness.BrowserSession", side_effect=[first_session, second_session]),
+            patch("core.account_liveness._warm_protocol_login_context"),
+            patch("core.account_liveness.get_csrf_token", side_effect=[RuntimeError("HTTP 403"), "csrf"]),
+            patch("core.account_liveness.signin_openai", return_value="https://auth.example/authorize"),
+            patch("core.account_liveness.human_delay"),
+            patch("core.account_liveness.time.sleep"),
+        ):
+            returned, _ = account_liveness._network_preflight_with_retry(
+                "account@example.com",
+                None,
+                max_attempts=2,
+                proxy_supplier=supplier,
+                context_recorder=recorder,
+            )
+
+        self.assertIs(second_session, returned)
+        self.assertEqual(2, recorder.open_protocol_session.call_count)
+        recorder.finish_session.assert_called_once_with(
+            first_session,
+            status="rotated",
+            result_code="network_preflight_retry",
+        )
+
     def test_live_check_without_saved_token_does_not_login_or_acquire_route(self):
         from core import live_check_service
 
@@ -196,6 +247,56 @@ class ProxyRouteInvariantTests(unittest.TestCase):
         acquire.assert_not_called()
         email_login.assert_not_called()
         self.assertNotIn("access_token", updated.call_args.args[1])
+
+    def test_protocol_v2_refresh_loads_stable_identity_only_in_account_stable_mode(self):
+        from core import live_check_service
+
+        route = SimpleNamespace(
+            proxy_url="http://stable.example:8080",
+            public_dict=lambda: {
+                "proxy_mode": "explicit",
+                "network_route": "proxy",
+                "proxy_provider": "manual",
+                "proxy_used": "http://stable.example:8080",
+                "proxy_region": "US",
+            },
+            release=MagicMock(),
+        )
+        identity = SimpleNamespace(profile_ref="abc123def456", profile_version=1)
+        refreshed = {
+            "ok": True,
+            "status": "live",
+            "access_token": "fresh-token",
+            "session": {"account": {"planType": "free"}},
+            "validation_method": "authenticated_session",
+            "live_check_driver": "protocol_v2",
+        }
+        with (
+            patch("config.account.ACCOUNT_AUTH_V2_ENABLED", True),
+            patch("config.account.ACCOUNT_AUTH_PROFILE_MODE", "account_stable"),
+            patch.object(live_check_service.db, "mark_account_live_check_running", return_value=True),
+            patch.object(live_check_service.db, "get_account", return_value={"access_token": "expired-token"}),
+            patch.object(live_check_service.db, "update_account_liveness"),
+            patch.object(live_check_service, "token_claims", return_value={"token_expired": True}),
+            patch.object(live_check_service, "_append_log"),
+            patch.object(live_check_service._QUEUE_SLOTS, "release"),
+            patch("core.account_proxy.acquire_account_proxy", return_value=route),
+            patch("core.storage.account_auth.ensure_account_protocol_identity", return_value=identity) as ensure,
+            patch("core.protocol_v2_liveness.refresh_access_token", return_value=refreshed) as refresh,
+        ):
+            result = live_check_service._run_live_check(
+                account_id=85,
+                email="first@example.com",
+                proxy="",
+                trigger="token_refresh_manual",
+                force_refresh=True,
+                refresh_driver="protocol_v2",
+            )
+
+        self.assertTrue(result["ok"])
+        ensure.assert_called_once_with(85)
+        self.assertIs(identity, refresh.call_args.kwargs["identity"])
+        route.release.assert_called_once_with(reason="live-check-85")
 
     def test_live_check_uses_valid_saved_token_before_email_login(self):
         from core import live_check_service
@@ -297,6 +398,62 @@ class ProxyRouteInvariantTests(unittest.TestCase):
         self.assertNotIn("access_token", updated.call_args.args[1])
         self.assertEqual(401, updated.call_args.args[1]["http_status"])
 
+    def test_ordinary_live_check_records_optional_context_without_auth_refresh(self):
+        from core import live_check_service
+
+        route = SimpleNamespace(
+            proxy_url="http://fresh.example:8080",
+            public_dict=lambda: {
+                "proxy_mode": "1024",
+                "network_route": "proxy",
+                "proxy_provider": "1024proxy",
+                "proxy_used": "http://fresh.example:8080",
+                "proxy_region": "US",
+            },
+            release=MagicMock(),
+        )
+        with (
+            patch.object(live_check_service.db, "mark_account_live_check_running", return_value=True),
+            patch.object(live_check_service.db, "get_account", return_value={"access_token": "valid-token"}),
+            patch.object(live_check_service.db, "update_account_liveness"),
+            patch.object(live_check_service, "token_claims", return_value={"token_expired": False}),
+            patch.object(
+                live_check_service,
+                "check_account_plan",
+                return_value={"ok": True, "http_status": 200, "current_plan_type": "free"},
+            ) as plan_check,
+            patch.object(live_check_service, "check_account_liveness") as email_login,
+            patch("core.storage.account_auth.ensure_account_protocol_identity") as ensure_identity,
+            patch("core.storage.account_auth.AuthContextRecorder.from_account_action_task") as recorder,
+            patch.object(live_check_service, "_append_log"),
+            patch("core.account_proxy.acquire_account_proxy", return_value=route),
+            patch.object(live_check_service._QUEUE_SLOTS, "release"),
+            patch("config.account.ACCOUNT_AUTH_PROFILE_MODE", "account_stable"),
+            patch("config.account.ACCOUNT_AUTH_RAW_CONTEXT_ENABLED", True),
+        ):
+            result = live_check_service._run_live_check(
+                account_id=85,
+                email="first@example.com",
+                proxy=None,
+                trigger="manual",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("access_token", result["validation_method"])
+        ensure_identity.assert_not_called()
+        recorder.assert_called_once_with(
+            None,
+            account_id=85,
+            protocol_identity=None,
+            action="live_check",
+            driver="protocol_current",
+        )
+        self.assertIs(
+            plan_check.call_args.kwargs["context_recorder"],
+            recorder.return_value,
+        )
+        email_login.assert_not_called()
+
     def test_force_refresh_uses_roxy_after_protocol_login_failure(self):
         from core import live_check_service
 
@@ -391,6 +548,58 @@ class ProxyRouteInvariantTests(unittest.TestCase):
         self.assertIn("没有现有 access_token", result["error"])
         acquire_slot.assert_not_called()
         claim.assert_not_called()
+
+    def test_protocol_v2_password_rejection_never_enters_roxy_fallback(self):
+        from core import live_check_service
+
+        route = SimpleNamespace(
+            proxy_url="http://fresh.example:8080",
+            public_dict=lambda: {
+                "proxy_mode": "1024",
+                "network_route": "proxy",
+                "proxy_provider": "1024proxy",
+                "proxy_used": "http://fresh.example:8080",
+                "proxy_region": "US",
+            },
+            release=MagicMock(),
+        )
+        rejected = {
+            "ok": False,
+            "status": "failed",
+            "error": "password_rejected",
+            "error_category": "auth",
+            "password_auth_status": "rejected",
+            "roxy_fallback_allowed": False,
+            "live_check_driver": "protocol_v2",
+        }
+        with (
+            patch("config.account.ACCOUNT_AUTH_V2_ENABLED", True),
+            patch.object(live_check_service.db, "mark_account_live_check_running", return_value=True),
+            patch.object(live_check_service.db, "get_account", return_value={"access_token": "expired-token"}),
+            patch.object(live_check_service.db, "update_account_liveness") as updated,
+            patch.object(live_check_service, "token_claims", return_value={"token_expired": True}),
+            patch.object(live_check_service, "_append_log"),
+            patch.object(live_check_service._QUEUE_SLOTS, "release"),
+            patch("core.account_proxy.acquire_account_proxy", return_value=route),
+            patch("core.protocol_v2_liveness.refresh_access_token", return_value=rejected),
+            patch("core.roxy_liveness.available", return_value=True),
+            patch("core.roxy_liveness.refresh_access_token") as roxy_refresh,
+        ):
+            result = live_check_service._run_live_check(
+                account_id=85,
+                email="first@example.com",
+                proxy="",
+                trigger="token_refresh_manual",
+                force_refresh=True,
+                refresh_driver="protocol_v2",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("password_rejected", result["error"])
+        self.assertEqual("protocol_v2", result["token_refresh_driver"])
+        roxy_refresh.assert_not_called()
+        self.assertNotIn("access_token", updated.call_args.args[1])
+        route.release.assert_called_once_with(reason="live-check-85")
 
     def test_immediate_browser_oauth_reuses_proxy_and_login_state(self):
         from core.cloakbrowser_registration import run_cloak_registration

@@ -8,6 +8,7 @@ from config import codex as codex_config
 from config import register as register_config
 from config import twofa as twofa_config
 from config import account as account_config
+from config import proxy as proxy_config
 from config import env_loader
 from core import account_export
 from webui import config_editor
@@ -134,6 +135,22 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         }
         self.assertTrue(completion_keys.issubset(fields))
         self.assertTrue(all(fields[key]["group"] == "账号补全" for key in completion_keys))
+        auth_keys = {
+            "ACCOUNT_TOKEN_REFRESH_DRIVER",
+            "ACCOUNT_AUTH_V2_ENABLED",
+            "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK",
+            "ACCOUNT_AUTH_PROFILE_MODE",
+            "ACCOUNT_AUTH_RAW_CONTEXT_ENABLED",
+            "ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS",
+        }
+        self.assertTrue(auth_keys.issubset(fields))
+        self.assertTrue(all(fields[key]["group"] == "账号补全" for key in auth_keys))
+        self.assertEqual("legacy", account_config.ACCOUNT_TOKEN_REFRESH_DRIVER)
+        self.assertFalse(account_config.ACCOUNT_AUTH_V2_ENABLED)
+        self.assertFalse(account_config.ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK)
+        self.assertEqual("current", account_config.ACCOUNT_AUTH_PROFILE_MODE)
+        self.assertFalse(account_config.ACCOUNT_AUTH_RAW_CONTEXT_ENABLED)
+        self.assertEqual(30, account_config.ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS)
 
         old_loaded = env_loader._LOADED
         env_loader._LOADED = True
@@ -141,10 +158,22 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             with patch.dict(os.environ, {
                 "ACCOUNT_COMPLETION_CODEX_ENABLED": "False",
                 "ACCOUNT_COMPLETION_REFRESH_AT_ENABLED": "True",
+                "ACCOUNT_TOKEN_REFRESH_DRIVER": "protocol_v2",
+                "ACCOUNT_AUTH_V2_ENABLED": "True",
+                "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK": "True",
+                "ACCOUNT_AUTH_PROFILE_MODE": "account_stable",
+                "ACCOUNT_AUTH_RAW_CONTEXT_ENABLED": "True",
+                "ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS": "14",
             }, clear=False):
                 reloaded = importlib.reload(account_config)
                 self.assertFalse(reloaded.ACCOUNT_COMPLETION_CODEX_ENABLED)
                 self.assertTrue(reloaded.ACCOUNT_COMPLETION_REFRESH_AT_ENABLED)
+                self.assertEqual("protocol_v2", reloaded.ACCOUNT_TOKEN_REFRESH_DRIVER)
+                self.assertTrue(reloaded.ACCOUNT_AUTH_V2_ENABLED)
+                self.assertTrue(reloaded.ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK)
+                self.assertEqual("account_stable", reloaded.ACCOUNT_AUTH_PROFILE_MODE)
+                self.assertTrue(reloaded.ACCOUNT_AUTH_RAW_CONTEXT_ENABLED)
+                self.assertEqual(14, reloaded.ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS)
         finally:
             env_loader._LOADED = old_loaded
             importlib.reload(account_config)
@@ -158,6 +187,44 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         }.issubset(config_editor.RESTART_REQUIRED_KEYS))
         result = config_editor.update_config({})
         self.assertEqual([], result["restart_required"])
+
+    def test_live_check_driver_is_env_editable_and_defaults_to_current_protocol(self):
+        fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
+        self.assertIn("ACCOUNT_LIVE_CHECK_DRIVER", fields)
+        self.assertIn("ACCOUNT_LIVE_CHECK_BROWSER_ENABLED", fields)
+        self.assertEqual(fields["ACCOUNT_LIVE_CHECK_DRIVER"]["file"], "account.py")
+        self.assertEqual(account_config.ACCOUNT_LIVE_CHECK_DRIVER, "protocol_current")
+        self.assertFalse(account_config.ACCOUNT_LIVE_CHECK_BROWSER_ENABLED)
+
+        old_loaded = env_loader._LOADED
+        env_loader._LOADED = True
+        try:
+            with patch.dict(os.environ, {
+                "ACCOUNT_LIVE_CHECK_DRIVER": "protocol_current",
+                "ACCOUNT_LIVE_CHECK_BROWSER_ENABLED": "True",
+            }, clear=False):
+                reloaded = importlib.reload(account_config)
+                self.assertEqual("protocol_current", reloaded.ACCOUNT_LIVE_CHECK_DRIVER)
+                self.assertTrue(reloaded.ACCOUNT_LIVE_CHECK_BROWSER_ENABLED)
+        finally:
+            env_loader._LOADED = old_loaded
+            importlib.reload(account_config)
+
+    def test_legacy_roxy_fallback_is_webui_editable_and_env_driven(self):
+        fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
+        self.assertIn("LIVE_CHECK_ROXY_FALLBACK_ENABLED", fields)
+        self.assertEqual(fields["LIVE_CHECK_ROXY_FALLBACK_ENABLED"]["group"], "账号补全")
+        self.assertTrue(proxy_config.LIVE_CHECK_ROXY_FALLBACK_ENABLED)
+
+        old_loaded = env_loader._LOADED
+        env_loader._LOADED = True
+        try:
+            with patch.dict(os.environ, {"LIVE_CHECK_ROXY_FALLBACK_ENABLED": "False"}, clear=False):
+                reloaded = importlib.reload(proxy_config)
+                self.assertFalse(reloaded.LIVE_CHECK_ROXY_FALLBACK_ENABLED)
+        finally:
+            env_loader._LOADED = old_loaded
+            importlib.reload(proxy_config)
 
     def test_protocol_twofa_checkpoints_secret_before_activation(self):
         events = []

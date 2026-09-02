@@ -73,6 +73,10 @@ PLAN_CHECK_PROXY = ""
 ACCOUNT_ACTION_PROXY_MODE = "registration"
 ACCOUNT_ACTION_PROXY = ""
 
+# 兼容旧版 token_refresh 的 Roxy 登录兜底开关。它不影响普通 live_check；
+# 普通查活是否允许使用 Roxy 由 config.account 的独立开关控制。
+LIVE_CHECK_ROXY_FALLBACK_ENABLED = True
+
 # 查套餐使用独立的短超时和有限重试，避免后台任务长时间卡住。
 PLAN_CHECK_TIMEOUT = 15.0
 PLAN_CHECK_MAX_ATTEMPTS = 2
@@ -121,6 +125,7 @@ apply_env_overrides(globals(), {
     'PLAN_CHECK_PROXY': 'str',
     'ACCOUNT_ACTION_PROXY_MODE': 'str',
     'ACCOUNT_ACTION_PROXY': 'str',
+    'LIVE_CHECK_ROXY_FALLBACK_ENABLED': 'bool',
     'PLAN_CHECK_TIMEOUT': 'float',
     'PLAN_CHECK_MAX_ATTEMPTS': 'int',
     'PLAN_CHECK_RETRY_DELAY': 'float',

@@ -82,6 +82,40 @@ class ChatGPTPlanTests(unittest.TestCase):
             "/backend-api/accounts/check/{version}",
         )
 
+    def test_plan_check_can_record_protocol_probe_session_without_changing_request(self):
+        response = Mock()
+        response.status_code = 200
+        response.text = "{}"
+        response.json.return_value = {
+            "accounts": {
+                "default": {
+                    "account": {"account_id": "account-1", "plan_type": "free"},
+                    "entitlement": {},
+                }
+            }
+        }
+        session = Mock()
+        session.get.return_value = response
+        session.js_timezone_offset_min.return_value = -480
+        session.get_chatgpt_headers.return_value = {"oai-session-id": "session-1"}
+        recorder = Mock()
+
+        result = chatgpt_plan.check_account_plan(
+            "access-token",
+            proxy="",
+            session=session,
+            max_attempts=1,
+            context_recorder=recorder,
+        )
+
+        self.assertTrue(result["ok"])
+        recorder.open_protocol_session.assert_called_once_with(
+            session, route_attempt_no=1, auth_method="access_token",
+        )
+        recorder.finish_session.assert_called_once_with(
+            session, status="success", result_code="authenticated",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

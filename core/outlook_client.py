@@ -61,6 +61,10 @@ _MS_TOKEN_CACHE: dict[str, tuple[str, float]] = {}
 _MS_TOKEN_FATAL_CACHE: dict[str, tuple[str, float]] = {}
 
 
+def _cache_key(email: str) -> str:
+    return str(email or "").strip().lower()
+
+
 @dataclass
 class OutlookAccount:
     email: str
@@ -274,26 +278,56 @@ def pick_account() -> OutlookAccount:
         client_id=row["client_id"],
         refresh_token=row["refresh_token"],
     )
-    _CONTEXT_CACHE[account.email] = account
+    _CONTEXT_CACHE[_cache_key(account.email)] = account
     logger.info(f"[Outlook] 选中账号: {account.email}（DB id={row['id']}）")
     return account
 
 
 def get_account_context(email: str) -> OutlookAccount | None:
-    """根据邮箱查 OutlookAccount 上下文。优先内存缓存，fallback 查 DB。"""
-    if email in _CONTEXT_CACHE:
-        return _CONTEXT_CACHE[email]
-    from core.db import get_outlook_by_email
-    row = get_outlook_by_email(email)
+    """根据邮箱恢复 Outlook 上下文，优先邮箱池、再读已注册账号快照。"""
+    cache_key = _cache_key(email)
+    if not cache_key:
+        return None
+    if cache_key in _CONTEXT_CACHE:
+        return _CONTEXT_CACHE[cache_key]
+    from core.db import get_account_by_email, get_outlook_by_email
+
+    pool_row = get_outlook_by_email(email)
+    registered = get_account_by_email(email)
+    registered_source = str((registered or {}).get("email_source") or "").strip().lower()
+    registered_source = registered_source.replace(";", ",").replace("|", ",").split(",", 1)[0].strip()
+    if registered_source and registered_source != "outlook":
+        return None
+
+    row = pool_row or registered
     if row is None:
         return None
+
+    def _first_value(*keys: str) -> str:
+        for source_row in (row, registered if registered is not row else None):
+            if not source_row:
+                continue
+            for key in keys:
+                value = str(source_row.get(key) or "").strip()
+                if value:
+                    return value
+        return ""
+
+    email_value = _first_value("email") or str(email or "").strip()
+    password = _first_value("password")
+    client_id = _first_value("client_id", "clientId")
+    refresh_token = _first_value("refresh_token", "refreshToken")
+    if not (email_value and password and client_id and refresh_token):
+        return None
     account = OutlookAccount(
-        email=row["email"],
-        password=row["password"],
-        client_id=row["client_id"],
-        refresh_token=row["refresh_token"],
+        email=email_value,
+        password=password,
+        client_id=client_id,
+        refresh_token=refresh_token,
+        recovery_email=_first_value("recovery_email"),
+        recovery_code=_first_value("recovery_code"),
     )
-    _CONTEXT_CACHE[email] = account
+    _CONTEXT_CACHE[cache_key] = account
     return account
 
 
@@ -301,7 +335,7 @@ def release_account(email: str, status: str = "available", note: str | None = No
     """按注册阶段结果更新 Outlook 账号状态：可重试回 available，已消耗则标记 failed。"""
     from core.db import release_outlook
     release_outlook(email, status=status, note=note)
-    _CONTEXT_CACHE.pop(email, None)
+    _CONTEXT_CACHE.pop(_cache_key(email), None)
 
 
 def import_outlook_from_file(path: str | Path | None = None) -> tuple[int, int]:
@@ -919,7 +953,7 @@ def fetch_otp_with_account(
     直接给定 OutlookAccount（含 client_id / refresh_token）拉 OTP。
     适用于 account 不在 DB / 不在内存缓存的场景（如外部脚本调用）。
     """
-    _CONTEXT_CACHE[account.email] = account
+    _CONTEXT_CACHE[_cache_key(account.email)] = account
     return fetch_latest_otp(
         account.email,
         after_ts=after_ts,

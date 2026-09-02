@@ -510,12 +510,22 @@ class RegistrationDebugSession:
                     run_id = candidate.get("id") or candidate.get("run_id")
             except Exception:
                 logger.debug("[Job %s][Debug] 解析 RegistrationRun 失败，继续使用已有诊断上下文", self.job_id, exc_info=True)
+        latest_evidence = _email_evidence_from_job(latest, context)
+        if isinstance(self.email_evidence, dict) and isinstance(latest_evidence, dict):
+            # Compatibility job rows may not carry the richer evidence that
+            # was collected in memory during this run.  A missing DB value is
+            # not a signal to erase that evidence; only concrete terminal
+            # values should refresh the in-memory context.
+            latest_evidence = {
+                **self.email_evidence,
+                **{key: value for key, value in latest_evidence.items() if value is not None},
+            }
         self.update_context(
             attempt_id=attempt_id,
             run_id=run_id,
             execution_id=execution_id,
             last_confirmed_state=latest.get("last_confirmed_state") or context.get("last_confirmed_state") or self.last_confirmed_state,
-            email_evidence=_email_evidence_from_job(latest, context),
+            email_evidence=latest_evidence,
         )
 
     def record_email_evidence(self, evidence: Any) -> None:

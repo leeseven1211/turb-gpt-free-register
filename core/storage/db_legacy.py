@@ -1702,6 +1702,26 @@ def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
         row["live_check_ok"] = ok
         row["live_checked_at"] = result.get("checked_at") or now
         row["live_check_error"] = None if ok else result.get("error")
+        # 认证路径是账号最近一次刷新 AT 的低敏摘要；密码、TOTP、Token 和
+        # 原始响应仍不进入账号行。普通 AT probe 没有 auth_method，不覆盖这组
+        # “最近认证”字段，避免查活把刷新 AT 的事实抹掉。
+        if result.get("auth_method"):
+            row["last_auth_method"] = str(result.get("auth_method"))[:80]
+        if result.get("password_auth_status"):
+            row["last_password_auth_status"] = str(result.get("password_auth_status"))[:40]
+        if "fallback_used" in result:
+            row["last_auth_fallback_used"] = bool(result.get("fallback_used"))
+        if result.get("error") and result.get("auth_method"):
+            row["last_auth_error_code"] = str(result.get("error"))[:100]
+        elif result.get("ok") and result.get("auth_method"):
+            row["last_auth_error_code"] = None
+        if result.get("fingerprint"):
+            from core.auth_fingerprint import clean_safe_fingerprint_summary, safe_fingerprint_summary_text
+
+            fingerprint = clean_safe_fingerprint_summary(result.get("fingerprint"))
+            if fingerprint:
+                row["last_auth_fingerprint"] = fingerprint
+                row["last_auth_fingerprint_text"] = safe_fingerprint_summary_text(fingerprint)
         try:
             row["live_check_http_status"] = int(result.get("http_status"))
         except (TypeError, ValueError):
