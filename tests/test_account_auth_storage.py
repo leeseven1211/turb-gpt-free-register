@@ -211,10 +211,9 @@ class AccountAuthRunContextStorageTests(PostgresTestCase):
             )
             self.assertTrue(account_auth.finish_auth_run_context(first, status="rotated", result_code="retry"))
             self.assertTrue(account_auth.finish_auth_run_context(first, status="rotated", result_code="retry"))
-
-        self.assertNotEqual(first, second)
-        first_row = account_auth.get_auth_run_context(first)
-        second_row = account_auth.get_auth_run_context(second)
+            self.assertNotEqual(first, second)
+            first_row = account_auth.get_auth_run_context(first)
+            second_row = account_auth.get_auth_run_context(second)
         self.assertEqual(1, first_row["context_no"])
         self.assertEqual(2, second_row["context_no"])
         self.assertEqual("rotated", first_row["status"])
@@ -241,9 +240,46 @@ class AccountAuthRunContextStorageTests(PostgresTestCase):
                     (expired,),
                 )
             self.assertEqual(1, account_auth.cleanup_expired_auth_contexts(limit=1))
+            self.assertIsNone(account_auth.get_auth_run_context(expired))
+            self.assertIsNotNone(account_auth.get_auth_run_context(live))
 
-        self.assertIsNone(account_auth.get_auth_run_context(expired))
-        self.assertIsNotNone(account_auth.get_auth_run_context(live))
+    def test_context_read_requires_audit_and_audit_contains_no_raw_values(self):
+        from config import account as account_config
+        from core.storage import account_auth
+
+        with patch.object(account_config, "ACCOUNT_AUTH_RAW_CONTEXT_ENABLED", True):
+            context_id = account_auth.create_auth_run_context(
+                operation_run_id=self.run["id"], account_id=self.account_id,
+                action="token_refresh", driver="protocol_v2",
+                device_id="private-device-id",
+                session_identifiers={"oai_session_id": "private-session-id"},
+            )
+            with self.assertRaisesRegex(account_auth.AccountAuthStorageError, "actor_required"):
+                account_auth.audit_auth_run_context_access(context_id, actor="")
+            row = account_auth.get_auth_run_context_audited(
+                context_id, actor="local-admin", purpose="incident-review", scope="identifiers",
+            )
+
+        self.assertEqual("private-device-id", row["device_id"])
+        self.assertEqual({"oai_session_id": "private-session-id"}, row["session_identifiers"])
+        with rs._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT actor, purpose, scope FROM \"{self.schema}\".\"account_auth_context_access_audits\" "
+                "WHERE context_id = %s",
+                (context_id,),
+            )
+            audit = cur.fetchone()
+        self.assertEqual("local-admin", audit["actor"])
+        self.assertEqual("incident-review", audit["purpose"])
+        self.assertEqual("identifiers", audit["scope"])
+
+    def test_raw_context_reads_and_finishes_are_noops_when_disabled(self):
+        from config import account as account_config
+        from core.storage import account_auth
+
+        with patch.object(account_config, "ACCOUNT_AUTH_RAW_CONTEXT_ENABLED", False):
+            self.assertIsNone(account_auth.get_auth_run_context(123))
+            self.assertFalse(account_auth.finish_auth_run_context(123, status="failed"))
 
 if __name__ == "__main__":
     unittest.main()
