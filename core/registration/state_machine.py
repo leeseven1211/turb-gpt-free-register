@@ -23,6 +23,7 @@ class PageState(str, Enum):
     EMAIL_VERIFIED = "EMAIL_VERIFIED"
     OTP_INVALID = "OTP_INVALID"
     OTP_STUCK = "OTP_STUCK"
+    MFA_TOTP = "MFA_TOTP"
     PROFILE = "PROFILE"
     AUTHENTICATED = "AUTHENTICATED"
     AUTH_ERROR = "AUTH_ERROR"
@@ -62,6 +63,7 @@ class RegistrationStateMachine:
             PageState.PASSWORD_CREATE,
             PageState.PASSWORD_LOGIN,
             PageState.OTP_EMAIL,
+            PageState.MFA_TOTP,
             PageState.PROFILE,
             PageState.AUTHENTICATED,
             PageState.AUTH_ERROR,
@@ -77,6 +79,7 @@ class RegistrationStateMachine:
         },
         PageState.PASSWORD_LOGIN: {
             PageState.OTP_EMAIL,
+            PageState.MFA_TOTP,
             PageState.AUTHENTICATED,
             PageState.AUTH_ERROR,
             PageState.LOGGED_OUT,
@@ -97,6 +100,7 @@ class RegistrationStateMachine:
         PageState.OTP_STUCK: {PageState.OTP_EMAIL, PageState.AUTH_ERROR, PageState.UNKNOWN},
         PageState.OTP_ACCEPTED: {
             PageState.EMAIL_VERIFIED,
+            PageState.MFA_TOTP,
             PageState.PROFILE,
             PageState.AUTHENTICATED,
             PageState.AUTH_ERROR,
@@ -104,8 +108,15 @@ class RegistrationStateMachine:
         },
         PageState.EMAIL_VERIFIED: {
             PageState.PROFILE,
+            PageState.MFA_TOTP,
             PageState.AUTHENTICATED,
             PageState.AUTH_ERROR,
+            PageState.UNKNOWN,
+        },
+        PageState.MFA_TOTP: {
+            PageState.AUTHENTICATED,
+            PageState.AUTH_ERROR,
+            PageState.LOGGED_OUT,
             PageState.UNKNOWN,
         },
         PageState.PROFILE: {
@@ -229,7 +240,18 @@ def classify_page(snapshot: Mapping[str, Any] | None, *, access_token: bool = Fa
     if password_inputs and (create_marker or create_form_marker):
         return PageState.PASSWORD_CREATE
 
-    if "email-verification" in url or any(
+    email_verification_route = "email-verification" in url
+    totp_attrs = " ".join(
+        " ".join(str(item.get(key) or "") for key in ("name", "id", "autocomplete", "inputmode"))
+        for item in inputs
+    ).lower()
+    totp_marker = any(marker in text or marker in totp_attrs for marker in (
+        "authenticator", "totp", "multi-factor", "multifactor", "two-factor", "2fa",
+        "身份验证器", "验证器", "二次验证",
+    ))
+    if not email_verification_route and totp_marker:
+        return PageState.MFA_TOTP
+    if email_verification_route or any(
         marker in text for marker in ("one-time-code", "otp", "verification code", "验证码", "認証コード")
     ):
         return PageState.OTP_EMAIL
