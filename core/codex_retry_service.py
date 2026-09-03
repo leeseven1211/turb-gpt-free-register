@@ -832,10 +832,8 @@ def run_twofa_worker(
         import config as config_pkg
 
         config_pkg.reload_all()
-        from config import codex as codex_cfg
-        from config import roxybrowser as roxy_cfg
         from config import account as account_cfg
-        from core.twofa_flow import canonical_twofa_executor, normalize_twofa_mode, plan_twofa_context
+        from core.twofa_flow import normalize_twofa_mode, plan_twofa_context
 
         password_driver = str(
             password_driver_override
@@ -851,15 +849,14 @@ def run_twofa_worker(
             raise RuntimeError(f"账号密码补全当前仅支持 roxy 驱动，当前驱动={password_driver or '-'}")
         if "plan_check" in requested_steps and plan_driver not in {"protocol", "api", "http"}:
             raise RuntimeError(f"套餐补全当前仅支持 protocol 驱动，当前驱动={plan_driver or '-'}")
-        selected_twofa_mode = normalize_twofa_mode(str(
-            twofa_driver_override
-            if twofa_driver_override is not None
-            else getattr(account_cfg, "ACCOUNT_2FA_DRIVER", "auto")
-        ).strip().lower())
         if "twofa" in requested_steps:
-            selected_twofa_driver = canonical_twofa_executor(selected_twofa_mode)
+            selected_twofa_mode = normalize_twofa_mode(str(
+                twofa_driver_override
+                if twofa_driver_override is not None
+                else getattr(account_cfg, "ACCOUNT_2FA_DRIVER", "auto")
+            ).strip().lower())
         else:
-            selected_twofa_driver = "protocol"
+            selected_twofa_mode = "auto"
         browser_fallback_enabled = bool(
             getattr(account_cfg, "ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED", True)
         )
@@ -867,15 +864,11 @@ def run_twofa_worker(
             getattr(account_cfg, "ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED", True)
         )
 
-        oauth_driver = str(getattr(codex_cfg, "CODEX_OAUTH_DRIVER", "protocol") or "protocol").strip().lower()
-        if oauth_driver == "same_as_registration":
-            oauth_driver = str(getattr(roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
-        # 套餐查询是独立的协议/API 步骤，不应因为 Codex OAuth 驱动不是
-        # Roxy 而被拦截；只有需要重新打开 ChatGPT 浏览器会话时才校验
-        # 这个历史上的 Roxy 约束。
-        browser_session_required = "password" in requested_steps or selected_twofa_mode == "browser"
-        if browser_session_required and oauth_driver not in {"roxy", "roxybrowser", "fingerprint", "browser"}:
-            raise RuntimeError(f"账号配置重试当前仅支持 Roxy 驱动，当前驱动={oauth_driver or 'protocol'}")
+        # 账号密码和显式 browser 2FA 需要浏览器会话；这和 Codex OAuth
+        # 的驱动是两个独立边界，不能拿 CODEX_OAUTH_DRIVER 误拦截账号配置。
+        browser_session_required = "password" in requested_steps or (
+            "twofa" in requested_steps and selected_twofa_mode == "browser"
+        )
 
         from core.account_proxy import acquire_account_proxy
 
@@ -1111,6 +1104,7 @@ def run_twofa_worker(
                         "message": result.get("message"),
                         "plan_check": result.get("plan_check"),
                         "twofa_driver": result.get("twofa_driver"),
+                        "auth_source": result.get("auth_source"),
                         "browser_opened": result.get("browser_opened"),
                     },
                     route={

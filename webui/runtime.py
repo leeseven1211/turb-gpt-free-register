@@ -171,7 +171,7 @@ def _run_account_completion_worker(
                 task_trigger=task_trigger,
                 steps=setup_steps,
                 manage_task=False,
-                twofa_driver_override=str(settings.get("twofa_driver") or "protocol"),
+                twofa_driver_override=str(settings.get("twofa_driver") or "auto"),
                 password_driver_override=str(settings.get("password_driver") or "roxy"),
                 plan_driver_override=str(settings.get("plan_check_driver") or "protocol"),
             )
@@ -181,6 +181,7 @@ def _run_account_completion_worker(
                 "message": setup_result.get("message"),
                 "plan_check": setup_result.get("plan_check"),
                 "twofa_driver": setup_result.get("twofa_driver"),
+                "auth_source": setup_result.get("auth_source"),
                 "browser_opened": setup_result.get("browser_opened"),
             }
             if not setup_result.get("ok"):

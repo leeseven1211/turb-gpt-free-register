@@ -16,6 +16,13 @@ class RegistrationTwofaAutoTests(unittest.TestCase):
         self.assertEqual("auto", snapshot["twofa_driver"])
         get_mode.assert_called_once_with()
 
+    def test_registration_snapshot_mode_overrides_runtime_twofa_config(self):
+        with patch.object(twofa_config, "TWOFA_DRIVER", "protocol"):
+            self.assertEqual(
+                "browser",
+                twofa_config.get_twofa_driver_for_options({"twofa_driver": "browser"}),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

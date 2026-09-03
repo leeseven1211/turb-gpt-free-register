@@ -4604,7 +4604,7 @@ def run_roxy_registration(
                     report_registered_account(account_id)
                     logger.info("[Roxy注册][2FA] Authenticator key 已写入账号检查点，准备激活")
 
-                twofa_driver = _twofa_cfg.get_twofa_driver()
+                twofa_driver = _twofa_cfg.get_twofa_driver_for_options(options)
                 if twofa_driver == "protocol":
                     protocol_session = BrowserSession(proxy=proxy or "")
                     plan_check_session = protocol_session

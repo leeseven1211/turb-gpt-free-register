@@ -25,6 +25,18 @@ def get_twofa_driver(value=None) -> str:
     return canonical_twofa_executor(TWOFA_DRIVER if value is None else value)
 
 
+def get_twofa_driver_for_options(options=None) -> str:
+    """Resolve the executor from a submitted registration snapshot.
+
+    Registration jobs must keep using the mode selected when they were
+    submitted.  The live module setting remains the fallback for legacy
+    callers that do not carry a snapshot.
+    """
+    if isinstance(options, dict) and "twofa_driver" in options:
+        return get_twofa_driver(options.get("twofa_driver"))
+    return get_twofa_driver()
+
+
 def get_twofa_mode(value=None) -> str:
     """Return the public normalized mode, including legacy alias migration."""
     return normalize_twofa_mode(TWOFA_DRIVER if value is None else value)
