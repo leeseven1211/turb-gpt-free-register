@@ -8,6 +8,12 @@ let CONFIG_NAV_QUERY_V2 = '';
 const CONFIG_PENDING_UPDATES = {};
 const CONFIG_LIFECYCLE_GROUP_V2 = '注册与账号';
 const CONFIG_LIFECYCLE_SOURCE_GROUPS_V2 = new Set(['注册主链路', '账号补全', '注册调试']);
+const CONFIG_NAV_CATEGORY_ORDER_V2 = ['运行链路', '资源与服务', '系统'];
+const CONFIG_NAV_CATEGORY_RULES_V2 = {
+  '运行链路': new Set(['注册与账号', '邮箱 / OTP', '接码平台', '人工节奏']),
+  '资源与服务': new Set(['RoxyBrowser', 'Browser Use', '代理平台', '代理池', '浏览器画像']),
+  '系统': new Set(['Codex', '定时任务', '网站配置', '提链']),
+};
 const CONFIG_LIFECYCLE_SECTION_KEYS_V2 = {
   '执行方式': [
     'REGISTRATION_DRIVER',
@@ -143,6 +149,31 @@ function updateConfigSaveUi(mode = 'idle') {
     badge.textContent = count > 99 ? '99+' : String(count);
     badge.setAttribute('aria-label', `${count} 项配置更改未保存`);
   }
+  const summary = document.getElementById('configDirtySummaryV2');
+  if (summary) {
+    summary.hidden = count === 0;
+    const summaryCopy = summary.querySelector('[data-config-dirty-copy]');
+    if (summaryCopy) summaryCopy.textContent = count ? `${count} 项未保存` : '0 项未保存';
+  }
+  const hint = document.querySelector('#configSaveBarV2 [data-config-save-hint]');
+  if (hint) {
+    hint.textContent = mode === 'saving'
+      ? '正在将更改写入运行配置…'
+      : mode === 'error'
+        ? '请检查网络或服务状态后重试'
+        : count
+          ? '修改只在点击保存后生效'
+          : '修改后点击保存才会生效';
+  }
+  document.querySelectorAll('#tab-config [data-reset-config-v2]').forEach(btn => {
+    btn.disabled = mode === 'saving' || count === 0;
+  });
+  document.querySelectorAll('#configNavV2 [data-config-dirty]').forEach(dot => {
+    const button = dot.closest('[data-config-nav]');
+    const keys = String(button?.dataset.configKeys || '').split(',').filter(Boolean);
+    const dirty = keys.some(key => Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, key));
+    dot.hidden = !dirty;
+  });
 }
 
 function configGroups() {
@@ -199,7 +230,7 @@ function codexConfigSectionForKey(key) {
 function renderRoxyWorkspaceToolsV2() {
   const current = (CONFIG.find(f => f.key === 'ROXY_WORKSPACE_ID') || {}).value || '';
   return `
-    <div class="roxy-workspace-box" style="margin-top:18px;margin-bottom:4px;">
+    <div class="config-tool-panel-v2 roxy-workspace-box">
       <div>
         <b>团队 / 项目选择</b>
         <div class="hint">点击“获取团队”调用 Roxy <span class="mono">/browser/workspace</span>，选择后保存团队与项目 ID。</div>
@@ -241,6 +272,56 @@ function configGroupSlug(name) {
 }
 function configGroupDisplayName(name) {
   return name;
+}
+function configNavCategoryV2(name) {
+  for (const category of CONFIG_NAV_CATEGORY_ORDER_V2) {
+    if (CONFIG_NAV_CATEGORY_RULES_V2[category].has(name)) return category;
+  }
+  const text = String(name || '');
+  if (text.includes('代理') || text.includes('Browser') || text.includes('画像')) return '资源与服务';
+  return '系统';
+}
+function configNavSearchTextV2(name, fields) {
+  return [name, ...(fields || []).flatMap(f => [f.key, f.label, f.help || ''])].join(' ');
+}
+function configNavDirtyV2(fields) {
+  return (fields || []).some(f => Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key));
+}
+function renderConfigNavV2(names, groups) {
+  const buckets = {};
+  names.forEach(name => {
+    const category = configNavCategoryV2(name);
+    (buckets[category] = buckets[category] || []).push(name);
+  });
+  const categories = [
+    ...CONFIG_NAV_CATEGORY_ORDER_V2,
+    ...Object.keys(buckets).filter(category => !CONFIG_NAV_CATEGORY_ORDER_V2.includes(category)),
+  ];
+  return categories.filter(category => buckets[category]?.length).map(category => `
+    <div class="config-nav-v2-group" data-config-nav-group="${attrEsc(category)}">
+      <div class="config-nav-v2-group-label">${esc(category)}</div>
+      <div class="config-nav-v2-group-list">
+        ${buckets[category].map(name => {
+          const fields = groups[name] || [];
+          const dirty = configNavDirtyV2(fields);
+          return `
+            <button type="button" class="config-nav-v2-item${name === CONFIG_ACTIVE_GROUP_V2 ? ' is-active' : ''}"
+              data-config-nav="${attrEsc(name)}" data-config-target="${attrEsc(configGroupSlug(name))}"
+              data-config-search="${attrEsc(configNavSearchTextV2(name, fields))}"
+              data-config-keys="${attrEsc(fields.map(f => f.key).join(','))}"
+              aria-current="${name === CONFIG_ACTIVE_GROUP_V2 ? 'page' : 'false'}">
+              <svg viewBox="0 0 24 24" aria-hidden="true">${configNavIcon(name)}</svg>
+              <span class="config-nav-v2-copy">
+                <span class="config-nav-v2-label">${esc(configGroupDisplayName(name))}</span>
+                <span class="config-nav-v2-meta">${fields.length} 项配置</span>
+              </span>
+              <span class="config-nav-v2-dirty" data-config-dirty${dirty ? '' : ' hidden'} aria-label="有未保存更改"></span>
+            </button>
+          `;
+        }).join('')}
+      </div>
+    </div>
+  `).join('');
 }
 function configNavIcon(name) {
   const n = String(name || '');
@@ -422,8 +503,11 @@ function renderConfigOverviewCards() {
 }
 function renderRegistrationDriverField(f) {
   return `
-    <label class="fld config-select-v2-field">
-      ${esc(f.label || '注册主流程驱动')}
+    <label class="fld config-field-v2 config-select-v2-field">
+      <span class="config-field-v2-head">
+        <span class="config-field-label-v2">${esc(f.label || '注册主流程驱动')}</span>
+        <code class="config-field-key-v2">${esc(f.key)}</code>
+      </span>
       <span class="hint">${esc(f.help || '选择注册所用的自动化方式')}</span>
       <div class="config-ep-select" id="configRegistrationSelectV2"></div>
     </label>
@@ -441,8 +525,11 @@ function renderFeatureSwitchField(f, opts = {}) {
         <span class="config-switch-v2-icon ${icon.cls}" aria-hidden="true">
           <svg viewBox="0 0 24 24">${icon.svg}</svg>
         </span>
-        <div class="config-switch-v2-label">${esc(f.label)}</div>
-      </div>` : `<div class="config-switch-v2-label">${esc(f.label)}</div>`}
+        <div class="config-switch-v2-label-wrap">
+          <div class="config-switch-v2-label">${esc(f.label)}</div>
+          <code class="config-field-key-v2">${esc(f.key)}</code>
+        </div>
+      </div>` : `<div class="config-switch-v2-label-wrap"><div class="config-switch-v2-label">${esc(f.label)}</div><code class="config-field-key-v2">${esc(f.key)}</code></div>`}
       <input class="config-switch-v2-toggle" type="checkbox" role="switch" data-key="${attrEsc(f.key)}"${on ? ' checked' : ''} aria-label="${attrEsc(f.label)}">
       ${opts.extraHtml || ''}
       <p class="config-switch-v2-help">${esc(f.help || '')}</p>
@@ -459,7 +546,10 @@ function renderLifecycleEnumSwitchField(f, onValue, offValue, label, help) {
         <span class="config-switch-v2-icon config-switch-v2-icon--default" aria-hidden="true">
           <svg viewBox="0 0 24 24"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/><circle cx="8" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="10" cy="18" r="2"/></svg>
         </span>
-        <div class="config-switch-v2-label">${esc(label || f.label)}</div>
+        <div class="config-switch-v2-label-wrap">
+          <div class="config-switch-v2-label">${esc(label || f.label)}</div>
+          <code class="config-field-key-v2">${esc(f.key)}</code>
+        </div>
       </div>
       <input class="config-switch-v2-toggle" type="checkbox" role="switch" data-key="${attrEsc(f.key)}" data-toggle-on-value="${attrEsc(onValue)}" data-toggle-off-value="${attrEsc(offValue)}"${on ? ' checked' : ''} aria-label="${attrEsc(label || f.label)}">
       <p class="config-switch-v2-help">${esc(help || f.help || '')}</p>
@@ -480,7 +570,10 @@ function renderLifecycleDriverSelect(key, label, help, choices, syncKeys = []) {
   return `
     <div class="config-lifecycle-driver-v2">
       <div class="config-lifecycle-driver-head">
-        <strong>${esc(label)}</strong>
+        <div class="config-lifecycle-driver-label-v2">
+          <strong>${esc(label)}</strong>
+          <code class="config-field-key-v2">${esc(key)}</code>
+        </div>
         ${syncKeys.length ? '<span class="config-lifecycle-shared-v2">注册 / 补全共用</span>' : ''}
       </div>
       <p>${esc(help || '')}</p>
@@ -492,11 +585,14 @@ function renderLifecycleDriverSelect(key, label, help, choices, syncKeys = []) {
   `;
 }
 
-function renderLifecycleFixedDriver(label, value, help) {
+function renderLifecycleFixedDriver(key, label, value, help) {
   return `
     <div class="config-lifecycle-driver-v2 config-lifecycle-driver-v2--fixed">
       <div class="config-lifecycle-driver-head">
-        <strong>${esc(label)}</strong>
+        <div class="config-lifecycle-driver-label-v2">
+          <strong>${esc(label)}</strong>
+          <code class="config-field-key-v2">${esc(key)}</code>
+        </div>
         <span class="config-lifecycle-fixed-v2">当前唯一实现</span>
       </div>
       <p>${esc(help || '')}</p>
@@ -541,10 +637,10 @@ function renderLifecycleExecutionSection(fields) {
     ));
   }
   if (has('ACCOUNT_PASSWORD_DRIVER')) {
-    cards.push(renderLifecycleFixedDriver('密码补全', 'RoxyBrowser', '密码补全当前依赖登录页面，只保留已实现的浏览器执行方式。'));
+    cards.push(renderLifecycleFixedDriver('ACCOUNT_PASSWORD_DRIVER', '密码补全', 'RoxyBrowser', '密码补全当前依赖登录页面，只保留已实现的浏览器执行方式。'));
   }
   if (has('ACCOUNT_PLAN_CHECK_DRIVER')) {
-    cards.push(renderLifecycleFixedDriver('套餐查询 / 补全', '纯协议', '套餐查询当前走协议接口，暂不需要填写执行方式。'));
+    cards.push(renderLifecycleFixedDriver('ACCOUNT_PLAN_CHECK_DRIVER', '套餐查询 / 补全', '纯协议', '套餐查询当前走协议接口，暂不需要填写执行方式。'));
   }
   if (has('ACCOUNT_LIVE_CHECK_DRIVER')) {
     cards.push(renderLifecycleDriverSelect(
@@ -722,7 +818,10 @@ function renderTwofaDriverControl(f) {
   const current = String(fv == null ? 'protocol' : fv).trim().toLowerCase() || 'protocol';
   return `
     <div class="config-twofa-driver-v2">
-      <div class="config-twofa-driver-v2-label">${esc(f.label)}</div>
+      <div class="config-twofa-driver-v2-label-wrap">
+        <div class="config-twofa-driver-v2-label">${esc(f.label)}</div>
+        <code class="config-field-key-v2">${esc(f.key)}</code>
+      </div>
       <select data-key="${attrEsc(f.key)}" aria-label="${attrEsc(f.label)}">
         ${registrationTwofaDriverChoices().map(item => `<option value="${attrEsc(item.value)}"${current === item.value ? ' selected' : ''}>${esc(item.label)}</option>`).join('')}
       </select>
@@ -735,7 +834,10 @@ function renderCodexOauthDriverControl(f) {
   const current = String(fv == null ? 'protocol' : fv).trim().toLowerCase() || 'protocol';
   return `
     <div class="config-twofa-driver-v2">
-      <div class="config-twofa-driver-v2-label">${esc(f.label)}</div>
+      <div class="config-twofa-driver-v2-label-wrap">
+        <div class="config-twofa-driver-v2-label">${esc(f.label)}</div>
+        <code class="config-field-key-v2">${esc(f.key)}</code>
+      </div>
       <select data-key="${attrEsc(f.key)}" aria-label="${attrEsc(f.label)}">
         ${codexOauthDriverChoices().map(item => `<option value="${attrEsc(item.value)}"${current === item.value ? ' selected' : ''}>${esc(item.label)}</option>`).join('')}
       </select>
@@ -803,8 +905,11 @@ function renderConfigPlainFieldV2(f) {
     control = `<input type="${inputType}" data-key="${attrEsc(f.key)}" value="${attrEsc(shown)}" placeholder="${ph}" autocomplete="off" spellcheck="false">`;
   }
   return `
-    <label class="fld">
-      ${esc(f.label)}
+    <label class="fld config-field-v2">
+      <span class="config-field-v2-head">
+        <span class="config-field-label-v2">${esc(f.label)}</span>
+        <code class="config-field-key-v2">${esc(f.key)}</code>
+      </span>
       <span class="hint">${esc(f.help || '')}</span>
       ${control}
     </label>
@@ -812,7 +917,7 @@ function renderConfigPlainFieldV2(f) {
 }
 function renderProxyProviderToolsV2() {
   return `
-    <div class="roxy-workspace-box" style="margin-top:18px;margin-bottom:4px;">
+    <div class="config-tool-panel-v2 roxy-workspace-box">
       <div>
         <b>1024Proxy 本地联调</b>
         <div class="hint">会实际提取并检测 1 个 IP，可能产生少量流量或配额消耗。API 请求会绕过系统代理。</div>
@@ -975,7 +1080,7 @@ function renderCloudMailTokenToolsV2() {
   const hasCloudMail = CONFIG.some(f => String(f.key || '').startsWith('CLOUDMAIL_'));
   if (!hasCloudMail) return '';
   return `
-    <div class="roxy-workspace-box" style="margin-top:18px;">
+    <div class="config-tool-panel-v2 roxy-workspace-box">
       <div>
         <b>CloudMail Token</b>
         <div class="hint">填写 API 地址、管理员邮箱、密码后，生成 Token；保存配置不会自动生成。</div>
@@ -992,7 +1097,7 @@ function renderEmailButlerToolsV2() {
   const hasButler = CONFIG.some(f => String(f.key || '').startsWith('EMAIL_BUTLER_'));
   if (!hasButler) return '';
   return `
-    <div class="roxy-workspace-box" style="margin-top:18px;">
+    <div class="config-tool-panel-v2 roxy-workspace-box">
       <div>
         <b>Email Butler 连接</b>
         <div class="hint">使用当前表单中的 /v1 URL 与 API Key 验证客户端策略和发号、收信、释放、信号扫描能力，不会租用邮箱。</div>
@@ -1049,7 +1154,7 @@ function bindCloudMailToolsV2() {
 }
 function renderICloudHMEToolsV2() {
   return `
-    <div class="roxy-workspace-box" style="margin-top:18px;">
+    <div class="config-tool-panel-v2 roxy-workspace-box">
       <div>
         <b>iCloud Hide My Email</b>
         <div class="hint">连接本机服务后同步 Apple 隐藏邮箱库存，并确认 sidecar 或 Email Butler PG 收件链路。Apple Cookie 不会保存到 turb。</div>
@@ -1286,10 +1391,13 @@ function applyConfigNavFilter() {
   const items = Array.from(document.querySelectorAll('#configNavV2 [data-config-nav]'));
   let shown = 0;
   items.forEach(btn => {
-    const haystack = `${btn.dataset.configNav || ''} ${btn.textContent || ''}`.toLowerCase();
+    const haystack = `${btn.dataset.configSearch || ''} ${btn.textContent || ''}`.toLowerCase();
     const matches = !query || haystack.includes(query);
     btn.hidden = !matches;
     if (matches) shown += 1;
+  });
+  document.querySelectorAll('#configNavV2 [data-config-nav-group]').forEach(group => {
+    group.hidden = !group.querySelector('[data-config-nav]:not([hidden])');
   });
   const count = document.getElementById('configNavCountV2');
   if (count) {
@@ -1322,12 +1430,13 @@ function renderConfigLayoutV2() {
   }
   if (!CONFIG_ACTIVE_GROUP_V2 && savedGroup && names.includes(savedGroup)) CONFIG_ACTIVE_GROUP_V2 = savedGroup;
   if (!CONFIG_ACTIVE_GROUP_V2 || !names.includes(CONFIG_ACTIVE_GROUP_V2)) CONFIG_ACTIVE_GROUP_V2 = names[0];
-  nav.innerHTML = names.map(name => `
-    <button type="button" class="config-nav-v2-item${name === CONFIG_ACTIVE_GROUP_V2 ? ' is-active' : ''}" data-config-nav="${esc(name)}" data-config-target="${esc(configGroupSlug(name))}">
-      <svg viewBox="0 0 24 24" aria-hidden="true">${configNavIcon(name)}</svg>
-      <span>${esc(configGroupDisplayName(name))}</span>
-    </button>
-  `).join('');
+  nav.innerHTML = renderConfigNavV2(names, groups);
+  const pageTitle = document.getElementById('configPageTitleV2');
+  if (pageTitle) pageTitle.textContent = configGroupDisplayName(CONFIG_ACTIVE_GROUP_V2);
+  const pageDescription = document.getElementById('configPageDescriptionV2');
+  if (pageDescription) {
+    pageDescription.textContent = configSectionIntro(CONFIG_ACTIVE_GROUP_V2) || '查看并维护当前分组的运行时配置。';
+  }
   applyConfigNavFilter();
   sections.innerHTML = renderConfigSectionV2(CONFIG_ACTIVE_GROUP_V2, groups[CONFIG_ACTIVE_GROUP_V2] || []);
   renderRegistrationDriverCard();
@@ -1341,14 +1450,29 @@ function renderConfigLayoutV2() {
   bindProxyProviderToolsV2();
   updateConfigSaveUi();
 }
+
+function resetPendingConfigUpdates() {
+  const keys = Object.keys(CONFIG_PENDING_UPDATES);
+  if (!keys.length) return;
+  if (!window.confirm(`撤销 ${keys.length} 项未保存更改？`)) return;
+  keys.forEach(key => delete CONFIG_PENDING_UPDATES[key]);
+  renderConfigLayoutV2();
+  updateConfigSaveUi();
+  showToast('已撤销未保存更改');
+}
 function scrollToConfigSection(slug) {
   const el = document.getElementById(slug);
   if (!el) return;
   el.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
+function resetConfigViewportV2() {
+  window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+}
 function setActiveConfigNav(slug) {
   document.querySelectorAll('#configNavV2 .config-nav-v2-item').forEach(btn => {
-    btn.classList.toggle('is-active', btn.dataset.configTarget === slug);
+    const active = btn.dataset.configTarget === slug;
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-current', active ? 'page' : 'false');
   });
 }
 function openConfigGroup(name) {
@@ -1356,6 +1480,7 @@ function openConfigGroup(name) {
   localStorage.setItem('gpt_console_config_group', CONFIG_ACTIVE_GROUP_V2);
   activateTab('config');
   if (CONFIG.length) renderConfigLayoutV2();
+  resetConfigViewportV2();
 }
 function bindConfigLayoutV2() {
   const nav = document.getElementById('configNavV2');
@@ -1376,6 +1501,7 @@ function bindConfigLayoutV2() {
     CONFIG_ACTIVE_GROUP_V2 = btn.dataset.configNav;
     localStorage.setItem('gpt_console_config_group', CONFIG_ACTIVE_GROUP_V2);
     renderConfigLayoutV2();
+    resetConfigViewportV2();
   });
   const layout = document.getElementById('configLayoutV2');
   if (layout && !layout.dataset.epBound) {
@@ -1576,7 +1702,19 @@ async function saveConfigUpdates(triggerBtn) {
   }
 }
 $('#tab-config').addEventListener('click', (e) => {
+  const resetBtn = e.target.closest('[data-reset-config-v2]');
+  if (resetBtn) {
+    e.preventDefault();
+    resetPendingConfigUpdates();
+    return;
+  }
   const btn = e.target.closest('[data-save-config-v2]');
   if (!btn) return;
   saveConfigUpdates(btn);
+});
+
+window.addEventListener('beforeunload', (e) => {
+  if (!configPendingCount()) return;
+  e.preventDefault();
+  e.returnValue = '';
 });

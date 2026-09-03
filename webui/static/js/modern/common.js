@@ -889,6 +889,8 @@ function containVerticalScroll(el) {
   if (!el || el.dataset.scrollContained === '1') return;
   el.dataset.scrollContained = '1';
   el.addEventListener('wheel', event => {
+    const overflowY = getComputedStyle(el).overflowY;
+    if (overflowY !== 'auto' && overflowY !== 'scroll') return;
     const canScroll = el.scrollHeight > el.clientHeight + 1;
     const atTop = el.scrollTop <= 0;
     const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
@@ -898,7 +900,7 @@ function containVerticalScroll(el) {
   }, { passive: false });
 }
 containVerticalScroll(document.querySelector('.sidebar-nav'));
-containVerticalScroll(document.querySelector('.config-nav-v2'));
+containVerticalScroll(document.querySelector('#configNavV2'));
 $('#mobileNavToggle')?.addEventListener('click', toggleMobileSidebar);
 $('#sidebarScrim')?.addEventListener('click', closeMobileSidebar);
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeMobileSidebar(); });

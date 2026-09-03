@@ -583,8 +583,21 @@
 
   <!-- ============ 配置 ============ -->
   <div id="tab-config" class="hidden">
-    <!-- 配置布局：左侧导航 + 右侧卡片/分区 -->
-    <div class="config-layout-v2" id="configLayoutV2">
+    <div class="config-workspace-v2" id="configWorkspaceV2">
+      <div class="config-page-head-v2">
+        <div class="config-page-head-main-v2">
+          <div class="config-page-kicker-v2">Configuration workspace</div>
+          <h2 id="configPageTitleV2">运行时配置</h2>
+          <p id="configPageDescriptionV2">仅开放运行时安全的开关与数值。协议级常量不在此处，避免误改影响账号。</p>
+        </div>
+        <div class="config-dirty-summary-v2" id="configDirtySummaryV2" hidden role="status" aria-live="polite">
+          <span class="config-dirty-summary-dot-v2" aria-hidden="true"></span>
+          <span data-config-dirty-copy>0 项未保存</span>
+        </div>
+      </div>
+
+      <!-- 配置布局：左侧导航 + 右侧卡片/分区 -->
+      <div class="config-layout-v2" id="configLayoutV2">
       <aside class="config-nav-v2" aria-label="配置分组">
         <div class="config-nav-v2-head">
           <div class="config-nav-v2-title">配置分组</div>
@@ -592,7 +605,7 @@
         </div>
         <label class="config-nav-search-v2">
           <svg viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
-          <input id="configNavSearchV2" type="search" placeholder="搜索配置分组" aria-label="搜索配置分组" autocomplete="off">
+          <input id="configNavSearchV2" type="search" placeholder="搜索分组或配置项" aria-label="搜索分组或配置项" autocomplete="off">
         </label>
         <div class="config-nav-v2-list" id="configNavV2"></div>
         <div class="config-nav-empty-v2" id="configNavEmptyV2" hidden>没有匹配的配置分组</div>
@@ -626,6 +639,21 @@
           </div>
         </div>
         <div class="config-sections-v2" id="configSectionsV2"></div>
+      </div>
+      <div class="config-save-bar-v2" id="configSaveBarV2">
+        <div class="config-save-bar-inner-v2">
+          <div class="config-save-state is-saved" data-config-save-state role="status" aria-live="polite">
+            <span class="config-save-dot" aria-hidden="true"></span>
+            <div>
+              <span data-config-save-copy>所有更改已保存</span>
+              <small data-config-save-hint>修改后点击保存才会生效</small>
+            </div>
+          </div>
+          <div class="config-save-bar-actions-v2">
+            <button type="button" class="btn" data-reset-config-v2 disabled>撤销更改</button>
+            <button type="button" class="btn primary" data-save-config-v2 disabled>已保存</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>

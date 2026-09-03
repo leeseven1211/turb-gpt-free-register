@@ -78,6 +78,7 @@
 
 html {
   color-scheme: light;
+  scrollbar-gutter: stable;
   text-size-adjust: 100%;
 }
 
@@ -1465,5 +1466,849 @@ table[data-resizable-table="codex"] {
 
   main {
     margin-bottom: var(--ui-space-6);
+  }
+}
+
+/* Configuration workspace refresh: visual hierarchy, safe density, and one
+   persistent save action for the whole page. */
+#tab-config .config-workspace-v2 {
+  min-width: 0;
+  padding-bottom: 104px;
+}
+
+#tab-config .config-page-head-v2 {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--ui-space-6);
+  min-width: 0;
+  margin-bottom: var(--ui-space-5);
+}
+
+#tab-config .config-page-head-main-v2 {
+  min-width: 0;
+}
+
+#tab-config .config-page-kicker-v2 {
+  margin-bottom: 7px;
+  color: var(--ui-color-brand);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .12em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+#tab-config .config-page-head-v2 h2 {
+  margin: 0;
+  color: var(--ui-color-text);
+  font-size: clamp(24px, 3vw, 30px);
+  letter-spacing: -.03em;
+  line-height: 1.15;
+}
+
+#tab-config .config-page-head-v2 p {
+  max-width: 720px;
+  margin: 8px 0 0;
+  color: var(--ui-color-text-secondary);
+  font-size: var(--ui-font-size-sm);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+#tab-config .config-dirty-summary-v2 {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 11px;
+  border: 1px solid var(--ui-color-warning-soft);
+  border-radius: var(--ui-radius-pill);
+  color: var(--ui-color-warning);
+  background: var(--ui-color-warning-soft);
+  font-size: var(--ui-font-size-xs);
+  font-weight: 750;
+}
+
+#tab-config .config-dirty-summary-v2[hidden] {
+  display: none;
+}
+
+#tab-config .config-dirty-summary-dot-v2 {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+#tab-config .config-layout-v2 {
+  grid-template-columns: minmax(220px, 244px) minmax(0, 1fr);
+  gap: var(--ui-space-5);
+  min-width: 0;
+  min-height: 0;
+  height: auto;
+  overflow: visible;
+}
+
+#tab-config .config-nav-v2 {
+  position: sticky;
+  top: calc(var(--topbar-height) + var(--ui-space-4));
+  align-self: start;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  min-width: 0;
+  max-height: calc(100dvh - var(--topbar-height) - 40px);
+  padding: 16px 12px 12px;
+  overflow: hidden;
+  background: var(--ui-color-surface);
+}
+
+#tab-config .config-nav-v2-list {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  padding: 2px 0 4px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+#tab-config .config-nav-v2-group {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+#tab-config .config-nav-v2-group[hidden],
+#tab-config .config-nav-v2-dirty[hidden] {
+  display: none;
+}
+
+#tab-config .config-nav-v2-group-label {
+  padding: 0 10px;
+  color: var(--ui-color-text-muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .1em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+#tab-config .config-nav-v2-group-list {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+#tab-config .config-nav-v2-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 48px;
+  padding: 8px 10px 8px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius-md);
+  color: var(--ui-color-text-secondary);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+#tab-config .config-nav-v2-item::before {
+  position: absolute;
+  top: 9px;
+  bottom: 9px;
+  left: 0;
+  width: 3px;
+  border-radius: 0 4px 4px 0;
+  background: transparent;
+  content: '';
+}
+
+#tab-config .config-nav-v2-item:hover {
+  border-color: var(--ui-color-border);
+  color: var(--ui-color-text);
+  background: var(--ui-color-surface-subtle);
+}
+
+#tab-config .config-nav-v2-item.is-active {
+  border-color: var(--ui-color-border-strong);
+  color: var(--ui-color-brand);
+  background: var(--ui-color-brand-soft);
+  box-shadow: var(--ui-shadow-sm);
+}
+
+#tab-config .config-nav-v2-item.is-active::before {
+  background: var(--ui-color-brand);
+}
+
+#tab-config .config-nav-v2-item > svg {
+  flex: 0 0 auto;
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+#tab-config .config-nav-v2-copy {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 3px;
+  min-width: 0;
+}
+
+#tab-config .config-nav-v2-label {
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--ui-font-size-sm);
+  font-weight: 720;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#tab-config .config-nav-v2-meta {
+  color: var(--ui-color-text-muted);
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+#tab-config .config-nav-v2-dirty {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ui-color-warning);
+  box-shadow: 0 0 0 3px var(--ui-color-warning-soft);
+}
+
+#tab-config .config-main-v2 {
+  min-width: 0;
+  max-height: none;
+  padding: 0;
+  overflow: visible;
+}
+
+#tab-config .config-cards-v2 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  min-width: 0;
+  margin-bottom: var(--ui-space-5);
+}
+
+#tab-config .config-card-v2 {
+  position: relative;
+  min-width: 0;
+  min-height: 132px;
+  padding: 17px;
+  border-color: var(--ui-color-border);
+  border-radius: var(--ui-radius-lg);
+  background: var(--ui-color-surface);
+  box-shadow: var(--ui-shadow-sm);
+  overflow: hidden;
+}
+
+#tab-config .config-card-v2::after {
+  position: absolute;
+  right: -24px;
+  bottom: -32px;
+  width: 92px;
+  height: 92px;
+  border: 1px solid var(--ui-color-border-strong);
+  border-radius: 50%;
+  content: '';
+  opacity: .8;
+}
+
+#tab-config .config-card-v2:nth-child(2)::after {
+  border-color: var(--ui-color-success-soft);
+}
+
+#tab-config .config-card-v2:nth-child(3)::after {
+  border-color: var(--ui-color-info-soft);
+}
+
+#tab-config .config-card-v2:nth-child(4)::after {
+  border-color: var(--ui-color-warning-soft);
+}
+
+#tab-config .config-card-v2-top,
+#tab-config .config-card-v2-label,
+#tab-config .config-card-v2-value,
+#tab-config .config-card-v2-hint {
+  position: relative;
+  z-index: 1;
+}
+
+#tab-config .config-card-v2-label {
+  color: var(--ui-color-text-muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+#tab-config .config-card-v2-value {
+  max-width: 100%;
+  margin-top: 18px;
+  overflow: hidden;
+  color: var(--ui-color-text);
+  font-size: clamp(18px, 2vw, 23px);
+  font-weight: 800;
+  letter-spacing: -.03em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#tab-config .config-card-v2-value.is-placeholder {
+  color: var(--ui-color-text-subtle);
+}
+
+#tab-config .config-card-v2-hint {
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+  color: var(--ui-color-text-muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+#tab-config .config-sections-v2 {
+  display: grid;
+  gap: var(--ui-space-4);
+  min-width: 0;
+}
+
+#tab-config .config-section-v2 {
+  min-width: 0;
+  padding: 0;
+  border-color: var(--ui-color-border);
+  border-radius: var(--ui-radius-lg);
+  background: var(--ui-color-surface);
+  box-shadow: var(--ui-shadow-sm);
+  overflow: hidden;
+}
+
+#tab-config .config-section-v2-head {
+  min-width: 0;
+  padding: 18px 20px 15px;
+  border-bottom: 1px solid var(--ui-color-border);
+  background: linear-gradient(180deg, var(--ui-color-surface), var(--ui-color-surface-subtle));
+}
+
+#tab-config .config-section-v2-head h3,
+#tab-config .config-section-v2-head p {
+  overflow-wrap: anywhere;
+}
+
+#tab-config .config-section-v2-body {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  min-width: 0;
+  padding: 16px 20px 20px;
+}
+
+#tab-config .config-section-v2-body label.fld {
+  display: grid;
+  align-content: start;
+  gap: 0;
+  min-width: 0;
+  min-height: 146px;
+  padding: 14px;
+  border: 1px solid var(--ui-color-border);
+  border-radius: var(--ui-radius-md);
+  background: var(--ui-color-surface-subtle);
+}
+
+#tab-config .config-field-v2-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+#tab-config .config-field-label-v2 {
+  min-width: 0;
+  color: var(--ui-color-text);
+  font-size: var(--ui-font-size-sm);
+  font-weight: 730;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+#tab-config .config-field-key-v2 {
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--ui-color-text-subtle);
+  font: 10px/1.3 var(--ui-font-mono);
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+#tab-config .config-section-v2-body label.fld > .hint {
+  min-height: 34px;
+  margin-top: 7px;
+  overflow-wrap: anywhere;
+  color: var(--ui-color-text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+#tab-config .config-section-v2-body label.fld > input,
+#tab-config .config-section-v2-body label.fld > select,
+#tab-config .config-section-v2-body label.fld > textarea,
+#tab-config .config-section-v2-body label.fld > .config-ep-select {
+  width: 100%;
+  min-width: 0;
+  margin-top: auto;
+}
+
+#tab-config .config-switches-v2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  min-width: 0;
+  padding: 16px 20px 20px;
+  border-top: 1px solid var(--ui-color-border);
+}
+
+#tab-config .config-switch-v2 {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px 14px;
+  min-width: 0;
+  min-height: 116px;
+  padding: 14px;
+  border: 1px solid var(--ui-color-border);
+  border-radius: var(--ui-radius-md);
+  background: var(--ui-color-surface-subtle);
+}
+
+#tab-config .config-switch-v2-top {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+#tab-config .config-switch-v2-label-wrap {
+  min-width: 0;
+}
+
+#tab-config .config-switch-v2-label {
+  min-width: 0;
+  color: var(--ui-color-text);
+  font-size: var(--ui-font-size-sm);
+  font-weight: 730;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+#tab-config .config-switch-v2-label-wrap .config-field-key-v2 {
+  display: block;
+  margin-top: 4px;
+  text-align: left;
+}
+
+#tab-config .config-switch-v2-help {
+  grid-column: 1;
+  grid-row: 2;
+  align-self: center;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--ui-color-text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+#tab-config .config-switch-v2-toggle {
+  grid-column: 2;
+  grid-row: 2;
+  align-self: center;
+  width: 44px;
+  min-width: 44px;
+  height: 24px;
+}
+
+#tab-config .config-switch-v2-toggle::after {
+  width: 20px;
+  height: 20px;
+}
+
+#tab-config .config-switch-v2-toggle:checked::after {
+  transform: translateX(20px);
+}
+
+#tab-config .config-lifecycle-driver-v2,
+#tab-config .config-twofa-driver-v2 {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--ui-color-border);
+  border-radius: var(--ui-radius-md);
+  background: var(--ui-color-surface-subtle);
+}
+
+#tab-config .config-lifecycle-driver-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+#tab-config .config-lifecycle-driver-label-v2 {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+#tab-config .config-lifecycle-driver-head strong,
+#tab-config .config-twofa-driver-v2-label {
+  min-width: 0;
+  color: var(--ui-color-text);
+  font-size: var(--ui-font-size-sm);
+  overflow-wrap: anywhere;
+}
+
+#tab-config .config-lifecycle-driver-v2 > p,
+#tab-config .config-twofa-driver-v2-help {
+  margin: 7px 0 12px;
+  color: var(--ui-color-text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+#tab-config .config-lifecycle-driver-v2 > select,
+#tab-config .config-twofa-driver-v2 > select {
+  width: 100%;
+  min-width: 0;
+}
+
+#tab-config .config-section-v2-actions {
+  display: none;
+}
+
+#tab-config .config-save-bar-v2 {
+  position: fixed;
+  z-index: 120;
+  right: var(--page-gutter);
+  bottom: 16px;
+  left: calc(var(--sidebar-width) + var(--page-gutter));
+  min-width: 0;
+  padding: 0;
+  border: 1px solid var(--ui-color-border-strong);
+  border-radius: var(--ui-radius-lg);
+  background: rgba(255, 255, 255, .94);
+  background: color-mix(in srgb, var(--ui-color-surface) 94%, transparent);
+  box-shadow: var(--ui-shadow-md);
+  backdrop-filter: blur(14px);
+}
+
+#tab-config .config-save-bar-inner-v2 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+  min-height: 66px;
+  padding: 10px 14px;
+}
+
+#tab-config .config-save-bar-v2 .config-save-state {
+  min-width: 0;
+}
+
+#tab-config .config-save-bar-v2 .config-save-state > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+#tab-config .config-save-bar-v2 [data-config-save-copy] {
+  overflow-wrap: anywhere;
+  font-weight: 750;
+}
+
+#tab-config .config-save-bar-v2 [data-config-save-hint] {
+  color: var(--ui-color-text-muted);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+#tab-config .config-save-bar-actions-v2 {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+#tab-config .config-save-bar-actions-v2 button {
+  min-height: 40px;
+  min-width: 104px;
+}
+
+#tab-config .config-save-bar-actions-v2 [data-save-config-v2] {
+  min-width: 124px;
+}
+
+@media (max-width: 1180px) {
+  #tab-config .config-cards-v2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 860px) {
+  #tab-config .config-workspace-v2 {
+    padding-bottom: 124px;
+  }
+
+  #tab-config .config-page-head-v2 {
+    gap: 12px;
+  }
+
+  #tab-config .config-layout-v2 {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+
+  #tab-config .config-nav-v2 {
+    top: calc(var(--topbar-height) + 8px);
+    max-height: none;
+    padding: 12px 10px 10px;
+  }
+
+  #tab-config .config-nav-v2-list {
+    display: flex;
+    flex-direction: row;
+    gap: 8px;
+    min-width: 0;
+    padding: 2px 1px 3px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+    touch-action: pan-x;
+  }
+
+  #tab-config .config-nav-v2-group,
+  #tab-config .config-nav-v2-group-list {
+    display: contents;
+  }
+
+  #tab-config .config-nav-v2-group-label,
+  #tab-config .config-nav-v2-meta {
+    display: none;
+  }
+
+  #tab-config .config-nav-v2-item {
+    flex: 0 0 auto;
+    width: auto;
+    min-width: max-content;
+    min-height: 44px;
+    padding: 8px 12px;
+  }
+
+  #tab-config .config-nav-v2-item::before {
+    top: auto;
+    right: 12px;
+    bottom: 0;
+    left: 12px;
+    width: auto;
+    height: 3px;
+    border-radius: 3px 3px 0 0;
+  }
+
+  #tab-config .config-nav-v2-dirty {
+    width: 6px;
+    height: 6px;
+    margin-left: 2px;
+  }
+
+  #tab-config .config-main-v2 {
+    min-width: 0;
+  }
+
+  #tab-config .config-save-bar-v2 {
+    right: var(--page-gutter);
+    left: var(--page-gutter);
+  }
+}
+
+@media (max-width: 600px) {
+  #tab-config .config-page-head-v2 {
+    display: block;
+  }
+
+  #tab-config .config-dirty-summary-v2 {
+    width: max-content;
+    margin-top: 12px;
+  }
+
+  #tab-config .config-cards-v2,
+  #tab-config .config-section-v2-body,
+  #tab-config .config-switches-v2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  #tab-config .config-section-v2-head {
+    padding: 16px 14px 14px;
+  }
+
+  #tab-config .config-section-v2-body,
+  #tab-config .config-switches-v2 {
+    padding: 14px;
+  }
+
+  #tab-config .config-save-bar-inner-v2 {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 9px;
+    padding: 10px 12px;
+  }
+
+  #tab-config .config-save-bar-actions-v2 {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.18fr);
+  }
+
+  #tab-config .config-save-bar-actions-v2 button,
+  #tab-config .config-save-bar-actions-v2 [data-save-config-v2] {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
+@media (max-width: 420px) {
+  #tab-config .config-page-head-v2 h2 {
+    font-size: 24px;
+  }
+
+  #tab-config .config-field-v2-head {
+    display: grid;
+    gap: 4px;
+  }
+
+  #tab-config .config-field-key-v2 {
+    text-align: left;
+  }
+}
+
+/* Configuration audit pass: custom content and dense forms use the same
+   horizontal rail as the regular field cards. */
+#tab-config .config-section-v2 > .config-tool-panel-v2,
+#tab-config .config-section-v2 > .config-lifecycle-note-v2,
+#tab-config .config-section-v2 > .config-lifecycle-driver-grid-v2,
+#tab-config .config-section-v2 > .config-lifecycle-toggle-grid-v2,
+#tab-config .config-section-v2 > .config-lifecycle-inherited-v2,
+#tab-config .config-section-v2 > .config-lifecycle-advanced-block-v2 {
+  margin-inline: var(--ui-space-5);
+}
+
+#tab-config .config-section-v2 > .config-tool-panel-v2 {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  margin-top: 16px;
+  margin-bottom: 0;
+  padding: 16px;
+  border: 1px solid #cbd9ff;
+  border-radius: var(--ui-radius-md);
+  background: var(--ui-color-info-soft);
+  overflow: hidden;
+}
+
+#tab-config .config-tool-panel-v2 > div:first-child {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+#tab-config .config-tool-panel-v2 > div:first-child b {
+  color: var(--ui-color-text);
+  font-size: var(--ui-font-size-sm);
+  line-height: 1.35;
+}
+
+#tab-config .config-tool-panel-v2 .hint,
+#tab-config .config-tool-panel-v2 .muted {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+#tab-config .config-tool-panel-v2 .row {
+  min-width: 0;
+  gap: 10px 14px;
+}
+
+#tab-config .config-tool-panel-v2 .row > * {
+  min-width: 0;
+}
+
+#tab-config .config-tool-panel-v2 .row > :first-child {
+  flex: 1 1 280px;
+}
+
+#tab-config .config-tool-panel-v2 .row .action-cell {
+  flex: 0 1 auto;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+#tab-config .config-tool-panel-v2 .action-cell {
+  display: flex;
+  gap: 8px;
+}
+
+#tab-config .config-tool-panel-v2 .btn,
+#tab-config .config-tool-panel-v2 select {
+  min-height: 40px;
+}
+
+#tab-config .config-twofa-driver-v2-label-wrap {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+#tab-config .config-twofa-driver-v2-label-wrap .config-field-key-v2 {
+  display: block;
+  text-align: left;
+}
+
+#tab-config .config-section-v2-body {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+#tab-config .config-section-v2-body:has(> .config-field-v2:only-child) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+#tab-config .config-section-v2-body > .config-field-v2:has(textarea) {
+  grid-column: 1 / -1;
+}
+
+#tab-config .config-switches-v2 {
+  grid-template-columns: repeat(auto-fit, minmax(min(290px, 100%), 1fr));
+}
+
+@media (max-width: 600px) {
+  #tab-config .config-section-v2 > .config-tool-panel-v2,
+  #tab-config .config-section-v2 > .config-lifecycle-note-v2,
+  #tab-config .config-section-v2 > .config-lifecycle-driver-grid-v2,
+  #tab-config .config-section-v2 > .config-lifecycle-toggle-grid-v2,
+  #tab-config .config-section-v2 > .config-lifecycle-inherited-v2,
+  #tab-config .config-section-v2 > .config-lifecycle-advanced-block-v2 {
+    margin-inline: 14px;
+  }
+
+  #tab-config .config-section-v2 > .config-tool-panel-v2 {
+    padding: 14px;
   }
 }
