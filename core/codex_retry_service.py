@@ -80,11 +80,12 @@ def _run_protocol_direct_twofa(
     *,
     protocol_reauth_enabled: bool = True,
 ) -> dict:
-    """Use the saved ChatGPT AT to enable 2FA without opening Roxy.
+    """Use the Protocol-first path to enable 2FA without opening Roxy when possible.
 
     ``BrowserSession`` here is the existing curl/cffi protocol client, not a
-    visible browser.  The caller is responsible for deciding whether a
-    protocol failure may continue into the legacy browser fallback.
+    visible browser.  Missing/stale AT enters protocol email reauthentication;
+    the caller decides whether a protocol failure may continue into the
+    browser fallback.
     """
     existing_secret = str(account.get("totp_secret") or "").strip()
     if existing_secret and not _totp_setup_pending(account):
@@ -940,10 +941,11 @@ def run_twofa_worker(
                 account_task_store.append_event(
                     task_id,
                     stage="twofa_result",
-                    message="纯协议 2FA 开通失败",
+                    message="协议 2FA 开通失败",
                     level="WARNING",
                     detail={
-                        "driver": "protocol_direct",
+                        "driver": "protocol",
+                        "auth_source": context_plan.auth_source,
                         "browser_fallback_enabled": browser_fallback_enabled,
                         "protocol_reauth_enabled": protocol_reauth_enabled,
                         "error": direct_error,
@@ -955,7 +957,7 @@ def run_twofa_worker(
                     result = {
                         "status": "failed",
                         "ok": False,
-                        "message": f"协议直开 2FA 失败，且已关闭浏览器兜底：{direct_error}",
+                        "message": f"协议 2FA 失败，且已关闭浏览器兜底：{direct_error}",
                         "twofa_driver": "protocol",
                         "auth_source": context_plan.auth_source,
                         "browser_opened": False,
@@ -967,8 +969,12 @@ def run_twofa_worker(
                 account_task_store.append_event(
                     task_id,
                     stage="twofa",
-                    message="纯协议 2FA 未完成，按配置回退 Roxy 安全设置页面",
-                    detail={"driver": "browser_fallback", "protocol_error": direct_error},
+                    message="协议 2FA 未完成，按配置回退 Roxy 安全设置页面",
+                    detail={
+                        "driver": "browser_fallback",
+                        "auth_source": "browser_session",
+                        "protocol_error": direct_error,
+                    },
                     state="running",
                 )
                 browser_twofa_driver = "browser"
