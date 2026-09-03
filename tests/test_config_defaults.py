@@ -100,6 +100,10 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         self.assertEqual(fields["TWOFA_DRIVER"]["type"], "str")
         self.assertEqual(twofa_config.get_twofa_driver("roxy"), "browser")
 
+        completion_help = fields["ACCOUNT_2FA_DRIVER"]["help"]
+        self.assertIn("自动选择", completion_help)
+        self.assertNotIn("protocol_direct=", completion_help)
+
         old_loaded = env_loader._LOADED
         env_loader._LOADED = True
         try:
@@ -110,6 +114,15 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         finally:
             env_loader._LOADED = old_loaded
             importlib.reload(twofa_config)
+
+    def test_config_api_projects_legacy_twofa_mode_as_auto(self):
+        with patch("config.env_loader.load_env"), patch(
+            "config.env_loader.read_env_file",
+            return_value={"ACCOUNT_2FA_DRIVER": "protocol_direct"},
+        ), patch.dict(os.environ, {"ACCOUNT_2FA_DRIVER": ""}, clear=False):
+            fields = {item["key"]: item for item in config_editor.get_config()}
+
+        self.assertEqual("auto", fields["ACCOUNT_2FA_DRIVER"]["value"])
 
     def test_registration_and_account_completion_switches_are_editable(self):
         fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}

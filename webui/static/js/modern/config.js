@@ -508,7 +508,7 @@ function renderLifecycleFixedDriver(label, value, help) {
 function renderLifecycleInheritedSummary() {
   const password = lifecycleChoiceLabel([{value: 'roxy', label: 'RoxyBrowser'}], lifecycleFieldValue('ACCOUNT_PASSWORD_DRIVER', 'roxy'));
   const plan = lifecycleChoiceLabel([{value: 'protocol', label: '纯协议'}], lifecycleFieldValue('ACCOUNT_PLAN_CHECK_DRIVER', 'protocol'));
-  const twofa = lifecycleChoiceLabel(accountTwofaDriverChoices(), lifecycleFieldValue('ACCOUNT_2FA_DRIVER', lifecycleFieldValue('TWOFA_DRIVER', 'protocol')));
+  const twofa = lifecycleChoiceLabel(accountTwofaDriverChoices(), lifecycleFieldValue('ACCOUNT_2FA_DRIVER', lifecycleFieldValue('TWOFA_DRIVER', 'auto')));
   const codex = lifecycleChoiceLabel(codexOauthDriverChoices(), lifecycleFieldValue('ACCOUNT_CODEX_DRIVER', lifecycleFieldValue('CODEX_OAUTH_DRIVER', 'same_as_registration')));
   return `
     <div class="config-lifecycle-inherited-v2">
@@ -584,12 +584,12 @@ function renderLifecycleExecutionSection(fields) {
   }
   if (has('TWOFA_DRIVER')) {
     cards.push(renderLifecycleDriverSelect(
-      'TWOFA_DRIVER', '注册 2FA 开通方式', '只影响注册主链路；protocol=注册会话内优先协议，失败按注册现有浏览器兜底；browser=注册流程直接使用浏览器安全设置页。', registrationTwofaDriverChoices()
+      'TWOFA_DRIVER', '注册 2FA 开通方式', '只影响注册主链路；auto=自动选择（协议优先）；protocol=注册会话内优先协议，失败按注册现有浏览器兜底；browser=注册流程直接使用浏览器安全设置页。', registrationTwofaDriverChoices()
     ));
   }
   if (has('ACCOUNT_2FA_DRIVER')) {
     cards.push(renderLifecycleDriverSelect(
-      'ACCOUNT_2FA_DRIVER', '账号补全 2FA 开通方式', '只影响已有账号补全；protocol_direct=先用已保存 AT 直接协议开通，成功不打开浏览器；protocol=浏览器前置后协议；browser=直接浏览器。', accountTwofaDriverChoices()
+      'ACCOUNT_2FA_DRIVER', '账号补全 2FA 开通方式', '只影响已有账号补全；auto=优先复用有效 AT，需要时协议重认证；若同时补密码则复用浏览器会话拿新 AT；protocol=协议开通并按开关回退；browser=直接浏览器。', accountTwofaDriverChoices()
     ));
   }
   if (has('ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED')) {
@@ -682,14 +682,15 @@ function renderRegistrationAccountSectionV2(fields) {
 
 function registrationTwofaDriverChoices() {
   return [
-    { value: 'protocol', label: '协议直开（新鲜 AT）' },
+    { value: 'auto', label: '自动选择（协议优先）' },
+    { value: 'protocol', label: '协议开通' },
     { value: 'browser', label: '浏览器页面（RoxyBrowser）' },
   ];
 }
 function accountTwofaDriverChoices() {
   return [
-    { value: 'protocol', label: '浏览器前置 + 协议' },
-    { value: 'protocol_direct', label: '已有 AT 纯协议优先' },
+    { value: 'auto', label: '自动选择（协议优先）' },
+    { value: 'protocol', label: '协议开通' },
     { value: 'browser', label: '浏览器页面（RoxyBrowser）' },
   ];
 }
@@ -719,7 +720,7 @@ function authProfileModeChoices() {
 }
 function renderTwofaDriverControl(f) {
   const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
-  const current = String(fv == null ? 'protocol' : fv).trim().toLowerCase() || 'protocol';
+  const current = String(fv == null ? 'auto' : fv).trim().toLowerCase() || 'auto';
   return `
     <div class="config-twofa-driver-v2">
       <div class="config-twofa-driver-v2-label">${esc(f.label)}</div>

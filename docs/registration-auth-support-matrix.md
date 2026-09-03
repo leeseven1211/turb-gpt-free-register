@@ -1,6 +1,6 @@
 # 注册与账号认证支持矩阵
 
-**审计日期：** 2026-09-02
+**审计日期：** 2026-09-03
 **范围：** Roxy 注册/登录主链、Protocol 协作适配、账号查活、刷新 AT、补密码、补 Authenticator 2FA。
 **结论：** Roxy 是稳定的浏览器主流程；Protocol 只处理能够明确判定的协议阶段。两者共享认证结果、挑战链和恢复边界，但不会在远端结果未知时自动重新注册。
 
@@ -29,7 +29,18 @@ Token、密码、OTP、TOTP Secret、Cookie、callback URL、原始响应和完�
 | Protocol | 可替换的协议阶段适配器 | 明确的邮箱 OTP、OAuth callback/session、Protocol v2 刷新 AT、协议 2FA | 不在未知页面继续 `create_account`，不因密码错误自动换线重试 |
 | Service/Dispatcher | 选择驱动、保存 checkpoint、决定是否重试 | 保留已有账号/邮箱/任务状态，区分 `manual_reconcile` 与普通失败 | 不以本地数据库“没有账号记录”推断远端一定没有账号 |
 
-推荐配置是 `REGISTRATION_DRIVER=roxy`。Protocol 仍可作为注册驱动或账号操作的阶段能力，但其结果必须先经过统一判定；Protocol 不稳定或不支持时才允许按结果交回 Roxy。
+推荐配置是 `REGISTRATION_DRIVER=roxy`。2FA 的公开选择统一为 `auto`、`protocol`、`browser`：`auto` 是协议优先的自动上下文选择，`protocol` 强制协议执行器，`browser` 强制 Roxy 安全设置页。历史值 `protocol_direct` 仍兼容，但只作为 `auto` 的别名，不再作为独立决策。Protocol 不稳定或不支持时才允许按结果交回 Roxy。
+
+### 2.1 2FA 执行器与认证上下文不是一回事
+
+| 概念 | 可选值 | 作用 | 当前行为 |
+|---|---|---|---|
+| 2FA 执行器 | `protocol` | 调用 MFA `enroll/activate` 协议接口 | 可复用 AT；没有 AT 或遇到 MFA 401 时走协议邮箱重认证；失败后按开关回退 Roxy |
+| 2FA 执行器 | `browser` | 使用浏览器安全设置页 | 依赖已经登录的 Roxy 会话，直接在页面完成 2FA |
+| 2FA 模式 | `auto` | 自动选择上下文，协议优先 | 单独补 2FA 优先已有 AT；组合补密码时复用浏览器会话取得新 AT，再由协议完成 2FA |
+| 认证上下文 | `existing_at` | 已保存、可尝试使用的 AT | 只适用于不需要浏览器登录的协议路径；MFA 401 时不把查活成功误认为近期认证 |
+| 认证上下文 | `protocol_reauth` | 协议邮箱 OTP 重认证取得新 AT | 适用于无 AT 或旧 AT 被 MFA 要求近期认证；新 AT 成功后先写回账号再继续 2FA |
+| 认证上下文 | `browser_session` | 当前 Roxy 登录会话取得新 AT | 适用于显式 browser，或同一任务还必须补密码的组合流程 |
 
 ## 3. 注册状态矩阵
 
@@ -71,11 +82,11 @@ Roxy 已覆盖“邮箱 OTP → TOTP”；这个判断优先读取最新 DOM 控
 
 下面的“密码/2FA”指 OpenAI 账号凭证，不是邮箱池密码。
 
-| 本地状态 | 普通查活 | 刷新 AT | 补密码 | 补 2FA |
+| 本地状态 | 普通查活 | 刷新 AT | 补密码 | 补 2FA（`auto`） |
 |---|---|---|---|---|
-| 无密码、无 2FA | 只验证现有 AT，不登录 | 默认 legacy 邮箱 OTP；Protocol v2 无密码时回落既有邮箱认证 | 有有效登录态/AT 时可补，提交立即保存 | 生成 Secret 后先保存，再激活；失败保留 pending |
-| 有密码、无 2FA | 只验证现有 AT，不登录 | Protocol v2 可密码登录；远端再要邮箱 OTP 就取 OTP | 跳过 | 登录收口后补 2FA |
-| 无密码、有 2FA | 只验证现有 AT，不登录 | 不伪造密码，走邮箱认证；若后续要求 TOTP，由 Roxy/公共状态机使用已有 Secret | 有有效登录态/AT 时可补 | 已有有效 Secret 跳过重复设置；pending 状态继续完成 |
+| 无密码、无 2FA | 只验证现有 AT，不登录 | 默认 legacy 邮箱 OTP；Protocol v2 无密码时回落既有邮箱认证 | 有有效登录态/AT 时可补，提交立即保存 | `existing_at` → 协议；无 AT/近期认证失败 → `protocol_reauth`；仍失败且开关开启 → Roxy |
+| 有密码、无 2FA | 只验证现有 AT，不登录 | Protocol v2 可密码登录；远端再要邮箱 OTP 就取 OTP | 跳过 | 单独补 2FA 仍优先协议；与密码同批时 Roxy 登录取新 AT，再协议开通 |
+| 无密码、有 2FA | 只验证现有 AT，不登录 | 不伪造密码，走邮箱认证；若后续要求 TOTP，由 Roxy/公共状态机使用已有 Secret | 有有效登录态/AT 时可补 | 已有有效 Secret 跳过；pending 状态继续完成，不重复注册 |
 | 有密码、有 2FA | 只验证现有 AT，不登录 | Protocol v2 可走密码 → TOTP，或密码 → 邮箱 OTP → TOTP | 跳过 | 跳过；仅 pending/失败状态重试 |
 
 ### 4.1 普通查活
@@ -119,6 +130,18 @@ Roxy 已覆盖“邮箱 OTP → TOTP”；这个判断优先读取最新 DOM 控
 - 密码和 2FA 的成功状态不互相回滚；Codex/套餐等后处理失败也不回滚账号核心状态。
 - 当前组合补全会独立收集密码和 2FA 步骤结果，最终任务只要有一步失败就标记为可重跑的部分失败。
 
+### 4.4 补 2FA 的自动选择矩阵
+
+| 配置/任务条件 | 取得认证上下文 | 2FA 执行器 | 是否打开浏览器 | 失败后的处理 |
+|---|---|---|---:|---|
+| `auto`/`protocol`，已有 AT，单独补 2FA | `existing_at` | `protocol` | 否 | MFA 401 时协议重认证；仍失败且开关开启则 Roxy |
+| `auto`/`protocol`，没有 AT，单独补 2FA | `protocol_reauth` | `protocol` | 否 | 协议重认证失败且开关开启则 Roxy，否则失败并保留原因 |
+| `auto`/`protocol`，同时补密码和 2FA | `browser_session` | `protocol` | 是 | 密码与 2FA 共享同一会话、串行执行；协议 2FA 失败按兜底开关处理 |
+| `browser`，任意 AT 状态 | `browser_session` | `browser` | 是 | 页面流程失败即停止，不再额外发送协议 OTP |
+| 历史值 `protocol_direct` | 按 `auto` 处理 | `protocol` | 同 `auto` | 不再进入注册驱动的非法值校验，也不在 WebUI 展示为独立选项 |
+
+安全边界：`existing_at` 不是“查活成功”的同义词。MFA enrollment 仍可能要求近期认证；只有协议重认证或当前浏览器登录态取得的新 AT 成功后，才继续激活。协议邮箱重认证取得的新 AT 会在继续 2FA 前写回账号检查点；TOTP Secret 仍在激活前写入 `totp_setup_pending` 检查点。
+
 ## 5. 错误码与重试矩阵
 
 | 错误/状态 | 是否自动重试 | 是否 Roxy 兜底 | 后续动作 |
@@ -157,11 +180,11 @@ Roxy 已覆盖“邮箱 OTP → TOTP”；这个判断优先读取最新 DOM 控
 
 ## 7. 当前边界与后续优化方向
 
-本次实现的单元测试使用脱敏 fake session/driver，不会访问真实账号、邮箱池或生产 PostgreSQL。尚未宣称真实外部 E2E 全部通过，原因是 OpenAI 页面、风控、邮箱延迟和 Protocol 响应会变化。
+本次自动选择改造的单元测试使用脱敏 fake session/driver，不会访问真实账号、邮箱池或生产 PostgreSQL；尚未宣称真实外部 E2E 全部通过，原因是 OpenAI 页面、风控、邮箱延迟和 Protocol 响应会变化。当前代码级支持边界已经明确：Roxy 是浏览器主线和最终兜底，Protocol 是 2FA 的协议执行器，`protocol_reauth`/`browser_session` 只是认证上下文来源；显式刷新 AT 仍由 `legacy`/`protocol_v2` 独立控制。
 
 后续优化按优先级：
 
-1. 用专用测试账号分别验证四种凭证组合，每种至少跑注册续跑、刷新 AT、补密码、补 2FA 一次，并保留只含状态码的审计结果；
+1. 用专用测试账号分别验证四种凭证组合，并分别覆盖 `existing_at`、`protocol_reauth`、`browser_session` 三类上下文；每种至少跑注册续跑、刷新 AT、补密码、补 2FA 一次，并保留只含状态码的审计结果；
 2. 为每个页面分类保存脱敏 DOM fixture，Provider 变化时先更新适配器和契约测试；
 3. 把 `remote_identity`、`challenge_chain`、`next_action` 在任务详情页做成结构化展示，减少只看自然语言错误；
 4. 为密码错误、TOTP 错误、结果未知分别增加人工恢复入口，避免所有失败都依赖重新点击；

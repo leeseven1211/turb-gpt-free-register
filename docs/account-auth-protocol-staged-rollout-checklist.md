@@ -344,16 +344,18 @@ ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK=False
 ### 配置
 
 ```dotenv
-TWOFA_DRIVER=protocol|browser
-ACCOUNT_2FA_DRIVER=protocol|protocol_direct|browser
+TWOFA_DRIVER=auto|protocol|browser
+ACCOUNT_2FA_DRIVER=auto|protocol|browser
 ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED=True|False
+ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED=True|False
 ```
 
-注册主链路和账号补全分别使用已有真实配置键；默认值不删除、不改写。账号补全新增
-`protocol_direct`：仅在单独“补 2FA”且账号已有 AT 时先调用现有
-`enroll/activate` 协议，成功不打开 Roxy；协议失败时由
-`ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED` 控制是否进入现有浏览器安全设置页。
-旧的 `protocol`、`browser` 行为保持不变。
+注册主链路和账号补全分别使用已有真实配置键；公开值统一为 `auto`、`protocol`、
+`browser`。`auto`/`protocol` 在单独补 2FA 时优先复用已有 AT，没有 AT 或 MFA 要求近期
+认证时先通过协议邮箱 OTP 重认证取得新 AT；协议仍失败时由
+`ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED` 控制是否进入现有浏览器安全设置页。组合补密码
+和 2FA 时则复用 Roxy 登录会话取得新 AT，再由协议完成 2FA。旧配置值
+`protocol_direct` 继续兼容，但归一为 `auto`，不再作为单独选项。
 
 ### 实施项
 

@@ -32,12 +32,12 @@ function configDriverChoices(f) {
     ['account_stable', '账号稳定 Protocol 画像（懒创建）'],
   ];
   if (f.key === 'TWOFA_DRIVER') {
-    return [['protocol', '协议直开（新鲜 AT）'], ['browser', '浏览器页面（RoxyBrowser）']];
+    return [['auto', '自动选择（协议优先）'], ['protocol', '协议开通'], ['browser', '浏览器页面（RoxyBrowser）']];
   }
   if (f.key === 'ACCOUNT_2FA_DRIVER') {
     return [
-      ['protocol', '浏览器前置 + 协议'],
-      ['protocol_direct', '已有 AT 纯协议优先'],
+      ['auto', '自动选择（协议优先）'],
+      ['protocol', '协议开通'],
       ['browser', '浏览器页面（RoxyBrowser）'],
     ];
   }

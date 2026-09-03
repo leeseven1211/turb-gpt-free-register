@@ -737,12 +737,12 @@ LIVE_CHECK_ROXY_FALLBACK_ENABLED=True
 已有账号单独执行“补 2FA”时，`ACCOUNT_2FA_DRIVER` 独立于注册 `TWOFA_DRIVER`：
 
 ```dotenv
-ACCOUNT_2FA_DRIVER=protocol
+ACCOUNT_2FA_DRIVER=auto
 ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED=True
 ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED=True
 ```
 
-`protocol` 保持现有“先打开 Roxy 登录，再在当前会话内优先协议、失败回浏览器设置页”；`browser` 直接走现有浏览器页面。需要让已有 AT 的账号在单独补 2FA 时不打开浏览器，可显式改为 `protocol_direct`：先使用已保存 AT 完成 `enroll/activate`；若 MFA 返回 401 且 `ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED=True`，则在协议会话内完成邮箱 OTP 重认证、写回新 AT，再继续 `enroll/activate`，全程不打开浏览器。协议重认证仍失败时，仅在 `ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED=True` 时进入 Roxy 兜底。组合“补全账号”同时缺密码时仍使用浏览器，因为密码设置本身需要登录页面。配置页“注册与账号 → 执行方式”会分别展示注册 2FA、账号补全 2FA、协议重认证和浏览器兜底开关。
+`auto` 是推荐配置：单独补 2FA 时先复用已有 AT；没有 AT 或旧 AT 被 MFA 要求近期认证时，通过协议邮箱 OTP 重认证并写回新 AT；协议仍无法完成且 `ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED=True` 时，才进入 Roxy 安全设置页。组合“补全账号”同时缺密码时，必须先打开 Roxy 登录页补密码，再从当前浏览器会话取得新 AT，随后仍优先使用协议完成 2FA。`protocol` 强制使用协议执行 2FA，但仍按上述认证上下文和兜底开关处理；`browser` 直接走现有浏览器安全设置页。历史配置中的 `protocol_direct` 仍兼容，但会自动归一为 `auto`，不再作为单独选项显示，也不会传给只接受 `protocol`/`browser` 的注册校验器。配置页“注册与账号 → 执行方式”会分别展示注册 2FA、账号补全 2FA、协议重认证和浏览器兜底开关。
 
 已注册账号的 `email_source` 是后续 OTP 取码的权威来源；即使进程重启或 Outlook 池记录被清理，也会优先按账号来源取码，Outlook 账号凭据可从已注册账号快照恢复，不会因为当前 `EMAIL_SOURCE` 顺序变化而误走其他邮箱平台。
 
