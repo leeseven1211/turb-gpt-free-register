@@ -92,27 +92,34 @@ def _run_protocol_direct_twofa(
             task_id,
             stage="twofa",
             message="账号已有 Authenticator 2FA，跳过重复设置",
-            detail={"driver": "protocol_direct", "browser_opened": False},
+            detail={
+                "driver": "protocol",
+                "auth_source": "existing_at",
+                "browser_opened": False,
+            },
             state="skipped",
         )
         return {
             "status": "success",
             "ok": True,
             "message": "账号已有 Authenticator 2FA，无需重复设置",
-            "twofa_driver": "protocol_direct",
+            "twofa_driver": "protocol",
+            "auth_source": "existing_at",
             "browser_opened": False,
         }
 
     access_token = str(account.get("access_token") or "").strip()
-    if not access_token:
-        raise RuntimeError("协议直开 2FA 需要账号已有 access_token")
-
     account_task_store.append_event(
         task_id,
         stage="twofa",
-        message="账号已有 access_token，先使用纯协议开通 Authenticator 2FA",
+        message=(
+            "账号已有 access_token，先使用协议开通 Authenticator 2FA"
+            if access_token
+            else "账号没有可复用 access_token，先通过协议重认证获取新 AT"
+        ),
         detail={
-            "driver": "protocol_direct",
+            "driver": "protocol",
+            "auth_source": "existing_at" if access_token else "protocol_reauth",
             "browser_opened": False,
             "protocol_reauth_enabled": bool(protocol_reauth_enabled),
         },
@@ -135,24 +142,19 @@ def _run_protocol_direct_twofa(
     protocol_session = BrowserSession(
         proxy=str(getattr(account_route, "proxy_url", "") or ""),
     )
-    driver_used = "protocol_direct"
-    try:
-        secret = setup_2fa_protocol(
-            protocol_session,
-            access_token,
-            on_secret=_checkpoint,
-        )
-    except TwofaEnrollmentAuthRequired as auth_exc:
+    auth_source_used = "existing_at" if access_token else "protocol_reauth"
+
+    def _protocol_reauth() -> str:
         if not protocol_reauth_enabled:
-            raise
+            raise RuntimeError("协议 2FA 需要近期认证，但已关闭协议重认证")
         account_task_store.append_event(
             task_id,
             stage="twofa",
-            message="已有 AT 可查活，但 MFA 要求近期认证，转为协议邮箱重认证",
+            message="协议 2FA 需要近期认证，转为协议邮箱重认证获取新 AT",
             detail={
-                "driver": "protocol_reauth",
+                "driver": "protocol",
+                "auth_source": "protocol_reauth",
                 "browser_opened": False,
-                "reason": str(auth_exc)[:180],
             },
             state="running",
         )
@@ -171,13 +173,27 @@ def _run_protocol_direct_twofa(
                 state="success",
             )
 
+        nonlocal auth_source_used
         secret = setup_2fa(
             protocol_session,
             email,
             on_secret=_checkpoint,
             on_access_token=_save_refreshed_token,
         )
-        driver_used = "protocol_reauth"
+        auth_source_used = "protocol_reauth"
+        return secret
+
+    if access_token:
+        try:
+            secret = setup_2fa_protocol(
+                protocol_session,
+                access_token,
+                on_secret=_checkpoint,
+            )
+        except TwofaEnrollmentAuthRequired:
+            secret = _protocol_reauth()
+    else:
+        secret = _protocol_reauth()
     if not state["secret"]:
         _checkpoint(secret)
     with _ACCOUNT_SETUP_DB_LOCK:
@@ -189,15 +205,21 @@ def _run_protocol_direct_twofa(
     account_task_store.append_event(
         task_id,
         stage="twofa_result",
-        message="纯协议已启用 Authenticator 2FA，未打开浏览器",
-        detail={"enabled": True, "driver": driver_used, "browser_opened": False},
+        message="协议已启用 Authenticator 2FA，未打开浏览器",
+        detail={
+            "enabled": True,
+            "driver": "protocol",
+            "auth_source": auth_source_used,
+            "browser_opened": False,
+        },
         state="success",
     )
     return {
         "status": "success",
         "ok": True,
-        "message": "Authenticator 2FA 已通过纯协议启用",
-        "twofa_driver": driver_used,
+        "message": "Authenticator 2FA 已通过协议启用",
+        "twofa_driver": "protocol",
+        "auth_source": auth_source_used,
         "browser_opened": False,
     }
 
@@ -578,8 +600,11 @@ def _build_roxy_account_setup(
             return False
 
         from config import twofa as twofa_cfg
+        from core.twofa_flow import canonical_twofa_executor
 
-        selected_twofa_driver = twofa_cfg.get_twofa_driver(twofa_driver) if twofa_driver else twofa_cfg.get_twofa_driver()
+        selected_twofa_driver = canonical_twofa_executor(
+            twofa_driver if twofa_driver is not None else twofa_cfg.get_twofa_driver()
+        )
         # 密码补充、浏览器 2FA，以及协议 2FA 失败后的浏览器回退都会共享
         # 同一个 Selenium driver。Selenium driver 不是线程安全的；并发导航
         # 会把页面互相覆盖，常见结果就是只剩本地化的“设置”壳层。
@@ -809,6 +834,7 @@ def run_twofa_worker(
         from config import codex as codex_cfg
         from config import roxybrowser as roxy_cfg
         from config import account as account_cfg
+        from core.twofa_flow import canonical_twofa_executor, normalize_twofa_mode, plan_twofa_context
 
         password_driver = str(
             password_driver_override
@@ -824,15 +850,15 @@ def run_twofa_worker(
             raise RuntimeError(f"账号密码补全当前仅支持 roxy 驱动，当前驱动={password_driver or '-'}")
         if "plan_check" in requested_steps and plan_driver not in {"protocol", "api", "http"}:
             raise RuntimeError(f"套餐补全当前仅支持 protocol 驱动，当前驱动={plan_driver or '-'}")
-        selected_twofa_driver = str(
+        selected_twofa_mode = normalize_twofa_mode(str(
             twofa_driver_override
             if twofa_driver_override is not None
-            else getattr(account_cfg, "ACCOUNT_2FA_DRIVER", "protocol")
-        ).strip().lower()
-        if "twofa" in requested_steps and selected_twofa_driver not in {
-            "protocol", "protocol_direct", "api", "http", "browser", "roxy", "roxybrowser",
-        }:
-            raise RuntimeError(f"2FA 补全驱动不支持：{selected_twofa_driver or '-'}")
+            else getattr(account_cfg, "ACCOUNT_2FA_DRIVER", "auto")
+        ).strip().lower())
+        if "twofa" in requested_steps:
+            selected_twofa_driver = canonical_twofa_executor(selected_twofa_mode)
+        else:
+            selected_twofa_driver = "protocol"
         browser_fallback_enabled = bool(
             getattr(account_cfg, "ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED", True)
         )
@@ -846,7 +872,8 @@ def run_twofa_worker(
         # 套餐查询是独立的协议/API 步骤，不应因为 Codex OAuth 驱动不是
         # Roxy 而被拦截；只有需要重新打开 ChatGPT 浏览器会话时才校验
         # 这个历史上的 Roxy 约束。
-        if requested_steps != {"plan_check"} and oauth_driver not in {"roxy", "roxybrowser", "fingerprint", "browser"}:
+        browser_session_required = "password" in requested_steps or selected_twofa_mode == "browser"
+        if browser_session_required and oauth_driver not in {"roxy", "roxybrowser", "fingerprint", "browser"}:
             raise RuntimeError(f"账号配置重试当前仅支持 Roxy 驱动，当前驱动={oauth_driver or 'protocol'}")
 
         from core.account_proxy import acquire_account_proxy
@@ -889,9 +916,14 @@ def run_twofa_worker(
             }
             return result
 
-        browser_twofa_driver = selected_twofa_driver
+        context_plan = plan_twofa_context(
+            selected_twofa_mode,
+            has_access_token=bool(str(account.get("access_token") or "").strip()),
+            browser_session_required=browser_session_required,
+        )
+        browser_twofa_driver = context_plan.executor
         direct_protocol_failed = False
-        if requested_steps == {"twofa"} and selected_twofa_driver == "protocol_direct":
+        if requested_steps == {"twofa"} and context_plan.executor == "protocol":
             try:
                 direct_result = _run_protocol_direct_twofa(
                     email,
@@ -924,7 +956,8 @@ def run_twofa_worker(
                         "status": "failed",
                         "ok": False,
                         "message": f"协议直开 2FA 失败，且已关闭浏览器兜底：{direct_error}",
-                        "twofa_driver": "protocol_direct",
+                        "twofa_driver": "protocol",
+                        "auth_source": context_plan.auth_source,
                         "browser_opened": False,
                         "proxy_provider": account_route.provider,
                         "proxy_region": account_route.region,
@@ -994,7 +1027,8 @@ def run_twofa_worker(
             "proxy_provider": account_route.provider,
             "proxy_region": account_route.region,
             "proxy_mode": account_route.mode,
-            "twofa_driver": "browser_fallback" if direct_protocol_failed else selected_twofa_driver,
+            "twofa_driver": "browser_fallback" if direct_protocol_failed else context_plan.executor,
+            "auth_source": "browser_session" if direct_protocol_failed else context_plan.auth_source,
             "browser_opened": True,
         }
         return result
