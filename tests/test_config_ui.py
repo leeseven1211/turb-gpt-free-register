@@ -65,9 +65,26 @@ class ModernConfigUiContractTests(unittest.TestCase):
         self.assertIn("window.scrollTo({ top: 0, left: 0, behavior: 'auto' })", CONFIG_JS)
 
     def test_read_only_driver_values_keep_their_config_key_context(self):
-        self.assertIn("renderLifecycleFixedDriver('ACCOUNT_PASSWORD_DRIVER'", CONFIG_JS)
-        self.assertIn("renderLifecycleFixedDriver('ACCOUNT_PLAN_CHECK_DRIVER'", CONFIG_JS)
-        self.assertIn('config-twofa-driver-v2-label-wrap', CONFIG_JS)
+        self.assertIn('config-setting-readonly-v2', CONFIG_JS)
+        self.assertIn('data-config-setting="${attrEsc(displayKey)}"', CONFIG_JS)
+        self.assertIn('由注册主链路统一维护', CONFIG_JS)
+
+    def test_lifecycle_groups_are_first_class_config_pages(self):
+        self.assertIn("const group = rawGroup || '其他';", CONFIG_JS)
+        self.assertIn("if (name === '注册主链路')", CONFIG_JS)
+        self.assertIn("if (name === '账号补全')", CONFIG_JS)
+        self.assertIn("if (name === '注册调试')", CONFIG_JS)
+        self.assertNotIn("CONFIG_LIFECYCLE_SOURCE_GROUPS_V2.has(rawGroup) ? CONFIG_LIFECYCLE_GROUP_V2 : rawGroup", CONFIG_JS)
+
+    def test_lifecycle_pages_use_rows_without_execution_submenu(self):
+        self.assertIn('config-setting-list-v2', CONFIG_JS)
+        self.assertIn('config-setting-row-v2', CONFIG_JS)
+        self.assertIn('renderRegistrationMainSectionV2', CONFIG_JS)
+        self.assertIn('renderAccountCompletionSectionV2', CONFIG_JS)
+        self.assertIn('renderRegistrationDebugSectionV2', CONFIG_JS)
+        self.assertNotIn('data-lifecycle-section-v2', CONFIG_JS)
+        self.assertIn('.config-setting-row-v2', FOUNDATION_CSS)
+        self.assertIn('grid-template-columns: minmax(0, 1fr) minmax(240px, 340px)', FOUNDATION_CSS)
 
 
 if __name__ == "__main__":

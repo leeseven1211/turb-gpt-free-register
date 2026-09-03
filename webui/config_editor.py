@@ -123,7 +123,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "ACCOUNT_LIVE_CHECK_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
-        "label": "普通查活驱动", "help": "可选 protocol_current 或 browser_roxy；browser_roxy 只验证已有 AT，不登录、不发 OTP、不刷新 AT；protocol_v2 不属于普通查活",
+        "label": "普通查活驱动", "help": "可选 protocol_current 或 browser_roxy；browser_roxy 只验证已有 AT，不登录、不发 OTP、不刷新 AT；全局协议版本设置不影响普通查活",
     },
     {
         "key": "ACCOUNT_LIVE_CHECK_BROWSER_ENABLED", "file": "account.py", "type": "bool", "group": "账号补全",
@@ -143,11 +143,11 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "ACCOUNT_AUTH_PROFILE_MODE", "file": "account.py", "type": "str", "group": "账号补全",
-        "label": "Protocol 设备画像", "help": "current 保持现状、每次会话随机设备画像；account_stable 仅在明确开启 Protocol v2 刷新时按账号懒创建稳定画像，不影响注册 device_id、普通查活和旧刷新链路",
+        "label": "Protocol 设备画像", "help": "current 保持现状、每次会话随机设备画像；account_stable 仅在实际使用 v2 协议刷新时按账号懒创建稳定画像，不影响注册 device_id、普通查活和 v1 刷新链路",
     },
     {
         "key": "ACCOUNT_AUTH_RAW_CONTEXT_ENABLED", "file": "account.py", "type": "bool", "group": "账号补全",
-        "label": "保存认证原始上下文", "help": "默认关闭；开启后仅为 Protocol v2 实际认证 run 按白名单保存设备 ID、session 标识和代理上下文到受限私有表，不进入普通 API/导出；不会复用过期代理",
+        "label": "保存认证原始上下文", "help": "默认关闭；开启后仅为 v2 协议实际认证 run 按白名单保存设备 ID、session 标识和代理上下文到受限私有表，不进入普通 API/导出；不会复用过期代理",
     },
     {
         "key": "ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS", "file": "account.py", "type": "int", "group": "账号补全",
@@ -155,7 +155,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "LIVE_CHECK_ROXY_FALLBACK_ENABLED", "file": "proxy.py", "type": "bool", "group": "账号补全",
-        "label": "旧刷新 Roxy 兜底", "help": "仅控制 legacy 刷新 AT 失败后的既有 Roxy 登录兜底；不影响普通查活，也不允许普通查活登录或发送 OTP",
+        "label": "刷新 Roxy 兜底", "help": "仅控制 v1 协议刷新 AT 失败后的既有 Roxy 登录兜底；不影响普通查活，也不允许普通查活登录或发送 OTP",
     },
     {
         "key": "ACCOUNT_2FA_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",

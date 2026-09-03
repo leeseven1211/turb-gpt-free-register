@@ -2184,6 +2184,158 @@ table[data-resizable-table="codex"] {
   }
 }
 
+/* Lifecycle settings use a compact settings-list pattern rather than
+   repeating a card for every switch or driver. */
+#tab-config .config-setting-group-v2 {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin: 18px 20px 0;
+}
+
+#tab-config .config-setting-group-v2:last-of-type {
+  margin-bottom: 20px;
+}
+
+#tab-config .config-setting-group-head-v2 {
+  padding: 0 2px;
+  color: var(--ui-color-text-muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  line-height: 1.4;
+}
+
+#tab-config .config-setting-list-v2 {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--ui-color-border);
+  border-radius: var(--ui-radius-md);
+  background: var(--ui-color-surface);
+}
+
+#tab-config .config-setting-row-v2 {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 340px);
+  align-items: center;
+  gap: 20px;
+  min-width: 0;
+  padding: 14px 16px;
+  border-bottom: 1px solid #edf0f4;
+  background: var(--ui-color-surface);
+}
+
+#tab-config .config-setting-row-v2:last-child {
+  border-bottom: 0;
+}
+
+#tab-config .config-setting-row-v2:hover {
+  background: #fcfcff;
+}
+
+#tab-config .config-setting-copy-v2,
+#tab-config .config-setting-control-v2 {
+  min-width: 0;
+}
+
+#tab-config .config-setting-label-v2 {
+  color: var(--ui-color-text);
+  font-size: var(--ui-font-size-sm);
+  font-weight: 730;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+#tab-config .config-setting-copy-v2 .config-field-key-v2 {
+  display: block;
+  margin-top: 4px;
+  text-align: left;
+}
+
+#tab-config .config-setting-help-v2 {
+  margin: 6px 0 0;
+  color: var(--ui-color-text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+#tab-config .config-setting-control-v2 {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+}
+
+#tab-config .config-setting-control-v2 > input:not([type="checkbox"]),
+#tab-config .config-setting-control-v2 > select,
+#tab-config .config-setting-control-v2 > textarea,
+#tab-config .config-setting-control-v2 > .config-ep-select {
+  width: 100%;
+  min-width: 0;
+}
+
+#tab-config .config-setting-control-v2 > input:not([type="checkbox"]),
+#tab-config .config-setting-control-v2 > select {
+  min-height: 40px;
+}
+
+#tab-config .config-setting-control-v2 > textarea {
+  min-height: 76px;
+}
+
+#tab-config .config-setting-control-v2 .config-switch-v2-toggle {
+  flex: 0 0 auto;
+  width: 44px;
+  min-width: 44px;
+  height: 24px;
+}
+
+#tab-config .config-setting-readonly-v2 {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--ui-color-border);
+  border-radius: var(--ui-radius-md);
+  color: var(--ui-color-text);
+  background: var(--ui-color-surface-subtle);
+}
+
+#tab-config .config-setting-readonly-v2 strong {
+  overflow-wrap: anywhere;
+  font-size: var(--ui-font-size-sm);
+}
+
+#tab-config .config-setting-readonly-v2 span {
+  color: var(--ui-color-text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+#tab-config .config-setting-row-v2--readonly {
+  background: #fbfbfd;
+}
+
+@media (max-width: 600px) {
+  #tab-config .config-setting-group-v2 {
+    margin: 16px 14px 0;
+  }
+
+  #tab-config .config-setting-group-v2:last-of-type {
+    margin-bottom: 14px;
+  }
+
+  #tab-config .config-setting-row-v2 {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    padding: 13px 14px;
+  }
+
+  #tab-config .config-setting-control-v2 {
+    justify-content: flex-start;
+  }
+}
+
 @media (max-width: 420px) {
   #tab-config .config-page-head-v2 h2 {
     font-size: 24px;

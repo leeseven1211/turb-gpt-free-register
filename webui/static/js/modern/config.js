@@ -2,96 +2,23 @@
 let CONFIG_EMAIL_ACTIVE_SECTION_V2 = '通用邮箱 / OTP';
 let CONFIG_SMS_ACTIVE_SECTION_V2 = '通用接码';
 let CONFIG_CODEX_ACTIVE_SECTION_V2 = '基础配置';
-let CONFIG_LIFECYCLE_ACTIVE_SECTION_V2 = '执行方式';
 let CONFIG_ACTIVE_GROUP_V2 = '';
 let CONFIG_NAV_QUERY_V2 = '';
 const CONFIG_PENDING_UPDATES = {};
-const CONFIG_LIFECYCLE_GROUP_V2 = '注册与账号';
-const CONFIG_LIFECYCLE_SOURCE_GROUPS_V2 = new Set(['注册主链路', '账号补全', '注册调试']);
+const CONFIG_LEGACY_LIFECYCLE_GROUPS_V2 = new Set(['注册与账号', '执行方式']);
 const CONFIG_NAV_CATEGORY_ORDER_V2 = ['运行链路', '资源与服务', '系统'];
 const CONFIG_NAV_CATEGORY_RULES_V2 = {
-  '运行链路': new Set(['注册与账号', '邮箱 / OTP', '接码平台', '人工节奏']),
+  '运行链路': new Set(['通用配置', '注册主链路', '账号补全', '注册调试', '邮箱 / OTP', '接码平台', '人工节奏']),
   '资源与服务': new Set(['RoxyBrowser', 'Browser Use', '代理平台', '代理池', '浏览器画像']),
   '系统': new Set(['Codex', '定时任务', '网站配置', '提链']),
 };
-const CONFIG_LIFECYCLE_SECTION_KEYS_V2 = {
-  '执行方式': [
-    'REGISTRATION_DRIVER',
-    'ACCOUNT_PASSWORD_DRIVER',
-    'ACCOUNT_PLAN_CHECK_DRIVER',
-    'ACCOUNT_LIVE_CHECK_DRIVER',
-    'ACCOUNT_LIVE_CHECK_BROWSER_ENABLED',
-    'ACCOUNT_TOKEN_REFRESH_DRIVER',
-    'ACCOUNT_AUTH_V2_ENABLED',
-    'ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK',
-    'ACCOUNT_AUTH_PROFILE_MODE',
-    'ACCOUNT_AUTH_RAW_CONTEXT_ENABLED',
-    'ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS',
-    'LIVE_CHECK_ROXY_FALLBACK_ENABLED',
-    'ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED',
-    'ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED',
-    'TWOFA_DRIVER',
-    'ACCOUNT_2FA_DRIVER',
-    'CODEX_OAUTH_DRIVER',
-    'ACCOUNT_CODEX_DRIVER',
-  ],
-  '注册主链路': [
-    'REGISTRATION_AUTH_MODE',
-    'REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS',
-    'REGISTRATION_PLAN_CHECK_ENABLED',
-    'ENABLE_2FA',
-    'ENABLE_CODEX_AUTO',
-    'ENABLE_FLOW_TRIGGER',
-  ],
-  '账号补全': [
-    'ACCOUNT_COMPLETION_PASSWORD_ENABLED',
-    'ACCOUNT_COMPLETION_PLAN_CHECK_ENABLED',
-    'ACCOUNT_COMPLETION_2FA_ENABLED',
-    'ACCOUNT_COMPLETION_CODEX_ENABLED',
-    'ACCOUNT_COMPLETION_REFRESH_AT_ENABLED',
-  ],
-  '注册调试': [
-    'REGISTRATION_FAILURE_DIAGNOSTICS_ENABLED',
-    'REGISTRATION_FAILURE_DIAGNOSTICS_RESOURCE_LIMIT',
-    'REGISTRATION_FAILURE_DIAGNOSTICS_TEXT_MAX_KB',
-    'REGISTRATION_DEBUG_HOLD_TIMEOUT_SECONDS',
-    'REGISTRATION_DEBUG_MAX_HELD_SESSIONS',
-    'REGISTRATION_DEBUG_BODY_MAX_KB',
-    'REGISTRATION_DEBUG_BODY_BUDGET_MB',
-    'REGISTRATION_DEBUG_GLOBAL_BUDGET_MB',
-    'REGISTRATION_DEBUG_RETENTION_DAYS',
-    'REGISTRATION_DEBUG_QUEUE_SIZE',
-  ],
-};
 
-function lifecycleFieldsForSection(fields, section) {
-  const byKey = new Map((fields || []).map(f => [f.key, f]));
-  return (CONFIG_LIFECYCLE_SECTION_KEYS_V2[section] || [])
-    .map(key => byKey.get(key))
-    .filter(Boolean);
-}
-
-function lifecycleFieldValue(key, fallback = '') {
+function configFieldValueV2(key, fallback = '') {
   const field = (CONFIG || []).find(item => item.key === key);
   if (!field) return fallback;
   const value = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, key)
     ? CONFIG_PENDING_UPDATES[key] : field.value;
   return value === null || value === undefined || value === '' ? fallback : value;
-}
-
-function lifecycleChoiceLabel(choices, value) {
-  const current = String(value || '').trim().toLowerCase();
-  const hit = (choices || []).find(item => String(item.value).toLowerCase() === current);
-  return hit ? String(hit.label || hit.value) : (current || '未设置');
-}
-
-function lifecycleChoicesWithCurrent(choices, value) {
-  const current = String(value || '').trim().toLowerCase();
-  const options = (choices || []).slice();
-  if (current && !options.some(item => String(item.value).toLowerCase() === current)) {
-    options.unshift({ value: current, label: `当前配置（${current}）` });
-  }
-  return options;
 }
 
 function configValuesEqual(a, b) {
@@ -180,7 +107,7 @@ function configGroups() {
   const groups = {};
   CONFIG.forEach(f => {
     const rawGroup = f.group || '其他';
-    const group = CONFIG_LIFECYCLE_SOURCE_GROUPS_V2.has(rawGroup) ? CONFIG_LIFECYCLE_GROUP_V2 : rawGroup;
+    const group = rawGroup || '其他';
     (groups[group] = groups[group] || []).push(f);
   });
   return groups;
@@ -344,9 +271,10 @@ function getConfigGroupNames() {
 }
 function configSectionIntro(name) {
   if (name === '网站配置') return '配置网站登录授权码与 Session 签名密钥。';
-  if (name === '注册与账号') return '统一配置注册、账号补全和注册调试；执行方式集中维护，链路页只配置功能开关。';
-  if (name === '注册主链路') return '配置注册主流程、密码/验证码模式，以及注册后可选能力的开关和执行驱动。';
-  if (name === '账号补全') return '配置“补全账号”包含哪些缺失能力，以及各能力使用的执行驱动。';
+  if (name === '通用配置') return '账号批量操作等跨页面的通用运行参数。';
+  if (name === '注册主链路') return '配置注册主流程、密码/验证码模式，以及注册后可选能力。';
+  if (name === '账号补全') return '配置“补全账号”处理哪些缺失能力，以及账号操作使用的执行策略。';
+  if (name === '注册调试') return '配置注册失败诊断、现场保留和抓包存储，不改变正常注册流程。';
   if (name === 'Browser Use') return 'Browser Use Cloud 远端浏览器与代理参数。';
   if (name === 'RoxyBrowser') return 'RoxyBrowser API、环境与代理相关设置。';
   if (name === 'Codex') return 'Codex Token、CPA 与 sub2api 相关设置。授权驱动已归入注册主链路。';
@@ -501,18 +429,6 @@ function renderConfigOverviewCards() {
   const codexHint = document.getElementById('configCardCodexDriverHintV2');
   if (codexHint) codexHint.textContent = `自动授权: ${codexAuto ? '已开启' : '已关闭'}`;
 }
-function renderRegistrationDriverField(f) {
-  return `
-    <label class="fld config-field-v2 config-select-v2-field">
-      <span class="config-field-v2-head">
-        <span class="config-field-label-v2">${esc(f.label || '注册主流程驱动')}</span>
-        <code class="config-field-key-v2">${esc(f.key)}</code>
-      </span>
-      <span class="hint">${esc(f.help || '选择注册所用的自动化方式')}</span>
-      <div class="config-ep-select" id="configRegistrationSelectV2"></div>
-    </label>
-  `;
-}
 function renderFeatureSwitchField(f, opts = {}) {
   const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
   const on = !!fv;
@@ -537,243 +453,148 @@ function renderFeatureSwitchField(f, opts = {}) {
   `;
 }
 
-function renderLifecycleEnumSwitchField(f, onValue, offValue, label, help) {
-  const current = String(lifecycleFieldValue(f.key, offValue)).trim().toLowerCase();
-  const on = current === String(onValue).trim().toLowerCase();
+function orderedConfigFieldsV2(fields, keys) {
+  const byKey = new Map((fields || []).map(f => [f.key, f]));
+  return keys.map(key => byKey.get(key)).filter(Boolean);
+}
+
+function renderConfigSettingGroupV2(title, fields, renderer = renderConfigSettingRowV2) {
+  if (!fields || !fields.length) return '';
   return `
-    <div class="config-switch-v2">
-      <div class="config-switch-v2-top">
-        <span class="config-switch-v2-icon config-switch-v2-icon--default" aria-hidden="true">
-          <svg viewBox="0 0 24 24"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/><circle cx="8" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="10" cy="18" r="2"/></svg>
-        </span>
-        <div class="config-switch-v2-label-wrap">
-          <div class="config-switch-v2-label">${esc(label || f.label)}</div>
-          <code class="config-field-key-v2">${esc(f.key)}</code>
-        </div>
-      </div>
-      <input class="config-switch-v2-toggle" type="checkbox" role="switch" data-key="${attrEsc(f.key)}" data-toggle-on-value="${attrEsc(onValue)}" data-toggle-off-value="${attrEsc(offValue)}"${on ? ' checked' : ''} aria-label="${attrEsc(label || f.label)}">
-      <p class="config-switch-v2-help">${esc(help || f.help || '')}</p>
+    <div class="config-setting-group-v2">
+      <div class="config-setting-group-head-v2">${esc(title)}</div>
+      <div class="config-setting-list-v2">${fields.map(field => renderer(field)).join('')}</div>
     </div>
   `;
 }
 
-function renderLifecycleDriverSelect(key, label, help, choices, syncKeys = []) {
-  const keys = [...new Set([key, ...syncKeys].filter(Boolean))];
-  const value = lifecycleFieldValue(key, lifecycleFieldValue(syncKeys[0], ''));
-  const options = lifecycleChoicesWithCurrent(choices, value);
-  const values = keys.map(item => String(lifecycleFieldValue(item, '')).trim().toLowerCase()).filter(Boolean);
-  const mismatch = values.length > 1 && values.some(item => item !== values[0]);
-  const syncAttr = syncKeys.length ? ` data-sync-keys="${attrEsc(syncKeys.join(','))}"` : '';
-  const mismatchText = mismatch
-    ? `<div class="config-lifecycle-warning-v2">注册与补全当前配置不一致，保存此处选择后会统一为同一个执行方式。</div>`
-    : '';
-  return `
-    <div class="config-lifecycle-driver-v2">
-      <div class="config-lifecycle-driver-head">
-        <div class="config-lifecycle-driver-label-v2">
-          <strong>${esc(label)}</strong>
-          <code class="config-field-key-v2">${esc(key)}</code>
-        </div>
-        ${syncKeys.length ? '<span class="config-lifecycle-shared-v2">注册 / 补全共用</span>' : ''}
-      </div>
-      <p>${esc(help || '')}</p>
-      <select data-key="${attrEsc(key)}"${syncAttr} aria-label="${attrEsc(label)}">
-        ${options.map(item => `<option value="${attrEsc(item.value)}"${String(item.value).toLowerCase() === String(value).toLowerCase() ? ' selected' : ''}>${esc(item.label)}</option>`).join('')}
-      </select>
-      ${mismatchText}
-    </div>
-  `;
+function renderAccountCompletionRowV2(f) {
+  if (f.key !== 'ACCOUNT_CODEX_DRIVER') return renderConfigSettingRowV2(f);
+  const registrationValue = configFieldValueV2('CODEX_OAUTH_DRIVER', 'same_as_registration');
+  const accountValue = configFieldValueV2(f.key, 'same_as_registration');
+  const registrationLabel = codexOauthDriverLabel(registrationValue);
+  const accountLabel = codexOauthDriverLabel(accountValue);
+  const mismatch = String(registrationValue).trim().toLowerCase() !== String(accountValue).trim().toLowerCase();
+  return renderConfigSettingRowV2(
+    f,
+    `<div class="config-setting-readonly-v2"><strong>${esc(registrationLabel)}</strong><span>由注册主链路统一维护</span></div>`,
+    {
+      extraClass: 'config-setting-row-v2--readonly',
+      help: mismatch
+        ? `当前账号补全值为“${accountLabel}”，保存注册主链路中的 Codex OAuth 后会同步统一。`
+        : '注册和账号补全共用同一套 Codex OAuth 执行方式，请到注册主链路修改。',
+    }
+  );
 }
 
-function renderLifecycleFixedDriver(key, label, value, help) {
+function renderRegistrationMainSectionV2(fields) {
+  const primaryKeys = [
+    'REGISTRATION_DRIVER',
+    'REGISTRATION_AUTH_MODE',
+    'REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS',
+  ];
+  const postRegistrationKeys = [
+    'REGISTRATION_PLAN_CHECK_ENABLED',
+    'ENABLE_2FA',
+    'TWOFA_DRIVER',
+    'ENABLE_CODEX_AUTO',
+    'CODEX_OAUTH_DRIVER',
+    'ENABLE_FLOW_TRIGGER',
+  ];
+  const primary = orderedConfigFieldsV2(fields, primaryKeys);
+  const postRegistration = orderedConfigFieldsV2(fields, postRegistrationKeys);
+  const known = new Set([...primaryKeys, ...postRegistrationKeys]);
+  const extra = fields.filter(f => !known.has(f.key));
+  const auth = fields.find(f => f.key === 'REGISTRATION_AUTH_MODE');
+  const authValue = auth ? configFieldValueV2(auth.key, auth.value || 'otp') : 'otp';
+  const filteredPrimary = String(authValue).trim().toLowerCase() === 'password'
+    ? primary
+    : primary.filter(f => f.key !== 'REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS');
   return `
-    <div class="config-lifecycle-driver-v2 config-lifecycle-driver-v2--fixed">
-      <div class="config-lifecycle-driver-head">
-        <div class="config-lifecycle-driver-label-v2">
-          <strong>${esc(label)}</strong>
-          <code class="config-field-key-v2">${esc(key)}</code>
-        </div>
-        <span class="config-lifecycle-fixed-v2">当前唯一实现</span>
-      </div>
-      <p>${esc(help || '')}</p>
-      <div class="config-lifecycle-fixed-value-v2">${esc(value)}</div>
-    </div>
-  `;
-}
-
-function renderLifecycleInheritedSummary() {
-  const password = lifecycleChoiceLabel([{value: 'roxy', label: 'RoxyBrowser'}], lifecycleFieldValue('ACCOUNT_PASSWORD_DRIVER', 'roxy'));
-  const plan = lifecycleChoiceLabel([{value: 'protocol', label: '纯协议'}], lifecycleFieldValue('ACCOUNT_PLAN_CHECK_DRIVER', 'protocol'));
-  const twofa = lifecycleChoiceLabel(accountTwofaDriverChoices(), lifecycleFieldValue('ACCOUNT_2FA_DRIVER', lifecycleFieldValue('TWOFA_DRIVER', 'protocol')));
-  const codex = lifecycleChoiceLabel(codexOauthDriverChoices(), lifecycleFieldValue('ACCOUNT_CODEX_DRIVER', lifecycleFieldValue('CODEX_OAUTH_DRIVER', 'same_as_registration')));
-  return `
-    <div class="config-lifecycle-inherited-v2">
-      <strong>执行方式来自“执行方式”菜单</strong>
-      <span>密码：${esc(password)}</span>
-      <span>套餐：${esc(plan)}</span>
-      <span>2FA：${esc(twofa)}</span>
-      <span>Codex：${esc(codex)}</span>
-    </div>
-  `;
-}
-
-function renderLifecycleSubtabs(active) {
-  return `
-    <div class="config-subtabs-v2 config-lifecycle-subtabs-v2">
-      ${Object.keys(CONFIG_LIFECYCLE_SECTION_KEYS_V2).map(section => `
-        <button type="button" data-lifecycle-section-v2="${attrEsc(section)}" class="${section === active ? 'active' : ''}">${esc(section)}</button>
-      `).join('')}
-    </div>
-  `;
-}
-
-function renderLifecycleExecutionSection(fields) {
-  const registration = lifecycleFieldsForSection(fields, '执行方式');
-  const has = key => registration.find(f => f.key === key);
-  const cards = [];
-  if (has('REGISTRATION_DRIVER')) {
-    cards.push(renderLifecycleDriverSelect(
-      'REGISTRATION_DRIVER', '注册主流程', '选择注册主链路使用浏览器还是协议。当前支持纯协议注册和 RoxyBrowser。', registrationDriverChoices()
-    ));
-  }
-  if (has('ACCOUNT_PASSWORD_DRIVER')) {
-    cards.push(renderLifecycleFixedDriver('ACCOUNT_PASSWORD_DRIVER', '密码补全', 'RoxyBrowser', '密码补全当前依赖登录页面，只保留已实现的浏览器执行方式。'));
-  }
-  if (has('ACCOUNT_PLAN_CHECK_DRIVER')) {
-    cards.push(renderLifecycleFixedDriver('ACCOUNT_PLAN_CHECK_DRIVER', '套餐查询 / 补全', '纯协议', '套餐查询当前走协议接口，暂不需要填写执行方式。'));
-  }
-  if (has('ACCOUNT_LIVE_CHECK_DRIVER')) {
-    cards.push(renderLifecycleDriverSelect(
-      'ACCOUNT_LIVE_CHECK_DRIVER', '普通查活', '阶段1仅保留现有协议型旧 AT 探测；浏览器 probe 和新协议完成验证后再开放切换。', liveCheckDriverChoices()
-    ));
-  }
-  if (has('ACCOUNT_LIVE_CHECK_BROWSER_ENABLED')) {
-    cards.push(renderFeatureSwitchField(
-      has('ACCOUNT_LIVE_CHECK_BROWSER_ENABLED'),
-      { withIcon: false }
-    ));
-  }
-  if (has('LIVE_CHECK_ROXY_FALLBACK_ENABLED')) {
-    cards.push(renderFeatureSwitchField(has('LIVE_CHECK_ROXY_FALLBACK_ENABLED'), { withIcon: false }));
-  }
-  if (has('ACCOUNT_TOKEN_REFRESH_DRIVER')) {
-    cards.push(renderLifecycleDriverSelect(
-      'ACCOUNT_TOKEN_REFRESH_DRIVER', '刷新 AT', '默认保持现有刷新链路；Protocol v2 仅在明确选择且总开关开启时使用，失败是否进入现有 Roxy 兜底仍按原规则。', refreshDriverChoices()
-    ));
-  }
-  if (has('ACCOUNT_AUTH_V2_ENABLED')) {
-    cards.push(renderFeatureSwitchField(has('ACCOUNT_AUTH_V2_ENABLED'), { withIcon: false }));
-  }
-  if (has('ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK')) {
-    cards.push(renderFeatureSwitchField(has('ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK'), { withIcon: false }));
-  }
-  if (has('ACCOUNT_AUTH_PROFILE_MODE')) {
-    cards.push(renderLifecycleDriverSelect(
-      'ACCOUNT_AUTH_PROFILE_MODE', 'Protocol 设备画像', '默认保持现状，每次会话随机画像；account_stable 只对明确开启的 Protocol v2 刷新懒创建账号级画像，不影响注册 device_id、普通查活或旧刷新。', authProfileModeChoices()
-    ));
-  }
-  if (has('ACCOUNT_AUTH_RAW_CONTEXT_ENABLED')) {
-    cards.push(renderFeatureSwitchField(has('ACCOUNT_AUTH_RAW_CONTEXT_ENABLED'), { withIcon: false }));
-  }
-  if (has('ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS')) {
-    cards.push(renderConfigPlainFieldV2(has('ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS')));
-  }
-  if (has('TWOFA_DRIVER')) {
-    cards.push(renderLifecycleDriverSelect(
-      'TWOFA_DRIVER', '注册 2FA 开通方式', '只影响注册主链路；protocol=注册会话内优先协议，失败按注册现有浏览器兜底；browser=注册流程直接使用浏览器安全设置页。', registrationTwofaDriverChoices()
-    ));
-  }
-  if (has('ACCOUNT_2FA_DRIVER')) {
-    cards.push(renderLifecycleDriverSelect(
-      'ACCOUNT_2FA_DRIVER', '账号补全 2FA 开通方式', '只影响已有账号补全；protocol_direct=先用已保存 AT 直接协议开通，成功不打开浏览器；protocol=浏览器前置后协议；browser=直接浏览器。', accountTwofaDriverChoices()
-    ));
-  }
-  if (has('ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED')) {
-    cards.push(renderFeatureSwitchField(has('ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED'), { withIcon: false }));
-  }
-  if (has('ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED')) {
-    cards.push(renderFeatureSwitchField(has('ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED'), { withIcon: false }));
-  }
-  if (has('CODEX_OAUTH_DRIVER')) {
-    cards.push(renderLifecycleDriverSelect(
-      'CODEX_OAUTH_DRIVER', 'Codex OAuth', '注册和账号补全的 Codex 执行方式统一维护；可选纯协议、RoxyBrowser 或跟随注册驱动。', codexOauthDriverChoices(), ['ACCOUNT_CODEX_DRIVER']
-    ));
-  }
-  return `
-    <section class="config-section-v2" id="cfg-registration-account" data-config-section="${CONFIG_LIFECYCLE_GROUP_V2}">
-      ${renderConfigSectionHead('执行方式', '浏览器和现有稳定链路保持可用；Protocol v2 仅作为显式灰度选项。')}
-      ${renderLifecycleSubtabs('执行方式')}
-      <div class="config-lifecycle-note-v2">这里仅配置“怎么执行”。是否在注册主链路或账号补全中执行，请分别到对应小菜单打开开关。</div>
-      <div class="config-lifecycle-driver-grid-v2">${cards.join('')}</div>
+    <section class="config-section-v2" id="${esc(configGroupSlug('注册主链路'))}" data-config-section="注册主链路">
+      ${renderConfigSectionHead('注册主链路', configSectionIntro('注册主链路'))}
+      ${renderConfigSettingGroupV2('注册基础流程', filteredPrimary)}
+      ${renderConfigSettingGroupV2('注册后能力', postRegistration)}
+      ${renderConfigSettingGroupV2('其他注册参数', extra)}
       ${renderConfigSaveActions()}
     </section>
   `;
 }
 
-function renderLifecycleRegistrationSection(fields) {
-  const byKey = key => lifecycleFieldsForSection(fields, '注册主链路').find(f => f.key === key);
-  const auth = byKey('REGISTRATION_AUTH_MODE');
-  const timeout = byKey('REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS');
-  const switches = ['REGISTRATION_PLAN_CHECK_ENABLED', 'ENABLE_2FA', 'ENABLE_CODEX_AUTO', 'ENABLE_FLOW_TRIGGER']
-    .map(byKey).filter(Boolean);
-  const passwordEnabled = auth && String(lifecycleFieldValue(auth.key, 'otp')).toLowerCase() === 'password';
+function renderAccountCompletionSectionV2(fields) {
+  const completionKeys = [
+    'ACCOUNT_COMPLETION_PASSWORD_ENABLED',
+    'ACCOUNT_COMPLETION_PLAN_CHECK_ENABLED',
+    'ACCOUNT_COMPLETION_2FA_ENABLED',
+    'ACCOUNT_COMPLETION_CODEX_ENABLED',
+    'ACCOUNT_COMPLETION_REFRESH_AT_ENABLED',
+  ];
+  const strategyKeys = [
+    'ACCOUNT_PASSWORD_DRIVER',
+    'ACCOUNT_PLAN_CHECK_DRIVER',
+    'ACCOUNT_LIVE_CHECK_DRIVER',
+    'ACCOUNT_LIVE_CHECK_BROWSER_ENABLED',
+    'LIVE_CHECK_ROXY_FALLBACK_ENABLED',
+    'ACCOUNT_TOKEN_REFRESH_DRIVER',
+    'ACCOUNT_AUTH_V2_ENABLED',
+    'ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK',
+    'ACCOUNT_AUTH_PROFILE_MODE',
+    'ACCOUNT_AUTH_RAW_CONTEXT_ENABLED',
+    'ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS',
+    'ACCOUNT_2FA_DRIVER',
+    'ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED',
+    'ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED',
+    'ACCOUNT_CODEX_DRIVER',
+  ];
+  const completion = orderedConfigFieldsV2(fields, completionKeys);
+  const strategies = orderedConfigFieldsV2(fields, strategyKeys);
+  const known = new Set([...completionKeys, ...strategyKeys]);
+  const extra = fields.filter(f => !known.has(f.key));
   return `
-    <section class="config-section-v2" id="cfg-registration-account" data-config-section="${CONFIG_LIFECYCLE_GROUP_V2}">
-      ${renderConfigSectionHead('注册主链路', '注册时的主流程和可选能力开关；执行方式请到“执行方式”小菜单统一设置。')}
-      ${renderLifecycleSubtabs('注册主链路')}
-      <div class="config-lifecycle-toggle-grid-v2">
-        ${auth ? renderLifecycleEnumSwitchField(auth, 'password', 'otp', '注册时设置账号密码', '开启后注册链路会尝试设置并保存密码；关闭时使用邮箱验证码模式。') : ''}
-        ${switches.map(f => renderFeatureSwitchField(f, { withIcon: true })).join('')}
-      </div>
-      ${passwordEnabled && timeout ? `<div class="config-lifecycle-advanced-block-v2"><strong>密码模式参数</strong><div class="config-section-v2-body">${renderConfigPlainFieldV2(timeout)}</div></div>` : ''}
+    <section class="config-section-v2" id="${esc(configGroupSlug('账号补全'))}" data-config-section="账号补全">
+      ${renderConfigSectionHead('账号补全', configSectionIntro('账号补全'))}
+      <div class="config-section-v2-subhelp">先选择需要补全的能力，再在下方调整对应的执行策略。</div>
+      ${renderConfigSettingGroupV2('补全项目', completion)}
+      ${renderConfigSettingGroupV2('账号处理策略', strategies, renderAccountCompletionRowV2)}
+      ${renderConfigSettingGroupV2('其他账号参数', extra, renderAccountCompletionRowV2)}
       ${renderConfigSaveActions()}
     </section>
   `;
 }
 
-function renderLifecycleCompletionSection(fields) {
-  const completion = lifecycleFieldsForSection(fields, '账号补全');
+function renderRegistrationDebugSectionV2(fields) {
+  const diagnosticKeys = [
+    'REGISTRATION_FAILURE_DIAGNOSTICS_ENABLED',
+    'REGISTRATION_FAILURE_DIAGNOSTICS_RESOURCE_LIMIT',
+    'REGISTRATION_FAILURE_DIAGNOSTICS_TEXT_MAX_KB',
+  ];
+  const runtimeKeys = [
+    'REGISTRATION_DEBUG_HOLD_TIMEOUT_SECONDS',
+    'REGISTRATION_DEBUG_MAX_HELD_SESSIONS',
+  ];
+  const storageKeys = [
+    'REGISTRATION_DEBUG_BODY_MAX_KB',
+    'REGISTRATION_DEBUG_BODY_BUDGET_MB',
+    'REGISTRATION_DEBUG_GLOBAL_BUDGET_MB',
+    'REGISTRATION_DEBUG_RETENTION_DAYS',
+    'REGISTRATION_DEBUG_QUEUE_SIZE',
+  ];
+  const diagnostics = orderedConfigFieldsV2(fields, diagnosticKeys);
+  const runtime = orderedConfigFieldsV2(fields, runtimeKeys);
+  const storage = orderedConfigFieldsV2(fields, storageKeys);
+  const known = new Set([...diagnosticKeys, ...runtimeKeys, ...storageKeys]);
+  const extra = fields.filter(f => !known.has(f.key));
   return `
-    <section class="config-section-v2" id="cfg-registration-account" data-config-section="${CONFIG_LIFECYCLE_GROUP_V2}">
-      ${renderConfigSectionHead('账号补全', '“补全账号”只处理这里开启且实际缺失的能力；不再重复配置执行方式。')}
-      ${renderLifecycleSubtabs('账号补全')}
-      <div class="config-lifecycle-note-v2">没有额外的“启用补全”总开关：下面所有项目都关闭时，组合补全自然不会执行任何步骤；刷新 AT 仍属于独立操作，只有打开“允许刷新 AT”后才可作为补全前置。</div>
-      ${renderLifecycleInheritedSummary()}
-      <div class="config-lifecycle-toggle-grid-v2">${completion.map(f => renderFeatureSwitchField(f, { withIcon: false })).join('')}</div>
+    <section class="config-section-v2" id="${esc(configGroupSlug('注册调试'))}" data-config-section="注册调试">
+      ${renderConfigSectionHead('注册调试', configSectionIntro('注册调试'))}
+      ${renderConfigSettingGroupV2('失败诊断', diagnostics)}
+      ${renderConfigSettingGroupV2('失败现场运行', runtime)}
+      ${renderConfigSettingGroupV2('抓包存储与清理', storage)}
+      ${renderConfigSettingGroupV2('其他调试参数', extra)}
+      <div class="config-lifecycle-note-v2">“调试模式”仍是单个注册批次的现场保留开关，本页只控制失败诊断、保留时长和抓包预算。</div>
       ${renderConfigSaveActions()}
     </section>
   `;
-}
-
-function renderLifecycleDebugSection(fields) {
-  const byKey = key => lifecycleFieldsForSection(fields, '注册调试').find(f => f.key === key);
-  const diagnostic = byKey('REGISTRATION_FAILURE_DIAGNOSTICS_ENABLED');
-  const diagnosticLimits = ['REGISTRATION_FAILURE_DIAGNOSTICS_RESOURCE_LIMIT', 'REGISTRATION_FAILURE_DIAGNOSTICS_TEXT_MAX_KB'].map(byKey).filter(Boolean);
-  const runtime = ['REGISTRATION_DEBUG_HOLD_TIMEOUT_SECONDS', 'REGISTRATION_DEBUG_MAX_HELD_SESSIONS'].map(byKey).filter(Boolean);
-  const storage = ['REGISTRATION_DEBUG_BODY_MAX_KB', 'REGISTRATION_DEBUG_BODY_BUDGET_MB', 'REGISTRATION_DEBUG_GLOBAL_BUDGET_MB', 'REGISTRATION_DEBUG_RETENTION_DAYS', 'REGISTRATION_DEBUG_QUEUE_SIZE'].map(byKey).filter(Boolean);
-  const renderInputs = group => group.length ? `<div class="config-section-v2-body">${group.map(renderConfigPlainFieldV2).join('')}</div>` : '';
-  return `
-    <section class="config-section-v2" id="cfg-registration-account" data-config-section="${CONFIG_LIFECYCLE_GROUP_V2}">
-      ${renderConfigSectionHead('注册调试', '普通失败诊断和调试任务运行参数；调试模式本身仍在注册任务面板中按批次开启。')}
-      ${renderLifecycleSubtabs('注册调试')}
-      <div class="config-lifecycle-toggle-grid-v2">${diagnostic ? renderFeatureSwitchField(diagnostic, { withIcon: false }) : ''}</div>
-      ${diagnosticLimits.length ? `<details class="config-lifecycle-advanced-block-v2" open><summary>失败诊断上限</summary>${renderInputs(diagnosticLimits)}</details>` : ''}
-      ${runtime.length ? `<details class="config-lifecycle-advanced-block-v2" open><summary>调试现场运行</summary>${renderInputs(runtime)}</details>` : ''}
-      ${storage.length ? `<details class="config-lifecycle-advanced-block-v2"><summary>抓包存储与清理</summary>${renderInputs(storage)}</details>` : ''}
-      <div class="config-lifecycle-note-v2">“调试模式”是单个注册批次的现场保留开关；本页只控制失败诊断、保留时长和抓包预算，不会默认暂停所有任务。</div>
-      ${renderConfigSaveActions()}
-    </section>
-  `;
-}
-
-function renderRegistrationAccountSectionV2(fields) {
-  const active = Object.prototype.hasOwnProperty.call(CONFIG_LIFECYCLE_SECTION_KEYS_V2, CONFIG_LIFECYCLE_ACTIVE_SECTION_V2)
-    ? CONFIG_LIFECYCLE_ACTIVE_SECTION_V2 : '执行方式';
-  CONFIG_LIFECYCLE_ACTIVE_SECTION_V2 = active;
-  if (active === '注册主链路') return renderLifecycleRegistrationSection(fields);
-  if (active === '账号补全') return renderLifecycleCompletionSection(fields);
-  if (active === '注册调试') return renderLifecycleDebugSection(fields);
-  return renderLifecycleExecutionSection(fields);
 }
 
 function registrationTwofaDriverChoices() {
@@ -796,7 +617,7 @@ function liveCheckDriverChoices() {
   const choices = [
     { value: 'protocol_current', label: '现有协议（保持现状）' },
   ];
-  const rawEnabled = lifecycleFieldValue('ACCOUNT_LIVE_CHECK_BROWSER_ENABLED', false);
+  const rawEnabled = configFieldValueV2('ACCOUNT_LIVE_CHECK_BROWSER_ENABLED', false);
   const enabled = rawEnabled === true || ['1', 'true', 'yes', 'on'].includes(String(rawEnabled).trim().toLowerCase());
   if (enabled) choices.push({ value: 'browser_roxy', label: 'Roxy 浏览器（旧 AT probe）' });
   return choices;
@@ -813,38 +634,6 @@ function authProfileModeChoices() {
     { value: 'account_stable', label: '账号稳定 Protocol 画像（懒创建）' },
   ];
 }
-function renderTwofaDriverControl(f) {
-  const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
-  const current = String(fv == null ? 'protocol' : fv).trim().toLowerCase() || 'protocol';
-  return `
-    <div class="config-twofa-driver-v2">
-      <div class="config-twofa-driver-v2-label-wrap">
-        <div class="config-twofa-driver-v2-label">${esc(f.label)}</div>
-        <code class="config-field-key-v2">${esc(f.key)}</code>
-      </div>
-      <select data-key="${attrEsc(f.key)}" aria-label="${attrEsc(f.label)}">
-        ${registrationTwofaDriverChoices().map(item => `<option value="${attrEsc(item.value)}"${current === item.value ? ' selected' : ''}>${esc(item.label)}</option>`).join('')}
-      </select>
-      <p class="config-twofa-driver-v2-help">${esc(f.help || '')}</p>
-    </div>
-  `;
-}
-function renderCodexOauthDriverControl(f) {
-  const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
-  const current = String(fv == null ? 'protocol' : fv).trim().toLowerCase() || 'protocol';
-  return `
-    <div class="config-twofa-driver-v2">
-      <div class="config-twofa-driver-v2-label-wrap">
-        <div class="config-twofa-driver-v2-label">${esc(f.label)}</div>
-        <code class="config-field-key-v2">${esc(f.key)}</code>
-      </div>
-      <select data-key="${attrEsc(f.key)}" aria-label="${attrEsc(f.label)}">
-        ${codexOauthDriverChoices().map(item => `<option value="${attrEsc(item.value)}"${current === item.value ? ' selected' : ''}>${esc(item.label)}</option>`).join('')}
-      </select>
-      <p class="config-twofa-driver-v2-help">${esc(f.help || '')}</p>
-    </div>
-  `;
-}
 function configDriverChoices(f) {
   if (f.key === 'ACCOUNT_PASSWORD_DRIVER') {
     return [{ value: 'roxy', label: 'RoxyBrowser（当前唯一实现）' }];
@@ -857,10 +646,11 @@ function configDriverChoices(f) {
   if (f.key === 'ACCOUNT_AUTH_PROFILE_MODE') return authProfileModeChoices();
   if (f.key === 'TWOFA_DRIVER') return registrationTwofaDriverChoices();
   if (f.key === 'ACCOUNT_2FA_DRIVER') return accountTwofaDriverChoices();
+  if (f.key === 'CODEX_OAUTH_DRIVER') return codexOauthDriverChoices();
   if (f.key === 'ACCOUNT_CODEX_DRIVER') return codexOauthDriverChoices();
   return null;
 }
-function renderConfigPlainFieldV2(f) {
+function renderConfigControlMarkupV2(f) {
   const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
   let control = '';
   const driverChoices = configDriverChoices(f);
@@ -871,7 +661,9 @@ function renderConfigPlainFieldV2(f) {
       options.unshift({ value: current, label: `当前配置（${current}）` });
     }
     const disabled = options.length === 1 ? ' disabled' : '';
-    control = `<select data-key="${attrEsc(f.key)}"${disabled}>${options.map(item => `<option value="${attrEsc(item.value)}"${current === item.value ? ' selected' : ''}>${esc(item.label)}</option>`).join('')}</select>`;
+    const syncKeys = f.key === 'CODEX_OAUTH_DRIVER' ? ['ACCOUNT_CODEX_DRIVER'] : [];
+    const syncAttr = syncKeys.length ? ` data-sync-keys="${attrEsc(syncKeys.join(','))}"` : '';
+    control = `<select data-key="${attrEsc(f.key)}"${syncAttr}${disabled}>${options.map(item => `<option value="${attrEsc(item.value)}"${current === item.value ? ' selected' : ''}>${esc(item.label)}</option>`).join('')}</select>`;
   } else if (f.key === 'REGISTRATION_AUTH_MODE') {
     const options = [['otp','不设置密码（邮箱验证码）'],['password','设置账号密码']];
     control = `<select data-key="${attrEsc(f.key)}">${options.map(([v,l]) => `<option value="${v}"${String(fv)===v?' selected':''}>${l}</option>`).join('')}</select>`;
@@ -896,6 +688,8 @@ function renderConfigPlainFieldV2(f) {
     control = `<input type="number" data-key="${attrEsc(f.key)}" value="${attrEsc(fv == null ? '' : fv)}">`;
   } else if (f.type === 'float') {
     control = `<input type="number" step="0.1" data-key="${attrEsc(f.key)}" value="${attrEsc(fv == null ? '' : fv)}">`;
+  } else if (f.type === 'bool') {
+    control = `<input class="config-switch-v2-toggle config-setting-toggle-v2" type="checkbox" role="switch" data-key="${attrEsc(f.key)}"${fv ? ' checked' : ''} aria-label="${attrEsc(f.label)}">`;
   } else if (f.type === 'list_str_multiline') {
     control = `<textarea data-key="${attrEsc(f.key)}" placeholder="每行一条，可留空">${attrEsc((fv || []).join('\n'))}</textarea>`;
   } else {
@@ -904,6 +698,26 @@ function renderConfigPlainFieldV2(f) {
     const ph = f.secret ? '保存在 .env，可留空' : '可留空';
     control = `<input type="${inputType}" data-key="${attrEsc(f.key)}" value="${attrEsc(shown)}" placeholder="${ph}" autocomplete="off" spellcheck="false">`;
   }
+  return control;
+}
+function renderConfigSettingRowV2(f, controlMarkup = null, options = {}) {
+  const control = controlMarkup || (f.key === 'REGISTRATION_DRIVER'
+    ? `<div class="config-ep-select" id="configRegistrationSelectV2"></div>`
+    : renderConfigControlMarkupV2(f));
+  const extraClass = options.extraClass ? ` ${options.extraClass}` : '';
+  const displayKey = options.displayKey || f.key;
+  return `
+    <div class="config-setting-row-v2${extraClass}" data-config-setting="${attrEsc(displayKey)}">
+      <div class="config-setting-copy-v2">
+        <div class="config-setting-label-v2">${esc(f.label)}</div>
+        <code class="config-field-key-v2">${esc(displayKey)}</code>
+        <p class="config-setting-help-v2">${esc(options.help || f.help || '')}</p>
+      </div>
+      <div class="config-setting-control-v2">${control}</div>
+    </div>
+  `;
+}
+function renderConfigPlainFieldV2(f) {
   return `
     <label class="fld config-field-v2">
       <span class="config-field-v2-head">
@@ -911,7 +725,7 @@ function renderConfigPlainFieldV2(f) {
         <code class="config-field-key-v2">${esc(f.key)}</code>
       </span>
       <span class="hint">${esc(f.help || '')}</span>
-      ${control}
+      ${renderConfigControlMarkupV2(f)}
     </label>
   `;
 }
@@ -989,44 +803,12 @@ function codexOauthDriverChoices() {
     { value: 'same_as_registration', label: '跟随注册驱动' },
   ];
 }
-function getCodexOauthDriverValue() {
-  const f = (CONFIG || []).find(x => x.key === 'CODEX_OAUTH_DRIVER');
-  if (!f) return 'protocol';
-  const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
-  return String(fv == null ? 'protocol' : fv).trim().toLowerCase() || 'protocol';
-}
 function codexOauthDriverLabel(value) {
   const cur = String(value || '').trim().toLowerCase();
   const hit = codexOauthDriverChoices().find(c => String(c.value) === cur);
   return hit ? String(hit.label || hit.value) : (cur || '—');
 }
-function setCodexOauthDriverValue(value) {
-  const cur = String(value || 'protocol').trim().toLowerCase() || 'protocol';
-  setPendingConfigValue('CODEX_OAUTH_DRIVER', cur);
-  closeConfigEpSelects();
-  renderConfigLayoutV2();
-}
-function renderCodexOauthDriverField() {
-  const cur = getCodexOauthDriverValue();
-  const label = codexOauthDriverLabel(cur);
-  const wrapId = 'configCodexOauthSelectV2';
-  const items = codexOauthDriverChoices().map(c => `
-    <button type="button" class="config-ep-select-item${c.value === cur ? ' is-active' : ''}" role="option" data-codex-oauth-value="${attrEsc(c.value)}">${esc(c.label)}</button>
-  `).join('');
-  return `
-    <label class="fld config-select-v2-field">
-      Codex 授权驱动
-      <span class="hint">选择 Codex 授权所用的自动化方式</span>
-      <div class="config-ep-select" id="${wrapId}">
-        <button type="button" class="config-ep-select-btn" data-ep-toggle="${wrapId}">${esc(label)}</button>
-        <div class="config-ep-select-menu" role="listbox">${items}</div>
-        <input type="hidden" data-key="CODEX_OAUTH_DRIVER" value="${attrEsc(cur)}">
-      </div>
-    </label>
-  `;
-}
 function renderCodexFieldV2(f) {
-  if (f.key === 'CODEX_OAUTH_DRIVER') return renderCodexOauthDriverField();
   if (f.type === 'bool') return renderFeatureSwitchField(f, { withIcon: false });
   return renderConfigPlainFieldV2(f);
 }
@@ -1304,58 +1086,15 @@ function renderCodexSectionV2(fields) {
 
 function renderConfigSectionV2(name, fields) {
   const slug = configGroupSlug(name);
+  if (name === '注册主链路') return renderRegistrationMainSectionV2(fields);
+  if (name === '账号补全') return renderAccountCompletionSectionV2(fields);
+  if (name === '注册调试') return renderRegistrationDebugSectionV2(fields);
   if (name === '网站配置') {
     return `
       <section class="config-section-v2" id="${esc(slug)}" data-config-section="${esc(name)}">
         ${renderConfigSectionHead(name, configSectionIntro(name))}
         <div class="config-section-v2-body">
           ${fields.map(renderConfigPlainFieldV2).join('')}
-        </div>
-        ${renderConfigSaveActions()}
-      </section>
-    `;
-  }
-  if (name === CONFIG_LIFECYCLE_GROUP_V2) {
-    return renderRegistrationAccountSectionV2(fields);
-  }
-  if (name === '注册主链路') {
-    const preferred = [
-      'REGISTRATION_DRIVER',
-      'REGISTRATION_AUTH_MODE',
-      'REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS',
-      'REGISTRATION_PLAN_CHECK_ENABLED',
-      'ENABLE_2FA',
-      'TWOFA_DRIVER',
-      'ENABLE_CODEX_AUTO',
-      'CODEX_OAUTH_DRIVER',
-      'ENABLE_FLOW_TRIGGER',
-    ];
-    const ordered = preferred
-      .map(k => fields.find(f => f.key === k))
-      .filter(Boolean)
-      .concat(fields.filter(f => !preferred.includes(f.key)));
-    const twofaDriver = ordered.find(f => f.key === 'TWOFA_DRIVER');
-    const codexDriver = ordered.find(f => f.key === 'CODEX_OAUTH_DRIVER');
-    const registrationDriver = ordered.find(f => f.key === 'REGISTRATION_DRIVER');
-    const switches = ordered.filter(f => f.type === 'bool');
-    const otherFields = ordered.filter(f => (
-      f.type !== 'bool' &&
-      !['REGISTRATION_DRIVER', 'TWOFA_DRIVER', 'CODEX_OAUTH_DRIVER'].includes(f.key)
-    ));
-    return `
-      <section class="config-section-v2" id="${esc(slug)}" data-config-section="${esc(name)}">
-        ${renderConfigSectionHead(name, configSectionIntro(name))}
-        <div class="config-section-v2-body">
-          ${registrationDriver ? renderRegistrationDriverField(registrationDriver) : '<div class="banner warn">未找到注册主流程驱动配置项</div>'}
-          ${otherFields.map(renderConfigPlainFieldV2).join('')}
-        </div>
-        <div class="config-switches-v2">
-          ${switches.map(f => renderFeatureSwitchField(f, {
-            withIcon: true,
-            extraHtml: f.key === 'ENABLE_2FA' && twofaDriver
-              ? renderTwofaDriverControl(twofaDriver)
-              : (f.key === 'ENABLE_CODEX_AUTO' && codexDriver ? renderCodexOauthDriverControl(codexDriver) : ''),
-          })).join('')}
         </div>
         ${renderConfigSaveActions()}
       </section>
@@ -1412,9 +1151,9 @@ function renderConfigLayoutV2() {
   const sections = document.getElementById('configSectionsV2');
   if (!nav || !sections) return;
   const groups = configGroups();
-  const names = Object.keys(groups);
-  const lifecycleIndex = names.indexOf(CONFIG_LIFECYCLE_GROUP_V2);
-  if (lifecycleIndex > 0) names.unshift(names.splice(lifecycleIndex, 1)[0]);
+  const preferredNames = ['通用配置', '注册主链路', '账号补全', '注册调试'];
+  const names = preferredNames.filter(name => groups[name])
+    .concat(Object.keys(groups).filter(name => !preferredNames.includes(name)));
   if (!names.length) {
     nav.innerHTML = '<div class="muted" style="padding:8px 12px;font-size:13px;">暂无分组</div>';
     sections.innerHTML = '';
@@ -1424,10 +1163,8 @@ function renderConfigLayoutV2() {
     return;
   }
   const savedGroup = localStorage.getItem('gpt_console_config_group');
-  if (!CONFIG_ACTIVE_GROUP_V2 && CONFIG_LIFECYCLE_SOURCE_GROUPS_V2.has(savedGroup)) {
-    CONFIG_ACTIVE_GROUP_V2 = CONFIG_LIFECYCLE_GROUP_V2;
-    CONFIG_LIFECYCLE_ACTIVE_SECTION_V2 = savedGroup;
-  }
+  if (CONFIG_LEGACY_LIFECYCLE_GROUPS_V2.has(CONFIG_ACTIVE_GROUP_V2)) CONFIG_ACTIVE_GROUP_V2 = '注册主链路';
+  if (!CONFIG_ACTIVE_GROUP_V2 && CONFIG_LEGACY_LIFECYCLE_GROUPS_V2.has(savedGroup)) CONFIG_ACTIVE_GROUP_V2 = '注册主链路';
   if (!CONFIG_ACTIVE_GROUP_V2 && savedGroup && names.includes(savedGroup)) CONFIG_ACTIVE_GROUP_V2 = savedGroup;
   if (!CONFIG_ACTIVE_GROUP_V2 || !names.includes(CONFIG_ACTIVE_GROUP_V2)) CONFIG_ACTIVE_GROUP_V2 = names[0];
   nav.innerHTML = renderConfigNavV2(names, groups);
@@ -1528,13 +1265,6 @@ function bindConfigLayoutV2() {
         renderConfigLayoutV2();
         return;
       }
-      const lifecycleTab = e.target.closest('[data-lifecycle-section-v2]');
-      if (lifecycleTab) {
-        e.preventDefault();
-        CONFIG_LIFECYCLE_ACTIVE_SECTION_V2 = lifecycleTab.dataset.lifecycleSectionV2;
-        renderConfigLayoutV2();
-        return;
-      }
       const toggle = e.target.closest('[data-ep-toggle]');
       if (toggle) {
         toggleConfigEpSelect(toggle.dataset.epToggle, e);
@@ -1545,13 +1275,6 @@ function bindConfigLayoutV2() {
         e.preventDefault();
         e.stopPropagation();
         setRegistrationDriverValue(item.dataset.driverValue);
-        return;
-      }
-      const oauthItem = e.target.closest('[data-codex-oauth-value]');
-      if (oauthItem) {
-        e.preventDefault();
-        e.stopPropagation();
-        setCodexOauthDriverValue(oauthItem.dataset.codexOauthValue);
         return;
       }
     });
