@@ -485,11 +485,11 @@ class ProtocolV2LivenessTests(unittest.TestCase):
 
     def test_refresh_enqueue_freezes_protocol_v2_driver_for_worker(self):
         from config import account as account_config
+        from config import openai_protocol as openai_protocol_config
         from core import live_check_service
 
         with (
-            patch.object(account_config, "ACCOUNT_TOKEN_REFRESH_DRIVER", "protocol_v2"),
-            patch.object(account_config, "ACCOUNT_AUTH_V2_ENABLED", True),
+            patch.object(openai_protocol_config, "OPENAI_PROTOCOL_VERSION", "v2"),
             patch.object(
                 live_check_service.db,
                 "get_account",
@@ -515,6 +515,7 @@ class ProtocolV2LivenessTests(unittest.TestCase):
 
         self.assertTrue(result["accepted"])
         self.assertEqual("protocol_v2", result["token_refresh_driver"])
+        self.assertEqual("v2", result["protocol_version"])
         self.assertEqual("protocol_v2", submit.call_args.kwargs["refresh_driver"])
         live_check_service._QUEUE_SLOTS.release()
 

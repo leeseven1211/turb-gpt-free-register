@@ -713,15 +713,14 @@ WebUI「账号 → 任务实例」统一保存以下账号操作：
 ACCOUNT_LIVE_CHECK_DRIVER=protocol_current
 ```
 
-当前默认仍只启用 `protocol_current`。Roxy 浏览器旧 AT probe 已完成独立 adapter、契约测试和真实样本验证，但仍由 `ACCOUNT_LIVE_CHECK_BROWSER_ENABLED=False` 灰度开关保护；需要本地明确开启后才能把 `ACCOUNT_LIVE_CHECK_DRIVER` 切为 `browser_roxy`。上游没有独立的 GitHub `protocol_v2` 普通 AT probe，因此它不会出现在普通查活选项中。普通查活无论使用哪种已开放驱动，都不会登录、发送 OTP 或刷新 AT。该配置不影响 `ACCOUNT_PLAN_CHECK_DRIVER`（账号补全套餐步骤），也不影响刷新 AT 的现有路径。
+当前默认仍只启用 `protocol_current`。Roxy 浏览器旧 AT probe 已完成独立 adapter、契约测试和真实样本验证，但仍由 `ACCOUNT_LIVE_CHECK_BROWSER_ENABLED=False` 灰度开关保护；需要本地明确开启后才能把 `ACCOUNT_LIVE_CHECK_DRIVER` 切为 `browser_roxy`。当前没有独立的 v2 协议普通 AT probe，因此它不会出现在普通查活选项中。普通查活无论使用哪种已开放驱动，都不会登录、发送 OTP 或刷新 AT。该配置不影响 `ACCOUNT_PLAN_CHECK_DRIVER`（账号补全套餐步骤），也不影响刷新 AT 的协议版本选择。
 
 账号列表的“查活”请求会把当前配置驱动显式传给后端，后端在领代理/创建 Roxy Profile 前校验；任务结果同时保留 configured/effective driver。也可以在测试账号上通过批量接口的 `driver` 字段做单次 override，该 override 不会写回全局配置。
 
-显式“刷新 AT”新增了独立的灰度选择，默认不改变现有流程：
+协议步骤统一使用一个版本配置。只有同时实现 v1/v2 的步骤才读取它；单版本步骤会忽略该配置并使用自己的唯一实现。当前能力矩阵是：刷新 AT 支持 v1/v2，注册协议、协议 2FA、套餐查询、普通查活和 Codex 协议授权均只有 v1。默认 v1，保持现有刷新流程：
 
 ```dotenv
-ACCOUNT_TOKEN_REFRESH_DRIVER=legacy
-ACCOUNT_AUTH_V2_ENABLED=False
+OPENAI_PROTOCOL_VERSION=v1
 ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK=False
 ACCOUNT_AUTH_PROFILE_MODE=current
 ACCOUNT_AUTH_RAW_CONTEXT_ENABLED=False
@@ -729,10 +728,10 @@ ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS=30
 LIVE_CHECK_ROXY_FALLBACK_ENABLED=True
 ```
 
-`legacy` 保持现有协议邮箱 OTP → Roxy 兜底；只有把 `ACCOUNT_TOKEN_REFRESH_DRIVER` 设为 `protocol_v2` 且打开 `ACCOUNT_AUTH_V2_ENABLED`，才会尝试保存的 OpenAI 账号密码，并按远端响应进入直接回调、TOTP MFA 或邮箱验证码。账号没有保存密码时不会伪造密码提交，而是沿用旧邮箱认证；密码页/返回结果无法识别时会停止并记录明确失败，不盲点按钮。密码明确错误默认不发送邮箱验证码；打开 `ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK` 后最多另起一次会话走邮箱 OTP，结果仍保留“密码被拒绝”，不会重复提交密码。普通查活不会触达这条认证链。
-`ACCOUNT_AUTH_PROFILE_MODE=current` 保持现有每个会话随机设备画像；只有明确改为 `account_stable` 且实际使用 Protocol v2 刷新时，才按账号懒创建私有稳定 Protocol identity。它不修改注册时的 `device_id`，不影响普通查活、旧刷新或浏览器兜底；画像的原始 profile key 不进入账号 JSON、导出和普通 API。
-`ACCOUNT_AUTH_RAW_CONTEXT_ENABLED` 默认关闭；开启后才会为 Protocol v2 的实际认证 session 按白名单保存受限 run context，包含原始 device/session 标识和当次代理上下文，不会作为后续任务的代理或会话来源。默认保留 30 天，`ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS=0` 关闭自动清理；这些原始值不进入普通账号 API、任务事件和导出。
-`LIVE_CHECK_ROXY_FALLBACK_ENABLED` 只控制 legacy 刷新 AT 失败后的既有 Roxy 登录兜底，不影响普通查活；普通查活是否使用浏览器由 `ACCOUNT_LIVE_CHECK_BROWSER_ENABLED` 与 `ACCOUNT_LIVE_CHECK_DRIVER` 独立控制。
+设置为 `OPENAI_PROTOCOL_VERSION=v1` 时刷新 AT 使用现有协议邮箱 OTP → Roxy 兜底；设置为 `v2` 时，刷新 AT 才尝试保存的 OpenAI 账号密码，并按远端响应进入直接回调、TOTP MFA 或邮箱验证码。账号没有保存密码时不会伪造密码提交，而是沿用邮箱认证；密码页/返回结果无法识别时会停止并记录明确失败，不盲点按钮。密码明确错误默认不发送邮箱验证码；打开 `ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK` 后最多另起一次会话走邮箱 OTP，结果仍保留“密码被拒绝”，不会重复提交密码。普通查活不会触达这条认证链。
+`ACCOUNT_AUTH_PROFILE_MODE=current` 保持现有每个会话随机设备画像；只有实际使用 v2 协议刷新且明确改为 `account_stable` 时，才按账号懒创建私有稳定 Protocol identity。它不修改注册时的 `device_id`，不影响普通查活、v1 协议刷新或浏览器兜底；画像的原始 profile key 不进入账号 JSON、导出和普通 API。
+`ACCOUNT_AUTH_RAW_CONTEXT_ENABLED` 默认关闭；开启后才会为 v2 协议的实际认证 session 按白名单保存受限 run context，包含原始 device/session 标识和当次代理上下文，不会作为后续任务的代理或会话来源。默认保留 30 天，`ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS=0` 关闭自动清理；这些原始值不进入普通账号 API、任务事件和导出。
+`LIVE_CHECK_ROXY_FALLBACK_ENABLED` 只控制 v1 协议刷新 AT 失败后的既有 Roxy 登录兜底，不影响普通查活；普通查活是否使用浏览器由 `ACCOUNT_LIVE_CHECK_BROWSER_ENABLED` 与 `ACCOUNT_LIVE_CHECK_DRIVER` 独立控制。历史 `.env` 中的 `ACCOUNT_TOKEN_REFRESH_DRIVER` 和 `ACCOUNT_AUTH_V2_ENABLED` 仍可被兼容读取，但不再是新配置项，也不在 WebUI 展示。
 
 已有账号单独执行“补 2FA”时，`ACCOUNT_2FA_DRIVER` 独立于注册 `TWOFA_DRIVER`：
 

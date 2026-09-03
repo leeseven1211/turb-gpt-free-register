@@ -84,28 +84,44 @@ def _roxy_fallback_enabled() -> bool:
 
 
 def _resolve_refresh_driver(requested: str | None = None) -> str:
-    """Resolve and freeze the explicit AT-refresh implementation for one task.
-
-    ``legacy`` is the compatibility route: current Protocol email/re-auth OTP,
-    followed by the existing Roxy fallback.  Protocol v2 is deliberately behind
-    both an explicit selection and a global kill switch.
-    """
+    """Resolve and freeze the explicit AT-refresh implementation for one task."""
     from config import account as account_config
+    from core.protocol_version import resolve_protocol_version
 
-    value = str(
-        requested
-        if requested is not None
-        else getattr(account_config, "ACCOUNT_TOKEN_REFRESH_DRIVER", "legacy")
-    ).strip().lower()
-    if value in {"current", "protocol", "protocol_current", "legacy", ""}:
-        return "legacy"
-    if value == "protocol_v2" and bool(getattr(account_config, "ACCOUNT_AUTH_V2_ENABLED", False)):
-        return "protocol_v2"
-    if value == "protocol_v2":
-        logger.warning("[查活] ACCOUNT_AUTH_V2_ENABLED 未开启，刷新 AT 回落旧实现")
-        return "legacy"
-    logger.warning("[查活] 不支持的刷新 AT 驱动 %r，回落旧实现", value)
-    return "legacy"
+    value = None if requested is None else str(requested or "").strip().lower()
+    legacy_v2_alias = value == "protocol_v2"
+    if value is None:
+        try:
+            version = resolve_protocol_version("refresh_at")
+        except ValueError as exc:
+            logger.warning("[查活] 协议版本配置无效，刷新 AT 回落 v1：%s", exc)
+            version = "v1"
+    elif value in {"v1", "1"}:
+        version = "v1"
+    elif value in {"v2", "2"}:
+        version = "v2"
+    elif value in {"current", "protocol", "protocol_current", "legacy", ""}:
+        version = "v1"
+    elif legacy_v2_alias:
+        version = "v2"
+    else:
+        logger.warning("[查活] 不支持的刷新 AT 版本/驱动 %r，回落 v1", value)
+        version = "v1"
+
+    # Only the old literal driver name keeps the old kill-switch semantics.
+    # The new OPENAI_PROTOCOL_VERSION=v2 is the explicit replacement and must
+    # not be silently disabled by a stale compatibility flag.
+    if legacy_v2_alias and not bool(getattr(account_config, "ACCOUNT_AUTH_V2_ENABLED", False)):
+        logger.warning("[查活] 旧配置 protocol_v2 未开启兼容开关，刷新 AT 回落 v1")
+        version = "v1"
+    return "protocol_v2" if resolve_protocol_version("refresh_at", requested=version) == "v2" else "legacy"
+
+
+def _refresh_protocol_version(refresh_driver: str | None) -> str | None:
+    """Expose the stable public version for a legacy internal driver value."""
+    if refresh_driver is None:
+        return None
+    return "v2" if str(refresh_driver).strip().lower() == "protocol_v2" else "v1"
 
 
 def _resolve_protocol_identity(account_id: int, refresh_driver: str | None):
@@ -242,8 +258,11 @@ def _run_live_check(
         if selected_refresh_driver:
             reporter.note(
                 stage="login_password",
-                message=f"刷新 AT 驱动：{selected_refresh_driver}",
-                detail={"token_refresh_driver": selected_refresh_driver},
+                message=f"刷新 AT 协议版本：{_refresh_protocol_version(selected_refresh_driver)}",
+                detail={
+                    "protocol_version": _refresh_protocol_version(selected_refresh_driver),
+                    "token_refresh_driver": selected_refresh_driver,
+                },
             )
         from core.account_proxy import acquire_account_proxy
 
@@ -545,6 +564,7 @@ def _run_live_check(
                 )
         if selected_refresh_driver:
             result.setdefault("token_refresh_driver", selected_refresh_driver)
+            result.setdefault("protocol_version", _refresh_protocol_version(selected_refresh_driver))
         result.update({
             "proxy_provider": route.get("proxy_provider"),
             "proxy_region": route.get("proxy_region"),
@@ -585,6 +605,7 @@ def _run_live_check(
                 "plan": (result.get("session") or {}).get("account", {}).get("planType"),
                 "live_check_driver": result.get("live_check_driver"),
                 "token_refresh_driver": selected_refresh_driver,
+                "protocol_version": _refresh_protocol_version(selected_refresh_driver),
                 "auth_method": result.get("auth_method"),
                 "password_auth_status": result.get("password_auth_status"),
                 "fallback_used": result.get("fallback_used"),
@@ -740,6 +761,7 @@ def enqueue_account_live_check(
         response["live_check_driver"] = effective_live_check_driver
     if force_refresh:
         response["token_refresh_driver"] = effective_refresh_driver
+        response["protocol_version"] = _refresh_protocol_version(effective_refresh_driver)
     return response
 
 

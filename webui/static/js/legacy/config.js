@@ -13,6 +13,7 @@ function configGroups() {
 
 function configDriverChoices(f) {
   if (f.key === 'REGISTRATION_DRIVER') return [['protocol', '纯协议注册'], ['roxy', 'RoxyBrowser']];
+  if (f.key === 'OPENAI_PROTOCOL_VERSION') return [['v1', '协议 v1（现有稳定实现）'], ['v2', '协议 v2（已支持的步骤）']];
   if (f.key === 'REGISTRATION_AUTH_MODE') return [['otp', '不设置密码（邮箱验证码）'], ['password', '设置账号密码']];
   if (f.key === 'ACCOUNT_PASSWORD_DRIVER') return [['roxy', 'RoxyBrowser（当前唯一实现）']];
   if (f.key === 'ACCOUNT_PLAN_CHECK_DRIVER') return [['protocol', '纯协议（当前唯一实现）']];
@@ -23,10 +24,6 @@ function configDriverChoices(f) {
     if (enabled) choices.push(['browser_roxy', 'Roxy 浏览器（已开放灰度）']);
     return choices;
   }
-  if (f.key === 'ACCOUNT_TOKEN_REFRESH_DRIVER') return [
-    ['legacy', '现有刷新链路（保持现状）'],
-    ['protocol_v2', 'Protocol v2 密码/MFA（需开启总开关）'],
-  ];
   if (f.key === 'ACCOUNT_AUTH_PROFILE_MODE') return [
     ['current', '当前会话画像（保持现状）'],
     ['account_stable', '账号稳定 Protocol 画像（懒创建）'],

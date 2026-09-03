@@ -4,6 +4,21 @@
 **范围：** Roxy 注册/登录主链、Protocol 协作适配、账号查活、刷新 AT、补密码、补 Authenticator 2FA。
 **结论：** Roxy 是稳定的浏览器主流程；Protocol 只处理能够明确判定的协议阶段。两者共享认证结果、挑战链和恢复边界，但不会在远端结果未知时自动重新注册。
 
+## 0. 协议版本选择
+
+全局配置只有一个：`OPENAI_PROTOCOL_VERSION=v1|v2`，默认 `v1`。它不是新的执行驱动，也不影响 Roxy。只有某个协议步骤同时具备 v1/v2 实现时才读取该配置；单版本步骤忽略全局配置并直接使用唯一实现。
+
+| 步骤 | 当前支持版本 | 是否读取 `OPENAI_PROTOCOL_VERSION` | 有效实现 |
+|---|---|---:|---|
+| 注册协议 | v1 | 否 | v1 |
+| 协议 2FA | v1 | 否 | v1 |
+| 套餐查询 | v1 | 否 | v1 |
+| 普通查活 | v1 | 否 | v1 |
+| 刷新 AT | v1、v2 | 是 | 按全局配置选择 |
+| Codex 协议授权 | v1 | 否 | v1 |
+
+历史 `.env` 的 `ACCOUNT_TOKEN_REFRESH_DRIVER`、`ACCOUNT_AUTH_V2_ENABLED` 只在兼容边界读取，不再作为新配置项或 WebUI 选项。内部仍可能保留 `legacy`、`protocol_v2` 等实现标签，但对外结果同时提供稳定的 `protocol_version` 字段。
+
 ## 1. 统一结果
 
 所有已接入的认证操作都可以在结果中读取 `auth`，只包含以下非敏感字段：
@@ -12,7 +27,8 @@
 |---|---|
 | `status` | `authenticated`、`password_rejected`、`request_unknown` 等稳定状态 |
 | `code` | 稳定错误码，例如 `mfa_secret_missing`、`remote_existing` |
-| `auth_method` | `roxy`、`protocol`、`protocol_v2`、`email_otp`、`access_token` 等 |
+| `auth_method` | `roxy`、`protocol`、`email_otp`、`access_token` 等实际认证方式 |
+| `protocol_version` | 使用协议时的公开版本；单版本步骤为 `v1`，刷新 AT 为实际选择的 `v1`/`v2` |
 | `challenge_chain` | 已完成的挑战，例如 `password → email_otp → totp` |
 | `remote_identity` | `new_candidate`、`existing`、`unknown` |
 | `retryable` | 是否允许安全重试 |
@@ -26,7 +42,7 @@ Token、密码、OTP、TOTP Secret、Cookie、callback URL、原始响应和完�
 | 入口 | 当前定位 | 已支持 | 明确不做 |
 |---|---|---|---|
 | Roxy | 稳定主流程、页面状态权威来源、最终浏览器兜底 | 邮箱提交、创建密码、邮箱 OTP、TOTP、资料页、登录态、Token、注册后账号配置 | 不把已有账号当新账号重复创建 |
-| Protocol | 可替换的协议阶段适配器 | 明确的邮箱 OTP、OAuth callback/session、Protocol v2 刷新 AT、协议 2FA | 不在未知页面继续 `create_account`，不因密码错误自动换线重试 |
+| Protocol | 可替换的协议阶段适配器 | 明确的邮箱 OTP、OAuth callback/session、v1/v2 刷新 AT、协议 2FA | 不在未知页面继续 `create_account`，不因密码错误自动换线重试 |
 | Service/Dispatcher | 选择驱动、保存 checkpoint、决定是否重试 | 保留已有账号/邮箱/任务状态，区分 `manual_reconcile` 与普通失败 | 不以本地数据库“没有账号记录”推断远端一定没有账号 |
 
 推荐配置是 `REGISTRATION_DRIVER=roxy`。2FA 的公开选择统一为 `auto`、`protocol`、`browser`：`auto` 是协议优先的自动上下文选择，`protocol` 强制协议执行器，`browser` 强制 Roxy 安全设置页。历史值 `protocol_direct` 仍兼容，但只作为 `auto` 的别名，不再作为独立决策。Protocol 不稳定或不支持时才允许按结果交回 Roxy。
@@ -84,10 +100,10 @@ Roxy 已覆盖“邮箱 OTP → TOTP”；这个判断优先读取最新 DOM 控
 
 | 本地状态 | 普通查活 | 刷新 AT | 补密码 | 补 2FA（`auto`） |
 |---|---|---|---|---|
-| 无密码、无 2FA | 只验证现有 AT，不登录 | 默认 legacy 邮箱 OTP；Protocol v2 无密码时回落既有邮箱认证 | 有有效登录态/AT 时可补，提交立即保存 | `existing_at` → 协议；无 AT/近期认证失败 → `protocol_reauth`；仍失败且开关开启 → Roxy |
-| 有密码、无 2FA | 只验证现有 AT，不登录 | Protocol v2 可密码登录；远端再要邮箱 OTP 就取 OTP | 跳过 | 单独补 2FA 仍优先协议；与密码同批时 Roxy 登录取新 AT，再协议开通 |
+| 无密码、无 2FA | 只验证现有 AT，不登录 | v1 走邮箱 OTP；v2 无密码时回落既有邮箱认证 | 有有效登录态/AT 时可补，提交立即保存 | `existing_at` → 协议；无 AT/近期认证失败 → `protocol_reauth`；仍失败且开关开启 → Roxy |
+| 有密码、无 2FA | 只验证现有 AT，不登录 | v2 可密码登录；远端再要邮箱 OTP 就取 OTP | 跳过 | 单独补 2FA 仍优先协议；与密码同批时 Roxy 登录取新 AT，再协议开通 |
 | 无密码、有 2FA | 只验证现有 AT，不登录 | 不伪造密码，走邮箱认证；若后续要求 TOTP，由 Roxy/公共状态机使用已有 Secret | 有有效登录态/AT 时可补 | 已有有效 Secret 跳过；pending 状态继续完成，不重复注册 |
-| 有密码、有 2FA | 只验证现有 AT，不登录 | Protocol v2 可走密码 → TOTP，或密码 → 邮箱 OTP → TOTP | 跳过 | 跳过；仅 pending/失败状态重试 |
+| 有密码、有 2FA | 只验证现有 AT，不登录 | v2 可走密码 → TOTP，或密码 → 邮箱 OTP → TOTP | 跳过 | 跳过；仅 pending/失败状态重试 |
 
 ### 4.1 普通查活
 
@@ -101,9 +117,9 @@ Roxy 已覆盖“邮箱 OTP → TOTP”；这个判断优先读取最新 DOM 控
 
 | 分支 | 结果 |
 |---|---|
-| legacy（默认） | 沿用现有邮箱 OTP 刷新；失败且满足条件时可进入 Roxy 浏览器兜底 |
-| Protocol v2 + 有密码 | 密码验证成功后可能直接 callback、邮箱 OTP 或 TOTP；按实际响应继续 |
-| Protocol v2 + 无密码 | 不发送伪造密码，回落现有邮箱认证路径 |
+| v1（默认） | 沿用现有邮箱 OTP 刷新；失败且满足条件时可进入 Roxy 浏览器兜底 |
+| v2 + 有密码 | 密码验证成功后可能直接 callback、邮箱 OTP 或 TOTP；按实际响应继续 |
+| v2 + 无密码 | 不发送伪造密码，回落现有邮箱认证路径 |
 | 密码明确错误 | `password_rejected`，默认停止，不自动重复提交，也不自动 Roxy 兜底 |
 | 密码提交结果未知 | `password_result_unknown`，不改写成密码错误，不重复提交 |
 | 明确要求 TOTP但没有 Secret | `mfa_secret_missing`，停止并提示先补 2FA |
@@ -175,12 +191,12 @@ Roxy 已覆盖“邮箱 OTP → TOTP”；这个判断优先读取最新 DOM 控
 2. 邮箱 OTP → TOTP 不重复发邮箱验证码；
 3. 本地无记录但远端已有账号、未知页面禁止新注册；
 4. 有密码/无密码 × 有 2FA/无 2FA 的账号补全规划；
-5. Protocol v2 的直接 callback、邮箱 OTP、邮箱 OTP → TOTP、密码错误、结果未知、缺 TOTP；
+5. v2 协议的直接 callback、邮箱 OTP、邮箱 OTP → TOTP、密码错误、结果未知、缺 TOTP；
 6. 密码 checkpoint、2FA Secret checkpoint、串行补全和后置失败不回滚。
 
 ## 7. 当前边界与后续优化方向
 
-本次自动选择改造的单元测试使用脱敏 fake session/driver，不会访问真实账号、邮箱池或生产 PostgreSQL；尚未宣称真实外部 E2E 全部通过，原因是 OpenAI 页面、风控、邮箱延迟和 Protocol 响应会变化。当前代码级支持边界已经明确：Roxy 是浏览器主线和最终兜底，Protocol 是 2FA 的协议执行器，`protocol_reauth`/`browser_session` 只是认证上下文来源；显式刷新 AT 仍由 `legacy`/`protocol_v2` 独立控制。
+本次自动选择改造的单元测试使用脱敏 fake session/driver，不会访问真实账号、邮箱池或生产 PostgreSQL；尚未宣称真实外部 E2E 全部通过，原因是 OpenAI 页面、风控、邮箱延迟和 Protocol 响应会变化。当前代码级支持边界已经明确：Roxy 是浏览器主线和最终兜底，Protocol 是 2FA 的协议执行器，`protocol_reauth`/`browser_session` 只是认证上下文来源；刷新 AT 统一由 `OPENAI_PROTOCOL_VERSION` 选择 v1/v2，其他单版本步骤不受它影响。
 
 后续优化按优先级：
 
@@ -188,5 +204,5 @@ Roxy 已覆盖“邮箱 OTP → TOTP”；这个判断优先读取最新 DOM 控
 2. 为每个页面分类保存脱敏 DOM fixture，Provider 变化时先更新适配器和契约测试；
 3. 把 `remote_identity`、`challenge_chain`、`next_action` 在任务详情页做成结构化展示，减少只看自然语言错误；
 4. 为密码错误、TOTP 错误、结果未知分别增加人工恢复入口，避免所有失败都依赖重新点击；
-5. Protocol v2 稳定后再扩大灰度，不改变 Roxy 主流程和可回退开关；
+5. v2 协议稳定后再扩大灰度，不改变 Roxy 主流程和可回退开关；
 6. 完成一次真实小样本验收后，再决定是否允许批量启用新的 Protocol 阶段。

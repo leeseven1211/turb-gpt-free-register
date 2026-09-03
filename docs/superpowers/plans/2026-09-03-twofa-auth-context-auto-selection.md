@@ -199,7 +199,7 @@ git commit -m "fix: auto select account twofa auth context"
 - Registration snapshots store normalized mode (`auto`, `protocol`, or `browser`) instead of leaking the legacy direct alias.
 - Roxy registration treats `auto` as protocol-first with its existing browser fallback; explicit `browser` remains UI-only.
 - Protocol/Browser Use registration accept `auto` as their existing supported protocol behavior and continue to reject unsupported explicit browser behavior where no browser adapter exists.
-- Explicit AT refresh keeps its existing `legacy`/`protocol_v2` driver contract; 2FA auto selection may use protocol reauthentication as a context source without silently changing the independent refresh task configuration.
+- Explicit AT refresh uses the unified `OPENAI_PROTOCOL_VERSION` selector; 2FA auto selection may use protocol reauthentication as a context source without silently changing the independent refresh task's protocol-version choice.
 
 - [ ] **Step 1: Add failing registration and refresh contract tests**
 

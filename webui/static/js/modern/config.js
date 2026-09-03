@@ -11,12 +11,11 @@ const CONFIG_LIFECYCLE_SOURCE_GROUPS_V2 = new Set(['注册主链路', '账号补
 const CONFIG_LIFECYCLE_SECTION_KEYS_V2 = {
   '执行方式': [
     'REGISTRATION_DRIVER',
+    'OPENAI_PROTOCOL_VERSION',
     'ACCOUNT_PASSWORD_DRIVER',
     'ACCOUNT_PLAN_CHECK_DRIVER',
     'ACCOUNT_LIVE_CHECK_DRIVER',
     'ACCOUNT_LIVE_CHECK_BROWSER_ENABLED',
-    'ACCOUNT_TOKEN_REFRESH_DRIVER',
-    'ACCOUNT_AUTH_V2_ENABLED',
     'ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK',
     'ACCOUNT_AUTH_PROFILE_MODE',
     'ACCOUNT_AUTH_RAW_CONTEXT_ENABLED',
@@ -540,6 +539,11 @@ function renderLifecycleExecutionSection(fields) {
       'REGISTRATION_DRIVER', '注册主流程', '选择注册主链路使用浏览器还是协议。当前支持纯协议注册和 RoxyBrowser。', registrationDriverChoices()
     ));
   }
+  if (has('OPENAI_PROTOCOL_VERSION')) {
+    cards.push(renderLifecycleDriverSelect(
+      'OPENAI_PROTOCOL_VERSION', '协议版本', '仅对同时支持 v1/v2 的协议步骤生效；当前刷新 AT 可按此选择，其他单版本步骤自动使用唯一实现。', protocolVersionChoices()
+    ));
+  }
   if (has('ACCOUNT_PASSWORD_DRIVER')) {
     cards.push(renderLifecycleFixedDriver('密码补全', 'RoxyBrowser', '密码补全当前依赖登录页面，只保留已实现的浏览器执行方式。'));
   }
@@ -560,20 +564,12 @@ function renderLifecycleExecutionSection(fields) {
   if (has('LIVE_CHECK_ROXY_FALLBACK_ENABLED')) {
     cards.push(renderFeatureSwitchField(has('LIVE_CHECK_ROXY_FALLBACK_ENABLED'), { withIcon: false }));
   }
-  if (has('ACCOUNT_TOKEN_REFRESH_DRIVER')) {
-    cards.push(renderLifecycleDriverSelect(
-      'ACCOUNT_TOKEN_REFRESH_DRIVER', '刷新 AT', '默认保持现有刷新链路；Protocol v2 仅在明确选择且总开关开启时使用，失败是否进入现有 Roxy 兜底仍按原规则。', refreshDriverChoices()
-    ));
-  }
-  if (has('ACCOUNT_AUTH_V2_ENABLED')) {
-    cards.push(renderFeatureSwitchField(has('ACCOUNT_AUTH_V2_ENABLED'), { withIcon: false }));
-  }
   if (has('ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK')) {
     cards.push(renderFeatureSwitchField(has('ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK'), { withIcon: false }));
   }
   if (has('ACCOUNT_AUTH_PROFILE_MODE')) {
     cards.push(renderLifecycleDriverSelect(
-      'ACCOUNT_AUTH_PROFILE_MODE', 'Protocol 设备画像', '默认保持现状，每次会话随机画像；account_stable 只对明确开启的 Protocol v2 刷新懒创建账号级画像，不影响注册 device_id、普通查活或旧刷新。', authProfileModeChoices()
+      'ACCOUNT_AUTH_PROFILE_MODE', 'Protocol 设备画像', '默认保持现状，每次会话随机画像；account_stable 只对实际使用 v2 协议刷新懒创建账号级画像，不影响注册 device_id、普通查活或 v1 刷新。', authProfileModeChoices()
     ));
   }
   if (has('ACCOUNT_AUTH_RAW_CONTEXT_ENABLED')) {
@@ -605,7 +601,7 @@ function renderLifecycleExecutionSection(fields) {
   }
   return `
     <section class="config-section-v2" id="cfg-registration-account" data-config-section="${CONFIG_LIFECYCLE_GROUP_V2}">
-      ${renderConfigSectionHead('执行方式', '浏览器和现有稳定链路保持可用；Protocol v2 仅作为显式灰度选项。')}
+      ${renderConfigSectionHead('执行方式', '浏览器和现有稳定链路保持可用；协议版本只对具备多个版本实现的步骤生效。')}
       ${renderLifecycleSubtabs('执行方式')}
       <div class="config-lifecycle-note-v2">这里仅配置“怎么执行”。是否在注册主链路或账号补全中执行，请分别到对应小菜单打开开关。</div>
       <div class="config-lifecycle-driver-grid-v2">${cards.join('')}</div>
@@ -706,10 +702,10 @@ function liveCheckDriverChoices() {
   if (enabled) choices.push({ value: 'browser_roxy', label: 'Roxy 浏览器（旧 AT probe）' });
   return choices;
 }
-function refreshDriverChoices() {
+function protocolVersionChoices() {
   return [
-    { value: 'legacy', label: '现有刷新链路（保持现状）' },
-    { value: 'protocol_v2', label: 'Protocol v2 密码 / MFA（需开启总开关）' },
+    { value: 'v1', label: '协议 v1（现有稳定实现）' },
+    { value: 'v2', label: '协议 v2（已支持的步骤）' },
   ];
 }
 function authProfileModeChoices() {
@@ -752,7 +748,7 @@ function configDriverChoices(f) {
     return [{ value: 'protocol', label: '纯协议（当前唯一实现）' }];
   }
   if (f.key === 'ACCOUNT_LIVE_CHECK_DRIVER') return liveCheckDriverChoices();
-  if (f.key === 'ACCOUNT_TOKEN_REFRESH_DRIVER') return refreshDriverChoices();
+  if (f.key === 'OPENAI_PROTOCOL_VERSION') return protocolVersionChoices();
   if (f.key === 'ACCOUNT_AUTH_PROFILE_MODE') return authProfileModeChoices();
   if (f.key === 'TWOFA_DRIVER') return registrationTwofaDriverChoices();
   if (f.key === 'ACCOUNT_2FA_DRIVER') return accountTwofaDriverChoices();

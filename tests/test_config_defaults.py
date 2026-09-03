@@ -8,6 +8,7 @@ from config import codex as codex_config
 from config import register as register_config
 from config import twofa as twofa_config
 from config import account as account_config
+from config import openai_protocol as openai_protocol_config
 from config import proxy as proxy_config
 from config import env_loader
 from core import account_export
@@ -115,6 +116,25 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             env_loader._LOADED = old_loaded
             importlib.reload(twofa_config)
 
+    def test_protocol_version_is_webui_editable_and_env_driven(self):
+        fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
+        self.assertIn("OPENAI_PROTOCOL_VERSION", fields)
+        self.assertEqual("注册主链路", fields["OPENAI_PROTOCOL_VERSION"]["group"])
+        self.assertEqual("str", fields["OPENAI_PROTOCOL_VERSION"]["type"])
+        self.assertNotIn("ACCOUNT_TOKEN_REFRESH_DRIVER", fields)
+        self.assertNotIn("ACCOUNT_AUTH_V2_ENABLED", fields)
+        self.assertEqual("v1", openai_protocol_config.OPENAI_PROTOCOL_VERSION)
+
+        old_loaded = env_loader._LOADED
+        env_loader._LOADED = True
+        try:
+            with patch.dict(os.environ, {"OPENAI_PROTOCOL_VERSION": "v2"}, clear=False):
+                reloaded = importlib.reload(openai_protocol_config)
+                self.assertEqual("v2", reloaded.OPENAI_PROTOCOL_VERSION)
+        finally:
+            env_loader._LOADED = old_loaded
+            importlib.reload(openai_protocol_config)
+
     def test_config_api_projects_legacy_twofa_mode_as_auto(self):
         with patch("config.env_loader.load_env"), patch(
             "config.env_loader.read_env_file",
@@ -136,6 +156,7 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             "TWOFA_DRIVER",
             "ENABLE_FLOW_TRIGGER",
             "CODEX_OAUTH_DRIVER",
+            "OPENAI_PROTOCOL_VERSION",
         }
         self.assertTrue(registration_keys.issubset(fields))
         self.assertTrue(all(fields[key]["group"] == "注册主链路" for key in registration_keys))
@@ -152,8 +173,6 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         self.assertTrue(completion_keys.issubset(fields))
         self.assertTrue(all(fields[key]["group"] == "账号补全" for key in completion_keys))
         auth_keys = {
-            "ACCOUNT_TOKEN_REFRESH_DRIVER",
-            "ACCOUNT_AUTH_V2_ENABLED",
             "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK",
             "ACCOUNT_AUTH_PROFILE_MODE",
             "ACCOUNT_AUTH_RAW_CONTEXT_ENABLED",

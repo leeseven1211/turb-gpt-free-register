@@ -2,8 +2,10 @@
 
 > 本文是本次改造唯一的实施顺序和放行依据。两份完整设计文档只作为技术背景；如果表述冲突，以本清单为准。
 
+> 当前公开配置和支持边界以 [`registration-auth-support-matrix.md`](registration-auth-support-matrix.md) 为准。本文中阶段记录里的 `protocol_v2`、`ACCOUNT_TOKEN_REFRESH_DRIVER` 和 `ACCOUNT_AUTH_V2_ENABLED` 是历史实现名称；新任务使用统一的 `OPENAI_PROTOCOL_VERSION`。
+
 - 基线：`main@d038f2a`
-- 当前状态：开发阶段已全部完成并通过隔离回归；阶段 3 经上游核对确认没有独立的普通 AT probe，按“不冒充实现”关闭为不适用。普通查活的 `protocol_current` 与 `browser_roxy` 均可配置，浏览器 probe 仍默认关闭；Protocol v2 只用于显式“刷新 AT”认证，密码、TOTP、邮箱 challenge、错误密码和浏览器兜底边界均已实现，旧链路仍是默认。稳定 Protocol identity、受限 raw context、安全指纹摘要、清理调度、日志脱敏、私有读取审计和注册账号邮箱来源恢复均已完成；raw context 的 HTTP 原始值读取及加密存储不开放，因此原始上下文默认仍关闭。剩余的是本地环境的放量门禁，不是未完成的业务代码
+- 当前状态：开发阶段已全部完成并通过隔离回归；阶段 3 经上游核对确认没有独立的普通 AT probe，按“不冒充实现”关闭为不适用。普通查活的 `protocol_current` 与 `browser_roxy` 均可配置，浏览器 probe 仍默认关闭；v2 协议只用于显式“刷新 AT”认证，密码、TOTP、邮箱 challenge、错误密码和浏览器兜底边界均已实现，默认由统一 `OPENAI_PROTOCOL_VERSION=v1` 保持旧链路。稳定 Protocol identity、受限 raw context、安全指纹摘要、清理调度、日志脱敏、私有读取审计和注册账号邮箱来源恢复均已完成；raw context 的 HTTP 原始值读取及加密存储不开放，因此原始上下文默认仍关闭。剩余的是本地环境的放量门禁，不是未完成的业务代码
 - 总原则：现有能力先冻结，新能力只做平行增量；每一阶段独立验证、独立放行、独立回退
 
 ### 本轮执行记录（2026-09-02）
@@ -19,7 +21,7 @@
 - 另有 4 次 Roxy 创建/浏览器层瞬时失败，分别落在 Profile/浏览器执行/页面导航错误分类；这属于本机 Roxy 服务的运行稳定性门禁，不能通过代码测试消除，因此不放开浏览器默认路径，但不影响显式配置和失败收口。
 - 独立库端到端任务已验证：有效 AT 查活任务成功完成并写回 `live`；失效 AT 任务完成为 `failed`，结果摘要记录 HTTP 401 和 `error_category=auth`；两类任务均记录 `browser_roxy`。
 - 上游核对未发现独立的 `protocol_v2` 普通 AT probe；因此没有把密码/MFA 认证链冒充成普通查活，阶段 3 已按“不冒充实现”关闭为不适用。
-- 本轮新增刷新 AT 专用 `protocol_v2`：密码直达 callback、密码+TOTP MFA、邮箱 challenge、密码错误分类、未知响应分类和可选一次邮箱兜底均有独立状态机/单测；默认配置仍为 `legacy`，普通查活不触达。
+- 本轮新增刷新 AT 专用 v2 协议：密码直达 callback、密码+TOTP MFA、邮箱 challenge、密码错误分类、未知响应分类和可选一次邮箱兜底均有独立状态机/单测；默认配置仍为 `OPENAI_PROTOCOL_VERSION=v1`，普通查活不触达。
 - 真实测试：在一个已有密码、TOTP 和 AT 的本地测试账号上执行一次真实 Protocol v2，结果为 `password_mfa_totp`、`authenticated_session`、`live`；未启用邮箱兜底，未写回数据库。
 - 真实错误密码测试：同一测试账号返回 `HTTP 401`，响应结构化错误码为 `invalid_username_or_password`；已分类为 `password_rejected` / `auth`，不会进入 Roxy、不会自动重试密码、默认不会发邮箱 OTP。
 - 本次最终复核的 Protocol v2 正确密码路径按账号功能正式申请 1024Proxy JP 租约，返回 `password_mfa_totp`、`authenticated_session`、`live`，`fallback_used=False`，租约已释放；错误密码复核返回 `password_rejected` / `auth`，`fallback_used=False`、`roxy_fallback_allowed=False`，没有重复提交或发送邮箱。
@@ -28,7 +30,7 @@
 - 本轮顺手为 `forward_imap` 增加 `ICLOUD_HME_REQUEST_TIMEOUT` socket 超时，避免收件链路卡死；对应单测已补齐。
 - 针对上游 `fd7766f` / `369d8eb` 的取码修复已按当前 PostgreSQL 架构最小移植：已注册账号优先使用落库的 `email_source`，Outlook 邮箱池记录被清理后可从已注册账号快照恢复；来源不一致时不会误读 Outlook 池。
 - 上一轮隔离 schema 全量回归为 `673 passed, 24 subtests passed`；加入稳定 identity 后为 `682 passed, 24 subtests passed`；加入受限 raw context 存储边界后为 `686 passed, 24 subtests passed`；本阶段安全指纹摘要定向验证为 `48 passed`，协议专项为 `19 passed`，日志脱敏后为 `694 passed, 24 subtests passed`，审计读取原语后为 `697 passed, 24 subtests passed`，本轮接入普通查活/Roxy/套餐查询的可选上下文记录后为 `700 passed, 24 subtests passed`；最后在隔离数据库 `turb_live_check_test` 的临时 `test_*` schema 上复核仍为 `700 passed, 24 subtests passed`。另修复一个独立的 `registration_debug` 终端上下文覆盖问题，该修复只在数据库缺少新 evidence 时保留会话内已有 evidence，不改变注册行为。
-- 阶段 8 第一小步：新增私有 `account_protocol_identities` 表、账号行锁保护的幂等创建、版本化 HMAC 派生和 `ACCOUNT_AUTH_PROFILE_MODE` 配置；只有 `account_stable + protocol_v2` 刷新才会懒创建并把同一身份传给每个 Protocol 会话。`current` 默认完全不建表行、不改变现有随机画像；稳定画像不保存 geo/locale/timezone、session/trace、Sentinel 或 Roxy 标识。Protocol v2 成功认证另写入白名单安全指纹摘要，账号行和任务结果不接收原始设备/session/代理凭据。
+- 阶段 8 第一小步：新增私有 `account_protocol_identities` 表、账号行锁保护的幂等创建、版本化 HMAC 派生和 `ACCOUNT_AUTH_PROFILE_MODE` 配置；只有 `account_stable + v2` 刷新才会懒创建并把同一身份传给每个 Protocol 会话。`current` 默认完全不建表行、不改变现有随机画像；稳定画像不保存 geo/locale/timezone、session/trace、Sentinel 或 Roxy 标识。v2 成功认证另写入白名单安全指纹摘要，账号行和任务结果不接收原始设备/session/代理凭据。
 - 稳定画像单测验证同一 key 的 device/profile 稳定、不同会话的 session/sentinel ID 仍变化、并发 ensure 只生成一行；受限 run context 已完成白名单、保留期、编号锁、收口、过期清理、审计读取，以及 Protocol v2、`protocol_current`、Roxy 普通查活和套餐查询的可选记录接入测试；真实 Roxy 稳定性门禁仍单独保留。
 
 相关背景：
@@ -54,7 +56,7 @@
 ### 1.2 用户目标
 
 - 注册、密码、TOTP、2FA 等认证主路径仍以现有浏览器能力为基础。
-- 普通查活允许用户明确选择现有协议或 Roxy 浏览器 probe；GitHub `protocol_v2` 只用于显式刷新 AT 认证，不作为普通查活驱动。
+- 普通查活允许用户明确选择现有协议或 Roxy 浏览器 probe；v2 协议只用于显式刷新 AT 认证，不作为普通查活驱动。
 - GitHub 新协议能力用于提速和补充，不自动取代当前稳定能力。
 - 浏览器能力永久保留；Protocol 被选择时，只有符合安全条件才允许启动一次完整浏览器 fallback。
 
@@ -268,15 +270,14 @@ ACCOUNT_LIVE_CHECK_DRIVER=browser_roxy      # 浏览器旧 AT probe
 
 ### 配置
 
-实际使用的配置是现有刷新 AT 驱动：
+实际使用的配置是统一协议版本选择：
 
 ```dotenv
-ACCOUNT_TOKEN_REFRESH_DRIVER=legacy|protocol_v2
-ACCOUNT_AUTH_V2_ENABLED=False|True
+OPENAI_PROTOCOL_VERSION=v1|v2
 ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK=False|True
 ```
 
-默认 `legacy` + `ACCOUNT_AUTH_V2_ENABLED=False`。密码登录和密码创建/补设是两件事；前者只在显式刷新 AT 的 Protocol v2 状态机中使用，后者仍由 `ACCOUNT_PASSWORD_DRIVER=roxy` 负责。
+默认 `OPENAI_PROTOCOL_VERSION=v1`。只有刷新 AT 这个当前具备 v1/v2 两种实现的步骤读取版本配置；密码登录和密码创建/补设是两件事，前者在刷新 AT 选择 v2 时使用 v2 状态机，后者仍由 `ACCOUNT_PASSWORD_DRIVER=roxy` 负责。
 
 ### 实施项
 
@@ -301,7 +302,7 @@ ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK=False|True
 ### 退出条件
 
 - [x] 默认浏览器路径网络序列和结果无变化。
-- [x] 新协议只对显式选择 `protocol_v2` 且开启总开关的刷新任务可达。
+- [x] v2 协议只在 `OPENAI_PROTOCOL_VERSION=v2` 的刷新任务中可达；历史刷新驱动/总开关只作兼容读取。
 - [x] 错误密码、未知结果和远端页面变化不会触发循环或重复提交。
 
 ## 9. 阶段 6：TOTP 与邮箱 OTP challenge
@@ -310,11 +311,10 @@ ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK=False|True
 
 ### 配置
 
-TOTP 和邮箱 OTP 是 Protocol v2 密码认证的子状态，不另外增加未接入执行器的配置键：
+TOTP 和邮箱 OTP 是 v2 协议密码认证的子状态，不另外增加未接入执行器的配置键：
 
 ```dotenv
-ACCOUNT_TOKEN_REFRESH_DRIVER=protocol_v2
-ACCOUNT_AUTH_V2_ENABLED=True
+OPENAI_PROTOCOL_VERSION=v2
 ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK=False
 ```
 
@@ -425,11 +425,11 @@ ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED=True|False
 
 ## 14. 当前下一步
 
-本轮已完成刷新 AT 专用 Protocol v2 的密码/MFA 适配、稳定 Protocol identity、受限 run context、安全指纹摘要、日志/读取审计、邮箱来源恢复，以及普通查活三条已存在路径的可选 context 接入；没有把认证 Protocol v2 冒充成普通查活，也没有改变默认配置。后续运行只需按以下已完成的开关说明操作，不再修改代码：
+本轮已完成刷新 AT 专用 v2 协议的密码/MFA 适配、稳定 Protocol identity、受限 run context、安全指纹摘要、日志/读取审计、邮箱来源恢复，以及普通查活三条已存在路径的可选 context 接入；没有把认证 v2 协议冒充成普通查活，也没有改变默认配置。后续运行只需按以下已完成的开关说明操作，不再修改代码：
 
-1. [x] 保持现有系统：`ACCOUNT_LIVE_CHECK_DRIVER=protocol_current`、`ACCOUNT_LIVE_CHECK_BROWSER_ENABLED=False`、`ACCOUNT_TOKEN_REFRESH_DRIVER=legacy`、`ACCOUNT_AUTH_V2_ENABLED=False`。
+1. [x] 保持现有系统：`ACCOUNT_LIVE_CHECK_DRIVER=protocol_current`、`ACCOUNT_LIVE_CHECK_BROWSER_ENABLED=False`、`OPENAI_PROTOCOL_VERSION=v1`。
 2. [x] 显式试用 Roxy 普通查活：先将 `ACCOUNT_AUTH_RAW_CONTEXT_ENABLED` 保持关闭，再设置 `ACCOUNT_LIVE_CHECK_BROWSER_ENABLED=True` 和 `ACCOUNT_LIVE_CHECK_DRIVER=browser_roxy`；失败只收口为浏览器查活失败，不会登录、发 OTP 或刷新 AT。
-3. [x] 显式试用 Protocol v2 刷新 AT：设置 `ACCOUNT_TOKEN_REFRESH_DRIVER=protocol_v2` 与 `ACCOUNT_AUTH_V2_ENABLED=True`；账号没有密码时自动沿用旧邮箱认证，有密码时按密码→TOTP/邮箱 challenge 处理。
+3. [x] 显式试用 v2 协议刷新 AT：设置 `OPENAI_PROTOCOL_VERSION=v2`；账号没有密码时自动沿用旧邮箱认证，有密码时按密码→TOTP/邮箱 challenge 处理。
 4. [x] 密码错误后的邮箱兜底仍默认关闭；只有使用可牺牲测试账号且确认接收链路正常时，才设置 `ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK=True`，最多新开一次邮箱会话，不重试错误密码。
-5. [x] 阶段 3 已关闭为不适用：上游没有独立普通查活 `protocol_v2` 接口，不能配置到 `ACCOUNT_LIVE_CHECK_DRIVER`。
+5. [x] 阶段 3 已关闭为不适用：上游没有独立普通查活 v2 协议接口，不能配置到 `ACCOUNT_LIVE_CHECK_DRIVER`。
 6. [x] 稳定设备画像、raw context、任务结果摘要和老实现均保留；恢复旧行为只需切回上述默认值，不需要数据回滚。
