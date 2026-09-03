@@ -604,6 +604,25 @@ class AccountTaskApiTests(PostgresTestCase):
         self.assertIn("尚未开放", response.get_json()["error"])
         get_account.assert_not_called()
 
+    def test_live_check_bulk_rejects_configured_driver_when_gate_is_closed(self):
+        app = create_app(auth_code="test-auth")
+        client = app.test_client()
+        client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
+        with (
+            patch("core.feature_availability.require_feature", return_value=(True, "")),
+            patch.object(webui_app.db, "get_account") as get_account,
+            patch("config.account.ACCOUNT_LIVE_CHECK_DRIVER", "browser_roxy"),
+            patch("config.account.ACCOUNT_LIVE_CHECK_BROWSER_ENABLED", False),
+        ):
+            response = client.post(
+                "/api/accounts/check-live-bulk",
+                json={"account_ids": [7]},
+            )
+
+        self.assertEqual(400, response.status_code)
+        self.assertIn("ACCOUNT_LIVE_CHECK_BROWSER_ENABLED", response.get_json()["error"])
+        get_account.assert_not_called()
+
     def test_list_api_returns_task_instances(self):
         app = create_app(auth_code="test-auth")
         client = app.test_client()

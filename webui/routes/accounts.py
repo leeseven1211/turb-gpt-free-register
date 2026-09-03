@@ -599,11 +599,10 @@ def create_accounts_blueprint(context: WebUIContext):
         if requested_driver is not None and not isinstance(requested_driver, str):
             return jsonify({"ok": False, "error": "driver 必须是字符串"}), 400
         requested_driver = str(requested_driver or "").strip().lower() or None
-        if requested_driver is not None:
-            try:
-                live_check_service.resolve_driver(requested_driver)
-            except LiveCheckDriverError as exc:
-                return jsonify({"ok": False, "error": str(exc)}), 400
+        try:
+            effective_driver = live_check_service.resolve_driver(requested_driver)
+        except LiveCheckDriverError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
         ids = data.get("account_ids") or data.get("ids") or []
         if not isinstance(ids, list) or not ids:
             return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
@@ -659,7 +658,7 @@ def create_accounts_blueprint(context: WebUIContext):
                 proxy=None,
                 batch_id=batch_id,
                 force_refresh=False,
-                driver=requested_driver,
+                driver=effective_driver,
             )
             if queued.get("accepted"):
                 started.append({"id": acc_id, "email": email, "status": "queued"})
@@ -680,7 +679,7 @@ def create_accounts_blueprint(context: WebUIContext):
             "skipped": skipped,
             "queue": live_check_service.queue_settings(),
             "batch_id": batch_id,
-            "live_check_driver": requested_driver or live_check_service.resolve_driver(),
+            "live_check_driver": effective_driver,
         }), 202
 
     @bp.post("/api/accounts/refresh-token-bulk")
