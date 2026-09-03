@@ -13,10 +13,12 @@ FOUNDATION_CSS = (ROOT / "webui/static/css/ui-foundation.css").read_text(encodin
 
 
 class ModernConfigUiContractTests(unittest.TestCase):
-    def test_config_workspace_has_page_context_and_global_save_bar(self):
+    def test_config_workspace_keeps_global_save_bar_without_redundant_page_header(self):
         self.assertIn('class="config-workspace-v2"', TEMPLATE)
-        self.assertIn('id="configPageTitleV2"', TEMPLATE)
-        self.assertIn('id="configPageDescriptionV2"', TEMPLATE)
+        self.assertNotIn('config-page-head-v2', TEMPLATE)
+        self.assertNotIn('config-page-kicker-v2', TEMPLATE)
+        self.assertNotIn('id="configPageTitleV2"', TEMPLATE)
+        self.assertNotIn('id="configPageDescriptionV2"', TEMPLATE)
         self.assertIn('id="configSaveBarV2"', TEMPLATE)
         self.assertIn('data-reset-config-v2', TEMPLATE)
 

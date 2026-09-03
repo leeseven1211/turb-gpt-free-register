@@ -76,12 +76,6 @@ function updateConfigSaveUi(mode = 'idle') {
     badge.textContent = count > 99 ? '99+' : String(count);
     badge.setAttribute('aria-label', `${count} 项配置更改未保存`);
   }
-  const summary = document.getElementById('configDirtySummaryV2');
-  if (summary) {
-    summary.hidden = count === 0;
-    const summaryCopy = summary.querySelector('[data-config-dirty-copy]');
-    if (summaryCopy) summaryCopy.textContent = count ? `${count} 项未保存` : '0 项未保存';
-  }
   const hint = document.querySelector('#configSaveBarV2 [data-config-save-hint]');
   if (hint) {
     hint.textContent = mode === 'saving'
@@ -1168,12 +1162,6 @@ function renderConfigLayoutV2() {
   if (!CONFIG_ACTIVE_GROUP_V2 && savedGroup && names.includes(savedGroup)) CONFIG_ACTIVE_GROUP_V2 = savedGroup;
   if (!CONFIG_ACTIVE_GROUP_V2 || !names.includes(CONFIG_ACTIVE_GROUP_V2)) CONFIG_ACTIVE_GROUP_V2 = names[0];
   nav.innerHTML = renderConfigNavV2(names, groups);
-  const pageTitle = document.getElementById('configPageTitleV2');
-  if (pageTitle) pageTitle.textContent = configGroupDisplayName(CONFIG_ACTIVE_GROUP_V2);
-  const pageDescription = document.getElementById('configPageDescriptionV2');
-  if (pageDescription) {
-    pageDescription.textContent = configSectionIntro(CONFIG_ACTIVE_GROUP_V2) || '查看并维护当前分组的运行时配置。';
-  }
   applyConfigNavFilter();
   sections.innerHTML = renderConfigSectionV2(CONFIG_ACTIVE_GROUP_V2, groups[CONFIG_ACTIVE_GROUP_V2] || []);
   renderRegistrationDriverCard();

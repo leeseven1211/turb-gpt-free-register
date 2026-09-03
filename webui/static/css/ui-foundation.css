@@ -1476,72 +1476,6 @@ table[data-resizable-table="codex"] {
   padding-bottom: 104px;
 }
 
-#tab-config .config-page-head-v2 {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--ui-space-6);
-  min-width: 0;
-  margin-bottom: var(--ui-space-5);
-}
-
-#tab-config .config-page-head-main-v2 {
-  min-width: 0;
-}
-
-#tab-config .config-page-kicker-v2 {
-  margin-bottom: 7px;
-  color: var(--ui-color-brand);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: .12em;
-  line-height: 1.2;
-  text-transform: uppercase;
-}
-
-#tab-config .config-page-head-v2 h2 {
-  margin: 0;
-  color: var(--ui-color-text);
-  font-size: clamp(24px, 3vw, 30px);
-  letter-spacing: -.03em;
-  line-height: 1.15;
-}
-
-#tab-config .config-page-head-v2 p {
-  max-width: 720px;
-  margin: 8px 0 0;
-  color: var(--ui-color-text-secondary);
-  font-size: var(--ui-font-size-sm);
-  line-height: 1.55;
-  overflow-wrap: anywhere;
-}
-
-#tab-config .config-dirty-summary-v2 {
-  display: inline-flex;
-  align-items: center;
-  flex: 0 0 auto;
-  gap: 8px;
-  min-height: 32px;
-  padding: 0 11px;
-  border: 1px solid var(--ui-color-warning-soft);
-  border-radius: var(--ui-radius-pill);
-  color: var(--ui-color-warning);
-  background: var(--ui-color-warning-soft);
-  font-size: var(--ui-font-size-xs);
-  font-weight: 750;
-}
-
-#tab-config .config-dirty-summary-v2[hidden] {
-  display: none;
-}
-
-#tab-config .config-dirty-summary-dot-v2 {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: currentColor;
-}
-
 #tab-config .config-layout-v2 {
   grid-template-columns: minmax(220px, 244px) minmax(0, 1fr);
   gap: var(--ui-space-5);
@@ -2069,10 +2003,6 @@ table[data-resizable-table="codex"] {
     padding-bottom: 124px;
   }
 
-  #tab-config .config-page-head-v2 {
-    gap: 12px;
-  }
-
   #tab-config .config-layout-v2 {
     grid-template-columns: minmax(0, 1fr);
     gap: 14px;
@@ -2141,15 +2071,6 @@ table[data-resizable-table="codex"] {
 }
 
 @media (max-width: 600px) {
-  #tab-config .config-page-head-v2 {
-    display: block;
-  }
-
-  #tab-config .config-dirty-summary-v2 {
-    width: max-content;
-    margin-top: 12px;
-  }
-
   #tab-config .config-cards-v2,
   #tab-config .config-section-v2-body,
   #tab-config .config-switches-v2 {
@@ -2337,10 +2258,6 @@ table[data-resizable-table="codex"] {
 }
 
 @media (max-width: 420px) {
-  #tab-config .config-page-head-v2 h2 {
-    font-size: 24px;
-  }
-
   #tab-config .config-field-v2-head {
     display: grid;
     gap: 4px;
