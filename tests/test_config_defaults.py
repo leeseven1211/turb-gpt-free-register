@@ -154,7 +154,7 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         self.assertEqual("current", account_config.ACCOUNT_AUTH_PROFILE_MODE)
         self.assertFalse(account_config.ACCOUNT_AUTH_RAW_CONTEXT_ENABLED)
         self.assertEqual(30, account_config.ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS)
-        self.assertEqual("protocol", account_config.ACCOUNT_2FA_DRIVER)
+        self.assertEqual("auto", account_config.ACCOUNT_2FA_DRIVER)
         self.assertTrue(account_config.ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED)
         self.assertTrue(account_config.ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED)
 

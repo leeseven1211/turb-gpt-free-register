@@ -5,6 +5,7 @@
 只决定账号管理里的“补全账号”要包含哪些缺失能力，避免把两条链路重新耦合。
 """
 from config.env_loader import apply_env_overrides
+from core.twofa_flow import normalize_twofa_mode
 
 
 # 补全账号默认只处理缺失项。刷新 AT 仍是独立的“操作”，默认不由补全隐式触发。
@@ -18,12 +19,12 @@ ACCOUNT_COMPLETION_REFRESH_AT_ENABLED = False
 # 服务校验；先保留为配置项，便于后续增加新的协议/浏览器实现。
 ACCOUNT_PASSWORD_DRIVER = "roxy"
 ACCOUNT_PLAN_CHECK_DRIVER = "protocol"
-ACCOUNT_2FA_DRIVER = "protocol"
-# 账号补全专用 2FA 兜底开关。protocol_direct 成功时不会打开 Roxy；只有
-# 协议明确失败且此开关开启时，才继续沿用现有浏览器安全设置流程。
+ACCOUNT_2FA_DRIVER = "auto"
+# 账号补全 2FA 默认自动选择：优先协议并按认证上下文获取 AT，协议明确失败
+# 且此开关开启时，才继续沿用现有浏览器安全设置流程。
 ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED = True
-# protocol_direct 遇到 MFA 401 时，是否先用协议完成邮箱重认证并换取新 AT。
-# 默认开启；关闭后保持“旧 AT 直开失败即按兜底开关处理”的旧行为。
+# Protocol 2FA 遇到 MFA 401 时，是否先用协议完成邮箱重认证并换取新 AT。
+# 默认开启；关闭后保持“旧 AT 直开失败即按兜底开关处理”的行为。
 ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED = True
 ACCOUNT_CODEX_DRIVER = "same_as_registration"
 
@@ -89,7 +90,7 @@ def completion_settings() -> dict[str, object]:
         "auth_profile_mode": str(ACCOUNT_AUTH_PROFILE_MODE or "current").strip().lower() or "current",
         "auth_raw_context_enabled": bool(ACCOUNT_AUTH_RAW_CONTEXT_ENABLED),
         "auth_raw_context_retention_days": int(ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS or 0),
-        "twofa_driver": str(ACCOUNT_2FA_DRIVER or "protocol").strip().lower() or "protocol",
+        "twofa_driver": normalize_twofa_mode(ACCOUNT_2FA_DRIVER),
         "twofa_browser_fallback_enabled": bool(ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED),
         "twofa_protocol_reauth_enabled": bool(ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED),
         "codex_driver": str(ACCOUNT_CODEX_DRIVER or "same_as_registration").strip().lower() or "same_as_registration",
