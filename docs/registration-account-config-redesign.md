@@ -73,7 +73,7 @@ execution_methods:
   registration: browser | protocol
   password_setup: browser
   plan_check: protocol
-  twofa_setup: browser | protocol
+  twofa_setup: auto | browser | protocol
   codex_oauth: follow_registration | browser | protocol
   token_refresh: protocol_with_browser_fallback
 ```
@@ -85,7 +85,7 @@ execution_methods:
 | 注册基础流程 | `REGISTRATION_DRIVER` | 直接沿用 |
 | 密码设置 | `ACCOUNT_PASSWORD_DRIVER` | 后端兼容保留，UI 只读 |
 | 套餐查询 | `ACCOUNT_PLAN_CHECK_DRIVER` | 后端兼容保留，UI 只读 |
-| 2FA 设置 | `TWOFA_DRIVER`、`ACCOUNT_2FA_DRIVER`、`ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED` | 注册与账号补全分开选择；账号补全可显式选择已有 AT 纯协议优先，并独立控制浏览器兜底 |
+| 2FA 设置 | `TWOFA_DRIVER`、`ACCOUNT_2FA_DRIVER`、`ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED`、`ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED` | 注册与账号补全分开选择；公开值为 auto/protocol/browser，自动模式按已有 AT、协议重认证、浏览器会话选择上下文，并独立控制浏览器兜底 |
 | Codex OAuth | `CODEX_OAUTH_DRIVER`、`ACCOUNT_CODEX_DRIVER` | 兼容期集中展示但不静默改值；新配置默认让补全跟随通用值 |
 | 刷新 AT | 当前固定策略 | 首版只展示，不新增无效选择 |
 
@@ -252,10 +252,11 @@ UI 不应继续靠字段名猜测如何渲染。配置 API 应逐步返回结构
   "capability": "twofa_setup",
   "control": "select",
   "choices": [
+    {"value": "auto", "label": "自动选择（协议优先）"},
     {"value": "protocol", "label": "协议"},
     {"value": "browser", "label": "浏览器（RoxyBrowser）"}
   ],
-  "requested_value": "protocol",
+  "requested_value": "auto",
   "effective_value": "protocol",
   "restart_required": false
 }

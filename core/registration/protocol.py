@@ -429,7 +429,7 @@ def run_protocol_registration(
         if twofa_enabled:
             report_job_progress("twofa", "running", "正在设置 Authenticator 2FA")
             try:
-                twofa_driver = _twofa_cfg.get_twofa_driver()
+                twofa_driver = _twofa_cfg.get_twofa_driver_for_options(options)
                 if twofa_driver != "protocol":
                     raise RuntimeError("协议注册驱动只支持 protocol 2FA；browser 模式请切换到 RoxyBrowser 注册")
                 totp_secret = setup_2fa_protocol(session, access_token)

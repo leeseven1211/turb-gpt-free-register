@@ -77,6 +77,10 @@ EDITABLE_FIELDS = [
         "label": "启用 Codex OAuth", "help": "注册成功后自动跑 Codex 授权（全新session+接码），落盘 codex-邮箱.json",
     },
     {
+        "key": "OPENAI_PROTOCOL_VERSION", "file": "openai_protocol.py", "type": "str", "group": "注册主链路",
+        "label": "协议版本", "help": "只对同时支持 v1/v2 的协议步骤生效；当前刷新 AT 支持按此选择，注册、2FA、套餐、普通查活等单版本步骤会自动使用唯一实现。",
+    },
+    {
         "key": "REGISTRATION_DRIVER", "file": "roxybrowser.py", "type": "str", "group": "注册主链路",
         "label": "注册主流程驱动", "help": "选择注册所用的自动化方式：roxy=浏览器主流程，protocol=协议辅助/回退；默认推荐 roxy",
     },
@@ -130,14 +134,6 @@ EDITABLE_FIELDS = [
         "label": "开放 Roxy 普通查活", "help": "灰度开关，默认关闭；开启后才允许将普通查活驱动设为 browser_roxy，且仍只验证已有 AT",
     },
     {
-        "key": "ACCOUNT_TOKEN_REFRESH_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
-        "label": "刷新 AT 驱动", "help": "legacy 保持现有协议邮箱 OTP→Roxy 兜底；protocol_v2 才尝试保存的账号密码/TOTP，需同时开启 Protocol v2 总开关",
-    },
-    {
-        "key": "ACCOUNT_AUTH_V2_ENABLED", "file": "account.py", "type": "bool", "group": "账号补全",
-        "label": "开启 Protocol v2", "help": "紧急总开关；关闭时即使刷新 AT 选择 protocol_v2，也会临时回到旧实现，不修改已保存的选择",
-    },
-    {
         "key": "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK", "file": "account.py", "type": "bool", "group": "账号补全",
         "label": "密码错误后邮箱兜底", "help": "默认关闭；开启后仅在新认证会话由远端明确进入邮箱验证码 challenge 时继续，不从密码页盲发 OTP；结果仍保留 password_rejected，不重试密码",
     },
@@ -159,15 +155,15 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "ACCOUNT_2FA_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
-        "label": "2FA 补全驱动", "help": "protocol=浏览器前置后协议开通；protocol_direct=已有 AT 先直接协议开通，失败再按兜底开关切浏览器；browser=直接浏览器",
+        "label": "2FA 补全驱动", "help": "auto=自动选择（优先复用有效 AT，需要时协议重认证；组合补密码时复用浏览器会话拿新 AT）；protocol=协议开通并按配置回退浏览器；browser=直接浏览器",
     },
     {
         "key": "ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED", "file": "account.py", "type": "bool", "group": "账号补全",
-        "label": "2FA 协议失败后浏览器兜底", "help": "仅用于账号补全；protocol_direct/protocol 失败后是否允许打开 Roxy 安全设置页面，默认开启",
+        "label": "2FA 协议失败后浏览器兜底", "help": "仅用于账号补全；auto/protocol 失败后是否允许打开 Roxy 安全设置页面，默认开启",
     },
     {
         "key": "ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED", "file": "account.py", "type": "bool", "group": "账号补全",
-        "label": "2FA 401 后协议重认证", "help": "仅用于 protocol_direct；旧 AT 被 MFA 接口要求近期认证时，先走协议邮箱 OTP 换新 AT，再继续开通；默认开启",
+        "label": "2FA 需要时协议重认证", "help": "仅用于 auto/protocol；没有可复用 AT 或旧 AT 被 MFA 接口要求近期认证时，先走协议邮箱 OTP 换新 AT，再继续开通；默认开启",
     },
     {
         "key": "ACCOUNT_CODEX_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
@@ -338,7 +334,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "TWOFA_DRIVER", "file": "twofa.py", "type": "str", "group": "注册主链路",
-        "label": "2FA 开通方式", "help": "protocol=优先用新鲜 AT，Roxy 中失败会自动回退浏览器 UI；browser=直接用 RoxyBrowser 安全设置页面",
+        "label": "2FA 开通方式", "help": "auto=自动选择（协议优先）；protocol=协议开通并按现有流程回退；browser=直接用 RoxyBrowser 安全设置页面",
     },
     {
         "key": "ENABLE_FLOW_TRIGGER", "file": "flow_trigger.py", "type": "bool", "group": "注册主链路",
@@ -1014,6 +1010,15 @@ def get_config() -> list[dict]:
 
         if field["type"] in ("str", "list_str_multiline"):
             value = _normalize_config_value(value, field["type"])
+        if key in {"TWOFA_DRIVER", "ACCOUNT_2FA_DRIVER"}:
+            # Keep old .env values readable while projecting the public
+            # choice shown by WebUI to the normalized automatic mode.
+            try:
+                from core.twofa_flow import normalize_twofa_mode
+
+                value = normalize_twofa_mode(value)
+            except (TypeError, ValueError):
+                pass
         item = dict(field)
         item["storage"] = "env"
         item["requires_restart"] = key in RESTART_REQUIRED_KEYS

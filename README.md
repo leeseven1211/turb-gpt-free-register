@@ -713,15 +713,14 @@ WebUI「账号 → 任务实例」统一保存以下账号操作：
 ACCOUNT_LIVE_CHECK_DRIVER=protocol_current
 ```
 
-当前默认仍只启用 `protocol_current`。Roxy 浏览器旧 AT probe 已完成独立 adapter、契约测试和真实样本验证，但仍由 `ACCOUNT_LIVE_CHECK_BROWSER_ENABLED=False` 灰度开关保护；需要本地明确开启后才能把 `ACCOUNT_LIVE_CHECK_DRIVER` 切为 `browser_roxy`。上游没有独立的 GitHub `protocol_v2` 普通 AT probe，因此它不会出现在普通查活选项中。普通查活无论使用哪种已开放驱动，都不会登录、发送 OTP 或刷新 AT。该配置不影响 `ACCOUNT_PLAN_CHECK_DRIVER`（账号补全套餐步骤），也不影响刷新 AT 的现有路径。
+当前默认仍只启用 `protocol_current`。Roxy 浏览器旧 AT probe 已完成独立 adapter、契约测试和真实样本验证，但仍由 `ACCOUNT_LIVE_CHECK_BROWSER_ENABLED=False` 灰度开关保护；需要本地明确开启后才能把 `ACCOUNT_LIVE_CHECK_DRIVER` 切为 `browser_roxy`。当前没有独立的 v2 协议普通 AT probe，因此它不会出现在普通查活选项中。普通查活无论使用哪种已开放驱动，都不会登录、发送 OTP 或刷新 AT。该配置不影响 `ACCOUNT_PLAN_CHECK_DRIVER`（账号补全套餐步骤），也不影响刷新 AT 的协议版本选择。
 
 账号列表的“查活”请求会把当前配置驱动显式传给后端，后端在领代理/创建 Roxy Profile 前校验；任务结果同时保留 configured/effective driver。也可以在测试账号上通过批量接口的 `driver` 字段做单次 override，该 override 不会写回全局配置。
 
-显式“刷新 AT”新增了独立的灰度选择，默认不改变现有流程：
+协议步骤统一使用一个版本配置。只有同时实现 v1/v2 的步骤才读取它；单版本步骤会忽略该配置并使用自己的唯一实现。当前能力矩阵是：刷新 AT 支持 v1/v2，注册协议、协议 2FA、套餐查询、普通查活和 Codex 协议授权均只有 v1。默认 v1，保持现有刷新流程：
 
 ```dotenv
-ACCOUNT_TOKEN_REFRESH_DRIVER=legacy
-ACCOUNT_AUTH_V2_ENABLED=False
+OPENAI_PROTOCOL_VERSION=v1
 ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK=False
 ACCOUNT_AUTH_PROFILE_MODE=current
 ACCOUNT_AUTH_RAW_CONTEXT_ENABLED=False
@@ -729,20 +728,20 @@ ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS=30
 LIVE_CHECK_ROXY_FALLBACK_ENABLED=True
 ```
 
-`legacy` 保持现有协议邮箱 OTP → Roxy 兜底；只有把 `ACCOUNT_TOKEN_REFRESH_DRIVER` 设为 `protocol_v2` 且打开 `ACCOUNT_AUTH_V2_ENABLED`，才会尝试保存的 OpenAI 账号密码，并按远端响应进入直接回调、TOTP MFA 或邮箱验证码。账号没有保存密码时不会伪造密码提交，而是沿用旧邮箱认证；密码页/返回结果无法识别时会停止并记录明确失败，不盲点按钮。密码明确错误默认不发送邮箱验证码；打开 `ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK` 后最多另起一次会话走邮箱 OTP，结果仍保留“密码被拒绝”，不会重复提交密码。普通查活不会触达这条认证链。
-`ACCOUNT_AUTH_PROFILE_MODE=current` 保持现有每个会话随机设备画像；只有明确改为 `account_stable` 且实际使用 Protocol v2 刷新时，才按账号懒创建私有稳定 Protocol identity。它不修改注册时的 `device_id`，不影响普通查活、旧刷新或浏览器兜底；画像的原始 profile key 不进入账号 JSON、导出和普通 API。
-`ACCOUNT_AUTH_RAW_CONTEXT_ENABLED` 默认关闭；开启后才会为 Protocol v2 的实际认证 session 按白名单保存受限 run context，包含原始 device/session 标识和当次代理上下文，不会作为后续任务的代理或会话来源。默认保留 30 天，`ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS=0` 关闭自动清理；这些原始值不进入普通账号 API、任务事件和导出。
-`LIVE_CHECK_ROXY_FALLBACK_ENABLED` 只控制 legacy 刷新 AT 失败后的既有 Roxy 登录兜底，不影响普通查活；普通查活是否使用浏览器由 `ACCOUNT_LIVE_CHECK_BROWSER_ENABLED` 与 `ACCOUNT_LIVE_CHECK_DRIVER` 独立控制。
+设置为 `OPENAI_PROTOCOL_VERSION=v1` 时刷新 AT 使用现有协议邮箱 OTP → Roxy 兜底；设置为 `v2` 时，刷新 AT 才尝试保存的 OpenAI 账号密码，并按远端响应进入直接回调、TOTP MFA 或邮箱验证码。账号没有保存密码时不会伪造密码提交，而是沿用邮箱认证；密码页/返回结果无法识别时会停止并记录明确失败，不盲点按钮。密码明确错误默认不发送邮箱验证码；打开 `ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK` 后最多另起一次会话走邮箱 OTP，结果仍保留“密码被拒绝”，不会重复提交密码。普通查活不会触达这条认证链。
+`ACCOUNT_AUTH_PROFILE_MODE=current` 保持现有每个会话随机设备画像；只有实际使用 v2 协议刷新且明确改为 `account_stable` 时，才按账号懒创建私有稳定 Protocol identity。它不修改注册时的 `device_id`，不影响普通查活、v1 协议刷新或浏览器兜底；画像的原始 profile key 不进入账号 JSON、导出和普通 API。
+`ACCOUNT_AUTH_RAW_CONTEXT_ENABLED` 默认关闭；开启后才会为 v2 协议的实际认证 session 按白名单保存受限 run context，包含原始 device/session 标识和当次代理上下文，不会作为后续任务的代理或会话来源。默认保留 30 天，`ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS=0` 关闭自动清理；这些原始值不进入普通账号 API、任务事件和导出。
+`LIVE_CHECK_ROXY_FALLBACK_ENABLED` 只控制 v1 协议刷新 AT 失败后的既有 Roxy 登录兜底，不影响普通查活；普通查活是否使用浏览器由 `ACCOUNT_LIVE_CHECK_BROWSER_ENABLED` 与 `ACCOUNT_LIVE_CHECK_DRIVER` 独立控制。历史 `.env` 中的 `ACCOUNT_TOKEN_REFRESH_DRIVER` 和 `ACCOUNT_AUTH_V2_ENABLED` 仍可被兼容读取，但不再是新配置项，也不在 WebUI 展示。
 
 已有账号单独执行“补 2FA”时，`ACCOUNT_2FA_DRIVER` 独立于注册 `TWOFA_DRIVER`：
 
 ```dotenv
-ACCOUNT_2FA_DRIVER=protocol
+ACCOUNT_2FA_DRIVER=auto
 ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED=True
 ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED=True
 ```
 
-`protocol` 保持现有“先打开 Roxy 登录，再在当前会话内优先协议、失败回浏览器设置页”；`browser` 直接走现有浏览器页面。需要让已有 AT 的账号在单独补 2FA 时不打开浏览器，可显式改为 `protocol_direct`：先使用已保存 AT 完成 `enroll/activate`；若 MFA 返回 401 且 `ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED=True`，则在协议会话内完成邮箱 OTP 重认证、写回新 AT，再继续 `enroll/activate`，全程不打开浏览器。协议重认证仍失败时，仅在 `ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED=True` 时进入 Roxy 兜底。组合“补全账号”同时缺密码时仍使用浏览器，因为密码设置本身需要登录页面。配置页“注册与账号 → 执行方式”会分别展示注册 2FA、账号补全 2FA、协议重认证和浏览器兜底开关。
+`auto` 是推荐配置：单独补 2FA 时先复用已有 AT；没有 AT 或旧 AT 被 MFA 要求近期认证时，通过协议邮箱 OTP 重认证并写回新 AT；协议仍无法完成且 `ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED=True` 时，才进入 Roxy 安全设置页。组合“补全账号”同时缺密码时，必须先打开 Roxy 登录页补密码，再从当前浏览器会话取得新 AT，随后仍优先使用协议完成 2FA。`protocol` 强制使用协议执行 2FA，但仍按上述认证上下文和兜底开关处理；`browser` 直接走现有浏览器安全设置页。历史配置中的 `protocol_direct` 仍兼容，但会自动归一为 `auto`，不再作为单独选项显示，也不会传给只接受 `protocol`/`browser` 的注册校验器。配置页“注册与账号 → 执行方式”会分别展示注册 2FA、账号补全 2FA、协议重认证和浏览器兜底开关。
 
 已注册账号的 `email_source` 是后续 OTP 取码的权威来源；即使进程重启或 Outlook 池记录被清理，也会优先按账号来源取码，Outlook 账号凭据可从已注册账号快照恢复，不会因为当前 `EMAIL_SOURCE` 顺序变化而误走其他邮箱平台。
 

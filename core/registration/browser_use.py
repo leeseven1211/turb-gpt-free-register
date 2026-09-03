@@ -1741,10 +1741,12 @@ def run_browser_use_registration(
     otp_code: str | None = None,
     batch_dir: Path | None = None,
     cloud_provider: str = "browser_use",
+    registration_options: dict | None = None,
 ) -> dict:
     """Browser Use / Skyvern 云端浏览器注册入口。proxy 参数保留兼容。"""
     from core.registration_service import report_job_progress
 
+    options = dict(registration_options or {})
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
@@ -2009,7 +2011,7 @@ def run_browser_use_registration(
             totp_secret = None
             if _twofa_cfg.ENABLE_2FA:
                 try:
-                    twofa_driver = _twofa_cfg.get_twofa_driver()
+                    twofa_driver = _twofa_cfg.get_twofa_driver_for_options(options)
                     if twofa_driver == "protocol":
                         protocol_session = BrowserSession(proxy=proxy or "")
                         plan_check_session = protocol_session

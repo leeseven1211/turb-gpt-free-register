@@ -8,6 +8,7 @@ from config import codex as codex_config
 from config import register as register_config
 from config import twofa as twofa_config
 from config import account as account_config
+from config import openai_protocol as openai_protocol_config
 from config import proxy as proxy_config
 from config import env_loader
 from core import account_export
@@ -100,6 +101,10 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         self.assertEqual(fields["TWOFA_DRIVER"]["type"], "str")
         self.assertEqual(twofa_config.get_twofa_driver("roxy"), "browser")
 
+        completion_help = fields["ACCOUNT_2FA_DRIVER"]["help"]
+        self.assertIn("自动选择", completion_help)
+        self.assertNotIn("protocol_direct=", completion_help)
+
         old_loaded = env_loader._LOADED
         env_loader._LOADED = True
         try:
@@ -110,6 +115,34 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         finally:
             env_loader._LOADED = old_loaded
             importlib.reload(twofa_config)
+
+    def test_protocol_version_is_webui_editable_and_env_driven(self):
+        fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
+        self.assertIn("OPENAI_PROTOCOL_VERSION", fields)
+        self.assertEqual("注册主链路", fields["OPENAI_PROTOCOL_VERSION"]["group"])
+        self.assertEqual("str", fields["OPENAI_PROTOCOL_VERSION"]["type"])
+        self.assertNotIn("ACCOUNT_TOKEN_REFRESH_DRIVER", fields)
+        self.assertNotIn("ACCOUNT_AUTH_V2_ENABLED", fields)
+        self.assertEqual("v1", openai_protocol_config.OPENAI_PROTOCOL_VERSION)
+
+        old_loaded = env_loader._LOADED
+        env_loader._LOADED = True
+        try:
+            with patch.dict(os.environ, {"OPENAI_PROTOCOL_VERSION": "v2"}, clear=False):
+                reloaded = importlib.reload(openai_protocol_config)
+                self.assertEqual("v2", reloaded.OPENAI_PROTOCOL_VERSION)
+        finally:
+            env_loader._LOADED = old_loaded
+            importlib.reload(openai_protocol_config)
+
+    def test_config_api_projects_legacy_twofa_mode_as_auto(self):
+        with patch("config.env_loader.load_env"), patch(
+            "config.env_loader.read_env_file",
+            return_value={"ACCOUNT_2FA_DRIVER": "protocol_direct"},
+        ), patch.dict(os.environ, {"ACCOUNT_2FA_DRIVER": ""}, clear=False):
+            fields = {item["key"]: item for item in config_editor.get_config()}
+
+        self.assertEqual("auto", fields["ACCOUNT_2FA_DRIVER"]["value"])
 
     def test_registration_and_account_completion_switches_are_editable(self):
         fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
@@ -123,6 +156,7 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             "TWOFA_DRIVER",
             "ENABLE_FLOW_TRIGGER",
             "CODEX_OAUTH_DRIVER",
+            "OPENAI_PROTOCOL_VERSION",
         }
         self.assertTrue(registration_keys.issubset(fields))
         self.assertTrue(all(fields[key]["group"] == "注册主链路" for key in registration_keys))
@@ -139,8 +173,6 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         self.assertTrue(completion_keys.issubset(fields))
         self.assertTrue(all(fields[key]["group"] == "账号补全" for key in completion_keys))
         auth_keys = {
-            "ACCOUNT_TOKEN_REFRESH_DRIVER",
-            "ACCOUNT_AUTH_V2_ENABLED",
             "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK",
             "ACCOUNT_AUTH_PROFILE_MODE",
             "ACCOUNT_AUTH_RAW_CONTEXT_ENABLED",
@@ -154,7 +186,7 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         self.assertEqual("current", account_config.ACCOUNT_AUTH_PROFILE_MODE)
         self.assertFalse(account_config.ACCOUNT_AUTH_RAW_CONTEXT_ENABLED)
         self.assertEqual(30, account_config.ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS)
-        self.assertEqual("protocol", account_config.ACCOUNT_2FA_DRIVER)
+        self.assertEqual("auto", account_config.ACCOUNT_2FA_DRIVER)
         self.assertTrue(account_config.ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED)
         self.assertTrue(account_config.ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED)
 

@@ -31,6 +31,9 @@ class ProtocolDirectTwofaTests(unittest.TestCase):
         protocol_side_effect=None,
         existing_action=None,
         protocol_reauth_enabled=True,
+        steps=None,
+        twofa_driver_override=None,
+        oauth_driver="roxy",
     ):
         route = self._route()
         secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
@@ -67,7 +70,7 @@ class ProtocolDirectTwofaTests(unittest.TestCase):
         ), patch.object(codex_retry_service.account_task_store, "get_task", return_value={}), patch.object(
             codex_retry_service.account_task_store, "append_event"
         ) as append_event, patch("config.reload_all"), patch(
-            "config.codex.CODEX_OAUTH_DRIVER", "roxy"
+            "config.codex.CODEX_OAUTH_DRIVER", oauth_driver
         ), patch("config.roxybrowser.REGISTRATION_DRIVER", "roxy"), patch(
             "config.account.ACCOUNT_2FA_DRIVER", "protocol_direct"
         ), patch(
@@ -91,9 +94,10 @@ class ProtocolDirectTwofaTests(unittest.TestCase):
                 "a@example.com",
                 target_log_path=Path(tempdir) / "twofa.log",
                 task_id=101,
-                steps={"twofa"},
+                steps=steps or {"twofa"},
                 manage_task=False,
                 clear_log=False,
+                twofa_driver_override=twofa_driver_override,
             )
 
         return (
@@ -122,7 +126,8 @@ class ProtocolDirectTwofaTests(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        self.assertEqual("protocol_direct", result["twofa_driver"])
+        self.assertEqual("protocol", result["twofa_driver"])
+        self.assertEqual("existing_at", result["auth_source"])
         self.assertFalse(result["browser_opened"])
         setup_protocol.assert_called_once()
         browser_session.assert_called_once_with(proxy="http://proxy.example")
@@ -136,6 +141,32 @@ class ProtocolDirectTwofaTests(unittest.TestCase):
         )
         db_mocks["update_account_twofa_status"].assert_called_once_with(
             "a@example.com", "success", "Authenticator 2FA 已启用"
+        )
+        route.release.assert_called_once_with(reason="twofa-retry-a@example.com")
+
+    def test_missing_at_uses_protocol_reauthentication_without_opening_roxy(self):
+        account = {
+            "id": 9,
+            "email": "a@example.com",
+            "access_token": "",
+            "totp_secret": "",
+            "extra_json": "{}",
+        }
+        result, route, db_mocks, _events, setup_protocol, setup_reauth, browser_session, run_browser, _action = self._run_worker(
+            account=account,
+            fallback_enabled=True,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("protocol", result["twofa_driver"])
+        self.assertEqual("protocol_reauth", result["auth_source"])
+        self.assertFalse(result["browser_opened"])
+        setup_protocol.assert_not_called()
+        setup_reauth.assert_called_once()
+        browser_session.assert_called_once_with(proxy="http://proxy.example")
+        run_browser.assert_not_called()
+        db_mocks["update_account_session"].assert_called_once_with(
+            "a@example.com", "fresh-chatgpt-token"
         )
         route.release.assert_called_once_with(reason="twofa-retry-a@example.com")
 
@@ -154,7 +185,8 @@ class ProtocolDirectTwofaTests(unittest.TestCase):
         )
 
         self.assertFalse(result["ok"])
-        self.assertEqual("protocol_direct", result["twofa_driver"])
+        self.assertEqual("protocol", result["twofa_driver"])
+        self.assertEqual("existing_at", result["auth_source"])
         self.assertFalse(result["browser_opened"])
         setup_protocol.assert_called_once()
         browser_session.assert_called_once_with(proxy="http://proxy.example")
@@ -211,7 +243,8 @@ class ProtocolDirectTwofaTests(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        self.assertEqual("protocol_reauth", result["twofa_driver"])
+        self.assertEqual("protocol", result["twofa_driver"])
+        self.assertEqual("protocol_reauth", result["auth_source"])
         self.assertFalse(result["browser_opened"])
         setup_protocol.assert_called_once()
         setup_reauth.assert_called_once()
@@ -225,6 +258,106 @@ class ProtocolDirectTwofaTests(unittest.TestCase):
             and item.kwargs.get("detail", {}).get("source") == "protocol_reauth"
             for item in events.call_args_list
         ))
+
+    def test_protocol_direct_legacy_value_maps_to_protocol_for_password_and_twofa(self):
+        account = {
+            "id": 9,
+            "email": "a@example.com",
+            "access_token": "saved-chatgpt-token",
+            "totp_secret": "",
+            "extra_json": "{}",
+        }
+        action = Mock()
+        with patch.object(codex_retry_service, "_build_roxy_account_setup", return_value=action) as build_action:
+            result, route, _db_mocks, _events, _setup_protocol, _reauth, _browser_session, run_browser, _action = self._run_worker(
+                account=account,
+                fallback_enabled=True,
+                existing_action=action,
+                steps={"password", "twofa"},
+            )
+
+        self.assertTrue(result["ok"])
+        run_browser.assert_called_once()
+        build_action.assert_called_once_with(
+            "a@example.com",
+            101,
+            proxy="http://proxy.example",
+            include_password=True,
+            include_twofa=True,
+            twofa_driver="protocol",
+            browser_fallback_enabled=True,
+        )
+        route.release.assert_called_once_with(reason="twofa-retry-a@example.com")
+
+    def test_explicit_browser_mode_uses_browser_security_page(self):
+        account = {
+            "id": 9,
+            "email": "a@example.com",
+            "access_token": "saved-chatgpt-token",
+            "totp_secret": "",
+            "extra_json": "{}",
+        }
+        action = Mock()
+        with patch.object(codex_retry_service, "_build_roxy_account_setup", return_value=action) as build_action:
+            result, route, _db_mocks, _events, setup_protocol, _reauth, browser_session, run_browser, _action = self._run_worker(
+                account=account,
+                fallback_enabled=True,
+                existing_action=action,
+                twofa_driver_override="browser",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("browser", result["twofa_driver"])
+        self.assertEqual("browser_session", result["auth_source"])
+        self.assertTrue(result["browser_opened"])
+        setup_protocol.assert_not_called()
+        browser_session.assert_not_called()
+        run_browser.assert_called_once()
+        build_action.assert_called_once_with(
+            "a@example.com",
+            101,
+            proxy="http://proxy.example",
+            include_password=False,
+            include_twofa=True,
+            twofa_driver="browser",
+            browser_fallback_enabled=True,
+        )
+        route.release.assert_called_once_with(reason="twofa-retry-a@example.com")
+
+    def test_password_twofa_is_not_blocked_by_independent_codex_protocol_driver(self):
+        account = {
+            "id": 9,
+            "email": "a@example.com",
+            "access_token": "saved-chatgpt-token",
+            "totp_secret": "",
+            "extra_json": "{}",
+        }
+        action = Mock()
+        with patch.object(codex_retry_service, "_build_roxy_account_setup", return_value=action) as build_action:
+            result, route, _db_mocks, _events, setup_protocol, _reauth, browser_session, run_browser, _action = self._run_worker(
+                account=account,
+                fallback_enabled=True,
+                existing_action=action,
+                steps={"password", "twofa"},
+                oauth_driver="protocol",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("protocol", result["twofa_driver"])
+        self.assertEqual("browser_session", result["auth_source"])
+        setup_protocol.assert_not_called()
+        browser_session.assert_not_called()
+        run_browser.assert_called_once()
+        build_action.assert_called_once_with(
+            "a@example.com",
+            101,
+            proxy="http://proxy.example",
+            include_password=True,
+            include_twofa=True,
+            twofa_driver="protocol",
+            browser_fallback_enabled=True,
+        )
+        route.release.assert_called_once_with(reason="twofa-retry-a@example.com")
 
     def test_enroll_401_without_protocol_reauth_uses_existing_fallback_policy(self):
         account = {
@@ -242,7 +375,8 @@ class ProtocolDirectTwofaTests(unittest.TestCase):
         )
 
         self.assertFalse(result["ok"])
-        self.assertEqual("protocol_direct", result["twofa_driver"])
+        self.assertEqual("protocol", result["twofa_driver"])
+        self.assertEqual("existing_at", result["auth_source"])
         self.assertFalse(result["browser_opened"])
         setup_protocol.assert_called_once()
         setup_reauth.assert_not_called()
@@ -263,7 +397,8 @@ class ProtocolDirectTwofaTests(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        self.assertEqual("protocol_direct", result["twofa_driver"])
+        self.assertEqual("protocol", result["twofa_driver"])
+        self.assertEqual("existing_at", result["auth_source"])
         self.assertFalse(result["browser_opened"])
         setup_protocol.assert_not_called()
         browser_session.assert_not_called()

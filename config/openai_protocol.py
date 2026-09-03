@@ -6,6 +6,11 @@ OpenAI / ChatGPT OAuth 协议固定参数
 SENTINEL_SV 是 sdk.js 的版本号，会随 OpenAI 更新而变化，
 更新时去 https://sentinel.openai.com/sentinel/<version>/sdk.js 找当前版本。
 """
+from config.env_loader import apply_env_overrides
+
+# Protocol 版本选择。只有同时实现 v1/v2 的步骤会读取它；单版本步骤
+# 会直接使用自己的唯一实现，浏览器步骤不受影响。
+OPENAI_PROTOCOL_VERSION = "v1"
 
 # OAuth 客户端 ID（固定）
 OPENAI_CLIENT_ID = "app_X8zY6vW2pQ9tR3dE7nK1jL5gH"
@@ -48,3 +53,5 @@ CHATGPT_ANON_BOOTSTRAP_ENABLED = True
 CHATGPT_AUTH_BOOTSTRAP_ENABLED = True
 # True 时预热失败会中断主流程；默认 False，仅记录日志并继续。
 CHATGPT_BOOTSTRAP_STRICT = False
+
+apply_env_overrides(globals(), {"OPENAI_PROTOCOL_VERSION": "str"})

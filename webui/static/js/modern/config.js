@@ -593,14 +593,15 @@ function renderRegistrationDebugSectionV2(fields) {
 
 function registrationTwofaDriverChoices() {
   return [
-    { value: 'protocol', label: '协议直开（新鲜 AT）' },
+    { value: 'auto', label: '自动选择（协议优先）' },
+    { value: 'protocol', label: '协议开通' },
     { value: 'browser', label: '浏览器页面（RoxyBrowser）' },
   ];
 }
 function accountTwofaDriverChoices() {
   return [
-    { value: 'protocol', label: '浏览器前置 + 协议' },
-    { value: 'protocol_direct', label: '已有 AT 纯协议优先' },
+    { value: 'auto', label: '自动选择（协议优先）' },
+    { value: 'protocol', label: '协议开通' },
     { value: 'browser', label: '浏览器页面（RoxyBrowser）' },
   ];
 }
@@ -616,10 +617,10 @@ function liveCheckDriverChoices() {
   if (enabled) choices.push({ value: 'browser_roxy', label: 'Roxy 浏览器（旧 AT probe）' });
   return choices;
 }
-function refreshDriverChoices() {
+function protocolVersionChoices() {
   return [
-    { value: 'legacy', label: '现有刷新链路（保持现状）' },
-    { value: 'protocol_v2', label: 'Protocol v2 密码 / MFA（需开启总开关）' },
+    { value: 'v1', label: '协议 v1（现有稳定实现）' },
+    { value: 'v2', label: '协议 v2（已支持的步骤）' },
   ];
 }
 function authProfileModeChoices() {
@@ -636,7 +637,7 @@ function configDriverChoices(f) {
     return [{ value: 'protocol', label: '纯协议（当前唯一实现）' }];
   }
   if (f.key === 'ACCOUNT_LIVE_CHECK_DRIVER') return liveCheckDriverChoices();
-  if (f.key === 'ACCOUNT_TOKEN_REFRESH_DRIVER') return refreshDriverChoices();
+  if (f.key === 'OPENAI_PROTOCOL_VERSION') return protocolVersionChoices();
   if (f.key === 'ACCOUNT_AUTH_PROFILE_MODE') return authProfileModeChoices();
   if (f.key === 'TWOFA_DRIVER') return registrationTwofaDriverChoices();
   if (f.key === 'ACCOUNT_2FA_DRIVER') return accountTwofaDriverChoices();

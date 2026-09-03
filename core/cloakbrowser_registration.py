@@ -30,10 +30,19 @@ from core.registration.selenium_auth import (
 logger = logging.getLogger(__name__)
 
 
-def run_cloak_registration(email: str, name: str, birthday: str, proxy: str = None, otp_code: str = None, batch_dir: Path | None = None) -> dict:
+def run_cloak_registration(
+    email: str,
+    name: str,
+    birthday: str,
+    proxy: str = None,
+    otp_code: str = None,
+    batch_dir: Path | None = None,
+    registration_options: dict | None = None,
+) -> dict:
     """CloakBrowser 自动化注册入口。"""
     from core.registration_service import report_job_progress
 
+    options = dict(registration_options or {})
     driver = None
     opened = None
     create_acknowledged = False
@@ -135,7 +144,7 @@ def run_cloak_registration(email: str, name: str, birthday: str, proxy: str = No
         totp_secret = None
         if _twofa_cfg.ENABLE_2FA:
             try:
-                twofa_driver = _twofa_cfg.get_twofa_driver()
+                twofa_driver = _twofa_cfg.get_twofa_driver_for_options(options)
                 if twofa_driver == "protocol":
                     protocol_session = BrowserSession(proxy=proxy or "")
                     plan_check_session = protocol_session
