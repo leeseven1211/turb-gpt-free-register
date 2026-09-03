@@ -516,7 +516,13 @@ class ProtocolV2LivenessTests(unittest.TestCase):
         self.assertTrue(result["accepted"])
         self.assertEqual("protocol_v2", result["token_refresh_driver"])
         self.assertEqual("v2", result["protocol_version"])
-        self.assertEqual("protocol_v2", submit.call_args.kwargs["refresh_driver"])
+        # The worker receives the public version, not the legacy internal
+        # driver alias; otherwise it would re-apply the old kill switch.
+        self.assertEqual("v2", submit.call_args.kwargs["refresh_driver"])
+        with patch.object(account_config, "ACCOUNT_AUTH_V2_ENABLED", False):
+            self.assertEqual("protocol_v2", live_check_service._resolve_refresh_driver(
+                submit.call_args.kwargs["refresh_driver"]
+            ))
         live_check_service._QUEUE_SLOTS.release()
 
 

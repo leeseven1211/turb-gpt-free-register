@@ -728,7 +728,11 @@ def enqueue_account_live_check(
             task_id=task_id,
             force_refresh=bool(force_refresh),
             driver=effective_live_check_driver,
-            refresh_driver=effective_refresh_driver,
+            # Pass the public version into the worker.  ``protocol_v2`` is a
+            # legacy compatibility alias and intentionally remains protected
+            # by ACCOUNT_AUTH_V2_ENABLED; a newly selected v2 task must not
+            # be downgraded when the worker re-resolves its frozen choice.
+            refresh_driver=_refresh_protocol_version(effective_refresh_driver),
         )
     except Exception as exc:
         _QUEUE_SLOTS.release()
