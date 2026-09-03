@@ -61,7 +61,10 @@ def registration_config_snapshot() -> dict[str, object]:
         "password_enabled": auth_mode == "password",
         "password_mode": auth_mode,
         "twofa_enabled": bool(getattr(twofa_cfg, "ENABLE_2FA", False)),
-        "twofa_driver": str(getattr(twofa_cfg, "TWOFA_DRIVER", "protocol") or "protocol").strip().lower(),
+        # Store the public normalized mode in the job snapshot.  Older .env
+        # values such as protocol_direct remain accepted by config.twofa but
+        # must not leak into downstream registration validators.
+        "twofa_driver": twofa_cfg.get_twofa_mode(),
         "codex_enabled": bool(getattr(codex_cfg, "ENABLE_CODEX_AUTO", False)),
         "codex_driver": str(getattr(codex_cfg, "CODEX_OAUTH_DRIVER", "same_as_registration") or "same_as_registration").strip().lower(),
         "plan_check_enabled": bool(getattr(register_cfg, "REGISTRATION_PLAN_CHECK_ENABLED", True)),
