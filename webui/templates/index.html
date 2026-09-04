@@ -366,7 +366,7 @@
           <colgroup>
             <col class="col-check"><col class="col-id"><col class="col-email"><col class="col-source">
             <col class="col-token"><col class="col-small"><col class="col-plan"><col class="col-trial"><col class="col-small">
-            <col class="col-risk-mail"><col class="col-status"><col class="col-time"><col class="col-actions">
+            <col class="col-risk-mail"><col class="col-account-status"><col class="col-status"><col class="col-time"><col class="col-actions">
           </colgroup>
           <thead>
             <tr>
@@ -375,6 +375,7 @@
               <th class="col-email column-filter-header" data-column-filter="qAccountsV2" data-filter-type="search" data-filter-placeholder="邮箱或姓名" data-filter-label="按邮箱或姓名筛选">邮箱 / 姓名</th>
               <th class="col-source column-filter-header" data-column-filter="accountSourceFilterV2" data-filter-type="select" data-filter-label="按邮箱来源筛选">来源</th>
               <th class="col-token column-filter-header" data-column-filter="accountTokenFilterV2" data-filter-type="select" data-filter-label="按 Token 状态筛选">Token</th>
+              <th class="col-account-status column-filter-header" data-column-filter="accountStatusFilterV2" data-filter-type="select" data-filter-label="按账号状态筛选">账号状态</th>
               <th class="col-small column-filter-header" data-column-filter="accountPasswordFilterV2" data-filter-type="select" data-filter-label="按账号密码状态筛选">账号密码</th>
               <th class="col-plan column-filter-header" data-column-filter="accountPlanFilterV2" data-filter-type="select" data-filter-label="按套餐筛选">套餐</th>
               <th class="col-trial column-filter-header" data-column-filter="accountTrialFilterV2" data-filter-type="select" data-filter-label="按 Plus 试用资格筛选">Plus 试用</th>
@@ -385,7 +386,7 @@
               <th class="col-actions"><div class="column-actions-heading"><span>操作</span><button type="button" class="column-filters-reset" id="btnResetAccountFiltersV2" title="清除全部列筛选">清筛</button></div></th>
             </tr>
           </thead>
-          <tbody id="accountsBodyV2"><tr class="list-state-row"><td class="table-state-cell" colspan="13"><div class="table-state is-loading" role="status"><span class="table-state-spinner" aria-hidden="true"></span><strong>正在加载账号</strong><small>正在同步账号状态和授权信息</small></div></td></tr></tbody>
+          <tbody id="accountsBodyV2"><tr class="list-state-row"><td class="table-state-cell" colspan="14"><div class="table-state is-loading" role="status"><span class="table-state-spinner" aria-hidden="true"></span><strong>正在加载账号</strong><small>正在同步账号状态和授权信息</small></div></td></tr></tbody>
         </table>
       </div>
       <div class="jobs-v2-pager" id="pager-accounts-v2"></div>

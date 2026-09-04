@@ -84,6 +84,13 @@ function _codexCell(r) {
   if (s === 'deactivated') return `<span class="pill status-failed" title="账号已被 OpenAI 删除/停用/封禁，无法授权">已废号</span>`;
   return `<span class="muted">-</span>`;
 }
+function _accountStatusCell(r) {
+  const status = String(r.account_status || 'active').toLowerCase();
+  const reason = String(r.account_status_reason || '').trim();
+  if (status === 'deactivated') return `<span class="pill status-failed"${reason ? ` title="${esc(reason)}"` : ''}>已废号</span>`;
+  if (status === 'active') return '<span class="pill status-success">正常</span>';
+  return '<span class="pill status-used">待确认</span>';
+}
 function _fmtPlanTime(v, dateOnly = false) {
   if (!v) return '';
   try {
@@ -286,6 +293,7 @@ function renderAccounts() {
       <td><div class="main-cell">${esc(r.email)}${r.archived ? ' <span class="pill status-used" title="该账号已归档">归档</span>' : ''}</div><div class="sub-cell">${esc(r.user_name || '-')}</div></td>
       <td>${esc(r.email_source || '-')}</td>
       <td><span class="mono">${_legacyTokenSummary(r)}</span></td>
+      <td>${_accountStatusCell(r)}</td>
       <td>${_planCell(r)}<div class="sub-cell">${_extractLinkCell(r)}</div></td>
       <td>${_trialCell(r)}</td>
       <td>${r.totp_enabled ? `<div data-account-totp-cell="${esc(r.id)}"><span class="pill status-success">已启用</span> <button class="good" data-account-totp-code="${esc(r.id)}" title="查询当前 6 位 TOTP 验证码">查询验证码</button> <span class="mono" data-account-totp-value hidden></span> <span class="muted" data-account-totp-ttl hidden></span> <button class="good" data-account-totp-copy="${esc(r.id)}" data-totp-code="" title="复制当前 TOTP 验证码" hidden>复制</button></div>` : '<span class="muted">未启用</span>'}</td>
@@ -299,7 +307,7 @@ function renderAccounts() {
           <div class="account-action-group danger-zone"><button data-account-archive="${esc(r.id)}" data-archived="${r.archived ? '0' : '1'}" title="${r.archived ? '恢复到默认账号列表' : '归档后默认账号列表不再显示'}">${r.archived ? '恢复' : '归档'}</button> <button class="danger" data-account-delete="${esc(r.id)}" data-email="${esc(r.email)}">删除</button></div>
         </div>
       </td>
-    </tr>`).join('') || '<tr><td colspan="11" class="muted">暂无账号</td></tr>';
+    </tr>`).join('') || '<tr><td colspan="12" class="muted">暂无账号</td></tr>';
   updateAccountSelectionUi(rows);
   _renderPager('accounts', total);
 }

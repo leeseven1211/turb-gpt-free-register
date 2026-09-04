@@ -113,7 +113,7 @@ def create_accounts_blueprint(context: WebUIContext):
         q = str(request.args.get("q", default="") or "").strip()
         column_filters = {
             key: str(request.args.get(key, default="") or "").strip().lower()
-            for key in ("id", "email", "source", "token", "password", "trial", "totp", "risk", "codex")
+            for key in ("id", "email", "source", "token", "password", "trial", "totp", "risk", "codex", "account_status")
         }
         date_from = str(request.args.get("date_from", default="") or "").strip() or None
         date_to = str(request.args.get("date_to", default="") or "").strip() or None

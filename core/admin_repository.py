@@ -79,6 +79,7 @@ def _revision(total: int, latest: Any, visible_state: Any = None) -> str:
 
 
 _ACCOUNT_ACCESS_TOKEN_PRESENT = "COALESCE(a.account_has_access_token, FALSE)"
+_ACCOUNT_STATUS = "LOWER(COALESCE(NULLIF(BTRIM(a.data->>'account_status'), ''), 'active'))"
 _ACCOUNT_TOKEN_EXPIRED = f"""(
     {_ACCOUNT_ACCESS_TOKEN_PRESENT}
     AND (
@@ -203,6 +204,10 @@ def _account_where(
     if value:
         where.append("LOWER(COALESCE(a.codex_status, '')) = %s")
         params.append(value)
+    value = _text(filters.get("account_status")).lower()
+    if value in {"active", "deactivated"}:
+        where.append(f"({_ACCOUNT_STATUS}) = %s")
+        params.append(value)
     return where, params
 
 
@@ -236,7 +241,7 @@ def list_accounts(
                 CASE WHEN {_ACCOUNT_TOTP_PRESENT} THEN 'enabled' ELSE 'disabled' END AS totp,
                 {_ACCOUNT_RISK_VALUE} AS risk,
                 LOWER(COALESCE(a.codex_status, '')) AS codex,
-                LOWER(COALESCE(a.data->>'account_status', 'active')) AS account_status
+                {_ACCOUNT_STATUS} AS account_status
               FROM {accounts} a{base_clause}
         )
         SELECT f.facet, f.value, COUNT(*) AS count
@@ -328,7 +333,7 @@ def list_account_statuses(
         "extract_link_message", "extract_link_error", "extract_link_long_url", "extract_link_copy_paste",
         "extract_link_image_url_png", "extract_link_image_url_svg", "extract_link_expires_at", "codex_status",
         "codex_credential_state", "codex_execution_status", "codex_last_run_status", "codex_active_run_id",
-        "codex_error", "access_token",
+        "codex_error", "access_token", "account_status", "account_status_reason", "account_status_at",
     }
     items = []
     for raw in raw_rows:

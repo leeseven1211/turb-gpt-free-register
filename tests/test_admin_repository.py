@@ -76,6 +76,29 @@ class AdminRepositoryTests(PostgresTestCase):
         self.assertIn("source", result["facets"])
         self.assertTrue(all(item["email_source"] == "icloud_hide" for item in result["items"]))
 
+    def test_accounts_can_filter_and_report_account_status(self):
+        account_id = rs.insert_row(rs.ACCOUNTS, {
+            "email": "deactivated@example.test",
+            "account_status": "deactivated",
+            "account_status_reason": "account_deactivated",
+        })
+
+        result = repo.list_accounts(
+            repo.PageRequest(page=1, page_size=20, filters={"account_status": "deactivated"}),
+            archived="0",
+        )
+
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["items"][0]["id"], account_id)
+        self.assertEqual(result["items"][0]["account_status"], "deactivated")
+        self.assertEqual(
+            {item["value"] for item in result["facets"]["account_status"]},
+            {"active", "deactivated"},
+        )
+        status_snapshot = repo.list_account_statuses(repo.PageRequest(page=1, page_size=50))
+        status_item = next(item for item in status_snapshot["items"] if item["id"] == account_id)
+        self.assertEqual(status_item["account_status"], "deactivated")
+
     def test_job_page_has_constant_query_count(self):
         with _QueryCounter() as counter:
             result = repo.list_jobs(repo.PageRequest(page=1, page_size=20, filters={}))

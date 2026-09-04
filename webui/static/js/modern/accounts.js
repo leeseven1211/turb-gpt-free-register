@@ -497,7 +497,7 @@ async function loadAccounts() {
     const params = new URLSearchParams({paged:'1', page:String(p.page), page_size:String(p.size), archived, plan, email:q, date_from:dateFrom, date_to:dateTo});
     const accountFilters = {
       id: 'accountIdFilterV2', source: 'accountSourceFilterV2', token: 'accountTokenFilterV2',
-      password: 'accountPasswordFilterV2', trial: 'accountTrialFilterV2', totp: 'accountTotpFilterV2', risk: 'accountRiskFilterV2', codex: 'accountCodexFilterV2',
+      password: 'accountPasswordFilterV2', trial: 'accountTrialFilterV2', totp: 'accountTotpFilterV2', risk: 'accountRiskFilterV2', codex: 'accountCodexFilterV2', account_status: 'accountStatusFilterV2',
     };
     Object.entries(accountFilters).forEach(([key, id]) => params.set(key, document.getElementById(id)?.value || ''));
     const res = await api(`/api/accounts?${params.toString()}`);
@@ -513,6 +513,7 @@ async function loadAccounts() {
     syncFacetSelect('accountTotpFilterV2', facets.totp, {group:'totp'});
     syncFacetSelect('accountRiskFilterV2', facets.risk, {group:'risk'});
     syncFacetSelect('accountCodexFilterV2', facets.codex, {group:'codex'});
+    syncFacetSelect('accountStatusFilterV2', facets.account_status, {group:'account_status', values:['active','deactivated']});
     ACCOUNTS = res.items || [];
     ACCOUNTS_TOTAL = Number(res.total || ACCOUNTS.length || 0);
     const totalPages = Math.max(1, Math.ceil(ACCOUNTS_TOTAL / p.size));
@@ -523,7 +524,7 @@ async function loadAccounts() {
     }
     renderAccounts();
   } catch(e) {
-    if (!ACCOUNTS.length) $('#accountsBodyV2').innerHTML = renderTableStateRow(13, '账号加载失败', '请检查服务状态后刷新列表。', 'error');
+    if (!ACCOUNTS.length) $('#accountsBodyV2').innerHTML = renderTableStateRow(14, '账号加载失败', '请检查服务状态后刷新列表。', 'error');
     showToast('加载账号失败: ' + e.message);
   }
   finally {
@@ -601,6 +602,15 @@ function _codexCellV2(r) {
   if (s === 'skipped') return `<span class="acc-v2-codex is-skip"${titleAttr}>已跳过</span>`;
   if (s === 'deactivated') return `<span class="acc-v2-codex is-fail" title="账号已被 OpenAI 删除/停用/封禁，无法授权">已废号</span>`;
   return `<span class="acc-v2-muted">-</span>`;
+}
+function _accountStatusCellV2(r) {
+  const status = String(r.account_status || 'active').toLowerCase();
+  const reason = String(r.account_status_reason || '').trim();
+  if (status === 'deactivated') {
+    return `<span class="acc-v2-account-status is-fail"${reason ? ` title="${esc(reason)}"` : ''}>已废号</span>`;
+  }
+  if (status === 'active') return '<span class="acc-v2-account-status is-ok">正常</span>';
+  return '<span class="acc-v2-account-status is-mute" title="账号状态待确认">待确认</span>';
 }
 function _fmtPlanTime(v, dateOnly = false) {
   if (!v) return '';
@@ -989,6 +999,7 @@ function renderAccounts() {
       </td>
       <td class="col-source">${esc(r.email_source || '-')}</td>
       <td class="col-token">${_tokenCellV2(r)}</td>
+      <td class="col-account-status">${_accountStatusCellV2(r)}</td>
       <td class="col-small">${_passwordCellV2(r)}</td>
       <td class="col-plan">${_planCell(r)}<div class="acc-v2-sub">${_extractLinkCell(r)}</div></td>
       <td class="col-trial">${_trialCell(r)}</td>
@@ -1009,7 +1020,7 @@ function renderAccounts() {
 
   const bodyV2 = $('#accountsBodyV2');
   if (bodyV2) {
-    bodyV2.innerHTML = rows.map(rowHtmlV2).join('') || renderTableStateRow(13, '暂无匹配账号', '调整筛选条件，或切换活跃与归档账号视图。');
+    bodyV2.innerHTML = rows.map(rowHtmlV2).join('') || renderTableStateRow(14, '暂无匹配账号', '调整筛选条件，或切换活跃与归档账号视图。');
     if (openMoreId) requestAnimationFrame(() => restoreAccountsV2MoreMenu(openMoreId));
   }
   const summary = $('#accountsPageSummary');
@@ -1405,7 +1416,7 @@ async function refreshAccountsList(btn) {
   ['accountIdFilterV2','qAccountsV2'].forEach(id => {
     document.getElementById(id)?.addEventListener('input', reload);
   });
-  ['accountSourceFilterV2','accountTokenFilterV2','accountPasswordFilterV2','accountPlanFilterV2','accountTrialFilterV2','accountTotpFilterV2','accountRiskFilterV2','accountCodexFilterV2','dateFromAccountsV2','dateToAccountsV2'].forEach(id => {
+  ['accountSourceFilterV2','accountTokenFilterV2','accountStatusFilterV2','accountPasswordFilterV2','accountPlanFilterV2','accountTrialFilterV2','accountTotpFilterV2','accountRiskFilterV2','accountCodexFilterV2','dateFromAccountsV2','dateToAccountsV2'].forEach(id => {
     document.getElementById(id)?.addEventListener('change', reload);
   });
 
@@ -1416,7 +1427,7 @@ async function refreshAccountsList(btn) {
   const refreshV2 = $('#btnRefreshAccountsV2');
   if (refreshV2) refreshV2.addEventListener('click', () => refreshAccountsList(refreshV2));
   $('#btnResetAccountFiltersV2')?.addEventListener('click', () => {
-    ['accountIdFilterV2','qAccountsV2','accountSourceFilterV2','accountTokenFilterV2','accountPasswordFilterV2','accountPlanFilterV2','accountTrialFilterV2','accountTotpFilterV2','accountRiskFilterV2','accountCodexFilterV2','dateFromAccountsV2','dateToAccountsV2'].forEach(id => {
+    ['accountIdFilterV2','qAccountsV2','accountSourceFilterV2','accountTokenFilterV2','accountStatusFilterV2','accountPasswordFilterV2','accountPlanFilterV2','accountTrialFilterV2','accountTotpFilterV2','accountRiskFilterV2','accountCodexFilterV2','dateFromAccountsV2','dateToAccountsV2'].forEach(id => {
       const el = document.getElementById(id); if (el) el.value = '';
     });
     ACCOUNT_SELECTED.clear(); PAGERS.accounts.page = 1; refreshColumnFilterStates(); loadAccounts();

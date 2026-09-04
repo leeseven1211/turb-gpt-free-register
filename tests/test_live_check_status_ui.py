@@ -60,3 +60,20 @@ class LiveCheckStatusUiTests(PostgresTestCase):
         finally:
             modern.close()
             foundation.close()
+
+    def test_both_account_uis_render_account_status_as_a_separate_column(self):
+        modern = self.client.get("/", headers=self.headers).get_data(as_text=True)
+        legacy = self.client.get("/?ui=legacy", headers=self.headers).get_data(as_text=True)
+        self.assertIn('data-column-filter="accountStatusFilterV2"', modern)
+        self.assertIn(">账号状态</th>", modern)
+        self.assertIn(">账号状态</th>", legacy)
+
+        for asset in ("modern/accounts.js", "legacy/accounts.js"):
+            with self.subTest(asset=asset):
+                response = self.client.get(f"/static/js/{asset}")
+                try:
+                    source = response.get_data(as_text=True)
+                    self.assertIn("accountStatus", source)
+                    self.assertIn("已废号", source)
+                finally:
+                    response.close()

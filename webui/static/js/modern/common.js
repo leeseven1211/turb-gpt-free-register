@@ -53,6 +53,7 @@ const LIST_FACET_LABELS = {
   risk: {detected:'已收到', clear:'未发现', pending:'待处理'},
   trial: {eligible:'可用', ineligible:'不可用', pending:'待查询', failed:'查询失败', not_applicable:'不适用'},
   codex: {success:'已通过', retrying:'进行中', failed:'失败', stopped:'已停止', deactivated:'已停用', skipped:'已跳过', missing:'缺失'},
+  account_status: {active:'正常', deactivated:'已废号', unknown:'待确认'},
   task_type: {
     registration:'注册', registration_resume:'继续邮箱验证', twofa_retry:'2FA / 配置补跑',
     account_setup_retry:'账号配置补跑', codex_retry:'Codex 补跑', codex_token_refresh:'Codex Token 刷新',

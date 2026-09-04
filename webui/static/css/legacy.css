@@ -122,14 +122,15 @@
     .col-actions { width: 220px; }
     .jobs-table .col-actions { width: 330px; }
     .accounts-table .col-token { width: 92px; }
+    .accounts-table .col-account-status { width: 96px; }
     .accounts-table .col-plan { width: 340px; }
     .accounts-table .col-trial { width: 112px; }
     .accounts-table .col-actions { width: 360px; }
-    .accounts-table td:nth-child(6), .accounts-table th:nth-child(6) { overflow: visible; text-overflow: clip; }
-    .accounts-table td:nth-child(10), .accounts-table th:nth-child(10) { overflow: visible; text-overflow: clip; }
-
-    .accounts-table td:nth-child(8), .accounts-table th:nth-child(8) { overflow: visible; text-overflow: clip; }
+    .accounts-table td:nth-child(7), .accounts-table th:nth-child(7) { overflow: visible; text-overflow: clip; }
     .accounts-table td:nth-child(11), .accounts-table th:nth-child(11) { overflow: visible; text-overflow: clip; }
+
+    .accounts-table td:nth-child(9), .accounts-table th:nth-child(9) { overflow: visible; text-overflow: clip; }
+    .accounts-table td:nth-child(12), .accounts-table th:nth-child(12) { overflow: visible; text-overflow: clip; }
     .outlook-table .col-actions { width: 220px; }
     .codex-table .col-actions { width: 260px; }
     th { position: sticky; top: 0; background: #fbfcfe; color: #475467; z-index: 1; font-size: 12px; }

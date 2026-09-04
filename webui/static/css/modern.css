@@ -129,11 +129,11 @@
     .accounts-table .col-token { width: 92px; }
     .accounts-table .col-plan { width: 340px; }
     .accounts-table .col-actions { width: 360px; }
-    .accounts-table td:nth-child(6), .accounts-table th:nth-child(6) { overflow: visible; text-overflow: clip; }
-    .accounts-table td:nth-child(10), .accounts-table th:nth-child(10) { overflow: visible; text-overflow: clip; }
-
-    .accounts-table td:nth-child(8), .accounts-table th:nth-child(8) { overflow: visible; text-overflow: clip; }
+    .accounts-table td:nth-child(7), .accounts-table th:nth-child(7) { overflow: visible; text-overflow: clip; }
     .accounts-table td:nth-child(11), .accounts-table th:nth-child(11) { overflow: visible; text-overflow: clip; }
+
+    .accounts-table td:nth-child(9), .accounts-table th:nth-child(9) { overflow: visible; text-overflow: clip; }
+    .accounts-table td:nth-child(12), .accounts-table th:nth-child(12) { overflow: visible; text-overflow: clip; }
     th { position: sticky; top: 0; background: #fbfcfe; color: #475467; z-index: 1; font-size: 12px; }
     tr:hover td { background: #fbfdff; }
     .main-cell { font-weight: 700; }
@@ -1145,6 +1145,7 @@
     .accounts-table-v2 .col-email { width: 240px; }
     .accounts-table-v2 .col-source { width: 90px; }
     .accounts-table-v2 .col-token { width: 100px; }
+    .accounts-table-v2 .col-account-status { width: 104px; }
     .accounts-table-v2 .col-plan { width: 120px; }
     .accounts-table-v2 .col-trial { width: 112px; }
     .accounts-table-v2 .col-small { width: 72px; }
@@ -1233,6 +1234,10 @@
     .accounts-table-v2 .acc-v2-codex.is-fail { color: #f56c6c; }
     .accounts-table-v2 .acc-v2-codex.is-run { color: #e6a23c; }
     .accounts-table-v2 .acc-v2-codex.is-mute { color: #c0c4cc; }
+    .accounts-table-v2 .acc-v2-account-status { display: inline-flex; align-items: center; min-width: 58px; justify-content: center; font-weight: 600; }
+    .accounts-table-v2 .acc-v2-account-status.is-ok { color: #377DFF; }
+    .accounts-table-v2 .acc-v2-account-status.is-fail { color: #f56c6c; }
+    .accounts-table-v2 .acc-v2-account-status.is-mute { color: #c0c4cc; }
     .accounts-table-v2 .status-action-cell {
       display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
     }
