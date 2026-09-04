@@ -550,6 +550,35 @@ def _refresh_chatgpt_settings_shell_if_needed(driver, *, reason: str = "") -> bo
         except Exception:
             pass
     _page_warmup(driver, reason=f"settings_shell_refresh:{reason or 'settings'}")
+    try:
+        after_refresh = driver.execute_script(r"""
+        const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+          && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+        const text = String(document.body?.innerText || '').replace(/\s+/g, ' ').trim();
+        const homeShell = [
+          '[data-testid="create-new-chat-button"]',
+          '[data-testid="send-button"]',
+          '[data-testid="composer-plus-btn"]',
+          '[data-testid="thread-header-right-actions"]',
+        ].some(selector => !!document.querySelector(selector));
+        return {home_shell: homeShell, text_length: text.length, visible};
+        """) or {}
+    except Exception:
+        after_refresh = {}
+    if bool(after_refresh.get("home_shell")) and int(after_refresh.get("text_length") or 0) < 500:
+        recovery_url = f"https://chatgpt.com/?settings_recover={int(time.time() * 1000)}#settings/Security"
+        logger.warning(
+            "%s 设置页刷新后仍停留首页壳，执行带恢复参数的新导航：reason=%s",
+            _log_prefix(driver), reason or "settings",
+        )
+        _safe_get(
+            driver,
+            recovery_url,
+            timeout=min(45, int(getattr(_cfg, "ROXY_SELENIUM_TIMEOUT", 90) or 90)),
+            attempts=2,
+            accept_hosts=("chatgpt.com",),
+        )
+        _page_warmup(driver, reason=f"settings_shell_recover:{reason or 'settings'}")
     return True
 
 

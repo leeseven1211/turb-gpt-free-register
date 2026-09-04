@@ -16,7 +16,10 @@ class RoxyTwoFactorTests(unittest.TestCase):
             "home_shell": True,
         }
 
-        with patch.object(roxy_registration, "_page_warmup") as warmup:
+        with (
+            patch.object(roxy_registration, "_page_warmup") as warmup,
+            patch.object(roxy_registration, "_safe_get") as safe_get,
+        ):
             refreshed = roxy_registration._refresh_chatgpt_settings_shell_if_needed(
                 driver,
                 reason="chatgpt_password_settings_empty_shell",
@@ -24,7 +27,10 @@ class RoxyTwoFactorTests(unittest.TestCase):
 
         self.assertTrue(refreshed)
         driver.refresh.assert_called_once_with()
-        warmup.assert_called_once()
+        self.assertEqual(2, warmup.call_count)
+        safe_get.assert_called_once()
+        self.assertIn("settings_recover=", safe_get.call_args.args[1])
+        self.assertIn("#settings/Security", safe_get.call_args.args[1])
 
     def test_password_setup_uses_account_add_password_flow(self):
         driver = Mock()
