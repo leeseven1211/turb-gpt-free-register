@@ -7,6 +7,25 @@ from core.task_stages import flow_for
 
 
 class RoxyTwoFactorTests(unittest.TestCase):
+    def test_settings_home_shell_is_refreshed_even_with_stale_home_controls(self):
+        driver = Mock()
+        driver.execute_script.return_value = {
+            "settings_route": True,
+            "text_length": 89,
+            "interactive": 16,
+            "home_shell": True,
+        }
+
+        with patch.object(roxy_registration, "_page_warmup") as warmup:
+            refreshed = roxy_registration._refresh_chatgpt_settings_shell_if_needed(
+                driver,
+                reason="chatgpt_password_settings_empty_shell",
+            )
+
+        self.assertTrue(refreshed)
+        driver.refresh.assert_called_once_with()
+        warmup.assert_called_once()
+
     def test_password_setup_uses_account_add_password_flow(self):
         driver = Mock()
         new_input = Mock()

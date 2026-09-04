@@ -514,7 +514,13 @@ def _refresh_chatgpt_settings_shell_if_needed(driver, *, reason: str = "") -> bo
         const interactive = [...document.querySelectorAll('button,a,[role="button"],input,select,textarea')]
           .filter(visible).length;
         const settingsRoute = /#settings\//i.test(url) || /\/settings\//i.test(url);
-        return {settings_route: settingsRoute, text_length: text.length, interactive};
+        const homeShell = [
+          '[data-testid="create-new-chat-button"]',
+          '[data-testid="send-button"]',
+          '[data-testid="composer-plus-btn"]',
+          '[data-testid="thread-header-right-actions"]',
+        ].some(selector => !!document.querySelector(selector));
+        return {settings_route: settingsRoute, text_length: text.length, interactive, home_shell: homeShell};
         """) or {}
     except Exception:
         return False
@@ -526,7 +532,11 @@ def _refresh_chatgpt_settings_shell_if_needed(driver, *, reason: str = "") -> bo
         return False
     # A blank settings shell can still contain a handful of stale menu nodes;
     # the absence of mounted text is stronger evidence than the raw node count.
-    if int(state.get("interactive") or 0) > 4 and int(state.get("text_length") or 0) > 0:
+    if (
+        not bool(state.get("home_shell"))
+        and int(state.get("interactive") or 0) > 4
+        and int(state.get("text_length") or 0) > 0
+    ):
         return False
     logger.warning(
         "%s 检测到 ChatGPT 设置页前端空壳，刷新一次等待安全设置挂载：reason=%s state=%s",
