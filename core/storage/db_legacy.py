@@ -1793,6 +1793,28 @@ def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
         return True
 
 
+def mark_account_deactivated(
+    acc_id: int,
+    reason: str | None = None,
+    *,
+    source: str | None = None,
+) -> bool:
+    """Persist a confirmed account deactivation from any account-operation path."""
+    normalized_reason = str(reason or "account_deactivated").strip()[:500]
+    now = _now()
+    changes = {
+        "account_status": "deactivated",
+        "account_status_reason": normalized_reason,
+        "account_status_at": now,
+        "codex_status": "deactivated",
+        "codex_error": normalized_reason,
+        "updated_at": now,
+    }
+    if source:
+        changes["account_status_source"] = str(source).strip()[:80]
+    return _patch_account(int(acc_id), changes)
+
+
 def account_is_deactivated(account: dict | None) -> bool:
     """判断账号是否已被明确标记为封号/停用；历史记录缺字段时视为正常。"""
     return str((account or {}).get("account_status") or "").strip().lower() == "deactivated"
@@ -2623,8 +2645,8 @@ def _increment_codex_state(filename: str, *, counter: str, timestamp: str, extra
         else:
             extra_without_counter = dict(extra)
             cur.execute(
-                f"UPDATE {table} SET data = data || jsonb_build_object(%s, "
-                f"COALESCE(NULLIF(data->>%s, '')::BIGINT, 0) + 1) || %s::jsonb, "
+                f"UPDATE {table} SET data = data || jsonb_build_object(%s::text, "
+                f"COALESCE(NULLIF(data->>(%s::text), '')::BIGINT, 0) + 1) || %s::jsonb, "
                 "updated_at = %s WHERE filename = %s RETURNING *",
                 (counter, counter, json.dumps(extra_without_counter, ensure_ascii=False), now, name),
             )

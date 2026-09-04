@@ -4,6 +4,7 @@ import json
 import logging
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 from core import db, task_run_log
@@ -20,6 +21,21 @@ _STOP_REQUESTED: set[str] = set()
 _RUNNING_THREADS: dict[str, int] = {}
 _RESERVED_AT: dict[str, float] = {}
 _ACCOUNT_SETUP_DB_LOCK = threading.RLock()
+_ACCOUNT_DEACTIVATED_CODES = frozenset({
+    "account_deactivated",
+    "account_deleted",
+    "account_banned",
+})
+
+
+def _account_deactivation_code(exc: BaseException) -> str:
+    """Return a confirmed dead-account code without classifying generic failures."""
+    if isinstance(exc, AccountUnusableError):
+        return str(getattr(exc, "error_code", "") or "account_deactivated").strip().lower()
+    code = str(
+        getattr(exc, "error_code", "") or getattr(exc, "code", "") or ""
+    ).strip().lower()
+    return code if code in _ACCOUNT_DEACTIVATED_CODES else ""
 
 
 def _attach_auth_projection(
@@ -75,23 +91,43 @@ def _account_login_password(account: dict | None) -> str:
 
 def _persist_account_deactivated(email: str, exc: BaseException) -> bool:
     """Persist a confirmed unusable result without touching saved credentials."""
-    code = str(getattr(exc, "error_code", "") or "").strip() or "account_deactivated"
+    code = _account_deactivation_code(exc) or "account_deactivated"
     try:
         account = db.get_account_by_email(email) or {}
         account_id = int(account.get("id") or 0)
         if not account_id:
             return False
-        return bool(db.update_account_liveness(
+        return bool(db.mark_account_deactivated(
             account_id,
-            {
-                "ok": False,
-                "status": "deactivated",
-                "error": code,
-                "validation_method": "account_setup",
-            },
+            reason=code,
+            source="account_setup",
         ))
     except Exception:
         logger.exception("写回废号账号状态失败：email=%s", email)
+        return False
+
+
+def _persist_account_deactivated_result(
+    email: str,
+    result: dict,
+    *,
+    source: str,
+) -> bool:
+    """Persist a deactivated result returned by an account-operation driver."""
+    try:
+        account = db.get_account_by_email(email) or {}
+        account_id = int(account.get("id") or 0)
+        if not account_id:
+            return False
+        reason = str(result.get("error_code") or result.get("error") or "").strip()
+        if not reason and str(result.get("status") or "").lower() == "deactivated":
+            reason = "account_deactivated"
+        if not reason:
+            reason = str(result.get("message") or "account_deactivated").strip()
+        reason = reason[:500]
+        return bool(db.mark_account_deactivated(account_id, reason=reason, source=source))
+    except Exception:
+        logger.exception("写回废号账号状态失败：email=%s source=%s", email, source)
         return False
 
 
@@ -231,6 +267,8 @@ def _run_protocol_direct_twofa(
                 access_token,
                 on_secret=_checkpoint,
             )
+        except AccountUnusableError:
+            raise
         except TwofaEnrollmentAuthRequired:
             secret = _protocol_reauth()
     else:
@@ -308,6 +346,12 @@ def _run_retry_plan_check(
             proxy=(getattr(account_route, "proxy_url", None) if account_route is not None else None),
             trigger=str(trigger or "retry_plan_check"),
         )
+        if str(result.get("status") or "").lower() == "deactivated":
+            result["account_status_persisted"] = _persist_account_deactivated_result(
+                email,
+                result,
+                source="plan_check",
+            )
         if result.get("ok"):
             account_task_store.append_event(
                 task_id,
@@ -330,6 +374,32 @@ def _run_retry_plan_check(
             )
         return result
     except Exception as exc:
+        deactivation_code = _account_deactivation_code(exc)
+        if deactivation_code:
+            result = {
+                "ok": False,
+                "status": "deactivated",
+                "checked_at": datetime.now().isoformat(timespec="seconds"),
+                "error": deactivation_code,
+            }
+            result["account_status_persisted"] = _persist_account_deactivated_result(
+                email,
+                result,
+                source="plan_check",
+            )
+            account_task_store.append_event(
+                task_id,
+                stage="plan_check_result",
+                message="套餐查询确认账号已废号，已停止后续配置",
+                level="ERROR",
+                detail={
+                    "status": "deactivated",
+                    "reason": deactivation_code,
+                    "persisted": result["account_status_persisted"],
+                },
+                state="failed",
+            )
+            return result
         account_task_store.append_event(
             task_id,
             stage="plan_check_result",
@@ -551,6 +621,8 @@ def _build_roxy_twofa_setup(
             return True
         except CodexRetryStopped:
             raise
+        except AccountUnusableError:
+            raise
         except Exception as exc:
             with _ACCOUNT_SETUP_DB_LOCK:
                 db.update_account_twofa_status(
@@ -702,6 +774,8 @@ def _build_roxy_account_setup(
                     _checkpoint_submitted_password(password)
             except CodexRetryStopped:
                 raise
+            except AccountUnusableError:
+                raise
             except PasswordSetupUnsupportedError as exc:
                 db.update_account_password_capability(
                     email,
@@ -718,6 +792,11 @@ def _build_roxy_account_setup(
                 )
                 raise
             except Exception as exc:
+                deactivation_code = _account_deactivation_code(exc)
+                if deactivation_code:
+                    raise AccountUnusableError(
+                        str(exc), error_code=deactivation_code,
+                    ) from exc
                 account_task_store.append_event(
                     task_id,
                     stage="login_password_result",
@@ -754,10 +833,17 @@ def _build_roxy_account_setup(
                     step_changed, error = future_or_result
             except CodexRetryStopped:
                 raise
+            except AccountUnusableError:
+                raise
             except PasswordSetupUnsupportedError as exc:
                 step_changed, error = False, f"{type(exc).__name__}: {str(exc)[:180]}"
                 unsupported_errors.append(error)
             except Exception as exc:
+                deactivation_code = _account_deactivation_code(exc)
+                if deactivation_code:
+                    raise AccountUnusableError(
+                        str(exc), error_code=deactivation_code,
+                    ) from exc
                 step_changed, error = False, f"{type(exc).__name__}: {str(exc)[:180]}"
             changed = changed or bool(step_changed)
             if error:
@@ -960,11 +1046,31 @@ def run_twofa_worker(
                 task_id,
                 trigger=str(task_trigger or "manual") + "_plan_check",
             )
-        if requested_steps == {"plan_check"}:
+        if str((plan_result or {}).get("status") or "").lower() == "deactivated":
             result = {
-                "status": "success" if plan_result and plan_result.get("ok") else "failed",
+                "status": "deactivated",
+                "ok": False,
+                "message": "账号已废号，已停止账号配置",
+                "plan_check": plan_result,
+                "account_status_persisted": bool(plan_result.get("account_status_persisted")),
+                "proxy_provider": account_route.provider,
+                "proxy_region": account_route.region,
+                "proxy_mode": account_route.mode,
+            }
+            return result
+        if requested_steps == {"plan_check"}:
+            plan_status = str((plan_result or {}).get("status") or "").lower()
+            result = {
+                "status": (
+                    "deactivated" if plan_status == "deactivated"
+                    else "success" if plan_result and plan_result.get("ok") else "failed"
+                ),
                 "ok": bool(plan_result and plan_result.get("ok")),
-                "message": "套餐已补查并确认" if plan_result and plan_result.get("ok") else "套餐补查未完成",
+                "message": (
+                    "账号已废号，已停止套餐补查" if plan_status == "deactivated"
+                    else "套餐已补查并确认" if plan_result and plan_result.get("ok")
+                    else "套餐补查未完成"
+                ),
                 "proxy_provider": account_route.provider,
                 "proxy_region": account_route.region,
                 "proxy_mode": account_route.mode,
@@ -989,7 +1095,14 @@ def run_twofa_worker(
                 )
             except CodexRetryStopped:
                 raise
+            except AccountUnusableError:
+                raise
             except Exception as exc:
+                deactivation_code = _account_deactivation_code(exc)
+                if deactivation_code:
+                    raise AccountUnusableError(
+                        str(exc), error_code=deactivation_code,
+                    ) from exc
                 direct_protocol_failed = True
                 direct_error = f"{type(exc).__name__}: {str(exc)[:220]}"
                 account_task_store.append_event(
@@ -1044,6 +1157,12 @@ def run_twofa_worker(
                     "proxy_region": account_route.region,
                     "proxy_mode": account_route.mode,
                 }
+                if str(result.get("status") or "").lower() == "deactivated":
+                    result["account_status_persisted"] = _persist_account_deactivated_result(
+                        email,
+                        result,
+                        source="account_setup",
+                    )
                 return result
         account_task_store.append_event(
             task_id,
@@ -1129,7 +1248,7 @@ def run_twofa_worker(
                 detail={"error": f"{type(exc).__name__}: {str(exc)[:220]}"},
                 state="failed",
             )
-        deactivated = isinstance(exc, AccountUnusableError)
+        deactivated = bool(_account_deactivation_code(exc))
         deactivated_persisted = False
         error_code = str(
             getattr(exc, "code", "") or getattr(exc, "error_code", "") or ""
@@ -1189,6 +1308,7 @@ def run_twofa_worker(
         task_status = (
             "success" if result.get("ok")
             else "unsupported" if result.get("status") == "unsupported"
+            else "deactivated" if result.get("status") == "deactivated"
             else "cancelled" if result.get("status") == "stopped"
             else "failed"
         )
@@ -1200,6 +1320,7 @@ def run_twofa_worker(
                     message=(
                         setup_message
                         if task_status == "success"
+                        else "账号已废号，已停止账号配置" if task_status == "deactivated"
                         else "账号配置重试已停止" if task_status == "cancelled" else "账号配置重试失败"
                     ),
                     error=None if task_status == "success" else str(result.get("message") or "账号配置重试失败"),
@@ -1211,6 +1332,7 @@ def run_twofa_worker(
                         "twofa_driver": result.get("twofa_driver"),
                         "auth_source": result.get("auth_source"),
                         "browser_opened": result.get("browser_opened"),
+                        "account_status_persisted": result.get("account_status_persisted"),
                     },
                     route={
                         "network_route": route_summary.get("network_route"),
@@ -1412,8 +1534,18 @@ def _run_worker_legacy(
             db.update_account_codex_status(email, "success", None)
             logger.info("[Codex 补跑] %s 成功", email)
         elif result_status == "deactivated":
+            persisted = _persist_account_deactivated_result(
+                email,
+                result,
+                source="codex_retry",
+            )
             db.update_account_codex_status(email, "deactivated", result.get("message"))
-            logger.warning("[Codex 补跑] %s 账号已废: %s", email, result.get("message"))
+            logger.warning(
+                "[Codex 补跑] %s 账号已废: persisted=%s message=%s",
+                email,
+                persisted,
+                result.get("message"),
+            )
         else:
             db.update_account_codex_status(email, result_status, result.get("message"))
             logger.warning("[Codex 补跑] %s 失败: %s", email, result.get("message"))

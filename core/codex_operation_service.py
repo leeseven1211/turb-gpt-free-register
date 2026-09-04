@@ -453,6 +453,14 @@ def _execute_run(run_id: int) -> dict:
                 error=final_error,
                 active_run_id=0,
             )
+            if final_status == "deactivated":
+                persisted = db.mark_account_deactivated(
+                    account_id,
+                    reason=final_error or "account_deactivated",
+                    source="codex_oauth",
+                )
+                if not persisted:
+                    logger.error("Codex OAuth 废号状态写回失败：account_id=%s run_id=%s", account_id, run_id)
             return {**result, "status": final_status, "run_id": run_id}
     except OperationCancelled as exc:
         message = str(exc) or "用户手动停止 Codex 补跑"

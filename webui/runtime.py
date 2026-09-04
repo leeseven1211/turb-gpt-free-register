@@ -184,8 +184,20 @@ def _run_account_completion_worker(
                 "twofa_driver": setup_result.get("twofa_driver"),
                 "auth_source": setup_result.get("auth_source"),
                 "browser_opened": setup_result.get("browser_opened"),
+                "account_status_persisted": setup_result.get("account_status_persisted"),
             }
-            if str(setup_result.get("status") or "").lower() == "unsupported":
+            setup_status = str(setup_result.get("status") or "").lower()
+            if setup_status == "deactivated":
+                account_task_store.finish_task(
+                    task_id,
+                    status="deactivated",
+                    message="账号已废号，已停止补全",
+                    error=str(setup_result.get("message") or "account_deactivated"),
+                    result_summary=result_summary,
+                    validation_method="account_completion_plan",
+                )
+                return
+            if setup_status == "unsupported":
                 account_task_store.finish_task(
                     task_id,
                     status="unsupported",

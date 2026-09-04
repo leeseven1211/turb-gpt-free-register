@@ -66,6 +66,17 @@ class AuthCompletionMatrixTests(unittest.TestCase):
         self.assertFalse(result["auth"]["roxy_fallback_allowed"])
         self.assertEqual("stop", result["auth"]["next_action"])
 
+    def test_protocol_v2_account_deactivated_keeps_terminal_account_status(self):
+        error = protocol_v2_liveness.ProtocolV2AuthError(
+            "account_deactivated", category="account", roxy_fallback_allowed=False,
+        )
+        with patch.object(protocol_v2_liveness, "_refresh_with_password", side_effect=error):
+            result = protocol_v2_liveness.refresh_access_token("account@example.com", proxy="")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("deactivated", result["status"])
+        self.assertEqual("account_deactivated", result["error"])
+
     def test_account_operation_result_projection_is_safe_for_success_and_failure(self):
         success = auth_result_for_operation(
             {"ok": True, "status": "success", "auth_method": "roxy"},

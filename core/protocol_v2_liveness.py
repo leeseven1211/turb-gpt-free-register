@@ -712,9 +712,10 @@ def refresh_access_token(
             ).as_dict(),
         }
     except ProtocolV2AuthError as exc:
+        status = "deactivated" if exc.code == "account_deactivated" else "failed"
         result = {
             "ok": False,
-            "status": "failed",
+            "status": status,
             "checked_at": checked_at,
             "error": exc.code,
             "error_category": exc.category,

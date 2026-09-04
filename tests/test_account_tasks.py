@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, call, patch
 
-from core import account_task_store, codex_retry_service, live_check_service, postgres_store, roxy_codex_oauth, task_run_log, token_refresh_service
+from core import account_task_store, codex_retry_service, live_check_service, postgres_store, record_store, roxy_codex_oauth, task_run_log, token_refresh_service
 from core.openai_auth import AccountUnusableError
 from webui import app as webui_app
 from webui.app import create_app
@@ -34,9 +34,9 @@ class AccountCompletionDeactivationTests(unittest.TestCase):
             ),
             patch.object(
                 codex_retry_service.db,
-                "update_account_liveness",
+                "mark_account_deactivated",
                 return_value=True,
-            ) as update_liveness,
+            ) as mark_deactivated,
         ):
             result = codex_retry_service._persist_account_deactivated(
                 "account@example.com",
@@ -44,15 +44,80 @@ class AccountCompletionDeactivationTests(unittest.TestCase):
             )
 
         self.assertTrue(result)
-        update_liveness.assert_called_once_with(
+        mark_deactivated.assert_called_once_with(
             192,
-            {
-                "ok": False,
-                "status": "deactivated",
-                "error": "account_deactivated",
-                "validation_method": "account_setup",
-            },
+            reason="account_deactivated",
+            source="account_setup",
         )
+
+    def test_account_setup_preserves_confirmed_unusable_error(self):
+        account = {
+            "id": 192,
+            "email": "account@example.com",
+            "access_token": "saved-token",
+            "totp_secret": "existing-totp",
+            "extra_json": "{}",
+        }
+        dead = AccountUnusableError("账号已废", error_code="account_deactivated")
+        with (
+            patch.object(codex_retry_service.db, "get_account_by_email", return_value=account),
+            patch.object(codex_retry_service.account_task_store, "append_event"),
+            patch("config.twofa.get_twofa_driver", return_value="browser"),
+            patch("core.registration.selenium_auth.registration_password", return_value="Password!123"),
+            patch("core.registration.selenium_auth.set_login_password", side_effect=dead),
+        ):
+            setup = codex_retry_service._build_roxy_account_setup(
+                "account@example.com", 101, include_twofa=False,
+            )
+            with self.assertRaises(AccountUnusableError):
+                setup(object())
+
+    def test_deactivated_operation_result_uses_stable_reason_code(self):
+        with (
+            patch.object(
+                codex_retry_service.db,
+                "get_account_by_email",
+                return_value={"id": 192},
+            ),
+            patch.object(
+                codex_retry_service.db,
+                "mark_account_deactivated",
+                return_value=True,
+            ) as mark_deactivated,
+        ):
+            self.assertTrue(codex_retry_service._persist_account_deactivated_result(
+                "account@example.com",
+                {"status": "deactivated", "message": "账号已废（account_deactivated）"},
+                source="codex_retry",
+            ))
+
+        mark_deactivated.assert_called_once_with(
+            192,
+            reason="account_deactivated",
+            source="codex_retry",
+        )
+
+    def test_twofa_setup_preserves_confirmed_unusable_error(self):
+        account = {
+            "id": 192,
+            "email": "account@example.com",
+            "access_token": "saved-token",
+            "totp_secret": "",
+            "extra_json": "{}",
+        }
+        dead = AccountUnusableError("账号已废", error_code="account_deactivated")
+        with (
+            patch.object(codex_retry_service.db, "get_account_by_email", return_value=account),
+            patch.object(codex_retry_service.db, "update_account_twofa_status", return_value=True),
+            patch.object(codex_retry_service.account_task_store, "append_event"),
+            patch("config.twofa.get_twofa_driver", return_value="browser"),
+            patch("core.registration.selenium_auth.setup_roxy_2fa", side_effect=dead),
+        ):
+            setup = codex_retry_service._build_roxy_twofa_setup(
+                "account@example.com", 101, twofa_driver="browser",
+            )
+            with self.assertRaises(AccountUnusableError):
+                setup(object())
 
     def test_protocol_mailbox_failure_does_not_fall_back_to_browser(self):
         self.assertFalse(
@@ -165,6 +230,24 @@ class TokenRefreshServiceTests(unittest.TestCase):
 
 
 class AccountStatusTests(PostgresTestCase):
+    def test_mark_account_deactivated_updates_status_and_source(self):
+        account_id = self.seed(record_store.ACCOUNTS, [{
+            "email": "dead@example.com",
+            "codex_status": "skipped",
+        }])[0]
+
+        self.assertTrue(webui_app.db.mark_account_deactivated(
+            account_id,
+            reason="account_deactivated",
+            source="account_setup",
+        ))
+
+        row = webui_app.db.get_account(account_id)
+        self.assertEqual("deactivated", row["account_status"])
+        self.assertEqual("deactivated", row["codex_status"])
+        self.assertEqual("account_deactivated", row["account_status_reason"])
+        self.assertEqual("account_setup", row["account_status_source"])
+
     def test_liveness_persists_only_safe_auth_fingerprint_summary(self):
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)
