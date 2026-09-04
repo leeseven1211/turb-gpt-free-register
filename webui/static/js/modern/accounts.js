@@ -609,8 +609,20 @@ function _accountStatusCellV2(r) {
   if (status === 'deactivated') {
     return `<span class="acc-v2-account-status is-fail"${reason ? ` title="${esc(reason)}"` : ''}>已废号</span>`;
   }
-  if (status === 'active') return '<span class="acc-v2-account-status is-ok">正常</span>';
-  return '<span class="acc-v2-account-status is-mute" title="账号状态待确认">待确认</span>';
+  const liveStatus = String(r.live_check_status || '').toLowerCase();
+  const liveHttp = _liveCheckHttpStatus(r);
+  const liveReason = String(r.live_check_error || '').trim();
+  if (liveStatus === 'failed') {
+    const tokenIssue = liveHttp === 401 || liveHttp === 403;
+    const label = tokenIssue ? `Token 异常 · HTTP ${liveHttp}` : '查活失败';
+    const detail = [liveHttp ? `HTTP ${liveHttp}` : '', liveReason].filter(Boolean).join('；');
+    return `<span class="acc-v2-account-status is-fail"${detail ? ` title="${esc(detail)}"` : ''}>${label}</span>`;
+  }
+  if (liveStatus === 'queued' || liveStatus === 'running') {
+    return '<span class="acc-v2-account-status is-mute">查活中</span>';
+  }
+  if (liveStatus === 'live') return '<span class="acc-v2-account-status is-ok">正常</span>';
+  return '<span class="acc-v2-account-status is-mute" title="尚未完成查活，不能确认账号正常">待查活</span>';
 }
 function _fmtPlanTime(v, dateOnly = false) {
   if (!v) return '';

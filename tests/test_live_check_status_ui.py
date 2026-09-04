@@ -75,5 +75,8 @@ class LiveCheckStatusUiTests(PostgresTestCase):
                     source = response.get_data(as_text=True)
                     self.assertIn("accountStatus", source)
                     self.assertIn("已废号", source)
+                    self.assertIn("Token 异常", source)
+                    self.assertIn("查活失败", source)
+                    self.assertIn("待查活", source)
                 finally:
                     response.close()

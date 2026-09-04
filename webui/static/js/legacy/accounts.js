@@ -88,8 +88,18 @@ function _accountStatusCell(r) {
   const status = String(r.account_status || 'active').toLowerCase();
   const reason = String(r.account_status_reason || '').trim();
   if (status === 'deactivated') return `<span class="pill status-failed"${reason ? ` title="${esc(reason)}"` : ''}>已废号</span>`;
-  if (status === 'active') return '<span class="pill status-success">正常</span>';
-  return '<span class="pill status-used">待确认</span>';
+  const liveStatus = String(r.live_check_status || '').toLowerCase();
+  const liveHttp = _liveCheckHttpStatus(r);
+  const liveReason = String(r.live_check_error || '').trim();
+  if (liveStatus === 'failed') {
+    const tokenIssue = liveHttp === 401 || liveHttp === 403;
+    const label = tokenIssue ? `Token 异常 · HTTP ${liveHttp}` : '查活失败';
+    const detail = [liveHttp ? `HTTP ${liveHttp}` : '', liveReason].filter(Boolean).join('；');
+    return `<span class="pill status-failed"${detail ? ` title="${esc(detail)}"` : ''}>${label}</span>`;
+  }
+  if (liveStatus === 'queued' || liveStatus === 'running') return '<span class="pill status-used">查活中</span>';
+  if (liveStatus === 'live') return '<span class="pill status-success">正常</span>';
+  return '<span class="pill status-used" title="尚未完成查活，不能确认账号正常">待查活</span>';
 }
 function _fmtPlanTime(v, dateOnly = false) {
   if (!v) return '';
