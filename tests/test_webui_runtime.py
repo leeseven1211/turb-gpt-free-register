@@ -161,6 +161,34 @@ class WebUIRuntimeTests(unittest.TestCase):
 
         self.assertEqual("partial_success", finish_task.call_args.kwargs["status"])
 
+    def test_unsupported_account_setup_finishes_parent_as_unsupported(self):
+        with (
+            patch.object(runtime.account_task_store, "start_task"),
+            patch.object(runtime.account_task_store, "append_event"),
+            patch.object(runtime.account_task_store, "finish_task") as finish_task,
+            patch.object(
+                runtime.codex_retry_service,
+                "run_twofa_worker",
+                return_value={
+                    "status": "unsupported",
+                    "ok": False,
+                    "message": "密码资格接口 eligible=false",
+                },
+            ),
+            patch.object(runtime.codex_retry_service, "release"),
+        ):
+            runtime._run_account_completion_worker(
+                "unsupported@example.test",
+                account_id=591,
+                task_id=1002,
+                task_trigger="manual_account_completion",
+                planned_steps=["password"],
+                settings={},
+            )
+
+        self.assertEqual("unsupported", finish_task.call_args.kwargs["status"])
+        self.assertIn("eligible=false", finish_task.call_args.kwargs["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

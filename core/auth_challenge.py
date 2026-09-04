@@ -32,6 +32,12 @@ class PasswordRejectedError(RuntimeError):
     code = "password_rejected"
 
 
+class PasswordSetupUnsupportedError(RuntimeError):
+    """The account is authenticated but the remote password setup is unavailable."""
+
+    code = "password_setup_unsupported"
+
+
 class MfaSecretMissingError(RuntimeError):
     """The remote requested TOTP but no local authenticator secret is available."""
 
@@ -278,6 +284,7 @@ __all__ = [
     "AuthStatus",
     "RemoteExistingAccountError",
     "PasswordRejectedError",
+    "PasswordSetupUnsupportedError",
     "MfaSecretMissingError",
     "auth_result_for_operation",
     "auth_result_for_registration",

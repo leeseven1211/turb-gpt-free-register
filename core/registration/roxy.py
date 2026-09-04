@@ -30,6 +30,7 @@ from core.registration.state_machine import (
 from core.auth_challenge import (
     MfaSecretMissingError,
     PasswordRejectedError,
+    PasswordSetupUnsupportedError,
     RemoteExistingAccountError,
     auth_result_for_registration,
     classify_registration_identity,
@@ -3172,6 +3173,64 @@ _MFA_EMAIL_CODE_SELECTOR = (
 _MFA_TOTP_CODE_SELECTOR = 'input[name="totp_otp"]'
 
 
+def _probe_chatgpt_password_eligibility(driver, *, timeout: int = 12) -> bool | None:
+    """Read the authenticated ChatGPT password-setup capability.
+
+    The settings SPA can render the normal home shell even when the backend
+    explicitly disables adding a password. Use the session's access token as
+    the browser frontend does, and treat transport/auth/schema failures as
+    unknown so this probe never blocks a potentially supported account.
+    """
+    try:
+        result = driver.execute_async_script(
+            r"""
+            const done = arguments[arguments.length - 1];
+            const timeoutMs = Number(arguments[0]) || 12000;
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), timeoutMs);
+            (async () => {
+              try {
+                const sessionResponse = await fetch('/api/auth/session', {
+                  credentials: 'include',
+                  headers: {Accept: 'application/json'},
+                  signal: controller.signal,
+                });
+                const session = await sessionResponse.json().catch(() => ({}));
+                const accessToken = String(session?.accessToken || '').trim();
+                if (!accessToken) {
+                  done({status: sessionResponse.status, eligible: null, reason: 'session_missing'});
+                  return;
+                }
+                const response = await fetch('/backend-api/accounts/change_password/eligibility', {
+                  credentials: 'include',
+                  headers: {Accept: 'application/json', Authorization: `Bearer ${accessToken}`},
+                  signal: controller.signal,
+                });
+                const payload = await response.json().catch(() => ({}));
+                const eligible = payload && typeof payload.eligible === 'boolean'
+                  ? payload.eligible : null;
+                done({status: response.status, eligible});
+              } catch (error) {
+                done({status: 0, eligible: null, reason: String(error?.name || 'probe_error')});
+              } finally {
+                clearTimeout(timer);
+              }
+            })();
+            """,
+            max(1, int(timeout)) * 1000,
+        )
+    except Exception:
+        return None
+    if not isinstance(result, dict):
+        return None
+    eligible = result.get("eligible")
+    if eligible is True:
+        return True
+    if eligible is False and int(result.get("status") or 0) == 200:
+        return False
+    return None
+
+
 def _totp_secret_candidate(value: object) -> str | None:
     """Normalize the manual Authenticator key without ever logging it."""
     text = str(value or "").strip()
@@ -3539,6 +3598,13 @@ def set_roxy_login_password(
     normalized = str(password or "").strip()
     if not normalized:
         raise ValueError("账号密码不能为空")
+
+    eligibility = _probe_chatgpt_password_eligibility(driver)
+    if eligibility is False:
+        logger.info("%s ChatGPT 密码资格检查：eligible=false，停止进入设置页", _log_prefix(driver))
+        raise PasswordSetupUnsupportedError(
+            "ChatGPT 当前账号不允许添加账号密码（密码资格接口 eligible=false）"
+        )
 
     _safe_get(
         driver,

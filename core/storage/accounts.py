@@ -10,6 +10,7 @@ from typing import Any, Callable
 _NAMES = {
     "insert_account", "get_account", "get_account_by_email", "list_accounts", "list_accounts_page",
     "update_account_codex_status", "update_account_codex_operation_state", "update_account_login_password",
+    "update_account_password_capability",
     "update_account_totp_secret", "update_account_twofa_status", "update_account_token_metadata",
     "update_account_session", "sync_account_token_metadata", "update_account_note", "update_account_registration_proxy",
     "backfill_account_registration_proxy_context", "update_account_deactivation_mail", "update_account_liveness",

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from core import db, task_run_log
 from core.operations import task_gateway as account_task_store
-from core.auth_challenge import auth_result_for_operation
+from core.auth_challenge import PasswordSetupUnsupportedError, auth_result_for_operation
 from core.openai_auth import AccountUnusableError
 
 logger = logging.getLogger(__name__)
@@ -702,6 +702,21 @@ def _build_roxy_account_setup(
                     _checkpoint_submitted_password(password)
             except CodexRetryStopped:
                 raise
+            except PasswordSetupUnsupportedError as exc:
+                db.update_account_password_capability(
+                    email,
+                    eligible=False,
+                    reason="remote_not_eligible",
+                )
+                account_task_store.append_event(
+                    task_id,
+                    stage="login_password_result",
+                    message="ChatGPT 当前不支持添加账号密码，跳过重复重试",
+                    level="WARNING",
+                    detail={"eligible": False, "reason": "remote_not_eligible"},
+                    state="skipped",
+                )
+                raise
             except Exception as exc:
                 account_task_store.append_event(
                     task_id,
@@ -728,6 +743,7 @@ def _build_roxy_account_setup(
 
         changed = False
         errors: list[str] = []
+        unsupported_errors: list[str] = []
 
         def _collect(label: str, future_or_result) -> None:
             nonlocal changed
@@ -738,6 +754,9 @@ def _build_roxy_account_setup(
                     step_changed, error = future_or_result
             except CodexRetryStopped:
                 raise
+            except PasswordSetupUnsupportedError as exc:
+                step_changed, error = False, f"{type(exc).__name__}: {str(exc)[:180]}"
+                unsupported_errors.append(error)
             except Exception as exc:
                 step_changed, error = False, f"{type(exc).__name__}: {str(exc)[:180]}"
             changed = changed or bool(step_changed)
@@ -761,6 +780,8 @@ def _build_roxy_account_setup(
                 level="ERROR",
                 detail={"errors": errors, "parallel": parallel_setup},
             )
+            if unsupported_errors:
+                raise PasswordSetupUnsupportedError("；".join(errors))
             raise RuntimeError("账号配置部分失败：" + "；".join(errors))
         return changed
 
@@ -1098,7 +1119,8 @@ def run_twofa_worker(
         result = {"status": "stopped", "ok": False, "message": str(exc) or "用户手动停止账号配置重试"}
         return result
     except Exception as exc:
-        if browser_stage_started and not browser_stage_finished:
+        unsupported = isinstance(exc, PasswordSetupUnsupportedError)
+        if browser_stage_started and not browser_stage_finished and not unsupported:
             account_task_store.append_event(
                 task_id,
                 stage="browser",
@@ -1132,7 +1154,7 @@ def run_twofa_worker(
                 state="success" if deactivated_persisted else "failed",
             )
         result = {
-            "status": "deactivated" if deactivated else "failed",
+            "status": "deactivated" if deactivated else "unsupported" if unsupported else "failed",
             "ok": False,
             "message": f"{type(exc).__name__}: {exc}",
             "error_code": error_code,
@@ -1164,7 +1186,12 @@ def run_twofa_worker(
         with _RETRYING_LOCK:
             if key:
                 _STOP_REQUESTED.discard(key)
-        task_status = "success" if result.get("ok") else "cancelled" if result.get("status") == "stopped" else "failed"
+        task_status = (
+            "success" if result.get("ok")
+            else "unsupported" if result.get("status") == "unsupported"
+            else "cancelled" if result.get("status") == "stopped"
+            else "failed"
+        )
         try:
             if manage_task:
                 account_task_store.finish_task(

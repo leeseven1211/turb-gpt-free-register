@@ -3,10 +3,34 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from core import db, roxy_registration
+from core.auth_challenge import PasswordSetupUnsupportedError
 from core.task_stages import flow_for
 
 
 class RoxyTwoFactorTests(unittest.TestCase):
+    def test_password_eligibility_probe_returns_remote_false(self):
+        driver = Mock()
+        driver.execute_async_script.return_value = {"status": 200, "eligible": False}
+
+        result = roxy_registration._probe_chatgpt_password_eligibility(driver)
+
+        self.assertFalse(result)
+        driver.execute_async_script.assert_called_once()
+
+    def test_password_setup_stops_before_settings_when_remote_disallows_it(self):
+        driver = Mock()
+        driver.execute_async_script.return_value = {"status": 200, "eligible": False}
+
+        with patch.object(roxy_registration, "_safe_get") as safe_get:
+            with self.assertRaises(PasswordSetupUnsupportedError):
+                roxy_registration.set_roxy_login_password(
+                    driver,
+                    "new@example.com",
+                    "AccountPassword!123",
+                )
+
+        safe_get.assert_not_called()
+
     def test_settings_home_shell_is_refreshed_even_with_stale_home_controls(self):
         driver = Mock()
         driver.execute_script.return_value = {

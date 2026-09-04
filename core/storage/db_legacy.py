@@ -988,6 +988,34 @@ def update_account_login_password(email: str, password: str, *, source: str = "p
     })
 
 
+def update_account_password_capability(
+    email: str,
+    *,
+    eligible: bool,
+    reason: str | None = None,
+) -> bool:
+    """Persist the remote capability result without changing credentials."""
+    row = record_store.get_row_by(record_store.ACCOUNTS, "email", email, lower=True)
+    if row is None:
+        return False
+    raw_extra = row.get("extra_json") or {}
+    if isinstance(raw_extra, str):
+        try:
+            raw_extra = json.loads(raw_extra)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw_extra = {}
+    extra = dict(raw_extra) if isinstance(raw_extra, dict) else {}
+    extra["account_password_capability"] = {
+        "eligible": bool(eligible),
+        "reason": str(reason or "")[:160],
+        "checked_at": _now(),
+    }
+    return _patch_account(int(row["id"]), {
+        "extra_json": json.dumps(extra, ensure_ascii=False),
+        "updated_at": _now(),
+    })
+
+
 def update_account_totp_secret(
     email: str,
     totp_secret: str,

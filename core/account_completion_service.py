@@ -45,6 +45,11 @@ def _password_present(account: Mapping) -> bool:
     )
 
 
+def _password_setup_blocked(account: Mapping) -> bool:
+    capability = _extra(account).get("account_password_capability")
+    return isinstance(capability, Mapping) and capability.get("eligible") is False
+
+
 def _twofa_present(account: Mapping) -> bool:
     if str(account.get("totp_secret") or "").strip():
         return not bool(_extra(account).get("totp_setup_pending"))
@@ -121,7 +126,13 @@ def completion_plan(account: Mapping | None, settings: Mapping | None = None) ->
             else:
                 blocked.append({"step": "refresh_at", "reason": "账号缺少可用 access_token，请先单独执行刷新 AT"})
         if enabled["password"] and not _password_present(account):
-            missing.append("password")
+            if _password_setup_blocked(account):
+                blocked.append({
+                    "step": "password",
+                    "reason": "ChatGPT 当前账号不允许添加账号密码，已跳过重复重试",
+                })
+            else:
+                missing.append("password")
         if enabled["plan_check"] and str(account.get("plan_check_status") or "").strip().lower() != "success":
             missing.append("plan_check")
         if enabled["twofa"] and not _twofa_present(account):

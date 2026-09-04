@@ -185,6 +185,16 @@ def _run_account_completion_worker(
                 "auth_source": setup_result.get("auth_source"),
                 "browser_opened": setup_result.get("browser_opened"),
             }
+            if str(setup_result.get("status") or "").lower() == "unsupported":
+                account_task_store.finish_task(
+                    task_id,
+                    status="unsupported",
+                    message="账号配置包含当前不支持的步骤",
+                    error=str(setup_result.get("message") or "账号配置步骤当前不支持"),
+                    result_summary=result_summary,
+                    validation_method="account_completion_plan",
+                )
+                return
             if not setup_result.get("ok"):
                 raise RuntimeError(setup_result.get("message") or "账号配置步骤未完成")
             plan_outcome = setup_result.get("plan_check") or {}
@@ -309,6 +319,23 @@ class WebUIContext:
         if not requested_steps:
             codex_retry_service.release(email)
             return {"accepted": False, "error": "没有可执行的账号配置步骤"}
+        if requested_steps == {"password"}:
+            from core.account_completion_service import completion_plan
+            from config.account import completion_settings
+
+            password_plan = completion_plan(account, completion_settings())
+            blocked = [
+                item for item in password_plan.get("blocked") or []
+                if item.get("step") == "password"
+            ]
+            if blocked:
+                codex_retry_service.release(email)
+                return {
+                    "accepted": False,
+                    "blocked": blocked,
+                    "plan": password_plan,
+                    "error": blocked[0].get("reason") or "账号密码补全当前不可用",
+                }
         inferred_task_type = (
             "password_setup" if requested_steps == {"password"}
             else "twofa_setup" if requested_steps == {"twofa"}
