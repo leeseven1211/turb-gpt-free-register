@@ -10,7 +10,6 @@ import logging
 import os
 import threading
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Iterable
 
@@ -18,12 +17,12 @@ from core.storage import accounts as db
 from core.storage import operation_runtime_store as operation_task_store
 from core import task_run_log
 from core.operation_runtime import CancellationToken, OperationCancelled, operation_context
+from core.account_operation_executor import configured_workers
+from core.account_operation_executor import executor as _EXECUTOR
 
 logger = logging.getLogger(__name__)
 
 _LOG_DIR = Path(__file__).resolve().parent.parent / "注册日志"
-_EXECUTOR_LOCK = threading.RLock()
-_EXECUTOR: ThreadPoolExecutor | None = None
 _LOCAL_TOKENS: dict[int, CancellationToken] = {}
 _LOCAL_TOKENS_LOCK = threading.RLock()
 
@@ -33,15 +32,9 @@ def log_path(email: str) -> Path:
     return _LOG_DIR / f"codex-retry-{safe}.log"
 
 
-def _executor() -> ThreadPoolExecutor:
-    global _EXECUTOR
-    with _EXECUTOR_LOCK:
-        if _EXECUTOR is None:
-            from config import codex as cfg
-
-            workers = max(1, min(16, int(getattr(cfg, "ACCOUNT_BATCH_WORKERS", 3) or 3)))
-            _EXECUTOR = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="codex-operation")
-        return _EXECUTOR
+def _executor():
+    """Compatibility accessor for the shared account-operation executor."""
+    return _EXECUTOR
 
 
 def _feature_ready() -> tuple[bool, str]:
@@ -80,19 +73,17 @@ def _append_log(email: str, message: str, *, clear: bool = False) -> None:
 
 
 def _dispatch(run_id: int) -> None:
-    _executor().submit(_execute_run, int(run_id))
+    _EXECUTOR.submit(_execute_run, int(run_id))
 
 
-def _dispatch_bulk(run_ids: list[int], workers: int) -> None:
-    """批次只启动固定数量 worker；账号资源仍在 run 被认领后才申请。"""
-    def run_batch() -> None:
-        with ThreadPoolExecutor(
-            max_workers=max(1, min(16, int(workers))),
-            thread_name_prefix="codex-batch-worker",
-        ) as executor:
-            list(executor.map(_execute_run, [int(run_id) for run_id in run_ids]))
+def _dispatch_bulk(run_ids: list[int], workers: int | None = None) -> None:
+    """Submit every run to the common account-operation pool.
 
-    threading.Thread(target=run_batch, name="codex-batch-dispatch", daemon=True).start()
+    ``workers`` remains accepted for compatibility with older callers, but
+    ACCOUNT_BATCH_WORKERS is authoritative.
+    """
+    for run_id in run_ids:
+        _EXECUTOR.submit(_execute_run, int(run_id))
 
 
 def _duplicate_result(account_id: int) -> dict:
@@ -221,18 +212,14 @@ def submit_bulk(
     if not started:
         operation_task_store.mark_runtime_batch_empty(int(batch["id"]), status="failed")
     if started:
-        if workers is None:
-            from config import codex as cfg
-
-            workers = int(getattr(cfg, "ACCOUNT_BATCH_WORKERS", 3) or 3)
-        _dispatch_bulk([int(item["run_id"]) for item in started], max(1, min(16, int(workers))))
+        _dispatch_bulk([int(item["run_id"]) for item in started])
     return {
         "accepted": bool(started),
         "batch_id": int(batch["id"]),
         "batch_uuid": batch.get("batch_uuid"),
         "started": started,
         "started_count": len(started),
-        "workers": max(1, min(16, int(workers or 1))),
+        "workers": configured_workers(),
         "skipped": skipped,
     }
 

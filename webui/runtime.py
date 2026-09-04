@@ -23,6 +23,7 @@ from core import (
     plan_check_service,
     sms_provider,
 )
+from core.account_operation_executor import executor as _ACCOUNT_EXECUTOR
 
 logger = logging.getLogger(__name__)
 
@@ -325,19 +326,14 @@ class WebUIContext:
             self.logger.exception("创建账号配置补跑任务实例失败：email=%s", email)
             return {"accepted": False, "error": f"任务实例创建失败：{type(exc).__name__}: {exc}"}
 
-        worker = threading.Thread(
-            target=_run_account_setup_worker,
-            kwargs={
-                "email": email,
-                "task_id": task_id,
-                "task_trigger": str(trigger or "manual_account_setup"),
-                "steps": requested_steps,
-            },
-            name=f"account-setup-{email}",
-            daemon=True,
-        )
         try:
-            worker.start()
+            _ACCOUNT_EXECUTOR.submit(
+                _run_account_setup_worker,
+                email=email,
+                task_id=task_id,
+                task_trigger=str(trigger or "manual_account_setup"),
+                steps=requested_steps,
+            )
         except Exception as exc:
             codex_retry_service.release(email)
             error = f"账号配置补跑启动失败：{type(exc).__name__}: {exc}"
@@ -453,21 +449,16 @@ class WebUIContext:
         except Exception as exc:
             codex_retry_service.release(email)
             return {"accepted": False, "error": f"任务实例创建失败：{type(exc).__name__}: {exc}"}
-        worker = threading.Thread(
-            target=_run_account_completion_worker,
-            kwargs={
-                "email": email,
-                "account_id": int(account["id"]),
-                "task_id": task_id,
-                "task_trigger": str(trigger or "manual_account_completion"),
-                "planned_steps": list(plan["missing_steps"]),
-                "settings": settings,
-            },
-            name=f"account-completion-{email}",
-            daemon=True,
-        )
         try:
-            worker.start()
+            _ACCOUNT_EXECUTOR.submit(
+                _run_account_completion_worker,
+                email=email,
+                account_id=int(account["id"]),
+                task_id=task_id,
+                task_trigger=str(trigger or "manual_account_completion"),
+                planned_steps=list(plan["missing_steps"]),
+                settings=settings,
+            )
         except Exception as exc:
             codex_retry_service.release(email)
             error = f"账号补全启动失败：{type(exc).__name__}: {exc}"

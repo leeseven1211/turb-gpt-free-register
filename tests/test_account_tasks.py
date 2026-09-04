@@ -517,7 +517,7 @@ class AccountActionLoginTests(unittest.TestCase):
         opened = Mock(profile_id="profile-1")
         driver = Mock(current_url="https://auth.openai.com/about-you")
         client = Mock()
-        client.open_profile.return_value = opened
+        client.open_profile_with_capacity_wait.return_value = opened
         session = {"accessToken": "fresh-token", "expires": "2026-09-01T00:00:00Z"}
         action = Mock(return_value=True)
         with (
@@ -538,6 +538,8 @@ class AccountActionLoginTests(unittest.TestCase):
 
         complete_profile.assert_called_once()
         action.assert_called_once_with(driver, session)
+        client.open_profile_with_capacity_wait.assert_called_once_with(proxy_url=None)
+        client.open_profile.assert_not_called()
         driver.quit.assert_called_once_with()
         client.cleanup_profile.assert_called_once_with(opened)
 
@@ -721,7 +723,7 @@ class AccountTaskApiTests(PostgresTestCase):
         payload = response.get_json()
         self.assertEqual(1, payload["started_count"])
         self.assertEqual(89, payload["started"][0]["task_id"])
-        submit_bulk.assert_called_once_with([7], trigger="manual_bulk", workers=2)
+        submit_bulk.assert_called_once_with([7], trigger="manual_bulk")
 
 
 if __name__ == "__main__":

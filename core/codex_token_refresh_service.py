@@ -7,7 +7,6 @@ import json
 import logging
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -18,17 +17,13 @@ from core import scheduler_state
 from core.operations import task_gateway as account_task_store
 from core.task_reporter import TaskReporter
 from core.storage import codex as db
+from core.account_operation_executor import executor as _EXECUTOR
 
 logger = logging.getLogger(__name__)
 
 _LOCK = threading.RLock()
 _IN_FLIGHT: set[str] = set()
 _SCHEDULER_STARTED = False
-_EXECUTOR = ThreadPoolExecutor(
-    max_workers=max(1, min(16, int(getattr(_cfg, "ACCOUNT_BATCH_WORKERS", 3) or 3))),
-    thread_name_prefix="codex-token-refresh",
-)
-
 _REAUTH_ERROR_MARKERS = (
     "invalid_grant",
     "invalid refresh token",

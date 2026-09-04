@@ -14,6 +14,8 @@ from core.operations import task_gateway as account_task_store
 from core.storage import accounts as db
 from core.chatgpt_plan import check_account_plan
 from core.task_reporter import TaskReporter
+from core.account_operation_executor import configured_workers
+from core.account_operation_executor import executor as _ACCOUNT_EXECUTOR
 
 logger = logging.getLogger(__name__)
 
@@ -354,7 +356,8 @@ def enqueue_account_plan_check(
         batch_id=batch_id,
     )
     try:
-        _EXECUTOR.submit(
+        executor = _EXECUTOR if str(trigger or "").strip().lower().startswith("registration_") else _ACCOUNT_EXECUTOR
+        executor.submit(
             _run_plan_check,
             account_id=account_id,
             email=email,
@@ -393,7 +396,8 @@ def enqueue_account_plan_check(
 
 def queue_settings() -> dict:
     return {
-        "workers": _WORKERS,
+        "workers": configured_workers(),
+        "registration_workers": _WORKERS,
         "queue_limit": _QUEUE_LIMIT,
         "min_interval": _float_setting("PLAN_CHECK_MIN_INTERVAL", 0.4, 0.0, 30.0),
         "jitter": _float_setting("PLAN_CHECK_JITTER", 0.3, 0.0, 30.0),

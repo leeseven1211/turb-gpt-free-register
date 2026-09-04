@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -16,12 +15,12 @@ from core.chatgpt_plan import check_account_plan, token_claims
 from core.live_check_router import LiveCheckDriverError, resolve_driver, run_probe
 from core.openai_auth import detect_account_unusable_text
 from core.auth_challenge import auth_result_for_operation
+from core.account_operation_executor import configured_workers
+from core.account_operation_executor import executor as _EXECUTOR
 
 logger = logging.getLogger(__name__)
 
-_WORKERS = 3
 _QUEUE_LIMIT = 500
-_EXECUTOR = ThreadPoolExecutor(max_workers=_WORKERS, thread_name_prefix="live-check")
 _QUEUE_SLOTS = threading.BoundedSemaphore(_QUEUE_LIMIT)
 _RUNNING: set[int] = set()
 _LOCK = threading.Lock()
@@ -770,4 +769,4 @@ def enqueue_account_live_check(
 
 
 def queue_settings() -> dict:
-    return {"workers": _WORKERS, "queue_limit": _QUEUE_LIMIT}
+    return {"workers": configured_workers(), "queue_limit": _QUEUE_LIMIT}

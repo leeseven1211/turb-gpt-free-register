@@ -67,7 +67,8 @@ CODEX_TOKEN_AUTO_SYNC_SUB2API: bool = True
 # 注册成功后是否自动跑 Codex 授权（True=自动，False=跳过）
 ENABLE_CODEX_AUTO: bool = False
 
-# WebUI 账号页批量操作的默认并发数（查活、查套餐、Codex 补跑等）。
+# WebUI 账号操作的公共并发数（补全、查活、套餐、刷新 AT、风险扫描、
+# Codex、提链等）。注册线程数和注册链路异步套餐查询仍分别维护。
 # 页面不再临时填写，统一在「配置 → 通用配置」维护。
 ACCOUNT_BATCH_WORKERS: int = 3
 

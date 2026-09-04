@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from core import scheduler_state
@@ -21,6 +20,8 @@ from core.email_butler_client import EmailButlerClientError, scan_openai_deactiv
 from core.forward_imap_client import ForwardIMAPError
 from core.forward_imap_client import scan_openai_deactivation as scan_hme_deactivation
 from core.task_reporter import TaskReporter
+from core.account_operation_executor import configured_workers
+from core.account_operation_executor import executor as _EXECUTOR
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,6 @@ def _env_int(name: str, default: int, low: int, high: int) -> int:
     return max(low, min(value, high))
 
 
-_WORKERS = _env_int("EMAIL_BUTLER_RISK_SCAN_WORKERS", 2, 1, 8)
 _INTERVAL_SECONDS = _env_int("EMAIL_BUTLER_RISK_SCAN_INTERVAL_SECONDS", 21600, 900, 604800)
 _INITIAL_DELAY_SECONDS = _env_int("EMAIL_BUTLER_RISK_SCAN_INITIAL_DELAY_SECONDS", 90, 5, 3600)
 _LOOKBACK_DAYS = _env_int("EMAIL_BUTLER_RISK_SCAN_LOOKBACK_DAYS", 120, 1, 365)
@@ -41,7 +41,6 @@ _ENABLED = str(os.environ.get("EMAIL_BUTLER_RISK_SCAN_ENABLED", "1")).strip().lo
     "0", "false", "no", "off",
 }
 
-_EXECUTOR = ThreadPoolExecutor(max_workers=_WORKERS, thread_name_prefix="deactivation-mail")
 _LOCK = threading.RLock()
 _IN_FLIGHT: set[int] = set()
 _SCHEDULER_STARTED = False
@@ -268,7 +267,7 @@ def start_periodic_scanner() -> bool:
         "[DeactivationMail] scanner enabled interval=%ss lookback=%sd workers=%s",
         _INTERVAL_SECONDS,
         _LOOKBACK_DAYS,
-        _WORKERS,
+        configured_workers(),
     )
     return True
 
@@ -278,7 +277,7 @@ def queue_settings() -> dict:
         in_flight = sorted(_IN_FLIGHT)
     return {
         "enabled": _ENABLED,
-        "workers": _WORKERS,
+        "workers": configured_workers(),
         "interval_seconds": _INTERVAL_SECONDS,
         "lookback_days": _LOOKBACK_DAYS,
         "in_flight": in_flight,

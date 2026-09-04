@@ -31,7 +31,6 @@ from core import (
 from core import registration_service as svc
 from core.task_errors import classify_task_error
 from core.live_check_router import LiveCheckDriverError
-from config import codex as codex_config
 from webui import config_editor
 from webui.blueprint import LegacyEndpointBlueprint
 from webui.runtime import WebUIContext
@@ -1069,10 +1068,6 @@ def create_accounts_blueprint(context: WebUIContext):
             return unavailable
         data = request.get_json(silent=True) or {}
         filenames = data.get("filenames") or []
-        try:
-            workers = max(1, min(16, int(data.get("workers", codex_config.ACCOUNT_BATCH_WORKERS))))
-        except (TypeError, ValueError):
-            return jsonify({"ok": False, "error": "workers 必须是数字"}), 400
         if not isinstance(filenames, list) or not filenames:
             return jsonify({"ok": False, "error": "filenames 必须是非空数组"}), 400
         if len(filenames) > 500:

@@ -266,7 +266,7 @@ class DashboardApiTests(PostgresTestCase):
         self.assertNotIn("TG 交流群", html)
         self.assertNotIn("切换老 UI", html)
 
-    @patch("webui.app.threading.Thread")
+    @patch("webui.runtime._ACCOUNT_EXECUTOR.submit")
     @patch("webui.app.account_task_store.create_task", return_value=901)
     @patch("webui.app.codex_retry_service.reserve", return_value=True)
     @patch("webui.app.db.get_account", return_value={
@@ -274,15 +274,15 @@ class DashboardApiTests(PostgresTestCase):
         "email": "setup@example.com",
         "account_status": "active",
     })
-    def test_account_setup_endpoint_queues_configuration_without_codex(self, _get_account, _reserve, _create_task, thread_cls):
+    def test_account_setup_endpoint_queues_configuration_without_codex(self, _get_account, _reserve, _create_task, submit):
         response = self.client.post("/api/accounts/1/setup", headers=self.headers, json={})
         self.assertEqual(response.status_code, 202)
         payload = response.get_json()
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["task_id"], 901)
-        self.assertEqual(thread_cls.call_args.kwargs["kwargs"]["task_id"], 901)
-        self.assertEqual(thread_cls.call_args.kwargs["kwargs"]["task_trigger"], "manual_account_setup")
-        self.assertEqual(thread_cls.call_args.kwargs["target"].__name__, "_run_account_setup_worker")
+        self.assertEqual(submit.call_args.kwargs["task_id"], 901)
+        self.assertEqual(submit.call_args.kwargs["task_trigger"], "manual_account_setup")
+        self.assertEqual(submit.call_args.args[0].__name__, "_run_account_setup_worker")
 
     def test_modern_ui_polling_avoids_overlapping_requests_and_duplicate_summary_refresh(self):
         response = self.client.get("/", headers=self.headers)

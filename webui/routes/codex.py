@@ -527,13 +527,6 @@ def create_codex_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error": "account_ids 或 filenames 必须是非空数组"}), 400
         if len(ids) + len(filenames) > 500:
             return jsonify({"ok": False, "error": "单次最多选择 500 个账号"}), 400
-        try:
-            workers = int(data.get("workers") or getattr(codex_config, "ACCOUNT_BATCH_WORKERS", 3) or 3)
-        except (TypeError, ValueError):
-            return jsonify({"ok": False, "error": "workers 必须是整数"}), 400
-        if workers < 1 or workers > 16:
-            return jsonify({"ok": False, "error": "workers 必须在 1 到 16 之间"}), 400
-
         skipped = []
         selected_ids = list(ids)
         if filenames:
@@ -576,7 +569,7 @@ def create_codex_blueprint(context: WebUIContext):
 
         if not normalized_ids:
             return jsonify({"ok": False, "error": "没有可补跑的账号", "skipped": skipped}), 409
-        result = codex_operation_service.submit_bulk(normalized_ids, trigger="manual_bulk", workers=workers)
+        result = codex_operation_service.submit_bulk(normalized_ids, trigger="manual_bulk")
         result["skipped"] = skipped + list(result.get("skipped") or [])
         if not result.get("accepted"):
             return jsonify({"ok": False, **result}), 503 if result.get("unavailable") else 409

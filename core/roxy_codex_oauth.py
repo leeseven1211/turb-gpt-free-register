@@ -336,31 +336,45 @@ def _login_password_targets(driver) -> dict:
         return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
 
 
+def _is_stale_element_error(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return "staleelementreferenceexception" in text or "stale element reference" in text
+
+
 def _submit_saved_login_password(driver, email: str, password: str) -> None:
     if not password:
         raise RuntimeError("账号已进入登录密码页，但本地没有保存注册密码，已在手机号验证前停止")
-    targets = _login_password_targets(driver)
-    password_input = targets.pop("input", None)
-    submitter = targets.pop("submitter", None)
-    if not targets.get("ok") or password_input is None or submitter is None:
-        raise RuntimeError(f"登录密码页控件识别失败：{targets}")
-    _human_type_text(driver, password_input, password, clear=True)
-    human_delay("form", minimum=0.4, maximum=1.2)
-    submitted = bool(driver.execute_script(r"""
-    const input = arguments[0], submitter = arguments[1];
-    const form = input?.closest('form');
-    if (!form || !submitter) return false;
-    if (typeof form.requestSubmit === 'function') form.requestSubmit(submitter);
-    else form.dispatchEvent(new Event('submit', {bubbles:true, cancelable:true}));
-    return true;
-    """, password_input, submitter))
-    if not submitted:
-        password_input.send_keys("\ue007")
-    logger.info(
-        "[Codex][Browser] 已使用本地保存的注册密码提交登录：email=%s method=%s",
-        email,
-        "form_request_submit" if submitted else "password_enter",
-    )
+    for attempt in range(2):
+        try:
+            targets = _login_password_targets(driver)
+            password_input = targets.pop("input", None)
+            submitter = targets.pop("submitter", None)
+            if not targets.get("ok") or password_input is None or submitter is None:
+                raise RuntimeError(f"登录密码页控件识别失败：{targets}")
+            _human_type_text(driver, password_input, password, clear=True)
+            human_delay("form", minimum=0.4, maximum=1.2)
+            submitted = bool(driver.execute_script(r"""
+            const input = arguments[0], submitter = arguments[1];
+            const form = input?.closest('form');
+            if (!form || !submitter) return false;
+            if (typeof form.requestSubmit === 'function') form.requestSubmit(submitter);
+            else form.dispatchEvent(new Event('submit', {bubbles:true, cancelable:true}));
+            return true;
+            """, password_input, submitter))
+            if not submitted:
+                password_input.send_keys("\ue007")
+            logger.info(
+                "[Codex][Browser] 已使用本地保存的注册密码提交登录：email=%s method=%s",
+                email,
+                "form_request_submit" if submitted else "password_enter",
+            )
+            return
+        except Exception as exc:
+            if attempt == 0 and _is_stale_element_error(exc):
+                logger.warning("[Codex][Browser] 登录密码控件已被页面重绘，重新获取后重试一次：email=%s", email)
+                time.sleep(random.uniform(0.2, 0.6))
+                continue
+            raise
 
 
 def _submit_saved_login_totp(driver, email: str, totp_secret: str) -> None:
@@ -2863,7 +2877,7 @@ def run_roxy_chatgpt_account_action(
         otp_provider = wait_for_otp
 
     client = RoxyBrowserClient()
-    opened = client.open_profile(proxy_url=proxy)
+    opened = client.open_profile_with_capacity_wait(proxy_url=proxy)
     browser_kind_token = _CODEX_BROWSER_KIND.set(_detect_browser_kind(opened))
     driver = None
     try:

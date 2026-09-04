@@ -68,6 +68,114 @@ class RoxyTwoFactorTests(unittest.TestCase):
         )
         self.assertEqual(submitted, ["AccountPassword!123"])
 
+    def test_password_setup_reacquires_form_after_stale_element(self):
+        driver = Mock()
+        new_input = Mock()
+        new_input.get_attribute.side_effect = lambda name: {
+            "autocomplete": "new-password",
+            "name": "password",
+            "id": "new-password",
+        }.get(name, "")
+        confirm_input = Mock()
+        confirm_input.get_attribute.side_effect = lambda name: {
+            "autocomplete": "new-password",
+            "name": "confirm_password",
+            "id": "confirm-password",
+        }.get(name, "")
+        fresh_input = Mock()
+        fresh_input.get_attribute.side_effect = lambda name: {
+            "autocomplete": "new-password",
+            "name": "password",
+            "id": "new-password",
+        }.get(name, "")
+        fresh_confirm = Mock()
+        fresh_confirm.get_attribute.side_effect = lambda name: {
+            "autocomplete": "new-password",
+            "name": "confirm_password",
+            "id": "confirm-password",
+        }.get(name, "")
+        add_password = object()
+        submit = object()
+        stale = RuntimeError("StaleElementReferenceException: stale element reference")
+        driver.execute_script.side_effect = [
+            {"settings_route": False},
+            {"action": add_password, "inputs": [], "body": "密码 添加"},
+            {"action": None, "inputs": [new_input, confirm_input], "body": "新密码 重新输入新密码"},
+            [fresh_input, fresh_confirm],
+            {"inputs": [], "errors": [], "body": "Password added"},
+        ]
+
+        with patch.object(roxy_registration, "_safe_get") as safe_get, patch.object(
+            roxy_registration, "_check_manual_stop"
+        ), patch.object(roxy_registration, "_dismiss_single_action_dialog", return_value=False), patch.object(
+            roxy_registration, "_dismiss_chatgpt_pricing_modal", return_value=False
+        ), patch.object(
+            roxy_registration, "_human_type_text", side_effect=[stale, None, None]
+        ) as type_text, patch.object(
+            roxy_registration, "_button_after_input", return_value=submit
+        ), patch.object(roxy_registration, "_human_click") as click, patch.object(
+            roxy_registration.time, "sleep"
+        ):
+            result = roxy_registration.set_roxy_login_password(
+                driver,
+                "new@example.com",
+                "AccountPassword!123",
+                timeout=10,
+            )
+
+        self.assertEqual(result, "AccountPassword!123")
+        self.assertEqual(type_text.call_count, 3)
+        self.assertEqual(click.call_count, 2)
+        self.assertEqual(safe_get.call_count, 1)
+
+    def test_password_setup_uses_broader_fallback_for_visible_add_password_control(self):
+        driver = Mock()
+        new_input = Mock()
+        new_input.get_attribute.side_effect = lambda name: {
+            "autocomplete": "new-password",
+            "name": "password",
+            "id": "new-password",
+        }.get(name, "")
+        confirm_input = Mock()
+        confirm_input.get_attribute.side_effect = lambda name: {
+            "autocomplete": "new-password",
+            "name": "confirm_password",
+            "id": "confirm-password",
+        }.get(name, "")
+        add_password = object()
+        submit = object()
+        driver.execute_script.side_effect = [
+            {"settings_route": False},
+            {
+                "action": None,
+                "inputs": [],
+                "password_controls": ["Password Add Password"],
+                "password_lines": ["Password Add Password"],
+            },
+            add_password,
+            {"action": None, "inputs": [new_input, confirm_input], "body": "新密码 重新输入新密码"},
+            {"inputs": [], "errors": [], "body": "Password added"},
+        ]
+
+        with patch.object(roxy_registration, "_safe_get"), patch.object(
+            roxy_registration, "_check_manual_stop"
+        ), patch.object(roxy_registration, "_dismiss_single_action_dialog", return_value=False), patch.object(
+            roxy_registration, "_dismiss_chatgpt_pricing_modal", return_value=False
+        ), patch.object(roxy_registration, "_click_chatgpt_settings_control") as click_control, patch.object(
+            roxy_registration, "_human_type_text"
+        ), patch.object(roxy_registration, "_button_after_input", return_value=submit), patch.object(
+            roxy_registration, "_human_click"
+        ) as human_click, patch.object(roxy_registration.time, "sleep"):
+            result = roxy_registration.set_roxy_login_password(
+                driver, "new@example.com", "AccountPassword!123", timeout=10
+            )
+
+        self.assertEqual(result, "AccountPassword!123")
+        click_control.assert_called_once_with(
+            driver, add_password, label="account_password_settings_fallback"
+        )
+        human_click.assert_called_once_with(driver, submit, label="account_password_submit")
+
     def test_job_progress_runs_codex_before_twofa(self):
         stages = [key for key, _label in db.JOB_PROGRESS_STAGES]
         self.assertLess(stages.index("network"), stages.index("email"))

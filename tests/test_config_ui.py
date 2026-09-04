@@ -84,6 +84,7 @@ class ModernConfigUiContractTests(unittest.TestCase):
         self.assertIn('renderRegistrationMainSectionV2', CONFIG_JS)
         self.assertIn('renderAccountCompletionSectionV2', CONFIG_JS)
         self.assertIn('renderRegistrationDebugSectionV2', CONFIG_JS)
+        self.assertIn("'OPENAI_PROTOCOL_VERSION'", CONFIG_JS)
         self.assertNotIn('data-lifecycle-section-v2', CONFIG_JS)
         self.assertIn('.config-setting-row-v2', FOUNDATION_CSS)
         self.assertIn('grid-template-columns: minmax(0, 1fr) minmax(240px, 340px)', FOUNDATION_CSS)

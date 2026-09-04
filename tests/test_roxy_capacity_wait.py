@@ -3,12 +3,35 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from core import roxy_registration
+from core import roxy_registration, roxybrowser_client
 from core import registration_debug
-from core.roxybrowser_client import RoxyOpenResult
+from core.roxybrowser_client import RoxyBrowserClient, RoxyOpenResult
 
 
 class RoxyCapacityWaitTests(unittest.TestCase):
+    def test_account_client_waits_for_window_capacity_before_opening(self):
+        opened = RoxyOpenResult(profile_id="profile-1", raw={})
+        client = RoxyBrowserClient(api_base="http://roxy.example")
+        client.open_profile = Mock(side_effect=[
+            RuntimeError("Roxy API 返回失败 POST /browser/create: 窗口额度不足"),
+            opened,
+        ])
+        progress = Mock()
+
+        with patch.object(roxybrowser_client._cfg, "ROXY_WINDOW_WAIT_TIMEOUT", 60), patch.object(
+            roxybrowser_client._cfg, "ROXY_WINDOW_WAIT_INTERVAL", 10
+        ), patch.object(roxybrowser_client.time, "sleep") as wait_sleep:
+            result = client.open_profile_with_capacity_wait(
+                proxy_url="http://proxy.example:8080",
+                progress_callback=progress,
+            )
+
+        self.assertIs(result, opened)
+        self.assertEqual(client.open_profile.call_count, 2)
+        client.open_profile.assert_called_with(proxy_url="http://proxy.example:8080")
+        wait_sleep.assert_called_once_with(10.0)
+        progress.assert_called_once()
+
     def test_capacity_error_waits_in_same_worker_then_opens(self):
         opened = RoxyOpenResult(profile_id="profile-1", raw={})
         client = Mock()

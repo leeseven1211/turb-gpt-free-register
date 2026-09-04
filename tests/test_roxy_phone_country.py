@@ -196,6 +196,33 @@ class RoxyPhoneCountryTests(unittest.TestCase):
         self.assertIn("requestSubmit", driver.execute_script.call_args_list[1].args[0])
         self.assertIs(driver.execute_script.call_args_list[1].args[2], submitter)
 
+    def test_saved_password_reacquires_controls_after_stale_element(self):
+        driver = MagicMock()
+        first_input = MagicMock()
+        first_submitter = MagicMock()
+        second_input = MagicMock()
+        second_submitter = MagicMock()
+        stale = RuntimeError("StaleElementReferenceException: stale element reference")
+
+        with (
+            patch(
+                "core.roxy_codex_oauth._login_password_targets",
+                side_effect=[
+                    {"ok": True, "input": first_input, "submitter": first_submitter},
+                    {"ok": True, "input": second_input, "submitter": second_submitter},
+                ],
+            ),
+            patch("core.roxy_codex_oauth._human_type_text", side_effect=[stale, None]) as type_text,
+            patch("core.roxy_codex_oauth.human_delay"),
+        ):
+            driver.execute_script.return_value = True
+            _submit_saved_login_password(driver, "a@example.com", "StoredPassword!123")
+
+        self.assertEqual(type_text.call_count, 2)
+        type_text.assert_any_call(driver, first_input, "StoredPassword!123", clear=True)
+        type_text.assert_any_call(driver, second_input, "StoredPassword!123", clear=True)
+        self.assertIs(driver.execute_script.call_args.args[2], second_submitter)
+
     def test_login_password_page_without_saved_password_fails_before_phone(self):
         driver = MagicMock()
         with (

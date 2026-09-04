@@ -7,7 +7,6 @@ import logging
 import os
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
@@ -19,6 +18,8 @@ except Exception:  # WebUI 环境未装 curl_cffi 时使用标准库兜底
 
 from config import extract_link as cfg
 from core import db
+from core.account_operation_executor import configured_workers
+from core.account_operation_executor import executor as _EXECUTOR
 
 logger = logging.getLogger(__name__)
 
@@ -71,14 +72,12 @@ def _cdk(value: str | None = None) -> str:
     return cdk
 
 
-_WORKERS = _int_setting("EXTRACT_LINK_WORKERS", 3, 1, 16)
-_QUEUE_LIMIT = _int_setting("EXTRACT_LINK_QUEUE_LIMIT", 500, _WORKERS, 5000)
-_EXECUTOR = ThreadPoolExecutor(max_workers=_WORKERS, thread_name_prefix="extract-link")
+_QUEUE_LIMIT = _int_setting("EXTRACT_LINK_QUEUE_LIMIT", 500, configured_workers(), 5000)
 _QUEUE_SLOTS = threading.BoundedSemaphore(_QUEUE_LIMIT)
 
 
 def queue_settings() -> dict:
-    return {"workers": _WORKERS, "queue_limit": _QUEUE_LIMIT}
+    return {"workers": configured_workers(), "queue_limit": _QUEUE_LIMIT}
 
 
 def _session():

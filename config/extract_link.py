@@ -11,8 +11,7 @@ EXTRACT_LINK_CDK: str = ""
 # 提链类型：pix / upi / kakao_pay / ideal
 EXTRACT_LINK_TYPE: str = "pix"
 
-# 后台提链并发与超时
-EXTRACT_LINK_WORKERS: int = 3
+# 提链队列容量与超时；提链并发统一使用 config.codex.ACCOUNT_BATCH_WORKERS
 EXTRACT_LINK_QUEUE_LIMIT: int = 500
 EXTRACT_LINK_REQUEST_TIMEOUT: int = 30
 EXTRACT_LINK_EVENT_TIMEOUT: int = 180
@@ -21,7 +20,6 @@ apply_env_overrides(globals(), {
     'EXTRACT_LINK_API_BASE': 'str',
     'EXTRACT_LINK_CDK': 'str',
     'EXTRACT_LINK_TYPE': 'str',
-    'EXTRACT_LINK_WORKERS': 'int',
     'EXTRACT_LINK_QUEUE_LIMIT': 'int',
     'EXTRACT_LINK_REQUEST_TIMEOUT': 'int',
     'EXTRACT_LINK_EVENT_TIMEOUT': 'int',

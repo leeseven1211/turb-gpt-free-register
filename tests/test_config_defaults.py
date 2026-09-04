@@ -119,8 +119,10 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
     def test_protocol_version_is_webui_editable_and_env_driven(self):
         fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
         self.assertIn("OPENAI_PROTOCOL_VERSION", fields)
-        self.assertEqual("注册主链路", fields["OPENAI_PROTOCOL_VERSION"]["group"])
+        self.assertEqual("账号补全", fields["OPENAI_PROTOCOL_VERSION"]["group"])
         self.assertEqual("str", fields["OPENAI_PROTOCOL_VERSION"]["type"])
+        self.assertEqual("刷新 AT 协议版本", fields["OPENAI_PROTOCOL_VERSION"]["label"])
+        self.assertIn("仅用于账号补全中的刷新 AT", fields["OPENAI_PROTOCOL_VERSION"]["help"])
         self.assertNotIn("ACCOUNT_TOKEN_REFRESH_DRIVER", fields)
         self.assertNotIn("ACCOUNT_AUTH_V2_ENABLED", fields)
         self.assertEqual("v1", openai_protocol_config.OPENAI_PROTOCOL_VERSION)
@@ -156,7 +158,6 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             "TWOFA_DRIVER",
             "ENABLE_FLOW_TRIGGER",
             "CODEX_OAUTH_DRIVER",
-            "OPENAI_PROTOCOL_VERSION",
         }
         self.assertTrue(registration_keys.issubset(fields))
         self.assertTrue(all(fields[key]["group"] == "注册主链路" for key in registration_keys))
@@ -166,6 +167,7 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             "ACCOUNT_COMPLETION_2FA_ENABLED",
             "ACCOUNT_COMPLETION_CODEX_ENABLED",
             "ACCOUNT_COMPLETION_REFRESH_AT_ENABLED",
+            "OPENAI_PROTOCOL_VERSION",
             "ACCOUNT_2FA_DRIVER",
             "ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED",
             "ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED",
@@ -227,8 +229,9 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             "WEBUI_AUTH_CODE",
             "WEBUI_SESSION_SECRET",
             "PLAN_CHECK_WORKERS",
-            "EXTRACT_LINK_WORKERS",
         }.issubset(config_editor.RESTART_REQUIRED_KEYS))
+        self.assertNotIn("ACCOUNT_BATCH_WORKERS", config_editor.RESTART_REQUIRED_KEYS)
+        self.assertNotIn("EXTRACT_LINK_WORKERS", {item["key"] for item in config_editor.EDITABLE_FIELDS})
         result = config_editor.update_config({})
         self.assertEqual([], result["restart_required"])
 

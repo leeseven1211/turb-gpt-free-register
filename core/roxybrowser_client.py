@@ -9,6 +9,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
+from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import unquote, urljoin, urlparse
 
@@ -31,6 +32,23 @@ _PROFILE_CREATE_LOCK = threading.Lock()
 _PROFILE_OPEN_LOCK = threading.Lock()
 _PROFILE_REGISTRY_LOCK = threading.RLock()
 _PROFILE_REGISTRY_PATH = Path(__file__).resolve().parent.parent / "run" / "roxy_active_profiles.json"
+
+_ROXY_WINDOW_CAPACITY_MARKERS = (
+    "窗口额度不足",
+    "窗口数量已达上限",
+    "窗口数已达上限",
+    "窗口达到上限",
+    "window quota",
+    "window limit",
+    "maximum number of windows",
+    "too many windows",
+)
+
+
+def _is_window_capacity_error(error: object) -> bool:
+    """Return whether Roxy explicitly rejected creation because slots are full."""
+    text = str(error or "").strip().lower()
+    return bool(text) and any(marker in text for marker in _ROXY_WINDOW_CAPACITY_MARKERS)
 
 
 def _load_profile_registry_locked() -> list[dict]:
@@ -713,6 +731,53 @@ class RoxyBrowserClient:
             ws_endpoint=ws_endpoint,
             created_by_run=created_by_run,
         )
+
+    def open_profile_with_capacity_wait(
+        self,
+        *,
+        proxy_url: str | None = None,
+        headless: bool | None = None,
+        progress_callback: Callable[[str, str, str], object] | None = None,
+        stop_checker: Callable[[], object] | None = None,
+    ) -> RoxyOpenResult:
+        """Open a profile, waiting when Roxy's window quota is full."""
+        timeout = max(0, int(getattr(_cfg, "ROXY_WINDOW_WAIT_TIMEOUT", 900) or 0))
+        interval = max(1, int(getattr(_cfg, "ROXY_WINDOW_WAIT_INTERVAL", 10) or 10))
+        started = time.monotonic()
+        attempt = 0
+
+        while True:
+            if stop_checker is not None:
+                stop_checker()
+            attempt += 1
+            try:
+                open_kwargs: dict[str, object] = {"proxy_url": proxy_url}
+                if headless is not None:
+                    open_kwargs["headless"] = headless
+                return self.open_profile(**open_kwargs)
+            except Exception as exc:
+                if not _is_window_capacity_error(exc) or timeout <= 0:
+                    raise
+                elapsed = time.monotonic() - started
+                remaining = timeout - elapsed
+                if remaining <= 0:
+                    raise RuntimeError(
+                        f"等待 Roxy 空闲窗口超时（>{timeout}s），最后错误: {str(exc)[:180]}"
+                    ) from exc
+                delay = min(float(interval), remaining)
+                message = (
+                    f"Roxy 窗口已满，等待空闲名额：已等 {int(elapsed)}s，"
+                    f"{int(delay)}s 后重试，最长 {timeout}s"
+                )
+                if progress_callback is not None:
+                    progress_callback("browser", "running", message)
+                logger.warning(
+                    "[Roxy] %s（attempt=%s，剩余 %.1fs）",
+                    message,
+                    attempt,
+                    remaining,
+                )
+                time.sleep(delay)
 
     def close_profile(self, profile_id: str) -> bool:
         if not profile_id:

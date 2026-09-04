@@ -132,9 +132,7 @@
           <div class="search"><input id="qAccounts" placeholder="搜索邮箱、token、来源…"></div>
           <div class="account-filter-strip btn-group">
             <span class="muted selected-hint" id="accountsSelectedHint">已选 0</span>
-            <label class="inline-num" title="批量补跑 Codex 的并发线程数">线程
-              <input id="codexBulkWorkers" type="number" min="1" max="16" value="3">
-            </label>
+            <span class="muted" title="账号操作并发由配置中的 ACCOUNT_BATCH_WORKERS 统一控制">账号操作并发遵循通用配置</span>
             <label class="inline-num" title="默认只显示未归档账号；勾选后单独查看归档账号">
               <input id="showArchivedAccounts" type="checkbox" style="width:auto;min-height:auto;"> 查看归档
             </label>

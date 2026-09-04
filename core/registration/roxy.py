@@ -524,7 +524,9 @@ def _refresh_chatgpt_settings_shell_if_needed(driver, *, reason: str = "") -> bo
     # remote outage is still reported by the caller's existing timeout.
     if not state.get("settings_route") or int(state.get("text_length") or 0) >= 500:
         return False
-    if int(state.get("interactive") or 0) > 4:
+    # A blank settings shell can still contain a handful of stale menu nodes;
+    # the absence of mounted text is stronger evidence than the raw node count.
+    if int(state.get("interactive") or 0) > 4 and int(state.get("text_length") or 0) > 0:
         return False
     logger.warning(
         "%s 检测到 ChatGPT 设置页前端空壳，刷新一次等待安全设置挂载：reason=%s state=%s",
@@ -3167,6 +3169,27 @@ def _first_visible_css(driver, selector: str):
     return None
 
 
+def _is_stale_element_error(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return "staleelementreferenceexception" in text or "stale element reference" in text
+
+
+def _visible_new_password_inputs(driver) -> list:
+    return list(driver.execute_script(r"""
+    const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+      && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+    const isCurrent = el => {
+      const autocomplete = String(el.getAttribute('autocomplete') || '').toLowerCase();
+      const name = String(el.getAttribute('name') || '').toLowerCase();
+      const id = String(el.getAttribute('id') || '').toLowerCase();
+      return autocomplete === 'current-password' || /current|old|existing/.test(`${name} ${id}`);
+    };
+    return [...document.querySelectorAll(
+      'input[type="password"],input[autocomplete*="password" i],input[name*="password" i]'
+    )].filter(el => visible(el) && !isCurrent(el));
+    """) or [])
+
+
 def _wait_visible_css(driver, selector: str, *, timeout: int, label: str):
     end = time.time() + max(1, int(timeout))
     last_url = ""
@@ -3341,6 +3364,36 @@ def _click_chatgpt_settings_control(driver, element, *, label: str = "") -> None
     """, element)
 
 
+def _click_password_setting_fallback(driver) -> bool:
+    """Click a visible Add Password control when the structured scan missed it."""
+    try:
+        element = driver.execute_script(r"""
+        const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+          && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none'
+          && !el.disabled && String(el.getAttribute('aria-disabled') || '').toLowerCase() !== 'true';
+        const label = el => [el.innerText, el.textContent, el.getAttribute('aria-label'),
+          el.getAttribute('title'), el.getAttribute('data-testid'), el.getAttribute('href')]
+          .filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+        const negative = /forgot|reset|log.?in|sign.?in|one.?time|otp|忘记|重置|一次性|验证码/i;
+        const nodes = [...document.querySelectorAll('[data-testid],button,a,[role="button"],[role="menuitem"]')]
+          .filter(visible);
+        return nodes.find(el => {
+          const text = label(el);
+          const testid = String(el.getAttribute('data-testid') || '').toLowerCase();
+          return !negative.test(text) && (
+            /password[-_:]?setting/.test(testid)
+            || /(?:add|set|create).{0,30}password|password.{0,30}(?:add|set|create)|添加密码|设置密码|新增密码/i.test(text)
+          );
+        }) || null;
+        """)
+        if element is None:
+            return False
+        _click_chatgpt_settings_control(driver, element, label="account_password_settings_fallback")
+        return True
+    except Exception:
+        return False
+
+
 def _open_chatgpt_security_settings(driver, *, timeout: int = 75):
     """Open Security settings and return the stable Authenticator toggle."""
     _safe_get(
@@ -3456,7 +3509,9 @@ def set_roxy_login_password(
         accept_hosts=("chatgpt.com",),
     )
     _page_warmup(driver, reason="chatgpt_password_settings")
-    _refresh_chatgpt_settings_shell_if_needed(driver, reason="chatgpt_password_settings")
+    settings_shell_refreshes = int(
+        _refresh_chatgpt_settings_shell_if_needed(driver, reason="chatgpt_password_settings")
+    )
     end = time.time() + max(10, int(timeout))
     password_inputs = []
     action = None
@@ -3467,6 +3522,7 @@ def set_roxy_login_password(
     security_clicks = 0
     profile_clicks = 0
     reauth_attempts = 0
+    password_setting_fallback_clicks = 0
     last_url = ""
     last_password_controls = []
     last_password_lines = []
@@ -3623,6 +3679,26 @@ def set_roxy_login_password(
         new_inputs = [field for field in password_inputs if not _is_current_password(field)]
         if new_inputs:
             break
+        if action is None and settings_action is None and security_action is None and profile_action is None:
+            if (
+                settings_shell_refreshes < 2
+                and not last_password_controls
+                and not last_password_lines
+                and _refresh_chatgpt_settings_shell_if_needed(
+                    driver, reason="chatgpt_password_settings_empty_shell"
+                )
+            ):
+                settings_shell_refreshes += 1
+                time.sleep(0.8)
+                continue
+            if (
+                password_setting_fallback_clicks < 2
+                and (last_password_controls or last_password_lines)
+                and _click_password_setting_fallback(driver)
+            ):
+                password_setting_fallback_clicks += 1
+                time.sleep(0.8)
+                continue
         if action is not None:
             _click_chatgpt_settings_control(driver, action, label="account_password_settings")
             action = None
@@ -3665,22 +3741,37 @@ def set_roxy_login_password(
             f"账号设置只提供当前密码输入框，未进入“Add password/设置密码”流程；页面诊断：{diagnostic}"
         )
 
-    for field in new_inputs:
-        _human_type_text(driver, field, normalized, clear=True)
-    submit = _button_after_input(driver, new_inputs[-1])
-    if submit is not None:
-        _human_click(driver, submit, label="account_password_submit")
-    else:
-        submitted = bool(driver.execute_script(r"""
-        const input = arguments[0];
-        const form = input?.closest('form');
-        if (!form) return false;
-        if (typeof form.requestSubmit === 'function') form.requestSubmit();
-        else form.submit();
-        return true;
-        """, new_inputs[-1]))
-        if not submitted:
-            raise RuntimeError("账号密码设置页缺少提交按钮")
+    for submit_attempt in range(2):
+        try:
+            for field in new_inputs:
+                _human_type_text(driver, field, normalized, clear=True)
+            submit = _button_after_input(driver, new_inputs[-1])
+            if submit is not None:
+                _human_click(driver, submit, label="account_password_submit")
+            else:
+                submitted = bool(driver.execute_script(r"""
+                const input = arguments[0];
+                const form = input?.closest('form');
+                if (!form) return false;
+                if (typeof form.requestSubmit === 'function') form.requestSubmit();
+                else form.submit();
+                return true;
+                """, new_inputs[-1]))
+                if not submitted:
+                    raise RuntimeError("账号密码设置页缺少提交按钮")
+            break
+        except Exception as exc:
+            if submit_attempt == 0 and _is_stale_element_error(exc):
+                logger.warning(
+                    "%s 新增密码表单已被页面重绘，重新获取控件后重试一次：email=%s",
+                    _log_prefix(driver), email,
+                )
+                time.sleep(random.uniform(0.2, 0.6))
+                refreshed_inputs = _visible_new_password_inputs(driver)
+                if refreshed_inputs:
+                    new_inputs = refreshed_inputs
+                    continue
+            raise
 
     # 表单提交后远端结果可能需要较长时间才反映到 DOM；先把密码交给
     # 调用方写入恢复检查点，避免后续诊断脚本/网络异常导致“远端已设置、

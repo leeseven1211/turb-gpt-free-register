@@ -403,9 +403,10 @@ async function codexDownloadBulkCpa() {
 async function codexReauthorize(filenames = null) {
   const selected = Array.isArray(filenames) ? filenames.filter(Boolean) : Array.from(CODEX_SELECTED);
   if (!selected.length) return;
-  const workers = getCodexBulkWorkers();
+  const workers = getAccountOperationWorkers();
   const note = `确定为选中的 ${selected.length} 个账号重新执行 Codex OAuth 授权吗？\n\n` +
                `每个账号将消耗：\n  • 1 封邮箱 OTP\n  • 1 个接码短信\n\n` +
+               `账号操作公共并发：${workers}\n\n` +
                `授权成功后会更新本地 Codex 凭证；如需同步到 sub2api，请等待成功后再点击“上传 sub2api”。`;
   if (!confirm(note)) return;
   const btn = document.getElementById('btnCodexReauthorizeBulkV2');
@@ -413,7 +414,7 @@ async function codexReauthorize(filenames = null) {
   try {
     const r = await api('/api/codex/retry-bulk', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({filenames: selected, workers}),
+      body: JSON.stringify({filenames: selected}),
     });
     const startedFilenames = new Set((r.started || []).map(item => item.filename).filter(Boolean));
     startedFilenames.forEach(filename => CODEX_SELECTED.delete(filename));

@@ -86,8 +86,8 @@ PLAN_CHECK_RETRY_DELAY = 1.5
 # Plus 试用资格时，等待该秒数后再复查一次；设为 0 可关闭复查。
 PLAN_CHECK_REGISTRATION_RECHECK_DELAY = 2.0
 
-# 自动、手动和批量套餐查询共用同一个后台队列，并复用这里的网络模式、
-# 请求启动间隔与随机抖动，避免批量后台请求过于集中。
+# 注册链路中没有复用注册代理时，异步套餐查询使用独立后台队列；账号页
+# 的套餐操作使用 config.codex.ACCOUNT_BATCH_WORKERS，不读取这里的线程数。
 PLAN_CHECK_WORKERS = 3
 PLAN_CHECK_QUEUE_LIMIT = 500
 PLAN_CHECK_MIN_INTERVAL = 0.4

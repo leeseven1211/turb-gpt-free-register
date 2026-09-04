@@ -2,9 +2,11 @@
 let accountsLoading = false;
 let planStatusLoading = false;
 let planStatusRevision = '';
-function getCodexBulkWorkers() {
-  const el = document.getElementById('codexBulkWorkers');
-  return Math.max(1, Math.min(16, Number((el && el.value) || 3)));
+function getAccountOperationWorkers() {
+  const configured = (typeof CONFIG !== 'undefined' && Array.isArray(CONFIG))
+    ? CONFIG.find(item => item.key === 'ACCOUNT_BATCH_WORKERS')
+    : null;
+  return Math.max(1, Math.min(16, Number(configured?.value || 3)));
 }
 function configuredLiveCheckDriver() {
   const configured = (typeof CONFIG !== 'undefined' && Array.isArray(CONFIG))
@@ -841,8 +843,6 @@ async function uploadSelectedCodexSub2() {
 async function checkSelectedPlans() {
   const ids = Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
-  const workersEl = $('#codexBulkWorkers');
-  const workers = Math.max(1, Math.min(16, Number(workersEl?.value || 3)));
   const btn = $('#btnCheckSelectedPlans');
   btn.disabled = true;
   const old = btn.textContent;
@@ -851,7 +851,7 @@ async function checkSelectedPlans() {
     const r = await api('/api/accounts/check-plan-bulk', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids, workers}),
+      body: JSON.stringify({account_ids: ids}),
     });
     const failed = r.failed_count || 0;
     const busy = r.busy_count || 0;
@@ -868,7 +868,7 @@ async function checkSelectedPlans() {
 async function checkSelectedLive(idsArg = null, btnArg = null) {
   const ids = idsArg || Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
-  const workers = getCodexBulkWorkers();
+  const workers = getAccountOperationWorkers();
   const msg = idsArg ? `确定查活这个账号吗？` : `确定查活选中的 ${ids.length} 个账号吗？
 
 只在线验证现有 accessToken，不会发送邮箱验证码，也不会刷新 AT。
@@ -886,7 +886,7 @@ async function checkSelectedLive(idsArg = null, btnArg = null) {
     const r = await api('/api/accounts/check-live-bulk', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids, workers, driver: configuredLiveCheckDriver()}),
+      body: JSON.stringify({account_ids: ids, driver: configuredLiveCheckDriver()}),
     });
     const skipped = (r.skipped || []).length;
     const configuredDriver = configuredLiveCheckDriver() || '默认';
@@ -911,7 +911,7 @@ async function checkSelectedLive(idsArg = null, btnArg = null) {
 async function refreshSelectedToken(idsArg = null, btnArg = null) {
   const ids = idsArg || Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
-  const workers = getCodexBulkWorkers();
+  const workers = getAccountOperationWorkers();
   const msg = idsArg ? `确定刷新这个账号的 AT 吗？\n\n会通过邮箱 OTP 重新登录并保存最新 accessToken。` : `确定刷新选中的 ${ids.length} 个账号的 AT 吗？\n\n会通过邮箱 OTP 重新登录并保存最新 accessToken。\n\n并发线程数：${workers}`;
   if (!confirm(msg)) return;
   const firstAcc = ACCOUNTS.find(a => Number(a.id) === Number(ids[0]));
@@ -922,7 +922,7 @@ async function refreshSelectedToken(idsArg = null, btnArg = null) {
     const r = await api('/api/accounts/refresh-token-bulk', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids, workers}),
+      body: JSON.stringify({account_ids: ids}),
     });
     const skipped = (r.skipped || []).length;
     showToast(`刷新AT已入队 ${r.started_count || 0} 个，忙碌 ${r.busy_count || 0} 个，失败 ${r.failed_count || 0}${skipped ? `，跳过 ${skipped}` : ''}`);
@@ -1054,9 +1054,7 @@ async function stopSelectedCodex() {
 async function retrySelectedCodex() {
   const ids = Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
-  const workersEl = $('#codexBulkWorkers');
-  const workers = Math.max(1, Math.min(16, Number(workersEl?.value || 1)));
-  if (workersEl) workersEl.value = workers;
+  const workers = getAccountOperationWorkers();
   const selectedAccounts = ids.map(id => ACCOUNTS.find(a => Number(a.id) === Number(id))).filter(Boolean);
   const retryingCount = selectedAccounts.filter(a => ['queued','running','cancelling'].includes(a.codex_execution_status || '') || (a.codex_status || '') === 'retrying').length;
   const deactivatedCount = selectedAccounts.filter(a => (a.codex_status || '') === 'deactivated').length;
@@ -1075,7 +1073,7 @@ async function retrySelectedCodex() {
     const r = await api('/api/codex/retry-bulk', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids, workers}),
+      body: JSON.stringify({account_ids: ids}),
     });
     const skippedCount = (r.skipped || []).length;
     showToast(skippedCount ? `已开始 ${r.started_count || 0} 个，跳过 ${skippedCount} 个` : (r.message || '已开始批量补跑'));

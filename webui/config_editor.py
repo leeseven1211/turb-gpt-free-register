@@ -32,7 +32,7 @@ EDITABLE_FIELDS = [
     # ---- 通用配置 ----
     {
         "key": "ACCOUNT_BATCH_WORKERS", "file": "codex.py", "type": "int", "group": "通用配置",
-        "label": "账号批量操作并发数", "help": "账号页查活、查套餐和 Codex 批量补跑等操作使用的默认并发数，范围 1-16；建议先保持 3",
+        "label": "账号操作并发数", "help": "账号补全、补密码、补 2FA、查套餐、查活、刷新 AT、查封号邮件、Codex 和提链共用的并发数，范围 1-16；注册线程数另行设置",
     },
     # ---- 定时任务 ----
     {
@@ -77,8 +77,8 @@ EDITABLE_FIELDS = [
         "label": "启用 Codex OAuth", "help": "注册成功后自动跑 Codex 授权（全新session+接码），落盘 codex-邮箱.json",
     },
     {
-        "key": "OPENAI_PROTOCOL_VERSION", "file": "openai_protocol.py", "type": "str", "group": "注册主链路",
-        "label": "协议版本", "help": "只对同时支持 v1/v2 的协议步骤生效；当前刷新 AT 支持按此选择，注册、2FA、套餐、普通查活等单版本步骤会自动使用唯一实现。",
+        "key": "OPENAI_PROTOCOL_VERSION", "file": "openai_protocol.py", "type": "str", "group": "账号补全",
+        "label": "刷新 AT 协议版本", "help": "仅用于账号补全中的刷新 AT；v1/v2 选择对应协议实现，注册、2FA、套餐、普通查活等步骤不读取此配置。",
     },
     {
         "key": "REGISTRATION_DRIVER", "file": "roxybrowser.py", "type": "str", "group": "注册主链路",
@@ -683,7 +683,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "PLAN_CHECK_WORKERS", "file": "proxy.py", "type": "int", "group": "代理池",
-        "label": "套餐查询并发数", "help": "自动、手动和批量查套餐共用，建议 2-4 个线程",
+        "label": "注册流程套餐查询并发数", "help": "仅用于注册链路中没有复用注册代理时的异步套餐查询；账号页套餐查询统一使用通用配置 ACCOUNT_BATCH_WORKERS",
     },
     {
         "key": "PLAN_CHECK_QUEUE_LIMIT", "file": "proxy.py", "type": "int", "group": "代理池",
@@ -710,10 +710,6 @@ EDITABLE_FIELDS = [
     {
         "key": "EXTRACT_LINK_TYPE", "file": "extract_link.py", "type": "str", "group": "提链",
         "label": "提链类型", "help": "支持 pix / upi / kakao_pay / ideal",
-    },
-    {
-        "key": "EXTRACT_LINK_WORKERS", "file": "extract_link.py", "type": "int", "group": "提链",
-        "label": "提链并发数", "help": "批量提链后台线程数，建议 1-4",
     },
     # ---- Codex 配置 ----
     {
@@ -832,15 +828,12 @@ EDITABLE_FIELDS = [
 _FIELD_BY_KEY = {f["key"]: f for f in EDITABLE_FIELDS}
 
 # These values are read when a fixed worker pool or Flask auth context is
-# created.  config.reload_all() still updates the .env-backed module values,
-# but it cannot resize an existing pool or replace the active auth context.
+# created. config.reload_all() still updates the .env-backed module values.
 RESTART_REQUIRED_KEYS = frozenset({
     "WEBUI_AUTH_CODE",
     "WEBUI_SESSION_SECRET",
-    "ACCOUNT_BATCH_WORKERS",
     "PLAN_CHECK_WORKERS",
     "PLAN_CHECK_QUEUE_LIMIT",
-    "EXTRACT_LINK_WORKERS",
     "EXTRACT_LINK_QUEUE_LIMIT",
 })
 
