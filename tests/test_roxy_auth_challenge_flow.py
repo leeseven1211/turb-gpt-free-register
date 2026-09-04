@@ -140,6 +140,28 @@ class RoxyEmailOtpChallengeTests(unittest.TestCase):
 
         self.assertEqual("mfa_secret_missing", caught.exception.code)
 
+    def test_browser_error_page_fails_login_challenge_without_waiting_for_timeout(self):
+        state = {
+            "url": "chrome-error://chromewebdata/",
+            "inputs": [],
+            "errors": ["无法访问此网站"],
+        }
+
+        with (
+            patch.object(roxy_codex_oauth, "check_cancelled"),
+            patch.object(roxy_codex_oauth, "_login_challenge_state", return_value=state),
+            patch.object(roxy_codex_oauth.time, "time", side_effect=[0.0, 1.0]),
+            patch.object(roxy_codex_oauth.time, "sleep"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "浏览器导航失败"):
+                roxy_codex_oauth._complete_login_challenge_after_email(
+                    MagicMock(),
+                    "account@example.com",
+                    "",
+                    "",
+                    timeout=45,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

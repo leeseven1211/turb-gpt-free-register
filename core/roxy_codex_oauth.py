@@ -416,6 +416,14 @@ def _is_login_advanced(driver, state: dict | None = None) -> bool:
     return False
 
 
+def _is_browser_error_page_state(state: dict | None) -> bool:
+    """Recognize Chrome's navigation error page before the challenge timeout."""
+    state = state or {}
+    url = str(state.get("url") or "").strip().lower()
+    errors = " ".join(str(item or "") for item in (state.get("errors") or [])).lower()
+    return url.startswith("chrome-error://") or "chrome-error://" in errors
+
+
 def _complete_login_challenge_after_email(
     driver,
     email: str,
@@ -441,6 +449,12 @@ def _complete_login_challenge_after_email(
     while time.time() < end:
         state = _login_challenge_state(driver)
         last_state = state
+        if _is_browser_error_page_state(state):
+            raise RuntimeError(
+                "浏览器导航失败："
+                f"url={str(state.get('url') or '')[:180]} "
+                f"errors={(state.get('errors') or [])[:3]}"
+            )
         url = str(state.get("url") or "")
         if url != last_url:
             logger.info("[Codex][Browser] 邮箱提交后登录分支：url=%s", url or "-")
