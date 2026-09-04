@@ -893,6 +893,7 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
     root_job_id = int(job.get("root_job_id") or job_id)
     task_type = _registration_task_type(job)
     task_source_id = f"{root_job_id}:{task_type}"
+    task_table = _table("operation_tasks")
     account = None
     if job.get("account_id") is not None:
         account = accounts_by_id.get(int(job["account_id"]))
@@ -952,9 +953,28 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
             status=EXCLUDED.status, target_status=EXCLUDED.target_status,
             current_stage=EXCLUDED.current_stage, next_actions=EXCLUDED.next_actions,
             error_category=EXCLUDED.error_category, error_code=EXCLUDED.error_code,
-            error_message=EXCLUDED.error_message, updated_at=EXCLUDED.updated_at,
+            error_message=EXCLUDED.error_message,
+            updated_at=CASE WHEN
+                {task_table}.batch_id IS DISTINCT FROM COALESCE(EXCLUDED.batch_id, {task_table}.batch_id)
+                OR {task_table}.parent_task_id IS DISTINCT FROM COALESCE(EXCLUDED.parent_task_id, {task_table}.parent_task_id)
+                OR {task_table}.attempt_id IS DISTINCT FROM EXCLUDED.attempt_id
+                OR {task_table}.account_id IS DISTINCT FROM COALESCE(EXCLUDED.account_id, {task_table}.account_id)
+                OR {task_table}.email_snapshot IS DISTINCT FROM CASE
+                    WHEN EXCLUDED.email_snapshot <> '' THEN EXCLUDED.email_snapshot
+                    ELSE {task_table}.email_snapshot
+                END
+                OR {task_table}.status IS DISTINCT FROM EXCLUDED.status
+                OR {task_table}.target_status IS DISTINCT FROM EXCLUDED.target_status
+                OR {task_table}.current_stage IS DISTINCT FROM EXCLUDED.current_stage
+                OR {task_table}.next_actions IS DISTINCT FROM EXCLUDED.next_actions
+                OR {task_table}.error_category IS DISTINCT FROM EXCLUDED.error_category
+                OR {task_table}.error_code IS DISTINCT FROM EXCLUDED.error_code
+                OR {task_table}.error_message IS DISTINCT FROM EXCLUDED.error_message
+                OR {task_table}.completed_at IS DISTINCT FROM EXCLUDED.completed_at
+                OR {task_table}.data IS DISTINCT FROM ({task_table}.data || EXCLUDED.data)
+                THEN now() ELSE {task_table}.updated_at END,
             completed_at=EXCLUDED.completed_at,
-            data={_table('operation_tasks')}.data || EXCLUDED.data
+            data={task_table}.data || EXCLUDED.data
         RETURNING id
         """,
         (
@@ -1101,12 +1121,26 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
     )
     cur.execute(
         f"""
-        UPDATE {_table('operation_tasks')} SET last_run_id=%s, status=%s, current_stage=%s,
+        UPDATE {task_table} SET
+            updated_at=CASE WHEN
+                {task_table}.last_run_id IS DISTINCT FROM %s
+                OR {task_table}.status IS DISTINCT FROM %s
+                OR {task_table}.current_stage IS DISTINCT FROM %s
+                OR {task_table}.error_category IS DISTINCT FROM %s
+                OR {task_table}.error_code IS DISTINCT FROM %s
+                OR {task_table}.error_message IS DISTINCT FROM %s
+                OR {task_table}.completed_at IS DISTINCT FROM %s
+                OR {task_table}.next_actions IS DISTINCT FROM %s::jsonb
+                THEN now() ELSE {task_table}.updated_at END,
+            last_run_id=%s, status=%s, current_stage=%s,
             error_category=%s, error_code=%s, error_message=%s,
-            completed_at=%s, updated_at=now(), next_actions=%s::jsonb
+            completed_at=%s, next_actions=%s::jsonb
         WHERE id=%s
         """,
         (
+            latest["id"], latest_status, latest["progress_stage"], latest["error_category"],
+            latest["error_code"], latest["error_message"], latest["completed_at"],
+            _json(latest_next_actions),
             latest["id"], latest_status, latest["progress_stage"], latest["error_category"],
             latest["error_code"], latest["error_message"], latest["completed_at"],
             _json(latest_next_actions), task_id,
@@ -2274,7 +2308,8 @@ def list_tasks(
                    (SELECT COUNT(*) FROM {_table('operation_runs')} rr WHERE rr.task_id=t.id) AS run_count
             {from_sql}
             {clause}
-            ORDER BY t.updated_at DESC, t.id DESC LIMIT %s OFFSET %s
+            ORDER BY CASE WHEN COALESCE(r.effective_status, t.status) IN ({_ACTIVE_RUN_STATUS_SQL}) THEN 0 ELSE 1 END,
+                     t.created_at DESC, t.id DESC LIMIT %s OFFSET %s
             """,
             (*params, page_size, (page - 1) * page_size),
         )

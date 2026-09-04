@@ -91,6 +91,66 @@ class OperationTaskStoreTests(PostgresTestCase):
         self.assertEqual("email_verification_pending", wrong_entry["target_status"])
         self.assertEqual("registration_resume", wrong_entry["next_actions"][0]["action"])
 
+    def test_compatibility_resync_does_not_bump_task_updated_at_when_unchanged(self):
+        account_id, job_id = self._seed_pending_registration()
+        operation_task_store.reconcile_all()
+        registration = operation_task_store.list_tasks(
+            page_size=10, q=str(account_id), task_type="registration",
+        )["items"][0]
+        expected_updated_at = "2026-08-26T10:00:00+00:00"
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {postgres_store.qualified('operation_tasks')} SET updated_at=%s WHERE id=%s",
+                (expected_updated_at, int(registration["id"])),
+            )
+
+        operation_task_store.sync_registration_job(job_id)
+
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT updated_at FROM {postgres_store.qualified('operation_tasks')} WHERE id=%s",
+                (int(registration["id"]),),
+            )
+            self.assertEqual(expected_updated_at, cur.fetchone()[0].isoformat())
+
+    def test_task_list_prioritizes_active_tasks_then_creation_time(self):
+        historical = operation_task_store.create_runtime_task(
+            task_type="live_check", account_id=101, email="historical@example.com", trigger="manual",
+        )
+        operation_task_store.finish_run(
+            historical["run"]["id"], status="success", message="历史任务完成",
+        )
+        recent_terminal = operation_task_store.create_runtime_task(
+            task_type="live_check", account_id=102, email="recent@example.com", trigger="manual",
+        )
+        operation_task_store.finish_run(
+            recent_terminal["run"]["id"], status="success", message="最近任务完成",
+        )
+        active = operation_task_store.create_runtime_task(
+            task_type="live_check", account_id=103, email="active@example.com", trigger="manual",
+        )
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            task_table = postgres_store.qualified("operation_tasks")
+            cur.execute(
+                f"UPDATE {task_table} SET created_at=%s, updated_at=%s WHERE id=%s",
+                ("2026-08-17T14:38:43Z", "2026-09-03T18:00:00Z", int(historical["id"])),
+            )
+            cur.execute(
+                f"UPDATE {task_table} SET created_at=%s, updated_at=%s WHERE id=%s",
+                ("2026-09-03T09:00:00Z", "2026-09-03T09:00:00Z", int(recent_terminal["id"])),
+            )
+            cur.execute(
+                f"UPDATE {task_table} SET created_at=%s, updated_at=%s WHERE id=%s",
+                ("2026-09-03T08:00:00Z", "2026-09-03T08:00:00Z", int(active["id"])),
+            )
+
+        listed = operation_task_store.list_tasks(page_size=10, task_type="live_check")["items"]
+
+        self.assertEqual(
+            [int(active["id"]), int(recent_terminal["id"]), int(historical["id"])],
+            [int(item["id"]) for item in listed[:3]],
+        )
+
     def test_new_session_advances_checkpoint_and_unified_target(self):
         account_id, _job_id = self._seed_pending_registration()
         operation_task_store.reconcile_all()
