@@ -1852,7 +1852,7 @@ async function checkSelectedDeactivationMail() {
   if (!ids.length) { showToast('请先选择账号'); return; }
   const eligible = ids.filter(id => {
     const acc = ACCOUNTS.find(a => Number(a.id) === Number(id));
-    return acc && ['email_butler','cloudflare'].includes((acc.email_source || '').toString().toLowerCase());
+    return acc && ['email_butler','cloudflare','icloud_hide'].includes((acc.email_source || '').toString().toLowerCase());
   });
   if (!eligible.length) { showToast('选中账号中没有支持扫描的邮箱来源'); return; }
   const btn = $('#btnCheckSelectedDeactivationMailV2');

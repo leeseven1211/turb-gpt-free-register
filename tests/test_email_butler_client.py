@@ -30,6 +30,25 @@ class EmailButlerClientTests(unittest.TestCase):
         self.assertNotIn("body", result)
         self.assertEqual(result["confidence"], "high")
 
+    def test_scan_retries_one_transient_connection_error(self):
+        response = Mock()
+        response.status_code = 200
+        response.json.return_value = {
+            "code": 200,
+            "checked_at": "2026-08-10T00:00:00Z",
+            "signal": {"detected": False},
+        }
+        with patch.object(
+            client.requests,
+            "request",
+            side_effect=[client.requests.ConnectionError("TLS closed"), response],
+        ) as request_mock, patch.object(client.time, "sleep") as sleep_mock:
+            result = client.scan_openai_deactivation("a@example.com")
+
+        self.assertFalse(result["detected"])
+        self.assertEqual(request_mock.call_count, 2)
+        sleep_mock.assert_called_once_with(0.5)
+
     def test_connection_requires_signal_capability(self):
         response = Mock()
         response.status_code = 200

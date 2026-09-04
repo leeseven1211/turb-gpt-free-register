@@ -184,6 +184,8 @@ def scan_openai_deactivation(email: str, *, lookback_days: int = 120) -> dict:
             "lookback_days": max(1, min(int(lookback_days or 120), 365)),
             "folders": ["inbox", "junk"],
         },
+        # 封号信号是只读查询，连接被网关瞬时断开时可安全重试一次。
+        retry_connection_error=True,
     )
     signal = payload.get("signal") if isinstance(payload.get("signal"), dict) else {}
     return {

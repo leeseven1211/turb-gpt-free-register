@@ -210,6 +210,64 @@ class ForwardIMAPTests(unittest.TestCase):
 
         self.assertFalse(result["detected"])
 
+    def test_deactivation_scan_reconnects_after_transient_imap_failure(self):
+        class Mail:
+            def logout(self):
+                return None
+
+        with (
+            patch.object(
+                client,
+                "_connect",
+                side_effect=[client.ForwardIMAPError("SSLEOFError"), Mail()],
+            ) as connect,
+            patch.object(client, "_messages_for_recipient", return_value=[]),
+            patch.object(client.time, "sleep") as sleep,
+        ):
+            result = client.scan_openai_deactivation("hidden@icloud.com")
+
+        self.assertFalse(result["detected"])
+        self.assertEqual(connect.call_count, 2)
+        sleep.assert_called_once_with(0.5)
+
+    def test_bulk_deactivation_scan_snapshots_one_mailbox_for_multiple_aliases(self):
+        first = EmailMessage()
+        first["From"] = "OpenAI <noreply@openai.com>"
+        first["To"] = "owner@gmail.com"
+        first["X-Original-To"] = "first@icloud.com"
+        first["X-Original-To"] = "second@icloud.com"
+        first["Subject"] = "OpenAI account deactivated"
+        first.set_content("Your OpenAI account has been deactivated.")
+
+        class Mail:
+            def __init__(self):
+                self.fetch_calls = []
+
+            def search(self, *_args):
+                return "OK", [b"7"]
+
+            def fetch(self, message_id, spec):
+                self.fetch_calls.append((message_id, spec))
+                return "OK", [
+                    (b'7 (INTERNALDATE "28-Aug-2026 03:22:57 +0000" RFC822 {1}', first.as_bytes())
+                ]
+
+            def logout(self):
+                return None
+
+        mail = Mail()
+        with patch.object(client, "_connect", return_value=mail) as connect:
+            result = client.scan_openai_deactivation_bulk([
+                "first@icloud.com",
+                "second@icloud.com",
+            ])
+
+        self.assertEqual(connect.call_count, 1)
+        self.assertEqual(len(mail.fetch_calls), 2)
+        self.assertTrue(result["first@icloud.com"]["detected"])
+        self.assertTrue(result["second@icloud.com"]["detected"])
+        self.assertNotIn("text", result["first@icloud.com"])
+
 
 if __name__ == "__main__":
     unittest.main()

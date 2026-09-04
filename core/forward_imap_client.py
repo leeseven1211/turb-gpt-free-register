@@ -10,6 +10,8 @@ from __future__ import annotations
 import email as email_lib
 import imaplib
 import logging
+import os
+import re
 import time
 from datetime import datetime, timezone
 from email.utils import parseaddr, parsedate_to_datetime
@@ -23,6 +25,12 @@ logger = logging.getLogger(__name__)
 
 class ForwardIMAPError(RuntimeError):
     pass
+
+
+_EMAIL_RE = re.compile(r"(?i)\b[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+\b")
+_DEFAULT_IMAP_RETRY_ATTEMPTS = 3
+_DEFAULT_IMAP_RETRY_DELAY_SECONDS = 0.5
+_MAX_BULK_SNAPSHOT_MESSAGES = 5000
 
 
 def _settings() -> tuple[str, int, str, str]:
@@ -56,6 +64,41 @@ def _connect() -> imaplib.IMAP4_SSL:
         raise ForwardIMAPError(f"隐藏邮箱转发 IMAP 登录失败: {exc}") from exc
     except Exception as exc:
         raise ForwardIMAPError(f"隐藏邮箱转发 IMAP 连接失败: {type(exc).__name__}: {exc}") from exc
+
+
+def _imap_retry_attempts() -> int:
+    try:
+        value = int(os.environ.get("ICLOUD_HME_IMAP_RETRY_ATTEMPTS", str(_DEFAULT_IMAP_RETRY_ATTEMPTS)) or _DEFAULT_IMAP_RETRY_ATTEMPTS)
+    except (TypeError, ValueError):
+        value = _DEFAULT_IMAP_RETRY_ATTEMPTS
+    return max(1, min(value, 5))
+
+
+def _run_with_imap_retry(operation):
+    """Retry a complete read-only IMAP operation after a transient disconnect."""
+    attempts = _imap_retry_attempts()
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return operation()
+        except (ForwardIMAPError, imaplib.IMAP4.error, OSError, TimeoutError) as exc:
+            last_error = exc
+            if attempt >= attempts:
+                break
+            delay = _DEFAULT_IMAP_RETRY_DELAY_SECONDS * (2 ** (attempt - 1))
+            logger.warning(
+                "[HME Forward IMAP] 只读扫描连接中断，将在 %.1fs 后重试 (%s/%s): %s",
+                delay,
+                attempt,
+                attempts,
+                str(exc)[:180],
+            )
+            time.sleep(delay)
+    if isinstance(last_error, ForwardIMAPError):
+        raise last_error
+    raise ForwardIMAPError(
+        f"隐藏邮箱转发 IMAP 扫描失败: {type(last_error).__name__}: {last_error}"
+    ) from last_error
 
 
 def test_connection() -> dict:
@@ -97,6 +140,58 @@ def _recipient_headers(msg) -> str:
     return " ".join(values).lower()
 
 
+def _recipient_addresses(msg) -> set[str]:
+    """Extract exact recipient addresses from all forwarding headers."""
+    return {
+        match.group(0).lower()
+        for name in ("To", "Delivered-To", "X-Original-To", "X-Forwarded-To", "Envelope-To")
+        for value in (msg.get_all(name, []) or [])
+        for match in _EMAIL_RE.finditer(str(value or ""))
+    }
+
+
+def _internal_date(meta: object) -> str:
+    marker = 'INTERNALDATE "'
+    raw = str(meta or "")
+    if marker not in raw:
+        return ""
+    return raw.split(marker, 1)[1].split('"', 1)[0]
+
+
+def _apply_internal_date(item: dict, meta: object) -> dict:
+    raw_internal = _internal_date(meta)
+    if raw_internal:
+        try:
+            internal_dt = parsedate_to_datetime(raw_internal)
+            item["receivedDateTime"] = internal_dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return item
+
+
+def _fetch_raw_message(mail: imaplib.IMAP4_SSL, message_id: bytes, spec: str) -> tuple[object, bytes]:
+    status, data = mail.fetch(message_id, spec)
+    if status != "OK" or not data:
+        raise ForwardIMAPError(f"隐藏邮箱转发 IMAP 读取邮件失败: {message_id!r}")
+    for entry in data:
+        if isinstance(entry, tuple) and len(entry) >= 2 and isinstance(entry[1], (bytes, bytearray)):
+            return entry[0], bytes(entry[1])
+    raise ForwardIMAPError(f"隐藏邮箱转发 IMAP 响应缺少邮件内容: {message_id!r}")
+
+
+def _message_from_fetch(
+    mail: imaplib.IMAP4_SSL,
+    message_id: bytes,
+    *,
+    spec: str,
+) -> tuple[dict, str, str]:
+    meta, raw = _fetch_raw_message(mail, message_id, spec)
+    msg = email_lib.message_from_bytes(raw)
+    item = _apply_internal_date(_msg_to_dict(msg), meta)
+    recipient_headers = _recipient_headers(msg)
+    return item, recipient_headers, message_id.decode("ascii", errors="ignore")
+
+
 def _messages_for_recipient(
     mail: imaplib.IMAP4_SSL,
     target: str,
@@ -107,47 +202,103 @@ def _messages_for_recipient(
     after_dt = datetime.fromtimestamp(after_ts, tz=timezone.utc)
     since = after_dt.strftime("%d-%b-%Y")
     ids: set[bytes] = set()
+    search_errors: list[Exception] = []
+    successful_search = False
     for header in ("To", "X-Original-To", "Delivered-To", "Envelope-To"):
         try:
             status, ids_data = mail.search(
                 None,
                 f'(SINCE "{since}" HEADER {header} "{target}")',
             )
-        except Exception:
+        except Exception as exc:
+            search_errors.append(exc)
             continue
-        if status == "OK" and ids_data and ids_data[0]:
-            ids.update(ids_data[0].split())
+        if status == "OK":
+            successful_search = True
+            if ids_data and ids_data[0]:
+                ids.update(ids_data[0].split())
+
+    if not successful_search and search_errors:
+        raise ForwardIMAPError(
+            f"隐藏邮箱转发 IMAP 搜索失败: {type(search_errors[-1]).__name__}: {search_errors[-1]}"
+        )
 
     selected = sorted(ids, key=lambda value: int(value))[-max(1, limit):]
     out: list[tuple[dict, str, str]] = []
     for mid in reversed(selected):
-        status, data = mail.fetch(mid, "(INTERNALDATE RFC822)")
-        if status != "OK" or not data or not isinstance(data[0], tuple):
-            continue
         try:
-            msg = email_lib.message_from_bytes(data[0][1])
-            item = _msg_to_dict(msg)
-            meta = data[0][0]
-            if isinstance(meta, bytes):
-                meta = meta.decode("ascii", errors="ignore")
-            marker = 'INTERNALDATE "'
-            raw_internal = ""
-            if marker in str(meta or ""):
-                raw_internal = str(meta).split(marker, 1)[1].split('"', 1)[0]
-            if raw_internal:
-                try:
-                    internal_dt = parsedate_to_datetime(raw_internal)
-                    item["receivedDateTime"] = internal_dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-                except (TypeError, ValueError, OverflowError):
-                    pass
+            item, recipient_headers, message_id = _message_from_fetch(
+                mail,
+                mid,
+                spec="(INTERNALDATE RFC822)",
+            )
             out.append((
                 item,
-                _recipient_headers(msg),
-                mid.decode("ascii", errors="ignore"),
+                recipient_headers,
+                message_id,
             ))
+        except ForwardIMAPError:
+            # A dropped socket must escape so the outer read-only operation
+            # can reconnect and retry the complete scan.
+            raise
         except Exception as exc:
             logger.debug("[HME Forward IMAP] 解析邮件失败: %s: %s", type(exc).__name__, exc)
     return out
+
+
+def _imap_ids(data: list[bytes] | list[str] | None) -> list[bytes]:
+    if not data or not data[0]:
+        return []
+    raw = data[0]
+    if isinstance(raw, str):
+        raw = raw.encode("ascii", errors="ignore")
+    return list(raw.split())
+
+
+def _imap_id_sort_key(value: bytes) -> tuple[int, str]:
+    text = value.decode("ascii", errors="ignore")
+    try:
+        return int(text), text
+    except ValueError:
+        return -1, text
+
+
+def _messages_for_mailbox_snapshot(
+    mail: imaplib.IMAP4_SSL,
+    targets: set[str],
+    after_ts: float,
+    *,
+    limit: int = _MAX_BULK_SNAPSHOT_MESSAGES,
+) -> dict[str, list[tuple[dict, str, str]]]:
+    """Read one shared inbox snapshot and index candidate messages by HME alias."""
+    after_dt = datetime.fromtimestamp(after_ts, tz=timezone.utc)
+    since = after_dt.strftime("%d-%b-%Y")
+    try:
+        status, ids_data = mail.search(None, f'(SINCE "{since}" FROM "openai.com")')
+    except Exception as exc:
+        raise ForwardIMAPError(
+            f"隐藏邮箱转发 IMAP 批量搜索失败: {type(exc).__name__}: {exc}"
+        ) from exc
+    if status != "OK":
+        raise ForwardIMAPError("隐藏邮箱转发 IMAP 批量搜索失败")
+
+    ids = sorted(_imap_ids(ids_data), key=_imap_id_sort_key)[-max(1, int(limit)) :]
+    indexed: dict[str, list[tuple[dict, str, str]]] = {target: [] for target in targets}
+    for message_id in ids:
+        _meta, raw_header = _fetch_raw_message(mail, message_id, "(INTERNALDATE BODY.PEEK[HEADER])")
+        header_msg = email_lib.message_from_bytes(raw_header)
+        matching_targets = targets.intersection(_recipient_addresses(header_msg))
+        if not matching_targets:
+            continue
+        full_item, recipient_headers, message_id_text = _message_from_fetch(
+            mail,
+            message_id,
+            spec="(INTERNALDATE RFC822)",
+        )
+        full_item["to"] = recipient_headers
+        for target in matching_targets:
+            indexed[target].append((full_item, recipient_headers, message_id_text))
+    return indexed
 
 
 def _message_timestamp(item: dict) -> float:
@@ -185,36 +336,22 @@ def _latest_forwarded_otp(mail: imaplib.IMAP4_SSL, target: str, after_ts: float)
     return None
 
 
-def scan_openai_deactivation(email: str, *, lookback_days: int = 120) -> dict:
-    """扫描转发收件箱中的高置信度 OpenAI 封号通知，不访问 OpenAI AT。"""
-    target = str(email or "").strip().lower()
-    if not target or "@" not in target:
-        raise ForwardIMAPError("待扫描隐藏邮箱地址无效")
-    lookback = max(1, min(int(lookback_days or 120), 365))
-    since_ts = time.time() - lookback * 86400
-    mail = _connect()
-    try:
-        messages = _messages_for_recipient(mail, target, since_ts)
-    finally:
-        try:
-            mail.logout()
-        except Exception:
-            pass
-
-    # 复用 Cloudflare 邮箱已经过测试的高置信度判定规则；只传入标准化字段，
-    # 不保存正文，也不会把普通通知误判成封号通知。
+def _deactivation_result(target: str, messages: list[tuple[dict, str, str]]) -> dict:
     from core.cf_temp_mail_client import _is_openai_deactivation
 
     matches: list[dict] = []
     for item, recipient_headers, message_id in messages:
         if target not in recipient_headers:
             continue
+        # The index already proved that this message was delivered to target;
+        # pass the exact alias to the shared detector instead of a combined
+        # forwarding-header string.
         candidate = {**item, "to": target, "id": message_id}
         matched, probe = _is_openai_deactivation(candidate, target)
         if not matched:
             continue
         matches.append({
-            "received_at": str(item.get("date") or item.get("receivedDateTime") or ""),
+            "received_at": str(item.get("receivedDateTime") or item.get("date") or ""),
             "subject": str(probe.get("subject") or "")[:300],
             "sender": parseaddr(str(probe.get("from") or ""))[1][:200],
             "message_id": str(message_id or "")[:300],
@@ -231,6 +368,61 @@ def scan_openai_deactivation(email: str, *, lookback_days: int = 120) -> dict:
         "message_id": latest.get("message_id") or "",
         "confidence": "high" if matches else "none",
     }
+
+
+def _scan_openai_deactivation_once(target: str, since_ts: float) -> dict:
+    mail = _connect()
+    try:
+        messages = _messages_for_recipient(mail, target, since_ts)
+        return _deactivation_result(target, messages)
+    finally:
+        try:
+            mail.logout()
+        except Exception:
+            pass
+
+
+def scan_openai_deactivation(email: str, *, lookback_days: int = 120) -> dict:
+    """扫描转发收件箱中的高置信度 OpenAI 封号通知，不访问 OpenAI AT。"""
+    target = str(email or "").strip().lower()
+    if not target or "@" not in target:
+        raise ForwardIMAPError("待扫描隐藏邮箱地址无效")
+    lookback = max(1, min(int(lookback_days or 120), 365))
+    since_ts = time.time() - lookback * 86400
+    return _run_with_imap_retry(lambda: _scan_openai_deactivation_once(target, since_ts))
+
+
+def scan_openai_deactivation_bulk(emails: list[str], *, lookback_days: int = 120) -> dict[str, dict]:
+    """Scan many aliases from one shared Gmail mailbox snapshot.
+
+    The result is keyed by normalized alias and contains the same safe fields
+    as :func:`scan_openai_deactivation`. Mail bodies and credentials never
+    leave this process.
+    """
+    targets = {str(email or "").strip().lower() for email in (emails or [])}
+    targets.discard("")
+    if any("@" not in target for target in targets):
+        raise ForwardIMAPError("待扫描隐藏邮箱地址无效")
+    if not targets:
+        return {}
+    lookback = max(1, min(int(lookback_days or 120), 365))
+    since_ts = time.time() - lookback * 86400
+
+    def _scan_once() -> dict[str, dict]:
+        mail = _connect()
+        try:
+            indexed = _messages_for_mailbox_snapshot(mail, targets, since_ts)
+            return {
+                target: _deactivation_result(target, indexed.get(target, []))
+                for target in sorted(targets)
+            }
+        finally:
+            try:
+                mail.logout()
+            except Exception:
+                pass
+
+    return _run_with_imap_retry(_scan_once)
 
 
 def fetch_latest_otp(

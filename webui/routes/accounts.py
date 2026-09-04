@@ -373,14 +373,17 @@ def create_accounts_blueprint(context: WebUIContext):
             if acc_id in seen:
                 continue
             seen.add(acc_id)
-            result = deactivation_mail_service.enqueue(acc_id, trigger="manual_bulk", batch_id=batch_id)
-            item = {"id": acc_id, **result}
-            if result.get("accepted"):
-                started.append(item)
-            elif result.get("busy"):
-                busy.append(item)
-            else:
-                skipped.append({"id": acc_id, "reason": result.get("error") or "不支持扫描"})
+        queued = deactivation_mail_service.enqueue_bulk(
+            valid_ids,
+            trigger="manual_bulk",
+            batch_id=batch_id,
+        )
+        started.extend(queued.get("started") or [])
+        busy.extend(queued.get("busy") or [])
+        skipped.extend(
+            {"id": item.get("id"), "reason": item.get("error") or "不支持扫描"}
+            for item in (queued.get("skipped") or [])
+        )
         return jsonify({
             "ok": True,
             "started": started,
