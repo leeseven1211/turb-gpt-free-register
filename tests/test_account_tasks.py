@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import Mock, call, patch
 
 from core import account_task_store, codex_retry_service, live_check_service, postgres_store, roxy_codex_oauth, task_run_log, token_refresh_service
+from core.openai_auth import AccountUnusableError
 from webui import app as webui_app
 from webui.app import create_app
 from tests.support_pg import PostgresTestCase
@@ -21,6 +22,37 @@ def _jwt_with_exp(exp: datetime) -> str:
         raw = json.dumps(value, separators=(",", ":")).encode()
         return base64.urlsafe_b64encode(raw).decode().rstrip("=")
     return f"{part({'alg': 'none'})}.{part({'exp': int(exp.timestamp())})}.signature"
+
+
+class AccountCompletionDeactivationTests(unittest.TestCase):
+    def test_confirmed_unusable_account_is_persisted_as_deactivated(self):
+        with (
+            patch.object(
+                codex_retry_service.db,
+                "get_account_by_email",
+                return_value={"id": 192},
+            ),
+            patch.object(
+                codex_retry_service.db,
+                "update_account_liveness",
+                return_value=True,
+            ) as update_liveness,
+        ):
+            result = codex_retry_service._persist_account_deactivated(
+                "account@example.com",
+                AccountUnusableError("账号已废", error_code="account_deactivated"),
+            )
+
+        self.assertTrue(result)
+        update_liveness.assert_called_once_with(
+            192,
+            {
+                "ok": False,
+                "status": "deactivated",
+                "error": "account_deactivated",
+                "validation_method": "account_setup",
+            },
+        )
 
 
 class AccountTaskStoreTests(unittest.TestCase):

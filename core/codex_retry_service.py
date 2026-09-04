@@ -9,6 +9,7 @@ from pathlib import Path
 from core import db, task_run_log
 from core.operations import task_gateway as account_task_store
 from core.auth_challenge import auth_result_for_operation
+from core.openai_auth import AccountUnusableError
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,28 @@ def _account_login_password(account: dict | None) -> str:
         or raw_extra.get("registration_password")
         or ""
     ).strip()
+
+
+def _persist_account_deactivated(email: str, exc: BaseException) -> bool:
+    """Persist a confirmed unusable result without touching saved credentials."""
+    code = str(getattr(exc, "error_code", "") or "").strip() or "account_deactivated"
+    try:
+        account = db.get_account_by_email(email) or {}
+        account_id = int(account.get("id") or 0)
+        if not account_id:
+            return False
+        return bool(db.update_account_liveness(
+            account_id,
+            {
+                "ok": False,
+                "status": "deactivated",
+                "error": code,
+                "validation_method": "account_setup",
+            },
+        ))
+    except Exception:
+        logger.exception("写回废号账号状态失败：email=%s", email)
+        return False
 
 
 def _run_protocol_direct_twofa(
@@ -989,9 +1012,20 @@ def run_twofa_worker(
         browser_stage_started = True
         from core.roxy_codex_oauth import run_roxy_chatgpt_account_action
 
+        def _report_browser_login_stage(**event) -> None:
+            account_task_store.append_event(
+                task_id,
+                stage=str(event.get("stage") or "browser"),
+                message=str(event.get("message") or "浏览器登录处理中"),
+                level=str(event.get("level") or "INFO"),
+                detail=dict(event.get("detail") or {}),
+                state=str(event.get("state") or "running"),
+            )
+
         run_roxy_chatgpt_account_action(
             email,
             proxy=account_route.proxy_url,
+            stage_reporter=_report_browser_login_stage,
             action=_build_roxy_account_setup(
                 email,
                 task_id,
@@ -1052,13 +1086,36 @@ def run_twofa_worker(
                 detail={"error": f"{type(exc).__name__}: {str(exc)[:220]}"},
                 state="failed",
             )
+        deactivated = isinstance(exc, AccountUnusableError)
+        deactivated_persisted = False
+        error_code = str(
+            getattr(exc, "code", "") or getattr(exc, "error_code", "") or ""
+        ).strip() or None
+        if deactivated:
+            deactivated_persisted = _persist_account_deactivated(email, exc)
+            error_code = error_code or "account_deactivated"
+            account_task_store.append_event(
+                task_id,
+                stage="account_status",
+                message=(
+                    "已确认账号废号并写回账号状态"
+                    if deactivated_persisted
+                    else "已确认账号废号，但账号状态写回失败"
+                ),
+                level="INFO" if deactivated_persisted else "ERROR",
+                detail={
+                    "status": "deactivated",
+                    "reason": error_code,
+                    "persisted": deactivated_persisted,
+                },
+                state="success" if deactivated_persisted else "failed",
+            )
         result = {
-            "status": "failed",
+            "status": "deactivated" if deactivated else "failed",
             "ok": False,
             "message": f"{type(exc).__name__}: {exc}",
-            "error_code": str(
-                getattr(exc, "code", "") or getattr(exc, "error_code", "") or ""
-            ).strip() or None,
+            "error_code": error_code,
+            "account_status_persisted": deactivated_persisted if deactivated else None,
         }
         logger.exception("[账号配置重试] %s 异常", email)
         return result

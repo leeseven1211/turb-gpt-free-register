@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from core.codex_retry_service import CodexRetryStopped
+from core import roxy_codex_oauth
 from core.roxy_codex_oauth import (
     _account_login_credentials,
     _body_indicates_whatsapp_only,
@@ -344,6 +345,75 @@ class RoxyPhoneCountryTests(unittest.TestCase):
         self.assertEqual(calls[0][:2], ("a@example.com", 100.0))
         self.assertGreaterEqual(calls[0][2], 89)
         self.assertLessEqual(calls[0][2], 90)
+
+    def test_codex_email_otp_uses_configured_budget_across_attempts(self):
+        wait_calls = []
+        resolver = MagicMock(return_value="email_otp")
+
+        def wait_for_code(*_args, **kwargs):
+            wait_calls.append(kwargs.get("timeout"))
+            return "123456"
+
+        with (
+            patch("config.email.OTP_MAX_WAIT", 240),
+            patch.object(roxy_codex_oauth, "check_cancelled"),
+            patch.object(roxy_codex_oauth, "report_stage"),
+            patch.object(roxy_codex_oauth, "human_delay"),
+            patch.object(roxy_codex_oauth, "_maybe_accept"),
+            patch.object(roxy_codex_oauth, "_select_existing_account_if_present", return_value=False),
+            patch.object(roxy_codex_oauth, "_account_login_credentials", return_value=("", "")),
+            patch.object(roxy_codex_oauth, "_type_email_address"),
+            patch.object(roxy_codex_oauth, "_submit_email_step"),
+            patch.object(roxy_codex_oauth, "complete_openai_login_challenge", resolver),
+            patch.object(roxy_codex_oauth, "_wait_for_fresh_email_otp", side_effect=wait_for_code),
+            patch.object(roxy_codex_oauth, "_wait_for_otp_input"),
+            patch.object(roxy_codex_oauth, "_clear_otp_inputs"),
+            patch.object(roxy_codex_oauth, "_type_otp"),
+            patch.object(roxy_codex_oauth, "_install_email_otp_validate_hook"),
+            patch.object(roxy_codex_oauth, "_click_if_present", return_value=True),
+            patch.object(roxy_codex_oauth, "_wait_after_email_otp_submit", return_value="accepted"),
+        ):
+            roxy_codex_oauth._fill_email_and_otp(
+                MagicMock(),
+                "account@example.com",
+                MagicMock(),
+                "https://auth.openai.com/oauth/authorize",
+            )
+
+        self.assertEqual([80], wait_calls)
+
+    def test_codex_account_login_reports_substages_to_task_progress(self):
+        events = []
+        resolver = MagicMock(side_effect=["email_otp", "advanced"])
+
+        with (
+            patch.object(roxy_codex_oauth, "check_cancelled"),
+            patch.object(roxy_codex_oauth, "report_stage"),
+            patch.object(roxy_codex_oauth, "human_delay"),
+            patch.object(roxy_codex_oauth, "_maybe_accept"),
+            patch.object(roxy_codex_oauth, "_select_existing_account_if_present", return_value=False),
+            patch.object(roxy_codex_oauth, "_account_login_credentials", return_value=("", "")),
+            patch.object(roxy_codex_oauth, "_type_email_address"),
+            patch.object(roxy_codex_oauth, "_submit_email_step"),
+            patch.object(roxy_codex_oauth, "complete_openai_login_challenge", resolver),
+            patch.object(roxy_codex_oauth, "_wait_for_fresh_email_otp", return_value="123456"),
+            patch.object(roxy_codex_oauth, "_wait_for_otp_input"),
+            patch.object(roxy_codex_oauth, "_clear_otp_inputs"),
+            patch.object(roxy_codex_oauth, "_type_otp"),
+            patch.object(roxy_codex_oauth, "_install_email_otp_validate_hook"),
+            patch.object(roxy_codex_oauth, "_click_if_present", return_value=True),
+            patch.object(roxy_codex_oauth, "_wait_after_email_otp_submit", return_value="totp_required"),
+        ):
+            roxy_codex_oauth._fill_email_and_otp(
+                MagicMock(),
+                "account@example.com",
+                MagicMock(),
+                "https://chatgpt.com/auth/login",
+                stage_reporter=lambda **event: events.append(event),
+            )
+
+        self.assertIn("login", [event["stage"] for event in events])
+        self.assertIn("email_otp", [event["stage"] for event in events])
 
     def test_missing_twofa_establishes_chatgpt_session_before_oauth(self):
         order = []

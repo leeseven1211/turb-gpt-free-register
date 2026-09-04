@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import inspect
 import json
+import math
 import random
 import time
 import uuid
@@ -784,9 +785,48 @@ def _select_existing_account_if_present(driver, email: str) -> bool:
     return False
 
 
-def _fill_email_and_otp(driver, email: str, otp_provider, auth_url: str) -> None:
+def _configured_email_otp_budget(default: int = 90) -> int:
+    """Read the configured total wait budget for one email-login challenge."""
+    try:
+        from config import email as email_cfg
+
+        value = int(getattr(email_cfg, "OTP_MAX_WAIT", default) or default)
+    except (TypeError, ValueError, ImportError):
+        value = default
+    return max(1, value)
+
+
+def _report_login_stage(
+    stage_reporter,
+    stage: str,
+    message: str,
+    *,
+    state: str = "running",
+    level: str = "INFO",
+    detail: dict | None = None,
+) -> None:
+    """Mirror operation stages into a parent account task when one exists."""
+    if stage_reporter is not None:
+        stage_reporter(
+            stage=stage,
+            message=message,
+            state=state,
+            level=level,
+            detail=detail or {},
+        )
+    report_stage(stage, message, state=state, level=level, detail=detail)
+
+
+def _fill_email_and_otp(
+    driver,
+    email: str,
+    otp_provider,
+    auth_url: str,
+    *,
+    stage_reporter=None,
+) -> None:
     check_cancelled()
-    report_stage("login", "打开 OpenAI 登录授权页")
+    _report_login_stage(stage_reporter, "login", "打开 OpenAI 登录授权页")
     otp_after_ts = time.time()
     password, totp_secret = _account_login_credentials(email)
     logger.info("[Codex][Browser] 打开授权地址")
@@ -805,7 +845,7 @@ def _fill_email_and_otp(driver, email: str, otp_provider, auth_url: str) -> None
         logger.info("[Codex][Browser] 已填写邮箱：%s", email)
         human_delay("form")
         _submit_email_step(driver)
-        report_stage("login", "已提交 OpenAI 登录邮箱", state="success")
+        _report_login_stage(stage_reporter, "login", "已提交 OpenAI 登录邮箱", state="success")
         logger.info("[Codex][Browser] 已提交邮箱，识别密码、TOTP 或邮箱 OTP 分支")
     except Exception as exc:
         state = _login_challenge_state(driver)
@@ -834,6 +874,7 @@ def _fill_email_and_otp(driver, email: str, otp_provider, auth_url: str) -> None
 
     used_codes: set[str] = set()
     max_otp_attempts = 3
+    otp_deadline = time.monotonic() + _configured_email_otp_budget()
 
     def _restart_email_otp_flow(reason: str) -> str:
         """Codex Auth 上直接点 resend 可能触发服务端 500；这里改为重新打开授权地址并提交邮箱。"""
@@ -874,15 +915,24 @@ def _fill_email_and_otp(driver, email: str, otp_provider, auth_url: str) -> None
 
     for otp_attempt in range(1, max_otp_attempts + 1):
         check_cancelled()
-        report_stage("email_otp", f"等待邮箱验证码（{otp_attempt}/{max_otp_attempts}）")
+        _report_login_stage(
+            stage_reporter,
+            "email_otp",
+            f"等待邮箱验证码（{otp_attempt}/{max_otp_attempts}）",
+        )
         logger.info("[Codex][Browser] 等待邮箱 OTP：%s（第 %s/%s 次）", email, otp_attempt, max_otp_attempts)
+        remaining_budget = max(0, int(math.ceil(otp_deadline - time.monotonic())))
+        if remaining_budget <= 0:
+            raise RuntimeError("邮箱验证码等待预算已用尽，停止重复登录")
+        attempts_left = max(1, max_otp_attempts - otp_attempt + 1)
+        attempt_timeout = max(1, min(remaining_budget, math.ceil(remaining_budget / attempts_left)))
         try:
             code = _wait_for_fresh_email_otp(
                 otp_provider,
                 email,
                 after_ts=otp_after_ts,
                 used_codes=used_codes,
-                timeout=90,
+                timeout=attempt_timeout,
             )
         except OperationCancelled:
             raise
@@ -930,11 +980,16 @@ def _fill_email_and_otp(driver, email: str, otp_provider, auth_url: str) -> None
                 timeout=45,
             )
             if next_state == "advanced":
-                report_stage("email_otp", "邮箱验证码和后续 TOTP 已通过", state="success")
+                _report_login_stage(
+                    stage_reporter,
+                    "email_otp",
+                    "邮箱验证码和后续 TOTP 已通过",
+                    state="success",
+                )
                 return
             raise RuntimeError("邮箱验证码已通过，但后续仍要求邮箱验证码，停止重复提交")
         if outcome == "accepted":
-            report_stage("email_otp", "邮箱验证码已通过", state="success")
+            _report_login_stage(stage_reporter, "email_otp", "邮箱验证码已通过", state="success")
             return
         if str(outcome).startswith("deactivated:"):
             error_code = str(outcome).split(":", 1)[1] or "account_deactivated"
@@ -2863,6 +2918,7 @@ def run_roxy_chatgpt_account_action(
     proxy: str | None = None,
     otp_provider=None,
     action=None,
+    stage_reporter=None,
 ):
     """新建一次性 Roxy 环境，登录 ChatGPT 后执行账号级操作。
 
@@ -2886,7 +2942,13 @@ def run_roxy_chatgpt_account_action(
         driver.set_page_load_timeout(int(_roxy_cfg.ROXY_SELENIUM_TIMEOUT))
         clear_roxy_browser_auth_state(driver)
         logger.info("[Codex][Browser] 开始建立 ChatGPT 账号会话：%s", email)
-        _fill_email_and_otp(driver, email, otp_provider, "https://chatgpt.com/auth/login")
+        _fill_email_and_otp(
+            driver,
+            email,
+            otp_provider,
+            "https://chatgpt.com/auth/login",
+            stage_reporter=stage_reporter,
+        )
         from core.registration.selenium_auth import (
             complete_profile_page as _complete_profile_page,
             fetch_chatgpt_session as _fetch_chatgpt_session,
