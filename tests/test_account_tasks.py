@@ -54,6 +54,20 @@ class AccountCompletionDeactivationTests(unittest.TestCase):
             },
         )
 
+    def test_protocol_mailbox_failure_does_not_fall_back_to_browser(self):
+        self.assertFalse(
+            codex_retry_service._should_browser_fallback_after_protocol_error(
+                RuntimeError("ForwardIMAPError: 等待新的邮箱验证码超时")
+            )
+        )
+
+    def test_other_protocol_failure_can_still_use_configured_browser_fallback(self):
+        self.assertTrue(
+            codex_retry_service._should_browser_fallback_after_protocol_error(
+                RuntimeError("ProtocolV2AuthError: mfa_enroll_unauthorized")
+            )
+        )
+
 
 class AccountTaskStoreTests(unittest.TestCase):
     def setUp(self):

@@ -95,6 +95,23 @@ def _persist_account_deactivated(email: str, exc: BaseException) -> bool:
         return False
 
 
+def _should_browser_fallback_after_protocol_error(exc: BaseException) -> bool:
+    """Avoid repeating browser OTP when the shared mailbox path already failed."""
+    text = f"{type(exc).__name__}: {exc}".lower()
+    mailbox_markers = (
+        "forwardimaperror",
+        "icloudhmeerror",
+        "emailbutler",
+        "email_butler",
+        "imap",
+        "mailbox",
+        "尚未收到新的 openai 验证码",
+        "等待新的邮箱验证码超时",
+        "等待邮箱验证码超时",
+    )
+    return not any(marker in text for marker in mailbox_markers)
+
+
 def _run_protocol_direct_twofa(
     email: str,
     account: dict,
@@ -968,12 +985,16 @@ def run_twofa_worker(
                     },
                     state="failed",
                 )
-                if not browser_fallback_enabled:
+                if not browser_fallback_enabled or not _should_browser_fallback_after_protocol_error(exc):
                     db.update_account_twofa_status(email, "failed", direct_error)
+                    if browser_fallback_enabled:
+                        message = "邮箱收件链路失败，跳过浏览器兜底，避免重复等待验证码"
+                    else:
+                        message = "协议 2FA 失败，且已关闭浏览器兜底"
                     result = {
                         "status": "failed",
                         "ok": False,
-                        "message": f"协议 2FA 失败，且已关闭浏览器兜底：{direct_error}",
+                        "message": f"{message}：{direct_error}",
                         "twofa_driver": "protocol",
                         "auth_source": context_plan.auth_source,
                         "browser_opened": False,
