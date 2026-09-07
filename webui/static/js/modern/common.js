@@ -95,12 +95,18 @@ function syncFacetSelect(id, items, {group='', allValue='', allLabel='全部', v
   if (!select) return;
   const current = select.value;
   const sourceRows = Array.isArray(items) ? items : [];
-  const counts = new Map(sourceRows.map(item => [String(item.value || ''), Number(item.count || 0)]));
-  const orderedValues = Array.isArray(values) ? values.map(String) : [];
+  const dataRows = sourceRows.filter(item => {
+    const value = String(item?.value || '').trim();
+    return value && Number(item?.count || 0) > 0;
+  });
+  const counts = new Map(dataRows.map(item => [String(item.value), Number(item.count || 0)]));
+  const orderedValues = Array.isArray(values)
+    ? values.map(String).filter(value => counts.has(value))
+    : [];
   const rows = orderedValues.length
     ? orderedValues.map(value => ({value, count: counts.get(value) || 0}))
-      .concat(sourceRows.filter(item => !orderedValues.includes(String(item.value || ''))))
-    : sourceRows;
+      .concat(dataRows.filter(item => !orderedValues.includes(String(item.value))))
+    : dataRows;
   const options = [{value: allValue, label: allLabel}].concat(rows.map(item => ({
     value: String(item.value || ''),
     label: `${facetLabel(group, item.value)} · ${Number(item.count || 0)}`,

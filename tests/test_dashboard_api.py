@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
+import subprocess
 import unittest
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -11,6 +13,7 @@ from tests.support_pg import PostgresTestCase
 
 
 class DashboardApiTests(PostgresTestCase):
+    MODERN_COMMON_JS = Path(__file__).resolve().parents[1] / "webui/static/js/modern/common.js"
     MODERN_ASSETS = (
         "css/modern.css",
         "js/modern/common.js",
@@ -41,6 +44,47 @@ class DashboardApiTests(PostgresTestCase):
 
     def _modern_page_source(self, response):
         return self._page_source(response, self.MODERN_ASSETS)
+
+    def test_modern_facet_select_hides_zero_count_options_and_clears_stale_selection(self):
+        source = self.MODERN_COMMON_JS.read_text(encoding="utf-8")
+        start = source.index("function syncFacetSelect")
+        end = source.index("// ---------- 分页状态 ----------", start)
+        function_source = source[start:end]
+        harness = f"""
+{function_source}
+const select = {{
+  value: 'gone',
+  innerHTML: '',
+  closest: () => null,
+}};
+global.document = {{ getElementById: () => select }};
+function attrEsc(value) {{ return String(value ?? ''); }}
+function esc(value) {{ return String(value ?? ''); }}
+function facetLabel(_group, value) {{ return String(value ?? ''); }}
+function refreshColumnFilterState() {{}}
+function renderColumnFilterOptions() {{}}
+syncFacetSelect('status', [
+  {{value: 'active', count: 2}},
+  {{value: 'gone', count: 0}},
+  {{value: 'pending', count: 1}},
+], {{group: 'status', values: ['gone', 'active', 'pending']}});
+const hasGoneOption = select.innerHTML.includes('value="gone"');
+const hasActiveOption = select.innerHTML.includes('value="active"');
+const hasPendingOption = select.innerHTML.includes('value="pending"');
+const hasAllOption = select.innerHTML.includes('value=""');
+if (hasGoneOption || !hasActiveOption || !hasPendingOption || !hasAllOption || select.value !== '') {{
+  throw new Error(JSON.stringify({{hasGoneOption, hasActiveOption, hasPendingOption, hasAllOption, value: select.value}}));
+}}
+console.log('ok');
+"""
+        result = subprocess.run(
+            ["node", "--input-type=commonjs", "-e", harness],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertEqual(result.stdout.strip(), "ok")
 
     def test_frontend_static_assets_are_referenced_and_served(self):
         assets = self.MODERN_ASSETS + (
