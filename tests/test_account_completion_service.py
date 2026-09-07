@@ -84,6 +84,28 @@ class AccountCompletionPlanTests(unittest.TestCase):
         self.assertNotIn("password", plan["missing_steps"])
         self.assertEqual("password", plan["blocked"][0]["step"])
 
+    def test_password_reset_opt_in_allows_ineligible_account_into_reset_flow(self):
+        plan = completion_plan(
+            {
+                "access_token": "at",
+                "plan_check_status": "success",
+                "totp_secret": "totp",
+                "extra_json": '{"account_password_capability":{"eligible":false,"reason":"remote_not_eligible"}}',
+                "codex_status": "success",
+            },
+            {
+                "password_enabled": True,
+                "password_reset_enabled": True,
+                "plan_check_enabled": True,
+                "twofa_enabled": True,
+                "codex_enabled": True,
+                "refresh_at_enabled": False,
+            },
+        )
+
+        self.assertIn("password", plan["missing_steps"])
+        self.assertFalse(plan["blocked"])
+
     def test_pending_registration_never_plans_at_refresh(self):
         account = {
             "access_token": "",

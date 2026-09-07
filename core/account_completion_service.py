@@ -103,6 +103,7 @@ def completion_plan(account: Mapping | None, settings: Mapping | None = None) ->
     cfg = _settings(settings)
     enabled = {
         "password": bool(cfg.get("password_enabled", True)),
+        "password_reset": bool(cfg.get("password_reset_enabled", False)),
         "plan_check": bool(cfg.get("plan_check_enabled", True)),
         "twofa": bool(cfg.get("twofa_enabled", True)),
         "codex": bool(cfg.get("codex_enabled", True)),
@@ -127,10 +128,13 @@ def completion_plan(account: Mapping | None, settings: Mapping | None = None) ->
                 blocked.append({"step": "refresh_at", "reason": "账号缺少可用 access_token，请先单独执行刷新 AT"})
         if enabled["password"] and not _password_present(account):
             if _password_setup_blocked(account):
-                blocked.append({
-                    "step": "password",
-                    "reason": "ChatGPT 当前账号不允许添加账号密码，已跳过重复重试",
-                })
+                if enabled["password_reset"]:
+                    missing.append("password")
+                else:
+                    blocked.append({
+                        "step": "password",
+                        "reason": "ChatGPT 当前账号不允许添加账号密码，已跳过重复重试",
+                    })
             else:
                 missing.append("password")
         if enabled["plan_check"] and str(account.get("plan_check_status") or "").strip().lower() != "success":
