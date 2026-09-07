@@ -167,6 +167,7 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             "ACCOUNT_COMPLETION_2FA_ENABLED",
             "ACCOUNT_COMPLETION_CODEX_ENABLED",
             "ACCOUNT_COMPLETION_REFRESH_AT_ENABLED",
+            "ACCOUNT_PASSWORD_RESET_ENABLED",
             "OPENAI_PROTOCOL_VERSION",
             "ACCOUNT_2FA_DRIVER",
             "ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED",
@@ -184,6 +185,7 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         self.assertTrue(all(fields[key]["group"] == "账号补全" for key in auth_keys))
         self.assertEqual("legacy", account_config.ACCOUNT_TOKEN_REFRESH_DRIVER)
         self.assertFalse(account_config.ACCOUNT_AUTH_V2_ENABLED)
+        self.assertFalse(account_config.ACCOUNT_PASSWORD_RESET_ENABLED)
         self.assertFalse(account_config.ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK)
         self.assertEqual("current", account_config.ACCOUNT_AUTH_PROFILE_MODE)
         self.assertFalse(account_config.ACCOUNT_AUTH_RAW_CONTEXT_ENABLED)
@@ -198,6 +200,7 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             with patch.dict(os.environ, {
                 "ACCOUNT_COMPLETION_CODEX_ENABLED": "False",
                 "ACCOUNT_COMPLETION_REFRESH_AT_ENABLED": "True",
+                "ACCOUNT_PASSWORD_RESET_ENABLED": "True",
                 "ACCOUNT_TOKEN_REFRESH_DRIVER": "protocol_v2",
                 "ACCOUNT_AUTH_V2_ENABLED": "True",
                 "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK": "True",
@@ -211,6 +214,7 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
                 reloaded = importlib.reload(account_config)
                 self.assertFalse(reloaded.ACCOUNT_COMPLETION_CODEX_ENABLED)
                 self.assertTrue(reloaded.ACCOUNT_COMPLETION_REFRESH_AT_ENABLED)
+                self.assertTrue(reloaded.ACCOUNT_PASSWORD_RESET_ENABLED)
                 self.assertEqual("protocol_v2", reloaded.ACCOUNT_TOKEN_REFRESH_DRIVER)
                 self.assertTrue(reloaded.ACCOUNT_AUTH_V2_ENABLED)
                 self.assertTrue(reloaded.ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK)

@@ -34,6 +34,7 @@ from core.registration.selenium_auth import (
     click_email_entry_option as _click_email_entry_option,
     type_otp as _type_otp,
     clear_otp_inputs as _clear_otp_inputs,
+    click_resend_email_otp as _click_resend_email_otp,
     email_otp_page_state as _email_otp_page_state,
     is_email_verification_page as _is_email_verification_page,
     is_login_password_page as _is_login_password_page,
@@ -114,6 +115,10 @@ class _CodexLogger:
 
 
 logger = _CodexLogger(_base_logger)
+
+
+class PasswordResetTransitionUnknown(RuntimeError):
+    """The reset password was submitted but the remote result is not confirmed."""
 
 
 def _is_callback_url(url: str) -> bool:
@@ -378,6 +383,318 @@ def _submit_saved_login_password(driver, email: str, password: str) -> None:
             raise
 
 
+def _forgot_password_target(driver):
+    """Return the localized forgot-password control without relying on its text only."""
+    try:
+        return driver.execute_script(r"""
+        const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+          && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none'
+          && !el.disabled && String(el.getAttribute('aria-disabled') || '').toLowerCase() !== 'true';
+        const norm = value => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+        const candidates = [...document.querySelectorAll('a,button,[role="link"],[role="button"]')]
+          .filter(visible);
+        const forgot = /forgot.{0,24}password|password.{0,24}forgot|reset.{0,24}password|忘记.{0,12}密码|忘記.{0,12}密碼|パスワードをお忘れ|パスワードを忘れ|비밀번호.{0,12}(잊|찾)|mot de passe.{0,16}(oubli|réinitial)|contraseña.{0,16}(olvid|rest)/i;
+        return candidates.find(el => {
+          const href = String(el.getAttribute('href') || '');
+          let path = '';
+          try { path = new URL(href, location.href).pathname.toLowerCase(); } catch (_) {}
+          const attrs = norm([
+            el.textContent, el.getAttribute('aria-label'), el.getAttribute('title'),
+            el.getAttribute('data-testid'), el.getAttribute('data-dd-action-name'), href,
+          ].join(' '));
+          return path.includes('/reset-password') || forgot.test(attrs);
+        }) || null;
+        """)
+    except Exception:
+        return None
+
+
+def _reset_continue_target(driver):
+    """Find the primary Continue button on the reset request/form page."""
+    try:
+        return driver.execute_script(r"""
+        const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+          && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none'
+          && !el.disabled && String(el.getAttribute('aria-disabled') || '').toLowerCase() !== 'true';
+        const norm = value => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+        const candidates = [...document.querySelectorAll('button,input[type="submit"],[role="button"]')]
+          .filter(visible);
+        const back = /back|return|cancel|返回|返回登录|取消|戻る|キャンセル|취소/i;
+        const primary = /continue|next|reset|submit|继续|下一步|重置|确定|確認|続行|다음/i;
+        const score = el => {
+          const attrs = norm([
+            el.innerText, el.textContent, el.getAttribute('aria-label'), el.getAttribute('name'),
+            el.getAttribute('value'), el.getAttribute('data-testid'), el.getAttribute('data-dd-action-name'),
+          ].join(' '));
+          if (back.test(attrs)) return -100;
+          if (String(el.getAttribute('type') || '').toLowerCase() === 'submit') return 30;
+          return primary.test(attrs) ? 20 : 0;
+        };
+        return candidates.map(el => ({el, score: score(el)})).filter(item => item.score > 0)
+          .sort((a, b) => b.score - a.score)[0]?.el || null;
+        """)
+    except Exception:
+        return None
+
+
+def _reset_password_targets(driver) -> dict:
+    """Return new-password fields and the primary submit control."""
+    try:
+        return driver.execute_script(r"""
+        const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+          && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none'
+          && !el.disabled && !el.readOnly;
+        const all = [...document.querySelectorAll('input[type="password"],input[autocomplete="new-password"],input[name*="password" i]')]
+          .filter(visible);
+        if (!all.length) return {ok:false, reason:'missing_reset_password_input'};
+        const preferred = all.filter(el => /new-password|new|confirm|retype|再次|确认|確認/i.test([
+          el.getAttribute('autocomplete'), el.getAttribute('name'), el.id,
+          el.getAttribute('aria-label'), el.getAttribute('placeholder'),
+        ].join(' ')));
+        const inputs = preferred.length ? preferred : all;
+        const first = inputs[0];
+        const root = first.closest('form,[role="dialog"]') || document;
+        const buttons = [...root.querySelectorAll('button,input[type="submit"],[role="button"]')]
+          .filter(visible);
+        const submit = buttons.find(el => String(el.getAttribute('type') || '').toLowerCase() === 'submit')
+          || buttons.find(el => /continue|next|reset|submit|save|继续|下一步|重置|保存|确认|確認|続行|다음/i.test([
+            el.innerText, el.textContent, el.getAttribute('aria-label'), el.getAttribute('value'),
+            el.getAttribute('data-testid'), el.getAttribute('data-dd-action-name'),
+          ].join(' ')));
+        if (!submit) return {ok:false, reason:'missing_reset_password_submit', inputCount:inputs.length};
+        inputs.forEach(el => el.scrollIntoView({block:'center'}));
+        return {ok:true, inputs, submit, inputCount:inputs.length};
+        """) or {"ok": False, "reason": "empty_result"}
+    except Exception as exc:
+        return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
+
+
+def _wait_for_reset_route(driver, timeout: int = 25) -> bool:
+    end = time.time() + max(1, timeout)
+    while time.time() < end:
+        try:
+            url = str(driver.current_url or '').lower()
+            if '/reset-password' in url:
+                return True
+            state = _login_challenge_state(driver)
+            text = str(state.get('text') or '').lower()
+            if ('reset password' in text or '重置密码' in text or '忘记密码' in text) and _reset_continue_target(driver):
+                return True
+        except Exception:
+            pass
+        time.sleep(0.4)
+    return False
+
+
+def _wait_for_reset_otp_page(driver, timeout: int = 35) -> bool:
+    end = time.time() + max(1, timeout)
+    while time.time() < end:
+        if _is_email_verification_page(driver):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def _wait_for_reset_password_form(driver, timeout: int = 45) -> str:
+    """Wait for the new-password form after the reset email OTP."""
+    end = time.time() + max(1, timeout)
+    while time.time() < end:
+        if _reset_password_targets(driver).get('ok'):
+            return 'accepted'
+        if _is_browser_error_page_state(_login_challenge_state(driver)):
+            raise RuntimeError('密码重置页面导航失败')
+        if _is_login_advanced(driver):
+            raise RuntimeError('密码重置验证码通过后未出现新密码表单')
+        state = _email_otp_page_state(driver)
+        text = str(state.get('text') or '').lower()
+        errors = state.get('errors') or []
+        invalid = any(str(item.get('ariaInvalid') or '').lower() == 'true' for item in (state.get('inputs') or []))
+        if invalid or any(marker in text for marker in ('invalid code', 'incorrect code', 'wrong code', 'expired', '验证码错误', '验证码无效', '验证码已过期')):
+            return 'invalid'
+        if any('invalid code' in str(error).lower() or '验证码' in str(error) for error in errors):
+            return 'invalid'
+        time.sleep(0.5)
+    return 'stuck'
+
+
+def _submit_reset_password_and_wait(
+    driver,
+    email: str,
+    password: str,
+    *,
+    on_password_submitted=None,
+    timeout: int = 60,
+) -> None:
+    targets = _reset_password_targets(driver)
+    if not targets.get('ok'):
+        raise RuntimeError(f"密码重置新密码表单识别失败：{targets}")
+    for field in targets.get('inputs') or []:
+        _human_type_text(driver, field, password, clear=True)
+    human_delay('form', minimum=0.4, maximum=1.2)
+    _human_click(driver, targets.get('submit'), label='password_reset_submit')
+    if on_password_submitted is not None:
+        on_password_submitted(password)
+    logger.info('[Codex][Browser] 密码重置新密码已提交，等待远端确认：email=%s', email)
+
+    end = time.time() + max(20, timeout)
+    password_submitted_at = time.time()
+    login_password_submitted = False
+    while time.time() < end:
+        check_cancelled()
+        if _is_login_advanced(driver):
+            return
+        if _is_totp_login_page(driver):
+            # A reset normally establishes the session directly. If OpenAI asks
+            # for TOTP, the account-level caller still has to provide its secret;
+            # this path is intentionally surfaced as a normal login failure.
+            raise MfaSecretMissingError('密码重置后仍要求 Authenticator 验证')
+        if _is_login_password_page(driver) and not login_password_submitted:
+            _submit_saved_login_password(driver, email, password)
+            login_password_submitted = True
+            password_submitted_at = time.time()
+            continue
+        if not _reset_password_targets(driver).get('ok'):
+            # The reset route has gone away. Session acquisition below will make
+            # the final login-state decision; do not resubmit the new password.
+            if time.time() - password_submitted_at >= 1.0:
+                return
+        time.sleep(0.5)
+    raise PasswordResetTransitionUnknown(
+        f'密码重置新密码已提交，但 {int(timeout)} 秒内未确认远端结果：url={str(getattr(driver, "current_url", ""))[:180]}'
+    )
+
+
+def _relogin_after_password_reset(
+    driver,
+    email: str,
+    password: str,
+    totp_secret: str,
+    otp_provider,
+    *,
+    stage_reporter=None,
+) -> None:
+    """Establish a normal ChatGPT session after reset APIs return without one."""
+    _report_login_stage(stage_reporter, 'login', '密码重置已完成，使用新密码重新建立账号会话')
+    _safe_get(
+        driver,
+        'https://chatgpt.com/auth/login',
+        timeout=30,
+        attempts=2,
+        accept_hosts=('chatgpt.com', 'auth.openai.com'),
+    )
+    human_delay('navigate')
+    _maybe_accept(driver)
+    try:
+        _type_email_address(driver, email, timeout=12)
+        human_delay('form')
+        _submit_email_step(driver)
+    except Exception:
+        state = _login_challenge_state(driver)
+        if _is_login_advanced(driver, state):
+            return
+        if not (_is_login_password_page(driver) or _is_email_verification_page(driver)):
+            raise
+    next_state = _complete_login_challenge_after_email(
+        driver,
+        email,
+        password,
+        totp_secret,
+        timeout=45,
+        otp_provider=otp_provider,
+        allow_password_reset=False,
+        stage_reporter=stage_reporter,
+    )
+    if next_state != 'advanced':
+        raise RuntimeError('密码重置后重新登录仍要求邮箱验证码，未自动重复提交旧验证码')
+
+
+def _reset_password_via_email(
+    driver,
+    email: str,
+    otp_provider,
+    *,
+    stage_reporter=None,
+    on_password_submitted=None,
+    totp_secret: str = '',
+    timeout: int = 120,
+) -> bool:
+    """Run the explicit forgot-password flow for an existing account."""
+    target = _forgot_password_target(driver)
+    if target is None:
+        return False
+    _report_login_stage(stage_reporter, 'password_reset', '登录密码页没有本地密码，打开忘记密码流程')
+    _human_click(driver, target, label='password_reset_link')
+    if not _wait_for_reset_route(driver):
+        raise RuntimeError('点击忘记密码后未进入密码重置页面')
+    continue_target = _reset_continue_target(driver)
+    if continue_target is None:
+        raise RuntimeError('密码重置页面缺少继续按钮')
+    otp_after_ts = time.time()
+    _human_click(driver, continue_target, label='password_reset_request')
+    if not _wait_for_reset_otp_page(driver):
+        raise RuntimeError('密码重置请求后未进入邮箱验证码页面')
+
+    used_codes: set[str] = set()
+    deadline = time.monotonic() + max(30, timeout)
+    for attempt in range(1, 4):
+        check_cancelled()
+        remaining = max(1, int(deadline - time.monotonic()))
+        _report_login_stage(
+            stage_reporter,
+            'password_reset_otp',
+            f'等待密码重置邮箱验证码（{attempt}/3）',
+        )
+        code = _wait_for_fresh_email_otp(
+            otp_provider,
+            email,
+            after_ts=otp_after_ts,
+            used_codes=used_codes,
+            timeout=min(remaining, max(1, int(remaining / max(1, 4 - attempt)))),
+        )
+        used_codes.add(str(code))
+        _wait_for_otp_input(driver, timeout=30)
+        _clear_otp_inputs(driver)
+        _type_otp(driver, code)
+        human_delay('otp_input')
+        clicked = _click_if_present(driver, [
+            'button[type="submit"]',
+            "//button[contains(., 'Continue')]",
+            "//button[contains(., '继续')]",
+            "//button[contains(., 'Verify')]",
+            "//button[contains(., '验证')]",
+        ], timeout=8)
+        if not clicked:
+            raise RuntimeError('密码重置验证码页面缺少提交按钮')
+        outcome = _wait_for_reset_password_form(driver, timeout=min(45, max(10, int(deadline - time.monotonic()))))
+        if outcome == 'accepted':
+            from core.registration.selenium_auth import registration_password
+
+            password = registration_password()
+            _submit_reset_password_and_wait(
+                driver,
+                email,
+                password,
+                on_password_submitted=on_password_submitted,
+            )
+            _relogin_after_password_reset(
+                driver,
+                email,
+                password,
+                totp_secret,
+                otp_provider,
+                stage_reporter=stage_reporter,
+            )
+            _report_login_stage(stage_reporter, 'password_reset', '密码重置完成并已保存本地检查点', state='success')
+            return True
+        if attempt >= 3 or time.monotonic() >= deadline:
+            break
+        if not _is_email_verification_page(driver):
+            raise RuntimeError(f'密码重置验证码提交后状态异常：{outcome}')
+        otp_after_ts = time.time()
+        _click_resend_email_otp(driver, timeout=20)
+    raise RuntimeError('密码重置邮箱验证码连续失败或超时')
+
+
 def _submit_saved_login_totp(driver, email: str, totp_secret: str) -> None:
     if not totp_secret:
         raise MfaSecretMissingError(
@@ -431,6 +748,10 @@ def _complete_login_challenge_after_email(
     totp_secret: str,
     *,
     timeout: int = 45,
+    otp_provider=None,
+    allow_password_reset: bool = False,
+    on_password_reset_submitted=None,
+    stage_reporter=None,
 ) -> str:
     """Resolve password/TOTP challenges and return ``email_otp`` or ``advanced``."""
     end = time.time() + max(5, int(timeout))
@@ -605,6 +926,19 @@ def _complete_login_challenge_after_email(
                 human_delay("form")
                 continue
             if not passwordless_clicked and passwordless_clicks < 2:
+                if allow_password_reset:
+                    if otp_provider is None:
+                        raise RuntimeError("密码重置流程缺少邮箱验证码提供器")
+                    reset_done = _reset_password_via_email(
+                        driver,
+                        email,
+                        otp_provider,
+                        stage_reporter=stage_reporter,
+                        on_password_submitted=on_password_reset_submitted,
+                        totp_secret=totp_secret,
+                    )
+                    if reset_done:
+                        return "advanced"
                 if not passwordless_wait_started:
                     passwordless_wait_started = time.monotonic()
                 result = _click_passwordless_signup_if_present(driver)
@@ -693,14 +1027,28 @@ def complete_openai_login_challenge(
     totp_secret: str,
     *,
     timeout: int = 45,
+    otp_provider=None,
+    allow_password_reset: bool = False,
+    on_password_reset_submitted=None,
+    stage_reporter=None,
 ) -> str:
     """注册恢复与 Codex OAuth 共用的密码/TOTP/邮箱 OTP 状态机。"""
+    extra_kwargs = {}
+    if otp_provider is not None:
+        extra_kwargs['otp_provider'] = otp_provider
+    if allow_password_reset:
+        extra_kwargs['allow_password_reset'] = True
+    if on_password_reset_submitted is not None:
+        extra_kwargs['on_password_reset_submitted'] = on_password_reset_submitted
+    if stage_reporter is not None:
+        extra_kwargs['stage_reporter'] = stage_reporter
     return _complete_login_challenge_after_email(
         driver,
         email,
         password,
         totp_secret,
         timeout=timeout,
+        **extra_kwargs,
     )
 
 
@@ -838,6 +1186,8 @@ def _fill_email_and_otp(
     auth_url: str,
     *,
     stage_reporter=None,
+    allow_password_reset: bool = False,
+    on_password_reset_submitted=None,
 ) -> None:
     check_cancelled()
     _report_login_stage(stage_reporter, "login", "打开 OpenAI 登录授权页")
@@ -878,6 +1228,10 @@ def _fill_email_and_otp(
         password,
         totp_secret,
         timeout=45,
+        otp_provider=otp_provider,
+        allow_password_reset=allow_password_reset,
+        on_password_reset_submitted=on_password_reset_submitted,
+        stage_reporter=stage_reporter,
     )
     if next_state == "advanced":
         logger.info("[Codex][Browser] 密码/TOTP 登录已完成，无需邮箱 OTP")
@@ -909,6 +1263,10 @@ def _fill_email_and_otp(
                 password,
                 totp_secret,
                 timeout=45,
+                otp_provider=otp_provider,
+                allow_password_reset=allow_password_reset,
+                on_password_reset_submitted=on_password_reset_submitted,
+                stage_reporter=stage_reporter,
             )
             if restart_state == "advanced":
                 return "advanced"
@@ -2933,6 +3291,8 @@ def run_roxy_chatgpt_account_action(
     otp_provider=None,
     action=None,
     stage_reporter=None,
+    allow_password_reset: bool = False,
+    on_password_reset_submitted=None,
 ):
     """新建一次性 Roxy 环境，登录 ChatGPT 后执行账号级操作。
 
@@ -2962,6 +3322,8 @@ def run_roxy_chatgpt_account_action(
             otp_provider,
             "https://chatgpt.com/auth/login",
             stage_reporter=stage_reporter,
+            allow_password_reset=allow_password_reset,
+            on_password_reset_submitted=on_password_reset_submitted,
         )
         from core.registration.selenium_auth import (
             complete_profile_page as _complete_profile_page,

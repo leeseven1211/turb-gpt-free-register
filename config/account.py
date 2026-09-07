@@ -14,6 +14,9 @@ ACCOUNT_COMPLETION_PLAN_CHECK_ENABLED = True
 ACCOUNT_COMPLETION_2FA_ENABLED = True
 ACCOUNT_COMPLETION_CODEX_ENABLED = True
 ACCOUNT_COMPLETION_REFRESH_AT_ENABLED = False
+# Password recovery changes the remote OpenAI password. Keep it opt-in so a
+# normal account-completion run cannot trigger reset emails unexpectedly.
+ACCOUNT_PASSWORD_RESET_ENABLED = False
 
 # 账号级执行器。same_as_registration 只对 Codex 有意义，其它驱动值由对应
 # 服务校验；先保留为配置项，便于后续增加新的协议/浏览器实现。
@@ -60,6 +63,7 @@ apply_env_overrides(globals(), {
     "ACCOUNT_COMPLETION_2FA_ENABLED": "bool",
     "ACCOUNT_COMPLETION_CODEX_ENABLED": "bool",
     "ACCOUNT_COMPLETION_REFRESH_AT_ENABLED": "bool",
+    "ACCOUNT_PASSWORD_RESET_ENABLED": "bool",
     "ACCOUNT_PASSWORD_DRIVER": "str",
     "ACCOUNT_PLAN_CHECK_DRIVER": "str",
     "ACCOUNT_2FA_DRIVER": "str",
@@ -87,6 +91,7 @@ def completion_settings() -> dict[str, object]:
         "twofa_enabled": bool(ACCOUNT_COMPLETION_2FA_ENABLED),
         "codex_enabled": bool(ACCOUNT_COMPLETION_CODEX_ENABLED),
         "refresh_at_enabled": bool(ACCOUNT_COMPLETION_REFRESH_AT_ENABLED),
+        "password_reset_enabled": bool(ACCOUNT_PASSWORD_RESET_ENABLED),
         "password_driver": str(ACCOUNT_PASSWORD_DRIVER or "roxy").strip().lower() or "roxy",
         "plan_check_driver": str(ACCOUNT_PLAN_CHECK_DRIVER or "protocol").strip().lower() or "protocol",
         "protocol_version": configured_protocol_version(),

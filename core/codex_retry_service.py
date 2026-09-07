@@ -739,6 +739,18 @@ def _build_roxy_account_setup(
             # 外层登录流程处理；有 AT 但没有密码时才进入“添加密码”流程。
             if not needs_password:
                 return False, None
+            # The browser login may have recovered the password before this
+            # account action starts. Re-read runtime truth to avoid opening the
+            # security settings page and attempting a second password change.
+            if _account_login_password(db.get_account_by_email(email) or {}):
+                account_task_store.append_event(
+                    task_id,
+                    stage="login_password",
+                    message="登录阶段已通过邮箱重置补齐账号密码，跳过设置页重复提交",
+                    detail={"saved": True, "checkpoint": "password_reset_submitted"},
+                    state="success",
+                )
+                return False, None
             from core.registration.selenium_auth import registration_password, set_login_password
 
             password = registration_password()
@@ -1233,6 +1245,24 @@ def run_twofa_worker(
                 state=str(event.get("state") or "running"),
             )
 
+        allow_password_reset = bool(
+            "password" in requested_steps
+            and getattr(account_cfg, "ACCOUNT_PASSWORD_RESET_ENABLED", False)
+            and not _account_login_password(account)
+        )
+
+        def _checkpoint_password_reset(value: str) -> None:
+            with _ACCOUNT_SETUP_DB_LOCK:
+                if not db.update_account_login_password(email, value, source="password_reset"):
+                    raise RuntimeError("密码重置提交后写入账号检查点失败")
+            account_task_store.append_event(
+                task_id,
+                stage="login_password",
+                message="邮箱重置新密码提交后已写入本地检查点，等待页面确认",
+                detail={"saved": True, "checkpoint": "password_reset_submitted"},
+                state="running",
+            )
+
         run_roxy_chatgpt_account_action(
             email,
             proxy=account_route.proxy_url,
@@ -1246,6 +1276,8 @@ def run_twofa_worker(
                 twofa_driver=browser_twofa_driver,
                 browser_fallback_enabled=browser_fallback_enabled,
             ),
+            allow_password_reset=allow_password_reset,
+            on_password_reset_submitted=(_checkpoint_password_reset if allow_password_reset else None),
         )
         account_task_store.append_event(
             task_id,

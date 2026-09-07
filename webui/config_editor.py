@@ -118,6 +118,10 @@ EDITABLE_FIELDS = [
         "label": "补全时允许刷新 AT", "help": "默认关闭。开启后仅对已完成注册但缺少/无法使用 AT 的账号允许刷新；注册尚未完成的账号会优先继续原注册任务，不会刷新 AT",
     },
     {
+        "key": "ACCOUNT_PASSWORD_RESET_ENABLED", "file": "account.py", "type": "bool", "group": "账号补全",
+        "label": "允许邮箱重置账号密码", "help": "默认关闭。开启后，账号补全登录时若本地没有 OpenAI 密码，会点击忘记密码、读取邮箱验证码并设置新密码；只影响账号补全，不影响注册、查活和刷新 AT",
+    },
+    {
         "key": "ACCOUNT_PASSWORD_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
         "label": "密码补全驱动", "help": "当前唯一实现为 RoxyBrowser，暂不可切换",
     },
