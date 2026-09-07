@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import Mock, call, patch
 
 from core import account_task_store, codex_retry_service, live_check_service, postgres_store, record_store, roxy_codex_oauth, task_run_log, token_refresh_service
+from core.auth_challenge import PasswordSetupUnsupportedError
 from core.openai_auth import AccountUnusableError
 from webui import app as webui_app
 from webui.app import create_app
@@ -607,6 +608,85 @@ class CodexRetryTaskTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "账号密码"):
                 setup(object())
 
+        self.assertEqual(setup_order, ["password", "twofa"])
+
+    def test_account_setup_continues_twofa_when_password_is_unsupported(self):
+        secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+        account = {
+            "id": 9,
+            "email": "a@example.com",
+            "access_token": "saved-token",
+            "totp_secret": "",
+            "extra_json": "{}",
+        }
+        setup_order = []
+
+        def unsupported_password(_driver, _email, _password, **_kwargs):
+            setup_order.append("password")
+            raise PasswordSetupUnsupportedError("eligible=false")
+
+        def setup_twofa(_driver, _email, *, on_secret, existing_secret=None):
+            setup_order.append("twofa")
+            self.assertIsNone(existing_secret)
+            on_secret(secret)
+            return secret
+
+        with (
+            patch.object(codex_retry_service.db, "get_account_by_email", return_value=account),
+            patch.object(codex_retry_service.db, "update_account_password_capability", return_value=True),
+            patch.object(codex_retry_service.db, "update_account_totp_secret", return_value=True),
+            patch.object(codex_retry_service.db, "update_account_twofa_status", return_value=True),
+            patch.object(codex_retry_service.account_task_store, "append_event"),
+            patch("config.twofa.get_twofa_driver", return_value="browser"),
+            patch("core.roxy_registration._registration_password", return_value="AccountPassword!123"),
+            patch("core.roxy_registration.set_roxy_login_password", side_effect=unsupported_password),
+            patch("core.roxy_registration.setup_roxy_2fa", side_effect=setup_twofa),
+        ):
+            setup = codex_retry_service._build_roxy_account_setup("a@example.com", 101)
+            self.assertTrue(setup(object()))
+
+        self.assertEqual(setup_order, ["password", "twofa"])
+
+    def test_missing_password_entry_is_unsupported_and_twofa_continues(self):
+        secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+        account = {
+            "id": 9,
+            "email": "a@example.com",
+            "access_token": "saved-token",
+            "totp_secret": "",
+            "extra_json": "{}",
+        }
+        setup_order = []
+
+        def missing_password_entry(_driver, _email, _password, **_kwargs):
+            setup_order.append("password")
+            raise RuntimeError("账号设置中未找到“Add password/设置密码”入口")
+
+        def setup_twofa(_driver, _email, *, on_secret, existing_secret=None):
+            setup_order.append("twofa")
+            self.assertIsNone(existing_secret)
+            on_secret(secret)
+            return secret
+
+        with (
+            patch.object(codex_retry_service.db, "get_account_by_email", return_value=account),
+            patch.object(codex_retry_service.db, "update_account_password_capability", return_value=True) as save_capability,
+            patch.object(codex_retry_service.db, "update_account_totp_secret", return_value=True),
+            patch.object(codex_retry_service.db, "update_account_twofa_status", return_value=True),
+            patch.object(codex_retry_service.account_task_store, "append_event"),
+            patch("config.twofa.get_twofa_driver", return_value="browser"),
+            patch("core.roxy_registration._registration_password", return_value="AccountPassword!123"),
+            patch("core.roxy_registration.set_roxy_login_password", side_effect=missing_password_entry),
+            patch("core.roxy_registration.setup_roxy_2fa", side_effect=setup_twofa),
+        ):
+            setup = codex_retry_service._build_roxy_account_setup("a@example.com", 101)
+            self.assertTrue(setup(object()))
+
+        save_capability.assert_called_once_with(
+            "a@example.com",
+            eligible=False,
+            reason="password_settings_entry_unavailable",
+        )
         self.assertEqual(setup_order, ["password", "twofa"])
 
     def test_account_setup_persists_fresh_session_before_reporting_success(self):

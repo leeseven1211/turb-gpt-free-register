@@ -23,7 +23,9 @@ _LOCK = threading.RLock()
 _SCHEMA = str(os.getenv("ACCOUNT_TASK_DB_SCHEMA") or "public").strip() or "public"
 _READY_KEY = ""
 
-_TERMINAL_STATUSES = {"success", "failed", "deactivated", "unsupported", "cancelled", "interrupted"}
+_TERMINAL_STATUSES = {
+    "success", "partial_success", "failed", "deactivated", "unsupported", "cancelled", "interrupted",
+}
 _SECRET_KEY_PARTS = ("password", "otp", "secret", "authorization", "cookie")
 _PROXY_CREDENTIAL_RE = re.compile(r"(?P<scheme>https?://)[^/@\s]+@", re.IGNORECASE)
 _PROXY_AUTH_RE = re.compile(r"(?<![\w/])[^\s:@/]+:[^\s@/]+@")
@@ -441,7 +443,8 @@ def _refresh_batch(cur, batch_id: str | None) -> None:
     running = counts.get("running", 0)
     success = counts.get("success", 0)
     failed = sum(counts.get(key, 0) for key in ("failed", "deactivated", "unsupported", "cancelled", "interrupted"))
-    completed_at = _now() if queued == 0 and running == 0 and (success + failed) > 0 else None
+    partial = counts.get("partial_success", 0)
+    completed_at = _now() if queued == 0 and running == 0 and (success + partial + failed) > 0 else None
     cur.execute(
         f"UPDATE {_table('account_action_batches')} SET queued_count=%s, running_count=%s, "
         "success_count=%s, failed_count=%s, completed_at=%s WHERE id=%s",

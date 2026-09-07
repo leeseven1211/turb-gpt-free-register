@@ -173,7 +173,7 @@ class CodexOauthRefreshApiTests(PostgresTestCase):
             "access_token": "new-access",
             "refresh_token": "new-refresh",
             "account_id": "acct-a",
-            "expired": "2026-09-05T06:23:54Z",
+            "expired": "2099-01-01T00:00:00Z",
         })
 
         stored = record_store.get_row_by(record_store.CODEX_CREDENTIALS, "filename", filename)
@@ -185,6 +185,23 @@ class CodexOauthRefreshApiTests(PostgresTestCase):
         item = listing["accounts"][0]
         self.assertEqual("valid", item["oauth_status"])
         self.assertFalse(item["oauth_reauth_required"])
+
+    def test_sub2_upload_tracking_increments_after_refresh(self):
+        filename = "codex-count@example.com-free.json"
+        db.save_codex_credential_record(filename, {
+            "email": "count@example.com",
+            "type": "codex",
+            "access_token": "access",
+            "refresh_token": "refresh",
+            "account_id": "acct-count",
+            "expired": "2026-09-05T00:00:00Z",
+        })
+
+        updated = db.mark_codex_sub2_uploaded(filename)
+
+        self.assertEqual(1, updated["sub2_uploaded_count"])
+        stored = record_store.get_row_by(record_store.CODEX_CREDENTIALS, "filename", filename)
+        self.assertEqual(1, stored["sub2_uploaded_count"])
 
 
 if __name__ == "__main__":

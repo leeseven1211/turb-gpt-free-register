@@ -161,6 +161,68 @@ class WebUIRuntimeTests(unittest.TestCase):
 
         self.assertEqual("partial_success", finish_task.call_args.kwargs["status"])
 
+    def test_password_block_does_not_prevent_twofa_completion(self):
+        context = runtime.WebUIContext(Flask("test-runtime"), logging.getLogger("test-runtime"))
+        account = {
+            "id": 593,
+            "email": "mixed@example.test",
+            "access_token": "at",
+            "plan_check_status": "success",
+            "totp_secret": "",
+            "extra_json": '{"account_password_capability":{"eligible":false}}',
+            "codex_status": "success",
+        }
+        settings = {
+            "password_enabled": True,
+            "plan_check_enabled": True,
+            "twofa_enabled": True,
+            "codex_enabled": False,
+            "refresh_at_enabled": False,
+        }
+        with (
+            patch.object(runtime.db, "get_account", return_value=account),
+            patch("core.storage.registration.get_latest_attempt_by_account", return_value=None),
+            patch("config.account.completion_settings", return_value=settings),
+            patch.object(runtime.codex_retry_service, "reserve", return_value=True),
+            patch.object(runtime.account_task_store, "create_task", return_value=1004),
+            patch.object(runtime._ACCOUNT_EXECUTOR, "submit") as submit,
+        ):
+            result = context.enqueue_account_completion(593)
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual("password", result["plan"]["blocked"][0]["step"])
+        self.assertEqual(["twofa"], result["plan"]["missing_steps"])
+        submit.assert_called_once()
+
+    def test_plan_check_failure_keeps_completed_account_steps_as_partial(self):
+        with (
+            patch.object(runtime.account_task_store, "start_task"),
+            patch.object(runtime.account_task_store, "append_event"),
+            patch.object(runtime.account_task_store, "finish_task") as finish_task,
+            patch.object(
+                runtime.codex_retry_service,
+                "run_twofa_worker",
+                return_value={
+                    "status": "success",
+                    "ok": True,
+                    "message": "Authenticator 2FA 已启用",
+                    "plan_check": {"status": "failed", "ok": False, "message": "AT 已过期"},
+                },
+            ),
+            patch.object(runtime.codex_retry_service, "release"),
+        ):
+            runtime._run_account_completion_worker(
+                "mixed@example.test",
+                account_id=593,
+                task_id=1005,
+                task_trigger="manual_account_completion",
+                planned_steps=["plan_check", "twofa"],
+                settings={},
+            )
+
+        self.assertEqual("partial_success", finish_task.call_args.kwargs["status"])
+        self.assertEqual(["plan_check"], finish_task.call_args.kwargs["result_summary"]["pending_steps"])
+
     def test_unsupported_account_setup_finishes_parent_as_unsupported(self):
         with (
             patch.object(runtime.account_task_store, "start_task"),

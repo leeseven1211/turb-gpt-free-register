@@ -732,6 +732,7 @@ def _build_roxy_account_setup(
             twofa_driver=selected_twofa_driver,
             browser_fallback_enabled=browser_fallback_enabled,
         )
+        unsupported_errors: list[str] = []
 
         def _setup_password() -> tuple[bool, str | None]:
             # 没有完整 AT 的历史检查点不能安全判断账号已完成注册，交给
@@ -790,12 +791,45 @@ def _build_roxy_account_setup(
                     detail={"eligible": False, "reason": "remote_not_eligible"},
                     state="skipped",
                 )
+                unsupported_errors.append(f"{type(exc).__name__}: {str(exc)[:180]}")
+                if needs_twofa:
+                    return False, None
                 raise
             except Exception as exc:
                 deactivation_code = _account_deactivation_code(exc)
                 if deactivation_code:
                     raise AccountUnusableError(
                         str(exc), error_code=deactivation_code,
+                    ) from exc
+                unsupported_text = str(exc)
+                password_entry_unavailable = (
+                    "未找到“Add password/设置密码”入口" in unsupported_text
+                    or "只提供当前密码输入框" in unsupported_text
+                )
+                if password_entry_unavailable:
+                    db.update_account_password_capability(
+                        email,
+                        eligible=False,
+                        reason="password_settings_entry_unavailable",
+                    )
+                    account_task_store.append_event(
+                        task_id,
+                        stage="login_password_result",
+                        message="ChatGPT 设置页没有添加账号密码入口，跳过密码并继续其它步骤",
+                        level="WARNING",
+                        detail={
+                            "eligible": False,
+                            "reason": "password_settings_entry_unavailable",
+                        },
+                        state="skipped",
+                    )
+                    unsupported_errors.append(
+                        f"PasswordSetupUnsupportedError: {unsupported_text[:180]}"
+                    )
+                    if needs_twofa:
+                        return False, None
+                    raise PasswordSetupUnsupportedError(
+                        "设置页没有添加账号密码入口"
                     ) from exc
                 account_task_store.append_event(
                     task_id,
@@ -822,7 +856,6 @@ def _build_roxy_account_setup(
 
         changed = False
         errors: list[str] = []
-        unsupported_errors: list[str] = []
 
         def _collect(label: str, future_or_result) -> None:
             nonlocal changed
@@ -838,6 +871,10 @@ def _build_roxy_account_setup(
             except PasswordSetupUnsupportedError as exc:
                 step_changed, error = False, f"{type(exc).__name__}: {str(exc)[:180]}"
                 unsupported_errors.append(error)
+                # ChatGPT 的账号密码资格是账号级能力，不应阻断同一浏览器
+                # 会话里仍可执行的 Authenticator 2FA。只有没有其它待执行
+                # 步骤时，才把这个结果向外层报告为 unsupported。
+                error = None
             except Exception as exc:
                 deactivation_code = _account_deactivation_code(exc)
                 if deactivation_code:
@@ -864,11 +901,24 @@ def _build_roxy_account_setup(
                 stage="account_setup_result",
                 message="账号配置部分完成，存在失败步骤，可重跑补齐",
                 level="ERROR",
-                detail={"errors": errors, "parallel": parallel_setup},
+                detail={
+                    "errors": errors,
+                    "unsupported": unsupported_errors,
+                    "parallel": parallel_setup,
+                },
             )
-            if unsupported_errors:
-                raise PasswordSetupUnsupportedError("；".join(errors))
             raise RuntimeError("账号配置部分失败：" + "；".join(errors))
+        if unsupported_errors:
+            account_task_store.append_event(
+                task_id,
+                stage="account_setup_result",
+                message="账号密码当前不支持，已继续执行其它账号配置步骤",
+                level="WARNING",
+                detail={"unsupported": unsupported_errors, "parallel": parallel_setup},
+                state="skipped",
+            )
+            if not needs_twofa:
+                raise PasswordSetupUnsupportedError("；".join(unsupported_errors))
         return changed
 
     return _setup

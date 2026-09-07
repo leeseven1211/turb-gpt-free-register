@@ -432,6 +432,7 @@ class OperationTaskStoreTests(PostgresTestCase):
                 """,
                 (run_id,),
             )
+
             cur.execute(
                 f"""
                 UPDATE {postgres_store.qualified('operation_tasks')}
@@ -466,6 +467,25 @@ class OperationTaskStoreTests(PostgresTestCase):
                 (run_id,),
             )
             self.assertEqual("success", cur.fetchone()[0])
+
+    def test_finish_task_persists_partial_success_as_terminal_status(self):
+        task_id = account_task_store.create_task(
+            task_type="account_completion",
+            account_id=None,
+            email="partial@example.com",
+            trigger="manual",
+        )
+        account_task_store.start_task(task_id, message="开始补全")
+        account_task_store.finish_task(
+            task_id,
+            status="partial_success",
+            message="密码/2FA 已完成，套餐查询待重试",
+            result_summary={"pending_steps": ["plan_check"]},
+        )
+
+        stored = account_task_store.get_task(task_id)
+        self.assertEqual("partial_success", stored["status"])
+        self.assertEqual("run.partial_success", stored["events"][-1]["event_type"])
 
     def test_batch_accounts_for_items_rejected_before_run_creation(self):
         account_id = self._seed_runtime_account("batch@example.com")

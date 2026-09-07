@@ -210,9 +210,21 @@ def _run_account_completion_worker(
             if not setup_result.get("ok"):
                 raise RuntimeError(setup_result.get("message") or "账号配置步骤未完成")
             plan_outcome = setup_result.get("plan_check") or {}
-            if "plan_check" in setup_steps and not bool(plan_outcome.get("ok")):
-                raise RuntimeError(plan_outcome.get("message") or "套餐补全未完成")
             remaining -= setup_steps
+            if "plan_check" in setup_steps and not bool(plan_outcome.get("ok")):
+                # 套餐查询依赖独立的 AT/接口状态；它失败时不应把已经完成
+                # 的密码或 2FA 重新标成整任务失败。保留待处理步骤，供后续
+                # 单独重试套餐查询。
+                result_summary["pending_steps"] = ["plan_check"]
+                result_summary["plan_check_error"] = plan_outcome.get("message") or "套餐补全未完成"
+                account_task_store.append_event(
+                    task_id,
+                    stage="plan_check",
+                    message="密码/2FA 已完成，套餐查询待后续单独重试",
+                    level="WARNING",
+                    detail={"error": result_summary["plan_check_error"]},
+                    state="skipped",
+                )
 
         if "codex" in remaining:
             account_task_store.append_event(
@@ -244,11 +256,20 @@ def _run_account_completion_worker(
                 raise RuntimeError(queued.get("error") or "Codex OAuth 入队失败")
             remaining.discard("codex")
 
-        result_summary["completed_steps"] = [step for step in planned_steps if step not in remaining]
+        pending_steps = set(result_summary.get("pending_steps") or [])
+        result_summary["completed_steps"] = [
+            step for step in planned_steps
+            if step not in remaining and step not in pending_steps
+        ]
+        task_status = "partial_success" if result_summary.get("pending_steps") else "success"
         account_task_store.finish_task(
             task_id,
-            status="success",
-            message="补全计划已提交，独立操作将在任务中心继续执行",
+            status=task_status,
+            message=(
+                "密码/2FA 已完成，套餐查询待后续单独重试"
+                if task_status == "partial_success"
+                else "补全计划已提交，独立操作将在任务中心继续执行"
+            ),
             result_summary=result_summary,
             validation_method="account_completion_plan",
         )
@@ -472,7 +493,9 @@ class WebUIContext:
                 "plan": plan,
                 "message": resumed.get("message") or "已继续原注册任务，不执行 AT 刷新",
             }
-        if plan["blocked"]:
+        # 一个步骤被账号能力明确阻塞时，仍允许执行其它未完成步骤。
+        # 例如密码资格为 false，但 Authenticator 2FA 仍然可以补齐。
+        if plan["blocked"] and not plan["missing_steps"]:
             return {"accepted": False, "blocked": plan["blocked"], "plan": plan, "error": plan["blocked"][0]["reason"]}
         if not plan["missing_steps"]:
             return {"accepted": False, "ready": True, "plan": plan, "message": "账号已满足当前补全配置"}
