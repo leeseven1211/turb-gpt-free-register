@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import logging
 import os
+import queue
 import threading
+import time
 from datetime import datetime, timezone
 
 from core import scheduler_state
@@ -43,10 +45,20 @@ _ENABLED = str(os.environ.get("EMAIL_BUTLER_RISK_SCAN_ENABLED", "1")).strip().lo
 }
 
 _LOCK = threading.RLock()
-_ICLOUD_SNAPSHOT_LOCK = threading.Lock()
 _IN_FLIGHT: set[int] = set()
 _SCHEDULER_STARTED = False
 _SUPPORTED_SOURCES = {"email_butler", "cloudflare", "icloud_hide"}
+_HME_SCAN_MODE = "shared_mailbox_recipient_search"
+_HME_VALIDATION_METHOD = "mailbox_recipient_search"
+
+# iCloud HME uses one dedicated coordinator instead of occupying the shared
+# account-operation pool while several requests wait for the same mailbox.
+# A short coalescing window also combines individual row clicks into one IMAP
+# batch without adding a noticeable delay to a normal bulk request.
+_HME_COALESCE_SECONDS = 0.5
+_HME_QUEUE: queue.Queue[tuple[list[dict], str]] = queue.Queue()
+_HME_COORDINATOR_LOCK = threading.RLock()
+_HME_COORDINATOR_THREAD: threading.Thread | None = None
 
 
 def _parse_time(value: object) -> datetime | None:
@@ -189,12 +201,12 @@ def _scan_group_failure(entry: dict, trigger: str, exc: Exception) -> None:
         status="failed",
         message="封号邮件扫描失败",
         error=error,
-        validation_method="mailbox_snapshot",
+        validation_method=_HME_VALIDATION_METHOD,
     )
 
 
 def _scan_group(entries: list[dict], trigger: str) -> None:
-    """Scan one shared iCloud HME inbox and fan out per-account results."""
+    """Scan one coalesced iCloud HME batch and fan out per-account results."""
     started: list[dict] = []
     completed: set[int] = set()
     try:
@@ -207,20 +219,18 @@ def _scan_group(entries: list[dict], trigger: str) -> None:
             reporter.start(message="开始扫描封号邮件信号")
             reporter.stage(
                 "mailbox_scan", "running",
-                message=f"读取 iCloud HME 共享邮箱快照，回溯 {_LOOKBACK_DAYS} 天",
+                message=f"读取 iCloud HME 共享邮箱并按收件人检索，回溯 {_LOOKBACK_DAYS} 天",
                 detail={
                     "email_source": "icloud_hide",
                     "lookback_days": _LOOKBACK_DAYS,
-                    "scan_mode": "shared_mailbox_snapshot",
+                    "scan_mode": _HME_SCAN_MODE,
                 },
             )
 
-        # 同一个配置邮箱只允许一个快照同时运行；其它邮箱来源仍由公共线程池并行处理。
-        with _ICLOUD_SNAPSHOT_LOCK:
-            results = scan_hme_deactivation_bulk(
-                [str(entry.get("email") or "") for entry in entries],
-                lookback_days=_LOOKBACK_DAYS,
-            )
+        results = scan_hme_deactivation_bulk(
+            [str(entry.get("email") or "") for entry in entries],
+            lookback_days=_LOOKBACK_DAYS,
+        )
 
         for entry in entries:
             account_id = int(entry["account_id"])
@@ -242,7 +252,7 @@ def _scan_group(entries: list[dict], trigger: str) -> None:
                 detail={
                     "detected": detected,
                     "email_source": "icloud_hide",
-                    "scan_mode": "shared_mailbox_snapshot",
+                    "scan_mode": _HME_SCAN_MODE,
                 },
             )
             reporter.finish(
@@ -256,9 +266,9 @@ def _scan_group(entries: list[dict], trigger: str) -> None:
                     "sender": result.get("sender"),
                     "confidence": result.get("confidence"),
                     "email_source": "icloud_hide",
-                    "scan_mode": "shared_mailbox_snapshot",
+                    "scan_mode": _HME_SCAN_MODE,
                 },
-                validation_method="mailbox_snapshot",
+                validation_method=_HME_VALIDATION_METHOD,
             )
             completed.add(account_id)
     except (EmailButlerClientError, CFTempMailError, ForwardIMAPError) as exc:
@@ -274,6 +284,49 @@ def _scan_group(entries: list[dict], trigger: str) -> None:
         with _LOCK:
             for entry in entries:
                 _IN_FLIGHT.discard(int(entry["account_id"]))
+
+
+def _ensure_hme_coordinator() -> None:
+    global _HME_COORDINATOR_THREAD
+    with _HME_COORDINATOR_LOCK:
+        if _HME_COORDINATOR_THREAD is not None and _HME_COORDINATOR_THREAD.is_alive():
+            return
+        _HME_COORDINATOR_THREAD = threading.Thread(
+            target=_hme_coordinator_loop,
+            name="icloud-hme-deactivation-coordinator",
+            daemon=True,
+        )
+        _HME_COORDINATOR_THREAD.start()
+
+
+def _queue_hme_batch(entries: list[dict], trigger: str) -> None:
+    _HME_QUEUE.put((list(entries), str(trigger or "manual_bulk")))
+    _ensure_hme_coordinator()
+
+
+def _take_hme_batches(first: tuple[list[dict], str]) -> dict[str, list[dict]]:
+    """Collect a short burst of requests, grouped by trigger for correct audit data."""
+    grouped: dict[str, list[dict]] = {}
+    first_entries, first_trigger = first
+    grouped.setdefault(first_trigger, []).extend(first_entries)
+    end_at = time.monotonic() + max(0.0, float(_HME_COALESCE_SECONDS))
+    while True:
+        remaining = end_at - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            entries, trigger = _HME_QUEUE.get(timeout=remaining)
+        except queue.Empty:
+            break
+        grouped.setdefault(trigger, []).extend(entries)
+    return grouped
+
+
+def _hme_coordinator_loop() -> None:
+    while True:
+        first = _HME_QUEUE.get()
+        for trigger, entries in _take_hme_batches(first).items():
+            _scan_group(entries, trigger)
 
 
 def enqueue_bulk(account_ids: list[int], trigger: str = "manual_bulk", batch_id: str | None = None) -> dict:
@@ -350,7 +403,7 @@ def enqueue_bulk(account_ids: list[int], trigger: str = "manual_bulk", batch_id:
     for source, entries in groups.items():
         if source == "icloud_hide":
             try:
-                _EXECUTOR.submit(_scan_group, entries, trigger)
+                _queue_hme_batch(entries, trigger)
             except Exception as exc:
                 for entry in entries:
                     _finish_enqueue_failure(entry, trigger, exc)
@@ -467,4 +520,5 @@ def queue_settings() -> dict:
         "interval_seconds": _INTERVAL_SECONDS,
         "lookback_days": _LOOKBACK_DAYS,
         "in_flight": in_flight,
+        "icloud_pending": _HME_QUEUE.qsize(),
     }

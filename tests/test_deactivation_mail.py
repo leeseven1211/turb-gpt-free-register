@@ -106,12 +106,12 @@ class DeactivationMailTests(PostgresTestCase):
     def test_icloud_hide_is_supported_by_mail_scanner(self):
         self.assertIn("icloud_hide", deactivation_mail_service._SUPPORTED_SOURCES)
 
-    def test_bulk_enqueue_groups_shared_icloud_mailbox_into_one_worker(self):
+    def test_bulk_enqueue_uses_dedicated_icloud_coordinator(self):
         accounts = {
             1: {"id": 1, "email": "first@icloud.com", "email_source": "icloud_hide"},
             2: {"id": 2, "email": "second@icloud.com", "email_source": "icloud_hide"},
         }
-        submitted = []
+        queued = []
         task_ids = iter([101, 102])
         with (
             patch.object(deactivation_mail_service.db, "get_account", side_effect=accounts.get),
@@ -123,19 +123,23 @@ class DeactivationMailTests(PostgresTestCase):
             patch.object(deactivation_mail_service.db, "update_account_deactivation_mail"),
             patch.object(deactivation_mail_service.account_task_store, "finish_task"),
             patch.object(
-                deactivation_mail_service._EXECUTOR,
-                "submit",
-                side_effect=lambda *args, **_kwargs: submitted.append(args),
+                deactivation_mail_service._HME_QUEUE,
+                "put",
+                side_effect=lambda item: queued.append(item),
             ),
+            patch.object(deactivation_mail_service, "_ensure_hme_coordinator") as ensure,
+            patch.object(deactivation_mail_service._EXECUTOR, "submit") as submit,
         ):
             deactivation_mail_service._IN_FLIGHT.clear()
             result = deactivation_mail_service.enqueue_bulk([1, 2], trigger="manual_bulk")
             deactivation_mail_service._IN_FLIGHT.clear()
 
         self.assertEqual(len(result["started"]), 2)
-        self.assertEqual(len(submitted), 1)
-        self.assertIs(submitted[0][0], deactivation_mail_service._scan_group)
-        self.assertEqual(len(submitted[0][1]), 2)
+        self.assertEqual(len(queued), 1)
+        self.assertEqual(len(queued[0][0]), 2)
+        self.assertEqual(queued[0][1], "manual_bulk")
+        ensure.assert_called_once_with()
+        submit.assert_not_called()
 
     def test_grouped_scan_fans_out_terminal_results_to_each_account(self):
         entries = [

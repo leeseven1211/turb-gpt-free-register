@@ -27,10 +27,11 @@ class ForwardIMAPError(RuntimeError):
     pass
 
 
-_EMAIL_RE = re.compile(r"(?i)\b[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+\b")
 _DEFAULT_IMAP_RETRY_ATTEMPTS = 3
 _DEFAULT_IMAP_RETRY_DELAY_SECONDS = 0.5
-_MAX_BULK_SNAPSHOT_MESSAGES = 5000
+_EMAIL_RE = re.compile(r"(?i)\b[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+\b")
+_RECIPIENT_SEARCH_CHUNK_SIZE = 50
+_MAX_BULK_MATCHED_MESSAGES = 5000
 
 
 def _settings() -> tuple[str, int, str, str]:
@@ -140,14 +141,8 @@ def _recipient_headers(msg) -> str:
     return " ".join(values).lower()
 
 
-def _recipient_addresses(msg) -> set[str]:
-    """Extract exact recipient addresses from all forwarding headers."""
-    return {
-        match.group(0).lower()
-        for name in ("To", "Delivered-To", "X-Original-To", "X-Forwarded-To", "Envelope-To")
-        for value in (msg.get_all(name, []) or [])
-        for match in _EMAIL_RE.finditer(str(value or ""))
-    }
+def _recipient_addresses(headers: str) -> set[str]:
+    return {match.group(0).lower() for match in _EMAIL_RE.finditer(headers or "")}
 
 
 def _internal_date(meta: object) -> str:
@@ -192,39 +187,56 @@ def _message_from_fetch(
     return item, recipient_headers, message_id.decode("ascii", errors="ignore")
 
 
-def _messages_for_recipient(
+def _imap_recipient_search(header: str, targets: list[str]) -> str:
+    """Build a bounded IMAP OR expression for one recipient header."""
+    expression = f'HEADER {header} "{targets[0]}"'
+    for target in targets[1:]:
+        expression = f'OR {expression} HEADER {header} "{target}"'
+    return expression
+
+
+def _messages_for_recipients(
     mail: imaplib.IMAP4_SSL,
-    target: str,
+    targets: set[str],
     after_ts: float,
     limit: int = 200,
-) -> list[tuple[dict, str, str]]:
-    """在 IMAP 端先按收件人头过滤，避免为每个隐藏邮箱下载整个收件箱。"""
+) -> dict[str, list[tuple[dict, str, str]]]:
+    """Search all aliases server-side, then fetch each matching message once."""
+    indexed: dict[str, list[tuple[dict, str, str]]] = {
+        target: [] for target in targets
+    }
+    if not targets:
+        return indexed
     after_dt = datetime.fromtimestamp(after_ts, tz=timezone.utc)
     since = after_dt.strftime("%d-%b-%Y")
     ids: set[bytes] = set()
     search_errors: list[Exception] = []
     successful_search = False
+    ordered_targets = sorted(targets)
     for header in ("To", "X-Original-To", "Delivered-To", "Envelope-To"):
-        try:
-            status, ids_data = mail.search(
-                None,
-                f'(SINCE "{since}" HEADER {header} "{target}")',
-            )
-        except Exception as exc:
-            search_errors.append(exc)
-            continue
-        if status == "OK":
-            successful_search = True
-            if ids_data and ids_data[0]:
-                ids.update(ids_data[0].split())
+        for start in range(0, len(ordered_targets), _RECIPIENT_SEARCH_CHUNK_SIZE):
+            chunk = ordered_targets[start:start + _RECIPIENT_SEARCH_CHUNK_SIZE]
+            query = f'(SINCE "{since}" {_imap_recipient_search(header, chunk)})'
+            try:
+                status, ids_data = mail.search(None, query)
+            except Exception as exc:
+                search_errors.append(exc)
+                continue
+            if status == "OK":
+                successful_search = True
+                if ids_data and ids_data[0]:
+                    ids.update(ids_data[0].split())
 
     if not successful_search and search_errors:
         raise ForwardIMAPError(
             f"隐藏邮箱转发 IMAP 搜索失败: {type(search_errors[-1]).__name__}: {search_errors[-1]}"
         )
 
-    selected = sorted(ids, key=lambda value: int(value))[-max(1, limit):]
-    out: list[tuple[dict, str, str]] = []
+    max_messages = min(
+        _MAX_BULK_MATCHED_MESSAGES,
+        max(1, int(limit)) * max(1, len(targets)),
+    )
+    selected = sorted(ids, key=lambda value: int(value))[-max_messages:]
     for mid in reversed(selected):
         try:
             item, recipient_headers, message_id = _message_from_fetch(
@@ -232,73 +244,27 @@ def _messages_for_recipient(
                 mid,
                 spec="(INTERNALDATE RFC822)",
             )
-            out.append((
-                item,
-                recipient_headers,
-                message_id,
-            ))
+            recipients = _recipient_addresses(recipient_headers)
+            for target in targets:
+                if target in recipients:
+                    indexed[target].append((item, recipient_headers, message_id))
         except ForwardIMAPError:
             # A dropped socket must escape so the outer read-only operation
             # can reconnect and retry the complete scan.
             raise
         except Exception as exc:
             logger.debug("[HME Forward IMAP] 解析邮件失败: %s: %s", type(exc).__name__, exc)
-    return out
-
-
-def _imap_ids(data: list[bytes] | list[str] | None) -> list[bytes]:
-    if not data or not data[0]:
-        return []
-    raw = data[0]
-    if isinstance(raw, str):
-        raw = raw.encode("ascii", errors="ignore")
-    return list(raw.split())
-
-
-def _imap_id_sort_key(value: bytes) -> tuple[int, str]:
-    text = value.decode("ascii", errors="ignore")
-    try:
-        return int(text), text
-    except ValueError:
-        return -1, text
-
-
-def _messages_for_mailbox_snapshot(
-    mail: imaplib.IMAP4_SSL,
-    targets: set[str],
-    after_ts: float,
-    *,
-    limit: int = _MAX_BULK_SNAPSHOT_MESSAGES,
-) -> dict[str, list[tuple[dict, str, str]]]:
-    """Read one shared inbox snapshot and index candidate messages by HME alias."""
-    after_dt = datetime.fromtimestamp(after_ts, tz=timezone.utc)
-    since = after_dt.strftime("%d-%b-%Y")
-    try:
-        status, ids_data = mail.search(None, f'(SINCE "{since}" FROM "openai.com")')
-    except Exception as exc:
-        raise ForwardIMAPError(
-            f"隐藏邮箱转发 IMAP 批量搜索失败: {type(exc).__name__}: {exc}"
-        ) from exc
-    if status != "OK":
-        raise ForwardIMAPError("隐藏邮箱转发 IMAP 批量搜索失败")
-
-    ids = sorted(_imap_ids(ids_data), key=_imap_id_sort_key)[-max(1, int(limit)) :]
-    indexed: dict[str, list[tuple[dict, str, str]]] = {target: [] for target in targets}
-    for message_id in ids:
-        _meta, raw_header = _fetch_raw_message(mail, message_id, "(INTERNALDATE BODY.PEEK[HEADER])")
-        header_msg = email_lib.message_from_bytes(raw_header)
-        matching_targets = targets.intersection(_recipient_addresses(header_msg))
-        if not matching_targets:
-            continue
-        full_item, recipient_headers, message_id_text = _message_from_fetch(
-            mail,
-            message_id,
-            spec="(INTERNALDATE RFC822)",
-        )
-        full_item["to"] = recipient_headers
-        for target in matching_targets:
-            indexed[target].append((full_item, recipient_headers, message_id_text))
     return indexed
+
+
+def _messages_for_recipient(
+    mail: imaplib.IMAP4_SSL,
+    target: str,
+    after_ts: float,
+    limit: int = 200,
+) -> list[tuple[dict, str, str]]:
+    """在 IMAP 端按收件人头过滤，避免下载整个共享收件箱。"""
+    return _messages_for_recipients(mail, {target}, after_ts, limit).get(target, [])
 
 
 def _message_timestamp(item: dict) -> float:
@@ -323,7 +289,7 @@ def _latest_forwarded_otp(mail: imaplib.IMAP4_SSL, target: str, after_ts: float)
         pass
     cutoff = float(after_ts if after_ts is not None else time.time()) - 30
     for item, recipient_headers, _message_id in _messages_for_recipient(mail, target, cutoff, limit=80):
-        if target not in recipient_headers:
+        if target not in _recipient_addresses(recipient_headers):
             continue
         received_at = _message_timestamp(item)
         if received_at and received_at < cutoff:
@@ -341,7 +307,7 @@ def _deactivation_result(target: str, messages: list[tuple[dict, str, str]]) -> 
 
     matches: list[dict] = []
     for item, recipient_headers, message_id in messages:
-        if target not in recipient_headers:
+        if target not in _recipient_addresses(recipient_headers):
             continue
         # The index already proved that this message was delivered to target;
         # pass the exact alias to the shared detector instead of a combined
@@ -393,7 +359,7 @@ def scan_openai_deactivation(email: str, *, lookback_days: int = 120) -> dict:
 
 
 def scan_openai_deactivation_bulk(emails: list[str], *, lookback_days: int = 120) -> dict[str, dict]:
-    """Scan many aliases from one shared Gmail mailbox snapshot.
+    """Scan many aliases through one shared Gmail connection.
 
     The result is keyed by normalized alias and contains the same safe fields
     as :func:`scan_openai_deactivation`. Mail bodies and credentials never
@@ -411,9 +377,12 @@ def scan_openai_deactivation_bulk(emails: list[str], *, lookback_days: int = 120
     def _scan_once() -> dict[str, dict]:
         mail = _connect()
         try:
-            indexed = _messages_for_mailbox_snapshot(mail, targets, since_ts)
+            indexed = _messages_for_recipients(mail, targets, since_ts)
             return {
-                target: _deactivation_result(target, indexed.get(target, []))
+                target: _deactivation_result(
+                    target,
+                    indexed.get(target, []),
+                )
                 for target in sorted(targets)
             }
         finally:

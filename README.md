@@ -784,7 +784,7 @@ WebUI「账号」页提供单账号“复查”和批量“查封号邮件”。
 
 - `email_butler`：调用 `/v1/signals/scan`。
 - `cloudflare`：优先调用只读 `CLOUDFLARE_SIGNAL_PATH`；当前进程仍保有邮箱 JWT 时可回退扫描收件箱。
-- `icloud_hide`：通过已配置的转发 Gmail/IMAP 按隐藏邮箱地址检索；服务器端先过滤收件人，不会为每个账号下载整个收件箱。
+- `icloud_hide`：通过独立协调队列处理；每个合并批次只建立一条转发 Gmail/IMAP 连接，服务器端按多个隐藏邮箱合并过滤收件人，再按账号拆分结果，不会为每个账号单独建连接或下载整个收件箱。
 
 `outlook`、`cloudflare_domain` 等其他来源会显示“不支持”，不会误报。已确认收到封号通知后，证据会持久保留；后续缩短回溯窗口或一次未命中不会把它自动清除。
 
@@ -800,7 +800,7 @@ CLOUDFLARE_SIGNAL_PATH=/signals/scan
 
 # 后台周期扫描
 EMAIL_BUTLER_RISK_SCAN_ENABLED=True
-# 封号邮件扫描并发与其它账号操作统一使用 ACCOUNT_BATCH_WORKERS
+# Email Butler/Cloudflare 扫描并发使用 ACCOUNT_BATCH_WORKERS；icloud_hide 使用独立协调队列
 EMAIL_BUTLER_RISK_SCAN_INTERVAL_SECONDS=21600
 EMAIL_BUTLER_RISK_SCAN_INITIAL_DELAY_SECONDS=90
 EMAIL_BUTLER_RISK_SCAN_LOOKBACK_DAYS=120

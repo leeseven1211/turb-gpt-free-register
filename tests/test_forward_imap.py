@@ -230,7 +230,7 @@ class ForwardIMAPTests(unittest.TestCase):
         self.assertEqual(connect.call_count, 2)
         sleep.assert_called_once_with(0.5)
 
-    def test_bulk_deactivation_scan_snapshots_one_mailbox_for_multiple_aliases(self):
+    def test_bulk_deactivation_scan_reuses_one_connection_and_searches_each_alias(self):
         first = EmailMessage()
         first["From"] = "OpenAI <noreply@openai.com>"
         first["To"] = "owner@gmail.com"
@@ -241,9 +241,11 @@ class ForwardIMAPTests(unittest.TestCase):
 
         class Mail:
             def __init__(self):
+                self.search_calls = []
                 self.fetch_calls = []
 
             def search(self, *_args):
+                self.search_calls.append(_args)
                 return "OK", [b"7"]
 
             def fetch(self, message_id, spec):
@@ -263,7 +265,11 @@ class ForwardIMAPTests(unittest.TestCase):
             ])
 
         self.assertEqual(connect.call_count, 1)
-        self.assertEqual(len(mail.fetch_calls), 2)
+        self.assertEqual(len(mail.search_calls), 4)
+        self.assertTrue(all("HEADER" in call[1] for call in mail.search_calls))
+        self.assertTrue(all('FROM "openai.com"' not in call[1] for call in mail.search_calls))
+        self.assertTrue(all("OR" in call[1] for call in mail.search_calls))
+        self.assertEqual(len(mail.fetch_calls), 1)
         self.assertTrue(result["first@icloud.com"]["detected"])
         self.assertTrue(result["second@icloud.com"]["detected"])
         self.assertNotIn("text", result["first@icloud.com"])
