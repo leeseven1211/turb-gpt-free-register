@@ -38,7 +38,12 @@ let jobsReloadQueued = false;
 let accountTasksLoading = false;
 
 const LIST_FACET_LABELS = {
-  status: {running:'运行中', pending:'排队中', stopping:'停止中', failed:'失败', partial_success:'部分成功', success:'成功', stopped:'已停止', cancelled:'已取消', available:'可用', used:'已使用', disabled:'停用', exported:'已导出', unexported:'未导出', archived:'已归档'},
+  status: {
+    queued:'排队中', pending:'排队中', running:'运行中', waiting:'等待中', stopping:'停止中', cancelling:'停止中', settling:'收尾中',
+    failed:'失败', partial_success:'部分成功', success:'成功', stopped:'已停止', cancelled:'已取消', interrupted:'执行中断',
+    deactivated:'已停用', unsupported:'不支持', attention_required:'需人工处理',
+    available:'可用', used:'已使用', disabled:'停用', exported:'已导出', unexported:'未导出', archived:'已归档',
+  },
   source: {
     outlook:'Outlook', generic_api:'通用 API', cloudflare_domain:'域名邮箱', cloudflare_temp:'Cloudflare 临时邮箱',
     icloud_hide:'iCloud 隐藏邮箱', email_butler:'Email Butler', gptmail:'GPTMail', mailnest:'MailNest', cloudmail:'CloudMail',
@@ -55,26 +60,28 @@ const LIST_FACET_LABELS = {
   codex: {success:'已通过', retrying:'进行中', failed:'失败', stopped:'已停止', deactivated:'已停用', skipped:'已跳过', missing:'缺失'},
   account_status: {active:'正常', deactivated:'已废号', unknown:'待确认'},
   task_type: {
-    registration:'注册', registration_resume:'继续邮箱验证', twofa_retry:'2FA / 配置补跑',
-    account_setup_retry:'账号配置补跑', codex_retry:'Codex 补跑', codex_token_refresh:'Codex Token 刷新',
+    registration:'注册', registration_resume:'继续邮箱验证', twofa_retry:'2FA 配置补跑',
+    account_setup_retry:'账号配置补跑', password_setup:'补密码', twofa_setup:'补 2FA', account_completion:'补全账号',
+    codex_retry:'Codex 补跑', codex_token_refresh:'Codex Token 刷新',
     live_check:'查活', token_refresh:'AT 刷新', plan_check:'查套餐', deactivation_mail:'查封号邮件',
   },
   target_status: {
-    not_created:'尚未创建', in_progress:'处理中', email_verification_pending:'待邮箱验证 / 资料',
+    not_created:'尚未创建', in_progress:'处理中', email_verification_pending:'待邮箱验证或资料补全',
     account_available:'账号可用', credential_valid:'凭证有效', credential_pending_confirmation:'凭证待确认',
-    attention_required:'需要人工处理', deactivated:'账号已停用', account_deactivated:'账号已停用',
-    cancelled:'已取消', failed:'失败', pending:'等待执行', unknown:'状态待确认',
+    attention_required:'需人工处理', deactivated:'账号已停用', account_deactivated:'账号已停用',
+    cancelled:'已取消', failed:'失败', pending:'等待执行', request_unknown:'结果待确认',
+    manual_reconcile:'需人工对账', completed:'已完成', unknown:'状态待确认',
   },
   stage: {
-    queued:'排队', running:'开始', preflight:'配置预检', network:'网络线路', network_route:'网络线路',
+    queued:'进入队列', running:'执行中', preflight:'配置预检', network:'分配网络', network_route:'分配网络',
     driver:'启动浏览器', email:'准备邮箱', browser:'启动浏览器', page:'打开页面', submit_email:'提交邮箱',
     auth_redirect:'进入认证', email_otp:'邮箱验证', profile:'账号资料', token:'获取 Token', codex:'Codex 授权',
-    login_password:'账号登录', account_setup:'账号配置', access_token:'Token 验证', reauth:'重新登录',
+    login_password:'账号密码', mfa_challenge:'TOTP 验证', account_setup:'账号配置', access_token:'校验 Token', reauth:'重新登录',
     roxy_fallback:'浏览器回退', oauth:'Codex 授权', auth_url:'获取授权地址', login:'登录 OpenAI',
     phone_check:'检查手机验证', phone_acquire:'申请接码号码', phone_otp:'短信验证', consent:'确认授权',
     callback:'接收 OAuth 回调', credential_confirm:'确认远端凭证', credential_persist:'保存凭证', cancelling:'正在停止',
-    twofa:'设置 2FA', plan_check:'查询套餐', plan_request:'请求套餐', refresh_token:'刷新 Token',
-    mailbox_scan:'扫描邮件', complete:'完成',
+    twofa:'设置 2FA', plan:'套餐信息', plan_check:'查询套餐', plan_request:'请求套餐', refresh_token:'刷新 Token',
+    mailbox_scan:'扫描邮件', complete:'完成', interrupted:'执行中断', event:'事件',
   },
   run_count: {'0':'0 次', '1':'1 次', '2':'2 次', '3':'3 次', '4+':'4 次及以上'},
 };

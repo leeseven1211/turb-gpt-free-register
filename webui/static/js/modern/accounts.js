@@ -4,32 +4,14 @@ let accountsReloadQueued = false;
 let planStatusLoading = false;
 let planStatusRevision = '';
 let ACCOUNT_BATCH_WORKERS = 3;
-const ACCOUNT_TASK_TYPE_LABELS = {
-  registration:'注册', registration_resume:'继续邮箱验证', twofa_retry:'2FA / 配置补跑',
-  account_setup_retry:'账号配置补跑', password_setup:'补密码', twofa_setup:'补 2FA', account_completion:'补全账号', codex_retry:'Codex 补跑', codex_token_refresh:'Codex Token 刷新', live_check:'查活', token_refresh:'AT 刷新', plan_check:'查套餐', deactivation_mail:'查封号邮件'
-};
+const ACCOUNT_TASK_TYPE_LABELS = LIST_FACET_LABELS.task_type;
 const ACCOUNT_TASK_TRIGGER_LABELS = {
   manual:'手动', manual_bulk:'手动批量', manual_retry:'失败重跑', scheduled:'定时',
   registration_auto:'注册后自动', registration_job_retry:'注册任务重试', token_refresh_scheduled:'AT 定时刷新',
   codex_token_refresh_scheduled:'Codex 定时刷新'
 };
-const ACCOUNT_TASK_STAGE_LABELS = {
-  queued:'排队', running:'开始', preflight:'配置预检', network:'网络线路', network_route:'网络线路', driver:'启动浏览器',
-  email:'准备邮箱', browser:'启动浏览器', page:'打开页面', submit_email:'提交邮箱', auth_redirect:'进入认证',
-  email_otp:'邮箱验证', profile:'账号资料', token:'获取 Token', codex:'Codex 授权',
-  login_password:'账号登录', account_setup:'账号配置', access_token:'Token 验证', reauth:'重新登录',
-  roxy_fallback:'浏览器回退', oauth:'Codex 授权', auth_url:'获取授权地址', login:'登录 OpenAI',
-  phone_check:'检查手机验证', phone_acquire:'申请接码号码', phone_otp:'短信验证', consent:'确认授权',
-  callback:'接收 OAuth 回调', credential_confirm:'确认远端凭证', credential_persist:'保存凭证', cancelling:'正在停止',
-  twofa:'设置 2FA', plan_check:'查询套餐',
-  plan_request:'请求套餐', refresh_token:'刷新 Token', mailbox_scan:'扫描邮件', complete:'完成'
-};
-const OPERATION_TARGET_LABELS = {
-  not_created:'尚未创建', in_progress:'处理中', email_verification_pending:'待邮箱验证 / 资料',
-  account_available:'账号可用', credential_valid:'凭证有效', credential_pending_confirmation:'凭证待确认',
-  attention_required:'需要人工处理', deactivated:'账号已停用', account_deactivated:'账号已停用',
-  cancelled:'已取消', failed:'失败', pending:'等待执行', unknown:'状态待确认'
-};
+const ACCOUNT_TASK_STAGE_LABELS = LIST_FACET_LABELS.stage;
+const OPERATION_TARGET_LABELS = LIST_FACET_LABELS.target_status;
 function formatTaskDuration(ms) {
   if (ms == null || ms === '') return '-';
   const value = Number(ms);
