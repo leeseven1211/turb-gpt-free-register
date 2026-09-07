@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import math
 import random
 import re
@@ -30,7 +31,7 @@ from core.registration.state_machine import (
 from core.auth_challenge import (
     MfaSecretMissingError,
     PasswordRejectedError,
-    PasswordSetupUnsupportedError,
+    PasswordSetupNotReadyError,
     RemoteExistingAccountError,
     auth_result_for_registration,
     classify_registration_identity,
@@ -581,6 +582,59 @@ def _refresh_chatgpt_settings_shell_if_needed(driver, *, reason: str = "") -> bo
         )
         _page_warmup(driver, reason=f"settings_shell_recover:{reason or 'settings'}")
     return True
+
+
+def _settings_page_not_ready(
+    *,
+    url: str,
+    password_controls: list[str] | tuple[str, ...] | None,
+    password_lines: list[str] | tuple[str, ...] | None,
+    page_meta: dict | str | None,
+    security_action=None,
+) -> bool:
+    """Distinguish an unmounted settings shell from a stable no-password page.
+
+    A missing Add-password control is only meaningful after the Security tab has
+    mounted.  The ChatGPT settings SPA can otherwise show a localized ``Settings``
+    label and a few stale menu nodes while the security tree is still loading.
+    """
+    controls = [str(item or "").strip() for item in (password_controls or []) if item]
+    lines = [str(item or "").strip() for item in (password_lines or []) if item]
+    password_marker = re.compile(
+        r"password|密码|パスワード|비밀번호|mot\s+de\s+passe|contraseña|senha|passwort|пароль",
+        re.IGNORECASE,
+    )
+    if any(password_marker.search(value) for value in (*controls, *lines)):
+        return False
+    normalized_url = str(url or "").strip().lower()
+    if "settings" not in normalized_url:
+        return False
+    meta = page_meta
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    testids = " ".join(str(item or "").lower() for item in (meta.get("testids") or []))
+    body_text_length = int(meta.get("body_text_length") or 0)
+    security_route = "#settings/security" in normalized_url or "/settings/security" in normalized_url
+    security_mounted = (
+        "security-tab" in testids
+        or "security-setting" in testids
+        or security_route
+    )
+    settings_modal_mounted = (
+        "modal-settings" in testids
+        or "general-setting-tab" in testids
+        or "data-controls" in testids
+    )
+    return (
+        not security_mounted
+        or not settings_modal_mounted
+        or (body_text_length < 500 and not security_route and security_action is not None)
+    )
 
 
 def _find_any(driver, selectors: list[str], timeout: int | None = None):
@@ -3445,7 +3499,8 @@ def _click_chatgpt_settings_control(driver, element, *, label: str = "") -> None
         testid = str(element.get_attribute("data-testid") or "")
     except Exception:
         pass
-    if testid not in {"accounts-profile-button", "settings-menu-item", "security-tab", "password-setting"}:
+    if testid not in {"accounts-profile-button", "settings-menu-item", "security-tab", "password-setting"} \
+            and not re.search(r"(?:^|[-_:])password[-_:]?setting(?:$|[-_:])", testid, re.IGNORECASE):
         _human_click(driver, element, label=label)
         return
     driver.execute_script(r"""
@@ -3462,8 +3517,99 @@ def _click_chatgpt_settings_control(driver, element, *, label: str = "") -> None
     """, element)
 
 
+def _reveal_chatgpt_settings_navigation(driver) -> bool:
+    """Scroll the virtualized Settings navigation so delayed tabs can mount."""
+    try:
+        result = driver.execute_script(r"""
+        const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+          && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+        const modal = document.querySelector('[data-testid="modal-settings"]') || document;
+        const modalRect = modal.getBoundingClientRect?.();
+        const candidates = [...modal.querySelectorAll('*')].filter(el => {
+          if (!visible(el) || el.scrollHeight <= el.clientHeight + 8) return false;
+          const rect = el.getBoundingClientRect();
+          return !modalRect || (rect.left < modalRect.left + modalRect.width * 0.48
+            && rect.width > 120 && rect.height > 180);
+        });
+        const scroller = candidates.sort((a, b) => a.clientHeight - b.clientHeight)[0];
+        if (!scroller) return {changed: false};
+        const before = scroller.scrollTop;
+        const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+        scroller.scrollTop = Math.min(max, before + Math.max(120, scroller.clientHeight * 0.7));
+        scroller.dispatchEvent(new Event('scroll', {bubbles: true}));
+        return {changed: scroller.scrollTop !== before, before, after: scroller.scrollTop, max};
+        """) or {}
+        return bool(result.get("changed"))
+    except Exception:
+        return False
+
+
 def _click_password_setting_fallback(driver) -> bool:
     """Click a visible Add Password control when the structured scan missed it."""
+    try:
+        from selenium.webdriver.common.by import By
+
+        negative = re.compile(r"forgot|reset|log.?in|sign.?in|one.?time|otp|忘记|重置|一次性|验证码", re.IGNORECASE)
+        add_password = re.compile(
+            r"(?:add|set|create).{0,30}password|password.{0,30}(?:add|set|create)|"
+            r"添加密码|设置密码|新增密码|パスワード.{0,30}(?:追加|設定)|"
+            r"(?:追加|設定).{0,30}パスワード|비밀번호.{0,30}(?:추가|설정)|"
+            r"(?:추가|설정).{0,30}비밀번호",
+            re.IGNORECASE,
+        )
+        add_action = re.compile(r"^(?:add|set|create|添加|设置|新增|追加|設定|추가|설정)$", re.IGNORECASE)
+        password_testid = re.compile(r"(?:^|[-_:])password[-_:]?setting(?:$|[-_:])", re.IGNORECASE)
+
+        def _label(element) -> str:
+            values = []
+            for name in ("innerText", "textContent", "aria-label", "title", "data-testid"):
+                try:
+                    value = element.get_attribute(name)
+                except Exception:
+                    value = ""
+                if value:
+                    values.append(str(value))
+            return re.sub(r"\s+", " ", " ".join(values)).strip()
+
+        def _is_action(element) -> bool:
+            text = _label(element)
+            return bool(text) and not negative.search(text) and bool(add_password.search(text) or add_action.search(text))
+
+        roots = []
+        for selector in ("[data-testid*='password-setting']", "[data-testid*='password_setting']", "[data-testid]"):
+            try:
+                candidates = driver.find_elements(By.CSS_SELECTOR, selector)
+            except Exception:
+                continue
+            for element in candidates or []:
+                try:
+                    testid = str(element.get_attribute("data-testid") or "")
+                except Exception:
+                    testid = ""
+                if not password_testid.search(testid) or not _visible(element):
+                    continue
+                if all(element is not seen for seen in roots):
+                    roots.append(element)
+        for root in roots:
+            descendants = []
+            try:
+                descendants = root.find_elements(
+                    By.CSS_SELECTOR,
+                    "button,a,[role='button'],[role='menuitem'],[role='tab'],*",
+                ) or []
+            except Exception:
+                pass
+            for candidate in descendants:
+                if _visible(candidate) and _is_action(candidate):
+                    _click_chatgpt_settings_control(
+                        driver, candidate, label="account_password_settings_fallback"
+                    )
+                    return True
+            _click_chatgpt_settings_control(driver, root, label="account_password_settings_fallback")
+            return True
+    except Exception:
+        pass
+
     try:
         element = driver.execute_script(r"""
         const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
@@ -3475,14 +3621,25 @@ def _click_password_setting_fallback(driver) -> bool:
         const negative = /forgot|reset|log.?in|sign.?in|one.?time|otp|忘记|重置|一次性|验证码/i;
         const nodes = [...document.querySelectorAll('[data-testid],button,a,[role="button"],[role="menuitem"]')]
           .filter(visible);
-        return nodes.find(el => {
+        const isPasswordAction = el => {
           const text = label(el);
-          const testid = String(el.getAttribute('data-testid') || '').toLowerCase();
           return !negative.test(text) && (
-            /password[-_:]?setting/.test(testid)
-            || /(?:add|set|create).{0,30}password|password.{0,30}(?:add|set|create)|添加密码|设置密码|新增密码/i.test(text)
+            /(?:add|set|create).{0,30}password|password.{0,30}(?:add|set|create)|添加密码|设置密码|新增密码/i.test(text)
+            || /^(?:add|set|create|添加|设置|新增)$/i.test(text)
           );
-        }) || null;
+        };
+        const passwordRoots = nodes.filter(el =>
+          /password[-_:]?setting/.test(String(el.getAttribute('data-testid') || '').toLowerCase())
+        );
+        for (const root of passwordRoots) {
+          if (isPasswordAction(root)) return root;
+          const descendants = [...root.querySelectorAll('button,a,[role="button"],[role="menuitem"],[role="tab"],*')]
+            .filter(visible);
+          const action = descendants.find(isPasswordAction);
+          if (action) return action;
+          return root;
+        }
+        return nodes.find(isPasswordAction) || null;
         """)
         if element is None:
             return False
@@ -3582,12 +3739,61 @@ def _open_chatgpt_security_settings(driver, *, timeout: int = 75):
     )
 
 
+def _complete_settings_email_reauth(driver, email: str) -> None:
+    """Complete Settings email re-authentication, including a follow-up TOTP."""
+    otp_after_ts = time.time()
+    logger.info("%s 设置页要求邮箱重认证，等待邮箱验证码：email=%s", _log_prefix(driver), email)
+    email_code = wait_for_otp(email, after_ts=otp_after_ts)
+    _clear_otp_inputs(driver)
+    _type_otp(driver, email_code, timeout=30)
+    field = _first_visible_css(
+        driver,
+        'input[autocomplete="one-time-code"],input[name="code"],input[inputmode="numeric"],input[type="tel"]',
+    )
+    submit = _button_after_input(driver, field) if field is not None else None
+    if submit is not None:
+        _human_click(driver, submit, label="chatgpt_settings_reauth_submit")
+    elif field is not None:
+        driver.execute_script(r"""
+        const input = arguments[0];
+        const form = input?.closest('form');
+        if (form && typeof form.requestSubmit === 'function') form.requestSubmit();
+        else if (form) form.submit();
+        """, field)
+    else:
+        raise RuntimeError("设置页邮箱重认证缺少验证码提交按钮")
+
+    # Settings re-authentication can chain email OTP -> Authenticator MFA.
+    # Reuse the same browser challenge handling as normal account login; a
+    # valid account must not remain stranded on /mfa-challenge.
+    from core.account_credentials import get_account_login_credentials
+    from core.roxy_codex_oauth import _is_totp_login_page, _submit_saved_login_totp
+
+    _, totp_secret = get_account_login_credentials(email)
+    totp_submitted = False
+    deadline = time.time() + 45
+    while time.time() < deadline:
+        _check_manual_stop()
+        if _is_totp_login_page(driver):
+            if totp_submitted:
+                time.sleep(0.5)
+                continue
+            _submit_saved_login_totp(driver, email, totp_secret)
+            totp_submitted = True
+            continue
+        if not _is_email_verification_page(driver):
+            logger.info("%s 设置页邮箱重认证已完成", _log_prefix(driver))
+            return
+        time.sleep(0.5)
+    raise RuntimeError(f"设置页邮箱重认证后未返回 ChatGPT 设置页：{str(driver.current_url or '')[:180]}")
+
+
 def set_roxy_login_password(
     driver,
     email: str,
     password: str,
     *,
-    timeout: int = 45,
+    timeout: int = 75,
     on_password_submitted=None,
 ) -> str:
     """在已登录的 ChatGPT 账号设置中补充账号密码。
@@ -3601,9 +3807,13 @@ def set_roxy_login_password(
 
     eligibility = _probe_chatgpt_password_eligibility(driver)
     if eligibility is False:
-        logger.info("%s ChatGPT 密码资格检查：eligible=false，停止进入设置页", _log_prefix(driver))
-        raise PasswordSetupUnsupportedError(
-            "ChatGPT 当前账号不允许添加账号密码（密码资格接口 eligible=false）"
+        # This endpoint describes the backend's password-change capability,
+        # but the passwordless account path is the Security -> Add flow. The
+        # visible browser UI is the source of truth for that flow; a false
+        # probe must not prevent us from trying it.
+        logger.warning(
+            "%s ChatGPT 密码资格接口返回 eligible=false，仅作参考，继续尝试安全设置页添加密码",
+            _log_prefix(driver),
         )
 
     _safe_get(
@@ -3626,44 +3836,13 @@ def set_roxy_login_password(
     settings_clicks = 0
     security_clicks = 0
     profile_clicks = 0
+    settings_navigation_reveals = 0
     reauth_attempts = 0
     password_setting_fallback_clicks = 0
     last_url = ""
     last_password_controls = []
     last_password_lines = []
     last_page_meta = {}
-
-    def _complete_settings_email_reauth() -> None:
-        """Complete the email re-authentication that Settings may require."""
-        otp_after_ts = time.time()
-        logger.info("%s 设置页要求邮箱重认证，等待邮箱验证码：email=%s", _log_prefix(driver), email)
-        email_code = wait_for_otp(email, after_ts=otp_after_ts)
-        _clear_otp_inputs(driver)
-        _type_otp(driver, email_code, timeout=30)
-        field = _first_visible_css(
-            driver,
-            'input[autocomplete="one-time-code"],input[name="code"],input[inputmode="numeric"],input[type="tel"]',
-        )
-        submit = _button_after_input(driver, field) if field is not None else None
-        if submit is not None:
-            _human_click(driver, submit, label="chatgpt_settings_reauth_submit")
-        elif field is not None:
-            driver.execute_script(r"""
-            const input = arguments[0];
-            const form = input?.closest('form');
-            if (form && typeof form.requestSubmit === 'function') form.requestSubmit();
-            else if (form) form.submit();
-            """, field)
-        else:
-            raise RuntimeError("设置页邮箱重认证缺少验证码提交按钮")
-        deadline = time.time() + 45
-        while time.time() < deadline:
-            _check_manual_stop()
-            if not _is_email_verification_page(driver):
-                logger.info("%s 设置页邮箱重认证已完成", _log_prefix(driver))
-                return
-            time.sleep(0.5)
-        raise RuntimeError(f"设置页邮箱重认证后未返回 ChatGPT 设置页：{str(driver.current_url or '')[:180]}")
 
     def _is_current_password(field) -> bool:
         autocomplete = str(field.get_attribute("autocomplete") or "").lower()
@@ -3688,7 +3867,7 @@ def set_roxy_login_password(
             if reauth_attempts >= 1:
                 raise RuntimeError("设置页邮箱重认证重复出现，已停止避免重复提交")
             reauth_attempts += 1
-            _complete_settings_email_reauth()
+            _complete_settings_email_reauth(driver, email)
             end = max(end, time.time() + 45)
             continue
         state = driver.execute_script(r"""
@@ -3722,12 +3901,24 @@ def set_roxy_login_password(
           || buttons.find(el => settingsMarker.test(label(el)) || /#settings\/(?:account|general)|\/settings\/(?:account|general)/i.test(href(el)));
         const securityAction = buttons.find(el => el.getAttribute('data-testid') === 'security-tab')
           || buttons.find(el => securityMarker.test(label(el)) || /#settings\/security|\/settings\/security/i.test(href(el)));
+        const isClickable = el => !!el && el.matches('button,a,[role="button"],[role="menuitem"],[role="tab"]');
+        const isPasswordAction = el => {
+          const text = label(el);
+          return !negative.test(text) && (addPassword.test(text) || (addAction.test(text) && text.length <= 120));
+        };
         const passwordSettingNode = [...document.querySelectorAll('[data-testid]')]
           .filter(visible).find(el => passwordSettingTestId.test(testId(el)));
-        let target = passwordSettingNode && (passwordSettingNode.matches('button,a,[role="button"]')
-          ? passwordSettingNode
-          : passwordSettingNode.querySelector('button,a,[role="button"]')
-            || passwordSettingNode.closest('button,a,[role="button"]'));
+        const passwordSettingTarget = root => {
+          if (!root) return null;
+          if (isClickable(root)) return root;
+          const descendants = [...root.querySelectorAll('button,a,[role="button"],[role="menuitem"],[role="tab"]')]
+            .filter(visible);
+          const clickableAction = descendants.find(isPasswordAction);
+          if (clickableAction) return clickableAction;
+          const textAction = [...root.querySelectorAll('*')].filter(visible).find(isPasswordAction);
+          return textAction || root;
+        };
+        let target = passwordSettingTarget(passwordSettingNode);
         if (!target) target = buttons.find(el => addPassword.test(label(el)) && !negative.test(label(el)));
         if (!target) {
           const roots = [...document.querySelectorAll('section,article,li,div')]
@@ -3784,6 +3975,15 @@ def set_roxy_login_password(
         new_inputs = [field for field in password_inputs if not _is_current_password(field)]
         if new_inputs:
             break
+        if action is None:
+            if (
+                password_setting_fallback_clicks < 2
+                and (last_password_controls or last_password_lines)
+                and _click_password_setting_fallback(driver)
+            ):
+                password_setting_fallback_clicks += 1
+                time.sleep(0.8)
+                continue
         if action is None and settings_action is None and security_action is None and profile_action is None:
             if (
                 settings_shell_refreshes < 2
@@ -3796,14 +3996,15 @@ def set_roxy_login_password(
                 settings_shell_refreshes += 1
                 time.sleep(0.8)
                 continue
-            if (
-                password_setting_fallback_clicks < 2
-                and (last_password_controls or last_password_lines)
-                and _click_password_setting_fallback(driver)
-            ):
-                password_setting_fallback_clicks += 1
-                time.sleep(0.8)
-                continue
+        if (
+            security_action is None
+            and settings_clicks >= 1
+            and settings_navigation_reveals < 5
+            and _reveal_chatgpt_settings_navigation(driver)
+        ):
+            settings_navigation_reveals += 1
+            time.sleep(0.8)
+            continue
         if action is not None:
             _click_chatgpt_settings_control(driver, action, label="account_password_settings")
             action = None
@@ -3828,6 +4029,17 @@ def set_roxy_login_password(
             f"url={last_url[:180]} controls={last_password_controls[:12]} "
             f"text={last_password_lines[:12]} settings_clicks={settings_clicks} meta={last_page_meta}"
         )
+        if _settings_page_not_ready(
+            url=last_url,
+            password_controls=last_password_controls,
+            password_lines=last_password_lines,
+            page_meta=last_page_meta,
+            security_action=security_action,
+        ):
+            logger.warning("%s 账号设置页安全菜单尚未挂载，标记为可重试：%s", _log_prefix(driver), diagnostic)
+            raise PasswordSetupNotReadyError(
+                f"账号设置页安全菜单尚未挂载，页面诊断：{diagnostic}"
+            )
         logger.warning("%s 账号设置密码入口诊断：%s", _log_prefix(driver), diagnostic)
         raise RuntimeError(f"账号设置中未找到“Add password/设置密码”入口；页面诊断：{diagnostic}")
 

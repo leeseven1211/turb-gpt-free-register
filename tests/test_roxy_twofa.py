@@ -3,11 +3,167 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from core import db, roxy_registration
-from core.auth_challenge import PasswordSetupUnsupportedError
+from core.auth_challenge import PasswordSetupNotReadyError
 from core.task_stages import flow_for
 
 
 class RoxyTwoFactorTests(unittest.TestCase):
+    def test_partial_settings_shell_is_retryable_not_unsupported(self):
+        self.assertTrue(
+            roxy_registration._settings_page_not_ready(
+                url="https://chatgpt.com/#settings",
+                password_controls=[],
+                password_lines=["設定"],
+                page_meta={
+                    "body_text_length": 178,
+                    "testids": ["modal-settings", "general-setting-tab"],
+                },
+                security_action=None,
+            )
+        )
+        self.assertTrue(
+            roxy_registration._settings_page_not_ready(
+                url="https://chatgpt.com/#settings",
+                password_controls=[],
+                password_lines=["設定"],
+                page_meta={
+                    "body_text_length": 324,
+                    "testids": ["modal-settings", "security-tab", "account-tab"],
+                },
+                security_action=object(),
+            )
+        )
+
+    def test_complete_security_page_without_add_password_is_not_retryable_shell(self):
+        self.assertFalse(
+            roxy_registration._settings_page_not_ready(
+                url="https://chatgpt.com/#settings/Security",
+                password_controls=["Password", "Current password"],
+                password_lines=["Password", "Current password"],
+                page_meta={
+                    "body_text_length": 1200,
+                    "testids": ["modal-settings", "security-tab", "password-setting"],
+                },
+                security_action=object(),
+            )
+        )
+
+    def test_short_security_route_without_add_password_is_not_retryable_shell(self):
+        self.assertFalse(
+            roxy_registration._settings_page_not_ready(
+                url="https://chatgpt.com/#settings/Security",
+                password_controls=["Security keys & passkeys"],
+                password_lines=["Security keys & passkeys"],
+                page_meta={
+                    "body_text_length": 320,
+                    "testids": ["modal-settings", "security-tab"],
+                },
+                security_action=object(),
+            )
+        )
+
+    def test_browser_setup_retry_classifier_accepts_stale_element_reference(self):
+        from core import codex_retry_service
+
+        self.assertTrue(
+            codex_retry_service._is_retryable_account_setup_error(
+                RuntimeError("WebDriverException: net::ERR_CONNECTION_CLOSED")
+            )
+        )
+        self.assertTrue(
+            codex_retry_service._is_retryable_account_setup_error(
+                PasswordSetupNotReadyError("设置页安全菜单尚未挂载")
+            )
+        )
+        self.assertFalse(
+            codex_retry_service._is_retryable_account_setup_error(
+                RuntimeError("本地 TOTP 未通过页面校验")
+            )
+        )
+        from selenium.common.exceptions import StaleElementReferenceException
+
+        self.assertFalse(
+            codex_retry_service._is_retryable_account_setup_error(RuntimeError("stale element reference"))
+        )
+        self.assertTrue(
+            codex_retry_service._is_retryable_account_setup_error(
+                StaleElementReferenceException("stale element reference")
+            )
+        )
+
+    def test_password_setting_fallback_runs_before_security_navigation(self):
+        driver = Mock()
+        new_input = Mock()
+        new_input.get_attribute.side_effect = lambda name: {
+            "autocomplete": "new-password",
+            "name": "password",
+            "id": "new-password",
+        }.get(name, "")
+        confirm_input = Mock()
+        confirm_input.get_attribute.side_effect = lambda name: {
+            "autocomplete": "new-password",
+            "name": "confirm_password",
+            "id": "confirm-password",
+        }.get(name, "")
+        security_action = object()
+        submit = object()
+        driver.execute_script.side_effect = [
+            {"settings_route": False},
+            {
+                "action": None,
+                "inputs": [],
+                "password_controls": ["Password Add Password"],
+                "password_lines": ["Password Add Password"],
+                "security_action": security_action,
+            },
+            {"action": None, "inputs": [new_input, confirm_input], "body": "新密码 重新输入新密码"},
+            {"inputs": [], "errors": [], "body": "Password added"},
+        ]
+
+        with patch.object(roxy_registration, "_probe_chatgpt_password_eligibility", return_value=False), patch.object(
+            roxy_registration, "_safe_get"
+        ), patch.object(roxy_registration, "_check_manual_stop"), patch.object(
+            roxy_registration, "_dismiss_single_action_dialog", return_value=False
+        ), patch.object(roxy_registration, "_dismiss_chatgpt_pricing_modal", return_value=False), patch.object(
+            roxy_registration, "_click_password_setting_fallback", return_value=True
+        ) as fallback, patch.object(
+            roxy_registration, "_click_chatgpt_settings_control"
+        ) as click_control, patch.object(roxy_registration, "_human_type_text"), patch.object(
+            roxy_registration, "_button_after_input", return_value=submit
+        ), patch.object(roxy_registration, "_human_click") as human_click, patch.object(
+            roxy_registration.time, "sleep"
+        ):
+            result = roxy_registration.set_roxy_login_password(
+                driver, "new@example.com", "AccountPassword!123", timeout=10
+            )
+
+        self.assertEqual(result, "AccountPassword!123")
+        fallback.assert_called_once_with(driver)
+        click_control.assert_not_called()
+        human_click.assert_called_once_with(driver, submit, label="account_password_submit")
+
+    def test_password_setting_fallback_finds_selenium_password_container(self):
+        driver = Mock()
+        container = Mock()
+        container.get_attribute.side_effect = lambda name: {
+            "data-testid": "password-setting",
+            "innerText": "Password Add Password",
+            "aria-label": "",
+            "title": "",
+        }.get(name, "")
+        container.is_displayed.return_value = True
+        container.is_enabled.return_value = True
+        container.find_elements.return_value = []
+        driver.find_elements.return_value = [container]
+        driver.execute_script.return_value = None
+
+        with patch.object(roxy_registration, "_click_chatgpt_settings_control") as click_control:
+            self.assertTrue(roxy_registration._click_password_setting_fallback(driver))
+
+        click_control.assert_called_once_with(
+            driver, container, label="account_password_settings_fallback"
+        )
+
     def test_password_eligibility_probe_returns_remote_false(self):
         driver = Mock()
         driver.execute_async_script.return_value = {"status": 200, "eligible": False}
@@ -17,19 +173,43 @@ class RoxyTwoFactorTests(unittest.TestCase):
         self.assertFalse(result)
         driver.execute_async_script.assert_called_once()
 
-    def test_password_setup_stops_before_settings_when_remote_disallows_it(self):
+    def test_password_setup_continues_to_settings_when_remote_disallows_it(self):
         driver = Mock()
-        driver.execute_async_script.return_value = {"status": 200, "eligible": False}
 
-        with patch.object(roxy_registration, "_safe_get") as safe_get:
-            with self.assertRaises(PasswordSetupUnsupportedError):
+        with (
+            patch.object(roxy_registration, "_probe_chatgpt_password_eligibility", return_value=False),
+            patch.object(roxy_registration, "_safe_get", side_effect=RuntimeError("settings reached")) as safe_get,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "settings reached"):
                 roxy_registration.set_roxy_login_password(
                     driver,
                     "new@example.com",
                     "AccountPassword!123",
+                    timeout=0,
                 )
 
-        safe_get.assert_not_called()
+        safe_get.assert_called_once()
+
+    def test_settings_email_reauth_completes_followup_totp(self):
+        driver = Mock(current_url="https://auth.openai.com/mfa-challenge/test")
+        field = Mock()
+        submit = object()
+        with (
+            patch.object(roxy_registration, "wait_for_otp", return_value="123456"),
+            patch.object(roxy_registration, "_clear_otp_inputs"),
+            patch.object(roxy_registration, "_type_otp"),
+            patch.object(roxy_registration, "_first_visible_css", return_value=field),
+            patch.object(roxy_registration, "_button_after_input", return_value=submit),
+            patch.object(roxy_registration, "_human_click"),
+            patch.object(roxy_registration, "_is_email_verification_page", side_effect=[True, False]),
+            patch("core.account_credentials.get_account_login_credentials", return_value=("", "TOTPSECRET")),
+            patch("core.roxy_codex_oauth._is_totp_login_page", side_effect=[True, False, False]),
+            patch("core.roxy_codex_oauth._submit_saved_login_totp") as submit_totp,
+            patch.object(roxy_registration.time, "time", return_value=100),
+        ):
+            roxy_registration._complete_settings_email_reauth(driver, "new@example.com")
+
+        submit_totp.assert_called_once_with(driver, "new@example.com", "TOTPSECRET")
 
     def test_settings_home_shell_is_refreshed_even_with_stale_home_controls(self):
         driver = Mock()

@@ -63,7 +63,7 @@ class AccountCompletionPlanTests(unittest.TestCase):
         )
         self.assertEqual(["twofa"], plan["missing_steps"])
 
-    def test_remote_password_ineligibility_blocks_password_step(self):
+    def test_remote_password_ineligibility_does_not_block_password_step(self):
         plan = completion_plan(
             {
                 "access_token": "at",
@@ -81,8 +81,8 @@ class AccountCompletionPlanTests(unittest.TestCase):
             },
         )
 
-        self.assertNotIn("password", plan["missing_steps"])
-        self.assertEqual("password", plan["blocked"][0]["step"])
+        self.assertIn("password", plan["missing_steps"])
+        self.assertFalse(plan["blocked"])
 
     def test_password_reset_opt_in_allows_ineligible_account_into_reset_flow(self):
         plan = completion_plan(
@@ -105,6 +105,26 @@ class AccountCompletionPlanTests(unittest.TestCase):
 
         self.assertIn("password", plan["missing_steps"])
         self.assertFalse(plan["blocked"])
+
+    def test_confirmed_missing_password_entry_blocks_repeat_completion(self):
+        plan = completion_plan(
+            {
+                "access_token": "at",
+                "totp_secret": "totp",
+                "extra_json": '{"account_password_capability":{"eligible":false,"reason":"password_settings_entry_unavailable"}}',
+                "codex_status": "success",
+            },
+            {
+                "password_enabled": True,
+                "plan_check_enabled": False,
+                "twofa_enabled": True,
+                "codex_enabled": True,
+                "refresh_at_enabled": False,
+            },
+        )
+
+        self.assertNotIn("password", plan["missing_steps"])
+        self.assertEqual("password", plan["blocked"][0]["step"])
 
     def test_pending_registration_never_plans_at_refresh(self):
         account = {

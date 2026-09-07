@@ -144,6 +144,48 @@ class ProtocolDirectTwofaTests(unittest.TestCase):
         )
         route.release.assert_called_once_with(reason="twofa-retry-a@example.com")
 
+    def test_browser_setup_retries_connection_closed_with_a_new_route(self):
+        account = {
+            "id": 9,
+            "email": "a@example.com",
+            "access_token": "saved-chatgpt-token",
+            "totp_secret": "already-set",
+            "extra_json": "{}",
+        }
+        route = self._route()
+        with tempfile.TemporaryDirectory() as tempdir, patch.object(
+            codex_retry_service.db, "get_account_by_email", return_value=account
+        ), patch.object(codex_retry_service.account_task_store, "get_task", return_value={}), patch.object(
+            codex_retry_service.account_task_store, "append_event"
+        ) as append_event, patch("config.reload_all"), patch(
+            "config.account.ACCOUNT_PASSWORD_DRIVER", "roxy"
+        ), patch(
+            "core.account_proxy.acquire_account_proxy", return_value=route
+        ) as acquire_route, patch(
+            "core.roxy_codex_oauth.run_roxy_chatgpt_account_action",
+            side_effect=[RuntimeError("WebDriverException: net::ERR_CONNECTION_CLOSED"), None],
+        ) as run_browser, patch.object(
+            codex_retry_service, "check_stop_requested"
+        ), patch.object(codex_retry_service.time, "sleep"):
+            result = codex_retry_service.run_twofa_worker(
+                "a@example.com",
+                target_log_path=Path(tempdir) / "password.log",
+                task_id=101,
+                steps={"password"},
+                manage_task=False,
+                clear_log=False,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(2, run_browser.call_count)
+        self.assertEqual(2, acquire_route.call_count)
+        self.assertEqual(1, result["browser_retry_attempts"])
+        route.release.assert_any_call(reason="browser-retry-1")
+        route.release.assert_any_call(reason="twofa-retry-a@example.com")
+        retry_events = [call.kwargs for call in append_event.call_args_list if call.kwargs.get("stage") == "browser_retry"]
+        self.assertEqual(1, len(retry_events))
+        self.assertEqual("err_connection_closed", retry_events[0]["detail"]["reason_code"])
+
     def test_missing_at_uses_protocol_reauthentication_without_opening_roxy(self):
         account = {
             "id": 9,

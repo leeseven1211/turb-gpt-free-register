@@ -9,7 +9,11 @@ from pathlib import Path
 
 from core import db, task_run_log
 from core.operations import task_gateway as account_task_store
-from core.auth_challenge import PasswordSetupUnsupportedError, auth_result_for_operation
+from core.auth_challenge import (
+    PasswordSetupNotReadyError,
+    PasswordSetupUnsupportedError,
+    auth_result_for_operation,
+)
 from core.openai_auth import AccountUnusableError
 
 logger = logging.getLogger(__name__)
@@ -26,6 +30,56 @@ _ACCOUNT_DEACTIVATED_CODES = frozenset({
     "account_deleted",
     "account_banned",
 })
+_BROWSER_SETUP_RETRY_LIMIT = 3
+_BROWSER_SETUP_TRANSPORT_MARKERS = (
+    "err_connection_closed",
+    "err_connection_reset",
+    "err_tunnel_connection_failed",
+    "err_proxy_connection_failed",
+    "err_connection_refused",
+    "timed out receiving message from renderer",
+    "timeout receiving message from renderer",
+    "page load timeout",
+    "timeout loading page",
+    "disconnected: not connected to devtools",
+    "chrome-error://",
+)
+
+
+def _is_retryable_account_setup_error(exc: BaseException) -> bool:
+    """Return whether a fresh browser/route may safely retry account setup."""
+    if isinstance(exc, PasswordSetupNotReadyError):
+        return True
+    try:
+        from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
+
+        if isinstance(exc, StaleElementReferenceException):
+            return True
+        if isinstance(exc, TimeoutException):
+            return True
+    except Exception:
+        pass
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(marker in text for marker in _BROWSER_SETUP_TRANSPORT_MARKERS)
+
+
+def _account_setup_retry_reason(exc: BaseException) -> str:
+    """Return a stable, non-secret reason code for a browser retry event."""
+    if isinstance(exc, PasswordSetupNotReadyError):
+        return PasswordSetupNotReadyError.code
+    try:
+        from selenium.common.exceptions import StaleElementReferenceException
+
+        if isinstance(exc, StaleElementReferenceException):
+            return "stale_element_reference"
+    except Exception:
+        pass
+    text = f"{type(exc).__name__}: {exc}".lower()
+    for marker in _BROWSER_SETUP_TRANSPORT_MARKERS:
+        if marker in text:
+            return marker.replace(" ", "_").replace("://", "_").strip("_")
+    code = str(getattr(exc, "code", "") or "").strip().lower()
+    return code or "browser_transient_error"
 
 
 def _account_deactivation_code(exc: BaseException) -> str:
@@ -785,9 +839,19 @@ def _build_roxy_account_setup(
                 )
                 if not password_saved:
                     _checkpoint_submitted_password(password)
+                db.update_account_password_capability(
+                    email,
+                    eligible=True,
+                    reason="browser_add_password_succeeded",
+                )
             except CodexRetryStopped:
                 raise
             except AccountUnusableError:
+                raise
+            except PasswordSetupNotReadyError:
+                # The settings SPA was incomplete; let the outer browser
+                # retry envelope acquire a fresh session/route instead of
+                # persisting a false unsupported capability.
                 raise
             except PasswordSetupUnsupportedError as exc:
                 db.update_account_password_capability(
@@ -879,6 +943,8 @@ def _build_roxy_account_setup(
             except CodexRetryStopped:
                 raise
             except AccountUnusableError:
+                raise
+            except PasswordSetupNotReadyError:
                 raise
             except PasswordSetupUnsupportedError as exc:
                 step_changed, error = False, f"{type(exc).__name__}: {str(exc)[:180]}"
@@ -998,6 +1064,7 @@ def run_twofa_worker(
     route_summary: dict = {}
     browser_stage_started = False
     browser_stage_finished = False
+    browser_retry_attempts = 0
     key = (email or "").strip().lower()
     requested_steps = {"password", "plan_check", "twofa"} if steps is None else {
         str(item or "").strip().lower() for item in steps
@@ -1263,22 +1330,86 @@ def run_twofa_worker(
                 state="running",
             )
 
-        run_roxy_chatgpt_account_action(
-            email,
-            proxy=account_route.proxy_url,
-            stage_reporter=_report_browser_login_stage,
-            action=_build_roxy_account_setup(
-                email,
-                task_id,
-                proxy=(account_route.proxy_url if account_route is not None else None),
-                include_password="password" in requested_steps,
-                include_twofa="twofa" in requested_steps,
-                twofa_driver=browser_twofa_driver,
-                browser_fallback_enabled=browser_fallback_enabled,
-            ),
-            allow_password_reset=allow_password_reset,
-            on_password_reset_submitted=(_checkpoint_password_reset if allow_password_reset else None),
-        )
+        for browser_attempt in range(1, _BROWSER_SETUP_RETRY_LIMIT + 1):
+            try:
+                run_roxy_chatgpt_account_action(
+                    email,
+                    proxy=account_route.proxy_url,
+                    stage_reporter=_report_browser_login_stage,
+                    action=_build_roxy_account_setup(
+                        email,
+                        task_id,
+                        proxy=(account_route.proxy_url if account_route is not None else None),
+                        include_password="password" in requested_steps,
+                        include_twofa="twofa" in requested_steps,
+                        twofa_driver=browser_twofa_driver,
+                        browser_fallback_enabled=browser_fallback_enabled,
+                    ),
+                    allow_password_reset=allow_password_reset,
+                    on_password_reset_submitted=(_checkpoint_password_reset if allow_password_reset else None),
+                )
+                break
+            except (CodexRetryStopped, AccountUnusableError):
+                raise
+            except Exception as exc:
+                if (
+                    browser_attempt >= _BROWSER_SETUP_RETRY_LIMIT
+                    or not _is_retryable_account_setup_error(exc)
+                ):
+                    raise
+                browser_retry_attempts += 1
+                reason_code = _account_setup_retry_reason(exc)
+                error_type = type(exc).__name__
+                account_task_store.append_event(
+                    task_id,
+                    stage="browser_retry",
+                    message=(
+                        f"浏览器账号配置遇到可恢复错误，准备刷新并更换线路重试 "
+                        f"({browser_attempt + 1}/{_BROWSER_SETUP_RETRY_LIMIT})"
+                    ),
+                    level="WARNING",
+                    detail={
+                        "attempt": browser_attempt,
+                        "next_attempt": browser_attempt + 1,
+                        "max_attempts": _BROWSER_SETUP_RETRY_LIMIT,
+                        "error_type": error_type,
+                        "reason_code": str(reason_code),
+                        "checkpoint_preserved": True,
+                    },
+                    state="running",
+                )
+                logger.warning(
+                    "[账号配置重试] 可恢复浏览器错误，准备更换线路开启第 %s/%s 次：email=%s type=%s reason=%s",
+                    browser_attempt + 1,
+                    _BROWSER_SETUP_RETRY_LIMIT,
+                    email,
+                    error_type,
+                    str(reason_code),
+                )
+                if account_route is not None:
+                    account_route.release(reason=f"browser-retry-{browser_attempt}")
+                    account_route = None
+                check_stop_requested(email)
+                time.sleep(min(3.0, float(browser_attempt)))
+                account_route = acquire_account_proxy(
+                    account_id=int(account.get("id") or 0) or None,
+                    email=email,
+                    purpose=f"twofa-retry-browser-{browser_attempt + 1}",
+                )
+                route_summary = account_route.public_dict()
+                account_task_store.append_event(
+                    task_id,
+                    stage="network",
+                    message="已为浏览器账号配置重试更换线路",
+                    detail={
+                        "attempt": browser_attempt + 1,
+                        "network_route": route_summary.get("network_route"),
+                        "proxy_mode": account_route.mode,
+                        "proxy_provider": account_route.provider,
+                        "proxy_region": account_route.region,
+                    },
+                    state="success",
+                )
         account_task_store.append_event(
             task_id,
             stage="browser",
@@ -1306,6 +1437,7 @@ def run_twofa_worker(
             "twofa_driver": "browser_fallback" if direct_protocol_failed else context_plan.executor,
             "auth_source": "browser_session" if direct_protocol_failed else context_plan.auth_source,
             "browser_opened": True,
+            "browser_retry_attempts": browser_retry_attempts,
         }
         return result
     except CodexRetryStopped as exc:
@@ -1360,6 +1492,7 @@ def run_twofa_worker(
             "message": f"{type(exc).__name__}: {exc}",
             "error_code": error_code,
             "account_status_persisted": deactivated_persisted if deactivated else None,
+            "browser_retry_attempts": browser_retry_attempts,
         }
         logger.exception("[账号配置重试] %s 异常", email)
         return result
@@ -1414,6 +1547,7 @@ def run_twofa_worker(
                         "twofa_driver": result.get("twofa_driver"),
                         "auth_source": result.get("auth_source"),
                         "browser_opened": result.get("browser_opened"),
+                        "browser_retry_attempts": result.get("browser_retry_attempts", browser_retry_attempts),
                         "account_status_persisted": result.get("account_status_persisted"),
                     },
                     route={

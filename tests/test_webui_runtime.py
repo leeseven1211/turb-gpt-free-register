@@ -161,7 +161,7 @@ class WebUIRuntimeTests(unittest.TestCase):
 
         self.assertEqual("partial_success", finish_task.call_args.kwargs["status"])
 
-    def test_password_block_does_not_prevent_twofa_completion(self):
+    def test_stale_password_capability_does_not_block_completion(self):
         context = runtime.WebUIContext(Flask("test-runtime"), logging.getLogger("test-runtime"))
         account = {
             "id": 593,
@@ -190,8 +190,8 @@ class WebUIRuntimeTests(unittest.TestCase):
             result = context.enqueue_account_completion(593)
 
         self.assertTrue(result["accepted"])
-        self.assertEqual("password", result["plan"]["blocked"][0]["step"])
-        self.assertEqual(["twofa"], result["plan"]["missing_steps"])
+        self.assertFalse(result["plan"]["blocked"])
+        self.assertEqual(["password", "twofa"], result["plan"]["missing_steps"])
         submit.assert_called_once()
 
     def test_plan_check_failure_keeps_completed_account_steps_as_partial(self):

@@ -38,6 +38,12 @@ class PasswordSetupUnsupportedError(RuntimeError):
     code = "password_setup_unsupported"
 
 
+class PasswordSetupNotReadyError(RuntimeError):
+    """The settings shell was observed before its security controls mounted."""
+
+    code = "password_setup_not_ready"
+
+
 class MfaSecretMissingError(RuntimeError):
     """The remote requested TOTP but no local authenticator secret is available."""
 
@@ -285,6 +291,7 @@ __all__ = [
     "RemoteExistingAccountError",
     "PasswordRejectedError",
     "PasswordSetupUnsupportedError",
+    "PasswordSetupNotReadyError",
     "MfaSecretMissingError",
     "auth_result_for_operation",
     "auth_result_for_registration",

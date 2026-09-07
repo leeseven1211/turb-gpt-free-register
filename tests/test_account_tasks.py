@@ -550,6 +550,7 @@ class CodexRetryTaskTests(unittest.TestCase):
             patch.object(codex_retry_service.db, "get_account_by_email", return_value=account),
             patch.object(codex_retry_service.db, "update_account_session", return_value=True),
             patch.object(codex_retry_service.db, "update_account_login_password", return_value=True),
+            patch.object(codex_retry_service.db, "update_account_password_capability", return_value=True),
             patch.object(codex_retry_service.db, "update_account_totp_secret", return_value=True) as save_totp,
             patch.object(codex_retry_service.db, "update_account_twofa_status", return_value=True),
             patch.object(codex_retry_service.account_task_store, "append_event"),

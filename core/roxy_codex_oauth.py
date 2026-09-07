@@ -832,7 +832,7 @@ def _complete_login_challenge_after_email(
             time.sleep(0.5)
             continue
         blank_login_shell_seen_at = 0.0
-        if "/auth/login" in url.lower() and "email=" in url.lower() and has_email_input and not has_challenge_input:
+        if "/auth/login" in url.lower() and has_email_input and not has_challenge_input:
             now = time.time()
             if not email_shell_seen_at:
                 email_shell_seen_at = now
@@ -1195,7 +1195,13 @@ def _fill_email_and_otp(
     password, totp_secret = _account_login_credentials(email)
     logger.info("[Codex][Browser] 打开授权地址")
     logger.info("[Codex][Browser] 完整授权地址: %s", auth_url)
-    driver.get(auth_url)
+    _safe_get(
+        driver,
+        auth_url,
+        timeout=min(45, int(getattr(_roxy_cfg, "ROXY_SELENIUM_TIMEOUT", 90) or 90)),
+        attempts=2,
+        accept_hosts=("chatgpt.com", "auth.openai.com", "localhost:1455"),
+    )
     human_delay("navigate")
     logger.info("[Codex][Browser] 授权页加载完成，检查是否需要邮箱登录")
     _maybe_accept(driver)

@@ -45,9 +45,14 @@ def _password_present(account: Mapping) -> bool:
     )
 
 
-def _password_setup_blocked(account: Mapping) -> bool:
+def _password_setup_repeat_blocked(account: Mapping) -> bool:
+    """Return whether the browser confirmed that the Add-password flow is absent."""
     capability = _extra(account).get("account_password_capability")
-    return isinstance(capability, Mapping) and capability.get("eligible") is False
+    if not isinstance(capability, Mapping):
+        return False
+    return str(capability.get("reason") or "").strip().lower() in {
+        "password_settings_entry_unavailable",
+    }
 
 
 def _twofa_present(account: Mapping) -> bool:
@@ -127,15 +132,18 @@ def completion_plan(account: Mapping | None, settings: Mapping | None = None) ->
             else:
                 blocked.append({"step": "refresh_at", "reason": "账号缺少可用 access_token，请先单独执行刷新 AT"})
         if enabled["password"] and not _password_present(account):
-            if _password_setup_blocked(account):
+            if _password_setup_repeat_blocked(account):
                 if enabled["password_reset"]:
                     missing.append("password")
                 else:
                     blocked.append({
                         "step": "password",
-                        "reason": "ChatGPT 当前账号不允许添加账号密码，已跳过重复重试",
+                        "reason": "设置页已确认没有添加密码入口，已跳过重复重试",
                     })
             else:
+                # The cached eligibility probe is advisory only. It can
+                # describe the password-change endpoint while the Security ->
+                # Add flow is still available for passwordless accounts.
                 missing.append("password")
         if enabled["plan_check"] and str(account.get("plan_check_status") or "").strip().lower() != "success":
             missing.append("plan_check")
