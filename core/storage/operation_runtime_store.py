@@ -58,8 +58,12 @@ def append_runtime_event(run_id: int, **kwargs: Any) -> dict:
     return _operation().append_runtime_event(run_id, **kwargs)
 
 
-def heartbeat_run(run_id: int, **kwargs: Any) -> bool:
-    return _operation().heartbeat_run(run_id, **kwargs)
+def heartbeat_run(run_id: int, lease_token: str = "", **kwargs: Any) -> bool:
+    return _operation().heartbeat_run(
+        run_id=run_id,
+        lease_token=lease_token,
+        **kwargs,
+    )
 
 
 def acquire_account_lease(account_id: int, run_id: int, **kwargs: Any) -> str | None:
@@ -82,8 +86,12 @@ def request_run_cancel(run_id: int, **kwargs: Any) -> dict:
     return _operation().request_run_cancel(run_id, **kwargs)
 
 
-def is_run_cancel_requested(run_id: int, **kwargs: Any) -> bool:
-    return _operation().is_run_cancel_requested(run_id, **kwargs)
+def is_run_cancel_requested(run_id: int, cancellation_token: str = "", **kwargs: Any) -> bool:
+    return _operation().is_run_cancel_requested(
+        run_id=run_id,
+        cancellation_token=cancellation_token,
+        **kwargs,
+    )
 
 
 def mark_run_settling(run_id: int, **kwargs: Any) -> bool:

@@ -39,6 +39,26 @@ class OperationRuntimeStoreBoundaryTests(TestCase):
             result,
         )
 
+    def test_cancel_check_accepts_cancellation_token_and_forwards_keywords(self):
+        implementation = SimpleNamespace(is_run_cancel_requested=lambda **kwargs: kwargs)
+        with patch.object(operation_runtime_store, "_operation", return_value=implementation):
+            result = operation_runtime_store.is_run_cancel_requested(46101, "cancel-token")
+
+        self.assertEqual(
+            {"run_id": 46101, "cancellation_token": "cancel-token"},
+            result,
+        )
+
+    def test_heartbeat_accepts_lease_token_and_forwards_keywords(self):
+        implementation = SimpleNamespace(heartbeat_run=lambda **kwargs: kwargs)
+        with patch.object(operation_runtime_store, "_operation", return_value=implementation):
+            result = operation_runtime_store.heartbeat_run(46101, "lease-token")
+
+        self.assertEqual(
+            {"run_id": 46101, "lease_token": "lease-token"},
+            result,
+        )
+
 
 if __name__ == "__main__":
     import unittest
