@@ -76,6 +76,17 @@ class RoxyTwoFactorTests(unittest.TestCase):
             )
         )
 
+    def test_auth_error_page_is_not_a_stable_no_password_settings_page(self):
+        self.assertTrue(
+            roxy_registration._settings_page_not_ready(
+                url="https://auth.openai.com/error?code=rate_limit_exceeded",
+                password_controls=[],
+                password_lines=[],
+                page_meta={"body_text_length": 221, "testids": []},
+                security_action=None,
+            )
+        )
+
     def test_browser_setup_retry_classifier_accepts_stale_element_reference(self):
         from core import codex_retry_service
 

@@ -626,7 +626,10 @@ def _settings_page_not_ready(
         return False
     normalized_url = str(url or "").strip().lower()
     if "settings" not in normalized_url:
-        return False
+        # An auth error, login page, or redirect is not evidence that the
+        # settings page lacks Add-password. Let the outer retry envelope
+        # reacquire the browser state before classifying the account.
+        return True
     meta = page_meta
     if isinstance(meta, str):
         try:
