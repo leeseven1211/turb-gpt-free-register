@@ -729,13 +729,17 @@ function showToast(t) {
   clearTimeout(showToast.t);
   showToast.t = setTimeout(() => el.classList.remove('show'), 2200);
 }
-async function copyText(text) {
-  if (!text) return;
+async function copyText(text, showFeedback = true) {
+  if (!text) return false;
   try {
     if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(text);
     else { const a=document.createElement('textarea'); a.value=text; a.style.position='fixed'; a.style.opacity='0'; document.body.appendChild(a); a.select(); document.execCommand('copy'); a.remove(); }
-    showToast('已复制');
-  } catch(e) { showToast('复制失败'); }
+    if (showFeedback) showToast('已复制');
+    return true;
+  } catch(e) {
+    if (showFeedback) showToast('复制失败');
+    return false;
+  }
 }
 async function api(url, opts) {
   const r = await fetch(url, opts);

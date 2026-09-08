@@ -20,6 +20,7 @@ from core import postgres_store, record_store
 from core import task_run_log
 from core.operations import task_gateway as account_task_store
 from core.task_errors import classify_task_error
+from core.task_progress import build_progress_snapshot
 from core.task_stages import flow_for, normalize_stage, normalize_step_state
 
 
@@ -2434,6 +2435,47 @@ def get_task(task_id: int, *, include_events: bool = True) -> dict | None:
         "flow": flow_for(result.get("task_type")),
     })
     return result
+
+
+def get_run_progress(task_id: int, run_id: int) -> dict:
+    """Build progress from the complete selected Run, independent of event pages."""
+    init()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT id, task_type FROM {_table('operation_tasks')} WHERE id=%s",
+            (int(task_id),),
+        )
+        task = cur.fetchone()
+        if not task:
+            raise LookupError("任务不存在")
+        cur.execute(
+            f"SELECT rr.*, {_compatibility_run_projection_sql()} "
+            f"FROM {_table('operation_runs')} rr {_compatibility_run_joins_sql()} "
+            f"WHERE rr.id=%s AND rr.task_id=%s",
+            (int(run_id), int(task_id)),
+        )
+        run_row = cur.fetchone()
+        if not run_row:
+            raise LookupError("执行实例不存在")
+        cur.execute(
+            f"""
+            SELECT e.*, r.run_no
+            FROM {_table('operation_events')} e
+            LEFT JOIN {_table('operation_runs')} r ON r.id=e.run_id
+            WHERE e.task_id=%s AND e.run_id=%s
+            ORDER BY e.created_at, e.id
+            """,
+            (int(task_id), int(run_id)),
+        )
+        events = [_read_event(dict(row)) for row in cur.fetchall()]
+    run = _normalize_compatibility_run(_row(dict(run_row)) or {})
+    return build_progress_snapshot(
+        int(task["id"]),
+        int(run["id"]),
+        str(task["task_type"] or ""),
+        run,
+        events,
+    )
 
 
 def list_task_events(

@@ -56,62 +56,49 @@ function normalizeAccountTaskStage(stage) {
 const ACCOUNT_TASK_STEP_STATE_LABELS = {
   pending:'未开始', running:'执行中', success:'已完成', skipped:'已跳过', failed:'失败'
 };
+const ACCOUNT_TASK_PROGRESS_STATUS_LABELS = {
+  pending:'未开始', running:'执行中', success:'已完成', skipped:'已跳过', failed:'失败',
+  partial_success:'部分完成', cancelled:'已取消', interrupted:'已中断', attention_required:'待确认'
+};
 function accountTaskEventStepState(event) {
   const detail = event?.detail && typeof event.detail === 'object' ? event.detail : {};
   const eventType = String(event?.event_type || '');
   const fromType = eventType.startsWith('stage.') ? eventType.slice(6) : '';
   const explicit = String(detail.step_state || fromType || '').toLowerCase();
   if (Object.prototype.hasOwnProperty.call(ACCOUNT_TASK_STEP_STATE_LABELS, explicit)) return explicit;
-  if (String(event?.level || '').toUpperCase() === 'ERROR') return 'failed';
-  return null;
+  return String(event?.level || '').toUpperCase() === 'ERROR' ? 'failed' : null;
 }
-function renderAccountTaskStageProgress(task, selectedRunId = null) {
+function accountTaskProgressStateLabel(step) {
+  const status = String(step?.display_status || step?.state || 'pending');
+  return ACCOUNT_TASK_PROGRESS_STATUS_LABELS[status] || ACCOUNT_TASK_STEP_STATE_LABELS[status] || status;
+}
+function renderAccountTaskProgressSnapshot(progress) {
   const panel = $('#accountTaskStageProgress');
   if (!panel) return;
-  const runs = Array.isArray(task?.runs) ? task.runs : [];
-  const latestRunId = String(selectedRunId || task?.last_run_id || runs[runs.length - 1]?.id || '');
-  const selectedRun = runs.find(run => String(run.id || '') === latestRunId) || runs[runs.length - 1] || {};
-  const observed = new Map();
-  (task?.events || []).filter(event => !latestRunId || String(event.run_id || '') === latestRunId).forEach(event => {
-    const key = normalizeAccountTaskStage(event.stage);
-    const state = accountTaskEventStepState(event);
-    if (state) observed.set(key, {state});
-  });
-  // 旧注册任务把代理分配合并在 email 阶段，没有独立 network
-  // 事件。只要浏览器或后续注册步骤已经开始，就能确定该任务
-  // 已拿到网络线路；这里只做展示兼容，不伪造历史耗时。
-  const legacyRegistration = ['registration', 'registration_resume'].includes(String(task?.task_type || ''));
-  const registrationStartedAfterNetwork = [
-    'browser', 'page', 'submit_email', 'auth_redirect', 'login_password',
-    'email_otp', 'profile', 'token', 'codex', 'twofa', 'plan_check', 'complete',
-  ].some(key => observed.has(key));
-  if (legacyRegistration && !observed.has('network') && registrationStartedAfterNetwork) {
-    observed.set('network', {state:'success', inferred:true});
-  }
-  const stages = (task?.flow || []).map(item => ({
-    key: item.key,
-    label: item.label,
-    ...(observed.get(item.key) || {state:'pending'}),
-  }));
-  observed.forEach((value, key) => {
-    if (!['queued','complete'].includes(key) && !stages.some(item => item.key === key)) stages.push({key, label:ACCOUNT_TASK_STAGE_LABELS[key] || key, ...value});
-  });
+  const stages = Array.isArray(progress?.main_steps) ? progress.main_steps : [];
   if (!stages.length) {
     panel.classList.add('hidden');
     panel.innerHTML = '';
     return;
   }
-  const taskStatus = String(selectedRun.status || task.status || '');
-  const active = ['queued','running','cancelling','settling'].includes(taskStatus);
-  panel.innerHTML = stages.map(stage => {
-    let state = stage.state || 'pending';
-    if (state === 'pending' && active && stage.key === normalizeAccountTaskStage(selectedRun.progress_stage || task.current_stage)) state = taskStatus === 'running' ? 'running' : 'pending';
-    if (stage.key === 'complete' && state === 'pending' && !active) state = taskStatus === 'success' ? 'success' : 'failed';
-    const label = stage.label || ACCOUNT_TASK_STAGE_LABELS[stage.key] || stage.key;
-    const inferredTitle = stage.inferred ? ' title="历史任务未单独记录网络阶段；已根据后续执行步骤确认完成"' : '';
-    return `<div class="account-task-stage-step is-${attrEsc(state)}"${inferredTitle}><span class="account-task-stage-node"></span><span class="account-task-stage-label">${esc(label)}</span><span class="account-task-stage-state">${esc(ACCOUNT_TASK_STEP_STATE_LABELS[state] || state)}</span></div>`;
+  const current = progress.current;
+  const currentText = current
+    ? `当前：${current.label || current.step_id}${current.child_label ? ` · ${current.child_label}` : ''}`
+    : `结果：${progress.outcome?.status || '未开始'}`;
+  const sourceText = progress.source === 'legacy_derived' ? '历史记录按已有结构化事件还原' : '';
+  const track = stages.map(stage => {
+    const state = String(stage.state || 'pending');
+    const children = Array.isArray(stage.children) ? stage.children : [];
+    const childrenHtml = children.length
+      ? `<div class="account-task-stage-children">${children.map(child => `<span class="account-task-stage-child is-${attrEsc(child.state || 'pending')}">${esc(child.label || child.step_id)} · ${esc(accountTaskProgressStateLabel(child))}</span>`).join('')}</div>`
+      : '';
+    return `<div class="account-task-stage-step is-${attrEsc(state)}"><span class="account-task-stage-node"></span><span class="account-task-stage-label">${esc(stage.label || stage.id)}</span><span class="account-task-stage-state">${esc(accountTaskProgressStateLabel(stage))}</span>${childrenHtml}</div>`;
   }).join('');
+  panel.innerHTML = `<div class="account-task-stage-current"><strong>${esc(currentText)}</strong>${sourceText ? `<small>${esc(sourceText)}</small>` : ''}</div><div class="account-task-stage-track">${track}</div>`;
   panel.classList.remove('hidden');
+}
+function renderAccountTaskStageProgress(task, selectedRunId = null) {
+  renderAccountTaskProgressSnapshot(task?.progress || null);
 }
 function renderAccountTasks() {
   const body = $('#accountTasksBody');
@@ -190,6 +177,7 @@ let activeAccountTaskId = null, activeAccountTaskRunId = null, accountTaskLogTim
 let activeAccountTaskDetailView = 'events', accountTaskSnapshot = null, accountTaskPolling = false;
 let accountTaskEventCursor = null, accountTaskEventCache = [], accountTaskNewEventCount = 0;
 let accountTaskRunLogCursor = null, accountTaskRunLogLines = [];
+let accountTaskProgressSnapshot = null, accountTaskProgressRequestId = 0, accountTaskProgressError = '';
 
 function meaningfulTaskDetail(detail) {
   if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return null;
@@ -256,9 +244,13 @@ function resetAccountTaskRunData(runId) {
   accountTaskNewEventCount = 0;
   accountTaskRunLogCursor = null;
   accountTaskRunLogLines = [];
+  accountTaskProgressSnapshot = null;
+  accountTaskProgressError = '';
+  accountTaskProgressRequestId += 1;
   $('#accountTaskLogContent').innerHTML = '<div class="account-task-empty">正在加载事件…</div>';
   $('#accountTaskRunLogContent').textContent = '正在加载运行日志…';
   $('#accountTaskNewEvents')?.classList.add('hidden');
+  renderAccountTaskProgressSnapshot(null);
 }
 
 function syncAccountTaskRunPicker(task) {
@@ -293,6 +285,26 @@ async function pollAccountTaskEvents(reset = false) {
     const button = $('#accountTaskNewEvents');
     button.textContent = `有 ${accountTaskNewEventCount} 条新事件，回到底部`;
     button.classList.toggle('hidden', activeAccountTaskDetailView !== 'events');
+  }
+}
+
+async function pollAccountTaskProgress() {
+  if (!activeAccountTaskId || !activeAccountTaskRunId) return;
+  const taskId = Number(activeAccountTaskId);
+  const runId = Number(activeAccountTaskRunId);
+  const requestId = ++accountTaskProgressRequestId;
+  try {
+    const result = await api(`/api/operations/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(activeAccountTaskRunId)}/progress`);
+    if (requestId !== accountTaskProgressRequestId || taskId !== Number(activeAccountTaskId) || runId !== Number(activeAccountTaskRunId)) return;
+    accountTaskProgressSnapshot = result.progress || null;
+    accountTaskProgressError = '';
+    renderAccountTaskProgressSnapshot(accountTaskProgressSnapshot);
+  } catch (e) {
+    if (requestId !== accountTaskProgressRequestId || taskId !== Number(activeAccountTaskId) || runId !== Number(activeAccountTaskRunId)) return;
+    accountTaskProgressError = e.message || '进度更新失败';
+    // Keep the last good snapshot. A first-load failure stays hidden rather
+    // than falling back to the incomplete event page.
+    if (accountTaskProgressSnapshot) renderAccountTaskProgressSnapshot(accountTaskProgressSnapshot);
   }
 }
 
@@ -336,6 +348,7 @@ async function pollAccountTaskLog() {
     syncAccountTaskRunPicker(task);
     const selectedRun = (task.runs || []).find(run => Number(run.id) === Number(activeAccountTaskRunId)) || {};
     $('#accountTaskDetailSummary').textContent = `${ACCOUNT_TASK_TYPE_LABELS[task.task_type] || task.task_type || '任务'} · ${selectedRun.status || task.status || '-'} · ${formatTaskDuration(selectedRun.duration_ms)}`;
+    await pollAccountTaskProgress();
     if (previousRunId !== activeAccountTaskRunId || accountTaskEventCursor == null) {
       await pollAccountTaskEvents(true);
       if (activeAccountTaskDetailView === 'logs') await pollAccountTaskRunLog(true);
@@ -343,7 +356,6 @@ async function pollAccountTaskLog() {
       await pollAccountTaskEvents(false);
       if (activeAccountTaskDetailView === 'logs') await pollAccountTaskRunLog(false);
     }
-    renderAccountTaskStageProgress({...task, events:accountTaskEventCache}, activeAccountTaskRunId);
     renderAccountTaskArtifacts(task);
     if (!['queued','running','cancelling','settling'].includes(String(task.status || ''))) {
       clearInterval(accountTaskLogTimer);
@@ -805,10 +817,7 @@ function _totpCellV2(r) {
   return `
     <div class="status-action-cell" data-account-totp-cell="${esc(r.id)}">
       <span class="pill status-success">已启用</span>
-      <button type="button" data-account-totp-code="${esc(r.id)}" title="查询当前 6 位 TOTP 验证码">查码</button>
-      <span class="acc-v2-totp-code" data-account-totp-value hidden></span>
-      <span class="acc-v2-totp-ttl" data-account-totp-ttl hidden></span>
-      <button type="button" data-account-totp-copy="${esc(r.id)}" data-totp-code="" title="复制当前 TOTP 验证码" hidden>复制</button>
+      <button type="button" data-account-totp-copy="${esc(r.id)}" title="获取并复制当前 6 位 TOTP 验证码">复制</button>
     </div>
   `;
 }
@@ -1118,35 +1127,22 @@ async function onAccountsBodyClick(e) {
     closeAccountsV2MoreMenus();
   }
 
-  const totpQueryBtn = e.target.closest('[data-account-totp-code]');
-  if (totpQueryBtn) {
-    const id = Number(totpQueryBtn.dataset.accountTotpCode);
-    const cell = totpQueryBtn.closest('[data-account-totp-cell]');
-    totpQueryBtn.disabled = true;
-    try {
-      const result = await api(`/api/accounts/${encodeURIComponent(id)}/totp-code`);
-      const value = cell?.querySelector('[data-account-totp-value]');
-      const ttl = cell?.querySelector('[data-account-totp-ttl]');
-      const copy = cell?.querySelector('[data-account-totp-copy]');
-      if (value) { value.textContent = result.code || ''; value.hidden = false; }
-      if (ttl) { ttl.textContent = result.remaining_seconds ? `剩余 ${result.remaining_seconds}s` : ''; ttl.hidden = false; }
-      if (copy) { copy.dataset.totpCode = result.code || ''; copy.hidden = !result.code; }
-      totpQueryBtn.textContent = '刷新验证码';
-      showToast(`验证码已查询，剩余 ${result.remaining_seconds || 0} 秒`);
-    } catch(err) {
-      showToast('查询验证码失败: ' + err.message);
-    } finally {
-      totpQueryBtn.disabled = false;
-    }
-    return;
-  }
-
   const totpCopyBtn = e.target.closest('[data-account-totp-copy]');
   if (totpCopyBtn) {
-    const code = String(totpCopyBtn.dataset.totpCode || '');
-    if (!code) { showToast('请先查询验证码'); return; }
-    copyText(code);
-    showToast('验证码已复制');
+    const id = Number(totpCopyBtn.dataset.accountTotpCopy);
+    totpCopyBtn.disabled = true;
+    totpCopyBtn.textContent = '查询中…';
+    try {
+      const result = await api(`/api/accounts/${encodeURIComponent(id)}/totp-code`);
+      if (!result.code) throw new Error('验证码为空');
+      const copied = await copyText(result.code, false);
+      showToast(copied ? `验证码已复制，剩余 ${result.remaining_seconds || 0} 秒` : '验证码已查询，但复制失败');
+    } catch(err) {
+      showToast('复制验证码失败: ' + err.message);
+    } finally {
+      totpCopyBtn.disabled = false;
+      totpCopyBtn.textContent = '复制';
+    }
     return;
   }
 

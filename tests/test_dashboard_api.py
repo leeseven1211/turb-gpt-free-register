@@ -282,10 +282,10 @@ console.log('ok');
         self.assertIn('progress_batch_id=${encodeURIComponent(JOB_PROGRESS_BATCH_ID)}', html)
         self.assertIn('id="accountTaskStageProgress"', html)
         self.assertIn('function renderAccountTaskStageProgress(task, selectedRunId = null)', html)
-        self.assertIn('function accountTaskEventStepState(event)', html)
-        self.assertIn("const latestRunId = String(selectedRunId || task?.last_run_id", html)
-        self.assertIn("legacyRegistration && !observed.has('network')", html)
-        self.assertIn("历史任务未单独记录网络阶段", html)
+        self.assertIn('/runs/${encodeURIComponent(activeAccountTaskRunId)}/progress', html)
+        self.assertIn('function renderAccountTaskProgressSnapshot(progress)', html)
+        self.assertNotIn('observed.forEach((value, key)', html)
+        self.assertNotIn("legacyRegistration && !observed.has('network')", html)
         self.assertIn("skipped:'已跳过'", html)
         self.assertNotIn("stage.seen ? 'success'", html)
         self.assertIn('data-progress-retry-job', html)
@@ -564,6 +564,18 @@ console.log('ok');
         self.assertEqual(payload["code"], pyotp.TOTP("JBSWY3DPEHPK3PXP").at(1710000010))
         self.assertEqual(payload["remaining_seconds"], 20)
         self.assertNotIn("secret", payload)
+
+    def test_modern_totp_action_fetches_and_copies_code_in_one_click(self):
+        response = self.client.get("/", headers=self.headers)
+        html = self._modern_page_source(response)
+        self.assertIn('data-account-totp-copy="${esc(r.id)}"', html)
+        self.assertIn('title="获取并复制当前 6 位 TOTP 验证码"', html)
+        self.assertIn("const result = await api(`/api/accounts/${encodeURIComponent(id)}/totp-code`);", html)
+        self.assertIn("const copied = await copyText(result.code, false);", html)
+        self.assertNotIn('data-account-totp-value', html)
+        self.assertNotIn('data-account-totp-ttl', html)
+        self.assertNotIn('data-account-totp-code="${esc(r.id)}"', html)
+        self.assertNotIn("请先查询验证码", html)
 
     def test_codex_column_filters_are_combined(self):
         db.save_codex_credential_record("codex-a@example.com-free.json", {

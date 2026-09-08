@@ -131,6 +131,14 @@ def create_operations_blueprint(context: WebUIContext):
             )
         return jsonify({"ok": True, "task": task})
 
+    @bp.get("/api/operations/<int:task_id>/runs/<int:run_id>/progress")
+    def api_operation_run_progress(task_id: int, run_id: int):
+        try:
+            progress = operation_task_store.get_run_progress(task_id, run_id)
+        except LookupError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 404
+        return jsonify({"ok": True, "progress": progress})
+
     @bp.get("/api/operations/<int:task_id>/runs/<int:run_id>/events")
     def api_operation_run_events(task_id: int, run_id: int):
         try:

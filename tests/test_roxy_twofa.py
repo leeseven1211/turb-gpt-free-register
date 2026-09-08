@@ -48,6 +48,20 @@ class RoxyTwoFactorTests(unittest.TestCase):
             )
         )
 
+    def test_visible_add_password_control_without_form_is_retryable(self):
+        self.assertTrue(
+            roxy_registration._settings_page_not_ready(
+                url="https://chatgpt.com/#settings/Security",
+                password_controls=["パスワード 追加 パスワード追加 password-setting"],
+                password_lines=["設定", "パスワード", "追加"],
+                page_meta={
+                    "body_text_length": 1281,
+                    "testids": ["modal-settings", "security-tab", "password-setting"],
+                },
+                security_action=object(),
+            )
+        )
+
     def test_short_security_route_without_add_password_is_not_retryable_shell(self):
         self.assertFalse(
             roxy_registration._settings_page_not_ready(
@@ -89,6 +103,39 @@ class RoxyTwoFactorTests(unittest.TestCase):
             codex_retry_service._is_retryable_account_setup_error(
                 StaleElementReferenceException("stale element reference")
             )
+        )
+        self.assertTrue(
+            codex_retry_service._is_retryable_account_setup_error(
+                RuntimeError("邮箱提交后未识别到密码、TOTP 或邮箱验证码分支：state={}")
+            )
+        )
+        self.assertEqual(
+            "login_challenge_branch_not_detected",
+            codex_retry_service._account_setup_retry_reason(
+                RuntimeError("邮箱提交后未识别到密码、TOTP 或邮箱验证码分支：state={}")
+            ),
+        )
+        self.assertTrue(
+            codex_retry_service._is_retryable_account_setup_error(
+                RuntimeError("账号配置部分失败：账号密码：StaleElementReferenceException: stale element not found")
+            )
+        )
+        self.assertEqual(
+            "stale_element_reference",
+            codex_retry_service._account_setup_retry_reason(
+                RuntimeError("账号配置部分失败：账号密码：StaleElementReferenceException: stale element not found")
+            ),
+        )
+        self.assertTrue(
+            codex_retry_service._is_retryable_account_setup_error(
+                RuntimeError("账号配置部分失败：账号密码：RuntimeError: 设置页邮箱重认证后未返回 ChatGPT 设置页：https://auth.openai.com/email-verification")
+            )
+        )
+        self.assertEqual(
+            "settings_reauth_not_returned",
+            codex_retry_service._account_setup_retry_reason(
+                RuntimeError("账号配置部分失败：账号密码：RuntimeError: 设置页邮箱重认证后未返回 ChatGPT 设置页：https://auth.openai.com/email-verification")
+            ),
         )
 
     def test_password_setting_fallback_runs_before_security_navigation(self):

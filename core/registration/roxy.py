@@ -604,6 +604,24 @@ def _settings_page_not_ready(
         r"password|密码|パスワード|비밀번호|mot\s+de\s+passe|contraseña|senha|passwort|пароль",
         re.IGNORECASE,
     )
+    add_password_marker = re.compile(
+        r"password[-_:]?setting|"
+        r"(?:add|set|create).{0,30}password|password.{0,30}(?:add|set|create)|"
+        r"添加密码|设置密码|新增密码|"
+        r"パスワード.{0,30}(?:追加|設定)|(?:追加|設定).{0,30}パスワード|"
+        r"비밀번호.{0,30}(?:추가|설정)|(?:추가|설정).{0,30}비밀번호|"
+        r"(?:ajouter|définir|configurer).{0,30}(?:mot\s+de\s+passe|password)|"
+        r"(?:agregar|añadir|establecer|configurar).{0,30}(?:contraseña|password)|"
+        r"(?:adicionar|definir|configurar).{0,30}(?:senha|password)|"
+        r"(?:hinzufügen|festlegen|einstellen).{0,30}(?:passwort|password)|"
+        r"(?:добавить|установить|настроить).{0,30}(?:пароль|password)",
+        re.IGNORECASE,
+    )
+    # A visible Add-password control is evidence that the page knows the
+    # passwordless flow. If its form did not open, retry the browser state
+    # instead of persisting a false unsupported capability.
+    if any(add_password_marker.search(value) for value in (*controls, *lines)):
+        return True
     if any(password_marker.search(value) for value in (*controls, *lines)):
         return False
     normalized_url = str(url or "").strip().lower()
@@ -3908,6 +3926,7 @@ def set_roxy_login_password(
         };
         const passwordSettingNode = [...document.querySelectorAll('[data-testid]')]
           .filter(visible).find(el => passwordSettingTestId.test(testId(el)));
+        const closestClickable = el => el?.closest?.('button,a,[role="button"],[role="menuitem"],[role="tab"]') || el;
         const passwordSettingTarget = root => {
           if (!root) return null;
           if (isClickable(root)) return root;
@@ -3916,7 +3935,7 @@ def set_roxy_login_password(
           const clickableAction = descendants.find(isPasswordAction);
           if (clickableAction) return clickableAction;
           const textAction = [...root.querySelectorAll('*')].filter(visible).find(isPasswordAction);
-          return textAction || root;
+          return closestClickable(textAction) || root;
         };
         let target = passwordSettingTarget(passwordSettingNode);
         if (!target) target = buttons.find(el => addPassword.test(label(el)) && !negative.test(label(el)));
@@ -4036,9 +4055,12 @@ def set_roxy_login_password(
             page_meta=last_page_meta,
             security_action=security_action,
         ):
-            logger.warning("%s 账号设置页安全菜单尚未挂载，标记为可重试：%s", _log_prefix(driver), diagnostic)
+            logger.warning(
+                "%s 账号设置页尚未稳定或添加密码入口未打开，标记为可重试：%s",
+                _log_prefix(driver), diagnostic,
+            )
             raise PasswordSetupNotReadyError(
-                f"账号设置页安全菜单尚未挂载，页面诊断：{diagnostic}"
+                f"账号设置页尚未稳定或添加密码入口未打开，页面诊断：{diagnostic}"
             )
         logger.warning("%s 账号设置密码入口诊断：%s", _log_prefix(driver), diagnostic)
         raise RuntimeError(f"账号设置中未找到“Add password/设置密码”入口；页面诊断：{diagnostic}")

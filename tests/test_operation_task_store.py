@@ -189,6 +189,70 @@ class OperationTaskStoreTests(PostgresTestCase):
         self.assertTrue(payload["flow"])
         self.assertNotIn("never-expose-this", json.dumps(payload, ensure_ascii=False))
 
+    def test_run_progress_api_is_scoped_to_selected_run_and_independent_of_timeline_page(self):
+        task = operation_task_store.create_runtime_task(
+            task_type="password_setup",
+            account_id=701,
+            email="progress-run@example.com",
+            trigger="test",
+        )
+        first_run_id = int(task["run"]["id"])
+        operation_task_store.append_runtime_event(
+            first_run_id, stage="network", state="success", message="第一 Run 网络就绪",
+        )
+        operation_task_store.finish_run(first_run_id, status="failed", message="第一 Run 失败")
+
+        second = operation_task_store.retry_runtime_task(int(task["id"]), trigger="manual_retry")
+        second_run_id = int(second["id"])
+        for stage, state in (
+            ("network", "success"),
+            ("browser", "running"),
+            ("login", "running"),
+            ("email_otp", "running"),
+            ("login_password", "running"),
+        ):
+            operation_task_store.append_runtime_event(
+                second_run_id, stage=stage, state=state, message=f"第二 Run {stage}",
+            )
+
+        app = create_app(auth_code="test-auth")
+        client = app.test_client()
+        client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
+        progress = client.get(
+            f"/api/operations/{task['id']}/runs/{second_run_id}/progress",
+        )
+        detail = client.get(f"/api/operations/{task['id']}?include_events=0")
+        timeline = client.get(
+            f"/api/operations/{task['id']}/runs/{second_run_id}/events?limit=1",
+        )
+
+        self.assertEqual(200, progress.status_code)
+        snapshot = progress.get_json()["progress"]
+        self.assertEqual(second_run_id, snapshot["run_id"])
+        self.assertEqual(
+            ["network", "browser", "authenticate", "set_password", "result"],
+            [item["id"] for item in snapshot["main_steps"]],
+        )
+        self.assertEqual("authenticate", snapshot["current"]["step_id"])
+        self.assertEqual([], detail.get_json()["task"]["events"])
+        self.assertEqual(200, timeline.status_code)
+        self.assertEqual(1, len(timeline.get_json()["items"]))
+
+        other = operation_task_store.create_runtime_task(
+            task_type="password_setup",
+            account_id=702,
+            email="other-progress-run@example.com",
+            trigger="test",
+        )
+        denied = client.get(
+            f"/api/operations/{other['id']}/runs/{second_run_id}/progress",
+        )
+        missing = client.get(
+            f"/api/operations/{task['id']}/runs/999999999/progress",
+        )
+        self.assertEqual(404, denied.status_code)
+        self.assertEqual(404, missing.status_code)
+
     def test_unified_task_list_supports_column_filters_and_facets(self):
         failed = operation_task_store.create_runtime_task(
             task_type="live_check", account_id=101, email="column-filter@example.com", trigger="manual_bulk",

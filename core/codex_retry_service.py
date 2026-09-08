@@ -44,6 +44,11 @@ _BROWSER_SETUP_TRANSPORT_MARKERS = (
     "disconnected: not connected to devtools",
     "chrome-error://",
 )
+_BROWSER_SETUP_PAGE_STATE_MARKERS = (
+    "邮箱提交后未识别到密码、totp 或邮箱验证码分支",
+    "staleelementreferenceexception",
+    "设置页邮箱重认证后未返回 chatgpt 设置页",
+)
 
 
 def _is_retryable_account_setup_error(exc: BaseException) -> bool:
@@ -60,7 +65,10 @@ def _is_retryable_account_setup_error(exc: BaseException) -> bool:
     except Exception:
         pass
     text = f"{type(exc).__name__}: {exc}".lower()
-    return any(marker in text for marker in _BROWSER_SETUP_TRANSPORT_MARKERS)
+    return any(marker in text for marker in (
+        *_BROWSER_SETUP_TRANSPORT_MARKERS,
+        *_BROWSER_SETUP_PAGE_STATE_MARKERS,
+    ))
 
 
 def _account_setup_retry_reason(exc: BaseException) -> str:
@@ -78,6 +86,13 @@ def _account_setup_retry_reason(exc: BaseException) -> str:
     for marker in _BROWSER_SETUP_TRANSPORT_MARKERS:
         if marker in text:
             return marker.replace(" ", "_").replace("://", "_").strip("_")
+    for marker in _BROWSER_SETUP_PAGE_STATE_MARKERS:
+        if marker in text:
+            if marker == "staleelementreferenceexception":
+                return "stale_element_reference"
+            if marker == "设置页邮箱重认证后未返回 chatgpt 设置页":
+                return "settings_reauth_not_returned"
+            return "login_challenge_branch_not_detected"
     code = str(getattr(exc, "code", "") or "").strip().lower()
     return code or "browser_transient_error"
 
@@ -887,6 +902,7 @@ def _build_roxy_account_setup(
                         email,
                         eligible=False,
                         reason="password_settings_entry_unavailable",
+                        evidence="stable_settings_page",
                     )
                     account_task_store.append_event(
                         task_id,

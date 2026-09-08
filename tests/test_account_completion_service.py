@@ -111,7 +111,7 @@ class AccountCompletionPlanTests(unittest.TestCase):
             {
                 "access_token": "at",
                 "totp_secret": "totp",
-                "extra_json": '{"account_password_capability":{"eligible":false,"reason":"password_settings_entry_unavailable"}}',
+                "extra_json": '{"account_password_capability":{"eligible":false,"reason":"password_settings_entry_unavailable","evidence":"stable_settings_page"}}',
                 "codex_status": "success",
             },
             {
@@ -125,6 +125,26 @@ class AccountCompletionPlanTests(unittest.TestCase):
 
         self.assertNotIn("password", plan["missing_steps"])
         self.assertEqual("password", plan["blocked"][0]["step"])
+
+    def test_legacy_missing_password_entry_cache_is_rechecked(self):
+        plan = completion_plan(
+            {
+                "access_token": "at",
+                "totp_secret": "totp",
+                "extra_json": '{"account_password_capability":{"eligible":false,"reason":"password_settings_entry_unavailable"}}',
+                "codex_status": "success",
+            },
+            {
+                "password_enabled": True,
+                "plan_check_enabled": False,
+                "twofa_enabled": True,
+                "codex_enabled": True,
+                "refresh_at_enabled": False,
+            },
+        )
+
+        self.assertIn("password", plan["missing_steps"])
+        self.assertFalse(plan["blocked"])
 
     def test_pending_registration_never_plans_at_refresh(self):
         account = {

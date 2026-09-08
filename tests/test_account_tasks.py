@@ -687,6 +687,7 @@ class CodexRetryTaskTests(unittest.TestCase):
             "a@example.com",
             eligible=False,
             reason="password_settings_entry_unavailable",
+            evidence="stable_settings_page",
         )
         self.assertEqual(setup_order, ["password", "twofa"])
 

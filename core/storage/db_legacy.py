@@ -993,6 +993,7 @@ def update_account_password_capability(
     *,
     eligible: bool,
     reason: str | None = None,
+    evidence: str | None = None,
 ) -> bool:
     """Persist the remote capability result without changing credentials."""
     row = record_store.get_row_by(record_store.ACCOUNTS, "email", email, lower=True)
@@ -1005,11 +1006,14 @@ def update_account_password_capability(
         except (TypeError, ValueError, json.JSONDecodeError):
             raw_extra = {}
     extra = dict(raw_extra) if isinstance(raw_extra, dict) else {}
-    extra["account_password_capability"] = {
+    capability = {
         "eligible": bool(eligible),
         "reason": str(reason or "")[:160],
         "checked_at": _now(),
     }
+    if evidence:
+        capability["evidence"] = str(evidence)[:160]
+    extra["account_password_capability"] = capability
     return _patch_account(int(row["id"]), {
         "extra_json": json.dumps(extra, ensure_ascii=False),
         "updated_at": _now(),

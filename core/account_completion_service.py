@@ -46,13 +46,16 @@ def _password_present(account: Mapping) -> bool:
 
 
 def _password_setup_repeat_blocked(account: Mapping) -> bool:
-    """Return whether the browser confirmed that the Add-password flow is absent."""
+    """Return whether the current browser code confirmed a stable no-entry page."""
     capability = _extra(account).get("account_password_capability")
     if not isinstance(capability, Mapping):
         return False
-    return str(capability.get("reason") or "").strip().lower() in {
-        "password_settings_entry_unavailable",
-    }
+    return (
+        str(capability.get("reason") or "").strip().lower()
+        == "password_settings_entry_unavailable"
+        and str(capability.get("evidence") or "").strip().lower()
+        == "stable_settings_page"
+    )
 
 
 def _twofa_present(account: Mapping) -> bool:
