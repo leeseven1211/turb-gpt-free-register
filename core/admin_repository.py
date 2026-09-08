@@ -677,7 +677,7 @@ def list_email_pool(request: PageRequest) -> dict:
 
 
 def _codex_item(row: dict) -> dict:
-    from core.codex_token_refresh_service import oauth_metadata, refresh_error_requires_reauth
+    from core.codex_token_refresh_service import oauth_metadata, refresh_error_requires_reauth, sub2api_status_requires_reauth
 
     merged = record_store.merge_row(record_store.CODEX_CREDENTIALS, row)
     # 列表查询刻意不取 content（里面含完整 token）。用写入时保存的生命周期元数据
@@ -688,7 +688,10 @@ def _codex_item(row: dict) -> dict:
         "refresh_token": "present" if merged.get("oauth_refreshable") else "",
     }
     oauth = oauth_metadata(synthetic)
-    oauth["oauth_reauth_required"] = refresh_error_requires_reauth(merged.get("oauth_refresh_error"))
+    oauth["oauth_reauth_required"] = (
+        refresh_error_requires_reauth(merged.get("oauth_refresh_error"))
+        or sub2api_status_requires_reauth(merged.get("sub2api_http_status"))
+    )
     return {
         "filename": merged.get("filename"),
         "email": merged.get("email") or "",
@@ -707,6 +710,8 @@ def _codex_item(row: dict) -> dict:
         "sub2_uploaded_at": merged.get("sub2_uploaded_at"),
         "sub2_uploaded_count": int(merged.get("sub2_uploaded_count") or 0),
         "sub2_sync_error": merged.get("sub2_sync_error"),
+        "sub2api_status": merged.get("sub2api_status"),
+        "sub2api_http_status": merged.get("sub2api_http_status"),
         "oauth_refresh_attempted_at": merged.get("oauth_refresh_attempted_at"),
         "oauth_refresh_error": merged.get("oauth_refresh_error"),
         "archived": bool(merged.get("archived")),

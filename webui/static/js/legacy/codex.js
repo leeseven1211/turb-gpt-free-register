@@ -33,6 +33,9 @@ function renderCodex() {
     const statusBadge = exported
       ? `<span class="pill status-used" title="导出 ${esc(r.exported_count)} 次，最近 ${esc(r.exported_at || '-')}">已导出</span>`
       : `<span class="pill status-available">未导出</span>`;
+    const oauthStatus = Number(r.sub2api_http_status) === 401
+      ? `<span class="pill status-failed" title="Sub2API HTTP 401：远端 OAuth Token 已撤销">401 失效</span>`
+      : '-';
     const checked = CODEX_SELECTED.has(r.filename) ? 'checked' : '';
     return `
     <tr>
@@ -40,6 +43,7 @@ function renderCodex() {
       <td><div class="main-cell">${esc(r.email || '-')}</div><div class="sub-cell mono">${esc(r.filename)}</div></td>
       <td>${esc(r.plan || '-')}</td>
       <td>${statusBadge}</td>
+      <td>${oauthStatus}</td>
       <td><span class="mono">${esc(r.account_id || '-')}</span></td>
       <td class="muted">${esc(r.mtime || '-')}</td>
       <td class="muted">${esc(r.expired || '-')}</td>
@@ -50,7 +54,7 @@ function renderCodex() {
         <button class="danger" data-codex-delete="${esc(r.filename)}" title="删除本地 Codex JSON 凭证文件">删除</button>
       </td>
     </tr>`;
-  }).join('') || '<tr><td colspan="8" class="muted">还没有 Codex 凭证。注册成功并跑通 Codex 授权后会自动出现。</td></tr>';
+  }).join('') || '<tr><td colspan="9" class="muted">还没有 Codex 凭证。注册成功并跑通 Codex 授权后会自动出现。</td></tr>';
   // 全选 checkbox：仅反映当前页状态
   const pageFilenames = rows.map(r => r.filename);
   const allChecked = pageFilenames.length > 0 && pageFilenames.every(f => CODEX_SELECTED.has(f));

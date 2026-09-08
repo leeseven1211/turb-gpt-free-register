@@ -109,11 +109,22 @@ def refresh_error_requires_reauth(error: object) -> bool:
     return bool(lowered and any(marker in lowered for marker in _REAUTH_ERROR_MARKERS))
 
 
+def sub2api_status_requires_reauth(http_status: object) -> bool:
+    """Sub2API 401 表示远端已撤销 OAuth Token，需要重新授权。"""
+    try:
+        return int(http_status or 0) == 401
+    except (TypeError, ValueError):
+        return False
+
+
 def decorate_row(row: dict[str, Any]) -> dict[str, Any]:
     """读取凭证内容后为列表行补齐 OAuth 状态；失败时保持列表可用。"""
     item = dict(row)
     if item.get("oauth_status"):
-        item["oauth_reauth_required"] = refresh_error_requires_reauth(item.get("oauth_refresh_error"))
+        item["oauth_reauth_required"] = (
+            refresh_error_requires_reauth(item.get("oauth_refresh_error"))
+            or sub2api_status_requires_reauth(item.get("sub2api_http_status"))
+        )
         return item
     try:
         text, _ = db.read_codex_credential(str(item.get("filename") or ""))
@@ -121,7 +132,10 @@ def decorate_row(row: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(content, dict):
             raise ValueError("凭证不是 JSON 对象")
         item.update(oauth_metadata(content))
-        item["oauth_reauth_required"] = refresh_error_requires_reauth(item.get("oauth_refresh_error"))
+        item["oauth_reauth_required"] = (
+            refresh_error_requires_reauth(item.get("oauth_refresh_error"))
+            or sub2api_status_requires_reauth(item.get("sub2api_http_status"))
+        )
     except Exception:
         item.update({
             "oauth_status": "unknown",
@@ -129,7 +143,10 @@ def decorate_row(row: dict[str, Any]) -> dict[str, Any]:
             "oauth_seconds_left": None,
             "oauth_refreshable": False,
             "oauth_auto_refresh": bool(getattr(_cfg, "CODEX_TOKEN_AUTO_REFRESH_ENABLED", True)),
-            "oauth_reauth_required": refresh_error_requires_reauth(item.get("oauth_refresh_error")),
+            "oauth_reauth_required": (
+                refresh_error_requires_reauth(item.get("oauth_refresh_error"))
+                or sub2api_status_requires_reauth(item.get("sub2api_http_status"))
+            ),
         })
     return item
 

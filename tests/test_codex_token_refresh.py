@@ -57,6 +57,8 @@ class CodexOauthMetadataTests(unittest.TestCase):
             )
         )
         self.assertTrue(service.refresh_error_requires_reauth("session has ended"))
+        self.assertTrue(service.sub2api_status_requires_reauth(401))
+        self.assertFalse(service.sub2api_status_requires_reauth(403))
 
     def test_refresh_error_extracts_top_level_code(self):
         response = Mock(status_code=400)
@@ -111,6 +113,7 @@ class CodexOauthMetadataTests(unittest.TestCase):
             {"filename": "codex-due.json", "oauth_status": "expiring", "oauth_refreshable": True},
             {"filename": "codex-later.json", "oauth_status": "valid", "oauth_refreshable": True},
             {"filename": "codex-no-refresh.json", "oauth_status": "expired", "oauth_refreshable": False},
+            {"filename": "codex-revoked.json", "oauth_status": "valid", "oauth_refreshable": True, "sub2api_http_status": 401},
         ]
         with (
             patch.object(service._cfg, "CODEX_TOKEN_AUTO_REFRESH_ENABLED", True),

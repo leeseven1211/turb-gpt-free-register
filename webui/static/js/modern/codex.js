@@ -82,6 +82,7 @@ function _codexStatusBadge(r) {
 }
 function _codexOauthBadge(r) {
   const status = String(r.oauth_status || 'unknown');
+  const remoteHttpStatus = Number(r.sub2api_http_status);
   const seconds = Number(r.oauth_seconds_left);
   let remaining = '';
   if (Number.isFinite(seconds)) {
@@ -90,7 +91,8 @@ function _codexOauthBadge(r) {
     const hours = Math.floor((absolute % 86400) / 3600);
     remaining = seconds < 0 ? `已过期 ${days}天${hours}小时` : `剩余 ${days}天${hours}小时`;
   }
-  const details = [r.oauth_expires_at ? `过期：${r.oauth_expires_at}` : '', remaining, r.oauth_refreshable ? '存在 refresh_token，可尝试自动刷新' : '缺少 refresh_token', Number(r.sub2_uploaded_count || 0) > 0 ? '已纳入 sub2 自动同步' : '未记录 sub2 自动同步', r.oauth_refresh_error ? `最近刷新失败：${r.oauth_refresh_error}` : '', r.sub2_sync_error ? `sub2 同步失败：${r.sub2_sync_error}` : ''].filter(Boolean).join('；');
+  const details = [remoteHttpStatus ? `Sub2API HTTP ${remoteHttpStatus}` : '', r.oauth_expires_at ? `过期：${r.oauth_expires_at}` : '', remaining, r.oauth_refreshable ? '存在 refresh_token，可尝试自动刷新' : '缺少 refresh_token', Number(r.sub2_uploaded_count || 0) > 0 ? '已纳入 sub2 自动同步' : '未记录 sub2 自动同步', r.oauth_refresh_error ? `最近刷新失败：${r.oauth_refresh_error}` : '', r.sub2_sync_error ? `sub2 同步失败：${r.sub2_sync_error}` : ''].filter(Boolean).join('；');
+  if (remoteHttpStatus === 401) return `<span class="pill status-failed" title="${esc(details)}">401 失效</span>`;
   if (r.oauth_reauth_required) return `<span class="pill status-failed" title="${esc(details)}">需重授权</span>`;
   if (status === 'valid') return `<span class="pill status-success" title="${esc(details)}">有效</span>`;
   if (status === 'expiring') return `<span class="pill status-running" title="${esc(details)}">即将过期</span>`;

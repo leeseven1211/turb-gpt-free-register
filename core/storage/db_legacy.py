@@ -2481,7 +2481,7 @@ def _codex_payload(filename: str, content: dict) -> dict:
 
 
 def _codex_public_row(row: dict) -> dict:
-    from core.codex_token_refresh_service import oauth_metadata, refresh_error_requires_reauth
+    from core.codex_token_refresh_service import oauth_metadata, refresh_error_requires_reauth, sub2api_status_requires_reauth
 
     content = row.get("content") if isinstance(row.get("content"), dict) else {}
     oauth = oauth_metadata(content)
@@ -2502,12 +2502,17 @@ def _codex_public_row(row: dict) -> dict:
         "sub2_uploaded_at": row.get("sub2_uploaded_at"),
         "sub2_uploaded_count": int(row.get("sub2_uploaded_count") or 0),
         "sub2_sync_error": row.get("sub2_sync_error"),
+        "sub2api_status": row.get("sub2api_status"),
+        "sub2api_http_status": row.get("sub2api_http_status"),
         "oauth_refresh_attempted_at": row.get("oauth_refresh_attempted_at"),
         "oauth_refresh_error": row.get("oauth_refresh_error"),
         "archived": bool(row.get("archived")),
         "archived_at": row.get("archived_at"),
         **oauth,
-        "oauth_reauth_required": refresh_error_requires_reauth(row.get("oauth_refresh_error")),
+        "oauth_reauth_required": (
+            refresh_error_requires_reauth(row.get("oauth_refresh_error"))
+            or sub2api_status_requires_reauth(row.get("sub2api_http_status"))
+        ),
     }
 
 

@@ -18,6 +18,48 @@ def configured_codex_import_url() -> str:
     return str(getattr(sub2api_cfg, "SUB2API_API_URL", "") or "").strip()
 
 
+def export_configured_accounts() -> list[dict[str, Any]]:
+    """读取 sub2api 的完整账号导出，不把响应内容写入日志或文件。"""
+    from config import sub2api as sub2api_cfg
+
+    base = str(getattr(sub2api_cfg, "SUB2API_API_BASE", "") or "").strip().rstrip("/")
+    if not base:
+        raise ValueError("SUB2API_API_BASE 为空，无法导出账号")
+    token = str(
+        getattr(sub2api_cfg, "SUB2API_API_KEY", "")
+        or getattr(sub2api_cfg, "SUB2API_API_TOKEN", "")
+        or ""
+    ).strip()
+    header_name = str(getattr(sub2api_cfg, "SUB2API_API_AUTH_HEADER", "x-api-key") or "x-api-key").strip()
+    prefix = str(getattr(sub2api_cfg, "SUB2API_API_AUTH_PREFIX", "") or "").strip()
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "turb-gpt-free-register/sub2api-sync",
+    }
+    if token:
+        headers[header_name] = f"{prefix} {token}".strip() if prefix else token
+
+    response = requests.get(
+        f"{base}/api/v1/admin/accounts/data",
+        headers=headers,
+        timeout=float(getattr(sub2api_cfg, "SUB2API_API_TIMEOUT", 20) or 20),
+    )
+    try:
+        body = response.json()
+    except Exception as exc:
+        raise RuntimeError(f"sub2api 账号导出响应不是 JSON: HTTP {response.status_code}") from exc
+    if response.status_code < 200 or response.status_code >= 300:
+        message = body.get("message") if isinstance(body, dict) else ""
+        raise RuntimeError(f"sub2api 账号导出失败 HTTP {response.status_code}: {str(message)[:300]}")
+    if isinstance(body, dict) and body.get("code") not in (None, 0, 200):
+        raise RuntimeError(f"sub2api 账号导出失败: {body.get('message') or str(body)[:300]}")
+    data = body.get("data") if isinstance(body, dict) and isinstance(body.get("data"), dict) else {}
+    accounts = data.get("accounts")
+    if not isinstance(accounts, list):
+        raise RuntimeError("sub2api 账号导出缺少 data.accounts")
+    return [item for item in accounts if isinstance(item, dict)]
+
+
 def upload_configured_codex_oauth_credential(auth_json: dict[str, Any]) -> dict[str, Any]:
     """使用项目当前 sub2api 配置上传一份 Codex OAuth 凭证。"""
     from config import sub2api as sub2api_cfg
