@@ -124,6 +124,51 @@ class OperationTaskStoreTests(PostgresTestCase):
         self.assertEqual("2026-08-25T02:00:00+00:00", registration["created_at"])
         self.assertEqual("2026-08-25T02:02:00+00:00", registration["completed_at"])
 
+    def test_task_list_sorts_by_current_run_creation_time(self):
+        def seed_registration(email, created_at):
+            account_id = record_store.insert_row(record_store.ACCOUNTS, {
+                "email": email,
+                "access_token": "",
+                "codex_status": "success",
+                "created_at": created_at,
+                "updated_at": created_at,
+                "extra_json": json.dumps({"registration_checkpoint": "registered"}),
+            })
+            job_id = record_store.insert_row(record_store.JOBS, {
+                "job_uuid": f"job-{email}",
+                "email": email,
+                "status": "success",
+                "job_type": "registration",
+                "account_id": account_id,
+                "created_at": created_at,
+                "updated_at": created_at,
+                "completed_at": created_at,
+                "progress_stage": "complete",
+                "progress_steps": {},
+            })
+            return account_id, job_id
+
+        first_account_id, first_job_id = seed_registration(
+            "first@example.com", "2026-08-25T10:00:00",
+        )
+        second_account_id, _second_job_id = seed_registration(
+            "second@example.com", "2026-08-25T10:01:00",
+        )
+        operation_task_store.reconcile_all()
+
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {postgres_store.qualified('registration_jobs')} SET created_at=%s WHERE id=%s",
+                ("2026-08-25T11:00:00", int(first_job_id)),
+            )
+
+        listed = operation_task_store.list_tasks(page_size=10, task_type="registration")["items"]
+        self.assertEqual(
+            [int(first_account_id), int(second_account_id)],
+            [int(item["account_id"]) for item in listed[:2]],
+        )
+        self.assertEqual("2026-08-25T03:00:00+00:00", listed[0]["created_at"])
+
     def test_task_list_prioritizes_active_tasks_then_creation_time(self):
         historical = operation_task_store.create_runtime_task(
             task_type="live_check", account_id=101, email="historical@example.com", trigger="manual",

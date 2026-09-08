@@ -669,6 +669,31 @@ def _compatibility_run_projection_sql(
         f"WHEN ({status_sql}) IN ({_TERMINAL_STATUS_SQL}) THEN 'complete' "
         f"ELSE {run_alias}.progress_stage END"
     )
+    local_offset = datetime.now().astimezone().utcoffset() or timedelta(0)
+    offset_seconds = int(local_offset.total_seconds())
+    offset_sign = "+" if offset_seconds >= 0 else "-"
+    offset_seconds = abs(offset_seconds)
+    offset_hours, offset_remainder = divmod(offset_seconds, 3600)
+    offset_minutes = offset_remainder // 60
+    local_timezone_sql = f"INTERVAL '{offset_sign}{offset_hours:02d}:{offset_minutes:02d}'"
+
+    def legacy_sort_sql(value_sql: str) -> str:
+        text_sql = f"NULLIF(({value_sql})::text, '')"
+        return (
+            f"CASE WHEN {text_sql} IS NULL THEN NULL "
+            f"WHEN {text_sql} ~* '(Z|[+-][0-9]{{2}}:?[0-9]{{2}})$' "
+            f"THEN {text_sql}::timestamptz "
+            f"ELSE ({text_sql}::timestamp AT TIME ZONE {local_timezone_sql}) END"
+        )
+
+    created_at_sort_sql = (
+        f"CASE "
+        f"WHEN {run_alias}.source_system='registration_jobs' AND {registration_alias}.id IS NOT NULL "
+        f"THEN {legacy_sort_sql(f'{registration_alias}.created_at')} "
+        f"WHEN {run_alias}.source_system='account_action_tasks' AND {account_alias}.id IS NOT NULL "
+        f"THEN {legacy_sort_sql(f'{account_alias}.queued_at')} "
+        f"ELSE NULL END"
+    )
     return (
         f"{status_sql} AS effective_status, "
         f"{stage_sql} AS effective_progress_stage, "
@@ -684,6 +709,7 @@ def _compatibility_run_projection_sql(
         f"WHEN {run_alias}.source_system='account_action_tasks' AND {account_alias}.id IS NOT NULL "
         f"THEN NULLIF({account_alias}.finished_at, '') "
         f"ELSE {run_alias}.completed_at::text END AS effective_completed_at, "
+        f"{created_at_sort_sql} AS effective_created_at_sort, "
         f"CASE "
         f"WHEN {run_alias}.source_system='registration_jobs' AND {registration_alias}.id IS NOT NULL "
         f"THEN {registration_alias}.data->>'error_message' "
@@ -709,6 +735,7 @@ def _normalize_compatibility_run(run: dict) -> dict:
     effective_status = run.pop("effective_status", None)
     effective_stage = run.pop("effective_progress_stage", None)
     effective_created_at = run.pop("effective_created_at", None)
+    run.pop("effective_created_at_sort", None)
     effective_completed_at = run.pop("effective_completed_at", None)
     effective_error_message = run.pop("effective_error_message", None)
     if effective_status:
@@ -2358,7 +2385,7 @@ def list_tasks(
             {from_sql}
             {clause}
             ORDER BY CASE WHEN COALESCE(r.effective_status, t.status) IN ({_ACTIVE_RUN_STATUS_SQL}) THEN 0 ELSE 1 END,
-                     t.created_at DESC, t.id DESC LIMIT %s OFFSET %s
+                     COALESCE(r.effective_created_at_sort, t.created_at) DESC, t.id DESC LIMIT %s OFFSET %s
             """,
             (*params, page_size, (page - 1) * page_size),
         )
