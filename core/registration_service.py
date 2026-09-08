@@ -15,7 +15,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +39,10 @@ _STOP_EVENTS: dict[int, threading.Event] = {}
 _ACTIVE_JOBS: set[int] = set()
 _STOP_LOCK = threading.Lock()
 _THREAD_CTX = threading.local()
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def registration_config_snapshot() -> dict[str, object]:
@@ -1056,7 +1060,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
     try:
         claimed = db.claim_job_for_execution(
             job_id,
-            started_at=datetime.now().isoformat(timespec="seconds"),
+            started_at=_now_iso(),
         )
     except Exception:
         _deactivate_job(job_id)
@@ -1070,7 +1074,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 job_id,
                 ("stopping",),
                 "stopped",
-                completed_at=datetime.now().isoformat(timespec="seconds"),
+                completed_at=_now_iso(),
                 error="用户手动停止",
             )
         _deactivate_job(job_id)
@@ -1278,7 +1282,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     job_id,
                     status="stopped",
                     error="用户手动停止",
-                    completed_at=datetime.now().isoformat(timespec="seconds"),
+                    completed_at=_now_iso(),
                 )
                 log_logger.warning(f"[Job {job_id}] 已按用户请求停止")
                 return
@@ -1342,7 +1346,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     # A successful later route must not retain the transient
                     # proxy/browser error that triggered its automatic retry.
                     error=warning[:500] if warning else "",
-                    completed_at=datetime.now().isoformat(timespec="seconds"),
+                    completed_at=_now_iso(),
                 )
                 if partial_success:
                     log_logger.warning(
@@ -1377,7 +1381,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     email=result_email,
                     account_id=(result or {}).get("account_id") if isinstance(result, dict) else None,
                     error=str(err)[:500],
-                    completed_at=datetime.now().isoformat(timespec="seconds"),
+                    completed_at=_now_iso(),
                 )
                 email_to_handle = str(result_email or email or "").strip()
                 if manual_reconcile or _should_disable_failed_registration_email(err):
@@ -1399,7 +1403,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
             job_id,
             status="stopped",
             error="用户手动停止",
-            completed_at=datetime.now().isoformat(timespec="seconds"),
+            completed_at=_now_iso(),
         )
     except Exception as exc:
         err_text = f"{type(exc).__name__}: {exc}"
@@ -1419,7 +1423,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 job_id,
                 status="stopped",
                 error="用户手动停止",
-                completed_at=datetime.now().isoformat(timespec="seconds"),
+                completed_at=_now_iso(),
             )
             return
         log_logger.exception(f"[Job {job_id}] 异常")
@@ -1429,7 +1433,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
             status="failed",
             proxy_status="failed" if proxy_lease is None else "leased",
             error=f"{type(exc).__name__}: {exc}"[:500],
-            completed_at=datetime.now().isoformat(timespec="seconds"),
+            completed_at=_now_iso(),
         )
     finally:
         final_job = db.get_job(job_id) or {}
@@ -1488,7 +1492,7 @@ def _run_codex_retry_job(
     try:
         claimed = db.claim_job_for_execution(
             job_id,
-            started_at=datetime.now().isoformat(timespec="seconds"),
+            started_at=_now_iso(),
         )
     except Exception:
         _deactivate_job(job_id)
@@ -1500,7 +1504,7 @@ def _run_codex_retry_job(
                 job_id,
                 ("stopping",),
                 "stopped",
-                completed_at=datetime.now().isoformat(timespec="seconds"),
+                completed_at=_now_iso(),
                 error="用户手动停止",
             )
         account_task_store.finish_task(
@@ -1524,7 +1528,7 @@ def _run_codex_retry_job(
             task_id=account_task_id,
             task_trigger="registration_job_retry",
         )
-        now_iso = datetime.now().isoformat(timespec="seconds")
+        now_iso = _now_iso()
         proxy_fields = {}
         if result.get("proxy_provider"):
             proxy_fields = {
@@ -1562,7 +1566,7 @@ def _run_codex_retry_job(
             job_id,
             status="failed",
             error=f"{type(exc).__name__}: {exc}"[:500],
-            completed_at=datetime.now().isoformat(timespec="seconds"),
+            completed_at=_now_iso(),
         )
         codex_retry_service.release(email)
         logger.exception("[Job %s] Codex 补跑异常", job_id)
@@ -1608,7 +1612,7 @@ def _run_twofa_retry_job(
     try:
         claimed = db.claim_job_for_execution(
             job_id,
-            started_at=datetime.now().isoformat(timespec="seconds"),
+            started_at=_now_iso(),
         )
     except Exception:
         _deactivate_job(job_id)
@@ -1620,7 +1624,7 @@ def _run_twofa_retry_job(
                 job_id,
                 ("stopping",),
                 "stopped",
-                completed_at=datetime.now().isoformat(timespec="seconds"),
+                completed_at=_now_iso(),
                 error="用户手动停止",
             )
         account_task_store.finish_task(
@@ -1644,7 +1648,7 @@ def _run_twofa_retry_job(
             task_id=account_task_id,
             task_trigger="registration_job_retry",
         )
-        now_iso = datetime.now().isoformat(timespec="seconds")
+        now_iso = _now_iso()
         proxy_fields = {}
         if result.get("proxy_provider"):
             proxy_fields = {
@@ -1670,7 +1674,7 @@ def _run_twofa_retry_job(
             job_id,
             status="failed",
             error=f"{type(exc).__name__}: {exc}"[:500],
-            completed_at=datetime.now().isoformat(timespec="seconds"),
+            completed_at=_now_iso(),
         )
         codex_retry_service.release(email)
         logger.exception("[Job %s] 账号配置重试异常", job_id)
@@ -1750,7 +1754,7 @@ def submit_registration(
                     int(job["id"]),
                     status="failed",
                     error=f"队列提交失败：{type(exc).__name__}: {exc}"[:500],
-                    completed_at=datetime.now().isoformat(timespec="seconds"),
+                    completed_at=_now_iso(),
                 )
                 logger.exception("[Service] 注册任务 #%s 提交线程池失败", job["id"])
             jobs.append(db.get_job(int(job["id"])) or job)
@@ -2281,7 +2285,7 @@ def retry_job(
             int(job["id"]),
             status="failed",
             error=f"队列提交失败：{type(exc).__name__}: {exc}"[:500],
-            completed_at=datetime.now().isoformat(timespec="seconds"),
+            completed_at=_now_iso(),
         )
         logger.exception("[Service] 重试任务 #%s 提交线程池失败", job["id"])
         return {"ok": False, "error": "重试任务创建成功，但提交执行失败", "status": 500, "job": db.get_job(int(job["id"]))}
@@ -2316,7 +2320,7 @@ def request_stop_job(job_id: int) -> dict:
     if not job:
         return {"ok": False, "error": "任务不存在", "status": 404}
     status = job.get("status")
-    now_iso = datetime.now().isoformat(timespec="seconds")
+    now_iso = _now_iso()
     if status == "pending":
         changed = db.transition_job_status(
             job_id,

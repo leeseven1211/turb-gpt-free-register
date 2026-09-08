@@ -84,14 +84,13 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _legacy_account_timestamp(value: Any) -> datetime | None:
-    """Normalize account_action_* text timestamps before writing TIMESTAMPTZ.
+def _legacy_timestamp(value: Any) -> datetime | None:
+    """Normalize legacy local-wall-clock text before writing or returning UTC.
 
-    Older rows were written with ``datetime.now().isoformat()`` and therefore
-    contain local wall-clock time without an offset.  Psycopg/PostgreSQL would
-    otherwise interpret those strings in the database session timezone (UTC),
-    making the browser add the local offset a second time.  New rows already
-    carry an explicit offset and pass through unchanged.
+    Older compatibility rows were written with ``datetime.now().isoformat()``
+    and therefore contain local wall-clock time without an offset.  PostgreSQL
+    interprets those strings in its UTC session timezone, while the browser
+    converts the result to local time and adds the offset a second time.
     """
     if value in (None, ""):
         return None
@@ -102,6 +101,14 @@ def _legacy_account_timestamp(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
     return parsed.astimezone(timezone.utc)
+
+
+def _legacy_account_timestamp(value: Any) -> datetime | None:
+    return _legacy_timestamp(value)
+
+
+def _legacy_registration_timestamp(value: Any) -> datetime | None:
+    return _legacy_timestamp(value)
 
 
 def _uuid(kind: str, source: object) -> str:
@@ -667,6 +674,12 @@ def _compatibility_run_projection_sql(
         f"{stage_sql} AS effective_progress_stage, "
         f"CASE "
         f"WHEN {run_alias}.source_system='registration_jobs' AND {registration_alias}.id IS NOT NULL "
+        f"THEN {registration_alias}.created_at "
+        f"WHEN {run_alias}.source_system='account_action_tasks' AND {account_alias}.id IS NOT NULL "
+        f"THEN {account_alias}.queued_at "
+        f"ELSE NULL END AS effective_created_at, "
+        f"CASE "
+        f"WHEN {run_alias}.source_system='registration_jobs' AND {registration_alias}.id IS NOT NULL "
         f"THEN NULLIF({registration_alias}.data->>'completed_at', '') "
         f"WHEN {run_alias}.source_system='account_action_tasks' AND {account_alias}.id IS NOT NULL "
         f"THEN NULLIF({account_alias}.finished_at, '') "
@@ -695,17 +708,37 @@ def _normalize_compatibility_run(run: dict) -> dict:
     """Overlay a compatibility run with its source row, if that row still exists."""
     effective_status = run.pop("effective_status", None)
     effective_stage = run.pop("effective_progress_stage", None)
+    effective_created_at = run.pop("effective_created_at", None)
     effective_completed_at = run.pop("effective_completed_at", None)
     effective_error_message = run.pop("effective_error_message", None)
     if effective_status:
         run["status"] = _status(effective_status)
     if effective_stage is not None:
         run["progress_stage"] = effective_stage
+    source_system = str(run.get("source_system") or "")
+    timestamp_normalizer = (
+        _legacy_registration_timestamp
+        if source_system == "registration_jobs"
+        else _legacy_account_timestamp
+        if source_system == "account_action_tasks"
+        else None
+    )
+    if effective_created_at is not None and timestamp_normalizer:
+        normalized_created_at = timestamp_normalizer(effective_created_at)
+        if normalized_created_at is not None:
+            run["created_at"] = normalized_created_at.isoformat()
     if effective_completed_at is not None:
-        run["completed_at"] = effective_completed_at
-    elif str(run.get("source_system") or "") in {"registration_jobs", "account_action_tasks"}:
+        normalized_completed_at = (
+            timestamp_normalizer(effective_completed_at)
+            if timestamp_normalizer else None
+        )
+        run["completed_at"] = (
+            normalized_completed_at.isoformat()
+            if normalized_completed_at is not None else effective_completed_at
+        )
+    elif source_system in {"registration_jobs", "account_action_tasks"}:
         run["completed_at"] = None
-    if str(run.get("source_system") or "") in {"registration_jobs", "account_action_tasks"}:
+    if source_system in {"registration_jobs", "account_action_tasks"}:
         run["error_message"] = effective_error_message
         if run.get("status") in _ACTIVE_RUN_STATUSES:
             run["error_category"] = None
@@ -720,6 +753,8 @@ def _apply_current_run_projection(task: dict, run: dict | None) -> dict:
     status = str(run.get("status") or task.get("status") or "queued").lower()
     task["last_run_id"] = run.get("id")
     task["status"] = status
+    if str(run.get("source_system") or "") in {"registration_jobs", "account_action_tasks"} and run.get("created_at"):
+        task["created_at"] = run["created_at"]
     if run.get("progress_stage"):
         task["current_stage"] = run.get("progress_stage")
     elif status == "queued":
@@ -831,9 +866,12 @@ def _upsert_attempt(cur, *, root_job_id: int, job: dict, account: dict | None) -
             str((account or {}).get("email") or job.get("email") or "")[:320],
             int(account["id"]) if account and account.get("id") is not None else None,
             state["checkpoint"], state["remote_identity_state"], state["remote_account_state"],
-            state["local_account_state"], state["target_status"], job.get("created_at") or _now(),
-            job.get("updated_at") or job.get("completed_at") or _now(),
-            job.get("completed_at") if state["target_status"] == "account_available" else None,
+            state["local_account_state"], state["target_status"],
+            _legacy_registration_timestamp(job.get("created_at")) or _now(),
+            _legacy_registration_timestamp(job.get("updated_at"))
+            or _legacy_registration_timestamp(job.get("completed_at")) or _now(),
+            _legacy_registration_timestamp(job.get("completed_at"))
+            if state["target_status"] == "account_available" else None,
             _json(attempt_data),
         ),
     )
@@ -923,7 +961,7 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
             title="注册批次" if task_type == "registration" else "注册补跑批次",
             requested_count=int(job.get("batch_size") or 1),
             created_by="webui",
-            created_at=job.get("created_at"),
+            created_at=_legacy_registration_timestamp(job.get("created_at")),
             data={"legacy_batch_id": legacy_batch_id, "workers": job.get("batch_workers")},
         )
     parent_task_id = None
@@ -932,9 +970,16 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
     error_category, error_code, error_message = _error_fields(
         job.get("error_message"), stage=str(job.get("progress_stage") or ""), task_type=task_type,
     )
+    status = _status(job.get("status"))
+    created_at = _legacy_registration_timestamp(job.get("created_at")) or _now()
+    completed_at = (
+        _legacy_registration_timestamp(job.get("completed_at"))
+        if status in _TERMINAL_STATUSES else None
+    )
+    updated_at = _legacy_registration_timestamp(job.get("updated_at")) or completed_at or _now()
+    started_at = _legacy_registration_timestamp(job.get("started_at"))
     source_system = "registration_chains"
     task_uuid = _uuid("task", f"{source_system}:{task_source_id}")
-    status = _status(job.get("status"))
     next_actions = _next_registration_actions(job, account, state["target_status"])
     cur.execute(
         f"""
@@ -988,8 +1033,7 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
             status, state["target_status"], normalize_stage(job.get("progress_stage")), _json(next_actions),
             error_category, error_code, error_message,
             "manual_retry" if job.get("parent_job_id") else "manual",
-            job.get("created_at") or _now(), job.get("updated_at") or job.get("completed_at") or _now(),
-            job.get("completed_at") if status in _TERMINAL_STATUSES else None,
+            created_at, updated_at, completed_at,
             _json(projection_data),
         ),
     )
@@ -1047,10 +1091,10 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
         (
             run_uuid, task_id, run_no, str(job_id), status,
             str(job.get("job_uuid") or "") or None, normalize_stage(job.get("progress_stage")),
-            _json(progress_steps), job.get("started_at"), job.get("completed_at"),
-            _duration(job.get("started_at"), job.get("completed_at")), error_category, error_code,
+            _json(progress_steps), started_at, completed_at,
+            _duration(started_at, completed_at), error_category, error_code,
             error_message, _json({"account_id": (account or {}).get("id"), "retry_action": job.get("retry_action")}),
-            run_log_file, job.get("created_at") or _now(),
+            run_log_file, created_at,
             _json({
                 "legacy_job_id": job_id,
                 "parent_job_id": job.get("parent_job_id"),
@@ -1082,7 +1126,10 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
             """,
             (
                 _uuid("event", f"registration_progress:{event_source_id}"), task_id, run_id,
-                event_source_id, step.get("completed_at") or step.get("started_at") or job.get("updated_at") or _now(),
+                event_source_id,
+                _legacy_registration_timestamp(step.get("completed_at"))
+                or _legacy_registration_timestamp(step.get("started_at"))
+                or updated_at or _now(),
                 level, stage, f"stage.{state_value}", category, code,
                 _text(step.get("detail") or state_value, 1200),
                 _json({"state": state_value, "started_at": step.get("started_at"), "completed_at": step.get("completed_at")}),
@@ -2300,6 +2347,7 @@ def list_tasks(
             SELECT t.*, b.batch_uuid, b.title AS batch_title, b.batch_type,
                    r.id AS __current_run_id, r.effective_status AS __current_run_status,
                    r.effective_progress_stage AS __current_run_stage,
+                   r.effective_created_at AS __current_run_created_at,
                    r.effective_completed_at AS __current_run_completed_at,
                    r.error_category AS __current_run_error_category,
                    r.error_code AS __current_run_error_code,
@@ -2319,14 +2367,18 @@ def list_tasks(
             item = _row(dict(raw_row)) or {}
             current_run = {
                 "id": item.pop("__current_run_id", None),
+                "source_system": item.pop("run_source_system", None),
+                "source_id": item.pop("run_source_id", None),
                 "status": item.pop("__current_run_status", None),
                 "progress_stage": item.pop("__current_run_stage", None),
-                "completed_at": item.pop("__current_run_completed_at", None),
+                "effective_created_at": item.pop("__current_run_created_at", None),
+                "effective_completed_at": item.pop("__current_run_completed_at", None),
                 "error_category": item.pop("__current_run_error_category", None),
                 "error_code": item.pop("__current_run_error_code", None),
                 "error_message": item.pop("__current_run_error_message", None),
             }
             if current_run["id"] is not None:
+                current_run = _normalize_compatibility_run(current_run)
                 _apply_current_run_projection(item, current_run)
             items.append(item)
         facet_specs = (

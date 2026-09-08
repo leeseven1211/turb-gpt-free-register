@@ -113,6 +113,17 @@ class OperationTaskStoreTests(PostgresTestCase):
             )
             self.assertEqual(expected_updated_at, cur.fetchone()[0].isoformat())
 
+    def test_registration_projection_normalizes_legacy_naive_timestamps(self):
+        account_id, _job_id = self._seed_pending_registration()
+
+        operation_task_store.reconcile_all()
+
+        registration = operation_task_store.list_tasks(
+            page_size=10, q=str(account_id), task_type="registration",
+        )["items"][0]
+        self.assertEqual("2026-08-25T02:00:00+00:00", registration["created_at"])
+        self.assertEqual("2026-08-25T02:02:00+00:00", registration["completed_at"])
+
     def test_task_list_prioritizes_active_tasks_then_creation_time(self):
         historical = operation_task_store.create_runtime_task(
             task_type="live_check", account_id=101, email="historical@example.com", trigger="manual",

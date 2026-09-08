@@ -5,11 +5,16 @@ from unittest.mock import Mock, patch
 from core import roxy_codex_oauth, roxy_registration
 from core.operations import legacy_task_store
 from core.storage import operation
+from core.storage import db_legacy
 
 
 class AccountTaskTimestampRegressionTests(unittest.TestCase):
     def test_new_legacy_task_timestamp_has_explicit_timezone(self):
         value = datetime.fromisoformat(legacy_task_store._now())
+        self.assertIsNotNone(value.tzinfo)
+
+    def test_new_registration_job_timestamp_has_explicit_timezone(self):
+        value = datetime.fromisoformat(db_legacy._now_utc())
         self.assertIsNotNone(value.tzinfo)
 
     def test_naive_legacy_timestamp_keeps_local_wall_clock(self):

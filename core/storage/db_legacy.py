@@ -16,7 +16,7 @@ import json
 import logging
 import threading
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 from typing import Any
@@ -74,6 +74,10 @@ _JOB_PROGRESS_STATES = {"pending", "running", "success", "failed", "skipped", "s
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def _now_utc() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def _ensure_storage() -> None:
@@ -2786,7 +2790,7 @@ def _new_job_row(
         "proxy_region": None,
         "proxy_acquired_at": None,
         "proxy_expires_at": None,
-        "created_at": _now(),
+        "created_at": _now_utc(),
     }
 
 
