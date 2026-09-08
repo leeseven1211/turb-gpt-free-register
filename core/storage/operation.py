@@ -2384,8 +2384,7 @@ def list_tasks(
                    (SELECT COUNT(*) FROM {_table('operation_runs')} rr WHERE rr.task_id=t.id) AS run_count
             {from_sql}
             {clause}
-            ORDER BY CASE WHEN COALESCE(r.effective_status, t.status) IN ({_ACTIVE_RUN_STATUS_SQL}) THEN 0 ELSE 1 END,
-                     COALESCE(r.effective_created_at_sort, t.created_at) DESC, t.id DESC LIMIT %s OFFSET %s
+            ORDER BY COALESCE(r.effective_created_at_sort, t.created_at) DESC, t.id DESC LIMIT %s OFFSET %s
             """,
             (*params, page_size, (page - 1) * page_size),
         )

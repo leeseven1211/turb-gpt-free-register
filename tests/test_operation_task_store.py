@@ -169,7 +169,7 @@ class OperationTaskStoreTests(PostgresTestCase):
         )
         self.assertEqual("2026-08-25T03:00:00+00:00", listed[0]["created_at"])
 
-    def test_task_list_prioritizes_active_tasks_then_creation_time(self):
+    def test_task_list_sorts_by_creation_time_regardless_of_status(self):
         historical = operation_task_store.create_runtime_task(
             task_type="live_check", account_id=101, email="historical@example.com", trigger="manual",
         )
@@ -203,7 +203,7 @@ class OperationTaskStoreTests(PostgresTestCase):
         listed = operation_task_store.list_tasks(page_size=10, task_type="live_check")["items"]
 
         self.assertEqual(
-            [int(active["id"]), int(recent_terminal["id"]), int(historical["id"])],
+            [int(recent_terminal["id"]), int(active["id"]), int(historical["id"])],
             [int(item["id"]) for item in listed[:3]],
         )
 
