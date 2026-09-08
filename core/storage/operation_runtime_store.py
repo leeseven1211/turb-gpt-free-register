@@ -62,12 +62,20 @@ def heartbeat_run(run_id: int, **kwargs: Any) -> bool:
     return _operation().heartbeat_run(run_id, **kwargs)
 
 
-def acquire_account_lease(account_id: int, run_id: int, **kwargs: Any) -> dict | None:
-    return _operation().acquire_account_lease(account_id, run_id, **kwargs)
+def acquire_account_lease(account_id: int, run_id: int, **kwargs: Any) -> str | None:
+    return _operation().acquire_account_lease(
+        account_id=account_id,
+        run_id=run_id,
+        **kwargs,
+    )
 
 
-def release_account_lease(account_id: int, **kwargs: Any) -> bool:
-    return _operation().release_account_lease(account_id, **kwargs)
+def release_account_lease(run_id: int, lease_token: str = "", **kwargs: Any) -> bool:
+    return _operation().release_account_lease(
+        run_id=run_id,
+        lease_token=lease_token,
+        **kwargs,
+    )
 
 
 def request_run_cancel(run_id: int, **kwargs: Any) -> dict:
