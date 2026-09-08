@@ -7,6 +7,7 @@ import inspect
 import json
 import math
 import random
+import re
 import time
 import uuid
 from contextvars import ContextVar
@@ -67,6 +68,12 @@ _PASSWORD_REJECTION_MARKERS = (
     "邮箱或密码错误",
     "密码不正确",
 )
+
+_ACCOUNT_DEAD_LOGIN_CODES = frozenset({
+    "account_deactivated",
+    "account_deleted",
+    "account_banned",
+})
 
 
 def _codex_prefix() -> str:
@@ -741,6 +748,31 @@ def _is_browser_error_page_state(state: dict | None) -> bool:
     return url.startswith("chrome-error://") or "chrome-error://" in errors
 
 
+def _detect_account_unusable_login_state(state: dict | None) -> str:
+    """Read structured account errors exposed by the auth page diagnostics.
+
+    Roxy can expose an OpenAI auth error in the page's error nodes after the
+    password/TOTP submit, before any email-OTP response hook runs. Restrict
+    this path to the real auth origin and an explicit error_code field so
+    ordinary page copy or network diagnostics cannot mark an account dead.
+    """
+    state = state or {}
+    try:
+        parsed = urlparse(str(state.get("url") or ""))
+        if parsed.scheme.lower() != "https" or parsed.hostname != "auth.openai.com":
+            return ""
+    except Exception:
+        return ""
+    pattern = re.compile(r"\berror_code\s*[:=]\s*([a-z0-9_]+)\b", re.IGNORECASE)
+    for item in state.get("errors") or []:
+        match = pattern.search(str(item or ""))
+        if match:
+            code = match.group(1).lower()
+            if code in _ACCOUNT_DEAD_LOGIN_CODES:
+                return code
+    return ""
+
+
 def _complete_login_challenge_after_email(
     driver,
     email: str,
@@ -770,6 +802,9 @@ def _complete_login_challenge_after_email(
     while time.time() < end:
         state = _login_challenge_state(driver)
         last_state = state
+        dead_code = _detect_account_unusable_login_state(state)
+        if dead_code:
+            raise AccountUnusableError(f"账号已废（{dead_code}）", error_code=dead_code)
         if _is_browser_error_page_state(state):
             raise RuntimeError(
                 "浏览器导航失败："

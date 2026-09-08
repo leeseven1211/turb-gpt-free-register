@@ -7,6 +7,50 @@ from core.registration import roxy as roxy_registration
 
 
 class RoxyEmailOtpChallengeTests(unittest.TestCase):
+    def test_login_challenge_state_detects_structured_deactivation_error(self):
+        state = {
+            "url": "https://auth.openai.com/mfa-challenge/example",
+            "errors": [
+                "error_code: account_deactivated request_id: redacted",
+            ],
+        }
+
+        self.assertEqual(
+            "account_deactivated",
+            roxy_codex_oauth._detect_account_unusable_login_state(state),
+        )
+        self.assertEqual(
+            "",
+            roxy_codex_oauth._detect_account_unusable_login_state({
+                "url": "https://chatgpt.com/auth/login",
+                "errors": ["error_code: account_deactivated"],
+            }),
+        )
+        self.assertEqual(
+            "",
+            roxy_codex_oauth._detect_account_unusable_login_state({
+                "url": "https://auth.openai.com/mfa-challenge/example",
+                "errors": ["Your account has been deactivated"],
+            }),
+        )
+
+    def test_login_challenge_raises_typed_error_before_generic_state_failure(self):
+        state = {
+            "url": "https://auth.openai.com/mfa-challenge/example",
+            "inputs": [],
+            "errors": ["error_code: account_deactivated request_id: redacted"],
+        }
+        with (
+            patch.object(roxy_codex_oauth, "check_cancelled"),
+            patch.object(roxy_codex_oauth, "_login_challenge_state", return_value=state),
+        ):
+            with self.assertRaises(roxy_codex_oauth.AccountUnusableError) as caught:
+                roxy_codex_oauth._complete_login_challenge_after_email(
+                    MagicMock(), "account@example.com", "password", "totp", timeout=5,
+                )
+
+        self.assertEqual("account_deactivated", caught.exception.error_code)
+
     def _totp_state(self):
         return {
             "url": "https://auth.openai.com/log-in/password",
