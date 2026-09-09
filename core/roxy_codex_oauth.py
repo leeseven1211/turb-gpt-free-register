@@ -729,6 +729,8 @@ def _submit_saved_login_totp(driver, email: str, totp_secret: str) -> None:
 def _is_login_advanced(driver, state: dict | None = None) -> bool:
     state = state or _login_challenge_state(driver)
     url = str(state.get("url") or "").lower()
+    if _is_terminal_auth_error_page(state):
+        return False
     if _is_callback_url(url):
         return True
     if any(marker in url for marker in ("/add-phone", "/workspace", "/consent")):
@@ -746,6 +748,16 @@ def _is_browser_error_page_state(state: dict | None) -> bool:
     url = str(state.get("url") or "").strip().lower()
     errors = " ".join(str(item or "") for item in (state.get("errors") or [])).lower()
     return url.startswith("chrome-error://") or "chrome-error://" in errors
+
+
+def _is_terminal_auth_error_page(state: dict | None) -> bool:
+    """Recognize ChatGPT's auth error route before generic home-page logic."""
+    state = state or {}
+    try:
+        parsed = urlparse(str(state.get("url") or ""))
+    except Exception:
+        return False
+    return parsed.hostname in {"chatgpt.com", "auth.openai.com"} and parsed.path.rstrip("/").endswith("/auth/error")
 
 
 def _detect_account_unusable_login_state(state: dict | None) -> str:
@@ -808,6 +820,12 @@ def _complete_login_challenge_after_email(
         if _is_browser_error_page_state(state):
             raise RuntimeError(
                 "浏览器导航失败："
+                f"url={str(state.get('url') or '')[:180]} "
+                f"errors={(state.get('errors') or [])[:3]}"
+            )
+        if _is_terminal_auth_error_page(state):
+            raise RuntimeError(
+                "OpenAI 认证错误页："
                 f"url={str(state.get('url') or '')[:180]} "
                 f"errors={(state.get('errors') or [])[:3]}"
             )

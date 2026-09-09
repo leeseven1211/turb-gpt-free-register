@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
@@ -55,6 +56,29 @@ _JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-
 _PROXY_RE = re.compile(r"(?P<scheme>https?://)[^/@\s]+@", re.IGNORECASE)
 _PROJECTION_RETRY_BASE_SECONDS = 5.0
 _PROJECTION_LEASE_TIMEOUT_SECONDS = 15 * 60
+_PROJECTION_WRITE_RETRY_LIMIT = 3
+_PROJECTION_WRITE_RETRY_DELAY_SECONDS = 0.05
+
+
+def _run_projection_write_with_retry(write, *, operation_name: str = "projection"):
+    """Retry only PostgreSQL deadlocks around one idempotent projection write."""
+    from psycopg.errors import DeadlockDetected
+
+    for attempt in range(_PROJECTION_WRITE_RETRY_LIMIT):
+        try:
+            return write()
+        except DeadlockDetected:
+            if attempt + 1 >= _PROJECTION_WRITE_RETRY_LIMIT:
+                raise
+            delay = _PROJECTION_WRITE_RETRY_DELAY_SECONDS * (attempt + 1)
+            logger.warning(
+                "统一任务投影遇到 deadlock，准备重试 (%s/%s): operation=%s",
+                attempt + 1,
+                _PROJECTION_WRITE_RETRY_LIMIT - 1,
+                operation_name,
+            )
+            time.sleep(delay)
+    raise RuntimeError("统一任务投影重试流程异常结束")
 
 
 def _schema_name() -> str:
@@ -1452,6 +1476,44 @@ def _lock_projection_batch(cur, batch_id: int) -> None:
     cur.execute("SELECT pg_advisory_xact_lock(%s)", (int(batch_id),))
 
 
+def _effective_batch_status_counts(cur, batch_id: int) -> dict[str, int]:
+    """Count one effective status per logical root task, including child retries."""
+    cur.execute(
+        f"""
+        WITH task_rows AS (
+            SELECT id, COALESCE(root_task_id, id) AS root_id, status, updated_at
+            FROM {_table('operation_tasks')}
+            WHERE batch_id=%s
+        ), root_tasks AS (
+            SELECT DISTINCT ON (root_id) root_id, id, status
+            FROM task_rows
+            ORDER BY root_id, (id = root_id) DESC, updated_at DESC, id DESC
+        ), latest_children AS (
+            SELECT DISTINCT ON (root_id) root_id, status
+            FROM task_rows
+            WHERE id <> root_id
+            ORDER BY root_id, updated_at DESC, id DESC
+        ), effective AS (
+            SELECT root_tasks.root_id,
+                   CASE
+                       WHEN latest_children.status IS NULL THEN root_tasks.status
+                       WHEN latest_children.status='failed'
+                            AND root_tasks.status IN ('success','partial_success')
+                           THEN 'partial_success'
+                       ELSE latest_children.status
+                   END AS status
+            FROM root_tasks
+            LEFT JOIN latest_children USING (root_id)
+        )
+        SELECT status, COUNT(*) AS n
+        FROM effective
+        GROUP BY status
+        """,
+        (int(batch_id),),
+    )
+    return {str(row["status"]): int(row["n"]) for row in cur.fetchall()}
+
+
 def _refresh_batch(cur, batch_id: int) -> None:
     batch_id = int(batch_id)
     _lock_projection_batch(cur, batch_id)
@@ -1463,11 +1525,7 @@ def _refresh_batch(cur, batch_id: int) -> None:
     if not raw:
         return
     skipped = int(raw.get("skipped_count") or 0)
-    cur.execute(
-        f"SELECT status, COUNT(*) AS n FROM {_table('operation_tasks')} WHERE batch_id=%s GROUP BY status",
-        (batch_id,),
-    )
-    counts = {str(row["status"]): int(row["n"]) for row in cur.fetchall()}
+    counts = _effective_batch_status_counts(cur, batch_id)
     queued = counts.get("queued", 0)
     running = (
         counts.get("running", 0) + counts.get("stopping", 0)
@@ -1477,7 +1535,12 @@ def _refresh_batch(cur, batch_id: int) -> None:
     success = counts.get("success", 0)
     partial = counts.get("partial_success", 0)
     failed = counts.get("failed", 0) + counts.get("deactivated", 0) + counts.get("unsupported", 0)
-    attention = counts.get("attention_required", 0) + counts.get("interrupted", 0)
+    attention = (
+        counts.get("attention_required", 0)
+        + counts.get("interrupted", 0)
+        + counts.get("request_unknown", 0)
+        + counts.get("manual_reconcile", 0)
+    )
     stopped = counts.get("stopped", 0)
     cancelled = counts.get("cancelled", 0)
     if running:
@@ -2150,21 +2213,24 @@ def sync_registration_job(job_id: int) -> None:
     accounts_by_email = {
         str(account.get("email") or "").strip().lower(): account
     } if account else {}
-    with _connect() as conn, conn.cursor() as cur:
-        operation_task_id = _upsert_registration_job(cur, job, accounts_by_id, accounts_by_email)
-        cur.execute(
-            f"SELECT batch_id FROM {_table('operation_tasks')} WHERE id=%s",
-            (int(operation_task_id),),
-        )
-        projected = cur.fetchone()
-        if projected and projected.get("batch_id"):
-            _enqueue_batch_projection_cur(
-                cur,
-                int(projected["batch_id"]),
-                reason="registration_job_updated",
-                source_system="registration_jobs",
-                source_id=str(job_id),
+    def _write_once():
+        with _connect() as conn, conn.cursor() as cur:
+            operation_task_id = _upsert_registration_job(cur, job, accounts_by_id, accounts_by_email)
+            cur.execute(
+                f"SELECT batch_id FROM {_table('operation_tasks')} WHERE id=%s",
+                (int(operation_task_id),),
             )
+            projected = cur.fetchone()
+            if projected and projected.get("batch_id"):
+                _enqueue_batch_projection_cur(
+                    cur,
+                    int(projected["batch_id"]),
+                    reason="registration_job_updated",
+                    source_system="registration_jobs",
+                    source_id=str(job_id),
+                )
+
+    _run_projection_write_with_retry(_write_once, operation_name=f"registration_job:{job_id}")
 
 
 def sync_account_task(task_id: int) -> None:

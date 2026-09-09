@@ -4,7 +4,10 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+from psycopg.errors import DeadlockDetected
+
 from core import account_task_store, db, operation_task_store, postgres_store, record_store, task_run_log
+from core.storage import operation
 from tests.support_pg import PostgresTestCase
 from webui.app import create_app
 
@@ -626,6 +629,48 @@ class OperationTaskStoreTests(PostgresTestCase):
         self.assertEqual(1, refreshed["success_count"])
         self.assertEqual(1, refreshed["skipped_count"])
         self.assertEqual("partial_success", refreshed["status"])
+
+    def test_projection_write_retries_a_deadlock_with_bounded_backoff(self):
+        calls = []
+
+        def write_once():
+            calls.append(len(calls) + 1)
+            if len(calls) == 1:
+                raise DeadlockDetected("deadlock")
+            return "written"
+
+        with patch.object(operation.time, "sleep") as sleep:
+            result = operation._run_projection_write_with_retry(write_once, operation_name="test")
+
+        self.assertEqual("written", result)
+        self.assertEqual([1, 2], calls)
+        sleep.assert_called_once()
+
+    def test_batch_counts_one_effective_root_after_child_retry(self):
+        batch = operation_task_store.create_runtime_batch(
+            batch_type="registration", title="registration", requested_count=1, trigger="test",
+        )
+        parent = operation_task_store.create_runtime_task(
+            task_type="registration", account_id=None, email="root@example.com",
+            trigger="test", batch_id=int(batch["id"]), batch_ordinal=1,
+        )
+        operation_task_store.finish_run(
+            int(parent["run"]["id"]), status="partial_success", message="首次线路失败",
+        )
+        child = operation_task_store.create_runtime_task(
+            task_type="registration_resume", account_id=None, email="root@example.com",
+            trigger="manual_retry", batch_id=int(batch["id"]),
+            parent_task_id=int(parent["id"]),
+        )
+        operation_task_store.finish_run(
+            int(child["run"]["id"]), status="success", message="续跑成功",
+        )
+
+        refreshed = next(item for item in operation_task_store.list_batches() if item["id"] == batch["id"])
+        self.assertEqual(1, refreshed["requested_count"])
+        self.assertEqual(1, refreshed["success_count"])
+        self.assertEqual(0, refreshed["partial_count"])
+        self.assertEqual(0, refreshed["failed_count"])
 
     def test_running_cancel_uses_db_token_and_resource_ledger(self):
         account_id = self._seed_runtime_account("cancel@example.com")

@@ -10,6 +10,7 @@ from core.auth_challenge import (
 from core import registration_service
 from core.registration import roxy as roxy_registration
 from core.registration import protocol as protocol_registration
+from core import roxy_codex_oauth
 
 
 class RegistrationIdentityContractTests(unittest.TestCase):
@@ -156,6 +157,18 @@ class RegistrationIdentityContractTests(unittest.TestCase):
 
 
 class RegistrationServiceRetryBoundaryTests(unittest.TestCase):
+    def test_transient_pre_auth_unknown_identity_can_rotate_proxy(self):
+        proxy = MagicMock(provider="1024proxy")
+        result = {
+            "success": False,
+            "remote_identity": "unknown",
+            "request_unknown": False,
+            "error": "RuntimeError: ERR_TUNNEL_CONNECTION_FAILED",
+        }
+
+        with patch.object(registration_service, "_registration_proxy_retry_limit", return_value=2):
+            self.assertTrue(registration_service._should_retry_registration_with_new_proxy(result, proxy, 0))
+
     def test_transient_proxy_retry_is_blocked_for_existing_remote_identity(self):
         proxy = MagicMock(provider="1024proxy")
         result = {
@@ -167,6 +180,33 @@ class RegistrationServiceRetryBoundaryTests(unittest.TestCase):
 
         with patch.object(registration_service, "_registration_proxy_retry_limit", return_value=2):
             self.assertFalse(registration_service._should_retry_registration_with_new_proxy(result, proxy, 0))
+
+
+class RegistrationLoginErrorPageTests(unittest.TestCase):
+    def test_auth_error_page_is_not_treated_as_advanced_login(self):
+        state = {
+            "url": "https://chatgpt.com/auth/error?error=undefined",
+            "inputs": [],
+            "errors": [],
+            "text": "",
+        }
+
+        self.assertFalse(roxy_codex_oauth._is_login_advanced(None, state))
+
+    def test_auth_error_page_raises_terminal_login_error(self):
+        state = {
+            "url": "https://chatgpt.com/auth/error?error=undefined",
+            "inputs": [],
+            "errors": [],
+            "text": "",
+        }
+        driver = MagicMock()
+
+        with patch.object(roxy_codex_oauth, "_login_challenge_state", return_value=state):
+            with self.assertRaisesRegex(RuntimeError, "auth/error"):
+                roxy_codex_oauth._complete_login_challenge_after_email(
+                    driver, "account@example.com", "saved-password", "", timeout=5,
+                )
 
 
 if __name__ == "__main__":
