@@ -838,7 +838,20 @@ def _should_retry_registration_with_new_proxy(
         from core.auth_challenge import safe_to_start_new_registration
 
         if not safe_to_start_new_registration(result):
-            return False
+            # Before the email/auth page mounts, the remote identity is often
+            # still unknown. A pure transport failure at that point has not
+            # acknowledged account creation, so it is safe to rotate the
+            # disposable registration route. Keep request_unknown and
+            # account/checkpoint guards above conservative.
+            identity = str(result.get("remote_identity") or "").strip().lower()
+            pre_auth_transport_failure = (
+                identity in {"", "unknown"}
+                and not result.get("request_unknown")
+                and not result.get("manual_reconcile")
+                and _is_transient_registration_proxy_error(result.get("error"))
+            )
+            if not pre_auth_transport_failure:
+                return False
     except Exception:
         # Keep the existing conservative guards if the compatibility adapter
         # cannot be imported during a legacy test/bootstrap path.
