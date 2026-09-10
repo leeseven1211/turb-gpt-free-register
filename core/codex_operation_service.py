@@ -319,6 +319,7 @@ def _execute_run(run_id: int) -> dict:
     current = operation_task_store.get_run(run_id) or run
     email = str(current.get("email_snapshot") or "")
     account_id = int(current.get("account_id") or 0)
+    task_trigger = str(current.get("trigger") or "").strip()
     cancellation_token = str(current.get("cancellation_token") or "")
     token = CancellationToken(
         run_id=run_id,
@@ -392,11 +393,25 @@ def _execute_run(run_id: int) -> dict:
             report(stage="browser", message=f"启动 {driver} OAuth 驱动", state="running", detail={"oauth_driver": driver})
             from core.codex_oauth import run_codex_oauth
 
+            allow_password_reset = task_trigger == "manual_sub2api_repair"
+
+            def _checkpoint_password_reset(value: str) -> None:
+                if not db.update_account_login_password(email, value, source="password_reset"):
+                    raise RuntimeError("密码重置提交后写入账号检查点失败")
+                report(
+                    stage="login_password",
+                    message="邮箱重置新密码提交后已写入本地检查点，等待页面确认",
+                    state="running",
+                    detail={"saved": True, "checkpoint": "password_reset_submitted"},
+                )
+
             result = run_codex_oauth(
                 email,
                 proxy=route.proxy_url if route is not None else None,
                 force=True,
                 driver_override=driver,
+                allow_password_reset=allow_password_reset,
+                on_password_reset_submitted=(_checkpoint_password_reset if allow_password_reset else None),
             )
             confirmed = bool(result.get("credential_confirmed"))
             callback_submitted = bool(result.get("callback_submitted"))

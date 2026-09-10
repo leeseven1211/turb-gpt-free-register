@@ -1442,6 +1442,8 @@ def run_codex_oauth(
     force: bool = False,
     _cpa_reauth_round: int = 1,
     driver_override: str | None = None,
+    allow_password_reset: bool = False,
+    on_password_reset_submitted=None,
 ) -> dict:
     """
     Codex OAuth 授权入口。独立补跑会新建会话；注册流程可把当前浏览器和代理
@@ -1491,6 +1493,8 @@ def run_codex_oauth(
                 force=force,
                 _cpa_reauth_round=_cpa_reauth_round,
                 driver_override=driver_override,
+                allow_password_reset=allow_password_reset,
+                on_password_reset_submitted=on_password_reset_submitted,
             )
         finally:
             route.release(reason=f"codex-oauth-{email}")
@@ -1507,7 +1511,14 @@ def run_codex_oauth(
             oauth_driver = str(getattr(_roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
         if oauth_driver in ("roxy", "roxybrowser", "fingerprint", "browser"):
             from core.roxy_codex_oauth import run_roxy_codex_oauth
-            return run_roxy_codex_oauth(email, otp_provider=otp_provider, proxy=proxy, force=True)
+            return run_roxy_codex_oauth(
+                email,
+                otp_provider=otp_provider,
+                proxy=proxy,
+                force=True,
+                allow_password_reset=allow_password_reset,
+                on_password_reset_submitted=on_password_reset_submitted,
+            )
         if oauth_driver not in ("protocol", "api", "http"):
             raise RuntimeError(f"[Codex] 不支持的 CODEX_OAUTH_DRIVER={oauth_driver!r}，当前仅支持 protocol / roxy / same_as_registration")
     except ImportError:
@@ -1681,6 +1692,8 @@ def run_codex_oauth(
                 force=force,
                 _cpa_reauth_round=_cpa_reauth_round + 1,
                 driver_override=driver_override,
+                allow_password_reset=allow_password_reset,
+                on_password_reset_submitted=on_password_reset_submitted,
             )
         logger.warning(f"[Codex] 失败：{email}，{type(exc).__name__}: {str(exc)[:200]}")
         logger.debug("[Codex] 失败详情:", exc_info=True)

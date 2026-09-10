@@ -1709,6 +1709,20 @@ def _run_worker_legacy(
         )
         needs_login_password = bool(str(account.get("access_token") or "").strip()) and not _account_login_password(account)
         needs_roxy_setup = needs_twofa or needs_login_password
+        allow_password_reset = str(task_trigger or "").strip() == "manual_sub2api_repair"
+
+        def _checkpoint_password_reset(value: str) -> None:
+            with _ACCOUNT_SETUP_DB_LOCK:
+                if not db.update_account_login_password(email, value, source="password_reset"):
+                    raise RuntimeError("密码重置提交后写入账号检查点失败")
+            account_task_store.append_event(
+                task_id,
+                stage="login_password",
+                message="邮箱重置新密码提交后已写入本地检查点，等待页面确认",
+                detail={"saved": True, "checkpoint": "password_reset_submitted"},
+                state="running",
+            )
+
         account_task_store.append_event(
             task_id,
             stage="oauth",
@@ -1731,12 +1745,16 @@ def _run_worker_legacy(
                     task_id,
                     proxy=(account_route.proxy_url if account_route is not None else None),
                 ),
+                allow_password_reset=allow_password_reset,
+                on_password_reset_submitted=(_checkpoint_password_reset if allow_password_reset else None),
             )
         else:
             result = run_codex_oauth(
                 email,
                 proxy=(account_route.proxy_url if account_route is not None else None),
                 force=True,
+                allow_password_reset=allow_password_reset,
+                on_password_reset_submitted=(_checkpoint_password_reset if allow_password_reset else None),
             )
         if account_route is not None:
             # 标准任务页需要展示补跑实际使用的平台/地区；只写公开元数据，绝不落代理凭据。

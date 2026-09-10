@@ -174,6 +174,47 @@ class RoxyEmailOtpChallengeTests(unittest.TestCase):
             )
         )
 
+    def test_rejected_saved_password_can_enter_authorized_email_reset_flow(self):
+        driver = MagicMock()
+        password_page = {
+            "url": "https://auth.openai.com/log-in/password",
+            "text": "Enter your password",
+            "inputs": [{"type": "password", "name": "password"}],
+            "errors": [],
+        }
+        rejected_page = {
+            "url": "https://auth.openai.com/log-in/password",
+            "text": "Incorrect email address or password",
+            "inputs": [{"type": "password", "name": "password", "ariaInvalid": "true"}],
+            "errors": ["Incorrect email address or password"],
+        }
+
+        with (
+            patch.object(roxy_codex_oauth, "check_cancelled"),
+            patch.object(roxy_codex_oauth, "_login_challenge_state", side_effect=[password_page, rejected_page]),
+            patch.object(roxy_codex_oauth, "_is_browser_error_page_state", return_value=False),
+            patch.object(roxy_codex_oauth, "_is_terminal_auth_error_page", return_value=False),
+            patch.object(roxy_codex_oauth, "_is_login_password_page", return_value=True),
+            patch.object(roxy_codex_oauth, "_is_totp_login_page", return_value=False),
+            patch.object(roxy_codex_oauth, "_submit_saved_login_password"),
+            patch.object(roxy_codex_oauth, "_reset_password_via_email", return_value=True) as reset_password,
+            patch.object(roxy_codex_oauth, "human_delay"),
+        ):
+            result = roxy_codex_oauth._complete_login_challenge_after_email(
+                driver,
+                "account@example.com",
+                "stale-password",
+                "totp-secret",
+                timeout=5,
+                otp_provider=MagicMock(),
+                allow_password_reset=True,
+                on_password_reset_submitted=MagicMock(),
+            )
+
+        self.assertEqual("advanced", result)
+        reset_password.assert_called_once()
+        self.assertEqual("account@example.com", reset_password.call_args.args[1])
+
     def test_missing_totp_is_a_typed_non_fallback_failure(self):
         with self.assertRaises(MfaSecretMissingError) as caught:
             roxy_codex_oauth._submit_saved_login_totp(

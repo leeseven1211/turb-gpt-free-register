@@ -62,6 +62,7 @@ _PASSWORD_REJECTION_MARKERS = (
     "invalid_username_or_password",
     "invalid email or password",
     "incorrect email or password",
+    "incorrect email address or password",
     "email or password is incorrect",
     "login failed",
     "密码错误",
@@ -948,6 +949,19 @@ def _complete_login_challenge_after_email(
         if _is_login_password_page(driver):
             if password_submitted_at:
                 if _is_explicit_password_rejection_state(state):
+                    if allow_password_reset:
+                        if otp_provider is None:
+                            raise RuntimeError("密码重置流程缺少邮箱验证码提供器")
+                        reset_done = _reset_password_via_email(
+                            driver,
+                            email,
+                            otp_provider,
+                            stage_reporter=stage_reporter,
+                            on_password_submitted=on_password_reset_submitted,
+                            totp_secret=totp_secret,
+                        )
+                        if reset_done:
+                            return "advanced"
                     raise PasswordRejectedError(
                         "远端明确拒绝本地保存的账号密码；已停止重复提交"
                     )
@@ -1409,6 +1423,10 @@ def _fill_email_and_otp(
                 password,
                 totp_secret,
                 timeout=45,
+                otp_provider=otp_provider,
+                allow_password_reset=allow_password_reset,
+                on_password_reset_submitted=on_password_reset_submitted,
+                stage_reporter=stage_reporter,
             )
             if next_state == "advanced":
                 _report_login_stage(
@@ -3195,6 +3213,8 @@ def _run_roxy_codex_oauth_once(
     reuse_existing_profile: bool = False,
     clear_existing_state: bool = True,
     before_oauth_setup=None,
+    allow_password_reset: bool = False,
+    on_password_reset_submitted=None,
 ) -> dict:
     """指纹浏览器 Codex OAuth 入口。
 
@@ -3256,14 +3276,30 @@ def _run_roxy_codex_oauth_once(
             # 缺登录密码或 2FA 时先独立完成一次 ChatGPT 登录，确认 session 后再补配置；
             # 全程还没有进入手机号页面，因此失败也不会产生接码费用。
             logger.info("[Codex][Browser] 账号缺少登录密码/2FA，先建立 ChatGPT 登录态")
-            _fill_email_and_otp(driver, email, otp_provider, "https://chatgpt.com/auth/login")
+            login_kwargs = {}
+            if allow_password_reset:
+                login_kwargs["allow_password_reset"] = True
+            if on_password_reset_submitted is not None:
+                login_kwargs["on_password_reset_submitted"] = on_password_reset_submitted
+            _fill_email_and_otp(
+                driver,
+                email,
+                otp_provider,
+                "https://chatgpt.com/auth/login",
+                **login_kwargs,
+            )
             from core.registration.selenium_auth import fetch_chatgpt_session as _fetch_chatgpt_session
 
             _fetch_chatgpt_session(driver, timeout=90, auto_jump_wait=10)
             setup_changed = bool(before_oauth_setup(driver))
             if setup_changed:
                 logger.info("[Codex][Browser] 账号前置配置已补齐，重新打开授权地址继续 OAuth")
-        _fill_email_and_otp(driver, email, otp_provider, auth_url)
+        login_kwargs = {}
+        if allow_password_reset:
+            login_kwargs["allow_password_reset"] = True
+        if on_password_reset_submitted is not None:
+            login_kwargs["on_password_reset_submitted"] = on_password_reset_submitted
+        _fill_email_and_otp(driver, email, otp_provider, auth_url, **login_kwargs)
         human_delay("api")
         logger.info("[Codex][Browser] 检查是否需要手机号验证")
         report_stage("phone_check", "检查是否需要手机验证")
@@ -3428,6 +3464,8 @@ def run_roxy_codex_oauth(
     reuse_existing_profile: bool = False,
     clear_existing_state: bool = True,
     before_oauth_setup=None,
+    allow_password_reset: bool = False,
+    on_password_reset_submitted=None,
 ) -> dict:
     """指纹浏览器 Codex OAuth 入口；可恢复错误时重新开启一轮授权。"""
     from core import codex_oauth as proto
@@ -3450,6 +3488,8 @@ def run_roxy_codex_oauth(
             reuse_existing_profile=reuse_existing_profile,
             clear_existing_state=clear_existing_state,
             before_oauth_setup=before_oauth_setup,
+            allow_password_reset=allow_password_reset,
+            on_password_reset_submitted=on_password_reset_submitted,
         )
         last_result = result
         if result.get("ok"):
