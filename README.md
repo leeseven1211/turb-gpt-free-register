@@ -371,6 +371,10 @@ ROXY_CREATE_USE_PROXY_POOL = True
 ROXY_OPEN_HEADLESS = True
 ```
 
+Codex OAuth 使用独立的 `ROXY_CODEX_OPEN_HEADLESS` 开关，默认显示窗口；注册流程可以继续使用
+`ROXY_OPEN_HEADLESS = True`。如果确认当前 Roxy 版本和 OAuth consent 页面支持无头模式，再单独将
+`ROXY_CODEX_OPEN_HEADLESS` 设为 `True`。
+
 
 #### 使用协议注册
 

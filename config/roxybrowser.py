@@ -49,6 +49,10 @@ ROXY_CREATE_METHOD: str = "POST"
 #   True  = 无头启动，不显示窗口（如果当前 Roxy 版本支持 headless）
 ROXY_OPEN_HEADLESS: bool = False
 
+# Codex OAuth 专用的无头开关。默认显示窗口，避免 OAuth consent 页在无头渲染下
+# 无法完成确认并最终卡在 localhost:1455 callback 等待；不影响注册流程的无头设置。
+ROXY_CODEX_OPEN_HEADLESS: bool = False
+
 # 打开浏览器时附加参数；会合并到 /browser/open 请求体，优先级高于默认值。
 ROXY_OPEN_EXTRA_PARAMS: dict = {}
 
@@ -113,4 +117,4 @@ ROXY_PROFILE_CREATE_PAYLOAD: dict = {
 ROXY_CODEX_CALLBACK_TIMEOUT: int = 180
 
 # ---- .env overrides for WebUI editable fields ----
-apply_env_overrides(globals(), {'REGISTRATION_DRIVER': 'str', 'ROXY_API_BASE': 'str', 'ROXY_API_TOKEN': 'str', 'ROXY_PROFILE_ID': 'str', 'ROXY_WORKSPACE_ID': 'str', 'ROXY_PROJECT_ID': 'str', 'ROXY_WORKSPACE_LIST_PATH': 'str', 'ROXY_OPEN_PATH': 'str', 'ROXY_OPEN_HEADLESS': 'bool', 'ROXY_CLOSE_PATH': 'str', 'ROXY_KEEP_BROWSER_OPEN': 'bool', 'ROXY_ONE_PROFILE_PER_ACCOUNT': 'bool', 'ROXY_DELETE_PROFILE_AFTER_RUN': 'bool', 'ROXY_RANDOM_OS_ON_CREATE': 'bool', 'ROXY_RANDOM_OS_CHOICES': 'str', 'ROXY_RANDOM_PROFILE_NAME_ON_CREATE': 'bool', 'ROXY_PROFILE_NAME_PREFIX': 'str', 'ROXY_CREATE_USE_PROXY_POOL': 'bool', 'ROXY_PROXY_CHECK_CHANNEL': 'str', 'ROXY_DELETE_PATH': 'str', 'ROXY_WINDOW_WAIT_TIMEOUT': 'int', 'ROXY_WINDOW_WAIT_INTERVAL': 'int', 'ROXY_CODEX_CALLBACK_TIMEOUT': 'int'})
+apply_env_overrides(globals(), {'REGISTRATION_DRIVER': 'str', 'ROXY_API_BASE': 'str', 'ROXY_API_TOKEN': 'str', 'ROXY_PROFILE_ID': 'str', 'ROXY_WORKSPACE_ID': 'str', 'ROXY_PROJECT_ID': 'str', 'ROXY_WORKSPACE_LIST_PATH': 'str', 'ROXY_OPEN_PATH': 'str', 'ROXY_OPEN_HEADLESS': 'bool', 'ROXY_CODEX_OPEN_HEADLESS': 'bool', 'ROXY_CLOSE_PATH': 'str', 'ROXY_KEEP_BROWSER_OPEN': 'bool', 'ROXY_ONE_PROFILE_PER_ACCOUNT': 'bool', 'ROXY_DELETE_PROFILE_AFTER_RUN': 'bool', 'ROXY_RANDOM_OS_ON_CREATE': 'bool', 'ROXY_RANDOM_OS_CHOICES': 'str', 'ROXY_RANDOM_PROFILE_NAME_ON_CREATE': 'bool', 'ROXY_PROFILE_NAME_PREFIX': 'str', 'ROXY_CREATE_USE_PROXY_POOL': 'bool', 'ROXY_PROXY_CHECK_CHANNEL': 'str', 'ROXY_DELETE_PATH': 'str', 'ROXY_WINDOW_WAIT_TIMEOUT': 'int', 'ROXY_WINDOW_WAIT_INTERVAL': 'int', 'ROXY_CODEX_CALLBACK_TIMEOUT': 'int'})

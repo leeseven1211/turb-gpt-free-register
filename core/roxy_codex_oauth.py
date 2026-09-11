@@ -142,6 +142,16 @@ def _is_callback_url(url: str) -> bool:
     )
 
 
+def _codex_open_headless() -> bool:
+    """Return the browser visibility setting dedicated to Codex OAuth.
+
+    Registration and Codex OAuth do not have the same rendering tolerance.  Keep
+    the registration-wide switch as a separate concern so a headless registration
+    setup cannot silently force the OAuth consent page into headless mode.
+    """
+    return bool(getattr(_roxy_cfg, "ROXY_CODEX_OPEN_HEADLESS", False))
+
+
 def _extract_callback_url_from_page(driver) -> str:
     """从当前页面提取 OAuth callback URL。
 
@@ -3266,7 +3276,11 @@ def _run_roxy_codex_oauth_once(
         otp_provider = wait_for_otp
 
     client = None if reuse_existing_profile else RoxyBrowserClient()
-    opened = existing_opened if reuse_existing_profile else client.open_profile(proxy_url=proxy)
+    opened = (
+        existing_opened
+        if reuse_existing_profile
+        else client.open_profile(proxy_url=proxy, headless=_codex_open_headless())
+    )
     browser_kind_token = _CODEX_BROWSER_KIND.set(_detect_browser_kind(opened))
     driver = existing_driver if reuse_existing_profile else None
     owns_driver = not reuse_existing_profile

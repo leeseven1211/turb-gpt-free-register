@@ -8,6 +8,7 @@ from core.roxy_codex_oauth import (
     _account_login_credentials,
     _body_indicates_whatsapp_only,
     _classify_phone_page_failure,
+    _codex_open_headless,
     _complete_login_challenge_after_email,
     complete_openai_login_challenge,
     _do_phone_verification_if_present,
@@ -83,6 +84,13 @@ class _CountryDriver:
 
 
 class RoxyPhoneCountryTests(unittest.TestCase):
+    def test_codex_oauth_has_independent_visible_window_setting(self):
+        with (
+            patch.object(roxy_codex_oauth._roxy_cfg, "ROXY_OPEN_HEADLESS", True),
+            patch.object(roxy_codex_oauth._roxy_cfg, "ROXY_CODEX_OPEN_HEADLESS", False, create=True),
+        ):
+            self.assertFalse(_codex_open_headless())
+
     def test_public_login_challenge_reuses_shared_state_machine(self):
         driver = object()
         with patch(

@@ -273,6 +273,10 @@ EDITABLE_FIELDS = [
         "label": "无头启动窗口", "help": "打开 Roxy 环境时向 /browser/open 传 headless；False=显示窗口，True=无头启动",
     },
     {
+        "key": "ROXY_CODEX_OPEN_HEADLESS", "file": "roxybrowser.py", "type": "bool", "group": "RoxyBrowser",
+        "label": "Codex OAuth 无头启动", "help": "Codex OAuth 单独控制窗口渲染；默认 False=显示窗口，避免授权确认页在无头模式下无法完成",
+    },
+    {
         "key": "ROXY_CLOSE_PATH", "file": "roxybrowser.py", "type": "str", "group": "RoxyBrowser",
         "label": "关闭接口路径", "help": "默认 /browser/close",
     },
