@@ -240,6 +240,28 @@ def _click_if_present(driver, selectors: list[str], timeout: int = 3) -> bool:
         return False
 
 
+def _click_consent_retry_button(driver, *, timeout: int = 2) -> bool:
+    """Retry a consent page whose own data request failed to load.
+
+    OpenAI renders this state as a generic ``Failed to fetch`` page with a
+    ``Try again`` button.  It is distinct from the OAuth authorization button;
+    without explicitly clicking it the browser can remain on the consent URL
+    while the callback wait loop has nothing to observe.
+    """
+    return _click_if_present(
+        driver,
+        [
+            "//button[contains(normalize-space(.), 'Try again')]",
+            "//button[contains(normalize-space(.), 'Retry')]",
+            "//button[contains(normalize-space(.), '重试')]",
+            "//button[contains(@aria-label, 'Try again')]",
+            "//button[contains(@aria-label, 'Retry')]",
+            "//button[contains(@aria-label, '重试')]",
+        ],
+        timeout=timeout,
+    )
+
+
 def _account_login_credentials(email: str) -> tuple[str, str]:
     """Return the saved OpenAI password and TOTP secret without logging either value."""
     from core.account_credentials import get_account_login_credentials
@@ -3175,6 +3197,8 @@ def _finish_consent_workspace(driver, email: str = "") -> str:
     add-phone/phone-verification，不能在该页面空等到 180 秒超时。
     """
     end = time.time() + int(_roxy_cfg.ROXY_CODEX_CALLBACK_TIMEOUT)
+    consent_retry_attempts = 0
+    max_consent_retry_attempts = 3
     while time.time() < end:
         check_cancelled()
         callback = _extract_callback_url_from_any_window(driver)
@@ -3187,6 +3211,15 @@ def _finish_consent_workspace(driver, email: str = "") -> str:
                 current,
             )
             _do_phone_verification_if_present(driver)
+            continue
+        if consent_retry_attempts < max_consent_retry_attempts and _click_consent_retry_button(driver):
+            consent_retry_attempts += 1
+            logger.warning(
+                "[Codex][Browser] consent 页面数据加载失败，点击 Try again 重试：%s/%s",
+                consent_retry_attempts,
+                max_consent_retry_attempts,
+            )
+            human_delay("form")
             continue
         clicked = False
         if email and _select_existing_account_if_present(driver, email):

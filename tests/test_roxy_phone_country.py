@@ -952,6 +952,37 @@ class RoxyPhoneCountryTests(unittest.TestCase):
         self.assertEqual(result, callback)
         phone_flow.assert_called_once_with(driver)
 
+    def test_consent_retry_helper_recognizes_try_again_button(self):
+        with patch.object(roxy_codex_oauth, "_click_if_present", return_value=True) as click:
+            result = roxy_codex_oauth._click_consent_retry_button(object())
+
+        self.assertTrue(result)
+        selectors = click.call_args.args[1]
+        self.assertTrue(any("Try again" in selector for selector in selectors))
+        self.assertTrue(any("Retry" in selector for selector in selectors))
+        self.assertTrue(any("重试" in selector for selector in selectors))
+
+    def test_callback_loop_limits_consent_fetch_retries(self):
+        driver = type("Driver", (), {"current_url": "https://auth.openai.com/sign-in-with-chatgpt/codex/consent"})()
+        callback = "http://localhost:1455/auth/callback?code=test&state=test"
+        with (
+            patch(
+                "core.roxy_codex_oauth._extract_callback_url_from_any_window",
+                side_effect=["", "", "", callback],
+            ),
+            patch("core.roxy_codex_oauth._has_strict_add_phone_form", return_value=False),
+            patch("core.roxy_codex_oauth._is_phone_code_page", return_value=False),
+            patch("core.roxy_codex_oauth._select_existing_account_if_present", return_value=False),
+            patch("core.roxy_codex_oauth._click_if_present", return_value=False),
+            patch("core.roxy_codex_oauth._click_consent_retry_button", side_effect=[True, True, True]) as retry,
+            patch("core.roxy_codex_oauth.human_delay"),
+            patch.object(roxy_codex_oauth._roxy_cfg, "ROXY_CODEX_CALLBACK_TIMEOUT", 5),
+        ):
+            result = _finish_consent_workspace(driver, email="test@example.com")
+
+        self.assertEqual(result, callback)
+        self.assertEqual(retry.call_count, 3)
+
     def test_local_phone_form_error_stops_without_buying_second_number(self):
         http = MagicMock()
         with (
