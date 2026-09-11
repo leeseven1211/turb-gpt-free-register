@@ -52,6 +52,8 @@ def _run_account_setup_worker(
     task_id: int,
     task_trigger: str,
     steps: set[str] | tuple[str, ...] | list[str] | None = None,
+    force_password_reset: bool = False,
+    force_twofa_change: bool = False,
 ) -> None:
     """Execute selected account configuration repair without starting Codex OAuth."""
     codex_retry_service.run_twofa_worker(
@@ -59,6 +61,8 @@ def _run_account_setup_worker(
         task_id=task_id,
         task_trigger=task_trigger,
         steps=steps,
+        force_password_reset=force_password_reset,
+        force_twofa_change=force_twofa_change,
     )
 
 
@@ -329,6 +333,7 @@ class WebUIContext:
         trigger: str = "manual_account_setup",
         steps: set[str] | tuple[str, ...] | list[str] | None = None,
         task_type: str | None = None,
+        operation: str | None = None,
     ) -> dict:
         """Queue selected account configuration repair (legacy setup by default)."""
         try:
@@ -352,7 +357,7 @@ class WebUIContext:
         if not requested_steps:
             codex_retry_service.release(email)
             return {"accepted": False, "error": "没有可执行的账号配置步骤"}
-        if requested_steps == {"password"}:
+        if requested_steps == {"password"} and str(operation or "").strip().lower() != "password_change":
             from core.account_completion_service import completion_plan
             from config.account import completion_settings
 
@@ -370,7 +375,9 @@ class WebUIContext:
                     "error": blocked[0].get("reason") or "账号密码补全当前不可用",
                 }
         inferred_task_type = (
-            "password_setup" if requested_steps == {"password"}
+            "password_change" if str(operation or "").strip().lower() == "password_change"
+            else "twofa_change" if str(operation or "").strip().lower() == "twofa_change"
+            else "password_setup" if requested_steps == {"password"}
             else "twofa_setup" if requested_steps == {"twofa"}
             else "account_setup_retry"
         )
@@ -393,6 +400,8 @@ class WebUIContext:
                 task_id=task_id,
                 task_trigger=str(trigger or "manual_account_setup"),
                 steps=requested_steps,
+                force_password_reset=str(operation or "").strip().lower() == "password_change",
+                force_twofa_change=str(operation or "").strip().lower() == "twofa_change",
             )
         except Exception as exc:
             codex_retry_service.release(email)
@@ -571,17 +580,24 @@ class WebUIContext:
                 email=str(account.get("email") or ""),
                 trigger="manual_retry",
             )
-        elif task_type in {"account_setup_retry", "password_setup", "twofa_setup"}:
+        elif task_type in {"account_setup_retry", "password_setup", "password_change", "twofa_setup", "twofa_change"}:
             step_map = {
                 "account_setup_retry": None,
                 "password_setup": {"password"},
+                "password_change": {"password"},
                 "twofa_setup": {"twofa"},
+                "twofa_change": {"twofa"},
+            }
+            operation_map = {
+                "password_change": "password_change",
+                "twofa_change": "twofa_change",
             }
             queued = self.enqueue_account_setup(
                 int(account["id"]),
                 trigger="manual_retry",
                 steps=step_map[task_type],
                 task_type=task_type,
+                operation=operation_map.get(task_type),
             )
         elif task_type == "account_completion":
             queued = self.enqueue_account_completion(

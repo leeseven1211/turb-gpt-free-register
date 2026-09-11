@@ -215,10 +215,26 @@ def create_accounts_blueprint(context: WebUIContext):
             queued = _enqueue_account_setup(acc_id, trigger=trigger, steps={"password"}, task_type="password_setup")
         elif action == "twofa":
             queued = _enqueue_account_setup(acc_id, trigger=trigger, steps={"twofa"}, task_type="twofa_setup")
+        elif action == "password_change":
+            queued = _enqueue_account_setup(
+                acc_id,
+                trigger=trigger,
+                steps={"password"},
+                task_type="password_change",
+                operation="password_change",
+            )
+        elif action == "twofa_change":
+            queued = _enqueue_account_setup(
+                acc_id,
+                trigger=trigger,
+                steps={"twofa"},
+                task_type="twofa_change",
+                operation="twofa_change",
+            )
         elif action == "complete":
             queued = _enqueue_account_completion(acc_id, trigger=trigger)
         else:
-            return {"accepted": False, "error": "action 只支持 password、twofa、complete"}, 400
+            return {"accepted": False, "error": "action 只支持 password、twofa、password_change、twofa_change、complete"}, 400
         if queued.get("busy"):
             return {"accepted": False, **queued}, 409
         if queued.get("accepted"):
@@ -285,10 +301,12 @@ def create_accounts_blueprint(context: WebUIContext):
         data = request.get_json(silent=True) or {}
         action = str(data.get("action") or "").strip().lower()
         raw_ids = data.get("account_ids") or data.get("ids") or []
-        if action not in {"password", "twofa", "complete"}:
-            return jsonify({"ok": False, "error": "action 只支持 password、twofa、complete"}), 400
+        if action not in {"password", "twofa", "password_change", "twofa_change", "complete"}:
+            return jsonify({"ok": False, "error": "action 只支持 password、twofa、password_change、twofa_change、complete"}), 400
         if not isinstance(raw_ids, list) or not raw_ids:
             return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
+        if action in {"password_change", "twofa_change"} and len(raw_ids) > 20:
+            return jsonify({"ok": False, "error": "修改密码或修改 2FA 单次最多操作 20 个账号"}), 400
         if len(raw_ids) > 500:
             return jsonify({"ok": False, "error": "单次最多操作 500 个账号"}), 400
         started, ready, skipped = [], [], []

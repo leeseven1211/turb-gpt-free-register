@@ -93,13 +93,15 @@ def _template(task_type: str, run: dict[str, Any] | None = None) -> list[dict[st
         for item in (result_summary.get("planned_steps") or [])
         if str(item or "").strip()
     }
-    if task_type in {"password_setup", "twofa_setup", "twofa_retry", "account_setup_retry"} and planned:
+    if task_type in {"password_setup", "password_change", "twofa_setup", "twofa_change", "twofa_retry", "account_setup_retry"} and planned:
         step_ids = ["network"]
         if "plan_check" in planned:
             step_ids.append("plan_check")
-        if "password" in planned and task_type != "twofa_setup":
+        if "password" in planned and task_type not in {"twofa_setup", "twofa_change"}:
             step_ids.extend(["browser", "authenticate", "set_password"])
         if "twofa" in planned:
+            if task_type == "twofa_change":
+                step_ids.extend(["browser", "authenticate"])
             step_ids.append("set_twofa")
         return [_step(step_id) for step_id in [*step_ids, "result"]]
     if task_type == "account_completion" and planned:
@@ -120,7 +122,9 @@ def _template(task_type: str, run: dict[str, Any] | None = None) -> list[dict[st
         return [_step(step_id) for step_id in [*step_ids, "result"]]
     templates = {
         "password_setup": ["network", "browser", "authenticate", "set_password", "result"],
+        "password_change": ["network", "browser", "authenticate", "set_password", "result"],
         "twofa_setup": ["network", "set_twofa", "result"],
+        "twofa_change": ["network", "browser", "authenticate", "set_twofa", "result"],
         "twofa_retry": ["network", "authenticate", "set_twofa", "plan_check", "result"],
         "account_setup_retry": [
             "network", "plan_check", "browser", "authenticate", "set_password", "set_twofa", "result",
@@ -185,7 +189,7 @@ def _child_id(raw_stage: str, detail: dict[str, Any]) -> str | None:
 def _raw_to_main(task_type: str, raw_stage: str, detail: dict[str, Any]) -> str | None:
     if raw_stage in {"queued", "complete", "interrupted", "cancelling"}:
         return "result" if raw_stage == "complete" else None
-    if task_type == "password_setup":
+    if task_type in {"password_setup", "password_change"}:
         if raw_stage == "network":
             return "network"
         if raw_stage == "browser":
@@ -199,6 +203,16 @@ def _raw_to_main(task_type: str, raw_stage: str, detail: dict[str, Any]) -> str 
         if raw_stage == "network":
             return "network"
         if raw_stage in {"twofa", "browser"}:
+            return "set_twofa"
+        return None
+    if task_type == "twofa_change":
+        if raw_stage == "network":
+            return "network"
+        if raw_stage == "browser":
+            return "browser"
+        if raw_stage in {"login", "email_otp", "token", "mfa_challenge", "password_reset", "password_reset_otp"}:
+            return "authenticate"
+        if raw_stage == "twofa":
             return "set_twofa"
         return None
     if task_type in {"twofa_retry", "account_setup_retry"}:

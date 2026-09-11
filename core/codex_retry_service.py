@@ -566,6 +566,7 @@ def _build_roxy_twofa_setup(
     access_token: str | None = None,
     twofa_driver: str | None = None,
     browser_fallback_enabled: bool = True,
+    force_reconfigure: bool = False,
 ):
     """为缺少 TOTP 的补跑构造一次性 2FA 前置步骤。"""
     state = {"secret": ""}
@@ -574,7 +575,7 @@ def _build_roxy_twofa_setup(
         current = db.get_account_by_email(email) or {}
         existing_secret = str(current.get("totp_secret") or state["secret"] or "").strip()
         setup_pending = _totp_setup_pending(current)
-        if existing_secret and not setup_pending:
+        if existing_secret and not setup_pending and not force_reconfigure:
             state["secret"] = existing_secret
             account_task_store.append_event(
                 task_id,
@@ -599,10 +600,27 @@ def _build_roxy_twofa_setup(
             if not normalized:
                 raise RuntimeError("Authenticator key 写入账号检查点失败")
             with _ACCOUNT_SETUP_DB_LOCK:
-                if not db.update_account_totp_secret(email, normalized, setup_pending=True):
+                checkpoint_ok = (
+                    db.stage_account_totp_secret(email, normalized)
+                    if force_reconfigure
+                    else db.update_account_totp_secret(email, normalized, setup_pending=True)
+                )
+                if not checkpoint_ok:
                     raise RuntimeError("Authenticator key 写入账号检查点失败")
             state["secret"] = normalized
             logger.info("[Codex 补跑][2FA] Authenticator key 已在激活前写入账号检查点")
+
+        def _mark_remote_disabled() -> None:
+            with _ACCOUNT_SETUP_DB_LOCK:
+                if not db.mark_account_totp_disabled_for_rotation(email):
+                    raise RuntimeError("旧 Authenticator 已关闭，但本地状态写回失败")
+            account_task_store.append_event(
+                task_id,
+                stage="twofa",
+                message="已确认远端旧 Authenticator 关闭，等待新密钥启用",
+                detail={"rotation": "disabled", "old_secret_preserved": True},
+                state="running",
+            )
 
         try:
             from config import twofa as twofa_cfg
@@ -664,12 +682,14 @@ def _build_roxy_twofa_setup(
             else:
                 from core.registration.selenium_auth import setup_roxy_2fa
 
-                secret = setup_roxy_2fa(
-                    driver,
-                    email,
-                    on_secret=_checkpoint,
-                    existing_secret=existing_secret or None,
-                )
+                setup_kwargs = {
+                    "on_secret": _checkpoint,
+                    "existing_secret": existing_secret or None,
+                }
+                if force_reconfigure:
+                    setup_kwargs["force_reconfigure"] = True
+                    setup_kwargs["on_disabled"] = _mark_remote_disabled
+                secret = setup_roxy_2fa(driver, email, **setup_kwargs)
                 logger.info("[账号补跑][2FA] 使用 browser 安全设置页开通 Authenticator：%s", email)
             if not state["secret"]:
                 _checkpoint(secret)
@@ -694,6 +714,8 @@ def _build_roxy_twofa_setup(
             raise
         except Exception as exc:
             with _ACCOUNT_SETUP_DB_LOCK:
+                if force_reconfigure:
+                    db.clear_account_totp_pending(email)
                 db.update_account_twofa_status(
                     email,
                     "failed",
@@ -723,6 +745,8 @@ def _build_roxy_account_setup(
     include_twofa: bool = True,
     twofa_driver: str | None = None,
     browser_fallback_enabled: bool = True,
+    force_twofa_change: bool = False,
+    force_password_reset: bool = False,
 ):
     """按步骤补账号密码/Authenticator 2FA；默认保持旧的组合行为。"""
 
@@ -745,10 +769,18 @@ def _build_roxy_account_setup(
             )
             account = db.get_account_by_email(email) or account
         account_token = str(account.get("access_token") or "").strip()
-        needs_password = bool(include_password and account_token) and not _account_login_password(account)
-        needs_twofa = bool(include_twofa) and (
-            not bool(str(account.get("totp_secret") or "").strip())
-            or _totp_setup_pending(account)
+        needs_password = (
+            bool(include_password) and not _account_login_password(account)
+            if force_password_reset
+            else bool(include_password and account_token) and not _account_login_password(account)
+        )
+        needs_twofa = (
+            bool(include_twofa)
+            if force_twofa_change
+            else bool(include_twofa) and (
+                not bool(str(account.get("totp_secret") or "").strip())
+                or _totp_setup_pending(account)
+            )
         )
         if not include_password:
             account_task_store.append_event(
@@ -800,6 +832,7 @@ def _build_roxy_account_setup(
             access_token=protocol_access_token,
             twofa_driver=selected_twofa_driver,
             browser_fallback_enabled=browser_fallback_enabled,
+            force_reconfigure=force_twofa_change,
         )
         unsupported_errors: list[str] = []
 
@@ -811,7 +844,7 @@ def _build_roxy_account_setup(
             # The browser login may have recovered the password before this
             # account action starts. Re-read runtime truth to avoid opening the
             # security settings page and attempting a second password change.
-            if _account_login_password(db.get_account_by_email(email) or {}):
+            if _account_login_password(db.get_account_by_email(email) or {}) and not force_password_reset:
                 account_task_store.append_event(
                     task_id,
                     stage="login_password",
@@ -1067,6 +1100,8 @@ def run_twofa_worker(
     twofa_driver_override: str | None = None,
     password_driver_override: str | None = None,
     plan_driver_override: str | None = None,
+    force_password_reset: bool = False,
+    force_twofa_change: bool = False,
 ) -> dict:
     """重新登录并执行指定账号配置步骤，不重复执行 Codex OAuth。
 
@@ -1147,6 +1182,8 @@ def run_twofa_worker(
                 if twofa_driver_override is not None
                 else getattr(account_cfg, "ACCOUNT_2FA_DRIVER", "auto")
             ).strip().lower())
+            if force_twofa_change:
+                selected_twofa_mode = "browser"
         else:
             selected_twofa_mode = "auto"
         browser_fallback_enabled = bool(
@@ -1330,8 +1367,13 @@ def run_twofa_worker(
 
         allow_password_reset = bool(
             "password" in requested_steps
-            and getattr(account_cfg, "ACCOUNT_PASSWORD_RESET_ENABLED", False)
-            and not _account_login_password(account)
+            and (
+                force_password_reset
+                or (
+                    getattr(account_cfg, "ACCOUNT_PASSWORD_RESET_ENABLED", False)
+                    and not _account_login_password(account)
+                )
+            )
         )
 
         def _checkpoint_password_reset(value: str) -> None:
@@ -1346,13 +1388,24 @@ def run_twofa_worker(
                 state="running",
             )
 
+        def _confirm_password_reset(value: str) -> None:
+            with _ACCOUNT_SETUP_DB_LOCK:
+                if not db.update_account_login_password(email, value, source="password_change"):
+                    raise RuntimeError("修改密码远端确认后写入本地检查点失败")
+            account_task_store.append_event(
+                task_id,
+                stage="login_password_result",
+                message="新密码已重新登录验证并写入本地",
+                detail={"saved": True, "checkpoint": "password_change_confirmed"},
+                state="success",
+            )
+
         for browser_attempt in range(1, _BROWSER_SETUP_RETRY_LIMIT + 1):
             try:
-                run_roxy_chatgpt_account_action(
-                    email,
-                    proxy=account_route.proxy_url,
-                    stage_reporter=_report_browser_login_stage,
-                    action=_build_roxy_account_setup(
+                action_kwargs = {
+                    "proxy": account_route.proxy_url,
+                    "stage_reporter": _report_browser_login_stage,
+                    "action": _build_roxy_account_setup(
                         email,
                         task_id,
                         proxy=(account_route.proxy_url if account_route is not None else None),
@@ -1360,9 +1413,19 @@ def run_twofa_worker(
                         include_twofa="twofa" in requested_steps,
                         twofa_driver=browser_twofa_driver,
                         browser_fallback_enabled=browser_fallback_enabled,
+                        **({"force_twofa_change": True} if force_twofa_change else {}),
+                        **({"force_password_reset": True} if force_password_reset else {}),
                     ),
-                    allow_password_reset=allow_password_reset,
-                    on_password_reset_submitted=(_checkpoint_password_reset if allow_password_reset else None),
+                    "allow_password_reset": allow_password_reset,
+                }
+                if allow_password_reset and not force_password_reset:
+                    action_kwargs["on_password_reset_submitted"] = _checkpoint_password_reset
+                if force_password_reset:
+                    action_kwargs["on_password_confirmed"] = _confirm_password_reset
+                    action_kwargs["force_password_reset"] = True
+                run_roxy_chatgpt_account_action(
+                    email,
+                    **action_kwargs,
                 )
                 break
             except (CodexRetryStopped, AccountUnusableError):

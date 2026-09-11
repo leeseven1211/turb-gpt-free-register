@@ -253,6 +253,25 @@ class TotpSecretTests(PostgresTestCase):
         row = rs.get_row_by(ACCOUNTS, "email", "totp@example.test")
         self.assertIsNone(row["extra_json"])
 
+    def test_replacement_secret_stays_pending_until_activation(self):
+        self.assertTrue(db.update_account_totp_secret("totp@example.test", "OLDSECRET"))
+        self.assertTrue(db.mark_account_totp_disabled_for_rotation("totp@example.test"))
+        row = rs.get_row_by(ACCOUNTS, "email", "totp@example.test")
+        self.assertIsNone(row.get("totp_secret"))
+        self.assertEqual("OLDSECRET", json.loads(row["extra_json"])["totp_previous_secret"])
+        self.assertTrue(db.stage_account_totp_secret("totp@example.test", "NEWSECRET"))
+        row = rs.get_row_by(ACCOUNTS, "email", "totp@example.test")
+        self.assertEqual("NEWSECRET", json.loads(row["extra_json"])["totp_pending_secret"])
+
+        self.assertTrue(db.clear_account_totp_pending("totp@example.test"))
+        row = rs.get_row_by(ACCOUNTS, "email", "totp@example.test")
+        self.assertNotIn("totp_pending_secret", json.loads(row.get("extra_json") or "{}"))
+
+        self.assertTrue(db.update_account_totp_secret("totp@example.test", "NEWSECRET", setup_pending=False))
+        row = rs.get_row_by(ACCOUNTS, "email", "totp@example.test")
+        self.assertEqual("NEWSECRET", row.get("totp_secret"))
+        self.assertNotIn("totp_previous_secret", json.loads(row.get("extra_json") or "{}"))
+
     def test_empty_secret_and_unknown_email_are_rejected(self):
         self.assertFalse(db.update_account_totp_secret("totp@example.test", "  "))
         self.assertFalse(db.update_account_totp_secret("nobody@example.test", "X"))

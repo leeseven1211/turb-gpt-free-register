@@ -623,6 +623,7 @@ def _reset_password_via_email(
     *,
     stage_reporter=None,
     on_password_submitted=None,
+    on_password_confirmed=None,
     totp_secret: str = '',
     timeout: int = 120,
 ) -> bool:
@@ -692,6 +693,8 @@ def _reset_password_via_email(
                 otp_provider,
                 stage_reporter=stage_reporter,
             )
+            if on_password_confirmed is not None:
+                on_password_confirmed(password)
             _report_login_stage(stage_reporter, 'password_reset', '密码重置完成并已保存本地检查点', state='success')
             return True
         if attempt >= 3 or time.monotonic() >= deadline:
@@ -796,6 +799,8 @@ def _complete_login_challenge_after_email(
     otp_provider=None,
     allow_password_reset: bool = False,
     on_password_reset_submitted=None,
+    on_password_confirmed=None,
+    force_password_reset: bool = False,
     stage_reporter=None,
 ) -> str:
     """Resolve password/TOTP challenges and return ``email_otp`` or ``advanced``."""
@@ -947,6 +952,20 @@ def _complete_login_challenge_after_email(
             continue
 
         if _is_login_password_page(driver):
+            if force_password_reset:
+                if otp_provider is None:
+                    raise RuntimeError("强制密码修改缺少邮箱验证码提供器")
+                reset_done = _reset_password_via_email(
+                    driver,
+                    email,
+                    otp_provider,
+                    stage_reporter=stage_reporter,
+                    on_password_confirmed=on_password_confirmed,
+                    totp_secret=totp_secret,
+                )
+                if reset_done:
+                    return "advanced"
+                raise RuntimeError("登录密码页没有找到忘记密码入口")
             if password_submitted_at:
                 if _is_explicit_password_rejection_state(state):
                     if allow_password_reset:
@@ -958,6 +977,7 @@ def _complete_login_challenge_after_email(
                             otp_provider,
                             stage_reporter=stage_reporter,
                             on_password_submitted=on_password_reset_submitted,
+                            on_password_confirmed=on_password_confirmed,
                             totp_secret=totp_secret,
                         )
                         if reset_done:
@@ -1002,6 +1022,7 @@ def _complete_login_challenge_after_email(
                         otp_provider,
                         stage_reporter=stage_reporter,
                         on_password_submitted=on_password_reset_submitted,
+                        on_password_confirmed=on_password_confirmed,
                         totp_secret=totp_secret,
                     )
                     if reset_done:
@@ -1097,6 +1118,8 @@ def complete_openai_login_challenge(
     otp_provider=None,
     allow_password_reset: bool = False,
     on_password_reset_submitted=None,
+    on_password_confirmed=None,
+    force_password_reset: bool = False,
     stage_reporter=None,
 ) -> str:
     """注册恢复与 Codex OAuth 共用的密码/TOTP/邮箱 OTP 状态机。"""
@@ -1107,6 +1130,10 @@ def complete_openai_login_challenge(
         extra_kwargs['allow_password_reset'] = True
     if on_password_reset_submitted is not None:
         extra_kwargs['on_password_reset_submitted'] = on_password_reset_submitted
+    if on_password_confirmed is not None:
+        extra_kwargs['on_password_confirmed'] = on_password_confirmed
+    if force_password_reset:
+        extra_kwargs['force_password_reset'] = True
     if stage_reporter is not None:
         extra_kwargs['stage_reporter'] = stage_reporter
     return _complete_login_challenge_after_email(
@@ -1255,6 +1282,8 @@ def _fill_email_and_otp(
     stage_reporter=None,
     allow_password_reset: bool = False,
     on_password_reset_submitted=None,
+    on_password_confirmed=None,
+    force_password_reset: bool = False,
 ) -> None:
     check_cancelled()
     _report_login_stage(stage_reporter, "login", "打开 OpenAI 登录授权页")
@@ -1304,6 +1333,8 @@ def _fill_email_and_otp(
         otp_provider=otp_provider,
         allow_password_reset=allow_password_reset,
         on_password_reset_submitted=on_password_reset_submitted,
+        on_password_confirmed=on_password_confirmed,
+        force_password_reset=force_password_reset,
         stage_reporter=stage_reporter,
     )
     if next_state == "advanced":
@@ -1339,6 +1370,8 @@ def _fill_email_and_otp(
                 otp_provider=otp_provider,
                 allow_password_reset=allow_password_reset,
                 on_password_reset_submitted=on_password_reset_submitted,
+                on_password_confirmed=on_password_confirmed,
+                force_password_reset=force_password_reset,
                 stage_reporter=stage_reporter,
             )
             if restart_state == "advanced":
@@ -1426,6 +1459,8 @@ def _fill_email_and_otp(
                 otp_provider=otp_provider,
                 allow_password_reset=allow_password_reset,
                 on_password_reset_submitted=on_password_reset_submitted,
+                on_password_confirmed=on_password_confirmed,
+                force_password_reset=force_password_reset,
                 stage_reporter=stage_reporter,
             )
             if next_state == "advanced":
@@ -3388,6 +3423,8 @@ def run_roxy_chatgpt_account_action(
     stage_reporter=None,
     allow_password_reset: bool = False,
     on_password_reset_submitted=None,
+    on_password_confirmed=None,
+    force_password_reset: bool = False,
 ):
     """新建一次性 Roxy 环境，登录 ChatGPT 后执行账号级操作。
 
@@ -3419,6 +3456,8 @@ def run_roxy_chatgpt_account_action(
             stage_reporter=stage_reporter,
             allow_password_reset=allow_password_reset,
             on_password_reset_submitted=on_password_reset_submitted,
+            on_password_confirmed=on_password_confirmed,
+            force_password_reset=force_password_reset,
         )
         from core.registration.selenium_auth import (
             complete_profile_page as _complete_profile_page,

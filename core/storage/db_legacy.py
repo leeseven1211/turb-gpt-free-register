@@ -1052,6 +1052,9 @@ def update_account_totp_secret(
                 extra["totp_setup_pending"] = True
             else:
                 extra.pop("totp_setup_pending", None)
+                extra.pop("totp_pending_secret", None)
+                extra.pop("totp_previous_secret", None)
+                extra.pop("totp_rotation_disabled", None)
             changes["extra_json"] = json.dumps(extra, ensure_ascii=False) if extra else None
 
         pool_row = record_store.get_row_by(record_store.OUTLOOK_POOL, "email", email, lower=True)
@@ -1068,6 +1071,81 @@ def update_account_totp_secret(
         if pool_row is not None:
             compat_export.schedule("outlook")
         return True
+
+
+def stage_account_totp_secret(email: str, totp_secret: str) -> bool:
+    """Store a replacement TOTP secret without changing the active secret."""
+    secret = str(totp_secret or "").strip()
+    if not secret:
+        return False
+    row = record_store.get_row_by(record_store.ACCOUNTS, "email", email, lower=True)
+    if row is None:
+        return False
+    raw_extra = row.get("extra_json") or {}
+    if isinstance(raw_extra, str):
+        try:
+            raw_extra = json.loads(raw_extra)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw_extra = {}
+    extra = dict(raw_extra) if isinstance(raw_extra, dict) else {}
+    extra["totp_pending_secret"] = secret
+    return _patch_account(int(row["id"]), {
+        "extra_json": json.dumps(extra, ensure_ascii=False),
+        "updated_at": _now(),
+    })
+
+
+def mark_account_totp_disabled_for_rotation(email: str) -> bool:
+    """Record remote MFA disablement while preserving the old secret for audit."""
+    row = record_store.get_row_by(record_store.ACCOUNTS, "email", email, lower=True)
+    if row is None:
+        return False
+    raw_extra = row.get("extra_json") or {}
+    if isinstance(raw_extra, str):
+        try:
+            raw_extra = json.loads(raw_extra)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw_extra = {}
+    extra = dict(raw_extra) if isinstance(raw_extra, dict) else {}
+    old_secret = str(row.get("totp_secret") or "").strip()
+    if old_secret:
+        extra["totp_previous_secret"] = old_secret
+    extra["totp_rotation_disabled"] = True
+    pool_row = record_store.get_row_by(record_store.OUTLOOK_POOL, "email", email, lower=True)
+    changes = {
+        "totp_secret": None,
+        "extra_json": json.dumps(extra, ensure_ascii=False),
+        "updated_at": _now(),
+    }
+    with record_store.transaction() as conn:
+        record_store.patch_row(record_store.ACCOUNTS, int(row["id"]), changes, conn=conn)
+        if pool_row is not None:
+            record_store.patch_row(record_store.OUTLOOK_POOL, int(pool_row["id"]), {"totp_secret": None}, conn=conn)
+    compat_export.schedule("accounts")
+    if pool_row is not None:
+        compat_export.schedule("outlook")
+    return True
+
+
+def clear_account_totp_pending(email: str) -> bool:
+    """Discard an unactivated replacement TOTP secret."""
+    row = record_store.get_row_by(record_store.ACCOUNTS, "email", email, lower=True)
+    if row is None:
+        return False
+    raw_extra = row.get("extra_json") or {}
+    if isinstance(raw_extra, str):
+        try:
+            raw_extra = json.loads(raw_extra)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw_extra = {}
+    extra = dict(raw_extra) if isinstance(raw_extra, dict) else {}
+    if "totp_pending_secret" not in extra:
+        return True
+    extra.pop("totp_pending_secret", None)
+    return _patch_account(int(row["id"]), {
+        "extra_json": json.dumps(extra, ensure_ascii=False) if extra else None,
+        "updated_at": _now(),
+    })
 
 
 def update_account_twofa_status(email: str, status: str, message: str) -> bool:

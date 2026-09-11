@@ -3760,6 +3760,43 @@ def _open_chatgpt_security_settings(driver, *, timeout: int = 75):
     )
 
 
+def _disable_roxy_2fa(driver, toggle, *, timeout: int = 60) -> None:
+    """Turn off the existing Authenticator method and confirm the switch is off."""
+    is_enabled = lambda element: element is not None and (
+        str(element.get_attribute("aria-checked") or "").lower() == "true"
+        or str(element.get_attribute("data-state") or "").lower() == "checked"
+    )
+    if not is_enabled(toggle):
+        return
+    _human_click(driver, toggle, label="mfa_authenticator_disable")
+    end = time.time() + max(10, int(timeout))
+    while time.time() < end:
+        _check_manual_stop()
+        # Some locales show a confirmation dialog after the toggle click.
+        # Select only affirmative disable/remove actions, never generic close.
+        confirmation = driver.execute_script(r"""
+        const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+          && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none'
+          && !el.disabled && String(el.getAttribute('aria-disabled') || '').toLowerCase() !== 'true';
+        const label = el => [el.innerText, el.textContent, el.getAttribute('aria-label'),
+          el.getAttribute('title'), el.getAttribute('data-testid')]
+          .filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+        const yes = /disable|remove|turn off|deactivate|关闭|禁用|停用|删除|取消启用|無効|解除|desactivar|désactiver/i;
+        const no = /cancel|close|back|取消|关闭窗口|返回|キャンセル|閉じる/i;
+        return [...document.querySelectorAll('button,[role="button"],[role="menuitem"]')]
+          .filter(visible)
+          .find(el => yes.test(label(el)) && !no.test(label(el))) || null;
+        """)
+        if confirmation is not None:
+            _human_click(driver, confirmation, label="mfa_authenticator_disable_confirm")
+        current = _first_visible_css(driver, '[data-testid="mfa-authenticator-toggle"]')
+        if current is not None and not is_enabled(current):
+            logger.info("%s[2FA] 已确认远端 Authenticator 开关关闭", _log_prefix(driver))
+            return
+        time.sleep(0.4)
+    raise RuntimeError("关闭旧 Authenticator 2FA 后未确认开关已关闭")
+
+
 def _complete_settings_email_reauth(driver, email: str) -> None:
     """Complete Settings email re-authentication, including a follow-up TOTP."""
     otp_after_ts = time.time()
@@ -4250,7 +4287,15 @@ def _manual_totp_secret(driver, field, *, timeout: int = 20) -> str:
     raise RuntimeError("TOTP 设置弹窗未显示可读取的手动密钥")
 
 
-def setup_roxy_2fa(driver, email: str, *, on_secret=None, existing_secret: str | None = None) -> str:
+def setup_roxy_2fa(
+    driver,
+    email: str,
+    *,
+    on_secret=None,
+    existing_secret: str | None = None,
+    force_reconfigure: bool = False,
+    on_disabled=None,
+) -> str:
     """Enable Authenticator MFA in the existing Roxy browser session."""
     import pyotp
 
@@ -4260,11 +4305,19 @@ def setup_roxy_2fa(driver, email: str, *, on_secret=None, existing_secret: str |
         str(toggle.get_attribute("aria-checked") or "").lower() == "true"
         or str(toggle.get_attribute("data-state") or "").lower() == "checked"
     ):
-        recovered = _totp_secret_candidate(existing_secret)
-        if recovered:
-            logger.info("%s[2FA] 已确认远端 Authenticator 开关启用，保留本地检查点密钥", _log_prefix(driver))
-            return recovered
-        raise RuntimeError("Authenticator 2FA 已启用，但当前流程无法恢复既有 secret")
+        if force_reconfigure:
+            _disable_roxy_2fa(driver, toggle)
+            if on_disabled is not None:
+                on_disabled()
+            toggle = _first_visible_css(driver, '[data-testid="mfa-authenticator-toggle"]')
+            if toggle is None:
+                raise RuntimeError("关闭旧 Authenticator 后未找到新的设置开关")
+        else:
+            recovered = _totp_secret_candidate(existing_secret)
+            if recovered:
+                logger.info("%s[2FA] 已确认远端 Authenticator 开关启用，保留本地检查点密钥", _log_prefix(driver))
+                return recovered
+            raise RuntimeError("Authenticator 2FA 已启用，但当前流程无法恢复既有 secret")
 
     otp_after_ts = time.time()
     _human_click(driver, toggle, label="mfa_authenticator_toggle")
