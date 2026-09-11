@@ -80,12 +80,35 @@ def _enter_existing_account_otp(
     code = _page_account_unusable_code(driver)
     if code:
         raise AccountUnusableError(f"登录页确认账号已停用/封禁: {code}", error_code=code)
-    _type_email_address(driver, email, timeout=25)
-    _submit_email_step(driver, email)
-    code = _page_account_unusable_code(driver)
-    if code:
-        raise AccountUnusableError(f"邮箱提交后页面确认账号已停用/封禁: {code}", error_code=code)
-    state = _wait_email_submit_next_state(driver, email, timeout=30)
+    state = ""
+    try:
+        _type_email_address(driver, email, timeout=25)
+    except RuntimeError as exc:
+        # 查活入口遇到未挂载的 ChatGPT 登录壳时，直接复用当前 Roxy
+        # 浏览器上下文走 NextAuth。这里不重试输入或提交，避免重复触发认证。
+        if "找不到邮箱输入框/邮箱入口" not in str(exc):
+            raise
+        fallback = _submit_email_via_browser_nextauth(driver, email)
+        state = str(fallback.get("state") or "").strip().lower()
+        logger.warning(
+            "[查活][Roxy] 邮箱入口未挂载，启用 NextAuth 登录兜底：%s",
+            {key: fallback.get(key) for key in ("ok", "stage", "state", "reason") if key in fallback},
+        )
+        if not fallback.get("ok") and state not in {"otp", "password", "login_password", "logged_in"}:
+            raise RuntimeError(f"邮箱入口未挂载且 NextAuth 兜底失败：{fallback}") from exc
+        if state not in {"otp", "password", "login_password", "logged_in"}:
+            state = _wait_email_submit_next_state(
+                driver,
+                email,
+                timeout=35,
+                wait_through_transient=True,
+            )
+    else:
+        _submit_email_step(driver, email)
+        code = _page_account_unusable_code(driver)
+        if code:
+            raise AccountUnusableError(f"邮箱提交后页面确认账号已停用/封禁: {code}", error_code=code)
+        state = _wait_email_submit_next_state(driver, email, timeout=30)
     if state in {"blank_shell", "email_page", "email_cleared", "unknown"}:
         fallback = _submit_email_via_browser_nextauth(driver, email)
         state = str(fallback.get("state") or "")

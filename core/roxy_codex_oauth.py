@@ -77,6 +77,46 @@ _ACCOUNT_DEAD_LOGIN_CODES = frozenset({
 })
 
 
+def _is_empty_auth_challenge_state(state: dict | None) -> bool:
+    """Recognize an auth challenge whose controls were temporarily unmounted."""
+    if not isinstance(state, dict):
+        return False
+    try:
+        parsed = urlparse(str(state.get("url") or ""))
+    except Exception:
+        return False
+    if parsed.scheme.lower() != "https" or parsed.hostname != "auth.openai.com":
+        return False
+    path = parsed.path.rstrip("/").lower()
+    if not (path.startswith("/mfa-challenge") or path.startswith("/log-in/")):
+        return False
+    return not (state.get("inputs") or state.get("buttons") or state.get("errors"))
+
+
+def _refresh_auth_challenge_after_submit(driver, stage: str) -> None:
+    """Refresh one stuck auth page without resubmitting a password or TOTP."""
+    try:
+        driver.refresh()
+        logger.warning(
+            "[Codex][Browser] %s 提交后页面未推进，执行一次受限刷新（不重复提交凭据）",
+            stage,
+        )
+    except Exception as exc:
+        # A renderer timeout can happen after the refresh has already reached
+        # the remote page. Keep the current DOM for the next state scan and do
+        # not navigate or submit credentials a second time.
+        logger.warning(
+            "[Codex][Browser] %s 提交后刷新异常，继续读取当前页面（不重复提交凭据）：%s",
+            stage,
+            type(exc).__name__,
+        )
+        try:
+            driver.execute_script("window.stop();")
+        except Exception:
+            pass
+    human_delay("navigate")
+
+
 def _codex_prefix() -> str:
     return f"[Codex][{_CODEX_BROWSER_KIND.get()}]"
 
@@ -843,6 +883,9 @@ def _complete_login_challenge_after_email(
     passwordless_clicks = 0
     passwordless_wait_started = 0.0
     passwordless_last_result: dict = {}
+    password_refresh_done = False
+    password_resubmit_done = False
+    totp_refresh_done = False
     email_shell_seen_at = 0.0
     blank_login_shell_seen_at = 0.0
     email_resubmit_done = False
@@ -983,6 +1026,20 @@ def _complete_login_challenge_after_email(
             human_delay("form")
             continue
 
+        # After a valid TOTP submit, OpenAI can briefly leave the browser on
+        # the same MFA challenge with all controls unmounted. Treat that as a
+        # renderer/navigation transition and refresh once; never resend TOTP.
+        if (
+            totp_submitted_at
+            and not totp_refresh_done
+            and _is_empty_auth_challenge_state(state)
+            and time.time() - totp_submitted_at >= 3
+        ):
+            totp_refresh_done = True
+            _refresh_auth_challenge_after_submit(driver, "TOTP")
+            end = max(end, time.time() + 25)
+            continue
+
         if _is_login_password_page(driver):
             if force_password_reset:
                 if otp_provider is None:
@@ -1021,7 +1078,23 @@ def _complete_login_challenge_after_email(
                     str(item.get("ariaInvalid") or "").lower() == "true" for item in (state.get("inputs") or [])
                 ):
                     raise RuntimeError(f"本地保存的注册密码未通过页面校验：errors={(state.get('errors') or [])[:3]}")
-                if time.time() - password_submitted_at > 20:
+                submitted_for = time.time() - password_submitted_at
+                if not password_refresh_done and not password_resubmit_done and submitted_for >= 8:
+                    password_refresh_done = True
+                    _refresh_auth_challenge_after_submit(driver, "密码")
+                    # A renderer can keep the old password form after the
+                    # first request was never consumed. After the refresh,
+                    # allow exactly one fresh control lookup and submission;
+                    # this remains bounded and never retries a confirmed
+                    # rejection or repeats an Authenticator code.
+                    password_submitted_at = 0.0
+                    password_resubmit_done = True
+                    logger.warning(
+                        "[Codex][Browser] 刷新后仍在无错误密码页，允许一次控件重挂载后重新提交保存密码"
+                    )
+                    end = max(end, time.time() + 25)
+                    continue
+                if submitted_for > 20:
                     safe_state = {
                         "url": state.get("url"),
                         "inputs": state.get("inputs"),

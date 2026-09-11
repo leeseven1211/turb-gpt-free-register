@@ -140,6 +140,17 @@ class RoxyEmailRecoveryTests(unittest.TestCase):
 
         self.assertTrue(roxy_registration._is_blank_chatgpt_auth_shell(driver, state))
 
+    def test_blank_auth_shell_detects_localized_start_title(self):
+        driver = _FakeDriver()
+        state = {
+            "url": "https://chatgpt.com/auth/login",
+            "title": "Bắt đầu | ChatGPT",
+            "inputs": [],
+            "actions": [],
+        }
+
+        self.assertTrue(roxy_registration._is_blank_chatgpt_auth_shell(driver, state))
+
     def test_submit_wait_returns_blank_shell_without_waiting_for_timeout(self):
         driver = _FakeDriver()
         with patch.object(roxy_registration, "_has_access_token", return_value=False), patch.object(

@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from core import roxy_codex_oauth
+from core import roxy_liveness
 from core.auth_challenge import MfaSecretMissingError
 from core.registration import roxy as roxy_registration
 
@@ -246,6 +247,162 @@ class RoxyEmailOtpChallengeTests(unittest.TestCase):
                     "",
                     timeout=45,
                 )
+
+    def test_empty_mfa_state_after_totp_gets_one_bounded_refresh(self):
+        driver = MagicMock()
+        driver.step = "totp"
+        refreshes = []
+
+        def refresh():
+            refreshes.append(driver.step)
+            driver.step = "advanced"
+
+        driver.refresh.side_effect = refresh
+        clock = [100.0]
+
+        def state(_driver):
+            if driver.step == "totp":
+                return {
+                    "url": "https://auth.openai.com/mfa-challenge/redacted",
+                    "inputs": [{"type": "text", "autocomplete": "one-time-code"}],
+                    "errors": [],
+                }
+            if driver.step == "empty_mfa":
+                return {
+                    "url": "https://auth.openai.com/mfa-challenge/redacted",
+                    "inputs": [],
+                    "errors": [],
+                }
+            return {"url": "https://chatgpt.com/", "inputs": [], "errors": []}
+
+        def submit_totp(_driver, _email, _secret):
+            driver.step = "empty_mfa"
+
+        with (
+            patch.object(roxy_codex_oauth, "check_cancelled"),
+            patch.object(roxy_codex_oauth, "_login_challenge_state", side_effect=state),
+            patch.object(roxy_codex_oauth, "_is_login_password_page", return_value=False),
+            patch.object(roxy_codex_oauth, "_is_email_verification_page", return_value=False),
+            patch.object(
+                roxy_codex_oauth,
+                "_is_totp_login_page",
+                side_effect=lambda _driver, _state=None: driver.step == "totp",
+            ),
+            patch.object(
+                roxy_codex_oauth,
+                "_is_login_advanced",
+                side_effect=lambda _driver, _state=None: driver.step == "advanced",
+            ),
+            patch.object(roxy_codex_oauth, "_submit_saved_login_totp", side_effect=submit_totp),
+            patch.object(roxy_codex_oauth.time, "time", side_effect=lambda: clock[0]),
+            patch.object(
+                roxy_codex_oauth.time,
+                "sleep",
+                side_effect=lambda seconds: clock.__setitem__(0, clock[0] + max(0.5, seconds)),
+            ),
+            patch.object(roxy_codex_oauth, "human_delay"),
+        ):
+            result = roxy_codex_oauth._complete_login_challenge_after_email(
+                driver, "account@example.com", "", "totp-secret", timeout=10
+            )
+
+        self.assertEqual("advanced", result)
+        self.assertEqual(["empty_mfa"], refreshes)
+
+    def test_stuck_password_page_gets_one_bounded_refresh_then_one_resubmit(self):
+        driver = MagicMock()
+        driver.step = "password"
+        driver.submit_count = 0
+        refreshes = []
+
+        def refresh():
+            refreshes.append(driver.step)
+            driver.step = "password"
+
+        driver.refresh.side_effect = refresh
+        clock = [100.0]
+        password_state = {
+            "url": "https://auth.openai.com/log-in/password",
+            "inputs": [{"type": "password", "autocomplete": "current-password"}],
+            "errors": [],
+        }
+
+        with (
+            patch.object(roxy_codex_oauth, "check_cancelled"),
+            patch.object(roxy_codex_oauth, "_login_challenge_state", return_value=password_state),
+            patch.object(
+                roxy_codex_oauth,
+                "_is_login_password_page",
+                side_effect=lambda _driver: driver.step == "password",
+            ),
+            patch.object(roxy_codex_oauth, "_is_totp_login_page", return_value=False),
+            patch.object(roxy_codex_oauth, "_is_email_verification_page", return_value=False),
+            patch.object(
+                roxy_codex_oauth,
+                "_is_login_advanced",
+                side_effect=lambda _driver, _state=None: driver.step == "advanced",
+            ),
+            patch.object(
+                roxy_codex_oauth,
+                "_submit_saved_login_password",
+                side_effect=lambda _driver, _email, _password: (
+                    driver.__setattr__("submit_count", driver.submit_count + 1),
+                    driver.__setattr__("step", "advanced" if driver.submit_count >= 2 else "password"),
+                ),
+            ) as submit_password,
+            patch.object(roxy_codex_oauth.time, "time", side_effect=lambda: clock[0]),
+            patch.object(
+                roxy_codex_oauth.time,
+                "sleep",
+                side_effect=lambda seconds: clock.__setitem__(0, clock[0] + max(1.0, seconds)),
+            ),
+            patch.object(roxy_codex_oauth, "human_delay"),
+        ):
+            result = roxy_codex_oauth._complete_login_challenge_after_email(
+                driver, "account@example.com", "saved-password", "", timeout=30
+            )
+
+        self.assertEqual("advanced", result)
+        self.assertEqual(2, submit_password.call_count)
+        self.assertEqual(["password"], refreshes)
+
+    def test_liveness_email_shell_can_use_nextauth_fallback_before_typing(self):
+        driver = MagicMock()
+        with (
+            patch.object(roxy_liveness, "_page_account_unusable_code", return_value=""),
+            patch.object(
+                roxy_liveness,
+                "_type_email_address",
+                side_effect=RuntimeError("找不到邮箱输入框/邮箱入口，state={...}"),
+            ),
+            patch.object(
+                roxy_liveness,
+                "_submit_email_via_browser_nextauth",
+                return_value={"ok": True, "stage": "auth_landed", "state": "login_password"},
+            ) as nextauth,
+            patch.object(roxy_liveness, "_has_access_token", return_value=False),
+            patch.object(roxy_liveness, "_is_login_password_page", return_value=True),
+            patch(
+                "core.roxy_codex_oauth.complete_openai_login_challenge",
+                return_value="advanced",
+            ) as complete,
+        ):
+            result = roxy_liveness._enter_existing_account_otp(
+                driver,
+                "account@example.com",
+                password="saved-password",
+                totp_secret="totp-secret",
+            )
+
+        self.assertEqual("logged_in", result)
+        nextauth.assert_called_once_with(driver, "account@example.com")
+        complete.assert_called_once_with(
+            driver,
+            "account@example.com",
+            "saved-password",
+            "totp-secret",
+            timeout=45,
+        )
 
 
 if __name__ == "__main__":

@@ -862,11 +862,20 @@ def _is_blank_chatgpt_auth_shell(driver, state: dict | None = None) -> bool:
     # ChatGPT auth route, but React never mounted the login form; refreshing
     # this state is equivalent to the user's manual refresh recovery.
     title = str(shell_state.get("title") or "").strip().lower()
-    return title in {
+    if title in {
         "开始使用 | chatgpt",
         "開始する | chatgpt",
         "get started | chatgpt",
-    }
+    }:
+        return True
+    # The same unmounted shell is localized by the browser profile. Keep the
+    # detection limited to a ChatGPT start-page title with no actions/inputs,
+    # so a normal mounted login page cannot be mistaken for this recovery case.
+    localized_start_markers = (
+        "start", "begin", "get started", "शुरु", "शुरू", "开始", "開始", "始め",
+        "bắt đầu", "commenc", "comenz", "empez", "iniciar", "iniz", "avvia", "нач",
+    )
+    return title.endswith("| chatgpt") and any(marker in title for marker in localized_start_markers)
 
 
 def _reload_blank_chatgpt_auth_shell(driver) -> None:
