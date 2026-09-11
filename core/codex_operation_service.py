@@ -46,6 +46,7 @@ def _feature_ready() -> tuple[bool, str]:
 def _config_snapshot(driver_override: str | None = None) -> dict:
     """只保存可复现执行路径所需的非敏感配置。"""
     from config import codex as cfg
+    from config import account as account_cfg
     from config import proxy as proxy_cfg
     from config import roxybrowser as roxy_cfg
 
@@ -60,7 +61,19 @@ def _config_snapshot(driver_override: str | None = None) -> dict:
         "auth_source": str(getattr(cfg, "CODEX_AUTH_URL_SOURCE", "cpa") or "cpa").strip().lower(),
         "sms_provider": str(getattr(cfg, "SMS_PROVIDER", "grizzly") or "grizzly").strip().lower(),
         "sms_country": str(getattr(cfg, "SMS_COUNTRY", "") or ""),
-        "account_proxy_mode": str(getattr(proxy_cfg, "ACCOUNT_ACTION_PROXY_MODE", "registration") or "registration"),
+        "account_proxy_mode": str(
+            getattr(account_cfg, "ACCOUNT_CODEX_PROXY_MODE", None)
+            or getattr(proxy_cfg, "ACCOUNT_ACTION_PROXY_MODE", "registration")
+            or "registration"
+        ),
+        "account_proxy_modes": {
+            "password": str(getattr(account_cfg, "ACCOUNT_PASSWORD_PROXY_MODE", "registration") or "registration"),
+            "twofa": str(getattr(account_cfg, "ACCOUNT_2FA_PROXY_MODE", "registration") or "registration"),
+            "plan_check": str(getattr(account_cfg, "ACCOUNT_PLAN_CHECK_PROXY_MODE", "direct") or "direct"),
+            "live_check": str(getattr(account_cfg, "ACCOUNT_LIVE_CHECK_PROXY_MODE", "direct") or "direct"),
+            "refresh_at": str(getattr(account_cfg, "ACCOUNT_REFRESH_AT_PROXY_MODE", "registration") or "registration"),
+            "codex": str(getattr(account_cfg, "ACCOUNT_CODEX_PROXY_MODE", "registration") or "registration"),
+        },
     }
 
 

@@ -130,6 +130,30 @@ EDITABLE_FIELDS = [
         "label": "套餐补全驱动", "help": "当前唯一实现为纯协议，暂不可切换",
     },
     {
+        "key": "ACCOUNT_PASSWORD_PROXY_MODE", "file": "account.py", "type": "str", "group": "代理与网络",
+        "label": "补密码代理来源", "help": "registration=跟随注册线路；direct=直连；pool=静态代理池；provider:<id>=指定代理提供商。密码认证默认跟随注册线路。",
+    },
+    {
+        "key": "ACCOUNT_2FA_PROXY_MODE", "file": "account.py", "type": "str", "group": "代理与网络",
+        "label": "补 2FA 代理来源", "help": "registration=跟随注册线路；direct=直连；pool=静态代理池；provider:<id>=指定代理提供商。",
+    },
+    {
+        "key": "ACCOUNT_PLAN_CHECK_PROXY_MODE", "file": "account.py", "type": "str", "group": "代理与网络",
+        "label": "查套餐代理来源", "help": "默认 direct。查套餐只读现有 Token，可按需选择 registration、pool 或 provider:<id>。",
+    },
+    {
+        "key": "ACCOUNT_LIVE_CHECK_PROXY_MODE", "file": "account.py", "type": "str", "group": "代理与网络",
+        "label": "查活代理来源", "help": "默认 direct。普通查活只验证现有 Token，不登录、不发 OTP、不刷新 AT。",
+    },
+    {
+        "key": "ACCOUNT_REFRESH_AT_PROXY_MODE", "file": "account.py", "type": "str", "group": "代理与网络",
+        "label": "刷新 AT 代理来源", "help": "默认 registration。刷新 AT 会重新认证并可能读取邮箱验证码，建议使用注册同类线路。",
+    },
+    {
+        "key": "ACCOUNT_CODEX_PROXY_MODE", "file": "account.py", "type": "str", "group": "代理与网络",
+        "label": "Codex OAuth 代理来源", "help": "默认 registration。可选 direct、pool 或 provider:<id>。",
+    },
+    {
         "key": "ACCOUNT_LIVE_CHECK_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
         "label": "普通查活驱动", "help": "可选 protocol_current 或 browser_roxy；browser_roxy 只验证已有 AT，不登录、不发 OTP、不刷新 AT；全局协议版本设置不影响普通查活",
     },
@@ -585,120 +609,120 @@ EDITABLE_FIELDS = [
         "label": "IP定位超时(秒)", "help": "出口 IP 地理信息接口的单次请求超时；接口失败会自动回退，不影响注册",
     },
 
-    # ---- 代理池 ----
+    # ---- 代理与网络 ----
     {
-        "key": "REGISTRATION_PROXY_MODE", "file": "proxy.py", "type": "str", "group": "代理平台",
+        "key": "REGISTRATION_PROXY_MODE", "file": "proxy.py", "type": "str", "group": "代理与网络",
         "label": "注册代理来源", "help": "pool=现有静态代理池；1024=每个注册任务从 1024Proxy 提取独立 IP；none=直连",
     },
     {
-        "key": "PROXY_1024_API_URL", "file": "proxy.py", "type": "str", "group": "代理平台",
+        "key": "PROXY_1024_API_URL", "file": "proxy.py", "type": "str", "group": "代理与网络",
         "label": "1024Proxy 提取 API", "help": "粘贴白名单 API 完整 URL；单任务使用 num=1，注册批次会按待执行任务数批量提取，并用下方粘性时长覆盖 URL 的 time 参数；仅保存到 .env",
         "storage": "env", "secret": True,
     },
     {
-        "key": "PROXY_1024_REGION", "file": "proxy.py", "type": "str", "group": "代理平台",
+        "key": "PROXY_1024_REGION", "file": "proxy.py", "type": "str", "group": "代理与网络",
         "label": "家宽国家 / 地区", "help": "选择或输入 ISO 两位地区代码；例如 US=美国、JP=日本、GB=英国；Rand=随机。留空沿用提取 API 链接中的 region",
     },
     {
-        "key": "PROXY_1024_PROTOCOL", "file": "proxy.py", "type": "str", "group": "代理平台",
+        "key": "PROXY_1024_PROTOCOL", "file": "proxy.py", "type": "str", "group": "代理与网络",
         "label": "返回代理协议", "help": "通常填 http；也支持 https、socks5、socks5h，必须与 1024Proxy 生成接口时选择的协议一致",
     },
     {
-        "key": "PROXY_1024_SESSION_MINUTES", "file": "proxy.py", "type": "int", "group": "代理平台",
+        "key": "PROXY_1024_SESSION_MINUTES", "file": "proxy.py", "type": "int", "group": "代理与网络",
         "label": "粘性时长(分钟)", "help": "默认 30，允许 1~120；延长时间本身不增加按 GB 套餐流量，只增加同一 IP 可使用的窗口",
     },
     {
-        "key": "PROXY_1024_ROTATE_SESSION_TIME", "file": "proxy.py", "type": "bool", "group": "代理平台",
+        "key": "PROXY_1024_ROTATE_SESSION_TIME", "file": "proxy.py", "type": "bool", "group": "代理与网络",
         "label": "每任务轮换远端会话", "help": "推荐开启；按任务在基础时长至 120 分钟间轮换 time 参数，避免白名单 API 在粘性窗口内重复返回同一 IP",
     },
     {
-        "key": "PROXY_1024_API_TIMEOUT", "file": "proxy.py", "type": "float", "group": "代理平台",
+        "key": "PROXY_1024_API_TIMEOUT", "file": "proxy.py", "type": "float", "group": "代理与网络",
         "label": "API/检测超时(秒)", "help": "提取 API 和出口 IP 检测的单次超时，建议 10~20 秒",
     },
     {
-        "key": "PROXY_1024_MAX_ATTEMPTS", "file": "proxy.py", "type": "int", "group": "代理平台",
+        "key": "PROXY_1024_MAX_ATTEMPTS", "file": "proxy.py", "type": "int", "group": "代理与网络",
         "label": "最大有效失败次数", "help": "空响应、不可用代理或地区不符的最大次数；重复粘性 IP 另有快速重取额度，不消耗该次数",
     },
     {
-        "key": "PROXY_1024_ACQUIRE_TIMEOUT", "file": "proxy.py", "type": "float", "group": "代理平台",
+        "key": "PROXY_1024_ACQUIRE_TIMEOUT", "file": "proxy.py", "type": "float", "group": "代理与网络",
         "label": "代理获取总预算(秒)", "help": "包含重复 IP 重取和出口检测的整段硬上限；建议 60 秒",
     },
     {
-        "key": "REGISTRATION_PROXY_RETRIES", "file": "proxy.py", "type": "int", "group": "代理平台",
+        "key": "REGISTRATION_PROXY_RETRIES", "file": "proxy.py", "type": "int", "group": "代理与网络",
         "label": "注册代理换线重试次数", "help": "只对隧道、连接重置和认证跳转超时等明确代理瞬时错误换线重试；不改变并发数，也不重试密码入口缺失",
     },
     {
-        "key": "REGISTRATION_PROXY_RETRY_DELAY", "file": "proxy.py", "type": "float", "group": "代理平台",
+        "key": "REGISTRATION_PROXY_RETRY_DELAY", "file": "proxy.py", "type": "float", "group": "代理与网络",
         "label": "注册换线重试间隔(秒)", "help": "换线前的短暂间隔，避免连续请求同一代理平台窗口",
     },
     {
-        "key": "PROXY_1024_VALIDATE", "file": "proxy.py", "type": "bool", "group": "代理平台",
+        "key": "PROXY_1024_VALIDATE", "file": "proxy.py", "type": "bool", "group": "代理与网络",
         "label": "使用前检测出口", "help": "领取邮箱前先通过该代理访问 IPInfo，确认代理可用并记录出口地区",
     },
     {
-        "key": "PROXY_1024_VALIDATE_ATTEMPTS", "file": "proxy.py", "type": "int", "group": "代理平台",
+        "key": "PROXY_1024_VALIDATE_ATTEMPTS", "file": "proxy.py", "type": "int", "group": "代理与网络",
         "label": "同端点检测次数", "help": "出口检测遇到超时、连接或 SSL 瞬时错误时，先重试同一代理；建议 2",
     },
     {
-        "key": "PROXY_1024_RECENT_TTL", "file": "proxy.py", "type": "int", "group": "代理平台",
+        "key": "PROXY_1024_RECENT_TTL", "file": "proxy.py", "type": "int", "group": "代理与网络",
         "label": "最近 IP 隔离(秒)", "help": "任务释放后多久内拒绝重复分配同一 IP；默认 1800，与 30 分钟粘性时间一致",
     },
     {
-        "key": "PROXY_1024_ACQUIRE_INTERVAL", "file": "proxy.py", "type": "float", "group": "代理平台",
+        "key": "PROXY_1024_ACQUIRE_INTERVAL", "file": "proxy.py", "type": "float", "group": "代理与网络",
         "label": "提取最小间隔(秒)", "help": "并发任务调用提取 API 的最小间隔，默认 0.6 秒，避免瞬间突发",
     },
     {
-        "key": "PROXY_POOL", "file": "proxy.py", "type": "list_str_multiline", "group": "代理池",
+        "key": "PROXY_POOL", "file": "proxy.py", "type": "list_str_multiline", "group": "代理与网络",
         "label": "代理池(每行一个)", "help": "每行一个代理 URL，留空行会被忽略；为空则不使用代理",
     },
     {
-        "key": "PLAN_CHECK_PROXY_MODE", "file": "proxy.py", "type": "str", "group": "代理池",
+        "key": "PLAN_CHECK_PROXY_MODE", "file": "proxy.py", "type": "str", "group": "代理与网络",
         "label": "旧版套餐网络模式", "help": "仅兼容 CLI/旧接口；WebUI 查套餐、查活、Agent、Codex OAuth 使用“账号功能代理来源”",
     },
     {
-        "key": "PLAN_CHECK_PROXY", "file": "proxy.py", "type": "str", "group": "代理池",
+        "key": "PLAN_CHECK_PROXY", "file": "proxy.py", "type": "str", "group": "代理与网络",
         "label": "旧版套餐专用代理", "help": "仅兼容 CLI/旧接口；留空时从代理池选择。可能包含认证信息，仅保存到 .env",
         "storage": "env", "secret": True,
     },
     {
-        "key": "ACCOUNT_ACTION_PROXY_MODE", "file": "proxy.py", "type": "str", "group": "代理平台",
+        "key": "ACCOUNT_ACTION_PROXY_MODE", "file": "proxy.py", "type": "str", "group": "代理与网络",
         "label": "账号功能代理来源", "help": "registration=跟随注册代理来源（推荐）；1024=每个账号功能申请新租约；pool=使用静态代理池；direct=直连。适用于查套餐、查活和 Codex OAuth",
     },
     {
-        "key": "ACCOUNT_ACTION_PROXY", "file": "proxy.py", "type": "str", "group": "代理池",
+        "key": "ACCOUNT_ACTION_PROXY", "file": "proxy.py", "type": "str", "group": "代理与网络",
         "label": "账号功能固定代理", "help": "仅账号功能代理来源为 pool 时优先使用；留空则从代理池抽取。可能包含认证信息，仅保存到 .env",
         "storage": "env", "secret": True,
     },
     {
-        "key": "PLAN_CHECK_TIMEOUT", "file": "proxy.py", "type": "float", "group": "代理池",
+        "key": "PLAN_CHECK_TIMEOUT", "file": "proxy.py", "type": "float", "group": "代理与网络",
         "label": "套餐查询超时(秒)", "help": "查套餐的单次请求超时，建议 10-20 秒；独立于注册请求超时",
     },
     {
-        "key": "PLAN_CHECK_MAX_ATTEMPTS", "file": "proxy.py", "type": "int", "group": "代理池",
+        "key": "PLAN_CHECK_MAX_ATTEMPTS", "file": "proxy.py", "type": "int", "group": "代理与网络",
         "label": "套餐查询最大尝试次数", "help": "查套餐遇到网络错误、429、5xx 等临时错误时的重试次数，建议 2 次",
     },
     {
-        "key": "PLAN_CHECK_RETRY_DELAY", "file": "proxy.py", "type": "float", "group": "代理池",
+        "key": "PLAN_CHECK_RETRY_DELAY", "file": "proxy.py", "type": "float", "group": "代理与网络",
         "label": "套餐查询重试间隔(秒)", "help": "查套餐的重试间隔，按尝试次数递增；服务端 Retry-After 优先",
     },
     {
-        "key": "PLAN_CHECK_REGISTRATION_RECHECK_DELAY", "file": "proxy.py", "type": "float", "group": "代理池",
+        "key": "PLAN_CHECK_REGISTRATION_RECHECK_DELAY", "file": "proxy.py", "type": "float", "group": "代理与网络",
         "label": "新账号资格复查延迟(秒)", "help": "新注册 free 账号未发现试用资格或首次查询失败时复查一次；0 表示关闭",
     },
     {
-        "key": "PLAN_CHECK_WORKERS", "file": "proxy.py", "type": "int", "group": "代理池",
+        "key": "PLAN_CHECK_WORKERS", "file": "proxy.py", "type": "int", "group": "代理与网络",
         "label": "注册流程套餐查询并发数", "help": "仅用于注册链路中没有复用注册代理时的异步套餐查询；账号页套餐查询统一使用通用配置 ACCOUNT_BATCH_WORKERS",
     },
     {
-        "key": "PLAN_CHECK_QUEUE_LIMIT", "file": "proxy.py", "type": "int", "group": "代理池",
+        "key": "PLAN_CHECK_QUEUE_LIMIT", "file": "proxy.py", "type": "int", "group": "代理与网络",
         "label": "套餐查询队列上限", "help": "防止异常批量操作无限堆积，建议 100-1000",
     },
     {
-        "key": "PLAN_CHECK_MIN_INTERVAL", "file": "proxy.py", "type": "float", "group": "代理池",
+        "key": "PLAN_CHECK_MIN_INTERVAL", "file": "proxy.py", "type": "float", "group": "代理与网络",
         "label": "套餐请求最小间隔(秒)", "help": "限制查套餐请求的启动频率，降低 429 风险",
     },
     {
-        "key": "PLAN_CHECK_JITTER", "file": "proxy.py", "type": "float", "group": "代理池",
+        "key": "PLAN_CHECK_JITTER", "file": "proxy.py", "type": "float", "group": "代理与网络",
         "label": "套餐请求随机抖动(秒)", "help": "在查套餐请求的最小间隔上增加随机延迟，避免请求过于规律",
     },
     # ---- 提链 ----

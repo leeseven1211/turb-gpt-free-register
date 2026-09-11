@@ -23,6 +23,14 @@ ACCOUNT_PASSWORD_RESET_ENABLED = False
 ACCOUNT_PASSWORD_DRIVER = "roxy"
 ACCOUNT_PLAN_CHECK_DRIVER = "protocol"
 ACCOUNT_2FA_DRIVER = "auto"
+# Each account action can choose a cheaper/direct route independently. The
+# compatibility ACCOUNT_ACTION_PROXY_MODE remains the fallback for old .envs.
+ACCOUNT_PASSWORD_PROXY_MODE = "registration"
+ACCOUNT_2FA_PROXY_MODE = "registration"
+ACCOUNT_PLAN_CHECK_PROXY_MODE = "direct"
+ACCOUNT_LIVE_CHECK_PROXY_MODE = "direct"
+ACCOUNT_REFRESH_AT_PROXY_MODE = "registration"
+ACCOUNT_CODEX_PROXY_MODE = "registration"
 # 账号补全 2FA 默认自动选择：优先协议并按认证上下文获取 AT，协议明确失败
 # 且此开关开启时，才继续沿用现有浏览器安全设置流程。
 ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED = True
@@ -67,6 +75,12 @@ apply_env_overrides(globals(), {
     "ACCOUNT_PASSWORD_DRIVER": "str",
     "ACCOUNT_PLAN_CHECK_DRIVER": "str",
     "ACCOUNT_2FA_DRIVER": "str",
+    "ACCOUNT_PASSWORD_PROXY_MODE": "str",
+    "ACCOUNT_2FA_PROXY_MODE": "str",
+    "ACCOUNT_PLAN_CHECK_PROXY_MODE": "str",
+    "ACCOUNT_LIVE_CHECK_PROXY_MODE": "str",
+    "ACCOUNT_REFRESH_AT_PROXY_MODE": "str",
+    "ACCOUNT_CODEX_PROXY_MODE": "str",
     "ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED": "bool",
     "ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED": "bool",
     "ACCOUNT_CODEX_DRIVER": "str",
@@ -94,6 +108,12 @@ def completion_settings() -> dict[str, object]:
         "password_reset_enabled": bool(ACCOUNT_PASSWORD_RESET_ENABLED),
         "password_driver": str(ACCOUNT_PASSWORD_DRIVER or "roxy").strip().lower() or "roxy",
         "plan_check_driver": str(ACCOUNT_PLAN_CHECK_DRIVER or "protocol").strip().lower() or "protocol",
+        "password_proxy_mode": str(ACCOUNT_PASSWORD_PROXY_MODE or "registration").strip().lower() or "registration",
+        "twofa_proxy_mode": str(ACCOUNT_2FA_PROXY_MODE or "registration").strip().lower() or "registration",
+        "plan_check_proxy_mode": str(ACCOUNT_PLAN_CHECK_PROXY_MODE or "direct").strip().lower() or "direct",
+        "live_check_proxy_mode": str(ACCOUNT_LIVE_CHECK_PROXY_MODE or "direct").strip().lower() or "direct",
+        "refresh_at_proxy_mode": str(ACCOUNT_REFRESH_AT_PROXY_MODE or "registration").strip().lower() or "registration",
+        "codex_proxy_mode": str(ACCOUNT_CODEX_PROXY_MODE or "registration").strip().lower() or "registration",
         "protocol_version": configured_protocol_version(),
         # Compatibility projection for old callers; new code should consume
         # protocol_version instead of this legacy driver name.

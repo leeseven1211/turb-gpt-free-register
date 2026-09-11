@@ -118,10 +118,10 @@ def _codex_retry_status() -> dict[str, Any]:
             ("ROXY_WORKSPACE_ID", getattr(roxy, "ROXY_WORKSPACE_ID", "")),
         ])
         if ok:
-            proxy_status = proxy_configuration_status()
+            proxy_status = proxy_configuration_status("codex-oauth")
             ok, reason = bool(proxy_status.get("ok")), str(proxy_status.get("reason") or "")
     else:
-        proxy_status = proxy_configuration_status()
+        proxy_status = proxy_configuration_status("codex-oauth")
         ok, reason = bool(proxy_status.get("ok")), str(proxy_status.get("reason") or "")
     if not ok:
         return _feature(False, reason)
@@ -166,8 +166,10 @@ def _codex_retry_status() -> dict[str, Any]:
 def feature_availability() -> dict[str, Any]:
     from config import codex, email, extract_link, sub2api, roxybrowser
 
-    account_proxy = proxy_configuration_status()
-    account_proxy_feature = _feature(bool(account_proxy.get("ok")), str(account_proxy.get("reason") or ""))
+    plan_proxy = proxy_configuration_status("plan-check")
+    live_proxy = proxy_configuration_status("live-check")
+    account_proxy_feature = _feature(bool(plan_proxy.get("ok")), str(plan_proxy.get("reason") or ""))
+    live_proxy_feature = _feature(bool(live_proxy.get("ok")), str(live_proxy.get("reason") or ""))
     email_sources = _email_source_features()
     driver = _registration_driver_status()
     registration_proxy = _registration_proxy_status()
@@ -236,7 +238,7 @@ def feature_availability() -> dict[str, Any]:
     features = {
         "register": _feature(register_ok, register_reason),
         "plan_check": dict(account_proxy_feature),
-        "live_check": dict(account_proxy_feature),
+        "live_check": dict(live_proxy_feature),
         "codex_retry": _codex_retry_status(),
         "extract_link": _feature(extract_ok, extract_reason),
         "sub2_upload": _feature(sub2_ok, sub2_reason),
@@ -254,7 +256,10 @@ def feature_availability() -> dict[str, Any]:
         "features": features,
         "email_sources": email_sources,
         "proxy": {
-            "account_actions": account_proxy,
+            "account_actions": {
+                "plan_check": plan_proxy,
+                "live_check": live_proxy,
+            },
             "registration": registration_proxy,
         },
     }

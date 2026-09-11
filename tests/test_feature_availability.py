@@ -17,6 +17,11 @@ class FeatureAvailabilityTests(PostgresTestCase):
                 PROXY_1024_API_URL="",
                 PROXY_1024_VALIDATE=True,
             ),
+            patch.multiple(
+                "config.account",
+                ACCOUNT_PLAN_CHECK_PROXY_MODE="registration",
+                ACCOUNT_LIVE_CHECK_PROXY_MODE="registration",
+            ),
         ):
             result = feature_availability.feature_availability()
         self.assertFalse(result["features"]["plan_check"]["enabled"])

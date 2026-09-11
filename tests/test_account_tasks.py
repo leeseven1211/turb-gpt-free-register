@@ -445,7 +445,7 @@ class CodexRetryTaskTests(unittest.TestCase):
             patch("config.reload_all"),
             patch("config.codex.CODEX_OAUTH_DRIVER", "roxy"),
             patch("config.twofa.get_twofa_driver", return_value="browser"),
-            patch("core.account_proxy.acquire_account_proxy", return_value=route),
+            patch("core.account_proxy.acquire_account_proxy", return_value=route) as acquire,
             patch("core.roxy_registration.setup_roxy_2fa", side_effect=setup_twofa),
             patch("core.roxy_codex_oauth.run_roxy_codex_oauth", side_effect=run_roxy),
         ):
@@ -459,6 +459,10 @@ class CodexRetryTaskTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(order, ["login", "twofa", "oauth"])
         self.assertEqual(
+            [item.kwargs["purpose"] for item in acquire.call_args_list],
+            ["plan-check", "codex-oauth"],
+        )
+        self.assertEqual(
             save_totp.call_args_list,
             [
                 call("a@example.com", secret, setup_pending=True),
@@ -467,7 +471,11 @@ class CodexRetryTaskTests(unittest.TestCase):
         )
         self.assertTrue(any(call.kwargs.get("stage") == "twofa_result" for call in append_event.call_args_list))
         save_twofa_status.assert_called_once_with("a@example.com", "success", "Authenticator 2FA 已启用")
-        route.release.assert_called_once_with(reason="codex-oauth-a@example.com")
+        self.assertEqual(route.release.call_count, 2)
+        route.release.assert_has_calls([
+            call(reason="plan-check-a@example.com"),
+            call(reason="codex-oauth-a@example.com"),
+        ])
 
     def test_roxy_retry_uses_protocol_twofa_when_configured(self):
         secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"

@@ -228,6 +228,43 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             env_loader._LOADED = old_loaded
             importlib.reload(account_config)
 
+    def test_account_action_proxy_modes_are_editable_with_safe_defaults(self):
+        fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
+        expected = {
+            "ACCOUNT_PASSWORD_PROXY_MODE": "registration",
+            "ACCOUNT_2FA_PROXY_MODE": "registration",
+            "ACCOUNT_PLAN_CHECK_PROXY_MODE": "direct",
+            "ACCOUNT_LIVE_CHECK_PROXY_MODE": "direct",
+            "ACCOUNT_REFRESH_AT_PROXY_MODE": "registration",
+            "ACCOUNT_CODEX_PROXY_MODE": "registration",
+        }
+        self.assertTrue(set(expected).issubset(fields))
+        self.assertTrue(all(fields[key]["group"] == "代理与网络" for key in expected))
+        for key, default in expected.items():
+            self.assertEqual(default, getattr(account_config, key))
+
+        old_loaded = env_loader._LOADED
+        env_loader._LOADED = True
+        try:
+            with patch.dict(os.environ, {
+                "ACCOUNT_PASSWORD_PROXY_MODE": "provider:1024proxy",
+                "ACCOUNT_2FA_PROXY_MODE": "pool",
+                "ACCOUNT_PLAN_CHECK_PROXY_MODE": "direct",
+                "ACCOUNT_LIVE_CHECK_PROXY_MODE": "registration",
+                "ACCOUNT_REFRESH_AT_PROXY_MODE": "provider:other",
+                "ACCOUNT_CODEX_PROXY_MODE": "pool",
+            }, clear=False):
+                reloaded = importlib.reload(account_config)
+                self.assertEqual("provider:1024proxy", reloaded.ACCOUNT_PASSWORD_PROXY_MODE)
+                self.assertEqual("pool", reloaded.ACCOUNT_2FA_PROXY_MODE)
+                self.assertEqual("direct", reloaded.ACCOUNT_PLAN_CHECK_PROXY_MODE)
+                self.assertEqual("registration", reloaded.ACCOUNT_LIVE_CHECK_PROXY_MODE)
+                self.assertEqual("provider:other", reloaded.ACCOUNT_REFRESH_AT_PROXY_MODE)
+                self.assertEqual("pool", reloaded.ACCOUNT_CODEX_PROXY_MODE)
+        finally:
+            env_loader._LOADED = old_loaded
+            importlib.reload(account_config)
+
     def test_config_reports_fields_that_need_restart(self):
         self.assertTrue({
             "WEBUI_AUTH_CODE",
@@ -453,7 +490,7 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             "ACCOUNT_ACTION_PROXY_MODE", "ACCOUNT_ACTION_PROXY",
         }
         self.assertTrue(expected.issubset(fields))
-        self.assertEqual(fields["PROXY_1024_API_URL"]["group"], "代理平台")
+        self.assertEqual(fields["PROXY_1024_API_URL"]["group"], "代理与网络")
         self.assertTrue(fields["PROXY_1024_API_URL"]["secret"])
 
     def test_retired_browser_driver_fields_are_not_webui_editable(self):

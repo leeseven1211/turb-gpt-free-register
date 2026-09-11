@@ -3,6 +3,7 @@ let CONFIG_ACTIVE_GROUP = '';
 let CONFIG_EMAIL_ACTIVE_SECTION = '通用邮箱 / OTP';
 let CONFIG_SMS_ACTIVE_SECTION = '通用接码';
 let CONFIG_CODEX_ACTIVE_SECTION = '基础配置';
+let CONFIG_PROXY_ACTIVE_SECTION = '注册线路';
 const CONFIG_PENDING_UPDATES = {};
 
 function configGroups() {
@@ -129,6 +130,17 @@ function codexConfigSectionForKey(key) {
   return ['基础配置', ''];
 }
 
+function proxyConfigSectionForKey(key) {
+  if (['ACCOUNT_PASSWORD_PROXY_MODE','ACCOUNT_2FA_PROXY_MODE','ACCOUNT_PLAN_CHECK_PROXY_MODE','ACCOUNT_LIVE_CHECK_PROXY_MODE','ACCOUNT_REFRESH_AT_PROXY_MODE','ACCOUNT_CODEX_PROXY_MODE'].includes(key)) {
+    return ['账号动作线路', '分别设置补密码、补 2FA、查套餐、查活、刷新 AT 和 Codex OAuth 的代理来源。'];
+  }
+  if (key === 'REGISTRATION_PROXY_MODE') return ['注册线路', '注册主流程使用的代理来源。'];
+  if (key.startsWith('PROXY_1024_') || key.startsWith('REGISTRATION_PROXY_')) {
+    return ['代理提供商', '1024Proxy 提取、检测和换线参数。'];
+  }
+  return ['静态代理池', '静态代理列表和旧版套餐查询兼容参数。'];
+}
+
 function renderSectionedConfigFields(fields, activeSectionName, setActiveSection, sectionForKey, preferred, dataAttr) {
   const bySection = {};
   for (const f of fields) {
@@ -190,6 +202,16 @@ function renderConfigFields(fields) {
       codexConfigSectionForKey,
       ['基础配置', 'CPA配置', 'sub2api'],
       'codex-config-section'
+    );
+  }
+  if (CONFIG_ACTIVE_GROUP === '代理与网络') {
+    return renderSectionedConfigFields(
+      fields,
+      CONFIG_PROXY_ACTIVE_SECTION,
+      v => { CONFIG_PROXY_ACTIVE_SECTION = v; },
+      proxyConfigSectionForKey,
+      ['注册线路', '账号动作线路', '代理提供商', '静态代理池'],
+      'proxy-config-section'
     );
   }
   return fields.map(renderConfigField).join('');
@@ -424,6 +446,12 @@ $('#configForm').addEventListener('click', (e) => {
   const codexBtn = e.target.closest('[data-codex-config-section]');
   if (codexBtn) {
     CONFIG_CODEX_ACTIVE_SECTION = codexBtn.dataset.codexConfigSection;
+    renderConfigPanel();
+    return;
+  }
+  const proxyBtn = e.target.closest('[data-proxy-config-section]');
+  if (proxyBtn) {
+    CONFIG_PROXY_ACTIVE_SECTION = proxyBtn.dataset.proxyConfigSection;
     renderConfigPanel();
     return;
   }

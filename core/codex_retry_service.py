@@ -1112,7 +1112,9 @@ def run_twofa_worker(
     root_logger = logging.getLogger()
     result: dict = {"status": "failed", "ok": False, "message": "账号配置重试未返回结果"}
     account_route = None
+    plan_route = None
     route_summary: dict = {}
+    plan_route_summary: dict = {}
     browser_stage_started = False
     browser_stage_finished = False
     browser_retry_attempts = 0
@@ -1201,33 +1203,38 @@ def run_twofa_worker(
 
         from core.account_proxy import acquire_account_proxy
 
-        account_route = acquire_account_proxy(
-            account_id=int(account.get("id") or 0) or None,
-            email=email,
-            purpose="twofa-retry",
-        )
-        route_summary = account_route.public_dict()
-        account_task_store.append_event(
-            task_id,
-            stage="network",
-            message="已分配账号配置重试线路",
-            detail={
-                "network_route": route_summary.get("network_route"),
-                "proxy_mode": account_route.mode,
-                "proxy_provider": account_route.provider,
-                "proxy_region": account_route.region,
-            },
-            state="success",
-        )
         plan_result = None
         if "plan_check" in requested_steps:
-            plan_result = _run_retry_plan_check(
-                email,
-                account,
-                account_route,
-                task_id,
-                trigger=str(task_trigger or "manual") + "_plan_check",
+            plan_route = acquire_account_proxy(
+                account_id=int(account.get("id") or 0) or None,
+                email=email,
+                purpose="plan-check",
             )
+            plan_route_summary = plan_route.public_dict()
+            route_summary = plan_route_summary
+            account_task_store.append_event(
+                task_id,
+                stage="network",
+                message="已分配套餐查询线路",
+                detail={
+                    "network_route": plan_route_summary.get("network_route"),
+                    "proxy_mode": plan_route.mode,
+                    "proxy_provider": plan_route.provider,
+                    "proxy_region": plan_route.region,
+                },
+                state="success",
+            )
+            try:
+                plan_result = _run_retry_plan_check(
+                    email,
+                    account,
+                    plan_route,
+                    task_id,
+                    trigger=str(task_trigger or "manual") + "_plan_check",
+                )
+            finally:
+                plan_route.release(reason=f"plan-check-{email}")
+                plan_route = None
         if str((plan_result or {}).get("status") or "").lower() == "deactivated":
             result = {
                 "status": "deactivated",
@@ -1235,9 +1242,9 @@ def run_twofa_worker(
                 "message": "账号已废号，已停止账号配置",
                 "plan_check": plan_result,
                 "account_status_persisted": bool(plan_result.get("account_status_persisted")),
-                "proxy_provider": account_route.provider,
-                "proxy_region": account_route.region,
-                "proxy_mode": account_route.mode,
+                "proxy_provider": plan_route_summary.get("proxy_provider"),
+                "proxy_region": plan_route_summary.get("proxy_region"),
+                "proxy_mode": plan_route_summary.get("proxy_mode"),
             }
             return result
         if requested_steps == {"plan_check"}:
@@ -1253,11 +1260,31 @@ def run_twofa_worker(
                     else "套餐已补查并确认" if plan_result and plan_result.get("ok")
                     else "套餐补查未完成"
                 ),
-                "proxy_provider": account_route.provider,
-                "proxy_region": account_route.region,
-                "proxy_mode": account_route.mode,
+                "proxy_provider": plan_route_summary.get("proxy_provider"),
+                "proxy_region": plan_route_summary.get("proxy_region"),
+                "proxy_mode": plan_route_summary.get("proxy_mode"),
             }
             return result
+
+        setup_proxy_purpose = "password-setup" if "password" in requested_steps else "twofa-setup"
+        account_route = acquire_account_proxy(
+            account_id=int(account.get("id") or 0) or None,
+            email=email,
+            purpose=setup_proxy_purpose,
+        )
+        route_summary = account_route.public_dict()
+        account_task_store.append_event(
+            task_id,
+            stage="network",
+            message="已分配账号配置线路",
+            detail={
+                "network_route": route_summary.get("network_route"),
+                "proxy_mode": account_route.mode,
+                "proxy_provider": account_route.provider,
+                "proxy_region": account_route.region,
+            },
+            state="success",
+        )
 
         context_plan = plan_twofa_context(
             selected_twofa_mode,
@@ -1473,7 +1500,7 @@ def run_twofa_worker(
                 account_route = acquire_account_proxy(
                     account_id=int(account.get("id") or 0) or None,
                     email=email,
-                    purpose=f"twofa-retry-browser-{browser_attempt + 1}",
+                    purpose=f"{setup_proxy_purpose}-retry-{browser_attempt + 1}",
                 )
                 route_summary = account_route.public_dict()
                 account_task_store.append_event(
@@ -1592,6 +1619,8 @@ def run_twofa_worker(
                 pass
         if account_route is not None:
             account_route.release(reason=f"twofa-retry-{email}")
+        if plan_route is not None:
+            plan_route.release(reason=f"plan-check-{email}")
         # “补全账号”把多个独立步骤串在同一个父任务里；子步骤结束后
         # 仍需保留父任务的账号租约，避免 Codex 入队前被其它操作插入。
         if manage_task:
@@ -1656,6 +1685,7 @@ def _run_worker_legacy(
     root_logger = logging.getLogger()
     result: dict = {"status": "failed", "ok": False, "message": "Codex 补跑未返回结果"}
     account_route = None
+    plan_route = None
     route_summary: dict = {}
     oauth_driver = ""
     key = (email or "").strip().lower()
@@ -1732,6 +1762,22 @@ def _run_worker_legacy(
         )
         from core.account_proxy import acquire_account_proxy
         account = db.get_account_by_email(email) or {}
+        plan_route = acquire_account_proxy(
+            account_id=int(account.get("id") or 0) or None,
+            email=email,
+            purpose="plan-check",
+        )
+        try:
+            _run_retry_plan_check(
+                email,
+                account,
+                plan_route,
+                task_id,
+                trigger=str(task_trigger or "manual") + "_plan_check",
+            )
+        finally:
+            plan_route.release(reason=f"plan-check-{email}")
+            plan_route = None
         account_route = acquire_account_proxy(
             account_id=int(account.get("id") or 0) or None,
             email=email,
@@ -1888,6 +1934,8 @@ def _run_worker_legacy(
         finally:
             if account_route is not None:
                 account_route.release(reason=f"codex-oauth-{email}")
+            if plan_route is not None:
+                plan_route.release(reason=f"plan-check-{email}")
             release(email)
             with _RETRYING_LOCK:
                 if key:

@@ -398,7 +398,7 @@ Roxy 一号一环境开启 `ROXY_CREATE_USE_PROXY_POOL=True` 时，会从这里�
 Roxy 的字段不是普通浏览器代理 URL，而是 `proxyMethod/proxyCategory/protocol/host/port`
 （有鉴权时再加 `proxyUserName/proxyPassword`）；任务日志只记录脱敏端点。
 
-也可以在 WebUI「配置 → 代理平台」中选择 `1024`，填写 1024Proxy 白名单提取 API。
+也可以在 WebUI「配置 → 代理与网络 → 代理提供商」中选择 1024Proxy，填写白名单提取 API。
 平台模式会为每个注册任务提取一个独立粘性代理，并在领取邮箱前检测出口；注册与紧接着执行的
 自动 Codex OAuth 共用该代理。建议把粘性时长设为至少 30 分钟。动态住宅流量套餐按实际流量计费，
 延长粘性时间本身不会持续产生流量。当前平台模式支持 protocol 和 RoxyBrowser。
@@ -434,11 +434,15 @@ ACCOUNT_ACTION_PROXY_MODE=registration
 - 粘性时间延长本身不产生流量，只有浏览器实际发出请求才消耗代理流量。30 分钟是注册 + 邮件等待的最低建议值，必要时可设更长。
 - 日志和 UI 只应显示脱敏后的代理端点/出口 IP；完整 API URL 属于私密配置，只放 `.env`。
 
-`ACCOUNT_ACTION_PROXY_MODE=registration` 会让查套餐、查活和手动 Codex OAuth
-跟随注册代理来源：注册使用 1024Proxy 时，每个账号功能会按该账号注册国家重新申请一条独立租约，
-完成后立即释放；注册使用静态代理池时则继续从池中抽取。邮箱、短信、CPA/Sub2、提链服务、
-Roxy 控制 API 等第三方或本地接口保持直连，不消耗住宅代理流量。批量账号功能不会让整批
-账号共用同一个平台 IP。
+账号动作可以在 WebUI「配置 → 代理与网络 → 账号动作线路」中分别设置：
+`ACCOUNT_PASSWORD_PROXY_MODE` 和 `ACCOUNT_2FA_PROXY_MODE` 默认跟随注册线路，
+`ACCOUNT_PLAN_CHECK_PROXY_MODE` 和 `ACCOUNT_LIVE_CHECK_PROXY_MODE` 默认直连，
+`ACCOUNT_REFRESH_AT_PROXY_MODE` 与 `ACCOUNT_CODEX_PROXY_MODE` 默认跟随注册线路。
+可选值为 `registration`、`direct`、`pool` 或 `provider:<id>`；当前内置 `provider:1024proxy`，
+后续提供商通过代理注册表扩展。旧的 `ACCOUNT_ACTION_PROXY_MODE` 仍可作为兼容回退。
+查套餐、查活是只读 Token 请求，默认不申请家宽租约；刷新 AT、密码和 2FA 会重新认证，
+建议继续使用注册同类线路。邮箱、短信、CPA/Sub2、提链服务、Roxy 控制 API 等第三方或本地接口
+保持直连，不消耗住宅代理流量。
 
 ---
 
@@ -614,7 +618,7 @@ WebUI 页面说明：
 
 下面是一套适合先在 macOS 本地单账号验证的组合配置。所有密钥和真实接口都写入 `.env`，不要改进源码或提交 Git：
 
-WebUI 中 1024Proxy 位于「配置 → 代理平台」，不是「代理池」；后者只保留静态代理及套餐查询网络配置。任务列表的“代理”列会显示实际 provider、脱敏端点和出口地区，可据此确认任务是否真的使用了 1024Proxy。
+WebUI 中代理相关配置统一位于「配置 → 代理与网络」，再按注册线路、账号动作线路、代理提供商和静态代理池切换。任务列表的“代理”列会显示实际 provider、脱敏端点和出口地区，可据此确认任务是否真的使用了 1024Proxy。
 
 ```dotenv
 # WebUI

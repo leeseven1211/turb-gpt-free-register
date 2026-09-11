@@ -2,6 +2,7 @@
 let CONFIG_EMAIL_ACTIVE_SECTION_V2 = '通用邮箱 / OTP';
 let CONFIG_SMS_ACTIVE_SECTION_V2 = '通用接码';
 let CONFIG_CODEX_ACTIVE_SECTION_V2 = '基础配置';
+let CONFIG_PROXY_ACTIVE_SECTION_V2 = '注册线路';
 let CONFIG_ACTIVE_GROUP_V2 = '';
 let CONFIG_NAV_QUERY_V2 = '';
 const CONFIG_PENDING_UPDATES = {};
@@ -9,7 +10,7 @@ const CONFIG_LEGACY_LIFECYCLE_GROUPS_V2 = new Set(['注册与账号', '执行方
 const CONFIG_NAV_CATEGORY_ORDER_V2 = ['运行链路', '资源与服务', '系统'];
 const CONFIG_NAV_CATEGORY_RULES_V2 = {
   '运行链路': new Set(['通用配置', '注册主链路', '账号补全', '注册调试', '邮箱 / OTP', '接码平台', '人工节奏']),
-  '资源与服务': new Set(['RoxyBrowser', 'Browser Use', '代理平台', '代理池', '浏览器画像']),
+  '资源与服务': new Set(['RoxyBrowser', 'Browser Use', '代理与网络', '浏览器画像']),
   '系统': new Set(['Codex', '定时任务', '网站配置', '提链']),
 };
 
@@ -120,6 +121,19 @@ function emailConfigSectionForKey(key) {
   if (key.startsWith('CLOUDFLARE_')) return ['Cloudflare 临时邮箱', 'Cloudflare Worker 临时邮箱 API、鉴权与路径配置'];
   if (['EMAIL_DOMAIN','QQ_EMAIL','QQ_IMAP_PASSWORD'].includes(key)) return ['Cloudflare 域名邮箱', 'Cloudflare 转发到 QQ 邮箱后的 IMAP 收信配置'];
   return ['其他邮箱配置', ''];
+}
+
+function proxyConfigSectionForKey(key) {
+  if (['ACCOUNT_PASSWORD_PROXY_MODE','ACCOUNT_2FA_PROXY_MODE','ACCOUNT_PLAN_CHECK_PROXY_MODE','ACCOUNT_LIVE_CHECK_PROXY_MODE','ACCOUNT_REFRESH_AT_PROXY_MODE','ACCOUNT_CODEX_PROXY_MODE'].includes(key)) {
+    return ['账号动作线路', '分别设置补密码、补 2FA、查套餐、查活、刷新 AT 和 Codex OAuth 的代理来源。'];
+  }
+  if (key === 'REGISTRATION_PROXY_MODE') {
+    return ['注册线路', '注册主流程使用的代理来源；这是账号风险最高、最需要保持地区一致的线路。'];
+  }
+  if (key.startsWith('PROXY_1024_') || key.startsWith('REGISTRATION_PROXY_')) {
+    return ['代理提供商', '1024Proxy 当前的提取、检测、粘性和换线参数；后续提供商可以继续注册到这里。'];
+  }
+  return ['静态代理池', '静态代理列表和旧版套餐查询兼容参数。'];
 }
 
 function smsConfigSectionForKey(key) {
@@ -277,8 +291,7 @@ function configSectionIntro(name) {
   if (name === '定时任务') return '后台周期任务的开关与执行间隔。上次执行时间保存在数据库中，重启服务会按剩余时间接续，不会重复执行。';
   if (name === '人工节奏') return '注册流程中的随机停顿节奏。';
   if (name === '浏览器画像') return '浏览器语言、时区与出口 IP 画像。';
-  if (name === '代理平台') return '为每个注册任务申请独立的粘性住宅代理；当前支持 1024Proxy。';
-  if (name === '代理池') return '代理列表与套餐/Agent 网络模式。';
+  if (name === '代理与网络') return '统一管理注册线路、账号动作线路、代理提供商和静态代理池。';
   if (name === '提链') return '提链服务地址、CDK 与并发参数。';
   return '';
 }
@@ -781,7 +794,7 @@ function renderMixedConfigSectionV2(name, fields, intro) {
   const slug = configGroupSlug(name);
   const switches = fields.filter(f => f.type === 'bool');
   const inputs = fields.filter(f => f.type !== 'bool');
-  const extra = name === 'RoxyBrowser' ? renderRoxyWorkspaceToolsV2() : (name === '代理平台' ? renderProxyProviderToolsV2() : '');
+  const extra = name === 'RoxyBrowser' ? renderRoxyWorkspaceToolsV2() : '';
   return `
     <section class="config-section-v2" id="${esc(slug)}" data-config-section="${esc(name)}">
       ${renderConfigSectionHead(name, intro || '')}
@@ -836,6 +849,9 @@ function renderSectionedConfigSectionV2(name, fields, sectionForKey, preferred, 
   }
   if (name === '邮箱 / OTP' && active === 'iCloud 隐藏邮箱') {
     extra = renderICloudHMEToolsV2();
+  }
+  if (name === '代理与网络' && active === '代理提供商') {
+    extra = renderProxyProviderToolsV2();
   }
   return `
     <section class="config-section-v2" id="${esc(slug)}" data-config-section="${esc(name)}">
@@ -1120,6 +1136,16 @@ function renderConfigSectionV2(name, fields) {
       'sms-section-v2'
     );
   }
+  if (name === '代理与网络') {
+    return renderSectionedConfigSectionV2(
+      name,
+      fields,
+      proxyConfigSectionForKey,
+      ['注册线路', '账号动作线路', '代理提供商', '静态代理池'],
+      { get: () => CONFIG_PROXY_ACTIVE_SECTION_V2, set: v => { CONFIG_PROXY_ACTIVE_SECTION_V2 = v; } },
+      'proxy-section-v2'
+    );
+  }
   return renderMixedConfigSectionV2(name, fields, configSectionIntro(name));
 }
 function applyConfigNavFilter() {
@@ -1253,6 +1279,13 @@ function bindConfigLayoutV2() {
       if (smsTab) {
         e.preventDefault();
         CONFIG_SMS_ACTIVE_SECTION_V2 = smsTab.dataset.smsSectionV2;
+        renderConfigLayoutV2();
+        return;
+      }
+      const proxyTab = e.target.closest('[data-proxy-section-v2]');
+      if (proxyTab) {
+        e.preventDefault();
+        CONFIG_PROXY_ACTIVE_SECTION_V2 = proxyTab.dataset.proxySectionV2;
         renderConfigLayoutV2();
         return;
       }

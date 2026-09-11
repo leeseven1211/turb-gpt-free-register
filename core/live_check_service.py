@@ -273,7 +273,7 @@ def _run_live_check(
             account_route = acquire_account_proxy(
                 account_id=account_id,
                 email=email,
-                purpose="live-check",
+                purpose="token-refresh" if force_refresh else "live-check",
             )
             route = account_route.public_dict()
             _append_log(
@@ -304,7 +304,7 @@ def _run_live_check(
                 account_route = acquire_account_proxy(
                     account_id=account_id,
                     email=email,
-                    purpose="live-check",
+                    purpose="token-refresh" if force_refresh else "live-check",
                     explicit_proxy=proxy,
                 )
                 route = account_route.public_dict()

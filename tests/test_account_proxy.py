@@ -8,6 +8,44 @@ from core.proxy_provider import ProxyLease
 
 
 class AccountProxyTests(unittest.TestCase):
+    def test_action_proxy_mode_uses_action_specific_config(self):
+        with (
+            patch.multiple(
+                "config.account",
+                ACCOUNT_PLAN_CHECK_PROXY_MODE="direct",
+                ACCOUNT_LIVE_CHECK_PROXY_MODE="pool",
+                ACCOUNT_PASSWORD_PROXY_MODE="provider:1024proxy",
+            ),
+        ):
+            self.assertEqual("direct", account_proxy.account_action_proxy_mode("plan-check"))
+            self.assertEqual("pool", account_proxy.account_action_proxy_mode("live-check"))
+            self.assertEqual("provider:1024proxy", account_proxy.account_action_proxy_mode("password-setup"))
+
+    def test_direct_action_does_not_acquire_1024_lease(self):
+        with (
+            patch.multiple(
+                "config.account",
+                ACCOUNT_PLAN_CHECK_PROXY_MODE="direct",
+            ),
+            patch("core.account_proxy.acquire_1024_proxy") as acquire,
+        ):
+            route = account_proxy.acquire_account_proxy(
+                account_id=1,
+                purpose="plan-check",
+            )
+        acquire.assert_not_called()
+        self.assertEqual("direct", route.provider)
+        self.assertEqual("", route.proxy_url)
+        self.assertEqual("direct", route.mode)
+
+    def test_legacy_provider_alias_normalizes_to_1024_provider(self):
+        self.assertEqual(
+            "provider:1024proxy",
+            account_proxy.normalize_proxy_source("1024"),
+        )
+        self.assertEqual("direct", account_proxy.normalize_proxy_source("none"))
+        self.assertEqual("pool", account_proxy.normalize_proxy_source("static_pool"))
+
     def test_registration_mode_follows_1024_and_account_country(self):
         lease = ProxyLease(
             lease_id="lease",
@@ -23,6 +61,7 @@ class AccountProxyTests(unittest.TestCase):
             patch("core.account_proxy.resolve_account_region", return_value="JP"),
             patch("core.account_proxy.acquire_1024_proxy", return_value=lease) as acquire,
             patch.multiple("config.proxy", ACCOUNT_ACTION_PROXY_MODE="registration"),
+            patch.multiple("config.account", ACCOUNT_PLAN_CHECK_PROXY_MODE="registration"),
         ):
             route = account_proxy.acquire_account_proxy(
                 account_id=7,

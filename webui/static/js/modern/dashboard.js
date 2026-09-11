@@ -35,7 +35,7 @@ function renderDashboard(data) {
     dashboardMetric('可用邮箱', email.local_available || 0, `本地资源 ${email.local_total || 0}`, '#2dbb8a'),
     dashboardMetric('运行任务', activeJobs, `累计任务 ${jobs.total || 0}`, '#e6a23c'),
     dashboardMetric('Codex 凭证', codex.total || 0, `待导出 ${codex.pending || 0}`, '#377dff'),
-    dashboardMetric('活跃出口', proxy.active_leases || 0, `代理平台 ${proxy.platform || 'none'}`, '#a855f7'),
+    dashboardMetric('活跃出口', proxy.active_leases || 0, `代理与网络 ${proxy.platform || 'none'}`, '#a855f7'),
   ].join('');
 
   const sources = email.sources || [];
