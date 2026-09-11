@@ -50,6 +50,10 @@ _SCHEDULER_STARTED = False
 _SUPPORTED_SOURCES = {"email_butler", "cloudflare", "icloud_hide"}
 _HME_SCAN_MODE = "shared_mailbox_recipient_search"
 _HME_VALIDATION_METHOD = "mailbox_recipient_search"
+_PERMANENT_EMAIL_BUTLER_SCAN_ERRORS = (
+    ("http 404", "email account not found"),
+    ("http 403", "email is not registered for openai"),
+)
 
 # iCloud HME uses one dedicated coordinator instead of occupying the shared
 # account-operation pool while several requests wait for the same mailbox.
@@ -59,6 +63,17 @@ _HME_COALESCE_SECONDS = 0.5
 _HME_QUEUE: queue.Queue[tuple[list[dict], str]] = queue.Queue()
 _HME_COORDINATOR_LOCK = threading.RLock()
 _HME_COORDINATOR_THREAD: threading.Thread | None = None
+
+
+def _is_permanent_email_butler_scan_error(exc: BaseException) -> bool:
+    """Return whether a Butler scan error cannot be fixed by retrying."""
+    if not isinstance(exc, EmailButlerClientError):
+        return False
+    message = str(exc).lower()
+    return any(
+        status_marker in message and error_marker in message
+        for status_marker, error_marker in _PERMANENT_EMAIL_BUTLER_SCAN_ERRORS
+    )
 
 
 def _parse_time(value: object) -> datetime | None:
@@ -136,6 +151,30 @@ def _scan(account_id: int, trigger: str, task_id: int | None = None) -> None:
             validation_method="mailbox_cache",
         )
     except (EmailButlerClientError, CFTempMailError, ForwardIMAPError) as exc:
+        if source == "email_butler" and _is_permanent_email_butler_scan_error(exc):
+            error = str(exc)
+            db.update_account_deactivation_mail(account_id, {
+                "status": "unsupported", "trigger": trigger, "error": error,
+            })
+            logger.info(
+                "[DeactivationMail] account=%s Butler mailbox is unavailable; scan unsupported: %s",
+                account_id, exc,
+            )
+            reporter.stage(
+                "mailbox_scan", "skipped", "Email Butler 中不存在可扫描邮箱",
+                level="WARNING", detail={"error": error, "permanent": True},
+            )
+            reporter.finish(
+                status="unsupported",
+                message="Email Butler 中不存在可扫描邮箱",
+                error=error,
+                result_summary={
+                    "email_source": source,
+                    "permanent": True,
+                },
+                validation_method="mailbox_cache",
+            )
+            return
         db.update_account_deactivation_mail(account_id, {
             "status": "failed", "trigger": trigger, "error": str(exc),
         })

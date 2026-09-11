@@ -1514,6 +1514,22 @@ def _effective_batch_status_counts(cur, batch_id: int) -> dict[str, int]:
     return {str(row["status"]): int(row["n"]) for row in cur.fetchall()}
 
 
+def _lock_existing_projection_queue(cur, batch_id: int) -> dict | None:
+    """Lock an existing queue row before touching its operation batch.
+
+    Projection workers always lock queue rows before batch rows. Compatibility
+    writers must follow the same order when a batch has already been queued;
+    a new batch has no visible queue row and is safe to create in this
+    transaction before enqueueing it.
+    """
+    cur.execute(
+        f"SELECT id FROM {_table('operation_projection_queue')} WHERE batch_id=%s FOR UPDATE",
+        (int(batch_id),),
+    )
+    row = cur.fetchone()
+    return dict(row) if row else None
+
+
 def _refresh_batch(cur, batch_id: int) -> None:
     batch_id = int(batch_id)
     _lock_projection_batch(cur, batch_id)
@@ -2213,8 +2229,19 @@ def sync_registration_job(job_id: int) -> None:
     accounts_by_email = {
         str(account.get("email") or "").strip().lower(): account
     } if account else {}
+
     def _write_once():
         with _connect() as conn, conn.cursor() as cur:
+            legacy_batch_id = str(job.get("batch_id") or "").strip()
+            if legacy_batch_id:
+                cur.execute(
+                    f"SELECT id FROM {_table('operation_batches')} "
+                    "WHERE source_system='registration_batches' AND source_id=%s",
+                    (legacy_batch_id,),
+                )
+                existing_batch = cur.fetchone()
+                if existing_batch:
+                    _lock_existing_projection_queue(cur, int(existing_batch["id"]))
             operation_task_id = _upsert_registration_job(cur, job, accounts_by_id, accounts_by_email)
             cur.execute(
                 f"SELECT batch_id FROM {_table('operation_tasks')} WHERE id=%s",
@@ -2248,6 +2275,14 @@ def sync_account_task(task_id: int) -> None:
             )
             batch = cur.fetchone()
             if batch:
+                cur.execute(
+                    f"SELECT id FROM {_table('operation_batches')} "
+                    "WHERE source_system='account_action_batches' AND source_id=%s",
+                    (str(task["batch_id"]),),
+                )
+                existing_batch = cur.fetchone()
+                if existing_batch:
+                    _lock_existing_projection_queue(cur, int(existing_batch["id"]))
                 batch_map[str(task["batch_id"])] = _upsert_account_batch(cur, dict(batch))
         accounts_by_id: dict[int, dict] = {}
         if task.get("account_id") is not None:

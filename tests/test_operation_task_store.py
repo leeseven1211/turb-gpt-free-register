@@ -34,6 +34,25 @@ class OperationTaskStoreTests(PostgresTestCase):
         self.task_log_root_patch.stop()
         self.task_log_tempdir.cleanup()
 
+    def test_existing_projection_queue_is_locked_before_batch_sync(self):
+        class RecordingCursor:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, query, params=()):
+                self.calls.append((query, params))
+
+            def fetchone(self):
+                return {"id": 9}
+
+        cur = RecordingCursor()
+        operation._lock_existing_projection_queue(cur, 9)
+
+        self.assertEqual(1, len(cur.calls))
+        self.assertIn("operation_projection_queue", cur.calls[0][0])
+        self.assertIn("FOR UPDATE", cur.calls[0][0])
+        self.assertEqual((9,), cur.calls[0][1])
+
     def _seed_pending_registration(self):
         account_id = record_store.insert_row(record_store.ACCOUNTS, {
             "email": "pending@example.com",

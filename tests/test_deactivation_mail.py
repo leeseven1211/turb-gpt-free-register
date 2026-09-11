@@ -106,6 +106,50 @@ class DeactivationMailTests(PostgresTestCase):
     def test_icloud_hide_is_supported_by_mail_scanner(self):
         self.assertIn("icloud_hide", deactivation_mail_service._SUPPORTED_SOURCES)
 
+    def test_email_butler_missing_account_is_marked_unsupported(self):
+        self.seed(ACCOUNTS, [
+            {"id": 3, "email": "missing@test.com", "email_source": "email_butler"},
+        ])
+        with (
+            patch.object(
+                deactivation_mail_service,
+                "scan_openai_deactivation",
+                side_effect=deactivation_mail_service.EmailButlerClientError(
+                    "Email Butler 请求失败 (/signals/scan): HTTP 404; email account not found"
+                ),
+            ),
+            patch.object(deactivation_mail_service.account_task_store, "start_task"),
+            patch.object(deactivation_mail_service.account_task_store, "append_event"),
+            patch.object(deactivation_mail_service.account_task_store, "finish_task") as finish,
+        ):
+            deactivation_mail_service._scan(3, "manual", task_id=999991)
+
+        self.assertEqual("unsupported", db.get_account(3)["deactivation_mail_scan_status"])
+        finish.assert_called_once()
+        self.assertEqual("unsupported", finish.call_args.kwargs["status"])
+
+    def test_email_butler_non_permanent_error_remains_failed(self):
+        self.seed(ACCOUNTS, [
+            {"id": 4, "email": "timeout@test.com", "email_source": "email_butler"},
+        ])
+        with (
+            patch.object(
+                deactivation_mail_service,
+                "scan_openai_deactivation",
+                side_effect=deactivation_mail_service.EmailButlerClientError(
+                    "Email Butler 请求失败 (/signals/scan): HTTP 503; service unavailable"
+                ),
+            ),
+            patch.object(deactivation_mail_service.account_task_store, "start_task"),
+            patch.object(deactivation_mail_service.account_task_store, "append_event"),
+            patch.object(deactivation_mail_service.account_task_store, "finish_task") as finish,
+        ):
+            deactivation_mail_service._scan(4, "manual", task_id=999992)
+
+        self.assertEqual("failed", db.get_account(4)["deactivation_mail_scan_status"])
+        finish.assert_called_once()
+        self.assertEqual("failed", finish.call_args.kwargs["status"])
+
     def test_bulk_enqueue_uses_dedicated_icloud_coordinator(self):
         accounts = {
             1: {"id": 1, "email": "first@icloud.com", "email_source": "icloud_hide"},
