@@ -105,6 +105,40 @@ class AdminCrudTests(PostgresTestCase):
         self.assertTrue(db.delete_codex_credential(filename))
         self.assertIsNone(record_store.get_row_by(record_store.CODEX_CREDENTIALS, "filename", filename))
 
+    def test_codex_save_merges_email_case_variant_for_same_account(self):
+        old_filename = "codex-User@example.test-free.json"
+        old_content = {
+            "email": "User@example.test",
+            "type": "codex",
+            "access_token": "old-access",
+            "refresh_token": "old-refresh",
+            "account_id": "acct-case-merge",
+            "expired": "2026-09-08T00:00:00Z",
+        }
+        db.save_codex_credential_record(old_filename, old_content)
+        old_row = record_store.get_row_by(record_store.CODEX_CREDENTIALS, "filename", old_filename)
+
+        new_filename = "codex-user@example.test-free.json"
+        db.save_codex_credential_record(new_filename, {
+            **old_content,
+            "email": "user@example.test",
+            "access_token": "new-access",
+            "refresh_token": "new-refresh",
+            "expired": "2099-01-01T00:00:00Z",
+        })
+
+        rows = record_store.list_rows(
+            record_store.CODEX_CREDENTIALS,
+            where="account_id = %s",
+            params=("acct-case-merge",),
+        )
+        self.assertEqual(1, len(rows))
+        self.assertEqual(old_row["id"], rows[0]["id"])
+        self.assertEqual(new_filename, rows[0]["filename"])
+        self.assertEqual("user@example.test", rows[0]["email"])
+        self.assertEqual("new-access", rows[0]["content"]["access_token"])
+        self.assertEqual("new-refresh", rows[0]["content"]["refresh_token"])
+
     def test_job_batch_delete_has_atomic_running_guard(self):
         terminal = record_store.insert_row(record_store.JOBS, {
             "job_uuid": "terminal-job",

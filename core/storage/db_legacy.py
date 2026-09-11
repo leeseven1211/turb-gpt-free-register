@@ -2562,6 +2562,63 @@ def _codex_payload(filename: str, content: dict) -> dict:
     }
 
 
+def _codex_identity_lock_key(filename: str, content: dict) -> tuple[str, tuple[Any, ...]]:
+    """返回 Codex 凭证的大小写不敏感身份和数据库锁参数。"""
+    email, plan = _codex_identity(filename, content)
+    account_id = str(content.get("account_id") or "").strip()
+    if account_id:
+        return f"codex-account:{account_id}", ("account_id", account_id)
+    plan = str(plan or "").strip().lower()
+    return f"codex-email:{email.strip().lower()}:{plan}", ("email_plan", email, plan)
+
+
+def _upsert_codex_credential_record(filename: str, content: dict) -> int:
+    """按账号身份原子保存凭证，并保留 OAuth 返回的邮箱大小写。"""
+    payload = _codex_payload(filename, content)
+    lock_key, identity = _codex_identity_lock_key(filename, content)
+    table = postgres_store.qualified(record_store.CODEX_CREDENTIALS.name)
+
+    with record_store.transaction() as conn, conn.cursor() as cur:
+        # 同一账号的不同邮箱大小写会映射到同一 advisory lock，避免两个授权
+        # worker 同时查不到旧记录后各自插入一行。
+        cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (lock_key,))
+        if identity[0] == "account_id":
+            cur.execute(
+                f"SELECT id FROM {table} WHERE account_id = %s ORDER BY updated_at DESC, id DESC LIMIT 1 FOR UPDATE",
+                (identity[1],),
+            )
+        else:
+            cur.execute(
+                f"""
+                SELECT id FROM {table}
+                 WHERE lower(COALESCE(email, '')) = lower(%s)
+                   AND lower(COALESCE(plan, '')) = lower(%s)
+                 ORDER BY updated_at DESC, id DESC
+                 LIMIT 1 FOR UPDATE
+                """,
+                identity[1:],
+            )
+        existing = cur.fetchone()
+        if existing:
+            # 不带 created_at，避免一次重新授权把原始创建时间改掉；其余字段和
+            # JSONB 内容使用 patch_row 的服务端合并语义，保留导出/同步统计。
+            changes = dict(payload)
+            changes.pop("created_at", None)
+            record_store.patch_row(
+                record_store.CODEX_CREDENTIALS,
+                int(existing["id"]),
+                changes,
+                conn=conn,
+            )
+            return int(existing["id"])
+        return record_store.upsert_row_by(
+            record_store.CODEX_CREDENTIALS,
+            "filename",
+            payload,
+            conn=conn,
+        )
+
+
 def _codex_public_row(row: dict) -> dict:
     from core.codex_token_refresh_service import oauth_metadata, refresh_error_requires_reauth, sub2api_status_requires_reauth
 
@@ -2633,7 +2690,7 @@ def save_codex_credential_record(filename: str, content: dict) -> None:
     name = _validate_codex_filename(filename)
     if not isinstance(content, dict):
         raise ValueError("Codex 凭证必须是 JSON 对象")
-    record_store.upsert_row_by(record_store.CODEX_CREDENTIALS, "filename", _codex_payload(name, content))
+    _upsert_codex_credential_record(name, content)
     compat_export.schedule("codex_credentials")
 
 
