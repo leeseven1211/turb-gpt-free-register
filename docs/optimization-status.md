@@ -27,7 +27,7 @@ synthetic. Never connect tests to `turb_console` or read private account exports
 | --- | --- | --- | --- |
 | A Storage | Coordinator; Aquinas reassigned to maintenance | First round integrated; nested metadata corrections in progress | No stale snapshot deletion/overwrite; atomic create/retry; concurrency tests |
 | B Tasks | Goodall, Luna max; Aquinas/Hooke service adapters | Phase 2 implementing actual maintenance migrations | Durable dispatch/recovery; automatic completion dependencies; bounded concurrency |
-| C Configuration | Tesla, Luna max | First round integrated; dedicated writer/schema corrections in progress | Canonical field schema, validation, explicit effective values/version |
+| C Configuration | Tesla, Luna max, closed after completion | Phase 2 integrated and targeted checks accepted; legacy constant atomicity boundary remains explicit | Canonical field schema, validation, explicit effective values/version |
 | D Authentication | Hooke, Luna max | First round integrated; combined regressions passed | Shared implementation independent of Roxy orchestration; contract tests |
 | E Verification/release | Ohm, Luna max | First round integrated; real performance measurements and environment tests in progress | Reproducible dependency lock, isolated mandatory DB tests, readiness/release checks |
 
@@ -190,6 +190,40 @@ Coordinator requested tests for accepted-new versus busy-reused return values,
 lease renewal and execution-owner fencing. Do not accept or copy the uncommitted
 draft as a completed interface. All five phase-2 agents continue with the scope
 above; the heartbeat remains active.
+
+### Phase 2 integration checkpoint 2026-09-14 12:44 UTC
+
+E's early contract/isolation commit `a9c3fb7` was reviewed and integrated as
+`a03ac46`. Full suite at that point: **1031 passed, 617 subtests passed in
+139.53s**, with no failures.
+
+C completed `ed84ee4`, integrated as `68427f4`: all 195 schema field/module
+bindings verified, legal `none` enum preserved, CloudMail writers routed through
+the canonical configuration editor. C's own relevant regression was 124 passed
+with 783 subtests. Main reviewed and tested the combined changes. Tesla is now
+closed after completed delivery. Legacy direct module-constant reads still lack
+global atomicity; each new task must consume its captured snapshot. CloudMail
+domain discovery retains two sequential, individually validated writes.
+
+B's early helper commit `73b6510` was integrated as `9808845`. Coordinator found
+that `last_result` was a method but read as a property, allowing an execution to
+return failed after its database success commit. Correction `5db5ada` adds the
+property, safe normalization defaults and direct return-value/DB-terminal
+regressions. Combined target results: **65 passed, 782 subtests in 24.07s**.
+A/D/E have been instructed to cherry-pick B's helper and `5db5ada` into their
+existing phase-2 worktrees, preserving their service-only edits. B must take the
+small correction into its own continuing branch as well.
+
+B's scope now explicitly includes `webui/routes/operations.py`: native retry
+and cancellation must dispatch by task type, never route maintenance tasks to
+Codex OAuth. Startup legacy recoverers must not reset business status belonging
+to active durable operations. B/D must agree a durable remote-write intent and
+receipt contract: an unconfirmed token rotation/password submission found after
+restart must remain request_unknown/reconcile, not become a blind retry.
+
+Full suite after C + B helper + coordinator correction is running in isolated
+session `57838` at this checkpoint. Four phase-2 agents remain active (A/B/D/E),
+and the heartbeat monitor is still ACTIVE. No production changes or push.
 
 ## Verification
 
