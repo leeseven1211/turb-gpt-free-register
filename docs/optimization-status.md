@@ -87,6 +87,22 @@ entrypoints (not only already-atomic low-level record helpers) and E readiness
 tests where startup succeeded but a required worker is now dead/missing. The
 latter must yield HTTP 503 instead of trusting the historical ready flag.
 
+### Monitor checkpoint 2026-09-14 11:18 UTC
+
+All five agents are running, adding regressions and release tooling. No final
+implementation commit has been returned, so none has been integrated. B's draft
+explicitly identifies all legacy maintenance types still requiring native
+handler migration; the infrastructure stage will not count as full acceptance
+of stream B.
+
+Coordinator compared real B/C code and found their in-progress snapshot
+contracts differed: C publishes `revision` with uppercase schema keys while B
+expected `version` with lowercase execution keys. B is assigned the explicit,
+allowlisted projection and actual-object contract test. C is assigned separate
+configured-versus-published effective values and sensitive proxy-pool coverage.
+The verified runtime package versions have been incorporated into E's lock
+inputs; installation and testing of that lock remain pending.
+
 Coordinator reviews every returned change, integrates nonconflicting commits,
 runs combined checks, delegates corrections, and updates actual acceptance and
 remaining work here. A completed agent is not equivalent to accepted delivery.
