@@ -48,9 +48,16 @@ remaining work here. A completed agent is not equivalent to accepted delivery.
 
 ## Verification
 
-Baseline full suite is running in exec session `73917`; at 50 percent there is
-one failure, root cause not yet known. Do not attribute this baseline failure to
-an implementation agent. Post-integration results pending. Test launcher (private local
+Baseline full suite completed: **954 passed, 34 subtests passed, 3 failed in
+148.96 seconds**. No implementation agent changes were included. Failures:
+
+- `tests/test_email_butler_client.py::EmailButlerClientTests::test_scan_retries_one_transient_connection_error`: mocked network call lacks explicit fake API base when private dotenv is disabled.
+- `tests/test_sub2api_sync.py::Sub2ApiSyncMappingTests::test_export_configured_accounts_reads_complete_account_list`: mocked network call lacks explicit fake API base.
+- `tests/test_route_contract.py::FlaskRouteContractTests::test_public_route_map_matches_refactor_baseline`: expected 109 routes, actual baseline has 110; verify the explicit route delta before updating the contract.
+
+These three baseline test fixes are delegated to E, including ownership of the
+three named test files. Do not restore private dotenv or change business
+defaults to satisfy them. Post-integration results pending. Test launcher (private local
 coordination tool, no embedded credentials):
 `/tmp/turb-optimization-20260914.mJ7Y6R/run.py <worktree> -m pytest -q ...`.
 Run it with the primary workspace `.venv/bin/python`. It suppresses private
