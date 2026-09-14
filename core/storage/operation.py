@@ -367,6 +367,7 @@ def init() -> None:
                     source_system TEXT NOT NULL,
                     source_id TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'queued',
+                    next_attempt_at TIMESTAMPTZ,
                     execution_id TEXT,
                     batch_id BIGINT REFERENCES {_table('operation_batches')}(id),
                     account_id BIGINT,
@@ -399,6 +400,7 @@ def init() -> None:
             for column_sql in (
                 f"batch_id BIGINT REFERENCES {_table('operation_batches')}(id)",
                 "account_id BIGINT",
+                "next_attempt_at TIMESTAMPTZ",
                 "resource_family TEXT NOT NULL DEFAULT 'openai_interactive'",
                 "cancellation_token TEXT NOT NULL DEFAULT ''",
                 "cancel_requested_at TIMESTAMPTZ",
@@ -563,7 +565,7 @@ def init() -> None:
                 ("idx_operation_tasks_status", "operation_tasks", "status, id DESC"),
                 ("idx_operation_tasks_type", "operation_tasks", "task_type, id DESC"),
                 ("idx_operation_runs_task", "operation_runs", "task_id, run_no"),
-                ("idx_operation_runs_queue", "operation_runs", "status, created_at, id"),
+                ("idx_operation_runs_queue", "operation_runs", "status, next_attempt_at, created_at, id"),
                 ("idx_operation_runs_account", "operation_runs", "account_id, id DESC"),
                 ("idx_operation_events_task", "operation_events", "task_id, id"),
                 ("idx_operation_events_run", "operation_events", "run_id, id"),
@@ -3062,6 +3064,7 @@ def _reconcile_parent_task_cur(cur, parent_task_id: int, *, child_task_id: int |
         (desired, target_status, current_stage, _json(next_actions), int(parent_task_id)),
     )
     parent_run_id = int(parent.get("last_run_id") or 0) or None
+    parent_source_system = str(parent.get("source_system") or "native_operations")
     if parent_run_id:
         cur.execute(
             f"SELECT status, result_summary FROM {_table('operation_runs')} WHERE id=%s FOR UPDATE",
@@ -3103,10 +3106,11 @@ def _reconcile_parent_task_cur(cur, parent_task_id: int, *, child_task_id: int |
                 INSERT INTO {_table('operation_events')} (
                     event_uuid, task_id, run_id, source_system, source_id,
                     level, stage, event_type, message, detail
-                ) VALUES (%s,%s,%s,'native_operations',%s,%s,%s,%s,%s,'{{}}'::jsonb)
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'{{}}'::jsonb)
                 """,
                 (
-                    event_uuid, int(parent_task_id), parent_run_id, event_uuid, level,
+                    event_uuid, int(parent_task_id), parent_run_id, parent_source_system,
+                    event_uuid, level,
                     current_stage, event_type, _text(message, 1400),
                 ),
             )
@@ -3161,6 +3165,7 @@ def _insert_runtime_run(
     *,
     task_id: int,
     run_no: int,
+    source_system: str,
     account_id: int | None,
     batch_id: int | None,
     resource_family: str,
@@ -3180,11 +3185,12 @@ def _insert_runtime_run(
         INSERT INTO {_table('operation_runs')} (
             run_uuid, task_id, run_no, source_system, source_id, status,
             batch_id, account_id, resource_family, cancellation_token, log_file, data
-        ) VALUES (%s, %s, %s, 'native_operations', %s, 'queued', %s, %s, %s, %s, %s, %s::jsonb)
+        ) VALUES (%s, %s, %s, %s, %s, 'queued', %s, %s, %s, %s, %s, %s::jsonb)
         RETURNING *
         """,
         (
-            run_uuid, int(task_id), int(run_no), run_uuid, batch_id, account_id,
+            run_uuid, int(task_id), int(run_no), str(source_system), run_uuid,
+            batch_id, account_id,
             str(resource_family or "openai_interactive"), cancellation_token, log_file, _json(data or {}),
         ),
     )
@@ -3195,9 +3201,9 @@ def _insert_runtime_run(
         INSERT INTO {_table('operation_events')} (
             event_uuid, task_id, run_id, source_system, source_id,
             level, stage, event_type, message, detail
-        ) VALUES (%s,%s,%s,'native_operations',%s,'INFO','queued','run.queued','任务已加入队列','{{}}'::jsonb)
+        ) VALUES (%s,%s,%s,%s,%s,'INFO','queued','run.queued','任务已加入队列','{{}}'::jsonb)
         """,
-        (event_uuid, int(task_id), int(run["id"]), event_uuid),
+        (event_uuid, int(task_id), int(run["id"]), str(source_system), event_uuid),
     )
     task_run_log.append(
         log_file, level="INFO", message="任务已加入队列", task_id=int(task_id),
@@ -3217,6 +3223,7 @@ def create_runtime_task(
     parent_task_id: int | None = None,
     resource_family: str = "openai_interactive",
     data: dict | None = None,
+    source_system: str = "native_operations",
     source_id: str | None = None,
     idempotency_key: str | None = None,
 ) -> dict:
@@ -3229,6 +3236,7 @@ def create_runtime_task(
     """
     init()
     task_uuid = uuid.uuid4().hex
+    source_system_value = str(source_system or "native_operations").strip()[:120] or "native_operations"
     source_value = str(source_id or idempotency_key or "").strip() or task_uuid
     account_value = int(account_id) if account_id else None
     with _connect() as conn, conn.cursor() as cur:
@@ -3236,10 +3244,10 @@ def create_runtime_task(
             cur.execute(
                 f"""
                 SELECT * FROM {_table('operation_tasks')}
-                WHERE source_system='native_operations' AND source_id=%s
+                WHERE source_system=%s AND source_id=%s
                 FOR UPDATE
                 """,
-                (source_value,),
+                (source_system_value, source_value),
             )
             existing = cur.fetchone()
             if existing:
@@ -3263,14 +3271,14 @@ def create_runtime_task(
                 requested_action, status, target_status, current_stage,
                 next_actions, trigger, data
             ) VALUES (
-                %s, 'native_operations', %s, %s, %s,
+                %s, %s, %s, %s, %s,
                 %s, 'account', %s, %s, %s,
                 %s, 'queued', 'pending', 'queued',
                 '[]'::jsonb, %s, %s::jsonb
             ) RETURNING *
             """,
             (
-                task_uuid, source_value, batch_id, parent_task_id, str(task_type),
+                task_uuid, source_system_value, source_value, batch_id, parent_task_id, str(task_type),
                 account_value, account_value, str(email or "").strip(), str(task_type),
                 str(trigger or "manual"), _json(data or {}),
             ),
@@ -3295,6 +3303,7 @@ def create_runtime_task(
             cur,
             task_id=int(task["id"]),
             run_no=1,
+            source_system=source_system_value,
             account_id=account_value,
             batch_id=int(batch_id) if batch_id else None,
             resource_family=resource_family,
@@ -3338,7 +3347,7 @@ def retry_runtime_task(task_id: int, *, trigger: str = "manual_retry", data: dic
         task = cur.fetchone()
         if not task:
             raise LookupError("任务不存在")
-        if str(task.get("source_system") or "") != "native_operations":
+        if str(task.get("source_system") or "") in {"registration_jobs", "account_action_tasks"}:
             raise ValueError("历史兼容任务需先迁移为原生任务后再重跑")
         cur.execute(
             f"SELECT COALESCE(MAX(run_no), 0) + 1 AS n FROM {_table('operation_runs')} WHERE task_id=%s",
@@ -3366,6 +3375,7 @@ def retry_runtime_task(task_id: int, *, trigger: str = "manual_retry", data: dic
             cur,
             task_id=int(task_id),
             run_no=run_no,
+            source_system=str(task.get("source_system") or "native_operations"),
             account_id=int(task["account_id"]) if task.get("account_id") else None,
             batch_id=previous_run.get("batch_id"),
             resource_family=str(previous_run.get("resource_family") or "openai_interactive"),
@@ -3428,6 +3438,7 @@ def list_queued_runs(*, limit: int = 500) -> list[dict]:
             JOIN {_table('operation_tasks')} t ON t.id=r.task_id
             WHERE r.source_system='native_operations' AND r.status='queued'
               AND r.cancel_requested_at IS NULL
+              AND (r.next_attempt_at IS NULL OR r.next_attempt_at <= now())
             ORDER BY r.created_at, r.id LIMIT %s
             """,
             (max(1, min(5000, int(limit or 500))),),
@@ -3460,6 +3471,7 @@ def list_dispatchable_runs(
     clauses = [
         "r.status='queued'",
         "r.cancel_requested_at IS NULL",
+        "(r.next_attempt_at IS NULL OR r.next_attempt_at <= now())",
         "t.last_run_id=r.id",
     ]
     params: list[Any] = []
@@ -3484,7 +3496,13 @@ def list_dispatchable_runs(
         return [_row(dict(row)) or {} for row in cur.fetchall()]
 
 
-def claim_next_queued_run(*, execution_id: str, worker_pid: int) -> dict | None:
+def claim_next_queued_run(
+    *,
+    execution_id: str,
+    worker_pid: int,
+    source_systems: Iterable[str] | None = None,
+    task_types: Iterable[str] | None = None,
+) -> dict | None:
     """Atomically claim the oldest durable queue row across workers.
 
     The row lock is held only for the state transition and event insert.  The
@@ -3494,16 +3512,37 @@ def claim_next_queued_run(*, execution_id: str, worker_pid: int) -> dict | None:
     """
     init()
     with _connect() as conn, conn.cursor() as cur:
+        clauses = [
+            "r.status='queued'",
+            "r.cancel_requested_at IS NULL",
+            "(r.next_attempt_at IS NULL OR r.next_attempt_at <= now())",
+        ]
+        params: list[Any] = []
+        sources = [str(item).strip() for item in (source_systems or ()) if str(item).strip()]
+        types = [str(item).strip() for item in (task_types or ()) if str(item).strip()]
+        if source_systems is None:
+            clauses.append("r.source_system='native_operations'")
+        elif not sources:
+            return None
+        else:
+            clauses.append("t.source_system = ANY(%s)")
+            params.append(sources)
+        if task_types is not None:
+            if not types:
+                return None
+            clauses.append("t.task_type = ANY(%s)")
+            params.append(types)
         cur.execute(
             f"""
             SELECT r.id
             FROM {_table('operation_runs')} r
-            WHERE r.source_system='native_operations' AND r.status='queued'
-              AND r.cancel_requested_at IS NULL
+            JOIN {_table('operation_tasks')} t ON t.id=r.task_id
+            WHERE {' AND '.join(clauses)}
             ORDER BY r.created_at, r.id
-            FOR UPDATE SKIP LOCKED
+            FOR UPDATE OF r SKIP LOCKED
             LIMIT 1
-            """
+            """,
+            tuple(params),
         )
         selected = cur.fetchone()
         if not selected:
@@ -3513,9 +3552,11 @@ def claim_next_queued_run(*, execution_id: str, worker_pid: int) -> dict | None:
             f"""
             UPDATE {_table('operation_runs')}
             SET status='running', execution_id=%s, worker_pid=%s,
+                next_attempt_at=NULL,
                 started_at=COALESCE(started_at, now()), heartbeat_at=now(),
                 progress_stage='preflight'
             WHERE id=%s AND status='queued' AND cancel_requested_at IS NULL
+              AND (next_attempt_at IS NULL OR next_attempt_at <= now())
             RETURNING *
             """,
             (str(execution_id), int(worker_pid), run_id),
@@ -3576,7 +3617,7 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
             UPDATE {_table('operation_runs')} AS run
             SET status='interrupted', completed_at=now(), heartbeat_at=now(),
                 progress_stage='interrupted', error_message='执行进程已重启，原 attempt 中断'
-            WHERE run.source_system='native_operations'
+            WHERE run.source_system NOT IN ('registration_jobs', 'account_action_tasks')
               AND run.status IN ('running', 'cancelling', 'settling')
               AND (run.heartbeat_at IS NULL OR run.heartbeat_at < now() - (%s * interval '1 second'))
               AND NOT EXISTS (
@@ -3591,7 +3632,16 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
         run_ids = [int(row["id"]) for row in recovered]
         task_ids = [int(row["task_id"]) for row in recovered]
         current_task_ids: list[int] = []
+        source_by_task: dict[int, str] = {}
         if task_ids:
+            cur.execute(
+                f"SELECT id, source_system FROM {_table('operation_tasks')} WHERE id = ANY(%s)",
+                (task_ids,),
+            )
+            source_by_task = {
+                int(row["id"]): str(row.get("source_system") or "native_operations")
+                for row in cur.fetchall()
+            }
             for row in recovered:
                 cur.execute(
                     f"""
@@ -3621,12 +3671,16 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
                     INSERT INTO {_table('operation_events')} (
                         event_uuid, task_id, run_id, source_system, source_id,
                         level, stage, event_type, message, detail
-                    ) VALUES (%s, %s, %s, 'native_operations', %s,
+                    ) VALUES (%s, %s, %s, %s, %s,
                               'WARNING', 'interrupted', 'run.interrupted',
                               '执行进程已重启，原 attempt 中断',
                               '{{"reason":"worker_restart"}}'::jsonb)
                     """,
-                    (event_uuid, int(row["task_id"]), int(row["id"]), event_uuid),
+                    (
+                        event_uuid, int(row["task_id"]), int(row["id"]),
+                        source_by_task.get(int(row["task_id"]), "native_operations"),
+                        event_uuid,
+                    ),
                 )
             if current_task_ids:
                 cur.execute(
@@ -3643,25 +3697,30 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
                 # attempt must not wake it after a newer retry has become the
                 # task's last_run_id. Only tasks whose current attempt was
                 # actually interrupted are eligible here.
-                cur.execute(
-                    f"""
-                    UPDATE {_table('operation_task_dependencies')} dependency
-                    SET status='ready', child_status='interrupted',
-                        child_result=%s::jsonb, ready_at=now(),
-                        next_attempt_at=NULL, last_error=NULL, updated_at=now()
-                    WHERE dependency.status='waiting'
-                      AND dependency.child_source_system='native_operations'
-                      AND dependency.child_source_id = ANY(%s)
-                    RETURNING dependency.*
-                    """,
-                    (
-                        _json({"status": "interrupted", "reason": "worker_restart"}),
-                        [str(task_id) for task_id in current_task_ids],
-                    ),
-                )
-                ready_dependencies = [
-                    _row(dict(row)) or {} for row in cur.fetchall()
-                ]
+                for source_system in sorted({source_by_task.get(task_id, "native_operations") for task_id in current_task_ids}):
+                    source_task_ids = [
+                        str(task_id) for task_id in current_task_ids
+                        if source_by_task.get(task_id, "native_operations") == source_system
+                    ]
+                    cur.execute(
+                        f"""
+                        UPDATE {_table('operation_task_dependencies')} dependency
+                        SET status='ready', child_status='interrupted',
+                            child_result=%s::jsonb, ready_at=now(),
+                            next_attempt_at=NULL, last_error=NULL, updated_at=now()
+                        WHERE dependency.status='waiting'
+                          AND dependency.child_source_system=%s
+                          AND dependency.child_source_id = ANY(%s)
+                        RETURNING dependency.*
+                        """,
+                        (
+                            _json({"status": "interrupted", "reason": "worker_restart"}),
+                            source_system, source_task_ids,
+                        ),
+                    )
+                    ready_dependencies.extend(
+                        _row(dict(dependency)) or {} for dependency in cur.fetchall()
+                    )
         if run_ids:
             cur.execute(
                 f"DELETE FROM {_table('account_operation_leases')} WHERE run_id = ANY(%s)",
@@ -3736,6 +3795,7 @@ def claim_run(run_id: int, *, execution_id: str, worker_pid: int) -> dict | None
             f"""
             UPDATE {_table('operation_runs')}
             SET status='running', execution_id=%s, worker_pid=%s,
+                next_attempt_at=NULL,
                 started_at=COALESCE(started_at, now()), heartbeat_at=now(), progress_stage='preflight'
             WHERE id=%s AND status='queued' AND cancel_requested_at IS NULL
             RETURNING *
@@ -3759,14 +3819,111 @@ def claim_run(run_id: int, *, execution_id: str, worker_pid: int) -> dict | None
             INSERT INTO {_table('operation_events')} (
                 event_uuid, task_id, run_id, source_system, source_id,
                 level, stage, event_type, message, detail
-            ) VALUES (%s,%s,%s,'native_operations',%s,'INFO','queued','run.running','任务开始执行','{{}}'::jsonb)
+            ) VALUES (%s,%s,%s,%s,%s,'INFO','queued','run.running','任务开始执行','{{}}'::jsonb)
             """,
-            (event_uuid, int(run["task_id"]), int(run_id), event_uuid),
+            (
+                event_uuid, int(run["task_id"]), int(run_id),
+                str(run.get("source_system") or "native_operations"), event_uuid,
+            ),
         )
         result = _row(dict(run)) or {}
     task_run_log.append(
         result.get("log_file"), level="INFO", message="任务开始执行",
         task_id=int(result["task_id"]), run_id=int(run_id), stage="queued", event_type="run.running",
+    )
+    return result
+
+
+def requeue_claimed_run(
+    run_id: int,
+    *,
+    execution_id: str,
+    reason: str,
+    delay_seconds: float = 1.0,
+) -> dict | None:
+    """Return a claimed run to the durable queue without creating an attempt.
+
+    A handler can reach this boundary when its account lease is temporarily
+    held by another worker.  The transition is guarded by the execution id,
+    so a stale worker cannot put a newer claim back into ``queued``.  A cancel
+    request wins over requeue and is left for the normal terminal path.
+    """
+    init()
+    delay = max(0.0, min(300.0, float(delay_seconds or 0.0)))
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT r.*, t.task_type, t.email_snapshot, t.trigger
+            FROM {_table('operation_runs')} r
+            JOIN {_table('operation_tasks')} t ON t.id=r.task_id
+            WHERE r.id=%s
+            FOR UPDATE OF r
+            """,
+            (int(run_id),),
+        )
+        found = cur.fetchone()
+        if not found:
+            raise LookupError("执行实例不存在")
+        if (
+            str(found.get("status") or "") not in {"running", "cancelling"}
+            or str(found.get("execution_id") or "") != str(execution_id)
+            or found.get("cancel_requested_at") is not None
+        ):
+            return None
+        cur.execute(
+            f"""
+            UPDATE {_table('operation_runs')}
+            SET status='queued', execution_id=NULL, worker_pid=NULL,
+                heartbeat_at=now(), progress_stage='queued',
+                started_at=NULL,
+                next_attempt_at=now() + (%s * interval '1 second'),
+                data=data || %s::jsonb
+            WHERE id=%s AND status IN ('running','cancelling')
+              AND execution_id=%s AND cancel_requested_at IS NULL
+            RETURNING *
+            """,
+            (
+                delay,
+                _json({
+                    "last_requeue_reason": _text(reason, 500),
+                    "next_attempt_delay_seconds": delay,
+                }),
+                int(run_id), str(execution_id),
+            ),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        run = dict(row)
+        cur.execute(
+            f"""
+            UPDATE {_table('operation_tasks')}
+            SET status='queued', current_stage='queued', updated_at=now(),
+                error_category=NULL, error_code=NULL, error_message=NULL
+            WHERE id=%s AND last_run_id=%s
+            """,
+            (int(run["task_id"]), int(run_id)),
+        )
+        event_uuid = uuid.uuid4().hex
+        cur.execute(
+            f"""
+            INSERT INTO {_table('operation_events')} (
+                event_uuid, task_id, run_id, source_system, source_id,
+                level, stage, event_type, message, detail
+            ) VALUES (%s,%s,%s,%s,%s,'INFO','queued','run.requeued',%s,%s::jsonb)
+            """,
+            (
+                event_uuid, int(run["task_id"]), int(run_id),
+                str(run.get("source_system") or "native_operations"), event_uuid,
+                _text(f"任务暂回数据库队列：{reason}", 1400),
+                _json({"delay_seconds": delay}),
+            ),
+        )
+        result = _row(run) or {}
+    task_run_log.append(
+        result.get("log_file"), level="INFO", message=f"任务暂回数据库队列：{reason}",
+        task_id=int(result["task_id"]), run_id=int(run_id), stage="queued",
+        event_type="run.requeued",
     )
     return result
 
@@ -3809,7 +3966,7 @@ def append_runtime_event(
         clean_detail["step_state"] = state_value
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
-            f"SELECT task_id, log_file FROM {_table('operation_runs')} WHERE id=%s",
+            f"SELECT task_id, log_file, source_system FROM {_table('operation_runs')} WHERE id=%s",
             (int(run_id),),
         )
         found = cur.fetchone()
@@ -3821,11 +3978,12 @@ def append_runtime_event(
             INSERT INTO {_table('operation_events')} (
                 event_uuid, task_id, run_id, source_system, source_id,
                 level, stage, event_type, message, detail
-            ) VALUES (%s, %s, %s, 'native_operations', %s, %s, %s, %s, %s, %s::jsonb)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
             RETURNING *
             """,
             (
-                event_uuid, task_id, int(run_id), event_uuid, level_value,
+                event_uuid, task_id, int(run_id), str(found.get("source_system") or "native_operations"),
+                event_uuid, level_value,
                 stage_value, event_type_value, _text(message, 1400), _json(clean_detail),
             ),
         )
@@ -3863,24 +4021,27 @@ def append_runtime_event(
     return result
 
 
-def heartbeat_run(run_id: int, lease_token: str = "") -> bool:
+def heartbeat_run(run_id: int, lease_token: str = "", *, ttl_seconds: int = 600) -> bool:
     init()
+    ttl = max(60, min(24 * 60 * 60, int(ttl_seconds or 600)))
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
             f"UPDATE {_table('operation_runs')} SET heartbeat_at=now() WHERE id=%s AND status IN ('running','cancelling','settling')",
             (int(run_id),),
         )
         changed = cur.rowcount > 0
+        lease_changed = True
         if lease_token:
             cur.execute(
                 f"""
                 UPDATE {_table('account_operation_leases')}
-                SET heartbeat_at=now(), expires_at=now() + interval '10 minutes'
+                SET heartbeat_at=now(), expires_at=now() + (%s * interval '1 second')
                 WHERE run_id=%s AND lease_token=%s
                 """,
-                (int(run_id), str(lease_token)),
+                (ttl, int(run_id), str(lease_token)),
             )
-        return changed
+            lease_changed = cur.rowcount > 0
+        return changed and lease_changed
 
 
 def acquire_account_lease(
@@ -3890,6 +4051,22 @@ def acquire_account_lease(
     init()
     lease_token = uuid.uuid4().hex
     with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT status, account_id, resource_family
+            FROM {_table('operation_runs')}
+            WHERE id=%s
+            FOR UPDATE
+            """,
+            (int(run_id),),
+        )
+        run = cur.fetchone()
+        if not run or str(run.get("status") or "") not in {"running", "cancelling", "settling"}:
+            return None
+        if int(run.get("account_id") or 0) != int(account_id):
+            return None
+        if str(run.get("resource_family") or "openai_interactive") != str(resource_family):
+            return None
         cur.execute(
             f"DELETE FROM {_table('account_operation_leases')} WHERE expires_at < now()",
         )
@@ -4077,6 +4254,8 @@ def finish_run(
     message: str = "",
     result_summary: dict | None = None,
     error: str | None = None,
+    execution_id: str | None = None,
+    lease_token: str | None = None,
 ) -> dict:
     init()
     status_value = _status(status)
@@ -4101,6 +4280,18 @@ def finish_run(
             raise LookupError("执行实例不存在")
         found = dict(found)
         parent_task_id = int(found["parent_task_id"]) if found.get("parent_task_id") else None
+        if execution_id and str(found.get("execution_id") or "") != str(execution_id):
+            raise PermissionError("执行实例 fence 不匹配，拒绝覆盖其他 worker 的结果")
+        if lease_token:
+            cur.execute(
+                f"""
+                SELECT 1 FROM {_table('account_operation_leases')}
+                WHERE run_id=%s AND lease_token=%s
+                """,
+                (int(run_id), str(lease_token)),
+            )
+            if not cur.fetchone():
+                raise PermissionError("账号 lease owner 不匹配，拒绝写入结果")
         if str(found.get("status") or "") in _TERMINAL_STATUSES:
             result = _row(found) or {}
             idempotent = True
@@ -4137,7 +4328,13 @@ def finish_run(
                 """,
                 (
                     status_value, target_status, category, code, error_message,
-                    _json([] if status_value == "success" else [{"action": "retry", "label": "重新执行"}]),
+                    _json(
+                        [] if status_value == "success" else
+                        [{"action": "reconcile", "label": "确认远端结果后继续"}]
+                        if status_value == "attention_required"
+                        and str(dependency_result.get("outcome") or "") == "request_unknown"
+                        else [{"action": "retry", "label": "重新执行"}]
+                    ),
                     int(run["task_id"]), int(run_id),
                 ),
             )
@@ -4153,11 +4350,12 @@ def finish_run(
                 INSERT INTO {_table('operation_events')} (
                     event_uuid, task_id, run_id, source_system, source_id,
                     level, stage, event_type, error_category, error_code, message, detail
-                ) VALUES (%s, %s, %s, 'native_operations', %s, %s, 'complete', %s,
+                ) VALUES (%s, %s, %s, %s, %s, %s, 'complete', %s,
                           %s, %s, %s, %s::jsonb)
                 """,
                 (
-                    event_uuid, int(run["task_id"]), int(run_id), event_uuid,
+                    event_uuid, int(run["task_id"]), int(run_id),
+                    str(run.get("source_system") or "native_operations"), event_uuid,
                     "INFO" if status_value == "success" else "WARNING",
                     f"run.{status_value}", category, code, _text(final_message, 1400),
                     _json({"status": status_value}),
@@ -4194,7 +4392,7 @@ def finish_run(
     )
     try:
         ready_dependencies = mark_task_dependency_ready(
-            child_source_system="native_operations",
+            child_source_system=str(result.get("source_system") or "native_operations"),
             child_source_id=str(result["task_id"]),
             child_status=str(result.get("status") or status_value),
             child_result=dependency_result,

@@ -62,6 +62,10 @@ def claim_run(run_id: int, **kwargs: Any) -> dict | None:
     return _operation().claim_run(run_id, **kwargs)
 
 
+def requeue_claimed_run(run_id: int, **kwargs: Any) -> dict | None:
+    return _operation().requeue_claimed_run(run_id, **kwargs)
+
+
 def append_runtime_event(run_id: int, **kwargs: Any) -> dict:
     return _operation().append_runtime_event(run_id, **kwargs)
 
@@ -155,6 +159,7 @@ __all__ = [
     "get_task", "active_run_for_account", "list_queued_runs", "list_dispatchable_runs", "recover_interrupted_runtime_runs",
     "claim_next_queued_run",
     "mark_runtime_batch_empty", "set_runtime_batch_skipped", "claim_run",
+    "requeue_claimed_run",
     "append_runtime_event", "heartbeat_run", "acquire_account_lease", "release_account_lease",
     "request_run_cancel", "is_run_cancel_requested", "mark_run_settling", "register_resource",
     "release_resource", "finish_run", "register_task_dependency",

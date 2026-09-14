@@ -40,6 +40,50 @@
 
 ## 对外协作接口
 
+### Phase 2 durable handler helper
+
+维护动作迁移统一复用 `core.operations.task_gateway`，不为每个服务创建线程池或
+自己的队列消费者。提交方只负责持久化一次逻辑任务/Run：
+
+```python
+task_gateway.submit_durable_operation(
+    task_type="live_check",
+    account_id=account_id,
+    email=email,
+    source_system="live_check_service",
+    source_id=stable_source_id,
+    idempotency_key=stable_request_key,
+    config_snapshot=snapshot,
+    config_allowlist={"driver": "ACCOUNT_LIVE_CHECK_DRIVER"},
+)
+```
+
+`source_system + source_id` 是旧来源到统一任务的幂等映射；同一请求重复提交返回
+`reused=True`，而新创建且已接受的排队项始终是 `accepted=True, busy=False`。只有
+复用中的活跃 Run 或数据库账号资源冲突才返回 `busy=True`。配置代理仍由调用方注入，
+helper 只读取 C 的 `revision/values`、递归解冻 immutable mapping，并保存显式
+allowlist；不会把 `sources` 或全局配置写入任务。
+
+handler 注册为：
+
+```python
+task_gateway.register_operation_handler(
+    "live_check", handle_live_check,
+    source_systems=("live_check_service",),
+)
+```
+
+`handle_live_check(context)` 只在共享 `AccountOperationExecutor` worker 中收到已由
+数据库 CAS 认领的 `context.run`。`context.task_reporter.report/stage/note` 写结构化
+事件；`context.lease()` 申请账号 lease，`lease.heartbeat()` 或
+`context.checkpoint()` 刷新 lease 与 Run 心跳；finally 自动释放 lease。handler 必须
+先确认业务表写回，再 `return OperationResult.success(...)` 或调用
+`context.finish(...)`。结果未知用 `OperationResult.request_unknown(...)`，数据库记录
+为 `attention_required` 并只提供 `reconcile`，不会自动重复密码、注册或 OAuth 写入。
+每个 terminal 写入带 `execution_id` fence；lease owner 不匹配的旧 worker 不能覆盖
+当前结果。暂时拿不到 lease 时 Run 有界回到持久队列，远端边界已可能发生或 lease
+心跳丢失时则保留 `request_unknown`，不重做远端动作。
+
 ### 配置代理 C
 
 Codex operation 优先调用：
