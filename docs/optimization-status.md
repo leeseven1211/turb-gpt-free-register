@@ -176,6 +176,21 @@ that runtime. E is asked to provide its fresh locked validation environment
 for the final merged checks. Phase 2 agents remain active; full acceptance of
 all task migrations and real performance measurements is still pending.
 
+Latest combined suite at integration commit `957c5f8`: **1029 passed,
+617 subtests passed, 2 failed in 145.42s**. Only the two known configuration
+fixture/route-contract failures remain, assigned to E. No running test session
+is left from this checkpoint. E is asked to return those fixes in an early
+commit independently of the remaining real-performance benchmark.
+
+B's draft common handler contract is now visible in its phase-2 worktree:
+`register_operation_handler`, `submit_durable_operation`, and
+`OperationHandlerContext`. A/D have received those provisional names but must
+wait for B's actual helper commit before pulling code into their worktrees.
+Coordinator requested tests for accepted-new versus busy-reused return values,
+lease renewal and execution-owner fencing. Do not accept or copy the uncommitted
+draft as a completed interface. All five phase-2 agents continue with the scope
+above; the heartbeat remains active.
+
 ## Verification
 
 Baseline full suite completed: **954 passed, 34 subtests passed, 3 failed in
