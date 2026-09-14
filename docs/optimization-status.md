@@ -25,11 +25,11 @@ synthetic. Never connect tests to `turb_console` or read private account exports
 
 | Stream | Owner | State | Acceptance |
 | --- | --- | --- | --- |
-| A Storage | Aquinas, Luna max | Running | No stale snapshot deletion/overwrite; atomic create/retry; concurrency tests |
-| B Tasks | Goodall, Luna max | Running | Durable dispatch/recovery; automatic completion dependencies; bounded concurrency |
-| C Configuration | Tesla, Luna max | Running | Canonical field schema, validation, explicit effective values/version |
-| D Authentication | Hooke, Luna max | Running | Shared implementation independent of Roxy orchestration; contract tests |
-| E Verification/release | Ohm, Luna max | Running | Reproducible dependency lock, isolated mandatory DB tests, readiness/release checks |
+| A Storage | Coordinator; Aquinas reassigned to maintenance | First round integrated; nested metadata corrections in progress | No stale snapshot deletion/overwrite; atomic create/retry; concurrency tests |
+| B Tasks | Goodall, Luna max; Aquinas/Hooke service adapters | Phase 2 implementing actual maintenance migrations | Durable dispatch/recovery; automatic completion dependencies; bounded concurrency |
+| C Configuration | Tesla, Luna max | First round integrated; dedicated writer/schema corrections in progress | Canonical field schema, validation, explicit effective values/version |
+| D Authentication | Hooke, Luna max | First round integrated; combined regressions passed | Shared implementation independent of Roxy orchestration; contract tests |
+| E Verification/release | Ohm, Luna max | First round integrated; real performance measurements and environment tests in progress | Reproducible dependency lock, isolated mandatory DB tests, readiness/release checks |
 
 Agent IDs and worktrees:
 
@@ -107,6 +107,60 @@ Coordinator reviews every returned change, integrates nonconflicting commits,
 runs combined checks, delegates corrections, and updates actual acceptance and
 remaining work here. A completed agent is not equivalent to accepted delivery.
 
+### Integrated first round and phase 2 checkpoint 2026-09-14 12:14 UTC
+
+All five first-round commits were reviewed and cherry-picked without conflicts:
+
+| Stream | Agent commit | Integration commit |
+| --- | --- | --- |
+| A | 24b9d3535e8961ca28ca28ba5c7295ec9ab5af90 | a071a17 |
+| C | fd339076e78affcea6effe20ef63c472f94821e0 | a615162 |
+| B | d289b192ebccc9aa9808a18a716ebdd3c18ba134 | 0d964ee |
+| D | 40d8b78a2523252c75998c7905429e9bd6297ca7 | 2d143eb |
+| E | 09abfcfaf9596f304454466d27e3ca4255b3d08a | b8c790f |
+
+Integrated full suite: **1012 passed, 617 subtests passed, 3 failed in 141.24s**.
+The three inherited baseline failures were fixed; these are integration issues:
+
+- Config isolation fixture used an invalid enum value; C/E are coordinating a
+  legal v2 override plus explicit invalid-value regression.
+- Snapshot adapter test replaced only sys.modules, leaving config.schema's
+  cached package attribute intact. Coordinator replaced it with the real
+  ConfigSnapshot/provider boundary; all 3 gateway dispatcher tests now pass.
+- C added /api/config/snapshot after E's route hash. E will verify that exact
+  route delta and update the fixed count/hash, without weakening the contract.
+
+First-round E lock was installed/tested with Python 3.12.13 on macOS x86_64;
+Linux CI has not run remotely. Its queue p95=40ms used generated numbers, not
+measured execution timings, so coordinator rejected that as performance
+acceptance evidence. E is replacing it with an actual synthetic queue workload
+and real UI repository/list measurements.
+
+Storage review found remaining serialized extra_json read/modify/write races
+in password, MFA and session updates, plus derived/default upsert and generated
+field filtering gaps. Coordinator owns fixes in record_store/db_legacy and a
+deterministic database-blocking concurrency test; results pending.
+
+Phase 2 worktrees all start at b8c790f; same five Luna max agents, disjoint scope:
+
+- A: `../turb-gpt-free-register-opt-maintenance-phase2-20260914`: live_check,
+  token refresh producer, plan_check, deactivation_mail, extract_link services
+  and dedicated tests/docs. No shared gateway/runtime/storage changes.
+- B: `../turb-gpt-free-register-opt-tasks-phase2-20260914`: shared durable
+  maintenance handler contract, gateway/storage/runtime, account setup and
+  completion/registration handoffs. Supplies an early helper commit to A/D.
+- C: `../turb-gpt-free-register-opt-config-phase2-20260914`: schema/config and
+  dedicated configuration writer consistency, including CloudMail routes.
+- D: `../turb-gpt-free-register-opt-token-phase2-20260914`: Codex token refresh
+  durable adapter, preserving unknown refresh-token rotation outcomes.
+- E: `../turb-gpt-free-register-opt-release-phase2-20260914`: real benchmark,
+  complete schema-aware environment isolation, exact route contract correction.
+
+Primary HEAD remains f33e523. Its dirty file count has increased from the
+12-file snapshot to 13, including core/registration/roxy.py; these are external
+changes, not this integration's edits, and are intentionally not overwritten.
+No production service restart, deployment, source-worktree merge, or push.
+
 ## Verification
 
 Baseline full suite completed: **954 passed, 34 subtests passed, 3 failed in
@@ -118,7 +172,7 @@ Baseline full suite completed: **954 passed, 34 subtests passed, 3 failed in
 
 These three baseline test fixes are delegated to E, including ownership of the
 three named test files. Do not restore private dotenv or change business
-defaults to satisfy them. Post-integration results pending. Test launcher (private local
+defaults to satisfy them. See combined results above. Test launcher (private local
 coordination tool, no embedded credentials):
 `/tmp/turb-optimization-20260914.mJ7Y6R/run.py <worktree> -m pytest -q ...`.
 Run it with the primary workspace `.venv/bin/python`. It suppresses private

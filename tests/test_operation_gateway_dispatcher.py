@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import sys
-import types
 import unittest
-from types import MappingProxyType, SimpleNamespace
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -67,15 +65,10 @@ class OperationGatewayDispatcherTests(unittest.TestCase):
 
     def test_schema_config_snapshot_object_is_consumed_without_defining_config(self):
         from core import codex_operation_service
+        from config import schema
 
-        schema = types.ModuleType("config.schema")
-
-        class ConfigSnapshot:
-            __slots__ = ("revision", "values", "sources")
-
-            def __init__(self):
-                self.revision = 17
-                self.values = MappingProxyType({
+        snapshot = schema.ConfigSnapshot(
+            values={
                     "CODEX_OAUTH_DRIVER": "same_as_registration",
                     "REGISTRATION_DRIVER": "RoxyBrowser",
                     "CODEX_AUTH_URL_SOURCE": "CPA",
@@ -89,26 +82,20 @@ class OperationGatewayDispatcherTests(unittest.TestCase):
                     "ACCOUNT_REFRESH_AT_PROXY_MODE": "registration",
                     "ACCOUNT_CODEX_PROXY_MODE": "registration",
                     "UNRELATED_GLOBAL_SETTING": "must-not-persist",
-                    "NESTED_UNRELATED": MappingProxyType({"secretish": "no"}),
-                })
-                self.sources = MappingProxyType({
+                    "NESTED_UNRELATED": {"secretish": "no"},
+            },
+            sources={
                     "CODEX_OAUTH_DRIVER": "config.codex",
                     "UNRELATED_GLOBAL_SETTING": "config.other",
-                })
-
-            def as_dict(self):
-                # Match C: as_dict thaws values but does not include revision
-                # or sources in the task payload.
-                return {
-                    key: (dict(value) if isinstance(value, MappingProxyType) else value)
-                    for key, value in self.values.items()
-                }
-
-        snapshot = ConfigSnapshot()
-        schema.non_sensitive_snapshot = lambda: snapshot
+            },
+            revision=17,
+        )
+        # Patch the real provider on the already-imported package. Replacing
+        # only sys.modules leaves config.schema pointing at its cached module
+        # and can silently exercise live defaults instead of this fixture.
         with (
             patch.object(codex_operation_service, "_CONFIG_SNAPSHOT_PROVIDER", None),
-            patch.dict(sys.modules, {"config.schema": schema}),
+            patch.object(schema, "non_sensitive_snapshot", return_value=snapshot),
         ):
             result = codex_operation_service._config_snapshot()
 
