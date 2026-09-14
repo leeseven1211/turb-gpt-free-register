@@ -72,6 +72,21 @@ dependencies and test the actual locked environment. Runtime health and config
 snapshot interfaces have been relayed between B, C, and E. No normal-progress
 user notification was issued.
 
+### Monitor checkpoint 2026-09-14 11:06 UTC
+
+All five agents remain running; targeted regression tests and implementation
+documents are now being added. No final implementation commit or integrated
+test result has been returned. A has removed normal snapshot-write call sites
+and added explicit conflict handling; C has moved field definitions into config
+and documented the immutable-snapshot versus legacy-constant boundary; D has
+split the extracted capabilities into domain modules. These remain unaccepted
+until committed and verified.
+
+Coordinator requested stronger A concurrency tests through changed business
+entrypoints (not only already-atomic low-level record helpers) and E readiness
+tests where startup succeeded but a required worker is now dead/missing. The
+latter must yield HTTP 503 instead of trusting the historical ready flag.
+
 Coordinator reviews every returned change, integrates nonconflicting commits,
 runs combined checks, delegates corrections, and updates actual acceptance and
 remaining work here. A completed agent is not equivalent to accepted delivery.
