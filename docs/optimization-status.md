@@ -42,6 +42,20 @@ Agent IDs and worktrees:
 Use local commits in each assigned worktree as integration artifacts. Agents
 must preserve scope boundaries; coordinator resolves shared-interface concerns.
 
+### Monitor checkpoint 2026-09-14 10:42 UTC
+
+All five agents remain running and have implementation edits in their assigned
+worktrees. None has returned a completed implementation commit or accepted test
+result yet. Integration branch remains at the documented baseline plus this
+coordination log. No milestone notification was issued for normal progress.
+
+Coordinator reviewed in-progress storage, executor, and authentication changes.
+Sent A review constraints about explicit optimistic-conflict handling, nested
+JSON metadata filtering/compatibility, and cold-schema initialization. Sent D
+constraints to decompose the extracted shared module by capability and remove
+its application-service cancellation dependency. These are pre-merge checks,
+not accepted changes or confirmed regressions in a finished deliverable.
+
 Coordinator reviews every returned change, integrates nonconflicting commits,
 runs combined checks, delegates corrections, and updates actual acceptance and
 remaining work here. A completed agent is not equivalent to accepted delivery.
