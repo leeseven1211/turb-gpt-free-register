@@ -338,6 +338,47 @@ Heartbeat remains ACTIVE; A/B/D/E remain assigned to remaining work. Primary
 HEAD is still `f33e523` with the same 13 external dirty files. No production DB
 tests, primary edits, service restart, deployment or push.
 
+### Monitor checkpoint 2026-09-14 13:52 UTC
+
+B returned shared-action/fence correction `bab0c60`, integrated as `55d5121`.
+Reconciliation query now deduplicates accounts in SQL before LIMIT and returns
+the whole explicit candidate set; password policy projection uses exact names.
+Every registered context handler receives safe shared retry/cancel actions.
+The cherry-pick's test-order conflict was resolved retaining each distinct test
+once. B's actual route/runtime migration remains uncommitted and unaccepted.
+
+D returned token migration `766a5fe`, integrated as `060bec4`. It uses the
+shared gateway, persists remote intent/receipt, gates manual as well as
+scheduled submission on durable unknown state, and no longer lets
+`reconcile=True` authorize another refresh grant. Combined locked-environment
+target tests passed: **73 passed, 11 subtests in 17.68s**; session `34063` is
+finished. No running test sessions remain.
+
+D is not closed or fully accepted yet: review found that the post-HTTP
+checkpoint still checks cancellation before saving the rotated credential.
+Hooke is assigned a narrow follow-up separating lease/fence checks from user
+cancellation during response settlement, with a real gateway test cancelling
+inside the synthetic POST and proving the returned token pair is persisted.
+D must also capture C's canonical config snapshot/revision instead of constructing
+a revisionless timeout dictionary. A has the same explicit snapshot requirement
+for its maintenance submissions and handler execution values.
+
+E's read-path draft identifies repeated correlated run-count/current-run work
+as the task-center bottleneck and reports unchanged-load p95 around 43ms
+(about 52ms in its locked environment). No final read-query commit has returned
+yet, so these remain agent-reported draft results, not integrated performance
+acceptance. Ohm is finishing filter/facet semantics tests before delivery.
+
+B's startup draft currently skips legacy recovery for an entire category if any
+durable run exists. Coordinator requested row-scoped exclusions instead: an
+active native account must be preserved while unrelated orphan legacy work is
+still recovered. B's write scope is expanded only to the needed legacy recovery
+functions/parameters and dedicated tests, not unrelated metadata writers.
+
+A/B/D/E continue in their assigned worktrees. The heartbeat remains ACTIVE.
+No normal-progress user notification, production changes, restart, deployment
+or push occurred in this checkpoint.
+
 ## Verification
 
 Baseline full suite completed: **954 passed, 34 subtests passed, 3 failed in
