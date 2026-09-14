@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 import uuid
@@ -12,7 +13,6 @@ from typing import Any
 from flask import Flask
 
 from core import (
-    account_task_store,
     codex_operation_service,
     codex_retry_service,
     codex_token_refresh_service,
@@ -24,6 +24,7 @@ from core import (
     plan_check_service,
     sms_provider,
 )
+from core.operations import task_gateway as account_task_store
 from core.account_operation_executor import executor as _ACCOUNT_EXECUTOR
 
 logger = logging.getLogger(__name__)
@@ -75,12 +76,49 @@ def _run_account_completion_worker(
     task_trigger: str,
     planned_steps: list[str],
     settings: dict[str, object],
+    initial_result_summary: dict[str, Any] | None = None,
 ) -> None:
     """Execute a config-driven completion plan and record one coordinator task."""
     from core.account_completion_service import STEP_LABELS, completion_plan
 
     started = False
-    result_summary: dict[str, Any] = {"planned_steps": list(planned_steps)}
+    result_summary: dict[str, Any] = dict(initial_result_summary or {})
+    result_summary["planned_steps"] = list(planned_steps)
+    reservation_held = True
+
+    def release_parent_reservation() -> None:
+        nonlocal reservation_held
+        if not reservation_held:
+            return
+        # A completion parent must release its process-local reservation before
+        # handing control to a queued child.  Otherwise the child can observe
+        # the parent as busy forever and the continuation deadlocks.
+        codex_retry_service.release(email)
+        reservation_held = False
+
+    def register_child_dependency(
+        *, child_source_system: str, child_source_id: object, payload: dict[str, Any],
+    ) -> None:
+        if not child_source_id:
+            return
+        try:
+            operation_task_store.register_task_dependency(
+                parent_source_system="account_action_tasks",
+                parent_source_id=str(int(task_id)),
+                child_source_system=child_source_system,
+                child_source_id=str(child_source_id),
+                dependency_type="account_completion",
+                payload=payload,
+            )
+        except Exception:
+            # The child remains independently durable.  Keep the parent
+            # partial result visible and let the next reconciliation pass
+            # recreate/repair the handoff rather than duplicating the child.
+            logger.exception(
+                "补全父子依赖写入失败：parent_task_id=%s child=%s:%s",
+                task_id, child_source_system, child_source_id,
+            )
+
     try:
         account_task_store.start_task(
             task_id,
@@ -152,12 +190,32 @@ def _run_account_completion_worker(
                     state="skipped",
                 )
             result_summary["awaiting_steps"] = ["refresh_at"]
+            result_summary["continuation_steps"] = [
+                step for step in planned_steps if step in remaining
+            ]
+            dependency_payload = {
+                "account_id": int(account_id),
+                "email": str(account.get("email") or email),
+                "task_trigger": task_trigger,
+                "remaining_steps": [step for step in planned_steps if step in remaining],
+                "settings": dict(settings or {}),
+                "result_summary": result_summary,
+            }
+            release_parent_reservation()
             account_task_store.finish_task(
                 task_id,
                 status="partial_success",
-                message="刷新 AT 已提交，结果以独立子任务为准；成功后请重新点击补全账号",
+                message="刷新 AT 已提交，成功后系统将自动继续补全步骤",
                 result_summary=result_summary,
                 validation_method="account_completion_plan",
+            )
+            # Persist the parent partial state before making a fast child
+            # eligible for the continuation scanner.  Otherwise a child that
+            # completes during enqueue could race the parent's final write.
+            register_child_dependency(
+                child_source_system="account_action_tasks",
+                child_source_id=queued.get("task_id"),
+                payload=dependency_payload,
             )
             return
 
@@ -231,6 +289,8 @@ def _run_account_completion_worker(
                     state="skipped",
                 )
 
+        codex_dependency_payload: dict[str, Any] | None = None
+        codex_child_task_id: object | None = None
         if "codex" in remaining:
             account_task_store.append_event(
                 task_id,
@@ -260,24 +320,50 @@ def _run_account_completion_worker(
             if not queued.get("accepted") and not queued.get("busy"):
                 raise RuntimeError(queued.get("error") or "Codex OAuth 入队失败")
             remaining.discard("codex")
+            result_summary["awaiting_steps"] = ["codex"]
+            result_summary["continuation_steps"] = [
+                step for step in planned_steps if step in remaining
+            ]
+            codex_child_task_id = queued.get("task_id")
+            codex_dependency_payload = {
+                "account_id": int(account_id),
+                "email": email,
+                "task_trigger": task_trigger,
+                "remaining_steps": [step for step in planned_steps if step in remaining],
+                "settings": dict(settings or {}),
+                "result_summary": result_summary,
+            }
+            release_parent_reservation()
 
         pending_steps = set(result_summary.get("pending_steps") or [])
         result_summary["completed_steps"] = [
             step for step in planned_steps
             if step not in remaining and step not in pending_steps
         ]
-        task_status = "partial_success" if result_summary.get("pending_steps") else "success"
+        task_status = "partial_success" if (
+            result_summary.get("pending_steps") or result_summary.get("awaiting_steps")
+        ) else "success"
         account_task_store.finish_task(
             task_id,
             status=task_status,
             message=(
-                "密码/2FA 已完成，套餐查询待后续单独重试"
+                "补全步骤已完成，等待子任务成功后系统自动继续"
+                if result_summary.get("awaiting_steps")
+                else "密码/2FA 已完成，套餐查询待后续单独重试"
                 if task_status == "partial_success"
                 else "补全计划已提交，独立操作将在任务中心继续执行"
             ),
             result_summary=result_summary,
             validation_method="account_completion_plan",
         )
+        if codex_dependency_payload is not None:
+            # As with refresh_at, the parent partial result is durable before
+            # a terminal child can wake and execute the continuation.
+            register_child_dependency(
+                child_source_system="native_operations",
+                child_source_id=codex_child_task_id,
+                payload=codex_dependency_payload,
+            )
     except Exception as exc:
         result_summary["error"] = f"{type(exc).__name__}: {str(exc)[:220]}"
         account_task_store.finish_task(
@@ -290,9 +376,119 @@ def _run_account_completion_worker(
         )
         logger.exception("账号补全失败：email=%s", email)
     finally:
-        # 统一释放父任务租约；账号配置子步骤在 manage_task=False 时会保留租约，
-        # 直到这里完成 Codex 入队或整个补全计划结束。
-        codex_retry_service.release(email)
+        # 账号配置子步骤在 manage_task=False 时会保留租约，直到这里完成；
+        # handoff 分支已经在提交 child 前释放，避免父任务占住 semaphore。
+        release_parent_reservation()
+
+
+def _handle_ready_completion_dependency(dependency: dict) -> None:
+    """Run one already-claimed completion continuation in the common pool.
+
+    ``task_gateway`` is the sole owner of the ready->running claim. This
+    function is intentionally a worker body and never claims again.
+    """
+    dependency_id = int(dependency.get("id") or 0)
+    if not dependency_id:
+        return
+    claimed = dependency
+    payload = claimed.get("payload") if isinstance(claimed.get("payload"), dict) else {}
+    parent_system = str(claimed.get("parent_source_system") or "")
+    parent_id = str(claimed.get("parent_source_id") or "")
+    child_status = str(claimed.get("child_status") or "").lower()
+    try:
+        if parent_system != "account_action_tasks":
+            operation_task_store.complete_task_dependency(
+                dependency_id, success=False, error="暂不支持该父任务来源",
+            )
+            return
+        parent_task_id = int(parent_id)
+        if child_status != "success":
+            message = "子任务未成功，补全父任务保留待对账状态"
+            account_task_store.append_event(
+                parent_task_id,
+                stage="plan",
+                level="WARNING",
+                message=message,
+                detail={"child_status": child_status, "child_task_id": claimed.get("child_source_id")},
+                state="skipped",
+            )
+            account_task_store.finish_task(
+                parent_task_id,
+                status="partial_success",
+                message=message,
+                error=f"child_status={child_status or 'unknown'}",
+                result_summary={
+                    "awaiting_steps": payload.get("remaining_steps") or [],
+                    "child_status": child_status or "unknown",
+                    "child_result": claimed.get("child_result") or {},
+                },
+                validation_method="account_completion_dependency",
+            )
+            operation_task_store.complete_task_dependency(dependency_id, success=True)
+            return
+
+        email = str(payload.get("email") or "").strip()
+        if not email:
+            raise ValueError("父任务续接缺少 email")
+        if not codex_retry_service.reserve(email):
+            # Return to the durable queue with storage-level backoff. A Timer
+            # per busy dependency would create an unbounded thread population
+            # during a long-running account operation.
+            operation_task_store.complete_task_dependency(
+                dependency_id, success=False, error="账号仍被其它操作占用",
+            )
+            account_task_store.notify_dependency_ready(claimed)
+            return
+        _run_account_completion_worker(
+            email,
+            account_id=int(payload.get("account_id") or 0),
+            task_id=parent_task_id,
+            task_trigger=str(payload.get("task_trigger") or "manual_account_completion"),
+            planned_steps=[str(step) for step in payload.get("remaining_steps") or []],
+            settings=dict(payload.get("settings") or {}),
+            initial_result_summary=dict(payload.get("result_summary") or {}),
+        )
+        operation_task_store.complete_task_dependency(dependency_id, success=True)
+    except Exception as exc:
+        logger.exception("补全父任务自动续接失败：dependency_id=%s", dependency_id)
+        operation_task_store.complete_task_dependency(
+            dependency_id, success=False, error=f"{type(exc).__name__}: {exc}",
+        )
+        account_task_store.notify_dependency_ready(claimed)
+
+
+def _submit_ready_completion_dependency(dependency: dict):
+    """Submit a claimed dependency without executing it on the scanner.
+
+    ``try_submit`` is deliberately non-blocking. If the account-operation
+    budget is full, the claimed row is returned to the durable ready queue and
+    the next scanner tick can reclaim it after the storage backoff expires.
+    """
+    dependency_id = int(dependency.get("id") or 0)
+    if not dependency_id:
+        return None
+    try:
+        future = _ACCOUNT_EXECUTOR.try_submit(
+            _handle_ready_completion_dependency,
+            dict(dependency),
+        )
+    except Exception as exc:
+        logger.exception("补全依赖提交到共享 executor 失败：dependency_id=%s", dependency_id)
+        operation_task_store.complete_task_dependency(
+            dependency_id,
+            success=False,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        account_task_store.notify_dependency_ready(dependency)
+        return None
+    if future is None:
+        operation_task_store.complete_task_dependency(
+            dependency_id,
+            success=False,
+            error="账号操作共享并发预算已满",
+        )
+        account_task_store.notify_dependency_ready(dependency)
+    return future
 
 
 @dataclass
@@ -629,11 +825,50 @@ class WebUIContext:
 
 _runtime_lock = threading.Lock()
 _runtime_started = False
+_runtime_started_at: float | None = None
+
+
+def runtime_status() -> dict[str, Any]:
+    """Read-only process runtime state for the release agent's health route.
+
+    The structure intentionally contains no account, token, proxy or database
+    payload.  ``ready`` means WebUI startup completed; component liveness is
+    exposed separately so a health route can choose strict or degraded policy.
+    """
+    with _runtime_lock:
+        started = bool(_runtime_started)
+        started_at = _runtime_started_at
+    try:
+        executor_status = _ACCOUNT_EXECUTOR.status()
+    except Exception as exc:
+        executor_status = {"error": type(exc).__name__}
+    try:
+        dispatcher_status = codex_operation_service.dispatcher_status()
+    except Exception as exc:
+        dispatcher_status = {"error": type(exc).__name__}
+    try:
+        dependency_dispatcher_status = account_task_store.dependency_dispatcher_status()
+    except Exception as exc:
+        dependency_dispatcher_status = {"error": type(exc).__name__}
+    try:
+        projection_status = operation_task_store.projection_worker_status()
+    except Exception as exc:
+        projection_status = {"error": type(exc).__name__}
+    return {
+        "ready": started,
+        "started": started,
+        "pid": os.getpid(),
+        "started_at": started_at,
+        "executor": executor_status,
+        "codex_dispatcher": dispatcher_status,
+        "dependency_dispatcher": dependency_dispatcher_status,
+        "projection_worker": projection_status,
+    }
 
 
 def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
     """Start WebUI recovery and periodic workers once per process."""
-    global _runtime_started
+    global _runtime_started, _runtime_started_at
     active_logger = runtime_logger or logger
     with _runtime_lock:
         if _runtime_started:
@@ -656,6 +891,16 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
                 repaired_compatibility_projections,
             )
         operation_task_store.start_projection_worker()
+        account_task_store.set_dependency_ready_handler(_submit_ready_completion_dependency)
+        account_task_store.start_dependency_dispatcher()
+        try:
+            resumed_dependencies = account_task_store.drain_ready_dependencies(initialized=True)
+            if resumed_dependencies:
+                active_logger.info("已恢复 %s 个待续接的账号补全父任务", resumed_dependencies)
+        except Exception:
+            # Dependency recovery is additive.  The durable ready rows remain
+            # queryable and will be retried on the next startup/reconcile.
+            active_logger.exception("恢复账号补全父子依赖失败；不影响 WebUI 启动")
         try:
             from core.roxybrowser_client import cleanup_orphaned_profiles
 
@@ -711,4 +956,5 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
 
         start_periodic_cleanup()
         _runtime_started = True
+        _runtime_started_at = time.time()
         return True

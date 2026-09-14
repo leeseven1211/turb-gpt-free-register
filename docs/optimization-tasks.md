@@ -1,0 +1,113 @@
+# 任务可靠性优化（2026-09-14）
+
+本轮只做可审查的增量：保留 `account_action_*` 兼容写模型和原生
+`operation_*` 模型，不在一个版本内切换全部任务。PostgreSQL 是队列、Run、
+依赖和恢复状态的事实来源；进程内集合只做去重和唤醒优化。
+
+## 已实现阶段
+
+### 1. Durable dispatch 与全局并发预算
+
+- `AccountOperationExecutor` 在 pool generation 之外维护 accepted/active
+  计数。配置热更新保留旧池排空，但新旧池共享同一
+  `ACCOUNT_BATCH_WORKERS` budget，不会叠加总并发。
+- `try_submit()` 是非阻塞的有界提交接口。持久 dispatcher 没有空位时不等待、
+  不占账号租约，把队列行放回数据库等待下一轮。
+- `operation_runs` 继续由数据库 CAS 认领，启动恢复只收口心跳过期且没有其它
+  worker 有效账号 lease 的 Run；WebUI 启动不会打断仍由其它 worker 持有有效
+  lease 的 Run。
+- gateway 的 `register_dispatch_handler(task_type, handler, source_systems=...)`
+  注册按任务类型的执行器。`start_dispatcher()` 持续扫描所有已注册类型的
+  durable operation queue，而不是把循环写死成 Codex；默认只消费
+  `native_operations`，迁移完一个兼容来源后再显式放开该来源，避免双跑。
+
+### 2. 补全父子依赖
+
+- `operation_task_dependencies` 用 source system/id 表达 legacy 父任务和 native
+  子 Run，注册、ready、claim、ack 都是幂等的数据库状态转换。
+- `drain_ready_dependencies()` 只读并唤醒，不 claim。唯一 claim owner 是
+  `operation-dependency-dispatcher`；收到通知也只唤醒同一个持久扫描器，避免
+  “drain 先 claim、handler 再 claim”丢失续接。
+- 扫描器每轮有限读取 ready 行并调用 runtime 的非阻塞提交回调；回调通过共享
+  `AccountOperationExecutor.try_submit()` 执行，不在 child worker 栈同步执行
+  `_run_account_completion_worker`。
+- 并发满或执行异常时，依赖回到 `ready` 并写入 `next_attempt_at`（短退避）；
+  不使用每行 `threading.Timer`。启动时会把超时的 running claim 恢复为 ready，
+  供下一轮重新 claim。
+- 子任务终态和业务任务落库都完成后才收口父任务；等待中的父 coordinator 不
+  占用账号操作 lease。已确认的远端未知结果仍保持待对账，不会自动重复注册、
+  重复写密码或重复授权。
+
+## 对外协作接口
+
+### 配置代理 C
+
+Codex operation 优先调用：
+
+```python
+config.schema.non_sensitive_snapshot()
+# -> ConfigSnapshot(values, sources, revision)
+```
+
+`ConfigSnapshot.__slots__` 是 `revision`、`values`、`sources`；服务读取
+`revision`，通过 `as_dict()`/递归 thaw 复制冻结值，再将 C 的大写 schema key
+显式投影为既有执行字段。任务只保存 `oauth_driver`、`auth_source`、
+`sms_provider`、`sms_country`、账号动作代理模式及 `config_snapshot_revision`，
+不保存全量 schema 或 `sources`，也不定义配置字段。`same_as_registration` 会在
+快照内解析 `REGISTRATION_DRIVER`，旧的 `ACCOUNT_ACTION_PROXY_MODE` fallback
+仍保留。`set_config_snapshot_provider()` 继续作为测试/滚动集成边界；当前
+checkout 没有该模块时才使用旧配置读取兼容路径。
+
+### 发布/health 代理 E
+
+`webui.runtime.runtime_status()` 是只读、无账号/Token/代理内容的状态结构：
+
+```text
+{
+  ready, started, pid, started_at,
+  executor,
+  codex_dispatcher,
+  dependency_dispatcher,
+  projection_worker,
+}
+```
+
+其中 `executor` 提供 budget/accepted/active/available/generation，三个 worker
+状态提供 `started/alive/name`。health 路由可以按自身策略把 `ready` 与组件
+`alive`、数据库探活组合，不应把这些状态写回数据库。
+
+### 认证代理 D
+
+本轮没有修改 `core/codex_retry_service.py`。补全续接只依赖其现有外层契约：
+`reserve(email)`、`release(email)` 和 `run_twofa_worker(..., manage_task=False,
+steps=...)`；Codex 子操作仍通过 `codex_operation_service.submit()` 入 durable
+队列。若认证代理改动这些签名，需要在 runtime 外层适配，不要让 gateway 直接
+调用认证内部实现。
+
+## 已覆盖回归
+
+- 两代线程池热更新的总 active 数不超过全局 budget。
+- 原生任务同一 idempotency key 不重复创建逻辑任务/Run。
+- ready drain 不重复 claim；单一 scanner claim 后第二轮不重复；超时 running
+  claim 可在模拟重启后恢复并再次 claim。
+- 父任务从 waiting 在 child terminal 后自动推进；waiting coordinator 不阻塞
+  同账号 child。
+- 有效其它 worker lease 保留，孤儿 Run 才会被启动恢复收口。
+- gateway handler 按 task type/source 过滤，兼容未迁移来源不会被原生 handler 双跑。
+
+## 尚未迁移的任务类型
+
+本轮只把 Codex 原生 Run 接入通用 dispatcher，并完成补全依赖基础设施；以下
+兼容维护任务仍由各自 legacy queue/scanner 写入 gateway，再由 projection 对账，
+尚未注册为 native gateway handler：
+
+- `live_check` / `token_refresh` / `plan_check`；
+- `deactivation_mail` / `extract_link`；
+- `codex_token_refresh`；
+- `account_setup_retry`、`password_setup`、`password_change`、`twofa_setup`、
+  `twofa_change`；
+- 注册后置动作及注册续跑的完整 native Run 执行器。
+
+后续迁移每种类型时，应先提供其 native handler 和 source 迁移/去重证明，再
+停止对应旧 scanner，保留 projection 对账和失败/重启回归；不能仅把旧线程名
+改成 dispatcher。

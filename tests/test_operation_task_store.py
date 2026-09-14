@@ -8,6 +8,7 @@ from psycopg.errors import DeadlockDetected
 
 from core import account_task_store, db, operation_task_store, postgres_store, record_store, task_run_log
 from core.storage import operation
+from core.operations import task_gateway
 from tests.support_pg import PostgresTestCase
 from webui.app import create_app
 
@@ -691,6 +692,141 @@ class OperationTaskStoreTests(PostgresTestCase):
         self.assertEqual(0, refreshed["partial_count"])
         self.assertEqual(0, refreshed["failed_count"])
 
+    def test_child_terminal_state_advances_waiting_parent(self):
+        parent = operation_task_store.create_runtime_task(
+            task_type="account_completion", account_id=None, email="parent@example.com",
+            trigger="test", resource_family="completion_coordinator",
+        )
+        child = operation_task_store.create_runtime_task(
+            task_type="token_refresh", account_id=None, email="parent@example.com",
+            trigger="test", parent_task_id=int(parent["id"]), resource_family="openai_interactive",
+        )
+
+        waiting = operation_task_store.get_task(int(parent["id"]))
+        self.assertEqual("waiting", waiting["status"])
+        self.assertEqual("waiting", waiting["runs"][0]["status"])
+        self.assertIsNone(operation_task_store.active_run_for_account(1))
+
+        operation_task_store.finish_run(int(child["run"]["id"]), status="success")
+        completed = operation_task_store.get_task(int(parent["id"]))
+        self.assertEqual("success", completed["status"])
+        self.assertEqual("success", completed["runs"][0]["status"])
+        self.assertEqual("task.children_reconciled", completed["events"][-1]["event_type"])
+
+    def test_restart_reconciles_interrupted_native_child_to_parent(self):
+        parent = operation_task_store.create_runtime_task(
+            task_type="account_completion", account_id=None, email="restart-parent@example.com",
+            trigger="test", resource_family="completion_coordinator",
+        )
+        child = operation_task_store.create_runtime_task(
+            task_type="token_refresh", account_id=None, email="restart-parent@example.com",
+            trigger="test", parent_task_id=int(parent["id"]), resource_family="openai_interactive",
+        )
+        child_run_id = int(child["run"]["id"])
+        operation_task_store.claim_run(child_run_id, execution_id="crashed-worker", worker_pid=987)
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {postgres_store.qualified('operation_runs')} "
+                "SET heartbeat_at=now() - interval '1 hour' WHERE id=%s",
+                (child_run_id,),
+            )
+
+        self.assertEqual(1, operation_task_store.recover_interrupted_runtime_runs())
+        recovered_parent = operation_task_store.get_task(int(parent["id"]))
+        recovered_child = operation_task_store.get_task(int(child["id"]))
+        self.assertEqual("partial_success", recovered_parent["status"])
+        self.assertEqual("interrupted", recovered_child["status"])
+
+    def test_native_submission_key_is_idempotent(self):
+        first = operation_task_store.create_runtime_task(
+            task_type="codex_retry", account_id=None, email="idempotent@example.com",
+            trigger="test", idempotency_key="request-123",
+        )
+        second = operation_task_store.create_runtime_task(
+            task_type="codex_retry", account_id=None, email="idempotent@example.com",
+            trigger="retry-of-http-request", idempotency_key="request-123",
+        )
+        self.assertEqual(int(first["id"]), int(second["id"]))
+        self.assertEqual(int(first["run"]["id"]), int(second["run"]["id"]))
+        self.assertTrue(second["idempotent"])
+        self.assertEqual(1, len(operation_task_store.get_task(int(first["id"]))["runs"]))
+
+    def test_dependency_drain_has_one_claim_owner_and_recovers_after_restart(self):
+        parent_id = account_task_store.create_task(
+            task_type="account_completion",
+            account_id=None,
+            email="dependency-parent@example.com",
+            trigger="test",
+        )
+        child_id = account_task_store.create_task(
+            task_type="token_refresh",
+            account_id=None,
+            email="dependency-parent@example.com",
+            trigger="test",
+        )
+        dependency = operation_task_store.register_task_dependency(
+            parent_source_system="account_action_tasks",
+            parent_source_id=str(parent_id),
+            child_source_system="account_action_tasks",
+            child_source_id=str(child_id),
+            dependency_type="account_completion",
+            payload={"remaining_steps": ["plan_check"]},
+        )
+        operation_task_store.mark_task_dependency_ready(
+            child_source_system="account_action_tasks",
+            child_source_id=str(child_id),
+            child_status="success",
+            child_result={"ok": True},
+        )
+
+        # Startup drain is notification-only. It must not claim a row before
+        # the persistent scanner gets ownership.
+        with patch.object(operation, "claim_task_dependency", side_effect=AssertionError("drain claimed")):
+            self.assertEqual(
+                1,
+                task_gateway.drain_ready_dependencies(limit=10, initialized=True),
+            )
+
+        handled: list[dict] = []
+        task_gateway.set_dependency_ready_handler(lambda row: handled.append(row))
+        try:
+            self.assertEqual(1, task_gateway._dependency_tick())
+            self.assertEqual(1, len(handled))
+            self.assertEqual("running", handled[0]["status"])
+            # A second tick sees no ready row and cannot claim the same child.
+            self.assertEqual(0, task_gateway._dependency_tick())
+        finally:
+            task_gateway.set_dependency_ready_handler(None)
+            operation_task_store.complete_task_dependency(int(dependency["id"]), success=True)
+
+        stale = operation_task_store.register_task_dependency(
+            parent_source_system="account_action_tasks",
+            parent_source_id=str(parent_id),
+            child_source_system="account_action_tasks",
+            child_source_id=str(child_id + 1),
+            dependency_type="account_completion",
+            payload={},
+        )
+        operation_task_store.mark_task_dependency_ready(
+            child_source_system="account_action_tasks",
+            child_source_id=str(child_id + 1),
+            child_status="success",
+        )
+        first_claim = operation_task_store.claim_task_dependency(int(stale["id"]))
+        self.assertEqual(1, first_claim["attempts"])
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {postgres_store.qualified('operation_task_dependencies')} "
+                "SET updated_at=now() - interval '1 hour' WHERE id=%s",
+                (int(stale["id"]),),
+            )
+        self.assertEqual(1, operation_task_store.recover_stale_task_dependencies())
+        ready_again = operation_task_store.list_ready_task_dependencies()
+        self.assertEqual(int(stale["id"]), int(ready_again[0]["id"]))
+        second_claim = operation_task_store.claim_task_dependency(int(stale["id"]))
+        self.assertEqual(2, second_claim["attempts"])
+        operation_task_store.complete_task_dependency(int(stale["id"]), success=True)
+
     def test_running_cancel_uses_db_token_and_resource_ledger(self):
         account_id = self._seed_runtime_account("cancel@example.com")
         task = operation_task_store.create_runtime_task(
@@ -746,6 +882,25 @@ class OperationTaskStoreTests(PostgresTestCase):
         operation_task_store.register_resource(
             run_id, resource_type="sms_activation", provider="test", external_id="restart-activation",
         )
+        # A valid lease belongs to another worker; only make this fixture an
+        # orphan explicitly so startup recovery has an unambiguous target.
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE {postgres_store.qualified('operation_runs')}
+                SET heartbeat_at=now() - interval '1 hour'
+                WHERE id=%s
+                """,
+                (run_id,),
+            )
+            cur.execute(
+                f"""
+                UPDATE {postgres_store.qualified('account_operation_leases')}
+                SET expires_at=now() - interval '1 minute'
+                WHERE run_id=%s
+                """,
+                (run_id,),
+            )
 
         self.assertEqual(1, operation_task_store.recover_interrupted_runtime_runs())
         detail = operation_task_store.get_task(int(task["id"]))
@@ -754,6 +909,29 @@ class OperationTaskStoreTests(PostgresTestCase):
         self.assertEqual("reconciliation_required", detail["resources"][0]["state"])
         self.assertEqual("worker_restart", detail["resources"][0]["detail"]["reason"])
         self.assertTrue(operation_task_store.verify()["ok"])
+
+    def test_startup_recovery_preserves_run_with_valid_other_worker_lease(self):
+        account_id = self._seed_runtime_account("live-worker@example.com")
+        task = operation_task_store.create_runtime_task(
+            task_type="codex_retry", account_id=account_id,
+            email="live-worker@example.com", trigger="test",
+        )
+        run_id = int(task["run"]["id"])
+        operation_task_store.claim_run(run_id, execution_id="other-worker", worker_pid=456)
+        lease = operation_task_store.acquire_account_lease(account_id=account_id, run_id=run_id)
+        self.assertTrue(lease)
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE {postgres_store.qualified('operation_runs')}
+                SET heartbeat_at=now() - interval '1 hour'
+                WHERE id=%s
+                """,
+                (run_id,),
+            )
+
+        self.assertEqual(0, operation_task_store.recover_interrupted_runtime_runs())
+        self.assertEqual("running", operation_task_store.get_run(run_id)["status"])
 
     def test_failed_reauthorization_does_not_erase_existing_valid_asset(self):
         self._seed_runtime_account("valid@example.com")

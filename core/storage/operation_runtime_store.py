@@ -38,8 +38,16 @@ def list_queued_runs(**kwargs: Any) -> list[dict]:
     return _operation().list_queued_runs(**kwargs)
 
 
-def recover_interrupted_runtime_runs() -> int:
-    return _operation().recover_interrupted_runtime_runs()
+def list_dispatchable_runs(**kwargs: Any) -> list[dict]:
+    return _operation().list_dispatchable_runs(**kwargs)
+
+
+def recover_interrupted_runtime_runs(**kwargs: Any) -> int:
+    return _operation().recover_interrupted_runtime_runs(**kwargs)
+
+
+def claim_next_queued_run(**kwargs: Any) -> dict | None:
+    return _operation().claim_next_queued_run(**kwargs)
 
 
 def mark_runtime_batch_empty(batch_id: int, **kwargs: Any) -> bool:
@@ -110,11 +118,46 @@ def finish_run(run_id: int, **kwargs: Any) -> dict:
     return _operation().finish_run(run_id, **kwargs)
 
 
+def register_task_dependency(**kwargs: Any) -> dict:
+    return _operation().register_task_dependency(**kwargs)
+
+
+def mark_task_dependency_ready(**kwargs: Any) -> list[dict]:
+    return _operation().mark_task_dependency_ready(**kwargs)
+
+
+def list_ready_task_dependencies(**kwargs: Any) -> list[dict]:
+    return _operation().list_ready_task_dependencies(**kwargs)
+
+
+def claim_task_dependency(dependency_id: int, **kwargs: Any) -> dict | None:
+    return _operation().claim_task_dependency(dependency_id, **kwargs)
+
+
+def complete_task_dependency(dependency_id: int, **kwargs: Any) -> bool:
+    return _operation().complete_task_dependency(dependency_id, **kwargs)
+
+
+def recover_stale_task_dependencies(**kwargs: Any) -> int:
+    return _operation().recover_stale_task_dependencies(**kwargs)
+
+
+def reconcile_parent_task(task_id: int) -> dict | None:
+    return _operation().reconcile_parent_task(task_id)
+
+
+def projection_worker_status() -> dict[str, object]:
+    return _operation().projection_worker_status()
+
+
 __all__ = [
     "create_runtime_batch", "create_runtime_task", "retry_runtime_task", "get_run",
-    "get_task", "active_run_for_account", "list_queued_runs", "recover_interrupted_runtime_runs",
+    "get_task", "active_run_for_account", "list_queued_runs", "list_dispatchable_runs", "recover_interrupted_runtime_runs",
+    "claim_next_queued_run",
     "mark_runtime_batch_empty", "set_runtime_batch_skipped", "claim_run",
     "append_runtime_event", "heartbeat_run", "acquire_account_lease", "release_account_lease",
     "request_run_cancel", "is_run_cancel_requested", "mark_run_settling", "register_resource",
-    "release_resource", "finish_run",
+    "release_resource", "finish_run", "register_task_dependency",
+    "mark_task_dependency_ready", "list_ready_task_dependencies", "claim_task_dependency",
+    "complete_task_dependency", "recover_stale_task_dependencies", "reconcile_parent_task", "projection_worker_status",
 ]

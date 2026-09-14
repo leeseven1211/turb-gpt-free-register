@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 import unittest
+import threading
+import time
 from unittest.mock import MagicMock, call, patch
 
 
@@ -56,6 +58,66 @@ class AccountOperationExecutorTests(unittest.TestCase):
             first_pool.shutdown.call_args_list,
         )
         second_pool.shutdown.assert_called_once_with(wait=True, cancel_futures=False)
+
+    def test_two_pool_generations_share_one_concurrency_budget(self):
+        from core.account_operation_executor import AccountOperationExecutor
+
+        entered = threading.Event()
+        release = threading.Event()
+        lock = threading.Lock()
+        active = 0
+        maximum = 0
+
+        def work():
+            nonlocal active, maximum
+            with lock:
+                active += 1
+                maximum = max(maximum, active)
+                if active >= 2:
+                    entered.set()
+            release.wait(2)
+            with lock:
+                active -= 1
+
+        operation_executor = AccountOperationExecutor()
+        try:
+            with patch("config.codex.ACCOUNT_BATCH_WORKERS", 2):
+                first = [operation_executor.submit(work) for _ in range(2)]
+                self.assertTrue(entered.wait(1))
+            with patch("config.codex.ACCOUNT_BATCH_WORKERS", 4):
+                second = [operation_executor.submit(work) for _ in range(4)]
+                time.sleep(0.1)
+                self.assertLessEqual(operation_executor.status()["active"], 4)
+            release.set()
+            for future in first + second:
+                future.result(timeout=3)
+            self.assertLessEqual(maximum, 4)
+        finally:
+            release.set()
+            operation_executor.shutdown()
+
+    def test_try_submit_is_non_blocking_when_global_budget_is_full(self):
+        from core.account_operation_executor import AccountOperationExecutor
+
+        entered = threading.Event()
+        release = threading.Event()
+        operation_executor = AccountOperationExecutor()
+
+        def work():
+            entered.set()
+            release.wait(2)
+
+        try:
+            with patch("config.codex.ACCOUNT_BATCH_WORKERS", 1):
+                first = operation_executor.try_submit(work)
+                self.assertIsNotNone(first)
+                self.assertTrue(entered.wait(1))
+                self.assertIsNone(operation_executor.try_submit(work))
+            release.set()
+            first.result(timeout=3)
+        finally:
+            release.set()
+            operation_executor.shutdown()
 
     def test_codex_bulk_dispatch_submits_each_run_to_common_pool(self):
         from core import codex_operation_service

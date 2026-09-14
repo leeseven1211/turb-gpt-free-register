@@ -11,9 +11,11 @@ from webui import runtime
 class WebUIRuntimeTests(unittest.TestCase):
     def setUp(self):
         runtime._runtime_started = False
+        runtime._runtime_started_at = None
 
     def tearDown(self):
         runtime._runtime_started = False
+        runtime._runtime_started_at = None
 
     def test_start_runtime_recovers_and_starts_periodic_workers_once(self):
         with (
@@ -30,6 +32,9 @@ class WebUIRuntimeTests(unittest.TestCase):
             patch.object(runtime.db, "recover_interrupted_live_checks", return_value=6) as recover_live,
             patch.object(runtime.db, "backfill_account_registration_proxy_context", return_value=7) as backfill_proxy,
             patch.object(runtime.codex_operation_service, "resume_queued", return_value=8) as resume_codex,
+            patch.object(runtime.account_task_store, "set_dependency_ready_handler") as set_dependency_handler,
+            patch.object(runtime.account_task_store, "start_dependency_dispatcher") as start_dependency_dispatcher,
+            patch.object(runtime.account_task_store, "drain_ready_dependencies", return_value=0) as drain_dependencies,
             patch("core.deactivation_mail_service.start_periodic_scanner") as start_risk_scan,
             patch("core.token_refresh_service.start_periodic_refresher") as start_at_refresh,
             patch("core.codex_token_refresh_service.start_periodic_refresher") as start_codex_refresh,
@@ -52,12 +57,32 @@ class WebUIRuntimeTests(unittest.TestCase):
             recover_live,
             backfill_proxy,
             resume_codex,
+            set_dependency_handler,
+            start_dependency_dispatcher,
+            drain_dependencies,
             start_risk_scan,
             start_at_refresh,
             start_codex_refresh,
             start_auth_context_cleanup,
         ):
             self.assertEqual(1, mock.call_count)
+
+    def test_runtime_status_is_read_only_and_contains_release_health_components(self):
+        runtime._runtime_started = True
+        runtime._runtime_started_at = 123.0
+        with (
+            patch.object(runtime._ACCOUNT_EXECUTOR, "status", return_value={"available": 2}),
+            patch.object(runtime.codex_operation_service, "dispatcher_status", return_value={"alive": True}),
+            patch.object(runtime.account_task_store, "dependency_dispatcher_status", return_value={"alive": True}),
+            patch.object(runtime.operation_task_store, "projection_worker_status", return_value={"alive": True}),
+        ):
+            status = runtime.runtime_status()
+
+        self.assertTrue(status["ready"])
+        self.assertEqual(123.0, status["started_at"])
+        self.assertEqual({"available": 2}, status["executor"])
+        self.assertEqual({"alive": True}, status["dependency_dispatcher"])
+        self.assertNotIn("email", status)
 
     def test_completion_routes_pending_registration_to_resume_job(self):
         context = runtime.WebUIContext(Flask("test-runtime"), logging.getLogger("test-runtime"))
@@ -160,6 +185,34 @@ class WebUIRuntimeTests(unittest.TestCase):
             )
 
         self.assertEqual("partial_success", finish_task.call_args.kwargs["status"])
+
+    def test_ready_dependency_submission_uses_shared_budget_without_claiming(self):
+        dependency = {"id": 901, "status": "running", "payload": {}}
+        with (
+            patch.object(runtime._ACCOUNT_EXECUTOR, "try_submit", return_value=object()) as submit,
+            patch.object(runtime.operation_task_store, "claim_task_dependency") as claim,
+        ):
+            result = runtime._submit_ready_completion_dependency(dependency)
+
+        self.assertIsNotNone(result)
+        claim.assert_not_called()
+        submit.assert_called_once_with(runtime._handle_ready_completion_dependency, dependency)
+
+    def test_busy_ready_dependency_returns_to_durable_queue_without_timer(self):
+        dependency = {"id": 902, "status": "running", "payload": {}}
+        with (
+            patch.object(runtime._ACCOUNT_EXECUTOR, "try_submit", return_value=None),
+            patch.object(runtime.operation_task_store, "complete_task_dependency", return_value=True) as complete,
+            patch.object(runtime.account_task_store, "notify_dependency_ready") as notify,
+        ):
+            self.assertIsNone(runtime._submit_ready_completion_dependency(dependency))
+
+        complete.assert_called_once_with(
+            902,
+            success=False,
+            error="账号操作共享并发预算已满",
+        )
+        notify.assert_called_once_with(dependency)
 
     def test_stale_password_capability_does_not_block_completion(self):
         context = runtime.WebUIContext(Flask("test-runtime"), logging.getLogger("test-runtime"))

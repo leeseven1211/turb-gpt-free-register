@@ -10,12 +10,15 @@ import logging
 import os
 import threading
 import uuid
+from concurrent.futures import Future
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from core.storage import accounts as db
 from core.storage import operation_runtime_store as operation_task_store
 from core import task_run_log
+from core.operations import task_gateway
 from core.operation_runtime import CancellationToken, OperationCancelled, operation_context
 from core.account_operation_executor import configured_workers
 from core.account_operation_executor import executor as _EXECUTOR
@@ -25,6 +28,25 @@ logger = logging.getLogger(__name__)
 _LOG_DIR = Path(__file__).resolve().parent.parent / "注册日志"
 _LOCAL_TOKENS: dict[int, CancellationToken] = {}
 _LOCAL_TOKENS_LOCK = threading.RLock()
+_DISPATCHED_RUNS: set[int] = set()
+_DISPATCH_LOCK = threading.RLock()
+_CONFIG_SNAPSHOT_PROVIDER: Callable[..., Any] | None = None
+_CONFIG_PROVIDER_LOCK = threading.RLock()
+
+# C's schema snapshot is intentionally broad because it is also consumed by
+# the configuration UI.  A Codex operation must capture only the choices that
+# its execution boundary can use.  Keep the translation here so the task
+# payload remains stable while C evolves its schema names.
+_SNAPSHOT_MISSING = object()
+_SNAPSHOT_REVISION_KEY = "config_snapshot_revision"
+_ACCOUNT_PROXY_MODE_KEYS = {
+    "password": ("ACCOUNT_PASSWORD_PROXY_MODE", "password_proxy_mode"),
+    "twofa": ("ACCOUNT_2FA_PROXY_MODE", "twofa_proxy_mode"),
+    "plan_check": ("ACCOUNT_PLAN_CHECK_PROXY_MODE", "plan_check_proxy_mode"),
+    "live_check": ("ACCOUNT_LIVE_CHECK_PROXY_MODE", "live_check_proxy_mode"),
+    "refresh_at": ("ACCOUNT_REFRESH_AT_PROXY_MODE", "refresh_at_proxy_mode"),
+    "codex": ("ACCOUNT_CODEX_PROXY_MODE", "codex_proxy_mode"),
+}
 
 
 def log_path(email: str) -> Path:
@@ -43,8 +65,23 @@ def _feature_ready() -> tuple[bool, str]:
     return require_feature("codex_retry")
 
 
-def _config_snapshot(driver_override: str | None = None) -> dict:
-    """只保存可复现执行路径所需的非敏感配置。"""
+def set_config_snapshot_provider(provider: Callable[..., Any] | None) -> None:
+    """Install C's immutable non-sensitive snapshot provider at the boundary.
+
+    The provider is intentionally dependency-injected: this service does not
+    define configuration fields or persist secrets.  It may accept the
+    ``driver_override`` keyword and return either a values mapping or
+    ``ConfigSnapshot`` (or a compatible mapping) is preferred. The current
+    config reader remains a compatibility fallback until C's schema module is
+    present in this checkout.
+    """
+    global _CONFIG_SNAPSHOT_PROVIDER
+    with _CONFIG_PROVIDER_LOCK:
+        _CONFIG_SNAPSHOT_PROVIDER = provider
+
+
+def _legacy_config_snapshot(driver_override: str | None = None) -> dict:
+    """Compatibility reader for deployments before C's provider is installed."""
     from config import codex as cfg
     from config import account as account_cfg
     from config import proxy as proxy_cfg
@@ -77,6 +114,201 @@ def _config_snapshot(driver_override: str | None = None) -> dict:
     }
 
 
+def _snapshot_payload(raw: Any) -> tuple[dict, object | None]:
+    """Normalize C's immutable ConfigSnapshot without retaining its object.
+
+    C's ``as_dict`` deliberately returns the thawed values only, so read the
+    revision before calling it.  The recursive thaw also handles a compatible
+    provider that exposes nested ``MappingProxyType`` values; ``deepcopy``
+    cannot copy those proxies directly.
+    """
+    revision = getattr(raw, "revision", _SNAPSHOT_MISSING)
+    if isinstance(raw, Mapping):
+        payload = _thaw_snapshot_value(raw)
+        revision = payload.get("revision", revision)
+        if revision is _SNAPSHOT_MISSING or revision is None:
+            # Test/rolling providers from before C's revision contract may
+            # still publish one of these envelope names.  Do not use these
+            # aliases for the real ConfigSnapshot object.
+            revision = payload.get("version")
+            if revision is None:
+                revision = payload.get("config_version")
+        values = payload.get("values")
+        if values is None:
+            values = payload.get("snapshot")
+        values = values if isinstance(values, Mapping) else payload
+    else:
+        as_dict = getattr(raw, "as_dict", None)
+        values = as_dict() if callable(as_dict) else getattr(raw, "values", None)
+    if not isinstance(values, Mapping):
+        raise TypeError("配置 snapshot 必须提供 Mapping values")
+    return _thaw_snapshot_value(values), (
+        None if revision is _SNAPSHOT_MISSING else revision
+    )
+
+
+def _thaw_snapshot_value(value: Any) -> Any:
+    """Copy ordinary snapshot containers without copying mapping proxies."""
+    if isinstance(value, Mapping):
+        return {key: _thaw_snapshot_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_thaw_snapshot_value(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        return {_thaw_snapshot_value(item) for item in value}
+    return value
+
+
+def _snapshot_value(values: Mapping[str, Any], *keys: str, default: Any = None) -> Any:
+    for key in keys:
+        if key in values:
+            return values[key]
+    return default
+
+
+def _snapshot_text(value: Any, default: str, *, lower: bool = False) -> str:
+    text = str(value if value is not None else default).strip()
+    return text.lower() if lower else text
+
+
+def _registration_driver_for_snapshot(values: Mapping[str, Any]) -> str:
+    configured = _snapshot_value(
+        values,
+        "REGISTRATION_DRIVER",
+        "registration_driver",
+        default=None,
+    )
+    if configured is None or not str(configured).strip():
+        # This fallback is only for old injected/partial providers.  The real
+        # C snapshot contains REGISTRATION_DRIVER and is resolved without
+        # consulting mutable module globals.
+        try:
+            from config import roxybrowser as roxy_cfg
+
+            configured = getattr(roxy_cfg, "REGISTRATION_DRIVER", "protocol")
+        except (ImportError, AttributeError):
+            configured = "protocol"
+    return _snapshot_text(configured, "protocol", lower=True)
+
+
+def _project_config_snapshot(
+    values: Mapping[str, Any],
+    revision: object | None,
+    *,
+    driver_override: str | None = None,
+) -> dict[str, Any]:
+    """Project C's uppercase schema values into the execution snapshot.
+
+    The returned mapping is the only representation persisted in an
+    operation task.  In particular, it intentionally excludes C's ``sources``
+    and every unrelated non-sensitive schema field.
+    """
+    override = driver_override
+    configured_driver = _snapshot_value(
+        values,
+        "CODEX_OAUTH_DRIVER",
+        "oauth_driver",
+        default="protocol",
+    )
+    driver = _snapshot_text(
+        configured_driver if override is None else override,
+        "protocol",
+        lower=True,
+    )
+    if driver == "same_as_registration":
+        driver = _registration_driver_for_snapshot(values)
+
+    action_proxy = _snapshot_value(
+        values,
+        "ACCOUNT_ACTION_PROXY_MODE",
+        "account_proxy_mode",
+        default="registration",
+    )
+    codex_proxy = _snapshot_value(
+        values,
+        "ACCOUNT_CODEX_PROXY_MODE",
+        "codex_proxy_mode",
+        default=None,
+    )
+    effective_codex_proxy = codex_proxy
+    # C publishes both the newer purpose-specific key and the historical
+    # ACCOUNT_ACTION_PROXY_MODE key.  If the newer value is still its default
+    # and the legacy value is explicitly non-default, retain the old env
+    # compatibility behavior; a purpose-specific non-default always wins.
+    if (
+        effective_codex_proxy is None
+        or (
+            str(effective_codex_proxy).strip().lower() in {"", "registration"}
+            and str(action_proxy or "").strip().lower() not in {"", "registration"}
+        )
+    ):
+        effective_codex_proxy = action_proxy
+    modes: dict[str, str] = {}
+    nested_modes = _snapshot_value(values, "account_proxy_modes", default=None)
+    if isinstance(nested_modes, Mapping):
+        nested_modes = _thaw_snapshot_value(nested_modes)
+    else:
+        nested_modes = {}
+    for name, keys in _ACCOUNT_PROXY_MODE_KEYS.items():
+        value = _snapshot_value(values, *keys, default=None)
+        if value is None:
+            value = _snapshot_value(nested_modes, name, default=None)
+        if value is None and name == "codex":
+            value = effective_codex_proxy
+        if value is None:
+            value = "direct" if name in {"plan_check", "live_check"} else "registration"
+        modes[name] = str(value or ("direct" if name in {"plan_check", "live_check"} else "registration"))
+
+    output: dict[str, Any] = {
+        "oauth_driver": driver,
+        "auth_source": _snapshot_text(
+            _snapshot_value(values, "CODEX_AUTH_URL_SOURCE", "auth_source", default="cpa"),
+            "cpa",
+            lower=True,
+        ),
+        "sms_provider": _snapshot_text(
+            _snapshot_value(values, "SMS_PROVIDER", "sms_provider", default="grizzly"),
+            "grizzly",
+            lower=True,
+        ),
+        "sms_country": str(
+            _snapshot_value(values, "SMS_COUNTRY", "sms_country", default="") or ""
+        ),
+        "account_proxy_mode": str(effective_codex_proxy or action_proxy or "registration"),
+        "account_proxy_modes": modes,
+    }
+    if revision is not None:
+        output[_SNAPSHOT_REVISION_KEY] = revision
+    return output
+
+
+def _schema_config_snapshot(driver_override: str | None = None) -> dict | None:
+    """Read the pluggable, atomic non-sensitive snapshot supplied by C."""
+    try:
+        from config import schema
+    except ImportError:
+        return None
+    provider = getattr(schema, "non_sensitive_snapshot", None)
+    if provider is None:
+        return None
+    values, revision = _snapshot_payload(provider())
+    return _project_config_snapshot(values, revision, driver_override=driver_override)
+
+
+def _config_snapshot(driver_override: str | None = None) -> dict:
+    """Return a copied, revision-carrying non-sensitive execution snapshot."""
+    with _CONFIG_PROVIDER_LOCK:
+        provider = _CONFIG_SNAPSHOT_PROVIDER
+    if provider is None:
+        schema_snapshot = _schema_config_snapshot(driver_override)
+        return schema_snapshot if schema_snapshot is not None else _legacy_config_snapshot(driver_override)
+    try:
+        raw = provider(driver_override=driver_override)
+    except TypeError:
+        raw = provider()
+    values, revision = _snapshot_payload(raw)
+    return _project_config_snapshot(values, revision, driver_override=driver_override)
+
+
 def _append_log(email: str, message: str, *, clear: bool = False) -> None:
     path = log_path(email)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -85,8 +317,35 @@ def _append_log(email: str, message: str, *, clear: bool = False) -> None:
         handle.write(str(message).rstrip() + "\n")
 
 
-def _dispatch(run_id: int) -> None:
-    _EXECUTOR.submit(_execute_run, int(run_id))
+def _forget_dispatched(run_id: int) -> None:
+    with _DISPATCH_LOCK:
+        _DISPATCHED_RUNS.discard(int(run_id))
+    task_gateway.release_dispatch(int(run_id))
+
+
+def _dispatch(run_id: int) -> bool:
+    """Submit one durable run once per process; DB claim remains authoritative."""
+    run_id = int(run_id)
+    if not task_gateway.reserve_dispatch(run_id):
+        return False
+    with _DISPATCH_LOCK:
+        if run_id in _DISPATCHED_RUNS:
+            task_gateway.release_dispatch(run_id)
+            return False
+        _DISPATCHED_RUNS.add(run_id)
+    try:
+        future = _EXECUTOR.submit(_execute_run, run_id)
+    except Exception:
+        _forget_dispatched(run_id)
+        raise
+    # Real Futures release the process-local de-duplication marker when the
+    # work ends.  A mocked/compatible submit result is not allowed to poison a
+    # later test or caller forever.
+    if isinstance(future, Future):
+        future.add_done_callback(lambda _completed: _forget_dispatched(run_id))
+    else:
+        _forget_dispatched(run_id)
+    return True
 
 
 def _dispatch_bulk(run_ids: list[int], workers: int | None = None) -> None:
@@ -96,7 +355,26 @@ def _dispatch_bulk(run_ids: list[int], workers: int | None = None) -> None:
     ACCOUNT_BATCH_WORKERS is authoritative.
     """
     for run_id in run_ids:
-        _EXECUTOR.submit(_execute_run, int(run_id))
+        _dispatch(int(run_id))
+
+
+def _dispatch_queued_once(*, scan_limit: int | None = None) -> int:
+    """Seed the gateway's registered task-type dispatcher once."""
+    return task_gateway.dispatch_registered_once(limit=scan_limit)
+
+
+def start_dispatcher() -> bool:
+    """Register Codex and start the shared task-type dispatcher."""
+    task_gateway.register_dispatch_handler("codex_retry", _execute_run)
+    return task_gateway.start_dispatcher()
+
+
+def stop_dispatcher(*, timeout: float = 2.0) -> bool:
+    return task_gateway.stop_dispatcher(timeout=timeout)
+
+
+def dispatcher_status() -> dict[str, object]:
+    return task_gateway.dispatcher_status()
 
 
 def _duplicate_result(account_id: int) -> dict:
@@ -120,6 +398,7 @@ def submit(
     batch_ordinal: int | None = None,
     dispatch: bool = True,
     driver: str | None = None,
+    idempotency_key: str | None = None,
 ) -> dict:
     """提交一个 Codex OAuth 逻辑任务和第一次 attempt。"""
     email = str(email or "").strip()
@@ -144,6 +423,7 @@ def submit(
             batch_id=batch_id,
             batch_ordinal=batch_ordinal,
             data={"config_snapshot": _config_snapshot(driver_override=driver)},
+            idempotency_key=idempotency_key,
         )
     except Exception as exc:
         # 活跃 run 的部分唯一索引是跨进程防重事实；不再依赖进程内 email set。
@@ -151,6 +431,20 @@ def submit(
             return _duplicate_result(account_id)
         logger.exception("创建 Codex operation 失败：email=%s", email)
         return {"accepted": False, "error": f"创建任务失败：{type(exc).__name__}: {exc}"}
+    if created.get("idempotent"):
+        existing_run = created.get("run") if isinstance(created.get("run"), dict) else {}
+        existing_status = str(existing_run.get("status") or created.get("status") or "queued")
+        return {
+            "accepted": True,
+            "busy": existing_status in {"queued", "running", "cancelling", "settling", "waiting"},
+            "reused": True,
+            "task_id": int(created["id"]),
+            "run_id": int(existing_run.get("id") or 0) or None,
+            "account_id": account_id,
+            "email": email,
+            "status": existing_status,
+            "trigger": str(trigger or "manual"),
+        }
     run = created["run"]
     run_id = int(run["id"])
     db.update_account_codex_operation_state(
@@ -164,6 +458,7 @@ def submit(
     )
     if dispatch:
         _dispatch(run_id)
+        task_gateway.notify_dispatch()
     return {
         "accepted": True,
         "busy": False,
@@ -316,12 +611,12 @@ def is_retrying(email: str) -> bool:
     return bool(account_id and operation_task_store.active_run_for_account(account_id))
 
 
-def resume_queued(*, limit: int = 500) -> int:
-    """进程启动后恢复数据库队列；claim_run 保证多进程不会重复执行。"""
-    runs = operation_task_store.list_queued_runs(limit=limit)
-    for run in runs:
-        _dispatch(int(run["id"]))
-    return len(runs)
+def resume_queued(*, limit: int | None = None) -> int:
+    """启动 durable dispatcher and seed the queue without a 500-row ceiling."""
+    start_dispatcher()
+    submitted = _dispatch_queued_once(scan_limit=limit)
+    task_gateway.notify_dispatch()
+    return submitted
 
 
 def _execute_run(run_id: int) -> dict:
@@ -457,22 +752,19 @@ def _execute_run(run_id: int) -> dict:
                 final_status = "failed"
                 credential_state = "valid" if existing_valid else None
                 final_error = str(result.get("message") or "Codex OAuth 失败")
-            operation_task_store.finish_run(
-                run_id,
-                status=final_status,
-                message=str(result.get("message") or ""),
-                error=final_error,
-                result_summary={
-                    "ok": final_status == "success",
-                    "status": final_status,
-                    "message": result.get("message"),
-                    "credential_confirmed": confirmed,
-                    "callback_submitted": callback_submitted,
-                    "credential_file": Path(str(result.get("file_path") or "")).name or None,
-                    "receipt_file": Path(str(result.get("receipt_path") or "")).name or None,
-                    "oauth_driver": driver,
-                },
-            )
+            run_summary = {
+                "ok": final_status == "success",
+                "status": final_status,
+                "message": result.get("message"),
+                "credential_confirmed": confirmed,
+                "callback_submitted": callback_submitted,
+                "credential_file": Path(str(result.get("file_path") or "")).name or None,
+                "receipt_file": Path(str(result.get("receipt_path") or "")).name or None,
+                "oauth_driver": driver,
+            }
+            # Persist the business outcome before publishing the child Run's
+            # terminal/dependency-ready state. A continuation must not race
+            # the account row and conclude from a stale credential state.
             db.update_account_codex_operation_state(
                 email,
                 credential_state=credential_state,
@@ -489,23 +781,30 @@ def _execute_run(run_id: int) -> dict:
                 )
                 if not persisted:
                     logger.error("Codex OAuth 废号状态写回失败：account_id=%s run_id=%s", account_id, run_id)
+            operation_task_store.finish_run(
+                run_id,
+                status=final_status,
+                message=str(result.get("message") or ""),
+                error=final_error,
+                result_summary=run_summary,
+            )
             return {**result, "status": final_status, "run_id": run_id}
     except OperationCancelled as exc:
         message = str(exc) or "用户手动停止 Codex 补跑"
-        operation_task_store.finish_run(run_id, status="cancelled", error=message, result_summary={"ok": False, "status": "cancelled", "message": message})
         db.update_account_codex_operation_state(
             email, execution_status="empty", last_run_status="cancelled",
             error=message, active_run_id=0,
         )
+        operation_task_store.finish_run(run_id, status="cancelled", error=message, result_summary={"ok": False, "status": "cancelled", "message": message})
         return {"status": "cancelled", "ok": False, "message": message, "run_id": run_id}
     except Exception as exc:
         message = f"{type(exc).__name__}: {exc}"
         logger.exception("Codex operation 执行失败：run=%s email=%s", run_id, email)
-        operation_task_store.finish_run(run_id, status="failed", error=message, result_summary={"ok": False, "status": "failed", "message": message})
         db.update_account_codex_operation_state(
             email, execution_status="empty", last_run_status="failed",
             error=message, active_run_id=0,
         )
+        operation_task_store.finish_run(run_id, status="failed", error=message, result_summary={"ok": False, "status": "failed", "message": message})
         return {"status": "failed", "ok": False, "message": message, "run_id": run_id}
     finally:
         if file_handler is not None:
@@ -524,3 +823,4 @@ def _execute_run(run_id: int) -> dict:
             operation_task_store.release_account_lease(run_id, lease_token)
         with _LOCAL_TOKENS_LOCK:
             _LOCAL_TOKENS.pop(run_id, None)
+        _forget_dispatched(run_id)
