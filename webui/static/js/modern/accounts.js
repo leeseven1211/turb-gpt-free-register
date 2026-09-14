@@ -818,6 +818,7 @@ function _totpCellV2(r) {
     <div class="status-action-cell" data-account-totp-cell="${esc(r.id)}">
       <span class="pill status-success">已启用</span>
       <button type="button" data-account-totp-copy="${esc(r.id)}" title="获取并复制当前 6 位 TOTP 验证码">复制</button>
+      <button type="button" data-account-copy-secret="totp_secret" data-account-id="${esc(r.id)}" title="复制 2FA 密钥（不是当前 6 位验证码）">复制2FA</button>
     </div>
   `;
 }
@@ -1047,7 +1048,7 @@ function updateAccountSelectionUi(pageRows = null) {
     'btnCheckSelectedLiveV2', 'btnRefreshSelectedTokenV2', 'btnCheckSelectedPlansV2', 'btnCheckSelectedDeactivationMailV2', 'btnExtractSelectedLinksV2',
     'btnSetupSelectedAccountsV2', 'btnAddPasswordSelectedAccountsV2', 'btnAddTwofaSelectedAccountsV2', 'btnChangePasswordSelectedAccountsV2', 'btnChangeTwofaSelectedAccountsV2', 'btnCompleteSelectedAccountsV2', 'btnUploadSelectedCodexSub2V2', 'btnRetrySelectedCodexV2', 'btnDownloadSelectedCpaV2', 'btnStopSelectedCodexV2',
     'btnCopySelectedTokensV2', 'btnCopySelectedLinesV2', 'btnCopySelectedEmailsV2',
-    'btnCopySelectedPasswordsV2',
+    'btnCopySelectedPasswordsV2', 'btnCopySelectedTotpsV2',
     'btnDownloadSelectedTxtV2', 'btnArchiveSelectedAccountsV2', 'btnDeleteSelectedAccountsV2',
   ];
   v2Ids.forEach(id => {
@@ -1461,6 +1462,17 @@ async function copySelectedAccountPasswords() {
     copyText(lines.join('\n'));
     showToast(`已复制 ${lines.length} 个账号密码；未设置密码的账号已跳过`);
   } catch(err) { showToast('复制密码失败: ' + err.message); }
+}
+
+async function copySelectedAccountTotpSecrets() {
+  const ids = Array.from(ACCOUNT_SELECTED).map(Number);
+  if (!ids.length) { showToast('请先选择账号'); return; }
+  try {
+    const lines = await fetchAccountSecrets(ids, 'totp_secret');
+    if (!lines.length) { showToast('选中账号没有已设置的 2FA 密钥'); return; }
+    copyText(lines.join('\n'));
+    showToast(`已复制 ${lines.length} 个 2FA 密钥；未设置 2FA 的账号已跳过`);
+  } catch(err) { showToast('复制 2FA 失败: ' + err.message); }
 }
 
 function bindDateFilterPanel({ btnId, panelId, fromId, toId, onApply }) {
@@ -2180,6 +2192,7 @@ async function copySelectedAccountTokens() {
   bind('btnCopySelectedLinesV2', copySelectedAccountLines);
   bind('btnCopySelectedEmailsV2', copySelectedAccountEmails);
   bind('btnCopySelectedPasswordsV2', copySelectedAccountPasswords);
+  bind('btnCopySelectedTotpsV2', copySelectedAccountTotpSecrets);
   bind('btnDownloadSelectedTxtV2', downloadSelectedAccountTxt);
   bind('btnArchiveSelectedAccountsV2', archiveSelectedAccounts);
   bind('btnDeleteSelectedAccountsV2', deleteSelectedAccounts);

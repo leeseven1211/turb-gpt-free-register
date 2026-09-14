@@ -306,7 +306,7 @@ function renderAccounts() {
       <td>${_accountStatusCell(r)}</td>
       <td>${_planCell(r)}<div class="sub-cell">${_extractLinkCell(r)}</div></td>
       <td>${_trialCell(r)}</td>
-      <td>${r.totp_enabled ? `<div data-account-totp-cell="${esc(r.id)}"><span class="pill status-success">已启用</span> <button class="good" data-account-totp-code="${esc(r.id)}" title="查询当前 6 位 TOTP 验证码">查询验证码</button> <span class="mono" data-account-totp-value hidden></span> <span class="muted" data-account-totp-ttl hidden></span> <button class="good" data-account-totp-copy="${esc(r.id)}" data-totp-code="" title="复制当前 TOTP 验证码" hidden>复制</button></div>` : '<span class="muted">未启用</span>'}</td>
+      <td>${r.totp_enabled ? `<div data-account-totp-cell="${esc(r.id)}"><span class="pill status-success">已启用</span> <button class="good" data-account-totp-code="${esc(r.id)}" title="查询当前 6 位 TOTP 验证码">查询验证码</button> <span class="mono" data-account-totp-value hidden></span> <span class="muted" data-account-totp-ttl hidden></span> <button class="good" data-account-totp-copy="${esc(r.id)}" data-totp-code="" title="复制当前 TOTP 验证码" hidden>复制</button> <button class="good" data-account-copy-secret="totp_secret" data-account-id="${esc(r.id)}" title="复制 2FA 密钥（不是当前 6 位验证码）">复制2FA</button></div>` : '<span class="muted">未启用</span>'}</td>
       <td>${_codexCell(r)}</td>
       <td class="muted">${esc(r.created_at || '-')}</td>
       <td class="actions actions-cell">

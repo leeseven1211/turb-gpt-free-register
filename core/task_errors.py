@@ -84,7 +84,10 @@ _RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         "external",
         "外部错误",
         "网络 / 上游服务",
-        ("httperror", "connection", "timeout", "timed out", "http error 5", "网络"),
+        (
+            "httperror", "connection", "timeout", "timed out", "http error 5", "网络",
+            "password_result_unknown",
+        ),
     ),
 )
 

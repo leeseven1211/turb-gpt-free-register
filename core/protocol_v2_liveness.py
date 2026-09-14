@@ -96,6 +96,7 @@ class ProtocolV2AuthError(RuntimeError):
             "mfa_secret_missing",
         }
         self.response_observed = bool(response_observed)
+        self.diagnostics: dict = {}
         super().__init__(message or self.code)
 
 
@@ -131,6 +132,19 @@ def _response_text(response) -> str:
     # This is used only for local classification.  It must never be returned or
     # logged because auth responses can contain challenge details.
     return str(getattr(response, "text", "") or "")
+
+
+def _request_diagnostics(exc: BaseException, *, operation: str, response_observed: bool) -> dict:
+    """Return only safe metadata for diagnosing an auth request failure."""
+    response = getattr(exc, "response", None)
+    status = _response_status(response)
+    return {
+        "operation": str(operation),
+        "failure_kind": "http_error" if response_observed else "transport_error",
+        "exception_type": type(exc).__name__[:80],
+        "http_status": status,
+        "response_observed": bool(response_observed),
+    }
 
 
 def _request_error(exc: BaseException, *, operation: str) -> ProtocolV2AuthError:
@@ -181,7 +195,7 @@ def _request_error(exc: BaseException, *, operation: str) -> ProtocolV2AuthError
             category="network",
             retryable=False,
             roxy_fallback_allowed=False,
-            response_observed=False,
+            response_observed=status is not None,
         )
     return ProtocolV2AuthError(
         f"{operation}_failed",
@@ -199,13 +213,25 @@ def _post_json(session, url: str, *, headers: dict, payload: dict, operation: st
             allow_redirects=False,
         )
     except Exception as exc:
-        raise _request_error(exc, operation=operation) from exc
+        error = _request_error(exc, operation=operation)
+        error.diagnostics = _request_diagnostics(
+            exc,
+            operation=operation,
+            response_observed=error.response_observed,
+        )
+        raise error from exc
 
     status = _response_status(response)
     if status is None or status < 200 or status >= 300:
         exc = RuntimeError(f"{operation} status={status or 0}")
         exc.response = response
-        raise _request_error(exc, operation=operation) from exc
+        error = _request_error(exc, operation=operation)
+        error.diagnostics = _request_diagnostics(
+            exc,
+            operation=operation,
+            response_observed=error.response_observed,
+        )
+        raise error from exc
     try:
         data = response.json()
     except Exception as exc:
@@ -472,6 +498,8 @@ def _refresh_with_password(
         return result
 
     fallback_used = False
+    auth_method = "protocol_v2"
+    password_auth_status = ""
     try:
         session, authorize_url = _network_preflight_with_retry(
             email,
@@ -486,7 +514,70 @@ def _refresh_with_password(
         if dead_code:
             raise ProtocolV2AuthError("account_deactivated", category="account", roxy_fallback_allowed=False)
 
+        parsed_final_url = urlparse(str(final_url or ""))
+        final_host = (parsed_final_url.hostname or "").lower()
+        final_path = parsed_final_url.path.lower()
+        if final_host == "auth.openai.com" and final_path == "/email-verification":
+            auth_method = "email_otp"
+            password_auth_status = "skipped"
+            email_result, auth_method = _complete_email_otp(
+                session,
+                email,
+                otp_after_ts,
+                auth_method=auth_method,
+            )
+            email_continue_url = _extract_continue_url(email_result)
+            if _is_mfa(email_result, email_continue_url):
+                if not totp_secret:
+                    raise ProtocolV2AuthError(
+                        "mfa_secret_missing",
+                        category="configuration",
+                        roxy_fallback_allowed=False,
+                    )
+                session_info, _ = _complete_mfa(session, email_result, email_continue_url, totp_secret)
+                auth_method = "email_otp_mfa"
+            else:
+                session_info = email_result
+            return _success(
+                checked_at,
+                session_info,
+                session,
+                auth_method=auth_method,
+                password_auth_status=password_auth_status,
+                fallback_used=False,
+            )
+
+        if final_host == "auth.openai.com" and final_path.startswith("/mfa-challenge"):
+            auth_method = "mfa_totp"
+            password_auth_status = "skipped"
+            if not totp_secret:
+                raise ProtocolV2AuthError(
+                    "mfa_secret_missing",
+                    category="configuration",
+                    roxy_fallback_allowed=False,
+                )
+            factor_id = _extract_factor_id(None, str(final_url))
+            if not factor_id:
+                raise ProtocolV2AuthError("mfa_factor_missing", category="response", roxy_fallback_allowed=False)
+            session_info, _ = _complete_mfa(session, {"continue_url": str(final_url)}, str(final_url), totp_secret)
+            return _success(
+                checked_at,
+                session_info,
+                session,
+                auth_method=auth_method,
+                password_auth_status=password_auth_status,
+                fallback_used=False,
+            )
+
+        if final_host != "auth.openai.com" or final_path != "/log-in/password":
+            raise ProtocolV2AuthError(
+                "auth_page_unknown",
+                category="response",
+                roxy_fallback_allowed=True,
+            )
+
         try:
+            auth_method = "password"
             password_result = _password_verify(session, password)
         except ProtocolV2AuthError as exc:
             if exc.code != "password_rejected":
@@ -561,6 +652,7 @@ def _refresh_with_password(
                     roxy_fallback_allowed=False,
                 )
             session_info, auth_method = _complete_mfa(session, password_result, continue_url, totp_secret)
+            password_auth_status = "verified"
         elif _is_email_otp(password_result, continue_url):
             email_result, auth_method = _complete_email_otp(
                 session,
@@ -584,9 +676,11 @@ def _refresh_with_password(
                 auth_method = "password_email_otp_mfa"
             else:
                 session_info = email_result
+            password_auth_status = "verified"
         elif continue_url:
             session_info = _follow_and_fetch(session, continue_url, referer=_PASSWORD_PATH)
             auth_method = "password"
+            password_auth_status = "verified"
         else:
             raise ProtocolV2AuthError("auth_page_unknown", category="response", roxy_fallback_allowed=True)
         return _success(
@@ -597,6 +691,12 @@ def _refresh_with_password(
             password_auth_status="verified",
             fallback_used=fallback_used,
         )
+    except ProtocolV2AuthError as exc:
+        # Keep the state-machine location without copying any response body.
+        exc.auth_method = auth_method
+        if password_auth_status:
+            exc.password_auth_status = password_auth_status
+        raise
     finally:
         if context_recorder is not None:
             if fallback_session is not None:
@@ -719,11 +819,16 @@ def refresh_access_token(
             "checked_at": checked_at,
             "error": exc.code,
             "error_category": exc.category,
-            "auth_method": "protocol_v2",
+            "auth_method": getattr(exc, "auth_method", "protocol_v2"),
             "roxy_fallback_allowed": exc.roxy_fallback_allowed,
             "retryable": exc.retryable,
             "live_check_driver": "protocol_v2",
         }
+        if getattr(exc, "password_auth_status", ""):
+            result["password_auth_status"] = exc.password_auth_status
+        if getattr(exc, "diagnostics", None):
+            result["auth_diagnostics"] = dict(exc.diagnostics)
+            result["http_status"] = exc.diagnostics.get("http_status")
         result["auth"] = auth_result_for_operation(result, auth_method="protocol_v2").as_dict()
         if exc.code in {
             "password_rejected",

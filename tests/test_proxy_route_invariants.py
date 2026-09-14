@@ -489,8 +489,76 @@ class ProxyRouteInvariantTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual("roxy_email_otp", result["validation_method"])
+        self.assertTrue(result["fallback_used"])
+        self.assertEqual("roxy_browser", result["auth_method"])
+        self.assertEqual("browser_roxy", result["live_check_driver"])
         roxy_refresh.assert_called_once_with("first@example.com", proxy=None)
         self.assertEqual("fresh-token", updated.call_args.args[1]["access_token"])
+
+    def test_roxy_fallback_rotates_automatic_route_after_protocol_failure(self):
+        from core import live_check_service
+
+        def make_route(proxy_url: str):
+            return SimpleNamespace(
+                proxy_url=proxy_url,
+                public_dict=lambda: {
+                    "proxy_mode": "1024",
+                    "network_route": "proxy",
+                    "proxy_provider": "1024proxy",
+                    "proxy_used": proxy_url,
+                    "proxy_region": "JP",
+                },
+                release=MagicMock(),
+            )
+
+        first_route = make_route("http://first.example:8080")
+        second_route = make_route("http://second.example:8080")
+        protocol_failed = {
+            "ok": False,
+            "status": "failed",
+            "error": "protocol_network_error",
+            "roxy_fallback_allowed": True,
+            "live_check_driver": "protocol_v2",
+        }
+        roxy_result = {
+            "ok": False,
+            "status": "failed",
+            "error": "Roxy RuntimeError: ERR_SSL_PROTOCOL_ERROR",
+            "validation_method": "roxy_email_otp",
+        }
+
+        def run_protocol(*_args, **kwargs):
+            kwargs["proxy_supplier"](1)
+            return protocol_failed
+
+        with (
+            patch("config.account.ACCOUNT_AUTH_V2_ENABLED", True),
+            patch.object(live_check_service.db, "mark_account_live_check_running", return_value=True),
+            patch.object(live_check_service.db, "get_account", return_value={"access_token": "expired-token"}),
+            patch.object(live_check_service.db, "update_account_liveness") as updated,
+            patch.object(live_check_service, "token_claims", return_value={"token_expired": True}),
+            patch.object(live_check_service, "_append_log"),
+            patch.object(live_check_service._QUEUE_SLOTS, "release"),
+            patch("core.account_proxy.acquire_account_proxy", side_effect=[first_route, second_route]) as acquire,
+            patch("core.protocol_v2_liveness.refresh_access_token", side_effect=run_protocol),
+            patch("core.roxy_liveness.available", return_value=True),
+            patch("core.roxy_liveness.refresh_access_token", return_value=roxy_result) as roxy_refresh,
+        ):
+            result = live_check_service._run_live_check(
+                account_id=85,
+                email="first@example.com",
+                proxy=None,
+                trigger="token_refresh_manual",
+                force_refresh=True,
+                refresh_driver="protocol_v2",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(2, acquire.call_count)
+        first_route.release.assert_called_once_with(reason="live-check-85-roxy-fallback-rotate")
+        roxy_refresh.assert_called_once_with("first@example.com", proxy=second_route.proxy_url)
+        self.assertTrue(updated.call_args.args[1]["fallback_used"])
+        second_route.release.assert_called_once_with(reason="live-check-85")
 
     def test_roxy_liveness_reuses_saved_password_on_login_password_page(self):
         from core import roxy_liveness

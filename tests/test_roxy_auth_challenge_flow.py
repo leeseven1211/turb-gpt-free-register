@@ -309,6 +309,68 @@ class RoxyEmailOtpChallengeTests(unittest.TestCase):
         self.assertEqual("advanced", result)
         self.assertEqual(["empty_mfa"], refreshes)
 
+    def test_initial_empty_mfa_state_gets_one_bounded_refresh_before_totp(self):
+        driver = MagicMock()
+        driver.step = "empty_mfa"
+        refreshes = []
+
+        def refresh():
+            refreshes.append(driver.step)
+            driver.step = "totp"
+
+        driver.refresh.side_effect = refresh
+        clock = [100.0]
+
+        def state(_driver):
+            if driver.step == "empty_mfa":
+                return {
+                    "url": "https://auth.openai.com/mfa-challenge/redacted",
+                    "inputs": [],
+                    "errors": [],
+                }
+            if driver.step == "totp":
+                return {
+                    "url": "https://auth.openai.com/mfa-challenge/redacted",
+                    "inputs": [{"type": "text", "autocomplete": "one-time-code"}],
+                    "errors": [],
+                }
+            return {"url": "https://chatgpt.com/", "inputs": [], "errors": []}
+
+        def submit_totp(_driver, _email, _secret):
+            driver.step = "advanced"
+
+        with (
+            patch.object(roxy_codex_oauth, "check_cancelled"),
+            patch.object(roxy_codex_oauth, "_login_challenge_state", side_effect=state),
+            patch.object(roxy_codex_oauth, "_is_login_password_page", return_value=False),
+            patch.object(roxy_codex_oauth, "_is_email_verification_page", return_value=False),
+            patch.object(
+                roxy_codex_oauth,
+                "_is_totp_login_page",
+                side_effect=lambda _driver, _state=None: driver.step == "totp",
+            ),
+            patch.object(
+                roxy_codex_oauth,
+                "_is_login_advanced",
+                side_effect=lambda _driver, _state=None: driver.step == "advanced",
+            ),
+            patch.object(roxy_codex_oauth, "_submit_saved_login_totp", side_effect=submit_totp) as submit,
+            patch.object(roxy_codex_oauth.time, "time", side_effect=lambda: clock[0]),
+            patch.object(
+                roxy_codex_oauth.time,
+                "sleep",
+                side_effect=lambda seconds: clock.__setitem__(0, clock[0] + max(0.5, seconds)),
+            ),
+            patch.object(roxy_codex_oauth, "human_delay"),
+        ):
+            result = roxy_codex_oauth._complete_login_challenge_after_email(
+                driver, "account@example.com", "", "totp-secret", timeout=10
+            )
+
+        self.assertEqual("advanced", result)
+        self.assertEqual(["empty_mfa"], refreshes)
+        submit.assert_called_once_with(driver, "account@example.com", "totp-secret")
+
     def test_stuck_password_page_gets_one_bounded_refresh_then_one_resubmit(self):
         driver = MagicMock()
         driver.step = "password"

@@ -50,6 +50,143 @@ class _OtpSession:
 
 
 class ProtocolV2LivenessTests(unittest.TestCase):
+    def test_authorize_email_challenge_uses_existing_session_without_password_or_resend(self):
+        from core import protocol_v2_liveness as v2
+
+        for needs_mfa in (False, True):
+            with self.subTest(needs_mfa=needs_mfa):
+                session = _Session()
+                email_result = (
+                    {"continue_url": "https://auth.openai.com/mfa-challenge/factor-1"}
+                    if needs_mfa else {"accessToken": "fresh"}
+                )
+                with (
+                    patch.object(v2, "get_account_login_credentials", return_value=("saved-password", "secret")),
+                    patch.object(v2, "_network_preflight_with_retry", return_value=(session, "authorize")),
+                    patch.object(v2, "follow_authorize", return_value="https://auth.openai.com/email-verification?state=private"),
+                    patch.object(v2, "_password_verify") as password,
+                    patch.object(v2, "_start_email_session") as restart,
+                    patch("core.openai_auth.send_email_otp") as resend,
+                    patch.object(v2, "_complete_email_otp", return_value=(email_result, "email_otp")) as email,
+                    patch.object(v2, "_complete_mfa", return_value=({"accessToken": "fresh"}, "password_mfa_totp")) as mfa,
+                ):
+                    result = v2.refresh_access_token("account@example.com", proxy="")
+                self.assertTrue(result["ok"])
+                self.assertEqual("email_otp_mfa" if needs_mfa else "email_otp", result["auth_method"])
+                self.assertEqual("skipped", result["password_auth_status"])
+                self.assertFalse(result["fallback_used"])
+                email.assert_called_once_with(session, "account@example.com", unittest.mock.ANY, auth_method="email_otp")
+                self.assertEqual(needs_mfa, mfa.called)
+                password.assert_not_called()
+                restart.assert_not_called()
+                resend.assert_not_called()
+                session.session.close.assert_called_once()
+
+    def test_authorize_mfa_challenge_does_not_resubmit_password(self):
+        from core import protocol_v2_liveness as v2
+
+        session = _Session()
+        with (
+            patch.object(v2, "get_account_login_credentials", return_value=("saved-password", "secret")),
+            patch.object(v2, "_network_preflight_with_retry", return_value=(session, "authorize")),
+            patch.object(v2, "follow_authorize", return_value="https://auth.openai.com/mfa-challenge/factor-1"),
+            patch.object(v2, "_password_verify") as password,
+            patch.object(v2, "_complete_mfa", return_value=({"accessToken": "fresh"}, "password_mfa_totp")),
+        ):
+            result = v2.refresh_access_token("account@example.com", proxy="")
+        self.assertTrue(result["ok"])
+        self.assertEqual("mfa_totp", result["auth_method"])
+        self.assertEqual("skipped", result["password_auth_status"])
+        password.assert_not_called()
+
+    def test_unknown_authorize_page_does_not_submit_password(self):
+        from core import protocol_v2_liveness as v2
+
+        for url in ("https://auth.openai.com/error", "https://other.example/log-in/password"):
+            with self.subTest(url=url):
+                with (
+                    patch.object(v2, "get_account_login_credentials", return_value=("saved-password", "")),
+                    patch.object(v2, "_network_preflight_with_retry", return_value=(_Session(), "authorize")),
+                    patch.object(v2, "follow_authorize", return_value=url),
+                    patch.object(v2, "_password_verify") as password,
+                ):
+                    result = v2.refresh_access_token("account@example.com", proxy="")
+            self.assertEqual("auth_page_unknown", result["error"])
+            password.assert_not_called()
+
+    def test_email_entry_failure_reports_email_stage_and_skipped_password(self):
+        from core import protocol_v2_liveness as v2
+
+        with (
+            patch.object(v2, "get_account_login_credentials", return_value=("saved-password", "")),
+            patch.object(v2, "_network_preflight_with_retry", return_value=(_Session(), "authorize")),
+            patch.object(v2, "follow_authorize", return_value="https://auth.openai.com/email-verification"),
+            patch.object(v2, "_password_verify") as password,
+            patch.object(v2, "_complete_email_otp", side_effect=v2.ProtocolV2AuthError("email_otp_failed", category="email", roxy_fallback_allowed=False)),
+        ):
+            result = v2.refresh_access_token("account@example.com", proxy="")
+        self.assertEqual("email_otp_failed", result["error"])
+        self.assertEqual("email_otp", result["auth_method"])
+        self.assertEqual("skipped", result["password_auth_status"])
+        self.assertFalse(result["roxy_fallback_allowed"])
+        password.assert_not_called()
+
+    def test_email_auth_failure_is_reported_as_email_failure_not_password_failure(self):
+        from core import live_check_service
+
+        reporter = MagicMock()
+        live_check_service._report_protocol_v2_refresh(
+            reporter,
+            {
+                "ok": False,
+                "error": "email_otp_failed",
+                "auth_method": "email_otp",
+                "password_auth_status": "skipped",
+                "fallback_used": False,
+            },
+        )
+
+        reporter.stage.assert_any_call(
+            "login_password",
+            "skipped",
+            "本次认证未提交账号密码，按邮箱验证码认证",
+        )
+        reporter.stage.assert_any_call(
+            "email_otp",
+            "failed",
+            "邮箱验证码未完成",
+            level="ERROR",
+            detail={"auth_method": "email_otp", "fallback_used": False},
+        )
+
+    def test_password_failure_preserves_safe_http_or_transport_diagnostics(self):
+        from core import protocol_v2_liveness as v2
+
+        for status in (400, 429, 503, None):
+            with self.subTest(status=status):
+                session = _Session()
+                if status is None:
+                    session.post = MagicMock(side_effect=TimeoutError("private-token private-password"))
+                else:
+                    session.post = MagicMock(return_value=_Response(status, text="private-token private-password"))
+                with (
+                    patch.object(v2, "get_account_login_credentials", return_value=("saved-password", "")),
+                    patch.object(v2, "_network_preflight_with_retry", return_value=(session, "authorize")),
+                    patch.object(v2, "follow_authorize", return_value="https://auth.openai.com/log-in/password"),
+                    patch.object(v2, "request_sentinel_token", return_value={}),
+                    patch.object(v2, "build_sentinel_header", return_value=("sentinel", None)),
+                ):
+                    result = v2.refresh_access_token("account@example.com", proxy="")
+                self.assertEqual("password_result_unknown", result["error"])
+                self.assertEqual(status, result["http_status"])
+                diagnostics = result["auth_diagnostics"]
+                self.assertEqual("password_verify", diagnostics["operation"])
+                self.assertEqual(status is not None, diagnostics["response_observed"])
+                self.assertEqual("transport_error" if status is None else "http_error", diagnostics["failure_kind"])
+                self.assertNotIn("private-", json.dumps(result))
+                self.assertFalse(result["roxy_fallback_allowed"])
+                session.post.assert_called_once()
+
     def test_credentials_reader_never_uses_email_provider_password(self):
         from core import account_credentials
 

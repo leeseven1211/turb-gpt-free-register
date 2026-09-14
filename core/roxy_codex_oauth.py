@@ -886,6 +886,8 @@ def _complete_login_challenge_after_email(
     password_refresh_done = False
     password_resubmit_done = False
     totp_refresh_done = False
+    initial_empty_challenge_seen_at = 0.0
+    initial_challenge_refresh_done = False
     email_shell_seen_at = 0.0
     blank_login_shell_seen_at = 0.0
     email_resubmit_done = False
@@ -1007,6 +1009,23 @@ def _complete_login_challenge_after_email(
                     end = max(end, now + 45)
                     human_delay("form")
                     continue
+
+        # Roxy can land on the MFA route before React mounts any controls. This
+        # is an initial renderer/navigation transition, not evidence that the
+        # account has no TOTP challenge. Give it one bounded refresh before
+        # declaring the branch unknown; no password or TOTP is repeated here.
+        if not password_submitted_at and not totp_submitted_at and not initial_challenge_refresh_done:
+            if _is_empty_auth_challenge_state(state):
+                now = time.time()
+                if not initial_empty_challenge_seen_at:
+                    initial_empty_challenge_seen_at = now
+                elif now - initial_empty_challenge_seen_at >= 3:
+                    initial_challenge_refresh_done = True
+                    _refresh_auth_challenge_after_submit(driver, "初始认证挑战")
+                    end = max(end, time.time() + 25)
+                    continue
+            else:
+                initial_empty_challenge_seen_at = 0.0
 
         # TOTP may be rendered in-place while the stale URL still ends in
         # /log-in/password, so inspect the live controls before trusting the URL.

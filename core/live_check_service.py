@@ -150,6 +150,7 @@ def _report_protocol_v2_refresh(reporter: TaskReporter, result: dict) -> None:
     """Project Protocol v2's actual auth method without inventing OTP success."""
     auth_method = str(result.get("auth_method") or "protocol_v2")
     password_status = str(result.get("password_auth_status") or "")
+    is_roxy_fallback = bool(result.get("fallback_used")) and result.get("validation_method") == "roxy_email_otp"
     uses_email = (
         "email" in auth_method
         or auth_method == "legacy_email_otp"
@@ -170,17 +171,28 @@ def _report_protocol_v2_refresh(reporter: TaskReporter, result: dict) -> None:
         )
     elif password_status == "verified":
         reporter.stage("login_password", "success", "账号密码验证通过")
+    elif password_status == "skipped":
+        reporter.stage("login_password", "skipped", "本次认证未提交账号密码，按邮箱验证码认证")
     elif auth_method == "legacy_email_otp":
         reporter.stage("login_password", "skipped", "账号没有保存密码，沿用邮箱认证")
     elif result.get("ok"):
-        reporter.stage("login_password", "success", "协议认证已完成", detail={"auth_method": auth_method})
+        reporter.stage(
+            "login_password",
+            "success",
+            "Roxy 浏览器认证已完成" if is_roxy_fallback else "协议认证已完成",
+            detail={"auth_method": auth_method},
+        )
     else:
         reporter.stage(
             "login_password",
             "failed",
-            "Protocol v2 密码认证未完成",
+            "Roxy 浏览器认证未完成" if is_roxy_fallback else "Protocol v2 密码认证未完成",
             level="ERROR",
-            detail={"error": result.get("error"), "auth_method": auth_method},
+            detail={
+                "error": result.get("error"),
+                "auth_method": auth_method,
+                "auth_diagnostics": result.get("auth_diagnostics"),
+            },
         )
 
     reporter.stage(
@@ -536,10 +548,48 @@ def _run_live_check(
                     detail={"protocol_error": result.get("error")},
                 )
                 _append_log(email, "[查活] 协议登录未通过，启用 Roxy 浏览器 NextAuth 兜底")
-                result = refresh_access_token(
+                roxy_proxy = account_route.proxy_url if account_route is not None else proxy
+                if proxy is None and account_route is not None:
+                    # A protocol failure can be caused by the current exit
+                    # (403/TLS/proxy corruption). Do not send the browser
+                    # fallback through that same lease; rotate once while
+                    # keeping explicit caller-selected proxies untouched.
+                    account_route.release(reason=f"live-check-{account_id}-roxy-fallback-rotate")
+                    account_route = acquire_account_proxy(
+                        account_id=account_id,
+                        email=email,
+                        purpose="token-refresh",
+                    )
+                    route = account_route.public_dict()
+                    reporter.resource(
+                        "resource.acquired",
+                        message="Roxy 兜底已切换新认证线路",
+                        stage="network",
+                        detail=route,
+                    )
+                    reporter.stage(
+                        "network",
+                        "success",
+                        "Roxy 兜底认证线路已就绪",
+                        detail={
+                            key: route.get(key)
+                            for key in ("network_route", "proxy_mode", "proxy_provider", "proxy_region")
+                        },
+                    )
+                    roxy_proxy = account_route.proxy_url
+                roxy_result = refresh_access_token(
                     email,
-                    proxy=account_route.proxy_url if account_route is not None else proxy,
+                    proxy=roxy_proxy,
                 )
+                if isinstance(roxy_result, dict):
+                    # Keep the task-center result tied to the actual driver after
+                    # the fallback; otherwise a Roxy outcome is projected as a
+                    # Protocol v2 password outcome and becomes misleading to
+                    # operators.
+                    roxy_result.setdefault("fallback_used", True)
+                    roxy_result.setdefault("auth_method", "roxy_browser")
+                    roxy_result.setdefault("live_check_driver", "browser_roxy")
+                result = roxy_result
         if isinstance(result, dict):
             _attach_auth_projection(
                 result,
@@ -608,6 +658,7 @@ def _run_live_check(
                 "auth_method": result.get("auth_method"),
                 "password_auth_status": result.get("password_auth_status"),
                 "fallback_used": result.get("fallback_used"),
+                "auth_diagnostics": result.get("auth_diagnostics"),
                 "fingerprint": result.get("fingerprint"),
             },
             route={**route, **{key: result.get(key) for key in ("network_route", "proxy_provider", "proxy_region", "proxy_used")}},

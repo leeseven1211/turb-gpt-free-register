@@ -353,7 +353,7 @@ console.log('ok');
             "btnCheckSelectedLiveV2", "btnRefreshSelectedTokenV2", "btnCheckSelectedPlansV2", "btnExtractSelectedLinksV2",
             "btnRetrySelectedCodexV2", "btnDownloadSelectedCpaV2", "btnUploadSelectedCodexSub2V2",
             "btnStopSelectedCodexV2", "btnCheckSelectedDeactivationMailV2",
-            "btnCopySelectedLinesV2", "btnCopySelectedEmailsV2", "btnCopySelectedPasswordsV2", "btnDownloadSelectedTxtV2",
+            "btnCopySelectedTokensV2", "btnCopySelectedLinesV2", "btnCopySelectedEmailsV2", "btnCopySelectedPasswordsV2", "btnCopySelectedTotpsV2", "btnDownloadSelectedTxtV2",
             "btnArchiveSelectedAccountsV2", "btnDeleteSelectedAccountsV2", "btnRefreshAccountsV2",
             # Codex 凭证
             "btnCodexReauthorizeBulkV2", "btnCodexDownloadBulkV2", "btnCodexDownloadBulkCpaV2", "btnCodexUploadSub2V2",
@@ -366,6 +366,8 @@ console.log('ok');
         for action_id in action_ids:
             self.assertIn(f'id="{action_id}"', html, action_id)
         self.assertIn("bind('btnRefreshSelectedTokenV2', () => refreshSelectedToken());", html)
+        self.assertIn("bind('btnCopySelectedTotpsV2', copySelectedAccountTotpSecrets);", html)
+        self.assertIn("fetchAccountSecrets(ids, 'totp_secret')", html)
         for table_name in ("jobs", "accounts", "codex", "outlook"):
             self.assertIn(f'data-resizable-table="{table_name}"', html)
             reset_id = f"btnReset{table_name.capitalize()}ColumnsV2"
@@ -519,6 +521,29 @@ console.log('ok');
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["value"], "Account123!abcd")
 
+    def test_account_copy_line_includes_openai_password_and_totp_secret(self):
+        self.seed(record_store.ACCOUNTS, [
+            {
+                "email": "target@example.com",
+                "original_email_line": "mail@example.com----mail-password----client-id----refresh-token",
+                "access_token": "access-token",
+                "totp_secret": "JBSWY3DPEHPK3PXP",
+                "extra_json": '{"account_password":"Account123!abcd"}',
+            },
+        ])
+
+        response = self.client.get(
+            "/api/accounts/1/secret?field=copy_line",
+            headers=self.headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.get_json()["value"],
+            "mail@example.com----mail-password----client-id----refresh-token"
+            "----access-token----Account123!abcd----JBSWY3DPEHPK3PXP",
+        )
+
     @patch("webui.app.db.get_account", return_value={
         "id": 1,
         "email": "target@example.com",
@@ -570,12 +595,21 @@ console.log('ok');
         html = self._modern_page_source(response)
         self.assertIn('data-account-totp-copy="${esc(r.id)}"', html)
         self.assertIn('title="获取并复制当前 6 位 TOTP 验证码"', html)
+        self.assertIn('data-account-copy-secret="totp_secret"', html)
+        self.assertIn('title="复制 2FA 密钥（不是当前 6 位验证码）"', html)
         self.assertIn("const result = await api(`/api/accounts/${encodeURIComponent(id)}/totp-code`);", html)
         self.assertIn("const copied = await copyText(result.code, false);", html)
         self.assertNotIn('data-account-totp-value', html)
         self.assertNotIn('data-account-totp-ttl', html)
         self.assertNotIn('data-account-totp-code="${esc(r.id)}"', html)
         self.assertNotIn("请先查询验证码", html)
+
+    def test_legacy_totp_ui_has_a_secret_copy_button_separate_from_code_copy(self):
+        response = self.client.get("/?ui=legacy", headers=self.headers)
+        html = self._page_source(response, ("js/legacy/accounts.js",))
+        self.assertIn('data-account-copy-secret="totp_secret"', html)
+        self.assertIn('title="复制 2FA 密钥（不是当前 6 位验证码）"', html)
+        self.assertIn('title="复制当前 TOTP 验证码"', html)
 
     def test_codex_column_filters_are_combined(self):
         db.save_codex_credential_record("codex-a@example.com-free.json", {

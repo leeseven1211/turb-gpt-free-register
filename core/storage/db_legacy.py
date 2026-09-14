@@ -205,11 +205,43 @@ def _generic_api_email_line(row: dict) -> str:
     ])
 
 
+def _account_password(row: dict) -> str:
+    """读取 OpenAI 账号密码，不把邮箱池 password 当成账号密码。"""
+    raw_extra = row.get("extra_json") or {}
+    if isinstance(raw_extra, str):
+        try:
+            raw_extra = json.loads(raw_extra)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw_extra = {}
+    if isinstance(raw_extra, dict):
+        password = (
+            raw_extra.get("account_password")
+            or raw_extra.get("login_password")
+            or raw_extra.get("registration_password")
+            or ""
+        )
+        if password:
+            return str(password).strip()
+    return str(
+        row.get("account_password")
+        or row.get("login_password")
+        or row.get("registration_password")
+        or ""
+    ).strip()
+
+
 def _account_line(row: dict) -> str:
+    """生成账号整行：邮箱素材、Token、OpenAI 密码和 TOTP 密钥。"""
     base = row.get("original_email_line") or row.get("email") or ""
     token = row.get("access_token") or ""
+    password = _account_password(row)
     totp = row.get("totp_secret") or ""
-    return f"{base}----{token}----{totp}" if totp else f"{base}----{token}"
+    parts = [base, token]
+    if password or totp:
+        parts.append(password)
+    if totp:
+        parts.append(totp)
+    return "----".join(parts)
 
 
 def _registered_email_line(row: dict) -> str:
@@ -417,7 +449,7 @@ def _render_static_viewer(outlook_rows: list[dict] | None = None, account_rows: 
   <section>
     <div class="head">
       <h2>已完成账号</h2>
-      <p>整行格式：邮箱----密码----clientId----邮箱刷新令牌----accessToken----totpSecret（如有）</p>
+      <p>整行格式：邮箱素材----accessToken----账号密码----totpSecret（如有）</p>
     </div>
     <div class="table-wrap">
       <table>
