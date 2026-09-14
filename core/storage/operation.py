@@ -2857,6 +2857,18 @@ def register_task_dependency(
                 (child_number,),
             )
             child = cur.fetchone()
+        else:
+            cur.execute(
+                f"""
+                SELECT t.status AS task_status, r.status AS run_status,
+                       r.result_summary
+                FROM {_table('operation_tasks')} t
+                LEFT JOIN {_table('operation_runs')} r ON r.id=t.last_run_id
+                WHERE t.source_system=%s AND t.source_id=%s
+                """,
+                (child_system, child_id),
+            )
+            child = cur.fetchone()
         if child:
             child_status = _status(child.get("run_status") or child.get("task_status") or child.get("status"))
             if child_status in _TERMINAL_STATUSES and str(row.get("status") or "") == "waiting":
@@ -2994,6 +3006,120 @@ def complete_task_dependency(
             ),
         )
         return cur.rowcount > 0
+
+
+def apply_task_dependency_result(
+    *,
+    parent_source_system: str,
+    parent_source_id: str,
+    child_status: str,
+    child_result: dict | None = None,
+) -> dict | None:
+    """Persist a dependency failure/unknown outcome on its parent task.
+
+    Runtime coordinators use their numeric logical task id as the parent
+    source id while the task itself remains in its source namespace.  Other
+    adapters may use the normal ``source_system/source_id`` pair.
+    """
+    init()
+    parent_system = _text(parent_source_system, 120)
+    parent_id = _text(parent_source_id, 240)
+    child_status_value = _status(child_status)
+    child_payload = dict(child_result or {})
+    unknown = child_status_value in {"request_unknown", "attention_required"} or (
+        str(child_payload.get("outcome") or "").lower() == "request_unknown"
+    )
+    desired = "attention_required" if unknown else "partial_success"
+    target_status = "attention_required"
+    next_actions = (
+        [{"action": "reconcile", "label": "确认远端结果后继续"}]
+        if unknown else [{"action": "retry", "label": "重试失败子任务"}]
+    )
+    with _connect() as conn, conn.cursor() as cur:
+        if parent_system == "webui_runtime" and parent_id.isdigit():
+            cur.execute(
+                f"SELECT * FROM {_table('operation_tasks')} WHERE id=%s FOR UPDATE",
+                (int(parent_id),),
+            )
+        else:
+            cur.execute(
+                f"""
+                SELECT * FROM {_table('operation_tasks')}
+                WHERE source_system=%s AND source_id=%s
+                FOR UPDATE
+                """,
+                (parent_system, parent_id),
+            )
+        parent = cur.fetchone()
+        if not parent:
+            return None
+        parent = dict(parent)
+        parent_task_id = int(parent["id"])
+        cur.execute(
+            f"SELECT * FROM {_table('operation_runs')} WHERE id=%s FOR UPDATE",
+            (int(parent.get("last_run_id") or 0),),
+        )
+        parent_run = cur.fetchone()
+        parent_summary = _decode(parent_run.get("result_summary")) if parent_run else {}
+        parent_summary = dict(parent_summary) if isinstance(parent_summary, dict) else {}
+        parent_summary.update({
+            "child_status": child_status_value,
+            "child_result": _scrub(child_payload),
+        })
+        if unknown:
+            parent_summary.update({"outcome": "request_unknown", "reconcile_required": True})
+        cur.execute(
+            f"""
+            UPDATE {_table('operation_tasks')}
+            SET status=%s, target_status=%s, current_stage='complete',
+                next_actions=%s::jsonb, completed_at=COALESCE(completed_at, now()),
+                updated_at=now(), error_message=%s
+            WHERE id=%s
+            """,
+            (
+                desired, target_status, _json(next_actions),
+                _text(
+                    "子任务远端结果待核验，父任务禁止自动重做"
+                    if unknown else "子任务失败，父任务保留部分成功结果",
+                    1400,
+                ),
+                parent_task_id,
+            ),
+        )
+        if parent_run:
+            cur.execute(
+                f"""
+                UPDATE {_table('operation_runs')}
+                SET status=%s, progress_stage='complete', completed_at=COALESCE(completed_at, now()),
+                    heartbeat_at=now(), result_summary=%s::jsonb,
+                    error_message=%s
+                WHERE id=%s
+                """,
+                (
+                    desired, _json(parent_summary),
+                    "子任务远端结果待核验，父任务禁止自动重做"
+                    if unknown else "子任务失败，父任务保留部分成功结果",
+                    int(parent_run["id"]),
+                ),
+            )
+        event_uuid = uuid.uuid4().hex
+        cur.execute(
+            f"""
+            INSERT INTO {_table('operation_events')} (
+                event_uuid, task_id, run_id, source_system, source_id,
+                level, stage, event_type, message, detail
+            ) VALUES (%s,%s,%s,%s,%s,'WARNING','complete',%s,%s,%s::jsonb)
+            """,
+            (
+                event_uuid, parent_task_id,
+                int(parent_run["id"]) if parent_run else None,
+                parent_system, event_uuid,
+                "task.dependency_unknown" if unknown else "task.dependency_failed",
+                "子任务结果待核验，父任务暂停续接" if unknown else "子任务失败，父任务保留部分成功结果",
+                _json({"child_status": child_status_value, "child_result": child_payload}),
+            ),
+        )
+        return _row(parent) or {}
 
 
 def _reconcile_parent_task_cur(cur, parent_task_id: int, *, child_task_id: int | None = None) -> dict | None:
@@ -3357,6 +3483,13 @@ def retry_runtime_task(task_id: int, *, trigger: str = "manual_retry", data: dic
         merged_data = dict(_decode(task.get("data")) or {})
         merged_data.update(data or {})
         merged_data["retry_trigger"] = str(trigger or "manual_retry")
+        # A new attempt must establish a fresh remote boundary.  Carrying a
+        # previous attempt's started/confirmed write checkpoint into the new
+        # queued Run would make a crash before the new request look unknown
+        # and would conflate two fences.  Unknown attempts are rejected by
+        # the route; explicit reconciliation can use separate caller data.
+        merged_data.pop("remote_intent", None)
+        merged_data.pop("remote_receipt", None)
         cur.execute(
             f"""
             SELECT resource_family, batch_id, data
@@ -3426,6 +3559,41 @@ def active_run_for_account(account_id: int, resource_family: str = "openai_inter
         )
         raw = cur.fetchone()
         return _row(dict(raw)) if raw else None
+
+
+def has_active_runtime_operations(
+    *,
+    task_types: Iterable[str] | None = None,
+    source_systems: Iterable[str] | None = None,
+) -> bool:
+    """Return whether durable active Runs cover a legacy recovery category."""
+    init()
+    clauses = [f"r.status IN ({_ACTIVE_RUN_STATUS_SQL})"]
+    params: list[Any] = []
+    if task_types is not None:
+        values = [str(item).strip() for item in task_types if str(item).strip()]
+        if not values:
+            return False
+        clauses.append("t.task_type = ANY(%s)")
+        params.append(values)
+    if source_systems is not None:
+        values = [str(item).strip() for item in source_systems if str(item).strip()]
+        if not values:
+            return False
+        clauses.append("t.source_system = ANY(%s)")
+        params.append(values)
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT 1
+            FROM {_table('operation_runs')} r
+            JOIN {_table('operation_tasks')} t ON t.id=r.task_id
+            WHERE {' AND '.join(clauses)}
+            LIMIT 1
+            """,
+            tuple(params),
+        )
+        return cur.fetchone() is not None
 
 
 def list_queued_runs(*, limit: int = 500) -> list[dict]:
@@ -3579,10 +3747,13 @@ def claim_next_queued_run(
             INSERT INTO {_table('operation_events')} (
                 event_uuid, task_id, run_id, source_system, source_id,
                 level, stage, event_type, message, detail
-            ) VALUES (%s,%s,%s,'native_operations',%s,'INFO','queued',
+            ) VALUES (%s,%s,%s,%s,%s,'INFO','queued',
                       'run.running','任务开始执行','{{}}'::jsonb)
             """,
-            (event_uuid, int(run["task_id"]), run_id, event_uuid),
+            (
+                event_uuid, int(run["task_id"]), run_id,
+                str(run.get("source_system") or "native_operations"), event_uuid,
+            ),
         )
         cur.execute(
             f"""
@@ -3615,24 +3786,81 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
         cur.execute(
             f"""
             UPDATE {_table('operation_runs')} AS run
-            SET status='interrupted', completed_at=now(), heartbeat_at=now(),
-                progress_stage='interrupted', error_message='执行进程已重启，原 attempt 中断'
-            WHERE run.source_system NOT IN ('registration_jobs', 'account_action_tasks')
+            SET status=CASE
+                    WHEN run.data->'remote_intent'->>'kind'='remote_write'
+                     AND COALESCE(
+                         run.data->'remote_intent'->>'receipt_state',
+                         run.data->'remote_intent'->>'state', 'started'
+                     )
+                         <> 'rejected'
+                    THEN 'attention_required'
+                    ELSE 'interrupted'
+                END,
+                completed_at=now(), heartbeat_at=now(),
+                progress_stage=CASE
+                    WHEN run.data->'remote_intent'->>'kind'='remote_write'
+                     AND COALESCE(
+                         run.data->'remote_intent'->>'receipt_state',
+                         run.data->'remote_intent'->>'state', 'started'
+                     )
+                         <> 'rejected'
+                    THEN 'reconcile'
+                    ELSE 'interrupted'
+                END,
+                error_message=CASE
+                    WHEN run.data->'remote_intent'->>'kind'='remote_write'
+                     AND COALESCE(
+                         run.data->'remote_intent'->>'receipt_state',
+                         run.data->'remote_intent'->>'state', 'started'
+                     )
+                         <> 'rejected'
+                    THEN '远端写请求结果待核验，禁止自动重做'
+                    ELSE '执行进程已重启，原 attempt 中断'
+                END,
+                result_summary=CASE
+                    WHEN run.data->'remote_intent'->>'kind'='remote_write'
+                     AND COALESCE(
+                         run.data->'remote_intent'->>'receipt_state',
+                         run.data->'remote_intent'->>'state', 'started'
+                     )
+                         <> 'rejected'
+                    THEN COALESCE(run.result_summary, '{{}}'::jsonb) || jsonb_build_object(
+                        'outcome', 'request_unknown',
+                        'reconcile_required', true,
+                        'execution_id', COALESCE(run.execution_id, ''),
+                        'lease_owner', COALESCE(run.execution_id, ''),
+                        'remote_action', run.data->'remote_intent'->>'action',
+                        'remote_intent_state', COALESCE(
+                            run.data->'remote_intent'->>'receipt_state',
+                            run.data->'remote_intent'->>'state', 'started'
+                        )
+                    )
+                    ELSE run.result_summary
+                END
+            FROM {_table('operation_tasks')} task
+            WHERE run.task_id=task.id
+              AND run.source_system NOT IN ('registration_jobs', 'account_action_tasks')
               AND run.status IN ('running', 'cancelling', 'settling')
               AND (run.heartbeat_at IS NULL OR run.heartbeat_at < now() - (%s * interval '1 second'))
               AND NOT EXISTS (
                   SELECT 1 FROM {_table('account_operation_leases')} lease
                   WHERE lease.run_id=run.id AND lease.expires_at > now()
               )
-            RETURNING id, task_id, account_id, batch_id
-            """
-            , (stale_seconds,)
+            RETURNING run.id, run.task_id, run.account_id, run.batch_id,
+                      run.status, run.data, run.execution_id, task.source_system,
+                      task.task_type
+            """,
+            (stale_seconds,),
         )
         recovered = list(cur.fetchall())
         run_ids = [int(row["id"]) for row in recovered]
         task_ids = [int(row["task_id"]) for row in recovered]
         current_task_ids: list[int] = []
         source_by_task: dict[int, str] = {}
+        status_by_task: dict[int, str] = {
+            int(row["task_id"]): str(row.get("status") or "interrupted")
+            for row in recovered
+        }
         if task_ids:
             cur.execute(
                 f"SELECT id, source_system FROM {_table('operation_tasks')} WHERE id = ANY(%s)",
@@ -3643,15 +3871,34 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
                 for row in cur.fetchall()
             }
             for row in recovered:
+                recovered_status = status_by_task[int(row["task_id"])]
                 cur.execute(
                     f"""
                     UPDATE {_table('operation_tasks')}
-                    SET status='interrupted', current_stage='interrupted', completed_at=now(),
-                        updated_at=now(), error_message='执行进程已重启，原 attempt 中断',
-                        next_actions='[{{"action":"retry","label":"重新执行"}}]'::jsonb
+                    SET status=%s,
+                        current_stage=%s,
+                        completed_at=now(),
+                        updated_at=now(),
+                        error_message=%s,
+                        target_status=CASE WHEN %s='attention_required'
+                            THEN 'attention_required' ELSE target_status END,
+                        next_actions=%s::jsonb
                     WHERE id=%s AND last_run_id=%s
                     """,
-                    (int(row["task_id"]), int(row["id"])),
+                    (
+                        recovered_status,
+                        "reconcile" if recovered_status == "attention_required" else "interrupted",
+                        "远端写请求结果待核验，禁止自动重做"
+                        if recovered_status == "attention_required"
+                        else "执行进程已重启，原 attempt 中断",
+                        recovered_status,
+                        _json(
+                            [{"action": "reconcile", "label": "确认远端结果后继续"}]
+                            if recovered_status == "attention_required"
+                            else [{"action": "retry", "label": "重新执行"}]
+                        ),
+                        int(row["task_id"]), int(row["id"]),
+                    ),
                 )
                 if cur.rowcount:
                     current_task_ids.append(int(row["task_id"]))
@@ -3665,6 +3912,7 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
                 (run_ids,),
             )
             for row in recovered:
+                recovered_status = status_by_task[int(row["task_id"])]
                 event_uuid = uuid.uuid4().hex
                 cur.execute(
                     f"""
@@ -3672,14 +3920,23 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
                         event_uuid, task_id, run_id, source_system, source_id,
                         level, stage, event_type, message, detail
                     ) VALUES (%s, %s, %s, %s, %s,
-                              'WARNING', 'interrupted', 'run.interrupted',
-                              '执行进程已重启，原 attempt 中断',
-                              '{{"reason":"worker_restart"}}'::jsonb)
+                              'WARNING', %s, %s, %s, %s::jsonb)
                     """,
                     (
                         event_uuid, int(row["task_id"]), int(row["id"]),
                         source_by_task.get(int(row["task_id"]), "native_operations"),
                         event_uuid,
+                        "reconcile" if recovered_status == "attention_required" else "interrupted",
+                        "run.request_unknown" if recovered_status == "attention_required" else "run.interrupted",
+                        "远端写请求结果待核验，禁止自动重做"
+                        if recovered_status == "attention_required"
+                        else "执行进程已重启，原 attempt 中断",
+                        _json({
+                            "reason": "worker_restart",
+                            "outcome": "request_unknown"
+                            if recovered_status == "attention_required" else "interrupted",
+                            "reconcile_required": recovered_status == "attention_required",
+                        }),
                     ),
                 )
             if current_task_ids:
@@ -3697,47 +3954,75 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
                 # attempt must not wake it after a newer retry has become the
                 # task's last_run_id. Only tasks whose current attempt was
                 # actually interrupted are eligible here.
-                for source_system in sorted({source_by_task.get(task_id, "native_operations") for task_id in current_task_ids}):
-                    source_task_ids = [
-                        str(task_id) for task_id in current_task_ids
-                        if source_by_task.get(task_id, "native_operations") == source_system
-                    ]
-                    cur.execute(
-                        f"""
-                        UPDATE {_table('operation_task_dependencies')} dependency
-                        SET status='ready', child_status='interrupted',
-                            child_result=%s::jsonb, ready_at=now(),
-                            next_attempt_at=NULL, last_error=NULL, updated_at=now()
-                        WHERE dependency.status='waiting'
-                          AND dependency.child_source_system=%s
-                          AND dependency.child_source_id = ANY(%s)
-                        RETURNING dependency.*
-                        """,
-                        (
-                            _json({"status": "interrupted", "reason": "worker_restart"}),
-                            source_system, source_task_ids,
-                        ),
-                    )
-                    ready_dependencies.extend(
-                        _row(dict(dependency)) or {} for dependency in cur.fetchall()
-                    )
+                for recovered_status in ("interrupted", "attention_required"):
+                    for source_system in sorted({source_by_task.get(task_id, "native_operations") for task_id in current_task_ids}):
+                        source_task_ids = [
+                            str(task_id) for task_id in current_task_ids
+                            if status_by_task.get(task_id) == recovered_status
+                            and source_by_task.get(task_id, "native_operations") == source_system
+                        ]
+                        if not source_task_ids:
+                            continue
+                        cur.execute(
+                            f"""
+                            UPDATE {_table('operation_task_dependencies')} dependency
+                            SET status='ready', child_status=%s,
+                                child_result=%s::jsonb, ready_at=now(),
+                                next_attempt_at=NULL, last_error=NULL, updated_at=now()
+                            WHERE dependency.status='waiting'
+                              AND dependency.child_source_system=%s
+                              AND dependency.child_source_id = ANY(%s)
+                            RETURNING dependency.*
+                            """,
+                            (
+                                recovered_status,
+                                _json({
+                                    "status": recovered_status,
+                                    "reason": "worker_restart",
+                                    "outcome": "request_unknown"
+                                    if recovered_status == "attention_required" else "interrupted",
+                                    "reconcile_required": recovered_status == "attention_required",
+                                }),
+                                source_system, source_task_ids,
+                            ),
+                        )
+                        ready_dependencies.extend(
+                            _row(dict(dependency)) or {} for dependency in cur.fetchall()
+                        )
         if run_ids:
             cur.execute(
                 f"DELETE FROM {_table('account_operation_leases')} WHERE run_id = ANY(%s)",
                 (run_ids,),
             )
-        account_ids = sorted({int(row["account_id"]) for row in recovered if row.get("account_id")})
-        if account_ids:
+        # Only the Codex adapter owns these legacy account columns.  A stale
+        # live/refresh/setup run must not clear Codex or other business state
+        # merely because the generic durable recovery pass saw its account id.
+        codex_status_by_account: dict[int, str] = {}
+        for row in recovered:
+            if row.get("account_id") and str(row.get("task_type") or "") == "codex_retry":
+                account_number = int(row["account_id"])
+                codex_status_by_account[account_number] = (
+                    "attention_required"
+                    if str(row.get("status") or "") == "attention_required"
+                    else "interrupted"
+                )
+        for account_number, last_status in codex_status_by_account.items():
             cur.execute(
                 f"""
                 UPDATE {postgres_store.qualified(record_store.ACCOUNTS.name)}
                 SET codex_execution_status='empty', codex_active_run_id=NULL,
-                    codex_last_run_status='interrupted',
-                    codex_status=CASE WHEN codex_status='success' THEN codex_status ELSE 'interrupted' END,
+                    codex_last_run_status=%s,
+                    codex_status=CASE
+                        WHEN codex_status='success' THEN codex_status
+                        ELSE %s
+                    END,
                     updated_at=%s
-                WHERE id = ANY(%s)
+                WHERE id=%s
                 """,
-                (datetime.now().isoformat(timespec="seconds"), account_ids),
+                (
+                    last_status, last_status,
+                    datetime.now().isoformat(timespec="seconds"), account_number,
+                ),
             )
         _refresh_batches(cur, [row.get("batch_id") for row in recovered])
     if ready_dependencies:
@@ -3798,6 +4083,7 @@ def claim_run(run_id: int, *, execution_id: str, worker_pid: int) -> dict | None
                 next_attempt_at=NULL,
                 started_at=COALESCE(started_at, now()), heartbeat_at=now(), progress_stage='preflight'
             WHERE id=%s AND status='queued' AND cancel_requested_at IS NULL
+              AND (next_attempt_at IS NULL OR next_attempt_at <= now())
             RETURNING *
             """,
             (str(execution_id), int(worker_pid), int(run_id)),
@@ -4021,27 +4307,316 @@ def append_runtime_event(
     return result
 
 
+_REMOTE_INTENT_KINDS = frozenset({"remote_write", "read"})
+_REMOTE_RECEIPT_OUTCOMES = frozenset({
+    "confirmed", "rejected", "unknown", "response_received",
+    "local_commit_required",
+})
+
+
+def _remote_checkpoint_fence(
+    cur,
+    run_id: int,
+    *,
+    execution_id: str,
+    lease_token: str | None,
+    require_lease: bool,
+) -> dict:
+    """Load one active run and verify the execution/lease owner.
+
+    Remote intent is a safety checkpoint, not an ordinary progress event.  It
+    therefore uses the same fence as terminal result writes and never accepts
+    a stale worker's checkpoint after a lease has changed hands.
+    """
+    execution_value = str(execution_id or "").strip()
+    if not execution_value:
+        raise ValueError("remote checkpoint 必须携带 execution_id")
+    cur.execute(
+        f"SELECT * FROM {_table('operation_runs')} WHERE id=%s FOR UPDATE",
+        (int(run_id),),
+    )
+    raw = cur.fetchone()
+    if not raw:
+        raise LookupError("执行实例不存在")
+    run = dict(raw)
+    if str(run.get("status") or "") not in {"running", "cancelling", "settling"}:
+        raise PermissionError("非活动执行实例不能写入 remote checkpoint")
+    if str(run.get("execution_id") or "") != execution_value:
+        raise PermissionError("remote checkpoint execution fence 不匹配")
+    token = str(lease_token or "").strip()
+    if require_lease and not token:
+        raise PermissionError("remote write 必须持有账号 lease")
+    if token:
+        cur.execute(
+            f"""
+            SELECT 1 FROM {_table('account_operation_leases')}
+            WHERE run_id=%s AND lease_token=%s AND expires_at > now()
+            """,
+            (int(run_id), token),
+        )
+        if not cur.fetchone():
+            raise PermissionError("remote checkpoint lease owner 不匹配或已过期")
+    elif run.get("account_id") is not None and require_lease:
+        raise PermissionError("账号 remote write 缺少 lease")
+    return run
+
+
+def _remote_checkpoint_event(
+    cur,
+    run: dict,
+    *,
+    event_type: str,
+    message: str,
+    detail: dict[str, Any],
+) -> None:
+    event_uuid = uuid.uuid4().hex
+    cur.execute(
+        f"""
+        INSERT INTO {_table('operation_events')} (
+            event_uuid, task_id, run_id, source_system, source_id,
+            level, stage, event_type, message, detail
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
+        """,
+        (
+            event_uuid, int(run["task_id"]), int(run["id"]),
+            str(run.get("source_system") or "native_operations"), event_uuid,
+            "WARNING" if "unknown" in event_type else "INFO",
+            "reconcile" if "unknown" in event_type else "remote_request",
+            event_type, _text(message, 1400), _json(detail),
+        ),
+    )
+
+
+def record_remote_intent(
+    run_id: int,
+    *,
+    execution_id: str,
+    lease_token: str | None = None,
+    action: str,
+    intent_kind: str = "remote_write",
+    request_id: str | None = None,
+    detail: dict | None = None,
+) -> dict:
+    """Persist the start of a remote request before crossing the API boundary.
+
+    ``remote_write`` checkpoints are lease-fenced.  The payload deliberately
+    contains only an action, a caller-supplied correlation id and scrubbed
+    metadata; credentials and full remote responses never belong here.
+    """
+    kind = str(intent_kind or "remote_write").strip().lower()
+    if kind not in _REMOTE_INTENT_KINDS:
+        raise ValueError(f"不支持的 remote intent 类型: {kind!r}")
+    action_value = _text(action, 160).strip() or "remote_operation"
+    request_value = _text(request_id, 240).strip() if request_id else ""
+    safe_detail = _scrub(detail or {})
+    with _connect() as conn, conn.cursor() as cur:
+        run = _remote_checkpoint_fence(
+            cur, int(run_id), execution_id=execution_id, lease_token=lease_token,
+            require_lease=kind == "remote_write",
+        )
+        intent = {
+            "action": action_value,
+            "kind": kind,
+            "state": "started",
+            "receipt_state": "started",
+            "started_at": _now().isoformat(),
+        }
+        if request_value:
+            intent["request_id"] = request_value
+        if safe_detail:
+            intent["detail"] = safe_detail
+        cur.execute(
+            f"""
+            UPDATE {_table('operation_runs')}
+            SET data=data || %s::jsonb, heartbeat_at=now()
+            WHERE id=%s AND execution_id=%s
+            RETURNING *
+            """,
+            (_json({"remote_intent": intent}), int(run_id), str(execution_id)),
+        )
+        updated = dict(cur.fetchone())
+        _remote_checkpoint_event(
+            cur, updated,
+            event_type="remote.request_started",
+            message=f"远端请求边界已记录：{action_value}",
+            detail={
+                "action": action_value,
+                "intent_kind": kind,
+                "request_id": request_value or None,
+                "execution_id": str(execution_id),
+            },
+        )
+    return _row(updated) or {}
+
+
+def record_remote_receipt(
+    run_id: int,
+    *,
+    execution_id: str,
+    lease_token: str | None = None,
+    outcome: str | None = None,
+    receipt_state: str | None = None,
+    action: str | None = None,
+    request_id: str | None = None,
+    detail: dict | None = None,
+) -> dict:
+    """Persist a remote response without closing the Run.
+
+    ``response_received`` (with ``received``/``response_observed``/``accepted``
+    aliases) means only that an HTTP response was observed.  A positive
+    response whose local writeback has not completed is represented by
+    ``local_commit_required``.  ``confirmed`` is accepted only when the caller
+    explicitly proves remote confirmation, local business writeback, and a
+    local readback.  A crash before :func:`finish_run` still requires
+    reconciliation for every non-rejected write checkpoint, including
+    ``confirmed``; the receipt never makes a Run terminal by itself.
+    """
+    outcome_value = str(receipt_state or outcome or "unknown").strip().lower()
+    outcome_value = {
+        "received": "response_received",
+        "response_observed": "response_received",
+        "accepted": "response_received",
+    }.get(outcome_value, outcome_value)
+    if outcome_value not in _REMOTE_RECEIPT_OUTCOMES:
+        raise ValueError(f"不支持的 remote receipt outcome: {outcome_value!r}")
+    action_value = _text(action, 160).strip() if action else ""
+    request_value = _text(request_id, 240).strip() if request_id else ""
+    raw_detail = dict(detail or {})
+    if outcome_value == "confirmed":
+        def _confirmed_marker(*names: str) -> bool:
+            for name in names:
+                value = raw_detail.get(name)
+                if value is True:
+                    return True
+                if isinstance(value, str) and value.strip().lower() in {
+                    "1", "true", "yes", "confirmed",
+                }:
+                    return True
+            return False
+
+        if not _confirmed_marker(
+            "remote_result_confirmed", "remote_response_confirmed", "remote_confirmed",
+        ):
+            raise ValueError(
+                "confirmed receipt 必须明确 remote_result_confirmed=true"
+            )
+        if not _confirmed_marker(
+            "local_business_writeback_confirmed", "local_writeback_confirmed",
+            "local_commit_confirmed",
+        ):
+            raise ValueError(
+                "confirmed receipt 必须明确 local_business_writeback_confirmed=true"
+            )
+        if not _confirmed_marker("local_readback_confirmed", "local_readback"):
+            raise ValueError(
+                "confirmed receipt 必须明确 local_readback_confirmed=true"
+            )
+    safe_detail = _scrub(raw_detail)
+    with _connect() as conn, conn.cursor() as cur:
+        run = _remote_checkpoint_fence(
+            cur, int(run_id), execution_id=execution_id, lease_token=lease_token,
+            require_lease=True,
+        )
+        data = _decode(run.get("data"))
+        data = dict(data) if isinstance(data, dict) else {}
+        intent = data.get("remote_intent")
+        if not isinstance(intent, dict):
+            raise ValueError("remote receipt 缺少对应的 remote_request_started")
+        intent = dict(intent)
+        intent_action = str(intent.get("action") or "")
+        if action_value and intent_action and action_value != intent_action:
+            raise ValueError("remote receipt action 与 intent 不匹配")
+        action_value = action_value or intent_action or "remote_operation"
+        if not request_value:
+            request_value = str(intent.get("request_id") or "")
+        intent["state"] = outcome_value
+        intent["receipt_state"] = outcome_value
+        intent["receipt_at"] = _now().isoformat()
+        receipt = {
+            "action": action_value,
+            "outcome": outcome_value,
+            "receipt_state": outcome_value,
+            "received_at": _now().isoformat(),
+        }
+        if request_value:
+            receipt["request_id"] = request_value
+        if safe_detail:
+            receipt["detail"] = safe_detail
+        cur.execute(
+            f"""
+            UPDATE {_table('operation_runs')}
+            SET data=data || %s::jsonb, heartbeat_at=now()
+            WHERE id=%s AND execution_id=%s
+            RETURNING *
+            """,
+            (
+                _json({"remote_intent": intent, "remote_receipt": receipt}),
+                int(run_id), str(execution_id),
+            ),
+        )
+        updated = dict(cur.fetchone())
+        _remote_checkpoint_event(
+            cur, updated,
+            event_type=(
+                "remote.receipt_unknown"
+                if outcome_value == "unknown" else "remote.receipt_received"
+            ),
+            message=(
+                f"远端请求回执待核验：{action_value}"
+                if outcome_value == "unknown"
+                else f"已记录远端请求回执：{action_value}/{outcome_value}"
+            ),
+            detail={
+                "action": action_value,
+                "outcome": outcome_value,
+                "request_id": request_value or None,
+                "execution_id": str(execution_id),
+            },
+        )
+    return _row(updated) or {}
+
+
 def heartbeat_run(run_id: int, lease_token: str = "", *, ttl_seconds: int = 600) -> bool:
     init()
     ttl = max(60, min(24 * 60 * 60, int(ttl_seconds or 600)))
     with _connect() as conn, conn.cursor() as cur:
-        cur.execute(
-            f"UPDATE {_table('operation_runs')} SET heartbeat_at=now() WHERE id=%s AND status IN ('running','cancelling','settling')",
-            (int(run_id),),
-        )
-        changed = cur.rowcount > 0
-        lease_changed = True
-        if lease_token:
+        token = str(lease_token or "").strip()
+        if token:
             cur.execute(
                 f"""
-                UPDATE {_table('account_operation_leases')}
-                SET heartbeat_at=now(), expires_at=now() + (%s * interval '1 second')
-                WHERE run_id=%s AND lease_token=%s
+                UPDATE {_table('operation_runs')} AS run
+                SET heartbeat_at=now()
+                WHERE run.id=%s AND run.status IN ('running','cancelling','settling')
+                  AND EXISTS (
+                      SELECT 1 FROM {_table('account_operation_leases')} lease
+                      WHERE lease.run_id=run.id AND lease.lease_token=%s
+                        AND lease.expires_at > now()
+                  )
                 """,
-                (ttl, int(run_id), str(lease_token)),
+                (int(run_id), token),
             )
-            lease_changed = cur.rowcount > 0
-        return changed and lease_changed
+            changed = cur.rowcount > 0
+            if changed:
+                cur.execute(
+                    f"""
+                    UPDATE {_table('account_operation_leases')}
+                    SET heartbeat_at=now(), expires_at=now() + (%s * interval '1 second')
+                    WHERE run_id=%s AND lease_token=%s AND expires_at > now()
+                    """,
+                    (ttl, int(run_id), token),
+                )
+                changed = cur.rowcount > 0
+            return changed
+        cur.execute(
+            f"""
+            UPDATE {_table('operation_runs')}
+            SET heartbeat_at=now()
+            WHERE id=%s AND account_id IS NULL
+              AND status IN ('running','cancelling','settling')
+            """,
+            (int(run_id),),
+        )
+        return cur.rowcount > 0
 
 
 def acquire_account_lease(
@@ -4147,11 +4722,12 @@ def request_run_cancel(run_id: int, *, reason: str = "用户手动停止") -> di
             INSERT INTO {_table('operation_events')} (
                 event_uuid, task_id, run_id, source_system, source_id,
                 level, stage, event_type, message, detail
-            ) VALUES (%s, %s, %s, 'native_operations', %s,
+            ) VALUES (%s, %s, %s, %s, %s,
                       'WARNING', %s, 'run.cancel_requested', %s, %s::jsonb)
             """,
             (
-                event_uuid, int(run["task_id"]), int(run_id), event_uuid,
+                event_uuid, int(run["task_id"]), int(run_id),
+                str(run.get("source_system") or "native_operations"), event_uuid,
                 task_stage, _text(reason, 1400),
                 _json({"previous_status": status, "status": target}),
             ),
@@ -4286,7 +4862,7 @@ def finish_run(
             cur.execute(
                 f"""
                 SELECT 1 FROM {_table('account_operation_leases')}
-                WHERE run_id=%s AND lease_token=%s
+                WHERE run_id=%s AND lease_token=%s AND expires_at > now()
                 """,
                 (int(run_id), str(lease_token)),
             )

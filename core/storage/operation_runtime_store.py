@@ -34,6 +34,10 @@ def active_run_for_account(account_id: int, **kwargs: Any) -> dict | None:
     return _operation().active_run_for_account(account_id, **kwargs)
 
 
+def has_active_runtime_operations(**kwargs: Any) -> bool:
+    return _operation().has_active_runtime_operations(**kwargs)
+
+
 def list_queued_runs(**kwargs: Any) -> list[dict]:
     return _operation().list_queued_runs(**kwargs)
 
@@ -76,6 +80,14 @@ def heartbeat_run(run_id: int, lease_token: str = "", **kwargs: Any) -> bool:
         lease_token=lease_token,
         **kwargs,
     )
+
+
+def record_remote_intent(run_id: int, **kwargs: Any) -> dict:
+    return _operation().record_remote_intent(run_id, **kwargs)
+
+
+def record_remote_receipt(run_id: int, **kwargs: Any) -> dict:
+    return _operation().record_remote_receipt(run_id, **kwargs)
 
 
 def acquire_account_lease(account_id: int, run_id: int, **kwargs: Any) -> str | None:
@@ -142,6 +154,10 @@ def complete_task_dependency(dependency_id: int, **kwargs: Any) -> bool:
     return _operation().complete_task_dependency(dependency_id, **kwargs)
 
 
+def apply_task_dependency_result(**kwargs: Any) -> dict | None:
+    return _operation().apply_task_dependency_result(**kwargs)
+
+
 def recover_stale_task_dependencies(**kwargs: Any) -> int:
     return _operation().recover_stale_task_dependencies(**kwargs)
 
@@ -156,13 +172,13 @@ def projection_worker_status() -> dict[str, object]:
 
 __all__ = [
     "create_runtime_batch", "create_runtime_task", "retry_runtime_task", "get_run",
-    "get_task", "active_run_for_account", "list_queued_runs", "list_dispatchable_runs", "recover_interrupted_runtime_runs",
+    "get_task", "active_run_for_account", "has_active_runtime_operations", "list_queued_runs", "list_dispatchable_runs", "recover_interrupted_runtime_runs",
     "claim_next_queued_run",
     "mark_runtime_batch_empty", "set_runtime_batch_skipped", "claim_run",
     "requeue_claimed_run",
-    "append_runtime_event", "heartbeat_run", "acquire_account_lease", "release_account_lease",
+    "append_runtime_event", "heartbeat_run", "record_remote_intent", "record_remote_receipt", "acquire_account_lease", "release_account_lease",
     "request_run_cancel", "is_run_cancel_requested", "mark_run_settling", "register_resource",
     "release_resource", "finish_run", "register_task_dependency",
     "mark_task_dependency_ready", "list_ready_task_dependencies", "claim_task_dependency",
-    "complete_task_dependency", "recover_stale_task_dependencies", "reconcile_parent_task", "projection_worker_status",
+    "complete_task_dependency", "apply_task_dependency_result", "recover_stale_task_dependencies", "reconcile_parent_task", "projection_worker_status",
 ]

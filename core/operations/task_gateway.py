@@ -39,6 +39,7 @@ _DEPENDENCY_BATCH_SIZE = 32
 # scheduler thread.
 _DISPATCH_HANDLERS: dict[str, tuple[Callable[[int], Any], tuple[str, ...] | None]] = {}
 _OPERATION_HANDLERS: dict[str, Callable[[OperationHandlerContext], Any]] = {}
+_OPERATION_ACTIONS: dict[str, dict[str, Callable[[Mapping[str, Any]], Any]]] = {}
 _DISPATCH_HANDLER_LOCK = threading.RLock()
 _RUN_DISPATCHED: set[int] = set()
 _RUN_DISPATCH_LOCK = threading.RLock()
@@ -178,26 +179,67 @@ class OperationLeaseLost(RuntimeError):
 class OperationLease:
     """A DB-backed account/resource lease owned by one handler context."""
 
-    def __init__(self, *, run_id: int, account_id: int, resource_family: str, token: str) -> None:
+    def __init__(
+        self,
+        *,
+        run_id: int,
+        account_id: int,
+        resource_family: str,
+        token: str,
+        ttl_seconds: int = 600,
+    ) -> None:
         self.run_id = int(run_id)
         self.account_id = int(account_id)
         self.resource_family = str(resource_family)
         self.token = str(token)
+        self.ttl_seconds = max(60, min(24 * 60 * 60, int(ttl_seconds or 600)))
         self._released = False
+        self._heartbeat_lost = False
+        self._heartbeat_stop = threading.Event()
+        self._heartbeat_interval = max(0.5, min(30.0, self.ttl_seconds / 3.0))
+        self._heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop,
+            name=f"operation-lease-{self.run_id}",
+            daemon=True,
+        )
+        self._heartbeat_thread.start()
 
     @property
     def released(self) -> bool:
         return self._released
 
+    @property
+    def lost(self) -> bool:
+        return self._heartbeat_lost
+
     def heartbeat(self, *, ttl_seconds: int = 600) -> bool:
         if self._released:
             return False
-        return bool(_operation().heartbeat_run(self.run_id, self.token, ttl_seconds=ttl_seconds))
+        effective_ttl = max(60, min(24 * 60 * 60, int(ttl_seconds or self.ttl_seconds)))
+        alive = bool(
+            _operation().heartbeat_run(
+                self.run_id, self.token, ttl_seconds=effective_ttl,
+            )
+        )
+        if not alive:
+            self._heartbeat_lost = True
+        return alive
+
+    def _heartbeat_loop(self) -> None:
+        while not self._heartbeat_stop.wait(self._heartbeat_interval):
+            if self._released or not self.heartbeat(ttl_seconds=self.ttl_seconds):
+                return
 
     def release(self) -> bool:
         if self._released:
             return False
         self._released = True
+        self._heartbeat_stop.set()
+        if (
+            self._heartbeat_thread is not threading.current_thread()
+            and self._heartbeat_thread.is_alive()
+        ):
+            self._heartbeat_thread.join(timeout=min(1.0, self._heartbeat_interval))
         return bool(_operation().release_account_lease(self.run_id, self.token))
 
     def __enter__(self) -> "OperationLease":
@@ -296,6 +338,7 @@ class OperationHandlerContext:
         lease = OperationLease(
             run_id=self.run_id, account_id=self.account_id,
             resource_family=family, token=token,
+            ttl_seconds=ttl_seconds,
         )
         self._lease = lease
         return lease
@@ -322,6 +365,62 @@ class OperationHandlerContext:
 
     def release_resource(self, resource_id: int, **kwargs: Any) -> bool:
         return bool(_operation().release_resource(int(resource_id), **kwargs))
+
+    def remote_request_started(
+        self,
+        action: str,
+        *,
+        intent_kind: str = "remote_write",
+        request_id: str | None = None,
+        detail: Mapping[str, Any] | None = None,
+    ) -> dict:
+        """Persist a remote request boundary before invoking the remote API.
+
+        ``detail`` is for non-sensitive routing/request metadata only.  The
+        storage boundary scrubs it and fences the update by this execution and
+        its current account lease.
+        """
+        return _operation().record_remote_intent(
+            self.run_id,
+            execution_id=self.execution_id,
+            lease_token=self._lease.token if self._lease and not self._lease.released else None,
+            action=str(action or "remote_operation"),
+            intent_kind=str(intent_kind or "remote_write"),
+            request_id=request_id,
+            detail=dict(detail or {}),
+        )
+
+    def remote_request_receipt(
+        self,
+        *,
+        outcome: str | None = None,
+        receipt_state: str | None = None,
+        action: str | None = None,
+        request_id: str | None = None,
+        detail: Mapping[str, Any] | None = None,
+    ) -> dict:
+        """Persist a remote response without treating it as task success.
+
+        ``received``/``response_received``/``response_observed`` (and the
+        compatibility alias ``accepted``) only mean that an HTTP/remote
+        response was observed. ``local_commit_required`` means the remote
+        side may have accepted the write but local persistence is incomplete.
+        ``confirmed`` is reserved for a receipt whose detail explicitly marks
+        ``remote_result_confirmed``, ``local_business_writeback_confirmed``
+        and ``local_readback_confirmed``. A receipt on a crashed non-terminal
+        run still remains reconciliation-required rather than being replayed
+        blindly.
+        """
+        return _operation().record_remote_receipt(
+            self.run_id,
+            execution_id=self.execution_id,
+            lease_token=self._lease.token if self._lease and not self._lease.released else None,
+            outcome=str(outcome or "unknown"),
+            receipt_state=receipt_state,
+            action=action,
+            request_id=request_id,
+            detail=dict(detail or {}),
+        )
 
     def finish(
         self,
@@ -432,6 +531,8 @@ def register_operation_handler(
     *,
     source_systems: tuple[str, ...] | list[str] | None = ("native_operations",),
     config_allowlist: Iterable[str] | Mapping[str, str] | None = None,
+    retry_handler: Callable[[Mapping[str, Any]], Any] | None = None,
+    cancel_handler: Callable[[Mapping[str, Any]], Any] | None = None,
 ) -> None:
     """Register the reusable context-based durable handler contract.
 
@@ -454,6 +555,10 @@ def register_operation_handler(
         return _execute_operation_handler(_task_type, run_id)
 
     register_dispatch_handler(name, invoke, source_systems=source_systems)
+    if retry_handler is not None or cancel_handler is not None:
+        register_operation_actions(
+            name, retry_handler=retry_handler, cancel_handler=cancel_handler,
+        )
 
 
 def unregister_operation_handler(task_type: str) -> None:
@@ -461,7 +566,74 @@ def unregister_operation_handler(task_type: str) -> None:
     with _DISPATCH_HANDLER_LOCK:
         _OPERATION_HANDLERS.pop(name, None)
         _OPERATION_HANDLER_ALLOWLISTS.pop(name, None)
+        _OPERATION_ACTIONS.pop(name, None)
     unregister_dispatch_handler(name)
+
+
+def register_operation_actions(
+    task_type: str,
+    *,
+    retry_handler: Callable[[Mapping[str, Any]], Any] | None = None,
+    cancel_handler: Callable[[Mapping[str, Any]], Any] | None = None,
+) -> None:
+    """Register task-type route actions without coupling services to Flask.
+
+    The route supplies the complete task read model.  A handler may return a
+    normal response mapping or raise its own domain exception; the route owns
+    HTTP status mapping.  Omitting one action preserves a previously installed
+    action so adapters can register retry and cancel independently.
+    """
+    name = str(task_type or "").strip()
+    if not name:
+        raise ValueError("task_type 不能为空")
+    if retry_handler is None and cancel_handler is None:
+        return
+    with _DISPATCH_HANDLER_LOCK:
+        actions = dict(_OPERATION_ACTIONS.get(name) or {})
+        if retry_handler is not None:
+            actions["retry"] = retry_handler
+        if cancel_handler is not None:
+            actions["cancel"] = cancel_handler
+        _OPERATION_ACTIONS[name] = actions
+
+
+def operation_action(
+    task_type: str,
+    action: str,
+) -> Callable[[Mapping[str, Any]], Any] | None:
+    with _DISPATCH_HANDLER_LOCK:
+        return (_OPERATION_ACTIONS.get(str(task_type or "").strip()) or {}).get(
+            str(action or "").strip().lower()
+        )
+
+
+def operation_requires_reconciliation(task: Mapping[str, Any] | None) -> bool:
+    """Whether a task's current result forbids a blind retry."""
+    if not isinstance(task, Mapping):
+        return False
+    if str(task.get("status") or "").strip().lower() == "attention_required":
+        return True
+    summary = task.get("result_summary")
+    if isinstance(summary, Mapping) and (
+        str(summary.get("outcome") or "").strip().lower() == "request_unknown"
+        or bool(summary.get("reconcile_required"))
+    ):
+        return True
+    for run in task.get("runs") or []:
+        if not isinstance(run, Mapping):
+            continue
+        run_summary = run.get("result_summary")
+        if isinstance(run_summary, Mapping) and (
+            str(run_summary.get("outcome") or "").strip().lower() == "request_unknown"
+            or bool(run_summary.get("reconcile_required"))
+        ):
+            return True
+    actions = task.get("next_actions")
+    return any(
+        isinstance(item, Mapping)
+        and str(item.get("action") or "").strip().lower() == "reconcile"
+        for item in (actions if isinstance(actions, list) else [])
+    )
 
 
 def submit_durable_operation(
@@ -926,6 +1098,7 @@ def unregister_dispatch_handler(task_type: str) -> None:
         _DISPATCH_HANDLERS.pop(str(task_type or "").strip(), None)
         _OPERATION_HANDLERS.pop(str(task_type or "").strip(), None)
         _OPERATION_HANDLER_ALLOWLISTS.pop(str(task_type or "").strip(), None)
+        _OPERATION_ACTIONS.pop(str(task_type or "").strip(), None)
 
 
 def registered_dispatch_types() -> tuple[str, ...]:
@@ -1097,6 +1270,7 @@ __all__ = [
     "OperationLeaseUnavailable", "OperationLeaseLost", "OperationLease",
     "OperationTaskReporter", "OperationHandlerContext", "OperationContext",
     "register_operation_handler", "unregister_operation_handler", "registered_operation_types",
+    "register_operation_actions", "operation_action", "operation_requires_reconciliation",
     "submit_durable_operation", "submit_operation", "register_durable_handler",
     "start_dispatcher", "stop_dispatcher", "dispatcher_status",
 ]

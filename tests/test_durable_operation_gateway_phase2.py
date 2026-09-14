@@ -262,6 +262,138 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
         self.assertEqual("success", finished["status"])
         self.assertEqual("worker-current", finished["execution_id"])
 
+    def test_remote_receipt_contract_requires_local_commit_and_readback_proof(self):
+        account_id = self._runtime_account("receipt-contract@example.test")
+        task = operation.create_runtime_task(
+            task_type="synthetic_remote_receipt",
+            account_id=account_id,
+            email="receipt-contract@example.test",
+            source_system="synthetic_service",
+            source_id="receipt-contract-1",
+        )
+        run_id = int(task["run"]["id"])
+        execution_id = "receipt-worker"
+        operation.claim_run(run_id, execution_id=execution_id, worker_pid=505)
+        lease_token = operation.acquire_account_lease(
+            account_id=account_id, run_id=run_id, ttl_seconds=120,
+        )
+        self.assertTrue(lease_token)
+        operation.record_remote_intent(
+            run_id,
+            execution_id=execution_id,
+            lease_token=lease_token,
+            action="synthetic_password_change",
+            request_id="receipt-request-1",
+        )
+        with self.assertRaises(ValueError):
+            operation.record_remote_receipt(
+                run_id,
+                execution_id=execution_id,
+                lease_token=lease_token,
+                outcome="confirmed",
+                action="synthetic_password_change",
+            )
+        received = operation.record_remote_receipt(
+            run_id,
+            execution_id=execution_id,
+            lease_token=lease_token,
+            outcome="received",
+            action="synthetic_password_change",
+            detail={"remote_response_received": True},
+        )
+        self.assertEqual(
+            "response_received", received["data"]["remote_intent"]["receipt_state"],
+        )
+        local_commit = operation.record_remote_receipt(
+            run_id,
+            execution_id=execution_id,
+            lease_token=lease_token,
+            receipt_state="local_commit_required",
+            action="synthetic_password_change",
+            detail={"remote_result_confirmed": True},
+        )
+        self.assertEqual(
+            "local_commit_required",
+            local_commit["data"]["remote_intent"]["receipt_state"],
+        )
+        confirmed = operation.record_remote_receipt(
+            run_id,
+            execution_id=execution_id,
+            lease_token=lease_token,
+            outcome="confirmed",
+            action="synthetic_password_change",
+            detail={
+                "remote_result_confirmed": True,
+                "local_business_writeback_confirmed": True,
+                "local_readback_confirmed": True,
+            },
+        )
+        self.assertEqual(
+            "confirmed", confirmed["data"]["remote_intent"]["receipt_state"],
+        )
+        operation.finish_run(
+            run_id,
+            status="success",
+            execution_id=execution_id,
+            lease_token=lease_token,
+            result_summary={"confirmed": True},
+        )
+
+    def test_crash_after_http_receipt_never_becomes_retryable(self):
+        account_id = self._runtime_account("receipt-crash@example.test")
+        task = operation.create_runtime_task(
+            task_type="synthetic_remote_crash",
+            account_id=account_id,
+            email="receipt-crash@example.test",
+            source_system="synthetic_service",
+            source_id="receipt-crash-1",
+        )
+        run_id = int(task["run"]["id"])
+        execution_id = "crashed-receipt-worker"
+        operation.claim_run(run_id, execution_id=execution_id, worker_pid=606)
+        lease_token = operation.acquire_account_lease(
+            account_id=account_id, run_id=run_id, ttl_seconds=120,
+        )
+        operation.record_remote_intent(
+            run_id,
+            execution_id=execution_id,
+            lease_token=lease_token,
+            action="synthetic_token_refresh",
+            request_id="receipt-crash-request",
+        )
+        operation.record_remote_receipt(
+            run_id,
+            execution_id=execution_id,
+            lease_token=lease_token,
+            outcome="response_received",
+            action="synthetic_token_refresh",
+            detail={"http_status": 200},
+        )
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {operation._table('operation_runs')} "
+                "SET heartbeat_at=now() - interval '1 hour' WHERE id=%s",
+                (run_id,),
+            )
+            cur.execute(
+                f"UPDATE {operation._table('account_operation_leases')} "
+                "SET expires_at=now() - interval '1 minute' WHERE run_id=%s",
+                (run_id,),
+            )
+        self.assertEqual(1, operation.recover_interrupted_runtime_runs())
+        recovered = operation.get_run(run_id)
+        self.assertEqual("attention_required", recovered["status"])
+        self.assertEqual("request_unknown", recovered["result_summary"]["outcome"])
+        self.assertTrue(recovered["result_summary"]["reconcile_required"])
+        self.assertEqual(
+            "response_received",
+            recovered["result_summary"]["remote_intent_state"],
+        )
+        self.assertEqual(
+            [{"action": "reconcile", "label": "确认远端结果后继续"}],
+            (operation.get_task(int(task["id"])) or {})["next_actions"],
+        )
+
     def test_cancelled_queue_is_not_claimed_by_registered_handler(self):
         called = threading.Event()
 

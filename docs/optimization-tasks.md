@@ -84,6 +84,51 @@ task_gateway.register_operation_handler(
 当前结果。暂时拿不到 lease 时 Run 有界回到持久队列，远端边界已可能发生或 lease
 心跳丢失时则保留 `request_unknown`，不重做远端动作。
 
+### Remote intent / receipt 崩溃契约
+
+所有可能改变远端或本地凭证/账号状态的 handler，必须使用同一个持久检查点，不能
+只写 logger，也不能由每个 service 自己造 SQL：
+
+```python
+ctx.remote_request_started(
+    action="codex_token_refresh",
+    intent_kind="remote_write",
+    request_id=correlation_id,
+    detail={"checkpoint": "refresh_request_dispatched"},
+)
+# HTTP response 到达时只记录非终结回执：
+ctx.remote_request_receipt(
+    outcome="response_received",
+    action="codex_token_refresh",
+    request_id=correlation_id,
+)
+# 只有远端结果、本地业务写回和本地 readback 都成功后才能这样记录：
+ctx.remote_request_receipt(
+    outcome="confirmed",
+    action="codex_token_refresh",
+    request_id=correlation_id,
+    detail={
+        "remote_result_confirmed": True,
+        "local_business_writeback_confirmed": True,
+        "local_readback_confirmed": True,
+    },
+)
+```
+
+`received`、`response_observed`、`accepted` 会规范化为
+`response_received`；当远端可能已接受而本地提交尚未完成时可使用
+`local_commit_required`。`confirmed` 的三个证明字段是公共 helper 的强制校验，
+绝不能因为 HTTP 200 就直接填写。`rejected` 只适用于明确确认远端没有应用写入的
+拒绝；其它异常用 `unknown`。receipt 不会自行把 Run 变成终态，handler 仍须在
+业务持久化和 readback 后调用 `context.finish()`。
+
+恢复时，只要 stale `remote_write` 的 receipt 不是明确 `rejected`（包括
+`started`、`response_received`、`local_commit_required`、`confirmed`），Run 会进入
+`attention_required`，结果为 `outcome=request_unknown` 并只提供 `reconcile`，禁止
+自动重做密码、MFA、Token、注册或 OAuth。`execution_id` 与 lease token 同时参与
+检查点和终态 fence；旧 worker 的 receipt/finish 不能覆盖新执行。纯读取
+`intent_kind="read"` 不占账号写 lease，但仍建议在需要解释异常时记录 receipt。
+
 ### 配置代理 C
 
 Codex operation 优先调用：
@@ -123,8 +168,9 @@ checkout 没有该模块时才使用旧配置读取兼容路径。
 ### 认证代理 D
 
 本轮没有修改 `core/codex_retry_service.py`。补全续接只依赖其现有外层契约：
-`reserve(email)`、`release(email)` 和 `run_twofa_worker(..., manage_task=False,
-steps=...)`；Codex 子操作仍通过 `codex_operation_service.submit()` 入 durable
+`run_twofa_worker(..., manage_task=False, steps=...)`；账号密码/MFA 的 HTTP 回应
+也只能记录 `response_received`，必须在业务表写回和 readback 后记录上述
+`confirmed`。Codex 子操作仍通过 `codex_operation_service.submit()` 入 durable
 队列。若认证代理改动这些签名，需要在 runtime 外层适配，不要让 gateway 直接
 调用认证内部实现。
 
