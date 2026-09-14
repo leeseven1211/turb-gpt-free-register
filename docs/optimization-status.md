@@ -221,9 +221,14 @@ to active durable operations. B/D must agree a durable remote-write intent and
 receipt contract: an unconfirmed token rotation/password submission found after
 restart must remain request_unknown/reconcile, not become a blind retry.
 
-Full suite after C + B helper + coordinator correction is running in isolated
-session `57838` at this checkpoint. Four phase-2 agents remain active (A/B/D/E),
-and the heartbeat monitor is still ACTIVE. No production changes or push.
+Full suite after C + B helper + coordinator correction completed: **1045 passed,
+816 subtests passed in 148.08s**. Session `57838` is finished, with no background
+test sessions remaining. A/D have both taken the helper and coordinator fix
+into their worktrees and are editing all assigned maintenance/token services.
+Four phase-2 agents remain active (A/B/D/E), and the heartbeat monitor is still
+ACTIVE. Full test success at this checkpoint is not acceptance of the still
+unfinished service migrations, remote-write recovery contract or benchmark.
+No production changes or push.
 
 ## Verification
 
