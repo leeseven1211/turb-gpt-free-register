@@ -251,7 +251,7 @@ console.log('ok');
         self.assertNotIn('id="codexFilterV2"', html)
         self.assertNotIn('id="accountsFilterV2"', html)
         self.assertIn('id="outlookToolbarV2"', html)
-        self.assertEqual(html.count('data-column-filter="'), 43)
+        self.assertEqual(html.count('data-column-filter="'), 41)
         self.assertIn('class="column-filter-trigger"', html)
         self.assertIn('class="column-filter-search"', html)
         self.assertIn('data-column-filter-options', html)
@@ -647,13 +647,15 @@ console.log('ok');
             {"email": "free@example.com", "status": "available", "access_token": "", "imported_at": "2026-08-09T10:00:00"},
         ])
         response = self.client.get(
-            "/api/outlook?paged=1&page=1&page_size=20&source=outlook&status=used&token=has&used_date=2026-08-11",
+            "/api/outlook?paged=1&page=1&page_size=20&source=outlook&status=used&used_date=2026-08-11",
             headers=self.headers,
         )
         payload = response.get_json()
         self.assertEqual(payload["total"], 1)
         self.assertEqual(payload["items"][0]["email"], "used@example.com")
         self.assertEqual({item["value"] for item in payload["facets"]["status"]}, {"available", "used"})
+        self.assertNotIn("token", payload["facets"])
+        self.assertNotIn("has_access_token", payload["items"][0])
 
 
 class EmailButlerLeaseApiTests(PostgresTestCase):

@@ -38,6 +38,66 @@ from webui.route_helpers import _pool_source_arg
 
 logger = logging.getLogger(__name__)
 
+
+def _parse_email_pool_import(text: str, source: str, *, include_account_fields: bool = False) -> dict:
+    """Parse only the fields that belong to an email resource.
+
+    ``include_account_fields`` is retained for old API clients that still send
+    ``as_registered``. The new email UI never enables that path.
+    """
+    source = str(source or "").strip().lower()
+    required = 2 if source == "generic_api" else 4
+    records: list[dict] = []
+    errors: list[dict] = []
+    extra_fields = 0
+    total_lines = 0
+    for line_no, raw_line in enumerate(str(text or "").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        total_lines += 1
+        parts = line.split("----") if "----" in line else line.split("====")
+        parts = [part.strip() for part in parts]
+        if len(parts) < required:
+            errors.append({"line": line_no, "reason": f"需要 {required} 段字段"})
+            continue
+        email = parts[0]
+        if "@" not in email or any(char.isspace() for char in email):
+            errors.append({"line": line_no, "reason": "邮箱格式不正确"})
+            continue
+        if any(not part for part in parts[:required]):
+            errors.append({"line": line_no, "reason": "必填字段不能为空"})
+            continue
+        if len(parts) > required:
+            extra_fields += len(parts) - required
+        if source == "generic_api":
+            record = {"email": email, "code_url": parts[1]}
+            if include_account_fields:
+                record.update({
+                    "access_token": parts[2] if len(parts) > 2 else "",
+                    "totp_secret": parts[3] if len(parts) > 3 else "",
+                })
+        else:
+            record = {
+                "email": email,
+                "password": parts[1],
+                "client_id": parts[2],
+                "refresh_token": parts[3],
+            }
+            if include_account_fields:
+                record.update({
+                    "access_token": parts[4] if len(parts) > 4 else "",
+                    "totp_secret": parts[5] if len(parts) > 5 else "",
+                })
+        records.append(record)
+    return {
+        "records": records,
+        "errors": errors,
+        "total_lines": total_lines,
+        "extra_fields": extra_fields,
+    }
+
+
 def create_email_pool_blueprint(context: WebUIContext):
     bp = LegacyEndpointBlueprint("email_pool", __name__)
     logger = context.logger
@@ -49,7 +109,6 @@ def create_email_pool_blueprint(context: WebUIContext):
         limit = request.args.get("limit", default=500, type=int)
         source = _pool_source_arg()
         q = str(request.args.get("q", default="") or "").strip()
-        token_filter = str(request.args.get("token", default="") or "").strip().lower()
         imported_date = str(request.args.get("imported_date", default="") or "").strip()
         used_date = str(request.args.get("used_date", default="") or "").strip()
         paged = str(request.args.get("paged", default="") or "").lower() in {"1", "true", "yes"}
@@ -62,7 +121,6 @@ def create_email_pool_blueprint(context: WebUIContext):
                 "source": source,
                 "q": q,
                 "status": status or "",
-                "token": token_filter,
                 "imported_date": imported_date,
                 "used_date": used_date,
             })
@@ -73,7 +131,7 @@ def create_email_pool_blueprint(context: WebUIContext):
 
     @bp.get("/api/outlook/secret")
     def api_outlook_secret():
-        """按需读取单条邮箱素材，普通列表不会下发密码、Token 或取码地址。"""
+        """按需读取单条邮箱资源，普通列表不会下发敏感凭证或取码地址。"""
         source = str(request.args.get("source") or "outlook").strip()
         email = str(request.args.get("email") or "").strip()
         field = str(request.args.get("field") or "copy_line").strip()
@@ -117,10 +175,42 @@ def create_email_pool_blueprint(context: WebUIContext):
                 skipped.append({"source": source, "email": email, "reason": "值为空"})
         return jsonify({"ok": True, "field": field, "values": values, "count": len(values), "skipped": skipped})
 
+    @bp.post("/api/outlook/import-preview")
+    def api_outlook_import_preview():
+        """Validate an email resource paste and report duplicates before writing."""
+        data = request.get_json(silent=True) or {}
+        source = str(data.get("source") or data.get("type") or "").strip().lower()
+        if source not in ("outlook", "generic_api"):
+            return jsonify({"ok": False, "error": "请选择 Outlook 或通用 API 邮箱来源"}), 400
+        parsed = _parse_email_pool_import(data.get("text") or "", source)
+        if parsed["total_lines"] > 5000:
+            return jsonify({"ok": False, "error": "单次最多预览 5000 行邮箱"}), 400
+        emails = [record["email"].lower() for record in parsed["records"]]
+        seen: set[str] = set()
+        duplicate_count = 0
+        for email in emails:
+            if email in seen:
+                duplicate_count += 1
+            seen.add(email)
+        existing = admin_repository.email_pool_existing_emails(source, seen)
+        unique_valid = len(seen)
+        return jsonify({
+            "ok": True,
+            "source": source,
+            "total_lines": parsed["total_lines"],
+            "valid": len(parsed["records"]),
+            "invalid": len(parsed["errors"]),
+            "invalid_rows": parsed["errors"][:100],
+            "duplicate_in_input": duplicate_count,
+            "existing": len(existing),
+            "new": max(0, unique_valid - len(existing)),
+            "extra_fields": parsed["extra_fields"],
+        })
+
     @bp.post("/api/outlook/import")
     def api_outlook_import():
         """
-        粘贴文本导入邮箱素材。
+        粘贴文本导入邮箱资源。
         Outlook：email----password----clientId----refreshToken
         通用 API：email----code_url
         分隔符兼容 ---- 与 ====。
@@ -130,34 +220,13 @@ def create_email_pool_blueprint(context: WebUIContext):
         if source not in ("outlook", "generic_api"):
             return jsonify({"ok": False, "error": "导入时请选择具体类型：Outlook 或 通用 API"}), 400
         text = data.get("text") or ""
+        # Old API clients may still send as_registered; keep the compatibility
+        # path while the current UI always imports resources only.
         as_registered = bool(data.get("as_registered", False))
-        records = []
-        for line in text.splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            parts = line.split("----") if "----" in line else line.split("====")
-            parts = [p.strip() for p in parts]
-            if source == "generic_api":
-                if len(parts) < 2:
-                    continue
-                records.append({
-                    "email": parts[0],
-                    "code_url": parts[1],
-                    "access_token": parts[2] if len(parts) > 2 else "",
-                    "totp_secret": parts[3] if len(parts) > 3 else "",
-                })
-                continue
-            if len(parts) < 4:
-                continue
-            records.append({
-                "email": parts[0],
-                "password": parts[1],
-                "client_id": parts[2],
-                "refresh_token": parts[3],
-                "access_token": parts[4] if len(parts) > 4 else "",
-                "totp_secret": parts[5] if len(parts) > 5 else "",
-            })
+        parsed = _parse_email_pool_import(text, source, include_account_fields=as_registered)
+        records = parsed["records"]
+        if parsed["total_lines"] > 5000:
+            return jsonify({"ok": False, "error": "单次最多导入 5000 行邮箱"}), 400
         if not records:
             need = "2 段：邮箱----取码地址" if source == "generic_api" else "4 段：email----password----clientId----refreshToken"
             return jsonify({"ok": False, "error": f"未解析到有效邮箱行（需 {need}，---- 或 ==== 分隔）"}), 400
@@ -173,6 +242,8 @@ def create_email_pool_blueprint(context: WebUIContext):
             "skipped": skipped,
             "parsed": len(records),
             "as_registered": as_registered,
+            "invalid": len(parsed["errors"]),
+            "extra_fields": parsed["extra_fields"],
         })
 
     @bp.post("/api/outlook/status")

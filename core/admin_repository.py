@@ -580,6 +580,23 @@ def _pool_union() -> str:
     return " UNION ALL ".join(parts)
 
 
+def email_pool_existing_emails(source: str, emails: list[str] | set[str]) -> set[str]:
+    """Return existing addresses for an import preview without reading secrets."""
+    source_key = _text(source).lower()
+    spec = _POOL_SPECS.get(source_key)
+    if spec is None:
+        raise ValueError("邮箱来源非法")
+    normalized = sorted({str(email or "").strip().lower() for email in emails if str(email or "").strip()})
+    if not normalized:
+        return set()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT lower(email) AS email FROM {_q(spec)} WHERE lower(email) = ANY(%s)",
+            (normalized,),
+        )
+        return {str(row["email"]).lower() for row in cur.fetchall()}
+
+
 def list_email_pool(request: PageRequest) -> dict:
     pool = _pool_union()
     accounts = _q(record_store.ACCOUNTS)
@@ -598,10 +615,6 @@ def list_email_pool(request: PageRequest) -> dict:
     if q:
         where.append("(p.email ILIKE %s OR p.data::text ILIKE %s)")
         params.extend((f"%{q}%", f"%{q}%"))
-    token = _text(filters.get("token")).lower()
-    token_present = "NULLIF(BTRIM(COALESCE(a.data->>'access_token', p.data->>'access_token', '')), '') IS NOT NULL"
-    if token in {"has", "none"}:
-        where.append(token_present if token == "has" else f"NOT ({token_present})")
     imported = _text(filters.get("imported_date"))
     if imported:
         where.append("LEFT(COALESCE(p.data->>'imported_at', p.created_at), 10) = %s")
@@ -617,6 +630,7 @@ def list_email_pool(request: PageRequest) -> dict:
         "'code_url','copy_line','account_copy_line','original_line']::text[] "
         "|| jsonb_build_object("
         "'has_password', NULLIF(BTRIM(COALESCE(p.data->>'password', '')), '') IS NOT NULL, "
+        "'has_client_id', NULLIF(BTRIM(COALESCE(p.data->>'client_id', '')), '') IS NOT NULL, "
         "'has_refresh_token', NULLIF(BTRIM(COALESCE(p.data->>'refresh_token', '')), '') IS NOT NULL, "
         "'has_code_url', NULLIF(BTRIM(COALESCE(p.data->>'code_url', '')), '') IS NOT NULL)"
     )
@@ -626,7 +640,7 @@ def list_email_pool(request: PageRequest) -> dict:
         cur.execute(
             f"SELECT p.source, p.id, p.email, p.created_at, p.updated_at, p.status, p.used_at, "
             f"p.registered_account_id, ({safe_pool_data}) AS data, "
-            f"a.id AS joined_account_id, ({token_present}) AS has_access_token{from_sql}{clause} "
+            f"a.id AS joined_account_id, COALESCE(NULLIF(a.data->>'account_status', ''), 'active') AS joined_account_status{from_sql}{clause} "
             "ORDER BY COALESCE(p.data->>'imported_at', p.created_at, p.used_at, '') DESC, p.id DESC LIMIT %s OFFSET %s",
             (*params, request.limit, request.offset),
         )
@@ -636,8 +650,6 @@ def list_email_pool(request: PageRequest) -> dict:
             SELECT 'source' AS facet, p.source AS value, COUNT(*) AS count {from_sql} GROUP BY p.source
             UNION ALL
             SELECT 'status', LOWER(COALESCE(p.status, '')), COUNT(*) {from_sql} GROUP BY 2
-            UNION ALL
-            SELECT 'token', CASE WHEN {token_present} THEN 'has' ELSE 'none' END, COUNT(*) {from_sql} GROUP BY 2
             """
         )
         facets = _facet_dict(cur.fetchall())
@@ -650,17 +662,32 @@ def list_email_pool(request: PageRequest) -> dict:
         source = str(raw["source"])
         spec = _POOL_SPECS[source]
         joined_id = raw.get("joined_account_id")
-        has_access_token = bool(raw.get("has_access_token"))
+        joined_status = str(raw.get("joined_account_status") or "").strip().lower()
         payload = dict(raw)
-        for key in ("source", "joined_account_id", "has_access_token"):
+        for key in ("source", "joined_account_id", "joined_account_status"):
             payload.pop(key, None)
         item = record_store.merge_row(spec, payload)
         item["source"] = source
-        item["registered_account_id"] = item.get("registered_account_id") or joined_id
-        item["has_access_token"] = has_access_token
-        item["has_password"] = bool(item.get("has_password"))
-        item["has_refresh_token"] = bool(item.get("has_refresh_token"))
-        item["has_code_url"] = bool(item.get("has_code_url"))
+        linked_id = item.get("registered_account_id") or joined_id
+        item["registered_account_id"] = linked_id
+        item["linked_account_status"] = joined_status or None
+        status_value = str(item.get("status") or "available").strip().lower()
+        if status_value == "used":
+            item["usage_state"] = "bound" if linked_id else "used_unbound"
+        else:
+            item["usage_state"] = status_value
+        item["resource_meta"] = {
+            "password": bool(item.get("has_password")),
+            "client_id": bool(item.get("has_client_id")),
+            "refresh_token": bool(item.get("has_refresh_token")),
+            "code_url": bool(item.get("has_code_url")),
+        }
+        item["last_activity_at"] = item.get("used_at") or item.get("updated_at") or item.get("created_at")
+        if source == "icloud_hide":
+            remote_active = item.get("remote_active")
+            item["remote_active"] = None if remote_active is None else str(remote_active).lower() not in {"false", "0", "no"}
+            item["remote_label"] = item.get("label") or None
+            item["synced_at"] = item.get("synced_at") or None
         for key in sensitive:
             item.pop(key, None)
         items.append(item)

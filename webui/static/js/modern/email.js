@@ -32,15 +32,63 @@ function poolKey(r) { return `${r.source || getPoolSource() || 'outlook'}|${r.em
 function poolLabel(src) {
   return ({outlook:'Outlook', generic_api:'通用API', cloudflare_domain:'域名邮箱', icloud_hide:'iCloud 隐藏邮箱'})[src] || src || '-';
 }
+const POOL_USAGE_LABELS = {
+  available: '待领取',
+  used_unbound: '已领取未绑定',
+  bound: '已绑定账号',
+  failed: '失败',
+  disabled: '已停用',
+};
+function poolUsageLabel(state) { return POOL_USAGE_LABELS[state] || state || '状态待确认'; }
+function _poolUsageCell(r) {
+  const state = r.usage_state || r.status || '';
+  const label = poolUsageLabel(state);
+  const account = r.registered_account_id ? ` · #${r.registered_account_id}` : '';
+  const cls = ['available', 'bound'].includes(state) ? 'is-good' : ['failed', 'disabled'].includes(state) ? 'is-bad' : 'is-muted';
+  return `<span class="pool-usage ${cls}">${esc(label)}${state === 'bound' ? esc(account) : ''}</span>`;
+}
+function _poolCredentialsCell(r) {
+  const meta = r.resource_meta || {};
+  const source = r.source || 'outlook';
+  if (source === 'outlook') {
+    const fields = [
+      ['password', '密码'],
+      ['client_id', 'Client ID'],
+      ['refresh_token', 'Refresh Token'],
+    ];
+    const configured = fields.filter(([key]) => meta[key]).length;
+    const missing = fields.filter(([key]) => !meta[key]).map(([, label]) => label);
+    return `<div class="pool-credential-title">${configured}/3 已配置</div><small>${missing.length ? `缺少：${esc(missing.join('、'))}` : '密码 · Client ID · Refresh Token'}</small>`;
+  }
+  if (source === 'generic_api') {
+    return `<div class="pool-credential-title">${meta.code_url ? '取码地址已配置' : '缺少取码地址'}</div><small>地址仅在按需复制时读取</small>`;
+  }
+  if (source === 'icloud_hide') {
+    const remote = r.remote_active === true ? '远程已激活' : r.remote_active === false ? '远程未激活' : '远程状态未知';
+    return `<div class="pool-credential-title">Apple 别名</div><small>${esc(remote)}</small>`;
+  }
+  return `<div class="pool-credential-title">运行时配置</div><small>由来源服务管理</small>`;
+}
+function _poolActivityCell(r) {
+  const activity = r.last_activity_at || r.used_at || r.updated_at || r.created_at;
+  const label = r.used_at ? '最近使用' : r.last_activity_at ? '最近更新' : '导入时间';
+  const sync = r.synced_at ? `<small>同步 ${esc(formatDateTime(r.synced_at))}</small>` : '';
+  return `<div class="pool-activity"><span>${esc(formatDateTime(activity))}</span><small>${esc(label)}</small>${sync}</div>`;
+}
+function _poolNoteCell(r) {
+  const note = String(r.note || r.disabled_reason || '').trim();
+  return note ? `<span class="pool-note" title="${attrEsc(note)}">${esc(note)}</span>` : '<span class="pool-note is-empty">-</span>';
+}
 function renderMailSourceCards(sources) {
   const root = $('#mailSourceCards');
   if (!root) return;
   root.innerHTML = (sources || []).map(source => {
     const onDemand = source.kind === 'on_demand';
-    return `<article class="mail-source-card${source.enabled ? ' is-enabled' : ''}">
+    const clickable = !onDemand && POOL_SOURCE_LABELS[source.source] && source.source !== 'all';
+    return `<article class="mail-source-card${source.enabled ? ' is-enabled' : ''}${clickable ? ' is-clickable' : ''}"${clickable ? ` data-mail-source="${attrEsc(source.source)}" role="button" tabindex="0"` : ''}>
       <div class="mail-source-card-head"><strong title="${attrEsc(source.label)}">${esc(source.label)}</strong><span>${source.enabled ? '已启用' : '未启用'}</span></div>
       <div class="mail-source-card-value">${onDemand ? '按需' : esc(source.available || 0)}</div>
-      <div class="mail-source-card-meta">${onDemand ? '运行时租用 / 创建' : `总数 ${esc(source.total || 0)} · 已用 ${esc(source.used || 0)} · 失败 ${esc(source.failed || 0)}`}</div>
+      <div class="mail-source-card-meta">${onDemand ? '运行时租用 / 创建' : `总数 ${esc(source.total || 0)} · 已用 ${esc(source.used || 0)} · 失败 ${esc(source.failed || 0)} · 停用 ${esc(source.disabled || 0)}`}</div>
     </article>`;
   }).join('') || '<div class="muted">暂无邮箱平台</div>';
 }
@@ -60,6 +108,20 @@ async function loadMailResources() {
   } catch(e) { showToast('邮箱资源加载失败: ' + e.message); }
 }
 $('#btnRefreshMailResources')?.addEventListener('click', loadMailResources);
+$('#mailSourceCards')?.addEventListener('click', e => {
+  const card = e.target.closest('[data-mail-source]');
+  if (!card) return;
+  setPoolSourceV2(card.dataset.mailSource);
+  setModuleView('outlook', 'list');
+});
+$('#mailSourceCards')?.addEventListener('keydown', e => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const card = e.target.closest('[data-mail-source]');
+  if (!card) return;
+  e.preventDefault();
+  setPoolSourceV2(card.dataset.mailSource);
+  setModuleView('outlook', 'list');
+});
 $('#btnLeaseButlerMailbox')?.addEventListener('click', async e => {
   e.currentTarget.disabled = true;
   try {
@@ -90,21 +152,18 @@ async function loadOutlook() {
     const p = PAGERS.outlook;
     const params = new URLSearchParams({paged:'1', page:String(p.page), page_size:String(p.size), source, q});
     params.set('status', document.getElementById('outlookStatusFilterV2')?.value || '');
-    params.set('token', document.getElementById('outlookTokenFilterV2')?.value || '');
-    params.set('imported_date', document.getElementById('outlookImportedFilterV2')?.value || '');
     params.set('used_date', document.getElementById('outlookUsedFilterV2')?.value || '');
     const res = await api(`/api/outlook?${params.toString()}`);
     const facets = res.facets || {};
     syncFacetSelect('poolSourceV2', facets.source, {group:'source', allValue:'all'});
     syncFacetSelect('outlookStatusFilterV2', facets.status, {group:'status'});
-    syncFacetSelect('outlookTokenFilterV2', facets.token, {group:'token'});
     OUTLOOK = res.items || [];
     OUTLOOK_TOTAL = Number(res.total || OUTLOOK.length || 0);
     const totalPages = Math.max(1, Math.ceil(OUTLOOK_TOTAL / p.size));
     if (p.page > totalPages) { p.page = totalPages; return loadOutlook(); }
     renderOutlook();
   } catch(e) {
-    if (!OUTLOOK.length) $('#outlookBodyV2').innerHTML = renderTableStateRow(8, '邮箱素材加载失败', '请检查服务状态后刷新列表。', 'error');
+    if (!OUTLOOK.length) $('#outlookBodyV2').innerHTML = renderTableStateRow(9, '邮箱资源加载失败', '请检查服务状态后刷新列表。', 'error');
     showToast('加载邮箱池失败: ' + e.message);
   }
   finally {
@@ -142,12 +201,6 @@ function positionOutlookV2MoreMenu(wrap) {
   menu.style.left = `${left}px`;
   menu.style.top = `${top}px`;
 }
-function _outlookTokenCell(r) {
-  if (r.has_access_token) {
-    return `<button type="button" class="acc-v2-token-copy" data-pool-copy="access_token" data-email="${esc(r.email)}" data-source="${esc(r.source || 'outlook')}" title="按需读取并复制 Token">复制</button>`;
-  }
-  return `<span class="acc-v2-token-none">无Token</span>`;
-}
 function _poolCopyButton(label, r, field, cls='') {
   return `<button type="button" class="${cls}" data-pool-copy="${esc(field)}" data-email="${esc(r.email)}" data-source="${esc(r.source || 'outlook')}">${esc(label)}</button>`;
 }
@@ -170,8 +223,6 @@ function _outlookMoreMenu(r) {
   const src = esc(r.source || 'outlook');
   const email = esc(r.email);
   const items = [
-    r.has_access_token ? _poolCopyButton('复制Token', r, 'access_token', 'good') : '',
-    r.registered_account_id ? _poolCopyButton('复制账号整行', r, 'account_copy_line', 'good') : '',
     r.status !== 'available' ? `<button type="button" data-pool-act="available" data-email="${email}" data-source="${src}">恢复可用</button>` : '',
     r.status !== 'disabled' ? `<button type="button" data-pool-act="disabled" data-email="${email}" data-source="${src}">停用</button>` : '',
     r.status !== 'failed' ? `<button type="button" data-pool-act="failed" data-email="${email}" data-source="${src}">标失败</button>` : '',
@@ -191,12 +242,14 @@ function renderOutlook() {
       <td class="col-check"><input type="checkbox" class="outlook-row-check" data-email="${email}" data-source="${src}" ${OUTLOOK_SELECTED.has(poolKey(r)) ? 'checked' : ''}></td>
       <td class="col-email" title="${email}">
         <div class="acc-v2-email">${email || '-'}</div>
+        ${r.remote_label ? `<small class="pool-remote">${esc(r.remote_label)}</small>` : ''}
       </td>
       <td class="col-source">${esc(poolLabel(r.source))}</td>
       <td class="col-status">${pill(r.status)}</td>
-      <td class="col-token">${_outlookTokenCell(r)}</td>
-      <td class="col-time" title="${esc(r.imported_at || r.created_at || '-')}">${esc(r.imported_at || r.created_at || '-')}</td>
-      <td class="col-time" title="${esc(r.used_at || '-')}">${esc(r.used_at || '-')}</td>
+      <td class="col-usage">${_poolUsageCell(r)}</td>
+      <td class="col-credentials">${_poolCredentialsCell(r)}</td>
+      <td class="col-time">${_poolActivityCell(r)}</td>
+      <td class="col-note">${_poolNoteCell(r)}</td>
       <td class="col-actions">
         <div class="acc-v2-actions">
           ${_poolCopyButton('复制素材', r, 'copy_line', 'primary')}
@@ -208,7 +261,7 @@ function renderOutlook() {
         </div>
       </td>
     </tr>`;
-  }).join('') || renderTableStateRow(8, '暂无邮箱素材', '调整筛选条件，或导入新的邮箱素材。');
+  }).join('') || renderTableStateRow(9, '暂无邮箱资源', '调整筛选条件，或导入新的邮箱资源。');
   updateOutlookSelectionUi(rows);
   const summary = $('#outlookPageSummary');
   if (summary) summary.textContent = `${total || 0} 个邮箱 · 当前页 ${rows.length} 条`;
@@ -340,7 +393,7 @@ async function onOutlookBodyClick(e) {
     });
   }
   if (srcHidden && !srcWrap) srcHidden.addEventListener('change', () => onPoolSourceChange(srcHidden));
-  ['outlookStatusFilterV2','outlookTokenFilterV2','outlookImportedFilterV2','outlookUsedFilterV2'].forEach(id => {
+  ['outlookStatusFilterV2','outlookUsedFilterV2'].forEach(id => {
     document.getElementById(id)?.addEventListener('change', () => { PAGERS.outlook.page = 1; OUTLOOK_SELECTED.clear(); loadOutlook(); });
   });
   const selectAllV2 = $('#outlookSelectAllV2');
@@ -362,7 +415,7 @@ async function onOutlookBodyClick(e) {
   });
   bind('btnRefreshOutlookV2', () => refreshOutlookManual(document.getElementById('btnRefreshOutlookV2')));
   bind('btnResetOutlookFiltersV2', () => {
-    ['qOutlookV2','outlookStatusFilterV2','outlookTokenFilterV2','outlookImportedFilterV2','outlookUsedFilterV2'].forEach(id => { const el=document.getElementById(id); if (el) el.value=''; });
+    ['qOutlookV2','outlookStatusFilterV2','outlookUsedFilterV2'].forEach(id => { const el=document.getElementById(id); if (el) el.value=''; });
     setPoolSourceV2('all'); OUTLOOK_SELECTED.clear(); PAGERS.outlook.page = 1; refreshColumnFilterStates(); loadOutlook();
   });
   document.addEventListener('click', (e) => {
@@ -378,6 +431,7 @@ const IMPORT_SOURCE_LABELS = {
   outlook: 'Outlook 邮箱池',
   generic_api: '通用 API 取码邮箱',
 };
+let outlookImportPreview = null;
 function setImportSourceV2(val) {
   const hidden = document.getElementById('importSourceV2');
   const btn = document.getElementById('importSourceV2Btn');
@@ -397,6 +451,7 @@ function openOutlookImportModal() {
   if (!modal) return;
   const result = $('#importResultV2');
   if (result) result.innerHTML = '';
+  clearOutlookImportPreview();
   const pool = getPoolSource();
   if (pool === 'outlook' || pool === 'generic_api') setImportSourceV2(pool);
   else setImportSourceV2('outlook');
@@ -420,6 +475,7 @@ function bindOutlookImportModal() {
   const closeBtn = $('#btnCloseOutlookImport');
   const cancelBtn = $('#btnCancelOutlookImport');
   const submitBtn = $('#btnSubmitOutlookImport');
+  const previewBtn = $('#btnPreviewOutlookImport');
   if (closeBtn) closeBtn.addEventListener('click', closeOutlookImportModal);
   if (cancelBtn) cancelBtn.addEventListener('click', closeOutlookImportModal);
   modal.addEventListener('click', (e) => {
@@ -441,6 +497,7 @@ function bindOutlookImportModal() {
       item.addEventListener('click', (e) => {
         e.stopPropagation();
         setImportSourceV2(item.dataset.value);
+        clearOutlookImportPreview();
         wrap.classList.remove('open');
         btn.setAttribute('aria-expanded', 'false');
       });
@@ -451,12 +508,63 @@ function bindOutlookImportModal() {
       btn.setAttribute('aria-expanded', 'false');
     });
   }
+  const sourceEl = $('#importSourceV2');
+  const textEl = $('#importTextV2');
+  if (sourceEl) sourceEl.addEventListener('change', clearOutlookImportPreview);
+  if (textEl) textEl.addEventListener('input', clearOutlookImportPreview);
+  if (previewBtn) previewBtn.addEventListener('click', previewOutlookImport);
   if (submitBtn) submitBtn.addEventListener('click', () => doImportOutlook());
+}
+function clearOutlookImportPreview() {
+  outlookImportPreview = null;
+  const previewEl = $('#importPreviewV2');
+  if (previewEl) previewEl.innerHTML = '';
+  const submitBtn = $('#btnSubmitOutlookImport');
+  if (submitBtn) submitBtn.disabled = false;
+}
+function renderOutlookImportPreview(data) {
+  const previewEl = $('#importPreviewV2');
+  if (!previewEl) return;
+  const invalidRows = (data.invalid_rows || []).slice(0, 8).map(row => `第 ${esc(row.line)} 行：${esc(row.reason)}`);
+  const invalidDetail = invalidRows.length ? `<div class="outlook-import-preview-errors">${invalidRows.map(item => `<span>${item}</span>`).join('')}</div>` : '';
+  previewEl.innerHTML = `
+    <div class="outlook-import-preview-head"><strong>导入前检查</strong><span>${esc(IMPORT_SOURCE_LABELS[data.source] || data.source)}</span></div>
+    <div class="outlook-import-preview-grid">
+      <div><strong>${esc(data.total_lines)}</strong><small>输入行数</small></div>
+      <div><strong>${esc(data.valid)}</strong><small>可解析</small></div>
+      <div class="is-good"><strong>${esc(data.new)}</strong><small>可新增</small></div>
+      <div><strong>${esc(data.existing)}</strong><small>已存在</small></div>
+      <div class="is-warn"><strong>${esc(data.duplicate_in_input)}</strong><small>输入重复</small></div>
+      <div class="is-bad"><strong>${esc(data.invalid)}</strong><small>无效行</small></div>
+    </div>
+    ${data.extra_fields ? `<p class="outlook-import-preview-note">检测到 ${esc(data.extra_fields)} 个多余字段，导入时会忽略。</p>` : ''}
+    ${invalidDetail}`;
+}
+async function previewOutlookImport() {
+  const text = $('#importTextV2')?.value || '';
+  const source = $('#importSourceV2')?.value || 'outlook';
+  const previewBtn = $('#btnPreviewOutlookImport');
+  const submitBtn = $('#btnSubmitOutlookImport');
+  if (!text.trim()) { showToast('请粘贴邮箱资源'); return; }
+  if (previewBtn) { previewBtn.disabled = true; previewBtn.textContent = '解析中…'; }
+  try {
+    const data = await api('/api/outlook/import-preview', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text, source}),
+    });
+    outlookImportPreview = data;
+    renderOutlookImportPreview(data);
+    if (submitBtn) submitBtn.disabled = Number(data.new || 0) === 0;
+  } catch (err) {
+    const previewEl = $('#importPreviewV2');
+    if (previewEl) previewEl.innerHTML = `<div class="banner warn">${esc(err.message)}</div>`;
+    if (submitBtn) submitBtn.disabled = true;
+  } finally {
+    if (previewBtn) { previewBtn.disabled = false; previewBtn.textContent = '解析预览'; }
+  }
 }
 async function doImportOutlook() {
   const textEl = $('#importTextV2');
   const sourceEl = $('#importSourceV2');
-  const registeredEl = $('#importAsRegisteredV2');
   const resultEl = $('#importResultV2');
   const submitBtn = $('#btnSubmitOutlookImport');
   const text = textEl ? textEl.value : '';
@@ -464,15 +572,21 @@ async function doImportOutlook() {
   if (submitBtn) submitBtn.disabled = true;
   try {
     const source = sourceEl ? sourceEl.value : 'outlook';
-    const as_registered = registeredEl ? !!registeredEl.checked : true;
-    const r = await api('/api/outlook/import', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text, source, as_registered}) });
-    const mode = r.as_registered ? '已注册账号' : '邮箱池素材';
-    const msg = `按 ${mode} 导入：解析 ${r.parsed} 行，新增 ${r.inserted}，跳过 ${r.skipped}${r.as_registered ? '；可到“账号”页选择后批量补跑 Codex' : ''}`;
+    if (!outlookImportPreview) await previewOutlookImport();
+    if (!outlookImportPreview) return;
+    if (outlookImportPreview && Number(outlookImportPreview.new || 0) === 0) {
+      if (resultEl) resultEl.innerHTML = '<div class="banner warn">没有可新增的邮箱资源，请修改内容后重新预览。</div>';
+      return;
+    }
+    const r = await api('/api/outlook/import', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text, source}) });
+    const extra = r.invalid || r.extra_fields ? `；无效 ${r.invalid || 0} 行，忽略多余字段 ${r.extra_fields || 0} 个` : '';
+    const msg = `导入邮箱池：解析 ${r.parsed} 行，新增 ${r.inserted}，跳过 ${r.skipped}${extra}`;
     if (resultEl) resultEl.innerHTML = `<div class="banner info">${esc(msg)}</div>`;
     if (textEl) textEl.value = '';
+    clearOutlookImportPreview();
     setPoolSourceV2(source);
     setImportSourceV2(source);
-    loadOutlook(); loadAccounts(); loadSummary();
+    loadOutlook(); loadMailResources(); loadSummary();
     showToast(`导入完成：新增 ${r.inserted}，跳过 ${r.skipped}`);
     setTimeout(closeOutlookImportModal, 600);
   } catch(e) {

@@ -76,6 +76,41 @@ class AdminCrudTests(PostgresTestCase):
             "pool@example.test----mail-password----client-id----refresh-secret",
         )
 
+    def test_email_import_preview_is_resource_only_and_reports_duplicates(self):
+        record_store.insert_row(record_store.OUTLOOK_POOL, {"email": "existing@example.test", "status": "available"})
+        app = create_app(auth_code="test-auth")
+        text = "\n".join([
+            "new@example.test----password----client-id----refresh-token",
+            "new@example.test====password-2====client-id-2====refresh-token-2",
+            "existing@example.test----password----client-id----refresh-token",
+            "not-an-email",
+        ])
+
+        preview = app.test_client().post(
+            "/api/outlook/import-preview",
+            json={"source": "outlook", "text": text},
+            headers={"X-Auth-Code": "test-auth"},
+        )
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(preview.get_json()["total_lines"], 4)
+        self.assertEqual(preview.get_json()["valid"], 3)
+        self.assertEqual(preview.get_json()["invalid"], 1)
+        self.assertEqual(preview.get_json()["duplicate_in_input"], 1)
+        self.assertEqual(preview.get_json()["existing"], 1)
+        self.assertEqual(preview.get_json()["new"], 1)
+
+        imported = app.test_client().post(
+            "/api/outlook/import",
+            json={"source": "outlook", "text": text},
+            headers={"X-Auth-Code": "test-auth"},
+        )
+        self.assertEqual(imported.status_code, 200)
+        self.assertEqual(imported.get_json()["inserted"], 1)
+        self.assertEqual(imported.get_json()["invalid"], 1)
+        self.assertFalse(imported.get_json()["as_registered"])
+        self.assertIsNotNone(record_store.get_row_by(record_store.OUTLOOK_POOL, "email", "new@example.test"))
+        self.assertIsNone(record_store.get_row_by(record_store.ACCOUNTS, "email", "new@example.test"))
+
     def test_codex_crud_uses_database_and_atomic_counters(self):
         filename = "codex-user@example.test-free.json"
         content = {

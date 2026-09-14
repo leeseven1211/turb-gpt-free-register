@@ -1001,7 +1001,7 @@ const MODULE_VIEW_META = {
   },
   outlook: {
     overview: '查看邮箱供给、使用情况与 Email Butler 租约',
-    list: '查询、导入和批量维护邮箱素材',
+    list: '查询、导入和批量维护邮箱资源',
   },
 };
 function setModuleView(module, view, persist=true, historyMode='push') {

@@ -253,7 +253,7 @@
   <!-- ============ 邮箱池 ============ -->
   <div id="tab-outlook" class="hidden">
     <section class="card">
-      <div class="head"><h2>导入邮箱素材</h2><p>Outlook：邮箱----密码----clientId----refreshToken；通用API：邮箱----取码地址（---- 或 ==== 分隔均可）。默认按“已注册成功账号”导入，方便直接在账号页补跑 Codex 授权。</p></div>
+      <div class="head"><h2>导入邮箱资源</h2><p>这里只导入验证码邮箱资源，不创建账号，也不写入 ChatGPT / Codex Token。Outlook：邮箱----密码----clientId----refreshToken；通用 API：邮箱----取码地址。</p></div>
       <div class="body">
         <div id="importResult"></div>
         <label class="fld">导入类型
@@ -263,13 +263,11 @@
           </select>
           <span class="hint">注册来源可在配置里填多个，例如：outlook,generic_api</span>
         </label>
-        <label style="display:flex;gap:8px;align-items:center;margin:8px 0;color:var(--text);font-size:13px;">
-          <input id="importAsRegistered" type="checkbox" style="width:auto;min-height:auto;">
-          导入后默认视为“注册成功账号”（邮箱池标记已用，并出现在账号页，可直接批量补跑 Codex）
-        </label>
         <textarea id="importText" placeholder="Outlook: email----password----clientId----refreshToken
 通用API: email----取码地址"></textarea>
-        <div style="margin-top:10px;"><button class="btn primary" id="btnImport">导入</button></div>
+        <div class="hint">支持 <code>----</code> 和 <code>====</code> 分隔符，每行一条；多余字段不会写入邮箱池。</div>
+        <div style="margin-top:10px;display:flex;gap:8px;"><button class="btn" id="btnPreviewImport">解析预览</button><button class="btn primary" id="btnImport">导入到邮箱池</button></div>
+        <div id="importPreview" class="import-preview" aria-live="polite"></div>
       </div>
     </section>
     <section class="card">
@@ -297,10 +295,10 @@
       </div>
       <div class="table-wrap">
         <table class="outlook-table">
-          <colgroup><col class="col-check"><col class="col-email"><col class="col-source"><col class="col-status"><col class="col-token"><col class="col-time"><col class="col-time"><col class="col-actions"></colgroup>
+          <colgroup><col class="col-check"><col class="col-email"><col class="col-source"><col class="col-status"><col class="col-usage"><col class="col-credentials"><col class="col-time"><col class="col-note"><col class="col-actions"></colgroup>
           <thead><tr>
             <th><input type="checkbox" id="outlookSelectAll" title="全选/取消全选当前页邮箱"></th>
-            <th>邮箱</th><th>类型</th><th>状态</th><th>Token</th><th>导入时间</th><th>已用时间</th><th>操作</th>
+            <th>邮箱</th><th>类型</th><th>状态</th><th>使用情况</th><th>凭证配置</th><th>最近活动</th><th>备注 / 原因</th><th>操作</th>
           </tr></thead>
           <tbody id="outlookBody"></tbody>
         </table>

@@ -1561,7 +1561,7 @@
     .codex-table-v2-wrap { overflow: auto; padding: 0; }
     .codex-table-v2 {
       width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 14px;
-      min-width: 1100px;
+      min-width: 1320px;
     }
     .codex-table-v2 th, .codex-table-v2 td {
       padding: 12px; border-bottom: 1px solid #ebeef5;
@@ -1824,10 +1824,12 @@
       text-align: left; vertical-align: middle;
     }
     .outlook-table-v2 .col-email { width: 240px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .outlook-table-v2 .col-source { width: 100px; }
-    .outlook-table-v2 .col-status { width: 100px; }
-    .outlook-table-v2 .col-token { width: 100px; }
-    .outlook-table-v2 .col-time { width: 160px; }
+    .outlook-table-v2 .col-source { width: 112px; }
+    .outlook-table-v2 .col-status { width: 92px; }
+    .outlook-table-v2 .col-usage { width: 160px; }
+    .outlook-table-v2 .col-credentials { width: 190px; }
+    .outlook-table-v2 .col-time { width: 168px; }
+    .outlook-table-v2 .col-note { width: 260px; white-space: normal; overflow: visible; text-overflow: clip; }
     .outlook-table-v2 .col-actions {
       width: 220px; white-space: normal; overflow: visible; text-overflow: clip;
     }
@@ -1835,6 +1837,23 @@
       font-weight: 700; color: #303133; line-height: 1.35;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
+    .outlook-table-v2 .pool-remote {
+      display: block; margin-top: 3px; color: #8b93a3; font-size: 10px; line-height: 1.2;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .outlook-table-v2 .pool-usage {
+      display: inline-flex; align-items: center; min-height: 26px; padding: 0 9px;
+      border: 1px solid transparent; border-radius: 999px; font-size: 12px; font-weight: 700; white-space: nowrap;
+    }
+    .outlook-table-v2 .pool-usage.is-good { color: #18794e; background: #ecfdf3; border-color: #a7e3c2; }
+    .outlook-table-v2 .pool-usage.is-muted { color: #667085; background: #f4f5f7; border-color: #e3e6eb; }
+    .outlook-table-v2 .pool-usage.is-bad { color: #b42318; background: #fff1f0; border-color: #f4b4ae; }
+    .outlook-table-v2 .pool-credential-title { color: #3d4658; font-size: 12px; font-weight: 700; line-height: 1.35; }
+    .outlook-table-v2 .col-credentials small,
+    .outlook-table-v2 .pool-activity small { display: block; margin-top: 3px; color: #929aaa; font-size: 10px; line-height: 1.25; }
+    .outlook-table-v2 .pool-activity span { display: block; color: #586174; font-size: 11px; line-height: 1.3; }
+    .outlook-table-v2 .pool-note { display: -webkit-box; color: #697386; font-size: 11px; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+    .outlook-table-v2 .pool-note.is-empty { color: #a0a6b1; }
     .outlook-table-v2 .pill {
       display: inline-flex; align-items: center; justify-content: center;
       height: 26px; padding: 0 10px; border-radius: 4px;
@@ -2057,6 +2076,21 @@
       box-shadow: 0 0 0 3px rgba(55,125,255,.12);
     }
     .outlook-import-result:empty { display: none; }
+    .outlook-import-preview:empty { display: none; }
+    .outlook-import-preview {
+      padding: 12px 14px; border: 1px solid #e2e4f6; border-radius: 8px; background: #fafaff;
+    }
+    .outlook-import-preview-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #4f51be; font-size: 12px; }
+    .outlook-import-preview-head span { color: #858da0; font-size: 11px; }
+    .outlook-import-preview-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+    .outlook-import-preview-grid > div { padding: 8px; border-radius: 7px; background: #fff; text-align: center; }
+    .outlook-import-preview-grid strong { display: block; color: #3d4658; font-size: 18px; line-height: 1.1; }
+    .outlook-import-preview-grid small { display: block; margin-top: 4px; color: #929aaa; font-size: 10px; }
+    .outlook-import-preview-grid .is-good strong { color: #18794e; }
+    .outlook-import-preview-grid .is-warn strong { color: #b54708; }
+    .outlook-import-preview-grid .is-bad strong { color: #b42318; }
+    .outlook-import-preview-note { margin: 10px 0 0; color: #8a4b08; font-size: 11px; line-height: 1.4; }
+    .outlook-import-preview-errors { display: grid; gap: 4px; margin-top: 10px; color: #b42318; font-size: 11px; line-height: 1.4; }
     .outlook-import-foot {
       display: flex; justify-content: flex-end; gap: 10px;
       padding: 14px 20px 18px; border-top: 1px solid #ebeef5; background: #fafbfc;
@@ -2985,6 +3019,8 @@
     .butler-lease-actions .jobs-tb-btn--primary { color: #fff; border-color: #5b5ce2; background: #5b5ce2; box-shadow: 0 7px 16px rgba(91,92,226,.18); }
     .mail-source-cards { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 10px; margin-top: 17px; }
     .mail-source-card { padding: 14px; border: 1px solid #e8eaf0; border-radius: 10px; background: #fafbfc; }
+    .mail-source-card.is-clickable { cursor: pointer; transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
+    .mail-source-card.is-clickable:hover, .mail-source-card.is-clickable:focus-visible { border-color: #b8b9ef; box-shadow: 0 6px 16px rgba(91,92,226,.12); outline: none; transform: translateY(-1px); }
     .mail-source-card.is-enabled { border-color: #d9dafa; background: #f8f8ff; }
     .mail-source-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
     .mail-source-card-head strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }

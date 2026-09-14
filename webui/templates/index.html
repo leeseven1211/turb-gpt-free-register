@@ -528,10 +528,10 @@
 
   <!-- ============ 邮箱池 ============ -->
   <div id="tab-outlook" class="hidden" data-module-view="overview">
-    <h1 class="register-title">邮箱池</h1>
+    <h1 class="register-title">邮箱资源池</h1>
     <section class="mail-resource-overview" aria-label="邮箱资源平台">
       <div class="mail-resource-head">
-        <div><span class="data-panel-kicker">Email resources</span><h2>邮箱资源平台</h2><p>本地邮箱池与按需租赁平台分开管理。</p></div>
+        <div><span class="data-panel-kicker">Email resources</span><h2>邮箱资源平台</h2><p>查看可用供给、占用情况和来源配置。</p></div>
         <button type="button" class="jobs-tb-btn" id="btnRefreshMailResources">刷新资源</button>
       </div>
       <div class="mail-source-cards" id="mailSourceCards"></div>
@@ -554,8 +554,8 @@
         <button type="button" class="jobs-tb-btn selection-only" id="btnDisableSelectedOutlookV2" disabled title="批量停用选中的邮箱；停用后不会被注册任务领取">停用选中</button>
         <button type="button" class="jobs-tb-btn selection-only" id="btnFailSelectedOutlookV2" disabled title="批量标记选中的邮箱为失败">标失败</button>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--danger selection-only" id="btnDeleteSelectedOutlookV2" disabled title="批量删除选中的邮箱素材">删除选中</button>
-        <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="copyAllEmailsV2" title="复制当前页全部邮箱素材">复制全部邮箱素材</button>
-        <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnImportOutlookV2" title="导入邮箱素材">导入</button>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="copyAllEmailsV2" title="复制当前页全部邮箱资源">复制当前页</button>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnImportOutlookV2" title="导入邮箱资源">导入邮箱</button>
         <div class="list-toolbar-utilities">
           <button type="button" class="jobs-tb-btn" id="btnResetOutlookColumnsV2" title="恢复邮箱列表默认列宽">恢复列宽</button>
           <button type="button" class="jobs-tb-btn" id="btnRefreshOutlookV2" title="重新加载邮箱列表">刷新</button>
@@ -566,21 +566,22 @@
         <table class="outlook-table-v2" data-resizable-table="outlook">
           <colgroup>
             <col class="col-check"><col class="col-email"><col class="col-source"><col class="col-status">
-            <col class="col-token"><col class="col-time"><col class="col-time"><col class="col-actions">
+            <col class="col-usage"><col class="col-credentials"><col class="col-time"><col class="col-note"><col class="col-actions">
           </colgroup>
           <thead>
             <tr>
-              <th class="col-check"><input type="checkbox" id="outlookSelectAllV2" title="全选/取消全选当前页邮箱" aria-label="全选当前页邮箱素材" disabled></th>
+              <th class="col-check"><input type="checkbox" id="outlookSelectAllV2" title="全选/取消全选当前页邮箱" aria-label="全选当前页邮箱资源" disabled></th>
               <th class="col-email column-filter-header" data-column-filter="qOutlookV2" data-filter-type="search" data-filter-placeholder="输入邮箱" data-filter-label="按邮箱筛选">邮箱</th>
               <th class="col-source column-filter-header" data-column-filter="poolSourceV2" data-filter-type="select" data-filter-label="按邮箱池类型筛选" data-filter-empty-value="all">类型</th>
-              <th class="col-status column-filter-header" data-column-filter="outlookStatusFilterV2" data-filter-type="select" data-filter-label="按邮箱状态筛选">状态</th>
-              <th class="col-token column-filter-header" data-column-filter="outlookTokenFilterV2" data-filter-type="select" data-filter-label="按 Token 状态筛选">Token</th>
-              <th class="col-time column-filter-header" data-column-filter="outlookImportedFilterV2" data-filter-type="date" data-filter-label="按导入日期筛选">导入时间</th>
-              <th class="col-time column-filter-header" data-column-filter="outlookUsedFilterV2" data-filter-type="date" data-filter-label="按已用日期筛选">已用时间</th>
+              <th class="col-status column-filter-header" data-column-filter="outlookStatusFilterV2" data-filter-type="select" data-filter-label="按资源状态筛选">状态</th>
+              <th class="col-usage" aria-label="使用情况">使用情况</th>
+              <th class="col-credentials" aria-label="邮箱凭证">凭证配置</th>
+              <th class="col-time column-filter-header" data-column-filter="outlookUsedFilterV2" data-filter-type="date" data-filter-label="按最近使用日期筛选">最近活动</th>
+              <th class="col-note" aria-label="备注或失败原因">备注 / 原因</th>
               <th class="col-actions"><div class="column-actions-heading"><span>操作</span><button type="button" class="column-filters-reset" id="btnResetOutlookFiltersV2" title="清除全部列筛选">清筛</button></div></th>
             </tr>
           </thead>
-          <tbody id="outlookBodyV2"><tr class="list-state-row"><td class="table-state-cell" colspan="8"><div class="table-state is-loading" role="status"><span class="table-state-spinner" aria-hidden="true"></span><strong>正在加载邮箱素材</strong><small>正在同步邮箱池状态与 Token 信息</small></div></td></tr></tbody>
+          <tbody id="outlookBodyV2"><tr class="list-state-row"><td class="table-state-cell" colspan="9"><div class="table-state is-loading" role="status"><span class="table-state-spinner" aria-hidden="true"></span><strong>正在加载邮箱资源</strong><small>正在同步来源、状态和使用情况</small></div></td></tr></tbody>
         </table>
       </div>
       <div class="jobs-v2-pager" id="pager-outlook-v2"></div>
@@ -658,8 +659,8 @@
   <div class="outlook-import-dialog" role="document">
     <div class="outlook-import-head">
       <div class="outlook-import-head-main">
-        <h3 id="outlookImportTitle">导入邮箱素材</h3>
-        <p>Outlook：邮箱----密码----clientId----refreshToken；通用 API：邮箱----取码地址（---- 或 ==== 均可）。默认按「已注册成功账号」导入，方便在账号页补跑 Codex。</p>
+        <h3 id="outlookImportTitle">导入邮箱资源</h3>
+        <p>只导入用于接收验证码的邮箱资源。Outlook 需要邮箱、密码、Client ID、Refresh Token；通用 API 需要邮箱和取码地址。</p>
       </div>
       <button type="button" class="outlook-import-close" id="btnCloseOutlookImport" aria-label="关闭">×</button>
     </div>
@@ -677,18 +678,17 @@
         </div>
         <span class="outlook-import-hint">注册来源可在配置里填多个，例如：outlook,generic_api</span>
       </label>
-      <label class="outlook-import-check">
-        <input id="importAsRegisteredV2" type="checkbox" checked>
-        <span>导入后默认视为「注册成功账号」（邮箱池标记已用，并出现在账号页，可直接批量补跑 Codex）</span>
-      </label>
       <label class="outlook-import-field">
-        <span>邮箱素材</span>
-        <textarea id="importTextV2" placeholder="Outlook: email----password----clientId----refreshToken&#10;通用API: email----取码地址"></textarea>
+        <span>邮箱资源</span>
+        <textarea id="importTextV2" placeholder="Outlook：email----password----clientId----refreshToken&#10;通用 API：email----取码地址"></textarea>
+        <small class="outlook-import-hint">支持 `----` 和 `====` 分隔符；每行一条。多余字段不会写入邮箱池。</small>
       </label>
+      <div class="outlook-import-preview" id="importPreviewV2" aria-live="polite"></div>
     </div>
     <div class="outlook-import-foot">
       <button type="button" class="jobs-tb-btn" id="btnCancelOutlookImport">取消</button>
-      <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnSubmitOutlookImport">导入</button>
+      <button type="button" class="jobs-tb-btn" id="btnPreviewOutlookImport">解析预览</button>
+      <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnSubmitOutlookImport">导入到邮箱池</button>
     </div>
   </div>
 </div>

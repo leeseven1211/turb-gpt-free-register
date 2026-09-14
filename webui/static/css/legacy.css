@@ -139,6 +139,18 @@
     .accounts-table .quota-remaining { color: #12b76a; font-weight: 700; }
     .accounts-table .quota-cell-warning { color: #f79009; font-size: 11px; margin-top: 2px; }
     .outlook-table .col-actions { width: 220px; }
+    .outlook-table { min-width: 1320px; }
+    .outlook-table .col-usage { width: 160px; }
+    .outlook-table .col-credentials { width: 190px; }
+    .outlook-table .col-note { width: 250px; white-space: normal; overflow: visible; }
+    .outlook-table .pool-usage { display: inline-flex; padding: 4px 8px; border-radius: 999px; font-size: 11px; font-weight: 800; white-space: nowrap; }
+    .outlook-table .pool-usage-good { color: #166534; background: #edf8f1; }
+    .outlook-table .pool-usage-muted { color: #475467; background: #f2f4f7; }
+    .outlook-table .pool-usage-bad { color: #b3261e; background: #fff0ef; }
+    .outlook-table .col-credentials strong, .outlook-table .col-credentials small,
+    .outlook-table .col-time span, .outlook-table .col-time small { display: block; line-height: 1.35; }
+    .outlook-table .col-credentials small, .outlook-table .col-time small { margin-top: 3px; color: var(--muted); font-size: 11px; }
+    .outlook-table .pool-note span { white-space: normal; word-break: break-word; }
     .codex-table .col-actions { width: 260px; }
     th { position: sticky; top: 0; background: #fbfcfe; color: #475467; z-index: 1; font-size: 12px; }
     tr:hover td { background: #fbfdff; }
@@ -154,6 +166,7 @@
     .status-partial_success { color: #9a6700; background: #fff7d6; }
     .status-running { color: var(--amber); background: #fff7e6; }
     .status-success { color: var(--green); background: #e9f7ef; }
+    .import-preview { margin-top: 12px; }
     .extract-link-cell {
       display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
       margin-top: 4px; max-width: 100%;

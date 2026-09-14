@@ -128,6 +128,31 @@ class AdminRepositoryTests(PostgresTestCase):
             self.assertNotIn("password", row)
             self.assertNotIn("code_url", row)
 
+    def test_email_pool_exposes_usage_and_resource_metadata_without_account_token(self):
+        rs.insert_row(rs.OUTLOOK_POOL, {
+            "email": "user0@example.test",
+            "status": "used",
+            "password": "mail-password",
+            "client_id": "client-id",
+            "refresh_token": "refresh-secret",
+        })
+
+        result = repo.list_email_pool(repo.PageRequest(page=1, page_size=20, filters={"source": "outlook"}))
+        item = next(row for row in result["items"] if row["email"] == "user0@example.test")
+
+        self.assertEqual(item["usage_state"], "bound")
+        self.assertEqual(item["registered_account_id"], self.account_ids[0])
+        self.assertEqual(item["resource_meta"], {
+            "password": True,
+            "client_id": True,
+            "refresh_token": True,
+            "code_url": False,
+        })
+        self.assertEqual(item["linked_account_status"], "active")
+        self.assertNotIn("has_access_token", item)
+        self.assertNotIn("refresh_token", item)
+        self.assertNotIn("account_copy_line", item)
+
     def test_codex_list_uses_relational_table_and_hides_content(self):
         result = repo.list_codex(repo.PageRequest(page=1, page_size=20, filters={"archived": "0"}))
         self.assertEqual(result["total"], 1)
