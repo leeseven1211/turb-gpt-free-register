@@ -3612,6 +3612,94 @@ def has_active_runtime_operations(
         return cur.fetchone() is not None
 
 
+def list_reconciliation_accounts(
+    *,
+    task_type: str,
+    account_ids: Iterable[int] | None = None,
+    source_systems: Iterable[str] | None = ("native_operations",),
+    limit: int = 5000,
+) -> list[dict]:
+    """List accounts whose current/recent attempt must be reconciled first.
+
+    This is a read-only safety gate for producers that have another durable
+    credential source. It treats every non-rejected remote-write checkpoint as
+    fenced, including ``started``, ``response_received``,
+    ``local_commit_required`` and ``confirmed`` while the attempt is not
+    terminal. Explicit ``rejected`` is deliberately not returned.
+    """
+    init()
+    clauses = [
+        "t.task_type=%s",
+        "("
+        "t.status='attention_required' OR r.status='attention_required' "
+        "OR COALESCE(r.result_summary->>'outcome','')='request_unknown' "
+        "OR COALESCE(r.result_summary->>'reconcile_required','false')='true' "
+        "OR ("
+        "r.status NOT IN ('success','partial_success','failed','stopped','cancelled',"
+        "'interrupted','deactivated','unsupported','attention_required') "
+        "AND r.data->'remote_intent'->>'kind'='remote_write' "
+        "AND COALESCE(r.data->'remote_intent'->>'receipt_state',"
+        "r.data->'remote_intent'->>'state','started') <> 'rejected'"
+        ")"
+        ")",
+    ]
+    params: list[Any] = [str(task_type or "").strip()]
+    if account_ids is not None:
+        values = [int(item) for item in account_ids]
+        if not values:
+            return []
+        clauses.append("t.account_id = ANY(%s)")
+        params.append(values)
+    if source_systems is not None:
+        values = [str(item).strip() for item in source_systems if str(item).strip()]
+        if not values:
+            return []
+        clauses.append("t.source_system = ANY(%s)")
+        params.append(values)
+    params.append(max(1, min(5000, int(limit or 5000))))
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT t.account_id, t.id AS task_id, t.status AS task_status,
+                   r.id AS run_id, r.status AS run_status,
+                   r.data->'remote_intent'->>'action' AS remote_action,
+                   COALESCE(r.data->'remote_intent'->>'receipt_state',
+                            r.data->'remote_intent'->>'state') AS remote_intent_state,
+                   r.result_summary
+            FROM {_table('operation_tasks')} t
+            JOIN {_table('operation_runs')} r ON r.task_id=t.id
+            WHERE {' AND '.join(clauses)}
+            ORDER BY t.account_id, r.id DESC
+            LIMIT %s
+            """,
+            tuple(params),
+        )
+        rows = []
+        seen_accounts: set[int] = set()
+        for raw in cur.fetchall():
+            row = dict(raw)
+            account_id = int(row["account_id"]) if row.get("account_id") else None
+            if account_id is None or account_id in seen_accounts:
+                continue
+            seen_accounts.add(account_id)
+            summary = _decode(row.get("result_summary"))
+            summary = dict(summary) if isinstance(summary, dict) else {}
+            row["result_summary"] = _scrub(summary)
+            row["reconcile_required"] = bool(
+                str(summary.get("outcome") or "").lower() == "request_unknown"
+                or summary.get("reconcile_required")
+                or str(row.get("run_status") or "") == "attention_required"
+                or str(row.get("task_status") or "") == "attention_required"
+                or (
+                    str(row.get("remote_intent_state") or "") != "rejected"
+                    and str(row.get("remote_intent_state") or "") != ""
+                    and str(row.get("run_status") or "") not in _TERMINAL_STATUSES
+                )
+            )
+            rows.append(_row(row) or {})
+        return rows
+
+
 def list_queued_runs(*, limit: int = 500) -> list[dict]:
     init()
     with _connect() as conn, conn.cursor() as cur:

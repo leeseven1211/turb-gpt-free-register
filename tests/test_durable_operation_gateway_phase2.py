@@ -529,6 +529,84 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
         result = operation.finish_run(run_id, execution_id="read-worker", status="success")
         self.assertEqual("success", result["status"])
 
+    def test_reconciliation_account_query_fences_unfinished_native_write(self):
+        account_id = self._runtime_account("producer-fence@example.test")
+        task = operation.create_runtime_task(
+            task_type="codex_token_refresh",
+            account_id=account_id,
+            email="producer-fence@example.test",
+            source_system="native_operations",
+            source_id="producer-fence-1",
+        )
+        run_id = int(task["run"]["id"])
+        execution_id = "producer-fence-worker"
+        operation.claim_run(run_id, execution_id=execution_id, worker_pid=707)
+        lease_token = operation.acquire_account_lease(
+            account_id=account_id, run_id=run_id, ttl_seconds=120,
+        )
+        operation.record_remote_intent(
+            run_id,
+            execution_id=execution_id,
+            lease_token=lease_token,
+            action="codex_token_refresh",
+            request_id="producer-fence-request",
+        )
+        operation.record_remote_receipt(
+            run_id,
+            execution_id=execution_id,
+            lease_token=lease_token,
+            outcome="response_received",
+            action="codex_token_refresh",
+        )
+        fenced = operation.list_reconciliation_accounts(
+            task_type="codex_token_refresh", account_ids=[account_id],
+        )
+        self.assertEqual([account_id], [row["account_id"] for row in fenced])
+        self.assertEqual("response_received", fenced[0]["remote_intent_state"])
+        self.assertTrue(fenced[0]["reconcile_required"])
+
+        rejected_account_id = self._runtime_account("producer-rejected@example.test")
+        rejected_task = operation.create_runtime_task(
+            task_type="codex_token_refresh",
+            account_id=rejected_account_id,
+            email="producer-rejected@example.test",
+            source_system="native_operations",
+            source_id="producer-rejected-1",
+        )
+        rejected_run_id = int(rejected_task["run"]["id"])
+        rejected_execution = "producer-rejected-worker"
+        operation.claim_run(rejected_run_id, execution_id=rejected_execution, worker_pid=708)
+        rejected_lease = operation.acquire_account_lease(
+            account_id=rejected_account_id, run_id=rejected_run_id, ttl_seconds=120,
+        )
+        operation.record_remote_intent(
+            rejected_run_id,
+            execution_id=rejected_execution,
+            lease_token=rejected_lease,
+            action="codex_token_refresh",
+            request_id="producer-rejected-request",
+        )
+        operation.record_remote_receipt(
+            rejected_run_id,
+            execution_id=rejected_execution,
+            lease_token=rejected_lease,
+            outcome="rejected",
+            action="codex_token_refresh",
+        )
+        self.assertEqual(
+            [],
+            operation.list_reconciliation_accounts(
+                task_type="codex_token_refresh", account_ids=[rejected_account_id],
+            ),
+        )
+        operation.finish_run(
+            rejected_run_id,
+            status="failed",
+            execution_id=rejected_execution,
+            lease_token=rejected_lease,
+            result_summary={"status": "failed"},
+        )
+
     def test_cancelled_queue_is_not_claimed_by_registered_handler(self):
         called = threading.Event()
 

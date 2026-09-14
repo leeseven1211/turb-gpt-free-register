@@ -54,6 +54,20 @@ _MISSING = object()
 _CONFIG_SECRET_PARTS = frozenset({"password", "secret", "token", "cookie", "otp", "authorization"})
 
 
+def _config_key_is_sensitive(*names: str) -> bool:
+    """Reject credential values while allowing non-sensitive config toggles."""
+    for name in names:
+        parts = {part for part in str(name).lower().split("_") if part}
+        if parts & {"secret", "token", "cookie", "otp", "authorization"}:
+            return True
+        # Schema flags such as PASSWORD_ENABLED and PASSWORD_DRIVER are
+        # policy choices, not password material. A bare/unknown password key
+        # remains rejected so an allowlist cannot persist credentials.
+        if "password" in parts and not parts & {"enabled", "driver", "proxy", "mode", "reset"}:
+            return True
+    return False
+
+
 def _thaw(value: Any) -> Any:
     """Copy immutable config containers without deepcopying mapping proxies."""
     if isinstance(value, Mapping):
@@ -107,8 +121,7 @@ def normalize_config_snapshot(
         source = source.strip()
         if not target or not source:
             continue
-        lowered = f"{target} {source}".lower()
-        if any(part in lowered.split("_") for part in _CONFIG_SECRET_PARTS):
+        if _config_key_is_sensitive(target, source):
             raise ValueError(f"配置 snapshot allowlist 包含敏感字段: {target}")
         if source in values:
             projected[target] = _thaw(values[source])
@@ -656,6 +669,11 @@ def operation_requires_reconciliation(task: Mapping[str, Any] | None) -> bool:
         and str(item.get("action") or "").strip().lower() == "reconcile"
         for item in (actions if isinstance(actions, list) else [])
     )
+
+
+def list_reconciliation_accounts(**kwargs: Any) -> list[dict[str, Any]]:
+    """Read the shared account fence used by producers before credential writes."""
+    return _operation().list_reconciliation_accounts(**kwargs)
 
 
 def submit_durable_operation(
@@ -1296,6 +1314,7 @@ __all__ = [
     "OperationTaskReporter", "OperationHandlerContext", "OperationContext",
     "register_operation_handler", "unregister_operation_handler", "registered_operation_types",
     "register_operation_actions", "operation_action", "operation_requires_reconciliation",
+    "list_reconciliation_accounts",
     "submit_durable_operation", "submit_operation", "register_durable_handler",
     "start_dispatcher", "stop_dispatcher", "dispatcher_status",
 ]
