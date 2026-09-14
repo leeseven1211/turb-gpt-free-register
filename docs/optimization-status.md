@@ -29,7 +29,7 @@ synthetic. Never connect tests to `turb_console` or read private account exports
 | B Tasks | Goodall, Luna max; Aquinas/Hooke service adapters | Phase 2 implementing actual maintenance migrations | Durable dispatch/recovery; automatic completion dependencies; bounded concurrency |
 | C Configuration | Tesla, Luna max, closed after completion | Phase 2 integrated and targeted checks accepted; legacy constant atomicity boundary remains explicit | Canonical field schema, validation, explicit effective values/version |
 | D Authentication | Hooke, Luna max | First round integrated; combined regressions passed | Shared implementation independent of Roxy orchestration; contract tests |
-| E Verification/release | Ohm, Luna max | First round integrated; real performance measurements and environment tests in progress | Reproducible dependency lock, isolated mandatory DB tests, readiness/release checks |
+| E Verification/release | Ohm, Luna max | History-load benchmark integrated; task-center latency gate failed and optimization continues | Reproducible dependency lock, isolated mandatory DB tests, readiness/release checks |
 
 Agent IDs and worktrees:
 
@@ -286,6 +286,57 @@ before the larger runtime/routes migration, so A/D can replace draft/fallback
 hooks with the actual shared contract and test crash recovery end-to-end.
 No user notification was issued for unchanged normal execution. The monitor
 remains ACTIVE; primary workspace and production service are unchanged.
+
+### Monitor checkpoint 2026-09-14 13:36 UTC
+
+B's remote-intent helper `8004538` was reviewed and integrated as `ca786db`.
+Coordinator identified a terminal-state safety gap: exceptions/cancellation
+after a remote write could become retryable failures and thereby bypass stale
+recovery. Coordinator correction `4d91dcd` enforces reconciliation in
+`finish_run` and rejects blind retry in storage, aligns handler return values
+with the actual committed status, clears rejected checkpoints after retry-data
+merge, and latches lease-heartbeat exceptions. Outstanding write checkpoints
+cannot be replaced, receipt correlation IDs must match, and read-only receipts
+do not need an account lease. Targeted result: **78 passed, 11 subtests in
+24.34s**. Loading the original `8004538` functions in a separate isolated test
+process reproduced **10 failures** against the initial new safety regressions.
+A/B/D have received the correction commit for their continuing branches.
+
+B's account reconciliation query `6742fbf` was integrated as `beed557`; the
+test-only cherry-pick conflict was resolved by retaining both agents' added
+tests. Two review corrections remain assigned to B: apply SQL account dedupe
+before a result cap (avoid silently omitted fenced accounts), and use exact
+non-sensitive config policy fields rather than broad password-name exceptions.
+B also must dispatch registered maintenance route actions by type rather than
+reject all non-Codex tasks in `native_operations`; A/D actually use that source.
+The service migrations have not returned final commits yet.
+
+E returned `94ea8aa`, integrated as `7ef5b71`, adding 2000 terminal task/run
+history rows before real account and task-center HTTP measurements. E measured
+account p95 **18.535ms / 3 SQL** but task-center p95 **1453.913ms / 8 SQL**,
+above the unchanged **250ms** gate: `passes_thresholds=false`. This is a real
+acceptance failure, not a passed benchmark. Ohm continues on the read-query
+bottleneck, with bounded ownership of task/batch list SQL and independent tests;
+B retains runtime, routes, recovery, reconciliation and write paths. Do not
+weaken thresholds, remove history load, or substitute a fake request path.
+
+E supplied its fresh locked environment `/tmp/turb-opt-release-lock-20260914`.
+Coordinator verified Python 3.12.13, `pip check`, and whole-repo Ruff. Full
+merged pytest in that locked environment passed: **1056 passed, 825 subtests
+passed in 164.31s** at `7ef5b71`. Session `52568` is finished, with no test
+sessions left running. The safe launcher selected only `turb_opt_20260914`.
+This passing suite does not waive the failed performance gate or accept the
+unfinished service migrations.
+
+Review of D's uncommitted migration found `reconcile=True` could only bypass a
+marker and enqueue the same refresh POST without an actual reconciliation
+handler. D must close this public-entrypoint bypass, query the durable fence on
+manual submission as well as scheduled scans, and prove zero remote requests
+for unresolved credentials. This draft is not an accepted migration.
+
+Heartbeat remains ACTIVE; A/B/D/E remain assigned to remaining work. Primary
+HEAD is still `f33e523` with the same 13 external dirty files. No production DB
+tests, primary edits, service restart, deployment or push.
 
 ## Verification
 
