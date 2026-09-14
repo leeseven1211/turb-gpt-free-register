@@ -170,11 +170,6 @@ def sync_sub2api_records(
     record_store.sync_identity(record_store.ACCOUNTS)
     if sync_codex:
         record_store.sync_identity(record_store.CODEX_CREDENTIALS)
-    existing_accounts = {
-        str(row.get("email") or "").strip().lower(): row
-        for row in db.list_accounts(limit=5000, offset=0, archived="all")
-        if str(row.get("email") or "").strip()
-    }
     existing_codex = {
         str(row.get("email") or "").strip().lower(): row
         for row in db.list_codex_accounts(archived="all")
@@ -193,23 +188,29 @@ def sync_sub2api_records(
             credentials = _credential(raw)
             email = _email(raw, credentials)
             key = email.lower()
-            existing = existing_accounts.get(key)
-            account_payload = build_account_sync_payload(
-                raw,
-                existing=existing,
-                email_source=email_source,
-            )
-            extra = account_payload.pop("extra")
-            account_payload["extra_json"] = json.dumps(extra, ensure_ascii=False)
+            with record_store.transaction() as conn:
+                record_store.advisory_xact_lock(conn, f"registered-account:{key}")
+                existing = record_store.get_row_by(
+                    record_store.ACCOUNTS, "email", email,
+                    lower=True, conn=conn, for_update=True,
+                )
+                # Build nested metadata only after locking the current row,
+                # not from a capped/stale list fetched before the import.
+                account_payload = build_account_sync_payload(
+                    raw, existing=existing, email_source=email_source,
+                )
+                extra = account_payload.pop("extra")
+                account_payload["extra_json"] = json.dumps(extra, ensure_ascii=False)
+                if existing is None:
+                    account_id = record_store.insert_row(record_store.ACCOUNTS, account_payload, conn=conn)
+                else:
+                    account_id = int(existing["id"])
+                    record_store.patch_row(record_store.ACCOUNTS, account_id, account_payload, conn=conn)
+                account = {**(existing or {}), **account_payload, "id": account_id}
             if existing is None:
-                account_id = record_store.upsert_row_by(record_store.ACCOUNTS, "email", account_payload)
                 summary["accounts_created"] += 1
-                account = {**account_payload, "id": account_id}
             else:
-                record_store.patch_row(record_store.ACCOUNTS, int(existing["id"]), account_payload)
                 summary["accounts_updated"] += 1
-                account = {**existing, **account_payload, "extra_json": account_payload["extra_json"]}
-            existing_accounts[key] = account
 
             codex_filename = None
             if sync_codex:

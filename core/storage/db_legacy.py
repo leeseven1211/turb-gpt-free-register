@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from core import compat_export, postgres_store, record_store, task_run_log
 
@@ -960,7 +960,9 @@ def insert_account(
         }
         changes.update({key: value for key, value in optional.items() if value is not None})
         if extra:
-            changes["extra_json"] = json.dumps(extra, ensure_ascii=False)
+            changes["extra_json"] = json.dumps(
+                {**_account_extra(existing or {}), **extra}, ensure_ascii=False,
+            )
 
         if access_token:
             # expires_at 是 ChatGPT Session 到期时间；AT 自身到期时间来自 JWT exp，
@@ -1071,29 +1073,72 @@ def update_account_codex_operation_state(
     return _patch_account(int(row["id"]), changes)
 
 
+def _account_extra(row: dict) -> dict:
+    raw = row.get("extra_json") or {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            raw = {}
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def _mutate_account_extra(
+    email: str,
+    mutate: Callable[[dict, dict], dict | None],
+    *,
+    sync_totp: bool = False,
+) -> bool:
+    """Read/modify metadata under one database row lock, including pool sync.
+
+    JSONB merging protects distinct top-level fields but extra_json is itself
+    one serialized object. Its read and write must share this transaction to
+    preserve another process's password, MFA, or registration checkpoints.
+    ``mutate`` only changes in-memory data and must not perform remote I/O.
+    """
+    pool_changed = False
+    with record_store.transaction() as conn:
+        row = _locked_row_by_email(conn, record_store.ACCOUNTS, email)
+        if row is None:
+            return False
+        extra = _account_extra(row)
+        changes = mutate(row, extra)
+        if changes is None:
+            return True
+        changed = record_store.patch_row(record_store.ACCOUNTS, int(row["id"]), {
+            **changes,
+            "extra_json": json.dumps(extra, ensure_ascii=False) if extra else None,
+            "updated_at": _now(),
+        }, conn=conn)
+        if sync_totp and "totp_secret" in changes:
+            # Keep lock ordering account -> pool, matching insert_account.
+            pool = _locked_row_by_email(conn, record_store.OUTLOOK_POOL, email)
+            if pool is not None:
+                pool_changed = record_store.patch_row(
+                    record_store.OUTLOOK_POOL, int(pool["id"]),
+                    {"totp_secret": changes["totp_secret"]}, conn=conn,
+                )
+    if changed:
+        compat_export.schedule("accounts")
+    if pool_changed:
+        compat_export.schedule("outlook")
+    return changed
+
+
 def update_account_login_password(email: str, password: str, *, source: str = "post_registration") -> bool:
     """保存账号当前 OpenAI 密码；旧函数名保留以兼容调用方。"""
     normalized = str(password or "").strip()
     if not normalized:
         return False
-    row = record_store.get_row_by(record_store.ACCOUNTS, "email", email, lower=True)
-    if row is None:
-        return False
-    raw_extra = row.get("extra_json") or {}
-    if isinstance(raw_extra, str):
-        try:
-            raw_extra = json.loads(raw_extra)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            raw_extra = {}
-    extra = dict(raw_extra) if isinstance(raw_extra, dict) else {}
-    extra["account_password"] = normalized
-    extra.pop("login_password", None)
-    extra.pop("login_password_source", None)
-    extra.pop("registration_password", None)
-    return _patch_account(int(row["id"]), {
-        "extra_json": json.dumps(extra, ensure_ascii=False),
-        "updated_at": _now(),
-    })
+
+    def mutate(_row, extra):
+        extra["account_password"] = normalized
+        extra.pop("login_password", None)
+        extra.pop("login_password_source", None)
+        extra.pop("registration_password", None)
+        return {}
+
+    return _mutate_account_extra(email, mutate)
 
 
 def update_account_password_capability(
@@ -1104,16 +1149,6 @@ def update_account_password_capability(
     evidence: str | None = None,
 ) -> bool:
     """Persist the remote capability result without changing credentials."""
-    row = record_store.get_row_by(record_store.ACCOUNTS, "email", email, lower=True)
-    if row is None:
-        return False
-    raw_extra = row.get("extra_json") or {}
-    if isinstance(raw_extra, str):
-        try:
-            raw_extra = json.loads(raw_extra)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            raw_extra = {}
-    extra = dict(raw_extra) if isinstance(raw_extra, dict) else {}
     capability = {
         "eligible": bool(eligible),
         "reason": str(reason or "")[:160],
@@ -1121,11 +1156,12 @@ def update_account_password_capability(
     }
     if evidence:
         capability["evidence"] = str(evidence)[:160]
-    extra["account_password_capability"] = capability
-    return _patch_account(int(row["id"]), {
-        "extra_json": json.dumps(extra, ensure_ascii=False),
-        "updated_at": _now(),
-    })
+
+    def mutate(_row, extra):
+        extra["account_password_capability"] = capability
+        return {}
+
+    return _mutate_account_extra(email, mutate)
 
 
 def update_account_totp_secret(
@@ -1138,20 +1174,9 @@ def update_account_totp_secret(
     secret = str(totp_secret or "").strip()
     if not secret:
         return False
-    with _LOCK:
-        row = record_store.get_row_by(record_store.ACCOUNTS, "email", email, lower=True)
-        if row is None:
-            return False
 
-        changes: dict = {"totp_secret": secret, "updated_at": _now()}
+    def mutate(_row, extra):
         if setup_pending is not None:
-            raw_extra = row.get("extra_json") or {}
-            if isinstance(raw_extra, str):
-                try:
-                    raw_extra = json.loads(raw_extra)
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    raw_extra = {}
-            extra = dict(raw_extra) if isinstance(raw_extra, dict) else {}
             if setup_pending:
                 extra["totp_setup_pending"] = True
             else:
@@ -1159,22 +1184,9 @@ def update_account_totp_secret(
                 extra.pop("totp_pending_secret", None)
                 extra.pop("totp_previous_secret", None)
                 extra.pop("totp_rotation_disabled", None)
-            changes["extra_json"] = json.dumps(extra, ensure_ascii=False) if extra else None
+        return {"totp_secret": secret}
 
-        pool_row = record_store.get_row_by(record_store.OUTLOOK_POOL, "email", email, lower=True)
-        # 账号和邮箱素材必须一起提交：TOTP secret 只写进一边的话，人工用邮箱
-        # 素材登录时会因为缺 2FA 密钥而进不去。
-        with record_store.transaction() as conn:
-            record_store.patch_row(record_store.ACCOUNTS, int(row["id"]), changes, conn=conn)
-            if pool_row is not None:
-                record_store.patch_row(
-                    record_store.OUTLOOK_POOL, int(pool_row["id"]),
-                    {"totp_secret": secret}, conn=conn,
-                )
-        compat_export.schedule("accounts")
-        if pool_row is not None:
-            compat_export.schedule("outlook")
-        return True
+    return _mutate_account_extra(email, mutate, sync_totp=True)
 
 
 def stage_account_totp_secret(email: str, totp_secret: str) -> bool:
@@ -1182,100 +1194,54 @@ def stage_account_totp_secret(email: str, totp_secret: str) -> bool:
     secret = str(totp_secret or "").strip()
     if not secret:
         return False
-    row = record_store.get_row_by(record_store.ACCOUNTS, "email", email, lower=True)
-    if row is None:
-        return False
-    raw_extra = row.get("extra_json") or {}
-    if isinstance(raw_extra, str):
-        try:
-            raw_extra = json.loads(raw_extra)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            raw_extra = {}
-    extra = dict(raw_extra) if isinstance(raw_extra, dict) else {}
-    extra["totp_pending_secret"] = secret
-    return _patch_account(int(row["id"]), {
-        "extra_json": json.dumps(extra, ensure_ascii=False),
-        "updated_at": _now(),
-    })
+
+    def mutate(_row, extra):
+        extra["totp_pending_secret"] = secret
+        return {}
+
+    return _mutate_account_extra(email, mutate)
 
 
 def mark_account_totp_disabled_for_rotation(email: str) -> bool:
     """Record remote MFA disablement while preserving the old secret for audit."""
-    row = record_store.get_row_by(record_store.ACCOUNTS, "email", email, lower=True)
-    if row is None:
-        return False
-    raw_extra = row.get("extra_json") or {}
-    if isinstance(raw_extra, str):
-        try:
-            raw_extra = json.loads(raw_extra)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            raw_extra = {}
-    extra = dict(raw_extra) if isinstance(raw_extra, dict) else {}
-    old_secret = str(row.get("totp_secret") or "").strip()
-    if old_secret:
-        extra["totp_previous_secret"] = old_secret
-    extra["totp_rotation_disabled"] = True
-    pool_row = record_store.get_row_by(record_store.OUTLOOK_POOL, "email", email, lower=True)
-    changes = {
-        "totp_secret": None,
-        "extra_json": json.dumps(extra, ensure_ascii=False),
-        "updated_at": _now(),
-    }
-    with record_store.transaction() as conn:
-        record_store.patch_row(record_store.ACCOUNTS, int(row["id"]), changes, conn=conn)
-        if pool_row is not None:
-            record_store.patch_row(record_store.OUTLOOK_POOL, int(pool_row["id"]), {"totp_secret": None}, conn=conn)
-    compat_export.schedule("accounts")
-    if pool_row is not None:
-        compat_export.schedule("outlook")
-    return True
+
+    def mutate(row, extra):
+        old_secret = str(row.get("totp_secret") or "").strip()
+        if old_secret:
+            extra["totp_previous_secret"] = old_secret
+        extra["totp_rotation_disabled"] = True
+        return {"totp_secret": None}
+
+    return _mutate_account_extra(email, mutate, sync_totp=True)
 
 
 def clear_account_totp_pending(email: str) -> bool:
     """Discard an unactivated replacement TOTP secret."""
-    row = record_store.get_row_by(record_store.ACCOUNTS, "email", email, lower=True)
-    if row is None:
-        return False
-    raw_extra = row.get("extra_json") or {}
-    if isinstance(raw_extra, str):
-        try:
-            raw_extra = json.loads(raw_extra)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            raw_extra = {}
-    extra = dict(raw_extra) if isinstance(raw_extra, dict) else {}
-    if "totp_pending_secret" not in extra:
-        return True
-    extra.pop("totp_pending_secret", None)
-    return _patch_account(int(row["id"]), {
-        "extra_json": json.dumps(extra, ensure_ascii=False) if extra else None,
-        "updated_at": _now(),
-    })
+
+    def mutate(_row, extra):
+        if "totp_pending_secret" not in extra:
+            return None
+        extra.pop("totp_pending_secret", None)
+        return {}
+
+    return _mutate_account_extra(email, mutate)
 
 
 def update_account_twofa_status(email: str, status: str, message: str) -> bool:
     """更新账号 2FA 结果，并在成功时清除待激活检查点。"""
-    row = record_store.get_row_by(record_store.ACCOUNTS, "email", email, lower=True)
-    if row is None:
-        return False
-    raw_extra = row.get("extra_json") or {}
-    if isinstance(raw_extra, str):
-        try:
-            raw_extra = json.loads(raw_extra)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            raw_extra = {}
-    extra = dict(raw_extra) if isinstance(raw_extra, dict) else {}
     normalized = str(status or "").strip().lower() or "failed"
-    extra["twofa"] = {
-        "status": normalized,
-        "ok": normalized == "success",
-        "message": str(message or "")[:300],
-    }
-    if normalized == "success":
-        extra.pop("totp_setup_pending", None)
-    return _patch_account(int(row["id"]), {
-        "extra_json": json.dumps(extra, ensure_ascii=False),
-        "updated_at": _now(),
-    })
+
+    def mutate(_row, extra):
+        extra["twofa"] = {
+            "status": normalized,
+            "ok": normalized == "success",
+            "message": str(message or "")[:300],
+        }
+        if normalized == "success":
+            extra.pop("totp_setup_pending", None)
+        return {}
+
+    return _mutate_account_extra(email, mutate)
 
 
 def update_account_token_metadata(acc_id: int, access_token: str) -> bool:
@@ -1289,11 +1255,15 @@ def update_account_token_metadata(acc_id: int, access_token: str) -> bool:
     expired = claims.get("token_expired")
     if row.get("token_expires_at") == expires_at and row.get("token_expired") == expired:
         return True   # 内容没变就不写，避免无谓地触发一次兼容导出
-    return _patch_account(acc_id, {
+    changed = record_store.claim_row(record_store.ACCOUNTS, acc_id, changes={
         "token_expires_at": expires_at,
         "token_expired": expired,
         "updated_at": _now(),
-    })
+    }, guard="BTRIM(COALESCE(data->>'access_token', '')) = %s",
+        guard_params=(str(access_token or "").strip(),))
+    if changed:
+        compat_export.schedule("accounts")
+    return changed
 
 
 def update_account_session(email: str, access_token: str, *, expires_at: str | None = None) -> bool:
@@ -1307,34 +1277,29 @@ def update_account_session(email: str, access_token: str, *, expires_at: str | N
     normalized_token = str(access_token or "").strip()
     if not normalized_email or not normalized_token:
         return False
-    row = record_store.get_row_by(record_store.ACCOUNTS, "email", normalized_email, lower=True)
-    if row is None:
-        return False
-    raw_extra = row.get("extra_json") or {}
-    if isinstance(raw_extra, str):
-        try:
-            raw_extra = json.loads(raw_extra)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            raw_extra = {}
-    extra = dict(raw_extra) if isinstance(raw_extra, dict) else {}
-    extra["registration_checkpoint"] = "registered"
-    extra.pop("registration_pending_reason", None)
     from core.chatgpt_plan import token_claims
 
     claims = token_claims(normalized_token)
-    changed = _patch_account(int(row["id"]), {
-        "access_token": normalized_token,
-        "expires_at": expires_at if expires_at is not None else row.get("expires_at"),
-        "token_expires_at": claims.get("token_expires_at"),
-        "token_expired": claims.get("token_expired"),
-        "extra_json": json.dumps(extra, ensure_ascii=False),
-        "updated_at": _now(),
-    })
+    account_id = None
+
+    def mutate(row, extra):
+        nonlocal account_id
+        account_id = int(row["id"])
+        extra["registration_checkpoint"] = "registered"
+        extra.pop("registration_pending_reason", None)
+        return {
+            "access_token": normalized_token,
+            "expires_at": expires_at if expires_at is not None else row.get("expires_at"),
+            "token_expires_at": claims.get("token_expires_at"),
+            "token_expired": claims.get("token_expired"),
+        }
+
+    changed = _mutate_account_extra(normalized_email, mutate)
     if changed:
         jobs = record_store.list_rows(
             record_store.JOBS,
             where='"account_id"=%s OR lower("email")=lower(%s)',
-            params=(int(row["id"]), normalized_email),
+            params=(account_id, normalized_email),
             order_by="id",
         )
         for job in jobs:

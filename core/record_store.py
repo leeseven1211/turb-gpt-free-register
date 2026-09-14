@@ -404,7 +404,8 @@ def _split(spec: TableSpec, payload: dict, *, partial: bool) -> tuple[dict[str, 
     rest = _jsonb_fragment(payload.get("data"), spec)
     rest.update({
         k: v for k, v in payload.items()
-        if k not in spec.promoted and k not in ("id", "data") and k not in _NEVER_PERSIST
+        if k not in spec.promoted and k not in spec.generated
+        and k not in ("id", "data") and k not in _NEVER_PERSIST
     })
     return promoted, rest
 
@@ -536,15 +537,20 @@ def get_row_by(
     lower: bool = False,
     conn=None,
     include_version: bool = False,
+    for_update: bool = False,
 ) -> dict | None:
     spec = _resolve(table)
     if column not in spec.promoted:
         raise ValueError(f"{spec.name} 没有提升列 {column!r}，无法按它查询")
+    if for_update and conn is None:
+        raise ValueError("for_update 需要调用者提供事务连接")
     init()
     col = postgres_store.quote_identifier(column)
     clause = f"lower({col}) = lower(%s)" if lower else f"{col} = %s"
     selected = "*, xmin::text AS __record_version" if include_version else "*"
     sql = f"SELECT {selected} FROM {_qualified(spec)} WHERE {clause} LIMIT 1"
+    if for_update:
+        sql += " FOR UPDATE"
     if conn is not None:
         with conn.cursor() as cur:
             cur.execute(sql, (value,))
@@ -642,6 +648,12 @@ def upsert_row_by(
     for col in promoted:
         if col in {key, "created_at"}:
             continue
+        # Insert defaults are not update intent. In particular, an upsert of
+        # an unrelated field must not clear an existing deactivated account.
+        if col in spec.derived:
+            sources, _ = spec.derived[col]
+            if not any(source in body for source in sources):
+                continue
         quoted = postgres_store.quote_identifier(col)
         updates.append(f"{quoted} = EXCLUDED.{quoted}")
     updates.append(f"data = {target}.data || EXCLUDED.data")
@@ -953,10 +965,17 @@ def sync_identity(table: str | TableSpec) -> int:
     spec = _resolve(table)
     init()
     with _connect() as conn, conn.cursor() as cur:
+        # Identity repair is a rare import/migration operation. Serialize with
+        # writers so an INSERT cannot allocate a new id between max() and
+        # setval(), and never move the sequence behind previously used values.
+        cur.execute(f"LOCK TABLE {_qualified(spec)} IN SHARE ROW EXCLUSIVE MODE")
         cur.execute(f"SELECT COALESCE(max(id), 0) AS m FROM {_qualified(spec)}")
         current = int(cur.fetchone()["m"])
+        sequence_table = f"{postgres_store.schema_name()}.{spec.name}"
+        cur.execute("SELECT nextval(pg_get_serial_sequence(%s, 'id')) AS n", (sequence_table,))
+        allocated = int(cur.fetchone()["n"])
         cur.execute(
             f"SELECT setval(pg_get_serial_sequence(%s, 'id'), %s, true) AS v",
-            (f"{postgres_store.schema_name()}.{spec.name}", max(current, 1)),
+            (sequence_table, max(current, allocated, 1)),
         )
         return current

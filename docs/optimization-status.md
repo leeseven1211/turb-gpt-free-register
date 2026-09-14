@@ -161,6 +161,21 @@ Primary HEAD remains f33e523. Its dirty file count has increased from the
 changes, not this integration's edits, and are intentionally not overwritten.
 No production service restart, deployment, source-worktree merge, or push.
 
+### Coordinator storage correction checkpoint 2026-09-14 12:24 UTC
+
+The coordinator's nested metadata/derived state/identity corrections passed
+**90 targeted tests in 30.59s**, including registration storage, Sub2API import,
+record-store and snapshot safety. Added 16 new regression cases. A separate
+in-memory reload of the first-round functions against the new isolated DB
+tests produced 11 failures out of the initial 12, reproducing lost metadata,
+derived-state reset and generated-field leakage without touching checkout
+files or any production data. The corrected snapshot adapter test also passes.
+
+Ruff is absent from the primary runtime venv; no packages were installed into
+that runtime. E is asked to provide its fresh locked validation environment
+for the final merged checks. Phase 2 agents remain active; full acceptance of
+all task migrations and real performance measurements is still pending.
+
 ## Verification
 
 Baseline full suite completed: **954 passed, 34 subtests passed, 3 failed in

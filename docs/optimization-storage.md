@@ -43,6 +43,24 @@ JSON/TXT 和 `accounts_viewer.html` 只由兼容导出任务生成。
 快照版本或提升字段在 `data` 中制造第二个事实来源。JSONB 合并沿用 PostgreSQL `||`
 的浅层 merge 语义，未触及的顶层键继续保留。
 
+### 合并复审补充：嵌套元数据与派生列
+
+浅层 JSONB merge 不能保护 `extra_json` 内部的并发修改。密码、密码能力、MFA
+设置/轮换/清理、2FA 状态和会话回写现在通过同一个事务内的账号行锁读取并更新
+最新元数据；TOTP 与邮箱池仍一起提交，任一写入异常会整体回滚。注册账号重入
+只合并明确提供的 extra 键。Sub2API 同步也改为读取当前锁定行，不再从最多
+5000 条的预取列表判断是否存在，避免把现有账号误判为新账号并覆盖凭证检查点。
+
+无关字段 upsert 不再把派生 `deactivated` 重置为默认值；生成列无论在顶层还是
+嵌套 data 中都不会重复存入 JSONB。Identity 校准与表写入互斥且不回退序列。
+Token 元数据写回时在 SQL 中复查当前 Token，避免旧 Token 的解析结果覆盖新会话。
+
+`tests/test_account_metadata_concurrency.py` 使用两个真实数据库连接与数据库锁
+等待，确定性制造“业务调用开始后、读取锁释放前另一事务提交检查点”的交错。
+用首轮 b8c790f 的相关函数在隔离进程中对照运行，12 项测试中 11 项失败；修复后
+包含新增导入、序列及 Token CAS 场景的回归重新执行，不把并发安全仅建立在内存
+锁或 mock 成功返回上。
+
 ## 验证
 
 新增 `tests/test_storage_snapshot_safety.py` 覆盖：
