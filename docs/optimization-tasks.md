@@ -73,6 +73,20 @@ task_gateway.register_operation_handler(
 )
 ```
 
+注册 handler 时 gateway 同时安装共享的安全 retry/cancel action；因此 A/D 的维护
+adapter 即使只传 `task_type`、handler 和 `source_systems=("native_operations",)`，
+统一任务中心也可控。显式传入 `retry_handler` 或 `cancel_handler` 时只替换对应
+action。默认 retry 走存储层 `retry_runtime_task(..., trigger="manual_retry")` 后
+唤醒 durable dispatcher；默认 cancel 走活动 Run 的 `request_run_cancel`。两者都
+不启动服务私有线程，retry 在进入存储层前检查 `request_unknown/reconcile_required`，
+active Run 返回 `busy=True`，新接受返回 `accepted=True, busy=False`。
+
+统一路由先按 `(task_type, registered action)` 选择 action；只有未注册 action 且
+`source_system="native_operations"`、`task_type="codex_retry"` 才回退到
+`codex_operation_service.retry_task/request_cancel`。因此 native source 不等于
+OAuth source，`live_check`、`token_refresh`、`plan_check`、`deactivation_mail`、
+`extract_link`、`codex_token_refresh` 可以共享同一 source namespace 而不误走 OAuth。
+
 `handle_live_check(context)` 只在共享 `AccountOperationExecutor` worker 中收到已由
 数据库 CAS 认领的 `context.run`。`context.task_reporter.report/stage/note` 写结构化
 事件；`context.lease()` 申请账号 lease，`lease.heartbeat()` 或
@@ -128,6 +142,11 @@ ctx.remote_request_receipt(
 自动重做密码、MFA、Token、注册或 OAuth。`execution_id` 与 lease token 同时参与
 检查点和终态 fence；旧 worker 的 receipt/finish 不能覆盖新执行。纯读取
 `intent_kind="read"` 不占账号写 lease，但仍建议在需要解释异常时记录 receipt。
+
+`list_reconciliation_accounts(task_type=..., account_ids=...)` 是生产者在新凭证/账号
+写入前使用的只读安全门。SQL 先按 `account_id` 选出最新候选再应用 `limit`，不会
+因同一账号的大量历史 Run 占满 limit 而漏掉其它账号；传入显式 `account_ids` 时
+会完整返回候选集合，不以小 limit 静默截断。
 
 ### 配置代理 C
 

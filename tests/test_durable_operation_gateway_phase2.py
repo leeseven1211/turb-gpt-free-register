@@ -394,6 +394,80 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
             (operation.get_task(int(task["id"])) or {})["next_actions"],
         )
 
+
+    def test_reconciliation_account_query_deduplicates_before_limit(self):
+        account_ids = [
+            self._runtime_account("reconcile-many-a@example.test"),
+            self._runtime_account("reconcile-many-b@example.test"),
+        ]
+        for account_id in account_ids:
+            for ordinal in range(3):
+                task = operation.create_runtime_task(
+                    task_type="codex_token_refresh",
+                    account_id=account_id,
+                    email=f"reconcile-{account_id}-{ordinal}@example.test",
+                    source_system="native_operations",
+                    source_id=f"reconcile-many-{account_id}-{ordinal}",
+                )
+                operation.finish_run(
+                    int(task["run"]["id"]),
+                    status="attention_required",
+                    result_summary={
+                        "outcome": "request_unknown",
+                        "reconcile_required": True,
+                        "ordinal": ordinal,
+                    },
+                )
+
+        rows = operation.list_reconciliation_accounts(
+            task_type="codex_token_refresh", limit=2,
+        )
+        self.assertEqual(account_ids, [int(row["account_id"]) for row in rows])
+        self.assertEqual(
+            account_ids,
+            [
+                int(row["account_id"])
+                for row in operation.list_reconciliation_accounts(
+                    task_type="codex_token_refresh",
+                    account_ids=account_ids,
+                    limit=1,
+                )
+            ],
+        )
+
+    def test_config_allowlist_accepts_only_exact_password_policy_keys(self):
+        values = MappingProxyType({
+            "ACCOUNT_COMPLETION_PASSWORD_ENABLED": True,
+            "ACCOUNT_PASSWORD_RESET_ENABLED": False,
+            "ACCOUNT_PASSWORD_DRIVER": "roxy",
+            "ACCOUNT_PASSWORD_PROXY_MODE": "registration",
+            "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK": False,
+            "ACCOUNT_PASSWORD_PROXY_PASSWORD": "must-never-copy",
+        })
+        snapshot = _ConfigSnapshot(values)
+        projected = task_gateway.normalize_config_snapshot(
+            snapshot,
+            allowlist={
+                "password_enabled": "ACCOUNT_COMPLETION_PASSWORD_ENABLED",
+                "password_reset_enabled": "ACCOUNT_PASSWORD_RESET_ENABLED",
+                "password_driver": "ACCOUNT_PASSWORD_DRIVER",
+                "password_proxy_mode": "ACCOUNT_PASSWORD_PROXY_MODE",
+                "auth_password_email_fallback": "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK",
+            },
+        )
+        self.assertEqual("roxy", projected["password_driver"])
+        self.assertNotIn("password_proxy_password", projected)
+        with self.assertRaises(ValueError):
+            task_gateway.normalize_config_snapshot(
+                snapshot,
+                allowlist={"password_proxy_password": "ACCOUNT_PASSWORD_PROXY_PASSWORD"},
+            )
+        with self.assertRaises(ValueError):
+            task_gateway.normalize_config_snapshot(
+                snapshot,
+                allowlist={"PASSWORD_PROXY_PASSWORD": "ACCOUNT_PASSWORD_PROXY_MODE"},
+            )
+
     def test_remote_write_exception_cancel_and_premature_result_require_reconciliation(self):
         cases = (
             ("started", "exception"), ("response_received", "exception"),

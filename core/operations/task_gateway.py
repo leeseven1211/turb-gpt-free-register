@@ -52,18 +52,33 @@ _RUN_DISPATCH_BATCH_SIZE = 32
 
 _MISSING = object()
 _CONFIG_SECRET_PARTS = frozenset({"password", "secret", "token", "cookie", "otp", "authorization"})
+_SAFE_PASSWORD_POLICY_KEYS = frozenset({
+    # C-owned schema names.
+    "ACCOUNT_COMPLETION_PASSWORD_ENABLED",
+    "ACCOUNT_PASSWORD_RESET_ENABLED",
+    "ACCOUNT_PASSWORD_DRIVER",
+    "ACCOUNT_PASSWORD_PROXY_MODE",
+    "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK",
+    # Stable execution projections used inside durable task data.
+    "password_enabled",
+    "password_reset_enabled",
+    "password_driver",
+    "password_proxy_mode",
+    "auth_password_email_fallback",
+})
 
 
 def _config_key_is_sensitive(*names: str) -> bool:
-    """Reject credential values while allowing non-sensitive config toggles."""
+    """Reject credential values while allowing exact policy/config names."""
     for name in names:
-        parts = {part for part in str(name).lower().split("_") if part}
+        text = str(name).strip()
+        parts = {part for part in text.lower().split("_") if part}
         if parts & {"secret", "token", "cookie", "otp", "authorization"}:
             return True
-        # Schema flags such as PASSWORD_ENABLED and PASSWORD_DRIVER are
-        # policy choices, not password material. A bare/unknown password key
-        # remains rejected so an allowlist cannot persist credentials.
-        if "password" in parts and not parts & {"enabled", "driver", "proxy", "mode", "reset"}:
+        # Only the schema/policy names above are safe. Checking for a generic
+        # ``proxy``/``enabled``/``driver`` suffix would allow names such as
+        # PASSWORD_PROXY_PASSWORD, which are credential material.
+        if "password" in parts and text not in _SAFE_PASSWORD_POLICY_KEYS:
             return True
     return False
 
@@ -590,10 +605,15 @@ def register_operation_handler(
         return _execute_operation_handler(_task_type, run_id)
 
     register_dispatch_handler(name, invoke, source_systems=source_systems)
-    if retry_handler is not None or cancel_handler is not None:
-        register_operation_actions(
-            name, retry_handler=retry_handler, cancel_handler=cancel_handler,
-        )
+    # Maintenance adapters commonly only need to provide their execution
+    # handler. Install the shared safe route actions at this boundary so a
+    # newly migrated native type remains controllable from the task center.
+    # Explicit adapter actions still replace these defaults one at a time.
+    register_operation_actions(
+        name,
+        retry_handler=retry_handler or default_operation_retry,
+        cancel_handler=cancel_handler or default_operation_cancel,
+    )
 
 
 def unregister_operation_handler(task_type: str) -> None:
@@ -630,6 +650,96 @@ def register_operation_actions(
         if cancel_handler is not None:
             actions["cancel"] = cancel_handler
         _OPERATION_ACTIONS[name] = actions
+
+
+_ACTIVE_OPERATION_TASK_STATUSES = frozenset({
+    "queued", "running", "cancelling", "settling", "stopping", "waiting",
+})
+
+
+def default_operation_retry(task: Mapping[str, Any]) -> dict[str, Any]:
+    """Retry a registered operation through the durable storage boundary.
+
+    This action is deliberately service-neutral. A handler registration makes
+    the task executable; unless the adapter supplies a more specific action,
+    the task center can retry the same logical task with a fresh Run. Unknown
+    remote writes are fenced before this function reaches storage.
+    """
+    if operation_requires_reconciliation(task):
+        return {
+            "accepted": False,
+            "busy": False,
+            "reconcile_required": True,
+            "error": "远端请求结果待核验，禁止盲目重试",
+        }
+    if str(task.get("status") or "").strip().lower() in _ACTIVE_OPERATION_TASK_STATUSES:
+        return {"accepted": False, "busy": True, "error": "任务仍在执行"}
+    task_id = int(task.get("id") or 0)
+    if not task_id:
+        return {"accepted": False, "busy": False, "error": "任务缺少 id"}
+    try:
+        run = _operation().retry_runtime_task(
+            task_id,
+            trigger="manual_retry",
+            data={"retry_action": "manual_retry"},
+        )
+    except (LookupError, ValueError) as exc:
+        return {
+            "accepted": False,
+            "busy": False,
+            "reconcile_required": "核验" in str(exc),
+            "error": str(exc),
+        }
+    notify_dispatch()
+    return {
+        "accepted": True,
+        "busy": False,
+        "reused": False,
+        "task_id": task_id,
+        "run_id": int(run.get("id") or 0) or None,
+        "account_id": int(task.get("account_id") or 0) or None,
+        "email": str(task.get("email_snapshot") or ""),
+        "status": "queued",
+        "source_system": str(task.get("source_system") or "native_operations"),
+    }
+
+
+def default_operation_cancel(task: Mapping[str, Any]) -> dict[str, Any]:
+    """Request cooperative cancellation for a registered durable operation."""
+    active = next(
+        (
+            run for run in reversed(task.get("runs") or [])
+            if isinstance(run, Mapping)
+            and str(run.get("status") or "").strip().lower()
+            in _ACTIVE_OPERATION_TASK_STATUSES
+        ),
+        None,
+    )
+    if not active:
+        return {
+            "ok": True,
+            "running": False,
+            "state": "empty",
+            "message": "任务没有活跃 attempt",
+        }
+    run_id = int(active.get("id") or 0)
+    if not run_id:
+        return {"ok": False, "error": "活动 attempt 缺少 id"}
+    try:
+        run = _operation().request_run_cancel(
+            run_id, reason="用户手动停止统一 durable operation",
+        )
+    except LookupError as exc:
+        return {"ok": False, "error": str(exc)}
+    notify_dispatch()
+    state = str(run.get("status") or "cancelling")
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "running": state != "cancelled",
+        "state": state,
+        "message": "已记录停止请求，任务将在安全检查点收口",
+    }
 
 
 def operation_action(
@@ -1314,6 +1424,7 @@ __all__ = [
     "OperationTaskReporter", "OperationHandlerContext", "OperationContext",
     "register_operation_handler", "unregister_operation_handler", "registered_operation_types",
     "register_operation_actions", "operation_action", "operation_requires_reconciliation",
+    "default_operation_retry", "default_operation_cancel",
     "list_reconciliation_accounts",
     "submit_durable_operation", "submit_operation", "register_durable_handler",
     "start_dispatcher", "stop_dispatcher", "dispatcher_status",

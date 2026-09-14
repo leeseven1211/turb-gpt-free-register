@@ -3644,32 +3644,50 @@ def list_reconciliation_accounts(
         ")",
     ]
     params: list[Any] = [str(task_type or "").strip()]
+    requested_account_ids: list[int] | None = None
     if account_ids is not None:
-        values = [int(item) for item in account_ids]
-        if not values:
+        requested_account_ids = list(dict.fromkeys(int(item) for item in account_ids))
+        if not requested_account_ids:
             return []
         clauses.append("t.account_id = ANY(%s)")
-        params.append(values)
+        params.append(requested_account_ids)
     if source_systems is not None:
         values = [str(item).strip() for item in source_systems if str(item).strip()]
         if not values:
             return []
         clauses.append("t.source_system = ANY(%s)")
         params.append(values)
-    params.append(max(1, min(5000, int(limit or 5000))))
+    requested_limit = max(1, int(limit or 5000))
+    # A caller that supplies an explicit candidate set is using this as a
+    # safety gate, not pagination. Return every requested account even when a
+    # small default limit was passed; otherwise a producer could silently
+    # skip an account whose older rows happen to sort ahead of it.
+    effective_limit = (
+        max(requested_limit, len(requested_account_ids))
+        if requested_account_ids is not None
+        else min(5000, requested_limit)
+    )
+    params.append(effective_limit)
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT t.account_id, t.id AS task_id, t.status AS task_status,
-                   r.id AS run_id, r.status AS run_status,
-                   r.data->'remote_intent'->>'action' AS remote_action,
-                   COALESCE(r.data->'remote_intent'->>'receipt_state',
-                            r.data->'remote_intent'->>'state') AS remote_intent_state,
-                   r.result_summary
-            FROM {_table('operation_tasks')} t
-            JOIN {_table('operation_runs')} r ON r.task_id=t.id
-            WHERE {' AND '.join(clauses)}
-            ORDER BY t.account_id, r.id DESC
+            WITH candidates AS (
+                SELECT DISTINCT ON (t.account_id)
+                       t.account_id, t.id AS task_id, t.status AS task_status,
+                       r.id AS run_id, r.status AS run_status,
+                       r.data->'remote_intent'->>'action' AS remote_action,
+                       COALESCE(r.data->'remote_intent'->>'receipt_state',
+                                r.data->'remote_intent'->>'state') AS remote_intent_state,
+                       r.result_summary
+                FROM {_table('operation_tasks')} t
+                JOIN {_table('operation_runs')} r ON r.task_id=t.id
+                WHERE {' AND '.join(clauses)}
+                ORDER BY t.account_id, r.id DESC
+            )
+            SELECT account_id, task_id, task_status, run_id, run_status,
+                   remote_action, remote_intent_state, result_summary
+            FROM candidates
+            ORDER BY account_id
             LIMIT %s
             """,
             tuple(params),
