@@ -22,7 +22,7 @@ Python 3.10--3.13 或其他操作系统无需重新解析。迁移到其他解�
 ```bash
 /Users/lihongwei/code/personal/gpt/turb-gpt-free-register/.venv/bin/python \
   /tmp/turb-optimization-20260914.mJ7Y6R/run.py \
-  /Users/lihongwei/code/personal/gpt/turb-gpt-free-register-opt-release-20260914 \
+  YOUR_OPTIMIZATION_WORKTREE \
   -m pytest -q
 ```
 
@@ -86,18 +86,37 @@ python tools/release.py rollback --releases-dir /srv/turb/releases \
 ## 性能检查边界
 
 ```bash
-python tools/test_performance.py --rows 1000 --samples 20 --json
+/Users/lihongwei/code/personal/gpt/turb-gpt-free-register/.venv/bin/python \
+  /tmp/turb-optimization-20260914.mJ7Y6R/run.py \
+  YOUR_OPTIMIZATION_WORKTREE \
+  tools/test_performance.py --rows 1000 --samples 20 --workers 3 --queue-tasks 32 --json
 ```
 
-脚本在显式测试库的随机 `test_` schema 中生成千级账号，测量
-`core.db.list_accounts_page(limit=50)` 的 SQL 次数和 latency p95，并输出标记为
-`synthetic_queue_samples` 的队列等待 p95。它会只删除自己生成的 schema，不读取或
-修改生产数据。队列样本是可复现合成指标，不冒充真实 worker 排队观测；若 API 的
-实际 query/p95 超过报告中的阈值，应保留真实结果并在发布评审中阻断，而不是调高阈值。
+脚本在显式测试库的随机 `test_` schema 中生成至少 1000 条合成账号和原生
+operation task/run 行，只删除自己生成的 schema，不读取或修改生产数据。列表测量走
+真实的 `Flask test_client` HTTP 路由 `/api/accounts?paged=1&page_size=50`，由
+`core.admin_repository.list_accounts` 返回；SQL 次数和每次请求的 latency p95 是实际
+执行结果，不构造 baseline。
+
+调度测量通过 `submit_durable_operation` 提交并用
+`register_operation_handler` 注册一个 `synthetic_no_network` handler，经真实共享
+`AccountOperationExecutor` 和 durable `task_gateway` scanner 执行。helper 先完成
+PostgreSQL claim，再调用 handler；脚本在真实 enqueue、handler entry、完成点采集单调
+时钟，因此 `queue_wait_ms` 是 enqueue 到实际执行开始的等待，而不是按序号生成的数字。
+测试会先
+用 gate 形成真实拥堵，报告实际吞吐与 observed max concurrency；随后在 scanner 停止
+时把恢复任务保留为 PostgreSQL `queued` 行，再启动新的 scanner，确认相同 durable
+行恢复完成。该“restart”是进程内 dispatcher scanner 的可控重启，不重启当前服务，
+也不声称覆盖进程崩溃后的所有恢复语义；负载明确不产生网络请求。
+
+首轮 `queue_wait_samples=[(index*7)%43]` 及据此得出的“40ms”结论均已撤销、未验收，
+不得作为可比较 baseline。若列表真实 query/p95、并发上限或 durable recovery 不满足
+报告阈值，应保留真实结果并在发布评审中阻断，而不是调高阈值。
 
 ## 路由契约摘要
 
 路由快照仍由 `tests/test_route_contract.py` 的显式数量和 SHA-256 固化。相对于
 `1006937` 到 `f33e523`，`/api/extract-link/types` 是已评审的既有新增；本提交再
-明确加入公开 `GET /healthz` 与 `GET /readyz`。当前快照为 112 条路由，更新理由和
-摘要保留在测试注释中，不能用运行时 `len(app.url_map)` 代替预期值。
+明确加入公开 `GET /healthz` 与 `GET /readyz`，以及单条已核对的
+`GET /api/config/snapshot` delta。当前固定快照为 113 条路由，数量与 SHA 都写死在
+测试中，不能用运行时 `len(app.url_map)` 代替预期值。
