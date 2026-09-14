@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 import threading
+from types import MappingProxyType
 from unittest import TestCase
 from unittest.mock import Mock, patch
 
 import requests
 
+import config
+from config import schema as config_schema
 from core import account_operation_executor, db, record_store, task_run_log
 from core import codex_token_refresh_service as service
 from core.operations import task_gateway
@@ -93,9 +96,54 @@ class CodexTokenRefreshSubmissionTests(TestCase):
         self.assertEqual("legacy-batch-id", kwargs["data"]["legacy_batch_id"])
         self.assertNotIn("config_snapshot", kwargs["data"])
         self.assertEqual({"request_timeout": "CODEX_REQUEST_TIMEOUT"}, kwargs["config_allowlist"])
-        self.assertEqual(set(kwargs["config_snapshot"]), {"CODEX_REQUEST_TIMEOUT"})
-        self.assertNotIn("CODEX_TOKEN_URL", kwargs["config_snapshot"])
+        self.assertIsInstance(kwargs["config_snapshot"], config_schema.ConfigSnapshot)
         direct_submit.assert_not_called()
+
+    def test_submission_uses_published_canonical_snapshot_and_revision(self):
+        candidate = config_schema.ConfigSnapshot(
+            MappingProxyType({
+                "CODEX_REQUEST_TIMEOUT": 17,
+                "CODEX_TOKEN_URL": "https://synthetic.invalid/oauth/token",
+                "UNRELATED_GLOBAL_SETTING": "must-not-persist",
+            }),
+            MappingProxyType({"CODEX_REQUEST_TIMEOUT": "test"}),
+            revision=0,
+        )
+        previous_published = config_schema._PUBLISHED_SNAPSHOT
+        try:
+            published = config_schema.publish_config_snapshot(candidate)
+            durable_result = {
+                "accepted": True,
+                "busy": False,
+                "reused": False,
+                "task_id": 171,
+                "run_id": 172,
+                "status": "queued",
+            }
+            with (
+                patch.object(service.db, "list_codex_accounts", return_value=[self._row()]),
+                patch.object(service.db, "get_account_by_email", return_value={"id": 17}),
+                patch.object(service.operation_runtime_store, "active_run_for_account", return_value=None),
+                patch.object(service.operation_runtime_store, "list_reconciliation_accounts", return_value=[]),
+                patch.object(service, "_register_worker"),
+                patch.object(service, "_update_account_state"),
+                patch.object(config, "non_sensitive_snapshot", return_value=published) as canonical,
+                patch.object(service.task_gateway, "submit_durable_operation", return_value=durable_result) as submit,
+            ):
+                result = service.enqueue_refresh(
+                    "codex-submit@example.test-free.json",
+                    idempotency_key="canonical-snapshot-request",
+                )
+        finally:
+            config_schema._PUBLISHED_SNAPSHOT = previous_published
+
+        self.assertTrue(result["accepted"])
+        snapshot = submit.call_args.kwargs["config_snapshot"]
+        self.assertIs(snapshot, published)
+        self.assertEqual(published.revision, snapshot.revision)
+        self.assertEqual(17, snapshot["CODEX_REQUEST_TIMEOUT"])
+        self.assertEqual({"request_timeout": "CODEX_REQUEST_TIMEOUT"}, submit.call_args.kwargs["config_allowlist"])
+        canonical.assert_called_once_with()
 
     def test_duplicate_durable_submission_returns_busy_from_database(self):
         with (
@@ -345,6 +393,41 @@ class CodexTokenRefreshDurablePostgresTests(PostgresTestCase):
             },
         )
 
+    def test_real_submission_persists_only_allowlisted_timeout_and_revision(self):
+        _account_id, _email, filename = self._seed_credential("canonical-persist")
+        candidate = config_schema.ConfigSnapshot(
+            MappingProxyType({
+                "CODEX_REQUEST_TIMEOUT": 19,
+                "CODEX_TOKEN_URL": "https://synthetic.invalid/oauth/token",
+                "UNRELATED_GLOBAL_SETTING": "must-not-persist",
+            }),
+            MappingProxyType({"CODEX_REQUEST_TIMEOUT": "test"}),
+            revision=0,
+        )
+        previous_published = config_schema._PUBLISHED_SNAPSHOT
+        try:
+            published = config_schema.publish_config_snapshot(candidate)
+            with patch.object(config, "non_sensitive_snapshot", return_value=published):
+                submitted = service.enqueue_refresh(
+                    filename,
+                    trigger="manual",
+                    idempotency_key="canonical-persist-request",
+                )
+        finally:
+            config_schema._PUBLISHED_SNAPSHOT = previous_published
+
+        self.assertTrue(submitted["accepted"])
+        run = operation.get_run(int(submitted["run_id"]))
+        self.assertEqual(
+            {
+                "request_timeout": 19,
+                "config_snapshot_revision": published.revision,
+            },
+            run["data"]["config_snapshot"],
+        )
+        self.assertNotIn("CODEX_TOKEN_URL", run["data"]["config_snapshot"])
+        self.assertNotIn("UNRELATED_GLOBAL_SETTING", run["data"]["config_snapshot"])
+
     def test_preferred_handler_persists_rotated_credentials_and_receipt_calls(self):
         account_id, email, filename = self._seed_credential("preferred")
         created = self._create_run(account_id, email, filename, "preferred-run")
@@ -394,6 +477,112 @@ class CodexTokenRefreshDurablePostgresTests(PostgresTestCase):
         self.assertTrue(summary["credential_persisted"])
         self.assertTrue(summary["credential_rotated"], summary)
         self.assertTrue(summary["execution_id"])
+
+    def test_cancel_during_http_settles_rotated_credential_once(self):
+        account_id, email, filename = self._seed_credential("cancel-during-http")
+        created = self._create_run(account_id, email, filename, "cancel-during-http-run")
+        service._register_worker()
+        run_id = int(created["run"]["id"])
+        http_entered = threading.Event()
+        release_http = threading.Event()
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "access_token": "settled-access",
+            "refresh_token": "settled-refresh",
+            "expires_in": 604800,
+        }
+
+        def blocking_post(*_args, **_kwargs):
+            http_entered.set()
+            if not release_http.wait(timeout=5):
+                raise RuntimeError("synthetic HTTP gate was not released")
+            return response
+
+        returned: dict[str, object] = {}
+
+        def run_handler() -> None:
+            try:
+                returned["result"] = task_gateway._execute_operation_handler(
+                    service.TASK_TYPE, run_id,
+                )
+            except BaseException as exc:  # surface worker failures in the test thread
+                returned["error"] = exc
+
+        worker = threading.Thread(target=run_handler, name="synthetic-token-refresh")
+        with (
+            patch.object(service.requests, "post", side_effect=blocking_post) as post,
+            patch.object(service, "_sync_sub2_if_needed", return_value={"status": "disabled"}),
+        ):
+            worker.start()
+            self.assertTrue(http_entered.wait(timeout=5))
+            cancelled = operation_runtime_store.request_run_cancel(
+                run_id, reason="synthetic cancel during HTTP response wait",
+            )
+            self.assertEqual("cancelling", cancelled["status"])
+            release_http.set()
+            worker.join(timeout=5)
+
+        self.assertFalse(worker.is_alive())
+        self.assertNotIn("error", returned, returned.get("error"))
+        result = returned["result"]
+        self.assertEqual("success", result["status"])
+        self.assertEqual(1, post.call_count)
+
+        run = operation.get_run(run_id)
+        self.assertEqual("success", run["status"])
+        self.assertEqual("success", run["result_summary"]["status"])
+        self.assertTrue(run["result_summary"]["credential_persisted"])
+        self.assertTrue(run["result_summary"]["credential_rotated"])
+        self.assertIsNotNone(run["cancel_requested_at"])
+
+        text, _ = db.read_codex_credential(filename)
+        stored = json.loads(text)
+        self.assertEqual("settled-access", stored["access_token"])
+        self.assertEqual("settled-refresh", stored["refresh_token"])
+        row = record_store.get_row_by(record_store.CODEX_CREDENTIALS, "filename", filename)
+        self.assertIsNone(row["oauth_refresh_error"])
+
+        # The successful settlement has a long-lived access token, so a
+        # subsequent producer scan must not create a second refresh attempt.
+        with patch.object(service._cfg, "CODEX_TOKEN_AUTO_REFRESH_ENABLED", True):
+            due = service.enqueue_due_credentials()
+        self.assertEqual(0, due["started"])
+        self.assertEqual(1, post.call_count)
+
+    def test_lease_loss_after_http_response_blocks_local_write(self):
+        account_id, email, filename = self._seed_credential("lease-loss-after-http")
+        created = self._create_run(account_id, email, filename, "lease-loss-after-http-run")
+        service._register_worker()
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "access_token": "must-not-be-written",
+            "refresh_token": "must-not-be-written",
+            "expires_in": 604800,
+        }
+        run_id = int(created["run"]["id"])
+
+        with (
+            patch.object(service.requests, "post", return_value=response) as post,
+            patch.object(service, "_persist_refreshed_credential") as persist,
+            patch.object(
+                task_gateway.OperationLease,
+                "heartbeat",
+                side_effect=[True, True, False],
+            ),
+        ):
+            returned = task_gateway._execute_operation_handler(service.TASK_TYPE, run_id)
+
+        self.assertEqual(service.REQUEST_UNKNOWN, returned["status"])
+        self.assertEqual(1, post.call_count)
+        persist.assert_not_called()
+        run = operation.get_run(run_id)
+        self.assertEqual("attention_required", run["status"])
+        self.assertEqual(service.REQUEST_UNKNOWN, run["result_summary"]["outcome"])
+        self.assertTrue(run["result_summary"]["reconcile_required"])
+        text, _ = db.read_codex_credential(filename)
+        stored = json.loads(text)
+        self.assertEqual("old-access", stored["access_token"])
+        self.assertEqual("old-refresh", stored["refresh_token"])
 
     def test_timeout_is_attention_required_and_scheduler_cannot_resubmit(self):
         account_id, email, filename = self._seed_credential("timeout")

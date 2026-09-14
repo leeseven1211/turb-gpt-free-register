@@ -18,6 +18,11 @@ register_operation_handler(
 submit_durable_operation(..., dispatch=True)
 ```
 
+`enqueue_refresh()` 提交时取得 C 发布的 `config.non_sensitive_snapshot()`
+`ConfigSnapshot`，不会手造逐字段配置 dict；gateway 再按上述 allowlist 投影，
+因此任务只保存 `request_timeout` 和该对象的 `config_snapshot_revision`。执行
+handler 使用已落库的这份版本化快照，不回读提交后的可变配置。
+
 `start_periodic_refresher()` 和 `resume_queued()` 只注册 handler、唤醒共享
 gateway 或读取 queued 数量。定时线程只负责发现到期凭证并生产 durable
 任务；claim、账号 lease、executor 预算、handler 调用和 terminal result
@@ -52,11 +57,14 @@ handler 取得 gateway context/lease 后按以下顺序执行：
    `received`（`accepted` 是兼容别名）观测；明确拒绝才可记录终结
    `rejected`，传输未知记录 `unknown`。响应 body、access token、refresh
    token 不进入 receipt/resource detail。
-4. 远端响应后不再以取消检查打断 credential write。先进入 settling，写入
-   新 credential 并 readback 校验 access/refresh pair，再调用
-   `remote_request_receipt(outcome="confirmed")`。只有这一步之后才发布
-   success `result_summary`；写/readback/receipt 任一未知都保留
-   `started`/`unknown`，绝不写 `confirmed`。durable handler 会把行级
+4. 远端响应后不再以取消检查打断 credential write。此处只做 lease/fence
+   心跳确认；用户取消会保留在运行记录中，但不打断 settling。随后写入新
+   credential 并 readback 校验 access/refresh pair，再调用
+   `remote_request_receipt(outcome="confirmed")`，最后完成 gateway `finish`。
+   只有这一步之后才发布 success `result_summary`；写/readback/receipt 任一
+   未知都保留 `started`/`unknown`，绝不写 `confirmed`。若 lease/fence 已丢失，
+   不越权写本地凭证，保留 request_unknown/reconciliation 所需的已授权持久
+   记录。durable handler 会把行级
    `oauth_refresh_error` 清除延后到 gateway terminal finish 之后；这是因为
    既有 credential upsert 会在写入时重建并清空该字段。旋转 proof 使用不含
    secret-like key 的 `credential_persisted` 与 `credential_rotated` 元数据。

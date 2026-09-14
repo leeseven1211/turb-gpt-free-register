@@ -565,6 +565,7 @@ def _perform_refresh(
     config_snapshot: Mapping[str, Any] | None = None,
     report: Callable[..., Any] | None = None,
     checkpoint: Callable[..., Any] | None = None,
+    post_response_fence: Callable[[], Any] | None = None,
     is_cancel_requested: Callable[[], bool] | None = None,
     mark_settling: Callable[[], Any] | None = None,
     on_remote_dispatch: Callable[[str], Any] | None = None,
@@ -795,11 +796,14 @@ def _perform_refresh(
                 remote_response_received=True,
                 remote_request_id=remote_request_id,
             ) from response_exc
-    # Renew the gateway lease after the potentially long HTTP call. A cancel
-    # or lease loss here is still an unknown remote-write outcome, but it
-    # happens before local credential writeback, so no later cancellation
-    # check can interrupt the write/readback confirmation sequence.
-    _checkpoint(checkpoint)
+    # The HTTP response may already contain a rotated refresh token. From
+    # this boundary onward, cancellation is deliberately not a checkpoint:
+    # it must not interrupt the write/readback/confirmed/finish settlement.
+    # The durable handler supplies a lease-only fence callback so a genuinely
+    # lost lease still prevents an unauthorized local write and preserves the
+    # response as request_unknown for reconciliation.
+    if post_response_fence is not None:
+        post_response_fence()
     _report(
         report,
         stage="refresh_token",
@@ -1169,15 +1173,23 @@ def _handle_operation_context(context: Any) -> Any:
         account_id = int(getattr(context, "account_id", 0) or 0)
         if not account_id:
             raise TokenRefreshError("durable refresh task 缺少 account_id")
-        with context.lease(resource_family=RESOURCE_FAMILY, ttl_seconds=600):
+        with context.lease(resource_family=RESOURCE_FAMILY, ttl_seconds=600) as lease:
             _update_account_state(email, execution_status="running", active_run_id=run_id)
             snapshot = getattr(context, "config_snapshot", {})
             snapshot = snapshot if isinstance(snapshot, Mapping) else {}
+
+            def post_response_fence() -> None:
+                if not lease.heartbeat():
+                    raise task_gateway.OperationLeaseLost(
+                        "账号 lease 心跳失败，远端结果必须重新核验",
+                    )
+
             result = _perform_refresh(
                 filename,
                 config_snapshot=snapshot,
                 report=report,
                 checkpoint=checkpoint,
+                post_response_fence=post_response_fence,
                 is_cancel_requested=lambda: bool(context.is_cancel_requested()),
                 mark_settling=lambda: operation_runtime_store.mark_run_settling(run_id),
                 on_remote_dispatch=on_remote_dispatch,
@@ -1317,8 +1329,11 @@ def _handle_operation_context(context: Any) -> Any:
         )
 
 
-def _snapshot_for_submission() -> dict[str, Any]:
-    return {"CODEX_REQUEST_TIMEOUT": _request_timeout(None)}
+def _snapshot_for_submission() -> Any:
+    """Capture C's immutable published snapshot at durable submission time."""
+    from config import non_sensitive_snapshot
+
+    return non_sensitive_snapshot()
 
 
 def _request_timeout(snapshot: Mapping[str, Any] | None) -> int:
