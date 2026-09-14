@@ -13,6 +13,7 @@ navigator/screen/timezone/client hints 不能互相打架。
 from __future__ import annotations
 
 from config.env_loader import apply_env_overrides
+from config.schema import schema_default
 
 import random
 import re
@@ -61,9 +62,9 @@ SEND_CLIENT_HINTS = True
 SEND_HIGH_ENTROPY_CLIENT_HINTS = False
 
 # ---------- 语言 / 时区 ----------
-BROWSER_LOCALE_PROFILE = "jp"
-AUTO_BROWSER_LOCALE_FROM_IP = True
-IP_GEO_TIMEOUT = 6.0
+BROWSER_LOCALE_PROFILE = schema_default("BROWSER_LOCALE_PROFILE")
+AUTO_BROWSER_LOCALE_FROM_IP = schema_default("AUTO_BROWSER_LOCALE_FROM_IP")
+IP_GEO_TIMEOUT = schema_default("IP_GEO_TIMEOUT")
 IP_GEO_ENDPOINTS = [
     "https://ipinfo.io/json",
     "https://ipapi.co/json",
@@ -300,4 +301,4 @@ def validate_browser_profile(profile: dict) -> list[str]:
     return issues
 
 # ---- .env overrides for WebUI editable fields ----
-apply_env_overrides(globals(), {'BROWSER_LOCALE_PROFILE': 'str', 'AUTO_BROWSER_LOCALE_FROM_IP': 'bool', 'IP_GEO_TIMEOUT': 'float', 'REJECT_CLOUD_PROXY': 'bool'})
+apply_env_overrides(globals())

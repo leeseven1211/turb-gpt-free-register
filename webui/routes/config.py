@@ -31,6 +31,7 @@ from core import (
 from core import registration_service as svc
 from core.task_errors import classify_task_error
 from config import codex as codex_config
+from config.schema import ConfigValidationError, config_revision
 from webui import config_editor
 from webui.blueprint import LegacyEndpointBlueprint
 from webui.runtime import WebUIContext
@@ -45,6 +46,16 @@ def create_config_blueprint(context: WebUIContext):
     @bp.get("/api/config")
     def api_config_get():
         return jsonify(config_editor.get_config())
+
+    @bp.get("/api/config/snapshot")
+    def api_config_snapshot():
+        """返回任务可绑定的非敏感配置快照；进程内对象本身保持不可变。"""
+        snapshot = config_editor.get_config_snapshot()
+        return jsonify({
+            "config_revision": snapshot.revision,
+            "values": snapshot.as_dict(),
+            "sources": dict(snapshot.sources),
+        })
 
     @bp.post("/api/cloudmail/gen-token")
     def api_cloudmail_gen_token():
@@ -143,34 +154,36 @@ def create_config_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error": "无更新内容"}), 400
         try:
             result = config_editor.update_config(updates)
+        except ConfigValidationError as exc:
+            # 字段名和校验原因均来自 schema，不回显候选值（尤其是 secret）。
+            return jsonify({
+                "ok": False,
+                "error": "配置校验失败",
+                "fields": dict(exc.errors),
+            }), 400
         except Exception as exc:
             logger.exception("配置写入失败")
-            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 500
-
-        # 写盘成功后立即热加载所有 config 子模块，让运行时代码看到新值。
-        reload_ok = True
-        reload_err = ""
-        try:
-            import config as _config_pkg
-            _config_pkg.reload_all()
-        except Exception as exc:
-            reload_ok = False
-            reload_err = f"{type(exc).__name__}: {exc}"
-            logger.exception("配置热加载失败")
+            # update_config 在写盘或 reload 失败时已恢复原文件和进程环境。
+            return jsonify({
+                "ok": False,
+                "error": f"配置保存失败（{type(exc).__name__}，未应用）",
+            }), 500
 
         restart_required = result.get("restart_required", [])
+        reload_ok = bool(result.get("reloaded"))
         if reload_ok and restart_required:
             note = f"✅ 已保存并热加载；{', '.join(restart_required)} 需重启后完整生效"
         elif reload_ok:
             note = "✅ 已保存并热加载，新值立即生效"
         else:
-            note = f"⚠️ 已写入文件但热加载失败（{reload_err}），需重启 Web 服务才能生效"
+            note = "⚠️ 已保存但尚未热加载，需重启 Web 服务才能生效"
         return jsonify({
             "ok": True,
             "updated": result["updated"],
             "ignored": result["ignored"],
             "restart_required": restart_required,
             "reloaded": reload_ok,
+            "config_revision": config_revision(),
             "note": note,
         })
 

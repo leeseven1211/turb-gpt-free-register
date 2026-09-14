@@ -216,11 +216,16 @@ from config.account import (
 
 
 # ---------- 热加载支持 ----------
-# WebUI 改配置后调 reload_all() 即可让所有运行时代码看到新值，无需重启进程。
-# 前提：运行时代码读配置时用 `config.<子模块>.KEY` 形式（而不是 `from config.子模块 import KEY` 把值绑死）。
-# 比如 `from config import codex; ... codex.SMS_COUNTRY`，reload 后 codex 模块对象原地更新，
-# 引用 codex.SMS_COUNTRY 立即看到新值。
+# WebUI 改配置后调 reload_all() 会校验并尝试让所有运行时代码看到新值，无需
+# 重启进程。reload_all 的模块回滚只保证失败后恢复 writer 状态；它不把旧式
+# `mod.CONSTANT` 读者变成全局无锁原子读者。旧代码若需要一致版本，应在一次
+# 业务操作开始时调用 `config.non_sensitive_snapshot()`，并只使用该对象的
+# values；`from config import CONSTANT` / `from config.module import CONSTANT`
+# 的迁移边界仍由调用方自行处理。
 import importlib as _importlib
+import os as _os
+import sys as _sys
+import threading as _threading
 
 _RELOADABLE_SUBMODULES = (
     "config.browser",
@@ -236,30 +241,85 @@ _RELOADABLE_SUBMODULES = (
     "config.extract_link",
     "config.sub2api",
     "config.humanize",
+    "config.registration_debug",
 )
+
+_RELOAD_LOCK = _threading.RLock()
 
 
 def reload_all() -> list[str]:
     """
-    热重载所有 config 子模块，返回成功 reload 的模块名列表。
-    任何子模块 reload 失败（语法错等）会抛 ImportError，调用方自行处理。
-    """
-    from config.env_loader import load_env
-    load_env(override=True)
+    带候选快照发布和失败回滚的热重载，返回成功 reload 的模块名列表。
 
-    import sys
-    reloaded = []
-    for name in _RELOADABLE_SUBMODULES:
-        mod = sys.modules.get(name)
-        if mod is None:
-            mod = _importlib.import_module(name)
-        else:
-            _importlib.reload(mod)
-        reloaded.append(name)
-    # 同步刷新 config 包顶层的"被绑死"常量（兼容历史 `from config import X` 用法）
-    # 注意：通过这些名字读到的是 reload 前的值，但子模块属性方式不受影响。
-    _refresh_top_level_constants()
-    return reloaded
+    先保存所有参与模块的 namespace、config 包顶层导出和进程环境；任一
+    子模块或顶层同步失败时全部恢复。新 snapshot 读者只会看到旧版或新版；
+    旧式直接读取模块常量的读者仍受逐模块 reload 迁移边界约束。
+    """
+    with _RELOAD_LOCK:
+        # 先确保已有稳定旧版本；这样并发读者不会在本次候选 reload 期间
+        # 首次初始化并发布一份可能需要回滚的环境快照。
+        from config.schema import non_sensitive_snapshot
+
+        non_sensitive_snapshot()
+        package_before = dict(globals())
+        environment_before = dict(_os.environ)
+        environment_expected = dict(_os.environ)
+        module_before = {
+            name: _sys.modules.get(name)
+            for name in _RELOADABLE_SUBMODULES
+        }
+        namespace_before = {
+            name: dict(module.__dict__)
+            for name, module in module_before.items()
+            if module is not None
+        }
+        reloaded = []
+        try:
+            from config.env_loader import load_env
+            from config.schema import build_non_sensitive_snapshot, publish_config_snapshot
+
+            load_env(override=True)
+            environment_expected = dict(_os.environ)
+            # 先离线解析/严格校验整套候选配置并构建稳定快照；模块 reload
+            # 失败时这个候选尚未发布。
+            candidate_snapshot = build_non_sensitive_snapshot(
+                environment_expected,
+                strict=True,
+            )
+            for name in _RELOADABLE_SUBMODULES:
+                mod = _sys.modules.get(name)
+                if mod is None:
+                    mod = _importlib.import_module(name)
+                else:
+                    _importlib.reload(mod)
+                reloaded.append(name)
+            # 同步刷新 config 包顶层的"被绑死"常量。
+            _refresh_top_level_constants()
+            # 仅在所有兼容模块成功后做一次 snapshot reference swap。
+            publish_config_snapshot(candidate_snapshot)
+            return reloaded
+        except Exception:
+            # 恢复模块字典和 sys.modules 中的精确对象。仅处理本次 reload
+            # 清单内的模块，不触碰其他业务模块或运行时数据。
+            for name, module in module_before.items():
+                if module is None:
+                    _sys.modules.pop(name, None)
+                    continue
+                _sys.modules[name] = module
+                previous_namespace = namespace_before[name]
+                module.__dict__.clear()
+                module.__dict__.update(previous_namespace)
+
+            from config.env_loader import restore_environment
+
+            restore_environment(environment_before, environment_expected)
+
+            # 恢复 config 包所有原有属性，去掉失败过程中新增的模块/常量。
+            current_keys = set(globals())
+            for key in current_keys - set(package_before):
+                globals().pop(key, None)
+            globals().update(package_before)
+            raise
 
 
 def _refresh_top_level_constants() -> None:
@@ -271,6 +331,16 @@ def _refresh_top_level_constants() -> None:
         for k in dir(src):
             if k.isupper() or k in ("pick_proxy", "pick_browser_profile", "build_browser_environment", "validate_browser_profile"):
                 setattr(_self, k, getattr(src, k))
+
+
+# 新任务/服务代码的稳定入口。返回的 ConfigSnapshot 在进程内不可变，且不含
+# secret 字段；不要把旧式逐项常量读取误当作 snapshot 事务。
+from config.schema import (
+    ConfigSnapshot,
+    build_non_sensitive_snapshot,
+    get_non_sensitive_snapshot,
+    non_sensitive_snapshot,
+)
 
 
 __all__ = [
@@ -336,4 +406,6 @@ __all__ = [
     "ACCOUNT_LIVE_CHECK_BROWSER_ENABLED", "ACCOUNT_TOKEN_REFRESH_DRIVER",
     "ACCOUNT_AUTH_V2_ENABLED", "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK", "ACCOUNT_AUTH_PROFILE_MODE",
     "ACCOUNT_AUTH_RAW_CONTEXT_ENABLED", "ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS",
+    "ConfigSnapshot", "non_sensitive_snapshot", "get_non_sensitive_snapshot",
+    "build_non_sensitive_snapshot",
 ]

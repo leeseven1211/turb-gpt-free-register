@@ -7,36 +7,37 @@ RoxyBrowser 指纹浏览器自动化注册配置。
 - 所有接口请求头必须带 token
 - 可配合 Selenium / Puppeteer / Playwright 自动化
 """
-from config.env_loader import env_str, apply_env_overrides
+from config.env_loader import apply_env_overrides
+from config.schema import schema_default
 
 
 # 注册驱动：
 #   "roxy"         = RoxyBrowser 主流程（推荐）
 #   "protocol"     = 协议辅助/回退流程
-REGISTRATION_DRIVER: str = "roxy"
+REGISTRATION_DRIVER: str = schema_default("REGISTRATION_DRIVER")
 
 # RoxyBrowser 本地 API
-ROXY_API_BASE: str = "http://127.0.0.1:50100"
-ROXY_API_TOKEN: str = env_str("ROXY_API_TOKEN", "")
+ROXY_API_BASE: str = schema_default("ROXY_API_BASE")
+ROXY_API_TOKEN: str = schema_default("ROXY_API_TOKEN")
 
 # Roxy 环境/Profile ID；留空时使用 ROXY_PROFILE_CREATE_* 先创建临时环境（如果接口支持）
-ROXY_PROFILE_ID: str = ""
+ROXY_PROFILE_ID: str = schema_default("ROXY_PROFILE_ID")
 
 # Roxy 工作区 ID。Roxy 创建 Profile 时接口要求 workspaceId，必须填写。
 # 可在 Roxy 工作区/团队页面或 API 返回中查看。
-ROXY_WORKSPACE_ID: str = "90143"
+ROXY_WORKSPACE_ID: str = schema_default("ROXY_WORKSPACE_ID")
 
 # Roxy 项目 ID。/browser/workspace 返回 project_details.projectId；创建 Profile 时一并提交。
-ROXY_PROJECT_ID: str = "97471"
+ROXY_PROJECT_ID: str = schema_default("ROXY_PROJECT_ID")
 
 # 获取团队/工作区列表接口路径。不同版本若不同，可在 WebUI 修改；客户端也会自动尝试多个常见路径。
-ROXY_WORKSPACE_LIST_PATH: str = "/browser/workspace"
+ROXY_WORKSPACE_LIST_PATH: str = schema_default("ROXY_WORKSPACE_LIST_PATH")
 ROXY_WORKSPACE_LIST_METHOD: str = "GET"
 
 # 接口路径模板。不同版本如有差异，只改这里即可。
 # {profile_id} 会替换为 ROXY_PROFILE_ID。
-ROXY_OPEN_PATH: str = "/browser/open"
-ROXY_CLOSE_PATH: str = "/browser/close"
+ROXY_OPEN_PATH: str = schema_default("ROXY_OPEN_PATH")
+ROXY_CLOSE_PATH: str = schema_default("ROXY_CLOSE_PATH")
 ROXY_CREATE_PATH: str = "/browser/create"
 
 # 接口方法：常见 open/close 为 GET；若你的版本要求 POST，可在 WebUI/配置里改。
@@ -47,18 +48,18 @@ ROXY_CREATE_METHOD: str = "POST"
 # 打开浏览器时是否无头启动：
 #   False = 显示 Roxy 浏览器窗口（便于观察/调试）
 #   True  = 无头启动，不显示窗口（如果当前 Roxy 版本支持 headless）
-ROXY_OPEN_HEADLESS: bool = False
+ROXY_OPEN_HEADLESS: bool = schema_default("ROXY_OPEN_HEADLESS")
 
 # Codex OAuth 专用的无头开关。默认显示窗口，避免 OAuth consent 页在无头渲染下
 # 无法完成确认并最终卡在 localhost:1455 callback 等待；不影响注册流程的无头设置。
-ROXY_CODEX_OPEN_HEADLESS: bool = False
+ROXY_CODEX_OPEN_HEADLESS: bool = schema_default("ROXY_CODEX_OPEN_HEADLESS")
 
 # 打开浏览器时附加参数；会合并到 /browser/open 请求体，优先级高于默认值。
 ROXY_OPEN_EXTRA_PARAMS: dict = {}
 
 # Selenium 行为
 ROXY_SELENIUM_TIMEOUT: int = 90
-ROXY_KEEP_BROWSER_OPEN: bool = False
+ROXY_KEEP_BROWSER_OPEN: bool = schema_default("ROXY_KEEP_BROWSER_OPEN")
 
 # Roxy API transient 错误重试。create 仅在 Roxy 明确返回失败、并通过唯一环境名
 # 查证没有创建成功后才重试；客户端超时/断连等结果未知场景不会盲目重复创建。
@@ -67,16 +68,16 @@ ROXY_API_RETRY_DELAY: int = 2
 
 # Roxy 窗口达到套餐/本机上限时，不要让当前 worker 快速失败并继续消费后续
 # 排队任务。保持任务在“启动浏览器”阶段等待，直到前面的窗口释放。
-ROXY_WINDOW_WAIT_TIMEOUT: int = 900
-ROXY_WINDOW_WAIT_INTERVAL: int = 10
+ROXY_WINDOW_WAIT_TIMEOUT: int = schema_default("ROXY_WINDOW_WAIT_TIMEOUT")
+ROXY_WINDOW_WAIT_INTERVAL: int = schema_default("ROXY_WINDOW_WAIT_INTERVAL")
 
 # 环境生命周期：
 #   True  = 一号一环境：每个账号强制创建新 Profile，用完关闭并删除，不允许复用 ROXY_PROFILE_ID
 #   False = 可复用 ROXY_PROFILE_ID 或只关闭不删除
-ROXY_ONE_PROFILE_PER_ACCOUNT: bool = True
+ROXY_ONE_PROFILE_PER_ACCOUNT: bool = schema_default("ROXY_ONE_PROFILE_PER_ACCOUNT")
 
 # 一号一环境结束后是否删除 Profile。建议保持 True。
-ROXY_DELETE_PROFILE_AFTER_RUN: bool = True
+ROXY_DELETE_PROFILE_AFTER_RUN: bool = schema_default("ROXY_DELETE_PROFILE_AFTER_RUN")
 
 # 删除环境接口路径/方法；如你的 Roxy 版本不同，只改这里。
 ROXY_DELETE_PATH: str = "/browser/delete"
@@ -84,12 +85,12 @@ ROXY_DELETE_METHOD: str = "POST"
 
 # 创建 Roxy 环境时随机系统指纹；开启后每次 /browser/create 在 Windows / macOS 里随机选一个，
 # 避免固定 macOS 指纹。
-ROXY_RANDOM_OS_ON_CREATE: bool = True
-ROXY_RANDOM_OS_CHOICES: str = "Windows,macOS"
+ROXY_RANDOM_OS_ON_CREATE: bool = schema_default("ROXY_RANDOM_OS_ON_CREATE")
+ROXY_RANDOM_OS_CHOICES: str = schema_default("ROXY_RANDOM_OS_CHOICES")
 
 # 创建 Roxy 环境时随机名称；开启后会覆盖 ROXY_PROFILE_CREATE_PAYLOAD 里的固定 windowName。
-ROXY_RANDOM_PROFILE_NAME_ON_CREATE: bool = True
-ROXY_PROFILE_NAME_PREFIX: str = "rb"
+ROXY_RANDOM_PROFILE_NAME_ON_CREATE: bool = schema_default("ROXY_RANDOM_PROFILE_NAME_ON_CREATE")
+ROXY_PROFILE_NAME_PREFIX: str = schema_default("ROXY_PROFILE_NAME_PREFIX")
 
 # 创建 Roxy 环境时默认系统指纹。仅在 ROXY_RANDOM_OS_ON_CREATE=False 时使用。
 # Roxy 官方 os 枚举：Windows / macOS / Linux / IOS / Android。
@@ -100,10 +101,10 @@ ROXY_DEFAULT_OS_VERSION: str = ""
 # 创建 Roxy 环境时是否使用 config/proxy.py 的 PROXY_POOL：
 #   False = 不主动给 Roxy 环境设置代理
 #   True  = 每次创建环境时从 PROXY_POOL 随机取一个代理写入 proxyInfo
-ROXY_CREATE_USE_PROXY_POOL: bool = False
+ROXY_CREATE_USE_PROXY_POOL: bool = schema_default("ROXY_CREATE_USE_PROXY_POOL")
 
 # Roxy 代理检测通道；留空则不传 checkChannel。
-ROXY_PROXY_CHECK_CHANNEL: str = "IPRust.io"
+ROXY_PROXY_CHECK_CHANNEL: str = schema_default("ROXY_PROXY_CHECK_CHANNEL")
 
 # 没有 ROXY_PROFILE_ID 时创建环境的最小 payload；按你的 Roxy 版本字段调整。
 # 默认开启 ROXY_RANDOM_PROFILE_NAME_ON_CREATE，因此这里的 windowName 只是兜底值。
@@ -114,7 +115,7 @@ ROXY_PROFILE_CREATE_PAYLOAD: dict = {
 
 
 # Roxy Codex 授权等待 callback 的最长秒数
-ROXY_CODEX_CALLBACK_TIMEOUT: int = 180
+ROXY_CODEX_CALLBACK_TIMEOUT: int = schema_default("ROXY_CODEX_CALLBACK_TIMEOUT")
 
 # ---- .env overrides for WebUI editable fields ----
-apply_env_overrides(globals(), {'REGISTRATION_DRIVER': 'str', 'ROXY_API_BASE': 'str', 'ROXY_API_TOKEN': 'str', 'ROXY_PROFILE_ID': 'str', 'ROXY_WORKSPACE_ID': 'str', 'ROXY_PROJECT_ID': 'str', 'ROXY_WORKSPACE_LIST_PATH': 'str', 'ROXY_OPEN_PATH': 'str', 'ROXY_OPEN_HEADLESS': 'bool', 'ROXY_CODEX_OPEN_HEADLESS': 'bool', 'ROXY_CLOSE_PATH': 'str', 'ROXY_KEEP_BROWSER_OPEN': 'bool', 'ROXY_ONE_PROFILE_PER_ACCOUNT': 'bool', 'ROXY_DELETE_PROFILE_AFTER_RUN': 'bool', 'ROXY_RANDOM_OS_ON_CREATE': 'bool', 'ROXY_RANDOM_OS_CHOICES': 'str', 'ROXY_RANDOM_PROFILE_NAME_ON_CREATE': 'bool', 'ROXY_PROFILE_NAME_PREFIX': 'str', 'ROXY_CREATE_USE_PROXY_POOL': 'bool', 'ROXY_PROXY_CHECK_CHANNEL': 'str', 'ROXY_DELETE_PATH': 'str', 'ROXY_WINDOW_WAIT_TIMEOUT': 'int', 'ROXY_WINDOW_WAIT_INTERVAL': 'int', 'ROXY_CODEX_CALLBACK_TIMEOUT': 'int'})
+apply_env_overrides(globals())

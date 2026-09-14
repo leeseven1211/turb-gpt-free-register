@@ -14,10 +14,11 @@ TWOFA_DRIVER:
 关掉 2FA 不会影响账号可用性，仅意味着账号没有动态口令保护，且少收一封 OTP 邮件。
 """
 from config.env_loader import apply_env_overrides
+from config.schema import schema_default
 from core.twofa_flow import canonical_twofa_executor, normalize_twofa_mode
 
-ENABLE_2FA = False
-TWOFA_DRIVER = "auto"
+ENABLE_2FA = schema_default("ENABLE_2FA")
+TWOFA_DRIVER = schema_default("TWOFA_DRIVER")
 
 
 def get_twofa_driver(value=None) -> str:
@@ -42,4 +43,4 @@ def get_twofa_mode(value=None) -> str:
     return normalize_twofa_mode(TWOFA_DRIVER if value is None else value)
 
 # ---- .env overrides for WebUI editable fields ----
-apply_env_overrides(globals(), {'ENABLE_2FA': 'bool', 'TWOFA_DRIVER': 'str'})
+apply_env_overrides(globals())

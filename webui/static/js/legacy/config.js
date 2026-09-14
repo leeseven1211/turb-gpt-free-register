@@ -12,57 +12,47 @@ function configGroups() {
   return groups;
 }
 
-function configDriverChoices(f) {
-  if (f.key === 'REGISTRATION_DRIVER') return [['protocol', '纯协议注册'], ['roxy', 'RoxyBrowser']];
-  if (f.key === 'OPENAI_PROTOCOL_VERSION') return [['v1', '协议 v1（现有稳定实现）'], ['v2', '协议 v2（已支持的步骤）']];
-  if (f.key === 'REGISTRATION_AUTH_MODE') return [['otp', '不设置密码（邮箱验证码）'], ['password', '设置账号密码']];
-  if (f.key === 'ACCOUNT_PASSWORD_DRIVER') return [['roxy', 'RoxyBrowser（当前唯一实现）']];
-  if (f.key === 'ACCOUNT_PLAN_CHECK_DRIVER') return [['protocol', '纯协议（当前唯一实现）']];
-  if (f.key === 'ACCOUNT_LIVE_CHECK_DRIVER') {
-    const choices = [['protocol_current', '现有协议（保持现状）']];
-    const gate = CONFIG.find(item => item.key === 'ACCOUNT_LIVE_CHECK_BROWSER_ENABLED');
-    const enabled = gate && (gate.value === true || ['1', 'true', 'yes', 'on'].includes(String(gate.value).trim().toLowerCase()));
-    if (enabled) choices.push(['browser_roxy', 'Roxy 浏览器（已开放灰度）']);
-    return choices;
-  }
-  if (f.key === 'ACCOUNT_AUTH_PROFILE_MODE') return [
-    ['current', '当前会话画像（保持现状）'],
-    ['account_stable', '账号稳定 Protocol 画像（懒创建）'],
-  ];
-  if (f.key === 'TWOFA_DRIVER') {
-    return [['auto', '自动选择（协议优先）'], ['protocol', '协议开通'], ['browser', '浏览器页面（RoxyBrowser）']];
-  }
-  if (f.key === 'ACCOUNT_2FA_DRIVER') {
-    return [
-      ['auto', '自动选择（协议优先）'],
-      ['protocol', '协议开通'],
-      ['browser', '浏览器页面（RoxyBrowser）'],
-    ];
-  }
-  if (f.key === 'ACCOUNT_CODEX_DRIVER' || f.key === 'CODEX_OAUTH_DRIVER') {
-    return [['protocol', '纯协议授权'], ['roxy', 'RoxyBrowser'], ['same_as_registration', '跟随注册驱动']];
-  }
-  return null;
+// 字段选项和范围由 /api/config schema 提供；这里仅保留旧版 DOM 的渲染适配。
+function configSchemaOptions(f) {
+  if (!f || !Array.isArray(f.options)) return [];
+  return f.options.map(item => {
+    if (typeof item === 'string') return { value: item, label: item };
+    const value = String(item?.value ?? '').trim();
+    return value ? { value, label: String(item?.label ?? value) } : null;
+  }).filter(Boolean);
+}
+function configSchemaField(key) {
+  return (CONFIG || []).find(item => item.key === key) || null;
+}
+function configSchemaOptionLabel(key, value) {
+  const option = configSchemaOptions(configSchemaField(key)).find(item => item.value === String(value));
+  return option ? option.label : '';
+}
+function configRangeAttrs(f, step = '') {
+  const range = f?.range || {};
+  const attrs = [];
+  if (range.min !== undefined && range.min !== null) attrs.push(`min="${attrEsc(range.min)}"`);
+  if (range.max !== undefined && range.max !== null) attrs.push(`max="${attrEsc(range.max)}"`);
+  if (step) attrs.push(`step="${attrEsc(step)}"`);
+  return attrs.length ? ` ${attrs.join(' ')}` : '';
 }
 
-const EXTRACT_LINK_TYPE_LABELS = {
-  pix: 'PIX',
-  gopay: 'GoPay',
-  upi: 'UPI',
-  ideal: 'iDEAL',
-  ideal_short: 'iDEAL Short',
-  kakao_pay: 'Kakao Pay',
-  momo: 'MoMo',
-  gcash: 'GCash',
-  paypal: 'PayPal',
-  ph_short: '菲律宾短链',
-};
-const EXTRACT_LINK_TYPE_FALLBACKS = ['pix', 'gopay', 'upi', 'kakao_pay', 'momo', 'gcash', 'paypal']
-  .map(value => ({ value, label: EXTRACT_LINK_TYPE_LABELS[value] }));
-let EXTRACT_LINK_TYPE_CHOICES = EXTRACT_LINK_TYPE_FALLBACKS.slice();
+function configDriverChoices(f) {
+  if (Array.isArray(f?.csv_options) && f.csv_options.length) return null;
+  let choices = configSchemaOptions(f);
+  if (f.key === 'ACCOUNT_LIVE_CHECK_DRIVER') {
+    const gate = CONFIG.find(item => item.key === 'ACCOUNT_LIVE_CHECK_BROWSER_ENABLED');
+    const enabled = gate && (gate.value === true || ['1', 'true', 'yes', 'on'].includes(String(gate.value).trim().toLowerCase()));
+    if (!enabled) choices = choices.filter(item => item.value !== 'browser_roxy');
+  }
+  return choices.length ? choices.map(item => [item.value, item.label]) : null;
+}
+
+let EXTRACT_LINK_TYPE_CHOICES = [];
 
 function extractLinkTypeOptions(current = '') {
-  const options = EXTRACT_LINK_TYPE_CHOICES.slice();
+  const schemaOptions = configSchemaOptions(configSchemaField('EXTRACT_LINK_TYPE'));
+  const options = (EXTRACT_LINK_TYPE_CHOICES.length ? EXTRACT_LINK_TYPE_CHOICES : schemaOptions).slice();
   const normalized = String(current || '').trim().toLowerCase();
   if (normalized && !options.some(item => item.value === normalized)) {
     options.unshift({ value: normalized, label: `当前配置（${normalized}）` });
@@ -85,7 +75,7 @@ async function loadExtractLinkTypes() {
         const value = String(item.type || '').trim().toLowerCase();
         if (!value || seen.has(value)) return null;
         seen.add(value);
-        return { value, label: String(item.label || EXTRACT_LINK_TYPE_LABELS[value] || value) };
+        return { value, label: String(item.label || configSchemaOptionLabel('EXTRACT_LINK_TYPE', value) || value) };
       })
       .filter(Boolean);
     if (!items.length) throw new Error('提链网站未返回可用类型');
@@ -112,28 +102,12 @@ function renderConfigField(f) {
     if (current && !options.some(([value]) => value === current)) options.unshift([current, `当前配置（${current}）`]);
     const disabled = options.length === 1 ? ' disabled' : '';
     html += `<select data-key="${attrEsc(f.key)}"${disabled}>${options.map(([value, label]) => `<option value="${attrEsc(value)}"${current === value ? ' selected' : ''}>${esc(label)}</option>`).join('')}</select>`;
-  } else if (f.key === 'REGISTRATION_PROXY_MODE') {
-    const options = [['pool','静态代理池'],['1024','1024Proxy 平台 API'],['none','直连']];
-    html += `<select data-key="${attrEsc(f.key)}">${options.map(([v,l]) => `<option value="${v}"${String(fv)===v?' selected':''}>${l} (${v})</option>`).join('')}</select>`;
-  } else if (f.key === 'PROXY_1024_REGION') {
-    const regions = [
-      ['','沿用 API URL'],['US','美国'],['JP','日本'],['GB','英国'],['CA','加拿大'],['AU','澳大利亚'],
-      ['DE','德国'],['FR','法国'],['NL','荷兰'],['SG','新加坡'],['KR','韩国'],['HK','中国香港'],
-      ['TW','中国台湾'],['ES','西班牙'],['IT','意大利'],['CH','瑞士'],['SE','瑞典'],['NO','挪威'],
-      ['PL','波兰'],['BR','巴西'],['MX','墨西哥'],['IN','印度'],['ID','印度尼西亚'],['TH','泰国'],
-      ['VN','越南'],['PH','菲律宾'],['MY','马来西亚'],['AE','阿联酋'],['TR','土耳其'],['Rand','随机地区'],
-    ];
-    const current = String(fv == null ? '' : fv);
-    if (current && !regions.some(([v]) => v === current)) regions.splice(1, 0, [current, '当前配置']);
-    html += `<select data-key="${attrEsc(f.key)}">${regions.map(([v,l]) => `<option value="${attrEsc(v)}"${current===v?' selected':''}>${esc(l)}${v ? ` (${esc(v)})` : ''}</option>`).join('')}</select>`;
-  } else if (f.key === 'PROXY_1024_PROTOCOL') {
-    html += `<select data-key="${attrEsc(f.key)}">${['http','https','socks5','socks5h'].map(v => `<option value="${v}"${String(fv)===v?' selected':''}>${v}</option>`).join('')}</select>`;
   } else if (f.type === 'bool') {
     html += `<select data-key="${attrEsc(f.key)}"><option value="true"${fv?' selected':''}>开启 (True)</option><option value="false"${!fv?' selected':''}>关闭 (False)</option></select>`;
   } else if (f.type === 'int') {
-    html += `<input type="number" data-key="${attrEsc(f.key)}" value="${attrEsc(fv == null ? '' : fv)}">`;
+    html += `<input type="number" data-key="${attrEsc(f.key)}"${configRangeAttrs(f, '1')} value="${attrEsc(fv == null ? '' : fv)}">`;
   } else if (f.type === 'float') {
-    html += `<input type="number" step="0.1" data-key="${attrEsc(f.key)}" value="${attrEsc(fv == null ? '' : fv)}">`;
+    html += `<input type="number" data-key="${attrEsc(f.key)}"${configRangeAttrs(f, '0.1')} value="${attrEsc(fv == null ? '' : fv)}">`;
   } else if (f.type === 'list_str_multiline') {
     html += `<textarea data-key="${attrEsc(f.key)}" placeholder="每行一条，可留空">${attrEsc((fv||[]).join('\n'))}</textarea>`;
   } else {
@@ -600,7 +574,9 @@ $('#btnSaveConfig').addEventListener('click', async () => {
   const updates = {...CONFIG_PENDING_UPDATES};
   $$('#tab-config [data-key]').forEach(el => {
     const f = CONFIG.find(x => x.key === el.dataset.key);
-    if (!f) return;
+    // secret 字段的 API value 永远是空串；只有用户实际编辑/触发事件
+    // 时才提交，避免旧版“保存全部可见字段”把已有 secret 清空。
+    if (!f || f.secret) return;
     updates[f.key] = readConfigElementValue(el, f);
   });
   $('#btnSaveConfig').disabled = true;

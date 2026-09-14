@@ -6,45 +6,46 @@
 """
 from config.env_loader import apply_env_overrides
 from core.twofa_flow import normalize_twofa_mode
+from config.schema import schema_default
 
 
 # 补全账号默认只处理缺失项。刷新 AT 仍是独立的“操作”，默认不由补全隐式触发。
-ACCOUNT_COMPLETION_PASSWORD_ENABLED = True
-ACCOUNT_COMPLETION_PLAN_CHECK_ENABLED = True
-ACCOUNT_COMPLETION_2FA_ENABLED = True
-ACCOUNT_COMPLETION_CODEX_ENABLED = True
-ACCOUNT_COMPLETION_REFRESH_AT_ENABLED = False
+ACCOUNT_COMPLETION_PASSWORD_ENABLED = schema_default("ACCOUNT_COMPLETION_PASSWORD_ENABLED")
+ACCOUNT_COMPLETION_PLAN_CHECK_ENABLED = schema_default("ACCOUNT_COMPLETION_PLAN_CHECK_ENABLED")
+ACCOUNT_COMPLETION_2FA_ENABLED = schema_default("ACCOUNT_COMPLETION_2FA_ENABLED")
+ACCOUNT_COMPLETION_CODEX_ENABLED = schema_default("ACCOUNT_COMPLETION_CODEX_ENABLED")
+ACCOUNT_COMPLETION_REFRESH_AT_ENABLED = schema_default("ACCOUNT_COMPLETION_REFRESH_AT_ENABLED")
 # Password recovery changes the remote OpenAI password. Keep it opt-in so a
 # normal account-completion run cannot trigger reset emails unexpectedly.
-ACCOUNT_PASSWORD_RESET_ENABLED = False
+ACCOUNT_PASSWORD_RESET_ENABLED = schema_default("ACCOUNT_PASSWORD_RESET_ENABLED")
 
 # 账号级执行器。same_as_registration 只对 Codex 有意义，其它驱动值由对应
 # 服务校验；先保留为配置项，便于后续增加新的协议/浏览器实现。
-ACCOUNT_PASSWORD_DRIVER = "roxy"
-ACCOUNT_PLAN_CHECK_DRIVER = "protocol"
-ACCOUNT_2FA_DRIVER = "auto"
+ACCOUNT_PASSWORD_DRIVER = schema_default("ACCOUNT_PASSWORD_DRIVER")
+ACCOUNT_PLAN_CHECK_DRIVER = schema_default("ACCOUNT_PLAN_CHECK_DRIVER")
+ACCOUNT_2FA_DRIVER = schema_default("ACCOUNT_2FA_DRIVER")
 # Each account action can choose a cheaper/direct route independently. The
 # compatibility ACCOUNT_ACTION_PROXY_MODE remains the fallback for old .envs.
-ACCOUNT_PASSWORD_PROXY_MODE = "registration"
-ACCOUNT_2FA_PROXY_MODE = "registration"
-ACCOUNT_PLAN_CHECK_PROXY_MODE = "direct"
-ACCOUNT_LIVE_CHECK_PROXY_MODE = "direct"
-ACCOUNT_REFRESH_AT_PROXY_MODE = "registration"
-ACCOUNT_CODEX_PROXY_MODE = "registration"
+ACCOUNT_PASSWORD_PROXY_MODE = schema_default("ACCOUNT_PASSWORD_PROXY_MODE")
+ACCOUNT_2FA_PROXY_MODE = schema_default("ACCOUNT_2FA_PROXY_MODE")
+ACCOUNT_PLAN_CHECK_PROXY_MODE = schema_default("ACCOUNT_PLAN_CHECK_PROXY_MODE")
+ACCOUNT_LIVE_CHECK_PROXY_MODE = schema_default("ACCOUNT_LIVE_CHECK_PROXY_MODE")
+ACCOUNT_REFRESH_AT_PROXY_MODE = schema_default("ACCOUNT_REFRESH_AT_PROXY_MODE")
+ACCOUNT_CODEX_PROXY_MODE = schema_default("ACCOUNT_CODEX_PROXY_MODE")
 # 账号补全 2FA 默认自动选择：优先协议并按认证上下文获取 AT，协议明确失败
 # 且此开关开启时，才继续沿用现有浏览器安全设置流程。
-ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED = True
+ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED = schema_default("ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED")
 # Protocol 2FA 遇到 MFA 401 时，是否先用协议完成邮箱重认证并换取新 AT。
 # 默认开启；关闭后保持“旧 AT 直开失败即按兜底开关处理”的行为。
-ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED = True
-ACCOUNT_CODEX_DRIVER = "same_as_registration"
+ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED = schema_default("ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED")
+ACCOUNT_CODEX_DRIVER = schema_default("ACCOUNT_CODEX_DRIVER")
 
 # 普通“查活”单独维护驱动选择，不复用 ACCOUNT_PLAN_CHECK_DRIVER。
 # 阶段 1 默认解析为当前协议型旧 AT probe，保持现有行为；browser_roxy 已完成
 # 契约接入但仍由独立 gate 控制；protocol_v2 不作为普通查活驱动。
-ACCOUNT_LIVE_CHECK_DRIVER = "protocol_current"
+ACCOUNT_LIVE_CHECK_DRIVER = schema_default("ACCOUNT_LIVE_CHECK_DRIVER")
 # Roxy 旧 AT probe 默认关闭；本地明确开启 gate 后才允许使用。
-ACCOUNT_LIVE_CHECK_BROWSER_ENABLED = False
+ACCOUNT_LIVE_CHECK_BROWSER_ENABLED = schema_default("ACCOUNT_LIVE_CHECK_BROWSER_ENABLED")
 
 # 旧刷新配置仅为历史 .env 兼容保留；新的协议版本统一配置位于
 # config.openai_protocol.OPENAI_PROTOCOL_VERSION。只有刷新 AT 同时支持 v1/v2，
@@ -55,44 +56,17 @@ ACCOUNT_TOKEN_REFRESH_DRIVER = "legacy"
 ACCOUNT_AUTH_V2_ENABLED = False
 # 密码明确错误后是否允许另起认证会话发送一次邮箱 OTP。默认关闭，避免把
 # 过期/录错密码静默掩盖；开启后任务结果仍保留 password_rejected。
-ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK = False
+ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK = schema_default("ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK")
 # v2 协议的设备画像默认继续沿用现有“每个 BrowserSession 随机画像”。只有
 # 明确选择 account_stable，且实际进入 v2 刷新时，才按账号懒创建私有身份。
-ACCOUNT_AUTH_PROFILE_MODE = "current"
+ACCOUNT_AUTH_PROFILE_MODE = schema_default("ACCOUNT_AUTH_PROFILE_MODE")
 # 原始认证上下文（设备 ID、session 标识、完整代理）默认不保存；只有本地明确开启
 # 才创建受限 run context。0 表示关闭自动清理，不表示关闭手工逐行清理。
-ACCOUNT_AUTH_RAW_CONTEXT_ENABLED = False
-ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS = 30
+ACCOUNT_AUTH_RAW_CONTEXT_ENABLED = schema_default("ACCOUNT_AUTH_RAW_CONTEXT_ENABLED")
+ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS = schema_default("ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS")
 
 
-apply_env_overrides(globals(), {
-    "ACCOUNT_COMPLETION_PASSWORD_ENABLED": "bool",
-    "ACCOUNT_COMPLETION_PLAN_CHECK_ENABLED": "bool",
-    "ACCOUNT_COMPLETION_2FA_ENABLED": "bool",
-    "ACCOUNT_COMPLETION_CODEX_ENABLED": "bool",
-    "ACCOUNT_COMPLETION_REFRESH_AT_ENABLED": "bool",
-    "ACCOUNT_PASSWORD_RESET_ENABLED": "bool",
-    "ACCOUNT_PASSWORD_DRIVER": "str",
-    "ACCOUNT_PLAN_CHECK_DRIVER": "str",
-    "ACCOUNT_2FA_DRIVER": "str",
-    "ACCOUNT_PASSWORD_PROXY_MODE": "str",
-    "ACCOUNT_2FA_PROXY_MODE": "str",
-    "ACCOUNT_PLAN_CHECK_PROXY_MODE": "str",
-    "ACCOUNT_LIVE_CHECK_PROXY_MODE": "str",
-    "ACCOUNT_REFRESH_AT_PROXY_MODE": "str",
-    "ACCOUNT_CODEX_PROXY_MODE": "str",
-    "ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED": "bool",
-    "ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED": "bool",
-    "ACCOUNT_CODEX_DRIVER": "str",
-    "ACCOUNT_LIVE_CHECK_DRIVER": "str",
-    "ACCOUNT_LIVE_CHECK_BROWSER_ENABLED": "bool",
-    "ACCOUNT_TOKEN_REFRESH_DRIVER": "str",
-    "ACCOUNT_AUTH_V2_ENABLED": "bool",
-    "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK": "bool",
-    "ACCOUNT_AUTH_PROFILE_MODE": "str",
-    "ACCOUNT_AUTH_RAW_CONTEXT_ENABLED": "bool",
-    "ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS": "int",
-})
+apply_env_overrides(globals())
 
 
 def completion_settings() -> dict[str, object]:

@@ -6,18 +6,19 @@
 等停顿。这里集中配置轻量随机延迟，避免全流程固定节拍。
 """
 from config.env_loader import apply_env_overrides
+from config.schema import schema_default
 
 # 总开关。关闭后 delay() 直接返回。
-ENABLE_HUMANIZE_DELAY = True
+ENABLE_HUMANIZE_DELAY = schema_default("ENABLE_HUMANIZE_DELAY")
 
 # 延迟倍率；批量跑得太慢时可调小到 0.5。
-HUMANIZE_DELAY_FACTOR = 1.0
+HUMANIZE_DELAY_FACTOR = schema_default("HUMANIZE_DELAY_FACTOR")
 
 # Roxy 浏览器自动化动作随机化。开启后会使用更接近人工的点击/输入：
 # - 点击前轻微滚动、移动到元素内随机位置、短暂停顿再点击
 # - 输入按字符/小段随机节奏，不再一次性整串 send_keys
 # - 页面打开后做少量随机停顿/鼠标移动
-ENABLE_HUMANIZE_BROWSER_ACTIONS = True
+ENABLE_HUMANIZE_BROWSER_ACTIONS = schema_default("ENABLE_HUMANIZE_BROWSER_ACTIONS")
 
 # 每类动作的随机停顿区间（秒）。
 HUMANIZE_DELAYS = {
@@ -46,4 +47,4 @@ HUMANIZE_DELAYS = {
 }
 
 # ---- .env overrides for WebUI editable fields ----
-apply_env_overrides(globals(), {'ENABLE_HUMANIZE_DELAY': 'bool', 'HUMANIZE_DELAY_FACTOR': 'float', 'ENABLE_HUMANIZE_BROWSER_ACTIONS': 'bool'})
+apply_env_overrides(globals())

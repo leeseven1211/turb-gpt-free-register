@@ -23,15 +23,4 @@ SKYVERN_KEEP_BROWSER_OPEN: bool = False
 SKYVERN_START_URL: str = "https://chatgpt.com/auth/login"
 
 # ---- .env overrides for WebUI editable fields ----
-apply_env_overrides(globals(), {
-    'SKYVERN_API_KEY': 'str',
-    'SKYVERN_API_BASE': 'str',
-    'SKYVERN_BROWSER_SESSION_TIMEOUT': 'int',
-    'SKYVERN_BROWSER_PROFILE_ID': 'str',
-    'SKYVERN_PROXY_LOCATION': 'str',
-    'SKYVERN_GENERATE_BROWSER_PROFILE': 'bool',
-    'SKYVERN_AD_BLOCKER': 'bool',
-    'SKYVERN_BROWSER_TYPE': 'str',
-    'SKYVERN_KEEP_BROWSER_OPEN': 'bool',
-    'SKYVERN_START_URL': 'str',
-})
+apply_env_overrides(globals())

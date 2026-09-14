@@ -15,6 +15,7 @@ from pathlib import Path
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _ENV_PATH = _PROJECT_ROOT / ".env"
 _LOADED = False
+_MISSING = object()
 
 # 这些多行列表字段允许用空值显式覆盖为 []。
 # 例如 WebUI 清空代理池后会写入 PROXY_POOL="" / PROXY_POOL="[]"，不能再回退到源码默认本地代理。
@@ -52,12 +53,25 @@ def env_path() -> Path:
     return _ENV_PATH
 
 
+def dotenv_loading_disabled() -> bool:
+    """返回是否显式禁止 dotenv/内置 parser 读取项目 ``.env``。"""
+    return str(os.getenv("PYTHON_DOTENV_DISABLED", "")).strip().lower() in {
+        "1", "true", "yes", "on", "y",
+    }
+
+
 def load_env(*, override: bool = False) -> Path:
     """加载项目根 .env 到进程环境。可重复调用（reload 时用 override=True）。
 
     优先使用 python-dotenv；未安装时使用本文件内置的轻量 parser，避免配置读取强依赖。
     """
     global _LOADED
+    # 测试 launcher 会显式设置此标志，必须在 python-dotenv 导入和内置
+    # parser 分支之前短路，确保任何依赖版本下都不会读入工作区 .env。
+    if dotenv_loading_disabled():
+        _LOADED = True
+        return _ENV_PATH
+
     try:
         from dotenv import load_dotenv
     except ImportError:  # pragma: no cover
@@ -125,6 +139,26 @@ def read_env_file() -> dict[str, str]:
             val = val.replace("\\n", "\n").replace("\\\"", '"').replace("\\\\", "\\")
         out[key] = val
     return out
+
+
+def restore_environment(before: dict[str, str], expected: dict[str, str] | None = None) -> None:
+    """有条件地恢复本次配置操作触碰的环境键。
+
+    ``expected`` 是本次操作完成后观察到的环境；当前值若已被别的线程改写，
+    则跳过该键，避免用 ``clear()`` 覆盖不相干的并发环境变更。
+    """
+    observed = dict(os.environ) if expected is None else expected
+    keys = set(before) | set(observed)
+    for key in keys:
+        current = os.environ.get(key, _MISSING)
+        expected_value = observed.get(key, _MISSING)
+        if current != expected_value:
+            continue
+        previous = before.get(key, _MISSING)
+        if previous is _MISSING:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = previous
 
 
 def write_env_values(updates: dict[str, str]) -> list[str]:
@@ -238,16 +272,12 @@ def env_list(key: str, default: list[str] | None = None) -> list[str]:
 
 
 def apply_env_overrides(namespace: dict, schema: dict[str, str] | None = None) -> None:
-    """用 .env/环境变量覆盖模块 globals() 中的配置常量。
+    """用统一 schema 覆盖模块 globals() 中的配置常量。
 
-    schema: {KEY: type}，type 支持 bool/int/float/str/list_str_multiline。
-    没传 schema 时，会对 namespace 里已有的大写常量按默认值类型推断。
+    ``schema`` 参数保留给测试和旧外部调用方；项目内配置模块不再各自维护
+    override mapping，而是由 ``config.schema`` 根据模块名集中解析。坏值仍按
+    历史行为回退默认值，WebUI 保存入口则使用严格校验。
     """
-    ensure_loaded()
-    keys = schema.keys() if schema else [k for k in namespace if k.isupper()]
-    for key in keys:
-        if os.getenv(key) is None:
-            continue
-        default = namespace.get(key)
-        vtype = schema.get(key) if schema else None
-        namespace[key] = env_value(key, default, vtype)
+    from config.schema import apply_env_namespace
+
+    apply_env_namespace(namespace, schema)

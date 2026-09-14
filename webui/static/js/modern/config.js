@@ -108,6 +108,32 @@ function configGroups() {
   return groups;
 }
 
+// 选项、范围和标签由 /api/config 的统一 schema 提供。前端只保留动态提链
+// 服务的运行时补充，不再为每个 config key 维护第二份选项表。
+function configSchemaOptions(f) {
+  if (!f || !Array.isArray(f.options)) return [];
+  return f.options.map(item => {
+    if (typeof item === 'string') return { value: item, label: item };
+    const value = String(item?.value ?? '').trim();
+    return value ? { value, label: String(item?.label ?? value) } : null;
+  }).filter(Boolean);
+}
+function configSchemaField(key) {
+  return (CONFIG || []).find(item => item.key === key) || null;
+}
+function configSchemaOptionLabel(key, value) {
+  const option = configSchemaOptions(configSchemaField(key)).find(item => item.value === String(value));
+  return option ? option.label : '';
+}
+function configRangeAttrs(f, step = '') {
+  const range = f?.range || {};
+  const attrs = [];
+  if (range.min !== undefined && range.min !== null) attrs.push(`min="${attrEsc(range.min)}"`);
+  if (range.max !== undefined && range.max !== null) attrs.push(`max="${attrEsc(range.max)}"`);
+  if (step) attrs.push(`step="${attrEsc(step)}"`);
+  return attrs.length ? ` ${attrs.join(' ')}` : '';
+}
+
 function emailConfigSectionForKey(key) {
   if (['USE_EMAIL_SERVICE','REGISTER_EMAIL','REGISTER_NAME','OTP_MAX_WAIT','OTP_POLL_INTERVAL','EMAIL_SOURCE'].includes(key)) {
     return ['通用邮箱 / OTP', '邮箱来源选择、OTP 等待参数、手动邮箱等通用设置'];
@@ -334,10 +360,7 @@ function renderConfigSectionHead(name, meta = '') {
   `;
 }
 function registrationDriverChoices() {
-  return [
-    { value: 'protocol', label: '纯协议注册' },
-    { value: 'roxy', label: 'RoxyBrowser' },
-  ];
+  return configSchemaOptions(configSchemaField('REGISTRATION_DRIVER'));
 }
 function getRegistrationDriverField() {
   return (CONFIG || []).find(f => f.key === 'REGISTRATION_DRIVER') || null;
@@ -607,55 +630,28 @@ function renderRegistrationDebugSectionV2(fields) {
 }
 
 function registrationTwofaDriverChoices() {
-  return [
-    { value: 'auto', label: '自动选择（协议优先）' },
-    { value: 'protocol', label: '协议开通' },
-    { value: 'browser', label: '浏览器页面（RoxyBrowser）' },
-  ];
+  return configSchemaOptions(configSchemaField('TWOFA_DRIVER'));
 }
 function accountTwofaDriverChoices() {
-  return [
-    { value: 'auto', label: '自动选择（协议优先）' },
-    { value: 'protocol', label: '协议开通' },
-    { value: 'browser', label: '浏览器页面（RoxyBrowser）' },
-  ];
+  return configSchemaOptions(configSchemaField('ACCOUNT_2FA_DRIVER'));
 }
 function twofaDriverChoices() {
   return accountTwofaDriverChoices();
 }
 function liveCheckDriverChoices() {
-  const choices = [
-    { value: 'protocol_current', label: '现有协议（保持现状）' },
-  ];
+  const choices = configSchemaOptions(configSchemaField('ACCOUNT_LIVE_CHECK_DRIVER'));
   const rawEnabled = configFieldValueV2('ACCOUNT_LIVE_CHECK_BROWSER_ENABLED', false);
   const enabled = rawEnabled === true || ['1', 'true', 'yes', 'on'].includes(String(rawEnabled).trim().toLowerCase());
-  if (enabled) choices.push({ value: 'browser_roxy', label: 'Roxy 浏览器（旧 AT probe）' });
-  return choices;
+  return enabled ? choices : choices.filter(item => item.value !== 'browser_roxy');
 }
 function protocolVersionChoices() {
-  return [
-    { value: 'v1', label: '协议 v1（现有稳定实现）' },
-    { value: 'v2', label: '协议 v2（已支持的步骤）' },
-  ];
+  return configSchemaOptions(configSchemaField('OPENAI_PROTOCOL_VERSION'));
 }
-const EXTRACT_LINK_TYPE_LABELS_V2 = {
-  pix: 'PIX',
-  gopay: 'GoPay',
-  upi: 'UPI',
-  ideal: 'iDEAL',
-  ideal_short: 'iDEAL Short',
-  kakao_pay: 'Kakao Pay',
-  momo: 'MoMo',
-  gcash: 'GCash',
-  paypal: 'PayPal',
-  ph_short: '菲律宾短链',
-};
-const EXTRACT_LINK_TYPE_FALLBACKS_V2 = ['pix', 'gopay', 'upi', 'kakao_pay', 'momo', 'gcash', 'paypal']
-  .map(value => ({ value, label: EXTRACT_LINK_TYPE_LABELS_V2[value] }));
-let EXTRACT_LINK_TYPE_CHOICES_V2 = EXTRACT_LINK_TYPE_FALLBACKS_V2.slice();
+let EXTRACT_LINK_TYPE_CHOICES_V2 = [];
 
 function extractLinkTypeOptionsV2(current = '') {
-  const options = EXTRACT_LINK_TYPE_CHOICES_V2.slice();
+  const schemaOptions = configSchemaOptions(configSchemaField('EXTRACT_LINK_TYPE'));
+  const options = (EXTRACT_LINK_TYPE_CHOICES_V2.length ? EXTRACT_LINK_TYPE_CHOICES_V2 : schemaOptions).slice();
   const normalized = String(current || '').trim().toLowerCase();
   if (normalized && !options.some(item => item.value === normalized)) {
     options.unshift({ value: normalized, label: `当前配置（${normalized}）` });
@@ -678,7 +674,7 @@ async function loadExtractLinkTypesV2() {
         const value = String(item.type || '').trim().toLowerCase();
         if (!value || seen.has(value)) return null;
         seen.add(value);
-        return { value, label: String(item.label || EXTRACT_LINK_TYPE_LABELS_V2[value] || value) };
+        return { value, label: String(item.label || configSchemaOptionLabel('EXTRACT_LINK_TYPE', value) || value) };
       })
       .filter(Boolean);
     if (!items.length) throw new Error('提链网站未返回可用类型');
@@ -693,26 +689,15 @@ async function loadExtractLinkTypesV2() {
   }
 }
 function authProfileModeChoices() {
-  return [
-    { value: 'current', label: '当前会话画像（保持现状）' },
-    { value: 'account_stable', label: '账号稳定 Protocol 画像（懒创建）' },
-  ];
+  return configSchemaOptions(configSchemaField('ACCOUNT_AUTH_PROFILE_MODE'));
 }
 function configDriverChoices(f) {
-  if (f.key === 'ACCOUNT_PASSWORD_DRIVER') {
-    return [{ value: 'roxy', label: 'RoxyBrowser（当前唯一实现）' }];
-  }
-  if (f.key === 'ACCOUNT_PLAN_CHECK_DRIVER') {
-    return [{ value: 'protocol', label: '纯协议（当前唯一实现）' }];
-  }
+  // EMAIL_SOURCE is a comma-separated field, so retain its text input while
+  // still exposing its allowed values in the schema metadata.
+  if (Array.isArray(f?.csv_options) && f.csv_options.length) return null;
   if (f.key === 'ACCOUNT_LIVE_CHECK_DRIVER') return liveCheckDriverChoices();
-  if (f.key === 'OPENAI_PROTOCOL_VERSION') return protocolVersionChoices();
-  if (f.key === 'ACCOUNT_AUTH_PROFILE_MODE') return authProfileModeChoices();
-  if (f.key === 'TWOFA_DRIVER') return registrationTwofaDriverChoices();
-  if (f.key === 'ACCOUNT_2FA_DRIVER') return accountTwofaDriverChoices();
-  if (f.key === 'CODEX_OAUTH_DRIVER') return codexOauthDriverChoices();
-  if (f.key === 'ACCOUNT_CODEX_DRIVER') return codexOauthDriverChoices();
-  return null;
+  const choices = configSchemaOptions(f);
+  return choices.length ? choices : null;
 }
 function renderConfigControlMarkupV2(f) {
   const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
@@ -730,30 +715,10 @@ function renderConfigControlMarkupV2(f) {
     const syncKeys = f.key === 'CODEX_OAUTH_DRIVER' ? ['ACCOUNT_CODEX_DRIVER'] : [];
     const syncAttr = syncKeys.length ? ` data-sync-keys="${attrEsc(syncKeys.join(','))}"` : '';
     control = `<select data-key="${attrEsc(f.key)}"${syncAttr}${disabled}>${options.map(item => `<option value="${attrEsc(item.value)}"${current === item.value ? ' selected' : ''}>${esc(item.label)}</option>`).join('')}</select>`;
-  } else if (f.key === 'REGISTRATION_AUTH_MODE') {
-    const options = [['otp','不设置密码（邮箱验证码）'],['password','设置账号密码']];
-    control = `<select data-key="${attrEsc(f.key)}">${options.map(([v,l]) => `<option value="${v}"${String(fv)===v?' selected':''}>${l}</option>`).join('')}</select>`;
-  } else if (f.key === 'REGISTRATION_PROXY_MODE') {
-    const options = [['pool','静态代理池'],['1024','1024Proxy 平台 API'],['none','直连']];
-    control = `<select data-key="${attrEsc(f.key)}">${options.map(([v,l]) => `<option value="${v}"${String(fv)===v?' selected':''}>${l} (${v})</option>`).join('')}</select>`;
-  } else if (f.key === 'PROXY_1024_REGION') {
-    const regions = [
-      ['','沿用 API URL'],['US','美国'],['JP','日本'],['GB','英国'],['CA','加拿大'],['AU','澳大利亚'],
-      ['DE','德国'],['FR','法国'],['NL','荷兰'],['SG','新加坡'],['KR','韩国'],['HK','中国香港'],
-      ['TW','中国台湾'],['ES','西班牙'],['IT','意大利'],['CH','瑞士'],['SE','瑞典'],['NO','挪威'],
-      ['PL','波兰'],['BR','巴西'],['MX','墨西哥'],['IN','印度'],['ID','印度尼西亚'],['TH','泰国'],
-      ['VN','越南'],['PH','菲律宾'],['MY','马来西亚'],['AE','阿联酋'],['TR','土耳其'],['Rand','随机地区'],
-    ];
-    const current = String(fv == null ? '' : fv);
-    if (current && !regions.some(([v]) => v === current)) regions.splice(1, 0, [current, '当前配置']);
-    control = `<select data-key="${attrEsc(f.key)}">${regions.map(([v,l]) => `<option value="${attrEsc(v)}"${current===v?' selected':''}>${esc(l)}${v ? ` (${esc(v)})` : ''}</option>`).join('')}</select>`;
-  } else if (f.key === 'PROXY_1024_PROTOCOL') {
-    const options = ['http','https','socks5','socks5h'];
-    control = `<select data-key="${attrEsc(f.key)}">${options.map(v => `<option value="${v}"${String(fv)===v?' selected':''}>${v}</option>`).join('')}</select>`;
   } else if (f.type === 'int') {
-    control = `<input type="number" data-key="${attrEsc(f.key)}" value="${attrEsc(fv == null ? '' : fv)}">`;
+    control = `<input type="number" data-key="${attrEsc(f.key)}"${configRangeAttrs(f, '1')} value="${attrEsc(fv == null ? '' : fv)}">`;
   } else if (f.type === 'float') {
-    control = `<input type="number" step="0.1" data-key="${attrEsc(f.key)}" value="${attrEsc(fv == null ? '' : fv)}">`;
+    control = `<input type="number" data-key="${attrEsc(f.key)}"${configRangeAttrs(f, '0.1')} value="${attrEsc(fv == null ? '' : fv)}">`;
   } else if (f.type === 'bool') {
     control = `<input class="config-switch-v2-toggle config-setting-toggle-v2" type="checkbox" role="switch" data-key="${attrEsc(f.key)}"${fv ? ' checked' : ''} aria-label="${attrEsc(f.label)}">`;
   } else if (f.type === 'list_str_multiline') {
@@ -863,11 +828,7 @@ function renderMixedConfigSectionV2(name, fields, intro) {
 }
 
 function codexOauthDriverChoices() {
-  return [
-    { value: 'protocol', label: '纯协议授权' },
-    { value: 'roxy', label: 'RoxyBrowser' },
-    { value: 'same_as_registration', label: '跟随注册驱动' },
-  ];
+  return configSchemaOptions(configSchemaField('CODEX_OAUTH_DRIVER'));
 }
 function codexOauthDriverLabel(value) {
   const cur = String(value || '').trim().toLowerCase();

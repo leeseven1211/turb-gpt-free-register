@@ -4,9 +4,10 @@
 设置 ENABLE_FLOW_TRIGGER = False 可完全跳过此步骤。
 """
 from config.env_loader import apply_env_overrides
+from config.schema import schema_default
 
 # 是否启用自动触发 Flow（False = 跳过，不影响注册结果）
-ENABLE_FLOW_TRIGGER: bool = False
+ENABLE_FLOW_TRIGGER: bool = schema_default("ENABLE_FLOW_TRIGGER")
 
 # Flow 触发接口地址
 FLOW_TRIGGER_URL: str = ""
@@ -24,4 +25,4 @@ FLOW_TRIGGER_PAYLOAD: dict = {}
 FLOW_TRIGGER_TIMEOUT: int = 15
 
 # ---- .env overrides for WebUI editable fields ----
-apply_env_overrides(globals(), {'ENABLE_FLOW_TRIGGER': 'bool'})
+apply_env_overrides(globals())

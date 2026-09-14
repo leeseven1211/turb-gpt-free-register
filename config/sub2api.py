@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
 """sub2api 对接配置。"""
 from config.env_loader import apply_env_overrides
+from config.schema import schema_default
 
 # sub2api API 基址；用于 Codex OAuth 授权及凭证上传。
-SUB2API_API_BASE: str = ""
+SUB2API_API_BASE: str = schema_default("SUB2API_API_BASE")
 
 # 兼容旧配置：Codex 凭证直接上传完整 URL。
 SUB2API_API_URL: str = ""
 
 # sub2api 管理接口 API Key；为空则不带鉴权头。
-SUB2API_API_KEY: str = ""
+SUB2API_API_KEY: str = schema_default("SUB2API_API_KEY")
 
 # 兼容旧配置名：SUB2API_API_TOKEN。
 SUB2API_API_TOKEN: str = ""
@@ -21,7 +22,7 @@ SUB2API_API_AUTH_HEADER: str = "x-api-key"
 SUB2API_API_AUTH_PREFIX: str = ""
 
 # 上传超时秒数。
-SUB2API_API_TIMEOUT: int = 20
+SUB2API_API_TIMEOUT: int = schema_default("SUB2API_API_TIMEOUT")
 
 # ============================================================
 # Codex OAuth 授权对接 sub2
@@ -53,19 +54,4 @@ SUB2_CODEX_AUTH_PREFIX: str = ""
 # exchange_code     => 只换 token，不创建账号（兼容旧逻辑）
 SUB2_CODEX_CALLBACK_PAYLOAD_MODE: str = "create_from_oauth"
 
-apply_env_overrides(globals(), {
-    'SUB2API_API_BASE': 'str',
-    'SUB2API_API_URL': 'str',
-    'SUB2API_API_KEY': 'str',
-    'SUB2API_API_TOKEN': 'str',
-    'SUB2API_API_AUTH_HEADER': 'str',
-    'SUB2API_API_AUTH_PREFIX': 'str',
-    'SUB2API_API_TIMEOUT': 'int',
-    'SUB2_CODEX_API_BASE': 'str',
-    'SUB2_CODEX_AUTH_URL_PATH': 'str',
-    'SUB2_CODEX_CALLBACK_PATH': 'str',
-    'SUB2_CODEX_API_TOKEN': 'str',
-    'SUB2_CODEX_AUTH_HEADER': 'str',
-    'SUB2_CODEX_AUTH_PREFIX': 'str',
-    'SUB2_CODEX_CALLBACK_PAYLOAD_MODE': 'str',
-})
+apply_env_overrides(globals())
