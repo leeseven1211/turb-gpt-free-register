@@ -15,6 +15,7 @@ from core.auth_challenge import (
     auth_result_for_operation,
 )
 from core.openai_auth import AccountUnusableError
+from core.registration.auth_context import AuthExecutionContext, execution_context
 
 logger = logging.getLogger(__name__)
 
@@ -558,6 +559,14 @@ def check_stop_requested(email: str) -> None:
         raise CodexRetryStopped("用户手动停止 Codex 补跑")
 
 
+def _auth_execution_context(email: str) -> AuthExecutionContext:
+    """Inject this service's stop signal into shared browser capabilities."""
+    return AuthExecutionContext(
+        cancellation=lambda: is_stop_requested(email),
+        cancellation_error=lambda: CodexRetryStopped("用户手动停止 Codex 补跑"),
+    )
+
+
 def _build_roxy_twofa_setup(
     email: str,
     task_id: int,
@@ -639,7 +648,12 @@ def _build_roxy_twofa_setup(
                 fresh_access_token = ""
                 refreshed_session = None
                 try:
-                    refreshed_session = _fetch_chatgpt_session(driver, timeout=60, auto_jump_wait=5)
+                    with execution_context(_auth_execution_context(email)):
+                        refreshed_session = _fetch_chatgpt_session(
+                            driver,
+                            timeout=60,
+                            auto_jump_wait=5,
+                        )
                     fresh_access_token = str((refreshed_session or {}).get("accessToken") or "").strip()
                     if fresh_access_token and fresh_access_token != str(access_token or "").strip():
                         expires_at = str((refreshed_session or {}).get("expires") or "") or None
@@ -657,14 +671,15 @@ def _build_roxy_twofa_setup(
                 if browser_fallback_enabled:
                     from core.registration.selenium_auth import setup_protocol_2fa_with_browser_fallback
 
-                    secret, fallback_used = setup_protocol_2fa_with_browser_fallback(
-                        driver,
-                        email,
-                        protocol_session,
-                        fresh_access_token,
-                        on_secret=_checkpoint,
-                        existing_secret=existing_secret or None,
-                    )
+                    with execution_context(_auth_execution_context(email)):
+                        secret, fallback_used = setup_protocol_2fa_with_browser_fallback(
+                            driver,
+                            email,
+                            protocol_session,
+                            fresh_access_token,
+                            on_secret=_checkpoint,
+                            existing_secret=existing_secret or None,
+                        )
                 else:
                     from core.account_export import setup_2fa_protocol
 
@@ -689,7 +704,8 @@ def _build_roxy_twofa_setup(
                 if force_reconfigure:
                     setup_kwargs["force_reconfigure"] = True
                     setup_kwargs["on_disabled"] = _mark_remote_disabled
-                secret = setup_roxy_2fa(driver, email, **setup_kwargs)
+                with execution_context(_auth_execution_context(email)):
+                    secret = setup_roxy_2fa(driver, email, **setup_kwargs)
                 logger.info("[账号补跑][2FA] 使用 browser 安全设置页开通 Authenticator：%s", email)
             if not state["secret"]:
                 _checkpoint(secret)
@@ -879,12 +895,13 @@ def _build_roxy_account_setup(
                 state="running",
             )
             try:
-                set_login_password(
-                    driver,
-                    email,
-                    password,
-                    on_password_submitted=_checkpoint_submitted_password,
-                )
+                with execution_context(_auth_execution_context(email)):
+                    set_login_password(
+                        driver,
+                        email,
+                        password,
+                        on_password_submitted=_checkpoint_submitted_password,
+                    )
                 if not password_saved:
                     _checkpoint_submitted_password(password)
                 db.update_account_password_capability(

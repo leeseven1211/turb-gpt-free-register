@@ -480,7 +480,7 @@ class RoxyPhoneCountryTests(unittest.TestCase):
             patch("core.roxy_codex_oauth._detect_browser_kind", return_value="roxy"),
             patch("core.roxy_codex_oauth._fill_email_and_otp", side_effect=fill),
             patch(
-                "core.roxy_registration._fetch_chatgpt_session",
+                "core.registration.selenium_auth.fetch_chatgpt_session",
                 side_effect=lambda *_args, **_kwargs: order.append("chatgpt_session") or {"accessToken": "token"},
             ),
             patch(

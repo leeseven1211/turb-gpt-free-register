@@ -11,15 +11,24 @@ import re
 import time
 import uuid
 from contextvars import ContextVar
+from functools import wraps
 from urllib.parse import urlparse
 
 from config import roxybrowser as _roxy_cfg
 from core.email_provider import wait_for_otp
 from core.humanize import delay as human_delay
 from core import sms_provider
-from core.operation_runtime import OperationCancelled, call_cancellable, cancellable_sleep, check_cancelled, report_stage
+from core.operation_runtime import (
+    OperationCancelled,
+    call_cancellable,
+    cancellable_sleep,
+    check_cancelled,
+    current_token,
+    report_stage,
+)
 from core.openai_auth import AccountUnusableError, detect_account_unusable_response_body
 from core.roxybrowser_client import RoxyBrowserClient
+from core.registration.auth_context import AuthExecutionContext, execution_context
 from core.registration.selenium_auth import (
     build_driver as _build_driver,
     center_browser_window as _center_browser_window,
@@ -75,6 +84,27 @@ _ACCOUNT_DEAD_LOGIN_CODES = frozenset({
     "account_deleted",
     "account_banned",
 })
+
+
+def _auth_execution_context() -> AuthExecutionContext | None:
+    """Adapt the current OAuth cancellation token to shared auth capabilities."""
+    token = current_token()
+    if token is None:
+        return None
+    return AuthExecutionContext(
+        cancellation=lambda: bool(token.requested()),
+        cancellation_error=lambda: OperationCancelled("用户手动停止 Codex OAuth"),
+    )
+
+
+def _with_auth_execution_context(function):
+    """Inject operation cancellation without making shared code import OAuth."""
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with execution_context(_auth_execution_context()):
+            return function(*args, **kwargs)
+
+    return wrapped
 
 
 def _is_empty_auth_challenge_state(state: dict | None) -> bool:
@@ -1397,6 +1427,7 @@ def _report_login_stage(
     report_stage(stage, message, state=state, level=level, detail=detail)
 
 
+@_with_auth_execution_context
 def _fill_email_and_otp(
     driver,
     email: str,
@@ -3373,6 +3404,7 @@ def clear_roxy_browser_auth_state(driver) -> None:
     time.sleep(1.0)
     logger.info("[Codex][Browser] 注册窗口登录态清理完成，准备开始 Codex 授权")
 
+@_with_auth_execution_context
 def _run_roxy_codex_oauth_once(
     email: str,
     otp_provider=None,
@@ -3553,6 +3585,7 @@ def _run_roxy_codex_oauth_once(
             pass
 
 
+@_with_auth_execution_context
 def run_roxy_chatgpt_account_action(
     email: str,
     *,

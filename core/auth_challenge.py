@@ -1,9 +1,201 @@
 """Storage-neutral authentication outcomes shared by browser and protocol flows."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Mapping
+from urllib.parse import urlsplit
+
+
+class AuthErrorCode(str, Enum):
+    """认证步骤之间允许传播的稳定错误码。"""
+
+    NONE = ""
+    UNSUPPORTED = "unsupported"
+    REQUEST_UNKNOWN = "request_unknown"
+    REMOTE_EXISTING = "remote_existing"
+    PASSWORD_REQUIRED = "password_required"
+    PASSWORD_REJECTED = "password_rejected"
+    PASSWORD_RESULT_UNKNOWN = "password_result_unknown"
+    EMAIL_OTP_REQUIRED = "email_otp_required"
+    EMAIL_OTP_INVALID = "email_otp_invalid"
+    EMAIL_OTP_DELIVERY_MISSING = "email_otp_delivery_missing"
+    TOTP_REQUIRED = "totp_required"
+    TOTP_REJECTED = "totp_rejected"
+    MFA_SECRET_MISSING = "mfa_secret_missing"
+    ACCOUNT_DEACTIVATED = "account_deactivated"
+    NETWORK_ERROR = "network_error"
+    PROTOCOL_NETWORK_ERROR = "protocol_network_error"
+    CANCELLED = "cancelled"
+
+
+class AuthCancelledError(RuntimeError):
+    """认证步骤在安全检查点响应了协作式取消。"""
+
+    code = AuthErrorCode.CANCELLED.value
+
+
+_SAFE_STEP_EVIDENCE_KEYS = {
+    "attempt",
+    "button_count",
+    "checkpoint",
+    "driver",
+    "form_count",
+    "http_status",
+    "input_count",
+    "next_state",
+    "page_state",
+    "protocol_version",
+    "remote_response_received",
+    "response_observed",
+    "route_attempt",
+    "stage",
+    "status",
+    "url_path",
+}
+
+
+def _safe_step_evidence(value: Any) -> dict[str, Any]:
+    """只保留步骤诊断白名单，拒绝 URL 查询串和原始响应。"""
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, Any] = {}
+    for raw_key, raw_value in value.items():
+        key = str(raw_key or "").strip().lower()
+        if key == "url":
+            try:
+                parsed = urlsplit(str(raw_value or ""))
+                result["url_path"] = parsed.path[:240]
+            except Exception:
+                pass
+            continue
+        if key not in _SAFE_STEP_EVIDENCE_KEYS:
+            continue
+        if isinstance(raw_value, bool) or raw_value is None:
+            result[key] = raw_value
+        elif isinstance(raw_value, (int, float)):
+            result[key] = raw_value
+        elif isinstance(raw_value, (list, tuple)):
+            result[key] = [str(item)[:80] for item in raw_value[:8]]
+        else:
+            result[key] = str(raw_value)[:240]
+    return result
+
+
+@dataclass(frozen=True)
+class StepResult:
+    """一个可审计认证动作的非敏感结果。
+
+    ``action_dispatched`` 与 ``remote_response_received`` 必须分开保存：已发出
+    密码、OTP 或 MFA 请求但没有收到结果时，步骤是 ``request_unknown``，不能
+    被上层改写成密码错误、成功或新的自动重试。
+    """
+
+    stage: str
+    ok: bool
+    code: str = AuthErrorCode.NONE.value
+    next_state: str = ""
+    checkpoint: str = ""
+    retryable: bool = False
+    remote_response_received: bool = False
+    action_dispatched: bool = False
+    remote_identity: str = "unknown"
+    next_action: str = "continue"
+    evidence: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        stage = str(self.stage or "unknown").strip().lower()
+        code = self.code.value if isinstance(self.code, Enum) else str(self.code or "").strip().lower()
+        identity = str(self.remote_identity or "unknown").strip().lower()
+        next_state = str(self.next_state or "").strip().lower()
+        checkpoint = str(self.checkpoint or "").strip().lower()
+        next_action = str(self.next_action or "continue").strip().lower()
+        # A dispatched request without a response is always an unknown result,
+        # even if a caller supplied a generic timeout or transport code.
+        if self.action_dispatched and not self.remote_response_received:
+            code = AuthErrorCode.REQUEST_UNKNOWN.value
+            next_action = "manual_reconcile"
+            retryable = False
+        else:
+            retryable = bool(self.retryable)
+        if code == AuthErrorCode.REQUEST_UNKNOWN.value:
+            next_action = "manual_reconcile"
+            retryable = False
+        ok = bool(self.ok) and code != AuthErrorCode.REQUEST_UNKNOWN.value
+        object.__setattr__(self, "stage", stage)
+        object.__setattr__(self, "ok", ok)
+        object.__setattr__(self, "code", code)
+        object.__setattr__(self, "next_state", next_state)
+        object.__setattr__(self, "checkpoint", checkpoint)
+        object.__setattr__(self, "remote_identity", identity)
+        object.__setattr__(self, "next_action", next_action)
+        object.__setattr__(self, "retryable", retryable)
+        object.__setattr__(self, "evidence", _safe_step_evidence(self.evidence))
+
+    @property
+    def error_code(self) -> str:
+        """兼容任务层使用的命名。"""
+        return self.code
+
+    @property
+    def request_unknown(self) -> bool:
+        return self.code == AuthErrorCode.REQUEST_UNKNOWN.value
+
+    @classmethod
+    def success(cls, stage: str, *, next_state: str = "", checkpoint: str = "", **kwargs: Any) -> "StepResult":
+        return cls(stage, True, next_state=next_state, checkpoint=checkpoint, **kwargs)
+
+    @classmethod
+    def failure(cls, stage: str, code: str, *, next_action: str = "stop", **kwargs: Any) -> "StepResult":
+        return cls(stage, False, code=code, next_action=next_action, **kwargs)
+
+    def as_dict(self) -> dict[str, Any]:
+        """返回可写入任务事件的摘要；不复制 credentials/detail/raw body。"""
+        return {
+            "stage": self.stage,
+            "ok": bool(self.ok),
+            "code": self.code,
+            "error_code": self.code,
+            "next_state": self.next_state,
+            "checkpoint": self.checkpoint,
+            "retryable": bool(self.retryable),
+            "remote_response_received": bool(self.remote_response_received),
+            "action_dispatched": bool(self.action_dispatched),
+            "remote_identity": self.remote_identity,
+            "next_action": self.next_action,
+            "evidence": dict(self.evidence),
+        }
+
+
+# The implementation design and a few downstream adapters use the more
+# explicit name. Keep both names pointing to the same immutable contract.
+AuthStepResult = StepResult
+
+
+def normalize_step_result(value: Any, *, stage: str = "unknown", default_code: str = "request_unknown") -> StepResult:
+    """把旧 mapping/异常边界投影到 ``StepResult``，不透传敏感字段。"""
+    if isinstance(value, StepResult):
+        return value
+    if not isinstance(value, Mapping):
+        return StepResult.failure(stage, default_code, next_action="manual_reconcile")
+    raw_code = value.get("code") or value.get("error_code") or value.get("status") or default_code
+    code = raw_code.value if isinstance(raw_code, Enum) else str(raw_code or default_code).strip().lower()
+    ok = bool(value.get("ok"))
+    if ok:
+        code = ""
+    return StepResult(
+        stage=str(value.get("stage") or stage),
+        ok=ok,
+        code=code,
+        next_state=str(value.get("next_state") or value.get("state") or ""),
+        checkpoint=str(value.get("checkpoint") or ""),
+        retryable=bool(value.get("retryable", False)),
+        remote_response_received=bool(value.get("remote_response_received", value.get("response_observed", False))),
+        action_dispatched=bool(value.get("action_dispatched", False)),
+        remote_identity=str(value.get("remote_identity") or "unknown"),
+        next_action=str(value.get("next_action") or ("continue" if ok else "stop")),
+        evidence=value.get("evidence") or {},
+    )
 
 
 class AuthStatus(str, Enum):
@@ -286,8 +478,12 @@ def auth_result_for_registration(
 
 
 __all__ = [
+    "AuthErrorCode",
+    "AuthCancelledError",
+    "AuthStepResult",
     "AuthAttemptResult",
     "AuthStatus",
+    "StepResult",
     "RemoteExistingAccountError",
     "PasswordRejectedError",
     "PasswordSetupUnsupportedError",
@@ -297,5 +493,6 @@ __all__ = [
     "auth_result_for_registration",
     "classify_registration_identity",
     "normalize_auth_result",
+    "normalize_step_result",
     "safe_to_start_new_registration",
 ]

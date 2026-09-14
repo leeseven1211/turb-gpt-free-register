@@ -12,6 +12,8 @@ from enum import Enum
 import time
 from typing import Any, Callable, Mapping
 
+from core.auth_challenge import AuthCancelledError
+
 
 class PageState(str, Enum):
     EMAIL_FORM = "EMAIL_FORM"
@@ -37,6 +39,37 @@ class FlowStateError(RuntimeError):
 
 class StageTimeout(TimeoutError):
     """Raised when a stage's shared deadline is exhausted."""
+
+
+class CancellationRequested(AuthCancelledError):
+    """协作式取消在认证安全检查点被观察到。"""
+
+    code = "cancelled"
+
+
+@dataclass(frozen=True)
+class Cancellation:
+    """不依赖任务实现的取消探针。
+
+    生产任务可以传入 ``operation_runtime.CancellationToken.checkpoint`` 的
+    包装函数，单元测试则传入无副作用的 lambda；认证能力不需要反向导入
+    registration service 或具体 driver。
+    """
+
+    checker: Callable[[], bool] | None = None
+    message: str = "用户手动停止认证任务"
+
+    def requested(self) -> bool:
+        return bool(self.checker and self.checker())
+
+    def checkpoint(self) -> None:
+        if self.requested():
+            raise CancellationRequested(self.message)
+
+
+# 兼容不同调用方的命名；它们是同一个无状态协议，而不是第二套取消实现。
+CancellationToken = Cancellation
+CancelToken = Cancellation
 
 
 class RegistrationStateMachine:
@@ -148,10 +181,31 @@ class StageBudget:
 
     deadline: float
     clock: Callable[[], float] = time.monotonic
+    cancellation: Cancellation | Callable[[], bool] | None = None
 
     @classmethod
-    def start(cls, timeout: float, *, clock: Callable[[], float] = time.monotonic) -> "StageBudget":
-        return cls(clock() + max(0.0, float(timeout)), clock)
+    def start(
+        cls,
+        timeout: float,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        cancel: Cancellation | Callable[[], bool] | None = None,
+        cancellation: Cancellation | Callable[[], bool] | None = None,
+    ) -> "StageBudget":
+        if cancel is not None and cancellation is not None:
+            raise ValueError("StageBudget.start 只能指定 cancel 或 cancellation 之一")
+        if cancellation is not None:
+            cancel = cancellation
+        return cls(clock() + max(0.0, float(timeout)), clock, cancel)
+
+    def check_cancelled(self) -> None:
+        if self.cancellation is None:
+            return
+        if isinstance(self.cancellation, Cancellation):
+            self.cancellation.checkpoint()
+            return
+        if self.cancellation():
+            raise CancellationRequested()
 
     def remaining(self, cap: float | None = None) -> float:
         value = max(0.0, self.deadline - self.clock())
@@ -163,13 +217,14 @@ class StageBudget:
         return self.remaining() <= 0
 
     def require(self, action: str = "stage") -> float:
+        self.check_cancelled()
         remaining = self.remaining()
         if remaining <= 0:
             raise StageTimeout(f"{action} exceeded shared stage timeout")
         return remaining
 
     def child(self, cap: float | None = None) -> "StageBudget":
-        return StageBudget(self.clock() + self.remaining(cap), self.clock)
+        return StageBudget(self.clock() + self.remaining(cap), self.clock, self.cancellation)
 
 
 def _text(snapshot: Mapping[str, Any]) -> str:
@@ -286,6 +341,8 @@ def run_with_budget(
             result = action(budget)
             if result is not None:
                 return result
+        except CancellationRequested:
+            raise
         except StageTimeout:
             raise
         except Exception as exc:
@@ -298,6 +355,10 @@ def run_with_budget(
 
 __all__ = [
     "FlowStateError",
+    "Cancellation",
+    "CancellationRequested",
+    "CancellationToken",
+    "CancelToken",
     "PageState",
     "RegistrationStateMachine",
     "StageBudget",

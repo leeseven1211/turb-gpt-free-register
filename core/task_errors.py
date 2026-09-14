@@ -7,9 +7,51 @@
 from __future__ import annotations
 
 import re
+from enum import Enum
 from typing import Any
 
 from core.task_stages import normalize_stage
+
+
+class TaskErrorCode(str, Enum):
+    """任务层共享的稳定错误码，不携带远端原文或敏感上下文。"""
+
+    CONFIGURATION = "configuration.missing"
+    USER_INTERRUPTED = "user.interrupted"
+    EXTERNAL_PROXY = "external.proxy"
+    EXTERNAL_EMAIL = "external.email"
+    EXTERNAL_OPENAI = "external.openai"
+    EXTERNAL_NETWORK = "external.network"
+    INTERNAL_STORAGE = "internal.storage"
+    INTERNAL_BROWSER = "internal.browser"
+    WORKFLOW_VERIFICATION = "workflow.verification"
+    WORKFLOW_PAGE_STATE = "workflow.page_state"
+    UNKNOWN = "unknown.unclassified"
+
+
+# Some callers use the shorter domain name; keep one enum rather than creating
+# a second set of values that could drift from the task projection rules.
+ErrorCode = TaskErrorCode
+
+
+def stable_error_code(value: Any, *, default: str = TaskErrorCode.UNKNOWN.value) -> str:
+    """从异常、mapping 或结构化步骤结果读取安全错误码。"""
+    if isinstance(value, Enum):
+        value = value.value
+    if isinstance(value, dict):
+        value = value.get("error_code") or value.get("code") or value.get("error")
+    code = str(value or "").strip()
+    if not code:
+        return default
+    return code[:120]
+
+
+def is_request_unknown(value: Any) -> bool:
+    """未知远端结果是一等状态，不能被任务层当成普通可重试错误。"""
+    return stable_error_code(value, default="") in {
+        "request_unknown",
+        "password_result_unknown",
+    }
 
 
 _RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
@@ -213,3 +255,12 @@ def classify_task_error(
     if error_code:
         result["original_error_code"] = str(error_code)
     return result
+
+
+__all__ = [
+    "ErrorCode",
+    "TaskErrorCode",
+    "classify_task_error",
+    "is_request_unknown",
+    "stable_error_code",
+]

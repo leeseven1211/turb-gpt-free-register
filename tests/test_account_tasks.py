@@ -446,7 +446,7 @@ class CodexRetryTaskTests(unittest.TestCase):
             patch("config.codex.CODEX_OAUTH_DRIVER", "roxy"),
             patch("config.twofa.get_twofa_driver", return_value="browser"),
             patch("core.account_proxy.acquire_account_proxy", return_value=route) as acquire,
-            patch("core.roxy_registration.setup_roxy_2fa", side_effect=setup_twofa),
+            patch("core.registration.selenium_auth.setup_roxy_2fa", side_effect=setup_twofa),
             patch("core.roxy_codex_oauth.run_roxy_codex_oauth", side_effect=run_roxy),
         ):
             result = codex_retry_service._run_worker_legacy(
@@ -510,7 +510,7 @@ class CodexRetryTaskTests(unittest.TestCase):
             patch("config.codex.CODEX_OAUTH_DRIVER", "roxy"),
             patch("config.twofa.get_twofa_driver", return_value="protocol"),
             patch("core.account_proxy.acquire_account_proxy", return_value=route),
-            patch("core.roxy_registration._fetch_chatgpt_session", return_value={"accessToken": "fresh-chatgpt-token"}),
+            patch("core.registration.selenium_auth.fetch_chatgpt_session", return_value={"accessToken": "fresh-chatgpt-token"}),
             patch("core.session.BrowserSession"),
             patch("core.registration.selenium_auth.setup_protocol_2fa_with_browser_fallback", side_effect=setup_protocol),
             patch("core.roxy_codex_oauth.run_roxy_codex_oauth", side_effect=run_roxy),
@@ -563,9 +563,9 @@ class CodexRetryTaskTests(unittest.TestCase):
             patch.object(codex_retry_service.db, "update_account_twofa_status", return_value=True),
             patch.object(codex_retry_service.account_task_store, "append_event"),
             patch("config.twofa.get_twofa_driver", return_value="protocol"),
-            patch("core.roxy_registration._registration_password", return_value="AccountPassword!123"),
-            patch("core.roxy_registration.set_roxy_login_password", side_effect=set_password),
-            patch("core.roxy_registration._fetch_chatgpt_session", return_value={"accessToken": "fresh-chatgpt-token"}),
+            patch("core.registration.selenium_auth.registration_password", return_value="AccountPassword!123"),
+            patch("core.registration.selenium_auth.set_login_password", side_effect=set_password),
+            patch("core.registration.selenium_auth.fetch_chatgpt_session", return_value={"accessToken": "fresh-chatgpt-token"}),
             patch("core.session.BrowserSession"),
             patch("core.registration.selenium_auth.setup_protocol_2fa_with_browser_fallback", side_effect=setup_protocol),
         ):
@@ -609,9 +609,9 @@ class CodexRetryTaskTests(unittest.TestCase):
             patch.object(codex_retry_service.db, "update_account_twofa_status", return_value=True),
             patch.object(codex_retry_service.account_task_store, "append_event"),
             patch("config.twofa.get_twofa_driver", return_value="browser"),
-            patch("core.roxy_registration._registration_password", return_value="AccountPassword!123"),
-            patch("core.roxy_registration.set_roxy_login_password", side_effect=fail_password),
-            patch("core.roxy_registration.setup_roxy_2fa", side_effect=setup_twofa),
+            patch("core.registration.selenium_auth.registration_password", return_value="AccountPassword!123"),
+            patch("core.registration.selenium_auth.set_login_password", side_effect=fail_password),
+            patch("core.registration.selenium_auth.setup_roxy_2fa", side_effect=setup_twofa),
         ):
             setup = codex_retry_service._build_roxy_account_setup("a@example.com", 101)
             with self.assertRaisesRegex(RuntimeError, "账号密码"):
@@ -647,9 +647,9 @@ class CodexRetryTaskTests(unittest.TestCase):
             patch.object(codex_retry_service.db, "update_account_twofa_status", return_value=True),
             patch.object(codex_retry_service.account_task_store, "append_event"),
             patch("config.twofa.get_twofa_driver", return_value="browser"),
-            patch("core.roxy_registration._registration_password", return_value="AccountPassword!123"),
-            patch("core.roxy_registration.set_roxy_login_password", side_effect=unsupported_password),
-            patch("core.roxy_registration.setup_roxy_2fa", side_effect=setup_twofa),
+            patch("core.registration.selenium_auth.registration_password", return_value="AccountPassword!123"),
+            patch("core.registration.selenium_auth.set_login_password", side_effect=unsupported_password),
+            patch("core.registration.selenium_auth.setup_roxy_2fa", side_effect=setup_twofa),
         ):
             setup = codex_retry_service._build_roxy_account_setup("a@example.com", 101)
             self.assertTrue(setup(object()))
@@ -684,9 +684,9 @@ class CodexRetryTaskTests(unittest.TestCase):
             patch.object(codex_retry_service.db, "update_account_twofa_status", return_value=True),
             patch.object(codex_retry_service.account_task_store, "append_event"),
             patch("config.twofa.get_twofa_driver", return_value="browser"),
-            patch("core.roxy_registration._registration_password", return_value="AccountPassword!123"),
-            patch("core.roxy_registration.set_roxy_login_password", side_effect=missing_password_entry),
-            patch("core.roxy_registration.setup_roxy_2fa", side_effect=setup_twofa),
+            patch("core.registration.selenium_auth.registration_password", return_value="AccountPassword!123"),
+            patch("core.registration.selenium_auth.set_login_password", side_effect=missing_password_entry),
+            patch("core.registration.selenium_auth.setup_roxy_2fa", side_effect=setup_twofa),
         ):
             setup = codex_retry_service._build_roxy_account_setup("a@example.com", 101)
             self.assertTrue(setup(object()))
@@ -746,8 +746,8 @@ class AccountActionLoginTests(unittest.TestCase):
             patch.object(roxy_codex_oauth, "_center_browser_window"),
             patch.object(roxy_codex_oauth, "clear_roxy_browser_auth_state"),
             patch.object(roxy_codex_oauth, "_fill_email_and_otp"),
-            patch("core.roxy_registration._complete_profile_page", return_value=True) as complete_profile,
-            patch("core.roxy_registration._fetch_chatgpt_session", return_value=session),
+            patch("core.registration.selenium_auth.complete_profile_page", return_value=True) as complete_profile,
+            patch("core.registration.selenium_auth.fetch_chatgpt_session", return_value=session),
             patch("core.profile_utils.generate_random_birthday", return_value="1995-01-02"),
             patch.object(roxy_codex_oauth._roxy_cfg, "ROXY_KEEP_BROWSER_OPEN", False),
         ):
