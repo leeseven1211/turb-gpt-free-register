@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core import db
+from core import db, record_store as rs
 from core import icloud_hme_client as client
 from core import email_provider
 from tests.support_pg import PostgresTestCase
@@ -16,12 +16,9 @@ class ICloudHidePoolTests(PostgresTestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.pool_path = Path(self.tmp.name) / "icloud-pool.json"
         self.pool_patch = patch.object(db, "_ICLOUD_HIDE_EMAIL_JSON", self.pool_path)
-        self.accounts_patch = patch.object(db, "_load_accounts", return_value=[])
         self.pool_patch.start()
-        self.accounts_patch.start()
 
     def tearDown(self):
-        self.accounts_patch.stop()
         self.pool_patch.stop()
         self.tmp.cleanup()
 
@@ -41,10 +38,10 @@ class ICloudHidePoolTests(PostgresTestCase):
         self.assertEqual(db.get_icloud_hide_email_by_email("one@example.com")["status"], "available")
 
     def test_registered_alias_is_not_released(self):
-        with patch.object(db, "_load_accounts", return_value=[{"email": "bound@example.com"}]):
-            db.sync_icloud_hide_aliases([{"email": "bound@example.com", "active": True}], "acc-1")
-            self.assertEqual(db.get_icloud_hide_email_by_email("bound@example.com")["status"], "used")
-            self.assertFalse(db.release_unconsumed_icloud_hide_email("bound@example.com"))
+        rs.insert_row(rs.ACCOUNTS, {"email": "bound@example.com"})
+        db.sync_icloud_hide_aliases([{"email": "bound@example.com", "active": True}], "acc-1")
+        self.assertEqual(db.get_icloud_hide_email_by_email("bound@example.com")["status"], "used")
+        self.assertFalse(db.release_unconsumed_icloud_hide_email("bound@example.com"))
 
     def test_full_sync_disables_missing_alias_but_partial_sync_does_not(self):
         db.sync_icloud_hide_aliases([
@@ -63,19 +60,17 @@ class ICloudHidePoolTests(PostgresTestCase):
         self.assertEqual(missing["disabled_reason"], "remote_missing")
 
     def test_active_sync_reactivates_legacy_route_disabled_alias(self):
-        rows = [{
-            "id": 1,
+        rs.insert_row(rs.ICLOUD_HIDE_POOL, {
             "email": "relay@example.com",
             "status": "disabled",
             "account_id": "acc-1",
             "remote_active": True,
-        }]
-        with patch.object(db, "_load_icloud_hide_pool", return_value=rows), patch.object(db, "_save_icloud_hide_pool") as save:
-            db.sync_icloud_hide_aliases([{"email": "relay@example.com", "active": True}], "acc-1")
+        })
+        db.sync_icloud_hide_aliases([{"email": "relay@example.com", "active": True}], "acc-1")
 
-        saved_rows = save.call_args.args[0]
-        self.assertEqual(saved_rows[0]["status"], "available")
-        self.assertNotIn("disabled_reason", saved_rows[0])
+        saved_row = db.get_icloud_hide_email_by_email("relay@example.com")
+        self.assertEqual(saved_row["status"], "available")
+        self.assertNotIn("disabled_reason", saved_row)
 
 
 class ICloudHMEClientTests(unittest.TestCase):

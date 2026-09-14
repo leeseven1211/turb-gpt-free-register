@@ -32,6 +32,10 @@ _LOG_DIR = _PROJECT_ROOT / "注册日志"
 _PLAN_CHECK_STALE_SECONDS = 120
 _PLAN_CHECK_QUEUE_STALE_SECONDS = 1800
 
+
+class SnapshotConflictError(RuntimeError):
+    """旧兼容快照试图覆盖已被其他事务修改的行。"""
+
 _OUTLOOK_JSON = _PROJECT_ROOT / "用于注册的邮箱.json"
 _OUTLOOK_TXT = _PROJECT_ROOT / "用于注册的邮箱.txt"
 _GENERIC_API_EMAIL_JSON = _PROJECT_ROOT / "用于注册的API邮箱.json"
@@ -51,6 +55,8 @@ _LEGACY_OUTLOOK_JSON = _LEGACY_DATA_DIR / "outlook_accounts.json"
 _LEGACY_ACCOUNTS_JSON = _LEGACY_DATA_DIR / "registered_accounts.json"
 _LEGACY_JOBS_JSON = _LEGACY_DATA_DIR / "registration_jobs.json"
 _LOCK = threading.RLock()
+_COMPAT_SCHEMA_LOCK_KEY = "turb-compat-schema-init"
+_COMPAT_SCHEMA_READY_KEYS = {"registration": "", "operation": ""}
 
 JOB_PROGRESS_STAGES = (
     ("network", "分配网络"),
@@ -126,11 +132,11 @@ def _collection_name(path: Path) -> str:
 
 
 # ============================================================
-# 表接缝：_load_X / _save_X 底下由 record_store 的行级表支撑
+# 表接缝：_load_X / _save_X 仅保留兼容 façade；业务写入直接走 record_store
 #
-# 保留"整表 list[dict] 进出"的形状，是为了让 60 多个调用方不必改写；但落库时
-# 只写真正变化的行，而不是把整个集合重新序列化一遍。真正需要行级语义的地方
-# （抢占、热点单字段更新、跨表事务）另有直连 record_store 的实现。
+# 保留"整表 list[dict] 进出"的形状，是为了让导出和迁移期旧测试可读；它们不再
+# 是普通业务写入口。真正需要行级语义的地方（抢占、热点单字段更新、跨表事务）
+# 直接调用 record_store，避免旧快照重新覆盖当前行。
 # ============================================================
 
 def _load_table(spec) -> list[dict]:
@@ -146,36 +152,44 @@ def _row_signature(row: dict) -> str:
 
 
 def _sync_table(spec, rows: list[dict], *, conn=None) -> None:
-    """把整表快照落到行级表，只写差异行。
+    """兼容接缝：逐行应用显式 payload，绝不把它当成全表快照。
 
-    这是旧"读全量→改→写全量"调用方与行级存储之间的桥。相比原来每次重写
-    2 MB+ JSONB，这里通常只发一条 UPDATE。
-
-    传入 conn 可以把多张表的写入并入同一个事务——insert_account 之类要同时改
-    账号和邮箱池，分两次提交会留下"账号建好了但邮箱没标记 used"的中间态。
+    正常业务写入口不应调用本函数；它只为迁移期私有 façade 和旧测试保留。旧实现
+    会先读整表、用全量快照覆盖字段，并删除快照中缺失的当前行，这两种行为都会把
+    并发新增或更新抹掉。现在只处理调用者明确给出的行，不扫描、不删除；带有
+    ``__record_version`` 的旧快照还会经过 ``xmin`` 乐观校验。没有版本的现有行
+    也拒绝覆盖（相同行则 no-op），任何冲突都抛出 ``SnapshotConflictError``，不能
+    让上层把“没有写入”误报成成功。
     """
-    current = {int(r["id"]): r for r in record_store.list_rows(spec, order_by="id")
-               if r.get("id") is not None}
-    seen: set[int] = set()
 
     def _apply(active) -> None:
         for row in rows:
-            rid = row.get("id")
+            payload = dict(row or {})
+            rid = payload.pop("id", None)
+            version = payload.pop("__record_version", None)
             if rid is None:
-                new_id = record_store.insert_row(spec, row, conn=active)
+                new_id = record_store.insert_row(spec, payload, conn=active)
                 row["id"] = new_id
-                seen.add(int(new_id))
                 continue
             rid = int(rid)
-            seen.add(rid)
-            existing = current.get(rid)
+            if version is not None:
+                applied = record_store.patch_row_if_version(
+                    spec, rid, payload, str(version), conn=active,
+                )
+                if not applied:
+                    raise SnapshotConflictError(
+                        f"{spec.name}#{rid} 的兼容快照版本已变化，拒绝覆盖"
+                    )
+                continue
+            existing = record_store.get_row(spec, rid, conn=active)
             if existing is None:
-                record_store.insert_row(spec, row, conn=active)
-            elif _row_signature(existing) != _row_signature(row):
-                record_store.patch_row(spec, rid, row, conn=active)
-        removed = [rid for rid in current if rid not in seen]
-        if removed:
-            record_store.delete_rows(spec, removed, conn=active)
+                record_store.insert_row(spec, {**payload, "id": rid}, conn=active)
+            elif _row_signature(existing) != _row_signature({**payload, "id": rid}):
+                # 没有 xmin 就无法区分“调用方有意修改的字段”和“旧快照里的
+                # 陈旧字段”。宁可显式拒绝，也不能把整个旧快照重新 patch 回去。
+                raise SnapshotConflictError(
+                    f"{spec.name}#{rid} 缺少快照版本，拒绝覆盖现有行"
+                )
 
     if conn is not None:
         _apply(conn)
@@ -623,6 +637,7 @@ def _export_outlook() -> None:
 
 
 def _save_outlook(rows: list[dict]) -> None:
+    """仅兼容旧测试/迁移；现有行没有版本时拒绝快照覆盖。"""
     _sync_table(record_store.OUTLOOK_POOL, rows)
     compat_export.schedule("outlook")
 
@@ -640,6 +655,7 @@ def _export_generic_api_emails() -> None:
 
 
 def _save_generic_api_emails(rows: list[dict]) -> None:
+    """仅兼容旧测试/迁移；现有行没有版本时拒绝快照覆盖。"""
     _sync_table(record_store.GENERIC_API_POOL, rows)
     compat_export.schedule("generic_api_emails")
 
@@ -661,6 +677,7 @@ def _export_accounts() -> None:
 
 
 def _save_accounts(rows: list[dict]) -> None:
+    """仅兼容旧测试/迁移；现有行没有版本时拒绝快照覆盖。"""
     _sync_table(record_store.ACCOUNTS, rows)
     compat_export.schedule("accounts")
 
@@ -674,6 +691,7 @@ def _export_jobs() -> None:
 
 
 def _save_jobs(rows: list[dict]) -> None:
+    """仅兼容旧测试/迁移；现有行没有版本时拒绝快照覆盖。"""
     _sync_table(record_store.JOBS, rows)
     compat_export.schedule("jobs")
 
@@ -701,6 +719,25 @@ def _patch_account(acc_id: int, changes: dict) -> bool:
     return _patch_row_and_export(record_store.ACCOUNTS, acc_id, changes, "accounts")
 
 
+def _ensure_compat_schema(name: str, initializer) -> None:
+    """Initialize one compatibility schema once per process/schema, safely."""
+    ready_key = f"{postgres_store.database_url()}::{postgres_store.schema_name()}"
+    with _LOCK:
+        if _COMPAT_SCHEMA_READY_KEYS.get(name) == ready_key:
+            return
+    # The local flag avoids taking a database lock on every projection write. The
+    # transaction-level lock is only needed while each worker initializes its own
+    # view of the shared, additive compatibility schema.
+    with record_store.transaction() as conn:
+        record_store.advisory_xact_lock(conn, _COMPAT_SCHEMA_LOCK_KEY)
+        with _LOCK:
+            if _COMPAT_SCHEMA_READY_KEYS.get(name) == ready_key:
+                return
+        initializer()
+        with _LOCK:
+            _COMPAT_SCHEMA_READY_KEYS[name] = ready_key
+
+
 def _sync_operation_job(job_id: int) -> None:
     """迁移期兼容桥：旧注册执行写入后，立即刷新统一任务投影。
 
@@ -710,6 +747,7 @@ def _sync_operation_job(job_id: int) -> None:
     try:
         from core import operation_task_store
 
+        _ensure_compat_schema("operation", operation_task_store.init)
         operation_task_store.sync_registration_job(int(job_id))
     except Exception:
         logger.exception("同步统一任务中心失败：registration_job_id=%s", job_id)
@@ -724,6 +762,7 @@ def _ensure_registration_attempt_job(row: dict) -> None:
     """
     from core.storage import registration
 
+    _ensure_compat_schema("registration", registration.init)
     job_data = row.get("data") if isinstance(row.get("data"), dict) else {}
     attempt = registration.ensure_attempt_for_job(int(row["id"]), data=job_data)
     attempt_id = int(attempt["id"])
@@ -749,14 +788,7 @@ def _patch_job(job_id: int, changes: dict) -> bool:
 
 
 def _save_together(*pairs) -> None:
-    """把多张表的写入并进同一个事务，再各自排队兼容导出。
-
-    用于 insert_account / import_registered_email_accounts /
-    recover_interrupted_registration_jobs 这三个跨集合操作：它们原先是两次独立
-    落盘，中间失败会留下"账号已创建但邮箱池没标记 used"这种半完成状态。
-
-    每个 pair 是 (spec, rows, 导出种类名)。
-    """
+    """仅兼容显式快照调用；普通业务写入不再使用此 helper。"""
     with record_store.transaction() as conn:
         for spec, rows, _kind in pairs:
             _sync_table(spec, rows, conn=conn)
@@ -863,6 +895,18 @@ def _row_to_dict(row: dict | None) -> dict | None:
     return dict(row) if row is not None else None
 
 
+def _locked_row_by_email(conn, spec, email: str) -> dict | None:
+    """在调用者事务中按不区分大小写的邮箱读取并锁定一行。"""
+    table = postgres_store.qualified(spec.name)
+    with conn.cursor() as cur:
+        cur.execute(
+            f'SELECT * FROM {table} WHERE lower("email") = lower(%s) '
+            "ORDER BY id LIMIT 1 FOR UPDATE",
+            (str(email or "").strip(),),
+        )
+        return record_store.merge_row(spec, cur.fetchone())
+
+
 # ============================================================
 # registered_accounts
 # ============================================================
@@ -883,70 +927,87 @@ def insert_account(
     codex_status: str | None = None,   # success / failed / skipped / missing
     codex_error: str | None = None,    # 失败原因（仅 codex_status=failed 时有意义）
 ) -> int:
-    """插入或更新注册成功账号，返回本地文件中的 id。"""
-    with _LOCK:
-        accounts = _load_accounts()
-        outlook_rows = _load_outlook()
-        existing = _find_by_email(accounts, email)
-        outlook_row = _find_by_email(outlook_rows, email)
-        extra_json = json.dumps(extra, ensure_ascii=False) if extra else None
+    """插入或更新注册成功账号，并在同一事务中收口关联邮箱素材。"""
+    normalized_email = str(email or "").strip()
+    if not normalized_email:
+        raise ValueError("账号邮箱不能为空")
 
-        if existing is None:
-            row_id = _next_id(accounts)
-            row = {
-                "id": row_id,
-                "email": email,
-                "created_at": _now(),
-            }
-            accounts.append(row)
-        else:
-            row = existing
-            row_id = int(row["id"])
-
-        row.update({
+    # transaction() 自身也会防御性 init，但这里显式初始化保证新 worktree/新
+    # schema 的首个查询不会在 _locked_row_by_email 处撞到尚未创建的表。
+    record_store.init()
+    account_changed = False
+    outlook_changed = False
+    with record_store.transaction() as conn:
+        record_store.advisory_xact_lock(conn, f"registered-account:{normalized_email.lower()}")
+        existing = _locked_row_by_email(conn, record_store.ACCOUNTS, normalized_email)
+        outlook_row = _locked_row_by_email(conn, record_store.OUTLOOK_POOL, normalized_email)
+        now = _now()
+        changes: dict[str, Any] = {
             "access_token": access_token,
-            "totp_secret": totp_secret if totp_secret is not None else row.get("totp_secret"),
-            "user_id": user_id if user_id is not None else row.get("user_id"),
-            "user_name": user_name if user_name is not None else row.get("user_name"),
-            "plan_type": plan_type if plan_type is not None else row.get("plan_type"),
-            "expires_at": expires_at if expires_at is not None else row.get("expires_at"),
-            "device_id": device_id if device_id is not None else row.get("device_id"),
-            "proxy_used": proxy_used if proxy_used is not None else row.get("proxy_used"),
-            "email_source": email_source if email_source is not None else row.get("email_source"),
-            "extra_json": extra_json if extra_json is not None else row.get("extra_json"),
-            "codex_status": codex_status if codex_status is not None else row.get("codex_status"),
-            "codex_error": codex_error if codex_error is not None else row.get("codex_error"),
-            "updated_at": _now(),
-        })
+            "updated_at": now,
+        }
+        optional = {
+            "totp_secret": totp_secret,
+            "user_id": user_id,
+            "user_name": user_name,
+            "plan_type": plan_type,
+            "expires_at": expires_at,
+            "device_id": device_id,
+            "proxy_used": proxy_used,
+            "email_source": email_source,
+            "codex_status": codex_status,
+            "codex_error": codex_error,
+        }
+        changes.update({key: value for key, value in optional.items() if value is not None})
+        if extra:
+            changes["extra_json"] = json.dumps(extra, ensure_ascii=False)
+
         if access_token:
             # expires_at 是 ChatGPT Session 到期时间；AT 自身到期时间来自 JWT exp，
             # 两者分开保存，避免页面和刷新调度误判。
             from core.chatgpt_plan import token_claims
+
             claims = token_claims(access_token)
-            row["token_expires_at"] = claims.get("token_expires_at")
-            row["token_expired"] = claims.get("token_expired")
+            changes["token_expires_at"] = claims.get("token_expires_at")
+            changes["token_expired"] = claims.get("token_expired")
 
-        if outlook_row:
-            row["password"] = outlook_row.get("password")
-            row["client_id"] = outlook_row.get("client_id")
-            row["refresh_token"] = outlook_row.get("refresh_token")
-            row["original_email_line"] = _outlook_line(outlook_row)
-            outlook_row["status"] = "used"
-            outlook_row["used_at"] = outlook_row.get("used_at") or _now()
-            outlook_row["registered_account_id"] = row_id
-            outlook_row["access_token"] = access_token
-            outlook_row["completed_at"] = _now()
+        if outlook_row is not None:
+            changes.update({
+                "password": outlook_row.get("password"),
+                "client_id": outlook_row.get("client_id"),
+                "refresh_token": outlook_row.get("refresh_token"),
+                "original_email_line": _outlook_line(outlook_row),
+            })
+
+        if existing is None:
+            account_payload = {"email": normalized_email, "created_at": now, **changes}
+            row_id = record_store.insert_row(record_store.ACCOUNTS, account_payload, conn=conn)
+            account_changed = True
+        else:
+            row_id = int(existing["id"])
+            account_changed = record_store.patch_row(
+                record_store.ACCOUNTS, row_id, changes, conn=conn,
+            )
+
+        if outlook_row is not None:
+            pool_changes: dict[str, Any] = {
+                "status": "used",
+                "used_at": outlook_row.get("used_at") or now,
+                "registered_account_id": row_id,
+                "access_token": access_token,
+                "completed_at": now,
+            }
             if totp_secret:
-                outlook_row["totp_secret"] = totp_secret
+                pool_changes["totp_secret"] = totp_secret
+            outlook_changed = record_store.patch_row(
+                record_store.OUTLOOK_POOL, int(outlook_row["id"]), pool_changes, conn=conn,
+            )
 
-        row["copy_line"] = _account_line(row)
-        # 账号和邮箱池必须一起提交：分两次落盘时，中间失败会留下"账号已创建
-        # 但邮箱没标记 used"，这个邮箱之后会被再领一次、重复注册。
-        _save_together(
-            (record_store.ACCOUNTS, accounts, "accounts"),
-            (record_store.OUTLOOK_POOL, outlook_rows, "outlook"),
-        )
-        return row_id
+    if account_changed:
+        compat_export.schedule("accounts")
+    if outlook_changed:
+        compat_export.schedule("outlook")
+    return row_id
 
 
 def update_account_codex_status(email: str, codex_status: str, codex_error: str | None = None) -> bool:
@@ -1282,31 +1343,37 @@ def update_account_session(email: str, access_token: str, *, expires_at: str | N
 
 
 def sync_account_token_metadata(items: list[tuple[int, str]]) -> int:
-    """批量回填 AT 到期信息，只在内容变化时写一次账号文件。"""
+    """批量回填 AT 到期信息，只 patch 仍持有该 Token 的目标账号。"""
     from core.chatgpt_plan import token_claims
+
     tokens = {int(acc_id): str(token or "").strip() for acc_id, token in items if str(token or "").strip()}
     if not tokens:
         return 0
-    with _LOCK:
-        accounts = _load_accounts()
-        changed = 0
-        for row in accounts:
-            acc_id = int(row.get("id") or 0)
-            token = tokens.get(acc_id)
-            if not token or str(row.get("access_token") or "").strip() != token:
-                continue
-            claims = token_claims(token)
-            expires_at = claims.get("token_expires_at")
-            expired = claims.get("token_expired")
-            if row.get("token_expires_at") == expires_at and row.get("token_expired") == expired:
-                continue
-            row["token_expires_at"] = expires_at
-            row["token_expired"] = expired
-            row["updated_at"] = _now()
+    changed = 0
+    for acc_id, token in tokens.items():
+        row = record_store.get_row(record_store.ACCOUNTS, acc_id)
+        if row is None or str(row.get("access_token") or "").strip() != token:
+            continue
+        claims = token_claims(token)
+        expires_at = claims.get("token_expires_at")
+        expired = claims.get("token_expired")
+        if row.get("token_expires_at") == expires_at and row.get("token_expired") == expired:
+            continue
+        if record_store.claim_row(
+            record_store.ACCOUNTS,
+            acc_id,
+            changes={
+                "token_expires_at": expires_at,
+                "token_expired": expired,
+                "updated_at": _now(),
+            },
+            guard="data->>'access_token' = %s",
+            guard_params=(token,),
+        ):
             changed += 1
-        if changed:
-            _save_accounts(accounts)
-        return changed
+    if changed:
+        compat_export.schedule("accounts")
+    return changed
 
 
 def _stage_claim_guard(prefix: str, *, require_alive: bool = False) -> tuple[str, list]:
@@ -1390,116 +1457,112 @@ def mark_account_plan_check_running(acc_id: int) -> bool:
 
 def recover_interrupted_plan_checks() -> int:
     """服务启动时把上次进程遗留的内存队列状态恢复为可重试失败。"""
-    with _LOCK:
-        accounts = _load_accounts()
-        recovered = 0
-        now = _now()
-        for row in accounts:
-            if row.get("plan_check_status") not in {"queued", "running"}:
-                continue
-            row["plan_check_status"] = "failed"
-            row["plan_check_ok"] = False
-            row["plan_check_error"] = "WebUI 重启导致套餐查询中断，请重新查询"
-            row["plan_check_completed_at"] = now
-            row["updated_at"] = now
-            recovered += 1
-        if recovered:
-            _save_accounts(accounts)
-        return recovered
+    now = _now()
+    recovered = record_store.patch_rows_where(
+        record_store.ACCOUNTS,
+        changes={
+            "plan_check_status": "failed",
+            "plan_check_ok": False,
+            "plan_check_error": "WebUI 重启导致套餐查询中断，请重新查询",
+            "plan_check_completed_at": now,
+            "updated_at": now,
+        },
+        where='"plan_check_status" IN (%s, %s)',
+        params=("queued", "running"),
+    )
+    if recovered:
+        compat_export.schedule("accounts")
+    return recovered
 
 
 def update_account_plan_check(acc_id: int | None = None, email: str | None = None, result: dict | None = None) -> bool:
     """更新账号套餐/Plus 试用资格查询结果。"""
     result = result or {}
-    with _LOCK:
-        accounts = _load_accounts()
-        target_email = (email or "").lower()
-        row = next((
-            r for r in accounts
-            if (acc_id is not None and int(r.get("id") or 0) == int(acc_id))
-            or (target_email and (r.get("email") or "").lower() == target_email)
-        ), None)
-        if row is None:
-            return False
+    row = (
+        record_store.get_row(record_store.ACCOUNTS, int(acc_id))
+        if acc_id is not None
+        else record_store.get_row_by(record_store.ACCOUNTS, "email", email or "", lower=True)
+    )
+    if row is None:
+        return False
 
-        ok = bool(result.get("ok"))
-        row["plan_check_status"] = "success" if ok else "failed"
-        row["plan_check_ok"] = ok
-        row["plan_checked_at"] = result.get("checked_at") or _now()
-        row["plan_check_completed_at"] = _now()
-        row["plan_check_http_status"] = result.get("http_status")
-        row["plan_check_error"] = None if ok else result.get("error")
+    now = _now()
+    ok = bool(result.get("ok"))
+    checked_at = result.get("checked_at") or now
+    changes: dict[str, Any] = {
+        "plan_check_status": "success" if ok else "failed",
+        "plan_check_ok": ok,
+        "plan_checked_at": checked_at,
+        "plan_check_completed_at": now,
+        "plan_check_http_status": result.get("http_status"),
+        "plan_check_error": None if ok else result.get("error"),
+    }
 
-        if result.get("account_id"):
-            row["account_id"] = result.get("account_id")
-        # 查询失败只更新本次错误和网络信息，不覆盖上一次成功拿到的套餐、
-        # 试用资格、优惠及有效期，避免临时网络故障把真实权益清空。
-        if ok:
-            if result.get("current_plan_type"):
-                row["current_plan_type"] = result.get("current_plan_type")
-                row["plan_type"] = result.get("current_plan_type")
-            if result.get("subscription_plan") is not None:
-                row["subscription_plan"] = result.get("subscription_plan")
-            if result.get("has_active_subscription") is not None:
-                row["has_active_subscription"] = bool(result.get("has_active_subscription"))
-            if result.get("expires_at") is not None:
-                row["plan_expires_at"] = result.get("expires_at")
-            if result.get("renews_at") is not None:
-                row["plan_renews_at"] = result.get("renews_at")
-            if result.get("cancels_at") is not None:
-                row["plan_cancels_at"] = result.get("cancels_at")
-            if result.get("billing_period") is not None:
-                row["billing_period"] = result.get("billing_period")
-            if result.get("billing_currency") is not None:
-                row["billing_currency"] = result.get("billing_currency")
-            if result.get("is_delinquent") is not None:
-                row["is_delinquent"] = bool(result.get("is_delinquent"))
-            for _k in (
-                "discount_type",
-                "discount_amount",
-                "discount_duration_num_periods",
-                "discount_expires_at",
-                "discount_cancellation_policy",
-                "discount_promo_campaign_id",
-                "last_purchase_origin_platform",
-                "last_will_renew",
-            ):
-                if result.get(_k) is not None:
-                    row[_k] = result.get(_k)
+    if result.get("account_id"):
+        changes["account_id"] = result.get("account_id")
+    # 查询失败只更新本次错误和网络信息，不覆盖上一次成功拿到的套餐、
+    # 试用资格、优惠及有效期，避免临时网络故障把真实权益清空。
+    if ok:
+        if result.get("current_plan_type"):
+            changes["current_plan_type"] = result.get("current_plan_type")
+            changes["plan_type"] = result.get("current_plan_type")
+        for key in ("subscription_plan", "expires_at", "renews_at", "cancels_at",
+                    "billing_period", "billing_currency"):
+            if result.get(key) is not None:
+                changes[f"plan_{key}" if key in {"expires_at", "renews_at", "cancels_at"} else key] = result.get(key)
+        if result.get("has_active_subscription") is not None:
+            changes["has_active_subscription"] = bool(result.get("has_active_subscription"))
+        if result.get("is_delinquent") is not None:
+            changes["is_delinquent"] = bool(result.get("is_delinquent"))
+        for key in (
+            "discount_type", "discount_amount", "discount_duration_num_periods",
+            "discount_expires_at", "discount_cancellation_policy",
+            "discount_promo_campaign_id", "last_purchase_origin_platform", "last_will_renew",
+        ):
+            if result.get(key) is not None:
+                changes[key] = result.get(key)
 
-            row["plus_trial_eligible"] = bool(result.get("plus_trial_eligible"))
-            row["plus_trial_campaign_id"] = result.get("plus_trial_campaign_id")
-            row["plus_trial_title"] = result.get("plus_trial_title")
-            row["plus_trial_discount_percentage"] = result.get("plus_trial_discount_percentage")
-            row["plus_trial_duration_num_periods"] = result.get("plus_trial_duration_num_periods")
-            row["plus_trial_duration_period"] = result.get("plus_trial_duration_period")
-            row["eligible_offer_ids"] = result.get("eligible_offer_ids") or []
-            row["plan_last_success_at"] = result.get("checked_at") or _now()
-            row["plan_last_success_result_json"] = json.dumps(result, ensure_ascii=False)
-            # 额度是套餐查询的附带快照。额度接口偶发失败时保留上次成功的
-            # 窗口和类型，只更新独立的失败状态，避免把真实额度清空。
-            quota_status = result.get("quota_status")
-            if quota_status:
-                row["quota_status"] = quota_status
-                row["quota_checked_at"] = result.get("quota_checked_at") or result.get("checked_at") or _now()
-                row["quota_http_status"] = result.get("quota_http_status")
-                if quota_status == "success":
-                    row["quota_type"] = result.get("quota_type") or "未返回额度窗口"
-                    row["quota_windows"] = result.get("quota_windows") or []
-                    row["quota_error"] = None
-                    row["quota_last_success_at"] = row["quota_checked_at"]
-                else:
-                    row["quota_error"] = result.get("quota_error") or "额度查询失败"
-        row["plan_check_proxy_mode"] = result.get("proxy_mode")
-        row["plan_check_network_route"] = result.get("network_route")
-        row["plan_check_proxy_used"] = result.get("proxy_used")
-        row["plan_check_proxy_fallback_reason"] = result.get("proxy_fallback_reason")
-        row["token_expired"] = result.get("token_expired")
-        row["token_expires_at"] = result.get("token_expires_at")
-        row["plan_check_result_json"] = json.dumps(result, ensure_ascii=False)
-        row["updated_at"] = _now()
-        _save_accounts(accounts)
-        return True
+        changes.update({
+            "plus_trial_eligible": bool(result.get("plus_trial_eligible")),
+            "plus_trial_campaign_id": result.get("plus_trial_campaign_id"),
+            "plus_trial_title": result.get("plus_trial_title"),
+            "plus_trial_discount_percentage": result.get("plus_trial_discount_percentage"),
+            "plus_trial_duration_num_periods": result.get("plus_trial_duration_num_periods"),
+            "plus_trial_duration_period": result.get("plus_trial_duration_period"),
+            "eligible_offer_ids": result.get("eligible_offer_ids") or [],
+            "plan_last_success_at": checked_at,
+            "plan_last_success_result_json": json.dumps(result, ensure_ascii=False),
+        })
+        # 额度是套餐查询的附带快照。额度接口偶发失败时保留上次成功的
+        # 窗口和类型，只更新独立的失败状态，避免把真实额度清空。
+        quota_status = result.get("quota_status")
+        if quota_status:
+            quota_checked_at = result.get("quota_checked_at") or checked_at
+            changes.update({
+                "quota_status": quota_status,
+                "quota_checked_at": quota_checked_at,
+                "quota_http_status": result.get("quota_http_status"),
+            })
+            if quota_status == "success":
+                changes.update({
+                    "quota_type": result.get("quota_type") or "未返回额度窗口",
+                    "quota_windows": result.get("quota_windows") or [],
+                    "quota_error": None,
+                    "quota_last_success_at": quota_checked_at,
+                })
+            else:
+                changes["quota_error"] = result.get("quota_error") or "额度查询失败"
+    changes.update({
+        "plan_check_proxy_mode": result.get("proxy_mode"),
+        "plan_check_network_route": result.get("network_route"),
+        "plan_check_proxy_used": result.get("proxy_used"),
+        "plan_check_proxy_fallback_reason": result.get("proxy_fallback_reason"),
+        "token_expired": result.get("token_expired"),
+        "token_expires_at": result.get("token_expires_at"),
+        "plan_check_result_json": json.dumps(result, ensure_ascii=False),
+        "updated_at": now,
+    })
+    return _patch_account(int(row["id"]), changes)
 
 
 def claim_account_extract(acc_id: int, trigger: str = "manual", link_type: str = "pix") -> bool:
@@ -1534,42 +1597,38 @@ def mark_account_extract_running(acc_id: int) -> bool:
 def update_account_extract(acc_id: int, result: dict | None = None) -> bool:
     """更新账号提链任务结果/进度。"""
     result = result or {}
-    with _LOCK:
-        accounts = _load_accounts()
-        row = next((r for r in accounts if int(r.get("id") or 0) == int(acc_id)), None)
-        if row is None:
-            return False
-        status = str(result.get("status") or ("success" if result.get("ok") else "failed"))
-        ok = bool(result.get("ok")) and status == "success"
-        row["extract_link_status"] = status
-        row["extract_link_ok"] = ok
-        row["extract_link_checked_at"] = result.get("checked_at") or _now()
-        if status in {"success", "failed", "stopped"}:
-            row["extract_link_completed_at"] = _now()
-        row["extract_link_error"] = None if ok or status == "running" else result.get("error")
-        if result.get("message") is not None:
-            row["extract_link_message"] = result.get("message")
-        if result.get("job_id") is not None:
-            row["extract_link_job_id"] = result.get("job_id")
-        if result.get("link_type") is not None:
-            row["extract_link_type"] = result.get("link_type")
-        if result.get("cdk_remaining") is not None:
-            row["extract_link_cdk_remaining"] = result.get("cdk_remaining")
-        payload = result.get("result") if isinstance(result.get("result"), dict) else {}
-        if payload:
-            row["extract_link_long_url"] = payload.get("long_url")
-            row["extract_link_copy_paste"] = payload.get("copy_paste")
-            row["extract_link_image_url_png"] = payload.get("image_url_png")
-            row["extract_link_image_url_svg"] = payload.get("image_url_svg")
-            row["extract_link_payment_method"] = payload.get("payment_method")
-            row["extract_link_payment_link_type"] = payload.get("payment_link_type")
-            row["extract_link_expires_at"] = payload.get("expires_at")
-            if payload.get("cdk_remaining") is not None:
-                row["extract_link_cdk_remaining"] = payload.get("cdk_remaining")
-            row["extract_link_result_json"] = json.dumps(payload, ensure_ascii=False)
-        row["updated_at"] = _now()
-        _save_accounts(accounts)
-        return True
+    if record_store.get_row(record_store.ACCOUNTS, int(acc_id)) is None:
+        return False
+    now = _now()
+    status = str(result.get("status") or ("success" if result.get("ok") else "failed"))
+    ok = bool(result.get("ok")) and status == "success"
+    changes: dict[str, Any] = {
+        "extract_link_status": status,
+        "extract_link_ok": ok,
+        "extract_link_checked_at": result.get("checked_at") or now,
+        "extract_link_error": None if ok or status == "running" else result.get("error"),
+        "updated_at": now,
+    }
+    if status in {"success", "failed", "stopped"}:
+        changes["extract_link_completed_at"] = now
+    for key in ("message", "job_id", "link_type", "cdk_remaining"):
+        if result.get(key) is not None:
+            changes[f"extract_link_{key}"] = result.get(key)
+    payload = result.get("result") if isinstance(result.get("result"), dict) else {}
+    if payload:
+        changes.update({
+            "extract_link_long_url": payload.get("long_url"),
+            "extract_link_copy_paste": payload.get("copy_paste"),
+            "extract_link_image_url_png": payload.get("image_url_png"),
+            "extract_link_image_url_svg": payload.get("image_url_svg"),
+            "extract_link_payment_method": payload.get("payment_method"),
+            "extract_link_payment_link_type": payload.get("payment_link_type"),
+            "extract_link_expires_at": payload.get("expires_at"),
+            "extract_link_result_json": json.dumps(payload, ensure_ascii=False),
+        })
+        if payload.get("cdk_remaining") is not None:
+            changes["extract_link_cdk_remaining"] = payload.get("cdk_remaining")
+    return _patch_account(int(acc_id), changes)
 
 
 def mark_extract_link_type_failed(acc_id: int, link_type: str, error: str | None = None) -> bool:
@@ -1607,22 +1666,22 @@ def mark_extract_link_type_failed(acc_id: int, link_type: str, error: str | None
 
 def recover_interrupted_extract_links() -> int:
     """服务启动时恢复上次进程中断的提链状态。"""
-    with _LOCK:
-        accounts = _load_accounts()
-        recovered = 0
-        now = _now()
-        for row in accounts:
-            if row.get("extract_link_status") not in {"queued", "running"}:
-                continue
-            row["extract_link_status"] = "failed"
-            row["extract_link_ok"] = False
-            row["extract_link_error"] = "WebUI 重启导致提链任务中断，请重新提链"
-            row["extract_link_completed_at"] = now
-            row["updated_at"] = now
-            recovered += 1
-        if recovered:
-            _save_accounts(accounts)
-        return recovered
+    now = _now()
+    recovered = record_store.patch_rows_where(
+        record_store.ACCOUNTS,
+        changes={
+            "extract_link_status": "failed",
+            "extract_link_ok": False,
+            "extract_link_error": "WebUI 重启导致提链任务中断，请重新提链",
+            "extract_link_completed_at": now,
+            "updated_at": now,
+        },
+        where='"extract_link_status" IN (%s, %s)',
+        params=("queued", "running"),
+    )
+    if recovered:
+        compat_export.schedule("accounts")
+    return recovered
 
 
 def _account_matches_query(row: dict, q: str | None) -> bool:
@@ -1805,175 +1864,179 @@ def update_account_registration_proxy(
     region: str | None = None,
 ) -> bool:
     """保存账号注册时的代理来源和实际出口国家，供后续账号功能按地区申请新租约。"""
-    with _LOCK:
-        accounts = _load_accounts()
-        row = next((r for r in accounts if int(r.get("id") or 0) == int(acc_id)), None)
-        if row is None:
-            return False
-        if provider is not None:
-            row["registration_proxy_provider"] = str(provider or "").strip() or None
-        if region is not None:
-            normalized = str(region or "").strip().upper()
-            row["registration_proxy_region"] = normalized if len(normalized) == 2 else None
-        row["updated_at"] = _now()
-        _save_accounts(accounts)
-        return True
+    if record_store.get_row(record_store.ACCOUNTS, int(acc_id)) is None:
+        return False
+    changes: dict[str, Any] = {"updated_at": _now()}
+    if provider is not None:
+        changes["registration_proxy_provider"] = str(provider or "").strip() or None
+    if region is not None:
+        normalized = str(region or "").strip().upper()
+        changes["registration_proxy_region"] = normalized if len(normalized) == 2 else None
+    return _patch_account(int(acc_id), changes)
 
 
 def backfill_account_registration_proxy_context() -> int:
     """从历史成功注册任务补齐账号的代理来源/实际国家；已有值不覆盖。"""
-    with _LOCK:
-        accounts = _load_accounts()
-        jobs = sorted(_load_jobs(), key=lambda r: int(r.get("id") or 0), reverse=True)
-        changed = 0
-        for row in accounts:
-            if row.get("registration_proxy_provider") and row.get("registration_proxy_region"):
-                continue
-            account_id = int(row.get("id") or 0)
-            email = str(row.get("email") or "").strip().lower()
-            job = next((
-                item for item in jobs
-                if (
-                    (account_id and int(item.get("account_id") or 0) == account_id)
-                    or (email and str(item.get("email") or "").strip().lower() == email)
-                )
-                and (
-                    str(item.get("proxy_provider") or "").strip()
-                    or len(str(item.get("proxy_region") or "").strip()) == 2
-                )
-            ), None)
-            if not job:
-                continue
-            provider = str(job.get("proxy_provider") or "").strip()
-            region = str(job.get("proxy_region") or "").strip().upper()
-            touched = False
-            if not row.get("registration_proxy_provider") and provider:
-                row["registration_proxy_provider"] = provider
-                touched = True
-            if not row.get("registration_proxy_region") and len(region) == 2:
-                row["registration_proxy_region"] = region
-                touched = True
-            if touched:
-                row["updated_at"] = _now()
-                changed += 1
-        if changed:
-            _save_accounts(accounts)
-        return changed
+    accounts = record_store.list_rows(record_store.ACCOUNTS, order_by="id")
+    jobs = record_store.list_rows(record_store.JOBS, order_by="id DESC")
+    changed = 0
+    for row in accounts:
+        if row.get("registration_proxy_provider") and row.get("registration_proxy_region"):
+            continue
+        account_id = int(row.get("id") or 0)
+        email = str(row.get("email") or "").strip().lower()
+        job = next((
+            item for item in jobs
+            if (
+                (account_id and int(item.get("account_id") or 0) == account_id)
+                or (email and str(item.get("email") or "").strip().lower() == email)
+            )
+            and (
+                str(item.get("proxy_provider") or "").strip()
+                or len(str(item.get("proxy_region") or "").strip()) == 2
+            )
+        ), None)
+        if not job:
+            continue
+        provider = str(job.get("proxy_provider") or "").strip()
+        region = str(job.get("proxy_region") or "").strip().upper()
+        row_changed = False
+        if not row.get("registration_proxy_provider") and provider:
+            if record_store.claim_row(
+                record_store.ACCOUNTS,
+                account_id,
+                changes={"registration_proxy_provider": provider, "updated_at": _now()},
+                guard="COALESCE(data->>'registration_proxy_provider', '') = %s",
+                guard_params=("",),
+            ):
+                row_changed = True
+        if not row.get("registration_proxy_region") and len(region) == 2:
+            if record_store.claim_row(
+                record_store.ACCOUNTS,
+                account_id,
+                changes={"registration_proxy_region": region, "updated_at": _now()},
+                guard="COALESCE(data->>'registration_proxy_region', '') = %s",
+                guard_params=("",),
+            ):
+                row_changed = True
+        if row_changed:
+            changed += 1
+    return changed
 
 
 def update_account_deactivation_mail(acc_id: int, result: dict | None = None) -> bool:
     """保存封号邮件扫描状态，不读取或修改 OAuth Token。"""
     result = result or {}
-    with _LOCK:
-        rows = _load_accounts()
-        row = next((r for r in rows if int(r.get("id") or 0) == int(acc_id)), None)
-        if row is None:
-            return False
-        now = _now()
-        status = str(result.get("status") or "failed")
-        row["deactivation_mail_scan_status"] = status
-        row["deactivation_mail_scan_trigger"] = str(result.get("trigger") or "")
-        if status == "queued":
-            row["deactivation_mail_scan_queued_at"] = now
-        elif status == "running":
-            row["deactivation_mail_scan_started_at"] = now
-        elif status == "success":
-            detected = bool(result.get("detected"))
-            # 已确认的封号通知是持久证据，后续缩短回溯窗口不能把它清掉。
-            row["deactivation_mail_detected"] = bool(row.get("deactivation_mail_detected")) or detected
-            row["deactivation_mail_checked_at"] = result.get("checked_at") or now
-            row["deactivation_mail_error"] = None
-            if detected:
-                row["deactivation_mail_received_at"] = result.get("received_at") or ""
-                row["deactivation_mail_subject"] = str(result.get("subject") or "")[:300]
-                row["deactivation_mail_sender"] = str(result.get("sender") or "")[:200]
-                row["deactivation_mail_message_id"] = str(result.get("message_id") or "")[:300]
-                row["deactivation_mail_confidence"] = str(result.get("confidence") or "high")
-        elif status in {"failed", "unsupported"}:
-            row["deactivation_mail_checked_at"] = result.get("checked_at") or now
-            row["deactivation_mail_error"] = str(result.get("error") or "")[:500]
-        row["updated_at"] = now
-        _save_accounts(rows)
-        return True
+    row = record_store.get_row(record_store.ACCOUNTS, int(acc_id))
+    if row is None:
+        return False
+    now = _now()
+    status = str(result.get("status") or "failed")
+    changes: dict[str, Any] = {
+        "deactivation_mail_scan_status": status,
+        "deactivation_mail_scan_trigger": str(result.get("trigger") or ""),
+        "updated_at": now,
+    }
+    if status == "queued":
+        changes["deactivation_mail_scan_queued_at"] = now
+    elif status == "running":
+        changes["deactivation_mail_scan_started_at"] = now
+    elif status == "success":
+        detected = bool(result.get("detected"))
+        # 已确认的封号通知是持久证据，后续缩短回溯窗口不能把它清掉。
+        if detected:
+            changes["deactivation_mail_detected"] = True
+        changes["deactivation_mail_checked_at"] = result.get("checked_at") or now
+        changes["deactivation_mail_error"] = None
+        if detected:
+            changes.update({
+                "deactivation_mail_received_at": result.get("received_at") or "",
+                "deactivation_mail_subject": str(result.get("subject") or "")[:300],
+                "deactivation_mail_sender": str(result.get("sender") or "")[:200],
+                "deactivation_mail_message_id": str(result.get("message_id") or "")[:300],
+                "deactivation_mail_confidence": str(result.get("confidence") or "high"),
+            })
+    elif status in {"failed", "unsupported"}:
+        changes["deactivation_mail_checked_at"] = result.get("checked_at") or now
+        changes["deactivation_mail_error"] = str(result.get("error") or "")[:500]
+    return _patch_account(int(acc_id), changes)
 
 
 def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
     """写回账号查活结果；成功时同步刷新最新 access_token 和账号基础信息。"""
     result = result or {}
-    with _LOCK:
-        rows = _load_accounts()
-        row = next((r for r in rows if int(r.get("id") or 0) == int(acc_id)), None)
-        if row is None:
-            return False
+    if record_store.get_row(record_store.ACCOUNTS, int(acc_id)) is None:
+        return False
+    now = _now()
+    ok = bool(result.get("ok"))
+    status = str(result.get("status") or ("live" if ok else "failed"))
+    changes: dict[str, Any] = {
+        "live_check_status": status,
+        "live_check_ok": ok,
+        "live_checked_at": result.get("checked_at") or now,
+        "live_check_error": None if ok else result.get("error"),
+        "updated_at": now,
+    }
+    # 认证路径是账号最近一次刷新 AT 的低敏摘要；密码、TOTP、Token 和
+    # 原始响应仍不进入账号行。普通 AT probe 没有 auth_method，不覆盖这组
+    # “最近认证”字段，避免查活把刷新 AT 的事实抹掉。
+    if result.get("auth_method"):
+        changes["last_auth_method"] = str(result.get("auth_method"))[:80]
+    if result.get("password_auth_status"):
+        changes["last_password_auth_status"] = str(result.get("password_auth_status"))[:40]
+    if "fallback_used" in result:
+        changes["last_auth_fallback_used"] = bool(result.get("fallback_used"))
+    if result.get("error") and result.get("auth_method"):
+        changes["last_auth_error_code"] = str(result.get("error"))[:100]
+    elif result.get("ok") and result.get("auth_method"):
+        changes["last_auth_error_code"] = None
+    if result.get("fingerprint"):
+        from core.auth_fingerprint import clean_safe_fingerprint_summary, safe_fingerprint_summary_text
 
-        now = _now()
-        ok = bool(result.get("ok"))
-        status = str(result.get("status") or ("live" if ok else "failed"))
-        row["live_check_status"] = status
-        row["live_check_ok"] = ok
-        row["live_checked_at"] = result.get("checked_at") or now
-        row["live_check_error"] = None if ok else result.get("error")
-        # 认证路径是账号最近一次刷新 AT 的低敏摘要；密码、TOTP、Token 和
-        # 原始响应仍不进入账号行。普通 AT probe 没有 auth_method，不覆盖这组
-        # “最近认证”字段，避免查活把刷新 AT 的事实抹掉。
-        if result.get("auth_method"):
-            row["last_auth_method"] = str(result.get("auth_method"))[:80]
-        if result.get("password_auth_status"):
-            row["last_password_auth_status"] = str(result.get("password_auth_status"))[:40]
-        if "fallback_used" in result:
-            row["last_auth_fallback_used"] = bool(result.get("fallback_used"))
-        if result.get("error") and result.get("auth_method"):
-            row["last_auth_error_code"] = str(result.get("error"))[:100]
-        elif result.get("ok") and result.get("auth_method"):
-            row["last_auth_error_code"] = None
-        if result.get("fingerprint"):
-            from core.auth_fingerprint import clean_safe_fingerprint_summary, safe_fingerprint_summary_text
+        fingerprint = clean_safe_fingerprint_summary(result.get("fingerprint"))
+        if fingerprint:
+            changes["last_auth_fingerprint"] = fingerprint
+            changes["last_auth_fingerprint_text"] = safe_fingerprint_summary_text(fingerprint)
+    try:
+        changes["live_check_http_status"] = int(result.get("http_status"))
+    except (TypeError, ValueError):
+        changes["live_check_http_status"] = None
 
-            fingerprint = clean_safe_fingerprint_summary(result.get("fingerprint"))
-            if fingerprint:
-                row["last_auth_fingerprint"] = fingerprint
-                row["last_auth_fingerprint_text"] = safe_fingerprint_summary_text(fingerprint)
-        try:
-            row["live_check_http_status"] = int(result.get("http_status"))
-        except (TypeError, ValueError):
-            row["live_check_http_status"] = None
-        row["updated_at"] = now
+    if status == "deactivated":
+        changes.update({
+            "account_status": "deactivated",
+            "account_status_reason": result.get("error") or "账号已删除/停用/封禁",
+            "account_status_at": result.get("checked_at") or now,
+            "codex_status": "deactivated",
+            "codex_error": result.get("error") or "账号已删除/停用/封禁",
+        })
 
-        if status == "deactivated":
-            row["account_status"] = "deactivated"
-            row["account_status_reason"] = result.get("error") or "账号已删除/停用/封禁"
-            row["account_status_at"] = result.get("checked_at") or now
-            row["codex_status"] = "deactivated"
-            row["codex_error"] = result.get("error") or "账号已删除/停用/封禁"
+    if ok:
+        token = str(result.get("access_token") or "").strip()
+        if token:
+            changes["access_token"] = token
+            from core.chatgpt_plan import token_claims
 
-        if ok:
-            token = str(result.get("access_token") or "").strip()
-            if token:
-                row["access_token"] = token
-                from core.chatgpt_plan import token_claims
-                claims = token_claims(token)
-                row["token_expires_at"] = claims.get("token_expires_at")
-                row["token_expired"] = claims.get("token_expired")
-            session = result.get("session") or {}
-            user = session.get("user") or {}
-            account = session.get("account") or {}
-            if user.get("id"):
-                row["user_id"] = user.get("id")
-            if user.get("name") is not None:
-                row["user_name"] = user.get("name")
-            if account.get("planType"):
-                row["plan_type"] = account.get("planType")
-            if session.get("expires"):
-                row["expires_at"] = session.get("expires")
-            if result.get("device_id"):
-                row["device_id"] = result.get("device_id")
-            if result.get("proxy_used"):
-                row["live_check_proxy_used"] = result.get("proxy_used")
-            row["live_check_error"] = None
-
-        row["copy_line"] = _account_line(row)
-        _save_accounts(rows)
-        return True
+            claims = token_claims(token)
+            changes["token_expires_at"] = claims.get("token_expires_at")
+            changes["token_expired"] = claims.get("token_expired")
+        session = result.get("session") or {}
+        user = session.get("user") or {}
+        account = session.get("account") or {}
+        if user.get("id"):
+            changes["user_id"] = user.get("id")
+        if user.get("name") is not None:
+            changes["user_name"] = user.get("name")
+        if account.get("planType"):
+            changes["plan_type"] = account.get("planType")
+        if session.get("expires"):
+            changes["expires_at"] = session.get("expires")
+        if result.get("device_id"):
+            changes["device_id"] = result.get("device_id")
+        if result.get("proxy_used"):
+            changes["live_check_proxy_used"] = result.get("proxy_used")
+        changes["live_check_error"] = None
+    return _patch_account(int(acc_id), changes)
 
 
 def mark_account_deactivated(
@@ -2021,22 +2084,22 @@ def claim_account_live_check(acc_id: int, trigger: str = "manual") -> bool:
 
 def recover_interrupted_live_checks() -> int:
     """服务启动时恢复上次进程中断的查活状态，避免 queued/running 卡死。"""
-    with _LOCK:
-        rows = _load_accounts()
-        recovered = 0
-        now = _now()
-        for row in rows:
-            if row.get("live_check_status") not in {"queued", "running"}:
-                continue
-            row["live_check_status"] = "failed"
-            row["live_check_ok"] = False
-            row["live_check_error"] = "WebUI 重启或任务异常中断，请重新查活"
-            row["live_checked_at"] = now
-            row["updated_at"] = now
-            recovered += 1
-        if recovered:
-            _save_accounts(rows)
-        return recovered
+    now = _now()
+    recovered = record_store.patch_rows_where(
+        record_store.ACCOUNTS,
+        changes={
+            "live_check_status": "failed",
+            "live_check_ok": False,
+            "live_check_error": "WebUI 重启或任务异常中断，请重新查活",
+            "live_checked_at": now,
+            "updated_at": now,
+        },
+        where='"live_check_status" IN (%s, %s)',
+        params=("queued", "running"),
+    )
+    if recovered:
+        compat_export.schedule("accounts")
+    return recovered
 
 
 def mark_account_live_check_running(acc_id: int) -> bool:
@@ -2311,49 +2374,51 @@ def import_registered_email_accounts(records: list[dict], source: str | None) ->
     if source not in ("outlook", "generic_api"):
         raise ValueError("source 必须显式传入 outlook / generic_api")
 
-    with _LOCK:
-        accounts = _load_accounts()
-        outlook_rows = _load_outlook()
-        generic_rows = _load_generic_api_emails()
-        inserted = skipped = 0
-
+    record_store.init()
+    inserted = skipped = 0
+    accounts_changed = outlook_changed = generic_changed = False
+    import_note = "导入为已注册账号，用于 Codex 授权"
+    with record_store.transaction() as conn:
         for raw in records:
             email = (raw.get("email") or "").strip()
             if not email:
                 skipped += 1
                 continue
-            if _find_by_email(accounts, email):
+
+            # 账号唯一性与对应邮箱池的状态变更必须一起判定；事务级业务键锁住
+            # 跨进程的“检查后插入”窗口，数据库 identity 负责生成新 ID。
+            record_store.advisory_xact_lock(conn, f"registered-account:{email.lower()}")
+            if _locked_row_by_email(conn, record_store.ACCOUNTS, email) is not None:
                 skipped += 1
                 continue
 
             now = _now()
             original_line = email
-            pool_row = None
+            pool_spec = (
+                record_store.GENERIC_API_POOL
+                if source == "generic_api"
+                else record_store.OUTLOOK_POOL
+            )
+            pool_row = _locked_row_by_email(conn, pool_spec, email)
 
             if source == "generic_api":
                 code_url = (raw.get("code_url") or raw.get("url") or "").strip()
                 if not code_url:
                     skipped += 1
                     continue
-                pool_row = _find_by_email(generic_rows, email)
+                pool_changes = {
+                    "code_url": code_url,
+                    "status": "used",
+                    "used_at": (pool_row or {}).get("used_at") or now,
+                    "completed_at": (pool_row or {}).get("completed_at") or now,
+                    "note": (pool_row or {}).get("note") or import_note,
+                }
                 if pool_row is None:
-                    pool_row = {
-                        "id": _next_id(generic_rows),
-                        "email": email,
-                        "code_url": code_url,
-                        "status": "used",
-                        "used_at": now,
-                        "note": "导入为已注册账号，用于 Codex 授权",
-                        "imported_at": now,
-                    }
-                    generic_rows.append(pool_row)
+                    pool_payload = {"email": email, **pool_changes, "imported_at": now}
+                    pool_id = record_store.insert_row(pool_spec, pool_payload, conn=conn)
+                    pool_row = {**pool_payload, "id": pool_id}
                 else:
-                    pool_row["code_url"] = code_url or pool_row.get("code_url")
-                pool_row["status"] = "used"
-                pool_row["used_at"] = pool_row.get("used_at") or now
-                pool_row["completed_at"] = pool_row.get("completed_at") or now
-                pool_row["note"] = pool_row.get("note") or "导入为已注册账号，用于 Codex 授权"
-                pool_row["copy_line"] = _generic_api_email_line(pool_row)
+                    pool_row = {**pool_row, **pool_changes}
                 original_line = _generic_api_email_line(pool_row)
             else:
                 password = (raw.get("password") or "").strip()
@@ -2362,36 +2427,26 @@ def import_registered_email_accounts(records: list[dict], source: str | None) ->
                 if not (password and client_id and refresh_token):
                     skipped += 1
                     continue
-                pool_row = _find_by_email(outlook_rows, email)
+                pool_changes = {
+                    "password": password,
+                    "client_id": client_id,
+                    "refresh_token": refresh_token,
+                    "status": "used",
+                    "used_at": (pool_row or {}).get("used_at") or now,
+                    "completed_at": (pool_row or {}).get("completed_at") or now,
+                    "note": (pool_row or {}).get("note") or import_note,
+                }
                 if pool_row is None:
-                    pool_row = {
-                        "id": _next_id(outlook_rows),
-                        "email": email,
-                        "password": password,
-                        "client_id": client_id,
-                        "refresh_token": refresh_token,
-                        "status": "used",
-                        "used_at": now,
-                        "note": "导入为已注册账号，用于 Codex 授权",
-                        "imported_at": now,
-                    }
-                    outlook_rows.append(pool_row)
+                    pool_payload = {"email": email, **pool_changes, "imported_at": now}
+                    pool_id = record_store.insert_row(pool_spec, pool_payload, conn=conn)
+                    pool_row = {**pool_payload, "id": pool_id}
                 else:
-                    pool_row["password"] = password or pool_row.get("password")
-                    pool_row["client_id"] = client_id or pool_row.get("client_id")
-                    pool_row["refresh_token"] = refresh_token or pool_row.get("refresh_token")
-                pool_row["status"] = "used"
-                pool_row["used_at"] = pool_row.get("used_at") or now
-                pool_row["completed_at"] = pool_row.get("completed_at") or now
-                pool_row["note"] = pool_row.get("note") or "导入为已注册账号，用于 Codex 授权"
-                pool_row["copy_line"] = _outlook_line(pool_row)
+                    pool_row = {**pool_row, **pool_changes}
                 original_line = _outlook_line(pool_row)
 
-            row_id = _next_id(accounts)
             access_token = (raw.get("access_token") or raw.get("token") or "").strip()
             totp_secret = (raw.get("totp_secret") or raw.get("totp") or "").strip() or None
             account = {
-                "id": row_id,
                 "email": email,
                 "created_at": now,
                 "access_token": access_token,
@@ -2410,28 +2465,34 @@ def import_registered_email_accounts(records: list[dict], source: str | None) ->
                 "original_email_line": original_line,
             }
             if source == "outlook":
-                account["password"] = pool_row.get("password")
-                account["client_id"] = pool_row.get("client_id")
-                account["refresh_token"] = pool_row.get("refresh_token")
-            account["copy_line"] = _account_line(account)
-            accounts.append(account)
+                account.update({
+                    "password": pool_row.get("password"),
+                    "client_id": pool_row.get("client_id"),
+                    "refresh_token": pool_row.get("refresh_token"),
+                })
+            account_id = record_store.insert_row(record_store.ACCOUNTS, account, conn=conn)
 
-            pool_row["registered_account_id"] = row_id
-            pool_row["access_token"] = access_token
+            pool_changes.update({
+                "registered_account_id": account_id,
+                "access_token": access_token,
+            })
             if totp_secret:
-                pool_row["totp_secret"] = totp_secret
+                pool_changes["totp_secret"] = totp_secret
+            record_store.patch_row(pool_spec, int(pool_row["id"]), pool_changes, conn=conn)
             inserted += 1
+            accounts_changed = True
+            if source == "outlook":
+                outlook_changed = True
+            else:
+                generic_changed = True
 
-        for row in generic_rows:
-            row["copy_line"] = _generic_api_email_line(row)
-        for row in accounts:
-            row["copy_line"] = _account_line(row)
-        _save_together(
-            (record_store.OUTLOOK_POOL, outlook_rows, "outlook"),
-            (record_store.GENERIC_API_POOL, generic_rows, "generic_api_emails"),
-            (record_store.ACCOUNTS, accounts, "accounts"),
-        )
-        return inserted, skipped
+    if accounts_changed:
+        compat_export.schedule("accounts")
+    if outlook_changed:
+        compat_export.schedule("outlook")
+    if generic_changed:
+        compat_export.schedule("generic_api_emails")
+    return inserted, skipped
 
 
 def claim_next_outlook() -> dict | None:
@@ -2454,19 +2515,27 @@ def release_outlook(email: str, status: str = "available", note: str | None = No
 
 def release_unconsumed_outlook(email: str, note: str | None = None) -> bool:
     """原子回收未生成本地账号且仍为 used 的 Outlook 邮箱。"""
-    with _LOCK:
-        if _find_by_email(_load_accounts(), email) is not None:
-            return False
-        rows = _load_outlook()
-        row = _find_by_email(rows, email)
-        if row is None or row.get("status") != "used":
-            return False
-        row["status"] = "available"
-        row["used_at"] = None
-        if note is not None:
-            row["note"] = note
-        _save_outlook(rows)
-        return True
+    address = str(email or "").strip()
+    changes: dict[str, Any] = {"status": "available", "used_at": None}
+    if note is not None:
+        changes["note"] = note
+    account_table = postgres_store.qualified(record_store.ACCOUNTS.name)
+    with record_store.transaction() as conn:
+        record_store.advisory_xact_lock(conn, f"registered-account:{address.lower()}")
+        rows = record_store.patch_rows_where_returning(
+            record_store.OUTLOOK_POOL,
+            changes=changes,
+            where=(
+                'lower("email") = lower(%s) AND "status" = %s '
+                f"AND NOT EXISTS (SELECT 1 FROM {account_table} a "
+                'WHERE lower(a."email") = lower(%s))'
+            ),
+            params=(address, "used", address),
+            conn=conn,
+        )
+    if rows:
+        compat_export.schedule("outlook")
+    return bool(rows)
 
 
 def delete_outlook(email: str) -> bool:
@@ -2555,19 +2624,27 @@ def release_generic_api_email(email: str, status: str = "available", note: str |
 
 def release_unconsumed_generic_api_email(email: str, note: str | None = None) -> bool:
     """原子回收未生成本地账号且仍为 used 的通用 API 邮箱。"""
-    with _LOCK:
-        if _find_by_email(_load_accounts(), email) is not None:
-            return False
-        rows = _load_generic_api_emails()
-        row = _find_by_email(rows, email)
-        if row is None or row.get("status") != "used":
-            return False
-        row["status"] = "available"
-        row["used_at"] = None
-        if note is not None:
-            row["note"] = note
-        _save_generic_api_emails(rows)
-        return True
+    address = str(email or "").strip()
+    changes: dict[str, Any] = {"status": "available", "used_at": None}
+    if note is not None:
+        changes["note"] = note
+    account_table = postgres_store.qualified(record_store.ACCOUNTS.name)
+    with record_store.transaction() as conn:
+        record_store.advisory_xact_lock(conn, f"registered-account:{address.lower()}")
+        rows = record_store.patch_rows_where_returning(
+            record_store.GENERIC_API_POOL,
+            changes=changes,
+            where=(
+                'lower("email") = lower(%s) AND "status" = %s '
+                f"AND NOT EXISTS (SELECT 1 FROM {account_table} a "
+                'WHERE lower(a."email") = lower(%s))'
+            ),
+            params=(address, "used", address),
+            conn=conn,
+        )
+    if rows:
+        compat_export.schedule("generic_api_emails")
+    return bool(rows)
 
 
 def delete_generic_api_email(email: str) -> bool:
@@ -2968,7 +3045,6 @@ def codex_accounts_summary() -> dict:
 # ============================================================
 
 def _new_job_row(
-    rows: list[dict],
     *,
     email_source: str,
     job_type: str = "registration",
@@ -2992,7 +3068,6 @@ def _new_job_row(
     )
     Path(log_file).parent.mkdir(parents=True, exist_ok=True)
     return {
-        "id": _next_id(rows),
         "job_uuid": job_uuid,
         "job_type": job_type,
         "parent_job_id": parent_job_id,
@@ -3036,22 +3111,23 @@ def create_job(
     data: dict | None = None,
 ) -> dict:
     """创建一个首次执行的 pending 注册任务。"""
-    with _LOCK:
-        rows = _load_jobs()
-        row = _new_job_row(
-            rows,
-            email_source=email_source,
-            batch_id=batch_id,
-            batch_index=batch_index,
-            batch_size=batch_size,
-            batch_workers=batch_workers,
-            data=data,
-        )
-        rows.append(row)
-        _save_jobs(rows)
-        _ensure_registration_attempt_job(row)
-        _sync_operation_job(int(row["id"]))
-        return dict(row)
+    # 显式 init 是新 schema 首次调用的前置条件；不能把建表责任推迟到
+    # _locked_row_by_email/其它业务查询之后。
+    record_store.init()
+    row = _new_job_row(
+        email_source=email_source,
+        batch_id=batch_id,
+        batch_index=batch_index,
+        batch_size=batch_size,
+        batch_workers=batch_workers,
+        data=data,
+    )
+    with record_store.transaction() as conn:
+        row["id"] = record_store.insert_row(record_store.JOBS, row, conn=conn)
+    _ensure_registration_attempt_job(row)
+    _sync_operation_job(int(row["id"]))
+    compat_export.schedule("jobs")
+    return dict(row)
 
 
 def create_retry_job(
@@ -3068,37 +3144,58 @@ def create_retry_job(
     data: dict | None = None,
 ) -> tuple[dict, bool]:
     """原子创建重试子任务；同一任务链已有活跃任务时直接复用。"""
-    with _LOCK:
-        rows = _load_jobs()
-        source = next((r for r in rows if int(r.get("id") or 0) == int(source_job_id)), None)
+    record_store.init()
+    source_id = int(source_job_id)
+    row: dict | None = None
+    with record_store.transaction() as conn:
+        source = record_store.get_row(record_store.JOBS, source_id, conn=conn)
+        if source is None:
+            raise LookupError("任务不存在")
+        root_id = int(source.get("root_job_id") or source_id)
+
+        # 只有 retry 创建者需要串行化；事务级 advisory lock 跨进程有效，且不会
+        # 把所有任务写入都退化为一个全局锁。拿锁后必须重新读取 source/active，
+        # 因为等待期间另一个进程可能已经创建了子任务。
+        record_store.advisory_xact_lock(conn, f"registration-retry:{root_id}")
+        source = record_store.get_row(record_store.JOBS, source_id, conn=conn)
         if source is None:
             raise LookupError("任务不存在")
         if source.get("status") not in ("success", "failed", "partial_success", "stopped", "cancelled"):
             raise ValueError(f"当前状态不支持重试：{source.get('status')}")
 
-        root_id = int(source.get("root_job_id") or source.get("id"))
-        active_states = {"pending", "running", "stopping"}
-        active = next((
-            r for r in rows
-            if int(r.get("id") or 0) != int(source_job_id)
-            and int(r.get("root_job_id") or 0) == root_id
-            and r.get("status") in active_states
-        ), None)
+        active_states = ("pending", "running", "stopping")
+        placeholders = ", ".join("%s" for _ in active_states)
+        active_rows = record_store.list_rows(
+            record_store.JOBS,
+            where=f'id <> %s AND "root_job_id" = %s AND "status" IN ({placeholders})',
+            params=(source_id, root_id, *active_states),
+            order_by="id",
+            limit=1,
+            conn=conn,
+        )
+        active = active_rows[0] if active_rows else None
         if active is not None:
             if active.get("job_type", "registration") != job_type:
                 raise ValueError(f"已有其他类型重试任务 #{active.get('id')} 在排队或运行中")
             return dict(active), False
 
-        attempts = [
-            int(r.get("retry_attempt") or 0)
-            for r in rows
-            if int(r.get("id") or 0) == root_id or int(r.get("root_job_id") or 0) == root_id
-        ]
+        history_rows = record_store.list_rows(
+            record_store.JOBS,
+            where='id = %s OR "root_job_id" = %s',
+            params=(root_id, root_id),
+            order_by="id",
+            conn=conn,
+        )
+        attempts = []
+        for item in history_rows:
+            try:
+                attempts.append(int(item.get("retry_attempt") or 0))
+            except (TypeError, ValueError):
+                continue
         row = _new_job_row(
-            rows,
             email_source=email_source,
             job_type=job_type,
-            parent_job_id=int(source_job_id),
+            parent_job_id=source_id,
             root_job_id=root_id,
             retry_attempt=(max(attempts) if attempts else 0) + 1,
             retry_action={
@@ -3114,11 +3211,12 @@ def create_retry_job(
             batch_workers=batch_workers,
             data=data,
         )
-        rows.append(row)
-        _save_jobs(rows)
-        _ensure_registration_attempt_job(row)
-        _sync_operation_job(int(row["id"]))
-        return dict(row), True
+        row["id"] = record_store.insert_row(record_store.JOBS, row, conn=conn)
+
+    _ensure_registration_attempt_job(row)
+    _sync_operation_job(int(row["id"]))
+    compat_export.schedule("jobs")
+    return dict(row), True
 
 
 def update_job(
@@ -3395,8 +3493,7 @@ def finish_job_progress(
 ) -> None:
     """收口任务进度：保留具体失败节点，并用“完成”节点展示任务总耗时。"""
     with _LOCK:
-        rows = _load_jobs()
-        row = next((r for r in rows if int(r.get("id") or 0) == int(job_id)), None)
+        row = record_store.get_row(record_store.JOBS, int(job_id))
         if row is None:
             return
         now = _now()
@@ -3490,69 +3587,90 @@ def finish_job_progress(
 
 def recover_interrupted_registration_jobs() -> int:
     """启动时把上个进程遗留的排队/运行任务收口为可重试失败状态。"""
-    with _LOCK:
-        rows = _load_jobs()
-        accounts = _load_accounts()
-        now = _now()
-        recovered = 0
-        account_changed = False
+    record_store.init()
+    detail = "WebUI 进程重启导致任务中断；浏览器和接码资源将在启动恢复阶段回收，请重新执行任务"
+    now = _now()
+    recovered_rows: list[dict] = []
+    account_changed = False
+    active_states = ("pending", "running", "stopping")
+    placeholders = ", ".join("%s" for _ in active_states)
+    with record_store.transaction() as conn:
+        rows = record_store.list_rows(
+            record_store.JOBS,
+            where=f'"status" IN ({placeholders})',
+            params=active_states,
+            order_by="id",
+            conn=conn,
+        )
         for row in rows:
-            if str(row.get("status") or "") not in {"pending", "running", "stopping"}:
-                continue
-            detail = "WebUI 进程重启导致任务中断；浏览器和接码资源将在启动恢复阶段回收，请重新执行任务"
-            row["status"] = "failed"
-            row["error_message"] = detail
-            row["completed_at"] = now
-            if row.get("proxy_status") in {"acquiring", "leased"}:
-                row["proxy_status"] = "interrupted"
-
-            steps = row.get("progress_steps")
-            if not isinstance(steps, dict):
-                steps = {}
             current = str(row.get("progress_stage") or "email")
             if current not in _JOB_PROGRESS_KEYS:
                 current = "email"
+            steps = row.get("progress_steps")
+            if not isinstance(steps, dict):
+                steps = {}
             item = steps.get(current)
             if not isinstance(item, dict):
                 item = {"started_at": row.get("started_at") or now}
             item.update({"state": "failed", "detail": detail[:300], "completed_at": now})
             steps[current] = item
-            row["progress_steps"] = steps
-            row["progress_stage"] = current
-            row["progress_updated_at"] = now
+            changes: dict[str, Any] = {
+                "status": "failed",
+                "error_message": detail,
+                "completed_at": now,
+                "progress_steps": steps,
+                "progress_stage": current,
+                "progress_updated_at": now,
+            }
+            if row.get("proxy_status") in {"acquiring", "leased"}:
+                changes["proxy_status"] = "interrupted"
+            if not record_store.claim_row(
+                record_store.JOBS,
+                int(row["id"]),
+                changes=changes,
+                guard=f'"status" IN ({placeholders})',
+                guard_params=active_states,
+                conn=conn,
+            ):
+                # 另一个进程已经收口/领取了这行；不能把它的更新覆盖回旧状态。
+                continue
+            recovered_row = dict(row)
+            recovered_row.update(changes)
+            recovered_rows.append(recovered_row)
 
             if str(row.get("job_type") or "") == "codex_retry":
-                email = str(row.get("email") or "").strip().lower()
-                account = next(
-                    (item for item in accounts if str(item.get("email") or "").strip().lower() == email),
-                    None,
-                )
+                email = str(row.get("email") or "").strip()
+                account = record_store.get_row_by(
+                    record_store.ACCOUNTS, "email", email, lower=True, conn=conn,
+                ) if email else None
                 if account is not None and str(account.get("codex_status") or "") == "retrying":
-                    account["codex_status"] = "failed"
-                    account["codex_error"] = "WebUI 进程重启导致 Codex OAuth 中断，请重新补跑"
-                    account["updated_at"] = now
-                    account_changed = True
-            recovered += 1
+                    account_changed = record_store.claim_row(
+                        record_store.ACCOUNTS,
+                        int(account["id"]),
+                        changes={
+                            "codex_status": "failed",
+                            "codex_error": "WebUI 进程重启导致 Codex OAuth 中断，请重新补跑",
+                            "updated_at": now,
+                        },
+                        guard='"codex_status" = %s',
+                        guard_params=("retrying",),
+                        conn=conn,
+                    ) or account_changed
 
-        if recovered or account_changed:
-            pairs = []
-            if recovered:
-                pairs.append((record_store.JOBS, rows, "jobs"))
-            if account_changed:
-                for account in accounts:
-                    account["copy_line"] = _account_line(account)
-                pairs.append((record_store.ACCOUNTS, accounts, "accounts"))
-            _save_together(*pairs)
-            for row in rows:
-                if str(row.get("status") or "") == "failed" and str(row.get("error_message") or "").startswith("WebUI 进程重启"):
-                    _sync_operation_job(int(row["id"]))
-        try:
-            from core.storage import registration
+    recovered = len(recovered_rows)
+    if recovered:
+        compat_export.schedule("jobs")
+    if account_changed:
+        compat_export.schedule("accounts")
+    for row in recovered_rows:
+        _sync_operation_job(int(row["id"]))
+    try:
+        from core.storage import registration
 
-            registration.recover_interrupted_runs()
-        except Exception:
-            logger.exception("恢复 RegistrationRun 失败")
-        return recovered
+        registration.recover_interrupted_runs()
+    except Exception:
+        logger.exception("恢复 RegistrationRun 失败")
+    return recovered
 
 
 def list_jobs(limit: int = 100) -> list[dict]:
@@ -3933,19 +4051,27 @@ def release_domain_email(email: str, status: str = "available", note: str | None
 
 def release_unconsumed_domain_email(email: str, note: str | None = None) -> bool:
     """原子回收未生成本地账号且仍为 used 的域名邮箱。"""
-    with _LOCK:
-        if _find_by_email(_load_accounts(), email) is not None:
-            return False
-        rows = _load_domain_pool()
-        row = _find_domain_email(rows, email)
-        if row is None or row.get("status") != "used":
-            return False
-        row["status"] = "available"
-        row["used_at"] = None
-        if note is not None:
-            row["note"] = note
-        _save_domain_pool(rows)
-        return True
+    address = str(email or "").strip()
+    changes: dict[str, Any] = {"status": "available", "used_at": None}
+    if note is not None:
+        changes["note"] = note
+    account_table = postgres_store.qualified(record_store.ACCOUNTS.name)
+    with record_store.transaction() as conn:
+        record_store.advisory_xact_lock(conn, f"registered-account:{address.lower()}")
+        rows = record_store.patch_rows_where_returning(
+            record_store.DOMAIN_POOL,
+            changes=changes,
+            where=(
+                'lower("email") = lower(%s) AND "status" = %s '
+                f"AND NOT EXISTS (SELECT 1 FROM {account_table} a "
+                'WHERE lower(a."email") = lower(%s))'
+            ),
+            params=(address, "used", address),
+            conn=conn,
+        )
+    if rows:
+        compat_export.schedule("domain_emails")
+    return bool(rows)
 
 
 def get_domain_email_by_email(email: str) -> dict | None:
@@ -3997,53 +4123,69 @@ def _find_icloud_hide_email(rows: list[dict], email: str) -> dict | None:
 
 def sync_icloud_hide_aliases(aliases: list[dict], account_id: str, *, full_snapshot: bool = True) -> dict:
     """把 sidecar 返回的 HME 别名同步到本地池，保留本地领取/失败状态。"""
-    with _LOCK:
-        rows = _load_icloud_hide_pool()
-        registered = {
-            (item.get("email") or "").strip().lower()
-            for item in _load_accounts()
-            if (item.get("email") or "").strip()
-        }
-        now = _now()
-        inserted = updated = disabled = 0
-
-        remote_emails: set[str] = set()
+    record_store.init()
+    account_key = str(account_id or "").strip()
+    now = _now()
+    inserted = updated = disabled = 0
+    remote_emails: set[str] = set()
+    with record_store.transaction() as conn:
         for raw in aliases or []:
             email = str(raw.get("email") or "").strip()
             if not email or "@" not in email:
                 continue
-            remote_emails.add(email.lower())
+            normalized_email = email.lower()
+            remote_emails.add(normalized_email)
             active = bool(raw.get("active", True))
-            row = _find_icloud_hide_email(rows, email)
+
+            # 与 insert_account 使用同一个业务键，避免同步恰好跨过账号创建提交
+            # 时把已注册别名误判成 available。
+            record_store.advisory_xact_lock(conn, f"registered-account:{normalized_email}")
+            registered = record_store.get_row_by(
+                record_store.ACCOUNTS, "email", email, lower=True, conn=conn,
+            ) is not None
+            row = _locked_row_by_email(conn, record_store.ICLOUD_HIDE_POOL, email)
             if row is None:
-                status = "used" if email.lower() in registered else ("available" if active else "disabled")
-                row = {
-                    "id": _next_id(rows),
+                status = "used" if registered else ("available" if active else "disabled")
+                payload = {
                     "email": email,
                     "status": status,
                     "used_at": now if status == "used" else None,
                     "note": None,
-                    "created_at": now,
+                    "account_id": account_key,
+                    "anonymous_id": str(raw.get("anonymousId") or raw.get("anonymous_id") or "").strip(),
+                    "label": str(raw.get("label") or "").strip(),
+                    "remote_created_at": str(raw.get("createdAt") or raw.get("created_at") or "").strip(),
+                    "remote_active": active,
+                    "synced_at": now,
                 }
-                rows.append(row)
+                row_id = record_store.insert_row(
+                    record_store.ICLOUD_HIDE_POOL, payload, conn=conn,
+                )
+                row = {**payload, "id": row_id}
                 inserted += 1
             else:
                 updated += 1
 
-            row["account_id"] = str(account_id or "").strip()
-            row["anonymous_id"] = str(raw.get("anonymousId") or raw.get("anonymous_id") or "").strip()
-            row["label"] = str(raw.get("label") or "").strip()
-            row["remote_created_at"] = str(raw.get("createdAt") or raw.get("created_at") or "").strip()
-            row["remote_active"] = active
-            row["synced_at"] = now
-
-            if email.lower() in registered:
-                row["status"] = "used"
-                row["used_at"] = row.get("used_at") or now
-                row.pop("disabled_reason", None)
+            changes: dict[str, Any] = {
+                "account_id": account_key,
+                "anonymous_id": str(raw.get("anonymousId") or raw.get("anonymous_id") or "").strip(),
+                "label": str(raw.get("label") or "").strip(),
+                "remote_created_at": str(raw.get("createdAt") or raw.get("created_at") or "").strip(),
+                "remote_active": active,
+                "synced_at": now,
+            }
+            remove_data_keys: tuple[str, ...] = ()
+            if registered:
+                changes.update({
+                    "status": "used",
+                    "used_at": row.get("used_at") or now,
+                })
+                remove_data_keys = ("disabled_reason",)
             elif not active and row.get("status") == "available":
-                row["status"] = "disabled"
-                row["disabled_reason"] = "remote_inactive"
+                changes.update({
+                    "status": "disabled",
+                    "disabled_reason": "remote_inactive",
+                })
                 disabled += 1
             elif (
                 active
@@ -4057,30 +4199,51 @@ def sync_icloud_hide_aliases(aliases: list[dict], account_id: str, *, full_snaps
                     or (not row.get("disabled_reason") and not row.get("note"))
                 )
             ):
-                row["status"] = "available"
-                row["used_at"] = None
-                row.pop("disabled_reason", None)
+                changes.update({
+                    "status": "available",
+                    "used_at": None,
+                })
+                remove_data_keys = ("disabled_reason",)
+            record_store.patch_row(
+                record_store.ICLOUD_HIDE_POOL,
+                int(row["id"]),
+                changes,
+                conn=conn,
+                remove_data_keys=remove_data_keys,
+            )
 
         if full_snapshot:
-            for row in rows:
-                if str(row.get("account_id") or "") != str(account_id or ""):
-                    continue
-                if (row.get("email") or "").strip().lower() in remote_emails:
+            existing_rows = record_store.list_rows(
+                record_store.ICLOUD_HIDE_POOL,
+                where='"account_id" = %s',
+                params=(account_key,),
+                order_by="id",
+                conn=conn,
+            )
+            for row in existing_rows:
+                if str(row.get("email") or "").strip().lower() in remote_emails:
                     continue
                 if row.get("status") == "available":
-                    row["status"] = "disabled"
-                    row["disabled_reason"] = "remote_missing"
-                    row["remote_active"] = False
-                    row["synced_at"] = now
+                    record_store.patch_row(
+                        record_store.ICLOUD_HIDE_POOL,
+                        int(row["id"]),
+                        {
+                            "status": "disabled",
+                            "disabled_reason": "remote_missing",
+                            "remote_active": False,
+                            "synced_at": now,
+                        },
+                        conn=conn,
+                    )
                     disabled += 1
 
-        _save_icloud_hide_pool(rows)
-        return {
-            "inserted": inserted,
-            "updated": updated,
-            "disabled": disabled,
-            "total": len(rows),
-        }
+    compat_export.schedule("icloud_hide_emails")
+    return {
+        "inserted": inserted,
+        "updated": updated,
+        "disabled": disabled,
+        "total": record_store.count_rows(record_store.ICLOUD_HIDE_POOL),
+    }
 
 
 def claim_next_icloud_hide_email(account_id: str | None = None) -> dict | None:
@@ -4109,19 +4272,28 @@ def release_icloud_hide_email(email: str, status: str = "available", note: str |
 
 def release_unconsumed_icloud_hide_email(email: str, note: str | None = None) -> bool:
     """原子回收未生成本地账号且仍为 used 的 HME 别名。"""
-    with _LOCK:
-        if _find_by_email(_load_accounts(), email) is not None:
-            return False
-        rows = _load_icloud_hide_pool()
-        row = _find_icloud_hide_email(rows, email)
-        if row is None or row.get("status") != "used" or row.get("remote_active", True) is False:
-            return False
-        row["status"] = "available"
-        row["used_at"] = None
-        if note is not None:
-            row["note"] = note
-        _save_icloud_hide_pool(rows)
-        return True
+    address = str(email or "").strip()
+    changes: dict[str, Any] = {"status": "available", "used_at": None}
+    if note is not None:
+        changes["note"] = note
+    account_table = postgres_store.qualified(record_store.ACCOUNTS.name)
+    with record_store.transaction() as conn:
+        record_store.advisory_xact_lock(conn, f"registered-account:{address.lower()}")
+        rows = record_store.patch_rows_where_returning(
+            record_store.ICLOUD_HIDE_POOL,
+            changes=changes,
+            where=(
+                'lower("email") = lower(%s) AND "status" = %s '
+                "AND COALESCE(data->>'remote_active', 'true') <> 'false' "
+                f"AND NOT EXISTS (SELECT 1 FROM {account_table} a "
+                'WHERE lower(a."email") = lower(%s))'
+            ),
+            params=(address, "used", address),
+            conn=conn,
+        )
+    if rows:
+        compat_export.schedule("icloud_hide_emails")
+    return bool(rows)
 
 
 def get_icloud_hide_email_by_email(email: str) -> dict | None:
