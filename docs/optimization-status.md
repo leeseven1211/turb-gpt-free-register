@@ -56,6 +56,22 @@ constraints to decompose the extracted shared module by capability and remove
 its application-service cancellation dependency. These are pre-merge checks,
 not accepted changes or confirmed regressions in a finished deliverable.
 
+### Monitor checkpoint 2026-09-14 10:54 UTC
+
+All five agents are still implementing, with no final commits returned. Changes
+now include row-scoped storage transactions, task dispatcher/dependency support,
+configuration schema, authentication capability modules, and lock/test tooling.
+No changes have been integrated or accepted yet.
+
+Coordinator sent concrete pre-merge review requirements: B must remove double
+claiming of resumed dependencies and keep continuations inside the concurrency
+budget; C must remove config-to-WebUI dependencies, publish values and revision
+as one immutable snapshot, and explicitly disable dotenv loading in test mode;
+E must resolve around the verified runtime rather than arbitrarily downgrade
+dependencies and test the actual locked environment. Runtime health and config
+snapshot interfaces have been relayed between B, C, and E. No normal-progress
+user notification was issued.
+
 Coordinator reviews every returned change, integrates nonconflicting commits,
 runs combined checks, delegates corrections, and updates actual acceptance and
 remaining work here. A completed agent is not equivalent to accepted delivery.
