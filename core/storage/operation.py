@@ -2404,7 +2404,7 @@ def _operation_task_where(
     batch_id: int | None = None, task_id: str = "", target: str = "",
     target_status: str = "", batch: str = "", run_count: str = "",
     stage: str = "", created_from: str = "", created_to: str = "", result: str = "",
-    exclude: str = "",
+    exclude: str = "", run_count_expression: str | None = None,
 ) -> tuple[list[str], list[Any]]:
     """Build the shared task-list predicate, optionally leaving one facet unfiltered."""
     where: list[str] = []
@@ -2460,7 +2460,9 @@ def _operation_task_where(
         )
     if run_count:
         value = str(run_count).strip().lower()
-        run_count_expr = f"(SELECT COUNT(*) FROM {_table('operation_runs')} rr WHERE rr.task_id=t.id)"
+        run_count_expr = run_count_expression or (
+            f"(SELECT COUNT(*) FROM {_table('operation_runs')} rr WHERE rr.task_id=t.id)"
+        )
         if value in {"4+", "4plus", "4_plus"}:
             add("run_count", f"{run_count_expr} >= %s", 4)
         elif value.isdigit():
@@ -2486,6 +2488,46 @@ def _operation_task_where(
     return where, params
 
 
+def _operation_task_current_run_join_sql() -> str:
+    """Join one authoritative run per task without a per-task lateral lookup.
+
+    The ordering deliberately matches the former ``LATERAL ... LIMIT 1`` query:
+    an active attempt wins over terminal history, then the newest run number and
+    id win.  ``DISTINCT ON`` evaluates that ordering once for the operation-run
+    relation instead of repeating the compatibility projection for every task.
+    """
+    return (
+        f"LEFT JOIN ("
+        f"SELECT DISTINCT ON (current_run.task_id) current_run.* "
+        f"FROM ("
+        f"SELECT rr.*, {_compatibility_run_projection_sql()} "
+        f"FROM {_table('operation_runs')} rr {_compatibility_run_joins_sql()}"
+        f") current_run "
+        f"ORDER BY current_run.task_id, "
+        f"CASE WHEN current_run.effective_status IN ({_ACTIVE_RUN_STATUS_SQL}) THEN 0 ELSE 1 END, "
+        f"current_run.run_no DESC, current_run.id DESC"
+        f") r ON r.task_id=t.id"
+    )
+
+
+def _operation_task_query_base(*, include_current_run: bool, include_run_count: bool) -> str:
+    """Build the read-only task-list relation with only needed derived joins."""
+    query = (
+        f"FROM {_table('operation_tasks')} t "
+        f"LEFT JOIN {_table('operation_batches')} b ON b.id=t.batch_id "
+    )
+    if include_run_count:
+        query += (
+            f"LEFT JOIN ("
+            f"SELECT rr.task_id, COUNT(*) AS run_count "
+            f"FROM {_table('operation_runs')} rr GROUP BY rr.task_id"
+            f") run_counts ON run_counts.task_id=t.id "
+        )
+    if include_current_run:
+        query += _operation_task_current_run_join_sql()
+    return query
+
+
 def list_tasks(
     *, page: int = 1, page_size: int = 50, task_type: str = "", status: str = "",
     source: str = "", q: str = "", batch_id: int | None = None, task_id: str = "",
@@ -2500,23 +2542,27 @@ def list_tasks(
         task_id=task_id, target=target, target_status=target_status, batch=batch,
         run_count=run_count, stage=stage, created_from=created_from,
         created_to=created_to, result=result,
+        run_count_expression="COALESCE(run_counts.run_count, 0)",
     )
     clause = f" WHERE {' AND '.join(where)}" if where else ""
-    from_sql = (
-        f"FROM {_table('operation_tasks')} t "
-        f"LEFT JOIN {_table('operation_batches')} b ON b.id=t.batch_id "
-        f"LEFT JOIN LATERAL ("
-        f"SELECT current_run.* FROM ("
-        f"SELECT rr.*, {_compatibility_run_projection_sql()} "
-        f"FROM {_table('operation_runs')} rr {_compatibility_run_joins_sql()} "
-        f"WHERE rr.task_id=t.id"
-        f") current_run "
-        f"ORDER BY CASE WHEN current_run.effective_status IN ({_ACTIVE_RUN_STATUS_SQL}) THEN 0 ELSE 1 END, "
-        f"current_run.run_no DESC, current_run.id DESC LIMIT 1"
-        f") r ON TRUE"
+
+    def uses_current_run(*, exclude: str = "", facet_name: str = "") -> bool:
+        return bool(
+            q
+            or result
+            or (status and exclude != "status")
+            or (stage and exclude != "stage")
+            or facet_name in {"status", "stage"}
+        )
+
+    run_count_expression = "COALESCE(run_counts.run_count, 0)"
+    count_from_sql = _operation_task_query_base(
+        include_current_run=uses_current_run(),
+        include_run_count=bool(run_count),
     )
+    page_from_sql = _operation_task_query_base(include_current_run=True, include_run_count=True)
     with _connect() as conn, conn.cursor() as cur:
-        cur.execute(f"SELECT COUNT(*) AS n {from_sql}{clause}", params)
+        cur.execute(f"SELECT COUNT(*) AS n {count_from_sql}{clause}", params)
         total = int(cur.fetchone()["n"])
         cur.execute(
             f"""
@@ -2530,8 +2576,8 @@ def list_tasks(
                    r.effective_error_message AS __current_run_error_message,
                    r.run_no AS last_run_no, r.duration_ms, r.result_summary,
                    r.source_system AS run_source_system, r.source_id AS run_source_id,
-                   (SELECT COUNT(*) FROM {_table('operation_runs')} rr WHERE rr.task_id=t.id) AS run_count
-            {from_sql}
+                   {run_count_expression} AS run_count
+            {page_from_sql}
             {clause}
             ORDER BY COALESCE(r.effective_created_at_sort, t.created_at) DESC, t.id DESC LIMIT %s OFFSET %s
             """,
@@ -2567,8 +2613,8 @@ def list_tasks(
             ),
             (
                 "run_count",
-                f"CASE WHEN (SELECT COUNT(*) FROM {_table('operation_runs')} rr WHERE rr.task_id=t.id) >= 4 "
-                f"THEN '4+' ELSE CAST((SELECT COUNT(*) FROM {_table('operation_runs')} rr WHERE rr.task_id=t.id) AS TEXT) END",
+                f"CASE WHEN {run_count_expression} >= 4 "
+                f"THEN '4+' ELSE CAST({run_count_expression} AS TEXT) END",
                 "run_count",
             ),
         )
@@ -2579,12 +2625,17 @@ def list_tasks(
                 task_id=task_id, target=target, target_status=target_status, batch=batch,
                 run_count=run_count, stage=stage, created_from=created_from,
                 created_to=created_to, result=result, exclude=exclude,
+                run_count_expression=run_count_expression,
             )
             facet_where.append(f"NULLIF({expression}, '') IS NOT NULL")
             facet_clause = f" WHERE {' AND '.join(facet_where)}"
+            facet_from_sql = _operation_task_query_base(
+                include_current_run=uses_current_run(exclude=exclude, facet_name=facet_name),
+                include_run_count=bool(run_count) or facet_name == "run_count",
+            )
             cur.execute(
                 f"SELECT {facet_name!r} AS facet, {expression} AS value, COUNT(*) AS count "
-                f"{from_sql}{facet_clause} GROUP BY 2 ORDER BY 2",
+                f"{facet_from_sql}{facet_clause} GROUP BY 2 ORDER BY 2",
                 facet_params,
             )
             facets[facet_name] = [

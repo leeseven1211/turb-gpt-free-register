@@ -131,6 +131,32 @@ benchmark 的清理位于嵌套 `finally` 中：即使 shared executor shutdown�
 删除或连接池关闭失败，也会尽力按顺序恢复调用方原有的 `TURB_DB_SCHEMA`、
 `ACCOUNT_BATCH_WORKERS` 与 `OPERATION_TASK_DB_SCHEMA`。
 
+## 任务中心历史负载读路径优化证据
+
+此前的真实 20-sample 结果在同一 launcher、同一路径、1000 个合成账号和 2000 条
+终态 task/run 历史上为任务中心 p95 **1453.913 ms**（max 1462.994 ms，8 条
+SQL），因此是有效的 250 ms 门禁失败，不是被缩小历史或改阈值得出的结论。
+
+只读定位链为 `webui/routes/operations.py:api_operations` ->
+`core.storage.operation.list_tasks`/`list_batches`。在 `turb_opt_20260914` 的随机
+`test_diag_*` schema 上做的 `EXPLAIN (ANALYZE, BUFFERS)` 显示，最贵的是
+`core/storage/operation.py` 原 `list_tasks` 的 `run_count` facet：执行约
+**895.077 ms**，其中按 task 的相关 `COUNT(operation_runs)` 被重复用于 facet
+表达式和过滤，且每个列表关系还重复执行 current-run LATERAL 兼容投影。批次列表
+本身的计划约 0.568 ms，不是瓶颈。
+
+当前最小写集只涉及任务中心只读查询：`DISTINCT ON (task_id)` 按原有
+active-first/run number/id 顺序一次选择 current run；按 task 聚合一次 run count；
+count 与各 facet 只加入实际需要的派生关系。没有改变任务、运行、reconciliation、
+dispatcher 或 recovery 写路径。
+
+同样的 20-sample benchmark 在该读路径优化后实测为：任务中心 p95 **43.229 ms**、
+max 45.053 ms、每次仍为 8 条 SQL；账号列表 p95 17.633 ms、max 19.716 ms、每次
+3 条 SQL。随后在独立锁定环境 `/tmp/turb-opt-release-lock-20260914` 同样运行 20
+samples，任务中心 p95 51.983 ms、max 53.025 ms，账号列表 p95 17.071 ms；门禁仍
+通过。历史 seed、HTTP route、PostgreSQL schema 和 250 ms 门禁均不变；结果是
+真实合成负载观测，不是生成的 baseline，集成后的机器仍需重新记录前后实测值。
+
 ## 路由契约摘要
 
 路由快照仍由 `tests/test_route_contract.py` 的显式数量和 SHA-256 固化。相对于
