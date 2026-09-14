@@ -18,6 +18,7 @@ AUTH_ENV_KEYS = ("WEBUI_AUTH_CODE", "AUTH_CODE", "WEB_AUTH_CODE")
 _SESSION_KEY = "webui_auth_ok"
 _AUTH_CODE: str | None = None
 _GENERATED = False
+_PUBLIC_ENDPOINTS = {"healthz", "readyz"}
 
 def init_auth(app: Any, *, auth_code: str | None = None) -> str:
     """初始化授权码和 Flask session。未显式配置时生成临时授权码。"""
@@ -105,7 +106,7 @@ def register_auth_routes(app: Any) -> None:
     @app.before_request
     def _require_auth_code():
         endpoint = request.endpoint or ""
-        if endpoint in {"auth_login", "auth_logout", "static", "favicon"}:
+        if endpoint in {"auth_login", "auth_logout", "static", "favicon"} | _PUBLIC_ENDPOINTS:
             return None
         if request_is_authorized():
             return None

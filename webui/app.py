@@ -46,6 +46,7 @@ from webui.routes.email_pool import create_email_pool_blueprint
 from webui.routes.integrations import create_integrations_blueprint
 from webui.routes.jobs import create_jobs_blueprint
 from webui.routes.operations import create_operations_blueprint
+from webui.routes.health import create_health_blueprint
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,7 @@ def create_app(auth_code: str | None = None) -> Flask:
         create_operations_blueprint,
         create_codex_blueprint,
         create_integrations_blueprint,
+        create_health_blueprint,
     ):
         app.register_blueprint(factory(context))
     return app

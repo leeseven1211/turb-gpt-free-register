@@ -13,10 +13,11 @@ from webui.app import create_app
 
 
 class FlaskRouteContractTests(PostgresTestCase):
-    # Intentional additions for the account-management action chain:
-    # single action, bulk action, and config-driven completion.
-    EXPECTED_ROUTE_COUNT = 109
-    EXPECTED_SHA256 = "3ab7717a55ed63869a310fdd8069cb9c16af810e720e27085cc68dad818dc6c3"
+    # Snapshot history: commit 1006937 had the prior map; f33e523 intentionally
+    # added /api/extract-link/types. This release adds the public /healthz and
+    # /readyz probes, so both additions remain explicit in this reviewed snapshot.
+    EXPECTED_ROUTE_COUNT = 112
+    EXPECTED_SHA256 = "089935cdfa5a87e74928b0d8ac53005a11f4191c7af15b337e20103f049ccc23"
 
     def test_public_route_map_matches_refactor_baseline(self):
         app = create_app(auth_code="route-contract")

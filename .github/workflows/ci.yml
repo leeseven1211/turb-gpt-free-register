@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    # The checked-in lock is verified on CPython 3.12.13/macOS. CI keeps the
+    # declared matrix honest by using the matching minor interpreter; another
+    # platform or Python version must receive its own resolver run first.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: turb_opt
+          POSTGRES_PASSWORD: turb_opt
+          POSTGRES_DB: turb_opt_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U turb_opt -d turb_opt_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgresql://turb_opt:turb_opt@127.0.0.1:5432/turb_opt_ci
+      TURB_DB_SCHEMA: test_ci
+      TURB_ALLOW_PRODUCTION_DB: "0"
+      PYTHON_DOTENV_DISABLED: "1"
+      COMPAT_EXPORT_MODE: off
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Install the reviewed locks
+        run: python -m pip install -r requirements-dev.txt
+      - name: Validate lock metadata
+        run: |
+          python tools/check_dependencies.py
+          python -m pip check
+      - name: Syntax and undefined-name gate
+        run: python -m ruff check .
+      - name: Run isolated tests
+        run: python tools/test_isolated.py -q

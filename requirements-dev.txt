@@ -1,0 +1,14 @@
+# Resolver output for requirements-dev.in, generated with Python 3.12.13 on
+# 2026-09-14. Runtime packages are inherited from requirements.txt. This is
+# not a pip freeze; re-resolve for another interpreter or operating system.
+-r requirements.txt
+build==1.6.1
+iniconfig==2.3.0
+packaging==26.3
+pip-tools==7.6.1
+pluggy==1.6.0
+pygments==2.21.0
+pyproject-hooks==1.2.0
+pytest==9.1.1
+ruff==0.16.7
+wheel==0.48.0

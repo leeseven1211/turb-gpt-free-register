@@ -108,7 +108,7 @@ WebUI 启动注册前会显示“本次注册邮箱来源”下拉框，操作�
 
 ## 环境要求
 
-- Python 3.10+
+- Python 3.10+（项目声明下限；当前锁已在 CPython 3.12.13、macOS x86_64 验证）
 - Node.js 18+
 - 可用代理、系统代理/VPN，或 RoxyBrowser 代理环境
 - 如使用 Roxy 注册：需要本机 RoxyBrowser API 可访问
@@ -122,6 +122,16 @@ python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -r requirements.txt
 node --version
+```
+
+`requirements.txt` 和 `requirements-dev.txt` 是基于已验证 Python 3.12.13 环境
+重新解析的版本锁，不是主环境 `pip freeze`，也不是无需重解析即可覆盖所有平台的
+wheel 锁。使用其他 Python 版本或操作系统时，请在独立 resolver 环境重新解析并
+运行 `python -m pip check`。依赖与锁覆盖检查：
+
+```bash
+.venv/bin/python tools/check_dependencies.py
+.venv/bin/python -m pip check
 ```
 
 macOS 如果本机环境变量仍指向旧版 `openssl@1.1`，安装新版 `cryptography` 可能触发编译失败。可先安装带 wheel 的兼容版本再继续：
@@ -564,10 +574,14 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 ./webui.sh stop       # 关闭
 ./webui.sh restart    # 重启
 ./webui.sh status     # 状态
+./webui.sh check      # HTTP、数据库和 worker readiness（只读）
 ./webui.sh logs       # 查看实时日志
 ```
 
 脚本默认启动 `http://127.0.0.1:5000`，日志写入 `logs/webui.log`，PID 写入 `run/webui.pid`。
+`start` 会等待 `/healthz`、PostgreSQL 和必需后台 worker readiness 全部通过后才报告成功；
+`check` 不启动或重启服务。固定版本发布、回退和隔离测试见
+[`docs/optimization-release.md`](docs/optimization-release.md)。
 
 可通过环境变量调整：
 
@@ -1114,7 +1128,7 @@ ENABLE_CODEX_AUTO = False
 │   ├── routes/                      # 按领域拆分的 Flask Blueprint
 │   │   ├── dashboard.py / config.py / email_pool.py
 │   │   ├── accounts.py / jobs.py / operations.py
-│   │   └── codex.py / integrations.py
+│   │   └── codex.py / integrations.py / health.py
 │   ├── auth.py                     # 登录鉴权
 │   ├── config_editor.py            # 配置白名单、.env 写入与热加载
 │   ├── templates/                  # modern / legacy / login 模板

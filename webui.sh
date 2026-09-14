@@ -8,6 +8,7 @@ set -euo pipefail
 #   ./webui.sh stop       关闭 WebUI
 #   ./webui.sh restart    重启 WebUI
 #   ./webui.sh status     查看状态
+#   ./webui.sh check      检查 HTTP、数据库和 worker readiness
 #   ./webui.sh logs       实时查看日志
 #
 # 可选环境变量：
@@ -17,6 +18,7 @@ set -euo pipefail
 #   VERBOSE=1
 #   AUTH_CODE=xxx
 #   EXTRA_ARGS="..."
+#   STARTUP_CHECK_TIMEOUT=30
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
@@ -32,8 +34,7 @@ OPEN_BROWSER="${OPEN_BROWSER:-0}"
 VERBOSE="${VERBOSE:-0}"
 AUTH_CODE="${AUTH_CODE:-}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
-
-mkdir -p "$RUN_DIR" "$LOG_DIR"
+STARTUP_CHECK_TIMEOUT="${STARTUP_CHECK_TIMEOUT:-30}"
 
 usage() {
   cat <<EOF
@@ -44,6 +45,7 @@ commands:
   stop       关闭 WebUI
   restart    重启 WebUI
   status     查看运行状态
+  check      检查 HTTP、数据库和 worker readiness（只读）
   logs       实时查看日志
 
 环境变量：
@@ -80,6 +82,43 @@ get_python() {
   fi
 }
 
+health_host() {
+  if [[ "$HOST" == "0.0.0.0" || "$HOST" == "::" ]]; then
+    echo "127.0.0.1"
+  else
+    echo "$HOST"
+  fi
+}
+
+check_readiness() {
+  local py="$1"
+  "$py" "$ROOT_DIR/tools/check_startup.py" \
+    --base-url "http://$(health_host):${PORT}" \
+    --timeout 3
+}
+
+wait_for_readiness() {
+  local pid="$1"
+  local py="$2"
+  local attempts
+  if ! [[ "$STARTUP_CHECK_TIMEOUT" =~ ^[0-9]+$ ]] || [[ "$STARTUP_CHECK_TIMEOUT" -lt 1 ]]; then
+    echo "STARTUP_CHECK_TIMEOUT 必须是正整数" >&2
+    return 1
+  fi
+  for ((attempts = 0; attempts < STARTUP_CHECK_TIMEOUT; attempts++)); do
+    if ! is_running "$pid"; then
+      echo "WebUI 进程在 readiness 通过前退出：PID=$pid" >&2
+      return 1
+    fi
+    if check_readiness "$py"; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "WebUI readiness 超时（${STARTUP_CHECK_TIMEOUT}s），请查看日志：$LOG_FILE" >&2
+  return 1
+}
+
 collect_running_pids() {
   local pids=()
   local pid
@@ -108,6 +147,7 @@ collect_running_pids() {
 
 cmd_start() {
   local old_pid py pid
+  mkdir -p "$RUN_DIR" "$LOG_DIR"
   old_pid="$(read_pid)"
   if is_running "$old_pid"; then
     echo "WebUI 已在运行：PID=$old_pid，地址：http://${HOST}:${PORT}"
@@ -147,6 +187,15 @@ cmd_start() {
     rm -f "$PID_FILE"
     return 1
   fi
+
+  if ! wait_for_readiness "$pid" "$py"; then
+    if is_running "$pid"; then
+      kill "$pid" >/dev/null 2>&1 || true
+    fi
+    rm -f "$PID_FILE"
+    return 1
+  fi
+  echo "启动检查通过：HTTP、PostgreSQL、worker readiness 均正常"
 }
 
 cmd_stop() {
@@ -214,6 +263,12 @@ cmd_status() {
   echo "日志：$LOG_FILE"
 }
 
+cmd_check() {
+  local py
+  py="$(get_python)"
+  check_readiness "$py"
+}
+
 cmd_logs() {
   touch "$LOG_FILE"
   tail -n 120 -f "$LOG_FILE"
@@ -225,6 +280,7 @@ case "$cmd" in
   stop) cmd_stop ;;
   restart) cmd_restart ;;
   status) cmd_status ;;
+  check|ready) cmd_check ;;
   logs|log) cmd_logs ;;
   -h|--help|help|"") usage ;;
   *)

@@ -39,6 +39,16 @@ class EmailButlerClientTests(unittest.TestCase):
             "signal": {"detected": False},
         }
         with patch.object(
+            client._email_cfg,
+            "EMAIL_BUTLER_API_BASE",
+            "http://example.test/v1",
+            create=True,
+        ), patch.object(
+            client._email_cfg,
+            "EMAIL_BUTLER_API_KEY",
+            "test-key",
+            create=True,
+        ), patch.object(
             client.requests,
             "request",
             side_effect=[client.requests.ConnectionError("TLS closed"), response],

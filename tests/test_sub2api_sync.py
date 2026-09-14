@@ -3,6 +3,7 @@ import json
 import unittest
 from unittest.mock import Mock, patch
 
+from config import sub2api as sub2api_config
 from core import record_store
 from core.sub2api_client import export_configured_accounts
 from core.sub2api_sync import (
@@ -26,7 +27,18 @@ class Sub2ApiSyncMappingTests(unittest.TestCase):
 
         from core.sub2api_client import export_configured_accounts
 
-        result = export_configured_accounts()
+        with patch.object(
+            sub2api_config,
+            "SUB2API_API_BASE",
+            "http://example.test",
+            create=True,
+        ), patch.object(
+            sub2api_config,
+            "SUB2API_API_KEY",
+            "test-key",
+            create=True,
+        ):
+            result = export_configured_accounts()
 
         self.assertEqual(result[0]["name"], "one@example.com")
         self.assertIn("x-api-key", get.call_args.kwargs["headers"])

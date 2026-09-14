@@ -1,0 +1,6 @@
+# Development/test inputs. Runtime dependencies are already locked by the
+# included requirements.txt reference.
+-r requirements.txt
+pytest==9.1.1
+ruff==0.16.7
+pip-tools==7.6.1
