@@ -263,6 +263,30 @@ temporary fallback claim/executor path onto the now available shared handler.
 No additional user notification was issued for this normal interim checkpoint;
 the heartbeat remains ACTIVE and full five-stream acceptance is not complete.
 
+### Monitor checkpoint 2026-09-14 13:10 UTC
+
+All four remaining agents are still implementing/testing; no new completed
+commit was available to integrate. A has native service adapters and a dedicated
+maintenance regression file; D has added HTTP-response-before-readback crash
+coverage and moved confirmed receipt after credential persistence/readback in
+its draft. These are not yet accepted results. B is implementing remote-intent
+storage and runtime integration; E is expanding the benchmark to historical
+task load. Integration remains clean at `1ea2cc7` before this log update.
+
+Coordinator found an A draft performance regression: it removed the prior HME
+bulk shared-mailbox scan and replaced it with one IMAP scan per alias. A must
+preserve batched mailbox search and per-account result fanout under durable
+dispatch, without restoring a second independent consumer. Added acceptance
+requirements cover a single bulk scan for multiple aliases, per-account result
+writeback, cancellation and partial failure. Queue unification is not permission
+to remove an existing batching optimization.
+
+B is asked to return a separately verified remote-intent/receipt helper commit
+before the larger runtime/routes migration, so A/D can replace draft/fallback
+hooks with the actual shared contract and test crash recovery end-to-end.
+No user notification was issued for unchanged normal execution. The monitor
+remains ACTIVE; primary workspace and production service are unchanged.
+
 ## Verification
 
 Baseline full suite completed: **954 passed, 34 subtests passed, 3 failed in
