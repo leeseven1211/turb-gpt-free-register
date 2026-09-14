@@ -167,6 +167,41 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
         self.assertEqual(first["task_id"], second["task_id"])
         self.assertEqual(first["run_id"], second["run_id"])
 
+    def test_handler_return_value_matches_persisted_terminal_result(self):
+        # Polling the database alone misses failures raised after finish_run
+        # commits. Verify the executor's return value as well as DB state.
+        for mode in ("returned", "finished"):
+            with self.subTest(mode=mode):
+                task_type = f"synthetic_result_{mode}"
+
+                def handler(context, *, _mode=mode):
+                    result = task_gateway.OperationResult.success({"receipt": _mode})
+                    if _mode == "finished":
+                        context.finish(result)
+                        return None
+                    return result
+
+                self._register(task_type, handler)
+                submission = task_gateway.submit_durable_operation(
+                    task_type=task_type,
+                    account_id=None,
+                    email="synthetic-return@example.test",
+                    idempotency_key=f"return-contract-{mode}",
+                    dispatch=False,
+                )
+                result = task_gateway._execute_operation_handler(task_type, submission["run_id"])
+                self.assertEqual("success", result["status"])
+                self.assertEqual("success", result["database_status"])
+                self.assertEqual("success", operation.get_run(submission["run_id"])["status"])
+
+    def test_mapping_result_normalization_has_safe_optional_defaults(self):
+        result = task_gateway._coerce_operation_result(
+            {"status": "success", "summary": {"receipt": "synthetic"}},
+            status="failed", message="",
+        )
+        self.assertEqual("success", result.status)
+        self.assertEqual({"receipt": "synthetic"}, result.summary)
+
     def test_request_unknown_is_fenced_and_only_reconcile_is_offered(self):
         completed = threading.Event()
 

@@ -362,6 +362,7 @@ class OperationHandlerContext:
         self._finished = True
         return row
 
+    @property
     def last_result(self) -> OperationResult | None:
         return self._last_result
 
@@ -369,10 +370,10 @@ class OperationHandlerContext:
 def _coerce_operation_result(
     result: OperationResult | Mapping[str, Any] | None,
     *,
-    status: str | None,
-    message: str,
-    result_summary: Mapping[str, Any] | None,
-    error: str | None,
+    status: str | None = None,
+    message: str = "",
+    result_summary: Mapping[str, Any] | None = None,
+    error: str | None = None,
 ) -> OperationResult:
     if isinstance(result, OperationResult):
         return result
