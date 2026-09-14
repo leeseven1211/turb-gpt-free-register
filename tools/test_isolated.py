@@ -21,7 +21,18 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
 
-_ENV_HELPERS = {"env_str", "env_bool", "env_int", "env_float", "env_list", "env_value"}
+_ENV_HELPERS = {
+    "env_str",
+    "env_bool",
+    "env_int",
+    "env_float",
+    "env_list",
+    "env_value",
+    # The centralized schema is the source of defaults for most config
+    # modules.  Keep this in the AST scanner so test entrypoint sanitization
+    # does not depend on importing config (which could load dotenv).
+    "schema_default",
+}
 _ENV_METHODS = {"get", "pop", "setdefault"}
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _PRODUCTION_DATABASES = {"turb_console"}
@@ -115,6 +126,40 @@ def _collect_from_python(path: Path) -> set[str]:
     for statement in ast.walk(tree):
         if isinstance(statement, (ast.Assign, ast.AnnAssign)):
             keys.update(_assigned_env_key_names(statement))
+            # ``config.schema`` owns the canonical field registry.  The
+            # registry is expressed as a list of metadata dictionaries, so
+            # these literals are the only source-level keys that are not
+            # necessarily repeated in a ``schema_default`` call.  Restrict
+            # this extraction to schema.py; generic ``{"key": ...}`` payloads
+            # elsewhere are not environment configuration.
+            targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+            target_names = {
+                target.id for target in targets if isinstance(target, ast.Name)
+            }
+            if path.name == "schema.py":
+                if "LEGACY_ENV_OVERRIDE_TYPES" in target_names:
+                    for item in ast.walk(statement.value):
+                        if not isinstance(item, ast.Dict):
+                            continue
+                        keys.update(
+                            key_text
+                            for key in item.keys
+                            if (key_text := _constant_string(key)) is not None
+                        )
+                if isinstance(statement.value, ast.Dict):
+                    for key, value in zip(statement.value.keys, statement.value.values):
+                        if _constant_string(key) == "key":
+                            field_key = _constant_string(value)
+                            if field_key:
+                                keys.add(field_key)
+        if path.name == "schema.py" and isinstance(statement, ast.Dict):
+            # ``_legacy_fields`` returns its field dictionaries directly from
+            # a list expression, rather than assigning that list first.
+            for key, value in zip(statement.keys, statement.values):
+                if _constant_string(key) == "key":
+                    field_key = _constant_string(value)
+                    if field_key:
+                        keys.add(field_key)
         if not isinstance(statement, ast.Call):
             continue
 
@@ -284,11 +329,12 @@ def build_isolated_environment(
     database_label = validate_test_database_url(configured_database)
     configured_schema = _validate_schema(schema or source.get("TURB_DB_SCHEMA") or f"test_runner_{os.getpid()}")
     root = Path(project_root).resolve()
+    application_env_keys = collect_application_env_keys(root)
 
     env = {
         key: value
         for key, value in source.items()
-        if key not in collect_application_env_keys(root)
+        if key not in application_env_keys
     }
     env.update(
         {

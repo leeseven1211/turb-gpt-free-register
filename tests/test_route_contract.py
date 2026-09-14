@@ -14,10 +14,12 @@ from webui.app import create_app
 
 class FlaskRouteContractTests(PostgresTestCase):
     # Snapshot history: commit 1006937 had the prior map; f33e523 intentionally
-    # added /api/extract-link/types. This release adds the public /healthz and
-    # /readyz probes, so both additions remain explicit in this reviewed snapshot.
-    EXPECTED_ROUTE_COUNT = 112
-    EXPECTED_SHA256 = "089935cdfa5a87e74928b0d8ac53005a11f4191c7af15b337e20103f049ccc23"
+    # added /api/extract-link/types. The release then added /healthz and
+    # /readyz, followed by the reviewed /api/config/snapshot route. Keep the
+    # single latter delta explicit rather than deriving this contract from the
+    # current route count.
+    EXPECTED_ROUTE_COUNT = 113
+    EXPECTED_SHA256 = "2f45751bf6cfba4533c4ba11ec45f3a74e87cc8f37c92b038efe6cd773b85b51"
 
     def test_public_route_map_matches_refactor_baseline(self):
         app = create_app(auth_code="route-contract")

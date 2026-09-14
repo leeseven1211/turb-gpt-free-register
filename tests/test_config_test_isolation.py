@@ -7,6 +7,7 @@ from pathlib import Path
 from config import account as account_config
 from config import env_loader
 from config import openai_protocol
+from config.schema import CONFIG_SCHEMA
 from tools.test_isolated import build_isolated_environment, collect_application_env_keys
 
 
@@ -33,8 +34,11 @@ def test_config_defaults_are_loaded_without_project_env_overrides():
 def test_unified_runner_removes_all_application_environment_keys():
     project_root = Path(__file__).resolve().parents[1]
     database_url = "postgresql://test:test@127.0.0.1:55432/turb_opt_20260914"
+    schema_keys = {field.key for field in CONFIG_SCHEMA.fields}
+    poisoned_schema = {key: "schema-poison" for key in schema_keys}
     environment = build_isolated_environment(
         {
+            **poisoned_schema,
             "OPENAI_PROTOCOL_VERSION": "poison",
             "ROXY_API_TOKEN": "private-poison",
             "DATABASE_URL": "postgresql://test:test@127.0.0.1:55432/turb_console",
@@ -45,6 +49,11 @@ def test_unified_runner_removes_all_application_environment_keys():
         project_root=project_root,
     )
 
+    # The registry is an independent truth source. Do not derive the expected
+    # set from collect_application_env_keys itself: that would let a scanner
+    # regression silently redefine what “isolated” means.
+    assert len(schema_keys) == 195
+    assert schema_keys.isdisjoint(environment)
     reset_keys = {
         "DATABASE_URL",
         "TURB_DB_SCHEMA",
@@ -67,9 +76,9 @@ def test_unified_runner_removes_all_application_environment_keys():
 
 def test_explicit_environment_override_remains_supported(monkeypatch):
     with monkeypatch.context() as context:
-        context.setenv("OPENAI_PROTOCOL_VERSION", "explicit-test-v2")
+        context.setenv("OPENAI_PROTOCOL_VERSION", "v2")
         importlib.reload(openai_protocol)
-        assert openai_protocol.OPENAI_PROTOCOL_VERSION == "explicit-test-v2"
+        assert openai_protocol.OPENAI_PROTOCOL_VERSION == "v2"
     importlib.reload(openai_protocol)
     assert openai_protocol.OPENAI_PROTOCOL_VERSION == "v1"
 
