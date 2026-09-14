@@ -25,7 +25,7 @@ synthetic. Never connect tests to `turb_console` or read private account exports
 
 | Stream | Owner | State | Acceptance |
 | --- | --- | --- | --- |
-| A Storage | Coordinator; Aquinas reassigned to maintenance | First round integrated; nested metadata corrections in progress | No stale snapshot deletion/overwrite; atomic create/retry; concurrency tests |
+| A Storage | Coordinator; Aquinas reassigned to maintenance | Row/metadata corrections integrated; targeted and full suites passed | No stale snapshot deletion/overwrite; atomic create/retry; concurrency tests |
 | B Tasks | Goodall, Luna max; Aquinas/Hooke service adapters | Phase 2 implementing actual maintenance migrations | Durable dispatch/recovery; automatic completion dependencies; bounded concurrency |
 | C Configuration | Tesla, Luna max, closed after completion | Phase 2 integrated and targeted checks accepted; legacy constant atomicity boundary remains explicit | Canonical field schema, validation, explicit effective values/version |
 | D Authentication | Hooke, Luna max | First round integrated; combined regressions passed | Shared implementation independent of Roxy orchestration; contract tests |
@@ -229,6 +229,39 @@ Four phase-2 agents remain active (A/B/D/E), and the heartbeat monitor is still
 ACTIVE. Full test success at this checkpoint is not acceptance of the still
 unfinished service migrations, remote-write recovery contract or benchmark.
 No production changes or push.
+
+### Monitor checkpoint 2026-09-14 12:56 UTC
+
+A/B/D remain active on service migration and shared remote-write checkpoints.
+A's four maintenance services and D's token service have implementation/test
+edits but no final migration commits. B is adding runtime wiring and durable
+remote intent/receipt recovery. No production/primary-worktree changes.
+
+E returned benchmark commit `3d95cc2`, reviewed and integrated as `ec32fbf`.
+Coordinator ran the real benchmark in the isolated database: 1000 accounts,
+20 authenticated HTTP samples, 3 SQL statements/request, list p95 **19.795ms**.
+With 32 synthetic no-network tasks, the gate produced a real backlog of 29;
+max active was **3/3**, all 32 tasks committed success, measured queue-wait p95
+**1022.102ms** and throughput **29.38 runs/s** under this artificial congestion.
+Scanner restart recovered the same 6 queued rows, all success. Thresholds pass;
+test session `80408` is finished. These are observations, not production SLA
+or before/after optimization claims.
+
+E still needs final locked-environment verification and history-load coverage:
+the current HTTP list timing precedes operation seed and thus does not exercise
+thousands of historical task rows. Coordinator requested >=2000 terminal
+synthetic jobs/operations before list tests plus actual task-center listing,
+and unconditional environment restoration if benchmark cleanup raises. Current
+benchmark is accepted only for its explicitly measured small-queue scope.
+
+Cross-agent review found D's draft records a confirmed remote receipt before
+persisting the rotated credential. Coordinator sent B/D a mandatory correction:
+an HTTP response alone must not clear pending-write recovery; confirmation must
+follow required local write/readback. Add a crash-between-receipt-and-persistence
+test, or recovery could expose an unsafe blind retry. D must also converge its
+temporary fallback claim/executor path onto the now available shared handler.
+No additional user notification was issued for this normal interim checkpoint;
+the heartbeat remains ACTIVE and full five-stream acceptance is not complete.
 
 ## Verification
 
