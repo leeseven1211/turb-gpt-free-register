@@ -89,14 +89,28 @@ python tools/release.py rollback --releases-dir /srv/turb/releases \
 /Users/lihongwei/code/personal/gpt/turb-gpt-free-register/.venv/bin/python \
   /tmp/turb-optimization-20260914.mJ7Y6R/run.py \
   YOUR_OPTIMIZATION_WORKTREE \
-  tools/test_performance.py --rows 1000 --samples 20 --workers 3 --queue-tasks 32 --json
+  tools/test_performance.py --rows 1000 --history-rows 2000 --samples 20 \
+  --workers 3 --queue-tasks 32 --json
 ```
 
-脚本在显式测试库的随机 `test_` schema 中生成至少 1000 条合成账号和原生
-operation task/run 行，只删除自己生成的 schema，不读取或修改生产数据。列表测量走
-真实的 `Flask test_client` HTTP 路由 `/api/accounts?paged=1&page_size=50`，由
-`core.admin_repository.list_accounts` 返回；SQL 次数和每次请求的 latency p95 是实际
-执行结果，不构造 baseline。
+脚本在显式测试库的随机 `test_` schema 中生成至少 1000 条合成账号，并在列表测量
+之前通过一次 PostgreSQL bulk SQL 事务 seed 至少 2000 条终态 synthetic
+operation task/run 历史。历史行使用独立 source system 且状态为终态，不会被 durable
+dispatcher 再次领取；它们仍是任务中心真实读模型消费的行。脚本只删除自己生成的
+schema，不读取或修改生产数据。
+
+列表测量覆盖两个真实 `Flask test_client` HTTP 路由，且分别报告 SQL 次数和每次请求
+latency p95（不构造 baseline）：
+
+- 账号列表 `/api/accounts?paged=1&page_size=50`，由
+  `core.admin_repository.list_accounts` 返回，至少 1000 条账号数据。
+- 任务中心 `/api/operations?page=1&page_size=50`，由
+  `core.storage.operation.list_tasks` 与 `list_batches` 返回，至少 2000 条终态
+  task/run 历史。
+
+当前发布门禁中，账号列表最多 3 条 SQL、任务中心最多 10 条 SQL，两个路由 p95 均须
+不超过 250ms；报告会保留真实的 per-request query count、p95 和 max，超出即阻断，
+不会通过改变阈值掩盖历史负载结果。
 
 调度测量通过 `submit_durable_operation` 提交并用
 `register_operation_handler` 注册一个 `synthetic_no_network` handler，经真实共享
@@ -112,6 +126,10 @@ PostgreSQL claim，再调用 handler；脚本在真实 enqueue、handler entry�
 首轮 `queue_wait_samples=[(index*7)%43]` 及据此得出的“40ms”结论均已撤销、未验收，
 不得作为可比较 baseline。若列表真实 query/p95、并发上限或 durable recovery 不满足
 报告阈值，应保留真实结果并在发布评审中阻断，而不是调高阈值。
+
+benchmark 的清理位于嵌套 `finally` 中：即使 shared executor shutdown、隔离 schema
+删除或连接池关闭失败，也会尽力按顺序恢复调用方原有的 `TURB_DB_SCHEMA`、
+`ACCOUNT_BATCH_WORKERS` 与 `OPERATION_TASK_DB_SCHEMA`。
 
 ## 路由契约摘要
 

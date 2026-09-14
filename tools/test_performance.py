@@ -3,9 +3,10 @@
 
 This is an opt-in check, never a deployment action.  It creates one generated
 ``test_`` schema in the explicitly supplied optimization database, seeds at
-least one thousand synthetic accounts and native operation runs, then measures
-the real Flask HTTP route, repository SQL, shared account executor, and durable
-task dispatcher. The dispatcher handler performs no network I/O; its queue
+least one thousand synthetic accounts and two thousand terminal operation
+task/run history rows, then measures the real Flask HTTP routes, repository
+SQL, shared account executor, and durable task dispatcher. The dispatcher
+handler performs no network I/O; its queue
 wait, throughput, and concurrency values are measured from monotonic clocks at
 actual enqueue, helper-dispatched handler entry (after the durable claim), and
 terminal completion points.
@@ -103,6 +104,195 @@ def _seed_accounts(*, rows: int, record_store: Any, postgres_store: Any) -> list
     return account_ids
 
 
+def _seed_terminal_operation_history(
+    *, rows: int, operation: Any, postgres_store: Any, account_ids: list[int],
+) -> dict[str, int]:
+    """Bulk-seed terminal task/run history for the real task-center list path.
+
+    The rows are inserted in one PostgreSQL transaction rather than through a
+    synthetic Python loop.  They are deliberately terminal and use their own
+    source system, so the durable dispatcher will never claim them.  The
+    generated history is still the same schema and row model consumed by
+    ``operation.list_tasks`` and the ``/api/operations`` route.
+    """
+    if rows < 2000:
+        raise ValueError("任务中心历史压力要求至少 2000 条终态 task/run")
+    if not account_ids:
+        raise ValueError("任务中心历史压力需要至少一个合成账号")
+
+    batch = operation.create_runtime_batch(
+        batch_type="performance_history",
+        title="Synthetic terminal task history for list benchmark",
+        requested_count=rows,
+        trigger="performance_history",
+        data={"synthetic": True, "network": "none", "terminal_history": True},
+    )
+    batch_id = int(batch["id"])
+    token = uuid.uuid4().hex
+    task_table = postgres_store.qualified("operation_tasks")
+    run_table = postgres_store.qualified("operation_runs")
+    batch_table = postgres_store.qualified("operation_batches")
+    source_system = "performance_history"
+    task_prefix = f"{token}:task:%"
+
+    with postgres_store.connect() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            f"""
+            INSERT INTO {task_table} (
+                task_uuid, source_system, source_id, batch_id, task_type,
+                target_type, target_id, account_id, email_snapshot,
+                requested_action, status, target_status, current_stage,
+                next_actions, trigger, created_at, updated_at, completed_at,
+                data
+            )
+            SELECT
+                concat(%s::text, '-task-', series.ordinal::text),
+                %s::text,
+                concat(%s::text, ':task:', series.ordinal::text),
+                %s::bigint,
+                'performance.history',
+                'account',
+                series.account_id,
+                series.account_id,
+                concat('performance-history-', series.ordinal::text, '@example.test'),
+                'performance.history',
+                'success',
+                'completed',
+                'complete',
+                '[]'::jsonb,
+                'performance_history',
+                series.created_at,
+                series.created_at,
+                series.created_at,
+                jsonb_build_object(
+                    'synthetic', true,
+                    'network', 'none',
+                    'terminal_history', true,
+                    'ordinal', series.ordinal
+                )
+            FROM (
+                SELECT
+                    ordinal,
+                    (%s::bigint[])[
+                        mod(ordinal, %s::bigint)::integer + 1
+                    ] AS account_id,
+                    now() - (ordinal * interval '1 second') AS created_at
+                FROM generate_series(0, %s::bigint - 1) AS generated(ordinal)
+            ) AS series
+            """,
+            (
+                token,
+                source_system,
+                token,
+                batch_id,
+                account_ids,
+                len(account_ids),
+                rows,
+            ),
+        )
+        cursor.execute(
+            f"""
+            INSERT INTO {run_table} (
+                run_uuid, task_id, run_no, source_system, source_id, status,
+                batch_id, account_id, resource_family, cancellation_token,
+                progress_stage, progress_steps, started_at, completed_at,
+                duration_ms, result_summary, created_at, data
+            )
+            SELECT
+                concat(%s::text, '-run-', task.id::text),
+                task.id,
+                1,
+                %s::text,
+                concat(%s::text, ':run:', task.id::text),
+                'success',
+                task.batch_id,
+                task.account_id,
+                'openai_interactive',
+                concat(%s::text, '-cancel-', task.id::text),
+                'complete',
+                '{{}}'::jsonb,
+                task.created_at,
+                task.completed_at,
+                1,
+                jsonb_build_object(
+                    'synthetic', true,
+                    'network', 'none',
+                    'terminal_history', true
+                ),
+                task.created_at,
+                task.data
+            FROM {task_table} AS task
+            WHERE task.batch_id = %s::bigint
+              AND task.source_system = %s::text
+              AND task.source_id LIKE %s::text
+            """,
+            (token, source_system, token, token, batch_id, source_system, task_prefix),
+        )
+        cursor.execute(
+            f"""
+            UPDATE {task_table} AS task
+            SET last_run_id = run.id
+            FROM {run_table} AS run
+            WHERE run.task_id = task.id
+              AND run.source_system = %s::text
+              AND run.source_id LIKE %s::text
+              AND task.batch_id = %s::bigint
+            """,
+            (source_system, f"{token}:run:%", batch_id),
+        )
+        cursor.execute(
+            f"""
+            UPDATE {batch_table}
+            SET status = 'success',
+                queued_count = 0,
+                running_count = 0,
+                success_count = %s::integer,
+                completed_at = now(),
+                data = data || %s::jsonb
+            WHERE id = %s::bigint
+            """,
+            (
+                rows,
+                json.dumps(
+                    {
+                        "synthetic": True,
+                        "network": "none",
+                        "terminal_history": True,
+                    },
+                    separators=(",", ":"),
+                ),
+                batch_id,
+            ),
+        )
+        cursor.execute(
+            f"""
+            SELECT
+                (SELECT COUNT(*) FROM {task_table}
+                 WHERE batch_id = %s::bigint AND source_system = %s::text
+                   AND source_id LIKE %s::text) AS task_count,
+                (SELECT COUNT(*) FROM {run_table}
+                 WHERE batch_id = %s::bigint AND source_system = %s::text
+                   AND source_id LIKE %s::text) AS run_count,
+                (SELECT COUNT(*) FROM {task_table}
+                 WHERE batch_id = %s::bigint AND source_system = %s::text
+                   AND source_id LIKE %s::text AND last_run_id IS NOT NULL) AS linked_count
+            """,
+            (
+                batch_id, source_system, task_prefix,
+                batch_id, source_system, f"{token}:run:%",
+                batch_id, source_system, task_prefix,
+            ),
+        )
+        counts = cursor.fetchone()
+
+    task_count, run_count, linked_count = (int(value) for value in counts)
+    expected = {"tasks": rows, "runs": rows, "linked_runs": rows}
+    actual = {"tasks": task_count, "runs": run_count, "linked_runs": linked_count}
+    if actual != expected:
+        raise RuntimeError(f"合成任务历史 bulk seed 数量异常: expected={expected} actual={actual}")
+    return {"batch_id": batch_id, **actual}
+
+
 def _measure_account_list(*, rows: int, samples: int) -> dict[str, Any]:
     """Measure the actual authenticated HTTP route backed by admin_repository."""
     from webui.app import create_app
@@ -149,6 +339,67 @@ def _measure_account_list(*, rows: int, samples: int) -> dict[str, Any]:
         "path": path,
         "transport": "Flask test_client HTTP route",
         "repository": "core.admin_repository.list_accounts",
+        "rows": rows,
+        "samples": samples,
+        "query_count": {
+            "per_request": query_counts,
+            "p95": percentile([float(value) for value in query_counts], 95),
+            "max": max(query_counts),
+        },
+        "latency_ms": {
+            "p95": round(percentile(latencies, 95), 3),
+            "max": round(max(latencies), 3),
+        },
+    }
+
+
+def _measure_operation_list(*, rows: int, samples: int) -> dict[str, Any]:
+    """Measure the real task-center route over terminal task/run history."""
+    from webui.app import create_app
+
+    path = "/api/operations?page=1&page_size=50"
+    headers = {"X-Auth-Code": "performance-check"}
+    app = create_app(auth_code="performance-check")
+    client = app.test_client()
+
+    warmup = client.get(path, headers=headers)
+    if warmup.status_code != 200:
+        raise RuntimeError(f"任务中心 HTTP warmup 失败: status={warmup.status_code}")
+    warmup_payload = warmup.get_json()
+    if not isinstance(warmup_payload, dict) or int(warmup_payload.get("total") or 0) != rows:
+        raise RuntimeError("任务中心 HTTP warmup 未返回完整终态历史总数")
+
+    latencies: list[float] = []
+    query_counts: list[int] = []
+    original_execute, counter = _query_counter()
+    try:
+        for _ in range(samples):
+            counter["count"] = 0
+            started = time.perf_counter()
+            response = client.get(path, headers=headers)
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            if response.status_code != 200:
+                raise RuntimeError(f"任务中心 HTTP 请求失败: status={response.status_code}")
+            payload = response.get_json()
+            if not isinstance(payload, dict):
+                raise RuntimeError("任务中心 HTTP 响应不是分页 object")
+            if payload.get("ok") is not True or int(payload.get("total") or 0) != rows:
+                raise RuntimeError("任务中心 HTTP 响应总数异常")
+            items = payload.get("items")
+            batches = payload.get("batches")
+            if not isinstance(items, list) or len(items) != 50:
+                raise RuntimeError("任务中心 HTTP 分页大小异常")
+            if not isinstance(batches, list) or not batches:
+                raise RuntimeError("任务中心 HTTP 未返回合成历史批次")
+            latencies.append(elapsed_ms)
+            query_counts.append(int(counter["count"]))
+    finally:
+        _restore_query_counter(original_execute)
+
+    return {
+        "path": path,
+        "transport": "Flask test_client HTTP route",
+        "repository": "core.storage.operation.list_tasks + list_batches",
         "rows": rows,
         "samples": samples,
         "query_count": {
@@ -548,10 +799,13 @@ def run_benchmark(
     samples: int = 20,
     workers: int = 3,
     queue_tasks: int = 32,
+    history_rows: int = 2000,
 ) -> dict[str, Any]:
-    """Seed and measure isolated account-list and durable dispatcher workloads."""
+    """Seed and measure isolated list and durable dispatcher workloads."""
     if rows < 1000:
         raise ValueError("性能门槛要求至少 1000 条合成账号数据")
+    if history_rows < 2000:
+        raise ValueError("性能门槛要求至少 2000 条终态任务/运行历史")
     if samples < 5:
         raise ValueError("性能样本至少需要 5 次")
     if not 1 <= workers <= 16:
@@ -571,9 +825,19 @@ def run_benchmark(
 
     previous_schema = os.environ.get("TURB_DB_SCHEMA")
     previous_workers = os.environ.get("ACCOUNT_BATCH_WORKERS")
+    previous_operation_schema = os.environ.get("OPERATION_TASK_DB_SCHEMA")
+    previous_account_task_schema = os.environ.get("ACCOUNT_TASK_DB_SCHEMA")
     schema = f"test_perf_{uuid.uuid4().hex[:12]}"
     os.environ["TURB_DB_SCHEMA"] = schema
     os.environ["ACCOUNT_BATCH_WORKERS"] = str(workers)
+    # operation.py has a dedicated override; force it to the same generated
+    # schema so both list and dispatcher rows are cleaned up together even if
+    # the caller inherited a different operation schema.
+    os.environ["OPERATION_TASK_DB_SCHEMA"] = schema
+    # The compatibility task store reads this value at module import time;
+    # keep its tables beside the operation tables rather than public or an
+    # inherited caller schema.
+    os.environ["ACCOUNT_TASK_DB_SCHEMA"] = schema
 
     postgres_store = None
     task_gateway = None
@@ -601,7 +865,14 @@ def run_benchmark(
             raise RuntimeError(
                 f"shared executor worker 配置未生效: requested={workers} effective={effective_workers}"
             )
-        list_report = _measure_account_list(rows=rows, samples=samples)
+        history_report = _seed_terminal_operation_history(
+            rows=history_rows,
+            operation=operation,
+            postgres_store=postgres_store,
+            account_ids=account_ids,
+        )
+        account_list_report = _measure_account_list(rows=rows, samples=samples)
+        operation_list_report = _measure_operation_list(rows=history_rows, samples=samples)
         dispatcher_report = _run_dispatch_benchmark(
             operation=operation,
             task_gateway=task_gateway,
@@ -612,15 +883,23 @@ def run_benchmark(
         )
 
         thresholds = {
-            "list_max_query_count": 3,
-            "list_latency_p95_ms": 250.0,
+            "account_list_max_query_count": 3,
+            "account_list_latency_p95_ms": 250.0,
+            "operation_list_max_query_count": 10,
+            "operation_list_latency_p95_ms": 250.0,
             "dispatcher_concurrency_must_not_exceed_workers": True,
             "dispatcher_congestion_must_be_observed": True,
             "restart_recovery_must_complete": True,
         }
         passes_thresholds = bool(
-            list_report["query_count"]["max"] <= thresholds["list_max_query_count"]
-            and list_report["latency_ms"]["p95"] <= thresholds["list_latency_p95_ms"]
+            account_list_report["query_count"]["max"]
+            <= thresholds["account_list_max_query_count"]
+            and account_list_report["latency_ms"]["p95"]
+            <= thresholds["account_list_latency_p95_ms"]
+            and operation_list_report["query_count"]["max"]
+            <= thresholds["operation_list_max_query_count"]
+            and operation_list_report["latency_ms"]["p95"]
+            <= thresholds["operation_list_latency_p95_ms"]
             and dispatcher_report["concurrency"]["within_limit"]
             and dispatcher_report["congestion"].get("observed") is True
             and dispatcher_report["restart_recovery"].get("all_completed") is True
@@ -631,8 +910,13 @@ def run_benchmark(
             "rows": rows,
             "samples": samples,
             "task_rows": queue_tasks,
+            "history_rows": history_report,
             "database_scope": "generated test_ schema in explicit optimization database",
-            "list_benchmark": list_report,
+            "list_benchmark": {
+                "history_seeded_before_measurement": True,
+                "accounts": account_list_report,
+                "operations": operation_list_report,
+            },
             "dispatcher_benchmark": dispatcher_report,
             "thresholds": thresholds,
             "passes_thresholds": passes_thresholds,
@@ -642,18 +926,37 @@ def run_benchmark(
             ),
         }
     finally:
-        if executor is not None:
-            executor.shutdown(wait=True)
-        if postgres_store is not None:
+        # Cleanup can fail independently (for example a worker shutdown or a
+        # lost DB connection). Environment restoration must still happen on
+        # every path, including those cleanup failures.
+        try:
             try:
-                with postgres_store.connect() as connection, connection.cursor() as cursor:
-                    cursor.execute(
-                        f"DROP SCHEMA IF EXISTS {postgres_store.quote_identifier(schema)} CASCADE"
-                    )
+                if executor is not None:
+                    executor.shutdown(wait=True)
             finally:
-                postgres_store.close_pools()
-        _restore_environment_value("TURB_DB_SCHEMA", previous_schema)
-        _restore_environment_value("ACCOUNT_BATCH_WORKERS", previous_workers)
+                if postgres_store is not None:
+                    try:
+                        with postgres_store.connect() as connection, connection.cursor() as cursor:
+                            cursor.execute(
+                                f"DROP SCHEMA IF EXISTS {postgres_store.quote_identifier(schema)} CASCADE"
+                            )
+                    finally:
+                        postgres_store.close_pools()
+        finally:
+            try:
+                _restore_environment_value("TURB_DB_SCHEMA", previous_schema)
+            finally:
+                try:
+                    _restore_environment_value("ACCOUNT_BATCH_WORKERS", previous_workers)
+                finally:
+                    try:
+                        _restore_environment_value(
+                            "OPERATION_TASK_DB_SCHEMA", previous_operation_schema
+                        )
+                    finally:
+                        _restore_environment_value(
+                            "ACCOUNT_TASK_DB_SCHEMA", previous_account_task_schema
+                        )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -664,6 +967,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--samples", type=int, default=20)
     parser.add_argument("--workers", type=int, default=3)
     parser.add_argument("--queue-tasks", type=int, default=32)
+    parser.add_argument("--history-rows", type=int, default=2000)
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -676,6 +980,7 @@ def main(argv: list[str] | None = None) -> int:
             samples=args.samples,
             workers=args.workers,
             queue_tasks=args.queue_tasks,
+            history_rows=args.history_rows,
         )
     except Exception as exc:
         print(f"performance check failed: {type(exc).__name__}: {exc}")
