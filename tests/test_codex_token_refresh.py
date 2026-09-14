@@ -82,8 +82,17 @@ class CodexOauthMetadataTests(unittest.TestCase):
             "refresh_token": "old-refresh",
             "expired": "2026-08-17T00:00:00Z",
         }
+        persisted = dict(original)
+        persisted.update({"access_token": "new-access", "refresh_token": "old-refresh"})
         with (
-            patch.object(service.db, "read_codex_credential", return_value=(json.dumps(original), "codex-a@example.com-free.json")),
+            patch.object(
+                service.db,
+                "read_codex_credential",
+                side_effect=[
+                    (json.dumps(original), "codex-a@example.com-free.json"),
+                    (json.dumps(persisted), "codex-a@example.com-free.json"),
+                ],
+            ),
             patch.object(service, "_request_refresh", return_value={"access_token": "new-access", "expires_in": 3600}),
             patch.object(service.db, "write_codex_credential") as write,
             patch.object(service.db, "mark_codex_oauth_refresh") as mark,

@@ -22,7 +22,10 @@ class AccountOperationExecutorTests(unittest.TestCase):
         self.assertIs(live_check_service._EXECUTOR, common)
         self.assertIs(plan_check_service._ACCOUNT_EXECUTOR, common)
         self.assertIs(codex_operation_service._EXECUTOR, common)
-        self.assertIs(codex_token_refresh_service._EXECUTOR, common)
+        self.assertFalse(
+            hasattr(codex_token_refresh_service, "_EXECUTOR"),
+            "Codex token refresh must dispatch through the durable gateway, not a local executor",
+        )
         self.assertIs(deactivation_mail_service._EXECUTOR, common)
         self.assertIs(extract_link_service._EXECUTOR, common)
         self.assertIs(runtime._ACCOUNT_EXECUTOR, common)
