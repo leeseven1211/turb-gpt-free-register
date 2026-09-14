@@ -3,12 +3,12 @@
 from config.env_loader import apply_env_overrides
 
 # 提链服务地址
-EXTRACT_LINK_API_BASE: str = ""
+EXTRACT_LINK_API_BASE: str = "https://ple.bzb.qzz.io"
 
 # 提链 CDK；创建任务和监听事件都需要。
 EXTRACT_LINK_CDK: str = ""
 
-# 提链类型：pix / upi / kakao_pay / ideal
+# 提链类型：以提链网站 /api/link-types 当前启用项为准
 EXTRACT_LINK_TYPE: str = "pix"
 
 # 提链队列容量与超时；提链并发统一使用 config.codex.ACCOUNT_BATCH_WORKERS

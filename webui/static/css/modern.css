@@ -641,7 +641,8 @@
       fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round;
     }
     .column-filter-search input {
-      width: 100% !important; min-width: 0 !important; height: 27px !important; min-height: 27px !important;
+      flex: 1 1 0 !important; width: auto !important; min-width: 0 !important;
+      height: 27px !important; min-height: 27px !important;
       margin: 0 !important; padding: 0 6px !important; border: 1px solid #bfc2f6 !important; border-radius: 5px !important;
       color: #363d4d !important; background: #fff !important; box-shadow: 0 0 0 2px rgba(91,92,226,.08) !important;
       font: inherit !important; font-size: 11px !important; font-weight: 650 !important; outline: none !important;
@@ -740,6 +741,7 @@
     table[data-resizable-table] thead tr:first-child th:hover .table-col-resizer::after,
     .table-col-resizer.is-dragging::after { background: #6b6de8; }
     body.is-resizing-table-column { cursor: col-resize; user-select: none; }
+    table[data-resizable-table] thead tr:first-child th.col-id { min-width: 72px; }
     .jobs-table-v2 td.col-error {
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
@@ -1161,6 +1163,7 @@
     .accounts-table-v2 .col-token { width: 100px; }
     .accounts-table-v2 .col-account-status { width: 104px; }
     .accounts-table-v2 .col-plan { width: 120px; }
+    .accounts-table-v2 .col-quota { width: 146px; }
     .accounts-table-v2 .col-trial { width: 112px; }
     .accounts-table-v2 .col-small { width: 72px; }
     .accounts-table-v2 .col-risk-mail { width: 112px; }
@@ -1196,9 +1199,28 @@
     .accounts-table-v2 tbody td:last-child { padding-right: 16px; }
     .accounts-table-v2 .col-email,
     .accounts-table-v2 .col-plan,
+    .accounts-table-v2 .col-quota,
     .accounts-table-v2 .col-trial,
     .accounts-table-v2 .col-actions {
       white-space: normal; overflow: visible; text-overflow: clip; vertical-align: middle;
+    }
+    .accounts-table-v2 .quota-cell { line-height: 1.45; font-size: 12px; }
+    .accounts-table-v2 .quota-cell-line { white-space: nowrap; }
+    .accounts-table-v2 .quota-remaining { color: #12b76a; font-weight: 700; }
+    .accounts-table-v2 .quota-cell-warning { color: #f79009; font-size: 11px; margin-top: 2px; }
+    .accounts-hover-tooltip {
+      position: fixed; z-index: 5000;
+      max-width: min(520px, calc(100vw - 24px));
+      padding: 8px 10px; border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 7px; background: #1f2937; color: #fff;
+      font-size: 12px; line-height: 1.5; white-space: normal;
+      overflow-wrap: anywhere; box-shadow: 0 8px 22px rgba(15, 23, 42, 0.24);
+      opacity: 0; pointer-events: none; transform: translateY(2px);
+      transition: opacity 0.12s ease, transform 0.12s ease;
+    }
+    .accounts-hover-tooltip.show { opacity: 1; transform: translateY(0); }
+    @media (prefers-reduced-motion: reduce) {
+      .accounts-hover-tooltip { transition: none; }
     }
     .accounts-table-v2 .acc-v2-email {
       font-weight: 700; color: #303133; line-height: 1.35;

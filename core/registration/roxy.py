@@ -5161,6 +5161,13 @@ def run_roxy_registration(
                 from core import db
                 if isinstance(captured_plan_result, dict) and captured_plan_result.get("ok"):
                     captured = dict(captured_plan_result)
+                    if not captured.get("quota_status"):
+                        from core.chatgpt_plan import query_account_quota
+                        captured.update(query_account_quota(
+                            access_token,
+                            proxy=proxy or None,
+                            session=plan_check_session,
+                        ))
                     captured["trigger"] = "registration_browser_response"
                     db.update_account_plan_check(acc_id=account_id, result=captured)
                     plan_result = {"status": "success", "ok": True, "message": "复用浏览器权益数据"}

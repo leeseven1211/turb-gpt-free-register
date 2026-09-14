@@ -6,6 +6,33 @@ from core import chatgpt_plan
 
 
 class ChatGPTPlanTests(unittest.TestCase):
+    def test_parse_quota_usage_classifies_windows_and_calculates_remaining(self):
+        result = chatgpt_plan.parse_quota_usage({
+            "rate_limit": {
+                "allowed": True,
+                "limit_reached": False,
+                "primary_window": {
+                    "used_percent": 12.5,
+                    "limit_window_seconds": 5 * 60 * 60,
+                    "reset_after_seconds": 1200,
+                    "reset_at": 1790000000,
+                },
+                "secondary_window": {
+                    "used_percent": 80,
+                    "limit_window_seconds": 7 * 24 * 60 * 60,
+                    "reset_after_seconds": 86400,
+                    "reset_at": 1791000000,
+                },
+            }
+        })
+
+        self.assertEqual(result["quota_status"], "success")
+        self.assertEqual(result["quota_type"], "5小时限额 / 周限额")
+        self.assertEqual([item["kind"] for item in result["quota_windows"]], ["five_hour", "weekly"])
+        self.assertEqual(result["quota_windows"][0]["remaining_percent"], 87.5)
+        self.assertEqual(result["quota_windows"][1]["remaining_percent"], 20.0)
+        self.assertEqual(chatgpt_plan.classify_quota_window(30 * 24 * 60 * 60), ("monthly", "月限额"))
+
     def test_common_headers_match_frontend_context(self):
         session = Mock()
         session.get_chatgpt_headers.return_value = {
@@ -49,8 +76,22 @@ class ChatGPTPlanTests(unittest.TestCase):
                 }
             }
         }
+        quota_response = Mock()
+        quota_response.status_code = 200
+        quota_response.text = "{}"
+        quota_response.json.return_value = {
+            "rate_limit": {
+                "allowed": True,
+                "primary_window": {
+                    "used_percent": 12,
+                    "limit_window_seconds": 5 * 60 * 60,
+                    "reset_after_seconds": 1200,
+                    "reset_at": 1790000000,
+                },
+            }
+        }
         session = Mock()
-        session.get.return_value = response
+        session.get.side_effect = [response, quota_response]
         session.js_timezone_offset_min.return_value = -480
         session.get_chatgpt_headers.return_value = {
             "User-Agent": "Mozilla/5.0",
@@ -71,16 +112,21 @@ class ChatGPTPlanTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["http_status"], 200)
+        self.assertEqual(result["quota_type"], "5小时限额")
+        self.assertEqual(result["quota_windows"][0]["remaining_percent"], 88.0)
         browser_session.assert_not_called()
-        session.get.assert_called_once()
+        self.assertEqual(session.get.call_count, 2)
         session.session.close.assert_not_called()
         request_url = session.get.call_args.args[0]
         request_headers = session.get.call_args.kwargs["headers"]
-        self.assertIn("timezone_offset_min=-480", request_url)
+        self.assertEqual(request_url, "https://chatgpt.com/backend-api/wham/usage")
         self.assertEqual(
             request_headers["x-openai-target-route"],
-            "/backend-api/accounts/check/{version}",
+            "/backend-api/wham/usage",
         )
+        self.assertEqual(request_headers["openai-beta"], "codex-1")
+        plan_request_url = session.get.call_args_list[0].args[0]
+        self.assertIn("timezone_offset_min=-480", plan_request_url)
 
     def test_plan_check_can_record_protocol_probe_session_without_changing_request(self):
         response = Mock()
@@ -109,6 +155,7 @@ class ChatGPTPlanTests(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
+        self.assertEqual(session.get.call_count, 2)
         recorder.open_protocol_session.assert_called_once_with(
             session, route_attempt_no=1, auth_method="access_token",
         )

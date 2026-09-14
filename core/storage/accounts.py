@@ -20,6 +20,7 @@ _NAMES = {
     "count_accounts", "delete_account", "delete_accounts", "claim_account_plan_check",
     "mark_account_plan_check_running", "recover_interrupted_plan_checks", "update_account_plan_check",
     "claim_account_extract", "mark_account_extract_running", "recover_interrupted_extract_links", "update_account_extract",
+    "mark_extract_link_type_failed",
 }
 
 

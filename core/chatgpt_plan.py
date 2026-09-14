@@ -6,6 +6,7 @@ import base64
 import ipaddress
 import json
 import logging
+import math
 import socket
 import time
 from datetime import datetime, timezone
@@ -17,6 +18,16 @@ from core.session import BrowserSession
 logger = logging.getLogger(__name__)
 
 ACCOUNTS_CHECK_PATH = "/backend-api/accounts/check/v4-2023-04-27"
+USAGE_PATH = "/backend-api/wham/usage"
+
+_QUOTA_WINDOW_LABELS = {
+    "five_hour": "5小时限额",
+    "weekly": "周限额",
+    "monthly": "月限额",
+    "daily": "日限额",
+    "custom": "自定义窗口",
+}
+_QUOTA_KIND_ORDER = {"five_hour": 0, "daily": 1, "weekly": 2, "monthly": 3, "custom": 4}
 
 
 def now_iso() -> str:
@@ -189,6 +200,235 @@ def _common_headers(
     if account_id:
         headers["chatgpt-account-id"] = account_id
     return headers
+
+
+def _quota_headers(
+    env: BrowserSession,
+    token: str,
+    claims: dict | None = None,
+) -> dict[str, str]:
+    """Build the Codex-style headers used by ChatGPT's ``/wham/usage`` API.
+
+    The header combination follows sub2api's OpenAI quota implementation.  The
+    response is only used for a sanitized local snapshot; the upstream payload
+    is never persisted or returned to the account list.
+    """
+    headers = env.get_chatgpt_headers(referer="https://chatgpt.com/")
+    claims = claims or token_claims(token)
+    headers.update({
+        "authorization": f"Bearer {normalize_token(token)}",
+        "openai-beta": "codex-1",
+        "oai-language": "zh-CN",
+        "originator": "Codex Desktop",
+        "accept": "application/json",
+        "sec-fetch-site": "none",
+        "sec-fetch-mode": "no-cors",
+        "sec-fetch-dest": "empty",
+        "priority": "u=4, i",
+        "x-openai-target-path": USAGE_PATH,
+        "x-openai-target-route": "/backend-api/wham/usage",
+    })
+    account_id = str(claims.get("account_id") or "").strip()
+    if account_id:
+        headers["chatgpt-account-id"] = account_id
+    return headers
+
+
+def classify_quota_window(seconds: Any) -> tuple[str, str]:
+    """Classify an upstream window by duration, without guessing from plan type."""
+    try:
+        value = int(float(seconds))
+    except (TypeError, ValueError, OverflowError):
+        return "custom", _QUOTA_WINDOW_LABELS["custom"]
+    if value <= 0:
+        return "custom", _QUOTA_WINDOW_LABELS["custom"]
+    if value >= 25 * 24 * 60 * 60:
+        kind = "monthly"
+    elif value >= 6 * 24 * 60 * 60:
+        kind = "weekly"
+    elif value <= 6 * 60 * 60:
+        kind = "five_hour"
+    elif value <= 2 * 24 * 60 * 60:
+        kind = "daily"
+    else:
+        kind = "custom"
+    return kind, _QUOTA_WINDOW_LABELS[kind]
+
+
+def _quota_number(value: Any, *, integer: bool = False) -> int | float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(number) or number < 0:
+        return None
+    return int(number) if integer else number
+
+
+def _parse_quota_rate_limit(rate_limit: Any) -> list[dict]:
+    if not isinstance(rate_limit, dict):
+        return []
+    windows = []
+    for slot in ("primary_window", "secondary_window"):
+        window = rate_limit.get(slot)
+        if not isinstance(window, dict):
+            continue
+        limit_seconds = _quota_number(
+            window.get("limit_window_seconds", window.get("limitWindowSeconds")),
+            integer=True,
+        )
+        if not limit_seconds:
+            continue
+        kind, label = classify_quota_window(limit_seconds)
+        used = _quota_number(window.get("used_percent", window.get("usedPercent")))
+        if used is not None:
+            used = max(0.0, min(100.0, float(used)))
+        reset_after = _quota_number(
+            window.get("reset_after_seconds", window.get("resetAfterSeconds")),
+            integer=True,
+        )
+        reset_at = _quota_number(window.get("reset_at", window.get("resetAt")), integer=True)
+        if reset_at and reset_at > 10**12:
+            reset_at //= 1000
+        item = {
+            "slot": slot.removesuffix("_window"),
+            "kind": kind,
+            "label": label,
+            "window_seconds": limit_seconds,
+            "window_minutes": round(limit_seconds / 60),
+            "used_percent": round(used, 2) if used is not None else None,
+            "remaining_percent": round(100.0 - used, 2) if used is not None else None,
+            "reset_after_seconds": reset_after,
+            "reset_at": reset_at,
+            "allowed": bool(rate_limit.get("allowed")) if "allowed" in rate_limit else None,
+            "limit_reached": bool(rate_limit.get("limit_reached")) if "limit_reached" in rate_limit else None,
+        }
+        windows.append({key: value for key, value in item.items() if value is not None})
+    return windows
+
+
+def parse_quota_usage(data: dict) -> dict:
+    """Project ``/wham/usage`` into safe, UI-oriented quota metadata."""
+    windows = _parse_quota_rate_limit((data or {}).get("rate_limit")) if isinstance(data, dict) else []
+    # Some accounts expose only a feature-specific rate limit.  Use it as a
+    # fallback, but do not mix it with the account-wide windows above.
+    if not windows and isinstance(data, dict):
+        for extra in data.get("additional_rate_limits") or []:
+            if not isinstance(extra, dict):
+                continue
+            windows = _parse_quota_rate_limit(
+                extra.get("rate_limit"),
+            )
+            if windows:
+                break
+    windows.sort(key=lambda item: (_QUOTA_KIND_ORDER.get(item.get("kind"), 99), item.get("window_seconds", 0)))
+    kinds = []
+    for item in windows:
+        label = item.get("label") or _QUOTA_WINDOW_LABELS["custom"]
+        if label not in kinds:
+            kinds.append(label)
+    return {
+        "quota_status": "success",
+        "quota_checked_at": now_iso(),
+        "quota_type": " / ".join(kinds),
+        "quota_windows": windows,
+    }
+
+
+def _query_account_quota(
+    env: BrowserSession,
+    token: str,
+    claims: dict,
+    timeout: float,
+) -> dict:
+    """Fetch quota metadata; quota errors are deliberately non-fatal to plan checks."""
+    checked_at = now_iso()
+    try:
+        response = env.get(
+            f"https://chatgpt.com{USAGE_PATH}",
+            headers=_quota_headers(env, token, claims),
+            allow_redirects=False,
+            timeout=timeout,
+        )
+        http_status = int(response.status_code)
+        if not (200 <= http_status < 300):
+            return {
+                "quota_status": "failed",
+                "quota_checked_at": checked_at,
+                "quota_http_status": http_status,
+                "quota_error": "额度查询 AT 已过期/失效" if http_status == 401 else f"额度查询 HTTP {http_status}",
+            }
+        response_text = response.text or ""
+        try:
+            data: Any = response.json()
+        except Exception:
+            data = json.loads(response_text) if response_text.strip().startswith(("{", "[")) else None
+        if not isinstance(data, dict):
+            return {
+                "quota_status": "failed",
+                "quota_checked_at": checked_at,
+                "quota_http_status": http_status,
+                "quota_error": "额度响应不是 JSON 对象",
+            }
+        parsed = parse_quota_usage(data)
+        parsed["quota_checked_at"] = checked_at
+        parsed["quota_http_status"] = http_status
+        return parsed
+    except Exception as exc:
+        logger.debug("额度查询失败: %s", type(exc).__name__, exc_info=True)
+        return {
+            "quota_status": "failed",
+            "quota_checked_at": checked_at,
+            "quota_http_status": None,
+            "quota_error": f"额度查询网络错误: {type(exc).__name__}",
+        }
+
+
+def query_account_quota(
+    token: str,
+    *,
+    proxy: Optional[str] = None,
+    session: BrowserSession | None = None,
+    timeout: float | None = None,
+) -> dict:
+    """Query only ``/wham/usage`` for a plan result captured in a browser flow."""
+    token = normalize_token(token)
+    if not token:
+        return {"quota_status": "failed", "quota_checked_at": now_iso(), "quota_error": "token 为空"}
+    claims = token_claims(token)
+    try:
+        route = resolve_plan_check_route(proxy)
+        timeout_seconds, _attempts, _delay = _plan_check_settings(timeout, 1, 0)
+    except Exception as exc:
+        return {
+            "quota_status": "failed",
+            "quota_checked_at": now_iso(),
+            "quota_http_status": None,
+            "quota_error": f"额度查询网络配置错误: {type(exc).__name__}",
+        }
+    owns_session = session is None
+    env = None
+    try:
+        env = session or BrowserSession(proxy=route["proxy"], detect_exit_geo=False)
+        result = _query_account_quota(env, token, claims, timeout_seconds)
+        result.update({key: value for key, value in route.items() if key != "proxy"})
+        return result
+    except Exception as exc:
+        logger.debug("仅额度查询失败: %s", type(exc).__name__, exc_info=True)
+        return {
+            "quota_status": "failed",
+            "quota_checked_at": now_iso(),
+            "quota_http_status": None,
+            "quota_error": f"额度查询网络错误: {type(exc).__name__}",
+        }
+    finally:
+        if owns_session and env is not None:
+            try:
+                env.session.close()
+            except Exception:
+                pass
 
 
 def parse_accounts_check(data: dict, *, token: str = "") -> dict:
@@ -420,6 +660,9 @@ def check_account_plan(
                     parsed["request_timeout"] = timeout_seconds
                     parsed["retryable"] = False
                     parsed.update(route_meta)
+                    # 额度接口失败不应让套餐查询失败；它有独立状态，便于列表
+                    # 展示“套餐已查到、额度暂不可用”以及保留上次成功快照。
+                    parsed.update(_query_account_quota(env, token, claims, timeout_seconds))
                     probe_result = parsed
                     return parsed
         except Exception as exc:

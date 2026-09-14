@@ -11,12 +11,19 @@ from config import account as account_config
 from config import openai_protocol as openai_protocol_config
 from config import proxy as proxy_config
 from config import env_loader
+from config import extract_link as extract_link_config
 from core import account_export
 from webui import config_editor
 from core import roxy_registration
 
 
 class ConfigDefaultFallbackTests(unittest.TestCase):
+    def test_extract_link_uses_documented_service_by_default(self):
+        self.assertEqual(
+            extract_link_config.EXTRACT_LINK_API_BASE,
+            "https://ple.bzb.qzz.io",
+        )
+
     def test_blank_env_value_uses_default_for_all_supported_types(self):
         old_loaded = env_loader._LOADED
         env_loader._LOADED = True

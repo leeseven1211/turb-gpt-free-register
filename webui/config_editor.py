@@ -741,7 +741,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "EXTRACT_LINK_TYPE", "file": "extract_link.py", "type": "str", "group": "提链",
-        "label": "提链类型", "help": "支持 pix / upi / kakao_pay / ideal",
+        "label": "提链类型", "help": "从提链网站读取当前启用类型；接口不可用时保留备用选项，默认 PIX",
     },
     # ---- Codex 配置 ----
     {

@@ -241,6 +241,7 @@ def _run_live_check(
     force_refresh: bool = False,
     driver: str | None = None,
     refresh_driver: str | None = None,
+    release_queue_slot: bool = True,
 ) -> dict:
     account_route = None
     route: dict = {}
@@ -467,6 +468,12 @@ def _run_live_check(
                     "probe_error": last_probe_error,
                     "error_category": probe.get("error_category"),
                     "live_check_driver": probe_driver,
+                    "token_expired": bool(
+                        probe.get("token_expired") is True
+                        or probe.get("needs_live_check") is True
+                        or saved_claims.get("token_expired") is True
+                    ),
+                    "needs_live_check": bool(probe.get("needs_live_check")),
                 }
         elif not force_refresh:
             result = {
@@ -660,6 +667,8 @@ def _run_live_check(
                 "fallback_used": result.get("fallback_used"),
                 "auth_diagnostics": result.get("auth_diagnostics"),
                 "fingerprint": result.get("fingerprint"),
+                "token_expired": result.get("token_expired"),
+                "needs_live_check": result.get("needs_live_check"),
             },
             route={**route, **{key: result.get(key) for key in ("network_route", "proxy_provider", "proxy_region", "proxy_used")}},
             validation_method=result.get("validation_method"),
@@ -708,7 +717,124 @@ def _run_live_check(
             account_route.release(reason=f"live-check-{account_id}")
         with _LOCK:
             _RUNNING.discard(int(account_id))
+        if release_queue_slot:
+            _QUEUE_SLOTS.release()
+
+
+def run_account_live_check_inline(
+    *,
+    account_id: int,
+    email: str,
+    trigger: str,
+    force_refresh: bool = False,
+    proxy: str | None = None,
+    driver: str | None = None,
+) -> dict:
+    """在当前 account-operation worker 内串行执行一次查活或刷新 AT。
+
+    提炼前置流程不能再次向同一个共享线程池提交 Future，否则当线程池已满
+    时会出现“提炼等待查活、查活等待线程”的死锁。这个入口复用原有查活
+    worker 和任务投影，但由调用方持有同一个队列槽并同步等待终态。
+    """
+    account_id = int(account_id)
+    email = str(email or "").strip()
+    if not email:
+        return {"accepted": False, "busy": False, "error": "email 为空"}
+
+    effective_live_check_driver = None
+    effective_refresh_driver = None
+    if not force_refresh:
+        try:
+            effective_live_check_driver = resolve_driver(driver)
+        except LiveCheckDriverError as exc:
+            return {"accepted": False, "busy": False, "error": str(exc)}
+    else:
+        effective_refresh_driver = _resolve_refresh_driver()
+
+    account = db.get_account(account_id)
+    if not account:
+        return {"accepted": False, "busy": False, "error": "账号不存在"}
+    if db.account_is_deactivated(account):
+        return {
+            "accepted": False,
+            "busy": False,
+            "deactivated": True,
+            "error": "账号已标记为封号，停止查活/刷新 AT",
+        }
+    if force_refresh and not str(account.get("access_token") or "").strip():
+        return {
+            "accepted": False,
+            "busy": False,
+            "not_registered": True,
+            "error": "账号没有现有 access_token，拒绝刷新 AT；请先完成账号注册或执行注册续跑",
+        }
+    if not _QUEUE_SLOTS.acquire(blocking=False):
+        return {"accepted": False, "busy": False, "queue_full": True, "error": "查活队列已满，请稍后重试"}
+    if not db.claim_account_live_check(acc_id=account_id, trigger=trigger):
         _QUEUE_SLOTS.release()
+        return {"accepted": False, "busy": True, "error": "该账号正在查活"}
+
+    task_type = "token_refresh" if force_refresh else "live_check"
+    try:
+        task_id = account_task_store.create_task(
+            task_type=task_type,
+            account_id=account_id,
+            email=email,
+            trigger=str(trigger or "manual"),
+        )
+    except Exception as exc:
+        _QUEUE_SLOTS.release()
+        result = {
+            "ok": False,
+            "status": "failed",
+            "error": f"查活任务记录创建失败: {type(exc).__name__}: {str(exc)[:300]}",
+        }
+        try:
+            db.update_account_liveness(account_id, result)
+        except Exception:
+            logger.exception("[查活] 任务记录异常状态写回失败: account_id=%s", account_id)
+        return {"accepted": False, "busy": False, "error": result["error"]}
+    try:
+        result = _run_live_check(
+            account_id=account_id,
+            email=email,
+            proxy=proxy,
+            trigger=str(trigger or "manual"),
+            task_id=task_id,
+            force_refresh=bool(force_refresh),
+            driver=effective_live_check_driver,
+            refresh_driver=_refresh_protocol_version(effective_refresh_driver),
+            release_queue_slot=False,
+        )
+    except Exception as exc:
+        # _run_live_check normally converts worker exceptions to a failed result;
+        # keep this guard so an unexpected exception cannot leave the live-check
+        # claim or queue slot hanging inside the extract worker.
+        result = {
+            "ok": False,
+            "status": "failed",
+            "error": f"查活内联执行异常: {type(exc).__name__}: {str(exc)[:300]}",
+        }
+        try:
+            db.update_account_liveness(account_id, result)
+        except Exception:
+            logger.exception("[查活] 内联异常状态写回失败: account_id=%s", account_id)
+        account_task_store.finish_task(
+            task_id,
+            status="failed",
+            message="查活内联执行异常",
+            error=result["error"],
+        )
+    finally:
+        _QUEUE_SLOTS.release()
+    return {
+        "accepted": True,
+        "busy": False,
+        "account_id": account_id,
+        "task_id": task_id,
+        "task_type": task_type,
+        "result": result,
+    }
 
 
 def enqueue_account_live_check(

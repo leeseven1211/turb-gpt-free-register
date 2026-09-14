@@ -52,6 +52,15 @@ def create_integrations_blueprint(context: WebUIContext):
             logger.exception("获取 Roxy 团队/工作区失败")
             return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 500
 
+    @bp.get("/api/extract-link/types")
+    def api_extract_link_types():
+        """代理读取提链服务当前启用的类型，不要求配置 CDK。"""
+        try:
+            return jsonify(extract_link_service.query_link_types())
+        except Exception as exc:
+            logger.warning("读取提链类型失败：%s", type(exc).__name__)
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}), 400
+
     @bp.post("/api/proxy-provider/test")
     def api_proxy_provider_test():
         """实际提取并检测一个 1024Proxy IP，供配置页本地联调。"""

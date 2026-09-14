@@ -400,7 +400,7 @@ console.log('ok');
 
     def test_accounts_column_filters_are_combined(self):
         self.seed(record_store.ACCOUNTS, [
-            {"email": "target@example.com", "email_source": "outlook", "access_token": "token", "totp_secret": "JBSWY3DPEHPK3PXP", "codex_status": "success", "plan_type": "free", "current_plan_type": "free", "plan_check_status": "success", "plus_trial_eligible": True, "extra_json": '{"account_password":"Account123!abcd"}'},
+            {"email": "target@example.com", "email_source": "outlook", "access_token": "token", "totp_secret": "JBSWY3DPEHPK3PXP", "codex_status": "success", "plan_type": "free", "current_plan_type": "free", "plan_check_status": "success", "plus_trial_eligible": True, "quota_status": "success", "quota_type": "月限额", "quota_windows": [{"kind": "monthly", "label": "月限额", "used_percent": 25, "remaining_percent": 75}], "extra_json": '{"account_password":"Account123!abcd"}'},
             {"email": "other@example.com", "email_source": "icloud_hide", "access_token": "", "totp_enabled": False, "codex_status": "failed", "plan_type": "plus", "current_plan_type": "plus"},
         ])
         response = self.client.get(
@@ -416,6 +416,15 @@ console.log('ok');
         self.assertEqual({item["value"] for item in payload["facets"]["trial"]}, {"eligible", "not_applicable"})
         self.assertTrue(payload["items"][0]["has_account_password"])
         self.assertTrue(payload["items"][0]["totp_enabled"])
+        self.assertEqual(payload["items"][0]["quota_type"], "月限额")
+        self.assertEqual(payload["items"][0]["quota_windows"][0]["remaining_percent"], 75)
+        status_response = self.client.get(
+            "/api/accounts/plan-check-status?page=1&page_size=20",
+            headers=self.headers,
+        )
+        status_payload = status_response.get_json()
+        status_item = next(item for item in status_payload["items"] if item["email"] == "target@example.com")
+        self.assertEqual(status_item["quota_type"], "月限额")
 
     def test_accounts_trial_filter_is_applied(self):
         self.seed(record_store.ACCOUNTS, [
@@ -595,8 +604,8 @@ console.log('ok');
         html = self._modern_page_source(response)
         self.assertIn('data-account-totp-copy="${esc(r.id)}"', html)
         self.assertIn('title="获取并复制当前 6 位 TOTP 验证码"', html)
-        self.assertIn('data-account-copy-secret="totp_secret"', html)
-        self.assertIn('title="复制 2FA 密钥（不是当前 6 位验证码）"', html)
+        self.assertNotIn('data-account-copy-secret="totp_secret"', html)
+        self.assertNotIn('title="复制 2FA 密钥（不是当前 6 位验证码）"', html)
         self.assertIn("const result = await api(`/api/accounts/${encodeURIComponent(id)}/totp-code`);", html)
         self.assertIn("const copied = await copyText(result.code, false);", html)
         self.assertNotIn('data-account-totp-value', html)
@@ -604,11 +613,11 @@ console.log('ok');
         self.assertNotIn('data-account-totp-code="${esc(r.id)}"', html)
         self.assertNotIn("请先查询验证码", html)
 
-    def test_legacy_totp_ui_has_a_secret_copy_button_separate_from_code_copy(self):
+    def test_legacy_totp_ui_keeps_code_copy_without_row_secret_copy(self):
         response = self.client.get("/?ui=legacy", headers=self.headers)
         html = self._page_source(response, ("js/legacy/accounts.js",))
-        self.assertIn('data-account-copy-secret="totp_secret"', html)
-        self.assertIn('title="复制 2FA 密钥（不是当前 6 位验证码）"', html)
+        self.assertNotIn('data-account-copy-secret="totp_secret"', html)
+        self.assertNotIn('title="复制 2FA 密钥（不是当前 6 位验证码）"', html)
         self.assertIn('title="复制当前 TOTP 验证码"', html)
 
     def test_codex_column_filters_are_combined(self):

@@ -638,6 +638,60 @@ function protocolVersionChoices() {
     { value: 'v2', label: '协议 v2（已支持的步骤）' },
   ];
 }
+const EXTRACT_LINK_TYPE_LABELS_V2 = {
+  pix: 'PIX',
+  gopay: 'GoPay',
+  upi: 'UPI',
+  ideal: 'iDEAL',
+  ideal_short: 'iDEAL Short',
+  kakao_pay: 'Kakao Pay',
+  momo: 'MoMo',
+  gcash: 'GCash',
+  paypal: 'PayPal',
+  ph_short: '菲律宾短链',
+};
+const EXTRACT_LINK_TYPE_FALLBACKS_V2 = ['pix', 'gopay', 'upi', 'kakao_pay', 'momo', 'gcash', 'paypal']
+  .map(value => ({ value, label: EXTRACT_LINK_TYPE_LABELS_V2[value] }));
+let EXTRACT_LINK_TYPE_CHOICES_V2 = EXTRACT_LINK_TYPE_FALLBACKS_V2.slice();
+
+function extractLinkTypeOptionsV2(current = '') {
+  const options = EXTRACT_LINK_TYPE_CHOICES_V2.slice();
+  const normalized = String(current || '').trim().toLowerCase();
+  if (normalized && !options.some(item => item.value === normalized)) {
+    options.unshift({ value: normalized, label: `当前配置（${normalized}）` });
+  }
+  return options;
+}
+
+function renderExtractLinkTypeControlV2(fv) {
+  const current = String(fv == null ? '' : fv).trim().toLowerCase();
+  return `<select data-key="EXTRACT_LINK_TYPE" aria-label="提链类型">${extractLinkTypeOptionsV2(current).map(item => `<option value="${attrEsc(item.value)}"${current === item.value ? ' selected' : ''}>${esc(item.label)}</option>`).join('')}</select>`;
+}
+
+async function loadExtractLinkTypesV2() {
+  try {
+    const response = await api('/api/extract-link/types');
+    const seen = new Set();
+    const items = (Array.isArray(response.items) ? response.items : [])
+      .filter(item => item && item.visible !== false && item.enabled !== false)
+      .map(item => {
+        const value = String(item.type || '').trim().toLowerCase();
+        if (!value || seen.has(value)) return null;
+        seen.add(value);
+        return { value, label: String(item.label || EXTRACT_LINK_TYPE_LABELS_V2[value] || value) };
+      })
+      .filter(Boolean);
+    if (!items.length) throw new Error('提链网站未返回可用类型');
+    EXTRACT_LINK_TYPE_CHOICES_V2 = items;
+    document.querySelectorAll('#tab-config [data-key="EXTRACT_LINK_TYPE"]').forEach(select => {
+      const current = String(select.value || '').trim().toLowerCase();
+      select.innerHTML = extractLinkTypeOptionsV2(current).map(item => `<option value="${attrEsc(item.value)}"${current === item.value ? ' selected' : ''}>${esc(item.label)}</option>`).join('');
+      select.value = current;
+    });
+  } catch (error) {
+    console.warn('读取提链网站类型失败，使用备用选项：', error);
+  }
+}
 function authProfileModeChoices() {
   return [
     { value: 'current', label: '当前会话画像（保持现状）' },
@@ -664,7 +718,9 @@ function renderConfigControlMarkupV2(f) {
   const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
   let control = '';
   const driverChoices = configDriverChoices(f);
-  if (driverChoices) {
+  if (f.key === 'EXTRACT_LINK_TYPE') {
+    control = renderExtractLinkTypeControlV2(fv);
+  } else if (driverChoices) {
     const current = String(fv == null ? '' : fv).trim().toLowerCase();
     const options = driverChoices.slice();
     if (current && !options.some(item => item.value === current)) {
@@ -1330,6 +1386,7 @@ async function loadConfig() {
     CONFIG = await api('/api/config');
     renderConfigLayoutV2();
     bindConfigLayoutV2();
+    loadExtractLinkTypesV2();
   } catch(e) {
     showToast('加载配置失败: ' + e.message);
   }

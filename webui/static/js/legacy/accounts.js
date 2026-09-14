@@ -135,40 +135,77 @@ function _planCell(r) {
   const ok = r.plan_check_ok;
   const err = r.plan_check_error || '';
   const plan = (r.current_plan_type || r.plan_type || '-').toString();
-  const checked = r.plan_checked_at ? `查询: ${esc(r.plan_checked_at)}` : '未查询实时套餐';
+  const checked = r.plan_checked_at ? `查询: ${r.plan_checked_at}` : '未查询实时套餐';
   const route = (r.plan_check_network_route || '').toString();
   const routeLabel = route === 'proxy' ? `网络: 代理${r.plan_check_proxy_used ? ` (${r.plan_check_proxy_used})` : ''}` :
     route === 'direct_fallback' ? `网络: 直连回退${r.plan_check_proxy_fallback_reason ? ` (${r.plan_check_proxy_fallback_reason})` : ''}` :
     route === 'direct' ? '网络: 直连' : '';
   const registrationRoute = r.registration_proxy_region
-    ? `注册出口: ${esc(r.registration_proxy_provider || '代理')} / ${esc(r.registration_proxy_region)}` : '';
-  const title = [err ? esc(err) : checked, registrationRoute, routeLabel].filter(Boolean).join('；');
+    ? `注册出口: ${r.registration_proxy_provider || '代理'} / ${r.registration_proxy_region}` : '';
+  const title = [err || checked, registrationRoute, routeLabel].filter(Boolean).join('；');
   const lower = plan.toLowerCase();
 
   if (lower === 'free') {
     const text = plan;
     const cls = 'status-success';
-    return `<span class="pill ${cls}" title="${title}">${esc(text)}</span>`;
+    return `<span class="pill ${cls}" title="${esc(title)}">${esc(text)}</span>`;
   }
 
   const isPaid = lower.includes('plus') || lower.includes('pro') || lower.includes('team') || lower.includes('go');
   const cls = lower === '-' ? 'status-used' : (isPaid ? 'status-success' : 'status-running');
   const expireRaw = r.plan_expires_at || r.expires_at || r.plan_renews_at || r.renews_at || '';
   const expire = _fmtPlanTime(expireRaw, true);
-  const parts = [];
   const billing = _billingLabel(r.billing_period);
-  if (billing) parts.push(billing);
-  if (r.billing_currency) parts.push(r.billing_currency);
-  if (expire) parts.push(`到期 ${expire}`);
   const discount = _discountLabel(r);
-  if (discount) parts.push(discount);
-  const text = parts.length ? `${plan}（${parts.join('/')}）` : plan;
+  const text = plan;
   const detail = [title];
-  if (expireRaw) detail.push(`到期时间: ${expireRaw}`);
+  if (billing) detail.push(`计费周期: ${billing}`);
+  if (r.billing_currency) detail.push(`币种: ${r.billing_currency}`);
+  if (expireRaw) detail.push(`到期时间: ${expire || expireRaw}`);
   if (r.plan_renews_at) detail.push(`续费时间: ${r.plan_renews_at}`);
+  if (discount) detail.push(`折扣: ${discount}`);
   if (r.discount_expires_at) detail.push(`折扣结束: ${r.discount_expires_at}`);
   if (r.discount_promo_campaign_id) detail.push(`优惠: ${r.discount_promo_campaign_id}`);
   return `<span class="pill ${cls}" title="${esc(detail.join('；'))}">${esc(text)}</span>`;
+}
+function _quotaWindowLabel(w) {
+  const labels = {five_hour: '5H', weekly: 'WEEKLY', monthly: 'MONTH', daily: 'DAY', custom: 'CUSTOM'};
+  const kind = String(w?.kind || '').toLowerCase();
+  return labels[kind] || String(w?.label || 'OTHER').trim().toUpperCase();
+}
+function _quotaPercent(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '';
+  return `${Math.round(Math.max(0, Math.min(100, n)))}%`;
+}
+function _quotaWindowDetail(w) {
+  const parts = [_quotaWindowLabel(w)];
+  const used = _quotaPercent(w.used_percent);
+  const remaining = _quotaPercent(w.remaining_percent);
+  if (used) parts.push(`已用 ${used}`);
+  if (remaining) parts.push(`剩余 ${remaining}`);
+  const resetAt = Number(w.reset_at);
+  if (Number.isFinite(resetAt) && resetAt > 0) {
+    const date = new Date((resetAt > 1e12 ? resetAt / 1000 : resetAt) * 1000);
+    if (!Number.isNaN(date.getTime())) parts.push(`重置于 ${date.toLocaleString()}`);
+  }
+  return parts.join(' · ');
+}
+function _quotaCell(r) {
+  const windows = Array.isArray(r.quota_windows) ? r.quota_windows.filter(Boolean) : [];
+  const status = String(r.quota_status || '').toLowerCase();
+  const checked = r.quota_checked_at || r.quota_last_success_at || '';
+  const error = r.quota_error || '';
+  if (!windows.length) {
+    if (status === 'queued' || status === 'running' || ['queued', 'running'].includes(String(r.plan_check_status || '').toLowerCase())) return '<span class="pill status-running">查询中</span>';
+    if (status === 'failed') return `<span class="pill status-failed" title="${esc(error || '额度查询失败')}">查询失败</span>`;
+    if (status === 'success') return `<span class="muted" title="${esc(checked ? `查询于 ${checked}` : '额度接口未返回窗口')}">未返回窗口</span>`;
+    return '<span class="muted">未查询</span>';
+  }
+  const details = windows.map(_quotaWindowDetail);
+  if (status === 'failed') details.push(`本次查询失败: ${error || '未知错误'}；显示上次成功快照`);
+  if (checked) details.push(`查询于 ${checked}`);
+  return `<div class="quota-cell" title="${esc(details.join('；'))}">${windows.map(w => `<span class="quota-cell-line">${esc(_quotaWindowLabel(w))}</span>`).join(' ')}</div>`;
 }
 function _trialCell(r) {
   const plan = (r.current_plan_type || r.plan_type || '').toString().toLowerCase();
@@ -228,7 +265,7 @@ function _extractLinkCell(r) {
   }
   if (s === 'failed') {
     const reason = err || msg || '未知原因';
-    return `<div class="extract-link-cell"><span class="pill status-failed" title="${esc(reason)}">提链失败</span><div class="extract-link-error" title="${esc(reason)}">${esc(reason)}</div></div>`;
+    return `<div class="extract-link-cell"><span class="pill status-failed" title="提炼失败：${esc(reason)}">失败</span><div class="extract-link-error" title="${esc(reason)}">${esc(reason)}</div></div>`;
   }
   return '';
 }
@@ -239,7 +276,7 @@ function _extractLinkAction(r) {
   const eligible = plan === 'free' && !!r.plus_trial_eligible;
   if (!eligible) return '';
   const failedReason = s === 'failed' ? (r.extract_link_error || r.extract_link_message || '') : '';
-  return `<button class="good" data-extract-link="${esc(r.id)}" title="${esc(failedReason ? '重新提链；上次失败原因：' + failedReason : '为该 free(可Plus试用) 账号创建 PIX/UPI/KAKAO_PAY/IDEAL 提链任务')}">提链</button>`;
+  return `<button class="good" data-extract-link="${esc(r.id)}" title="${esc(failedReason ? '重新提链；上次失败原因：' + failedReason : '为该 free(可Plus试用) 账号按配置创建提链任务')}">提链</button>`;
 }
 function _codexAction(r) {
   if ((r.account_status || '').toLowerCase() === 'deactivated') return '';
@@ -305,8 +342,9 @@ function renderAccounts() {
       <td><span class="mono">${_legacyTokenSummary(r)}</span></td>
       <td>${_accountStatusCell(r)}</td>
       <td>${_planCell(r)}<div class="sub-cell">${_extractLinkCell(r)}</div></td>
+      <td>${_quotaCell(r)}</td>
       <td>${_trialCell(r)}</td>
-      <td>${r.totp_enabled ? `<div data-account-totp-cell="${esc(r.id)}"><span class="pill status-success">已启用</span> <button class="good" data-account-totp-code="${esc(r.id)}" title="查询当前 6 位 TOTP 验证码">查询验证码</button> <span class="mono" data-account-totp-value hidden></span> <span class="muted" data-account-totp-ttl hidden></span> <button class="good" data-account-totp-copy="${esc(r.id)}" data-totp-code="" title="复制当前 TOTP 验证码" hidden>复制</button> <button class="good" data-account-copy-secret="totp_secret" data-account-id="${esc(r.id)}" title="复制 2FA 密钥（不是当前 6 位验证码）">复制2FA</button></div>` : '<span class="muted">未启用</span>'}</td>
+      <td>${r.totp_enabled ? `<div data-account-totp-cell="${esc(r.id)}"><span class="pill status-success">已启用</span> <button class="good" data-account-totp-code="${esc(r.id)}" title="查询当前 6 位 TOTP 验证码">查询验证码</button> <span class="mono" data-account-totp-value hidden></span> <span class="muted" data-account-totp-ttl hidden></span> <button class="good" data-account-totp-copy="${esc(r.id)}" data-totp-code="" title="复制当前 TOTP 验证码" hidden>复制</button></div>` : '<span class="muted">未启用</span>'}</td>
       <td>${_codexCell(r)}</td>
       <td class="muted">${esc(r.created_at || '-')}</td>
       <td class="actions actions-cell">
@@ -317,7 +355,7 @@ function renderAccounts() {
           <div class="account-action-group danger-zone"><button data-account-archive="${esc(r.id)}" data-archived="${r.archived ? '0' : '1'}" title="${r.archived ? '恢复到默认账号列表' : '归档后默认账号列表不再显示'}">${r.archived ? '恢复' : '归档'}</button> <button class="danger" data-account-delete="${esc(r.id)}" data-email="${esc(r.email)}">删除</button></div>
         </div>
       </td>
-    </tr>`).join('') || '<tr><td colspan="12" class="muted">暂无账号</td></tr>';
+    </tr>`).join('') || '<tr><td colspan="13" class="muted">暂无账号</td></tr>';
   updateAccountSelectionUi(rows);
   _renderPager('accounts', total);
 }
@@ -783,17 +821,21 @@ async function extractOneLink(id, btn) {
     showToast('仅支持 free(可Plus试用) 账号提链');
     return;
   }
-  if (!confirm(`确定为该账号提链吗？\n\n${acc.email || ('#' + id)}\n\n提链类型按配置使用 PIX/UPI/KAKAO_PAY/IDEAL，成功会消耗 1 次 CDK。`)) return;
+  if (!confirm(`确定为该账号提链吗？\n\n${acc.email || ('#' + id)}\n\n提链类型按配置使用，成功会消耗 1 次 CDK。`)) return;
   const old = btn.textContent;
   btn.disabled = true;
   btn.textContent = '提链中…';
   try {
-    await api('/api/accounts/extract-link', {
+    const queued = await api('/api/accounts/extract-link', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({account_id: id}),
     });
-    showToast('提链任务已入队');
+    const fallback = queued.fallback_from && queued.link_type
+      ? `；${String(queued.fallback_from).toUpperCase()} 已失败，改用 ${String(queued.link_type).toUpperCase()}`
+      : '';
+    showToast(`提炼任务已入队${queued.task_id ? ` · 任务 #${queued.task_id}` : ''}${fallback}，可在任务中心查看日志`);
+    if (typeof loadAccountTasks === 'function') loadAccountTasks();
     await pollAccountPlanStatuses();
   } catch(err) {
     showToast('提链失败: ' + err.message);
@@ -820,7 +862,10 @@ async function extractSelectedLinks() {
       body: JSON.stringify({account_ids: ids}),
     });
     const skipped = (r.skipped_count || 0) + (r.busy_count || 0) + (r.failed_count || 0);
-    showToast(skipped ? `已入队 ${r.started_count || 0} 个，跳过/失败 ${skipped} 个` : `已入队 ${r.started_count || 0} 个`);
+    const fallbackCount = (r.started || []).filter(item => item.fallback_from).length;
+    const fallbackText = fallbackCount ? `，其中 ${fallbackCount} 个已自动跳过失败类型` : '';
+    showToast(skipped ? `已入队 ${r.started_count || 0} 个，跳过/失败 ${skipped} 个${fallbackText}` : `已入队 ${r.started_count || 0} 个${fallbackText}`);
+    if (typeof loadAccountTasks === 'function') loadAccountTasks();
     await pollAccountPlanStatuses();
   } catch(err) {
     showToast('批量提链失败: ' + err.message);

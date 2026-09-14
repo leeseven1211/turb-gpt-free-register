@@ -79,6 +79,7 @@ STAGES: dict[str, dict[str, str]] = {
     "plan_check": {"label": "查询套餐", "group": "account"},
     "access_token": {"label": "校验 Token", "group": "account"},
     "refresh_token": {"label": "刷新 Token", "group": "account"},
+    "extract_link": {"label": "提炼", "group": "account"},
     "mailbox_scan": {"label": "扫描邮件", "group": "account"},
     "complete": {"label": "完成", "group": "system"},
     "interrupted": {"label": "执行中断", "group": "system"},
@@ -119,6 +120,7 @@ TASK_FLOWS: dict[str, tuple[str, ...]] = {
     "codex_token_refresh": ("refresh_token", "complete"),
     "plan_check": ("network", "plan_check", "complete"),
     "deactivation_mail": ("mailbox_scan", "complete"),
+    "extract_link": ("preflight", "access_token", "refresh_token", "extract_link", "complete"),
 }
 
 

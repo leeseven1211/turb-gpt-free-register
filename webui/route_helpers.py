@@ -189,11 +189,15 @@ def _compact_account_for_list(row: dict) -> dict:
         "plan_last_success_at", "plan_expires_at", "plan_renews_at", "renews_at",
         "billing_period", "billing_currency", "discount_amount", "discount_type",
         "discount_expires_at", "discount_promo_campaign_id",
+        # 额度窗口快照（来自 ChatGPT /wham/usage，不返回原始响应）。
+        "quota_status", "quota_checked_at", "quota_http_status", "quota_error",
+        "quota_type", "quota_windows", "quota_last_success_at",
         "token_expired", "token_expires_at", "account_status_reason", "account_status_at",
         # 查活状态。
         "live_check_status", "live_check_error", "live_check_http_status", "live_checked_at",
         # 提链成功/失败时才需要。
-        "extract_link_status", "extract_link_type", "extract_link_message", "extract_link_error",
+        "extract_link_status", "extract_link_ok", "extract_link_type", "extract_link_message", "extract_link_error",
+        "extract_link_failed_types", "extract_link_last_failed_type", "extract_link_last_failed_at",
         "extract_link_long_url", "extract_link_copy_paste", "extract_link_image_url_png",
         "extract_link_image_url_svg", "extract_link_expires_at",
         # Codex 状态提示。

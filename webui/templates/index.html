@@ -336,12 +336,13 @@
               <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnChangeTwofaSelectedAccountsV2" disabled title="先关闭旧 Authenticator，再启用并确认新的 2FA">修改 2FA</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCompleteSelectedAccountsV2" disabled title="按配置补全账号密码、套餐、2FA、Codex；刷新 AT 是否包含由配置决定">补全账号</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnRetrySelectedCodexV2" disabled title="给选中的账号批量补跑 Codex 授权">补 Codex</button>
-              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnExtractSelectedLinksV2" disabled title="给选中的 free(可Plus试用) 账号批量提链，类型按配置 PIX/UPI/KAKAO_PAY/IDEAL">提链</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnExtractSelectedLinksV2" disabled title="给选中的 free(可Plus试用) 账号批量提链，类型按提链配置">提链</button>
             </div>
             <div class="toolbar-overflow-section toolbar-overflow-section--wide">
               <span class="toolbar-overflow-section-title">复制与导出</span>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedTokensV2" disabled title="复制选中账号的 Token，每个账号一行">复制 Token</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedLinesV2" disabled title="复制选中账号的完整整行，每个账号一行">复制行</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedExtractLinksV2" disabled title="复制选中账号已成功生成的提炼地址，每个地址一行">复制提炼地址</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedEmailsV2" disabled title="复制选中账号的邮箱，每个账号一行">复制邮箱</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedPasswordsV2" disabled title="复制选中账号中已设置的账号密码，格式为 邮箱----密码">复制密码</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedTotpsV2" disabled title="复制选中账号的 2FA 密钥，每个账号一行，不是 6 位验证码">复制 2FA</button>
@@ -368,8 +369,8 @@
         <table class="accounts-table-v2" data-resizable-table="accounts">
           <colgroup>
             <col class="col-check"><col class="col-id"><col class="col-email"><col class="col-source">
-            <col class="col-token"><col class="col-small"><col class="col-plan"><col class="col-trial"><col class="col-small">
-            <col class="col-risk-mail"><col class="col-account-status"><col class="col-status"><col class="col-time"><col class="col-actions">
+            <col class="col-token"><col class="col-account-status"><col class="col-small"><col class="col-plan"><col class="col-quota"><col class="col-trial"><col class="col-small">
+            <col class="col-risk-mail"><col class="col-status"><col class="col-time"><col class="col-actions">
           </colgroup>
           <thead>
             <tr>
@@ -381,6 +382,7 @@
               <th class="col-account-status column-filter-header" data-column-filter="accountStatusFilterV2" data-filter-type="select" data-filter-label="按账号状态筛选">账号状态</th>
               <th class="col-small column-filter-header" data-column-filter="accountPasswordFilterV2" data-filter-type="select" data-filter-label="按账号密码状态筛选">账号密码</th>
               <th class="col-plan column-filter-header" data-column-filter="accountPlanFilterV2" data-filter-type="select" data-filter-label="按套餐筛选">套餐</th>
+              <th class="col-quota">额度</th>
               <th class="col-trial column-filter-header" data-column-filter="accountTrialFilterV2" data-filter-type="select" data-filter-label="按 Plus 试用资格筛选">Plus 试用</th>
               <th class="col-small column-filter-header" data-column-filter="accountTotpFilterV2" data-filter-type="select" data-filter-label="按 2FA 状态筛选">2FA</th>
               <th class="col-risk-mail column-filter-header" data-column-filter="accountRiskFilterV2" data-filter-type="select" data-filter-label="按封号邮件状态筛选">封号邮件</th>
@@ -389,7 +391,7 @@
               <th class="col-actions"><div class="column-actions-heading"><span>操作</span><button type="button" class="column-filters-reset" id="btnResetAccountFiltersV2" title="清除全部列筛选">清筛</button></div></th>
             </tr>
           </thead>
-          <tbody id="accountsBodyV2"><tr class="list-state-row"><td class="table-state-cell" colspan="14"><div class="table-state is-loading" role="status"><span class="table-state-spinner" aria-hidden="true"></span><strong>正在加载账号</strong><small>正在同步账号状态和授权信息</small></div></td></tr></tbody>
+          <tbody id="accountsBodyV2"><tr class="list-state-row"><td class="table-state-cell" colspan="15"><div class="table-state is-loading" role="status"><span class="table-state-spinner" aria-hidden="true"></span><strong>正在加载账号</strong><small>正在同步账号状态和授权信息</small></div></td></tr></tbody>
         </table>
       </div>
       <div class="jobs-v2-pager" id="pager-accounts-v2"></div>

@@ -453,7 +453,7 @@ def _render_static_viewer(outlook_rows: list[dict] | None = None, account_rows: 
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>ID</th><th>邮箱</th><th>来源</th><th>Token</th><th>备注</th><th>2FA</th><th>创建时间</th><th>操作</th></tr></thead>
+        <thead><tr><th>ID</th><th>邮箱</th><th>来源</th><th>额度</th><th>Token</th><th>备注</th><th>2FA</th><th>创建时间</th><th>操作</th></tr></thead>
         <tbody id="accountsBody"></tbody>
       </table>
     </div>
@@ -502,6 +502,16 @@ function pill(status) {{
   const label = map[status] || status || '-';
   return `<span class="pill status-${{esc(status)}}">${{esc(label)}}</span>`;
 }}
+function quotaCell(r) {{
+  const windows = Array.isArray(r.quota_windows) ? r.quota_windows.filter(Boolean) : [];
+  const labels = {{ five_hour: '5小时限额', weekly: '周限额', monthly: '月限额', daily: '日限额', custom: '自定义窗口' }};
+  if (!windows.length) return `<span class="muted">${{r.quota_status === 'failed' ? '查询失败' : (r.quota_status === 'success' ? '未返回窗口' : '未查询')}}</span>`;
+  return `<div class="quota-cell">${{windows.map((w) => {{
+    const label = w.label || labels[String(w.kind || '').toLowerCase()] || '额度窗口';
+    const remaining = Number(w.remaining_percent);
+    return `<div>${{esc(label)}}${{Number.isFinite(remaining) ? ` 余${{Math.round(Math.max(0, Math.min(100, remaining)))}}%` : ''}}</div>`;
+  }}).join('')}}</div>`;
+}}
 function showToast(text) {{
   const toast = $('#toast');
   toast.textContent = text;
@@ -543,6 +553,7 @@ function render() {{
       <td class="muted">#${{esc(r.id)}}</td>
       <td><div class="main-cell">${{esc(r.email)}}</div><div class="sub-cell">${{esc(r.user_name || '-')}}</div></td>
       <td>${{esc(r.email_source || '-')}}</td>
+      <td>${{quotaCell(r)}}</td>
       <td><span class="mono">${{esc(short(r.access_token || '', 42))}}</span></td>
       <td title="${{esc(r.note || '')}}">${{r.note ? esc(short(r.note, 60)) : '<span class="muted">-</span>'}}</td>
       <td>${{r.totp_secret ? '已启用' : '<span class="muted">未启用</span>'}}</td>
@@ -1465,6 +1476,20 @@ def update_account_plan_check(acc_id: int | None = None, email: str | None = Non
             row["eligible_offer_ids"] = result.get("eligible_offer_ids") or []
             row["plan_last_success_at"] = result.get("checked_at") or _now()
             row["plan_last_success_result_json"] = json.dumps(result, ensure_ascii=False)
+            # 额度是套餐查询的附带快照。额度接口偶发失败时保留上次成功的
+            # 窗口和类型，只更新独立的失败状态，避免把真实额度清空。
+            quota_status = result.get("quota_status")
+            if quota_status:
+                row["quota_status"] = quota_status
+                row["quota_checked_at"] = result.get("quota_checked_at") or result.get("checked_at") or _now()
+                row["quota_http_status"] = result.get("quota_http_status")
+                if quota_status == "success":
+                    row["quota_type"] = result.get("quota_type") or "未返回额度窗口"
+                    row["quota_windows"] = result.get("quota_windows") or []
+                    row["quota_error"] = None
+                    row["quota_last_success_at"] = row["quota_checked_at"]
+                else:
+                    row["quota_error"] = result.get("quota_error") or "额度查询失败"
         row["plan_check_proxy_mode"] = result.get("proxy_mode")
         row["plan_check_network_route"] = result.get("network_route")
         row["plan_check_proxy_used"] = result.get("proxy_used")
@@ -1545,6 +1570,39 @@ def update_account_extract(acc_id: int, result: dict | None = None) -> bool:
         row["updated_at"] = _now()
         _save_accounts(accounts)
         return True
+
+
+def mark_extract_link_type_failed(acc_id: int, link_type: str, error: str | None = None) -> bool:
+    """记录某账号已失败的提链类型，后续提炼自动跳过该类型。"""
+    normalized = str(link_type or "").strip().lower()
+    if not normalized:
+        return False
+    row = record_store.get_row(record_store.ACCOUNTS, int(acc_id))
+    if row is None:
+        return False
+    failed = row.get("extract_link_failed_types")
+    if isinstance(failed, str):
+        try:
+            failed = json.loads(failed)
+        except (TypeError, ValueError):
+            failed = []
+    if not isinstance(failed, list):
+        failed = []
+    failed_types = {
+        str(item or "").strip().lower()
+        for item in failed
+        if str(item or "").strip()
+    }
+    failed_types.add(normalized)
+    changes = {
+        "extract_link_failed_types": sorted(failed_types),
+        "extract_link_last_failed_type": normalized,
+        "extract_link_last_failed_at": _now(),
+        "updated_at": _now(),
+    }
+    if error:
+        changes["extract_link_last_failed_error"] = str(error)[:500]
+    return _patch_account(acc_id, changes)
 
 
 def recover_interrupted_extract_links() -> int:
@@ -1634,6 +1692,8 @@ def list_account_plan_check_statuses(limit: int = 5000, offset: int = 0, archive
         "plan_check_status", "plan_check_ok", "plan_check_error",
         "plan_check_trigger", "plan_check_queued_at", "plan_check_started_at",
         "plan_check_completed_at", "plan_checked_at", "plan_last_success_at",
+        "quota_status", "quota_checked_at", "quota_http_status", "quota_error",
+        "quota_type", "quota_windows", "quota_last_success_at",
         "plan_check_network_route", "plan_check_proxy_used", "plan_check_proxy_fallback_reason",
         "expires_at", "plan_expires_at", "plan_renews_at", "renews_at",
         "billing_period", "billing_currency", "discount_amount", "discount_type",
@@ -1681,6 +1741,11 @@ def list_account_plan_check_statuses(limit: int = 5000, offset: int = 0, archive
                     "current_plan_type": row.get("current_plan_type"),
                     "plan_type": row.get("plan_type"),
                     "plus_trial_eligible": row.get("plus_trial_eligible"),
+                    "quota_status": row.get("quota_status"),
+                    "quota_checked_at": row.get("quota_checked_at"),
+                    "quota_error": row.get("quota_error"),
+                    "quota_type": row.get("quota_type"),
+                    "quota_windows": row.get("quota_windows"),
                     "extract_link_status": row.get("extract_link_status"),
                     "codex_status": row.get("codex_status"),
                 }

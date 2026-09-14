@@ -18,6 +18,7 @@ from core import (
     codex_token_refresh_service,
     db,
     deactivation_mail_service,
+    extract_link_service,
     live_check_service,
     operation_task_store,
     plan_check_service,
@@ -575,6 +576,16 @@ class WebUIContext:
             )
         elif task_type == "deactivation_mail":
             queued = deactivation_mail_service.enqueue(int(account["id"]), trigger="manual_retry")
+        elif task_type == "extract_link":
+            result_summary = task.get("result_summary") if isinstance(task.get("result_summary"), dict) else {}
+            queued = extract_link_service.enqueue_account_extract(
+                account_id=int(account["id"]),
+                email=str(account.get("email") or ""),
+                access_token=str(account.get("access_token") or ""),
+                trigger="manual_retry",
+                # 失败类型会由提炼服务重新检查并自动换下一个可用类型。
+                link_type=str(result_summary.get("link_type") or "") or None,
+            )
         elif task_type == "codex_retry":
             queued = self.enqueue_codex_retry(
                 email=str(account.get("email") or ""),

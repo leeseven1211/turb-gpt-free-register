@@ -513,6 +513,13 @@ def save_account_data(
         from core import db
 
         captured = dict(captured_plan_result)
+        if not captured.get("quota_status"):
+            from core.chatgpt_plan import query_account_quota
+            captured.update(query_account_quota(
+                access_token,
+                proxy=plan_check_proxy,
+                session=plan_check_session,
+            ))
         captured["trigger"] = "registration_browser_response"
         db.update_account_plan_check(acc_id=row_id, result=captured)
         report_job_progress(

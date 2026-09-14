@@ -63,7 +63,7 @@ const LIST_FACET_LABELS = {
     registration:'注册', registration_resume:'继续邮箱验证', twofa_retry:'2FA 配置补跑',
     account_setup_retry:'账号配置补跑', password_setup:'补密码', twofa_setup:'补 2FA', account_completion:'补全账号',
     codex_retry:'Codex 补跑', codex_token_refresh:'Codex Token 刷新',
-    live_check:'查活', token_refresh:'AT 刷新', plan_check:'查套餐', deactivation_mail:'查封号邮件',
+    live_check:'查活', token_refresh:'AT 刷新', plan_check:'查套餐', deactivation_mail:'查封号邮件', extract_link:'提炼',
   },
   target_status: {
     not_created:'尚未创建', in_progress:'处理中', email_verification_pending:'待邮箱验证或资料补全',
@@ -81,7 +81,7 @@ const LIST_FACET_LABELS = {
     phone_check:'检查手机验证', phone_acquire:'申请接码号码', phone_otp:'短信验证', consent:'确认授权',
     callback:'接收 OAuth 回调', credential_confirm:'确认远端凭证', credential_persist:'保存凭证', cancelling:'正在停止',
     twofa:'设置 2FA', plan:'套餐信息', plan_check:'查询套餐', plan_request:'请求套餐', refresh_token:'刷新 Token',
-    mailbox_scan:'扫描邮件', complete:'完成', interrupted:'执行中断', event:'事件',
+    mailbox_scan:'扫描邮件', extract_link:'提炼', complete:'完成', interrupted:'执行中断', event:'事件',
   },
   run_count: {'0':'0 次', '1':'1 次', '2':'2 次', '3':'3 次', '4+':'4 次及以上'},
 };
@@ -245,12 +245,17 @@ const TABLE_DEFAULT_WIDTHS = {
   jobs:     [4, 6, 15, 9, 11, 8, 9, 9, 13, 16],
   // Desktop account rows need to scan in one viewport; long values keep
   // their full text in the cell title and the detail drawer.
-  accounts: [3, 4, 17, 7, 6, 6, 7, 7, 10, 9, 8, 8, 8],
+  accounts: [3, 6, 17, 7, 6, 6, 7, 7, 8, 7, 9, 8, 8, 8, 10],
   codex:    [4, 19, 7, 9, 9, 11, 11, 11, 19],
   outlook:  [4, 20, 9, 9, 8, 14, 14, 18],
   accountTasks: [6, 9, 18, 10, 11, 13, 10, 11, 17, 15, 10],
 };
 const TABLE_WIDTH_STORAGE_PREFIX = 'gpt_console_table_widths_';
+const TABLE_SAVED_WIDTH_MIN_RATIOS = {
+  // The account ID search keeps a clear button beside the input; do not let
+  // a previously saved narrow layout collapse the input to its intrinsic size.
+  accounts: { 1: 0.05 },
+};
 
 function applyResizableTableWidths(table, widths) {
   const cols = Array.from(table.querySelectorAll('colgroup col'));
@@ -285,7 +290,15 @@ function initResizableTable(table) {
   const headers = Array.from(table.querySelectorAll('thead tr:first-child th'));
   if (!key || !cols.length || cols.length !== headers.length) return;
   table.dataset.resizableReady = '1';
-  applyResizableTableWidths(table, readSavedTableWidths(key, cols.length) || TABLE_DEFAULT_WIDTHS[key]);
+  const savedWidths = readSavedTableWidths(key, cols.length);
+  if (savedWidths) {
+    const savedTotal = savedWidths.reduce((sum, value) => sum + Math.max(0, Number(value) || 0), 0) || 1;
+    Object.entries(TABLE_SAVED_WIDTH_MIN_RATIOS[key] || {}).forEach(([index, ratio]) => {
+      const columnIndex = Number(index);
+      if (savedWidths[columnIndex] / savedTotal < ratio) savedWidths[columnIndex] = savedTotal * ratio;
+    });
+  }
+  applyResizableTableWidths(table, savedWidths || TABLE_DEFAULT_WIDTHS[key]);
 
   headers.forEach((header, index) => {
     if (index === 0 || index >= headers.length - 1) return;
@@ -302,7 +315,7 @@ function initResizableTable(table) {
       const startX = event.clientX;
       const startWidths = headers.map(item => item.getBoundingClientRect().width);
       const nextIndex = index + 1;
-      const minCurrent = 64;
+      const minCurrent = header.classList.contains('col-id') ? 72 : 64;
       const minNext = headers[nextIndex].classList.contains('col-actions') ? 108 : 64;
       handle.classList.add('is-dragging');
       document.body.classList.add('is-resizing-table-column');

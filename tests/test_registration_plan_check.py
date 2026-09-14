@@ -144,6 +144,7 @@ class RegistrationPlanCheckTests(unittest.TestCase):
             patch.object(plan_check_service, "check_registration_account_plan") as sync_check,
             patch.object(plan_check_service, "enqueue_account_plan_check") as enqueue,
             patch("core.db.update_account_plan_check", return_value=True) as update,
+            patch("core.chatgpt_plan.query_account_quota", return_value={"quota_status": "failed", "quota_error": "test"}) as quota,
         ):
             row_id = account_export.save_account_data(
                 email="captured@example.com",
@@ -160,6 +161,7 @@ class RegistrationPlanCheckTests(unittest.TestCase):
             update.call_args.kwargs["result"]["trigger"],
             "registration_browser_response",
         )
+        quota.assert_called_once_with("token", proxy=None, session=None)
 
     def test_save_account_treats_empty_registration_proxy_as_explicit_direct(self):
         with (

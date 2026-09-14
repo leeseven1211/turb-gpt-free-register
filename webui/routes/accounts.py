@@ -928,6 +928,11 @@ def create_accounts_blueprint(context: WebUIContext):
         if not token:
             return jsonify({"ok": False, "error": "该账号没有 access_token"}), 400
         try:
+            payment_options = {
+                key: data.get(key)
+                for key in ("paypal_region_selected", "paypal_country", "paypal_currency", "paypal_region")
+                if key in data
+            }
             queued = extract_link_service.enqueue_account_extract(
                 account_id=int(acc.get("id")),
                 email=acc.get("email") or "",
@@ -935,6 +940,7 @@ def create_accounts_blueprint(context: WebUIContext):
                 trigger="manual",
                 link_type=data.get("link_type"),
                 cdk=data.get("cdk"),
+                payment_options=payment_options,
             )
         except Exception as exc:
             return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 400
@@ -962,6 +968,7 @@ def create_accounts_blueprint(context: WebUIContext):
         failed = []
         skipped = []
         seen = set()
+        items = []
         for raw in ids:
             try:
                 acc_id = int(raw)
@@ -983,14 +990,32 @@ def create_accounts_blueprint(context: WebUIContext):
             if not token:
                 skipped.append({"id": acc_id, "email": email, "reason": "缺少 access_token"})
                 continue
+            items.append(acc)
+
+        batch_id = account_task_store.create_batch(
+            action_type="extract_link",
+            trigger="manual_bulk",
+            total_count=len(items),
+        ) if items else None
+        for acc in items:
+            acc_id = int(acc.get("id") or 0)
+            email = acc.get("email") or ""
+            token = (acc.get("access_token") or "").strip()
             try:
+                payment_options = {
+                    key: data.get(key)
+                    for key in ("paypal_region_selected", "paypal_country", "paypal_currency", "paypal_region")
+                    if key in data
+                }
                 queued = extract_link_service.enqueue_account_extract(
                     account_id=acc_id,
-                    email=email or "",
+                    email=email,
                     access_token=token,
                     trigger="manual_bulk",
                     link_type=data.get("link_type"),
                     cdk=data.get("cdk"),
+                    payment_options=payment_options,
+                    batch_id=batch_id,
                 )
             except Exception as exc:
                 failed.append({"id": acc_id, "email": email, "error": f"{type(exc).__name__}: {exc}"})
@@ -1012,6 +1037,7 @@ def create_accounts_blueprint(context: WebUIContext):
             "failed_count": len(failed),
             "skipped": skipped,
             "skipped_count": len(skipped),
+            "batch_id": batch_id,
         }), 202
 
     @bp.post("/api/accounts/<int:acc_id>/codex/upload-sub2")

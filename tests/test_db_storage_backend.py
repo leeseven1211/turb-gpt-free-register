@@ -145,6 +145,47 @@ class WriteScopeTests(PostgresTestCase):
         self.assertEqual(db.get_account(self.ids[0])["note"], "备注保留")
         self.assertEqual(db.get_account(self.ids[1])["note"], "另一条备注")
 
+    def test_quota_snapshot_round_trips_and_failed_refresh_keeps_last_success(self):
+        account_id = self.ids[0]
+        quota_windows = [{
+            "kind": "five_hour",
+            "label": "5小时限额",
+            "used_percent": 12,
+            "remaining_percent": 88,
+            "window_seconds": 18000,
+        }]
+        self.assertTrue(db.update_account_plan_check(
+            acc_id=account_id,
+            result={
+                "ok": True,
+                "checked_at": "2026-09-14T10:00:00",
+                "current_plan_type": "free",
+                "plus_trial_eligible": False,
+                "quota_status": "success",
+                "quota_checked_at": "2026-09-14T10:00:00",
+                "quota_type": "5小时限额",
+                "quota_windows": quota_windows,
+            },
+        ))
+        self.assertTrue(db.update_account_plan_check(
+            acc_id=account_id,
+            result={
+                "ok": True,
+                "checked_at": "2026-09-14T10:05:00",
+                "current_plan_type": "free",
+                "plus_trial_eligible": False,
+                "quota_status": "failed",
+                "quota_checked_at": "2026-09-14T10:05:00",
+                "quota_error": "HTTP 503",
+            },
+        ))
+
+        row = db.get_account(account_id)
+        self.assertEqual(row["quota_status"], "failed")
+        self.assertEqual(row["quota_type"], "5小时限额")
+        self.assertEqual(row["quota_windows"], quota_windows)
+        self.assertEqual(row["quota_error"], "HTTP 503")
+
 
 class JobStorageTests(PostgresTestCase):
     def setUp(self):

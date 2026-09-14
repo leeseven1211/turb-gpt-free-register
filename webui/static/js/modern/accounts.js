@@ -36,6 +36,10 @@ function accountTaskResultText(task) {
     if (!Object.prototype.hasOwnProperty.call(result, 'detected')) return '-';
     return result.detected ? '发现封号邮件' : '未发现封号邮件';
   }
+  if (task.task_type === 'extract_link') {
+    if (result.ok && result.has_link) return `提炼成功${result.link_type ? ` · ${String(result.link_type).toUpperCase()}` : ''}`;
+    return result.message || result.status || (result.ok ? '提炼完成' : '提炼失败');
+  }
   if (task.task_type === 'live_check' || task.task_type === 'token_refresh') return result.ok ? '账号正常' : (result.status || '-');
   if (['account_setup_retry','password_setup','password_change','twofa_setup','twofa_change','account_completion'].includes(task.task_type)) return result.ok ? (result.message || '账号配置操作已完成') : (result.message || result.status || '账号配置操作失败');
   if (task.task_type === 'codex_retry') {
@@ -405,7 +409,7 @@ async function cancelAccountTask(taskId, button) {
 function updateAccountTaskFilters(facets = {}) {
   syncFacetSelect('accountTaskTypeFilterV2', facets.task_type, {
     group: 'task_type',
-    values: ['registration', 'registration_resume', 'account_setup_retry', 'password_setup', 'password_change', 'twofa_setup', 'twofa_change', 'account_completion', 'twofa_retry', 'codex_retry', 'codex_token_refresh', 'live_check', 'token_refresh', 'plan_check', 'deactivation_mail'],
+    values: ['registration', 'registration_resume', 'account_setup_retry', 'password_setup', 'password_change', 'twofa_setup', 'twofa_change', 'account_completion', 'twofa_retry', 'codex_retry', 'codex_token_refresh', 'live_check', 'token_refresh', 'plan_check', 'deactivation_mail', 'extract_link'],
   });
   syncFacetSelect('accountTaskStatusFilterV2', facets.status, {
     group: 'status',
@@ -518,7 +522,7 @@ async function loadAccounts() {
     }
     renderAccounts();
   } catch(e) {
-    if (!ACCOUNTS.length) $('#accountsBodyV2').innerHTML = renderTableStateRow(14, '账号加载失败', '请检查服务状态后刷新列表。', 'error');
+    if (!ACCOUNTS.length) $('#accountsBodyV2').innerHTML = renderTableStateRow(15, '账号加载失败', '请检查服务状态后刷新列表。', 'error');
     showToast('加载账号失败: ' + e.message);
   }
   finally {
@@ -648,43 +652,153 @@ function _discountLabel(r) {
   if (!Number.isNaN(n)) return `${n}折扣`;
   return `${amount}折扣`;
 }
+
+let _accountsTooltipNode = null;
+let _accountsTooltipTarget = null;
+
+function _accountsTooltipSelector() {
+  return '.accounts-table-v2 .col-plan [data-accounts-tooltip], .accounts-table-v2 .col-quota [data-accounts-tooltip]';
+}
+
+function _hideAccountsTooltip() {
+  if (_accountsTooltipNode) _accountsTooltipNode.classList.remove('show');
+  _accountsTooltipTarget = null;
+}
+
+function _showAccountsTooltip(target) {
+  const message = target?.dataset?.accountsTooltip || '';
+  if (!message) return;
+  if (!_accountsTooltipNode) {
+    _accountsTooltipNode = document.createElement('div');
+    _accountsTooltipNode.className = 'accounts-hover-tooltip';
+    _accountsTooltipNode.setAttribute('role', 'tooltip');
+    document.body.appendChild(_accountsTooltipNode);
+  }
+
+  _accountsTooltipTarget = target;
+  _accountsTooltipNode.textContent = message;
+  _accountsTooltipNode.style.left = '0px';
+  _accountsTooltipNode.style.top = '0px';
+  _accountsTooltipNode.classList.add('show');
+
+  const rect = target.getBoundingClientRect();
+  const tipRect = _accountsTooltipNode.getBoundingClientRect();
+  const padding = 8;
+  const gap = 6;
+  const left = Math.max(padding, Math.min(rect.left, window.innerWidth - tipRect.width - padding));
+  let top = rect.bottom + gap;
+  if (top + tipRect.height > window.innerHeight - padding && rect.top - tipRect.height - gap >= padding) {
+    top = rect.top - tipRect.height - gap;
+  }
+  _accountsTooltipNode.style.left = `${left}px`;
+  _accountsTooltipNode.style.top = `${top}px`;
+}
+
+(function bindAccountsHoverTooltips() {
+  const targetFor = (node) => node?.closest?.(_accountsTooltipSelector()) || null;
+  document.addEventListener('mouseover', (event) => {
+    const target = targetFor(event.target);
+    if (!target || (event.relatedTarget && target.contains(event.relatedTarget))) return;
+    _showAccountsTooltip(target);
+  });
+  document.addEventListener('mouseout', (event) => {
+    const target = targetFor(event.target);
+    if (!target || (event.relatedTarget && target.contains(event.relatedTarget))) return;
+    if (!_accountsTooltipTarget || _accountsTooltipTarget === target) _hideAccountsTooltip();
+  });
+  document.addEventListener('focusin', (event) => {
+    const target = targetFor(event.target);
+    if (target) _showAccountsTooltip(target);
+  });
+  document.addEventListener('focusout', (event) => {
+    const target = targetFor(event.target);
+    if (!target || (event.relatedTarget && target.contains(event.relatedTarget))) return;
+    if (!_accountsTooltipTarget || _accountsTooltipTarget === target) _hideAccountsTooltip();
+  });
+  window.addEventListener('scroll', _hideAccountsTooltip, true);
+  window.addEventListener('resize', _hideAccountsTooltip);
+})();
+
 function _planCell(r) {
   const ok = r.plan_check_ok;
   const err = r.plan_check_error || '';
   const plan = (r.current_plan_type || r.plan_type || '-').toString();
-  const checked = r.plan_checked_at ? `查询: ${esc(r.plan_checked_at)}` : '未查询实时套餐';
+  const checked = r.plan_checked_at ? `查询: ${r.plan_checked_at}` : '未查询实时套餐';
   const route = (r.plan_check_network_route || '').toString();
   const routeLabel = route === 'proxy' ? `网络: 代理${r.plan_check_proxy_used ? ` (${r.plan_check_proxy_used})` : ''}` :
     route === 'direct_fallback' ? `网络: 直连回退${r.plan_check_proxy_fallback_reason ? ` (${r.plan_check_proxy_fallback_reason})` : ''}` :
     route === 'direct' ? '网络: 直连' : '';
   const registrationRoute = r.registration_proxy_region
-    ? `注册出口: ${esc(r.registration_proxy_provider || '代理')} / ${esc(r.registration_proxy_region)}` : '';
-  const title = [err ? esc(err) : checked, registrationRoute, routeLabel].filter(Boolean).join('；');
+    ? `注册出口: ${r.registration_proxy_provider || '代理'} / ${r.registration_proxy_region}` : '';
+  const title = [err || checked, registrationRoute, routeLabel].filter(Boolean).join('；');
   const lower = plan.toLowerCase();
 
   if (lower === 'free') {
     const text = plan;
     const cls = 'status-success';
-    return `<span class="pill ${cls}" title="${title}">${esc(text)}</span>`;
+    return `<span class="pill ${cls}" data-accounts-tooltip="${esc(title)}" tabindex="0">${esc(text)}</span>`;
   }
 
   const cls = lower === '-' ? 'status-used' : 'status-success';
   const expireRaw = r.plan_expires_at || r.expires_at || r.plan_renews_at || r.renews_at || '';
   const expire = _fmtPlanTime(expireRaw, true);
-  const parts = [];
   const billing = _billingLabel(r.billing_period);
-  if (billing) parts.push(billing);
-  if (r.billing_currency) parts.push(r.billing_currency);
-  if (expire) parts.push(`到期 ${expire}`);
   const discount = _discountLabel(r);
-  if (discount) parts.push(discount);
-  const text = parts.length ? `${plan}（${parts.join('/')}）` : plan;
+  const text = plan;
   const detail = [title];
-  if (expireRaw) detail.push(`到期时间: ${expireRaw}`);
+  if (billing) detail.push(`计费周期: ${billing}`);
+  if (r.billing_currency) detail.push(`币种: ${r.billing_currency}`);
+  if (expireRaw) detail.push(`到期时间: ${expire || expireRaw}`);
   if (r.plan_renews_at) detail.push(`续费时间: ${r.plan_renews_at}`);
+  if (discount) detail.push(`折扣: ${discount}`);
   if (r.discount_expires_at) detail.push(`折扣结束: ${r.discount_expires_at}`);
   if (r.discount_promo_campaign_id) detail.push(`优惠: ${r.discount_promo_campaign_id}`);
-  return `<span class="pill ${cls}" title="${esc(detail.join('；'))}">${esc(text)}</span>`;
+  return `<span class="pill ${cls}" data-accounts-tooltip="${esc(detail.join('；'))}" tabindex="0">${esc(text)}</span>`;
+}
+function _quotaWindowLabel(w) {
+  const labels = {five_hour: '5H', weekly: 'WEEKLY', monthly: 'MONTH', daily: 'DAY', custom: 'CUSTOM'};
+  const kind = String(w?.kind || '').toLowerCase();
+  return labels[kind] || String(w?.label || 'OTHER').trim().toUpperCase();
+}
+function _quotaPercent(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '';
+  return `${Math.round(Math.max(0, Math.min(100, n)))}%`;
+}
+function _quotaWindowDetail(w) {
+  const parts = [_quotaWindowLabel(w)];
+  const used = _quotaPercent(w.used_percent);
+  const remaining = _quotaPercent(w.remaining_percent);
+  if (used) parts.push(`已用 ${used}`);
+  if (remaining) parts.push(`剩余 ${remaining}`);
+  const resetAt = Number(w.reset_at);
+  if (Number.isFinite(resetAt) && resetAt > 0) {
+    const date = new Date((resetAt > 1e12 ? resetAt / 1000 : resetAt) * 1000);
+    if (!Number.isNaN(date.getTime())) parts.push(`重置于 ${date.toLocaleString()}`);
+  }
+  return parts.join(' · ');
+}
+function _quotaCell(r) {
+  const windows = Array.isArray(r.quota_windows) ? r.quota_windows.filter(Boolean) : [];
+  const status = String(r.quota_status || '').toLowerCase();
+  const checked = r.quota_checked_at || r.quota_last_success_at || '';
+  const error = r.quota_error || '';
+  if (!windows.length) {
+    if (status === 'queued' || status === 'running' || ['queued', 'running'].includes(String(r.plan_check_status || '').toLowerCase())) {
+      return '<span class="pill status-running">查询中</span>';
+    }
+    if (status === 'failed') {
+      return `<span class="pill status-failed" data-accounts-tooltip="${esc(error || '额度查询失败')}" tabindex="0">查询失败</span>`;
+    }
+    if (status === 'success') {
+      return `<span class="acc-v2-muted" data-accounts-tooltip="${esc(checked ? `查询于 ${checked}` : '额度接口未返回窗口')}" tabindex="0">未返回窗口</span>`;
+    }
+    return '<span class="acc-v2-muted" data-accounts-tooltip="尚未查询额度" tabindex="0">未查询</span>';
+  }
+  const details = windows.map(_quotaWindowDetail);
+  if (status === 'failed') details.push(`本次查询失败: ${error || '未知错误'}；显示上次成功快照`);
+  if (checked) details.push(`查询于 ${checked}`);
+  return `<div class="quota-cell" data-accounts-tooltip="${esc(details.join('；'))}" tabindex="0">${windows.map(w => `<span class="quota-cell-line">${esc(_quotaWindowLabel(w))}</span>`).join(' ')}</div>`;
 }
 function _trialCell(r) {
   const plan = (r.current_plan_type || r.plan_type || '').toString().toLowerCase();
@@ -739,17 +853,11 @@ function _extractLinkCell(r) {
   if (s === 'running') return `<span class="pill status-running" title="${title}">${esc(msg || '提链中')}</span>`;
   if (s === 'success') {
     const typ = (r.extract_link_type || '').toUpperCase();
-    const link = r.extract_link_long_url || r.extract_link_copy_paste || '';
-    const qr = r.extract_link_image_url_png || r.extract_link_image_url_svg || '';
-    const expire = _fmtExtractExpire(r.extract_link_expires_at || '');
-    const copy = link ? cbtn('复制提链', link, 'extract-link-btn extract-copy') : '';
-    const qrBtn = qr ? `<button class="extract-link-btn extract-qr" data-qr-url="${esc(qr)}" title="打开支付二维码图片">查看二维码</button>` : '';
-    const expireHtml = expire ? `<div class="extract-link-expire" title="支付链接过期时间">支付到期：${esc(expire)}</div>` : '';
-    return `<div class="extract-link-cell"><span class="pill status-success" title="${title || esc(link)}">提链成功${typ ? '(' + esc(typ) + ')' : ''}</span>${copy}${qrBtn}${expireHtml}</div>`;
+    return `<div class="extract-link-cell"><span class="pill status-success" title="${title || '提炼成功，可在更多菜单复制地址'}">提链成功${typ ? '(' + esc(typ) + ')' : ''}</span></div>`;
   }
   if (s === 'failed') {
     const reason = err || msg || '未知原因';
-    return `<div class="extract-link-cell"><span class="pill status-failed" title="${esc(reason)}">提链失败</span><div class="extract-link-error" title="${esc(reason)}">${esc(reason)}</div></div>`;
+    return `<div class="extract-link-cell"><span class="pill status-failed" title="提炼失败：${esc(reason)}">失败</span><div class="extract-link-error" title="${esc(reason)}">${esc(reason)}</div></div>`;
   }
   return '';
 }
@@ -760,7 +868,7 @@ function _extractLinkAction(r) {
   const eligible = plan === 'free' && !!r.plus_trial_eligible;
   if (!eligible) return '';
   const failedReason = s === 'failed' ? (r.extract_link_error || r.extract_link_message || '') : '';
-  return `<button class="good" data-extract-link="${esc(r.id)}" title="${esc(failedReason ? '重新提链；上次失败原因：' + failedReason : '为该 free(可Plus试用) 账号创建 PIX/UPI/KAKAO_PAY/IDEAL 提链任务')}">提链</button>`;
+  return `<button class="good" data-extract-link="${esc(r.id)}" title="${esc(failedReason ? '重新提链；上次失败原因：' + failedReason : '为该 free(可Plus试用) 账号按配置创建提链任务')}">提链</button>`;
 }
 function _codexAction(r) {
   if ((r.account_status || '').toLowerCase() === 'deactivated') return '';
@@ -818,7 +926,6 @@ function _totpCellV2(r) {
     <div class="status-action-cell" data-account-totp-cell="${esc(r.id)}">
       <span class="pill status-success">已启用</span>
       <button type="button" data-account-totp-copy="${esc(r.id)}" title="获取并复制当前 6 位 TOTP 验证码">复制</button>
-      <button type="button" data-account-copy-secret="totp_secret" data-account-id="${esc(r.id)}" title="复制 2FA 密钥（不是当前 6 位验证码）">复制2FA</button>
     </div>
   `;
 }
@@ -868,6 +975,10 @@ function _accountsV2MoreMenu(r) {
     `<button type="button" data-account-task-history="${esc(r.email)}" title="在任务实例中查看该账号的 Codex 补跑、查活、AT 刷新、套餐和封号邮件历史">任务记录</button>`,
     _planAction(r),
     _extractLinkAction(r),
+    (String(r.extract_link_status || '').toLowerCase() === 'success' || r.extract_link_ok === true)
+      && (r.extract_link_long_url || r.extract_link_copy_paste)
+      ? cbtn('复制提炼地址', r.extract_link_long_url || r.extract_link_copy_paste, 'account-menu-copy')
+      : '',
     _codexAction(r),
     `<button type="button" data-account-archive="${esc(r.id)}" data-archived="${r.archived ? '0' : '1'}" title="${r.archived ? '恢复到默认账号列表' : '归档后默认账号列表不再显示'}">${r.archived ? '恢复' : '归档'}</button>`,
   ].filter(html => String(html || '').trim());
@@ -1008,6 +1119,7 @@ function renderAccounts() {
       <td class="col-account-status">${_accountStatusCellV2(r)}</td>
       <td class="col-small">${_passwordCellV2(r)}</td>
       <td class="col-plan">${_planCell(r)}<div class="acc-v2-sub">${_extractLinkCell(r)}</div></td>
+      <td class="col-quota">${_quotaCell(r)}</td>
       <td class="col-trial">${_trialCell(r)}</td>
       <td class="col-small">${_totpCellV2(r)}</td>
       <td class="col-risk-mail">${_deactivationMailCell(r)}</td>
@@ -1026,7 +1138,7 @@ function renderAccounts() {
 
   const bodyV2 = $('#accountsBodyV2');
   if (bodyV2) {
-    bodyV2.innerHTML = rows.map(rowHtmlV2).join('') || renderTableStateRow(14, '暂无匹配账号', '调整筛选条件，或切换活跃与归档账号视图。');
+    bodyV2.innerHTML = rows.map(rowHtmlV2).join('') || renderTableStateRow(15, '暂无匹配账号', '调整筛选条件，或切换活跃与归档账号视图。');
     if (openMoreId) requestAnimationFrame(() => restoreAccountsV2MoreMenu(openMoreId));
   }
   const summary = $('#accountsPageSummary');
@@ -1048,6 +1160,7 @@ function updateAccountSelectionUi(pageRows = null) {
     'btnCheckSelectedLiveV2', 'btnRefreshSelectedTokenV2', 'btnCheckSelectedPlansV2', 'btnCheckSelectedDeactivationMailV2', 'btnExtractSelectedLinksV2',
     'btnSetupSelectedAccountsV2', 'btnAddPasswordSelectedAccountsV2', 'btnAddTwofaSelectedAccountsV2', 'btnChangePasswordSelectedAccountsV2', 'btnChangeTwofaSelectedAccountsV2', 'btnCompleteSelectedAccountsV2', 'btnUploadSelectedCodexSub2V2', 'btnRetrySelectedCodexV2', 'btnDownloadSelectedCpaV2', 'btnStopSelectedCodexV2',
     'btnCopySelectedTokensV2', 'btnCopySelectedLinesV2', 'btnCopySelectedEmailsV2',
+    'btnCopySelectedExtractLinksV2',
     'btnCopySelectedPasswordsV2', 'btnCopySelectedTotpsV2',
     'btnDownloadSelectedTxtV2', 'btnArchiveSelectedAccountsV2', 'btnDeleteSelectedAccountsV2',
   ];
@@ -1453,6 +1566,20 @@ async function copySelectedAccountLines() {
   } catch(err) { showToast('复制失败: ' + err.message); }
 }
 
+async function copySelectedAccountExtractLinks() {
+  const ids = Array.from(ACCOUNT_SELECTED).map(Number);
+  if (!ids.length) { showToast('请先选择账号'); return; }
+  const links = ACCOUNTS
+    .filter(r => ids.includes(Number(r.id)))
+    .filter(r => String(r.extract_link_status || '').toLowerCase() === 'success' || r.extract_link_ok === true)
+    .map(r => r.extract_link_long_url || r.extract_link_copy_paste || '')
+    .map(value => String(value).trim())
+    .filter(Boolean);
+  if (!links.length) { showToast('选中账号没有成功提炼地址'); return; }
+  const copied = await copyText(links.join('\n'), false);
+  showToast(copied ? `已复制 ${links.length} 个提炼地址` : '复制提炼地址失败');
+}
+
 async function copySelectedAccountPasswords() {
   const ids = Array.from(ACCOUNT_SELECTED).map(Number);
   if (!ids.length) { showToast('请先选择账号'); return; }
@@ -1713,17 +1840,21 @@ async function extractOneLink(id, btn) {
     showToast('仅支持 free(可Plus试用) 账号提链');
     return;
   }
-  if (!confirm(`确定为该账号提链吗？\n\n${acc.email || ('#' + id)}\n\n提链类型按配置使用 PIX/UPI/KAKAO_PAY/IDEAL，成功会消耗 1 次 CDK。`)) return;
+  if (!confirm(`确定为该账号提链吗？\n\n${acc.email || ('#' + id)}\n\n提链类型按配置使用，成功会消耗 1 次 CDK。`)) return;
   const old = btn.textContent;
   btn.disabled = true;
   btn.textContent = '提链中…';
   try {
-    await api('/api/accounts/extract-link', {
+    const queued = await api('/api/accounts/extract-link', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({account_id: id}),
     });
-    showToast('提链任务已入队');
+    const fallback = queued.fallback_from && queued.link_type
+      ? `；${String(queued.fallback_from).toUpperCase()} 已失败，改用 ${String(queued.link_type).toUpperCase()}`
+      : '';
+    showToast(`提炼任务已入队${queued.task_id ? ` · 任务 #${queued.task_id}` : ''}${fallback}，可在任务中心查看日志`);
+    loadAccountTasks();
     await pollAccountPlanStatuses();
   } catch(err) {
     showToast('提链失败: ' + err.message);
@@ -1750,7 +1881,10 @@ async function extractSelectedLinks() {
       body: JSON.stringify({account_ids: ids}),
     });
     const skipped = (r.skipped_count || 0) + (r.busy_count || 0) + (r.failed_count || 0);
-    showToast(skipped ? `已入队 ${r.started_count || 0} 个，跳过/失败 ${skipped} 个` : `已入队 ${r.started_count || 0} 个`);
+    const fallbackCount = (r.started || []).filter(item => item.fallback_from).length;
+    const fallbackText = fallbackCount ? `，其中 ${fallbackCount} 个已自动跳过失败类型` : '';
+    showToast(skipped ? `已入队 ${r.started_count || 0} 个，跳过/失败 ${skipped} 个${fallbackText}` : `已入队 ${r.started_count || 0} 个${fallbackText}`);
+    loadAccountTasks();
     await pollAccountPlanStatuses();
   } catch(err) {
     showToast('批量提链失败: ' + err.message);
@@ -2190,6 +2324,7 @@ async function copySelectedAccountTokens() {
   bind('btnStopSelectedCodexV2', stopSelectedCodex);
   bind('btnCopySelectedTokensV2', copySelectedAccountTokens);
   bind('btnCopySelectedLinesV2', copySelectedAccountLines);
+  bind('btnCopySelectedExtractLinksV2', copySelectedAccountExtractLinks);
   bind('btnCopySelectedEmailsV2', copySelectedAccountEmails);
   bind('btnCopySelectedPasswordsV2', copySelectedAccountPasswords);
   bind('btnCopySelectedTotpsV2', copySelectedAccountTotpSecrets);
