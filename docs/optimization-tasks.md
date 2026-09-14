@@ -185,6 +185,22 @@ checkout 没有该模块时才使用旧配置读取兼容路径。
 - 有效其它 worker lease 保留，孤儿 Run 才会被启动恢复收口。
 - gateway handler 按 task type/source 过滤，兼容未迁移来源不会被原生 handler 双跑。
 
+## Coordinator terminal safety corrections
+
+The remote boundary applies to ordinary exceptions and cancellation as well as
+process crashes. `finish_run` converts an unconfirmed remote write to
+`attention_required/request_unknown`, even if a handler accidentally returns
+success. A confirmed write followed by failure also requires a service-specific
+follow-up rather than replay. Generic retry rejects these runs at the storage
+boundary; a proven rejected request may retry with a fresh checkpoint. Handler
+return values reflect the actual committed terminal state.
+
+An outstanding write intent cannot be replaced by another request, and receipt
+correlation IDs must match. Read-only receipts do not require an account lease.
+A heartbeat exception latches lease loss instead of silently killing renewal.
+These safeguards do not replace each service's business writeback/readback or
+explicit multi-step continuation logic.
+
 ## 尚未迁移的任务类型
 
 本轮只把 Codex 原生 Run 接入通用 dispatcher，并完成补全依赖基础设施；以下

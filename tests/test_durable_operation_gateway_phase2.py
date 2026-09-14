@@ -394,6 +394,141 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
             (operation.get_task(int(task["id"])) or {})["next_actions"],
         )
 
+    def test_remote_write_exception_cancel_and_premature_result_require_reconciliation(self):
+        cases = (
+            ("started", "exception"), ("response_received", "exception"),
+            ("response_received", "cancel_exception"), ("started", "failed"),
+            ("started", "cancelled"), ("started", "success"),
+            ("confirmed", "failed"),
+        )
+        for receipt, ending in cases:
+            with self.subTest(receipt=receipt, ending=ending):
+                kind = f"synthetic_pending_{receipt}_{ending}"
+                account_id = self._runtime_account(f"{kind}@example.test")
+
+                def handler(context, *, _receipt=receipt, _ending=ending):
+                    with context.lease():
+                        context.remote_request_started("synthetic_remote_write")
+                        if _receipt != "started":
+                            context.remote_request_receipt(
+                                outcome=_receipt,
+                                detail={
+                                    "remote_result_confirmed": True,
+                                    "local_business_writeback_confirmed": True,
+                                    "local_readback_confirmed": True,
+                                } if _receipt == "confirmed" else {},
+                            )
+                        if _ending == "exception":
+                            raise RuntimeError("synthetic local writeback failure")
+                        if _ending == "cancel_exception":
+                            raise task_gateway.OperationCancelled("synthetic cancel")
+                        return task_gateway.OperationResult(_ending)
+
+                self._register(kind, handler)
+                submitted = task_gateway.submit_durable_operation(
+                    task_type=kind, account_id=account_id, email=f"{kind}@example.test", dispatch=False,
+                )
+                result = task_gateway._execute_operation_handler(kind, submitted["run_id"])
+                persisted = operation.get_run(submitted["run_id"])
+                self.assertEqual("attention_required", persisted["status"])
+                self.assertEqual("request_unknown", persisted["result_summary"]["outcome"])
+                self.assertEqual("request_unknown", result["status"])
+                self.assertFalse(result["ok"])
+                self.assertEqual("attention_required", result["database_status"])
+                task = operation.get_task(submitted["task_id"])
+                self.assertEqual("reconcile", task["next_actions"][0]["action"])
+                with self.assertRaises(ValueError):
+                    operation.retry_runtime_task(submitted["task_id"])
+                self.assertEqual(1, len(operation.get_task(submitted["task_id"])["runs"]))
+
+    def test_direct_terminal_write_cannot_bypass_remote_pending_guard(self):
+        account_id = self._runtime_account("direct-pending@example.test")
+        task = operation.create_runtime_task(
+            task_type="synthetic_direct", account_id=account_id, email="direct-pending@example.test",
+        )
+        run_id = task["run"]["id"]
+        operation.claim_run(run_id, execution_id="direct-worker", worker_pid=707)
+        lease = operation.acquire_account_lease(account_id=account_id, run_id=run_id)
+        operation.record_remote_intent(
+            run_id, execution_id="direct-worker", lease_token=lease, action="synthetic_write",
+        )
+        result = operation.finish_run(
+            run_id, execution_id="direct-worker", lease_token=lease, status="failed",
+        )
+        self.assertEqual("attention_required", result["status"])
+        with self.assertRaises(ValueError):
+            operation.retry_runtime_task(task["id"], data={"remote_intent": {}})
+
+    def test_rejected_write_is_retryable_but_new_run_has_no_old_checkpoint(self):
+        account_id = self._runtime_account("rejected-write@example.test")
+        task = operation.create_runtime_task(
+            task_type="synthetic_rejected", account_id=account_id, email="rejected-write@example.test",
+        )
+        run_id = task["run"]["id"]
+        operation.claim_run(run_id, execution_id="rejected-worker", worker_pid=808)
+        lease = operation.acquire_account_lease(account_id=account_id, run_id=run_id)
+        operation.record_remote_intent(
+            run_id, execution_id="rejected-worker", lease_token=lease, action="synthetic_write",
+        )
+        operation.record_remote_receipt(
+            run_id, execution_id="rejected-worker", lease_token=lease, outcome="rejected",
+        )
+        operation.finish_run(
+            run_id, execution_id="rejected-worker", lease_token=lease, status="failed",
+        )
+        retry = operation.retry_runtime_task(task["id"])
+        self.assertEqual("queued", retry["status"])
+        self.assertNotIn("remote_intent", retry["data"])
+        self.assertNotIn("remote_receipt", retry["data"])
+
+    def test_heartbeat_exception_latches_lease_loss_without_thread_crash(self):
+        with patch.object(threading.Thread, "start"):
+            lease = task_gateway.OperationLease(
+                run_id=1, account_id=1, resource_family="synthetic", token="synthetic",
+                ttl_seconds=120,
+            )
+        with patch.object(operation, "heartbeat_run", side_effect=RuntimeError("synthetic DB loss")):
+            self.assertFalse(lease.heartbeat())
+        self.assertTrue(lease.lost)
+        with patch.object(operation, "heartbeat_run", return_value=True) as heartbeat:
+            self.assertFalse(lease.heartbeat())
+        heartbeat.assert_not_called()
+
+    def test_pending_checkpoint_cannot_be_overwritten_or_receive_another_request_receipt(self):
+        account_id = self._runtime_account("checkpoint-fence@example.test")
+        task = operation.create_runtime_task(
+            task_type="synthetic_checkpoint", account_id=account_id, email="checkpoint-fence@example.test",
+        )
+        run_id = task["run"]["id"]
+        operation.claim_run(run_id, execution_id="checkpoint-worker", worker_pid=909)
+        lease = operation.acquire_account_lease(account_id=account_id, run_id=run_id)
+        fence = {"execution_id": "checkpoint-worker", "lease_token": lease}
+        operation.record_remote_intent(run_id, **fence, action="write", request_id="first")
+        for kind in ("read", "remote_write"):
+            with self.subTest(kind=kind), self.assertRaises(ValueError):
+                operation.record_remote_intent(run_id, **fence, action="next", intent_kind=kind)
+        with self.assertRaises(ValueError):
+            operation.record_remote_receipt(run_id, **fence, outcome="rejected", request_id="second")
+        with self.assertRaises(PermissionError):
+            operation.record_remote_receipt(
+                run_id, execution_id="checkpoint-worker", outcome="rejected",
+            )
+        self.assertEqual("started", operation.get_run(run_id)["data"]["remote_intent"]["receipt_state"])
+        operation.finish_run(run_id, **fence, status="attention_required")
+
+    def test_read_only_receipt_does_not_require_an_account_lease(self):
+        task = operation.create_runtime_task(
+            task_type="synthetic_read", account_id=None, email="read@example.test",
+        )
+        run_id = task["run"]["id"]
+        operation.claim_run(run_id, execution_id="read-worker", worker_pid=910)
+        operation.record_remote_intent(
+            run_id, execution_id="read-worker", action="read", intent_kind="read",
+        )
+        operation.record_remote_receipt(run_id, execution_id="read-worker", outcome="response_received")
+        result = operation.finish_run(run_id, execution_id="read-worker", status="success")
+        self.assertEqual("success", result["status"])
+
     def test_cancelled_queue_is_not_claimed_by_registered_handler(self):
         called = threading.Event()
 

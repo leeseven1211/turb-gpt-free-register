@@ -212,15 +212,21 @@ class OperationLease:
     def lost(self) -> bool:
         return self._heartbeat_lost
 
-    def heartbeat(self, *, ttl_seconds: int = 600) -> bool:
-        if self._released:
+    def heartbeat(self, *, ttl_seconds: int | None = None) -> bool:
+        if self._released or self._heartbeat_lost:
             return False
         effective_ttl = max(60, min(24 * 60 * 60, int(ttl_seconds or self.ttl_seconds)))
-        alive = bool(
-            _operation().heartbeat_run(
-                self.run_id, self.token, ttl_seconds=effective_ttl,
+        try:
+            alive = bool(
+                _operation().heartbeat_run(
+                    self.run_id, self.token, ttl_seconds=effective_ttl,
+                )
             )
-        )
+        except Exception:
+            # A broken DB connection must not kill the renewal thread while
+            # the handler continues believing it still owns a usable lease.
+            logger.exception("operation lease heartbeat failed: run_id=%s", self.run_id)
+            alive = False
         if not alive:
             self._heartbeat_lost = True
         return alive
@@ -435,7 +441,6 @@ class OperationHandlerContext:
             result, status=status, message=message,
             result_summary=result_summary, error=error,
         )
-        self._last_result = normalized
         db_status = "attention_required" if normalized.status == "request_unknown" else normalized.status
         summary = dict(normalized.summary)
         summary.setdefault("execution_id", self.execution_id)
@@ -458,6 +463,23 @@ class OperationHandlerContext:
                 if self._lease is not None and not self._lease.released else None
             ),
         )
+        actual_status = str(row.get("status") or db_status)
+        actual_summary = row.get("result_summary") or summary
+        if actual_status != db_status or (
+            actual_status == "attention_required"
+            and actual_summary.get("outcome") == "request_unknown"
+        ):
+            if actual_summary.get("outcome") == "request_unknown":
+                normalized = OperationResult.request_unknown(
+                    str(row.get("error_message") or "远端请求结果待核验"), actual_summary,
+                )
+            else:
+                normalized = OperationResult(
+                    actual_status, actual_summary,
+                    str(row.get("error_message") or normalized.message),
+                    row.get("error_message"),
+                )
+        self._last_result = normalized
         self._finished = True
         return row
 
@@ -743,6 +765,9 @@ def _operation_handler_result_payload(
     *,
     database_status: str | None = None,
 ) -> dict[str, Any]:
+    if context.finished and context.last_result is not None:
+        result = context.last_result
+        database_status = "attention_required" if result.status == "request_unknown" else result.status
     payload = result.as_dict()
     payload.update({
         "task_id": context.task_id,

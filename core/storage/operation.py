@@ -3462,6 +3462,14 @@ def create_runtime_task(
         return task
 
 
+def _remote_write_checkpoint(data: Any) -> dict:
+    payload = _decode(data)
+    intent = payload.get("remote_intent") if isinstance(payload, dict) else None
+    if isinstance(intent, dict) and intent.get("kind") == "remote_write":
+        return intent
+    return {}
+
+
 def retry_runtime_task(task_id: int, *, trigger: str = "manual_retry", data: dict | None = None) -> dict:
     """在同一逻辑任务下新建 attempt；不会制造第二条逻辑任务。"""
     init()
@@ -3483,27 +3491,35 @@ def retry_runtime_task(task_id: int, *, trigger: str = "manual_retry", data: dic
         merged_data = dict(_decode(task.get("data")) or {})
         merged_data.update(data or {})
         merged_data["retry_trigger"] = str(trigger or "manual_retry")
-        # A new attempt must establish a fresh remote boundary.  Carrying a
-        # previous attempt's started/confirmed write checkpoint into the new
-        # queued Run would make a crash before the new request look unknown
-        # and would conflate two fences.  Unknown attempts are rejected by
-        # the route; explicit reconciliation can use separate caller data.
-        merged_data.pop("remote_intent", None)
-        merged_data.pop("remote_receipt", None)
         cur.execute(
             f"""
-            SELECT resource_family, batch_id, data
+            SELECT resource_family, batch_id, data, result_summary
             FROM {_table('operation_runs')}
             WHERE task_id=%s ORDER BY run_no DESC, id DESC LIMIT 1
             """,
             (int(task_id),),
         )
         previous_run = cur.fetchone() or {}
+        intent = _remote_write_checkpoint(previous_run.get("data"))
+        receipt = str(intent.get("receipt_state") or intent.get("state") or "started")
+        summary = _decode(previous_run.get("result_summary")) or {}
+        if (intent and receipt != "rejected") or (
+            isinstance(summary, dict)
+            and (summary.get("outcome") == "request_unknown" or summary.get("reconcile_required"))
+        ):
+            # Guard the storage boundary, not only the HTTP route.  A generic
+            # retry cannot establish whether a remote write already happened;
+            # reconciliation must use the service's explicit follow-up path.
+            raise ValueError("远端写请求结果需先核验，禁止直接重试原操作")
         previous_data = _decode(previous_run.get("data"))
         if isinstance(previous_data, dict):
             previous_data = dict(previous_data)
             previous_data.update(merged_data)
             merged_data = previous_data
+        # Clear after merging the previous Run, otherwise its checkpoints are
+        # copied back into the supposedly fresh attempt.
+        merged_data.pop("remote_intent", None)
+        merged_data.pop("remote_receipt", None)
         run = _insert_runtime_run(
             cur,
             task_id=int(task_id),
@@ -4414,6 +4430,12 @@ def record_remote_intent(
             cur, int(run_id), execution_id=execution_id, lease_token=lease_token,
             require_lease=kind == "remote_write",
         )
+        previous_intent = _remote_write_checkpoint(run.get("data"))
+        previous_receipt = str(
+            previous_intent.get("receipt_state") or previous_intent.get("state") or "started"
+        )
+        if previous_intent and previous_receipt not in {"confirmed", "rejected"}:
+            raise ValueError("前一个远端写请求尚未核验，不能覆盖其 checkpoint")
         intent = {
             "action": action_value,
             "kind": kind,
@@ -4515,7 +4537,7 @@ def record_remote_receipt(
     with _connect() as conn, conn.cursor() as cur:
         run = _remote_checkpoint_fence(
             cur, int(run_id), execution_id=execution_id, lease_token=lease_token,
-            require_lease=True,
+            require_lease=False,
         )
         data = _decode(run.get("data"))
         data = dict(data) if isinstance(data, dict) else {}
@@ -4523,12 +4545,18 @@ def record_remote_receipt(
         if not isinstance(intent, dict):
             raise ValueError("remote receipt 缺少对应的 remote_request_started")
         intent = dict(intent)
+        if intent.get("kind") == "remote_write" and not str(lease_token or "").strip():
+            raise PermissionError("remote write receipt 必须持有账号 lease")
         intent_action = str(intent.get("action") or "")
         if action_value and intent_action and action_value != intent_action:
             raise ValueError("remote receipt action 与 intent 不匹配")
         action_value = action_value or intent_action or "remote_operation"
+        if request_value and intent.get("request_id") and request_value != str(intent["request_id"]):
+            raise ValueError("remote receipt request_id 与 intent 不匹配")
         if not request_value:
             request_value = str(intent.get("request_id") or "")
+        if intent.get("receipt_state") == "confirmed" and outcome_value != "confirmed":
+            raise ValueError("已确认的远端写回执不能降级或改为 rejected")
         intent["state"] = outcome_value
         intent["receipt_state"] = outcome_value
         intent["receipt_at"] = _now().isoformat()
@@ -4872,6 +4900,27 @@ def finish_run(
             result = _row(found) or {}
             idempotent = True
         else:
+            intent = _remote_write_checkpoint(found.get("data"))
+            receipt = str(intent.get("receipt_state") or intent.get("state") or "started")
+            if intent and receipt != "rejected" and (
+                status_value != "success" or receipt != "confirmed"
+            ):
+                # Exceptions/cancellation after the request boundary must not
+                # evade crash recovery by becoming a retryable terminal Run.
+                # Even a confirmed write followed by another failure needs a
+                # follow-up, not replay of the already completed remote write.
+                dependency_result.update({
+                    "outcome": "request_unknown",
+                    "reconcile_required": True,
+                    "requested_status": status_value,
+                    "remote_action": intent.get("action"),
+                    "remote_intent_state": receipt,
+                })
+                status_value = "attention_required"
+                error = "远端写请求尚未完成整条任务核验，禁止直接重试" + (
+                    f"：{error}" if error else ""
+                )
+                message = error
             task_type = str(found.get("task_type") or "")
             category, code, error_message = _error_fields(
                 error or "", stage="complete", task_type=task_type,
