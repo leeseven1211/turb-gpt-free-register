@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import json
+import importlib
 import os
 import tempfile
 import unittest
@@ -42,6 +43,7 @@ class ConfigSchemaTests(unittest.TestCase):
             with self.subTest(key=field.key):
                 self.assertTrue(field.type)
                 self.assertIsNotNone(field.file)
+                self.assertTrue(field.module)
                 self.assertIsInstance(field.default, (str, int, float, bool, list))
                 self.assertIsInstance(field.options, tuple)
                 self.assertIsInstance(field.range, dict)
@@ -50,18 +52,19 @@ class ConfigSchemaTests(unittest.TestCase):
                 self.assertIn(field.hot_edit, {"safe", "restart"})
                 metadata = field.metadata()
                 self.assertIn("default", metadata)
+                self.assertEqual(field.module, metadata["module"])
                 self.assertIn("type", metadata)
                 self.assertIn("secret", metadata)
                 self.assertIn("hot_edit", metadata)
 
     def test_schema_defaults_match_loaded_module_defaults(self):
         for field in CONFIG_SCHEMA.fields:
-            if not field.module:
-                continue
             module = __import__(field.module, fromlist=[field.key])
-            if not hasattr(module, field.key):
-                continue
             with self.subTest(key=field.key):
+                self.assertTrue(
+                    hasattr(module, field.key),
+                    f"schema field {field.key} missing from {field.module}",
+                )
                 self.assertEqual(field.default, getattr(module, field.key))
 
     def test_every_editable_module_is_in_reload_boundary(self):
@@ -78,6 +81,9 @@ class ConfigSchemaTests(unittest.TestCase):
         with self.assertRaises(ConfigValidationError):
             validate_value("REGISTRATION_PROXY_MODE", "not-a-route")
         with self.assertRaises(ConfigValidationError):
+            validate_value("OPENAI_PROTOCOL_VERSION", "explicit-test-v2")
+        self.assertEqual("v2", validate_value("OPENAI_PROTOCOL_VERSION", "v2"))
+        with self.assertRaises(ConfigValidationError):
             validate_config_updates({"NOT_IN_SCHEMA": "x"})
         with self.assertRaises(ConfigValidationError):
             validate_config_updates({"ACCOUNT_LIVE_CHECK_DRIVER": "browser_roxy"})
@@ -91,6 +97,11 @@ class ConfigSchemaTests(unittest.TestCase):
                 "ACCOUNT_LIVE_CHECK_BROWSER_ENABLED": True,
             }),
         )
+
+    def test_every_schema_default_is_legal_for_its_declared_type_and_options(self):
+        for field in CONFIG_SCHEMA.fields:
+            with self.subTest(key=field.key):
+                self.assertEqual(field.default, validate_value(field.key, field.default))
 
     def test_effective_metadata_reports_default_and_env_sources(self):
         with patch.object(config_schema, "_PUBLISHED_SNAPSHOT", None), patch(
@@ -113,6 +124,19 @@ class ConfigSchemaTests(unittest.TestCase):
             self.assertEqual(7, values["PLAN_CHECK_WORKERS"]["value"])
             self.assertEqual("env", values["PLAN_CHECK_WORKERS"]["source"])
             self.assertEqual("PLAN_CHECK_WORKERS", values["PLAN_CHECK_WORKERS"]["source_key"])
+
+    def test_real_protocol_module_accepts_only_schema_legal_override(self):
+        from config import openai_protocol
+
+        old_loaded = env_loader._LOADED
+        env_loader._LOADED = True
+        try:
+            with patch.dict(os.environ, {"OPENAI_PROTOCOL_VERSION": "v2"}, clear=False):
+                reloaded = importlib.reload(openai_protocol)
+                self.assertEqual("v2", reloaded.OPENAI_PROTOCOL_VERSION)
+        finally:
+            env_loader._LOADED = old_loaded
+            importlib.reload(openai_protocol)
 
     def test_secret_metadata_and_snapshot_never_contain_secret_value(self):
         secret = "schema-test-secret-do-not-return"
@@ -212,6 +236,7 @@ class ConfigSchemaTests(unittest.TestCase):
             bait_values[field.key] = (
                 f"https://user:{bait}@proxy.example.test:443"
                 if field.type == "list_str_multiline"
+                or field.key in {"PROXY_1024_API_URL", "PLAN_CHECK_PROXY", "ACCOUNT_ACTION_PROXY"}
                 else bait
             )
         bait_values["PROXY_POOL"] = "https://user:schema-bait-proxy-pool@proxy.example.test:443"
@@ -312,6 +337,25 @@ class ConfigSchemaTests(unittest.TestCase):
                 os.environ, {"PYTHON_DOTENV_DISABLED": "1"}, clear=True
             ):
                 env_loader.load_env(override=True)
+                self.assertNotIn("DOTENV_SHOULD_NOT_LOAD", os.environ)
+        finally:
+            env_loader._LOADED = old_loaded
+
+    def test_dotenv_disabled_explicit_write_does_not_read_file_and_updates_process(self):
+        fd, raw_path = tempfile.mkstemp(prefix="turb-dotenv-write-disabled-")
+        os.close(fd)
+        path = Path(raw_path)
+        path.write_text("DOTENV_SHOULD_NOT_LOAD=secret\n", encoding="utf-8")
+        self.addCleanup(lambda: path.unlink() if path.exists() else None)
+
+        old_loaded = env_loader._LOADED
+        try:
+            env_loader._LOADED = False
+            with patch.object(env_loader, "_ENV_PATH", path), patch.object(
+                env_loader, "read_env_file", side_effect=AssertionError("dotenv file was read")
+            ), patch.dict(os.environ, {"PYTHON_DOTENV_DISABLED": "1"}, clear=True):
+                env_loader.write_env_values({"PLAN_CHECK_WORKERS": "7"})
+                self.assertEqual("7", os.environ["PLAN_CHECK_WORKERS"])
                 self.assertNotIn("DOTENV_SHOULD_NOT_LOAD", os.environ)
         finally:
             env_loader._LOADED = old_loaded

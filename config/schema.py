@@ -93,6 +93,7 @@ class ConfigField:
         out: dict[str, Any] = {
             "key": self.key,
             "file": self.file,
+            "module": self.module,
             "type": self.type,
             "default": self.clone_default(),
             "group": self.group,
@@ -1456,7 +1457,7 @@ def _legacy_fields() -> list[dict[str, Any]]:
     函数名保留是为了减少内部/外部旧调用方的迁移成本；它不再导入
     ``webui.config_editor``。
     """
-    return [dict(field) for field in _FIELD_DEFINITIONS]
+    return [copy.deepcopy(field) for field in _FIELD_DEFINITIONS]
 
 
 def _editor_field_definitions() -> list[dict[str, Any]]:
@@ -1686,7 +1687,14 @@ def _coerce(value: Any, field: ConfigField, *, strict: bool) -> Any:
         raise ValueError(f"不支持的类型: {field.type}")
     if isinstance(value, (dict, list, tuple, set)):
         raise ValueError("必须是字符串")
-    return _normalize_string(value)
+    text = "" if value is None else str(value).strip()
+    # ``none`` 是通用空占位，但也是 CLOUDFLARE_AUTH_MODE 的合法
+    # canonical option；选项值必须先于通用空值语义保留。
+    option_values = {option.value.casefold() for option in field.options}
+    if text.casefold() in {item.casefold() for item in _PLACEHOLDER_EMPTY}:
+        if text.casefold() not in option_values:
+            return ""
+    return text
 
 
 def _validate_value(field: ConfigField, value: Any, *, strict: bool) -> Any:

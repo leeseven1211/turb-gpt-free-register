@@ -10,6 +10,13 @@ from config.env_loader import apply_env_overrides
 from config.schema import schema_default
 
 
+# WebUI 在进程启动时读取这两个字段；这里保留 schema 对应的兼容常量，
+# 让字段归属、默认值和 reload 边界仍能由 config registry 完整验证。
+# auth 初始化本身仍按原契约从环境变量读取，修改后需要重启 WebUI。
+WEBUI_AUTH_CODE: str = schema_default("WEBUI_AUTH_CODE")
+WEBUI_SESSION_SECRET: str = schema_default("WEBUI_SESSION_SECRET")
+
+
 # 是否启用 Codex OAuth 授权（False = 跳过，不影响注册结果）
 ENABLE_CODEX: bool = False
 

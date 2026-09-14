@@ -202,6 +202,12 @@ def write_env_values(updates: dict[str, str]) -> list[str]:
 
     # 让当前进程立刻看到新值
     load_env(override=True)
+    if dotenv_loading_disabled():
+        # 测试/受控运行器明确禁止 dotenv 读取；这里的值来自本次显式
+        # 调用者，而不是文件，因此可以安全地进入当前进程并参与 reload。
+        # 不调用 read_env_file，避免把工作区 .env 带入隔离环境。
+        for key, value in updates.items():
+            os.environ[str(key)] = "" if value is None else str(value)
     return written
 
 

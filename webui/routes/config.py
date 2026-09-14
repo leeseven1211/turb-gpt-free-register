@@ -63,7 +63,6 @@ def create_config_blueprint(context: WebUIContext):
         data = request.get_json(silent=True) or {}
         try:
             from core.cloudmail_client import gen_token
-            from config.env_loader import write_env_values
 
             api_base = (data.get("api_base") or "").strip()
             admin_email = (data.get("email") or data.get("admin_email") or "").strip()
@@ -86,18 +85,21 @@ def create_config_blueprint(context: WebUIContext):
                 updates["CLOUDMAIL_PASSWORD"] = password
             if path:
                 updates["CLOUDMAIL_TOKEN_PATH"] = path
-            written = write_env_values(updates)
-            try:
-                import config as _config_pkg
-                _config_pkg.reload_all()
-            except Exception:
-                logger.exception("CloudMail Token 写入后热加载失败")
+            result = config_editor.update_config(updates)
             return jsonify({
                 "ok": True,
                 "token": token,
-                "written": written,
+                "written": result.get("env_updated", []),
+                "reloaded": bool(result.get("reloaded")),
+                "config_revision": result.get("config_revision", config_revision()),
                 "message": "CloudMail Token 已生成，且当前 CloudMail 配置已保存",
             })
+        except ConfigValidationError as exc:
+            return jsonify({
+                "ok": False,
+                "error": "配置校验失败",
+                "fields": dict(exc.errors),
+            }), 400
         except Exception as exc:
             logger.exception("生成 CloudMail Token 失败")
             return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 400
@@ -108,7 +110,6 @@ def create_config_blueprint(context: WebUIContext):
         data = request.get_json(silent=True) or {}
         try:
             from core.cloudmail_client import fetch_domains
-            from config.env_loader import write_env_values
 
             updates = {}
             api_base = (data.get("api_base") or "").strip()
@@ -123,25 +124,36 @@ def create_config_blueprint(context: WebUIContext):
                 updates["CLOUDMAIL_PASSWORD"] = password
             if token:
                 updates["CLOUDMAIL_AUTH_TOKEN"] = token
+            written = []
+            config_result = None
             if updates:
-                write_env_values(updates)
-                import config as _config_pkg
-                _config_pkg.reload_all()
+                config_result = config_editor.update_config(updates)
+                written.extend(config_result.get("env_updated", []))
 
             domains = fetch_domains(force=True)
-            written = write_env_values({"CLOUDMAIL_DOMAINS": "\n".join(domains)})
-            try:
-                import config as _config_pkg
-                _config_pkg.reload_all()
-            except Exception:
-                logger.exception("CloudMail 域名写入后热加载失败")
+            domain_result = config_editor.update_config({
+                "CLOUDMAIL_DOMAINS": domains,
+            })
+            written.extend(domain_result.get("env_updated", []))
             return jsonify({
                 "ok": True,
                 "domains": domains,
                 "count": len(domains),
                 "written": written,
+                "reloaded": bool(domain_result.get("reloaded")),
+                "config_revision": domain_result.get(
+                    "config_revision",
+                    config_result.get("config_revision", config_revision())
+                    if config_result else config_revision(),
+                ),
                 "message": f"已获取 {len(domains)} 个 CloudMail 可用域名并保存",
             })
+        except ConfigValidationError as exc:
+            return jsonify({
+                "ok": False,
+                "error": "配置校验失败",
+                "fields": dict(exc.errors),
+            }), 400
         except Exception as exc:
             logger.exception("获取 CloudMail 域名失败")
             return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 400

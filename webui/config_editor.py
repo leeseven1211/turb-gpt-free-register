@@ -39,6 +39,7 @@ EXPLICIT_EMPTY_LIST_KEYS = {"PROXY_POOL"}
 from config.schema import (
     CONFIG_SCHEMA,
     build_non_sensitive_snapshot,
+    config_revision,
     effective_config_metadata,
     non_sensitive_snapshot,
     validate_config_updates,
@@ -350,6 +351,7 @@ def update_config(updates: dict) -> dict:
             "reloaded": False,
             "reload_modules": [],
             "restart_required": [],
+            "config_revision": config_revision(),
         }
 
     normalized = validate_config_updates(updates)
@@ -398,4 +400,5 @@ def update_config(updates: dict) -> dict:
         "reloaded": True,
         "reload_modules": reload_modules,
         "restart_required": [key for key in updated if key in RESTART_REQUIRED_KEYS],
+        "config_revision": config_revision(),
     }
