@@ -660,6 +660,14 @@ EDITABLE_FIELDS = [
         "label": "注册换线重试间隔(秒)", "help": "换线前的短暂间隔，避免连续请求同一代理平台窗口",
     },
     {
+        "key": "ACCOUNT_ACTION_PROXY_RETRIES", "file": "proxy.py", "type": "int", "group": "代理与网络",
+        "label": "查活/刷新 AT 换线次数", "help": "查活或刷新 AT 在申请代理阶段遇到重复租约时的额外换线次数；不重跑已提交的认证步骤",
+    },
+    {
+        "key": "ACCOUNT_ACTION_PROXY_RETRY_DELAY", "file": "proxy.py", "type": "float", "group": "代理与网络",
+        "label": "查活/刷新 AT 换线间隔(秒)", "help": "查活或刷新 AT 申请新代理前等待的秒数，避免连续命中同一粘性代理窗口",
+    },
+    {
         "key": "PROXY_1024_VALIDATE", "file": "proxy.py", "type": "bool", "group": "代理与网络",
         "label": "使用前检测出口", "help": "领取邮箱前先通过该代理访问 IPInfo，确认代理可用并记录出口地区",
     },

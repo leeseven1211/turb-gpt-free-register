@@ -494,6 +494,7 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             "PROXY_1024_VALIDATE_ATTEMPTS",
             "PROXY_1024_RECENT_TTL", "PROXY_1024_ACQUIRE_INTERVAL",
             "REGISTRATION_PROXY_RETRIES", "REGISTRATION_PROXY_RETRY_DELAY",
+            "ACCOUNT_ACTION_PROXY_RETRIES", "ACCOUNT_ACTION_PROXY_RETRY_DELAY",
             "ACCOUNT_ACTION_PROXY_MODE", "ACCOUNT_ACTION_PROXY",
         }
         self.assertTrue(expected.issubset(fields))

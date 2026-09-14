@@ -249,6 +249,7 @@ def acquire_account_proxy(
     explicit_proxy: str | None = None,
     region: str | None = None,
     source: str | None = None,
+    rotation_index: int = 0,
 ) -> AccountProxyRoute:
     """为一次账号功能调用获取线路；调用方必须在 finally 中 release。"""
     if explicit_proxy is not None:
@@ -286,6 +287,7 @@ def acquire_account_proxy(
         purpose=purpose,
         region=region,
         mode=mode,
+        **({"rotation_index": max(0, int(rotation_index or 0))} if provider_id == "1024proxy" else {}),
     )
 
 
@@ -306,6 +308,7 @@ def _acquire_1024proxy(
     purpose: str,
     region: str | None,
     mode: str,
+    rotation_index: int = 0,
 ) -> AccountProxyRoute:
     selected_region = str(region or "").strip().upper() or resolve_account_region(
         account_id=account_id,
@@ -313,10 +316,14 @@ def _acquire_1024proxy(
     )
     if not selected_region:
         raise RuntimeError("无法确定账号注册国家，拒绝使用随机地区代理查询")
+    seed = f"{purpose}-{account_id or email or datetime.now().timestamp()}"
+    normalized_rotation = max(0, int(rotation_index or 0))
+    if normalized_rotation:
+        seed = f"{seed}-rotation-{normalized_rotation}"
     lease = acquire_1024_proxy(
         region=selected_region,
         validate=True,
-        job_id=f"{purpose}-{account_id or email or datetime.now().timestamp()}",
+        job_id=seed,
     )
     return AccountProxyRoute(
         proxy_url=lease.proxy_url,

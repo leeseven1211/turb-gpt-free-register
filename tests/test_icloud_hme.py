@@ -62,6 +62,21 @@ class ICloudHidePoolTests(PostgresTestCase):
         self.assertEqual(missing["status"], "disabled")
         self.assertEqual(missing["disabled_reason"], "remote_missing")
 
+    def test_active_sync_reactivates_legacy_route_disabled_alias(self):
+        rows = [{
+            "id": 1,
+            "email": "relay@example.com",
+            "status": "disabled",
+            "account_id": "acc-1",
+            "remote_active": True,
+        }]
+        with patch.object(db, "_load_icloud_hide_pool", return_value=rows), patch.object(db, "_save_icloud_hide_pool") as save:
+            db.sync_icloud_hide_aliases([{"email": "relay@example.com", "active": True}], "acc-1")
+
+        saved_rows = save.call_args.args[0]
+        self.assertEqual(saved_rows[0]["status"], "available")
+        self.assertNotIn("disabled_reason", saved_rows[0])
+
 
 class ICloudHMEClientTests(unittest.TestCase):
     def test_non_icloud_forward_target_is_disabled_for_imap_pool(self):
@@ -78,6 +93,16 @@ class ICloudHMEClientTests(unittest.TestCase):
     def test_gmail_forward_target_is_enabled_for_matching_forward_imap(self):
         prepared, routing = client._prepare_imap_aliases(
             [{"email": "alias@icloud.com", "forwardToEmail": "owner@gmail.com", "active": True}],
+            inbox_mode="forward_imap",
+            forward_imap_email="owner@gmail.com",
+        )
+        self.assertTrue(prepared[0]["active"])
+        self.assertEqual(routing["remote_usable"], 1)
+        self.assertEqual(routing["forward_incompatible"], 0)
+
+    def test_forward_imap_keeps_intermediate_gmail_target_usable(self):
+        prepared, routing = client._prepare_imap_aliases(
+            [{"email": "alias@icloud.com", "forwardToEmail": "relay@gmail.com", "active": True}],
             inbox_mode="forward_imap",
             forward_imap_email="owner@gmail.com",
         )

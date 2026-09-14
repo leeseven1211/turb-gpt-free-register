@@ -52,6 +52,9 @@ PROXY_1024_PERSIST_LEASES = True
 # 这里只控制额外重试次数，不改变注册线程池并发数。
 REGISTRATION_PROXY_RETRIES = 2
 REGISTRATION_PROXY_RETRY_DELAY = 1.0
+# 查活/刷新 AT 在申请线路阶段遇到代理平台租约碰撞时，最多额外换线重试。
+ACCOUNT_ACTION_PROXY_RETRIES = 2
+ACCOUNT_ACTION_PROXY_RETRY_DELAY = 1.0
 
 # 旧版/CLI 直接调用 check_account_plan() 时使用的兼容网络策略。
 # WebUI 账号功能统一由下方 ACCOUNT_ACTION_PROXY_MODE 管理。
@@ -121,6 +124,8 @@ apply_env_overrides(globals(), {
     'PROXY_1024_PERSIST_LEASES': 'bool',
     'REGISTRATION_PROXY_RETRIES': 'int',
     'REGISTRATION_PROXY_RETRY_DELAY': 'float',
+    'ACCOUNT_ACTION_PROXY_RETRIES': 'int',
+    'ACCOUNT_ACTION_PROXY_RETRY_DELAY': 'float',
     'PLAN_CHECK_PROXY_MODE': 'str',
     'PLAN_CHECK_PROXY': 'str',
     'ACCOUNT_ACTION_PROXY_MODE': 'str',

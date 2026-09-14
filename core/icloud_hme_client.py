@@ -78,10 +78,14 @@ def _prepare_imap_aliases(
     inbox_mode: str | None = None,
     forward_imap_email: str | None = None,
 ) -> tuple[list[dict], dict]:
-    """把明确转发到非 iCloud 邮箱的别名标为不可领取。
+    """按实际收件模式准备 HME 别名。
 
-    旧版 sidecar 不返回 forwardToEmail，未知目标继续兼容；新版返回目标后，
-    iCloud IMAP 不可能读取 Gmail 等外部收件箱，因此必须阻止任务误领。
+    ``forward_imap`` 读取的是最终 Gmail 收件箱。iCloud 的直接转发目标可以是
+    一个中转邮箱，只要邮件最终转发到该 Gmail；最终收件箱中的 To 头仍用于
+    精确匹配原始 HME 别名。因此这里不能把“直接目标不是最终邮箱”当成失效。
+
+    ``sidecar`` 仍拒绝明确转发到外部邮箱，因为 sidecar 只能读取 iCloud IMAP；
+    ``forward_butler`` 保持原有的直接目标校验。
     """
     prepared: list[dict] = []
     known_domains: set[str] = set()
@@ -99,7 +103,12 @@ def _prepare_imap_aliases(
         domain = _forward_domain(forward)
         if domain:
             known_domains.add(domain)
-        if mode in {"forward_imap", "forward_butler"}:
+        if mode == "forward_imap":
+            # The configured IMAP mailbox is the final inbox. A relay target
+            # is valid here because the final mailbox lookup matches the
+            # original HME address in the forwarded To header.
+            compatible = bool(forward and expected_forward and not _is_icloud_mailbox(forward))
+        elif mode == "forward_butler":
             compatible = bool(forward and expected_forward and forward.lower() == expected_forward)
         else:
             compatible = not forward or _is_icloud_mailbox(forward)

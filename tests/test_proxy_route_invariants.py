@@ -8,6 +8,52 @@ from urllib.parse import parse_qs, urlparse
 
 
 class ProxyRouteInvariantTests(unittest.TestCase):
+    def test_account_action_proxy_acquisition_retries_duplicate_with_new_rotation_index(self):
+        from core import live_check_service
+
+        route = SimpleNamespace(proxy_url="http://second.example:8080")
+        acquire = MagicMock(
+            side_effect=[
+                RuntimeError("1024Proxy 获取失败：DuplicateProxyError: duplicate endpoint"),
+                route,
+            ]
+        )
+        retry_callback = MagicMock()
+
+        with (
+            patch.object(live_check_service, "_account_action_proxy_retry_limit", return_value=1),
+            patch.object(live_check_service, "_account_action_proxy_retry_delay", return_value=0),
+            patch.object(live_check_service.time, "sleep"),
+        ):
+            result = live_check_service._acquire_account_proxy_with_retries(
+                acquire_proxy=acquire,
+                account_id=612,
+                email="account@example.com",
+                purpose="token-refresh",
+                rotation_index=7,
+                retry_callback=retry_callback,
+            )
+
+        self.assertIs(route, result)
+        self.assertEqual(2, acquire.call_count)
+        self.assertEqual(7, acquire.call_args_list[0].kwargs["rotation_index"])
+        self.assertEqual(8, acquire.call_args_list[1].kwargs["rotation_index"])
+        retry_callback.assert_called_once()
+
+    def test_account_action_proxy_acquisition_does_not_retry_configuration_error(self):
+        from core import live_check_service
+
+        acquire = MagicMock(side_effect=RuntimeError("无法确定账号注册国家"))
+        with patch.object(live_check_service, "_account_action_proxy_retry_limit", return_value=2):
+            with self.assertRaisesRegex(RuntimeError, "无法确定账号注册国家"):
+                live_check_service._acquire_account_proxy_with_retries(
+                    acquire_proxy=acquire,
+                    account_id=612,
+                    email="account@example.com",
+                    purpose="token-refresh",
+                )
+        acquire.assert_called_once()
+
     def test_blank_auth_shell_error_is_eligible_for_fresh_registration_proxy(self):
         from core.registration_service import _is_transient_registration_proxy_error
 

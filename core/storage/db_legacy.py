@@ -4045,7 +4045,18 @@ def sync_icloud_hide_aliases(aliases: list[dict], account_id: str, *, full_snaps
                 row["status"] = "disabled"
                 row["disabled_reason"] = "remote_inactive"
                 disabled += 1
-            elif active and row.get("status") == "disabled" and row.get("disabled_reason") in {"remote_inactive", "remote_missing"}:
+            elif (
+                active
+                and row.get("status") == "disabled"
+                and (
+                    row.get("disabled_reason") in {"remote_inactive", "remote_missing"}
+                    # Older forward-target compatibility checks disabled the
+                    # row without recording a reason. Once the remote alias
+                    # is active again, treat that legacy route-only state as
+                    # recoverable; explicit/manual disables remain disabled.
+                    or (not row.get("disabled_reason") and not row.get("note"))
+                )
+            ):
                 row["status"] = "available"
                 row["used_at"] = None
                 row.pop("disabled_reason", None)

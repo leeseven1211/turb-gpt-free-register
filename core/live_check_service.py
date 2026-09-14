@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -80,6 +81,68 @@ def _roxy_fallback_enabled() -> bool:
     from config import proxy as proxy_config
 
     return bool(getattr(proxy_config, "LIVE_CHECK_ROXY_FALLBACK_ENABLED", True))
+
+
+def _account_action_proxy_retry_limit() -> int:
+    """读取账号动作代理申请的额外换线次数。"""
+    try:
+        from config import proxy as proxy_config
+
+        value = int(getattr(proxy_config, "ACCOUNT_ACTION_PROXY_RETRIES", 2) or 0)
+    except (TypeError, ValueError, ImportError):
+        value = 2
+    return max(0, min(3, value))
+
+
+def _account_action_proxy_retry_delay() -> float:
+    try:
+        from config import proxy as proxy_config
+
+        value = float(getattr(proxy_config, "ACCOUNT_ACTION_PROXY_RETRY_DELAY", 1.0) or 0)
+    except (TypeError, ValueError, ImportError):
+        value = 1.0
+    return max(0.0, min(10.0, value))
+
+
+def _is_retryable_account_proxy_acquisition_error(error: object) -> bool:
+    """只把代理平台/租约碰撞视为可换线错误。"""
+    text = str(error or "").lower()
+    return any(marker in text for marker in (
+        "duplicateproxyerror",
+        "1024proxy 获取失败",
+        "1024proxy 批量获取失败",
+    ))
+
+
+def _acquire_account_proxy_with_retries(
+    *,
+    acquire_proxy,
+    account_id: int,
+    email: str,
+    purpose: str,
+    rotation_index: int = 0,
+    retry_callback=None,
+):
+    """只重试账号动作的代理申请，不重跑后续认证步骤。"""
+    retry_limit = _account_action_proxy_retry_limit()
+    base_rotation = max(0, int(rotation_index or 0))
+    for attempt in range(retry_limit + 1):
+        try:
+            return acquire_proxy(
+                account_id=account_id,
+                email=email,
+                purpose=purpose,
+                rotation_index=base_rotation + attempt,
+            )
+        except Exception as exc:
+            if attempt >= retry_limit or not _is_retryable_account_proxy_acquisition_error(exc):
+                raise
+            next_attempt = attempt + 1
+            if retry_callback is not None:
+                retry_callback(next_attempt, retry_limit, exc)
+            delay = _account_action_proxy_retry_delay()
+            if delay:
+                time.sleep(delay)
 
 
 def _resolve_refresh_driver(requested: str | None = None) -> str:
@@ -283,10 +346,27 @@ def _run_live_check(
             nonlocal account_route, route
             if account_route is not None:
                 account_route.release(reason=f"live-check-{account_id}-preflight-rotate")
-            account_route = acquire_account_proxy(
+            account_route = None
+            route = {}
+            purpose = "token-refresh" if force_refresh else "live-check"
+
+            def report_retry(next_attempt: int, retry_limit: int, error: Exception) -> None:
+                message = f"申请账号动作线路失败，准备换线重试 ({next_attempt}/{retry_limit})"
+                _append_log(email, f"[查活] {message}: {type(error).__name__}: {str(error)[:220]}")
+                reporter.note(
+                    stage="network",
+                    level="WARNING",
+                    message=message,
+                    detail={"error": f"{type(error).__name__}: {str(error)[:300]}"},
+                )
+
+            account_route = _acquire_account_proxy_with_retries(
+                acquire_proxy=acquire_account_proxy,
                 account_id=account_id,
                 email=email,
-                purpose="token-refresh" if force_refresh else "live-check",
+                purpose=purpose,
+                rotation_index=max(0, attempt - 1),
+                retry_callback=report_retry,
             )
             route = account_route.public_dict()
             _append_log(
@@ -562,10 +642,26 @@ def _run_live_check(
                     # fallback through that same lease; rotate once while
                     # keeping explicit caller-selected proxies untouched.
                     account_route.release(reason=f"live-check-{account_id}-roxy-fallback-rotate")
-                    account_route = acquire_account_proxy(
+                    account_route = None
+                    route = {}
+
+                    def report_fallback_retry(next_attempt: int, retry_limit: int, error: Exception) -> None:
+                        message = f"Roxy 兜底申请新线路失败，准备换线重试 ({next_attempt}/{retry_limit})"
+                        _append_log(email, f"[查活] {message}: {type(error).__name__}: {str(error)[:220]}")
+                        reporter.note(
+                            stage="network",
+                            level="WARNING",
+                            message=message,
+                            detail={"error": f"{type(error).__name__}: {str(error)[:300]}"},
+                        )
+
+                    account_route = _acquire_account_proxy_with_retries(
+                        acquire_proxy=acquire_account_proxy,
                         account_id=account_id,
                         email=email,
                         purpose="token-refresh",
+                        rotation_index=4,
+                        retry_callback=report_fallback_retry,
                     )
                     route = account_route.public_dict()
                     reporter.resource(

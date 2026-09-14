@@ -72,6 +72,35 @@ class AccountProxyTests(unittest.TestCase):
         self.assertEqual(route.provider, "1024proxy")
         self.assertEqual(route.region, "JP")
 
+    def test_1024_account_route_changes_sticky_seed_for_rotation(self):
+        lease = ProxyLease(
+            lease_id="lease",
+            provider="1024proxy",
+            proxy_url="http://1.2.3.4:8080",
+            endpoint="1.2.3.4:8080",
+            acquired_at=datetime.now(),
+            exit_ip="1.2.3.4",
+            region="JP",
+        )
+        with (
+            patch("core.account_proxy.registration_proxy_mode", return_value="1024"),
+            patch("core.account_proxy.resolve_account_region", return_value="JP"),
+            patch("core.account_proxy.acquire_1024_proxy", return_value=lease) as acquire,
+            patch.multiple("config.proxy", ACCOUNT_ACTION_PROXY_MODE="registration"),
+            patch.multiple("config.account", ACCOUNT_PLAN_CHECK_PROXY_MODE="registration"),
+        ):
+            account_proxy.acquire_account_proxy(
+                account_id=7,
+                email="a@example.com",
+                purpose="plan-check",
+                rotation_index=3,
+            )
+        acquire.assert_called_once_with(
+            region="JP",
+            validate=True,
+            job_id="plan-check-7-rotation-3",
+        )
+
     def test_pool_mode_uses_dedicated_account_proxy_first(self):
         with patch.multiple(
             "config.proxy",
