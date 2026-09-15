@@ -426,6 +426,22 @@ the passing result above. Integration remains isolated, primary HEAD remains
 `f33e523` with 13 user-owned dirty files, and no production DB test, restart,
 deployment or push occurred.
 
+### Monitor checkpoint 2026-09-15 01:08 UTC
+
+Zeno returned maintenance commit `036e623`; after diff review it was
+integrated as `6e007da`. It migrates live check, plan check, extract-link and
+deactivation-mail handlers to the durable gateway, retaining the single HME
+bulk scan plus per-account fanout. Dewey returned runtime/recovery commit
+`737ac25`; it was integrated as `c12f863` after resolving only the combined
+`Callable`/`Iterable` import conflict in `core/storage/db_legacy.py`.
+
+The combined focused integration set passed: **94 passed, 11 subtests in
+52.98s**, with `git diff --check` clean. This is targeted acceptance only;
+the locked full suite is still required before accepting the two streams.
+Both source worktrees are clean and local-only. Aquinas's token acceptance
+remains integrated. Primary workspace still has 13 user-owned dirty files;
+there were no production DB tests, restarts, deployments or pushes.
+
 ## Verification
 
 Baseline full suite completed: **954 passed, 34 subtests passed, 3 failed in
