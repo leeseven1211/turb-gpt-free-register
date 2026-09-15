@@ -48,6 +48,22 @@
 - Commits: `08ee9e3` (`refactor: remove legacy file fallbacks from operational tools`) and `b465b77` (`fix: repair database token test parser`).
 - Verification: implementer reported `10 passed`; CLI help exposes `--token`, `--account-id`, `--email`, and optional `--chatgpt-account-id`, while `--token-file` is rejected. A controller help check also completed successfully.
 - Review ruling: migration source loading now fails explicitly when PostgreSQL collections are absent; token tests resolve access tokens only through DB account selectors. The parser regression found during review was fixed before proceeding.
+
+## Task 4: complete
+
+- Commit: `0d50036` (`docs: document database-only runtime storage`).
+- Verification: release checks `7 passed`; related DB-only regression checks `16 passed`; `git diff --check` passed.
+- Review ruling: removed the static viewer implementation, corrected operator/architecture docs, kept `accounts/` batch archives as the spec-defined out-of-scope artifact, and added a runtime reference audit permitting only the migration mapping and batch archive contract.
+
+## Task 5: verification complete; deletion gate pending
+
+- Focused regression: `96 passed in 61.01s`.
+- Post-doc targeted regression: `23 passed in 5.76s`.
+- Full suite: `1145 passed, 44 failed, 791 subtests passed in 305.57s`. The failures remain the baseline categories: five `tests/test_codex_token_refresh_durable.py` cases and configuration-schema subfailures caused by local `.env` overrides; no failure pointed at this change's focused surface.
+- Runtime reference audit: no retired root-file references in normal runtime modules except the intentional `accounts/` batch archive filenames in `core/account_export.py`; migration collection names are historical DB mappings and were excluded by the audit contract.
+- Live health: existing local WebUI PID `82555` on port 8000 returned `/login` HTTP 200. Read-only PostgreSQL counts were `registered_accounts=965`, `registration_jobs=1310`, `email_pool_outlook=0`, `email_pool_icloud_hide=873`.
+- Implementation worktree check: all seven retired root files are absent and were not recreated. No production/runtime data files were deleted or modified.
+- Stop reason: deleting the seven files is irreversible maintenance. Await explicit confirmation after reporting the exact targets; do not remove them as part of code verification.
 # Task 4 completed
 
 - Updated README/CLAUDE and architecture docs for DB-only runtime storage and explicit transient Outlook import.
