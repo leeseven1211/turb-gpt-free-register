@@ -458,6 +458,19 @@ The two implementation commits remain only on the isolated integration branch
 data remain unchanged; no production DB test, restart, deployment or push
 occurred.
 
+### Monitor checkpoint 2026-09-15 01:53 UTC
+
+Zeno returned follow-up commit `4532f32`; after review it was integrated as
+`1c97df2`. It restores the live-check common-executor compatibility alias and
+the plan-check registration seam as non-consuming compatibility surfaces;
+native submissions still go through the durable gateway. The four previously
+failed regression tests plus maintenance coverage now pass: **81 passed, 8
+subtests in 37.74s**.
+
+The next required gate is a fresh locked full-suite run on this exact
+integration state. Primary workspace remains unchanged with 13 user-owned
+dirty files; no production DB test, restart, deployment or push occurred.
+
 ## Verification
 
 Baseline full suite completed: **954 passed, 34 subtests passed, 3 failed in
