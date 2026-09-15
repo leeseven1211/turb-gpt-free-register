@@ -40,6 +40,7 @@ _DEPENDENCY_BATCH_SIZE = 32
 _DISPATCH_HANDLERS: dict[str, tuple[Callable[[int], Any], tuple[str, ...] | None]] = {}
 _OPERATION_HANDLERS: dict[str, Callable[[OperationHandlerContext], Any]] = {}
 _OPERATION_ACTIONS: dict[str, dict[str, Callable[[Mapping[str, Any]], Any]]] = {}
+_OPERATION_ACTION_SOURCES: dict[str, tuple[str, ...] | None] = {}
 _DISPATCH_HANDLER_LOCK = threading.RLock()
 _RUN_DISPATCHED: set[int] = set()
 _RUN_DISPATCH_LOCK = threading.RLock()
@@ -613,6 +614,7 @@ def register_operation_handler(
         name,
         retry_handler=retry_handler or default_operation_retry,
         cancel_handler=cancel_handler or default_operation_cancel,
+        source_systems=source_systems,
     )
 
 
@@ -622,6 +624,7 @@ def unregister_operation_handler(task_type: str) -> None:
         _OPERATION_HANDLERS.pop(name, None)
         _OPERATION_HANDLER_ALLOWLISTS.pop(name, None)
         _OPERATION_ACTIONS.pop(name, None)
+        _OPERATION_ACTION_SOURCES.pop(name, None)
     unregister_dispatch_handler(name)
 
 
@@ -630,6 +633,7 @@ def register_operation_actions(
     *,
     retry_handler: Callable[[Mapping[str, Any]], Any] | None = None,
     cancel_handler: Callable[[Mapping[str, Any]], Any] | None = None,
+    source_systems: tuple[str, ...] | list[str] | None = ("native_operations",),
 ) -> None:
     """Register task-type route actions without coupling services to Flask.
 
@@ -650,6 +654,12 @@ def register_operation_actions(
         if cancel_handler is not None:
             actions["cancel"] = cancel_handler
         _OPERATION_ACTIONS[name] = actions
+        if source_systems is None:
+            _OPERATION_ACTION_SOURCES[name] = None
+        else:
+            _OPERATION_ACTION_SOURCES[name] = tuple(
+                str(item).strip() for item in source_systems if str(item).strip()
+            )
 
 
 _ACTIVE_OPERATION_TASK_STATUSES = frozenset({
@@ -745,11 +755,20 @@ def default_operation_cancel(task: Mapping[str, Any]) -> dict[str, Any]:
 def operation_action(
     task_type: str,
     action: str,
+    *,
+    source_system: str | None = None,
 ) -> Callable[[Mapping[str, Any]], Any] | None:
     with _DISPATCH_HANDLER_LOCK:
-        return (_OPERATION_ACTIONS.get(str(task_type or "").strip()) or {}).get(
+        name = str(task_type or "").strip()
+        handler = (_OPERATION_ACTIONS.get(name) or {}).get(
             str(action or "").strip().lower()
         )
+        if handler is None or source_system is None:
+            return handler
+        allowed_sources = _OPERATION_ACTION_SOURCES.get(name)
+        if allowed_sources is not None and str(source_system).strip() not in allowed_sources:
+            return None
+        return handler
 
 
 def operation_requires_reconciliation(task: Mapping[str, Any] | None) -> bool:
@@ -1040,8 +1059,9 @@ def finish_task(task_id: int | None, **kwargs: Any) -> None:
     return result
 
 
-def recover_interrupted() -> int:
-    return _legacy().recover_interrupted()
+def recover_interrupted(**kwargs: Any) -> int:
+    """Recover compatibility tasks outside the row-level durable fences."""
+    return _legacy().recover_interrupted(**kwargs)
 
 
 def list_tasks(**kwargs: Any) -> dict:
@@ -1252,6 +1272,7 @@ def unregister_dispatch_handler(task_type: str) -> None:
         _OPERATION_HANDLERS.pop(str(task_type or "").strip(), None)
         _OPERATION_HANDLER_ALLOWLISTS.pop(str(task_type or "").strip(), None)
         _OPERATION_ACTIONS.pop(str(task_type or "").strip(), None)
+        _OPERATION_ACTION_SOURCES.pop(str(task_type or "").strip(), None)
 
 
 def registered_dispatch_types() -> tuple[str, ...]:

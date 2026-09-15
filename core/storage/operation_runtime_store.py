@@ -38,6 +38,10 @@ def has_active_runtime_operations(**kwargs: Any) -> bool:
     return _operation().has_active_runtime_operations(**kwargs)
 
 
+def list_active_runtime_recovery_exclusions(**kwargs: Any) -> dict:
+    return _operation().list_active_runtime_recovery_exclusions(**kwargs)
+
+
 def list_reconciliation_accounts(**kwargs: Any) -> list[dict]:
     return _operation().list_reconciliation_accounts(**kwargs)
 
@@ -176,7 +180,7 @@ def projection_worker_status() -> dict[str, object]:
 
 __all__ = [
     "create_runtime_batch", "create_runtime_task", "retry_runtime_task", "get_run",
-    "get_task", "active_run_for_account", "has_active_runtime_operations", "list_reconciliation_accounts", "list_queued_runs", "list_dispatchable_runs", "recover_interrupted_runtime_runs",
+    "get_task", "active_run_for_account", "has_active_runtime_operations", "list_active_runtime_recovery_exclusions", "list_reconciliation_accounts", "list_queued_runs", "list_dispatchable_runs", "recover_interrupted_runtime_runs",
     "claim_next_queued_run",
     "mark_runtime_batch_empty", "set_runtime_batch_skipped", "claim_run",
     "requeue_claimed_run",

@@ -310,23 +310,33 @@ console.log('ok');
         self.assertNotIn("TG 交流群", html)
         self.assertNotIn("切换老 UI", html)
 
-    @patch("webui.runtime._ACCOUNT_EXECUTOR.submit")
-    @patch("webui.app.account_task_store.create_task", return_value=901)
-    @patch("webui.app.codex_retry_service.reserve", return_value=True)
+    @patch("webui.runtime.account_task_store.start_dispatcher")
+    @patch("webui.runtime.account_task_store.submit_durable_operation", return_value={
+        "accepted": True,
+        "busy": False,
+        "reused": False,
+        "task_id": 901,
+        "run_id": 902,
+        "status": "queued",
+        "source_system": "webui_runtime",
+        "source_id": "account-setup:1:test",
+    })
     @patch("webui.app.db.get_account", return_value={
         "id": 1,
         "email": "setup@example.com",
         "account_status": "active",
     })
-    def test_account_setup_endpoint_queues_configuration_without_codex(self, _get_account, _reserve, _create_task, submit):
+    def test_account_setup_endpoint_queues_configuration_without_codex(self, _get_account, submit, start_dispatcher):
         response = self.client.post("/api/accounts/1/setup", headers=self.headers, json={})
         self.assertEqual(response.status_code, 202)
         payload = response.get_json()
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["task_id"], 901)
-        self.assertEqual(submit.call_args.kwargs["task_id"], 901)
-        self.assertEqual(submit.call_args.kwargs["task_trigger"], "manual_account_setup")
-        self.assertEqual(submit.call_args.args[0].__name__, "_run_account_setup_worker")
+        self.assertEqual(submit.call_args.kwargs["task_type"], "account_setup_retry")
+        self.assertEqual(submit.call_args.kwargs["trigger"], "manual_account_setup")
+        self.assertEqual(submit.call_args.kwargs["source_system"], "webui_runtime")
+        self.assertEqual(submit.call_args.kwargs["data"]["steps"], ["password", "plan_check", "twofa"])
+        start_dispatcher.assert_not_called()
 
     def test_modern_ui_polling_avoids_overlapping_requests_and_duplicate_summary_refresh(self):
         response = self.client.get("/", headers=self.headers)

@@ -13,7 +13,7 @@ import re
 import threading
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Iterable
 
 from core import postgres_store
 from core import task_run_log
@@ -452,18 +452,47 @@ def _refresh_batch(cur, batch_id: str | None) -> None:
     )
 
 
-def recover_interrupted() -> int:
+def recover_interrupted(
+    *,
+    excluded_account_ids: Iterable[int] | None = None,
+    excluded_source_ids: Iterable[str | int] | None = None,
+) -> int:
+    """收口未迁移任务，但保留与 active durable Run 关联的账号行。"""
     init()
     now = _now()
     tasks = _table("account_action_tasks")
     events = _table("account_action_events")
+    excluded_accounts = sorted({int(item) for item in (excluded_account_ids or ())})
+    excluded_sources = sorted({str(item).strip() for item in (excluded_source_ids or ()) if str(item).strip()})
+    where_parts = ["status IN ('queued','running')"]
+    where_params: list[Any] = []
+    if excluded_accounts:
+        where_parts.append("(account_id IS NULL OR account_id <> ALL(%s))")
+        where_params.append(excluded_accounts)
+    if excluded_sources:
+        # The compatibility table has no source_id column; its numeric id is
+        # the only stable source key available during the migration window.
+        where_parts.append("id::text <> ALL(%s)")
+        where_params.append(excluded_sources)
     with _connect() as conn, conn.cursor() as cur:
-        cur.execute(f"SELECT id, batch_id, started_at FROM {tasks} WHERE status IN ('queued','running')")
+        cur.execute(
+            f"SELECT id, batch_id, started_at FROM {tasks} WHERE {' AND '.join(where_parts)}",
+            tuple(where_params),
+        )
         rows = cur.fetchall()
         for row in rows:
             cur.execute(
-                f"UPDATE {tasks} SET status='interrupted', error=%s, finished_at=%s, duration_ms=%s WHERE id=%s",
-                ("WebUI 重启导致任务中断，请重新执行", now, _duration_ms(row["started_at"], now), int(row["id"])),
+                f"""
+                UPDATE {tasks}
+                SET status='interrupted', error=%s, finished_at=%s, duration_ms=%s
+                WHERE id=%s AND status IN ('queued','running')
+                """,
+                (
+                    "WebUI 重启导致任务中断，请重新执行",
+                    now,
+                    _duration_ms(row["started_at"], now),
+                    int(row["id"]),
+                ),
             )
             cur.execute(
                 f"INSERT INTO {events} (task_id, created_at, level, stage, message, detail, event_type) "

@@ -3663,6 +3663,78 @@ def has_active_runtime_operations(
         return cur.fetchone() is not None
 
 
+def list_active_runtime_recovery_exclusions(
+    *,
+    task_types: Iterable[str] | None = None,
+    source_systems: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    """Return row-level legacy recovery fences for active durable Runs.
+
+    Startup recovery must not turn a category-wide boolean into a category-wide
+    skip: one native task for account A must not leave an unrelated legacy row
+    for account B running forever.  The result is deliberately limited to
+    account/source identifiers so callers can pass it to their legacy storage
+    recovery predicates without copying task payloads or credentials.
+    """
+    init()
+    clauses = [f"r.status IN ({_ACTIVE_RUN_STATUS_SQL})"]
+    params: list[Any] = []
+    if task_types is not None:
+        values = [str(item).strip() for item in task_types if str(item).strip()]
+        if not values:
+            return {"account_ids": [], "source_fences": []}
+        clauses.append("t.task_type = ANY(%s)")
+        params.append(values)
+    if source_systems is not None:
+        values = [str(item).strip() for item in source_systems if str(item).strip()]
+        if not values:
+            return {"account_ids": [], "source_fences": []}
+        clauses.append("t.source_system = ANY(%s)")
+        params.append(values)
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT DISTINCT t.account_id, t.source_system, t.source_id,
+                            t.task_type,
+                            NULLIF(t.data->>'source_job_id', '') AS source_job_id
+            FROM {_table('operation_runs')} r
+            JOIN {_table('operation_tasks')} t ON t.id=r.task_id
+            WHERE {' AND '.join(clauses)}
+            """,
+            tuple(params),
+        )
+        rows = cur.fetchall()
+    account_ids = sorted({
+        int(row["account_id"])
+        for row in rows
+        if row.get("account_id") is not None
+    })
+    source_fences: set[tuple[str, str]] = set()
+    for row in rows:
+        source_system = str(row.get("source_system") or "").strip()
+        source_id = str(row.get("source_id") or "").strip()
+        task_type = str(row.get("task_type") or "").strip()
+        # A compatibility projection owns the corresponding legacy row, so
+        # its source pair is safe to pass back to that same legacy namespace.
+        # A native task's arbitrary source_id is not: the same numeric value
+        # can independently exist in another source table.
+        if source_system in {"registration_jobs", "account_action_tasks"} and source_id:
+            source_fences.add((source_system, source_id))
+        # registration_resume is a native WebUI task, but it explicitly points
+        # at the legacy registration job it is continuing. Preserve only that
+        # declared cross-model mapping, never the native task's own source_id.
+        source_job_id = str(row.get("source_job_id") or "").strip()
+        if task_type == "registration_resume" and source_job_id:
+            source_fences.add(("registration_jobs", source_job_id))
+    return {
+        "account_ids": account_ids,
+        "source_fences": [
+            {"source_system": source_system, "source_id": source_id}
+            for source_system, source_id in sorted(source_fences)
+        ],
+    }
+
+
 def list_reconciliation_accounts(
     *,
     task_type: str,

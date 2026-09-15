@@ -69,9 +69,18 @@ class AccountChangeActionTests(unittest.TestCase):
         account = {"id": 17, "email": "account@example.com", "account_status": "active"}
         with (
             patch.object(runtime.db, "get_account", return_value=account),
-            patch.object(runtime.codex_retry_service, "reserve", return_value=True),
-            patch.object(runtime.account_task_store, "create_task", return_value=701) as create_task,
-            patch.object(runtime._ACCOUNT_EXECUTOR, "submit") as submit,
+            patch.object(
+                runtime.account_task_store,
+                "submit_durable_operation",
+                return_value={
+                    "accepted": True,
+                    "busy": False,
+                    "reused": False,
+                    "task_id": 701,
+                    "run_id": 702,
+                    "status": "queued",
+                },
+            ) as submit,
         ):
             result = context.enqueue_account_setup(
                 17,
@@ -82,9 +91,9 @@ class AccountChangeActionTests(unittest.TestCase):
             )
 
         self.assertTrue(result["accepted"])
-        self.assertEqual("password_change", create_task.call_args.kwargs["task_type"])
-        self.assertTrue(submit.call_args.kwargs["force_password_reset"])
-        self.assertFalse(submit.call_args.kwargs["force_twofa_change"])
+        self.assertEqual("password_change", submit.call_args.kwargs["task_type"])
+        self.assertTrue(submit.call_args.kwargs["data"]["force_password_reset"])
+        self.assertFalse(submit.call_args.kwargs["data"]["force_twofa_change"])
 
     def test_change_task_types_have_progress_templates(self):
         self.assertEqual(
@@ -113,15 +122,24 @@ class AccountChangeActionTests(unittest.TestCase):
         with (
             patch.object(runtime.account_task_store, "get_task", return_value=task),
             patch.object(runtime.db, "get_account", return_value=account),
-            patch.object(runtime.codex_retry_service, "reserve", return_value=True),
-            patch.object(runtime.account_task_store, "create_task", return_value=702),
-            patch.object(runtime._ACCOUNT_EXECUTOR, "submit") as submit,
+            patch.object(
+                runtime.account_task_store,
+                "submit_durable_operation",
+                return_value={
+                    "accepted": True,
+                    "busy": False,
+                    "reused": False,
+                    "task_id": 702,
+                    "run_id": 703,
+                    "status": "queued",
+                },
+            ) as submit,
         ):
             result = context.retry_account_task_result(701)
 
         self.assertEqual(202, result[1])
-        self.assertTrue(submit.call_args.kwargs["force_twofa_change"])
-        self.assertFalse(submit.call_args.kwargs["force_password_reset"])
+        self.assertTrue(submit.call_args.kwargs["data"]["force_twofa_change"])
+        self.assertFalse(submit.call_args.kwargs["data"]["force_password_reset"])
 
     def test_change_bulk_is_capped_at_twenty_accounts(self):
         from webui.routes.accounts import create_accounts_blueprint

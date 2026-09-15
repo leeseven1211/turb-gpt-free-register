@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from core import compat_export, postgres_store, record_store, task_run_log
 
@@ -1420,9 +1420,17 @@ def mark_account_plan_check_running(acc_id: int) -> bool:
     })
 
 
-def recover_interrupted_plan_checks() -> int:
+def recover_interrupted_plan_checks(
+    *, excluded_account_ids: Iterable[int] | None = None,
+) -> int:
     """服务启动时把上次进程遗留的内存队列状态恢复为可重试失败。"""
     now = _now()
+    excluded = sorted({int(item) for item in (excluded_account_ids or ())})
+    where = '"plan_check_status" IN (%s, %s)'
+    params: list[Any] = ["queued", "running"]
+    if excluded:
+        where += ' AND "id" <> ALL(%s)'
+        params.append(excluded)
     recovered = record_store.patch_rows_where(
         record_store.ACCOUNTS,
         changes={
@@ -1432,8 +1440,8 @@ def recover_interrupted_plan_checks() -> int:
             "plan_check_completed_at": now,
             "updated_at": now,
         },
-        where='"plan_check_status" IN (%s, %s)',
-        params=("queued", "running"),
+        where=where,
+        params=params,
     )
     if recovered:
         compat_export.schedule("accounts")
@@ -1629,9 +1637,17 @@ def mark_extract_link_type_failed(acc_id: int, link_type: str, error: str | None
     return _patch_account(acc_id, changes)
 
 
-def recover_interrupted_extract_links() -> int:
+def recover_interrupted_extract_links(
+    *, excluded_account_ids: Iterable[int] | None = None,
+) -> int:
     """服务启动时恢复上次进程中断的提链状态。"""
     now = _now()
+    excluded = sorted({int(item) for item in (excluded_account_ids or ())})
+    where = '"extract_link_status" IN (%s, %s)'
+    params: list[Any] = ["queued", "running"]
+    if excluded:
+        where += ' AND "id" <> ALL(%s)'
+        params.append(excluded)
     recovered = record_store.patch_rows_where(
         record_store.ACCOUNTS,
         changes={
@@ -1641,8 +1657,8 @@ def recover_interrupted_extract_links() -> int:
             "extract_link_completed_at": now,
             "updated_at": now,
         },
-        where='"extract_link_status" IN (%s, %s)',
-        params=("queued", "running"),
+        where=where,
+        params=params,
     )
     if recovered:
         compat_export.schedule("accounts")
@@ -2047,9 +2063,17 @@ def claim_account_live_check(acc_id: int, trigger: str = "manual") -> bool:
     }, require_alive=True)
 
 
-def recover_interrupted_live_checks() -> int:
+def recover_interrupted_live_checks(
+    *, excluded_account_ids: Iterable[int] | None = None,
+) -> int:
     """服务启动时恢复上次进程中断的查活状态，避免 queued/running 卡死。"""
     now = _now()
+    excluded = sorted({int(item) for item in (excluded_account_ids or ())})
+    where = '"live_check_status" IN (%s, %s)'
+    params: list[Any] = ["queued", "running"]
+    if excluded:
+        where += ' AND "id" <> ALL(%s)'
+        params.append(excluded)
     recovered = record_store.patch_rows_where(
         record_store.ACCOUNTS,
         changes={
@@ -2059,8 +2083,8 @@ def recover_interrupted_live_checks() -> int:
             "live_checked_at": now,
             "updated_at": now,
         },
-        where='"live_check_status" IN (%s, %s)',
-        params=("queued", "running"),
+        where=where,
+        params=params,
     )
     if recovered:
         compat_export.schedule("accounts")
@@ -3550,7 +3574,11 @@ def finish_job_progress(
         })
 
 
-def recover_interrupted_registration_jobs() -> int:
+def recover_interrupted_registration_jobs(
+    *,
+    excluded_account_ids: Iterable[int] | None = None,
+    excluded_source_ids: Iterable[str | int] | None = None,
+) -> int:
     """启动时把上个进程遗留的排队/运行任务收口为可重试失败状态。"""
     record_store.init()
     detail = "WebUI 进程重启导致任务中断；浏览器和接码资源将在启动恢复阶段回收，请重新执行任务"
@@ -3559,11 +3587,21 @@ def recover_interrupted_registration_jobs() -> int:
     account_changed = False
     active_states = ("pending", "running", "stopping")
     placeholders = ", ".join("%s" for _ in active_states)
+    excluded_accounts = sorted({int(item) for item in (excluded_account_ids or ())})
+    excluded_sources = sorted({str(item).strip() for item in (excluded_source_ids or ()) if str(item).strip()})
+    where_parts = [f'"status" IN ({placeholders})']
+    where_params: list[Any] = list(active_states)
+    if excluded_accounts:
+        where_parts.append('("account_id" IS NULL OR "account_id" <> ALL(%s))')
+        where_params.append(excluded_accounts)
+    if excluded_sources:
+        where_parts.append('"id"::text <> ALL(%s)')
+        where_params.append(excluded_sources)
     with record_store.transaction() as conn:
         rows = record_store.list_rows(
             record_store.JOBS,
-            where=f'"status" IN ({placeholders})',
-            params=active_states,
+            where=" AND ".join(where_parts),
+            params=where_params,
             order_by="id",
             conn=conn,
         )
@@ -3632,7 +3670,10 @@ def recover_interrupted_registration_jobs() -> int:
     try:
         from core.storage import registration
 
-        registration.recover_interrupted_runs()
+        registration.recover_interrupted_runs(
+            excluded_account_ids=excluded_accounts,
+            excluded_source_ids=excluded_sources,
+        )
     except Exception:
         logger.exception("恢复 RegistrationRun 失败")
     return recovered

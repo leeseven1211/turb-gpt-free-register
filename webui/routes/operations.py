@@ -29,6 +29,7 @@ from core import (
     plan_check_service,
 )
 from core import registration_service as svc
+from core.operations import task_gateway
 from core.task_errors import classify_task_error
 from config import codex as codex_config
 from webui import config_editor
@@ -171,9 +172,38 @@ def create_operations_blueprint(context: WebUIContext):
         task = operation_task_store.get_task(task_id)
         if not task:
             return jsonify({"ok": False, "error": "任务不存在"}), 404
+        if task_gateway.operation_requires_reconciliation(task):
+            return jsonify({
+                "ok": False,
+                "reconcile_required": True,
+                "error": "远端请求结果待核验，禁止盲目重试",
+            }), 409
         if task.get("status") in {"queued", "running", "stopping", "cancelling", "settling", "waiting"}:
             return jsonify({"ok": False, "error": "任务仍在执行"}), 409
-        if str(task.get("source_system") or "") == "native_operations":
+        task_type = str(task.get("task_type") or "").strip()
+        source_system = str(task.get("source_system") or "").strip()
+        # A migrated adapter may intentionally keep the historical
+        # ``native_operations`` source namespace. Task-type registration is the
+        # dispatch boundary; inspect it before the Codex compatibility
+        # fallback, otherwise live/token/plan/etc. maintenance retries would
+        # be misclassified as OAuth.
+        action = task_gateway.operation_action(
+            task_type, "retry", source_system=source_system,
+        )
+        if action is not None:
+            try:
+                result = action(task)
+            except Exception as exc:
+                logger.exception("统一任务类型重试 handler 失败：task_id=%s type=%s", task_id, task_type)
+                return jsonify({"ok": False, "error": f"重试入口异常：{type(exc).__name__}: {exc}"}), 503
+            payload = dict(result) if isinstance(result, dict) else {"accepted": bool(result)}
+            payload.setdefault("ok", bool(payload.get("accepted", True)))
+            if payload.get("busy"):
+                return jsonify(payload), 409
+            if not payload.get("accepted", payload.get("ok")):
+                return jsonify(payload), 503 if payload.get("unavailable") else 409
+            return jsonify(payload), 202
+        if source_system == "native_operations" and task_type == "codex_retry":
             queued = codex_operation_service.retry_task(int(task_id), trigger="manual_retry")
             if queued.get("busy"):
                 return jsonify({"ok": False, **queued}), 409
@@ -204,7 +234,21 @@ def create_operations_blueprint(context: WebUIContext):
         task = operation_task_store.get_task(task_id)
         if not task:
             return jsonify({"ok": False, "error": "任务不存在"}), 404
-        if str(task.get("source_system") or "") != "native_operations":
+        task_type = str(task.get("task_type") or "").strip()
+        source_system = str(task.get("source_system") or "").strip()
+        action = task_gateway.operation_action(
+            task_type, "cancel", source_system=source_system,
+        )
+        if action is not None:
+            try:
+                result = action(task)
+            except Exception as exc:
+                logger.exception("统一任务类型取消 handler 失败：task_id=%s type=%s", task_id, task_type)
+                return jsonify({"ok": False, "error": f"停止入口异常：{type(exc).__name__}: {exc}"}), 503
+            payload = dict(result) if isinstance(result, dict) else {"ok": bool(result)}
+            payload.setdefault("ok", True)
+            return jsonify(payload), 200 if payload.get("ok") else 409
+        if source_system != "native_operations" or task_type != "codex_retry":
             return jsonify({"ok": False, "error": "历史兼容任务请使用原任务停止入口"}), 409
         active = next(
             (

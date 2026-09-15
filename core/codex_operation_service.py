@@ -635,6 +635,9 @@ def _execute_run(run_id: int) -> dict:
         checker=operation_task_store.is_run_cancel_requested,
     )
     lease_token = ""
+    lease_guard: task_gateway.OperationLease | None = None
+    remote_intent_started = False
+    remote_receipt_state: str | None = None
     route = None
     route_resource_id: int | None = None
     result: dict = {"status": "failed", "ok": False, "message": "OAuth 未返回结果"}
@@ -643,6 +646,34 @@ def _execute_run(run_id: int) -> dict:
 
     def report(**event):
         return operation_task_store.append_runtime_event(run_id, **event)
+
+    def _finish_fenced(
+        status: str,
+        *,
+        message: str = "",
+        error: str | None = None,
+        summary: Mapping[str, Any] | None = None,
+    ) -> bool:
+        values = dict(summary or {})
+        values.setdefault("execution_id", execution_id)
+        values.setdefault("lease_owner", execution_id)
+        try:
+            operation_task_store.finish_run(
+                run_id,
+                status=status,
+                message=message,
+                error=error,
+                result_summary=values,
+                execution_id=execution_id,
+                lease_token=lease_token or None,
+            )
+        except PermissionError:
+            logger.warning(
+                "Codex operation 终态写入被 execution/lease fence 拒绝：run=%s",
+                run_id,
+            )
+            return False
+        return True
 
     with _LOCAL_TOKENS_LOCK:
         _LOCAL_TOKENS[run_id] = token
@@ -660,6 +691,13 @@ def _execute_run(run_id: int) -> dict:
         lease_token = operation_task_store.acquire_account_lease(account_id=account_id, run_id=run_id) or ""
         if not lease_token:
             raise RuntimeError("账号操作租约被另一执行占用")
+        lease_guard = task_gateway.OperationLease(
+            run_id=run_id,
+            account_id=account_id,
+            resource_family=str(current.get("resource_family") or "openai_interactive"),
+            token=lease_token,
+            ttl_seconds=600,
+        )
         db.update_account_codex_operation_state(email, execution_status="running", active_run_id=run_id)
         with operation_context(token, reporter=report):
             report(stage="preflight", message="开始执行统一配置预检", state="running")
@@ -701,6 +739,17 @@ def _execute_run(run_id: int) -> dict:
             report(stage="browser", message=f"启动 {driver} OAuth 驱动", state="running", detail={"oauth_driver": driver})
             from core.codex_oauth import run_codex_oauth
 
+            remote_intent_started = True
+            operation_task_store.record_remote_intent(
+                run_id,
+                execution_id=execution_id,
+                lease_token=lease_token,
+                action="codex_oauth",
+                intent_kind="remote_write",
+                request_id=f"codex-oauth:{run_id}",
+                detail={"checkpoint": "oauth_request_dispatched", "driver": driver},
+            )
+
             allow_password_reset = task_trigger == "manual_sub2api_repair"
 
             def _checkpoint_password_reset(value: str) -> None:
@@ -723,6 +772,28 @@ def _execute_run(run_id: int) -> dict:
             )
             confirmed = bool(result.get("credential_confirmed"))
             callback_submitted = bool(result.get("callback_submitted"))
+            if callback_submitted or result.get("remote_response_received"):
+                remote_receipt_state = "response_received"
+                operation_task_store.record_remote_receipt(
+                    run_id,
+                    execution_id=execution_id,
+                    lease_token=lease_token,
+                    outcome="response_received",
+                    action="codex_oauth",
+                    request_id=f"codex-oauth:{run_id}",
+                    detail={"callback_submitted": callback_submitted},
+                )
+            elif result.get("remote_write_rejected"):
+                remote_receipt_state = "rejected"
+                operation_task_store.record_remote_receipt(
+                    run_id,
+                    execution_id=execution_id,
+                    lease_token=lease_token,
+                    outcome="rejected",
+                    action="codex_oauth",
+                    request_id=f"codex-oauth:{run_id}",
+                    detail={"remote_write_rejected": True},
+                )
             # callback 之后收到取消信号时不能简单宣称“已取消”：远端可能仍在落凭证。
             if callback_submitted and not confirmed and token.requested(force=True):
                 result["status"] = "attention_required"
@@ -761,11 +832,37 @@ def _execute_run(run_id: int) -> dict:
                 "credential_file": Path(str(result.get("file_path") or "")).name or None,
                 "receipt_file": Path(str(result.get("receipt_path") or "")).name or None,
                 "oauth_driver": driver,
+                "execution_id": execution_id,
+                "lease_owner": execution_id,
             }
+            if lease_guard is not None and lease_guard.lost:
+                raise task_gateway.OperationLeaseLost(
+                    "Codex OAuth 执行期间账号 lease 心跳丢失"
+                )
+            if remote_intent_started and remote_receipt_state != "rejected":
+                if (
+                    final_status == "success"
+                    and confirmed
+                    and lease_guard is not None
+                    and not lease_guard.lost
+                ):
+                    # The account-state write below is the durable business
+                    # commit. The readback immediately after it is part of
+                    # the confirmed receipt proof.
+                    pass
+                else:
+                    final_status = "attention_required"
+                    credential_state = "valid" if existing_valid else "pending_confirmation"
+                    final_error = final_error or "远端 OAuth 结果待确认"
+                    run_summary.update({
+                        "outcome": "request_unknown",
+                        "reconcile_required": True,
+                        "remote_receipt_state": remote_receipt_state or "started",
+                    })
             # Persist the business outcome before publishing the child Run's
             # terminal/dependency-ready state. A continuation must not race
             # the account row and conclude from a stale credential state.
-            db.update_account_codex_operation_state(
+            account_writeback_confirmed = db.update_account_codex_operation_state(
                 email,
                 credential_state=credential_state,
                 execution_status="empty",
@@ -773,6 +870,55 @@ def _execute_run(run_id: int) -> dict:
                 error=final_error,
                 active_run_id=0,
             )
+            account_after = db.get_account_by_email(email) or {}
+            local_readback_confirmed = (
+                final_status == "success"
+                and str(account_after.get("codex_credential_state") or "").lower() == "valid"
+            )
+            if final_status == "success" and not (
+                account_writeback_confirmed and local_readback_confirmed
+            ):
+                final_status = "attention_required"
+                credential_state = "valid" if existing_valid else "pending_confirmation"
+                final_error = "Codex 凭证本地写回或 readback 未确认"
+                run_summary.update({
+                    "status": final_status,
+                    "ok": False,
+                    "outcome": "request_unknown",
+                    "reconcile_required": True,
+                    "remote_receipt_state": remote_receipt_state or "started",
+                })
+                db.update_account_codex_operation_state(
+                    email,
+                    credential_state=credential_state,
+                    execution_status="empty",
+                    last_run_status=final_status,
+                    error=final_error,
+                    active_run_id=0,
+                )
+            run_summary.update({
+                "status": final_status,
+                "ok": final_status == "success",
+            })
+            if final_status == "success":
+                remote_receipt_state = "confirmed"
+                operation_task_store.record_remote_receipt(
+                    run_id,
+                    execution_id=execution_id,
+                    lease_token=lease_token,
+                    outcome="confirmed",
+                    action="codex_oauth",
+                    request_id=f"codex-oauth:{run_id}",
+                    detail={
+                        "remote_result_confirmed": True,
+                        "local_business_writeback_confirmed": account_writeback_confirmed,
+                        "local_readback_confirmed": local_readback_confirmed,
+                    },
+                )
+            elif remote_intent_started and remote_receipt_state != "rejected":
+                run_summary.setdefault("outcome", "request_unknown")
+                run_summary.setdefault("reconcile_required", True)
+                run_summary.setdefault("remote_receipt_state", remote_receipt_state or "started")
             if final_status == "deactivated":
                 persisted = db.mark_account_deactivated(
                     account_id,
@@ -787,25 +933,87 @@ def _execute_run(run_id: int) -> dict:
                 message=str(result.get("message") or ""),
                 error=final_error,
                 result_summary=run_summary,
+                execution_id=execution_id,
+                lease_token=lease_token,
             )
             return {**result, "status": final_status, "run_id": run_id}
+    except task_gateway.OperationLeaseLost as exc:
+        message = str(exc) or "账号操作租约丢失，远端结果待核验"
+        logger.error("Codex operation lease 丢失：run=%s", run_id)
+        _finish_fenced(
+            "attention_required",
+            message="Codex OAuth 远端结果待核验，禁止自动重做",
+            error=message,
+            summary={
+                "ok": False,
+                "status": "attention_required",
+                "outcome": "request_unknown",
+                "reconcile_required": True,
+                "lease_lost": True,
+            },
+        )
+        return {
+            "status": "attention_required",
+            "ok": False,
+            "message": "Codex OAuth 远端结果待核验，禁止自动重做",
+            "run_id": run_id,
+        }
     except OperationCancelled as exc:
         message = str(exc) or "用户手动停止 Codex 补跑"
+        if remote_intent_started and remote_receipt_state != "rejected":
+            _finish_fenced(
+                "attention_required",
+                message="停止请求发生在远端边界后；结果待核验",
+                error=message,
+                summary={
+                    "ok": False,
+                    "status": "attention_required",
+                    "outcome": "request_unknown",
+                    "reconcile_required": True,
+                    "remote_receipt_state": remote_receipt_state or "started",
+                },
+            )
+            return {
+                "status": "attention_required",
+                "ok": False,
+                "message": "停止请求发生在远端边界后；结果待核验",
+                "run_id": run_id,
+            }
         db.update_account_codex_operation_state(
             email, execution_status="empty", last_run_status="cancelled",
             error=message, active_run_id=0,
         )
-        operation_task_store.finish_run(run_id, status="cancelled", error=message, result_summary={"ok": False, "status": "cancelled", "message": message})
+        _finish_fenced(
+            "cancelled",
+            error=message,
+            summary={"ok": False, "status": "cancelled", "message": message},
+        )
         return {"status": "cancelled", "ok": False, "message": message, "run_id": run_id}
     except Exception as exc:
         message = f"{type(exc).__name__}: {exc}"
         logger.exception("Codex operation 执行失败：run=%s email=%s", run_id, email)
+        final_status = "attention_required" if (
+            remote_intent_started and remote_receipt_state != "rejected"
+        ) else "failed"
+        final_summary = {
+            "ok": final_status == "success",
+            "status": final_status,
+            "message": message,
+            "execution_id": execution_id,
+            "lease_owner": execution_id,
+        }
+        if final_status == "attention_required":
+            final_summary.update({
+                "outcome": "request_unknown",
+                "reconcile_required": True,
+                "remote_receipt_state": remote_receipt_state or "started",
+            })
         db.update_account_codex_operation_state(
-            email, execution_status="empty", last_run_status="failed",
+            email, execution_status="empty", last_run_status=final_status,
             error=message, active_run_id=0,
         )
-        operation_task_store.finish_run(run_id, status="failed", error=message, result_summary={"ok": False, "status": "failed", "message": message})
-        return {"status": "failed", "ok": False, "message": message, "run_id": run_id}
+        _finish_fenced(final_status, error=message, summary=final_summary)
+        return {"status": final_status, "ok": False, "message": message, "run_id": run_id}
     finally:
         if file_handler is not None:
             try:
@@ -819,7 +1027,9 @@ def _execute_run(run_id: int) -> dict:
             finally:
                 if route_resource_id:
                     operation_task_store.release_resource(route_resource_id, state="released")
-        if lease_token:
+        if lease_guard is not None:
+            lease_guard.release()
+        elif lease_token:
             operation_task_store.release_account_lease(run_id, lease_token)
         with _LOCAL_TOKENS_LOCK:
             _LOCAL_TOKENS.pop(run_id, None)

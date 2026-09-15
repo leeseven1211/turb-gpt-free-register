@@ -974,17 +974,42 @@ def finish_run(
         return updated
 
 
-def recover_interrupted_runs() -> int:
+def recover_interrupted_runs(
+    *,
+    excluded_account_ids: Iterable[int] | None = None,
+    excluded_source_ids: Iterable[str | int] | None = None,
+) -> int:
     """Close queued/running registration runs left by a crashed worker.
 
     Recovery only changes statuses and appends facts; it never deletes attempts,
-    runs, events, or legacy jobs.
+    runs, events, or legacy jobs.  During the operation migration the caller may
+    provide row-level fences for durable runs that are still active.  An account
+    fence is resolved through the owning RegistrationAttempt, while a source
+    fence covers both the compatibility job id and the RegistrationRun id.
     """
     init()
     recovered = 0
+    excluded_accounts = sorted({int(item) for item in (excluded_account_ids or ())})
+    excluded_sources = sorted({str(item).strip() for item in (excluded_source_ids or ()) if str(item).strip()})
+    where_parts = ["rr.status IN ('queued','running')"]
+    where_params: list[Any] = []
+    if excluded_accounts:
+        where_parts.append("(a.account_id IS NULL OR a.account_id <> ALL(%s))")
+        where_params.append(excluded_accounts)
+    if excluded_sources:
+        where_parts.extend(("rr.id::text <> ALL(%s)", "COALESCE(rr.job_id::text, '') <> ALL(%s)"))
+        where_params.extend((excluded_sources, excluded_sources))
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
-            f"SELECT * FROM {_table('registration_runs')} WHERE status IN ('queued','running') ORDER BY id FOR UPDATE"
+            f"""
+            SELECT rr.*
+            FROM {_table('registration_runs')} rr
+            JOIN {_table('registration_attempts')} a ON a.id=rr.attempt_id
+            WHERE {' AND '.join(where_parts)}
+            ORDER BY rr.id
+            FOR UPDATE OF rr
+            """,
+            tuple(where_params),
         )
         rows = cur.fetchall()
         for run in rows:

@@ -33,7 +33,8 @@ class OperationGatewayDispatcherTests(unittest.TestCase):
                 return Future()
 
         def list_dispatchable_runs(**kwargs):
-            self.assertEqual(("native_operations",), kwargs["source_systems"])
+            self.assertIn("native_operations", kwargs["source_systems"])
+            self.assertNotIn("account_action_tasks", kwargs["source_systems"])
             return [
                 {"id": 7002, "task_type": "maintenance_test", "source_system": "account_action_tasks"},
                 {"id": 7001, "task_type": "maintenance_test", "source_system": "native_operations"},

@@ -16,6 +16,10 @@
 - `operation_runs` 继续由数据库 CAS 认领，启动恢复只收口心跳过期且没有其它
   worker 有效账号 lease 的 Run；WebUI 启动不会打断仍由其它 worker 持有有效
   lease 的 Run。
+- legacy 启动恢复先按任务类型查询 durable active Run 的 `account_id`/`source_id`，
+  再把排除项传给对应旧表的恢复 SQL；只保留同一账号/来源行，不能因为账号 A
+  有一条 native queued Run 就让账号 B 的孤立 legacy running 永远不收口。行级查询
+  失败时为安全起见跳过该类旧恢复，而不是扩大清理范围。
 - gateway 的 `register_dispatch_handler(task_type, handler, source_systems=...)`
   注册按任务类型的执行器。`start_dispatcher()` 持续扫描所有已注册类型的
   durable operation queue，而不是把循环写死成 Codex；默认只消费
@@ -143,6 +147,13 @@ ctx.remote_request_receipt(
 检查点和终态 fence；旧 worker 的 receipt/finish 不能覆盖新执行。纯读取
 `intent_kind="read"` 不占账号写 lease，但仍建议在需要解释异常时记录 receipt。
 
+补全 coordinator 不直接在等待型父 Run 中执行密码/MFA 远端写。它会先提交
+`account_setup_retry` durable child，由 child 持有这次 remote intent/receipt；父任务只
+保存剩余步骤和依赖边。child 只有在 `confirmed` 后才会以
+`trigger="dependency_resume"` 创建父任务的新 attempt。若 child 在 confirmed 后仍因
+后置业务失败，父任务保持 `attention_required/request_unknown`，由该业务 adapter
+提供显式 reconcile/follow-up；通用 retry 不会重放原远端写。
+
 `list_reconciliation_accounts(task_type=..., account_ids=...)` 是生产者在新凭证/账号
 写入前使用的只读安全门。SQL 先按 `account_id` 选出最新候选再应用 `limit`，不会
 因同一账号的大量历史 Run 占满 limit 而漏掉其它账号；传入显式 `account_ids` 时
@@ -202,6 +213,8 @@ checkout 没有该模块时才使用旧配置读取兼容路径。
 - 父任务从 waiting 在 child terminal 后自动推进；waiting coordinator 不阻塞
   同账号 child。
 - 有效其它 worker lease 保留，孤儿 Run 才会被启动恢复收口。
+- 跨账号启动恢复中，native queued 账号 A 的旧状态保持不变，孤立 legacy 账号 B
+  仍会收口；注册 Run、账号任务和查活状态分别覆盖了相同的行级 fence。
 - gateway handler 按 task type/source 过滤，兼容未迁移来源不会被原生 handler 双跑。
 
 ## Coordinator terminal safety corrections
@@ -220,19 +233,24 @@ A heartbeat exception latches lease loss instead of silently killing renewal.
 These safeguards do not replace each service's business writeback/readback or
 explicit multi-step continuation logic.
 
-## 尚未迁移的任务类型
+## 本 checkout 的迁移边界
 
-本轮只把 Codex 原生 Run 接入通用 dispatcher，并完成补全依赖基础设施；以下
-兼容维护任务仍由各自 legacy queue/scanner 写入 gateway，再由 projection 对账，
-尚未注册为 native gateway handler：
+本 checkout 已把 WebUI 的 `account_setup_retry`、`password_setup`、
+`password_change`、`twofa_setup`、`twofa_change`、`account_completion` 和
+`registration_resume` 接入通用 dispatcher。账号设置/补全使用 durable child 和
+持久依赖续接；注册续跑仍以原注册任务的安全 checkpoint 为入口，遇到未知远端账号
+状态只提供核验，不盲目重注册。
 
-- `live_check` / `token_refresh` / `plan_check`；
-- `deactivation_mail` / `extract_link`；
-- `codex_token_refresh`；
-- `account_setup_retry`、`password_setup`、`password_change`、`twofa_setup`、
-  `twofa_change`；
-- 注册后置动作及注册续跑的完整 native Run 执行器。
+`live_check` / `token_refresh` / `plan_check` / `deactivation_mail` / `extract_link`
+以及 `codex_token_refresh` 的业务 handler 由 A/D adapter 在其它独占 worktree 接入，
+本 checkout 不修改这些 service 文件。它们接入时必须调用同一个
+`task_gateway.register_operation_handler(task_type, handler,
+source_systems=("native_operations",))`；省略 retry/cancel 参数会自动得到共享
+`default_operation_retry` / `default_operation_cancel`，不允许留下只有业务 API、
+任务中心不可控的 native 任务。若 service 自己已有安全的 explicit action，可以只
+通过 `task_gateway.register_operation_actions` 替换对应一侧。
 
-后续迁移每种类型时，应先提供其 native handler 和 source 迁移/去重证明，再
-停止对应旧 scanner，保留 projection 对账和失败/重启回归；不能仅把旧线程名
-改成 dispatcher。
+每种 adapter 集成后仍需先证明 source 映射、幂等、重启/lease 恢复和旧消费者已停止，
+再把该类型的 legacy scanner 关掉；不能仅把旧线程改名为 dispatcher，也不能让
+`source_system="native_operations"` 自动代表 OAuth。注册 action 前会先查任务类型，
+只有未注册的真实 `codex_retry` 才回退 Codex service。
