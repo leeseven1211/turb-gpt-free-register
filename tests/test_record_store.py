@@ -262,5 +262,67 @@ class QueryTests(PostgresTestCase):
         self.assertEqual(rs.get_row_by(GENERIC_API_POOL, "email", "same@example.test")["status"], "used")
 
 
+class IdentitySequenceTests(PostgresTestCase):
+    def test_repeated_init_does_not_consume_synchronized_identity(self):
+        rs.init()
+        first_id = rs.insert_row(JOBS, {"job_uuid": "u-first", "status": "queued"})
+        self.assertEqual(first_id, 1)
+
+        rs.reset_ready()
+        rs.init()
+        rs.reset_ready()
+        rs.init()
+
+        next_id = rs.insert_row(JOBS, {"job_uuid": "u-next", "status": "queued"})
+        self.assertEqual(next_id, 2)
+
+    def test_empty_identity_table_starts_at_one(self):
+        rs.init()
+        first_id = rs.insert_row(
+            OUTLOOK_POOL,
+            {"email": "first@example.test", "status": "available"},
+        )
+        self.assertEqual(first_id, 1)
+
+    def test_explicit_import_id_is_repaired_without_a_startup_gap(self):
+        rs.init()
+        imported_id = rs.insert_row(
+            JOBS,
+            {"id": 500, "job_uuid": "u-imported", "status": "success"},
+        )
+        self.assertEqual(imported_id, 500)
+
+        rs.reset_ready()
+        rs.init()
+        rs.reset_ready()
+        rs.init()
+
+        next_id = rs.insert_row(JOBS, {"job_uuid": "u-after-import", "status": "queued"})
+        self.assertEqual(next_id, 501)
+
+    def test_history_table_without_identity_sequence_does_not_block_init(self):
+        table = rs._qualified(OUTLOOK_POOL)
+        with rs._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+            cur.execute(
+                f"CREATE TABLE {table} ("
+                "id BIGINT PRIMARY KEY, "
+                "data JSONB NOT NULL DEFAULT '{}'::jsonb"
+                ")"
+            )
+
+        rs.reset_ready()
+        rs.init()
+        imported_id = rs.insert_row(
+            OUTLOOK_POOL,
+            {"id": 77, "email": "legacy@example.test", "status": "available"},
+        )
+        self.assertEqual(imported_id, 77)
+
+        rs.reset_ready()
+        rs.init()
+        self.assertEqual(rs.get_row(OUTLOOK_POOL, imported_id)["email"], "legacy@example.test")
+
+
 if __name__ == "__main__":
     unittest.main()

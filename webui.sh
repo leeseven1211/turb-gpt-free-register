@@ -270,6 +270,7 @@ cmd_check() {
 }
 
 cmd_logs() {
+  mkdir -p "$LOG_DIR"
   touch "$LOG_FILE"
   tail -n 120 -f "$LOG_FILE"
 }

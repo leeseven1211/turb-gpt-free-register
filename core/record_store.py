@@ -968,21 +968,53 @@ def advisory_xact_lock(conn, key: str) -> None:
 
 
 def _sync_identity_cursor(cur, spec: TableSpec) -> int:
-    """Advance one identity sequence without opening a nested connection."""
+    """Repair one identity sequence without consuming an unnecessary value."""
     cur.execute(f"LOCK TABLE {_qualified(spec)} IN SHARE ROW EXCLUSIVE MODE")
     cur.execute(f"SELECT COALESCE(max(id), 0) AS m FROM {_qualified(spec)}")
     current = int(cur.fetchone()["m"])
-    # Do not consume the first value of a never-used identity sequence. This
-    # keeps an empty table's first normal insert at 1 while leaving previously
-    # advanced sequences untouched.
     if current == 0:
         return current
-    sequence_table = f"{postgres_store.schema_name()}.{spec.name}"
-    cur.execute("SELECT nextval(pg_get_serial_sequence(%s, 'id')) AS n", (sequence_table,))
-    allocated = int(cur.fetchone()["n"])
+
+    # A few historical tables may have an id primary key without an owned
+    # identity/serial sequence. They remain usable for explicit-id imports;
+    # startup must not fail merely because there is no sequence to repair.
     cur.execute(
-        "SELECT setval(pg_get_serial_sequence(%s, 'id'), %s, true) AS v",
-        (sequence_table, max(current, allocated, 1)),
+        "SELECT pg_get_serial_sequence(%s, 'id') AS sequence_name",
+        (_qualified(spec),),
+    )
+    sequence_name = cur.fetchone()["sequence_name"]
+    if not sequence_name:
+        return current
+
+    # Resolve the sequence through PostgreSQL's catalogs, then quote the
+    # catalog-provided identifiers before reading its state. The table lock
+    # serializes this check with normal INSERTs, so a writer cannot move the
+    # sequence between max(id) and setval().
+    cur.execute(
+        """
+        SELECT namespace.nspname AS sequence_schema, sequence.relname AS sequence_name
+        FROM pg_class AS sequence
+        JOIN pg_namespace AS namespace ON namespace.oid = sequence.relnamespace
+        WHERE sequence.oid = %s::regclass
+        """,
+        (sequence_name,),
+    )
+    sequence = cur.fetchone()
+    if not sequence:
+        return current
+    qualified_sequence = (
+        f"{postgres_store.quote_identifier(sequence['sequence_schema'])}."
+        f"{postgres_store.quote_identifier(sequence['sequence_name'])}"
+    )
+    cur.execute(f"SELECT last_value, is_called FROM {qualified_sequence}")
+    sequence_state = cur.fetchone()
+    last_value = sequence_state["last_value"]
+    if sequence_state["is_called"] and last_value is not None and int(last_value) >= current:
+        return current
+
+    cur.execute(
+        "SELECT setval(%s::regclass, %s, true) AS v",
+        (sequence_name, max(current, int(last_value or 0), 1)),
     )
     return current
 
