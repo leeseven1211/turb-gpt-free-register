@@ -379,6 +379,32 @@ A/B/D/E continue in their assigned worktrees. The heartbeat remains ACTIVE.
 No normal-progress user notification, production changes, restart, deployment
 or push occurred in this checkpoint.
 
+### Monitor checkpoint 2026-09-15 00:08 UTC
+
+The prior three Luna max worktree sessions were no longer addressable by the
+agent tool, so their uncommitted work was not treated as delivered. The
+integration branch contains the reviewed commits through `13ba506` plus the
+task-center read optimization; no newer service/runtime migration has been
+integrated. The last verified full locked-environment result remains **1056
+passed, 825 subtests**, while the real 2000-history task-center benchmark passed
+after the read optimization at p95 about **45 ms** with 8 SQL queries.
+
+Coordinator dispatched three replacement Luna max agents into the existing
+isolated worktrees, with disjoint scopes and explicit commit/test requirements:
+
+- Zeno `01a0a264-8016-7181-a7cc-f16e5c516ee3`: maintenance service handlers,
+  HME bulk preservation and canonical snapshots;
+- Dewey `01a0a264-80ca-7ad0-a37e-691876dc7afd`: shared runtime/routes,
+  row-scoped legacy recovery and parent/child continuation;
+- Aquinas `01a0a264-81b9-7310-8402-6807a821395c`: token refresh final audit,
+  cancellation settlement and canonical snapshot verification.
+
+They must work only in their assigned worktree and use synthetic isolated
+PostgreSQL through the safe launcher. No agent completion will be accepted
+without coordinator diff review, targeted tests, and a fresh locked full-suite
+run. Primary workspace, private data, production database, deployment and push
+remain out of scope. The heartbeat remains ACTIVE.
+
 ## Verification
 
 Baseline full suite completed: **954 passed, 34 subtests passed, 3 failed in
