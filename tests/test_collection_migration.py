@@ -5,6 +5,10 @@ from tools import migrate_collections_to_tables as migration
 
 
 class CollectionMigrationTests(PostgresTestCase):
+    def test_missing_collection_is_not_replaced_by_root_snapshot(self):
+        with self.assertRaisesRegex(RuntimeError, "缺少 PostgreSQL 集合: 注册任务.json"):
+            migration.load_source("注册任务.json", "注册任务.json")
+
     def test_all_admin_sources_migrate_idempotently_and_verify(self):
         for index, (collection, spec, filename) in enumerate(migration.MIGRATIONS, start=1):
             row = {"id": index, "email": f"row{index}@example.test", "status": "available"}

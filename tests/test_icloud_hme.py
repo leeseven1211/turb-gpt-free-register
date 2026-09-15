@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
-import tempfile
 import time
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 from core import db, record_store as rs
@@ -13,14 +11,10 @@ from tests.support_pg import PostgresTestCase
 
 class ICloudHidePoolTests(PostgresTestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.pool_path = Path(self.tmp.name) / "icloud-pool.json"
-        self.pool_patch = patch.object(db, "_ICLOUD_HIDE_EMAIL_JSON", self.pool_path)
-        self.pool_patch.start()
+        pass
 
     def tearDown(self):
-        self.pool_patch.stop()
-        self.tmp.cleanup()
+        pass
 
     def test_sync_claim_and_release_unconsumed(self):
         result = db.sync_icloud_hide_aliases([

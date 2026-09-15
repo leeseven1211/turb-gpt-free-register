@@ -2,7 +2,7 @@
 """
 Outlook 邮箱客户端（mail.chatai.codes 双协议）
 
-账号文件格式（每行一个）：
+外部导入文件格式（每行一个）：
     # 4 段格式（基础）
     email----password----clientId----refreshToken
     例：SorenBarrett5150@outlook.com----oc621409----9e5f94bc-...----M.C529_...
@@ -12,9 +12,9 @@ Outlook 邮箱客户端（mail.chatai.codes 双协议）
     例：ChristinLeno5020@outlook.com----3qP3kEjF----9e5f94bc-...----M.C506_...----Dy9bOAnUd@wmhotmail.com----zf4rBS
 
 工作流：
-    1. pick_account()       从根目录 `用于注册的邮箱.json` 中挑一个未用过的账号
+    1. pick_account()       从 PostgreSQL 邮箱池中挑一个未用过的账号
     2. fetch_latest_otp()   双协议（Graph / IMAP）轮询取 OTP
-    3. 注册成功后会写入 `注册成功的邮箱.txt` 与 `注册成功的token.txt`
+    3. 注册成功后账号与邮箱状态写入 PostgreSQL；批次归档仅供本次运行留档
 
 只用 Outlook 提供的 refresh_token 调远端的 mail.chatai.codes 服务，
 不直连 Microsoft Graph，因为后者要 access_token + 复杂 OAuth 协议。
@@ -38,7 +38,6 @@ from pathlib import Path
 from curl_cffi.requests import Session as CurlSession
 
 from config import (
-    OUTLOOK_ACCOUNTS_FILE,
     OUTLOOK_API_BASE,
     OTP_SETTLE_SECONDS,
     USER_AGENT,
@@ -49,8 +48,6 @@ from config import email as _email_cfg
 from core.otp_utils import looks_like_openai_email, extract_otp
 
 logger = logging.getLogger(__name__)
-
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # 邮箱 → account 上下文的内存缓存，fetch_latest_otp 用
 _CONTEXT_CACHE: dict[str, "OutlookAccount"] = {}
@@ -233,7 +230,8 @@ def _parse_accounts_file(path: Path) -> list[OutlookAccount]:
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        parts = line.split("----")
+        separator = "----" if "----" in line else "====" if "====" in line else None
+        parts = line.split(separator) if separator else []
         # 支持 4 段或 6 段格式
         if len(parts) == 4:
             email, password, client_id, refresh_token = (p.strip() for p in parts)
@@ -260,16 +258,12 @@ def pick_account() -> OutlookAccount:
     """
     from core.db import claim_next_outlook, outlook_pool_summary
 
-    inserted, skipped = import_outlook_from_file()
-    if inserted:
-        logger.info(f"[Outlook] 已自动从 {OUTLOOK_ACCOUNTS_FILE} 导入 {inserted} 个新账号（跳过 {skipped} 个）")
-
     row = claim_next_outlook()
     if row is None:
         summary = outlook_pool_summary()
         raise OutlookClientError(
             f"Outlook 账号池没有可用账号: {summary}. "
-            f"请把新邮箱写入 {OUTLOOK_ACCOUNTS_FILE}，程序会在下次注册前自动导入。"
+            "请通过 WebUI/API 导入邮箱素材，或使用显式导入命令 tools/import_outlook_pool.py --file PATH。"
         )
 
     account = OutlookAccount(
@@ -338,12 +332,14 @@ def release_account(email: str, status: str = "available", note: str | None = No
     _CONTEXT_CACHE.pop(_cache_key(email), None)
 
 
-def import_outlook_from_file(path: str | Path | None = None) -> tuple[int, int]:
-    """读取一份账号文本文件，全量导入 DB，返回 (新增, 已存在跳过)。"""
+def import_outlook_from_file(path: str | Path) -> tuple[int, int]:
+    """显式读取外部账号文本并导入 DB，返回 (新增, 已存在跳过)。"""
     from core.db import import_outlook_accounts
-    p = Path(path or OUTLOOK_ACCOUNTS_FILE)
+    if path is None:
+        raise TypeError("import_outlook_from_file() requires an explicit path")
+    p = Path(path).expanduser()
     if not p.is_absolute():
-        p = _PROJECT_ROOT / p
+        p = Path.cwd() / p
     accounts = _parse_accounts_file(p)
     records = [
         {"email": a.email, "password": a.password, "client_id": a.client_id, "refresh_token": a.refresh_token}

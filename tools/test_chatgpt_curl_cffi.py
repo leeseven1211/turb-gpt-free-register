@@ -11,11 +11,14 @@ ChatGPT backend-api 指纹环境请求测试脚本。
     # 方式1：直接参数传 token
     python3 tools/test_chatgpt_curl_cffi.py --token '<JWT>' --verbose
 
-    # 方式2：从文件读取 token（默认取第一条非空行；允许有 Bearer 前缀）
-    python3 tools/test_chatgpt_curl_cffi.py --token-file 注册成功的token.txt
+    # 方式2：按 PostgreSQL 中的账号 ID 读取 token
+    python3 tools/test_chatgpt_curl_cffi.py --account-id 123
 
-    # 方式3：测试 subscriptions，需要传 account_id
-    python3 tools/test_chatgpt_curl_cffi.py --token '<JWT>' --endpoint subscriptions --account-id '<account_id>'
+    # 方式3：按 PostgreSQL 中的账号邮箱读取 token
+    python3 tools/test_chatgpt_curl_cffi.py --email registered@example.test
+
+    # 方式4：测试 subscriptions（account_id 从 token payload 提取）
+    python3 tools/test_chatgpt_curl_cffi.py --token '<JWT>' --endpoint subscriptions
 
     # 代理：不传则沿用项目 pick_proxy()；传空字符串禁用代理；传具体地址使用指定代理
     python3 tools/test_chatgpt_curl_cffi.py --token '<JWT>' --proxy ''
@@ -39,6 +42,7 @@ from urllib.parse import quote
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 
+from core import db  # noqa: E402
 from core.session import BrowserSession  # noqa: E402
 
 logger = logging.getLogger("chatgpt_curl_cffi_test")
@@ -70,36 +74,16 @@ def _normalize_token(token: str) -> str:
     return token
 
 
-def _read_token_file(path: str, index: int = 0) -> str:
-    p = Path(path).expanduser().resolve()
-    lines = []
-    for raw in p.read_text(encoding="utf-8", errors="ignore").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        # 兼容常见格式：纯 token / email----token / email:token / JSON 行
-        token = ""
-        if line.startswith("{"):
-            try:
-                obj = json.loads(line)
-                token = obj.get("token") or obj.get("access_token") or obj.get("bearer") or ""
-            except Exception:
-                token = ""
-        if not token:
-            if "----" in line:
-                token = line.rsplit("----", 1)[-1]
-            elif "\t" in line:
-                token = line.rsplit("\t", 1)[-1]
-            else:
-                token = line
-        token = _normalize_token(token)
-        if token:
-            lines.append(token)
-    if not lines:
-        raise RuntimeError(f"token 文件没有可用内容: {p}")
-    if index < 0 or index >= len(lines):
-        raise RuntimeError(f"--token-index 越界：{index}，文件内可用 token 数={len(lines)}")
-    return lines[index]
+def _resolve_database_token(*, account_id: int | None = None, email: str | None = None) -> str:
+    """在手工测试进程内按数据库账号选择 token，不读取兼容导出文件。"""
+    account = db.get_account(account_id) if account_id is not None else db.get_account_by_email(str(email).strip())
+    if not account:
+        selector = f"id={account_id}" if account_id is not None else f"email={str(email).strip()!r}"
+        raise RuntimeError(f"数据库中找不到账号（{selector}）")
+    token = _normalize_token(str(account.get("access_token") or ""))
+    if not token:
+        raise RuntimeError("数据库账号没有可用 access_token")
+    return token
 
 
 def _decode_jwt_payload_unverified(token: str) -> dict:
@@ -175,34 +159,47 @@ def _print_profile(env: BrowserSession) -> None:
     logger.info("[指纹] screen=%sx%s dpr=%s", p.get("screen_width"), p.get("screen_height"), p.get("device_pixel_ratio"))
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="ChatGPT backend-api curl_cffi 指纹环境请求测试",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    parser.add_argument("--token", default=None, help="Bearer JWT；可带或不带 Bearer 前缀")
-    parser.add_argument("--token-file", default=None, help="从文件读取 token，默认第一条非空行")
-    parser.add_argument("--token-index", type=int, default=0, help="读取 token 文件时使用第几个 token，默认 0")
+    selector = parser.add_mutually_exclusive_group(required=True)
+    selector.add_argument("--token", help="Bearer JWT；可带或不带 Bearer 前缀")
+    selector.add_argument("--account-id", type=int, help="从 PostgreSQL 按注册账号 ID 读取 token")
+    selector.add_argument("--email", help="从 PostgreSQL 按注册账号邮箱读取 token")
     parser.add_argument(
         "--endpoint",
         choices=["accounts-check", "subscriptions"],
         default="accounts-check",
         help="要测试的接口，默认 accounts-check",
     )
-    parser.add_argument("--account-id", default=None, help="subscriptions 接口 account_id；不传则尝试从 JWT payload 提取")
+    parser.add_argument(
+        "--chatgpt-account-id",
+        default=None,
+        help="subscriptions 接口使用的 ChatGPT account_id；不传则从 token payload 提取",
+    )
     parser.add_argument("--timezone-offset-min", default="-", help="accounts-check 参数，默认 -")
     parser.add_argument("--proxy", default=None, help="代理；不传随机抽项目代理池；传空字符串禁用代理")
     parser.add_argument("--verbose", action="store_true", help="显示 DEBUG 日志")
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
 
     _setup_logging(args.verbose)
 
     token = _normalize_token(args.token or "")
-    if not token and args.token_file:
-        token = _read_token_file(args.token_file, args.token_index)
+    if args.account_id is not None or args.email:
+        try:
+            token = _resolve_database_token(account_id=args.account_id, email=args.email)
+        except RuntimeError as exc:
+            logger.error("读取数据库账号失败：%s", exc)
+            return 2
     if not token:
-        logger.error("缺少 token：请传 --token 或 --token-file")
+        logger.error("缺少可用 token：请传 --token、--account-id 或 --email")
         return 2
 
     logger.info("=" * 70)
@@ -226,7 +223,7 @@ def main() -> int:
         url, target_path, target_route = _build_url(
             args.endpoint,
             token,
-            args.account_id,
+            args.chatgpt_account_id,
             args.timezone_offset_min,
         )
     except Exception as exc:

@@ -252,14 +252,7 @@ class AccountStatusTests(PostgresTestCase):
     def test_liveness_persists_only_safe_auth_fingerprint_summary(self):
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)
-            patches = [
-                patch.object(webui_app.db, "_ACCOUNTS_JSON", root / "registered.json"),
-                patch.object(webui_app.db, "_OUTLOOK_JSON", root / "outlook.json"),
-                patch.object(webui_app.db, "_ACCOUNTS_TXT", root / "registered.txt"),
-                patch.object(webui_app.db, "_TOKENS_TXT", root / "tokens.txt"),
-                patch.object(webui_app.db, "_OUTLOOK_TXT", root / "outlook.txt"),
-                patch.object(webui_app.db, "_VIEWER_HTML", root / "viewer.html"),
-            ]
+            patches = []
             with ExitStack() as stack:
                 for item in patches:
                     stack.enter_context(item)
@@ -289,14 +282,7 @@ class AccountStatusTests(PostgresTestCase):
     def test_deactivated_liveness_result_persists_independent_account_status(self):
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)
-            patches = [
-                patch.object(webui_app.db, "_ACCOUNTS_JSON", root / "registered.json"),
-                patch.object(webui_app.db, "_OUTLOOK_JSON", root / "outlook.json"),
-                patch.object(webui_app.db, "_ACCOUNTS_TXT", root / "registered.txt"),
-                patch.object(webui_app.db, "_TOKENS_TXT", root / "tokens.txt"),
-                patch.object(webui_app.db, "_OUTLOOK_TXT", root / "outlook.txt"),
-                patch.object(webui_app.db, "_VIEWER_HTML", root / "viewer.html"),
-            ]
+            patches = []
             with ExitStack() as stack:
                 for item in patches:
                     stack.enter_context(item)
@@ -315,14 +301,7 @@ class AccountStatusTests(PostgresTestCase):
     def test_non_deactivated_failure_does_not_mark_account(self):
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)
-            patches = [
-                patch.object(webui_app.db, "_ACCOUNTS_JSON", root / "registered.json"),
-                patch.object(webui_app.db, "_OUTLOOK_JSON", root / "outlook.json"),
-                patch.object(webui_app.db, "_ACCOUNTS_TXT", root / "registered.txt"),
-                patch.object(webui_app.db, "_TOKENS_TXT", root / "tokens.txt"),
-                patch.object(webui_app.db, "_OUTLOOK_TXT", root / "outlook.txt"),
-                patch.object(webui_app.db, "_VIEWER_HTML", root / "viewer.html"),
-            ]
+            patches = []
             with ExitStack() as stack:
                 for item in patches:
                     stack.enter_context(item)

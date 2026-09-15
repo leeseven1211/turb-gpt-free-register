@@ -89,12 +89,9 @@ class PostgresTestCase(unittest.TestCase):
 
     # db 里那些指向仓库根目录真实文件的常量
     _REDIRECTED_PATHS = (
-        "_ACCOUNTS_JSON", "_ACCOUNTS_TXT", "_TOKENS_TXT", "_VIEWER_HTML",
-        "_JOBS_JSON", "_OUTLOOK_JSON", "_OUTLOOK_TXT",
         "_GENERIC_API_EMAIL_JSON", "_GENERIC_API_EMAIL_TXT",
-        "_DOMAIN_EMAIL_JSON", "_ICLOUD_HIDE_EMAIL_JSON",
+        "_DOMAIN_EMAIL_JSON",
         "_CODEX_DIR", "_CODEX_EXPORT_STATE",
-        "_LEGACY_ACCOUNTS_JSON", "_LEGACY_JOBS_JSON", "_LEGACY_OUTLOOK_JSON",
     )
 
     @classmethod

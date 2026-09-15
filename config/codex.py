@@ -36,7 +36,7 @@ CODEX_REDIRECT_URI: str = "http://localhost:1455/auth/callback"
 # OAuth scopes（openai_auth.go:75 GenerateAuthURL 里的 scope）
 CODEX_SCOPE: str = "openid email profile offline_access"
 
-# 输出目录名（仅名字，运行时拼到项目根；与 OUTLOOK_ACCOUNTS_FILE 同级风格）
+# 输出目录名（仅名字，运行时拼到项目根）
 CODEX_OUTPUT_DIRNAME: str = "codex_accounts"
 
 # 请求超时（秒）

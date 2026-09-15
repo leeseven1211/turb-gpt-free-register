@@ -174,7 +174,7 @@ PostgreSQL 是**唯一事实来源**，没有纯文件模式回退：`DATABASE_U
 
 账号、注册任务、四类邮箱池、代理租约和 Codex 凭证均由 PostgreSQL 行级表支撑（`registered_accounts` / `registration_jobs` / `email_pool_*` / `proxy_leases` / `codex_credentials`），可行级更新、可跨进程原子抢占。`app_collections` 仅保留调度状态、兼容集合和迁移期旧数据，不是正常列表的事实来源。
 
-根目录的 JSON/TXT 与 `accounts_viewer.html` 是**兼容产物**，供 CLI、CPA 和人工导出使用；它们由后台去抖任务生成，不在写入主路径上。日志、浏览器缓存与批次文件仍保留在文件系统。
+账号、注册任务、Outlook 和 iCloud 邮箱池不再生成根目录 JSON/TXT 或 `accounts_viewer.html`，运行时只读写 PostgreSQL。仍有外部消费者的通用 API、域名邮箱和 Codex 兼容产物由后台按需生成；日志、浏览器缓存与批次归档仍保留在文件系统。
 
 结构、迁移步骤与开发约定见 [`docs/storage-architecture.md`](docs/storage-architecture.md)。
 
@@ -224,10 +224,10 @@ python web.py --auth-code 你的授权码
 
 #### Outlook 邮箱池
 
-复制示例文件：
+准备外部导入文本（示例文件只描述格式，不是运行时库存）：
 
 ```bash
-cp 用于注册的邮箱.txt.example 用于注册的邮箱.txt
+cp 用于注册的邮箱.txt.example /tmp/outlook-import.txt
 ```
 
 每行格式：
@@ -236,7 +236,7 @@ cp 用于注册的邮箱.txt.example 用于注册的邮箱.txt
 email----password----clientId----refreshToken
 ```
 
-也可以在 WebUI 的「邮箱池」页面导入；导入弹窗会先预览新增、已存在、重复和无效行，确认后只写入邮箱资源池，不会创建注册账号或写入 ChatGPT / Codex Token。
+也可以在 WebUI 的「邮箱池」页面导入；导入弹窗会先预览新增、已存在、重复和无效行，确认后只写入 PostgreSQL 的 `email_pool_outlook`，不会保存或改写源文件，也不会创建注册账号或写入 ChatGPT / Codex Token。命令行可使用 `tools/import_outlook_pool.py --file PATH`。
 
 #### 通用 API 邮箱
 
@@ -716,7 +716,7 @@ WebUI 提交真实任务时先设为“数量 1、线程 1”。确认批次进�
 
 - 使用 systemd、launchd 或其他进程管理器托管 WebUI 和 iCloud sidecar；反向代理只暴露 WebUI，不要把 sidecar 的 `8081` 直接暴露公网。
 - WebUI 绑定 `127.0.0.1`，由 Nginx/Caddy 提供 HTTPS；设置固定 `WEBUI_AUTH_CODE` 和 `WEBUI_SESSION_SECRET`。
-- 部署新代码前备份 `.env`、邮箱池、`accounts/`、`codex_accounts/`、`注册任务.json`、注册成功文件和日志；这些都是运行时私有数据，不能被仓库覆盖。
+- 部署新代码前备份 `.env`、PostgreSQL 数据库、`accounts/`、`codex_accounts/` 和日志；账号、任务与邮箱池以 PostgreSQL 备份为准，不能用根目录快照替代。
 - 代理和邮箱都必须按任务生命周期领取：任务开始领取，成功永久占用邮箱并释放本地代理租约；确认账号未创建的失败任务才退回邮箱，避免同一邮箱注册两次。
 - 先执行完整测试，再滚动重启服务。不要提交 `.env`、许可证、Apple Cookie、App 专用密码、邮箱、代理完整地址或 Token。
 
@@ -961,25 +961,19 @@ WebUI 配置页保存后会调用热加载；Roxy、Codex、邮箱、代理、�
 
 | 路径 | 内容 |
 |---|---|
-| `用于注册的邮箱.txt/json` | Outlook 邮箱池及状态 |
+| PostgreSQL `email_pool_outlook` | Outlook 邮箱池及状态；通过 WebUI/API 或显式文件导入写入 |
 | `用于注册的API邮箱.txt/json` | 通用 API 邮箱池及状态 |
-| `注册成功的邮箱.txt/json` | 注册成功账号 |
-| `注册成功的token.txt` | ChatGPT access token |
+| PostgreSQL `registered_accounts` | 注册成功账号及 access token |
 | `accounts/` | 每次运行的批次归档 |
 | `codex_accounts/` | Codex OAuth 凭证 JSON |
-| `注册任务.json` | WebUI 注册任务表 |
 | PostgreSQL `account_action_batches/account_action_tasks/account_action_events` | 账号操作任务实例及脱敏阶段事件 |
 | `注册日志/` | 注册任务日志、兼容用 Codex 补跑文件日志 |
-| `accounts_viewer.html` | 本地账号查看页 |
 
 批次目录示例：
 
 ```text
 accounts/20260709-10个-3线程/
-├── 注册成功的邮箱.txt
-├── 注册成功的token.txt
-├── 注册成功整行.txt
-└── 注册成功账号.json
+└── 本次运行归档文件（数据库仍为事实来源）
 ```
 
 ---

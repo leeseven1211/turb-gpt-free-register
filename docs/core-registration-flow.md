@@ -36,7 +36,7 @@ OpenAI 注册主体完成：邮箱 OTP -> 资料 -> OAuth 回调 -> accessToken
 2. 真正的注册主体成功条件是拿到 ChatGPT `/api/auth/session` 的 `accessToken`，并将账号绑定到任务。
 3. 邮箱领取后先变为 `used`。只有能确认“没有创建账号”的失败才允许回到 `available`；已经消耗邮箱或已经创建账号的失败会标记为 `failed` 或 `disabled`，避免重复注册。
 4. 2FA、Codex、套餐查询是注册后的后置能力。后置步骤失败时，账号可能已经保存在 `registered_accounts`，但任务仍可能是 `partial_success` 或 `failed`。
-5. PostgreSQL 是运行时事实来源；根目录 JSON/TXT 和 `accounts_viewer.html` 只是兼容导出，不参与核心状态判断。
+5. PostgreSQL 是运行时唯一事实来源；账号、任务和邮箱池不依赖根目录 JSON/TXT 快照，WebUI/API 直接查询数据库。
 6. 注册调试只支持当前实际使用的 `protocol` 和 Roxy 驱动。每条并发任务有独立抓包会话。
 
 ## 1. 一眼看懂的主流程
@@ -601,7 +601,7 @@ pending -> cancelled
   proxy_leases
   app_collections（调度状态、兼容集合和迁移期旧数据，不是正常列表事实来源）
 
-兼容输出：根目录 JSON/TXT、accounts_viewer.html、批次 accounts/ 目录
+兼容输出：仍有外部消费者的通用 API、域名邮箱、Codex 文件，以及批次 `accounts/` 归档
 ```
 
 核心写入路径应优先保证数据库事务成功；兼容导出不应被当成任务成功条件。

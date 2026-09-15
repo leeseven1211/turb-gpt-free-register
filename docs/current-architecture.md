@@ -175,7 +175,7 @@ CLI/WebUI 必须在启动阶段终止。
 
 ### 5.3 兼容数据
 
-根目录 JSON/TXT、`accounts_viewer.html` 和 `codex_accounts/*.json` 是兼容导出，不是
+仍有外部消费者的兼容文件（如 `codex_accounts/*.json`）不是
 数据库故障时的回退数据源。兼容导出失败只能记录错误，不能回滚业务数据库写入。
 
 仍应保留在文件系统的运行数据包括：

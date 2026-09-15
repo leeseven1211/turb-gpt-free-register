@@ -24,6 +24,7 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
 
         self.assertFalse(hasattr(email_config, "OUTLOOK_ACCOUNTS_FILE"))
         self.assertFalse(hasattr(config_package, "OUTLOOK_ACCOUNTS_FILE"))
+
     def test_extract_link_uses_documented_service_by_default(self):
         self.assertEqual(
             extract_link_config.EXTRACT_LINK_API_BASE,
