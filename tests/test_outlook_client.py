@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from core import outlook_client
@@ -58,6 +60,37 @@ class OutlookClientContextTests(unittest.TestCase):
 
         get_outlook_by_email.assert_called_once_with("registered@outlook.test")
         get_account_by_email.assert_called_once_with("registered@outlook.test")
+
+
+class OutlookExplicitImportTests(unittest.TestCase):
+    def test_pick_account_does_not_auto_import_a_file(self):
+        with patch("core.db.claim_next_outlook", return_value=None), patch(
+            "core.db.outlook_pool_summary", return_value={"available": 0}
+        ), patch("core.outlook_client.import_outlook_from_file") as importer:
+            with self.assertRaises(outlook_client.OutlookClientError):
+                outlook_client.pick_account()
+        importer.assert_not_called()
+
+    def test_file_import_is_explicit_and_does_not_rewrite_source(self):
+        source = (
+            "first@example.test----password----client----refresh\n"
+            "second@example.test====password2====client2====refresh2\n"
+        ).encode()
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "outlook.txt"
+            path.write_bytes(source)
+            with patch("core.db.import_outlook_accounts", return_value=(2, 0)) as importer:
+                result = outlook_client.import_outlook_from_file(path)
+            self.assertEqual(result, (2, 0))
+            self.assertEqual(path.read_bytes(), source)
+        importer.assert_called_once_with([
+            {"email": "first@example.test", "password": "password", "client_id": "client", "refresh_token": "refresh"},
+            {"email": "second@example.test", "password": "password2", "client_id": "client2", "refresh_token": "refresh2"},
+        ])
+
+    def test_file_import_requires_a_path(self):
+        with self.assertRaises(TypeError):
+            outlook_client.import_outlook_from_file(None)
 
 
 if __name__ == "__main__":

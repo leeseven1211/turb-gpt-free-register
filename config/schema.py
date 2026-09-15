@@ -1386,7 +1386,6 @@ LEGACY_ENV_OVERRIDE_TYPES: Mapping[str, str] = MappingProxyType({
     "CPA_CALLBACK_SUBMIT_RETRY_DELAY": "int",
     "QQ_IMAP_SERVER": "str",
     "QQ_IMAP_PORT": "int",
-    "OUTLOOK_ACCOUNTS_FILE": "str",
     "OUTLOOK_API_BASE": "str",
     "EMAIL_BUTLER_RISK_SCAN_INITIAL_DELAY_SECONDS": "int",
     "EMAIL_BUTLER_RISK_SCAN_LOOKBACK_DAYS": "int",

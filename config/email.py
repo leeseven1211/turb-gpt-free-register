@@ -2,10 +2,8 @@
 """
 Outlook 邮箱账号池配置。
 
-注册邮箱与 OTP 均只走 Outlook 账号池：
-    1. 把邮箱素材写入项目根目录 `用于注册的邮箱.txt`
-    2. 每行格式：email====password====clientId====refreshToken
-    3. 运行注册时会自动导入新增邮箱
+注册邮箱与 OTP 均只走 PostgreSQL Outlook 账号池。邮箱素材通过 WebUI/API
+导入，或由操作者显式调用导入命令写入数据库。
 """
 from config.env_loader import apply_env_overrides
 from config.schema import schema_default
@@ -32,8 +30,6 @@ EMAIL_SOURCE = schema_default("EMAIL_SOURCE")
 # ============================================================
 # Outlook 模式（外购账号池 + 取信服务）
 # ============================================================
-
-OUTLOOK_ACCOUNTS_FILE = "用于注册的邮箱.txt"
 
 # Outlook 取件模式：
 #   "auto"   = 先用远端 mail.chatai.codes；远端 402/DEPLOYMENT_DISABLED 时自动切 Microsoft Graph 直连
