@@ -1507,6 +1507,16 @@ def enqueue_refresh(
             "filename": filename,
             "email": email,
         }
+    if reconcile:
+        return {
+            "accepted": False,
+            "error_code": NEEDS_RECONCILIATION,
+            "next_action": "manual_reconcile",
+            "reconcile_required": True,
+            "error": "reconcile 仅用于人工核验，不能创建新的 refresh grant",
+            "filename": filename,
+            "email": email,
+        }
     active = operation_runtime_store.active_run_for_account(
         account_id,
         resource_family=RESOURCE_FAMILY,

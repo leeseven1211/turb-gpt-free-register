@@ -222,6 +222,45 @@ class CodexTokenRefreshSubmissionTests(TestCase):
         submit.assert_not_called()
         post.assert_not_called()
 
+    def test_reconcile_flag_blocks_clean_credential_before_durable_submit(self):
+        row = self._row(oauth_refresh_error=None, account_id="provider-account")
+        with (
+            patch.object(service.db, "list_codex_accounts", return_value=[row]),
+            patch.object(service.db, "get_account_by_email", return_value={"id": 17}),
+            patch.object(
+                service.operation_runtime_store,
+                "list_reconciliation_accounts",
+                return_value=[],
+            ) as list_fence,
+            patch.object(service.operation_runtime_store, "active_run_for_account", return_value=None),
+            patch.object(service, "_register_worker"),
+            patch.object(
+                service,
+                "_durable_submit",
+                return_value={
+                    "accepted": True,
+                    "busy": False,
+                    "reused": False,
+                    "task_id": 18,
+                    "run_id": 19,
+                    "status": "queued",
+                },
+            ) as submit,
+            patch.object(service, "_update_account_state"),
+            patch.object(service.requests, "post") as post,
+        ):
+            blocked = service.enqueue_refresh(
+                row["filename"], reconcile=True, idempotency_key="clean-reconcile-attempt",
+            )
+
+        self.assertFalse(blocked["accepted"])
+        self.assertEqual(service.NEEDS_RECONCILIATION, blocked["error_code"])
+        self.assertEqual("manual_reconcile", blocked["next_action"])
+        self.assertTrue(blocked["reconcile_required"])
+        self.assertEqual([17], list_fence.call_args.kwargs["account_ids"])
+        submit.assert_not_called()
+        post.assert_not_called()
+
     def test_registration_is_once_only_under_concurrent_calls(self):
         service._HANDLER_REGISTERED = False
         with (
