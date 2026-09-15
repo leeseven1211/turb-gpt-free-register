@@ -210,17 +210,25 @@ class ExtractLinkServiceTests(unittest.TestCase):
         self.assertGreaterEqual(update_extract.call_count, 2)
         release.assert_called_once_with()
 
-    def test_enqueue_creates_extract_task_record_and_passes_task_id_to_worker(self):
-        future = object()
+    def test_enqueue_creates_native_extract_run_without_legacy_executor(self):
         with (
-            patch.object(extract_link_service._QUEUE_SLOTS, "acquire", return_value=True),
-            patch.object(extract_link_service._QUEUE_SLOTS, "release") as release,
             patch.object(extract_link_service.db, "get_account", return_value={"id": 7, "email": "masked@example.com"}),
             patch.object(extract_link_service, "_select_account_link_type", return_value=("pix", None)),
             patch.object(extract_link_service, "_cdk", return_value="cdk"),
             patch.object(extract_link_service.db, "claim_account_extract", return_value=True),
-            patch.object(extract_link_service.account_task_store, "create_task", return_value=701) as create_task,
-            patch.object(extract_link_service._EXECUTOR, "submit", return_value=future) as submit,
+            patch.object(extract_link_service.db, "update_account_extract") as update,
+            patch.object(
+                extract_link_service,
+                "_submit_native_extract",
+                return_value={
+                    "accepted": True,
+                    "busy": False,
+                    "reused": False,
+                    "task_id": 701,
+                    "run_id": 801,
+                    "status": "queued",
+                },
+            ) as submit,
         ):
             result = extract_link_service.enqueue_account_extract(
                 account_id=7,
@@ -234,16 +242,29 @@ class ExtractLinkServiceTests(unittest.TestCase):
 
         self.assertTrue(result["accepted"])
         self.assertEqual(701, result["task_id"])
+        self.assertEqual(801, result["run_id"])
         self.assertEqual("queued", result["status"])
-        create_task.assert_called_once_with(
-            task_type="extract_link",
+        submit.assert_called_once_with(
             account_id=7,
             email="masked@example.com",
             trigger="manual",
+            link_type="pix",
+            cdk="cdk",
+            payment_options=None,
             batch_id="batch-1",
+            idempotency_key=None,
         )
-        self.assertEqual(701, submit.call_args.kwargs["task_id"])
-        release.assert_not_called()
+        update.assert_called_once_with(
+            7,
+            {
+                "ok": False,
+                "status": "queued",
+                "link_type": "pix",
+                "message": "已入队",
+            },
+        )
+        self.assertNotIn("access_token", submit.call_args.kwargs)
+        self.assertNotIn("cdk", result)
 
     def test_failed_extract_task_retry_uses_recorded_type_for_fallback(self):
         context = runtime.WebUIContext(Mock(), Mock())

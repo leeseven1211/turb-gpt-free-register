@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from core import account_task_store as legacy_account_task_store
 from core import db, deactivation_mail_service
@@ -155,35 +155,41 @@ class DeactivationMailTests(PostgresTestCase):
             1: {"id": 1, "email": "first@icloud.com", "email_source": "icloud_hide"},
             2: {"id": 2, "email": "second@icloud.com", "email_source": "icloud_hide"},
         }
-        queued = []
-        task_ids = iter([101, 102])
         with (
             patch.object(deactivation_mail_service.db, "get_account", side_effect=accounts.get),
-            patch.object(
-                deactivation_mail_service.account_task_store,
-                "create_task",
-                side_effect=lambda **_kwargs: next(task_ids),
-            ),
             patch.object(deactivation_mail_service.db, "update_account_deactivation_mail"),
-            patch.object(deactivation_mail_service.account_task_store, "finish_task"),
             patch.object(
-                deactivation_mail_service._HME_QUEUE,
-                "put",
-                side_effect=lambda item: queued.append(item),
+                deactivation_mail_service.db,
+                "list_accounts",
+                return_value=[],
             ),
-            patch.object(deactivation_mail_service, "_ensure_hme_coordinator") as ensure,
-            patch.object(deactivation_mail_service._EXECUTOR, "submit") as submit,
+            patch.object(
+                deactivation_mail_service,
+                "_submit_native_hme_group",
+                return_value={
+                    "accepted": True,
+                    "busy": False,
+                    "reused": False,
+                    "task_id": 101,
+                    "run_id": 201,
+                    "status": "queued",
+                },
+            ) as submit_group,
         ):
-            deactivation_mail_service._IN_FLIGHT.clear()
             result = deactivation_mail_service.enqueue_bulk([1, 2], trigger="manual_bulk")
-            deactivation_mail_service._IN_FLIGHT.clear()
 
         self.assertEqual(len(result["started"]), 2)
-        self.assertEqual(len(queued), 1)
-        self.assertEqual(len(queued[0][0]), 2)
-        self.assertEqual(queued[0][1], "manual_bulk")
-        ensure.assert_called_once_with()
-        submit.assert_not_called()
+        self.assertEqual({item["task_id"] for item in result["started"]}, {101})
+        self.assertEqual({item["run_id"] for item in result["started"]}, {201})
+        self.assertTrue(all(item["shared_scan"] for item in result["started"]))
+        submit_group.assert_called_once()
+        self.assertEqual(
+            submit_group.call_args.kwargs["entries"],
+            [
+                {"account_id": 1, "email": "first@icloud.com"},
+                {"account_id": 2, "email": "second@icloud.com"},
+            ],
+        )
 
     def test_grouped_scan_fans_out_terminal_results_to_each_account(self):
         entries = [
@@ -198,17 +204,15 @@ class DeactivationMailTests(PostgresTestCase):
         }
         with (
             patch.object(deactivation_mail_service.db, "update_account_deactivation_mail") as update,
-            patch.object(deactivation_mail_service.account_task_store, "start_task"),
-            patch.object(deactivation_mail_service.account_task_store, "append_event"),
-            patch.object(deactivation_mail_service.account_task_store, "finish_task") as finish,
             patch.object(
                 deactivation_mail_service,
                 "scan_hme_deactivation_bulk",
                 return_value={"first@icloud.com": result, "second@icloud.com": result},
             ) as scan,
         ):
-            deactivation_mail_service._IN_FLIGHT.update({1, 2})
-            deactivation_mail_service._scan_group(entries, "manual_bulk")
+            context = Mock()
+            context.is_cancel_requested.return_value = False
+            deactivation_mail_service._scan_hme_group(context, entries, "manual_bulk")
 
         scan.assert_called_once_with(
             ["first@icloud.com", "second@icloud.com"],
@@ -218,9 +222,8 @@ class DeactivationMailTests(PostgresTestCase):
             call for call in update.call_args_list if call.args[1].get("status") == "success"
         ]
         self.assertEqual({call.args[0] for call in success_updates}, {1, 2})
-        self.assertEqual(2, finish.call_count)
-        self.assertTrue(all(call.kwargs["status"] == "success" for call in finish.call_args_list))
-        self.assertFalse(deactivation_mail_service._IN_FLIGHT.intersection({1, 2}))
+        context.finish.assert_called_once()
+        self.assertEqual("success", context.finish.call_args.kwargs["status"])
 
 
 if __name__ == "__main__":

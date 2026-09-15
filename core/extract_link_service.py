@@ -7,6 +7,7 @@ import logging
 import os
 import threading
 import time
+import uuid
 from datetime import datetime
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
@@ -17,14 +18,95 @@ except Exception:  # WebUI 环境未装 curl_cffi 时使用标准库兜底
     curl_requests = None
 
 from config import extract_link as cfg
+from config.schema import get_config_snapshot
 from core import db
+from core.operation_runtime import OperationCancelled
 from core import task_run_log
 from core.account_operation_executor import configured_workers
-from core.account_operation_executor import executor as _EXECUTOR
 from core.operations import task_gateway as account_task_store
 from core.task_reporter import TaskReporter
 
 logger = logging.getLogger(__name__)
+
+
+# API endpoint and timing are non-sensitive inputs needed by the durable
+# worker.  The CDK remains an on-demand secret and is deliberately excluded.
+EXTRACT_CONFIG_ALLOWLIST = {
+    "api_base": "EXTRACT_LINK_API_BASE",
+    "link_type": "EXTRACT_LINK_TYPE",
+    "request_timeout": "EXTRACT_LINK_REQUEST_TIMEOUT",
+    "event_timeout": "EXTRACT_LINK_EVENT_TIMEOUT",
+}
+
+
+def _snapshot_value(snapshot, key: str, default=None):
+    if isinstance(snapshot, dict) and key in snapshot:
+        return snapshot[key]
+    return default
+
+
+def _captured_int(
+    snapshot: dict | None,
+    key: str,
+    setting_name: str,
+    default: int,
+    lower: int,
+    upper: int,
+) -> int:
+    if snapshot is None:
+        return _int_setting(setting_name, default, lower, upper)
+    value = _snapshot_value(snapshot, key, default)
+    try:
+        value = int(value or default)
+    except (TypeError, ValueError):
+        value = default
+    return max(lower, min(value, upper))
+
+
+class _ReporterAdapter:
+    """Route the existing extract progress vocabulary to a durable Run."""
+
+    def __init__(self, task_id: int | None, context=None):
+        self._legacy = TaskReporter(task_id) if context is None else None
+        self._context = context
+
+    def start(self, message: str = "开始执行") -> None:
+        if self._context is None:
+            self._legacy.start(message)
+        else:
+            self._context.report(stage="preflight", state="running", message=message)
+
+    def stage(self, stage: str, state: str, message: str, **kwargs) -> None:
+        if self._context is None:
+            self._legacy.stage(stage, state, message, **kwargs)
+        else:
+            self._context.report(stage=stage, state=state, message=message, **kwargs)
+
+    def note(self, message: str, *, stage: str = "event", **kwargs) -> None:
+        if self._context is None:
+            self._legacy.note(message, stage=stage, **kwargs)
+        else:
+            self._context.report(stage=stage, message=message, **kwargs)
+
+    def finish(self, *, status: str, message: str, **kwargs) -> None:
+        if self._context is None:
+            self._legacy.finish(status=status, message=message, **kwargs)
+            return
+        summary = dict(kwargs.get("result_summary") or {})
+        for key in ("route", "validation_method"):
+            if kwargs.get(key) is not None:
+                summary[key] = kwargs[key]
+        self._context.finish(
+            status=status,
+            message=message,
+            error=kwargs.get("error"),
+            result_summary=summary,
+        )
+
+
+def _checkpoint(context, message: str = "用户手动停止提链任务") -> None:
+    if context is not None:
+        context.checkpoint(message)
 
 
 def _runtime_setting(name: str, default=None):
@@ -136,8 +218,11 @@ def _select_account_link_type(*, account: dict, requested: str | None) -> tuple[
     raise ValueError("该账号已记录所有当前启用提链类型均失败，请更换账号或清理失败标记")
 
 
-def _api_base() -> str:
-    base = str(_runtime_setting("EXTRACT_LINK_API_BASE", "") or "").strip().rstrip("/")
+def _api_base(override: str | None = None) -> str:
+    base = str(
+        override if override is not None else _runtime_setting("EXTRACT_LINK_API_BASE", "")
+        or ""
+    ).strip().rstrip("/")
     if not base:
         raise ValueError("EXTRACT_LINK_API_BASE 为空")
     return base
@@ -240,9 +325,21 @@ def _paypal_options(payment_options: dict | None) -> dict:
     return out
 
 
-def _create_extract_job(*, token: str, link_type: str, cdk: str, payment_options: dict | None = None) -> dict:
-    base = _api_base()
-    timeout = _int_setting("EXTRACT_LINK_REQUEST_TIMEOUT", 30, 5, 300)
+def _create_extract_job(
+    *,
+    token: str,
+    link_type: str,
+    cdk: str,
+    payment_options: dict | None = None,
+    api_base: str | None = None,
+    request_timeout: int | float | None = None,
+) -> dict:
+    base = _api_base(api_base)
+    timeout = (
+        _int_setting("EXTRACT_LINK_REQUEST_TIMEOUT", 30, 5, 300)
+        if request_timeout is None
+        else max(5, min(300, int(request_timeout or 30)))
+    )
     payload = {"link_type": _link_type(link_type), "cdk": _cdk(cdk), "token": token}
     if payload["link_type"] == "paypal":
         payload.update(_paypal_options(payment_options))
@@ -278,9 +375,19 @@ def _create_extract_job(*, token: str, link_type: str, cdk: str, payment_options
             pass
 
 
-def _iter_sse_events(*, job_id: str, cdk: str):
-    base = _api_base()
-    timeout = _int_setting("EXTRACT_LINK_EVENT_TIMEOUT", 180, 30, 900)
+def _iter_sse_events(
+    *,
+    job_id: str,
+    cdk: str,
+    api_base: str | None = None,
+    event_timeout: int | float | None = None,
+):
+    base = _api_base(api_base)
+    timeout = (
+        _int_setting("EXTRACT_LINK_EVENT_TIMEOUT", 180, 30, 900)
+        if event_timeout is None
+        else max(30, min(900, int(event_timeout or 180)))
+    )
     url = f"{base}/api/jobs/{quote(job_id, safe='')}/events?{urlencode({'cdk': _cdk(cdk)})}"
     s = _session()
     try:
@@ -416,21 +523,80 @@ def _preflight_failure(result: dict, fallback: str) -> str:
     return fallback
 
 
-def _ensure_extract_token(*, account_id: int, email: str, progress=None, on_refresh_start=None, on_refresh_success=None) -> str:
+def _is_request_unknown_error(exc: BaseException) -> bool:
+    text = str(exc or "").strip().lower()
+    return "request_unknown" in text or "manual_reconcile" in text or "结果待确认" in text
+
+
+def _record_extract_receipt(context, boundary: dict | None, outcome: str, detail: dict | None = None) -> None:
+    """Persist the extract remote-job receipt without hiding fence errors."""
+    if context is None or not boundary:
+        return
+    context.remote_request_receipt(
+        outcome=outcome,
+        action=str(boundary["action"]),
+        request_id=str(boundary["request_id"]),
+        detail=dict(detail or {}),
+    )
+    boundary["receipt_outcome"] = str(outcome)
+    boundary["pending_confirmation"] = str(outcome) == "response_received"
+
+
+def _confirm_extract_job_receipt(
+    *, context, boundary: dict | None, account_id: int, job_id: str, writeback_ok: bool,
+) -> bool:
+    """Confirm job creation only after its local running row can be read back."""
+    if context is None or not boundary or not boundary.get("pending_confirmation"):
+        return True
+    account_after = db.get_account(account_id) if writeback_ok else None
+    stored_job_id = str((account_after or {}).get("extract_link_job_id") or "").strip()
+    local_readback_confirmed = bool(
+        account_after
+        and str((account_after or {}).get("extract_link_status") or "").strip() == "running"
+        and stored_job_id == str(job_id).strip()
+    )
+    evidence = {
+        "remote_result_confirmed": bool(str(job_id).strip()),
+        "local_business_writeback_confirmed": bool(writeback_ok),
+        "local_readback_confirmed": local_readback_confirmed,
+        "response_observed": True,
+    }
+    if all(evidence.values()):
+        _record_extract_receipt(context, boundary, "confirmed", evidence)
+        return True
+    _record_extract_receipt(context, boundary, "local_commit_required", evidence)
+    return False
+
+
+def _ensure_extract_token(
+    *, account_id: int, email: str, progress=None, on_refresh_start=None,
+    on_refresh_success=None, operation_context=None, config_snapshot=None,
+) -> str:
     """提炼前在线验证 Token，失效时同步刷新并读取数据库新 Token。"""
     from core import live_check_service
 
     if progress:
         progress("提炼前正在在线查活")
-    live = live_check_service.run_account_live_check_inline(
-        account_id=account_id,
-        email=email,
-        trigger="extract_preflight",
-        force_refresh=False,
-    )
+    live_kwargs = {
+        "account_id": account_id,
+        "email": email,
+        "trigger": "extract_preflight",
+        "force_refresh": False,
+    }
+    if operation_context is not None:
+        live_kwargs["operation_context"] = operation_context
+    if config_snapshot is not None:
+        live_kwargs["config_snapshot"] = config_snapshot
+    live = live_check_service.run_account_live_check_inline(**live_kwargs)
     if not live.get("accepted"):
         raise RuntimeError(f"提炼前查活未执行：{live.get('error') or '任务未接受'}")
     live_result = live.get("result") if isinstance(live.get("result"), dict) else {}
+    if live_result.get("status") == "cancelled":
+        raise OperationCancelled(live_result.get("error") or "提炼前查活已取消")
+    if live_result.get("status") == "request_unknown" or live_result.get("manual_reconcile"):
+        raise RuntimeError(
+            f"request_unknown: 提炼前查活结果待确认：{_preflight_failure(live_result, '需人工对账')}"
+        )
     if live_result.get("ok"):
         account = db.get_account(account_id) or {}
         token = str(account.get("access_token") or "").strip()
@@ -449,15 +615,26 @@ def _ensure_extract_token(*, account_id: int, email: str, progress=None, on_refr
         progress("现有 AT 已失效，正在刷新 AT；刷新成功后继续提炼")
     if on_refresh_start:
         on_refresh_start()
-    refreshed = live_check_service.run_account_live_check_inline(
-        account_id=account_id,
-        email=email,
-        trigger="token_refresh_extract_preflight",
-        force_refresh=True,
-    )
+    refresh_kwargs = {
+        "account_id": account_id,
+        "email": email,
+        "trigger": "token_refresh_extract_preflight",
+        "force_refresh": True,
+    }
+    if operation_context is not None:
+        refresh_kwargs["operation_context"] = operation_context
+    if config_snapshot is not None:
+        refresh_kwargs["config_snapshot"] = config_snapshot
+    refreshed = live_check_service.run_account_live_check_inline(**refresh_kwargs)
     if not refreshed.get("accepted"):
         raise RuntimeError(f"AT 刷新未执行：{refreshed.get('error') or '任务未接受'}")
     refresh_result = refreshed.get("result") if isinstance(refreshed.get("result"), dict) else {}
+    if refresh_result.get("status") == "cancelled":
+        raise OperationCancelled(refresh_result.get("error") or "提炼前 AT 刷新已取消")
+    if refresh_result.get("status") == "request_unknown" or refresh_result.get("manual_reconcile"):
+        raise RuntimeError(
+            f"request_unknown: AT 刷新结果待确认：{_preflight_failure(refresh_result, '需人工对账')}"
+        )
     if not refresh_result.get("ok"):
         raise RuntimeError(
             f"AT 已失效，但刷新失败，未调用提炼网站："
@@ -489,14 +666,20 @@ def _extract_task_result_summary(*, result: dict, link_type: str, job_id: str, o
     }
 
 
-def _run_extract(*, account_id: int, email: str, access_token: str, link_type: str, cdk: str, trigger: str, payment_options: dict | None = None, task_id: int | None = None) -> dict:
+def _run_extract(
+    *, account_id: int, email: str, access_token: str, link_type: str, cdk: str,
+    trigger: str, payment_options: dict | None = None, task_id: int | None = None,
+    operation_context=None, release_queue_slot: bool = True, config_snapshot=None,
+) -> dict:
     logs: list[str] = []
     last_event = None
     job_id = ""
-    reporter = TaskReporter(task_id)
+    reporter = _ReporterAdapter(task_id, operation_context)
     refresh_started = False
     task_stage = "preflight"
+    remote_boundary: dict | None = None
     try:
+        _checkpoint(operation_context)
         if not db.mark_account_extract_running(account_id):
             message = "账号已删除或提链状态已被重置"
             reporter.finish(status="cancelled", message=message, error=message)
@@ -533,6 +716,8 @@ def _run_extract(*, account_id: int, email: str, access_token: str, link_type: s
             progress=progress,
             on_refresh_start=mark_refresh_start,
             on_refresh_success=mark_refresh_success,
+            operation_context=operation_context,
+            config_snapshot=config_snapshot,
         )
         reporter.stage("preflight", "success", "提炼前 Token 检查完成")
         reporter.stage("access_token", "success", "已取得可用 AT")
@@ -541,21 +726,158 @@ def _run_extract(*, account_id: int, email: str, access_token: str, link_type: s
         progress("AT 已确认有效，正在创建提链任务")
         task_stage = "extract_link"
         reporter.stage("extract_link", "running", "正在创建提炼任务")
-        job = _create_extract_job(
-            token=extract_token,
-            link_type=link_type,
-            cdk=cdk,
-            payment_options=payment_options,
-        )
+        _checkpoint(operation_context, "创建提链任务前检查取消状态")
+        request_id = None
+        if operation_context is not None:
+            request_id = f"extract-job:{operation_context.run_id}:{uuid.uuid4().hex}"
+            # This is the last durable action before the remote job-create
+            # request.  Never persist the AT, CDK, payment links, or raw body.
+            operation_context.remote_request_started(
+                "extract_job_create",
+                request_id=request_id,
+                detail={
+                    "link_type": link_type,
+                    "trigger": str(trigger or "manual"),
+                },
+            )
+            remote_boundary = {
+                "action": "extract_job_create",
+                "request_id": request_id,
+                "receipt_outcome": "started",
+                "pending_confirmation": False,
+            }
+        try:
+            create_kwargs = {}
+            if config_snapshot is not None:
+                create_kwargs = {
+                    "api_base": _snapshot_value(config_snapshot, "api_base"),
+                    "request_timeout": _captured_int(
+                        config_snapshot,
+                        "request_timeout",
+                        "EXTRACT_LINK_REQUEST_TIMEOUT",
+                        30,
+                        5,
+                        300,
+                    ),
+                }
+            job = _create_extract_job(
+                token=extract_token,
+                link_type=link_type,
+                cdk=cdk,
+                payment_options=payment_options,
+                **create_kwargs,
+            )
+        except account_task_store.OperationLeaseLost:
+            raise
+        except OperationCancelled:
+            if remote_boundary:
+                _record_extract_receipt(
+                    operation_context,
+                    remote_boundary,
+                    "unknown",
+                    {"response_observed": False, "cancelled": True},
+                )
+            raise
+        except Exception as exc:
+            if remote_boundary:
+                _record_extract_receipt(
+                    operation_context,
+                    remote_boundary,
+                    "unknown",
+                    {
+                        "response_observed": False,
+                        "exception_type": type(exc).__name__,
+                    },
+                )
+            raise
         job_id = str(job.get("job_id") or "")
-        db.update_account_extract(account_id, {
+        if not job_id:
+            if remote_boundary:
+                _record_extract_receipt(
+                    operation_context,
+                    remote_boundary,
+                    "unknown",
+                    {"response_observed": True, "job_id_present": False},
+                )
+            raise RuntimeError("提链服务未返回 job_id，结果待确认")
+        if remote_boundary:
+            _record_extract_receipt(
+                operation_context,
+                remote_boundary,
+                "response_received",
+                {
+                    "response_observed": True,
+                    "remote_result_confirmed": True,
+                    "job_id_present": True,
+                },
+            )
+            _checkpoint(operation_context, "提链任务远端响应后检查取消状态")
+        running_payload = {
             "ok": False,
             "status": "running",
             "job_id": job_id,
             "link_type": link_type,
             "message": "提链任务已创建，等待结果",
             "cdk_remaining": job.get("cdk_remaining"),
-        })
+        }
+        try:
+            writeback_ok = bool(db.update_account_extract(account_id, running_payload))
+        except Exception:
+            if remote_boundary and remote_boundary.get("pending_confirmation"):
+                _record_extract_receipt(
+                    operation_context,
+                    remote_boundary,
+                    "local_commit_required",
+                    {
+                        "remote_result_confirmed": True,
+                        "local_business_writeback_confirmed": False,
+                        "local_readback_confirmed": False,
+                        "response_observed": True,
+                    },
+                )
+            raise
+        if remote_boundary and remote_boundary.get("pending_confirmation"):
+            if not _confirm_extract_job_receipt(
+                context=operation_context,
+                boundary=remote_boundary,
+                account_id=account_id,
+                job_id=job_id,
+                writeback_ok=writeback_ok,
+            ):
+                unknown_result = {
+                    "ok": False,
+                    "status": "request_unknown",
+                    "job_id": job_id,
+                    "link_type": link_type,
+                    "error": "远端提链任务已创建，但本地业务写回/读回未完成，需人工对账",
+                    "message": "远端提链任务已创建，但本地业务写回/读回未完成，需人工对账",
+                    "request_unknown": True,
+                    "manual_reconcile": True,
+                    "next_action": "manual_reconcile",
+                }
+                try:
+                    db.update_account_extract(account_id, unknown_result)
+                except Exception:
+                    logger.exception("[提链] 远端创建未确认状态写回失败: account_id=%s", account_id)
+                reporter.stage(
+                    task_stage,
+                    "failed",
+                    "远端提链任务结果待确认",
+                    level="WARNING",
+                    detail={"remote_job_created": True, "error": unknown_result["error"]},
+                )
+                reporter.finish(
+                    status="request_unknown",
+                    message="远端提链任务结果待确认",
+                    error=unknown_result["error"],
+                    result_summary={
+                        "remote_job_created": True,
+                        "outcome": "request_unknown",
+                        "reconcile_required": True,
+                    },
+                    validation_method="extract_job_create",
+                )
+                return unknown_result
         reporter.note(
             "远端提炼任务已创建",
             stage="extract_link",
@@ -566,7 +888,21 @@ def _run_extract(*, account_id: int, email: str, access_token: str, link_type: s
                 "cdk_remaining": job.get("cdk_remaining"),
             },
         )
-        for event, data in _iter_sse_events(job_id=job_id, cdk=cdk):
+        event_kwargs = {}
+        if config_snapshot is not None:
+            event_kwargs = {
+                "api_base": _snapshot_value(config_snapshot, "api_base"),
+                "event_timeout": _captured_int(
+                    config_snapshot,
+                    "event_timeout",
+                    "EXTRACT_LINK_EVENT_TIMEOUT",
+                    180,
+                    30,
+                    900,
+                ),
+            }
+        for event, data in _iter_sse_events(job_id=job_id, cdk=cdk, **event_kwargs):
+            _checkpoint(operation_context, "处理提链事件前检查取消状态")
             last_event = {"event": event, "data": data}
             if event == "log":
                 msg = task_run_log.redact_text(str((data or {}).get("message") or ""), 300)
@@ -585,7 +921,27 @@ def _run_extract(*, account_id: int, email: str, access_token: str, link_type: s
                 if not isinstance(result, dict):
                     result = {}
                 final = {"ok": True, "status": "success", "job_id": job_id, "link_type": link_type, "result": result, "logs": logs}
-                db.update_account_extract(account_id, final)
+                if operation_context is None:
+                    # Keep the legacy synchronous API's mocked/test and
+                    # projection behavior unchanged; only a durable native
+                    # Run has the remote receipt/readback contract.
+                    db.update_account_extract(account_id, final)
+                else:
+                    try:
+                        final_writeback_ok = bool(db.update_account_extract(account_id, final))
+                        final_account = db.get_account(account_id) if final_writeback_ok else None
+                    except Exception as exc:
+                        raise RuntimeError(
+                            f"提链结果本地写回失败，结果待确认: {type(exc).__name__}"
+                        ) from exc
+                    if not (
+                        final_writeback_ok
+                        and final_account
+                        and str(final_account.get("extract_link_status") or "").strip() == "success"
+                        and bool(final_account.get("extract_link_ok"))
+                        and str(final_account.get("extract_link_job_id") or "").strip() == job_id
+                    ):
+                        raise RuntimeError("提链结果本地写回/读回未完成，结果待确认")
                 summary = _extract_task_result_summary(result=result, link_type=link_type, job_id=job_id)
                 reporter.stage("extract_link", "success", "提炼成功", detail=summary)
                 reporter.finish(
@@ -603,15 +959,88 @@ def _run_extract(*, account_id: int, email: str, access_token: str, link_type: s
             elif event == "done":
                 break
         raise RuntimeError(f"提链事件流结束但未返回 result: {last_event}")
-    except Exception as exc:
-        reason = _format_failure_reason(exc, logs=logs, last_event=last_event)
+    except OperationCancelled as exc:
+        receipt_outcome = str((remote_boundary or {}).get("receipt_outcome") or "")
+        remote_unknown = bool(remote_boundary and receipt_outcome != "rejected")
+        if remote_unknown and receipt_outcome not in {"unknown", "local_commit_required", "confirmed"}:
+            _record_extract_receipt(
+                operation_context,
+                remote_boundary,
+                "unknown",
+                {"response_observed": receipt_outcome == "response_received", "cancelled": True},
+            )
+        unknown = bool(job_id or remote_unknown)
+        reason = str(exc) or ("远端提链任务已创建，取消结果待确认" if unknown else "提链任务已取消")
+        status = "request_unknown" if unknown else "cancelled"
         result = {
             "ok": False,
-            "status": "failed",
+            "status": status,
+            "job_id": job_id or None,
+            "link_type": link_type,
             "checked_at": datetime.now().isoformat(timespec="seconds"),
             "error": reason,
             "message": reason,
         }
+        if unknown:
+            result.update({"request_unknown": True, "manual_reconcile": True, "next_action": "manual_reconcile"})
+        safe_reason = task_run_log.redact_text(reason, 1200)
+        try:
+            db.update_account_extract(account_id, result)
+        except Exception:
+            logger.exception("[提链] 取消/未知状态写入失败: account_id=%s", account_id)
+        if job_id and not unknown:
+            try:
+                db.mark_extract_link_type_failed(account_id, link_type, reason)
+            except Exception:
+                logger.exception("[提链] 取消类型状态写入失败: account_id=%s type=%s", account_id, link_type)
+        reporter.stage(
+            task_stage,
+            "failed" if unknown else "cancelled",
+            "远端提链结果待确认" if unknown else "提炼已取消",
+            level="WARNING" if unknown else "INFO",
+            detail={"error": safe_reason, "remote_job_created": bool(job_id)},
+        )
+        reporter.finish(
+            status=status,
+            message="远端提链结果待确认" if unknown else "提炼已取消",
+            error=safe_reason,
+            result_summary={
+                "remote_job_created": bool(job_id),
+                "outcome": "request_unknown" if unknown else "cancelled",
+                "reconcile_required": unknown,
+            },
+            validation_method="extract_link_sse" if job_id else "extract_preflight",
+        )
+        return result
+    except account_task_store.OperationLeaseLost:
+        # The shared gateway must own the lease-loss fence and unknown result.
+        raise
+    except Exception as exc:
+        receipt_outcome = str((remote_boundary or {}).get("receipt_outcome") or "")
+        remote_unknown = bool(remote_boundary and receipt_outcome != "rejected")
+        if remote_unknown and receipt_outcome not in {"unknown", "local_commit_required", "confirmed"}:
+            try:
+                _record_extract_receipt(
+                    operation_context,
+                    remote_boundary,
+                    "unknown",
+                    {"response_observed": receipt_outcome == "response_received"},
+                )
+            except Exception:
+                logger.exception("[提链] 远端创建异常回执写入失败: account_id=%s", account_id)
+        unknown = bool(job_id or _is_request_unknown_error(exc) or remote_unknown)
+        reason = _format_failure_reason(exc, logs=logs, last_event=last_event)
+        result = {
+            "ok": False,
+            "status": "request_unknown" if unknown else "failed",
+            "job_id": job_id or None,
+            "link_type": link_type,
+            "checked_at": datetime.now().isoformat(timespec="seconds"),
+            "error": reason,
+            "message": reason,
+        }
+        if unknown:
+            result.update({"request_unknown": True, "manual_reconcile": True, "next_action": "manual_reconcile"})
         safe_reason = task_run_log.redact_text(reason, 1200)
         failure_summary = _extract_task_result_summary(
             result={}, link_type=link_type, job_id=job_id, ok=False,
@@ -620,13 +1049,13 @@ def _run_extract(*, account_id: int, email: str, access_token: str, link_type: s
         reporter.stage(
             task_stage,
             "failed",
-            "提炼失败",
-            level="ERROR",
+            "远端提炼结果待确认" if unknown else "提炼失败",
+            level="WARNING" if unknown else "ERROR",
             detail={"error": safe_reason},
         )
         reporter.finish(
-            status="failed",
-            message="提炼失败",
+            status="request_unknown" if unknown else "failed",
+            message="远端提炼结果待确认" if unknown else "提炼失败",
             error=safe_reason,
             result_summary=failure_summary,
             validation_method="extract_link_sse" if job_id else "extract_preflight",
@@ -635,7 +1064,7 @@ def _run_extract(*, account_id: int, email: str, access_token: str, link_type: s
             db.update_account_extract(account_id, result)
         except Exception:
             logger.exception("[提链] 写入失败状态异常: account_id=%s", account_id)
-        if job_id:
+        if job_id and not unknown:
             try:
                 db.mark_extract_link_type_failed(account_id, link_type, reason)
             except Exception:
@@ -643,80 +1072,201 @@ def _run_extract(*, account_id: int, email: str, access_token: str, link_type: s
         logger.exception("[提链] 失败: %s", email)
         return result
     finally:
-        _QUEUE_SLOTS.release()
+        if release_queue_slot:
+            _QUEUE_SLOTS.release()
 
 
-def enqueue_account_extract(*, account_id: int, email: str, access_token: str, trigger: str = "manual", link_type: str | None = None, cdk: str | None = None, payment_options: dict | None = None, batch_id: str | None = None) -> dict:
-    if not _QUEUE_SLOTS.acquire(blocking=False):
-        return {"accepted": False, "busy": False, "error": "提链队列已满"}
-    claimed = False
-    task_id = None
+def _numeric_batch_id(value: str | int | None) -> int | None:
     try:
-        account = db.get_account(account_id)
-        if not account:
-            _QUEUE_SLOTS.release()
-            return {"accepted": False, "busy": False, "error": "账号不存在"}
-        lt, fallback_from = _select_account_link_type(account=account, requested=link_type)
-        code = _cdk(cdk)
+        return int(value) if value is not None and str(value).strip().isdigit() else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _native_response(submitted: dict, *, account_id: int, email: str, trigger: str, link_type: str) -> dict:
+    accepted = bool(submitted.get("accepted"))
+    response = {
+        "accepted": accepted,
+        "busy": bool(submitted.get("busy")) and not accepted,
+        "account_id": account_id,
+        "email": email,
+        "status": submitted.get("status") or ("queued" if accepted else "failed"),
+        "trigger": trigger,
+        "task_id": submitted.get("task_id"),
+        "run_id": submitted.get("run_id"),
+        "link_type": link_type,
+        "reused": bool(submitted.get("reused")),
+        # Routes discard this key before JSON serialization.  Keeping it in the
+        # compatibility shape avoids making callers branch on queue backend.
+        "future": None,
+    }
+    if submitted.get("error"):
+        response["error"] = submitted["error"]
+    return response
+
+
+def _cancel_unclaimed_native_run(run_id: int | None) -> None:
+    if not run_id:
+        return
+    try:
+        from core.storage import operation_runtime_store
+
+        operation_runtime_store.request_run_cancel(int(run_id), reason="账号提链业务状态已被其他请求占用")
+    except Exception:
+        logger.exception("[提链] 取消孤立 durable run 失败: run_id=%s", run_id)
+
+
+def _handle_extract_operation(context):
+    data = context.run.get("data") if isinstance(context.run.get("data"), dict) else {}
+    if context.account_id is None:
+        context.finish(status="failed", message="提链缺少账号", error="提链缺少账号")
+        return None
+    account = db.get_account(int(context.account_id))
+    if not account:
+        context.finish(status="cancelled", message="账号不存在，取消提链", error="账号不存在")
+        return None
+    email = str(account.get("email") or context.email or "").strip()
+    link_type = str(
+        data.get("link_type")
+        or _snapshot_value(context.config_snapshot, "link_type", "pix")
+        or "pix"
+    ).strip().lower()
+    # CDK is a connection secret.  Durable data contains no copy; resolve it
+    # once at claim time and keep it only in the worker's local call chain.
+    cdk = _cdk()
+    with context.lease(resource_family="openai_interactive"):
+        _run_extract(
+            account_id=int(context.account_id),
+            email=email,
+            # The worker deliberately re-reads the account after preflight;
+            # never persist or trust an access-token enqueue snapshot.
+            access_token="",
+            link_type=link_type,
+            cdk=cdk,
+            trigger=str(context.run.get("trigger") or "manual"),
+            payment_options=data.get("payment_options") if isinstance(data.get("payment_options"), dict) else None,
+            task_id=int(context.task_id),
+            operation_context=context,
+            release_queue_slot=False,
+            config_snapshot=context.config_snapshot,
+        )
+    return None
+
+
+def register_operation_handlers() -> bool:
+    register = getattr(account_task_store, "register_operation_handler", None)
+    if not callable(register):
+        return False
+    register(
+        "extract_link",
+        _handle_extract_operation,
+        source_systems=("native_operations",),
+        config_allowlist=EXTRACT_CONFIG_ALLOWLIST,
+    )
+    return True
+
+
+def start_dispatcher() -> bool:
+    if not register_operation_handlers():
+        return False
+    starter = getattr(account_task_store, "start_dispatcher", None)
+    return bool(starter()) if callable(starter) else False
+
+
+def _submit_native_extract(
+    *, account_id: int, email: str, trigger: str, link_type: str, cdk: str,
+    payment_options: dict | None, batch_id: str | None, idempotency_key: str | None,
+) -> dict:
+    register_operation_handlers()
+    key = str(idempotency_key or "").strip() or None
+    source_id = (
+        f"maintenance:extract_link:{account_id}:{key}"
+        if key else f"maintenance:extract_link:{account_id}:{uuid.uuid4().hex}"
+    )
+    return account_task_store.submit_durable_operation(
+        task_type="extract_link",
+        account_id=account_id,
+        email=email,
+        trigger=trigger,
+        source_system="native_operations",
+        source_id=source_id,
+        idempotency_key=key,
+        batch_id=_numeric_batch_id(batch_id),
+        resource_family="openai_interactive",
+        data={
+            "link_type": link_type,
+            # CDK is intentionally not persisted.  The handler obtains the
+            # current secret on demand after the durable Run is claimed.
+            "payment_options": _paypal_options(payment_options),
+        },
+        config_snapshot_provider=get_config_snapshot,
+        config_allowlist=EXTRACT_CONFIG_ALLOWLIST,
+        dispatch=True,
+    )
+
+
+def enqueue_account_extract(
+    *, account_id: int, email: str, access_token: str, trigger: str = "manual",
+    link_type: str | None = None, cdk: str | None = None,
+    payment_options: dict | None = None, batch_id: str | None = None,
+    idempotency_key: str | None = None,
+) -> dict:
+    """Persist one extract operation; execution is owned by the native dispatcher."""
+    account_id = int(account_id)
+    email = str(email or "").strip()
+    trigger = str(trigger or "manual")
+    account = db.get_account(account_id)
+    if not account:
+        return {"accepted": False, "busy": False, "error": "账号不存在"}
+    lt, fallback_from = _select_account_link_type(account=account, requested=link_type)
+    code = _cdk(cdk)
+    key = str(idempotency_key or "").strip() or None
+    claimed = False
+    if not key:
         if not db.claim_account_extract(account_id, trigger=trigger, link_type=lt):
-            _QUEUE_SLOTS.release()
             return {"accepted": False, "busy": True, "error": "该账号正在提链中"}
         claimed = True
-        try:
-            task_id = account_task_store.create_task(
-                task_type="extract_link",
-                account_id=account_id,
-                email=email,
-                trigger=trigger,
-                batch_id=batch_id,
-            )
-        except Exception as exc:
-            error = f"提炼任务记录创建失败：{type(exc).__name__}: {exc}"
-            try:
-                db.update_account_extract(account_id, {
-                    "ok": False,
-                    "status": "failed",
-                    "link_type": lt,
-                    "message": error,
-                    "error": error,
-                })
-            except Exception:
-                logger.exception("[提链] 任务记录失败后的账号状态写入异常：account_id=%s", account_id)
-            raise RuntimeError(error) from exc
-        fut = _EXECUTOR.submit(
-            _run_extract,
-            account_id=account_id,
-            email=email,
-            access_token=access_token,
-            link_type=lt,
-            cdk=code,
-            trigger=trigger,
-            payment_options=payment_options,
-            task_id=task_id,
+    try:
+        submitted = _submit_native_extract(
+            account_id=account_id, email=email, trigger=trigger, link_type=lt,
+            cdk=code, payment_options=payment_options,
+            batch_id=batch_id, idempotency_key=key,
         )
-        response = {
-            "accepted": True,
-            "busy": False,
-            "future": fut,
-            "task_id": task_id,
-            "account_id": account_id,
-            "status": "queued",
-            "trigger": trigger,
-            "link_type": lt,
-        }
-        if fallback_from:
-            response["fallback_from"] = fallback_from
-        return response
     except Exception as exc:
-        if claimed and task_id is None:
-            try:
-                db.update_account_extract(account_id, {
-                    "ok": False,
-                    "status": "failed",
-                    "message": f"提炼入队失败：{type(exc).__name__}: {exc}",
-                    "error": f"{type(exc).__name__}: {exc}",
-                })
-            except Exception:
-                logger.exception("[提链] 入队失败后的账号状态写入异常：account_id=%s", account_id)
-        _QUEUE_SLOTS.release()
-        raise
+        error = f"提炼任务持久化失败: {type(exc).__name__}: {str(exc)[:300]}"
+        if claimed:
+            db.update_account_extract(account_id, {
+                "ok": False, "status": "failed", "link_type": lt,
+                "message": error, "error": error,
+            })
+        return {"accepted": False, "busy": False, "error": error}
+    if not submitted.get("accepted"):
+        return _native_response(
+            submitted, account_id=account_id, email=email, trigger=trigger, link_type=lt,
+        )
+    if key and not submitted.get("reused"):
+        if not db.claim_account_extract(account_id, trigger=trigger, link_type=lt):
+            _cancel_unclaimed_native_run(submitted.get("run_id"))
+            return {
+                "accepted": False, "busy": True, "account_id": account_id,
+                "email": email, "task_id": submitted.get("task_id"),
+                "run_id": submitted.get("run_id"), "link_type": lt,
+                "error": "该账号正在提链中",
+            }
+    if not submitted.get("reused"):
+        db.update_account_extract(account_id, {
+            "ok": False, "status": "queued", "link_type": lt,
+            "message": "已入队",
+        })
+    response = _native_response(
+        submitted, account_id=account_id, email=email, trigger=trigger, link_type=lt,
+    )
+    if fallback_from:
+        response["fallback_from"] = fallback_from
+    return response
+
+
+# Register with the shared dispatcher when the runtime imports this service.
+# The runtime owns the single dispatcher thread; this call only installs the
+# task-type handler and its allowlist.
+register_operation_handlers()
