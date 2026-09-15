@@ -293,17 +293,17 @@ CLOUDFLARE_DEFAULT_DOMAINS=你的收信域名.com
 
 #### iCloud Hide My Email（`icloud_hide`）
 
-先在本机启动 `icloud-hme` sidecar，再到 WebUI「配置 → 邮箱 / OTP → iCloud 隐藏邮箱」填写服务地址和账号 ID，保存后点击“连接并同步”。推荐配置：
+先在本机启动 `icloud-hme` sidecar，再到 WebUI「配置 → 邮箱 / OTP → iCloud 隐藏邮箱」填写服务地址，账号 ID 留空即可自动发现全部 active 账号；保存后点击“连接并同步”。推荐配置：
 
 ```dotenv
 USE_EMAIL_SERVICE=True
 EMAIL_SOURCE=icloud_hide
 ICLOUD_HME_API_BASE=http://127.0.0.1:8081
-ICLOUD_HME_ACCOUNT_ID=你的_sidecar_账号ID
+ICLOUD_HME_ACCOUNT_ID=
 ICLOUD_HME_AUTO_CREATE=False
 ```
 
-turb 只保存别名库存与领取状态；Apple Cookie 和 iCloud App 专用密码保留在 sidecar 中。Gmail 转发收码支持本机 `forward_imap` 直连和生产 `forward_butler` 两种模式；本机调试/注册可直接连接 Gmail，生产链路仍由 Oracle Email Butler 接收。每个注册任务领取一个别名，注册成功后永久占用；明确未消耗的失败任务才会把别名退回可用池。默认只复用已同步别名，库存为空时不会自动创建；确需自动补充时再开启 `ICLOUD_HME_AUTO_CREATE`。
+turb 只保存别名库存、领取状态和所属 sidecar 账号 ID；Apple Cookie 和 iCloud App 专用密码保留在 sidecar 中。`ICLOUD_HME_ACCOUNT_ID` 留空时会自动发现并同步所有 active iCloud 账号，填写后固定使用指定账号（适合排障或回滚）。Gmail 转发收码支持本机 `forward_imap` 直连和生产 `forward_butler` 两种模式；本机调试/注册可直接连接 Gmail，生产链路仍由 Oracle Email Butler 接收。所有账号共用同一个最终 Gmail/Email Butler 收件箱，OTP 仍按原始隐藏邮箱地址匹配。每个注册任务领取一个别名，注册成功后永久占用；明确未消耗的失败任务才会把别名退回可用池。默认只复用已同步别名，库存为空时不会自动创建；持续自动创建建议由 sidecar worker 负责，turb 侧仅在排障或按需补充时开启 `ICLOUD_HME_AUTO_CREATE`。
 
 收码前必须确认以下链路一致：
 
@@ -678,7 +678,7 @@ EMAIL_BUTLER_REQUEST_TIMEOUT=20
 
 # iCloud 隐藏邮箱（在注册页手动选择时使用，不作为 Butler 失败后的自动回退）
 ICLOUD_HME_API_BASE=http://127.0.0.1:8081
-ICLOUD_HME_ACCOUNT_ID=请替换
+ICLOUD_HME_ACCOUNT_ID=请留空以自动发现全部 active 账号
 ICLOUD_HME_API_TOKEN=
 ICLOUD_HME_REQUEST_TIMEOUT=45
 ICLOUD_HME_SYNC_TTL=300

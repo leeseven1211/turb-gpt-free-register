@@ -142,7 +142,7 @@ function emailConfigSectionForKey(key) {
   if (key.startsWith('GPTMAIL_')) return ['GPTMail', 'GPTMail 临时邮箱 API 配置'];
   if (key.startsWith('MAIL_NEST_')) return ['MailNest', 'MailNest / 迈巢临时邮箱 API 配置'];
   if (key.startsWith('CLOUDMAIL_')) return ['CloudMail', 'CloudMail 域名随机邮箱、Token 和收信 API 配置'];
-  if (key.startsWith('ICLOUD_HME_')) return ['iCloud 隐藏邮箱', '连接本机 iCloud HME 服务、同步 Hide My Email 别名并按实际转发目标自动收码'];
+  if (key.startsWith('ICLOUD_HME_')) return ['iCloud 隐藏邮箱', '连接本机 iCloud HME 服务、同步全部 active 账号的 Hide My Email 别名并按实际转发目标自动收码'];
   if (key.startsWith('OUTLOOK_')) return ['Outlook 邮箱池', 'Outlook 邮箱池和取件模式配置'];
   if (key.startsWith('CLOUDFLARE_')) return ['Cloudflare 临时邮箱', 'Cloudflare Worker 临时邮箱 API、鉴权与路径配置'];
   if (['EMAIL_DOMAIN','QQ_EMAIL','QQ_IMAP_PASSWORD'].includes(key)) return ['Cloudflare 域名邮箱', 'Cloudflare 转发到 QQ 邮箱后的 IMAP 收信配置'];
@@ -990,7 +990,7 @@ async function testICloudHMEV2() {
   const status = $('#icloudHMEStatusV2');
   if (!btn || !status) return;
   btn.disabled = true;
-  status.textContent = '正在连接、同步别名并检测实际收件通道...';
+  status.textContent = '正在连接、同步全部 active 账号的别名并检测实际收件通道...';
   try {
     const r = await api('/api/icloud-hme/test', {
       method:'POST',

@@ -860,7 +860,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "ICLOUD_HME_ACCOUNT_ID", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
-        "label": "iCloud 账号 ID", "help": "sidecar 中的账号 ID；留空自动选 active 账号",
+        "label": "iCloud 固定账号 ID", "help": "sidecar 中的固定账号 ID；留空自动发现并同步全部 active 账号",
         "storage": "env",
     },
     {
