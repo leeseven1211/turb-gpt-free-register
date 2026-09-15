@@ -14,14 +14,12 @@ class JobProgressTests(PostgresTestCase):
         return (
             patch.object(db, "_DATA_DIR", root),
             patch.object(db, "_LOG_DIR", root / "logs"),
-            patch.object(db, "_JOBS_JSON", root / "jobs.json"),
-            patch.object(db, "_LEGACY_JOBS_JSON", root / "legacy_jobs.json"),
         )
 
     def test_progress_tracks_stages_and_keeps_explicit_failure(self):
         with tempfile.TemporaryDirectory() as td:
             patches = self._storage_patches(Path(td))
-            with patches[0], patches[1], patches[2], patches[3]:
+            with patches[0], patches[1]:
                 job = db.create_job(
                     "icloud_hide",
                     batch_id="batch-demo",
@@ -94,7 +92,7 @@ class JobProgressTests(PostgresTestCase):
     def test_successful_closeout_marks_never_started_stages_skipped(self):
         with tempfile.TemporaryDirectory() as td:
             patches = self._storage_patches(Path(td))
-            with patches[0], patches[1], patches[2], patches[3]:
+            with patches[0], patches[1]:
                 job = db.create_job("icloud_hide")
                 db.update_job_progress(job["id"], "email_otp", "success", "邮箱验证码已通过")
                 db.update_job_progress(job["id"], "profile", "pending", "尚未开始")
@@ -111,7 +109,7 @@ class JobProgressTests(PostgresTestCase):
     def test_failed_job_lands_on_current_stage(self):
         with tempfile.TemporaryDirectory() as td:
             patches = self._storage_patches(Path(td))
-            with patches[0], patches[1], patches[2], patches[3]:
+            with patches[0], patches[1]:
                 job = db.create_job("icloud_hide")
                 db.update_job_progress(job["id"], "email_otp", "running")
                 db.finish_job_progress(job["id"], success=False, detail="验证码超时")
@@ -125,7 +123,7 @@ class JobProgressTests(PostgresTestCase):
     def test_failed_codex_is_not_moved_to_successful_plan_check(self):
         with tempfile.TemporaryDirectory() as td:
             patches = self._storage_patches(Path(td))
-            with patches[0], patches[1], patches[2], patches[3]:
+            with patches[0], patches[1]:
                 job = db.create_job("icloud_hide")
                 db.update_job_progress(job["id"], "codex", "failed", "OAuth 失败")
                 db.update_job_progress(job["id"], "plan_check", "running", "正在查套餐")
@@ -142,7 +140,7 @@ class JobProgressTests(PostgresTestCase):
     def test_partial_success_can_create_codex_retry_job(self):
         with tempfile.TemporaryDirectory() as td:
             patches = self._storage_patches(Path(td))
-            with patches[0], patches[1], patches[2], patches[3]:
+            with patches[0], patches[1]:
                 source = db.create_job("icloud_hide")
                 db.update_job(
                     source["id"],
@@ -234,7 +232,7 @@ class JobProgressTests(PostgresTestCase):
     def test_registration_batch_email_claim_is_unique_but_cross_batch_reusable(self):
         with tempfile.TemporaryDirectory() as td:
             patches = self._storage_patches(Path(td))
-            with patches[0], patches[1], patches[2], patches[3]:
+            with patches[0], patches[1]:
                 self.assertTrue(
                     db.claim_registration_batch_email(
                         "batch-a", "Same@Example.com", job_id=1, email_source="icloud_hide"
@@ -254,7 +252,7 @@ class JobProgressTests(PostgresTestCase):
     def test_registration_batch_email_claim_blocks_existing_job_email(self):
         with tempfile.TemporaryDirectory() as td:
             patches = self._storage_patches(Path(td))
-            with patches[0], patches[1], patches[2], patches[3]:
+            with patches[0], patches[1]:
                 job = db.create_job("icloud_hide", batch_id="batch-existing")
                 db.update_job(job["id"], email="already@example.com")
                 self.assertFalse(
@@ -597,9 +595,7 @@ class JobProgressTests(PostgresTestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             patches = self._storage_patches(root)
-            with patches[0], patches[1], patches[2], patches[3], patch.object(
-                db, "_ACCOUNTS_JSON", root / "accounts.json"
-            ):
+            with patches[0], patches[1]:
                 job = db.create_job("icloud_hide")
                 db.update_job(job["id"], status="running", proxy_status="leased")
                 db.update_job_progress(job["id"], "email_otp", "running", "等待验证码")

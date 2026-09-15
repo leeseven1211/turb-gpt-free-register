@@ -17,7 +17,6 @@ import logging
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
-from html import escape
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -36,24 +35,14 @@ _PLAN_CHECK_QUEUE_STALE_SECONDS = 1800
 class SnapshotConflictError(RuntimeError):
     """旧兼容快照试图覆盖已被其他事务修改的行。"""
 
-_OUTLOOK_JSON = _PROJECT_ROOT / "用于注册的邮箱.json"
-_OUTLOOK_TXT = _PROJECT_ROOT / "用于注册的邮箱.txt"
 _GENERIC_API_EMAIL_JSON = _PROJECT_ROOT / "用于注册的API邮箱.json"
 _GENERIC_API_EMAIL_TXT = _PROJECT_ROOT / "用于注册的API邮箱.txt"
-_ACCOUNTS_JSON = _PROJECT_ROOT / "注册成功的邮箱.json"
-_ACCOUNTS_TXT = _PROJECT_ROOT / "注册成功的邮箱.txt"
-_TOKENS_TXT = _PROJECT_ROOT / "注册成功的token.txt"
-_JOBS_JSON = _PROJECT_ROOT / "注册任务.json"
-_VIEWER_HTML = _PROJECT_ROOT / "accounts_viewer.html"
 _CODEX_DIR = _PROJECT_ROOT / "codex_accounts"
 # 导出状态单独存：{ "codex-邮箱-plan.json": {"exported_at": "...", "exported_count": N} }
 # 不污染 CPA 兼容的原文件
 _CODEX_EXPORT_STATE = _PROJECT_ROOT / "codex_导出状态.json"
 _CODEX_CREDENTIALS_COLLECTION = "codex_credentials"
 
-_LEGACY_OUTLOOK_JSON = _LEGACY_DATA_DIR / "outlook_accounts.json"
-_LEGACY_ACCOUNTS_JSON = _LEGACY_DATA_DIR / "registered_accounts.json"
-_LEGACY_JOBS_JSON = _LEGACY_DATA_DIR / "registration_jobs.json"
 _LOCK = threading.RLock()
 _COMPAT_SCHEMA_LOCK_KEY = "turb-compat-schema-init"
 _COMPAT_SCHEMA_READY_KEYS = {"registration": "", "operation": ""}
@@ -263,30 +252,10 @@ def _registered_email_line(row: dict) -> str:
     return row.get("original_email_line") or row.get("email") or ""
 
 
-def _sync_outlook_txt(rows: list[dict]) -> None:
-    available_rows = [r for r in rows if r.get("status") == "available"]
-    lines = [_outlook_line(r) for r in sorted(available_rows, key=lambda x: int(x.get("id") or 0))]
-    _OUTLOOK_TXT.write_text(("\n".join(lines) + ("\n" if lines else "")), encoding="utf-8")
-
-
 def _sync_generic_api_email_txt(rows: list[dict]) -> None:
     available_rows = [r for r in rows if r.get("status") == "available"]
     lines = [_generic_api_email_line(r) for r in sorted(available_rows, key=lambda x: int(x.get("id") or 0))]
     _GENERIC_API_EMAIL_TXT.write_text(("\n".join(lines) + ("\n" if lines else "")), encoding="utf-8")
-
-
-def _sync_accounts_txt(rows: list[dict]) -> None:
-    lines = [_registered_email_line(r) for r in sorted(rows, key=lambda x: int(x.get("id") or 0))]
-    _ACCOUNTS_TXT.write_text(("\n".join(lines) + ("\n" if lines else "")), encoding="utf-8")
-
-
-def _sync_tokens_txt(rows: list[dict]) -> None:
-    tokens = [
-        r.get("access_token") or ""
-        for r in sorted(rows, key=lambda x: int(x.get("id") or 0))
-        if r.get("access_token")
-    ]
-    _TOKENS_TXT.write_text(("\n".join(tokens) + ("\n" if tokens else "")), encoding="utf-8")
 
 
 def _viewer_snapshot(outlook_rows: list[dict], account_rows: list[dict]) -> dict:
@@ -627,19 +596,9 @@ def _load_outlook() -> list[dict]:
     return _load_table(record_store.OUTLOOK_POOL)
 
 
-def _export_outlook() -> None:
-    rows = _load_outlook()
-    for row in rows:
-        row["copy_line"] = _outlook_line(row)
-    _write_json(_OUTLOOK_JSON, rows)
-    _sync_outlook_txt(rows)
-    _render_static_viewer(outlook_rows=rows)
-
-
 def _save_outlook(rows: list[dict]) -> None:
     """仅兼容旧测试/迁移；现有行没有版本时拒绝快照覆盖。"""
     _sync_table(record_store.OUTLOOK_POOL, rows)
-    compat_export.schedule("outlook")
 
 
 def _load_generic_api_emails() -> list[dict]:
@@ -664,41 +623,20 @@ def _load_accounts() -> list[dict]:
     return _load_table(record_store.ACCOUNTS)
 
 
-def _export_accounts() -> None:
-    # copy_line 是派生字段，不入库：读路径由 _decorate_account 现算，
-    # 这里只为保持兼容文件的历史字段不变而补上。
-    rows = _load_accounts()
-    for row in rows:
-        row["copy_line"] = _account_line(row)
-    _write_json(_ACCOUNTS_JSON, rows)
-    _sync_accounts_txt(rows)
-    _sync_tokens_txt(rows)
-    _render_static_viewer(account_rows=rows)
-
-
 def _save_accounts(rows: list[dict]) -> None:
     """仅兼容旧测试/迁移；现有行没有版本时拒绝快照覆盖。"""
     _sync_table(record_store.ACCOUNTS, rows)
-    compat_export.schedule("accounts")
 
 
 def _load_jobs() -> list[dict]:
     return _load_table(record_store.JOBS)
 
 
-def _export_jobs() -> None:
-    _write_json(_JOBS_JSON, _load_jobs())
-
-
 def _save_jobs(rows: list[dict]) -> None:
     """仅兼容旧测试/迁移；现有行没有版本时拒绝快照覆盖。"""
     _sync_table(record_store.JOBS, rows)
-    compat_export.schedule("jobs")
 
 
-compat_export.register("accounts", _export_accounts)
-compat_export.register("jobs", _export_jobs)
-compat_export.register("outlook", _export_outlook)
 compat_export.register("generic_api_emails", _export_generic_api_emails)
 
 
@@ -710,7 +648,7 @@ def _patch_row_and_export(spec, row_id: int, changes: dict, kind: str) -> bool:
     需要整表语义的地方（批量导入、跨表事务）仍走接缝。
     """
     changed = record_store.patch_row(spec, int(row_id), changes)
-    if changed:
+    if changed and kind not in {"accounts", "jobs", "outlook", "icloud_hide_emails"}:
         compat_export.schedule(kind)
     return changed
 
@@ -793,7 +731,7 @@ def _save_together(*pairs) -> None:
         for spec, rows, _kind in pairs:
             _sync_table(spec, rows, conn=conn)
     for _spec, _rows, kind in pairs:
-        if kind:
+        if kind and kind not in {"accounts", "jobs", "outlook", "icloud_hide_emails"}:
             compat_export.schedule(kind)
 
 
@@ -1005,10 +943,6 @@ def insert_account(
                 record_store.OUTLOOK_POOL, int(outlook_row["id"]), pool_changes, conn=conn,
             )
 
-    if account_changed:
-        compat_export.schedule("accounts")
-    if outlook_changed:
-        compat_export.schedule("outlook")
     return row_id
 
 
@@ -1118,10 +1052,6 @@ def _mutate_account_extra(
                     record_store.OUTLOOK_POOL, int(pool["id"]),
                     {"totp_secret": changes["totp_secret"]}, conn=conn,
                 )
-    if changed:
-        compat_export.schedule("accounts")
-    if pool_changed:
-        compat_export.schedule("outlook")
     return changed
 
 
@@ -1261,8 +1191,6 @@ def update_account_token_metadata(acc_id: int, access_token: str) -> bool:
         "updated_at": _now(),
     }, guard="BTRIM(COALESCE(data->>'access_token', '')) = %s",
         guard_params=(str(access_token or "").strip(),))
-    if changed:
-        compat_export.schedule("accounts")
     return changed
 
 
@@ -1336,8 +1264,6 @@ def sync_account_token_metadata(items: list[tuple[int, str]]) -> int:
             guard_params=(token,),
         ):
             changed += 1
-    if changed:
-        compat_export.schedule("accounts")
     return changed
 
 
@@ -1443,8 +1369,6 @@ def recover_interrupted_plan_checks(
         where=where,
         params=params,
     )
-    if recovered:
-        compat_export.schedule("accounts")
     return recovered
 
 
@@ -1660,8 +1584,6 @@ def recover_interrupted_extract_links(
         where=where,
         params=params,
     )
-    if recovered:
-        compat_export.schedule("accounts")
     return recovered
 
 
@@ -2086,8 +2008,6 @@ def recover_interrupted_live_checks(
         where=where,
         params=params,
     )
-    if recovered:
-        compat_export.schedule("accounts")
     return recovered
 
 
@@ -2126,8 +2046,6 @@ def update_accounts_note(account_ids: list[int] | None, note: str) -> tuple[list
         for row in rows
     ]
     skipped = [{"id": item, "reason": "账号不存在"} for item in sorted(ids - seen_ids)]
-    if updated:
-        compat_export.schedule("accounts")
     return updated, skipped
 
 
@@ -2139,8 +2057,6 @@ def archive_account(acc_id: int, archived: bool = True) -> bool:
         "archived_at": now if archived else None,
         "updated_at": now,
     })
-    if changed:
-        compat_export.schedule("accounts")
     return changed
 
 
@@ -2172,8 +2088,6 @@ def archive_accounts(account_ids: list[int] | None, archived: bool = True) -> tu
         for row in rows
     ]
     skipped = [{"id": item, "reason": "账号不存在"} for item in sorted(ids - seen_ids)]
-    if updated:
-        compat_export.schedule("accounts")
     return updated, skipped
 
 
@@ -2217,8 +2131,6 @@ def delete_accounts(account_ids: list[int] | None = None, emails: list[str] | No
     seen_emails = {str(row.get("email") or "").lower() for row in rows}
     skipped = [{"id": item, "reason": "账号不存在"} for item in sorted(ids - seen_ids)]
     skipped += [{"email": item, "reason": "账号不存在"} for item in sorted(email_set - seen_emails)]
-    if deleted:
-        compat_export.schedule("accounts")
     return deleted, skipped
 
 
@@ -2227,10 +2139,8 @@ def delete_accounts(account_ids: list[int] | None = None, emails: list[str] | No
 # ============================================================
 
 _POOL_EXPORT_KINDS = {
-    record_store.OUTLOOK_POOL.name: "outlook",
     record_store.GENERIC_API_POOL.name: "generic_api_emails",
     record_store.DOMAIN_POOL.name: "domain_emails",
-    record_store.ICLOUD_HIDE_POOL.name: "icloud_hide_emails",
 }
 
 _POOL_SOURCE_SPECS = {
@@ -2255,8 +2165,9 @@ def _release_pool_email(spec, email: str, *, status: str, note: str | None = Non
     if note is not None:
         changes["note"] = note
     changed = record_store.patch_row(spec, int(row["id"]), changes)
-    if changed:
-        compat_export.schedule(_POOL_EXPORT_KINDS[spec.name])
+    kind = _POOL_EXPORT_KINDS.get(spec.name)
+    if changed and kind:
+        compat_export.schedule(kind)
     return changed
 
 
@@ -2266,8 +2177,9 @@ def _delete_pool_email(spec, email: str) -> bool:
         where="lower(email) = lower(%s)",
         params=(str(email or "").strip(),),
     )
-    if rows:
-        compat_export.schedule(_POOL_EXPORT_KINDS[spec.name])
+    kind = _POOL_EXPORT_KINDS.get(spec.name)
+    if rows and kind:
+        compat_export.schedule(kind)
     return bool(rows)
 
 
@@ -2344,8 +2256,6 @@ def import_outlook_accounts(records: list[dict]) -> tuple[int, int]:
                 skipped += 1
             else:
                 inserted += 1
-    if inserted:
-        compat_export.schedule("outlook")
     return inserted, skipped
 
 
@@ -2475,10 +2385,6 @@ def import_registered_email_accounts(records: list[dict], source: str | None) ->
             else:
                 generic_changed = True
 
-    if accounts_changed:
-        compat_export.schedule("accounts")
-    if outlook_changed:
-        compat_export.schedule("outlook")
     if generic_changed:
         compat_export.schedule("generic_api_emails")
     return inserted, skipped
@@ -2492,8 +2398,6 @@ def claim_next_outlook() -> dict | None:
         where="status = %s",
         params=("available",),
     )
-    if row:
-        compat_export.schedule("outlook")
     return _decorate_outlook(row) if row else None
 
 
@@ -2522,8 +2426,6 @@ def release_unconsumed_outlook(email: str, note: str | None = None) -> bool:
             params=(address, "used", address),
             conn=conn,
         )
-    if rows:
-        compat_export.schedule("outlook")
     return bool(rows)
 
 
@@ -3115,7 +3017,6 @@ def create_job(
         row["id"] = record_store.insert_row(record_store.JOBS, row, conn=conn)
     _ensure_registration_attempt_job(row)
     _sync_operation_job(int(row["id"]))
-    compat_export.schedule("jobs")
     return dict(row)
 
 
@@ -3204,7 +3105,6 @@ def create_retry_job(
 
     _ensure_registration_attempt_job(row)
     _sync_operation_job(int(row["id"]))
-    compat_export.schedule("jobs")
     return dict(row), True
 
 
@@ -3661,10 +3561,6 @@ def recover_interrupted_registration_jobs(
                     ) or account_changed
 
     recovered = len(recovered_rows)
-    if recovered:
-        compat_export.schedule("jobs")
-    if account_changed:
-        compat_export.schedule("accounts")
     for row in recovered_rows:
         _sync_operation_job(int(row["id"]))
     try:
@@ -3882,7 +3778,6 @@ def delete_jobs(job_ids: list[int], *, delete_log: bool = True, allow_running: b
         for job_id in sorted(missing)
     ]
     if rows:
-        compat_export.schedule("jobs")
         try:
             from core import operation_task_store
 
@@ -3941,7 +3836,7 @@ def migrate_legacy_files() -> dict:
             except Exception:
                 continue
 
-    for txt in (_PROJECT_ROOT / "outlook_accounts.txt", _OUTLOOK_TXT):
+    for txt in (_PROJECT_ROOT / "outlook_accounts.txt",):
         if txt.exists():
             records = []
             for line in txt.read_text(encoding="utf-8").splitlines():
@@ -3985,26 +3880,13 @@ def db_path() -> Path:
 
 def storage_paths() -> dict:
     return {
-        "outlook_json": str(_OUTLOOK_JSON),
-        "outlook_txt": str(_OUTLOOK_TXT),
-        "accounts_json": str(_ACCOUNTS_JSON),
-        "accounts_txt": str(_ACCOUNTS_TXT),
-        "tokens_txt": str(_TOKENS_TXT),
-        "viewer_html": str(_VIEWER_HTML),
-        "jobs_json": str(_JOBS_JSON),
         "logs_dir": str(_LOG_DIR),
     }
 
 
 def refresh_static_viewer() -> Path:
-    """手动刷新静态查看器，返回 HTML 路径。"""
-    with _LOCK:
-        outlook_rows = _load_outlook()
-        account_rows = _load_accounts()
-        _sync_outlook_txt(outlook_rows)
-        _sync_accounts_txt(account_rows)
-        _sync_tokens_txt(account_rows)
-        return _render_static_viewer(outlook_rows=outlook_rows, account_rows=account_rows)
+    """静态查看器已退休；账号与邮箱池通过 WebUI/API 查询。"""
+    raise RuntimeError("accounts_viewer.html 已退休，请通过 WebUI/API 查询数据库")
 
 
 # ============================================================
@@ -4105,21 +3987,12 @@ def delete_domain_email(email: str) -> bool:
 # iCloud Hide My Email pool（本地状态镜像）
 # ============================================================
 
-_ICLOUD_HIDE_EMAIL_JSON = _PROJECT_ROOT / "用于注册的iCloud隐藏邮箱.json"
-
-
 def _load_icloud_hide_pool() -> list[dict]:
     return _load_table(record_store.ICLOUD_HIDE_POOL)
 
 
-def _export_icloud_hide_pool() -> None:
-    rows = _load_icloud_hide_pool()
-    _write_json(_ICLOUD_HIDE_EMAIL_JSON, rows)
-
-
 def _save_icloud_hide_pool(rows: list[dict]) -> None:
     _sync_table(record_store.ICLOUD_HIDE_POOL, rows)
-    compat_export.schedule("icloud_hide_emails")
 
 
 def _find_icloud_hide_email(rows: list[dict], email: str) -> dict | None:
@@ -4243,7 +4116,6 @@ def sync_icloud_hide_aliases(aliases: list[dict], account_id: str, *, full_snaps
                     )
                     disabled += 1
 
-    compat_export.schedule("icloud_hide_emails")
     return {
         "inserted": inserted,
         "updated": updated,
@@ -4265,8 +4137,6 @@ def claim_next_icloud_hide_email(account_id: str | None = None) -> dict | None:
         where=" AND ".join(where),
         params=params,
     )
-    if row:
-        compat_export.schedule("icloud_hide_emails")
     return row
 
 
@@ -4297,8 +4167,6 @@ def release_unconsumed_icloud_hide_email(email: str, note: str | None = None) ->
             params=(address, "used", address),
             conn=conn,
         )
-    if rows:
-        compat_export.schedule("icloud_hide_emails")
     return bool(rows)
 
 
@@ -4324,4 +4192,3 @@ def delete_icloud_hide_email(email: str) -> bool:
 
 
 compat_export.register("domain_emails", _export_domain_pool)
-compat_export.register("icloud_hide_emails", _export_icloud_hide_pool)
