@@ -553,3 +553,58 @@ coordination tool, no embedded credentials):
 `/tmp/turb-optimization-20260914.mJ7Y6R/run.py <worktree> -m pytest -q ...`.
 Run it with the primary workspace `.venv/bin/python`. It suppresses private
 dotenv loading and selects only the isolated database.
+
+### Local merge and deployment checkpoint 2026-09-15 12:25 Asia/Shanghai
+
+The validated optimization branch was fast-forwarded into local `main` at
+`f3cd9a4` after the combined isolated suite passed **1127 tests and 830
+subtests**, with ruff, compileall, dependency-lock validation, pip check, and
+diff checks passing. The primary workspace's 13 pre-existing uncommitted files
+were preserved in a recoverable stash; they were not overwritten or pushed.
+
+The local WebUI is now running from the primary checkout at
+`http://127.0.0.1:8000`. Fresh checks returned `/healthz=200`, `/readyz=200`,
+`/login=200`; PostgreSQL, executor, codex dispatcher, dependency dispatcher,
+and projection worker were all ready. The projection queue is fully succeeded
+with no pending rows.
+
+The previous real 10-task, concurrency-10 batch remains mixed rather than green:
+9 successful follow-up outcomes, 4 original failed parent jobs retained for
+history, and 1 `partial_success` OAuth reconciliation outcome. Its task/run
+writeback is present and was not rewritten. This is runtime evidence of the
+new durable state handling, but not a claim that all external registration
+dependencies succeeded.
+
+Luna max review then identified a real remaining acceptance gap in startup
+identity sequence repair: repeated startup can consume an ID on non-empty tables,
+and legacy tables without an owned identity sequence need an explicit safe path.
+The fix and isolated regressions are delegated before final five-gate closure;
+no push or remote deployment is authorized by this checkpoint.
+
+### Final local acceptance checkpoint 2026-09-15 12:52 Asia/Shanghai
+
+The review correction was integrated at `7a28188`. Final isolated verification
+passed **1132 tests and 830 subtests**, with ruff, compileall, dependency-lock
+validation, pip check, bash syntax, and diff checks passing. The local service
+was restarted from this commit on `127.0.0.1:8000`; `/healthz`, `/readyz`, and
+`/login` all returned **200**, and the database plus all three runtime workers
+reported ready.
+
+Read-only live checks after restart found no identity sequence regression across
+the nine row tables (`sequence >= MAX(id)`) and the projection queue remained
+fully `succeeded`. The startup repair now avoids consuming a synchronized ID,
+preserves empty-table first inserts, repairs explicit imports, and tolerates
+legacy tables without an owned sequence. `webui.sh logs` also works in a fresh
+checkout without a pre-existing `logs/` directory.
+
+Five optimization gates are locally integrated and operationally verified:
+row-safe storage, durable tasks/runtime, canonical configuration snapshots,
+remote authentication/token uncertainty handling, and release/test/read
+performance. The real 10-task external batch remains intentionally recorded as
+mixed evidence (9 success, 4 failed parent jobs, 1 partial-success follow-up),
+not as a fabricated all-green result. No production/remote deployment or push
+was performed. The remaining documented operational risk is that
+`STARTUP_CHECK_TIMEOUT` still defaults to 30 seconds and was not broadened in
+this pass; the observed local startup completed within that window.
+
+Monitoring is closed after this final local acceptance checkpoint.
