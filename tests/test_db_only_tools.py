@@ -34,6 +34,14 @@ class DatabaseOnlyToolTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             token_tool.build_parser().parse_args(["--token-file", "注册成功的token.txt"])
 
+    def test_subscriptions_can_still_use_explicit_chatgpt_account_id(self):
+        url, path, route = token_tool._build_url(
+            "subscriptions", "header.payload.signature", "chatgpt-acct", "-"
+        )
+        self.assertIn("account_id=chatgpt-acct", url)
+        self.assertEqual(path, "/backend-api/subscriptions")
+        self.assertEqual(route, path)
+
 
 if __name__ == "__main__":
     unittest.main()

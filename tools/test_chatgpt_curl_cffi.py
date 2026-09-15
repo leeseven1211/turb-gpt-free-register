@@ -175,6 +175,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="accounts-check",
         help="要测试的接口，默认 accounts-check",
     )
+    parser.add_argument(
+        "--chatgpt-account-id",
+        default=None,
+        help="subscriptions 接口使用的 ChatGPT account_id；不传则从 token payload 提取",
+    )
     parser.add_argument("--timezone-offset-min", default="-", help="accounts-check 参数，默认 -")
     parser.add_argument("--proxy", default=None, help="代理；不传随机抽项目代理池；传空字符串禁用代理")
     parser.add_argument("--verbose", action="store_true", help="显示 DEBUG 日志")
@@ -183,7 +188,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
-    args = parser.parse_args()
 
     _setup_logging(args.verbose)
 
@@ -219,7 +223,7 @@ def main() -> int:
         url, target_path, target_route = _build_url(
             args.endpoint,
             token,
-            None,
+            args.chatgpt_account_id,
             args.timezone_offset_min,
         )
     except Exception as exc:
