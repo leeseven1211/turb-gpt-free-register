@@ -14,7 +14,7 @@ Outlook 邮箱客户端（mail.chatai.codes 双协议）
 工作流：
     1. pick_account()       从 PostgreSQL 邮箱池中挑一个未用过的账号
     2. fetch_latest_otp()   双协议（Graph / IMAP）轮询取 OTP
-    3. 注册成功后会写入 `注册成功的邮箱.txt` 与 `注册成功的token.txt`
+    3. 注册成功后账号与邮箱状态写入 PostgreSQL；批次归档仅供本次运行留档
 
 只用 Outlook 提供的 refresh_token 调远端的 mail.chatai.codes 服务，
 不直连 Microsoft Graph，因为后者要 access_token + 复杂 OAuth 协议。

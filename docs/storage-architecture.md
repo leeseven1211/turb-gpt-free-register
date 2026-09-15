@@ -11,7 +11,7 @@
 
 **写放大。** 改一个字段要 `_load_accounts()` 读全量 → 改 → `_save_accounts()` 写全量。
 而 `_save_accounts` 连锁做四件事：写 2.1 MB JSON、PG 整块覆盖、重建
-`注册成功的token.txt`、重渲染 2.5 MB `accounts_viewer.html`。刷新一个账号的 AT
+兼容快照和静态查看页。刷新一个账号的 AT
 过期时间，实际写入 7 MB。
 
 **丢更新。** `db._LOCK` 是 `threading.RLock`，只在进程内有效。CLI（`main.py`）和
@@ -116,8 +116,8 @@ RETURNING id
 
 ### 兼容导出
 
-根目录的 JSON/TXT 和 `accounts_viewer.html` **不是事实来源**，只是给 CLI、CPA 和
-人工导出用的兼容产物。它们由 `core/compat_export.py` 在后台去抖生成：
+通用 API、域名邮箱和 Codex 的兼容产物由 `core/compat_export.py` 在后台去抖生成。
+账号、注册任务、Outlook 和 iCloud 邮箱池不生成根目录快照，WebUI/API 直接查询 PostgreSQL：
 
 - 导出器只接收"种类"名，到点自己从库里重读当前状态。合并因此天然正确——最后
   一次渲染写的一定是最新状态，也不必在内存里留几 MB 的快照。
@@ -158,13 +158,13 @@ python tools/migrate_collections_to_tables.py --apply     # 导入（幂等）
 python tools/migrate_collections_to_tables.py --verify    # 逐字段对账
 ```
 
-- 这是历史/一次性迁移工具：优先读取 `app_collections`，对应集合不存在时才读取根目录兼容文件。
-  该输入顺序不代表运行时事实来源；迁移完成后，正常业务读取行级表。
+- 这是历史/一次性迁移工具：只从 `app_collections` 读取迁移期集合并写入行级表。
+  根目录快照不再作为运行时或迁移回退来源。
 - **id 原样保留**：现有 id 被 `codex_accounts/` 的文件名和
   `account_action_tasks.account_id` 引用，重排会打断这些引用。导入后
   `sync_identity` 把序列推到 `max(id)` 之后。
 - 幂等：重复执行不会翻倍。
-- 回滚：旧的 `app_collections` blob 仍在，且兼容文件持续更新，可作为回退落点。
+- 回滚：旧的 `app_collections` blob 仍在，可作为迁移审计落点；生产备份以 PostgreSQL 为准。
 
 ## 开发约定
 

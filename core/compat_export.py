@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """兼容文件的去抖导出器。
 
-PostgreSQL 是唯一事实来源；根目录那些 JSON/TXT 和 accounts_viewer.html 只是
+PostgreSQL 是唯一事实来源；这里只生成仍有外部消费者的兼容输出，不参与业务写入。
+根目录那些 JSON/TXT 和 accounts_viewer.html 只是
 给 CLI、CPA 和人工导出用的兼容产物。但它们原先是在每次写入的主路径上同步生成的：
 改一个账号备注要重写 2.1 MB JSON + 2.5 MB viewer + 0.4 MB token.txt，
 接口要等这几百毫秒才返回。

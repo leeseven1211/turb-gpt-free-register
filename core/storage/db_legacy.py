@@ -2,14 +2,10 @@
 """
 业务数据持久化层。
 
-配置 DATABASE_URL 后以 PostgreSQL 为主存储；现有 JSON/TXT 继续作为兼容导出。
+配置 DATABASE_URL 后，PostgreSQL 是业务数据的唯一事实来源。
 
-根目录文件分工：
-    - 用于注册的邮箱.txt      仅保留可继续注册的邮箱素材
-    - 注册成功的邮箱.txt      仅保存注册成功的邮箱素材，不追加 token
-    - 注册成功的token.txt     每行只保存一个 access token
-    - 用于注册的邮箱.json     Outlook 账号池完整状态
-    - 注册成功的邮箱.json     注册成功账号完整状态
+兼容导出仅保留仍有外部消费者的通用 API 邮箱、域名邮箱和 Codex 凭证产物；
+账号、注册任务、Outlook 和 iCloud 邮箱池均只通过行级表读写。
 """
 import hashlib
 import json
@@ -248,7 +244,7 @@ def _account_line(row: dict) -> str:
 
 
 def _registered_email_line(row: dict) -> str:
-    """生成注册成功邮箱 TXT 的行内容；token 由注册成功的token.txt 单独保存。"""
+    """生成注册成功邮箱素材行。"""
     return row.get("original_email_line") or row.get("email") or ""
 
 
@@ -256,340 +252,6 @@ def _sync_generic_api_email_txt(rows: list[dict]) -> None:
     available_rows = [r for r in rows if r.get("status") == "available"]
     lines = [_generic_api_email_line(r) for r in sorted(available_rows, key=lambda x: int(x.get("id") or 0))]
     _GENERIC_API_EMAIL_TXT.write_text(("\n".join(lines) + ("\n" if lines else "")), encoding="utf-8")
-
-
-def _viewer_snapshot(outlook_rows: list[dict], account_rows: list[dict]) -> dict:
-    account_by_email = {
-        (a.get("email") or "").lower(): a
-        for a in account_rows
-    }
-    return {
-        "generated_at": _now(),
-        "accounts": [
-            _decorate_account(r)
-            for r in sorted(account_rows, key=lambda x: int(x.get("id") or 0), reverse=True)
-        ],
-        "outlook": [
-            _decorate_outlook(r, account_by_email)
-            for r in sorted(outlook_rows, key=lambda x: int(x.get("id") or 0), reverse=True)
-        ],
-        "summary": {
-            "accounts": len(account_rows),
-            "outlook_total": len(outlook_rows),
-            "outlook_available": sum(1 for r in outlook_rows if r.get("status") == "available"),
-            "outlook_used": sum(1 for r in outlook_rows if r.get("status") == "used"),
-            "outlook_failed": sum(1 for r in outlook_rows if r.get("status") == "failed"),
-        },
-    }
-
-
-def _render_static_viewer(outlook_rows: list[dict] | None = None, account_rows: list[dict] | None = None) -> Path:
-    """生成可直接双击打开的静态账号查看页。"""
-    outlook_rows = _load_outlook() if outlook_rows is None else outlook_rows
-    account_rows = _load_accounts() if account_rows is None else account_rows
-    snapshot = _viewer_snapshot(outlook_rows, account_rows)
-    data_json = json.dumps(snapshot, ensure_ascii=False).replace("</", "<\\/")
-    title = escape(f"账号查看器 - {snapshot['generated_at']}")
-    html_text = f"""<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{title}</title>
-  <style>
-    * {{ box-sizing: border-box; }}
-    :root {{
-      --bg: #eef3f8;
-      --surface: #ffffff;
-      --soft: #f7f9fc;
-      --text: #172033;
-      --muted: #667085;
-      --line: #d9e2ec;
-      --blue: #2563eb;
-      --green: #16803c;
-      --red: #c2413a;
-      --amber: #b7791f;
-    }}
-    body {{
-      margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-      background: var(--bg);
-      color: var(--text);
-    }}
-    header {{
-      padding: 22px 28px;
-      background: #101827;
-      color: #fff;
-      display: flex;
-      justify-content: space-between;
-      gap: 20px;
-      align-items: center;
-      flex-wrap: wrap;
-    }}
-    h1, h2, p {{ margin: 0; }}
-    h1 {{ font-size: 28px; }}
-    .meta {{ margin-top: 6px; color: #b8c7d9; font-size: 13px; }}
-    .stats {{ display: flex; gap: 10px; flex-wrap: wrap; }}
-    .stat {{
-      min-width: 116px;
-      padding: 10px 12px;
-      border: 1px solid rgba(255,255,255,.16);
-      border-radius: 8px;
-      background: rgba(255,255,255,.08);
-    }}
-    .stat span {{ display: block; color: #b8c7d9; font-size: 12px; }}
-    .stat strong {{ display: block; margin-top: 4px; font-size: 18px; }}
-    main {{ width: min(1500px, calc(100vw - 32px)); margin: 16px auto 30px; display: grid; gap: 16px; }}
-    .toolbar, section {{
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: var(--surface);
-      box-shadow: 0 8px 22px rgba(15,23,42,.06);
-    }}
-    .toolbar {{ padding: 14px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }}
-    .search {{ min-width: min(520px, 100%); flex: 1; }}
-    input {{
-      width: 100%;
-      min-height: 36px;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 0 12px;
-      font: inherit;
-    }}
-    .buttons {{ display: flex; gap: 8px; flex-wrap: wrap; }}
-    button {{
-      min-height: 32px;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      background: #fff;
-      padding: 0 12px;
-      font-weight: 700;
-      cursor: pointer;
-    }}
-    button:hover {{ background: var(--soft); }}
-    button.primary {{ border-color: var(--blue); background: var(--blue); color: #fff; }}
-    button.good {{ border-color: #2f855a; background: #edf8f1; color: #166534; }}
-    button:disabled {{ color: #98a2b3; cursor: not-allowed; background: #f2f4f7; }}
-    .head {{ padding: 14px 16px; border-bottom: 1px solid var(--line); background: var(--soft); }}
-    .head p {{ margin-top: 4px; color: var(--muted); font-size: 12px; }}
-    .table-wrap {{ overflow: auto; }}
-    table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
-    th, td {{ padding: 10px 12px; border-bottom: 1px solid #edf1f5; text-align: left; white-space: nowrap; vertical-align: middle; }}
-    th {{ position: sticky; top: 0; background: #fbfcfe; color: #475467; z-index: 1; font-size: 12px; }}
-    tr:hover td {{ background: #fbfdff; }}
-    .main-cell {{ font-weight: 700; }}
-    .sub-cell {{ margin-top: 3px; color: var(--muted); font-size: 12px; }}
-    .mono {{ font-family: ui-monospace, "JetBrains Mono", Consolas, monospace; font-size: 12px; }}
-    .muted {{ color: var(--muted); }}
-    .pill {{ display: inline-flex; min-width: 48px; justify-content: center; padding: 3px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; }}
-    .status-available {{ color: var(--blue); background: #eef4ff; }}
-    .status-used {{ color: #475467; background: #f2f4f7; }}
-    .status-failed {{ color: var(--red); background: #fff0ef; }}
-    .actions {{ display: flex; gap: 8px; flex-wrap: wrap; }}
-    #toast {{
-      position: fixed;
-      right: 18px;
-      bottom: 18px;
-      padding: 10px 14px;
-      border-radius: 8px;
-      background: #101827;
-      color: #fff;
-      box-shadow: 0 14px 30px rgba(15,23,42,.24);
-      opacity: 0;
-      transform: translateY(8px);
-      pointer-events: none;
-      transition: opacity .18s ease, transform .18s ease;
-    }}
-    #toast.show {{ opacity: 1; transform: translateY(0); }}
-    @media (max-width: 820px) {{
-      header {{ align-items: flex-start; }}
-      .stats {{ width: 100%; }}
-      .stat {{ flex: 1; }}
-    }}
-  </style>
-</head>
-<body>
-<header>
-  <div>
-    <h1>账号查看器</h1>
-    <p class="meta">静态快照，无需启动 Web Server。生成时间：<span id="generated"></span></p>
-  </div>
-  <div class="stats">
-    <div class="stat"><span>已完成</span><strong id="statAccounts">0</strong></div>
-    <div class="stat"><span>邮箱总数</span><strong id="statOutlook">0</strong></div>
-    <div class="stat"><span>可用邮箱</span><strong id="statAvailable">0</strong></div>
-  </div>
-</header>
-<main>
-  <div class="toolbar">
-    <div class="search"><input id="q" placeholder="搜索邮箱、token、clientId、状态"></div>
-    <div class="buttons">
-      <button class="primary" id="copyAllTokens">复制全部 Token</button>
-      <button class="good" id="copyAllLines">复制全部整行</button>
-      <button id="copyAllEmails">复制全部邮箱素材</button>
-    </div>
-  </div>
-  <section>
-    <div class="head">
-      <h2>已完成账号</h2>
-      <p>整行格式：邮箱素材----accessToken----账号密码----totpSecret（如有）</p>
-    </div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>ID</th><th>邮箱</th><th>来源</th><th>额度</th><th>Token</th><th>备注</th><th>2FA</th><th>创建时间</th><th>操作</th></tr></thead>
-        <tbody id="accountsBody"></tbody>
-      </table>
-    </div>
-  </section>
-  <section>
-    <div class="head">
-      <h2>邮箱素材库</h2>
-      <p>原始格式：邮箱----密码----clientId----邮箱刷新令牌；注册完成后可直接复制对应 Token 或整行。</p>
-    </div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>邮箱</th><th>状态</th><th>Token</th><th>导入时间</th><th>已用时间</th><th>操作</th></tr></thead>
-        <tbody id="outlookBody"></tbody>
-      </table>
-    </div>
-  </section>
-</main>
-<div id="toast"></div>
-<script id="snapshot" type="application/json">{data_json}</script>
-<script>
-const SNAPSHOT = JSON.parse(document.getElementById('snapshot').textContent);
-const $ = (s) => document.querySelector(s);
-let copySeq = 0;
-const copyStore = new Map();
-
-function fmt(v) {{ return v == null || v === '' ? '-' : String(v); }}
-function esc(v) {{
-  return fmt(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-}}
-function short(v, n = 34) {{
-  const s = v || '';
-  return s.length > n ? `${{s.slice(0, n)}}...` : s;
-}}
-function copyId(v) {{
-  if (!v) return '';
-  const id = `c${{++copySeq}}`;
-  copyStore.set(id, v);
-  return id;
-}}
-function btn(label, value, cls = '') {{
-  const id = copyId(value);
-  return `<button class="${{cls}}" data-copy-id="${{id}}" ${{id ? '' : 'disabled'}}>${{label}}</button>`;
-}}
-function pill(status) {{
-  const map = {{ available: '可用', used: '已用', failed: '失败' }};
-  const label = map[status] || status || '-';
-  return `<span class="pill status-${{esc(status)}}">${{esc(label)}}</span>`;
-}}
-function quotaCell(r) {{
-  const windows = Array.isArray(r.quota_windows) ? r.quota_windows.filter(Boolean) : [];
-  const labels = {{ five_hour: '5小时限额', weekly: '周限额', monthly: '月限额', daily: '日限额', custom: '自定义窗口' }};
-  if (!windows.length) return `<span class="muted">${{r.quota_status === 'failed' ? '查询失败' : (r.quota_status === 'success' ? '未返回窗口' : '未查询')}}</span>`;
-  return `<div class="quota-cell">${{windows.map((w) => {{
-    const label = w.label || labels[String(w.kind || '').toLowerCase()] || '额度窗口';
-    const remaining = Number(w.remaining_percent);
-    return `<div>${{esc(label)}}${{Number.isFinite(remaining) ? ` 余${{Math.round(Math.max(0, Math.min(100, remaining)))}}%` : ''}}</div>`;
-  }}).join('')}}</div>`;
-}}
-function showToast(text) {{
-  const toast = $('#toast');
-  toast.textContent = text;
-  toast.classList.add('show');
-  clearTimeout(showToast.timer);
-  showToast.timer = setTimeout(() => toast.classList.remove('show'), 1400);
-}}
-async function copyText(text) {{
-  if (!text) return;
-  if (navigator.clipboard && window.isSecureContext) {{
-    await navigator.clipboard.writeText(text);
-  }} else {{
-    const area = document.createElement('textarea');
-    area.value = text;
-    area.style.position = 'fixed';
-    area.style.opacity = '0';
-    document.body.appendChild(area);
-    area.select();
-    document.execCommand('copy');
-    area.remove();
-  }}
-  showToast('已复制');
-}}
-function haystack(row) {{
-  return Object.values(row).join('\\n').toLowerCase();
-}}
-function render() {{
-  copyStore.clear();
-  copySeq = 0;
-  const q = $('#q').value.trim().toLowerCase();
-  const accounts = SNAPSHOT.accounts.filter((r) => !q || haystack(r).includes(q));
-  const outlook = SNAPSHOT.outlook.filter((r) => !q || haystack(r).includes(q));
-  $('#generated').textContent = SNAPSHOT.generated_at;
-  $('#statAccounts').textContent = SNAPSHOT.summary.accounts;
-  $('#statOutlook').textContent = SNAPSHOT.summary.outlook_total;
-  $('#statAvailable').textContent = SNAPSHOT.summary.outlook_available;
-  $('#accountsBody').innerHTML = accounts.map((r) => `
-    <tr>
-      <td class="muted">#${{esc(r.id)}}</td>
-      <td><div class="main-cell">${{esc(r.email)}}</div><div class="sub-cell">${{esc(r.user_name || '-')}}</div></td>
-      <td>${{esc(r.email_source || '-')}}</td>
-      <td>${{quotaCell(r)}}</td>
-      <td><span class="mono">${{esc(short(r.access_token || '', 42))}}</span></td>
-      <td title="${{esc(r.note || '')}}">${{r.note ? esc(short(r.note, 60)) : '<span class="muted">-</span>'}}</td>
-      <td>${{r.totp_secret ? '已启用' : '<span class="muted">未启用</span>'}}</td>
-      <td class="muted">${{esc(r.created_at || '-')}}</td>
-      <td class="actions">${{btn('复制Token', r.access_token, 'primary')}} ${{btn('复制整行', r.copy_line, 'good')}}</td>
-    </tr>`).join('');
-  $('#outlookBody').innerHTML = outlook.map((r) => `
-    <tr>
-      <td><div class="main-cell">${{esc(r.email)}}</div><div class="sub-cell mono">${{esc(short(r.copy_line, 76))}}</div></td>
-      <td>${{pill(r.status)}}</td>
-      <td><span class="mono">${{esc(short(r.access_token || '', 36) || '未生成')}}</span></td>
-      <td class="muted">${{esc(r.imported_at || r.created_at || '-')}}</td>
-      <td class="muted">${{esc(r.used_at || '-')}}</td>
-      <td class="actions">${{btn('复制邮箱', r.copy_line)}} ${{btn('复制Token', r.access_token, 'primary')}} ${{btn('复制整行', r.account_copy_line, 'good')}}</td>
-    </tr>`).join('');
-}}
-document.addEventListener('click', (e) => {{
-  const target = e.target.closest('[data-copy-id]');
-  if (!target) return;
-  copyText(copyStore.get(target.dataset.copyId));
-}});
-$('#q').addEventListener('input', render);
-$('#copyAllTokens').addEventListener('click', () => copyText(SNAPSHOT.accounts.map((r) => r.access_token).filter(Boolean).join('\\n')));
-$('#copyAllLines').addEventListener('click', () => copyText(SNAPSHOT.accounts.map((r) => r.copy_line).filter(Boolean).join('\\n')));
-$('#copyAllEmails').addEventListener('click', () => copyText(SNAPSHOT.outlook.map((r) => r.copy_line).filter(Boolean).join('\\n')));
-render();
-</script>
-</body>
-</html>
-"""
-    tmp = _VIEWER_HTML.with_suffix(".html.tmp")
-    tmp.write_text(html_text, encoding="utf-8")
-    try:
-        tmp.replace(_VIEWER_HTML)
-        return _VIEWER_HTML
-    except PermissionError:
-        # Windows 下如果目标 HTML 正被浏览器或编辑器短暂占用，原子替换可能失败。
-        # 先尝试直接覆盖；仍失败时写一个时间戳快照，避免注册流程被查看页刷新阻断。
-        try:
-            _VIEWER_HTML.write_text(html_text, encoding="utf-8")
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-            return _VIEWER_HTML
-        except PermissionError:
-            fallback = _DATA_DIR / f"accounts_viewer_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-            fallback.write_text(html_text, encoding="utf-8")
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-            return fallback
 
 
 def _load_outlook() -> list[dict]:
@@ -2096,7 +1758,7 @@ def count_accounts() -> int:
 
 
 def delete_account(acc_id: int | None = None, email: str | None = None) -> bool:
-    """删除一个已注册账号记录，并同步刷新 注册成功的邮箱.txt / token.txt / 静态查看页。"""
+    """删除一个已注册账号记录。"""
     deleted, _ = delete_accounts(
         account_ids=[acc_id] if acc_id is not None else None,
         emails=[email] if email else None,
@@ -3882,11 +3544,6 @@ def storage_paths() -> dict:
     return {
         "logs_dir": str(_LOG_DIR),
     }
-
-
-def refresh_static_viewer() -> Path:
-    """静态查看器已退休；账号与邮箱池通过 WebUI/API 查询。"""
-    raise RuntimeError("accounts_viewer.html 已退休，请通过 WebUI/API 查询数据库")
 
 
 # ============================================================
