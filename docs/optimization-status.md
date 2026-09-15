@@ -442,6 +442,22 @@ Both source worktrees are clean and local-only. Aquinas's token acceptance
 remains integrated. Primary workspace still has 13 user-owned dirty files;
 there were no production DB tests, restarts, deployments or pushes.
 
+### Monitor checkpoint 2026-09-15 01:13 UTC
+
+The first locked full-suite run after integrating Zeno and Dewey completed
+with **1121 passed, 830 subtests, 4 failed in 280.50s**. The failures are a
+real compatibility regression from the maintenance migration: four existing
+tests patch the historical `_EXECUTOR` aliases on live-check/plan-check
+services, but those aliases were removed while the durable gateway became the
+submission path. No production behavior was reverted. Zeno was assigned a
+narrow Luna max follow-up to restore the test/legacy patch seam without
+reintroducing direct process-pool submission; its result remains pending.
+
+The two implementation commits remain only on the isolated integration branch
+(`6e007da`, `c12f863` plus this follow-up log). Primary workspace and private
+data remain unchanged; no production DB test, restart, deployment or push
+occurred.
+
 ## Verification
 
 Baseline full suite completed: **954 passed, 34 subtests passed, 3 failed in
