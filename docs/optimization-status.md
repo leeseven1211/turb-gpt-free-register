@@ -411,6 +411,21 @@ the token settlement and task-center read-query integrations: **1087 passed,
 isolated database launcher. This result predates the replacement agents' new
 commits and therefore does not accept their pending service/runtime work.
 
+### Monitor checkpoint 2026-09-15 00:37 UTC
+
+Aquinas returned Luna max token audit commit `35e15a1`, which adds a fail-closed
+guard so `reconcile=True` cannot create a refresh run or send a refresh grant
+even when the credential marker is clean. The commit was reviewed and
+integrated as `7a8ce99`. Isolated token targets passed: **38 passed in 14.99s**;
+the earlier gateway/executor audit also passed **24 passed, 11 subtests**.
+
+Zeno and Dewey remain in progress with uncommitted maintenance and runtime
+changes; their work is not accepted. A first incorrect local test invocation
+referenced a nonexistent test file and ran no tests; it was corrected before
+the passing result above. Integration remains isolated, primary HEAD remains
+`f33e523` with 13 user-owned dirty files, and no production DB test, restart,
+deployment or push occurred.
+
 ## Verification
 
 Baseline full suite completed: **954 passed, 34 subtests passed, 3 failed in
