@@ -471,6 +471,27 @@ The next required gate is a fresh locked full-suite run on this exact
 integration state. Primary workspace remains unchanged with 13 user-owned
 dirty files; no production DB test, restart, deployment or push occurred.
 
+### Monitor checkpoint 2026-09-15 01:59 UTC — all five acceptance gates complete
+
+The fresh locked full-suite run on the repaired integration branch passed:
+**1125 passed, 830 subtests in 220.68s**. Ruff, compileall, `pip check` and
+the dependency-lock checker also passed (`runtime=51`, `development=61`).
+
+The release performance gate passed on 1000 synthetic accounts and 2000
+terminal history rows using 20 HTTP samples: account list p95 **19.422 ms**
+(max 41.762, 3 SQL), task center p95 **60.303 ms** (max 60.578, 8 SQL), under
+the 250 ms/3-SQL/10-SQL limits. Durable dispatcher measured configured max
+concurrency **3/3**, observed a 29-run backlog with 32/32 successful
+no-network runs, and restarted recovery completed **6/6**; no network calls
+were made.
+
+Coordinator acceptance is now complete for storage row safety, durable task
+and runtime migration, canonical configuration snapshots, authentication/
+token remote-boundary handling, and release/test/read-performance gates. The
+integration branch remains local-only. Primary HEAD is still `f33e523` with
+the same 13 user-owned dirty files; no production database test, restart,
+deployment or push occurred. This monitoring automation can now be closed.
+
 ## Verification
 
 Baseline full suite completed: **954 passed, 34 subtests passed, 3 failed in
