@@ -18,6 +18,12 @@ from core import roxy_registration
 
 
 class ConfigDefaultFallbackTests(unittest.TestCase):
+    def test_outlook_pool_has_no_file_configuration(self):
+        import config.email as email_config
+        import config as config_package
+
+        self.assertFalse(hasattr(email_config, "OUTLOOK_ACCOUNTS_FILE"))
+        self.assertFalse(hasattr(config_package, "OUTLOOK_ACCOUNTS_FILE"))
     def test_extract_link_uses_documented_service_by_default(self):
         self.assertEqual(
             extract_link_config.EXTRACT_LINK_API_BASE,
