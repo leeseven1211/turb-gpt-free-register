@@ -37,6 +37,29 @@ class ICloudHidePoolTests(PostgresTestCase):
         self.assertTrue(db.release_unconsumed_icloud_hide_email("one@example.com", note="task stopped"))
         self.assertEqual(db.get_icloud_hide_email_by_email("one@example.com")["status"], "available")
 
+    def test_claim_can_restrict_to_multiple_accounts(self):
+        db.sync_icloud_hide_aliases([{"email": "a@example.com", "active": True}], "acc-a")
+        db.sync_icloud_hide_aliases([{"email": "b@example.com", "active": True}], "acc-b")
+
+        claimed = db.claim_next_icloud_hide_email(account_ids=["acc-b"])
+
+        self.assertEqual(claimed["email"], "b@example.com")
+        self.assertEqual(db.get_icloud_hide_email_by_email("a@example.com")["status"], "available")
+
+    def test_summary_is_grouped_by_account(self):
+        db.sync_icloud_hide_aliases([
+            {"email": "a1@example.com", "active": True},
+            {"email": "a2@example.com", "active": True},
+        ], "acc-a")
+        db.sync_icloud_hide_aliases([{"email": "b1@example.com", "active": False}], "acc-b")
+        db.claim_next_icloud_hide_email("acc-a")
+
+        grouped = {row["account_id"]: row for row in db.icloud_hide_email_pool_summary_by_account()}
+
+        self.assertEqual(grouped["acc-a"]["available"], 1)
+        self.assertEqual(grouped["acc-a"]["used"], 1)
+        self.assertEqual(grouped["acc-b"]["disabled"], 1)
+
     def test_registered_alias_is_not_released(self):
         rs.insert_row(rs.ACCOUNTS, {"email": "bound@example.com"})
         db.sync_icloud_hide_aliases([{"email": "bound@example.com", "active": True}], "acc-1")

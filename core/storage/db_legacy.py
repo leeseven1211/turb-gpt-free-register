@@ -4252,13 +4252,26 @@ def sync_icloud_hide_aliases(aliases: list[dict], account_id: str, *, full_snaps
     }
 
 
-def claim_next_icloud_hide_email(account_id: str | None = None) -> dict | None:
+def claim_next_icloud_hide_email(
+    account_id: str | None = None,
+    *,
+    account_ids: list[str] | None = None,
+) -> dict | None:
     """原子领取一个已同步且仍激活的 iCloud 隐藏邮箱。"""
+    if account_ids is not None:
+        normalized_ids = [str(value or "").strip() for value in account_ids if str(value or "").strip()]
+        if not normalized_ids:
+            return None
+    else:
+        normalized_ids = None
     where = ["status = %s", "COALESCE(data->>'remote_active', 'true') <> 'false'"]
     params: list[Any] = ["available"]
     if account_id:
         where.append("account_id = %s")
         params.append(str(account_id))
+    if normalized_ids is not None:
+        where.append("account_id = ANY(%s)")
+        params.append(normalized_ids)
     row = record_store.claim_next_row(
         record_store.ICLOUD_HIDE_POOL,
         changes={"status": "used", "used_at": _now(), "note": None},
@@ -4316,6 +4329,52 @@ def list_icloud_hide_email_pool(status: str | None = None, limit: int = 500) -> 
 
 def icloud_hide_email_pool_summary() -> dict:
     return _pool_summary(record_store.ICLOUD_HIDE_POOL, ("available", "used", "failed", "disabled"))
+
+
+def icloud_hide_email_pool_summary_by_account(account_ids: list[str] | None = None) -> list[dict]:
+    """按 sidecar 账号汇总本地 HME 别名池状态。"""
+    normalized_ids = None
+    if account_ids is not None:
+        normalized_ids = [str(value or "").strip() for value in account_ids if str(value or "").strip()]
+        if not normalized_ids:
+            return []
+
+    table = postgres_store.qualified(record_store.ICLOUD_HIDE_POOL.name)
+    from psycopg.rows import dict_row
+
+    where = ""
+    params: tuple[Any, ...] = ()
+    if normalized_ids is not None:
+        where = ' WHERE "account_id" = ANY(%s)'
+        params = (normalized_ids,)
+    record_store.init()
+    with postgres_store.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
+        cur.execute(
+            f'''SELECT COALESCE("account_id", '') AS account_id,
+                       COALESCE(status, 'available') AS status,
+                       COUNT(*) AS count
+                  FROM {table}{where}
+                 GROUP BY 1, 2
+                 ORDER BY 1, 2''',
+            params,
+        )
+        rows = cur.fetchall()
+
+    statuses = ("available", "used", "failed", "disabled")
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        account_key = str(row["account_id"] or "")
+        item = grouped.setdefault(
+            account_key,
+            {"account_id": account_key, **{status: 0 for status in statuses}, "total": 0},
+        )
+        status = str(row["status"] or "available")
+        count = int(row["count"] or 0)
+        if status not in item:
+            item[status] = 0
+        item[status] += count
+        item["total"] += count
+    return [grouped[key] for key in sorted(grouped)]
 
 
 def delete_icloud_hide_email(email: str) -> bool:

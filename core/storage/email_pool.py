@@ -12,7 +12,7 @@ _NAMES = {
     "release_unconsumed_domain_email", "get_domain_email_by_email", "list_domain_email_pool", "domain_email_pool_summary",
     "delete_domain_email", "sync_icloud_hide_aliases", "claim_next_icloud_hide_email", "release_icloud_hide_email",
     "release_unconsumed_icloud_hide_email", "get_icloud_hide_email_by_email", "list_icloud_hide_email_pool",
-    "icloud_hide_email_pool_summary", "delete_icloud_hide_email",
+    "icloud_hide_email_pool_summary", "icloud_hide_email_pool_summary_by_account", "delete_icloud_hide_email",
 }
 
 
