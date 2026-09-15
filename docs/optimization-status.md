@@ -405,6 +405,12 @@ without coordinator diff review, targeted tests, and a fresh locked full-suite
 run. Primary workspace, private data, production database, deployment and push
 remain out of scope. The heartbeat remains ACTIVE.
 
+The coordinator ran a fresh full suite on the current integration branch after
+the token settlement and task-center read-query integrations: **1087 passed,
+830 subtests passed in 536.68s** using the locked Python environment and safe
+isolated database launcher. This result predates the replacement agents' new
+commits and therefore does not accept their pending service/runtime work.
+
 ## Verification
 
 Baseline full suite completed: **954 passed, 34 subtests passed, 3 failed in
