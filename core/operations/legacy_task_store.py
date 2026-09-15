@@ -20,7 +20,11 @@ from core import task_run_log
 from core.task_stages import normalize_step_state
 
 _LOCK = threading.RLock()
-_SCHEMA = str(os.getenv("ACCOUNT_TASK_DB_SCHEMA") or "public").strip() or "public"
+_SCHEMA = str(
+    os.getenv("ACCOUNT_TASK_DB_SCHEMA")
+    or os.getenv("TURB_DB_SCHEMA")
+    or "public"
+).strip() or "public"
 _READY_KEY = ""
 
 _TERMINAL_STATUSES = {

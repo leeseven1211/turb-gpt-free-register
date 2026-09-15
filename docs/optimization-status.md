@@ -492,6 +492,21 @@ integration branch remains local-only. Primary HEAD is still `f33e523` with
 the same 13 user-owned dirty files; no production database test, restart,
 deployment or push occurred. This monitoring automation can now be closed.
 
+### Local deployment verification 2026-09-15 02:12 UTC
+
+按用户要求在本优化 worktree 做本地启动验证。第一次启动在
+`operation_task_store.repair_stale_compatibility_projections()` 处失败：
+`test_opt_bootstrap.account_action_tasks` 不存在。根因是 `legacy_task_store`
+在未设置 `ACCOUNT_TASK_DB_SCHEMA` 时固定使用 `public`，而隔离启动入口只设置
+了 `TURB_DB_SCHEMA`。先新增回归测试确认该失败，再将默认选择改为
+`ACCOUNT_TASK_DB_SCHEMA` -> `TURB_DB_SCHEMA` -> `public`，回归测试通过。
+
+修复后的集成 worktree 已在独立本地端口 `127.0.0.1:8001` 启动，使用
+`turb_opt_20260914` 的隔离 schema；进程监听正常，`/healthz` 返回 **200**，
+`/readyz` 返回 **200** 且 database、executor、codex dispatcher、dependency
+dispatcher、projection worker 均为 healthy，`/login` 返回 **200**。该进程
+只用于本地隔离验证，未读取生产数据库、未重启既有服务、未部署远端、未推送。
+
 ## Verification
 
 Baseline full suite completed: **954 passed, 34 subtests passed, 3 failed in
