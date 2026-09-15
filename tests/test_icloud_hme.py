@@ -128,6 +128,100 @@ class ICloudHMEClientTests(unittest.TestCase):
         self.assertEqual(routing["remote_usable"], 1)
         self.assertEqual(routing["forward_incompatible"], 0)
 
+    @patch("core.db.icloud_hide_email_pool_summary_by_account", return_value=[])
+    @patch("core.db.icloud_hide_email_pool_summary", return_value={"total": 2})
+    @patch("core.db.sync_icloud_hide_aliases", return_value={"inserted": 1, "updated": 0, "disabled": 0, "total": 1})
+    @patch("core.icloud_hme_client._request")
+    def test_dynamic_syncs_all_active_accounts(self, request_mock, sync_mock, _summary, _grouped):
+        request_mock.side_effect = [
+            [
+                {"id": "acc-a", "name": "old", "status": "active", "created_at": "2026-01-01"},
+                {"id": "acc-b", "name": "new", "status": "active", "created_at": "2026-01-02"},
+                {"id": "acc-off", "name": "off", "status": "disabled", "created_at": "2026-01-03"},
+            ],
+            {"aliases": [{"email": "a@example.com", "active": True}]},
+            {"aliases": [{"email": "b@example.com", "active": True}]},
+        ]
+        with patch.object(client._email_cfg, "ICLOUD_HME_ACCOUNT_ID", ""):
+            result = client.sync_aliases(force=True)
+
+        self.assertEqual(result["account_ids"], ["acc-a", "acc-b"])
+        self.assertEqual(result["synced_account_ids"], ["acc-a", "acc-b"])
+        self.assertEqual(result["remote_count"], 2)
+        self.assertEqual(sync_mock.call_count, 2)
+        self.assertEqual(
+            [call.args[1] for call in sync_mock.call_args_list],
+            ["acc-a", "acc-b"],
+        )
+
+    @patch("core.db.icloud_hide_email_pool_summary_by_account", return_value=[])
+    @patch("core.db.icloud_hide_email_pool_summary", return_value={"total": 1})
+    @patch("core.db.sync_icloud_hide_aliases", return_value={"inserted": 1, "updated": 0, "disabled": 0, "total": 1})
+    @patch("core.icloud_hme_client._request")
+    def test_dynamic_sync_keeps_successful_account_when_another_fails(self, request_mock, sync_mock, _summary, _grouped):
+        request_mock.side_effect = [
+            [
+                {"id": "acc-a", "status": "active", "created_at": "2026-01-01"},
+                {"id": "acc-b", "status": "active", "created_at": "2026-01-02"},
+            ],
+            client.ICloudHMEError("acc-a unavailable"),
+            {"aliases": [{"email": "b@example.com", "active": True}]},
+        ]
+        with patch.object(client._email_cfg, "ICLOUD_HME_ACCOUNT_ID", ""):
+            result = client.sync_aliases(force=True)
+
+        self.assertEqual(result["account_ids"], ["acc-a", "acc-b"])
+        self.assertEqual(result["synced_account_ids"], ["acc-b"])
+        self.assertEqual(result["remote_count"], 1)
+        self.assertEqual(result["account_errors"][0]["account_id"], "acc-a")
+        sync_mock.assert_called_once()
+        self.assertEqual(sync_mock.call_args.args[1], "acc-b")
+
+    @patch("core.db.claim_next_icloud_hide_email", return_value={
+        "email": "b@example.com",
+        "account_id": "acc-b",
+        "anonymous_id": "anon-b",
+        "label": "new",
+    })
+    @patch("core.icloud_hme_client.sync_aliases", return_value={
+        "account_id": "acc-a",
+        "account_ids": ["acc-a", "acc-b"],
+        "synced_account_ids": ["acc-a", "acc-b"],
+    })
+    def test_pick_account_uses_global_pool(self, sync_mock, claim_mock):
+        account = client.pick_account()
+
+        self.assertEqual(account.email, "b@example.com")
+        self.assertEqual(account.account_id, "acc-b")
+        claim_mock.assert_called_once_with(account_ids=["acc-a", "acc-b"])
+        sync_mock.assert_called_once_with(force=False)
+
+    @patch("core.db.icloud_hide_email_pool_summary_by_account", return_value=[
+        {"account_id": "acc-a", "available": 1, "used": 2, "disabled": 0, "failed": 0, "total": 3},
+        {"account_id": "acc-b", "available": 4, "used": 5, "disabled": 0, "failed": 0, "total": 9},
+    ])
+    @patch("core.db.icloud_hide_email_pool_summary", return_value={"available": 5, "used": 7, "disabled": 0, "failed": 0, "total": 12})
+    @patch("core.db.sync_icloud_hide_aliases", return_value={"inserted": 1, "updated": 0, "disabled": 0, "total": 1})
+    @patch("core.icloud_hme_client._request")
+    def test_connection_reports_all_accounts(self, request_mock, _sync, _summary, _grouped):
+        request_mock.side_effect = [
+            [
+                {"id": "acc-a", "name": "old", "status": "active", "created_at": "2026-01-01"},
+                {"id": "acc-b", "name": "new", "status": "active", "created_at": "2026-01-02"},
+            ],
+            {"aliases": [{"email": "a@example.com", "active": True}]},
+            {"aliases": [{"email": "b@example.com", "active": True}]},
+            {"method": "imap", "messages": []},
+        ]
+        with patch.object(client._email_cfg, "ICLOUD_HME_ACCOUNT_ID", ""):
+            result = client.test_connection(api_base="http://127.0.0.1:8081")
+
+        self.assertEqual(result["account_ids"], ["acc-a", "acc-b"])
+        self.assertEqual(result["remote_aliases"], 2)
+        self.assertEqual(result["remote_active"], 2)
+        self.assertEqual(result["pool_by_account"][1]["account_id"], "acc-b")
+        self.assertEqual(result["inbox_method"], "imap")
+
     @patch("core.forward_imap_client.fetch_latest_otp", return_value="123456")
     @patch.object(client, "_inbox_mode", return_value="forward_butler")
     def test_fetch_latest_otp_delegates_to_forward_cache(self, _mode, fetch):
@@ -139,15 +233,17 @@ class ICloudHMEClientTests(unittest.TestCase):
         client._LAST_SYNC_AT = 0.0
         client._LAST_SYNC_KEY = ""
         client._LAST_ACCOUNT_ID = ""
+        client._LAST_SYNC_RESULT = {}
         self.inbox_mode_patch = patch.object(client, "_inbox_mode", return_value="sidecar")
         self.inbox_mode_patch.start()
 
     def tearDown(self):
         self.inbox_mode_patch.stop()
 
+    @patch("core.db.icloud_hide_email_pool_summary_by_account", return_value=[])
     @patch("core.db.sync_icloud_hide_aliases")
     @patch("core.icloud_hme_client._request")
-    def test_connection_syncs_aliases_and_checks_imap(self, request_mock, sync_mock):
+    def test_connection_syncs_aliases_and_checks_imap(self, request_mock, sync_mock, _grouped):
         request_mock.side_effect = [
             [{"id": "acc-1", "status": "active"}],
             {"aliases": [{"email": "one@example.com", "active": True}]},
@@ -162,10 +258,11 @@ class ICloudHMEClientTests(unittest.TestCase):
         self.assertEqual(result["inbox_method"], "imap")
         sync_mock.assert_called_once()
 
+    @patch("core.db.icloud_hide_email_pool_summary_by_account", return_value=[])
     @patch("core.db.icloud_hide_email_pool_summary", return_value={"available": 0, "disabled": 1, "total": 1})
     @patch("core.db.sync_icloud_hide_aliases", return_value={"inserted": 1, "total": 1})
     @patch("core.icloud_hme_client._request")
-    def test_connection_rejects_gmail_forward_with_icloud_imap(self, request_mock, _sync, _summary):
+    def test_connection_rejects_gmail_forward_with_icloud_imap(self, request_mock, _sync, _summary, _grouped):
         request_mock.side_effect = [
             [{"id": "acc-1", "status": "active"}],
             {"aliases": [{
@@ -178,12 +275,19 @@ class ICloudHMEClientTests(unittest.TestCase):
         with self.assertRaisesRegex(client.ICloudHMEError, "gmail.com"):
             client.test_connection(api_base="http://127.0.0.1:8081", account_id="acc-1")
 
+    @patch("core.db.icloud_hide_email_pool_summary_by_account", return_value=[])
     @patch("core.db.icloud_hide_email_pool_summary", return_value={"available": 2, "total": 2})
-    @patch("core.db.sync_icloud_hide_aliases", return_value={"inserted": 2, "total": 2})
-    @patch("core.icloud_hme_client.list_aliases", return_value=("auto-selected", [{"email": "a@example.com"}]))
-    def test_cached_sync_keeps_auto_selected_account_id(self, _list, _sync, _summary):
-        first = client.sync_aliases(force=True)
-        second = client.sync_aliases(force=False)
+    @patch("core.db.sync_icloud_hide_aliases", return_value={"inserted": 1, "updated": 0, "disabled": 0, "total": 1})
+    @patch("core.icloud_hme_client._request")
+    def test_cached_sync_keeps_auto_selected_account_id(self, request_mock, _sync, _summary, _grouped):
+        request_mock.side_effect = [
+            [{"id": "auto-selected", "status": "active"}],
+            {"aliases": [{"email": "a@example.com"}]},
+            [{"id": "auto-selected", "status": "active"}],
+        ]
+        with patch.object(client._email_cfg, "ICLOUD_HME_ACCOUNT_ID", ""):
+            first = client.sync_aliases(force=True)
+            second = client.sync_aliases(force=False)
         self.assertEqual(first["account_id"], "auto-selected")
         self.assertEqual(second["account_id"], "auto-selected")
         self.assertTrue(second["cached"])
