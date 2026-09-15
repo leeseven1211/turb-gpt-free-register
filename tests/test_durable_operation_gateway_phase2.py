@@ -339,6 +339,57 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
             result_summary={"confirmed": True},
         )
 
+    def test_explicit_remote_rejection_after_confirmed_request_is_terminal(self):
+        account_id = self._runtime_account("unsupported-payment@example.test")
+        task = operation.create_runtime_task(
+            task_type="extract_link",
+            account_id=account_id,
+            email="unsupported-payment@example.test",
+            source_system="native_operations",
+            source_id="unsupported-payment-1",
+        )
+        run_id = int(task["run"]["id"])
+        execution_id = "unsupported-payment-worker"
+        operation.claim_run(run_id, execution_id=execution_id, worker_pid=707)
+        lease_token = operation.acquire_account_lease(
+            account_id=account_id, run_id=run_id, ttl_seconds=120,
+        )
+        operation.record_remote_intent(
+            run_id,
+            execution_id=execution_id,
+            lease_token=lease_token,
+            action="extract_job_create",
+            request_id="unsupported-payment-request",
+        )
+        operation.record_remote_receipt(
+            run_id,
+            execution_id=execution_id,
+            lease_token=lease_token,
+            outcome="confirmed",
+            action="extract_job_create",
+            detail={
+                "remote_result_confirmed": True,
+                "local_business_writeback_confirmed": True,
+                "local_readback_confirmed": True,
+            },
+        )
+
+        finished = operation.finish_run(
+            run_id,
+            status="unsupported",
+            message="当前账号不支持 MoMo 支付方式",
+            error="当前账号不支持 MoMo 支付方式",
+            execution_id=execution_id,
+            lease_token=lease_token,
+            result_summary={"remote_result_state": "rejected"},
+        )
+
+        self.assertEqual("unsupported", finished["status"])
+        detail = operation.get_task(int(task["id"]))
+        self.assertEqual("unsupported", detail["status"])
+        self.assertEqual("account_available", detail["target_status"])
+        self.assertEqual([], detail["next_actions"])
+
     def test_crash_after_http_receipt_never_becomes_retryable(self):
         account_id = self._runtime_account("receipt-crash@example.test")
         task = operation.create_runtime_task(

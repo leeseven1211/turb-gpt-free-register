@@ -502,6 +502,17 @@ def _format_failure_reason(exc: Exception, logs: list[str] | None = None, last_e
     return reason[:500]
 
 
+def _explicit_remote_failure_status(last_event: dict | None, reason: str) -> str | None:
+    """把远端 SSE 明确拒绝转换成终态，而不是未知结果。"""
+    if not isinstance(last_event, dict) or str(last_event.get("event") or "") != "error":
+        return None
+    text = str(reason or "")
+    lowered = text.lower()
+    if "不支持" in text or "unsupported" in lowered or "not supported" in lowered:
+        return "unsupported"
+    return "failed"
+
+
 def _token_is_invalid_for_extract(result: dict) -> bool:
     """只把明确的 Token 失效交给邮箱登录刷新；网络错误不自动重登。"""
     if bool(result.get("token_expired") or result.get("needs_live_check")):
@@ -1030,9 +1041,16 @@ def _run_extract(
                 logger.exception("[提链] 远端创建异常回执写入失败: account_id=%s", account_id)
         unknown = bool(job_id or _is_request_unknown_error(exc) or remote_unknown)
         reason = _format_failure_reason(exc, logs=logs, last_event=last_event)
+        explicit_remote_status = _explicit_remote_failure_status(last_event, reason)
+        if explicit_remote_status:
+            unknown = False
+            remote_reason = _extract_error_message(last_event.get("data")) if last_event else ""
+            if remote_reason:
+                reason = remote_reason[:500]
+        final_status = explicit_remote_status or ("request_unknown" if unknown else "failed")
         result = {
             "ok": False,
-            "status": "request_unknown" if unknown else "failed",
+            "status": final_status,
             "job_id": job_id or None,
             "link_type": link_type,
             "checked_at": datetime.now().isoformat(timespec="seconds"),
@@ -1046,16 +1064,23 @@ def _run_extract(
             result={}, link_type=link_type, job_id=job_id, ok=False,
         )
         failure_summary["remote_job_created"] = bool(job_id)
+        if explicit_remote_status:
+            failure_summary["remote_result_state"] = "rejected"
+        stage_message = (
+            "远端提炼结果待确认" if unknown
+            else "当前支付方式不支持" if final_status == "unsupported"
+            else "提炼失败"
+        )
         reporter.stage(
             task_stage,
             "failed",
-            "远端提炼结果待确认" if unknown else "提炼失败",
+            stage_message,
             level="WARNING" if unknown else "ERROR",
             detail={"error": safe_reason},
         )
         reporter.finish(
-            status="request_unknown" if unknown else "failed",
-            message="远端提炼结果待确认" if unknown else "提炼失败",
+            status=final_status,
+            message=stage_message,
             error=safe_reason,
             result_summary=failure_summary,
             validation_method="extract_link_sse" if job_id else "extract_preflight",

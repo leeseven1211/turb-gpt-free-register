@@ -210,6 +210,40 @@ class ExtractLinkServiceTests(unittest.TestCase):
         self.assertGreaterEqual(update_extract.call_count, 2)
         release.assert_called_once_with()
 
+    def test_explicit_remote_unsupported_error_is_terminal_unsupported(self):
+        reporter = Mock()
+        error_message = "当前账号不支持 MoMo 支付方式"
+        with (
+            patch.object(extract_link_service, "TaskReporter", return_value=reporter),
+            patch.object(extract_link_service.db, "mark_account_extract_running", return_value=True),
+            patch.object(extract_link_service.db, "update_account_extract") as update_extract,
+            patch.object(extract_link_service.db, "mark_extract_link_type_failed") as mark_type_failed,
+            patch.object(extract_link_service, "_ensure_extract_token", return_value="fresh-token"),
+            patch.object(extract_link_service, "_create_extract_job", return_value={"job_id": "job-unsupported"}),
+            patch.object(
+                extract_link_service,
+                "_iter_sse_events",
+                return_value=iter([("error", {"message": error_message})]),
+            ),
+            patch.object(extract_link_service._QUEUE_SLOTS, "release"),
+        ):
+            result = extract_link_service._run_extract(
+                account_id=7,
+                email="masked@example.com",
+                access_token="fresh-token",
+                link_type="momo",
+                cdk="cdk",
+                trigger="manual",
+                task_id=701,
+            )
+
+        self.assertEqual("unsupported", result["status"])
+        self.assertEqual(error_message, result["error"])
+        self.assertEqual("unsupported", reporter.finish.call_args.kwargs["status"])
+        self.assertEqual(error_message, reporter.finish.call_args.kwargs["error"])
+        mark_type_failed.assert_called_once_with(7, "momo", error_message)
+        self.assertTrue(any(call.args[1]["status"] == "unsupported" for call in update_extract.call_args_list))
+
     def test_enqueue_creates_native_extract_run_without_legacy_executor(self):
         with (
             patch.object(extract_link_service.db, "get_account", return_value={"id": 7, "email": "masked@example.com"}),

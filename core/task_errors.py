@@ -26,6 +26,7 @@ class TaskErrorCode(str, Enum):
     INTERNAL_BROWSER = "internal.browser"
     WORKFLOW_VERIFICATION = "workflow.verification"
     WORKFLOW_PAGE_STATE = "workflow.page_state"
+    WORKFLOW_UNSUPPORTED = "workflow.unsupported"
     UNKNOWN = "unknown.unclassified"
 
 
@@ -122,6 +123,13 @@ _RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         ("未识别到", "无法切换", "未进入", "页面状态", "当前页面", "state="),
     ),
     (
+        "workflow.unsupported",
+        "workflow",
+        "流程错误",
+        "当前功能不支持",
+        ("不支持", "unsupported", "not supported"),
+    ),
+    (
         "external.network",
         "external",
         "外部错误",
@@ -190,6 +198,11 @@ _ERROR_METADATA: dict[str, dict[str, str]] = {
         "retryability": "conditional",
         "remote_state_impact": "unknown",
         "next_action": "reconcile_session",
+    },
+    "workflow.unsupported": {
+        "retryability": "not_retryable",
+        "remote_state_impact": "remote_rejected",
+        "next_action": "none",
     },
     "external.network": {
         "retryability": "retryable",

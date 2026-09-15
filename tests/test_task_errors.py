@@ -29,6 +29,12 @@ class TaskErrorClassificationTests(unittest.TestCase):
         info = classify_task_error("等待 /api/auth/session accessToken 超时")
         self.assertEqual(info["code"], "external.openai")
 
+    def test_unsupported_payment_method_is_explicit_unsupported_error(self):
+        info = classify_task_error("当前账号不支持 MoMo 支付方式")
+        self.assertEqual(info["code"], "workflow.unsupported")
+        self.assertEqual(info["kind_label"], "当前功能不支持")
+        self.assertEqual(info["retryability"], "not_retryable")
+
     def test_missing_api_key_is_configuration_error(self):
         info = classify_task_error("CloudMail API Key 为空，请填写配置")
         self.assertEqual(info["code"], "configuration.missing")

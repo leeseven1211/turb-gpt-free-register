@@ -5131,8 +5131,14 @@ def finish_run(
         else:
             intent = _remote_write_checkpoint(found.get("data"))
             receipt = str(intent.get("receipt_state") or intent.get("state") or "started")
+            explicit_remote_rejection = (
+                str(found.get("task_type") or "") == "extract_link"
+                and status_value in {"failed", "unsupported"}
+                and str(dependency_result.get("remote_result_state") or "").lower() == "rejected"
+            )
             if intent and receipt != "rejected" and (
-                status_value != "success" or receipt != "confirmed"
+                not explicit_remote_rejection
+                and (status_value != "success" or receipt != "confirmed")
             ):
                 # Exceptions/cancellation after the request boundary must not
                 # evade crash recovery by becoming a retryable terminal Run.
@@ -5172,6 +5178,8 @@ def finish_run(
                 "cancelled": "cancelled",
                 "stopped": "cancelled",
             }.get(status_value, "failed")
+            if task_type == "extract_link" and status_value in {"failed", "unsupported"}:
+                target_status = "account_available"
             cur.execute(
                 f"""
                 UPDATE {_table('operation_tasks')}
@@ -5183,7 +5191,7 @@ def finish_run(
                 (
                     status_value, target_status, category, code, error_message,
                     _json(
-                        [] if status_value == "success" else
+                        [] if status_value in {"success", "unsupported"} else
                         [{"action": "reconcile", "label": "确认远端结果后继续"}]
                         if status_value == "attention_required"
                         and str(dependency_result.get("outcome") or "") == "request_unknown"
