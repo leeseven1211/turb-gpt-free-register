@@ -608,3 +608,20 @@ was performed. The remaining documented operational risk is that
 this pass; the observed local startup completed within that window.
 
 Monitoring is closed after this final local acceptance checkpoint.
+
+### Primary stash equivalence audit 2026-09-15 14:14 Asia/Shanghai
+
+The five optimization streams are already represented on local `main` by the
+reviewed integration commits for storage, durable tasks/runtime, configuration,
+shared authentication/token handling, and release verification. The original
+agent branch tips are patch-equivalent to `main`; they do not contain an
+additional implementation that needs to be merged again.
+
+The primary-workspace snapshot `stash@{0}` (`ffb0e835`) was compared file by
+file before any cleanup. Its proxy retry/rotation, iCloud relay/reactivation,
+and regression tests are already present in `main`. Its Roxy and legacy storage
+sections are older copies of code that the shared authentication and row-level
+storage migrations replaced; applying them wholesale would regress the new
+architecture. No unique source change from this stash remains to merge. The
+stash is retained as a recoverable backup; the single active code version is
+the committed `main` tree.
