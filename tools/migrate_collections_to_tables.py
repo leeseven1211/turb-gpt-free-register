@@ -3,7 +3,7 @@
 """把 app_collections 里的 JSONB blob 迁移成 record_store 的行级表。
 
 数据源是 PostgreSQL 的 `app_collections`（当前主存储），不是根目录那些兼容文件——
-文件可能落后于库。兼容文件只在库里没有对应集合时作为兜底。
+文件可能落后于库。迁移只接受 PostgreSQL 中的集合，缺失集合会明确失败。
 
 用法：
     python tools/migrate_collections_to_tables.py --dry-run   # 只报告，不写
@@ -67,20 +67,14 @@ def load_collection_readonly(name: str) -> tuple[bool, object]:
     return (False, None) if row is None else (True, row["payload"])
 
 
-def load_source(collection: str, filename: str) -> tuple[list[dict], str]:
-    """优先读库里的集合；库里没有再退回兼容文件。"""
+def load_source(collection: str, filename: str | None = None) -> tuple[list[dict], str]:
+    """从 PostgreSQL 读取集合；不把根目录快照当作迁移源。"""
     found, payload = load_collection_readonly(collection)
-    if found and isinstance(payload, list):
-        return payload, "app_collections"
-    path = _PROJECT_ROOT / filename
-    if path.exists() and path.stat().st_size > 2:
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(data, list):
-                return data, "文件"
-        except (OSError, ValueError):
-            pass
-    return [], "空"
+    if not found:
+        raise RuntimeError(f"缺少 PostgreSQL 集合: {collection}")
+    if not isinstance(payload, list):
+        raise RuntimeError(f"PostgreSQL 集合格式错误（应为数组）: {collection}")
+    return payload, "app_collections"
 
 
 def load_codex_source() -> tuple[list[dict], str]:
@@ -226,7 +220,11 @@ def main() -> int:
 
     total_problems: list[str] = []
     for collection, spec, filename in MIGRATIONS:
-        rows, origin = load_source(collection, filename)
+        try:
+            rows, origin = load_source(collection, filename)
+        except RuntimeError as exc:
+            print(f"错误：{exc}", file=sys.stderr)
+            return 2
 
         if args.dry_run:
             report(collection, spec, rows, origin)

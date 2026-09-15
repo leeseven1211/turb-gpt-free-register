@@ -11,7 +11,7 @@ Codex OAuth 单独验证脚本（2026-06-15 重写：全新 session + 接码方�
     python tools/test_codex_oauth.py --email <已注册邮箱> [--verbose]
 
 前提：
-    - 该邮箱在邮箱池（用于注册的邮箱.json）里有完整凭证（client_id/refresh_token），用于收邮箱 OTP
+    - 该邮箱在 PostgreSQL 邮箱池中有完整凭证（client_id/refresh_token），用于收邮箱 OTP
     - config/codex.py 里 ENABLE_CODEX_AUTO=True，接码配置（SMS_*）已填好
     - 会真实消耗：该邮箱一封邮箱 OTP + 一个接码短信（约 $0.13）
 
