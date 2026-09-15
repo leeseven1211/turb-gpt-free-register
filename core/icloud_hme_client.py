@@ -262,6 +262,7 @@ def sync_aliases(
     force: bool = False,
     account_id: str | None = None,
     api_base: str | None = None,
+    timeout: int | None = None,
 ) -> dict:
     """按 TTL 将一个或多个 Apple 侧别名集合同步到本地领取池。"""
     global _LAST_SYNC_AT, _LAST_SYNC_KEY, _LAST_ACCOUNT_ID, _LAST_SYNC_RESULT
@@ -269,7 +270,7 @@ def sync_aliases(
     ttl = max(0, _cfg_int("ICLOUD_HME_SYNC_TTL", 300))
 
     with _SYNC_LOCK:
-        selected_accounts = select_accounts(account_id, api_base=base)
+        selected_accounts = select_accounts(account_id, api_base=base, timeout=timeout)
         account_ids = [str(item.get("id") or "").strip() for item in selected_accounts]
         sync_key = (
             f"{base}|{','.join(account_ids)}|{_inbox_mode()}|"
@@ -297,6 +298,7 @@ def sync_aliases(
                     "/api/aliases",
                     params={"account_id": selected},
                     api_base=base,
+                    timeout=timeout,
                 ) or {}
                 aliases = data.get("aliases") if isinstance(data, dict) else []
                 aliases = [item for item in (aliases or []) if isinstance(item, dict)]
@@ -559,7 +561,7 @@ def test_connection(
 ) -> dict:
     """WebUI 使用：检查账号、同步别名，并确认收件是否走 IMAP。"""
     from core import db
-    sync = sync_aliases(force=True, account_id=account_id, api_base=api_base)
+    sync = sync_aliases(force=True, account_id=account_id, api_base=api_base, timeout=timeout)
     selected_ids = [
         str(value).strip() for value in sync.get("synced_account_ids") or sync.get("account_ids") or []
         if str(value).strip()
