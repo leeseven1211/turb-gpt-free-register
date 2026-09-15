@@ -347,7 +347,18 @@ def init() -> None:
                         )
                     gin = postgres_store.quote_identifier(f"idx_{spec.name}_data_gin")
                     cur.execute(f"CREATE INDEX IF NOT EXISTS {gin} ON {_qualified(spec)} USING gin(data)")
+        # Existing deployments may have imported rows with explicit IDs while
+        # the identity sequence stayed behind. Repair every table once per
+        # process/schema initialization so the next normal insert cannot reuse
+        # an already occupied ID.
         _READY_KEY = ready_key
+        try:
+            with _connect() as conn, conn.cursor() as cur:
+                for spec in ALL_TABLES:
+                    _sync_identity_cursor(cur, spec)
+        except Exception:
+            _READY_KEY = ""
+            raise
 
 
 def reset_ready() -> None:
@@ -956,6 +967,26 @@ def advisory_xact_lock(conn, key: str) -> None:
         cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (str(key),))
 
 
+def _sync_identity_cursor(cur, spec: TableSpec) -> int:
+    """Advance one identity sequence without opening a nested connection."""
+    cur.execute(f"LOCK TABLE {_qualified(spec)} IN SHARE ROW EXCLUSIVE MODE")
+    cur.execute(f"SELECT COALESCE(max(id), 0) AS m FROM {_qualified(spec)}")
+    current = int(cur.fetchone()["m"])
+    # Do not consume the first value of a never-used identity sequence. This
+    # keeps an empty table's first normal insert at 1 while leaving previously
+    # advanced sequences untouched.
+    if current == 0:
+        return current
+    sequence_table = f"{postgres_store.schema_name()}.{spec.name}"
+    cur.execute("SELECT nextval(pg_get_serial_sequence(%s, 'id')) AS n", (sequence_table,))
+    allocated = int(cur.fetchone()["n"])
+    cur.execute(
+        "SELECT setval(pg_get_serial_sequence(%s, 'id'), %s, true) AS v",
+        (sequence_table, max(current, allocated, 1)),
+    )
+    return current
+
+
 def sync_identity(table: str | TableSpec) -> int:
     """把 id 序列推到当前 max(id) 之后。
 
@@ -965,17 +996,6 @@ def sync_identity(table: str | TableSpec) -> int:
     spec = _resolve(table)
     init()
     with _connect() as conn, conn.cursor() as cur:
-        # Identity repair is a rare import/migration operation. Serialize with
-        # writers so an INSERT cannot allocate a new id between max() and
-        # setval(), and never move the sequence behind previously used values.
-        cur.execute(f"LOCK TABLE {_qualified(spec)} IN SHARE ROW EXCLUSIVE MODE")
-        cur.execute(f"SELECT COALESCE(max(id), 0) AS m FROM {_qualified(spec)}")
-        current = int(cur.fetchone()["m"])
-        sequence_table = f"{postgres_store.schema_name()}.{spec.name}"
-        cur.execute("SELECT nextval(pg_get_serial_sequence(%s, 'id')) AS n", (sequence_table,))
-        allocated = int(cur.fetchone()["n"])
-        cur.execute(
-            f"SELECT setval(pg_get_serial_sequence(%s, 'id'), %s, true) AS v",
-            (sequence_table, max(current, allocated, 1)),
-        )
-        return current
+        # Serialize with writers so an INSERT cannot allocate a new id between
+        # max() and setval(), and never move the sequence behind used values.
+        return _sync_identity_cursor(cur, spec)

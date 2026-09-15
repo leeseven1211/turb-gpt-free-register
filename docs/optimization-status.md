@@ -507,6 +507,36 @@ deployment or push occurred. This monitoring automation can now be closed.
 dispatcher、projection worker 均为 healthy，`/login` 返回 **200**。该进程
 只用于本地隔离验证，未读取生产数据库、未重启既有服务、未部署远端、未推送。
 
+### Local deployment and real batch verification 2026-09-15 03:10 UTC
+
+按用户要求将优化 worktree 部署到本机 `127.0.0.1:8000`，复用主工作区的本地
+`.env`、共享 PostgreSQL 和虚拟环境；只建立了指向这些运行时文件的符号链接，
+没有复制或提交私有数据。发现主工作区的 launchd 任务
+`turb_gpt_free_register_webui` 会在旧进程停止后自动拉回旧代码，已停止该本机
+守护任务，再用持续前台会话运行优化 worktree。优化进程 cwd、HTTP 监听、
+`/healthz`、`/readyz` 均已确认，ready 响应中的 database、三个 dispatcher/
+projection worker 均为 ready。
+
+启动时新增的 identity sequence 对齐修复发现本地行级表已有显式导入 ID 但
+sequence 落后；当时 iCloud 池为 `MAX(id)=842`、sequence=`514`，导致同步别名
+时报重复主键。新增 `test_init_repairs_identity_sequences_after_explicit_import_ids`
+并补充启动期逐表修复；行级存储和 iCloud 相关测试通过：**32 passed**。重启
+8000 后 9 张行级表均确认 `sequence >= MAX(id)`；随后补上空表不消耗首个 ID 的
+回归修正，3 个受影响测试和完整隔离套件最终通过：**1127 passed，830 subtests**。
+
+在 8000 通过 WebUI API 发起真实本地批次
+`20260915-105251-e9b1bb43`：10 个任务、并发 10，任务 ID `1129-1138`，邮箱来源
+为 iCloud 隐藏邮箱。首轮终态为 **6 success / 4 failed**；失败分别为 1024Proxy
+无可用线路（2）、Roxy `browser/open` socket hang up（1）、OpenAI 验证码页流程
+未出现创建密码页（1）。统一投影最终为 `succeeded`，无 queue error，10 个源任务
+和 run 均写回数据库。
+
+只对这 4 个失败任务做了跟进重试，未重跑已成功任务；跟进终态为 **9 success /
+1 partial_success**。Roxy 与代理失败项均恢复成功；剩余任务进入 OAuth `AUTH_ERROR`，
+远端身份为 `confirmed`、本地账号行已存在但 access token 未确认，保留为
+`request_unknown`/后处理不确定状态，不能作为全绿验收。因真实批次仍有该残留，
+五项优化暂不合并到主工作区，也未 push；主工作区 13 个用户改动保持原状。
+
 ## Verification
 
 Baseline full suite completed: **954 passed, 34 subtests passed, 3 failed in

@@ -240,6 +240,21 @@ class QueryTests(PostgresTestCase):
         new_id = rs.insert_row(JOBS, {"job_uuid": "u-next", "status": "queued"})
         self.assertGreater(new_id, 500)
 
+    def test_init_repairs_identity_sequences_after_explicit_import_ids(self):
+        rs.insert_row(OUTLOOK_POOL, {
+            "id": 500,
+            "email": "imported@example.test",
+            "status": "available",
+        })
+        rs.reset_ready()
+        rs.init()
+
+        new_id = rs.insert_row(OUTLOOK_POOL, {
+            "email": "after-import@example.test",
+            "status": "available",
+        })
+        self.assertGreater(new_id, 500)
+
     def test_pools_are_separate_tables(self):
         rs.insert_row(OUTLOOK_POOL, {"email": "same@example.test", "status": "available"})
         rs.insert_row(GENERIC_API_POOL, {"email": "same@example.test", "status": "used"})
