@@ -17,6 +17,7 @@ from core.storage import accounts as db
 from core.chatgpt_plan import check_account_plan
 from core.task_reporter import TaskReporter
 from core.account_operation_executor import configured_workers
+from core.account_operation_executor import executor as _ACCOUNT_EXECUTOR
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,22 @@ _QUEUE_LIMIT = _int_setting("PLAN_CHECK_QUEUE_LIMIT", 500, _WORKERS, 5000)
 _QUEUE_SLOTS = threading.BoundedSemaphore(_QUEUE_LIMIT)  # synchronous compatibility only
 _RATE_LOCK = threading.Lock()
 _NEXT_REQUEST_AT = 0.0
+
+
+class _RegistrationExecutorCompatibility:
+    """Keep the old registration-pool patch surface without a local worker."""
+
+    def submit(self, *_args, **_kwargs):
+        raise RuntimeError(
+            "plan_check native operations must be submitted through task_gateway"
+        )
+
+
+# Older callers/tests patch this symbol to observe the registration boundary.
+# Native standalone plan checks never call it; the durable gateway owns claim
+# and dispatch, while ``_ACCOUNT_EXECUTOR`` preserves the common-pool identity
+# expected by the remaining account-operation compatibility surface.
+_EXECUTOR = _RegistrationExecutorCompatibility()
 
 # Only stable, non-sensitive execution settings are copied into a durable
 # Run.  The actual proxy URL/API token remains an on-demand resource owned by

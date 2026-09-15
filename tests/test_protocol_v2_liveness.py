@@ -638,9 +638,25 @@ class ProtocolV2LivenessTests(unittest.TestCase):
             ),
             patch.object(live_check_service.db, "account_is_deactivated", return_value=False),
             patch.object(live_check_service.db, "claim_account_live_check", return_value=True),
-            patch.object(live_check_service.account_task_store, "create_task", return_value=101),
+            patch.object(
+                live_check_service.account_task_store,
+                "create_task",
+                side_effect=AssertionError("legacy task"),
+            ),
+            patch.object(
+                live_check_service.account_task_store,
+                "submit_durable_operation",
+                return_value={
+                    "accepted": True,
+                    "busy": False,
+                    "reused": False,
+                    "task_id": 101,
+                    "run_id": 1001,
+                    "status": "queued",
+                },
+            ) as durable_submit,
             patch.object(live_check_service, "_append_log"),
-            patch.object(live_check_service._EXECUTOR, "submit") as submit,
+            patch.object(live_check_service._EXECUTOR, "submit") as legacy_submit,
         ):
             result = live_check_service.enqueue_account_live_check(
                 account_id=7,
@@ -653,14 +669,14 @@ class ProtocolV2LivenessTests(unittest.TestCase):
         self.assertTrue(result["accepted"])
         self.assertEqual("protocol_v2", result["token_refresh_driver"])
         self.assertEqual("v2", result["protocol_version"])
-        # The worker receives the public version, not the legacy internal
-        # driver alias; otherwise it would re-apply the old kill switch.
-        self.assertEqual("v2", submit.call_args.kwargs["refresh_driver"])
+        # The durable worker receives the public version, not the legacy
+        # driver alias; the compatibility executor is never a submit path.
+        self.assertEqual("v2", durable_submit.call_args.kwargs["data"]["refresh_driver"])
+        legacy_submit.assert_not_called()
         with patch.object(account_config, "ACCOUNT_AUTH_V2_ENABLED", False):
             self.assertEqual("protocol_v2", live_check_service._resolve_refresh_driver(
-                submit.call_args.kwargs["refresh_driver"]
+                durable_submit.call_args.kwargs["data"]["refresh_driver"]
             ))
-        live_check_service._QUEUE_SLOTS.release()
 
 
 if __name__ == "__main__":

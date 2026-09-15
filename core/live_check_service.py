@@ -20,6 +20,7 @@ from core.live_check_router import LiveCheckDriverError, resolve_driver, run_pro
 from core.openai_auth import detect_account_unusable_text
 from core.auth_challenge import auth_result_for_operation
 from core.account_operation_executor import configured_workers
+from core.account_operation_executor import executor as _EXECUTOR
 
 logger = logging.getLogger(__name__)
 

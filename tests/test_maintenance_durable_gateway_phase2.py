@@ -4,7 +4,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
-from core import db, record_store
+from core import account_operation_executor, db, record_store
 from core import deactivation_mail_service, extract_link_service, live_check_service, plan_check_service
 from core.operations import task_gateway
 from core.storage import operation
@@ -286,13 +286,13 @@ class MaintenanceDurableGatewayTests(PostgresTestCase):
             }.issubset(set(task_gateway.registered_operation_types()))
         )
 
-    def test_native_services_have_no_legacy_consumer_handles(self):
-        for service in (
-            live_check_service,
-            plan_check_service,
-            deactivation_mail_service,
-            extract_link_service,
-        ):
+    def test_native_services_keep_compatibility_seams_without_legacy_consumers(self):
+        common = account_operation_executor.executor
+        self.assertIs(live_check_service._EXECUTOR, common)
+        self.assertIs(plan_check_service._ACCOUNT_EXECUTOR, common)
+        self.assertIsNot(plan_check_service._EXECUTOR, common)
+        self.assertTrue(callable(plan_check_service._EXECUTOR.submit))
+        for service in (deactivation_mail_service, extract_link_service):
             self.assertFalse(hasattr(service, "_EXECUTOR"), service.__name__)
             self.assertFalse(hasattr(service, "_ACCOUNT_EXECUTOR"), service.__name__)
         self.assertFalse(hasattr(deactivation_mail_service, "_HME_QUEUE"))

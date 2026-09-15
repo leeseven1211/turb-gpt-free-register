@@ -26,10 +26,13 @@ class AccountOperationExecutorTests(unittest.TestCase):
             hasattr(codex_token_refresh_service, "_EXECUTOR"),
             "Codex token refresh must dispatch through the durable gateway, not a local executor",
         )
-        self.assertIs(deactivation_mail_service._EXECUTOR, common)
-        self.assertIs(extract_link_service._EXECUTOR, common)
         self.assertIs(runtime._ACCOUNT_EXECUTOR, common)
         self.assertIsNot(plan_check_service._EXECUTOR, common)
+        self.assertTrue(callable(plan_check_service._EXECUTOR.submit))
+        self.assertFalse(hasattr(deactivation_mail_service, "_EXECUTOR"))
+        self.assertFalse(hasattr(extract_link_service, "_EXECUTOR"))
+        self.assertFalse(hasattr(deactivation_mail_service, "_EXECUTOR"))
+        self.assertFalse(hasattr(extract_link_service, "_EXECUTOR"))
 
     def test_common_executor_reads_account_batch_workers(self):
         from core import account_operation_executor
@@ -135,10 +138,39 @@ class AccountOperationExecutorTests(unittest.TestCase):
         from core import plan_check_service
 
         with (
-            patch.object(plan_check_service._QUEUE_SLOTS, "acquire", return_value=True),
-            patch.object(plan_check_service._QUEUE_SLOTS, "release"),
+            patch.object(
+                plan_check_service.db,
+                "get_account",
+                side_effect=[{"id": 1}, {"id": 2}],
+            ),
             patch.object(plan_check_service.db, "claim_account_plan_check", return_value=True),
-            patch.object(plan_check_service.account_task_store, "create_task", return_value=901),
+            patch.object(
+                plan_check_service.account_task_store,
+                "create_task",
+                side_effect=AssertionError("legacy task"),
+            ),
+            patch.object(
+                plan_check_service.account_task_store,
+                "submit_durable_operation",
+                side_effect=[
+                    {
+                        "accepted": True,
+                        "busy": False,
+                        "reused": False,
+                        "task_id": 901,
+                        "run_id": 1901,
+                        "status": "queued",
+                    },
+                    {
+                        "accepted": True,
+                        "busy": False,
+                        "reused": False,
+                        "task_id": 902,
+                        "run_id": 1902,
+                        "status": "queued",
+                    },
+                ],
+            ) as durable_submit,
             patch.object(plan_check_service._EXECUTOR, "submit") as registration_submit,
             patch.object(plan_check_service._ACCOUNT_EXECUTOR, "submit") as account_submit,
         ):
@@ -155,8 +187,13 @@ class AccountOperationExecutorTests(unittest.TestCase):
                 trigger="manual_bulk",
             )
 
-        self.assertEqual(1, registration_submit.call_count)
-        self.assertEqual(1, account_submit.call_count)
+        self.assertEqual(2, durable_submit.call_count)
+        self.assertEqual(
+            ["registration_auto", "manual_bulk"],
+            [call.kwargs["trigger"] for call in durable_submit.call_args_list],
+        )
+        registration_submit.assert_not_called()
+        account_submit.assert_not_called()
 
 
 if __name__ == "__main__":
