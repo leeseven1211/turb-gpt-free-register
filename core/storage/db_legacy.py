@@ -404,6 +404,9 @@ def _find_by_email(rows: list[dict], email: str) -> dict | None:
 
 def _decorate_account(row: dict) -> dict:
     out = dict(row)
+    # New mailbox credentials are retained for worker-side recovery only; they
+    # must never ride along with ordinary account reads or compact responses.
+    out.pop("email_change_material_line", None)
     out["note"] = out.get("note") or ""
     out["note_updated_at"] = out.get("note_updated_at") or ""
     plan_status = out.get("plan_check_status")
@@ -1746,6 +1749,135 @@ def mark_account_deactivated(
 def account_is_deactivated(account: dict | None) -> bool:
     """判断账号是否已被明确标记为封号/停用；历史记录缺字段时视为正常。"""
     return str((account or {}).get("account_status") or "").strip().lower() == "deactivated"
+
+
+def _locked_account_by_id(conn, account_id: int) -> dict | None:
+    table = postgres_store.qualified(record_store.ACCOUNTS.name)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT * FROM {table} WHERE id=%s FOR UPDATE",
+            (int(account_id),),
+        )
+        return record_store.merge_row(record_store.ACCOUNTS, cur.fetchone())
+
+
+def claim_account_email_change(
+    acc_id: int,
+    source: str,
+    trigger: str = "manual",
+    new_email: str | None = None,
+) -> bool:
+    """Atomically reserve the account-side email-change projection.
+
+    The durable operation unique index remains the primary conflict fence;
+    this projection gives account readers a safe, low-sensitivity status while
+    the worker is running.
+    """
+    now = _now()
+    changes = {
+        "email_change_status": "queued",
+        "email_change_source": str(source or "").strip().lower(),
+        "email_change_trigger": str(trigger or "manual"),
+        "email_change_queued_at": now,
+        "email_change_started_at": None,
+        "email_change_completed_at": None,
+        "email_change_error": None,
+        "email_change_target": str(new_email or "").strip() or None,
+        "updated_at": now,
+    }
+    return _claim_account_stage(acc_id, "email_change", changes, require_alive=True)
+
+
+def mark_account_email_change_running(
+    acc_id: int,
+    new_email: str | None = None,
+    *,
+    source: str | None = None,
+) -> bool:
+    """Move a claimed email-change projection to the running state."""
+    now = _now()
+    changes = {
+        "email_change_status": "running",
+        "email_change_started_at": now,
+        "email_change_error": None,
+        "updated_at": now,
+    }
+    if new_email is not None:
+        changes["email_change_target"] = str(new_email or "").strip() or None
+    if source is not None:
+        changes["email_change_source"] = str(source or "").strip().lower()
+    return _mark_account_stage_running(acc_id, "email_change", changes)
+
+
+def finish_account_email_change(
+    acc_id: int,
+    *,
+    ok: bool,
+    new_email: str | None = None,
+    source: str | None = None,
+    material_line: str | None = None,
+    error: str | None = None,
+    outcome: str | None = None,
+) -> bool:
+    """Atomically finish an email change under a PostgreSQL row lock.
+
+    ``original_email_line`` is immutable account provenance.  New mailbox
+    material is retained separately for the private account export path, while
+    the current AT is invalidated in the same transaction as the email update.
+    """
+    target = str(new_email or "").strip()
+    status = "success" if ok else str(outcome or "failed").strip().lower()
+    if status not in {"success", "failed", "attention_required", "request_unknown"}:
+        status = "failed"
+    now = _now()
+    table = postgres_store.qualified(record_store.ACCOUNTS.name)
+    with record_store.transaction() as conn:
+        row = _locked_account_by_id(conn, int(acc_id))
+        if row is None:
+            return False
+        old_email = str(row.get("email") or "").strip()
+        changes: dict[str, Any] = {
+            "email_change_status": status,
+            "email_change_completed_at": now,
+            "email_change_error": None if ok else str(error or "")[:500],
+            "updated_at": now,
+        }
+        if source is not None:
+            changes["email_change_source"] = str(source or "").strip().lower()
+        if target:
+            changes["email_change_target"] = target
+        if not ok:
+            record_store.patch_row(record_store.ACCOUNTS, int(acc_id), changes, conn=conn)
+            return True
+        if not target:
+            raise ValueError("邮箱换绑成功写回缺少新邮箱")
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT id FROM {table} WHERE lower(email)=lower(%s) AND id<>%s FOR UPDATE",
+                (target, int(acc_id)),
+            )
+            if cur.fetchone() is not None:
+                raise ValueError("新邮箱已被其它账号占用")
+
+        # Preserve the original source line even for imported historical rows
+        # that did not populate original_email_line at registration time.
+        if not str(row.get("original_email_line") or "").strip():
+            changes["original_email_line"] = old_email
+        changes.update({
+            "email": target,
+            "email_source": str(source or row.get("email_source") or "").strip().lower() or None,
+            "access_token": None,
+            "token_expires_at": None,
+            "token_expired": None,
+            "live_check_status": None,
+            "live_check_ok": False,
+            "live_check_error": None,
+            "live_checked_at": None,
+        })
+        if material_line is not None:
+            changes["email_change_material_line"] = str(material_line or "")
+        record_store.patch_row(record_store.ACCOUNTS, int(acc_id), changes, conn=conn)
+    return True
 
 
 def claim_account_live_check(acc_id: int, trigger: str = "manual") -> bool:

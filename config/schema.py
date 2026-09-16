@@ -16,7 +16,7 @@ import math
 import os
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping
@@ -57,7 +57,7 @@ class ConfigField:
     min_value: int | float | None = None
     max_value: int | float | None = None
     secret: bool = False
-    aliases: Mapping[str, str] = MappingProxyType({})
+    aliases: Mapping[str, str] = dataclass_field(default_factory=lambda: MappingProxyType({}))
     restart: bool = False
     hot_edit: str = "safe"
     allow_prefix: str | None = None
@@ -176,6 +176,8 @@ _DEFAULTS: dict[str, Any] = {
     "ACCOUNT_LIVE_CHECK_PROXY_MODE": "direct",
     "ACCOUNT_REFRESH_AT_PROXY_MODE": "registration",
     "ACCOUNT_CODEX_PROXY_MODE": "registration",
+    "ACCOUNT_EMAIL_CHANGE_ENABLED": True,
+    "ACCOUNT_EMAIL_CHANGE_PROXY_MODE": "registration",
     "ACCOUNT_LIVE_CHECK_DRIVER": "protocol_current",
     "ACCOUNT_LIVE_CHECK_BROWSER_ENABLED": False,
     "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK": False,
@@ -435,6 +437,10 @@ _FIELD_DEFINITIONS = [
         "label": "密码补全驱动", "help": "当前唯一实现为 RoxyBrowser，暂不可切换",
     },
     {
+        "key": "ACCOUNT_EMAIL_CHANGE_ENABLED", "file": "account.py", "type": "bool", "group": "账号补全",
+        "label": "启用协议邮箱换绑", "help": "只通过 BrowserSession HTTP 协议执行邮箱换绑；远端结果不确定时不会自动打开浏览器兜底",
+    },
+    {
         "key": "ACCOUNT_PLAN_CHECK_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
         "label": "套餐补全驱动", "help": "当前唯一实现为纯协议，暂不可切换",
     },
@@ -461,6 +467,10 @@ _FIELD_DEFINITIONS = [
     {
         "key": "ACCOUNT_CODEX_PROXY_MODE", "file": "account.py", "type": "str", "group": "代理与网络",
         "label": "Codex OAuth 代理来源", "help": "默认 registration。可选 direct、pool 或 provider:<id>。",
+    },
+    {
+        "key": "ACCOUNT_EMAIL_CHANGE_PROXY_MODE", "file": "account.py", "type": "str", "group": "代理与网络",
+        "label": "邮箱换绑代理来源", "help": "默认 registration。邮箱换绑使用独立用途线路，可选 direct、pool 或 provider:<id>。",
     },
     {
         "key": "ACCOUNT_LIVE_CHECK_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
@@ -1199,6 +1209,12 @@ _OPTIONS: dict[str, tuple[ConfigOption, ...]] = {
         ("current", "当前会话画像（保持现状）"),
         ("account_stable", "账号稳定 Protocol 画像（懒创建）"),
     ),
+    "ACCOUNT_EMAIL_CHANGE_PROXY_MODE": _options(
+        ("registration", "跟随注册线路"),
+        ("direct", "直连"),
+        ("pool", "静态代理池"),
+        ("provider:1024proxy", "1024Proxy 独立租约"),
+    ),
     "TWOFA_DRIVER": _options(
         ("auto", "自动选择（协议优先）"),
         ("protocol", "协议开通"),
@@ -1435,6 +1451,7 @@ _PROVIDER_PROXY_KEYS = {
     "ACCOUNT_PASSWORD_PROXY_MODE", "ACCOUNT_2FA_PROXY_MODE",
     "ACCOUNT_PLAN_CHECK_PROXY_MODE", "ACCOUNT_LIVE_CHECK_PROXY_MODE",
     "ACCOUNT_REFRESH_AT_PROXY_MODE", "ACCOUNT_CODEX_PROXY_MODE",
+    "ACCOUNT_EMAIL_CHANGE_PROXY_MODE",
 }
 
 _DYNAMIC_PATTERNS = {

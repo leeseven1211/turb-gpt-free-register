@@ -196,6 +196,9 @@ def wait_for_otp(
     max_wait: int | None = None,
     poll_interval: int | None = None,
     settle_seconds: int | None = None,
+    *,
+    email_source: str | None = None,
+    force_service: bool | None = None,
 ) -> str:
     """等待并返回该邮箱最新的 ChatGPT OTP（6 位数字字符串）。
 
@@ -204,7 +207,10 @@ def wait_for_otp(
     """
     try:
         from config import email as _email_cfg
-        use_service = bool(getattr(_email_cfg, "USE_EMAIL_SERVICE", True))
+        use_service = bool(
+            getattr(_email_cfg, "USE_EMAIL_SERVICE", True)
+            if force_service is None else force_service
+        )
     except Exception:
         use_service = True
 
@@ -228,7 +234,7 @@ def wait_for_otp(
     if settle_seconds is not None:
         extra_kwargs["settle_seconds"] = settle_seconds
 
-    source = resolve_email_source(email)
+    source = validate_email_source(email_source) if email_source else resolve_email_source(email)
     if source == "gptmail":
         from core.gptmail_client import fetch_latest_otp
         return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
@@ -255,6 +261,41 @@ def wait_for_otp(
         return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
     from core.outlook_client import fetch_latest_otp
     return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
+
+
+def email_material_line(email: str, source: str | None = None) -> str:
+    """Return the private mailbox material line for an acquired address.
+
+    This is intentionally an on-demand worker helper.  The line is used only
+    during the atomic account writeback and is never placed in task events or
+    ordinary account responses.
+    """
+    address = str(email or "").strip()
+    if not address:
+        return ""
+    selected = validate_email_source(source) if source else resolve_email_source(address)
+    from core import db
+
+    if selected == "outlook":
+        row = db.get_outlook_by_email(address) or {}
+        return "----".join([
+            str(row.get("email") or address),
+            str(row.get("password") or ""),
+            str(row.get("client_id") or ""),
+            str(row.get("refresh_token") or ""),
+        ])
+    if selected == "generic_api":
+        row = db.get_generic_api_email_by_email(address) or {}
+        return "----".join([str(row.get("email") or address), str(row.get("code_url") or "")])
+    if selected == "cloudflare_domain":
+        row = db.get_domain_email_by_email(address) or {}
+        return "----".join([str(row.get("email") or address), str(row.get("password") or "")])
+    if selected == "icloud_hide":
+        row = db.get_icloud_hide_email_by_email(address) or {}
+        return "----".join([str(row.get("email") or address), str(row.get("remote_address") or "")])
+    # Remote mailbox providers keep their credentials outside the account row;
+    # retain the address as the stable material reference without copying them.
+    return address
 
 
 def release_email(email: str, status: str = "available", note: str | None = None) -> str:

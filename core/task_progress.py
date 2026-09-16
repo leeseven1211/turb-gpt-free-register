@@ -40,6 +40,7 @@ _STEP_LABELS = {
     "access_token": "校验 Token",
     "refresh_token": "刷新 Token",
     "mailbox_scan": "扫描邮件",
+    "submit_email": "验证新邮箱",
     "result": "结果",
 }
 
@@ -57,6 +58,10 @@ _CHILD_LABELS = {
     "twofa_checkpoint": "保存 2FA 检查点",
     "twofa_remote_confirm": "确认 2FA 已启用",
     "dispatch": "已提交独立任务",
+    "change_email_begin": "发送换绑验证码",
+    "change_email_verify": "确认新邮箱",
+    "recent_login": "Recent Login 重认证",
+    "new_email_otp": "验证新邮箱验证码",
 }
 
 def _step(step_id: str, *, state: str = "pending", reason: str | None = None) -> dict[str, Any]:
@@ -146,6 +151,7 @@ def _template(task_type: str, run: dict[str, Any] | None = None) -> list[dict[st
         "codex_token_refresh": ["refresh_token", "result"],
         "plan_check": ["network", "plan_check", "result"],
         "deactivation_mail": ["mailbox_scan", "result"],
+        "email_change": ["email", "network", "login_password", "email_otp", "submit_email", "result"],
     }
     return [_step(step_id) for step_id in templates.get(task_type, ["result"])]
 
@@ -282,6 +288,19 @@ def _raw_to_main(task_type: str, raw_stage: str, detail: dict[str, Any]) -> str 
             return "result"
         if raw_stage in {"network", "plan_check", "mailbox_scan"}:
             return raw_stage
+    if task_type == "email_change":
+        if raw_stage in {"email", "mailbox", "email_prepare"}:
+            return "email"
+        if raw_stage in {"network", "proxy"}:
+            return "network"
+        if raw_stage in {"reauth", "recent_login", "login_password"}:
+            return "login_password"
+        if raw_stage in {"email_otp", "new_email_otp"}:
+            return "email_otp"
+        if raw_stage in {"submit_email", "change_email", "change_email_begin", "change_email_verify", "writeback"}:
+            return "submit_email"
+        if raw_stage == "complete":
+            return "result"
     return None
 
 

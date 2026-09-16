@@ -58,6 +58,55 @@ def _warm_protocol_login_context(session: BrowserSession) -> None:
         human_delay("navigate")
 
 
+def _warm_authenticated_session(session: BrowserSession, access_token: str) -> None:
+    """Warm the existing authenticated HTTP session before Recent Login."""
+    from core.chatgpt_bootstrap import authenticated_bootstrap
+
+    authenticated_bootstrap(session, access_token, strict=False)
+
+
+def perform_recent_login(
+    session: BrowserSession,
+    email: str,
+    *,
+    email_source: str | None = None,
+    access_token: str | None = None,
+) -> dict:
+    """Complete the protocol Recent Login flow and return a fresh AT.
+
+    The account-export helpers contain the already-proven HTTP protocol for
+    CSRF, reauth signin, auth.openai.com OTP validation, and the callback that
+    refreshes the NextAuth session.  Keeping this adapter here lets account
+    operations share that protocol without opening a browser automation path.
+    """
+    if access_token:
+        _warm_authenticated_session(session, access_token)
+    from core.account_export import (
+        _exchange_new_token,
+        _follow_reauth,
+        _trigger_reauth,
+        _validate_reauth_otp,
+    )
+
+    otp_after_ts = time.time()
+    authorize_url = _trigger_reauth(session, str(email or "").strip())
+    _follow_reauth(session, authorize_url)
+    otp = wait_for_otp(
+        str(email or "").strip(),
+        after_ts=otp_after_ts,
+        email_source=email_source,
+        force_service=True,
+    )
+    continue_url = _validate_reauth_otp(session, otp)
+    fresh_token = _exchange_new_token(session, continue_url)
+    if not str(fresh_token or "").strip():
+        raise RuntimeError("Recent Login 未获取到新的 access_token")
+    return {
+        "access_token": str(fresh_token).strip(),
+        "reauthenticated": True,
+    }
+
+
 def _network_preflight_with_retry(
     email: str,
     proxy: str | None,

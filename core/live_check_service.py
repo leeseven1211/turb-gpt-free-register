@@ -1371,6 +1371,8 @@ def _native_response(submitted: dict, *, task_type: str, account_id: int, email:
         "task_type": task_type,
         "task_id": submitted.get("task_id"),
         "run_id": submitted.get("run_id"),
+        "source_system": submitted.get("source_system"),
+        "source_id": submitted.get("source_id"),
         "reused": bool(submitted.get("reused")),
     }
     if submitted.get("error"):
@@ -1455,13 +1457,14 @@ def register_maintenance_operation_handlers() -> bool:
     remains the owner of its own handler implementation and no second
     dispatcher is created here.
     """
-    from core import deactivation_mail_service, extract_link_service, plan_check_service
+    from core import deactivation_mail_service, email_change_service, extract_link_service, plan_check_service
 
     registered = (
         register_operation_handlers(),
         plan_check_service.register_operation_handlers(),
         deactivation_mail_service.register_operation_handlers(),
         extract_link_service.register_operation_handlers(),
+        email_change_service.register_operation_handlers(),
     )
     return all(registered)
 
@@ -1477,6 +1480,7 @@ def _submit_native_live(
     *, account_id: int, email: str, trigger: str, task_type: str,
     force_refresh: bool, driver: str | None, refresh_driver: str | None,
     explicit_proxy_requested: bool, batch_id: str | None, idempotency_key: str | None,
+    resource_family: str = "openai_interactive",
 ) -> dict:
     register_operation_handlers()
     key = str(idempotency_key or "").strip() or None
@@ -1493,7 +1497,7 @@ def _submit_native_live(
         source_id=source_id,
         idempotency_key=key,
         batch_id=_numeric_batch_id(batch_id),
-        resource_family="openai_interactive",
+        resource_family=str(resource_family or "openai_interactive"),
         data={
             "force_refresh": bool(force_refresh),
             "driver": driver,
@@ -1632,6 +1636,7 @@ def enqueue_account_live_check(
     force_refresh: bool = False,
     driver: str | None = None,
     idempotency_key: str | None = None,
+    resource_family: str = "openai_interactive",
 ) -> dict:
     account_id = int(account_id)
     email = str(email or "").strip()
@@ -1675,6 +1680,7 @@ def enqueue_account_live_check(
             refresh_driver=_refresh_protocol_version(effective_refresh_driver),
             explicit_proxy_requested=proxy is not None,
             batch_id=batch_id, idempotency_key=key,
+            resource_family=resource_family,
         )
     except Exception as exc:
         error = f"查活任务持久化失败: {type(exc).__name__}: {str(exc)[:300]}"

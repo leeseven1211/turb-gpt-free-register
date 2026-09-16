@@ -23,6 +23,7 @@ from core import (
     codex_token_refresh_service,
     db,
     deactivation_mail_service,
+    email_change_service,
     extract_link_service,
     live_check_service,
     operation_task_store,
@@ -221,6 +222,50 @@ def create_accounts_blueprint(context: WebUIContext):
             "skipped": skipped,
             "skipped_count": len(skipped),
         }), 202
+
+    @bp.post("/api/accounts/<int:acc_id>/email-change")
+    def api_account_email_change(acc_id: int):
+        """Submit one protocol-only durable email-change operation."""
+        data = request.get_json(silent=True) or {}
+        account = db.get_account(acc_id)
+        source = str(
+            data.get("source")
+            or data.get("email_source")
+            or (account or {}).get("email_source")
+            or ""
+        ).strip().lower()
+        result = email_change_service.submit_email_change(
+            acc_id,
+            source=source,
+            trigger=str(data.get("trigger") or "manual_email_change"),
+            idempotency_key=data.get("idempotency_key"),
+        )
+        if result.get("busy") or result.get("reconcile_required"):
+            return jsonify({"ok": False, **result}), 409
+        if not result.get("accepted"):
+            status = 404 if result.get("error") == "账号不存在" else 400
+            return jsonify({"ok": False, **result}), status
+        return jsonify({"ok": True, **result}), 202
+
+    @bp.post("/api/accounts/email-change-bulk")
+    def api_accounts_email_change_bulk():
+        """Submit one native operation batch for selected accounts."""
+        data = request.get_json(silent=True) or {}
+        raw_ids = data.get("account_ids") or data.get("ids") or []
+        if not isinstance(raw_ids, list) or not raw_ids:
+            return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
+        if len(raw_ids) > 500:
+            return jsonify({"ok": False, "error": "单次最多换绑 500 个账号"}), 400
+        source = str(data.get("source") or data.get("email_source") or "").strip().lower()
+        result = email_change_service.submit_email_change_bulk(
+            raw_ids,
+            source=source,
+            trigger=str(data.get("trigger") or "manual_email_change_bulk"),
+            idempotency_key=data.get("idempotency_key"),
+        )
+        if not result.get("accepted") and not result.get("started"):
+            return jsonify({"ok": False, **result}), 409
+        return jsonify({"ok": True, **result}), 202
 
     def _account_action_result(acc_id: int, action: str, *, trigger: str):
         action = str(action or "").strip().lower()
