@@ -4357,7 +4357,16 @@ def claim_run(run_id: int, *, execution_id: str, worker_pid: int) -> dict | None
                 str(run.get("source_system") or "native_operations"), event_uuid,
             ),
         )
-        result = _row(dict(run)) or {}
+        cur.execute(
+            f"""
+            SELECT r.*, t.task_type, t.email_snapshot, t.trigger, t.parent_task_id
+            FROM {_table('operation_runs')} r
+            JOIN {_table('operation_tasks')} t ON t.id=r.task_id
+            WHERE r.id=%s
+            """,
+            (int(run_id),),
+        )
+        result = _row(dict(cur.fetchone())) or {}
     task_run_log.append(
         result.get("log_file"), level="INFO", message="任务开始执行",
         task_id=int(result["task_id"]), run_id=int(run_id), stage="queued", event_type="run.running",

@@ -142,6 +142,29 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
         self.assertNotIn("NESTED_UNRELATED", run["data"]["config_snapshot"])
         self.assertEqual([], operation.active_run_for_account(account_id) or [])
 
+    def test_claimed_handler_context_includes_task_email_snapshot(self):
+        account_id = self._runtime_account("claimed-context@example.test")
+        task = operation.create_runtime_task(
+            task_type="synthetic_context",
+            account_id=account_id,
+            email="claimed-context@example.test",
+            source_system="synthetic_service",
+            source_id="claimed-context-1",
+        )
+
+        claimed = operation.claim_run(
+            int(task["run"]["id"]),
+            execution_id="context-worker",
+            worker_pid=123,
+        )
+        self.assertIsNotNone(claimed)
+        context = task_gateway.OperationHandlerContext(
+            claimed,
+            execution_id="context-worker",
+        )
+
+        self.assertEqual("claimed-context@example.test", context.email)
+
     def test_new_accept_busy_false_but_idempotent_reuse_is_busy(self):
         first = task_gateway.submit_durable_operation(
             task_type="synthetic_dedupe",
