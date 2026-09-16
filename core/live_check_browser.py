@@ -2,8 +2,8 @@
 """Roxy 浏览器普通查活 probe。
 
 该模块只验证已有 access token。它不打开登录页、不提交账号凭据、不发送
-邮箱验证码，也不读取或写入持久 Cookie/localStorage；Roxy 环境默认由本次
-任务创建并在结束时清理。
+邮箱验证码，也不读取或写入持久 Cookie/localStorage；有账号标识时优先复用
+账号绑定的 Profile，没有绑定时才创建并回写绑定。
 """
 from __future__ import annotations
 
@@ -165,10 +165,11 @@ def run_probe(
     *,
     token: str,
     proxy: str | None = None,
+    email: str | None = None,
     context_recorder=None,
     route_context: dict | None = None,
 ) -> dict[str, Any]:
-    """创建临时 Roxy 环境并执行一次旧 AT probe。"""
+    """打开账号绑定的 Roxy Profile 并执行一次旧 AT probe。"""
     checked_at = _now()
     if not normalize_token(token):
         return _failure("token 为空", category="configuration", checked_at=checked_at, retryable=False)
@@ -180,17 +181,37 @@ def run_probe(
             retryable=False,
         )
     client = RoxyBrowserClient()
+    bound_profile_id = ""
     opened = None
     driver = None
     probe_result = None
     try:
+        if email:
+            from core.roxy_profile_binding import account_profile_id_by_email
+
+            bound_profile_id = account_profile_id_by_email(email, strict=True)
         try:
-            opened = client.open_profile(proxy_url=proxy)
+            if email:
+                opened = client.open_profile_for_account(
+                    profile_id=bound_profile_id or None,
+                    proxy_url=proxy,
+                )
+                if not bound_profile_id or str(opened.profile_id) != str(bound_profile_id):
+                    from core.roxy_profile_binding import persist_account_profile_id
+
+                    if not persist_account_profile_id(email, opened.profile_id):
+                        raise RuntimeError("账号 Roxy Profile 绑定写回失败")
+                    opened.account_bound = True
+                    client.mark_profile_bound(opened.profile_id)
+            else:
+                # Preserve the low-level adapter contract for callers that do
+                # not have an account identity (and for legacy integrations).
+                opened = client.open_profile(proxy_url=proxy)
             if context_recorder is not None:
                 context_recorder.open_roxy_profile(
                     opened,
                     route_attempt_no=1,
-                    proxy_url=proxy,
+                    proxy_url=(None if bound_profile_id and opened.account_bound else proxy),
                     proxy_context=route_context,
                 )
         except Exception as exc:

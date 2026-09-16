@@ -336,7 +336,13 @@ def _wait_for_roxy_window_retry(seconds: float) -> None:
         time.sleep(min(1.0, remaining))
 
 
-def _open_roxy_profile_with_capacity_wait(client, proxy_url: str | None, progress_callback=None) -> RoxyOpenResult:
+def _open_roxy_profile_with_capacity_wait(
+    client,
+    proxy_url: str | None,
+    *,
+    profile_id: str | None = None,
+    progress_callback=None,
+) -> RoxyOpenResult:
     """窗口满时保持当前 worker 等待，防止失败槽位快速消费整个任务队列。"""
     timeout = max(0, int(getattr(_cfg, "ROXY_WINDOW_WAIT_TIMEOUT", 900) or 0))
     interval = max(1, int(getattr(_cfg, "ROXY_WINDOW_WAIT_INTERVAL", 10) or 10))
@@ -361,7 +367,13 @@ def _open_roxy_profile_with_capacity_wait(client, proxy_url: str | None, progres
             open_kwargs = {"proxy_url": proxy_url}
             if debug_headless is not None:
                 open_kwargs["headless"] = debug_headless
-            opened = client.open_profile(**open_kwargs)
+            if profile_id is None:
+                opened = client.open_profile(**open_kwargs)
+            else:
+                opened = client.open_profile_for_account(
+                    profile_id=profile_id,
+                    **open_kwargs,
+                )
             if attempt > 1:
                 logger.info(
                     "[Roxy注册] 已等到空闲窗口并成功启动环境：attempt=%s waited=%.1fs profile=%s",
@@ -430,7 +442,11 @@ def _save_roxy_account_checkpoint(
         "user": user,
         "account": account,
         "expires": session_info.get("expires"),
-        "roxybrowser": {"profile_id": opened.profile_id, "open_result": opened.raw},
+        "roxybrowser": {
+            "profile_id": opened.profile_id,
+            "open_result": opened.raw,
+            "retained": True,
+        },
         "account_password": openai_password,
         "registration_checkpoint": "registered",
         "codex": codex_result,
@@ -442,7 +458,7 @@ def _save_roxy_account_checkpoint(
         # enabled. Keep this checkpoint explicit so a later browser retry can
         # verify/finish enrollment instead of assuming the secret is active.
         extra["totp_setup_pending"] = True
-    return insert_account(
+    account_id = insert_account(
         email=email,
         access_token=access_token,
         totp_secret=totp_secret,
@@ -456,6 +472,9 @@ def _save_roxy_account_checkpoint(
         codex_status=codex_status,
         codex_error=codex_error,
     )
+    opened.account_bound = True
+    RoxyBrowserClient.mark_profile_bound(opened.profile_id)
+    return account_id
 
 
 def _save_pending_email_verification_checkpoint(
@@ -473,7 +492,7 @@ def _save_pending_email_verification_checkpoint(
     """
     from core.db import insert_account
 
-    return insert_account(
+    account_id = insert_account(
         email=email,
         access_token="",
         proxy_used=proxy or None,
@@ -482,9 +501,16 @@ def _save_pending_email_verification_checkpoint(
             "account_password": openai_password,
             "registration_checkpoint": "email_verification_pending",
             "registration_pending_reason": "email_otp_pending",
-            "roxybrowser": {"profile_id": opened.profile_id, "open_result": opened.raw},
+            "roxybrowser": {
+                "profile_id": opened.profile_id,
+                "open_result": opened.raw,
+                "retained": True,
+            },
         },
     )
+    opened.account_bound = True
+    RoxyBrowserClient.mark_profile_bound(opened.profile_id)
+    return account_id
 
 
 def _run_in_isolated_browser_tab(driver, callback, *, label: str):
@@ -577,6 +603,7 @@ def run_roxy_registration(
     batch_dir: Path | None = None,
     existing_password: str | None = None,
     existing_totp_secret: str | None = None,
+    profile_id: str | None = None,
     registration_options: dict | None = None,
 ) -> dict:
     """Roxy 指纹浏览器自动化注册入口。"""
@@ -596,13 +623,30 @@ def run_roxy_registration(
     )
     plan_check_enabled = bool(options.get("plan_check_enabled", True))
 
-    report_job_progress("browser", "running", "正在创建并启动 Roxy 浏览器环境")
+    report_job_progress("browser", "running", "正在打开或创建 Roxy 浏览器环境")
     client = RoxyBrowserClient()
     opened = _open_roxy_profile_with_capacity_wait(
         client,
         proxy,
+        profile_id=profile_id,
         progress_callback=report_job_progress,
     )
+    if profile_id and str(opened.profile_id) != str(profile_id):
+        try:
+            from core.roxy_profile_binding import persist_account_profile_id
+
+            if not persist_account_profile_id(email, opened.profile_id):
+                raise RuntimeError("账号 Roxy Profile 绑定写回失败")
+            opened.account_bound = True
+            client.mark_profile_bound(opened.profile_id)
+            logger.info("[Roxy注册] 账号绑定环境已替换为可用 Profile")
+        except Exception:
+            logger.exception("[Roxy注册] 回写替代 Profile 绑定失败；停止使用未绑定环境")
+            try:
+                client.cleanup_profile(opened)
+            except Exception:
+                logger.exception("[Roxy注册] 绑定失败后的替代环境清理失败")
+            raise
     driver = None
     profile_discarded = False
     create_acknowledged = False
@@ -994,11 +1038,17 @@ def run_roxy_registration(
                 "user": session_info.get("user"),
                 "account": session_info.get("account"),
                 "expires": session_info.get("expires"),
-                "roxybrowser": {"profile_id": opened.profile_id, "open_result": opened.raw},
+                "roxybrowser": {
+                    "profile_id": opened.profile_id,
+                    "open_result": opened.raw,
+                    "retained": True,
+                },
                 "account_password": openai_password,
                 "registration_checkpoint": "core_persisted",
             },
         )
+        opened.account_bound = True
+        client.mark_profile_bound(opened.profile_id)
         logger.info("[Roxy注册] 注册主体已保存检查点：id=%s email=%s", account_id, email)
 
         codex_result = {

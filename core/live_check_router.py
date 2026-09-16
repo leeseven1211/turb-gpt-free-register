@@ -67,6 +67,7 @@ def run_probe(
     token: str,
     proxy: str | None,
     max_attempts: int,
+    email: str | None = None,
     browser_probe: Callable[..., dict[str, Any]] | None = None,
     context_recorder=None,
     route_context: dict | None = None,
@@ -86,6 +87,8 @@ def run_probe(
         if browser_probe is None:
             raise LiveCheckDriverError("Roxy 浏览器普通查活 probe 尚未接入")
         browser_kwargs = {"token": token, "proxy": proxy}
+        if email:
+            browser_kwargs["email"] = email
         if context_recorder is not None:
             browser_kwargs["context_recorder"] = context_recorder
             browser_kwargs["route_context"] = route_context

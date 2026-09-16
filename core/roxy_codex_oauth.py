@@ -3414,6 +3414,7 @@ def _run_roxy_codex_oauth_once(
     existing_opened=None,
     reuse_existing_profile: bool = False,
     clear_existing_state: bool = True,
+    profile_id: str | None = None,
     before_oauth_setup=None,
     allow_password_reset: bool = False,
     on_password_reset_submitted=None,
@@ -3433,11 +3434,36 @@ def _run_roxy_codex_oauth_once(
         otp_provider = wait_for_otp
 
     client = None if reuse_existing_profile else RoxyBrowserClient()
+    if not reuse_existing_profile and not profile_id:
+        from core.roxy_profile_binding import account_profile_id_by_email
+
+        profile_id = account_profile_id_by_email(email, strict=True) or None
     opened = (
         existing_opened
         if reuse_existing_profile
-        else client.open_profile(proxy_url=proxy, headless=_codex_open_headless())
+        else client.open_profile_for_account(
+            profile_id=profile_id,
+            proxy_url=proxy,
+            headless=_codex_open_headless(),
+        )
     )
+    if not reuse_existing_profile and (
+        not profile_id or str(opened.profile_id) != str(profile_id)
+    ):
+        try:
+            from core.roxy_profile_binding import persist_account_profile_id
+
+            if not persist_account_profile_id(email, opened.profile_id):
+                raise RuntimeError("账号 Roxy Profile 绑定写回失败")
+            opened.account_bound = True
+            client.mark_profile_bound(opened.profile_id)
+        except Exception:
+            logger.exception("[Codex][Browser] 回写替代 Profile 绑定失败")
+            try:
+                client.cleanup_profile(opened)
+            except Exception:
+                logger.exception("[Codex][Browser] 绑定失败后的替代环境清理失败")
+            raise
     browser_kind_token = _CODEX_BROWSER_KIND.set(_detect_browser_kind(opened))
     driver = existing_driver if reuse_existing_profile else None
     owns_driver = not reuse_existing_profile
@@ -3598,7 +3624,7 @@ def run_roxy_chatgpt_account_action(
     on_password_confirmed=None,
     force_password_reset: bool = False,
 ):
-    """新建一次性 Roxy 环境，登录 ChatGPT 后执行账号级操作。
+    """打开或创建账号绑定的 Roxy 环境，登录 ChatGPT 后执行账号级操作。
 
     用于 2FA 恢复检查：先使用已保存密码/TOTP 或邮箱 OTP 建立真实 ChatGPT
     session，再检查安全设置。它不会进入 Codex OAuth，也不会触发手机号购买。
@@ -3611,7 +3637,25 @@ def run_roxy_chatgpt_account_action(
         otp_provider = wait_for_otp
 
     client = RoxyBrowserClient()
-    opened = client.open_profile_with_capacity_wait(proxy_url=proxy)
+    from core.roxy_profile_binding import account_profile_id_by_email
+
+    profile_id = account_profile_id_by_email(email, strict=True) or None
+    opened = client.open_profile_for_account(profile_id=profile_id, proxy_url=proxy)
+    if not profile_id or str(opened.profile_id) != str(profile_id):
+        try:
+            from core.roxy_profile_binding import persist_account_profile_id
+
+            if not persist_account_profile_id(email, opened.profile_id):
+                raise RuntimeError("账号 Roxy Profile 绑定写回失败")
+            opened.account_bound = True
+            client.mark_profile_bound(opened.profile_id)
+        except Exception:
+            logger.exception("[Codex][Browser] 回写替代 Profile 绑定失败")
+            try:
+                client.cleanup_profile(opened)
+            except Exception:
+                logger.exception("[Codex][Browser] 绑定失败后的替代环境清理失败")
+            raise
     browser_kind_token = _CODEX_BROWSER_KIND.set(_detect_browser_kind(opened))
     driver = None
     try:
@@ -3674,6 +3718,7 @@ def run_roxy_codex_oauth(
     existing_opened=None,
     reuse_existing_profile: bool = False,
     clear_existing_state: bool = True,
+    profile_id: str | None = None,
     before_oauth_setup=None,
     allow_password_reset: bool = False,
     on_password_reset_submitted=None,
@@ -3686,9 +3731,10 @@ def run_roxy_codex_oauth(
     for round_no in range(1, max_rounds + 1):
         if round_no > 1:
             logger.warning(
-                "[Codex][Browser] 上一轮授权遇到可恢复错误，使用新环境开启第 %s/%s 轮 Codex 授权：%s reason=%s",
+                "[Codex][Browser] 上一轮授权遇到可恢复错误，重新打开/创建环境开启第 %s/%s 轮 Codex 授权：%s reason=%s",
                 round_no, max_rounds, email, str((last_result or {}).get('message') or '')[:160],
             )
+        attempt_profile_id = None if round_no > 1 else profile_id
         result = _run_roxy_codex_oauth_once(
             email=email,
             otp_provider=otp_provider,
@@ -3698,6 +3744,7 @@ def run_roxy_codex_oauth(
             existing_opened=existing_opened,
             reuse_existing_profile=reuse_existing_profile,
             clear_existing_state=clear_existing_state,
+            profile_id=attempt_profile_id,
             before_oauth_setup=before_oauth_setup,
             allow_password_reset=allow_password_reset,
             on_password_reset_submitted=on_password_reset_submitted,

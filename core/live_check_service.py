@@ -536,6 +536,7 @@ def _browser_live_check_probe(
     *,
     token: str,
     proxy: str | None,
+    email: str | None = None,
     context_recorder=None,
     route_context: dict | None = None,
 ) -> dict:
@@ -545,6 +546,7 @@ def _browser_live_check_probe(
     return run_probe(
         token=token,
         proxy=proxy,
+        email=email,
         context_recorder=context_recorder,
         route_context=route_context,
     )
@@ -843,6 +845,7 @@ def _run_live_check(
                     probe=check_account_plan,
                     token=saved_access_token,
                     proxy=selected_proxy,
+                    email=email,
                     max_attempts=1,
                     browser_probe=_browser_live_check_probe,
                     context_recorder=auth_context_recorder,

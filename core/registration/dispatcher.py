@@ -17,6 +17,7 @@ def run_registration(
     batch_dir=None,
     existing_password: str | None = None,
     existing_totp_secret: str | None = None,
+    profile_id: str | None = None,
     registration_options: dict | None = None,
 ):
     """按 `REGISTRATION_DRIVER` 分发一次注册任务。"""
@@ -38,6 +39,7 @@ def run_registration(
         )
         if registration_options is not None:
             kwargs["registration_options"] = registration_options
+        kwargs["profile_id"] = profile_id
         return run_roxy_registration(**kwargs)
 
     if existing_password:

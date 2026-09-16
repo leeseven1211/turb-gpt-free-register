@@ -112,6 +112,35 @@ class LiveCheckBrowserProbeTests(unittest.TestCase):
         driver.quit.assert_called_once_with()
         client.cleanup_profile.assert_called_once_with(opened)
 
+    def test_account_probe_reuses_bound_profile(self):
+        opened = SimpleNamespace(profile_id="profile-1", account_bound=True)
+        driver = MagicMock()
+        client = MagicMock()
+        client.open_profile_for_account.return_value = opened
+        expected = {"ok": True, "status": "live", "live_check_driver": "browser_roxy"}
+
+        with (
+            patch.object(live_check_browser, "available", return_value=True),
+            patch.object(live_check_browser, "RoxyBrowserClient", return_value=client),
+            patch.object(live_check_browser, "build_driver", return_value=driver),
+            patch.object(live_check_browser, "safe_get"),
+            patch.object(live_check_browser, "_execute_probe", return_value=expected),
+            patch("core.roxy_profile_binding.account_profile_id_by_email", return_value="profile-1"),
+        ):
+            result = live_check_browser.run_probe(
+                token="test-at",
+                email="account@example.com",
+                proxy="http://new-route.example:8080",
+            )
+
+        self.assertEqual(expected, result)
+        client.open_profile_for_account.assert_called_once_with(
+            profile_id="profile-1",
+            proxy_url="http://new-route.example:8080",
+        )
+        client.open_profile.assert_not_called()
+        client.cleanup_profile.assert_called_once_with(opened)
+
     def test_optional_context_recorder_captures_and_closes_roxy_probe(self):
         opened = SimpleNamespace(profile_id="profile-1")
         driver = MagicMock()
