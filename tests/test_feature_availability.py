@@ -8,6 +8,22 @@ from tests.support_pg import PostgresTestCase
 
 
 class FeatureAvailabilityTests(PostgresTestCase):
+    def test_icloud_hide_allows_dynamic_account_discovery_without_account_id(self):
+        with (
+            patch.multiple(
+                "config.email",
+                EMAIL_SOURCE="icloud_hide",
+                ICLOUD_HME_API_BASE="http://127.0.0.1:8081",
+                ICLOUD_HME_ACCOUNT_ID="",
+            ),
+            patch("core.db.outlook_pool_summary", return_value={"available": 0}),
+            patch("core.db.generic_api_email_pool_summary", return_value={"available": 0}),
+        ):
+            result = feature_availability.feature_availability()
+
+        self.assertTrue(result["email_sources"]["icloud_hide"]["enabled"])
+        self.assertEqual(result["email_sources"]["icloud_hide"]["reason"], "")
+
     def test_account_features_disabled_when_1024_api_missing(self):
         with (
             patch("core.account_proxy.registration_proxy_mode", return_value="1024"),

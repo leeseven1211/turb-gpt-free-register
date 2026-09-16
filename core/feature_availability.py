@@ -66,9 +66,11 @@ def _email_source_features() -> dict[str, dict[str, Any]]:
         ("CLOUDMAIL_AUTH_TOKEN", getattr(cfg, "CLOUDMAIL_AUTH_TOKEN", "")),
     ])
     add("cloudmail", ok, reason)
+    # An empty account ID is intentional: the HME client discovers all active
+    # sidecar accounts and rotates across them. A non-empty ID remains an
+    # optional fixed-account override for debugging or rollback.
     ok, reason = _all_present([
         ("ICLOUD_HME_API_BASE", getattr(cfg, "ICLOUD_HME_API_BASE", "")),
-        ("ICLOUD_HME_ACCOUNT_ID", getattr(cfg, "ICLOUD_HME_ACCOUNT_ID", "")),
     ])
     add("icloud_hide", ok, reason)
     return results
@@ -224,7 +226,6 @@ def feature_availability() -> dict[str, Any]:
     cloudmail_domains_reason = "CLOUDMAIL_API_BASE 以及 Token（或管理员账号/密码）未配置"
     icloud_tool_ok, icloud_tool_reason = _all_present([
         ("ICLOUD_HME_API_BASE", getattr(email, "ICLOUD_HME_API_BASE", "")),
-        ("ICLOUD_HME_ACCOUNT_ID", getattr(email, "ICLOUD_HME_ACCOUNT_ID", "")),
     ])
     butler_ok, butler_reason = _all_present([
         ("EMAIL_BUTLER_API_BASE", getattr(email, "EMAIL_BUTLER_API_BASE", "")),
