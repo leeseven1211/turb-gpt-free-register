@@ -43,6 +43,7 @@ def create_accounts_blueprint(context: WebUIContext):
     logger = context.logger
     _enqueue_account_setup = context.enqueue_account_setup
     _enqueue_account_completion = context.enqueue_account_completion
+    _enqueue_email_change = context.enqueue_email_change
     _put_prepared_download = context.put_prepared_download
     def _is_extract_eligible(acc: dict) -> bool:
         plan = str(acc.get("current_plan_type") or acc.get("plan_type") or "").lower()
@@ -209,7 +210,16 @@ def create_accounts_blueprint(context: WebUIContext):
             "skipped_count": len(skipped),
         }), 202
 
-    def _account_action_result(acc_id: int, action: str, *, trigger: str):
+    def _account_action_result(
+        acc_id: int,
+        action: str,
+        *,
+        trigger: str,
+        new_email: str | None = None,
+        email_source: str | None = None,
+        batch_id: int | None = None,
+        idempotency_key: str | None = None,
+    ):
         action = str(action or "").strip().lower()
         if action == "password":
             queued = _enqueue_account_setup(acc_id, trigger=trigger, steps={"password"}, task_type="password_setup")
@@ -233,8 +243,17 @@ def create_accounts_blueprint(context: WebUIContext):
             )
         elif action == "complete":
             queued = _enqueue_account_completion(acc_id, trigger=trigger)
+        elif action == "email_change":
+            queued = _enqueue_email_change(
+                acc_id,
+                new_email=new_email,
+                email_source=email_source,
+                trigger=trigger,
+                batch_id=batch_id,
+                idempotency_key=idempotency_key,
+            )
         else:
-            return {"accepted": False, "error": "action 只支持 password、twofa、password_change、twofa_change、complete"}, 400
+            return {"accepted": False, "error": "action 只支持 password、twofa、password_change、twofa_change、complete、email_change"}, 400
         if queued.get("busy"):
             return {"accepted": False, **queued}, 409
         if queued.get("accepted"):
@@ -251,8 +270,97 @@ def create_accounts_blueprint(context: WebUIContext):
             acc_id,
             data.get("action"),
             trigger=f"manual_account_{str(data.get('action') or 'action').strip().lower()}",
+            new_email=data.get("new_email") or data.get("email"),
+            email_source=data.get("email_source"),
         )
         return jsonify({"ok": status < 400, **payload}), status
+
+    @bp.post("/api/accounts/<int:acc_id>/email-change")
+    def api_account_email_change(acc_id: int):
+        data = request.get_json(silent=True) or {}
+        try:
+            queued = _enqueue_email_change(
+                acc_id,
+                new_email=data.get("new_email") or data.get("email"),
+                email_source=data.get("email_source"),
+                trigger="manual_email_change",
+                idempotency_key=data.get("idempotency_key"),
+            )
+        except (TypeError, ValueError) as exc:
+            return jsonify({"ok": False, "accepted": False, "error": str(exc)}), 400
+        if queued.get("busy"):
+            return jsonify({"ok": False, **queued}), 409
+        if not queued.get("accepted"):
+            return jsonify({"ok": False, **queued}), 400
+        return jsonify({"ok": True, **queued}), 202
+
+    @bp.post("/api/accounts/email-change-bulk")
+    def api_accounts_email_change_bulk():
+        data = request.get_json(silent=True) or {}
+        raw_ids = data.get("account_ids") or data.get("ids") or []
+        if not isinstance(raw_ids, list) or not raw_ids:
+            return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
+        if len(raw_ids) > 500:
+            return jsonify({"ok": False, "error": "单次最多换绑 500 个账号"}), 400
+        common_email = data.get("new_email") or data.get("email")
+        per_account = data.get("new_emails") or {}
+        if per_account and not isinstance(per_account, dict):
+            return jsonify({"ok": False, "error": "new_emails 必须是对象"}), 400
+
+        account_ids: list[int] = []
+        skipped: list[dict] = []
+        seen: set[int] = set()
+        for raw_id in raw_ids:
+            try:
+                account_id = int(raw_id)
+            except (TypeError, ValueError):
+                skipped.append({"id": raw_id, "reason": "ID 非法"})
+                continue
+            if account_id not in seen:
+                seen.add(account_id)
+                account_ids.append(account_id)
+        if not account_ids:
+            return jsonify({"ok": False, "error": "没有合法账号 ID"}), 400
+        batch = operation_task_store.create_runtime_batch(
+            batch_type="email_change",
+            title="批量邮箱换绑",
+            requested_count=len(account_ids),
+            trigger="manual_email_change_bulk",
+            data={"email_source": data.get("email_source")},
+        )
+        batch_id = int(batch.get("id") or 0) or None
+        started: list[dict] = []
+        for account_id in account_ids:
+            target = common_email
+            if not target and isinstance(per_account, dict):
+                target = per_account.get(str(account_id), per_account.get(account_id))
+            if not target:
+                skipped.append({"id": account_id, "reason": "缺少 new_email"})
+                continue
+            try:
+                queued = _enqueue_email_change(
+                    account_id,
+                    new_email=target,
+                    email_source=data.get("email_source"),
+                    trigger="manual_email_change_bulk",
+                    batch_id=batch_id,
+                    idempotency_key=f"email-change-batch:{batch_id}:{account_id}",
+                )
+            except (TypeError, ValueError) as exc:
+                skipped.append({"id": account_id, "reason": str(exc)})
+                continue
+            if queued.get("accepted"):
+                started.append(queued)
+            else:
+                skipped.append({"id": account_id, "reason": queued.get("error") or "操作未入队"})
+        return jsonify({
+            "ok": True,
+            "batch_id": batch_id,
+            "started": started,
+            "started_count": len(started),
+            "skipped": skipped,
+            "skipped_count": len(skipped),
+        }), 202
 
     @bp.post("/api/accounts/complete-bulk")
     def api_accounts_complete_bulk():

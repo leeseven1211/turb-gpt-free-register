@@ -35,6 +35,8 @@ _STEP_LABELS = {
     "credential": "凭证处理",
     "plan": "生成补全计划",
     "refresh_dispatch": "提交刷新 AT",
+    "email_change_begin": "提交换绑请求",
+    "email_change_verify": "验证新邮箱",
     "codex_dispatch": "提交 Codex 授权",
     "plan_check": "查询套餐",
     "access_token": "校验 Token",
@@ -143,6 +145,10 @@ def _template(task_type: str, run: dict[str, Any] | None = None) -> list[dict[st
         ],
         "live_check": ["network", "access_token", "result"],
         "token_refresh": ["network", "authenticate", "refresh_token", "result"],
+        "email_change": [
+            "email", "network", "authenticate", "email_change_begin",
+            "email_change_verify", "refresh_dispatch", "result",
+        ],
         "codex_token_refresh": ["refresh_token", "result"],
         "plan_check": ["network", "plan_check", "result"],
         "deactivation_mail": ["mailbox_scan", "result"],
@@ -266,6 +272,22 @@ def _raw_to_main(task_type: str, raw_stage: str, detail: dict[str, Any]) -> str 
             return "set_twofa"
         if raw_stage in {"network", "browser", "plan_check"}:
             return raw_stage
+        if raw_stage == "complete":
+            return "result"
+        return None
+    if task_type == "email_change":
+        if raw_stage == "email":
+            return "email"
+        if raw_stage == "network":
+            return "network"
+        if raw_stage in {"reauth", "login", "email_otp", "authenticate"}:
+            return "authenticate"
+        if raw_stage == "email_change_begin":
+            return "email_change_begin"
+        if raw_stage == "email_change_verify":
+            return "email_change_verify"
+        if raw_stage in {"refresh_token", "live_check"}:
+            return "refresh_dispatch"
         if raw_stage == "complete":
             return "result"
         return None

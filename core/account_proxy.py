@@ -55,6 +55,7 @@ _ACTION_PROXY_CONFIG = {
     "live-check": "ACCOUNT_LIVE_CHECK_PROXY_MODE",
     "token-refresh": "ACCOUNT_REFRESH_AT_PROXY_MODE",
     "codex-oauth": "ACCOUNT_CODEX_PROXY_MODE",
+    "email-change": "ACCOUNT_EMAIL_CHANGE_PROXY_MODE",
 }
 _DEFAULT_ACTION_PROXY_MODES = {
     "ACCOUNT_PASSWORD_PROXY_MODE": "registration",
@@ -63,6 +64,7 @@ _DEFAULT_ACTION_PROXY_MODES = {
     "ACCOUNT_LIVE_CHECK_PROXY_MODE": "direct",
     "ACCOUNT_REFRESH_AT_PROXY_MODE": "registration",
     "ACCOUNT_CODEX_PROXY_MODE": "registration",
+    "ACCOUNT_EMAIL_CHANGE_PROXY_MODE": "registration",
 }
 
 # Providers are registered by id so adding another platform does not require
