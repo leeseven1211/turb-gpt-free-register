@@ -4,10 +4,41 @@ from pathlib import Path
 from unittest.mock import patch
 
 from core import codex_oauth
+from core.codex_operation_service import classify_codex_operation_result
 from core.operation_runtime import CancellationToken, OperationCancelled
 
 
 class CodexCredentialSemanticsTests(unittest.TestCase):
+    def test_account_deactivated_result_is_terminal_even_when_wrapped_as_attention(self):
+        status, credential_state, error = classify_codex_operation_result(
+            {
+                "status": "attention_required",
+                "message": "账号已废（account_deactivated）",
+            },
+            confirmed=False,
+            callback_submitted=False,
+            existing_valid=True,
+        )
+
+        self.assertEqual("deactivated", status)
+        self.assertEqual("deactivated", credential_state)
+        self.assertEqual("账号已废（account_deactivated）", error)
+
+    def test_remote_write_attention_without_deactivation_stays_pending(self):
+        status, credential_state, error = classify_codex_operation_result(
+            {
+                "status": "attention_required",
+                "message": "远端凭证待确认",
+            },
+            confirmed=False,
+            callback_submitted=True,
+            existing_valid=True,
+        )
+
+        self.assertEqual("attention_required", status)
+        self.assertEqual("valid", credential_state)
+        self.assertEqual("远端凭证待确认", error)
+
     def test_callback_receipt_is_not_reported_as_saved_credential(self):
         with patch.object(
             codex_oauth, "_save_cpa_local_record",

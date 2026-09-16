@@ -236,6 +236,14 @@ def sub2api_status_requires_reauth(http_status: object) -> bool:
         return False
 
 
+def _apply_account_status_override(item: dict[str, Any]) -> dict[str, Any]:
+    """Make a confirmed account deactivation override local token expiry."""
+    if str(item.get("oauth_account_status") or "").strip().lower() == "deactivated":
+        item["oauth_status"] = "deactivated"
+        item["oauth_reauth_required"] = True
+    return item
+
+
 def decorate_row(row: dict[str, Any]) -> dict[str, Any]:
     """读取凭证内容后为列表行补齐 OAuth 状态；失败时保持列表可用。"""
     item = dict(row)
@@ -244,7 +252,7 @@ def decorate_row(row: dict[str, Any]) -> dict[str, Any]:
             refresh_error_requires_reauth(item.get("oauth_refresh_error"))
             or sub2api_status_requires_reauth(item.get("sub2api_http_status"))
         )
-        return item
+        return _apply_account_status_override(item)
     try:
         text, _ = db.read_codex_credential(str(item.get("filename") or ""))
         content = json.loads(text)
@@ -267,7 +275,7 @@ def decorate_row(row: dict[str, Any]) -> dict[str, Any]:
                 or sub2api_status_requires_reauth(item.get("sub2api_http_status"))
             ),
         })
-    return item
+    return _apply_account_status_override(item)
 
 
 def _refresh_error(response: requests.Response) -> str:
@@ -919,6 +927,16 @@ def _sync_sub2_if_needed(filename: str) -> dict[str, Any]:
     row = next((item for item in rows if item.get("filename") == filename), {})
     if not bool(getattr(_cfg, "CODEX_TOKEN_AUTO_SYNC_SUB2API", True)):
         return {"status": "disabled"}
+    account_deactivated = str(row.get("oauth_account_status") or "").strip().lower() == "deactivated"
+    if not account_deactivated and str(row.get("email") or "").strip():
+        linked_account = db.get_account_by_email(str(row.get("email") or "").strip())
+        account_deactivated = str((linked_account or {}).get("account_status") or "").strip().lower() == "deactivated"
+    if account_deactivated:
+        return {
+            "status": "blocked",
+            "error_code": "account_deactivated",
+            "error": "关联账号已停用，禁止自动同步 OAuth 凭证",
+        }
     if int(row.get("sub2_uploaded_count") or 0) <= 0:
         return {"status": "not_previously_uploaded"}
 
@@ -1450,6 +1468,14 @@ def enqueue_refresh(
     if row is None:
         return {"accepted": False, "error": "Codex 凭证不存在", "filename": filename}
     decorated = decorate_row(row)
+    if str(decorated.get("oauth_account_status") or "").strip().lower() == "deactivated":
+        return {
+            "accepted": False,
+            "error_code": "account_deactivated",
+            "next_action": "reauthorize",
+            "error": "账号已停用，禁止刷新 Codex OAuth；需先恢复账号后重新授权",
+            "filename": filename,
+        }
     if not decorated.get("oauth_refreshable"):
         return {
             "accepted": False,

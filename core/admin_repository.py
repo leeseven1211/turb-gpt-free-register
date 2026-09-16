@@ -44,6 +44,18 @@ def _text(value: Any) -> str:
     return str(value or "").strip()
 
 
+_SUB2API_ID_SQL = """
+CASE
+    WHEN jsonb_typeof(a.data->'extra_json') = 'object'
+        THEN (a.data->'extra_json')->>'sub2api_account_id'
+    WHEN jsonb_typeof(a.data->'extra_json') = 'string'
+         AND LEFT(BTRIM(a.data->>'extra_json'), 1) = '{'
+        THEN ((a.data->>'extra_json')::jsonb)->>'sub2api_account_id'
+    ELSE NULL
+END
+"""
+
+
 def _facet_dict(rows: list[dict]) -> dict[str, list[dict]]:
     grouped: dict[str, list[dict]] = {}
     for row in rows:
@@ -722,11 +734,23 @@ def _codex_item(row: dict) -> dict:
         refresh_error_requires_reauth(merged.get("oauth_refresh_error"))
         or sub2api_status_requires_reauth(merged.get("sub2api_http_status"))
     )
+    if str(merged.get("oauth_account_status") or "").strip().lower() == "deactivated":
+        oauth["oauth_status"] = "deactivated"
+        oauth["oauth_reauth_required"] = True
+    sub2api_account_id = row.get("sub2api_account_id")
+    if sub2api_account_id not in (None, ""):
+        try:
+            sub2api_account_id = int(sub2api_account_id)
+        except (TypeError, ValueError):
+            sub2api_account_id = str(sub2api_account_id)
+    else:
+        sub2api_account_id = None
     return {
         "filename": merged.get("filename"),
         "email": merged.get("email") or "",
         "plan": merged.get("plan") or "",
         "account_id": merged.get("account_id") or "",
+        "sub2api_account_id": sub2api_account_id,
         "type": merged.get("type") or "codex",
         "last_refresh": merged.get("last_refresh") or "",
         "expired": merged.get("expired") or "",
@@ -744,6 +768,9 @@ def _codex_item(row: dict) -> dict:
         "sub2api_http_status": merged.get("sub2api_http_status"),
         "oauth_refresh_attempted_at": merged.get("oauth_refresh_attempted_at"),
         "oauth_refresh_error": merged.get("oauth_refresh_error"),
+        "oauth_account_status": merged.get("oauth_account_status"),
+        "oauth_account_status_reason": merged.get("oauth_account_status_reason"),
+        "oauth_account_status_at": merged.get("oauth_account_status_at"),
         "archived": bool(merged.get("archived")),
         "archived_at": merged.get("archived_at"),
         **oauth,
@@ -752,6 +779,11 @@ def _codex_item(row: dict) -> dict:
 
 def list_codex(request: PageRequest) -> dict:
     table = _q(record_store.CODEX_CREDENTIALS)
+    accounts_table = _q(record_store.ACCOUNTS)
+    from_clause = (
+        f"{table} c LEFT JOIN {accounts_table} a "
+        "ON LOWER(BTRIM(COALESCE(c.email, ''))) = LOWER(BTRIM(COALESCE(a.email, '')))"
+    )
     filters = request.filters
     where: list[str] = []
     params: list[Any] = []
@@ -762,8 +794,11 @@ def list_codex(request: PageRequest) -> dict:
         where.append("c.archived IS FALSE")
     q = _text(filters.get("q"))
     if q:
-        where.append("(c.filename ILIKE %s OR COALESCE(c.email, '') ILIKE %s OR COALESCE(c.account_id, '') ILIKE %s)")
-        params.extend((f"%{q}%", f"%{q}%", f"%{q}%"))
+        where.append(
+            "(c.filename ILIKE %s OR COALESCE(c.email, '') ILIKE %s "
+            f"OR COALESCE(c.account_id, '') ILIKE %s OR COALESCE({_SUB2API_ID_SQL}, '') ILIKE %s)"
+        )
+        params.extend((f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"))
     for key, column in (("plan", "plan"), ("oauth_status", "oauth_status")):
         value = _text(filters.get(key)).lower()
         if value:
@@ -778,6 +813,10 @@ def list_codex(request: PageRequest) -> dict:
     if account_id:
         where.append("COALESCE(c.account_id, '') ILIKE %s")
         params.append(f"%{account_id}%")
+    sub2api_id = _text(filters.get("sub2api_id"))
+    if sub2api_id:
+        where.append(f"COALESCE({_SUB2API_ID_SQL}, '') = %s")
+        params.append(sub2api_id)
     expired = _text(filters.get("expired_date"))
     if expired:
         where.append("LEFT(COALESCE(c.oauth_expires_at, c.data->>'expired', ''), 10) = %s")
@@ -793,11 +832,11 @@ def list_codex(request: PageRequest) -> dict:
     clause = f" WHERE {' AND '.join(where)}" if where else ""
     promoted = ["id", *record_store.CODEX_CREDENTIALS.promoted]
     selected = ", ".join(f"c.{postgres_store.quote_identifier(column)}" for column in promoted)
-    selected += ", c.data - 'content' AS data"
+    selected += f", c.data - 'content' AS data, {_SUB2API_ID_SQL} AS sub2api_account_id"
     with _connect() as conn, conn.cursor() as cur:
-        cur.execute(f"SELECT COUNT(*) AS total, MAX(c.updated_at) AS latest FROM {table} c{clause}", params)
+        cur.execute(f"SELECT COUNT(*) AS total, MAX(c.updated_at) AS latest FROM {from_clause}{clause}", params)
         aggregate = cur.fetchone()
-        cur.execute(f"SELECT {selected} FROM {table} c{clause} ORDER BY COALESCE(c.mtime, c.updated_at) DESC, c.id DESC LIMIT %s OFFSET %s", (*params, request.limit, request.offset))
+        cur.execute(f"SELECT {selected} FROM {from_clause}{clause} ORDER BY COALESCE(c.mtime, c.updated_at) DESC, c.id DESC LIMIT %s OFFSET %s", (*params, request.limit, request.offset))
         rows = [_codex_item(row) for row in cur.fetchall()]
         cur.execute(
             f"""

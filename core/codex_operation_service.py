@@ -33,6 +33,16 @@ _DISPATCH_LOCK = threading.RLock()
 _CONFIG_SNAPSHOT_PROVIDER: Callable[..., Any] | None = None
 _CONFIG_PROVIDER_LOCK = threading.RLock()
 
+_ACCOUNT_DEACTIVATED_MARKERS = (
+    "account_deactivated",
+    "account_deleted",
+    "account_banned",
+    "账号已废",
+    "账号已停用",
+    "账号已删除",
+    "账号已封禁",
+)
+
 # C's schema snapshot is intentionally broad because it is also consumed by
 # the configuration UI.  A Codex operation must capture only the choices that
 # its execution boundary can use.  Keep the translation here so the task
@@ -47,6 +57,41 @@ _ACCOUNT_PROXY_MODE_KEYS = {
     "refresh_at": ("ACCOUNT_REFRESH_AT_PROXY_MODE", "refresh_at_proxy_mode"),
     "codex": ("ACCOUNT_CODEX_PROXY_MODE", "codex_proxy_mode"),
 }
+
+
+def _is_confirmed_account_deactivation(result: Mapping[str, Any]) -> bool:
+    evidence = " ".join(
+        str(result.get(key) or "")
+        for key in ("status", "error_code", "error", "reason", "message")
+    ).casefold()
+    return any(marker.casefold() in evidence for marker in _ACCOUNT_DEACTIVATED_MARKERS)
+
+
+def classify_codex_operation_result(
+    result: Mapping[str, Any],
+    *,
+    confirmed: bool,
+    callback_submitted: bool,
+    existing_valid: bool,
+) -> tuple[str, str | None, str | None]:
+    """Classify the OAuth result before remote-receipt safeguards run.
+
+    A provider can wrap a confirmed account-deactivation response as
+    ``attention_required``. Stable deactivation evidence is terminal, while a
+    normal callback or pending receipt remains recoverable.
+    """
+    if confirmed and result.get("ok"):
+        return "success", "valid", None
+    result_status = str(result.get("status") or "").casefold()
+    if result_status == "deactivated" or _is_confirmed_account_deactivation(result):
+        return "deactivated", "deactivated", str(result.get("message") or "账号已停用")
+    if result_status == "attention_required" or callback_submitted:
+        return (
+            "attention_required",
+            "valid" if existing_valid else "pending_confirmation",
+            str(result.get("message") or "远端凭证待确认"),
+        )
+    return "failed", "valid" if existing_valid else None, str(result.get("message") or "Codex OAuth 失败")
 
 
 def log_path(email: str) -> Path:
@@ -806,23 +851,14 @@ def _execute_run(run_id: int) -> dict:
                 str(account.get("codex_credential_state") or "").lower() == "valid"
                 or str(account.get("codex_status") or "").lower() == "success"
             )
-            if confirmed and result.get("ok"):
-                final_status = "success"
-                credential_state = "valid"
-                final_error = None
+            final_status, credential_state, final_error = classify_codex_operation_result(
+                result,
+                confirmed=confirmed,
+                callback_submitted=callback_submitted,
+                existing_valid=existing_valid,
+            )
+            if final_status == "success":
                 report(stage="credential_confirm", message="真实 Codex 凭证已确认", state="success")
-            elif str(result.get("status") or "") == "attention_required" or callback_submitted:
-                final_status = "attention_required"
-                credential_state = "valid" if existing_valid else "pending_confirmation"
-                final_error = str(result.get("message") or "远端凭证待确认")
-            elif str(result.get("status") or "") == "deactivated":
-                final_status = "deactivated"
-                credential_state = "deactivated"
-                final_error = str(result.get("message") or "账号已停用")
-            else:
-                final_status = "failed"
-                credential_state = "valid" if existing_valid else None
-                final_error = str(result.get("message") or "Codex OAuth 失败")
             run_summary = {
                 "ok": final_status == "success",
                 "status": final_status,
@@ -849,6 +885,11 @@ def _execute_run(run_id: int) -> dict:
                     # The account-state write below is the durable business
                     # commit. The readback immediately after it is part of
                     # the confirmed receipt proof.
+                    pass
+                elif final_status == "deactivated":
+                    # Confirmed account death is terminal. It must not be
+                    # downgraded to request_unknown just because an earlier
+                    # remote write also needs receipt reconciliation.
                     pass
                 else:
                     final_status = "attention_required"

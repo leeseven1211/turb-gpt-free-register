@@ -1585,6 +1585,7 @@
     .codex-table-v2 .col-plan { width: 100px; }
     .codex-table-v2 .col-status { width: 100px; }
     .codex-table-v2 .col-account { width: 160px; }
+    .codex-table-v2 .col-sub2api-id { width: 108px; font-variant-numeric: tabular-nums; }
     .codex-table-v2 .col-time { width: 160px; }
     .codex-table-v2 .col-actions {
       width: 200px; white-space: normal; overflow: visible; text-overflow: clip;
