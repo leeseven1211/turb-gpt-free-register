@@ -355,9 +355,14 @@ def handle_email_change(context: Any) -> task_gateway.OperationResult:
     data = context.run.get("data") if isinstance(getattr(context, "run", None), Mapping) else {}
     data = data if isinstance(data, Mapping) else {}
     new_email = _normalize_email(data.get("new_email"))
-    email_source = str(data.get("email_source") or "").strip().lower() or "outlook"
+    requested_source = str(data.get("email_source") or "").strip().lower() or None
+    email_source = email_provider.validate_email_source(requested_source) if requested_source else None
     if not new_email:
         new_email = _normalize_email(email_provider.acquire_email(email_source))
+    if email_source is None:
+        # A supplied address can belong to any configured mailbox pool. Resolve
+        # its owner after acquisition so writeback marks the correct pool row.
+        email_source = email_provider.resolve_email_source(new_email)
     if new_email.casefold() == old_email.casefold():
         return task_gateway.OperationResult.failed("新邮箱不能与当前邮箱相同")
     conflict = db.get_account_by_email(new_email)
@@ -414,7 +419,9 @@ def handle_email_change(context: Any) -> task_gateway.OperationResult:
                 email_source=email_source,
             )
         except Exception as exc:
-            logger.warning("邮箱换绑远端已确认但本地写回异常: %s", type(exc).__name__)
+            # The remote verification was accepted. A local writeback failure
+            # therefore cannot be reported as an ordinary retryable failure.
+            logger.warning("邮箱换绑本地写回失败，转入待核验: %s", type(exc).__name__)
             raise _RemoteRequestUnknown({
                 "remote_change_confirmed": True,
                 "local_writeback_confirmed": False,
