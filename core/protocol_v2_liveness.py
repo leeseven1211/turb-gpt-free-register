@@ -811,6 +811,7 @@ def refresh_access_token(
                 auth_method="protocol_v2",
             ).as_dict(),
         }
+
     except ProtocolV2AuthError as exc:
         status = "deactivated" if exc.code == "account_deactivated" else "failed"
         result = {
@@ -837,6 +838,7 @@ def refresh_access_token(
         }:
             result["password_auth_status"] = "rejected"
         return result
+
     except Exception as exc:
         logger.warning("[查活][Protocol v2] 认证失败：%s: %s", type(exc).__name__, str(exc)[:160])
         return {
@@ -853,3 +855,104 @@ def refresh_access_token(
                 auth_method="protocol_v2",
             ).as_dict(),
         }
+
+
+def refresh_access_token_in_session(email: str, session) -> dict:
+    """Complete Recent Login on an already authenticated protocol session."""
+    checked_at = _now()
+    password, totp_secret = get_account_login_credentials(email)
+    from core.account_export import _trigger_reauth
+
+    auth_url = _trigger_reauth(session, email)
+    otp_after_ts = time.time()
+    final_url = follow_authorize(session, auth_url)
+    dead_code = detect_account_unusable_text(final_url)
+    if dead_code:
+        raise ProtocolV2AuthError("account_deactivated", category="account", roxy_fallback_allowed=False)
+
+    parsed_final_url = urlparse(str(final_url or ""))
+    final_host = (parsed_final_url.hostname or "").lower()
+    final_path = parsed_final_url.path.lower()
+    if final_host != "auth.openai.com":
+        raise ProtocolV2AuthError("auth_page_unknown", category="response", roxy_fallback_allowed=False)
+
+    if final_path == "/email-verification":
+        email_result, auth_method = _complete_email_otp(
+            session, email, otp_after_ts, auth_method="email_otp",
+        )
+        continue_url = _extract_continue_url(email_result)
+        if _is_mfa(email_result, continue_url):
+            if not totp_secret:
+                raise ProtocolV2AuthError(
+                    "mfa_secret_missing", category="configuration", roxy_fallback_allowed=False,
+                )
+            session_info, _ = _complete_mfa(session, email_result, continue_url, totp_secret)
+            auth_method = "email_otp_mfa"
+        else:
+            session_info = email_result
+        return _success(
+            checked_at, session_info, session,
+            auth_method=auth_method, password_auth_status="skipped", fallback_used=False,
+        )
+
+    if final_path.startswith("/mfa-challenge"):
+        if not totp_secret:
+            raise ProtocolV2AuthError(
+                "mfa_secret_missing", category="configuration", roxy_fallback_allowed=False,
+            )
+        continue_url = str(final_url)
+        factor_id = _extract_factor_id(None, continue_url)
+        if not factor_id:
+            raise ProtocolV2AuthError("mfa_factor_missing", category="response", roxy_fallback_allowed=False)
+        session_info, _ = _complete_mfa(
+            session, {"continue_url": continue_url}, continue_url, totp_secret,
+        )
+        return _success(
+            checked_at, session_info, session,
+            auth_method="mfa_totp", password_auth_status="skipped", fallback_used=False,
+        )
+
+    if final_path != "/log-in/password":
+        raise ProtocolV2AuthError("auth_page_unknown", category="response", roxy_fallback_allowed=False)
+    if not password:
+        raise ProtocolV2AuthError(
+            "password_missing", category="configuration", roxy_fallback_allowed=False,
+        )
+
+    password_result = _password_verify(session, password)
+    continue_url = _extract_continue_url(password_result)
+    if _is_mfa(password_result, continue_url):
+        if not totp_secret:
+            raise ProtocolV2AuthError(
+                "mfa_secret_missing", category="configuration", roxy_fallback_allowed=False,
+            )
+        session_info, auth_method = _complete_mfa(session, password_result, continue_url, totp_secret)
+        password_auth_status = "verified"
+    elif _is_email_otp(password_result, continue_url):
+        email_result, auth_method = _complete_email_otp(
+            session, email, otp_after_ts, auth_method="password_email_otp",
+        )
+        if _is_mfa(email_result, _extract_continue_url(email_result)):
+            if not totp_secret:
+                raise ProtocolV2AuthError(
+                    "mfa_secret_missing", category="configuration", roxy_fallback_allowed=False,
+                )
+            session_info, _ = _complete_mfa(
+                session, email_result, _extract_continue_url(email_result), totp_secret,
+            )
+            auth_method = "password_email_otp_mfa"
+        else:
+            session_info = email_result
+        password_auth_status = "verified"
+    elif continue_url:
+        session_info = _follow_and_fetch(session, continue_url, referer=_PASSWORD_PATH)
+        auth_method = "password"
+        password_auth_status = "verified"
+    else:
+        raise ProtocolV2AuthError("auth_page_unknown", category="response", roxy_fallback_allowed=False)
+    return _success(
+        checked_at, session_info, session,
+        auth_method=auth_method,
+        password_auth_status=password_auth_status,
+        fallback_used=False,
+    )

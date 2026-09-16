@@ -17,14 +17,7 @@ from typing import Any, Callable, Mapping
 from config.schema import get_config_snapshot
 from core import account_proxy, email_provider, live_check_service, operation_task_store
 from core.operations import task_gateway
-from core.account_liveness import (
-    _network_preflight_with_retry,
-    _validate_with_retry,
-)
-from core.account_export import fetch_session, follow_oauth_callback
-from core.chatgpt_auth import get_csrf_token, signin_openai
 from core.chatgpt_bootstrap import authenticated_bootstrap
-from core.openai_auth import detect_account_unusable_text, follow_authorize
 from core.session import BrowserSession
 from core.storage import account_auth
 from core.storage import accounts as db
@@ -75,7 +68,7 @@ class ChangeEmailProtocolClient:
         url: str,
         payload: Mapping[str, Any],
     ) -> ProtocolResponse:
-        headers = dict(session.get_chatgpt_headers(referer="https://chatgpt.com/settings/account"))
+        headers = dict(session.get_chatgpt_headers(referer="https://chatgpt.com/"))
         headers.update({
             "authorization": (
                 access_token
@@ -85,7 +78,11 @@ class ChangeEmailProtocolClient:
             "origin": "https://chatgpt.com",
             "content-type": "application/json",
         })
-        response = session.post(url, headers=headers, json=dict(payload))
+        response = session.post(
+            url,
+            headers=headers,
+            data=json.dumps(dict(payload), separators=(",", ":")),
+        )
         try:
             body = response.json()
         except Exception:
@@ -97,10 +94,21 @@ class ChangeEmailProtocolClient:
         )
 
     def begin(self, session: BrowserSession, access_token: str, new_email: str) -> ProtocolResponse:
-        return self._request(session, access_token, BEGIN_URL, {"new_email": new_email})
+        return self._request(session, access_token, BEGIN_URL, {"email": new_email})
 
-    def verify(self, session: BrowserSession, access_token: str, code: str) -> ProtocolResponse:
-        return self._request(session, access_token, VERIFY_URL, {"code": code})
+    def verify(
+        self,
+        session: BrowserSession,
+        access_token: str,
+        new_email: str,
+        code: str,
+    ) -> ProtocolResponse:
+        return self._request(
+            session,
+            access_token,
+            VERIFY_URL,
+            {"email": new_email, "code": code},
+        )
 
 
 def _normalize_email(value: str | None) -> str:
@@ -154,6 +162,16 @@ def _response_accepted(response: ProtocolResponse) -> bool:
     return status not in {"failed", "failure", "rejected", "denied", "invalid", "error"}
 
 
+def _safe_response_meta(response: ProtocolResponse) -> dict[str, Any]:
+    """Expose only response classification fields in task events."""
+    payload = response.payload if isinstance(response.payload, Mapping) else {}
+    return {
+        "http_status": int(response.status_code or 0),
+        "error_code": _response_error_code(response) or None,
+        "status": str(payload.get("status") or payload.get("state") or "").strip().lower() or None,
+    }
+
+
 def _safe_child(child: Mapping[str, Any]) -> dict[str, Any]:
     return {
         key: child.get(key)
@@ -168,42 +186,27 @@ def run_recent_login(
     identity: Any = None,
     *,
     context: Any = None,
+    session: BrowserSession | None = None,
 ) -> str:
-    """Perform the existing protocol login flow after explicit reauth."""
-    session = None
+    """Perform Recent Login through the existing protocol v2 auth adapter.
+
+    This deliberately shares the password/TOTP/Sentinel/OAuth state machine
+    used by explicit AT refreshes.  The adapter is protocol-only; it may use
+    the existing email-OTP compatibility path for accounts without a saved
+    OpenAI password, but it never opens a browser fallback.
+    """
+    from core.protocol_v2_liveness import refresh_access_token, refresh_access_token_in_session
+
     identity_payload = identity.session_payload() if callable(getattr(identity, "session_payload", None)) else identity
-    try:
-        session, authorize_url = _network_preflight_with_retry(
-            email, proxy, identity=identity_payload,
-        )
-        final_url = follow_authorize(session, authorize_url)
-        dead_code = detect_account_unusable_text(final_url)
-        if dead_code:
-            raise RuntimeError(dead_code)
-        validate_result = _validate_with_retry(session, email, time.time())
-        page = validate_result.get("page") if isinstance(validate_result, Mapping) else {}
-        page = page if isinstance(page, Mapping) else {}
-        continue_url = (
-            validate_result.get("continue_url")
-            or validate_result.get("external_url")
-            or validate_result.get("url")
-            or page.get("continue_url")
-            or page.get("external_url")
-            or page.get("url")
-        )
-        if not continue_url or "about-you" in str(continue_url):
-            raise RuntimeError("Recent Login 未返回可用的 OAuth continue_url")
-        follow_oauth_callback(session, str(continue_url), referer="https://auth.openai.com/email-verification")
-        session_info = fetch_session(session)
-        token = str(session_info.get("accessToken") or "").strip()
-        if not token:
-            raise RuntimeError("Recent Login 未返回 accessToken")
+    if session is not None:
+        result = refresh_access_token_in_session(email, session)
+    else:
+        result = refresh_access_token(email, proxy=proxy, identity=identity_payload)
+    token = str(result.get("access_token") or "").strip() if isinstance(result, Mapping) else ""
+    if token:
         return token
-    finally:
-        raw_session = getattr(session, "session", None)
-        close = getattr(raw_session, "close", None)
-        if callable(close):
-            close()
+    error = str(result.get("error") or "protocol_v2_reauth_failed") if isinstance(result, Mapping) else "protocol_v2_reauth_failed"
+    raise RuntimeError(f"Recent Login 协议重认证失败: {error}")
 
 
 def submit_email_change(
@@ -290,7 +293,7 @@ def _remote_call(
             receipt_state="unknown",
             action=action,
             request_id=request_id,
-            detail={"response_observed": True, "remote_result_confirmed": False},
+            detail={"response_observed": True, "remote_result_confirmed": False, **_safe_response_meta(response)},
         )
         raise _RemoteRequestUnknown
     if not _response_accepted(response):
@@ -299,7 +302,11 @@ def _remote_call(
             receipt_state="rejected",
             action=action,
             request_id=request_id,
-            detail={"response_observed": True, "remote_result_confirmed": False},
+            detail={
+                "response_observed": True,
+                "remote_result_confirmed": False,
+                **_safe_response_meta(response),
+            },
         )
         return response
     context.remote_request_receipt(
@@ -307,7 +314,7 @@ def _remote_call(
         receipt_state="received",
         action=action,
         request_id=request_id,
-        detail={"response_observed": True, "remote_result_confirmed": False},
+        detail={"response_observed": True, "remote_result_confirmed": False, **_safe_response_meta(response)},
     )
     return response
 
@@ -399,7 +406,17 @@ def handle_email_change(context: Any) -> task_gateway.OperationResult:
         begin = _remote_call(context, "begin", lambda: client.begin(session, token, new_email))
         if response_requires_reauth(begin):
             context.report(stage="reauth", state="running", message="远端要求 Recent Login")
-            token = run_recent_login(old_email, getattr(route, "proxy_url", None), identity, context=context)
+            token = run_recent_login(
+                old_email,
+                getattr(route, "proxy_url", None),
+                identity,
+                context=context,
+                session=session,
+            )
+            # Recent Login runs in a fresh protocol session.  Re-establish the
+            # ChatGPT-side cookies/CSRF context on the original session before
+            # retrying the protected email-change endpoint.
+            authenticated_bootstrap(session, token, strict=False)
             begin = _remote_call(context, "begin", lambda: client.begin(session, token, new_email))
         if not _response_accepted(begin):
             return task_gateway.OperationResult.failed("远端拒绝邮箱换绑请求")
@@ -408,7 +425,11 @@ def handle_email_change(context: Any) -> task_gateway.OperationResult:
 
         context.report(stage="email_change_verify", state="running", message="等待新邮箱验证码")
         code = email_provider.wait_for_otp(new_email, after_ts=time.time())
-        verify = _remote_call(context, "verify", lambda: client.verify(session, token, str(code)))
+        verify = _remote_call(
+            context,
+            "verify",
+            lambda: client.verify(session, token, new_email, str(code)),
+        )
         if not _response_accepted(verify):
             return task_gateway.OperationResult.failed("远端拒绝邮箱验证码")
         try:

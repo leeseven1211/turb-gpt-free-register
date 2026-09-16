@@ -99,6 +99,31 @@ class ProtocolV2LivenessTests(unittest.TestCase):
         self.assertEqual("skipped", result["password_auth_status"])
         password.assert_not_called()
 
+    def test_recent_login_reuses_the_caller_session_for_password_auth(self):
+        from core import protocol_v2_liveness as v2
+
+        session = _Session()
+        with (
+            patch.object(v2, "get_account_login_credentials", return_value=("saved-password", "secret")),
+            patch("core.account_export._trigger_reauth", return_value="reauth-authorize") as trigger,
+            patch.object(v2, "follow_authorize", return_value="https://auth.openai.com/log-in/password"),
+            patch.object(v2, "_network_preflight_with_retry") as preflight,
+            patch.object(v2, "_password_verify", return_value={"continue_url": "https://auth.openai.com/continue"}) as password,
+            patch.object(v2, "_follow_and_fetch", return_value={"accessToken": "fresh"}) as follow,
+        ):
+            result = v2.refresh_access_token_in_session("account@example.com", session)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("fresh", result["access_token"])
+        trigger.assert_called_once_with(session, "account@example.com")
+        password.assert_called_once_with(session, "saved-password")
+        follow.assert_called_once_with(
+            session,
+            "https://auth.openai.com/continue",
+            referer="https://auth.openai.com/log-in/password",
+        )
+        preflight.assert_not_called()
+
     def test_unknown_authorize_page_does_not_submit_password(self):
         from core import protocol_v2_liveness as v2
 

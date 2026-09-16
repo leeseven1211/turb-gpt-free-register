@@ -108,13 +108,58 @@ def test_protocol_client_uses_change_email_begin_and_verify_contract():
     session = FakeSession()
     client = ChangeEmailProtocolClient()
     client.begin(session, "at-secret", "new@example.com")
-    client.verify(session, "at-secret", "123456")
+    client.verify(session, "at-secret", "new@example.com", "123456")
 
     assert session.posts[0][0].endswith("/backend-api/accounts/change_email/begin")
-    assert session.posts[0][2] == {"new_email": "new@example.com"}
+    assert session.posts[0][2] == {"email": "new@example.com"}
     assert session.posts[1][0].endswith("/backend-api/accounts/change_email/verify")
-    assert session.posts[1][2] == {"code": "123456"}
+    assert session.posts[1][2] == {"email": "new@example.com", "code": "123456"}
     assert session.posts[0][1]["authorization"] == "Bearer at-secret"
+
+
+def test_recent_login_reuses_protocol_v2_without_browser_or_legacy_waiter():
+    from core import email_change_service
+
+    identity = SimpleNamespace(session_payload=lambda: {"device_id": "device-test"})
+    with (
+        patch(
+            "core.protocol_v2_liveness.refresh_access_token",
+            return_value={"ok": True, "access_token": "fresh-at-secret", "auth_method": "password_mfa_totp"},
+        ) as refresh,
+        patch.object(email_change_service.email_provider, "wait_for_otp", side_effect=AssertionError("legacy waiter used")),
+    ):
+        token = email_change_service.run_recent_login(
+            "old@example.com",
+            "http://proxy.invalid",
+            identity,
+        )
+
+    assert token == "fresh-at-secret"
+    refresh.assert_called_once_with(
+        "old@example.com",
+        proxy="http://proxy.invalid",
+        identity={"device_id": "device-test"},
+    )
+
+
+def test_recent_login_keeps_the_existing_session_for_protocol_v2_reauth():
+    from core import email_change_service
+
+    session = FakeSession()
+    identity = SimpleNamespace(session_payload=lambda: {"device_id": "device-test"})
+    with patch(
+        "core.protocol_v2_liveness.refresh_access_token_in_session",
+        return_value={"ok": True, "access_token": "same-session-at"},
+    ) as refresh:
+        token = email_change_service.run_recent_login(
+            "old@example.com",
+            "http://proxy.invalid",
+            identity,
+            session=session,
+        )
+
+    assert token == "same-session-at"
+    refresh.assert_called_once_with("old@example.com", session)
 
 
 def test_email_change_progress_has_protocol_steps_without_browser_step():
@@ -164,7 +209,7 @@ def test_explicit_reauth_retries_begin_once_then_waits_new_email_otp():
         patch.object(email_change_service.account_proxy, "acquire_account_proxy", return_value=route),
         patch.object(email_change_service.account_auth, "ensure_account_protocol_identity", return_value=identity),
         patch.object(email_change_service, "BrowserSession", return_value=FakeSession()),
-        patch.object(email_change_service, "authenticated_bootstrap"),
+        patch.object(email_change_service, "authenticated_bootstrap") as bootstrap,
         patch.object(email_change_service, "run_recent_login", return_value="fresh-at-secret") as reauth,
         patch.object(email_change_service.email_provider, "wait_for_otp", return_value="654321"),
         patch.object(email_change_service, "ChangeEmailProtocolClient", return_value=client),
@@ -185,8 +230,11 @@ def test_explicit_reauth_retries_begin_once_then_waits_new_email_otp():
         result = email_change_service.handle_email_change(context)
 
     reauth.assert_called_once()
+    assert reauth.call_args.kwargs["session"] is context.session
+    assert bootstrap.call_count == 2
+    assert bootstrap.call_args_list[1].args[1] == "fresh-at-secret"
     assert client.begin.call_count == 2
-    client.verify.assert_called_once_with(context.session, "fresh-at-secret", "654321")
+    client.verify.assert_called_once_with(context.session, "fresh-at-secret", "new@example.com", "654321")
     enqueue_child.assert_called_once()
     register_dependency.assert_called_once()
     assert context.release_calls == 1
@@ -293,6 +341,30 @@ def test_email_change_error_projection_is_safe_and_actionable():
 def test_email_change_proxy_mode_is_purpose_specific():
     with patch("config.account.ACCOUNT_EMAIL_CHANGE_PROXY_MODE", "direct", create=True):
         assert account_proxy.account_action_proxy_mode("email-change") == "direct"
+
+
+def test_rejected_remote_response_persists_safe_classification():
+    from core import email_change_service
+
+    context = _fake_context()
+    response = email_change_service.ProtocolResponse(
+        status_code=403,
+        payload={"error": {"code": "reauth_required"}, "status": "rejected"},
+    )
+    with patch.object(context, "remote_request_started"), patch.object(
+        context, "remote_request_receipt"
+    ) as receipt:
+        result = email_change_service._remote_call(context, "begin", lambda: response)
+
+    assert result is response
+    detail = receipt.call_args.kwargs["detail"]
+    assert detail == {
+        "response_observed": True,
+        "remote_result_confirmed": False,
+        "http_status": 403,
+        "error_code": "reauth_required",
+        "status": "rejected",
+    }
 
 
 def test_email_change_single_and_bulk_entries_are_durable():
