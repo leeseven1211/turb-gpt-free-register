@@ -23,7 +23,7 @@ ChatGPT / OpenAI 账号自动注册与 Codex OAuth 授权工具。当前项目�
 - 支持注册驱动切换：
   - `REGISTRATION_DRIVER = "protocol"`
   - `REGISTRATION_DRIVER = "roxy"`
-- 支持 RoxyBrowser 一号一环境：自动创建、打开、关闭、删除 Roxy Profile。
+- 支持 RoxyBrowser 一号一环境：账号首次需要时创建 Profile，后续注册续跑、Codex、账号配置、查活和 AT 刷新优先复用同一 Profile。
 - 支持 Roxy 无头启动：`ROXY_OPEN_HEADLESS=True`。
 - Roxy 浏览器注册已兼容：
   - 填邮箱后直接进入邮箱验证码页；
@@ -371,7 +371,8 @@ ROXY_API_TOKEN = "你的Roxy API Key"
 ROXY_WORKSPACE_ID = "你的workspaceId"
 ROXY_PROJECT_ID = "你的projectId"
 ROXY_ONE_PROFILE_PER_ACCOUNT = True
-ROXY_DELETE_PROFILE_AFTER_RUN = True
+ROXY_REUSE_ACCOUNT_PROFILE = True
+ROXY_DELETE_PROFILE_AFTER_RUN = False
 ROXY_CREATE_USE_PROXY_POOL = True
 ```
 
@@ -539,12 +540,13 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 
 #### Roxy 环境与登录态
 
-- `ROXY_ONE_PROFILE_PER_ACCOUNT=True` 时，每个注册任务创建一个唯一临时 Profile；创建请求超时或断连属于“结果未知”，客户端会先按唯一环境名查询是否已经创建成功，不能盲目重试并制造孤儿环境。
+- `ROXY_ONE_PROFILE_PER_ACCOUNT=True` 时，每个账号最多绑定一个 Roxy Profile；账号记录的 `extra_json.roxybrowser.profile_id` 是复用入口，没有绑定时才创建环境。创建请求超时或断连属于“结果未知”，客户端会先按唯一环境名查询是否已经创建成功，不能盲目重试并制造孤儿环境。
 - Roxy 明确返回“窗口额度不足”时，当前 worker 会停留在“启动浏览器”阶段等待并重试，不会失败后继续消费后续排队任务。默认最多等待 `ROXY_WINDOW_WAIT_TIMEOUT=900` 秒，每 `ROXY_WINDOW_WAIT_INTERVAL=10` 秒重试；其他创建错误不进入容量等待。
 - 邮箱 UI 提交后如果进入登录空壳或邮箱框短暂清空，NextAuth 兜底会等待真实落点；只有确认页面仍未前进时才刷新或重填。页面已经到达密码、OTP 或登录完成状态时必须立即接受该状态，不能依据旧快照重复提交邮箱。
-- 默认在任务结束时关闭浏览器，并在 `ROXY_DELETE_PROFILE_AFTER_RUN=True` 时删除临时 Profile。需要排查时应在发起注册页勾选「调试模式」：失败任务会在配置的超时时间内暂停并保留自己的 Roxy 窗口，用户可在任务日志中点击「释放现场」继续清理。`ROXY_KEEP_BROWSER_OPEN=True` 只保留为低层紧急诊断开关，不适合日常批量调试，因为它不受任务级超时和并发上限管理。
+- 默认在任务结束时关闭浏览器但保留 Profile；账号级重试/补配置/查活/AT 刷新再次打开账号绑定的 Profile。复用时使用 Profile 已保存的代理，新申请的任务线路不会覆盖它；绑定 Profile 明确不存在或已删除时才创建替代环境并回写账号绑定。
+- `ROXY_DELETE_PROFILE_AFTER_RUN=True` 是高风险兼容开关，仅允许删除本轮新建且尚未绑定账号的 Profile；默认关闭。启动恢复对没有 `disposable` 标记的历史登记项永不自动删除。需要排查时仍可在发起注册页勾选「调试模式」：失败任务会在配置的超时时间内暂停并保留自己的 Roxy 窗口，用户可在任务日志中点击「释放现场」继续清理。`ROXY_KEEP_BROWSER_OPEN=True` 只保留为低层紧急诊断开关，不适合日常批量调试，因为它不受任务级超时和并发上限管理。
 - 注册后紧接着执行 Codex OAuth 时，复用同一个 driver、Profile、代理和 ChatGPT 登录态，授权 URL 不强制 `prompt=login`；若出现账号选择器，只允许选择与当前任务邮箱完全匹配的账号。
-- 从账号页独立补跑 Codex 时没有可信的注册浏览器上下文，因此使用新环境和账号功能代理重新登录。这与“注册后立即 OAuth 复用登录态”是两个不同场景。
+- 从账号页独立补跑 Codex 时优先打开账号绑定的 Profile；只有账号没有绑定或 Roxy 明确报告 Profile 已不存在时才创建环境。这与“注册后立即 OAuth 复用登录态”仍是两个不同场景，但两者共享账号级 Profile 绑定。
 - Roxy 免费版界面显示的 5 个 Profile/窗口额度不等于整条注册链路必然能稳定并发 5。实际并发还受住宅代理提取频率、邮箱库存、OTP、接码平台和 OpenAI 风控限制；首次部署先跑通单任务，再逐步提高并发。
 
 #### Codex、接码与 sub2api
@@ -1143,7 +1145,7 @@ ENABLE_CODEX_AUTO = False
 
 - 日常批量使用 WebUI，不建议直接同时开多个 CLI 进程。
 - 注册线程数建议不超过可用代理数。
-- Roxy 一号一环境建议保持开启，降低环境污染。
+- Roxy 一号一环境和账号环境复用建议保持开启，`ROXY_DELETE_PROFILE_AFTER_RUN` 建议保持关闭；这样会减少重复创建，但不会改变 Roxy 自己的打开窗口并发额度，也不能据此推断每日创建额度会刷新。
 - 调试页面或接口问题时，在「发起注册」勾选「调试模式」。该开关只作用于本批任务：Roxy 强制显示窗口，抓包按任务隔离；失败后脚本暂停等待人工查看，点击「释放现场」、停止任务或达到超时后继续自动清理。
 - 在任务日志的「网络调试」区域查看请求状态、阶段、耗时和错误，可选择同批成功任务自动对比，也可下载已经脱敏和限流的 HAR。Cookie、Token、密码、OTP、邮箱和 URL 查询值不会明文写入抓包。
 - 普通失败任务在同一日志面板显示「失败诊断」：分类、页面状态、失败请求和截图；普通模式不会保存成功请求或请求/响应正文。

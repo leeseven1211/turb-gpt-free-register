@@ -274,11 +274,16 @@ class RoxyProxyInjectionTests(unittest.TestCase):
     def test_startup_cleans_registered_orphan_profile(self):
         with tempfile.TemporaryDirectory() as td:
             registry = Path(td) / "profiles.json"
-            registry.write_text(json.dumps({"items": [{"profile_id": "orphan-1"}]}), encoding="utf-8")
+            registry.write_text(
+                json.dumps({"items": [{"profile_id": "orphan-1", "disposable": True}]}),
+                encoding="utf-8",
+            )
             with patch.object(
                 roxybrowser_client, "_PROFILE_REGISTRY_PATH", registry
             ), patch.object(
                 roxybrowser_client._cfg, "ROXY_KEEP_BROWSER_OPEN", False
+            ), patch.object(
+                roxybrowser_client._cfg, "ROXY_DELETE_PROFILE_AFTER_RUN", True
             ), patch.object(
                 roxybrowser_client.RoxyBrowserClient, "close_profile", return_value=True
             ) as close_profile, patch.object(

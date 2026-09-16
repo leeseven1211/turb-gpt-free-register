@@ -211,7 +211,8 @@ _DEFAULTS: dict[str, Any] = {
     "ROXY_WINDOW_WAIT_TIMEOUT": 900,
     "ROXY_WINDOW_WAIT_INTERVAL": 10,
     "ROXY_ONE_PROFILE_PER_ACCOUNT": True,
-    "ROXY_DELETE_PROFILE_AFTER_RUN": True,
+    "ROXY_REUSE_ACCOUNT_PROFILE": True,
+    "ROXY_DELETE_PROFILE_AFTER_RUN": False,
     "ROXY_RANDOM_OS_ON_CREATE": True,
     "ROXY_RANDOM_OS_CHOICES": "Windows,macOS",
     "ROXY_RANDOM_PROFILE_NAME_ON_CREATE": True,
@@ -602,11 +603,15 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "ROXY_ONE_PROFILE_PER_ACCOUNT", "file": "roxybrowser.py", "type": "bool", "group": "RoxyBrowser",
-        "label": "一号一环境", "help": "每个账号强制创建新 Roxy Profile，用完关闭并删除，禁止复用固定环境",
+        "label": "一号一环境", "help": "每个账号最多绑定一个 Roxy Profile；没有绑定时才创建新环境",
+    },
+    {
+        "key": "ROXY_REUSE_ACCOUNT_PROFILE", "file": "roxybrowser.py", "type": "bool", "group": "RoxyBrowser",
+        "label": "复用账号环境", "help": "注册续跑和账号级浏览器操作优先打开账号已绑定的 Roxy Profile",
     },
     {
         "key": "ROXY_DELETE_PROFILE_AFTER_RUN", "file": "roxybrowser.py", "type": "bool", "group": "RoxyBrowser",
-        "label": "结束后删除环境", "help": "一号一环境模式下，任务结束后删除本轮创建的 Roxy Profile",
+        "label": "结束后删除环境", "help": "高风险开关；默认关闭。开启后仅删除本轮新建且未绑定复用的 Roxy Profile",
     },
     {
         "key": "ROXY_RANDOM_OS_ON_CREATE", "file": "roxybrowser.py", "type": "bool", "group": "RoxyBrowser",
