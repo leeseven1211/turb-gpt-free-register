@@ -143,7 +143,7 @@ function debounce(fn, wait=250) {
 }
 
 // ---------- Tab 切换与浏览器历史 ----------
-const LEGACY_NAV_ALLOWED_TABS = ['register','accounts','codex','outlook','config'];
+const LEGACY_NAV_ALLOWED_TABS = ['register','accounts','codex','outlook','proxy-traffic','config'];
 const LEGACY_NAV_HISTORY_KEY = 'gptConsoleNav';
 let LEGACY_ACTIVE_TAB = 'register';
 let legacyNavigationHistoryBound = false;
@@ -199,6 +199,7 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   if (tab === 'accounts') loadAccounts();
   if (tab === 'codex') loadCodex();
   if (tab === 'outlook') loadOutlook();
+  if (tab === 'proxy-traffic') loadProxyTraffic();
   if (tab === 'config') loadConfig();
   if (tab === 'register') refreshJobs();
   if (historyMode === 'push') recordLegacyNavigationHistory();

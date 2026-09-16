@@ -981,6 +981,443 @@ tr:hover td,
   .config-save-state.is-saving .config-save-dot { animation: none; }
 }
 
+/* Proxy and traffic workspace. The tables keep the dense operational rhythm
+   of the existing list pages while the scroll container owns narrow screens. */
+.proxy-traffic-page {
+  display: grid;
+  gap: var(--ui-space-4);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.proxy-traffic-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--ui-space-5);
+  min-width: 0;
+  padding: 2px 0 12px;
+  border-bottom: 1px solid var(--ui-color-border);
+}
+
+.proxy-traffic-head h2 {
+  margin-top: 4px;
+  color: var(--ui-color-text);
+  font-size: var(--ui-font-size-xl);
+  line-height: var(--ui-line-height-tight);
+}
+
+.proxy-traffic-head p {
+  max-width: 700px;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-sm);
+}
+
+.proxy-traffic-head-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--ui-space-3);
+}
+
+.proxy-traffic-last-updated,
+.proxy-traffic-panel-status {
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-xs);
+  white-space: nowrap;
+}
+
+#btnRefreshProxyTraffic {
+  min-height: 40px;
+  gap: 7px;
+}
+
+#btnRefreshProxyTraffic svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+#btnRefreshProxyTraffic[aria-busy="true"] svg {
+  animation: proxy-traffic-spin .8s linear infinite;
+}
+
+@keyframes proxy-traffic-spin {
+  to { transform: rotate(360deg); }
+}
+
+.proxy-traffic-toolbar {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(130px, .65fr)) minmax(240px, 1.4fr) auto;
+  align-items: end;
+  gap: var(--ui-space-3);
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--ui-color-border);
+  border-radius: var(--ui-radius-md);
+  background: var(--ui-color-surface);
+  box-shadow: var(--ui-shadow-sm);
+}
+
+.proxy-traffic-filter {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--ui-color-text-secondary);
+  font-size: var(--ui-font-size-xs);
+  font-weight: 700;
+}
+
+.proxy-traffic-filter input,
+.proxy-traffic-filter select {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  margin: 0;
+}
+
+.proxy-traffic-filter--search {
+  min-width: 0;
+}
+
+#btnClearProxyTrafficFilters {
+  min-height: 40px;
+  white-space: nowrap;
+}
+
+.proxy-traffic-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  min-width: 0;
+  border-top: 1px solid var(--ui-color-border);
+  border-bottom: 1px solid var(--ui-color-border);
+  background: var(--ui-color-surface);
+}
+
+.proxy-traffic-summary > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 11px 16px;
+  border-right: 1px solid var(--ui-color-border);
+}
+
+.proxy-traffic-summary > div:last-child { border-right: 0; }
+
+.proxy-traffic-summary span {
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-xs);
+}
+
+.proxy-traffic-summary strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--ui-color-text);
+  font-family: var(--ui-font-mono);
+  font-size: var(--ui-font-size-lg);
+  line-height: 1.25;
+}
+
+.proxy-traffic-view-tabs {
+  display: flex;
+  gap: 2px;
+  min-width: 0;
+  border-bottom: 1px solid var(--ui-color-border);
+}
+
+.proxy-traffic-view-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--ui-color-text-muted);
+  background: transparent;
+  font-size: var(--ui-font-size-sm);
+  font-weight: 750;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.proxy-traffic-view-tabs button:hover {
+  color: var(--ui-color-text);
+  background: var(--ui-color-surface-subtle);
+}
+
+.proxy-traffic-view-tabs button.is-active {
+  border-bottom-color: var(--ui-color-brand);
+  color: var(--ui-color-brand);
+}
+
+.proxy-traffic-view-tabs button span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  min-height: 20px;
+  padding: 0 6px;
+  border-radius: var(--ui-radius-pill);
+  color: currentColor;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  font-family: var(--ui-font-mono);
+  font-size: 11px;
+}
+
+.proxy-traffic-panel {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--ui-color-border);
+  border-radius: var(--ui-radius-md);
+  background: var(--ui-color-surface);
+  box-shadow: var(--ui-shadow-sm);
+}
+
+.proxy-traffic-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--ui-space-4);
+  min-width: 0;
+  padding: 15px 16px 13px;
+  border-bottom: 1px solid var(--ui-color-border);
+  background: var(--ui-color-surface-subtle);
+}
+
+.proxy-traffic-panel-head h3,
+.proxy-traffic-panel-head p {
+  overflow-wrap: anywhere;
+}
+
+.proxy-traffic-panel-head h3 {
+  color: var(--ui-color-text);
+  font-size: var(--ui-font-size-lg);
+  line-height: var(--ui-line-height-tight);
+}
+
+.proxy-traffic-panel-head p {
+  margin-top: 4px;
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-xs);
+}
+
+.proxy-traffic-panel-status { padding-top: 2px; }
+
+.proxy-traffic-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-x pan-y;
+}
+
+.proxy-traffic-table {
+  width: 100%;
+  min-width: 1080px;
+  table-layout: fixed;
+  border-collapse: collapse;
+  color: var(--ui-color-text);
+  font-size: var(--ui-font-size-sm);
+}
+
+.proxy-traffic-table th,
+.proxy-traffic-table td {
+  min-width: 0;
+  padding: 11px 12px;
+  border-bottom: 1px solid #edf0f4;
+  text-align: left;
+  vertical-align: top;
+  overflow: hidden;
+}
+
+.proxy-traffic-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: var(--ui-color-text-muted);
+  background: var(--ui-color-surface-subtle);
+  font-size: var(--ui-font-size-xs);
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.proxy-traffic-table tbody tr:last-child td { border-bottom: 0; }
+.proxy-traffic-table tbody tr:hover td { background: #fcfcff; }
+
+.proxy-col-lease { width: 145px; }
+.proxy-col-ip { width: 144px; }
+.proxy-col-status { width: 108px; }
+.proxy-col-account { width: 156px; }
+.proxy-col-purpose { width: 126px; }
+.proxy-col-correlation { width: 220px; }
+.proxy-col-attempt { width: 88px; }
+.proxy-col-time { width: 188px; }
+.proxy-col-details { width: 92px; }
+.proxy-col-source { width: 132px; }
+.proxy-col-method { width: 92px; }
+.proxy-col-bytes { width: 170px; }
+.proxy-col-counts { width: 188px; }
+
+.proxy-traffic-primary,
+.proxy-traffic-id,
+.proxy-traffic-ip,
+.proxy-traffic-mono,
+.proxy-traffic-number {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.proxy-traffic-primary { color: var(--ui-color-text); font-weight: 720; }
+.proxy-traffic-id,
+.proxy-traffic-ip,
+.proxy-traffic-mono,
+.proxy-traffic-number { font-family: var(--ui-font-mono); font-size: 12px; }
+.proxy-traffic-ip { color: var(--ui-color-info); }
+.proxy-traffic-table small,
+.proxy-traffic-muted { color: var(--ui-color-text-muted); font-size: 11px; }
+.proxy-traffic-table small { display: block; margin-top: 4px; overflow-wrap: anywhere; }
+
+.proxy-traffic-status {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: var(--ui-radius-pill);
+  color: var(--ui-color-text-secondary);
+  background: var(--ui-color-surface-subtle);
+  font-size: 11px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.proxy-traffic-status--leased,
+.proxy-traffic-status--running { color: var(--ui-color-info); background: var(--ui-color-info-soft); }
+.proxy-traffic-status--recent,
+.proxy-traffic-status--complete { color: var(--ui-color-success); background: var(--ui-color-success-soft); }
+.proxy-traffic-status--failed,
+.proxy-traffic-status--unknown { color: var(--ui-color-danger); background: var(--ui-color-danger-soft); }
+.proxy-traffic-status--unavailable { color: var(--ui-color-warning); background: var(--ui-color-warning-soft); }
+
+.proxy-traffic-correlation,
+.proxy-traffic-time {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.proxy-traffic-correlation > span {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 6px;
+  min-width: 0;
+  align-items: baseline;
+}
+
+.proxy-traffic-correlation small { margin: 0; }
+.proxy-traffic-time small { margin: 0; }
+
+.proxy-traffic-row-details {
+  min-width: 0;
+}
+
+.proxy-traffic-row-details summary {
+  min-height: 30px;
+  padding: 4px 2px;
+  color: var(--ui-color-brand);
+  font-size: var(--ui-font-size-xs);
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.proxy-traffic-row-details summary:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--ui-color-brand) 24%, transparent);
+  outline-offset: 2px;
+}
+
+.proxy-traffic-row-details dl {
+  display: grid;
+  gap: 7px;
+  min-width: 220px;
+  margin: 8px 0 2px;
+  padding: 10px;
+  border: 1px solid var(--ui-color-border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-color-surface-subtle);
+}
+
+.proxy-traffic-detail-item {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+}
+
+.proxy-traffic-detail-item dt {
+  color: var(--ui-color-text-muted);
+  font-size: 11px;
+}
+
+.proxy-traffic-detail-item dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  color: var(--ui-color-text);
+  font-size: 11px;
+}
+
+@media (max-width: 1180px) {
+  .proxy-traffic-toolbar {
+    grid-template-columns: repeat(3, minmax(140px, 1fr));
+  }
+
+  .proxy-traffic-filter--search { grid-column: span 2; }
+  #btnClearProxyTrafficFilters { grid-column: span 1; }
+}
+
+@media (max-width: 860px) {
+  .proxy-traffic-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .proxy-traffic-head-actions { width: 100%; justify-content: space-between; }
+  .proxy-traffic-toolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .proxy-traffic-filter--search { grid-column: span 2; }
+  #btnClearProxyTrafficFilters { grid-column: span 2; justify-self: start; }
+  .proxy-traffic-table { min-width: 980px; }
+}
+
+@media (max-width: 560px) {
+  .proxy-traffic-head h2 { font-size: var(--ui-font-size-xl); }
+  .proxy-traffic-head p { font-size: var(--ui-font-size-xs); }
+  .proxy-traffic-head-actions { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .proxy-traffic-toolbar { grid-template-columns: minmax(0, 1fr); padding: 11px 12px; }
+  .proxy-traffic-filter--search,
+  #btnClearProxyTrafficFilters { grid-column: auto; }
+  #btnClearProxyTrafficFilters { width: 100%; }
+  .proxy-traffic-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .proxy-traffic-summary > div:nth-child(2) { border-right: 0; }
+  .proxy-traffic-summary > div:nth-child(-n + 2) { border-bottom: 1px solid var(--ui-color-border); }
+  .proxy-traffic-view-tabs { overflow-x: auto; scrollbar-width: thin; }
+  .proxy-traffic-view-tabs button { flex: 0 0 auto; padding-inline: 12px; }
+  .proxy-traffic-panel-head { align-items: flex-start; flex-direction: column; gap: 6px; padding-inline: 13px; }
+  .proxy-traffic-table { min-width: 920px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #btnRefreshProxyTraffic[aria-busy="true"] svg { animation: none; }
+}
+
 @media (max-width: 860px) {
   .jobs-table-v2-wrap,
   .accounts-table-v2-wrap,
