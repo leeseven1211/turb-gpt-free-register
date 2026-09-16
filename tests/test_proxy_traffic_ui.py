@@ -60,6 +60,8 @@ class ProxyTrafficUiContractTest(unittest.TestCase):
         for secret_field in ("proxy_url", "username", "password"):
             self.assertNotIn(secret_field, PROXY_JS)
         self.assertIn("exit_ip", PROXY_JS)
+        self.assertNotIn("proxyTrafficNormalize(await proxyTrafficRequest())", PROXY_JS)
+        self.assertIn("proxyTrafficSnapshot = await proxyTrafficRequest();", PROXY_JS)
         self.assertIn("route_attempt_no", PROXY_JS)
         self.assertIn("availability", PROXY_JS)
         self.assertIn("ended_at", PROXY_JS)

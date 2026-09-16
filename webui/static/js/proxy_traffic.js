@@ -389,7 +389,7 @@ async function loadProxyTraffic() {
     proxyTrafficSetPanelState(view, 'loading', `正在加载${view === 'current' ? '当前租约' : view === 'history' ? '线路历史' : '浏览器流量'}`, '正在同步代理与流量 API');
   });
   try {
-    proxyTrafficSnapshot = proxyTrafficNormalize(await proxyTrafficRequest());
+    proxyTrafficSnapshot = await proxyTrafficRequest();
     proxyTrafficRefreshFilterOptions();
     proxyTrafficRenderRows();
     const updated = document.getElementById('proxyTrafficLastUpdated');
