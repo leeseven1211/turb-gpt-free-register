@@ -4,6 +4,7 @@ let accountsReloadQueued = false;
 let planStatusLoading = false;
 let planStatusRevision = '';
 let ACCOUNT_BATCH_WORKERS = 3;
+let emailChangeAccountId = null;
 const ACCOUNT_TASK_TYPE_LABELS = LIST_FACET_LABELS.task_type;
 const ACCOUNT_TASK_TRIGGER_LABELS = {
   manual:'手动', manual_bulk:'手动批量', manual_retry:'失败重跑', scheduled:'定时',
@@ -41,6 +42,10 @@ function accountTaskResultText(task) {
     return result.message || result.status || (result.ok ? '提炼完成' : '提炼失败');
   }
   if (task.task_type === 'live_check' || task.task_type === 'token_refresh') return result.ok ? '账号正常' : (result.status || '-');
+  if (task.task_type === 'email_change') {
+    if (result.remote_change_confirmed && result.local_writeback_confirmed) return '邮箱已换绑 · 已提交新 Token 刷新';
+    return result.message || result.status || '邮箱换绑未完成';
+  }
   if (['account_setup_retry','password_setup','password_change','twofa_setup','twofa_change','account_completion'].includes(task.task_type)) return result.ok ? (result.message || '账号配置操作已完成') : (result.message || result.status || '账号配置操作失败');
   if (task.task_type === 'codex_retry') {
     if (result.ok) return result.credential_confirmed ? '授权成功 · 凭证已确认' : '授权成功';
@@ -409,7 +414,7 @@ async function cancelAccountTask(taskId, button) {
 function updateAccountTaskFilters(facets = {}) {
   syncFacetSelect('accountTaskTypeFilterV2', facets.task_type, {
     group: 'task_type',
-    values: ['registration', 'registration_resume', 'account_setup_retry', 'password_setup', 'password_change', 'twofa_setup', 'twofa_change', 'account_completion', 'twofa_retry', 'codex_retry', 'codex_token_refresh', 'live_check', 'token_refresh', 'plan_check', 'deactivation_mail', 'extract_link'],
+    values: ['registration', 'registration_resume', 'account_setup_retry', 'password_setup', 'password_change', 'twofa_setup', 'twofa_change', 'account_completion', 'email_change', 'twofa_retry', 'codex_retry', 'codex_token_refresh', 'live_check', 'token_refresh', 'plan_check', 'deactivation_mail', 'extract_link'],
   });
   syncFacetSelect('accountTaskStatusFilterV2', facets.status, {
     group: 'status',
@@ -970,6 +975,7 @@ function _accountsV2MoreMenu(r) {
     (r.account_status || '').toLowerCase() === 'deactivated' ? '' : `<button type="button" data-account-action="password_change" data-account-id="${esc(r.id)}">修改密码</button>`,
     (r.account_status || '').toLowerCase() === 'deactivated' ? '' : `<button type="button" data-account-action="twofa_change" data-account-id="${esc(r.id)}">修改 2FA</button>`,
     (r.account_status || '').toLowerCase() === 'deactivated' ? '' : `<button type="button" data-account-action="complete" data-account-id="${esc(r.id)}">补全账号</button>`,
+    (r.account_status || '').toLowerCase() === 'deactivated' ? '' : `<button type="button" data-account-email-change="${esc(r.id)}" title="协议换绑邮箱；不会启动浏览器">换绑邮箱</button>`,
     (r.account_status || '').toLowerCase() === 'deactivated' ? '' : `<button type="button" onclick="checkSelectedLive([Number('${esc(r.id)}')], this); return false;" title="只在线验证现有 Token；不会发送邮箱验证码或刷新 AT">查活</button>`,
     (r.account_status || '').toLowerCase() === 'deactivated' ? '' : `<button type="button" onclick="refreshSelectedToken([Number('${esc(r.id)}')], this); return false;" title="通过邮箱 OTP 重新登录并刷新最新 AT">刷新AT</button>`,
     `<button type="button" data-account-task-history="${esc(r.email)}" title="在任务实例中查看该账号的 Codex 补跑、查活、AT 刷新、套餐和封号邮件历史">任务记录</button>`,
@@ -1059,9 +1065,80 @@ function closeAccountDetail() {
 }
 $('#btnCloseAccountDetail')?.addEventListener('click', closeAccountDetail);
 $('#accountDetailBackdrop')?.addEventListener('click', closeAccountDetail);
+
+function openEmailChangeModal(id) {
+  const account = ACCOUNTS.find(item => Number(item.id) === Number(id));
+  if (!account) { showToast('账号详情暂不可用，请先刷新列表'); return; }
+  emailChangeAccountId = Number(id);
+  const modal = $('#emailChangeModal');
+  if (!modal) return;
+  modal.dataset.accountId = String(emailChangeAccountId);
+  $('#emailChangeAccountLabel').textContent = `账号 #${account.id} · 当前邮箱 ${account.email || '-'}`;
+  const target = $('#emailChangeTarget');
+  const source = $('#emailChangeSource');
+  if (target) target.value = '';
+  if (source) source.value = '';
+  modal.classList.remove('hidden');
+  updateModalScrollLock();
+  target?.focus({preventScroll:true});
+}
+
+function closeEmailChangeModal() {
+  emailChangeAccountId = null;
+  $('#emailChangeModal')?.classList.add('hidden');
+  updateModalScrollLock();
+}
+
+async function submitEmailChange(event) {
+  event.preventDefault();
+  const accountId = Number(emailChangeAccountId || $('#emailChangeModal')?.dataset.accountId || 0);
+  const account = ACCOUNTS.find(item => Number(item.id) === accountId);
+  const target = $('#emailChangeTarget');
+  const source = $('#emailChangeSource');
+  const submit = $('#btnSubmitEmailChange');
+  if (!accountId || !account) { closeEmailChangeModal(); showToast('账号已不在当前列表，请刷新后重试'); return; }
+  if (!target?.checkValidity()) { target?.reportValidity(); return; }
+  const newEmail = target.value.trim();
+  if (newEmail.toLowerCase() === String(account.email || '').toLowerCase()) {
+    target.setCustomValidity('新邮箱不能与当前邮箱相同');
+    target.reportValidity();
+    target.setCustomValidity('');
+    return;
+  }
+  if (submit) { submit.disabled = true; submit.textContent = '提交中…'; }
+  try {
+    const result = await api(`/api/accounts/${encodeURIComponent(accountId)}/email-change`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({new_email: newEmail, email_source: source?.value || null}),
+    });
+    showToast(result.message || `邮箱换绑已入队 · 任务 #${result.task_id || '-'}`);
+    closeEmailChangeModal();
+    loadAccounts();
+    const search = $('#accountTaskTargetFilterV2');
+    const typeFilter = $('#accountTaskTypeFilterV2');
+    if (search) search.value = account.email || `#${accountId}`;
+    if (typeFilter) typeFilter.value = 'email_change';
+    PAGERS.accountTasks.page = 1;
+    activateTab('tasks');
+  } catch (err) {
+    showToast('换绑邮箱失败: ' + err.message);
+  } finally {
+    if (submit) { submit.disabled = false; submit.textContent = '提交换绑'; }
+  }
+}
+
+$('#btnCloseEmailChange')?.addEventListener('click', closeEmailChangeModal);
+$('#btnCancelEmailChange')?.addEventListener('click', closeEmailChangeModal);
+$('#emailChangeModal')?.addEventListener('click', event => {
+  if (event.target.id === 'emailChangeModal') closeEmailChangeModal();
+});
+$('#emailChangeForm')?.addEventListener('submit', submitEmailChange);
 document.addEventListener('keydown', event => {
   if (event.key === 'Escape' && !$('#accountDetailDrawer')?.classList.contains('hidden')) {
     closeAccountDetail();
+  } else if (event.key === 'Escape' && !$('#emailChangeModal')?.classList.contains('hidden')) {
+    closeEmailChangeModal();
   }
 });
 function closeAccountsV2MoreMenus(except = null) {
@@ -1241,6 +1318,12 @@ async function onAccountsBodyClick(e) {
   if (e.target.closest('.acc-v2-more-menu')) {
     // 点菜单项后收起，再继续走下面的动作处理
     closeAccountsV2MoreMenus();
+  }
+
+  const emailChangeBtn = e.target.closest('[data-account-email-change]');
+  if (emailChangeBtn) {
+    openEmailChangeModal(Number(emailChangeBtn.dataset.accountEmailChange));
+    return;
   }
 
   const totpCopyBtn = e.target.closest('[data-account-totp-copy]');

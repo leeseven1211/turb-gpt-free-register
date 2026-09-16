@@ -2,6 +2,69 @@
 let accountsLoading = false;
 let planStatusLoading = false;
 let planStatusRevision = '';
+let emailChangeAccountId = null;
+
+function openEmailChangeModal(id) {
+  const account = ACCOUNTS.find(item => Number(item.id) === Number(id));
+  if (!account) { showToast('账号暂不可用，请先刷新列表'); return; }
+  emailChangeAccountId = Number(id);
+  const modal = $('#emailChangeModal');
+  if (!modal) return;
+  modal.dataset.accountId = String(emailChangeAccountId);
+  $('#emailChangeAccountLabel').textContent = `账号 #${account.id} · 当前邮箱 ${account.email || '-'}`;
+  $('#emailChangeTarget').value = '';
+  $('#emailChangeSource').value = '';
+  modal.classList.remove('hidden');
+  updateModalScrollLock();
+  $('#emailChangeTarget')?.focus({preventScroll:true});
+}
+
+function closeEmailChangeModal() {
+  emailChangeAccountId = null;
+  $('#emailChangeModal')?.classList.add('hidden');
+  updateModalScrollLock();
+}
+
+async function submitEmailChange(event) {
+  event.preventDefault();
+  const accountId = Number(emailChangeAccountId || $('#emailChangeModal')?.dataset.accountId || 0);
+  const account = ACCOUNTS.find(item => Number(item.id) === accountId);
+  const target = $('#emailChangeTarget');
+  const submit = $('#btnSubmitEmailChange');
+  if (!accountId || !account) { closeEmailChangeModal(); showToast('账号已不在当前列表，请刷新后重试'); return; }
+  if (!target?.checkValidity()) { target?.reportValidity(); return; }
+  if (target.value.trim().toLowerCase() === String(account.email || '').toLowerCase()) {
+    target.setCustomValidity('新邮箱不能与当前邮箱相同');
+    target.reportValidity();
+    target.setCustomValidity('');
+    return;
+  }
+  if (submit) { submit.disabled = true; submit.textContent = '提交中…'; }
+  try {
+    const result = await api(`/api/accounts/${encodeURIComponent(accountId)}/email-change`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({new_email: target.value.trim(), email_source: $('#emailChangeSource')?.value || null}),
+    });
+    showToast(result.message || '邮箱换绑已入队；可在现代 UI 的任务中心查看');
+    closeEmailChangeModal();
+    loadAccounts();
+  } catch (err) {
+    showToast('换绑邮箱失败: ' + err.message);
+  } finally {
+    if (submit) { submit.disabled = false; submit.textContent = '提交换绑'; }
+  }
+}
+
+$('#btnCloseEmailChange')?.addEventListener('click', closeEmailChangeModal);
+$('#btnCancelEmailChange')?.addEventListener('click', closeEmailChangeModal);
+$('#emailChangeModal')?.addEventListener('click', event => {
+  if (event.target.id === 'emailChangeModal') closeEmailChangeModal();
+});
+$('#emailChangeForm')?.addEventListener('submit', submitEmailChange);
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && !$('#emailChangeModal')?.classList.contains('hidden')) closeEmailChangeModal();
+});
 function getAccountOperationWorkers() {
   const configured = (typeof CONFIG !== 'undefined' && Array.isArray(CONFIG))
     ? CONFIG.find(item => item.key === 'ACCOUNT_BATCH_WORKERS')
@@ -349,7 +412,7 @@ function renderAccounts() {
       <td class="muted">${esc(r.created_at || '-')}</td>
       <td class="actions actions-cell">
         <div class="account-row-actions">
-          <div class="account-action-group"><button class="good" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button></div>
+          <div class="account-action-group"><button class="good" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button> ${r.account_status === 'deactivated' ? '' : `<button data-account-email-change="${esc(r.id)}" title="协议换绑邮箱；不会启动浏览器">换绑邮箱</button>`}</div>
           <div class="account-action-group">${r.account_status === 'deactivated' ? '' : `<button data-account-live-check="${esc(r.id)}" title="只在线验证现有 Token；不会发送邮箱验证码或刷新 AT">查活</button> <button data-account-token-refresh="${esc(r.id)}" title="通过邮箱 OTP 重新登录并刷新最新 AT">刷新AT</button>`} <button data-account-live-log="${esc(r.email)}" title="查看该账号最近一次查活日志">查活日志</button> ${_planAction(r)} ${_extractLinkAction(r)}</div>
           <div class="account-action-group">${_codexAction(r)} <button data-codex-log="${esc(r.email)}" title="查看该账号最近一次 Codex 补跑日志">补跑日志</button></div>
           <div class="account-action-group danger-zone"><button data-account-archive="${esc(r.id)}" data-archived="${r.archived ? '0' : '1'}" title="${r.archived ? '恢复到默认账号列表' : '归档后默认账号列表不再显示'}">${r.archived ? '恢复' : '归档'}</button> <button class="danger" data-account-delete="${esc(r.id)}" data-email="${esc(r.email)}">删除</button></div>
@@ -486,6 +549,11 @@ document.addEventListener('click', async (e) => {
 
 // 账号操作按钮（事件委托）
 $('#accountsBody').addEventListener('click', async (e) => {
+  const emailChangeBtn = e.target.closest('[data-account-email-change]');
+  if (emailChangeBtn) {
+    openEmailChangeModal(Number(emailChangeBtn.dataset.accountEmailChange));
+    return;
+  }
   const totpQueryBtn = e.target.closest('[data-account-totp-code]');
   if (totpQueryBtn) {
     const id = Number(totpQueryBtn.dataset.accountTotpCode);

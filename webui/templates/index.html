@@ -412,6 +412,46 @@
       </div>
       <div class="account-detail-body" id="accountDetailBody"></div>
     </aside>
+    <div class="email-change-modal hidden" id="emailChangeModal" role="dialog" aria-modal="true" aria-labelledby="emailChangeTitle">
+      <div class="email-change-dialog" role="document">
+        <div class="email-change-head">
+          <div>
+            <div class="data-panel-kicker">PROTOCOL OPERATION</div>
+            <h2 id="emailChangeTitle">换绑邮箱</h2>
+            <p id="emailChangeAccountLabel"></p>
+          </div>
+          <button type="button" class="account-detail-close" id="btnCloseEmailChange" aria-label="关闭换绑邮箱">×</button>
+        </div>
+        <form id="emailChangeForm" class="email-change-form">
+          <label class="email-change-field">
+            <span>新邮箱</span>
+            <input id="emailChangeTarget" name="new_email" type="email" autocomplete="off" required placeholder="name@example.com">
+            <small>新邮箱需要已经在邮箱池中，任务会从该邮箱读取验证码。</small>
+          </label>
+          <label class="email-change-field">
+            <span>验证码来源</span>
+            <select id="emailChangeSource" name="email_source">
+              <option value="">自动识别</option>
+              <option value="outlook">Outlook 邮箱池</option>
+              <option value="generic_api">通用 API 邮箱</option>
+              <option value="cloudflare_domain">Cloudflare 域名邮箱</option>
+              <option value="cloudflare">Cloudflare 临时邮箱</option>
+              <option value="email_butler">Email Butler</option>
+              <option value="gptmail">GPTMail</option>
+              <option value="mailnest">MailNest</option>
+              <option value="cloudmail">CloudMail</option>
+              <option value="icloud_hide">iCloud 隐藏邮箱</option>
+            </select>
+            <small>自动识别会按新邮箱在本地邮箱池的归属匹配来源。</small>
+          </label>
+          <div class="email-change-note">换绑、Recent Login 和验证码校验全部走协议任务；不会启动浏览器兜底。成功后会自动提交一次新 Token 查活/刷新。</div>
+          <div class="email-change-foot">
+            <button type="button" class="jobs-tb-btn" id="btnCancelEmailChange">取消</button>
+            <button type="submit" class="jobs-tb-btn jobs-tb-btn--primary" id="btnSubmitEmailChange">提交换绑</button>
+          </div>
+        </form>
+      </div>
+    </div>
     <section class="account-tasks-panel" id="accountTasksPanel" aria-label="统一任务中心">
       <div class="account-tasks-command-deck">
       <div class="jobs-toolbar-v2 list-action-toolbar account-tasks-toolbar">

@@ -62,6 +62,7 @@ const LIST_FACET_LABELS = {
   task_type: {
     registration:'注册', registration_resume:'继续邮箱验证', twofa_retry:'2FA 配置补跑',
     account_setup_retry:'账号配置补跑', password_setup:'补密码', twofa_setup:'补 2FA', account_completion:'补全账号',
+    email_change:'换绑邮箱',
     codex_retry:'Codex 补跑', codex_token_refresh:'Codex Token 刷新',
     live_check:'查活', token_refresh:'AT 刷新', plan_check:'查套餐', deactivation_mail:'查封号邮件', extract_link:'提炼',
   },
@@ -81,6 +82,7 @@ const LIST_FACET_LABELS = {
     phone_check:'检查手机验证', phone_acquire:'申请接码号码', phone_otp:'短信验证', consent:'确认授权',
     callback:'接收 OAuth 回调', credential_confirm:'确认远端凭证', credential_persist:'保存凭证', cancelling:'正在停止',
     twofa:'设置 2FA', plan:'套餐信息', plan_check:'查询套餐', plan_request:'请求套餐', refresh_token:'刷新 Token',
+    email_change_begin:'提交换绑请求', email_change_verify:'验证换绑验证码',
     mailbox_scan:'扫描邮件', extract_link:'提炼', complete:'完成', interrupted:'执行中断', event:'事件',
   },
   run_count: {'0':'0 次', '1':'1 次', '2':'2 次', '3':'3 次', '4+':'4 次及以上'},
