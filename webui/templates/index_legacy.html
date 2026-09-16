@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/legacy.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/ui-foundation.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/legacy-bridge.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/proxy-traffic.css') }}">
 </head>
 <body>
 <header>
@@ -36,6 +37,7 @@
     <button data-tab="register" class="active">注册</button>
     <button data-tab="accounts">账号</button>
     <button data-tab="codex">Codex 授权</button>
+    <button data-tab="proxy-traffic">代理与流量</button>
     <button data-tab="outlook">邮箱池</button>
     <button data-tab="config">配置</button>
   </div>
@@ -307,6 +309,53 @@
     </section>
   </div>
 
+  <!-- ============ 代理与流量 ============ -->
+  <div id="tab-proxy-traffic" class="hidden">
+    <section class="proxy-traffic-panel" aria-labelledby="legacyProxyTrafficTitle">
+      <div class="proxy-traffic-heading">
+        <div>
+          <div class="data-panel-kicker">Network operations</div>
+          <h2 id="legacyProxyTrafficTitle">代理与流量</h2>
+          <p>查看持久化线路租约和浏览器可观测流量。协议任务的浏览器流量显示为未采集。</p>
+        </div>
+        <div class="proxy-traffic-heading-actions">
+          <span class="proxy-traffic-updated" id="proxyTrafficUpdatedAt" role="status" aria-live="polite">尚未刷新</span>
+          <button type="button" class="btn primary" id="btnRefreshProxyTraffic">刷新</button>
+        </div>
+      </div>
+      <div class="proxy-traffic-summary" id="proxyTrafficSummary" aria-label="代理与流量摘要">
+        <div class="proxy-traffic-summary-item"><span>当前租约</span><strong data-proxy-summary="current_leases">—</strong></div>
+        <div class="proxy-traffic-summary-item"><span>线路历史</span><strong data-proxy-summary="history">—</strong></div>
+        <div class="proxy-traffic-summary-item"><span>浏览器会话</span><strong data-proxy-summary="traffic">—</strong></div>
+        <div class="proxy-traffic-summary-item"><span>总流量</span><strong data-proxy-summary="total_bytes">—</strong></div>
+      </div>
+      <div class="proxy-traffic-toolbar" aria-label="代理与流量筛选">
+        <div class="proxy-traffic-view-tabs" role="tablist" aria-label="代理与流量视图">
+          <button type="button" id="proxyTrafficCurrentTab" class="proxy-traffic-view-tab is-active" role="tab" aria-selected="true" aria-controls="proxyTrafficCurrentView" data-proxy-view="current">当前租约</button>
+          <button type="button" id="proxyTrafficHistoryTab" class="proxy-traffic-view-tab" role="tab" aria-selected="false" aria-controls="proxyTrafficHistoryView" data-proxy-view="history">线路历史</button>
+          <button type="button" id="proxyTrafficTrafficTab" class="proxy-traffic-view-tab" role="tab" aria-selected="false" aria-controls="proxyTrafficTrafficView" data-proxy-view="traffic">浏览器流量</button>
+        </div>
+        <div class="proxy-traffic-filters">
+          <label>搜索<input id="proxyTrafficQuery" type="search" placeholder="账号、任务或线路用途" autocomplete="off"></label>
+          <label>提供方<select id="proxyTrafficProvider"><option value="">全部提供方</option></select></label>
+          <label>状态<select id="proxyTrafficState"><option value="">全部状态</option></select></label>
+          <label>用途<select id="proxyTrafficPurpose"><option value="">全部用途</option></select></label>
+          <button type="button" class="btn" id="btnResetProxyTrafficFilters">清除筛选</button>
+        </div>
+      </div>
+      <section id="proxyTrafficCurrentView" class="proxy-traffic-view" role="tabpanel" aria-labelledby="proxyTrafficCurrentTab" data-proxy-view-panel="current">
+        <div class="proxy-traffic-table-wrap"><table class="proxy-traffic-table proxy-traffic-table--current"><colgroup><col class="proxy-col-provider"><col class="proxy-col-ip"><col class="proxy-col-status"><col class="proxy-col-purpose"><col class="proxy-col-correlation"><col class="proxy-col-time"><col class="proxy-col-actions"></colgroup><thead><tr><th>提供方 / 地域</th><th>出口 IP</th><th>状态</th><th>用途</th><th>关联任务</th><th>获取 / 到期</th><th>详情</th></tr></thead><tbody id="proxyTrafficCurrentBody"><tr class="list-state-row"><td class="table-state-cell" colspan="7"><div class="table-state is-loading" role="status"><span class="table-state-spinner" aria-hidden="true"></span><strong>正在加载当前租约</strong><small>正在同步持久化线路状态</small></div></td></tr></tbody></table></div>
+      </section>
+      <section id="proxyTrafficHistoryView" class="proxy-traffic-view" role="tabpanel" aria-labelledby="proxyTrafficHistoryTab" data-proxy-view-panel="history" hidden>
+        <div class="proxy-traffic-table-wrap"><table class="proxy-traffic-table proxy-traffic-table--history"><colgroup><col class="proxy-col-provider"><col class="proxy-col-ip"><col class="proxy-col-status"><col class="proxy-col-purpose"><col class="proxy-col-correlation"><col class="proxy-col-time"><col class="proxy-col-actions"></colgroup><thead><tr><th>提供方 / 地域</th><th>出口 IP</th><th>状态</th><th>用途</th><th>关联任务</th><th>获取 / 释放</th><th>详情</th></tr></thead><tbody id="proxyTrafficHistoryBody"><tr class="list-state-row"><td class="table-state-cell" colspan="7"><div class="table-state is-loading" role="status"><span class="table-state-spinner" aria-hidden="true"></span><strong>正在加载线路历史</strong><small>正在同步最近的租约记录</small></div></td></tr></tbody></table></div>
+      </section>
+      <section id="proxyTrafficTrafficView" class="proxy-traffic-view" role="tabpanel" aria-labelledby="proxyTrafficTrafficTab" data-proxy-view-panel="traffic" hidden>
+        <div class="proxy-traffic-note">仅统计 Roxy/CDP 可观测的 HTTP/WebSocket 字节，不等同于代理供应商计费流量。</div>
+        <div class="proxy-traffic-table-wrap"><table class="proxy-traffic-table proxy-traffic-table--traffic"><colgroup><col class="proxy-col-source"><col class="proxy-col-time"><col class="proxy-col-bytes"><col class="proxy-col-bytes"><col class="proxy-col-bytes"><col class="proxy-col-requests"><col class="proxy-col-actions"></colgroup><thead><tr><th>来源 / 方法</th><th>时间 / 时长</th><th>上传</th><th>下载</th><th>总计</th><th>请求统计</th><th>详情</th></tr></thead><tbody id="proxyTrafficTrafficBody"><tr class="list-state-row"><td class="table-state-cell" colspan="7"><div class="table-state is-loading" role="status"><span class="table-state-spinner" aria-hidden="true"></span><strong>正在加载浏览器流量</strong><small>正在同步 HTTP/WebSocket 流量摘要</small></div></td></tr></tbody></table></div>
+      </section>
+    </section>
+  </div>
+
   <!-- ============ 配置 ============ -->
   <div id="tab-config" class="hidden">
     <section class="card">
@@ -335,4 +384,5 @@
 <script src="{{ url_for('static', filename='js/legacy/email.js') }}"></script>
 <script src="{{ url_for('static', filename='js/legacy/codex.js') }}"></script>
 <script src="{{ url_for('static', filename='js/legacy/config.js') }}"></script>
+<script src="{{ url_for('static', filename='js/proxy_traffic.js') }}"></script>
 <script src="{{ url_for('static', filename='js/legacy/bootstrap.js') }}"></script>

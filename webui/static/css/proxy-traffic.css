@@ -1,0 +1,322 @@
+.proxy-traffic-panel {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--ui-color-border, #e5e8ef);
+  border-radius: var(--ui-radius-lg, 12px);
+  background: var(--ui-color-surface, #fff);
+  box-shadow: var(--ui-shadow-sm, 0 1px 2px rgba(16, 24, 40, .03));
+}
+
+.proxy-traffic-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 20px 22px 18px;
+  border-bottom: 1px solid var(--ui-color-border, #e5e8ef);
+}
+
+.proxy-traffic-heading h2 {
+  margin: 4px 0 0;
+  color: var(--ui-color-text, #172033);
+  font-size: 22px;
+  line-height: 1.25;
+}
+
+.proxy-traffic-heading p {
+  max-width: 680px;
+  margin: 5px 0 0;
+  color: var(--ui-color-text-muted, #7d8596);
+  font-size: 12px;
+}
+
+.proxy-traffic-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.proxy-traffic-updated {
+  color: var(--ui-color-text-muted, #7d8596);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.proxy-traffic-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-bottom: 1px solid var(--ui-color-border, #e5e8ef);
+}
+
+.proxy-traffic-summary-item {
+  min-width: 0;
+  padding: 14px 18px;
+  border-right: 1px solid var(--ui-color-border, #e5e8ef);
+}
+
+.proxy-traffic-summary-item:last-child { border-right: 0; }
+
+.proxy-traffic-summary-item span {
+  display: block;
+  color: var(--ui-color-text-muted, #7d8596);
+  font-size: 11px;
+}
+
+.proxy-traffic-summary-item strong {
+  display: block;
+  margin-top: 5px;
+  overflow: hidden;
+  color: var(--ui-color-text, #172033);
+  font-family: var(--ui-font-mono, ui-monospace, monospace);
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.proxy-traffic-toolbar {
+  display: grid;
+  gap: 14px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--ui-color-border, #e5e8ef);
+  background: var(--ui-color-surface-subtle, #f8f9fb);
+}
+
+.proxy-traffic-view-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.proxy-traffic-view-tab {
+  min-height: 36px;
+  padding: 0 13px;
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius-md, 8px);
+  color: var(--ui-color-text-secondary, #596274);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.proxy-traffic-view-tab:hover { background: var(--ui-color-surface, #fff); }
+
+.proxy-traffic-view-tab.is-active {
+  border-color: #d7d8f7;
+  color: var(--ui-color-brand, #5b5ce2);
+  background: var(--ui-color-brand-soft, #f1f1ff);
+}
+
+.proxy-traffic-filters {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.6fr) repeat(3, minmax(130px, .8fr)) auto;
+  gap: 9px;
+  align-items: end;
+}
+
+.proxy-traffic-filters label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--ui-color-text-muted, #7d8596);
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.proxy-traffic-filters input,
+.proxy-traffic-filters select {
+  width: 100%;
+  min-height: 36px;
+  margin: 0;
+  padding: 7px 10px;
+  font-size: 12px;
+}
+
+.proxy-traffic-filters .jobs-tb-btn,
+.proxy-traffic-filters .btn {
+  min-height: 36px;
+  white-space: nowrap;
+}
+
+.proxy-traffic-view { min-width: 0; }
+
+.proxy-traffic-note {
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--ui-color-border, #e5e8ef);
+  color: var(--ui-color-text-muted, #7d8596);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.proxy-traffic-table-wrap {
+  max-height: min(680px, calc(100vh - var(--topbar-height, 68px) - 250px));
+  overflow-x: auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.proxy-traffic-table {
+  width: 100%;
+  min-width: 980px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  color: var(--ui-color-text-secondary, #596274);
+  font-size: 12px;
+}
+
+.proxy-traffic-table--traffic { min-width: 900px; }
+
+.proxy-traffic-table th,
+.proxy-traffic-table td {
+  height: 48px;
+  padding: 9px 12px;
+  border-bottom: 1px solid #edf0f4;
+  text-align: left;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.proxy-traffic-table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  height: 40px;
+  color: var(--ui-color-text-muted, #7d8596);
+  background: var(--ui-color-surface-subtle, #f8f9fb);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.proxy-traffic-table tbody tr:hover td { background: #fbfbff; }
+
+.proxy-col-provider { width: 160px; }
+.proxy-col-ip { width: 138px; }
+.proxy-col-status { width: 104px; }
+.proxy-col-purpose { width: 126px; }
+.proxy-col-correlation { width: 220px; }
+.proxy-col-time { width: 190px; }
+.proxy-col-source { width: 170px; }
+.proxy-col-bytes { width: 110px; }
+.proxy-col-requests { width: 180px; }
+.proxy-col-actions { width: 76px; }
+
+.proxy-traffic-main-cell,
+.proxy-traffic-sub-cell {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.proxy-traffic-main-cell { color: var(--ui-color-text, #172033); font-weight: 750; }
+.proxy-traffic-sub-cell { margin-top: 3px; color: var(--ui-color-text-muted, #7d8596); font-size: 11px; }
+.proxy-traffic-mono { font-family: var(--ui-font-mono, ui-monospace, monospace); font-variant-numeric: tabular-nums; }
+
+.proxy-traffic-status {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.proxy-traffic-status--active,
+.proxy-traffic-status--leased { color: var(--ui-color-success, #1f9d75); background: var(--ui-color-success-soft, #eefaf5); }
+.proxy-traffic-status--pending,
+.proxy-traffic-status--recent { color: var(--ui-color-warning, #c98216); background: var(--ui-color-warning-soft, #fff8eb); }
+.proxy-traffic-status--released,
+.proxy-traffic-status--expired,
+.proxy-traffic-status--unavailable { color: var(--ui-color-text-muted, #7d8596); background: #f1f3f6; }
+.proxy-traffic-status--failed { color: var(--ui-color-danger, #db4b55); background: var(--ui-color-danger-soft, #fff5f6); }
+
+.proxy-traffic-row-toggle {
+  min-width: 52px;
+  min-height: 32px;
+  padding: 0 9px;
+  border: 1px solid var(--ui-color-border-strong, #d7dbe5);
+  border-radius: var(--ui-radius-md, 8px);
+  color: var(--ui-color-text-secondary, #596274);
+  background: var(--ui-color-surface, #fff);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.proxy-traffic-row-toggle:hover { border-color: var(--ui-color-brand, #5b5ce2); color: var(--ui-color-brand, #5b5ce2); }
+
+.proxy-traffic-row-detail td {
+  height: auto;
+  padding: 12px 16px;
+  color: var(--ui-color-text-secondary, #596274);
+  background: #fbfbfe;
+  white-space: normal;
+}
+
+.proxy-traffic-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  gap: 10px 18px;
+}
+
+.proxy-traffic-detail-item { min-width: 0; }
+.proxy-traffic-detail-item span { display: block; color: var(--ui-color-text-muted, #7d8596); font-size: 10px; }
+.proxy-traffic-detail-item strong { display: block; margin-top: 3px; color: var(--ui-color-text, #172033); font-size: 12px; overflow-wrap: anywhere; }
+
+.proxy-traffic-detail-note {
+  grid-column: 1 / -1;
+  margin: 2px 0 0;
+  color: var(--ui-color-text-muted, #7d8596);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.proxy-traffic-panel button:focus-visible,
+.proxy-traffic-panel input:focus-visible,
+.proxy-traffic-panel select:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--ui-color-brand, #5b5ce2) 26%, transparent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .proxy-traffic-panel * {
+    animation-duration: .01ms !important;
+    scroll-behavior: auto !important;
+    transition-duration: .01ms !important;
+  }
+}
+
+@media (max-width: 860px) {
+  .proxy-traffic-heading { padding: 18px; }
+  .proxy-traffic-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .proxy-traffic-filters label:first-child { grid-column: 1 / -1; }
+  .proxy-traffic-filters .jobs-tb-btn,
+  .proxy-traffic-filters .btn { justify-self: start; }
+  .proxy-traffic-detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 560px) {
+  .proxy-traffic-heading { flex-direction: column; gap: 13px; padding: 16px 14px; }
+  .proxy-traffic-heading h2 { font-size: 20px; }
+  .proxy-traffic-heading-actions { justify-content: space-between; width: 100%; }
+  .proxy-traffic-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .proxy-traffic-summary-item:nth-child(2) { border-right: 0; }
+  .proxy-traffic-summary-item:nth-child(-n + 2) { border-bottom: 1px solid var(--ui-color-border, #e5e8ef); }
+  .proxy-traffic-toolbar { padding: 12px 14px; }
+  .proxy-traffic-view-tabs { overflow-x: auto; flex-wrap: nowrap; }
+  .proxy-traffic-view-tab { flex: 0 0 auto; }
+  .proxy-traffic-filters { grid-template-columns: 1fr; }
+  .proxy-traffic-filters label:first-child { grid-column: auto; }
+  .proxy-traffic-filters .jobs-tb-btn,
+  .proxy-traffic-filters .btn { width: 100%; }
+  .proxy-traffic-note { padding-inline: 14px; }
+  .proxy-traffic-table { min-width: 880px; }
+  .proxy-traffic-table--traffic { min-width: 820px; }
+  .proxy-traffic-detail-grid { grid-template-columns: 1fr 1fr; gap: 9px 14px; }
+}

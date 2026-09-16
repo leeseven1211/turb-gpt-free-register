@@ -818,8 +818,9 @@ const TAB_META = {
   codex: { title: 'Codex 授权', description: '管理 OAuth 凭证、归档与导出状态' },
   outlook: { title: '邮箱资源池', description: '统一维护注册邮箱素材及可用状态' },
   config: { title: '运行配置', description: '调整安全的运行参数与服务集成' },
+  'proxy-traffic': { title: '代理与流量', description: '查看持久化线路租约和浏览器流量摘要' },
 };
-const NAV_ALLOWED_TABS = ['overview','register','tasks','accounts','codex','outlook','config'];
+const NAV_ALLOWED_TABS = ['overview','register','tasks','accounts','codex','proxy-traffic','outlook','config'];
 const NAV_HISTORY_KEY = 'gptConsoleNav';
 let ACTIVE_TAB = 'overview';
 let navigationHistoryBound = false;
@@ -957,7 +958,7 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   $$('.sidebar-module[data-sidebar-module]').forEach(item => {
     item.classList.toggle('is-open', item.dataset.sidebarModule === tab);
   });
-  const contentTabs = ['overview','register','accounts','codex','outlook','config'];
+  const contentTabs = ['overview','register','accounts','codex','proxy-traffic','outlook','config'];
   const accountTab = $('#tab-accounts');
   if (tab === 'tasks' && accountTab) accountTab.dataset.moduleView = 'tasks';
   if (tab === 'accounts' && accountTab?.dataset.moduleView === 'tasks') {
@@ -986,6 +987,7 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   }
   if (tab === 'config') loadConfig();
   if (tab === 'register') refreshJobs();
+  if (tab === 'proxy-traffic') loadProxyTraffic();
   if (historyMode === 'push') recordNavigationHistory();
   else updateNavigationBackButton();
 }
