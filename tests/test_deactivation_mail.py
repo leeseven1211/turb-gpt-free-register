@@ -4,14 +4,44 @@ import unittest
 from unittest.mock import Mock, patch
 
 from core import account_task_store as legacy_account_task_store
-from core import db, deactivation_mail_service
+from core import db, deactivation_mail_service, record_store
 from core.operations import task_gateway as account_task_store
-from core.record_store import ACCOUNTS
+from core.record_store import ACCOUNTS, CODEX_CREDENTIALS
 from webui.app import create_app
 from tests.support_pg import PostgresTestCase
 
 
 class DeactivationMailTests(PostgresTestCase):
+    def test_detected_mail_deactivates_linked_codex_credential(self):
+        self.seed(ACCOUNTS, [
+            {"id": 5, "email": "mail-dead@test.com", "email_source": "email_butler"},
+        ])
+        db.save_codex_credential_record(
+            "codex-mail-dead@test.com-free.json",
+            {
+                "email": "mail-dead@test.com",
+                "type": "codex",
+                "access_token": "access-token",
+                "refresh_token": "refresh-token",
+                "expired": "2099-01-01T00:00:00Z",
+            },
+        )
+
+        db.update_account_deactivation_mail(5, {
+            "status": "success",
+            "detected": True,
+            "subject": "Deactivated",
+        })
+
+        account = db.get_account(5)
+        credential = record_store.get_row_by(
+            CODEX_CREDENTIALS,
+            "filename",
+            "codex-mail-dead@test.com-free.json",
+        )
+        self.assertEqual("deactivated", account["account_status"])
+        self.assertEqual("deactivated", credential["oauth_status"])
+
     def test_detected_mail_is_durable_and_empty_rescan_does_not_clear_it(self):
         self.seed(ACCOUNTS, [
             {"id": 1, "email": "a@test.com", "email_source": "email_butler"},

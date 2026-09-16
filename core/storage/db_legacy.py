@@ -737,11 +737,70 @@ def update_account_codex_status(email: str, codex_status: str, codex_error: str 
     row = record_store.get_row_by(record_store.ACCOUNTS, "email", email, lower=True)
     if row is None:
         return False
-    return _patch_account(int(row["id"]), {
+    now = _now()
+    changes = {
         "codex_status": codex_status,
         "codex_error": codex_error,
-        "updated_at": _now(),
-    })
+        "updated_at": now,
+    }
+    if str(codex_status or "").strip().lower() == "deactivated":
+        changes.update({
+            "account_status": "deactivated",
+            "account_status_reason": codex_error or "account_deactivated",
+            "account_status_at": now,
+            "codex_credential_state": "deactivated",
+        })
+    updated = _patch_account(int(row["id"]), changes)
+    if updated and str(codex_status or "").strip().lower() == "deactivated":
+        mark_codex_account_deactivated(email, codex_error or "account_deactivated")
+    return updated
+
+
+def mark_codex_account_deactivated(
+    email: str,
+    reason: str | None = None,
+    *,
+    checked_at: str | None = None,
+) -> int:
+    """Mark every local Codex credential for an account as deactivated.
+
+    The credential JSON is retained for audit/export history. The lifecycle
+    projection is separate from token expiry so a still-unexpired JWT cannot
+    make a deactivated account look usable again.
+    """
+    normalized_email = str(email or "").strip()
+    if not normalized_email:
+        return 0
+    normalized_reason = str(reason or "account_deactivated").strip()[:500]
+    now = str(checked_at or _now())
+    changes = {
+        "oauth_status": "deactivated",
+        "oauth_account_status": "deactivated",
+        "oauth_account_status_reason": normalized_reason,
+        "oauth_account_status_at": now,
+        "oauth_reauth_required": True,
+        "oauth_refresh_error": normalized_reason,
+    }
+    changed = 0
+    with record_store.transaction() as conn:
+        rows = record_store.list_rows(
+            record_store.CODEX_CREDENTIALS,
+            where="LOWER(BTRIM(COALESCE(email, ''))) = LOWER(BTRIM(%s))",
+            params=(normalized_email,),
+            order_by="id",
+            conn=conn,
+        )
+        for row in rows:
+            if record_store.patch_row(
+                record_store.CODEX_CREDENTIALS,
+                int(row["id"]),
+                changes,
+                conn=conn,
+            ):
+                changed += 1
+    if changed:
+        compat_export.schedule("codex_credentials")
+    return changed
 
 
 def update_account_codex_operation_state(
@@ -761,7 +820,8 @@ def update_account_codex_operation_state(
     row = record_store.get_row_by(record_store.ACCOUNTS, "email", email, lower=True)
     if row is None:
         return False
-    changes: dict[str, Any] = {"updated_at": _now()}
+    now = _now()
+    changes: dict[str, Any] = {"updated_at": now}
     if credential_state is not None:
         changes["codex_credential_state"] = str(credential_state)
     if execution_status is not None:
@@ -787,7 +847,17 @@ def update_account_codex_operation_state(
             changes["codex_status"] = "stopped" if result == "cancelled" else result
         elif execution_status in {"queued", "running", "cancelling"}:
             changes["codex_status"] = "retrying"
-    return _patch_account(int(row["id"]), changes)
+    if asset == "deactivated" or result == "deactivated":
+        changes.update({
+            "account_status": "deactivated",
+            "account_status_reason": error or "account_deactivated",
+            "account_status_at": now,
+            "codex_credential_state": "deactivated",
+        })
+    updated = _patch_account(int(row["id"]), changes)
+    if updated and (asset == "deactivated" or result == "deactivated"):
+        mark_codex_account_deactivated(email, error or "account_deactivated")
+    return updated
 
 
 def _account_extra(row: dict) -> dict:
@@ -1669,13 +1739,21 @@ def update_account_deactivation_mail(acc_id: int, result: dict | None = None) ->
     elif status in {"failed", "unsupported"}:
         changes["deactivation_mail_checked_at"] = result.get("checked_at") or now
         changes["deactivation_mail_error"] = str(result.get("error") or "")[:500]
-    return _patch_account(int(acc_id), changes)
+    updated = _patch_account(int(acc_id), changes)
+    if updated and status == "success" and bool(result.get("detected")):
+        mark_account_deactivated(
+            int(acc_id),
+            reason="account_deactivated",
+            source="deactivation_mail",
+        )
+    return updated
 
 
 def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
     """写回账号查活结果；成功时同步刷新最新 access_token 和账号基础信息。"""
     result = result or {}
-    if record_store.get_row(record_store.ACCOUNTS, int(acc_id)) is None:
+    account = record_store.get_row(record_store.ACCOUNTS, int(acc_id))
+    if account is None:
         return False
     now = _now()
     ok = bool(result.get("ok"))
@@ -1718,6 +1796,7 @@ def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
             "account_status_reason": result.get("error") or "账号已删除/停用/封禁",
             "account_status_at": result.get("checked_at") or now,
             "codex_status": "deactivated",
+            "codex_credential_state": "deactivated",
             "codex_error": result.get("error") or "账号已删除/停用/封禁",
         })
 
@@ -1746,7 +1825,14 @@ def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
         if result.get("proxy_used"):
             changes["live_check_proxy_used"] = result.get("proxy_used")
         changes["live_check_error"] = None
-    return _patch_account(int(acc_id), changes)
+    updated = _patch_account(int(acc_id), changes)
+    if updated and status == "deactivated":
+        mark_codex_account_deactivated(
+            str(account.get("email") or ""),
+            str(result.get("error") or "account_deactivated"),
+            checked_at=str(result.get("checked_at") or now),
+        )
+    return updated
 
 
 def mark_account_deactivated(
@@ -1763,12 +1849,29 @@ def mark_account_deactivated(
         "account_status_reason": normalized_reason,
         "account_status_at": now,
         "codex_status": "deactivated",
+        "codex_credential_state": "deactivated",
         "codex_error": normalized_reason,
         "updated_at": now,
     }
     if source:
         changes["account_status_source"] = str(source).strip()[:80]
-    return _patch_account(int(acc_id), changes)
+    account = record_store.get_row(record_store.ACCOUNTS, int(acc_id))
+    if account is None:
+        return False
+    updated = _patch_account(int(acc_id), changes)
+    if updated:
+        try:
+            mark_codex_account_deactivated(
+                str(account.get("email") or ""),
+                normalized_reason,
+                checked_at=now,
+            )
+        except Exception:
+            logger.exception(
+                "同步账号停用到 Codex 凭证失败：account_id=%s",
+                acc_id,
+            )
+    return updated
 
 
 def account_is_deactivated(account: dict | None) -> bool:
@@ -2471,11 +2574,36 @@ def _upsert_codex_credential_record(filename: str, content: dict) -> int:
                 identity[1:],
             )
         existing = cur.fetchone()
+        account = record_store.get_row_by(
+            record_store.ACCOUNTS,
+            "email",
+            payload.get("email") or "",
+            lower=True,
+            conn=conn,
+        )
+        account_deactivated = str((account or {}).get("account_status") or "").strip().lower() == "deactivated"
+        account_reason = str((account or {}).get("account_status_reason") or "account_deactivated").strip()[:500]
+        if account_deactivated:
+            payload.update({
+                "oauth_status": "deactivated",
+                "oauth_account_status": "deactivated",
+                "oauth_account_status_reason": account_reason,
+                "oauth_account_status_at": (account or {}).get("account_status_at") or _now(),
+                "oauth_reauth_required": True,
+                "oauth_refresh_error": account_reason,
+            })
         if existing:
             # 不带 created_at，避免一次重新授权把原始创建时间改掉；其余字段和
             # JSONB 内容使用 patch_row 的服务端合并语义，保留导出/同步统计。
             changes = dict(payload)
             changes.pop("created_at", None)
+            if not account_deactivated:
+                changes.update({
+                    "oauth_account_status": None,
+                    "oauth_account_status_reason": None,
+                    "oauth_account_status_at": None,
+                    "oauth_reauth_required": False,
+                })
             record_store.patch_row(
                 record_store.CODEX_CREDENTIALS,
                 int(existing["id"]),
@@ -2496,6 +2624,10 @@ def _codex_public_row(row: dict) -> dict:
 
     content = row.get("content") if isinstance(row.get("content"), dict) else {}
     oauth = oauth_metadata(content)
+    account_status = str(row.get("oauth_account_status") or "").strip().lower()
+    if account_status == "deactivated":
+        oauth["oauth_status"] = "deactivated"
+        oauth["oauth_reauth_required"] = True
     return {
         "filename": row.get("filename"),
         "path": str(_CODEX_DIR / str(row.get("filename") or "")),
@@ -2517,11 +2649,16 @@ def _codex_public_row(row: dict) -> dict:
         "sub2api_http_status": row.get("sub2api_http_status"),
         "oauth_refresh_attempted_at": row.get("oauth_refresh_attempted_at"),
         "oauth_refresh_error": row.get("oauth_refresh_error"),
+        "oauth_account_status": row.get("oauth_account_status"),
+        "oauth_account_status_reason": row.get("oauth_account_status_reason"),
+        "oauth_account_status_at": row.get("oauth_account_status_at"),
         "archived": bool(row.get("archived")),
         "archived_at": row.get("archived_at"),
         **oauth,
         "oauth_reauth_required": (
-            refresh_error_requires_reauth(row.get("oauth_refresh_error"))
+            bool(row.get("oauth_reauth_required"))
+            or bool(oauth.get("oauth_reauth_required"))
+            or refresh_error_requires_reauth(row.get("oauth_refresh_error"))
             or sub2api_status_requires_reauth(row.get("sub2api_http_status"))
         ),
     }

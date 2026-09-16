@@ -53,6 +53,7 @@ def create_codex_blueprint(context: WebUIContext):
         status_filter = str(request.args.get("status", default="") or "").strip().lower()
         oauth_filter = str(request.args.get("oauth_status", default="") or "").strip().lower()
         account_filter = str(request.args.get("account_id", default="") or "").strip()
+        sub2api_id_filter = str(request.args.get("sub2api_id", default="") or "").strip()
         expired_date = str(request.args.get("expired_date", default="") or "").strip()
         limit = request.args.get("limit", default=500, type=int)
         paged = str(request.args.get("paged", default="") or "").lower() in {"1", "true", "yes"}
@@ -70,6 +71,7 @@ def create_codex_blueprint(context: WebUIContext):
                 "status": status_filter,
                 "oauth_status": oauth_filter,
                 "account_id": account_filter,
+                "sub2api_id": sub2api_id_filter,
                 "expired_date": expired_date,
             })
         )
