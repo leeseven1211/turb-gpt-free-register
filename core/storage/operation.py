@@ -4673,7 +4673,23 @@ def record_remote_intent(
         previous_receipt = str(
             previous_intent.get("receipt_state") or previous_intent.get("state") or "started"
         )
-        if previous_intent and previous_receipt not in {"confirmed", "rejected"}:
+        previous_data = _decode(run.get("data"))
+        previous_receipt_row = (
+            previous_data.get("remote_receipt")
+            if isinstance(previous_data, dict) else None
+        )
+        previous_receipt_detail = (
+            previous_receipt_row.get("detail")
+            if isinstance(previous_receipt_row, dict) else None
+        )
+        phase_complete = isinstance(previous_receipt_detail, dict) and any(
+            value is True or str(value).strip().lower() in {"1", "true", "yes", "confirmed"}
+            for key, value in previous_receipt_detail.items()
+            if key in {"phase_complete", "allow_next_intent"}
+        )
+        if previous_intent and previous_receipt not in {"confirmed", "rejected"} and not (
+            previous_receipt == "response_received" and phase_complete
+        ):
             raise ValueError("前一个远端写请求尚未核验，不能覆盖其 checkpoint")
         intent = {
             "action": action_value,

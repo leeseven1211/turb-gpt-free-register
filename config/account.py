@@ -32,6 +32,8 @@ ACCOUNT_PLAN_CHECK_PROXY_MODE = schema_default("ACCOUNT_PLAN_CHECK_PROXY_MODE")
 ACCOUNT_LIVE_CHECK_PROXY_MODE = schema_default("ACCOUNT_LIVE_CHECK_PROXY_MODE")
 ACCOUNT_REFRESH_AT_PROXY_MODE = schema_default("ACCOUNT_REFRESH_AT_PROXY_MODE")
 ACCOUNT_CODEX_PROXY_MODE = schema_default("ACCOUNT_CODEX_PROXY_MODE")
+ACCOUNT_EMAIL_CHANGE_ENABLED = schema_default("ACCOUNT_EMAIL_CHANGE_ENABLED")
+ACCOUNT_EMAIL_CHANGE_PROXY_MODE = schema_default("ACCOUNT_EMAIL_CHANGE_PROXY_MODE")
 # 账号补全 2FA 默认自动选择：优先协议并按认证上下文获取 AT，协议明确失败
 # 且此开关开启时，才继续沿用现有浏览器安全设置流程。
 ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED = schema_default("ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED")
@@ -88,6 +90,8 @@ def completion_settings() -> dict[str, object]:
         "live_check_proxy_mode": str(ACCOUNT_LIVE_CHECK_PROXY_MODE or "direct").strip().lower() or "direct",
         "refresh_at_proxy_mode": str(ACCOUNT_REFRESH_AT_PROXY_MODE or "registration").strip().lower() or "registration",
         "codex_proxy_mode": str(ACCOUNT_CODEX_PROXY_MODE or "registration").strip().lower() or "registration",
+        "email_change_enabled": bool(ACCOUNT_EMAIL_CHANGE_ENABLED),
+        "email_change_proxy_mode": str(ACCOUNT_EMAIL_CHANGE_PROXY_MODE or "registration").strip().lower() or "registration",
         "protocol_version": configured_protocol_version(),
         # Compatibility projection for old callers; new code should consume
         # protocol_version instead of this legacy driver name.

@@ -1129,6 +1129,9 @@ def _cancel_native_runtime_task(task: Mapping[str, Any]) -> dict[str, Any]:
 
 def _register_runtime_handlers() -> None:
     global _RUNTIME_HANDLERS_REGISTERED
+    from core import email_change_service
+
+    email_change_service.register_operation_handlers()
     with _RUNTIME_HANDLER_LOCK:
         registered = set(task_gateway.registered_dispatch_types())
         if _RUNTIME_HANDLERS_REGISTERED and _RUNTIME_HANDLER_TYPES <= registered:
@@ -1314,6 +1317,12 @@ def _handle_ready_completion_dependency(dependency: dict) -> None:
                 "补全父任务已由持久依赖续接：parent_task_id=%s run_id=%s",
                 parent_task_id, run.get("id"),
             )
+            return
+        if parent_system == "native_operations":
+            # The email-change parent is terminal before its follow-up child
+            # becomes eligible. This dependency records the handoff; it does
+            # not reopen a completed parent operation.
+            operation_task_store.complete_task_dependency(dependency_id, success=True)
             return
         if parent_system != "account_action_tasks":
             operation_task_store.complete_task_dependency(

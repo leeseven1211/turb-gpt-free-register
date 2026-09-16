@@ -30,6 +30,7 @@ class TaskErrorCode(str, Enum):
     WORKFLOW_PASSWORD_ENTRY_NOT_OFFERED = "workflow.password_entry_not_offered"
     WORKFLOW_PASSWORD_ENTRY_RECOVERY_EXHAUSTED = "workflow.password_entry_recovery_exhausted"
     WORKFLOW_UNSUPPORTED = "workflow.unsupported"
+    REQUEST_UNKNOWN = "request_unknown"
     UNKNOWN = "unknown.unclassified"
 
 
@@ -52,13 +53,26 @@ def stable_error_code(value: Any, *, default: str = TaskErrorCode.UNKNOWN.value)
 
 def is_request_unknown(value: Any) -> bool:
     """未知远端结果是一等状态，不能被任务层当成普通可重试错误。"""
-    return stable_error_code(value, default="") in {
+    if isinstance(value, dict) and (
+        value.get("request_unknown") is True
+        or value.get("reconcile_required") is True
+        or str(value.get("outcome") or "").strip().lower() == "request_unknown"
+    ):
+        return True
+    return stable_error_code(value, default="").lower() in {
         "request_unknown",
         "password_result_unknown",
     }
 
 
 _RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
+    (
+        "request_unknown",
+        "external",
+        "远端待核验",
+        "远端请求结果待确认",
+        ("request_unknown", "远端请求结果待确认", "需人工对账", "结果待确认"),
+    ),
     (
         "workflow.password_entry_not_hydrated",
         "workflow",
@@ -178,6 +192,11 @@ _SOURCE_LABELS = {
 # technically possible while still being unsafe after an irreversible remote
 # request, so consumers need the distinction for recovery UX.
 _ERROR_METADATA: dict[str, dict[str, str]] = {
+    "request_unknown": {
+        "retryability": "manual_only",
+        "remote_state_impact": "unknown",
+        "next_action": "manual_reconcile",
+    },
     "configuration.missing": {
         "retryability": "not_retryable",
         "remote_state_impact": "not_started",

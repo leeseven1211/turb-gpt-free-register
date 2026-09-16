@@ -121,6 +121,7 @@ TASK_FLOWS: dict[str, tuple[str, ...]] = {
     "plan_check": ("network", "plan_check", "complete"),
     "deactivation_mail": ("mailbox_scan", "complete"),
     "extract_link": ("preflight", "access_token", "refresh_token", "extract_link", "complete"),
+    "email_change": ("email", "network", "login_password", "email_otp", "submit_email", "complete"),
 }
 
 
