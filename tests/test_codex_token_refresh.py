@@ -148,6 +148,61 @@ class CodexOauthMetadataTests(unittest.TestCase):
         self.assertFalse(result["accepted"])
         self.assertEqual("account_deactivated", result["error_code"])
 
+    def test_refresh_rejects_linked_deactivated_account_with_stale_oauth_projection(self):
+        row = {
+            "filename": "codex-stale-dead.json",
+            "email": "stale-dead@example.com",
+            "oauth_status": "valid",
+            "oauth_refreshable": True,
+        }
+        account = {
+            "id": 17,
+            "email": "stale-dead@example.com",
+            "account_status": "deactivated",
+            "account_status_reason": "account_deactivated",
+        }
+        with (
+            patch.object(service.db, "list_codex_accounts", return_value=[row]),
+            patch.object(service.db, "get_account_by_email", return_value=account),
+            patch.object(service.db, "mark_codex_account_deactivated") as mark_deactivated,
+            patch.object(service.operation_runtime_store, "list_reconciliation_accounts", return_value=[]),
+            patch.object(service.operation_runtime_store, "active_run_for_account", return_value=None),
+            patch.object(service, "_register_worker"),
+            patch.object(service, "_durable_submit", return_value={"accepted": True}) as submit,
+        ):
+            result = service.enqueue_refresh("codex-stale-dead.json")
+
+        self.assertFalse(result["accepted"])
+        self.assertEqual("account_deactivated", result["error_code"])
+        mark_deactivated.assert_called_once_with(
+            "stale-dead@example.com",
+            "account_deactivated",
+        )
+        submit.assert_not_called()
+
+    def test_sub2_sync_skips_linked_deactivated_account(self):
+        row = {
+            "filename": "codex-sync-dead.json",
+            "email": "sync-dead@example.com",
+            "sub2_uploaded_count": 1,
+        }
+        with (
+            patch.object(service._cfg, "CODEX_TOKEN_AUTO_SYNC_SUB2API", True),
+            patch.object(service.db, "list_codex_accounts", return_value=[row]),
+            patch.object(service.db, "get_account_by_email", return_value={"account_status": "deactivated"}),
+            patch.object(service.db, "read_codex_credential", return_value=(
+                json.dumps({"email": "sync-dead@example.com", "refresh_token": "refresh"}),
+                row["filename"],
+            )),
+            patch.object(service.db, "mark_codex_sub2_uploaded"),
+            patch("core.sub2api_client.upload_configured_codex_oauth_credential") as upload,
+        ):
+            result = service._sync_sub2_if_needed(row["filename"])
+
+        self.assertEqual("blocked", result["status"])
+        self.assertEqual("account_deactivated", result["error_code"])
+        upload.assert_not_called()
+
 
 class CodexOauthRefreshApiTests(PostgresTestCase):
     def setUp(self):

@@ -66,6 +66,8 @@ def create_accounts_blueprint(context: WebUIContext):
     def _codex_oauth_auth_for_account(acc: dict) -> tuple[str, str]:
         """读取账号可导入 sub2api 的 Codex OAuth JSON。"""
         email = str(acc.get("email") or "").strip().lower()
+        if str(acc.get("account_status") or "").strip().lower() == "deactivated":
+            raise RuntimeError("关联账号已停用，禁止上传 OAuth 凭证")
         if (acc.get("codex_status") or "") != "success":
             raise RuntimeError("该账号尚未完成 Codex OAuth")
         match = next((
@@ -77,6 +79,11 @@ def create_accounts_blueprint(context: WebUIContext):
         return db.read_codex_credential(str(match.get("filename") or ""))
     def _upload_codex_auth_to_sub2(auth_json: dict, filename: str) -> dict:
         """把一份已解析的 Codex OAuth JSON 上传到 sub2api。"""
+        email = str(auth_json.get("email") or "").strip()
+        if email:
+            linked_account = db.get_account_by_email(email)
+            if str((linked_account or {}).get("account_status") or "").strip().lower() == "deactivated":
+                raise RuntimeError("关联账号已停用，禁止上传 OAuth 凭证")
         from core.sub2api_client import upload_configured_codex_oauth_credential
 
         result = upload_configured_codex_oauth_credential(auth_json)

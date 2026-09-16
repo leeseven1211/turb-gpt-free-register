@@ -927,6 +927,16 @@ def _sync_sub2_if_needed(filename: str) -> dict[str, Any]:
     row = next((item for item in rows if item.get("filename") == filename), {})
     if not bool(getattr(_cfg, "CODEX_TOKEN_AUTO_SYNC_SUB2API", True)):
         return {"status": "disabled"}
+    account_deactivated = str(row.get("oauth_account_status") or "").strip().lower() == "deactivated"
+    if not account_deactivated and str(row.get("email") or "").strip():
+        linked_account = db.get_account_by_email(str(row.get("email") or "").strip())
+        account_deactivated = str((linked_account or {}).get("account_status") or "").strip().lower() == "deactivated"
+    if account_deactivated:
+        return {
+            "status": "blocked",
+            "error_code": "account_deactivated",
+            "error": "关联账号已停用，禁止自动同步 OAuth 凭证",
+        }
     if int(row.get("sub2_uploaded_count") or 0) <= 0:
         return {"status": "not_previously_uploaded"}
 
@@ -1499,6 +1509,20 @@ def enqueue_refresh(
             "accepted": False,
             "error_code": "account_reference_missing",
             "error": "Codex 凭证没有对应的 registered account，不能申请 durable lease",
+            "filename": filename,
+            "email": email,
+        }
+    if str((account or {}).get("account_status") or "").strip().lower() == "deactivated":
+        reason = str((account or {}).get("account_status_reason") or "account_deactivated").strip()[:500]
+        try:
+            db.mark_codex_account_deactivated(email, reason)
+        except Exception:
+            logger.exception("同步停用账号到 Codex OAuth 凭证失败：email=%s", email)
+        return {
+            "accepted": False,
+            "error_code": "account_deactivated",
+            "next_action": "reauthorize",
+            "error": "账号已停用，禁止刷新 Codex OAuth；需先恢复账号后重新授权",
             "filename": filename,
             "email": email,
         }

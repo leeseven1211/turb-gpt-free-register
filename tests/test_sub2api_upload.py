@@ -107,6 +107,77 @@ class Sub2ApiWebUploadTests(PostgresTestCase):
         mark_exported.assert_called_once_with("codex-codex@example.com-free.json")
         mark_sub2_uploaded.assert_called_once_with("codex-codex@example.com-free.json")
 
+    def test_codex_account_upload_rejects_deactivated_account_before_remote(self):
+        account = {
+            "id": 23,
+            "email": "dead-upload@example.com",
+            "codex_status": "success",
+            "account_status": "deactivated",
+        }
+        credential = json.dumps({
+            "type": "codex",
+            "email": "dead-upload@example.com",
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+        })
+        with (
+            patch("core.feature_availability.require_feature", return_value=(True, "")),
+            patch("webui.app.db.get_account", return_value=account),
+            patch("webui.app.db.list_codex_accounts", return_value=[{
+                "email": "dead-upload@example.com",
+                "filename": "codex-dead-upload@example.com-free.json",
+            }]),
+            patch("webui.app.db.read_codex_credential", return_value=(credential, "codex-dead-upload@example.com-free.json")),
+            patch("webui.app.db.mark_codex_exported"),
+            patch("webui.app.db.mark_codex_sub2_uploaded"),
+            patch("core.sub2api_client.upload_codex_oauth_credential", return_value={
+                "ok": True,
+                "url": "https://sub2.example/api/v1/admin/accounts/import/codex-session",
+                "status_code": 200,
+            }) as upload,
+        ):
+            response = self.client.post("/api/accounts/23/codex/upload-sub2")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("停用", response.get_json()["error"])
+        upload.assert_not_called()
+
+    def test_codex_management_upload_rejects_stale_deactivated_account_before_remote(self):
+        filename = "codex-stale-upload@example.com-free.json"
+        credential = json.dumps({
+            "type": "codex",
+            "email": "stale-upload@example.com",
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+        })
+        with (
+            patch("core.feature_availability.require_feature", return_value=(True, "")),
+            patch("webui.app.db.list_codex_accounts", return_value=[{
+                "email": "stale-upload@example.com",
+                "filename": filename,
+            }]),
+            patch("webui.app.db.get_account_by_email", return_value={
+                "email": "stale-upload@example.com",
+                "account_status": "deactivated",
+            }),
+            patch("webui.app.db.read_codex_credential", return_value=(credential, filename)),
+            patch("webui.app.db.mark_codex_exported"),
+            patch("webui.app.db.mark_codex_sub2_uploaded"),
+            patch("core.sub2api_client.upload_codex_oauth_credential", return_value={
+                "ok": True,
+                "url": "https://sub2.example/api/v1/admin/accounts/import/codex-session",
+                "status_code": 200,
+            }) as upload,
+        ):
+            response = self.client.post("/api/codex/upload-sub2-bulk", json={"filenames": [filename]})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(0, body["uploaded_count"])
+        self.assertEqual(1, body["failed_count"])
+        self.assertIn("停用", body["failed"][0]["error"])
+        upload.assert_not_called()
+
     def test_codex_management_bulk_uploads_selected_credentials(self):
         credential = json.dumps({
             "type": "codex",
