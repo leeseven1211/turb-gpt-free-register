@@ -8,6 +8,7 @@ import random
 import re
 import string
 import time
+from urllib.parse import urlsplit
 
 from config import roxybrowser as _cfg
 from core.auth_challenge import (
@@ -227,6 +228,7 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
         else None
     )
     refresh_attempted = False
+    direct_navigation_count = 0
     last_result = {"ok": False, "reason": "missing_create_account_password_target"}
     while time.time() < find_end:
         try:
@@ -266,6 +268,9 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
         if (!target) return {
           ok:false,
           reason:'missing_create_account_password_target',
+          input_count: [...document.querySelectorAll('input')].filter(visible).length,
+          button_count: candidates.length,
+          body_text_length: String(document.body?.innerText || '').trim().length,
           candidates: candidates.map(el => ({
             tag: el.tagName,
             text: String(el.textContent || el.getAttribute('value') || '').trim().slice(0, 80),
@@ -328,23 +333,90 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
         time.sleep(0.4)
 
     current_url = str(getattr(driver, "current_url", "") or "")
+    parsed_url = urlsplit(current_url)
     candidates = (last_result.get("candidates") or [])[:10]
-    candidate_text = " ".join(
-        str(item.get(key) or "") for item in candidates for key in ("text", "name", "value", "aria")
-    ).lower()
-    flow_variant = (
-        "otp_only_no_password_entry"
-        if "email-verification" in current_url.lower()
-        and any(marker in candidate_text for marker in ("resend", "validate", "verification", "code"))
-        else "password_entry_not_rendered"
+    input_count = int(last_result.get("input_count") or 0)
+    button_count = int(last_result.get("button_count") or len(candidates))
+    body_text_length = int(last_result.get("body_text_length") or 0)
+    page_mounted = bool(candidates or input_count or button_count)
+    page_snapshot_observed = (
+        last_result.get("reason") == "missing_create_account_password_target"
+        and all(key in last_result for key in ("input_count", "button_count", "body_text_length"))
     )
+    is_email_verification_route = (
+        parsed_url.hostname == "auth.openai.com"
+        and parsed_url.path.rstrip("/") == "/email-verification"
+    )
+
+    # 只有验证码页仍是空壳、且受控刷新已经用完时，才允许同一浏览器上下文
+    # 直达一次 create-account/password。页面已挂载但没有入口代表产品流变体，
+    # 强行跳转可能绕过服务端状态，必须保留失败而不是猜测。
+    direct_error = ""
+    if refresh_attempted and is_email_verification_route and page_snapshot_observed and not page_mounted:
+        direct_navigation_count = 1
+        logger.warning(
+            "%s 验证码页刷新后仍未挂载密码入口，执行一次同源密码页恢复：path=%s",
+            _log_prefix(driver),
+            parsed_url.path,
+        )
+        try:
+            _safe_get(
+                driver,
+                "https://auth.openai.com/create-account/password",
+                timeout=min(15, max(5, int(timeout))),
+                attempts=1,
+                accept_hosts=("auth.openai.com",),
+            )
+            _page_warmup(driver, reason="password_entry_direct_recovery")
+            direct_end = time.time() + max(1, min(5, wait_seconds))
+            while time.time() < direct_end:
+                if _is_signup_password_page(driver):
+                    return {
+                        "ok": True,
+                        "reason": "entered_create_account_password_direct",
+                        "refresh_count": 1,
+                        "direct_navigation_count": 1,
+                        "url_path": "/create-account/password",
+                    }
+                if _has_access_token(driver):
+                    return {
+                        "ok": False,
+                        "reason": "logged_in_before_password_page",
+                        "refresh_count": 1,
+                        "direct_navigation_count": 1,
+                        "url_path": urlsplit(str(getattr(driver, "current_url", "") or "")).path,
+                    }
+                time.sleep(0.4)
+        except Exception as exc:
+            direct_error = type(exc).__name__
+
+        return {
+            "ok": False,
+            "reason": "password_entry_recovery_exhausted",
+            "waited_seconds": wait_seconds,
+            "refresh_count": 1,
+            "direct_navigation_count": direct_navigation_count,
+            "page_state": "empty_shell",
+            "url_path": parsed_url.path,
+            "input_count": input_count,
+            "button_count": button_count,
+            "body_text_length": body_text_length,
+            "last_reason": last_result.get("reason"),
+            "direct_navigation_error": direct_error,
+            "candidates": candidates,
+        }
+
     return {
         "ok": False,
-        "reason": "missing_create_account_password_target_after_wait",
+        "reason": "password_entry_not_offered" if page_mounted else "password_entry_page_not_hydrated",
         "waited_seconds": wait_seconds,
-        "refresh_attempted": refresh_attempted,
-        "flow_variant": flow_variant,
-        "url": current_url,
+        "refresh_count": int(refresh_attempted),
+        "direct_navigation_count": direct_navigation_count,
+        "page_state": "mounted" if page_mounted else "empty_shell",
+        "url_path": parsed_url.path,
+        "input_count": input_count,
+        "button_count": button_count,
+        "body_text_length": body_text_length,
         "last_reason": last_result.get("reason"),
         "candidates": candidates,
     }

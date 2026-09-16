@@ -1362,11 +1362,18 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     completed_at=_now_iso(),
                 )
                 if partial_success:
-                    log_logger.warning(
-                        "[Job %s] 注册主体成功，后置步骤部分未完成: %s",
-                        job_id,
-                        warning or "请查看 Codex/2FA 子步骤",
-                    )
+                    if registration_pending:
+                        log_logger.warning(
+                            "[Job %s] 密码已提交并保存恢复检查点，远端结果待确认: %s",
+                            job_id,
+                            warning or "请继续登录同一账号完成邮箱验证",
+                        )
+                    else:
+                        log_logger.warning(
+                            "[Job %s] 注册主体成功，后置步骤部分未完成: %s",
+                            job_id,
+                            warning or "请查看 Codex/2FA 子步骤",
+                        )
                 else:
                     log_logger.info(f"[Job {job_id}] 成功: {result.get('email')}")
             else:
@@ -1926,11 +1933,11 @@ def _build_retry_info(
     pending_password = _pending_registration_password(account)
     if account and pending_password:
         info.update({
-            "display_status": "partial_success",
+            "display_status": "password_confirmation_pending",
             "retryable": True,
             "retry_action": "registration_resume",
             "retry_label": "继续邮箱验证",
-            "retry_reason": "OpenAI 密码已创建并保存在本地，继续登录同一账号完成邮箱验证",
+            "retry_reason": "密码已提交且本地检查点已保存，远端结果尚未确认；继续登录同一账号完成邮箱验证",
             "next_actions": [{
                 "action": "registration_resume",
                 "reason": "同一 Attempt 继续完成邮箱验证",

@@ -34,6 +34,52 @@ class ForwardIMAPTests(unittest.TestCase):
             datetime(2026, 8, 28, 3, 22, 57, tzinfo=timezone.utc).timestamp(),
         )
 
+    def test_resend_cutoff_rejects_code_delivered_before_click(self):
+        target = "alias@icloud.com"
+        clicked_at = datetime(2026, 9, 16, 0, 50, 33, tzinfo=timezone.utc).timestamp()
+        old_message = {
+            "from": "OpenAI <noreply@openai.com>",
+            "subject": "Your ChatGPT code is 123456",
+            "text": "Your code is 123456",
+            "receivedDateTime": "2026-09-16T00:50:18Z",
+        }
+
+        class Mail:
+            def noop(self):
+                return "OK", []
+
+        with patch.object(
+            client,
+            "_messages_for_recipient",
+            return_value=[(old_message, target, "4013")],
+        ):
+            result = client._latest_forwarded_otp(Mail(), target, clicked_at)
+
+        self.assertIsNone(result)
+
+    def test_resend_cutoff_allows_small_delivery_clock_skew(self):
+        target = "alias@icloud.com"
+        clicked_at = datetime(2026, 9, 16, 0, 50, 33, tzinfo=timezone.utc).timestamp()
+        new_message = {
+            "from": "OpenAI <noreply@openai.com>",
+            "subject": "Your ChatGPT code is 654321",
+            "text": "Your code is 654321",
+            "receivedDateTime": "2026-09-16T00:50:32Z",
+        }
+
+        class Mail:
+            def noop(self):
+                return "OK", []
+
+        with patch.object(
+            client,
+            "_messages_for_recipient",
+            return_value=[(new_message, target, "4014")],
+        ):
+            result = client._latest_forwarded_otp(Mail(), target, clicked_at)
+
+        self.assertEqual(result, "654321")
+
     def test_recipient_headers_include_hme_forwarding_headers(self):
         msg = EmailMessage()
         msg["To"] = "owner@gmail.com"

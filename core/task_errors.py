@@ -26,6 +26,9 @@ class TaskErrorCode(str, Enum):
     INTERNAL_BROWSER = "internal.browser"
     WORKFLOW_VERIFICATION = "workflow.verification"
     WORKFLOW_PAGE_STATE = "workflow.page_state"
+    WORKFLOW_PASSWORD_ENTRY_NOT_HYDRATED = "workflow.password_entry_not_hydrated"
+    WORKFLOW_PASSWORD_ENTRY_NOT_OFFERED = "workflow.password_entry_not_offered"
+    WORKFLOW_PASSWORD_ENTRY_RECOVERY_EXHAUSTED = "workflow.password_entry_recovery_exhausted"
     WORKFLOW_UNSUPPORTED = "workflow.unsupported"
     UNKNOWN = "unknown.unclassified"
 
@@ -56,6 +59,27 @@ def is_request_unknown(value: Any) -> bool:
 
 
 _RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
+    (
+        "workflow.password_entry_not_hydrated",
+        "workflow",
+        "流程错误",
+        "密码入口页面未加载",
+        ("password_entry_page_not_hydrated",),
+    ),
+    (
+        "workflow.password_entry_not_offered",
+        "workflow",
+        "流程错误",
+        "当前流程未提供密码入口",
+        ("password_entry_not_offered",),
+    ),
+    (
+        "workflow.password_entry_recovery_exhausted",
+        "workflow",
+        "流程错误",
+        "密码入口页面恢复已用尽",
+        ("password_entry_recovery_exhausted",),
+    ),
     (
         "configuration.missing",
         "configuration",
@@ -198,6 +222,21 @@ _ERROR_METADATA: dict[str, dict[str, str]] = {
         "retryability": "conditional",
         "remote_state_impact": "unknown",
         "next_action": "reconcile_session",
+    },
+    "workflow.password_entry_not_hydrated": {
+        "retryability": "retryable",
+        "remote_state_impact": "remote_may_be_pending",
+        "next_action": "retry_registration",
+    },
+    "workflow.password_entry_not_offered": {
+        "retryability": "conditional",
+        "remote_state_impact": "remote_may_be_pending",
+        "next_action": "retry_registration",
+    },
+    "workflow.password_entry_recovery_exhausted": {
+        "retryability": "retryable",
+        "remote_state_impact": "remote_may_be_pending",
+        "next_action": "retry_registration",
     },
     "workflow.unsupported": {
         "retryability": "not_retryable",

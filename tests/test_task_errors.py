@@ -21,6 +21,31 @@ class TaskErrorClassificationTests(unittest.TestCase):
         self.assertEqual(info["code"], "workflow.page_state")
         self.assertEqual(info["kind_label"], "页面状态不符合预期")
 
+    def test_password_entry_failures_keep_distinct_recovery_categories(self):
+        cases = {
+            "password_entry_page_not_hydrated": (
+                "workflow.password_entry_not_hydrated",
+                "密码入口页面未加载",
+            ),
+            "password_entry_not_offered": (
+                "workflow.password_entry_not_offered",
+                "当前流程未提供密码入口",
+            ),
+            "password_entry_recovery_exhausted": (
+                "workflow.password_entry_recovery_exhausted",
+                "密码入口页面恢复已用尽",
+            ),
+        }
+        for message, (code, label) in cases.items():
+            with self.subTest(message=message):
+                info = classify_task_error(
+                    f"RuntimeError: 密码注册模式失败：{message}; https://auth.openai.com/email-verification",
+                    stage="email_otp",
+                )
+                self.assertEqual(code, info["code"])
+                self.assertEqual(label, info["kind_label"])
+                self.assertEqual("retry_registration", info["next_action"])
+
     def test_imap_otp_timeout_is_email_service_error(self):
         info = classify_task_error("Gmail IMAP 等待验证码超时；尚未收到新的 OpenAI 验证码邮件")
         self.assertEqual(info["code"], "external.email")

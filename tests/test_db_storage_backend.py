@@ -294,6 +294,27 @@ class TotpSecretTests(PostgresTestCase):
         row = rs.get_row_by(ACCOUNTS, "email", "totp@example.test")
         self.assertIsNone(row["extra_json"])
 
+    def test_successful_twofa_checkpoint_clears_previous_pending_flag(self):
+        db.update_account_totp_secret("totp@example.test", "S1", setup_pending=True)
+
+        db.insert_account(
+            email="totp@example.test",
+            access_token="token-1",
+            totp_secret="S1",
+            extra={
+                "twofa": {
+                    "status": "success",
+                    "ok": True,
+                    "message": "2FA 已启用",
+                },
+            },
+        )
+
+        row = rs.get_row_by(ACCOUNTS, "email", "totp@example.test")
+        extra = json.loads(row.get("extra_json") or "{}")
+        self.assertNotIn("totp_setup_pending", extra)
+        self.assertEqual(extra["twofa"]["status"], "success")
+
     def test_replacement_secret_stays_pending_until_activation(self):
         self.assertTrue(db.update_account_totp_secret("totp@example.test", "OLDSECRET"))
         self.assertTrue(db.mark_account_totp_disabled_for_rotation("totp@example.test"))

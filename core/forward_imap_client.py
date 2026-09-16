@@ -32,6 +32,9 @@ _DEFAULT_IMAP_RETRY_DELAY_SECONDS = 0.5
 _EMAIL_RE = re.compile(r"(?i)\b[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+\b")
 _RECIPIENT_SEARCH_CHUNK_SIZE = 50
 _MAX_BULK_MATCHED_MESSAGES = 5000
+# Gmail IMAP INTERNALDATE 与本机点击时间可能存在极小的秒级偏差；容忍范围
+# 必须足够小，避免重发前刚到达的旧验证码再次被当成新码。
+_OTP_CLOCK_SKEW_TOLERANCE = 2
 
 
 def _settings() -> tuple[str, int, str, str]:
@@ -287,7 +290,7 @@ def _latest_forwarded_otp(mail: imaplib.IMAP4_SSL, target: str, after_ts: float)
     except Exception:
         # 部分 IMAP mock/旧服务没有 NOOP；后续 SEARCH 仍可能正常工作。
         pass
-    cutoff = float(after_ts if after_ts is not None else time.time()) - 30
+    cutoff = float(after_ts if after_ts is not None else time.time()) - _OTP_CLOCK_SKEW_TOLERANCE
     for item, recipient_headers, _message_id in _messages_for_recipient(mail, target, cutoff, limit=80):
         if target not in _recipient_addresses(recipient_headers):
             continue

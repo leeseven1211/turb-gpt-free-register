@@ -75,6 +75,10 @@ class RegistrationServicePostprocessContractTests(unittest.TestCase):
 
         self.assertEqual("registration_resume", info["retry_action"])
         self.assertEqual("registration_resume", info["next_actions"][0]["action"])
+        self.assertEqual("password_confirmation_pending", info["display_status"])
+        self.assertIn("密码已提交", info["retry_reason"])
+        self.assertIn("远端结果尚未确认", info["retry_reason"])
+        self.assertNotIn("密码已创建", info["retry_reason"])
 
     def test_normalized_attempt_can_make_pending_registration_resumeable(self):
         with patch(

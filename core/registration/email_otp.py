@@ -1198,6 +1198,9 @@ def _click_resend_email_otp(driver, timeout: int = 20, *, budget: StageBudget | 
             """)
             if btn:
                 text = str(btn.text or btn.get_attribute('value') or btn.get_attribute('data-dd-action-name') or '').strip()
+                # 以真正派发点击的时刻作为下一封邮件的时间边界。必须在 click
+                # 前立即取值，既排除点击前旧码，也不会漏掉点击后瞬间到达的邮件。
+                requested_after_ts = time.time()
                 _human_click(driver, btn, label="resend_otp")
                 logger.info("%s[OTP] 已点击重新发送验证码按钮：%s", _log_prefix(driver), text or '-')
                 delay = random.uniform(1.1, 2.4) if _browser_actions_enabled() else 1.5
@@ -1219,7 +1222,12 @@ def _click_resend_email_otp(driver, timeout: int = 20, *, budget: StageBudget | 
                     or any(bool(item.get("disabled")) for item in matching)
                 ) else "unconfirmed"
                 logger.info("%s[OTP] 重发请求页面确认：%s", _log_prefix(driver), ui_ack)
-                return {"ok": True, "text": text, "ui_ack": ui_ack}
+                return {
+                    "ok": True,
+                    "text": text,
+                    "ui_ack": ui_ack,
+                    "requested_after_ts": requested_after_ts,
+                }
         except Exception as exc:
             last = exc
         time.sleep(min(0.5, max(0.0, budget.remaining())) if budget is not None else 0.5)

@@ -257,8 +257,10 @@ function formatProgressDuration(startValue, endValue = '') {
 }
 
 function progressJobResult(job) {
-  const status = String(job.status || 'pending');
+  const status = String(job.display_status || job.status || 'pending');
+  if (status === 'password_confirmation_pending') return { label: '待确认 · 密码已提交', cls: 'is-failed' };
   if (status === 'success') return { label: '成功', cls: '' };
+  if (status === 'partial_success') return { label: '部分完成', cls: 'is-failed' };
   if (status === 'request_unknown') return { label: '待确认', cls: 'is-failed' };
   if (status === 'failed') return { label: '失败', cls: 'is-failed' };
   if (status === 'cancelled') return { label: '已取消', cls: 'is-failed' };
@@ -373,7 +375,7 @@ function renderBatchProgress() {
     const duration = formatProgressDuration(job.started_at || job.created_at, terminal ? job.completed_at : '');
     const failedStageIndex = stages.findIndex(stage => ['failed', 'stopped'].includes(String((steps[stage.key] || {}).state || '')));
     const failedStep = failedStageIndex >= 0 ? (steps[stages[failedStageIndex].key] || {}) : null;
-    const result = String(job.status || '') === 'request_unknown'
+    const result = ['request_unknown', 'password_confirmation_pending'].includes(String(job.display_status || job.status || ''))
       ? progressJobResult(job)
       : failedStep ? { label: '部分失败', cls: 'is-failed' } : progressJobResult(job);
     const cardFailed = ['failed', 'cancelled', 'stopped', 'request_unknown'].includes(String(job.status || '')) || Boolean(failedStep);

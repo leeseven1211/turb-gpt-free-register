@@ -40,7 +40,7 @@ let accountTasksLoading = false;
 const LIST_FACET_LABELS = {
   status: {
     queued:'排队中', pending:'排队中', running:'运行中', waiting:'等待中', stopping:'停止中', cancelling:'停止中', settling:'收尾中',
-    failed:'失败', partial_success:'部分成功', success:'成功', stopped:'已停止', cancelled:'已取消', interrupted:'执行中断',
+    failed:'失败', partial_success:'部分成功', password_confirmation_pending:'待确认 · 密码已提交', success:'成功', stopped:'已停止', cancelled:'已取消', interrupted:'执行中断',
     deactivated:'已停用', unsupported:'不支持', attention_required:'需人工处理',
     available:'可用', used:'已使用', disabled:'停用', exported:'已导出', unexported:'未导出', archived:'已归档',
   },
@@ -674,15 +674,15 @@ function short(v, n=40) { const s = v || ''; return s.length > n ? s.slice(0,n)+
 function copyId(v) { if (!v) return ''; const id = 'c'+(++copySeq); copyStore.set(id, v); return id; }
 function cbtn(label, value, cls='') { const id = copyId(value); return `<button class="${cls}" data-copy-id="${id}" ${id?'':'disabled'}>${label}</button>`; }
 function pill(status) {
-  const map = { available:'可用', used:'已用', failed:'失败', partial_success:'部分成功', disabled:'已停用', pending:'排队', running:'运行中', debug_paused:'调试暂停', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消' };
+  const map = { available:'可用', used:'已用', failed:'失败', partial_success:'部分成功', password_confirmation_pending:'待确认 · 密码已提交', disabled:'已停用', pending:'排队', running:'运行中', debug_paused:'调试暂停', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消' };
   return `<span class="pill status-${esc(status)}">${esc(map[status]||status||'-')}</span>`;
 }
 function pillV2(status) {
   const s = String(status || '');
-  const map = { available:'可用', used:'已用', failed:'失败', partial_success:'部分成功', disabled:'已停用', pending:'排队', queued:'排队中', running:'运行中', debug_paused:'调试暂停', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消', interrupted:'已中断', unsupported:'不支持', deactivated:'已停用', attention_required:'需要处理', not_created:'尚未创建', in_progress:'处理中', email_verification_pending:'待邮箱验证 / 资料', account_available:'账号可用', unknown:'状态待确认' };
+  const map = { available:'可用', used:'已用', failed:'失败', partial_success:'部分成功', password_confirmation_pending:'待确认 · 密码已提交', disabled:'已停用', pending:'排队', queued:'排队中', running:'运行中', debug_paused:'调试暂停', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消', interrupted:'已中断', unsupported:'不支持', deactivated:'已停用', attention_required:'需要处理', not_created:'尚未创建', in_progress:'处理中', email_verification_pending:'待邮箱验证 / 资料', account_available:'账号可用', unknown:'状态待确认' };
   let cls = 'jobs-v2-pill--muted';
   if (s === 'success' || s === 'account_available' || s === 'available') cls = 'jobs-v2-pill--success';
-  else if (s === 'failed' || s === 'interrupted' || s === 'deactivated' || s === 'attention_required') cls = 'jobs-v2-pill--failed';
+  else if (s === 'failed' || s === 'interrupted' || s === 'deactivated' || s === 'attention_required' || s === 'password_confirmation_pending') cls = 'jobs-v2-pill--failed';
   else if (s === 'running' || s === 'debug_paused' || s === 'stopping' || s === 'in_progress' || s === 'email_verification_pending') cls = 'jobs-v2-pill--running';
   else if (s === 'pending' || s === 'queued' || s === 'cancelled' || s === 'stopped' || s === 'unsupported') cls = 'jobs-v2-pill--muted';
   return `<span class="jobs-v2-pill ${cls}">${esc(map[s]||s||'-')}</span>`;

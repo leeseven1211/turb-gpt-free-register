@@ -14,6 +14,7 @@ from tests.support_pg import PostgresTestCase
 
 class DashboardApiTests(PostgresTestCase):
     MODERN_COMMON_JS = Path(__file__).resolve().parents[1] / "webui/static/js/modern/common.js"
+    MODERN_JOBS_JS = Path(__file__).resolve().parents[1] / "webui/static/js/modern/jobs.js"
     MODERN_ASSETS = (
         "css/modern.css",
         "js/modern/common.js",
@@ -74,6 +75,31 @@ const hasPendingOption = select.innerHTML.includes('value="pending"');
 const hasAllOption = select.innerHTML.includes('value=""');
 if (hasGoneOption || !hasActiveOption || !hasPendingOption || !hasAllOption || select.value !== '') {{
   throw new Error(JSON.stringify({{hasGoneOption, hasActiveOption, hasPendingOption, hasAllOption, value: select.value}}));
+}}
+console.log('ok');
+"""
+        result = subprocess.run(
+            ["node", "--input-type=commonjs", "-e", harness],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertEqual(result.stdout.strip(), "ok")
+
+    def test_batch_progress_distinguishes_submitted_password_pending_confirmation(self):
+        source = self.MODERN_JOBS_JS.read_text(encoding="utf-8")
+        start = source.index("function progressJobResult")
+        end = source.index("function refreshBatchProgressDurations", start)
+        function_source = source[start:end]
+        harness = f"""
+{function_source}
+const result = progressJobResult({{
+  status: 'partial_success',
+  display_status: 'password_confirmation_pending',
+}});
+if (result.label !== '待确认 · 密码已提交' || result.cls !== 'is-failed') {{
+  throw new Error(JSON.stringify(result));
 }}
 console.log('ok');
 """

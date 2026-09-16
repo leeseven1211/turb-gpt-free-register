@@ -49,6 +49,16 @@ class _BrowserUsePage:
         self.state = "email_verification"
 
 
+class _SteppingClock:
+    def __init__(self, step=0.6):
+        self.value = -step
+        self.step = step
+
+    def __call__(self):
+        self.value += self.step
+        return self.value
+
+
 class RegistrationFailureClassificationTests(unittest.TestCase):
     def test_pre_account_shell_failures_are_disposable_but_checkpointed_failures_are_not(self):
         disposable_errors = (
@@ -90,8 +100,139 @@ class RegistrationFailureClassificationTests(unittest.TestCase):
             )
         )
 
+    def test_password_entry_failures_preserve_profile_for_same_attempt_recovery(self):
+        for error in (
+            "password_entry_page_not_hydrated",
+            "password_entry_not_offered",
+            "password_entry_recovery_exhausted",
+        ):
+            with self.subTest(error=error):
+                self.assertFalse(
+                    roxy_registration._is_disposable_pre_account_failure(
+                        error,
+                        create_acknowledged=False,
+                        account_id=None,
+                    )
+                )
+
 
 class RegistrationPasswordFlowTests(unittest.TestCase):
+    def test_roxy_empty_otp_shell_refreshes_once_then_opens_password_route_once(self):
+        driver = _RoxyDriver()
+        driver.refresh_count = 0
+        direct_navigation_count = 0
+
+        def refresh():
+            driver.refresh_count += 1
+
+        def empty_shell(_script):
+            return {
+                "ok": False,
+                "reason": "missing_create_account_password_target",
+                "candidates": [],
+                "input_count": 0,
+                "button_count": 0,
+                "body_text_length": 0,
+            }
+
+        def open_password_route(_driver, url, **kwargs):
+            nonlocal direct_navigation_count
+            direct_navigation_count += 1
+            self.assertEqual(url, "https://auth.openai.com/create-account/password")
+            self.assertEqual(kwargs["attempts"], 1)
+            self.assertEqual(kwargs["accept_hosts"], ("auth.openai.com",))
+            driver.state = "password"
+
+        driver.refresh = refresh
+        driver.execute_script = empty_shell
+        with (
+            patch.object(roxy_registration, "_safe_get", side_effect=open_password_route),
+            patch.object(roxy_registration, "_page_warmup"),
+            patch.object(roxy_registration, "_is_signup_password_page", side_effect=lambda _driver: driver.state == "password"),
+            patch.object(roxy_registration, "_has_access_token", return_value=False),
+            patch.object(
+                roxy_registration,
+                "time",
+                SimpleNamespace(time=_SteppingClock(), sleep=Mock()),
+            ),
+        ):
+            result = roxy_registration._click_signup_password_from_otp_if_present(driver, timeout=2)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["reason"], "entered_create_account_password_direct")
+        self.assertEqual(result["refresh_count"], 1)
+        self.assertEqual(result["direct_navigation_count"], 1)
+        self.assertEqual(driver.refresh_count, 1)
+        self.assertEqual(direct_navigation_count, 1)
+
+    def test_roxy_mounted_otp_page_never_forces_direct_password_route(self):
+        driver = _RoxyDriver()
+        driver.refresh_count = 0
+        driver.refresh = lambda: setattr(driver, "refresh_count", driver.refresh_count + 1)
+        driver.execute_script = lambda _script: {
+            "ok": False,
+            "reason": "missing_create_account_password_target",
+            "candidates": [{
+                "tag": "BUTTON",
+                "text": "Resend email",
+                "href": "",
+                "name": "intent",
+                "value": "resend",
+                "aria": "",
+            }],
+            "input_count": 1,
+            "button_count": 1,
+            "body_text_length": 80,
+        }
+        with (
+            patch.object(roxy_registration, "_safe_get") as direct_navigation,
+            patch.object(roxy_registration, "_is_signup_password_page", return_value=False),
+            patch.object(roxy_registration, "_has_access_token", return_value=False),
+            patch.object(
+                roxy_registration,
+                "time",
+                SimpleNamespace(time=_SteppingClock(), sleep=Mock()),
+            ),
+        ):
+            result = roxy_registration._click_signup_password_from_otp_if_present(driver, timeout=2)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "password_entry_not_offered")
+        self.assertEqual(result["refresh_count"], 1)
+        self.assertEqual(result["direct_navigation_count"], 0)
+        direct_navigation.assert_not_called()
+
+    def test_roxy_empty_otp_shell_exhausts_single_direct_navigation_without_looping(self):
+        driver = _RoxyDriver()
+        driver.refresh_count = 0
+        driver.refresh = lambda: setattr(driver, "refresh_count", driver.refresh_count + 1)
+        driver.execute_script = lambda _script: {
+            "ok": False,
+            "reason": "missing_create_account_password_target",
+            "candidates": [],
+            "input_count": 0,
+            "button_count": 0,
+            "body_text_length": 0,
+        }
+        with (
+            patch.object(roxy_registration, "_safe_get") as direct_navigation,
+            patch.object(roxy_registration, "_page_warmup"),
+            patch.object(roxy_registration, "_is_signup_password_page", return_value=False),
+            patch.object(roxy_registration, "_has_access_token", return_value=False),
+            patch.object(
+                roxy_registration,
+                "time",
+                SimpleNamespace(time=_SteppingClock(), sleep=Mock()),
+            ),
+        ):
+            result = roxy_registration._click_signup_password_from_otp_if_present(driver, timeout=2)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "password_entry_recovery_exhausted")
+        self.assertEqual(result["refresh_count"], 1)
+        self.assertEqual(result["direct_navigation_count"], 1)
+        direct_navigation.assert_called_once()
+
     def test_roxy_waits_for_delayed_create_password_target(self):
         driver = _RoxyDriver()
         target = object()
@@ -177,7 +318,7 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
             result = roxy_registration._click_signup_password_from_otp_if_present(driver, timeout=0)
 
         self.assertFalse(result["ok"])
-        self.assertEqual(result["reason"], "missing_create_account_password_target_after_wait")
+        self.assertEqual(result["reason"], "password_entry_not_offered")
         self.assertEqual(result["candidates"], [candidate])
 
     def test_roxy_password_target_refreshes_once_before_classifying_otp_only_flow(self):

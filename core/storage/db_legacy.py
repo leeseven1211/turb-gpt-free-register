@@ -560,8 +560,16 @@ def insert_account(
         }
         changes.update({key: value for key, value in optional.items() if value is not None})
         if extra:
+            merged_extra = {**_account_extra(existing or {}), **extra}
+            # A final registration checkpoint is authoritative for 2FA.  The
+            # intermediate checkpoint intentionally leaves this marker behind,
+            # but a later success must remove it instead of preserving stale
+            # derived state through the generic metadata merge.
+            twofa = extra.get("twofa")
+            if isinstance(twofa, dict) and str(twofa.get("status") or "").strip().lower() == "success":
+                merged_extra.pop("totp_setup_pending", None)
             changes["extra_json"] = json.dumps(
-                {**_account_extra(existing or {}), **extra}, ensure_ascii=False,
+                merged_extra, ensure_ascii=False,
             )
 
         if access_token:

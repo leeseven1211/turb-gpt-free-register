@@ -61,6 +61,26 @@ _REGISTRATION_REQUEST_UNKNOWN_MARKERS = (
     "认证跳转结果未知",
 )
 
+_PASSWORD_ENTRY_FAILURE_MARKERS = (
+    "password_entry_page_not_hydrated",
+    "password_entry_not_offered",
+    "password_entry_recovery_exhausted",
+)
+
+
+class _OtpAttemptTracker:
+    """Prevent one registration run from submitting the same OTP twice."""
+
+    def __init__(self) -> None:
+        self._submitted: set[str] = set()
+
+    def accept(self, code: object) -> bool:
+        normalized = str(code or "").strip()
+        if not normalized or normalized in self._submitted:
+            return False
+        self._submitted.add(normalized)
+        return True
+
 
 def _is_registration_request_unknown(error_text: object) -> bool:
     """Recognize an observed-but-unclassified remote registration state."""
@@ -78,6 +98,10 @@ def _is_disposable_pre_account_failure(
     if create_acknowledged or account_id is not None:
         return False
     normalized = str(error_text or "").lower()
+    # 密码入口阶段已在 OpenAI 侧推进过注册身份。即使页面仍是空壳，也要保留
+    # Profile/cookie 给同一 Attempt 继续恢复，不能按普通首屏空壳回收。
+    if any(marker in normalized for marker in _PASSWORD_ENTRY_FAILURE_MARKERS):
+        return False
     if any(marker in normalized for marker in _DISPOSABLE_PRE_ACCOUNT_FAILURE_MARKERS):
         return True
     # The page-not-hydrated classifier is persisted separately from the raw
@@ -738,6 +762,7 @@ def run_roxy_registration(
         )
         last_otp_ui_ack = "unconfirmed"
         current_otp = otp_code
+        submitted_otps = _OtpAttemptTracker()
         max_otp_attempts = 3
         try:
             from config import email as _email_cfg
@@ -787,7 +812,6 @@ def run_roxy_registration(
                         type(exc).__name__,
                         str(exc)[:180],
                     )
-                    otp_after_ts = time.time()
                     try:
                         resend_result = _resend_email_otp_after_failure(
                             driver,
@@ -805,6 +829,7 @@ def run_roxy_registration(
                         )
                         report_job_progress("email_otp", "failed", f"{failure_code}: {failure_detail}")
                         raise RuntimeError(f"{failure_code}: {failure_detail}") from resend_exc
+                    otp_after_ts = float(resend_result.get("requested_after_ts") or time.time())
                     last_otp_ui_ack = str(resend_result.get("ui_ack") or "unconfirmed")
                     report_job_otp_evidence(
                         request_kind="resend",
@@ -814,6 +839,41 @@ def run_roxy_registration(
                     human_delay("api")
                     current_otp = None
                     continue
+            if not submitted_otps.accept(current_otp):
+                failure_detail = "收码器返回了本次运行已经提交过的验证码，拒绝重复提交"
+                logger.warning("[Roxy注册][OTP] %s", failure_detail)
+                if otp_attempt >= max_otp_attempts:
+                    failure_code = "otp_reused_after_resend"
+                    report_job_otp_evidence(detail=failure_detail, failure_code=failure_code)
+                    report_job_progress("email_otp", "failed", f"{failure_code}: {failure_detail}")
+                    raise RuntimeError(f"{failure_code}: {failure_detail}")
+                try:
+                    resend_result = _resend_email_otp_after_failure(
+                        driver,
+                        reason=failure_detail,
+                        budget=otp_budget,
+                    )
+                except Exception as resend_exc:
+                    failure_code = "otp_request_unconfirmed"
+                    failure_detail = "重复验证码已拒绝，但验证码重发控件未能完成或缺少确认"
+                    report_job_otp_evidence(
+                        request_kind="resend",
+                        ui_ack="rejected",
+                        detail=failure_detail,
+                        failure_code=failure_code,
+                    )
+                    report_job_progress("email_otp", "failed", f"{failure_code}: {failure_detail}")
+                    raise RuntimeError(f"{failure_code}: {failure_detail}") from resend_exc
+                otp_after_ts = float(resend_result.get("requested_after_ts") or time.time())
+                last_otp_ui_ack = str(resend_result.get("ui_ack") or "unconfirmed")
+                report_job_otp_evidence(
+                    request_kind="resend",
+                    ui_ack=last_otp_ui_ack,
+                    detail="拒绝重复验证码后请求重新发送",
+                )
+                human_delay("api")
+                current_otp = None
+                continue
             logger.info("[Roxy注册][OTP] 收到验证码：%s", current_otp)
             _clear_otp_inputs(driver)
             otp_input_timeout = _budget_timeout(otp_budget, 20, minimum=1)
@@ -858,7 +918,6 @@ def run_roxy_registration(
                 report_job_progress("email_otp", "failed", f"{failure_code}: {failure_detail}")
                 raise RuntimeError(f"{failure_code}: {failure_detail}")
             logger.warning("[Roxy注册][OTP] 验证码错误/过期，准备重新发送并重新获取验证码（%s/%s）", otp_attempt + 1, max_otp_attempts)
-            otp_after_ts = time.time()
             try:
                 resend_result = _resend_email_otp_after_failure(
                     driver,
@@ -876,6 +935,7 @@ def run_roxy_registration(
                 )
                 report_job_progress("email_otp", "failed", f"{failure_code}: {failure_detail}")
                 raise RuntimeError(f"{failure_code}: {failure_detail}") from resend_exc
+            otp_after_ts = float(resend_result.get("requested_after_ts") or time.time())
             last_otp_ui_ack = str(resend_result.get("ui_ack") or "unconfirmed")
             report_job_otp_evidence(
                 request_kind="resend",
@@ -1204,7 +1264,10 @@ def run_roxy_registration(
                 logger.exception("[Roxy注册] 释放代理失败临时环境时出错；保留原失败结果")
         try:
             from core.email_provider import release_email
-            password_target_missing = "missing_create_account_password_target_after_wait" in error_text
+            password_target_missing = any(
+                marker in error_text.lower()
+                for marker in _PASSWORD_ENTRY_FAILURE_MARKERS
+            )
             release_email(
                 email,
                 status=(

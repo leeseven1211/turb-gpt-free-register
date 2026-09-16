@@ -18,6 +18,50 @@ class _FakeDriver:
 
 
 class RoxyEmailRecoveryTests(unittest.TestCase):
+    def test_resend_result_records_the_actual_click_time(self):
+        button = Mock()
+        button.text = "Resend"
+        button.get_attribute.return_value = ""
+
+        class Driver(_FakeDriver):
+            def execute_script(self, *_args):
+                return button
+
+        fake_time = Mock()
+        fake_time.monotonic.side_effect = [10.0, 10.0]
+        fake_time.time.return_value = 1234.5
+        fake_time.sleep.return_value = None
+        with patch.object(
+            roxy_registration,
+            "_human_click",
+        ), patch.object(
+            roxy_registration,
+            "_email_otp_page_state",
+            return_value={"buttons": [{"text": "Resend", "disabled": True}]},
+        ), patch.object(
+            roxy_registration,
+            "_is_email_verification_page",
+            return_value=True,
+        ), patch.object(
+            roxy_registration,
+            "_browser_actions_enabled",
+            return_value=False,
+        ), patch.object(roxy_registration, "time", fake_time):
+            result = roxy_registration._click_resend_email_otp(Driver(), timeout=20)
+
+        self.assertEqual(result["requested_after_ts"], 1234.5)
+
+    def test_submitted_otp_tracker_rejects_the_same_code_twice(self):
+        tracker_factory = getattr(roxy_registration, "_OtpAttemptTracker", None)
+        self.assertIsNotNone(tracker_factory)
+        if tracker_factory is None:
+            return
+
+        tracker = tracker_factory()
+        self.assertTrue(tracker.accept("123456"))
+        self.assertFalse(tracker.accept("123456"))
+        self.assertTrue(tracker.accept("654321"))
+
     def test_otp_wait_failure_does_not_treat_dom_click_as_send_confirmation(self):
         code, detail = roxy_registration._classify_otp_wait_failure(
             TimeoutError("等待验证码超时"),
