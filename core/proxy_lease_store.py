@@ -272,8 +272,10 @@ def _page_query(cur, *, view: str) -> tuple[str, list[Any]]:
         columns.extend(("reg_job.job_uuid AS registration_job_uuid", "reg_job.status AS registration_job_status"))
     where = ""
     if view == "current":
-        where = "WHERE p.state IN ('pending', 'leased', 'recent')"
-    elif view != "history":
+        where = "WHERE p.state IN ('pending', 'leased')"
+    elif view == "history":
+        where = "WHERE p.state NOT IN ('pending', 'leased')"
+    else:
         raise ValueError("代理租约视图必须是 current 或 history")
     sql = (
         f"SELECT {', '.join(columns)} FROM {postgres_store.qualified(PROXY_LEASES.name)} p "
