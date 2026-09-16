@@ -778,7 +778,7 @@ class AccountActionLoginTests(unittest.TestCase):
         opened = Mock(profile_id="profile-1")
         driver = Mock(current_url="https://auth.openai.com/about-you")
         client = Mock()
-        client.open_profile_with_capacity_wait.return_value = opened
+        client.open_profile_for_account.return_value = opened
         session = {"accessToken": "fresh-token", "expires": "2026-09-01T00:00:00Z"}
         action = Mock(return_value=True)
         with (
@@ -791,6 +791,8 @@ class AccountActionLoginTests(unittest.TestCase):
             patch("core.registration.selenium_auth.complete_profile_page", return_value=True) as complete_profile,
             patch("core.registration.selenium_auth.fetch_chatgpt_session", return_value=session),
             patch("core.profile_utils.generate_random_birthday", return_value="1995-01-02"),
+            patch("core.roxy_profile_binding.account_profile_id_by_email", return_value=""),
+            patch("core.roxy_profile_binding.persist_account_profile_id", return_value=True),
             patch.object(roxy_codex_oauth._roxy_cfg, "ROXY_KEEP_BROWSER_OPEN", False),
         ):
             self.assertTrue(roxy_codex_oauth.run_roxy_chatgpt_account_action(
@@ -799,7 +801,7 @@ class AccountActionLoginTests(unittest.TestCase):
 
         complete_profile.assert_called_once()
         action.assert_called_once_with(driver, session)
-        client.open_profile_with_capacity_wait.assert_called_once_with(proxy_url=None)
+        client.open_profile_for_account.assert_called_once_with(profile_id=None, proxy_url=None)
         client.open_profile.assert_not_called()
         driver.quit.assert_called_once_with()
         client.cleanup_profile.assert_called_once_with(opened)

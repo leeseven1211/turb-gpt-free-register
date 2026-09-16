@@ -192,7 +192,7 @@ def _complete_otp(
 
 
 def refresh_access_token(email: str, *, proxy: str | None = None) -> dict:
-    """在一次性 Roxy 环境中登录已有账号并返回刷新后的 Session/AT。"""
+    """复用账号绑定的 Roxy Profile 登录并返回刷新后的 Session/AT。"""
     checked_at = _now()
     if not available():
         return {"ok": False, "status": "failed", "checked_at": checked_at, "error": "Roxy 浏览器兜底未配置"}
@@ -200,8 +200,28 @@ def refresh_access_token(email: str, *, proxy: str | None = None) -> dict:
     opened = None
     driver = None
     try:
-        logger.info("[查活][Roxy] 协议登录未通过，创建指纹浏览器环境：%s", email)
-        opened = client.open_profile(proxy_url=proxy)
+        from core.roxy_profile_binding import (
+            account_profile_id_by_email,
+            persist_account_profile_id,
+        )
+
+        bound_profile_id = account_profile_id_by_email(email, strict=True)
+        logger.info("[查活][Roxy] 协议登录未通过，打开或创建账号指纹浏览器环境：%s", email)
+        opened = client.open_profile_for_account(
+            profile_id=bound_profile_id or None,
+            proxy_url=proxy,
+        )
+        profile_reused = bool(
+            bound_profile_id
+            and str(opened.profile_id) == str(bound_profile_id)
+            and bool(getattr(opened, "account_bound", False))
+        )
+        if not bound_profile_id or str(opened.profile_id) != str(bound_profile_id):
+            if not persist_account_profile_id(email, opened.profile_id):
+                raise RuntimeError("账号 Roxy Profile 绑定写回失败")
+            opened.account_bound = True
+            client.mark_profile_bound(opened.profile_id)
+        effective_proxy = None if profile_reused else proxy
         driver = _build_driver(opened)
         _center_browser_window(driver)
         driver.set_page_load_timeout(int(getattr(cfg, "ROXY_SELENIUM_TIMEOUT", 90) or 90))
@@ -258,7 +278,7 @@ def refresh_access_token(email: str, *, proxy: str | None = None) -> dict:
             "checked_at": checked_at,
             "access_token": access_token,
             "session": session_info,
-            "proxy_used": proxy or None,
+            "proxy_used": effective_proxy or None,
             "validation_method": "roxy_email_otp",
         }
     except AccountUnusableError as exc:

@@ -20,7 +20,7 @@ REGISTRATION_DRIVER: str = schema_default("REGISTRATION_DRIVER")
 ROXY_API_BASE: str = schema_default("ROXY_API_BASE")
 ROXY_API_TOKEN: str = schema_default("ROXY_API_TOKEN")
 
-# Roxy 环境/Profile ID；留空时使用 ROXY_PROFILE_CREATE_* 先创建临时环境（如果接口支持）
+# Roxy 全局环境/Profile ID；一号一环境模式下不应配置它，账号绑定会优先使用账号元数据中的 Profile ID。
 ROXY_PROFILE_ID: str = schema_default("ROXY_PROFILE_ID")
 
 # Roxy 工作区 ID。Roxy 创建 Profile 时接口要求 workspaceId，必须填写。
@@ -72,11 +72,12 @@ ROXY_WINDOW_WAIT_TIMEOUT: int = schema_default("ROXY_WINDOW_WAIT_TIMEOUT")
 ROXY_WINDOW_WAIT_INTERVAL: int = schema_default("ROXY_WINDOW_WAIT_INTERVAL")
 
 # 环境生命周期：
-#   True  = 一号一环境：每个账号强制创建新 Profile，用完关闭并删除，不允许复用 ROXY_PROFILE_ID
-#   False = 可复用 ROXY_PROFILE_ID 或只关闭不删除
+#   True  = 每个账号最多绑定一个 Profile；账号没有绑定时才创建新环境
+#   False = 允许使用全局 ROXY_PROFILE_ID（兼容旧配置）
 ROXY_ONE_PROFILE_PER_ACCOUNT: bool = schema_default("ROXY_ONE_PROFILE_PER_ACCOUNT")
 
-# 一号一环境结束后是否删除 Profile。建议保持 True。
+# 是否在任务结束后删除本轮新建 Profile。默认 False：关闭浏览器但保留环境，后续可按账号绑定复用。
+ROXY_REUSE_ACCOUNT_PROFILE: bool = schema_default("ROXY_REUSE_ACCOUNT_PROFILE")
 ROXY_DELETE_PROFILE_AFTER_RUN: bool = schema_default("ROXY_DELETE_PROFILE_AFTER_RUN")
 
 # 删除环境接口路径/方法；如你的 Roxy 版本不同，只改这里。

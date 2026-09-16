@@ -794,6 +794,30 @@ def update_account_login_password(email: str, password: str, *, source: str = "p
     return _mutate_account_extra(email, mutate)
 
 
+def update_account_roxy_profile(
+    email: str,
+    profile_id: str,
+    *,
+    retained: bool = True,
+) -> bool:
+    """Bind an account to a Roxy Profile without touching credentials."""
+    normalized_profile = str(profile_id or "").strip()
+    if not normalized_profile:
+        return False
+
+    def mutate(_row, extra):
+        binding = extra.get("roxybrowser")
+        binding = dict(binding) if isinstance(binding, dict) else {}
+        binding.update({
+            "profile_id": normalized_profile,
+            "retained": bool(retained),
+        })
+        extra["roxybrowser"] = binding
+        return {}
+
+    return _mutate_account_extra(str(email or "").strip(), mutate)
+
+
 def update_account_password_capability(
     email: str,
     *,

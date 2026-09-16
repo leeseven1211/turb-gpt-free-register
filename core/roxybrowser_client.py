@@ -44,11 +44,30 @@ _ROXY_WINDOW_CAPACITY_MARKERS = (
     "too many windows",
 )
 
+_ROXY_PROFILE_NOT_FOUND_MARKERS = (
+    "环境不存在",
+    "环境已删除",
+    "环境不存在或已删除",
+    "profile not found",
+    "profile does not exist",
+    "profile not exist",
+    "dirid不存在",
+    "dir id not found",
+    "profile deleted",
+    "dirid not found",
+)
+
 
 def _is_window_capacity_error(error: object) -> bool:
     """Return whether Roxy explicitly rejected creation because slots are full."""
     text = str(error or "").strip().lower()
     return bool(text) and any(marker in text for marker in _ROXY_WINDOW_CAPACITY_MARKERS)
+
+
+def _is_profile_not_found_error(error: object) -> bool:
+    """Only classify explicit missing/deleted Profile responses as replaceable."""
+    text = str(error or "").strip().lower()
+    return bool(text) and any(marker in text for marker in _ROXY_PROFILE_NOT_FOUND_MARKERS)
 
 
 def _load_profile_registry_locked() -> list[dict]:
@@ -89,6 +108,7 @@ def _track_created_profile(profile_id: str) -> None:
                 "profile_id": profile_id,
                 "workspace_id": str(_workspace_id_value() or ""),
                 "created_at": time.time(),
+                "disposable": True,
             })
             _save_profile_registry_locked(items)
 
@@ -104,6 +124,21 @@ def _untrack_created_profile(profile_id: str) -> None:
             _save_profile_registry_locked(remaining)
 
 
+def _mark_profile_bound(profile_id: str) -> None:
+    profile_id = str(profile_id or "").strip()
+    if not profile_id:
+        return
+    with _PROFILE_REGISTRY_LOCK:
+        items = _load_profile_registry_locked()
+        changed = False
+        for item in items:
+            if str(item.get("profile_id")) == profile_id and not item.get("account_bound"):
+                item["account_bound"] = True
+                changed = True
+        if changed:
+            _save_profile_registry_locked(items)
+
+
 @dataclass
 class RoxyOpenResult:
     profile_id: str
@@ -112,6 +147,7 @@ class RoxyOpenResult:
     webdriver_url: str | None = None
     ws_endpoint: str | None = None
     created_by_run: bool = False
+    account_bound: bool = False
 
 
 def _strip_slashes(value: str) -> str:
@@ -660,10 +696,15 @@ class RoxyBrowserClient:
         headless: bool | None = None,
     ) -> RoxyOpenResult:
         one_profile = bool(getattr(_cfg, "ROXY_ONE_PROFILE_PER_ACCOUNT", True))
-        configured_pid = self._normalize_profile_id(profile_id if profile_id is not None else getattr(_cfg, "ROXY_PROFILE_ID", ""))
+        explicit_profile = profile_id is not None
+        configured_pid = self._normalize_profile_id(
+            profile_id if explicit_profile else getattr(_cfg, "ROXY_PROFILE_ID", "")
+        )
         if proxy_url and configured_pid:
-            raise RuntimeError("本次任务已绑定独立代理，不能复用固定 ROXY_PROFILE_ID；请留空以创建新环境")
-        if one_profile and configured_pid:
+            raise RuntimeError(
+                "不能复用固定 ROXY_PROFILE_ID 覆盖其代理；请让 Profile 使用已保存的代理配置"
+            )
+        if one_profile and configured_pid and not explicit_profile:
             raise RuntimeError(
                 "已启用 ROXY_ONE_PROFILE_PER_ACCOUNT=True（一号一环境），"
                 "不能配置/传入固定 ROXY_PROFILE_ID；请留空以便每个账号创建新环境。"
@@ -735,6 +776,7 @@ class RoxyBrowserClient:
     def open_profile_with_capacity_wait(
         self,
         *,
+        profile_id: str | None = None,
         proxy_url: str | None = None,
         headless: bool | None = None,
         progress_callback: Callable[[str, str, str], object] | None = None,
@@ -752,6 +794,8 @@ class RoxyBrowserClient:
             attempt += 1
             try:
                 open_kwargs: dict[str, object] = {"proxy_url": proxy_url}
+                if profile_id is not None:
+                    open_kwargs["profile_id"] = profile_id
                 if headless is not None:
                     open_kwargs["headless"] = headless
                 return self.open_profile(**open_kwargs)
@@ -778,6 +822,56 @@ class RoxyBrowserClient:
                     remaining,
                 )
                 time.sleep(delay)
+
+    def open_profile_for_account(
+        self,
+        *,
+        profile_id: str | None = None,
+        proxy_url: str | None = None,
+        headless: bool | None = None,
+        progress_callback: Callable[[str, str, str], object] | None = None,
+        stop_checker: Callable[[], object] | None = None,
+    ) -> RoxyOpenResult:
+        """Reuse an account-bound Profile; create only after an explicit miss."""
+        normalized_profile = self._normalize_profile_id(profile_id)
+        reuse_enabled = bool(getattr(_cfg, "ROXY_REUSE_ACCOUNT_PROFILE", True))
+
+        def open_with(**kwargs):
+            if headless is not None:
+                kwargs["headless"] = headless
+            if progress_callback is not None:
+                kwargs["progress_callback"] = progress_callback
+            if stop_checker is not None:
+                kwargs["stop_checker"] = stop_checker
+            return self.open_profile_with_capacity_wait(**kwargs)
+
+        if normalized_profile and reuse_enabled:
+            try:
+                # A bound Profile carries its own Roxy proxy configuration.  A
+                # newly acquired task route must not overwrite that identity.
+                opened = open_with(profile_id=normalized_profile, proxy_url=None)
+                opened.account_bound = True
+                # A crash can leave the profile in the process registry after
+                # the account row was already committed. Protect it before
+                # any later cleanup or process restart can inspect that file.
+                _mark_profile_bound(normalized_profile)
+                return opened
+            except Exception as exc:
+                if not _is_profile_not_found_error(exc):
+                    raise
+                logger.warning(
+                    "[Roxy] 账号绑定 Profile 不存在，创建替代环境并回写绑定：%s",
+                    type(exc).__name__,
+                )
+
+        # An explicit empty profile_id bypasses the global ROXY_PROFILE_ID;
+        # account isolation must never silently fall back to a shared Profile.
+        return open_with(profile_id="", proxy_url=proxy_url)
+
+    @staticmethod
+    def mark_profile_bound(profile_id: str) -> None:
+        """Protect an account-bound Profile from orphan cleanup."""
+        _mark_profile_bound(profile_id)
 
     def close_profile(self, profile_id: str) -> bool:
         if not profile_id:
@@ -825,25 +919,45 @@ class RoxyBrowserClient:
             return False
 
     def cleanup_profile(self, opened: RoxyOpenResult | None) -> None:
-        """任务结束清理：关闭窗口；一号一环境时删除本轮创建的 Profile。"""
+        """任务结束清理：默认只关闭；删除必须显式开启且仅限本轮创建。"""
         if not opened or not opened.profile_id:
             return
         keep_open = bool(getattr(_cfg, "ROXY_KEEP_BROWSER_OPEN", False))
+        closed = True
         if not keep_open:
-            self.close_profile(opened.profile_id)
+            closed = self.close_profile(opened.profile_id)
 
         should_delete = (
             bool(getattr(_cfg, "ROXY_ONE_PROFILE_PER_ACCOUNT", True))
-            and bool(getattr(_cfg, "ROXY_DELETE_PROFILE_AFTER_RUN", True))
+            and bool(getattr(_cfg, "ROXY_DELETE_PROFILE_AFTER_RUN", False))
             and bool(opened.created_by_run)
+            and not bool(opened.account_bound)
         )
         if should_delete:
             # 删除前尽量确保已关闭；若 keep_open=True 则不删除，便于调试保留现场。
             if keep_open:
                 logger.info("[Roxy] ROXY_KEEP_BROWSER_OPEN=True，跳过删除环境")
                 return
+            if not closed:
+                logger.warning("[Roxy] 环境未能关闭，保留本地登记，不执行删除")
+                return
             if self.delete_profile(opened.profile_id):
                 _untrack_created_profile(opened.profile_id)
+            else:
+                # Keep the item for a later startup cleanup attempt instead of
+                # losing the only local record of an undeleted Profile.
+                return
+        if opened.account_bound:
+            _mark_profile_bound(opened.profile_id)
+            if closed and opened.created_by_run:
+                # The account row is the durable binding. The registry only
+                # exists for crash recovery while the current process owns a
+                # newly created Profile.
+                _untrack_created_profile(opened.profile_id)
+        elif closed and opened.created_by_run:
+            # The Profile is retained in Roxy, but no longer belongs to the
+            # current process's orphan-recovery registry.
+            _untrack_created_profile(opened.profile_id)
 
     def discard_profile(self, opened: RoxyOpenResult | None) -> None:
         """Close and soft-delete one disposable run-created profile.
@@ -895,10 +1009,10 @@ class RoxyBrowserClient:
 
 
 def cleanup_orphaned_profiles() -> dict:
-    """关闭并软删除上次 WebUI 异常退出后遗留的临时环境。
+    """关闭并按显式策略处理上次 WebUI 异常退出后遗留的环境。
 
-    任务级调试现场在进程存活期间由 registration_debug 管理；只有显式设置
-    ROXY_KEEP_BROWSER_OPEN 时，才把进程重启前登记的环境视为用户要求长期保留。
+    默认只关闭并清理本地登记；只有显式开启删除开关且登记项明确标记为
+    disposable 时才软删除。历史登记项没有这个标记，永不自动删除。
     """
     with _PROFILE_REGISTRY_LOCK:
         items = _load_profile_registry_locked()
@@ -909,6 +1023,7 @@ def cleanup_orphaned_profiles() -> dict:
         return {"found": len(items), "cleaned": 0, "failed": 0, "kept": len(items)}
 
     client = RoxyBrowserClient()
+    delete_after_run = bool(getattr(_cfg, "ROXY_DELETE_PROFILE_AFTER_RUN", False))
     cleaned = 0
     failed = 0
     try:
@@ -916,8 +1031,13 @@ def cleanup_orphaned_profiles() -> dict:
             profile_id = str(item.get("profile_id") or "").strip()
             if not profile_id:
                 continue
-            client.close_profile(profile_id)
-            if client.delete_profile(profile_id):
+            closed = client.close_profile(profile_id)
+            account_bound = bool(item.get("account_bound"))
+            disposable = bool(item.get("disposable"))
+            if delete_after_run and disposable and not account_bound and client.delete_profile(profile_id):
+                _untrack_created_profile(profile_id)
+                cleaned += 1
+            elif closed and (not delete_after_run or account_bound):
                 _untrack_created_profile(profile_id)
                 cleaned += 1
             else:

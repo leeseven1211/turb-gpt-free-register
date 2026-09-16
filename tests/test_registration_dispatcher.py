@@ -82,6 +82,7 @@ class RegistrationDispatcherTests(unittest.TestCase):
             batch_dir=self.args["batch_dir"],
             existing_password="saved-password",
             existing_totp_secret="saved-totp",
+            profile_id=None,
         )
 
     def test_removed_browser_drivers_are_rejected(self):

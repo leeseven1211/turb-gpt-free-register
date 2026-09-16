@@ -13,6 +13,7 @@ _NAMES = {
     "update_account_password_capability",
     "update_account_totp_secret", "update_account_twofa_status", "update_account_token_metadata",
     "update_account_session", "sync_account_token_metadata", "update_account_note", "update_account_registration_proxy",
+    "update_account_roxy_profile",
     "backfill_account_registration_proxy_context", "update_account_deactivation_mail", "update_account_liveness",
     "mark_account_deactivated",
     "account_is_deactivated", "claim_account_live_check", "recover_interrupted_live_checks",

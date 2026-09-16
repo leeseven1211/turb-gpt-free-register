@@ -1156,9 +1156,13 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 selected_source = parse_email_sources(selected_source)[0]
             existing_password = ""
             existing_totp_secret = ""
+            bound_profile_id = ""
+            from core.roxy_profile_binding import account_profile_id
+            bound_profile_id = account_profile_id(_account_for_job(current))
             if str(current.get("job_type") or "") == "registration_resume":
                 resume_account = _enrich_account_registration_state(_account_for_job(current))
                 email = str((resume_account or {}).get("email") or current.get("email") or "").strip()
+                bound_profile_id = account_profile_id(resume_account)
                 existing_password = _pending_registration_password(resume_account)
                 existing_totp_secret = str((resume_account or {}).get("totp_secret") or "").strip()
                 if not email or not existing_password:
@@ -1188,6 +1192,11 @@ def _run_one_job(job_id: int, log_file: str) -> None:
             retry_attempt = 0
             while True:
                 check_stop_requested()
+                # A missing bound Profile may be replaced during the previous
+                # attempt. Re-read the durable account row before a proxy
+                # retry so the next attempt opens that replacement instead of
+                # retrying the stale Profile ID.
+                bound_profile_id = account_profile_id(_account_for_job(current))
                 result = run_registration(
                     email=email,
                     name=name,
@@ -1195,6 +1204,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     proxy=proxy_lease.proxy_url,
                     existing_password=existing_password or None,
                     existing_totp_secret=existing_totp_secret or None,
+                    profile_id=bound_profile_id or None,
                     registration_options=registration_options_for_job(current),
                 )
                 if not _should_retry_registration_with_new_proxy(result, proxy_lease, retry_attempt):
