@@ -68,7 +68,13 @@ class AccountProxyTests(unittest.TestCase):
                 email="a@example.com",
                 purpose="plan-check",
             )
-        acquire.assert_called_once_with(region="JP", validate=True, job_id="plan-check-7")
+        acquire.assert_called_once_with(
+            region="JP",
+            validate=True,
+            job_id="plan-check-7",
+            account_id=7,
+            purpose="plan-check",
+        )
         self.assertEqual(route.provider, "1024proxy")
         self.assertEqual(route.region, "JP")
 
@@ -99,6 +105,8 @@ class AccountProxyTests(unittest.TestCase):
             region="JP",
             validate=True,
             job_id="plan-check-7-rotation-3",
+            account_id=7,
+            purpose="plan-check",
         )
 
     def test_pool_mode_uses_dedicated_account_proxy_first(self):

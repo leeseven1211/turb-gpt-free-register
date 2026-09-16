@@ -344,6 +344,76 @@ def _persistent_lease_abort(lease_id: str) -> None:
         logger.exception("[代理平台] 清理持久化代理租约失败: lease_id=%s", lease_id)
 
 
+def _lease_correlation_kwargs(
+    *,
+    account_id: int | None = None,
+    purpose: str | None = None,
+    operation_task_id: int | None = None,
+    operation_run_id: int | None = None,
+    registration_job_id: int | None = None,
+    registration_attempt_id: int | None = None,
+    route_attempt_id: str | None = None,
+    route_attempt_no: int | None = None,
+) -> dict[str, Any]:
+    return {
+        "account_id": account_id,
+        "purpose": purpose,
+        "operation_task_id": operation_task_id,
+        "operation_run_id": operation_run_id,
+        "registration_job_id": registration_job_id,
+        "registration_attempt_id": registration_attempt_id,
+        "route_attempt_id": route_attempt_id,
+        "route_attempt_no": route_attempt_no,
+    }
+
+
+def bind_proxy_lease(
+    lease: ProxyLease | None,
+    *,
+    account_id: int | None = None,
+    purpose: str | None = None,
+    operation_task_id: int | None = None,
+    operation_run_id: int | None = None,
+    registration_job_id: int | None = None,
+    registration_attempt_id: int | None = None,
+    route_attempt_id: str | None = None,
+    route_attempt_no: int | None = None,
+) -> bool:
+    """Attach durable correlation facts without turning static pool routes into leases."""
+    if lease is None:
+        return False
+    metadata = getattr(lease, "metadata", None)
+    if not isinstance(metadata, dict):
+        metadata = {}
+        try:
+            setattr(lease, "metadata", metadata)
+        except Exception:
+            return False
+    values = _lease_correlation_kwargs(
+        account_id=account_id,
+        purpose=purpose,
+        operation_task_id=operation_task_id,
+        operation_run_id=operation_run_id,
+        registration_job_id=registration_job_id,
+        registration_attempt_id=registration_attempt_id,
+        route_attempt_id=route_attempt_id,
+        route_attempt_no=route_attempt_no,
+    )
+    metadata.update({key: value for key, value in values.items() if value is not None})
+    if not metadata.get("persistent_lease") or getattr(lease, "provider", "") != "1024proxy":
+        return False
+    try:
+        from core import proxy_lease_store
+
+        return proxy_lease_store.bind(lease_id=getattr(lease, "lease_id", ""), **values)
+    except Exception:
+        logger.exception(
+            "[代理平台] 绑定代理租约关联信息失败: lease_id=%s",
+            getattr(lease, "lease_id", ""),
+        )
+        return False
+
+
 def acquire_1024_proxy(
     *,
     api_url: str | None = None,
@@ -353,6 +423,14 @@ def acquire_1024_proxy(
     validate: bool | None = None,
     job_id: int | str | None = None,
     progress_callback=None,
+    account_id: int | None = None,
+    purpose: str | None = "registration",
+    operation_task_id: int | None = None,
+    operation_run_id: int | None = None,
+    registration_job_id: int | None = None,
+    registration_attempt_id: int | None = None,
+    route_attempt_id: str | None = None,
+    route_attempt_no: int | None = None,
 ) -> ProxyLease:
     from config import proxy as cfg
 
@@ -442,6 +520,16 @@ def acquire_1024_proxy(
                                 expires_at=expires_at.isoformat(timespec="seconds"),
                                 batch_id=None,
                                 job_id=job_id,
+                                **_lease_correlation_kwargs(
+                                    account_id=account_id,
+                                    purpose=purpose,
+                                    operation_task_id=operation_task_id,
+                                    operation_run_id=operation_run_id,
+                                    registration_job_id=registration_job_id,
+                                    registration_attempt_id=registration_attempt_id,
+                                    route_attempt_id=route_attempt_id,
+                                    route_attempt_no=route_attempt_no,
+                                ),
                             )
                             persistent_reserved = True
                         except proxy_lease_store.DuplicateProxyLeaseError as exc:
@@ -500,6 +588,16 @@ def acquire_1024_proxy(
                     expires_at=expires_at,
                     metadata={
                         "job_id": job_id,
+                        **_lease_correlation_kwargs(
+                            account_id=account_id,
+                            purpose=purpose,
+                            operation_task_id=operation_task_id,
+                            operation_run_id=operation_run_id,
+                            registration_job_id=registration_job_id,
+                            registration_attempt_id=registration_attempt_id,
+                            route_attempt_id=route_attempt_id,
+                            route_attempt_no=route_attempt_no,
+                        ),
                         "persistent_lease": persist_lease,
                         "recent_ttl": recent_ttl,
                         "uniqueness_key": uniqueness_key,
@@ -582,6 +680,14 @@ def acquire_1024_proxy_batch(
     rotation_index: int = 0,
     _refill_depth: int = 0,
     progress_callback=None,
+    account_id: int | None = None,
+    purpose: str | None = "registration",
+    operation_task_id: int | None = None,
+    operation_run_id: int | None = None,
+    registration_job_id: int | None = None,
+    registration_attempt_id: int | None = None,
+    route_attempt_id: str | None = None,
+    route_attempt_no: int | None = None,
 ) -> list[ProxyLease]:
     """Fetch and validate a batch of independent 1024Proxy leases."""
     from config import proxy as cfg
@@ -665,6 +771,16 @@ def acquire_1024_proxy_batch(
                             expires_at=expires_at.isoformat(timespec="seconds"),
                             batch_id=str(job_id) if job_id is not None else None,
                             job_id=job_id,
+                            **_lease_correlation_kwargs(
+                                account_id=account_id,
+                                purpose=purpose,
+                                operation_task_id=operation_task_id,
+                                operation_run_id=operation_run_id,
+                                registration_job_id=registration_job_id,
+                                registration_attempt_id=registration_attempt_id,
+                                route_attempt_id=route_attempt_id,
+                                route_attempt_no=route_attempt_no,
+                            ),
                         )
                     except proxy_lease_store.DuplicateProxyLeaseError:
                         _PENDING_ENDPOINTS.discard(endpoint)
@@ -757,6 +873,16 @@ def acquire_1024_proxy_batch(
                     metadata={
                         "job_id": job_id,
                         "batch_id": job_id,
+                        **_lease_correlation_kwargs(
+                            account_id=account_id,
+                            purpose=purpose,
+                            operation_task_id=operation_task_id,
+                            operation_run_id=operation_run_id,
+                            registration_job_id=registration_job_id,
+                            registration_attempt_id=registration_attempt_id,
+                            route_attempt_id=route_attempt_id,
+                            route_attempt_no=route_attempt_no,
+                        ),
                         "persistent_lease": persist_lease,
                         "recent_ttl": recent_ttl,
                         "uniqueness_key": uniqueness_key,
@@ -786,6 +912,14 @@ def acquire_1024_proxy_batch(
                         rotation_index=rotation_index + 1,
                         _refill_depth=_refill_depth + 1,
                         progress_callback=progress_callback,
+                        account_id=account_id,
+                        purpose=purpose,
+                        operation_task_id=operation_task_id,
+                        operation_run_id=operation_run_id,
+                        registration_job_id=registration_job_id,
+                        registration_attempt_id=registration_attempt_id,
+                        route_attempt_id=route_attempt_id,
+                        route_attempt_no=route_attempt_no,
                     )
                     logger.warning(
                         "[代理平台] 批量候选全部未通过出口检测，已换取 %s 条替代线路：requested=%s",
@@ -810,6 +944,14 @@ def acquire_1024_proxy_batch(
                     rotation_index=rotation_index + 1,
                     _refill_depth=_refill_depth + 1,
                     progress_callback=progress_callback,
+                    account_id=account_id,
+                    purpose=purpose,
+                    operation_task_id=operation_task_id,
+                    operation_run_id=operation_run_id,
+                    registration_job_id=registration_job_id,
+                    registration_attempt_id=registration_attempt_id,
+                    route_attempt_id=route_attempt_id,
+                    route_attempt_no=route_attempt_no,
                 )
                 accepted.extend(refill)
             except Exception as refill_error:
@@ -853,10 +995,29 @@ def _acquire_registration_proxy_from_batch(
     batch_workers: int,
     job_id: int | str | None,
     progress_callback=None,
+    account_id: int | None = None,
+    purpose: str | None = "registration",
+    operation_task_id: int | None = None,
+    operation_run_id: int | None = None,
+    registration_job_id: int | None = None,
+    registration_attempt_id: int | None = None,
+    route_attempt_id: str | None = None,
+    route_attempt_no: int | None = None,
 ) -> ProxyLease:
     batch_key = str(batch_id or "").strip()
     if not batch_key:
-        return acquire_1024_proxy(job_id=job_id, progress_callback=progress_callback)
+        return acquire_1024_proxy(
+            job_id=job_id,
+            progress_callback=progress_callback,
+            account_id=account_id,
+            purpose=purpose,
+            operation_task_id=operation_task_id,
+            operation_run_id=operation_run_id,
+            registration_job_id=registration_job_id,
+            registration_attempt_id=registration_attempt_id,
+            route_attempt_id=route_attempt_id,
+            route_attempt_no=route_attempt_no,
+        )
     total_jobs = max(1, int(batch_size or 1))
     workers = max(1, min(16, int(batch_workers or 1)))
 
@@ -875,6 +1036,33 @@ def _acquire_registration_proxy_from_batch(
                 lease = state.leases.pop(0)
                 state.remaining_jobs = max(0, state.remaining_jobs - 1)
                 lease.metadata["job_id"] = job_id
+                lease.metadata.update(
+                    {
+                        key: value
+                        for key, value in _lease_correlation_kwargs(
+                            account_id=account_id,
+                            purpose=purpose,
+                            operation_task_id=operation_task_id,
+                            operation_run_id=operation_run_id,
+                            registration_job_id=registration_job_id,
+                            registration_attempt_id=registration_attempt_id,
+                            route_attempt_id=route_attempt_id,
+                            route_attempt_no=route_attempt_no,
+                        ).items()
+                        if value is not None
+                    }
+                )
+                bind_proxy_lease(
+                    lease,
+                    account_id=account_id,
+                    purpose=purpose,
+                    operation_task_id=operation_task_id,
+                    operation_run_id=operation_run_id,
+                    registration_job_id=registration_job_id,
+                    registration_attempt_id=registration_attempt_id,
+                    route_attempt_id=route_attempt_id,
+                    route_attempt_no=route_attempt_no,
+                )
                 return lease
             if state.remaining_jobs <= 0:
                 raise RuntimeError(f"注册批次 {batch_key} 没有可分配的 1024Proxy 租约")
@@ -892,6 +1080,14 @@ def _acquire_registration_proxy_from_batch(
                 job_id=batch_key,
                 rotation_index=fetch_count,
                 progress_callback=progress_callback,
+                account_id=account_id,
+                purpose=purpose,
+                operation_task_id=operation_task_id,
+                operation_run_id=operation_run_id,
+                registration_job_id=registration_job_id,
+                registration_attempt_id=registration_attempt_id,
+                route_attempt_id=route_attempt_id,
+                route_attempt_no=route_attempt_no,
             )
         except Exception:
             with _BATCH_CONDITION:
@@ -950,6 +1146,14 @@ def acquire_registration_proxy(
     batch_size: int = 1,
     batch_workers: int = 1,
     progress_callback=None,
+    account_id: int | None = None,
+    purpose: str | None = "registration",
+    operation_task_id: int | None = None,
+    operation_run_id: int | None = None,
+    registration_job_id: int | None = None,
+    registration_attempt_id: int | None = None,
+    route_attempt_id: str | None = None,
+    route_attempt_no: int | None = None,
 ) -> ProxyLease:
     from config import proxy as cfg
 
@@ -962,15 +1166,58 @@ def acquire_registration_proxy(
                 batch_workers=batch_workers,
                 job_id=job_id,
                 progress_callback=progress_callback,
+                account_id=account_id,
+                purpose=purpose,
+                operation_task_id=operation_task_id,
+                operation_run_id=operation_run_id,
+                registration_job_id=registration_job_id,
+                registration_attempt_id=registration_attempt_id,
+                route_attempt_id=route_attempt_id,
+                route_attempt_no=route_attempt_no,
             )
-        return acquire_1024_proxy(job_id=job_id, progress_callback=progress_callback)
+        return acquire_1024_proxy(
+            job_id=job_id,
+            progress_callback=progress_callback,
+            account_id=account_id,
+            purpose=purpose,
+            operation_task_id=operation_task_id,
+            operation_run_id=operation_run_id,
+            registration_job_id=registration_job_id,
+            registration_attempt_id=registration_attempt_id,
+            route_attempt_id=route_attempt_id,
+            route_attempt_no=route_attempt_no,
+        )
     if mode == "none":
-        return ProxyLease(str(uuid.uuid4()), "direct", "", "", datetime.now(), state="leased")
+        lease = ProxyLease(str(uuid.uuid4()), "direct", "", "", datetime.now(), state="leased")
+        bind_proxy_lease(
+            lease,
+            account_id=account_id,
+            purpose=purpose,
+            operation_task_id=operation_task_id,
+            operation_run_id=operation_run_id,
+            registration_job_id=registration_job_id,
+            registration_attempt_id=registration_attempt_id,
+            route_attempt_id=route_attempt_id,
+            route_attempt_no=route_attempt_no,
+        )
+        return lease
     if mode != "pool":
         raise RuntimeError(f"不支持的 REGISTRATION_PROXY_MODE={mode!r}，可选 pool / 1024 / none")
     proxy_url = str(cfg.pick_proxy() or "").strip()
     endpoint = proxy_url.rsplit("@", 1)[-1].split("://", 1)[-1] if proxy_url else ""
-    return ProxyLease(str(uuid.uuid4()), "proxy_pool" if proxy_url else "direct", proxy_url, endpoint, datetime.now())
+    lease = ProxyLease(str(uuid.uuid4()), "proxy_pool" if proxy_url else "direct", proxy_url, endpoint, datetime.now())
+    bind_proxy_lease(
+        lease,
+        account_id=account_id,
+        purpose=purpose,
+        operation_task_id=operation_task_id,
+        operation_run_id=operation_run_id,
+        registration_job_id=registration_job_id,
+        registration_attempt_id=registration_attempt_id,
+        route_attempt_id=route_attempt_id,
+        route_attempt_no=route_attempt_no,
+    )
+    return lease
 
 
 def release_proxy(lease: ProxyLease | None, *, reason: str = "completed") -> None:

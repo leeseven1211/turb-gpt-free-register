@@ -880,19 +880,26 @@ def _acquire_registration_proxy_with_retries(
     batch_workers: int,
     progress_callback,
     log_logger: logging.Logger,
+    registration_job_id: int | None = None,
+    purpose: str | None = None,
     retry_kind: str = "proxy_acquisition",
 ):
     """申请注册代理；仅在代理平台/线路错误时有限重试。"""
     retry_limit = _registration_proxy_retry_limit()
     for attempt in range(retry_limit + 1):
         try:
-            return acquire_proxy(
-                job_id=job_id,
-                batch_id=batch_id,
-                batch_size=batch_size,
-                batch_workers=batch_workers,
-                progress_callback=progress_callback,
-            )
+            acquire_kwargs = {
+                "job_id": job_id,
+                "batch_id": batch_id,
+                "batch_size": batch_size,
+                "batch_workers": batch_workers,
+                "progress_callback": progress_callback,
+            }
+            if registration_job_id is not None:
+                acquire_kwargs["registration_job_id"] = registration_job_id
+            if purpose:
+                acquire_kwargs["purpose"] = purpose
+            return acquire_proxy(**acquire_kwargs)
         except Exception as exc:
             error_text = f"{type(exc).__name__}: {exc}"[:300]
             if attempt >= retry_limit or not _is_retryable_registration_proxy_acquisition_error(exc):
@@ -1100,14 +1107,40 @@ def _run_one_job(job_id: int, log_file: str) -> None:
     try:
         with _JobLogContext(log_file, task_id=job_id):
             from core.registration.dispatcher import run_registration
-            from core.proxy_provider import acquire_registration_proxy, mask_endpoint, mask_ip, release_proxy
+            from core.proxy_provider import (
+                acquire_registration_proxy,
+                bind_proxy_lease,
+                mask_endpoint,
+                mask_ip,
+                release_proxy,
+            )
 
             def _bind_proxy_lease(lease) -> None:
                 attempt_id = getattr(_THREAD_CTX, "attempt_id", None)
+                latest_context = db.get_job(job_id) or current
+                route_attempt_no = max(1, int(latest_context.get("route_attempt_no") or 1))
+                operation_ids = {"operation_task_id": None, "operation_run_id": None}
+                try:
+                    from core import proxy_lease_store
+
+                    operation_ids = proxy_lease_store.operation_correlation_for_registration_job(job_id)
+                except Exception:
+                    log_logger.debug("[Job %s] 读取 operation 关联失败，保留可用注册租约", job_id, exc_info=True)
                 if attempt_id is not None:
                     metadata = getattr(lease, "metadata", None)
                     if isinstance(metadata, dict):
                         metadata["attempt_id"] = int(attempt_id)
+                bind_proxy_lease(
+                    lease,
+                    account_id=latest_context.get("account_id"),
+                    purpose="registration",
+                    operation_task_id=operation_ids.get("operation_task_id"),
+                    operation_run_id=operation_ids.get("operation_run_id"),
+                    registration_job_id=job_id,
+                    registration_attempt_id=attempt_id,
+                    route_attempt_id=f"{job_id}:{route_attempt_no}",
+                    route_attempt_no=route_attempt_no,
+                )
                 db.update_job(
                     job_id,
                     proxy_provider=lease.provider,
@@ -1143,6 +1176,8 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     detail=detail,
                 ),
                 log_logger=log_logger,
+                registration_job_id=job_id,
+                purpose="registration",
             )
             _bind_proxy_lease(proxy_lease)
             db.update_job_progress(job_id, "email", state="running", detail="正在领取或复用注册邮箱")
@@ -1245,6 +1280,8 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                         detail=detail,
                     ),
                     log_logger=log_logger,
+                    registration_job_id=job_id,
+                    purpose="registration",
                     retry_kind="proxy_rotation_acquisition",
                 )
                 _bind_proxy_lease(proxy_lease)
@@ -1281,6 +1318,17 @@ def _run_one_job(job_id: int, log_file: str) -> None:
             # Codex 失败时注册账号可能已经创建并保存。代理地区属于账号注册事实，
             # 不能只在整项任务 success 时落库，否则后续补跑/查套餐无法稳定沿用地区。
             if isinstance(result, dict) and result.get("account_id"):
+                latest_context = db.get_job(job_id) or {}
+                route_attempt_no = max(1, int(latest_context.get("route_attempt_no") or 1))
+                bind_proxy_lease(
+                    proxy_lease,
+                    account_id=int(result["account_id"]),
+                    purpose="registration",
+                    registration_job_id=job_id,
+                    registration_attempt_id=getattr(_THREAD_CTX, "attempt_id", None),
+                    route_attempt_id=f"{job_id}:{route_attempt_no}",
+                    route_attempt_no=route_attempt_no,
+                )
                 db.update_account_registration_proxy(
                     int(result.get("account_id")),
                     provider=proxy_lease.provider,

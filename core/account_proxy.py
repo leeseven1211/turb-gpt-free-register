@@ -324,6 +324,8 @@ def _acquire_1024proxy(
         region=selected_region,
         validate=True,
         job_id=seed,
+        account_id=account_id,
+        purpose=purpose,
     )
     return AccountProxyRoute(
         proxy_url=lease.proxy_url,
