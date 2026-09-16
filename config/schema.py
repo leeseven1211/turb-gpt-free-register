@@ -176,6 +176,7 @@ _DEFAULTS: dict[str, Any] = {
     "ACCOUNT_LIVE_CHECK_PROXY_MODE": "direct",
     "ACCOUNT_REFRESH_AT_PROXY_MODE": "registration",
     "ACCOUNT_CODEX_PROXY_MODE": "registration",
+    "ACCOUNT_EMAIL_CHANGE_PROXY_MODE": "registration",
     "ACCOUNT_LIVE_CHECK_DRIVER": "protocol_current",
     "ACCOUNT_LIVE_CHECK_BROWSER_ENABLED": False,
     "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK": False,
@@ -460,6 +461,10 @@ _FIELD_DEFINITIONS = [
     {
         "key": "ACCOUNT_CODEX_PROXY_MODE", "file": "account.py", "type": "str", "group": "代理与网络",
         "label": "Codex OAuth 代理来源", "help": "默认 registration。可选 direct、pool 或 provider:<id>。",
+    },
+    {
+        "key": "ACCOUNT_EMAIL_CHANGE_PROXY_MODE", "file": "account.py", "type": "str", "group": "代理与网络",
+        "label": "邮箱换绑代理来源", "help": "默认 registration。换绑协议只使用 BrowserSession 和协议请求，不进入 Roxy/Selenium。",
     },
     {
         "key": "ACCOUNT_LIVE_CHECK_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",

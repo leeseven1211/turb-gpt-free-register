@@ -66,7 +66,7 @@ _RUNTIME_HANDLER_TYPES = frozenset({
 _LEGACY_DURABLE_TASK_TYPES = frozenset({
     *_RUNTIME_HANDLER_TYPES,
     "live_check", "token_refresh", "plan_check", "deactivation_mail",
-    "extract_link", "codex_token_refresh", "codex_retry",
+    "extract_link", "codex_token_refresh", "codex_retry", "email_change",
 })
 _RUNTIME_HANDLER_LOCK = threading.RLock()
 _RUNTIME_HANDLERS_REGISTERED = False
@@ -1130,8 +1130,11 @@ def _cancel_native_runtime_task(task: Mapping[str, Any]) -> dict[str, Any]:
 def _register_runtime_handlers() -> None:
     global _RUNTIME_HANDLERS_REGISTERED
     with _RUNTIME_HANDLER_LOCK:
+        from core import email_change_service
+
+        email_change_service.register_operation_handlers()
         registered = set(task_gateway.registered_dispatch_types())
-        if _RUNTIME_HANDLERS_REGISTERED and _RUNTIME_HANDLER_TYPES <= registered:
+        if _RUNTIME_HANDLERS_REGISTERED and _RUNTIME_HANDLER_TYPES <= registered and "email_change" in registered:
             return
         for task_type in sorted(_RUNTIME_HANDLER_TYPES):
             if task_type == "registration_resume":
@@ -1314,6 +1317,24 @@ def _handle_ready_completion_dependency(dependency: dict) -> None:
                 "补全父任务已由持久依赖续接：parent_task_id=%s run_id=%s",
                 parent_task_id, run.get("id"),
             )
+            return
+        if parent_system == "native_operations":
+            # The email-change parent is partial while its live-check child
+            # owns the next account lease. Never rerun the remote mutation.
+            parent = operation_task_store.get_task(int(parent_id), include_events=False) or {}
+            if str(parent.get("task_type") or "").strip().lower() != "email_change":
+                operation_task_store.complete_task_dependency(
+                    dependency_id, success=False, error="暂不支持该 native 父任务来源",
+                )
+                return
+            if child_status != "success":
+                operation_task_store.complete_task_dependency(
+                    dependency_id,
+                    success=True,
+                    error=f"邮箱换绑刷新子任务未成功: {child_status or 'unknown'}",
+                )
+                return
+            operation_task_store.complete_task_dependency(dependency_id, success=True)
             return
         if parent_system != "account_action_tasks":
             operation_task_store.complete_task_dependency(
@@ -1659,6 +1680,28 @@ class WebUIContext:
             "trigger": task_trigger,
             "plan": plan,
         }
+
+    def enqueue_email_change(
+        self,
+        account_id: int,
+        *,
+        new_email: str | None = None,
+        email_source: str | None = None,
+        trigger: str = "manual_email_change",
+        batch_id: int | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        """Queue a protocol-only email change in the native operation store."""
+        from core import email_change_service
+
+        return email_change_service.submit_email_change(
+            account_id=int(account_id),
+            new_email=new_email,
+            email_source=email_source,
+            trigger=trigger,
+            batch_id=batch_id,
+            idempotency_key=idempotency_key,
+        )
 
     def retry_account_task_result(self, task_id: int) -> tuple[dict, int]:
         """Resolve a historical account task to its current retry service."""

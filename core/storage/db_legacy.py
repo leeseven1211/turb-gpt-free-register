@@ -507,6 +507,119 @@ def _locked_row_by_email(conn, spec, email: str) -> dict | None:
         return record_store.merge_row(spec, cur.fetchone())
 
 
+def update_account_email_after_change(
+    *,
+    account_id: int,
+    expected_old_email: str,
+    new_email: str,
+    email_source: str | None = None,
+) -> dict[str, Any] | None:
+    """Atomically commit a remotely confirmed email change.
+
+    The old mailbox material remains attached to the account as its original
+    registration line. The new pool row is marked used in the same transaction,
+    and the old access token is cleared so a later live-check child establishes
+    a fresh session.
+    """
+    account_id = int(account_id)
+    old_email = str(expected_old_email or "").strip()
+    target_email = str(new_email or "").strip()
+    if not old_email or not target_email:
+        raise ValueError("邮箱换绑缺少旧邮箱或新邮箱")
+    if old_email.casefold() == target_email.casefold():
+        raise ValueError("新邮箱不能与当前邮箱相同")
+
+    source = str(email_source or "").strip().lower() or None
+    pool_specs = {
+        "outlook": record_store.OUTLOOK_POOL,
+        "generic_api": record_store.GENERIC_API_POOL,
+        "cloudflare_domain": record_store.DOMAIN_POOL,
+        "icloud_hide": record_store.ICLOUD_HIDE_POOL,
+    }
+    selected_specs = (
+        (pool_specs[source],) if source in pool_specs else tuple(pool_specs.values())
+    )
+    now = _now()
+    with record_store.transaction() as conn:
+        # Lock both email keys in stable order to serialize unique-email checks.
+        for key in sorted({old_email.casefold(), target_email.casefold()}):
+            record_store.advisory_xact_lock(conn, f"email-change:{key}")
+
+        account = _locked_row_by_email(conn, record_store.ACCOUNTS, old_email)
+        if account is None or int(account.get("id") or 0) != account_id:
+            return None
+        if str(account.get("email") or "").casefold() != old_email.casefold():
+            return None
+
+        conflicting = _locked_row_by_email(conn, record_store.ACCOUNTS, target_email)
+        if conflicting is not None and int(conflicting.get("id") or 0) != account_id:
+            raise ValueError("新邮箱已绑定其它账号")
+
+        pool = None
+        pool_spec = None
+        for candidate in selected_specs:
+            pool_spec = candidate
+            pool = _locked_row_by_email(conn, candidate, target_email)
+            if pool is not None:
+                break
+        if pool is not None:
+            registered_id = pool.get("registered_account_id")
+            pool_account_id = pool.get("account_id")
+            if registered_id not in (None, "", account_id) and int(registered_id) != account_id:
+                raise ValueError("新邮箱素材已被其它账号占用")
+            if pool_account_id not in (None, "", account_id) and str(pool_account_id) != str(account_id):
+                raise ValueError("新邮箱素材已被其它账号占用")
+            pool_status = str(pool.get("status") or "").strip().lower()
+            if pool_status in {"failed", "invalid", "released", "depleted"}:
+                raise ValueError("新邮箱素材当前不可用")
+
+        changes: dict[str, Any] = {
+            "email": target_email,
+            "email_source": source or account.get("email_source"),
+            "access_token": None,
+            "expires_at": None,
+            "token_expires_at": None,
+            "token_expired": None,
+            "updated_at": now,
+        }
+        # Copy mailbox material only; preserve original_email_line, password,
+        # and TOTP as account history/credentials.
+        if pool is not None:
+            for field in ("password", "client_id", "refresh_token"):
+                value = pool.get(field)
+                if value not in (None, ""):
+                    changes[field] = value
+        record_store.patch_row(record_store.ACCOUNTS, account_id, changes, conn=conn)
+        if pool is not None and pool_spec is not None:
+            record_store.patch_row(
+                pool_spec,
+                int(pool["id"]),
+                {
+                    "status": "used",
+                    "used_at": now,
+                    "registered_account_id": account_id,
+                    "updated_at": now,
+                    "completed_at": now,
+                },
+                conn=conn,
+            )
+
+        readback = record_store.get_row(record_store.ACCOUNTS, account_id, conn=conn)
+        if not readback or str(readback.get("email") or "").casefold() != target_email.casefold():
+            raise RuntimeError("邮箱换绑本地写回读回失败")
+        return {
+            "account_id": account_id,
+            "old_email": old_email,
+            "new_email": target_email,
+            "email_source": readback.get("email_source"),
+            "access_token_cleared": not bool(readback.get("access_token")),
+            "original_email_preserved": bool(
+                readback.get("original_email_line") or account.get("original_email_line")
+            ),
+            "local_readback_confirmed": True,
+        }
+
+
 # ============================================================
 # registered_accounts
 # ============================================================
