@@ -250,15 +250,71 @@ PROXY_LEASES = TableSpec(
         "released_at": "TEXT",
         "batch_id": "TEXT",
         "job_id": "TEXT",
+        # These links are intentionally nullable: a route can exist before an
+        # account or durable operation row is created.  They are correlation
+        # facts, not ownership foreign keys, so historical rows remain valid
+        # during the operation/registration migration.
+        "account_id": "BIGINT",
+        "purpose": "TEXT",
+        "operation_task_id": "BIGINT",
+        "operation_run_id": "BIGINT",
+        "registration_job_id": "BIGINT",
+        "route_attempt_no": "INTEGER",
         "release_reason": "TEXT",
         "created_at": "TEXT NOT NULL",
         "updated_at": "TEXT NOT NULL",
     },
     unique=("lease_id",),
-    indexes=(("state", "recent_until"), ("batch_id",), ("job_id",)),
+    indexes=(
+        ("state", "recent_until"),
+        ("batch_id",),
+        ("job_id",),
+        ("account_id", "created_at"),
+        ("operation_task_id", "operation_run_id"),
+        ("registration_job_id", "route_attempt_no"),
+        ("purpose", "created_at"),
+    ),
     partial_unique=(
         (("endpoint",), '"state" IN (\'pending\', \'leased\', \'recent\')'),
         (("exit_ip",), '"exit_ip" IS NOT NULL AND "state" IN (\'leased\', \'recent\')'),
+    ),
+)
+
+BROWSER_TRAFFIC = TableSpec(
+    name="browser_traffic_summaries",
+    promoted={
+        "summary_key": "TEXT NOT NULL",
+        "source": "TEXT NOT NULL",
+        "method": "TEXT NOT NULL",
+        "availability": "TEXT NOT NULL DEFAULT 'available'",
+        "unavailable_reason": "TEXT",
+        "started_at": "TEXT",
+        "ended_at": "TEXT",
+        "upload_bytes": "BIGINT NOT NULL DEFAULT 0",
+        "download_bytes": "BIGINT NOT NULL DEFAULT 0",
+        "total_bytes": "BIGINT NOT NULL DEFAULT 0",
+        "request_count": "BIGINT NOT NULL DEFAULT 0",
+        "failed_count": "BIGINT NOT NULL DEFAULT 0",
+        "unfinished_count": "BIGINT NOT NULL DEFAULT 0",
+        "unknown_count": "BIGINT NOT NULL DEFAULT 0",
+        "proxy_lease_id": "TEXT",
+        "account_id": "BIGINT",
+        "purpose": "TEXT",
+        "operation_task_id": "BIGINT",
+        "operation_run_id": "BIGINT",
+        "registration_job_id": "BIGINT",
+        "route_attempt_no": "INTEGER",
+        "created_at": "TEXT NOT NULL",
+        "updated_at": "TEXT NOT NULL",
+    },
+    unique=("summary_key",),
+    indexes=(
+        ("started_at",),
+        ("proxy_lease_id",),
+        ("account_id", "created_at"),
+        ("operation_task_id", "operation_run_id"),
+        ("registration_job_id", "route_attempt_no"),
+        ("availability", "created_at"),
     ),
 )
 
@@ -272,6 +328,7 @@ ALL_TABLES: tuple[TableSpec, ...] = (
     ICLOUD_HIDE_POOL,
     CODEX_CREDENTIALS,
     PROXY_LEASES,
+    BROWSER_TRAFFIC,
 )
 _BY_NAME = {spec.name: spec for spec in ALL_TABLES}
 

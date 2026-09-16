@@ -871,6 +871,62 @@ def _is_retryable_registration_proxy_acquisition_error(error: object) -> bool:
     return "1024proxy 获取失败" in text or "1024proxy 批量获取失败" in text
 
 
+def _registration_proxy_correlation(job_id: int, job: dict | None) -> dict[str, int | None]:
+    """Resolve durable operation IDs without making them a runtime dependency."""
+    current = job if isinstance(job, dict) else {}
+    raw_data = current.get("data")
+    data = raw_data if isinstance(raw_data, dict) else {}
+    account_id = current.get("account_id")
+    if account_id is None:
+        account_id = data.get("account_id")
+    operation_task_id = current.get("operation_task_id")
+    if operation_task_id is None:
+        operation_task_id = data.get("operation_task_id")
+    operation_run_id = current.get("operation_run_id")
+    if operation_run_id is None:
+        operation_run_id = data.get("operation_run_id")
+    if operation_run_id is None:
+        operation_run_id = getattr(_THREAD_CTX, "run_id", None)
+
+    # Projection writes may lag the legacy job row. When the mapping is already
+    # present, fill the correlation from its durable task/current run; a
+    # compatibility-only schema simply keeps these fields nullable.
+    if operation_task_id is None:
+        try:
+            from core import operation_task_store
+
+            root_job_id = int(current.get("root_job_id") or job_id)
+            raw_task_type = str(current.get("job_type") or "registration").strip().lower()
+            task_type = raw_task_type if raw_task_type in {
+                "registration", "registration_resume", "codex_retry", "twofa_retry",
+            } else "registration"
+            operation_task = operation_task_store.find_task_by_source(
+                "registration_chains", f"{root_job_id}:{task_type}"
+            )
+            if operation_task:
+                operation_task_id = operation_task.get("id")
+                if operation_run_id is None:
+                    operation_run_id = operation_task.get("last_run_id")
+                if account_id is None:
+                    account_id = operation_task.get("account_id")
+        except Exception:
+            logger.debug("[Job %s] operation proxy correlation unavailable", job_id, exc_info=True)
+
+    def optional_int(value: object) -> int | None:
+        if value is None or str(value).strip() == "":
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "account_id": optional_int(account_id),
+        "operation_task_id": optional_int(operation_task_id),
+        "operation_run_id": optional_int(operation_run_id),
+    }
+
+
 def _acquire_registration_proxy_with_retries(
     *,
     acquire_proxy,
@@ -880,19 +936,40 @@ def _acquire_registration_proxy_with_retries(
     batch_workers: int,
     progress_callback,
     log_logger: logging.Logger,
+    account_id: int | None = None,
+    purpose: str | None = "registration",
+    operation_task_id: int | None = None,
+    operation_run_id: int | None = None,
+    registration_job_id: int | None = None,
+    route_attempt_no: int | None = None,
     retry_kind: str = "proxy_acquisition",
 ):
     """申请注册代理；仅在代理平台/线路错误时有限重试。"""
     retry_limit = _registration_proxy_retry_limit()
+    if registration_job_id is None:
+        registration_job_id = job_id
     for attempt in range(retry_limit + 1):
         try:
-            return acquire_proxy(
-                job_id=job_id,
-                batch_id=batch_id,
-                batch_size=batch_size,
-                batch_workers=batch_workers,
-                progress_callback=progress_callback,
-            )
+            acquire_kwargs = {
+                "job_id": job_id,
+                "batch_id": batch_id,
+                "batch_size": batch_size,
+                "batch_workers": batch_workers,
+                "progress_callback": progress_callback,
+            }
+            correlation = {
+                "account_id": account_id,
+                "purpose": purpose,
+                "operation_task_id": operation_task_id,
+                "operation_run_id": operation_run_id,
+                "registration_job_id": registration_job_id,
+                "route_attempt_no": route_attempt_no,
+            }
+            acquire_kwargs.update({
+                key: value for key, value in correlation.items()
+                if value is not None
+            })
+            return acquire_proxy(**acquire_kwargs)
         except Exception as exc:
             error_text = f"{type(exc).__name__}: {exc}"[:300]
             if attempt >= retry_limit or not _is_retryable_registration_proxy_acquisition_error(exc):
@@ -1093,6 +1170,15 @@ def _run_one_job(job_id: int, log_file: str) -> None:
         _deactivate_job(job_id)
         return
     _ensure_registration_run_context(db.get_job(job_id) or current)
+    proxy_correlation = _registration_proxy_correlation(job_id, db.get_job(job_id) or current)
+    try:
+        initial_route_attempt_no = max(1, int(current.get("route_attempt_no") or 1))
+    except (TypeError, ValueError):
+        initial_route_attempt_no = 1
+    proxy_correlation.update({
+        "registration_job_id": job_id,
+        "route_attempt_no": initial_route_attempt_no,
+    })
     db.update_job_progress(job_id, "network", state="running", detail="正在申请或分配网络线路")
 
     email: str | None = None
@@ -1143,6 +1229,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     detail=detail,
                 ),
                 log_logger=log_logger,
+                **proxy_correlation,
             )
             _bind_proxy_lease(proxy_lease)
             db.update_job_progress(job_id, "email", state="running", detail="正在领取或复用注册邮箱")
@@ -1241,6 +1328,8 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 if retry_delay:
                     time.sleep(retry_delay)
                 check_stop_requested()
+                retry_proxy_correlation = dict(proxy_correlation)
+                retry_proxy_correlation["route_attempt_no"] = initial_route_attempt_no + retry_attempt
                 proxy_lease = _acquire_registration_proxy_with_retries(
                     acquire_proxy=acquire_registration_proxy,
                     job_id=job_id,
@@ -1256,6 +1345,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     ),
                     log_logger=log_logger,
                     retry_kind="proxy_rotation_acquisition",
+                    **retry_proxy_correlation,
                 )
                 _bind_proxy_lease(proxy_lease)
                 db.update_job_progress(
