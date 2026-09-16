@@ -1015,17 +1015,6 @@ def _handle_native_account_completion(context: task_gateway.OperationHandlerCont
 
 def _handle_native_registration_resume(context: task_gateway.OperationHandlerContext) -> task_gateway.OperationResult:
     data = _native_task_data(context)
-    remote_state = str(
-        data.get("remote_account_state") or data.get("registration_remote_account_state") or ""
-    ).strip().lower()
-    if remote_state in {"request_unknown", "unknown", "pending_confirmation"}:
-        return _finish_native_context(
-            context,
-            task_gateway.OperationResult.request_unknown(
-                "注册远端账号状态待核验，禁止盲目继续注册",
-                {"remote_account_state": remote_state},
-            ),
-        )
     source_job_id = int(data.get("source_job_id") or 0)
     if not source_job_id:
         return _finish_native_context(
@@ -1072,7 +1061,10 @@ def _handle_native_registration_resume(context: task_gateway.OperationHandlerCon
 def _retry_native_runtime_task(task: Mapping[str, Any]) -> dict[str, Any]:
     if str(task.get("source_system") or "") != _RUNTIME_SOURCE_SYSTEM:
         return {"accepted": False, "busy": False, "error": "任务来源不属于 WebUI runtime"}
-    if task_gateway.operation_requires_reconciliation(task):
+    if (
+        str(task.get("task_type") or "").strip().lower() != "registration_resume"
+        and task_gateway.operation_requires_reconciliation(task)
+    ):
         return {
             "accepted": False,
             "busy": False,

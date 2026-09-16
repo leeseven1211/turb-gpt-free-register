@@ -449,6 +449,70 @@ class WebUIRuntimeTests(unittest.TestCase):
         self.assertEqual("registration_resume", submit.call_args.kwargs["task_type"])
         self.assertEqual(836, submit.call_args.kwargs["data"]["source_job_id"])
 
+    def test_registration_resume_continues_when_remote_state_is_unknown(self):
+        class FakeContext:
+            run = {
+                "data": {
+                    "source_job_id": 836,
+                    "remote_account_state": "request_unknown",
+                },
+                "trigger": "manual_account_completion",
+                "log_file": "",
+            }
+
+            def __init__(self):
+                self.finished = False
+                self.last_result = None
+
+            def report(self, **_kwargs):
+                return {}
+
+            def finish(self, result):
+                self.finished = True
+                self.last_result = result
+                return result.as_dict()
+
+        context = FakeContext()
+        with patch(
+            "core.registration_service.retry_job",
+            return_value={
+                "ok": True,
+                "created": True,
+                "message": "已继续原注册任务",
+                "job": {"id": 861},
+            },
+        ) as retry_job:
+            result = runtime._handle_native_registration_resume(context)
+
+        self.assertTrue(context.finished)
+        self.assertEqual("success", result.status)
+        retry_job.assert_called_once_with(836)
+
+    def test_registration_resume_retry_allows_unknown_attempt(self):
+        task = {
+            "id": 901,
+            "task_type": "registration_resume",
+            "source_system": "webui_runtime",
+            "status": "attention_required",
+            "result_summary": {"outcome": "request_unknown", "reconcile_required": True},
+            "next_actions": [{"action": "reconcile"}],
+        }
+        with (
+            patch.object(runtime.task_gateway, "operation_requires_reconciliation", return_value=True),
+            patch.object(runtime.operation_task_store, "retry_runtime_task", return_value={"id": 902}) as retry,
+            patch.object(runtime.task_gateway, "notify_dispatch") as notify,
+        ):
+            result = runtime._retry_native_runtime_task(task)
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual(902, result["run_id"])
+        retry.assert_called_once_with(
+            901,
+            trigger="manual_retry",
+            data={"retry_action": "manual_retry"},
+        )
+        notify.assert_called_once()
+
     def test_old_refresh_plan_is_stopped_when_switch_is_now_off(self):
         account = {
             "id": 591,

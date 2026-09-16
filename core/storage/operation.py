@@ -3554,13 +3554,14 @@ def retry_runtime_task(task_id: int, *, trigger: str = "manual_retry", data: dic
         intent = _remote_write_checkpoint(previous_run.get("data"))
         receipt = str(intent.get("receipt_state") or intent.get("state") or "started")
         summary = _decode(previous_run.get("result_summary")) or {}
-        if (intent and receipt != "rejected") or (
+        allow_registration_resume = str(task.get("task_type") or "").strip().lower() == "registration_resume"
+        if not allow_registration_resume and ((intent and receipt != "rejected") or (
             isinstance(summary, dict)
             and (summary.get("outcome") == "request_unknown" or summary.get("reconcile_required"))
-        ):
+        )):
             # Guard the storage boundary, not only the HTTP route.  A generic
             # retry cannot establish whether a remote write already happened;
-            # reconciliation must use the service's explicit follow-up path.
+            # registration resume is the explicit operator-authorized exception.
             raise ValueError("远端写请求结果需先核验，禁止直接重试原操作")
         previous_data = _decode(previous_run.get("data"))
         if isinstance(previous_data, dict):

@@ -257,6 +257,26 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
             task["next_actions"],
         )
 
+    def test_registration_resume_retry_can_override_unknown_fence(self):
+        task = operation.create_runtime_task(
+            task_type="registration_resume",
+            account_id=None,
+            email="registration-resume@example.test",
+            source_system="webui_runtime",
+            source_id="registration-resume-unknown",
+        )
+        operation.finish_run(
+            int(task["run"]["id"]),
+            status="attention_required",
+            result_summary={"outcome": "request_unknown", "reconcile_required": True},
+        )
+
+        retry = operation.retry_runtime_task(int(task["id"]), trigger="manual_retry")
+
+        self.assertEqual(2, retry["run_no"])
+        self.assertEqual(int(task["id"]), retry["task_id"])
+        self.assertEqual("queued", (operation.get_task(int(task["id"])) or {})["status"])
+
     def test_stale_execution_or_lease_cannot_overwrite_current_run(self):
         account_id = self._runtime_account("fenced@example.test")
         task = operation.create_runtime_task(
