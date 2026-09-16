@@ -277,7 +277,7 @@ console.log('ok');
         self.assertNotIn('id="codexFilterV2"', html)
         self.assertNotIn('id="accountsFilterV2"', html)
         self.assertIn('id="outlookToolbarV2"', html)
-        self.assertEqual(html.count('data-column-filter="'), 41)
+        self.assertEqual(html.count('data-column-filter="'), 42)
         self.assertIn('class="column-filter-trigger"', html)
         self.assertIn('class="column-filter-search"', html)
         self.assertIn('data-column-filter-options', html)
@@ -296,6 +296,8 @@ console.log('ok');
         self.assertNotIn('data-column-filter="accountNoteFilterV2"', html)
         self.assertNotIn('>备注</th>', html)
         self.assertIn('data-column-filter="codexStatusFilterV2"', html)
+        self.assertIn('data-column-filter="codexSub2apiIdFilterV2"', html)
+        self.assertIn("sub2api_id", html)
         self.assertIn('data-column-filter="outlookStatusFilterV2"', html)
         self.assertNotIn('id="configOverviewV2"', html)
         self.assertIn("activateTab(localStorage.getItem('gpt_console_active_tab') || 'overview', false)", html)
@@ -665,10 +667,14 @@ console.log('ok');
             "email": "b@example.com", "account_id": "acc-b", "access_token": "b",
             "expired": "2026-09-30T00:00:00Z",
         })
+        record_store.insert_row(record_store.ACCOUNTS, {
+            "email": "b@example.com",
+            "extra_json": '{"sub2api_account_id": 77}',
+        })
         second = record_store.get_row_by(record_store.CODEX_CREDENTIALS, "filename", "codex-b@example.com-plus.json")
         record_store.patch_row(record_store.CODEX_CREDENTIALS, second["id"], {"exported_count": 2})
         response = self.client.get(
-            "/api/codex?paged=1&page=1&page_size=20&plan=plus&status=exported&account_id=acc-b&expired_date=2026-09-30",
+            "/api/codex?paged=1&page=1&page_size=20&plan=plus&status=exported&account_id=acc-b&sub2api_id=77&expired_date=2026-09-30",
             headers=self.headers,
         )
         payload = response.get_json()

@@ -228,7 +228,7 @@
         </div>
       </div>
       <div class="toolbar" style="padding-top:10px;padding-bottom:10px;">
-        <div class="search"><input id="qCodex" placeholder="搜索邮箱、plan、account_id…"></div>
+        <div class="search"><input id="qCodex" placeholder="搜索邮箱、plan、account_id、Sub2API ID…"></div>
         <div class="buttons">
           <span class="muted" id="codexSelectedHint" style="font-size:12px;align-self:center;margin-right:4px;">已选 0</span>
           <button class="btn primary" id="btnCodexDownloadBulk" disabled title="把选中的多个本地凭证打包成一个 JSON 文件下载（备份/迁移用，CPA 不能直接读，需先解包）">批量下载本地</button>
@@ -238,10 +238,10 @@
       </div>
       <div class="table-wrap">
         <table class="codex-table">
-          <colgroup><col class="col-check"><col class="col-email"><col class="col-plan"><col class="col-status"><col class="col-account"><col class="col-time"><col class="col-expire"><col class="col-actions"></colgroup>
+          <colgroup><col class="col-check"><col class="col-email"><col class="col-plan"><col class="col-status"><col class="col-account"><col class="col-sub2api-id"><col class="col-time"><col class="col-expire"><col class="col-actions"></colgroup>
           <thead><tr>
             <th><input type="checkbox" id="codexSelectAll" title="全选/取消全选当前页"></th>
-            <th>邮箱</th><th>Plan</th><th>状态</th><th>OAuth 远端</th><th>Account ID</th><th>更新时间</th><th>过期时间</th><th>操作</th>
+            <th>邮箱</th><th>Plan</th><th>状态</th><th>OAuth 远端</th><th>Account ID</th><th>Sub2API ID</th><th>更新时间</th><th>过期时间</th><th>操作</th>
           </tr></thead>
           <tbody id="codexBody"></tbody>
         </table>

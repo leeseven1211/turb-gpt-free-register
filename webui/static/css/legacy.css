@@ -117,6 +117,7 @@
     .col-small { width: 78px; }
     .col-plan { width: 82px; }
     .col-account { width: 180px; }
+    .codex-table .col-sub2api-id { width: 110px; font-variant-numeric: tabular-nums; }
     .col-time { width: 168px; }
     .col-expire { width: 168px; }
     .col-error { width: 320px; }

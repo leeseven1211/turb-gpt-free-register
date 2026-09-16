@@ -26,6 +26,7 @@ async function loadCodex() {
     params.set('oauth_status', document.getElementById('codexOauthFilterV2')?.value || '');
     params.set('account_id', document.getElementById('codexAccountFilterV2')?.value || '');
     params.set('expired_date', document.getElementById('codexExpiredFilterV2')?.value || '');
+    params.set('sub2api_id', document.getElementById('codexSub2apiIdFilterV2')?.value || '');
     const r = await api(`/api/codex?${params.toString()}`);
     const facets = r.facets || {};
     syncFacetSelect('codexPlanFilterV2', facets.plan, {group:'plan'});
@@ -38,7 +39,7 @@ async function loadCodex() {
     const st = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
     renderCodex();
   } catch(e) {
-    if (!CODEX.length) $('#codexBodyV2').innerHTML = renderTableStateRow(9, '授权凭证加载失败', '请检查服务状态后刷新列表。', 'error');
+    if (!CODEX.length) $('#codexBodyV2').innerHTML = renderTableStateRow(10, '授权凭证加载失败', '请检查服务状态后刷新列表。', 'error');
     showToast('加载 Codex 列表失败: ' + e.message);
   }
   finally {
@@ -92,6 +93,7 @@ function _codexOauthBadge(r) {
     remaining = seconds < 0 ? `已过期 ${days}天${hours}小时` : `剩余 ${days}天${hours}小时`;
   }
   const details = [remoteHttpStatus ? `Sub2API HTTP ${remoteHttpStatus}` : '', r.oauth_expires_at ? `过期：${r.oauth_expires_at}` : '', remaining, r.oauth_refreshable ? '存在 refresh_token，可尝试自动刷新' : '缺少 refresh_token', Number(r.sub2_uploaded_count || 0) > 0 ? '已纳入 sub2 自动同步' : '未记录 sub2 自动同步', r.oauth_refresh_error ? `最近刷新失败：${r.oauth_refresh_error}` : '', r.sub2_sync_error ? `sub2 同步失败：${r.sub2_sync_error}` : ''].filter(Boolean).join('；');
+  if (status === 'deactivated') return `<span class="pill status-failed" title="${esc(details || '关联账号已停用，OAuth 已失效')}">账号停用</span>`;
   if (remoteHttpStatus === 401) return `<span class="pill status-failed" title="${esc(details)}">401 失效</span>`;
   if (r.oauth_reauth_required) return `<span class="pill status-failed" title="${esc(details)}">需重授权</span>`;
   if (status === 'valid') return `<span class="pill status-success" title="${esc(details)}">有效</span>`;
@@ -155,6 +157,7 @@ function renderCodex() {
       <td class="col-status">${_codexStatusBadge(r)}</td>
       <td class="col-status">${_codexOauthBadge(r)}</td>
       <td class="col-account" title="${esc(r.account_id || '-')}">${esc(r.account_id || '-')}</td>
+      <td class="col-sub2api-id" title="${esc(r.sub2api_account_id ?? '-')}">${esc(r.sub2api_account_id ?? '-')}</td>
       <td class="col-time" title="${esc(r.mtime || '-')}">${esc(r.mtime || '-')}</td>
       <td class="col-time" title="${esc(r.expired || '-')}">${esc(r.expired || '-')}</td>
       <td class="col-actions">
@@ -169,7 +172,7 @@ function renderCodex() {
         </div>
       </td>
     </tr>`;
-  }).join('') || renderTableStateRow(9, '暂无授权凭证', '调整筛选条件，或从账号页发起 Codex 授权。');
+  }).join('') || renderTableStateRow(10, '暂无授权凭证', '调整筛选条件，或从账号页发起 Codex 授权。');
   syncCodexSelectAllUi(rows);
   const summary = $('#codexPageSummary');
   if (summary) summary.textContent = `${total || 0} 个凭证 · 当前页 ${rows.length} 条`;
@@ -517,6 +520,7 @@ async function codexDeleteBulk() {
   }, 250));
   const codexTextReload = debounce(() => { PAGERS.codex.page = 1; loadCodex(); }, 250);
   $('#codexAccountFilterV2')?.addEventListener('input', codexTextReload);
+  $('#codexSub2apiIdFilterV2')?.addEventListener('input', codexTextReload);
   ['codexPlanFilterV2','codexStatusFilterV2','codexOauthFilterV2','dateFromCodexV2','dateToCodexV2','codexExpiredFilterV2'].forEach(id => {
     document.getElementById(id)?.addEventListener('change', () => { CODEX_SELECTED.clear(); PAGERS.codex.page = 1; loadCodex(); });
   });
@@ -538,7 +542,7 @@ async function codexDeleteBulk() {
   bind('btnCodexArchiveBulkV2', codexArchiveSelected);
   bind('btnCodexDeleteBulkV2', codexDeleteBulk);
   bind('btnResetCodexFiltersV2', () => {
-    ['qCodexV2','codexPlanFilterV2','codexStatusFilterV2','codexOauthFilterV2','codexAccountFilterV2','dateFromCodexV2','dateToCodexV2','codexExpiredFilterV2'].forEach(id => { const el=document.getElementById(id); if (el) el.value=''; });
+    ['qCodexV2','codexPlanFilterV2','codexStatusFilterV2','codexOauthFilterV2','codexAccountFilterV2','codexSub2apiIdFilterV2','dateFromCodexV2','dateToCodexV2','codexExpiredFilterV2'].forEach(id => { const el=document.getElementById(id); if (el) el.value=''; });
     CODEX_SHOW_ARCHIVED = false; CODEX_SELECTED.clear(); PAGERS.codex.page = 1; refreshColumnFilterStates(); loadCodex();
   });
   document.addEventListener('click', (e) => {

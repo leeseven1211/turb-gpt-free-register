@@ -88,6 +88,12 @@ def create_accounts_blueprint(context: WebUIContext):
         """按 Codex 凭证文件名上传到 sub2api。"""
         import json as _json
 
+        row = next((
+            item for item in db.list_codex_accounts(archived="all")
+            if str(item.get("filename") or "") == str(filename or "")
+        ), None)
+        if row and str(row.get("oauth_account_status") or "").strip().lower() == "deactivated":
+            raise RuntimeError("关联账号已停用，禁止上传 OAuth 凭证")
         text, actual_filename = db.read_codex_credential(filename)
         try:
             auth_json = _json.loads(text)

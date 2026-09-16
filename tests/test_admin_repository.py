@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import json
 import unittest
 
 from core import admin_repository as repo
@@ -159,6 +160,54 @@ class AdminRepositoryTests(PostgresTestCase):
         self.assertEqual(result["summary"], {"total": 1, "exported": 0, "pending": 1})
         self.assertNotIn("content", result["accounts"][0])
         self.assertEqual(result["accounts"][0]["access_token_preview"], "已保存")
+
+    def test_codex_list_shows_deactivated_account_over_token_expiry(self):
+        account_id = rs.insert_row(rs.ACCOUNTS, {
+            "email": "dead-list@example.test",
+            "account_status": "deactivated",
+            "account_status_reason": "account_deactivated",
+        })
+        db.save_codex_credential_record(
+            "codex-dead-list@example.test-free.json",
+            {
+                "email": "dead-list@example.test",
+                "type": "codex",
+                "access_token": "access-token",
+                "refresh_token": "refresh-token",
+                "expired": "2099-01-01T00:00:00Z",
+            },
+        )
+
+        result = repo.list_codex(
+            repo.PageRequest(page=1, page_size=20, filters={"archived": "0"})
+        )
+
+        item = next(row for row in result["accounts"] if row["email"] == "dead-list@example.test")
+        self.assertEqual("deactivated", item["oauth_status"])
+        self.assertTrue(item["oauth_reauth_required"])
+
+    def test_codex_list_exposes_and_filters_sub2api_id_from_account_metadata(self):
+        db.save_codex_credential_record(
+            "codex-user2.json",
+            {"email": "user2@example.test", "type": "codex", "access_token": "secret-token-2"},
+        )
+        rs.patch_row(
+            rs.ACCOUNTS,
+            self.account_ids[1],
+            {"extra_json": json.dumps({"sub2api_account_id": 77})},
+        )
+        rs.patch_row(
+            rs.ACCOUNTS,
+            self.account_ids[2],
+            {"extra_json": json.dumps({"sub2api_account_id": 145})},
+        )
+
+        listing = repo.list_codex(
+            repo.PageRequest(page=1, page_size=20, filters={"archived": "0", "sub2api_id": "77"})
+        )
+
+        self.assertEqual(listing["total"], 1)
+        self.assertEqual(listing["accounts"][0]["sub2api_account_id"], 77)
 
     def test_revision_changes_when_state_changes_inside_same_second(self):
         before_accounts = repo.list_account_statuses(repo.PageRequest(page=1, page_size=20))

@@ -134,6 +134,20 @@ class CodexOauthMetadataTests(unittest.TestCase):
         self.assertEqual(1, result["started"])
         enqueue.assert_called_once_with("codex-due.json", trigger="codex_token_refresh_scheduled")
 
+    def test_refresh_rejects_deactivated_account_projection(self):
+        row = {
+            "filename": "codex-dead.json",
+            "email": "dead@example.com",
+            "oauth_status": "deactivated",
+            "oauth_account_status": "deactivated",
+            "oauth_refreshable": True,
+        }
+        with patch.object(service.db, "list_codex_accounts", return_value=[row]):
+            result = service.enqueue_refresh("codex-dead.json")
+
+        self.assertFalse(result["accepted"])
+        self.assertEqual("account_deactivated", result["error_code"])
+
 
 class CodexOauthRefreshApiTests(PostgresTestCase):
     def setUp(self):
@@ -197,6 +211,27 @@ class CodexOauthRefreshApiTests(PostgresTestCase):
         item = listing["accounts"][0]
         self.assertEqual("valid", item["oauth_status"])
         self.assertFalse(item["oauth_reauth_required"])
+
+    def test_oauth_save_cannot_clear_deactivated_account_projection(self):
+        record_store.insert_row(record_store.ACCOUNTS, {
+            "email": "dead-save@example.com",
+            "account_status": "deactivated",
+            "account_status_reason": "account_deactivated",
+        })
+        filename = "codex-dead-save@example.com-free.json"
+
+        db.save_codex_credential_record(filename, {
+            "email": "dead-save@example.com",
+            "type": "codex",
+            "access_token": "new-access",
+            "refresh_token": "new-refresh",
+            "expired": "2099-01-01T00:00:00Z",
+        })
+
+        stored = record_store.get_row_by(record_store.CODEX_CREDENTIALS, "filename", filename)
+        self.assertEqual("deactivated", stored["oauth_status"])
+        self.assertEqual("deactivated", stored["oauth_account_status"])
+        self.assertTrue(stored["oauth_reauth_required"])
 
     def test_sub2_upload_tracking_increments_after_refresh(self):
         filename = "codex-count@example.com-free.json"

@@ -231,10 +231,42 @@ class TokenRefreshServiceTests(unittest.TestCase):
 
 
 class AccountStatusTests(PostgresTestCase):
+    def test_mark_account_deactivated_propagates_to_codex_credential(self):
+        account_id = self.seed(record_store.ACCOUNTS, [{
+            "email": "dead-codex@example.com",
+            "codex_status": "success",
+        }])[0]
+        webui_app.db.save_codex_credential_record(
+            "codex-dead-codex@example.com-free.json",
+            {
+                "email": "dead-codex@example.com",
+                "type": "codex",
+                "access_token": "access-token",
+                "refresh_token": "refresh-token",
+                "expired": "2099-01-01T00:00:00Z",
+            },
+        )
+
+        self.assertTrue(webui_app.db.mark_account_deactivated(
+            account_id,
+            reason="account_deactivated",
+            source="account_setup",
+        ))
+
+        credential = record_store.get_row_by(
+            record_store.CODEX_CREDENTIALS,
+            "filename",
+            "codex-dead-codex@example.com-free.json",
+        )
+        self.assertEqual("deactivated", credential["oauth_status"])
+        self.assertEqual("deactivated", credential["oauth_account_status"])
+        self.assertTrue(credential["oauth_reauth_required"])
+
     def test_mark_account_deactivated_updates_status_and_source(self):
         account_id = self.seed(record_store.ACCOUNTS, [{
             "email": "dead@example.com",
             "codex_status": "skipped",
+            "codex_credential_state": "valid",
         }])[0]
 
         self.assertTrue(webui_app.db.mark_account_deactivated(
@@ -246,8 +278,39 @@ class AccountStatusTests(PostgresTestCase):
         row = webui_app.db.get_account(account_id)
         self.assertEqual("deactivated", row["account_status"])
         self.assertEqual("deactivated", row["codex_status"])
+        self.assertEqual("deactivated", row["codex_credential_state"])
         self.assertEqual("account_deactivated", row["account_status_reason"])
         self.assertEqual("account_setup", row["account_status_source"])
+
+    def test_deactivated_liveness_propagates_to_codex_credential(self):
+        account_id = self.seed(record_store.ACCOUNTS, [{
+            "email": "dead-live-codex@example.com",
+            "codex_status": "success",
+        }])[0]
+        webui_app.db.save_codex_credential_record(
+            "codex-dead-live-codex@example.com-free.json",
+            {
+                "email": "dead-live-codex@example.com",
+                "type": "codex",
+                "access_token": "access-token",
+                "refresh_token": "refresh-token",
+                "expired": "2099-01-01T00:00:00Z",
+            },
+        )
+
+        self.assertTrue(webui_app.db.update_account_liveness(account_id, {
+            "ok": False,
+            "status": "deactivated",
+            "error": "account_deactivated",
+        }))
+
+        credential = record_store.get_row_by(
+            record_store.CODEX_CREDENTIALS,
+            "filename",
+            "codex-dead-live-codex@example.com-free.json",
+        )
+        self.assertEqual("deactivated", credential["oauth_status"])
+        self.assertEqual("deactivated", credential["oauth_account_status"])
 
     def test_liveness_persists_only_safe_auth_fingerprint_summary(self):
         with tempfile.TemporaryDirectory() as tempdir:
