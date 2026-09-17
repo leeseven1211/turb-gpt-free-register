@@ -1031,13 +1031,23 @@ def _stage_claim_guard(prefix: str, *, require_alive: bool = False) -> tuple[str
     now = datetime.now()
     queue_before = (now - timedelta(seconds=_PLAN_CHECK_QUEUE_STALE_SECONDS)).isoformat(timespec="seconds")
     run_before = (now - timedelta(seconds=_PLAN_CHECK_STALE_SECONDS)).isoformat(timespec="seconds")
-    status = f'"{prefix}_status"'
+    status_key = f"{prefix}_status"
+    # Existing stages use promoted columns; newer account stages are kept in
+    # the JSONB projection. Build the guard against the actual storage shape.
+    if status_key in record_store.ACCOUNTS.promoted:
+        status = postgres_store.quote_identifier(status_key)
+        queued_at = postgres_store.quote_identifier(f"{prefix}_queued_at")
+        started_at = postgres_store.quote_identifier(f"{prefix}_started_at")
+    else:
+        status = f"data->>'{status_key}'"
+        queued_at = f"data->>'{prefix}_queued_at'"
+        started_at = f"data->>'{prefix}_started_at'"
     guard = (
         f"(COALESCE({status}, '') NOT IN ('queued', 'running')"
-        f" OR ({status} = 'queued' AND (COALESCE(data->>'{prefix}_queued_at', '') !~ '^[0-9]{{4}}-'"
-        f"      OR data->>'{prefix}_queued_at' < %s))"
-        f" OR ({status} = 'running' AND (COALESCE(data->>'{prefix}_started_at', '') !~ '^[0-9]{{4}}-'"
-        f"      OR data->>'{prefix}_started_at' < %s)))"
+        f" OR ({status} = 'queued' AND (COALESCE({queued_at}, '') !~ '^[0-9]{{4}}-'"
+        f"      OR {queued_at} < %s))"
+        f" OR ({status} = 'running' AND (COALESCE({started_at}, '') !~ '^[0-9]{{4}}-'"
+        f"      OR {started_at} < %s)))"
     )
     params = [queue_before, run_before]
     if require_alive:
@@ -1055,10 +1065,16 @@ def _claim_account_stage(acc_id: int, prefix: str, changes: dict, *, require_ali
 
 def _mark_account_stage_running(acc_id: int, prefix: str, changes: dict) -> bool:
     """仅当该阶段确实处于 queued/running 时才置为 running。"""
+    status_key = f"{prefix}_status"
+    status = (
+        postgres_store.quote_identifier(status_key)
+        if status_key in record_store.ACCOUNTS.promoted
+        else f"data->>'{status_key}'"
+    )
     return record_store.claim_row(
         record_store.ACCOUNTS, int(acc_id),
         changes=changes,
-        guard=f"COALESCE(\"{prefix}_status\", '') IN ('queued', 'running')",
+        guard=f"COALESCE({status}, '') IN ('queued', 'running')",
     )
 
 
@@ -3972,6 +3988,7 @@ def sync_icloud_hide_aliases(aliases: list[dict], account_id: str, *, full_snaps
                     "account_id": account_key,
                     "anonymous_id": str(raw.get("anonymousId") or raw.get("anonymous_id") or "").strip(),
                     "label": str(raw.get("label") or "").strip(),
+                    "forward_to_email": str(raw.get("forwardToEmail") or raw.get("forward_to_email") or "").strip(),
                     "remote_created_at": str(raw.get("createdAt") or raw.get("created_at") or "").strip(),
                     "remote_active": active,
                     "synced_at": now,
@@ -3988,6 +4005,7 @@ def sync_icloud_hide_aliases(aliases: list[dict], account_id: str, *, full_snaps
                 "account_id": account_key,
                 "anonymous_id": str(raw.get("anonymousId") or raw.get("anonymous_id") or "").strip(),
                 "label": str(raw.get("label") or "").strip(),
+                "forward_to_email": str(raw.get("forwardToEmail") or raw.get("forward_to_email") or "").strip(),
                 "remote_created_at": str(raw.get("createdAt") or raw.get("created_at") or "").strip(),
                 "remote_active": active,
                 "synced_at": now,

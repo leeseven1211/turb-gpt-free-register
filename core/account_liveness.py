@@ -6,6 +6,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlparse
 
 from config import openai_protocol as _protocol_cfg
 from core.session import BrowserSession
@@ -58,11 +59,166 @@ def _warm_protocol_login_context(session: BrowserSession) -> None:
         human_delay("navigate")
 
 
+def _clear_optional_bootstrap_circuit(session: BrowserSession) -> None:
+    """Clear a best-effort bootstrap circuit without replacing the cookie jar."""
+    reset = getattr(session, "reset_circuit_breaker", None)
+    if callable(reset):
+        reset()
+        return
+    if getattr(session, "blocked_until", 0.0):
+        session.blocked_until = 0.0
+        session.blocked_reason = ""
+
+
 def _warm_authenticated_session(session: BrowserSession, access_token: str) -> None:
-    """Warm the existing authenticated HTTP session before Recent Login."""
+    """Warm the authenticated HTTP session; optional failures stay non-fatal."""
+    if not str(access_token or "").strip():
+        return
     from core.chatgpt_bootstrap import authenticated_bootstrap
 
-    authenticated_bootstrap(session, access_token, strict=False)
+    try:
+        authenticated_bootstrap(session, access_token, strict=False)
+    except Exception as exc:
+        logger.warning(
+            "[Recent Login] 登录态预热失败，继续正式认证链：%s: %s",
+            type(exc).__name__,
+            str(exc)[:180],
+        )
+    finally:
+        _clear_optional_bootstrap_circuit(session)
+
+
+def _session_identity_payload(session: BrowserSession) -> dict | None:
+    """Carry the stable account identity into a fresh cookie session."""
+    device_id = str(getattr(session, "device_id", "") or "").strip()
+    browser_profile = getattr(session, "browser_profile", None)
+    if not device_id or not isinstance(browser_profile, dict):
+        return None
+    return {
+        "device_id": device_id,
+        "identity_id": getattr(session, "protocol_identity_id", None),
+        "profile_ref": getattr(session, "protocol_profile_ref", None),
+        "profile_version": getattr(session, "protocol_profile_version", None),
+        "browser_profile": dict(browser_profile),
+    }
+
+
+def _complete_recent_login_on_session(
+    session: BrowserSession,
+    email: str,
+    final_url: str,
+    otp_after_ts: float,
+    *,
+    email_source: str | None,
+) -> tuple[dict, str]:
+    """Finish a fresh protocol login after the authorize navigation."""
+    from core.account_credentials import get_account_login_credentials
+    from core.protocol_v2_liveness import (
+        _complete_mfa,
+        _extract_continue_url,
+        _follow_and_fetch,
+        _is_email_otp,
+        _is_mfa,
+        _password_verify,
+    )
+
+    parsed = urlparse(str(final_url or ""))
+    final_host = (parsed.hostname or "").lower()
+    final_path = parsed.path.rstrip("/").lower() or "/"
+    password, totp_secret = get_account_login_credentials(str(email or "").strip())
+
+    if final_host == "auth.openai.com" and final_path == "/email-verification":
+        validate_result = _validate_with_retry(
+            session,
+            email,
+            otp_after_ts,
+            email_source=email_source,
+        )
+        continue_url = _extract_continue_url(validate_result)
+        if _is_mfa(validate_result, continue_url):
+            if not totp_secret:
+                raise RuntimeError("Recent Login 需要 TOTP，但账号未保存 TOTP 密钥")
+            session_info, _ = _complete_mfa(
+                session,
+                validate_result,
+                continue_url,
+                totp_secret,
+            )
+            return session_info, "email_otp_mfa"
+        return (
+            _follow_and_fetch(
+                session,
+                continue_url,
+                referer="https://auth.openai.com/email-verification",
+            ),
+            "email_otp",
+        )
+
+    if final_host == "auth.openai.com" and final_path.startswith("/mfa-challenge"):
+        if not totp_secret:
+            raise RuntimeError("Recent Login 需要 TOTP，但账号未保存 TOTP 密钥")
+        session_info, _ = _complete_mfa(
+            session,
+            {"continue_url": str(final_url)},
+            str(final_url),
+            totp_secret,
+        )
+        return session_info, "mfa_totp"
+
+    if final_host != "auth.openai.com" or final_path != "/log-in/password":
+        raise RuntimeError(
+            f"Recent Login 落点不受支持：host={final_host or 'unknown'} path={final_path}"
+        )
+    if not password:
+        raise RuntimeError("Recent Login 进入密码页，但账号未保存 OpenAI 登录密码")
+
+    password_result = _password_verify(session, password)
+    continue_url = _extract_continue_url(password_result)
+    if _is_mfa(password_result, continue_url):
+        if not totp_secret:
+            raise RuntimeError("Recent Login 需要 TOTP，但账号未保存 TOTP 密钥")
+        return _complete_mfa(
+            session,
+            password_result,
+            continue_url,
+            totp_secret,
+        )
+    if _is_email_otp(password_result, continue_url):
+        validate_result = _validate_with_retry(
+            session,
+            email,
+            otp_after_ts,
+            email_source=email_source,
+        )
+        email_continue_url = _extract_continue_url(validate_result)
+        if _is_mfa(validate_result, email_continue_url):
+            if not totp_secret:
+                raise RuntimeError("Recent Login 需要 TOTP，但账号未保存 TOTP 密钥")
+            session_info, _ = _complete_mfa(
+                session,
+                validate_result,
+                email_continue_url,
+                totp_secret,
+            )
+            return session_info, "password_email_otp_mfa"
+        return (
+            _follow_and_fetch(
+                session,
+                email_continue_url,
+                referer="https://auth.openai.com/email-verification",
+            ),
+            "password_email_otp",
+        )
+    if continue_url:
+        return (
+            _follow_and_fetch(
+                session,
+                continue_url,
+                referer="https://auth.openai.com/log-in/password",
+            ),
+            "password",
+        )
+    raise RuntimeError("Recent Login 密码验证响应缺少后续认证地址")
 
 
 def perform_recent_login(
@@ -71,40 +227,61 @@ def perform_recent_login(
     *,
     email_source: str | None = None,
     access_token: str | None = None,
+    proxy_override: str | None = None,
 ) -> dict:
-    """Complete the protocol Recent Login flow and return a fresh AT.
+    """Build a fresh cookie session and complete a protocol-only login.
 
-    The account-export helpers contain the already-proven HTTP protocol for
-    CSRF, reauth signin, auth.openai.com OTP validation, and the callback that
-    refreshes the NextAuth session.  Keeping this adapter here lets account
-    operations share that protocol without opening a browser automation path.
+    A new access token is not sufficient for the change-email endpoint: the
+    follow-up request must use the same fresh Cookie Jar that completed the
+    login.  This mirrors the public implementation while retaining this
+    project's stable account identity and durable task boundaries.
     """
-    if access_token:
-        _warm_authenticated_session(session, access_token)
-    from core.account_export import (
-        _exchange_new_token,
-        _follow_reauth,
-        _trigger_reauth,
-        _validate_reauth_otp,
-    )
-
-    otp_after_ts = time.time()
-    authorize_url = _trigger_reauth(session, str(email or "").strip())
-    _follow_reauth(session, authorize_url)
-    otp = wait_for_otp(
-        str(email or "").strip(),
-        after_ts=otp_after_ts,
-        email_source=email_source,
-        force_service=True,
-    )
-    continue_url = _validate_reauth_otp(session, otp)
-    fresh_token = _exchange_new_token(session, continue_url)
-    if not str(fresh_token or "").strip():
-        raise RuntimeError("Recent Login 未获取到新的 access_token")
-    return {
-        "access_token": str(fresh_token).strip(),
-        "reauthenticated": True,
-    }
+    del access_token  # Kept in the signature for compatibility with callers.
+    fresh_session: BrowserSession | None = None
+    try:
+        route_proxy = (
+            getattr(session, "proxy", None)
+            if proxy_override is None
+            else proxy_override
+        )
+        fresh_session, authorize_url = _network_preflight_with_retry(
+            str(email or "").strip(),
+            route_proxy,
+            identity=_session_identity_payload(session),
+        )
+        otp_after_ts = time.time()
+        final_url = follow_authorize(fresh_session, authorize_url)
+        dead_code = detect_account_unusable_text(final_url)
+        if dead_code:
+            raise AccountUnusableError(f"账号已废弃（{dead_code}）", error_code=dead_code)
+        session_info, auth_method = _complete_recent_login_on_session(
+            fresh_session,
+            str(email or "").strip(),
+            str(final_url or ""),
+            otp_after_ts,
+            email_source=email_source,
+        )
+        fresh_token = str((session_info or {}).get("accessToken") or "").strip()
+        if not fresh_token:
+            raise RuntimeError("Recent Login 未获取到新的 access_token")
+        _warm_authenticated_session(fresh_session, fresh_token)
+        try:
+            session.session.close()
+        except Exception:
+            pass
+        return {
+            "access_token": fresh_token,
+            "reauthenticated": True,
+            "auth_method": auth_method,
+            "protocol_session": fresh_session,
+        }
+    except Exception:
+        if fresh_session is not None and fresh_session is not session:
+            try:
+                fresh_session.session.close()
+            except Exception:
+                pass
+        raise
 
 
 def _network_preflight_with_retry(
@@ -186,14 +363,25 @@ def is_checking(email: str) -> bool:
         return key in _RUNNING
 
 
-def _validate_with_retry(session: BrowserSession, email: str, otp_after_ts: float, max_otp_attempts: int = 3) -> dict:
+def _validate_with_retry(
+    session: BrowserSession,
+    email: str,
+    otp_after_ts: float,
+    max_otp_attempts: int = 3,
+    email_source: str | None = None,
+) -> dict:
     current_otp = None
     last_exc: Exception | None = None
     for attempt in range(1, max_otp_attempts + 1):
         try:
             if current_otp is None:
                 logger.info("[查活] 等待登录 OTP：%s（第 %s/%s 次）", email, attempt, max_otp_attempts)
-                current_otp = wait_for_otp(email, after_ts=otp_after_ts)
+                current_otp = wait_for_otp(
+                    email,
+                    after_ts=otp_after_ts,
+                    email_source=email_source,
+                    force_service=bool(email_source),
+                )
             result = validate_email_otp(session, current_otp, sentinel_header=None, so_header=None)
             return result
         except EmailOtpInvalidError as exc:

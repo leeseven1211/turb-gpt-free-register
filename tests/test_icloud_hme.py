@@ -18,7 +18,13 @@ class ICloudHidePoolTests(PostgresTestCase):
 
     def test_sync_claim_and_release_unconsumed(self):
         result = db.sync_icloud_hide_aliases([
-            {"email": "one@example.com", "anonymousId": "anon-1", "label": "One", "active": True},
+            {
+                "email": "one@example.com",
+                "anonymousId": "anon-1",
+                "label": "One",
+                "forwardToEmail": "owner@gmail.com",
+                "active": True,
+            },
             {"email": "off@example.com", "anonymousId": "anon-2", "label": "Off", "active": False},
         ], "acc-1")
         self.assertEqual(result["inserted"], 2)
@@ -28,6 +34,7 @@ class ICloudHidePoolTests(PostgresTestCase):
         claimed = db.claim_next_icloud_hide_email("acc-1")
         self.assertEqual(claimed["email"], "one@example.com")
         self.assertEqual(claimed["status"], "used")
+        self.assertEqual(claimed["forward_to_email"], "owner@gmail.com")
         self.assertTrue(db.release_unconsumed_icloud_hide_email("one@example.com", note="task stopped"))
         self.assertEqual(db.get_icloud_hide_email_by_email("one@example.com")["status"], "available")
 
@@ -112,15 +119,26 @@ class ICloudHMEClientTests(unittest.TestCase):
         self.assertEqual(routing["remote_usable"], 1)
         self.assertEqual(routing["forward_incompatible"], 0)
 
-    def test_forward_imap_keeps_intermediate_gmail_target_usable(self):
+    def test_forward_imap_disables_intermediate_gmail_target(self):
         prepared, routing = client._prepare_imap_aliases(
             [{"email": "alias@icloud.com", "forwardToEmail": "relay@gmail.com", "active": True}],
             inbox_mode="forward_imap",
             forward_imap_email="owner@gmail.com",
         )
-        self.assertTrue(prepared[0]["active"])
-        self.assertEqual(routing["remote_usable"], 1)
-        self.assertEqual(routing["forward_incompatible"], 0)
+        self.assertFalse(prepared[0]["active"])
+        self.assertEqual(routing["remote_usable"], 0)
+        self.assertEqual(routing["forward_incompatible"], 1)
+
+    def test_forward_imap_route_mismatch_is_rejected_before_polling(self):
+        with patch.object(client, "_inbox_mode", return_value="forward_imap"), patch.object(
+            client._email_cfg, "ICLOUD_HME_FORWARD_IMAP_EMAIL", "owner@gmail.com"
+        ), patch.object(
+            client, "get_account_context", return_value=client.ICloudHMEAccount(
+                email="alias@icloud.com", account_id="acc-1", forward_to_email="other@gmail.com"
+            )
+        ):
+            with self.assertRaisesRegex(client.ICloudHMEError, "转发目标与当前 IMAP 收件账号不一致"):
+                client.fetch_latest_otp("alias@icloud.com", max_wait=1)
 
     @patch("core.db.icloud_hide_email_pool_summary_by_account", return_value=[])
     @patch("core.db.icloud_hide_email_pool_summary", return_value={"total": 2})
@@ -217,10 +235,12 @@ class ICloudHMEClientTests(unittest.TestCase):
         self.assertEqual(result["inbox_method"], "imap")
 
     @patch("core.forward_imap_client.fetch_latest_otp", return_value="123456")
+    @patch.object(client, "_validate_forward_route")
     @patch.object(client, "_inbox_mode", return_value="forward_butler")
-    def test_fetch_latest_otp_delegates_to_forward_cache(self, _mode, fetch):
+    def test_fetch_latest_otp_delegates_to_forward_cache(self, _mode, validate_route, fetch):
         result = client.fetch_latest_otp("alias@icloud.com", after_ts=123.0, max_wait=10)
         self.assertEqual(result, "123456")
+        validate_route.assert_called_once_with("alias@icloud.com")
         fetch.assert_called_once()
 
     def setUp(self):

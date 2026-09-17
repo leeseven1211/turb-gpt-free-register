@@ -106,13 +106,23 @@ class EmailChangeProtocol:
 
     def _post(self, session: BrowserSession, path: str, access_token: str, payload: dict) -> dict:
         headers = dict(session.get_chatgpt_headers(referer="https://chatgpt.com/") or {})
+        token = str(access_token or "").strip()
         headers.update({
-            "authorization": f"Bearer {str(access_token or '').strip()}",
+            "authorization": f"Bearer {token}",
             "oai-device-id": str(getattr(session, "device_id", "") or ""),
             "oai-language": str(session.navigator_language() or "en-US"),
             "origin": "https://chatgpt.com",
             "content-type": "application/json",
         })
+        # Modern ChatGPT account endpoints resolve the selected account from
+        # the same JWT-derived header used by plan/quota requests.  Omitting it
+        # can leave a freshly authenticated multi-account session without an
+        # explicit account context and the edge responds with a bare 403.
+        from core.chatgpt_plan import token_claims
+
+        account_id = str(token_claims(token).get("account_id") or "").strip()
+        if account_id:
+            headers["chatgpt-account-id"] = account_id
         response = session.post(
             f"{self._BASE_URL}{path}",
             headers=headers,
@@ -174,6 +184,12 @@ class EmailChangeProtocol:
 
 
 def _is_reauth_required(exc: BaseException) -> bool:
+    # The change-email begin endpoint uses a bare 401 for an expired or stale
+    # authenticated session.  It is safe to recover here because this helper
+    # is only called for the initial begin request, before a new-email write
+    # has been accepted; the verify request never enters this branch.
+    if isinstance(exc, RemoteRequestRejected) and int(getattr(exc, "http_status", 0) or 0) == 401:
+        return True
     error_code = str(getattr(exc, "remote_error_code", "") or "").strip().lower()
     normalized_code = error_code.replace("-", "_").replace(" ", "_")
     if normalized_code in {"reauth_required", "recent_login_required", "step_up_required"}:
@@ -186,6 +202,20 @@ def _is_reauth_required(exc: BaseException) -> bool:
         "recent login required",
         "step_up_required",
     ))
+
+
+def _should_retry_begin_direct(exc: BaseException, session: BrowserSession) -> bool:
+    """Retry only a bare proxy-side 403 after a completed Recent Login.
+
+    A structured application error is authoritative and must not be replayed.
+    The direct retry is also skipped when the current session is already direct.
+    """
+    return (
+        isinstance(exc, RemoteRequestRejected)
+        and int(getattr(exc, "http_status", 0) or 0) == 403
+        and not str(getattr(exc, "remote_error_code", "") or "").strip()
+        and bool(str(getattr(session, "proxy", "") or "").strip())
+    )
 
 
 def _safe_remote_error_detail(exc: BaseException) -> dict[str, Any]:
@@ -285,6 +315,10 @@ def begin_change_with_optional_reauth(
         token = _access_token(recent)
         if not token:
             raise RemoteRequestRejected("Recent Login 未返回新的 access_token")
+        recent_session = recent.get("protocol_session") if isinstance(recent, Mapping) else None
+        if recent_session is None:
+            raise RemoteRequestRejected("Recent Login 未返回新的协议会话")
+        session = recent_session
         after_ts = time.time()
         second_request_id = _remote_request_id(context, "begin-reauth") if context is not None else None
         if context is not None:
@@ -309,7 +343,84 @@ def begin_change_with_optional_reauth(
                         **_safe_remote_error_detail(second_exc),
                     },
                 )
-            raise
+            if not _should_retry_begin_direct(second_exc, session):
+                raise
+
+            if context is not None:
+                context.report(
+                    stage="login_password",
+                    state="running",
+                    message="代理会话被边缘层拒绝，切换直连协议会话重试",
+                )
+            try:
+                direct = perform_recent_login(
+                    session,
+                    email=current_email,
+                    email_source=current_source,
+                    access_token=token,
+                    proxy_override="",
+                )
+            except task_gateway.OperationLeaseLost:
+                raise
+            except Exception as direct_exc:
+                raise RemoteRequestRejected(
+                    f"直连 Recent Login 失败: {type(direct_exc).__name__}"
+                ) from direct_exc
+            token = _access_token(direct)
+            direct_session = (
+                direct.get("protocol_session")
+                if isinstance(direct, Mapping)
+                else None
+            )
+            if not token or direct_session is None:
+                raise RemoteRequestRejected("直连 Recent Login 未返回完整协议会话")
+            session = direct_session
+            after_ts = time.time()
+            direct_request_id = (
+                _remote_request_id(context, "begin-direct")
+                if context is not None
+                else None
+            )
+            if context is not None:
+                context.remote_request_started(
+                    "change_email.begin",
+                    request_id=direct_request_id,
+                    detail={"account_id": int(account_id), "phase": "recent_login_direct"},
+                )
+            try:
+                protocol.begin(session, token, new_email)
+            except task_gateway.OperationLeaseLost:
+                raise
+            except RemoteRequestRejected as direct_exc:
+                if context is not None:
+                    context.remote_request_receipt(
+                        outcome="rejected",
+                        action="change_email.begin",
+                        request_id=direct_request_id,
+                        detail={
+                            "response_observed": True,
+                            "phase": "recent_login_direct",
+                            **_safe_remote_error_detail(direct_exc),
+                        },
+                    )
+                raise
+            except Exception as direct_exc:
+                if context is not None:
+                    context.remote_request_receipt(
+                        outcome="unknown",
+                        action="change_email.begin",
+                        request_id=direct_request_id,
+                        detail={
+                            "response_observed": False,
+                            "phase": "recent_login_direct",
+                            **_safe_remote_error_detail(direct_exc),
+                        },
+                    )
+                    raise RemoteRequestUnknown(
+                        "begin 直连重认证后请求结果待确认"
+                    ) from direct_exc
+                raise
+            second_request_id = direct_request_id
         except Exception as second_exc:
             if context is not None:
                 context.remote_request_receipt(
@@ -504,6 +615,7 @@ def _handle_email_change(context):
                 access_token=token,
                 context=context,
             )
+            session = begin.session
             token = begin.access_token
             remote_accepted = True
             context.report(

@@ -42,6 +42,7 @@ class ICloudHMEAccount:
     account_id: str
     anonymous_id: str = ""
     label: str = ""
+    forward_to_email: str = ""
 
 
 def _cfg_str(name: str, default: str = "") -> str:
@@ -81,9 +82,9 @@ def _prepare_imap_aliases(
 ) -> tuple[list[dict], dict]:
     """按实际收件模式准备 HME 别名。
 
-    ``forward_imap`` 读取的是最终 Gmail 收件箱。iCloud 的直接转发目标可以是
-    一个中转邮箱，只要邮件最终转发到该 Gmail；最终收件箱中的 To 头仍用于
-    精确匹配原始 HME 别名。因此这里不能把“直接目标不是最终邮箱”当成失效。
+    ``forward_imap`` 使用当前配置的 Gmail 凭据读取收件箱，因此 Apple 返回的
+    ``forwardToEmail`` 必须与该 Gmail 完全一致。不同 Apple 账号可以保留在同一
+    池中，但只有路由匹配的别名才允许被领取。
 
     ``sidecar`` 仍拒绝明确转发到外部邮箱，因为 sidecar 只能读取 iCloud IMAP；
     ``forward_butler`` 保持原有的直接目标校验。
@@ -105,10 +106,10 @@ def _prepare_imap_aliases(
         if domain:
             known_domains.add(domain)
         if mode == "forward_imap":
-            # The configured IMAP mailbox is the final inbox. A relay target
-            # is valid here because the final mailbox lookup matches the
-            # original HME address in the forwarded To header.
-            compatible = bool(forward and expected_forward and not _is_icloud_mailbox(forward))
+            # The local IMAP credentials identify one mailbox. Do not claim an
+            # alias whose Apple-side route points at another mailbox; a local
+            # IMAP connection can be healthy while that alias is unreachable.
+            compatible = bool(forward and expected_forward and forward.lower() == expected_forward)
         elif mode == "forward_butler":
             compatible = bool(forward and expected_forward and forward.lower() == expected_forward)
         else:
@@ -379,12 +380,19 @@ def create_address(label: str | None = None, account_id: str | None = None) -> I
     remote = {
         "email": email,
         "label": data.get("label") or create_label,
+        "forwardToEmail": data.get("forwardToEmail") or data.get("forward_to_email") or "",
         "createdAt": data.get("created_at") or "",
         "active": True,
     }
     from core import db
-    db.sync_icloud_hide_aliases([remote], selected, full_snapshot=False)
-    return ICloudHMEAccount(email=email, account_id=selected, label=str(remote["label"]))
+    prepared, _routing = _prepare_imap_aliases([remote])
+    db.sync_icloud_hide_aliases(prepared, selected, full_snapshot=False)
+    return ICloudHMEAccount(
+        email=email,
+        account_id=selected,
+        label=str(remote["label"]),
+        forward_to_email=str(remote.get("forwardToEmail") or ""),
+    )
 
 
 def pick_account() -> ICloudHMEAccount:
@@ -418,6 +426,7 @@ def pick_account() -> ICloudHMEAccount:
         account_id=str(row.get("account_id") or selected),
         anonymous_id=str(row.get("anonymous_id") or ""),
         label=str(row.get("label") or ""),
+        forward_to_email=str(row.get("forward_to_email") or ""),
     )
 
 
@@ -431,7 +440,24 @@ def get_account_context(email: str) -> ICloudHMEAccount | None:
         account_id=str(row.get("account_id") or ""),
         anonymous_id=str(row.get("anonymous_id") or ""),
         label=str(row.get("label") or ""),
+        forward_to_email=str(row.get("forward_to_email") or ""),
     )
+
+
+def _validate_forward_route(email: str) -> None:
+    """Fail before OTP polling when a persisted HME route cannot reach IMAP."""
+    if _inbox_mode() not in {"forward_imap", "forward_butler"}:
+        return
+    context = get_account_context(str(email or "").strip())
+    if context is None:
+        return
+    actual = str(context.forward_to_email or "").strip().lower()
+    expected = _cfg_str("ICLOUD_HME_FORWARD_IMAP_EMAIL").lower()
+    if actual and expected and actual != expected:
+        raise ICloudHMEError(
+            "隐藏邮箱转发目标与当前 IMAP 收件账号不一致；请重新同步 HME 别名，"
+            "或为该 Apple 账号配置对应的转发收件箱"
+        )
 
 
 def release_account(email: str, status: str = "available", note: str | None = None) -> None:
@@ -470,6 +496,7 @@ def fetch_latest_otp(
     settle_seconds: int | None = None,
 ) -> str:
     if _inbox_mode() in {"forward_imap", "forward_butler"}:
+        _validate_forward_route(email)
         from core.forward_imap_client import fetch_latest_otp as fetch_forwarded_otp
         return fetch_forwarded_otp(
             email,

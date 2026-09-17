@@ -35,6 +35,42 @@ class TwofaEnrollmentAuthRequired(RuntimeError):
     status_code = 401
 
 
+def _clear_twofa_session_circuit(
+    session: BrowserSession, *, source: str = "可选预热"
+) -> None:
+    """清理可恢复 2FA 请求留下的会话熔断，保留 Cookie 和设备身份。"""
+    blocked_reason = str(getattr(session, "blocked_reason", "") or "")
+    reset = getattr(session, "reset_circuit_breaker", None)
+    if callable(reset):
+        reset()
+    elif getattr(session, "blocked_until", 0.0):
+        # 兼容当前 BrowserSession 以及测试桩；不重建会话，保留 CF Cookie。
+        session.blocked_until = 0.0
+        session.blocked_reason = ""
+    if blocked_reason:
+        logger.info("[2FA] 已清理%s产生的熔断状态：%s", source, blocked_reason)
+
+
+_RETRYABLE_REAUTH_HINTS = (
+    "403", "408", "425", "429", "500", "502", "503", "504",
+    "proxy", "socks", "timeout", "timed out", "connection", "closed",
+    "reset", "temporarily unavailable", "熔断冷却",
+)
+
+
+def _is_retryable_reauth_error(exc: BaseException) -> bool:
+    """只重试限流、服务端错误和传输故障，不重试普通业务 4xx。"""
+    response = getattr(exc, "response", None)
+    try:
+        status = int(getattr(response, "status_code", 0) or 0)
+    except (TypeError, ValueError):
+        status = 0
+    if status:
+        return status in (403, 408, 425, 429) or status >= 500
+    text = str(exc or "").lower()
+    return any(hint in text for hint in _RETRYABLE_REAUTH_HINTS)
+
+
 def _account_material_line(email: str, row: dict | None = None) -> str:
     """优先输出 Outlook 原始素材；没有素材时退回邮箱地址。"""
     if row:
@@ -224,7 +260,7 @@ def _trigger_reauth(session: BrowserSession, email: str) -> str:
     return auth_url
 
 
-def _follow_reauth(session: BrowserSession, auth_url: str) -> None:
+def _follow_reauth(session: BrowserSession, auth_url: str) -> str:
     """
     步骤3: 跟随 authorize URL 触发邮箱 OTP 发送。
     auth.openai.com 会重定向到 /email-verification 页面，期间发送 OTP 邮件。
@@ -232,7 +268,111 @@ def _follow_reauth(session: BrowserSession, auth_url: str) -> None:
     headers = session.get_auth_navigate_headers(referer="https://chatgpt.com/")
     logger.info("[2FA] 跟随 authorize URL，触发 OTP 发送...")
     resp = session.get(auth_url, headers=headers, allow_redirects=True)
+    raise_for_status = getattr(resp, "raise_for_status", None)
+    if callable(raise_for_status):
+        raise_for_status()
+    elif int(getattr(resp, "status_code", 0) or 0) >= 400:
+        raise RuntimeError(f"reauth authorize 导航失败 status={resp.status_code}")
     logger.info("[2FA] 已到达邮箱验证页面（落点 URL 原值不写日志）")
+    return str(getattr(resp, "url", "") or auth_url)
+
+
+def _trigger_reauth_with_retry(session: BrowserSession, email: str) -> str:
+    """对 CSRF + signin 阶段的临时故障执行有限退避重试。"""
+    from config import twofa as _twofa_cfg
+
+    max_attempts = max(1, min(8, int(
+        getattr(_twofa_cfg, "TWOFA_REAUTH_MAX_ATTEMPTS", 3) or 3
+    )))
+    base_delay = max(0.0, min(60.0, float(
+        getattr(_twofa_cfg, "TWOFA_REAUTH_RETRY_DELAY", 3.0) or 0.0
+    )))
+    for attempt in range(1, max_attempts + 1):
+        try:
+            auth_url = _trigger_reauth(session, email)
+            if attempt > 1:
+                logger.info("[2FA] 重认证发起重试成功：attempt=%s/%s", attempt, max_attempts)
+            return auth_url
+        except Exception as exc:
+            retryable = _is_retryable_reauth_error(exc)
+            if attempt >= max_attempts or not retryable:
+                logger.warning(
+                    "[2FA] 重认证发起失败且不再重试：attempt=%s/%s retryable=%s error=%s: %s",
+                    attempt, max_attempts, retryable, type(exc).__name__, str(exc)[:200],
+                )
+                raise
+            _clear_twofa_session_circuit(session, source="重认证请求")
+            delay = min(120.0, base_delay * (2 ** (attempt - 1)))
+            logger.warning(
+                "[2FA] 重认证发起临时失败：attempt=%s/%s error=%s: %s；%.1fs 后重试",
+                attempt, max_attempts, type(exc).__name__, str(exc)[:200], delay,
+            )
+            if delay > 0:
+                time.sleep(delay)
+    raise RuntimeError("重认证发起重试耗尽")
+
+
+def _warm_auth_document_for_reauth(session: BrowserSession) -> None:
+    """预热 auth.openai.com 顶层文档，给 authorize 链建立域 Cookie 上下文。"""
+    get_headers = getattr(session, "get_auth_navigate_headers", None)
+    request_get = getattr(session, "get", None)
+    if not callable(get_headers) or not callable(request_get):
+        return
+    headers = get_headers(referer="", user_initiated=False)
+    for attempt in range(1, 3):
+        try:
+            resp = request_get(
+                "https://auth.openai.com/log-in",
+                headers=headers,
+                allow_redirects=True,
+            )
+            status = int(getattr(resp, "status_code", 0) or 0)
+            if status < 400:
+                logger.info("[2FA] Auth document 预热完成")
+                return
+            logger.info("[2FA] Auth document 预热返回 HTTP %s，保留响应 Cookie", status)
+        except Exception as exc:
+            logger.debug("[2FA] Auth document 预热异常：%s: %s", type(exc).__name__, str(exc)[:160])
+        _clear_twofa_session_circuit(session, source="Auth document 预热")
+        if attempt < 2:
+            time.sleep(float(attempt))
+    logger.info("[2FA] Auth document 预热未通过，继续正式 authorize 重试链")
+
+
+def _follow_reauth_with_retry(session: BrowserSession, auth_url: str) -> str:
+    """重试跨站 authorize 导航；保留同一会话中的 CF Cookie 和 OAuth 状态。"""
+    from config import twofa as _twofa_cfg
+
+    max_attempts = max(1, min(8, int(
+        getattr(_twofa_cfg, "TWOFA_REAUTH_MAX_ATTEMPTS", 3) or 3
+    )))
+    base_delay = max(0.0, min(60.0, float(
+        getattr(_twofa_cfg, "TWOFA_REAUTH_RETRY_DELAY", 3.0) or 0.0
+    )))
+    _warm_auth_document_for_reauth(session)
+    for attempt in range(1, max_attempts + 1):
+        try:
+            result = _follow_reauth(session, auth_url)
+            if attempt > 1:
+                logger.info("[2FA] authorize 导航重试成功：attempt=%s/%s", attempt, max_attempts)
+            return str(result or auth_url)
+        except Exception as exc:
+            retryable = _is_retryable_reauth_error(exc)
+            if attempt >= max_attempts or not retryable:
+                logger.warning(
+                    "[2FA] authorize 导航失败且不再重试：attempt=%s/%s retryable=%s error=%s: %s",
+                    attempt, max_attempts, retryable, type(exc).__name__, str(exc)[:200],
+                )
+                raise
+            _clear_twofa_session_circuit(session, source="authorize 导航")
+            delay = min(120.0, base_delay * (2 ** (attempt - 1)))
+            logger.warning(
+                "[2FA] authorize 导航临时失败：attempt=%s/%s error=%s: %s；%.1fs 后复用会话重试",
+                attempt, max_attempts, type(exc).__name__, str(exc)[:200], delay,
+            )
+            if delay > 0:
+                time.sleep(delay)
+    raise RuntimeError("authorize 导航重试耗尽")
 
 
 def _validate_reauth_otp(session: BrowserSession, code: str) -> str:
