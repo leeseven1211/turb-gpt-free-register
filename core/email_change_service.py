@@ -104,6 +104,8 @@ class EmailChangeProtocol:
                 raw_code = str(error.get("code") or "").strip()
             elif isinstance(error, str):
                 raw_code = error.strip()
+            if not raw_code and isinstance(payload.get("detail"), dict):
+                raw_code = str(payload["detail"].get("code") or "").strip()
             if not raw_code:
                 raw_code = str(payload.get("code") or "").strip()
         if not raw_code or len(raw_code) > 120:

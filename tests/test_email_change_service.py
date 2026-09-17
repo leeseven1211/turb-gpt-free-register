@@ -242,6 +242,24 @@ class EmailChangeProtocolContractTests(unittest.TestCase):
         self.assertEqual("invalid_email", caught.exception.remote_error_code)
         self.assertNotIn("new-user@example.test", str(caught.exception))
 
+    def test_remote_rejection_reads_nested_detail_code(self):
+        from core.email_change_service import EmailChangeProtocol, RemoteRequestRejected
+
+        session = Mock()
+        session.get_chatgpt_headers.return_value = {}
+        session.device_id = "device-test"
+        session.navigator_language.return_value = "en-US"
+        session.post.return_value = _Response(
+            {"detail": {"message": "Recent login required", "code": "reauth_required"}},
+            status_code=401,
+        )
+
+        with self.assertRaises(RemoteRequestRejected) as caught:
+            EmailChangeProtocol().begin(session, "at-test", "new-user@example.test")
+
+        self.assertEqual(401, caught.exception.http_status)
+        self.assertEqual("reauth_required", caught.exception.remote_error_code)
+
     def test_change_request_includes_account_context_from_access_token(self):
         from core.email_change_service import EmailChangeProtocol
 
