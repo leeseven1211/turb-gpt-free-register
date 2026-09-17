@@ -130,7 +130,10 @@ _RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         "external",
         "外部错误",
         "OpenAI / Codex",
-        ("openai", "chatgpt", "codex", "oauth", "authenticator", "2fa", "/api/auth/session"),
+        (
+            "openai", "chatgpt", "codex", "oauth", "authenticator", "2fa", "/api/auth/session",
+            "/accounts/change_email/",
+        ),
     ),
     (
         "internal.storage",

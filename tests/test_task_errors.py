@@ -54,6 +54,14 @@ class TaskErrorClassificationTests(unittest.TestCase):
         info = classify_task_error("等待 /api/auth/session accessToken 超时")
         self.assertEqual(info["code"], "external.openai")
 
+    def test_email_change_remote_rejection_is_openai_error(self):
+        info = classify_task_error(
+            "/backend-api/accounts/change_email/begin 返回 403",
+            task_type="email_change",
+        )
+        self.assertEqual(info["code"], "external.openai")
+        self.assertEqual(info["kind_label"], "OpenAI / Codex")
+
     def test_unsupported_payment_method_is_explicit_unsupported_error(self):
         info = classify_task_error("当前账号不支持 MoMo 支付方式")
         self.assertEqual(info["code"], "workflow.unsupported")
