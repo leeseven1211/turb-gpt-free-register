@@ -15,6 +15,7 @@ class FeatureAvailabilityTests(PostgresTestCase):
                 EMAIL_SOURCE="icloud_hide",
                 ICLOUD_HME_API_BASE="http://127.0.0.1:8081",
                 ICLOUD_HME_ACCOUNT_ID="",
+                ICLOUD_HME_AUTO_CREATE=True,
             ),
             patch("core.db.outlook_pool_summary", return_value={"available": 0}),
             patch("core.db.generic_api_email_pool_summary", return_value={"available": 0}),
@@ -23,6 +24,24 @@ class FeatureAvailabilityTests(PostgresTestCase):
 
         self.assertTrue(result["email_sources"]["icloud_hide"]["enabled"])
         self.assertEqual(result["email_sources"]["icloud_hide"]["reason"], "")
+
+    def test_icloud_hide_requires_local_inventory_when_auto_create_is_disabled(self):
+        with (
+            patch.multiple(
+                "config.email",
+                EMAIL_SOURCE="icloud_hide",
+                ICLOUD_HME_API_BASE="http://127.0.0.1:8081",
+                ICLOUD_HME_ACCOUNT_ID="",
+                ICLOUD_HME_AUTO_CREATE=False,
+            ),
+            patch("core.db.outlook_pool_summary", return_value={"available": 0}),
+            patch("core.db.generic_api_email_pool_summary", return_value={"available": 0}),
+            patch("core.db.icloud_hide_email_pool_summary", return_value={"available": 0}),
+        ):
+            result = feature_availability.feature_availability()
+
+        self.assertFalse(result["email_sources"]["icloud_hide"]["enabled"])
+        self.assertIn("库存", result["email_sources"]["icloud_hide"]["reason"])
 
     def test_account_features_disabled_when_1024_api_missing(self):
         with (

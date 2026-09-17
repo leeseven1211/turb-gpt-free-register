@@ -1032,16 +1032,19 @@ def _stage_claim_guard(prefix: str, *, require_alive: bool = False) -> tuple[str
     queue_before = (now - timedelta(seconds=_PLAN_CHECK_QUEUE_STALE_SECONDS)).isoformat(timespec="seconds")
     run_before = (now - timedelta(seconds=_PLAN_CHECK_STALE_SECONDS)).isoformat(timespec="seconds")
     status_key = f"{prefix}_status"
-    # Existing stages use promoted columns; newer account stages are kept in
-    # the JSONB projection. Build the guard against the actual storage shape.
-    if status_key in record_store.ACCOUNTS.promoted:
-        status = postgres_store.quote_identifier(status_key)
-        queued_at = postgres_store.quote_identifier(f"{prefix}_queued_at")
-        started_at = postgres_store.quote_identifier(f"{prefix}_started_at")
-    else:
-        status = f"data->>'{status_key}'"
-        queued_at = f"data->>'{prefix}_queued_at'"
-        started_at = f"data->>'{prefix}_started_at'"
+    # Promotion is field-specific: the status columns are promoted while the
+    # historical queued/started timestamps still live in JSONB. Never infer
+    # the storage shape of one field from another field's promotion.
+    def storage_expr(key: str) -> str:
+        return (
+            postgres_store.quote_identifier(key)
+            if key in record_store.ACCOUNTS.promoted
+            else f"data->>'{key}'"
+        )
+
+    status = storage_expr(status_key)
+    queued_at = storage_expr(f"{prefix}_queued_at")
+    started_at = storage_expr(f"{prefix}_started_at")
     guard = (
         f"(COALESCE({status}, '') NOT IN ('queued', 'running')"
         f" OR ({status} = 'queued' AND (COALESCE({queued_at}, '') !~ '^[0-9]{{4}}-'"
