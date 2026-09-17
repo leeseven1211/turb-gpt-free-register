@@ -119,18 +119,18 @@ class ICloudHMEClientTests(unittest.TestCase):
         self.assertEqual(routing["remote_usable"], 1)
         self.assertEqual(routing["forward_incompatible"], 0)
 
-    def test_forward_imap_disables_intermediate_gmail_target(self):
+    def test_forward_imap_keeps_intermediate_gmail_target_usable(self):
         prepared, routing = client._prepare_imap_aliases(
             [{"email": "alias@icloud.com", "forwardToEmail": "relay@gmail.com", "active": True}],
             inbox_mode="forward_imap",
             forward_imap_email="owner@gmail.com",
         )
-        self.assertFalse(prepared[0]["active"])
-        self.assertEqual(routing["remote_usable"], 0)
-        self.assertEqual(routing["forward_incompatible"], 1)
+        self.assertTrue(prepared[0]["active"])
+        self.assertEqual(routing["remote_usable"], 1)
+        self.assertEqual(routing["forward_incompatible"], 0)
 
-    def test_forward_imap_route_mismatch_is_rejected_before_polling(self):
-        with patch.object(client, "_inbox_mode", return_value="forward_imap"), patch.object(
+    def test_forward_butler_route_mismatch_is_rejected_before_polling(self):
+        with patch.object(client, "_inbox_mode", return_value="forward_butler"), patch.object(
             client._email_cfg, "ICLOUD_HME_FORWARD_IMAP_EMAIL", "owner@gmail.com"
         ), patch.object(
             client, "get_account_context", return_value=client.ICloudHMEAccount(
@@ -139,6 +139,17 @@ class ICloudHMEClientTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(client.ICloudHMEError, "转发目标与当前 IMAP 收件账号不一致"):
                 client.fetch_latest_otp("alias@icloud.com", max_wait=1)
+
+    @patch("core.forward_imap_client.fetch_latest_otp", return_value="123456")
+    @patch.object(client, "get_account_context", return_value=client.ICloudHMEAccount(
+        email="alias@icloud.com", account_id="acc-1", forward_to_email="relay@gmail.com"
+    ))
+    @patch.object(client, "_inbox_mode", return_value="forward_imap")
+    def test_forward_imap_uses_final_inbox_for_relay_route(self, _mode, _context, fetch):
+        result = client.fetch_latest_otp("alias@icloud.com", after_ts=123.0, max_wait=10)
+
+        self.assertEqual(result, "123456")
+        fetch.assert_called_once()
 
     @patch("core.db.icloud_hide_email_pool_summary_by_account", return_value=[])
     @patch("core.db.icloud_hide_email_pool_summary", return_value={"total": 2})

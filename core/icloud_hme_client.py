@@ -82,9 +82,9 @@ def _prepare_imap_aliases(
 ) -> tuple[list[dict], dict]:
     """按实际收件模式准备 HME 别名。
 
-    ``forward_imap`` 使用当前配置的 Gmail 凭据读取收件箱，因此 Apple 返回的
-    ``forwardToEmail`` 必须与该 Gmail 完全一致。不同 Apple 账号可以保留在同一
-    池中，但只有路由匹配的别名才允许被领取。
+    ``forward_imap`` 读取的是最终 Gmail 收件箱。iCloud 的直接转发目标可以是
+    一个中转邮箱，只要邮件最终转发到该 Gmail；最终收件箱中的 To 头仍用于
+    精确匹配原始 HME 别名。因此这里不能把“直接目标不是最终邮箱”当成失效。
 
     ``sidecar`` 仍拒绝明确转发到外部邮箱，因为 sidecar 只能读取 iCloud IMAP；
     ``forward_butler`` 保持原有的直接目标校验。
@@ -106,10 +106,10 @@ def _prepare_imap_aliases(
         if domain:
             known_domains.add(domain)
         if mode == "forward_imap":
-            # The local IMAP credentials identify one mailbox. Do not claim an
-            # alias whose Apple-side route points at another mailbox; a local
-            # IMAP connection can be healthy while that alias is unreachable.
-            compatible = bool(forward and expected_forward and forward.lower() == expected_forward)
+            # The configured IMAP mailbox is the final inbox. A relay target
+            # is valid here because the final mailbox lookup matches the
+            # original HME address in the forwarded To header.
+            compatible = bool(forward and expected_forward and not _is_icloud_mailbox(forward))
         elif mode == "forward_butler":
             compatible = bool(forward and expected_forward and forward.lower() == expected_forward)
         else:
@@ -446,7 +446,10 @@ def get_account_context(email: str) -> ICloudHMEAccount | None:
 
 def _validate_forward_route(email: str) -> None:
     """Fail before OTP polling when a persisted HME route cannot reach IMAP."""
-    if _inbox_mode() not in {"forward_imap", "forward_butler"}:
+    # forward_imap intentionally supports an intermediate Gmail relay. The
+    # final IMAP mailbox matches the original HME alias in the message header,
+    # so its Apple-side direct target cannot be compared to this mailbox.
+    if _inbox_mode() != "forward_butler":
         return
     context = get_account_context(str(email or "").strip())
     if context is None:
