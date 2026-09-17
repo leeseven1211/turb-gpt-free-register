@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 from config import openai_protocol as _protocol_cfg
 from core.session import BrowserSession
-from core.chatgpt_auth import get_csrf_token, signin_openai
+from core.chatgpt_auth import get_csrf_token, get_providers, probe_auth_session, signin_openai
 from core.openai_auth import (
     follow_authorize,
     network_preflight,
@@ -46,7 +46,7 @@ def _is_retryable_network_error(exc: BaseException) -> bool:
 
 
 def _warm_protocol_login_context(session: BrowserSession) -> None:
-    """按注册协议流建立页面、Cookie 和匿名态前端上下文后再请求 CSRF。"""
+    """按真实登录页顺序建立 Cookie、动态 build 与匿名 NextAuth 上下文。"""
     network_preflight(session)
     human_delay("navigate")
     if getattr(_protocol_cfg, "CHATGPT_ANON_BOOTSTRAP_ENABLED", True):
@@ -57,6 +57,11 @@ def _warm_protocol_login_context(session: BrowserSession) -> None:
             strict=bool(getattr(_protocol_cfg, "CHATGPT_BOOTSTRAP_STRICT", False)),
         )
         human_delay("navigate")
+    # best-effort bootstrap 的非关键接口不能阻断正式认证链；随后复现
+    # 成功浏览器样本的 providers → session → CSRF → session 顺序。
+    _clear_optional_bootstrap_circuit(session)
+    get_providers(session)
+    probe_auth_session(session)
 
 
 def _clear_optional_bootstrap_circuit(session: BrowserSession) -> None:
@@ -328,6 +333,7 @@ def _network_preflight_with_retry(
             _warm_protocol_login_context(session)
             csrf = get_csrf_token(session)
             human_delay("api")
+            probe_auth_session(session)
             authorize_url = signin_openai(session, csrf, email)
             return session, authorize_url
         except Exception as exc:
@@ -350,6 +356,36 @@ def _network_preflight_with_retry(
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def _login_via_full_web_flow(
+    email: str,
+    proxy: str | None,
+    *,
+    email_source: str | None,
+    fingerprint_state: dict,
+) -> tuple[BrowserSession, dict]:
+    """按 plus 纯协议注册的 Web 登录序列建立一份全新登录态。"""
+    session, authorize_url = _network_preflight_with_retry(
+        email,
+        proxy,
+        fingerprint_state=fingerprint_state,
+    )
+    otp_after_ts = time.time()
+    final_url = follow_authorize(session, authorize_url)
+    dead_code = detect_account_unusable_text(final_url)
+    if dead_code:
+        raise AccountUnusableError(
+            f"账号已废弃（{dead_code}）",
+            error_code=dead_code,
+        )
+    session_info = _login_via_password_or_otp(
+        session,
+        email,
+        otp_after_ts,
+        email_source=email_source,
+    )
+    return session, session_info
 
 
 def log_path(email: str) -> Path:
