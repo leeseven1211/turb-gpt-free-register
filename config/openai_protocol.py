@@ -65,6 +65,7 @@ OPENAI_PREFLIGHT_TIMEOUT = 12.0
 
 
 apply_env_overrides(globals(), {
+    "OPENAI_PROTOCOL_VERSION": "str",
     "OPENAI_PROXY_RETRY_MAX_ATTEMPTS": "int",
     "OPENAI_PROXY_RETRY_DELAY": "float",
     "OPENAI_PREFLIGHT_TIMEOUT": "float",

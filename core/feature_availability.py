@@ -76,6 +76,20 @@ def _email_source_features() -> dict[str, dict[str, Any]]:
     return results
 
 
+def email_source_availability() -> dict[str, dict[str, Any]]:
+    """Return the current local readiness of every supported mailbox source."""
+    return _email_source_features()
+
+
+def require_email_source(source: str) -> tuple[bool, str]:
+    """Validate that a source is configured and currently able to allocate."""
+    key = str(source or "").strip().lower()
+    item = email_source_availability().get(key)
+    if not item:
+        return False, f"不支持的邮箱来源: {key or '-'}"
+    return bool(item.get("enabled")), str(item.get("reason") or "邮箱来源当前不可用")
+
+
 def _registration_driver_status() -> dict[str, Any]:
     from config import roxybrowser as roxy
     driver = str(getattr(roxy, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()

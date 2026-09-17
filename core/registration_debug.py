@@ -1246,6 +1246,13 @@ class _RoxyTargetCollector:
                 self._finish_request(request_id, body_unavailable="redirect")
                 self._redirect_seq[request_id] += 1
             request = params.get("request") or {}
+            if getattr(self.session, "summary_only", False):
+                post_data = request.get("postData")
+                self._requests[request_id] = {
+                    "started_monotonic": params.get("timestamp"),
+                    "request_body_bytes": len(str(post_data).encode("utf-8")) if post_data is not None else 0,
+                }
+                return
             post_body, post_truncated = _raw_body(request.get("postData"), str((request.get("headers") or {}).get("content-type") or ""))
             self._requests[request_id] = {
                 "capture_request_id": self._request_key(request_id),
@@ -1265,7 +1272,7 @@ class _RoxyTargetCollector:
             }
         elif method == "Network.requestWillBeSentExtraInfo":
             request_id = str(params.get("requestId") or "")
-            if request_id in self._requests:
+            if request_id in self._requests and not getattr(self.session, "summary_only", False):
                 self._requests[request_id]["request_headers"] = _raw_headers(params.get("headers") or {})
         elif method == "Network.responseReceived":
             request_id = str(params.get("requestId") or "")
@@ -1273,6 +1280,9 @@ class _RoxyTargetCollector:
             if record is None:
                 return
             response = params.get("response") or {}
+            if getattr(self.session, "summary_only", False):
+                record["status"] = response.get("status")
+                return
             record.update({
                 "status": response.get("status"),
                 "status_text": response.get("statusText"),
@@ -1287,7 +1297,7 @@ class _RoxyTargetCollector:
             })
         elif method == "Network.responseReceivedExtraInfo":
             request_id = str(params.get("requestId") or "")
-            if request_id in self._requests:
+            if request_id in self._requests and not getattr(self.session, "summary_only", False):
                 self._requests[request_id]["response_headers"] = _raw_headers(params.get("headers") or {})
         elif method == "Network.loadingFinished":
             request_id = str(params.get("requestId") or "")
@@ -1315,6 +1325,15 @@ class _RoxyTargetCollector:
             self.session.record({"kind": "websocket_open", "target_id": self.target_id, "url": _raw_url(params.get("url"))})
         elif method in {"Network.webSocketFrameSent", "Network.webSocketFrameReceived"}:
             response = params.get("response") or {}
+            if getattr(self.session, "summary_only", False):
+                payload_data = response.get("payloadData")
+                self.session.websocket_frame_count += 1
+                self.session.record({
+                    "kind": "websocket_frame",
+                    "direction": "sent" if method.endswith("Sent") else "received",
+                    "payload_bytes": len(str(payload_data).encode("utf-8")) if payload_data is not None else 0,
+                })
+                return
             payload, truncated = _raw_body(response.get("payloadData"), "text/plain")
             self.session.websocket_frame_count += 1
             self.session.record({

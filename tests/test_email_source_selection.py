@@ -46,9 +46,15 @@ class EmailSourceSelectionTests(PostgresTestCase):
         cloudflare.assert_not_called()
         butler.assert_not_called()
 
-    def test_email_sources_endpoint_returns_enabled_choices_without_default_selection(self):
+    def test_email_sources_endpoint_returns_configured_choices_with_availability(self):
         with patch.object(email_config, "USE_EMAIL_SERVICE", True), patch.object(
             email_config, "EMAIL_SOURCE", "email_butler,icloud_hide"
+        ), patch(
+            "core.feature_availability.email_source_availability",
+            return_value={
+                "email_butler": {"label": "Email Butler", "enabled": False, "reason": "API Key 未配置"},
+                "icloud_hide": {"label": "iCloud 隐藏邮箱", "enabled": True, "reason": ""},
+            },
         ):
             response = self.client.get("/api/email-sources")
 
@@ -56,8 +62,8 @@ class EmailSourceSelectionTests(PostgresTestCase):
         self.assertEqual(
             response.get_json()["sources"],
             [
-                {"value": "email_butler", "label": "Email Butler"},
-                {"value": "icloud_hide", "label": "iCloud 隐藏邮箱"},
+                {"value": "email_butler", "label": "Email Butler", "enabled": False, "reason": "API Key 未配置"},
+                {"value": "icloud_hide", "label": "iCloud 隐藏邮箱", "enabled": True, "reason": ""},
             ],
         )
 

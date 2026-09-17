@@ -102,3 +102,13 @@ function activateTab(tab) {{ calls.push({{tab}}); }}
         )
         self.assertEqual(0, result.returncode, result.stderr or result.stdout)
         self.assertEqual("ok", result.stdout.strip())
+
+    def test_both_ui_variants_load_email_change_sources_and_disable_unavailable_choices(self):
+        for relative in (
+            "webui/static/js/modern/accounts.js",
+            "webui/static/js/legacy/accounts.js",
+        ):
+            source = (ROOT / relative).read_text(encoding="utf-8")
+            self.assertIn("/api/email-sources", source, relative)
+            self.assertIn("option.disabled = !item.enabled", source, relative)
+            self.assertIn("item.reason", source, relative)

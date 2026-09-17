@@ -859,6 +859,20 @@ class AuthContextRecorder:
         """Record a Roxy profile without copying its full response payload."""
         if opened is None:
             return None
+        try:
+            from core import browser_traffic
+
+            route = proxy_context if isinstance(proxy_context, dict) else {}
+            browser_traffic.bind_roxy_capture(
+                opened,
+                proxy_lease_id=route.get("proxy_lease_id") or route.get("lease_id"),
+                account_id=self.account_id,
+                purpose=self.action,
+                operation_run_id=self.operation_run_id,
+                route_attempt_no=route_attempt_no,
+            )
+        except Exception:
+            logger.exception("[浏览器流量] 关联账号操作上下文失败；认证流程继续")
         raw = getattr(opened, "raw", {}) or {}
         if not isinstance(raw, dict):
             raw = {}

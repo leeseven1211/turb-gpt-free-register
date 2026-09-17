@@ -393,16 +393,7 @@
       <label class="email-change-field" for="emailChangeSource">
         <span>新邮箱来源</span>
         <select id="emailChangeSource" name="email_source" required aria-describedby="emailChangeSourceHelp emailChangeSourceError">
-          <option value="">请选择邮箱来源</option>
-          <option value="outlook">Outlook 邮箱池</option>
-          <option value="generic_api">通用 API 邮箱</option>
-          <option value="cloudflare_domain">Cloudflare 域名邮箱</option>
-          <option value="cloudflare">Cloudflare 临时邮箱</option>
-          <option value="email_butler">Email Butler</option>
-          <option value="gptmail">GPTMail</option>
-          <option value="mailnest">MailNest</option>
-          <option value="cloudmail">CloudMail</option>
-          <option value="icloud_hide">iCloud 隐藏邮箱</option>
+          <option value="">打开弹窗后读取可用来源</option>
         </select>
         <small id="emailChangeSourceHelp">系统会从所选邮箱池自动领取新地址，并读取新邮箱验证码。</small>
         <small class="email-change-error" id="emailChangeSourceError" role="alert" hidden></small>

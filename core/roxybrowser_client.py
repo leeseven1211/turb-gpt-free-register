@@ -148,6 +148,7 @@ class RoxyOpenResult:
     ws_endpoint: str | None = None
     created_by_run: bool = False
     account_bound: bool = False
+    traffic_capture: object | None = None
 
 
 def _strip_slashes(value: str) -> str:
@@ -764,7 +765,7 @@ class RoxyBrowserClient:
         ]) or None
         if not debugger_address and not webdriver_url:
             raise RuntimeError(f"Roxy 已打开环境但未返回 Selenium/调试地址，请检查 ROXY_OPEN_PATH 或接口响应: {result}")
-        return RoxyOpenResult(
+        opened = RoxyOpenResult(
             pid,
             result,
             debugger_address=debugger_address,
@@ -772,6 +773,13 @@ class RoxyBrowserClient:
             ws_endpoint=ws_endpoint,
             created_by_run=created_by_run,
         )
+        try:
+            from core import browser_traffic
+
+            browser_traffic.start_roxy_capture(opened, purpose="roxy_browser")
+        except Exception:
+            logger.exception("[浏览器流量] 启动摘要采集失败；浏览器流程继续")
+        return opened
 
     def open_profile_with_capacity_wait(
         self,
@@ -922,6 +930,12 @@ class RoxyBrowserClient:
         """任务结束清理：默认只关闭；删除必须显式开启且仅限本轮创建。"""
         if not opened or not opened.profile_id:
             return
+        try:
+            from core import browser_traffic
+
+            browser_traffic.finish_roxy_capture(opened)
+        except Exception:
+            logger.exception("[浏览器流量] 收口摘要采集失败；继续清理环境")
         keep_open = bool(getattr(_cfg, "ROXY_KEEP_BROWSER_OPEN", False))
         closed = True
         if not keep_open:
@@ -969,6 +983,12 @@ class RoxyBrowserClient:
         """
         if not opened or not opened.profile_id or not opened.created_by_run:
             return
+        try:
+            from core import browser_traffic
+
+            browser_traffic.finish_roxy_capture(opened)
+        except Exception:
+            logger.exception("[浏览器流量] 收口摘要采集失败；继续丢弃环境")
         self.close_profile(opened.profile_id)
         if self.delete_profile(opened.profile_id):
             _untrack_created_profile(opened.profile_id)

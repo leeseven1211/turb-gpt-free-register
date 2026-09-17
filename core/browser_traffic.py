@@ -8,11 +8,15 @@ capture implementation, whose purpose and retention rules are different.
 """
 from __future__ import annotations
 
+import json
+import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
 from core import record_store
 
+logger = logging.getLogger(__name__)
 
 TRAFFIC_SUMMARIES = record_store.BROWSER_TRAFFIC
 _HTTP_KINDS = {"http", "http_request", "network_request", "request"}
@@ -257,11 +261,191 @@ def aggregate_summaries(rows: Iterable[Mapping[str, Any]] | None = None) -> dict
     return result
 
 
+def _content_size(value: Any) -> int:
+    """Measure one transient CDP value without retaining it in the summary."""
+    if value is None:
+        return 0
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return len(value)
+    if isinstance(value, str):
+        return len(value.encode("utf-8"))
+    try:
+        return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    except (TypeError, ValueError):
+        return 0
+
+
+class _SummaryOnlyCDPSession:
+    """Adapter consumed by the existing collector that keeps counters only."""
+
+    body_capture_enabled = False
+    summary_only = True
+
+    def __init__(self, profile_id: str) -> None:
+        self.job_id = f"traffic-{str(profile_id or 'roxy')[:32]}"
+        self.current_stage = "browser"
+        self.websocket_frame_count = 0
+        self.started_at = _now_iso()
+        self.upload_bytes = 0
+        self.download_bytes = 0
+        self.request_count = 0
+        self.failed_count = 0
+        self.unfinished_count = 0
+        self.unknown_count = 0
+
+    def record_network(self, record: Mapping[str, Any]) -> None:
+        item = record if isinstance(record, Mapping) else {}
+        self.request_count += 1
+        self.upload_bytes += _int_value(item.get("request_body_bytes")) or _content_size(item.get("request_body"))
+        self.download_bytes += _int_value(item.get("encoded_data_length"))
+        status = _int_value(item.get("status"))
+        if item.get("failure") or status >= 400:
+            self.failed_count += 1
+        if item.get("response_body_omitted") == "target_closed" and not item.get("failure"):
+            self.unfinished_count += 1
+
+    def record(self, event: Mapping[str, Any]) -> None:
+        item = event if isinstance(event, Mapping) else {}
+        kind = _event_kind(item)
+        if kind == "websocket_frame":
+            size = _int_value(item.get("payload_bytes")) or _content_size(item.get("payload"))
+            direction = str(item.get("direction") or "").strip().lower()
+            if direction in {"out", "outgoing", "send", "sent", "upload"}:
+                self.upload_bytes += size
+            elif direction in {"in", "incoming", "receive", "received", "download"}:
+                self.download_bytes += size
+            else:
+                self.unknown_count += 1
+        elif kind == "capture_warning":
+            self.unknown_count += 1
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "source": "roxy_cdp",
+            "method": "cdp",
+            "availability": "available",
+            "unavailable_reason": None,
+            "started_at": self.started_at,
+            "ended_at": _now_iso(),
+            "upload_bytes": self.upload_bytes,
+            "download_bytes": self.download_bytes,
+            "total_bytes": self.upload_bytes + self.download_bytes,
+            "request_count": self.request_count,
+            "failed_count": self.failed_count,
+            "unfinished_count": self.unfinished_count,
+            "unknown_count": self.unknown_count,
+        }
+
+
+def _new_roxy_collector(session: _SummaryOnlyCDPSession, debugger_address: str):
+    from core.registration_debug import RoxyCDPCollector
+
+    return RoxyCDPCollector(session, debugger_address)
+
+
+class RoxyTrafficCapture:
+    """Reduce one Roxy lifetime to a durable summary-only traffic row."""
+
+    _CORRELATION_KEYS = frozenset({
+        "proxy_lease_id", "account_id", "purpose", "operation_task_id",
+        "operation_run_id", "registration_job_id", "route_attempt_no",
+    })
+
+    def __init__(self, opened, correlation: Mapping[str, Any] | None = None) -> None:
+        self.summary_key = f"roxy:{uuid.uuid4().hex}"
+        self.session = _SummaryOnlyCDPSession(getattr(opened, "profile_id", ""))
+        self.correlation: dict[str, Any] = {}
+        self.update_context(**dict(correlation or {}))
+        self.collector = None
+        self.unavailable_reason = ""
+        self.finished = False
+        debugger_address = str(getattr(opened, "debugger_address", "") or "").strip()
+        if not debugger_address:
+            self.unavailable_reason = "roxy_debugger_address_unavailable"
+            return
+        try:
+            self.collector = _new_roxy_collector(self.session, debugger_address)
+            self.collector.start()
+        except Exception as exc:
+            self.collector = None
+            self.unavailable_reason = f"roxy_cdp_start_failed:{type(exc).__name__}"[:240]
+            logger.warning("[浏览器流量] Roxy CDP 采集启动失败：%s", type(exc).__name__)
+
+    def update_context(self, **correlation: Any) -> None:
+        for key in self._CORRELATION_KEYS:
+            value = correlation.get(key)
+            replaceable = self.correlation.get(key) in (None, "")
+            if key == "purpose" and self.correlation.get(key) == "roxy_browser":
+                replaceable = True
+            if value is not None and str(value).strip() != "" and replaceable:
+                self.correlation[key] = value
+
+    def stop(self) -> None:
+        if self.finished:
+            return
+        self.finished = True
+        if self.collector is not None:
+            try:
+                self.collector.stop()
+            except Exception as exc:
+                self.session.unknown_count += 1
+                logger.warning("[浏览器流量] Roxy CDP 采集停止异常：%s", type(exc).__name__)
+        try:
+            if self.unavailable_reason:
+                record_unavailable(
+                    summary_key=self.summary_key,
+                    source="roxy_cdp",
+                    method="cdp",
+                    reason=self.unavailable_reason,
+                    **self.correlation,
+                )
+            else:
+                persist_summary(
+                    summary_key=self.summary_key,
+                    summary=self.session.summary(),
+                    **self.correlation,
+                )
+        except Exception:
+            logger.exception("[浏览器流量] 摘要持久化失败")
+
+    def record_network(self, record: Mapping[str, Any]) -> None:
+        self.session.record_network(record)
+
+    def record(self, event: Mapping[str, Any]) -> None:
+        self.session.record(event)
+
+
+def start_roxy_capture(opened, **correlation: Any) -> RoxyTrafficCapture:
+    existing = getattr(opened, "traffic_capture", None)
+    if isinstance(existing, RoxyTrafficCapture):
+        existing.update_context(**correlation)
+        return existing
+    capture = RoxyTrafficCapture(opened, correlation)
+    opened.traffic_capture = capture
+    return capture
+
+
+def bind_roxy_capture(opened, **correlation: Any) -> None:
+    capture = getattr(opened, "traffic_capture", None)
+    if isinstance(capture, RoxyTrafficCapture):
+        capture.update_context(**correlation)
+
+
+def finish_roxy_capture(opened) -> None:
+    capture = getattr(opened, "traffic_capture", None)
+    if isinstance(capture, RoxyTrafficCapture):
+        capture.stop()
+
+
 __all__ = [
     "TRAFFIC_SUMMARIES",
     "aggregate_summaries",
     "list_summaries",
     "persist_summary",
     "record_unavailable",
+    "RoxyTrafficCapture",
+    "start_roxy_capture",
+    "bind_roxy_capture",
+    "finish_roxy_capture",
     "summarize_cdp_events",
 ]

@@ -631,6 +631,19 @@ def run_roxy_registration(
         profile_id=profile_id,
         progress_callback=report_job_progress,
     )
+    try:
+        from core import browser_traffic
+        from core.registration_service import registration_fact_context
+
+        facts = registration_fact_context()
+        browser_traffic.bind_roxy_capture(
+            opened,
+            purpose="registration",
+            registration_job_id=facts.get("job_id"),
+            operation_run_id=facts.get("run_id"),
+        )
+    except Exception:
+        logger.exception("[浏览器流量] 关联注册任务上下文失败；注册流程继续")
     if profile_id and str(opened.profile_id) != str(profile_id):
         try:
             from core.roxy_profile_binding import persist_account_profile_id

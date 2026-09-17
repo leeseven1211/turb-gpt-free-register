@@ -4,7 +4,8 @@ from __future__ import annotations
 import json
 import unittest
 from datetime import datetime, timedelta
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from core import browser_traffic, postgres_store, proxy_lease_store, proxy_provider, record_store
 from core import registration_service as registration_svc
@@ -303,6 +304,68 @@ class ProxyTrafficBackendTests(PostgresTestCase):
         self.assertEqual(rows[0]["total_bytes"], 0)
         self.assertEqual(rows[0]["unknown_count"], 1)
         self.assertEqual(rows[0]["operation_task_id"], 801)
+
+    def test_roxy_capture_reduces_live_cdp_records_without_retaining_raw_content(self):
+        opened = SimpleNamespace(
+            profile_id="profile-traffic-1",
+            debugger_address="127.0.0.1:9222",
+            traffic_capture=None,
+        )
+        collector = Mock()
+        with patch.object(browser_traffic, "_new_roxy_collector", return_value=collector), patch.object(
+            browser_traffic, "persist_summary", return_value=1,
+        ) as persist:
+            capture = browser_traffic.start_roxy_capture(
+                opened,
+                account_id=41,
+                purpose="live_check",
+                operation_run_id=601,
+            )
+            capture.record_network({
+                "url": "https://private.example.test/account",
+                "request_headers": {"Authorization": "Bearer secret"},
+                "request_body": {"password": "private-password"},
+                "response_body": "private-response",
+                "encoded_data_length": 29,
+                "status": 200,
+            })
+            capture.record({
+                "kind": "websocket_frame",
+                "direction": "sent",
+                "payload": "private-frame",
+            })
+            browser_traffic.finish_roxy_capture(opened)
+
+        collector.start.assert_called_once_with()
+        collector.stop.assert_called_once_with()
+        saved = persist.call_args.kwargs
+        self.assertEqual(saved["account_id"], 41)
+        self.assertEqual(saved["purpose"], "live_check")
+        self.assertEqual(saved["operation_run_id"], 601)
+        self.assertEqual(saved["summary"]["request_count"], 1)
+        self.assertEqual(saved["summary"]["download_bytes"], 29)
+        self.assertGreater(saved["summary"]["upload_bytes"], 0)
+        encoded = json.dumps(saved, ensure_ascii=False)
+        self.assertNotIn("private.example.test", encoded)
+        self.assertNotIn("private-password", encoded)
+        self.assertNotIn("private-response", encoded)
+        self.assertNotIn("private-frame", encoded)
+
+    def test_roxy_capture_without_debugger_persists_explicit_unavailable_row(self):
+        opened = SimpleNamespace(
+            profile_id="profile-no-cdp",
+            debugger_address=None,
+            traffic_capture=None,
+        )
+        with patch.object(browser_traffic, "record_unavailable", return_value=1) as unavailable:
+            browser_traffic.start_roxy_capture(opened, purpose="codex_oauth")
+            browser_traffic.finish_roxy_capture(opened)
+
+        self.assertEqual(unavailable.call_args.kwargs["purpose"], "codex_oauth")
+        self.assertEqual(
+            unavailable.call_args.kwargs["reason"],
+            "roxy_debugger_address_unavailable",
+        )
 
     def test_provider_persists_lease_correlation_without_changing_masked_public_shape(self):
         with patch("core.proxy_provider._direct_session", return_value=_FakeSession()), patch(

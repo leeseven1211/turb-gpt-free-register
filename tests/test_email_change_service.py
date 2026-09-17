@@ -17,10 +17,11 @@ from webui import runtime
 
 
 class _Response:
-    def __init__(self, payload, status_code=200):
+    def __init__(self, payload, status_code=200, headers=None):
         self._payload = payload
         self.status_code = status_code
         self.text = str(payload)
+        self.headers = dict(headers or {})
 
     def json(self):
         return self._payload
@@ -78,36 +79,6 @@ class EmailChangeProtocolContractTests(unittest.TestCase):
         self.assertEqual("identity-1", identity["identity_id"])
         complete.assert_called_once()
         warm.assert_called_once_with(fresh_session, "fresh-at")
-
-    def test_recent_login_can_force_an_explicit_direct_route(self):
-        from core import account_liveness
-
-        old_session = Mock()
-        old_session.proxy = "socks5://proxy.example:1080"
-        old_session.device_id = "stable-device"
-        old_session.browser_profile = {"screen_width": 1920, "screen_height": 1080}
-        fresh_session = Mock()
-        with patch.object(
-            account_liveness,
-            "_network_preflight_with_retry",
-            return_value=(fresh_session, "https://auth.openai.com/authorize"),
-        ) as preflight, patch.object(
-            account_liveness,
-            "follow_authorize",
-            return_value="https://auth.openai.com/log-in/password",
-        ), patch.object(
-            account_liveness,
-            "_complete_recent_login_on_session",
-            return_value=({"accessToken": "fresh-at"}, "password"),
-        ), patch.object(account_liveness, "_warm_authenticated_session"):
-            account_liveness.perform_recent_login(
-                old_session,
-                "old@example.test",
-                email_source="email_butler",
-                proxy_override="",
-            )
-
-        self.assertEqual("", preflight.call_args.args[1])
 
     def test_follow_reauth_rejects_failed_navigation_response(self):
         from core.account_export import _follow_reauth
@@ -374,7 +345,7 @@ class EmailChangeProtocolContractTests(unittest.TestCase):
         self.assertEqual("old@example.test", recent_login.call_args.kwargs["email"])
         self.assertEqual("outlook", recent_login.call_args.kwargs["email_source"])
 
-    def test_bare_proxy_403_after_recent_login_retries_once_via_direct_protocol(self):
+    def test_bare_proxy_403_after_recent_login_is_not_replayed(self):
         from core.email_change_service import (
             RemoteRequestRejected,
             begin_change_with_optional_reauth,
@@ -383,8 +354,6 @@ class EmailChangeProtocolContractTests(unittest.TestCase):
         session = Mock()
         proxy_session = Mock()
         proxy_session.proxy = "socks5://proxy.example:1080"
-        direct_session = Mock()
-        direct_session.proxy = ""
         first = RemoteRequestRejected(
             "recent login required",
             http_status=401,
@@ -395,29 +364,61 @@ class EmailChangeProtocolContractTests(unittest.TestCase):
         )
         with patch(
             "core.email_change_service.EmailChangeProtocol.begin",
-            side_effect=[first, proxy_forbidden, {"success": True}],
+            side_effect=[first, proxy_forbidden],
         ) as begin, patch(
             "core.email_change_service.perform_recent_login",
-            side_effect=[
-                {"access_token": "proxy-at", "protocol_session": proxy_session},
-                {"access_token": "direct-at", "protocol_session": direct_session},
-            ],
+            return_value={"access_token": "proxy-at", "protocol_session": proxy_session},
         ) as recent_login:
-            result = begin_change_with_optional_reauth(
-                session,
-                account_id=7,
-                current_email="old@example.test",
-                current_source="outlook",
-                new_email="new@example.test",
-                access_token="old-at",
-            )
+            with self.assertRaises(RemoteRequestRejected):
+                begin_change_with_optional_reauth(
+                    session,
+                    account_id=7,
+                    current_email="old@example.test",
+                    current_source="outlook",
+                    new_email="new@example.test",
+                    access_token="old-at",
+                )
 
-        self.assertEqual("direct-at", result.access_token)
-        self.assertIs(direct_session, result.session)
-        self.assertEqual(3, begin.call_count)
-        self.assertEqual(2, recent_login.call_count)
-        self.assertNotIn("proxy_override", recent_login.call_args_list[0].kwargs)
-        self.assertEqual("", recent_login.call_args_list[1].kwargs["proxy_override"])
+        self.assertEqual(2, begin.call_count)
+        recent_login.assert_called_once()
+
+    def test_remote_rejection_records_only_safe_response_metadata(self):
+        from core.email_change_service import EmailChangeProtocol, RemoteRequestRejected
+
+        session = Mock()
+        session.get_chatgpt_headers.return_value = {}
+        session.device_id = "device-test"
+        session.navigator_language.return_value = "en-US"
+        session.post.return_value = _Response(
+            {"error": "forbidden"},
+            status_code=403,
+            headers={
+                "content-type": "text/html; charset=UTF-8",
+                "server": "cloudflare",
+                "cf-mitigated": "challenge",
+                "cf-ray": "sensitive-ray-id",
+                "set-cookie": "secret-cookie",
+            },
+        )
+
+        with self.assertRaises(RemoteRequestRejected) as caught:
+            EmailChangeProtocol().begin(session, "at-test", "new@example.test")
+
+        exc = caught.exception
+        self.assertEqual("text/html", exc.response_content_type)
+        self.assertEqual("cloudflare", exc.response_server)
+        self.assertTrue(exc.cf_mitigated)
+        self.assertTrue(exc.cf_ray_present)
+        self.assertNotIn("sensitive-ray-id", str(exc))
+        self.assertFalse(hasattr(exc, "response_headers"))
+
+    def test_close_protocol_session_closes_the_owned_transport(self):
+        from core.email_change_service import _close_protocol_session
+
+        session = Mock()
+        _close_protocol_session(session)
+
+        session.session.close.assert_called_once_with()
 
     def test_context_transport_failure_becomes_request_unknown_without_retry(self):
         from core.email_change_service import RemoteRequestUnknown, begin_change_with_optional_reauth
@@ -445,6 +446,68 @@ class EmailChangeProtocolContractTests(unittest.TestCase):
             "unknown",
             context.remote_request_receipt.call_args.kwargs["outcome"],
         )
+
+    def test_successful_begin_with_lost_receipt_is_request_unknown(self):
+        from core.email_change_service import RemoteRequestUnknown, begin_change_with_optional_reauth
+
+        session = Mock()
+        context = Mock(run_id=23)
+        context.remote_request_receipt.side_effect = task_gateway.OperationLeaseLost(
+            "lease lost while persisting receipt"
+        )
+        with patch(
+            "core.email_change_service.EmailChangeProtocol.begin",
+            return_value={"success": True},
+        ) as begin:
+            with self.assertRaises(RemoteRequestUnknown):
+                begin_change_with_optional_reauth(
+                    session,
+                    account_id=7,
+                    current_email="old@example.test",
+                    current_source="outlook",
+                    new_email="new@example.test",
+                    access_token="old-at",
+                    context=context,
+                )
+
+        begin.assert_called_once()
+
+    def test_successful_reauth_begin_with_lost_receipt_is_request_unknown(self):
+        from core.email_change_service import (
+            RemoteRequestRejected,
+            RemoteRequestUnknown,
+            begin_change_with_optional_reauth,
+        )
+
+        session = Mock()
+        fresh_session = Mock()
+        context = Mock(run_id=29)
+        context.remote_request_receipt.side_effect = [
+            None,
+            task_gateway.OperationLeaseLost("lease lost while persisting receipt"),
+        ]
+        with patch(
+            "core.email_change_service.EmailChangeProtocol.begin",
+            side_effect=[
+                RemoteRequestRejected("recent login required", http_status=401),
+                {"success": True},
+            ],
+        ) as begin, patch(
+            "core.email_change_service.perform_recent_login",
+            return_value={"access_token": "fresh-at", "protocol_session": fresh_session},
+        ):
+            with self.assertRaises(RemoteRequestUnknown):
+                begin_change_with_optional_reauth(
+                    session,
+                    account_id=7,
+                    current_email="old@example.test",
+                    current_source="outlook",
+                    new_email="new@example.test",
+                    access_token="old-at",
+                    context=context,
+                )
+
+        self.assertEqual(2, begin.call_count)
 
     def test_server_error_is_request_unknown_but_client_rejection_is_explicit(self):
         from core.email_change_service import EmailChangeProtocol, RemoteRequestRejected, RemoteRequestUnknown
@@ -579,12 +642,16 @@ class EmailChangeDurableOperationTests(PostgresTestCase):
     def test_submit_and_account_conflict_use_native_durable_task(self):
         from core import email_change_service
 
-        first = email_change_service.submit_email_change(
-            self.account_id, source="outlook", dispatch=False,
-        )
-        second = email_change_service.submit_email_change(
-            self.account_id, source="outlook", dispatch=False,
-        )
+        with patch(
+            "core.feature_availability.require_email_source",
+            return_value=(True, ""),
+        ):
+            first = email_change_service.submit_email_change(
+                self.account_id, source="outlook", dispatch=False,
+            )
+            second = email_change_service.submit_email_change(
+                self.account_id, source="outlook", dispatch=False,
+            )
 
         self.assertTrue(first["accepted"])
         self.assertEqual("email_change", first["task_type"])
@@ -592,6 +659,23 @@ class EmailChangeDurableOperationTests(PostgresTestCase):
         task = operation.get_task(first["task_id"], include_events=False)
         self.assertEqual("native_operations", task["source_system"])
         self.assertEqual("email_change", task["task_type"])
+
+    def test_submit_rejects_configured_but_unavailable_email_source_before_enqueue(self):
+        from core import email_change_service
+
+        with patch(
+            "core.feature_availability.require_email_source",
+            return_value=(False, "邮箱池没有可用 Outlook 素材"),
+        ), patch.object(task_gateway, "submit_durable_operation") as submit:
+            result = email_change_service.submit_email_change(
+                self.account_id,
+                source="outlook",
+                dispatch=False,
+            )
+
+        self.assertFalse(result["accepted"])
+        self.assertIn("邮箱池没有可用", result["error"])
+        submit.assert_not_called()
 
     def test_remote_receipt_phase_can_open_verify_boundary_without_retrying(self):
         created = operation.create_runtime_task(

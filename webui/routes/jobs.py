@@ -147,14 +147,21 @@ def create_jobs_blueprint(context: WebUIContext):
         """返回注册页可明确选择的邮箱来源；顺序来自全局启用列表。"""
         from config import email as _email_cfg
         from core.email_provider import EMAIL_SOURCE_LABELS, parse_email_sources
+        from core.feature_availability import email_source_availability
 
         use_service = bool(getattr(_email_cfg, "USE_EMAIL_SERVICE", True))
         sources = parse_email_sources(_email_cfg.EMAIL_SOURCE) if use_service else []
+        availability = email_source_availability() if use_service else {}
         return jsonify({
             "ok": True,
             "manual_mode": not use_service,
             "sources": [
-                {"value": source, "label": EMAIL_SOURCE_LABELS.get(source, source)}
+                {
+                    "value": source,
+                    "label": EMAIL_SOURCE_LABELS.get(source, source),
+                    "enabled": bool(availability.get(source, {}).get("enabled")),
+                    "reason": str(availability.get(source, {}).get("reason") or ""),
+                }
                 for source in sources
             ],
         })

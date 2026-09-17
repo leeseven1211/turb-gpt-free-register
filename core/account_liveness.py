@@ -232,7 +232,6 @@ def perform_recent_login(
     *,
     email_source: str | None = None,
     access_token: str | None = None,
-    proxy_override: str | None = None,
 ) -> dict:
     """Build a fresh cookie session and complete a protocol-only login.
 
@@ -244,14 +243,9 @@ def perform_recent_login(
     del access_token  # Kept in the signature for compatibility with callers.
     fresh_session: BrowserSession | None = None
     try:
-        route_proxy = (
-            getattr(session, "proxy", None)
-            if proxy_override is None
-            else proxy_override
-        )
         fresh_session, authorize_url = _network_preflight_with_retry(
             str(email or "").strip(),
-            route_proxy,
+            getattr(session, "proxy", None),
             identity=_session_identity_payload(session),
         )
         otp_after_ts = time.time()
@@ -356,36 +350,6 @@ def _network_preflight_with_retry(
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
-
-
-def _login_via_full_web_flow(
-    email: str,
-    proxy: str | None,
-    *,
-    email_source: str | None,
-    fingerprint_state: dict,
-) -> tuple[BrowserSession, dict]:
-    """按 plus 纯协议注册的 Web 登录序列建立一份全新登录态。"""
-    session, authorize_url = _network_preflight_with_retry(
-        email,
-        proxy,
-        fingerprint_state=fingerprint_state,
-    )
-    otp_after_ts = time.time()
-    final_url = follow_authorize(session, authorize_url)
-    dead_code = detect_account_unusable_text(final_url)
-    if dead_code:
-        raise AccountUnusableError(
-            f"账号已废弃（{dead_code}）",
-            error_code=dead_code,
-        )
-    session_info = _login_via_password_or_otp(
-        session,
-        email,
-        otp_after_ts,
-        email_source=email_source,
-    )
-    return session, session_info
 
 
 def log_path(email: str) -> Path:

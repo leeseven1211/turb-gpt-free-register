@@ -47,10 +47,18 @@ class _RemoteRequestError(RuntimeError):
         *,
         http_status: int | None = None,
         remote_error_code: str | None = None,
+        response_content_type: str | None = None,
+        response_server: str | None = None,
+        cf_mitigated: bool = False,
+        cf_ray_present: bool = False,
     ) -> None:
         super().__init__(message)
         self.http_status = int(http_status) if http_status is not None else None
         self.remote_error_code = str(remote_error_code or "").strip() or None
+        self.response_content_type = str(response_content_type or "").strip() or None
+        self.response_server = str(response_server or "").strip() or None
+        self.cf_mitigated = bool(cf_mitigated)
+        self.cf_ray_present = bool(cf_ray_present)
 
 
 class RemoteRequestRejected(_RemoteRequestError):
@@ -104,6 +112,27 @@ class EmailChangeProtocol:
             return ""
         return raw_code
 
+    @staticmethod
+    def _safe_response_metadata(response: Any) -> dict[str, Any]:
+        raw_headers = getattr(response, "headers", None) or {}
+        headers = {str(key).lower(): str(value) for key, value in raw_headers.items()}
+        content_type = headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if len(content_type) > 80 or not all(
+            char.isalnum() or char in ".+-/" for char in content_type
+        ):
+            content_type = ""
+        server = headers.get("server", "").strip().lower()
+        if len(server) > 80 or not all(
+            char.isalnum() or char in " ._+-/" for char in server
+        ):
+            server = ""
+        return {
+            "response_content_type": content_type or None,
+            "response_server": server or None,
+            "cf_mitigated": bool(headers.get("cf-mitigated")),
+            "cf_ray_present": bool(headers.get("cf-ray")),
+        }
+
     def _post(self, session: BrowserSession, path: str, access_token: str, payload: dict) -> dict:
         headers = dict(session.get_chatgpt_headers(referer="https://chatgpt.com/") or {})
         token = str(access_token or "").strip()
@@ -131,17 +160,20 @@ class EmailChangeProtocol:
         status_code = int(getattr(response, "status_code", 0) or 0)
         if status_code != 200:
             error_code = self._response_error_code(response)
+            response_meta = self._safe_response_metadata(response)
             suffix = f" ({error_code})" if error_code else ""
             if status_code == 408 or status_code == 429 or status_code >= 500:
                 raise RemoteRequestUnknown(
                     f"{path} 返回 {status_code}{suffix}，远端结果待确认",
                     http_status=status_code,
                     remote_error_code=error_code,
+                    **response_meta,
                 )
             raise RemoteRequestRejected(
                 f"{path} 返回 {status_code}{suffix}",
                 http_status=status_code,
                 remote_error_code=error_code,
+                **response_meta,
             )
         try:
             result = response.json()
@@ -204,20 +236,6 @@ def _is_reauth_required(exc: BaseException) -> bool:
     ))
 
 
-def _should_retry_begin_direct(exc: BaseException, session: BrowserSession) -> bool:
-    """Retry only a bare proxy-side 403 after a completed Recent Login.
-
-    A structured application error is authoritative and must not be replayed.
-    The direct retry is also skipped when the current session is already direct.
-    """
-    return (
-        isinstance(exc, RemoteRequestRejected)
-        and int(getattr(exc, "http_status", 0) or 0) == 403
-        and not str(getattr(exc, "remote_error_code", "") or "").strip()
-        and bool(str(getattr(session, "proxy", "") or "").strip())
-    )
-
-
 def _safe_remote_error_detail(exc: BaseException) -> dict[str, Any]:
     detail: dict[str, Any] = {}
     http_status = getattr(exc, "http_status", None)
@@ -226,6 +244,16 @@ def _safe_remote_error_detail(exc: BaseException) -> dict[str, Any]:
     error_code = str(getattr(exc, "remote_error_code", "") or "").strip()
     if error_code:
         detail["remote_error_code"] = error_code[:120]
+    content_type = str(getattr(exc, "response_content_type", "") or "").strip()
+    if content_type:
+        detail["response_content_type"] = content_type[:80]
+    server = str(getattr(exc, "response_server", "") or "").strip()
+    if server:
+        detail["response_server"] = server[:80]
+    if bool(getattr(exc, "cf_mitigated", False)):
+        detail["cf_mitigated"] = True
+    if bool(getattr(exc, "cf_ray_present", False)):
+        detail["cf_ray_present"] = True
     return detail
 
 
@@ -236,6 +264,30 @@ def _access_token(value: Mapping[str, Any] | None) -> str:
 
 def _remote_request_id(context, phase: str) -> str:
     return f"email-change:{int(context.run_id)}:{phase}:{uuid.uuid4().hex}"
+
+
+def _record_begin_success_receipt(context, *, request_id: str | None) -> None:
+    """Persist a successful begin response without downgrading it to failure.
+
+    Once ``begin`` returned successfully, losing the lease or failing the local
+    receipt write makes the remote state unknown.  The caller must retain the
+    allocated mailbox for reconciliation instead of releasing it for reuse.
+    """
+    if context is None:
+        return
+    try:
+        context.remote_request_receipt(
+            outcome="response_received",
+            action="change_email.begin",
+            request_id=request_id,
+            detail={
+                "response_observed": True,
+                "remote_result_confirmed": True,
+                "phase_complete": True,
+            },
+        )
+    except Exception as exc:
+        raise RemoteRequestUnknown("begin 已成功但本地回执未确认") from exc
 
 
 def begin_change_with_optional_reauth(
@@ -343,84 +395,7 @@ def begin_change_with_optional_reauth(
                         **_safe_remote_error_detail(second_exc),
                     },
                 )
-            if not _should_retry_begin_direct(second_exc, session):
-                raise
-
-            if context is not None:
-                context.report(
-                    stage="login_password",
-                    state="running",
-                    message="代理会话被边缘层拒绝，切换直连协议会话重试",
-                )
-            try:
-                direct = perform_recent_login(
-                    session,
-                    email=current_email,
-                    email_source=current_source,
-                    access_token=token,
-                    proxy_override="",
-                )
-            except task_gateway.OperationLeaseLost:
-                raise
-            except Exception as direct_exc:
-                raise RemoteRequestRejected(
-                    f"直连 Recent Login 失败: {type(direct_exc).__name__}"
-                ) from direct_exc
-            token = _access_token(direct)
-            direct_session = (
-                direct.get("protocol_session")
-                if isinstance(direct, Mapping)
-                else None
-            )
-            if not token or direct_session is None:
-                raise RemoteRequestRejected("直连 Recent Login 未返回完整协议会话")
-            session = direct_session
-            after_ts = time.time()
-            direct_request_id = (
-                _remote_request_id(context, "begin-direct")
-                if context is not None
-                else None
-            )
-            if context is not None:
-                context.remote_request_started(
-                    "change_email.begin",
-                    request_id=direct_request_id,
-                    detail={"account_id": int(account_id), "phase": "recent_login_direct"},
-                )
-            try:
-                protocol.begin(session, token, new_email)
-            except task_gateway.OperationLeaseLost:
-                raise
-            except RemoteRequestRejected as direct_exc:
-                if context is not None:
-                    context.remote_request_receipt(
-                        outcome="rejected",
-                        action="change_email.begin",
-                        request_id=direct_request_id,
-                        detail={
-                            "response_observed": True,
-                            "phase": "recent_login_direct",
-                            **_safe_remote_error_detail(direct_exc),
-                        },
-                    )
-                raise
-            except Exception as direct_exc:
-                if context is not None:
-                    context.remote_request_receipt(
-                        outcome="unknown",
-                        action="change_email.begin",
-                        request_id=direct_request_id,
-                        detail={
-                            "response_observed": False,
-                            "phase": "recent_login_direct",
-                            **_safe_remote_error_detail(direct_exc),
-                        },
-                    )
-                    raise RemoteRequestUnknown(
-                        "begin 直连重认证后请求结果待确认"
-                    ) from direct_exc
-                raise
-            second_request_id = direct_request_id
+            raise
         except Exception as second_exc:
             if context is not None:
                 context.remote_request_receipt(
@@ -435,29 +410,9 @@ def begin_change_with_optional_reauth(
                 )
                 raise RemoteRequestUnknown("begin 重认证后请求结果待确认") from second_exc
             raise
-        if context is not None:
-            context.remote_request_receipt(
-                outcome="response_received",
-                action="change_email.begin",
-                request_id=second_request_id,
-                detail={
-                    "response_observed": True,
-                    "remote_result_confirmed": True,
-                    "phase_complete": True,
-                },
-            )
+        _record_begin_success_receipt(context, request_id=second_request_id)
         return BeginChangeResult(session, token, after_ts, True)
-    if context is not None:
-        context.remote_request_receipt(
-            outcome="response_received",
-            action="change_email.begin",
-            request_id=first_request_id,
-            detail={
-                "response_observed": True,
-                "remote_result_confirmed": True,
-                "phase_complete": True,
-            },
-        )
+    _record_begin_success_receipt(context, request_id=first_request_id)
     return BeginChangeResult(session, token, after_ts, False)
 
 
@@ -505,6 +460,18 @@ def _release_unconsumed(email: str, account_id: int, error: str) -> None:
         )
     except Exception:
         logger.exception("邮箱换绑失败邮箱回收异常: account_id=%s", account_id)
+
+
+def _close_protocol_session(session: BrowserSession | None) -> None:
+    if session is None:
+        return
+    try:
+        transport = getattr(session, "session", None)
+        close = getattr(transport, "close", None)
+        if callable(close):
+            close()
+    except Exception:
+        logger.debug("关闭邮箱换绑协议会话失败", exc_info=True)
 
 
 def _enqueue_live_check_child(context, account_id: int, email: str) -> dict[str, Any]:
@@ -566,8 +533,24 @@ def _handle_email_change(context):
         source = email_provider.validate_email_source(data.get("email_source") or "")
     except ValueError as exc:
         return task_gateway.OperationResult.failed(str(exc))
+    try:
+        from core import browser_traffic
+
+        browser_traffic.record_unavailable(
+            summary_key=f"email-change-protocol:{int(context.run_id)}",
+            source="email_change",
+            method="protocol",
+            reason="protocol_no_browser_observation",
+            account_id=account_id,
+            purpose="email_change",
+            operation_task_id=int(context.task_id),
+            operation_run_id=int(context.run_id),
+        )
+    except Exception:
+        logger.exception("邮箱换绑协议流量标记写入失败；业务流程继续: account_id=%s", account_id)
     new_email = ""
     route = None
+    session = None
     account_claimed = False
     remote_accepted = False
     writeback_confirmed = False
@@ -826,6 +809,7 @@ def _handle_email_change(context):
         )
         return task_gateway.OperationResult.failed(f"邮箱换绑失败: {type(exc).__name__}")
     finally:
+        _close_protocol_session(session)
         if route is not None:
             try:
                 route.release(reason="email-change-completed")
@@ -895,6 +879,15 @@ def submit_email_change(
         selected_source = email_provider.validate_email_source(source)
     except ValueError as exc:
         return {"accepted": False, "busy": False, "error": str(exc)}
+    from core.feature_availability import require_email_source
+
+    source_ready, source_reason = require_email_source(selected_source)
+    if not source_ready:
+        return {
+            "accepted": False,
+            "busy": False,
+            "error": f"邮箱来源 {selected_source} 当前不可用：{source_reason}",
+        }
     if not str(account.get("access_token") or "").strip():
         return {"accepted": False, "busy": False, "error": "账号缺少 access_token，请先查活刷新 AT"}
     if str(account.get("email_change_status") or "").strip().lower() in {

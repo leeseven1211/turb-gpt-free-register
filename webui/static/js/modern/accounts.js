@@ -1067,7 +1067,41 @@ function closeAccountDetail() {
 }
 $('#btnCloseAccountDetail')?.addEventListener('click', closeAccountDetail);
 $('#accountDetailBackdrop')?.addEventListener('click', closeAccountDetail);
-function openEmailChangeModal(id, trigger = null) {
+async function loadEmailChangeSources(preferredSource = '') {
+  const source = $('#emailChangeSource');
+  const error = $('#emailChangeSourceError');
+  if (!source) return false;
+  source.disabled = true;
+  source.innerHTML = '<option value="">正在读取邮箱来源…</option>';
+  try {
+    const result = await api('/api/email-sources');
+    const items = Array.isArray(result.sources) ? result.sources : [];
+    source.innerHTML = '<option value="">请选择邮箱来源</option>';
+    items.forEach(item => {
+      const option = document.createElement('option');
+      option.value = String(item.value || '');
+      option.textContent = item.enabled ? String(item.label || item.value) : `${item.label || item.value}（不可用）`;
+      option.disabled = !item.enabled;
+      option.title = String(item.reason || '');
+      option.dataset.reason = String(item.reason || '');
+      source.appendChild(option);
+    });
+    const enabled = items.filter(item => item.enabled);
+    const preferred = enabled.find(item => String(item.value) === preferredSource);
+    source.value = String((preferred || enabled[0] || {}).value || '');
+    source.disabled = enabled.length === 0;
+    if (!enabled.length && error) {
+      error.textContent = '没有已配置且可用的新邮箱来源';
+      error.hidden = false;
+    }
+    return enabled.length > 0;
+  } catch (err) {
+    source.innerHTML = '<option value="">邮箱来源读取失败</option>';
+    if (error) { error.textContent = `邮箱来源读取失败：${err.message}`; error.hidden = false; }
+    return false;
+  }
+}
+async function openEmailChangeModal(id, trigger = null) {
   const account = ACCOUNTS.find(item => Number(item.id) === Number(id));
   if (!account) { showToast('账号详情暂不可用，请先刷新列表'); return; }
   const modal = $('#emailChangeModal');
@@ -1078,14 +1112,12 @@ function openEmailChangeModal(id, trigger = null) {
   modal.dataset.accountId = String(account.id);
   $('#emailChangeAccountLabel').textContent = `账号 #${account.id} · 当前邮箱 ${account.email || '-'}`;
   const preferredSource = String(account.email_source || '').trim().toLowerCase();
-  source.value = Array.from(source.options || []).some(option => option.value === preferredSource)
-    ? preferredSource
-    : '';
   source.setCustomValidity('');
   if (error) { error.textContent = ''; error.hidden = true; }
   modal.classList.remove('hidden');
   modal.setAttribute('aria-hidden', 'false');
   updateModalScrollLock();
+  await loadEmailChangeSources(preferredSource);
   source.focus({preventScroll:true});
 }
 function closeEmailChangeModal({restoreFocus = true} = {}) {
