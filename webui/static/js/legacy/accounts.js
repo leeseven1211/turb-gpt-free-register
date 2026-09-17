@@ -2,6 +2,7 @@
 let accountsLoading = false;
 let planStatusLoading = false;
 let planStatusRevision = '';
+let legacyEmailChangeReturnFocus = null;
 function getAccountOperationWorkers() {
   const configured = (typeof CONFIG !== 'undefined' && Array.isArray(CONFIG))
     ? CONFIG.find(item => item.key === 'ACCOUNT_BATCH_WORKERS')
@@ -350,7 +351,7 @@ function renderAccounts() {
       <td class="actions actions-cell">
         <div class="account-row-actions">
           <div class="account-action-group"><button class="good" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button></div>
-          <div class="account-action-group">${r.account_status === 'deactivated' ? '' : `<button data-account-live-check="${esc(r.id)}" title="只在线验证现有 Token；不会发送邮箱验证码或刷新 AT">查活</button> <button data-account-token-refresh="${esc(r.id)}" title="通过邮箱 OTP 重新登录并刷新最新 AT">刷新AT</button>`} <button data-account-live-log="${esc(r.email)}" title="查看该账号最近一次查活日志">查活日志</button> ${_planAction(r)} ${_extractLinkAction(r)}</div>
+          <div class="account-action-group">${r.account_status === 'deactivated' ? '' : `<button data-account-email-change="${esc(r.id)}" title="协议自动领取新邮箱并换绑；不会启动浏览器">换绑邮箱</button> <button data-account-live-check="${esc(r.id)}" title="只在线验证现有 Token；不会发送邮箱验证码或刷新 AT">查活</button> <button data-account-token-refresh="${esc(r.id)}" title="通过邮箱 OTP 重新登录并刷新最新 AT">刷新AT</button>`} <button data-account-live-log="${esc(r.email)}" title="查看该账号最近一次查活日志">查活日志</button> ${_planAction(r)} ${_extractLinkAction(r)}</div>
           <div class="account-action-group">${_codexAction(r)} <button data-codex-log="${esc(r.email)}" title="查看该账号最近一次 Codex 补跑日志">补跑日志</button></div>
           <div class="account-action-group danger-zone"><button data-account-archive="${esc(r.id)}" data-archived="${r.archived ? '0' : '1'}" title="${r.archived ? '恢复到默认账号列表' : '归档后默认账号列表不再显示'}">${r.archived ? '恢复' : '归档'}</button> <button class="danger" data-account-delete="${esc(r.id)}" data-email="${esc(r.email)}">删除</button></div>
         </div>
@@ -484,8 +485,106 @@ document.addEventListener('click', async (e) => {
   }
 }, true);
 
+function openLegacyEmailChangeModal(id, trigger = null) {
+  const account = ACCOUNTS.find(item => Number(item.id) === Number(id));
+  const modal = $('#emailChangeModal');
+  const source = $('#emailChangeSource');
+  const error = $('#emailChangeSourceError');
+  if (!account || !modal || !source) { showToast('账号详情暂不可用，请刷新后重试'); return; }
+  legacyEmailChangeReturnFocus = trigger || document.activeElement;
+  modal.dataset.accountId = String(account.id);
+  $('#emailChangeAccountLabel').textContent = `账号 #${account.id} · 当前邮箱 ${account.email || '-'}`;
+  const preferredSource = String(account.email_source || '').trim().toLowerCase();
+  source.value = Array.from(source.options || []).some(option => option.value === preferredSource)
+    ? preferredSource
+    : '';
+  source.setCustomValidity('');
+  if (error) { error.textContent = ''; error.hidden = true; }
+  modal.classList.remove('hidden');
+  modal.setAttribute('aria-hidden', 'false');
+  updateModalScrollLock();
+  source.focus({preventScroll:true});
+}
+function closeLegacyEmailChangeModal({restoreFocus = true} = {}) {
+  const modal = $('#emailChangeModal');
+  if (!modal || modal.classList.contains('hidden')) return;
+  modal.classList.add('hidden');
+  modal.setAttribute('aria-hidden', 'true');
+  modal.dataset.accountId = '';
+  updateModalScrollLock();
+  if (restoreFocus && legacyEmailChangeReturnFocus?.isConnected) {
+    legacyEmailChangeReturnFocus.focus({preventScroll:true});
+  }
+  legacyEmailChangeReturnFocus = null;
+}
+async function submitLegacyEmailChange(event) {
+  event.preventDefault();
+  const modal = $('#emailChangeModal');
+  const source = $('#emailChangeSource');
+  const error = $('#emailChangeSourceError');
+  const submit = $('#btnSubmitEmailChange');
+  const accountId = Number(modal?.dataset.accountId || 0);
+  const account = ACCOUNTS.find(item => Number(item.id) === accountId);
+  source?.setCustomValidity?.('');
+  if (!accountId || !account) { closeLegacyEmailChangeModal(); showToast('账号已不在当前列表'); return; }
+  if (!source?.checkValidity() || !source.value) {
+    source?.setCustomValidity?.('请选择新邮箱来源');
+    if (error) { error.textContent = '请选择新邮箱来源'; error.hidden = false; }
+    source?.reportValidity();
+    source?.focus();
+    return;
+  }
+  if (error) { error.textContent = ''; error.hidden = true; }
+  if (submit) { submit.disabled = true; submit.textContent = '提交中…'; }
+  try {
+    const result = await api(`/api/accounts/${encodeURIComponent(accountId)}/email-change`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({email_source: source.value}),
+    });
+    showToast(result.message || `邮箱换绑已入队 · 任务 #${result.task_id || '-'}`);
+    closeLegacyEmailChangeModal({restoreFocus:false});
+    loadAccounts();
+  } catch (err) {
+    const message = `提交失败：${err.message}`;
+    if (error) { error.textContent = message; error.hidden = false; }
+    showToast('换绑邮箱失败: ' + err.message);
+  } finally {
+    if (submit) { submit.disabled = false; submit.textContent = '开始换绑'; }
+  }
+}
+$('#btnCloseEmailChange')?.addEventListener('click', () => closeLegacyEmailChangeModal());
+$('#btnCancelEmailChange')?.addEventListener('click', () => closeLegacyEmailChangeModal());
+$('#emailChangeForm')?.addEventListener('submit', submitLegacyEmailChange);
+$('#emailChangeModal')?.addEventListener('click', event => {
+  if (event.target.id === 'emailChangeModal') closeLegacyEmailChangeModal();
+});
+document.addEventListener('keydown', event => {
+  const modal = $('#emailChangeModal');
+  if (!modal || modal.classList.contains('hidden')) return;
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeLegacyEmailChangeModal();
+    return;
+  }
+  if (event.key !== 'Tab') return;
+  const controls = Array.from(modal.querySelectorAll('button, select, [href], [tabindex]:not([tabindex="-1"])'))
+    .filter(item => !item.disabled && !item.hidden);
+  if (!controls.length) return;
+  const first = controls[0];
+  const last = controls[controls.length - 1];
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+});
+
 // 账号操作按钮（事件委托）
 $('#accountsBody').addEventListener('click', async (e) => {
+  const emailChangeBtn = e.target.closest('[data-account-email-change]');
+  if (emailChangeBtn) {
+    openLegacyEmailChangeModal(Number(emailChangeBtn.dataset.accountEmailChange), emailChangeBtn);
+    return;
+  }
+
   const totpQueryBtn = e.target.closest('[data-account-totp-code]');
   if (totpQueryBtn) {
     const id = Number(totpQueryBtn.dataset.accountTotpCode);

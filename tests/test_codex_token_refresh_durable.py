@@ -149,6 +149,7 @@ class CodexTokenRefreshSubmissionTests(TestCase):
         with (
             patch.object(service.db, "list_codex_accounts", return_value=[self._row()]),
             patch.object(service.db, "get_account_by_email", return_value={"id": 17}),
+            patch.object(service.operation_runtime_store, "list_reconciliation_accounts", return_value=[]),
             patch.object(service.operation_runtime_store, "active_run_for_account", return_value={"id": 99, "task_id": 98, "status": "queued"}),
             patch.object(service, "_register_worker"),
         ):
@@ -341,6 +342,7 @@ class CodexTokenRefreshSubmissionTests(TestCase):
         with (
             patch.object(service._cfg, "CODEX_TOKEN_AUTO_REFRESH_ENABLED", True),
             patch.object(service.db, "list_codex_accounts", return_value=[row]),
+            patch.object(service.db, "get_account_by_email", return_value={"id": 17}),
             patch.object(service, "_reconcile_abandoned_refresh_markers", return_value=0),
             patch.object(
                 service.operation_runtime_store,
@@ -391,8 +393,15 @@ class CodexTokenRefreshDurablePostgresTests(PostgresTestCase):
     def setUp(self):
         task_gateway.unregister_operation_handler(service.TASK_TYPE)
         service._HANDLER_REGISTERED = False
+        self.auto_refresh_patch = patch.object(
+            service._cfg,
+            "CODEX_TOKEN_AUTO_REFRESH_ENABLED",
+            True,
+        )
+        self.auto_refresh_patch.start()
 
     def tearDown(self):
+        self.auto_refresh_patch.stop()
         task_gateway.unregister_operation_handler(service.TASK_TYPE)
         service._HANDLER_REGISTERED = False
 

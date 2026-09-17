@@ -29,7 +29,7 @@ class ConfigSchemaTests(unittest.TestCase):
     def test_schema_owns_unique_fields_and_editor_consumes_it(self):
         fields = CONFIG_SCHEMA.fields
         self.assertEqual(len(fields), len({field.key for field in fields}))
-        self.assertEqual(196, len(fields))
+        self.assertEqual(198, len(fields))
         canonical = config_schema._legacy_fields()
         self.assertEqual(len(canonical), len({field["key"] for field in canonical}))
         self.assertEqual(

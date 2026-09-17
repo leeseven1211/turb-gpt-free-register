@@ -379,6 +379,42 @@
 </main>
 
 <div id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+<div class="email-change-modal hidden" id="emailChangeModal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="emailChangeTitle" aria-describedby="emailChangeNote">
+  <div class="email-change-dialog" role="document">
+    <div class="email-change-head">
+      <div>
+        <div class="data-panel-kicker">PROTOCOL OPERATION</div>
+        <h2 id="emailChangeTitle">换绑邮箱</h2>
+        <p id="emailChangeAccountLabel"></p>
+      </div>
+      <button type="button" class="btn email-change-close" id="btnCloseEmailChange" aria-label="关闭换绑邮箱">×</button>
+    </div>
+    <form id="emailChangeForm" class="email-change-form" novalidate>
+      <label class="email-change-field" for="emailChangeSource">
+        <span>新邮箱来源</span>
+        <select id="emailChangeSource" name="email_source" required aria-describedby="emailChangeSourceHelp emailChangeSourceError">
+          <option value="">请选择邮箱来源</option>
+          <option value="outlook">Outlook 邮箱池</option>
+          <option value="generic_api">通用 API 邮箱</option>
+          <option value="cloudflare_domain">Cloudflare 域名邮箱</option>
+          <option value="cloudflare">Cloudflare 临时邮箱</option>
+          <option value="email_butler">Email Butler</option>
+          <option value="gptmail">GPTMail</option>
+          <option value="mailnest">MailNest</option>
+          <option value="cloudmail">CloudMail</option>
+          <option value="icloud_hide">iCloud 隐藏邮箱</option>
+        </select>
+        <small id="emailChangeSourceHelp">系统会从所选邮箱池自动领取新地址，并读取新邮箱验证码。</small>
+        <small class="email-change-error" id="emailChangeSourceError" role="alert" hidden></small>
+      </label>
+      <div class="email-change-note" id="emailChangeNote">换绑、Recent Login 和验证码校验全部走协议任务，不会启动浏览器。成功写回后会自动创建一次协议查活任务刷新 AT。</div>
+      <div class="email-change-foot">
+        <button type="button" class="btn" id="btnCancelEmailChange">取消</button>
+        <button type="submit" class="btn primary" id="btnSubmitEmailChange">开始换绑</button>
+      </div>
+    </form>
+  </div>
+</div>
 <div id="qrPanel" class="body hidden" role="dialog" aria-modal="true" aria-labelledby="legacyQrPanelTitle">
   <h3 id="legacyQrPanelTitle">支付二维码 <button class="btn" onclick="closeQrModal()">关闭</button></h3>
   <img id="qrImage" alt="支付二维码">

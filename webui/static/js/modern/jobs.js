@@ -628,7 +628,8 @@ function updateModalScrollLock() {
     || !$('#accountTaskLogPanel').classList.contains('hidden')
     || !$('#qrPanel').classList.contains('hidden')
     || !$('#outlookImportModal').classList.contains('hidden')
-    || !$('#accountDetailDrawer').classList.contains('hidden');
+    || !$('#accountDetailDrawer').classList.contains('hidden')
+    || !$('#emailChangeModal').classList.contains('hidden');
   const locked = document.body.classList.contains('modal-open');
   if (opened && !locked) {
     modalScrollY = window.scrollY || document.documentElement.scrollTop || 0;

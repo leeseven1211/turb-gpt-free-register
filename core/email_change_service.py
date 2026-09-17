@@ -40,13 +40,26 @@ def _config_snapshot():
     return get_config_snapshot()
 
 
-class RemoteRequestRejected(RuntimeError):
+class _RemoteRequestError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        http_status: int | None = None,
+        remote_error_code: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.http_status = int(http_status) if http_status is not None else None
+        self.remote_error_code = str(remote_error_code or "").strip() or None
+
+
+class RemoteRequestRejected(_RemoteRequestError):
     """The remote endpoint returned an explicit, safe rejection."""
 
     remote_response_observed = True
 
 
-class RemoteRequestUnknown(RuntimeError):
+class RemoteRequestUnknown(_RemoteRequestError):
     """The transport result crossed a write boundary but is not known."""
 
     request_unknown = True
@@ -71,17 +84,25 @@ class EmailChangeProtocol:
     _BASE_URL = "https://chatgpt.com"
 
     @staticmethod
-    def _response_error(response: Any) -> str:
+    def _response_error_code(response: Any) -> str:
         try:
             payload = response.json()
         except Exception:
-            payload = None
+            return ""
+        raw_code = ""
         if isinstance(payload, dict):
             error = payload.get("error")
             if isinstance(error, dict):
-                return str(error.get("message") or error.get("code") or payload)[:500]
-            return str(error or payload)[:500]
-        return str(getattr(response, "text", "") or f"HTTP {getattr(response, 'status_code', '?')}")[:500]
+                raw_code = str(error.get("code") or "").strip()
+            elif isinstance(error, str):
+                raw_code = error.strip()
+            if not raw_code:
+                raw_code = str(payload.get("code") or "").strip()
+        if not raw_code or len(raw_code) > 120:
+            return ""
+        if not all(char.isalnum() or char in "._:-" for char in raw_code):
+            return ""
+        return raw_code
 
     def _post(self, session: BrowserSession, path: str, access_token: str, payload: dict) -> dict:
         headers = dict(session.get_chatgpt_headers(referer="https://chatgpt.com/") or {})
@@ -99,22 +120,40 @@ class EmailChangeProtocol:
         )
         status_code = int(getattr(response, "status_code", 0) or 0)
         if status_code != 200:
-            error = self._response_error(response)
+            error_code = self._response_error_code(response)
+            suffix = f" ({error_code})" if error_code else ""
             if status_code == 408 or status_code == 429 or status_code >= 500:
                 raise RemoteRequestUnknown(
-                    f"{path} 返回 {status_code}，远端结果待确认: {error}"
+                    f"{path} 返回 {status_code}{suffix}，远端结果待确认",
+                    http_status=status_code,
+                    remote_error_code=error_code,
                 )
             raise RemoteRequestRejected(
-                f"{path} 返回 {status_code}: {error}"
+                f"{path} 返回 {status_code}{suffix}",
+                http_status=status_code,
+                remote_error_code=error_code,
             )
         try:
             result = response.json()
         except Exception as exc:
-            raise RemoteRequestUnknown(f"{path} 返回不是 JSON，远端结果待确认") from exc
+            raise RemoteRequestUnknown(
+                f"{path} 返回不是 JSON，远端结果待确认",
+                http_status=status_code,
+                remote_error_code="invalid_json",
+            ) from exc
         if not isinstance(result, dict):
-            raise RemoteRequestUnknown(f"{path} 返回格式异常，远端结果待确认")
+            raise RemoteRequestUnknown(
+                f"{path} 返回格式异常，远端结果待确认",
+                http_status=status_code,
+                remote_error_code="invalid_response_shape",
+            )
         if not result.get("success"):
-            raise RemoteRequestRejected(f"{path} 返回失败: {self._response_error(response)}")
+            error_code = self._response_error_code(response) or "remote_rejected"
+            raise RemoteRequestRejected(
+                f"{path} 返回失败 ({error_code})",
+                http_status=status_code,
+                remote_error_code=error_code,
+            )
         return result
 
     def begin(self, session: BrowserSession, access_token: str, new_email: str) -> dict:
@@ -135,8 +174,29 @@ class EmailChangeProtocol:
 
 
 def _is_reauth_required(exc: BaseException) -> bool:
+    error_code = str(getattr(exc, "remote_error_code", "") or "").strip().lower()
+    normalized_code = error_code.replace("-", "_").replace(" ", "_")
+    if normalized_code in {"reauth_required", "recent_login_required", "step_up_required"}:
+        return True
     text = str(exc or "").strip().lower()
-    return "reauth_required" in text or "recent login required" in text
+    normalized_text = text.replace("-", "_")
+    return any(marker in normalized_text for marker in (
+        "reauth_required",
+        "recent_login_required",
+        "recent login required",
+        "step_up_required",
+    ))
+
+
+def _safe_remote_error_detail(exc: BaseException) -> dict[str, Any]:
+    detail: dict[str, Any] = {}
+    http_status = getattr(exc, "http_status", None)
+    if http_status is not None:
+        detail["http_status"] = int(http_status)
+    error_code = str(getattr(exc, "remote_error_code", "") or "").strip()
+    if error_code:
+        detail["remote_error_code"] = error_code[:120]
+    return detail
 
 
 def _access_token(value: Mapping[str, Any] | None) -> str:
@@ -184,6 +244,7 @@ def begin_change_with_optional_reauth(
                         "response_observed": isinstance(exc, RemoteRequestRejected),
                         "reauth_required": False,
                         "exception_type": type(exc).__name__,
+                        **_safe_remote_error_detail(exc),
                     },
                 )
                 if not isinstance(exc, RemoteRequestRejected):
@@ -195,7 +256,11 @@ def begin_change_with_optional_reauth(
                 outcome="rejected",
                 action="change_email.begin",
                 request_id=first_request_id,
-                detail={"response_observed": True, "reauth_required": True},
+                detail={
+                    "response_observed": True,
+                    "reauth_required": True,
+                    **_safe_remote_error_detail(exc),
+                },
             )
             context.report(
                 stage="login_password",
@@ -232,13 +297,17 @@ def begin_change_with_optional_reauth(
             protocol.begin(session, token, new_email)
         except task_gateway.OperationLeaseLost:
             raise
-        except RemoteRequestRejected:
+        except RemoteRequestRejected as second_exc:
             if context is not None:
                 context.remote_request_receipt(
                     outcome="rejected",
                     action="change_email.begin",
                     request_id=second_request_id,
-                    detail={"response_observed": True, "phase": "recent_login"},
+                    detail={
+                        "response_observed": True,
+                        "phase": "recent_login",
+                        **_safe_remote_error_detail(second_exc),
+                    },
                 )
             raise
         except Exception as second_exc:
@@ -247,7 +316,11 @@ def begin_change_with_optional_reauth(
                     outcome="unknown",
                     action="change_email.begin",
                     request_id=second_request_id,
-                    detail={"response_observed": False, "phase": "recent_login"},
+                    detail={
+                        "response_observed": False,
+                        "phase": "recent_login",
+                        **_safe_remote_error_detail(second_exc),
+                    },
                 )
                 raise RemoteRequestUnknown("begin 重认证后请求结果待确认") from second_exc
             raise
@@ -475,7 +548,10 @@ def _handle_email_change(context):
                     outcome="rejected",
                     action="change_email.verify",
                     request_id=verify_request_id,
-                    detail={"response_observed": True},
+                    detail={
+                        "response_observed": True,
+                        **_safe_remote_error_detail(exc),
+                    },
                 )
                 db.finish_account_email_change(
                     account_id,
@@ -491,7 +567,11 @@ def _handle_email_change(context):
                     outcome="unknown",
                     action="change_email.verify",
                     request_id=verify_request_id,
-                    detail={"response_observed": False, "exception_type": type(exc).__name__},
+                    detail={
+                        "response_observed": False,
+                        "exception_type": type(exc).__name__,
+                        **_safe_remote_error_detail(exc),
+                    },
                 )
                 db.finish_account_email_change(
                     account_id,

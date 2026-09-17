@@ -52,7 +52,7 @@ def test_unified_runner_removes_all_application_environment_keys():
     # The registry is an independent truth source. Do not derive the expected
     # set from collect_application_env_keys itself: that would let a scanner
     # regression silently redefine what “isolated” means.
-    assert len(schema_keys) == 195
+    assert len(schema_keys) == 198
     assert schema_keys.isdisjoint(environment)
     reset_keys = {
         "DATABASE_URL",

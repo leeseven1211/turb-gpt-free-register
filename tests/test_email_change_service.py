@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 from flask import Flask
 
-from core import record_store, task_run_log
+from core import account_task_store, record_store, task_run_log
 from core.record_store import ACCOUNTS
 from core.operations import task_gateway
 from core.storage import operation
@@ -27,6 +27,41 @@ class _Response:
 
 
 class EmailChangeProtocolContractTests(unittest.TestCase):
+    def test_remote_rejection_exposes_only_safe_status_and_error_code(self):
+        from core.email_change_service import EmailChangeProtocol, RemoteRequestRejected
+
+        session = Mock()
+        session.get_chatgpt_headers.return_value = {}
+        session.device_id = "device-test"
+        session.navigator_language.return_value = "en-US"
+        session.post.return_value = _Response(
+            {
+                "error": {
+                    "code": "invalid_email",
+                    "message": "new-user@example.test is not allowed",
+                }
+            },
+            status_code=400,
+        )
+
+        with self.assertRaises(RemoteRequestRejected) as caught:
+            EmailChangeProtocol().begin(session, "at-test", "new-user@example.test")
+
+        self.assertEqual(400, caught.exception.http_status)
+        self.assertEqual("invalid_email", caught.exception.remote_error_code)
+        self.assertNotIn("new-user@example.test", str(caught.exception))
+
+    def test_recent_login_error_code_is_recognized_without_message_matching(self):
+        from core.email_change_service import RemoteRequestRejected, _is_reauth_required
+
+        exc = RemoteRequestRejected(
+            "change_email begin rejected",
+            http_status=403,
+            remote_error_code="recent_login_required",
+        )
+
+        self.assertTrue(_is_reauth_required(exc))
+
     def test_change_request_does_not_replay_after_transport_failure(self):
         from core.email_change_service import EmailChangeProtocol
 
@@ -115,6 +150,10 @@ class EmailChangeProtocolContractTests(unittest.TestCase):
 
 class EmailChangeStorageTests(PostgresTestCase):
     def setUp(self):
+        self.account_task_schema_patch = patch.object(account_task_store, "_SCHEMA", self.schema)
+        self.account_task_ready_patch = patch.object(account_task_store, "_READY_KEY", "")
+        self.account_task_schema_patch.start()
+        self.account_task_ready_patch.start()
         record_store.reset_ready()
         operation.reset_ready()
         record_store.init()
@@ -129,6 +168,10 @@ class EmailChangeStorageTests(PostgresTestCase):
                 "extra_json": '{"account_password":"keep-me","email_change_marker":"old"}',
             },
         )
+
+    def tearDown(self):
+        self.account_task_ready_patch.stop()
+        self.account_task_schema_patch.stop()
 
     def test_writeback_is_atomic_and_preserves_original_mailbox_material(self):
         from core.storage import accounts
@@ -178,6 +221,10 @@ class EmailChangeDurableOperationTests(PostgresTestCase):
         self.log_dir = tempfile.TemporaryDirectory()
         self.log_patch = patch.object(task_run_log, "_LOG_ROOT", Path(self.log_dir.name))
         self.log_patch.start()
+        self.account_task_schema_patch = patch.object(account_task_store, "_SCHEMA", self.schema)
+        self.account_task_ready_patch = patch.object(account_task_store, "_READY_KEY", "")
+        self.account_task_schema_patch.start()
+        self.account_task_ready_patch.start()
         record_store.reset_ready()
         operation.reset_ready()
         record_store.init()
@@ -189,6 +236,8 @@ class EmailChangeDurableOperationTests(PostgresTestCase):
 
     def tearDown(self):
         task_gateway.unregister_operation_handler("email_change")
+        self.account_task_ready_patch.stop()
+        self.account_task_schema_patch.stop()
         self.log_patch.stop()
         self.log_dir.cleanup()
 

@@ -684,6 +684,129 @@ tr:hover td,
   background: var(--ui-color-surface-subtle);
 }
 
+/* Protocol-only email change dialog */
+.email-change-modal {
+  position: fixed;
+  z-index: 5000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(15, 23, 42, .48);
+  backdrop-filter: blur(2px);
+}
+
+.email-change-modal.hidden {
+  display: none !important;
+}
+
+.email-change-dialog {
+  width: min(520px, 100%);
+  max-height: min(720px, calc(100dvh - 32px));
+  overflow: auto;
+  border: 1px solid var(--ui-color-border);
+  border-radius: var(--ui-radius-lg);
+  background: var(--ui-color-surface);
+  box-shadow: var(--ui-shadow-lg, 0 20px 50px rgba(15, 23, 42, .2));
+}
+
+.email-change-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--ui-space-4);
+  padding: 22px 22px 16px;
+  border-bottom: 1px solid var(--ui-color-border);
+}
+
+.email-change-head h2 {
+  margin-top: 4px;
+  color: var(--ui-color-text);
+  font-size: 20px;
+  line-height: 1.25;
+}
+
+.email-change-head p {
+  max-width: 390px;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-xs);
+  line-height: 1.5;
+}
+
+.email-change-close {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  font-size: 20px;
+}
+
+.email-change-modal .account-detail-close {
+  width: 44px;
+  height: 44px;
+}
+
+.email-change-form {
+  display: grid;
+  gap: 16px;
+  padding: 20px 22px 22px;
+}
+
+.email-change-field {
+  display: grid;
+  gap: 7px;
+  color: var(--ui-color-text-secondary);
+  font-size: var(--ui-font-size-sm);
+  font-weight: 650;
+}
+
+.email-change-field select {
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--ui-color-border-strong);
+  border-radius: var(--ui-radius-md);
+  color: var(--ui-color-text);
+  background: var(--ui-color-surface);
+  font: inherit;
+  font-weight: 400;
+}
+
+.email-change-field select:focus-visible,
+.email-change-modal button:focus-visible {
+  outline: 2px solid var(--ui-color-brand);
+  outline-offset: 2px;
+}
+
+.email-change-field small {
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-xs);
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.email-change-field .email-change-error {
+  color: var(--ui-color-danger);
+}
+
+.email-change-note {
+  padding: 10px 12px;
+  border: 1px solid rgba(79, 81, 190, .2);
+  border-radius: var(--ui-radius-md);
+  color: var(--ui-color-text-secondary);
+  background: var(--ui-color-brand-soft, rgba(79, 81, 190, .06));
+  font-size: var(--ui-font-size-xs);
+  line-height: 1.55;
+}
+
+.email-change-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 2px;
+}
+
 .account-detail-body {
   display: grid;
   gap: 20px;
@@ -779,6 +902,28 @@ tr:hover td,
 
   .account-detail-grid {
     grid-template-columns: 1fr;
+  }
+
+  .email-change-modal {
+    padding: 10px;
+  }
+
+  .email-change-dialog {
+    max-height: calc(100dvh - 20px);
+  }
+
+  .email-change-head,
+  .email-change-form {
+    padding-inline: 16px;
+  }
+
+  .email-change-foot {
+    flex-direction: column-reverse;
+  }
+
+  .email-change-foot button {
+    width: 100%;
+    min-height: 44px;
   }
 }
 
