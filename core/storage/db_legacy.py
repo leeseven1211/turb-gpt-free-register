@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DATA_DIR = _PROJECT_ROOT
 _LEGACY_DATA_DIR = _PROJECT_ROOT / "data"
-_LOG_DIR = _PROJECT_ROOT / "注册日志"
+_LOG_DIR = _PROJECT_ROOT / "logs"
 _PLAN_CHECK_STALE_SECONDS = 120
 _PLAN_CHECK_QUEUE_STALE_SECONDS = 1800
 
@@ -2940,7 +2940,7 @@ def _new_job_row(
         run_no=max(1, int(retry_attempt or 0) + 1),
         run_uuid=job_uuid,
     )
-    Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+    task_run_log.resolve_path(log_file, for_write=True).parent.mkdir(parents=True, exist_ok=True)
     return {
         "job_uuid": job_uuid,
         "job_type": job_type,
@@ -3787,7 +3787,7 @@ def delete_jobs(job_ids: list[int], *, delete_log: bool = True, allow_running: b
             if not log_file:
                 continue
             try:
-                Path(str(log_file)).unlink(missing_ok=True)
+                task_run_log.resolve_path(str(log_file)).unlink(missing_ok=True)
             except Exception:
                 pass
     return rows, skipped

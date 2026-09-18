@@ -998,7 +998,7 @@ passwordless 入口之后允许出现三种中间态，不能假设“一点就�
 - 使用账号当前 route，不能在 Roxy 内再随机选代理。
 - 成功、失败、取消都在 `finally` 中 quit driver、关闭/软删除 Profile、释放 route。
 - `ROXY_KEEP_BROWSER_OPEN=True` 只用于人工诊断；任务终态必须显示“等待人工关闭”，不能假装资源已释放。
-- 进程崩溃依赖现有 `run/roxy_active_profiles.json` 孤儿清理；新设计不另建第二份 Profile 注册表。
+- 进程崩溃依赖现有 `logs/run/roxy_active_profiles.json` 孤儿清理；新设计不另建第二份 Profile 注册表。
 
 ## 11. fallback 决策表
 

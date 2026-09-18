@@ -874,7 +874,7 @@ WebUI 配置页按步骤展示“浏览器（默认）/现有协议/Protocol v2�
 9. 任务事件准确显示密码、MFA、邮箱 OTP 和 fallback 的实际状态。
 10. PostgreSQL 并发、启动恢复、列表紧凑响应和敏感字段测试全部通过。
 11. 单账号灰度没有出现意外注册、重复 OTP、重复密码提交或账号行数变化。
-12. 完整测试、`ruff check .`、`git diff --check` 通过，且没有修改/提交 `.env`、日志、`run/`、账号、Token、邮箱池和 `.venv/`。
+12. 完整测试、`ruff check .`、`git diff --check` 通过，且没有修改/提交 `.env`、日志、`logs/run/`、账号、Token、邮箱池和 `.venv/`。
 13. 每个步骤都能独立选择浏览器或可用协议实现；默认浏览器，全局关闭 v2 只覆盖选择 v2 的步骤。
 14. 步骤选择浏览器时直接创建主路径 Profile；步骤选择 Protocol 时，fallback 关闭不创建 Profile，开启且命中 allowlist 时最多启动一次独立 fallback run。
 15. browser_current/protocol_current 的 characterization tests 与上线前基线一致，且没有删除当前密码、查活、邮箱 OTP、TOTP/2FA 或 Roxy 入口。

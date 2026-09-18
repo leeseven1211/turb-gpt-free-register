@@ -98,10 +98,10 @@ account_task_store.append_event(stage, message, level, detail)
 - `registration_events`：注册尝试的领域检查点；
 - `account_action_events`：账号任务自由文本事件；
 - `operation_events`：统一任务中心的兼容投影和原生事件；
-- `注册日志/<job_uuid>.log`：注册任务文件日志；
-- `注册日志/live-check-<email>.log`：按邮箱覆盖/追加的查活日志；
-- `注册日志/codex-retry-<email>.log`：按邮箱保存的 Codex 日志；
-- `注册日志/debug/<job_uuid>/`：失败诊断产物。
+- `logs/tasks/<task_uuid>/runs/<run_no>-<run_uuid>/run.jsonl`：注册和账号任务的 Run 日志；
+- `logs/live-check-<email>.log`：按邮箱覆盖/追加的查活日志；
+- `logs/codex-retry-<email>.log`：按邮箱保存的 Codex 日志；
+- `logs/debug/<job_uuid>/`：失败诊断产物。
 
 按邮箱命名的日志不能天然区分多次 Run；不同任务的文件格式和生命周期也不一致。统一任务详情虽然读取了 `operation_events`，但还没有统一“技术日志”的读取协议。
 
@@ -238,7 +238,7 @@ reporter.run_succeeded(result_summary=safe_summary)
 统一目录建议：
 
 ```text
-注册日志/tasks/<task_uuid>/runs/<run_no>-<run_uuid>/
+logs/tasks/<task_uuid>/runs/<run_no>-<run_uuid>/
   run.jsonl
   artifacts/
     manifest.json

@@ -35,7 +35,7 @@ Protocol = Roxy 流程中的阶段级辅助和加速通道
 
 - 使用独立分支或 worktree。
 - 存储改动使用独立开发数据库。
-- 不修改 `.env`、账号、Token、邮箱池、日志、`run/`、`.venv/`。
+- 不修改 `.env`、账号、Token、邮箱池、日志、`logs/run/`、`.venv/`。
 - 不执行 `rm -r` / `rm -rf`。
 - 先认领 [registration-parallel-workstreams.md](/Users/lihongwei/code/personal/gpt/turb-gpt-free-register/docs/registration-parallel-workstreams.md) 中的一个工作流。
 - 先提交契约测试，再接入实现。

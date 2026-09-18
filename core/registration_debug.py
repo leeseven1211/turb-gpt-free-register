@@ -30,7 +30,8 @@ from core.task_stages import EVENT_TYPES, normalize_stage, normalize_wait_reason
 logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_ARTIFACT_ROOT = _PROJECT_ROOT / "注册日志" / "debug"
+_ARTIFACT_ROOT = _PROJECT_ROOT / "logs" / "debug"
+_LEGACY_ARTIFACT_ROOT = _PROJECT_ROOT / "注册日志" / "debug"
 _CURRENT_SESSION: contextvars.ContextVar["RegistrationDebugSession | None"] = contextvars.ContextVar(
     "registration_debug_session",
     default=None,
@@ -1647,9 +1648,17 @@ def _artifact_dir_for_job(job: dict) -> Path:
     path = Path(configured) if configured else _safe_artifact_dir(job)
     resolved_root = _ARTIFACT_ROOT.resolve()
     resolved = path.resolve()
-    if resolved != resolved_root and resolved_root not in resolved.parents:
-        raise ValueError("调试产物路径不在允许目录")
-    return resolved
+    if resolved == resolved_root or resolved_root in resolved.parents:
+        return resolved
+
+    legacy_root = _LEGACY_ARTIFACT_ROOT.resolve()
+    if resolved == legacy_root or legacy_root in resolved.parents:
+        mapped = resolved_root / resolved.relative_to(legacy_root)
+        if mapped.exists():
+            return mapped
+        return resolved
+
+    raise ValueError("调试产物路径不在允许目录")
 
 
 def read_events(job: dict, *, limit: int = 300, errors_only: bool = False) -> list[dict]:

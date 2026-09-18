@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 _GRIZZLY_CANCEL_INITIAL_DELAY = 305
 _GRIZZLY_CANCEL_EARLY_BACKOFF = (60, 120, 300, 600)
 _GRIZZLY_CANCEL_ERROR_BACKOFF = (30, 60, 120, 300, 600)
-_CANCEL_QUEUE_PATH = Path(__file__).resolve().parent.parent / "run" / "sms_cancel_queue.json"
+_CANCEL_QUEUE_PATH = Path(__file__).resolve().parent.parent / "logs" / "run" / "sms_cancel_queue.json"
 
 # 记录每个 activation_id 的取号时间与服务端 activationTime；返回值仍保持二元组，
 # 避免影响现有调用方。持久化取消队列只保存 activation_id/时间，不含 API key/手机号。
@@ -1350,7 +1350,7 @@ def cancel(activation_id: str, http: CurlSession | None = None, background: bool
     取消激活（status=8），释放号码避免白扣费。
 
     GrizzlySMS 不返回精确可取消时间。程序会记录 getNumberV2 的 activationTime、
-    本地取号时间和计划取消时间到 run/sms_cancel_queue.json，并由单一后台 worker
+    本地取号时间和计划取消时间到 logs/run/sms_cancel_queue.json，并由单一后台 worker
     到点发起取消；EARLY_CANCEL_DENIED 会低频退避，不做高频轮询。
 
     WebUI 重启时会恢复未完成队列。background=False 时同步等到确认取消后返回。

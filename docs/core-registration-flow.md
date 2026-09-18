@@ -139,9 +139,9 @@ ThreadPoolExecutor.submit(_run_one_job)
 - `protocol`：记录 `BrowserSession` 的 HTTP 请求、重定向、响应、耗时和异常。
 - Roxy：除 protocol 后置请求外，通过 Roxy 的 DevTools 地址为 page、iframe、worker 和 service worker 建立旁路 CDP 连接，记录请求/响应、失败、文本正文、WebSocket 帧、控制台错误和页面异常。
 
-普通模式失败现场写入同一任务目录 `注册日志/debug/<job_uuid>/`，但只在失败时创建：`last-page.png`、`last-page.json` 和仅含失败请求元数据的 `network.jsonl.gz`。页面快照包含 URL、标题、readyState、可见输入/操作元素摘要、资源时序、导航耗时和浏览器错误；不会保存请求/响应正文、Cookie、Token 或密码。任务日志面板中的「失败诊断」区域可查看分类、页面状态、失败请求和截图。
+普通模式失败现场写入同一任务目录 `logs/debug/<job_uuid>/`，但只在失败时创建：`last-page.png`、`last-page.json` 和仅含失败请求元数据的 `network.jsonl.gz`。页面快照包含 URL、标题、readyState、可见输入/操作元素摘要、资源时序、导航耗时和浏览器错误；不会保存请求/响应正文、Cookie、Token 或密码。任务日志面板中的「失败诊断」区域可查看分类、页面状态、失败请求和截图。
 
-所有事件先脱敏再进入有界异步队列，写入 `注册日志/debug/<job_uuid>/network.jsonl.gz`。密码、OTP、Token、Cookie、Authorization、邮箱和 URL 查询值不落明文；正文有单条和单任务上限，全局目录有软容量上限。容量或队列达到上限时只降级或丢弃调试数据，不得阻塞注册主流程。
+所有事件先脱敏再进入有界异步队列，写入 `logs/debug/<job_uuid>/network.jsonl.gz`。密码、OTP、Token、Cookie、Authorization、邮箱和 URL 查询值不落明文；正文有单条和单任务上限，全局目录有软容量上限。容量或队列达到上限时只降级或丢弃调试数据，不得阻塞注册主流程。
 
 Roxy 调试任务会强制显示浏览器。任务最终失败时，注册线程进入 `debug_state=paused`，保留该任务自己的窗口并等待以下任一事件：
 
@@ -660,7 +660,7 @@ pending -> cancelled
 1. 看 registration_jobs.status / job_type / account_id
 2. 看 progress_stage 和 progress_steps，定位第一个 failed/stopped 节点
 3. 若该任务开启调试，在任务日志查看网络摘要、请求差异、控制台错误；Roxy 仍暂停时先查看现场，再点击释放
-4. 看任务日志 注册日志/<job_uuid>.log
+4. 看任务日志 `logs/tasks/<task_uuid>/runs/<run_no>-<run_uuid>/run.jsonl`
 5. 如果 account_id 非空，优先检查 registered_accounts.access_token
 6. 检查账号 extra_json.registration_checkpoint
 7. 检查 codex_status、twofa、plan_check_status

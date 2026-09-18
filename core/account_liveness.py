@@ -25,7 +25,7 @@ from core.email_provider import wait_for_otp
 from core.humanize import delay as human_delay
 
 logger = logging.getLogger(__name__)
-_LOG_DIR = Path(__file__).resolve().parent.parent / "注册日志"
+_LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 _RUNNING: set[str] = set()
 _RUNNING_LOCK = threading.Lock()
 

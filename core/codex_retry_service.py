@@ -19,7 +19,7 @@ from core.registration.auth_context import AuthExecutionContext, execution_conte
 
 logger = logging.getLogger(__name__)
 
-_LOG_DIR = Path(__file__).resolve().parent.parent / "注册日志"
+_LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 _RETRYING: set[str] = set()
 _RETRYING_LOCK = threading.Lock()
 _STOP_REQUESTED: set[str] = set()
@@ -1165,7 +1165,11 @@ def run_twofa_worker(
             account_task_store.start_task(task_id, message=f"开始处理{ '、'.join(setup_labels) }")
 
         task_row = account_task_store.get_task(task_id) or {}
-        path = Path(target_log_path) if target_log_path else Path(task_row.get("log_file") or log_path(email))
+        raw_path = target_log_path or task_row.get("log_file") or log_path(email)
+        try:
+            path = task_run_log.resolve_path(raw_path, for_write=True)
+        except ValueError:
+            path = Path(raw_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         if clear_log:
             path.write_text("", encoding="utf-8")
@@ -1732,7 +1736,11 @@ def _run_worker_legacy(
         from core.codex_oauth import run_codex_oauth
 
         task_row = account_task_store.get_task(task_id) or {}
-        path = Path(target_log_path) if target_log_path else Path(task_row.get("log_file") or log_path(email))
+        raw_path = target_log_path or task_row.get("log_file") or log_path(email)
+        try:
+            path = task_run_log.resolve_path(raw_path, for_write=True)
+        except ValueError:
+            path = Path(raw_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         if clear_log:
             path.write_text("", encoding="utf-8")

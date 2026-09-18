@@ -192,9 +192,9 @@ python tools/migrate_collections_to_tables.py --verify    # 逐字段对账
 
 - `codex_accounts/*.json` —— PostgreSQL `codex_credentials` 的 CPA 兼容输出。有真实外部
   消费者（CPA 按此格式读），因此必须保留按需生成和导出能力。
-- `run/sms_cancel_queue.json` —— 待取消的接码订单队列，带退避重试。这是**欠外部
+- `logs/run/sms_cancel_queue.json` —— 待取消的接码订单队列，带退避重试。这是**欠外部
   平台的动作**，崩溃后必须恢复，本质上和 `account_action_tasks` 同类。
-- `run/roxy_active_profiles.json` —— 孤儿浏览器环境登记表，崩溃恢复用。
+- `logs/run/roxy_active_profiles.json` —— 孤儿浏览器环境登记表，崩溃恢复用。
 
-**应当继续留在文件系统**的：`注册日志/`（追加写 + 尾读）、sentinel 的子进程传参
-临时文件、`.env`（装着 `DATABASE_URL` 本身，先有鸡先有蛋）、`logs/`、`run/webui.pid`。
+**应当继续留在文件系统**的：`logs/`（WebUI、任务日志和运行时恢复状态，追加写 + 尾读）、sentinel 的子进程传参
+临时文件、`.env`（装着 `DATABASE_URL` 本身，先有鸡先有蛋）、`logs/run/webui.pid`。

@@ -1092,7 +1092,7 @@ class _JobLogContext:
         self.handler: logging.Handler | None = None
 
     def __enter__(self):
-        Path(self.log_path).parent.mkdir(parents=True, exist_ok=True)
+        task_run_log.resolve_path(self.log_path, for_write=True).parent.mkdir(parents=True, exist_ok=True)
         self.handler = task_run_log.TaskRunLogHandler(
             self.log_path,
             task_id=self.task_id,
@@ -2574,7 +2574,7 @@ def read_job_log(job_id: int, max_bytes: int = 50_000) -> str:
     job = db.get_job(job_id)
     if not job or not job.get("log_file"):
         return ""
-    p = Path(job["log_file"])
+    p = task_run_log.resolve_path(job["log_file"])
     if not p.exists():
         return ""
     payload = task_run_log.read_incremental(job.get("log_file"), limit=1000, max_bytes=max_bytes)

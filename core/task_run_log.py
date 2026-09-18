@@ -15,9 +15,10 @@ from typing import Any
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_DEFAULT_LOG_ROOT = Path(tempfile.gettempdir()) / "turb-task-logs" if "unittest" in sys.modules else _PROJECT_ROOT / "注册日志"
+_DEFAULT_LOG_ROOT = Path(tempfile.gettempdir()) / "turb-task-logs" if "unittest" in sys.modules else _PROJECT_ROOT / "logs"
 _LOG_ROOT = Path(os.getenv("TASK_RUN_LOG_ROOT") or _DEFAULT_LOG_ROOT)
 _TASK_LOG_ROOT = _LOG_ROOT / "tasks"
+_LEGACY_LOG_ROOT = _PROJECT_ROOT / "注册日志"
 _LOCK = threading.RLock()
 _SECRET_PARTS = ("password", "otp", "secret", "authorization", "cookie", "token")
 _PRIVATE_IDENTIFIER_KEYS = frozenset({
@@ -105,15 +106,34 @@ def scrub(value: Any, depth: int = 0) -> Any:
     return redact_text(value, 1000)
 
 
-def _validated_path(log_file: str | Path) -> Path:
+def resolve_path(log_file: str | Path, *, for_write: bool = False) -> Path:
+    """Resolve a task log inside the shared log directory.
+
+    Database rows created before the log-directory consolidation still point
+    at ``注册日志/``.  Reads use that path as a fallback until the files are
+    moved; writes always target the new shared ``logs/`` root.
+    """
     path = Path(str(log_file or "")).expanduser()
     if not path.is_absolute():
         path = _PROJECT_ROOT / path
     resolved = path.resolve()
     root = _LOG_ROOT.resolve()
-    if resolved != root and root not in resolved.parents:
-        raise ValueError("任务日志路径不在受控目录内")
-    return resolved
+    if resolved == root or root in resolved.parents:
+        return resolved
+
+    legacy_root = _LEGACY_LOG_ROOT.resolve()
+    if resolved == legacy_root or legacy_root in resolved.parents:
+        mapped = root / resolved.relative_to(legacy_root)
+        if for_write or mapped.exists():
+            return mapped
+        return resolved
+
+    raise ValueError("任务日志路径不在受控目录内")
+
+
+def _validated_path(log_file: str | Path, *, for_write: bool = False) -> Path:
+    """Backward-compatible internal alias for the controlled path resolver."""
+    return resolve_path(log_file, for_write=for_write)
 
 
 def append(
@@ -132,7 +152,7 @@ def append(
     if not log_file:
         return False
     try:
-        path = _validated_path(log_file)
+        path = _validated_path(log_file, for_write=True)
         if isinstance(created_at, datetime):
             ts = created_at.astimezone(timezone.utc).isoformat()
         else:

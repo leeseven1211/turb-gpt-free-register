@@ -218,7 +218,7 @@ git commit -m "docs: document database-only runtime storage"
 
 **Files:**
 - No production source changes unless verification exposes a concrete regression.
-- Inspect: all seven retired root files, `run/webui.pid`, WebUI logs, PostgreSQL counts.
+- Inspect: all seven retired root files, `logs/run/webui.pid`, WebUI logs, PostgreSQL counts.
 
 - [ ] **Step 1: Run the focused regression suite**
 

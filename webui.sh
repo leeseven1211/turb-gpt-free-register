@@ -23,8 +23,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
-RUN_DIR="$ROOT_DIR/run"
 LOG_DIR="$ROOT_DIR/logs"
+RUN_DIR="$LOG_DIR/run"
 PID_FILE="$RUN_DIR/webui.pid"
 LOG_FILE="$LOG_DIR/webui.log"
 

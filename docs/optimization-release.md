@@ -75,7 +75,7 @@ python tools/release.py rollback --releases-dir /srv/turb/releases \
 `prepare` 只接受干净 Git 工作树中的 tracked 文件，先复制到随机 staging 目录，
 写入固定 `release-manifest.json`（commit、Python 声明、文件大小/SHA-256、两份锁
 摘要），校验通过后才原子改名为 release id。`.env`、账号、Token、代理、日志、
-`run/`、`.venv/`、数据库/JSONL 运行产物和符号链接不会进入发布目录。已存在 release
+`logs/run/`、`.venv/`、数据库/JSONL 运行产物和符号链接不会进入发布目录。已存在 release
 不覆盖。
 
 `switch` 会先完整校验目标 manifest 和依赖锁，再用同目录临时符号链接执行原子替换，

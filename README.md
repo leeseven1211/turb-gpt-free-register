@@ -506,9 +506,9 @@ H_ADMIN_AUTH_CODE = "你的H后台授权码"
 等待短信和换号合计的整段硬预算。号码超时后，取消任务会交给后台持久化队列，不再阻塞注册线程。
 
 GrizzlySMS 的订单取消不是“取号后立即取消”：程序会把待取消订单持久化到
-`run/sms_cancel_queue.json`，由单一后台 worker 根据平台允许的时间执行取消。
+`logs/run/sms_cancel_queue.json`，由单一后台 worker 根据平台允许的时间执行取消。
 `EARLY_CANCEL_DENIED` 会按平台返回时间或退避策略延后处理，不会高频轮询；WebUI 重启后会自动恢复队列。
-`run/` 是运行时私有目录，不得提交 Git。手机号国家选择会按号码国际区号同步页面国家选项；如果页面明确只允许
+`logs/run/` 是运行时私有目录，不得提交 Git。手机号国家选择会按号码国际区号同步页面国家选项；如果页面明确只允许
 WhatsApp 而不是 SMS，当前号码会判为不可用并进入换号流程。
 
 CPA 授权地址来源：
@@ -580,7 +580,7 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 ./webui.sh logs       # 查看实时日志
 ```
 
-脚本默认启动 `http://127.0.0.1:5000`，日志写入 `logs/webui.log`，PID 写入 `run/webui.pid`。
+脚本默认启动 `http://127.0.0.1:5000`，日志写入 `logs/webui.log`，PID 写入 `logs/run/webui.pid`。
 `start` 会等待 `/healthz`、PostgreSQL 和必需后台 worker readiness 全部通过后才报告成功；
 `check` 不启动或重启服务。固定版本发布、回退和隔离测试见
 [`docs/optimization-release.md`](docs/optimization-release.md)。
@@ -895,7 +895,7 @@ python tools/test_codex_oauth.py --email <已注册邮箱> --verbose
 兼容文件日志仍保留用于旧版页面或本地故障排查：
 
 ```text
-注册日志/codex-retry-邮箱.log
+logs/codex-retry-邮箱.log
 ```
 
 标准 WebUI 不再从账号菜单打开该文件；日常查看以任务实例中的脱敏阶段事件为准。
@@ -969,7 +969,7 @@ WebUI 配置页保存后会调用热加载；Roxy、Codex、邮箱、代理、�
 | `accounts/` | 每次运行的批次归档 |
 | `codex_accounts/` | Codex OAuth 凭证 JSON |
 | PostgreSQL `account_action_batches/account_action_tasks/account_action_events` | 账号操作任务实例及脱敏阶段事件 |
-| `注册日志/` | 注册任务日志、兼容用 Codex 补跑文件日志 |
+| `logs/` | WebUI、注册任务、查活和 Codex 补跑日志 |
 
 批次目录示例：
 
@@ -1137,7 +1137,7 @@ ENABLE_CODEX_AUTO = False
 └── sentinel/                       # Sentinel Node.js 子进程
 ```
 
-`accounts/`、`codex_accounts/`、`注册日志/`、`run/`、`logs/`、`.env` 和 `.venv/` 等是本地运行时数据或凭证目录，故意不列入代码结构，也不得提交。
+`accounts/`、`codex_accounts/`、`logs/`、`.env` 和 `.venv/` 等是本地运行时数据或凭证目录，故意不列入代码结构，也不得提交。
 
 ---
 
@@ -1149,7 +1149,7 @@ ENABLE_CODEX_AUTO = False
 - 调试页面或接口问题时，在「发起注册」勾选「调试模式」。该开关只作用于本批任务：Roxy 强制显示窗口，抓包按任务隔离；失败后脚本暂停等待人工查看，点击「释放现场」、停止任务或达到超时后继续自动清理。
 - 在任务日志的「网络调试」区域查看请求状态、阶段、耗时和错误，可选择同批成功任务自动对比，也可下载已经脱敏和限流的 HAR。Cookie、Token、密码、OTP、邮箱和 URL 查询值不会明文写入抓包。
 - 普通失败任务在同一日志面板显示「失败诊断」：分类、页面状态、失败请求和截图；普通模式不会保存成功请求或请求/响应正文。
-- 保留时间、并发暂停数、单正文/单任务/全局容量、产物保留天数和异步队列长度在「配置 → 注册调试」管理。调试抓包位于 `注册日志/debug/<job_uuid>/`，属于运行时私有数据，不得提交。
+- 保留时间、并发暂停数、单正文/单任务/全局容量、产物保留天数和异步队列长度在「配置 → 注册调试」管理。调试抓包位于 `logs/debug/<job_uuid>/`，属于运行时私有数据，不得提交。
 
 ---
 

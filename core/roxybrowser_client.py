@@ -31,7 +31,7 @@ _HTTP_STATUS_RE = re.compile(
 _PROFILE_CREATE_LOCK = threading.Lock()
 _PROFILE_OPEN_LOCK = threading.Lock()
 _PROFILE_REGISTRY_LOCK = threading.RLock()
-_PROFILE_REGISTRY_PATH = Path(__file__).resolve().parent.parent / "run" / "roxy_active_profiles.json"
+_PROFILE_REGISTRY_PATH = Path(__file__).resolve().parent.parent / "logs" / "run" / "roxy_active_profiles.json"
 _ROXY_CLOSE_VERIFY_ATTEMPTS = 4
 _ROXY_CLOSE_VERIFY_INTERVAL = 0.5
 

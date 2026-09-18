@@ -824,7 +824,7 @@ class AuthInterfaceRun:
 
         registry_count = -1
         try:
-            registry_path = _PROJECT_ROOT / "run" / "roxy_active_profiles.json"
+            registry_path = _PROJECT_ROOT / "logs" / "run" / "roxy_active_profiles.json"
             registry = json.loads(registry_path.read_text(encoding="utf-8"))
             items = (
                 registry.get("items", [])

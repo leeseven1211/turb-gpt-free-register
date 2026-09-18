@@ -25,7 +25,7 @@ from core.account_operation_executor import executor as _EXECUTOR
 
 logger = logging.getLogger(__name__)
 
-_LOG_DIR = Path(__file__).resolve().parent.parent / "注册日志"
+_LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 _LOCAL_TOKENS: dict[int, CancellationToken] = {}
 _LOCAL_TOKENS_LOCK = threading.RLock()
 _DISPATCHED_RUNS: set[int] = set()
