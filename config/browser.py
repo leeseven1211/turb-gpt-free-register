@@ -210,7 +210,7 @@ WINDOW_FEATURE_FLAGS = {
 # ---------- HTTP 超时 ----------
 REQUEST_TIMEOUT = 30
 
-# HAR 参考画像：Default-all-domains-1784468371563.json 解码 p[0]/p[2]/p[16] 得出。
+# HAR 参考画像：由历史 Reqorder HAR 解码 p[0]/p[2]/p[16] 得出；原始抓包不入库。
 HAR_CAPTURE_BASE_PROFILE = {"screen_width": 1680, "screen_height": 1050, "hardware_concurrency": 6, "device_memory": 8, "js_heap_size_limit": 4395630592, "device_pixel_ratio": 2}
 
 # 常见 macOS Chrome 桌面画像池。同一 session 内保持不变；不同 session 随机分散。

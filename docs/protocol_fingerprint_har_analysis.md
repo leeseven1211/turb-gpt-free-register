@@ -1,6 +1,6 @@
-# Default-all-domains-1784468371563.json 纯协议链路与指纹补齐说明
+# 历史 HAR 纯协议链路与指纹补齐说明
 
-来源文件：`Default-all-domains-1784468371563.json`，Reqorder HAR，抓包时间窗口：2026-07-19 21:36:16 ~ 21:37:30（Asia/Shanghai）。
+本说明基于 2026-07-19 21:36:16 ~ 21:37:30（Asia/Shanghai）的 Reqorder HAR 整理；原始抓包文件不纳入仓库，摘要保存在 `docs/protocol_har_summary.json`。
 
 ## 1. 总览
 
@@ -120,7 +120,7 @@ HAR 没有直接保存 `.js` 响应正文，但从 Sentinel `p[5]` 还原出被�
 ## 6. 重新生成摘要
 
 ```bash
-./tools/analyze_har_protocol.py Default-all-domains-1784468371563.json -o docs/protocol_har_summary.json
+./tools/analyze_har_protocol.py /path/to/new-capture.json -o docs/protocol_har_summary.json
 ```
 
 ## 7. `.env` 覆盖项
