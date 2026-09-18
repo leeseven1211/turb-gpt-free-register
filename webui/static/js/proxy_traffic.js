@@ -53,7 +53,14 @@ const PROXY_TRAFFIC_STATUS_LABELS = {
   observed: '可观测',
   complete: '已完成',
   running: '运行中',
+  available: '可观测',
 };
+const PROXY_TRAFFIC_WINDOW_OPTIONS = Object.freeze([
+  {value: 'all', label: '全部时间'},
+  {value: '1h', label: '最近 1 小时'},
+  {value: '24h', label: '最近 24 小时'},
+  {value: '7d', label: '最近 7 天'},
+]);
 
 let proxyTrafficSnapshot = null;
 let proxyTrafficActiveView = 'current';
@@ -231,8 +238,8 @@ function proxyTrafficInWindow(row) {
   return !values.length || values.some((value) => value >= limit);
 }
 
-function proxyTrafficMatches(row) {
-  if (proxyTrafficFilters.purpose !== 'all' && String(proxyTrafficValue(row, 'purpose')) !== proxyTrafficFilters.purpose) return false;
+function proxyTrafficMatches(row, view) {
+  if (view !== 'traffic' && proxyTrafficFilters.purpose !== 'all' && String(proxyTrafficValue(row, 'purpose')) !== proxyTrafficFilters.purpose) return false;
   const rowState = proxyTrafficValue(row, 'state') || proxyTrafficValue(row, 'availability');
   if (proxyTrafficFilters.state !== 'all' && String(rowState) !== proxyTrafficFilters.state) return false;
   if (!proxyTrafficInWindow(row)) return false;
@@ -240,22 +247,203 @@ function proxyTrafficMatches(row) {
   if (!search) return true;
   return [
     'lease_id', 'provider', 'exit_ip', 'account_id', 'purpose', 'operation_task_id',
-    'operation_run_id', 'registration_job_id', 'proxy_lease_id', 'source', 'method', 'state',
+    'operation_run_id', 'registration_job_id', 'proxy_lease_id', 'source', 'method', 'state', 'availability',
   ].some((key) => String(proxyTrafficValue(row, key)).toLowerCase().includes(search));
 }
 
 function proxyTrafficRows(view) {
   const config = PROXY_TRAFFIC_VIEW_CONFIG[view];
-  return proxyTrafficSnapshot?.[config.key]?.filter(proxyTrafficMatches) || [];
+  return proxyTrafficSnapshot?.[config.key]?.filter((row) => proxyTrafficMatches(row, view)) || [];
 }
 
-function proxyTrafficPopulateSelect(id, values, current) {
-  const select = document.getElementById(id);
-  if (!select) return;
-  const options = ['<option value="all">全部' + (id === 'proxyTrafficPurpose' ? '用途' : '状态') + '</option>'];
-  values.forEach((value) => options.push(`<option value="${proxyTrafficEsc(value)}">${proxyTrafficEsc(value)}</option>`));
-  select.innerHTML = options.join('');
-  select.value = values.includes(current) ? current : 'all';
+function proxyTrafficFilterHeaders(key = '') {
+  const suffix = key ? `[data-proxy-filter-key="${key}"]` : '[data-proxy-filter-key]';
+  return [...document.querySelectorAll(`#tab-proxy-traffic ${suffix}`)];
+}
+
+function proxyTrafficFilterControl(header) {
+  return header ? document.getElementById(header.dataset.columnFilter || '') : null;
+}
+
+function proxyTrafficFilterIcon(type) {
+  if (type === 'search') {
+    return '<svg class="column-filter-trigger-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="3.75"></circle><path d="m10 10 3 3"></path></svg>';
+  }
+  return '<svg class="column-filter-trigger-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.5h11L9.3 8.3v3.4l-2.6 1.2V8.3z"></path></svg>';
+}
+
+function proxyTrafficRenderFilterOptions(select) {
+  const list = select?.closest('.column-filter-header')?.querySelector('[data-column-filter-options]');
+  if (!list) return;
+  list.innerHTML = [...select.options].map((option) => `
+    <button type="button" class="column-filter-option" role="menuitemradio"
+      data-column-filter-option="${proxyTrafficEsc(option.value)}" aria-checked="${option.selected ? 'true' : 'false'}">
+      <span>${proxyTrafficEsc(option.textContent || option.label || '全部')}</span>
+      <svg class="column-filter-option-check" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8.3 3.1 3L13 4.7"></path></svg>
+    </button>`).join('');
+}
+
+function proxyTrafficRefreshFilterControlState(control) {
+  const header = control?.closest('[data-proxy-filter-key]');
+  if (!header) return;
+  const emptyValue = header.dataset.filterEmptyValue || (control.matches('input[type="search"]') ? '' : 'all');
+  header.classList.toggle('has-filter-value', String(control.value ?? '') !== emptyValue);
+  if (control.matches('select')) proxyTrafficRenderFilterOptions(control);
+}
+
+function proxyTrafficInitColumnFilterFallback() {
+  proxyTrafficFilterHeaders().forEach((header) => {
+    if (header.dataset.columnFilterReady === '1') return;
+    const id = header.dataset.columnFilter;
+    const type = header.dataset.filterType || 'search';
+    const label = header.textContent.trim();
+    const filterLabel = header.dataset.filterLabel || `按${label}筛选`;
+    const trigger = `<button type="button" class="column-filter-trigger" data-column-filter-trigger aria-expanded="false" aria-label="${proxyTrafficEsc(filterLabel)}"><span class="column-filter-trigger-label">${proxyTrafficEsc(label)}</span>${proxyTrafficFilterIcon(type)}</button>`;
+    header.dataset.columnFilterReady = '1';
+    header.dataset.proxyFilterFallback = '1';
+    header.dataset.filterTitle = label;
+    if (type === 'search') {
+      header.innerHTML = `${trigger}
+        <div class="column-filter-search" data-column-filter-search>
+          <svg class="column-filter-search-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="3.75"></circle><path d="m10 10 3 3"></path></svg>
+          <input id="${proxyTrafficEsc(id)}" type="search" placeholder="${proxyTrafficEsc(header.dataset.filterPlaceholder || '')}" aria-label="${proxyTrafficEsc(filterLabel)}" autocomplete="off">
+          <button type="button" class="column-filter-clear-inline" data-clear-column-filter aria-label="清空${proxyTrafficEsc(label)}筛选" title="清空">×</button>
+        </div>`;
+      return;
+    }
+    header.innerHTML = `${trigger}
+      <select id="${proxyTrafficEsc(id)}" class="column-filter-native" hidden tabindex="-1" aria-hidden="true"><option value="all">全部</option></select>
+      <div class="column-filter-popover column-filter-popover--select" role="menu" aria-label="${proxyTrafficEsc(filterLabel)}">
+        <div class="column-filter-options" data-column-filter-options></div>
+      </div>`;
+    header.querySelector('[data-column-filter-trigger]')?.setAttribute('aria-haspopup', 'menu');
+    proxyTrafficRenderFilterOptions(document.getElementById(id));
+  });
+}
+
+function proxyTrafficCloseFallbackFilters(exceptHeader = null) {
+  document.querySelectorAll('#tab-proxy-traffic [data-proxy-filter-fallback="1"]').forEach((header) => {
+    if (header === exceptHeader) return;
+    header.classList.remove('is-filter-open', 'is-searching');
+    header.querySelector('[data-column-filter-trigger]')?.setAttribute('aria-expanded', 'false');
+  });
+}
+
+function proxyTrafficPositionFallbackPopover(header) {
+  const trigger = header?.querySelector('[data-column-filter-trigger]');
+  const popover = header?.querySelector('.column-filter-popover');
+  if (!trigger || !popover) return;
+  const rect = trigger.getBoundingClientRect();
+  const width = Math.min(208, Math.max(148, window.innerWidth - 20));
+  const left = Math.max(10, Math.min(rect.left, window.innerWidth - width - 10));
+  popover.style.width = `${width}px`;
+  popover.style.left = `${left}px`;
+  popover.style.top = `${Math.min(rect.bottom + 6, window.innerHeight - Math.max(48, popover.offsetHeight) - 10)}px`;
+}
+
+function proxyTrafficBindFallbackColumnFilters() {
+  const page = document.getElementById('tab-proxy-traffic');
+  if (!page || page.dataset.proxyFallbackFiltersBound === '1') return;
+  page.dataset.proxyFallbackFiltersBound = '1';
+  page.addEventListener('click', (event) => {
+    const header = event.target.closest?.('[data-proxy-filter-fallback="1"]');
+    const clear = event.target.closest?.('[data-clear-column-filter]');
+    if (clear && header) {
+      event.preventDefault();
+      const control = proxyTrafficFilterControl(header);
+      if (control) {
+        control.value = header.dataset.filterEmptyValue || (control.matches('input[type="search"]') ? '' : 'all');
+        control.dispatchEvent(new Event(control.matches('input[type="search"]') ? 'input' : 'change', {bubbles: true}));
+        control.focus({preventScroll: true});
+      }
+      return;
+    }
+    const option = event.target.closest?.('[data-column-filter-option]');
+    if (option && header) {
+      event.preventDefault();
+      const select = proxyTrafficFilterControl(header);
+      if (select) {
+        select.value = option.dataset.columnFilterOption ?? 'all';
+        select.dispatchEvent(new Event('change', {bubbles: true}));
+      }
+      proxyTrafficCloseFallbackFilters();
+      header.querySelector('[data-column-filter-trigger]')?.focus({preventScroll: true});
+      return;
+    }
+    const trigger = event.target.closest?.('[data-column-filter-trigger]');
+    if (trigger && header) {
+      event.preventDefault();
+      const type = header.dataset.filterType || 'search';
+      const willOpen = type === 'search' || !header.classList.contains('is-filter-open');
+      proxyTrafficCloseFallbackFilters(willOpen ? header : null);
+      if (type === 'search') {
+        header.classList.add('is-searching');
+        requestAnimationFrame(() => proxyTrafficFilterControl(header)?.focus({preventScroll: true}));
+      } else {
+        header.classList.toggle('is-filter-open', willOpen);
+        trigger.setAttribute('aria-expanded', String(willOpen));
+        if (willOpen) requestAnimationFrame(() => proxyTrafficPositionFallbackPopover(header));
+      }
+      return;
+    }
+    if (!event.target.closest?.('.column-filter-popover')) proxyTrafficCloseFallbackFilters();
+  });
+  page.addEventListener('keydown', (event) => {
+    const header = event.target.closest?.('[data-proxy-filter-fallback="1"]');
+    if (!header || !['Escape', 'Enter'].includes(event.key)) return;
+    if (event.key === 'Enter' && !event.target.matches('input[type="search"]')) return;
+    event.preventDefault();
+    proxyTrafficCloseFallbackFilters();
+    header.querySelector('[data-column-filter-trigger]')?.focus({preventScroll: true});
+  });
+}
+
+function proxyTrafficPopulateSelects(key, options, allLabel) {
+  const values = options.map(({value}) => String(value));
+  if (!values.includes(String(proxyTrafficFilters[key]))) proxyTrafficFilters[key] = 'all';
+  proxyTrafficFilterHeaders(key).forEach((header) => {
+    const select = proxyTrafficFilterControl(header);
+    if (!select) return;
+    select.innerHTML = [`<option value="all">${proxyTrafficEsc(allLabel)}</option>`]
+      .concat(options.filter(({value}) => String(value) !== 'all').map(({value, label}) => `<option value="${proxyTrafficEsc(value)}">${proxyTrafficEsc(label)}</option>`))
+      .join('');
+  });
+}
+
+function proxyTrafficSyncFilterControls() {
+  Object.entries(proxyTrafficFilters).forEach(([key, value]) => {
+    proxyTrafficFilterHeaders(key).forEach((header) => {
+      const control = proxyTrafficFilterControl(header);
+      if (!control) return;
+      control.value = String(value);
+      proxyTrafficRefreshFilterControlState(control);
+    });
+  });
+  const clear = document.getElementById('btnClearProxyTrafficFilters');
+  if (clear) clear.hidden = !Object.entries(proxyTrafficFilters).some(([key, value]) => value !== (key === 'search' ? '' : 'all'));
+}
+
+function proxyTrafficBindFilterControls() {
+  proxyTrafficFilterHeaders().forEach((header) => {
+    const control = proxyTrafficFilterControl(header);
+    if (!control || control.dataset.proxyFilterBound === '1') return;
+    control.dataset.proxyFilterBound = '1';
+    const eventName = control.matches('input[type="search"]') ? 'input' : 'change';
+    control.addEventListener(eventName, () => {
+      proxyTrafficFilters[header.dataset.proxyFilterKey] = control.value;
+      proxyTrafficSyncFilterControls();
+      proxyTrafficRenderRows();
+    });
+  });
+}
+
+function proxyTrafficClearFilters() {
+  proxyTrafficFilters.window = 'all';
+  proxyTrafficFilters.purpose = 'all';
+  proxyTrafficFilters.state = 'all';
+  proxyTrafficFilters.search = '';
+  proxyTrafficSyncFilterControls();
+  proxyTrafficRenderRows();
 }
 
 function proxyTrafficRefreshFilterOptions() {
@@ -270,8 +458,9 @@ function proxyTrafficRefreshFilterOptions() {
       if (state) states.add(String(state));
     });
   });
-  proxyTrafficPopulateSelect('proxyTrafficPurpose', [...purposes].sort(), proxyTrafficFilters.purpose);
-  proxyTrafficPopulateSelect('proxyTrafficState', [...states].sort(), proxyTrafficFilters.state);
+  proxyTrafficPopulateSelects('purpose', [...purposes].sort().map((value) => ({value, label: value})), '全部用途');
+  proxyTrafficPopulateSelects('state', [...states].sort().map((value) => ({value, label: PROXY_TRAFFIC_STATUS_LABELS[value] || value})), '全部状态');
+  proxyTrafficSyncFilterControls();
 }
 
 function proxyTrafficRenderSummary() {
@@ -369,22 +558,12 @@ async function proxyTrafficRequest() {
   }, {});
 }
 
-function proxyTrafficSetRefreshState(loading) {
-  const button = document.getElementById('btnRefreshProxyTraffic');
-  if (!button) return;
-  button.disabled = loading;
-  button.setAttribute('aria-busy', loading ? 'true' : 'false');
-  const label = button.querySelector('span');
-  if (label) label.textContent = loading ? '刷新中…' : '刷新';
-}
-
 async function loadProxyTraffic() {
   if (proxyTrafficLoading) {
     proxyTrafficReloadQueued = true;
     return;
   }
   proxyTrafficLoading = true;
-  proxyTrafficSetRefreshState(true);
   Object.keys(PROXY_TRAFFIC_VIEW_CONFIG).forEach((view) => {
     proxyTrafficSetPanelState(view, 'loading', `正在加载${view === 'current' ? '当前租约' : view === 'history' ? '线路历史' : '浏览器流量'}`, '正在同步代理与流量 API');
   });
@@ -392,16 +571,11 @@ async function loadProxyTraffic() {
     proxyTrafficSnapshot = await proxyTrafficRequest();
     proxyTrafficRefreshFilterOptions();
     proxyTrafficRenderRows();
-    const updated = document.getElementById('proxyTrafficLastUpdated');
-    if (updated) updated.textContent = `已同步 ${new Date().toLocaleTimeString('zh-CN', {hour12: false})}`;
   } catch (error) {
     proxyTrafficSnapshot = null;
     proxyTrafficRenderError(error);
-    const updated = document.getElementById('proxyTrafficLastUpdated');
-    if (updated) updated.textContent = '加载失败';
   } finally {
     proxyTrafficLoading = false;
-    proxyTrafficSetRefreshState(false);
     if (proxyTrafficReloadQueued) {
       proxyTrafficReloadQueued = false;
       setTimeout(loadProxyTraffic, 0);
@@ -437,38 +611,16 @@ function proxyTrafficBindControls() {
     event.preventDefault();
     proxyTrafficSetView(buttons[next].dataset.proxyView, true);
   });
-  document.getElementById('btnRefreshProxyTraffic')?.addEventListener('click', loadProxyTraffic);
-  document.getElementById('btnClearProxyTrafficFilters')?.addEventListener('click', () => {
-    proxyTrafficFilters.window = 'all';
-    proxyTrafficFilters.purpose = 'all';
-    proxyTrafficFilters.state = 'all';
-    proxyTrafficFilters.search = '';
-    document.getElementById('proxyTrafficWindow').value = 'all';
-    document.getElementById('proxyTrafficPurpose').value = 'all';
-    document.getElementById('proxyTrafficState').value = 'all';
-    document.getElementById('proxyTrafficSearch').value = '';
-    proxyTrafficRenderRows();
-  });
-  document.getElementById('proxyTrafficWindow')?.addEventListener('change', (event) => {
-    proxyTrafficFilters.window = event.target.value;
-    proxyTrafficRenderRows();
-  });
-  document.getElementById('proxyTrafficPurpose')?.addEventListener('change', (event) => {
-    proxyTrafficFilters.purpose = event.target.value;
-    proxyTrafficRenderRows();
-  });
-  document.getElementById('proxyTrafficState')?.addEventListener('change', (event) => {
-    proxyTrafficFilters.state = event.target.value;
-    proxyTrafficRenderRows();
-  });
-  document.getElementById('proxyTrafficSearch')?.addEventListener('input', (event) => {
-    proxyTrafficFilters.search = event.target.value;
-    proxyTrafficRenderRows();
-  });
+  document.getElementById('btnClearProxyTrafficFilters')?.addEventListener('click', proxyTrafficClearFilters);
 }
 
 function initProxyTraffic() {
   if (!document.getElementById('tab-proxy-traffic')) return;
+  proxyTrafficInitColumnFilterFallback();
+  proxyTrafficBindFallbackColumnFilters();
+  proxyTrafficPopulateSelects('window', PROXY_TRAFFIC_WINDOW_OPTIONS, '全部时间');
+  proxyTrafficBindFilterControls();
+  proxyTrafficSyncFilterControls();
   proxyTrafficBindControls();
   proxyTrafficSetView(proxyTrafficActiveView);
   setInterval(() => {
