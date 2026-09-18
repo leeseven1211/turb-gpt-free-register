@@ -10,6 +10,7 @@
 """
 import json
 import logging
+import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -27,12 +28,160 @@ logger = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _ACCOUNTS_DIR = _PROJECT_ROOT / "accounts"
 _BATCH_ARCHIVE_LOCK = threading.RLock()
+_TWOFA_PROXY_URL_RE = re.compile(
+    r"(?P<scheme>\b[a-z][a-z0-9+.-]*://)[^\s/@:]+:[^\s/@]+@[^\s/]+",
+    re.IGNORECASE,
+)
 
 
 class TwofaEnrollmentAuthRequired(RuntimeError):
     """The MFA enrollment endpoint requires a fresh authentication step."""
 
     status_code = 401
+
+
+class TwofaProtocolHTTPError(RuntimeError):
+    """Classified, redacted HTTP failure returned by a protocol MFA endpoint."""
+
+    def __init__(
+        self,
+        operation: str,
+        status_code: int,
+        *,
+        error_code: str = "",
+        error_type: str = "",
+        detail: str = "",
+    ) -> None:
+        self.operation = str(operation or "mfa")
+        self.status_code = int(status_code or 0)
+        self.error_code = str(error_code or "")[:120]
+        self.error_type = str(error_type or "")[:120]
+        self.detail = str(detail or "")[:240]
+        fields = [f"{self.operation} HTTP {self.status_code}"]
+        if self.error_code:
+            fields.append(f"code={self.error_code}")
+        if self.error_type:
+            fields.append(f"type={self.error_type}")
+        if self.detail:
+            fields.append(f"detail={self.detail}")
+        super().__init__("; ".join(fields))
+
+
+class TwofaProtocolTransportError(RuntimeError):
+    """Redacted transport failure after the bounded MFA retry is exhausted."""
+
+    def __init__(self, operation: str, cause_type: str) -> None:
+        self.operation = str(operation or "mfa")
+        self.cause_type = str(cause_type or "TransportError")[:120]
+        super().__init__(
+            f"{self.operation} transport failed after retry: {self.cause_type} "
+            "(exception detail redacted)"
+        )
+
+
+class TwofaProtocolStepError(RuntimeError):
+    """Redacted non-HTTP failure raised within a protocol MFA step."""
+
+    def __init__(self, operation: str, cause_type: str) -> None:
+        self.operation = str(operation or "mfa")
+        self.cause_type = str(cause_type or "ProtocolError")[:120]
+        super().__init__(
+            f"{self.operation} failed: {self.cause_type} (exception detail redacted)"
+        )
+
+
+def _twofa_error_fields(response) -> tuple[str, str, str]:
+    """Return only safe diagnostic fields, never the complete response body."""
+    try:
+        payload = response.json()
+    except Exception:
+        payload = None
+    if not isinstance(payload, dict):
+        return "", "", ""
+
+    error = payload.get("error")
+    source = error if isinstance(error, dict) else payload
+    code = str(
+        source.get("code")
+        or source.get("error_code")
+        or (error if isinstance(error, str) else "")
+        or ""
+    ).strip()
+    error_type = str(source.get("type") or source.get("error_type") or "").strip()
+    detail = str(
+        source.get("detail")
+        or source.get("message")
+        or source.get("error_description")
+        or ""
+    ).strip()
+    try:
+        from core.registration_debug import sanitize_body
+
+        sanitized, _ = sanitize_body({
+            "error_code": code,
+            "error_type": error_type,
+            "detail": detail,
+        })
+        if isinstance(sanitized, dict):
+            code = str(sanitized.get("error_code") or "")
+            error_type = str(sanitized.get("error_type") or "")
+            detail = str(sanitized.get("detail") or "")
+    except Exception:
+        code = error_type = detail = ""
+    code = _TWOFA_PROXY_URL_RE.sub(r"\g<scheme><redacted-proxy>", code)
+    error_type = _TWOFA_PROXY_URL_RE.sub(r"\g<scheme><redacted-proxy>", error_type)
+    detail = _TWOFA_PROXY_URL_RE.sub(r"\g<scheme><redacted-proxy>", detail)
+    return code[:120], error_type[:120], detail[:240]
+
+
+def _twofa_http_error(operation: str, response) -> TwofaProtocolHTTPError:
+    code, error_type, detail = _twofa_error_fields(response)
+    return TwofaProtocolHTTPError(
+        operation,
+        int(getattr(response, "status_code", 0) or 0),
+        error_code=code,
+        error_type=error_type,
+        detail=detail,
+    )
+
+
+def _is_retryable_twofa_transport_error(exc: BaseException) -> bool:
+    name = type(exc).__name__.lower()
+    text = str(exc or "").lower()
+    return any(
+        marker in name or marker in text
+        for marker in (
+            "proxy", "ssl", "timeout", "timed out", "connection", "connect",
+            "reset", "closed", "curl: (35)", "curl: (56)", "熔断冷却",
+        )
+    )
+
+
+def _activation_400_is_retryable(exc: TwofaProtocolHTTPError) -> bool:
+    """Retry a stale code/session once, but not a route or feature rejection."""
+    full_text = " ".join((exc.error_code, exc.error_type, exc.detail)).lower()
+    if any(marker in full_text for marker in (
+        "invalid url", "route", "not found", "unsupported", "not supported",
+        "already enabled", "already active", "duplicate factor", "unknown factor",
+    )):
+        return False
+    if not full_text:
+        # The affected batch discarded the body. One fresh-code retry is safe,
+        # bounded, and supplies diagnostic fields if the second call fails.
+        return True
+    # ``type=invalid_request`` alone is a generic business rejection.  Only
+    # retry when the code/detail specifically identifies the TOTP or enrollment
+    # session as the stale input.
+    code_detail = " ".join((exc.error_code, exc.detail)).lower()
+    return any(marker in code_detail for marker in (
+        "code", "otp", "totp", "verification", "enrollment", "session",
+        "expired", "stale",
+    ))
+
+
+def _wait_for_next_totp_window() -> None:
+    remaining = 30 - (int(time.time()) % 30)
+    time.sleep(min(31, remaining + 1))
 
 
 def _clear_twofa_session_circuit(
@@ -48,7 +197,7 @@ def _clear_twofa_session_circuit(
         session.blocked_until = 0.0
         session.blocked_reason = ""
     if blocked_reason:
-        logger.info("[2FA] 已清理%s产生的熔断状态：%s", source, blocked_reason)
+        logger.info("[2FA] 已清理%s产生的熔断状态（原因原文不写日志）", source)
 
 
 _RETRYABLE_REAUTH_HINTS = (
@@ -60,15 +209,93 @@ _RETRYABLE_REAUTH_HINTS = (
 
 def _is_retryable_reauth_error(exc: BaseException) -> bool:
     """只重试限流、服务端错误和传输故障，不重试普通业务 4xx。"""
+    if isinstance(exc, TwofaProtocolTransportError):
+        return True
     response = getattr(exc, "response", None)
     try:
-        status = int(getattr(response, "status_code", 0) or 0)
+        status = int(
+            getattr(exc, "status_code", 0)
+            or getattr(response, "status_code", 0)
+            or 0
+        )
     except (TypeError, ValueError):
         status = 0
     if status:
         return status in (403, 408, 425, 429) or status >= 500
     text = str(exc or "").lower()
     return any(hint in text for hint in _RETRYABLE_REAUTH_HINTS)
+
+
+def _raise_twofa_http_response(operation: str, response) -> None:
+    status = int(getattr(response, "status_code", 0) or 0)
+    if status >= 400:
+        raise _twofa_http_error(operation, response) from None
+
+
+def _reauth_retry_settings() -> tuple[int, float]:
+    from config import twofa as _twofa_cfg
+
+    max_attempts = max(1, min(8, int(
+        getattr(_twofa_cfg, "TWOFA_REAUTH_MAX_ATTEMPTS", 3) or 3
+    )))
+    base_delay = max(0.0, min(60.0, float(
+        getattr(_twofa_cfg, "TWOFA_REAUTH_RETRY_DELAY", 3.0) or 0.0
+    )))
+    return max_attempts, base_delay
+
+
+def _run_reauth_step_with_retry(
+    operation: str,
+    session: BrowserSession,
+    callback,
+    *,
+    retry_forbidden: bool = True,
+):
+    """Run one protocol reauthentication step with bounded, redacted retries."""
+    max_attempts, base_delay = _reauth_retry_settings()
+    for attempt in range(1, max_attempts + 1):
+        try:
+            result = callback()
+            if attempt > 1:
+                logger.info(
+                    "[2FA] %s 重试成功：attempt=%s/%s",
+                    operation, attempt, max_attempts,
+                )
+            return result
+        except Exception as exc:
+            retryable = _is_retryable_reauth_error(exc)
+            response = getattr(exc, "response", None)
+            status = int(
+                getattr(exc, "status_code", 0)
+                or getattr(response, "status_code", 0)
+                or 0
+            )
+            if status == 403 and not retry_forbidden:
+                retryable = False
+            if attempt >= max_attempts or not retryable:
+                logger.warning(
+                    "[2FA] %s 失败且不再重试：attempt=%s/%s retryable=%s "
+                    "error=%s status=%s（异常原文不写日志）",
+                    operation, attempt, max_attempts, retryable,
+                    type(exc).__name__, status or "-",
+                )
+                if isinstance(exc, TwofaProtocolHTTPError):
+                    raise exc from None
+                if response is not None and status:
+                    raise _twofa_http_error(operation, response) from None
+                if retryable:
+                    raise TwofaProtocolTransportError(operation, type(exc).__name__) from None
+                raise TwofaProtocolStepError(operation, type(exc).__name__) from None
+            _clear_twofa_session_circuit(session, source=operation)
+            delay = min(120.0, base_delay * (2 ** (attempt - 1)))
+            logger.warning(
+                "[2FA] %s 临时失败：attempt=%s/%s error=%s status=%s；%.1fs 后重试"
+                "（异常原文不写日志）",
+                operation, attempt, max_attempts, type(exc).__name__, status or "-", delay,
+            )
+            if delay > 0:
+                time.sleep(delay)
+    raise RuntimeError(f"{operation} 重试耗尽")
 
 
 def _account_material_line(email: str, row: dict | None = None) -> str:
@@ -233,7 +460,7 @@ def _trigger_reauth(session: BrowserSession, email: str) -> str:
     # 重新拿一次 csrf（旧的可能已过期）
     csrf_url = "https://chatgpt.com/api/auth/csrf"
     csrf_resp = session.get(csrf_url, headers=session.get_nextauth_headers(referer="https://chatgpt.com/"))
-    csrf_resp.raise_for_status()
+    _raise_twofa_http_response("reauth_csrf", csrf_resp)
     csrf_token = csrf_resp.json()["csrfToken"]
     logger.info("[2FA] 重认证 CSRF 已获取（原值不写日志）")
 
@@ -259,7 +486,7 @@ def _trigger_reauth(session: BrowserSession, email: str) -> str:
 
     logger.info("[2FA] 发起重认证 signin/openai...")
     resp = session.post(signin_url, headers=headers, data=body)
-    resp.raise_for_status()
+    _raise_twofa_http_response("reauth_signin", resp)
     auth_url = resp.json().get("url")
     if not auth_url:
         raise RuntimeError("未拿到 reauth authorize URL（原始响应未记录）")
@@ -274,48 +501,18 @@ def _follow_reauth(session: BrowserSession, auth_url: str) -> str:
     headers = session.get_auth_navigate_headers(referer="https://chatgpt.com/")
     logger.info("[2FA] 跟随 authorize URL，触发 OTP 发送...")
     resp = session.get(auth_url, headers=headers, allow_redirects=True)
-    raise_for_status = getattr(resp, "raise_for_status", None)
-    if callable(raise_for_status):
-        raise_for_status()
-    elif int(getattr(resp, "status_code", 0) or 0) >= 400:
-        raise RuntimeError(f"reauth authorize 导航失败 status={resp.status_code}")
+    _raise_twofa_http_response("reauth_authorize", resp)
     logger.info("[2FA] 已到达邮箱验证页面（落点 URL 原值不写日志）")
     return str(getattr(resp, "url", "") or auth_url)
 
 
 def _trigger_reauth_with_retry(session: BrowserSession, email: str) -> str:
     """对 CSRF + signin 阶段的临时故障执行有限退避重试。"""
-    from config import twofa as _twofa_cfg
-
-    max_attempts = max(1, min(8, int(
-        getattr(_twofa_cfg, "TWOFA_REAUTH_MAX_ATTEMPTS", 3) or 3
-    )))
-    base_delay = max(0.0, min(60.0, float(
-        getattr(_twofa_cfg, "TWOFA_REAUTH_RETRY_DELAY", 3.0) or 0.0
-    )))
-    for attempt in range(1, max_attempts + 1):
-        try:
-            auth_url = _trigger_reauth(session, email)
-            if attempt > 1:
-                logger.info("[2FA] 重认证发起重试成功：attempt=%s/%s", attempt, max_attempts)
-            return auth_url
-        except Exception as exc:
-            retryable = _is_retryable_reauth_error(exc)
-            if attempt >= max_attempts or not retryable:
-                logger.warning(
-                    "[2FA] 重认证发起失败且不再重试：attempt=%s/%s retryable=%s error=%s: %s",
-                    attempt, max_attempts, retryable, type(exc).__name__, str(exc)[:200],
-                )
-                raise
-            _clear_twofa_session_circuit(session, source="重认证请求")
-            delay = min(120.0, base_delay * (2 ** (attempt - 1)))
-            logger.warning(
-                "[2FA] 重认证发起临时失败：attempt=%s/%s error=%s: %s；%.1fs 后重试",
-                attempt, max_attempts, type(exc).__name__, str(exc)[:200], delay,
-            )
-            if delay > 0:
-                time.sleep(delay)
-    raise RuntimeError("重认证发起重试耗尽")
+    return str(_run_reauth_step_with_retry(
+        "重认证发起",
+        session,
+        lambda: _trigger_reauth(session, email),
+    ))
 
 
 def _warm_auth_document_for_reauth(session: BrowserSession) -> None:
@@ -338,7 +535,10 @@ def _warm_auth_document_for_reauth(session: BrowserSession) -> None:
                 return
             logger.info("[2FA] Auth document 预热返回 HTTP %s，保留响应 Cookie", status)
         except Exception as exc:
-            logger.debug("[2FA] Auth document 预热异常：%s: %s", type(exc).__name__, str(exc)[:160])
+            logger.debug(
+                "[2FA] Auth document 预热异常：%s（异常原文不写日志）",
+                type(exc).__name__,
+            )
         _clear_twofa_session_circuit(session, source="Auth document 预热")
         if attempt < 2:
             time.sleep(float(attempt))
@@ -347,38 +547,13 @@ def _warm_auth_document_for_reauth(session: BrowserSession) -> None:
 
 def _follow_reauth_with_retry(session: BrowserSession, auth_url: str) -> str:
     """重试跨站 authorize 导航；保留同一会话中的 CF Cookie 和 OAuth 状态。"""
-    from config import twofa as _twofa_cfg
-
-    max_attempts = max(1, min(8, int(
-        getattr(_twofa_cfg, "TWOFA_REAUTH_MAX_ATTEMPTS", 3) or 3
-    )))
-    base_delay = max(0.0, min(60.0, float(
-        getattr(_twofa_cfg, "TWOFA_REAUTH_RETRY_DELAY", 3.0) or 0.0
-    )))
     _warm_auth_document_for_reauth(session)
-    for attempt in range(1, max_attempts + 1):
-        try:
-            result = _follow_reauth(session, auth_url)
-            if attempt > 1:
-                logger.info("[2FA] authorize 导航重试成功：attempt=%s/%s", attempt, max_attempts)
-            return str(result or auth_url)
-        except Exception as exc:
-            retryable = _is_retryable_reauth_error(exc)
-            if attempt >= max_attempts or not retryable:
-                logger.warning(
-                    "[2FA] authorize 导航失败且不再重试：attempt=%s/%s retryable=%s error=%s: %s",
-                    attempt, max_attempts, retryable, type(exc).__name__, str(exc)[:200],
-                )
-                raise
-            _clear_twofa_session_circuit(session, source="authorize 导航")
-            delay = min(120.0, base_delay * (2 ** (attempt - 1)))
-            logger.warning(
-                "[2FA] authorize 导航临时失败：attempt=%s/%s error=%s: %s；%.1fs 后复用会话重试",
-                attempt, max_attempts, type(exc).__name__, str(exc)[:200], delay,
-            )
-            if delay > 0:
-                time.sleep(delay)
-    raise RuntimeError("authorize 导航重试耗尽")
+    result = _run_reauth_step_with_retry(
+        "authorize 导航",
+        session,
+        lambda: _follow_reauth(session, auth_url),
+    )
+    return str(result or auth_url)
 
 
 def _validate_reauth_otp(session: BrowserSession, code: str) -> str:
@@ -392,12 +567,22 @@ def _validate_reauth_otp(session: BrowserSession, code: str) -> str:
 
     logger.info("[2FA] 提交重认证 OTP（验证码原值不写日志）")
     resp = session.post(url, headers=headers, data=body)
-    resp.raise_for_status()
+    _raise_twofa_http_response("reauth_otp_validate", resp)
     data = resp.json()
     continue_url = data.get("continue_url")
     if not continue_url:
         raise RuntimeError("OTP 验证响应缺少 continue_url（原始响应未记录）")
     return continue_url
+
+
+def _validate_reauth_otp_with_retry(session: BrowserSession, code: str) -> str:
+    """OTP 业务 4xx 直接返回；仅对传输、限流和服务端失败有限重试。"""
+    return str(_run_reauth_step_with_retry(
+        "重认证 OTP 校验",
+        session,
+        lambda: _validate_reauth_otp(session, code),
+        retry_forbidden=False,
+    ))
 
 
 def _exchange_new_token(session: BrowserSession, continue_url: str) -> str:
@@ -407,13 +592,23 @@ def _exchange_new_token(session: BrowserSession, continue_url: str) -> str:
     """
     headers = session.get_auth_navigate_headers(referer="https://auth.openai.com/email-verification")
     logger.info("[2FA] 跟随 continue_url，刷新 session-token cookie...")
-    session.get(continue_url, headers=headers, allow_redirects=True)
+    response = session.get(continue_url, headers=headers, allow_redirects=True)
+    _raise_twofa_http_response("reauth_token_callback", response)
 
     # 拿新的 accessToken
     new_session = fetch_session(session)
     new_token = new_session["accessToken"]
     logger.info("[2FA] 新 accessToken 已获取（原值不写日志）")
     return new_token
+
+
+def _exchange_new_token_with_retry(session: BrowserSession, continue_url: str) -> str:
+    """完成回调并刷新 token；临时网络/HTTP 故障复用当前会话重试。"""
+    return str(_run_reauth_step_with_retry(
+        "重认证 token 交换",
+        session,
+        lambda: _exchange_new_token(session, continue_url),
+    ))
 
 
 def _enroll_totp(session: BrowserSession, access_token: str) -> tuple[str, str]:
@@ -429,14 +624,40 @@ def _enroll_totp(session: BrowserSession, access_token: str) -> tuple[str, str]:
     body = json.dumps({"factor_type": "totp"})
 
     logger.info("[2FA] 注册 TOTP...")
-    resp = session.post(url, headers=headers, data=body)
-    if resp.status_code != 200:
-        logger.error("[2FA] enroll 失败 HTTP %s（响应原值不写日志）", resp.status_code)
-        if resp.status_code == 401:
+    for attempt in range(1, 3):
+        try:
+            resp = session.post(url, headers=headers, data=body)
+        except Exception as exc:
+            if _is_retryable_twofa_transport_error(exc):
+                if attempt < 2:
+                    _clear_twofa_session_circuit(session, source="MFA enroll")
+                    logger.warning(
+                        "[2FA] enroll 临时网络错误，1.5s 后重试：%s（异常原文不写日志）",
+                        type(exc).__name__,
+                    )
+                    time.sleep(1.5)
+                    continue
+                raise TwofaProtocolTransportError("enroll", type(exc).__name__) from None
+            raise TwofaProtocolStepError("enroll", type(exc).__name__) from None
+        status = int(resp.status_code or 0)
+        if status == 200:
+            break
+        if status == 401:
+            logger.error("[2FA] enroll 失败 HTTP 401：需要近期重新认证")
             raise TwofaEnrollmentAuthRequired(
                 "MFA enroll 要求近期重新认证，当前 access_token 不能直接开通"
             )
-        resp.raise_for_status()
+        if attempt < 2 and (status in (408, 425, 429) or status >= 500):
+            _clear_twofa_session_circuit(session, source="MFA enroll")
+            logger.warning("[2FA] enroll 临时 HTTP %s，1.5s 后重试", status)
+            time.sleep(1.5)
+            continue
+        error = _twofa_http_error("enroll", resp)
+        logger.error("[2FA] %s", error)
+        raise error
+    else:
+        raise RuntimeError("MFA enroll 重试耗尽")
+
     data = resp.json()
     secret = data.get("secret")
     session_id = data.get("session_id")
@@ -469,14 +690,53 @@ def _activate_totp(
     })
 
     logger.info("[2FA] 激活 enrollment（TOTP 原值不写日志）")
-    resp = session.post(url, headers=headers, data=body)
-    if resp.status_code != 200:
-        logger.error("[2FA] activate 失败 HTTP %s（响应原值不写日志）", resp.status_code)
-        resp.raise_for_status()
-    data = resp.json()
-    if not data.get("success"):
-        raise RuntimeError("激活返回 success=false（原始响应未记录）")
-    return True
+    wait_for_fresh_totp = False
+    for attempt in range(1, 3):
+        if attempt > 1:
+            if wait_for_fresh_totp:
+                _wait_for_next_totp_window()
+            body = json.dumps({
+                "code": pyotp.TOTP(secret).now(),
+                "factor_type": "totp",
+                "session_id": session_id,
+            })
+        try:
+            resp = session.post(url, headers=headers, data=body)
+        except Exception as exc:
+            if _is_retryable_twofa_transport_error(exc):
+                if attempt < 2:
+                    _clear_twofa_session_circuit(session, source="MFA activate")
+                    logger.warning(
+                        "[2FA] activate 临时网络错误，1.5s 后重试：%s（异常原文不写日志）",
+                        type(exc).__name__,
+                    )
+                    time.sleep(1.5)
+                    continue
+                raise TwofaProtocolTransportError("activate", type(exc).__name__) from None
+            raise TwofaProtocolStepError("activate", type(exc).__name__) from None
+
+        status = int(resp.status_code or 0)
+        if status == 200:
+            data = resp.json()
+            if not data.get("success"):
+                raise RuntimeError("激活返回 success=false（原始响应未记录）")
+            return True
+
+        if attempt < 2 and (status in (408, 425, 429) or status >= 500):
+            _clear_twofa_session_circuit(session, source="MFA activate")
+            logger.warning("[2FA] activate 临时 HTTP %s，1.5s 后重试", status)
+            time.sleep(1.5)
+            continue
+
+        error = _twofa_http_error("activate", resp)
+        logger.error("[2FA] %s", error)
+        if attempt < 2 and error.status_code == 400 and _activation_400_is_retryable(error):
+            wait_for_fresh_totp = True
+            logger.warning("[2FA] activate 400 属于验证码/会话候选错误，等待新 TOTP 窗口重试一次")
+            continue
+        raise error
+
+    raise RuntimeError("MFA activate 重试耗尽")
 
 
 def setup_2fa_protocol(session: BrowserSession, access_token: str, *, on_secret=None) -> str:
@@ -531,9 +791,9 @@ def setup_2fa(
 
     # 阶段一：重认证
     reauth_otp_after_ts = time.time()
-    auth_url = _trigger_reauth(session, email)
+    auth_url = _trigger_reauth_with_retry(session, email)
     human_delay("api")
-    _follow_reauth(session, auth_url)
+    _follow_reauth_with_retry(session, auth_url)
     human_delay("navigate")
 
     if otp_code is None:
@@ -547,9 +807,9 @@ def setup_2fa(
             otp_code = input(">>> 2FA 验证码: ").strip()
 
     human_delay("otp_input")
-    continue_url = _validate_reauth_otp(session, otp_code)
+    continue_url = _validate_reauth_otp_with_retry(session, otp_code)
     human_delay("api")
-    new_token = _exchange_new_token(session, continue_url)
+    new_token = _exchange_new_token_with_retry(session, continue_url)
     if on_access_token is not None:
         on_access_token(new_token)
     human_delay("api")

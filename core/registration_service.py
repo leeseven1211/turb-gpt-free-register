@@ -620,7 +620,14 @@ def _prepare_registration_args(
             attempt = 0
             while not email:
                 attempt += 1
-                candidate = str(acquire_email(email_source) or "").strip()
+                candidate = str(
+                    acquire_email(
+                        email_source,
+                        batch_id=normalized_batch_id or None,
+                        job_id=job_id,
+                    )
+                    or ""
+                ).strip()
                 if not candidate:
                     raise RuntimeError("邮箱来源返回空地址，无法继续注册")
                 try:

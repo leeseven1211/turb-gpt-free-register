@@ -133,7 +133,12 @@ class RoxyEmailRecoveryTests(unittest.TestCase):
 
         self.assertEqual(result, "otp")
         self.assertEqual(start_budget.call_count, 2)
-        wait_next.assert_called_once_with(driver, "test@example.com", timeout=20)
+        wait_next.assert_called_once_with(
+            driver,
+            "test@example.com",
+            timeout=20,
+            blank_shell_grace=3,
+        )
 
     def test_type_otp_waits_for_delayed_input(self):
         field = Mock()
@@ -207,6 +212,60 @@ class RoxyEmailRecoveryTests(unittest.TestCase):
             return_value={"url": driver.current_url, "inputs": []},
         ), patch.object(roxy_registration, "_is_blank_chatgpt_auth_shell", return_value=True):
             result = roxy_registration._wait_email_submit_next_state(driver, "test@example.com", timeout=20)
+
+        self.assertEqual(result, "blank_shell")
+
+    def test_submit_wait_gives_transient_blank_shell_a_bounded_hydration_grace(self):
+        driver = _FakeDriver()
+        fake_time = Mock()
+        fake_time.time.side_effect = [100.0, 100.0, 101.0, 102.0]
+        fake_time.sleep.return_value = None
+        with patch.object(
+            roxy_registration,
+            "_email_submit_advanced_state",
+            side_effect=[None, None, "otp"],
+        ), patch.object(
+            roxy_registration,
+            "_email_input_value_state",
+            return_value={"url": driver.current_url, "inputs": []},
+        ), patch.object(
+            roxy_registration,
+            "_is_blank_chatgpt_auth_shell",
+            return_value=True,
+        ), patch.object(roxy_registration, "time", fake_time):
+            result = roxy_registration._wait_email_submit_next_state(
+                driver,
+                "test@example.com",
+                timeout=20,
+                blank_shell_grace=3,
+            )
+
+        self.assertEqual(result, "otp")
+
+    def test_submit_wait_stops_grace_and_falls_back_for_persistent_blank_shell(self):
+        driver = _FakeDriver()
+        fake_time = Mock()
+        fake_time.time.side_effect = [100.0, 100.0, 101.0, 103.1]
+        fake_time.sleep.return_value = None
+        with patch.object(
+            roxy_registration,
+            "_email_submit_advanced_state",
+            return_value=None,
+        ), patch.object(
+            roxy_registration,
+            "_email_input_value_state",
+            return_value={"url": driver.current_url, "inputs": []},
+        ), patch.object(
+            roxy_registration,
+            "_is_blank_chatgpt_auth_shell",
+            return_value=True,
+        ), patch.object(roxy_registration, "time", fake_time):
+            result = roxy_registration._wait_email_submit_next_state(
+                driver,
+                "test@example.com",
+                timeout=20,
+                blank_shell_grace=3,
+            )
 
         self.assertEqual(result, "blank_shell")
 
@@ -345,7 +404,12 @@ class RoxyEmailRecoveryTests(unittest.TestCase):
             result = roxy_registration._submit_email_and_wait_next(driver, "test@example.com")
 
         self.assertEqual(result, "otp")
-        wait_next.assert_called_once_with(driver, "test@example.com", timeout=20)
+        wait_next.assert_called_once_with(
+            driver,
+            "test@example.com",
+            timeout=20,
+            blank_shell_grace=3,
+        )
 
     def test_retry_stops_when_page_reaches_otp_before_email_refill(self):
         driver = _FakeDriver()

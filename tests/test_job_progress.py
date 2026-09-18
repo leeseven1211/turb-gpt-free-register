@@ -282,6 +282,30 @@ class JobProgressTests(PostgresTestCase):
             "same@example.com", status="available", note=ANY
         )
 
+    def test_prepare_registration_args_passes_batch_to_email_provider(self):
+        from config import email as email_config, register as register_config
+
+        acquired = []
+
+        def acquire_email(source, *, batch_id=None, job_id=None):
+            acquired.append((source, batch_id, job_id))
+            return "fresh@example.com"
+
+        with (
+            patch.object(register_config, "REGISTER_EMAIL", ""),
+            patch.object(email_config, "USE_EMAIL_SERVICE", True),
+            patch.object(registration_service, "_random_display_name", return_value="Test User"),
+            patch("core.profile_utils.generate_random_birthday", return_value="1990-01-01"),
+            patch("core.email_provider.acquire_email", side_effect=acquire_email),
+            patch.object(db, "claim_registration_batch_email", return_value=True),
+        ):
+            result = registration_service._prepare_registration_args(
+                "icloud_hide", batch_id="batch-a", job_id=2
+            )
+
+        self.assertEqual(result, ("fresh@example.com", "Test User", "1990-01-01"))
+        self.assertEqual(acquired, [("icloud_hide", "batch-a", 2)])
+
     def test_prepare_registration_args_stops_if_provider_repeats_rejected_email(self):
         from config import email as email_config, register as register_config
 

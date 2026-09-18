@@ -28,7 +28,7 @@ class EmailSourceSelectionTests(PostgresTestCase):
             with self.assertRaisesRegex(RuntimeError, "所选邮箱来源 email_butler 领取失败"):
                 email_provider.acquire_email("email_butler")
 
-        pick.assert_called_once_with("email_butler")
+        pick.assert_called_once_with("email_butler", batch_id=None, job_id=None)
 
     def test_registered_account_source_wins_over_runtime_email_context(self):
         with (

@@ -1,11 +1,27 @@
 # -*- coding: utf-8 -*-
 import tempfile
 import unittest
+import json
+import traceback
 from pathlib import Path
 from unittest.mock import Mock, call, patch
 
 from core import codex_retry_service
-from core.account_export import TwofaEnrollmentAuthRequired
+from core.account_export import (
+    TwofaEnrollmentAuthRequired,
+    TwofaProtocolHTTPError,
+    TwofaProtocolTransportError,
+)
+
+
+class _Response:
+    def __init__(self, payload, status_code=200, text=""):
+        self._payload = payload
+        self.status_code = status_code
+        self.text = text or (json.dumps(payload) if payload is not None else "")
+
+    def json(self):
+        return self._payload
 
 
 class ProtocolDirectTwofaTests(unittest.TestCase):
@@ -143,6 +159,238 @@ class ProtocolDirectTwofaTests(unittest.TestCase):
             "a@example.com", "success", "Authenticator 2FA 已启用"
         )
         route.release.assert_called_once_with(reason="twofa-retry-a@example.com")
+
+    def test_protocol_enroll_retries_transient_http_failure(self):
+        from core import account_export
+
+        session = Mock()
+        session.device_id = "device"
+        session.navigator_language.return_value = "en-US"
+        session.get_chatgpt_headers.return_value = {}
+        session.post.side_effect = [
+            _Response({"error": "temporary"}, status_code=503),
+            _Response({"secret": "JBSWY3DPEHPK3PXP", "session_id": "sid"}),
+        ]
+        with patch.object(account_export, "_clear_twofa_session_circuit") as reset, patch.object(
+            account_export.time, "sleep"
+        ):
+            result = account_export._enroll_totp(session, "access-token")
+
+        self.assertEqual(("JBSWY3DPEHPK3PXP", "sid"), result)
+        self.assertEqual(2, session.post.call_count)
+        reset.assert_called_once_with(session, source="MFA enroll")
+
+    def test_protocol_enroll_retry_log_does_not_expose_proxy_credentials(self):
+        from core import account_export
+
+        session = Mock()
+        session.device_id = "device"
+        session.navigator_language.return_value = "en-US"
+        session.get_chatgpt_headers.return_value = {}
+        session.post.side_effect = [
+            RuntimeError("Proxy CONNECT aborted: http://proxy-user:proxy-pass@1.2.3.4:8080"),
+            _Response({"secret": "JBSWY3DPEHPK3PXP", "session_id": "sid"}),
+        ]
+        with patch.object(account_export, "_clear_twofa_session_circuit"), patch.object(
+            account_export.time, "sleep"
+        ), self.assertLogs(account_export.logger, level="WARNING") as captured:
+            account_export._enroll_totp(session, "access-token")
+
+        rendered = "\n".join(captured.output)
+        self.assertNotIn("proxy-user", rendered)
+        self.assertNotIn("proxy-pass", rendered)
+        self.assertNotIn("1.2.3.4", rendered)
+
+    def test_protocol_enroll_retry_exhaustion_does_not_expose_proxy_credentials(self):
+        from core import account_export
+
+        session = Mock()
+        session.device_id = "device"
+        session.navigator_language.return_value = "en-US"
+        session.get_chatgpt_headers.return_value = {}
+        session.post.side_effect = [
+            RuntimeError("Proxy CONNECT aborted: http://proxy-user:proxy-pass@1.2.3.4:8080"),
+            RuntimeError("SSL closed via http://proxy-user:proxy-pass@1.2.3.4:8080"),
+        ]
+        with patch.object(account_export, "_clear_twofa_session_circuit"), patch.object(
+            account_export.time, "sleep"
+        ), self.assertRaises(TwofaProtocolTransportError) as raised:
+            account_export._enroll_totp(session, "access-token")
+
+        rendered = str(raised.exception)
+        self.assertNotIn("proxy-user", rendered)
+        self.assertNotIn("proxy-pass", rendered)
+        self.assertNotIn("1.2.3.4", rendered)
+        rendered_traceback = "".join(traceback.format_exception(raised.exception))
+        self.assertNotIn("proxy-user", rendered_traceback)
+        self.assertNotIn("proxy-pass", rendered_traceback)
+        self.assertNotIn("1.2.3.4", rendered_traceback)
+
+    def test_protocol_http_error_redacts_sensitive_detail_fields(self):
+        from core import account_export
+
+        response = _Response({
+            "error": {
+                "code": "invalid_request",
+                "type": "validation_error",
+                "detail": (
+                    "user@example.com Bearer "
+                    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature "
+                    "via http://proxy-user:proxy-pass@1.2.3.4:8080"
+                ),
+            }
+        }, status_code=400)
+
+        error = account_export._twofa_http_error("activate", response)
+        rendered = str(error)
+        self.assertNotIn("user@example.com", rendered)
+        self.assertNotIn("eyJhbGciOiJIUzI1NiJ9", rendered)
+        self.assertNotIn("proxy-user", rendered)
+        self.assertNotIn("proxy-pass", rendered)
+        self.assertIn("invalid_request", rendered)
+
+    def test_protocol_activate_retries_a_code_or_session_400_once(self):
+        from core import account_export
+
+        session = Mock()
+        session.device_id = "device"
+        session.navigator_language.return_value = "en-US"
+        session.get_chatgpt_headers.return_value = {}
+        session.post.side_effect = [
+            _Response({"detail": "invalid verification code"}, status_code=400),
+            _Response({"success": True}),
+        ]
+        totp = Mock()
+        totp.now.side_effect = ["111111", "222222"]
+        with patch.object(account_export.pyotp, "TOTP", return_value=totp), patch.object(
+            account_export, "_wait_for_next_totp_window"
+        ) as wait_window:
+            self.assertTrue(account_export._activate_totp(session, "access-token", "secret", "sid"))
+
+        self.assertEqual(2, session.post.call_count)
+        wait_window.assert_called_once_with()
+        first_body = json.loads(session.post.call_args_list[0].kwargs["data"])
+        second_body = json.loads(session.post.call_args_list[1].kwargs["data"])
+        self.assertEqual("111111", first_body["code"])
+        self.assertEqual("222222", second_body["code"])
+
+    def test_protocol_activate_retries_transient_http_failure(self):
+        from core import account_export
+
+        session = Mock()
+        session.device_id = "device"
+        session.navigator_language.return_value = "en-US"
+        session.get_chatgpt_headers.return_value = {}
+        session.post.side_effect = [
+            _Response({"error": "temporary"}, status_code=503),
+            _Response({"success": True}),
+        ]
+        totp = Mock()
+        totp.now.return_value = "111111"
+        with patch.object(account_export.pyotp, "TOTP", return_value=totp), patch.object(
+            account_export, "_clear_twofa_session_circuit"
+        ) as reset, patch.object(account_export.time, "sleep"), patch.object(
+            account_export, "_wait_for_next_totp_window"
+        ) as wait_window:
+            self.assertTrue(account_export._activate_totp(session, "access-token", "secret", "sid"))
+
+        self.assertEqual(2, session.post.call_count)
+        reset.assert_called_once_with(session, source="MFA activate")
+        wait_window.assert_not_called()
+
+    def test_protocol_activate_does_not_retry_generic_invalid_request(self):
+        from core import account_export
+
+        session = Mock()
+        session.device_id = "device"
+        session.navigator_language.return_value = "en-US"
+        session.get_chatgpt_headers.return_value = {}
+        session.post.return_value = _Response(
+            {"error": {"type": "invalid_request"}},
+            status_code=400,
+        )
+        with patch.object(account_export.pyotp, "TOTP") as totp, patch.object(
+            account_export, "_wait_for_next_totp_window"
+        ) as wait_window, self.assertRaises(TwofaProtocolHTTPError):
+            totp.return_value.now.return_value = "111111"
+            account_export._activate_totp(session, "access-token", "secret", "sid")
+
+        session.post.assert_called_once()
+        wait_window.assert_not_called()
+
+    def test_protocol_activate_does_not_retry_top_level_invalid_request(self):
+        from core import account_export
+
+        session = Mock()
+        session.device_id = "device"
+        session.navigator_language.return_value = "en-US"
+        session.get_chatgpt_headers.return_value = {}
+        session.post.return_value = _Response(
+            {"error": "invalid_request"},
+            status_code=400,
+        )
+        with patch.object(account_export.pyotp, "TOTP") as totp, patch.object(
+            account_export, "_wait_for_next_totp_window"
+        ) as wait_window, self.assertRaises(TwofaProtocolHTTPError) as raised:
+            totp.return_value.now.return_value = "111111"
+            account_export._activate_totp(session, "access-token", "secret", "sid")
+
+        self.assertEqual("invalid_request", raised.exception.error_code)
+        session.post.assert_called_once()
+        wait_window.assert_not_called()
+
+    def test_reauth_otp_business_403_is_not_retried(self):
+        from core import account_export
+
+        session = Mock()
+        session.get_auth_headers.return_value = {}
+        session.post.return_value = _Response(
+            {"error": {"code": "invalid_otp"}},
+            status_code=403,
+        )
+        with patch("config.twofa.TWOFA_REAUTH_MAX_ATTEMPTS", 3, create=True), patch.object(
+            account_export.time, "sleep"
+        ), self.assertRaises(TwofaProtocolHTTPError):
+            account_export._validate_reauth_otp_with_retry(session, "123456")
+
+        session.post.assert_called_once()
+
+    def test_reauth_unknown_exception_traceback_is_redacted(self):
+        from core import account_export
+
+        session = Mock()
+        leaked = RuntimeError(
+            "unexpected adapter failure at http://proxy-user:proxy-pass@1.2.3.4:8080"
+        )
+        with patch("config.twofa.TWOFA_REAUTH_MAX_ATTEMPTS", 1, create=True), patch.object(
+            account_export,
+            "_trigger_reauth",
+            side_effect=leaked,
+        ), self.assertRaises(RuntimeError) as raised:
+            account_export._trigger_reauth_with_retry(session, "a@example.com")
+
+        rendered = "".join(traceback.format_exception(raised.exception))
+        self.assertNotIn("proxy-user", rendered)
+        self.assertNotIn("proxy-pass", rendered)
+        self.assertNotIn("1.2.3.4", rendered)
+
+    def test_protocol_enroll_exposes_classified_error_without_retrying_business_4xx(self):
+        from core import account_export
+
+        session = Mock()
+        session.device_id = "device"
+        session.navigator_language.return_value = "en-US"
+        session.get_chatgpt_headers.return_value = {}
+        session.post.return_value = _Response(
+            {"error": {"code": "feature_disabled", "type": "invalid_request"}},
+            status_code=400,
+        )
+        with self.assertRaises(TwofaProtocolHTTPError) as raised:
+            account_export._enroll_totp(session, "access-token")
+
+        self.assertEqual(400, raised.exception.status_code)
+        self.assertEqual("feature_disabled", raised.exception.error_code)
+        session.post.assert_called_once()
 
     def test_browser_setup_retries_connection_closed_with_a_new_route(self):
         account = {

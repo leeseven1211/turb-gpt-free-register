@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 from core import db, record_store as rs
@@ -46,6 +47,115 @@ class ICloudHidePoolTests(PostgresTestCase):
 
         self.assertEqual(claimed["email"], "b@example.com")
         self.assertEqual(db.get_icloud_hide_email_by_email("a@example.com")["status"], "available")
+
+    def test_claim_excludes_alias_already_seen_in_same_registration_batch(self):
+        db.sync_icloud_hide_aliases([
+            {"email": "old@example.com", "active": True},
+            {"email": "fresh@example.com", "active": True},
+        ], "acc-a")
+        self.assertTrue(db.claim_registration_batch_email(
+            "batch-a", "old@example.com", job_id=1, email_source="icloud_hide"
+        ))
+
+        claimed = db.claim_next_icloud_hide_email(
+            account_ids=["acc-a"],
+            batch_id="batch-a",
+        )
+
+        self.assertEqual(claimed["email"], "fresh@example.com")
+        self.assertEqual(db.get_icloud_hide_email_by_email("old@example.com")["status"], "available")
+
+    def test_atomic_claim_excludes_pre_claim_table_registration_job(self):
+        db.sync_icloud_hide_aliases([
+            {"email": "old@example.com", "active": True},
+            {"email": "fresh@example.com", "active": True},
+        ], "acc-a")
+        old_job = db.create_job("icloud_hide", batch_id="batch-a")
+        db.update_job(old_job["id"], email="old@example.com")
+
+        claimed = db.claim_next_icloud_hide_email(
+            account_ids=["acc-a"],
+            batch_id="batch-a",
+            job_id=old_job["id"] + 1,
+            email_source="icloud_hide",
+        )
+
+        self.assertEqual(claimed["email"], "fresh@example.com")
+        self.assertEqual(
+            db.get_icloud_hide_email_by_email("old@example.com")["status"],
+            "available",
+        )
+
+    def test_batch_claim_is_durable_in_same_transaction_as_pool_claim(self):
+        db.sync_icloud_hide_aliases([
+            {"email": "one@example.com", "active": True},
+        ], "acc-a")
+
+        claimed = db.claim_next_icloud_hide_email(
+            account_ids=["acc-a"],
+            batch_id="batch-a",
+            job_id=17,
+            email_source="icloud_hide",
+        )
+
+        self.assertEqual(claimed["email"], "one@example.com")
+        row = rs.get_row_by(
+            rs.REGISTRATION_BATCH_EMAIL_CLAIMS,
+            "claim_key",
+            "batch-a\x1fone@example.com",
+        )
+        self.assertIsNotNone(row)
+        self.assertEqual(row["job_id"], 17)
+        self.assertTrue(db.claim_registration_batch_email(
+            "batch-a", "one@example.com", job_id=17, email_source="icloud_hide"
+        ))
+
+    def test_batch_claim_failure_rolls_back_pool_claim(self):
+        db.sync_icloud_hide_aliases([
+            {"email": "one@example.com", "active": True},
+        ], "acc-a")
+
+        with patch.object(rs, "insert_row_if_absent", side_effect=RuntimeError("claim write failed")):
+            with self.assertRaisesRegex(RuntimeError, "claim write failed"):
+                db.claim_next_icloud_hide_email(
+                    account_ids=["acc-a"],
+                    batch_id="batch-a",
+                    job_id=17,
+                    email_source="icloud_hide",
+                )
+
+        self.assertEqual(
+            db.get_icloud_hide_email_by_email("one@example.com")["status"],
+            "available",
+        )
+
+    def test_concurrent_batch_claims_receive_distinct_aliases(self):
+        db.sync_icloud_hide_aliases([
+            {"email": "one@example.com", "active": True},
+            {"email": "two@example.com", "active": True},
+        ], "acc-a")
+
+        def claim(job_id):
+            return db.claim_next_icloud_hide_email(
+                account_ids=["acc-a"],
+                batch_id="batch-a",
+                job_id=job_id,
+                email_source="icloud_hide",
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            rows = list(executor.map(claim, (17, 18)))
+
+        self.assertEqual(
+            {row["email"] for row in rows},
+            {"one@example.com", "two@example.com"},
+        )
+        claims = rs.list_rows(
+            rs.REGISTRATION_BATCH_EMAIL_CLAIMS,
+            where='"batch_id" = %s',
+            params=("batch-a",),
+        )
+        self.assertEqual({row["job_id"] for row in claims}, {17, 18})
 
     def test_summary_is_grouped_by_account(self):
         db.sync_icloud_hide_aliases([
@@ -219,6 +329,28 @@ class ICloudHMEClientTests(unittest.TestCase):
         claim_mock.assert_called_once_with(account_ids=["acc-a", "acc-b"])
         sync_mock.assert_called_once_with(force=False)
 
+    @patch("core.db.claim_next_icloud_hide_email", return_value={
+        "email": "b@example.com",
+        "account_id": "acc-b",
+        "anonymous_id": "anon-b",
+        "label": "new",
+    })
+    @patch("core.icloud_hme_client.sync_aliases", return_value={
+        "account_id": "acc-a",
+        "account_ids": ["acc-a", "acc-b"],
+        "synced_account_ids": ["acc-a", "acc-b"],
+    })
+    def test_pick_account_forwards_registration_batch(self, _sync, claim_mock):
+        account = client.pick_account(batch_id="batch-a", job_id=17)
+
+        self.assertEqual(account.email, "b@example.com")
+        claim_mock.assert_called_once_with(
+            account_ids=["acc-a", "acc-b"],
+            batch_id="batch-a",
+            job_id=17,
+            email_source="icloud_hide",
+        )
+
     @patch("core.db.icloud_hide_email_pool_summary_by_account", return_value=[
         {"account_id": "acc-a", "available": 1, "used": 2, "disabled": 0, "failed": 0, "total": 3},
         {"account_id": "acc-b", "available": 4, "used": 5, "disabled": 0, "failed": 0, "total": 9},
@@ -348,8 +480,17 @@ class ICloudEmailProviderTests(unittest.TestCase):
         self.assertEqual(email_provider.parse_email_sources("icloud_hide,outlook"), ["icloud_hide", "outlook"])
         with patch("core.icloud_hme_client.pick_account", return_value=client.ICloudHMEAccount(
             email="alias@icloud.com", account_id="acc-1"
-        )):
-            self.assertEqual(email_provider._pick_from_source("icloud_hide"), "alias@icloud.com")
+        )) as pick:
+            self.assertEqual(
+                email_provider._pick_from_source(
+                    "icloud_hide",
+                    batch_id="batch-a",
+                    job_id=17,
+                ),
+                "alias@icloud.com",
+            )
+
+        pick.assert_called_once_with(batch_id="batch-a", job_id=17)
 
     @patch("core.db.get_icloud_hide_email_by_email", return_value={"email": "alias@icloud.com", "account_id": "acc-1"})
     def test_resolve_and_release_unconsumed_use_icloud_pool(self, _context):

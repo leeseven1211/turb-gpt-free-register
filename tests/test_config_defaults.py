@@ -352,9 +352,21 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
     def test_reauth_twofa_callbacks_persist_new_token_before_secret(self):
         events = []
         secret = "JBSWY3DPEHPK3PXP"
-        with patch.object(account_export, "_trigger_reauth", return_value="https://auth.example/reauth"), patch.object(
-            account_export, "_follow_reauth"
-        ), patch.object(
+        with patch.object(
+            account_export,
+            "_trigger_reauth_with_retry",
+            return_value="https://auth.example/reauth",
+        ) as trigger, patch.object(
+            account_export, "_follow_reauth_with_retry"
+        ) as follow, patch.object(
+            account_export,
+            "_validate_reauth_otp_with_retry",
+            return_value="https://auth.example/callback",
+        ) as validate, patch.object(
+            account_export,
+            "_exchange_new_token_with_retry",
+            return_value="fresh-token",
+        ) as exchange, patch.object(
             account_export, "_validate_reauth_otp", return_value="https://auth.example/callback"
         ), patch.object(
             account_export, "_exchange_new_token", return_value="fresh-token"
@@ -372,6 +384,10 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             )
 
         self.assertEqual(result, secret)
+        trigger.assert_called_once()
+        follow.assert_called_once()
+        validate.assert_called_once()
+        exchange.assert_called_once()
         self.assertEqual(events, [
             ("token", "fresh-token"),
             "enroll",

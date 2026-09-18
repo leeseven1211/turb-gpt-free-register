@@ -97,7 +97,12 @@ def _registered_email_source(email: str) -> str | None:
         return None
 
 
-def _pick_from_source(source: str) -> str:
+def _pick_from_source(
+    source: str,
+    *,
+    batch_id: str | None = None,
+    job_id: int | None = None,
+) -> str:
     if source == "gptmail":
         from core.gptmail_client import pick_account
         return pick_account().email
@@ -121,19 +126,24 @@ def _pick_from_source(source: str) -> str:
         return pick_account().email
     if source == "icloud_hide":
         from core.icloud_hme_client import pick_account
-        return pick_account().email
+        return pick_account(batch_id=batch_id, job_id=job_id).email
     from core.outlook_client import pick_account
     return pick_account().email
 
 
-def acquire_email(source: str | None = None) -> str:
+def acquire_email(
+    source: str | None = None,
+    *,
+    batch_id: str | None = None,
+    job_id: int | None = None,
+) -> str:
     """领取邮箱；任务传入 source 时严格使用该来源，不自动切换平台。"""
     explicit = source is not None
     sources = [validate_email_source(source)] if explicit else parse_email_sources()
     last_exc: Exception | None = None
     for source in sources:
         try:
-            email = _pick_from_source(source)
+            email = _pick_from_source(source, batch_id=batch_id, job_id=job_id)
             logger.info(f"[EmailProvider] 使用邮箱来源: {source}, email={email}")
             return email
         except Exception as exc:

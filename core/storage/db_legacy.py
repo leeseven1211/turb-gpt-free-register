@@ -3612,12 +3612,26 @@ def claim_registration_batch_email(
     if not batch or not address:
         return True
 
+    claim_key = f"{batch}\x1f{address}"
+    existing = record_store.get_row_by(
+        record_store.REGISTRATION_BATCH_EMAIL_CLAIMS,
+        "claim_key",
+        claim_key,
+    )
+    if existing is not None:
+        # iCloud HME 会在领取池记录的同一事务内先写 claim。随后服务层的
+        # 通用登记调用应对同一 job 幂等，但不能让其他 job 复用该地址。
+        return (
+            job_id is not None
+            and existing.get("job_id") is not None
+            and int(existing["job_id"]) == int(job_id)
+        )
+
     # 先检查历史 registration_jobs，覆盖该保护上线前已经产生的重复任务。
     if count_registration_jobs_by_batch_email(batch, address) > 0:
         return False
 
     claimed_at = _now()
-    claim_key = f"{batch}\x1f{address}"
     row_id = record_store.insert_row_if_absent(
         record_store.REGISTRATION_BATCH_EMAIL_CLAIMS,
         "claim_key",
@@ -4108,8 +4122,11 @@ def claim_next_icloud_hide_email(
     account_id: str | None = None,
     *,
     account_ids: list[str] | None = None,
+    batch_id: str | None = None,
+    job_id: int | None = None,
+    email_source: str | None = None,
 ) -> dict | None:
-    """原子领取一个已同步且仍激活的 iCloud 隐藏邮箱。"""
+    """原子领取 HME 邮箱，并在同一事务写入可选的批次去重记录。"""
     if account_ids is not None:
         normalized_ids = [str(value or "").strip() for value in account_ids if str(value or "").strip()]
         if not normalized_ids:
@@ -4124,13 +4141,80 @@ def claim_next_icloud_hide_email(
     if normalized_ids is not None:
         where.append("account_id = ANY(%s)")
         params.append(normalized_ids)
-    row = record_store.claim_next_row(
-        record_store.ICLOUD_HIDE_POOL,
-        changes={"status": "used", "used_at": _now(), "note": None},
-        where=" AND ".join(where),
-        params=params,
-    )
-    return row
+    normalized_batch = str(batch_id or "").strip()
+    if normalized_batch:
+        claims_table = postgres_store.qualified(
+            record_store.REGISTRATION_BATCH_EMAIL_CLAIMS.name
+        )
+        jobs_table = postgres_store.qualified(record_store.JOBS.name)
+        pool_name = postgres_store.quote_identifier(record_store.ICLOUD_HIDE_POOL.name)
+        where.append(
+            "NOT EXISTS ("
+            f"SELECT 1 FROM {claims_table} AS claimed "
+            "WHERE claimed.batch_id = %s "
+            f"AND lower(claimed.email) = lower({pool_name}.email)"
+            ")"
+        )
+        params.append(normalized_batch)
+        # 兼容 registration_batch_email_claims 上线前已写入的批次任务。
+        # 原子领取必须在选中池记录之前排除它们，不能依赖服务层二次登记。
+        where.append(
+            "NOT EXISTS ("
+            f"SELECT 1 FROM {jobs_table} AS historical "
+            "WHERE historical.batch_id = %s "
+            f"AND lower(historical.email) = lower({pool_name}.email)"
+            ")"
+        )
+        params.append(normalized_batch)
+    changes = {"status": "used", "used_at": _now(), "note": None}
+    if not normalized_batch:
+        return record_store.claim_next_row(
+            record_store.ICLOUD_HIDE_POOL,
+            changes=changes,
+            where=" AND ".join(where),
+            params=params,
+        )
+
+    class _BatchClaimConflict(RuntimeError):
+        pass
+
+    # NOT EXISTS 与池行锁覆盖常规并发；极窄窗口内若另一事务的 claim 尚未
+    # 可见，唯一键冲突会触发整笔回滚，再从下一个候选重新领取。
+    for _attempt in range(8):
+        try:
+            with record_store.transaction() as conn:
+                row = record_store.claim_next_row(
+                    record_store.ICLOUD_HIDE_POOL,
+                    changes=changes,
+                    where=" AND ".join(where),
+                    params=params,
+                    conn=conn,
+                )
+                if row is None:
+                    return None
+                address = str(row.get("email") or "").strip().lower()
+                claimed_at = _now()
+                claim_key = f"{normalized_batch}\x1f{address}"
+                inserted = record_store.insert_row_if_absent(
+                    record_store.REGISTRATION_BATCH_EMAIL_CLAIMS,
+                    "claim_key",
+                    {
+                        "claim_key": claim_key,
+                        "batch_id": normalized_batch,
+                        "email": address,
+                        "job_id": int(job_id) if job_id is not None else None,
+                        "email_source": str(email_source or "icloud_hide").strip()
+                        or "icloud_hide",
+                        "claimed_at": claimed_at,
+                    },
+                    conn=conn,
+                )
+                if inserted is None:
+                    raise _BatchClaimConflict(claim_key)
+                return row
+        except _BatchClaimConflict:
+            continue
+    raise RuntimeError("iCloud HME 批次邮箱并发领取冲突次数过多，请稍后重试")
 
 
 def release_icloud_hide_email(email: str, status: str = "available", note: str | None = None) -> bool:

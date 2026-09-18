@@ -849,6 +849,7 @@ def _wait_email_submit_next_state(
     *,
     wait_through_transient: bool = False,
     budget: StageBudget | None = None,
+    blank_shell_grace: float = 0.0,
 ) -> str:
     """邮箱提交后等待进入 password / otp / logged_in；仍停留邮箱页则返回 email_page。
 
@@ -871,8 +872,14 @@ def _wait_email_submit_next_state(
     cleared_seen_at: float | None = None
     cleared_last_log_at = 0.0
     cleared_recover_done = False
+    blank_shell_seen_at: float | None = None
+    blank_shell_logged = False
     transient_shell_logged = False
     expected_email = str(email or "").strip().lower()
+    try:
+        blank_shell_grace = max(0.0, min(10.0, float(blank_shell_grace or 0.0)))
+    except (TypeError, ValueError):
+        blank_shell_grace = 0.0
     while True:
         _check_manual_stop()
         loop_now = clock()
@@ -886,11 +893,26 @@ def _wait_email_submit_next_state(
         inputs = state.get("inputs") or []
         if not inputs and _is_blank_chatgpt_auth_shell(driver):
             if not wait_through_transient:
+                if blank_shell_grace > 0:
+                    if blank_shell_seen_at is None:
+                        blank_shell_seen_at = loop_now
+                    if not blank_shell_logged:
+                        logger.info(
+                            "%s 邮箱提交后检测到登录空壳，先等待页面组件挂载：grace=%.1fs",
+                            _log_prefix(driver), blank_shell_grace,
+                        )
+                        blank_shell_logged = True
+                    if loop_now - blank_shell_seen_at < blank_shell_grace:
+                        time.sleep(min(0.4, max(0.0, end - loop_now)))
+                        continue
                 logger.warning("%s 邮箱提交后进入 ChatGPT 登录空壳页，立即切换认证兜底", _log_prefix(driver))
                 return "blank_shell"
             if not transient_shell_logged:
                 logger.info("%s 认证兜底后仍在登录过渡页，继续等待最终跳转", _log_prefix(driver))
                 transient_shell_logged = True
+        else:
+            blank_shell_seen_at = None
+            blank_shell_logged = False
         if inputs:
             values = [str(i.get("value") or "") for i in inputs]
             url = str(state.get("url") or "")
@@ -1014,7 +1036,12 @@ def _submit_email_and_wait_next(
                 logger.exception("%s 上报邮箱提交阶段失败", _log_prefix(driver))
             submitted_reported = True
         logger.info("%s 已提交邮箱，等待进入密码页或验证码页（%s/%s）", _log_prefix(driver), attempt, attempts)
-        state_name = _wait_email_submit_next_state(driver, email, timeout=_remaining(20))
+        state_name = _wait_email_submit_next_state(
+            driver,
+            email,
+            timeout=_remaining(20),
+            blank_shell_grace=3,
+        )
         accepted = _accept_advanced_state(state_name, "邮箱提交后")
         if accepted:
             return accepted

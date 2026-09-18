@@ -395,18 +395,29 @@ def create_address(label: str | None = None, account_id: str | None = None) -> I
     )
 
 
-def pick_account() -> ICloudHMEAccount:
+def pick_account(
+    *,
+    batch_id: str | None = None,
+    job_id: int | None = None,
+) -> ICloudHMEAccount:
     from core import db
+
+    def _claim(**filters):
+        if str(batch_id or "").strip():
+            filters["batch_id"] = str(batch_id).strip()
+            filters["job_id"] = int(job_id) if job_id is not None else None
+            filters["email_source"] = "icloud_hide"
+        return db.claim_next_icloud_hide_email(**filters)
 
     synced = sync_aliases(force=False)
     selected = str(synced.get("account_id") or _cfg_str("ICLOUD_HME_ACCOUNT_ID") or "").strip()
     selected_ids = [str(value).strip() for value in synced.get("synced_account_ids") or [] if str(value).strip()]
-    row = db.claim_next_icloud_hide_email(account_ids=selected_ids or None)
+    row = _claim(account_ids=selected_ids or None)
     if row is None:
         synced = sync_aliases(force=True)
         selected = str(synced.get("account_id") or selected).strip()
         selected_ids = [str(value).strip() for value in synced.get("synced_account_ids") or [] if str(value).strip()]
-        row = db.claim_next_icloud_hide_email(account_ids=selected_ids or None)
+        row = _claim(account_ids=selected_ids or None)
     if row is None and _cfg_bool("ICLOUD_HME_AUTO_CREATE", False):
         for candidate_id in selected_ids:
             try:
@@ -414,7 +425,7 @@ def pick_account() -> ICloudHMEAccount:
             except Exception as exc:
                 logger.warning("[iCloud HME] 账号 %s 按需创建失败: %s", candidate_id, exc)
                 continue
-            row = db.claim_next_icloud_hide_email(account_id=candidate_id)
+            row = _claim(account_id=candidate_id)
             if row is not None:
                 break
     if row is None:

@@ -945,6 +945,7 @@ def claim_next_row(
     where: str,
     params: Iterable[Any] = (),
     order_by: str = "id",
+    conn=None,
 ) -> dict | None:
     """用 ``FOR UPDATE SKIP LOCKED`` 原子领取一个符合条件的最早记录。"""
     spec = _resolve(table)
@@ -957,9 +958,15 @@ def claim_next_row(
         f"UPDATE {_qualified(spec)} AS target SET {', '.join(sets)} "
         "FROM candidate WHERE target.id = candidate.id RETURNING target.*"
     )
-    with _connect() as conn, conn.cursor() as cur:
+    def _run(cur):
         cur.execute(sql, args)
         return _merge(spec, cur.fetchone())
+
+    if conn is not None:
+        with conn.cursor() as cur:
+            return _run(cur)
+    with _connect() as own, own.cursor() as cur:
+        return _run(cur)
 
 
 def delete_rows(table: str | TableSpec, ids: Iterable[int], *, conn=None) -> int:
