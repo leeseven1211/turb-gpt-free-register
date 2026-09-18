@@ -1252,6 +1252,8 @@ class _RoxyTargetCollector:
                 self._requests[request_id] = {
                     "started_monotonic": params.get("timestamp"),
                     "request_body_bytes": len(str(post_data).encode("utf-8")) if post_data is not None else 0,
+                    "url": _raw_url(request.get("url")),
+                    "resource_type": params.get("type"),
                 }
                 return
             post_body, post_truncated = _raw_body(request.get("postData"), str((request.get("headers") or {}).get("content-type") or ""))
@@ -1317,6 +1319,16 @@ class _RoxyTargetCollector:
                 self._finish_request(request_id, body_unavailable="binary_or_disabled")
         elif method == "Network.loadingFailed":
             request_id = str(params.get("requestId") or "")
+            data_saver = getattr(self.owner, "data_saver", None)
+            if data_saver is not None:
+                try:
+                    data_saver.observe_cdp_event(
+                        method,
+                        params,
+                        self._requests.get(request_id) or {},
+                    )
+                except Exception:
+                    logger.debug("Roxy 省流量拦截事件统计失败", exc_info=True)
             self._finish_request(
                 request_id,
                 failure=str(params.get("errorText") or "network_failed")[:500],
@@ -1386,6 +1398,7 @@ class RoxyCDPCollector:
 
     def __init__(self, session: RegistrationDebugSession, debugger_address: str):
         self.session = session
+        self.data_saver = None
         address = str(debugger_address or "").strip().rstrip("/")
         self.http_base = address if address.startswith(("http://", "https://")) else f"http://{address}"
         self._stop = threading.Event()

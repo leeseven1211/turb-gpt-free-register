@@ -1,6 +1,7 @@
 """ChatGPT browser-session acquisition shared by auth flows."""
 from __future__ import annotations
 
+import json
 import logging
 import time
 from urllib.parse import urlsplit
@@ -18,6 +19,7 @@ from .selenium_resource import _log_prefix, _safe_get
 
 logger = logging.getLogger(__name__)
 time = time_proxy
+_CHATGPT_SESSION_URL = "https://chatgpt.com/api/auth/session"
 
 
 def _diagnostic_url(value: object) -> str:
@@ -56,6 +58,27 @@ def _read_chatgpt_session_once(driver) -> dict | None:
             logger.info("%s /api/auth/session 已返回 accessToken", _log_prefix(driver))
             return data
         logger.info("%s 等待 ChatGPT session 写入 accessToken，当前响应 keys=%s", _log_prefix(driver), list(data.keys()))
+    return None
+
+
+def _read_chatgpt_session_document(driver) -> dict | None:
+    """Read the JSON document loaded at ``/api/auth/session``.
+
+    Opening the endpoint as a document avoids loading the ChatGPT SPA merely
+    to run the same session fetch from its homepage.  Keep this as a narrow
+    fallback: if the browser returns HTML or a non-JSON body, the caller can
+    still use the existing page-fetch path.
+    """
+    try:
+        body = driver.execute_script(
+            "return document.body ? (document.body.innerText || document.body.textContent || '') : '';"
+        )
+        data = json.loads(str(body or "").strip())
+    except Exception:
+        return None
+    if isinstance(data, dict) and data.get("accessToken"):
+        logger.info("%s /api/auth/session JSON 文档已返回 accessToken", _log_prefix(driver))
+        return data
     return None
 
 def _switch_to_chatgpt_window_if_any(driver) -> bool:
@@ -141,7 +164,7 @@ def _fetch_chatgpt_session(
                         raise StageTimeout("OAuth session navigation budget exhausted")
                     _safe_get(
                         driver,
-                        "https://chatgpt.com/",
+                        _CHATGPT_SESSION_URL,
                         timeout=max(1, int(safe_timeout)),
                         attempts=2,
                         accept_hosts=("chatgpt.com",),
@@ -157,7 +180,41 @@ def _fetch_chatgpt_session(
                 time.sleep(min(1.0, max(0.0, end - time.monotonic())))
                 continue
 
+        # A successful callback may already have landed on the ChatGPT home
+        # page. Replace that expensive SPA load with the small session JSON
+        # document before probing the page via JavaScript.
+        if (
+            'chatgpt.com' in current
+            and not forced_chatgpt_open
+            and "/api/auth/session" not in current_lower
+        ):
+            try:
+                safe_timeout = _budget_timeout(budget, 35, minimum=1)
+                if budget is not None and safe_timeout < 1:
+                    raise StageTimeout("OAuth session navigation budget exhausted")
+                _safe_get(
+                    driver,
+                    _CHATGPT_SESSION_URL,
+                    timeout=max(1, int(safe_timeout)),
+                    attempts=2,
+                    accept_hosts=("chatgpt.com",),
+                )
+                forced_chatgpt_open = True
+                current = str(getattr(driver, "current_url", "") or "")
+                document_data = _read_chatgpt_session_document(driver)
+                if document_data:
+                    return document_data
+            except Exception as exc:
+                last_data = f"{type(exc).__name__}: {exc}"
+
         if 'chatgpt.com' in current:
+            document_data = (
+                _read_chatgpt_session_document(driver)
+                if "/api/auth/session" in current.lower()
+                else None
+            )
+            if document_data:
+                return document_data
             try:
                 data = _read_chatgpt_session_once(driver)
                 if data:

@@ -80,6 +80,12 @@ CLOUD_PROXY_ORG_KEYWORDS = [
     "tencent", "alibaba", "aliyun", "huawei cloud", "vultr", "contabo",
     "data center", "datacenter", "hosting", "host", "server", "cloud",
 ]
+
+# ---------- Roxy/Cloak 本地浏览器省流量模式 ----------
+BROWSER_DATA_SAVER_MODE = schema_default("BROWSER_DATA_SAVER_MODE")
+BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES = schema_default("BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES")
+BROWSER_DATA_SAVER_BLOCKED_URL_PATTERNS = schema_default("BROWSER_DATA_SAVER_BLOCKED_URL_PATTERNS")
+
 COUNTRY_LOCALE_PROFILE_MAP = {
     "JP": "jp", "CN": "cn", "HK": "hk", "TW": "tw", "US": "us", "CA": "us",
     "SG": "sg", "GB": "gb", "AU": "gb", "DE": "de", "FR": "fr", "NL": "nl",

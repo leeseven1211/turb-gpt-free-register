@@ -286,6 +286,20 @@ _DEFAULTS: dict[str, Any] = {
     "BROWSER_LOCALE_PROFILE": "jp",
     "AUTO_BROWSER_LOCALE_FROM_IP": True,
     "IP_GEO_TIMEOUT": 6.0,
+    "BROWSER_DATA_SAVER_MODE": False,
+    "BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES": ["image", "media"],
+    "BROWSER_DATA_SAVER_BLOCKED_URL_PATTERNS": [
+        "**://auth.openai.com/awe/api/v2/rum**",
+        "**://chatgpt.com/ces/statsc/flush**",
+        "**://connect.facebook.net/**",
+        "**://analytics.tiktok.com/**",
+        "**://snap.licdn.com/**",
+        "**://bat.bing.com/**",
+        "**://accounts.google.com/gsi/client**",
+        "**://*/favicon.ico**",
+        "**://chatgpt.com/ces/v1/rgstr**",
+        "**://chatgpt.com/cdn/assets/*.js**",
+    ],
     "REGISTRATION_PROXY_MODE": "pool",
     "PROXY_1024_API_URL": "",
     "PROXY_1024_REGION": "",
@@ -934,6 +948,18 @@ _FIELD_DEFINITIONS = [
     {
         "key": "IP_GEO_TIMEOUT", "file": "browser.py", "type": "float", "group": "浏览器画像",
         "label": "IP定位超时(秒)", "help": "出口 IP 地理信息接口的单次请求超时；接口失败会自动回退，不影响注册",
+    },
+    {
+        "key": "BROWSER_DATA_SAVER_MODE", "file": "browser.py", "type": "bool", "group": "浏览器画像",
+        "label": "本地浏览器省流量模式", "help": "仅 Roxy/Cloak 本地浏览器生效；拦截图片、媒体、注册不需要的 ChatGPT SPA 脚本和明确配置的遥测/广告 URL，不拦截认证接口和 WebSocket",
+    },
+    {
+        "key": "BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES", "file": "browser.py", "type": "list_str_multiline", "group": "浏览器画像",
+        "label": "省流量拦截类型", "help": "每行一种，默认 image、media；font/stylesheet 等类型需单独验证页面稳定性；填 [] 可关闭类型拦截",
+    },
+    {
+        "key": "BROWSER_DATA_SAVER_BLOCKED_URL_PATTERNS", "file": "browser.py", "type": "list_str_multiline", "group": "浏览器画像",
+        "label": "省流量 URL 规则", "help": "每行一个 URL glob；内置规则含遥测/广告和注册不需要的 ChatGPT SPA JS；不要加入 auth-cdn、session、sentinel 或注册接口；填 [] 可关闭 URL 规则",
     },
 
     # ---- 代理与网络 ----

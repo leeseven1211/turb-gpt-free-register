@@ -662,6 +662,7 @@ def run_roxy_registration(
                 logger.exception("[Roxy注册] 绑定失败后的替代环境清理失败")
             raise
     driver = None
+    data_saver = None
     profile_discarded = False
     create_acknowledged = False
     openai_password: str | None = None
@@ -678,6 +679,14 @@ def run_roxy_registration(
         except Exception:
             logger.exception("[Roxy注册][Debug] 启动浏览器网络抓包失败；注册流程继续执行")
         driver = _build_driver(opened)
+        from core.browser_data_saver import BrowserDataSaver
+        data_saver = BrowserDataSaver(label="Roxy注册")
+        data_saver.install_selenium(driver)
+        traffic_capture = getattr(opened, "traffic_capture", None)
+        if traffic_capture is not None:
+            setter = getattr(traffic_capture, "set_data_saver", None)
+            if callable(setter):
+                setter(data_saver)
         from core import registration_plan_capture
         registration_plan_capture.install_selenium(driver)
         report_job_progress("browser", "success", "Roxy 浏览器环境已启动")
@@ -1012,7 +1021,13 @@ def run_roxy_registration(
         report_job_progress("profile", "running", "正在填写账号资料")
         logger.info("[Roxy注册] 开始等待资料页/登录态")
         _check_manual_stop()
-        profile_submitted = _complete_profile_page(driver, name, birthday, timeout=60)
+        profile_submitted = _complete_profile_page(
+            driver,
+            name,
+            birthday,
+            timeout=60,
+            on_submit=(data_saver.activate_post_auth if data_saver is not None else None),
+        )
         if profile_submitted:
             remote_identity = "new_candidate"
             create_acknowledged = True
@@ -1381,6 +1396,11 @@ def run_roxy_registration(
             "error": f"{type(exc).__name__}: {str(exc)[:300]}",
         }
     finally:
+        if data_saver is not None:
+            try:
+                data_saver.stop()
+            except Exception:
+                logger.exception("[Roxy注册] 收口省流量统计失败")
         if driver and not profile_discarded and not bool(_cfg.ROXY_KEEP_BROWSER_OPEN):
             try:
                 _quit_driver(driver)

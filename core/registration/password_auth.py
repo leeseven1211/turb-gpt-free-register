@@ -605,7 +605,7 @@ def _accept_profile_consents(driver) -> int:
         logger.debug('%s 勾选 profile consent 失败：%s', _log_prefix(driver), exc)
         return 0
 
-def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45) -> bool:
+def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45, on_submit=None) -> bool:
     """等待并完成姓名/生日页；若已经登录成功则返回 False，不把它当失败。"""
     end = time.time() + timeout
     y, m, d = birthday.split('-')
@@ -677,6 +677,11 @@ def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45) 
             logger.warning('%s 资料页提交前表单校验未通过 state=%s', _log_prefix(driver), form_state)
             continue
         for _ in range(3):
+            if callable(on_submit):
+                try:
+                    on_submit()
+                except Exception:
+                    logger.debug('%s 资料页提交前切换 post-auth 省流量规则失败', _log_prefix(driver), exc_info=True)
             if _click_if_enabled_submit(driver):
                 logger.info('%s 已点击资料页提交按钮，等待 OAuth 跳转', _log_prefix(driver))
                 submit_end = time.time() + 45

@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
+from urllib.parse import urlsplit
 
 from core import record_store
 
@@ -275,6 +278,32 @@ def _content_size(value: Any) -> int:
         return 0
 
 
+def _safe_resource_label(url: Any) -> str:
+    """Return a bounded host/path label without query strings or identifiers."""
+    try:
+        parsed = urlsplit(str(url or ""))
+        host = str(parsed.hostname or "").strip().lower()
+        path = str(parsed.path or "/")
+        path = re.sub(r"/[^/]{1,120}@[^/]+", "/<redacted>", path)
+        path = re.sub(r"/[A-Fa-f0-9]{24,}(?=/|$)", "/<id>", path)
+        path = re.sub(r"/[A-Za-z0-9_-]{40,}(?=/|$)", "/<id>", path)
+        label = f"{host}{path}" if host else path
+        return label[:180]
+    except Exception:
+        return "<unknown>"
+
+
+def _is_local_browser_resource(url: Any) -> bool:
+    """Exclude Roxy/Chromium loopback resources from provider traffic bytes."""
+    try:
+        parsed = urlsplit(str(url or ""))
+        return (parsed.scheme or "").lower() in {"devtools", "chrome-extension"} or (
+            (parsed.hostname or "").lower() in {"127.0.0.1", "localhost", "::1"}
+        )
+    except Exception:
+        return False
+
+
 class _SummaryOnlyCDPSession:
     """Adapter consumed by the existing collector that keeps counters only."""
 
@@ -292,12 +321,25 @@ class _SummaryOnlyCDPSession:
         self.failed_count = 0
         self.unfinished_count = 0
         self.unknown_count = 0
+        self.resource_type_bytes: Counter[str] = Counter()
+        self.resource_type_requests: Counter[str] = Counter()
+        self.resource_url_bytes: Counter[str] = Counter()
 
     def record_network(self, record: Mapping[str, Any]) -> None:
         item = record if isinstance(record, Mapping) else {}
         self.request_count += 1
-        self.upload_bytes += _int_value(item.get("request_body_bytes")) or _content_size(item.get("request_body"))
-        self.download_bytes += _int_value(item.get("encoded_data_length"))
+        blocked_by_data_saver = bool(item.get("_data_saver_blocked"))
+        local_resource = _is_local_browser_resource(item.get("url"))
+        upload_bytes = 0 if blocked_by_data_saver or local_resource else (
+            _int_value(item.get("request_body_bytes")) or _content_size(item.get("request_body"))
+        )
+        download_bytes = 0 if blocked_by_data_saver or local_resource else _int_value(item.get("encoded_data_length"))
+        self.upload_bytes += upload_bytes
+        self.download_bytes += download_bytes
+        resource_type = str(item.get("resource_type") or "other").strip().lower() or "other"
+        self.resource_type_requests[resource_type] += 1
+        self.resource_type_bytes[resource_type] += upload_bytes + download_bytes
+        self.resource_url_bytes[_safe_resource_label(item.get("url"))] += upload_bytes + download_bytes
         status = _int_value(item.get("status"))
         if item.get("failure") or status >= 400:
             self.failed_count += 1
@@ -316,6 +358,8 @@ class _SummaryOnlyCDPSession:
                 self.download_bytes += size
             else:
                 self.unknown_count += 1
+            self.resource_type_requests["websocket"] += 1
+            self.resource_type_bytes["websocket"] += size
         elif kind == "capture_warning":
             self.unknown_count += 1
 
@@ -334,6 +378,9 @@ class _SummaryOnlyCDPSession:
             "failed_count": self.failed_count,
             "unfinished_count": self.unfinished_count,
             "unknown_count": self.unknown_count,
+            "resource_type_bytes": dict(sorted(self.resource_type_bytes.items())),
+            "resource_type_requests": dict(sorted(self.resource_type_requests.items())),
+            "resource_url_bytes": dict(self.resource_url_bytes.most_common(20)),
         }
 
 
@@ -354,6 +401,7 @@ class RoxyTrafficCapture:
     def __init__(self, opened, correlation: Mapping[str, Any] | None = None) -> None:
         self.summary_key = f"roxy:{uuid.uuid4().hex}"
         self.session = _SummaryOnlyCDPSession(getattr(opened, "profile_id", ""))
+        self.data_saver = None
         self.correlation: dict[str, Any] = {}
         self.update_context(**dict(correlation or {}))
         self.collector = None
@@ -370,6 +418,12 @@ class RoxyTrafficCapture:
             self.collector = None
             self.unavailable_reason = f"roxy_cdp_start_failed:{type(exc).__name__}"[:240]
             logger.warning("[浏览器流量] Roxy CDP 采集启动失败：%s", type(exc).__name__)
+
+    def set_data_saver(self, data_saver: Any) -> None:
+        """Attach the optional-request blocker to the existing CDP observer."""
+        self.data_saver = data_saver
+        if self.collector is not None:
+            self.collector.data_saver = data_saver
 
     def update_context(self, **correlation: Any) -> None:
         for key in self._CORRELATION_KEYS:
@@ -400,9 +454,19 @@ class RoxyTrafficCapture:
                     **self.correlation,
                 )
             else:
+                summary = self.session.summary()
+                logger.info(
+                    "[浏览器流量] Roxy资源类型汇总：bytes=%s requests=%s",
+                    summary.get("resource_type_bytes") or {},
+                    summary.get("resource_type_requests") or {},
+                )
+                logger.info(
+                    "[浏览器流量] Roxy资源路径Top：%s",
+                    summary.get("resource_url_bytes") or {},
+                )
                 persist_summary(
                     summary_key=self.summary_key,
-                    summary=self.session.summary(),
+                    summary=summary,
                     **self.correlation,
                 )
         except Exception:

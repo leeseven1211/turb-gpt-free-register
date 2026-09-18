@@ -190,6 +190,18 @@ class RegistrationStateMachineContractTests(unittest.TestCase):
                 roxy._fetch_chatgpt_session(Driver(), timeout=30)
         read_session.assert_not_called()
 
+    def test_session_json_document_reader_avoids_homepage_shell(self):
+        from core.registration.session_auth import _read_chatgpt_session_document
+
+        class Driver:
+            def execute_script(self, _script):
+                return '{"accessToken":"opaque-token","user":{}}'
+
+        self.assertEqual(
+            _read_chatgpt_session_document(Driver()),
+            {"accessToken": "opaque-token", "user": {}},
+        )
+
     def test_registration_snapshot_does_not_eagerly_read_codex_config(self):
         try:
             from core.registration import protocol, roxy

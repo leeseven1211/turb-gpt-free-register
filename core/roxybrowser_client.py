@@ -170,6 +170,30 @@ def _mask_proxy(proxy_url: str) -> str:
     return str(proxy_url or "").strip()
 
 
+def _apply_data_saver_open_args(params: dict) -> dict:
+    """Disable Chromium image loading before the first page request when enabled."""
+    try:
+        from config import browser as _browser_cfg
+        enabled = bool(getattr(_browser_cfg, "BROWSER_DATA_SAVER_MODE", False))
+        raw_types = getattr(_browser_cfg, "BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES", ())
+        types = {str(item or "").strip().lower() for item in (raw_types or ())}
+        if enabled and "image" in types:
+            args = list(params.get("args") or [])
+            flag = "--blink-settings=imagesEnabled=false"
+            if flag not in args:
+                args.append(flag)
+            params["args"] = args
+        if enabled and "font" in types:
+            args = list(params.get("args") or [])
+            flag = "--disable-remote-fonts"
+            if flag not in args:
+                args.append(flag)
+            params["args"] = args
+    except Exception:
+        logger.debug("[Roxy] 添加省流量启动参数失败", exc_info=True)
+    return params
+
+
 def _proxy_url_to_roxy_info(proxy_url: str) -> dict:
     """
     将 config/proxy.py 里的代理 URL 转成 Roxy /browser/create 的 proxyInfo。
@@ -733,6 +757,7 @@ class RoxyBrowserClient:
         params.setdefault("dirId", int(pid) if str(pid).isdigit() else pid)
         params.setdefault("args", [])
         params.setdefault("forceOpen", True)
+        _apply_data_saver_open_args(params)
         # ROXY_OPEN_HEADLESS 是显式开关，优先级应高于 ROXY_OPEN_EXTRA_PARAMS，
         # 否则 extra 里残留 headless=False 会导致 WebUI 保存无头后仍弹窗口。
         params["headless"] = (
