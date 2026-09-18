@@ -994,7 +994,6 @@ class RoxyBrowserClient:
             bool(getattr(_cfg, "ROXY_ONE_PROFILE_PER_ACCOUNT", True))
             and bool(getattr(_cfg, "ROXY_DELETE_PROFILE_AFTER_RUN", False))
             and bool(opened.created_by_run)
-            and not bool(opened.account_bound)
         )
         if should_delete:
             # 删除前尽量确保已关闭；若 keep_open=True 则不删除，便于调试保留现场。
@@ -1103,7 +1102,7 @@ def cleanup_orphaned_profiles() -> dict:
             closed = client.close_profile(profile_id)
             account_bound = bool(item.get("account_bound"))
             disposable = bool(item.get("disposable"))
-            if delete_after_run and disposable and not account_bound and client.delete_profile(profile_id):
+            if delete_after_run and disposable and client.delete_profile(profile_id):
                 _untrack_created_profile(profile_id)
                 cleaned += 1
             elif closed and (not delete_after_run or account_bound):

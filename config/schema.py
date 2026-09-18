@@ -621,7 +621,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "ROXY_DELETE_PROFILE_AFTER_RUN", "file": "roxybrowser.py", "type": "bool", "group": "RoxyBrowser",
-        "label": "结束后删除环境", "help": "高风险开关；默认关闭。开启后仅删除本轮新建且未绑定复用的 Roxy Profile",
+        "label": "结束后删除环境", "help": "高风险开关；默认关闭。开启后删除本轮新建的 Roxy Profile，即使已绑定账号",
     },
     {
         "key": "ROXY_RANDOM_OS_ON_CREATE", "file": "roxybrowser.py", "type": "bool", "group": "RoxyBrowser",

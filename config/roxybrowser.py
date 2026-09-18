@@ -77,6 +77,7 @@ ROXY_WINDOW_WAIT_INTERVAL: int = schema_default("ROXY_WINDOW_WAIT_INTERVAL")
 ROXY_ONE_PROFILE_PER_ACCOUNT: bool = schema_default("ROXY_ONE_PROFILE_PER_ACCOUNT")
 
 # 是否在任务结束后删除本轮新建 Profile。默认 False：关闭浏览器但保留环境，后续可按账号绑定复用。
+# 开启后即使 Profile 已绑定账号也会软删除，下一次使用需要重新创建环境。
 ROXY_REUSE_ACCOUNT_PROFILE: bool = schema_default("ROXY_REUSE_ACCOUNT_PROFILE")
 ROXY_DELETE_PROFILE_AFTER_RUN: bool = schema_default("ROXY_DELETE_PROFILE_AFTER_RUN")
 

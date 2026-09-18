@@ -78,7 +78,7 @@ class RoxyProfileLifecycleTests(unittest.TestCase):
             delete_profile.assert_not_called()
             self.assertEqual(json.loads(registry.read_text(encoding="utf-8"))["items"], [])
 
-    def test_account_bound_profile_is_not_deleted_even_when_delete_switch_is_enabled(self):
+    def test_account_bound_profile_is_deleted_when_delete_switch_is_enabled(self):
         client = RoxyBrowserClient(api_base="http://roxy.example")
         opened = RoxyOpenResult(profile_id="profile-1", raw={}, created_by_run=True, account_bound=True)
 
@@ -97,7 +97,7 @@ class RoxyProfileLifecycleTests(unittest.TestCase):
             self.assertEqual(json.loads(registry.read_text(encoding="utf-8"))["items"], [])
 
         close_profile.assert_called_once_with("profile-1")
-        delete_profile.assert_not_called()
+        delete_profile.assert_called_once_with("profile-1")
 
     def test_close_profile_waits_until_roxy_reports_closed(self):
         client = RoxyBrowserClient(api_base="http://roxy.example")
@@ -194,6 +194,29 @@ class RoxyProfileLifecycleTests(unittest.TestCase):
             close_profile.assert_called_once_with("legacy-1")
             delete_profile.assert_not_called()
             self.assertEqual(json.loads(registry.read_text(encoding="utf-8"))["items"], [{"profile_id": "legacy-1"}])
+
+    def test_startup_deletes_bound_disposable_profile_when_delete_switch_is_enabled(self):
+        with tempfile.TemporaryDirectory() as td:
+            registry = Path(td) / "profiles.json"
+            registry.write_text(
+                json.dumps({"items": [{"profile_id": "bound-1", "disposable": True, "account_bound": True}]}),
+                encoding="utf-8",
+            )
+            with patch.object(roxybrowser_client, "_PROFILE_REGISTRY_PATH", registry), patch.multiple(
+                roxybrowser_client._cfg,
+                ROXY_KEEP_BROWSER_OPEN=False,
+                ROXY_DELETE_PROFILE_AFTER_RUN=True,
+            ), patch.object(
+                roxybrowser_client.RoxyBrowserClient, "close_profile", return_value=True
+            ) as close_profile, patch.object(
+                roxybrowser_client.RoxyBrowserClient, "delete_profile", return_value=True
+            ) as delete_profile:
+                result = roxybrowser_client.cleanup_orphaned_profiles()
+
+            self.assertEqual(result, {"found": 1, "cleaned": 1, "failed": 0})
+            close_profile.assert_called_once_with("bound-1")
+            delete_profile.assert_called_once_with("bound-1")
+            self.assertEqual(json.loads(registry.read_text(encoding="utf-8"))["items"], [])
 
     def test_profile_id_is_read_from_account_metadata_and_non_retained_binding_is_ignored(self):
         from core.roxy_profile_binding import account_profile_id
