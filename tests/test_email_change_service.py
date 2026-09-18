@@ -3,7 +3,9 @@ from __future__ import annotations
 import tempfile
 import unittest
 import logging
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from flask import Flask
@@ -80,6 +82,44 @@ class EmailChangeProtocolContractTests(unittest.TestCase):
         complete.assert_called_once()
         warm.assert_called_once_with(fresh_session, "fresh-at")
 
+    def test_recent_login_uses_protocol_direct_fallback_after_proxy_403(self):
+        from core import account_liveness
+
+        old_session = Mock()
+        old_session.proxy = "socks5://proxy.example:1080"
+        old_session.device_id = "stable-device"
+        old_session.protocol_identity_id = "identity-1"
+        old_session.protocol_profile_ref = "profile-1"
+        old_session.protocol_profile_version = 3
+        old_session.browser_profile = {"screen_width": 1920}
+        failed_session = Mock()
+        fresh_session = Mock()
+        with patch.object(
+            account_liveness,
+            "_network_preflight_with_retry",
+            side_effect=[RuntimeError("HTTP 403 from auth.openai.com"), (fresh_session, "authorize")],
+        ) as preflight, patch.object(
+            account_liveness,
+            "follow_authorize",
+            return_value="https://auth.openai.com/log-in/password",
+        ), patch.object(
+            account_liveness,
+            "_complete_recent_login_on_session",
+            return_value=({"accessToken": "fresh-at"}, "password_mfa_totp"),
+        ), patch.object(account_liveness, "_warm_authenticated_session"):
+            result = account_liveness.perform_recent_login(
+                old_session,
+                "old@example.test",
+                email_source="email_butler",
+                access_token="old-at",
+            )
+
+        self.assertIs(fresh_session, result["protocol_session"])
+        self.assertEqual(2, preflight.call_count)
+        self.assertEqual(old_session.proxy, preflight.call_args_list[0].args[1])
+        self.assertEqual("", preflight.call_args_list[1].args[1])
+        self.assertIsNone(preflight.call_args_list[1].kwargs["identity"])
+
     def test_follow_reauth_rejects_failed_navigation_response(self):
         from core.account_export import _follow_reauth
 
@@ -91,6 +131,35 @@ class EmailChangeProtocolContractTests(unittest.TestCase):
             _follow_reauth(session, "https://auth.example/reauth")
 
         session.get.assert_called_once()
+
+    def test_live_child_uses_its_durable_resource_family_for_the_lease(self):
+        from core import live_check_service
+
+        acquired_families = []
+
+        @contextmanager
+        def lease(*, resource_family):
+            acquired_families.append(resource_family)
+            yield Mock()
+
+        context = SimpleNamespace(
+            account_id=790,
+            task_id=97991,
+            email="new@example.test",
+            resource_family="email_change_live_check",
+            run={"data": {"force_refresh": True}, "trigger": "email_change_auto"},
+            config_snapshot=None,
+            lease=lease,
+        )
+        with patch.object(
+            live_check_service.db,
+            "get_account",
+            return_value={"email": "new@example.test"},
+        ), patch.object(live_check_service, "_run_live_check") as run:
+            self.assertIsNone(live_check_service._handle_live_operation(context))
+
+        self.assertEqual(["email_change_live_check"], acquired_families)
+        self.assertTrue(run.call_args.kwargs["force_refresh"])
 
     def test_follow_reauth_retries_transient_failure_on_same_session(self):
         from core import account_export
@@ -592,6 +661,32 @@ class EmailChangeStorageTests(PostgresTestCase):
         self.assertIn("account_password", row["extra_json"])
         public_account = accounts.get_account(self.account_id)
         self.assertNotIn("email_change_material_line", public_account)
+
+    def test_success_writeback_keeps_recent_login_token_for_post_change_live_check(self):
+        from core.storage import accounts
+
+        token = (
+            "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0."
+            "eyJleHAiOjQxMDAwMDAwMDAsInN1YiI6InRlc3QiLCJhY2NvdW50X2lkIjoiMSJ9."
+            "signature"
+        )
+        with patch(
+            "core.chatgpt_plan.token_claims",
+            return_value={"token_expires_at": "2100-01-01T00:00:00+00:00", "token_expired": False},
+        ):
+            self.assertTrue(
+                accounts.finish_account_email_change(
+                    self.account_id,
+                    ok=True,
+                    new_email="new@example.test",
+                    source="outlook",
+                    access_token=token,
+                )
+            )
+        row = record_store.get_row(ACCOUNTS, self.account_id)
+        self.assertEqual(token, row["access_token"])
+        self.assertEqual("2100-01-01T00:00:00+00:00", row["token_expires_at"])
+        self.assertFalse(row["token_expired"])
 
     def test_failed_writeback_does_not_change_current_email(self):
         from core.storage import accounts

@@ -444,12 +444,12 @@ def _account_stable_identity(account_id: int):
     return ensure_account_protocol_identity(int(account_id))
 
 
-def _safe_readback(account_id: int, email: str, source: str) -> bool:
+def _safe_readback(account_id: int, email: str, source: str, access_token: str) -> bool:
     account = db.get_account(int(account_id)) or {}
     return bool(
         str(account.get("email") or "").strip().lower() == str(email or "").strip().lower()
         and str(account.get("email_source") or "").strip().lower() == str(source or "").strip().lower()
-        and not str(account.get("access_token") or "").strip()
+        and str(account.get("access_token") or "").strip() == str(access_token or "").strip()
     )
 
 
@@ -693,7 +693,8 @@ def _handle_email_change(context):
                 new_email=new_email,
                 source=source,
                 material_line=material_line,
-            ) or not _safe_readback(account_id, new_email, source):
+                access_token=token,
+            ) or not _safe_readback(account_id, new_email, source, token):
                 context.remote_request_receipt(
                     outcome="local_commit_required",
                     action="change_email.verify",

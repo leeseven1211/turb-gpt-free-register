@@ -241,46 +241,84 @@ def perform_recent_login(
     project's stable account identity and durable task boundaries.
     """
     del access_token  # Kept in the signature for compatibility with callers.
-    fresh_session: BrowserSession | None = None
-    try:
-        fresh_session, authorize_url = _network_preflight_with_retry(
-            str(email or "").strip(),
-            getattr(session, "proxy", None),
-            identity=_session_identity_payload(session),
-        )
-        otp_after_ts = time.time()
-        final_url = follow_authorize(fresh_session, authorize_url)
-        dead_code = detect_account_unusable_text(final_url)
-        if dead_code:
-            raise AccountUnusableError(f"账号已废弃（{dead_code}）", error_code=dead_code)
-        session_info, auth_method = _complete_recent_login_on_session(
-            fresh_session,
-            str(email or "").strip(),
-            str(final_url or ""),
-            otp_after_ts,
-            email_source=email_source,
-        )
-        fresh_token = str((session_info or {}).get("accessToken") or "").strip()
-        if not fresh_token:
-            raise RuntimeError("Recent Login 未获取到新的 access_token")
-        _warm_authenticated_session(fresh_session, fresh_token)
+    selected_proxy = getattr(session, "proxy", None)
+    # A proxy can pass the anonymous preflight and still be rejected when the
+    # authorize redirect crosses into auth.openai.com.  Keep this recovery
+    # protocol-only: after a retryable 403/429/transport failure on the
+    # selected proxy, rebuild the whole login session once on direct network.
+    # The old implementation retried the same route only, which left email
+    # change unable to recover from a bad 1024Proxy exit before any write.
+    routes = [(selected_proxy, _session_identity_payload(session), "selected")]
+    if selected_proxy:
+        routes.append(("", None, "direct"))
+
+    last_exc: BaseException | None = None
+    for route_index, (route_proxy, route_identity, route_label) in enumerate(routes):
+        fresh_session: BrowserSession | None = None
         try:
-            session.session.close()
-        except Exception:
-            pass
-        return {
-            "access_token": fresh_token,
-            "reauthenticated": True,
-            "auth_method": auth_method,
-            "protocol_session": fresh_session,
-        }
-    except Exception:
-        if fresh_session is not None and fresh_session is not session:
+            if route_index:
+                logger.warning(
+                    "[Recent Login] 代理线路失败，切换协议直连兜底：route=%s",
+                    route_label,
+                )
+            fresh_session, authorize_url = _network_preflight_with_retry(
+                str(email or "").strip(),
+                route_proxy,
+                identity=route_identity,
+            )
+            otp_after_ts = time.time()
+            final_url = follow_authorize(fresh_session, authorize_url)
+            dead_code = detect_account_unusable_text(final_url)
+            if dead_code:
+                raise AccountUnusableError(f"账号已废弃（{dead_code}）", error_code=dead_code)
+            session_info, auth_method = _complete_recent_login_on_session(
+                fresh_session,
+                str(email or "").strip(),
+                str(final_url or ""),
+                otp_after_ts,
+                email_source=email_source,
+            )
+            fresh_token = str((session_info or {}).get("accessToken") or "").strip()
+            if not fresh_token:
+                raise RuntimeError("Recent Login 未获取到新的 access_token")
+            _warm_authenticated_session(fresh_session, fresh_token)
             try:
-                fresh_session.session.close()
+                session.session.close()
             except Exception:
                 pass
-        raise
+            return {
+                "access_token": fresh_token,
+                "reauthenticated": True,
+                "auth_method": auth_method,
+                "protocol_session": fresh_session,
+            }
+        except AccountUnusableError:
+            raise
+        except Exception as exc:
+            last_exc = exc
+            retryable = _is_retryable_network_error(exc)
+            should_try_next_route = (
+                route_index == 0
+                and bool(selected_proxy)
+                and len(routes) > 1
+                and retryable
+            )
+            if fresh_session is not None:
+                try:
+                    fresh_session.session.close()
+                except Exception:
+                    pass
+            if not should_try_next_route:
+                raise
+            logger.warning(
+                "[Recent Login] 代理路线失败，将使用协议直连重建会话：%s: %s",
+                type(exc).__name__,
+                str(exc)[:180],
+            )
+
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("Recent Login 路线为空")
 
 
 def _network_preflight_with_retry(

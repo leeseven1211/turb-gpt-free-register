@@ -1835,14 +1835,17 @@ def finish_account_email_change(
     new_email: str | None = None,
     source: str | None = None,
     material_line: str | None = None,
+    access_token: str | None = None,
     error: str | None = None,
     outcome: str | None = None,
 ) -> bool:
     """Atomically finish an email change under a PostgreSQL row lock.
 
     ``original_email_line`` is immutable account provenance.  New mailbox
-    material is retained separately for the private account export path, while
-    the current AT is invalidated in the same transaction as the email update.
+    material is retained separately for the private account export path.  A
+    token obtained by the same Recent Login transaction may be supplied so the
+    confirmed email change and the usable post-change session are committed
+    together; callers that omit it retain the legacy invalidation behavior.
     """
     target = str(new_email or "").strip()
     status = "success" if ok else str(outcome or "failed").strip().lower()
@@ -1870,6 +1873,9 @@ def finish_account_email_change(
             return True
         if not target:
             raise ValueError("邮箱换绑成功写回缺少新邮箱")
+        normalized_token = str(access_token or "").strip()
+        if access_token is not None and not normalized_token:
+            raise ValueError("邮箱换绑成功写回缺少 access_token")
         with conn.cursor() as cur:
             cur.execute(
                 f"SELECT id FROM {table} WHERE lower(email)=lower(%s) AND id<>%s FOR UPDATE",
@@ -1885,14 +1891,28 @@ def finish_account_email_change(
         changes.update({
             "email": target,
             "email_source": str(source or row.get("email_source") or "").strip().lower() or None,
-            "access_token": None,
-            "token_expires_at": None,
-            "token_expired": None,
             "live_check_status": None,
             "live_check_ok": False,
             "live_check_error": None,
             "live_checked_at": None,
         })
+        if normalized_token:
+            from core.chatgpt_plan import token_claims
+
+            claims = token_claims(normalized_token)
+            changes.update({
+                "access_token": normalized_token,
+                "token_expires_at": claims.get("token_expires_at"),
+                "token_expired": claims.get("token_expired"),
+            })
+        else:
+            # Preserve the historical API behavior for maintenance callers
+            # that intentionally omit a replacement token.
+            changes.update({
+                "access_token": None,
+                "token_expires_at": None,
+                "token_expired": None,
+            })
         if material_line is not None:
             changes["email_change_material_line"] = str(material_line or "")
         record_store.patch_row(record_store.ACCOUNTS, int(acc_id), changes, conn=conn)

@@ -1398,7 +1398,12 @@ def _handle_live_operation(context):
     data = context.run.get("data") if isinstance(context.run.get("data"), dict) else {}
     account = db.get_account(int(context.account_id))
     email = str((account or {}).get("email") or context.email or "").strip()
-    with context.lease(resource_family="openai_interactive"):
+    # Email-change post-checks use a distinct durable resource family so the
+    # child can be queued while the parent is settling.  Normal live-check
+    # and token-refresh runs still carry ``openai_interactive`` in their run
+    # row; using the frozen run family here keeps the lease fence consistent
+    # for both paths.
+    with context.lease(resource_family=context.resource_family):
         _run_live_check(
             account_id=int(context.account_id),
             email=email,
