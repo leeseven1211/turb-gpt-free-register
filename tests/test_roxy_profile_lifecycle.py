@@ -19,7 +19,11 @@ class RoxyProfileLifecycleTests(unittest.TestCase):
             registry = Path(td) / "profiles.json"
             with patch.object(roxybrowser_client, "_PROFILE_REGISTRY_PATH", registry), patch.object(
                 client, "open_profile_with_capacity_wait", return_value=opened
-            ) as open_profile:
+            ) as open_profile, patch.object(
+                client,
+                "request",
+                return_value={"code": 0, "data": {"rows": [{"dirId": "profile-1", "openStatus": 0}]}},
+            ):
                 result = client.open_profile_for_account(
                     profile_id="profile-1",
                     proxy_url="http://new-route.example:8080",
@@ -36,10 +40,15 @@ class RoxyProfileLifecycleTests(unittest.TestCase):
             replacement,
         ])
 
-        result = client.open_profile_for_account(
-            profile_id="profile-1",
-            proxy_url="http://new-route.example:8080",
-        )
+        with patch.object(
+            client,
+            "request",
+            return_value={"code": 0, "data": {"rows": [{"dirId": "profile-1", "openStatus": 0}]}},
+        ):
+            result = client.open_profile_for_account(
+                profile_id="profile-1",
+                proxy_url="http://new-route.example:8080",
+            )
 
         self.assertIs(result, replacement)
         self.assertEqual(
@@ -51,12 +60,47 @@ class RoxyProfileLifecycleTests(unittest.TestCase):
         )
 
         client.open_profile_with_capacity_wait = Mock(side_effect=RuntimeError("Roxy API 连接失败"))
-        with self.assertRaisesRegex(RuntimeError, "连接失败"):
+        with patch.object(
+            client,
+            "request",
+            return_value={"code": 0, "data": {"rows": [{"dirId": "profile-1", "openStatus": 0}]}},
+        ), self.assertRaisesRegex(RuntimeError, "连接失败"):
             client.open_profile_for_account(
                 profile_id="profile-1",
                 proxy_url="http://new-route.example:8080",
             )
         client.open_profile_with_capacity_wait.assert_called_once_with(profile_id="profile-1", proxy_url=None)
+
+    def test_deleted_bound_profile_is_replaced_before_open(self):
+        client = RoxyBrowserClient(api_base="http://roxy.example")
+        replacement = RoxyOpenResult(profile_id="profile-2", raw={}, created_by_run=True)
+        client.open_profile_with_capacity_wait = Mock(return_value=replacement)
+
+        with patch.object(client, "request", return_value={"code": 0, "data": {"rows": []}}):
+            result = client.open_profile_for_account(
+                profile_id="profile-1",
+                proxy_url="http://new-route.example:8080",
+            )
+
+        self.assertIs(result, replacement)
+        client.open_profile_with_capacity_wait.assert_called_once_with(
+            profile_id="",
+            proxy_url="http://new-route.example:8080",
+        )
+
+    def test_profile_probe_error_does_not_create_replacement(self):
+        client = RoxyBrowserClient(api_base="http://roxy.example")
+        client.open_profile_with_capacity_wait = Mock()
+
+        with patch.object(client, "request", side_effect=RuntimeError("Roxy API 连接失败")), self.assertRaisesRegex(
+            RuntimeError, "连接失败"
+        ):
+            client.open_profile_for_account(
+                profile_id="profile-1",
+                proxy_url="http://new-route.example:8080",
+            )
+
+        client.open_profile_with_capacity_wait.assert_not_called()
 
     def test_retained_profile_cleanup_closes_and_untracks_without_delete(self):
         client = RoxyBrowserClient(api_base="http://roxy.example")

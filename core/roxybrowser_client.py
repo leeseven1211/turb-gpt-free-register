@@ -857,6 +857,15 @@ class RoxyBrowserClient:
 
         if normalized_profile and reuse_enabled:
             try:
+                # Roxy may keep a deleted Profile in its recycle-bin view while
+                # still returning a generic window-quota error from /browser/open.
+                # Probe the active view first so a stale DB binding is replaced
+                # instead of waiting for capacity on an unusable Profile.
+                if self._find_active_profile_by_id(normalized_profile) is None:
+                    logger.warning(
+                        "[Roxy] 账号绑定 Profile 不在当前活动环境列表，创建替代环境并回写绑定"
+                    )
+                    return open_with(profile_id="", proxy_url=proxy_url)
                 # A bound Profile carries its own Roxy proxy configuration.  A
                 # newly acquired task route must not overwrite that identity.
                 opened = open_with(profile_id=normalized_profile, proxy_url=None)
@@ -906,6 +915,31 @@ class RoxyBrowserClient:
         except Exception as exc:
             logger.warning("[Roxy] 关闭环境失败：%s", exc)
             return False
+
+    def _find_active_profile_by_id(self, profile_id: str) -> dict | None:
+        """按 dirId 查询活动 Profile；回收站中的 Profile 不可复用。"""
+        normalized = str(profile_id or "").strip()
+        if not normalized:
+            return None
+        value = int(normalized) if normalized.isdigit() else normalized
+        payload = self.request(
+            "GET",
+            "/browser/list_v2",
+            params={
+                "workspaceId": _workspace_id_value(),
+                "dirId": value,
+                "isDelete": 0,
+                "page_index": 1,
+                "page_size": 10,
+            },
+        )
+        for row in self._profile_rows(payload):
+            row_id = _first(row, [
+                ("dirId",), ("dir_id",), ("id",), ("profileId",), ("profile_id",),
+            ])
+            if row_id == normalized:
+                return row
+        return None
 
     def _find_profile_by_id(self, profile_id: str) -> dict | None:
         """按 dirId 查询 Profile，兼容活跃列表与回收站列表。"""
