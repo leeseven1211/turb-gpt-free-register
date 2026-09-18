@@ -194,6 +194,7 @@ def _make_shared_compatibility_wrapper(name: str):
 
 _log_prefix = _make_shared_compatibility_wrapper("_log_prefix")
 _build_driver = _make_shared_compatibility_wrapper("_build_driver")
+_quit_driver = _make_shared_compatibility_wrapper("quit_driver")
 _center_browser_window = _make_shared_compatibility_wrapper("_center_browser_window")
 _wait = _make_shared_compatibility_wrapper("_wait")
 _budget_timeout = _make_shared_compatibility_wrapper("_budget_timeout")
@@ -1382,7 +1383,7 @@ def run_roxy_registration(
     finally:
         if driver and not profile_discarded and not bool(_cfg.ROXY_KEEP_BROWSER_OPEN):
             try:
-                driver.quit()
+                _quit_driver(driver)
             except Exception:
                 pass
         if not profile_discarded and not bool(_cfg.ROXY_KEEP_BROWSER_OPEN):

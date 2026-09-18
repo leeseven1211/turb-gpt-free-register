@@ -15,7 +15,7 @@ from urllib.parse import quote
 
 from config import roxybrowser as roxy_config
 from core.chatgpt_plan import ACCOUNTS_CHECK_PATH, normalize_token, parse_accounts_check, token_claims
-from core.registration.selenium_auth import build_driver, safe_get
+from core.registration.selenium_auth import build_driver, quit_driver, safe_get
 from core.roxybrowser_client import RoxyBrowserClient
 
 logger = logging.getLogger(__name__)
@@ -263,10 +263,7 @@ def run_probe(
         )
     finally:
         if driver is not None:
-            try:
-                driver.quit()
-            except Exception:
-                logger.debug("[查活][Roxy] driver 关闭失败", exc_info=True)
+            quit_driver(driver)
         if opened is not None:
             try:
                 client.cleanup_profile(opened)

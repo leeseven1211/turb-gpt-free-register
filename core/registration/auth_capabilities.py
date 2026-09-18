@@ -54,7 +54,7 @@ _MODULES = (
 
 _CAPABILITY_NAMES = (
     # resource
-    "_log_prefix", "_build_driver", "_center_browser_window", "_wait",
+    "_log_prefix", "_build_driver", "quit_driver", "_center_browser_window", "_wait",
     "_budget_timeout", "_roxy_page_state", "_auth_terminal_page_state", "_safe_get",
     "_visible", "_browser_actions_enabled", "_apply_browser_automation_mask",
     "_human_scroll_to", "_human_click", "_human_type_text", "_page_warmup",
@@ -132,6 +132,7 @@ def call_with_compatibility(name: str, overrides: Mapping[str, object] | None, *
 
 _PUBLIC_ALIASES = {
     "build_driver": "_build_driver",
+    "quit_driver": "quit_driver",
     "center_browser_window": "_center_browser_window",
     "safe_get": "_safe_get",
     "page_warmup": "_page_warmup",

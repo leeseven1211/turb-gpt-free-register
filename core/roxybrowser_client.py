@@ -32,6 +32,8 @@ _PROFILE_CREATE_LOCK = threading.Lock()
 _PROFILE_OPEN_LOCK = threading.Lock()
 _PROFILE_REGISTRY_LOCK = threading.RLock()
 _PROFILE_REGISTRY_PATH = Path(__file__).resolve().parent.parent / "run" / "roxy_active_profiles.json"
+_ROXY_CLOSE_VERIFY_ATTEMPTS = 4
+_ROXY_CLOSE_VERIFY_INTERVAL = 0.5
 
 _ROXY_WINDOW_CAPACITY_MARKERS = (
     "窗口额度不足",
@@ -896,11 +898,58 @@ class RoxyBrowserClient:
                 params=body if str(_cfg.ROXY_CLOSE_METHOD).upper() == "GET" else None,
                 json_body=body if str(_cfg.ROXY_CLOSE_METHOD).upper() != "GET" else None,
             )
+            if not self._wait_profile_closed(profile_id):
+                logger.warning("[Roxy] 关闭环境请求已接受，但未确认环境已退出（profile 原值不写日志）")
+                return False
             logger.info("[Roxy] 已关闭环境（profile 原值不写日志）")
             return True
         except Exception as exc:
             logger.warning("[Roxy] 关闭环境失败：%s", exc)
             return False
+
+    def _find_profile_by_id(self, profile_id: str) -> dict | None:
+        """按 dirId 查询 Profile，兼容活跃列表与回收站列表。"""
+        normalized = str(profile_id or "").strip()
+        if not normalized:
+            return None
+        value = int(normalized) if normalized.isdigit() else normalized
+        for is_delete in (0, 1):
+            payload = self.request(
+                "GET",
+                "/browser/list_v2",
+                params={
+                    "workspaceId": _workspace_id_value(),
+                    "dirId": value,
+                    # Roxy 当前版本的活动列表与回收站列表是两个过滤视图；
+                    # 关闭确认必须同时覆盖这两种最终状态。
+                    "isDelete": is_delete,
+                    "page_index": 1,
+                    "page_size": 10,
+                },
+            )
+            for row in self._profile_rows(payload):
+                row_id = _first(row, [
+                    ("dirId",), ("dir_id",), ("id",), ("profileId",), ("profile_id",),
+                ])
+                if row_id == normalized:
+                    return row
+        return None
+
+    def _wait_profile_closed(self, profile_id: str) -> bool:
+        """等待 Roxy 的 Profile 状态变成 closed，而不是只相信 close HTTP 2xx。"""
+        attempts = max(1, int(_ROXY_CLOSE_VERIFY_ATTEMPTS))
+        interval = max(0.0, float(_ROXY_CLOSE_VERIFY_INTERVAL))
+        for attempt in range(attempts):
+            try:
+                row = self._find_profile_by_id(profile_id)
+                status = _first(row or {}, [("openStatus",), ("open_status",)])
+                if status.lower() in {"0", "false", "closed", "close"}:
+                    return True
+            except Exception as exc:
+                logger.debug("[Roxy] 关闭状态查询失败 attempt=%s/%s：%s", attempt + 1, attempts, type(exc).__name__)
+            if attempt + 1 < attempts and interval:
+                time.sleep(interval)
+        return False
 
     def delete_profile(self, profile_id: str) -> bool:
         if not profile_id:

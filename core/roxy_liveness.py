@@ -25,6 +25,7 @@ from core.registration.selenium_auth import (
     is_login_password_page as _is_login_password_page,
     maybe_accept as _maybe_accept,
     page_warmup as _page_warmup,
+    quit_driver as _quit_driver,
     safe_get as _safe_get,
     submit_email_step as _submit_email_step,
     submit_email_via_browser_nextauth as _submit_email_via_browser_nextauth,
@@ -298,10 +299,7 @@ def refresh_access_token(email: str, *, proxy: str | None = None) -> dict:
         }
     finally:
         if driver is not None and not bool(getattr(cfg, "ROXY_KEEP_BROWSER_OPEN", False)):
-            try:
-                driver.quit()
-            except Exception:
-                pass
+            _quit_driver(driver)
         if opened is not None and not bool(getattr(cfg, "ROXY_KEEP_BROWSER_OPEN", False)):
             try:
                 client.cleanup_profile(opened)

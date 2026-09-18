@@ -99,6 +99,55 @@ class RoxyProfileLifecycleTests(unittest.TestCase):
         close_profile.assert_called_once_with("profile-1")
         delete_profile.assert_not_called()
 
+    def test_close_profile_waits_until_roxy_reports_closed(self):
+        client = RoxyBrowserClient(api_base="http://roxy.example")
+        responses = [
+            {"code": 0},
+            {"code": 0, "data": {"rows": [{"dirId": "456", "openStatus": 1}]}},
+            {"code": 0, "data": {"rows": [{"dirId": "456", "openStatus": 0}]}},
+        ]
+
+        with patch.object(client, "request", side_effect=responses) as request, patch(
+            "core.roxybrowser_client.time.sleep"
+        ) as sleep:
+            self.assertTrue(client.close_profile("456"))
+
+        self.assertEqual(request.call_count, 3)
+        self.assertEqual(request.call_args_list[1].args[:2], ("GET", "/browser/list_v2"))
+        self.assertEqual(request.call_args_list[1].kwargs["params"]["dirId"], 456)
+        self.assertEqual(request.call_args_list[1].kwargs["params"]["isDelete"], 0)
+        sleep.assert_called_once()
+
+    def test_close_profile_falls_back_to_deleted_profile_list(self):
+        client = RoxyBrowserClient(api_base="http://roxy.example")
+        responses = [
+            {"code": 0},
+            {"code": 0, "data": {"rows": []}},
+            {"code": 0, "data": {"rows": [{"dirId": "456", "openStatus": 0}]}},
+        ]
+
+        with patch.object(client, "request", side_effect=responses) as request, patch(
+            "core.roxybrowser_client._ROXY_CLOSE_VERIFY_ATTEMPTS", 1
+        ), patch("core.roxybrowser_client.time.sleep"):
+            self.assertTrue(client.close_profile("456"))
+
+        self.assertEqual(request.call_count, 3)
+        self.assertEqual(request.call_args_list[1].kwargs["params"]["isDelete"], 0)
+        self.assertEqual(request.call_args_list[2].kwargs["params"]["isDelete"], 1)
+
+    def test_close_profile_fails_when_roxy_never_confirms_closed(self):
+        client = RoxyBrowserClient(api_base="http://roxy.example")
+        responses = [
+            {"code": 0},
+            {"code": 0, "data": {"rows": [{"dirId": "456", "openStatus": 1}]}},
+            {"code": 0, "data": {"rows": [{"dirId": "456", "openStatus": 1}]}},
+        ]
+
+        with patch.object(client, "request", side_effect=responses), patch(
+            "core.roxybrowser_client._ROXY_CLOSE_VERIFY_ATTEMPTS", 2
+        ), patch("core.roxybrowser_client.time.sleep"):
+            self.assertFalse(client.close_profile("456"))
+
     def test_lifecycle_defaults_reuse_and_keep_profiles(self):
         from config.schema import DEFAULTS
 

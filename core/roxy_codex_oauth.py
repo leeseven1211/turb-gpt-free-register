@@ -36,6 +36,7 @@ from core.registration.selenium_auth import (
     click_continue as _click_continue,
     find_any as _find_any,
     maybe_accept as _maybe_accept,
+    quit_driver as _quit_driver,
     type_any as _type_any,
     type_email_address as _type_email_address,
     submit_email_step as _submit_email_step,
@@ -3599,10 +3600,7 @@ def _run_roxy_codex_oauth_once(
         # 注册后复用窗口时，driver/profile 生命周期由注册流程统一清理，
         # 这里不能 quit/delete，否则会提前销毁注册环境。
         if owns_driver and driver and not bool(_roxy_cfg.ROXY_KEEP_BROWSER_OPEN):
-            try:
-                driver.quit()
-            except Exception:
-                pass
+            _quit_driver(driver)
         if owns_driver and client and not bool(_roxy_cfg.ROXY_KEEP_BROWSER_OPEN):
             client.cleanup_profile(opened)
         try:
@@ -3697,10 +3695,7 @@ def run_roxy_chatgpt_account_action(
         return result
     finally:
         if driver and not bool(_roxy_cfg.ROXY_KEEP_BROWSER_OPEN):
-            try:
-                driver.quit()
-            except Exception:
-                pass
+            _quit_driver(driver)
         if not bool(_roxy_cfg.ROXY_KEEP_BROWSER_OPEN):
             client.cleanup_profile(opened)
         try:

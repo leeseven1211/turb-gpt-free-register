@@ -66,6 +66,30 @@ def _build_driver(opened: RoxyOpenResult):
 
     raise RuntimeError("Roxy 未返回可连接的 Selenium 地址")
 
+
+def quit_driver(driver) -> bool:
+    """退出 Selenium 会话，并在会话断开时停止本地 chromedriver 服务。"""
+    if driver is None:
+        return True
+    quit_error = None
+    try:
+        driver.quit()
+    except Exception as exc:
+        quit_error = exc
+        logger.warning("%s Selenium 会话退出失败，尝试停止 driver service：%s", _log_prefix(driver), type(exc).__name__)
+    service = getattr(driver, "service", None)
+    process = getattr(service, "process", None) if service is not None else None
+    try:
+        process_alive = process is not None and process.poll() is None
+    except Exception:
+        process_alive = False
+    if process_alive:
+        try:
+            service.stop()
+        except Exception as stop_exc:
+            logger.warning("%s driver service 停止失败：%s", _log_prefix(driver), type(stop_exc).__name__)
+    return quit_error is None
+
 def _center_browser_window(driver) -> None:
     """把可见的 Roxy 窗口移动到 Windows 主屏工作区中央。"""
     if bool(getattr(_cfg, "ROXY_OPEN_HEADLESS", False)):
@@ -205,11 +229,11 @@ def _apply_browser_automation_mask(driver) -> None:
 
 
 install_dispatches(globals(), (
-    "_log_prefix", "_build_driver", "_center_browser_window",
+    "_log_prefix", "_build_driver", "quit_driver", "_center_browser_window",
     "_browser_actions_enabled", "_apply_browser_automation_mask", "_safe_get",
 ))
 
 __all__ = [
-    "_log_prefix", "_build_driver", "_center_browser_window",
+    "_log_prefix", "_build_driver", "quit_driver", "_center_browser_window",
     "_browser_actions_enabled", "_apply_browser_automation_mask", "_safe_get",
 ]
