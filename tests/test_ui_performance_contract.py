@@ -107,6 +107,41 @@ global.fetch = async () => {
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_registration_batch_selector_distinguishes_running_from_waiting(self):
+        harness = r'''
+const fs = require('fs');
+const path = require('path');
+
+const projectRoot = process.argv[1];
+const source = fs.readFileSync(
+  path.join(projectRoot, 'webui/static/js/modern/jobs.js'),
+  'utf8',
+);
+const start = source.indexOf('function registrationBatchStateLabel(');
+const end = source.indexOf('\nfunction ', start + 1);
+if (start < 0 || end < 0) throw new Error('registration batch state helper missing');
+eval(source.slice(start, end));
+
+const label = registrationBatchStateLabel({
+  active: 12,
+  running: 2,
+  stopping: 0,
+  pending: 10,
+});
+if (label !== '未完成 12（运行 2 / 等待 10）') {
+  throw new Error(`unexpected batch state label: ${label}`);
+}
+'''
+        result = subprocess.run(
+            ["node", "--input-type=commonjs", "-e", harness, str(PROJECT_ROOT)],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_config_writes_invalidate_the_cached_config_for_both_ui_variants(self):
         for relative_path in (
             "webui/static/js/modern/config.js",

@@ -287,6 +287,17 @@ function setJobProgressBatch(batchId) {
   else localStorage.removeItem('gpt_console_registration_batch_id');
 }
 
+function registrationBatchStateLabel(counts = {}) {
+  const running = Number(counts.running || 0) + Number(counts.stopping || 0);
+  const pending = Number(counts.pending || 0);
+  const unfinished = running + pending;
+  if (unfinished > 0) return `未完成 ${unfinished}（运行 ${running} / 等待 ${pending}）`;
+  const failures = Number(counts.failed || 0) + Number(counts.partial_success || 0) + Number(counts.request_unknown || 0) + Number(counts.stopped || 0) + Number(counts.cancelled || 0);
+  if (failures > 0) return `异常 ${failures}`;
+  const interrupted = Number(counts.interrupted || 0);
+  return interrupted > 0 ? `服务中断 ${interrupted}` : '已完成';
+}
+
 function renderRegistrationBatchSelector() {
   const select = $('#registrationBatchSelectV2');
   if (!select) return;
@@ -302,10 +313,7 @@ function renderRegistrationBatchSelector() {
   }
   select.innerHTML = batches.map(batch => {
     const counts = batch.status_counts || {};
-    const active = Number(counts.active || 0);
-    const failures = Number(counts.failed || 0) + Number(counts.partial_success || 0) + Number(counts.request_unknown || 0) + Number(counts.stopped || 0) + Number(counts.cancelled || 0);
-    const interrupted = Number(counts.interrupted || 0);
-    const state = active > 0 ? `进行中 ${active}` : (failures > 0 ? `异常 ${failures}` : (interrupted > 0 ? `服务中断 ${interrupted}` : '已完成'));
+    const state = registrationBatchStateLabel(counts);
     const kind = batch.kind === 'retry' ? '批量重跑' : '发起注册';
     const time = formatDateTime(batch.created_at).replace(/:\d{2}$/, '');
     const label = `${time} · ${kind} · ${Number(batch.total || 0)} 个 · ${state}`;
