@@ -219,6 +219,12 @@ from config.account import (
     ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS,
 )
 
+# ---------- 任务中心保留策略 ----------
+from config.operations import (
+    TASK_CENTER_RETENTION_DAYS,
+    TASK_CENTER_ARCHIVE_RETENTION_DAYS,
+)
+
 
 # ---------- 热加载支持 ----------
 # WebUI 改配置后调 reload_all() 会校验并尝试让所有运行时代码看到新值，无需
@@ -247,6 +253,7 @@ _RELOADABLE_SUBMODULES = (
     "config.sub2api",
     "config.humanize",
     "config.registration_debug",
+    "config.operations",
 )
 
 _RELOAD_LOCK = _threading.RLock()
@@ -416,6 +423,7 @@ __all__ = [
     "ACCOUNT_LIVE_CHECK_BROWSER_ENABLED", "ACCOUNT_TOKEN_REFRESH_DRIVER",
     "ACCOUNT_AUTH_V2_ENABLED", "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK", "ACCOUNT_AUTH_PROFILE_MODE",
     "ACCOUNT_AUTH_RAW_CONTEXT_ENABLED", "ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS",
+    "TASK_CENTER_RETENTION_DAYS", "TASK_CENTER_ARCHIVE_RETENTION_DAYS",
     "ConfigSnapshot", "non_sensitive_snapshot", "get_non_sensitive_snapshot",
     "build_non_sensitive_snapshot",
 ]

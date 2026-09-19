@@ -933,6 +933,283 @@ class OperationTaskStoreTests(PostgresTestCase):
         self.assertEqual(0, operation_task_store.recover_interrupted_runtime_runs())
         self.assertEqual("running", operation_task_store.get_run(run_id)["status"])
 
+    def test_retention_deletes_only_expired_terminal_tasks_after_archive(self):
+        expired = operation_task_store.create_runtime_task(
+            task_type="live_check", account_id=501,
+            email="expired-retention@example.test", trigger="test",
+        )
+        operation_task_store.finish_run(expired["run"]["id"], status="success")
+        recent = operation_task_store.create_runtime_task(
+            task_type="live_check", account_id=502,
+            email="recent-retention@example.test", trigger="test",
+        )
+        operation_task_store.finish_run(recent["run"]["id"], status="success")
+        uncertain = operation_task_store.create_runtime_task(
+            task_type="live_check", account_id=503,
+            email="uncertain-retention@example.test", trigger="test",
+        )
+        operation_task_store.finish_run(uncertain["run"]["id"], status="failed")
+        active = operation_task_store.create_runtime_task(
+            task_type="live_check", account_id=504,
+            email="active-retention@example.test", trigger="test",
+        )
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            tasks = postgres_store.qualified("operation_tasks")
+            runs = postgres_store.qualified("operation_runs")
+            cur.execute(
+                f"UPDATE {tasks} SET completed_at=now() - interval '8 days' WHERE id IN (%s, %s)",
+                (int(expired["id"]), int(uncertain["id"])),
+            )
+            cur.execute(
+                f"UPDATE {runs} SET completed_at=now() - interval '8 days' WHERE task_id IN (%s, %s)",
+                (int(expired["id"]), int(uncertain["id"])),
+            )
+            cur.execute(
+                f"UPDATE {tasks} SET status='request_unknown' WHERE id=%s",
+                (int(uncertain["id"]),),
+            )
+
+        archived = []
+        result = operation_task_store.cleanup_terminal_history(
+            retention_days=7,
+            limit=100,
+            archive=lambda snapshot: archived.append(snapshot),
+        )
+
+        self.assertEqual(1, result["deleted_tasks"])
+        self.assertEqual([int(expired["id"])], [row["id"] for row in archived[0]["tasks"]])
+        self.assertEqual(
+            [str(expired["run"]["log_file"])],
+            result["native_log_files"],
+        )
+        self.assertIsNone(operation_task_store.get_task(int(expired["id"])))
+        self.assertIsNotNone(operation_task_store.get_task(int(recent["id"])))
+        self.assertIsNotNone(operation_task_store.get_task(int(uncertain["id"])))
+        self.assertIsNotNone(operation_task_store.get_task(int(active["id"])))
+
+    def test_retention_reports_more_work_after_deleting_expired_child(self):
+        parent = operation_task_store.create_runtime_task(
+            task_type="account_completion", account_id=601,
+            email="retention-parent@example.test", trigger="test",
+        )
+        operation_task_store.finish_run(parent["run"]["id"], status="success")
+        child = operation_task_store.create_runtime_task(
+            task_type="plan_check", account_id=601,
+            email="retention-parent@example.test", trigger="test",
+            parent_task_id=int(parent["id"]),
+        )
+        operation_task_store.finish_run(child["run"]["id"], status="success")
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {postgres_store.qualified('operation_tasks')} "
+                "SET completed_at=now() - interval '8 days' WHERE id IN (%s, %s)",
+                (int(parent["id"]), int(child["id"])),
+            )
+            cur.execute(
+                f"UPDATE {postgres_store.qualified('operation_runs')} "
+                "SET completed_at=now() - interval '8 days' WHERE task_id IN (%s, %s)",
+                (int(parent["id"]), int(child["id"])),
+            )
+
+        first = operation_task_store.cleanup_terminal_history(
+            retention_days=7, limit=100, archive=lambda snapshot: None,
+        )
+        second = operation_task_store.cleanup_terminal_history(
+            retention_days=7, limit=100, archive=lambda snapshot: None,
+        )
+
+        self.assertEqual(1, first["deleted_tasks"])
+        self.assertTrue(first["has_more"])
+        self.assertEqual(1, second["deleted_tasks"])
+        self.assertIsNone(operation_task_store.get_task(int(parent["id"])))
+        self.assertIsNone(operation_task_store.get_task(int(child["id"])))
+
+    def test_retention_preserves_stale_terminal_projection_of_active_source_task(self):
+        legacy_task_id = account_task_store.create_task(
+            task_type="live_check", account_id=None,
+            email="active-source-retention@example.test", trigger="test",
+        )
+        account_task_store.start_task(legacy_task_id, message="源任务仍在执行")
+        projected = operation_task_store.list_tasks(
+            page_size=10, q="active-source-retention@example.test",
+        )["items"][0]
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {postgres_store.qualified('operation_tasks')} "
+                "SET status='failed', completed_at=now() - interval '8 days' WHERE id=%s",
+                (int(projected["id"]),),
+            )
+            cur.execute(
+                f"UPDATE {postgres_store.qualified('operation_runs')} "
+                "SET status='failed', completed_at=now() - interval '8 days' WHERE task_id=%s",
+                (int(projected["id"]),),
+            )
+
+        result = operation_task_store.cleanup_terminal_history(
+            retention_days=7, limit=100, archive=lambda snapshot: None,
+        )
+
+        self.assertEqual(0, result["deleted_tasks"])
+        self.assertIsNotNone(operation_task_store.get_task(int(projected["id"])))
+
+    def test_retention_rolls_back_when_archive_fails(self):
+        task = operation_task_store.create_runtime_task(
+            task_type="live_check", account_id=701,
+            email="archive-failure@example.test", trigger="test",
+        )
+        operation_task_store.finish_run(task["run"]["id"], status="success")
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {postgres_store.qualified('operation_tasks')} "
+                "SET completed_at=now() - interval '8 days' WHERE id=%s",
+                (int(task["id"]),),
+            )
+
+        def fail_archive(_snapshot):
+            raise RuntimeError("archive unavailable")
+
+        with self.assertRaisesRegex(RuntimeError, "archive unavailable"):
+            operation_task_store.cleanup_terminal_history(
+                retention_days=7, limit=100, archive=fail_archive,
+            )
+
+        self.assertIsNotNone(operation_task_store.get_task(int(task["id"])))
+
+    def test_retention_preserves_task_with_unfinished_dependency(self):
+        task = operation_task_store.create_runtime_task(
+            task_type="account_completion", account_id=702,
+            email="waiting-dependency@example.test", trigger="test",
+        )
+        operation_task_store.finish_run(task["run"]["id"], status="success")
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {postgres_store.qualified('operation_tasks')} "
+                "SET completed_at=now() - interval '8 days' WHERE id=%s",
+                (int(task["id"]),),
+            )
+            cur.execute(
+                f"""
+                INSERT INTO {postgres_store.qualified('operation_task_dependencies')} (
+                    parent_source_system, parent_source_id,
+                    child_source_system, child_source_id, dependency_type
+                ) VALUES (%s, %s, 'native_operations', 'pending-child', 'account_completion')
+                """,
+                (str(task["source_system"]), str(task["source_id"])),
+            )
+
+        result = operation_task_store.cleanup_terminal_history(
+            retention_days=7, limit=100, archive=lambda snapshot: None,
+        )
+
+        self.assertEqual(0, result["deleted_tasks"])
+        self.assertIsNotNone(operation_task_store.get_task(int(task["id"])))
+
+    def test_retention_removes_expired_batch_only_after_last_task(self):
+        batch = operation_task_store.create_runtime_batch(
+            batch_type="live_check", title="retention batch",
+            requested_count=1, trigger="test",
+        )
+        task = operation_task_store.create_runtime_task(
+            task_type="live_check", account_id=703,
+            email="batch-retention@example.test", trigger="test",
+            batch_id=int(batch["id"]), batch_ordinal=1,
+        )
+        operation_task_store.finish_run(task["run"]["id"], status="success")
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {postgres_store.qualified('operation_tasks')} "
+                "SET completed_at=now() - interval '8 days' WHERE id=%s",
+                (int(task["id"]),),
+            )
+            cur.execute(
+                f"UPDATE {postgres_store.qualified('operation_batches')} "
+                "SET completed_at=now() - interval '8 days' WHERE id=%s",
+                (int(batch["id"]),),
+            )
+
+        result = operation_task_store.cleanup_terminal_history(
+            retention_days=7, limit=100, archive=lambda snapshot: None,
+        )
+
+        self.assertEqual(1, result["deleted_tasks"])
+        self.assertEqual(1, result["deleted_batches"])
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT COUNT(*) FROM {postgres_store.qualified('operation_batches')} WHERE id=%s",
+                (int(batch["id"]),),
+            )
+            self.assertEqual(0, cur.fetchone()[0])
+
+    def test_retention_archives_and_removes_expired_empty_batch(self):
+        expired = operation_task_store.create_runtime_batch(
+            batch_type="live_check", title="expired empty batch",
+            requested_count=0, trigger="test",
+        )
+        recent = operation_task_store.create_runtime_batch(
+            batch_type="live_check", title="recent empty batch",
+            requested_count=0, trigger="test",
+        )
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {postgres_store.qualified('operation_batches')} "
+                "SET status='failed', created_at=now() - interval '8 days', "
+                "completed_at=now() - interval '8 days' WHERE id=%s",
+                (int(expired["id"]),),
+            )
+        archived = []
+
+        result = operation_task_store.cleanup_terminal_history(
+            retention_days=7, limit=100,
+            archive=lambda snapshot: archived.append(snapshot),
+        )
+
+        self.assertEqual(0, result["deleted_tasks"])
+        self.assertEqual(1, result["deleted_batches"])
+        self.assertEqual([int(expired["id"])], [row["id"] for row in archived[0]["batches"]])
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT id FROM {postgres_store.qualified('operation_batches')} ORDER BY id",
+            )
+            self.assertEqual([int(recent["id"])], [row[0] for row in cur.fetchall()])
+
+    def test_retention_preserves_expired_empty_batch_that_is_not_terminal(self):
+        active = operation_task_store.create_runtime_batch(
+            batch_type="live_check", title="active empty batch",
+            requested_count=0, trigger="test",
+        )
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {postgres_store.qualified('operation_batches')} "
+                "SET status='running', created_at=now() - interval '8 days' WHERE id=%s",
+                (int(active["id"]),),
+            )
+
+        result = operation_task_store.cleanup_terminal_history(
+            retention_days=7, limit=100, archive=lambda snapshot: None,
+        )
+
+        self.assertEqual(0, result["deleted_batches"])
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT status FROM {postgres_store.qualified('operation_batches')} WHERE id=%s",
+                (int(active["id"]),),
+            )
+            self.assertEqual("running", cur.fetchone()[0])
+
+    def test_retention_candidate_lookup_has_status_completion_index(self):
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT indexdef FROM pg_indexes
+                WHERE schemaname=%s AND indexname='idx_operation_tasks_retention'
+                """,
+                (self.schema,),
+            )
+            row = cur.fetchone()
+
+        self.assertIsNotNone(row)
+        self.assertIn("(status, completed_at, id)", row[0])
+
     def test_failed_reauthorization_does_not_erase_existing_valid_asset(self):
         self._seed_runtime_account("valid@example.com")
         db.update_account_codex_operation_state(

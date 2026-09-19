@@ -1925,8 +1925,12 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
         start_periodic_refresher()
         start_codex_token_refresher()
         from core.account_auth_context_service import start_periodic_cleanup
+        from core.task_center_retention import (
+            start_periodic_cleanup as start_task_center_retention,
+        )
 
         start_periodic_cleanup()
+        start_task_center_retention()
         _runtime_started = True
         _runtime_started_at = time.time()
         return True

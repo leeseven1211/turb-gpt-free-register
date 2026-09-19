@@ -184,6 +184,8 @@ _DEFAULTS: dict[str, Any] = {
     "ACCOUNT_AUTH_PROFILE_MODE": "current",
     "ACCOUNT_AUTH_RAW_CONTEXT_ENABLED": False,
     "ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS": 30,
+    "TASK_CENTER_RETENTION_DAYS": 7,
+    "TASK_CENTER_ARCHIVE_RETENTION_DAYS": 30,
     "LIVE_CHECK_ROXY_FALLBACK_ENABLED": True,
     "ACCOUNT_2FA_DRIVER": "auto",
     "ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED": True,
@@ -509,6 +511,14 @@ _FIELD_DEFINITIONS = [
     {
         "key": "ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS", "file": "account.py", "type": "int", "group": "账号补全",
         "label": "认证上下文保留天数", "help": "原始认证上下文的自动清理周期，默认 30 天；设置为 0 表示不自动清理，仍可手工逐行清理",
+    },
+    {
+        "key": "TASK_CENTER_RETENTION_DAYS", "file": "operations.py", "type": "int", "group": "任务中心",
+        "label": "任务历史保留天数", "help": "每天自动归档并清理超过此天数的终态任务；默认 7 天，设置为 0 关闭自动清理",
+    },
+    {
+        "key": "TASK_CENTER_ARCHIVE_RETENTION_DAYS", "file": "operations.py", "type": "int", "group": "任务中心",
+        "label": "清理归档保留天数", "help": "清理前生成的脱敏本地归档保留天数；默认 30 天，设置为 0 表示永久保留归档",
     },
     {
         "key": "LIVE_CHECK_ROXY_FALLBACK_ENABLED", "file": "proxy.py", "type": "bool", "group": "账号补全",
@@ -1346,6 +1356,8 @@ _RANGES: dict[str, tuple[int | float | None, int | float | None]] = {
     "REGISTRATION_DEBUG_BODY_BUDGET_MB": (0, 102400),
     "REGISTRATION_DEBUG_GLOBAL_BUDGET_MB": (0, 1048576),
     "REGISTRATION_DEBUG_RETENTION_DAYS": (0, 3650),
+    "TASK_CENTER_RETENTION_DAYS": (0, 3650),
+    "TASK_CENTER_ARCHIVE_RETENTION_DAYS": (0, 3650),
     "REGISTRATION_DEBUG_QUEUE_SIZE": (1, 1000000),
     "ROXY_WINDOW_WAIT_TIMEOUT": (0, 86400),
     "ROXY_WINDOW_WAIT_INTERVAL": (1, 3600),

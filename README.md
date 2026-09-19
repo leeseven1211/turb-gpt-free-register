@@ -724,6 +724,15 @@ WebUI 提交真实任务时先设为“数量 1、线程 1”。确认批次进�
 
 ### 账号任务实例与 AT 生命周期
 
+任务中心默认每天自动执行一次历史保留清理。它只处理已明确结束且超过保留期的统一任务中心记录；排队/运行中的任务、`request_unknown`、有效租约、未完成父子依赖以及仍在执行的注册/账号源任务都会保留。清理前会先在 `logs/task-center-archives/` 生成并回读校验脱敏 gzip 归档，归档失败时数据库事务回滚。配置可在 WebUI 配置页的“任务中心”分组修改：
+
+```dotenv
+TASK_CENTER_RETENTION_DAYS=7
+TASK_CENTER_ARCHIVE_RETENTION_DAYS=30
+```
+
+`TASK_CENTER_RETENTION_DAYS=0` 会关闭自动清理；`TASK_CENTER_ARCHIVE_RETENTION_DAYS=0` 会永久保留已生成的本地归档。清理只删除统一任务中心历史及其级联投影，不删除 `registered_accounts`、`registration_*`、`account_action_*` 等业务/兼容事实表。原生任务的独占 `run.jsonl` 会逐文件删除，兼容任务复用的源日志保留。
+
 WebUI「账号 → 任务实例」统一保存以下账号操作：
 
 - `codex_retry`：Codex OAuth 补跑。

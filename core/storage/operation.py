@@ -563,6 +563,7 @@ def init() -> None:
                 ("idx_operation_tasks_batch", "operation_tasks", "batch_id, id"),
                 ("idx_operation_tasks_account", "operation_tasks", "account_id, id DESC"),
                 ("idx_operation_tasks_status", "operation_tasks", "status, id DESC"),
+                ("idx_operation_tasks_retention", "operation_tasks", "status, completed_at, id"),
                 ("idx_operation_tasks_type", "operation_tasks", "task_type, id DESC"),
                 ("idx_operation_runs_task", "operation_runs", "task_id, run_no"),
                 ("idx_operation_runs_queue", "operation_runs", "status, next_attempt_at, created_at, id"),
@@ -5295,6 +5296,300 @@ def finish_run(
         # remote operation into a failure merely because its wakeup failed.
         logger.exception("写入父任务依赖 ready 状态失败：run_id=%s", run_id)
     return result
+
+
+def cleanup_terminal_history(
+    *,
+    retention_days: int,
+    limit: int = 500,
+    archive,
+) -> dict[str, Any]:
+    """Archive and delete one bounded batch of expired task-center history.
+
+    The archive callback runs inside the transaction after candidates are
+    locked and before any row is deleted.  Raising from the callback aborts
+    the transaction, so a task is never removed without a verified archive.
+    """
+    init()
+    days = int(retention_days or 0)
+    if days <= 0:
+        return {"deleted_tasks": 0, "deleted_batches": 0, "disabled": True}
+    if not callable(archive):
+        raise ValueError("任务中心清理必须提供归档回调")
+    row_limit = max(1, min(5000, int(limit or 500)))
+    cutoff = _now() - timedelta(days=days)
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT pg_try_advisory_xact_lock(hashtext(%s)) AS locked",
+            ("task_center_retention",),
+        )
+        if not bool(cur.fetchone()["locked"]):
+            return {"deleted_tasks": 0, "deleted_batches": 0, "locked": True}
+        cur.execute(
+            f"""
+            SELECT task.*
+            FROM {_table('operation_tasks')} task
+            WHERE task.status IN ({_TERMINAL_STATUS_SQL})
+              AND task.completed_at IS NOT NULL
+              AND task.completed_at < %s
+              AND NOT EXISTS (
+                  SELECT 1 FROM {_table('operation_runs')} run
+                  WHERE run.task_id=task.id
+                    AND run.status IN ({_ACTIVE_RUN_STATUS_SQL})
+              )
+              AND NOT (
+                  task.source_system='registration_jobs'
+                  AND EXISTS (
+                      SELECT 1 FROM {_table('registration_jobs')} source_task
+                      WHERE source_task.id::text=task.source_id
+                        AND source_task.status IN ({_ACTIVE_RUN_STATUS_SQL})
+                  )
+              )
+              AND NOT (
+                  task.source_system='account_action_tasks'
+                  AND EXISTS (
+                      SELECT 1 FROM {_table('account_action_tasks')} source_task
+                      WHERE source_task.id::text=task.source_id
+                        AND source_task.status IN ({_ACTIVE_RUN_STATUS_SQL})
+                  )
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM {_table('account_operation_leases')} lease
+                  JOIN {_table('operation_runs')} run ON run.id=lease.run_id
+                  WHERE run.task_id=task.id AND lease.expires_at >= now()
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM {_table('operation_tasks')} child
+                  WHERE child.id<>task.id
+                    AND (child.parent_task_id=task.id OR child.root_task_id=task.id)
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM {_table('operation_task_dependencies')} dependency
+                  WHERE dependency.status<>'completed'
+                    AND (
+                      (
+                        dependency.parent_source_system=task.source_system
+                        AND dependency.parent_source_id IN (task.source_id, task.id::text)
+                      ) OR (
+                        dependency.child_source_system=task.source_system
+                        AND dependency.child_source_id IN (task.source_id, task.id::text)
+                      )
+                    )
+              )
+            ORDER BY task.completed_at, task.id
+            LIMIT %s
+            FOR UPDATE OF task
+            """,
+            (cutoff, row_limit),
+        )
+        tasks = [dict(row) for row in cur.fetchall()]
+        cur.execute(
+            f"""
+            SELECT batch.*
+            FROM {_table('operation_batches')} batch
+            WHERE batch.status IN ({_TERMINAL_STATUS_SQL})
+              AND batch.completed_at IS NOT NULL
+              AND batch.completed_at < %s
+              AND NOT EXISTS (
+                  SELECT 1 FROM {_table('operation_tasks')} task
+                  WHERE task.batch_id=batch.id
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM {_table('operation_runs')} run
+                  WHERE run.batch_id=batch.id
+                    AND run.status IN ({_ACTIVE_RUN_STATUS_SQL})
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM {_table('operation_projection_queue')} queue
+                  WHERE queue.batch_id=batch.id
+                    AND queue.status IN ('queued', 'running')
+              )
+            ORDER BY batch.created_at, batch.id
+            LIMIT %s
+            FOR UPDATE OF batch
+            """,
+            (cutoff, row_limit),
+        )
+        empty_batches = [dict(row) for row in cur.fetchall()]
+        if not tasks and not empty_batches:
+            return {
+                "deleted_tasks": 0,
+                "deleted_batches": 0,
+                "cutoff": cutoff.isoformat(),
+            }
+        task_ids = [int(row["id"]) for row in tasks]
+        task_batch_ids = sorted({int(row["batch_id"]) for row in tasks if row.get("batch_id")})
+        empty_batch_ids = [int(row["id"]) for row in empty_batches]
+        batch_ids = sorted(set(task_batch_ids) | set(empty_batch_ids))
+
+        def fetch(sql: str, params=()) -> list[dict]:
+            cur.execute(sql, params)
+            return [dict(row) for row in cur.fetchall()]
+
+        runs = (
+            fetch(
+                f"SELECT * FROM {_table('operation_runs')} WHERE task_id=ANY(%s) ORDER BY id",
+                (task_ids,),
+            ) if task_ids else []
+        )
+        run_ids = [int(row["id"]) for row in runs]
+        native_task_ids = {
+            int(row["id"]) for row in tasks
+            if str(row.get("source_system") or "") == "native_operations"
+        }
+        native_log_files = sorted({
+            str(row.get("log_file") or "").strip()
+            for row in runs
+            if int(row["task_id"]) in native_task_ids
+            and str(row.get("log_file") or "").strip()
+        })
+        events = (
+            fetch(
+                f"SELECT * FROM {_table('operation_events')} WHERE task_id=ANY(%s) ORDER BY id",
+                (task_ids,),
+            ) if task_ids else []
+        )
+        resources = (
+            fetch(
+                f"SELECT * FROM {_table('operation_resources')} WHERE run_id=ANY(%s) ORDER BY id",
+                (run_ids,),
+            ) if run_ids else []
+        )
+        leases = (
+            fetch(
+                f"SELECT * FROM {_table('account_operation_leases')} WHERE run_id=ANY(%s) ORDER BY run_id",
+                (run_ids,),
+            ) if run_ids else []
+        )
+        batch_items = (
+            fetch(
+                f"SELECT * FROM {_table('operation_batch_items')} WHERE task_id=ANY(%s) ORDER BY id",
+                (task_ids,),
+            ) if task_ids else []
+        )
+        batches = (
+            fetch(
+                f"SELECT * FROM {_table('operation_batches')} WHERE id=ANY(%s) ORDER BY id",
+                (batch_ids,),
+            ) if batch_ids else []
+        )
+        projection_queue = (
+            fetch(
+                f"SELECT * FROM {_table('operation_projection_queue')} WHERE batch_id=ANY(%s) ORDER BY id",
+                (batch_ids,),
+            ) if batch_ids else []
+        )
+        dependencies = (
+            fetch(
+                f"""
+                SELECT dependency.*
+                FROM {_table('operation_task_dependencies')} dependency
+                WHERE EXISTS (
+                    SELECT 1 FROM {_table('operation_tasks')} task
+                    WHERE task.id=ANY(%s)
+                      AND (
+                        (
+                          dependency.parent_source_system=task.source_system
+                          AND dependency.parent_source_id IN (task.source_id, task.id::text)
+                        ) OR (
+                          dependency.child_source_system=task.source_system
+                          AND dependency.child_source_id IN (task.source_id, task.id::text)
+                        )
+                      )
+                )
+                ORDER BY dependency.id
+                """,
+                (task_ids,),
+            ) if task_ids else []
+        )
+        snapshot = {
+            "version": 1,
+            "created_at": _now().isoformat(),
+            "cutoff": cutoff.isoformat(),
+            "retention_days": days,
+            "tasks": [_row(row) or {} for row in tasks],
+            "runs": [_row(row) or {} for row in runs],
+            "events": [_row(row) or {} for row in events],
+            "resources": [_row(row) or {} for row in resources],
+            "leases": [_row(row) or {} for row in leases],
+            "batch_items": [_row(row) or {} for row in batch_items],
+            "batches": [_row(row) or {} for row in batches],
+            "projection_queue": [_row(row) or {} for row in projection_queue],
+            "dependencies": [_row(row) or {} for row in dependencies],
+        }
+        archive_result = archive(snapshot)
+
+        completed_dependency_ids = [
+            int(row["id"]) for row in dependencies
+            if str(row.get("status") or "") == "completed"
+        ]
+        if completed_dependency_ids:
+            cur.execute(
+                f"DELETE FROM {_table('operation_task_dependencies')} WHERE id=ANY(%s)",
+                (completed_dependency_ids,),
+            )
+        deleted_tasks = 0
+        if task_ids:
+            cur.execute(
+                f"DELETE FROM {_table('operation_tasks')} WHERE id=ANY(%s)",
+                (task_ids,),
+            )
+            deleted_tasks = int(cur.rowcount)
+        deleted_batches = 0
+        if empty_batch_ids:
+            cur.execute(
+                f"""
+                DELETE FROM {_table('operation_batches')} batch
+                WHERE batch.id=ANY(%s)
+                  AND batch.status IN ({_TERMINAL_STATUS_SQL})
+                  AND batch.completed_at IS NOT NULL
+                  AND batch.completed_at < %s
+                  AND NOT EXISTS (
+                      SELECT 1 FROM {_table('operation_tasks')} task
+                      WHERE task.batch_id=batch.id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM {_table('operation_runs')} run
+                      WHERE run.batch_id=batch.id
+                        AND run.status IN ({_ACTIVE_RUN_STATUS_SQL})
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM {_table('operation_projection_queue')} queue
+                      WHERE queue.batch_id=batch.id
+                        AND queue.status IN ('queued', 'running')
+                  )
+                """,
+                (empty_batch_ids, cutoff),
+            )
+            deleted_batches += int(cur.rowcount)
+        if task_batch_ids:
+            cur.execute(
+                f"""
+                DELETE FROM {_table('operation_batches')} batch
+                WHERE batch.id=ANY(%s)
+                  AND batch.completed_at IS NOT NULL
+                  AND batch.completed_at < %s
+                  AND batch.status IN ({_TERMINAL_STATUS_SQL})
+                  AND NOT EXISTS (
+                      SELECT 1 FROM {_table('operation_tasks')} task
+                      WHERE task.batch_id=batch.id
+                  )
+                """,
+                (task_batch_ids, cutoff),
+            )
+            deleted_batches += int(cur.rowcount)
+        return {
+            "deleted_tasks": deleted_tasks,
+            "deleted_batches": deleted_batches,
+            "cutoff": cutoff.isoformat(),
+            "archive": archive_result,
+            "native_log_files": native_log_files,
+            # Deleting a leaf can make its expired parent eligible.  Force one
+            # more bounded pass after any deletion; an empty pass terminates
+            # the daily drain without guessing from the current batch size.
+            "has_more": deleted_tasks > 0 or deleted_batches > 0,
+        }
 
 
 def verify() -> dict[str, Any]:

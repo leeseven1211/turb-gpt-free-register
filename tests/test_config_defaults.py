@@ -9,6 +9,7 @@ from config import register as register_config
 from config import twofa as twofa_config
 from config import account as account_config
 from config import openai_protocol as openai_protocol_config
+from config import operations as operations_config
 from config import proxy as proxy_config
 from config import env_loader
 from config import extract_link as extract_link_config
@@ -18,6 +19,28 @@ from core import roxy_registration
 
 
 class ConfigDefaultFallbackTests(unittest.TestCase):
+    def test_task_center_retention_strategy_is_webui_editable(self):
+        fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
+
+        self.assertEqual(7, fields["TASK_CENTER_RETENTION_DAYS"]["default"])
+        self.assertEqual("任务中心", fields["TASK_CENTER_RETENTION_DAYS"]["group"])
+        self.assertEqual(30, fields["TASK_CENTER_ARCHIVE_RETENTION_DAYS"]["default"])
+        self.assertEqual("任务中心", fields["TASK_CENTER_ARCHIVE_RETENTION_DAYS"]["group"])
+
+        old_loaded = env_loader._LOADED
+        env_loader._LOADED = True
+        try:
+            with patch.dict(os.environ, {
+                "TASK_CENTER_RETENTION_DAYS": "14",
+                "TASK_CENTER_ARCHIVE_RETENTION_DAYS": "60",
+            }, clear=False):
+                reloaded = importlib.reload(operations_config)
+                self.assertEqual(14, reloaded.TASK_CENTER_RETENTION_DAYS)
+                self.assertEqual(60, reloaded.TASK_CENTER_ARCHIVE_RETENTION_DAYS)
+        finally:
+            env_loader._LOADED = old_loaded
+            importlib.reload(operations_config)
+
     def test_outlook_pool_has_no_file_configuration(self):
         import config.email as email_config
         import config as config_package

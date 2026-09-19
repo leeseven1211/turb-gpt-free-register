@@ -90,6 +90,9 @@ class WebUIRuntimeTests(unittest.TestCase):
             start_auth_context_cleanup = stack.enter_context(
                 patch("core.account_auth_context_service.start_periodic_cleanup")
             )
+            start_task_center_cleanup = stack.enter_context(
+                patch("core.task_center_retention.start_periodic_cleanup")
+            )
             self.assertTrue(runtime.start_runtime(logging.getLogger("test-webui-runtime")))
             self.assertFalse(runtime.start_runtime(logging.getLogger("test-webui-runtime")))
 
@@ -115,6 +118,7 @@ class WebUIRuntimeTests(unittest.TestCase):
             start_at_refresh,
             start_codex_refresh,
             start_auth_context_cleanup,
+            start_task_center_cleanup,
         ):
             self.assertEqual(1, mock.call_count, getattr(mock, "_mock_name", "mock"))
         self.assertEqual(5, recovery_exclusions.call_count)
