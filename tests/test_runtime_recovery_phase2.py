@@ -148,7 +148,7 @@ class RuntimeRecoveryFenceTests(PostgresTestCase):
                 excluded_source_ids=fence["source_ids"],
             )
         self.assertEqual(1, recovered)
-        self.assertEqual("failed", record_store.get_row(record_store.JOBS, job_b)["status"])
+        self.assertEqual("interrupted", record_store.get_row(record_store.JOBS, job_b)["status"])
         self.assertEqual("queued", operation.get_run(int(native["run"]["id"]))["status"])
 
     def test_registration_recovery_excludes_native_account_but_closes_other_account(self):
@@ -204,7 +204,7 @@ class RuntimeRecoveryFenceTests(PostgresTestCase):
 
         self.assertEqual(1, recovered)
         self.assertEqual("running", record_store.get_row(record_store.JOBS, job_a)["status"])
-        self.assertEqual("failed", record_store.get_row(record_store.JOBS, job_b)["status"])
+        self.assertEqual("interrupted", record_store.get_row(record_store.JOBS, job_b)["status"])
         self.assertEqual("queued", registration.get_run(int(run_a["id"]))["status"])
         self.assertEqual("interrupted", registration.get_run(int(run_b["id"]))["status"])
         self.assertEqual("queued", operation.get_run(int(native["run"]["id"]))["status"])

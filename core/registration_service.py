@@ -314,6 +314,22 @@ def registration_result_status(result: dict | None) -> str:
     return "success" if result.get("success") or result.get("registration_success") else "failed"
 
 
+def _persisted_result_error(result: dict | None, message: object) -> str:
+    """Keep a driver's stable error code visible to the task projection.
+
+    Legacy jobs persist one error string while the driver returns structured
+    fields.  Prefixing the safe code lets the unified operation projection
+    classify the task consistently without storing page bodies or credentials.
+    """
+    text = str(message or "").strip()
+    code = str((result or {}).get("error_code") or "").strip() if isinstance(result, dict) else ""
+    if not code and isinstance(result, dict) and result.get("request_unknown"):
+        code = "request_unknown"
+    if code and code.casefold() not in text.casefold():
+        text = f"{code}: {text}" if text else code
+    return text[:500]
+
+
 def _finish_registration_run(status: str, *, error_message: str | None = None, result_summary: dict | None = None) -> None:
     run_id = getattr(_THREAD_CTX, "run_id", None)
     if run_id is None:
@@ -702,8 +718,15 @@ def _is_final_session_access_token_timeout(error: object) -> bool:
         return False
     return (
         "等待 /api/auth/session accessToken 超时" in text
-        and "WARNING_BANNER" in text
-        and "'_http_status': 200" in text
+        and (
+            "WARNING_BANNER" in text
+            or "chatgpt_session_unavailable" in text
+        )
+        and (
+            "'_http_status': 200" in text
+            or "status=200" in text
+            or "status=unknown" in text
+        )
     )
 
 
@@ -802,6 +825,7 @@ def _is_transient_registration_proxy_error(error: object) -> bool:
         "err_connection_reset",
         "err_connection_closed",
         "err_timed_out",
+        "roxy registration stage timeout exhausted",
         "proxy connection",
         "ssl_error_syscall",
         "unexpected eof while reading",
@@ -835,6 +859,7 @@ def _should_retry_registration_with_new_proxy(
     if not isinstance(result, dict):
         return False
     # 已落库的账号、待邮箱验证检查点或 access token 都不能再从头注册。
+    # 明确的资料页拒绝也只做分类和人工对账，不自动新建第二个账号。
     if result.get("account_id") is not None or result.get("registration_pending"):
         return False
     if str(result.get("access_token") or "").strip():
@@ -1425,7 +1450,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
             )
             if registration_succeeded:
                 _mark_registration_result(result)
-                warning = str(result.get("error") or "").strip()
+                warning = _persisted_result_error(result, result.get("error"))
                 registration_pending = bool(
                     not result.get("success")
                     and result.get("account_id")
@@ -1465,7 +1490,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     account_id=result.get("account_id"),
                     # A successful later route must not retain the transient
                     # proxy/browser error that triggered its automatic retry.
-                    error=warning[:500] if warning else "",
+                    error=warning,
                     completed_at=_now_iso(),
                 )
                 if partial_success:
@@ -1486,6 +1511,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
             else:
                 # 注意：失败也可能伴随 account_id（如 Codex 失败但账号已注册成功）
                 err = (result or {}).get("error") if isinstance(result, dict) else "unknown"
+                persisted_err = _persisted_result_error(result, err)
                 result_email = (result or {}).get("email") if isinstance(result, dict) else None
                 request_unknown = bool(isinstance(result, dict) and result.get("request_unknown"))
                 manual_reconcile = bool(isinstance(result, dict) and result.get("manual_reconcile"))
@@ -1501,13 +1527,13 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     capture_current_failure(str(err)[:1000])
                 except Exception:
                     logger.exception("[Job %s] 保存失败诊断现场失败", job_id)
-                db.finish_job_progress(job_id, success=False, detail=str(err)[:300])
+                db.finish_job_progress(job_id, success=False, detail=persisted_err[:300])
                 db.update_job(
                     job_id,
                     status=registration_result_status(result),
                     email=result_email,
                     account_id=(result or {}).get("account_id") if isinstance(result, dict) else None,
-                    error=str(err)[:500],
+                    error=persisted_err,
                     completed_at=_now_iso(),
                 )
                 email_to_handle = str(result_email or email or "").strip()
@@ -2027,7 +2053,7 @@ def _build_retry_info(
         "display_status": status,
         "next_actions": [],
     }
-    if status not in ("success", "failed", "partial_success", "stopped", "cancelled"):
+    if status not in ("success", "failed", "partial_success", "stopped", "cancelled", "interrupted"):
         return info
 
     if successful_retry is not None:
@@ -2183,7 +2209,7 @@ def _build_retry_info(
 def get_retry_info(job: dict, *, account_override: dict | None = None) -> dict:
     """返回给 API/UI 的重试能力描述，不依赖前端猜测错误阶段。"""
     status = str(job.get("status") or "")
-    if status not in ("success", "failed", "partial_success", "stopped", "cancelled"):
+    if status not in ("success", "failed", "partial_success", "stopped", "cancelled", "interrupted"):
         return _build_retry_info(job, account=None, successful_retry=None)
     successful_retry = db.get_successful_retry_for_job(int(job.get("id") or 0))
     account = None if successful_retry is not None else (
@@ -2201,7 +2227,7 @@ def get_retry_info_bulk(jobs: list[dict]) -> dict[int, dict]:
     rows = [dict(job) for job in (jobs or [])]
     terminal = [
         job for job in rows
-        if str(job.get("status") or "") in ("success", "failed", "partial_success", "stopped", "cancelled")
+        if str(job.get("status") or "") in ("success", "failed", "partial_success", "stopped", "cancelled", "interrupted")
     ]
     successful_by_job = db.get_successful_retries_for_jobs(terminal)
     needs_accounts = [job for job in terminal if int(job.get("id") or 0) not in successful_by_job]
@@ -2465,7 +2491,7 @@ def request_stop_job(job_id: int) -> dict:
             }
         _append_job_log(job_id, "用户手动停止：任务尚未运行，已取消排队。")
         return {"ok": True, "message": "排队任务已取消", "job_id": job_id, "state": "cancelled"}
-    if status in ("success", "partial_success", "failed", "cancelled", "stopped"):
+    if status in ("success", "partial_success", "failed", "cancelled", "stopped", "interrupted"):
         return {"ok": True, "message": f"任务已结束：{status}", "job_id": job_id, "state": status}
     if status in ("running", "stopping"):
         with _STOP_LOCK:

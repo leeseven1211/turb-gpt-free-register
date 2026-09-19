@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -69,6 +70,11 @@ def _now() -> str:
 
 def _now_utc() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _registration_now() -> str:
+    """Return timezone-aware UTC timestamps for registration progress records."""
+    return _now_utc()
 
 
 def _ensure_storage() -> None:
@@ -3164,7 +3170,7 @@ def claim_job_for_execution(job_id: int, *, started_at: str | None = None) -> bo
         job_id,
         ("pending",),
         "running",
-        started_at=started_at or _now(),
+        started_at=started_at or _registration_now(),
     )
 
 
@@ -3185,7 +3191,7 @@ def cancel_pending_jobs(*, batch_id: str | None = None) -> int:
         record_store.JOBS,
         changes={
             "status": "cancelled",
-            "completed_at": _now(),
+            "completed_at": _registration_now(),
             "error_message": "用户手动取消",
         },
         where=where,
@@ -3214,7 +3220,7 @@ def update_job_progress(
         row = record_store.get_row(record_store.JOBS, int(job_id))
         if row is None:
             return
-        now = _now()
+        now = _registration_now()
         steps = row.get("progress_steps")
         if not isinstance(steps, dict):
             steps = {}
@@ -3285,7 +3291,7 @@ def begin_job_route_attempt(
         row = record_store.get_row(record_store.JOBS, int(job_id))
         if row is None:
             raise LookupError("任务不存在")
-        now = _now()
+        now = _registration_now()
         current_no = max(1, int(row.get("route_attempt_no") or 1))
         steps = row.get("progress_steps")
         if not isinstance(steps, dict):
@@ -3341,7 +3347,7 @@ def record_job_otp_evidence(
         if not isinstance(events, list):
             events = []
         event = {
-            "recorded_at": _now(),
+            "recorded_at": _registration_now(),
             "request_kind": str(request_kind or "")[:40] or None,
             "ui_ack": str(ui_ack or "")[:40] or None,
             "detail": str(detail or "")[:240] or None,
@@ -3368,7 +3374,7 @@ def finish_job_progress(
         row = record_store.get_row(record_store.JOBS, int(job_id))
         if row is None:
             return
-        now = _now()
+        now = _registration_now()
         steps = row.get("progress_steps")
         if not isinstance(steps, dict):
             steps = {}
@@ -3462,10 +3468,10 @@ def recover_interrupted_registration_jobs(
     excluded_account_ids: Iterable[int] | None = None,
     excluded_source_ids: Iterable[str | int] | None = None,
 ) -> int:
-    """启动时把上个进程遗留的排队/运行任务收口为可重试失败状态。"""
+    """启动时把上个进程遗留的排队/运行任务收口为可重试中断状态。"""
     record_store.init()
     detail = "WebUI 进程重启导致任务中断；浏览器和接码资源将在启动恢复阶段回收，请重新执行任务"
-    now = _now()
+    now = _registration_now()
     recovered_rows: list[dict] = []
     account_changed = False
     active_states = ("pending", "running", "stopping")
@@ -3501,7 +3507,10 @@ def recover_interrupted_registration_jobs(
             item.update({"state": "failed", "detail": detail[:300], "completed_at": now})
             steps[current] = item
             changes: dict[str, Any] = {
-                "status": "failed",
+                # A process restart is not a business failure. Keep it as a
+                # distinct terminal state so batch metrics and retry UX do not
+                # blame the registration flow.
+                "status": "interrupted",
                 "error_message": detail,
                 "completed_at": now,
                 "progress_steps": steps,
@@ -4180,6 +4189,8 @@ def claim_next_icloud_hide_email(
 
     # NOT EXISTS 与池行锁覆盖常规并发；极窄窗口内若另一事务的 claim 尚未
     # 可见，唯一键冲突会触发整笔回滚，再从下一个候选重新领取。
+    from psycopg.errors import DeadlockDetected
+
     for _attempt in range(8):
         try:
             with record_store.transaction() as conn:
@@ -4214,6 +4225,19 @@ def claim_next_icloud_hide_email(
                 return row
         except _BatchClaimConflict:
             continue
+        except DeadlockDetected:
+            # This transaction only claims an available mailbox and writes its
+            # idempotent batch claim. Retrying a PostgreSQL deadlock is safe;
+            # never apply this policy to password/OTP or remote registration
+            # requests whose result may already be irreversible.
+            if _attempt >= 2:
+                raise
+            delay = 0.05 * (_attempt + 1)
+            logger.warning(
+                "iCloud HME 批次邮箱领取遇到 deadlock，准备重试 (%s/2)",
+                _attempt + 1,
+            )
+            time.sleep(delay)
     raise RuntimeError("iCloud HME 批次邮箱并发领取冲突次数过多，请稍后重试")
 
 

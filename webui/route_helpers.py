@@ -382,7 +382,7 @@ def _compact_job_for_list(row: dict) -> dict:
             }
             changed = True
     terminal_status = str(row.get("status") or "")
-    if isinstance(steps, dict) and terminal_status in {"success", "partial_success", "failed", "cancelled", "stopped", "request_unknown"}:
+    if isinstance(steps, dict) and terminal_status in {"success", "partial_success", "failed", "cancelled", "stopped", "interrupted", "request_unknown"}:
         completed_at = row.get("completed_at")
         if "twofa" not in steps:
             prior = steps.get("token") if isinstance(steps.get("token"), dict) else {}
@@ -405,7 +405,7 @@ def _compact_job_for_list(row: dict) -> dict:
             }
             changed = True
         if "complete" not in steps:
-            complete_state = "success" if terminal_status in {"success", "partial_success"} else "stopped" if terminal_status in {"cancelled", "stopped"} else "failed"
+            complete_state = "success" if terminal_status in {"success", "partial_success"} else "stopped" if terminal_status in {"cancelled", "stopped", "interrupted"} else "failed"
             steps["complete"] = {
                 "state": complete_state,
                 "detail": (

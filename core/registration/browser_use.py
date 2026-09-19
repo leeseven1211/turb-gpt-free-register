@@ -312,6 +312,12 @@ def _quick_auth_state(page) -> dict:
                 qv("input[type='password']") ||
                 qv("input[name='password']") ||
                 qv("input[autocomplete='new-password']");
+              const remoteCreateError = new RegExp(
+                "account could not be created|couldn't create account|could not create account|"
+                + "アカウントを作成できませんでした|アカウントを作成できない|"
+                + "无法创建账号|无法创建帳戶|无法建立账号|無法建立帳戶",
+                'i'
+              ).test(text);
               let state = 'other';
               // /log-in/password 代表该邮箱已走登录密码分支；即便页面 DOM 里有 code/otp 字样，
               // 注册流程也按不可用邮箱处理，不能误判成邮箱验证码页。
@@ -320,7 +326,7 @@ def _quick_auth_state(page) -> dict:
               else if (hasPassword) state = 'password';
               else if (url.includes('about-you') || url.includes('profile') || url.includes('create-account/about')) state = 'profile';
               else if (url.includes('chatgpt.com') && !url.includes('/auth/')) state = 'chatgpt';
-              return {state, url, hasOtp, hasPassword, textPreview: text.slice(0, 160)};
+              return {state, url, hasOtp, hasPassword, remoteCreateError, textPreview: text.slice(0, 160)};
             }"""
         ) or {"state": "other", "url": _page_url(page)}
     except Exception as exc:
@@ -694,6 +700,9 @@ def _fill_password_if_present(page, email: str, timeout: int = 25, context=None)
             # fast 模式也不要 3 秒就放弃：提交邮箱后常仍停在 /auth/login，
             # 需等跳到 auth.openai.com 或出现密码/OTP 控件。
             if _fast_mode() and time.time() - started >= 8:
+                if auth_mode == "password":
+                    logger.info("[BrowserUse] 密码模式在快速检测预算内未检测到密码页，转为流程失败：state=%s url=%s", state, state_info.get("url") or "-")
+                    break
                 logger.info("[BrowserUse] 未检测到密码页，提前进入 OTP 阶段：state=%s url=%s", state, state_info.get("url") or "-")
                 return None
             time.sleep(0.15 if _fast_mode() else 0.4)
@@ -753,6 +762,10 @@ def _fill_password_if_present(page, email: str, timeout: int = 25, context=None)
             page = _browser_use_heartbeat(page, context=context, label="password-submit-transition")
             state_after = _quick_auth_state(page)
             next_state = str(state_after.get("state") or "other")
+            if state_after.get("remoteCreateError"):
+                raise _PasswordTransitionTimeout(
+                    "request_unknown: 密码提交后页面报告账号创建失败，远端结果待确认"
+                )
             if next_state == "email_verification":
                 logger.info("[BrowserUse] 密码提交后已进入邮箱验证码页")
                 return password
@@ -764,8 +777,12 @@ def _fill_password_if_present(page, email: str, timeout: int = 25, context=None)
             time.sleep(0.2 if _fast_mode() else 0.5)
         state_after = _quick_auth_state(page)
         raise _PasswordTransitionTimeout(
-            f"密码提交后等待 {int(transition_timeout)} 秒仍未确认远端结果，页面仍停留在密码页："
+            f"request_unknown: 密码提交后等待 {int(transition_timeout)} 秒仍未确认远端结果，页面仍停留在密码页："
             f"state={state_after.get('state') or 'other'} url={state_after.get('url') or _page_url(page) or '-'}"
+        )
+    if auth_mode == "password":
+        raise RuntimeError(
+            "password_entry_not_offered: 密码模式要求创建账号密码，但认证跳转预算内未检测到密码页"
         )
     return None
 

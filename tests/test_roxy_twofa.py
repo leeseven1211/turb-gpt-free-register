@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from core import db, roxy_registration
+from core.account_export import TwofaProtocolTransportError
 from core.auth_challenge import PasswordSetupNotReadyError
 from core.task_stages import flow_for
 
@@ -732,6 +733,36 @@ class RoxyTwoFactorTests(unittest.TestCase):
             on_secret=unittest.mock.ANY,
             existing_secret=secret,
         )
+
+    def test_protocol_transport_failure_resets_transport_before_ui_fallback(self):
+        secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+        session = Mock()
+        calls = []
+
+        def reset_transport():
+            calls.append("reset")
+
+        session.reset_transport.side_effect = reset_transport
+        with patch.object(
+            roxy_registration,
+            "setup_2fa_protocol",
+            side_effect=[
+                TwofaProtocolTransportError("enroll", "SSLError"),
+                secret,
+            ],
+        ) as protocol_setup, patch.object(roxy_registration, "setup_roxy_2fa") as browser_setup:
+            result, fallback_used = roxy_registration.setup_protocol_2fa_with_browser_fallback(
+                object(),
+                "new@example.com",
+                session,
+                "access-token",
+            )
+
+        self.assertEqual(result, secret)
+        self.assertFalse(fallback_used)
+        self.assertEqual(calls, ["reset"])
+        self.assertEqual(protocol_setup.call_count, 2)
+        browser_setup.assert_not_called()
 
     def test_protocol_and_browser_twofa_failures_are_both_reported(self):
         with patch.object(

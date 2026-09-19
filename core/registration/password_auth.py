@@ -86,6 +86,84 @@ def _password_transition_timeout_seconds() -> float:
 class _PasswordTransitionTimeout(RuntimeError):
     """Password submit was dispatched but the remote result is still unknown."""
 
+
+_PASSWORD_SUBMIT_REMOTE_ERROR_MARKERS = (
+    "account could not be created",
+    "couldn't create account",
+    "could not create account",
+    "アカウントを作成できませんでした",
+    "アカウントを作成できない",
+    "无法创建账号",
+    "无法创建帳戶",
+    "无法建立账号",
+    "無法建立帳戶",
+)
+
+# The profile page can reject account creation with a remote policy/eligibility
+# message that is not exposed through the normal form-error selectors.  Keep
+# this list deliberately narrow: a generic validation message must still be
+# treated as a workflow error, while this marker means the upstream has made a
+# decision and we should not burn the whole profile timeout waiting for a
+# navigation that will never happen.
+_PROFILE_ACCOUNT_REJECTION_MARKERS = (
+    "利用規約のため、お客様のアカウントを作成できません",
+    "アカウントを作成できません",
+    "can't create your account",
+    "cannot create your account",
+    "couldn't create your account",
+    "account cannot be created",
+    "无法创建您的账号",
+    "无法创建账号",
+)
+
+
+def _profile_account_rejection_marker(driver) -> str | None:
+    """Return a stable remote-rejection marker without persisting page text."""
+    try:
+        body_text = driver.execute_script(
+            "return String(document.body?.innerText || document.body?.textContent || '')"
+        )
+    except Exception:
+        return None
+    text = re.sub(r"\s+", " ", str(body_text or "")).strip()
+    lowered = text.lower()
+    for marker in _PROFILE_ACCOUNT_REJECTION_MARKERS:
+        if marker.lower() in lowered:
+            return marker
+    return None
+
+
+def _password_submit_error_marker(state: object) -> str | None:
+    """Return a stable marker for an explicit post-submit create error.
+
+    The page may remain on ``/create-account/password`` after the request has
+    already reached OpenAI.  Only match account-creation error phrases, not a
+    generic ``try again`` hint, so a transient form helper cannot prematurely
+    turn a still-pending request into an unknown outcome.
+    """
+    if not isinstance(state, dict):
+        return None
+    text = re.sub(r"\s+", " ", str(state.get("text") or "")).strip().casefold()
+    for marker in _PASSWORD_SUBMIT_REMOTE_ERROR_MARKERS:
+        if marker.casefold() in text:
+            return "password_submit_remote_error"
+    return None
+
+
+def _password_page_state_summary(state: object) -> str:
+    """Build a non-sensitive password-page summary for logs and task errors."""
+    if not isinstance(state, dict):
+        return f"state_type={type(state).__name__}"
+    raw_url = str(state.get("url") or "")
+    parsed_url = urlsplit(raw_url)
+    return (
+        f"path={parsed_url.path or '/'} "
+        f"inputs={len(state.get('inputs') or []) if isinstance(state.get('inputs'), list) else 0} "
+        f"buttons={len(state.get('buttons') or []) if isinstance(state.get('buttons'), list) else 0} "
+        f"text_length={len(str(state.get('text') or ''))}"
+    )
+
+
 def _click_passwordless_signup_if_present(driver) -> dict:
     """
     新版注册/登录流在 password 页可能默认要求密码。
@@ -228,7 +306,6 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
         else None
     )
     refresh_attempted = False
-    direct_navigation_count = 0
     last_result = {"ok": False, "reason": "missing_create_account_password_target"}
     while time.time() < find_end:
         try:
@@ -329,6 +406,10 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
             except Exception as exc:
                 logger.warning("%s 密码入口刷新失败，继续使用原页面诊断：%s", _log_prefix(driver), exc)
             time.sleep(0.8)
+            # 刷新会重新挂载 auth.openai.com 的 React 树；不要把刷新本身
+            # 计入原来的 15 秒硬窗口，否则空壳刚开始恢复就会被判失败。
+            # 这是一次有界的额外等待，不改变页面分支或密码流程。
+            find_end = max(find_end, time.time() + min(10.0, wait_seconds))
             continue
         time.sleep(0.4)
 
@@ -348,61 +429,24 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
         and parsed_url.path.rstrip("/") == "/email-verification"
     )
 
-    # 只有验证码页仍是空壳、且受控刷新已经用完时，才允许同一浏览器上下文
-    # 直达一次 create-account/password。页面已挂载但没有入口代表产品流变体，
-    # 强行跳转可能绕过服务端状态，必须保留失败而不是猜测。
-    direct_error = ""
+    # A same-origin GET of /create-account/password can render a convincing
+    # form while the server-side auth step is still the OTP step.  Submitting
+    # that form then returns invalid_auth_step (HTTP 400), so it is not a safe
+    # recovery.  Keep the profile at the real OTP page and classify the missing
+    # password transition instead of guessing a new remote state.
     if refresh_attempted and is_email_verification_route and page_snapshot_observed and not page_mounted:
-        direct_navigation_count = 1
-        logger.warning(
-            "%s 验证码页刷新后仍未挂载密码入口，执行一次同源密码页恢复：path=%s",
-            _log_prefix(driver),
-            parsed_url.path,
-        )
-        try:
-            _safe_get(
-                driver,
-                "https://auth.openai.com/create-account/password",
-                timeout=min(15, max(5, int(timeout))),
-                attempts=1,
-                accept_hosts=("auth.openai.com",),
-            )
-            _page_warmup(driver, reason="password_entry_direct_recovery")
-            direct_end = time.time() + max(1, min(5, wait_seconds))
-            while time.time() < direct_end:
-                if _is_signup_password_page(driver):
-                    return {
-                        "ok": True,
-                        "reason": "entered_create_account_password_direct",
-                        "refresh_count": 1,
-                        "direct_navigation_count": 1,
-                        "url_path": "/create-account/password",
-                    }
-                if _has_access_token(driver):
-                    return {
-                        "ok": False,
-                        "reason": "logged_in_before_password_page",
-                        "refresh_count": 1,
-                        "direct_navigation_count": 1,
-                        "url_path": urlsplit(str(getattr(driver, "current_url", "") or "")).path,
-                    }
-                time.sleep(0.4)
-        except Exception as exc:
-            direct_error = type(exc).__name__
-
         return {
             "ok": False,
             "reason": "password_entry_recovery_exhausted",
             "waited_seconds": wait_seconds,
             "refresh_count": 1,
-            "direct_navigation_count": direct_navigation_count,
+            "direct_navigation_count": 0,
             "page_state": "empty_shell",
             "url_path": parsed_url.path,
             "input_count": input_count,
             "button_count": button_count,
             "body_text_length": body_text_length,
             "last_reason": last_result.get("reason"),
-            "direct_navigation_error": direct_error,
             "candidates": candidates,
         }
 
@@ -411,7 +455,7 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
         "reason": "password_entry_not_offered" if page_mounted else "password_entry_page_not_hydrated",
         "waited_seconds": wait_seconds,
         "refresh_count": int(refresh_attempted),
-        "direct_navigation_count": direct_navigation_count,
+        "direct_navigation_count": 0,
         "page_state": "mounted" if page_mounted else "empty_shell",
         "url_path": parsed_url.path,
         "input_count": input_count,
@@ -510,13 +554,38 @@ def _fill_password_page_if_present(
           .map((el, idx) => {
             const r = el.getBoundingClientRect();
             const ir = input.getBoundingClientRect();
-            return {el, idx, below: r.top >= ir.bottom - 10, dist: Math.max(0, r.top - ir.bottom) + Math.abs((r.left+r.right-ir.left-ir.right)/2)/10};
+            const type = String(el.getAttribute('type') || '').toLowerCase();
+            const name = String(el.getAttribute('name') || '').toLowerCase();
+            const attrs = [
+              el.textContent, el.getAttribute('aria-label'), el.getAttribute('title'),
+              el.getAttribute('data-testid'), el.getAttribute('data-dd-action-name'),
+              type, name, el.getAttribute('value'),
+            ].join(' ').replace(/\s+/g, ' ').trim().slice(0, 160);
+            const normalized = attrs.toLowerCase();
+            const otpOrAlternate = /otp|one[-_ ]?time|passwordless|一次性验证码|一次性驗證碼|intent=/.test(normalized)
+              || name === 'intent';
+            const primaryText = /continue|proceed|next|submit|sign up|create|続行|次へ|注册|创建|继续|確認|確認する/.test(normalized);
+            const priority = otpOrAlternate ? 3 : type === 'submit' ? 0 : primaryText ? 1 : 2;
+            return {
+              el, idx, type, name, text: attrs,
+              priority,
+              below: r.top >= ir.bottom - 10,
+              dist: Math.max(0, r.top - ir.bottom) + Math.abs((r.left+r.right-ir.left-ir.right)/2)/10,
+            };
           })
           .filter(x => x.below)
-          .sort((a,b) => a.dist - b.dist || a.idx - b.idx);
+          .sort((a,b) => a.priority - b.priority || a.dist - b.dist || a.idx - b.idx);
         if (!buttons.length) return {ok:false, reason:'missing_submit'};
         buttons[0].el.scrollIntoView({block:'center'});
-        return {ok:true, reason:'password_targets', input, button: buttons[0].el};
+        return {
+          ok:true,
+          reason:'password_targets',
+          input,
+          button: buttons[0].el,
+          button_type: buttons[0].type,
+          button_name: buttons[0].name,
+          button_text: buttons[0].text,
+        };
         """) or {}
         if not result.get('ok'):
             raise RuntimeError(f"密码页处理失败：{result} state={last}")
@@ -530,6 +599,7 @@ def _fill_password_page_if_present(
         # 必须从点击成功后使用独立预算；否则慢代理下页面会在任务判失败后才迟到进入 OTP。
         transition_timeout = _password_transition_timeout_seconds()
         wait_end = time.time() + transition_timeout
+        transition_probe = 0
         while time.time() < wait_end:
             _check_manual_stop()
             if _is_email_verification_page(driver):
@@ -538,13 +608,27 @@ def _fill_password_page_if_present(
             if _has_access_token(driver):
                 logger.info("%s 密码提交后已检测到登录态", _log_prefix(driver))
                 return password
+            # Poll the body only every two seconds.  This catches an explicit
+            # upstream create error quickly without turning every 500 ms loop
+            # into another full DOM snapshot over the remote browser bridge.
+            if transition_probe % 4 == 0:
+                post_submit_state = _password_page_state(driver)
+                if _password_submit_error_marker(post_submit_state):
+                    raise _PasswordTransitionTimeout(
+                        "request_unknown: 密码提交后页面报告账号创建失败，远端结果待确认"
+                    )
+            transition_probe += 1
             if not (_is_signup_password_page(driver) or _is_login_password_page(driver)):
                 return password
             time.sleep(0.5)
         stuck_state = _password_page_state(driver)
         raise _PasswordTransitionTimeout(
-            f"密码提交后等待 {int(transition_timeout)} 秒仍未确认远端结果，页面仍停留在密码页："
-            f"url={getattr(driver, 'current_url', '')} state={stuck_state}"
+            f"request_unknown: 密码提交后等待 {int(transition_timeout)} 秒仍未确认远端结果，"
+            f"页面仍停留在密码页：{_password_page_state_summary(stuck_state)}"
+        )
+    if auth_mode == "password" and not existing_password and not _has_access_token(driver):
+        raise RuntimeError(
+            "password_entry_not_offered: 密码模式要求创建账号密码，但认证跳转预算内未检测到密码页"
         )
     logger.info("%s 未检测到密码页，继续后续流程 last=%s", _log_prefix(driver), last)
     return None
@@ -692,6 +776,12 @@ def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45, 
                     submitted_snapshot = _page_snapshot(driver)
                     if not _is_profile_like(submitted_snapshot):
                         return True
+                    rejection_marker = _profile_account_rejection_marker(driver)
+                    if rejection_marker:
+                        raise RuntimeError(
+                            "account_create_rejected: 远端资料页明确拒绝创建账号；"
+                            "原因属于条款/资格或风控限制"
+                        )
                     errors = driver.execute_script(r"""
                     const visible = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
                     return [...document.querySelectorAll(

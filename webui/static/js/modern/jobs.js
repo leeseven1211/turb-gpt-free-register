@@ -127,7 +127,7 @@ async function batchCancelJobs() {
 }
 
 async function retryBatchFailedJobs() {
-  const ids = currentBatchJobs().filter(job => ['failed', 'partial_success', 'stopped', 'cancelled'].includes(String(job.status || '')) && job.retryable).map(job => Number(job.id));
+  const ids = currentBatchJobs().filter(job => ['failed', 'partial_success', 'stopped', 'cancelled', 'interrupted'].includes(String(job.status || '')) && job.retryable).map(job => Number(job.id));
   if (!ids.length) { showToast('当前批次没有可重跑的失败任务'); return; }
   if (!confirm('确定重跑当前批次的 ' + ids.length + ' 个失败任务吗？已创建账号的任务会只补跑 Codex。')) return;
   const btn = $('#btnBatchRetryV2');
@@ -262,6 +262,7 @@ function progressJobResult(job) {
   if (status === 'success') return { label: '成功', cls: '' };
   if (status === 'partial_success') return { label: '部分完成', cls: 'is-failed' };
   if (status === 'request_unknown') return { label: '待确认', cls: 'is-failed' };
+  if (status === 'interrupted') return { label: '服务中断', cls: 'is-failed' };
   if (status === 'failed') return { label: '失败', cls: 'is-failed' };
   if (status === 'cancelled') return { label: '已取消', cls: 'is-failed' };
   if (status === 'stopped') return { label: '已停止', cls: 'is-failed' };
@@ -300,7 +301,8 @@ function renderRegistrationBatchSelector() {
     const counts = batch.status_counts || {};
     const active = Number(counts.active || 0);
     const failures = Number(counts.failed || 0) + Number(counts.partial_success || 0) + Number(counts.request_unknown || 0) + Number(counts.stopped || 0) + Number(counts.cancelled || 0);
-    const state = active > 0 ? `进行中 ${active}` : (failures > 0 ? `异常 ${failures}` : '已完成');
+    const interrupted = Number(counts.interrupted || 0);
+    const state = active > 0 ? `进行中 ${active}` : (failures > 0 ? `异常 ${failures}` : (interrupted > 0 ? `服务中断 ${interrupted}` : '已完成'));
     const kind = batch.kind === 'retry' ? '批量重跑' : '发起注册';
     const time = formatDateTime(batch.created_at).replace(/:\d{2}$/, '');
     const label = `${time} · ${kind} · ${Number(batch.total || 0)} 个 · ${state}`;
@@ -327,6 +329,7 @@ function renderBatchProgress() {
   const hasFailedStep = job => Object.values(job.progress_steps || {}).some(step => step && ['failed', 'stopped'].includes(step.state));
   const success = items.filter(job => job.status === 'success' && !hasFailedStep(job)).length;
   const failed = items.filter(job => ['failed', 'cancelled', 'stopped'].includes(job.status) || hasFailedStep(job)).length;
+  const interrupted = items.filter(job => job.status === 'interrupted').length;
   const active = items.filter(job => ['running', 'stopping'].includes(job.status) && !hasFailedStep(job)).length;
   const pending = items.filter(job => job.status === 'pending').length;
   const total = Number(batch.total || items.length);
@@ -335,6 +338,7 @@ function renderBatchProgress() {
   if (success === total && total > 0) { stateLabel = '全部成功'; stateClass = ''; }
   else if (active > 0) { stateLabel = '进行中'; stateClass = ''; }
   else if (failed > 0) { stateLabel = success > 0 ? '部分失败' : '批次失败'; stateClass = 'is-failed'; }
+  else if (interrupted > 0) { stateLabel = success > 0 ? '部分中断' : '服务中断'; stateClass = 'is-failed'; }
   if (batch.projection_delayed) {
     stateLabel += ' · 投影延迟';
     if (!stateClass) stateClass = 'is-waiting';
@@ -344,7 +348,7 @@ function renderBatchProgress() {
     stateEl.className = `batch-progress-v2-state ${stateClass}`.trim();
   }
   const summaryEl = $('#batchProgressSummaryV2');
-  if (summaryEl) summaryEl.textContent = `成功 ${success} · 失败 ${failed} · 运行 ${active} · 等待 ${pending} ｜ 共 ${total} · 并发 ${Number(batch.workers || 1)}`;
+  if (summaryEl) summaryEl.textContent = `成功 ${success} · 失败 ${failed} · 中断 ${interrupted} · 运行 ${active} · 等待 ${pending} ｜ 共 ${total} · 并发 ${Number(batch.workers || 1)}`;
   const allDone = active === 0 && pending === 0;
   const batchDuration = formatProgressDuration(batch.started_at || batch.created_at, allDone ? batch.completed_at : '');
   const timeEl = $('#batchProgressTimeV2');
@@ -352,7 +356,7 @@ function renderBatchProgress() {
 
   const runningIds = items.filter(job => ['running', 'stopping'].includes(String(job.status || ''))).map(job => Number(job.id));
   const pendingIds = items.filter(job => String(job.status || '') === 'pending').map(job => Number(job.id));
-  const retryIds = items.filter(job => ['failed', 'partial_success', 'stopped', 'cancelled'].includes(String(job.status || '')) && job.retryable).map(job => Number(job.id));
+  const retryIds = items.filter(job => ['failed', 'partial_success', 'stopped', 'cancelled', 'interrupted'].includes(String(job.status || '')) && job.retryable).map(job => Number(job.id));
   const stopBtn = $('#btnBatchStopV2');
   const cancelBtn = $('#btnBatchCancelV2');
   const retryBtn = $('#btnBatchRetryV2');
@@ -371,14 +375,14 @@ function renderBatchProgress() {
   batchProgressRenderSignature = nextRenderSignature;
   list.innerHTML = items.map((job, itemIndex) => {
     const steps = job.progress_steps && typeof job.progress_steps === 'object' ? job.progress_steps : {};
-    const terminal = ['success', 'partial_success', 'failed', 'cancelled', 'stopped', 'request_unknown'].includes(String(job.status || ''));
+    const terminal = ['success', 'partial_success', 'failed', 'cancelled', 'stopped', 'interrupted', 'request_unknown'].includes(String(job.status || ''));
     const duration = formatProgressDuration(job.started_at || job.created_at, terminal ? job.completed_at : '');
     const failedStageIndex = stages.findIndex(stage => ['failed', 'stopped'].includes(String((steps[stage.key] || {}).state || '')));
     const failedStep = failedStageIndex >= 0 ? (steps[stages[failedStageIndex].key] || {}) : null;
     const result = ['request_unknown', 'password_confirmation_pending'].includes(String(job.display_status || job.status || ''))
       ? progressJobResult(job)
       : failedStep ? { label: '部分失败', cls: 'is-failed' } : progressJobResult(job);
-    const cardFailed = ['failed', 'cancelled', 'stopped', 'request_unknown'].includes(String(job.status || '')) || Boolean(failedStep);
+    const cardFailed = ['failed', 'cancelled', 'stopped', 'interrupted', 'request_unknown'].includes(String(job.status || '')) || Boolean(failedStep);
     const stepHtml = stages.map((stage, index) => {
       const step = steps[stage.key] || {};
       const state = String(step.state || 'pending');
@@ -863,7 +867,7 @@ async function pollLog() {
     c.textContent = r.log || '(暂无日志)';
     if (atBottom) c.scrollTop = c.scrollHeight;
     await pollRegistrationDebug(activeLogJob);
-    if (r.job && ['success','partial_success','failed','stopped','cancelled','request_unknown'].includes(r.job.status)) clearInterval(logTimer);
+    if (r.job && ['success','partial_success','failed','stopped','cancelled','interrupted','request_unknown'].includes(r.job.status)) clearInterval(logTimer);
   } catch(e) {}
 }
 

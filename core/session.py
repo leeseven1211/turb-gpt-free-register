@@ -620,6 +620,41 @@ class BrowserSession:
         logger.warning("[熔断] 当前会话收到 HTTP %s，进入冷却 %ss，停止后续请求：%s", status, min(cool_down, 3600), url)
         return resp
 
+    def reset_transport(self) -> None:
+        """Replace the curl transport after a bounded transient TLS failure.
+
+        Keep the BrowserSession identity, proxy, cookies and device headers,
+        but discard a possibly poisoned connection pool.  This is deliberately
+        narrower than creating a new account session: callers use it only for
+        a retry after a classified transport error.
+        """
+        old_session = self.session
+        new_session = Session(impersonate=IMPERSONATE)
+        if self.proxy:
+            new_session.proxies = {
+                "http": self.proxy,
+                "https": self.proxy,
+            }
+        new_session.timeout = getattr(old_session, "timeout", None) or REQUEST_TIMEOUT
+        try:
+            new_session.cookies = old_session.cookies.copy()
+        except Exception:
+            # The bearer token is supplied by the caller; preserving the
+            # device cookie is still useful when a lightweight test/dummy
+            # cookie jar cannot be copied as a whole.
+            for domain in ("chatgpt.com", "auth.openai.com", "sentinel.openai.com"):
+                new_session.cookies.set("oai-did", self.device_id, domain=domain, path="/")
+        self.session = new_session
+        for domain in ("chatgpt.com", "auth.openai.com", "sentinel.openai.com"):
+            self.session.cookies.set("oai-did", self.device_id, domain=domain, path="/")
+        self.blocked_until = 0.0
+        self.blocked_reason = ""
+        self._cf_cookie_seen = self.cf_cookie_snapshot()
+        try:
+            old_session.close()
+        except Exception:
+            logger.debug("[Session] 清理旧 HTTP transport 失败", exc_info=True)
+
     def get(self, url: str, headers: dict = None, **kwargs):
         """发送 GET 请求"""
         self._raise_if_circuit_open()

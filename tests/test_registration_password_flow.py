@@ -117,10 +117,9 @@ class RegistrationFailureClassificationTests(unittest.TestCase):
 
 
 class RegistrationPasswordFlowTests(unittest.TestCase):
-    def test_roxy_empty_otp_shell_refreshes_once_then_opens_password_route_once(self):
+    def test_roxy_empty_otp_shell_does_not_force_password_route(self):
         driver = _RoxyDriver()
         driver.refresh_count = 0
-        direct_navigation_count = 0
 
         def refresh():
             driver.refresh_count += 1
@@ -135,19 +134,9 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
                 "body_text_length": 0,
             }
 
-        def open_password_route(_driver, url, **kwargs):
-            nonlocal direct_navigation_count
-            direct_navigation_count += 1
-            self.assertEqual(url, "https://auth.openai.com/create-account/password")
-            self.assertEqual(kwargs["attempts"], 1)
-            self.assertEqual(kwargs["accept_hosts"], ("auth.openai.com",))
-            driver.state = "password"
-
         driver.refresh = refresh
         driver.execute_script = empty_shell
         with (
-            patch.object(roxy_registration, "_safe_get", side_effect=open_password_route),
-            patch.object(roxy_registration, "_page_warmup"),
             patch.object(roxy_registration, "_is_signup_password_page", side_effect=lambda _driver: driver.state == "password"),
             patch.object(roxy_registration, "_has_access_token", return_value=False),
             patch.object(
@@ -158,12 +147,11 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
         ):
             result = roxy_registration._click_signup_password_from_otp_if_present(driver, timeout=2)
 
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["reason"], "entered_create_account_password_direct")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "password_entry_recovery_exhausted")
         self.assertEqual(result["refresh_count"], 1)
-        self.assertEqual(result["direct_navigation_count"], 1)
+        self.assertEqual(result["direct_navigation_count"], 0)
         self.assertEqual(driver.refresh_count, 1)
-        self.assertEqual(direct_navigation_count, 1)
 
     def test_roxy_mounted_otp_page_never_forces_direct_password_route(self):
         driver = _RoxyDriver()
@@ -202,7 +190,29 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
         self.assertEqual(result["direct_navigation_count"], 0)
         direct_navigation.assert_not_called()
 
-    def test_roxy_empty_otp_shell_exhausts_single_direct_navigation_without_looping(self):
+    def test_password_mode_rejects_mounted_otp_page_without_password_option(self):
+        driver = _RoxyDriver()
+        with (
+            patch.object(
+                roxy_registration,
+                "_click_signup_password_from_otp_if_present",
+                return_value={
+                    "ok": False,
+                    "reason": "password_entry_not_offered",
+                    "page_state": "mounted",
+                    "url_path": "/email-verification",
+                    "input_count": 1,
+                    "button_count": 6,
+                },
+            ),
+            patch.object(roxy_registration, "_registration_auth_mode", return_value="password"),
+            patch.object(roxy_registration, "_is_email_verification_page", return_value=True),
+            patch.object(roxy_registration, "time", SimpleNamespace(time=lambda: 1, sleep=Mock())),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "password_entry_not_offered"):
+                roxy_registration._fill_password_page_if_present(driver, "masked@example.test", timeout=2)
+
+    def test_roxy_empty_otp_shell_exhausts_without_direct_navigation(self):
         driver = _RoxyDriver()
         driver.refresh_count = 0
         driver.refresh = lambda: setattr(driver, "refresh_count", driver.refresh_count + 1)
@@ -216,7 +226,6 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
         }
         with (
             patch.object(roxy_registration, "_safe_get") as direct_navigation,
-            patch.object(roxy_registration, "_page_warmup"),
             patch.object(roxy_registration, "_is_signup_password_page", return_value=False),
             patch.object(roxy_registration, "_has_access_token", return_value=False),
             patch.object(
@@ -230,8 +239,8 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["reason"], "password_entry_recovery_exhausted")
         self.assertEqual(result["refresh_count"], 1)
-        self.assertEqual(result["direct_navigation_count"], 1)
-        direct_navigation.assert_called_once()
+        self.assertEqual(result["direct_navigation_count"], 0)
+        direct_navigation.assert_not_called()
 
     def test_roxy_waits_for_delayed_create_password_target(self):
         driver = _RoxyDriver()
@@ -408,6 +417,32 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
 
         self.assertEqual(result, password)
 
+    def test_roxy_password_submit_stops_early_on_explicit_remote_create_error(self):
+        driver = _RoxyDriver()
+        driver.state = "password"
+        password = "ValidPass123!"
+        with (
+            patch.object(roxy_registration, "_registration_auth_mode", return_value="password"),
+            patch.object(roxy_registration, "_is_email_verification_page", return_value=False),
+            patch.object(roxy_registration, "_has_access_token", return_value=False),
+            patch.object(
+                roxy_registration,
+                "_password_page_state",
+                side_effect=[
+                    {"url": driver.current_url, "text": "password form"},
+                    {"url": driver.current_url, "text": "アカウントを作成できませんでした。もう一度お試しください"},
+                ],
+            ),
+            patch.object(roxy_registration, "_is_signup_password_page", return_value=True),
+            patch.object(roxy_registration, "_is_login_password_page", return_value=False),
+            patch.object(roxy_registration, "_registration_password", return_value=password),
+            patch.object(roxy_registration, "_human_type_text"),
+            patch.object(roxy_registration, "_human_click"),
+            patch.object(roxy_registration, "human_delay"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "request_unknown.*页面报告账号创建失败"):
+                roxy_registration._fill_password_page_if_present(driver, "new@example.com", timeout=2)
+
     def test_roxy_password_is_checkpointed_immediately_after_submit_click(self):
         driver = _RoxyDriver()
         driver.state = "password"
@@ -517,6 +552,52 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
 
         self.assertEqual(result, password)
         switch.assert_called_once()
+
+    def test_browser_use_password_mode_rejects_otp_page_without_password_entry(self):
+        page = _BrowserUsePage()
+        with (
+            patch.object(browser_use_registration, "_registration_auth_mode", return_value="password"),
+            patch.object(browser_use_registration, "_browser_use_heartbeat", return_value=page),
+            patch.object(
+                browser_use_registration,
+                "_quick_auth_state",
+                return_value={"state": "email_verification", "url": "https://auth.openai.com/email-verification", "hasOtp": True},
+            ),
+            patch.object(browser_use_registration, "_click_signup_password_from_otp_if_present", return_value=False) as switch,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "无法切换到创建密码页"):
+                browser_use_registration._fill_password_if_present(
+                    page,
+                    "new@example.com",
+                    timeout=2,
+                    context=None,
+                )
+        switch.assert_called_once()
+
+    def test_browser_use_password_submit_stops_on_explicit_remote_create_error(self):
+        page = _BrowserUsePage()
+        states = iter(
+            (
+                {"state": "password", "url": "https://auth.openai.com/create-account/password", "remoteCreateError": False},
+                {"state": "password", "url": "https://auth.openai.com/create-account/password", "remoteCreateError": True},
+            )
+        )
+        with (
+            patch.object(browser_use_registration, "_registration_auth_mode", return_value="password"),
+            patch.object(browser_use_registration, "_browser_use_heartbeat", return_value=page),
+            patch.object(browser_use_registration, "_quick_auth_state", side_effect=lambda _page: next(states)),
+            patch.object(browser_use_registration, "_registration_password", return_value="ValidPass123!"),
+            patch.object(browser_use_registration, "_fill_first", return_value=True),
+            patch.object(browser_use_registration, "_click_first", return_value=True),
+            patch.object(browser_use_registration, "_bu_delay"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "request_unknown.*页面报告账号创建失败"):
+                browser_use_registration._fill_password_if_present(
+                    page,
+                    "new@example.com",
+                    timeout=2,
+                    context=None,
+                )
 
 
 if __name__ == "__main__":

@@ -48,7 +48,7 @@ class JobProgressTests(PostgresTestCase):
 
     def test_automatic_route_retry_resets_stage_timestamps_and_keeps_history(self):
         job = db.create_job("icloud_hide", batch_id="route-batch")
-        with patch.object(db, "_now", side_effect=[
+        with patch.object(db, "_registration_now", side_effect=[
             "2026-08-28T11:11:40", "2026-08-28T11:12:17", "2026-08-28T11:12:40",
             "2026-08-28T11:16:18", "2026-08-28T11:16:19", "2026-08-28T11:16:27",
             "2026-08-28T11:16:38", "2026-08-28T11:16:48",
@@ -628,7 +628,7 @@ class JobProgressTests(PostgresTestCase):
 
                 self.assertEqual(recovered, 1)
                 row = db.get_job(job["id"])
-                self.assertEqual(row["status"], "failed")
+                self.assertEqual(row["status"], "interrupted")
                 self.assertEqual(row["proxy_status"], "interrupted")
                 self.assertEqual(row["progress_steps"]["email_otp"]["state"], "failed")
                 self.assertIn("WebUI 进程重启", row["error_message"])

@@ -22,6 +22,30 @@ time = time_proxy
 _CHATGPT_SESSION_URL = "https://chatgpt.com/api/auth/session"
 
 
+class ChatGPTSessionUnavailable(RuntimeError):
+    """The session endpoint answered, but the browser is not authenticated."""
+
+    code = "chatgpt_session_unavailable"
+
+
+def _session_warning_banner(data: object) -> bool:
+    """识别 ChatGPT 返回的未登录/拦截壳，而不是把它当成持续加载。"""
+    if not isinstance(data, dict):
+        return False
+    return "WARNING_BANNER" in data or any(
+        "WARNING_BANNER" in str(value or "") for value in data.values()
+    )
+
+
+def _session_unavailable_message(data: object, status: object = None) -> str:
+    status_text = str(status or (data.get("_http_status") if isinstance(data, dict) else "unknown"))
+    marker = "WARNING_BANNER" if _session_warning_banner(data) else "no_access_token"
+    return (
+        f"{ChatGPTSessionUnavailable.code}: /api/auth/session 未返回 accessToken "
+        f"(status={status_text}, marker={marker})"
+    )
+
+
 def _diagnostic_url(value: object) -> str:
     """Keep session errors to a URL path; query strings may contain secrets."""
     try:
@@ -47,8 +71,13 @@ def _read_chatgpt_session_once(driver) -> dict | None:
     script = r"""
     const done = arguments[0];
     fetch('/api/auth/session', {credentials: 'include'})
-      .then(r => r.json())
-      .then(j => done({ok: true, data: j}))
+      .then(async r => {
+        const text = await r.text();
+        let data = {};
+        try { data = JSON.parse(text || '{}'); } catch (_) { data = {text: text}; }
+        if (data && typeof data === 'object') data._http_status = r.status;
+        done({ok: true, status: r.status, data: data});
+      })
       .catch(e => done({ok: false, error: String(e)}));
     """
     result = driver.execute_async_script(script)
@@ -57,7 +86,14 @@ def _read_chatgpt_session_once(driver) -> dict | None:
         if data.get("accessToken"):
             logger.info("%s /api/auth/session 已返回 accessToken", _log_prefix(driver))
             return data
-        logger.info("%s 等待 ChatGPT session 写入 accessToken，当前响应 keys=%s", _log_prefix(driver), list(data.keys()))
+        if _session_warning_banner(data) or result.get("status") in {401, 403}:
+            raise ChatGPTSessionUnavailable(
+                _session_unavailable_message(data, result.get("status"))
+            )
+        logger.info(
+            "%s 等待 ChatGPT session 写入 accessToken，当前响应 keys=%s status=%s",
+            _log_prefix(driver), list(data.keys()), result.get("status"),
+        )
     return None
 
 
@@ -79,6 +115,8 @@ def _read_chatgpt_session_document(driver) -> dict | None:
     if isinstance(data, dict) and data.get("accessToken"):
         logger.info("%s /api/auth/session JSON 文档已返回 accessToken", _log_prefix(driver))
         return data
+    if _session_warning_banner(data):
+        raise ChatGPTSessionUnavailable(_session_unavailable_message(data))
     return None
 
 def _switch_to_chatgpt_window_if_any(driver) -> bool:
@@ -127,6 +165,22 @@ def _fetch_chatgpt_session(
     auto_jump_end = time.monotonic() + max(3, int(auto_jump_wait or 15))
     last_data = None
     forced_chatgpt_open = False
+    warning_banner_probes = 0
+
+    def _remember_session_probe_error(exc: Exception) -> None:
+        nonlocal last_data, warning_banner_probes
+        last_data = f"{type(exc).__name__}: {exc}"
+        if isinstance(exc, ChatGPTSessionUnavailable):
+            warning_banner_probes += 1
+            # WARNING_BANNER/401/403 is an explicit unauthenticated response.
+            # Give a just-completed callback a few short probes, but do not
+            # burn the full 120-second token budget on a known auth shell.
+            if warning_banner_probes >= 3:
+                raise RuntimeError(
+                    f"等待 /api/auth/session accessToken 超时；{last_data}"
+                ) from exc
+        else:
+            warning_banner_probes = 0
 
     while time.monotonic() < end:
         _checkpoint()
@@ -175,7 +229,7 @@ def _fetch_chatgpt_session(
                         time.sleep(delay)
                     current = str(getattr(driver, "current_url", "") or "")
                 except Exception as exc:
-                    last_data = f"{type(exc).__name__}: {exc}"
+                    _remember_session_probe_error(exc)
             else:
                 time.sleep(min(1.0, max(0.0, end - time.monotonic())))
                 continue
@@ -205,7 +259,7 @@ def _fetch_chatgpt_session(
                 if document_data:
                     return document_data
             except Exception as exc:
-                last_data = f"{type(exc).__name__}: {exc}"
+                _remember_session_probe_error(exc)
 
         if 'chatgpt.com' in current:
             document_data = (
@@ -221,7 +275,7 @@ def _fetch_chatgpt_session(
                     return data
                 last_data = "session 暂无 accessToken"
             except Exception as exc:
-                last_data = f"{type(exc).__name__}: {exc}"
+                _remember_session_probe_error(exc)
         delay = min(2.0, max(0.0, end - time.monotonic()))
         if budget is not None:
             delay = min(delay, budget.remaining())
@@ -242,5 +296,5 @@ install_dispatches(globals(), (
 
 __all__ = [
     "_read_chatgpt_session_once", "_switch_to_chatgpt_window_if_any",
-    "_fetch_chatgpt_session", "_has_access_token",
+    "_fetch_chatgpt_session", "_has_access_token", "ChatGPTSessionUnavailable",
 ]

@@ -29,6 +29,35 @@ from core.task_stages import EVENT_TYPES, normalize_stage, normalize_wait_reason
 
 logger = logging.getLogger(__name__)
 
+
+def _is_expected_data_saver_failure(item: dict[str, Any] | None) -> bool:
+    """Treat intentionally blocked optional browser resources as non-errors."""
+    record = item if isinstance(item, dict) else {}
+    if bool(record.get("_data_saver_blocked")):
+        return True
+    url = str(record.get("url") or "")
+    resource_type = str(record.get("resource_type") or "").strip().lower()
+    if not url and not resource_type:
+        return False
+    try:
+        from fnmatch import fnmatchcase
+        from core.browser_data_saver import configured_resource_types, configured_url_patterns
+
+        parsed = urlsplit(url)
+        host = str(parsed.hostname or "").lower()
+        path = str(parsed.path or "").lower()
+        if (
+            (host == "chatgpt.com" and path.startswith("/cdn/assets/"))
+            or path.endswith(("/favicon.ico", "/favicon.svg", ".ico", ".svg"))
+        ):
+            return True
+        if resource_type in set(configured_resource_types()):
+            return True
+        return any(fnmatchcase(url, pattern) for pattern in configured_url_patterns())
+    except Exception:
+        return False
+
+
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _ARTIFACT_ROOT = _PROJECT_ROOT / "logs" / "debug"
 _LEGACY_ARTIFACT_ROOT = _PROJECT_ROOT / "注册日志" / "debug"
@@ -357,6 +386,7 @@ class RegistrationDebugSession:
         self.request_count = 0
         self.failed_count = 0
         self.http_error_count = 0
+        self.data_saver_blocked_count = 0
         self.websocket_frame_count = 0
         self.dropped_event_count = 0
         self.body_bytes_saved = 0
@@ -691,18 +721,22 @@ class RegistrationDebugSession:
             item.pop("request_body", None)
             item.pop("response_body", None)
             item["capture_mode"] = self.capture_mode
+            expected_data_saver_failure = _is_expected_data_saver_failure(item)
             with self._lock:
                 self.request_count += 1
-                self.failed_count += 1 if item.get("failure") else 0
-                self.http_error_count += 1 if status >= 400 else 0
-                self.network_error_observed = self.network_error_observed or bool(item.get("failure"))
+                if expected_data_saver_failure:
+                    self.data_saver_blocked_count += 1
+                self.failed_count += 1 if item.get("failure") and not expected_data_saver_failure else 0
+                self.http_error_count += 1 if status >= 400 and not expected_data_saver_failure else 0
+                self.network_error_observed = self.network_error_observed or bool(item.get("failure")) and not expected_data_saver_failure
                 for body_key in ("request_body", "response_body"):
                     if item.get(body_key) is not None:
                         try:
                             self.body_bytes_saved += len(json.dumps(item[body_key], ensure_ascii=False, default=str).encode("utf-8"))
                         except Exception:
                             self.body_bytes_saved += len(str(item[body_key]).encode("utf-8", errors="replace"))
-                self._failure_network_seen.append(dict(item))
+                if not expected_data_saver_failure:
+                    self._failure_network_seen.append(dict(item))
                 if not self.capture_started:
                     self._pending_network.append(item)
                     return
@@ -718,10 +752,13 @@ class RegistrationDebugSession:
             item["response_body_omitted"] = "body_budget"
         with self._lock:
             self.request_count += 1
-            if item.get("failure"):
+            expected_data_saver_failure = _is_expected_data_saver_failure(item)
+            if expected_data_saver_failure:
+                self.data_saver_blocked_count += 1
+            if item.get("failure") and not expected_data_saver_failure:
                 self.failed_count += 1
                 self.network_error_observed = True
-            if status >= 400:
+            if status >= 400 and not expected_data_saver_failure:
                 self.http_error_count += 1
         self.record(item)
 
@@ -741,7 +778,8 @@ class RegistrationDebugSession:
         text = str(reason or "").lower()
         url = str(state.get("url") or "").lower()
         dom = state.get("dom") if isinstance(state.get("dom"), dict) else {}
-        if any(item.get("failure") for item in (network or [])) or any(
+        meaningful_network = [item for item in (network or []) if not _is_expected_data_saver_failure(item)]
+        if any(item.get("failure") for item in meaningful_network) or any(
             marker in text for marker in ("proxy", "tunnel", "connection", "timed out", "timeout", "chrome-error")
         ):
             return "network_or_proxy"
@@ -751,7 +789,7 @@ class RegistrationDebugSession:
             return "page_not_hydrated"
         if "找不到" in str(reason or "") or "not found" in text or "missing" in text:
             return "element_not_found"
-        if any(int(item.get("status") or 0) >= 400 for item in (network or [])):
+        if any(int(item.get("status") or 0) >= 400 for item in meaningful_network):
             return "upstream_http_error"
         return "unknown"
 
@@ -1019,6 +1057,7 @@ class RegistrationDebugSession:
             "request_count": int(self.request_count),
             "failed_count": int(self.failed_count),
             "http_error_count": int(self.http_error_count),
+            "data_saver_blocked_count": int(self.data_saver_blocked_count),
             "websocket_frame_count": int(self.websocket_frame_count),
             "dropped_event_count": int(self.dropped_event_count),
             "body_bytes_saved": int(self.body_bytes_saved),

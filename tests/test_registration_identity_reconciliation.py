@@ -181,6 +181,33 @@ class RegistrationServiceRetryBoundaryTests(unittest.TestCase):
         with patch.object(registration_service, "_registration_proxy_retry_limit", return_value=2):
             self.assertFalse(registration_service._should_retry_registration_with_new_proxy(result, proxy, 0))
 
+    def test_registration_stage_timeout_can_rotate_before_remote_identity_is_known(self):
+        proxy = MagicMock(provider="1024proxy")
+        result = {
+            "success": False,
+            "remote_identity": "unknown",
+            "request_unknown": False,
+            "error": "registration_failed: StageTimeout: Roxy registration stage timeout exhausted",
+        }
+
+        with patch.object(registration_service, "_registration_proxy_retry_limit", return_value=2):
+            self.assertTrue(registration_service._should_retry_registration_with_new_proxy(result, proxy, 0))
+
+    def test_explicit_profile_rejection_never_starts_a_second_account(self):
+        proxy = MagicMock(provider="1024proxy")
+        result = {
+            "success": False,
+            "account_id": 1540,
+            "registration_pending": True,
+            "access_token": "",
+            "retry_as_new_registration": True,
+            "error_code": "account_create_rejected",
+            "error": "account_create_rejected: 远端资料页明确拒绝创建账号",
+        }
+
+        with patch.object(registration_service, "_registration_proxy_retry_limit", return_value=2):
+            self.assertFalse(registration_service._should_retry_registration_with_new_proxy(result, proxy, 0))
+
 
 class RegistrationLoginErrorPageTests(unittest.TestCase):
     def test_auth_error_page_is_not_treated_as_advanced_login(self):

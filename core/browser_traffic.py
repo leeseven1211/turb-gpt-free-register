@@ -90,7 +90,7 @@ def summarize_cdp_events(
                 "encoded_data_length",
             )
             status = _int_value(event.get("status") or event.get("response_status"))
-            if bool(event.get("failed")) or status >= 400:
+            if not event.get("_data_saver_blocked") and (bool(event.get("failed")) or status >= 400):
                 failed_count += 1
             if bool(event.get("unfinished")) or (
                 "finished" in event and event.get("finished") is False and not event.get("failed")
@@ -323,7 +323,6 @@ class _SummaryOnlyCDPSession:
         self.unknown_count = 0
         self.resource_type_bytes: Counter[str] = Counter()
         self.resource_type_requests: Counter[str] = Counter()
-        self.resource_url_bytes: Counter[str] = Counter()
 
     def record_network(self, record: Mapping[str, Any]) -> None:
         item = record if isinstance(record, Mapping) else {}
@@ -339,9 +338,8 @@ class _SummaryOnlyCDPSession:
         resource_type = str(item.get("resource_type") or "other").strip().lower() or "other"
         self.resource_type_requests[resource_type] += 1
         self.resource_type_bytes[resource_type] += upload_bytes + download_bytes
-        self.resource_url_bytes[_safe_resource_label(item.get("url"))] += upload_bytes + download_bytes
         status = _int_value(item.get("status"))
-        if item.get("failure") or status >= 400:
+        if not blocked_by_data_saver and (item.get("failure") or status >= 400):
             self.failed_count += 1
         if item.get("response_body_omitted") == "target_closed" and not item.get("failure"):
             self.unfinished_count += 1
@@ -380,7 +378,6 @@ class _SummaryOnlyCDPSession:
             "unknown_count": self.unknown_count,
             "resource_type_bytes": dict(sorted(self.resource_type_bytes.items())),
             "resource_type_requests": dict(sorted(self.resource_type_requests.items())),
-            "resource_url_bytes": dict(self.resource_url_bytes.most_common(20)),
         }
 
 
@@ -459,10 +456,6 @@ class RoxyTrafficCapture:
                     "[浏览器流量] Roxy资源类型汇总：bytes=%s requests=%s",
                     summary.get("resource_type_bytes") or {},
                     summary.get("resource_type_requests") or {},
-                )
-                logger.info(
-                    "[浏览器流量] Roxy资源路径Top：%s",
-                    summary.get("resource_url_bytes") or {},
                 )
                 persist_summary(
                     summary_key=self.summary_key,

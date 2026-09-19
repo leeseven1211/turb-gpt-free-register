@@ -779,10 +779,15 @@ def run_roxy_registration(
             raise
         else:
             if password_stage_expected:
+                password_skip_detail = (
+                    "当前认证流先验证邮箱，但密码流程未返回新密码"
+                    if _is_email_verification_page(driver)
+                    else "密码流程未返回新密码"
+                )
                 report_job_progress(
                     "login_password",
                     "success" if openai_password else "skipped",
-                    "账号密码已提交并进入下一步" if openai_password else "已有登录态，无需再次提交密码",
+                    "账号密码已提交并进入下一步" if openai_password else password_skip_detail,
                 )
         if existing_password or openai_password:
             auth_challenge_chain.append("password")
@@ -949,7 +954,9 @@ def run_roxy_registration(
             _type_otp(driver, current_otp, timeout=max(1, int(otp_input_timeout)))
             logger.info("[Roxy注册][OTP] 已填写邮箱验证码")
             _check_manual_stop()
-            human_delay("otp_input")
+            # OTP 页面已经确认可提交；保留极短的人类化停顿，但不要让默认
+            # 的“切回邮箱/阅读验证码”长区间拖慢每个批次。
+            human_delay("otp_input", minimum=0.35, maximum=1.0)
             try:
                 _click_continue(driver)
                 logger.info("[Roxy注册][OTP] 已提交邮箱验证码，等待资料页或登录态")
@@ -1032,7 +1039,9 @@ def run_roxy_registration(
             remote_identity = "new_candidate"
             create_acknowledged = True
             # 给 OAuth 回调 / session cookie 写入一点时间。
-            human_delay("post_auth")
+            # 资料页已离开后，token 阶段仍会独立等待 session；这里只保留
+            # 很短的 cookie 落盘缓冲，不改变任何认证等待预算。
+            human_delay("post_auth", minimum=0.25, maximum=0.8)
             report_job_progress("profile", "success", "账号资料已提交")
         else:
             remote_identity = "existing"
@@ -1320,6 +1329,19 @@ def run_roxy_registration(
         request_unknown = password_result_unknown or _is_registration_request_unknown(error_text)
         remote_existing = isinstance(exc, RemoteExistingAccountError) or remote_identity == "existing"
         password_rejected = isinstance(exc, PasswordRejectedError)
+        account_create_rejected = "account_create_rejected" in error_text.lower()
+        password_entry_error_code = next(
+            (
+                code
+                for marker, code in (
+                    ("password_entry_page_not_hydrated", "workflow.password_entry_not_hydrated"),
+                    ("password_entry_not_offered", "workflow.password_entry_not_offered"),
+                    ("password_entry_recovery_exhausted", "workflow.password_entry_recovery_exhausted"),
+                )
+                if marker in error_text.lower()
+            ),
+            None,
+        )
         mfa_secret_missing = isinstance(exc, MfaSecretMissingError) or any(marker in error_text.lower() for marker in (
             "缺少可用密码或 totp",
             "没有 totp 密钥",
@@ -1365,6 +1387,10 @@ def run_roxy_registration(
         auth_error_code = (
             "password_rejected"
             if password_rejected
+            else "account_create_rejected"
+            if account_create_rejected
+            else password_entry_error_code
+            if password_entry_error_code
             else "mfa_secret_missing"
             if mfa_secret_missing
             else
@@ -1373,6 +1399,11 @@ def run_roxy_registration(
             else "request_unknown"
             if request_unknown
             else "registration_failed"
+        )
+        error_prefix = (
+            f"{auth_error_code}: "
+            if auth_error_code and auth_error_code.casefold() not in error_text.casefold()
+            else ""
         )
         return {
             "success": False,
@@ -1393,7 +1424,7 @@ def run_roxy_registration(
                 remote_identity=auth_remote_identity,
                 challenge_chain=auth_challenge_chain,
             ).as_dict(),
-            "error": f"{type(exc).__name__}: {str(exc)[:300]}",
+            "error": f"{error_prefix}{type(exc).__name__}: {str(exc)[:300]}",
         }
     finally:
         if data_saver is not None:

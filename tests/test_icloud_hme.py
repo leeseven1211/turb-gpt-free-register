@@ -129,6 +129,30 @@ class ICloudHidePoolTests(PostgresTestCase):
             "available",
         )
 
+    def test_batch_claim_retries_postgres_deadlock(self):
+        from psycopg.errors import DeadlockDetected
+
+        db.sync_icloud_hide_aliases([
+            {"email": "one@example.com", "active": True},
+        ], "acc-a")
+
+        with patch.object(
+            rs,
+            "claim_next_row",
+            side_effect=[DeadlockDetected("deadlock"), {"email": "one@example.com", "status": "used"}],
+        ), patch.object(rs, "insert_row_if_absent", return_value=17), patch(
+            "core.storage.db_legacy.time.sleep"
+        ) as sleep:
+            claimed = db.claim_next_icloud_hide_email(
+                account_ids=["acc-a"],
+                batch_id="batch-a",
+                job_id=17,
+                email_source="icloud_hide",
+            )
+
+        self.assertEqual(claimed["email"], "one@example.com")
+        sleep.assert_called_once_with(0.05)
+
     def test_concurrent_batch_claims_receive_distinct_aliases(self):
         db.sync_icloud_hide_aliases([
             {"email": "one@example.com", "active": True},

@@ -7,7 +7,10 @@ import re
 import time
 
 from config import roxybrowser as _cfg
-from core.account_export import setup_2fa_protocol as _setup_2fa_protocol
+from core.account_export import (
+    TwofaProtocolTransportError,
+    setup_2fa_protocol as _setup_2fa_protocol,
+)
 from core.email_provider import wait_for_otp as _wait_for_otp
 from core.registration.state_machine import PageState, StageBudget, StageTimeout, classify_page
 from core.session import BrowserSession
@@ -793,6 +796,7 @@ def setup_protocol_2fa_with_browser_fallback(
         if on_secret is not None:
             on_secret(normalized)
 
+    protocol_exc = None
     try:
         secret = setup_2fa_protocol(
             protocol_session,
@@ -801,7 +805,35 @@ def setup_protocol_2fa_with_browser_fallback(
         )
         return str(secret or checkpoint["secret"]).strip(), False
     except Exception as protocol_exc:
-        protocol_error = f"{type(protocol_exc).__name__}: {str(protocol_exc)[:180]}"
+        # A bounded TLS/connection retry can leave the curl connection pool
+        # unhealthy while the browser session and account state remain valid.
+        # Reset only that transport and retry once when no secret was
+        # checkpointed yet. If enroll already returned a secret, repeating it
+        # could create an ambiguous second enrollment, so use the UI fallback.
+        protocol_error_exc = protocol_exc
+        if isinstance(protocol_exc, TwofaProtocolTransportError) and not checkpoint["secret"]:
+            reset_transport = getattr(protocol_session, "reset_transport", None)
+            if callable(reset_transport):
+                try:
+                    reset_transport()
+                    logger.warning(
+                        "%s[2FA] 协议通道出现临时传输错误，已重置同一会话 transport 并重试一次",
+                        _log_prefix(driver),
+                    )
+                    secret = setup_2fa_protocol(
+                        protocol_session,
+                        access_token,
+                        on_secret=_remember_secret,
+                    )
+                    logger.info("%s[2FA] 重置协议通道后启用成功", _log_prefix(driver))
+                    return str(secret or checkpoint["secret"]).strip(), False
+                except Exception as retry_error:
+                    protocol_error_exc = retry_error
+                    logger.warning(
+                        "%s[2FA] 重置协议通道后重试仍失败，继续浏览器 UI 回退：%s",
+                        _log_prefix(driver), type(retry_error).__name__,
+                    )
+        protocol_error = f"{type(protocol_error_exc).__name__}: {str(protocol_error_exc)[:180]}"
         logger.warning(
             "%s[2FA] 协议开通失败，复用当前登录态改走浏览器安全设置页：%s",
             _log_prefix(driver),

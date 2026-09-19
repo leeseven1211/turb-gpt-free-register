@@ -92,6 +92,13 @@ def _find_visible_email_input_js(driver):
 def _is_oauth_consent_like(driver) -> bool:
     """检测是否已到 OAuth 授权/consent 页。这里不能再点任何邮箱分支或全局提交按钮。"""
     try:
+        current_url = str(getattr(driver, "current_url", "") or "").lower()
+        parsed = urlsplit(current_url)
+        # ChatGPT 自己的登录壳可能暂时没有表单，但它仍是注册主流程的
+        # 中间页。不能因为空壳里的按钮属性包含 authorize/consent 就把
+        # /auth/login?email=... 误判成第三方 OAuth 页面。
+        if parsed.hostname == "chatgpt.com" and parsed.path.rstrip("/") == "/auth/login":
+            return False
         return bool(driver.execute_script(r"""
         const url = String(location.href || '').toLowerCase();
         if (/oauth|authorize|consent/.test(url) && !/login|signup|identifier|email-verification/.test(url)) return true;
@@ -922,8 +929,12 @@ def _wait_email_submit_next_state(
                 now = clock()
                 if cleared_seen_at is None:
                     cleared_seen_at = now
-                # URL 已带 email 查询参数时更像是提交后的中间态，给它更长观察窗口。
-                debounce = 18.0 if ("/auth/login" in url and "email=" in url) else 5.0
+                # URL 已带 email 查询参数时通常是提交后的中间态。旧的 18s
+                # 去抖会把已经确认卡在 login?email 的任务白白拖到兜底前，实测
+                # 这正是单任务耗时的主要固定成本；2s 后已有一次原生补交，6s
+                # 仍未落到 auth.openai.com 时再交给 NextAuth 兜底即可。正常的
+                # 快速跳转仍会在此之前直接返回 password/otp。
+                debounce = 4.0 if ("/auth/login" in url and "email=" in url) else 5.0
                 if now - cleared_last_log_at > 2.0:
                     logger.info(
                         "%s 邮箱提交后检测到输入框短暂清空，继续等待跳转：elapsed=%.1fs debounce=%.1fs url=%s",
@@ -1097,8 +1108,34 @@ def _type_otp(driver, code: str, *, timeout: int = 20) -> None:
     # 邮件通常比认证页渲染更快。收到验证码后继续等输入框出现，避免把页面竞态
     # 误判成注册失败；同时保留硬超时，防止页面真的卡死。
     deadline = time.monotonic() + max(1, int(timeout or 20))
+    otp_send_route_seen_at = None
+    otp_send_route_recovered = False
     while time.monotonic() < deadline:
         _check_manual_stop()
+        current_url = str(getattr(driver, "current_url", "") or "").lower()
+        if "/api/accounts/email-otp/send" in current_url:
+            if otp_send_route_seen_at is None:
+                otp_send_route_seen_at = time.monotonic()
+                if not otp_send_route_recovered:
+                    otp_send_route_recovered = True
+                    try:
+                        back = getattr(driver, "back", None)
+                        if callable(back):
+                            back()
+                            time.sleep(0.8)
+                            continue
+                    except Exception as exc:
+                        logger.warning(
+                            "%s[OTP] 当前停在 email-otp/send API 路由，返回验证码页失败：%s",
+                            _log_prefix(driver), type(exc).__name__,
+                        )
+            elif time.monotonic() - otp_send_route_seen_at >= 3.0:
+                raise RuntimeError(
+                    "otp_page_navigation_failed: 浏览器停留在 /api/accounts/email-otp/send，"
+                    "3 秒内未恢复到验证码输入页"
+                )
+        else:
+            otp_send_route_seen_at = None
         # 单输入框
         for selector in [
             "input[autocomplete='one-time-code']",

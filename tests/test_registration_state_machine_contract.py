@@ -202,6 +202,52 @@ class RegistrationStateMachineContractTests(unittest.TestCase):
             {"accessToken": "opaque-token", "user": {}},
         )
 
+    def test_session_warning_banner_is_classified_before_long_timeout(self):
+        from core.registration import session_auth
+
+        class Driver:
+            def execute_async_script(self, _script):
+                return {
+                    "ok": True,
+                    "status": 200,
+                    "data": {"WARNING_BANNER": "unauthenticated"},
+                }
+
+        with self.assertRaisesRegex(RuntimeError, "chatgpt_session_unavailable"):
+            session_auth._read_chatgpt_session_once(Driver())
+
+    def test_session_document_warning_banner_is_not_treated_as_pending_token(self):
+        from core.registration import session_auth
+
+        class Driver:
+            current_url = "https://chatgpt.com/api/auth/session"
+
+            def execute_script(self, _script):
+                return '{"WARNING_BANNER":"unauthenticated"}'
+
+        with self.assertRaisesRegex(RuntimeError, "chatgpt_session_unavailable"):
+            session_auth._read_chatgpt_session_document(Driver())
+
+    def test_session_fetch_short_circuits_repeated_warning_banner(self):
+        from core.registration import session_auth
+
+        class Driver:
+            current_url = "https://chatgpt.com/api/auth/session"
+
+            def execute_script(self, _script):
+                return '{"WARNING_BANNER":"unauthenticated"}'
+
+            def execute_async_script(self, _script):
+                return {
+                    "ok": True,
+                    "status": 200,
+                    "data": {"WARNING_BANNER": "unauthenticated"},
+                }
+
+        with patch.object(session_auth.time, "sleep", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "chatgpt_session_unavailable"):
+                session_auth._fetch_chatgpt_session(Driver(), timeout=120)
+
     def test_registration_snapshot_does_not_eagerly_read_codex_config(self):
         try:
             from core.registration import protocol, roxy

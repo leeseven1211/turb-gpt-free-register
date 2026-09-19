@@ -3,9 +3,11 @@ from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
 from core import roxy_codex_oauth, roxy_registration
+from core.registration import password_auth
 from core.operations import legacy_task_store
 from core.storage import operation
 from core.storage import db_legacy
+from core.task_errors import classify_task_error
 
 
 class AccountTaskTimestampRegressionTests(unittest.TestCase):
@@ -60,6 +62,23 @@ class CodexOtpRegressionTests(unittest.TestCase):
 
 
 class ProfilePageRegressionTests(unittest.TestCase):
+    def test_profile_remote_policy_rejection_has_a_stable_marker(self):
+        driver = Mock()
+        driver.execute_script.return_value = (
+            "利用規約のため、お客様のアカウントを作成できません。"
+        )
+
+        self.assertEqual(
+            password_auth._profile_account_rejection_marker(driver),
+            "利用規約のため、お客様のアカウントを作成できません",
+        )
+        info = classify_task_error(
+            "account_create_rejected: 远端资料页明确拒绝创建账号；原因属于条款/资格或风控限制",
+            stage="profile",
+        )
+        self.assertEqual(info["code"], "external.openai.account_creation_rejected")
+        self.assertEqual(info["next_action"], "registration_resume")
+
     def test_text_input_falls_back_when_send_keys_did_not_change_value(self):
         field = Mock(tag_name="input")
         field.get_attribute.side_effect = ["", "Haruto Sato"]

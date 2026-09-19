@@ -305,6 +305,20 @@ class ProxyTrafficBackendTests(PostgresTestCase):
         self.assertEqual(rows[0]["unknown_count"], 1)
         self.assertEqual(rows[0]["operation_task_id"], 801)
 
+    def test_data_saver_blocked_request_is_not_counted_as_browser_failure(self):
+        summary = browser_traffic.summarize_cdp_events([
+            {
+                "kind": "http_request",
+                "status": 0,
+                "failed": True,
+                "_data_saver_blocked": True,
+                "request_bytes": 0,
+                "response_bytes": 0,
+            },
+        ])
+        self.assertEqual(summary["request_count"], 1)
+        self.assertEqual(summary["failed_count"], 0)
+
     def test_roxy_capture_reduces_live_cdp_records_without_retaining_raw_content(self):
         opened = SimpleNamespace(
             profile_id="profile-traffic-1",

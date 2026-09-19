@@ -150,7 +150,15 @@ cmd_start() {
   mkdir -p "$RUN_DIR" "$LOG_DIR"
   old_pid="$(read_pid)"
   if is_running "$old_pid"; then
-    echo "WebUI 已在运行：PID=$old_pid，地址：http://${HOST}:${PORT}"
+    echo "WebUI 已在运行：PID=${old_pid}，地址：http://${HOST}:${PORT}"
+    return 0
+  fi
+  # The PID file can be lost when a detached child outlives the shell that
+  # launched it. Reconcile the port before starting another WebUI instance.
+  old_pid="$(find_pids_by_port | head -n 1)"
+  if is_running "$old_pid"; then
+    echo "$old_pid" > "$PID_FILE"
+    echo "WebUI 已在运行：PID=${old_pid}，地址：http://${HOST}:${PORT}"
     return 0
   fi
   rm -f "$PID_FILE"
@@ -180,6 +188,18 @@ cmd_start() {
   echo "$pid" > "$PID_FILE"
 
   sleep 1
+  if ! is_running "$pid"; then
+    # Some macOS launch contexts detach the final Python process between the
+    # nohup return and this first probe. Reconcile by port before reporting a
+    # false startup failure; never accept an unrelated process because the
+    # command line must match this WebUI/port.
+    local adopted_pid
+    adopted_pid="$(find_pids_by_port | head -n 1)"
+    if is_running "$adopted_pid"; then
+      pid="$adopted_pid"
+      echo "$pid" > "$PID_FILE"
+    fi
+  fi
   if is_running "$pid"; then
     echo "启动成功：PID=$pid"
   else

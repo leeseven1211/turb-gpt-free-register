@@ -54,6 +54,28 @@ class TaskErrorClassificationTests(unittest.TestCase):
         info = classify_task_error("等待 /api/auth/session accessToken 超时")
         self.assertEqual(info["code"], "external.openai")
 
+    def test_password_submit_unknown_is_manual_reconcile(self):
+        info = classify_task_error(
+            "request_unknown: _PasswordTransitionTimeout: 密码提交后页面报告账号创建失败，远端结果待确认",
+            stage="login_password",
+        )
+        self.assertEqual(info["code"], "request_unknown")
+        self.assertEqual(info["retryability"], "manual_only")
+        self.assertEqual(info["next_action"], "manual_reconcile")
+
+    def test_known_registration_failures_do_not_fall_into_unknown(self):
+        cases = {
+            "Roxy API 返回失败 POST /browser/open: 窗口额度不足": "external.roxy_capacity",
+            "Roxy API 返回失败 POST /browser/open: socket hang up": "external.roxy",
+            "otp_request_unconfirmed: 验证码重发控件未能完成或缺少确认": "external.email",
+            "WebUI 进程重启导致任务中断；浏览器和接码资源将在启动恢复阶段回收": "service.interrupted",
+        }
+        for message, code in cases.items():
+            with self.subTest(message=message):
+                info = classify_task_error(message, stage="email_otp")
+                self.assertEqual(code, info["code"])
+                self.assertNotEqual("unknown.unclassified", info["error_code"])
+
     def test_email_change_remote_rejection_is_openai_error(self):
         info = classify_task_error(
             "/backend-api/accounts/change_email/begin 返回 403",

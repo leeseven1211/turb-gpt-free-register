@@ -431,6 +431,37 @@ class RegistrationDebugTests(unittest.TestCase):
         self.assertEqual(event["last_confirmed_state"], "UNKNOWN")
         self.assertFalse(event["network_error_observed"])
 
+    def test_data_saver_blocked_static_requests_are_not_failures(self):
+        session = debug.RegistrationDebugSession(self.job(151), capture_mode="failure_only")
+        session.record_network({
+            "method": "GET",
+            "url": "https://chatgpt.com/cdn/assets/app.js",
+            "status": 0,
+            "failure": "network_failed",
+            "_data_saver_blocked": True,
+        })
+        summary = session.summary()
+        self.assertEqual(summary["request_count"], 1)
+        self.assertEqual(summary["failed_count"], 0)
+        self.assertEqual(summary["http_error_count"], 0)
+        self.assertEqual(summary["data_saver_blocked_count"], 1)
+        self.assertFalse(summary["network_error_observed"])
+
+    def test_configured_static_url_failures_are_not_failures_even_without_marker(self):
+        with patch("core.browser_data_saver._cfg.BROWSER_DATA_SAVER_BLOCKED_URL_PATTERNS", ["**://chatgpt.com/cdn/assets/*.js"]):
+            session = debug.RegistrationDebugSession(self.job(152), capture_mode="failure_only")
+            session.record_network({
+                "method": "GET",
+                "url": "https://chatgpt.com/cdn/assets/auth.login.js",
+                "status": 0,
+                "failure": "network_failed",
+                "resource_type": "Script",
+            })
+        summary = session.summary()
+        self.assertEqual(summary["failed_count"], 0)
+        self.assertEqual(summary["data_saver_blocked_count"], 1)
+        self.assertFalse(summary["network_error_observed"])
+
     def test_b_attempt_run_and_execution_aliases_are_carried_by_events(self):
         job = self.job(16)
         job.update({

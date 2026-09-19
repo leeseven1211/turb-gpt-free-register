@@ -18,6 +18,13 @@ class _FakeDriver:
 
 
 class RoxyEmailRecoveryTests(unittest.TestCase):
+    def test_chatgpt_login_shell_is_not_oauth_consent(self):
+        driver = _FakeDriver()
+        driver.current_url = "https://chatgpt.com/auth/login?email=masked%40icloud.com"
+        with patch.object(driver, "execute_script") as execute_script:
+            self.assertFalse(roxy_registration._is_oauth_consent_like(driver))
+        execute_script.assert_not_called()
+
     def test_resend_result_records_the_actual_click_time(self):
         button = Mock()
         button.text = "Resend"
@@ -162,6 +169,33 @@ class RoxyEmailRecoveryTests(unittest.TestCase):
         ) as type_text:
             roxy_registration._type_otp(driver, "123456", timeout=2)
 
+        type_text.assert_called_once_with(driver, field, "123456", clear=True)
+
+    def test_type_otp_recovers_from_email_otp_send_api_route(self):
+        field = Mock()
+        field.is_displayed.return_value = True
+        field.is_enabled.return_value = True
+
+        class ApiRouteDriver(_FakeDriver):
+            def __init__(self):
+                super().__init__()
+                self.current_url = "https://auth.openai.com/api/accounts/email-otp/send"
+                self.back_count = 0
+
+            def back(self):
+                self.back_count += 1
+                self.current_url = "https://auth.openai.com/email-verification"
+
+            def find_elements(self, *_args):
+                return [field]
+
+        driver = ApiRouteDriver()
+        with patch.object(roxy_registration.time, "monotonic", return_value=100.0), patch.object(
+            roxy_registration.time, "sleep"
+        ), patch.object(roxy_registration, "_human_type_text") as type_text:
+            roxy_registration._type_otp(driver, "123456", timeout=20)
+
+        self.assertEqual(driver.back_count, 1)
         type_text.assert_called_once_with(driver, field, "123456", clear=True)
 
     def test_blank_auth_shell_uses_logged_dom_state_as_fallback(self):

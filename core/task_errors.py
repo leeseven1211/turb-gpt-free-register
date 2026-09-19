@@ -18,9 +18,15 @@ class TaskErrorCode(str, Enum):
 
     CONFIGURATION = "configuration.missing"
     USER_INTERRUPTED = "user.interrupted"
+    SERVICE_INTERRUPTED = "service.interrupted"
     EXTERNAL_PROXY = "external.proxy"
+    EXTERNAL_ROXY_CAPACITY = "external.roxy_capacity"
+    EXTERNAL_ROXY = "external.roxy"
     EXTERNAL_EMAIL = "external.email"
     EXTERNAL_OPENAI = "external.openai"
+    EXTERNAL_OPENAI_ACCOUNT_CREATION_REJECTED = "external.openai.account_creation_rejected"
+    EXTERNAL_NETWORK_MFA_TRANSPORT = "external.network.mfa_transport"
+    EXTERNAL_NETWORK_REGISTRATION_TIMEOUT = "external.network.registration_timeout"
     EXTERNAL_NETWORK = "external.network"
     INTERNAL_STORAGE = "internal.storage"
     INTERNAL_BROWSER = "internal.browser"
@@ -102,11 +108,44 @@ _RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         ("未配置", "配置缺失", "请填写", "api key 为空", "token 为空", "不能为空"),
     ),
     (
+        "service.interrupted",
+        "system",
+        "系统事件",
+        "服务重启中断",
+        (
+            "webui 进程重启导致任务中断",
+            "执行进程中断，等待同一 attempt 恢复",
+            "worker_interrupted",
+            "run.interrupted",
+        ),
+    ),
+    (
         "user.interrupted",
         "user",
         "用户操作",
         "任务被停止",
         ("用户手动停止", "用户取消", "已取消", "收到停止请求"),
+    ),
+    (
+        "external.roxy_capacity",
+        "external",
+        "外部错误",
+        "Roxy 窗口容量",
+        (
+            "窗口额度不足", "窗口数量已达上限", "窗口数已达上限", "窗口达到上限",
+            "窗口单日创建次数已经超出", "window quota", "window limit",
+            "maximum number of windows", "too many windows",
+        ),
+    ),
+    (
+        "external.roxy",
+        "external",
+        "外部错误",
+        "Roxy 浏览器服务",
+        (
+            "roxy api", "roxybrowser", "roxy 创建环境", "/browser/create",
+            "/browser/open", "selenium/调试地址",
+        ),
     ),
     (
         "external.proxy",
@@ -122,7 +161,37 @@ _RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         "邮箱 / 验证码服务",
         (
             "邮箱池", "邮箱服务", "收码", "otp service", "邮件服务", "验证码接口",
-            "imap", "gmail", "验证码邮件", "等待验证码超时",
+            "imap", "gmail", "验证码邮件", "等待验证码超时", "otp_request_unconfirmed",
+            "otp_reused_after_resend", "otp_invalid_or_expired", "otp_delivery_missing",
+            "验证码重发",
+        ),
+    ),
+    (
+        "external.openai.account_creation_rejected",
+        "external",
+        "OpenAI / ChatGPT",
+        "账号创建被上游拒绝",
+        (
+            "account_create_rejected",
+            "利用規約のため、お客様のアカウントを作成できません",
+            "アカウントを作成できません",
+            "can't create your account",
+            "cannot create your account",
+            "account cannot be created",
+            "无法创建账号",
+            "无法创建您的账号",
+        ),
+    ),
+    (
+        "external.network.mfa_transport",
+        "external",
+        "网络 / 上游服务",
+        "2FA 通道网络错误",
+        (
+            "twofaprotocoltransporterror",
+            "transport failed after retry",
+            "enroll transport failed",
+            "activate transport failed",
         ),
     ),
     (
@@ -132,6 +201,7 @@ _RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         "OpenAI / Codex",
         (
             "openai", "chatgpt", "codex", "oauth", "authenticator", "2fa", "/api/auth/session",
+            "otp_page_navigation_failed",
             "/accounts/change_email/",
         ),
     ),
@@ -171,13 +241,24 @@ _RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         ("不支持", "unsupported", "not supported"),
     ),
     (
+        "external.network.registration_timeout",
+        "external",
+        "网络 / 上游服务",
+        "注册认证跳转超时",
+        (
+            "roxy registration stage timeout exhausted",
+            "邮箱提交/认证跳转超过总预算",
+        ),
+    ),
+    (
         "external.network",
         "external",
         "外部错误",
         "网络 / 上游服务",
         (
             "httperror", "connection", "timeout", "timed out", "http error 5", "网络",
-            "password_result_unknown",
+            "password_result_unknown", "ssl_error", "err_ssl_", "socket hang up",
+            "connection reset", "client network socket", "tls connect", "read timeout",
         ),
     ),
 )
@@ -189,6 +270,7 @@ _SOURCE_LABELS = {
     "internal": "内部错误",
     "workflow": "流程错误",
     "unknown": "未分类错误",
+    "system": "系统事件",
 }
 
 # These values are intentionally strings rather than booleans.  A retry can be
@@ -199,6 +281,11 @@ _ERROR_METADATA: dict[str, dict[str, str]] = {
         "retryability": "manual_only",
         "remote_state_impact": "unknown",
         "next_action": "manual_reconcile",
+    },
+    "service.interrupted": {
+        "retryability": "retryable",
+        "remote_state_impact": "unknown",
+        "next_action": "resume_or_reconcile",
     },
     "configuration.missing": {
         "retryability": "not_retryable",
@@ -215,6 +302,16 @@ _ERROR_METADATA: dict[str, dict[str, str]] = {
         "remote_state_impact": "not_started_or_unknown",
         "next_action": "retry_with_new_proxy",
     },
+    "external.roxy_capacity": {
+        "retryability": "retryable",
+        "remote_state_impact": "not_started",
+        "next_action": "retry_when_capacity_available",
+    },
+    "external.roxy": {
+        "retryability": "conditional",
+        "remote_state_impact": "not_started_or_unknown",
+        "next_action": "reconcile_roxy_profile",
+    },
     "external.email": {
         "retryability": "retryable",
         "remote_state_impact": "unchanged_or_unknown",
@@ -224,6 +321,21 @@ _ERROR_METADATA: dict[str, dict[str, str]] = {
         "retryability": "conditional",
         "remote_state_impact": "unknown",
         "next_action": "reconcile_session",
+    },
+    "external.openai.account_creation_rejected": {
+        "retryability": "retryable",
+        "remote_state_impact": "remote_rejected_or_pending",
+        "next_action": "registration_resume",
+    },
+    "external.network.mfa_transport": {
+        "retryability": "retryable",
+        "remote_state_impact": "account_core_confirmed",
+        "next_action": "retry_twofa_with_fresh_transport",
+    },
+    "external.network.registration_timeout": {
+        "retryability": "retryable",
+        "remote_state_impact": "not_started_or_unknown",
+        "next_action": "retry_with_new_proxy",
     },
     "internal.storage": {
         "retryability": "retryable",
