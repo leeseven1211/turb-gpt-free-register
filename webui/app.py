@@ -54,6 +54,10 @@ logger = logging.getLogger(__name__)
 
 def create_app(auth_code: str | None = None) -> Flask:
     app = Flask(__name__, template_folder="templates")
+    # Keep static bundles in the browser cache for a short, explicit window so
+    # switching/reopening the console does not re-download several hundred KB
+    # of CSS/JS on every visit.
+    app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 300
     init_auth(app, auth_code=auth_code)
     register_auth_routes(app)
 

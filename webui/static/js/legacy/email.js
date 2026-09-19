@@ -44,6 +44,7 @@ async function loadOutlook() {
     const totalPages = Math.max(1, Math.ceil(OUTLOOK_TOTAL / p.size));
     if (p.page > totalPages) { p.page = totalPages; return loadOutlook(); }
     renderOutlook();
+    markViewReady('outlook');
   } catch(e) { showToast('加载邮箱资源失败: ' + e.message); }
 }
 function renderOutlook() {

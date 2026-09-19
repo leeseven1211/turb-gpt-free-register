@@ -57,6 +57,20 @@ def create_config_blueprint(context: WebUIContext):
             "sources": dict(snapshot.sources),
         })
 
+    @bp.get("/api/ui-settings")
+    def api_ui_settings():
+        """返回前端启动所需的最小非敏感运行参数。
+
+        列表页和注册页只需要这两个值；不要在启动阶段为了读取它们
+        下载完整的配置编辑器元数据（其中包含大量字段说明和选项）。
+        """
+        snapshot = config_editor.get_config_snapshot().as_dict()
+        return jsonify({
+            "account_batch_workers": snapshot.get("ACCOUNT_BATCH_WORKERS", 3),
+            "account_live_check_driver": snapshot.get("ACCOUNT_LIVE_CHECK_DRIVER", ""),
+            "config_revision": config_revision(),
+        })
+
     @bp.post("/api/cloudmail/gen-token")
     def api_cloudmail_gen_token():
         """手动生成 CloudMail Authorization Token，并把本次填写的 CloudMail 配置一并写入 .env。"""

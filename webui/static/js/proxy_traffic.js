@@ -571,6 +571,7 @@ async function loadProxyTraffic() {
     proxyTrafficSnapshot = await proxyTrafficRequest();
     proxyTrafficRefreshFilterOptions();
     proxyTrafficRenderRows();
+    markViewReady('proxy-traffic');
   } catch (error) {
     proxyTrafficSnapshot = null;
     proxyTrafficRenderError(error);

@@ -7,7 +7,10 @@ function registrationEmailSourceLabel(value) {
 async function loadRegistrationEmailSources() {
   const select = $('#regEmailSource');
   try {
-    const [result, capabilities] = await Promise.all([api('/api/email-sources'), api('/api/capabilities')]);
+    const [result, capabilities] = await Promise.all([
+      apiCached('/api/email-sources', {}, 30000),
+      apiCached('/api/capabilities', {}, 30000),
+    ]);
     CAPABILITIES = capabilities;
     const sourceCaps = capabilities.email_sources || {};
     REGISTRATION_EMAIL_SOURCES = (result.sources || []).map(item => ({...item, ...(sourceCaps[item.value] || {})}));
@@ -157,6 +160,7 @@ async function refreshJobs() {
       jobsRenderSignature = nextSignature;
       renderJobs();
     }
+    markViewReady('register');
   } catch(e) {}
   finally { jobsLoading = false; }
 }

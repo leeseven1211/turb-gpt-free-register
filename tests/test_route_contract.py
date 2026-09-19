@@ -18,8 +18,8 @@ class FlaskRouteContractTests(PostgresTestCase):
     # /readyz, followed by the reviewed config snapshot, durable operations,
     # proxy-traffic APIs and protocol email-change routes. Keep these reviewed
     # deltas explicit rather than deriving this contract from the current map.
-    EXPECTED_ROUTE_COUNT = 120
-    EXPECTED_SHA256 = "d5be4756f30677abedd01fbd05c783a8782a65ae3c339f4994e5b7e7f65e8936"
+    EXPECTED_ROUTE_COUNT = 121
+    EXPECTED_SHA256 = "d4341ceebf4166bff13f2df51edee466c1bc33d8a5fe987c8e775f2ca9cc1ad0"
 
     def test_public_route_map_matches_refactor_baseline(self):
         app = create_app(auth_code="route-contract")

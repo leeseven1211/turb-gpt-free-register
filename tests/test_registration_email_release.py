@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from core import registration_service as svc
+from core import task_run_log
 
 
 class RegistrationEmailReleaseTests(unittest.TestCase):
@@ -70,6 +71,8 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
             return result
 
         with tempfile.TemporaryDirectory() as td, patch.object(
+            task_run_log, "_LOG_ROOT", Path(td)
+        ), patch.object(
             svc.db, "get_job", return_value=job
         ), patch.object(svc.db, "update_job"), patch.object(
             svc.db, "update_job_progress"
@@ -185,6 +188,8 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
         }
 
         with tempfile.TemporaryDirectory() as td, patch.object(
+            task_run_log, "_LOG_ROOT", Path(td)
+        ), patch.object(
             svc.db, "get_job", return_value=job
         ), patch.object(svc.db, "update_job"), patch.object(
             svc.db, "update_job_progress"
@@ -309,6 +314,8 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
         }
 
         with tempfile.TemporaryDirectory() as td, patch.object(
+            task_run_log, "_LOG_ROOT", Path(td)
+        ), patch.object(
             svc.db, "get_job", return_value=job
         ), patch.object(svc.db, "update_job"), patch.object(
             svc.db, "update_job_progress"

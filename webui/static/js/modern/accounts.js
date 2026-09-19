@@ -175,6 +175,7 @@ async function loadAccountTasks() {
     }
     if ($('#accountTaskRefreshHint')) $('#accountTaskRefreshHint').textContent = `最近批次 ${Number((result.batches || []).length)} 个 · 共 ${ACCOUNT_TASKS_TOTAL} 个任务`;
     renderAccountTasks();
+    markViewReady('account-tasks');
   } catch (e) {
     if (!ACCOUNT_TASKS.length) $('#accountTasksBody').innerHTML = renderTableStateRow(11, '任务记录加载失败', '请检查服务状态后刷新列表。', 'error');
     showToast('加载任务中心失败: ' + e.message);
@@ -476,12 +477,8 @@ function configuredLiveCheckDriver() {
 }
 async function loadRuntimeUiSettings() {
   try {
-    const items = await api('/api/config');
-    if (Array.isArray(items)) {
-      CONFIG = items;
-      const field = items.find(item => item.key === 'ACCOUNT_BATCH_WORKERS');
-      ACCOUNT_BATCH_WORKERS = Math.max(1, Math.min(16, Number(field?.value) || 3));
-    }
+    const settings = await apiCached('/api/ui-settings', {}, 30000);
+    ACCOUNT_BATCH_WORKERS = Math.max(1, Math.min(16, Number(settings.account_batch_workers) || 3));
   } catch(e) {}
 }
 async function loadAccounts() {
@@ -528,6 +525,7 @@ async function loadAccounts() {
       return;
     }
     renderAccounts();
+    markViewReady(`accounts:${SHOW_ARCHIVED_ACCOUNTS ? 'archived' : 'active'}`);
   } catch(e) {
     if (!ACCOUNTS.length) $('#accountsBodyV2').innerHTML = renderTableStateRow(15, '账号加载失败', '请检查服务状态后刷新列表。', 'error');
     showToast('加载账号失败: ' + e.message);

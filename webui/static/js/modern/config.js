@@ -1344,10 +1344,11 @@ function bindConfigLayoutV2() {
 
 async function loadConfig() {
   try {
-    CONFIG = await api('/api/config');
+    CONFIG = await apiCached('/api/config', {}, 30000);
     renderConfigLayoutV2();
     bindConfigLayoutV2();
     loadExtractLinkTypesV2();
+    markViewReady('config');
   } catch(e) {
     showToast('加载配置失败: ' + e.message);
   }
@@ -1399,6 +1400,7 @@ async function saveRoxyWorkspaceSelection() {
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({updates: {ROXY_WORKSPACE_ID: workspaceId, ROXY_PROJECT_ID: projectId}}),
     });
+    invalidateApiCache('/api/config');
     const fw = CONFIG.find(x => x.key === 'ROXY_WORKSPACE_ID');
     const fp = CONFIG.find(x => x.key === 'ROXY_PROJECT_ID');
     if (fw) fw.value = workspaceId;
@@ -1451,6 +1453,8 @@ async function saveConfigUpdates(triggerBtn) {
   updateConfigSaveUi('saving');
   try {
     const r = await api('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({updates}) });
+    invalidateApiCache('/api/config');
+    invalidateApiCache('/api/ui-settings');
     for (const [k, v] of Object.entries(updates)) { const f = CONFIG.find(x => x.key === k); if (f) f.value = v; delete CONFIG_PENDING_UPDATES[k]; }
     renderConfigLayoutV2();
     await loadCapabilities();

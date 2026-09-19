@@ -3,7 +3,7 @@ async function loadSummary() {
   if (summaryLoading) return;
   summaryLoading = true;
   try {
-    const s = await api('/api/summary');
+    const s = await apiCached('/api/summary', {}, 3000);
     $('#statAccounts').textContent = s.accounts;
     $('#statOutlook').textContent = s.outlook_total;
     $('#statAvailable').textContent = s.outlook_available;
@@ -79,7 +79,10 @@ async function loadDashboard() {
   dashboardLoading = true;
   const button = $('#btnRefreshOverview');
   if (button) button.disabled = true;
-  try { renderDashboard(await api('/api/dashboard')); }
+  try {
+    renderDashboard(await api('/api/dashboard'));
+    markViewReady('overview');
+  }
   catch(e) { showToast('总览加载失败: ' + e.message); }
   finally {
     dashboardLoading = false;

@@ -71,9 +71,9 @@ class ProxyTrafficUiContractTest(unittest.TestCase):
     def test_navigation_allows_proxy_traffic_and_loads_its_page(self):
         self.assertIn("'proxy-traffic': { title: '代理与流量'", MODERN_COMMON)
         self.assertIn("'proxy-traffic'", MODERN_COMMON)
-        self.assertIn("if (tab === 'proxy-traffic') loadProxyTraffic();", MODERN_COMMON)
+        self.assertIn("if (tab === 'proxy-traffic') ensureViewLoaded('proxy-traffic', loadProxyTraffic);", MODERN_COMMON)
         self.assertIn("'proxy-traffic'", LEGACY_COMMON)
-        self.assertIn("if (tab === 'proxy-traffic') loadProxyTraffic();", LEGACY_COMMON)
+        self.assertIn("if (tab === 'proxy-traffic') ensureViewLoaded('proxy-traffic', loadProxyTraffic);", LEGACY_COMMON)
 
     def test_frontend_uses_only_the_proxy_traffic_contract_and_never_renders_secrets(self):
         self.assertNotIn("const PROXY_TRAFFIC_API = '/api/proxy-traffic';", PROXY_JS)

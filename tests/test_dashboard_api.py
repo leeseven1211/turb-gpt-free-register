@@ -277,7 +277,7 @@ console.log('ok');
         self.assertNotIn('id="codexFilterV2"', html)
         self.assertNotIn('id="accountsFilterV2"', html)
         self.assertIn('id="outlookToolbarV2"', html)
-        self.assertEqual(html.count('data-column-filter="'), 42)
+        self.assertEqual(html.count('data-column-filter="'), 53)
         self.assertIn('class="column-filter-trigger"', html)
         self.assertIn('class="column-filter-search"', html)
         self.assertIn('data-column-filter-options', html)

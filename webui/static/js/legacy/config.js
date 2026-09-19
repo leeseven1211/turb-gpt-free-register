@@ -448,6 +448,7 @@ async function loadConfig() {
     renderConfigTabs();
     renderConfigPanel();
     loadExtractLinkTypes();
+    markViewReady('config');
   } catch(e) {
     $('#configTabs').innerHTML = '';
     $('#configForm').innerHTML = `<div class="banner warn">${esc(e.message)}</div>`;
@@ -535,6 +536,7 @@ async function saveRoxyWorkspaceSelection() {
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({updates: {ROXY_WORKSPACE_ID: workspaceId, ROXY_PROJECT_ID: projectId}}),
     });
+    invalidateApiCache('/api/config');
     const fw = CONFIG.find(x => x.key === 'ROXY_WORKSPACE_ID');
     const fp = CONFIG.find(x => x.key === 'ROXY_PROJECT_ID');
     if (fw) fw.value = workspaceId;
@@ -582,6 +584,7 @@ $('#btnSaveConfig').addEventListener('click', async () => {
   $('#btnSaveConfig').disabled = true;
   try {
     const r = await api('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({updates}) });
+    invalidateApiCache('/api/config');
     const restartRequired = Array.isArray(r.restart_required) ? r.restart_required : [];
     if (r.reloaded && !restartRequired.length) {
       $('#configBanner').className = 'banner info';

@@ -102,9 +102,13 @@ function renderButlerLeases(items) {
 }
 async function loadMailResources() {
   try {
-    const [dashboard, leases] = await Promise.all([api('/api/dashboard'), api('/api/email-butler/leases')]);
+    const [dashboard, leases] = await Promise.all([
+      apiCached('/api/dashboard', {}, 5000),
+      api('/api/email-butler/leases'),
+    ]);
     renderMailSourceCards((dashboard.email || {}).sources || []);
     renderButlerLeases(leases.items || []);
+    markViewReady('outlook:overview');
   } catch(e) { showToast('邮箱资源加载失败: ' + e.message); }
 }
 $('#btnRefreshMailResources')?.addEventListener('click', loadMailResources);
@@ -162,6 +166,7 @@ async function loadOutlook() {
     const totalPages = Math.max(1, Math.ceil(OUTLOOK_TOTAL / p.size));
     if (p.page > totalPages) { p.page = totalPages; return loadOutlook(); }
     renderOutlook();
+    markViewReady('outlook:list');
   } catch(e) {
     if (!OUTLOOK.length) $('#outlookBodyV2').innerHTML = renderTableStateRow(9, '邮箱资源加载失败', '请检查服务状态后刷新列表。', 'error');
     showToast('加载邮箱池失败: ' + e.message);

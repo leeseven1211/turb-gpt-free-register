@@ -18,6 +18,9 @@ const JOB_SELECTED = new Set();
 let activeLogJob = null, logTimer = null, jobsTimer = null;
 let summaryLoading = false;
 let jobsLoading = false;
+const API_INFLIGHT = new Map();
+const API_CACHE = new Map();
+const VIEW_READY = new Map();
 
 // ---------- 分页状态 ----------
 const PAGERS = {
@@ -87,11 +90,40 @@ async function copyText(text) {
     showToast('已复制');
   } catch(e) { showToast('复制失败'); }
 }
-async function api(url, opts) {
-  const r = await fetch(url, opts);
-  const j = await r.json().catch(()=>({}));
-  if (!r.ok) throw new Error(j.error || ('HTTP '+r.status));
-  return j;
+async function api(url, opts = {}) {
+  const method = String(opts.method || 'GET').toUpperCase();
+  const key = method === 'GET' ? String(url) : '';
+  if (key && API_INFLIGHT.has(key)) return API_INFLIGHT.get(key);
+  const request = (async () => {
+    const r = await fetch(url, opts);
+    const j = await r.json().catch(()=>({}));
+    if (!r.ok) throw new Error(j.error || ('HTTP '+r.status));
+    return j;
+  })();
+  if (key) {
+    API_INFLIGHT.set(key, request);
+    request.then(() => API_INFLIGHT.delete(key), () => API_INFLIGHT.delete(key));
+  }
+  return request;
+}
+async function apiCached(url, opts = {}, ttlMs = 10000) {
+  const method = String(opts.method || 'GET').toUpperCase();
+  if (method !== 'GET' || ttlMs <= 0) return api(url, opts);
+  const key = String(url);
+  const cached = API_CACHE.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const value = await api(url, opts);
+  API_CACHE.set(key, {value, expiresAt: Date.now() + ttlMs});
+  return value;
+}
+function invalidateApiCache(prefix = '') {
+  for (const key of API_CACHE.keys()) if (!prefix || key.startsWith(prefix)) API_CACHE.delete(key);
+}
+function markViewReady(key) { if (key) VIEW_READY.set(key, Date.now()); }
+function ensureViewLoaded(key, loader, maxAge = 15000) {
+  const loadedAt = VIEW_READY.get(key) || 0;
+  if (!loadedAt || Date.now() - loadedAt > maxAge) return loader();
+  return Promise.resolve();
 }
 let CAPABILITIES = {features:{}, email_sources:{}};
 const FEATURE_SELECTORS = {
@@ -125,7 +157,7 @@ function applyFeatureGates(root=document) {
 }
 async function loadCapabilities() {
   try {
-    CAPABILITIES = await api('/api/capabilities');
+    CAPABILITIES = await apiCached('/api/capabilities', {}, 30000);
     applyFeatureGates();
   } catch (_) {}
 }
@@ -196,12 +228,12 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   $$('nav button').forEach(x => x.classList.toggle('active', x.dataset.tab === tab));
   LEGACY_NAV_ALLOWED_TABS.forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== tab));
   if (persist) localStorage.setItem('gpt_console_active_tab', tab);
-  if (tab === 'accounts') loadAccounts();
-  if (tab === 'codex') loadCodex();
-  if (tab === 'outlook') loadOutlook();
-  if (tab === 'proxy-traffic') loadProxyTraffic();
-  if (tab === 'config') loadConfig();
-  if (tab === 'register') refreshJobs();
+  if (tab === 'accounts') ensureViewLoaded('accounts', loadAccounts);
+  if (tab === 'codex') ensureViewLoaded('codex', loadCodex);
+  if (tab === 'outlook') ensureViewLoaded('outlook', loadOutlook);
+  if (tab === 'proxy-traffic') ensureViewLoaded('proxy-traffic', loadProxyTraffic);
+  if (tab === 'config') ensureViewLoaded('config', loadConfig, 30000);
+  if (tab === 'register') ensureViewLoaded('register', refreshJobs);
   if (historyMode === 'push') recordLegacyNavigationHistory();
   else updateLegacyNavigationButton();
 }

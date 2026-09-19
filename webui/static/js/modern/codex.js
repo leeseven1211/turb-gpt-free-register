@@ -38,6 +38,7 @@ async function loadCodex() {
     if (p.page > totalPages) { p.page = totalPages; return loadCodex(); }
     const st = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
     renderCodex();
+    markViewReady('codex');
   } catch(e) {
     if (!CODEX.length) $('#codexBodyV2').innerHTML = renderTableStateRow(10, '授权凭证加载失败', '请检查服务状态后刷新列表。', 'error');
     showToast('加载 Codex 列表失败: ' + e.message);

@@ -14,6 +14,7 @@ async function loadCodex() {
     $('#codexStatExported').textContent = r.summary?.exported ?? 0;
     $('#codexStatPending').textContent = r.summary?.pending ?? 0;
     renderCodex();
+    markViewReady('codex');
   } catch(e) { showToast('加载 Codex 列表失败: ' + e.message); }
 }
 const CODEX_SELECTED = new Set();

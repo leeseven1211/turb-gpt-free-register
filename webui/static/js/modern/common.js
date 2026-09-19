@@ -37,6 +37,15 @@ let jobsLoading = false;
 let jobsReloadQueued = false;
 let accountTasksLoading = false;
 
+// GET requests are shared while in flight so startup and navigation cannot
+// create duplicate requests for the same resource. A small explicit cache is
+// used only for stable metadata; live lists keep their existing polling and
+// manual-refresh semantics.
+const API_INFLIGHT = new Map();
+const API_CACHE = new Map();
+const VIEW_READY = new Map();
+const VIEW_REFRESH_MAX_AGE_MS = 15000;
+
 const LIST_FACET_LABELS = {
   status: {
     queued:'排队中', pending:'排队中', running:'运行中', waiting:'等待中', stopping:'停止中', cancelling:'停止中', settling:'收尾中',
@@ -755,11 +764,42 @@ async function copyText(text, showFeedback = true) {
     return false;
   }
 }
-async function api(url, opts) {
-  const r = await fetch(url, opts);
-  const j = await r.json().catch(()=>({}));
-  if (!r.ok) throw new Error(j.error || ('HTTP '+r.status));
-  return j;
+async function api(url, opts = {}) {
+  const method = String(opts.method || 'GET').toUpperCase();
+  const key = method === 'GET' ? String(url) : '';
+  if (key && API_INFLIGHT.has(key)) return API_INFLIGHT.get(key);
+  const request = (async () => {
+    const r = await fetch(url, opts);
+    const j = await r.json().catch(()=>({}));
+    if (!r.ok) throw new Error(j.error || ('HTTP '+r.status));
+    return j;
+  })();
+  if (key) {
+    API_INFLIGHT.set(key, request);
+    request.then(() => API_INFLIGHT.delete(key), () => API_INFLIGHT.delete(key));
+  }
+  return request;
+}
+async function apiCached(url, opts = {}, ttlMs = 10000) {
+  const method = String(opts.method || 'GET').toUpperCase();
+  if (method !== 'GET' || ttlMs <= 0) return api(url, opts);
+  const key = String(url);
+  const cached = API_CACHE.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const value = await api(url, opts);
+  API_CACHE.set(key, {value, expiresAt: Date.now() + ttlMs});
+  return value;
+}
+function invalidateApiCache(prefix = '') {
+  for (const key of API_CACHE.keys()) if (!prefix || key.startsWith(prefix)) API_CACHE.delete(key);
+}
+function markViewReady(key) {
+  if (key) VIEW_READY.set(key, Date.now());
+}
+function ensureViewLoaded(key, loader, maxAge = VIEW_REFRESH_MAX_AGE_MS) {
+  const loadedAt = VIEW_READY.get(key) || 0;
+  if (!loadedAt || Date.now() - loadedAt > maxAge) return loader();
+  return Promise.resolve();
 }
 let CAPABILITIES = {features:{}, email_sources:{}};
 const FEATURE_SELECTORS = {
@@ -793,7 +833,7 @@ function applyFeatureGates(root=document) {
 }
 async function loadCapabilities() {
   try {
-    CAPABILITIES = await api('/api/capabilities');
+    CAPABILITIES = await apiCached('/api/capabilities', {}, 30000);
     applyFeatureGates();
   } catch (_) {}
 }
@@ -975,20 +1015,22 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   document.title = `${meta.title} · Turb Console`;
   closeMobileSidebar();
   if (persist) localStorage.setItem('gpt_console_active_tab', tab);
-  if (tab === 'overview') loadDashboard();
-  if (tab === 'tasks') loadAccountTasks();
+  if (tab === 'overview') ensureViewLoaded('overview', loadDashboard);
+  if (tab === 'tasks') ensureViewLoaded('account-tasks', loadAccountTasks);
   if (tab === 'accounts') {
     const view = $('#tab-accounts')?.dataset.moduleView || 'active';
-    if (view === 'tasks') loadAccountTasks(); else loadAccounts();
+    if (view === 'tasks') ensureViewLoaded('account-tasks', loadAccountTasks);
+    else ensureViewLoaded(`accounts:${view}`, loadAccounts);
   }
-  if (tab === 'codex') loadCodex();
+  if (tab === 'codex') ensureViewLoaded('codex', loadCodex);
   if (tab === 'outlook') {
     const view = $('#tab-outlook')?.dataset.moduleView || 'overview';
-    if (view === 'overview') loadMailResources(); else loadOutlook();
+    if (view === 'overview') ensureViewLoaded('outlook:overview', loadMailResources);
+    else ensureViewLoaded('outlook:list', loadOutlook);
   }
-  if (tab === 'proxy-traffic') loadProxyTraffic();
-  if (tab === 'config') loadConfig();
-  if (tab === 'register') refreshJobs();
+  if (tab === 'proxy-traffic') ensureViewLoaded('proxy-traffic', loadProxyTraffic);
+  if (tab === 'config') ensureViewLoaded('config', loadConfig, 30000);
+  if (tab === 'register') ensureViewLoaded('register', refreshJobs);
   if (historyMode === 'push') recordNavigationHistory();
   else updateNavigationBackButton();
 }
@@ -1016,11 +1058,13 @@ function setModuleView(module, view, persist=true, historyMode='push') {
     btn.classList.toggle('is-active', btn.dataset.view === view);
   });
   if ($('#topbarDescription')) $('#topbarDescription').textContent = MODULE_VIEW_META[module][view];
-  if (module === 'accounts' && view === 'tasks') loadAccountTasks();
+  if (module === 'accounts' && view === 'tasks') ensureViewLoaded('account-tasks', loadAccountTasks);
   else if (module === 'accounts' && SHOW_ARCHIVED_ACCOUNTS !== (view === 'archived')) applyAccountsArchivedFilter(view === 'archived');
-  if (module === 'register' && view === 'tasks') refreshJobs();
-  if (module === 'codex') loadCodex();
-  if (module === 'outlook') view === 'overview' ? loadMailResources() : loadOutlook();
+  if (module === 'register') ensureViewLoaded('register', refreshJobs);
+  if (module === 'codex') ensureViewLoaded('codex', loadCodex);
+  if (module === 'outlook') view === 'overview'
+    ? ensureViewLoaded('outlook:overview', loadMailResources)
+    : ensureViewLoaded('outlook:list', loadOutlook);
   closeMobileSidebar();
   if (historyMode === 'push') recordNavigationHistory();
   else updateNavigationBackButton();
@@ -1029,7 +1073,19 @@ $$('[data-module-subnav]').forEach(nav => nav.addEventListener('click', event =>
   const btn = event.target.closest('[data-view]');
   if (!btn) return;
   const module = nav.dataset.moduleSubnav;
-  if (document.getElementById(`tab-${module}`)?.classList.contains('hidden')) activateTab(module, true, 'none');
+  const tab = document.getElementById(`tab-${module}`);
+  if (tab?.classList.contains('hidden')) {
+    // Apply the requested view before activating the tab. Otherwise
+    // activation loads the old view and setModuleView immediately loads the
+    // new view again, producing a visible waterfall on submenu clicks.
+    tab.dataset.moduleView = btn.dataset.view;
+    if (module === 'accounts') SHOW_ARCHIVED_ACCOUNTS = btn.dataset.view === 'archived';
+    if (module === 'accounts') localStorage.setItem('gpt_console_module_view_accounts', btn.dataset.view);
+    if (module === 'outlook') localStorage.setItem('gpt_console_module_view_outlook', btn.dataset.view);
+    nav.querySelectorAll('[data-view]').forEach(item => item.classList.toggle('is-active', item === btn));
+    activateTab(module);
+    return;
+  }
   setModuleView(module, btn.dataset.view);
 }));
 function restoreModuleViewState() {

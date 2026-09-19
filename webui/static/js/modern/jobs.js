@@ -7,7 +7,10 @@ async function loadRegistrationEmailSources() {
   const select = $('#regEmailSourceV2');
   if (!select) return;
   try {
-    const [result, capabilities] = await Promise.all([api('/api/email-sources'), api('/api/capabilities')]);
+    const [result, capabilities] = await Promise.all([
+      apiCached('/api/email-sources', {}, 30000),
+      apiCached('/api/capabilities', {}, 30000),
+    ]);
     CAPABILITIES = capabilities;
     const sourceCaps = capabilities.email_sources || {};
     REGISTRATION_EMAIL_SOURCES = (Array.isArray(result.sources) ? result.sources : []).map(item => ({
@@ -605,6 +608,7 @@ async function refreshJobs() {
       // 数据不变时也刷新耗时文本。
       renderBatchProgress();
     }
+    markViewReady('register');
   } catch(e) {
     if (!JOBS.length) $('#jobsBodyV2').innerHTML = renderTableStateRow(10, '任务加载失败', '服务暂时不可用，系统会自动重试。', 'error');
   }

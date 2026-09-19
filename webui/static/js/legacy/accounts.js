@@ -30,6 +30,7 @@ async function loadAccounts() {
     const totalPages = Math.max(1, Math.ceil(ACCOUNTS_TOTAL / p.size));
     if (p.page > totalPages) { p.page = totalPages; accountsLoading = false; return loadAccounts(); }
     renderAccounts();
+    markViewReady('accounts');
   } catch(e) { showToast('加载账号失败: ' + e.message); }
   finally { accountsLoading = false; }
 }
