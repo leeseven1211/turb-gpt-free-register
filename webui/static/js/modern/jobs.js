@@ -132,7 +132,7 @@ async function batchCancelJobs() {
 async function retryBatchFailedJobs() {
   const ids = currentBatchJobs().filter(job => ['failed', 'partial_success', 'stopped', 'cancelled', 'interrupted'].includes(String(job.status || '')) && job.retryable).map(job => Number(job.id));
   if (!ids.length) { showToast('当前批次没有可重跑的失败任务'); return; }
-  if (!confirm('确定重跑当前批次的 ' + ids.length + ' 个失败任务吗？已创建账号的任务会只补跑 Codex。')) return;
+  if (!confirm('确定重跑当前批次的 ' + ids.length + ' 个失败任务吗？完整注册重跑会复用原邮箱，不会换新邮箱；已创建账号的任务会只补跑 Codex。')) return;
   const btn = $('#btnBatchRetryV2');
   if (btn) btn.disabled = true;
   try {
@@ -805,7 +805,7 @@ async function retryJob(jobId, btn) {
       ? '重新登录检查并补齐 Authenticator 2FA'
       : (job.retry_action === 'registration_resume'
         ? '使用已保存账号密码继续邮箱验证'
-        : '创建新的完整注册任务'));
+        : '创建新的完整注册任务，并复用原邮箱，不会换新邮箱'));
   if (!confirm(`确定${job.retry_label || '重试'}任务 #${jobId}？\n\n${actionText}\n原任务记录和日志会保留。`)) return;
   btn.disabled = true;
   try {
@@ -825,7 +825,7 @@ async function retryJob(jobId, btn) {
 
 async function retrySelectedJobs() {
   const ids = Array.from(JOB_SELECTED);
-  if (!confirm(`确定重试选中的 ${ids.length} 个任务吗？\n\n后端会逐条校验；已创建账号的任务只补跑 Codex，其余任务重新入队注册，不能重试的会自动跳过。`)) return;
+  if (!confirm(`确定重试选中的 ${ids.length} 个任务吗？\n\n后端会逐条校验；已创建账号的任务只补跑 Codex，其余任务会完整注册重跑并复用原邮箱，不会换新邮箱；不能重试的会自动跳过。`)) return;
   const btn = $('#btnRetrySelectedJobsV2');
   if (btn) btn.disabled = true;
   try {

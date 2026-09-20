@@ -36,6 +36,10 @@ EMAIL_SOURCE_LABELS = {
     "icloud_hide": "iCloud 隐藏邮箱",
 }
 
+# 注册驱动只接收邮箱字符串；任务执行时记住明确选择的来源，避免临时邮箱在
+# 配置顺序变化或进程缓存存在时被错误识别为其他来源。
+_EMAIL_SOURCE_HINTS: dict[str, str] = {}
+
 
 def parse_email_sources(value=None) -> list[str]:
     """把 EMAIL_SOURCE 解析为有序来源列表，去重并过滤空值。"""
@@ -71,6 +75,147 @@ def validate_email_source(source: str) -> str:
         raise ValueError("每个注册批次只能明确选择一个邮箱来源")
     if selected not in _VALID_SOURCES:
         raise ValueError(f"不支持的邮箱来源: {selected}")
+    return selected
+
+
+def remember_email_source(email: str, source: str) -> str:
+    """记录任务已明确选择的邮箱来源，供同一任务链后续恢复使用。"""
+    address = str(email or "").strip()
+    if not address:
+        raise ValueError("邮箱不能为空")
+    selected = validate_email_source(source)
+    _EMAIL_SOURCE_HINTS[address.lower()] = selected
+    return selected
+
+
+def retain_email(email: str, *, source: str | None = None, note: str | None = None) -> str:
+    """保留邮箱租约，不改变本地池或远端供应商状态。"""
+    address = str(email or "").strip()
+    if not address:
+        raise ValueError("邮箱不能为空")
+    selected = remember_email_source(address, source) if source else resolve_email_source(address)
+    logger.warning(
+        "[EmailProvider] 保留邮箱租约: source=%s, email=%s, note=%s",
+        selected,
+        address,
+        str(note or "")[:300],
+    )
+    return selected
+
+
+def mark_email_permanently_unusable(
+    email: str,
+    *,
+    source: str | None = None,
+    note: str | None = None,
+) -> str:
+    """仅在上游明确确认永久失效时标记 failed，绝不标记 disabled。"""
+    address = str(email or "").strip()
+    if not address:
+        raise ValueError("邮箱不能为空")
+    selected = remember_email_source(address, source) if source else resolve_email_source(address, fallback=False)
+    if not selected:
+        raise RuntimeError("邮箱来源无法确认，不能标记为永久失效")
+    release_email(address, status="failed", note=note, source=selected)
+    logger.warning(
+        "[EmailProvider] 上游确认邮箱永久失效: source=%s, email=%s, note=%s",
+        selected,
+        address,
+        str(note or "")[:300],
+    )
+    return selected
+
+
+def _is_configured_manual_email(email: str) -> bool:
+    """手动配置的固定邮箱不依赖邮箱池上下文，也必须原样重跑。"""
+    try:
+        from config import register as _register_cfg
+
+        configured = str(getattr(_register_cfg, "REGISTER_EMAIL", "") or "").strip()
+    except Exception:
+        configured = ""
+    return bool(configured and configured.lower() == str(email or "").strip().lower())
+
+
+def _require_retained_local_email(row: dict | None, email: str, source: str) -> None:
+    status = str((row or {}).get("status") or "").strip().lower()
+    if status != "used":
+        raise RuntimeError(
+            f"原注册邮箱不再处于保留状态（source={source}, status={status or 'unknown'}），"
+            "不能改用其他邮箱重跑"
+        )
+
+
+def restore_email_context(
+    email: str,
+    *,
+    source: str,
+    purpose: str = "registration_retry",
+) -> str:
+    """恢复原邮箱的必要上下文；无法安全恢复时拒绝改领新邮箱。"""
+    address = str(email or "").strip()
+    if not address:
+        raise RuntimeError("重跑任务缺少原注册邮箱，不能改用其他邮箱")
+    selected = remember_email_source(address, source)
+    if _is_configured_manual_email(address):
+        return selected
+
+    if selected == "email_butler":
+        from core.email_butler_client import restore_account_context
+
+        account = restore_account_context(address, purpose=purpose)
+        if str(account.email or "").strip().lower() != address.lower():
+            raise RuntimeError("Email Butler 未能恢复原注册邮箱，不能改用其他邮箱重跑")
+        return selected
+
+    if selected == "outlook":
+        from core import db
+        from core.outlook_client import get_account_context
+
+        if get_account_context(address) is None:
+            raise RuntimeError("原 Outlook 注册邮箱上下文不可恢复，不能改用其他邮箱重跑")
+        _require_retained_local_email(db.get_outlook_by_email(address), address, selected)
+        return selected
+
+    if selected == "generic_api":
+        from core import db
+        from core.generic_api_mail_client import get_account_context
+
+        if get_account_context(address) is None:
+            raise RuntimeError("原通用 API 注册邮箱上下文不可恢复，不能改用其他邮箱重跑")
+        _require_retained_local_email(db.get_generic_api_email_by_email(address), address, selected)
+        return selected
+
+    if selected == "icloud_hide":
+        from core import db
+        from core.icloud_hme_client import get_account_context
+
+        if get_account_context(address) is None:
+            raise RuntimeError("原 iCloud 隐藏邮箱上下文不可恢复，不能改用其他邮箱重跑")
+        _require_retained_local_email(db.get_icloud_hide_email_by_email(address), address, selected)
+        return selected
+
+    if selected == "cloudflare_domain":
+        from core import db
+
+        row = db.get_domain_email_by_email(address)
+        if row is None:
+            raise RuntimeError("原域名注册邮箱不可恢复，不能改用其他邮箱重跑")
+        _require_retained_local_email(row, address, selected)
+        return selected
+
+    # 其余临时邮箱的可用性只存在于进程内上下文。上下文丢失时不能猜测
+    # 该地址仍归当前任务链所有，必须让任务明确失败而不是悄悄换邮箱。
+    context_getters = {
+        "gptmail": ("core.gptmail_client", "get_account_context"),
+        "cloudflare": ("core.cf_temp_mail_client", "get_account_context"),
+        "mailnest": ("core.mailnest_client", "get_account_context"),
+        "cloudmail": ("core.cloudmail_client", "get_account_context"),
+    }
+    module_name, getter_name = context_getters[selected]
+    module = __import__(module_name, fromlist=[getter_name])
+    if getattr(module, getter_name)(address) is None:
+        raise RuntimeError(f"原 {EMAIL_SOURCE_LABELS[selected]} 上下文不可恢复，不能改用其他邮箱重跑")
     return selected
 
 
@@ -144,6 +289,7 @@ def acquire_email(
     for source in sources:
         try:
             email = _pick_from_source(source, batch_id=batch_id, job_id=job_id)
+            remember_email_source(email, source)
             logger.info(f"[EmailProvider] 使用邮箱来源: {source}, email={email}")
             return email
         except Exception as exc:
@@ -157,11 +303,15 @@ def acquire_email(
     raise RuntimeError(f"所有邮箱来源均领取失败: {sources}; last={last_exc}")
 
 
-def resolve_email_source(email: str) -> str:
-    """根据邮箱在各池中的归属判断实际来源。"""
+def resolve_email_source(email: str, *, fallback: bool = True) -> str | None:
+    """根据邮箱在各池中的归属判断实际来源；可禁止按当前配置猜测。"""
     registered_source = _registered_email_source(email)
     if registered_source:
         return registered_source
+
+    hinted_source = _EMAIL_SOURCE_HINTS.get(str(email or "").strip().lower())
+    if hinted_source:
+        return hinted_source
 
     from core.gptmail_client import get_account_context as get_gptmail_context
     if get_gptmail_context(email):
@@ -197,7 +347,7 @@ def resolve_email_source(email: str) -> str:
             return "cloudflare_domain"
     except Exception:
         pass
-    return parse_email_sources()[0]
+    return parse_email_sources()[0] if fallback else None
 
 
 def wait_for_otp(
@@ -308,37 +458,43 @@ def email_material_line(email: str, source: str | None = None) -> str:
     return address
 
 
-def release_email(email: str, status: str = "available", note: str | None = None) -> str:
-    """按邮箱实际来源回收状态，返回来源名。"""
-    source = resolve_email_source(email)
-    if source == "gptmail":
+def release_email(
+    email: str,
+    status: str = "available",
+    note: str | None = None,
+    *,
+    source: str | None = None,
+) -> str:
+    """按已确认或解析出的邮箱来源回收状态，返回来源名。"""
+    selected = remember_email_source(email, source) if source else resolve_email_source(email)
+    if selected == "gptmail":
         from core.gptmail_client import release_account
         release_account(email, status=status, note=note)
-    elif source == "cloudflare":
+    elif selected == "cloudflare":
         from core.cf_temp_mail_client import release_account
         release_account(email, status=status, note=note)
-    elif source == "email_butler":
+    elif selected == "email_butler":
         from core.email_butler_client import release_account
         release_account(email, status=status, note=note)
-    elif source == "cloudflare_domain":
+    elif selected == "cloudflare_domain":
         from core.qqmail_client import release_domain_email
         release_domain_email(email, status=status, note=note)
-    elif source == "generic_api":
+    elif selected == "generic_api":
         from core.generic_api_mail_client import release_account
         release_account(email, status=status, note=note)
-    elif source == "mailnest":
+    elif selected == "mailnest":
         from core.mailnest_client import release_account
         release_account(email, status=status, note=note)
-    elif source == "cloudmail":
+    elif selected == "cloudmail":
         from core.cloudmail_client import release_account
         release_account(email, status=status, note=note)
-    elif source == "icloud_hide":
+    elif selected == "icloud_hide":
         from core.icloud_hme_client import release_account
         release_account(email, status=status, note=note)
     else:
         from core.outlook_client import release_account
         release_account(email, status=status, note=note)
-    return source
+    return selected
 
 
 def release_email_if_unconsumed(email: str, note: str | None = None) -> bool:

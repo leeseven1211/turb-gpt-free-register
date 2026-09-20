@@ -460,6 +460,34 @@ def get_attempt_by_job(job_id: int) -> dict | None:
         return _row(cur.fetchone())
 
 
+def get_attempts_for_root_jobs(root_job_ids: list[int]) -> dict[int, dict]:
+    """按根任务批量读取 Attempt，供注册列表投影避免逐行查询。"""
+    roots = sorted({int(value) for value in root_job_ids if value is not None})
+    if not roots:
+        return {}
+    init()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT * FROM {_table('registration_attempts')} "
+            "WHERE root_job_id = ANY(%s) OR source_root_job_id = ANY(%s) "
+            "ORDER BY id DESC",
+            (roots, roots),
+        )
+        attempts = [_row(item) for item in cur.fetchall()]
+    by_root: dict[int, dict] = {}
+    for attempt in attempts:
+        for raw_root_id in (attempt.get("root_job_id"), attempt.get("source_root_job_id")):
+            if raw_root_id is None:
+                continue
+            try:
+                root_id = int(raw_root_id)
+            except (TypeError, ValueError):
+                continue
+            if root_id in roots:
+                by_root.setdefault(root_id, attempt)
+    return by_root
+
+
 def get_latest_attempt_by_account(account_id: int) -> dict | None:
     """Return the newest durable registration attempt for one account."""
     init()
@@ -965,6 +993,17 @@ def finish_run(
              completed, completed, completed, _now(), int(run_id)),
         )
         updated = _row(cur.fetchone()) or {}
+        if value in TERMINAL_RUN_STATUSES:
+            execution_id = str(run.get("execution_id") or "").strip()
+            if execution_id:
+                cur.execute(
+                    f"""
+                    UPDATE {_table('registration_attempts')}
+                       SET active_execution_id=NULL, updated_at=%s, heartbeat_at=%s
+                     WHERE id=%s AND active_execution_id=%s
+                    """,
+                    (completed, completed, int(run["attempt_id"]), execution_id),
+                )
         if value in {"request_unknown", "manual_reconcile"}:
             _insert_event(
                 cur, attempt_id=int(run["attempt_id"]), run_id=int(run_id), job_id=run.get("job_id"),
@@ -1213,7 +1252,7 @@ def verify() -> dict[str, Any]:
 
 __all__ = [
     "CHECKPOINTS", "CHECKPOINT_RANK", "LEGACY_CHECKPOINT_MAP", "REMOTE_STATES", "LOCAL_ACCOUNT_STATES", "RUN_STATUSES",
-    "init", "reset_ready", "create_attempt", "ensure_attempt_for_job", "get_attempt", "get_attempt_by_job",
+    "init", "reset_ready", "create_attempt", "ensure_attempt_for_job", "get_attempt", "get_attempt_by_job", "get_attempts_for_root_jobs",
     "list_attempts", "advance_checkpoint", "mark_request_unknown", "mark_manual_reconcile", "start_run",
     "retry_run", "list_runs", "get_run", "finish_run", "persist_core_account", "events", "list_events",
     "mark_checkpoint", "record_checkpoint", "persist_account_core", "recover_interrupted_runs",

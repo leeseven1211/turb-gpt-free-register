@@ -30,6 +30,20 @@ class RegistrationDispatcherTests(unittest.TestCase):
         self.assertIs(expected, result)
         run_protocol.assert_called_once_with(**self.args)
 
+    def test_protocol_driver_forwards_selected_email_source(self):
+        expected = {"success": True, "email": self.args["email"]}
+        with (
+            patch.object(dispatcher._roxy_cfg, "REGISTRATION_DRIVER", "protocol"),
+            patch(
+                "core.registration.protocol.run_protocol_registration",
+                return_value=expected,
+            ) as run_protocol,
+        ):
+            result = dispatcher.run_registration(**self.args, email_source="icloud_hide")
+
+        self.assertIs(expected, result)
+        run_protocol.assert_called_once_with(**self.args, email_source="icloud_hide")
+
     def test_main_keeps_compatibility_facade(self):
         import main
 
@@ -42,6 +56,21 @@ class RegistrationDispatcherTests(unittest.TestCase):
             **self.args,
             existing_password=None,
             existing_totp_secret=None,
+        )
+
+    def test_main_forwards_selected_email_source(self):
+        import main
+
+        expected = {"success": True}
+        with patch.object(main, "_run_registration", return_value=expected) as run_registration:
+            result = main.run_registration(**self.args, email_source="icloud_hide")
+
+        self.assertIs(expected, result)
+        run_registration.assert_called_once_with(
+            **self.args,
+            existing_password=None,
+            existing_totp_secret=None,
+            email_source="icloud_hide",
         )
 
     def test_cli_batch_does_not_create_file_archive(self):
@@ -86,6 +115,7 @@ class RegistrationDispatcherTests(unittest.TestCase):
                     "birthday": None,
                     "existing_password": "saved-password",
                     "existing_totp_secret": "saved-totp",
+                    "email_source": "icloud_hide",
                 }
             )
 
@@ -99,6 +129,7 @@ class RegistrationDispatcherTests(unittest.TestCase):
             existing_password="saved-password",
             existing_totp_secret="saved-totp",
             profile_id=None,
+            email_source="icloud_hide",
         )
 
     def test_removed_browser_drivers_are_rejected(self):

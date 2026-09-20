@@ -97,6 +97,8 @@ def _codex_result(
     credential_confirmed: bool = False,
     callback_submitted: bool = False,
     receipt_path: str | None = None,
+    email_permanently_unusable: bool = False,
+    account_unusable_error_code: str | None = None,
 ) -> dict:
     """构造与 flow_trigger._flow_result 同形态的结构化结果。"""
     return {
@@ -110,6 +112,8 @@ def _codex_result(
         "credential_confirmed": bool(credential_confirmed),
         "callback_submitted": bool(callback_submitted),
         "receipt_path": receipt_path,
+        "email_permanently_unusable": bool(email_permanently_unusable),
+        "account_unusable_error_code": account_unusable_error_code,
     }
 
 
@@ -1678,6 +1682,8 @@ def run_codex_oauth(
             status="deactivated",
             email=email,
             message=f"账号已废（{exc.error_code}）",
+            email_permanently_unusable=True,
+            account_unusable_error_code=exc.error_code,
         )
     except Exception as exc:
         if _is_cpa_callback_reauth_error(exc) and _cpa_reauth_round < 2:

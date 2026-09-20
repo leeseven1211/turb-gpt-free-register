@@ -90,9 +90,10 @@ def run_registration(
     otp_code: str | None = None,
     existing_password: str | None = None,
     existing_totp_secret: str | None = None,
+    email_source: str | None = None,
 ):
     """兼容入口：转发到 core.registration.dispatcher。"""
-    return _run_registration(
+    kwargs = dict(
         email=email,
         name=name,
         birthday=birthday,
@@ -101,6 +102,9 @@ def run_registration(
         existing_password=existing_password,
         existing_totp_secret=existing_totp_secret,
     )
+    if email_source is not None:
+        kwargs["email_source"] = email_source
+    return _run_registration(**kwargs)
 
 
 def main():

@@ -61,6 +61,54 @@ class RegistrationServicePostprocessContractTests(unittest.TestCase):
         self.assertEqual("plan_check", info["retry_action"])
         self.assertEqual(["plan_check"], [action["action"] for action in info["next_actions"]])
 
+    def test_confirmed_deactivation_suppresses_all_postprocess_actions(self):
+        info = _build_retry_info(
+            {
+                "status": "partial_success",
+                "account_id": 44,
+                "progress_steps": {
+                    "codex": {"state": "failed"},
+                    "twofa": {"state": "failed"},
+                },
+            },
+            account={
+                "id": 44,
+                "email": "deactivated@example.com",
+                "access_token": "token",
+                "account_status": "deactivated",
+                "codex_status": "deactivated",
+                "plan_check_status": "failed",
+                "extra_json": '{"account_password":"Password!123"}',
+            },
+            successful_retry=None,
+        )
+
+        self.assertFalse(info["retryable"])
+        self.assertIsNone(info["retry_action"])
+        self.assertEqual([], info["next_actions"])
+        self.assertEqual("failed", info["display_status"])
+        self.assertIn("永久失效", info["retry_reason"])
+
+    def test_recovery_adapter_passes_deactivated_target_status_to_decision(self):
+        attempt = {
+            "id": 46,
+            "checkpoint": "failed",
+            "target_status": "deactivated",
+            "remote_identity_state": "confirmed",
+            "remote_account_state": "confirmed",
+            "local_account_state": "persisted",
+            "account_id": 46,
+            "data": {"has_access_token": True},
+            "active_execution_id": None,
+        }
+        with patch("core.storage.registration.recover_interrupted_runs"), patch(
+            "core.storage.registration.list_attempts", return_value=[attempt]
+        ):
+            decisions = registration_service.recover_registration_attempts()
+
+        self.assertEqual("none", decisions[0]["decision"]["action"])
+        self.assertFalse(decisions[0]["decision"]["safe_to_start_new_registration"])
+
     def test_pending_email_resume_is_same_attempt_action(self):
         info = _build_retry_info(
             {"status": "partial_success", "account_id": 44},

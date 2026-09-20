@@ -300,14 +300,16 @@ def decide_recovery(snapshot: Mapping[str, Any] | None) -> RecoveryDecision:
     The mapping keys are deliberately an adapter contract, not a database
     schema.  Workflow B can map its final Attempt/Run/Checkpoint row into:
     ``checkpoint``, ``remote_identity_state``, ``remote_account_state``,
-    ``local_account_state``, ``email_resume_capability``, ``has_password``,
-    ``has_access_token``, ``account_id`` and optional ``active_execution``.
+    ``local_account_state``, ``target_status``, ``email_resume_capability``,
+    ``has_password``, ``has_access_token``, ``account_id`` and optional
+    ``active_execution``.
     Unknown or missing values fail closed to reconciliation.
     """
     checkpoint = _status(_snapshot(snapshot, "checkpoint"), default="unknown")
     remote_identity = _status(_snapshot(snapshot, "remote_identity_state"), default="unknown")
     remote_account = _status(_snapshot(snapshot, "remote_account_state"), default="unknown")
     local_account = _status(_snapshot(snapshot, "local_account_state"), default="none")
+    target_status = _status(_snapshot(snapshot, "target_status"), default="")
     capability = str(_snapshot(snapshot, "email_resume_capability", "manual_only") or "manual_only").strip().lower()
     has_password = bool(_snapshot(snapshot, "has_password", False))
     has_token = bool(_snapshot(snapshot, "has_access_token", False))
@@ -321,6 +323,15 @@ def decide_recovery(snapshot: Mapping[str, Any] | None) -> RecoveryDecision:
             proxy_lease="retain",
             safe_to_start_new_registration=False,
             reason="仍有活动执行者，恢复流程不得抢占 Attempt 或资源租约",
+        )
+
+    if target_status == "deactivated":
+        return RecoveryDecision(
+            action="none",
+            email_lease="retain",
+            proxy_lease="release",
+            safe_to_start_new_registration=False,
+            reason="账号已被上游明确确认永久失效，禁止恢复注册或后处理",
         )
 
     # A persisted core account is already the registration result.  Recovery

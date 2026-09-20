@@ -95,6 +95,31 @@ class RegistrationFactsTests(PostgresTestCase):
         self.assertEqual(registration.get_run(int(run["id"]))["status"], "interrupted")
         self.assertEqual(registration.recover_interrupted_runs(), 0)
 
+    def test_terminal_run_only_clears_its_own_active_execution(self):
+        attempt = registration.create_attempt("terminal-run@example.test")
+        attempt_id = int(attempt["id"])
+        first = registration.start_run(attempt_id, execution_id="worker-old")
+        registration.advance_checkpoint(
+            attempt_id,
+            "email_claimed",
+            run_id=int(first["id"]),
+            execution_id="worker-old",
+        )
+        self.assertEqual("worker-old", registration.get_attempt(attempt_id)["active_execution_id"])
+
+        registration.finish_run(int(first["id"]), status="failed")
+        self.assertIsNone(registration.get_attempt(attempt_id)["active_execution_id"])
+
+        second = registration.retry_run(attempt_id, execution_id="worker-new")
+        registration.advance_checkpoint(
+            attempt_id,
+            "auth_started",
+            run_id=int(second["id"]),
+            execution_id="worker-new",
+        )
+        registration.finish_run(int(first["id"]), status="failed")
+        self.assertEqual("worker-new", registration.get_attempt(attempt_id)["active_execution_id"])
+
     def test_token_persists_core_account_immediately_and_repeated_call_is_idempotent(self):
         attempt = registration.create_attempt("token@example.test")
         result = registration.persist_core_account(
@@ -238,6 +263,27 @@ class RegistrationFactsTests(PostgresTestCase):
         self.assertEqual("core_persisted", attempt["checkpoint"])
         self.assertEqual("registered", attempt["data"]["legacy_registration_checkpoint"])
         self.assertEqual(0, registration.verify()["checks"]["invalid_checkpoints"])
+
+    def test_legacy_job_update_preserves_deactivated_attempt_without_account(self):
+        job = db.create_job("outlook")
+        attempt_id = int(job["attempt_id"])
+        registration.advance_checkpoint(
+            attempt_id,
+            "failed",
+            remote_identity_state="confirmed",
+            remote_account_state="confirmed",
+            local_account_state="none",
+            target_status="deactivated",
+        )
+
+        self.assertIsNone(db.get_job(int(job["id"])).get("account_id"))
+        db.update_job(int(job["id"]), status="failed", error="账号已明确永久失效")
+
+        attempt = registration.get_attempt(attempt_id)
+        task = operation.find_task_by_source("registration_chains", f"{job['id']}:registration")
+        self.assertEqual("deactivated", attempt["target_status"])
+        self.assertEqual("deactivated", task["target_status"])
+        self.assertEqual([], task["next_actions"])
 
 
 if __name__ == "__main__":

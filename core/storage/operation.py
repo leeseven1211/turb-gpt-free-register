@@ -646,6 +646,13 @@ def _account_state(account: dict | None) -> dict[str, str]:
             "remote_account_state": "not_started", "local_account_state": "none",
             "target_status": "not_created",
         }
+    account_status = str(account.get("account_status") or "").strip().lower()
+    if account_status == "deactivated" or account.get("deactivated") is True:
+        return {
+            "checkpoint": "failed", "remote_identity_state": "confirmed",
+            "remote_account_state": "confirmed", "local_account_state": "persisted",
+            "target_status": "deactivated",
+        }
     extra = _account_extra(account)
     legacy_checkpoint = str(extra.get("registration_checkpoint") or "").strip().lower()
     checkpoint = _LEGACY_REGISTRATION_CHECKPOINT_MAP.get(legacy_checkpoint, legacy_checkpoint)
@@ -939,7 +946,10 @@ def _upsert_attempt(cur, *, root_job_id: int, job: dict, account: dict | None) -
             remote_identity_state=CASE WHEN EXCLUDED.remote_identity_state IN ('unknown','') OR ({_table('registration_attempts')}.remote_identity_state='request_unknown' AND EXCLUDED.remote_identity_state='unknown') THEN {_table('registration_attempts')}.remote_identity_state ELSE EXCLUDED.remote_identity_state END,
             remote_account_state=CASE WHEN EXCLUDED.remote_account_state IN ('unknown','') OR ({_table('registration_attempts')}.remote_account_state='request_unknown' AND EXCLUDED.remote_account_state='unknown') THEN {_table('registration_attempts')}.remote_account_state ELSE EXCLUDED.remote_account_state END,
             local_account_state=CASE WHEN {_table('registration_attempts')}.local_account_state IN ('persisted','saved') AND EXCLUDED.local_account_state IN ('missing','checkpoint_saved') THEN {_table('registration_attempts')}.local_account_state ELSE EXCLUDED.local_account_state END,
-            target_status=EXCLUDED.target_status,
+            -- 永久失效是不可逆事实。兼容任务同步时没有 account 行，不能把
+            -- 已停用 Attempt 回写成 not_created 并重新开放注册重试。
+            target_status=CASE WHEN {_table('registration_attempts')}.target_status='deactivated'
+                THEN {_table('registration_attempts')}.target_status ELSE EXCLUDED.target_status END,
             updated_at=EXCLUDED.updated_at,
             completed_at=COALESCE(EXCLUDED.completed_at, {_table('registration_attempts')}.completed_at),
             data={_table('registration_attempts')}.data || EXCLUDED.data
@@ -969,6 +979,10 @@ def _registration_task_type(job: dict) -> str:
 
 def _next_registration_actions(job: dict, account: dict | None, target_status: str) -> list[dict[str, Any]]:
     if _status(job.get("status")) not in _TERMINAL_STATUSES:
+        return []
+    if str(target_status or "").strip().lower() == "deactivated":
+        return []
+    if str((account or {}).get("account_status") or "").strip().lower() == "deactivated":
         return []
     source_job_id = int(job.get("id") or 0)
     if target_status == "email_verification_pending":
@@ -1023,6 +1037,23 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
     if account is None and job.get("email"):
         account = accounts_by_email.get(str(job.get("email") or "").strip().lower())
     attempt_id = _upsert_attempt(cur, root_job_id=root_job_id, job=job, account=account)
+    # _upsert_attempt 需要兼容旧任务的 account=None 投影，但不能覆盖已经
+    # 明确 deactivated 的事实。读取最终 Attempt 状态后再生成任务中心投影，
+    # 确保 operation_tasks 同样不会重新出现 registration_retry。
+    cur.execute(
+        f"SELECT target_status FROM {_table('registration_attempts')} WHERE id=%s",
+        (attempt_id,),
+    )
+    persisted_attempt = cur.fetchone()
+    if persisted_attempt and str(persisted_attempt.get("target_status") or "").strip().lower() == "deactivated":
+        state = dict(_account_state(account))
+        state["checkpoint"] = "failed"
+        state["remote_identity_state"] = "confirmed"
+        state["remote_account_state"] = "confirmed"
+        state["local_account_state"] = "persisted" if account else "none"
+        state["target_status"] = "deactivated"
+    else:
+        state = _account_state(account)
     projection_data = {
         "legacy_root_job_id": root_job_id,
         "latest_legacy_job_id": job_id,
@@ -1033,7 +1064,6 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
         f"UPDATE {postgres_store.qualified('registration_jobs')} SET attempt_id=%s WHERE id=%s",
         (attempt_id, job_id),
     )
-    state = _account_state(account)
     batch_id = None
     legacy_batch_id = str(job.get("batch_id") or "").strip()
     if legacy_batch_id:

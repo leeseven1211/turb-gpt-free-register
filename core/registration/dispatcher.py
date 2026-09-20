@@ -18,6 +18,7 @@ def run_registration(
     existing_totp_secret: str | None = None,
     profile_id: str | None = None,
     registration_options: dict | None = None,
+    email_source: str | None = None,
 ):
     """按 `REGISTRATION_DRIVER` 分发一次注册任务。"""
     driver_mode = str(getattr(_roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
@@ -37,6 +38,8 @@ def run_registration(
         )
         if registration_options is not None:
             kwargs["registration_options"] = registration_options
+        if email_source is not None:
+            kwargs["email_source"] = email_source
         kwargs["profile_id"] = profile_id
         return run_roxy_registration(**kwargs)
 
@@ -61,4 +64,6 @@ def run_registration(
     )
     if registration_options is not None:
         kwargs["registration_options"] = registration_options
+    if email_source is not None:
+        kwargs["email_source"] = email_source
     return run_protocol_registration(**kwargs)

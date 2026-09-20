@@ -586,6 +586,31 @@ class RoxyTwoFactorTests(unittest.TestCase):
         self.assertEqual(insert.call_args.kwargs["extra"]["registration_checkpoint"], "registered")
         self.assertEqual(insert.call_args.kwargs["access_token"], "token")
 
+    def test_registration_checkpoint_prefers_explicit_task_email_source(self):
+        session_info = {
+            "accessToken": "token",
+            "user": {"id": "user-1", "name": "Demo"},
+            "account": {"planType": "free"},
+            "expires": "later",
+        }
+        opened = SimpleNamespace(profile_id="profile-1", raw={"ok": True})
+        with patch("core.db.insert_account", return_value=17) as insert, patch.object(
+            roxy_registration,
+            "resolve_email_source",
+            side_effect=AssertionError("重跑任务不应按已有账号或当前配置改判邮箱来源"),
+        ):
+            roxy_registration._save_roxy_account_checkpoint(
+                email="new@example.com",
+                access_token="token",
+                session_info=session_info,
+                opened=opened,
+                openai_password="RandomPassword!123",
+                proxy="http://proxy.example",
+                email_source="icloud_hide",
+            )
+
+        self.assertEqual(insert.call_args.kwargs["email_source"], "icloud_hide")
+
     def test_password_submission_saves_pending_email_verification_account(self):
         opened = SimpleNamespace(profile_id="profile-1", raw={"ok": True})
         with patch("core.db.insert_account", return_value=19) as insert, patch.object(
@@ -608,6 +633,23 @@ class RoxyTwoFactorTests(unittest.TestCase):
             insert.call_args.kwargs["extra"]["account_password"],
             "StoredPassword!123",
         )
+
+    def test_pending_checkpoint_prefers_explicit_task_email_source(self):
+        opened = SimpleNamespace(profile_id="profile-1", raw={"ok": True})
+        with patch("core.db.insert_account", return_value=19) as insert, patch.object(
+            roxy_registration,
+            "resolve_email_source",
+            side_effect=AssertionError("重跑任务不应按已有账号或当前配置改判邮箱来源"),
+        ):
+            roxy_registration._save_pending_email_verification_checkpoint(
+                email="pending@example.com",
+                openai_password="StoredPassword!123",
+                opened=opened,
+                proxy="http://proxy.example",
+                email_source="icloud_hide",
+            )
+
+        self.assertEqual(insert.call_args.kwargs["email_source"], "icloud_hide")
 
     def test_failed_activation_checkpoint_marks_totp_pending(self):
         session_info = {
@@ -682,6 +724,44 @@ class RoxyTwoFactorTests(unittest.TestCase):
         self.assertEqual(saved, [])
         click.assert_not_called()
 
+    def test_setup_email_reauth_uses_supplied_otp_provider(self):
+        secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+        toggle = Mock()
+        toggle.enabled = False
+        toggle.get_attribute.side_effect = lambda name: (
+            "true" if name == "aria-checked" and toggle.enabled else "false"
+        )
+        email_field = object()
+        totp_field = object()
+        verify_button = object()
+        otp_provider = Mock(return_value="123456")
+
+        def click(_driver, element, label=""):
+            if element is verify_button:
+                toggle.enabled = True
+
+        with patch.object(roxy_registration, "_open_chatgpt_security_settings", return_value=toggle), patch.object(
+            roxy_registration, "_wait_mfa_enrollment_step", return_value=("email", email_field)
+        ), patch.object(
+            roxy_registration, "_wait_after_mfa_email_submit", return_value=totp_field
+        ), patch.object(roxy_registration, "_manual_totp_secret", return_value=secret), patch.object(
+            roxy_registration, "_human_click", side_effect=click
+        ), patch.object(roxy_registration, "_human_type_text"), patch.object(
+            roxy_registration, "_button_after_input", return_value=verify_button
+        ), patch.object(
+            roxy_registration,
+            "_first_visible_css",
+            side_effect=lambda _driver, selector: toggle if selector == '[data-testid="mfa-authenticator-toggle"]' else None,
+        ), patch.object(roxy_registration.time, "sleep"):
+            result = roxy_registration.setup_roxy_2fa(
+                object(),
+                "new@example.com",
+                otp_provider=otp_provider,
+            )
+
+        self.assertEqual(result, secret)
+        otp_provider.assert_called_once_with("new@example.com", after_ts=unittest.mock.ANY)
+
     def test_protocol_twofa_success_does_not_open_browser_settings(self):
         secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
         saved = []
@@ -732,6 +812,34 @@ class RoxyTwoFactorTests(unittest.TestCase):
             "new@example.com",
             on_secret=unittest.mock.ANY,
             existing_secret=secret,
+        )
+
+    def test_protocol_twofa_fallback_preserves_supplied_otp_provider(self):
+        otp_provider = Mock()
+        with patch.object(
+            roxy_registration,
+            "setup_2fa_protocol",
+            side_effect=RuntimeError("protocol blocked"),
+        ), patch.object(
+            roxy_registration,
+            "setup_roxy_2fa",
+            return_value="JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP",
+        ) as browser_setup:
+            _result, fallback_used = roxy_registration.setup_protocol_2fa_with_browser_fallback(
+                object(),
+                "new@example.com",
+                object(),
+                "access-token",
+                otp_provider=otp_provider,
+            )
+
+        self.assertTrue(fallback_used)
+        browser_setup.assert_called_once_with(
+            unittest.mock.ANY,
+            "new@example.com",
+            on_secret=unittest.mock.ANY,
+            existing_secret=None,
+            otp_provider=otp_provider,
         )
 
     def test_protocol_transport_failure_resets_transport_before_ui_fallback(self):

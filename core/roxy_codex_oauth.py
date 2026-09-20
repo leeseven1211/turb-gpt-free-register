@@ -3591,6 +3591,8 @@ def _run_roxy_codex_oauth_once(
             status="deactivated",
             email=email,
             message=f"账号已废（{exc.error_code or 'account_deactivated'}）",
+            email_permanently_unusable=True,
+            account_unusable_error_code=exc.error_code or "account_deactivated",
         )
     except Exception as exc:
         logger.warning("[Codex][Browser] 失败：%s，%s: %s", email, type(exc).__name__, str(exc)[:240])

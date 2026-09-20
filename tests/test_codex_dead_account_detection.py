@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 import unittest
+from unittest.mock import patch
 
-from core.openai_auth import detect_account_unusable_response_body
+from core import codex_oauth
+from core.openai_auth import AccountUnusableError, detect_account_unusable_response_body
 from core.browser_use_codex_oauth import _wait_after_email_submit
 
 
@@ -30,6 +32,23 @@ class CodexDeadAccountDetectionTests(unittest.TestCase):
         tracker = {"code": "account_deactivated"}
         self.assertEqual(_wait_after_email_submit(Page(), timeout=1, dead_tracker=tracker), "deactivated:account_deactivated")
         self.assertNotEqual(_wait_after_email_submit(Page(), timeout=1, dead_tracker={}), "deactivated:account_deactivated")
+
+    def test_structured_unusable_exception_marks_oauth_result_explicitly(self):
+        with patch.object(codex_oauth, "BrowserSession"), patch.object(
+            codex_oauth,
+            "check_cancelled",
+            side_effect=AccountUnusableError("账号已废", error_code="account_deactivated"),
+        ):
+            result = codex_oauth.run_codex_oauth(
+                "dead@example.com",
+                proxy="",
+                force=True,
+                driver_override="protocol",
+            )
+
+        self.assertEqual(result["status"], "deactivated")
+        self.assertTrue(result["email_permanently_unusable"])
+        self.assertEqual(result["account_unusable_error_code"], "account_deactivated")
 
 
 if __name__ == "__main__":
