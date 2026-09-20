@@ -17,8 +17,11 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
+
+from tools.test_profiles import PROFILES, apply_profile
 
 
 _ENV_HELPERS = {
@@ -389,6 +392,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--database-url", help="独立测试数据库 DSN；默认读取已存在的进程环境")
     parser.add_argument("--schema", help="测试 schema，必须以 test_ 开头")
     parser.add_argument("--dry-run", action="store_true", help="只校验环境，不启动 pytest")
+    parser.add_argument("--profile", choices=PROFILES, default="default", help="pytest 测试 profile")
     parser.add_argument("pytest_args", nargs=argparse.REMAINDER, help="传给 pytest 的参数")
     return parser
 
@@ -396,6 +400,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     root = Path(__file__).resolve().parents[1]
+    started_at = time.monotonic()
     try:
         environment = build_isolated_environment(
             database_url=args.database_url,
@@ -424,8 +429,24 @@ def main(argv: list[str] | None = None) -> int:
         print(f"isolated test environment failed: {exc}", file=sys.stderr)
         return 2
 
-    command = _pytest_command(args.pytest_args)
+    try:
+        profile_args = apply_profile(args.pytest_args, args.profile)
+    except ValueError as exc:
+        print(f"isolated test profile failed: {exc}", file=sys.stderr)
+        return 2
+    command = _pytest_command(profile_args)
     completed = subprocess.run(command, cwd=root, env=environment, check=False)
+    print(
+        json.dumps(
+            {
+                "elapsed_seconds": round(time.monotonic() - started_at, 3),
+                "profile": args.profile,
+                "returncode": completed.returncode,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
     return int(completed.returncode)
 
 

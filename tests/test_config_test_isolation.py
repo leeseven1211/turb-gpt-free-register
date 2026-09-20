@@ -9,6 +9,7 @@ from config import env_loader
 from config import openai_protocol
 from config.schema import CONFIG_SCHEMA
 from tools.test_isolated import build_isolated_environment, collect_application_env_keys
+from tools import test_isolated
 
 
 _CONFIG_ENV_KEYS = (
@@ -101,3 +102,14 @@ def test_locked_runner_ignores_decoy_dotenv(monkeypatch, tmp_path):
     assert os.getenv("OPENAI_PROTOCOL_VERSION") is None
     importlib.reload(openai_protocol)
     assert openai_protocol.OPENAI_PROTOCOL_VERSION == "v1"
+
+
+def test_isolated_runner_profile_defaults_to_default_and_consumes_option():
+    parser = test_isolated.build_parser()
+
+    default = parser.parse_args([])
+    assert default.profile == "default"
+
+    extended = parser.parse_args(["--profile", "extended", "--", "-q"])
+    assert extended.profile == "extended"
+    assert extended.pytest_args == ["--", "-q"]
