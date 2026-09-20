@@ -1047,13 +1047,23 @@ def _handle_native_registration_resume(context: task_gateway.OperationHandlerCon
             ),
         )
     job = resumed.get("job") if isinstance(resumed.get("job"), Mapping) else {}
-    result = task_gateway.OperationResult.success(
+    # This handler is retained only for registration_resume wrappers that were
+    # persisted before account completion began dispatching the real retry job
+    # directly.  Queuing a child is not the same as that child succeeding, so
+    # never leave a misleading green terminal state on the compatibility task.
+    result = task_gateway.OperationResult(
+        "partial_success",
         {
             "source_job_id": source_job_id,
             "job_id": job.get("id"),
             "created": bool(resumed.get("created")),
+            "reused": bool(resumed.get("reused")),
+            "child_result_authoritative": True,
         },
-        message=str(resumed.get("message") or "已继续原注册任务"),
+        message=(
+            f"已转交给真实注册续跑任务 #{job.get('id')}，"
+            "请以该任务的最终状态为准"
+        ),
     )
     return _finish_native_context(context, result)
 
@@ -1590,49 +1600,45 @@ class WebUIContext:
                     "plan": plan,
                     "error": reason,
                 }
-            _register_runtime_handlers()
             source_job_id = int(source_job["id"])
-            remote_account_state = str(
-                account.get("registration_remote_account_state")
-                or account.get("remote_account_state")
-                or ""
-            ).strip().lower()
             try:
-                queued = account_task_store.submit_durable_operation(
-                    task_type="registration_resume",
-                    account_id=int(account["id"]),
-                    email=email,
-                    trigger=str(trigger or "manual_account_completion"),
-                    source_system=_RUNTIME_SOURCE_SYSTEM,
-                    source_id=f"registration-resume:{int(account['id'])}:{source_job_id}",
-                    idempotency_key=f"registration-resume:{int(account['id'])}:{source_job_id}",
-                    resource_family="openai_interactive",
-                    data={
-                        "source_job_id": source_job_id,
-                        "remote_account_state": remote_account_state,
-                        "registration_checkpoint": str(
-                            account.get("registration_checkpoint") or ""
-                        ),
-                        "task_trigger": str(trigger or "manual_account_completion"),
-                    },
-                    config_snapshot=snapshot,
-                    config_allowlist=allowlist,
-                )
+                from core import registration_service
+
+                resumed = registration_service.retry_job(source_job_id)
             except Exception as exc:
-                logger.exception("创建注册续跑 durable task 失败：account_id=%s", account_id)
+                logger.exception("创建注册续跑任务失败：account_id=%s", account_id)
                 return {
                     "accepted": False,
                     "blocked": [{"step": "registration_resume", "reason": f"继续注册入队异常：{type(exc).__name__}"}],
                     "plan": plan,
                     "error": f"继续注册入队异常：{type(exc).__name__}: {exc}",
                 }
+            if not resumed.get("ok"):
+                reason = str(resumed.get("error") or "继续注册任务未能入队")
+                return {
+                    "accepted": False,
+                    "blocked": [{"step": "registration_resume", "reason": reason}],
+                    "plan": plan,
+                    "error": reason,
+                }
+            retry_job = resumed.get("job") if isinstance(resumed.get("job"), Mapping) else {}
+            created = bool(resumed.get("created"))
+            reused = bool(resumed.get("reused"))
             return {
-                **queued,
+                "accepted": True,
+                "busy": reused,
+                "reused": reused,
                 "registration_resume": True,
-                "job_id": source_job_id,
+                "job_id": int(retry_job.get("id") or 0) or None,
                 "source_job_id": source_job_id,
                 "plan": plan,
-                "message": "已将原注册任务续跑请求持久化，不执行 AT 刷新",
+                "message": str(
+                    resumed.get("message")
+                    or (
+                        "已创建真实注册续跑任务"
+                        if created else "已有注册续跑任务正在执行"
+                    )
+                ),
             }
         # 一个步骤被账号能力明确阻塞时，仍允许执行其它未完成步骤。
         # 例如密码资格为 false，但 Authenticator 2FA 仍然可以补齐。

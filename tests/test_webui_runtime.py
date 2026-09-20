@@ -427,31 +427,14 @@ class WebUIRuntimeTests(unittest.TestCase):
             patch.object(runtime.db, "get_account", return_value=account),
             patch("core.storage.registration.get_latest_attempt_by_account", return_value=attempt),
             patch.object(runtime.db, "get_latest_registration_job_for_account", return_value={"id": 836}),
-            patch.object(
-                runtime.account_task_store,
-                "submit_durable_operation",
-                return_value={
-                    "accepted": True,
-                    "busy": False,
-                    "reused": False,
-                    "task_id": 901,
-                    "run_id": 902,
-                    "source_system": "webui_runtime",
-                    "source_id": "registration-resume:591:836",
-                    "status": "queued",
-                },
-            ) as submit,
-            patch("core.registration_service.retry_job") as retry_job,
+            patch("core.registration_service.retry_job", return_value=resume_result) as retry_job,
         ):
             result = context.enqueue_account_completion(591)
 
         self.assertTrue(result["accepted"])
         self.assertTrue(result["registration_resume"])
-        self.assertEqual(836, result["job_id"])
-        retry_job.assert_not_called()
-        submit.assert_called_once()
-        self.assertEqual("registration_resume", submit.call_args.kwargs["task_type"])
-        self.assertEqual(836, submit.call_args.kwargs["data"]["source_job_id"])
+        self.assertEqual(861, result["job_id"])
+        retry_job.assert_called_once_with(836)
 
     def test_registration_resume_continues_when_remote_state_is_unknown(self):
         class FakeContext:
@@ -489,7 +472,8 @@ class WebUIRuntimeTests(unittest.TestCase):
             result = runtime._handle_native_registration_resume(context)
 
         self.assertTrue(context.finished)
-        self.assertEqual("success", result.status)
+        self.assertEqual("partial_success", result.status)
+        self.assertTrue(result.summary["child_result_authoritative"])
         retry_job.assert_called_once_with(836)
 
     def test_registration_resume_retry_allows_unknown_attempt(self):

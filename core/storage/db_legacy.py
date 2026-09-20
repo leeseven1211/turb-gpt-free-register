@@ -3039,7 +3039,9 @@ def create_retry_job(
         source = record_store.get_row(record_store.JOBS, source_id, conn=conn)
         if source is None:
             raise LookupError("任务不存在")
-        if source.get("status") not in ("success", "failed", "partial_success", "stopped", "cancelled"):
+        if source.get("status") not in (
+            "success", "failed", "partial_success", "stopped", "cancelled", "interrupted",
+        ):
             raise ValueError(f"当前状态不支持重试：{source.get('status')}")
 
         active_states = ("pending", "running", "stopping")
