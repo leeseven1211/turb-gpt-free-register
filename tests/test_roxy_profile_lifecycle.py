@@ -291,7 +291,6 @@ class RoxyProfileLifecycleTests(unittest.TestCase):
             "birthday": "1990-01-01",
             "proxy": "http://proxy.example:8080",
             "otp_code": None,
-            "batch_dir": None,
             "profile_id": "profile-1",
         }
         expected = {"success": True}

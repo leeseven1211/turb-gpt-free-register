@@ -168,7 +168,7 @@ function smsConfigSectionForKey(key) {
   }
   if (key === 'SMS_API_KEY') return ['GrizzlySMS', 'GrizzlySMS 平台 API Key 配置'];
   if (key.startsWith('H_')) return ['H 接码', 'H_API.md 本地 H 取号服务配置；项目ID/国家留空时复用通用字段'];
-  if (key.startsWith('L_')) return ['L 接码', 'L_API.md 本地 L 取号服务配置'];
+  if (key.startsWith('L_')) return ['L 接码', '本地 L 取号服务配置，接口约定见 README'];
   return ['其他接码配置', ''];
 }
 

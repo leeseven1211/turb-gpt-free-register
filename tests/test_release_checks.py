@@ -22,11 +22,13 @@ from tools.test_isolated import parse_conninfo, validate_test_database_url
 from webui.routes import health
 
 
-_RETIRED_ROOT_FILES = (
+_RETIRED_ACCOUNT_FILES = (
     "注册任务.json",
     "注册成功的邮箱.json",
     "注册成功的邮箱.txt",
     "注册成功的token.txt",
+    "注册成功整行.txt",
+    "注册成功账号.json",
     "用于注册的邮箱.json",
     "用于注册的邮箱.txt",
     "用于注册的iCloud隐藏邮箱.json",
@@ -34,7 +36,7 @@ _RETIRED_ROOT_FILES = (
 
 
 def test_runtime_has_no_retired_root_file_io():
-    """Root snapshots are history/input only; batch archives are a separate directory contract."""
+    """账号根快照和批次归档都只能作为历史数据，不得重新进入运行时。"""
     project_root = Path(__file__).resolve().parents[1]
     runtime_files = [
         *sorted((project_root / "core").rglob("*.py")),
@@ -48,12 +50,8 @@ def test_runtime_has_no_retired_root_file_io():
         if path.name == "migrate_collections_to_tables.py":
             continue
         text = path.read_text(encoding="utf-8")
-        for filename in _RETIRED_ROOT_FILES:
+        for filename in _RETIRED_ACCOUNT_FILES:
             if filename not in text:
-                continue
-            # Batch archives intentionally use familiar names below accounts/;
-            # this is not root inventory and is not part of the audit contract.
-            if path.name == "account_export.py" and "folder /" in text:
                 continue
             violations.append(f"{path}:{filename}")
     assert violations == [], "retired root-file references: " + ", ".join(violations)

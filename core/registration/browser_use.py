@@ -16,7 +16,6 @@ import threading
 import string
 import time
 from datetime import date
-from pathlib import Path
 from typing import Any
 
 from config import browser_use as _cfg
@@ -1756,7 +1755,6 @@ def run_browser_use_registration(
     birthday: str,
     proxy: str | None = None,
     otp_code: str | None = None,
-    batch_dir: Path | None = None,
     cloud_provider: str = "browser_use",
     registration_options: dict | None = None,
 ) -> dict:
@@ -2095,7 +2093,6 @@ def run_browser_use_registration(
                 plan_check_proxy=proxy or None,
                 captured_plan_result=captured_plan_result,
                 plan_check_session=plan_check_session,
-                batch_dir=batch_dir,
                 extra={
                     "user": session_info.get("user"),
                     "account": session_info.get("account"),

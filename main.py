@@ -9,7 +9,6 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from config import REGISTER_EMAIL, REGISTER_NAME  # 这两个一般不在 WebUI 改
 # 可热改的，按模块属性方式读
 from config import email as _email_cfg
-from core.account_export import create_batch_archive_dir
 from core.email_provider import acquire_email
 from core.humanize import delay as human_delay
 from core.name_samples import random_display_name
@@ -89,7 +88,6 @@ def run_registration(
     birthday: str | None = None,
     proxy: str | None = None,
     otp_code: str | None = None,
-    batch_dir=None,
     existing_password: str | None = None,
     existing_totp_secret: str | None = None,
 ):
@@ -100,7 +98,6 @@ def run_registration(
         birthday=birthday,
         proxy=proxy,
         otp_code=otp_code,
-        batch_dir=batch_dir,
         existing_password=existing_password,
         existing_totp_secret=existing_totp_secret,
     )
@@ -142,13 +139,9 @@ def main():
         args.workers = args.count
 
     if args.workers > 1:
-        batch_dir = create_batch_archive_dir(args.count, args.workers)
-        logger.info(f"[批量] 本批次归档目录：{batch_dir}")
-        results = run_parallel_batch(args.count, args.workers, args.delay, args.continue_on_fail, batch_dir)
+        results = run_parallel_batch(args.count, args.workers, args.delay, args.continue_on_fail)
     else:
-        batch_dir = create_batch_archive_dir(args.count, args.workers)
-        logger.info(f"[批量] 本批次归档目录：{batch_dir}")
-        results = run_serial_batch(args.count, args.delay, args.continue_on_fail, batch_dir)
+        results = run_serial_batch(args.count, args.delay, args.continue_on_fail)
 
     success_count = sum(1 for r in results if _is_success(r))
     flow_success_count = sum(
@@ -194,14 +187,19 @@ def main():
     sys.exit(0 if success_count == args.count else 1)
 
 
-def run_one_batch_item(index: int, total: int, batch_dir=None, batch_id: str | None = None, batch_workers: int = 1) -> dict:
+def run_one_batch_item(
+    index: int,
+    total: int,
+    batch_id: str | None = None,
+    batch_workers: int = 1,
+) -> dict:
     """执行批量注册中的一个任务，返回结构化结果。"""
     logger.info(f"[批量] 开始第 {index + 1}/{total} 个注册")
     proxy_lease = None
     from core import sms_provider
 
-    if batch_dir is not None:
-        sms_provider.set_sms_batch_context(f"cli:{batch_dir}")
+    if batch_id:
+        sms_provider.set_sms_batch_context(batch_id)
     try:
         from core.proxy_provider import acquire_registration_proxy
 
@@ -216,7 +214,6 @@ def run_one_batch_item(index: int, total: int, batch_dir=None, batch_id: str | N
             email=email,
             name=name,
             birthday=birthday,
-            batch_dir=batch_dir,
             proxy=proxy_lease.proxy_url,
         )
     except Exception as exc:
@@ -235,13 +232,13 @@ def run_one_batch_item(index: int, total: int, batch_dir=None, batch_id: str | N
         sms_provider.clear_sms_batch_context()
 
 
-def run_serial_batch(count: int, delay: float, continue_on_fail: bool, batch_dir=None) -> list[dict]:
+def run_serial_batch(count: int, delay: float, continue_on_fail: bool) -> list[dict]:
     """按原有串行方式执行批量注册。"""
     results = []
-    batch_id = f"cli:{batch_dir or time.time_ns()}"
+    batch_id = f"cli:{time.time_ns()}"
     try:
         for index in range(count):
-            result = run_one_batch_item(index, count, batch_dir, batch_id, 1)
+            result = run_one_batch_item(index, count, batch_id, 1)
             results.append(result)
             if not _is_success(result) and not continue_on_fail:
                 logger.error("[批量] 当前账号失败，已停止。需要继续跑可加 --continue-on-fail")
@@ -263,7 +260,6 @@ def run_parallel_batch(
     workers: int,
     delay: float,
     continue_on_fail: bool,
-    batch_dir=None,
 ) -> list[dict]:
     """使用线程池并发执行批量注册。"""
     logger.info(f"[批量] 启用多线程注册：目标 {count}，并发 {workers}")
@@ -271,7 +267,7 @@ def run_parallel_batch(
         logger.info(f"[批量] 并发模式下 --delay={delay} 表示提交任务之间的错峰间隔")
 
     results: list[dict] = []
-    batch_id = f"cli:{batch_dir or time.time_ns()}"
+    batch_id = f"cli:{time.time_ns()}"
     future_to_index = {}
     next_index = 0
     stop_submitting = False
@@ -280,7 +276,7 @@ def run_parallel_batch(
         nonlocal next_index
         if stop_submitting or next_index >= count:
             return False
-        future = executor.submit(run_one_batch_item, next_index, count, batch_dir, batch_id, workers)
+        future = executor.submit(run_one_batch_item, next_index, count, batch_id, workers)
         future_to_index[future] = next_index
         next_index += 1
         if delay > 0 and next_index < count:

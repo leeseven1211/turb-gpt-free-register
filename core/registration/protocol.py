@@ -170,7 +170,6 @@ def run_protocol_registration(
     birthday: str | None = None,
     proxy: str | None = None,
     otp_code: str | None = None,
-    batch_dir=None,
     registration_options: dict | None = None,
 ) -> dict:
     """执行完整的纯协议 ChatGPT 注册流程。"""
@@ -411,7 +410,6 @@ def run_protocol_registration(
             access_token=access_token,
             email_source=resolve_email_source(email),
             proxy_used=session.proxy or None,
-            batch_dir=batch_dir,
             extra={
                 "user": session_info.get("user"),
                 "account": session_info.get("account"),

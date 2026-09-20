@@ -1,17 +1,21 @@
-# Turb GPT Free Register
+# Turb GPT 注册与账号管理工具
 
 ChatGPT / OpenAI 账号自动注册与 Codex OAuth 授权工具。当前项目的注册流程围绕 RoxyBrowser，Protocol 仅作为协议辅助/回退：
 
 - **protocol**：原纯协议注册，基于 `curl_cffi` + Sentinel/PoW。
 - **roxy**：RoxyBrowser 指纹浏览器 + Selenium 自动化注册，兼容新版页面流，例如 `create-account/password`、`about-you` 年龄/生日表单、地区本地化页面等。
 
-项目提供 **CLI** 和 **本地 WebUI** 两种使用方式。日常推荐使用 WebUI。
+项目提供 **CLI** 和 **本地 WebUI** 两种使用方式，日常推荐使用 WebUI。本项目由我们自行维护，主仓库为
+[leeseven1211/turb-gpt-free-register](https://github.com/leeseven1211/turb-gpt-free-register)。
 
-> 项目说明：本项目基于 [xiaoguzuiniu/gpt-free-register](https://github.com/xiaoguzuiniu/gpt-free-register) 进行改造与扩展。
+## 项目概况
 
-- TG 交流群：[https://t.me/+gu_cvEKq_vcyZWRl](https://t.me/+gu_cvEKq_vcyZWRl)
-
-> 开源版说明：仓库只保留源码、配置模板和文档；运行时账号、Token、邮箱池、Codex 凭证、日志等真实数据均已通过 `.gitignore` 排除。
+- WebUI 入口：`web.py` / `webui.sh`。
+- CLI 入口：`main.py`。
+- 默认仅监听 `127.0.0.1:5000`；macOS 的 `5000` 端口可能被 Control Center 占用，本机运行优先使用 `8000`。
+- PostgreSQL 是账号、注册任务、邮箱池、代理租约和 Codex 凭证的唯一事实来源；根目录中的兼容导出文件不能替代数据库。
+- 项目代码、注释、日志、界面和文档统一使用中文；配置键、协议字段和第三方产品名保留原名。
+- `.env`、账号、Token、邮箱池、Codex 凭证、日志、`run/` 和 `.venv/` 都属于运行时私有数据，不得提交仓库。
 
 ---
 
@@ -63,7 +67,7 @@ WebUI 启动注册前会显示“本次注册邮箱来源”下拉框，操作�
 - 支持 CPA 管理接口生成授权 URL，并提交 OAuth callback。
 - 支持接码平台：
   - GrizzlySMS
-  - 本地 L 取号服务，见 `L_API.md`
+  - 本地 L 取号服务，见「本地 L 接码服务」
 - 手机验证支持自动取号、填号、收码、提交、失败换号重试。
 - Codex 凭证保存到 PostgreSQL，并同步生成 `codex_accounts/` CPA 兼容文件。
 - 账号页与 Codex 管理页都可把已经完成的 Codex OAuth 凭证单个或批量上传到 sub2api；旧的 Codex Agent Token 生成链路已经移除，OAuth 凭证是唯一的 Codex 授权产物。
@@ -174,7 +178,7 @@ PostgreSQL 是**唯一事实来源**，没有纯文件模式回退：`DATABASE_U
 
 账号、注册任务、四类邮箱池、代理租约和 Codex 凭证均由 PostgreSQL 行级表支撑（`registered_accounts` / `registration_jobs` / `email_pool_*` / `proxy_leases` / `codex_credentials`），可行级更新、可跨进程原子抢占。`app_collections` 仅保留调度状态、兼容集合和迁移期旧数据，不是正常列表的事实来源。
 
-账号、注册任务、Outlook 和 iCloud 邮箱池不再生成根目录 JSON/TXT 或 `accounts_viewer.html`，运行时只读写 PostgreSQL。仍有外部消费者的通用 API、域名邮箱和 Codex 兼容产物由后台按需生成；日志、浏览器缓存与批次归档仍保留在文件系统。
+账号、注册任务、Outlook 和 iCloud 邮箱池不再生成根目录 JSON/TXT、`accounts/` 批次归档或 `accounts_viewer.html`，运行时只读写 PostgreSQL。仍有外部消费者的通用 API、域名邮箱和 Codex 兼容产物由后台按需生成；日志和浏览器缓存仍保留在文件系统。
 
 结构、迁移步骤与开发约定见 [`docs/storage-architecture.md`](docs/storage-architecture.md)。
 
@@ -502,6 +506,31 @@ H_API_BASE = "http://localhost:8788"
 H_ADMIN_AUTH_CODE = "你的H后台授权码"
 ```
 
+#### 本地 L 接码服务
+
+`SMS_PROVIDER="l"` 时，本项目把 L 服务作为内部接码客户端依赖。这里仅记录客户端必须遵守的接口约定；L 服务自身的后台管理、完整错误码和调试示例不属于本仓库文档范围。
+
+配置统一放在 `.env` 或 WebUI「配置 → 接码平台」，不要把授权码写入源码：
+
+```dotenv
+SMS_PROVIDER=l
+SMS_SERVICE=openai
+SMS_COUNTRY=10
+SMS_MAX_PRICE=0.05
+L_API_BASE=http://localhost:8788
+L_ADMIN_AUTH_CODE=你的后台授权码
+```
+
+所有请求均为 JSON，并携带 `Authorization: Bearer <L_ADMIN_AUTH_CODE>`：
+
+| 用途 | 接口 | 本项目发送 | 本项目读取 |
+|---|---|---|---|
+| 获取号码 | `POST /api/admin/l/take-phone` | `service`、`country`，可选 `maxPrice` | `item.id`、`item.phone` |
+| 获取验证码 | `POST /api/admin/l/fetch-code` | `id` | `code`；空字符串表示继续等待 |
+| 释放号码 | `POST /api/admin/l/release` | 单个 `id` 或批量 `ids` | `released` / `updated`、`failed` |
+
+`item.id` 是 L 服务的号码记录 ID，必须原样保存并用于后续取码和释放；`item.phone` 会在客户端按 `L_PHONE_PREFIX` 做号码规范化。服务返回非 `200`、`error`、`NO_NUMBERS` 或 `NO_BALANCE` 时，客户端会转换为对应的接码异常。号码使用完毕或任务失败后由现有释放/取消流程处理，不要在业务流程外重复释放。
+
 `SMS_CODE_WAIT` 是单个号码等待短信的硬上限，`CODEX_PHONE_TOTAL_TIMEOUT` 是取号、页面操作、
 等待短信和换号合计的整段硬预算。号码超时后，取消任务会交给后台持久化队列，不再阻塞注册线程。
 
@@ -522,6 +551,14 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 ### 当前设计与适配规则
 
 下面这些规则同时适用于 WebUI 自动注册、单账号操作、批量操作和 CLI。修改相关功能时必须一起检查所有入口，不能只修其中一条链路。
+
+#### 代码分层与运行时
+
+- 项目按 `config/`（声明式默认值）→ `core/`（驱动与业务服务）→ `webui/routes/` 和 `main.py`（WebUI / CLI 入口）分层；`core/` 不反向依赖 `webui/`。
+- 注册由 `core.registration.dispatcher.run_registration()` 按 `REGISTRATION_DRIVER` 分发，Codex OAuth 由 `core.codex_oauth.run_codex_oauth()` 按 `CODEX_OAUTH_DRIVER` 分发。驱动必须使用统一参数和任务进度上报接口。
+- `webui/app.py` 只负责组装应用；领域路由位于 `webui/routes/`，`webui/runtime.py` 负责启动恢复和后台 worker。新增长期任务时必须补充启动恢复，避免重启后记录永久停在 `running`。
+- WebUI 同时维护现代版和旧版模板。涉及页面结构、脚本或接口契约的改动，必须同步检查两套界面及 `tests/test_dashboard_api.py`。
+- 配置页保存到 `.env` 并热加载，不修改 `config/*.py`。需要读取热加载值的运行时代码应通过配置模块访问，避免 `from config import X` 形成过期绑定。
 
 #### 邮件验证码
 
@@ -713,6 +750,13 @@ curl -sS http://127.0.0.1:8081/api/accounts
 WebUI 提交真实任务时先设为“数量 1、线程 1”。确认批次进度完整走过“拉邮箱 → 打开浏览器 → 打开注册页 → 提交邮箱 → 邮箱验证码 → 填资料 → 获取 Token”后，再考虑连续任务。Codex OAuth 会额外需要 CPA 和短信接码，主注册验收期间建议保持 `ENABLE_CODEX_AUTO=False`。
 
 `.env.example` 是 WebUI 可编辑字段的完整模板；新增配置时必须同步更新 `config/*.py`、`webui/config_editor.py`、`.env.example` 和本 README。配置页的密钥字段只写 `.env`，页面会按密码框处理。
+
+### 当前部署边界
+
+- 当前默认运行和部署目标是本机工作区 `/Users/lihongwei/code/personal/gpt/turb-gpt-free-register`，本机 WebUI 优先使用 `PORT=8000`。
+- Oracle 主机上旧的项目 WebUI、systemd 服务和 Nginx 站点已经停用，不再把 `ssh oracle` 作为本项目默认部署方式。
+- Oracle 上可能仍运行 Email Butler；它只是本项目可选的外部收信依赖，不是 WebUI 的部署目标。
+- 更新或重启前必须保留 `.env`、PostgreSQL 数据、`accounts/`、`codex_accounts/`、日志、`run/` 和 `.venv/`。提交代码、推送仓库、重启服务和验证实际运行版本是四个独立步骤，不能相互代替。
 
 ### 后续投产清单
 
@@ -938,7 +982,6 @@ OpenAI 新版注册通常先展示邮箱验证码页；新账号页面同时提�
 
 - 账号 `extra_json.account_password`：账号唯一密码。注册时或账号配置补跑时设置后都写入这里，后续补跑只会读取，不会改密码。
 - 旧数据中的 `extra_json.registration_password` / `extra_json.login_password` 仅作为兼容读取来源，新写入不会再生成这两个字段。
-- 批次归档 `accounts/YYYYMMDD-.../注册成功账号.json` 的 `extra.account_password`
 
 账号页提供“账号密码”状态列和真实数据筛选。已设置密码的账号可以单独复制；批量选择后可用“复制密码”导出 `邮箱----密码`，未设置密码的账号会自动跳过。
 
@@ -975,17 +1018,11 @@ WebUI 配置页保存后会调用热加载；Roxy、Codex、邮箱、代理、�
 | PostgreSQL `email_pool_outlook` | Outlook 邮箱池及状态；通过 WebUI/API 或显式文件导入写入 |
 | `用于注册的API邮箱.txt/json` | 通用 API 邮箱池及状态 |
 | PostgreSQL `registered_accounts` | 注册成功账号及 access token |
-| `accounts/` | 每次运行的批次归档 |
 | `codex_accounts/` | Codex OAuth 凭证 JSON |
 | PostgreSQL `account_action_batches/account_action_tasks/account_action_events` | 账号操作任务实例及脱敏阶段事件 |
 | `logs/` | WebUI、注册任务、查活和 Codex 补跑日志 |
 
-批次目录示例：
-
-```text
-accounts/20260709-10个-3线程/
-└── 本次运行归档文件（数据库仍为事实来源）
-```
+旧版本生成的 `accounts/` 批次目录仅是历史归档，当前注册流程不会继续创建或读取它；是否清理历史目录应在核对 PostgreSQL 数据后单独执行。
 
 ---
 
@@ -1022,7 +1059,7 @@ accounts/20260709-10个-3线程/
   ↓
 可选 Codex OAuth（复用当前 Profile、代理和登录态）
   ↓
-保存账号与批次归档
+保存账号到 PostgreSQL
   ↓
 关闭/删除 Roxy Profile
 ```
@@ -1146,7 +1183,30 @@ ENABLE_CODEX_AUTO = False
 └── sentinel/                       # Sentinel Node.js 子进程
 ```
 
-`accounts/`、`codex_accounts/`、`logs/`、`.env` 和 `.venv/` 等是本地运行时数据或凭证目录，故意不列入代码结构，也不得提交。
+历史 `accounts/`、`codex_accounts/`、`logs/`、`.env` 和 `.venv/` 等是本地运行时数据或凭证目录，故意不列入代码结构，也不得提交。
+
+---
+
+## 开发与验证
+
+项目使用标准库 `unittest`。普通改动先运行针对性测试，再根据影响范围运行完整测试；存储测试必须使用隔离的测试 schema，禁止连接生产数据库 `turb_console`。
+
+```bash
+# 完整单元测试
+.venv/bin/python -m unittest discover -s tests -p 'test_*.py'
+
+# 常用针对性测试
+.venv/bin/python -m unittest tests.test_config_defaults
+.venv/bin/python -m unittest tests.test_dashboard_api.DashboardApiTests.test_jobs_date_range_filter
+
+# 静态检查
+ruff check .
+ruff check --select E4,E7,E9,F --exit-zero .
+```
+
+涉及 PostgreSQL 的完整测试优先通过项目现有的隔离测试工具或 `tests.support_pg.PostgresTestCase` 运行。该基类会创建临时 schema、重定向兼容导出并在用例间清理数据；不得把测试 schema 指向 `public`。详细存储约束见 [`docs/storage-architecture.md`](docs/storage-architecture.md)。
+
+涉及真实浏览器或外部服务时，先验证单任务，再逐步增加并发；测试结论要区分静态测试、数据库状态、浏览器链路和实际服务运行状态。
 
 ---
 
@@ -1159,18 +1219,3 @@ ENABLE_CODEX_AUTO = False
 - 在任务日志的「网络调试」区域查看请求状态、阶段、耗时和错误，可选择同批成功任务自动对比，也可下载已经脱敏和限流的 HAR。Cookie、Token、密码、OTP、邮箱和 URL 查询值不会明文写入抓包。
 - 普通失败任务在同一日志面板显示「失败诊断」：分类、页面状态、失败请求和截图；普通模式不会保存成功请求或请求/响应正文。
 - 保留时间、并发暂停数、单正文/单任务/全局容量、产物保留天数和异步队列长度在「配置 → 注册调试」管理。调试抓包位于 `logs/debug/<job_uuid>/`，属于运行时私有数据，不得提交。
-
----
-
-## 🙏 致谢
-
-- [LINUX DO](https://linux.do) — 社区交流与用户反馈
-- [RoxyBrowser](https://roxybrowser.cn/invite/NvH4Jx) — 免费提供 5 个窗口
-- [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) — Codex OAuth 凭证格式参考
-- [curl_cffi](https://github.com/yifeikong/curl_cffi) — 底层 HTTP 库，提供 TLS 指纹 impersonate 能力
-
----
-
-## License
-
-MIT

@@ -273,7 +273,7 @@ email_butler / gptmail / mailnest / cloudmail / icloud_hide
 所有驱动接收相同的核心参数：
 
 ```text
-(email, name, birthday, proxy, otp_code, batch_dir)
+(email, name, birthday, proxy, otp_code)
 ```
 
 浏览器驱动还会在需要时接收或读取密码检查点。
@@ -481,12 +481,12 @@ Outlook 的事务写入可以避免“账号已经创建，但邮箱池仍是 av
 落库成功后：
 
 1. 通过 `report_registered_account(account_id)` 立即绑定当前任务。Roxy 会在多个检查点提前绑定，WebUI 重启后仍能定位已创建账号。
-2. 写入批次归档文件，供兼容复制使用。
-3. 触发套餐查询：
+2. 触发套餐查询：
    - 有注册代理时优先同步查询，完成后再释放代理。
    - 没有可复用代理时进入后台任务队列。
    - 查询失败只记录 `plan_check` 失败，不否定注册主体。
-4. 兼容 JSON/TXT 导出由去抖导出任务生成，导出失败不回滚数据库业务写入。
+
+通用 API 邮箱、域名邮箱和 Codex 等各自仍可按外部消费者需要生成兼容文件；这些导出不由账号落库触发，也不属于 `accounts/` 批次归档。
 
 ### 步骤 14：protocol 驱动的 Flow 和结果返回
 
@@ -601,7 +601,7 @@ pending -> cancelled
   proxy_leases
   app_collections（调度状态、兼容集合和迁移期旧数据，不是正常列表事实来源）
 
-兼容输出：仍有外部消费者的通用 API、域名邮箱、Codex 文件，以及批次 `accounts/` 归档
+兼容输出：仍有外部消费者的通用 API、域名邮箱和 Codex 文件
 ```
 
 核心写入路径应优先保证数据库事务成功；兼容导出不应被当成任务成功条件。

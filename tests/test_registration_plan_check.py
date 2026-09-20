@@ -84,7 +84,6 @@ class RegistrationPlanCheckTests(unittest.TestCase):
     def test_save_account_uses_sync_check_when_registration_proxy_is_available(self):
         with (
             patch("core.db.insert_account", return_value=12),
-            patch.object(account_export, "_append_batch_archive", return_value="batch"),
             patch.object(plan_check_service, "check_registration_account_plan", return_value={"ok": True}) as sync_check,
             patch.object(plan_check_service, "enqueue_account_plan_check") as enqueue,
         ):
@@ -107,7 +106,6 @@ class RegistrationPlanCheckTests(unittest.TestCase):
     def test_save_account_keeps_async_check_without_registration_proxy(self):
         with (
             patch("core.db.insert_account", return_value=13),
-            patch.object(account_export, "_append_batch_archive", return_value="batch"),
             patch.object(plan_check_service, "check_registration_account_plan") as sync_check,
             patch.object(
                 plan_check_service,
@@ -140,7 +138,6 @@ class RegistrationPlanCheckTests(unittest.TestCase):
         }
         with (
             patch("core.db.insert_account", return_value=15),
-            patch.object(account_export, "_append_batch_archive", return_value="batch"),
             patch.object(plan_check_service, "check_registration_account_plan") as sync_check,
             patch.object(plan_check_service, "enqueue_account_plan_check") as enqueue,
             patch("core.db.update_account_plan_check", return_value=True) as update,
@@ -166,7 +163,6 @@ class RegistrationPlanCheckTests(unittest.TestCase):
     def test_save_account_treats_empty_registration_proxy_as_explicit_direct(self):
         with (
             patch("core.db.insert_account", return_value=14),
-            patch.object(account_export, "_append_batch_archive", return_value="batch"),
             patch.object(plan_check_service, "check_registration_account_plan", return_value={"ok": True}) as sync_check,
             patch.object(plan_check_service, "enqueue_account_plan_check") as enqueue,
         ):

@@ -2,8 +2,6 @@
 """Skyvern 云端浏览器注册入口。"""
 from __future__ import annotations
 
-from pathlib import Path
-
 from core.registration.browser_use import run_browser_use_registration
 
 
@@ -13,7 +11,6 @@ def run_skyvern_registration(
     birthday: str,
     proxy: str | None = None,
     otp_code: str | None = None,
-    batch_dir: Path | None = None,
     registration_options: dict | None = None,
 ) -> dict:
     return run_browser_use_registration(
@@ -22,7 +19,6 @@ def run_skyvern_registration(
         birthday=birthday,
         proxy=proxy,
         otp_code=otp_code,
-        batch_dir=batch_dir,
         cloud_provider="skyvern",
         registration_options=registration_options,
     )

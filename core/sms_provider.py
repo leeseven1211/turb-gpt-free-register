@@ -9,7 +9,7 @@
 
 当前支持：
     - GrizzlySMS：GET 文本接口，文档 https://api.grizzlysms.com
-    - L：本地 JSON 管理接口，文档 L_API.md
+    - L：本地 JSON 管理接口，约定见 README“本地 L 接码服务”
     - H：本地 JSON 管理接口，文档 H_API.md
 
 价格相关：每取一个号、收到短信都会计费，所以：

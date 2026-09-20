@@ -10,7 +10,6 @@ import re
 import string
 import time
 import uuid
-from pathlib import Path
 from urllib.parse import urlsplit
 
 from config import roxybrowser as _cfg
@@ -431,7 +430,7 @@ def _save_roxy_account_checkpoint(
     codex_result: dict | None = None,
     twofa_result: dict | None = None,
 ) -> int:
-    """只落库、不做批次归档/套餐查询的注册检查点。"""
+    """只落库、不做套餐查询的注册检查点。"""
     from core.db import insert_account
 
     user = session_info.get("user") or {}
@@ -601,7 +600,6 @@ def run_roxy_registration(
     birthday: str,
     proxy: str = None,
     otp_code: str = None,
-    batch_dir: Path | None = None,
     existing_password: str | None = None,
     existing_totp_secret: str | None = None,
     profile_id: str | None = None,
@@ -1071,7 +1069,6 @@ def run_roxy_registration(
             access_token=access_token,
             email_source=resolve_email_source(email),
             proxy_used=proxy or None,
-            batch_dir=batch_dir,
             extra={
                 "user": session_info.get("user"),
                 "account": session_info.get("account"),

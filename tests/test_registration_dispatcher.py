@@ -1,5 +1,6 @@
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from core.registration import dispatcher
@@ -13,7 +14,6 @@ class RegistrationDispatcherTests(unittest.TestCase):
             "birthday": "1990-01-01",
             "proxy": "http://proxy.example:8080",
             "otp_code": "123456",
-            "batch_dir": Path("batch"),
         }
 
     def test_protocol_driver_forwards_common_contract(self):
@@ -43,6 +43,23 @@ class RegistrationDispatcherTests(unittest.TestCase):
             existing_password=None,
             existing_totp_secret=None,
         )
+
+    def test_cli_batch_does_not_create_file_archive(self):
+        import main
+        from core import account_export
+
+        with TemporaryDirectory() as temporary_dir:
+            archive_dir = Path(temporary_dir) / "accounts"
+            with (
+                patch.object(account_export, "_ACCOUNTS_DIR", archive_dir, create=True),
+                patch("core.postgres_store.require_ready"),
+                patch.object(main, "run_serial_batch", return_value=[{"success": True}]),
+                patch("sys.argv", ["main.py", "--count", "1"]),
+            ):
+                with self.assertRaisesRegex(SystemExit, "0"):
+                    main.main()
+
+            self.assertFalse(archive_dir.exists())
 
     def test_protocol_aliases_are_supported(self):
         for driver in ("api", "http"):
@@ -79,7 +96,6 @@ class RegistrationDispatcherTests(unittest.TestCase):
             birthday="1990-01-01",
             proxy=self.args["proxy"],
             otp_code=self.args["otp_code"],
-            batch_dir=self.args["batch_dir"],
             existing_password="saved-password",
             existing_totp_secret="saved-totp",
             profile_id=None,

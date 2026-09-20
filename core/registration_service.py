@@ -415,7 +415,6 @@ def persist_registration_core(
     extra: dict | None = None,
     email_source: str | None = None,
     proxy_used: str | None = None,
-    batch_dir=None,
 ) -> int:
     """Save the core account and mirror it into B's Attempt atomically where available."""
     from core.account_export import persist_account_core
@@ -427,7 +426,6 @@ def persist_registration_core(
         extra=extra,
         email_source=email_source,
         proxy_used=proxy_used,
-        batch_dir=batch_dir,
     )
     attempt_id = getattr(_THREAD_CTX, "attempt_id", None)
     if attempt_id is not None:

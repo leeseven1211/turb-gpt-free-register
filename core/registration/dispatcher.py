@@ -14,7 +14,6 @@ def run_registration(
     birthday: str | None = None,
     proxy: str | None = None,
     otp_code: str | None = None,
-    batch_dir=None,
     existing_password: str | None = None,
     existing_totp_secret: str | None = None,
     profile_id: str | None = None,
@@ -33,7 +32,6 @@ def run_registration(
             birthday=birthday or generate_random_birthday(),
             proxy=proxy,
             otp_code=otp_code,
-            batch_dir=batch_dir,
             existing_password=existing_password,
             existing_totp_secret=existing_totp_secret,
         )
@@ -60,7 +58,6 @@ def run_registration(
         birthday=birthday,
         proxy=proxy,
         otp_code=otp_code,
-        batch_dir=batch_dir,
     )
     if registration_options is not None:
         kwargs["registration_options"] = registration_options

@@ -126,7 +126,7 @@ CPA_SAVE_CALLBACK_RECEIPT: bool = schema_default("CPA_SAVE_CALLBACK_RECEIPT")
 # 接码平台（手机短信验证用）
 # SMS_PROVIDER:
 #   "grizzly" = GrizzlySMS，接口说明见 https://api.grizzlysms.com
-#   "l"       = 本地 L 取号服务，接口说明见 L_API.md
+#   "l"       = 本地 L 取号服务，接口说明见 README“本地 L 接码服务”
 #   "h"       = 本地 H 取号服务，接口说明见 H_API.md
 # ============================================================
 
@@ -197,7 +197,7 @@ H_PHONE_ACQUIRE_MODE: str = schema_default("H_PHONE_ACQUIRE_MODE")
 # L API 基址，例如本地后台：http://localhost:8788
 L_API_BASE: str = schema_default("L_API_BASE")
 
-# L 后台授权码，对应 L_API.md 里的 Authorization: Bearer <ADMIN_AUTH_CODE>
+# L 后台授权码，对应 README“本地 L 接码服务”中的 Bearer 鉴权
 L_ADMIN_AUTH_CODE: str = schema_default("L_ADMIN_AUTH_CODE")
 
 # L 返回的号码如果不含国家码，可在这里补前缀；例如美国本地 10 位号填 "1"。

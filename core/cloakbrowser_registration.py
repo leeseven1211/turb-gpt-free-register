@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import time
-from pathlib import Path
 
 from config import cloakbrowser as _cfg
 from config import twofa as _twofa_cfg
@@ -36,7 +35,6 @@ def run_cloak_registration(
     birthday: str,
     proxy: str = None,
     otp_code: str = None,
-    batch_dir: Path | None = None,
     registration_options: dict | None = None,
 ) -> dict:
     """CloakBrowser 自动化注册入口。"""
@@ -200,7 +198,6 @@ def run_cloak_registration(
             plan_check_proxy=proxy or None,
             captured_plan_result=captured_plan_result,
             plan_check_session=plan_check_session,
-            batch_dir=batch_dir,
             extra={
                 "user": session_info.get("user"),
                 "account": session_info.get("account"),
