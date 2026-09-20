@@ -128,6 +128,28 @@ class RegistrationServicePostprocessContractTests(unittest.TestCase):
         self.assertIn("远端结果尚未确认", info["retry_reason"])
         self.assertNotIn("密码已创建", info["retry_reason"])
 
+    def test_confirmed_deactivated_account_is_not_retryable_with_stale_codex_projection(self):
+        info = _build_retry_info(
+            {
+                "status": "partial_success",
+                "account_id": 46,
+                "progress_steps": {"codex": {"state": "failed"}},
+            },
+            account={
+                "id": 46,
+                "email": "deactivated@example.com",
+                "account_status": "deactivated",
+                "codex_status": "failed",
+                "plan_check_status": "failed",
+                "totp_secret": "",
+                "extra_json": "{}",
+            },
+            successful_retry=None,
+        )
+
+        self.assertFalse(info["retryable"])
+        self.assertEqual("账号已废号，不能补跑 Codex", info["retry_reason"])
+
     def test_normalized_attempt_can_make_pending_registration_resumeable(self):
         with patch(
             "core.storage.registration.get_latest_attempt_by_account",

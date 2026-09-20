@@ -15,7 +15,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Iterator
 
-from core.operation_runtime import CancellationToken, OperationCancelled, operation_context
+from core.operation_runtime import (
+    CancellationToken,
+    OperationAccountDeactivated,
+    OperationCancelled,
+    operation_context,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -158,7 +163,7 @@ def _stored_config_snapshot(run: Mapping[str, Any]) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class OperationResult:
-    """Explicit handler result; ``request_unknown`` is never retried here."""
+    """显式 handler 结果；``request_unknown`` 保留旧 Run 供后续人工重跑。"""
 
     status: str
     summary: Mapping[str, Any] = field(default_factory=dict)
@@ -668,19 +673,18 @@ _ACTIVE_OPERATION_TASK_STATUSES = frozenset({
 
 
 def default_operation_retry(task: Mapping[str, Any]) -> dict[str, Any]:
-    """Retry a registered operation through the durable storage boundary.
+    """通过 durable storage 边界重试一个已注册的任务。
 
-    This action is deliberately service-neutral. A handler registration makes
-    the task executable; unless the adapter supplies a more specific action,
-    the task center can retry the same logical task with a fresh Run. Unknown
-    remote writes are fenced before this function reaches storage.
+    该入口不绑定具体服务：只要任务类型已经注册 handler，任务中心就能在同一逻辑
+    任务下创建新的 Run。远端结果未知时保留旧 Run 的请求证据，但不再阻止操作员
+    创建新的 Run。
     """
-    if operation_requires_reconciliation(task):
+    if operation_is_deactivated(task):
         return {
             "accepted": False,
             "busy": False,
-            "reconcile_required": True,
-            "error": "远端请求结果待核验，禁止盲目重试",
+            "deactivated": True,
+            "error": "账号已废号，不能重跑",
         }
     if str(task.get("status") or "").strip().lower() in _ACTIVE_OPERATION_TASK_STATUSES:
         return {"accepted": False, "busy": True, "error": "任务仍在执行"}
@@ -694,6 +698,13 @@ def default_operation_retry(task: Mapping[str, Any]) -> dict[str, Any]:
             data={"retry_action": "manual_retry"},
         )
     except (LookupError, ValueError) as exc:
+        if "账号已废号" in str(exc):
+            return {
+                "accepted": False,
+                "busy": False,
+                "deactivated": True,
+                "error": "账号已废号，不能重跑",
+            }
         return {
             "accepted": False,
             "busy": False,
@@ -772,7 +783,10 @@ def operation_action(
 
 
 def operation_requires_reconciliation(task: Mapping[str, Any] | None) -> bool:
-    """Whether a task's current result forbids a blind retry."""
+    """Return whether a task retains unconfirmed remote-result evidence.
+
+    该信号用于展示与人工核验，不再阻止任务中心在同一逻辑任务下创建新的 Run。
+    """
     if not isinstance(task, Mapping):
         return False
     if str(task.get("status") or "").strip().lower() == "attention_required":
@@ -797,6 +811,23 @@ def operation_requires_reconciliation(task: Mapping[str, Any] | None) -> bool:
         isinstance(item, Mapping)
         and str(item.get("action") or "").strip().lower() == "reconcile"
         for item in (actions if isinstance(actions, list) else [])
+    )
+
+
+def operation_is_deactivated(task: Mapping[str, Any] | None) -> bool:
+    """判断任务是否已有明确的账号停用结果。"""
+    if not isinstance(task, Mapping):
+        return False
+    status = str(task.get("status") or "").strip().lower()
+    target_status = str(task.get("target_status") or "").strip().lower()
+    if status == "deactivated" or target_status in {"deactivated", "account_deactivated"}:
+        return True
+    summary = task.get("result_summary")
+    if not isinstance(summary, Mapping):
+        return False
+    return any(
+        str(summary.get(key) or "").strip().lower() == "deactivated"
+        for key in ("status", "requested_status")
     )
 
 
@@ -866,6 +897,14 @@ def submit_durable_operation(
             data=payload,
         )
     except Exception as exc:
+        if isinstance(exc, OperationAccountDeactivated):
+            return {
+                "accepted": False,
+                "busy": False,
+                "deactivated": True,
+                "error_code": "account_deactivated",
+                "error": str(exc) or "账号已废号，禁止创建任务",
+            }
         if "uq_operation_runs_active_account_family" in str(exc) or "duplicate key" in str(exc).lower():
             active = _operation().active_run_for_account(
                 int(account_id), str(resource_family or "openai_interactive"),
@@ -978,6 +1017,21 @@ def _execute_operation_handler(task_type: str, run_id: int) -> dict[str, Any]:
             "task_id": context.task_id,
             "reason": str(exc),
         }
+    except OperationAccountDeactivated as exc:
+        result = OperationResult(
+            "deactivated",
+            {
+                "status": "deactivated",
+                "requested_status": "deactivated",
+                "reason": "account_deactivated",
+                "execution_id": execution_id,
+            },
+            str(exc) or "账号已废号，任务未执行",
+            str(exc) or "账号已废号，任务未执行",
+        )
+        if not context.finished:
+            context.finish(result)
+        return _operation_handler_result_payload(context, result)
     except OperationLeaseLost as exc:
         # A lost lease can mean that a remote write was accepted. Never
         # requeue this run; preserve the attempt for reconciliation instead.
@@ -1444,7 +1498,7 @@ __all__ = [
     "OperationLeaseUnavailable", "OperationLeaseLost", "OperationLease",
     "OperationTaskReporter", "OperationHandlerContext", "OperationContext",
     "register_operation_handler", "unregister_operation_handler", "registered_operation_types",
-    "register_operation_actions", "operation_action", "operation_requires_reconciliation",
+    "register_operation_actions", "operation_action", "operation_requires_reconciliation", "operation_is_deactivated",
     "default_operation_retry", "default_operation_cancel",
     "list_reconciliation_accounts",
     "submit_durable_operation", "submit_operation", "register_durable_handler",

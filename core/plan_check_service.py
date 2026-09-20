@@ -661,8 +661,16 @@ def enqueue_account_plan_check(
     access_token = str(access_token or "").strip()
     if not access_token:
         return {"accepted": False, "busy": False, "error": "账号缺少 access_token"}
-    if not db.get_account(account_id):
+    account = db.get_account(account_id)
+    if not account:
         return {"accepted": False, "busy": False, "error": "账号不存在"}
+    if db.account_is_deactivated(account):
+        return {
+            "accepted": False,
+            "busy": False,
+            "deactivated": True,
+            "error": "账号已废号，不能查询套餐",
+        }
     claimed = False
     key = str(idempotency_key or "").strip() or None
     if not key:

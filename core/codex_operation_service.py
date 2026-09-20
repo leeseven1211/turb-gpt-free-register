@@ -453,7 +453,7 @@ def submit(
     if not account:
         return {"accepted": False, "error": f"账号不存在: {email}"}
     account_id = int(account.get("id") or 0)
-    if str(account.get("account_status") or "").lower() == "deactivated" or str(account.get("codex_status") or "").lower() == "deactivated":
+    if db.account_is_deactivated(account):
         return {"accepted": False, "error": "账号已废号，不能补跑 Codex"}
     enabled, reason = _feature_ready()
     if not enabled:
@@ -584,6 +584,9 @@ def retry_task(task_id: int, *, trigger: str = "manual_retry") -> dict:
     if str(task.get("source_system") or "") != "native_operations":
         return {"accepted": False, "error": "该历史任务尚未迁移为原生运行任务"}
     account_id = int(task.get("account_id") or 0)
+    account = db.get_account(account_id) if account_id else None
+    if task_gateway.operation_is_deactivated(task) or db.account_is_deactivated(account):
+        return {"accepted": False, "deactivated": True, "error": "账号已废号，不能重跑 Codex"}
     if operation_task_store.active_run_for_account(account_id):
         return _duplicate_result(account_id)
     enabled, reason = _feature_ready()
@@ -956,7 +959,7 @@ def _execute_run(run_id: int) -> dict:
                         "local_readback_confirmed": local_readback_confirmed,
                     },
                 )
-            elif remote_intent_started and remote_receipt_state != "rejected":
+            elif final_status != "deactivated" and remote_intent_started and remote_receipt_state != "rejected":
                 run_summary.setdefault("outcome", "request_unknown")
                 run_summary.setdefault("reconcile_required", True)
                 run_summary.setdefault("remote_receipt_state", remote_receipt_state or "started")

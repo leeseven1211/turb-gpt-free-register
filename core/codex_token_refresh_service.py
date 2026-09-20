@@ -930,7 +930,7 @@ def _sync_sub2_if_needed(filename: str) -> dict[str, Any]:
     account_deactivated = str(row.get("oauth_account_status") or "").strip().lower() == "deactivated"
     if not account_deactivated and str(row.get("email") or "").strip():
         linked_account = db.get_account_by_email(str(row.get("email") or "").strip())
-        account_deactivated = str((linked_account or {}).get("account_status") or "").strip().lower() == "deactivated"
+        account_deactivated = db.account_is_deactivated(linked_account)
     if account_deactivated:
         return {
             "status": "blocked",
@@ -1123,8 +1123,9 @@ def _handle_operation_context(context: Any) -> Any:
     except ImportError:  # pragma: no cover - only for a partial rolling import
         OperationLeaseUnavailable = ()  # type: ignore[assignment]
     try:
-        from core.operation_runtime import OperationCancelled
+        from core.operation_runtime import OperationAccountDeactivated, OperationCancelled
     except ImportError:  # pragma: no cover - project always provides it
+        OperationAccountDeactivated = ()  # type: ignore[assignment]
         OperationCancelled = ()  # type: ignore[assignment]
 
     run = context.run if isinstance(context.run, Mapping) else {}
@@ -1234,6 +1235,21 @@ def _handle_operation_context(context: Any) -> Any:
         context.finish(terminal_result)
         _clear_refresh_marker_after_terminal(str(result.get("filename") or filename))
         return None
+    except OperationAccountDeactivated as exc:
+        summary = {
+            "filename": filename,
+            "status": "deactivated",
+            "requested_status": "deactivated",
+            "reason": "account_deactivated",
+            "remote_request_started": bool(remote_dispatched),
+            "remote_response_received": bool(remote_response_received),
+        }
+        return _b_operation_result(
+            "deactivated",
+            message="账号已确认停用，任务未继续执行",
+            summary=summary,
+            error=_safe_error(exc),
+        )
     except OperationLeaseUnavailable:
         # B's dispatcher owns requeue/backoff for lease contention. Do not
         # turn this into a business failure or submit a second run here.
@@ -1374,9 +1390,17 @@ def _idempotency_key(
     trigger: str,
     explicit: str | None,
     reconcile: bool,
+    manual_retry_unknown: bool = False,
 ) -> str:
     if explicit:
         return _safe_text(explicit, 240)
+    if manual_retry_unknown:
+        # 任务中心的显式重试必须创建新的 durable Run，不能复用调度器
+        # 按凭证代际生成的幂等键，也不能把未知结果静默合并回旧尝试。
+        return _safe_text(
+            f"{TASK_TYPE}:{filename}:task-center-retry:{uuid.uuid4().hex}",
+            240,
+        )
     generation = (
         row.get("oauth_refresh_attempted_at")
         or row.get("last_refresh")
@@ -1459,6 +1483,7 @@ def enqueue_refresh(
     batch_id: str | int | None = None,
     idempotency_key: str | None = None,
     reconcile: bool = False,
+    allow_unknown_manual_retry: bool = False,
 ) -> dict[str, Any]:
     filename = str(filename or "").strip()
     row = next(
@@ -1492,7 +1517,7 @@ def enqueue_refresh(
             "error": "refresh token 已被远端拒绝，需要重新 OAuth 授权",
             "filename": filename,
         }
-    if _has_reconciliation_marker(refresh_error):
+    if _has_reconciliation_marker(refresh_error) and not allow_unknown_manual_retry:
         return {
             "accepted": False,
             "error_code": NEEDS_RECONCILIATION,
@@ -1512,7 +1537,7 @@ def enqueue_refresh(
             "filename": filename,
             "email": email,
         }
-    if str((account or {}).get("account_status") or "").strip().lower() == "deactivated":
+    if db.account_is_deactivated(account):
         reason = str((account or {}).get("account_status_reason") or "account_deactivated").strip()[:500]
         try:
             db.mark_codex_account_deactivated(email, reason)
@@ -1533,7 +1558,10 @@ def enqueue_refresh(
     fence_row = dict(row)
     fence_row["registered_account_id"] = account_id
     reconciliation_accounts = _reconciliation_account_ids([fence_row])
-    if reconciliation_accounts is None or account_id in reconciliation_accounts:
+    if (
+        not allow_unknown_manual_retry
+        and (reconciliation_accounts is None or account_id in reconciliation_accounts)
+    ):
         return {
             "accepted": False,
             "error_code": NEEDS_RECONCILIATION,
@@ -1583,6 +1611,8 @@ def enqueue_refresh(
             "credential_filename": filename,
             "resource_family": RESOURCE_FAMILY,
         }
+        if allow_unknown_manual_retry:
+            data["manual_retry_unknown"] = True
         if batch_id is not None and native_batch_id is None:
             data["legacy_batch_id"] = _safe_text(batch_id, 120)
         key = _idempotency_key(
@@ -1591,6 +1621,7 @@ def enqueue_refresh(
             trigger=str(trigger or "manual"),
             explicit=idempotency_key,
             reconcile=bool(reconcile),
+            manual_retry_unknown=bool(allow_unknown_manual_retry),
         )
         result = _durable_submit(
             account_id=account_id,

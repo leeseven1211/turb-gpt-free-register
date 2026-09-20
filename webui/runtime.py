@@ -1071,15 +1071,20 @@ def _handle_native_registration_resume(context: task_gateway.OperationHandlerCon
 def _retry_native_runtime_task(task: Mapping[str, Any]) -> dict[str, Any]:
     if str(task.get("source_system") or "") != _RUNTIME_SOURCE_SYSTEM:
         return {"accepted": False, "busy": False, "error": "任务来源不属于 WebUI runtime"}
-    if (
-        str(task.get("task_type") or "").strip().lower() != "registration_resume"
-        and task_gateway.operation_requires_reconciliation(task)
-    ):
+    if task_gateway.operation_is_deactivated(task):
         return {
             "accepted": False,
             "busy": False,
-            "reconcile_required": True,
-            "error": "远端结果待核验，禁止盲目重试",
+            "deactivated": True,
+            "error": "账号已废号，不能重跑",
+        }
+    account_id = int(task.get("account_id") or 0)
+    if account_id and db.account_is_deactivated(db.get_account(account_id)):
+        return {
+            "accepted": False,
+            "busy": False,
+            "deactivated": True,
+            "error": "账号已废号，不能重跑",
         }
     if str(task.get("status") or "").lower() in {
         "queued", "running", "cancelling", "settling", "stopping", "waiting",
@@ -1100,7 +1105,7 @@ def _retry_native_runtime_task(task: Mapping[str, Any]) -> dict[str, Any]:
         "reused": False,
         "task_id": int(task["id"]),
         "run_id": int(run["id"]),
-        "account_id": int(task.get("account_id") or 0) or None,
+        "account_id": account_id or None,
         "email": str(task.get("email_snapshot") or ""),
         "status": "queued",
         "source_system": _RUNTIME_SOURCE_SYSTEM,
@@ -1480,7 +1485,7 @@ class WebUIContext:
         email = str(account.get("email") or "").strip()
         if not email:
             return {"accepted": False, "error": "账号邮箱为空"}
-        if str(account.get("account_status") or "").lower() == "deactivated":
+        if db.account_is_deactivated(account):
             return {"accepted": False, "error": "账号已废号，不能补齐配置"}
 
         requested_steps = {"password", "plan_check", "twofa"} if steps is None else {
@@ -1571,7 +1576,7 @@ class WebUIContext:
         email = str(account.get("email") or "").strip()
         if not email:
             return {"accepted": False, "error": "账号邮箱为空"}
-        if str(account.get("account_status") or "").lower() == "deactivated":
+        if db.account_is_deactivated(account):
             return {"accepted": False, "error": "账号已废号，不能补全账号"}
         # registered_accounts is created before registration is fully complete.
         # Enrich the account row with the durable Attempt state so a missing
@@ -1685,6 +1690,12 @@ class WebUIContext:
         account = db.get_account(int(task.get("account_id") or 0))
         if not account:
             return {"ok": False, "error": "关联账号不存在"}, 404
+        if db.account_is_deactivated(account):
+            return {
+                "ok": False,
+                "deactivated": True,
+                "error": "账号已废号，不能重跑",
+            }, 409
         task_type = str(task.get("task_type") or "")
         if task_type in {"live_check", "token_refresh"}:
             queued = live_check_service.enqueue_account_live_check(
@@ -1744,8 +1755,18 @@ class WebUIContext:
                 trigger="manual_retry_completion",
             )
         elif task_type == "codex_token_refresh":
-            filename = str((task.get("result_summary") or {}).get("filename") or "")
-            queued = codex_token_refresh_service.enqueue_refresh(filename, trigger="manual_retry")
+            summary = task.get("result_summary") if isinstance(task.get("result_summary"), dict) else {}
+            task_data = task.get("data") if isinstance(task.get("data"), dict) else {}
+            filename = str(
+                summary.get("filename")
+                or task_data.get("credential_filename")
+                or ""
+            )
+            queued = codex_token_refresh_service.enqueue_refresh(
+                filename,
+                trigger="manual_task_center_retry",
+                allow_unknown_manual_retry=True,
+            )
         else:
             return {"ok": False, "error": "该任务类型暂不支持重跑"}, 400
         if queued.get("busy"):

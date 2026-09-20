@@ -314,6 +314,40 @@ class WebUIRuntimeTests(unittest.TestCase):
         complete.assert_called_once_with(301, success=True)
         notify.assert_called_once()
 
+    def test_completion_dependency_deactivated_child_does_not_offer_parent_retry(self):
+        dependency = {
+            "id": 302,
+            "parent_source_system": "webui_runtime",
+            "parent_source_id": "402",
+            "child_status": "deactivated",
+            "child_result": {"status": "deactivated", "message": "账号已废"},
+            "payload": {},
+        }
+        with (
+            patch.object(
+                runtime.operation_task_store,
+                "get_task",
+                return_value={"id": 402, "status": "waiting"},
+            ),
+            patch.object(
+                runtime.operation_task_store,
+                "apply_task_dependency_result",
+                return_value={"id": 402, "status": "deactivated", "next_actions": []},
+            ) as apply_result,
+            patch.object(runtime.operation_task_store, "complete_task_dependency") as complete,
+            patch.object(runtime.operation_task_store, "retry_runtime_task") as retry,
+        ):
+            runtime._handle_ready_completion_dependency(dependency)
+
+        apply_result.assert_called_once_with(
+            parent_source_system="webui_runtime",
+            parent_source_id="402",
+            child_status="deactivated",
+            child_result={"status": "deactivated", "message": "账号已废"},
+        )
+        complete.assert_called_once_with(302, success=True)
+        retry.assert_not_called()
+
     def test_completion_setup_is_a_durable_child_before_parent_partial(self):
         class FakeContext:
             run = {
@@ -496,6 +530,31 @@ class WebUIRuntimeTests(unittest.TestCase):
         self.assertEqual(902, result["run_id"])
         retry.assert_called_once_with(
             901,
+            trigger="manual_retry",
+            data={"retry_action": "manual_retry"},
+        )
+        notify.assert_called_once()
+
+    def test_account_completion_retry_allows_unknown_attempt(self):
+        task = {
+            "id": 903,
+            "task_type": "account_completion",
+            "source_system": "webui_runtime",
+            "status": "attention_required",
+            "result_summary": {"outcome": "request_unknown", "reconcile_required": True},
+            "next_actions": [{"action": "reconcile"}],
+        }
+        with (
+            patch.object(runtime.task_gateway, "operation_requires_reconciliation", return_value=True),
+            patch.object(runtime.operation_task_store, "retry_runtime_task", return_value={"id": 904}) as retry,
+            patch.object(runtime.task_gateway, "notify_dispatch") as notify,
+        ):
+            result = runtime._retry_native_runtime_task(task)
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual(904, result["run_id"])
+        retry.assert_called_once_with(
+            903,
             trigger="manual_retry",
             data={"retry_action": "manual_retry"},
         )

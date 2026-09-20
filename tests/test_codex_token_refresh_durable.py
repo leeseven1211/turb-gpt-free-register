@@ -99,6 +99,55 @@ class CodexTokenRefreshSubmissionTests(TestCase):
         self.assertIsInstance(kwargs["config_snapshot"], config_schema.ConfigSnapshot)
         direct_submit.assert_not_called()
 
+    def test_task_center_can_retry_unknown_refresh_with_fresh_idempotency_key(self):
+        durable_result = {
+            "accepted": True,
+            "busy": False,
+            "reused": False,
+            "task_id": 81,
+            "run_id": 82,
+            "status": "queued",
+        }
+        row = self._row(oauth_refresh_error="request_unknown: needs_reconciliation")
+        with (
+            patch.object(service.db, "list_codex_accounts", return_value=[row]),
+            patch.object(service.db, "get_account_by_email", return_value={"id": 17}),
+            patch.object(service.operation_runtime_store, "active_run_for_account", return_value=None),
+            patch.object(
+                service.operation_runtime_store,
+                "list_reconciliation_accounts",
+                return_value=[{"account_id": 17, "run_status": "attention_required"}],
+            ),
+            patch.object(service, "_register_worker"),
+            patch.object(service, "_update_account_state"),
+            patch.object(service.task_gateway, "submit_durable_operation", return_value=durable_result) as submit,
+        ):
+            result = service.enqueue_refresh(
+                row["filename"],
+                trigger="manual_task_center_retry",
+                allow_unknown_manual_retry=True,
+            )
+
+        self.assertTrue(result["accepted"])
+        kwargs = submit.call_args.kwargs
+        self.assertTrue(kwargs["idempotency_key"].startswith(
+            f"{service.TASK_TYPE}:{row['filename']}:task-center-retry:"
+        ))
+        self.assertTrue(kwargs["data"]["manual_retry_unknown"])
+
+    def test_scheduler_still_blocks_unknown_refresh_without_explicit_retry(self):
+        row = self._row(oauth_refresh_error="request_unknown: needs_reconciliation")
+        with (
+            patch.object(service.db, "list_codex_accounts", return_value=[row]),
+            patch.object(service.db, "get_account_by_email", return_value={"id": 17}),
+            patch.object(service.operation_runtime_store, "active_run_for_account", return_value=None),
+            patch.object(service.operation_runtime_store, "list_reconciliation_accounts", return_value=[]),
+        ):
+            result = service.enqueue_refresh(row["filename"], trigger="codex_token_refresh_scheduled")
+
+        self.assertFalse(result["accepted"])
+        self.assertEqual(service.NEEDS_RECONCILIATION, result["error_code"])
+
     def test_submission_uses_published_canonical_snapshot_and_revision(self):
         candidate = config_schema.ConfigSnapshot(
             MappingProxyType({

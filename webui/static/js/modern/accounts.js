@@ -13,6 +13,11 @@ const ACCOUNT_TASK_TRIGGER_LABELS = {
 };
 const ACCOUNT_TASK_STAGE_LABELS = LIST_FACET_LABELS.stage;
 const OPERATION_TARGET_LABELS = LIST_FACET_LABELS.target_status;
+function accountIsDeactivated(account) {
+  return ['account_status', 'codex_status', 'codex_credential_state'].some(
+    key => String(account?.[key] || '').toLowerCase() === 'deactivated',
+  );
+}
 function formatTaskDuration(ms) {
   if (ms == null || ms === '') return '-';
   const value = Number(ms);
@@ -111,13 +116,24 @@ function renderAccountTaskProgressSnapshot(progress) {
 function renderAccountTaskStageProgress(task, selectedRunId = null) {
   renderAccountTaskProgressSnapshot(task?.progress || null);
 }
+function accountTaskCanRetry(task) {
+  const status = String(task?.status || '').toLowerCase();
+  const targetStatus = String(task?.target_status || '').toLowerCase();
+  const summary = task?.result_summary && typeof task.result_summary === 'object' ? task.result_summary : {};
+  const summaryDeactivated = ['status', 'requested_status'].some(
+    key => String(summary[key] || '').toLowerCase() === 'deactivated',
+  );
+  const active = ['queued','running','stopping','cancelling','settling','waiting'].includes(status);
+  const deactivated = status === 'deactivated' || ['deactivated', 'account_deactivated'].includes(targetStatus) || summaryDeactivated;
+  return !active && !deactivated && Array.isArray(task?.next_actions) && task.next_actions.length > 0;
+}
 function renderAccountTasks() {
   const body = $('#accountTasksBody');
   if (!body) return;
   body.innerHTML = ACCOUNT_TASKS.map(task => {
     const result = accountTaskResultText(task);
     const active = ['queued','running','stopping','cancelling','settling','waiting'].includes(String(task.status || ''));
-    const retryable = Array.isArray(task.next_actions) && task.next_actions.length > 0 && !active;
+    const retryable = accountTaskCanRetry(task);
     const cancellable = task.source_system === 'native_operations' && active;
     const target = task.account_id ? `账号 #${task.account_id}` : (task.attempt_id ? `注册尝试 #${task.attempt_id}` : '-');
     const batch = task.batch_title || (task.batch_uuid ? short(task.batch_uuid, 12) : '单任务');
@@ -591,7 +607,7 @@ function _codexCell(r) {
   return `<span class="muted">-</span>`;
 }
 function _codexCellV2(r) {
-  if ((r.account_status || '').toLowerCase() === 'deactivated') return '<span class="acc-v2-codex is-fail" title="账号已确认停用/封禁">封号</span>';
+  if (accountIsDeactivated(r)) return '<span class="acc-v2-codex is-fail" title="账号已确认停用/封禁">封号</span>';
   const s = r.codex_status || '';
   const exec = r.codex_execution_status || '';
   const err = r.codex_error || '';
@@ -607,9 +623,8 @@ function _codexCellV2(r) {
   return `<span class="acc-v2-muted">-</span>`;
 }
 function _accountStatusCellV2(r) {
-  const status = String(r.account_status || 'active').toLowerCase();
   const reason = String(r.account_status_reason || '').trim();
-  if (status === 'deactivated') {
+  if (accountIsDeactivated(r)) {
     return `<span class="acc-v2-account-status is-fail"${reason ? ` title="${esc(reason)}"` : ''}>已废号</span>`;
   }
   const liveStatus = String(r.live_check_status || '').toLowerCase();
@@ -830,6 +845,7 @@ function _trialCell(r) {
     : '<span class="pill status-used">不可用</span>';
 }
 function _planAction(r) {
+  if (accountIsDeactivated(r)) return '';
   if (['queued','running'].includes(r.plan_check_status)) {
     const automatic = r.plan_check_trigger === 'registration_auto';
     const queued = r.plan_check_status === 'queued';
@@ -867,6 +883,7 @@ function _extractLinkCell(r) {
   return '';
 }
 function _extractLinkAction(r) {
+  if (accountIsDeactivated(r)) return '';
   const s = r.extract_link_status || '';
   if (['queued','running'].includes(s)) return `<button disabled title="${esc(r.extract_link_message || '提链任务执行中')}">提链中…</button>`;
   const plan = (r.current_plan_type || r.plan_type || '').toString().toLowerCase();
@@ -876,7 +893,7 @@ function _extractLinkAction(r) {
   return `<button class="good" data-extract-link="${esc(r.id)}" title="${esc(failedReason ? '重新提链；上次失败原因：' + failedReason : '为该 free(可Plus试用) 账号按配置创建提链任务')}">提链</button>`;
 }
 function _codexAction(r) {
-  if ((r.account_status || '').toLowerCase() === 'deactivated') return '';
+  if (accountIsDeactivated(r)) return '';
   const s = r.codex_status || '';
   const exec = r.codex_execution_status || '';
   if (['queued','running','cancelling'].includes(exec) || s === 'retrying') {
@@ -970,14 +987,14 @@ function _accountsV2MoreMenu(r) {
   const parts = [
     `<button type="button" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button>`,
     r.has_account_password ? `<button type="button" data-account-copy-secret="account_password" data-account-id="${esc(r.id)}">复制账号密码</button>` : '',
-    (r.account_status || '').toLowerCase() === 'deactivated' ? '' : `<button type="button" data-account-action="password" data-account-id="${esc(r.id)}">补密码</button>`,
-    (r.account_status || '').toLowerCase() === 'deactivated' ? '' : `<button type="button" data-account-action="twofa" data-account-id="${esc(r.id)}">补 2FA</button>`,
-    (r.account_status || '').toLowerCase() === 'deactivated' ? '' : `<button type="button" data-account-action="password_change" data-account-id="${esc(r.id)}">修改密码</button>`,
-    (r.account_status || '').toLowerCase() === 'deactivated' ? '' : `<button type="button" data-account-action="twofa_change" data-account-id="${esc(r.id)}">修改 2FA</button>`,
-    (r.account_status || '').toLowerCase() === 'deactivated' ? '' : `<button type="button" data-account-action="complete" data-account-id="${esc(r.id)}">补全账号</button>`,
-    (r.account_status || '').toLowerCase() === 'deactivated' ? '' : `<button type="button" data-account-email-change="${esc(r.id)}" title="协议自动领取新邮箱并换绑；不会启动浏览器">换绑邮箱</button>`,
-    (r.account_status || '').toLowerCase() === 'deactivated' ? '' : `<button type="button" onclick="checkSelectedLive([Number('${esc(r.id)}')], this); return false;" title="只在线验证现有 Token；不会发送邮箱验证码或刷新 AT">查活</button>`,
-    (r.account_status || '').toLowerCase() === 'deactivated' ? '' : `<button type="button" onclick="refreshSelectedToken([Number('${esc(r.id)}')], this); return false;" title="通过邮箱 OTP 重新登录并刷新最新 AT">刷新AT</button>`,
+    accountIsDeactivated(r) ? '' : `<button type="button" data-account-action="password" data-account-id="${esc(r.id)}">补密码</button>`,
+    accountIsDeactivated(r) ? '' : `<button type="button" data-account-action="twofa" data-account-id="${esc(r.id)}">补 2FA</button>`,
+    accountIsDeactivated(r) ? '' : `<button type="button" data-account-action="password_change" data-account-id="${esc(r.id)}">修改密码</button>`,
+    accountIsDeactivated(r) ? '' : `<button type="button" data-account-action="twofa_change" data-account-id="${esc(r.id)}">修改 2FA</button>`,
+    accountIsDeactivated(r) ? '' : `<button type="button" data-account-action="complete" data-account-id="${esc(r.id)}">补全账号</button>`,
+    accountIsDeactivated(r) ? '' : `<button type="button" data-account-email-change="${esc(r.id)}" title="协议自动领取新邮箱并换绑；不会启动浏览器">换绑邮箱</button>`,
+    accountIsDeactivated(r) ? '' : `<button type="button" onclick="checkSelectedLive([Number('${esc(r.id)}')], this); return false;" title="只在线验证现有 Token；不会发送邮箱验证码或刷新 AT">查活</button>`,
+    accountIsDeactivated(r) ? '' : `<button type="button" onclick="refreshSelectedToken([Number('${esc(r.id)}')], this); return false;" title="通过邮箱 OTP 重新登录并刷新最新 AT">刷新AT</button>`,
     `<button type="button" data-account-task-history="${esc(r.email)}" title="在任务实例中查看该账号的 Codex 补跑、查活、AT 刷新、套餐和封号邮件历史">任务记录</button>`,
     _planAction(r),
     _extractLinkAction(r),
@@ -2017,7 +2034,7 @@ async function extractSelectedLinks() {
   const ids = Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
   const selected = ids.map(id => ACCOUNTS.find(a => Number(a.id) === Number(id))).filter(Boolean);
-  const eligible = selected.filter(a => (a.current_plan_type || a.plan_type || '').toString().toLowerCase() === 'free' && !!a.plus_trial_eligible);
+  const eligible = selected.filter(a => !accountIsDeactivated(a) && (a.current_plan_type || a.plan_type || '').toString().toLowerCase() === 'free' && !!a.plus_trial_eligible);
   if (!eligible.length) { showToast('选中账号里没有 free(可Plus试用)'); return; }
   if (!confirm(`确定批量提链 ${eligible.length} 个 free(可Plus试用) 账号吗？\n\n非可试用账号会自动跳过。成功会按账号消耗 CDK 次数。`)) return;
   const btn = $('#btnExtractSelectedLinksV2');
@@ -2028,7 +2045,7 @@ async function extractSelectedLinks() {
     const r = await api('/api/accounts/extract-link-bulk', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids}),
+      body: JSON.stringify({account_ids: eligible.map(a => a.id)}),
     });
     const skipped = (r.skipped_count || 0) + (r.busy_count || 0) + (r.failed_count || 0);
     const fallbackCount = (r.started || []).filter(item => item.fallback_from).length;
@@ -2075,6 +2092,11 @@ async function uploadSelectedCodexSub2() {
 async function checkSelectedPlans() {
   const ids = Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
+  const eligibleIds = ids.filter(id => {
+    const account = ACCOUNTS.find(item => Number(item.id) === Number(id));
+    return account && !accountIsDeactivated(account);
+  });
+  if (!eligibleIds.length) { showToast('选中账号均已废号'); return; }
   const btn = $('#btnCheckSelectedPlansV2');
   if (!btn) return;
   btn.disabled = true;
@@ -2084,7 +2106,7 @@ async function checkSelectedPlans() {
     const r = await api('/api/accounts/check-plan-bulk', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids}),
+      body: JSON.stringify({account_ids: eligibleIds}),
     });
     const failed = r.failed_count || 0;
     const busy = r.busy_count || 0;
@@ -2346,7 +2368,7 @@ async function retrySelectedCodex() {
   const workers = getAccountOperationWorkers();
   const selectedAccounts = ids.map(id => ACCOUNTS.find(a => Number(a.id) === Number(id))).filter(Boolean);
   const retryingCount = selectedAccounts.filter(a => ['queued','running','cancelling'].includes(a.codex_execution_status || '') || (a.codex_status || '') === 'retrying').length;
-  const deactivatedCount = selectedAccounts.filter(a => (a.codex_status || '') === 'deactivated').length;
+  const deactivatedCount = selectedAccounts.filter(accountIsDeactivated).length;
   let msg = `批量补跑选中的 ${ids.length} 个账号 Codex 授权？
 
 并发线程数：${workers}

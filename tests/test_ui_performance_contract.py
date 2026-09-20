@@ -142,6 +142,89 @@ if (label !== '未完成 12（运行 2 / 等待 10）') {
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_task_center_hides_retry_for_deactivated_tasks_but_allows_unknown_results(self):
+        harness = r'''
+const fs = require('fs');
+const path = require('path');
+
+const projectRoot = process.argv[1];
+const source = fs.readFileSync(
+  path.join(projectRoot, 'webui/static/js/modern/accounts.js'),
+  'utf8',
+);
+const start = source.indexOf('function accountTaskCanRetry(');
+const end = source.indexOf('\nfunction ', start + 1);
+if (start < 0 || end < 0) throw new Error('account task retry helper missing');
+eval(source.slice(start, end));
+
+if (accountTaskCanRetry({
+  status: 'deactivated',
+  target_status: 'account_deactivated',
+  next_actions: [{action: 'retry'}],
+})) {
+  throw new Error('deactivated task must not expose retry');
+}
+if (!accountTaskCanRetry({
+  status: 'attention_required',
+  target_status: 'attention_required',
+  next_actions: [{action: 'reconcile'}],
+})) {
+  throw new Error('unknown remote result must allow a fresh retry run');
+}
+if (accountTaskCanRetry({
+  status: 'attention_required',
+  target_status: 'attention_required',
+  result_summary: {requested_status: 'deactivated'},
+  next_actions: [{action: 'retry'}],
+})) {
+  throw new Error('deactivated result summary must not expose retry');
+}
+'''
+        result = subprocess.run(
+            ["node", "--input-type=commonjs", "-e", harness, str(PROJECT_ROOT)],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_both_account_variants_hide_actions_for_all_deactivation_projections(self):
+        harness = r'''
+const fs = require('fs');
+const path = require('path');
+
+const projectRoot = process.argv[1];
+for (const relativePath of [
+  'webui/static/js/modern/accounts.js',
+  'webui/static/js/legacy/accounts.js',
+]) {
+  const source = fs.readFileSync(path.join(projectRoot, relativePath), 'utf8');
+  const start = source.indexOf('function accountIsDeactivated(');
+  const end = source.indexOf('\nfunction ', start + 1);
+  if (start < 0 || end < 0) throw new Error(`account deactivation helper missing: ${relativePath}`);
+  eval(source.slice(start, end));
+  for (const key of ['account_status', 'codex_status', 'codex_credential_state']) {
+    if (!accountIsDeactivated({[key]: 'deactivated'})) {
+      throw new Error(`${relativePath} did not recognize ${key}`);
+    }
+  }
+  if (accountIsDeactivated({account_status: 'active', codex_status: 'failed'})) {
+    throw new Error(`${relativePath} misclassified a retryable account`);
+  }
+}
+'''
+        result = subprocess.run(
+            ["node", "--input-type=commonjs", "-e", harness, str(PROJECT_ROOT)],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_config_writes_invalidate_the_cached_config_for_both_ui_variants(self):
         for relative_path in (
             "webui/static/js/modern/config.js",

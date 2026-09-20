@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from flask import Flask
 
@@ -133,10 +133,10 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
         self.assertIn("历史任务", response.get_json()["error"])
         durable_retry.assert_not_called()
 
-    def test_request_unknown_blocks_registered_retry_without_invoking_adapter(self):
+    def test_request_unknown_dispatches_registered_retry_as_a_new_run(self):
         client = self._client()
         task_type = "token_refresh"
-        retry = lambda _task: {"accepted": True, "busy": False}
+        retry = Mock(return_value={"accepted": True, "busy": False, "run_id": 52})
         task_gateway.register_operation_handler(
             task_type,
             lambda _context: task_gateway.OperationResult.success(),
@@ -158,9 +158,83 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
         finally:
             task_gateway.unregister_operation_handler(task_type)
 
+        self.assertEqual(202, response.status_code)
+        self.assertTrue(response.get_json()["accepted"])
+        action.assert_called_once()
+        retry.assert_called_once_with(task)
+
+    def test_deactivated_task_is_rejected_before_registered_retry(self):
+        client = self._client()
+        task_type = "token_refresh"
+        retry = Mock(return_value={"accepted": True, "busy": False, "run_id": 52})
+        task_gateway.register_operation_handler(
+            task_type,
+            lambda _context: task_gateway.OperationResult.success(),
+            source_systems=("native_operations",),
+            retry_handler=retry,
+        )
+        try:
+            task = self._task(
+                task_type=task_type,
+                status="deactivated",
+                target_status="account_deactivated",
+            )
+            with patch.object(operations.operation_task_store, "get_task", return_value=task):
+                response = client.post("/api/operations/41/retry")
+        finally:
+            task_gateway.unregister_operation_handler(task_type)
+
         self.assertEqual(409, response.status_code)
-        self.assertTrue(response.get_json()["reconcile_required"])
-        action.assert_not_called()
+        self.assertTrue(response.get_json()["deactivated"])
+        retry.assert_not_called()
+
+    def test_deactivated_legacy_account_task_is_rejected_before_its_retry_service(self):
+        client = self._client()
+        task = self._task(
+            task_type="plan_check",
+            source_system="account_action_tasks",
+            account_id=7,
+        )
+        with (
+            patch.object(operations.account_task_store, "get_task", return_value=task),
+            patch.object(
+                runtime.db,
+                "get_account",
+                return_value={"id": 7, "email": "deactivated@example.test", "account_status": "deactivated"},
+            ),
+            patch.object(runtime.plan_check_service, "enqueue_account_plan_check") as enqueue,
+        ):
+            response = client.post("/api/account-tasks/41/retry")
+
+        self.assertEqual(409, response.status_code)
+        self.assertTrue(response.get_json()["deactivated"])
+        enqueue.assert_not_called()
+
+    def test_oauth_deactivated_projection_rejects_legacy_account_task_retry(self):
+        client = self._client()
+        task = self._task(
+            task_type="plan_check",
+            source_system="account_action_tasks",
+            account_id=7,
+        )
+        with (
+            patch.object(operations.account_task_store, "get_task", return_value=task),
+            patch.object(
+                runtime.db,
+                "get_account",
+                return_value={
+                    "id": 7,
+                    "email": "deactivated@example.test",
+                    "codex_credential_state": "deactivated",
+                },
+            ),
+            patch.object(runtime.plan_check_service, "enqueue_account_plan_check") as enqueue,
+        ):
+            response = client.post("/api/account-tasks/41/retry")
+
+        self.assertEqual(409, response.status_code)
+        self.assertTrue(response.get_json()["deactivated"])
+        enqueue.assert_not_called()
 
     def test_registered_maintenance_cancel_action_and_native_codex_cancel_are_separate(self):
         maintenance_type = "deactivation_mail"

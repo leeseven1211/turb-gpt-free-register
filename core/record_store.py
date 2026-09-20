@@ -59,7 +59,10 @@ class TableSpec:
 
 
 def _is_deactivated(payload: dict) -> bool:
-    return str(payload.get("account_status") or "").strip().lower() == "deactivated"
+    return any(
+        str(payload.get(key) or "").strip().lower() == "deactivated"
+        for key in ("account_status", "codex_status", "codex_credential_state")
+    )
 
 
 ACCOUNTS = TableSpec(
@@ -122,7 +125,12 @@ ACCOUNTS = TableSpec(
         ("account_totp_enabled",),
         ("account_deactivation_detected",),
     ),
-    derived={"deactivated": (("account_status",), _is_deactivated)},
+    derived={
+        "deactivated": (
+            ("account_status", "codex_status", "codex_credential_state"),
+            _is_deactivated,
+        ),
+    },
 )
 
 JOBS = TableSpec(
@@ -587,11 +595,22 @@ def list_rows(
         return [_merge(spec, row) for row in cur.fetchall()]
 
 
-def get_row(table: str | TableSpec, row_id: int, *, conn=None, include_version: bool = False) -> dict | None:
+def get_row(
+    table: str | TableSpec,
+    row_id: int,
+    *,
+    conn=None,
+    include_version: bool = False,
+    for_update: bool = False,
+) -> dict | None:
     spec = _resolve(table)
+    if for_update and conn is None:
+        raise ValueError("for_update 需要调用者提供事务连接")
     init()
     selected = "*, xmin::text AS __record_version" if include_version else "*"
     sql = f"SELECT {selected} FROM {_qualified(spec)} WHERE id = %s"
+    if for_update:
+        sql += " FOR UPDATE"
     if conn is not None:
         with conn.cursor() as cur:
             cur.execute(sql, (int(row_id),))
