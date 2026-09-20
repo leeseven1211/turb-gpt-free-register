@@ -21,7 +21,10 @@ import time
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from tools.test_profiles import PROFILES, apply_profile
+try:
+    from tools.test_profiles import PROFILES, apply_profile
+except ModuleNotFoundError:  # Direct ``python tools/test_isolated.py`` entrypoint.
+    from test_profiles import PROFILES, apply_profile
 
 
 _ENV_HELPERS = {

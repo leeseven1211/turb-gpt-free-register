@@ -2,6 +2,9 @@
 
 import importlib
 import os
+import json
+import subprocess
+import sys
 from pathlib import Path
 
 from config import account as account_config
@@ -113,3 +116,22 @@ def test_isolated_runner_profile_defaults_to_default_and_consumes_option():
     extended = parser.parse_args(["--profile", "extended", "--", "-q"])
     assert extended.profile == "extended"
     assert extended.pytest_args == ["--", "-q"]
+
+
+def test_isolated_runner_script_entrypoint_imports_profile_module():
+    project_root = Path(__file__).resolve().parents[1]
+    environment = {
+        **os.environ,
+        "DATABASE_URL": "postgresql://test:test@127.0.0.1:55432/turb_opt_20260914",
+        "PYTHON_DOTENV_DISABLED": "1",
+    }
+    completed = subprocess.run(
+        [sys.executable, "tools/test_isolated.py", "--dry-run"],
+        cwd=project_root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert json.loads(completed.stdout)["ok"] is True
