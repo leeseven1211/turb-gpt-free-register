@@ -39,6 +39,7 @@ class PasswordResetFlowTests(unittest.TestCase):
             patch.object(roxy_codex_oauth, "_wait_for_reset_password_form", return_value="accepted"),
             patch.object(roxy_codex_oauth, "_submit_reset_password_and_wait") as submit,
             patch.object(roxy_codex_oauth, "_relogin_after_password_reset") as relogin,
+            patch.object(roxy_codex_oauth, "human_delay"),
             patch("core.registration.selenium_auth.registration_password", return_value="Generated!123"),
         ):
             self.assertTrue(

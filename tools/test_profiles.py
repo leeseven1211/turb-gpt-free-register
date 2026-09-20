@@ -25,6 +25,7 @@ EXTENDED_PATHS = frozenset(
         "tests/test_release_checks.py",
         "tests/test_performance_checks.py",
         "tests/test_live_check_browser.py",
+        "tests/test_test_runtime_budget.py",
     }
 )
 

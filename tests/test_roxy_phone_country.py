@@ -234,6 +234,11 @@ class RoxyPhoneCountryTests(unittest.TestCase):
 
     def test_login_password_page_without_saved_password_fails_before_phone(self):
         driver = MagicMock()
+        clock = [100.0]
+
+        def advance(seconds):
+            clock[0] += float(seconds)
+
         with (
             patch(
                 "core.roxy_codex_oauth._login_challenge_state",
@@ -241,6 +246,11 @@ class RoxyPhoneCountryTests(unittest.TestCase):
             ),
             patch("core.roxy_codex_oauth._is_login_password_page", return_value=True),
             patch("core.roxy_codex_oauth._click_passwordless_signup_if_present", return_value={"ok": False}),
+            patch("core.roxy_codex_oauth._safe_get"),
+            patch("core.roxy_codex_oauth._submit_email_via_browser_nextauth", return_value={"ok": False}),
+            patch("core.roxy_codex_oauth.time.time", side_effect=lambda: clock[0]),
+            patch("core.roxy_codex_oauth.time.monotonic", side_effect=lambda: clock[0]),
+            patch("core.roxy_codex_oauth.time.sleep", side_effect=advance),
         ):
             with self.assertRaisesRegex(RuntimeError, "本地无注册密码"):
                 _complete_login_challenge_after_email(driver, "a@example.com", "", "", timeout=1)
