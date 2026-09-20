@@ -6,6 +6,8 @@ import sys
 
 import pytest
 
+from tools.test_profiles import classify_node
+
 
 CONFIG_DEFAULT_ENV_KEYS = (
     "OPENAI_PROTOCOL_VERSION",
@@ -32,6 +34,23 @@ def _reload_config_modules():
 
 
 _reload_config_modules()
+
+
+def pytest_collection_modifyitems(config, items):
+    """Mark expensive database and diagnostic items for profile selection."""
+    del config
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for item in items:
+        item_path = os.path.abspath(str(item.fspath))
+        try:
+            relative_path = os.path.relpath(item_path, project_root).replace(os.sep, "/")
+        except ValueError:
+            relative_path = str(item.fspath).replace(os.sep, "/")
+        item_class = getattr(item, "cls", None)
+        is_postgres = any(base.__name__ == "PostgresTestCase" for base in getattr(item_class, "__mro__", ()))
+        marker = classify_node(relative_path, item.nodeid, is_postgres=is_postgres)
+        if marker == "extended":
+            item.add_marker(pytest.mark.extended)
 
 
 @pytest.fixture(autouse=True)
