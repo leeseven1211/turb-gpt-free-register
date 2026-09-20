@@ -87,6 +87,9 @@ ACCOUNTS = TableSpec(
         "extract_link_status": "TEXT",
         "deactivation_mail_scan_status": "TEXT",
         "token_expires_at": "TEXT",
+        # /api/auth/session 的完整响应。与 access_token 分列，便于后续恢复
+        # 浏览器登录态；普通账号列表和兼容导出不会返回该敏感字段。
+        "chatgpt_session": "JSONB",
         # 抢占条件要用，但 payload 里叫 account_status，故为派生列
         "deactivated": "BOOLEAN NOT NULL DEFAULT FALSE",
     },

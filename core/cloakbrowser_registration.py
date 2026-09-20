@@ -210,6 +210,7 @@ def run_cloak_registration(
             email=email,
             access_token=access_token,
             totp_secret=totp_secret,
+            chatgpt_session=session_info,
             email_source=selected_email_source or resolve_email_source(email),
             proxy_used=((opened.raw or {}).get("proxy") if opened else None) or proxy or None,
             plan_check_proxy=proxy or None,

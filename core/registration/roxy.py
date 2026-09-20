@@ -471,6 +471,7 @@ def _save_roxy_account_checkpoint(
         proxy_used=proxy or None,
         email_source=email_source or resolve_email_source(email),
         extra=extra,
+        chatgpt_session=session_info,
         codex_status=codex_status,
         codex_error=codex_error,
     )
@@ -1083,6 +1084,7 @@ def run_roxy_registration(
         account_id = persist_registration_core(
             email=email,
             access_token=access_token,
+            chatgpt_session=session_info,
             email_source=selected_email_source or resolve_email_source(email),
             proxy_used=proxy or None,
             extra={

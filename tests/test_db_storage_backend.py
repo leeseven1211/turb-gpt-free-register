@@ -44,6 +44,79 @@ class InsertAccountTransactionTests(PostgresTestCase):
         pool = rs.get_row_by(OUTLOOK_POOL, "email", "atomic@example.test")
         self.assertEqual(bool(account), pool["status"] == "used")
 
+    def test_chatgpt_session_is_stored_in_its_own_field(self):
+        session = {
+            "accessToken": "session-token",
+            "user": {"id": "user-1", "email": "session@example.test"},
+            "account": {"id": "account-1", "planType": "free"},
+            "expires": "2099-01-01T00:00:00.000Z",
+        }
+
+        acc_id = db.insert_account(
+            email="session@example.test",
+            access_token="session-token",
+            chatgpt_session=session,
+            extra={"registration_checkpoint": "registered"},
+        )
+
+        stored = rs.get_row(rs.ACCOUNTS, acc_id)
+        self.assertEqual(session, stored["chatgpt_session"])
+        self.assertNotIn("chatgpt_session", json.loads(stored["extra_json"]))
+        self.assertNotIn("chatgpt_session", db.get_account(acc_id))
+        self.assertEqual(session, db.get_account_chatgpt_session(acc_id))
+
+    def test_refresh_writeback_replaces_the_saved_chatgpt_session(self):
+        acc_id = db.insert_account(
+            email="refresh-session@example.test",
+            access_token="old-token",
+            chatgpt_session={"accessToken": "old-token", "expires": "old"},
+        )
+        refreshed = {
+            "accessToken": "new-token",
+            "user": {"id": "user-2"},
+            "account": {"planType": "free"},
+            "expires": "2099-02-01T00:00:00.000Z",
+        }
+
+        self.assertTrue(
+            db.update_account_session(
+                "refresh-session@example.test",
+                "new-token",
+                chatgpt_session=refreshed,
+                expires_at=refreshed["expires"],
+            )
+        )
+        stored = rs.get_row(rs.ACCOUNTS, acc_id)
+        self.assertEqual(refreshed, stored["chatgpt_session"])
+        self.assertEqual("new-token", stored["access_token"])
+
+    def test_liveness_writeback_also_saves_a_successful_session_response(self):
+        acc_id = db.insert_account(
+            email="liveness-session@example.test",
+            access_token="old-token",
+        )
+        session = {
+            "accessToken": "live-token",
+            "user": {"id": "user-live", "name": "Live User"},
+            "account": {"planType": "free"},
+            "expires": "2099-03-01T00:00:00.000Z",
+        }
+
+        self.assertTrue(
+            db.update_account_liveness(
+                acc_id,
+                {
+                    "ok": True,
+                    "status": "live",
+                    "access_token": "live-token",
+                    "session": session,
+                    "checked_at": "2099-03-01T00:00:00.000Z",
+                },
+            )
+        )
+        stored = rs.get_row(rs.ACCOUNTS, acc_id)
+        self.assertEqual(session, stored["chatgpt_session"])
+
 
 class ClaimConcurrencyTests(PostgresTestCase):
     def setUp(self):

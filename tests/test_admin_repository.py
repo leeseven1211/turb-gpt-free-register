@@ -77,6 +77,16 @@ class AdminRepositoryTests(PostgresTestCase):
         self.assertIn("source", result["facets"])
         self.assertTrue(all(item["email_source"] == "icloud_hide" for item in result["items"]))
 
+    def test_account_list_does_not_return_full_chatgpt_session(self):
+        account_id = rs.insert_row(rs.ACCOUNTS, {
+            "email": "session-hidden@example.test",
+            "chatgpt_session": json.dumps({"accessToken": "session-token"}),
+        })
+
+        result = repo.list_accounts(repo.PageRequest(page=1, page_size=100, filters={}))
+        item = next(row for row in result["items"] if row["id"] == account_id)
+        self.assertNotIn("chatgpt_session", item)
+
     def test_accounts_can_filter_and_report_account_status(self):
         account_id = rs.insert_row(rs.ACCOUNTS, {
             "email": "deactivated@example.test",

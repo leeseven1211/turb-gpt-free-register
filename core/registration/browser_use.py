@@ -2122,6 +2122,7 @@ def run_browser_use_registration(
                 email=email,
                 access_token=access_token,
                 totp_secret=totp_secret,
+                chatgpt_session=session_info,
                 email_source=selected_email_source or resolve_email_source(email),
                 proxy_used=proxy or f"{provider_prefix}:{session_info_open.proxy_country_code or 'default'}",
                 plan_check_proxy=proxy or None,

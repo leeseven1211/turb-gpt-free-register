@@ -272,7 +272,11 @@ def list_accounts(
          WHERE NULLIF(f.value, '') IS NOT NULL
          GROUP BY f.facet, f.value
     """
-    promoted = ["id", *record_store.ACCOUNTS.promoted]
+    # chatgpt_session 是恢复用的敏感完整响应，不进入管理列表查询。
+    promoted = [
+        "id",
+        *(column for column in record_store.ACCOUNTS.promoted if column != "chatgpt_session"),
+    ]
     selected = ", ".join(f"a.{postgres_store.quote_identifier(column)}" for column in promoted)
     safe_data = (
         "a.data - ARRAY['access_token','id_token','refresh_token','password','login_password',"

@@ -415,6 +415,7 @@ def run_protocol_registration(
         account_id = persist_registration_core(
             email=email,
             access_token=access_token,
+            chatgpt_session=session_info,
             email_source=selected_email_source or resolve_email_source(email),
             proxy_used=session.proxy or None,
             extra={

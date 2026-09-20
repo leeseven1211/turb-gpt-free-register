@@ -1017,7 +1017,7 @@ WebUI 配置页保存后会调用热加载；Roxy、Codex、邮箱、代理、�
 |---|---|
 | PostgreSQL `email_pool_outlook` | Outlook 邮箱池及状态；通过 WebUI/API 或显式文件导入写入 |
 | `用于注册的API邮箱.txt/json` | 通用 API 邮箱池及状态 |
-| PostgreSQL `registered_accounts` | 注册成功账号及 access token |
+| PostgreSQL `registered_accounts` | 注册成功账号、access token，以及单独保存的完整 `chatgpt_session`（恢复用，不进入普通列表/导出） |
 | `codex_accounts/` | Codex OAuth 凭证 JSON |
 | PostgreSQL `account_action_batches/account_action_tasks/account_action_events` | 账号操作任务实例及脱敏阶段事件 |
 | `logs/` | WebUI、注册任务、查活和 Codex 补跑日志 |

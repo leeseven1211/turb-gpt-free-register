@@ -428,6 +428,7 @@ def persist_registration_core(
     access_token: str,
     totp_secret: str | None = None,
     extra: dict | None = None,
+    chatgpt_session: dict | None = None,
     email_source: str | None = None,
     proxy_used: str | None = None,
 ) -> int:
@@ -439,6 +440,7 @@ def persist_registration_core(
         access_token=access_token,
         totp_secret=totp_secret,
         extra=extra,
+        chatgpt_session=chatgpt_session,
         email_source=email_source,
         proxy_used=proxy_used,
     )
@@ -449,6 +451,8 @@ def persist_registration_core(
 
             payload = dict(extra or {})
             payload.update({"id": account_id, "email": email})
+            if chatgpt_session is not None:
+                payload["chatgpt_session"] = chatgpt_session
             result = registration.persist_core_account(
                 int(attempt_id),
                 access_token=access_token,

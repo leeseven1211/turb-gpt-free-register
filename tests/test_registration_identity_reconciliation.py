@@ -160,6 +160,10 @@ class RegistrationIdentityContractTests(unittest.TestCase):
         self.assertTrue(persist_core.called, result)
         self.assertTrue(result["success"], result)
         self.assertEqual("new_candidate", result["remote_identity"])
+        self.assertEqual(
+            {"accessToken": "fresh-token", "user": {}, "account": {}},
+            persist_core.call_args.kwargs["chatgpt_session"],
+        )
         create_account.assert_called_once()
         self.assertEqual(wait_for_otp.call_args.kwargs["email_source"], "icloud_hide")
         self.assertEqual(persist_core.call_args.kwargs["email_source"], "icloud_hide")

@@ -742,6 +742,7 @@ def persist_account_core(
     access_token: str,
     totp_secret: str | None = None,
     extra: dict | None = None,
+    chatgpt_session: dict | None = None,
     email_source: str | None = None,
     proxy_used: str | None = None,
 ) -> int:
@@ -771,6 +772,7 @@ def persist_account_core(
         proxy_used=proxy_used,
         email_source=email_source,
         extra=extra,
+        chatgpt_session=chatgpt_session,
         codex_status=codex_status,
         codex_error=codex_error,
     )
@@ -783,6 +785,7 @@ def save_account_data(
     access_token: str,
     totp_secret: str | None = None,
     extra: dict | None = None,
+    chatgpt_session: dict | None = None,
     output_path: Path | None = None,  # 兼容老接口；不再写文件
     email_source: str | None = None,
     proxy_used: str | None = None,
@@ -800,6 +803,7 @@ def save_account_data(
         access_token=access_token,
         totp_secret=totp_secret,
         extra=extra,
+        chatgpt_session=chatgpt_session,
         email_source=email_source,
         proxy_used=proxy_used,
     )

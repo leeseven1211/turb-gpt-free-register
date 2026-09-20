@@ -585,6 +585,7 @@ class RoxyTwoFactorTests(unittest.TestCase):
         self.assertEqual(insert.call_args.kwargs["extra"]["account_password"], "RandomPassword!123")
         self.assertEqual(insert.call_args.kwargs["extra"]["registration_checkpoint"], "registered")
         self.assertEqual(insert.call_args.kwargs["access_token"], "token")
+        self.assertEqual(insert.call_args.kwargs["chatgpt_session"], session_info)
 
     def test_registration_checkpoint_prefers_explicit_task_email_source(self):
         session_info = {

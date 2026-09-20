@@ -410,6 +410,8 @@ def _find_by_email(rows: list[dict], email: str) -> dict | None:
 
 def _decorate_account(row: dict) -> dict:
     out = dict(row)
+    # 完整 ChatGPT session 只供存储层/恢复流程使用，不随普通账号读模型返回。
+    out.pop("chatgpt_session", None)
     # New mailbox credentials are retained for worker-side recovery only; they
     # must never ride along with ordinary account reads or compact responses.
     out.pop("email_change_material_line", None)
@@ -533,6 +535,7 @@ def insert_account(
     proxy_used: str | None = None,
     email_source: str | None = None,
     extra: dict | None = None,
+    chatgpt_session: dict | None = None,
     codex_status: str | None = None,   # success / failed / skipped / missing
     codex_error: str | None = None,    # 失败原因（仅 codex_status=failed 时有意义）
 ) -> int:
@@ -579,6 +582,12 @@ def insert_account(
                 merged_extra.pop("totp_setup_pending", None)
             changes["extra_json"] = json.dumps(
                 merged_extra, ensure_ascii=False,
+            )
+        if chatgpt_session is not None:
+            if not isinstance(chatgpt_session, dict):
+                raise TypeError("chatgpt_session 必须是 /api/auth/session 返回的对象")
+            changes["chatgpt_session"] = json.dumps(
+                chatgpt_session, ensure_ascii=False,
             )
 
         if access_token:
@@ -954,7 +963,13 @@ def update_account_token_metadata(acc_id: int, access_token: str) -> bool:
     return changed
 
 
-def update_account_session(email: str, access_token: str, *, expires_at: str | None = None) -> bool:
+def update_account_session(
+    email: str,
+    access_token: str,
+    *,
+    expires_at: str | None = None,
+    chatgpt_session: dict | None = None,
+) -> bool:
     """保存重新登录取得的新 ChatGPT 会话，并把注册检查点推进到已注册。
 
     账号配置补跑过去只在浏览器里取得 session，却没有写回本地，导致任务显示成功而
@@ -980,6 +995,11 @@ def update_account_session(email: str, access_token: str, *, expires_at: str | N
             "expires_at": expires_at if expires_at is not None else row.get("expires_at"),
             "token_expires_at": claims.get("token_expires_at"),
             "token_expired": claims.get("token_expired"),
+            **(
+                {"chatgpt_session": json.dumps(chatgpt_session, ensure_ascii=False)}
+                if isinstance(chatgpt_session, dict)
+                else {}
+            ),
         }
 
     changed = _mutate_account_extra(normalized_email, mutate)
@@ -1529,6 +1549,20 @@ def get_account_by_email(email: str) -> dict | None:
     return _decorate_account(row) if row else None
 
 
+def get_account_chatgpt_session(acc_id: int) -> dict | None:
+    """读取账号保存的完整 ChatGPT session；普通账号读模型不会携带它。"""
+    row = record_store.get_row(record_store.ACCOUNTS, int(acc_id))
+    if not row:
+        return None
+    value = row.get("chatgpt_session")
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+    return dict(value) if isinstance(value, dict) else None
+
+
 def update_account_note(acc_id: int, note: str) -> bool:
     """更新单个已注册账号备注。note 为空字符串时表示清空备注。"""
     now = _now()
@@ -1667,9 +1701,9 @@ def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
         "live_check_error": None if ok else result.get("error"),
         "updated_at": now,
     }
-    # 认证路径是账号最近一次刷新 AT 的低敏摘要；密码、TOTP、Token 和
-    # 原始响应仍不进入账号行。普通 AT probe 没有 auth_method，不覆盖这组
-    # “最近认证”字段，避免查活把刷新 AT 的事实抹掉。
+    # 认证路径是账号最近一次刷新 AT 的低敏摘要；密码、TOTP 和日志摘要不会进入
+    # 这些状态字段。完整 /api/auth/session 单独保存到 chatgpt_session，普通 AT
+    # probe 没有 auth_method，不覆盖这组“最近认证”字段。
     if result.get("auth_method"):
         changes["last_auth_method"] = str(result.get("auth_method"))[:80]
     if result.get("password_auth_status"):
@@ -1711,6 +1745,8 @@ def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
             changes["token_expires_at"] = claims.get("token_expires_at")
             changes["token_expired"] = claims.get("token_expired")
         session = result.get("session") or {}
+        if isinstance(session, dict) and session.get("accessToken"):
+            changes["chatgpt_session"] = json.dumps(session, ensure_ascii=False)
         user = session.get("user") or {}
         account = session.get("account") or {}
         if user.get("id"):

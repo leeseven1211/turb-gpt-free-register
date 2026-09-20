@@ -66,11 +66,16 @@ CREATE TABLE registered_accounts (
     plan_check_status TEXT,
     live_check_status TEXT,
     ...
+    chatgpt_session JSONB,                     -- 完整 /api/auth/session，恢复用
     data JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 ```
 
 加一个稀疏字段不需要改表，直接写进 `data` 即可。需要按它筛选时才提升为列。
+
+`registered_accounts.chatgpt_session` 是例外：它保存完整 `/api/auth/session` 响应，和
+`access_token` 分开维护，供后续登录态恢复/续期使用；管理列表、兼容导出和普通账号读模型
+均不返回该敏感字段。
 
 **派生列** 由 `TableSpec.derived` 声明：`deactivated` 从 `account_status` 推导。
 部分更新时，只有来源字段出现在本次改动里才重算，避免无关更新把它连带清零。

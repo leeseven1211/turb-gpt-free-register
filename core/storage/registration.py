@@ -1093,6 +1093,10 @@ def persist_core_account(
         raise ValueError("核心账号落库需要 access_token")
     init()
     payload = dict(account or {})
+    if isinstance(payload.get("chatgpt_session"), dict):
+        payload["chatgpt_session"] = json.dumps(
+            payload["chatgpt_session"], ensure_ascii=False,
+        )
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(f"SELECT * FROM {_table('registration_attempts')} WHERE id=%s FOR UPDATE", (int(attempt_id),))
         attempt = _row(cur.fetchone())

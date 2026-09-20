@@ -657,7 +657,10 @@ def _build_roxy_twofa_setup(
                     fresh_access_token = str((refreshed_session or {}).get("accessToken") or "").strip()
                     if fresh_access_token and fresh_access_token != str(access_token or "").strip():
                         expires_at = str((refreshed_session or {}).get("expires") or "") or None
-                        if not db.update_account_session(email, fresh_access_token, expires_at=expires_at):
+                        session_kwargs = {"expires_at": expires_at}
+                        if isinstance(refreshed_session, dict):
+                            session_kwargs["chatgpt_session"] = refreshed_session
+                        if not db.update_account_session(email, fresh_access_token, **session_kwargs):
                             logger.warning("[账号补跑][2FA] 已取得重认证后的 AT，但写回账号失败，继续使用当前会话")
                 except Exception as exc:
                     logger.warning(
@@ -770,10 +773,15 @@ def _build_roxy_account_setup(
         account = db.get_account_by_email(email) or {}
         fresh_access_token = str((session_info or {}).get("accessToken") or "").strip()
         if fresh_access_token:
+            session_kwargs = {
+                "expires_at": str((session_info or {}).get("expires") or "") or None,
+            }
+            if isinstance(session_info, dict):
+                session_kwargs["chatgpt_session"] = session_info
             if not db.update_account_session(
                 email,
                 fresh_access_token,
-                expires_at=str((session_info or {}).get("expires") or "") or None,
+                **session_kwargs,
             ):
                 raise RuntimeError("重新登录已取得 ChatGPT Token，但写回账号失败")
             account_task_store.append_event(

@@ -769,6 +769,10 @@ class CodexRetryTaskTests(unittest.TestCase):
             "a@example.com",
             "fresh-chatgpt-token",
             expires_at="2026-09-01T00:00:00Z",
+            chatgpt_session={
+                "accessToken": "fresh-chatgpt-token",
+                "expires": "2026-09-01T00:00:00Z",
+            },
         )
         self.assertTrue(any(call.kwargs.get("stage") == "token" for call in append_event.call_args_list))
 
