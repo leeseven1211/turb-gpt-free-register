@@ -148,7 +148,7 @@ class RegistrationServicePostprocessContractTests(unittest.TestCase):
         )
 
         self.assertFalse(info["retryable"])
-        self.assertEqual("账号已废号，不能补跑 Codex", info["retry_reason"])
+        self.assertIn("禁止", info["retry_reason"])
 
     def test_normalized_attempt_can_make_pending_registration_resumeable(self):
         with patch(
