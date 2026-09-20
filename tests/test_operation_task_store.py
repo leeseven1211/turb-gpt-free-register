@@ -489,6 +489,27 @@ class OperationTaskStoreTests(PostgresTestCase):
         self.assertEqual([1, 2], [run["run_no"] for run in detail["runs"]])
         self.assertEqual("queued", detail["status"])
 
+    def test_retry_reopens_terminal_batch_and_clears_completed_time(self):
+        account_id = self._seed_runtime_account("retry-batch@example.com")
+        batch = operation_task_store.create_runtime_batch(
+            batch_type="codex_retry", title="retry batch", requested_count=1, trigger="test",
+        )
+        task = operation_task_store.create_runtime_task(
+            task_type="codex_retry", account_id=account_id,
+            email="retry-batch@example.com", trigger="test", batch_id=int(batch["id"]),
+        )
+        operation_task_store.finish_run(int(task["run"]["id"]), status="failed", error="temporary failure")
+        terminal = next(item for item in operation_task_store.list_batches() if item["id"] == batch["id"])
+        self.assertEqual("failed", terminal["status"])
+        self.assertIsNotNone(terminal["completed_at"])
+
+        operation_task_store.retry_runtime_task(int(task["id"]), trigger="manual_retry")
+
+        reopened = next(item for item in operation_task_store.list_batches() if item["id"] == batch["id"])
+        self.assertEqual("queued", reopened["status"])
+        self.assertEqual(1, reopened["queued_count"])
+        self.assertIsNone(reopened["completed_at"])
+
     def test_active_retry_wins_over_stale_terminal_task_projection(self):
         account_id = self._seed_runtime_account("active-attempt@example.com")
         task = operation_task_store.create_runtime_task(
@@ -712,6 +733,96 @@ class OperationTaskStoreTests(PostgresTestCase):
         self.assertEqual("success", completed["status"])
         self.assertEqual("success", completed["runs"][0]["status"])
         self.assertEqual("task.children_reconciled", completed["events"][-1]["event_type"])
+
+    def test_deactivated_native_child_marks_parent_deactivated_without_retry(self):
+        parent = operation_task_store.create_runtime_task(
+            task_type="account_completion", account_id=None, email="parent-deactivated@example.test",
+            trigger="test", resource_family="completion_coordinator",
+        )
+        child = operation_task_store.create_runtime_task(
+            task_type="token_refresh", account_id=None, email="parent-deactivated@example.test",
+            trigger="test", parent_task_id=int(parent["id"]), resource_family="openai_interactive",
+        )
+
+        operation_task_store.finish_run(
+            int(child["run"]["id"]),
+            status="deactivated",
+            result_summary={"status": "deactivated"},
+        )
+
+        completed = operation_task_store.get_task(int(parent["id"]))
+        self.assertEqual("deactivated", completed["status"])
+        self.assertEqual("account_deactivated", completed["target_status"])
+        self.assertEqual([], completed["next_actions"])
+        self.assertEqual("deactivated", completed["runs"][0]["status"])
+
+    def test_deactivated_dependency_callback_marks_parent_without_retry(self):
+        parent = operation_task_store.create_runtime_task(
+            task_type="account_completion", account_id=None, email="dependency-deactivated@example.test",
+            trigger="test", resource_family="completion_coordinator",
+        )
+
+        operation_task_store.apply_task_dependency_result(
+            parent_source_system="webui_runtime",
+            parent_source_id=str(parent["id"]),
+            child_status="deactivated",
+            child_result={"status": "deactivated", "reason": "account_deactivated"},
+        )
+
+        completed = operation_task_store.get_task(int(parent["id"]))
+        self.assertEqual("deactivated", completed["status"])
+        self.assertEqual("account_deactivated", completed["target_status"])
+        self.assertEqual([], completed["next_actions"])
+        self.assertEqual("deactivated", completed["runs"][0]["status"])
+
+    def test_retrying_terminal_child_returns_parent_to_waiting(self):
+        parent = operation_task_store.create_runtime_task(
+            task_type="account_completion", account_id=None, email="retry-child-parent@example.test",
+            trigger="test", resource_family="completion_coordinator",
+        )
+        child = operation_task_store.create_runtime_task(
+            task_type="token_refresh", account_id=None, email="retry-child-parent@example.test",
+            trigger="test", parent_task_id=int(parent["id"]), resource_family="openai_interactive",
+        )
+        operation_task_store.finish_run(
+            int(child["run"]["id"]), status="failed", error="temporary child failure",
+        )
+        terminal_parent = operation_task_store.get_task(int(parent["id"]))
+        self.assertEqual("partial_success", terminal_parent["status"])
+
+        operation_task_store.retry_runtime_task(int(child["id"]), trigger="manual_retry")
+
+        waiting_parent = operation_task_store.get_task(int(parent["id"]))
+        self.assertEqual("waiting", waiting_parent["status"])
+        self.assertEqual([], waiting_parent["next_actions"])
+        self.assertEqual(["partial_success", "waiting"], [run["status"] for run in waiting_parent["runs"]])
+        self.assertEqual(2, len(waiting_parent["runs"]))
+        self.assertEqual("waiting", waiting_parent["runs"][-1]["status"])
+        with self.assertRaisesRegex(ValueError, "任务仍在执行"):
+            operation_task_store.retry_runtime_task(int(parent["id"]), trigger="manual_retry")
+
+    def test_waiting_parent_does_not_compete_with_same_account_child_retry(self):
+        account_id = self._seed_runtime_account("same-family-parent@example.test")
+        parent = operation_task_store.create_runtime_task(
+            task_type="account_completion", account_id=account_id,
+            email="same-family-parent@example.test", trigger="test",
+            resource_family="openai_interactive",
+        )
+        operation_task_store.finish_run(int(parent["run"]["id"]), status="partial_success")
+        child = operation_task_store.create_runtime_task(
+            task_type="token_refresh", account_id=account_id,
+            email="same-family-parent@example.test", trigger="test",
+            parent_task_id=int(parent["id"]), resource_family="openai_interactive",
+        )
+        self.assertEqual("waiting", operation_task_store.get_task(int(parent["id"]))["status"])
+        operation_task_store.finish_run(int(child["run"]["id"]), status="failed", error="temporary failure")
+
+        retried = operation_task_store.retry_runtime_task(int(child["id"]), trigger="manual_retry")
+
+        self.assertEqual("queued", retried["status"])
+        parent_detail = operation_task_store.get_task(int(parent["id"]))
+        self.assertEqual("waiting", parent_detail["status"])
+        self.assertEqual("waiting", parent_detail["runs"][-1]["status"])
 
     def test_restart_reconciles_interrupted_native_child_to_parent(self):
         parent = operation_task_store.create_runtime_task(

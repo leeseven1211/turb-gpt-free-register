@@ -67,7 +67,7 @@ def create_accounts_blueprint(context: WebUIContext):
     def _codex_oauth_auth_for_account(acc: dict) -> tuple[str, str]:
         """读取账号可导入 sub2api 的 Codex OAuth JSON。"""
         email = str(acc.get("email") or "").strip().lower()
-        if str(acc.get("account_status") or "").strip().lower() == "deactivated":
+        if db.account_is_deactivated(acc):
             raise RuntimeError("关联账号已停用，禁止上传 OAuth 凭证")
         if (acc.get("codex_status") or "") != "success":
             raise RuntimeError("该账号尚未完成 Codex OAuth")
@@ -83,7 +83,7 @@ def create_accounts_blueprint(context: WebUIContext):
         email = str(auth_json.get("email") or "").strip()
         if email:
             linked_account = db.get_account_by_email(email)
-            if str((linked_account or {}).get("account_status") or "").strip().lower() == "deactivated":
+            if db.account_is_deactivated(linked_account):
                 raise RuntimeError("关联账号已停用，禁止上传 OAuth 凭证")
         from core.sub2api_client import upload_configured_codex_oauth_credential
 
@@ -100,7 +100,10 @@ def create_accounts_blueprint(context: WebUIContext):
             item for item in db.list_codex_accounts(archived="all")
             if str(item.get("filename") or "") == str(filename or "")
         ), None)
-        if row and str(row.get("oauth_account_status") or "").strip().lower() == "deactivated":
+        if row and (
+            str(row.get("oauth_account_status") or "").strip().lower() == "deactivated"
+            or db.account_is_deactivated(db.get_account_by_email(str(row.get("email") or "").strip()))
+        ):
             raise RuntimeError("关联账号已停用，禁止上传 OAuth 凭证")
         text, actual_filename = db.read_codex_credential(filename)
         try:
@@ -862,7 +865,7 @@ def create_accounts_blueprint(context: WebUIContext):
         if not acc:
             return jsonify({"ok": False, "error": "账号不存在"}), 404
         if db.account_is_deactivated(acc):
-            return jsonify({"ok": False, "deactivated": True, "error": "账号已标记为封号，停止查活/刷新 AT"}), 409
+            return jsonify({"ok": False, "deactivated": True, "error": "账号已废号，不能查询套餐"}), 409
         token = (acc.get("access_token") or "").strip()
         if not token:
             return jsonify({"ok": False, "error": "该账号没有 access_token"}), 400
@@ -910,6 +913,9 @@ def create_accounts_blueprint(context: WebUIContext):
             acc = db.get_account(acc_id)
             if not acc:
                 skipped.append({"id": acc_id, "reason": "账号不存在"})
+                continue
+            if db.account_is_deactivated(acc):
+                skipped.append({"id": acc_id, "email": acc.get("email"), "reason": "账号已废号"})
                 continue
             if not (acc.get("access_token") or "").strip():
                 skipped.append({"id": acc_id, "email": acc.get("email"), "reason": "缺少 access_token"})
@@ -980,6 +986,8 @@ def create_accounts_blueprint(context: WebUIContext):
             acc = None
         if not acc:
             return jsonify({"ok": False, "error": "账号不存在"}), 404
+        if db.account_is_deactivated(acc):
+            return jsonify({"ok": False, "deactivated": True, "error": "账号已废号，不能提链"}), 409
         if not _is_extract_eligible(acc):
             return jsonify({"ok": False, "error": "仅支持 free(可Plus试用) 账号提链；请先查询套餐确认资格"}), 400
         token = (acc.get("access_token") or "").strip()
@@ -1041,6 +1049,9 @@ def create_accounts_blueprint(context: WebUIContext):
                 skipped.append({"id": acc_id, "reason": "账号不存在"})
                 continue
             email = acc.get("email")
+            if db.account_is_deactivated(acc):
+                skipped.append({"id": acc_id, "email": email, "reason": "账号已废号"})
+                continue
             if not _is_extract_eligible(acc):
                 skipped.append({"id": acc_id, "email": email, "reason": "不是 free(可Plus试用)"})
                 continue

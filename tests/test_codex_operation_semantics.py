@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from core import codex_oauth
+from core import codex_operation_service
 from core.codex_operation_service import classify_codex_operation_result
 from core.operation_runtime import CancellationToken, OperationCancelled
 
@@ -104,6 +105,31 @@ class CodexCredentialSemanticsTests(unittest.TestCase):
         self.assertTrue(result["credential_confirmed"])
         self.assertEqual(str(confirmed_path), result["file_path"])
         self.assertIsNone(result["receipt_path"])
+
+    def test_retry_task_rejects_currently_deactivated_account(self):
+        task = {
+            "id": 41,
+            "source_system": "native_operations",
+            "account_id": 7,
+            "status": "failed",
+            "target_status": "failed",
+        }
+        with (
+            patch.object(codex_operation_service.operation_task_store, "get_task", return_value=task),
+            patch.object(
+                codex_operation_service.db,
+                "get_account",
+                return_value={"id": 7, "account_status": "deactivated"},
+            ),
+            patch.object(codex_operation_service.operation_task_store, "active_run_for_account") as active,
+            patch.object(codex_operation_service.operation_task_store, "retry_runtime_task") as retry,
+        ):
+            result = codex_operation_service.retry_task(41)
+
+        self.assertFalse(result["accepted"])
+        self.assertTrue(result["deactivated"])
+        active.assert_not_called()
+        retry.assert_not_called()
 
 
 class CancellationTokenTests(unittest.TestCase):

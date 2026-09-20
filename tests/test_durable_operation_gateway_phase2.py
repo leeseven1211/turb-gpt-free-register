@@ -8,6 +8,7 @@ from types import MappingProxyType
 from unittest.mock import patch
 
 from core import account_task_store, db, record_store, task_run_log
+from core.operation_runtime import OperationAccountDeactivated
 from core.operations import task_gateway
 from core.storage import operation
 from tests.support_pg import PostgresTestCase
@@ -225,7 +226,7 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
         self.assertEqual("success", result.status)
         self.assertEqual({"receipt": "synthetic"}, result.summary)
 
-    def test_request_unknown_is_fenced_and_only_reconcile_is_offered(self):
+    def test_request_unknown_is_retryable_as_a_new_run(self):
         completed = threading.Event()
 
         def handler(context):
@@ -253,9 +254,12 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
         self.assertTrue(run["result_summary"]["execution_id"])
         task = operation.get_task(int(submission["task_id"]))
         self.assertEqual(
-            [{"action": "reconcile", "label": "确认远端结果后继续"}],
+            [{"action": "retry", "label": "重新执行"}],
             task["next_actions"],
         )
+        retry = operation.retry_runtime_task(int(submission["task_id"]), trigger="manual_retry")
+        self.assertEqual(2, retry["run_no"])
+        self.assertEqual(int(submission["task_id"]), retry["task_id"])
 
     def test_registration_resume_retry_can_override_unknown_fence(self):
         task = operation.create_runtime_task(
@@ -276,6 +280,42 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
         self.assertEqual(2, retry["run_no"])
         self.assertEqual(int(task["id"]), retry["task_id"])
         self.assertEqual("queued", (operation.get_task(int(task["id"])) or {})["status"])
+
+    def test_active_task_cannot_create_a_parallel_retry_run(self):
+        task = operation.create_runtime_task(
+            task_type="synthetic_active_retry",
+            account_id=None,
+            email="active-retry@example.test",
+            source_system="synthetic_service",
+            source_id="active-retry-1",
+        )
+
+        with self.assertRaisesRegex(ValueError, "任务仍在执行"):
+            operation.retry_runtime_task(int(task["id"]), trigger="manual_retry")
+
+        detail = operation.get_task(int(task["id"])) or {}
+        self.assertEqual("queued", detail["status"])
+        self.assertEqual([1], [run["run_no"] for run in detail["runs"]])
+
+    def test_active_latest_run_cannot_be_bypassed_by_stale_task_projection(self):
+        task = operation.create_runtime_task(
+            task_type="synthetic_stale_active_retry",
+            account_id=None,
+            email="stale-active-retry@example.test",
+            source_system="synthetic_service",
+            source_id="stale-active-retry-1",
+        )
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {operation._table('operation_tasks')} SET status='failed' WHERE id=%s",
+                (int(task["id"]),),
+            )
+
+        with self.assertRaisesRegex(ValueError, "任务仍在执行"):
+            operation.retry_runtime_task(int(task["id"]), trigger="manual_retry")
+
+        detail = operation.get_task(int(task["id"])) or {}
+        self.assertEqual([1], [run["run_no"] for run in detail["runs"]])
 
     def test_stale_execution_or_lease_cannot_overwrite_current_run(self):
         account_id = self._runtime_account("fenced@example.test")
@@ -382,7 +422,7 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
             result_summary={"confirmed": True},
         )
 
-    def test_explicit_remote_rejection_after_confirmed_request_is_terminal(self):
+    def test_explicit_remote_rejection_after_confirmed_request_is_terminal_and_retryable(self):
         account_id = self._runtime_account("unsupported-payment@example.test")
         task = operation.create_runtime_task(
             task_type="extract_link",
@@ -431,7 +471,10 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
         detail = operation.get_task(int(task["id"]))
         self.assertEqual("unsupported", detail["status"])
         self.assertEqual("account_available", detail["target_status"])
-        self.assertEqual([], detail["next_actions"])
+        self.assertEqual(
+            [{"action": "retry", "label": "重新执行"}],
+            detail["next_actions"],
+        )
 
     def test_crash_after_http_receipt_never_becomes_retryable(self):
         account_id = self._runtime_account("receipt-crash@example.test")
@@ -484,7 +527,7 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
             recovered["result_summary"]["remote_intent_state"],
         )
         self.assertEqual(
-            [{"action": "reconcile", "label": "确认远端结果后继续"}],
+            [{"action": "retry", "label": "重新执行"}],
             (operation.get_task(int(task["id"])) or {})["next_actions"],
         )
 
@@ -562,7 +605,7 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
                 allowlist={"PASSWORD_PROXY_PASSWORD": "ACCOUNT_PASSWORD_PROXY_MODE"},
             )
 
-    def test_remote_write_exception_cancel_and_premature_result_require_reconciliation(self):
+    def test_remote_write_exception_cancel_and_premature_result_preserve_unknown_then_allow_retry(self):
         cases = (
             ("started", "exception"), ("response_received", "exception"),
             ("response_received", "cancel_exception"), ("started", "failed"),
@@ -604,12 +647,12 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
                 self.assertFalse(result["ok"])
                 self.assertEqual("attention_required", result["database_status"])
                 task = operation.get_task(submitted["task_id"])
-                self.assertEqual("reconcile", task["next_actions"][0]["action"])
-                with self.assertRaises(ValueError):
-                    operation.retry_runtime_task(submitted["task_id"])
-                self.assertEqual(1, len(operation.get_task(submitted["task_id"])["runs"]))
+                self.assertEqual("retry", task["next_actions"][0]["action"])
+                retry = operation.retry_runtime_task(submitted["task_id"])
+                self.assertEqual(2, retry["run_no"])
+                self.assertEqual(2, len(operation.get_task(submitted["task_id"])["runs"]))
 
-    def test_direct_terminal_write_cannot_bypass_remote_pending_guard(self):
+    def test_direct_terminal_write_preserves_unknown_and_allows_a_new_run(self):
         account_id = self._runtime_account("direct-pending@example.test")
         task = operation.create_runtime_task(
             task_type="synthetic_direct", account_id=account_id, email="direct-pending@example.test",
@@ -624,8 +667,93 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
             run_id, execution_id="direct-worker", lease_token=lease, status="failed",
         )
         self.assertEqual("attention_required", result["status"])
-        with self.assertRaises(ValueError):
-            operation.retry_runtime_task(task["id"], data={"remote_intent": {}})
+        retry = operation.retry_runtime_task(task["id"], data={"remote_intent": {}})
+        self.assertEqual(2, retry["run_no"])
+        self.assertNotIn("remote_intent", retry["data"])
+
+    def test_deactivated_remote_write_stays_terminal_and_cannot_retry(self):
+        account_id = self._runtime_account("deactivated-write@example.test")
+        task = operation.create_runtime_task(
+            task_type="codex_retry", account_id=account_id, email="deactivated-write@example.test",
+        )
+        run_id = int(task["run"]["id"])
+        operation.claim_run(run_id, execution_id="deactivated-worker", worker_pid=708)
+        lease = operation.acquire_account_lease(account_id=account_id, run_id=run_id)
+        operation.record_remote_intent(
+            run_id, execution_id="deactivated-worker", lease_token=lease, action="codex_oauth",
+        )
+
+        result = operation.finish_run(
+            run_id,
+            execution_id="deactivated-worker",
+            lease_token=lease,
+            status="deactivated",
+            error="账号已废（account_deleted）",
+        )
+
+        self.assertEqual("deactivated", result["status"])
+        detail = operation.get_task(int(task["id"])) or {}
+        self.assertEqual("account_deactivated", detail["target_status"])
+        self.assertEqual([], detail["next_actions"])
+        with self.assertRaisesRegex(ValueError, "账号已废号"):
+            operation.retry_runtime_task(int(task["id"]))
+
+    def test_currently_deactivated_account_blocks_retry_under_account_lock(self):
+        account_id = self._runtime_account("deactivated-current@example.test")
+        task = operation.create_runtime_task(
+            task_type="codex_retry", account_id=account_id, email="deactivated-current@example.test",
+        )
+        operation.finish_run(int(task["run"]["id"]), status="failed", error="temporary failure")
+        self.assertTrue(db.mark_account_deactivated(account_id, reason="account_deleted"))
+
+        with patch.object(record_store, "get_row", wraps=record_store.get_row) as get_row:
+            with self.assertRaisesRegex(ValueError, "账号已废号"):
+                operation.retry_runtime_task(int(task["id"]))
+
+        self.assertTrue(any(
+            call.kwargs.get("conn") is not None and call.kwargs.get("for_update") is True
+            for call in get_row.call_args_list
+        ))
+
+    def test_deactivated_account_is_fenced_before_handler_and_lease(self):
+        account_id = self._runtime_account("deactivated-fence@example.test")
+        task = operation.create_runtime_task(
+            task_type="synthetic_deactivated_fence",
+            account_id=account_id,
+            email="deactivated-fence@example.test",
+            source_system="native_operations",
+            source_id="deactivated-fence-1",
+        )
+        run_id = int(task["run"]["id"])
+        self.assertTrue(db.mark_account_deactivated(account_id, reason="account_deleted"))
+        called = threading.Event()
+
+        def handler(_context):
+            called.set()
+            return task_gateway.OperationResult.success()
+
+        self._register("synthetic_deactivated_fence", handler)
+        result = task_gateway._execute_operation_handler("synthetic_deactivated_fence", run_id)
+        self.assertEqual("not_claimed", result["status"])
+        self.assertFalse(called.is_set())
+        self.assertEqual("deactivated", operation.get_run(run_id)["status"])
+
+        active = operation.create_runtime_task(
+            task_type="synthetic_deactivated_lease",
+            account_id=self._runtime_account("deactivated-lease@example.test"),
+            email="deactivated-lease@example.test",
+            source_system="native_operations",
+            source_id="deactivated-lease-1",
+        )
+        active_run_id = int(active["run"]["id"])
+        operation.claim_run(active_run_id, execution_id="deactivated-lease-worker", worker_pid=709)
+        lease_account_id = int(active["account_id"])
+        self.assertTrue(db.mark_account_deactivated(lease_account_id, reason="account_deleted"))
+        with self.assertRaises(OperationAccountDeactivated):
+            operation.acquire_account_lease(
+                account_id=lease_account_id,
+                run_id=active_run_id,
+            )
 
     def test_rejected_write_is_retryable_but_new_run_has_no_old_checkpoint(self):
         account_id = self._runtime_account("rejected-write@example.test")

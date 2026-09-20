@@ -2061,6 +2061,13 @@ def _build_retry_info(
 
     if status == "success" and account is None:
         return info
+    if account and db.account_is_deactivated(account):
+        info.update({
+            "display_status": "deactivated",
+            "retry_reason": "账号已废号，不能补跑 Codex",
+            "next_actions": [],
+        })
+        return info
     pending_password = _pending_registration_password(account)
     if account and pending_password:
         info.update({
@@ -2145,6 +2152,7 @@ def _build_retry_info(
 
     if account:
         if codex_status == "deactivated":
+            info["next_actions"] = []
             info["retry_reason"] = "账号已废号，不能补跑 Codex"
             return info
         if (

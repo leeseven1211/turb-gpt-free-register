@@ -20,6 +20,7 @@ from typing import Any, Iterable
 from core import postgres_store, record_store
 from core import task_run_log
 from core.operations import task_gateway as account_task_store
+from core.operation_runtime import OperationAccountDeactivated
 from core.task_errors import classify_task_error
 from core.task_progress import build_progress_snapshot
 from core.task_stages import flow_for, normalize_stage, normalize_step_state
@@ -605,7 +606,10 @@ def init() -> None:
                 f"""
                 UPDATE {postgres_store.qualified(record_store.ACCOUNTS.name)} account
                 SET codex_credential_state=CASE
-                        WHEN account.deactivated THEN 'deactivated'
+                        WHEN account.deactivated
+                          OR account.codex_status='deactivated'
+                          OR account.codex_credential_state='deactivated'
+                        THEN 'deactivated'
                         WHEN account.codex_status='success' OR EXISTS (
                             SELECT 1 FROM {postgres_store.qualified(record_store.CODEX_CREDENTIALS.name)} credential
                             WHERE credential.archived IS FALSE
@@ -624,6 +628,21 @@ def init() -> None:
                     )
                 WHERE account.codex_credential_state IS NULL
                    OR account.codex_execution_status IS NULL
+                """
+            )
+            cur.execute(
+                f"""
+                UPDATE {postgres_store.qualified(record_store.ACCOUNTS.name)} account
+                SET deactivated=(
+                    LOWER(COALESCE(account.data->>'account_status', ''))='deactivated'
+                    OR LOWER(COALESCE(account.codex_status, ''))='deactivated'
+                    OR LOWER(COALESCE(account.codex_credential_state, ''))='deactivated'
+                )
+                WHERE account.deactivated IS DISTINCT FROM (
+                    LOWER(COALESCE(account.data->>'account_status', ''))='deactivated'
+                    OR LOWER(COALESCE(account.codex_status, ''))='deactivated'
+                    OR LOWER(COALESCE(account.codex_credential_state, ''))='deactivated'
+                )
                 """
             )
         _READY_KEY = ready_key
@@ -668,6 +687,36 @@ def _account_state(account: dict | None) -> dict[str, str]:
         "local_account_state": "none",
         "target_status": "attention_required",
     }
+
+
+def _account_is_deactivated(account: dict | None) -> bool:
+    return any(
+        str((account or {}).get(key) or "").strip().lower() == "deactivated"
+        for key in ("account_status", "codex_status", "codex_credential_state")
+    )
+
+
+def _finish_deactivated_before_execution(
+    run_id: int,
+    *,
+    execution_id: str | None = None,
+    lease_token: str | None = None,
+) -> dict:
+    """将尚未跨越远端边界的 Run 收口为已停用。"""
+    return finish_run(
+        int(run_id),
+        status="deactivated",
+        message="账号已确认停用，队列任务未执行",
+        error="账号已确认停用，队列任务未执行",
+        result_summary={
+            "status": "deactivated",
+            "requested_status": "deactivated",
+            "reason": "account_deactivated_before_execution",
+            "remote_request_started": False,
+        },
+        execution_id=execution_id,
+        lease_token=lease_token,
+    )
 
 
 def _error_fields(message: Any, *, stage: str = "", task_type: str = "") -> tuple[str | None, str | None, str | None]:
@@ -969,6 +1018,8 @@ def _registration_task_type(job: dict) -> str:
 
 def _next_registration_actions(job: dict, account: dict | None, target_status: str) -> list[dict[str, Any]]:
     if _status(job.get("status")) not in _TERMINAL_STATUSES:
+        return []
+    if _account_is_deactivated(account):
         return []
     source_job_id = int(job.get("id") or 0)
     if target_status == "email_verification_pending":
@@ -1310,7 +1361,8 @@ def _upsert_account_task(
     account_id = int(task["account_id"]) if task.get("account_id") is not None else None
     account = (accounts_by_id or {}).get(account_id) if account_id is not None else None
     account_state = _account_state(account)
-    target_status = "deactivated" if status == "deactivated" else account_state["target_status"]
+    account_deactivated = status == "deactivated" or _account_is_deactivated(account)
+    target_status = "account_deactivated" if account_deactivated else account_state["target_status"]
     next_actions: list[dict[str, Any]] = []
     if target_status == "email_verification_pending" and account_id is not None:
         cur.execute(
@@ -1325,7 +1377,7 @@ def _upsert_account_task(
         registration_task = cur.fetchone()
         if registration_task:
             next_actions = _decode(registration_task["next_actions"]) or []
-    elif status != "success":
+    elif status != "success" and not account_deactivated:
         next_actions = [{"action": "retry", "label": "重新执行", "source_task_id": legacy_id}]
     source_id = str(legacy_id)
     task_uuid = _uuid("task", f"account_action_tasks:{legacy_id}")
@@ -1618,7 +1670,7 @@ def _refresh_batch(cur, batch_id: int) -> None:
         UPDATE {_table('operation_batches')} SET status=%s, queued_count=%s,
             running_count=%s, success_count=%s, partial_count=%s, failed_count=%s,
             attention_count=%s, stopped_count=%s, cancelled_count=%s,
-            completed_at=COALESCE(%s, completed_at)
+            completed_at=%s
         WHERE id=%s
         """,
         (status, queued, running, success, partial, failed, attention, stopped, cancelled, completed_at, batch_id),
@@ -3078,12 +3130,16 @@ def apply_task_dependency_result(
     parent_id = _text(parent_source_id, 240)
     child_status_value = _status(child_status)
     child_payload = dict(child_result or {})
+    deactivated = child_status_value == "deactivated" or any(
+        str(child_payload.get(key) or "").strip().lower() == "deactivated"
+        for key in ("status", "requested_status")
+    )
     unknown = child_status_value in {"request_unknown", "attention_required"} or (
         str(child_payload.get("outcome") or "").lower() == "request_unknown"
     )
-    desired = "attention_required" if unknown else "partial_success"
-    target_status = "attention_required"
-    next_actions = (
+    desired = "deactivated" if deactivated else "attention_required" if unknown else "partial_success"
+    target_status = "account_deactivated" if deactivated else "attention_required"
+    next_actions = [] if deactivated else (
         [{"action": "reconcile", "label": "确认远端结果后继续"}]
         if unknown else [{"action": "retry", "label": "重试失败子任务"}]
     )
@@ -3118,7 +3174,9 @@ def apply_task_dependency_result(
             "child_status": child_status_value,
             "child_result": _scrub(child_payload),
         })
-        if unknown:
+        if deactivated:
+            parent_summary.update({"status": "deactivated", "requested_status": "deactivated"})
+        elif unknown:
             parent_summary.update({"outcome": "request_unknown", "reconcile_required": True})
         cur.execute(
             f"""
@@ -3131,7 +3189,8 @@ def apply_task_dependency_result(
             (
                 desired, target_status, _json(next_actions),
                 _text(
-                    "子任务远端结果待核验，父任务禁止自动重做"
+                    "子任务已确认废号，父任务停止重跑"
+                    if deactivated else "子任务远端结果待核验，父任务禁止自动重做"
                     if unknown else "子任务失败，父任务保留部分成功结果",
                     1400,
                 ),
@@ -3149,7 +3208,8 @@ def apply_task_dependency_result(
                 """,
                 (
                     desired, _json(parent_summary),
-                    "子任务远端结果待核验，父任务禁止自动重做"
+                    "子任务已确认废号，父任务停止重跑"
+                    if deactivated else "子任务远端结果待核验，父任务禁止自动重做"
                     if unknown else "子任务失败，父任务保留部分成功结果",
                     int(parent_run["id"]),
                 ),
@@ -3166,8 +3226,8 @@ def apply_task_dependency_result(
                 event_uuid, parent_task_id,
                 int(parent_run["id"]) if parent_run else None,
                 parent_system, event_uuid,
-                "task.dependency_unknown" if unknown else "task.dependency_failed",
-                "子任务结果待核验，父任务暂停续接" if unknown else "子任务失败，父任务保留部分成功结果",
+                "task.dependency_deactivated" if deactivated else "task.dependency_unknown" if unknown else "task.dependency_failed",
+                "子任务已确认废号，父任务停止重跑" if deactivated else "子任务结果待核验，父任务暂停续接" if unknown else "子任务失败，父任务保留部分成功结果",
                 _json({"child_status": child_status_value, "child_result": child_payload}),
             ),
         )
@@ -3217,6 +3277,12 @@ def _reconcile_parent_task_cur(cur, parent_task_id: int, *, child_task_id: int |
             next_actions = []
             message = "所有子任务已完成，父任务自动收口"
             level = "INFO"
+        elif "deactivated" in statuses:
+            desired = "deactivated"
+            target_status = "account_deactivated"
+            next_actions = []
+            message = "子任务已确认废号，父任务停止重跑"
+            level = "WARNING"
         elif "attention_required" in statuses:
             desired = "attention_required"
             target_status = "attention_required"
@@ -3241,14 +3307,42 @@ def _reconcile_parent_task_cur(cur, parent_task_id: int, *, child_task_id: int |
         """,
         (desired, target_status, current_stage, _json(next_actions), int(parent_task_id)),
     )
-    parent_run_id = int(parent.get("last_run_id") or 0) or None
     parent_source_system = str(parent.get("source_system") or "native_operations")
+    parent_run_id = int(parent.get("last_run_id") or 0) or None
     if parent_run_id:
         cur.execute(
-            f"SELECT status, result_summary FROM {_table('operation_runs')} WHERE id=%s FOR UPDATE",
+            f"SELECT * FROM {_table('operation_runs')} WHERE id=%s FOR UPDATE",
             (parent_run_id,),
         )
         parent_run = cur.fetchone()
+        # 协调任务的终态仅表示上一轮子任务已经结束。子任务重跑时建立新的
+        # waiting Run，保留旧终态 Run 的审计记录，同时让读模型指向当前协调态。
+        if (
+            parent_run
+            and desired == "waiting"
+            and str(parent_run.get("status") or "") in _TERMINAL_STATUSES
+        ):
+            cur.execute(
+                f"SELECT COALESCE(MAX(run_no), 0) + 1 AS n FROM {_table('operation_runs')} WHERE task_id=%s",
+                (int(parent_task_id),),
+            )
+            replacement = _insert_runtime_run(
+                cur,
+                task_id=int(parent_task_id),
+                run_no=int(cur.fetchone()["n"]),
+                source_system=parent_source_system,
+                account_id=int(parent["account_id"]) if parent.get("account_id") else None,
+                batch_id=parent_run.get("batch_id") or parent.get("batch_id"),
+                resource_family=str(parent_run.get("resource_family") or "completion_coordinator"),
+                data=_decode(parent_run.get("data")) or _decode(parent.get("data")) or {},
+                initial_status="waiting",
+            )
+            parent_run = replacement
+            parent_run_id = int(replacement["id"])
+            cur.execute(
+                f"UPDATE {_table('operation_tasks')} SET last_run_id=%s WHERE id=%s",
+                (parent_run_id, int(parent_task_id)),
+            )
         if parent_run and str(parent_run.get("status") or "") not in _TERMINAL_STATUSES:
             summary = _decode(parent_run.get("result_summary"))
             summary = dict(summary) if isinstance(summary, dict) else {}
@@ -3348,7 +3442,9 @@ def _insert_runtime_run(
     batch_id: int | None,
     resource_family: str,
     data: dict | None,
+    initial_status: str = "queued",
 ) -> dict:
+    status_value = "waiting" if str(initial_status or "").strip().lower() == "waiting" else "queued"
     run_uuid = uuid.uuid4().hex
     cancellation_token = uuid.uuid4().hex
     cur.execute(f"SELECT task_uuid FROM {_table('operation_tasks')} WHERE id=%s", (int(task_id),))
@@ -3363,11 +3459,11 @@ def _insert_runtime_run(
         INSERT INTO {_table('operation_runs')} (
             run_uuid, task_id, run_no, source_system, source_id, status,
             batch_id, account_id, resource_family, cancellation_token, log_file, data
-        ) VALUES (%s, %s, %s, %s, %s, 'queued', %s, %s, %s, %s, %s, %s::jsonb)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
         RETURNING *
         """,
         (
-            run_uuid, int(task_id), int(run_no), str(source_system), run_uuid,
+            run_uuid, int(task_id), int(run_no), str(source_system), run_uuid, status_value,
             batch_id, account_id,
             str(resource_family or "openai_interactive"), cancellation_token, log_file, _json(data or {}),
         ),
@@ -3379,13 +3475,19 @@ def _insert_runtime_run(
         INSERT INTO {_table('operation_events')} (
             event_uuid, task_id, run_id, source_system, source_id,
             level, stage, event_type, message, detail
-        ) VALUES (%s,%s,%s,%s,%s,'INFO','queued','run.queued','任务已加入队列','{{}}'::jsonb)
+        ) VALUES (%s,%s,%s,%s,%s,'INFO',%s,%s,%s,'{{}}'::jsonb)
         """,
-        (event_uuid, int(task_id), int(run["id"]), str(source_system), event_uuid),
+        (
+            event_uuid, int(task_id), int(run["id"]), str(source_system), event_uuid,
+            status_value,
+            "run.waiting" if status_value == "waiting" else "run.queued",
+            "任务等待子任务完成" if status_value == "waiting" else "任务已加入队列",
+        ),
     )
     task_run_log.append(
-        log_file, level="INFO", message="任务已加入队列", task_id=int(task_id),
-        run_id=int(run["id"]), stage="queued", event_type="run.queued",
+        log_file, level="INFO", message="任务等待子任务完成" if status_value == "waiting" else "任务已加入队列",
+        task_id=int(task_id), run_id=int(run["id"]), stage=status_value,
+        event_type="run.waiting" if status_value == "waiting" else "run.queued",
     )
     return run
 
@@ -3418,6 +3520,15 @@ def create_runtime_task(
     source_value = str(source_id or idempotency_key or "").strip() or task_uuid
     account_value = int(account_id) if account_id else None
     with _connect() as conn, conn.cursor() as cur:
+        if account_value:
+            account = record_store.get_row(
+                record_store.ACCOUNTS,
+                account_value,
+                conn=conn,
+                for_update=True,
+            )
+            if _account_is_deactivated(account):
+                raise OperationAccountDeactivated("账号已废号，禁止创建任务")
         if source_id or idempotency_key:
             cur.execute(
                 f"""
@@ -3535,6 +3646,9 @@ def retry_runtime_task(task_id: int, *, trigger: str = "manual_retry", data: dic
             raise LookupError("任务不存在")
         if str(task.get("source_system") or "") in {"registration_jobs", "account_action_tasks"}:
             raise ValueError("历史兼容任务需先迁移为原生任务后再重跑")
+        task_status = str(task.get("status") or "").strip().lower()
+        if task_status in _ACTIVE_RUN_STATUSES:
+            raise ValueError("任务仍在执行")
         cur.execute(
             f"SELECT COALESCE(MAX(run_no), 0) + 1 AS n FROM {_table('operation_runs')} WHERE task_id=%s",
             (int(task_id),),
@@ -3545,25 +3659,35 @@ def retry_runtime_task(task_id: int, *, trigger: str = "manual_retry", data: dic
         merged_data["retry_trigger"] = str(trigger or "manual_retry")
         cur.execute(
             f"""
-            SELECT resource_family, batch_id, data, result_summary
+            SELECT status, resource_family, batch_id, data, result_summary
             FROM {_table('operation_runs')}
             WHERE task_id=%s ORDER BY run_no DESC, id DESC LIMIT 1
             """,
             (int(task_id),),
         )
         previous_run = cur.fetchone() or {}
-        intent = _remote_write_checkpoint(previous_run.get("data"))
-        receipt = str(intent.get("receipt_state") or intent.get("state") or "started")
+        if str(previous_run.get("status") or "").strip().lower() in _ACTIVE_RUN_STATUSES:
+            raise ValueError("任务仍在执行")
         summary = _decode(previous_run.get("result_summary")) or {}
-        allow_registration_resume = str(task.get("task_type") or "").strip().lower() == "registration_resume"
-        if not allow_registration_resume and ((intent and receipt != "rejected") or (
-            isinstance(summary, dict)
-            and (summary.get("outcome") == "request_unknown" or summary.get("reconcile_required"))
-        )):
-            # Guard the storage boundary, not only the HTTP route.  A generic
-            # retry cannot establish whether a remote write already happened;
-            # registration resume is the explicit operator-authorized exception.
-            raise ValueError("远端写请求结果需先核验，禁止直接重试原操作")
+        account_id = int(task.get("account_id") or 0)
+        account = (
+            record_store.get_row(
+                record_store.ACCOUNTS, account_id, conn=conn, for_update=True,
+            )
+            if account_id else None
+        )
+        target_status = str(task.get("target_status") or "").strip().lower()
+        summary_statuses = {
+            str(summary.get(key) or "").strip().lower()
+            for key in ("status", "requested_status")
+        } if isinstance(summary, dict) else set()
+        if (
+            task_status == "deactivated"
+            or target_status in {"deactivated", "account_deactivated"}
+            or "deactivated" in summary_statuses
+            or _account_is_deactivated(account)
+        ):
+            raise ValueError("账号已废号，禁止重跑")
         previous_data = _decode(previous_run.get("data"))
         if isinstance(previous_data, dict):
             previous_data = dict(previous_data)
@@ -3588,11 +3712,32 @@ def retry_runtime_task(task_id: int, *, trigger: str = "manual_retry", data: dic
             UPDATE {_table('operation_tasks')}
             SET status='queued', target_status='pending', current_stage='queued',
                 last_run_id=%s, error_category=NULL, error_code=NULL, error_message=NULL,
-                completed_at=NULL, updated_at=now(), trigger=%s
+                completed_at=NULL, next_actions='[]'::jsonb, updated_at=now(), trigger=%s
             WHERE id=%s
             """,
             (int(run["id"]), str(trigger or "manual_retry"), int(task_id)),
         )
+        refreshed_batch_ids = {
+            int(value)
+            for value in (task.get("batch_id"), previous_run.get("batch_id"))
+            if value
+        }
+        parent_task_id = int(task.get("parent_task_id") or 0)
+        if parent_task_id:
+            _reconcile_parent_task_cur(
+                cur,
+                parent_task_id,
+                child_task_id=int(task_id),
+            )
+            cur.execute(
+                f"SELECT batch_id FROM {_table('operation_tasks')} WHERE id=%s",
+                (parent_task_id,),
+            )
+            parent_row = cur.fetchone() or {}
+            if parent_row.get("batch_id"):
+                refreshed_batch_ids.add(int(parent_row["batch_id"]))
+        if refreshed_batch_ids:
+            _refresh_batches(cur, sorted(refreshed_batch_ids))
         return _row(run) or {}
 
 
@@ -3755,6 +3900,11 @@ def list_reconciliation_accounts(
     init()
     clauses = [
         "t.task_type=%s",
+        # Only the task's current Run can fence a new producer submission.
+        # A prior request_unknown Run remains in history for audit/reconcile,
+        # but a successful or queued retry replaces it as the active safety
+        # decision for this logical task.
+        "r.id=t.last_run_id",
         "("
         "t.status='attention_required' OR r.status='attention_required' "
         "OR COALESCE(r.result_summary->>'outcome','')='request_unknown' "
@@ -3926,6 +4076,8 @@ def claim_next_queued_run(
     thread-pool slot.
     """
     init()
+    blocked_before_execution = False
+    result: dict | None = None
     with _connect() as conn, conn.cursor() as cur:
         clauses = [
             "r.status='queued'",
@@ -3964,54 +4116,98 @@ def claim_next_queued_run(
             return None
         run_id = int(selected["id"])
         cur.execute(
-            f"""
-            UPDATE {_table('operation_runs')}
-            SET status='running', execution_id=%s, worker_pid=%s,
-                next_attempt_at=NULL,
-                started_at=COALESCE(started_at, now()), heartbeat_at=now(),
-                progress_stage='preflight'
-            WHERE id=%s AND status='queued' AND cancel_requested_at IS NULL
-              AND (next_attempt_at IS NULL OR next_attempt_at <= now())
-            RETURNING *
-            """,
-            (str(execution_id), int(worker_pid), run_id),
-        )
-        raw = cur.fetchone()
-        if not raw:
-            return None
-        run = dict(raw)
-        cur.execute(
-            f"""
-            UPDATE {_table('operation_tasks')}
-            SET status='running', current_stage='preflight', updated_at=now()
-            WHERE id=%s
-            """,
-            (int(run["task_id"]),),
-        )
-        event_uuid = uuid.uuid4().hex
-        cur.execute(
-            f"""
-            INSERT INTO {_table('operation_events')} (
-                event_uuid, task_id, run_id, source_system, source_id,
-                level, stage, event_type, message, detail
-            ) VALUES (%s,%s,%s,%s,%s,'INFO','queued',
-                      'run.running','任务开始执行','{{}}'::jsonb)
-            """,
-            (
-                event_uuid, int(run["task_id"]), run_id,
-                str(run.get("source_system") or "native_operations"), event_uuid,
-            ),
-        )
-        cur.execute(
-            f"""
-            SELECT r.*, t.task_type, t.email_snapshot, t.trigger, t.parent_task_id
-            FROM {_table('operation_runs')} r
-            JOIN {_table('operation_tasks')} t ON t.id=r.task_id
-            WHERE r.id=%s
-            """,
+            f"SELECT * FROM {_table('operation_runs')} WHERE id=%s FOR UPDATE",
             (run_id,),
         )
-        result = _row(dict(cur.fetchone())) or {}
+        run_meta = cur.fetchone()
+        account = (
+            record_store.get_row(
+                record_store.ACCOUNTS,
+                int(run_meta.get("account_id") or 0),
+                conn=conn,
+                for_update=True,
+            )
+            if run_meta and run_meta.get("account_id") else None
+        )
+        if _account_is_deactivated(account):
+            cur.execute(
+                f"""
+                UPDATE {_table('operation_runs')}
+                SET status='settling', execution_id=%s, worker_pid=%s,
+                    next_attempt_at=NULL,
+                    started_at=COALESCE(started_at, now()), heartbeat_at=now(),
+                    progress_stage='preflight'
+                WHERE id=%s AND status='queued'
+                """,
+                (str(execution_id), int(worker_pid), run_id),
+            )
+            cur.execute(
+                f"""
+                UPDATE {_table('operation_tasks')}
+                SET status='settling', current_stage='preflight', updated_at=now()
+                WHERE id=%s
+                """,
+                (int(run_meta["task_id"]),),
+            )
+            blocked_before_execution = True
+        else:
+            cur.execute(
+                f"""
+                UPDATE {_table('operation_runs')}
+                SET status='running', execution_id=%s, worker_pid=%s,
+                    next_attempt_at=NULL,
+                    started_at=COALESCE(started_at, now()), heartbeat_at=now(),
+                    progress_stage='preflight'
+                WHERE id=%s AND status='queued' AND cancel_requested_at IS NULL
+                  AND (next_attempt_at IS NULL OR next_attempt_at <= now())
+                RETURNING *
+                """,
+                (str(execution_id), int(worker_pid), run_id),
+            )
+            raw = cur.fetchone()
+            if not raw:
+                return None
+            run = dict(raw)
+        if blocked_before_execution:
+            result = None
+        else:
+            cur.execute(
+                f"""
+                UPDATE {_table('operation_tasks')}
+                SET status='running', current_stage='preflight', updated_at=now()
+                WHERE id=%s
+                """,
+                (int(run["task_id"]),),
+            )
+            event_uuid = uuid.uuid4().hex
+            cur.execute(
+                f"""
+                INSERT INTO {_table('operation_events')} (
+                    event_uuid, task_id, run_id, source_system, source_id,
+                    level, stage, event_type, message, detail
+                ) VALUES (%s,%s,%s,%s,%s,'INFO','queued',
+                          'run.running','任务开始执行','{{}}'::jsonb)
+                """,
+                (
+                    event_uuid, int(run["task_id"]), run_id,
+                    str(run.get("source_system") or "native_operations"), event_uuid,
+                ),
+            )
+            cur.execute(
+                f"""
+                SELECT r.*, t.task_type, t.email_snapshot, t.trigger, t.parent_task_id
+                FROM {_table('operation_runs')} r
+                JOIN {_table('operation_tasks')} t ON t.id=r.task_id
+                WHERE r.id=%s
+                """,
+                (run_id,),
+            )
+            result = _row(dict(cur.fetchone())) or {}
+    if blocked_before_execution:
+        _finish_deactivated_before_execution(run_id, execution_id=str(execution_id))
+        return None
+    if not result:
+        return None
     task_run_log.append(
         result.get("log_file"), level="INFO", message="任务开始执行",
         task_id=int(result["task_id"]), run_id=run_id, stage="queued", event_type="run.running",
@@ -4044,16 +4240,7 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
                     ELSE 'interrupted'
                 END,
                 completed_at=now(), heartbeat_at=now(),
-                progress_stage=CASE
-                    WHEN run.data->'remote_intent'->>'kind'='remote_write'
-                     AND COALESCE(
-                         run.data->'remote_intent'->>'receipt_state',
-                         run.data->'remote_intent'->>'state', 'started'
-                     )
-                         <> 'rejected'
-                    THEN 'reconcile'
-                    ELSE 'interrupted'
-                END,
+                progress_stage='complete',
                 error_message=CASE
                     WHEN run.data->'remote_intent'->>'kind'='remote_write'
                      AND COALESCE(
@@ -4061,7 +4248,7 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
                          run.data->'remote_intent'->>'state', 'started'
                      )
                          <> 'rejected'
-                    THEN '远端写请求结果待核验，禁止自动重做'
+                    THEN '远端写请求结果未知，已保留原记录，可重新执行'
                     ELSE '执行进程已重启，原 attempt 中断'
                 END,
                 result_summary=CASE
@@ -4134,16 +4321,12 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
                     """,
                     (
                         recovered_status,
-                        "reconcile" if recovered_status == "attention_required" else "interrupted",
-                        "远端写请求结果待核验，禁止自动重做"
+                        "complete" if recovered_status == "attention_required" else "interrupted",
+                        "远端写请求结果未知，已保留原记录，可重新执行"
                         if recovered_status == "attention_required"
                         else "执行进程已重启，原 attempt 中断",
                         recovered_status,
-                        _json(
-                            [{"action": "reconcile", "label": "确认远端结果后继续"}]
-                            if recovered_status == "attention_required"
-                            else [{"action": "retry", "label": "重新执行"}]
-                        ),
+                        _json([{"action": "retry", "label": "重新执行"}]),
                         int(row["task_id"]), int(row["id"]),
                     ),
                 )
@@ -4173,9 +4356,9 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
                         event_uuid, int(row["task_id"]), int(row["id"]),
                         source_by_task.get(int(row["task_id"]), "native_operations"),
                         event_uuid,
-                        "reconcile" if recovered_status == "attention_required" else "interrupted",
+                        "complete" if recovered_status == "attention_required" else "interrupted",
                         "run.request_unknown" if recovered_status == "attention_required" else "run.interrupted",
-                        "远端写请求结果待核验，禁止自动重做"
+                        "远端写请求结果未知，已保留原记录，可重新执行"
                         if recovered_status == "attention_required"
                         else "执行进程已重启，原 attempt 中断",
                         _json({
@@ -4322,53 +4505,105 @@ def set_runtime_batch_skipped(batch_id: int, skipped: list[dict]) -> None:
 def claim_run(run_id: int, *, execution_id: str, worker_pid: int) -> dict | None:
     """仅一个进程能把 queued attempt 原子认领为 running。"""
     init()
+    blocked_before_execution = False
+    result: dict | None = None
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
             f"""
-            UPDATE {_table('operation_runs')}
-            SET status='running', execution_id=%s, worker_pid=%s,
-                next_attempt_at=NULL,
-                started_at=COALESCE(started_at, now()), heartbeat_at=now(), progress_stage='preflight'
+            SELECT * FROM {_table('operation_runs')}
             WHERE id=%s AND status='queued' AND cancel_requested_at IS NULL
               AND (next_attempt_at IS NULL OR next_attempt_at <= now())
-            RETURNING *
+            FOR UPDATE
             """,
-            (str(execution_id), int(worker_pid), int(run_id)),
+            (int(run_id),),
         )
         run = cur.fetchone()
         if not run:
             return None
-        cur.execute(
-            f"""
-            UPDATE {_table('operation_tasks')}
-            SET status='running', current_stage='preflight', updated_at=now()
-            WHERE id=%s
-            """,
-            (int(run["task_id"]),),
+        account_id = int(run.get("account_id") or 0)
+        account = (
+            record_store.get_row(
+                record_store.ACCOUNTS,
+                account_id,
+                conn=conn,
+                for_update=True,
+            )
+            if account_id else None
         )
-        event_uuid = uuid.uuid4().hex
-        cur.execute(
-            f"""
-            INSERT INTO {_table('operation_events')} (
-                event_uuid, task_id, run_id, source_system, source_id,
-                level, stage, event_type, message, detail
-            ) VALUES (%s,%s,%s,%s,%s,'INFO','queued','run.running','任务开始执行','{{}}'::jsonb)
-            """,
-            (
-                event_uuid, int(run["task_id"]), int(run_id),
-                str(run.get("source_system") or "native_operations"), event_uuid,
-            ),
+        if _account_is_deactivated(account):
+            cur.execute(
+                f"""
+                UPDATE {_table('operation_runs')}
+                SET status='settling', execution_id=%s, worker_pid=%s,
+                    next_attempt_at=NULL,
+                    started_at=COALESCE(started_at, now()), heartbeat_at=now(), progress_stage='preflight'
+                WHERE id=%s AND status='queued'
+                """,
+                (str(execution_id), int(worker_pid), int(run_id)),
+            )
+            cur.execute(
+                f"""
+                UPDATE {_table('operation_tasks')}
+                SET status='settling', current_stage='preflight', updated_at=now()
+                WHERE id=%s
+                """,
+                (int(run["task_id"]),),
+            )
+            blocked_before_execution = True
+        else:
+            cur.execute(
+                f"""
+                UPDATE {_table('operation_runs')}
+                SET status='running', execution_id=%s, worker_pid=%s,
+                    next_attempt_at=NULL,
+                    started_at=COALESCE(started_at, now()), heartbeat_at=now(), progress_stage='preflight'
+                WHERE id=%s AND status='queued' AND cancel_requested_at IS NULL
+                RETURNING *
+                """,
+                (str(execution_id), int(worker_pid), int(run_id)),
+            )
+            run = cur.fetchone()
+            if not run:
+                return None
+            cur.execute(
+                f"""
+                UPDATE {_table('operation_tasks')}
+                SET status='running', current_stage='preflight', updated_at=now()
+                WHERE id=%s
+                """,
+                (int(run["task_id"]),),
+            )
+            event_uuid = uuid.uuid4().hex
+            cur.execute(
+                f"""
+                INSERT INTO {_table('operation_events')} (
+                    event_uuid, task_id, run_id, source_system, source_id,
+                    level, stage, event_type, message, detail
+                ) VALUES (%s,%s,%s,%s,%s,'INFO','queued','run.running','任务开始执行','{{}}'::jsonb)
+                """,
+                (
+                    event_uuid, int(run["task_id"]), int(run_id),
+                    str(run.get("source_system") or "native_operations"), event_uuid,
+                ),
+            )
+            cur.execute(
+                f"""
+                SELECT r.*, t.task_type, t.email_snapshot, t.trigger, t.parent_task_id
+                FROM {_table('operation_runs')} r
+                JOIN {_table('operation_tasks')} t ON t.id=r.task_id
+                WHERE r.id=%s
+                """,
+                (int(run_id),),
+            )
+            result = _row(dict(cur.fetchone())) or {}
+    if blocked_before_execution:
+        _finish_deactivated_before_execution(
+            int(run_id),
+            execution_id=str(execution_id),
         )
-        cur.execute(
-            f"""
-            SELECT r.*, t.task_type, t.email_snapshot, t.trigger, t.parent_task_id
-            FROM {_table('operation_runs')} r
-            JOIN {_table('operation_tasks')} t ON t.id=r.task_id
-            WHERE r.id=%s
-            """,
-            (int(run_id),),
-        )
-        result = _row(dict(cur.fetchone())) or {}
+        return None
+    if not result:
+        return None
     task_run_log.append(
         result.get("log_file"), level="INFO", message="任务开始执行",
         task_id=int(result["task_id"]), run_id=int(run_id), stage="queued", event_type="run.running",
@@ -4599,6 +4834,16 @@ def _remote_checkpoint_fence(
         raise PermissionError("非活动执行实例不能写入 remote checkpoint")
     if str(run.get("execution_id") or "") != execution_value:
         raise PermissionError("remote checkpoint execution fence 不匹配")
+    account_id = int(run.get("account_id") or 0)
+    if account_id:
+        account = record_store.get_row(
+            record_store.ACCOUNTS,
+            account_id,
+            conn=cur.connection,
+            for_update=True,
+        )
+        if _account_is_deactivated(account):
+            raise OperationAccountDeactivated("账号已确认停用，禁止继续远端请求")
     token = str(lease_token or "").strip()
     if require_lease and not token:
         raise PermissionError("remote write 必须持有账号 lease")
@@ -4926,6 +5171,14 @@ def acquire_account_lease(
             return None
         if str(run.get("resource_family") or "openai_interactive") != str(resource_family):
             return None
+        account = record_store.get_row(
+            record_store.ACCOUNTS,
+            int(account_id),
+            conn=conn,
+            for_update=True,
+        )
+        if _account_is_deactivated(account):
+            raise OperationAccountDeactivated("账号已确认停用，禁止申请任务 lease")
         cur.execute(
             f"DELETE FROM {_table('account_operation_leases')} WHERE expires_at < now()",
         )
@@ -5163,14 +5416,12 @@ def finish_run(
                 and status_value in {"failed", "unsupported"}
                 and str(dependency_result.get("remote_result_state") or "").lower() == "rejected"
             )
-            if intent and receipt != "rejected" and (
+            if status_value != "deactivated" and intent and receipt != "rejected" and (
                 not explicit_remote_rejection
                 and (status_value != "success" or receipt != "confirmed")
             ):
-                # Exceptions/cancellation after the request boundary must not
-                # evade crash recovery by becoming a retryable terminal Run.
-                # Even a confirmed write followed by another failure needs a
-                # follow-up, not replay of the already completed remote write.
+                # 未确认的远端写入保留在当前 Run，人工重跑会创建新的 Run，
+                # 不会覆盖这条用于排障与审计的远端请求证据。
                 dependency_result.update({
                     "outcome": "request_unknown",
                     "reconcile_required": True,
@@ -5179,7 +5430,7 @@ def finish_run(
                     "remote_intent_state": receipt,
                 })
                 status_value = "attention_required"
-                error = "远端写请求尚未完成整条任务核验，禁止直接重试" + (
+                error = "远端写请求尚未完成整条任务核验，结果未知，已保留原记录，可重新执行" + (
                     f"：{error}" if error else ""
                 )
                 message = error
@@ -5218,10 +5469,7 @@ def finish_run(
                 (
                     status_value, target_status, category, code, error_message,
                     _json(
-                        [] if status_value in {"success", "unsupported"} else
-                        [{"action": "reconcile", "label": "确认远端结果后继续"}]
-                        if status_value == "attention_required"
-                        and str(dependency_result.get("outcome") or "") == "request_unknown"
+                        [] if status_value in {"success", "deactivated"}
                         else [{"action": "retry", "label": "重新执行"}]
                     ),
                     int(run["task_id"]), int(run_id),

@@ -1243,6 +1243,13 @@ def enqueue_account_extract(
     account = db.get_account(account_id)
     if not account:
         return {"accepted": False, "busy": False, "error": "账号不存在"}
+    if db.account_is_deactivated(account):
+        return {
+            "accepted": False,
+            "busy": False,
+            "deactivated": True,
+            "error": "账号已废号，不能提链",
+        }
     lt, fallback_from = _select_account_link_type(account=account, requested=link_type)
     code = _cdk(cdk)
     key = str(idempotency_key or "").strip() or None

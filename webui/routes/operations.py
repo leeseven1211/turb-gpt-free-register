@@ -172,11 +172,11 @@ def create_operations_blueprint(context: WebUIContext):
         task = operation_task_store.get_task(task_id)
         if not task:
             return jsonify({"ok": False, "error": "任务不存在"}), 404
-        if task_gateway.operation_requires_reconciliation(task):
+        if task_gateway.operation_is_deactivated(task):
             return jsonify({
                 "ok": False,
-                "reconcile_required": True,
-                "error": "远端请求结果待核验，禁止盲目重试",
+                "deactivated": True,
+                "error": "账号已废号，不能重跑",
             }), 409
         if task.get("status") in {"queued", "running", "stopping", "cancelling", "settling", "waiting"}:
             return jsonify({"ok": False, "error": "任务仍在执行"}), 409

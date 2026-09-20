@@ -16,6 +16,10 @@ class OperationCancelled(RuntimeError):
     """任务在安全检查点响应了取消请求。"""
 
 
+class OperationAccountDeactivated(RuntimeError):
+    """执行边界确认账号已停用，禁止继续向远端发起操作。"""
+
+
 @dataclass
 class CancellationToken:
     run_id: int

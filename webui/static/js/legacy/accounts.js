@@ -3,6 +3,11 @@ let accountsLoading = false;
 let planStatusLoading = false;
 let planStatusRevision = '';
 let legacyEmailChangeReturnFocus = null;
+function accountIsDeactivated(account) {
+  return ['account_status', 'codex_status', 'codex_credential_state'].some(
+    key => String(account?.[key] || '').toLowerCase() === 'deactivated',
+  );
+}
 function getAccountOperationWorkers() {
   const configured = (typeof CONFIG !== 'undefined' && Array.isArray(CONFIG))
     ? CONFIG.find(item => item.key === 'ACCOUNT_BATCH_WORKERS')
@@ -71,7 +76,7 @@ async function pollAccountPlanStatuses() {
   finally { planStatusLoading = false; }
 }
 function _codexCell(r) {
-  if ((r.account_status || '').toLowerCase() === 'deactivated') return '<span class="pill status-failed" title="账号已确认停用/封禁">封号</span>';
+  if (accountIsDeactivated(r)) return '<span class="pill status-failed" title="账号已确认停用/封禁">封号</span>';
   const s = r.codex_status || '';
   const exec = r.codex_execution_status || '';
   const err = r.codex_error || '';
@@ -89,7 +94,7 @@ function _codexCell(r) {
 function _accountStatusCell(r) {
   const status = String(r.account_status || 'active').toLowerCase();
   const reason = String(r.account_status_reason || '').trim();
-  if (status === 'deactivated') return `<span class="pill status-failed"${reason ? ` title="${esc(reason)}"` : ''}>已废号</span>`;
+  if (accountIsDeactivated(r)) return `<span class="pill status-failed"${reason ? ` title="${esc(reason)}"` : ''}>已废号</span>`;
   const liveStatus = String(r.live_check_status || '').toLowerCase();
   const liveHttp = _liveCheckHttpStatus(r);
   const liveReason = String(r.live_check_error || '').trim();
@@ -229,6 +234,7 @@ function _trialCell(r) {
     : '<span class="pill status-used">不可用</span>';
 }
 function _planAction(r) {
+  if (accountIsDeactivated(r)) return '';
   if (['queued','running'].includes(r.plan_check_status)) {
     const automatic = r.plan_check_trigger === 'registration_auto';
     const queued = r.plan_check_status === 'queued';
@@ -272,6 +278,7 @@ function _extractLinkCell(r) {
   return '';
 }
 function _extractLinkAction(r) {
+  if (accountIsDeactivated(r)) return '';
   const s = r.extract_link_status || '';
   if (['queued','running'].includes(s)) return `<button disabled title="${esc(r.extract_link_message || '提链任务执行中')}">提链中…</button>`;
   const plan = (r.current_plan_type || r.plan_type || '').toString().toLowerCase();
@@ -281,7 +288,7 @@ function _extractLinkAction(r) {
   return `<button class="good" data-extract-link="${esc(r.id)}" title="${esc(failedReason ? '重新提链；上次失败原因：' + failedReason : '为该 free(可Plus试用) 账号按配置创建提链任务')}">提链</button>`;
 }
 function _codexAction(r) {
-  if ((r.account_status || '').toLowerCase() === 'deactivated') return '';
+  if (accountIsDeactivated(r)) return '';
   const s = r.codex_status || '';
   const exec = r.codex_execution_status || '';
   if (['queued','running','cancelling'].includes(exec) || s === 'retrying') {
@@ -352,7 +359,7 @@ function renderAccounts() {
       <td class="actions actions-cell">
         <div class="account-row-actions">
           <div class="account-action-group"><button class="good" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button></div>
-          <div class="account-action-group">${r.account_status === 'deactivated' ? '' : `<button data-account-email-change="${esc(r.id)}" title="协议自动领取新邮箱并换绑；不会启动浏览器">换绑邮箱</button> <button data-account-live-check="${esc(r.id)}" title="只在线验证现有 Token；不会发送邮箱验证码或刷新 AT">查活</button> <button data-account-token-refresh="${esc(r.id)}" title="通过邮箱 OTP 重新登录并刷新最新 AT">刷新AT</button>`} <button data-account-live-log="${esc(r.email)}" title="查看该账号最近一次查活日志">查活日志</button> ${_planAction(r)} ${_extractLinkAction(r)}</div>
+          <div class="account-action-group">${accountIsDeactivated(r) ? '' : `<button data-account-email-change="${esc(r.id)}" title="协议自动领取新邮箱并换绑；不会启动浏览器">换绑邮箱</button> <button data-account-live-check="${esc(r.id)}" title="只在线验证现有 Token；不会发送邮箱验证码或刷新 AT">查活</button> <button data-account-token-refresh="${esc(r.id)}" title="通过邮箱 OTP 重新登录并刷新最新 AT">刷新AT</button>`} <button data-account-live-log="${esc(r.email)}" title="查看该账号最近一次查活日志">查活日志</button> ${_planAction(r)} ${_extractLinkAction(r)}</div>
           <div class="account-action-group">${_codexAction(r)} <button data-codex-log="${esc(r.email)}" title="查看该账号最近一次 Codex 补跑日志">补跑日志</button></div>
           <div class="account-action-group danger-zone"><button data-account-archive="${esc(r.id)}" data-archived="${r.archived ? '0' : '1'}" title="${r.archived ? '恢复到默认账号列表' : '归档后默认账号列表不再显示'}">${r.archived ? '恢复' : '归档'}</button> <button class="danger" data-account-delete="${esc(r.id)}" data-email="${esc(r.email)}">删除</button></div>
         </div>
@@ -980,7 +987,7 @@ async function extractSelectedLinks() {
   const ids = Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
   const selected = ids.map(id => ACCOUNTS.find(a => Number(a.id) === Number(id))).filter(Boolean);
-  const eligible = selected.filter(a => (a.current_plan_type || a.plan_type || '').toString().toLowerCase() === 'free' && !!a.plus_trial_eligible);
+  const eligible = selected.filter(a => !accountIsDeactivated(a) && (a.current_plan_type || a.plan_type || '').toString().toLowerCase() === 'free' && !!a.plus_trial_eligible);
   if (!eligible.length) { showToast('选中账号里没有 free(可Plus试用)'); return; }
   if (!confirm(`确定批量提链 ${eligible.length} 个 free(可Plus试用) 账号吗？\n\n非可试用账号会自动跳过。成功会按账号消耗 CDK 次数。`)) return;
   const btn = $('#btnExtractSelectedLinks');
@@ -991,7 +998,7 @@ async function extractSelectedLinks() {
     const r = await api('/api/accounts/extract-link-bulk', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids}),
+      body: JSON.stringify({account_ids: eligible.map(a => a.id)}),
     });
     const skipped = (r.skipped_count || 0) + (r.busy_count || 0) + (r.failed_count || 0);
     const fallbackCount = (r.started || []).filter(item => item.fallback_from).length;
@@ -1038,6 +1045,11 @@ async function uploadSelectedCodexSub2() {
 async function checkSelectedPlans() {
   const ids = Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
+  const eligibleIds = ids.filter(id => {
+    const account = ACCOUNTS.find(item => Number(item.id) === Number(id));
+    return account && !accountIsDeactivated(account);
+  });
+  if (!eligibleIds.length) { showToast('选中账号均已废号'); return; }
   const btn = $('#btnCheckSelectedPlans');
   btn.disabled = true;
   const old = btn.textContent;
@@ -1046,7 +1058,7 @@ async function checkSelectedPlans() {
     const r = await api('/api/accounts/check-plan-bulk', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids}),
+      body: JSON.stringify({account_ids: eligibleIds}),
     });
     const failed = r.failed_count || 0;
     const busy = r.busy_count || 0;
@@ -1252,7 +1264,7 @@ async function retrySelectedCodex() {
   const workers = getAccountOperationWorkers();
   const selectedAccounts = ids.map(id => ACCOUNTS.find(a => Number(a.id) === Number(id))).filter(Boolean);
   const retryingCount = selectedAccounts.filter(a => ['queued','running','cancelling'].includes(a.codex_execution_status || '') || (a.codex_status || '') === 'retrying').length;
-  const deactivatedCount = selectedAccounts.filter(a => (a.codex_status || '') === 'deactivated').length;
+  const deactivatedCount = selectedAccounts.filter(accountIsDeactivated).length;
   let msg = `批量补跑选中的 ${ids.length} 个账号 Codex 授权？
 
 并发线程数：${workers}

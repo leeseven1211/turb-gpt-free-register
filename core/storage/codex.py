@@ -9,6 +9,7 @@ _NAMES = {
     "read_codex_credential", "mark_codex_exported", "mark_codex_sub2_uploaded", "mark_codex_sub2_sync_error",
     "mark_codex_oauth_refresh", "reset_codex_exported", "delete_codex_credential", "codex_accounts_summary",
     "mark_codex_account_deactivated", "update_account_codex_operation_state",
+    "account_is_deactivated",
 }
 
 

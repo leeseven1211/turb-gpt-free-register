@@ -709,6 +709,10 @@ def update_account_codex_operation_state(
         return False
     changes: dict[str, Any] = {"updated_at": _now()}
     if credential_state is not None:
+        # 账号停用是更高优先级的事实投影；任何旧 worker 的成功/有效回写
+        # 都不能把它恢复成可用状态。恢复只能由重新授权/显式解封流程完成。
+        if account_is_deactivated(row) and str(credential_state).strip().lower() != "deactivated":
+            return False
         changes["codex_credential_state"] = str(credential_state)
     if execution_status is not None:
         changes["codex_execution_status"] = str(execution_status)
@@ -1773,7 +1777,10 @@ def mark_account_deactivated(
 
 def account_is_deactivated(account: dict | None) -> bool:
     """判断账号是否已被明确标记为封号/停用；历史记录缺字段时视为正常。"""
-    return str((account or {}).get("account_status") or "").strip().lower() == "deactivated"
+    return any(
+        str((account or {}).get(key) or "").strip().lower() == "deactivated"
+        for key in ("account_status", "codex_status", "codex_credential_state")
+    )
 
 
 def _locked_account_by_id(conn, account_id: int) -> dict | None:
@@ -2627,7 +2634,7 @@ def _upsert_codex_credential_record(filename: str, content: dict) -> int:
             lower=True,
             conn=conn,
         )
-        account_deactivated = str((account or {}).get("account_status") or "").strip().lower() == "deactivated"
+        account_deactivated = account_is_deactivated(account)
         account_reason = str((account or {}).get("account_status_reason") or "account_deactivated").strip()[:500]
         if account_deactivated:
             payload.update({
