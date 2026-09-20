@@ -204,6 +204,45 @@ class JobProgressTests(PostgresTestCase):
         self.assertEqual(kwargs["batch_workers"], 5)
         executor.submit.assert_called_once()
 
+    def test_service_retry_registration_preserves_source_email(self):
+        source = {
+            "id": 31, "status": "failed", "job_type": "registration",
+            "batch_id": "original-batch", "batch_index": 3, "batch_size": 10,
+            "batch_workers": 4, "email_source": "icloud_hide", "email": "held@example.com",
+        }
+        retry_row = {
+            "id": 32, "status": "pending", "job_type": "registration",
+            "batch_id": "original-batch", "batch_index": 3, "batch_size": 10,
+            "batch_workers": 4, "log_file": "/tmp/retry.log",
+        }
+        executor = unittest.mock.Mock()
+        with (
+            patch.object(db, "get_job", return_value=source),
+            patch.object(registration_service, "get_retry_info", return_value={
+                "retryable": True, "retry_action": "registration",
+            }),
+            patch.object(registration_service, "_account_for_job", return_value=None),
+            patch.object(db, "create_retry_job", return_value=(retry_row, True)) as create_retry,
+            patch.object(registration_service, "get_executor", return_value=executor),
+        ):
+            result = registration_service.retry_job(31)
+
+        self.assertTrue(result["ok"])
+        kwargs = create_retry.call_args.kwargs
+        self.assertEqual(kwargs["job_type"], "registration")
+        self.assertEqual(kwargs["email"], "held@example.com")
+        self.assertIsNone(kwargs["account_id"])
+        executor.submit.assert_called_once()
+
+    def test_new_domain_email_is_reserved_for_original_retry_chain(self):
+        email = "retry-domain@example.test"
+
+        row = db.claim_next_domain_email(email)
+
+        self.assertEqual(row["email"], email)
+        self.assertEqual(row["status"], "used")
+        self.assertEqual(db.get_domain_email_by_email(email)["status"], "used")
+
     def test_repository_projects_legacy_retry_batch_back_to_root_batch(self):
         root = db.create_job(
             "icloud_hide", batch_id="root-batch", batch_index=1, batch_size=1, batch_workers=2,

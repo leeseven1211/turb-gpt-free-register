@@ -22,8 +22,9 @@ from config import browser_use as _cfg
 from config import twofa as _twofa_cfg
 from core.account_export import save_account_data, setup_2fa_protocol
 from core.browser_use_client import BrowserUseClient
-from core.email_provider import resolve_email_source, wait_for_otp
+from core.email_provider import resolve_email_source, validate_email_source, wait_for_otp
 from core.humanize import delay as human_delay
+from core.openai_auth import AccountUnusableError
 from core.session import BrowserSession
 
 logger = logging.getLogger(__name__)
@@ -469,7 +470,7 @@ def _submit_email_until_transition(
         last_state = _wait_after_email_submit_transition(page, context=context, timeout=10 if _fast_mode() else 16)
         logger.info("[BrowserUse] 邮箱提交后状态：%s url=%s", last_state, _page_url(page) or "-")
         if last_state == "login_password":
-            raise RuntimeError(f"邮箱提交后进入登录密码页，按已注册/不可用邮箱处理并停用: url={_page_url(page) or 'https://auth.openai.com/log-in/password'}")
+            raise RuntimeError(f"邮箱提交后进入登录密码页，按已有账号或结果不明处理，保留原邮箱等待对账: url={_page_url(page) or 'https://auth.openai.com/log-in/password'}")
         if last_state != "email_page":
             return last_state
         if attempt < attempts:
@@ -1546,7 +1547,14 @@ def _browser_use_heartbeat(page, context=None, label: str = ""):
 
 
 
-def _wait_for_otp_with_browser_heartbeat(page, context, email: str, after_ts: float) -> str:
+def _wait_for_otp_with_browser_heartbeat(
+    page,
+    context,
+    email: str,
+    after_ts: float,
+    *,
+    email_source: str | None = None,
+) -> str:
     """短轮询邮箱 OTP；每轮之间触碰页面，避免 Browser Use Cloud 长时间无页面活动被回收。"""
     try:
         from config import email as _email_cfg
@@ -1579,13 +1587,15 @@ def _wait_for_otp_with_browser_heartbeat(page, context, email: str, after_ts: fl
             remaining,
         )
         try:
-            return wait_for_otp(
-                email,
-                after_ts=after_ts,
-                max_wait=wait_this_round,
-                poll_interval=max(1, min(poll_interval, 3)),
-                settle_seconds=slice_settle,
-            )
+            otp_kwargs = {
+                "after_ts": after_ts,
+                "max_wait": wait_this_round,
+                "poll_interval": max(1, min(poll_interval, 3)),
+                "settle_seconds": slice_settle,
+            }
+            if email_source is not None:
+                otp_kwargs["email_source"] = email_source
+            return wait_for_otp(email, **otp_kwargs)
         except Exception as exc:
             last_exc = exc
             if _is_target_closed_error(exc):
@@ -1757,10 +1767,12 @@ def run_browser_use_registration(
     otp_code: str | None = None,
     cloud_provider: str = "browser_use",
     registration_options: dict | None = None,
+    email_source: str | None = None,
 ) -> dict:
     """Browser Use / Skyvern 云端浏览器注册入口。proxy 参数保留兼容。"""
     from core.registration_service import report_job_progress
 
+    selected_email_source = validate_email_source(email_source) if email_source else None
     options = dict(registration_options or {})
     try:
         from playwright.sync_api import sync_playwright
@@ -1790,6 +1802,7 @@ def run_browser_use_registration(
     context = None
     page = None
     plan_check_session = None
+    account_id: int | None = None
 
     logger.info(
         "[%s] 开始注册：%s proxyCountry=%s profileId=%s local_proxy_arg=%s",
@@ -1944,7 +1957,7 @@ def run_browser_use_registration(
                     state_info = _quick_auth_state(page)
                     state = str(state_info.get("state") or "other")
                     if "/log-in/password" in str(state_info.get("url") or _page_url(page) or "").lower() or state == "login_password":
-                        raise RuntimeError(f"邮箱提交后进入登录密码页，按已注册/不可用邮箱处理并停用: url={state_info.get('url') or _page_url(page) or 'https://auth.openai.com/log-in/password'}")
+                        raise RuntimeError(f"邮箱提交后进入登录密码页，按已有账号或结果不明处理，保留原邮箱等待对账: url={state_info.get('url') or _page_url(page) or 'https://auth.openai.com/log-in/password'}")
                     if state == "email_verification":
                         logger.info("[BrowserUse][OTP] 已检测到验证码页：url=%s", state_info.get("url") or "-")
                         break
@@ -1959,7 +1972,15 @@ def run_browser_use_registration(
                     logger.info("[BrowserUse][OTP] 等待验证码：%s（%s/%s）", email, otp_attempt, max_otp_attempts)
                     _t_otp_wait = _StepTimer("等待邮箱 OTP")
                     try:
-                        current_otp = _wait_for_otp_with_browser_heartbeat(page, context, email, after_ts=otp_after_ts)
+                        otp_wait_kwargs = {"after_ts": otp_after_ts}
+                        if selected_email_source is not None:
+                            otp_wait_kwargs["email_source"] = selected_email_source
+                        current_otp = _wait_for_otp_with_browser_heartbeat(
+                            page,
+                            context,
+                            email,
+                            **otp_wait_kwargs,
+                        )
                         page = _pick_live_page(context, page) or page
                         _t_otp_wait.done()
                     except Exception as exc:
@@ -2070,11 +2091,24 @@ def run_browser_use_registration(
                     context = None
                     page = None
                     from core.codex_oauth import run_codex_oauth
-                    codex_result = run_codex_oauth(email, otp_provider=wait_for_otp, proxy=proxy, force=True)
+                    codex_kwargs = {
+                        "otp_provider": wait_for_otp,
+                        "proxy": proxy,
+                        "force": True,
+                    }
+                    if selected_email_source is not None:
+                        codex_kwargs["otp_provider"] = lambda address, **kwargs: wait_for_otp(
+                            address,
+                            email_source=selected_email_source,
+                            **kwargs,
+                        )
+                    codex_result = run_codex_oauth(email, **codex_kwargs)
                     report_job_progress("codex", "success" if codex_result.get("ok") else "failed", str(codex_result.get("message") or "Codex OAuth 已完成")[:300])
                 else:
                     logger.info("[BrowserUse][Codex] ENABLE_CODEX_AUTO=False，注册后跳过 Codex OAuth")
                     report_job_progress("codex", "skipped", "未启用 Codex 自动授权")
+            except AccountUnusableError:
+                raise
             except Exception as exc:
                 logger.warning("[BrowserUse][Codex] 自动授权失败：%s: %s", type(exc).__name__, str(exc)[:220])
                 codex_result = {
@@ -2088,7 +2122,7 @@ def run_browser_use_registration(
                 email=email,
                 access_token=access_token,
                 totp_secret=totp_secret,
-                email_source=resolve_email_source(email),
+                email_source=selected_email_source or resolve_email_source(email),
                 proxy_used=proxy or f"{provider_prefix}:{session_info_open.proxy_country_code or 'default'}",
                 plan_check_proxy=proxy or None,
                 captured_plan_result=captured_plan_result,
@@ -2121,19 +2155,37 @@ def run_browser_use_registration(
         logger.error("[BrowserUse] 注册失败：%s: %s", type(exc).__name__, exc)
         logger.debug("[BrowserUse] 失败详情", exc_info=True)
         password_result_unknown = isinstance(exc, _PasswordTransitionTimeout)
+        account_unusable = isinstance(exc, AccountUnusableError)
         try:
-            from core.email_provider import release_email
-            release_email(
-                email,
-                status="failed" if create_acknowledged or password_result_unknown else "available",
-                note=f"BrowserUse注册失败: {str(exc)[:180]}",
-            )
+            if account_unusable:
+                from core.email_provider import mark_email_permanently_unusable
+
+                mark_email_permanently_unusable(
+                    email,
+                    source=selected_email_source,
+                    note=f"上游明确确认账号永久失效: {str(exc)[:180]}",
+                )
+            else:
+                from core.email_provider import retain_email
+
+                retain_email(
+                    email,
+                    source=selected_email_source,
+                    note=f"BrowserUse注册中途失败，保留给原任务链: {str(exc)[:180]}",
+                )
         except Exception:
             pass
         return {
             "success": False,
             "email": email,
+            "account_id": account_id,
             "request_unknown": password_result_unknown,
+            "email_permanently_unusable": account_unusable,
+            "account_unusable_error_code": (
+                exc.error_code or "account_deactivated"
+                if account_unusable
+                else None
+            ),
             "error": f"{type(exc).__name__}: {str(exc)[:300]}",
         }
     finally:

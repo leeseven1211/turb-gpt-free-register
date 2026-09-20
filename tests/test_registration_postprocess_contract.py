@@ -186,6 +186,24 @@ class RecoveryDecisionContractTests(unittest.TestCase):
         self.assertEqual("retain", decision.email_lease)
         self.assertFalse(decision.safe_to_start_new_registration)
 
+    def test_confirmed_deactivation_never_requeues_postprocess(self):
+        decision = decide_recovery(
+            {
+                "checkpoint": "failed",
+                "target_status": "deactivated",
+                "remote_identity_state": "confirmed",
+                "remote_account_state": "confirmed",
+                "local_account_state": "persisted",
+                "account_id": 42,
+                "has_access_token": True,
+            }
+        )
+
+        self.assertEqual("none", decision.action)
+        self.assertEqual("retain", decision.email_lease)
+        self.assertEqual("release", decision.proxy_lease)
+        self.assertFalse(decision.safe_to_start_new_registration)
+
     def test_token_observed_before_core_persistence_requires_reconcile(self):
         decision = decide_recovery(
             {

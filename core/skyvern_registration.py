@@ -12,13 +12,17 @@ def run_skyvern_registration(
     proxy: str | None = None,
     otp_code: str | None = None,
     registration_options: dict | None = None,
+    email_source: str | None = None,
 ) -> dict:
-    return run_browser_use_registration(
-        email=email,
-        name=name,
-        birthday=birthday,
-        proxy=proxy,
-        otp_code=otp_code,
-        cloud_provider="skyvern",
-        registration_options=registration_options,
-    )
+    registration_kwargs = {
+        "email": email,
+        "name": name,
+        "birthday": birthday,
+        "proxy": proxy,
+        "otp_code": otp_code,
+        "cloud_provider": "skyvern",
+        "registration_options": registration_options,
+    }
+    if email_source is not None:
+        registration_kwargs["email_source"] = email_source
+    return run_browser_use_registration(**registration_kwargs)

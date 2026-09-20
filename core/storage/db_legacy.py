@@ -3919,15 +3919,15 @@ def _find_domain_email(rows: list[dict], email: str) -> dict | None:
 
 
 def claim_next_domain_email(email: str) -> dict:
-    """记录一个新的域名邮箱地址到池中（标记为 available）。"""
+    """记录一个新生成的域名邮箱地址，并立即标记为当前任务已领取。"""
     target = str(email or "").strip()
     existing = _pool_row_by_email(record_store.DOMAIN_POOL, target)
     if existing:
         return existing
     row_id = record_store.upsert_row_by(record_store.DOMAIN_POOL, "email", {
         "email": target,
-        "status": "available",
-        "used_at": None,
+        "status": "used",
+        "used_at": _now(),
         "note": None,
         "created_at": _now(),
     })

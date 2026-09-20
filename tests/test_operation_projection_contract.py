@@ -8,6 +8,29 @@ from webui.routes import jobs
 
 
 class OperationProjectionContractTests(TestCase):
+    def test_deactivated_account_projection_has_no_registration_follow_up(self):
+        account = {
+            "id": 7,
+            "email": "deactivated@example.test",
+            "access_token": "token",
+            "account_status": "deactivated",
+            "codex_status": "deactivated",
+        }
+
+        state = operation._account_state(account)
+        actions = operation._next_registration_actions(
+            {"id": 9, "status": "failed"},
+            account,
+            state["target_status"],
+        )
+
+        self.assertEqual("failed", state["checkpoint"])
+        self.assertEqual("confirmed", state["remote_identity_state"])
+        self.assertEqual("confirmed", state["remote_account_state"])
+        self.assertEqual("persisted", state["local_account_state"])
+        self.assertEqual("deactivated", state["target_status"])
+        self.assertEqual([], actions)
+
     def test_batch_refresh_deduplicates_and_sorts_only_explicit_ids(self):
         cursor = Mock()
         with patch.object(operation, "_refresh_batch") as refresh:

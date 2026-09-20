@@ -1,0 +1,407 @@
+# -*- coding: utf-8 -*-
+import sys
+import types
+import unittest
+from contextlib import ExitStack
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+from core import cloakbrowser_registration, skyvern_registration
+from core.registration import browser_use, protocol, roxy
+
+
+class EmailSourceCompatibilityTests(unittest.TestCase):
+    email = "compat@example.test"
+    email_source = "icloud_hide"
+
+    def _run_roxy_resume(self, *, email_source=None):
+        client = MagicMock()
+        opened = SimpleNamespace(
+            profile_id="compat-profile",
+            debugger_address="127.0.0.1:9222",
+            created_by_run=False,
+            account_bound=False,
+            raw={},
+        )
+        driver = MagicMock()
+        challenge = MagicMock(side_effect=RuntimeError("stop after resume challenge"))
+
+        with ExitStack() as stack:
+            stack.enter_context(patch("core.registration_service.report_job_progress"))
+            stack.enter_context(patch("core.registration_service.report_job_otp_evidence"))
+            stack.enter_context(patch("core.registration_service.report_registered_account"))
+            stack.enter_context(patch("core.registration_service.is_stop_requested", return_value=False))
+            stack.enter_context(patch("core.registration_debug.attach_current_roxy"))
+            stack.enter_context(patch("core.registration_debug.pause_current_failure"))
+            stack.enter_context(patch.object(roxy, "RoxyBrowserClient", return_value=client))
+            stack.enter_context(patch.object(roxy, "_open_roxy_profile_with_capacity_wait", return_value=opened))
+            stack.enter_context(patch.object(roxy, "_build_driver", return_value=driver))
+            stack.enter_context(patch("core.browser_data_saver.BrowserDataSaver"))
+            stack.enter_context(patch("core.registration_plan_capture.install_selenium"))
+            stack.enter_context(patch.object(roxy, "_center_browser_window"))
+            stack.enter_context(patch.object(roxy, "_safe_get"))
+            stack.enter_context(patch.object(roxy, "_page_warmup"))
+            stack.enter_context(patch.object(roxy, "_maybe_accept"))
+            stack.enter_context(patch.object(roxy, "_check_manual_stop"))
+            stack.enter_context(patch.object(roxy, "human_delay"))
+            stack.enter_context(patch.object(roxy, "_submit_email_and_wait_next", return_value="login_password"))
+            stack.enter_context(patch.object(roxy, "_fill_password_page_if_present", return_value=None))
+            stack.enter_context(patch.object(roxy, "_is_email_verification_page", return_value=False))
+            stack.enter_context(
+                patch("core.roxy_codex_oauth.complete_openai_login_challenge", challenge)
+            )
+            stack.enter_context(patch("core.email_provider.retain_email"))
+            result = roxy.run_roxy_registration(
+                self.email,
+                "Test User",
+                "2000-01-01",
+                existing_password="StoredPassword!123",
+                registration_options={
+                    "password_enabled": True,
+                    "twofa_enabled": False,
+                    "codex_enabled": False,
+                    "plan_check_enabled": False,
+                },
+                email_source=email_source,
+            )
+
+        self.assertFalse(result["success"])
+        challenge.assert_called_once()
+        return challenge.call_args
+
+    def test_roxy_resume_legacy_call_omits_otp_provider(self):
+        call = self._run_roxy_resume()
+
+        self.assertEqual(call.kwargs, {"timeout": 45})
+
+    def test_roxy_resume_binds_otp_provider_to_explicit_source(self):
+        with patch.object(roxy, "wait_for_otp", return_value="123456") as wait_for_otp:
+            call = self._run_roxy_resume(email_source=self.email_source)
+            provider = call.kwargs["otp_provider"]
+            self.assertEqual(provider(self.email, after_ts=123.0, max_wait=30), "123456")
+
+        wait_for_otp.assert_called_once_with(
+            self.email,
+            after_ts=123.0,
+            max_wait=30,
+            email_source=self.email_source,
+        )
+
+    def test_roxy_legacy_initial_otp_omits_email_source_keyword(self):
+        client = MagicMock()
+        opened = SimpleNamespace(
+            profile_id="compat-profile",
+            debugger_address="127.0.0.1:9222",
+            created_by_run=False,
+            account_bound=False,
+            raw={},
+        )
+        driver = MagicMock()
+        class StopAfterOtp(BaseException):
+            pass
+
+        def wait_for_otp(*_args, **kwargs):
+            self.assertNotIn("email_source", kwargs)
+            raise StopAfterOtp()
+
+        with ExitStack() as stack:
+            stack.enter_context(patch("core.registration_service.report_job_progress"))
+            stack.enter_context(patch("core.registration_service.report_job_otp_evidence"))
+            stack.enter_context(patch("core.registration_service.report_registered_account"))
+            stack.enter_context(patch("core.registration_service.is_stop_requested", return_value=False))
+            stack.enter_context(patch("core.registration_debug.attach_current_roxy"))
+            stack.enter_context(patch("core.registration_debug.pause_current_failure"))
+            stack.enter_context(patch.object(roxy, "RoxyBrowserClient", return_value=client))
+            stack.enter_context(patch.object(roxy, "_open_roxy_profile_with_capacity_wait", return_value=opened))
+            stack.enter_context(patch.object(roxy, "_build_driver", return_value=driver))
+            stack.enter_context(patch("core.browser_data_saver.BrowserDataSaver"))
+            stack.enter_context(patch("core.registration_plan_capture.install_selenium"))
+            stack.enter_context(patch.object(roxy, "_center_browser_window"))
+            stack.enter_context(patch.object(roxy, "_safe_get"))
+            stack.enter_context(patch.object(roxy, "_page_warmup"))
+            stack.enter_context(patch.object(roxy, "_maybe_accept"))
+            stack.enter_context(patch.object(roxy, "_check_manual_stop"))
+            stack.enter_context(patch.object(roxy, "human_delay"))
+            stack.enter_context(patch.object(roxy, "_submit_email_and_wait_next", return_value="email_verification"))
+            stack.enter_context(patch.object(roxy, "_fill_password_page_if_present", return_value=None))
+            stack.enter_context(patch.object(roxy, "_is_email_verification_page", return_value=True))
+            stack.enter_context(patch.object(roxy, "_has_access_token", return_value=False))
+            stack.enter_context(patch.object(roxy, "_registration_auth_mode", return_value="passwordless"))
+            stack.enter_context(patch.object(roxy, "wait_for_otp", wait_for_otp))
+            stack.enter_context(patch("core.email_provider.retain_email"))
+            with self.assertRaises(StopAfterOtp):
+                roxy.run_roxy_registration(
+                    self.email,
+                    "Test User",
+                    "2000-01-01",
+                    registration_options={
+                        "password_enabled": False,
+                        "twofa_enabled": False,
+                        "codex_enabled": False,
+                        "plan_check_enabled": False,
+                    },
+                )
+
+    def test_protocol_legacy_initial_otp_omits_email_source_keyword(self):
+        session = MagicMock()
+        session.proxy = ""
+
+        class StopAfterOtp(BaseException):
+            pass
+
+        observed_kwargs = []
+
+        def wait_for_otp(*_args, **kwargs):
+            observed_kwargs.append(kwargs)
+            raise StopAfterOtp()
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(protocol, "BrowserSession", return_value=session))
+            stack.enter_context(patch.object(protocol, "network_preflight"))
+            stack.enter_context(patch.object(protocol, "get_providers"))
+            stack.enter_context(patch.object(protocol, "get_csrf_token", return_value="csrf"))
+            stack.enter_context(patch.object(protocol, "signin_openai", return_value="authorize"))
+            stack.enter_context(patch.object(protocol, "follow_authorize"))
+            stack.enter_context(patch.object(protocol, "human_delay"))
+            stack.enter_context(patch.object(protocol, "wait_for_otp", wait_for_otp))
+            stack.enter_context(patch.object(protocol._email_cfg, "USE_EMAIL_SERVICE", True))
+            stack.enter_context(
+                patch.multiple(
+                    protocol._protocol_cfg,
+                    CHATGPT_ANON_BOOTSTRAP_ENABLED=False,
+                    create=True,
+                )
+            )
+            stack.enter_context(patch("core.registration_service.report_job_progress"))
+            with self.assertRaises(StopAfterOtp):
+                protocol.run_protocol_registration(
+                    self.email,
+                    "Test User",
+                    "2000-01-01",
+                    registration_options={
+                        "password_enabled": False,
+                        "twofa_enabled": False,
+                        "codex_enabled": False,
+                        "plan_check_enabled": False,
+                    },
+                )
+
+        self.assertEqual(1, len(observed_kwargs))
+        self.assertNotIn("email_source", observed_kwargs[0])
+
+
+    def test_skyvern_legacy_wrapper_omits_new_email_source_keyword(self):
+        with patch.object(skyvern_registration, "run_browser_use_registration", return_value={"success": True}) as run:
+            result = skyvern_registration.run_skyvern_registration(
+                self.email,
+                "Test User",
+                "2000-01-01",
+            )
+
+        self.assertTrue(result["success"])
+        self.assertNotIn("email_source", run.call_args.kwargs)
+
+    def test_skyvern_wrapper_forwards_explicit_email_source(self):
+        with patch.object(skyvern_registration, "run_browser_use_registration", return_value={"success": True}) as run:
+            skyvern_registration.run_skyvern_registration(
+                self.email,
+                "Test User",
+                "2000-01-01",
+                email_source=self.email_source,
+            )
+
+        self.assertEqual(run.call_args.kwargs["email_source"], self.email_source)
+
+    def _run_cloak_codex(self, *, email_source=None):
+        driver = MagicMock()
+        opened = SimpleNamespace(profile_id="compat-profile", raw={})
+        oauth = MagicMock(return_value={"ok": True, "status": "success", "message": "ok"})
+
+        with ExitStack() as stack:
+            stack.enter_context(patch("core.registration_service.report_job_progress"))
+            stack.enter_context(patch.object(cloakbrowser_registration, "build_cloak_driver", return_value=(driver, opened)))
+            stack.enter_context(patch("core.registration_plan_capture.install_selenium"))
+            stack.enter_context(patch("core.registration_plan_capture.read_selenium", return_value={}))
+            stack.enter_context(patch.object(cloakbrowser_registration, "human_delay"))
+            stack.enter_context(patch.object(cloakbrowser_registration, "_maybe_accept"))
+            stack.enter_context(patch.object(cloakbrowser_registration, "_check_manual_stop"))
+            stack.enter_context(patch.object(cloakbrowser_registration, "_submit_email_and_wait_next", return_value="email_verification"))
+            stack.enter_context(patch.object(cloakbrowser_registration, "_fill_password_page_if_present", return_value=None))
+            stack.enter_context(patch.object(cloakbrowser_registration, "_clear_otp_inputs"))
+            stack.enter_context(patch.object(cloakbrowser_registration, "_type_otp"))
+            stack.enter_context(patch.object(cloakbrowser_registration, "_click_continue"))
+            stack.enter_context(patch.object(cloakbrowser_registration, "_wait_after_email_otp_submit", return_value="accepted"))
+            stack.enter_context(patch.object(cloakbrowser_registration, "_complete_profile_page", return_value=True))
+            stack.enter_context(
+                patch.object(
+                    cloakbrowser_registration,
+                    "_fetch_chatgpt_session",
+                    return_value={"accessToken": "token", "user": {}, "account": {}},
+                )
+            )
+            stack.enter_context(patch.object(cloakbrowser_registration._twofa_cfg, "ENABLE_2FA", False))
+            stack.enter_context(patch("config.codex.ENABLE_CODEX_AUTO", True))
+            stack.enter_context(patch("core.roxy_codex_oauth.run_roxy_codex_oauth", oauth))
+            stack.enter_context(patch.object(cloakbrowser_registration, "save_account_data", return_value=17))
+            stack.enter_context(patch.object(cloakbrowser_registration, "resolve_email_source", return_value="generic_api"))
+            result = cloakbrowser_registration.run_cloak_registration(
+                self.email,
+                "Test User",
+                "2000-01-01",
+                otp_code="123456",
+                email_source=email_source,
+            )
+
+        self.assertTrue(result["success"], result)
+        oauth.assert_called_once()
+        return oauth.call_args
+
+    def test_cloak_codex_legacy_call_omits_otp_provider(self):
+        call = self._run_cloak_codex()
+
+        self.assertNotIn("otp_provider", call.kwargs)
+
+    def test_cloak_codex_binds_otp_provider_to_explicit_source(self):
+        with patch.object(cloakbrowser_registration, "wait_for_otp", return_value="123456") as wait_for_otp:
+            call = self._run_cloak_codex(email_source=self.email_source)
+            provider = call.kwargs["otp_provider"]
+            self.assertEqual(provider(self.email, after_ts=123.0, max_wait=30), "123456")
+
+        wait_for_otp.assert_called_once_with(
+            self.email,
+            after_ts=123.0,
+            max_wait=30,
+            email_source=self.email_source,
+        )
+
+    def test_cloak_legacy_initial_otp_omits_email_source_keyword(self):
+        driver = MagicMock()
+        opened = SimpleNamespace(profile_id="compat-profile", raw={})
+        wait_for_otp = MagicMock(return_value="123456")
+
+        with ExitStack() as stack:
+            stack.enter_context(patch("core.registration_service.report_job_progress"))
+            stack.enter_context(patch.object(cloakbrowser_registration, "build_cloak_driver", return_value=(driver, opened)))
+            stack.enter_context(patch("core.registration_plan_capture.install_selenium"))
+            stack.enter_context(patch.object(cloakbrowser_registration, "human_delay"))
+            stack.enter_context(patch.object(cloakbrowser_registration, "_maybe_accept"))
+            stack.enter_context(patch.object(cloakbrowser_registration, "_check_manual_stop"))
+            stack.enter_context(patch.object(cloakbrowser_registration, "_submit_email_and_wait_next", return_value="email_verification"))
+            stack.enter_context(patch.object(cloakbrowser_registration, "_fill_password_page_if_present", return_value=None))
+            stack.enter_context(patch.object(cloakbrowser_registration, "wait_for_otp", wait_for_otp))
+            stack.enter_context(patch.object(cloakbrowser_registration, "_type_otp", side_effect=RuntimeError("stop after initial otp")))
+            stack.enter_context(patch("core.email_provider.retain_email"))
+            result = cloakbrowser_registration.run_cloak_registration(
+                self.email,
+                "Test User",
+                "2000-01-01",
+            )
+
+        self.assertFalse(result["success"])
+        wait_for_otp.assert_called_once()
+        self.assertNotIn("email_source", wait_for_otp.call_args.kwargs)
+
+    def test_browser_use_legacy_heartbeat_otp_omits_email_source_keyword(self):
+        page = MagicMock()
+        context = MagicMock()
+        with (
+            patch.object(browser_use, "_browser_use_heartbeat", return_value=page),
+            patch.object(browser_use, "wait_for_otp", return_value="123456") as wait_for_otp,
+        ):
+            result = browser_use._wait_for_otp_with_browser_heartbeat(
+                page,
+                context,
+                self.email,
+                after_ts=123.0,
+            )
+
+        self.assertEqual(result, "123456")
+        self.assertNotIn("email_source", wait_for_otp.call_args.kwargs)
+
+    def _run_browser_use_codex(self, *, email_source=None):
+        client = MagicMock()
+        client.open_session.return_value = SimpleNamespace(
+            connect_url="ws://browser-use.test",
+            proxy_country_code="",
+            profile_id="",
+            session_id="",
+            raw={},
+        )
+        page = MagicMock()
+        context = MagicMock(pages=[page])
+        browser = MagicMock(contexts=[context])
+        fake_playwright = MagicMock()
+        fake_playwright.chromium.connect_over_cdp.return_value = browser
+        playwright_manager = MagicMock()
+        playwright_manager.__enter__.return_value = fake_playwright
+        playwright_manager.__exit__.return_value = False
+        sync_api = types.ModuleType("playwright.sync_api")
+        sync_api.sync_playwright = MagicMock(return_value=playwright_manager)
+        playwright_package = types.ModuleType("playwright")
+        playwright_package.sync_api = sync_api
+        oauth = MagicMock(return_value={"ok": True, "status": "success", "message": "ok"})
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(sys.modules, {"playwright": playwright_package, "playwright.sync_api": sync_api}))
+            stack.enter_context(patch("core.registration_service.report_job_progress"))
+            stack.enter_context(patch.object(browser_use, "BrowserUseClient", return_value=client))
+            stack.enter_context(patch("core.registration_plan_capture.install_playwright"))
+            stack.enter_context(patch("core.registration_plan_capture.read_playwright", return_value={}))
+            stack.enter_context(patch.object(browser_use, "_maybe_accept_cookies"))
+            stack.enter_context(patch.object(browser_use, "_check_manual_stop"))
+            stack.enter_context(patch.object(browser_use, "_submit_email_until_transition", return_value="email_verification"))
+            stack.enter_context(patch.object(browser_use, "_assert_not_external_idp"))
+            stack.enter_context(patch.object(browser_use, "_fill_password_if_present", return_value=None))
+            stack.enter_context(patch.object(browser_use, "_browser_use_heartbeat", return_value=page))
+            stack.enter_context(patch.object(browser_use, "_quick_auth_state", return_value={"state": "email_verification", "url": "https://auth.openai.com/email-verification"}))
+            stack.enter_context(patch.object(browser_use, "_clear_otp_inputs"))
+            stack.enter_context(patch.object(browser_use, "_type_otp"))
+            stack.enter_context(patch.object(browser_use, "_click_continue"))
+            stack.enter_context(patch.object(browser_use, "_wait_after_otp", return_value="accepted"))
+            stack.enter_context(patch.object(browser_use, "_complete_profile_page", return_value=True))
+            stack.enter_context(
+                patch.object(
+                    browser_use,
+                    "_fetch_chatgpt_session",
+                    return_value={"accessToken": "token", "user": {}, "account": {}},
+                )
+            )
+            stack.enter_context(patch.object(browser_use._twofa_cfg, "ENABLE_2FA", False))
+            stack.enter_context(patch("config.codex.ENABLE_CODEX_AUTO", True))
+            stack.enter_context(patch("core.codex_oauth.run_codex_oauth", oauth))
+            stack.enter_context(patch.object(browser_use, "save_account_data", return_value=17))
+            stack.enter_context(patch.object(browser_use, "resolve_email_source", return_value="generic_api"))
+            result = browser_use.run_browser_use_registration(
+                self.email,
+                "Test User",
+                "2000-01-01",
+                otp_code="123456",
+                registration_options={"twofa_enabled": False},
+                email_source=email_source,
+            )
+
+        self.assertTrue(result["success"], result)
+        oauth.assert_called_once()
+        return oauth.call_args
+
+    def test_browser_use_codex_legacy_call_keeps_original_otp_provider(self):
+        call = self._run_browser_use_codex()
+
+        self.assertIs(call.kwargs["otp_provider"], browser_use.wait_for_otp)
+
+    def test_browser_use_codex_binds_otp_provider_to_explicit_source(self):
+        with patch.object(browser_use, "wait_for_otp", return_value="123456") as wait_for_otp:
+            call = self._run_browser_use_codex(email_source=self.email_source)
+            provider = call.kwargs["otp_provider"]
+            self.assertEqual(provider(self.email, after_ts=123.0, max_wait=30), "123456")
+
+        wait_for_otp.assert_called_once_with(
+            self.email,
+            after_ts=123.0,
+            max_wait=30,
+            email_source=self.email_source,
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -330,6 +330,17 @@ def _persisted_result_error(result: dict | None, message: object) -> str:
     return text[:500]
 
 
+def _confirmed_postprocess_email_unusable(result: dict | None) -> dict | None:
+    """只接受 OAuth 明确返回的永久失效标志，不能从普通失败文案推断。"""
+    if not isinstance(result, dict):
+        return None
+    candidates = (result, result.get("codex"))
+    for candidate in candidates:
+        if isinstance(candidate, dict) and candidate.get("email_permanently_unusable") is True:
+            return candidate
+    return None
+
+
 def _finish_registration_run(status: str, *, error_message: str | None = None, result_summary: dict | None = None) -> None:
     run_id = getattr(_THREAD_CTX, "run_id", None)
     if run_id is None:
@@ -383,7 +394,12 @@ def registration_fact_context() -> dict[str, int | str | None]:
     }
 
 
-def bind_registration_email(email: str, *, email_source: str | None = None) -> None:
+def bind_registration_email(
+    email: str,
+    *,
+    email_source: str | None = None,
+    root_job_id: int | None = None,
+) -> None:
     """Refresh B's Attempt email snapshot after the provider lease is claimed."""
     attempt_id = getattr(_THREAD_CTX, "attempt_id", None)
     job_id = getattr(_THREAD_CTX, "job_id", None)
@@ -393,15 +409,14 @@ def bind_registration_email(email: str, *, email_source: str | None = None) -> N
     try:
         from core.storage import registration
 
-        # ``create_attempt`` is idempotent for the root job and updates only
-        # additive metadata when the Attempt already exists.  The logical lease
-        # identifier is scoped to this job because the email providers expose a
-        # release-by-address API rather than a durable lease id.
+        # ``create_attempt`` is idempotent for the original root job. 重跑子任务
+        # 必须继续写回同一个 Attempt，不能各自声明一份邮箱租约。
+        root_id = int(root_job_id or job_id)
         registration.create_attempt(
             address,
             email_source=email_source,
-            root_job_id=int(job_id),
-            data={"email_lease_id": f"job:{int(job_id)}:{address.lower()}"},
+            root_job_id=root_id,
+            data={"email_lease_id": f"root:{root_id}:{address.lower()}"},
         )
     except Exception:
         logger.exception("[Job %s] 绑定 Attempt 邮箱租约快照失败", job_id)
@@ -478,6 +493,7 @@ def recover_registration_attempts(*, limit: int = 100) -> list[dict]:
             "remote_identity_state": attempt.get("remote_identity_state"),
             "remote_account_state": attempt.get("remote_account_state"),
             "local_account_state": attempt.get("local_account_state"),
+            "target_status": attempt.get("target_status"),
             "email_resume_capability": (attempt.get("data") or {}).get("email_resume_capability", "manual_only"),
             "has_password": bool((attempt.get("data") or {}).get("has_password")),
             "has_access_token": bool((attempt.get("data") or {}).get("has_access_token")),
@@ -695,7 +711,7 @@ def _prepare_registration_args(
 
 
 def _release_unconsumed_job_email(email: str | None, reason: str) -> None:
-    """任务失败兜底：只回收尚未生成账号、仍处于 used 的邮箱领取。"""
+    """仅供明确未开始注册的管理路径回收尚未消耗的邮箱。"""
     if not email:
         return
     try:
@@ -706,54 +722,109 @@ def _release_unconsumed_job_email(email: str | None, reason: str) -> None:
         logger.exception("[Service] 回收未消耗邮箱失败: %s", email)
 
 
-def _is_final_session_access_token_timeout(error: object) -> bool:
-    """
-    识别注册最后一步已经返回 /api/auth/session 200 但没有 accessToken 的失败。
-    这种邮箱后续继续注册通常会卡在同一状态，按要求直接停用邮箱池条目。
-    """
-    text = str(error or "")
-    if not text:
-        return False
-    return (
-        "等待 /api/auth/session accessToken 超时" in text
-        and (
-            "WARNING_BANNER" in text
-            or "chatgpt_session_unavailable" in text
+def _retain_job_email(email: str | None, reason: str, *, source: str | None = None) -> None:
+    """中途失败时保留原邮箱，避免其他任务领取或自动停用。"""
+    address = str(email or "").strip()
+    if not address:
+        return
+    try:
+        from core.email_provider import retain_email
+
+        selected_source = retain_email(
+            address,
+            source=source,
+            note=f"注册任务中途结束，保留给原任务链重跑: {str(reason or '')[:180]}",
         )
-        and (
-            "'_http_status': 200" in text
-            or "status=200" in text
-            or "status=unknown" in text
+        logger.warning(
+            "[Service] 已保留注册邮箱，等待原任务链重跑或人工对账: source=%s email=%s",
+            selected_source,
+            address,
         )
-    )
+    except Exception:
+        logger.exception("[Service] 保留注册邮箱失败: %s", address)
 
 
-def _should_disable_failed_registration_email(error: object) -> bool:
-    """需要直接停用邮箱的注册失败类型。"""
-    text = str(error or "")
-    if not text:
+def _mark_job_email_permanently_unusable(
+    email: str | None,
+    reason: str,
+    *,
+    source: str | None,
+) -> bool:
+    """仅处理 OAuth 的结构化永久失效结果，且必须使用任务已确认的来源。"""
+    address = str(email or "").strip()
+    if not address:
         return False
-    return (
-        _is_final_session_access_token_timeout(text)
-        or "邮箱提交后进入登录密码页" in text
-        or "auth.openai.com/log-in/password" in text
-        or "/log-in/password" in text
-    )
-
-
-def _disable_job_email(email: str | None, reason: str) -> bool:
-    """把本次任务邮箱停用，避免后续再次领取。"""
-    if not email:
+    selected_source = str(source or "").strip()
+    if not selected_source:
+        logger.error("[Service] 缺少任务邮箱来源，拒绝标记邮箱永久失效: %s", address)
         return False
     try:
-        from core.email_provider import release_email
+        from core.email_provider import mark_email_permanently_unusable
 
-        source = release_email(email, status="disabled", note=f"自动停用: {reason[:180]}")
-        logger.warning("[Service] 已自动停用邮箱: source=%s email=%s reason=%s", source, email, reason[:220])
+        resolved_source = mark_email_permanently_unusable(
+            address,
+            source=selected_source,
+            note=f"上游明确确认账号永久失效: {str(reason or '')[:180]}",
+        )
+        logger.warning(
+            "[Service] 已按上游明确结果标记注册邮箱永久失效: source=%s email=%s",
+            resolved_source,
+            address,
+        )
         return True
     except Exception:
-        logger.exception("[Service] 自动停用邮箱失败: %s", email)
+        logger.exception("[Service] 标记注册邮箱永久失效失败: %s", address)
         return False
+
+
+def _mark_registration_attempt_deactivated(
+    account_id: int | None,
+    reason: str,
+    *,
+    error_code: str | None = None,
+) -> bool:
+    """收口上游已明确永久失效的 Attempt 与已落库账号。"""
+    normalized_reason = str(reason or "账号已明确永久失效").strip()[:1000]
+    normalized_code = str(error_code or "").strip()[:120]
+    try:
+        resolved_account_id = int(account_id) if account_id is not None else None
+    except (TypeError, ValueError):
+        resolved_account_id = None
+    changed = False
+    attempt_id = getattr(_THREAD_CTX, "attempt_id", None)
+    if attempt_id is not None:
+        try:
+            from core.storage import registration
+
+            registration.advance_checkpoint(
+                int(attempt_id),
+                "failed",
+                run_id=getattr(_THREAD_CTX, "run_id", None),
+                job_id=getattr(_THREAD_CTX, "job_id", None),
+                execution_id=getattr(_THREAD_CTX, "execution_id", None),
+                event_type="account_deactivated",
+                level="WARNING",
+                message=normalized_reason,
+                detail={"account_unusable_error_code": normalized_code} if normalized_code else {},
+                remote_identity_state="confirmed",
+                remote_account_state="confirmed",
+                local_account_state="persisted" if resolved_account_id is not None else "none",
+                target_status="deactivated",
+            )
+            changed = True
+        except Exception:
+            logger.exception("[Job %s] 写入账号永久失效 Attempt 失败", getattr(_THREAD_CTX, "job_id", None))
+
+    if resolved_account_id is not None:
+        try:
+            changed = db.mark_account_deactivated(
+                resolved_account_id,
+                normalized_reason,
+                source="registration_postprocess",
+            ) or changed
+        except Exception:
+            logger.exception("[Service] 标记已落库账号永久失效失败: account_id=%s", resolved_account_id)
+    return changed
 
 
 def _mark_completed_registration_email(
@@ -761,6 +832,7 @@ def _mark_completed_registration_email(
     account_id: int | None,
     *,
     resumed: bool = False,
+    source: str | None = None,
 ) -> bool:
     """注册主体成功后把邮箱收口为已使用，并让邮箱服务登记 OpenAI。"""
     if not email:
@@ -769,14 +841,16 @@ def _mark_completed_registration_email(
         from core.email_provider import release_email
 
         note_prefix = "继续注册已完成" if resumed else "注册已完成"
-        source = release_email(
+        release_kwargs = {"source": source} if source else {}
+        resolved_source = release_email(
             email,
             status="used",
             note=f"{note_prefix}，已绑定账号 #{account_id or '-'}",
+            **release_kwargs,
         )
         logger.info(
             "[Service] 已收口注册账号邮箱: source=%s account_id=%s resumed=%s",
-            source,
+            resolved_source,
             account_id,
             resumed,
         )
@@ -786,9 +860,14 @@ def _mark_completed_registration_email(
         return False
 
 
-def _mark_completed_resume_email(email: str | None, account_id: int | None) -> bool:
+def _mark_completed_resume_email(
+    email: str | None,
+    account_id: int | None,
+    *,
+    source: str | None = None,
+) -> bool:
     """恢复任务成功后把曾被失败分支标记的邮箱重新收口为已使用。"""
-    return _mark_completed_registration_email(email, account_id, resumed=True)
+    return _mark_completed_registration_email(email, account_id, resumed=True, source=source)
 
 
 def _registration_proxy_retry_limit() -> int:
@@ -1263,17 +1342,43 @@ def _run_one_job(job_id: int, log_file: str) -> None:
             )
             _bind_proxy_lease(proxy_lease)
             db.update_job_progress(job_id, "email", state="running", detail="正在领取或复用注册邮箱")
-            selected_source = str(current.get("email_source") or "").strip()
-            try:
-                from core.email_provider import validate_email_source
-                selected_source = validate_email_source(selected_source)
-            except ValueError:
-                # 兼容改造前已经存在的多来源历史任务；新任务 API 不再允许这种值。
-                from core.email_provider import parse_email_sources
-                selected_source = parse_email_sources(selected_source)[0]
             existing_password = ""
             existing_totp_secret = ""
             bound_profile_id = ""
+            reuses_original_email = (
+                is_retry_job
+                and str(current.get("job_type") or "") == "registration"
+            )
+            if reuses_original_email:
+                root_job_id = int(current.get("root_job_id") or current.get("id") or job_id)
+                root_job = current if root_job_id == job_id else db.get_job(root_job_id)
+                if not root_job:
+                    raise RuntimeError("重跑任务的根任务不存在，不能确认原邮箱来源或邮箱")
+                try:
+                    from core.email_provider import validate_email_source
+
+                    root_source = validate_email_source(str(root_job.get("email_source") or ""))
+                    child_source = validate_email_source(str(current.get("email_source") or ""))
+                except ValueError:
+                    raise RuntimeError("重跑任务的原邮箱来源不明确，不能切换来源或邮箱")
+                if child_source != root_source:
+                    raise RuntimeError("重跑任务邮箱来源与根任务不一致，不能切换来源或邮箱")
+                root_email = str(root_job.get("email") or "").strip()
+                child_email = str(current.get("email") or "").strip()
+                if root_email and child_email and root_email.casefold() != child_email.casefold():
+                    raise RuntimeError("重跑任务邮箱与根任务不一致，不能切换来源或邮箱")
+                selected_source = root_source
+            else:
+                selected_source = str(current.get("email_source") or "").strip()
+                try:
+                    from core.email_provider import validate_email_source
+
+                    selected_source = validate_email_source(selected_source)
+                except ValueError:
+                    # 兼容改造前已经存在的多来源历史任务；新任务 API 不再允许这种值。
+                    from core.email_provider import parse_email_sources
+
+                    selected_source = parse_email_sources(selected_source)[0]
             from core.roxy_profile_binding import account_profile_id
             bound_profile_id = account_profile_id(_account_for_job(current))
             if str(current.get("job_type") or "") == "registration_resume":
@@ -1295,16 +1400,44 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     detail="已复用待邮箱验证账号和保存的账号密码",
                 )
                 log_logger.info("[Job %s] 继续验证已保存账号：account_id=%s", job_id, (resume_account or {}).get("id"))
+            elif reuses_original_email:
+                email = str(current.get("email") or "").strip()
+                if not email:
+                    raise RuntimeError("重跑任务缺少原注册邮箱，不能改用其他邮箱")
+                from core.email_provider import restore_email_context
+                from core.profile_utils import generate_random_birthday
+
+                restore_email_context(
+                    email,
+                    source=selected_source,
+                    purpose="registration_retry",
+                )
+                name = _random_display_name()
+                birthday = generate_random_birthday()
+                db.update_job_progress(
+                    job_id,
+                    "email",
+                    state="success",
+                    detail="已复用原任务邮箱，不会改领新邮箱",
+                )
             else:
                 email, name, birthday = _prepare_registration_args(
                     selected_source,
                     batch_id=batch_id,
                     job_id=job_id,
                 )
-            bind_registration_email(email, email_source=selected_source)
+            from core.email_provider import remember_email_source
+
+            remember_email_source(email, selected_source)
+            bind_registration_email(
+                email,
+                email_source=selected_source,
+                root_job_id=int(current.get("root_job_id") or job_id),
+            )
             db.update_job(job_id, email=email)
             if not existing_password:
-                db.update_job_progress(job_id, "email", state="success", detail=f"已从 {selected_source} 领取邮箱")
+                if not reuses_original_email:
+                    db.update_job_progress(job_id, "email", state="success", detail=f"已从 {selected_source} 领取邮箱")
             check_stop_requested()
             retry_attempt = 0
             while True:
@@ -1323,6 +1456,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     existing_totp_secret=existing_totp_secret or None,
                     profile_id=bound_profile_id or None,
                     registration_options=registration_options_for_job(current),
+                    email_source=selected_source,
                 )
                 if not _should_retry_registration_with_new_proxy(result, proxy_lease, retry_attempt):
                     break
@@ -1382,24 +1516,14 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     job_id,
                     "email",
                     state="running",
-                    detail="新线路已就绪，正在重新准备邮箱",
+                    detail="新线路已就绪，将继续使用原注册邮箱",
                 )
                 if not existing_password:
-                    # Roxy 失败后会把未建号邮箱释放回池；重试不能继续持有已释放的
-                    # 字符串，否则可能被另一个并发任务抢走。仍使用同一个已选来源，
-                    # 不引入第二邮箱供应商或兜底来源。
-                    email, name, birthday = _prepare_registration_args(
-                        selected_source,
-                        batch_id=batch_id,
-                        job_id=job_id,
-                    )
-                    bind_registration_email(email, email_source=selected_source)
-                    db.update_job(job_id, email=email)
                     db.update_job_progress(
                         job_id,
                         "email",
                         state="success",
-                        detail=f"换线重试已从 {selected_source} 重新领取邮箱",
+                        detail="换线重试继续使用原注册邮箱，不会改领新邮箱",
                     )
                 else:
                     db.update_job_progress(
@@ -1416,7 +1540,9 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     provider=proxy_lease.provider,
                     region=proxy_lease.region,
                 )
-            if is_stop_requested(job_id):
+            result_is_dict = isinstance(result, dict)
+            confirmed_unusable = _confirmed_postprocess_email_unusable(result)
+            if is_stop_requested(job_id) and confirmed_unusable is None:
                 # run_registration 正常返回前，各注册驱动已经完成邮箱状态收口。
                 # 这里不能再次释放：失败邮箱可能已经被下一任务重新领取，二次释放
                 # 会把别的线程正在使用的租约错误改回 available。
@@ -1429,7 +1555,6 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 )
                 log_logger.warning(f"[Job {job_id}] 已按用户请求停止")
                 return
-            result_is_dict = isinstance(result, dict)
             registration_succeeded = bool(
                 result_is_dict
                 and (
@@ -1446,7 +1571,39 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     or not result.get("success")
                 )
             )
-            if registration_succeeded:
+            if confirmed_unusable is not None:
+                result_email = str(result.get("email") or email or "").strip()
+                unusable_code = str(confirmed_unusable.get("account_unusable_error_code") or "").strip()
+                unusable_message = str(
+                    confirmed_unusable.get("message") or result.get("error") or "账号已明确永久失效"
+                ).strip()
+                unusable_reason = (
+                    f"{unusable_code}: {unusable_message}"
+                    if unusable_code and unusable_code.casefold() not in unusable_message.casefold()
+                    else unusable_message
+                )
+                persisted_err = _persisted_result_error(result, unusable_reason)
+                _mark_job_email_permanently_unusable(
+                    result_email,
+                    unusable_reason,
+                    source=selected_source,
+                )
+                _mark_registration_attempt_deactivated(
+                    result.get("account_id"),
+                    unusable_message,
+                    error_code=unusable_code or None,
+                )
+                db.finish_job_progress(job_id, success=False, detail=persisted_err[:300])
+                db.update_job(
+                    job_id,
+                    status="failed",
+                    email=result.get("email"),
+                    account_id=result.get("account_id"),
+                    error=persisted_err,
+                    completed_at=_now_iso(),
+                )
+                log_logger.error("[Job %s] Codex 明确确认账号永久失效: %s", job_id, unusable_reason)
+            elif registration_succeeded:
                 _mark_registration_result(result)
                 warning = _persisted_result_error(result, result.get("error"))
                 registration_pending = bool(
@@ -1464,6 +1621,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                         completed_email,
                         completed_account_id,
                         resumed=str(current.get("job_type") or "") == "registration_resume",
+                        source=selected_source,
                     )
                 if registration_pending:
                     # 密码已经保存只能说明账号进入了“待邮箱验证”，不能把当前
@@ -1535,11 +1693,11 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     completed_at=_now_iso(),
                 )
                 email_to_handle = str(result_email or email or "").strip()
-                if manual_reconcile or _should_disable_failed_registration_email(err):
-                    _disable_job_email(email_to_handle, str(err))
-                # 普通失败的邮箱已经由 run_registration/具体驱动释放。
-                # 只有 run_registration 直接抛出、没有正常返回时，才由下面的
-                # except 分支调用 _release_unconsumed_job_email 做服务层兜底。
+                _retain_job_email(
+                    email_to_handle,
+                    str(err),
+                    source=selected_source,
+                )
                 if manual_reconcile:
                     log_logger.warning("[Job %s] 检测到远端已有账号，已转人工协调，禁止新注册重试: %s", job_id, err)
                 elif request_unknown:
@@ -1547,7 +1705,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 else:
                     log_logger.error(f"[Job {job_id}] 失败: {err}")
     except StopRequested as exc:
-        _release_unconsumed_job_email(email, str(exc))
+        _retain_job_email(email, str(exc), source=str(current.get("email_source") or "") or None)
         db.finish_job_progress(job_id, success=False, detail="用户手动停止", failure_state="stopped")
         log_logger.warning(f"[Job {job_id}] 已停止: {exc}")
         db.update_job(
@@ -1563,10 +1721,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
             capture_current_failure(err_text[:1000])
         except Exception:
             logger.exception("[Job %s] 保存失败诊断现场失败", job_id)
-        if _should_disable_failed_registration_email(err_text):
-            _disable_job_email(email, err_text)
-        else:
-            _release_unconsumed_job_email(email, err_text)
+        _retain_job_email(email, err_text, source=str(current.get("email_source") or "") or None)
         if is_stop_requested(job_id):
             log_logger.warning(f"[Job {job_id}] 停止中捕获异常，按停止处理: {type(exc).__name__}: {exc}")
             db.finish_job_progress(job_id, success=False, detail="用户手动停止", failure_state="stopped")
@@ -2035,11 +2190,55 @@ def _account_plan_ready(account: dict | None) -> bool:
     return bool(account and str(account.get("plan_check_status") or "").strip().lower() == "success")
 
 
+_DEACTIVATED_ATTEMPT_RETRY_REASON = "注册 Attempt 已被上游明确确认永久失效，禁止重跑"
+_ATTEMPT_READ_FAILED_RETRY_REASON = "注册 Attempt 读取失败，需人工确认后再重试"
+
+
+def _attempt_is_deactivated(attempt: dict | None) -> bool:
+    return str((attempt or {}).get("target_status") or "").strip().lower() == "deactivated"
+
+
+def _attempt_id_for_job(job: dict) -> int | None:
+    """仅为已建立事实链接的任务读取 Attempt；旧轻量任务不触发存储初始化。"""
+    try:
+        attempt_id = int(job.get("attempt_id"))
+    except (TypeError, ValueError):
+        return None
+    return attempt_id if attempt_id > 0 else None
+
+
+def _root_job_id_for_job(job: dict) -> int:
+    try:
+        root_job_id = int(job.get("root_job_id") or job.get("id") or 0)
+    except (TypeError, ValueError):
+        return 0
+    return root_job_id if root_job_id > 0 else 0
+
+
+def _read_linked_attempt_for_job(job: dict) -> tuple[dict | None, bool]:
+    """读取任务关联的 Attempt，并明确区分未关联与读取失败。"""
+    attempt_id = _attempt_id_for_job(job)
+    if attempt_id is None:
+        return None, False
+    try:
+        from core.storage import registration as registration_store
+
+        attempt = registration_store.get_attempt(attempt_id)
+        # 已建立 durable link 却找不到 Attempt，说明事实链不完整；不能把
+        # “查不到”当成“没有永久失效”，否则会放行一条无法核验邮箱状态的重跑。
+        return attempt, attempt is None
+    except Exception:
+        logger.exception("[Job %s] 读取根注册 Attempt 失败", job.get("id"))
+        return None, True
+
+
 def _build_retry_info(
     job: dict,
     *,
     account: dict | None,
     successful_retry: dict | None,
+    attempt: dict | None = None,
+    attempt_read_failed: bool = False,
 ) -> dict:
     """纯函数版本的任务重试投影；列表页可批量准备关联数据后复用。"""
     status = str(job.get("status") or "")
@@ -2052,6 +2251,29 @@ def _build_retry_info(
         "next_actions": [],
     }
     if status not in ("success", "failed", "partial_success", "stopped", "cancelled", "interrupted"):
+        return info
+
+    if attempt_read_failed:
+        info.update({
+            "display_status": "failed",
+            "retry_reason": _ATTEMPT_READ_FAILED_RETRY_REASON,
+        })
+        return info
+
+    if _attempt_is_deactivated(attempt):
+        info.update({
+            "display_status": "failed",
+            "retry_reason": _DEACTIVATED_ATTEMPT_RETRY_REASON,
+        })
+        return info
+
+    account_status = str((account or {}).get("account_status") or "").strip().lower()
+    codex_status = str((account or {}).get("codex_status") or "").strip().lower()
+    if account_status == "deactivated" or codex_status == "deactivated":
+        info.update({
+            "display_status": "failed",
+            "retry_reason": "账号已被上游明确确认永久失效，禁止补跑注册后处理",
+        })
         return info
 
     if successful_retry is not None:
@@ -2080,7 +2302,6 @@ def _build_retry_info(
     steps = job.get("progress_steps") if isinstance(job.get("progress_steps"), dict) else {}
     codex_step = steps.get("codex") if isinstance(steps.get("codex"), dict) else {}
     codex_step_state = str(codex_step.get("state") or "").strip().lower()
-    codex_status = str((account or {}).get("codex_status") or "").strip().lower()
     # 注册任务明确记录为 skipped 时，以任务运行事实为准。历史上曾在注册已
     # 跳过 Codex 后误创建补跑任务，随后把账号的兼容字段写成 failed；不能让
     # 这个旧字段再次把“跳过”展示成 Codex 失败。
@@ -2144,9 +2365,6 @@ def _build_retry_info(
         info["next_actions"] = [action.as_dict() for action in summary.next_actions]
 
     if account:
-        if codex_status == "deactivated":
-            info["retry_reason"] = "账号已废号，不能补跑 Codex"
-            return info
         if (
             setup_missing
             and codex_status in {"success", "skipped"}
@@ -2213,10 +2431,13 @@ def get_retry_info(job: dict, *, account_override: dict | None = None) -> dict:
     account = None if successful_retry is not None else (
         account_override if account_override is not None else _account_for_job(job)
     )
+    attempt, attempt_read_failed = _read_linked_attempt_for_job(job)
     return _build_retry_info(
         job,
         account=account,
         successful_retry=successful_retry,
+        attempt=attempt,
+        attempt_read_failed=attempt_read_failed,
     )
 
 
@@ -2230,11 +2451,35 @@ def get_retry_info_bulk(jobs: list[dict]) -> dict[int, dict]:
     successful_by_job = db.get_successful_retries_for_jobs(terminal)
     needs_accounts = [job for job in terminal if int(job.get("id") or 0) not in successful_by_job]
     accounts_by_job = db.get_accounts_for_jobs(needs_accounts)
+    root_ids = sorted({
+        root_job_id
+        for job in terminal
+        if _attempt_id_for_job(job) is not None
+        for root_job_id in [_root_job_id_for_job(job)]
+        if root_job_id > 0
+    })
+    attempts_by_root = {}
+    attempt_read_failed_roots: set[int] = set()
+    if root_ids:
+        try:
+            from core.storage import registration as registration_store
+
+            attempts_by_root = registration_store.get_attempts_for_root_jobs(root_ids)
+        except Exception:
+            logger.exception("批量读取根注册 Attempt 失败")
+            # 任何已建立 Attempt link 的行都必须 fail closed；不能因一次
+            # 批量读取异常而重新显示“重新执行注册”。
+            attempt_read_failed_roots.update(root_ids)
+        else:
+            # 查询成功但缺少某个已链接根任务，同样属于事实链损坏。
+            attempt_read_failed_roots.update(set(root_ids) - set(attempts_by_root))
     return {
         int(job.get("id") or 0): _build_retry_info(
             job,
             account=accounts_by_job.get(int(job.get("id") or 0)),
             successful_retry=successful_by_job.get(int(job.get("id") or 0)),
+            attempt=attempts_by_root.get(_root_job_id_for_job(job)),
+            attempt_read_failed=_root_job_id_for_job(job) in attempt_read_failed_roots,
         )
         for job in rows
     }
@@ -2261,15 +2506,53 @@ def retry_job(
 
     action = str(retry_info["retry_action"])
     root_id = int(source.get("root_job_id") or source.get("id") or job_id)
-    root_job = db.get_job(root_id) or source
+    root_record = db.get_job(root_id)
+    root_job = root_record or source
+    attempt_job = root_job if _attempt_id_for_job(root_job) is not None else source
+    attempt, attempt_read_failed = _read_linked_attempt_for_job(attempt_job)
+    if attempt_read_failed:
+        return {"ok": False, "error": _ATTEMPT_READ_FAILED_RETRY_REASON, "status": 409}
+    if _attempt_is_deactivated(attempt):
+        return {"ok": False, "error": _DEACTIVATED_ATTEMPT_RETRY_REASON, "status": 409}
     if batch_id is None:
         batch_id = str(root_job.get("batch_id") or source.get("batch_id") or "") or None
         batch_index = int(root_job.get("batch_index") or source.get("batch_index") or 1)
         batch_size = int(root_job.get("batch_size") or source.get("batch_size") or 1)
     if workers is None:
         workers = max(1, int(root_job.get("batch_workers") or source.get("batch_workers") or 1))
-    email = str((account or {}).get("email") or source.get("email") or "").strip()
+    source_email = str(source.get("email") or "").strip()
+    root_email = str(root_job.get("email") or "").strip()
+    email = str((account or {}).get("email") or source_email or "").strip()
     account_id = int(account["id"]) if account and account.get("id") is not None else None
+    if action == "registration":
+        # 普通注册重跑属于同一根任务链；根任务保存的地址才是不可替换的原邮箱。
+        # 仅为兼容根记录尚未回填邮箱的历史链，才退回当前失败任务自身的快照。
+        email = root_email or source_email
+    if action == "registration" and not email:
+        return {
+            "ok": False,
+            "error": "原注册邮箱未保存，不能使用其他邮箱重跑",
+            "status": 409,
+        }
+    if action == "registration":
+        if root_record is None and root_id != int(source.get("id") or 0):
+            return {
+                "ok": False,
+                "error": "原注册根任务不存在，无法确认原邮箱来源",
+                "status": 409,
+            }
+        try:
+            from core.email_provider import validate_email_source
+
+            retry_email_source = validate_email_source(str(root_job.get("email_source") or ""))
+        except ValueError:
+            return {
+                "ok": False,
+                "error": "原邮箱来源缺失或不明确，不能切换来源或邮箱重跑",
+                "status": 409,
+            }
+    else:
+        retry_email_source = str(source.get("email_source") or root_job.get("email_source") or "outlook")
     if action == "plan_check":
         if not email or account_id is None:
             return {"ok": False, "error": "已保存账号信息不完整，无法查询套餐", "status": 409}
@@ -2342,8 +2625,8 @@ def retry_job(
         job, created = db.create_retry_job(
             int(job_id),
             job_type=job_type,
-            email_source=str(source.get("email_source") or "outlook"),
-            email=email if action in {"codex", "twofa", "registration_resume"} else None,
+            email_source=retry_email_source,
+            email=email if action in {"codex", "twofa", "registration_resume", "registration"} else None,
             account_id=account_id if action in {"codex", "twofa", "registration_resume"} else None,
             batch_id=batch_id,
             batch_index=batch_index,
@@ -2518,9 +2801,10 @@ def request_stop_job(job_id: int) -> dict:
                     "job_id": job_id,
                     "state": latest.get("status") or "unknown",
                 }
-            _release_unconsumed_job_email(
+            _retain_job_email(
                 str(job.get("email") or "").strip() or None,
-                "任务实例不存在，确认未继续执行",
+                "任务实例不存在，注册结果无法确认",
+                source=str(job.get("email_source") or "") or None,
             )
             _append_job_log(job_id, "用户手动停止：未找到运行中的任务实例，已直接标记为已停止。")
             logger.warning("[Service] 用户停止任务 #%s：任务实例不存在，已直接标记 stopped", job_id)

@@ -681,6 +681,7 @@ def setup_roxy_2fa(
     existing_secret: str | None = None,
     force_reconfigure: bool = False,
     on_disabled=None,
+    otp_provider=None,
 ) -> str:
     """Enable Authenticator MFA in the existing Roxy browser session."""
     import pyotp
@@ -711,7 +712,8 @@ def setup_roxy_2fa(
     if step == "email":
         logger.info("%s[2FA] 当前会话要求邮箱重认证", _log_prefix(driver))
         _check_manual_stop()
-        email_code = wait_for_otp(email, after_ts=otp_after_ts)
+        provider = otp_provider or wait_for_otp
+        email_code = provider(email, after_ts=otp_after_ts)
         _human_type_text(driver, field, email_code, clear=True)
         submit_email_code = _button_after_input(driver, field)
         if not submit_email_code:
@@ -779,6 +781,7 @@ def setup_protocol_2fa_with_browser_fallback(
     *,
     on_secret=None,
     existing_secret: str | None = None,
+    otp_provider=None,
 ) -> tuple[str, bool]:
     """优先协议开通 2FA，失败时复用当前登录态改走安全设置页。
 
@@ -840,11 +843,16 @@ def setup_protocol_2fa_with_browser_fallback(
             protocol_error,
         )
         try:
+            fallback_kwargs = dict(
+                on_secret=_remember_secret,
+                existing_secret=checkpoint["secret"] or None,
+            )
+            if otp_provider is not None:
+                fallback_kwargs["otp_provider"] = otp_provider
             secret = setup_roxy_2fa(
                 driver,
                 email,
-                on_secret=_remember_secret,
-                existing_secret=checkpoint["secret"] or None,
+                **fallback_kwargs,
             )
         except Exception as browser_exc:
             browser_error = f"{type(browser_exc).__name__}: {str(browser_exc)[:180]}"

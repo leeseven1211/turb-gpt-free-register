@@ -16,8 +16,9 @@ from config import roxybrowser as _cfg
 from config import codex as _codex_cfg
 from config import twofa as _twofa_cfg
 from core.account_export import setup_2fa_protocol
-from core.email_provider import wait_for_otp, resolve_email_source
+from core.email_provider import wait_for_otp, resolve_email_source, validate_email_source
 from core.humanize import delay as human_delay
+from core.openai_auth import AccountUnusableError
 from core.roxybrowser_client import RoxyBrowserClient, RoxyOpenResult
 from core.session import BrowserSession
 from core.registration.state_machine import (
@@ -426,6 +427,7 @@ def _save_roxy_account_checkpoint(
     opened: RoxyOpenResult,
     openai_password: str | None,
     proxy: str | None,
+    email_source: str | None = None,
     totp_secret: str | None = None,
     codex_result: dict | None = None,
     twofa_result: dict | None = None,
@@ -467,7 +469,7 @@ def _save_roxy_account_checkpoint(
         plan_type=account.get("planType"),
         expires_at=session_info.get("expires"),
         proxy_used=proxy or None,
-        email_source=resolve_email_source(email),
+        email_source=email_source or resolve_email_source(email),
         extra=extra,
         codex_status=codex_status,
         codex_error=codex_error,
@@ -483,6 +485,7 @@ def _save_pending_email_verification_checkpoint(
     openai_password: str,
     opened: RoxyOpenResult,
     proxy: str | None,
+    email_source: str | None = None,
 ) -> int:
     """密码提交请求发出后立即保存待邮箱验证账号。
 
@@ -496,7 +499,7 @@ def _save_pending_email_verification_checkpoint(
         email=email,
         access_token="",
         proxy_used=proxy or None,
-        email_source=resolve_email_source(email),
+        email_source=email_source or resolve_email_source(email),
         extra={
             "account_password": openai_password,
             "registration_checkpoint": "email_verification_pending",
@@ -604,10 +607,12 @@ def run_roxy_registration(
     existing_totp_secret: str | None = None,
     profile_id: str | None = None,
     registration_options: dict | None = None,
+    email_source: str | None = None,
 ) -> dict:
     """Roxy 指纹浏览器自动化注册入口。"""
     from core.registration_service import report_job_otp_evidence, report_job_progress, report_registered_account
 
+    selected_email_source = validate_email_source(email_source) if email_source else None
     options = dict(registration_options or {})
     password_required = bool(options.get("password_enabled", _registration_auth_mode() == "password"))
     twofa_enabled = bool(options.get("twofa_enabled", _twofa_cfg.ENABLE_2FA))
@@ -751,6 +756,7 @@ def run_roxy_registration(
                 openai_password=password,
                 opened=opened,
                 proxy=proxy,
+                email_source=selected_email_source,
             )
             report_registered_account(account_id)
             create_acknowledged = True
@@ -795,6 +801,7 @@ def run_roxy_registration(
                 openai_password=openai_password,
                 opened=opened,
                 proxy=proxy,
+                email_source=selected_email_source,
             )
             report_registered_account(account_id)
             create_acknowledged = True
@@ -810,12 +817,19 @@ def run_roxy_registration(
             # 两种页面外观相似，必须与 Codex OAuth 共用同一个认证状态机。
             from core.roxy_codex_oauth import complete_openai_login_challenge
 
+            resume_kwargs = {"timeout": 45}
+            if selected_email_source is not None:
+                resume_kwargs["otp_provider"] = lambda address, **kwargs: wait_for_otp(
+                    address,
+                    email_source=selected_email_source,
+                    **kwargs,
+                )
             resume_login_state = complete_openai_login_challenge(
                 driver,
                 email,
                 existing_password,
                 str(existing_totp_secret or ""),
-                timeout=45,
+                **resume_kwargs,
             )
             logger.info(
                 "[Roxy注册] 待验证账号公共登录状态机完成：email=%s state=%s",
@@ -856,11 +870,13 @@ def run_roxy_registration(
                     otp_budget.require("email OTP")
                     if attempt_wait <= 0:
                         raise TimeoutError(f"邮箱验证码总等待已达到 {otp_total_wait}s")
-                    current_otp = wait_for_otp(
-                        email,
-                        after_ts=otp_after_ts,
-                        max_wait=attempt_wait,
-                    )
+                    otp_kwargs = {
+                        "after_ts": otp_after_ts,
+                        "max_wait": attempt_wait,
+                    }
+                    if selected_email_source is not None:
+                        otp_kwargs["email_source"] = selected_email_source
+                    current_otp = wait_for_otp(email, **otp_kwargs)
                 except Exception as exc:
                     if otp_attempt >= max_otp_attempts:
                         failure_code, failure_detail = _classify_otp_wait_failure(
@@ -1067,7 +1083,7 @@ def run_roxy_registration(
         account_id = persist_registration_core(
             email=email,
             access_token=access_token,
-            email_source=resolve_email_source(email),
+            email_source=selected_email_source or resolve_email_source(email),
             proxy_used=proxy or None,
             extra={
                 "user": session_info.get("user"),
@@ -1099,6 +1115,13 @@ def run_roxy_registration(
                 from core.roxy_codex_oauth import run_roxy_codex_oauth
                 logger.info("[Roxy注册][Codex] ENABLE_CODEX_AUTO=True，复用当前注册 Roxy 窗口执行 Codex 授权，不创建新环境")
                 _check_manual_stop()
+                codex_kwargs = {}
+                if selected_email_source is not None:
+                    codex_kwargs["otp_provider"] = lambda address, **kwargs: wait_for_otp(
+                        address,
+                        email_source=selected_email_source,
+                        **kwargs,
+                    )
                 codex_result = _run_in_isolated_browser_tab(
                     driver,
                     lambda: run_roxy_codex_oauth(
@@ -1111,6 +1134,7 @@ def run_roxy_registration(
                         # 当前 Roxy 环境刚完成这个账号的注册，保留登录态可直接进入
                         # consent/手机验证；若登录态不可复用，页面仍会回落到邮箱 OTP。
                         clear_existing_state=False,
+                        **codex_kwargs,
                     ),
                     label="Codex OAuth",
                 )
@@ -1122,6 +1146,8 @@ def run_roxy_registration(
             else:
                 logger.info("[Roxy注册][Codex] ENABLE_CODEX_AUTO=False，注册后跳过 Codex OAuth")
                 report_job_progress("codex", "skipped", "未启用 Codex 自动授权")
+        except AccountUnusableError:
+            raise
         except Exception as exc:
             codex_result = {"status": "failed", "ok": False, "message": f"{type(exc).__name__}: {str(exc)[:180]}"}
             report_job_progress("codex", "failed", codex_result["message"])
@@ -1135,6 +1161,7 @@ def run_roxy_registration(
             opened=opened,
             openai_password=openai_password,
             proxy=proxy,
+            email_source=selected_email_source,
             codex_result=codex_result,
         )
         report_registered_account(account_id)
@@ -1157,6 +1184,7 @@ def run_roxy_registration(
                         opened=opened,
                         openai_password=openai_password,
                         proxy=proxy,
+                        email_source=selected_email_source,
                         totp_secret=totp_secret,
                         codex_result=codex_result,
                         twofa_result={
@@ -1169,6 +1197,13 @@ def run_roxy_registration(
                     logger.info("[Roxy注册][2FA] Authenticator key 已写入账号检查点，准备激活")
 
                 twofa_driver = _twofa_cfg.get_twofa_driver_for_options(options)
+                twofa_kwargs = {"on_secret": _checkpoint_totp_secret}
+                if selected_email_source is not None:
+                    twofa_kwargs["otp_provider"] = lambda address, **kwargs: wait_for_otp(
+                        address,
+                        email_source=selected_email_source,
+                        **kwargs,
+                    )
                 if twofa_driver == "protocol":
                     protocol_session = BrowserSession(proxy=proxy or "")
                     plan_check_session = protocol_session
@@ -1177,7 +1212,7 @@ def run_roxy_registration(
                         email,
                         protocol_session,
                         access_token,
-                        on_secret=_checkpoint_totp_secret,
+                        **twofa_kwargs,
                     )
                     twofa_result = {
                         "status": "success",
@@ -1190,7 +1225,7 @@ def run_roxy_registration(
                         "driver": "browser_fallback" if fallback_used else "protocol",
                     }
                 else:
-                    totp_secret = setup_roxy_2fa(driver, email, on_secret=_checkpoint_totp_secret)
+                    totp_secret = setup_roxy_2fa(driver, email, **twofa_kwargs)
                     twofa_result = {
                         "status": "success",
                         "ok": True,
@@ -1214,6 +1249,7 @@ def run_roxy_registration(
             opened=opened,
             openai_password=openai_password,
             proxy=proxy,
+            email_source=selected_email_source,
             totp_secret=totp_secret,
             codex_result=codex_result,
             twofa_result=twofa_result,
@@ -1323,6 +1359,7 @@ def run_roxy_registration(
         # 让后续任务反复命中登录 OTP 页，永远无法完成“账号+密码”注册。
         password_result_unknown = isinstance(exc, _PasswordTransitionTimeout)
         error_text = str(exc)
+        account_unusable = isinstance(exc, AccountUnusableError)
         request_unknown = password_result_unknown or _is_registration_request_unknown(error_text)
         remote_existing = isinstance(exc, RemoteExistingAccountError) or remote_identity == "existing"
         password_rejected = isinstance(exc, PasswordRejectedError)
@@ -1361,23 +1398,22 @@ def run_roxy_registration(
             except Exception:
                 logger.exception("[Roxy注册] 释放代理失败临时环境时出错；保留原失败结果")
         try:
-            from core.email_provider import release_email
-            password_target_missing = any(
-                marker in error_text.lower()
-                for marker in _PASSWORD_ENTRY_FAILURE_MARKERS
-            )
-            release_email(
-                email,
-                status=(
-                    "failed"
-                    if create_acknowledged
-                    or password_target_missing
-                    or request_unknown
-                    or remote_existing
-                    else "available"
-                ),
-                note=f"Roxy注册失败: {error_text[:180]}",
-            )
+            if account_unusable:
+                from core.email_provider import mark_email_permanently_unusable
+
+                mark_email_permanently_unusable(
+                    email,
+                    source=selected_email_source,
+                    note=f"上游明确确认账号永久失效: {error_text[:180]}",
+                )
+            else:
+                from core.email_provider import retain_email
+
+                retain_email(
+                    email,
+                    source=selected_email_source,
+                    note=f"Roxy注册中途失败，保留给原任务链: {error_text[:180]}",
+                )
         except Exception:
             pass
         auth_remote_identity = "existing" if remote_existing else remote_identity
@@ -1415,6 +1451,12 @@ def run_roxy_registration(
             "remote_identity_state": "confirmed" if remote_existing else "unknown",
             "remote_account_state": "confirmed" if remote_existing else "request_unknown" if request_unknown else "not_started",
             "error_code": auth_error_code,
+            "email_permanently_unusable": account_unusable,
+            "account_unusable_error_code": (
+                exc.error_code or "account_deactivated"
+                if account_unusable
+                else None
+            ),
             "auth": auth_result_for_registration(
                 {"success": False, "error_code": auth_error_code},
                 auth_method="roxy",

@@ -18,9 +18,10 @@ from core.account_export import (
     setup_2fa_protocol,
 )
 from core.chatgpt_auth import get_csrf_token, get_providers, signin_openai
-from core.email_provider import wait_for_otp
+from core.email_provider import validate_email_source, wait_for_otp
 from core.humanize import delay as human_delay
 from core.openai_auth import (
+    AccountUnusableError,
     EmailOtpInvalidError,
     build_sentinel_header,
     create_account,
@@ -171,10 +172,12 @@ def run_protocol_registration(
     proxy: str | None = None,
     otp_code: str | None = None,
     registration_options: dict | None = None,
+    email_source: str | None = None,
 ) -> dict:
     """执行完整的纯协议 ChatGPT 注册流程。"""
     from core.registration_service import report_job_progress
 
+    selected_email_source = validate_email_source(email_source) if email_source else None
     options = dict(registration_options or {})
     password_required = bool(options.get("password_enabled", False))
     twofa_enabled = bool(options.get("twofa_enabled", _twofa_cfg.ENABLE_2FA))
@@ -213,6 +216,7 @@ def run_protocol_registration(
     create_acknowledged = False
     remote_identity = "unknown"
     auth_challenge_chain: list[str] = []
+    account_id: int | None = None
     try:
         report_job_progress("page", "running", "正在初始化 ChatGPT 注册页状态")
         # 网络预检必须在 signin/follow_authorize 之前完成；预检不带邮箱，不会触发 OTP。
@@ -260,7 +264,10 @@ def run_protocol_registration(
             if current_otp is None:
                 if _email_cfg.USE_EMAIL_SERVICE:
                     logger.info(f"[OTP] 等待验证码：{email}（第 {otp_attempt}/{max_otp_attempts} 次）")
-                    current_otp = wait_for_otp(email, after_ts=otp_after_ts)
+                    otp_kwargs = {"after_ts": otp_after_ts}
+                    if selected_email_source is not None:
+                        otp_kwargs["email_source"] = selected_email_source
+                    current_otp = wait_for_otp(email, **otp_kwargs)
                 else:
                     logger.info("")
                     logger.info(f"[OTP] 请检查邮箱，输入收到的 6 位验证码（第 {otp_attempt}/{max_otp_attempts} 次）:")
@@ -408,7 +415,7 @@ def run_protocol_registration(
         account_id = persist_registration_core(
             email=email,
             access_token=access_token,
-            email_source=resolve_email_source(email),
+            email_source=selected_email_source or resolve_email_source(email),
             proxy_used=session.proxy or None,
             extra={
                 "user": session_info.get("user"),
@@ -448,7 +455,14 @@ def run_protocol_registration(
 
             if codex_enabled:
                 report_job_progress("codex", "running", "正在执行 Codex OAuth")
-                codex_result = run_codex_oauth(email, proxy=session.proxy)
+                codex_kwargs = {"proxy": session.proxy}
+                if selected_email_source is not None:
+                    codex_kwargs["otp_provider"] = lambda address, **kwargs: wait_for_otp(
+                        address,
+                        email_source=selected_email_source,
+                        **kwargs,
+                    )
+                codex_result = run_codex_oauth(email, **codex_kwargs)
                 report_job_progress(
                     "codex",
                     "success"
@@ -465,6 +479,8 @@ def run_protocol_registration(
                     "message": "ENABLE_CODEX_AUTO=False，跳过 Codex",
                 }
                 report_job_progress("codex", "skipped", codex_result["message"])
+        except AccountUnusableError:
+            raise
         except Exception as exc:
             codex_result = {
                 "status": "failed",
@@ -599,7 +615,6 @@ def run_protocol_registration(
     except Exception as exc:
         logger.error(f"[失败] {email}: {type(exc).__name__}: {exc}")
         logger.debug("详细错误信息:", exc_info=True)
-        from core.openai_auth import AccountUnusableError
         error_text = str(exc)
         request_unknown = any(marker in error_text for marker in (
             "后续页面类型未知",
@@ -610,40 +625,45 @@ def run_protocol_registration(
         ))
         remote_existing = remote_identity == "existing"
         auth_error_code = "remote_existing" if remote_existing else "request_unknown" if request_unknown else "registration_failed"
+        account_unusable = isinstance(exc, AccountUnusableError)
 
-        account_dead = isinstance(exc, AccountUnusableError)
         try:
-            if email:
-                from core.email_provider import release_email
+            if email and account_unusable:
+                from core.email_provider import mark_email_permanently_unusable
 
-                if account_dead:
-                    src = release_email(
-                        email,
-                        status="failed",
-                        note=f"账号已废弃，邮箱不可用: {str(exc)[:180]}",
-                    )
-                    logger.warning(f"[邮箱:{src}] {email} 账号已废弃，标记为 failed，不再重新注册")
-                elif create_acknowledged or request_unknown or remote_existing:
-                    src = release_email(
-                        email,
-                        status="failed",
-                        note=f"创建接口已通过但后续失败，已废弃: {str(exc)[:180]}",
-                    )
-                    logger.warning(f"[邮箱:{src}] {email} 已创建但后续失败，标记为 failed，不再重新注册")
-                else:
-                    src = release_email(email, status="available", note=f"上次失败: {str(exc)[:180]}")
-                    logger.info(f"[邮箱:{src}] {email} 已恢复 available")
+                src = mark_email_permanently_unusable(
+                    email,
+                    source=selected_email_source,
+                    note=f"上游明确确认账号永久失效: {str(exc)[:180]}",
+                )
+                logger.warning(f"[邮箱:{src}] {email} 已确认永久失效，标记 failed")
+            elif email:
+                from core.email_provider import retain_email
+
+                src = retain_email(
+                    email,
+                    source=selected_email_source,
+                    note=f"协议注册中途失败，保留给原任务链: {str(exc)[:180]}",
+                )
+                logger.warning(f"[邮箱:{src}] {email} 注册中途失败，保留原邮箱等待重跑或对账")
         except Exception:
             pass
         return {
             "success": False,
             "email": email,
+            "account_id": account_id,
             "request_unknown": request_unknown,
             "manual_reconcile": remote_existing,
             "remote_identity": remote_identity,
             "remote_identity_state": "confirmed" if remote_existing else "unknown",
             "remote_account_state": "confirmed" if remote_existing else "request_unknown" if request_unknown else "not_started",
             "error_code": auth_error_code,
+            "email_permanently_unusable": account_unusable,
+            "account_unusable_error_code": (
+                exc.error_code or "account_deactivated"
+                if account_unusable
+                else None
+            ),
             "auth": auth_result_for_registration(
                 {"success": False, "error_code": auth_error_code},
                 auth_method="protocol",

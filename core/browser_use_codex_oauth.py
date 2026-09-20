@@ -1446,6 +1446,8 @@ def _run_browser_use_codex_oauth_once(email: str, otp_provider=None, proxy: str 
             status="deactivated",
             email=email,
             message=f"账号已废（{exc.error_code or 'account_deactivated'}）",
+            email_permanently_unusable=True,
+            account_unusable_error_code=exc.error_code or "account_deactivated",
         )
     except Exception as exc:
         logger.error("[Codex][BrowserUse] 授权失败：%s: %s", type(exc).__name__, exc)

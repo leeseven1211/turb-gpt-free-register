@@ -9,8 +9,9 @@ from config import cloakbrowser as _cfg
 from config import twofa as _twofa_cfg
 from core.account_export import save_account_data, setup_2fa_protocol
 from core.cloakbrowser_driver import build_cloak_driver
-from core.email_provider import wait_for_otp, resolve_email_source
+from core.email_provider import wait_for_otp, resolve_email_source, validate_email_source
 from core.humanize import delay as human_delay
+from core.openai_auth import AccountUnusableError
 from core.session import BrowserSession
 from core.registration.selenium_auth import (
     check_manual_stop as _check_manual_stop,
@@ -36,16 +37,19 @@ def run_cloak_registration(
     proxy: str = None,
     otp_code: str = None,
     registration_options: dict | None = None,
+    email_source: str | None = None,
 ) -> dict:
     """CloakBrowser 自动化注册入口。"""
     from core.registration_service import report_job_progress
 
+    selected_email_source = validate_email_source(email_source) if email_source else None
     options = dict(registration_options or {})
     driver = None
     opened = None
     create_acknowledged = False
     openai_password: str | None = None
     plan_check_session = None
+    account_id: int | None = None
     try:
         report_job_progress("browser", "running", "正在启动 CloakBrowser")
         driver, opened = build_cloak_driver(proxy=proxy)
@@ -87,7 +91,10 @@ def run_cloak_registration(
             if current_otp is None:
                 logger.info("[Cloak注册][OTP] 等待验证码：%s（第 %s/%s 次）", email, otp_attempt, max_otp_attempts)
                 try:
-                    current_otp = wait_for_otp(email, after_ts=otp_after_ts)
+                    otp_kwargs = {"after_ts": otp_after_ts}
+                    if selected_email_source is not None:
+                        otp_kwargs["email_source"] = selected_email_source
+                    current_otp = wait_for_otp(email, **otp_kwargs)
                 except Exception as exc:
                     if otp_attempt >= max_otp_attempts:
                         raise
@@ -170,6 +177,13 @@ def run_cloak_registration(
                 from core.roxy_codex_oauth import run_roxy_codex_oauth
                 logger.info("[Cloak注册][Codex] ENABLE_CODEX_AUTO=True，复用当前 CloakBrowser 窗口执行 Codex 授权")
                 _check_manual_stop()
+                codex_kwargs = {}
+                if selected_email_source is not None:
+                    codex_kwargs["otp_provider"] = lambda address, **kwargs: wait_for_otp(
+                        address,
+                        email_source=selected_email_source,
+                        **kwargs,
+                    )
                 codex_result = run_roxy_codex_oauth(
                     email,
                     proxy=proxy,
@@ -180,11 +194,14 @@ def run_cloak_registration(
                     # 当前 Cloak 环境刚完成这个账号的注册，直接复用登录态。
                     # 若服务端仍要求登录，OAuth 页面会自行回落到邮箱 OTP 流程。
                     clear_existing_state=False,
+                    **codex_kwargs,
                 )
                 report_job_progress("codex", "success" if codex_result.get("ok") else "failed", str(codex_result.get("message") or "Codex OAuth 已完成")[:300])
             else:
                 logger.info("[Cloak注册][Codex] ENABLE_CODEX_AUTO=False，注册后跳过 Codex OAuth")
                 report_job_progress("codex", "skipped", "未启用 Codex 自动授权")
+        except AccountUnusableError:
+            raise
         except Exception as exc:
             codex_result = {"status": "failed", "ok": False, "message": f"{type(exc).__name__}: {str(exc)[:180]}"}
             report_job_progress("codex", "failed", codex_result["message"])
@@ -193,7 +210,7 @@ def run_cloak_registration(
             email=email,
             access_token=access_token,
             totp_secret=totp_secret,
-            email_source=resolve_email_source(email),
+            email_source=selected_email_source or resolve_email_source(email),
             proxy_used=((opened.raw or {}).get("proxy") if opened else None) or proxy or None,
             plan_check_proxy=proxy or None,
             captured_plan_result=captured_plan_result,
@@ -212,12 +229,38 @@ def run_cloak_registration(
     except Exception as exc:
         logger.error("[Cloak注册] 失败：%s: %s", type(exc).__name__, exc)
         logger.debug("[Cloak注册] 失败详情", exc_info=True)
+        account_unusable = isinstance(exc, AccountUnusableError)
         try:
-            from core.email_provider import release_email
-            release_email(email, status="failed" if create_acknowledged else "available", note=f"Cloak注册失败: {str(exc)[:180]}")
+            if account_unusable:
+                from core.email_provider import mark_email_permanently_unusable
+
+                mark_email_permanently_unusable(
+                    email,
+                    source=selected_email_source,
+                    note=f"上游明确确认账号永久失效: {str(exc)[:180]}",
+                )
+            else:
+                from core.email_provider import retain_email
+
+                retain_email(
+                    email,
+                    source=selected_email_source,
+                    note=f"Cloak注册中途失败，保留给原任务链: {str(exc)[:180]}",
+                )
         except Exception:
             pass
-        return {"success": False, "email": email, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+        return {
+            "success": False,
+            "email": email,
+            "account_id": account_id,
+            "email_permanently_unusable": account_unusable,
+            "account_unusable_error_code": (
+                exc.error_code or "account_deactivated"
+                if account_unusable
+                else None
+            ),
+            "error": f"{type(exc).__name__}: {str(exc)[:300]}",
+        }
     finally:
         if driver and not bool(_cfg.CLOAK_KEEP_BROWSER_OPEN):
             try:

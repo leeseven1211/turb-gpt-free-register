@@ -8,6 +8,7 @@ from core.auth_challenge import (
     safe_to_start_new_registration,
 )
 from core import registration_service
+from core.openai_auth import AccountUnusableError
 from core.registration import roxy as roxy_registration
 from core.registration import protocol as protocol_registration
 from core import roxy_codex_oauth
@@ -124,36 +125,82 @@ class RegistrationIdentityContractTests(unittest.TestCase):
                 return_value=({"accessToken": "fresh-token", "user": {}, "account": {}}, "fresh-token"),
             ) as finalize,
             patch("core.registration_service.persist_registration_core", return_value=7) as persist_core,
-            patch("core.email_provider.resolve_email_source", return_value="generic_api"),
+            patch.object(protocol_registration, "wait_for_otp", return_value="123456") as wait_for_otp,
+            patch(
+                "core.codex_oauth.run_codex_oauth",
+                return_value={"status": "skipped", "ok": True, "message": "测试跳过"},
+            ) as run_codex_oauth,
             patch("core.db.update_account_codex_status"),
             patch("core.flow_trigger.trigger_flow", return_value={"status": "skipped", "ok": True}),
             patch("core.registration_service.report_job_progress"),
             patch.object(protocol_registration, "human_delay"),
-            patch.object(protocol_registration._protocol_cfg, "CHATGPT_ANON_BOOTSTRAP_ENABLED", False, create=True),
-            patch.object(protocol_registration._protocol_cfg, "CHATGPT_AUTH_BOOTSTRAP_ENABLED", False, create=True),
+            patch.object(protocol_registration._email_cfg, "USE_EMAIL_SERVICE", True),
+            patch.multiple(
+                protocol_registration._protocol_cfg,
+                CHATGPT_ANON_BOOTSTRAP_ENABLED=False,
+                CHATGPT_AUTH_BOOTSTRAP_ENABLED=False,
+                create=True,
+            ),
         ):
             result = protocol_registration.run_protocol_registration(
                 "new@example.com",
                 "New User",
                 "2000-01-01",
-                otp_code="123456",
+                email_source="icloud_hide",
                 registration_options={
                     "password_enabled": False,
                     "twofa_enabled": False,
-                    "codex_enabled": False,
+                    "codex_enabled": True,
                     "plan_check_enabled": False,
                 },
             )
+            oauth_otp_provider = run_codex_oauth.call_args.kwargs["otp_provider"]
+            oauth_otp_provider("new@example.com", after_ts=123.0)
 
         self.assertTrue(persist_core.called, result)
         self.assertTrue(result["success"], result)
         self.assertEqual("new_candidate", result["remote_identity"])
         create_account.assert_called_once()
+        self.assertEqual(wait_for_otp.call_args.kwargs["email_source"], "icloud_hide")
+        self.assertEqual(persist_core.call_args.kwargs["email_source"], "icloud_hide")
+        self.assertEqual(wait_for_otp.call_count, 2)
         finalize.assert_called_once_with(
             session,
             "https://auth.openai.com/authorize/continue?state=opaque",
             "new@example.com",
         )
+
+    def test_protocol_marks_confirmed_unusable_account_failed_without_disabling(self):
+        session = MagicMock()
+        session.proxy = ""
+
+        with (
+            patch.object(protocol_registration, "BrowserSession", return_value=session),
+            patch.object(
+                protocol_registration,
+                "network_preflight",
+                side_effect=AccountUnusableError(
+                    "账号已废弃（account_deleted）",
+                    error_code="account_deleted",
+                ),
+            ),
+            patch("core.email_provider.release_email", return_value="icloud_hide") as release_email,
+            patch("core.email_provider.retain_email") as retain_email,
+            patch("core.registration_service.report_job_progress"),
+        ):
+            result = protocol_registration.run_protocol_registration(
+                "dead@example.com",
+                "Dead User",
+                "2000-01-01",
+                registration_options={"codex_enabled": False, "plan_check_enabled": False},
+                email_source="icloud_hide",
+            )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(release_email.call_args.kwargs["status"], "failed")
+        self.assertNotEqual(release_email.call_args.kwargs["status"], "disabled")
+        self.assertEqual(release_email.call_args.kwargs["source"], "icloud_hide")
+        retain_email.assert_not_called()
 
 
 class RegistrationServiceRetryBoundaryTests(unittest.TestCase):
