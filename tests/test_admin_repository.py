@@ -41,6 +41,7 @@ class AdminRepositoryTests(PostgresTestCase):
                 "email_source": "icloud_hide" if index % 2 else "outlook",
                 "current_plan_type": "plus" if index % 3 == 0 else "free",
                 "plan_check_status": "success",
+                "plus_promo_kind": "free_trial" if index % 4 == 0 else "none",
                 "plus_trial_eligible": index % 4 == 0,
                 "codex_status": "success" if index % 2 else "failed",
                 "access_token": f"token-{index}" if index % 2 else "",
@@ -235,6 +236,8 @@ class AdminRepositoryTests(PostgresTestCase):
     def test_dashboard_uses_aggregates(self):
         result = repo.dashboard_aggregates()
         self.assertEqual(result["accounts"]["total"], 30)
+        self.assertEqual(result["accounts"]["plans"]["free_trial_eligible"], 5)
+        self.assertEqual(result["accounts"]["plans"]["free"], 15)
         self.assertEqual(result["jobs"]["total"], 45)
         self.assertEqual(result["codex"]["total"], 1)
 

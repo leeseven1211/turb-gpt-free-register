@@ -5,6 +5,7 @@ from __future__ import annotations
 from flask import jsonify, request
 
 from core import db
+from core.plus_promotion import promotion_kind_from_record
 from core.task_errors import classify_task_error
 
 def _feature_unavailable(name: str):
@@ -62,8 +63,9 @@ def _matches_account_columns(row: dict, filters: dict[str, str]) -> bool:
         return False
     if not _contains_value(row, ("note",), filters.get("note")):
         return False
-    trial = filters.get("trial")
-    if trial and _account_trial_value(row) != trial:
+    promotion = filters.get("promotion") or filters.get("trial")
+    promotion = {"eligible": "free_trial", "ineligible": "none"}.get(promotion, promotion)
+    if promotion and _account_promotion_value(row) != promotion:
         return False
     token = filters.get("token")
     if token == "has" and not str(row.get("access_token") or "").strip():
@@ -133,8 +135,8 @@ def _account_risk_value(row: dict) -> str:
     return "pending"
 
 
-def _account_trial_value(row: dict) -> str:
-    """Return the normalized Plus trial state used by the account list filter."""
+def _account_promotion_value(row: dict) -> str:
+    """返回账号列表筛选使用的标准 Plus 优惠状态。"""
     plan = str(row.get("current_plan_type") or row.get("plan_type") or "").strip().lower()
     if plan and plan != "free":
         return "not_applicable"
@@ -143,12 +145,10 @@ def _account_trial_value(row: dict) -> str:
 
     status = str(row.get("plan_check_status") or "").lower()
     if status == "failed":
-        return "eligible" if row.get("plan_last_success_at") and bool(row.get("plus_trial_eligible")) else (
-            "ineligible" if row.get("plan_last_success_at") else "failed"
-        )
+        return promotion_kind_from_record(row) if row.get("plan_last_success_at") else "failed"
     if status != "success" and row.get("plan_check_ok") is not True:
         return "pending"
-    return "eligible" if bool(row.get("plus_trial_eligible")) else "ineligible"
+    return promotion_kind_from_record(row)
 
 
 def _compact_account_for_list(row: dict) -> dict:
@@ -189,6 +189,13 @@ def _compact_account_for_list(row: dict) -> dict:
         "plan_last_success_at", "plan_expires_at", "plan_renews_at", "renews_at",
         "billing_period", "billing_currency", "discount_amount", "discount_type",
         "discount_expires_at", "discount_promo_campaign_id",
+        "plus_promo_eligible", "plus_promo_kind", "plus_discount_eligible",
+        "plus_promo_campaign_id", "plus_promo_title", "plus_promo_summary",
+        "plus_promo_discount_percentage", "plus_promo_duration_num_periods",
+        "plus_promo_duration_period", "plus_promo_promotion_type",
+        "plus_promo_promotion_type_label", "plus_trial_campaign_id", "plus_trial_title",
+        "plus_trial_discount_percentage", "plus_trial_duration_num_periods",
+        "plus_trial_duration_period", "plus_trial_promotion_type_label",
         # 额度窗口快照（来自 ChatGPT /wham/usage，不返回原始响应）。
         "quota_status", "quota_checked_at", "quota_http_status", "quota_error",
         "quota_type", "quota_windows", "quota_last_success_at",
@@ -211,6 +218,11 @@ def _compact_account_for_list(row: dict) -> dict:
         value = row.get(key)
         if value is not None and value != "":
             out[key] = value
+    promo_kind = promotion_kind_from_record(row)
+    out["plus_promo_kind"] = promo_kind
+    out["plus_promo_eligible"] = promo_kind in {"free_trial", "discount", "other_promo"}
+    out["plus_trial_eligible"] = promo_kind == "free_trial"
+    out["plus_discount_eligible"] = promo_kind == "discount"
     if out["has_access_token"] and not out.get("token_expires_at"):
         from core.chatgpt_plan import token_claims
         claims = token_claims(str(row.get("access_token") or ""))

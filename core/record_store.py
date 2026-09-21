@@ -65,6 +65,40 @@ def _is_deactivated(payload: dict) -> bool:
     )
 
 
+_ACCOUNT_PROMOTION_KIND_SQL = """CASE
+    WHEN LOWER(COALESCE(plus_promo_kind, '')) IN
+         ('free_trial', 'discount', 'other_promo', 'none', 'unknown')
+      THEN LOWER(plus_promo_kind)
+    WHEN plus_discount_eligible IS TRUE THEN 'discount'
+    WHEN plus_promo_eligible IS TRUE OR plus_trial_eligible IS TRUE THEN 'unknown'
+    ELSE 'none'
+END"""
+
+_ACCOUNT_PROMOTION_FILTER_SQL = f"""CASE
+    WHEN COALESCE(current_plan_type, plan_type, '') <> ''
+         AND LOWER(COALESCE(current_plan_type, plan_type, '')) <> 'free'
+      THEN 'not_applicable'
+    WHEN COALESCE(current_plan_type, plan_type, '') = ''
+         OR COALESCE(plan_check_status, '') IN ('queued', 'running')
+      THEN 'pending'
+    WHEN COALESCE(plan_check_status, '') = 'failed'
+      THEN CASE
+        WHEN NULLIF(plan_last_success_at, '') IS NULL THEN 'failed'
+        WHEN ({_ACCOUNT_PROMOTION_KIND_SQL}) = 'discount'
+             AND plus_promo_discount_percentage = 50 THEN 'half_price'
+        WHEN ({_ACCOUNT_PROMOTION_KIND_SQL}) = 'discount' THEN 'other_discount'
+        ELSE ({_ACCOUNT_PROMOTION_KIND_SQL})
+      END
+    WHEN COALESCE(plan_check_status, '') <> 'success'
+         AND plan_check_ok IS NOT TRUE
+      THEN 'pending'
+    WHEN ({_ACCOUNT_PROMOTION_KIND_SQL}) = 'discount'
+         AND plus_promo_discount_percentage = 50 THEN 'half_price'
+    WHEN ({_ACCOUNT_PROMOTION_KIND_SQL}) = 'discount' THEN 'other_discount'
+    ELSE ({_ACCOUNT_PROMOTION_KIND_SQL})
+END"""
+
+
 ACCOUNTS = TableSpec(
     name="registered_accounts",
     promoted={
@@ -76,6 +110,18 @@ ACCOUNTS = TableSpec(
         "plan_type": "TEXT",
         "current_plan_type": "TEXT",
         "plus_trial_eligible": "BOOLEAN",
+        # Plus 优惠参与列表筛选和总览聚合，不能继续在热查询里逐行解析 JSONB。
+        "plus_promo_eligible": "BOOLEAN",
+        "plus_promo_kind": "TEXT",
+        "plus_discount_eligible": "BOOLEAN",
+        "plus_promo_campaign_id": "TEXT",
+        "plus_promo_title": "TEXT",
+        "plus_promo_summary": "TEXT",
+        "plus_promo_discount_percentage": "DOUBLE PRECISION",
+        "plus_promo_duration_num_periods": "INTEGER",
+        "plus_promo_duration_period": "TEXT",
+        "plus_promo_promotion_type": "TEXT",
+        "plus_promo_promotion_type_label": "TEXT",
         "codex_status": "TEXT",
         # Codex 凭证资产、当前执行和最近结果是三条正交状态；codex_status 仅保留为兼容投影。
         "codex_credential_state": "TEXT",
@@ -83,6 +129,8 @@ ACCOUNTS = TableSpec(
         "codex_last_run_status": "TEXT",
         "codex_active_run_id": "BIGINT",
         "plan_check_status": "TEXT",
+        "plan_check_ok": "BOOLEAN",
+        "plan_last_success_at": "TEXT",
         "live_check_status": "TEXT",
         "extract_link_status": "TEXT",
         "deactivation_mail_scan_status": "TEXT",
@@ -113,6 +161,9 @@ ACCOUNTS = TableSpec(
         "account_deactivation_detected": """BOOLEAN GENERATED ALWAYS AS (
             LOWER(COALESCE(data->>'deactivation_mail_detected', 'false')) IN ('true', '1', 'yes')
         ) STORED""",
+        "account_promotion_value": f"""TEXT GENERATED ALWAYS AS (
+            {_ACCOUNT_PROMOTION_FILTER_SQL}
+        ) STORED""",
     },
     unique=("email",),
     indexes=(
@@ -127,6 +178,8 @@ ACCOUNTS = TableSpec(
         ("account_has_password",),
         ("account_totp_enabled",),
         ("account_deactivation_detected",),
+        ("archived", "plus_promo_kind"),
+        ("archived", "account_promotion_value", "id"),
     ),
     derived={
         "deactivated": (
@@ -357,6 +410,156 @@ def _qualified(spec: TableSpec) -> str:
     return postgres_store.qualified(spec.name)
 
 
+def _backfill_account_promotion_columns(cur) -> int:
+    """把历史套餐 JSONB 一次性归一化到可索引列；不会删除兼容字段。"""
+    table = _qualified(ACCOUNTS)
+    percentage = """COALESCE(
+        a.data->>'plus_promo_discount_percentage',
+        a.plus_promo_discount_percentage::TEXT,
+        a.data->>'plus_trial_discount_percentage',
+        ''
+    )"""
+    campaign_id = """COALESCE(
+        a.data->>'plus_promo_campaign_id',
+        a.plus_promo_campaign_id,
+        a.data->>'plus_trial_campaign_id',
+        ''
+    )"""
+    title = """COALESCE(
+        a.data->>'plus_promo_title',
+        a.plus_promo_title,
+        a.data->>'plus_trial_title',
+        ''
+    )"""
+    promotion_type = """COALESCE(
+        a.data->>'plus_promo_promotion_type',
+        a.plus_promo_promotion_type,
+        ''
+    )"""
+    promotion_type_label = """COALESCE(
+        a.data->>'plus_promo_promotion_type_label',
+        a.plus_promo_promotion_type_label,
+        a.data->>'plus_trial_promotion_type_label',
+        ''
+    )"""
+    searchable = (
+        "LOWER(CONCAT_WS(' ', "
+        f"{campaign_id}, {title}, {promotion_type}, {promotion_type_label}))"
+    )
+    kind = f"""CASE
+        WHEN LOWER(COALESCE(a.data->>'plus_promo_kind', '')) IN
+             ('free_trial', 'discount', 'other_promo', 'none', 'unknown')
+          THEN LOWER(a.data->>'plus_promo_kind')
+        WHEN ({percentage}) ~ '^[0-9]+([.][0-9]+)?$'
+             AND ({percentage})::NUMERIC = 100
+          THEN 'free_trial'
+        WHEN ({percentage}) ~ '^[0-9]+([.][0-9]+)?$'
+             AND ({percentage})::NUMERIC > 0
+             AND ({percentage})::NUMERIC < 100
+          THEN 'discount'
+        WHEN POSITION('pct-off' IN ({searchable})) > 0
+             OR POSITION('discount' IN ({searchable})) > 0
+             OR POSITION(' off' IN ({searchable})) > 0
+          THEN 'discount'
+        WHEN POSITION('free trial' IN ({searchable})) > 0
+             OR POSITION('-free' IN LOWER({campaign_id})) > 0
+             OR POSITION('plus-trial' IN LOWER({campaign_id})) > 0
+          THEN 'free_trial'
+        WHEN NULLIF(BTRIM({campaign_id}), '') IS NOT NULL
+          THEN 'other_promo'
+        WHEN a.plus_discount_eligible IS TRUE
+             OR LOWER(COALESCE(a.data->>'plus_discount_eligible', 'false')) IN ('true', '1', 'yes')
+          THEN 'discount'
+        WHEN a.plus_promo_eligible IS TRUE
+             OR LOWER(COALESCE(a.data->>'plus_promo_eligible', 'false')) IN ('true', '1', 'yes')
+             OR a.plus_trial_eligible IS TRUE
+          THEN 'unknown'
+        ELSE 'none'
+    END"""
+    cur.execute(
+        f"""
+        WITH classified AS MATERIALIZED (
+            SELECT
+                a.id,
+                ({kind}) AS promo_kind,
+                CASE WHEN ({percentage}) ~ '^[0-9]+([.][0-9]+)?$'
+                     THEN ({percentage})::DOUBLE PRECISION END AS discount_percentage,
+                NULLIF(BTRIM({campaign_id}), '') AS campaign_id,
+                NULLIF(BTRIM({title}), '') AS title,
+                NULLIF(BTRIM(COALESCE(
+                    a.data->>'plus_promo_summary',
+                    a.plus_promo_summary,
+                    a.data->>'plus_trial_summary',
+                    ''
+                )), '') AS summary,
+                CASE WHEN COALESCE(
+                    a.data->>'plus_promo_duration_num_periods',
+                    a.plus_promo_duration_num_periods::TEXT,
+                    a.data->>'plus_trial_duration_num_periods',
+                    ''
+                ) ~ '^[0-9]+$' THEN COALESCE(
+                    a.data->>'plus_promo_duration_num_periods',
+                    a.plus_promo_duration_num_periods::TEXT,
+                    a.data->>'plus_trial_duration_num_periods'
+                )::INTEGER END AS duration_num_periods,
+                NULLIF(BTRIM(COALESCE(
+                    a.data->>'plus_promo_duration_period',
+                    a.plus_promo_duration_period,
+                    a.data->>'plus_trial_duration_period',
+                    ''
+                )), '') AS duration_period,
+                NULLIF(BTRIM({promotion_type}), '') AS promotion_type,
+                NULLIF(BTRIM({promotion_type_label}), '') AS promotion_type_label,
+                CASE
+                    WHEN LOWER(COALESCE(a.data->>'plan_check_ok', '')) IN ('true', '1', 'yes') THEN TRUE
+                    WHEN LOWER(COALESCE(a.data->>'plan_check_ok', '')) IN ('false', '0', 'no') THEN FALSE
+                    ELSE NULL
+                END AS plan_check_ok,
+                NULLIF(BTRIM(COALESCE(a.data->>'plan_last_success_at', '')), '') AS plan_last_success_at
+              FROM {table} a
+             WHERE a.plus_promo_kind IS NULL
+                OR a.data ?| ARRAY[
+                    'plus_promo_eligible', 'plus_promo_kind', 'plus_discount_eligible',
+                    'plus_promo_campaign_id', 'plus_promo_title', 'plus_promo_summary',
+                    'plus_promo_discount_percentage', 'plus_promo_duration_num_periods',
+                    'plus_promo_duration_period', 'plus_promo_promotion_type',
+                    'plus_promo_promotion_type_label', 'plan_check_ok', 'plan_last_success_at'
+                ]
+        )
+        UPDATE {table} a
+           SET plus_promo_kind = c.promo_kind,
+               plus_promo_eligible = c.promo_kind IN ('free_trial', 'discount', 'other_promo'),
+               plus_discount_eligible = c.promo_kind = 'discount',
+               plus_promo_campaign_id = c.campaign_id,
+               plus_promo_title = c.title,
+               plus_promo_summary = c.summary,
+               plus_promo_discount_percentage = c.discount_percentage,
+               plus_promo_duration_num_periods = c.duration_num_periods,
+               plus_promo_duration_period = c.duration_period,
+               plus_promo_promotion_type = c.promotion_type,
+               plus_promo_promotion_type_label = c.promotion_type_label,
+               plan_check_ok = CASE
+                   WHEN a.data ? 'plan_check_ok' THEN c.plan_check_ok
+                   ELSE COALESCE(a.plan_check_ok, c.plan_check_ok)
+               END,
+               plan_last_success_at = CASE
+                   WHEN a.data ? 'plan_last_success_at' THEN c.plan_last_success_at
+                   ELSE COALESCE(a.plan_last_success_at, c.plan_last_success_at)
+               END,
+               data = a.data - ARRAY[
+                   'plus_promo_eligible', 'plus_promo_kind', 'plus_discount_eligible',
+                   'plus_promo_campaign_id', 'plus_promo_title', 'plus_promo_summary',
+                   'plus_promo_discount_percentage', 'plus_promo_duration_num_periods',
+                   'plus_promo_duration_period', 'plus_promo_promotion_type',
+                   'plus_promo_promotion_type_label', 'plan_check_ok', 'plan_last_success_at'
+               ]::TEXT[]
+          FROM classified c
+         WHERE a.id = c.id
+        """
+    )
+    return max(0, int(cur.rowcount or 0))
+
+
 def init() -> None:
     """幂等建表。schema 变了会重新执行一次。"""
     global _READY_KEY
@@ -397,6 +600,8 @@ def init() -> None:
                             f"ALTER TABLE {_qualified(spec)} ADD COLUMN IF NOT EXISTS "
                             f"{postgres_store.quote_identifier(col)} {column_sql}"
                         )
+                    if spec is ACCOUNTS:
+                        _backfill_account_promotion_columns(cur)
                     for col in spec.unique:
                         idx = postgres_store.quote_identifier(f"uq_{spec.name}_{col}")
                         cur.execute(

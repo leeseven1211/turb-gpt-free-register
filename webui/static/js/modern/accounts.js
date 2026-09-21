@@ -37,7 +37,10 @@ function accountTaskResultText(task) {
   if (task.task_type === 'registration' || task.task_type === 'registration_resume') {
     return OPERATION_TARGET_LABELS[task.target_status] || task.target_status || '注册执行已结束';
   }
-  if (task.task_type === 'plan_check') return result.current_plan_type ? `套餐 ${result.current_plan_type}${result.plus_trial_eligible ? ' · 可 Plus 试用' : ''}` : '查询完成';
+  if (task.task_type === 'plan_check') {
+    const plan = String(result.current_plan_type || '');
+    return plan ? (plan.toLowerCase() === 'free' ? `套餐 ${plan} · Plus ${_plusPromotionLabel(result)}` : `套餐 ${plan}`) : '查询完成';
+  }
   if (task.task_type === 'deactivation_mail') {
     if (!Object.prototype.hasOwnProperty.call(result, 'detected')) return '-';
     return result.detected ? '发现封号邮件' : '未发现封号邮件';
@@ -497,6 +500,21 @@ async function loadRuntimeUiSettings() {
     ACCOUNT_BATCH_WORKERS = Math.max(1, Math.min(16, Number(settings.account_batch_workers) || 3));
   } catch(e) {}
 }
+function accountListQueryParams() {
+  const archived = SHOW_ARCHIVED_ACCOUNTS ? 'only' : '0';
+  const plan = document.getElementById('accountPlanFilterV2')?.value || (SHOW_PLUS_ACCOUNTS_ONLY ? 'plus' : '');
+  const email = getAccountsQuery();
+  const dateFrom = document.getElementById('dateFromAccountsV2')?.value || '';
+  const dateTo = document.getElementById('dateToAccountsV2')?.value || '';
+  const p = PAGERS.accounts;
+  const params = new URLSearchParams({paged:'1', page:String(p.page), page_size:String(p.size), archived, plan, email, date_from:dateFrom, date_to:dateTo});
+  const accountFilters = {
+    id: 'accountIdFilterV2', source: 'accountSourceFilterV2', token: 'accountTokenFilterV2',
+    password: 'accountPasswordFilterV2', promotion: 'accountTrialFilterV2', totp: 'accountTotpFilterV2', risk: 'accountRiskFilterV2', codex: 'accountCodexFilterV2', account_status: 'accountStatusFilterV2',
+  };
+  Object.entries(accountFilters).forEach(([key, id]) => params.set(key, document.getElementById(id)?.value || ''));
+  return params;
+}
 async function loadAccounts() {
   if (accountsLoading) {
     accountsReloadQueued = true;
@@ -506,18 +524,8 @@ async function loadAccounts() {
   accountsReloadQueued = false;
   setListBusy('accountsPanelV2', true);
   try {
-    const archived = SHOW_ARCHIVED_ACCOUNTS ? 'only' : '0';
-    const plan = document.getElementById('accountPlanFilterV2')?.value || (SHOW_PLUS_ACCOUNTS_ONLY ? 'plus' : '');
-    const q = getAccountsQuery();
-    const dateFrom = document.getElementById('dateFromAccountsV2')?.value || '';
-    const dateTo = document.getElementById('dateToAccountsV2')?.value || '';
     const p = PAGERS.accounts;
-    const params = new URLSearchParams({paged:'1', page:String(p.page), page_size:String(p.size), archived, plan, email:q, date_from:dateFrom, date_to:dateTo});
-    const accountFilters = {
-      id: 'accountIdFilterV2', source: 'accountSourceFilterV2', token: 'accountTokenFilterV2',
-      password: 'accountPasswordFilterV2', trial: 'accountTrialFilterV2', totp: 'accountTotpFilterV2', risk: 'accountRiskFilterV2', codex: 'accountCodexFilterV2', account_status: 'accountStatusFilterV2',
-    };
-    Object.entries(accountFilters).forEach(([key, id]) => params.set(key, document.getElementById(id)?.value || ''));
+    const params = accountListQueryParams();
     const res = await api(`/api/accounts?${params.toString()}`);
     const facets = res.facets || {};
     syncFacetSelect('accountSourceFilterV2', facets.source, {group:'source'});
@@ -527,7 +535,7 @@ async function loadAccounts() {
     });
     syncFacetSelect('accountPasswordFilterV2', facets.password, {group:'password'});
     syncFacetSelect('accountPlanFilterV2', facets.plan, {group:'plan'});
-    syncFacetSelect('accountTrialFilterV2', facets.trial, {group:'trial'});
+    syncFacetSelect('accountTrialFilterV2', facets.promotion, {group:'promotion'});
     syncFacetSelect('accountTotpFilterV2', facets.totp, {group:'totp'});
     syncFacetSelect('accountRiskFilterV2', facets.risk, {group:'risk'});
     syncFacetSelect('accountCodexFilterV2', facets.codex, {group:'codex'});
@@ -559,11 +567,7 @@ async function pollAccountPlanStatuses() {
   if (planStatusLoading || accountsLoading) return;
   planStatusLoading = true;
   try {
-    const archived = SHOW_ARCHIVED_ACCOUNTS ? 'only' : '0';
-    const plan = SHOW_PLUS_ACCOUNTS_ONLY ? 'plus' : '';
-    const q = getAccountsQuery();
-    const p = PAGERS.accounts;
-    const snapshot = await api(`/api/accounts/plan-check-status?page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&archived=${encodeURIComponent(archived)}&plan=${encodeURIComponent(plan)}&q=${encodeURIComponent(q)}`);
+    const snapshot = await api(`/api/accounts/plan-check-status?${accountListQueryParams().toString()}`);
     const items = snapshot.items || [];
     const accountById = new Map(ACCOUNTS.map(r => [Number(r.id), r]));
     const hasUnknown = items.some(item => !accountById.has(Number(item.id)));
@@ -820,7 +824,60 @@ function _quotaCell(r) {
   if (checked) details.push(`查询于 ${checked}`);
   return `<div class="quota-cell" data-accounts-tooltip="${esc(details.join('；'))}" tabindex="0">${windows.map(w => `<span class="quota-cell-line">${esc(_quotaWindowLabel(w))}</span>`).join(' ')}</div>`;
 }
-function _trialCell(r) {
+function _plusPromotionKind(r) {
+  const explicit = String(r.plus_promo_kind || '').trim().toLowerCase();
+  if (['free_trial', 'discount', 'other_promo', 'none', 'unknown'].includes(explicit)) return explicit;
+  const percentageRaw = r.plus_promo_discount_percentage ?? r.plus_trial_discount_percentage;
+  const percentage = percentageRaw === null || percentageRaw === undefined || percentageRaw === '' ? NaN : Number(percentageRaw);
+  const campaignId = String(r.plus_promo_campaign_id || r.plus_trial_campaign_id || '').trim().toLowerCase();
+  const searchable = [
+    campaignId,
+    r.plus_promo_title || r.plus_trial_title,
+    r.plus_promo_promotion_type,
+    r.plus_promo_promotion_type_label || r.plus_trial_promotion_type_label,
+  ].join(' ').toLowerCase();
+  if (percentage === 100) return 'free_trial';
+  if (Number.isFinite(percentage) && percentage > 0 && percentage < 100) return 'discount';
+  if (searchable.includes('pct-off') || searchable.includes('discount') || searchable.includes('% off')) return 'discount';
+  if (searchable.includes('free trial') || campaignId.includes('-free') || campaignId.includes('trial')) return 'free_trial';
+  if (searchable.trim()) return 'other_promo';
+  if (r.plus_discount_eligible === true) return 'discount';
+  if (r.plus_promo_eligible === true || r.plus_trial_eligible === true) return 'unknown';
+  return 'none';
+}
+function _plusPromotionDuration(r) {
+  const periods = r.plus_promo_duration_num_periods ?? r.plus_trial_duration_num_periods;
+  if (periods === null || periods === undefined || periods === '') return '';
+  const period = String(r.plus_promo_duration_period || r.plus_trial_duration_period || '').toLowerCase();
+  const unit = period === 'month' ? '个月' : (period === 'year' ? '年' : period);
+  return unit ? ` ${periods} ${unit}` : '';
+}
+function _plusPromotionLabel(r) {
+  const kind = _plusPromotionKind(r);
+  const duration = _plusPromotionDuration(r);
+  if (kind === 'free_trial') return `免费${duration}`.trim();
+  if (kind === 'discount') {
+    const raw = r.plus_promo_discount_percentage ?? r.plus_trial_discount_percentage;
+    const percentage = raw === null || raw === undefined || raw === '' ? NaN : Number(raw);
+    const discount = percentage === 50 ? '五折' : (Number.isFinite(percentage) ? `减 ${percentage}%` : '折扣');
+    return `${discount}${duration}`.trim();
+  }
+  if (kind === 'other_promo') return '其他优惠';
+  if (kind === 'unknown') return '历史优惠待复查';
+  return '无优惠';
+}
+function _plusPromotionDetail(r) {
+  const details = [_plusPromotionLabel(r)];
+  const title = r.plus_promo_title || r.plus_trial_title;
+  const campaignId = r.plus_promo_campaign_id || r.plus_trial_campaign_id;
+  if (title && title !== details[0]) details.push(String(title));
+  if (campaignId) details.push(`活动 ${campaignId}`);
+  return details.join('；');
+}
+function _isFreeTrialPromotion(r) {
+  return _plusPromotionKind(r) === 'free_trial';
+}
+function _promotionCell(r) {
   const plan = (r.current_plan_type || r.plan_type || '').toString().toLowerCase();
   const status = (r.plan_check_status || '').toString().toLowerCase();
   const err = r.plan_check_error || '';
@@ -832,17 +889,19 @@ function _trialCell(r) {
   }
   if (status === 'failed') {
     if (r.plan_last_success_at) {
-      const label = r.plus_trial_eligible ? '可用' : '不可用';
-      return `<span class="pill ${r.plus_trial_eligible ? 'status-success' : 'status-used'}" title="上次成功查询: ${esc(r.plan_last_success_at)}；本次查询失败: ${esc(err || '未知错误')}">${label}</span>`;
+      const kind = _plusPromotionKind(r);
+      const cls = kind === 'free_trial' ? 'status-success' : (['discount', 'other_promo'].includes(kind) ? 'status-running' : 'status-used');
+      const detail = `${_plusPromotionDetail(r)}；上次成功查询: ${r.plan_last_success_at}；本次查询失败: ${err || '未知错误'}`;
+      return `<span class="pill ${cls}" data-accounts-tooltip="${esc(detail)}" tabindex="0">${esc(_plusPromotionLabel(r))}</span>`;
     }
-    return `<span class="pill status-failed" title="${esc(err || '套餐查询失败')}">查询失败</span>`;
+    return `<span class="pill status-failed" data-accounts-tooltip="${esc(err || '套餐查询失败')}" tabindex="0">查询失败</span>`;
   }
   if (status !== 'success' && r.plan_check_ok !== true) {
     return '<span class="pill status-running">待查询</span>';
   }
-  return r.plus_trial_eligible
-    ? '<span class="pill status-success">可用</span>'
-    : '<span class="pill status-used">不可用</span>';
+  const kind = _plusPromotionKind(r);
+  const cls = kind === 'free_trial' ? 'status-success' : (['discount', 'other_promo'].includes(kind) ? 'status-running' : 'status-used');
+  return `<span class="pill ${cls}" data-accounts-tooltip="${esc(_plusPromotionDetail(r))}" tabindex="0">${esc(_plusPromotionLabel(r))}</span>`;
 }
 function _planAction(r) {
   if (accountIsDeactivated(r)) return '';
@@ -852,7 +911,7 @@ function _planAction(r) {
     const label = automatic ? (queued ? '自动查询排队中…' : '自动查询中…') : (queued ? '查询排队中…' : '查询中…');
     return `<button data-plan-check="${esc(r.id)}" disabled title="套餐查询正在执行，完成后可再次查询">${label}</button>`;
   }
-  return `<button data-plan-check="${esc(r.id)}" title="查询当前套餐；free 账号会检查 Plus 试用资格">查套餐</button>`;
+  return `<button data-plan-check="${esc(r.id)}" title="查询当前套餐；free 账号会检查 Plus 免费试用或折扣优惠">查套餐</button>`;
 }
 function _fmtExtractExpire(v) {
   if (!v) return '';
@@ -887,10 +946,10 @@ function _extractLinkAction(r) {
   const s = r.extract_link_status || '';
   if (['queued','running'].includes(s)) return `<button disabled title="${esc(r.extract_link_message || '提链任务执行中')}">提链中…</button>`;
   const plan = (r.current_plan_type || r.plan_type || '').toString().toLowerCase();
-  const eligible = plan === 'free' && !!r.plus_trial_eligible;
+  const eligible = plan === 'free' && _isFreeTrialPromotion(r);
   if (!eligible) return '';
   const failedReason = s === 'failed' ? (r.extract_link_error || r.extract_link_message || '') : '';
-  return `<button class="good" data-extract-link="${esc(r.id)}" title="${esc(failedReason ? '重新提链；上次失败原因：' + failedReason : '为该 free(可Plus试用) 账号按配置创建提链任务')}">提链</button>`;
+  return `<button class="good" data-extract-link="${esc(r.id)}" title="${esc(failedReason ? '重新提链；上次失败原因：' + failedReason : '为已确认 Plus 免费试用资格的 free 账号创建提链任务')}">提链</button>`;
 }
 function _codexAction(r) {
   if (accountIsDeactivated(r)) return '';
@@ -1025,8 +1084,9 @@ function _accountDetailMarkup(r) {
   const liveState = r.live_check_status === 'live' ? '查活正常' : (r.live_check_status === 'failed' ? `查活失败${liveHttpLabel}` : (r.live_check_status === 'running' ? '查活中' : '未查活'));
   const liveTone = r.live_check_status === 'live' ? 'success' : (r.live_check_status === 'failed' ? 'danger' : (r.live_check_status === 'running' ? 'warning' : 'neutral'));
   const plan = (r.current_plan_type || r.plan_type || '未查询').toString();
-  const trial = plan.toLowerCase() === 'free' ? (r.plus_trial_eligible ? 'Plus 试用可用' : 'Plus 试用不可用') : '不适用';
-  const trialTone = trial === 'Plus 试用可用' ? 'success' : (trial === 'Plus 试用不可用' ? 'neutral' : 'neutral');
+  const promotionKind = plan.toLowerCase() === 'free' ? _plusPromotionKind(r) : 'not_applicable';
+  const promotion = promotionKind === 'not_applicable' ? '不适用' : _plusPromotionLabel(r);
+  const promotionTone = promotionKind === 'free_trial' ? 'success' : (['discount', 'other_promo'].includes(promotionKind) ? 'warning' : 'neutral');
   const codexRaw = (r.codex_status || r.codex_execution_status || '').toString().toLowerCase();
   const codexLabels = { success: '已通过', completed: '已通过', failed: '失败', deactivated: '已废号', running: '补跑中', queued: '排队中', cancelling: '停止中', retrying: '补跑中', stopped: '已停止', pending_confirmation: '待确认', skipped: '已跳过' };
   const codex = codexLabels[codexRaw] || '未授权';
@@ -1057,7 +1117,7 @@ function _accountDetailMarkup(r) {
     <div class="account-detail-section-title">套餐与授权</div>
     <div class="account-detail-grid">
       ${_accountDetailState('当前套餐', plan, plan.toLowerCase() === 'free' ? 'info' : 'success', r.plan_checked_at ? `检查于 ${_fmtPlanTime(r.plan_checked_at)}` : '')}
-      ${_accountDetailState('Plus 试用', trial, trialTone)}
+      ${_accountDetailState('Plus 优惠', promotion, promotionTone, promotionKind === 'not_applicable' ? '' : _plusPromotionDetail(r))}
       ${_accountDetailState('Codex', codex, codexTone)}
       ${_accountDetailState('注册时间', _fmtPlanTime(r.created_at, true) || '-', 'neutral')}
     </div>
@@ -1282,7 +1342,7 @@ function renderAccounts() {
       <td class="col-small">${_passwordCellV2(r)}</td>
       <td class="col-plan">${_planCell(r)}<div class="acc-v2-sub">${_extractLinkCell(r)}</div></td>
       <td class="col-quota">${_quotaCell(r)}</td>
-      <td class="col-trial">${_trialCell(r)}</td>
+      <td class="col-trial">${_promotionCell(r)}</td>
       <td class="col-small">${_totpCellV2(r)}</td>
       <td class="col-risk-mail">${_deactivationMailCell(r)}</td>
       <td class="col-status">${_codexCellV2(r)}</td>
@@ -2004,8 +2064,8 @@ async function extractOneLink(id, btn) {
   const acc = ACCOUNTS.find(a => Number(a.id) === Number(id));
   if (!acc) { showToast('账号不存在'); return; }
   const plan = (acc.current_plan_type || acc.plan_type || '').toString().toLowerCase();
-  if (plan !== 'free' || !acc.plus_trial_eligible) {
-    showToast('仅支持 free(可Plus试用) 账号提链');
+  if (plan !== 'free' || !_isFreeTrialPromotion(acc)) {
+    showToast('仅支持已确认 Plus 免费试用资格的 free 账号提链；折扣优惠不支持');
     return;
   }
   if (!confirm(`确定为该账号提链吗？\n\n${acc.email || ('#' + id)}\n\n提链类型按配置使用，成功会消耗 1 次 CDK。`)) return;
@@ -2035,9 +2095,9 @@ async function extractSelectedLinks() {
   const ids = Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
   const selected = ids.map(id => ACCOUNTS.find(a => Number(a.id) === Number(id))).filter(Boolean);
-  const eligible = selected.filter(a => !accountIsDeactivated(a) && (a.current_plan_type || a.plan_type || '').toString().toLowerCase() === 'free' && !!a.plus_trial_eligible);
-  if (!eligible.length) { showToast('选中账号里没有 free(可Plus试用)'); return; }
-  if (!confirm(`确定批量提链 ${eligible.length} 个 free(可Plus试用) 账号吗？\n\n非可试用账号会自动跳过。成功会按账号消耗 CDK 次数。`)) return;
+  const eligible = selected.filter(a => !accountIsDeactivated(a) && (a.current_plan_type || a.plan_type || '').toString().toLowerCase() === 'free' && _isFreeTrialPromotion(a));
+  if (!eligible.length) { showToast('选中账号里没有已确认的 Plus 免费试用账号'); return; }
+  if (!confirm(`确定批量提链 ${eligible.length} 个 Plus 免费试用账号吗？\n\n折扣优惠和历史待复查账号会自动跳过。成功会按账号消耗 CDK 次数。`)) return;
   const btn = $('#btnExtractSelectedLinksV2');
   const old = btn.textContent;
   btn.disabled = true;

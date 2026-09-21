@@ -17,8 +17,9 @@ from urllib.parse import urlencode
 
 import pyotp
 
-from core.session import BrowserSession
 from core.humanize import delay as human_delay
+from core.plus_promotion import promotion_label
+from core.session import BrowserSession
 
 logger = logging.getLogger(__name__)
 
@@ -810,7 +811,7 @@ def save_account_data(
 
     # WebUI 注册线程会把这个阶段写入当前任务；CLI 或非任务调用中会自动忽略。
     from core.registration_service import report_job_progress
-    report_job_progress("plan_check", "running", "正在查询账号套餐与 Plus 试用资格")
+    report_job_progress("plan_check", "running", "正在查询账号套餐与 Plus 优惠资格")
 
     # 注册浏览器若已经收到完整 accounts/check 权益响应，直接复用它，
     # 避免再发一次相同的套餐请求。原始响应只保留在浏览器内存，
@@ -832,17 +833,17 @@ def save_account_data(
             "plan_check",
             "success",
             f"复用浏览器权益数据：{captured.get('current_plan_type') or 'unknown'}，"
-            f"Plus 试用{'可用' if captured.get('plus_trial_eligible') else '不可用'}",
+            f"Plus {promotion_label(captured)}",
         )
         logger.info(
-            "[Plan] 复用注册浏览器权益响应: id=%s, email=%s, plus_trial=%s",
+            "[Plan] 复用注册浏览器权益响应: id=%s, email=%s, plus_promo=%s",
             row_id,
             email,
-            bool(captured.get("plus_trial_eligible")),
+            captured.get("plus_promo_kind") or "none",
         )
         return row_id
 
-    # session 中的 account.planType 不能说明 Plus 试用资格。
+    # session 中的 account.planType 不能说明 Plus 优惠。
     # 有注册任务代理时必须同步查完再返回，让上层随后释放代理租约；没有可复用代理时
     # 保持原来的后台队列行为，按套餐查询网络配置选择线路。
     try:
@@ -864,15 +865,14 @@ def save_account_data(
             result = check_registration_account_plan(**query_kwargs)
             if result.get("ok"):
                 plan_type = str(result.get("current_plan_type") or "unknown")
-                plus_trial = "可用" if result.get("plus_trial_eligible") else "不可用"
                 report_job_progress(
                     "plan_check",
                     "success",
-                    f"套餐查询完成：{plan_type}，Plus 试用{plus_trial}",
+                    f"套餐查询完成：{plan_type}，Plus {promotion_label(result)}",
                 )
                 logger.info(
                     f"[Plan] 注册代理同步查询完成: id={row_id}, email={email}, "
-                    f"plus_trial={bool(result.get('plus_trial_eligible'))}"
+                    f"plus_promo={result.get('plus_promo_kind') or 'none'}"
                 )
             else:
                 report_job_progress(

@@ -348,8 +348,8 @@ class ExtractLinkTypesEndpointTests(PostgresTestCase):
 
     def test_bulk_extract_creates_batch_and_attaches_each_task(self):
         accounts = {
-            7: {"id": 7, "email": "masked-7@example.com", "current_plan_type": "free", "plus_trial_eligible": True, "access_token": "token-7"},
-            8: {"id": 8, "email": "masked-8@example.com", "current_plan_type": "free", "plus_trial_eligible": True, "access_token": "token-8"},
+            7: {"id": 7, "email": "masked-7@example.com", "current_plan_type": "free", "plus_promo_kind": "free_trial", "plus_trial_eligible": True, "access_token": "token-7"},
+            8: {"id": 8, "email": "masked-8@example.com", "current_plan_type": "free", "plus_promo_kind": "free_trial", "plus_trial_eligible": True, "access_token": "token-8"},
         }
         queued = iter([
             {"accepted": True, "busy": False, "task_id": 701, "status": "queued", "link_type": "pix"},
@@ -374,6 +374,32 @@ class ExtractLinkTypesEndpointTests(PostgresTestCase):
         self.assertEqual([701, 702], [item["task_id"] for item in payload["started"]])
         create_batch.assert_called_once_with(action_type="extract_link", trigger="manual_bulk", total_count=2)
         self.assertEqual(["batch-1", "batch-1"], [call.kwargs["batch_id"] for call in enqueue.call_args_list])
+
+    def test_half_price_promotion_is_rejected_before_cdk_enqueue(self):
+        account = {
+            "id": 7,
+            "email": "masked-7@example.com",
+            "current_plan_type": "free",
+            "plus_promo_kind": "discount",
+            "plus_promo_discount_percentage": 50,
+            "plus_trial_eligible": False,
+            "access_token": "token-7",
+        }
+        with (
+            patch("webui.routes.accounts._feature_unavailable", return_value=None),
+            patch.object(extract_link_service.db, "get_account", return_value=account),
+            patch.object(extract_link_service, "enqueue_account_extract") as enqueue,
+        ):
+            client = create_app(auth_code="test-auth").test_client()
+            response = client.post(
+                "/api/accounts/extract-link",
+                json={"account_id": 7},
+                headers={"X-Auth-Code": "test-auth"},
+            )
+
+        self.assertEqual(400, response.status_code)
+        self.assertIn("半价", response.get_json()["error"])
+        enqueue.assert_not_called()
 
 
 class ExtractLinkConfigUiTests(unittest.TestCase):

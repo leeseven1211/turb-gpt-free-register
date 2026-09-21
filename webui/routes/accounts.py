@@ -30,8 +30,9 @@ from core import (
     plan_check_service,
 )
 from core import registration_service as svc
-from core.task_errors import classify_task_error
 from core.live_check_router import LiveCheckDriverError
+from core.plus_promotion import is_free_trial_record
+from core.task_errors import classify_task_error
 from webui import config_editor
 from webui.blueprint import LegacyEndpointBlueprint
 from webui.runtime import WebUIContext
@@ -46,8 +47,7 @@ def create_accounts_blueprint(context: WebUIContext):
     _enqueue_account_completion = context.enqueue_account_completion
     _put_prepared_download = context.put_prepared_download
     def _is_extract_eligible(acc: dict) -> bool:
-        plan = str(acc.get("current_plan_type") or acc.get("plan_type") or "").lower()
-        return plan == "free" and bool(acc.get("plus_trial_eligible"))
+        return is_free_trial_record(acc)
     def _join_sub2_url(base: str, path: str) -> str:
         base = str(base or "").strip().rstrip("/")
         path = str(path or "").strip()
@@ -139,7 +139,7 @@ def create_accounts_blueprint(context: WebUIContext):
         q = str(request.args.get("q", default="") or "").strip()
         column_filters = {
             key: str(request.args.get(key, default="") or "").strip().lower()
-            for key in ("id", "email", "source", "token", "password", "trial", "totp", "risk", "codex", "account_status")
+            for key in ("id", "email", "source", "token", "password", "promotion", "trial", "totp", "risk", "codex", "account_status")
         }
         date_from = str(request.args.get("date_from", default="") or "").strip() or None
         date_to = str(request.args.get("date_to", default="") or "").strip() or None
@@ -171,15 +171,23 @@ def create_accounts_blueprint(context: WebUIContext):
         archived = str(request.args.get("archived", default="0") or "0").lower()
         plan_filter = str(request.args.get("plan", default="") or "").lower()
         q = str(request.args.get("q", default="") or "").strip()
+        column_filters = {
+            key: str(request.args.get(key, default="") or "").strip().lower()
+            for key in ("id", "email", "source", "token", "password", "promotion", "trial", "totp", "risk", "codex", "account_status")
+        }
+        date_from = str(request.args.get("date_from", default="") or "").strip()
+        date_to = str(request.args.get("date_to", default="") or "").strip()
         page_arg = request.args.get("page", default=None, type=int)
         page_size_arg = request.args.get("page_size", default=None, type=int)
         page = max(1, int(page_arg or 1))
         page_size = max(1, min(500, int(page_size_arg or limit or 50)))
         snapshot = admin_repository.list_account_statuses(
-            admin_repository.PageRequest(page=page, page_size=page_size),
+            admin_repository.PageRequest(page=page, page_size=page_size, filters=column_filters),
             archived=archived,
             plan=plan_filter,
             q=q,
+            date_from=date_from,
+            date_to=date_to,
         )
         snapshot.update({"offset": (page - 1) * page_size, "limit": page_size})
         snapshot["queue"] = plan_check_service.queue_settings()
@@ -998,7 +1006,7 @@ def create_accounts_blueprint(context: WebUIContext):
         if db.account_is_deactivated(acc):
             return jsonify({"ok": False, "deactivated": True, "error": "账号已废号，不能提链"}), 409
         if not _is_extract_eligible(acc):
-            return jsonify({"ok": False, "error": "仅支持 free(可Plus试用) 账号提链；请先查询套餐确认资格"}), 400
+            return jsonify({"ok": False, "error": "仅支持确认具有 Plus 免费试用资格的 free 账号提链；半价和历史未知优惠不支持"}), 400
         token = (acc.get("access_token") or "").strip()
         if not token:
             return jsonify({"ok": False, "error": "该账号没有 access_token"}), 400
@@ -1062,7 +1070,7 @@ def create_accounts_blueprint(context: WebUIContext):
                 skipped.append({"id": acc_id, "email": email, "reason": "账号已废号"})
                 continue
             if not _is_extract_eligible(acc):
-                skipped.append({"id": acc_id, "email": email, "reason": "不是 free(可Plus试用)"})
+                skipped.append({"id": acc_id, "email": email, "reason": "不是已确认的 Plus 免费试用账号"})
                 continue
             token = (acc.get("access_token") or "").strip()
             if not token:

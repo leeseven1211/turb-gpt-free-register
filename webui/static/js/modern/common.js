@@ -65,7 +65,11 @@ const LIST_FACET_LABELS = {
   password: {has:'已设置', none:'未设置'},
   totp: {enabled:'已启用', disabled:'未启用'},
   risk: {detected:'已收到', clear:'未发现', pending:'待处理'},
-  trial: {eligible:'可用', ineligible:'不可用', pending:'待查询', failed:'查询失败', not_applicable:'不适用'},
+  promotion: {
+    free_trial:'免费试用', half_price:'半价优惠', other_discount:'其他折扣', discount:'折扣优惠',
+    other_promo:'其他优惠', none:'无优惠', unknown:'历史优惠待复查',
+    pending:'待查询', failed:'查询失败', not_applicable:'不适用',
+  },
   codex: {success:'已通过', retrying:'进行中', failed:'失败', stopped:'已停止', deactivated:'已停用', skipped:'已跳过', missing:'缺失'},
   account_status: {active:'正常', deactivated:'已废号', unknown:'待确认'},
   task_type: {

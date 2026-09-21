@@ -231,10 +231,10 @@ def _query_account_plan(
         and recheck_delay > 0
         and bool(result.get("ok"))
         and str(result.get("current_plan_type") or "").lower() == "free"
-        and not bool(result.get("plus_trial_eligible"))
+        and not bool(result.get("plus_promo_eligible", result.get("plus_trial_eligible")))
     )
     if should_recheck:
-        logger.info("[Plan] 新账号暂未发现 Plus 试用资格，%.1fs 后复查一次: %s", recheck_delay, email)
+        logger.info("[Plan] 新账号暂未发现 Plus 优惠，%.1fs 后复查一次: %s", recheck_delay, email)
         time.sleep(recheck_delay)
         _wait_for_rate_slot(config_snapshot)
         recheck_kwargs = {
@@ -271,10 +271,10 @@ def _query_account_plan(
 def _log_plan_result(email: str, trigger: str, result: dict) -> None:
     if result.get("ok"):
         logger.info(
-            "[Plan] 后台查询成功: %s, plan=%s, plus_trial=%s, trigger=%s",
+            "[Plan] 后台查询成功: %s, plan=%s, plus_promo=%s, trigger=%s",
             email,
             result.get("current_plan_type") or "unknown",
-            bool(result.get("plus_trial_eligible")),
+            result.get("plus_promo_kind") or "none",
             trigger,
         )
     else:
@@ -355,7 +355,11 @@ def _run_plan_check(
             "plan_check", "success" if result.get("ok") else "failed",
             "套餐查询成功" if result.get("ok") else "套餐查询失败",
             level="INFO" if result.get("ok") else "ERROR",
-            detail={"http_status": result.get("http_status"), "current_plan_type": result.get("current_plan_type")},
+            detail={
+                "http_status": result.get("http_status"),
+                "current_plan_type": result.get("current_plan_type"),
+                "plus_promo_kind": result.get("plus_promo_kind"),
+            },
         )
         reporter.finish(
             status="success" if result.get("ok") else "failed",
@@ -366,6 +370,11 @@ def _run_plan_check(
                 "http_status": result.get("http_status"),
                 "current_plan_type": result.get("current_plan_type"),
                 "plus_trial_eligible": result.get("plus_trial_eligible"),
+                "plus_discount_eligible": result.get("plus_discount_eligible"),
+                "plus_promo_kind": result.get("plus_promo_kind"),
+                "plus_promo_discount_percentage": result.get("plus_promo_discount_percentage"),
+                "plus_promo_duration_num_periods": result.get("plus_promo_duration_num_periods"),
+                "plus_promo_duration_period": result.get("plus_promo_duration_period"),
                 "checked_at": result.get("checked_at"),
                 "token_expires_at": result.get("token_expires_at"),
             },
@@ -470,7 +479,11 @@ def check_registration_account_plan(
             "plan_check", "success" if result.get("ok") else "failed",
             "注册后套餐查询成功" if result.get("ok") else "注册后套餐查询失败",
             level="INFO" if result.get("ok") else "ERROR",
-            detail={"http_status": result.get("http_status"), "current_plan_type": result.get("current_plan_type")},
+            detail={
+                "http_status": result.get("http_status"),
+                "current_plan_type": result.get("current_plan_type"),
+                "plus_promo_kind": result.get("plus_promo_kind"),
+            },
         )
         reporter.finish(
             status="success" if result.get("ok") else "failed",
@@ -481,6 +494,11 @@ def check_registration_account_plan(
                 "http_status": result.get("http_status"),
                 "current_plan_type": result.get("current_plan_type"),
                 "plus_trial_eligible": result.get("plus_trial_eligible"),
+                "plus_discount_eligible": result.get("plus_discount_eligible"),
+                "plus_promo_kind": result.get("plus_promo_kind"),
+                "plus_promo_discount_percentage": result.get("plus_promo_discount_percentage"),
+                "plus_promo_duration_num_periods": result.get("plus_promo_duration_num_periods"),
+                "plus_promo_duration_period": result.get("plus_promo_duration_period"),
                 "checked_at": result.get("checked_at"),
                 "token_expires_at": result.get("token_expires_at"),
             },

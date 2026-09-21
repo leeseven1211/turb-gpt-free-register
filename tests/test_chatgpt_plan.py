@@ -6,6 +6,48 @@ from core import chatgpt_plan
 
 
 class ChatGPTPlanTests(unittest.TestCase):
+    @staticmethod
+    def _accounts_check_payload(plus_campaign=None):
+        item = {
+            "account": {"account_id": "account-1", "plan_type": "free"},
+            "entitlement": {"subscription_plan": "chatgptfreeplan"},
+        }
+        if plus_campaign is not None:
+            item["eligible_promo_campaigns"] = {"plus": plus_campaign}
+        return {"accounts": {"default": item}}
+
+    def test_parse_accounts_check_distinguishes_free_trial_discount_and_no_promo(self):
+        free_trial = chatgpt_plan.parse_accounts_check(self._accounts_check_payload({
+            "id": "plus-1-month-free",
+            "metadata": {
+                "title": "One month free",
+                "discount": {"percentage": 100},
+                "duration": {"num_periods": 1, "period": "month"},
+            },
+        }))
+        discount = chatgpt_plan.parse_accounts_check(self._accounts_check_payload({
+            # 即使活动名沿用 trial，只要折扣百分比明确就不能当成免费试用。
+            "id": "plus-trial-half-price",
+            "metadata": {
+                "title": "50% off for two months",
+                "discount": {"percentage": 50},
+                "duration": {"num_periods": 2, "period": "month"},
+            },
+        }))
+        no_promo = chatgpt_plan.parse_accounts_check(self._accounts_check_payload())
+
+        self.assertEqual(free_trial["plus_promo_kind"], "free_trial")
+        self.assertTrue(free_trial["plus_trial_eligible"])
+        self.assertFalse(free_trial["plus_discount_eligible"])
+        self.assertEqual(discount["plus_promo_kind"], "discount")
+        self.assertTrue(discount["plus_promo_eligible"])
+        self.assertFalse(discount["plus_trial_eligible"])
+        self.assertTrue(discount["plus_discount_eligible"])
+        self.assertEqual(discount["plus_promo_discount_percentage"], 50)
+        self.assertEqual(discount["plus_promo_duration_num_periods"], 2)
+        self.assertEqual(no_promo["plus_promo_kind"], "none")
+        self.assertFalse(no_promo["plus_promo_eligible"])
+
     def test_parse_quota_usage_classifies_windows_and_calculates_remaining(self):
         result = chatgpt_plan.parse_quota_usage({
             "rate_limit": {

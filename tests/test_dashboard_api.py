@@ -335,7 +335,7 @@ console.log('ok');
         self.assertIn('data-column-filter="accountPlanFilterV2"', html)
         self.assertIn("syncFacetSelect('accountTrialFilterV2'", html)
         self.assertIn('data-column-filter="accountTrialFilterV2"', html)
-        self.assertIn('>Plus 试用</th>', html)
+        self.assertIn('>Plus 优惠</th>', html)
         self.assertIn('data-account-more-id="${esc(r.id)}"', html)
         self.assertIn('function restoreAccountsV2MoreMenu(accountId)', html)
         self.assertNotIn('data-column-filter="accountNoteFilterV2"', html)
@@ -483,11 +483,11 @@ console.log('ok');
 
     def test_accounts_column_filters_are_combined(self):
         self.seed(record_store.ACCOUNTS, [
-            {"email": "target@example.com", "email_source": "outlook", "access_token": "token", "totp_secret": "JBSWY3DPEHPK3PXP", "codex_status": "success", "plan_type": "free", "current_plan_type": "free", "plan_check_status": "success", "plus_trial_eligible": True, "quota_status": "success", "quota_type": "月限额", "quota_windows": [{"kind": "monthly", "label": "月限额", "used_percent": 25, "remaining_percent": 75}], "extra_json": '{"account_password":"Account123!abcd"}'},
+            {"email": "target@example.com", "email_source": "outlook", "access_token": "token", "totp_secret": "JBSWY3DPEHPK3PXP", "codex_status": "success", "plan_type": "free", "current_plan_type": "free", "plan_check_status": "success", "plus_promo_kind": "free_trial", "plus_trial_eligible": True, "quota_status": "success", "quota_type": "月限额", "quota_windows": [{"kind": "monthly", "label": "月限额", "used_percent": 25, "remaining_percent": 75}], "extra_json": '{"account_password":"Account123!abcd"}'},
             {"email": "other@example.com", "email_source": "icloud_hide", "access_token": "", "totp_enabled": False, "codex_status": "failed", "plan_type": "plus", "current_plan_type": "plus"},
         ])
         response = self.client.get(
-            "/api/accounts?paged=1&page=1&page_size=20&email=target&source=outlook&token=has&password=has&trial=eligible&totp=enabled&codex=success",
+            "/api/accounts?paged=1&page=1&page_size=20&email=target&source=outlook&token=has&password=has&promotion=free_trial&totp=enabled&codex=success",
             headers=self.headers,
         )
         payload = response.get_json()
@@ -496,7 +496,7 @@ console.log('ok');
         self.assertEqual({item["value"] for item in payload["facets"]["source"]}, {"outlook", "icloud_hide"})
         self.assertEqual({item["value"] for item in payload["facets"]["codex"]}, {"success", "failed"})
         self.assertEqual({item["value"] for item in payload["facets"]["password"]}, {"has", "none"})
-        self.assertEqual({item["value"] for item in payload["facets"]["trial"]}, {"eligible", "not_applicable"})
+        self.assertEqual({item["value"] for item in payload["facets"]["promotion"]}, {"free_trial", "not_applicable"})
         self.assertTrue(payload["items"][0]["has_account_password"])
         self.assertTrue(payload["items"][0]["totp_enabled"])
         self.assertEqual(payload["items"][0]["quota_type"], "月限额")
@@ -509,21 +509,49 @@ console.log('ok');
         status_item = next(item for item in status_payload["items"] if item["email"] == "target@example.com")
         self.assertEqual(status_item["quota_type"], "月限额")
 
-    def test_accounts_trial_filter_is_applied(self):
+    def test_accounts_promotion_filter_distinguishes_trial_discount_and_history(self):
         self.seed(record_store.ACCOUNTS, [
-            {"email": "eligible@example.com", "plan_type": "free", "current_plan_type": "free", "plan_check_status": "success", "plus_trial_eligible": True},
+            {"email": "eligible@example.com", "plan_type": "free", "current_plan_type": "free", "plan_check_status": "success", "plus_promo_kind": "free_trial", "plus_trial_eligible": True},
+            {"email": "half-price@example.com", "plan_type": "free", "current_plan_type": "free", "plan_check_status": "success", "plus_promo_kind": "discount", "plus_promo_discount_percentage": 50, "plus_trial_eligible": False},
+            {"email": "discount@example.com", "plan_type": "free", "current_plan_type": "free", "plan_check_status": "success", "plus_promo_kind": "discount", "plus_promo_discount_percentage": 20, "plus_trial_eligible": False},
+            {"email": "history@example.com", "plan_type": "free", "current_plan_type": "free", "plan_check_status": "success", "plus_trial_eligible": True},
             {"email": "used@example.com", "plan_type": "free", "current_plan_type": "free", "plan_check_status": "success", "plus_trial_eligible": False},
             {"email": "plus@example.com", "plan_type": "plus", "current_plan_type": "plus"},
         ])
         response = self.client.get(
-            "/api/accounts?paged=1&page=1&page_size=20&trial=eligible",
+            "/api/accounts?paged=1&page=1&page_size=20&promotion=half_price",
             headers=self.headers,
         )
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertEqual(payload["total"], 1)
-        self.assertEqual(payload["items"][0]["email"], "eligible@example.com")
-        self.assertEqual({item["value"] for item in payload["facets"]["trial"]}, {"eligible", "ineligible", "not_applicable"})
+        self.assertEqual(payload["items"][0]["email"], "half-price@example.com")
+        self.assertEqual(payload["items"][0]["plus_promo_kind"], "discount")
+        self.assertFalse(payload["items"][0]["plus_trial_eligible"])
+        self.assertEqual(
+            {item["value"] for item in payload["facets"]["promotion"]},
+            {"free_trial", "half_price", "other_discount", "unknown", "none", "not_applicable"},
+        )
+
+        other_discount = self.client.get(
+            "/api/accounts?paged=1&page=1&page_size=20&promotion=other_discount",
+            headers=self.headers,
+        ).get_json()
+        self.assertEqual(other_discount["total"], 1)
+        self.assertEqual(other_discount["items"][0]["email"], "discount@example.com")
+
+        all_discounts = self.client.get(
+            "/api/accounts?paged=1&page=1&page_size=20&promotion=discount",
+            headers=self.headers,
+        ).get_json()
+        self.assertEqual(all_discounts["total"], 2)
+
+        status = self.client.get(
+            "/api/accounts/plan-check-status?page=1&page_size=20&promotion=half_price",
+            headers=self.headers,
+        ).get_json()
+        self.assertEqual(status["total"], 1)
+        self.assertEqual(status["items"][0]["email"], "half-price@example.com")
 
     def test_accounts_token_filter_distinguishes_valid_expired_and_missing(self):
         self.seed(record_store.ACCOUNTS, [

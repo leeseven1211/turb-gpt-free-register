@@ -42,6 +42,7 @@ class RegistrationPlanCaptureTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["current_plan_type"], "free")
         self.assertTrue(result["plus_trial_eligible"])
+        self.assertEqual(result["plus_promo_kind"], "free_trial")
         self.assertEqual(result["plus_trial_campaign_id"], "plus-trial")
         self.assertEqual(result["eligible_offer_ids"], ["offer-1"])
         self.assertEqual(result["trigger"], "registration_browser_response")

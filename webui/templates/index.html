@@ -325,7 +325,7 @@
         <span class="list-selection-hint" id="accountsSelectedHintV2">选择账号后批量操作</span>
         <div class="acc-v2-btn-group toolbar-selection-primary selection-only">
           <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedLiveV2" onclick="checkSelectedLive()" disabled title="只在线验证现有 Token；不会发送邮箱验证码或刷新 AT">查活</button>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedPlansV2" disabled title="查询选中账号当前套餐；free 账号会检查 Plus 试用资格">查套餐</button>
+          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedPlansV2" disabled title="查询选中账号当前套餐；free 账号会检查 Plus 免费试用或折扣优惠">查套餐</button>
         </div>
         <details class="toolbar-overflow selection-only" id="accountsMoreActionsV2">
           <summary>更多操作</summary>
@@ -340,7 +340,7 @@
               <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnChangeTwofaSelectedAccountsV2" disabled title="先关闭旧 Authenticator，再启用并确认新的 2FA">修改 2FA</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCompleteSelectedAccountsV2" disabled title="按配置补全账号密码、套餐、2FA、Codex；刷新 AT 是否包含由配置决定">补全账号</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnRetrySelectedCodexV2" disabled title="给选中的账号批量补跑 Codex 授权">补 Codex</button>
-              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnExtractSelectedLinksV2" disabled title="给选中的 free(可Plus试用) 账号批量提链，类型按提链配置">提链</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnExtractSelectedLinksV2" disabled title="仅给已确认 Plus 免费试用资格的 free 账号批量提链；折扣优惠会跳过">提链</button>
             </div>
             <div class="toolbar-overflow-section toolbar-overflow-section--wide">
               <span class="toolbar-overflow-section-title">复制与导出</span>
@@ -387,7 +387,7 @@
               <th class="col-small column-filter-header" data-column-filter="accountPasswordFilterV2" data-filter-type="select" data-filter-label="按账号密码状态筛选">账号密码</th>
               <th class="col-plan column-filter-header" data-column-filter="accountPlanFilterV2" data-filter-type="select" data-filter-label="按套餐筛选">套餐</th>
               <th class="col-quota">额度</th>
-              <th class="col-trial column-filter-header" data-column-filter="accountTrialFilterV2" data-filter-type="select" data-filter-label="按 Plus 试用资格筛选">Plus 试用</th>
+              <th class="col-trial column-filter-header" data-column-filter="accountTrialFilterV2" data-filter-type="select" data-filter-label="按 Plus 优惠类型筛选">Plus 优惠</th>
               <th class="col-small column-filter-header" data-column-filter="accountTotpFilterV2" data-filter-type="select" data-filter-label="按 2FA 状态筛选">2FA</th>
               <th class="col-risk-mail column-filter-header" data-column-filter="accountRiskFilterV2" data-filter-type="select" data-filter-label="按封号邮件状态筛选">封号邮件</th>
               <th class="col-status column-filter-header" data-column-filter="accountCodexFilterV2" data-filter-type="select" data-filter-label="按 Codex 状态筛选">Codex</th>

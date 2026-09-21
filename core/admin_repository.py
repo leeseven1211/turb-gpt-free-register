@@ -123,25 +123,17 @@ END"""
 _ACCOUNT_PASSWORD_PRESENT = "COALESCE(a.account_has_password, FALSE)"
 _ACCOUNT_TOTP_PRESENT = "COALESCE(a.account_totp_enabled, FALSE)"
 
-_ACCOUNT_TRIAL_VALUE = """CASE
-    WHEN COALESCE(a.current_plan_type, a.plan_type, '') <> ''
-         AND LOWER(COALESCE(a.current_plan_type, a.plan_type, '')) <> 'free'
-      THEN 'not_applicable'
-    WHEN COALESCE(a.current_plan_type, a.plan_type, '') = ''
-         OR COALESCE(a.plan_check_status, '') IN ('queued', 'running')
-      THEN 'pending'
-    WHEN COALESCE(a.plan_check_status, '') = 'failed'
-      THEN CASE
-        WHEN NULLIF(a.data->>'plan_last_success_at', '') IS NOT NULL AND a.plus_trial_eligible IS TRUE THEN 'eligible'
-        WHEN NULLIF(a.data->>'plan_last_success_at', '') IS NOT NULL THEN 'ineligible'
-        ELSE 'failed'
-      END
-    WHEN COALESCE(a.plan_check_status, '') <> 'success'
-         AND LOWER(COALESCE(a.data->>'plan_check_ok', 'false')) NOT IN ('true', '1', 'yes')
-      THEN 'pending'
-    WHEN a.plus_trial_eligible IS TRUE THEN 'eligible'
-    ELSE 'ineligible'
+_ACCOUNT_PROMO_KIND = """CASE
+    WHEN LOWER(COALESCE(a.plus_promo_kind, '')) IN
+         ('free_trial', 'discount', 'other_promo', 'none', 'unknown')
+      THEN LOWER(a.plus_promo_kind)
+    WHEN a.plus_discount_eligible IS TRUE THEN 'discount'
+    WHEN a.plus_promo_eligible IS TRUE OR a.plus_trial_eligible IS TRUE
+      THEN 'unknown'
+    ELSE 'none'
 END"""
+
+_ACCOUNT_PROMOTION_VALUE = "a.account_promotion_value"
 
 _ACCOUNT_RISK_VALUE = """CASE
     WHEN COALESCE(a.account_deactivation_detected, FALSE) THEN 'detected'
@@ -201,9 +193,13 @@ def _account_where(
     value = _text(filters.get("password")).lower()
     if value in {"has", "none"}:
         where.append(_ACCOUNT_PASSWORD_PRESENT if value == "has" else f"NOT {_ACCOUNT_PASSWORD_PRESENT}")
-    value = _text(filters.get("trial")).lower()
-    if value:
-        where.append(f"({_ACCOUNT_TRIAL_VALUE}) = %s")
+    value = _text(filters.get("promotion") or filters.get("trial")).lower()
+    value = {"eligible": "free_trial", "ineligible": "none"}.get(value, value)
+    if value == "discount":
+        # 兼容旧链接：未细分的 discount 仍表示所有折扣优惠。
+        where.append(f"({_ACCOUNT_PROMOTION_VALUE}) IN ('half_price', 'other_discount')")
+    elif value in {"free_trial", "half_price", "other_discount", "other_promo", "none", "unknown", "pending", "failed", "not_applicable"}:
+        where.append(f"({_ACCOUNT_PROMOTION_VALUE}) = %s")
         params.append(value)
     value = _text(filters.get("totp")).lower()
     if value in {"enabled", "disabled"}:
@@ -249,7 +245,7 @@ def list_accounts(
                 {_ACCOUNT_TOKEN_STATE} AS token,
                 CASE WHEN {_ACCOUNT_PASSWORD_PRESENT} THEN 'has' ELSE 'none' END AS password,
                 LOWER(COALESCE(a.current_plan_type, a.plan_type, '')) AS plan,
-                {_ACCOUNT_TRIAL_VALUE} AS trial,
+                {_ACCOUNT_PROMOTION_VALUE} AS promotion,
                 CASE WHEN {_ACCOUNT_TOTP_PRESENT} THEN 'enabled' ELSE 'disabled' END AS totp,
                 {_ACCOUNT_RISK_VALUE} AS risk,
                 LOWER(COALESCE(a.codex_status, '')) AS codex,
@@ -263,7 +259,7 @@ def list_accounts(
               ('token', b.token),
               ('password', b.password),
               ('plan', b.plan),
-              ('trial', b.trial),
+              ('promotion', b.promotion),
               ('totp', b.totp),
               ('risk', b.risk),
               ('codex', b.codex),
@@ -314,12 +310,26 @@ def list_account_statuses(
     archived: str = "0",
     plan: str = "",
     q: str = "",
+    date_from: str = "",
+    date_to: str = "",
 ) -> dict:
     accounts = _q(record_store.ACCOUNTS)
-    where, params = _account_where(archived, plan, q, "", "", {})
+    where, params = _account_where(
+        archived,
+        plan,
+        q,
+        date_from,
+        date_to,
+        request.filters,
+    )
     clause = f" WHERE {' AND '.join(where)}" if where else ""
     fields = (
         "id", "email", "archived", "plan_type", "current_plan_type", "plus_trial_eligible",
+        "plus_promo_eligible", "plus_promo_kind", "plus_discount_eligible",
+        "plus_promo_campaign_id", "plus_promo_title", "plus_promo_summary",
+        "plus_promo_discount_percentage", "plus_promo_duration_num_periods",
+        "plus_promo_duration_period", "plus_promo_promotion_type",
+        "plus_promo_promotion_type_label", "plan_check_ok", "plan_last_success_at",
         "codex_status", "codex_credential_state", "codex_execution_status",
         "codex_last_run_status", "codex_active_run_id",
         "plan_check_status", "extract_link_status", "updated_at", "data",
@@ -348,6 +358,13 @@ def list_account_statuses(
         "quota_type", "quota_windows", "quota_last_success_at",
         "billing_period", "billing_currency", "discount_amount", "discount_type", "discount_expires_at",
         "discount_promo_campaign_id", "extract_link_status", "extract_link_ok", "extract_link_type",
+        "plus_promo_eligible", "plus_promo_kind", "plus_discount_eligible",
+        "plus_promo_campaign_id", "plus_promo_title", "plus_promo_summary",
+        "plus_promo_discount_percentage", "plus_promo_duration_num_periods",
+        "plus_promo_duration_period", "plus_promo_promotion_type",
+        "plus_promo_promotion_type_label", "plus_trial_campaign_id", "plus_trial_title",
+        "plus_trial_discount_percentage", "plus_trial_duration_num_periods",
+        "plus_trial_duration_period", "plus_trial_promotion_type_label",
         "extract_link_message", "extract_link_error", "extract_link_long_url", "extract_link_copy_paste",
         "extract_link_failed_types", "extract_link_last_failed_type", "extract_link_last_failed_at",
         "extract_link_image_url_png", "extract_link_image_url_svg", "extract_link_expires_at", "codex_status",
@@ -894,13 +911,20 @@ def dashboard_aggregates() -> dict:
         cur.execute(
             f"""
             SELECT CASE
-                     WHEN LOWER(COALESCE(current_plan_type, plan_type, '')) = 'free'
-                          AND plus_trial_eligible IS TRUE THEN 'free_trial_eligible'
-                     ELSE COALESCE(NULLIF(LOWER(COALESCE(current_plan_type, plan_type, '')), ''), 'unknown')
+                     WHEN LOWER(COALESCE(a.current_plan_type, a.plan_type, '')) = 'free'
+                          AND ({_ACCOUNT_PROMO_KIND}) = 'free_trial' THEN 'free_trial_eligible'
+                     WHEN LOWER(COALESCE(a.current_plan_type, a.plan_type, '')) = 'free'
+                          AND ({_ACCOUNT_PROMO_KIND}) = 'discount'
+                          AND a.plus_promo_discount_percentage = 50 THEN 'free_half_price_eligible'
+                     WHEN LOWER(COALESCE(a.current_plan_type, a.plan_type, '')) = 'free'
+                          AND ({_ACCOUNT_PROMO_KIND}) = 'discount' THEN 'free_discount_eligible'
+                     WHEN LOWER(COALESCE(a.current_plan_type, a.plan_type, '')) = 'free'
+                          AND ({_ACCOUNT_PROMO_KIND}) IN ('other_promo', 'unknown') THEN 'free_promo_unknown'
+                     ELSE COALESCE(NULLIF(LOWER(COALESCE(a.current_plan_type, a.plan_type, '')), ''), 'unknown')
                    END AS plan,
                    COUNT(*) AS count
-              FROM {accounts}
-             WHERE archived IS FALSE
+              FROM {accounts} a
+             WHERE a.archived IS FALSE
              GROUP BY 1
             """
         )

@@ -430,6 +430,8 @@ def _run_retry_plan_check(
                 detail={
                     "current_plan_type": result.get("current_plan_type"),
                     "plus_trial_eligible": bool(result.get("plus_trial_eligible")),
+                    "plus_discount_eligible": bool(result.get("plus_discount_eligible")),
+                    "plus_promo_kind": result.get("plus_promo_kind"),
                 },
                 state="success",
             )

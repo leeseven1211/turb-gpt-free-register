@@ -259,6 +259,112 @@ class WriteScopeTests(PostgresTestCase):
         self.assertEqual(row["quota_windows"], quota_windows)
         self.assertEqual(row["quota_error"], "HTTP 503")
 
+    def test_half_price_promotion_is_persisted_without_legacy_trial_eligibility(self):
+        account_id = self.ids[0]
+        self.assertTrue(db.update_account_plan_check(
+            acc_id=account_id,
+            result={
+                "ok": True,
+                "checked_at": "2026-09-21T10:00:00",
+                "current_plan_type": "free",
+                "plus_promo_kind": "discount",
+                "plus_promo_eligible": True,
+                "plus_discount_eligible": True,
+                "plus_promo_campaign_id": "plus-50-off-2-months",
+                "plus_promo_discount_percentage": 50,
+                "plus_promo_duration_num_periods": 2,
+                "plus_promo_duration_period": "month",
+            },
+        ))
+
+        row = db.get_account(account_id)
+        self.assertEqual(row["plus_promo_kind"], "discount")
+        self.assertTrue(row["plus_promo_eligible"])
+        self.assertTrue(row["plus_discount_eligible"])
+        self.assertFalse(row["plus_trial_eligible"])
+        self.assertEqual(row["plus_promo_discount_percentage"], 50)
+        with rs._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT plus_promo_kind, plus_promo_discount_percentage, "
+                f"account_promotion_value, data FROM {rs._qualified(ACCOUNTS)} WHERE id=%s",
+                (account_id,),
+            )
+            stored = cur.fetchone()
+        self.assertEqual(stored["plus_promo_kind"], "discount")
+        self.assertEqual(stored["plus_promo_discount_percentage"], 50)
+        self.assertEqual(stored["account_promotion_value"], "half_price")
+        self.assertNotIn("plus_promo_kind", stored["data"])
+        self.assertNotIn("plus_promo_discount_percentage", stored["data"])
+
+    def test_legacy_promotion_json_is_backfilled_into_indexed_columns(self):
+        account_id = rs.insert_row(ACCOUNTS, {
+            "email": "legacy-half-price@example.test",
+            "plan_type": "free",
+            "current_plan_type": "free",
+            "plan_check_status": "success",
+            "plan_check_ok": True,
+            "plus_trial_eligible": False,
+            "plus_trial_campaign_id": "plus-50-off-2-months",
+            "plus_trial_discount_percentage": 50,
+            "plus_trial_duration_num_periods": 2,
+            "plus_trial_duration_period": "month",
+        })
+
+        rs.reset_ready()
+        rs.init()
+
+        with rs._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT plus_promo_kind, plus_promo_eligible, plus_discount_eligible, "
+                f"plus_promo_discount_percentage, account_promotion_value, data "
+                f"FROM {rs._qualified(ACCOUNTS)} WHERE id=%s",
+                (account_id,),
+            )
+            stored = cur.fetchone()
+            cur.execute(
+                "SELECT indexname FROM pg_indexes "
+                "WHERE schemaname=%s AND tablename='registered_accounts'",
+                (rs.postgres_store.schema_name(),),
+            )
+            indexes = {row["indexname"] for row in cur.fetchall()}
+
+        self.assertEqual(stored["plus_promo_kind"], "discount")
+        self.assertTrue(stored["plus_promo_eligible"])
+        self.assertTrue(stored["plus_discount_eligible"])
+        self.assertEqual(stored["plus_promo_discount_percentage"], 50)
+        self.assertEqual(stored["account_promotion_value"], "half_price")
+        self.assertEqual(stored["data"]["plus_trial_discount_percentage"], 50)
+        self.assertIn("idx_registered_accounts_archived_plus_promo_kind", indexes)
+        self.assertIn(
+            "idx_registered_accounts_archived_account_promotion_value_id",
+            indexes,
+        )
+
+        # 迁移和 WebUI 重启之间，旧进程可能仍把新字段写回 JSONB；下次初始化要
+        # 以该片段为准重新归一化，并清掉重复键，避免列和 JSONB 长期漂移。
+        with rs._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {rs._qualified(ACCOUNTS)} "
+                "SET data = data || %s::jsonb WHERE id=%s",
+                (json.dumps({
+                    "plus_promo_kind": "discount",
+                    "plus_promo_discount_percentage": 20,
+                }), account_id),
+            )
+        rs.reset_ready()
+        rs.init()
+        with rs._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT plus_promo_discount_percentage, account_promotion_value, data "
+                f"FROM {rs._qualified(ACCOUNTS)} WHERE id=%s",
+                (account_id,),
+            )
+            reconciled = cur.fetchone()
+        self.assertEqual(reconciled["plus_promo_discount_percentage"], 20)
+        self.assertEqual(reconciled["account_promotion_value"], "other_discount")
+        self.assertNotIn("plus_promo_kind", reconciled["data"])
+        self.assertNotIn("plus_promo_discount_percentage", reconciled["data"])
+
 
 class JobStorageTests(PostgresTestCase):
     def setUp(self):

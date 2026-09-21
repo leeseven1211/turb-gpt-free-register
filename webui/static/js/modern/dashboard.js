@@ -69,7 +69,11 @@ function renderDashboard(data) {
 
   const plans = Object.entries(accounts.plans || {}).sort((a,b) => Number(b[1]) - Number(a[1]));
   const planMax = Math.max(1, ...plans.map(([,count]) => Number(count || 0)));
-  const planLabels = {free:'Free',free_trial_eligible:'Free · 可领 Plus 试用',plus:'Plus',pro:'Pro',team:'Team',go:'Go',unknown:'未检测'};
+  const planLabels = {
+    free:'Free', free_trial_eligible:'Free · Plus 免费试用', free_half_price_eligible:'Free · Plus 半价',
+    free_discount_eligible:'Free · Plus 其他折扣',
+    free_promo_unknown:'Free · 优惠待复查', plus:'Plus', pro:'Pro', team:'Team', go:'Go', unknown:'未检测',
+  };
   $('#overviewPlans').innerHTML = plans.map(([plan,count]) => `<div class="overview-plan-row">
     <span>${esc(planLabels[plan] || plan)}</span><div class="overview-plan-bar"><i style="width:${Math.max(4, Math.round(Number(count || 0) / planMax * 100))}%"></i></div><strong>${esc(count)}</strong>
   </div>`).join('') || '<div class="muted">暂无套餐信息</div>';

@@ -112,7 +112,7 @@
     .col-email { width: 260px; }
     .col-source { width: 96px; }
     .col-token { width: 220px; }
-    .col-trial { width: 112px; }
+    .col-trial { width: 136px; }
     .col-quota { width: 136px; }
     .col-small { width: 78px; }
     .col-plan { width: 82px; }
@@ -126,7 +126,7 @@
     .accounts-table .col-token { width: 92px; }
     .accounts-table .col-account-status { width: 96px; }
     .accounts-table .col-plan { width: 340px; }
-    .accounts-table .col-trial { width: 112px; }
+    .accounts-table .col-trial { width: 136px; }
     .accounts-table .col-quota { width: 136px; }
     .accounts-table .col-actions { width: 360px; }
     .accounts-table td:nth-child(7), .accounts-table th:nth-child(7) { overflow: visible; text-overflow: clip; }
@@ -235,7 +235,7 @@
     .accounts-table .col-source { width: 80px; }
     .accounts-table .col-token { width: 92px; }
     .accounts-table .col-plan { width: 300px; }
-    .accounts-table .col-trial { width: 112px; }
+    .accounts-table .col-trial { width: 136px; }
     .accounts-table .col-small { width: 76px; }
     .accounts-table .col-status { width: 88px; }
     .accounts-table .col-time { width: 170px; }

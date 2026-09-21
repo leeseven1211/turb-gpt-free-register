@@ -73,6 +73,12 @@ CREATE TABLE registered_accounts (
 
 加一个稀疏字段不需要改表，直接写进 `data` 即可。需要按它筛选时才提升为列。
 
+Plus 优惠属于高频筛选字段，因此 `plus_promo_kind`、折扣比例、活动标识和展示元数据会
+提升为 `registered_accounts` 真列；`account_promotion_value` 是 PostgreSQL 自动维护的
+存储生成列，将折扣进一步区分为 `half_price` 与 `other_discount`。账号列表使用
+`(archived, account_promotion_value, id)` 复合索引，历史 `plus_trial_*` JSONB 只在幂等
+回填时解析，不进入日常列表查询热路径。
+
 `registered_accounts.chatgpt_session` 是例外：它保存完整 `/api/auth/session` 响应，和
 `access_token` 分开维护，供后续登录态恢复/续期使用；管理列表、兼容导出和普通账号读模型
 均不返回该敏感字段。
