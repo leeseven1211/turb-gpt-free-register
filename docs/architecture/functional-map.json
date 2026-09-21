@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "description": "当前现代 WebUI、CLI 和后台任务共用的功能链路及测试影响映射。路径相对于项目根目录。",
+  "flows": [
+    {
+      "id": "registration",
+      "name": "注册主链路",
+      "entrypoints": ["webui/routes/jobs.py", "core/registration_service.py", "core/registration/dispatcher.py"],
+      "shared_components": ["core/registration/state_machine.py", "core/email_provider.py", "core/account_proxy.py", "core/operations/task_gateway.py"],
+      "config_keys": ["REGISTRATION_DRIVER", "REGISTRATION_AUTH_MODE", "REGISTRATION_PROXY_MODE", "EMAIL_SOURCE", "OTP_MAX_WAIT", "OTP_POLL_INTERVAL"],
+      "tests": ["tests/test_registration_dispatcher.py", "tests/test_registration_password_flow.py", "tests/test_registration_email_source_compat.py", "tests/test_registration_state_machine_contract.py", "tests/test_registration_storage.py"],
+      "acceptance": ["docs/development/release-verification.md"]
+    },
+    {
+      "id": "registration_resume",
+      "name": "注册续跑与结果不明恢复",
+      "entrypoints": ["core/registration_service.py", "core/registration/dispatcher.py", "webui/routes/jobs.py"],
+      "shared_components": ["core/email_provider.py", "core/operations/task_gateway.py", "core/storage/registration.py", "core/registration_debug.py"],
+      "config_keys": ["REGISTRATION_DRIVER", "REGISTRATION_FAILURE_DIAGNOSTICS_ENABLED", "REGISTRATION_DEBUG_RETENTION_DAYS", "REGISTRATION_DEBUG_HOLD_TIMEOUT_SECONDS"],
+      "tests": ["tests/test_registration_deactivation_retry.py", "tests/test_registration_identity_reconciliation.py", "tests/test_registration_driver_email_retention.py", "tests/test_registration_email_release.py", "tests/test_registration_debug.py"],
+      "acceptance": ["docs/development/release-verification.md", "docs/architecture/storage-architecture.md"]
+    },
+    {
+      "id": "live_check",
+      "name": "账号普通查活",
+      "entrypoints": ["core/live_check_service.py", "core/live_check_router.py", "webui/routes/accounts.py"],
+      "shared_components": ["core/account_proxy.py", "core/operations/task_gateway.py", "core/protocol_v2_liveness.py", "core/live_check_browser.py"],
+      "config_keys": ["ACCOUNT_LIVE_CHECK_DRIVER", "ACCOUNT_LIVE_CHECK_BROWSER_ENABLED", "ACCOUNT_LIVE_CHECK_PROXY_MODE", "ACCOUNT_AUTH_PROFILE_MODE"],
+      "tests": ["tests/test_live_check_router.py", "tests/test_live_check_browser.py", "tests/test_live_check_status_ui.py", "tests/test_account_proxy.py", "tests/test_account_tasks.py"],
+      "acceptance": ["README.md", "docs/development/release-verification.md"]
+    },
+    {
+      "id": "at_refresh",
+      "name": "ChatGPT access token 自动刷新",
+      "entrypoints": ["core/token_refresh_service.py", "core/live_check_service.py"],
+      "shared_components": ["core/scheduler_state.py", "core/operations/task_gateway.py", "core/account_proxy.py"],
+      "config_keys": ["AT_AUTO_REFRESH_ENABLED", "AT_REFRESH_SCAN_INTERVAL_SECONDS", "AT_REFRESH_BEFORE_HOURS", "AT_REFRESH_INITIAL_DELAY_SECONDS", "AT_REFRESH_MAX_PER_CYCLE", "ACCOUNT_REFRESH_AT_PROXY_MODE"],
+      "tests": ["tests/test_scheduler_state.py", "tests/test_account_tasks.py", "tests/test_protocol_refresh_selection.py"],
+      "acceptance": ["README.md", "docs/development/release-verification.md"]
+    },
+    {
+      "id": "codex_token_refresh",
+      "name": "Codex OAuth 凭证刷新",
+      "entrypoints": ["core/codex_token_refresh_service.py", "webui/routes/codex.py"],
+      "shared_components": ["core/scheduler_state.py", "core/operations/task_gateway.py", "core/codex_operation_service.py"],
+      "config_keys": ["CODEX_TOKEN_AUTO_REFRESH_ENABLED", "CODEX_TOKEN_REFRESH_BEFORE_HOURS", "CODEX_TOKEN_REFRESH_SCAN_INTERVAL_SECONDS", "CODEX_TOKEN_REFRESH_INITIAL_DELAY_SECONDS", "CODEX_TOKEN_REFRESH_MAX_PER_CYCLE", "ACCOUNT_CODEX_PROXY_MODE"],
+      "tests": ["tests/test_codex_token_refresh.py", "tests/test_codex_token_refresh_durable.py", "tests/test_codex_operation_semantics.py", "tests/test_scheduler_state.py"],
+      "acceptance": ["README.md", "docs/development/release-verification.md"]
+    },
+    {
+      "id": "deactivation_scan",
+      "name": "封号邮件扫描",
+      "entrypoints": ["core/deactivation_mail_service.py", "webui/routes/accounts.py"],
+      "shared_components": ["core/scheduler_state.py", "core/email_provider.py", "core/operations/task_gateway.py"],
+      "config_keys": ["EMAIL_BUTLER_RISK_SCAN_ENABLED", "EMAIL_BUTLER_RISK_SCAN_INTERVAL_SECONDS", "EMAIL_BUTLER_RISK_SCAN_INITIAL_DELAY_SECONDS", "EMAIL_BUTLER_RISK_SCAN_LOOKBACK_DAYS", "ACCOUNT_BATCH_WORKERS"],
+      "tests": ["tests/test_deactivation_mail.py", "tests/test_registration_deactivation_retry.py", "tests/test_account_operation_deactivation_policy.py", "tests/test_scheduler_state.py"],
+      "acceptance": ["README.md", "docs/development/release-verification.md"]
+    },
+    {
+      "id": "email_resources",
+      "name": "邮箱来源与 OTP 资源",
+      "entrypoints": ["core/email_provider.py", "webui/routes/jobs.py", "webui/routes/dashboard.py"],
+      "shared_components": ["core/storage/email_pool.py", "core/email_butler_client.py", "core/cf_temp_mail_client.py", "core/outlook_client.py"],
+      "config_keys": ["EMAIL_SOURCE", "USE_EMAIL_SERVICE", "OUTLOOK_FETCH_MODE", "OUTLOOK_API_BASE", "OTP_MAX_WAIT", "OTP_POLL_INTERVAL"],
+      "tests": ["tests/test_email_source_selection.py", "tests/test_email_provider_cloudflare.py", "tests/test_email_provider_gptmail.py", "tests/test_webui_gptmail.py", "tests/test_webui_cloudflare.py"],
+      "acceptance": ["README.md", "docs/development/release-verification.md"]
+    }
+  ]
+}
