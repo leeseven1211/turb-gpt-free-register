@@ -98,6 +98,15 @@ class ConfigSchemaTests(unittest.TestCase):
             }),
         )
 
+    def test_vietnam_locale_profile_is_available_to_the_config_ui(self):
+        field = CONFIG_SCHEMA["BROWSER_LOCALE_PROFILE"]
+
+        self.assertIn(
+            ("vn", "越南"),
+            tuple((option.value, option.label) for option in field.options),
+        )
+        self.assertEqual("vn", validate_value("BROWSER_LOCALE_PROFILE", "vn"))
+
     def test_every_schema_default_is_legal_for_its_declared_type_and_options(self):
         for field in CONFIG_SCHEMA.fields:
             with self.subTest(key=field.key):

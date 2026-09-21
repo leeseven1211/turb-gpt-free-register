@@ -948,7 +948,7 @@ _FIELD_DEFINITIONS = [
     # ---- 浏览器地区画像 ----
     {
         "key": "BROWSER_LOCALE_PROFILE", "file": "browser.py", "type": "str", "group": "浏览器画像",
-        "label": "地区画像", "help": "应与代理出口地区一致；可选 jp/cn/us/sg。当前本地代理实测为日本东京，推荐 jp",
+        "label": "地区画像", "help": "GeoIP 自动画像关闭或检测失败时使用的兜底地区；可选 jp/cn/us/sg/vn，应尽量与代理出口地区一致",
     },
 
     {
@@ -1303,7 +1303,7 @@ _OPTIONS: dict[str, tuple[ConfigOption, ...]] = {
         ("reusable", "优先复用历史号码"), ("new", "每次取新号码")
     ),
     "BROWSER_LOCALE_PROFILE": _options(
-        ("jp", "日本"), ("cn", "中国"), ("us", "美国"), ("sg", "新加坡")
+        ("jp", "日本"), ("cn", "中国"), ("us", "美国"), ("sg", "新加坡"), ("vn", "越南")
     ),
     "PROXY_1024_REGION": _options(
         ("", "沿用 API URL"),
