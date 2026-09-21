@@ -926,14 +926,17 @@ def enqueue(
 
 
 def enqueue_due_accounts() -> dict:
+    if not scheduler_enabled():
+        return {"started": 0, "skipped": 0}
     now = datetime.now(timezone.utc)
+    interval_seconds = scheduler_interval_seconds()
     due_ids: list[int] = []
     skipped = 0
     for account in db.list_accounts(limit=5000, archived=False):
         if str(account.get("email_source") or "").strip().lower() not in _SUPPORTED_SOURCES:
             continue
         checked = _parse_time(account.get("deactivation_mail_checked_at"))
-        if checked and (now - checked).total_seconds() < _INTERVAL_SECONDS:
+        if checked and (now - checked).total_seconds() < interval_seconds:
             skipped += 1
             continue
         due_ids.append(int(account.get("id") or 0))
@@ -969,18 +972,21 @@ def _scheduler_loop() -> None:
 
 
 def start_periodic_scanner() -> bool:
+    """启动唯一扫描调度线程，关闭时休眠并等待配置热启用。"""
     global _SCHEDULER_STARTED
-    if not scheduler_enabled():
-        logger.info("[DeactivationMail] periodic scanner disabled")
-        return False
     with _LOCK:
         if _SCHEDULER_STARTED:
             return False
+        try:
+            threading.Thread(target=_scheduler_loop, name="deactivation-mail-scheduler", daemon=True).start()
+        except Exception:
+            logger.exception("[DeactivationMail] 调度线程启动失败，可再次启动")
+            return False
         _SCHEDULER_STARTED = True
-    threading.Thread(target=_scheduler_loop, name="deactivation-mail-scheduler", daemon=True).start()
     logger.info(
-        "[DeactivationMail] scanner enabled interval=%ss lookback=%sd workers=%s",
-        _INTERVAL_SECONDS,
+        "[DeactivationMail] 调度器已启动 enabled=%s interval=%ss lookback=%sd workers=%s",
+        scheduler_enabled(),
+        scheduler_interval_seconds(),
         _LOOKBACK_DAYS,
         configured_workers(),
     )
@@ -989,9 +995,9 @@ def start_periodic_scanner() -> bool:
 
 def queue_settings() -> dict:
     return {
-        "enabled": _ENABLED,
+        "enabled": scheduler_enabled(),
         "workers": configured_workers(),
-        "interval_seconds": _INTERVAL_SECONDS,
+        "interval_seconds": scheduler_interval_seconds(),
         "lookback_days": _LOOKBACK_DAYS,
         # The durable operation store is the authority for active scans; keep
         # the historical response key without exposing a process-local list.

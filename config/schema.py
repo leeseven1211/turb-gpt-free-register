@@ -1082,14 +1082,6 @@ _FIELD_DEFINITIONS = [
         "label": "新账号资格复查延迟(秒)", "help": "新注册 free 账号未发现试用资格或首次查询失败时复查一次；0 表示关闭",
     },
     {
-        "key": "PLAN_CHECK_WORKERS", "file": "proxy.py", "type": "int", "group": "代理与网络",
-        "label": "注册流程套餐查询并发数", "help": "仅用于注册链路中没有复用注册代理时的异步套餐查询；账号页套餐查询统一使用通用配置 ACCOUNT_BATCH_WORKERS",
-    },
-    {
-        "key": "PLAN_CHECK_QUEUE_LIMIT", "file": "proxy.py", "type": "int", "group": "代理与网络",
-        "label": "套餐查询队列上限", "help": "防止异常批量操作无限堆积，建议 100-1000",
-    },
-    {
         "key": "PLAN_CHECK_MIN_INTERVAL", "file": "proxy.py", "type": "float", "group": "代理与网络",
         "label": "套餐请求最小间隔(秒)", "help": "限制查套餐请求的启动频率，降低 429 风险",
     },
@@ -1343,10 +1335,10 @@ _RANGES: dict[str, tuple[int | float | None, int | float | None]] = {
     "ACCOUNT_BATCH_WORKERS": (1, 16),
     "EMAIL_BUTLER_RISK_SCAN_INTERVAL_SECONDS": (900, 604800),
     "AT_REFRESH_SCAN_INTERVAL_SECONDS": (300, 86400),
-    "CODEX_TOKEN_REFRESH_BEFORE_HOURS": (0, 720),
-    "CODEX_TOKEN_REFRESH_SCAN_INTERVAL_SECONDS": (300, 604800),
-    "CODEX_TOKEN_REFRESH_INITIAL_DELAY_SECONDS": (0, 86400),
-    "CODEX_TOKEN_REFRESH_MAX_PER_CYCLE": (1, 10000),
+    "CODEX_TOKEN_REFRESH_BEFORE_HOURS": (1, 720),
+    "CODEX_TOKEN_REFRESH_SCAN_INTERVAL_SECONDS": (300, 86400),
+    "CODEX_TOKEN_REFRESH_INITIAL_DELAY_SECONDS": (10, 3600),
+    "CODEX_TOKEN_REFRESH_MAX_PER_CYCLE": (1, 200),
     "REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS": (1, 3600),
     "REGISTRATION_DEBUG_HOLD_TIMEOUT_SECONDS": (0, 86400),
     "REGISTRATION_FAILURE_DIAGNOSTICS_RESOURCE_LIMIT": (0, 100000),
@@ -1376,21 +1368,19 @@ _RANGES: dict[str, tuple[int | float | None, int | float | None]] = {
     "PROXY_1024_API_TIMEOUT": (0.1, 300.0),
     "PROXY_1024_MAX_ATTEMPTS": (1, 100),
     "PROXY_1024_ACQUIRE_TIMEOUT": (0.1, 3600.0),
-    "REGISTRATION_PROXY_RETRIES": (0, 100),
-    "REGISTRATION_PROXY_RETRY_DELAY": (0, 300.0),
-    "ACCOUNT_ACTION_PROXY_RETRIES": (0, 100),
-    "ACCOUNT_ACTION_PROXY_RETRY_DELAY": (0, 300.0),
+    "REGISTRATION_PROXY_RETRIES": (0, 3),
+    "REGISTRATION_PROXY_RETRY_DELAY": (0, 10.0),
+    "ACCOUNT_ACTION_PROXY_RETRIES": (0, 3),
+    "ACCOUNT_ACTION_PROXY_RETRY_DELAY": (0, 10.0),
     "PROXY_1024_VALIDATE_ATTEMPTS": (1, 100),
     "PROXY_1024_RECENT_TTL": (0, 604800),
     "PROXY_1024_ACQUIRE_INTERVAL": (0, 300.0),
-    "PLAN_CHECK_TIMEOUT": (0.1, 300.0),
-    "PLAN_CHECK_MAX_ATTEMPTS": (1, 100),
-    "PLAN_CHECK_RETRY_DELAY": (0, 300.0),
-    "PLAN_CHECK_REGISTRATION_RECHECK_DELAY": (0, 604800.0),
-    "PLAN_CHECK_WORKERS": (1, 64),
-    "PLAN_CHECK_QUEUE_LIMIT": (1, 1000000),
-    "PLAN_CHECK_MIN_INTERVAL": (0, 300.0),
-    "PLAN_CHECK_JITTER": (0, 300.0),
+    "PLAN_CHECK_TIMEOUT": (1.0, 60.0),
+    "PLAN_CHECK_MAX_ATTEMPTS": (1, 4),
+    "PLAN_CHECK_RETRY_DELAY": (0, 30.0),
+    "PLAN_CHECK_REGISTRATION_RECHECK_DELAY": (0, 30.0),
+    "PLAN_CHECK_MIN_INTERVAL": (0, 30.0),
+    "PLAN_CHECK_JITTER": (0, 30.0),
     "SUB2API_API_TIMEOUT": (1, 3600),
     "CPA_REQUEST_TIMEOUT": (1, 3600),
     "CPA_CREDENTIAL_CONFIRM_TIMEOUT": (0, 86400),
@@ -1407,6 +1397,9 @@ _RANGES: dict[str, tuple[int | float | None, int | float | None]] = {
 # 当前仍需兼容的、但不是 WebUI editable 的环境覆盖。默认值取模块当前
 # namespace，避免把运行配置再次复制到这里。
 LEGACY_ENV_OVERRIDE_TYPES: Mapping[str, str] = MappingProxyType({
+    # 旧套餐队列已退出调度，仅保留模块属性和历史 .env 的类型兼容。
+    "PLAN_CHECK_WORKERS": "int",
+    "PLAN_CHECK_QUEUE_LIMIT": "int",
     "REJECT_CLOUD_PROXY": "bool",
     "BROWSER_USE_API_KEY": "str",
     "BROWSER_USE_PROXY_COUNTRY_CODE": "str",
@@ -1470,8 +1463,6 @@ LEGACY_ENV_OVERRIDE_TYPES: Mapping[str, str] = MappingProxyType({
 _RESTART_KEYS = frozenset({
     "WEBUI_AUTH_CODE",
     "WEBUI_SESSION_SECRET",
-    "PLAN_CHECK_WORKERS",
-    "PLAN_CHECK_QUEUE_LIMIT",
 })
 
 _SECRET_KEYS = frozenset({

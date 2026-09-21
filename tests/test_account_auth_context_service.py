@@ -14,16 +14,18 @@ class AccountAuthContextServiceTests(unittest.TestCase):
 
         account_auth_context_service.reset_for_tests()
 
-    def test_disabled_raw_context_does_not_cleanup_or_start_worker(self):
+    def test_disabled_raw_context_starts_only_a_dormant_scheduler(self):
         from core import account_auth_context_service
 
         with patch("config.account.ACCOUNT_AUTH_RAW_CONTEXT_ENABLED", False), \
              patch.object(account_auth_context_service, "cleanup_once") as cleanup, \
              patch.object(account_auth_context_service.threading, "Thread") as thread:
+            self.assertTrue(account_auth_context_service.start_periodic_cleanup())
             self.assertFalse(account_auth_context_service.start_periodic_cleanup())
 
         cleanup.assert_not_called()
-        thread.assert_not_called()
+        thread.assert_called_once()
+        thread.return_value.start.assert_called_once_with()
 
     def test_enabled_raw_context_runs_startup_cleanup_and_starts_one_worker(self):
         from core import account_auth_context_service
@@ -38,6 +40,29 @@ class AccountAuthContextServiceTests(unittest.TestCase):
         cleanup.assert_called_once_with()
         thread.assert_called_once()
         thread.return_value.start.assert_called_once_with()
+
+    def test_disabled_or_zero_retention_does_not_touch_private_contexts(self):
+        from core import account_auth_context_service
+
+        for enabled, days in ((False, 30), (True, 0)):
+            with self.subTest(enabled=enabled, days=days), \
+                 patch("config.account.ACCOUNT_AUTH_RAW_CONTEXT_ENABLED", enabled), \
+                 patch("config.account.ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS", days), \
+                 patch("core.storage.account_auth.cleanup_expired_auth_contexts") as cleanup:
+                self.assertEqual(account_auth_context_service.cleanup_once(), 0)
+                cleanup.assert_not_called()
+
+    def test_startup_cleanup_failure_keeps_periodic_retry_available(self):
+        from core import account_auth_context_service as service
+
+        with patch("config.account.ACCOUNT_AUTH_RAW_CONTEXT_ENABLED", True), \
+             patch("config.account.ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS", 30), \
+             patch.object(service, "cleanup_once", side_effect=RuntimeError("临时数据库错误")), \
+             patch.object(service.threading, "Thread") as thread, \
+             patch.object(service.logger, "exception"):
+            self.assertTrue(service.start_periodic_cleanup())
+            self.assertFalse(service.start_periodic_cleanup())
+            thread.return_value.start.assert_called_once_with()
 
 
 if __name__ == "__main__":

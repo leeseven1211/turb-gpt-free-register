@@ -1,0 +1,176 @@
+"""验证可保存数值与真实消费者一致，并保留退出编辑页的环境变量兼容。"""
+
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
+
+import pytest
+
+from config import codex as codex_config
+from config import env_loader
+from config import proxy as proxy_config
+from config import schema
+from core import chatgpt_plan, codex_token_refresh_service, live_check_service
+from core import plan_check_service, registration_service
+
+
+# 对应 registration_service/live_check_service 的换线边界、chatgpt_plan 和
+# plan_check_service 的请求边界，以及 codex_token_refresh_service 的调度边界。
+RUNTIME_RANGES = (
+    ("REGISTRATION_PROXY_RETRIES", 0, 3),
+    ("REGISTRATION_PROXY_RETRY_DELAY", 0, 10.0),
+    ("ACCOUNT_ACTION_PROXY_RETRIES", 0, 3),
+    ("ACCOUNT_ACTION_PROXY_RETRY_DELAY", 0, 10.0),
+    ("PLAN_CHECK_TIMEOUT", 1.0, 60.0),
+    ("PLAN_CHECK_MAX_ATTEMPTS", 1, 4),
+    ("PLAN_CHECK_RETRY_DELAY", 0, 30.0),
+    ("PLAN_CHECK_REGISTRATION_RECHECK_DELAY", 0, 30.0),
+    ("PLAN_CHECK_MIN_INTERVAL", 0, 30.0),
+    ("PLAN_CHECK_JITTER", 0, 30.0),
+    ("CODEX_TOKEN_REFRESH_BEFORE_HOURS", 1, 720),
+    ("CODEX_TOKEN_REFRESH_SCAN_INTERVAL_SECONDS", 300, 86400),
+    ("CODEX_TOKEN_REFRESH_INITIAL_DELAY_SECONDS", 10, 3600),
+    ("CODEX_TOKEN_REFRESH_MAX_PER_CYCLE", 1, 200),
+)
+
+
+@pytest.mark.parametrize("key,lower,upper", RUNTIME_RANGES)
+def test_saved_runtime_ranges_accept_boundaries_and_reject_clipped_values(key, lower, upper):
+    assert schema.validate_value(key, lower) == lower
+    assert schema.validate_value(key, upper) == upper
+    default = schema.schema_default(key)
+    assert schema.validate_value(key, default) == default
+    for outside in (lower - 1, upper + 1):
+        with pytest.raises(schema.ConfigValidationError):
+            schema.validate_config_updates({key: outside})
+
+
+@pytest.mark.parametrize("key,lower,upper", RUNTIME_RANGES)
+def test_previous_out_of_range_environment_is_visible_without_publishing_it(key, lower, upper):
+    del lower
+    with (
+        patch.dict("os.environ", {key: str(upper + 1)}, clear=True),
+        patch.object(env_loader, "read_env_file", return_value={}),
+        patch.object(schema, "_PUBLISHED_SNAPSHOT", None),
+    ):
+        item = next(item for item in schema.effective_config_metadata() if item["key"] == key)
+        assert item["invalid_env"] is True
+        assert item["pending_reload"] is True
+        assert item["value"] == schema.schema_default(key)
+        with pytest.raises(schema.ConfigValidationError):
+            schema.resolve_config({key: str(upper + 1)}, strict=True)
+
+
+@pytest.mark.parametrize(
+    "key,consumer",
+    (
+        ("REGISTRATION_PROXY_RETRIES", registration_service._registration_proxy_retry_limit),
+        ("REGISTRATION_PROXY_RETRY_DELAY", registration_service._registration_proxy_retry_delay),
+        ("ACCOUNT_ACTION_PROXY_RETRIES", live_check_service._account_action_proxy_retry_limit),
+        ("ACCOUNT_ACTION_PROXY_RETRY_DELAY", live_check_service._account_action_proxy_retry_delay),
+    ),
+)
+def test_saved_proxy_retry_boundaries_are_not_changed_by_consumers(key, consumer):
+    field = schema.CONFIG_SCHEMA[key]
+    for value in (field.min_value, field.max_value):
+        saved = schema.validate_value(key, value)
+        with patch.object(proxy_config, key, saved):
+            assert consumer() == saved
+
+
+@pytest.mark.parametrize("boundary", ("min_value", "max_value"))
+def test_saved_plan_request_boundaries_reach_the_request_settings_unchanged(boundary):
+    keys = ("PLAN_CHECK_TIMEOUT", "PLAN_CHECK_MAX_ATTEMPTS", "PLAN_CHECK_RETRY_DELAY")
+    values = {key: schema.validate_value(key, getattr(schema.CONFIG_SCHEMA[key], boundary)) for key in keys}
+    with patch.multiple(proxy_config, **values):
+        assert chatgpt_plan._plan_check_settings(None, None, None) == tuple(values.values())
+
+
+@pytest.mark.parametrize("boundary", ("min_value", "max_value"))
+def test_saved_plan_rate_and_recheck_boundaries_are_used_without_real_waits(boundary):
+    keys = ("PLAN_CHECK_MIN_INTERVAL", "PLAN_CHECK_JITTER", "PLAN_CHECK_REGISTRATION_RECHECK_DELAY")
+    values = {key: schema.validate_value(key, getattr(schema.CONFIG_SCHEMA[key], boundary)) for key in keys}
+    with (
+        patch.multiple(proxy_config, **values),
+        patch.object(plan_check_service, "_NEXT_REQUEST_AT", 100.0),
+        patch.object(plan_check_service.time, "monotonic", return_value=100.0),
+        patch.object(plan_check_service.time, "sleep") as sleep,
+        patch.object(plan_check_service.random, "uniform", side_effect=lambda _low, high: high),
+    ):
+        plan_check_service._wait_for_rate_slot()
+        assert plan_check_service._NEXT_REQUEST_AT == 100.0 + values[keys[0]] + values[keys[1]]
+        if values[keys[1]]:
+            sleep.assert_called_once_with(values[keys[1]])
+        else:
+            sleep.assert_not_called()
+        assert plan_check_service._registration_recheck_delay() == values[keys[2]]
+
+
+@pytest.mark.parametrize("hours", (1, 720))
+def test_saved_codex_refresh_window_controls_the_expiring_boundary(hours):
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    with patch.object(codex_config, "CODEX_TOKEN_REFRESH_BEFORE_HOURS", schema.validate_value(
+        "CODEX_TOKEN_REFRESH_BEFORE_HOURS", hours,
+    )):
+        for extra_seconds, expected in ((0, "expiring"), (1, "valid")):
+            content = {
+                "access_token": "synthetic-access",
+                "refresh_token": "synthetic-refresh",
+                "expired": (now + timedelta(hours=hours, seconds=extra_seconds)).isoformat(),
+            }
+            assert codex_token_refresh_service.oauth_metadata(content, now=now)["oauth_status"] == expected
+
+
+@pytest.mark.parametrize("boundary", ("min_value", "max_value"))
+def test_saved_codex_scheduler_boundaries_reach_the_scheduler_unchanged(boundary):
+    keys = ("CODEX_TOKEN_REFRESH_SCAN_INTERVAL_SECONDS", "CODEX_TOKEN_REFRESH_INITIAL_DELAY_SECONDS")
+    values = {key: schema.validate_value(key, getattr(schema.CONFIG_SCHEMA[key], boundary)) for key in keys}
+    with (
+        patch.multiple(codex_config, **values),
+        patch.object(codex_token_refresh_service.scheduler_state, "run_periodic") as periodic,
+    ):
+        assert codex_token_refresh_service.scheduler_interval_seconds() == values[keys[0]]
+        codex_token_refresh_service._scheduler_loop()
+        assert periodic.call_args.kwargs["initial_delay_seconds"] == values[keys[1]]
+
+
+@pytest.mark.parametrize("maximum", (1, 200))
+def test_saved_codex_cycle_limit_bounds_the_actual_submissions(maximum):
+    service = codex_token_refresh_service
+    rows = [{"filename": f"synthetic-{index}.json"} for index in range(maximum + 1)]
+    with (
+        patch.object(codex_config, "CODEX_TOKEN_AUTO_REFRESH_ENABLED", True),
+        patch.object(codex_config, "CODEX_TOKEN_REFRESH_MAX_PER_CYCLE", schema.validate_value(
+            "CODEX_TOKEN_REFRESH_MAX_PER_CYCLE", maximum,
+        )),
+        patch.object(service.db, "list_codex_accounts", return_value=rows),
+        patch.object(service, "_reconcile_abandoned_refresh_markers", return_value=0),
+        patch.object(service, "_reconciliation_account_ids", return_value=set()),
+        patch.object(service, "decorate_row", return_value={"oauth_status": "expiring", "oauth_refreshable": True}),
+        patch.object(service, "_registered_account_id", return_value=1),
+        patch.object(service, "enqueue_refresh", return_value={"accepted": True}) as enqueue,
+    ):
+        result = service.enqueue_due_credentials()
+        assert result == {"started": maximum, "skipped": 1, "reconciled": 0}
+        assert enqueue.call_count == maximum
+
+
+@pytest.mark.parametrize(
+    "workers,queue_limit,expected",
+    (("7", "800", (7, 800)), ("0", "-1", (0, -1)), ("invalid", "invalid", (3, 500))),
+)
+def test_retired_plan_queue_keys_load_as_compatibility_values_only(workers, queue_limit, expected):
+    keys = ("PLAN_CHECK_WORKERS", "PLAN_CHECK_QUEUE_LIMIT")
+    namespace = {"__name__": "config.proxy", **{key: schema.schema_default(key) for key in keys}}
+    with (
+        patch.dict("os.environ", dict(zip(keys, (workers, queue_limit))), clear=True),
+        patch.object(env_loader, "ensure_loaded"),
+    ):
+        schema.apply_env_namespace(namespace)
+        assert tuple(namespace[key] for key in keys) == expected
+        schema.resolve_config(dict(zip(keys, (workers, queue_limit))), strict=True)
+    assert all(hasattr(proxy_config, key) for key in keys)
+    assert not set(keys).intersection(item["key"] for item in schema.CONFIG_SCHEMA.editor_metadata())
+    assert not set(keys).intersection(schema.CONFIG_SCHEMA.restart_keys())
+    for key in keys:
+        with pytest.raises(schema.ConfigValidationError):
+            schema.validate_config_updates({key: 4})

@@ -1818,28 +1818,25 @@ def _scheduler_loop() -> None:
 
 
 def start_periodic_refresher() -> bool:
+    """启动唯一巡检线程；关闭自动刷新时保留休眠线程以支持热启用。"""
     global _SCHEDULER_STARTED
-    try:
-        _register_worker()
-    except Exception:
-        logger.exception("Codex token refresh durable handler registration failed")
-        return False
-    if not bool(getattr(_cfg, "CODEX_TOKEN_AUTO_REFRESH_ENABLED", True)):
-        logger.info("[Codex Token Refresh] periodic refresher disabled")
-        return False
     with _LOCK:
         if _SCHEDULER_STARTED:
             return False
+        try:
+            _register_worker()
+            # 此线程只生产任务；claim、资源租约和执行仍由共享 gateway 负责。
+            threading.Thread(target=_scheduler_loop, name="codex-token-refresh-producer", daemon=True).start()
+        except Exception:
+            logger.exception("[Codex Token Refresh] 调度器启动失败，可再次启动")
+            return False
         _SCHEDULER_STARTED = True
-    # This thread is a producer only. The shared gateway owns claim, lease,
-    # executor submission and terminal result persistence.
-    threading.Thread(target=_scheduler_loop, name="codex-token-refresh-producer", daemon=True).start()
     logger.info(
-        "[Codex Token Refresh] enabled interval=%ss before=%sh max_per_cycle=%s next_due_in=%ss",
+        "[Codex Token Refresh] 调度器已启动 enabled=%s interval=%ss before=%sh max_per_cycle=%s",
+        scheduler_enabled(),
         scheduler_interval_seconds(),
         getattr(_cfg, "CODEX_TOKEN_REFRESH_BEFORE_HOURS", 24),
         getattr(_cfg, "CODEX_TOKEN_REFRESH_MAX_PER_CYCLE", 20),
-        int(scheduler_state.seconds_until_due(SCHEDULER_TASK, scheduler_interval_seconds())),
     )
     return True
 

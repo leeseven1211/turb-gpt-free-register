@@ -306,8 +306,8 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         self.assertTrue({
             "WEBUI_AUTH_CODE",
             "WEBUI_SESSION_SECRET",
-            "PLAN_CHECK_WORKERS",
         }.issubset(config_editor.RESTART_REQUIRED_KEYS))
+        self.assertNotIn("PLAN_CHECK_WORKERS", config_editor.RESTART_REQUIRED_KEYS)
         self.assertNotIn("ACCOUNT_BATCH_WORKERS", config_editor.RESTART_REQUIRED_KEYS)
         self.assertNotIn("EXTRACT_LINK_WORKERS", {item["key"] for item in config_editor.EDITABLE_FIELDS})
         result = config_editor.update_config({})

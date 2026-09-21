@@ -114,8 +114,9 @@ function configSchemaOptions(f) {
   if (!f || !Array.isArray(f.options)) return [];
   return f.options.map(item => {
     if (typeof item === 'string') return { value: item, label: item };
-    const value = String(item?.value ?? '').trim();
-    return value ? { value, label: String(item?.label ?? value) } : null;
+    if (!item || typeof item !== 'object' || item.value === null || item.value === undefined) return null;
+    const value = String(item.value).trim();
+    return { value, label: String(item.label ?? value) };
   }).filter(Boolean);
 }
 function configSchemaField(key) {
@@ -706,7 +707,8 @@ function renderConfigControlMarkupV2(f) {
   if (f.key === 'EXTRACT_LINK_TYPE') {
     control = renderExtractLinkTypeControlV2(fv);
   } else if (driverChoices) {
-    const current = String(fv == null ? '' : fv).trim().toLowerCase();
+    const raw = String(fv == null ? '' : fv).trim();
+    const current = driverChoices.find(item => item.value.toLowerCase() === raw.toLowerCase())?.value ?? raw;
     const options = driverChoices.slice();
     if (current && !options.some(item => item.value === current)) {
       options.unshift({ value: current, label: `当前配置（${current}）` });
@@ -1424,7 +1426,9 @@ function readConfigElementValue(el, f) {
   }
   if (f.type === 'int') return parseInt(el.value || '0', 10);
   if (f.type === 'float') return parseFloat(el.value || '0');
-  return isPlaceholderEmpty(el.value) ? '' : el.value.trim();
+  const value = el.value.trim();
+  const option = configSchemaOptions(f).find(item => item.value.toLowerCase() === value.toLowerCase());
+  return option ? option.value : (isPlaceholderEmpty(value) ? '' : value);
 }
 
 function trackConfigFieldChange(e) {

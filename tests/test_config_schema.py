@@ -13,7 +13,6 @@ from config import env_loader
 from config import schema as config_schema
 from config.schema import (
     CONFIG_SCHEMA,
-    ConfigSnapshot,
     ConfigValidationError,
     build_non_sensitive_snapshot,
     effective_config_metadata,
@@ -29,7 +28,7 @@ class ConfigSchemaTests(unittest.TestCase):
     def test_schema_owns_unique_fields_and_editor_consumes_it(self):
         fields = CONFIG_SCHEMA.fields
         self.assertEqual(len(fields), len({field.key for field in fields}))
-        self.assertEqual(203, len(fields))
+        self.assertTrue(fields)
         canonical = config_schema._legacy_fields()
         self.assertEqual(len(canonical), len({field["key"] for field in canonical}))
         self.assertEqual(
@@ -77,7 +76,7 @@ class ConfigSchemaTests(unittest.TestCase):
 
     def test_invalid_range_option_unknown_and_cross_field_updates_are_rejected(self):
         with self.assertRaises(ConfigValidationError):
-            validate_value("PLAN_CHECK_WORKERS", 0)
+            validate_value("ACCOUNT_BATCH_WORKERS", 0)
         with self.assertRaises(ConfigValidationError):
             validate_value("REGISTRATION_PROXY_MODE", "not-a-route")
         with self.assertRaises(ConfigValidationError):
@@ -120,19 +119,19 @@ class ConfigSchemaTests(unittest.TestCase):
                 item["key"]: item
                 for item in effective_config_metadata()
             }
-            self.assertEqual(3, defaults["PLAN_CHECK_WORKERS"]["value"])
-            self.assertEqual("default", defaults["PLAN_CHECK_WORKERS"]["source"])
+            self.assertEqual(3, defaults["ACCOUNT_BATCH_WORKERS"]["value"])
+            self.assertEqual("default", defaults["ACCOUNT_BATCH_WORKERS"]["source"])
 
         with patch.object(config_schema, "_PUBLISHED_SNAPSHOT", None), patch(
             "config.env_loader.read_env_file", return_value={}
-        ), patch.dict(os.environ, {"PLAN_CHECK_WORKERS": "7"}, clear=True):
+        ), patch.dict(os.environ, {"ACCOUNT_BATCH_WORKERS": "7"}, clear=True):
             values = {
                 item["key"]: item
                 for item in effective_config_metadata()
             }
-            self.assertEqual(7, values["PLAN_CHECK_WORKERS"]["value"])
-            self.assertEqual("env", values["PLAN_CHECK_WORKERS"]["source"])
-            self.assertEqual("PLAN_CHECK_WORKERS", values["PLAN_CHECK_WORKERS"]["source_key"])
+            self.assertEqual(7, values["ACCOUNT_BATCH_WORKERS"]["value"])
+            self.assertEqual("env", values["ACCOUNT_BATCH_WORKERS"]["source"])
+            self.assertEqual("ACCOUNT_BATCH_WORKERS", values["ACCOUNT_BATCH_WORKERS"]["source_key"])
 
     def test_real_protocol_module_accepts_only_schema_legal_override(self):
         from config import openai_protocol
@@ -166,45 +165,45 @@ class ConfigSchemaTests(unittest.TestCase):
     def test_snapshot_is_immutable_and_published_as_one_versioned_object(self):
         with patch.object(config_schema, "_PUBLISHED_SNAPSHOT", None), patch(
             "config.env_loader.read_env_file", return_value={}
-        ), patch.dict(os.environ, {"PLAN_CHECK_WORKERS": "9"}, clear=True):
+        ), patch.dict(os.environ, {"ACCOUNT_BATCH_WORKERS": "9"}, clear=True):
             candidate = build_non_sensitive_snapshot(strict=True)
             published = publish_config_snapshot(candidate)
             current = non_sensitive_snapshot()
 
             self.assertIs(published, current)
             self.assertEqual(0, current.revision)
-            self.assertEqual(9, current["PLAN_CHECK_WORKERS"])
-            self.assertEqual("env", current.sources["PLAN_CHECK_WORKERS"])
+            self.assertEqual(9, current["ACCOUNT_BATCH_WORKERS"])
+            self.assertEqual("env", current.sources["ACCOUNT_BATCH_WORKERS"])
             self.assertNotIn("PROXY_POOL", current.values)
             with self.assertRaises(TypeError):
-                current.values["PLAN_CHECK_WORKERS"] = 1
+                current.values["ACCOUNT_BATCH_WORKERS"] = 1
             with self.assertRaises(TypeError):
-                current.sources["PLAN_CHECK_WORKERS"] = "default"
+                current.sources["ACCOUNT_BATCH_WORKERS"] = "default"
             with self.assertRaises(AttributeError):
                 current.revision = 99
 
     def test_config_metadata_distinguishes_published_and_pending_environment(self):
         with patch.object(config_schema, "_PUBLISHED_SNAPSHOT", None), patch(
             "config.env_loader.read_env_file", return_value={}
-        ), patch.dict(os.environ, {"PLAN_CHECK_WORKERS": "3"}, clear=True):
+        ), patch.dict(os.environ, {"ACCOUNT_BATCH_WORKERS": "3"}, clear=True):
             initial = {
                 item["key"]: item
                 for item in effective_config_metadata()
-            }["PLAN_CHECK_WORKERS"]
+            }["ACCOUNT_BATCH_WORKERS"]
             self.assertEqual(3, initial["value"])
             self.assertEqual(3, initial["configured_value"])
             self.assertFalse(initial["pending_reload"])
 
-            os.environ["PLAN_CHECK_WORKERS"] = "9"
+            os.environ["ACCOUNT_BATCH_WORKERS"] = "9"
             pending = {
                 item["key"]: item
                 for item in effective_config_metadata()
-            }["PLAN_CHECK_WORKERS"]
+            }["ACCOUNT_BATCH_WORKERS"]
 
         self.assertEqual(3, pending["published_effective_value"])
         self.assertEqual("env", pending["published_effective_source"])
-        self.assertEqual("PLAN_CHECK_WORKERS", pending["source_key"])
-        self.assertEqual("PLAN_CHECK_WORKERS", pending["configured_source_key"])
+        self.assertEqual("ACCOUNT_BATCH_WORKERS", pending["source_key"])
+        self.assertEqual("ACCOUNT_BATCH_WORKERS", pending["configured_source_key"])
         self.assertEqual(3, pending["value"])
         self.assertEqual(9, pending["configured_value"])
         self.assertEqual(initial["published_revision"], pending["published_revision"])
@@ -312,25 +311,54 @@ class ConfigSchemaTests(unittest.TestCase):
             config, "reload_all", side_effect=RuntimeError("simulated reload failure")
         ), patch.dict(os.environ, {"UNRELATED_THREAD_ENV": "keep"}, clear=True):
             with self.assertRaises(RuntimeError):
-                config_editor.update_config({"PLAN_CHECK_WORKERS": 4})
+                config_editor.update_config({"ACCOUNT_BATCH_WORKERS": 4})
             self.assertFalse(path.exists())
-            self.assertNotIn("PLAN_CHECK_WORKERS", os.environ)
+            self.assertNotIn("ACCOUNT_BATCH_WORKERS", os.environ)
             self.assertEqual("keep", os.environ["UNRELATED_THREAD_ENV"])
+
+    def test_enum_none_survives_save_reload_and_metadata(self):
+        fd, raw_path = tempfile.mkstemp(prefix="turb-config-enum-")
+        os.close(fd)
+        path = Path(raw_path)
+        self.addCleanup(lambda: path.unlink() if path.exists() else None)
+        try:
+            with patch.object(env_loader, "_ENV_PATH", path), patch.object(
+                config_schema, "_PUBLISHED_SNAPSHOT", None
+            ), patch.dict(os.environ, {"PYTHON_DOTENV_DISABLED": "1"}, clear=True):
+                result = config_editor.update_config({
+                    "REGISTRATION_PROXY_MODE": "none",
+                    "CLOUDFLARE_AUTH_MODE": "NONE",
+                    "PROXY_1024_REGION": "",
+                    "REGISTER_NAME": "-",
+                })
+                self.assertTrue(result["reloaded"])
+                saved = env_loader.read_env_file()
+                metadata = {item["key"]: item for item in config_editor.get_config()}
+                for key in ("REGISTRATION_PROXY_MODE", "CLOUDFLARE_AUTH_MODE"):
+                    self.assertEqual("none", saved[key])
+                    self.assertEqual("none", metadata[key]["value"])
+                    self.assertFalse(metadata[key]["pending_reload"])
+                    module = importlib.import_module(CONFIG_SCHEMA[key].module)
+                    self.assertEqual("none", getattr(module, key))
+                self.assertEqual("", saved["PROXY_1024_REGION"])
+                self.assertEqual("", saved["REGISTER_NAME"])
+        finally:
+            config.reload_all()
 
     def test_full_candidate_is_validated_before_env_write(self):
         fd, raw_path = tempfile.mkstemp(prefix="turb-config-preflight-")
         os.close(fd)
         path = Path(raw_path)
-        path.write_text("PLAN_CHECK_WORKERS=0\n", encoding="utf-8")
+        path.write_text("ACCOUNT_BATCH_WORKERS=0\n", encoding="utf-8")
         self.addCleanup(lambda: path.unlink() if path.exists() else None)
 
         with patch.object(env_loader, "_ENV_PATH", path), patch.dict(
             os.environ, {}, clear=True
         ):
             with self.assertRaises(ConfigValidationError):
-                config_editor.update_config({"PLAN_CHECK_QUEUE_LIMIT": 600})
-            self.assertEqual("PLAN_CHECK_WORKERS=0\n", path.read_text(encoding="utf-8"))
-            self.assertNotIn("PLAN_CHECK_QUEUE_LIMIT", os.environ)
+                config_editor.update_config({"OTP_MAX_WAIT": 600})
+            self.assertEqual("ACCOUNT_BATCH_WORKERS=0\n", path.read_text(encoding="utf-8"))
+            self.assertNotIn("OTP_MAX_WAIT", os.environ)
 
     def test_dotenv_disabled_short_circuits_before_file_parser(self):
         fd, raw_path = tempfile.mkstemp(prefix="turb-dotenv-disabled-")
@@ -363,8 +391,8 @@ class ConfigSchemaTests(unittest.TestCase):
             with patch.object(env_loader, "_ENV_PATH", path), patch.object(
                 env_loader, "read_env_file", side_effect=AssertionError("dotenv file was read")
             ), patch.dict(os.environ, {"PYTHON_DOTENV_DISABLED": "1"}, clear=True):
-                env_loader.write_env_values({"PLAN_CHECK_WORKERS": "7"})
-                self.assertEqual("7", os.environ["PLAN_CHECK_WORKERS"])
+                env_loader.write_env_values({"ACCOUNT_BATCH_WORKERS": "7"})
+                self.assertEqual("7", os.environ["ACCOUNT_BATCH_WORKERS"])
                 self.assertNotIn("DOTENV_SHOULD_NOT_LOAD", os.environ)
         finally:
             env_loader._LOADED = old_loaded

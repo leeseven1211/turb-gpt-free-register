@@ -317,7 +317,7 @@ def _atomic_write(path: Path, text: str) -> None:
 
 
 def _format_env_value(value, vtype: str) -> str:
-    """把前端值格式化成适合写入 .env 的字符串。"""
+    """把 schema 已校验的值序列化到 .env，保留合法枚举的原义。"""
     if vtype == "bool":
         if isinstance(value, str):
             value = value.strip().lower() in ("true", "1", "yes", "on", "y")
@@ -330,7 +330,7 @@ def _format_env_value(value, vtype: str) -> str:
         lines = _normalize_config_value(value, vtype)
         return "\n".join(lines) if lines else "[]"
     if vtype == "str":
-        return _normalize_config_value(value, vtype)
+        return "" if value is None else str(value)
     return "" if value is None else str(value)
 
 

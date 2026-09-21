@@ -2,6 +2,7 @@
 """Regression contracts for the modern configuration workspace UI."""
 
 from pathlib import Path
+import subprocess
 import unittest
 
 
@@ -13,6 +14,85 @@ FOUNDATION_CSS = (ROOT / "webui/static/css/ui-foundation.css").read_text(encodin
 
 
 class ModernConfigUiContractTests(unittest.TestCase):
+    def _run_config_control_js(self, assertions):
+        harness = r'''
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+const assert = require('assert/strict');
+const root = process.argv[1];
+const config = fs.readFileSync(path.join(root, 'webui/static/js/modern/config.js'), 'utf8');
+const common = fs.readFileSync(path.join(root, 'webui/static/js/modern/common.js'), 'utf8');
+function extractFunction(source, name) {
+  const start = source.indexOf(`function ${name}(`);
+  const end = source.indexOf('\n}', start);
+  if (start < 0 || end < 0) throw new Error(`缺少待验证函数：${name}`);
+  return source.slice(start, end + 2);
+}
+const context = vm.createContext({
+  assert, CONFIG: [], CONFIG_PENDING_UPDATES: {}, esc: String, attrEsc: String,
+});
+vm.runInContext(extractFunction(common, 'isPlaceholderEmpty'), context);
+for (const name of [
+  'configSchemaOptions', 'configDriverChoices',
+  'renderConfigControlMarkupV2', 'readConfigElementValue',
+]) {
+  vm.runInContext(extractFunction(config, name), context);
+}
+vm.runInContext(process.argv[2], context);
+'''
+        result = subprocess.run(
+            ["node", "--input-type=commonjs", "-e", harness, str(ROOT), assertions],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
+    def test_config_enum_values_preserve_none_without_changing_text_placeholders(self):
+        self._run_config_control_js(r'''
+for (const key of ['REGISTRATION_PROXY_MODE', 'CLOUDFLARE_AUTH_MODE']) {
+  const field = {key, type: 'str', options: [{value: 'none', label: '无'}]};
+  for (const value of ['none', ' NONE ']) {
+    assert.equal(readConfigElementValue({dataset: {}, value}, field), 'none');
+  }
+}
+const textField = {key: 'REGISTER_NAME', type: 'str'};
+for (const value of ['none', '-', ' 无 ', '']) {
+  assert.equal(readConfigElementValue({dataset: {}, value}, textField), '');
+}
+assert.equal(readConfigElementValue({dataset: {}, value: ' Alice '}, textField), 'Alice');
+const region = {key: 'PROXY_1024_REGION', type: 'str', options: [
+  {value: '', label: '沿用 API URL'}, {value: 'JP', label: '日本'},
+]};
+assert.equal(readConfigElementValue({dataset: {}, value: ''}, region), '');
+assert.equal(readConfigElementValue({dataset: {}, value: 'jp'}, region), 'JP');
+''')
+
+    def test_region_select_preserves_empty_and_canonical_options(self):
+        self._run_config_control_js(r'''
+const region = {key: 'PROXY_1024_REGION', type: 'str', options: [
+  {value: '', label: '沿用 API URL'},
+  {value: 'US', label: '美国'}, {value: 'JP', label: '日本'},
+  {value: 'Rand', label: '随机地区'}, null, {}, {value: null},
+]};
+for (const [value, expected, label] of [
+  ['', '', '沿用 API URL'], ['JP', 'JP', '日本'],
+  ['us', 'US', '美国'], ['Rand', 'Rand', '随机地区'],
+]) {
+  const markup = renderConfigControlMarkupV2({...region, value});
+  assert.equal((markup.match(/<option /g) || []).length, 4);
+  assert.equal((markup.match(/ selected/g) || []).length, 1);
+  assert.ok(markup.includes(`<option value="${expected}" selected>${label}</option>`));
+  assert.ok(!markup.includes('当前配置'));
+}
+CONFIG_PENDING_UPDATES.PROXY_1024_REGION = '';
+const pending = renderConfigControlMarkupV2({...region, value: 'US'});
+assert.ok(pending.includes('<option value="" selected>沿用 API URL</option>'));
+''')
+
     def test_config_workspace_keeps_global_save_bar_without_redundant_page_header(self):
         self.assertIn('class="config-workspace-v2"', TEMPLATE)
         self.assertNotIn('config-page-head-v2', TEMPLATE)

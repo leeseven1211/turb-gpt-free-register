@@ -42,6 +42,8 @@ def _expires_in_seconds(access_token: str) -> tuple[float | None, dict]:
 
 def enqueue_due_accounts() -> dict:
     """把已过期或进入刷新窗口的 AT 加入邮箱重登录刷新队列。"""
+    if not scheduler_enabled():
+        return {"started": 0, "skipped": 0, "invalid": 0}
     from core.live_check_service import enqueue_account_live_check
 
     started = 0
@@ -118,21 +120,23 @@ def _scheduler_loop() -> None:
 
 
 def start_periodic_refresher() -> bool:
+    """启动唯一调度线程；关闭时休眠，后续由周期循环读取最新开关。"""
     global _SCHEDULER_STARTED
-    if not scheduler_enabled():
-        logger.info("[AT Refresh] periodic refresher disabled")
-        return False
     with _LOCK:
         if _SCHEDULER_STARTED:
             return False
+        try:
+            threading.Thread(target=_scheduler_loop, name="at-refresh-scheduler", daemon=True).start()
+        except Exception:
+            logger.exception("[AT Refresh] 调度线程启动失败，可再次启动")
+            return False
         _SCHEDULER_STARTED = True
-    threading.Thread(target=_scheduler_loop, name="at-refresh-scheduler", daemon=True).start()
     logger.info(
-        "[AT Refresh] enabled interval=%ss before=%sh max_per_cycle=%s next_due_in=%ss",
+        "[AT Refresh] 调度器已启动 enabled=%s interval=%ss before=%sh max_per_cycle=%s",
+        scheduler_enabled(),
         scheduler_interval_seconds(),
         _REFRESH_BEFORE_HOURS,
         _MAX_PER_CYCLE,
-        int(scheduler_state.seconds_until_due(SCHEDULER_TASK, scheduler_interval_seconds())),
     )
     return True
 

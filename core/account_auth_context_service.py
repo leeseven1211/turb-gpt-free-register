@@ -1,10 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Periodic maintenance for private account-authentication context rows.
+"""私有认证上下文的周期维护。
 
-The raw context feature is deliberately opt-in.  When it is disabled this
-module neither creates the private table nor starts a worker.  When enabled,
-startup performs one bounded cleanup and a daily database-backed scheduler
-continues the same bounded operation across WebUI restarts.
+关闭时仅保留休眠调度线程，不创建或访问私有上下文表。启动时已启用才执行
+一次有上限的清理；周期循环读取最新开关并按数据库中的时间记录继续调度。
 """
 from __future__ import annotations
 
@@ -56,27 +54,32 @@ def _scheduler_loop() -> None:
 
 
 def start_periodic_cleanup() -> bool:
-    """Run startup cleanup and start at most one daily maintenance worker."""
+    """启动唯一调度线程，仅在已启用时执行启动清理。"""
     global _SCHEDULER_STARTED
-    if not scheduler_enabled():
-        logger.info("[AccountAuthContext] cleanup disabled")
-        return False
     with _LOCK:
         if _SCHEDULER_STARTED:
             return False
+        if scheduler_enabled():
+            try:
+                removed = cleanup_once()
+                if removed:
+                    logger.info("[AccountAuthContext] 启动清理完成 removed=%s", removed)
+            except Exception:
+                logger.exception("[AccountAuthContext] 启动清理失败，后续按周期重试")
+        try:
+            threading.Thread(
+                target=_scheduler_loop,
+                name="account-auth-context-cleanup",
+                daemon=True,
+            ).start()
+        except Exception:
+            logger.exception("[AccountAuthContext] 调度线程启动失败，可再次启动")
+            return False
         _SCHEDULER_STARTED = True
-    try:
-        removed = cleanup_once()
-        if removed:
-            logger.info("[AccountAuthContext] startup cleanup removed=%s", removed)
-    except Exception:
-        logger.exception("[AccountAuthContext] startup cleanup failed; scheduler will retry")
-    threading.Thread(
-        target=_scheduler_loop,
-        name="account-auth-context-cleanup",
-        daemon=True,
-    ).start()
-    logger.info("[AccountAuthContext] cleanup enabled interval=%ss", _INTERVAL_SECONDS)
+    logger.info(
+        "[AccountAuthContext] 调度器已启动 enabled=%s interval=%ss",
+        scheduler_enabled(), _INTERVAL_SECONDS,
+    )
     return True
 
 

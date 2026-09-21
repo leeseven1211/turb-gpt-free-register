@@ -88,8 +88,8 @@ PLAN_CHECK_RETRY_DELAY = schema_default("PLAN_CHECK_RETRY_DELAY")
 # Plus 试用资格时，等待该秒数后再复查一次；设为 0 可关闭复查。
 PLAN_CHECK_REGISTRATION_RECHECK_DELAY = schema_default("PLAN_CHECK_REGISTRATION_RECHECK_DELAY")
 
-# 注册链路中没有复用注册代理时，异步套餐查询使用独立后台队列；账号页
-# 的套餐操作使用 config.codex.ACCOUNT_BATCH_WORKERS，不读取这里的线程数。
+# 旧套餐队列配置仅为历史 .env 和模块调用方保留，不参与当前任务调度。
+# 独立套餐任务使用 ACCOUNT_BATCH_WORKERS；复用注册会话的查询随注册任务同步执行。
 PLAN_CHECK_WORKERS = schema_default("PLAN_CHECK_WORKERS")
 PLAN_CHECK_QUEUE_LIMIT = schema_default("PLAN_CHECK_QUEUE_LIMIT")
 PLAN_CHECK_MIN_INTERVAL = schema_default("PLAN_CHECK_MIN_INTERVAL")
