@@ -49,7 +49,7 @@ function renderDashboard(data) {
   }).join('') || '<div class="muted">暂无邮箱来源</div>';
 
   const proxyPlatformLabel = ({'1024':'1024Proxy',pool:'静态代理池',none:'直连',direct:'直连'})[proxy.platform] || proxy.platform || '未配置';
-  const leases = proxy.leases || [];
+  const leases = (proxy.leases || []).slice(0, 3);
   $('#overviewProxy').innerHTML = `<div class="overview-proxy-grid">
     <div class="overview-proxy-item"><span>系统代理平台</span><strong>${esc(proxyPlatformLabel)}</strong></div>
     <div class="overview-proxy-item"><span>活跃出口</span><strong>${esc(proxy.active_leases || 0)} 个</strong></div>

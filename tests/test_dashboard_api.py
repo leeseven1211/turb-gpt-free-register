@@ -12,6 +12,51 @@ from webui.app import create_app
 from tests.support_pg import PostgresTestCase
 
 
+class DashboardUiScriptTests(unittest.TestCase):
+    MODERN_DASHBOARD_JS = Path(__file__).resolve().parents[1] / "webui/static/js/modern/dashboard.js"
+
+    def test_dashboard_proxy_summary_displays_at_most_three_exit_leases(self):
+        source = self.MODERN_DASHBOARD_JS.read_text(encoding="utf-8")
+        start = source.index("function dashboardMetric")
+        end = source.index("async function loadDashboard", start)
+        function_source = source[start:end]
+        harness = f"""
+const targets = new Map();
+function $(selector) {{
+  if (!targets.has(selector)) targets.set(selector, {{innerHTML: ''}});
+  return targets.get(selector);
+}}
+function esc(value) {{ return String(value ?? ''); }}
+function attrEsc(value) {{ return String(value ?? ''); }}
+function pill(status) {{ return String(status); }}
+{function_source}
+renderDashboard({{
+  accounts: {{plans: {{}}}},
+  email: {{sources: []}},
+  jobs: {{counts: {{}}, today_counts: {{}}}},
+  proxy: {{
+    active_leases: 4,
+    leases: Array.from({{length: 4}}, (_, index) => ({{
+      endpoint: `192.0.2.${{index + 1}}:8080`,
+      region: 'US',
+    }})),
+  }},
+  codex: {{}},
+}});
+const exitRows = ($('#overviewProxy').innerHTML.match(/overview-exit-row/g) || []).length;
+if (exitRows !== 3) throw new Error(`expected 3 exit rows, got ${{exitRows}}`);
+console.log('ok');
+"""
+        result = subprocess.run(
+            ["node", "--input-type=commonjs", "-e", harness],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertEqual(result.stdout.strip(), "ok")
+
+
 class DashboardApiTests(PostgresTestCase):
     MODERN_COMMON_JS = Path(__file__).resolve().parents[1] / "webui/static/js/modern/common.js"
     MODERN_JOBS_JS = Path(__file__).resolve().parents[1] / "webui/static/js/modern/jobs.js"
