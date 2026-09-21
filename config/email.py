@@ -38,7 +38,7 @@ EMAIL_SOURCE = schema_default("EMAIL_SOURCE")
 OUTLOOK_FETCH_MODE = schema_default("OUTLOOK_FETCH_MODE")
 
 # 取邮件 API 的根 URL（远端模式使用）
-OUTLOOK_API_BASE = "https://mail.chatai.codes"
+OUTLOOK_API_BASE = schema_default("OUTLOOK_API_BASE")
 
 
 # ============================================================
@@ -66,6 +66,8 @@ EMAIL_BUTLER_REQUEST_TIMEOUT = schema_default("EMAIL_BUTLER_REQUEST_TIMEOUT")
 # 封号邮件周期扫描。原先只能通过环境变量控制，现在纳入配置体系。
 EMAIL_BUTLER_RISK_SCAN_ENABLED: bool = schema_default("EMAIL_BUTLER_RISK_SCAN_ENABLED")
 EMAIL_BUTLER_RISK_SCAN_INTERVAL_SECONDS: int = schema_default("EMAIL_BUTLER_RISK_SCAN_INTERVAL_SECONDS")
+EMAIL_BUTLER_RISK_SCAN_INITIAL_DELAY_SECONDS: int = schema_default("EMAIL_BUTLER_RISK_SCAN_INITIAL_DELAY_SECONDS")
+EMAIL_BUTLER_RISK_SCAN_LOOKBACK_DAYS: int = schema_default("EMAIL_BUTLER_RISK_SCAN_LOOKBACK_DAYS")
 
 
 # ============================================================

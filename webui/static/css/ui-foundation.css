@@ -2836,6 +2836,38 @@ table[data-resizable-table="codex"] {
   overflow-wrap: anywhere;
 }
 
+#tab-config .config-field-status-v2 {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  margin-left: 6px;
+  padding: 2px 7px;
+  border: 1px solid var(--ui-color-border);
+  border-radius: 999px;
+  color: var(--ui-color-text-muted);
+  background: var(--ui-color-surface-subtle);
+  font-size: 10px;
+  font-weight: 650;
+  vertical-align: 1px;
+  white-space: nowrap;
+}
+
+#tab-config .config-field-status-v2.is-effective {
+  border-color: color-mix(in srgb, var(--ui-color-success) 35%, var(--ui-color-border));
+  color: var(--ui-color-success);
+}
+
+#tab-config .config-field-status-v2.is-pending,
+#tab-config .config-field-status-v2.is-restart {
+  border-color: color-mix(in srgb, var(--ui-color-warning) 40%, var(--ui-color-border));
+  color: var(--ui-color-warning);
+}
+
+#tab-config .config-field-status-v2.is-error {
+  border-color: color-mix(in srgb, var(--ui-color-danger) 40%, var(--ui-color-border));
+  color: var(--ui-color-danger);
+}
+
 #tab-config .config-setting-copy-v2 .config-field-key-v2 {
   display: block;
   margin-top: 4px;
@@ -2867,6 +2899,11 @@ table[data-resizable-table="codex"] {
 #tab-config .config-setting-control-v2 > input:not([type="checkbox"]),
 #tab-config .config-setting-control-v2 > select {
   min-height: 40px;
+}
+
+#tab-config .config-setting-control-v2 > select[multiple] {
+  min-height: 124px;
+  padding-block: 6px;
 }
 
 #tab-config .config-setting-control-v2 > textarea {

@@ -93,6 +93,25 @@ const pending = renderConfigControlMarkupV2({...region, value: 'US'});
 assert.ok(pending.includes('<option value="" selected>沿用 API URL</option>'));
 ''')
 
+    def test_email_source_uses_an_ordered_multi_select(self):
+        self._run_config_control_js(r'''
+const field = {key: 'EMAIL_SOURCE', type: 'str', value: 'mailnest,outlook', csv_options: ['outlook', 'mailnest'], options: [
+  {value: 'outlook', label: 'Outlook'}, {value: 'mailnest', label: 'MailNest'},
+]};
+const markup = renderConfigControlMarkupV2(field);
+assert.ok(markup.includes('<select multiple'));
+assert.ok(markup.includes('<option value="outlook" selected>Outlook</option>'));
+assert.ok(markup.includes('<option value="mailnest" selected>MailNest</option>'));
+const selected = {multiple: true, selectedOptions: [{value: 'mailnest'}, {value: 'outlook'}], dataset: {}};
+assert.equal(readConfigElementValue(selected, field), 'mailnest,outlook');
+''')
+
+    def test_config_page_exposes_runtime_status_and_refreshes_after_save(self):
+        self.assertIn('config-field-status-v2', CONFIG_JS)
+        self.assertIn("f.invalid_env", CONFIG_JS)
+        self.assertIn("f.restart", CONFIG_JS)
+        self.assertIn("await loadConfig();", CONFIG_JS)
+
     def test_config_workspace_keeps_global_save_bar_without_redundant_page_header(self):
         self.assertIn('class="config-workspace-v2"', TEMPLATE)
         self.assertNotIn('config-page-head-v2', TEMPLATE)

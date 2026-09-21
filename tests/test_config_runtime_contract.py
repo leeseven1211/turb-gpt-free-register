@@ -33,6 +33,30 @@ RUNTIME_RANGES = (
 )
 
 
+def test_missing_runtime_settings_are_schema_fields_with_explicit_restart_semantics():
+    expected = {
+        "AT_REFRESH_BEFORE_HOURS": (1, 168),
+        "AT_REFRESH_INITIAL_DELAY_SECONDS": (10, 3600),
+        "AT_REFRESH_MAX_PER_CYCLE": (1, 200),
+        "EMAIL_BUTLER_RISK_SCAN_INITIAL_DELAY_SECONDS": (5, 3600),
+        "EMAIL_BUTLER_RISK_SCAN_LOOKBACK_DAYS": (1, 365),
+        "OUTLOOK_API_BASE": (None, None),
+        "EXTRACT_LINK_QUEUE_LIMIT": (1, 5000),
+        "EXTRACT_LINK_REQUEST_TIMEOUT": (5, 300),
+        "EXTRACT_LINK_EVENT_TIMEOUT": (30, 900),
+    }
+    fields = schema.CONFIG_SCHEMA
+    for key, (lower, upper) in expected.items():
+        field = fields[key]
+        assert field.hot_edit == "restart" if key in {
+            "AT_REFRESH_BEFORE_HOURS", "AT_REFRESH_INITIAL_DELAY_SECONDS",
+            "AT_REFRESH_MAX_PER_CYCLE", "EMAIL_BUTLER_RISK_SCAN_INITIAL_DELAY_SECONDS",
+            "EMAIL_BUTLER_RISK_SCAN_LOOKBACK_DAYS", "EXTRACT_LINK_QUEUE_LIMIT",
+        } else field.hot_edit == "safe"
+        if lower is not None:
+            assert (field.min_value, field.max_value) == (lower, upper)
+
+
 @pytest.mark.parametrize("key,lower,upper", RUNTIME_RANGES)
 def test_saved_runtime_ranges_accept_boundaries_and_reject_clipped_values(key, lower, upper):
     assert schema.validate_value(key, lower) == lower

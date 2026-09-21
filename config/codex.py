@@ -46,6 +46,9 @@ CODEX_REQUEST_TIMEOUT: int = 30
 # 体系，WebUI 可改、可热加载。
 AT_AUTO_REFRESH_ENABLED: bool = schema_default("AT_AUTO_REFRESH_ENABLED")
 AT_REFRESH_SCAN_INTERVAL_SECONDS: int = schema_default("AT_REFRESH_SCAN_INTERVAL_SECONDS")
+AT_REFRESH_BEFORE_HOURS: int = schema_default("AT_REFRESH_BEFORE_HOURS")
+AT_REFRESH_INITIAL_DELAY_SECONDS: int = schema_default("AT_REFRESH_INITIAL_DELAY_SECONDS")
+AT_REFRESH_MAX_PER_CYCLE: int = schema_default("AT_REFRESH_MAX_PER_CYCLE")
 
 # Codex OAuth access token 自动刷新。refresh token 仍有效时无需重新跑完整
 # OAuth 登录、邮箱 OTP 和短信验证。

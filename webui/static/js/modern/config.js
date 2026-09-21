@@ -135,6 +135,23 @@ function configRangeAttrs(f, step = '') {
   return attrs.length ? ` ${attrs.join(' ')}` : '';
 }
 
+function configFieldStatusV2(f) {
+  const dirty = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key);
+  if (dirty) return {label: '待保存', cls: 'is-pending'};
+  if (f.invalid_env) return {label: '配置值无效，未生效', cls: 'is-error'};
+  if (f.secret) return f.configured
+    ? {label: f.restart ? '密钥已配置 · 需重启' : '密钥已配置', cls: f.restart ? 'is-restart' : 'is-effective'}
+    : {label: '未配置', cls: 'is-muted'};
+  if (f.restart) return {label: f.configured_source === 'env' ? '已配置 · 需重启' : '默认值 · 重启后生效', cls: 'is-restart'};
+  if (f.configured_source === 'env') return {label: '已生效 · .env', cls: 'is-effective'};
+  return {label: '已生效 · 默认值', cls: 'is-muted'};
+}
+
+function renderConfigFieldStatusV2(f) {
+  const status = configFieldStatusV2(f);
+  return `<span class="config-field-status-v2 ${status.cls}" role="status">${esc(status.label)}</span>`;
+}
+
 function emailConfigSectionForKey(key) {
   if (['USE_EMAIL_SERVICE','REGISTER_EMAIL','REGISTER_NAME','OTP_MAX_WAIT','OTP_POLL_INTERVAL','EMAIL_SOURCE'].includes(key)) {
     return ['通用邮箱 / OTP', '邮箱来源选择、OTP 等待参数、手动邮箱等通用设置'];
@@ -151,8 +168,8 @@ function emailConfigSectionForKey(key) {
 }
 
 function proxyConfigSectionForKey(key) {
-  if (['ACCOUNT_PASSWORD_PROXY_MODE','ACCOUNT_2FA_PROXY_MODE','ACCOUNT_PLAN_CHECK_PROXY_MODE','ACCOUNT_LIVE_CHECK_PROXY_MODE','ACCOUNT_REFRESH_AT_PROXY_MODE','ACCOUNT_CODEX_PROXY_MODE'].includes(key)) {
-    return ['账号动作线路', '分别设置补密码、补 2FA、查套餐、查活、刷新 AT 和 Codex OAuth 的代理来源。'];
+  if (['ACCOUNT_PASSWORD_PROXY_MODE','ACCOUNT_2FA_PROXY_MODE','ACCOUNT_PLAN_CHECK_PROXY_MODE','ACCOUNT_LIVE_CHECK_PROXY_MODE','ACCOUNT_REFRESH_AT_PROXY_MODE','ACCOUNT_CODEX_PROXY_MODE','ACCOUNT_EMAIL_CHANGE_PROXY_MODE'].includes(key)) {
+    return ['账号动作线路', '分别设置补密码、补 2FA、查套餐、查活、刷新 AT、邮箱换绑和 Codex OAuth 的代理来源。'];
   }
   if (key === 'REGISTRATION_PROXY_MODE') {
     return ['注册线路', '注册主流程使用的代理来源；这是账号风险最高、最需要保持地区一致的线路。'];
@@ -693,8 +710,7 @@ function authProfileModeChoices() {
   return configSchemaOptions(configSchemaField('ACCOUNT_AUTH_PROFILE_MODE'));
 }
 function configDriverChoices(f) {
-  // EMAIL_SOURCE is a comma-separated field, so retain its text input while
-  // still exposing its allowed values in the schema metadata.
+  // EMAIL_SOURCE uses the dedicated ordered multi-select below.
   if (Array.isArray(f?.csv_options) && f.csv_options.length) return null;
   if (f.key === 'ACCOUNT_LIVE_CHECK_DRIVER') return liveCheckDriverChoices();
   const choices = configSchemaOptions(f);
@@ -704,7 +720,16 @@ function renderConfigControlMarkupV2(f) {
   const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
   let control = '';
   const driverChoices = configDriverChoices(f);
-  if (f.key === 'EXTRACT_LINK_TYPE') {
+  if (f.key === 'EMAIL_SOURCE') {
+    const selectedValues = String(fv || '').split(',').map(value => value.trim().toLowerCase()).filter(Boolean);
+    const allOptions = configSchemaOptions(f);
+    const orderedOptions = [
+      ...selectedValues.map(value => allOptions.find(item => item.value.toLowerCase() === value)).filter(Boolean),
+      ...allOptions.filter(item => !selectedValues.includes(item.value.toLowerCase())),
+    ];
+    const options = orderedOptions.map(item => `<option value="${attrEsc(item.value)}"${selectedValues.includes(item.value.toLowerCase()) ? ' selected' : ''}>${esc(item.label)}</option>`).join('');
+    control = `<select multiple size="${Math.min(Math.max(configSchemaOptions(f).length, 3), 6)}" data-key="${attrEsc(f.key)}" aria-label="${attrEsc(f.label)}">${options}</select>`;
+  } else if (f.key === 'EXTRACT_LINK_TYPE') {
     control = renderExtractLinkTypeControlV2(fv);
   } else if (driverChoices) {
     const raw = String(fv == null ? '' : fv).trim();
@@ -742,7 +767,7 @@ function renderConfigSettingRowV2(f, controlMarkup = null, options = {}) {
   return `
     <div class="config-setting-row-v2${extraClass}" data-config-setting="${attrEsc(displayKey)}">
       <div class="config-setting-copy-v2">
-        <div class="config-setting-label-v2">${esc(f.label)}</div>
+        <div class="config-setting-label-v2">${esc(f.label)} ${renderConfigFieldStatusV2(f)}</div>
         <code class="config-field-key-v2">${esc(displayKey)}</code>
         <p class="config-setting-help-v2">${esc(options.help || f.help || '')}</p>
       </div>
@@ -754,7 +779,7 @@ function renderConfigPlainFieldV2(f) {
   return `
     <label class="fld config-field-v2">
       <span class="config-field-v2-head">
-        <span class="config-field-label-v2">${esc(f.label)}</span>
+        <span class="config-field-label-v2">${esc(f.label)} ${renderConfigFieldStatusV2(f)}</span>
         <code class="config-field-key-v2">${esc(f.key)}</code>
       </span>
       <span class="hint">${esc(f.help || '')}</span>
@@ -1419,6 +1444,7 @@ async function saveRoxyWorkspaceSelection() {
 function readConfigElementValue(el, f) {
   if (!f) return undefined;
   if (el.dataset.toggleOnValue) return el.checked ? el.dataset.toggleOnValue : el.dataset.toggleOffValue;
+  if (el.multiple) return Array.from(el.selectedOptions || []).map(option => option.value).join(',');
   if (f.type === 'list_str_multiline') return el.value.split('\n').map(s=>s.trim()).filter(Boolean);
   if (f.type === 'bool') {
     if (el.type === 'checkbox') return !!el.checked;
@@ -1459,8 +1485,8 @@ async function saveConfigUpdates(triggerBtn) {
     const r = await api('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({updates}) });
     invalidateApiCache('/api/config');
     invalidateApiCache('/api/ui-settings');
-    for (const [k, v] of Object.entries(updates)) { const f = CONFIG.find(x => x.key === k); if (f) f.value = v; delete CONFIG_PENDING_UPDATES[k]; }
-    renderConfigLayoutV2();
+    for (const k of Object.keys(updates)) delete CONFIG_PENDING_UPDATES[k];
+    await loadConfig();
     await loadCapabilities();
     await loadRegistrationEmailSources();
     const restartRequired = Array.isArray(r.restart_required) ? r.restart_required : [];

@@ -150,8 +150,13 @@ _DEFAULTS: dict[str, Any] = {
     "ACCOUNT_BATCH_WORKERS": 3,
     "EMAIL_BUTLER_RISK_SCAN_ENABLED": True,
     "EMAIL_BUTLER_RISK_SCAN_INTERVAL_SECONDS": 21600,
+    "EMAIL_BUTLER_RISK_SCAN_INITIAL_DELAY_SECONDS": 90,
+    "EMAIL_BUTLER_RISK_SCAN_LOOKBACK_DAYS": 120,
     "AT_AUTO_REFRESH_ENABLED": True,
     "AT_REFRESH_SCAN_INTERVAL_SECONDS": 3600,
+    "AT_REFRESH_BEFORE_HOURS": 24,
+    "AT_REFRESH_INITIAL_DELAY_SECONDS": 120,
+    "AT_REFRESH_MAX_PER_CYCLE": 20,
     "CODEX_TOKEN_AUTO_REFRESH_ENABLED": True,
     "CODEX_TOKEN_REFRESH_SCAN_INTERVAL_SECONDS": 86400,
     "WEBUI_AUTH_CODE": "",
@@ -260,6 +265,7 @@ _DEFAULTS: dict[str, Any] = {
     "CLOUDFLARE_REQUEST_TIMEOUT": 20,
     "CLOUDFLARE_NAME_LENGTH": 10,
     "OUTLOOK_FETCH_MODE": "auto",
+    "OUTLOOK_API_BASE": "https://mail.chatai.codes",
     "EMAIL_DOMAIN": "",
     "QQ_EMAIL": "",
     "QQ_IMAP_PASSWORD": "",
@@ -335,6 +341,9 @@ _DEFAULTS: dict[str, Any] = {
     "EXTRACT_LINK_API_BASE": "https://ple.bzb.qzz.io",
     "EXTRACT_LINK_CDK": "",
     "EXTRACT_LINK_TYPE": "pix",
+    "EXTRACT_LINK_QUEUE_LIMIT": 500,
+    "EXTRACT_LINK_REQUEST_TIMEOUT": 30,
+    "EXTRACT_LINK_EVENT_TIMEOUT": 180,
     "SUB2API_API_BASE": "",
     "SUB2API_API_KEY": "",
     "SUB2API_API_TIMEOUT": 20,
@@ -380,12 +389,32 @@ _FIELD_DEFINITIONS = [
         "label": "查封号邮件间隔（秒）", "help": "两轮扫描之间的最短间隔，范围 900-604800；默认 21600（6 小时）",
     },
     {
+        "key": "EMAIL_BUTLER_RISK_SCAN_INITIAL_DELAY_SECONDS", "file": "email.py", "type": "int", "group": "定时任务",
+        "label": "封号扫描首次延迟（秒）", "help": "服务启动后首次扫描封号邮件的等待时间；修改后重启调度线程生效，范围 5-3600",
+    },
+    {
+        "key": "EMAIL_BUTLER_RISK_SCAN_LOOKBACK_DAYS", "file": "email.py", "type": "int", "group": "定时任务",
+        "label": "封号邮件回看天数", "help": "扫描封号信号时向邮箱服务查询的历史天数，范围 1-365",
+    },
+    {
         "key": "AT_AUTO_REFRESH_ENABLED", "file": "codex.py", "type": "bool", "group": "定时任务",
         "label": "自动刷新账号 AT", "help": "临近过期时自动刷新 ChatGPT accessToken；关闭后仍可在账号页手动刷新",
     },
     {
         "key": "AT_REFRESH_SCAN_INTERVAL_SECONDS", "file": "codex.py", "type": "int", "group": "定时任务",
         "label": "刷新账号 AT 间隔（秒）", "help": "两轮扫描之间的最短间隔，范围 300-86400；默认 3600（1 小时）",
+    },
+    {
+        "key": "AT_REFRESH_BEFORE_HOURS", "file": "codex.py", "type": "int", "group": "定时任务",
+        "label": "AT 提前刷新窗口（小时）", "help": "ChatGPT access token 距离过期进入此窗口后才入队刷新，范围 1-168",
+    },
+    {
+        "key": "AT_REFRESH_INITIAL_DELAY_SECONDS", "file": "codex.py", "type": "int", "group": "定时任务",
+        "label": "AT 启动后首次巡检（秒）", "help": "服务启动后首次扫描 AT 的等待时间；修改后重启调度线程生效，范围 10-3600",
+    },
+    {
+        "key": "AT_REFRESH_MAX_PER_CYCLE", "file": "codex.py", "type": "int", "group": "定时任务",
+        "label": "AT 单轮最多刷新数", "help": "每轮最多加入刷新队列的账号数，范围 1-200",
     },
     # ---- WebUI 授权 ----
     {
@@ -754,7 +783,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "EMAIL_SOURCE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
-        "label": "邮箱来源", "help": "WebUI 可选来源列表，可填单个或多个并用逗号分隔；开始注册时必须明确选择一个，任务不会跨平台兜底：outlook,generic_api,cloudflare_domain,cloudflare,email_butler,gptmail,mailnest,cloudmail,icloud_hide",
+        "label": "邮箱来源", "help": "按列表顺序尝试邮箱来源；可多选，当前已选顺序会被保留（保存为逗号分隔），开始注册时仍必须明确选择一个，任务不会跨平台兜底",
     },
     {
         "key": "EMAIL_BUTLER_API_BASE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
@@ -834,6 +863,11 @@ _FIELD_DEFINITIONS = [
     {
         "key": "OUTLOOK_FETCH_MODE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
         "label": "Outlook取件模式", "help": "auto=远端优先，远端 402/DEPLOYMENT_DISABLED 自动切 Graph 直连；direct=只用 Microsoft Graph 直连；remote=只用远端服务",
+    },
+    {
+        "key": "OUTLOOK_API_BASE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "Outlook 远端取件地址", "help": "OUTLOOK_FETCH_MODE=remote/auto 时使用的 mail.chatai.codes API 根地址；改为自建兼容服务时填写完整地址",
+        "storage": "env",
     },
     {
         "key": "EMAIL_DOMAIN", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
@@ -1103,6 +1137,18 @@ _FIELD_DEFINITIONS = [
         "key": "EXTRACT_LINK_TYPE", "file": "extract_link.py", "type": "str", "group": "提链",
         "label": "提链类型", "help": "从提链网站读取当前启用类型；接口不可用时保留备用选项，默认 PIX",
     },
+    {
+        "key": "EXTRACT_LINK_QUEUE_LIMIT", "file": "extract_link.py", "type": "int", "group": "提链",
+        "label": "提链队列上限", "help": "提链并发队列容量；修改后需要重启进程，范围 1-5000",
+    },
+    {
+        "key": "EXTRACT_LINK_REQUEST_TIMEOUT", "file": "extract_link.py", "type": "int", "group": "提链",
+        "label": "提链请求超时（秒）", "help": "创建任务和查询余额等 HTTP 请求超时，范围 5-300",
+    },
+    {
+        "key": "EXTRACT_LINK_EVENT_TIMEOUT", "file": "extract_link.py", "type": "int", "group": "提链",
+        "label": "提链事件等待超时（秒）", "help": "等待提链任务事件的最长时间，范围 30-900",
+    },
     # ---- Codex 配置 ----
     {
         "key": "SUB2API_API_BASE", "file": "sub2api.py", "type": "str", "group": "Codex",
@@ -1243,6 +1289,30 @@ _OPTIONS: dict[str, tuple[ConfigOption, ...]] = {
         ("pool", "静态代理池"),
         ("provider:1024proxy", "1024Proxy 独立租约"),
     ),
+    "ACCOUNT_PASSWORD_PROXY_MODE": _options(
+        ("registration", "跟随注册线路"), ("direct", "直连"),
+        ("pool", "静态代理池"), ("provider:1024proxy", "1024Proxy 独立租约"),
+    ),
+    "ACCOUNT_2FA_PROXY_MODE": _options(
+        ("registration", "跟随注册线路"), ("direct", "直连"),
+        ("pool", "静态代理池"), ("provider:1024proxy", "1024Proxy 独立租约"),
+    ),
+    "ACCOUNT_PLAN_CHECK_PROXY_MODE": _options(
+        ("registration", "跟随注册线路"), ("direct", "直连"),
+        ("pool", "静态代理池"), ("provider:1024proxy", "1024Proxy 独立租约"),
+    ),
+    "ACCOUNT_LIVE_CHECK_PROXY_MODE": _options(
+        ("registration", "跟随注册线路"), ("direct", "直连"),
+        ("pool", "静态代理池"), ("provider:1024proxy", "1024Proxy 独立租约"),
+    ),
+    "ACCOUNT_REFRESH_AT_PROXY_MODE": _options(
+        ("registration", "跟随注册线路"), ("direct", "直连"),
+        ("pool", "静态代理池"), ("provider:1024proxy", "1024Proxy 独立租约"),
+    ),
+    "ACCOUNT_CODEX_PROXY_MODE": _options(
+        ("registration", "跟随注册线路"), ("direct", "直连"),
+        ("pool", "静态代理池"), ("provider:1024proxy", "1024Proxy 独立租约"),
+    ),
     "TWOFA_DRIVER": _options(
         ("auto", "自动选择（协议优先）"),
         ("protocol", "协议开通"),
@@ -1334,7 +1404,12 @@ _ALIASES: dict[str, Mapping[str, str]] = {
 _RANGES: dict[str, tuple[int | float | None, int | float | None]] = {
     "ACCOUNT_BATCH_WORKERS": (1, 16),
     "EMAIL_BUTLER_RISK_SCAN_INTERVAL_SECONDS": (900, 604800),
+    "EMAIL_BUTLER_RISK_SCAN_INITIAL_DELAY_SECONDS": (5, 3600),
+    "EMAIL_BUTLER_RISK_SCAN_LOOKBACK_DAYS": (1, 365),
     "AT_REFRESH_SCAN_INTERVAL_SECONDS": (300, 86400),
+    "AT_REFRESH_BEFORE_HOURS": (1, 168),
+    "AT_REFRESH_INITIAL_DELAY_SECONDS": (10, 3600),
+    "AT_REFRESH_MAX_PER_CYCLE": (1, 200),
     "CODEX_TOKEN_REFRESH_BEFORE_HOURS": (1, 720),
     "CODEX_TOKEN_REFRESH_SCAN_INTERVAL_SECONDS": (300, 86400),
     "CODEX_TOKEN_REFRESH_INITIAL_DELAY_SECONDS": (10, 3600),
@@ -1368,6 +1443,9 @@ _RANGES: dict[str, tuple[int | float | None, int | float | None]] = {
     "PROXY_1024_API_TIMEOUT": (0.1, 300.0),
     "PROXY_1024_MAX_ATTEMPTS": (1, 100),
     "PROXY_1024_ACQUIRE_TIMEOUT": (0.1, 3600.0),
+    "EXTRACT_LINK_QUEUE_LIMIT": (1, 5000),
+    "EXTRACT_LINK_REQUEST_TIMEOUT": (5, 300),
+    "EXTRACT_LINK_EVENT_TIMEOUT": (30, 900),
     "REGISTRATION_PROXY_RETRIES": (0, 3),
     "REGISTRATION_PROXY_RETRY_DELAY": (0, 10.0),
     "ACCOUNT_ACTION_PROXY_RETRIES": (0, 3),
@@ -1463,6 +1541,12 @@ LEGACY_ENV_OVERRIDE_TYPES: Mapping[str, str] = MappingProxyType({
 _RESTART_KEYS = frozenset({
     "WEBUI_AUTH_CODE",
     "WEBUI_SESSION_SECRET",
+    "AT_REFRESH_BEFORE_HOURS",
+    "AT_REFRESH_INITIAL_DELAY_SECONDS",
+    "AT_REFRESH_MAX_PER_CYCLE",
+    "EMAIL_BUTLER_RISK_SCAN_INITIAL_DELAY_SECONDS",
+    "EMAIL_BUTLER_RISK_SCAN_LOOKBACK_DAYS",
+    "EXTRACT_LINK_QUEUE_LIMIT",
 })
 
 _SECRET_KEYS = frozenset({

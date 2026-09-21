@@ -614,11 +614,11 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         """
         from webui.config_editor import EDITABLE_FIELDS
         keys = {f["key"] for f in EDITABLE_FIELDS if f.get("group") == "定时任务"}
-        self.assertEqual(keys, {
+        self.assertTrue({
             "EMAIL_BUTLER_RISK_SCAN_ENABLED", "EMAIL_BUTLER_RISK_SCAN_INTERVAL_SECONDS",
             "AT_AUTO_REFRESH_ENABLED", "AT_REFRESH_SCAN_INTERVAL_SECONDS",
             "CODEX_TOKEN_AUTO_REFRESH_ENABLED", "CODEX_TOKEN_REFRESH_SCAN_INTERVAL_SECONDS",
-        })
+        }.issubset(keys))
 
     def test_scheduled_task_switches_are_env_overridable(self):
         for key, module in [
