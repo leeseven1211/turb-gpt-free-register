@@ -1,5 +1,7 @@
 # Project optimization implementation status
 
+> **历史记录**：本文保留当时的优化状态与验收记录，不作为现行运行规则；请从 [文档导航](../../README.md) 进入当前资料。
+
 Updated: 2026-09-14. Coordinator owns this file.
 
 Heartbeat monitor: automation ID `automation`, active every 10 minutes in this

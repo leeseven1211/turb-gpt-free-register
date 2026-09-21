@@ -1,5 +1,7 @@
 # 账号认证协议能力分阶段实施清单
 
+> **历史记录**：本文保留当时的分阶段放行记录，不作为现行运行规则；请从 [文档导航](../../README.md) 进入当前资料。
+
 > 本文是本次改造唯一的实施顺序和放行依据。两份完整设计文档只作为技术背景；如果表述冲突，以本清单为准。
 
 > 当前公开配置和支持边界以 [`registration-auth-support-matrix.md`](registration-auth-support-matrix.md) 为准。本文中阶段记录里的 `protocol_v2`、`ACCOUNT_TOKEN_REFRESH_DRIVER` 和 `ACCOUNT_AUTH_V2_ENABLED` 是历史实现名称；新任务使用统一的 `OPENAI_PROTOCOL_VERSION`。

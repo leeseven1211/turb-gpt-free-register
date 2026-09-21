@@ -1,5 +1,7 @@
 # 维护动作 durable operation 迁移（2026-09-14）
 
+> **历史记录**：本文保留当时的维护任务迁移记录，不作为现行运行规则；请从 [文档导航](../../README.md) 进入当前资料。
+
 本阶段把账号维护动作的排队和执行边界接到共享
 `core.operations.task_gateway`。PostgreSQL 的 `operation_tasks`/
 `operation_runs` 是队列与执行状态事实来源；账号表仍保存查活、套餐、提链和

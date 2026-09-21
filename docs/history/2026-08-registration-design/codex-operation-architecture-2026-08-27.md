@@ -1,5 +1,7 @@
 # Codex 补跑运行架构
 
+> **历史记录**：本文是 2026-08-27 的 Codex operation 设计快照，不作为现行运行规则；请从 [文档导航](../../README.md) 进入当前资料。
+
 ## 结论
 
 Codex 补跑只有一个业务入口：`core/codex_operation_service.py`。Web 单账号、Web 批量、

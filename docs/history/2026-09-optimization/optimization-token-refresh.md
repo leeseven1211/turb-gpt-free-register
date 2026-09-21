@@ -1,5 +1,7 @@
 # Codex token refresh durable operation
 
+> **历史记录**：本文保留当时的 Token 刷新迁移记录，不作为现行运行规则；请从 [文档导航](../../README.md) 进入当前资料。
+
 本阶段把 Codex `refresh_token` 旋转从进程内 `_IN_FLIGHT`/直接 executor
 提交迁移为 PostgreSQL `operation_tasks`/`operation_runs`。实现位于
 `core/codex_token_refresh_service.py`；不创建第二个 dispatcher，也不把
