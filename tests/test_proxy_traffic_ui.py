@@ -5,61 +5,51 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-TEMPLATES = {
-    "modern": ROOT / "webui/templates/index.html",
-    "legacy": ROOT / "webui/templates/index_legacy.html",
-}
+TEMPLATE = (ROOT / "webui/templates/index.html").read_text(encoding="utf-8")
 MODERN_COMMON = (ROOT / "webui/static/js/modern/common.js").read_text(encoding="utf-8")
-LEGACY_COMMON = (ROOT / "webui/static/js/legacy/common.js").read_text(encoding="utf-8")
 PROXY_JS_PATH = ROOT / "webui/static/js/proxy_traffic.js"
 PROXY_JS = PROXY_JS_PATH.read_text(encoding="utf-8") if PROXY_JS_PATH.exists() else ""
 FOUNDATION_CSS = (ROOT / "webui/static/css/ui-foundation.css").read_text(encoding="utf-8")
 
 
 class ProxyTrafficUiContractTest(unittest.TestCase):
-    def test_both_templates_expose_an_independent_three_view_workspace(self):
+    def test_template_exposes_an_independent_three_view_workspace(self):
         required_views = (
             'data-proxy-view="current"',
             'data-proxy-view="history"',
             'data-proxy-view="traffic"',
         )
-        for name, path in TEMPLATES.items():
-            html = path.read_text(encoding="utf-8")
-            self.assertIn('data-tab="proxy-traffic"', html, name)
-            self.assertIn('id="tab-proxy-traffic"', html, name)
-            for view in required_views:
-                self.assertIn(view, html, name)
-            self.assertIn('id="proxyTrafficCurrentBody"', html, name)
-            self.assertIn('id="proxyTrafficHistoryBody"', html, name)
-            self.assertIn('id="proxyTrafficTrafficBody"', html, name)
-            self.assertIn('js/proxy_traffic.js', html, name)
+        self.assertIn('data-tab="proxy-traffic"', TEMPLATE)
+        self.assertIn('id="tab-proxy-traffic"', TEMPLATE)
+        for view in required_views:
+            self.assertIn(view, TEMPLATE)
+        self.assertIn('id="proxyTrafficCurrentBody"', TEMPLATE)
+        self.assertIn('id="proxyTrafficHistoryBody"', TEMPLATE)
+        self.assertIn('id="proxyTrafficTrafficBody"', TEMPLATE)
+        self.assertIn('js/proxy_traffic.js', TEMPLATE)
 
-    def test_both_templates_remove_the_manual_refresh_row_and_top_filter_card(self):
-        for name, path in TEMPLATES.items():
-            html = path.read_text(encoding="utf-8")
-            self.assertNotIn('Network operations', html, name)
-            self.assertNotIn('<h2>代理与流量</h2>', html, name)
-            self.assertNotIn('查看持久化线路租约与 Roxy/CDP 可观测的浏览器字节；协议任务显示为未采集。', html, name)
-            self.assertNotIn('class="proxy-traffic-head"', html, name)
-            self.assertNotIn('id="proxyTrafficLastUpdated"', html, name)
-            self.assertNotIn('id="btnRefreshProxyTraffic"', html, name)
-            self.assertNotIn('class="proxy-traffic-toolbar"', html, name)
+    def test_template_removes_the_manual_refresh_row_and_top_filter_card(self):
+        self.assertNotIn('Network operations', TEMPLATE)
+        self.assertNotIn('<h2>代理与流量</h2>', TEMPLATE)
+        self.assertNotIn('查看持久化线路租约与 Roxy/CDP 可观测的浏览器字节；协议任务显示为未采集。', TEMPLATE)
+        self.assertNotIn('class="proxy-traffic-head"', TEMPLATE)
+        self.assertNotIn('id="proxyTrafficLastUpdated"', TEMPLATE)
+        self.assertNotIn('id="btnRefreshProxyTraffic"', TEMPLATE)
+        self.assertNotIn('class="proxy-traffic-toolbar"', TEMPLATE)
 
-    def test_both_templates_put_existing_filters_in_relevant_table_headers(self):
+    def test_template_puts_existing_filters_in_relevant_table_headers(self):
         filter_contracts = {
             "search": ("proxyTrafficSearchCurrent", "proxyTrafficSearchHistory", "proxyTrafficSearchTraffic"),
             "state": ("proxyTrafficStateCurrent", "proxyTrafficStateHistory", "proxyTrafficStateTraffic"),
             "window": ("proxyTrafficWindowCurrent", "proxyTrafficWindowHistory", "proxyTrafficWindowTraffic"),
             "purpose": ("proxyTrafficPurposeCurrent", "proxyTrafficPurposeHistory"),
         }
-        for name, path in TEMPLATES.items():
-            html = path.read_text(encoding="utf-8")
-            for key, control_ids in filter_contracts.items():
-                self.assertGreaterEqual(html.count(f'data-proxy-filter-key="{key}"'), len(control_ids), name)
-                for control_id in control_ids:
-                    self.assertIn(f'data-column-filter="{control_id}"', html, name)
-            self.assertIn('id="btnClearProxyTrafficFilters"', html, name)
-            self.assertIn('class="proxy-traffic-view-bar"', html, name)
+        for key, control_ids in filter_contracts.items():
+            self.assertGreaterEqual(TEMPLATE.count(f'data-proxy-filter-key="{key}"'), len(control_ids))
+            for control_id in control_ids:
+                self.assertIn(f'data-column-filter="{control_id}"', TEMPLATE)
+        self.assertIn('id="btnClearProxyTrafficFilters"', TEMPLATE)
+        self.assertIn('class="proxy-traffic-view-bar"', TEMPLATE)
 
     def test_proxy_filter_script_synchronizes_header_controls_without_manual_refresh_ui(self):
         self.assertIn("[data-proxy-filter-key]", PROXY_JS)
@@ -72,8 +62,6 @@ class ProxyTrafficUiContractTest(unittest.TestCase):
         self.assertIn("'proxy-traffic': { title: '代理与流量'", MODERN_COMMON)
         self.assertIn("'proxy-traffic'", MODERN_COMMON)
         self.assertIn("if (tab === 'proxy-traffic') ensureViewLoaded('proxy-traffic', loadProxyTraffic);", MODERN_COMMON)
-        self.assertIn("'proxy-traffic'", LEGACY_COMMON)
-        self.assertIn("if (tab === 'proxy-traffic') ensureViewLoaded('proxy-traffic', loadProxyTraffic);", LEGACY_COMMON)
 
     def test_frontend_uses_only_the_proxy_traffic_contract_and_never_renders_secrets(self):
         self.assertNotIn("const PROXY_TRAFFIC_API = '/api/proxy-traffic';", PROXY_JS)

@@ -13,7 +13,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import pyotp
-from flask import Response, jsonify, make_response, redirect, render_template, request, url_for
+from flask import Response, jsonify, redirect, render_template, request, url_for
 
 from core import (
     account_task_store,
@@ -69,19 +69,8 @@ def create_dashboard_blueprint(context: WebUIContext):
 
     @bp.get("/")
     def index():
-        requested_ui = (request.args.get("ui") or "").strip().lower()
-        if requested_ui in {"legacy", "modern"}:
-            ui_mode = requested_ui
-        else:
-            ui_mode = (request.cookies.get("ui_mode") or "modern").strip().lower()
-            if ui_mode not in {"legacy", "modern"}:
-                ui_mode = "modern"
-
-        template_name = "index_legacy.html" if ui_mode == "legacy" else "index.html"
-        resp = make_response(render_template(template_name))
-        if requested_ui in {"legacy", "modern"}:
-            resp.set_cookie("ui_mode", ui_mode, max_age=60 * 60 * 24 * 365, samesite="Lax")
-        return resp
+        # 统一使用当前界面，历史书签参数和界面偏好 Cookie 不再参与模板选择。
+        return render_template("index.html")
 
     @bp.get("/api/summary")
     def api_summary():

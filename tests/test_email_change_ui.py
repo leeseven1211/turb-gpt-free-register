@@ -33,27 +33,26 @@ class EmailChangeUiTests(PostgresTestCase):
         self.client = self.app.test_client()
         self.headers = {"X-Auth-Code": "test-auth"}
 
-    def test_both_ui_variants_render_source_only_accessible_dialog(self):
-        for path in ("/", "/?ui=legacy"):
-            response = self.client.get(path, headers=self.headers)
-            self.assertEqual(200, response.status_code)
-            source = response.get_data(as_text=True)
-            parser = _ElementCollector()
-            parser.feed(source)
+    def test_ui_renders_source_only_accessible_dialog(self):
+        response = self.client.get("/", headers=self.headers)
+        self.assertEqual(200, response.status_code)
+        source = response.get_data(as_text=True)
+        parser = _ElementCollector()
+        parser.feed(source)
 
-            modal = parser.by_id("emailChangeModal")
-            self.assertIsNotNone(modal)
-            self.assertEqual("dialog", modal[1].get("role"))
-            self.assertEqual("true", modal[1].get("aria-modal"))
-            self.assertEqual("emailChangeTitle", modal[1].get("aria-labelledby"))
+        modal = parser.by_id("emailChangeModal")
+        self.assertIsNotNone(modal)
+        self.assertEqual("dialog", modal[1].get("role"))
+        self.assertEqual("true", modal[1].get("aria-modal"))
+        self.assertEqual("emailChangeTitle", modal[1].get("aria-labelledby"))
 
-            source_select = parser.by_id("emailChangeSource")
-            self.assertIsNotNone(source_select)
-            self.assertEqual("select", source_select[0])
-            self.assertEqual("email_source", source_select[1].get("name"))
-            self.assertIn("required", source_select[1])
-            self.assertIsNone(parser.by_id("emailChangeTarget"))
-            self.assertIn("不会启动浏览器", source)
+        source_select = parser.by_id("emailChangeSource")
+        self.assertIsNotNone(source_select)
+        self.assertEqual("select", source_select[0])
+        self.assertEqual("email_source", source_select[1].get("name"))
+        self.assertIn("required", source_select[1])
+        self.assertIsNone(parser.by_id("emailChangeTarget"))
+        self.assertIn("不会启动浏览器", source)
 
     def test_modern_submit_posts_only_source_and_opens_email_change_tasks(self):
         source = (ROOT / "webui/static/js/modern/accounts.js").read_text(encoding="utf-8")
@@ -103,12 +102,8 @@ function activateTab(tab) {{ calls.push({{tab}}); }}
         self.assertEqual(0, result.returncode, result.stderr or result.stdout)
         self.assertEqual("ok", result.stdout.strip())
 
-    def test_both_ui_variants_load_email_change_sources_and_disable_unavailable_choices(self):
-        for relative in (
-            "webui/static/js/modern/accounts.js",
-            "webui/static/js/legacy/accounts.js",
-        ):
-            source = (ROOT / relative).read_text(encoding="utf-8")
-            self.assertIn("/api/email-sources", source, relative)
-            self.assertIn("option.disabled = !item.enabled", source, relative)
-            self.assertIn("item.reason", source, relative)
+    def test_ui_loads_email_change_sources_and_disables_unavailable_choices(self):
+        source = (ROOT / "webui/static/js/modern/accounts.js").read_text(encoding="utf-8")
+        self.assertIn("/api/email-sources", source)
+        self.assertIn("option.disabled = !item.enabled", source)
+        self.assertIn("item.reason", source)

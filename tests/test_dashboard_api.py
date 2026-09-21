@@ -159,16 +159,9 @@ console.log('ok');
 
     def test_frontend_static_assets_are_referenced_and_served(self):
         assets = self.MODERN_ASSETS + (
-            "css/legacy.css",
+            "css/ui-foundation.css",
             "css/login.css",
-            "js/legacy/common.js",
-            "js/legacy/dashboard.js",
-            "js/legacy/jobs.js",
-            "js/legacy/accounts.js",
-            "js/legacy/email.js",
-            "js/legacy/codex.js",
-            "js/legacy/config.js",
-            "js/legacy/bootstrap.js",
+            "js/proxy_traffic.js",
             "js/login.js",
         )
         for asset in assets:
@@ -179,11 +172,22 @@ console.log('ok');
                 response.close()
 
         modern = self.client.get("/", headers=self.headers).get_data(as_text=True)
-        legacy = self.client.get("/?ui=legacy", headers=self.headers).get_data(as_text=True)
         login = self.client.get("/login").get_data(as_text=True)
         self.assertIn("/static/js/modern/common.js", modern)
-        self.assertIn("/static/js/legacy/common.js", legacy)
+        self.assertIn("/static/js/proxy_traffic.js", modern)
         self.assertIn("/static/js/login.js", login)
+
+    def test_previous_ui_preferences_open_the_current_interface(self):
+        self.client.set_cookie("ui_mode", "legacy")
+        for path in ("/", "/?ui=legacy", "/?ui=modern"):
+            with self.subTest(path=path):
+                response = self.client.get(path, headers=self.headers)
+                self.assertEqual(response.status_code, 200)
+                html = response.get_data(as_text=True)
+                self.assertIn('class="app-sidebar"', html)
+                self.assertIn("/static/js/modern/common.js", html)
+                self.assertNotIn("/static/js/legacy/", html)
+                self.assertNotIn("ui_mode=", " ".join(response.headers.getlist("Set-Cookie")))
 
     @patch("core.proxy_provider.registration_proxy_mode", return_value="1024")
     @patch("core.proxy_provider.active_proxy_leases", return_value=[{"provider": "1024proxy", "endpoint": "1.2.*.*:80"}])
@@ -746,22 +750,10 @@ console.log('ok');
         self.assertNotIn('data-account-totp-code="${esc(r.id)}"', html)
         self.assertNotIn("请先查询验证码", html)
 
-    def test_legacy_totp_ui_keeps_code_copy_without_row_secret_copy(self):
-        response = self.client.get("/?ui=legacy", headers=self.headers)
-        html = self._page_source(response, ("js/legacy/accounts.js",))
-        self.assertNotIn('data-account-copy-secret="totp_secret"', html)
-        self.assertNotIn('title="复制 2FA 密钥（不是当前 6 位验证码）"', html)
-        self.assertIn('title="复制当前 TOTP 验证码"', html)
-
-    def test_both_account_interfaces_expose_chatgpt_session_copy_action(self):
-        modern = self._modern_page_source(self.client.get("/", headers=self.headers))
-        legacy = self._page_source(
-            self.client.get("/?ui=legacy", headers=self.headers),
-            ("js/legacy/accounts.js",),
-        )
-        for source in (modern, legacy):
-            self.assertIn('data-account-copy-secret="chatgpt_session"', source)
-            self.assertIn("复制 ChatGPT session", source)
+    def test_account_interface_exposes_chatgpt_session_copy_action(self):
+        source = self._modern_page_source(self.client.get("/", headers=self.headers))
+        self.assertIn('data-account-copy-secret="chatgpt_session"', source)
+        self.assertIn("复制 ChatGPT session", source)
 
     def test_codex_column_filters_are_combined(self):
         db.save_codex_credential_record("codex-a@example.com-free.json", {

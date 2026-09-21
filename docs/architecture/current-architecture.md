@@ -36,7 +36,7 @@ config/
 core/
   -> 注册、账号、Codex、邮箱、代理、任务、存储与外部客户端
 webui/ routes/
-  -> 参数校验、服务调用、响应序列化、现代版/兼容版界面
+  -> 参数校验、服务调用、响应序列化、现代界面
 main.py / web.py
   -> CLI 兼容入口与 Web 进程生命周期
 ```
@@ -44,9 +44,9 @@ main.py / web.py
 `core/` 不反向依赖 `webui/` 或 CLI。路由不得直接重写业务状态机；配置的公开字段以
 `config/schema.py` 为准，页面编辑器和所有入口必须共用相同的配置语义。
 
-现代与兼容版 UI 同时存在：模板位于 `webui/templates/`，脚本和样式位于
-`webui/static/js/{modern,legacy}/` 与 `webui/static/css/`。涉及路由契约、模板或配置页时，
-两套 UI 都是同一功能范围的一部分。
+WebUI 只维护现代界面：主模板为 `webui/templates/index.html`，业务脚本和样式位于
+`webui/static/js/modern/` 与 `webui/static/css/`。旧 `?ui=legacy` 链接和
+`ui_mode=legacy` Cookie 均返回现代页面；相关路由兼容检查属于现代界面的入口验收。
 
 ## 3. 主要业务流
 

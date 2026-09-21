@@ -1,10 +1,8 @@
 /*
- * Turb Console UI foundation
+ * Turb Console 基础样式
  *
- * This file is the single source of truth for the shared visual language.
- * The current page is still a large legacy template, so the compatibility
- * aliases below let existing module selectors migrate without changing their
- * DOM ids or JavaScript contracts.
+ * 当前管理界面与登录页共用的视觉变量和基础样式。
+ * 下方变量别名继续供现有模块使用，保留其 DOM 与 JavaScript 契约。
  */
 
 :root {
@@ -61,7 +59,7 @@
   --ui-shadow-sm: 0 1px 2px rgba(16, 24, 40, .03), 0 8px 24px rgba(16, 24, 40, .04);
   --ui-shadow-md: 0 16px 38px rgba(28, 34, 52, .14), 0 2px 8px rgba(28, 34, 52, .06);
 
-  /* Shared legacy aliases. New CSS should use the --ui-* roles above. */
+  /* 现有模块使用的变量别名；新增样式使用上方 --ui-* 语义变量。 */
   --bg: var(--ui-color-bg);
   --surface: var(--ui-color-surface);
   --soft: var(--ui-color-surface-subtle);

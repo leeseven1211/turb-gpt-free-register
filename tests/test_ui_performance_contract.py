@@ -42,23 +42,18 @@ const fs = require('fs');
 const path = require('path');
 
 const projectRoot = process.argv[1];
-const files = [
-  'webui/static/js/modern/common.js',
-  'webui/static/js/legacy/common.js',
-];
+const relativePath = 'webui/static/js/modern/common.js';
+const source = fs.readFileSync(path.join(projectRoot, relativePath), 'utf8');
+const start = source.indexOf('const API_INFLIGHT');
+const apiStart = source.indexOf('async function api(');
+const end = source.indexOf('let CAPABILITIES', apiStart);
+if (start < 0 || apiStart < 0 || end < 0) throw new Error(`cache helper block missing: ${relativePath}`);
 
-for (const relativePath of files) {
-  const source = fs.readFileSync(path.join(projectRoot, relativePath), 'utf8');
-  const start = source.indexOf('const API_INFLIGHT');
-  const apiStart = source.indexOf('async function api(');
-  const end = source.indexOf('let CAPABILITIES', apiStart);
-  if (start < 0 || apiStart < 0 || end < 0) throw new Error(`cache helper block missing: ${relativePath}`);
-
-  const declarations = source.split('\n')
-    .filter(line => /^(const (API_INFLIGHT|API_CACHE|VIEW_READY|VIEW_REFRESH_MAX_AGE_MS))/.test(line.trim()))
-    .join('\n');
-  const helperBlock = `${declarations}\n${source.slice(apiStart, end)}`;
-  const runner = `${helperBlock}
+const declarations = source.split('\n')
+  .filter(line => /^(const (API_INFLIGHT|API_CACHE|VIEW_READY|VIEW_REFRESH_MAX_AGE_MS))/.test(line.trim()))
+  .join('\n');
+const helperBlock = `${declarations}\n${source.slice(apiStart, end)}`;
+const runner = `${helperBlock}
 let fetchCalls = 0;
 global.fetch = async () => {
   fetchCalls += 1;
@@ -87,14 +82,13 @@ global.fetch = async () => {
   process.exitCode = 1;
 });`;
 
-  const result = require('child_process').spawnSync(
-    process.execPath,
-    ['--input-type=commonjs', '-e', runner, projectRoot],
-    { encoding: 'utf8' },
-  );
-  if (result.status !== 0) {
-    throw new Error(`${relativePath} helper contract failed:\n${result.stdout}\n${result.stderr}`);
-  }
+const result = require('child_process').spawnSync(
+  process.execPath,
+  ['--input-type=commonjs', '-e', runner, projectRoot],
+  { encoding: 'utf8' },
+);
+if (result.status !== 0) {
+  throw new Error(`${relativePath} helper contract failed:\n${result.stdout}\n${result.stderr}`);
 }
 '''
         result = subprocess.run(
@@ -190,29 +184,25 @@ if (accountTaskCanRetry({
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_both_account_variants_hide_actions_for_all_deactivation_projections(self):
+    def test_account_ui_hides_actions_for_all_deactivation_projections(self):
         harness = r'''
 const fs = require('fs');
 const path = require('path');
 
 const projectRoot = process.argv[1];
-for (const relativePath of [
-  'webui/static/js/modern/accounts.js',
-  'webui/static/js/legacy/accounts.js',
-]) {
-  const source = fs.readFileSync(path.join(projectRoot, relativePath), 'utf8');
-  const start = source.indexOf('function accountIsDeactivated(');
-  const end = source.indexOf('\nfunction ', start + 1);
-  if (start < 0 || end < 0) throw new Error(`account deactivation helper missing: ${relativePath}`);
-  eval(source.slice(start, end));
-  for (const key of ['account_status', 'codex_status', 'codex_credential_state']) {
-    if (!accountIsDeactivated({[key]: 'deactivated'})) {
-      throw new Error(`${relativePath} did not recognize ${key}`);
-    }
+const relativePath = 'webui/static/js/modern/accounts.js';
+const source = fs.readFileSync(path.join(projectRoot, relativePath), 'utf8');
+const start = source.indexOf('function accountIsDeactivated(');
+const end = source.indexOf('\nfunction ', start + 1);
+if (start < 0 || end < 0) throw new Error(`account deactivation helper missing: ${relativePath}`);
+eval(source.slice(start, end));
+for (const key of ['account_status', 'codex_status', 'codex_credential_state']) {
+  if (!accountIsDeactivated({[key]: 'deactivated'})) {
+    throw new Error(`${relativePath} did not recognize ${key}`);
   }
-  if (accountIsDeactivated({account_status: 'active', codex_status: 'failed'})) {
-    throw new Error(`${relativePath} misclassified a retryable account`);
-  }
+}
+if (accountIsDeactivated({account_status: 'active', codex_status: 'failed'})) {
+  throw new Error(`${relativePath} misclassified a retryable account`);
 }
 '''
         result = subprocess.run(
@@ -225,13 +215,9 @@ for (const relativePath of [
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_config_writes_invalidate_the_cached_config_for_both_ui_variants(self):
-        for relative_path in (
-            "webui/static/js/modern/config.js",
-            "webui/static/js/legacy/config.js",
-        ):
-            source = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
-            self.assertIn("invalidateApiCache('/api/config');", source, relative_path)
+    def test_config_writes_invalidate_the_cached_config(self):
+        source = (PROJECT_ROOT / "webui/static/js/modern/config.js").read_text(encoding="utf-8")
+        self.assertIn("invalidateApiCache('/api/config');", source)
 
 
 if __name__ == "__main__":

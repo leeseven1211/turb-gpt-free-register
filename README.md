@@ -557,7 +557,7 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 - 项目按 `config/`（声明式默认值）→ `core/`（驱动与业务服务）→ `webui/routes/` 和 `main.py`（WebUI / CLI 入口）分层；`core/` 不反向依赖 `webui/`。
 - 注册由 `core.registration.dispatcher.run_registration()` 按 `REGISTRATION_DRIVER` 分发，Codex OAuth 由 `core.codex_oauth.run_codex_oauth()` 按 `CODEX_OAUTH_DRIVER` 分发。驱动必须使用统一参数和任务进度上报接口。
 - `webui/app.py` 只负责组装应用；领域路由位于 `webui/routes/`，`webui/runtime.py` 负责启动恢复和后台 worker。新增长期任务时必须补充启动恢复，避免重启后记录永久停在 `running`。
-- WebUI 同时维护现代版和旧版模板。涉及页面结构、脚本或接口契约的改动，必须同步检查两套界面及 `tests/test_dashboard_api.py`。
+- WebUI 只维护现代界面，统一使用 `webui/templates/index.html` 和 `webui/static/js/modern/`。旧书签中的 `?ui=legacy` 和浏览器保留的 `ui_mode=legacy` Cookie 仍返回现代页面。涉及页面结构、脚本或接口契约的改动，应检查现代界面、相关回归测试及真实浏览器行为。
 - 配置页保存到 `.env` 并热加载，不修改 `config/*.py`。需要读取热加载值的运行时代码应通过配置模块访问，避免 `from config import X` 形成过期绑定。
 
 #### 邮件验证码
@@ -945,7 +945,7 @@ python tools/test_codex_oauth.py --email <已注册邮箱> --verbose
 - 1 次邮箱 OTP
 - 1 个接码号码
 
-兼容文件日志仍保留用于旧版页面或本地故障排查：
+兼容文件日志仍保留用于本地故障排查：
 
 ```text
 logs/codex-retry-邮箱.log
@@ -1173,10 +1173,10 @@ ENABLE_CODEX_AUTO = False
 │   │   └── codex.py / integrations.py / health.py
 │   ├── auth.py                     # 登录鉴权
 │   ├── config_editor.py            # 配置白名单、.env 写入与热加载
-│   ├── templates/                  # modern / legacy / login 模板
+│   ├── templates/                  # 现代界面 index.html / 登录页 login.html
 │   └── static/                     # CSS、按页面/领域拆分的普通 JavaScript、favicon
-│       ├── css/                   # foundation、modern、legacy、login 样式
-│       └── js/                    # modern/legacy 八段业务脚本 + login.js
+│       ├── css/                   # foundation、modern、login 样式
+│       └── js/                    # modern 八段业务脚本、proxy_traffic.js 和 login.js
 ├── tests/                          # unittest、存储隔离和契约测试
 ├── tools/                          # 迁移、诊断和单独补跑工具
 ├── docs/                           # 架构、流程、规范和路线图

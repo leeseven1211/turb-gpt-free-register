@@ -405,16 +405,12 @@ class ExtractLinkTypesEndpointTests(PostgresTestCase):
 class ExtractLinkConfigUiTests(unittest.TestCase):
     ROOT = Path(__file__).resolve().parents[1]
 
-    def test_modern_and_legacy_config_use_remote_type_select(self):
-        for relative_path, function_name in (
-            ("webui/static/js/modern/config.js", "loadExtractLinkTypesV2"),
-            ("webui/static/js/legacy/config.js", "loadExtractLinkTypes"),
-        ):
-            source = (self.ROOT / relative_path).read_text(encoding="utf-8")
-            self.assertIn("EXTRACT_LINK_TYPE", source)
-            self.assertIn("/api/extract-link/types", source)
-            self.assertIn(f"function {function_name}", source)
-            self.assertIn("<select data-key=", source)
+    def test_config_uses_remote_type_select(self):
+        source = (self.ROOT / "webui/static/js/modern/config.js").read_text(encoding="utf-8")
+        self.assertIn("EXTRACT_LINK_TYPE", source)
+        self.assertIn("/api/extract-link/types", source)
+        self.assertIn("function loadExtractLinkTypesV2", source)
+        self.assertIn("<select data-key=", source)
 
 
 if __name__ == "__main__":

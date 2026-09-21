@@ -32,24 +32,16 @@ class LiveCheckStatusUiTests(PostgresTestCase):
         self.assertEqual("failed", account["live_check_status"])
         self.assertEqual(401, account["live_check_http_status"])
 
-    def test_both_account_uis_render_clickable_token_states(self):
-        for asset in ("modern/accounts.js", "legacy/accounts.js"):
-            with self.subTest(asset=asset):
-                response = self.client.get(f"/static/js/{asset}")
-                try:
-                    source = response.get_data(as_text=True)
-                    self.assertIn("live_check_http_status", source)
-                    self.assertIn("data-account-copy-secret=\"access_token\"", source)
-                    self.assertIn("失效 ·", source)
-                    self.assertIn("Token 到期：", source)
-                finally:
-                    response.close()
-
+    def test_account_ui_renders_clickable_token_states(self):
         modern = self.client.get("/static/js/modern/accounts.js")
         foundation = self.client.get("/static/css/ui-foundation.css")
         try:
             modern_source = modern.get_data(as_text=True)
             foundation_source = foundation.get_data(as_text=True)
+            self.assertIn("live_check_http_status", modern_source)
+            self.assertIn("data-account-copy-secret=\"access_token\"", modern_source)
+            self.assertIn("失效 ·", modern_source)
+            self.assertIn("Token 到期：", modern_source)
             self.assertIn("acc-v2-token-state", modern_source)
             self.assertNotIn("acc-v2-token-alert", modern_source)
             self.assertIn(".accounts-table-v2 .acc-v2-token-state.is-normal", foundation_source)
@@ -61,22 +53,18 @@ class LiveCheckStatusUiTests(PostgresTestCase):
             modern.close()
             foundation.close()
 
-    def test_both_account_uis_render_account_status_as_a_separate_column(self):
+    def test_account_ui_renders_account_status_as_a_separate_column(self):
         modern = self.client.get("/", headers=self.headers).get_data(as_text=True)
-        legacy = self.client.get("/?ui=legacy", headers=self.headers).get_data(as_text=True)
         self.assertIn('data-column-filter="accountStatusFilterV2"', modern)
         self.assertIn(">账号状态</th>", modern)
-        self.assertIn(">账号状态</th>", legacy)
 
-        for asset in ("modern/accounts.js", "legacy/accounts.js"):
-            with self.subTest(asset=asset):
-                response = self.client.get(f"/static/js/{asset}")
-                try:
-                    source = response.get_data(as_text=True)
-                    self.assertIn("accountStatus", source)
-                    self.assertIn("已废号", source)
-                    self.assertIn("Token 异常", source)
-                    self.assertIn("查活失败", source)
-                    self.assertIn("待查活", source)
-                finally:
-                    response.close()
+        response = self.client.get("/static/js/modern/accounts.js")
+        try:
+            source = response.get_data(as_text=True)
+            self.assertIn("accountStatus", source)
+            self.assertIn("已废号", source)
+            self.assertIn("Token 异常", source)
+            self.assertIn("查活失败", source)
+            self.assertIn("待查活", source)
+        finally:
+            response.close()
