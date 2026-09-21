@@ -180,7 +180,7 @@ PostgreSQL 是**唯一事实来源**，没有纯文件模式回退：`DATABASE_U
 
 账号、注册任务、Outlook 和 iCloud 邮箱池不再生成根目录 JSON/TXT、`accounts/` 批次归档或 `accounts_viewer.html`，运行时只读写 PostgreSQL。仍有外部消费者的通用 API、域名邮箱和 Codex 兼容产物由后台按需生成；日志和浏览器缓存仍保留在文件系统。
 
-结构、迁移步骤与开发约定见 [`docs/storage-architecture.md`](docs/storage-architecture.md)。
+结构、迁移步骤与开发约定见 [`docs/architecture/storage-architecture.md`](docs/architecture/storage-architecture.md)。
 
 本机 PostgreSQL 已从项目目录拆分为公共服务。启动：
 
@@ -620,7 +620,7 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 脚本默认启动 `http://127.0.0.1:5000`，日志写入 `logs/webui.log`，PID 写入 `logs/run/webui.pid`。
 `start` 会等待 `/healthz`、PostgreSQL 和必需后台 worker readiness 全部通过后才报告成功；
 `check` 不启动或重启服务。固定版本发布、回退和隔离测试见
-[`docs/optimization-release.md`](docs/optimization-release.md)。
+[`docs/development/release-verification.md`](docs/development/release-verification.md)。
 
 可通过环境变量调整：
 
@@ -976,7 +976,7 @@ OpenAI 新版注册通常先展示邮箱验证码页；新账号页面同时提�
 
 密码始终按账号独立随机生成：14 位，包含大写、小写、数字和符号。配置页不提供固定密码输入，避免一批账号共用同一个密码。
 
-注册、查活、刷新 AT、补密码和补 2FA 的完整支持矩阵见 [`docs/registration-auth-support-matrix.md`](docs/registration-auth-support-matrix.md)。
+注册、查活、刷新 AT、补密码和补 2FA 的完整支持矩阵见 [`docs/workflows/account-auth-support-matrix.md`](docs/workflows/account-auth-support-matrix.md)。
 
 保存位置：
 
@@ -1204,7 +1204,7 @@ ruff check .
 ruff check --select E4,E7,E9,F --exit-zero .
 ```
 
-涉及 PostgreSQL 的完整测试优先通过项目现有的隔离测试工具或 `tests.support_pg.PostgresTestCase` 运行。该基类会创建临时 schema、重定向兼容导出并在用例间清理数据；不得把测试 schema 指向 `public`。详细存储约束见 [`docs/storage-architecture.md`](docs/storage-architecture.md)。
+涉及 PostgreSQL 的完整测试优先通过项目现有的隔离测试工具或 `tests.support_pg.PostgresTestCase` 运行。该基类会创建临时 schema、重定向兼容导出并在用例间清理数据；不得把测试 schema 指向 `public`。详细存储约束见 [`docs/architecture/storage-architecture.md`](docs/architecture/storage-architecture.md)。
 
 涉及真实浏览器或外部服务时，先验证单任务，再逐步增加并发；测试结论要区分静态测试、数据库状态、浏览器链路和实际服务运行状态。
 

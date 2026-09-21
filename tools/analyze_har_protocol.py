@@ -84,7 +84,7 @@ def classify(url: str) -> str:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("har")
-    ap.add_argument("-o", "--output", default="docs/protocol_har_summary.json")
+    ap.add_argument("-o", "--output", default="docs/reference/protocol-har-summary.json")
     args = ap.parse_args()
     har_path = pathlib.Path(args.har)
     data = json.loads(har_path.read_text(encoding="utf-8"))

@@ -23,7 +23,7 @@ registered_accounts             已落库的账号资产
 核心约束是：**执行状态和目标状态永远分开**。
 
 Codex 补跑的运行态、协作式取消、三轴账号状态和 callback 凭证确认规则详见
-[`codex-operation-architecture.md`](codex-operation-architecture.md)。
+[`codex-operation-architecture-2026-08-27.md`](codex-operation-architecture-2026-08-27.md)。
 
 - “本次执行失败”不等于“OpenAI 账号不存在”。
 - `operation_tasks.status` 描述执行结果。

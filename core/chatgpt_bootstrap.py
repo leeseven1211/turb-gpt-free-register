@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """ChatGPT 前端 bootstrap 预热链路。
 
-根据 docs/protocol_fingerprint_har_analysis.md / protocol_har_summary.json
+根据 docs/reference/protocol-fingerprint-har-analysis.md / protocol-har-summary.json
 补齐与真实 Web 首屏更接近的 backend-anon / backend-api 初始化请求。该模块只做
 可失败的预热：任何单个接口异常都会记录并继续，不打断注册主流程。
 """

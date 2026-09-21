@@ -4,7 +4,7 @@
 
 > 本文是本次改造唯一的实施顺序和放行依据。两份完整设计文档只作为技术背景；如果表述冲突，以本清单为准。
 
-> 当前公开配置和支持边界以 [`registration-auth-support-matrix.md`](registration-auth-support-matrix.md) 为准。本文中阶段记录里的 `protocol_v2`、`ACCOUNT_TOKEN_REFRESH_DRIVER` 和 `ACCOUNT_AUTH_V2_ENABLED` 是历史实现名称；新任务使用统一的 `OPENAI_PROTOCOL_VERSION`。
+> 当前公开配置和支持边界以 [`账号认证支持矩阵`](../../workflows/account-auth-support-matrix.md) 为准。本文中阶段记录里的 `protocol_v2`、`ACCOUNT_TOKEN_REFRESH_DRIVER` 和 `ACCOUNT_AUTH_V2_ENABLED` 是历史实现名称；新任务使用统一的 `OPENAI_PROTOCOL_VERSION`。
 
 - 基线：`main@d038f2a`
 - 当前状态：开发阶段已全部完成并通过隔离回归；阶段 3 经上游核对确认没有独立的普通 AT probe，按“不冒充实现”关闭为不适用。普通查活的 `protocol_current` 与 `browser_roxy` 均可配置，浏览器 probe 仍默认关闭；v2 协议只用于显式“刷新 AT”认证，密码、TOTP、邮箱 challenge、错误密码和浏览器兜底边界均已实现，默认由统一 `OPENAI_PROTOCOL_VERSION=v1` 保持旧链路。稳定 Protocol identity、受限 raw context、安全指纹摘要、清理调度、日志脱敏、私有读取审计和注册账号邮箱来源恢复均已完成；raw context 的 HTTP 原始值读取及加密存储不开放，因此原始上下文默认仍关闭。剩余的是本地环境的放量门禁，不是未完成的业务代码

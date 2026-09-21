@@ -130,7 +130,7 @@ Codex 补跑已经使用原生统一任务运行模型；其他账号操作仍�
 | `core/registration/browser_use_auth.py` | 已停用的 Browser Use/Skyvern 历史兼容能力 |
 | `core/storage/` | 账号、注册任务、邮箱池、Codex 和统一 operation 存储入口 |
 | `core/operations/` | 账号任务兼容存储、统一 task gateway 和 operation 投影边界 |
-| `docs/compatibility-inventory.md` | 兼容入口、孤儿代码和观察期删除条件 |
+| `docs/architecture/compatibility-inventory.md` | 兼容入口、孤儿代码和观察期删除条件 |
 | `main.py` | CLI 和 `run_registration` 兼容门面 |
 | `web.py` | Web 进程生命周期入口 |
 
@@ -219,8 +219,8 @@ CLI/WebUI 必须在启动阶段终止。
 2. `docs/admin-data-architecture.md`；
 3. `docs/unified-task-center-architecture.md`；
 4. `docs/codex-operation-architecture.md`；
-5. `docs/core-registration-flow.md`；
-6. `docs/storage-architecture.md` 中仍与代码一致的设计原则；
+5. `docs/workflows/registration.md`；
+6. `docs/architecture/storage-architecture.md` 中仍与代码一致的设计原则；
 7. README/`CLAUDE.md` 中的使用说明。
 
 历史文档出现冲突时，以实际表定义、入口代码和本基线为准。

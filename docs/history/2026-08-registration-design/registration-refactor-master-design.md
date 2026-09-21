@@ -176,9 +176,9 @@ Session 等待采用正向信号优先：已知 `AUTH_ERROR`、`LOGGED_OUT` 或 
 
 本设计补充并收敛：
 
-- [registration-state-refactor-design.md](/Users/lihongwei/code/personal/gpt/turb-gpt-free-register/docs/registration-state-refactor-design.md)：状态和恢复模型基础。
-- [core-registration-flow.md](/Users/lihongwei/code/personal/gpt/turb-gpt-free-register/docs/core-registration-flow.md)：当前实现流程。
-- [unified-task-center-architecture.md](/Users/lihongwei/code/personal/gpt/turb-gpt-free-register/docs/unified-task-center-architecture.md)：任务中心模型。
-- [registration-implementation-plan.md](/Users/lihongwei/code/personal/gpt/turb-gpt-free-register/docs/registration-implementation-plan.md)：本设计的实施拆分。
+- [registration-state-refactor-design.md](registration-state-refactor-design.md)：状态和恢复模型基础。
+- [当前注册流程](../../workflows/registration.md)：当前实现流程。
+- [unified-task-center-architecture.md](unified-task-center-architecture.md)：任务中心模型。
+- [registration-implementation-plan.md](registration-implementation-plan.md)：本设计的实施拆分。
 
 后续以本文的“Roxy 主流程 + Protocol 辅助”定义覆盖旧文档中把驱动并列描述的部分。

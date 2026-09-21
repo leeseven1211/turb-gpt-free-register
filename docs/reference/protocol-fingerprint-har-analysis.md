@@ -1,6 +1,6 @@
 # 历史 HAR 纯协议链路与指纹补齐说明
 
-本说明基于 2026-07-19 21:36:16 ~ 21:37:30（Asia/Shanghai）的 Reqorder HAR 整理；原始抓包文件不纳入仓库，摘要保存在 `docs/protocol_har_summary.json`。
+本说明基于 2026-07-19 21:36:16 ~ 21:37:30（Asia/Shanghai）的 Reqorder HAR 整理；原始抓包文件不纳入仓库，摘要保存在 `docs/reference/protocol-har-summary.json`。
 
 ## 1. 总览
 
@@ -60,7 +60,7 @@
 - `POST /backend-api/sentinel/chat-requirements/finalize`
 - `GET /backend-api/conversations?...`、`GET /backend-api/client/strings` 等 sidebar/home 初始化接口。
 
-完整逐条请求已抽取到：`docs/protocol_har_summary.json`。
+完整逐条请求已抽取到：`docs/reference/protocol-har-summary.json`。
 
 ## 3. 指纹 p 数组字段补齐
 
@@ -120,7 +120,7 @@ HAR 没有直接保存 `.js` 响应正文，但从 Sentinel `p[5]` 还原出被�
 ## 6. 重新生成摘要
 
 ```bash
-./tools/analyze_har_protocol.py /path/to/new-capture.json -o docs/protocol_har_summary.json
+./tools/analyze_har_protocol.py /path/to/new-capture.json -o docs/reference/protocol-har-summary.json
 ```
 
 ## 7. `.env` 覆盖项

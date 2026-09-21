@@ -177,7 +177,7 @@
 
 本阶段实际落地：
 
-- 新增 `docs/compatibility-inventory.md`，登记所有保留兼容入口、替代实现、调用证据和删除条件；
+- 新增 `docs/architecture/compatibility-inventory.md`，登记所有保留兼容入口、替代实现、调用证据和删除条件；
 - 全仓库确认 `core/mail_password_change.py` 无调用，且依赖不存在的 `core.mailcom_client`，
   已按单文件删除；
 - 未删除数据库表、账号任务旧表、兼容导出或任何运行时私有数据。
