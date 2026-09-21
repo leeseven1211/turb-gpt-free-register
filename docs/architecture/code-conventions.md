@@ -142,12 +142,15 @@ WebUI 只维护现代页面，使用普通 `<script>` 按
 
 ## 10. 测试规范
 
+- 统一使用 `tools/test_isolated.py` 启动 pytest；profile 与路径选择遵循[发布与验证](../development/release-verification.md)，现有 `unittest.TestCase` 继续由 pytest 收集。
+- 小改动先做定向与相邻回归；扩大到扩展或全量测试必须有风险依据，不因文件发生改动就默认全量。
 - 纯函数和错误分类使用单元测试。
 - PostgreSQL 行为使用临时 schema 集成测试。
-- 每种注册/Codex driver 必须通过相同的 contract tests。
+- 受影响的注册/Codex driver 通过统一调用契约测试；公共契约变化时覆盖所有受影响驱动。
 - API 变更必须覆盖鉴权、参数、状态码和响应字段。
 - Flask 路由契约由 `tests/test_route_contract.py` 固化；有意变更必须单独评审。
-- 修复缺陷时先增加能复现缺陷的测试。
+- 缺陷修复应有能复现问题的行为验证，优先复用或补强已有用例，避免重复断言实现细节。
+- 不按测试数量删减用例；根据保护的业务行为、重复覆盖和实际耗时调整测试结构。
 - 测试不得写入仓库根目录真实账号、日志、邮箱池或兼容导出。
 
 ## 11. 文件规模

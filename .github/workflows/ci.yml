@@ -47,4 +47,4 @@ jobs:
       - name: Syntax and undefined-name gate
         run: python -m ruff check .
       - name: Run isolated tests
-        run: python tools/test_isolated.py -q
+        run: python tools/test_isolated.py --profile default -- -q

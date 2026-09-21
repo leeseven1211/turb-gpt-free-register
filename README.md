@@ -598,7 +598,7 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 - `/api/capabilities` 是前端功能开关的依据，但后端接口仍必须调用同一套可用性检查，不能只靠隐藏/禁用按钮保证安全。
 - 配置保存并热加载后，要同时刷新功能可用性和注册邮箱来源。后台任务启动前读取最新配置，已经运行的任务保持其提交时的邮箱来源和已领取资源，不在途中静默换源。
 - 新增、删除或重命名配置时，必须同步检查 `config/*.py`、`config/__init__.py`、`webui/config_editor.py`、`.env.example`、README、CLI/WebUI/自动任务/批量任务入口及测试。涉及代理、邮箱、Codex 或数据结构的改动，还要检查账号页、任务恢复、导入导出和部署配置。
-- 提交前至少运行完整单元测试；涉及真实浏览器链路时，按“单任务 → 小并发”顺序验收。`.env`、`run/`、`logs/`、账号、邮箱池、Codex 凭证和生产数据库内容永远不得提交。
+- 提交前完成受影响功能的定向测试和相邻回归，再按风险决定是否扩大范围；涉及真实浏览器链路时，按“单任务 → 小并发”顺序验收。`.env`、`run/`、`logs/`、账号、邮箱池、Codex 凭证和生产数据库内容永远不得提交。
 
 ---
 
@@ -764,7 +764,7 @@ WebUI 提交真实任务时先设为“数量 1、线程 1”。确认批次进�
 - WebUI 绑定 `127.0.0.1`，由 Nginx/Caddy 提供 HTTPS；设置固定 `WEBUI_AUTH_CODE` 和 `WEBUI_SESSION_SECRET`。
 - 部署新代码前备份 `.env`、PostgreSQL 数据库、`accounts/`、`codex_accounts/` 和日志；账号、任务与邮箱池以 PostgreSQL 备份为准，不能用根目录快照替代。
 - 代理和邮箱都必须按任务生命周期领取：任务开始领取，成功永久占用邮箱并释放本地代理租约；确认账号未创建的失败任务才退回邮箱，避免同一邮箱注册两次。
-- 先执行完整测试，再滚动重启服务。不要提交 `.env`、许可证、Apple Cookie、App 专用密码、邮箱、代理完整地址或 Token。
+- 先按本次发布范围和风险完成验证，再依据明确的部署授权重启服务；涉及共享存储、运行时或迁移时补充对应扩展验证。不要提交 `.env`、许可证、Apple Cookie、App 专用密码、邮箱、代理完整地址或 Token。
 
 ### 账号任务实例与 AT 生命周期
 
@@ -1177,7 +1177,7 @@ ENABLE_CODEX_AUTO = False
 │   └── static/                     # CSS、按页面/领域拆分的普通 JavaScript、favicon
 │       ├── css/                   # foundation、modern、login 样式
 │       └── js/                    # modern 八段业务脚本、proxy_traffic.js 和 login.js
-├── tests/                          # unittest、存储隔离和契约测试
+├── tests/                          # pytest 统一收集，包含 unittest、存储隔离和契约测试
 ├── tools/                          # 迁移、诊断和单独补跑工具
 ├── docs/                           # 架构、流程、规范和路线图
 └── sentinel/                       # Sentinel Node.js 子进程
@@ -1189,22 +1189,25 @@ ENABLE_CODEX_AUTO = False
 
 ## 开发与验证
 
-项目使用标准库 `unittest`。普通改动先运行针对性测试，再根据影响范围运行完整测试；存储测试必须使用隔离的测试 schema，禁止连接生产数据库 `turb_console`。
+项目统一通过 `tools/test_isolated.py` 调用 `pytest`，现有 `unittest.TestCase` 也由 pytest 收集。先在已激活的开发环境中提供独立测试库的 `DATABASE_URL`；入口会禁用项目 dotenv、清除业务环境配置并检查非生产数据库，测试 schema 必须以 `test_` 开头，未指定时由入口生成。禁止连接生产数据库 `turb_console` 或使用 `public` schema。
+
+小改动运行受影响功能的定向测试和相邻回归即可；只有共享存储、运行时、迁移、跨模块契约等风险，或明确的发布验收需要，才扩大范围，并说明原因。不要因为改了一个文件就默认全量，也不要按测试数量删除用例；调整测试应依据它保护的业务行为、重复覆盖和实际耗时。
 
 ```bash
-# 完整单元测试
-.venv/bin/python -m unittest discover -s tests -p 'test_*.py'
+# 定向验证：包含指定文件中的普通与扩展测试，不扫描其他测试文件
+python tools/test_isolated.py --profile all -- tests/test_config_defaults.py -q
 
-# 常用针对性测试
-.venv/bin/python -m unittest tests.test_config_defaults
-.venv/bin/python -m unittest tests.test_dashboard_api.DashboardApiTests.test_jobs_date_range_filter
+# 定向测试通过后，按影响范围补充相邻回归
+python tools/test_isolated.py --profile all -- tests/test_config_ui.py tests/test_dashboard_api.py -q
 
 # 静态检查
 ruff check .
 ruff check --select E4,E7,E9,F --exit-zero .
 ```
 
-涉及 PostgreSQL 的完整测试优先通过项目现有的隔离测试工具或 `tests.support_pg.PostgresTestCase` 运行。该基类会创建临时 schema、重定向兼容导出并在用例间清理数据；不得把测试 schema 指向 `public`。详细存储约束见 [`docs/architecture/storage-architecture.md`](docs/architecture/storage-architecture.md)。
+`--profile default` 只选未标记 `extended` 的测试；`--profile extended` 只选扩展测试，不包含 default；`--profile all` 不加 marker 筛选，但仍受后面指定的文件、目录或用例节点限制。因此 `all -- tests/test_config_ui.py` 只是该文件的全部用例；不指定路径时，pytest 才按 `tests/` 收集整个测试目录。不要将 profile 与 pytest 的 `-m`/`--markexpr` 同时使用。完整的范围选择与交付规则见[发布与验证](docs/development/release-verification.md)。
+
+存储测试继承 `tests.support_pg.PostgresTestCase`；该基类创建临时 schema、重定向兼容导出并在用例间清理数据，与统一隔离入口配合使用。详细存储约束见[存储架构](docs/architecture/storage-architecture.md)。
 
 涉及真实浏览器或外部服务时，先验证单任务，再逐步增加并发；测试结论要区分静态测试、数据库状态、浏览器链路和实际服务运行状态。
 
