@@ -122,6 +122,15 @@ def create_accounts_blueprint(context: WebUIContext):
             raise RuntimeError(f"Codex 凭证 JSON 无效: {exc}") from exc
         return _upload_codex_auth_to_sub2(auth_json, filename)
 
+    def _account_secret_value_for_api(acc_id: int, acc: dict, field: str) -> str:
+        """读取账号敏感字段；完整 ChatGPT session 只在复制时按需读取。"""
+        if field == "chatgpt_session":
+            session = db.get_account_chatgpt_session(acc_id)
+            if session is None:
+                return ""
+            return json.dumps(session, ensure_ascii=False, indent=2)
+        return _account_secret_value(acc, field)
+
     @bp.get("/api/accounts")
     def api_accounts():
         limit = request.args.get("limit", default=500, type=int)
@@ -483,7 +492,7 @@ def create_accounts_blueprint(context: WebUIContext):
         if not acc:
             return jsonify({"ok": False, "error": "账号不存在"}), 404
         try:
-            value = _account_secret_value(acc, field)
+            value = _account_secret_value_for_api(acc_id, acc, field)
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
         return jsonify({"ok": True, "id": acc_id, "field": field, "value": value})
@@ -536,7 +545,7 @@ def create_accounts_blueprint(context: WebUIContext):
                 skipped.append({"id": acc_id, "reason": "账号不存在"})
                 continue
             try:
-                value = _account_secret_value(acc, field)
+                value = _account_secret_value_for_api(acc_id, acc, field)
             except ValueError as exc:
                 return jsonify({"ok": False, "error": str(exc)}), 400
             if value:

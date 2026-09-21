@@ -568,6 +568,28 @@ console.log('ok');
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["value"], "Account123!abcd")
 
+    @patch("webui.routes.accounts.db.get_account_chatgpt_session", return_value={
+        "accessToken": "session-at",
+        "user": {"email": "target@example.com"},
+    })
+    @patch("webui.routes.accounts.db.get_account", return_value={
+        "id": 1,
+        "email": "target@example.com",
+    })
+    def test_chatgpt_session_is_returned_as_formatted_json_by_secret_endpoint(
+        self, _get_account, _get_session
+    ):
+        response = self.client.get(
+            "/api/accounts/1/secret?field=chatgpt_session",
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.get_json()["value"],
+            '{\n  "accessToken": "session-at",\n  "user": {\n    "email": "target@example.com"\n  }\n}',
+        )
+        _get_session.assert_called_once_with(1)
+
     def test_account_copy_line_includes_openai_password_and_totp_secret(self):
         self.seed(record_store.ACCOUNTS, [
             {
@@ -657,6 +679,16 @@ console.log('ok');
         self.assertNotIn('data-account-copy-secret="totp_secret"', html)
         self.assertNotIn('title="复制 2FA 密钥（不是当前 6 位验证码）"', html)
         self.assertIn('title="复制当前 TOTP 验证码"', html)
+
+    def test_both_account_interfaces_expose_chatgpt_session_copy_action(self):
+        modern = self._modern_page_source(self.client.get("/", headers=self.headers))
+        legacy = self._page_source(
+            self.client.get("/?ui=legacy", headers=self.headers),
+            ("js/legacy/accounts.js",),
+        )
+        for source in (modern, legacy):
+            self.assertIn('data-account-copy-secret="chatgpt_session"', source)
+            self.assertIn("复制 ChatGPT session", source)
 
     def test_codex_column_filters_are_combined(self):
         db.save_codex_credential_record("codex-a@example.com-free.json", {

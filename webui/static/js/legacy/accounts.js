@@ -358,7 +358,7 @@ function renderAccounts() {
       <td class="muted">${esc(r.created_at || '-')}</td>
       <td class="actions actions-cell">
         <div class="account-row-actions">
-          <div class="account-action-group"><button class="good" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button></div>
+          <div class="account-action-group"><button class="good" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button> <button class="good" data-account-copy-secret="chatgpt_session" data-account-id="${esc(r.id)}" title="复制完整 ChatGPT session JSON">复制 ChatGPT session</button></div>
           <div class="account-action-group">${accountIsDeactivated(r) ? '' : `<button data-account-email-change="${esc(r.id)}" title="协议自动领取新邮箱并换绑；不会启动浏览器">换绑邮箱</button> <button data-account-live-check="${esc(r.id)}" title="只在线验证现有 Token；不会发送邮箱验证码或刷新 AT">查活</button> <button data-account-token-refresh="${esc(r.id)}" title="通过邮箱 OTP 重新登录并刷新最新 AT">刷新AT</button>`} <button data-account-live-log="${esc(r.email)}" title="查看该账号最近一次查活日志">查活日志</button> ${_planAction(r)} ${_extractLinkAction(r)}</div>
           <div class="account-action-group">${_codexAction(r)} <button data-codex-log="${esc(r.email)}" title="查看该账号最近一次 Codex 补跑日志">补跑日志</button></div>
           <div class="account-action-group danger-zone"><button data-account-archive="${esc(r.id)}" data-archived="${r.archived ? '0' : '1'}" title="${r.archived ? '恢复到默认账号列表' : '归档后默认账号列表不再显示'}">${r.archived ? '恢复' : '归档'}</button> <button class="danger" data-account-delete="${esc(r.id)}" data-email="${esc(r.email)}">删除</button></div>
@@ -666,7 +666,7 @@ $('#accountsBody').addEventListener('click', async (e) => {
       const value = await fetchOneAccountSecret(id, field);
       if (!value) { showToast('可复制内容为空'); return; }
       copyText(value);
-      showToast(field === 'access_token' ? 'Token 已复制' : (field === 'totp_secret' ? 'TOTP 密钥已复制' : '账号整行已复制'));
+      showToast(field === 'access_token' ? 'Token 已复制' : (field === 'totp_secret' ? 'TOTP 密钥已复制' : (field === 'chatgpt_session' ? 'ChatGPT session 已复制' : '账号整行已复制')));
     } catch(err) {
       showToast('复制失败: ' + err.message);
     } finally {

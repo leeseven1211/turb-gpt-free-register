@@ -986,6 +986,7 @@ function _deactivationMailCell(r) {
 function _accountsV2MoreMenu(r) {
   const parts = [
     `<button type="button" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button>`,
+    `<button type="button" data-account-copy-secret="chatgpt_session" data-account-id="${esc(r.id)}" title="复制完整 ChatGPT session JSON">复制 ChatGPT session</button>`,
     r.has_account_password ? `<button type="button" data-account-copy-secret="account_password" data-account-id="${esc(r.id)}">复制账号密码</button>` : '',
     accountIsDeactivated(r) ? '' : `<button type="button" data-account-action="password" data-account-id="${esc(r.id)}">补密码</button>`,
     accountIsDeactivated(r) ? '' : `<button type="button" data-account-action="twofa" data-account-id="${esc(r.id)}">补 2FA</button>`,
@@ -1438,7 +1439,7 @@ async function onAccountsBodyClick(e) {
       const value = await fetchOneAccountSecret(id, field);
       if (!value) { showToast('可复制内容为空'); return; }
       copyText(value);
-      showToast(field === 'access_token' ? 'Token 已复制' : (field === 'account_password' ? '账号密码已复制' : (field === 'totp_secret' ? 'TOTP 密钥已复制' : '账号整行已复制')));
+      showToast(field === 'access_token' ? 'Token 已复制' : (field === 'account_password' ? '账号密码已复制' : (field === 'totp_secret' ? 'TOTP 密钥已复制' : (field === 'chatgpt_session' ? 'ChatGPT session 已复制' : '账号整行已复制'))));
     } catch(err) {
       showToast('复制失败: ' + err.message);
     } finally {

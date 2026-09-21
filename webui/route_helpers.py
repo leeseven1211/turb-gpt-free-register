@@ -238,7 +238,7 @@ def _account_secret_value(row: dict, field: str) -> str:
         return f"{row.get('email') or ''}----{password}" if password else ""
     if field == "totp_secret":
         return str(row.get("totp_secret") or "")
-    raise ValueError("field 仅支持 access_token/copy_line/account_password/account_password_line/totp_secret")
+    raise ValueError("field 仅支持 access_token/copy_line/account_password/account_password_line/totp_secret/chatgpt_session")
 
 
 def _account_password(row: dict) -> str:
