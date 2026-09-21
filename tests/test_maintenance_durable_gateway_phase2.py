@@ -622,6 +622,57 @@ class MaintenanceDurableGatewayTests(PostgresTestCase):
         self.assertTrue(second.get("deactivation_mail_detected", False))
         self.assertEqual("high", second["deactivation_mail_confidence"])
 
+    def test_hme_bulk_persists_and_scans_more_than_operation_list_limit(self):
+        account_ids = [
+            self._account(
+                f"bulk-{index:03d}@icloud.example",
+                email_source="icloud_hide",
+            )
+            for index in range(121)
+        ]
+        expected_emails = [f"bulk-{index:03d}@icloud.example" for index in range(121)]
+        results = {
+            email: {
+                "ok": True,
+                "detected": False,
+                "checked_at": "2026-09-14T12:00:00Z",
+                "confidence": "none",
+            }
+            for email in expected_emails
+        }
+
+        with patch.object(
+            deactivation_mail_service,
+            "scan_hme_deactivation_bulk",
+            return_value=results,
+        ) as bulk_scan:
+            submitted = deactivation_mail_service.enqueue_bulk(
+                account_ids,
+                trigger="manual_hme_large_bulk",
+            )
+            self.assertEqual(121, len(submitted["started"]))
+            self.assertEqual(1, len({item["run_id"] for item in submitted["started"]}))
+            run_id = int(submitted["started"][0]["run_id"])
+            run = operation.get_run(run_id)
+            self.assertEqual(121, run["data"]["account_count"])
+            self.assertEqual(
+                [100, 21],
+                [len(batch) for batch in run["data"]["account_batches"]],
+            )
+
+            result = self._run_native("deactivation_mail", run_id)
+
+        bulk_scan.assert_called_once_with(
+            expected_emails,
+            lookback_days=deactivation_mail_service._LOOKBACK_DAYS,
+        )
+        self.assertEqual("success", result["status"])
+        self.assertEqual("success", operation.get_run(run_id)["status"])
+        self.assertTrue(all(
+            db.get_account(account_id)["deactivation_mail_scan_status"] == "success"
+            for account_id in account_ids
+        ))
+
     def test_hme_bulk_partial_failure_writes_each_alias_and_fails_coordinator(self):
         first_id = self._account("partial-first@icloud.example", email_source="icloud_hide")
         second_id = self._account("partial-second@icloud.example", email_source="icloud_hide")

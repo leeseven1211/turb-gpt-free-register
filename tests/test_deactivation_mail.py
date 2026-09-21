@@ -136,6 +136,20 @@ class DeactivationMailTests(PostgresTestCase):
     def test_icloud_hide_is_supported_by_mail_scanner(self):
         self.assertIn("icloud_hide", deactivation_mail_service._SUPPORTED_SOURCES)
 
+    def test_hme_run_data_reader_keeps_legacy_accounts_compatible(self):
+        self.assertEqual(
+            [
+                {"account_id": 1, "email": "first@icloud.com"},
+                {"account_id": 2, "email": "second@icloud.com"},
+            ],
+            deactivation_mail_service._hme_entries_from_run_data({
+                "accounts": [
+                    {"account_id": 1, "email": "FIRST@ICLOUD.COM"},
+                    {"account_id": 2, "email": "second@icloud.com"},
+                ],
+            }),
+        )
+
     def test_email_butler_missing_account_is_marked_unsupported(self):
         self.seed(ACCOUNTS, [
             {"id": 3, "email": "missing@test.com", "email_source": "email_butler"},

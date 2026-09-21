@@ -49,6 +49,11 @@ _SCHEDULER_STARTED = False
 _SUPPORTED_SOURCES = {"email_butler", "cloudflare", "icloud_hide"}
 _HME_SCAN_MODE = "shared_mailbox_recipient_search"
 _HME_VALIDATION_METHOD = "mailbox_recipient_search"
+# operation 存储会把单层列表限制为 120 项。这里用更小的分块嵌套保存目标，
+# 既保留通用存储的限流边界，也避免大批 HME 账号只持久化前 120 个。
+# 调度器单轮最多读取 5000 个账号，因此 100 x 50 的两层结构足够覆盖当前上限。
+_HME_PAYLOAD_CHUNK_SIZE = 100
+_HME_PAYLOAD_MAX_ACCOUNTS = 5000
 _PERMANENT_EMAIL_BUTLER_SCAN_ERRORS = (
     ("http 404", "email account not found"),
     ("http 403", "email is not registered for openai"),
@@ -314,6 +319,29 @@ def _normalise_hme_entries(entries) -> list[dict]:
         seen.add(account_id)
         normalized.append({"account_id": account_id, "email": email})
     return normalized
+
+
+def _pack_hme_entries(entries) -> list[list[dict]]:
+    """把 HME 目标编码成不会触发 operation 单层列表截断的持久化结构。"""
+    normalized = _normalise_hme_entries(entries)
+    return [
+        normalized[index:index + _HME_PAYLOAD_CHUNK_SIZE]
+        for index in range(0, len(normalized), _HME_PAYLOAD_CHUNK_SIZE)
+    ]
+
+
+def _hme_entries_from_run_data(data: dict | None) -> list[dict]:
+    """读取新版分块结构，并兼容已经入库的旧版 ``accounts`` 列表。"""
+    payload = data if isinstance(data, dict) else {}
+    batches = payload.get("account_batches")
+    flattened: list[dict] = []
+    if isinstance(batches, list):
+        for batch in batches:
+            if isinstance(batch, list):
+                flattened.extend(item for item in batch if isinstance(item, dict))
+    if flattened:
+        return _normalise_hme_entries(flattened)
+    return _normalise_hme_entries(payload.get("accounts"))
 
 
 def _scan_hme_group(
@@ -597,7 +625,7 @@ def _handle_deactivation_operation(context):
         if bool(data.get("bulk")):
             _scan_hme_group(
                 context,
-                data.get("accounts"),
+                _hme_entries_from_run_data(data),
                 trigger,
                 context.config_snapshot,
             )
@@ -684,6 +712,11 @@ def _submit_native_hme_group(
     normalized = _normalise_hme_entries(entries)
     if not normalized:
         raise ValueError("iCloud HME 批量扫描缺少有效账号")
+    if len(normalized) > _HME_PAYLOAD_MAX_ACCOUNTS:
+        raise ValueError(
+            f"iCloud HME 单次批量扫描最多 {_HME_PAYLOAD_MAX_ACCOUNTS} 个账号"
+        )
+    packed_entries = _pack_hme_entries(normalized)
     key = str(idempotency_key or "").strip() or None
     source_id = (
         f"maintenance:deactivation_mail:bulk:{key}"
@@ -703,7 +736,8 @@ def _submit_native_hme_group(
             "bulk": True,
             "scan_mode": _HME_SCAN_MODE,
             "lookback_days": _LOOKBACK_DAYS,
-            "accounts": normalized,
+            "account_count": len(normalized),
+            "account_batches": packed_entries,
         },
         config_snapshot_provider=_config_snapshot_provider,
         config_allowlist=DEACTIVATION_CONFIG_ALLOWLIST,
