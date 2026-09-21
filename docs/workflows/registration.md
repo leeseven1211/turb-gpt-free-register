@@ -1,6 +1,10 @@
 # 核心注册流程逻辑
 
-本文以当前代码为准，梳理一次 ChatGPT 注册任务从提交到结束的完整链路，以及每个步骤的实现、状态变化和容错边界。
+> 核对基线：2026-09-21。本文以当前代码为准，梳理一次 ChatGPT 注册任务从提交到结束的
+> 完整链路，以及每个步骤的实现、状态变化和容错边界。
+
+本文只描述已落地行为；历史重构方案、并行窗口和阶段验收记录已移入
+[`docs/history/`](../history/)。
 
 ## 0. 先看结论
 
@@ -15,8 +19,8 @@ registration_service.py       任务编排、并发、停止、资源释放、�
     v
 core.registration.dispatcher  统一注册入口，按 REGISTRATION_DRIVER 分发
     |
-    +--> core.registration.roxy       RoxyBrowser + Selenium（主流程）
-    +--> core.registration.protocol   纯 HTTP/curl_cffi + Sentinel/PoW（辅助/回退）
+    +--> core.registration.roxy       RoxyBrowser + Selenium（浏览器驱动）
+    +--> core.registration.protocol   纯 HTTP/curl_cffi + Sentinel/PoW（协议驱动）
     |
     v
 OpenAI 注册主体完成：邮箱 OTP -> 资料 -> OAuth 回调 -> accessToken
@@ -24,7 +28,7 @@ OpenAI 注册主体完成：邮箱 OTP -> 资料 -> OAuth 回调 -> accessToken
     +--> 2FA（可选）
     +--> Codex OAuth（可选，但可能影响任务完整成功）
     +--> 账号落库、邮箱状态收口、套餐查询
-    +--> protocol 驱动额外触发 Flow
+    +--> protocol 驱动按配置触发额外 Flow
     |
     v
 任务终态：success / partial_success / failed / stopped / cancelled
@@ -37,7 +41,9 @@ OpenAI 注册主体完成：邮箱 OTP -> 资料 -> OAuth 回调 -> accessToken
 3. 邮箱领取后先变为 `used`。只有能确认“没有创建账号”的失败才允许回到 `available`；已经消耗邮箱或已经创建账号的失败会标记为 `failed` 或 `disabled`，避免重复注册。
 4. 2FA、Codex、套餐查询是注册后的后置能力。后置步骤失败时，账号可能已经保存在 `registered_accounts`，但任务仍可能是 `partial_success` 或 `failed`。
 5. PostgreSQL 是运行时唯一事实来源；账号、任务和邮箱池不依赖根目录 JSON/TXT 快照，WebUI/API 直接查询数据库。
-6. 注册调试只支持当前实际使用的 `protocol` 和 Roxy 驱动。每条并发任务有独立抓包会话。
+6. `REGISTRATION_DRIVER` 直接选择 `roxy` 或 `protocol`；它们是两种可配置驱动，不会仅因
+   某一步失败就自动把同一任务切换为另一种驱动。注册调试支持这两种当前驱动，每条并发
+   任务有独立抓包会话。
 
 ## 1. 一眼看懂的主流程
 
@@ -97,15 +103,18 @@ ThreadPoolExecutor.submit(_run_one_job)
 
 ### 1.3 任务阶段顺序
 
-任务进度表由 `core/db.py:JOB_PROGRESS_STAGES` 定义，顺序如下：
+任务进度表由 `core/storage/db_legacy.py:JOB_PROGRESS_STAGES`（兼容导出仍可经 `core.db`
+读取）定义，顺序如下：
 
 | 阶段 | 含义 | 主要负责模块 | 终态判定 |
 | --- | --- | --- | --- |
-| `email` | 获取邮箱、准备代理 | `registration_service.py` | 邮箱和代理已准备 |
+| `network` | 分配或复用网络线路 | `registration_service.py` + 代理提供方 | 租约可用、线路元数据已写入 |
+| `email` | 获取或恢复注册邮箱 | `registration_service.py` + 邮箱提供方 | 邮箱来源和邮箱上下文可确定 |
 | `browser` | 启动 HTTP/浏览器环境 | 各注册驱动 | 会话可用 |
 | `page` | 打开注册页、预热页面 | 各注册驱动 | 注册入口可用 |
 | `submit_email` | 填写并提交邮箱 | 各注册驱动 | 邮箱表单已提交 |
 | `auth_redirect` | 等待 OpenAI 认证跳转 | `openai_auth.py` 或浏览器辅助函数 | 进入下一认证步骤 |
+| `login_password` | 创建或提交已保存的账号密码 | Roxy 驱动或续跑登录能力 | 密码步骤已确认离开或保存恢复检查点 |
 | `email_otp` | 收码、提交、验证 OTP | `email_provider.py` + 驱动 | OTP 通过或已有登录态 |
 | `profile` | 填写姓名和生日 | 协议接口或浏览器驱动 | 资料提交，或确认无需资料 |
 | `token` | 完成 OAuth 回调并取得 Token | `account_export.py` 或浏览器驱动 | `accessToken` 非空 |
@@ -120,7 +129,7 @@ ThreadPoolExecutor.submit(_run_one_job)
 
 ### 2.1 WebUI 入口
 
-`webui/app.py` 的 `POST /api/jobs` 做三件事：
+`webui/routes/jobs.py` 的 `POST /api/jobs`（`api_jobs_create`）做三件事：
 
 1. 校验 `count`（1~200）和 `workers`（1~16）。
 2. 自动邮箱模式下强制校验一个明确的 `email_source`，且该来源必须已在 `EMAIL_SOURCE` 中启用。一个批次不会在任务执行时静默切换到其他邮箱平台。
@@ -192,7 +201,8 @@ WebUI 启动时先调用 `postgres_store.require_ready()`。缺少 `DATABASE_URL
 
 ### 步骤 1：创建任务和批次
 
-实现位置：`core/registration_service.py:submit_registration()`、`core/db.py:create_job()`。
+实现位置：`core/registration_service.py:submit_registration()`、
+`core/storage/db_legacy.py:create_job()`（`core.db` 是兼容导出）。
 
 任务记录至少包含：
 
@@ -458,7 +468,8 @@ Codex 失败不会删除已经注册的账号。失败结果会保存到账号�
 
 ### 步骤 13：账号落库和套餐查询
 
-实现位置：`core/account_export.py:save_account_data()`、`core/db.py:insert_account()`。
+实现位置：`core/account_export.py:save_account_data()`、
+`core/storage/db_legacy.py:insert_account()`（`core.db` 是兼容导出）。
 
 账号落库内容包括：
 
@@ -647,7 +658,7 @@ pending -> cancelled
 | WebUI 任务提交 | `webui/routes/jobs.py:api_jobs_create()` |
 | 调试会话、CDP 抓包、HAR 与对比 | `core/registration_debug.py` |
 | 单任务编排和清理 | `core/registration_service.py:_run_one_job()` |
-| 任务状态和阶段进度 | `core/db.py` 的 `claim_job_for_execution()`、`update_job_progress()`、`finish_job_progress()` |
+| 任务状态和阶段进度 | `core/storage/db_legacy.py` 的 `claim_job_for_execution()`、`update_job_progress()`、`finish_job_progress()`（`core.db` 兼容导出） |
 | 邮箱领取/OTP/释放 | `core/email_provider.py` |
 | 代理获取/释放 | `core/proxy_provider.py` |
 | OAuth 回调、Session、账号保存 | `core/account_export.py` |

@@ -1,8 +1,10 @@
 # 注册与账号认证支持矩阵
 
-**审计日期：** 2026-09-03
-**范围：** Roxy 注册/登录主链、Protocol 协作适配、账号查活、刷新 AT、补密码、补 Authenticator 2FA。
-**结论：** Roxy 是稳定的浏览器主流程；Protocol 只处理能够明确判定的协议阶段。两者共享认证结果、挑战链和恢复边界，但不会在远端结果未知时自动重新注册。
+**当前核对日期：** 2026-09-21
+**范围：** Roxy/Protocol 注册驱动、账号查活、刷新 AT、补密码、补 Authenticator 2FA。
+**结论：** Roxy 是推荐的浏览器注册驱动；Protocol 也是可直接选择的协议注册驱动。
+两者共享认证结果、挑战链和恢复边界，但 `REGISTRATION_DRIVER` 不会因为某一步失败而
+自动切换，也不会在远端结果未知时自动重新注册。
 
 ## 0. 协议版本选择
 
@@ -42,10 +44,15 @@ Token、密码、OTP、TOTP Secret、Cookie、callback URL、原始响应和完�
 | 入口 | 当前定位 | 已支持 | 明确不做 |
 |---|---|---|---|
 | Roxy | 稳定主流程、页面状态权威来源、最终浏览器兜底 | 邮箱提交、创建密码、邮箱 OTP、TOTP、资料页、登录态、Token、注册后账号配置 | 不把已有账号当新账号重复创建 |
-| Protocol | 可替换的协议阶段适配器 | 明确的邮箱 OTP、OAuth callback/session、v1/v2 刷新 AT、协议 2FA | 不在未知页面继续 `create_account`，不因密码错误自动换线重试 |
+| Protocol | 可直接选择的纯协议注册驱动，以及账号认证协议能力 | 协议注册、明确的邮箱 OTP、OAuth callback/session、v1/v2 刷新 AT、协议 2FA | 不在未知远端结果下自动改用 Roxy 或重新创建账号；不因密码错误自动换线重试 |
 | Service/Dispatcher | 选择驱动、保存 checkpoint、决定是否重试 | 保留已有账号/邮箱/任务状态，区分 `manual_reconcile` 与普通失败 | 不以本地数据库“没有账号记录”推断远端一定没有账号 |
 
-推荐配置是 `REGISTRATION_DRIVER=roxy`。2FA 的公开选择统一为 `auto`、`protocol`、`browser`：`auto` 是协议优先的自动上下文选择，`protocol` 强制协议执行器，`browser` 强制 Roxy 安全设置页。历史值 `protocol_direct` 仍兼容，但只作为 `auto` 的别名，不再作为独立决策。Protocol 不稳定或不支持时才允许按结果交回 Roxy。
+推荐配置是 `REGISTRATION_DRIVER=roxy`；显式设置 `REGISTRATION_DRIVER=protocol` 时会直接
+运行协议驱动。2FA 的公开选择统一为 `auto`、`protocol`、`browser`：`auto` 是协议优先的
+自动上下文选择，`protocol` 强制协议执行器，`browser` 强制 Roxy 安全设置页。历史值
+`protocol_direct` 仍兼容，但只作为 `auto` 的别名，不再作为独立决策。认证操作返回的
+`roxy_fallback_allowed` 只表示对应账号动作可按结果进入浏览器处理，不改变注册任务的
+驱动选择。
 
 ### 2.1 2FA 执行器与认证上下文不是一回事
 
@@ -196,7 +203,7 @@ Roxy 已覆盖“邮箱 OTP → TOTP”；这个判断优先读取最新 DOM 控
 
 ## 7. 当前边界与后续优化方向
 
-本次自动选择改造的单元测试使用脱敏 fake session/driver，不会访问真实账号、邮箱池或生产 PostgreSQL；尚未宣称真实外部 E2E 全部通过，原因是 OpenAI 页面、风控、邮箱延迟和 Protocol 响应会变化。当前代码级支持边界已经明确：Roxy 是浏览器主线和最终兜底，Protocol 是 2FA 的协议执行器，`protocol_reauth`/`browser_session` 只是认证上下文来源；刷新 AT 统一由 `OPENAI_PROTOCOL_VERSION` 选择 v1/v2，其他单版本步骤不受它影响。
+本次自动选择改造的单元测试使用脱敏 fake session/driver，不会访问真实账号、邮箱池或生产 PostgreSQL；尚未宣称真实外部 E2E 全部通过，原因是 OpenAI 页面、风控、邮箱延迟和 Protocol 响应会变化。当前代码级支持边界已经明确：Roxy 是浏览器注册驱动和账号动作的浏览器兜底，Protocol 既可作为直接注册驱动，也承载协议 2FA/刷新 AT 等能力；`protocol_reauth`/`browser_session` 只是认证上下文来源；刷新 AT 统一由 `OPENAI_PROTOCOL_VERSION` 选择 v1/v2，其他单版本步骤不受它影响。
 
 后续优化按优先级：
 
