@@ -388,6 +388,28 @@ class EmailChangeProtocolContractTests(unittest.TestCase):
         self.assertEqual("object.errors_object", caught.exception.response_error_shape)
         self.assertNotIn("alice@leeseven.com", caught.exception.response_error_shape)
 
+    def test_remote_rejection_projects_fixed_hints_without_detail_text(self):
+        from core.email_change_service import EmailChangeProtocol, RemoteRequestRejected
+
+        session = Mock()
+        session.get_chatgpt_headers.return_value = {}
+        session.device_id = "device-test"
+        session.navigator_language.return_value = "en-US"
+        session.post.return_value = _Response(
+            {"detail": "The email address cannot be used for this account."},
+            status_code=422,
+        )
+
+        with self.assertRaises(RemoteRequestRejected) as caught:
+            EmailChangeProtocol().begin(session, "at-test", "new-user@example.test")
+
+        self.assertEqual("email_change_not_allowed", caught.exception.remote_error_code)
+        self.assertEqual(
+            ("account", "email", "not_allowed"),
+            caught.exception.response_error_hints,
+        )
+        self.assertNotIn("cannot be used", " ".join(caught.exception.response_error_hints))
+
 
 class EmailChangeEligibilityTests(unittest.TestCase):
     def test_email_prepare_failure_summary_redacts_supplier_email(self):

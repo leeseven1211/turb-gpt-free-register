@@ -98,6 +98,7 @@ class _RemoteRequestError(RuntimeError):
         cf_mitigated: bool = False,
         cf_ray_present: bool = False,
         response_error_shape: str | None = None,
+        response_error_hints: tuple[str, ...] | list[str] | None = None,
     ) -> None:
         super().__init__(message)
         self.http_status = int(http_status) if http_status is not None else None
@@ -107,6 +108,13 @@ class _RemoteRequestError(RuntimeError):
         self.cf_mitigated = bool(cf_mitigated)
         self.cf_ray_present = bool(cf_ray_present)
         self.response_error_shape = str(response_error_shape or "").strip() or None
+        self.response_error_hints = tuple(
+            hint for hint in response_error_hints or ()
+            if hint in {
+                "account", "already_in_use", "domain", "email", "invalid", "not_allowed",
+                "not_supported", "phone", "rate_limit", "too_new", "verification",
+            }
+        )
 
 
 class RemoteRequestRejected(_RemoteRequestError):
@@ -165,31 +173,89 @@ class EmailChangeProtocol:
         return "object.unclassified"
 
     @staticmethod
+    def _safe_error_hints(value: Any) -> tuple[str, ...]:
+        text = str(value or "").strip().lower()
+        if not text:
+            return ()
+        hints: set[str] = set()
+        if "email" in text:
+            hints.add("email")
+        if "domain" in text:
+            hints.add("domain")
+        if "account" in text:
+            hints.add("account")
+        if any(marker in text for marker in (
+            "not allowed", "cannot be used", "can't be used", "not eligible", "forbidden",
+            "blocked", "prohibited", "policy",
+        )):
+            hints.add("not_allowed")
+        if "not supported" in text:
+            hints.add("not_supported")
+        if "already" in text and any(marker in text for marker in ("used", "exists", "registered")):
+            hints.add("already_in_use")
+        if any(marker in text for marker in ("invalid", "malformed", "format", "valid email")):
+            hints.add("invalid")
+        if any(marker in text for marker in ("verify", "verification")):
+            hints.add("verification")
+        if "phone" in text:
+            hints.add("phone")
+        if any(marker in text for marker in ("too many", "rate limit", "rate-limit")):
+            hints.add("rate_limit")
+        if any(marker in text for marker in ("too new", "too recent", "not old enough")):
+            hints.add("too_new")
+        return tuple(sorted(hints))
+
+    @staticmethod
+    def _error_code_from_hints(hints: tuple[str, ...]) -> str:
+        hint_set = set(hints)
+        if {"email", "domain", "not_allowed"}.issubset(hint_set):
+            return "email_domain_rejected"
+        if {"email", "already_in_use"}.issubset(hint_set):
+            return "email_already_in_use"
+        if {"email", "invalid"}.issubset(hint_set):
+            return "invalid_email"
+        if {"account", "too_new"}.issubset(hint_set):
+            return "email_change_account_too_new"
+        if "email" in hint_set and "not_supported" in hint_set:
+            return "email_change_not_supported"
+        if "email" in hint_set and "verification" in hint_set:
+            return "email_change_verification_required"
+        if "email" in hint_set and "not_allowed" in hint_set:
+            return "email_change_not_allowed"
+        if "rate_limit" in hint_set:
+            return "email_change_rate_limited"
+        return ""
+
+    @classmethod
+    def _response_error_hints(cls, response: Any) -> tuple[str, ...]:
+        payload = cls._response_payload(response)
+        values: list[str] = []
+
+        def collect(value: Any, depth: int = 0) -> None:
+            if depth > 4 or len(values) >= 40:
+                return
+            if isinstance(value, dict):
+                for item in value.values():
+                    collect(item, depth + 1)
+            elif isinstance(value, (list, tuple)):
+                for item in value[:20]:
+                    collect(item, depth + 1)
+            elif isinstance(value, str):
+                values.append(value)
+
+        collect(payload)
+        return tuple(sorted({hint for value in values for hint in cls._safe_error_hints(value)}))
+
+    @staticmethod
     def _safe_error_code(value: Any) -> str:
         raw_code = str(value or "").strip()
         if not raw_code or len(raw_code) > 120:
             return ""
         if all(char.isalnum() or char in "._:-" for char in raw_code):
             return raw_code
-        normalized = raw_code.lower()
-        if "email" in normalized:
-            if "domain" in normalized and any(marker in normalized for marker in (
-                "not allowed", "not supported", "rejected", "blocked",
-            )):
-                return "email_domain_rejected"
-            if "already" in normalized and any(marker in normalized for marker in (
-                "used", "exists", "registered",
-            )):
-                return "email_already_in_use"
-            if any(marker in normalized for marker in (
-                "invalid", "valid email", "malformed", "format",
-            )):
-                return "invalid_email"
-        if "account" in normalized and any(marker in normalized for marker in (
-            "too new", "too recent", "not old enough",
-        )):
-            return "email_change_account_too_new"
-        return ""
+        return EmailChangeProtocol._error_code_from_hints(
+            EmailChangeProtocol._safe_error_hints(raw_code)
+        )
 
     @classmethod
     def _response_error_code(cls, response: Any) -> str:
@@ -221,7 +287,7 @@ class EmailChangeProtocol:
             error_code = cls._safe_error_code(candidate)
             if error_code:
                 return error_code
-        return ""
+        return cls._error_code_from_hints(cls._response_error_hints(response))
 
     @staticmethod
     def _safe_response_metadata(response: Any) -> dict[str, Any]:
@@ -274,6 +340,7 @@ class EmailChangeProtocol:
             response_meta = {
                 **self._safe_response_metadata(response),
                 "response_error_shape": self._response_error_shape(response),
+                "response_error_hints": self._response_error_hints(response),
             }
             suffix = f" ({error_code})" if error_code else ""
             if status_code == 408 or status_code == 429 or status_code >= 500:
@@ -310,6 +377,7 @@ class EmailChangeProtocol:
                 http_status=status_code,
                 remote_error_code=error_code,
                 response_error_shape=self._response_error_shape(response),
+                response_error_hints=self._response_error_hints(response),
             )
         return result
 
@@ -368,6 +436,9 @@ def _safe_remote_error_detail(exc: BaseException) -> dict[str, Any]:
     response_error_shape = str(getattr(exc, "response_error_shape", "") or "").strip()
     if response_error_shape:
         detail["response_error_shape"] = response_error_shape[:80]
+    response_error_hints = tuple(getattr(exc, "response_error_hints", ()) or ())
+    if response_error_hints:
+        detail["response_error_hints"] = list(response_error_hints[:12])
     if bool(getattr(exc, "cf_mitigated", False)):
         detail["cf_mitigated"] = True
     if bool(getattr(exc, "cf_ray_present", False)):
