@@ -433,7 +433,7 @@ class EmailChangeEligibilityTests(unittest.TestCase):
             "id": 7,
             "email": "account@example.test",
             "access_token": "at-test",
-            "created_at": datetime.now(timezone.utc),
+            "created_at": datetime.now(timezone.utc) - timedelta(hours=23),
         }
         with patch.object(email_change_service.db, "get_account", return_value=account), patch(
             "core.feature_availability.require_email_source",
@@ -457,7 +457,7 @@ class EmailChangeEligibilityTests(unittest.TestCase):
             "id": 7,
             "email": "account@example.test",
             "access_token": "at-test",
-            "created_at": datetime.now(timezone.utc) - timedelta(days=8),
+            "created_at": datetime.now(timezone.utc) - timedelta(hours=25),
         }
         with patch.object(email_change_service.db, "get_account", return_value=account), patch(
             "core.feature_availability.require_email_source",

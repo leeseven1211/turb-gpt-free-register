@@ -48,7 +48,7 @@ def _email_change_min_account_age_hours() -> int:
     try:
         return max(0, min(int(account_config.ACCOUNT_EMAIL_CHANGE_MIN_ACCOUNT_AGE_HOURS or 0), 8760))
     except (TypeError, ValueError):
-        return 168
+        return 24
 
 
 def _account_age_gate_error(account: Mapping[str, Any]) -> str:

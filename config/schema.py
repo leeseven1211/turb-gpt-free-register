@@ -182,7 +182,7 @@ _DEFAULTS: dict[str, Any] = {
     "ACCOUNT_REFRESH_AT_PROXY_MODE": "registration",
     "ACCOUNT_CODEX_PROXY_MODE": "registration",
     "ACCOUNT_EMAIL_CHANGE_ENABLED": True,
-    "ACCOUNT_EMAIL_CHANGE_MIN_ACCOUNT_AGE_HOURS": 168,
+    "ACCOUNT_EMAIL_CHANGE_MIN_ACCOUNT_AGE_HOURS": 24,
     "ACCOUNT_EMAIL_CHANGE_PROXY_MODE": "registration",
     "ACCOUNT_LIVE_CHECK_DRIVER": "protocol_current",
     "ACCOUNT_LIVE_CHECK_BROWSER_ENABLED": False,
@@ -488,7 +488,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "ACCOUNT_EMAIL_CHANGE_MIN_ACCOUNT_AGE_HOURS", "file": "account.py", "type": "int", "group": "账号补全",
-        "label": "邮箱换绑最小账号年龄（小时）", "help": "默认 168。低于该账号年龄时在提交前拒绝，避免租用邮箱后被远端以账号过新拒绝；设为 0 可关闭门槛。",
+        "label": "邮箱换绑最小账号年龄（小时）", "help": "默认 24。低于该账号年龄时在提交前拒绝，避免租用邮箱后被远端以账号过新拒绝；设为 0 可关闭门槛。",
     },
     {
         "key": "ACCOUNT_PLAN_CHECK_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
