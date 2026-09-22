@@ -5,6 +5,7 @@ from __future__ import annotations
 from flask import jsonify, request
 
 from core import db
+from core.auth_fingerprint import clean_safe_fingerprint_summary
 from core.plus_promotion import promotion_kind_from_record
 from core.task_errors import classify_task_error
 
@@ -151,6 +152,52 @@ def _account_promotion_value(row: dict) -> str:
     return promotion_kind_from_record(row)
 
 
+def _compact_fingerprint_summary(row: dict) -> dict:
+    """把最近认证指纹压缩成详情抽屉需要的安全摘要。"""
+    raw = row.get("last_auth_fingerprint")
+    if isinstance(raw, str):
+        try:
+            import json
+
+            raw = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+    safe = clean_safe_fingerprint_summary(raw)
+    if not safe:
+        return {}
+
+    browser = "/".join(
+        str(item) for item in (
+            safe.get("browser_family"),
+            safe.get("browser_version"),
+            safe.get("browser_os"),
+        ) if item
+    )
+    width = safe.get("screen_width")
+    height = safe.get("screen_height")
+    screen = f"{width}x{height}" if width is not None and height is not None else ""
+    hardware = " / ".join(
+        str(item) for item in (
+            f"{safe['hardware_concurrency']} 核" if safe.get("hardware_concurrency") is not None else "",
+            f"{safe['device_memory']} GB" if safe.get("device_memory") is not None else "",
+        ) if item
+    )
+    compact = {
+        "source": safe.get("source"),
+        "profile_ref": safe.get("profile_ref"),
+        "browser": browser,
+        "screen": screen,
+        "device_pixel_ratio": safe.get("device_pixel_ratio"),
+        "hardware": hardware,
+        "language": safe.get("navigator_language"),
+        "timezone": safe.get("timezone_iana"),
+        "geo_country": safe.get("geo_country"),
+        "proxy_mode": safe.get("proxy_mode"),
+        "observed_at": safe.get("observed_at"),
+    }
+    return {key: value for key, value in compact.items() if value not in (None, "")}
+
+
 def _compact_account_for_list(row: dict) -> dict:
     """账号列表轻量对象：只返回当前表格渲染和按钮判断必需字段。
 
@@ -202,6 +249,8 @@ def _compact_account_for_list(row: dict) -> dict:
         "token_expired", "token_expires_at", "account_status_reason", "account_status_at",
         # 查活状态。
         "live_check_status", "live_check_error", "live_check_http_status", "live_checked_at",
+        # 最近一次认证的低敏状态；完整认证上下文不进入列表。
+        "last_auth_method", "last_auth_fallback_used",
         # 提链成功/失败时才需要。
         "extract_link_status", "extract_link_ok", "extract_link_type", "extract_link_message", "extract_link_error",
         "extract_link_failed_types", "extract_link_last_failed_type", "extract_link_last_failed_at",
@@ -218,6 +267,9 @@ def _compact_account_for_list(row: dict) -> dict:
         value = row.get(key)
         if value is not None and value != "":
             out[key] = value
+    fingerprint_summary = _compact_fingerprint_summary(row)
+    if fingerprint_summary:
+        out["fingerprint_summary"] = fingerprint_summary
     promo_kind = promotion_kind_from_record(row)
     out["plus_promo_kind"] = promo_kind
     out["plus_promo_eligible"] = promo_kind in {"free_trial", "discount", "other_promo"}

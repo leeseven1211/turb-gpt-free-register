@@ -824,6 +824,13 @@ tr:hover td,
   text-transform: uppercase;
 }
 
+.account-detail-section-copy {
+  margin: -2px 0 2px;
+  color: var(--ui-color-text-subtle);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .account-detail-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -869,6 +876,30 @@ tr:hover td,
   line-height: 1.4;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.account-detail-note {
+  display: grid;
+  gap: 5px;
+  padding: 12px;
+  border: 1px solid var(--ui-color-border);
+  border-radius: var(--ui-radius-md);
+  background: var(--ui-color-surface-subtle);
+}
+
+.account-detail-note span {
+  color: var(--ui-color-text-muted);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.account-detail-note p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--ui-color-text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
 }
 
 .account-detail-dot {
