@@ -350,6 +350,9 @@ def _network_preflight_with_retry(
             except Exception:
                 pass
         selected_proxy = proxy_supplier(attempt) if proxy_supplier is not None else proxy
+        # 直连没有可轮换的出口。重复创建会话只会再次撞同一个 Auth
+        # 边缘路由，并把一次确定性的线路拒绝放大成四次失败。
+        attempt_limit = attempt if not str(selected_proxy or "").strip() else max_attempts
         # 空字符串是账号代理服务明确选择“直连”，不能转成 None 后又静默回退 PROXY_POOL。
         session_kwargs = {"proxy": selected_proxy}
         if identity is not None:
@@ -359,7 +362,7 @@ def _network_preflight_with_retry(
             context_recorder.open_protocol_session(session, route_attempt_no=attempt)
         logger.info(
             "[查活] 会话创建完成：proxy=%s device_id=已隐藏（网络预检第 %s/%s 次）",
-            session.proxy or "配置随机/直连", attempt, max_attempts,
+            session.proxy or "配置随机/直连", attempt, attempt_limit,
         )
         try:
             _warm_protocol_login_context(session)
@@ -370,7 +373,7 @@ def _network_preflight_with_retry(
             return session, authorize_url
         except Exception as exc:
             last_exc = exc
-            if attempt >= max_attempts or not _is_retryable_network_error(exc):
+            if attempt >= attempt_limit or not _is_retryable_network_error(exc):
                 try:
                     session.session.close()
                 except Exception:
@@ -378,7 +381,7 @@ def _network_preflight_with_retry(
                 raise
             logger.warning(
                 "[查活] 网络预检失败（%s/%s），%s：%s",
-                attempt, max_attempts,
+                attempt, attempt_limit,
                 "释放当前线路并换新代理重试" if proxy_supplier is not None else "同一线路创建新会话重试",
                 str(exc)[:200],
             )
@@ -454,6 +457,7 @@ def check_account_liveness(
     *,
     clear_log: bool = True,
     proxy_supplier: Callable[[int], str | None] | None = None,
+    on_remote_request_started: Callable[[], None] | None = None,
 ) -> dict:
     """
     重新登录账号并刷新最新 accessToken。
@@ -507,6 +511,8 @@ def check_account_liveness(
             proxy_supplier=proxy_supplier,
         )
 
+        if callable(on_remote_request_started):
+            on_remote_request_started()
         otp_after_ts = time.time()
         final_url = follow_authorize(session, authorize_url)
         dead_code = detect_account_unusable_text(final_url)

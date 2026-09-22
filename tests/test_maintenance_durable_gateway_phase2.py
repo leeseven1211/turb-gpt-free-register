@@ -359,6 +359,86 @@ class MaintenanceDurableGatewayTests(PostgresTestCase):
         self.assertEqual("request_unknown", run["result_summary"]["outcome"])
         self.assertEqual("request_unknown", db.get_account(account_id)["live_check_status"])
 
+    def test_native_refresh_route_rejection_does_not_open_remote_boundary(self):
+        account_id = self._account("native-refresh-route-rejected@example.test")
+
+        def reject_before_remote_write(_email, **kwargs):
+            self.assertTrue(callable(kwargs.get("on_remote_request_started")))
+            return {
+                "ok": False,
+                "status": "failed",
+                "error": "auth_route_rejected",
+                "error_category": "network",
+                "http_status": 403,
+                "auth_method": "protocol_v2",
+                "roxy_fallback_allowed": True,
+            }
+
+        with (
+            patch.object(live_check_service, "_append_log"),
+            patch.object(live_check_service, "_resolve_refresh_driver", return_value="protocol_v2"),
+            patch("core.account_proxy.acquire_account_proxy", return_value=_Route()),
+            patch("core.protocol_v2_liveness.refresh_access_token", side_effect=reject_before_remote_write),
+            patch.object(live_check_service, "_roxy_fallback_enabled", return_value=False),
+        ):
+            submitted = live_check_service.enqueue_account_live_check(
+                account_id=account_id,
+                email="native-refresh-route-rejected@example.test",
+                trigger="token_refresh_manual",
+                force_refresh=True,
+            )
+            result = self._run_native("token_refresh", submitted["run_id"])
+
+        self.assertEqual("failed", result["status"])
+        self.assertEqual("failed", db.get_account(account_id)["live_check_status"])
+        run = operation.get_run(submitted["run_id"])
+        self.assertEqual("failed", run["status"])
+        self.assertNotIn("remote_intent", run["data"])
+        events = operation.list_task_events(
+            submitted["task_id"], run_id=submitted["run_id"], limit=100,
+        )["items"]
+        self.assertFalse(any(event.get("event_type") == "remote.request_started" for event in events))
+        self.assertFalse(any(event.get("event_type") == "remote.receipt_unknown" for event in events))
+
+    def test_token_refresh_retry_reclaims_account_projection_before_dispatch(self):
+        account_id = self._account("token-refresh-retry-claim@example.test")
+        with (
+            patch.object(live_check_service, "_append_log"),
+            patch.object(live_check_service, "_resolve_refresh_driver", return_value="protocol_v2"),
+            patch("core.account_proxy.acquire_account_proxy", return_value=_Route()),
+            patch("core.protocol_v2_liveness.refresh_access_token", return_value={
+                "ok": False,
+                "status": "failed",
+                "error": "protocol_v2_unknown_error",
+            }),
+            patch.object(live_check_service, "_roxy_fallback_enabled", return_value=False),
+        ):
+            submitted = live_check_service.enqueue_account_live_check(
+                account_id=account_id,
+                email="token-refresh-retry-claim@example.test",
+                trigger="token_refresh_manual",
+                force_refresh=True,
+            )
+            self._run_native("token_refresh", submitted["run_id"])
+
+        self.assertEqual("request_unknown", db.get_account(account_id)["live_check_status"])
+        task = {
+            "id": submitted["task_id"],
+            "account_id": account_id,
+            "email_snapshot": "token-refresh-retry-claim@example.test",
+            "status": "attention_required",
+            "source_system": "native_operations",
+        }
+        retry = task_gateway.operation_action(
+            "token_refresh", "retry", source_system="native_operations",
+        )
+        self.assertIsNotNone(retry)
+        with patch.object(task_gateway, "notify_dispatch"):
+            result = retry(task)
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual("queued", db.get_account(account_id)["live_check_status"])
+
     def test_force_refresh_uses_token_refresh_native_task_type_for_any_trigger(self):
         account_id = self._account("refresh-at-trigger@example.test")
         with (

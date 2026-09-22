@@ -138,10 +138,11 @@ def _refresh_result_is_unknown(result: dict | None) -> bool:
     """A refresh response without remote confirmation must remain reconcilable."""
     value = result if isinstance(result, dict) else {}
     auth = value.get("auth") if isinstance(value.get("auth"), dict) else {}
-    codes = [
+    result_codes = [
         str(value.get(key) or "").strip().lower()
         for key in ("error_code", "status", "error")
-    ] + [
+    ]
+    auth_codes = [
         str(auth.get(key) or "").strip().lower()
         for key in ("code", "status")
     ]
@@ -151,8 +152,14 @@ def _refresh_result_is_unknown(result: dict | None) -> bool:
     )
     return bool(
         value.get("request_unknown") or value.get("manual_reconcile") or
-        any(any(marker in code for marker in markers) for code in codes)
-        or auth.get("next_action") == "manual_reconcile"
+        any(any(marker in code for marker in markers) for code in result_codes)
+        or (
+            not _refresh_result_before_remote_boundary(value)
+            and (
+                auth.get("next_action") == "manual_reconcile"
+                or any(any(marker in code for marker in markers) for code in auth_codes)
+            )
+        )
     )
 
 
@@ -162,6 +169,18 @@ def _refresh_exception_is_unknown(exc: BaseException) -> bool:
         "request_unknown", "password_result_unknown", "oauth_callback_failed",
         "protocol_v2_unknown_error",
     ))
+
+
+def _refresh_result_before_remote_boundary(result: dict | None) -> bool:
+    """判断刷新结果是否明确发生在远端认证边界之前。"""
+    value = result if isinstance(result, dict) else {}
+    if value.get("remote_request_started") is False:
+        return True
+    codes = {
+        str(value.get(key) or "").strip().lower()
+        for key in ("error_code", "error", "status")
+    }
+    return bool(codes & {"auth_route_rejected", "network_preflight_failed"})
 
 
 def _refresh_result_is_rejected(result: dict | None) -> bool:
@@ -729,31 +748,38 @@ def _run_live_check(
         last_probe_http_status = None
 
         def invoke_refresh(call, *, driver_name: str):
-            """Run one refresh behind a durable remote-write checkpoint."""
+            """在网络预检完成后建立远端请求边界，并执行一次刷新。"""
             nonlocal refresh_boundary
             if operation_context is None:
-                return call()
-            request_id = f"token-refresh:{operation_context.run_id}:{uuid.uuid4().hex}"
-            # This is deliberately the last durable operation before crossing
-            # the remote authentication boundary.  Do not persist tokens,
-            # passwords, proxies, or raw protocol responses in its detail.
-            operation_context.remote_request_started(
-                "token_refresh",
-                request_id=request_id,
-                detail={
-                    "driver": str(driver_name or "unknown"),
-                    "trigger": str(trigger or "manual"),
-                    "protocol_version": _refresh_protocol_version(driver_name),
-                },
-            )
-            refresh_boundary = {
-                "action": "token_refresh",
-                "request_id": request_id,
-                "receipt_outcome": "started",
-                "pending_confirmation": False,
-            }
+                return call(None)
+
+            def begin_remote_request() -> None:
+                nonlocal refresh_boundary
+                if refresh_boundary is not None:
+                    return
+                request_id = f"token-refresh:{operation_context.run_id}:{uuid.uuid4().hex}"
+                # 只有匿名网络预检完成后才持久化边界；不记录 Token、密码、代理或原始响应。
+                operation_context.remote_request_started(
+                    "token_refresh",
+                    request_id=request_id,
+                    detail={
+                        "driver": str(driver_name or "unknown"),
+                        "trigger": str(trigger or "manual"),
+                        "protocol_version": _refresh_protocol_version(driver_name),
+                    },
+                )
+                refresh_boundary = {
+                    "action": "token_refresh",
+                    "request_id": request_id,
+                    "receipt_outcome": "started",
+                    "pending_confirmation": False,
+                }
             try:
-                remote_result = call()
+                remote_result = call(begin_remote_request)
+                # 兼容适配器和未调用回调的测试替身保持保守策略：只有明确的预检错误
+                # 才不打开“结果未知”的安全栅栏。
+                if refresh_boundary is None and not _refresh_result_before_remote_boundary(remote_result):
+                    begin_remote_request()
             except account_task_store.OperationLeaseLost:
                 raise
             except OperationCancelled as exc:
@@ -765,6 +791,9 @@ def _run_live_check(
                 )
                 raise exc
             except Exception as exc:
+                if refresh_boundary is None:
+                    # 适配器未报告阶段就抛错时，保守地按远端结果未知处理。
+                    begin_remote_request()
                 _record_refresh_receipt(
                     operation_context,
                     refresh_boundary,
@@ -786,7 +815,7 @@ def _run_live_check(
                     {"response_observed": True, "response_type": type(remote_result).__name__},
                 )
                 return _mark_refresh_request_unknown({}, "刷新 AT 返回格式异常，结果待确认")
-            if _refresh_result_is_unknown(remote_result):
+            if _refresh_result_is_unknown(remote_result) and not _refresh_result_before_remote_boundary(remote_result):
                 _record_refresh_receipt(
                     operation_context,
                     refresh_boundary,
@@ -817,6 +846,8 @@ def _run_live_check(
                         "error_code": remote_result.get("error_code") or remote_result.get("error"),
                     },
                 )
+                return remote_result
+            if _refresh_result_before_remote_boundary(remote_result):
                 return remote_result
             _record_refresh_receipt(
                 operation_context,
@@ -980,23 +1011,25 @@ def _run_live_check(
 
                 _checkpoint(operation_context, "刷新 AT 前检查取消状态")
                 result = invoke_refresh(
-                    lambda: refresh_access_token(
+                    lambda on_remote_request_started: refresh_access_token(
                         email,
                         proxy=None,
                         proxy_supplier=acquire_retry_route,
                         identity=protocol_identity,
                         context_recorder=auth_context_recorder,
+                        on_remote_request_started=on_remote_request_started,
                     ),
                     driver_name=selected_refresh_driver,
                 )
             else:
                 _checkpoint(operation_context, "邮箱登录刷新 AT 前检查取消状态")
                 result = invoke_refresh(
-                    lambda: check_account_liveness(
+                    lambda on_remote_request_started: check_account_liveness(
                         email,
                         proxy=None,
                         clear_log=False,
                         proxy_supplier=acquire_retry_route,
+                        **({"on_remote_request_started": on_remote_request_started} if on_remote_request_started else {}),
                     ),
                     driver_name=selected_refresh_driver or "legacy_email_otp",
                 )
@@ -1015,18 +1048,24 @@ def _run_live_check(
 
                 _checkpoint(operation_context, "刷新 AT 前检查取消状态")
                 result = invoke_refresh(
-                    lambda: refresh_access_token(
+                    lambda on_remote_request_started: refresh_access_token(
                         email,
                         proxy=selected_proxy,
                         identity=protocol_identity,
                         context_recorder=auth_context_recorder,
+                        on_remote_request_started=on_remote_request_started,
                     ),
                     driver_name=selected_refresh_driver,
                 )
             else:
                 _checkpoint(operation_context, "邮箱登录刷新 AT 前检查取消状态")
                 result = invoke_refresh(
-                    lambda: check_account_liveness(email, proxy=selected_proxy, clear_log=False),
+                    lambda on_remote_request_started: check_account_liveness(
+                        email,
+                        proxy=selected_proxy,
+                        clear_log=False,
+                        **({"on_remote_request_started": on_remote_request_started} if on_remote_request_started else {}),
+                    ),
                     driver_name=selected_refresh_driver or "legacy_email_otp",
                 )
         if refresh_boundary is not None:
@@ -1102,11 +1141,14 @@ def _run_live_check(
                         },
                     )
                     roxy_proxy = account_route.proxy_url
+
+                def run_roxy_refresh(on_remote_request_started):
+                    if on_remote_request_started:
+                        on_remote_request_started()
+                    return refresh_access_token(email, proxy=roxy_proxy)
+
                 roxy_result = invoke_refresh(
-                    lambda: refresh_access_token(
-                        email,
-                        proxy=roxy_proxy,
-                    ),
+                    run_roxy_refresh,
                     driver_name="roxy_browser",
                 )
                 if isinstance(roxy_result, dict):

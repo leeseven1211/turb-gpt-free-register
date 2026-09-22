@@ -3714,6 +3714,26 @@ def retry_runtime_task(task_id: int, *, trigger: str = "manual_retry", data: dic
             or _account_is_deactivated(account)
         ):
             raise ValueError("账号已废号，禁止重跑")
+        if str(task.get("task_type") or "").strip() in {"live_check", "token_refresh"} and account_id and account:
+            # 持久化重试和账号侧投影必须是同一个状态迁移。否则 worker 可能先收到新 Run，
+            # 而 mark_account_live_check_running 仍读到 request_unknown，在发起外部请求前取消任务。
+            queued_at = _now().isoformat(timespec="seconds")
+            record_store.patch_row(
+                record_store.ACCOUNTS,
+                account_id,
+                changes={
+                    "live_check_status": "queued",
+                    "live_check_ok": False,
+                    "live_check_trigger": str(trigger or "manual_retry"),
+                    "live_check_queued_at": queued_at,
+                    "live_check_started_at": None,
+                    "live_checked_at": None,
+                    "live_check_error": None,
+                    "live_check_http_status": None,
+                    "updated_at": queued_at,
+                },
+                conn=conn,
+            )
         previous_data = _decode(previous_run.get("data"))
         if isinstance(previous_data, dict):
             previous_data = dict(previous_data)

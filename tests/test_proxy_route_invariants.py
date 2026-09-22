@@ -222,6 +222,26 @@ class ProxyRouteInvariantTests(unittest.TestCase):
         )
         first_session.session.close.assert_called_once()
 
+    def test_live_check_preflight_does_not_repeat_same_direct_route(self):
+        from core import account_liveness
+
+        session = MagicMock(proxy="")
+        supplier = MagicMock(return_value="")
+        with (
+            patch("core.account_liveness.BrowserSession", return_value=session) as browser_session,
+            patch("core.account_liveness._warm_protocol_login_context", side_effect=RuntimeError("HTTP 403")),
+            patch("core.account_liveness.time.sleep"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "HTTP 403"):
+                account_liveness._network_preflight_with_retry(
+                    "account@example.com",
+                    None,
+                    proxy_supplier=supplier,
+                )
+
+        supplier.assert_called_once_with(1)
+        browser_session.assert_called_once_with(proxy="")
+
     def test_protocol_preflight_records_rotation_without_reusing_session_ids(self):
         from core import account_liveness
 

@@ -114,6 +114,32 @@ class ProtocolV2LivenessTests(unittest.TestCase):
             self.assertEqual("auth_page_unknown", result["error"])
             password.assert_not_called()
 
+    def test_authorize_route_rejection_is_classified_before_remote_boundary(self):
+        from core import openai_auth
+        from core import protocol_v2_liveness as v2
+
+        remote_boundary = MagicMock()
+        with (
+            patch.object(v2, "get_account_login_credentials", return_value=("saved-password", "")),
+            patch.object(
+                v2,
+                "_network_preflight_with_retry",
+                side_effect=openai_auth.AuthorizeRouteRejectedError(403),
+            ),
+        ):
+            result = v2.refresh_access_token(
+                "account@example.com",
+                proxy="",
+                on_remote_request_started=remote_boundary,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("auth_route_rejected", result["error"])
+        self.assertEqual("network", result["error_category"])
+        self.assertEqual(403, result["http_status"])
+        self.assertTrue(result["roxy_fallback_allowed"])
+        remote_boundary.assert_not_called()
+
     def test_email_entry_failure_reports_email_stage_and_skipped_password(self):
         from core import protocol_v2_liveness as v2
 
@@ -343,6 +369,7 @@ class ProtocolV2LivenessTests(unittest.TestCase):
             proxy="http://proxy.example:8080",
             clear_log=False,
             proxy_supplier=None,
+            on_remote_request_started=unittest.mock.ANY,
         )
 
     def test_missing_password_with_saved_totp_still_uses_email_refresh_path(self):

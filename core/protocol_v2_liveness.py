@@ -30,6 +30,7 @@ from core.account_liveness import (
 )
 from core.openai_auth import (
     AccountUnusableError,
+    AuthorizeRouteRejectedError,
     build_sentinel_header,
     detect_account_unusable_response_body,
     detect_account_unusable_text,
@@ -478,6 +479,7 @@ def _refresh_with_password(
     proxy_supplier: Callable[[int], str | None] | None,
     identity=None,
     context_recorder=None,
+    on_remote_request_started: Callable[[], None] | None = None,
 ) -> dict:
     session = None
     fallback_session = None
@@ -492,6 +494,7 @@ def _refresh_with_password(
             proxy=proxy,
             clear_log=False,
             proxy_supplier=proxy_supplier,
+            on_remote_request_started=on_remote_request_started,
         )
         result.setdefault("auth_method", "legacy_email_otp")
         result.setdefault("live_check_driver", "protocol_v2")
@@ -508,6 +511,8 @@ def _refresh_with_password(
             identity=identity,
             context_recorder=context_recorder,
         )
+        if callable(on_remote_request_started):
+            on_remote_request_started()
         otp_after_ts = time.time()
         final_url = follow_authorize(session, authorize_url)
         dead_code = detect_account_unusable_text(final_url)
@@ -779,9 +784,20 @@ def refresh_access_token(
     proxy_supplier: Callable[[int], str | None] | None = None,
     identity=None,
     context_recorder=None,
+    on_remote_request_started: Callable[[], None] | None = None,
 ) -> dict:
     """Run the opt-in Protocol v2 refresh flow and return a safe result."""
     checked_at = _now()
+    remote_request_started = False
+
+    def mark_remote_request_started() -> None:
+        nonlocal remote_request_started
+        if remote_request_started:
+            return
+        remote_request_started = True
+        if callable(on_remote_request_started):
+            on_remote_request_started()
+
     try:
         result = _refresh_with_password(
             email,
@@ -789,12 +805,32 @@ def refresh_access_token(
             proxy_supplier=proxy_supplier,
             identity=identity,
             context_recorder=context_recorder,
+            on_remote_request_started=mark_remote_request_started,
         )
+        result.setdefault("remote_request_started", remote_request_started)
         result.setdefault(
             "auth",
             auth_result_for_operation(result, auth_method=str(result.get("auth_method") or "protocol_v2")).as_dict(),
         )
         return result
+    except AuthorizeRouteRejectedError as exc:
+        return {
+            "ok": False,
+            "status": "failed",
+            "checked_at": checked_at,
+            "error": "auth_route_rejected",
+            "error_category": "network",
+            "http_status": int(exc.status_code or 0) or None,
+            "auth_method": "protocol_v2",
+            "roxy_fallback_allowed": True,
+            "retryable": True,
+            "remote_request_started": remote_request_started,
+            "live_check_driver": "protocol_v2",
+            "auth": auth_result_for_operation(
+                {"ok": False, "error": "auth_route_rejected", "roxy_fallback_allowed": True},
+                auth_method="protocol_v2",
+            ).as_dict(),
+        }
     except AccountUnusableError as exc:
         code = getattr(exc, "error_code", "") or "account_deactivated"
         return {
@@ -805,6 +841,7 @@ def refresh_access_token(
             "error_category": "account",
             "auth_method": "protocol_v2",
             "roxy_fallback_allowed": False,
+            "remote_request_started": remote_request_started,
             "live_check_driver": "protocol_v2",
             "auth": auth_result_for_operation(
                 {"ok": False, "error": code, "roxy_fallback_allowed": False},
@@ -822,6 +859,7 @@ def refresh_access_token(
             "auth_method": getattr(exc, "auth_method", "protocol_v2"),
             "roxy_fallback_allowed": exc.roxy_fallback_allowed,
             "retryable": exc.retryable,
+            "remote_request_started": remote_request_started,
             "live_check_driver": "protocol_v2",
         }
         if getattr(exc, "password_auth_status", ""):
@@ -839,17 +877,19 @@ def refresh_access_token(
         return result
     except Exception as exc:
         logger.warning("[查活][Protocol v2] 认证失败：%s: %s", type(exc).__name__, str(exc)[:160])
+        error = "protocol_v2_unknown_error" if remote_request_started else "network_preflight_failed"
         return {
             "ok": False,
             "status": "failed",
             "checked_at": checked_at,
-            "error": "protocol_v2_unknown_error",
-            "error_category": "runtime",
+            "error": error,
+            "error_category": "runtime" if remote_request_started else "network",
             "auth_method": "protocol_v2",
             "roxy_fallback_allowed": True,
+            "remote_request_started": remote_request_started,
             "live_check_driver": "protocol_v2",
             "auth": auth_result_for_operation(
-                {"ok": False, "error": "protocol_v2_unknown_error", "roxy_fallback_allowed": True},
+                {"ok": False, "error": error, "roxy_fallback_allowed": True},
                 auth_method="protocol_v2",
             ).as_dict(),
         }
