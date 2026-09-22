@@ -58,6 +58,7 @@ def create_operations_blueprint(context: WebUIContext):
                 task.get("error"),
                 stage="complete",
                 task_type=str(task.get("task_type") or ""),
+                error_code=str(task.get("error_code") or ""),
             )
             if error_info:
                 task["error_info"] = error_info
@@ -75,6 +76,7 @@ def create_operations_blueprint(context: WebUIContext):
             task.get("error"),
             stage="complete",
             task_type=str(task.get("task_type") or ""),
+            error_code=str(task.get("error_code") or ""),
         )
         if error_info:
             task["error_info"] = error_info
@@ -112,6 +114,7 @@ def create_operations_blueprint(context: WebUIContext):
                     task.get("error_message"),
                     stage=str(task.get("current_stage") or ""),
                     task_type=str(task.get("task_type") or ""),
+                    error_code=str(task.get("error_code") or ""),
                 )
         result["batches"] = operation_task_store.list_batches(limit=50)
         return jsonify(result)
@@ -129,6 +132,7 @@ def create_operations_blueprint(context: WebUIContext):
                 task.get("error_message"),
                 stage=str(task.get("current_stage") or ""),
                 task_type=str(task.get("task_type") or ""),
+                error_code=str(task.get("error_code") or ""),
             )
         return jsonify({"ok": True, "task": task})
 

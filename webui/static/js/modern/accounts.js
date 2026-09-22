@@ -32,7 +32,7 @@ function accountTaskResultText(task) {
   const status = String(task.status || '');
   if (status === 'queued') return '等待执行';
   if (status === 'running') return '执行中';
-  if (task.error_message) return task.error_message;
+  if (task.error_message) return taskErrorDisplayText(task.error_info, task.error_message);
   const result = task.result_summary || {};
   if (task.task_type === 'registration' || task.task_type === 'registration_resume') {
     return OPERATION_TARGET_LABELS[task.target_status] || task.target_status || '注册执行已结束';
@@ -144,6 +144,8 @@ function renderAccountTasks() {
     const trigger = ACCOUNT_TASK_TRIGGER_LABELS[task.trigger] || task.trigger || '-';
     const stage = ACCOUNT_TASK_STAGE_LABELS[normalizeAccountTaskStage(task.current_stage)] || task.current_stage || '-';
     const error = task.error_message || '';
+    const errorInfo = task.error_info || null;
+    const errorText = taskErrorDisplayText(errorInfo, error);
     return `<tr>
       <td>#${esc(task.id)}</td>
       <td>${esc(ACCOUNT_TASK_TYPE_LABELS[task.task_type] || task.task_type)}</td>
@@ -154,7 +156,7 @@ function renderAccountTasks() {
       <td>${esc(task.run_count || 0)} 次<div class="sub-cell">最近 #${esc(task.last_run_no || '-')}</div></td>
       <td>${esc(stage)}<div class="sub-cell">${esc(formatTaskDuration(task.duration_ms))}</div></td>
       <td title="${esc(formatDateTime(task.created_at))} → ${esc(formatDateTime(task.completed_at))}">${esc(formatDateTime(task.created_at))}<div class="sub-cell">${esc(formatDateTime(task.completed_at))}</div></td>
-      <td class="task-error" title="${esc(error || result)}">${error ? `${taskErrorBadge(task.error_info)}<span class="task-error-cell-text">${esc(short(task.error_info?.summary || result, 90))}</span>` : esc(short(result, 90))}</td>
+      <td class="task-error" title="${esc(error ? taskErrorDisplayTitle(errorInfo, error) : result)}">${error ? `${taskErrorBadge(errorInfo)}<span class="task-error-cell-text">${esc(short(errorText, 90))}</span>` : esc(short(result, 90))}</td>
       <td><div class="task-row-actions"><button type="button" class="task-row-action" data-account-task-log="${esc(task.id)}">日志</button>${terminable ? `<button type="button" class="task-row-action task-row-action--terminate" data-account-task-terminate="${esc(task.id)}" aria-label="${terminationLabel}任务 #${esc(task.id)}">${terminationLabel}</button>` : ''}${retryable ? `<button type="button" class="task-row-action task-row-action--retry" data-account-task-retry="${esc(task.id)}">重跑</button>` : ''}</div></td>
     </tr>`;
   }).join('') || renderTableStateRow(11, '暂无任务记录', '调整搜索或筛选条件后再试。');

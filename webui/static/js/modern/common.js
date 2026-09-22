@@ -713,7 +713,17 @@ function formatDateTime(v) {
 }
 function taskErrorBadge(info) {
   if (!info) return '';
-  return `<span class="task-error-badge" data-source="${attrEsc(info.source || 'unknown')}" title="${attrEsc(info.title || '')}">${esc(info.source_label || '未分类')} · ${esc(info.kind_label || '待归类')}</span>`;
+  const code = info.display_code || info.error_code || 'UNK-000';
+  return `<span class="task-error-badge" data-source="${attrEsc(info.source || 'unknown')}" title="${attrEsc(info.title || '')}">${esc(code)}</span>`;
+}
+function taskErrorDisplayText(info, raw = '') {
+  const summary = info?.summary || (raw ? short(raw, 90) : '未知错误');
+  return summary;
+}
+function taskErrorDisplayTitle(info, raw = '') {
+  if (!info) return short(raw || '未知错误', 160);
+  const code = info.display_code || info.error_code || 'UNK-000';
+  return `${info.title || info.source_label || '错误'} · ${code} · ${taskErrorDisplayText(info, raw)}`;
 }
 function renderTaskLogErrorSummary(id, task) {
   const el = document.getElementById(id);
@@ -725,7 +735,7 @@ function renderTaskLogErrorSummary(id, task) {
     el.innerHTML = '';
     return;
   }
-  el.innerHTML = `${taskErrorBadge(info)}<span>${esc(info?.summary || raw)}</span>`;
+  el.innerHTML = `${taskErrorBadge(info)}<span>${esc(taskErrorDisplayText(info, raw))}</span>`;
   el.classList.remove('hidden');
 }
 function jobsV2OpIcons() {

@@ -159,6 +159,64 @@ class TaskErrorClassificationTests(unittest.TestCase):
         self.assertEqual(info["stage"], "codex")
         self.assertIn("retryability", info)
 
+    def test_current_task_center_errors_have_short_codes_and_summaries(self):
+        cases = (
+            ("用户手动取消", "user.interrupted", "USR-001", "任务已取消", {}),
+            ("AT已过期/失效，请手动查活刷新", "external.openai.credential_expired", "AUTH-001", "授权已失效，请刷新 AT", {}),
+            (
+                "远端写请求尚未完成整条任务核验，结果未知，已保留原记录，可重新执行：查活失败",
+                "request_unknown", "REMOTE-001", "远端结果待核验", {"task_type": "token_refresh"},
+            ),
+            (
+                "TokenRefreshReauthRequiredError: reauth_required: refresh_token_reused",
+                "external.openai.auth_reauth_required", "AUTH-002", "授权已失效，请重新登录", {"task_type": "codex_token_refresh"},
+            ),
+            (
+                "Email Butler 请求失败 (/signals/scan): HTTP 502; None",
+                "external.email.service_unavailable", "MAIL-002", "邮箱服务暂时不可用", {"task_type": "deactivation_mail"},
+            ),
+            (
+                "Email Butler 请求失败 (/signals/scan): HTTP 404; email account not found",
+                "external.email.account_missing", "MAIL-003", "邮箱服务账号不存在", {"task_type": "deactivation_mail"},
+            ),
+            (
+                "原注册邮箱不再处于保留状态（source=icloud_hide, status=available），不能改用其他邮箱重跑",
+                "workflow.retry_blocked", "FLOW-RETRY-001", "原邮箱不可用，不能安全重试", {"task_type": "registration"},
+            ),
+            ("account_deactivated", "account.deactivated", "ACCT-001", "账号已停用", {"task_type": "token_refresh"}),
+            (
+                "registration_failed: HTTP Error 403:",
+                "external.openai.registration_rejected", "OA-REG-403", "注册请求被拒绝（HTTP 403）", {"task_type": "registration"},
+            ),
+            (
+                "auth_route_rejected: Auth authorize 路由被拒绝: HTTP 403",
+                "external.openai.auth_route_rejected", "OA-AUTH-403", "授权路由被拒绝（HTTP 403）", {"task_type": "registration"},
+            ),
+            ("SyntaxError: invalid syntax (roxy.py, line 1)", "internal.code", "SYS-CODE-001", "本地代码错误", {}),
+            (
+                "registration_failed: RuntimeError: 资料页点击提交后 45 秒仍未离开",
+                "workflow.page_state", "FLOW-PAGE-001", "页面未进入下一步", {"task_type": "registration"},
+            ),
+            ("邮箱换绑未完成", "external.openai.email_change_incomplete", "OA-EMAIL-001", "邮箱换绑未完成", {"task_type": "email_change"}),
+            ("远端拒绝邮箱换绑请求", "external.openai.email_change_rejected", "OA-EMAIL-005", "邮箱换绑请求被拒绝", {"task_type": "email_change"}),
+            ("邮箱换绑失败: UndefinedColumn", "internal.storage", "SYS-DB-001", "数据存储异常", {"task_type": "email_change"}),
+            ("套餐查询待处理: 套餐查询已入队", "task.pending", "STATE-001", "套餐查询等待执行", {"task_type": "plan_check"}),
+            ("任务在取得账号 lease 前收到取消请求", "user.interrupted", "USR-001", "任务已取消", {"task_type": "account_completion"}),
+        )
+        for message, code, display_code, summary, options in cases:
+            with self.subTest(message=message):
+                info = classify_task_error(message, **options)
+                self.assertEqual(code, info["code"])
+                self.assertEqual(display_code, info["display_code"])
+                self.assertEqual(summary, info["summary"])
+
+    def test_unknown_error_has_safe_short_fallback(self):
+        info = classify_task_error("某个尚未建立映射的内部异常：opaque_failure_123")
+        self.assertEqual("unknown.unclassified", info["code"])
+        self.assertEqual("UNK-000", info["display_code"])
+        self.assertEqual("未知错误", info["summary"])
+        self.assertNotIn("opaque_failure_123", info["summary"])
+
 
 if __name__ == "__main__":
     unittest.main()

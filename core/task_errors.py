@@ -24,24 +24,36 @@ class TaskErrorCode(str, Enum):
     EXTERNAL_ROXY = "external.roxy"
     EXTERNAL_EMAIL = "external.email"
     EXTERNAL_EMAIL_EMAIL_BUTLER_PREPARE = "external.email.email_butler_prepare"
+    EXTERNAL_EMAIL_SERVICE_UNAVAILABLE = "external.email.service_unavailable"
+    EXTERNAL_EMAIL_ACCOUNT_MISSING = "external.email.account_missing"
     EXTERNAL_OPENAI = "external.openai"
     EXTERNAL_OPENAI_ACCOUNT_CREATION_REJECTED = "external.openai.account_creation_rejected"
+    EXTERNAL_OPENAI_REGISTRATION_REJECTED = "external.openai.registration_rejected"
+    EXTERNAL_OPENAI_CREDENTIAL_EXPIRED = "external.openai.credential_expired"
+    EXTERNAL_OPENAI_AUTH_REAUTH_REQUIRED = "external.openai.auth_reauth_required"
+    EXTERNAL_OPENAI_AUTH_ROUTE_REJECTED = "external.openai.auth_route_rejected"
     EXTERNAL_OPENAI_EMAIL_CHANGE_ACCOUNT_TOO_NEW = "external.openai.email_change_account_too_new"
     EXTERNAL_OPENAI_EMAIL_CHANGE_FORBIDDEN = "external.openai.email_change_forbidden"
     EXTERNAL_OPENAI_EMAIL_CHANGE_RECENT_LOGIN = "external.openai.email_change_recent_login"
     EXTERNAL_OPENAI_EMAIL_CHANGE_REJECTED = "external.openai.email_change_rejected"
+    EXTERNAL_OPENAI_EMAIL_CHANGE_INCOMPLETE = "external.openai.email_change_incomplete"
+    EXTERNAL_OPENAI_EMAIL_CHANGE_FAILED = "external.openai.email_change_failed"
     EXTERNAL_OPENAI_EMAIL_DOMAIN_REJECTED = "external.openai.email_domain_rejected"
     EXTERNAL_NETWORK_MFA_TRANSPORT = "external.network.mfa_transport"
     EXTERNAL_NETWORK_REGISTRATION_TIMEOUT = "external.network.registration_timeout"
     EXTERNAL_NETWORK = "external.network"
+    ACCOUNT_DEACTIVATED = "account.deactivated"
     INTERNAL_STORAGE = "internal.storage"
+    INTERNAL_CODE = "internal.code"
     INTERNAL_BROWSER = "internal.browser"
     WORKFLOW_VERIFICATION = "workflow.verification"
     WORKFLOW_PAGE_STATE = "workflow.page_state"
     WORKFLOW_PASSWORD_ENTRY_NOT_HYDRATED = "workflow.password_entry_not_hydrated"
     WORKFLOW_PASSWORD_ENTRY_NOT_OFFERED = "workflow.password_entry_not_offered"
     WORKFLOW_PASSWORD_ENTRY_RECOVERY_EXHAUSTED = "workflow.password_entry_recovery_exhausted"
+    WORKFLOW_RETRY_BLOCKED = "workflow.retry_blocked"
     WORKFLOW_UNSUPPORTED = "workflow.unsupported"
+    TASK_PENDING = "task.pending"
     REQUEST_UNKNOWN = "request_unknown"
     UNKNOWN = "unknown.unclassified"
 
@@ -79,11 +91,29 @@ def is_request_unknown(value: Any) -> bool:
 
 _RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
     (
+        "account.deactivated",
+        "account",
+        "账号状态",
+        "账号已停用",
+        ("account_deactivated", "账号已废", "账号已停用"),
+    ),
+    (
+        "task.pending",
+        "system",
+        "任务状态",
+        "套餐查询等待执行",
+        ("套餐查询待处理", "套餐查询待重试", "套餐查询已入队"),
+    ),
+    (
         "request_unknown",
         "external",
         "远端待核验",
         "远端请求结果待确认",
-        ("request_unknown", "远端请求结果待确认", "需人工对账", "结果待确认"),
+        (
+            "request_unknown", "远端请求结果待确认", "需人工对账", "结果待确认",
+            "结果未知", "远端写请求尚未完成整条任务核验", "远端账号状态待核验",
+            "禁止直接重试", "远端结果待确认",
+        ),
     ),
     (
         "workflow.password_entry_not_hydrated",
@@ -130,7 +160,69 @@ _RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         "user",
         "用户操作",
         "任务被停止",
-        ("用户手动停止", "用户取消", "已取消", "收到停止请求"),
+        ("用户手动停止", "用户手动取消", "用户取消", "已取消", "收到停止请求", "收到取消请求", "取消请求"),
+    ),
+    (
+        "external.openai.credential_expired",
+        "external",
+        "OpenAI / ChatGPT",
+        "授权已失效",
+        (
+            "at已过期", "at已失效", "accesstoken 已过期", "access token 已过期",
+            "access_token 已过期", "现有 accesstoken 已过期", "token expired", "token invalid",
+        ),
+    ),
+    (
+        "external.openai.auth_reauth_required",
+        "external",
+        "OpenAI / ChatGPT",
+        "授权已失效",
+        ("reauth_required", "refresh_token_reused", "invalid_refresh_token", "refresh_token_invalidated"),
+    ),
+    (
+        "external.email.account_missing",
+        "external",
+        "邮箱 / 验证码服务",
+        "邮箱服务账号不存在",
+        ("email is not registered for openai", "email account not found", "account not found"),
+    ),
+    (
+        "external.email.service_unavailable",
+        "external",
+        "邮箱 / 验证码服务",
+        "邮箱服务暂时不可用",
+        (
+            "email butler 请求失败", "email butler request failed", "signals/scan",
+            "passwordless/send-otp", "email butler", "邮箱服务暂时不可用",
+        ),
+    ),
+    (
+        "external.openai.auth_route_rejected",
+        "external",
+        "OpenAI / ChatGPT",
+        "授权路由被拒绝",
+        ("auth_route_rejected", "auth authorize 路由被拒绝"),
+    ),
+    (
+        "internal.code",
+        "internal",
+        "内部错误",
+        "本地代码错误",
+        ("syntaxerror", "cannot schedule new futures after interpreter shutdown"),
+    ),
+    (
+        "workflow.retry_blocked",
+        "workflow",
+        "流程错误",
+        "原邮箱不可用，不能安全重试",
+        ("原注册邮箱不再处于保留状态", "不能改用其他邮箱重跑"),
+    ),
+    (
+        "workflow.page_state",
+        "workflow",
+        "流程错误",
+        "页面未进入下一步",
+        ("资料页点击提交后", "仍未离开", "页面未继续"),
     ),
     (
         "external.roxy_capacity",
@@ -169,7 +261,7 @@ _RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
             "邮箱池", "邮箱服务", "收码", "otp service", "邮件服务", "验证码接口",
             "imap", "gmail", "验证码邮件", "等待验证码超时", "otp_request_unconfirmed",
             "otp_reused_after_resend", "otp_invalid_or_expired", "otp_delivery_missing",
-            "验证码重发",
+            "验证码重发", "icloud hme 批量扫描缺少有效账号",
         ),
     ),
     (
@@ -216,7 +308,7 @@ _RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         "internal",
         "内部错误",
         "数据存储",
-        ("postgres", "database", "数据库", "数据写入", "持久化"),
+        ("postgres", "database", "数据库", "数据写入", "持久化", "undefinedcolumn", "deadlock detected"),
     ),
     (
         "internal.browser",
@@ -320,6 +412,16 @@ _EMAIL_CHANGE_RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
 # technically possible while still being unsafe after an irreversible remote
 # request, so consumers need the distinction for recovery UX.
 _ERROR_METADATA: dict[str, dict[str, str]] = {
+    "account.deactivated": {
+        "retryability": "not_retryable",
+        "remote_state_impact": "remote_confirmed",
+        "next_action": "none",
+    },
+    "task.pending": {
+        "retryability": "conditional",
+        "remote_state_impact": "unknown",
+        "next_action": "wait_for_task",
+    },
     "request_unknown": {
         "retryability": "manual_only",
         "remote_state_impact": "unknown",
@@ -365,10 +467,40 @@ _ERROR_METADATA: dict[str, dict[str, str]] = {
         "remote_state_impact": "not_started",
         "next_action": "retry_email_prepare",
     },
+    "external.email.service_unavailable": {
+        "retryability": "retryable",
+        "remote_state_impact": "unknown",
+        "next_action": "retry_email_service",
+    },
+    "external.email.account_missing": {
+        "retryability": "conditional",
+        "remote_state_impact": "unknown",
+        "next_action": "check_email_service",
+    },
     "external.openai": {
         "retryability": "conditional",
         "remote_state_impact": "unknown",
         "next_action": "reconcile_session",
+    },
+    "external.openai.registration_rejected": {
+        "retryability": "conditional",
+        "remote_state_impact": "remote_rejected",
+        "next_action": "inspect_remote_rejection",
+    },
+    "external.openai.credential_expired": {
+        "retryability": "conditional",
+        "remote_state_impact": "unknown",
+        "next_action": "refresh_credential",
+    },
+    "external.openai.auth_reauth_required": {
+        "retryability": "manual_only",
+        "remote_state_impact": "unknown",
+        "next_action": "reauthenticate_before_retry",
+    },
+    "external.openai.auth_route_rejected": {
+        "retryability": "conditional",
+        "remote_state_impact": "remote_rejected",
+        "next_action": "inspect_remote_rejection",
     },
     "external.openai.email_domain_rejected": {
         "retryability": "not_retryable",
@@ -395,6 +527,16 @@ _ERROR_METADATA: dict[str, dict[str, str]] = {
         "remote_state_impact": "remote_rejected",
         "next_action": "inspect_remote_rejection",
     },
+    "external.openai.email_change_incomplete": {
+        "retryability": "manual_only",
+        "remote_state_impact": "unknown",
+        "next_action": "inspect_remote_state",
+    },
+    "external.openai.email_change_failed": {
+        "retryability": "manual_only",
+        "remote_state_impact": "unknown",
+        "next_action": "inspect_remote_state",
+    },
     "external.openai.account_creation_rejected": {
         "retryability": "retryable",
         "remote_state_impact": "remote_rejected_or_pending",
@@ -414,6 +556,11 @@ _ERROR_METADATA: dict[str, dict[str, str]] = {
         "retryability": "retryable",
         "remote_state_impact": "remote_unchanged",
         "next_action": "retry_persistence",
+    },
+    "internal.code": {
+        "retryability": "not_retryable",
+        "remote_state_impact": "unknown",
+        "next_action": "fix_local_code",
     },
     "internal.browser": {
         "retryability": "retryable",
@@ -445,6 +592,11 @@ _ERROR_METADATA: dict[str, dict[str, str]] = {
         "remote_state_impact": "remote_may_be_pending",
         "next_action": "retry_registration",
     },
+    "workflow.retry_blocked": {
+        "retryability": "not_retryable",
+        "remote_state_impact": "unknown",
+        "next_action": "restore_email_lease",
+    },
     "workflow.unsupported": {
         "retryability": "not_retryable",
         "remote_state_impact": "remote_rejected",
@@ -460,6 +612,91 @@ _ERROR_METADATA: dict[str, dict[str, str]] = {
         "remote_state_impact": "unknown",
         "next_action": "manual_reconcile",
     },
+}
+
+_DISPLAY_CODES = {
+    "configuration.missing": "CFG-001",
+    "user.interrupted": "USR-001",
+    "service.interrupted": "SYS-002",
+    "account.deactivated": "ACCT-001",
+    "task.pending": "STATE-001",
+    "request_unknown": "REMOTE-001",
+    "external.proxy": "PROXY-001",
+    "external.roxy_capacity": "ROXY-002",
+    "external.roxy": "ROXY-001",
+    "external.email": "MAIL-001",
+    "external.email.email_butler_prepare": "MAIL-004",
+    "external.email.service_unavailable": "MAIL-002",
+    "external.email.account_missing": "MAIL-003",
+    "external.openai": "OA-000",
+    "external.openai.account_creation_rejected": "OA-REG-001",
+    "external.openai.registration_rejected": "OA-REG-000",
+    "external.openai.credential_expired": "AUTH-001",
+    "external.openai.auth_reauth_required": "AUTH-002",
+    "external.openai.auth_route_rejected": "OA-AUTH-000",
+    "external.openai.email_change_account_too_new": "OA-EMAIL-002",
+    "external.openai.email_change_forbidden": "OA-EMAIL-003",
+    "external.openai.email_change_recent_login": "OA-EMAIL-004",
+    "external.openai.email_change_rejected": "OA-EMAIL-005",
+    "external.openai.email_change_incomplete": "OA-EMAIL-001",
+    "external.openai.email_change_failed": "OA-EMAIL-000",
+    "external.openai.email_domain_rejected": "OA-EMAIL-006",
+    "external.network.mfa_transport": "NET-002",
+    "external.network.registration_timeout": "NET-003",
+    "external.network": "NET-001",
+    "internal.storage": "SYS-DB-001",
+    "internal.code": "SYS-CODE-001",
+    "internal.browser": "SYS-BROWSER-001",
+    "workflow.verification": "FLOW-VERIFY-001",
+    "workflow.page_state": "FLOW-PAGE-001",
+    "workflow.password_entry_not_hydrated": "FLOW-PWD-001",
+    "workflow.password_entry_not_offered": "FLOW-PWD-002",
+    "workflow.password_entry_recovery_exhausted": "FLOW-PWD-003",
+    "workflow.retry_blocked": "FLOW-RETRY-001",
+    "workflow.unsupported": "FLOW-UNSUPPORTED-001",
+    "unknown.unclassified": "UNK-000",
+}
+
+_DISPLAY_SUMMARIES = {
+    "configuration.missing": "配置缺失",
+    "user.interrupted": "任务已取消",
+    "service.interrupted": "服务重启导致任务中断",
+    "account.deactivated": "账号已停用",
+    "task.pending": "套餐查询等待执行",
+    "request_unknown": "远端结果待核验",
+    "external.proxy": "代理获取失败",
+    "external.roxy_capacity": "Roxy 窗口额度不足",
+    "external.roxy": "Roxy 浏览器服务异常",
+    "external.email": "邮箱 / 验证码服务异常",
+    "external.email.email_butler_prepare": "邮箱准备失败",
+    "external.email.service_unavailable": "邮箱服务暂时不可用",
+    "external.email.account_missing": "邮箱服务账号不存在",
+    "external.openai": "OpenAI / Codex 服务异常",
+    "external.openai.account_creation_rejected": "账号创建被上游拒绝",
+    "external.openai.credential_expired": "授权已失效，请刷新 AT",
+    "external.openai.auth_reauth_required": "授权已失效，请重新登录",
+    "external.openai.auth_route_rejected": "授权路由被拒绝",
+    "external.openai.email_change_account_too_new": "账号注册时间不足，暂不允许换绑",
+    "external.openai.email_change_forbidden": "当前会话不允许换绑邮箱",
+    "external.openai.email_change_recent_login": "Recent Login 认证失败",
+    "external.openai.email_change_rejected": "邮箱换绑请求被拒绝",
+    "external.openai.email_change_incomplete": "邮箱换绑未完成",
+    "external.openai.email_change_failed": "邮箱换绑失败",
+    "external.openai.email_domain_rejected": "目标邮箱域名被拒绝",
+    "external.network.mfa_transport": "2FA 通道网络异常",
+    "external.network.registration_timeout": "注册认证跳转超时",
+    "external.network": "网络 / 上游服务异常",
+    "internal.storage": "数据存储异常",
+    "internal.code": "本地代码错误",
+    "internal.browser": "浏览器自动化异常",
+    "workflow.verification": "验证流程失败",
+    "workflow.page_state": "页面未进入下一步",
+    "workflow.password_entry_not_hydrated": "密码入口页面未加载",
+    "workflow.password_entry_not_offered": "当前流程未提供密码入口",
+    "workflow.password_entry_recovery_exhausted": "密码入口页面恢复失败",
+    "workflow.retry_blocked": "原邮箱不可用，不能安全重试",
+    "workflow.unsupported": "当前功能不支持",
+    "unknown.unclassified": "未知错误",
 }
 
 
@@ -479,15 +716,24 @@ def _error_projection(
     error_code: str,
     raw: str,
     summary: str | None = None,
-) -> dict[str, str]:
+    display_code: str | None = None,
+) -> dict[str, Any]:
+    resolved_display_code = display_code or _DISPLAY_CODES.get(code, "UNK-000")
+    if code == TaskErrorCode.EXTERNAL_OPENAI_AUTH_ROUTE_REJECTED.value:
+        status_match = re.search(r"\bHTTP(?:\s+Error)?\s*:?\s*(\d{3})\b", raw, flags=re.IGNORECASE)
+        if status_match:
+            resolved_display_code = f"OA-AUTH-{status_match.group(1)}"
+            summary = f"授权路由被拒绝（HTTP {status_match.group(1)}）"
     result = {
         "code": code,
         "error_code": code,
+        "display_code": resolved_display_code,
         "source": source,
         "source_label": source_label,
         "kind_label": kind_label,
         "title": f"{source_label} · {kind_label}",
-        "summary": summary or _summary(raw),
+        "summary": summary or _DISPLAY_SUMMARIES.get(code) or _summary(raw),
+        "is_error": code != TaskErrorCode.TASK_PENDING.value,
     }
     result.update(_ERROR_METADATA.get(code, {}))
     supplied_error_code = str(error_code or "").strip()
@@ -506,7 +752,9 @@ def _email_change_error_projection(
     *,
     stage: str,
     error_code: str,
-) -> dict[str, str] | None:
+) -> dict[str, Any] | None:
+    if "undefinedcolumn" in haystack:
+        return None
     for code, source_label, kind_label, summary, needles in _EMAIL_CHANGE_RULES:
         if not all(needle in haystack for needle in needles):
             continue
@@ -527,6 +775,42 @@ def _email_change_error_projection(
             error_code=error_code,
             raw=raw,
             summary=summary,
+        )
+
+    if "邮箱换绑未完成" in haystack or "email_change_incomplete" in haystack:
+        return _error_projection(
+            TaskErrorCode.EXTERNAL_OPENAI_EMAIL_CHANGE_INCOMPLETE.value,
+            "external",
+            "OpenAI / ChatGPT",
+            "邮箱换绑未完成",
+            stage=stage,
+            error_code=error_code,
+            raw=raw,
+            summary="邮箱换绑未完成",
+        )
+
+    if "远端拒绝邮箱换绑请求" in haystack:
+        return _error_projection(
+            TaskErrorCode.EXTERNAL_OPENAI_EMAIL_CHANGE_REJECTED.value,
+            "external",
+            "OpenAI / ChatGPT",
+            "邮箱换绑请求被拒绝",
+            stage=stage,
+            error_code=error_code,
+            raw=raw,
+            summary="邮箱换绑请求被拒绝",
+        )
+
+    if "邮箱换绑失败" in haystack or "email_change_failed" in haystack:
+        return _error_projection(
+            TaskErrorCode.EXTERNAL_OPENAI_EMAIL_CHANGE_FAILED.value,
+            "external",
+            "OpenAI / ChatGPT",
+            "邮箱换绑失败",
+            stage=stage,
+            error_code=error_code,
+            raw=raw,
+            summary="邮箱换绑失败",
         )
 
     if "/backend-api/accounts/change_email/" not in haystack:
@@ -557,6 +841,35 @@ def _email_change_error_projection(
     )
 
 
+def _registration_error_projection(
+    raw: str,
+    *,
+    haystack: str,
+    stage: str,
+    task_type: str,
+    error_code: str,
+) -> dict[str, Any] | None:
+    if str(task_type or "").strip().lower() not in {"registration", "registration_resume"}:
+        return None
+    if "http error" not in haystack and "registration_failed" not in haystack:
+        return None
+    status_match = re.search(r"(?:HTTP\s+Error|HTTP)\s*:?[\s(]*(\d{3})", raw, flags=re.IGNORECASE)
+    if not status_match:
+        return None
+    status = status_match.group(1)
+    return _error_projection(
+        TaskErrorCode.EXTERNAL_OPENAI_REGISTRATION_REJECTED.value,
+        "external",
+        "OpenAI / ChatGPT",
+        "注册请求被拒绝",
+        stage=stage,
+        error_code=error_code,
+        raw=raw,
+        summary=f"注册请求被拒绝（HTTP {status}）",
+        display_code=f"OA-REG-{status}",
+    )
+
+
 def classify_task_error(
     message: Any,
     *,
@@ -580,6 +893,15 @@ def classify_task_error(
         )
         if projection is not None:
             return projection
+    registration_projection = _registration_error_projection(
+        raw,
+        haystack=haystack,
+        stage=stage,
+        task_type=task_type,
+        error_code=error_code,
+    )
+    if registration_projection is not None:
+        return registration_projection
     for code, source, source_label, kind_label, needles in _RULES:
         if any(needle in haystack for needle in needles):
             return _error_projection(

@@ -406,8 +406,9 @@ function renderBatchProgress() {
         : state === 'stopped' ? '!'
         : String(index + 1);
       const stageError = ['failed', 'stopped'].includes(state) ? (step.detail || job.error_message || '') : '';
-      const stageDetail = stageError || (state === 'skipped' ? (step.detail || '已跳过') : '');
-      const detailTitle = stageDetail ? ` title="${esc(stageDetail)}" aria-label="${esc(stage.label)}：${esc(stageDetail)}"` : '';
+      const stageErrorText = stageError ? taskErrorDisplayText(job.error_info, stageError) : '';
+      const stageDetail = stageErrorText || (state === 'skipped' ? (step.detail || '已跳过') : '');
+      const detailTitle = stageDetail ? ` title="${esc(stageError ? taskErrorDisplayTitle(job.error_info, stageError) : stageDetail)}" aria-label="${esc(stage.label)}：${esc(stageDetail)}"` : '';
       const legacyMergedTiming = Boolean(job.legacy_retry_timing) && stage.key !== 'complete' && Boolean(step.started_at);
       const stepDuration = legacyMergedTiming ? '' : formatProgressDuration(step.started_at, ['success', 'failed', 'skipped', 'stopped'].includes(state) ? step.completed_at : '');
       const stepDurationEnd = ['success', 'failed', 'skipped', 'stopped'].includes(state) ? (step.completed_at || '') : '';
@@ -430,7 +431,9 @@ function renderBatchProgress() {
         ${attemptRows.map((attempt, attemptIndex) => {
           const attemptResult = progressJobResult(attempt);
           const attemptDuration = formatProgressDuration(attempt.started_at, attempt.completed_at || '');
-          const error = attempt.error_message ? ` · ${esc(attempt.error_message)}` : '';
+          const error = attempt.error_message
+            ? ` · ${taskErrorBadge(attempt.error_info)} ${esc(taskErrorDisplayText(attempt.error_info, attempt.error_message))}`
+            : '';
           const warning = attempt.warning_summary ? ` · 换线原因：${esc(attempt.warning_summary)}` : '';
           return `<div><strong>第 ${attemptIndex + 1} 次执行 #${esc(attempt.id)}</strong><span class="batch-progress-v2-result ${attemptResult.cls}">${attemptResult.label}</span>${attemptDuration ? ` · ${esc(attemptDuration)}` : ''}${error}${warning}</div>`;
         }).join('')}
@@ -484,7 +487,7 @@ function renderJobs() {
         <td class="col-status">${pillV2(j.debug_state === 'paused' ? 'debug_paused' : (j.display_status || j.status))}</td>
         <td class="col-time" title="${esc(started)}">${esc(started)}</td>
         <td class="col-time" title="${esc(completed)}">${esc(completed)}</td>
-        <td class="col-error" title="${esc(err)}">${err ? `${taskErrorBadge(j.error_info)}<span class="task-error-cell-text">${esc(short(j.error_info?.summary || err, 60))}</span>` : '-'}</td>
+        <td class="col-error" title="${esc(err ? taskErrorDisplayTitle(j.error_info, err) : '-')}">${err ? `${taskErrorBadge(j.error_info)}<span class="task-error-cell-text">${esc(short(taskErrorDisplayText(j.error_info, err), 60))}</span>` : '-'}</td>
         <td class="col-actions">
           <div class="jobs-v2-ops">
             <button type="button" class="jobs-v2-op jobs-v2-op--view" data-log-job="${esc(j.id)}" title="查看日志">${icons.view}</button>

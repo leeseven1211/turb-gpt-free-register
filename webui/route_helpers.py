@@ -490,6 +490,7 @@ def _latest_progress_batch(rows: list[dict]) -> dict | None:
                 "started_at": row.get("started_at"),
                 "completed_at": row.get("completed_at"),
                 "error_message": str(attempt_compact.get("error_message") or "")[:240] or None,
+                "error_info": attempt_compact.get("error_info") or {},
                 "warning_summary": str(attempt_compact.get("warning_summary") or "")[:240] or None,
                 "internal_retry_count": int(attempt_compact.get("internal_retry_count") or 0),
             })
