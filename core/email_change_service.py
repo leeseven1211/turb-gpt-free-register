@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Mapping
 
 from core import email_provider
@@ -38,6 +40,50 @@ def _config_snapshot():
     from config.schema import get_config_snapshot
 
     return get_config_snapshot()
+
+
+def _email_change_min_account_age_hours() -> int:
+    from config import account as account_config
+
+    try:
+        return max(0, min(int(account_config.ACCOUNT_EMAIL_CHANGE_MIN_ACCOUNT_AGE_HOURS or 0), 8760))
+    except (TypeError, ValueError):
+        return 168
+
+
+def _account_age_gate_error(account: Mapping[str, Any]) -> str:
+    """Reject only parseable, clearly too-new accounts before leasing a mailbox."""
+    minimum_hours = _email_change_min_account_age_hours()
+    if minimum_hours <= 0:
+        return ""
+    raw_created_at = account.get("created_at")
+    if isinstance(raw_created_at, datetime):
+        created_at = raw_created_at
+    else:
+        try:
+            created_at = datetime.fromisoformat(str(raw_created_at or "").strip().replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return ""
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    age_seconds = (datetime.now(timezone.utc) - created_at.astimezone(timezone.utc)).total_seconds()
+    if age_seconds >= minimum_hours * 3600:
+        return ""
+    return f"账号注册时间不足 {minimum_hours} 小时，暂不提交邮箱换绑"
+
+
+def _safe_local_failure_message(stage: str, exc: BaseException) -> str:
+    """Keep task errors actionable without copying supplier paths or mailbox addresses."""
+    raw = str(exc or "")
+    if "EmailButler" in raw or "email_butler" in raw:
+        category = "Email Butler 领取失败"
+    elif "邮箱池" in raw or "邮箱来源" in raw:
+        category = "邮箱来源领取失败"
+    else:
+        category = type(exc).__name__
+    match = re.search(r"\bHTTP\s+([1-5]\d{2})\b", raw, flags=re.IGNORECASE)
+    status_suffix = f"（HTTP {match.group(1)}）" if match else ""
+    return f"{str(stage or '邮箱换绑失败')}: {category}{status_suffix}"
 
 
 class _RemoteRequestError(RuntimeError):
@@ -108,6 +154,8 @@ class EmailChangeProtocol:
                 raw_code = str(payload["detail"].get("code") or "").strip()
             if not raw_code:
                 raw_code = str(payload.get("code") or "").strip()
+            if not raw_code and isinstance(payload.get("detail"), str):
+                raw_code = payload["detail"].strip()
         if not raw_code or len(raw_code) > 120:
             return ""
         if not all(char.isalnum() or char in "._:-" for char in raw_code):
@@ -791,26 +839,30 @@ def _handle_email_change(context):
         )
         return task_gateway.OperationResult.failed(str(exc))
     except Exception as exc:
+        local_error = _safe_local_failure_message(
+            "邮箱准备失败" if not new_email else "邮箱换绑失败",
+            exc,
+        )
         if remote_accepted or writeback_confirmed:
             db.finish_account_email_change(
                 account_id,
                 ok=False,
                 new_email=new_email or None,
                 source=source,
-                error=f"{type(exc).__name__}: {str(exc)[:300]}",
+                error=local_error,
                 outcome="request_unknown",
             )
             return task_gateway.OperationResult.request_unknown("邮箱换绑结果待核验")
         if new_email:
-            _release_unconsumed(new_email, account_id, str(exc))
+            _release_unconsumed(new_email, account_id, local_error)
         db.finish_account_email_change(
             account_id,
             ok=False,
             new_email=new_email or None,
             source=source,
-            error=f"{type(exc).__name__}: {str(exc)[:300]}",
+            error=local_error,
         )
-        return task_gateway.OperationResult.failed(f"邮箱换绑失败: {type(exc).__name__}")
+        return task_gateway.OperationResult.failed(local_error)
     finally:
         _close_protocol_session(session)
         if route is not None:
@@ -882,6 +934,9 @@ def submit_email_change(
         selected_source = email_provider.validate_email_source(source)
     except ValueError as exc:
         return {"accepted": False, "busy": False, "error": str(exc)}
+    age_gate_error = _account_age_gate_error(account)
+    if age_gate_error:
+        return {"accepted": False, "busy": False, "error": age_gate_error}
     from core.feature_availability import require_email_source
 
     source_ready, source_reason = require_email_source(selected_source)

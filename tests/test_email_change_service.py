@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import logging
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -328,6 +329,90 @@ class EmailChangeProtocolContractTests(unittest.TestCase):
 
         self.assertEqual(401, caught.exception.http_status)
         self.assertEqual("reauth_required", caught.exception.remote_error_code)
+
+    def test_remote_rejection_reads_safe_scalar_detail_code(self):
+        from core.email_change_service import EmailChangeProtocol, RemoteRequestRejected
+
+        session = Mock()
+        session.get_chatgpt_headers.return_value = {}
+        session.device_id = "device-test"
+        session.navigator_language.return_value = "en-US"
+        session.post.return_value = _Response(
+            {"detail": "email_domain_not_allowed"},
+            status_code=422,
+        )
+
+        with self.assertRaises(RemoteRequestRejected) as caught:
+            EmailChangeProtocol().begin(session, "at-test", "new-user@example.test")
+
+        self.assertEqual(422, caught.exception.http_status)
+        self.assertEqual("email_domain_not_allowed", caught.exception.remote_error_code)
+
+
+class EmailChangeEligibilityTests(unittest.TestCase):
+    def test_email_prepare_failure_summary_redacts_supplier_email(self):
+        from core.email_change_service import _safe_local_failure_message
+
+        summary = _safe_local_failure_message(
+            "邮箱准备失败",
+            RuntimeError(
+                "所选邮箱来源 email_butler 领取失败: EmailButlerClientError: "
+                "Email Butler 请求失败 (/mailboxes/alice@example.test/messages): HTTP 409"
+            ),
+        )
+
+        self.assertEqual("邮箱准备失败: Email Butler 领取失败（HTTP 409）", summary)
+        self.assertNotIn("alice@example.test", summary)
+
+    def test_submit_rejects_too_new_account_before_email_source_check(self):
+        from core import email_change_service
+
+        account = {
+            "id": 7,
+            "email": "account@example.test",
+            "access_token": "at-test",
+            "created_at": datetime.now(timezone.utc),
+        }
+        with patch.object(email_change_service.db, "get_account", return_value=account), patch(
+            "core.feature_availability.require_email_source",
+            return_value=(True, ""),
+        ) as source_ready, patch.object(task_gateway, "submit_durable_operation") as submit:
+            result = email_change_service.submit_email_change(
+                7,
+                source="email_butler",
+                dispatch=False,
+            )
+
+        self.assertFalse(result["accepted"])
+        self.assertIn("注册时间不足", result["error"])
+        source_ready.assert_not_called()
+        submit.assert_not_called()
+
+    def test_submit_allows_account_past_minimum_age(self):
+        from core import email_change_service
+
+        account = {
+            "id": 7,
+            "email": "account@example.test",
+            "access_token": "at-test",
+            "created_at": datetime.now(timezone.utc) - timedelta(days=8),
+        }
+        with patch.object(email_change_service.db, "get_account", return_value=account), patch(
+            "core.feature_availability.require_email_source",
+            return_value=(True, ""),
+        ), patch.object(
+            task_gateway,
+            "submit_durable_operation",
+            return_value={"accepted": True, "task_id": 9, "run_id": 10},
+        ) as submit:
+            result = email_change_service.submit_email_change(
+                7,
+                source="email_butler",
+                dispatch=False,
+            )
+
+        self.assertTrue(result["accepted"])
+        submit.assert_called_once()
 
     def test_change_request_includes_account_context_from_access_token(self):
         from core.email_change_service import EmailChangeProtocol
