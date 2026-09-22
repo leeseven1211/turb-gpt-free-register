@@ -138,29 +138,66 @@ class EmailChangeProtocol:
     _BASE_URL = "https://chatgpt.com"
 
     @staticmethod
-    def _response_error_code(response: Any) -> str:
+    def _safe_error_code(value: Any) -> str:
+        raw_code = str(value or "").strip()
+        if not raw_code or len(raw_code) > 120:
+            return ""
+        if all(char.isalnum() or char in "._:-" for char in raw_code):
+            return raw_code
+        normalized = raw_code.lower()
+        if "email" in normalized:
+            if "domain" in normalized and any(marker in normalized for marker in (
+                "not allowed", "not supported", "rejected", "blocked",
+            )):
+                return "email_domain_rejected"
+            if "already" in normalized and any(marker in normalized for marker in (
+                "used", "exists", "registered",
+            )):
+                return "email_already_in_use"
+            if any(marker in normalized for marker in (
+                "invalid", "valid email", "malformed", "format",
+            )):
+                return "invalid_email"
+        if "account" in normalized and any(marker in normalized for marker in (
+            "too new", "too recent", "not old enough",
+        )):
+            return "email_change_account_too_new"
+        return ""
+
+    @classmethod
+    def _response_error_code(cls, response: Any) -> str:
         try:
             payload = response.json()
         except Exception:
             return ""
-        raw_code = ""
-        if isinstance(payload, dict):
-            error = payload.get("error")
-            if isinstance(error, dict):
-                raw_code = str(error.get("code") or "").strip()
-            elif isinstance(error, str):
-                raw_code = error.strip()
-            if not raw_code and isinstance(payload.get("detail"), dict):
-                raw_code = str(payload["detail"].get("code") or "").strip()
-            if not raw_code:
-                raw_code = str(payload.get("code") or "").strip()
-            if not raw_code and isinstance(payload.get("detail"), str):
-                raw_code = payload["detail"].strip()
-        if not raw_code or len(raw_code) > 120:
+        if not isinstance(payload, dict):
             return ""
-        if not all(char.isalnum() or char in "._:-" for char in raw_code):
-            return ""
-        return raw_code
+
+        codes: list[Any] = [payload.get("code"), payload.get("error_code")]
+        messages: list[Any] = []
+        types: list[Any] = []
+
+        def collect(value: Any) -> None:
+            if isinstance(value, dict):
+                codes.extend((value.get("code"), value.get("error_code")))
+                messages.extend((value.get("message"), value.get("msg")))
+                types.append(value.get("type"))
+                nested = value.get("detail")
+                if nested is not None:
+                    collect(nested)
+            elif isinstance(value, list):
+                for item in value[:5]:
+                    collect(item)
+            elif isinstance(value, str):
+                messages.append(value)
+
+        collect(payload.get("error"))
+        collect(payload.get("detail"))
+        for candidate in [*codes, *messages, *types]:
+            error_code = cls._safe_error_code(candidate)
+            if error_code:
+                return error_code
+        return ""
 
     @staticmethod
     def _safe_response_metadata(response: Any) -> dict[str, Any]:

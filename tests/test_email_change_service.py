@@ -348,6 +348,28 @@ class EmailChangeProtocolContractTests(unittest.TestCase):
         self.assertEqual(422, caught.exception.http_status)
         self.assertEqual("email_domain_not_allowed", caught.exception.remote_error_code)
 
+    def test_remote_rejection_classifies_detail_message_without_address(self):
+        from core.email_change_service import EmailChangeProtocol, RemoteRequestRejected
+
+        session = Mock()
+        session.get_chatgpt_headers.return_value = {}
+        session.device_id = "device-test"
+        session.navigator_language.return_value = "en-US"
+        session.post.return_value = _Response(
+            {
+                "detail": {
+                    "message": "Email alice@leeseven.com uses a domain that is not allowed",
+                },
+            },
+            status_code=422,
+        )
+
+        with self.assertRaises(RemoteRequestRejected) as caught:
+            EmailChangeProtocol().begin(session, "at-test", "new-user@example.test")
+
+        self.assertEqual("email_domain_rejected", caught.exception.remote_error_code)
+        self.assertNotIn("alice@leeseven.com", str(caught.exception))
+
 
 class EmailChangeEligibilityTests(unittest.TestCase):
     def test_email_prepare_failure_summary_redacts_supplier_email(self):
