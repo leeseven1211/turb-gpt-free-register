@@ -191,6 +191,21 @@ if (accountTaskCanRetry({
         self.assertIn("status === 'queued' ? '取消' : '终止'", source)
         self.assertIn("window.confirm", source)
 
+    def test_task_center_exposes_single_and_bulk_delete(self):
+        template = (PROJECT_ROOT / 'webui/templates/index.html').read_text(encoding='utf-8')
+        source = (PROJECT_ROOT / 'webui/static/js/modern/accounts.js').read_text(encoding='utf-8')
+        self.assertIn('id="btnDeleteSelectedAccountTasksV2"', template)
+        self.assertIn('data-account-task-delete', source)
+        self.assertIn('/api/operations/bulk', source)
+
+    def test_task_center_localizes_unknown_execution_status_and_colors_it_as_attention(self):
+        source = (PROJECT_ROOT / 'webui/static/js/modern/common.js').read_text(encoding='utf-8')
+        css = (PROJECT_ROOT / 'webui/static/css/modern.css').read_text(encoding='utf-8')
+        self.assertIn("request_unknown:'待确认'", source)
+        self.assertIn("s === 'request_unknown'", source)
+        self.assertIn('data-filter-status', source)
+        self.assertIn('.account-tasks-table { width:100%; min-width:100%; table-layout:fixed; }', css)
+
     def test_account_ui_hides_actions_for_all_deactivation_projections(self):
         harness = r'''
 const fs = require('fs');

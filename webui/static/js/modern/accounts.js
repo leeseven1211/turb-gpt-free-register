@@ -145,18 +145,21 @@ function updateAccountTaskSelectionUi() {
   const retryable = selected.filter(accountTaskCanRetry).length;
   const cancellable = selected.filter(task => String(task.status || '').toLowerCase() === 'queued').length;
   const terminable = selected.filter(accountTaskCanTerminate).length;
+  const deletable = selected.filter(task => !accountTaskIsActive(task)).length;
   const hint = $('#accountTaskSelectedHintV2');
   const toolbar = hint?.closest('.list-action-toolbar');
   toolbar?.classList.toggle('has-selection', selected.length > 0);
   if (hint) hint.textContent = selected.length
-    ? `已选 ${selected.length} 个 · 可重跑 ${retryable} · 可取消 ${cancellable} · 可终止 ${terminable}`
+    ? `已选 ${selected.length} 个 · 可重跑 ${retryable} · 可取消 ${cancellable} · 可终止 ${terminable} · 可删除 ${deletable}`
     : '选择任务后批量操作';
   const retryBtn = $('#btnRetrySelectedAccountTasksV2');
   const cancelBtn = $('#btnCancelSelectedAccountTasksV2');
   const terminateBtn = $('#btnTerminateSelectedAccountTasksV2');
+  const deleteBtn = $('#btnDeleteSelectedAccountTasksV2');
   if (retryBtn) retryBtn.disabled = retryable === 0;
   if (cancelBtn) cancelBtn.disabled = cancellable === 0;
   if (terminateBtn) terminateBtn.disabled = terminable === 0;
+  if (deleteBtn) deleteBtn.disabled = deletable === 0;
   const selectAll = $('#accountTasksSelectAllV2');
   const pageIds = ACCOUNT_TASKS.map(task => Number(task.id));
   const checkedCount = pageIds.filter(id => ACCOUNT_TASK_SELECTED.has(id)).length;
@@ -205,7 +208,7 @@ function renderAccountTasks() {
       <td>${esc(stage)}<div class="sub-cell">${esc(formatTaskDuration(task.duration_ms))}</div></td>
       <td title="${esc(formatDateTime(task.created_at))} → ${esc(formatDateTime(task.completed_at))}">${esc(formatDateTime(task.created_at))}<div class="sub-cell">${esc(formatDateTime(task.completed_at))}</div></td>
       <td class="task-error" title="${esc(error ? taskErrorDisplayTitle(errorInfo, error) : result)}">${error ? `${taskErrorBadge(errorInfo)}<span class="task-error-cell-text">${esc(short(errorText, 90))}</span>` : esc(short(result, 90))}</td>
-      <td><div class="task-row-actions"><button type="button" class="task-row-action" data-account-task-log="${esc(task.id)}">日志</button>${stoppable ? `<button type="button" class="task-row-action task-row-action--terminate" data-account-task-terminate="${esc(task.id)}" aria-label="${terminationLabel}任务 #${esc(task.id)}">${terminationLabel}</button>` : ''}${retryable ? `<button type="button" class="task-row-action task-row-action--retry" data-account-task-retry="${esc(task.id)}">重跑</button>` : ''}</div></td>
+      <td><div class="task-row-actions"><button type="button" class="task-row-action" data-account-task-log="${esc(task.id)}">日志</button>${stoppable ? `<button type="button" class="task-row-action task-row-action--terminate" data-account-task-terminate="${esc(task.id)}" aria-label="${terminationLabel}任务 #${esc(task.id)}">${terminationLabel}</button>` : ''}${retryable ? `<button type="button" class="task-row-action task-row-action--retry" data-account-task-retry="${esc(task.id)}">重跑</button>` : ''}${!active ? `<button type="button" class="task-row-action task-row-action--delete" data-account-task-delete="${esc(task.id)}">删除</button>` : ''}</div></td>
     </tr>`;
   }).join('') || renderTableStateRow(12, '暂无任务记录', '调整搜索或筛选条件后再试。');
   const summary = $('#accountTaskPageSummary');
@@ -520,25 +523,47 @@ async function terminateAccountTask(taskId, button) {
     button.disabled = false;
   }
 }
+async function deleteAccountTask(taskId, button) {
+  const task = ACCOUNT_TASKS.find(item => Number(item.id) === Number(taskId));
+  if (!task || accountTaskIsActive(task)) {
+    showToast('执行中的任务不能删除，请先停止任务');
+    return;
+  }
+  if (!window.confirm(`确定删除任务 #${taskId}？\n\n删除后任务会从任务中心隐藏，历史审计记录仍会保留。`)) return;
+  button.disabled = true;
+  try {
+    await api(`/api/operations/${encodeURIComponent(taskId)}/delete`, {method:'POST'});
+    showToast('任务已删除');
+    ACCOUNT_TASK_SELECTED.delete(Number(taskId));
+    await loadAccountTasks();
+  } catch (e) {
+    showToast('删除失败: ' + e.message);
+    button.disabled = false;
+  }
+}
 async function bulkAccountTasks(action) {
   const selected = accountTaskSelectedRows();
   const eligible = selected.filter(task => action === 'retry'
     ? accountTaskCanRetry(task)
     : action === 'cancel'
       ? String(task.status || '').toLowerCase() === 'queued'
-      : accountTaskCanTerminate(task));
+      : action === 'delete'
+        ? !accountTaskIsActive(task)
+        : accountTaskCanTerminate(task));
   if (!eligible.length) {
-    showToast(action === 'retry' ? '选中任务中没有可重跑项' : action === 'cancel' ? '选中任务中没有排队项' : '选中任务中没有可终止的原生运行任务');
+    showToast(action === 'retry' ? '选中任务中没有可重跑项' : action === 'cancel' ? '选中任务中没有排队项' : action === 'delete' ? '选中任务中没有可删除项' : '选中任务中没有可终止的原生运行任务');
     return;
   }
-  const label = action === 'retry' ? '重跑' : action === 'cancel' ? '取消排队' : '终止运行';
+  const label = action === 'retry' ? '重跑' : action === 'cancel' ? '取消排队' : action === 'delete' ? '删除' : '终止运行';
   const warning = action === 'retry'
     ? '原任务记录和运行日志会保留，废号或无重跑来源的任务会跳过。'
     : action === 'cancel'
       ? '只会取消尚未开始的排队任务。'
-      : '运行中的任务会立即收口；如果已经向远端发起写入，结果可能需要人工核验。';
+      : action === 'delete'
+        ? '任务会从任务中心隐藏，历史审计记录仍会保留；执行中的任务会跳过。'
+        : '运行中的任务会立即收口；如果已经向远端发起写入，结果可能需要人工核验。';
   if (!window.confirm(`确定${label}选中的 ${eligible.length} 个任务吗？\n\n${warning}`)) return;
-  const buttonId = action === 'retry' ? 'btnRetrySelectedAccountTasksV2' : action === 'cancel' ? 'btnCancelSelectedAccountTasksV2' : 'btnTerminateSelectedAccountTasksV2';
+  const buttonId = action === 'retry' ? 'btnRetrySelectedAccountTasksV2' : action === 'cancel' ? 'btnCancelSelectedAccountTasksV2' : action === 'delete' ? 'btnDeleteSelectedAccountTasksV2' : 'btnTerminateSelectedAccountTasksV2';
   const button = document.getElementById(buttonId);
   if (button) button.disabled = true;
   try {
@@ -564,7 +589,7 @@ function updateAccountTaskFilters(facets = {}) {
   });
   syncFacetSelect('accountTaskStatusFilterV2', facets.status, {
     group: 'status',
-    values: ['queued', 'running', 'success', 'partial_success', 'failed', 'deactivated', 'unsupported', 'attention_required', 'interrupted', 'stopped', 'cancelled'],
+    values: ['queued', 'running', 'success', 'partial_success', 'failed', 'deactivated', 'unsupported', 'attention_required', 'request_unknown', 'interrupted', 'stopped', 'cancelled'],
   });
   syncFacetSelect('accountTaskTargetStatusFilterV2', facets.target_status, {group: 'target_status'});
   syncFacetSelect('accountTaskRunCountFilterV2', facets.run_count, {group: 'run_count', values: ['0', '1', '2', '3', '4+']});
@@ -587,6 +612,7 @@ $('#btnRefreshAccountTasks')?.addEventListener('click', loadAccountTasks);
 $('#btnRetrySelectedAccountTasksV2')?.addEventListener('click', () => bulkAccountTasks('retry'));
 $('#btnCancelSelectedAccountTasksV2')?.addEventListener('click', () => bulkAccountTasks('cancel'));
 $('#btnTerminateSelectedAccountTasksV2')?.addEventListener('click', () => bulkAccountTasks('terminate'));
+$('#btnDeleteSelectedAccountTasksV2')?.addEventListener('click', () => bulkAccountTasks('delete'));
 $('#accountTasksSelectAllV2')?.addEventListener('change', event => syncAccountTasksSelectAll(event.target.checked));
 ['accountTaskIdFilterV2', 'accountTaskTargetFilterV2', 'accountTaskBatchFilterV2', 'accountTaskResultFilterV2'].forEach(id => {
   document.getElementById(id)?.addEventListener('input', () => scheduleAccountTaskFilterReload());
@@ -607,6 +633,8 @@ $('#accountTasksPanel')?.addEventListener('click', event => {
   if (logBtn) { openAccountTaskLog(Number(logBtn.dataset.accountTaskLog)); return; }
   const retryBtn = event.target.closest('[data-account-task-retry]');
   if (retryBtn) { retryAccountTask(Number(retryBtn.dataset.accountTaskRetry), retryBtn); return; }
+  const deleteBtn = event.target.closest('[data-account-task-delete]');
+  if (deleteBtn) { deleteAccountTask(Number(deleteBtn.dataset.accountTaskDelete), deleteBtn); return; }
   const terminateBtn = event.target.closest('[data-account-task-terminate]');
   if (terminateBtn) terminateAccountTask(Number(terminateBtn.dataset.accountTaskTerminate), terminateBtn);
 });
@@ -1211,6 +1239,40 @@ function _accountDetailState(label, value, tone = 'neutral', detail = '') {
     ${detail ? `<small>${esc(detail)}</small>` : ''}
   </div>`;
 }
+function _accountDetailAuthMethod(value) {
+  const labels = {
+    password: '密码登录',
+    email_otp: '邮箱 OTP',
+    token: 'Token',
+    protocol: '协议认证',
+    browser: '浏览器认证',
+  };
+  const key = String(value || '').toLowerCase();
+  return labels[key] || value || '未记录';
+}
+function _accountDetailFingerprintMarkup(r) {
+  const fingerprint = r.fingerprint_summary && typeof r.fingerprint_summary === 'object'
+    ? r.fingerprint_summary : {};
+  const sourceLabels = {protocol: '协议认证', roxy: 'RoxyBrowser', browser: '浏览器', unknown: '未知来源'};
+  const source = sourceLabels[String(fingerprint.source || '').toLowerCase()] || fingerprint.source || '未记录';
+  const dpr = fingerprint.device_pixel_ratio == null ? '未记录' : `${fingerprint.device_pixel_ratio}x`;
+  const hasFingerprint = Object.keys(fingerprint).length > 0;
+  return `<div class="account-detail-section">
+    <div class="account-detail-section-title">最近认证指纹</div>
+    <p class="account-detail-section-copy">只展示最近一次认证观测的安全摘要，不代表注册时永久固定的浏览器环境。</p>
+    <div class="account-detail-grid">
+      ${_accountDetailState('来源', hasFingerprint ? source : '未记录', hasFingerprint ? 'info' : 'neutral')}
+      ${_accountDetailState('Profile 摘要', fingerprint.profile_ref || '未记录', fingerprint.profile_ref ? 'info' : 'neutral')}
+      ${_accountDetailState('浏览器 / 系统', fingerprint.browser || '未记录')}
+      ${_accountDetailState('屏幕 / DPR', fingerprint.screen ? `${fingerprint.screen} / ${dpr}` : '未记录')}
+      ${_accountDetailState('语言', fingerprint.language || '未记录')}
+      ${_accountDetailState('时区', fingerprint.timezone || '未记录')}
+      ${_accountDetailState('观测国家', fingerprint.geo_country || '未记录')}
+      ${_accountDetailState('硬件摘要', fingerprint.hardware || '未记录')}
+      ${_accountDetailState('观测时间', fingerprint.observed_at ? _fmtPlanTime(fingerprint.observed_at) : '未记录')}
+    </div>
+  </div>`;
+}
 function _accountDetailMarkup(r) {
   const liveHttpStatus = _liveCheckHttpStatus(r);
   const liveHttpLabel = liveHttpStatus ? ` (HTTP ${liveHttpStatus})` : '';
@@ -1230,14 +1292,20 @@ function _accountDetailMarkup(r) {
   const codexTone = ['success', 'completed'].includes(codexRaw) ? 'success' : (['failed', 'deactivated'].includes(codexRaw) ? 'danger' : (['running', 'queued', 'cancelling', 'retrying'].includes(codexRaw) ? 'warning' : 'neutral'));
   const risk = r.deactivation_mail_detected ? '发现封号邮件' : (r.deactivation_mail_scan_status === 'success' ? '未发现封号邮件' : '待扫描');
   const riskTone = r.deactivation_mail_detected ? 'danger' : (r.deactivation_mail_scan_status === 'success' ? 'success' : 'neutral');
+  const authFallback = r.last_auth_fallback_used === true ? '已使用回退' : (r.last_auth_fallback_used === false ? '未使用回退' : '未记录');
+  const authFallbackTone = r.last_auth_fallback_used === true ? 'warning' : (r.last_auth_fallback_used === false ? 'success' : 'neutral');
+  const note = String(r.note || '').trim();
   return `<div class="account-detail-section">
-    <div class="account-detail-section-title">身份信息</div>
+    <div class="account-detail-section-title">账号与注册</div>
     <div class="account-detail-grid">
       ${_accountDetailState('账号 ID', `#${r.id}`, 'info')}
-      ${_accountDetailState('邮箱来源', r.email_source || '未知')}
+      ${_accountDetailState('邮箱来源', facetLabel('source', r.email_source) || '未知')}
       ${_accountDetailState('姓名', r.user_name || '未设置')}
-      ${_accountDetailState('创建时间', _fmtPlanTime(r.created_at) || '-')}
+      ${_accountDetailState('注册出口国家', r.registration_proxy_region || '未记录', r.registration_proxy_region ? 'info' : 'neutral')}
+      ${_accountDetailState('注册代理', r.registration_proxy_provider || '未记录')}
+      ${_accountDetailState('注册时间', _fmtPlanTime(r.created_at) || '-')}
     </div>
+    ${note ? `<div class="account-detail-note"><span>备注</span><p>${esc(note)}</p></div>` : ''}
   </div>
   <div class="account-detail-section">
     <div class="account-detail-section-title">健康与安全</div>
@@ -1247,16 +1315,19 @@ function _accountDetailMarkup(r) {
       ${_accountDetailState('账号密码', r.has_account_password ? '已设置' : '未设置', r.has_account_password ? 'success' : 'neutral')}
       ${_accountDetailState('Authenticator 2FA', r.totp_enabled ? '已启用' : '未启用', r.totp_enabled ? 'success' : 'neutral')}
       ${_accountDetailState('封号邮件', risk, riskTone)}
+      ${_accountDetailState('最近认证方式', _accountDetailAuthMethod(r.last_auth_method))}
+      ${_accountDetailState('认证回退', authFallback, authFallbackTone)}
       ${_accountDetailState('归档状态', r.archived ? '已归档' : '活跃', r.archived ? 'neutral' : 'success')}
     </div>
   </div>
+  ${_accountDetailFingerprintMarkup(r)}
   <div class="account-detail-section">
     <div class="account-detail-section-title">套餐与授权</div>
     <div class="account-detail-grid">
       ${_accountDetailState('当前套餐', plan, plan.toLowerCase() === 'free' ? 'info' : 'success', r.plan_checked_at ? `检查于 ${_fmtPlanTime(r.plan_checked_at)}` : '')}
       ${_accountDetailState('Plus 优惠', promotion, promotionTone, promotionKind === 'not_applicable' ? '' : _plusPromotionDetail(r))}
       ${_accountDetailState('Codex', codex, codexTone)}
-      ${_accountDetailState('注册时间', _fmtPlanTime(r.created_at, true) || '-', 'neutral')}
+      ${_accountDetailState('套餐检查', r.plan_checked_at ? _fmtPlanTime(r.plan_checked_at) : '未检查')}
     </div>
   </div>`;
 }
@@ -1264,7 +1335,7 @@ function openAccountDetail(id) {
   const account = ACCOUNTS.find(item => Number(item.id) === Number(id));
   if (!account) { showToast('账号详情暂不可用，请先刷新列表'); return; }
   $('#accountDetailTitle').textContent = account.email || `账号 #${account.id}`;
-  $('#accountDetailSubtitle').textContent = `账号 #${account.id} · ${account.email_source || '未知来源'}`;
+  $('#accountDetailSubtitle').textContent = `账号 #${account.id} · ${facetLabel('source', account.email_source) || '未知来源'}`;
   $('#accountDetailBody').innerHTML = _accountDetailMarkup(account);
   $('#accountDetailDrawer').classList.remove('hidden');
   $('#accountDetailBackdrop').classList.remove('hidden');

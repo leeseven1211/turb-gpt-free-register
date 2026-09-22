@@ -375,9 +375,28 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
     def test_bulk_operation_rejects_unknown_action_and_excessive_task_ids(self):
         client = self._client()
 
+        with patch.object(
+            operations.operation_task_store,
+            "delete_tasks",
+            create=True,
+            return_value={
+                "deleted": [41],
+                "deleted_count": 1,
+                "skipped": [],
+                "skipped_count": 0,
+            },
+        ) as delete_tasks:
+            delete = client.post(
+                "/api/operations/bulk",
+                json={"action": "delete", "task_ids": [41]},
+            )
+        self.assertEqual(200, delete.status_code)
+        self.assertEqual("delete", delete.get_json()["action"])
+        delete_tasks.assert_called_once_with([41])
+
         invalid = client.post(
             "/api/operations/bulk",
-            json={"action": "delete", "task_ids": [41]},
+            json={"action": "unsupported", "task_ids": [41]},
         )
         self.assertEqual(400, invalid.status_code)
 
@@ -393,6 +412,44 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
                 json={"action": "retry", "task_ids": [invalid_id]},
             )
             self.assertEqual(400, response.status_code)
+
+    def test_single_delete_uses_task_store_and_returns_deleted_task(self):
+        client = self._client()
+        with patch.object(
+            operations.operation_task_store,
+            "delete_tasks",
+            create=True,
+            return_value={
+                "deleted": [41],
+                "deleted_count": 1,
+                "skipped": [],
+                "skipped_count": 0,
+            },
+        ) as delete_tasks:
+            response = client.post("/api/operations/41/delete")
+
+        self.assertEqual(200, response.status_code)
+        self.assertTrue(response.get_json()["deleted"])
+        delete_tasks.assert_called_once_with([41])
+
+    def test_single_delete_reports_active_task_without_hiding_it(self):
+        client = self._client()
+        with patch.object(
+            operations.operation_task_store,
+            "delete_tasks",
+            create=True,
+            return_value={
+                "deleted": [],
+                "deleted_count": 0,
+                "skipped": [{"task_id": 41, "error": "任务仍在执行，不能删除"}],
+                "skipped_count": 1,
+            },
+        ):
+            response = client.post("/api/operations/41/delete")
+
+        self.assertEqual(409, response.status_code)
+        self.assertFalse(response.get_json()["deleted"])
+        self.assertIn("执行", response.get_json()["error"])
 
     def test_bulk_cancel_rechecks_queued_state_before_dispatch(self):
         client = self._client()

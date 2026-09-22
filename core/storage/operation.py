@@ -193,6 +193,14 @@ def _row(row: dict | None) -> dict | None:
     return result
 
 
+def _task_is_user_deleted(row: dict | None) -> bool:
+    """判断任务是否被用户从任务中心隐藏，保留审计数据。"""
+    if not row:
+        return False
+    data = _decode(row.get("data"))
+    return isinstance(data, dict) and str(data.get("deleted_by_user") or "").lower() == "true"
+
+
 def _legacy_event_type_for_read(event: dict) -> str:
     """Normalize pre-contract account events without mutating historical rows."""
     event_type = str(event.get("event_type") or "").strip()
@@ -2486,7 +2494,7 @@ def _operation_task_where(
     exclude: str = "", run_count_expression: str | None = None,
 ) -> tuple[list[str], list[Any]]:
     """Build the shared task-list predicate, optionally leaving one facet unfiltered."""
-    where: list[str] = []
+    where: list[str] = ["COALESCE(t.data->>'deleted_by_user','false') <> 'true'"]
     params: list[Any] = []
 
     def add(name: str, expression: str, *values: Any) -> None:
@@ -2737,7 +2745,7 @@ def get_task(task_id: int, *, include_events: bool = True) -> dict | None:
             (int(task_id),),
         )
         task = cur.fetchone()
-        if not task:
+        if not task or _task_is_user_deleted(dict(task)):
             return None
         cur.execute(
             f"SELECT rr.*, {_compatibility_run_projection_sql()} "
@@ -2792,6 +2800,72 @@ def get_task(task_id: int, *, include_events: bool = True) -> dict | None:
         "flow": flow_for(result.get("task_type")),
     })
     return result
+
+
+def delete_tasks(task_ids: Iterable[int]) -> dict[str, Any]:
+    """隐藏非执行中的任务，保留任务、运行和事件供审计查询。"""
+    normalized: list[int] = []
+    for raw_id in task_ids:
+        try:
+            task_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if task_id > 0 and task_id not in normalized:
+            normalized.append(task_id)
+    normalized = normalized[:100]
+    if not normalized:
+        return {"deleted": [], "deleted_count": 0, "skipped": [], "skipped_count": 0}
+
+    init()
+    deleted: list[int] = []
+    skipped: list[dict[str, Any]] = []
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT t.id, t.status, t.data,
+                   EXISTS (
+                     SELECT 1 FROM {_table('operation_runs')} active_run
+                     WHERE active_run.task_id=t.id
+                       AND active_run.status IN ({_ACTIVE_RUN_STATUS_SQL})
+                   ) AS has_active_run
+            FROM {_table('operation_tasks')} t
+            WHERE t.id = ANY(%s)
+            FOR UPDATE OF t
+            """,
+            (normalized,),
+        )
+        rows = {int(row["id"]): dict(row) for row in cur.fetchall()}
+        for task_id in normalized:
+            row = rows.get(task_id)
+            if not row:
+                skipped.append({"task_id": task_id, "error": "任务不存在"})
+                continue
+            if _task_is_user_deleted(row):
+                skipped.append({"task_id": task_id, "error": "任务已删除"})
+                continue
+            status = str(row.get("status") or "").strip().lower()
+            if status in _ACTIVE_RUN_STATUSES or bool(row.get("has_active_run")):
+                skipped.append({"task_id": task_id, "error": "任务仍在执行，不能删除"})
+                continue
+            cur.execute(
+                f"""
+                UPDATE {_table('operation_tasks')}
+                SET data=COALESCE(data, '{{}}'::jsonb)
+                          || jsonb_build_object('deleted_by_user', true, 'deleted_at', now()),
+                    updated_at=now()
+                WHERE id=%s
+                RETURNING id
+                """,
+                (task_id,),
+            )
+            if cur.fetchone():
+                deleted.append(task_id)
+    return {
+        "deleted": deleted,
+        "deleted_count": len(deleted),
+        "skipped": skipped,
+        "skipped_count": len(skipped),
+    }
 
 
 def get_run_progress(task_id: int, run_id: int) -> dict:

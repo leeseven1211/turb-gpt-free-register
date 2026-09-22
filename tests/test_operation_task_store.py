@@ -1165,6 +1165,36 @@ class OperationTaskStoreTests(PostgresTestCase):
         self.assertIsNotNone(operation_task_store.get_task(int(uncertain["id"])))
         self.assertIsNotNone(operation_task_store.get_task(int(active["id"])))
 
+    def test_user_deleted_task_is_hidden_without_reappearing_after_projection_sync(self):
+        task = operation_task_store.create_runtime_task(
+            task_type="live_check", account_id=505,
+            email="user-delete@example.test", trigger="test",
+        )
+        operation_task_store.finish_run(task["run"]["id"], status="success")
+
+        delete_tasks = getattr(operation_task_store, "delete_tasks", None)
+        self.assertTrue(callable(delete_tasks))
+        result = delete_tasks([int(task["id"])])
+
+        self.assertEqual([int(task["id"])], result["deleted"])
+        operation_task_store.reconcile_all()
+        self.assertEqual([], operation_task_store.list_tasks(page_size=20, q="user-delete@example.test")["items"])
+        self.assertIsNone(operation_task_store.get_task(int(task["id"])))
+
+    def test_user_delete_skips_active_task(self):
+        task = operation_task_store.create_runtime_task(
+            task_type="live_check", account_id=506,
+            email="user-delete-active@example.test", trigger="test",
+        )
+
+        delete_tasks = getattr(operation_task_store, "delete_tasks", None)
+        self.assertTrue(callable(delete_tasks))
+        result = delete_tasks([int(task["id"])])
+
+        self.assertEqual([], result["deleted"])
+        self.assertEqual("任务仍在执行，不能删除", result["skipped"][0]["error"])
+        self.assertIsNotNone(operation_task_store.get_task(int(task["id"])))
+
     def test_retention_reports_more_work_after_deleting_expired_child(self):
         parent = operation_task_store.create_runtime_task(
             task_type="account_completion", account_id=601,

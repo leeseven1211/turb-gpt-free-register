@@ -278,14 +278,29 @@ def create_operations_blueprint(context: WebUIContext):
         payload, status = _perform_operation_action(task_id, "retry")
         return jsonify(payload), status
 
+    @bp.post("/api/operations/<int:task_id>/delete")
+    def api_operation_delete(task_id: int):
+        """从任务中心隐藏单个非执行中的任务，但保留审计记录。"""
+        result = operation_task_store.delete_tasks([task_id])
+        if task_id in result.get("deleted", []):
+            payload = dict(result)
+            payload.update({"ok": True, "deleted": True})
+            return jsonify(payload)
+        skipped = result.get("skipped") or []
+        error = skipped[0].get("error") if skipped else "任务未删除"
+        status = 409 if error == "任务仍在执行，不能删除" else 404
+        payload = dict(result)
+        payload.update({"ok": False, "deleted": False, "error": error})
+        return jsonify(payload), status
+
     @bp.post("/api/operations/bulk")
     def api_operations_bulk():
         """批量执行任务中心动作；逐条校验并返回跳过原因。"""
         data = request.get_json(silent=True) or {}
         action = str(data.get("action") or "").strip().lower()
         raw_ids = data.get("task_ids") or data.get("ids") or []
-        if action not in {"retry", "cancel", "terminate"}:
-            return jsonify({"ok": False, "error": "action 必须是 retry、cancel 或 terminate"}), 400
+        if action not in {"retry", "cancel", "terminate", "delete"}:
+            return jsonify({"ok": False, "error": "action 必须是 retry、cancel、terminate 或 delete"}), 400
         if not isinstance(raw_ids, list) or not raw_ids:
             return jsonify({"ok": False, "error": "task_ids 必须是非空数组"}), 400
         task_ids = []
@@ -299,6 +314,20 @@ def create_operations_blueprint(context: WebUIContext):
                 task_ids.append(task_id)
         if len(task_ids) > 100:
             return jsonify({"ok": False, "error": "单次最多处理 100 个任务"}), 400
+
+        if action == "delete":
+            result = operation_task_store.delete_tasks(task_ids)
+            accepted = [
+                {"task_id": task_id, "state": "deleted", "message": "任务已从任务中心隐藏"}
+                for task_id in result.get("deleted", [])
+            ]
+            return jsonify({
+                "ok": True,
+                "action": action,
+                "accepted": accepted,
+                "accepted_count": len(accepted),
+                **result,
+            })
 
         accepted = []
         skipped = []

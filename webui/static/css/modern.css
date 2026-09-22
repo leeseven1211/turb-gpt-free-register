@@ -674,6 +674,16 @@
     }
     .column-filter-option:hover, .column-filter-option:focus-visible { color: #4244aa; background: #f4f4ff; outline: none; }
     .column-filter-option[aria-checked="true"] { color: #4f51be; background: #efefff; }
+    .column-filter-option[data-filter-status]::before {
+      content:""; width:7px; height:7px; flex:0 0 auto; margin-right:-2px; border-radius:50%; background:#a8adb7;
+      box-shadow:0 0 0 3px rgba(168,173,183,.12);
+    }
+    .column-filter-option[data-filter-status="success"]::before { background:#22a78f; box-shadow:0 0 0 3px rgba(34,167,143,.13); }
+    .column-filter-option[data-filter-status="running"]::before,
+    .column-filter-option[data-filter-status="queued"]::before { background:#e99a24; box-shadow:0 0 0 3px rgba(233,154,36,.13); }
+    .column-filter-option[data-filter-status="failed"]::before,
+    .column-filter-option[data-filter-status="attention_required"]::before,
+    .column-filter-option[data-filter-status="request_unknown"]::before { background:#e06464; box-shadow:0 0 0 3px rgba(224,100,100,.13); }
     .column-filter-option-check {
       width: 14px; height: 14px; flex: 0 0 auto; color: #5b5ce2; opacity: 0;
       fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round;
@@ -1038,22 +1048,36 @@
     .account-tasks-toolbar .account-task-search-field { flex: 1 1 270px; max-width: 390px; }
     .account-tasks-toolbar input, .account-tasks-toolbar select { width:100%; min-width:0; margin:0; }
     .account-task-refresh-meta { color:#8b93a3; font-size:10px; white-space:nowrap; }
-    .account-tasks-table-wrap { overflow:auto; }
-    .account-tasks-table { min-width:1240px; }
-    .account-tasks-table .task-col-check { width:46px; text-align:center; }
+    .account-tasks-table-wrap { overflow-x:hidden; }
+    .account-tasks-table { width:100%; min-width:100%; table-layout:fixed; }
+    .account-tasks-table th, .account-tasks-table td { overflow:hidden; text-overflow:ellipsis; }
+    .account-tasks-table .task-col-check { width:38px; text-align:center; }
     .account-tasks-table tbody tr.is-selected { background:#f6f6ff; }
     .account-tasks-table tbody tr.is-selected td:first-child { box-shadow: inset 3px 0 0 #6264e8; }
-    .account-tasks-table .task-col-id { width:66px; }
-    .account-tasks-table .task-col-type { width:94px; }
-    .account-tasks-table .task-col-account { width:220px; }
-    .account-tasks-table .task-col-status { width:92px; }
-    .account-tasks-table .task-col-trigger { width:96px; }
-    .account-tasks-table .task-col-method { width:150px; }
-    .account-tasks-table .task-col-route { width:170px; }
-    .account-tasks-table .task-col-duration { width:82px; }
-    .account-tasks-table .task-col-time { width:170px; }
-    .account-tasks-table .task-col-result { width:240px; }
-    .account-tasks-table .task-col-actions { width:132px; }
+    .account-tasks-table .task-col-id { width:48px; min-width:48px; }
+    .account-tasks-table .task-col-type { width:68px; }
+    .account-tasks-table .task-col-account { width:128px; }
+    .account-tasks-table .task-col-status { width:78px; }
+    .account-tasks-table .task-col-trigger { width:76px; }
+    .account-tasks-table .task-col-method { width:100px; }
+    .account-tasks-table .task-col-route { width:64px; }
+    .account-tasks-table .task-col-duration { width:72px; }
+    .account-tasks-table .task-col-time { width:126px; }
+    .account-tasks-table .task-col-result { width:152px; }
+    .account-tasks-table .task-col-actions { width:108px; }
+    .account-tasks-table .task-col-account,
+    .account-tasks-table .task-col-method,
+    .account-tasks-table .task-col-time,
+    .account-tasks-table .task-col-result { white-space:normal; }
+    .account-tasks-table .jobs-v2-pill {
+      display:inline-flex; align-items:center; justify-content:center; max-width:100%; height:24px; padding:0 7px;
+      border:1px solid transparent; border-radius:999px; box-sizing:border-box; font-size:10px; font-weight:700;
+      line-height:1; white-space:nowrap; vertical-align:middle;
+    }
+    .account-tasks-table .jobs-v2-pill--success { color:#168f73; background:#e9faf5; border-color:#a9e5d6; }
+    .account-tasks-table .jobs-v2-pill--failed { color:#c43d3d; background:#fff0f0; border-color:#f3b8b8; }
+    .account-tasks-table .jobs-v2-pill--running { color:#ad6810; background:#fff7e6; border-color:#f5d293; }
+    .account-tasks-table .jobs-v2-pill--muted { color:#737b88; background:#f5f6f8; border-color:#e1e4e9; }
     .account-tasks-table .task-error { color:#8a6070; }
     .account-tasks-table .task-row-actions { display:flex; align-items:center; gap:6px; }
     .account-tasks-table .task-row-action {
@@ -1064,6 +1088,12 @@
     .account-tasks-table .task-row-action--terminate { color:#b42318; border-color:#f0b4ad; background:#fff8f7; }
     .account-tasks-table .task-row-action--terminate:hover:not(:disabled) { color:#912018; border-color:#e88b83; background:#fff1ef; }
     .account-tasks-table .task-row-action--retry { color:#4f51be; border-color:#d8d8fb; background:#f8f8ff; }
+    .account-tasks-table .task-row-action--delete { color:#b42318; border-color:#f0b4ad; background:#fff8f7; }
+    .account-tasks-table .task-row-action--delete:hover:not(:disabled) { color:#912018; border-color:#e88b83; background:#fff1ef; }
+    @media (max-width: 1180px) {
+      .account-tasks-table-wrap { overflow-x:auto; }
+      .account-tasks-table { min-width:1080px; }
+    }
     .account-task-stage-progress {
       display:block; margin:0 0 10px; padding:12px 10px 10px;
       border:1px solid #dfe7ef; border-radius:8px; background:#f8fafc; overflow-x:auto;

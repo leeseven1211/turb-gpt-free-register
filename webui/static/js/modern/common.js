@@ -52,7 +52,7 @@ const LIST_FACET_LABELS = {
   status: {
     queued:'排队中', pending:'排队中', running:'运行中', waiting:'等待中', stopping:'停止中', cancelling:'停止中', settling:'收尾中',
     failed:'失败', partial_success:'部分成功', password_confirmation_pending:'待确认 · 密码已提交', success:'成功', stopped:'已停止', cancelled:'已取消', interrupted:'执行中断',
-    deactivated:'已停用', unsupported:'不支持', attention_required:'需人工处理',
+    deactivated:'已停用', unsupported:'不支持', attention_required:'需人工处理', request_unknown:'待确认', manual_reconcile:'需人工对账',
     available:'可用', used:'已使用', disabled:'停用', exported:'已导出', unexported:'未导出', archived:'已归档',
   },
   source: {
@@ -114,6 +114,7 @@ function facetLabel(group, value) {
 function syncFacetSelect(id, items, {group='', allValue='', allLabel='全部', values=[]} = {}) {
   const select = document.getElementById(id);
   if (!select) return;
+  if (select.dataset) select.dataset.facetGroup = group;
   const current = select.value;
   const sourceRows = Array.isArray(items) ? items : [];
   const dataRows = sourceRows.filter(item => {
@@ -330,11 +331,11 @@ function autoSizeResizableTableColumns(table) {
   const key = table.dataset.resizableTable;
   if (readSavedTableWidths(key, cols.length)) {
     const savedTotal = readSavedTableTotal(key);
-    if (savedTotal) table.style.setProperty('width', `${Math.max(1240, savedTotal)}px`, 'important');
+    if (savedTotal && key !== 'accountTasks') table.style.setProperty('width', `${Math.max(1240, savedTotal)}px`, 'important');
     table.dataset.autoSized = '1';
     return;
   }
-  const minWidths = [44, 72, 96, 96, 96, 104, 112, 88, 104, 150, 220, 132];
+  const minWidths = [38, 48, 68, 128, 78, 76, 100, 64, 72, 126, 152, 108];
   const maxWidths = [56, 132, 240, 150, 160, 180, 220, 120, 200, 220, 420, 210];
   const rows = Array.from(table.tBodies?.[0]?.rows || []).slice(0, 20);
   const widths = headers.map((header, index) => {
@@ -344,7 +345,10 @@ function autoSizeResizableTableColumns(table) {
     return Math.min(maxWidths[index] || 360, Math.max(minWidths[index] || 64, natural));
   });
   const total = widths.reduce((sum, value) => sum + value, 0);
-  const tableWidth = Math.max(1240, readSavedTableTotal(key), Math.ceil(total));
+  const availableWidth = table.parentElement?.clientWidth || 0;
+  const tableWidth = availableWidth > 0
+    ? availableWidth
+    : Math.max(1080, readSavedTableTotal(key), Math.ceil(total));
   table.style.setProperty('width', `${tableWidth}px`, 'important');
   localStorage.setItem(TABLE_WIDTH_TOTAL_STORAGE_PREFIX + key, String(tableWidth));
   applyResizableTableWidths(table, widths.map(value => value / total));
@@ -360,8 +364,7 @@ function initResizableTable(table) {
   table.dataset.resizableReady = '1';
   const savedWidths = readSavedTableWidths(key, cols.length);
   if (savedWidths && key === 'accountTasks') {
-    const savedTotal = readSavedTableTotal(key);
-    if (savedTotal) table.style.setProperty('width', `${Math.max(1240, savedTotal)}px`, 'important');
+    table.style.removeProperty('width');
   }
   if (savedWidths) {
     const savedTotal = savedWidths.reduce((sum, value) => sum + Math.max(0, Number(value) || 0), 0) || 1;
@@ -528,9 +531,10 @@ function renderColumnFilterOptions(select) {
   const header = select?.closest?.('.column-filter-header');
   const list = header?.querySelector('[data-column-filter-options]');
   if (!header || !list) return;
+  const statusFilter = select.dataset.facetGroup === 'status';
   list.innerHTML = Array.from(select.options).map(option => `
     <button type="button" class="column-filter-option" role="menuitemradio"
-      data-column-filter-option="${attrEsc(option.value)}" aria-checked="${option.selected ? 'true' : 'false'}">
+      data-column-filter-option="${attrEsc(option.value)}"${statusFilter && option.value ? ` data-filter-status="${attrEsc(option.value)}"` : ''} aria-checked="${option.selected ? 'true' : 'false'}">
       <span>${esc(option.textContent || option.label || '全部')}</span>
       <svg class="column-filter-option-check" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8.3 3.1 3L13 4.7"></path></svg>
     </button>`).join('');
@@ -757,7 +761,7 @@ function short(v, n=40) { const s = v || ''; return s.length > n ? s.slice(0,n)+
 function copyId(v) { if (!v) return ''; const id = 'c'+(++copySeq); copyStore.set(id, v); return id; }
 function cbtn(label, value, cls='') { const id = copyId(value); return `<button class="${cls}" data-copy-id="${id}" ${id?'':'disabled'}>${label}</button>`; }
 function pill(status) {
-  const map = { available:'可用', used:'已用', failed:'失败', partial_success:'部分成功', password_confirmation_pending:'待确认 · 密码已提交', disabled:'已停用', pending:'排队', running:'运行中', debug_paused:'调试暂停', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消' };
+  const map = { available:'可用', used:'已用', failed:'失败', partial_success:'部分成功', password_confirmation_pending:'待确认 · 密码已提交', disabled:'已停用', pending:'排队', running:'运行中', debug_paused:'调试暂停', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消', request_unknown:'待确认', manual_reconcile:'需人工对账' };
   return `<span class="pill status-${esc(status)}">${esc(map[status]||status||'-')}</span>`;
 }
 function pillV2(status, group = 'status') {
@@ -766,7 +770,7 @@ function pillV2(status, group = 'status') {
   const label = map[s] || facetLabel(group, s);
   let cls = 'jobs-v2-pill--muted';
   if (s === 'success' || s === 'account_available' || s === 'available') cls = 'jobs-v2-pill--success';
-  else if (s === 'failed' || s === 'interrupted' || s === 'deactivated' || s === 'attention_required' || s === 'password_confirmation_pending') cls = 'jobs-v2-pill--failed';
+  else if (s === 'failed' || s === 'interrupted' || s === 'deactivated' || s === 'attention_required' || s === 'request_unknown' || s === 'manual_reconcile' || s === 'password_confirmation_pending') cls = 'jobs-v2-pill--failed';
   else if (s === 'running' || s === 'debug_paused' || s === 'stopping' || s === 'in_progress' || s === 'email_verification_pending') cls = 'jobs-v2-pill--running';
   else if (s === 'pending' || s === 'queued' || s === 'cancelled' || s === 'stopped' || s === 'unsupported') cls = 'jobs-v2-pill--muted';
   return `<span class="jobs-v2-pill ${cls}">${esc(label || s || '-')}</span>`;
