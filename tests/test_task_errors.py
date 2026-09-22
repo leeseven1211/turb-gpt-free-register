@@ -76,13 +76,65 @@ class TaskErrorClassificationTests(unittest.TestCase):
                 self.assertEqual(code, info["code"])
                 self.assertNotEqual("unknown.unclassified", info["error_code"])
 
-    def test_email_change_remote_rejection_is_openai_error(self):
+    def test_email_change_forbidden_is_actionable(self):
         info = classify_task_error(
             "/backend-api/accounts/change_email/begin 返回 403",
             task_type="email_change",
         )
-        self.assertEqual(info["code"], "external.openai")
-        self.assertEqual(info["kind_label"], "OpenAI / Codex")
+        self.assertEqual(info["code"], "external.openai.email_change_forbidden")
+        self.assertEqual(info["kind_label"], "邮箱换绑请求被拒绝")
+        self.assertEqual(info["next_action"], "reauthenticate_before_retry")
+
+    def test_email_change_failures_are_projected_with_safe_actionable_causes(self):
+        cases = {
+            "/backend-api/accounts/change_email/begin 返回 422 (email_domain_rejected)": (
+                "external.openai.email_domain_rejected",
+                "目标邮箱域名被拒绝",
+                "change_email_domain",
+                "OpenAI 拒绝该目标邮箱域名，请更换域名后再试",
+            ),
+            "/backend-api/accounts/change_email/begin 返回 400 (email_change_account_too_new)": (
+                "external.openai.email_change_account_too_new",
+                "账号注册时间不足",
+                "wait_for_account_age",
+                "账号注册时间不足，暂不允许换绑邮箱",
+            ),
+            "/backend-api/accounts/change_email/begin 返回 422": (
+                "external.openai.email_change_rejected",
+                "邮箱换绑请求被拒绝",
+                "inspect_remote_rejection",
+                "OpenAI 拒绝邮箱换绑请求（HTTP 422，未返回可识别细码）",
+            ),
+            "Recent Login 失败: AuthorizeRouteRejectedError": (
+                "external.openai.email_change_recent_login",
+                "Recent Login 认证失败",
+                "reauthenticate_before_retry",
+                "Recent Login 认证失败，尚未提交目标邮箱",
+            ),
+            "邮箱准备失败: Email Butler 领取失败（HTTP 409）": (
+                "external.email.email_butler_prepare",
+                "EmailButler 邮箱准备失败",
+                "retry_email_prepare",
+                "EmailButler 未能准备目标邮箱（HTTP 409）",
+            ),
+        }
+        for message, (code, label, next_action, summary) in cases.items():
+            with self.subTest(message=message):
+                info = classify_task_error(message, task_type="email_change")
+                self.assertEqual(info["code"], code)
+                self.assertEqual(info["kind_label"], label)
+                self.assertEqual(info["next_action"], next_action)
+                self.assertEqual(info["summary"], summary)
+
+    def test_email_change_projection_upgrades_coarse_persisted_error_code(self):
+        info = classify_task_error(
+            "/backend-api/accounts/change_email/begin 返回 422 (email_domain_rejected)",
+            task_type="email_change",
+            error_code="external.openai",
+        )
+
+        self.assertEqual(info["error_code"], "external.openai.email_domain_rejected")
+        self.assertEqual(info["original_error_code"], "external.openai")
 
     def test_unsupported_payment_method_is_explicit_unsupported_error(self):
         info = classify_task_error("当前账号不支持 MoMo 支付方式")

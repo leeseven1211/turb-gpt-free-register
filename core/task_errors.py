@@ -23,8 +23,14 @@ class TaskErrorCode(str, Enum):
     EXTERNAL_ROXY_CAPACITY = "external.roxy_capacity"
     EXTERNAL_ROXY = "external.roxy"
     EXTERNAL_EMAIL = "external.email"
+    EXTERNAL_EMAIL_EMAIL_BUTLER_PREPARE = "external.email.email_butler_prepare"
     EXTERNAL_OPENAI = "external.openai"
     EXTERNAL_OPENAI_ACCOUNT_CREATION_REJECTED = "external.openai.account_creation_rejected"
+    EXTERNAL_OPENAI_EMAIL_CHANGE_ACCOUNT_TOO_NEW = "external.openai.email_change_account_too_new"
+    EXTERNAL_OPENAI_EMAIL_CHANGE_FORBIDDEN = "external.openai.email_change_forbidden"
+    EXTERNAL_OPENAI_EMAIL_CHANGE_RECENT_LOGIN = "external.openai.email_change_recent_login"
+    EXTERNAL_OPENAI_EMAIL_CHANGE_REJECTED = "external.openai.email_change_rejected"
+    EXTERNAL_OPENAI_EMAIL_DOMAIN_REJECTED = "external.openai.email_domain_rejected"
     EXTERNAL_NETWORK_MFA_TRANSPORT = "external.network.mfa_transport"
     EXTERNAL_NETWORK_REGISTRATION_TIMEOUT = "external.network.registration_timeout"
     EXTERNAL_NETWORK = "external.network"
@@ -273,6 +279,43 @@ _SOURCE_LABELS = {
     "system": "系统事件",
 }
 
+_COARSE_PROJECTED_ERROR_CODES = {
+    TaskErrorCode.EXTERNAL_EMAIL.value,
+    TaskErrorCode.EXTERNAL_OPENAI.value,
+    TaskErrorCode.UNKNOWN.value,
+}
+
+_EMAIL_CHANGE_RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
+    (
+        TaskErrorCode.EXTERNAL_OPENAI_EMAIL_DOMAIN_REJECTED.value,
+        "OpenAI / ChatGPT",
+        "目标邮箱域名被拒绝",
+        "OpenAI 拒绝该目标邮箱域名，请更换域名后再试",
+        ("email_domain_rejected",),
+    ),
+    (
+        TaskErrorCode.EXTERNAL_OPENAI_EMAIL_CHANGE_ACCOUNT_TOO_NEW.value,
+        "OpenAI / ChatGPT",
+        "账号注册时间不足",
+        "账号注册时间不足，暂不允许换绑邮箱",
+        ("email_change_account_too_new",),
+    ),
+    (
+        TaskErrorCode.EXTERNAL_OPENAI_EMAIL_CHANGE_RECENT_LOGIN.value,
+        "OpenAI / ChatGPT",
+        "Recent Login 认证失败",
+        "Recent Login 认证失败，尚未提交目标邮箱",
+        ("recent login",),
+    ),
+    (
+        TaskErrorCode.EXTERNAL_EMAIL_EMAIL_BUTLER_PREPARE.value,
+        "EmailButler",
+        "EmailButler 邮箱准备失败",
+        "EmailButler 未能准备目标邮箱（HTTP {http_status}）",
+        ("邮箱准备失败", "email butler"),
+    ),
+)
+
 # These values are intentionally strings rather than booleans.  A retry can be
 # technically possible while still being unsafe after an irreversible remote
 # request, so consumers need the distinction for recovery UX.
@@ -317,10 +360,40 @@ _ERROR_METADATA: dict[str, dict[str, str]] = {
         "remote_state_impact": "unchanged_or_unknown",
         "next_action": "retry_email_wait",
     },
+    "external.email.email_butler_prepare": {
+        "retryability": "retryable",
+        "remote_state_impact": "not_started",
+        "next_action": "retry_email_prepare",
+    },
     "external.openai": {
         "retryability": "conditional",
         "remote_state_impact": "unknown",
         "next_action": "reconcile_session",
+    },
+    "external.openai.email_domain_rejected": {
+        "retryability": "not_retryable",
+        "remote_state_impact": "remote_rejected",
+        "next_action": "change_email_domain",
+    },
+    "external.openai.email_change_account_too_new": {
+        "retryability": "conditional",
+        "remote_state_impact": "remote_rejected",
+        "next_action": "wait_for_account_age",
+    },
+    "external.openai.email_change_forbidden": {
+        "retryability": "conditional",
+        "remote_state_impact": "remote_rejected",
+        "next_action": "reauthenticate_before_retry",
+    },
+    "external.openai.email_change_recent_login": {
+        "retryability": "retryable",
+        "remote_state_impact": "not_started",
+        "next_action": "reauthenticate_before_retry",
+    },
+    "external.openai.email_change_rejected": {
+        "retryability": "manual_only",
+        "remote_state_impact": "remote_rejected",
+        "next_action": "inspect_remote_rejection",
     },
     "external.openai.account_creation_rejected": {
         "retryability": "retryable",
@@ -396,6 +469,94 @@ def _summary(message: str, limit: int = 160) -> str:
     return value[:limit] + ("…" if len(value) > limit else "")
 
 
+def _error_projection(
+    code: str,
+    source: str,
+    source_label: str,
+    kind_label: str,
+    *,
+    stage: str,
+    error_code: str,
+    raw: str,
+    summary: str | None = None,
+) -> dict[str, str]:
+    result = {
+        "code": code,
+        "error_code": code,
+        "source": source,
+        "source_label": source_label,
+        "kind_label": kind_label,
+        "title": f"{source_label} · {kind_label}",
+        "summary": summary or _summary(raw),
+    }
+    result.update(_ERROR_METADATA.get(code, {}))
+    supplied_error_code = str(error_code or "").strip()
+    result["error_code"] = (
+        code if supplied_error_code in _COARSE_PROJECTED_ERROR_CODES else supplied_error_code or code
+    )
+    result["stage"] = normalize_stage(stage) if stage else "unknown"
+    if supplied_error_code:
+        result["original_error_code"] = supplied_error_code
+    return result
+
+
+def _email_change_error_projection(
+    raw: str,
+    haystack: str,
+    *,
+    stage: str,
+    error_code: str,
+) -> dict[str, str] | None:
+    for code, source_label, kind_label, summary, needles in _EMAIL_CHANGE_RULES:
+        if not all(needle in haystack for needle in needles):
+            continue
+        if code == TaskErrorCode.EXTERNAL_EMAIL_EMAIL_BUTLER_PREPARE.value:
+            status_match = re.search(r"\bHTTP\s+(\d{3})\b", raw, flags=re.IGNORECASE)
+            if not status_match:
+                continue
+            summary = summary.format(http_status=status_match.group(1))
+            source = "external"
+        else:
+            source = "external"
+        return _error_projection(
+            code,
+            source,
+            source_label,
+            kind_label,
+            stage=stage,
+            error_code=error_code,
+            raw=raw,
+            summary=summary,
+        )
+
+    if "/backend-api/accounts/change_email/" not in haystack:
+        return None
+    status_match = re.search(r"\b返回\s*(\d{3})\b", raw)
+    status = status_match.group(1) if status_match else ""
+    if status == "403":
+        return _error_projection(
+            TaskErrorCode.EXTERNAL_OPENAI_EMAIL_CHANGE_FORBIDDEN.value,
+            "external",
+            "OpenAI / ChatGPT",
+            "邮箱换绑请求被拒绝",
+            stage=stage,
+            error_code=error_code,
+            raw=raw,
+            summary="OpenAI 拒绝当前会话的邮箱换绑请求（HTTP 403）",
+        )
+    suffix = f"（HTTP {status}，未返回可识别细码）" if status else "（未返回可识别细码）"
+    return _error_projection(
+        TaskErrorCode.EXTERNAL_OPENAI_EMAIL_CHANGE_REJECTED.value,
+        "external",
+        "OpenAI / ChatGPT",
+        "邮箱换绑请求被拒绝",
+        stage=stage,
+        error_code=error_code,
+        raw=raw,
+        summary=f"OpenAI 拒绝邮箱换绑请求{suffix}",
+    )
+
+
 def classify_task_error(
     message: Any,
     *,
@@ -410,37 +571,35 @@ def classify_task_error(
     # 以实际错误和失败阶段为准；不能因为任务类型是 codex_retry，就把其中的代理、
     # 数据库或页面状态错误统统误归为 OpenAI 上游错误。
     haystack = f"{stage} {raw}".lower()
+    if str(task_type or "").strip().lower() == "email_change":
+        projection = _email_change_error_projection(
+            raw,
+            haystack,
+            stage=stage,
+            error_code=error_code,
+        )
+        if projection is not None:
+            return projection
     for code, source, source_label, kind_label, needles in _RULES:
         if any(needle in haystack for needle in needles):
-            result = {
-                "code": code,
-                "error_code": code,
-                "source": source,
-                "source_label": source_label,
-                "kind_label": kind_label,
-                "title": f"{source_label} · {kind_label}",
-                "summary": _summary(raw),
-            }
-            result.update(_ERROR_METADATA.get(code, {}))
-            result["error_code"] = str(error_code or code)
-            result["stage"] = normalize_stage(stage) if stage else "unknown"
-            if error_code:
-                result["original_error_code"] = str(error_code)
-            return result
-    result = {
-        "code": "unknown.unclassified",
-        "error_code": "unknown.unclassified",
-        "source": "unknown",
-        "source_label": _SOURCE_LABELS["unknown"],
-        "kind_label": "待归类",
-        "title": "未分类错误 · 待归类",
-        "summary": _summary(raw),
-    }
-    result.update(_ERROR_METADATA["unknown.unclassified"])
-    result["stage"] = normalize_stage(stage) if stage else "unknown"
-    if error_code:
-        result["original_error_code"] = str(error_code)
-    return result
+            return _error_projection(
+                code,
+                source,
+                source_label,
+                kind_label,
+                stage=stage,
+                error_code=error_code,
+                raw=raw,
+            )
+    return _error_projection(
+        TaskErrorCode.UNKNOWN.value,
+        "unknown",
+        _SOURCE_LABELS["unknown"],
+        "待归类",
+        stage=stage,
+        error_code=error_code,
+        raw=raw,
+    )
 
 
 __all__ = [
