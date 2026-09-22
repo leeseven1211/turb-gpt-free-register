@@ -97,6 +97,7 @@ class _RemoteRequestError(RuntimeError):
         response_server: str | None = None,
         cf_mitigated: bool = False,
         cf_ray_present: bool = False,
+        response_error_shape: str | None = None,
     ) -> None:
         super().__init__(message)
         self.http_status = int(http_status) if http_status is not None else None
@@ -105,6 +106,7 @@ class _RemoteRequestError(RuntimeError):
         self.response_server = str(response_server or "").strip() or None
         self.cf_mitigated = bool(cf_mitigated)
         self.cf_ray_present = bool(cf_ray_present)
+        self.response_error_shape = str(response_error_shape or "").strip() or None
 
 
 class RemoteRequestRejected(_RemoteRequestError):
@@ -138,6 +140,31 @@ class EmailChangeProtocol:
     _BASE_URL = "https://chatgpt.com"
 
     @staticmethod
+    def _response_payload(response: Any) -> Any:
+        try:
+            return response.json()
+        except Exception:
+            return None
+
+    @staticmethod
+    def _response_error_shape(response: Any) -> str:
+        """Return only a fixed structural label for a rejected JSON response."""
+        payload = EmailChangeProtocol._response_payload(response)
+        if not isinstance(payload, dict):
+            return ""
+        for key in ("error", "errors", "detail"):
+            value = payload.get(key)
+            if isinstance(value, dict):
+                return f"object.{key}_object"
+            if isinstance(value, list):
+                return f"object.{key}_list"
+            if isinstance(value, str):
+                return f"object.{key}_string"
+        if any(key in payload for key in ("message", "msg", "code", "error_code")):
+            return "object.standard_error_fields"
+        return "object.unclassified"
+
+    @staticmethod
     def _safe_error_code(value: Any) -> str:
         raw_code = str(value or "").strip()
         if not raw_code or len(raw_code) > 120:
@@ -166,10 +193,7 @@ class EmailChangeProtocol:
 
     @classmethod
     def _response_error_code(cls, response: Any) -> str:
-        try:
-            payload = response.json()
-        except Exception:
-            return ""
+        payload = cls._response_payload(response)
         if not isinstance(payload, dict):
             return ""
 
@@ -247,7 +271,10 @@ class EmailChangeProtocol:
         status_code = int(getattr(response, "status_code", 0) or 0)
         if status_code != 200:
             error_code = self._response_error_code(response)
-            response_meta = self._safe_response_metadata(response)
+            response_meta = {
+                **self._safe_response_metadata(response),
+                "response_error_shape": self._response_error_shape(response),
+            }
             suffix = f" ({error_code})" if error_code else ""
             if status_code == 408 or status_code == 429 or status_code >= 500:
                 raise RemoteRequestUnknown(
@@ -282,6 +309,7 @@ class EmailChangeProtocol:
                 f"{path} 返回失败 ({error_code})",
                 http_status=status_code,
                 remote_error_code=error_code,
+                response_error_shape=self._response_error_shape(response),
             )
         return result
 
@@ -337,6 +365,9 @@ def _safe_remote_error_detail(exc: BaseException) -> dict[str, Any]:
     server = str(getattr(exc, "response_server", "") or "").strip()
     if server:
         detail["response_server"] = server[:80]
+    response_error_shape = str(getattr(exc, "response_error_shape", "") or "").strip()
+    if response_error_shape:
+        detail["response_error_shape"] = response_error_shape[:80]
     if bool(getattr(exc, "cf_mitigated", False)):
         detail["cf_mitigated"] = True
     if bool(getattr(exc, "cf_ray_present", False)):
