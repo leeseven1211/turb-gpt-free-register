@@ -607,7 +607,13 @@ def retry_task(task_id: int, *, trigger: str = "manual_retry") -> dict:
     return {"accepted": True, "task_id": int(task_id), "run_id": run_id, "account_id": account_id, "email": email, "status": "queued"}
 
 
-def request_cancel(*, run_id: int | None = None, email: str = "", account_id: int | None = None) -> dict:
+def request_cancel(
+    *,
+    run_id: int | None = None,
+    email: str = "",
+    account_id: int | None = None,
+    expected_status: str | None = None,
+) -> dict:
     if run_id is None:
         if account_id is None and email:
             account = db.get_account_by_email(email) or {}
@@ -620,9 +626,15 @@ def request_cancel(*, run_id: int | None = None, email: str = "", account_id: in
         run_id = int(active["id"])
         email = str(active.get("email_snapshot") or email)
     try:
-        run = operation_task_store.request_run_cancel(int(run_id), reason="用户手动停止 Codex 补跑")
+        run = operation_task_store.request_run_cancel(
+            int(run_id),
+            reason="用户手动停止 Codex 补跑",
+            expected_status=expected_status,
+        )
     except LookupError as exc:
         return {"ok": False, "error": str(exc)}
+    if run.get("cancel_skipped"):
+        return {"ok": False, **run}
     with _LOCAL_TOKENS_LOCK:
         token = _LOCAL_TOKENS.get(int(run_id))
         if token:

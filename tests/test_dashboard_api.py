@@ -14,6 +14,7 @@ from tests.support_pg import PostgresTestCase
 
 class DashboardUiScriptTests(unittest.TestCase):
     MODERN_DASHBOARD_JS = Path(__file__).resolve().parents[1] / "webui/static/js/modern/dashboard.js"
+    MODERN_COMMON_JS = Path(__file__).resolve().parents[1] / "webui/static/js/modern/common.js"
 
     def test_dashboard_proxy_summary_displays_at_most_three_exit_leases(self):
         source = self.MODERN_DASHBOARD_JS.read_text(encoding="utf-8")
@@ -45,6 +46,32 @@ renderDashboard({{
 }});
 const exitRows = ($('#overviewProxy').innerHTML.match(/overview-exit-row/g) || []).length;
 if (exitRows !== 3) throw new Error(`expected 3 exit rows, got ${{exitRows}}`);
+console.log('ok');
+"""
+        result = subprocess.run(
+            ["node", "--input-type=commonjs", "-e", harness],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertEqual(result.stdout.strip(), "ok")
+
+    def test_task_error_ui_uses_short_code_and_summary_instead_of_raw_message(self):
+        source = self.MODERN_COMMON_JS.read_text(encoding="utf-8")
+        start = source.index("function taskErrorBadge")
+        end = source.index("function jobsV2OpIcons", start)
+        function_source = source[start:end]
+        harness = f"""
+function esc(value) {{ return String(value ?? '').replace(/[&<>]/g, ''); }}
+function attrEsc(value) {{ return String(value ?? ''); }}
+function short(value, n=40) {{ const text = String(value || ''); return text.length > n ? text.slice(0, n) + '…' : text; }}
+{function_source}
+const info = {{display_code: 'AUTH-001', error_code: 'external.openai.credential_expired', source: 'external', title: 'OpenAI / ChatGPT · 授权已失效', summary: '授权已失效，请刷新 AT'}};
+const badge = taskErrorBadge(info);
+if (!badge.includes('AUTH-001')) throw new Error('short code missing');
+if (taskErrorDisplayText(info, 'TokenRefreshReauthRequiredError: long raw detail').includes('TokenRefresh')) throw new Error('raw error leaked');
+if (!taskErrorDisplayTitle(info, 'TokenRefreshReauthRequiredError: long raw detail').includes('AUTH-001')) throw new Error('title code missing');
 console.log('ok');
 """
         result = subprocess.run(
@@ -424,7 +451,8 @@ console.log('ok');
         self.assertIn("if (jobsLoading) { jobsReloadQueued = true; return; }", html)
         self.assertIn("if (outlookLoading) { outlookReloadQueued = true; return; }", html)
         self.assertIn("if (codexLoading) { codexReloadQueued = true; return; }", html)
-        self.assertIn("if (accountTasksLoading) return;", html)
+        self.assertIn("if (accountTasksLoading) {", html)
+        self.assertIn("accountTasksReloadQueued = true;", html)
         self.assertNotIn("    loadSummary();\n  } catch(e) {}\n}", html)
         self.assertIn("}, 10000);", html)
         self.assertIn("}, 5000);", html)
@@ -474,6 +502,55 @@ console.log('ok');
         self.assertIn(">重试</button>", html)
         self.assertIn(">删除</button>", html)
         self.assertIn(">取消</button>", html)
+
+    def test_task_center_uses_shared_resizable_table_layout(self):
+        response = self.client.get("/", headers=self.headers)
+        source = self._modern_page_source(response)
+
+        self.assertIn('data-resizable-table="accountTasks"', source)
+        self.assertIn('id="btnResetAccountTaskColumnsV2"', source)
+        self.assertIn('table[data-resizable-table="accountTasks"] {', source)
+        self.assertIn('width: max(100%, 1240px) !important;', source)
+        self.assertIn('min-width: 1240px !important;', source)
+        self.assertIn("if (header.classList.contains('col-check') || index >= headers.length - 1) return;", source)
+        self.assertIn("header.classList.contains('task-col-id')", source)
+        self.assertIn("headers[nextIndex].classList.contains('task-col-actions')", source)
+
+    def test_task_center_exposes_safe_bulk_actions_and_shared_chinese_labels(self):
+        response = self.client.get("/", headers=self.headers)
+        source = self._modern_page_source(response)
+
+        self.assertIn('id="accountTasksSelectAllV2"', source)
+        self.assertIn('class="task-col-check col-check"', source)
+        for action_id in (
+            "btnRetrySelectedAccountTasksV2",
+            "btnCancelSelectedAccountTasksV2",
+            "btnTerminateSelectedAccountTasksV2",
+        ):
+            self.assertIn(f'id="{action_id}"', source)
+        self.assertIn("const ACCOUNT_TASK_SELECTED = new Set();", source)
+        self.assertIn("/api/operations/bulk", source)
+        self.assertIn("function bulkAccountTasks", source)
+        self.assertIn("facetLabel('task_type'", source)
+        self.assertIn("pillV2(task.target_status, 'target_status')", source)
+        self.assertIn("renderTableStateRow(12, '任务记录加载失败'", source)
+        self.assertIn("['queued','running','stopping','cancelling','settling','waiting']", source)
+        self.assertIn("password_change:'修改密码'", source)
+        self.assertIn("twofa_change:'修改 2FA'", source)
+
+    def test_task_center_auto_expands_only_unsaved_columns_and_filter_popovers(self):
+        source = self._modern_page_source(self.client.get("/", headers=self.headers))
+
+        self.assertIn("function autoSizeResizableTableColumns", source)
+        self.assertIn("readSavedTableWidths(key, cols.length)", source)
+        self.assertIn("columnFilterOptionWidth", source)
+        self.assertIn("table.dataset.autoSized", source)
+        self.assertLess(
+            source.index("renderColumnFilterOptions(document.getElementById(header.dataset.columnFilter))"),
+            source.index("positionColumnFilterPopover(header)", source.index("renderColumnFilterOptions(document.getElementById(header.dataset.columnFilter))")),
+        )
+        self.assertIn("accountTaskRequestId", source)
+        self.assertIn("accountTasksReloadQueued", source)
 
     def test_navigation_avoids_unnecessary_vertical_scrolling(self):
         response = self.client.get("/", headers=self.headers)

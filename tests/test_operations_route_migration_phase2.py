@@ -336,6 +336,134 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         terminate.assert_called_once_with(run_id=64)
 
+    def test_bulk_operation_action_reuses_registered_handler_and_skips_active_task(self):
+        task_type = "bulk_live_check"
+        retry = Mock(return_value={"accepted": True, "busy": False, "run_id": 71})
+        task_gateway.register_operation_handler(
+            task_type,
+            lambda _context: task_gateway.OperationResult.success(),
+            source_systems=("native_operations",),
+            retry_handler=retry,
+        )
+        tasks = {
+            41: self._task(task_type=task_type, status="failed"),
+            42: self._task(task_type=task_type, status="running"),
+        }
+        try:
+            client = self._client()
+            with patch.object(
+                operations.operation_task_store,
+                "get_task",
+                side_effect=lambda task_id: tasks.get(int(task_id)),
+            ):
+                response = client.post(
+                    "/api/operations/bulk",
+                    json={"action": "retry", "task_ids": [41, 42]},
+                )
+        finally:
+            task_gateway.unregister_operation_handler(task_type)
+
+        self.assertEqual(200, response.status_code)
+        payload = response.get_json()
+        self.assertEqual(1, payload["accepted_count"])
+        self.assertEqual(1, payload["skipped_count"])
+        self.assertEqual(41, payload["accepted"][0]["task_id"])
+        self.assertEqual(42, payload["skipped"][0]["task_id"])
+        self.assertIn("执行", payload["skipped"][0]["error"])
+        retry.assert_called_once_with(tasks[41])
+
+    def test_bulk_operation_rejects_unknown_action_and_excessive_task_ids(self):
+        client = self._client()
+
+        invalid = client.post(
+            "/api/operations/bulk",
+            json={"action": "delete", "task_ids": [41]},
+        )
+        self.assertEqual(400, invalid.status_code)
+
+        excessive = client.post(
+            "/api/operations/bulk",
+            json={"action": "retry", "task_ids": list(range(1, 102))},
+        )
+        self.assertEqual(400, excessive.status_code)
+
+        for invalid_id in (1.9, True):
+            response = client.post(
+                "/api/operations/bulk",
+                json={"action": "retry", "task_ids": [invalid_id]},
+            )
+            self.assertEqual(400, response.status_code)
+
+    def test_bulk_cancel_rechecks_queued_state_before_dispatch(self):
+        client = self._client()
+        queued = self._task(status="queued", runs=[{"id": 55, "status": "queued"}])
+        running = self._task(status="running", runs=[{"id": 55, "status": "running"}])
+        with (
+            patch.object(
+                operations.operation_task_store,
+                "get_task",
+                side_effect=[queued, running],
+            ),
+            patch.object(operations.codex_operation_service, "request_cancel") as request_cancel,
+        ):
+            response = client.post(
+                "/api/operations/bulk",
+                json={"action": "cancel", "task_ids": [41]},
+            )
+
+        self.assertEqual(200, response.status_code)
+        payload = response.get_json()
+        self.assertEqual(0, payload["accepted_count"])
+        self.assertEqual(1, payload["skipped_count"])
+        self.assertIn("状态", payload["skipped"][0]["error"])
+        request_cancel.assert_not_called()
+
+    def test_bulk_terminate_skips_queued_task(self):
+        client = self._client()
+        queued = self._task(status="queued", runs=[{"id": 56, "status": "queued"}])
+        with (
+            patch.object(operations.operation_task_store, "get_task", return_value=queued),
+            patch.object(operations.codex_operation_service, "terminate") as terminate,
+        ):
+            response = client.post(
+                "/api/operations/bulk",
+                json={"action": "terminate", "task_ids": [41]},
+            )
+
+        self.assertEqual(200, response.status_code)
+        payload = response.get_json()
+        self.assertEqual(0, payload["accepted_count"])
+        self.assertEqual(1, payload["skipped_count"])
+        self.assertIn("执行中", payload["skipped"][0]["error"])
+        terminate.assert_not_called()
+
+    def test_operation_list_exposes_short_error_code_and_summary(self):
+        client = self._client()
+        with (
+            patch.object(
+                operations.operation_task_store,
+                "list_tasks",
+                return_value={
+                    "ok": True,
+                    "items": [{
+                        "id": 41,
+                        "task_type": "codex_token_refresh",
+                        "current_stage": "complete",
+                        "error_message": "TokenRefreshReauthRequiredError: reauth_required: refresh_token_reused",
+                    }],
+                    "total": 1,
+                    "facets": {},
+                },
+            ),
+            patch.object(operations.operation_task_store, "list_batches", return_value=[]),
+        ):
+            response = client.get("/api/operations")
+
+        self.assertEqual(200, response.status_code)
+        info = response.get_json()["items"][0]["error_info"]
+        self.assertEqual("AUTH-002", info["display_code"])
+        self.assertEqual("授权已失效，请重新登录", info["summary"])
+
 
 if __name__ == "__main__":
     unittest.main()

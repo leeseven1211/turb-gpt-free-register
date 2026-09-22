@@ -755,11 +755,26 @@ def default_operation_cancel(task: Mapping[str, Any]) -> dict[str, Any]:
     if not run_id:
         return {"ok": False, "error": "活动 attempt 缺少 id"}
     try:
-        run = _operation().request_run_cancel(
-            run_id, reason="用户手动停止统一 durable operation",
-        )
+        expected_status = str(task.get("_expected_run_status") or "")
+        if expected_status:
+            run = _operation().request_run_cancel(
+                run_id,
+                reason="用户手动停止统一 durable operation",
+                expected_status=expected_status,
+            )
+        else:
+            run = _operation().request_run_cancel(
+                run_id,
+                reason="用户手动停止统一 durable operation",
+            )
     except LookupError as exc:
         return {"ok": False, "error": str(exc)}
+    if run.get("cancel_skipped"):
+        return {
+            "ok": False,
+            "state": str(run.get("state") or run.get("status") or "unknown"),
+            "message": run.get("message") or "任务状态已变化，请刷新后重试",
+        }
     notify_dispatch()
     state = str(run.get("status") or "cancelling")
     return {

@@ -6,11 +6,6 @@ let planStatusRevision = '';
 let ACCOUNT_BATCH_WORKERS = 3;
 let emailChangeReturnFocus = null;
 const ACCOUNT_TASK_TYPE_LABELS = LIST_FACET_LABELS.task_type;
-const ACCOUNT_TASK_TRIGGER_LABELS = {
-  manual:'手动', manual_bulk:'手动批量', manual_retry:'失败重跑', scheduled:'定时',
-  registration_auto:'注册后自动', registration_job_retry:'注册任务重试', token_refresh_scheduled:'AT 定时刷新',
-  codex_token_refresh_scheduled:'Codex 定时刷新'
-};
 const ACCOUNT_TASK_STAGE_LABELS = LIST_FACET_LABELS.stage;
 const OPERATION_TARGET_LABELS = LIST_FACET_LABELS.target_status;
 function accountIsDeactivated(account) {
@@ -35,7 +30,7 @@ function accountTaskResultText(task) {
   if (task.error_message) return taskErrorDisplayText(task.error_info, task.error_message);
   const result = task.result_summary || {};
   if (task.task_type === 'registration' || task.task_type === 'registration_resume') {
-    return OPERATION_TARGET_LABELS[task.target_status] || task.target_status || '注册执行已结束';
+    return facetLabel('target_status', task.target_status) || '注册执行已结束';
   }
   if (task.task_type === 'plan_check') {
     const plan = String(result.current_plan_type || '');
@@ -130,42 +125,100 @@ function accountTaskCanRetry(task) {
   const deactivated = status === 'deactivated' || ['deactivated', 'account_deactivated'].includes(targetStatus) || summaryDeactivated;
   return !active && !deactivated && Array.isArray(task?.next_actions) && task.next_actions.length > 0;
 }
+function accountTaskIsActive(task) {
+  return ['queued','running','stopping','cancelling','settling','waiting'].includes(String(task?.status || '').toLowerCase());
+}
+function accountTaskCanTerminate(task) {
+  return task?.source_system === 'native_operations'
+    && accountTaskIsActive(task)
+    && String(task.status || '').toLowerCase() !== 'queued';
+}
+function accountTaskCanStop(task) {
+  return task?.source_system === 'native_operations'
+    && (String(task.status || '').toLowerCase() === 'queued' || accountTaskCanTerminate(task));
+}
+function accountTaskSelectedRows() {
+  return ACCOUNT_TASKS.filter(task => ACCOUNT_TASK_SELECTED.has(Number(task.id)));
+}
+function updateAccountTaskSelectionUi() {
+  const selected = accountTaskSelectedRows();
+  const retryable = selected.filter(accountTaskCanRetry).length;
+  const cancellable = selected.filter(task => String(task.status || '').toLowerCase() === 'queued').length;
+  const terminable = selected.filter(accountTaskCanTerminate).length;
+  const hint = $('#accountTaskSelectedHintV2');
+  const toolbar = hint?.closest('.list-action-toolbar');
+  toolbar?.classList.toggle('has-selection', selected.length > 0);
+  if (hint) hint.textContent = selected.length
+    ? `已选 ${selected.length} 个 · 可重跑 ${retryable} · 可取消 ${cancellable} · 可终止 ${terminable}`
+    : '选择任务后批量操作';
+  const retryBtn = $('#btnRetrySelectedAccountTasksV2');
+  const cancelBtn = $('#btnCancelSelectedAccountTasksV2');
+  const terminateBtn = $('#btnTerminateSelectedAccountTasksV2');
+  if (retryBtn) retryBtn.disabled = retryable === 0;
+  if (cancelBtn) cancelBtn.disabled = cancellable === 0;
+  if (terminateBtn) terminateBtn.disabled = terminable === 0;
+  const selectAll = $('#accountTasksSelectAllV2');
+  const pageIds = ACCOUNT_TASKS.map(task => Number(task.id));
+  const checkedCount = pageIds.filter(id => ACCOUNT_TASK_SELECTED.has(id)).length;
+  if (selectAll) {
+    selectAll.checked = pageIds.length > 0 && checkedCount === pageIds.length;
+    selectAll.indeterminate = checkedCount > 0 && checkedCount < pageIds.length;
+    selectAll.disabled = pageIds.length === 0;
+  }
+}
+function syncAccountTasksSelectAll(checked) {
+  ACCOUNT_TASKS.forEach(task => {
+    const id = Number(task.id);
+    if (checked) ACCOUNT_TASK_SELECTED.add(id);
+    else ACCOUNT_TASK_SELECTED.delete(id);
+  });
+  renderAccountTasks();
+}
 function renderAccountTasks() {
   const body = $('#accountTasksBody');
   if (!body) return;
+  const pageIds = new Set(ACCOUNT_TASKS.map(task => Number(task.id)));
+  ACCOUNT_TASK_SELECTED.forEach(id => { if (!pageIds.has(Number(id))) ACCOUNT_TASK_SELECTED.delete(id); });
   body.innerHTML = ACCOUNT_TASKS.map(task => {
     const result = accountTaskResultText(task);
-    const active = ['queued','running','stopping','cancelling','settling','waiting'].includes(String(task.status || ''));
+    const active = accountTaskIsActive(task);
     const retryable = accountTaskCanRetry(task);
-    const terminable = task.source_system === 'native_operations' && active;
+    const terminable = accountTaskCanTerminate(task);
+    const stoppable = accountTaskCanStop(task);
     const terminationLabel = task.status === 'queued' ? '取消' : '终止';
     const target = task.account_id ? `账号 #${task.account_id}` : (task.attempt_id ? `注册尝试 #${task.attempt_id}` : '-');
     const batch = task.batch_title || (task.batch_uuid ? short(task.batch_uuid, 12) : '单任务');
-    const trigger = ACCOUNT_TASK_TRIGGER_LABELS[task.trigger] || task.trigger || '-';
-    const stage = ACCOUNT_TASK_STAGE_LABELS[normalizeAccountTaskStage(task.current_stage)] || task.current_stage || '-';
+    const trigger = facetLabel('trigger', task.trigger);
+    const stage = facetLabel('stage', normalizeAccountTaskStage(task.current_stage));
     const error = task.error_message || '';
     const errorInfo = task.error_info || null;
     const errorText = taskErrorDisplayText(errorInfo, error);
-    return `<tr>
+    return `<tr class="${ACCOUNT_TASK_SELECTED.has(Number(task.id)) ? 'is-selected' : ''}">
+      <td class="task-col-check col-check"><input type="checkbox" data-account-task-select="${esc(task.id)}" ${ACCOUNT_TASK_SELECTED.has(Number(task.id)) ? 'checked' : ''} aria-label="选择任务 #${esc(task.id)}"></td>
       <td>#${esc(task.id)}</td>
-      <td>${esc(ACCOUNT_TASK_TYPE_LABELS[task.task_type] || task.task_type)}</td>
+      <td title="${esc(task.task_type || '')}">${esc(facetLabel('task_type', task.task_type))}</td>
       <td title="${esc(task.email_snapshot)}"><strong>${esc(target)}</strong><div class="sub-cell">${esc(task.email_snapshot || '-')}</div></td>
-      <td>${pillV2(task.status)}</td>
-      <td>${pillV2(task.target_status)}</td>
+      <td title="${esc(task.status || '')}">${pillV2(task.status, 'status')}</td>
+      <td title="${esc(task.target_status || '')}">${pillV2(task.target_status, 'target_status')}</td>
       <td title="${esc(batch)} · ${esc(trigger)}">${esc(short(batch, 26))}<div class="sub-cell">${esc(trigger)}</div></td>
       <td>${esc(task.run_count || 0)} 次<div class="sub-cell">最近 #${esc(task.last_run_no || '-')}</div></td>
       <td>${esc(stage)}<div class="sub-cell">${esc(formatTaskDuration(task.duration_ms))}</div></td>
       <td title="${esc(formatDateTime(task.created_at))} → ${esc(formatDateTime(task.completed_at))}">${esc(formatDateTime(task.created_at))}<div class="sub-cell">${esc(formatDateTime(task.completed_at))}</div></td>
       <td class="task-error" title="${esc(error ? taskErrorDisplayTitle(errorInfo, error) : result)}">${error ? `${taskErrorBadge(errorInfo)}<span class="task-error-cell-text">${esc(short(errorText, 90))}</span>` : esc(short(result, 90))}</td>
-      <td><div class="task-row-actions"><button type="button" class="task-row-action" data-account-task-log="${esc(task.id)}">日志</button>${terminable ? `<button type="button" class="task-row-action task-row-action--terminate" data-account-task-terminate="${esc(task.id)}" aria-label="${terminationLabel}任务 #${esc(task.id)}">${terminationLabel}</button>` : ''}${retryable ? `<button type="button" class="task-row-action task-row-action--retry" data-account-task-retry="${esc(task.id)}">重跑</button>` : ''}</div></td>
+      <td><div class="task-row-actions"><button type="button" class="task-row-action" data-account-task-log="${esc(task.id)}">日志</button>${stoppable ? `<button type="button" class="task-row-action task-row-action--terminate" data-account-task-terminate="${esc(task.id)}" aria-label="${terminationLabel}任务 #${esc(task.id)}">${terminationLabel}</button>` : ''}${retryable ? `<button type="button" class="task-row-action task-row-action--retry" data-account-task-retry="${esc(task.id)}">重跑</button>` : ''}</div></td>
     </tr>`;
-  }).join('') || renderTableStateRow(11, '暂无任务记录', '调整搜索或筛选条件后再试。');
+  }).join('') || renderTableStateRow(12, '暂无任务记录', '调整搜索或筛选条件后再试。');
   const summary = $('#accountTaskPageSummary');
   if (summary) summary.textContent = `${ACCOUNT_TASKS_TOTAL || 0} 个任务 · 当前页 ${ACCOUNT_TASKS.length} 条`;
+  updateAccountTaskSelectionUi();
+  autoSizeResizableTableColumns(document.querySelector('table[data-resizable-table="accountTasks"]'));
   _renderPager('accountTasks', ACCOUNT_TASKS_TOTAL);
 }
 async function loadAccountTasks() {
-  if (accountTasksLoading) return;
+  if (accountTasksLoading) {
+    accountTasksReloadQueued = true;
+    return;
+  }
   accountTasksLoading = true;
   setListBusy('accountTasksPanel', true);
   const p = PAGERS.accountTasks;
@@ -199,16 +252,21 @@ async function loadAccountTasks() {
     renderAccountTasks();
     markViewReady('account-tasks');
   } catch (e) {
-    if (!ACCOUNT_TASKS.length) $('#accountTasksBody').innerHTML = renderTableStateRow(11, '任务记录加载失败', '请检查服务状态后刷新列表。', 'error');
+    if (!ACCOUNT_TASKS.length) $('#accountTasksBody').innerHTML = renderTableStateRow(12, '任务记录加载失败', '请检查服务状态后刷新列表。', 'error');
     showToast('加载任务中心失败: ' + e.message);
   }
   finally {
     accountTasksLoading = false;
     setListBusy('accountTasksPanel', false);
+    if (accountTasksReloadQueued) {
+      accountTasksReloadQueued = false;
+      void loadAccountTasks();
+    }
   }
 }
 let activeAccountTaskId = null, activeAccountTaskRunId = null, accountTaskLogTimer = null;
 let activeAccountTaskDetailView = 'events', accountTaskSnapshot = null, accountTaskPolling = false;
+let accountTaskRequestId = 0;
 let accountTaskEventCursor = null, accountTaskEventCache = [], accountTaskNewEventCount = 0;
 let accountTaskRunLogCursor = null, accountTaskRunLogLines = [];
 let accountTaskProgressSnapshot = null, accountTaskProgressRequestId = 0, accountTaskProgressError = '';
@@ -300,11 +358,15 @@ function syncAccountTaskRunPicker(task) {
 
 async function pollAccountTaskEvents(reset = false) {
   if (!activeAccountTaskId || !activeAccountTaskRunId) return;
+  const requestId = accountTaskRequestId;
+  const taskId = Number(activeAccountTaskId);
+  const runId = Number(activeAccountTaskRunId);
   const scroller = $('#accountTaskLogContent')?.parentElement;
   const atBottom = !scroller || scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 36;
   const params = new URLSearchParams({limit:'500'});
   if (!reset && accountTaskEventCursor != null) params.set('after_id', String(accountTaskEventCursor));
-  const result = await api(`/api/operations/${encodeURIComponent(activeAccountTaskId)}/runs/${encodeURIComponent(activeAccountTaskRunId)}/events?${params}`);
+  const result = await api(`/api/operations/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(runId)}/events?${params}`);
+  if (requestId !== accountTaskRequestId || taskId !== Number(activeAccountTaskId) || runId !== Number(activeAccountTaskRunId)) return;
   const incoming = result.items || [];
   if (reset || accountTaskEventCursor == null) accountTaskEventCache = incoming;
   else {
@@ -326,15 +388,16 @@ async function pollAccountTaskProgress() {
   if (!activeAccountTaskId || !activeAccountTaskRunId) return;
   const taskId = Number(activeAccountTaskId);
   const runId = Number(activeAccountTaskRunId);
+  const detailRequestId = accountTaskRequestId;
   const requestId = ++accountTaskProgressRequestId;
   try {
     const result = await api(`/api/operations/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(activeAccountTaskRunId)}/progress`);
-    if (requestId !== accountTaskProgressRequestId || taskId !== Number(activeAccountTaskId) || runId !== Number(activeAccountTaskRunId)) return;
+    if (detailRequestId !== accountTaskRequestId || requestId !== accountTaskProgressRequestId || taskId !== Number(activeAccountTaskId) || runId !== Number(activeAccountTaskRunId)) return;
     accountTaskProgressSnapshot = result.progress || null;
     accountTaskProgressError = '';
     renderAccountTaskProgressSnapshot(accountTaskProgressSnapshot);
   } catch (e) {
-    if (requestId !== accountTaskProgressRequestId || taskId !== Number(activeAccountTaskId) || runId !== Number(activeAccountTaskRunId)) return;
+    if (detailRequestId !== accountTaskRequestId || requestId !== accountTaskProgressRequestId || taskId !== Number(activeAccountTaskId) || runId !== Number(activeAccountTaskRunId)) return;
     accountTaskProgressError = e.message || '进度更新失败';
     // Keep the last good snapshot. A first-load failure stays hidden rather
     // than falling back to the incomplete event page.
@@ -344,9 +407,13 @@ async function pollAccountTaskProgress() {
 
 async function pollAccountTaskRunLog(reset = false) {
   if (!activeAccountTaskId || !activeAccountTaskRunId) return;
+  const requestId = accountTaskRequestId;
+  const taskId = Number(activeAccountTaskId);
+  const runId = Number(activeAccountTaskRunId);
   const params = new URLSearchParams({limit:'500'});
   if (!reset && accountTaskRunLogCursor != null) params.set('cursor', String(accountTaskRunLogCursor));
-  const result = await api(`/api/operations/${encodeURIComponent(activeAccountTaskId)}/runs/${encodeURIComponent(activeAccountTaskRunId)}/logs?${params}`);
+  const result = await api(`/api/operations/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(runId)}/logs?${params}`);
+  if (requestId !== accountTaskRequestId || taskId !== Number(activeAccountTaskId) || runId !== Number(activeAccountTaskRunId)) return;
   if (reset || accountTaskRunLogCursor == null) accountTaskRunLogLines = result.items || [];
   else accountTaskRunLogLines.push(...(result.items || []));
   accountTaskRunLogCursor = Number(result.next_cursor || 0);
@@ -354,6 +421,7 @@ async function pollAccountTaskRunLog(reset = false) {
 }
 
 function openAccountTaskLog(taskId) {
+  accountTaskRequestId += 1;
   activeAccountTaskId = Number(taskId);
   accountTaskSnapshot = null;
   resetAccountTaskRunData(null);
@@ -372,17 +440,22 @@ function openAccountTaskLog(taskId) {
 
 async function pollAccountTaskLog() {
   if (!activeAccountTaskId || accountTaskPolling) return;
+  const requestId = accountTaskRequestId;
+  const taskId = Number(activeAccountTaskId);
   accountTaskPolling = true;
   try {
-    const result = await api(`/api/operations/${encodeURIComponent(activeAccountTaskId)}?include_events=0`);
+    const result = await api(`/api/operations/${encodeURIComponent(taskId)}?include_events=0`);
+    if (requestId !== accountTaskRequestId || taskId !== Number(activeAccountTaskId)) return;
     const task = result.task || {};
     accountTaskSnapshot = task;
     renderTaskLogErrorSummary('accountTaskLogErrorSummary', task);
     const previousRunId = activeAccountTaskRunId;
     syncAccountTaskRunPicker(task);
+    if (requestId !== accountTaskRequestId || taskId !== Number(activeAccountTaskId)) return;
     const selectedRun = (task.runs || []).find(run => Number(run.id) === Number(activeAccountTaskRunId)) || {};
-    $('#accountTaskDetailSummary').textContent = `${ACCOUNT_TASK_TYPE_LABELS[task.task_type] || task.task_type || '任务'} · ${selectedRun.status || task.status || '-'} · ${formatTaskDuration(selectedRun.duration_ms)}`;
+    $('#accountTaskDetailSummary').textContent = `${facetLabel('task_type', task.task_type)} · ${facetLabel('status', selectedRun.status || task.status)} · ${formatTaskDuration(selectedRun.duration_ms)}`;
     await pollAccountTaskProgress();
+    if (requestId !== accountTaskRequestId || taskId !== Number(activeAccountTaskId)) return;
     if (previousRunId !== activeAccountTaskRunId || accountTaskEventCursor == null) {
       await pollAccountTaskEvents(true);
       if (activeAccountTaskDetailView === 'logs') await pollAccountTaskRunLog(true);
@@ -390,14 +463,17 @@ async function pollAccountTaskLog() {
       await pollAccountTaskEvents(false);
       if (activeAccountTaskDetailView === 'logs') await pollAccountTaskRunLog(false);
     }
+    if (requestId !== accountTaskRequestId || taskId !== Number(activeAccountTaskId)) return;
     renderAccountTaskArtifacts(task);
-    if (!['queued','running','cancelling','settling'].includes(String(task.status || ''))) {
+    if (!accountTaskIsActive(task)) {
       clearInterval(accountTaskLogTimer);
       loadAccountTasks();
       loadAccounts();
     }
   } catch (e) {
-    $('#accountTaskLogContent').innerHTML = `<div class="account-task-empty">加载失败：${esc(e.message)}</div>`;
+    if (requestId === accountTaskRequestId && taskId === Number(activeAccountTaskId)) {
+      $('#accountTaskLogContent').innerHTML = `<div class="account-task-empty">加载失败：${esc(e.message)}</div>`;
+    }
   } finally {
     accountTaskPolling = false;
   }
@@ -444,6 +520,43 @@ async function terminateAccountTask(taskId, button) {
     button.disabled = false;
   }
 }
+async function bulkAccountTasks(action) {
+  const selected = accountTaskSelectedRows();
+  const eligible = selected.filter(task => action === 'retry'
+    ? accountTaskCanRetry(task)
+    : action === 'cancel'
+      ? String(task.status || '').toLowerCase() === 'queued'
+      : accountTaskCanTerminate(task));
+  if (!eligible.length) {
+    showToast(action === 'retry' ? '选中任务中没有可重跑项' : action === 'cancel' ? '选中任务中没有排队项' : '选中任务中没有可终止的原生运行任务');
+    return;
+  }
+  const label = action === 'retry' ? '重跑' : action === 'cancel' ? '取消排队' : '终止运行';
+  const warning = action === 'retry'
+    ? '原任务记录和运行日志会保留，废号或无重跑来源的任务会跳过。'
+    : action === 'cancel'
+      ? '只会取消尚未开始的排队任务。'
+      : '运行中的任务会立即收口；如果已经向远端发起写入，结果可能需要人工核验。';
+  if (!window.confirm(`确定${label}选中的 ${eligible.length} 个任务吗？\n\n${warning}`)) return;
+  const buttonId = action === 'retry' ? 'btnRetrySelectedAccountTasksV2' : action === 'cancel' ? 'btnCancelSelectedAccountTasksV2' : 'btnTerminateSelectedAccountTasksV2';
+  const button = document.getElementById(buttonId);
+  if (button) button.disabled = true;
+  try {
+    const result = await api('/api/operations/bulk', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action, task_ids: eligible.map(task => Number(task.id))}),
+    });
+    const skipped = Number(result.skipped_count || 0);
+    showToast(`已${label} ${Number(result.accepted_count || 0)} 个${skipped ? `，跳过 ${skipped} 个` : ''}`);
+    ACCOUNT_TASK_SELECTED.clear();
+    await loadAccountTasks();
+  } catch (e) {
+    showToast(`${label}失败: ` + e.message);
+  } finally {
+    updateAccountTaskSelectionUi();
+  }
+}
 function updateAccountTaskFilters(facets = {}) {
   syncFacetSelect('accountTaskTypeFilterV2', facets.task_type, {
     group: 'task_type',
@@ -461,6 +574,7 @@ function updateAccountTaskFilters(facets = {}) {
 let accountTaskFilterTimer = null;
 function scheduleAccountTaskFilterReload(immediate = false) {
   PAGERS.accountTasks.page = 1;
+  ACCOUNT_TASK_SELECTED.clear();
   refreshColumnFilterStates();
   clearTimeout(accountTaskFilterTimer);
   if (immediate) {
@@ -470,6 +584,10 @@ function scheduleAccountTaskFilterReload(immediate = false) {
   accountTaskFilterTimer = setTimeout(loadAccountTasks, 260);
 }
 $('#btnRefreshAccountTasks')?.addEventListener('click', loadAccountTasks);
+$('#btnRetrySelectedAccountTasksV2')?.addEventListener('click', () => bulkAccountTasks('retry'));
+$('#btnCancelSelectedAccountTasksV2')?.addEventListener('click', () => bulkAccountTasks('cancel'));
+$('#btnTerminateSelectedAccountTasksV2')?.addEventListener('click', () => bulkAccountTasks('terminate'));
+$('#accountTasksSelectAllV2')?.addEventListener('change', event => syncAccountTasksSelectAll(event.target.checked));
 ['accountTaskIdFilterV2', 'accountTaskTargetFilterV2', 'accountTaskBatchFilterV2', 'accountTaskResultFilterV2'].forEach(id => {
   document.getElementById(id)?.addEventListener('input', () => scheduleAccountTaskFilterReload());
 });
@@ -491,6 +609,14 @@ $('#accountTasksPanel')?.addEventListener('click', event => {
   if (retryBtn) { retryAccountTask(Number(retryBtn.dataset.accountTaskRetry), retryBtn); return; }
   const terminateBtn = event.target.closest('[data-account-task-terminate]');
   if (terminateBtn) terminateAccountTask(Number(terminateBtn.dataset.accountTaskTerminate), terminateBtn);
+});
+$('#accountTasksPanel')?.addEventListener('change', event => {
+  const checkbox = event.target.closest('[data-account-task-select]');
+  if (!checkbox) return;
+  const taskId = Number(checkbox.dataset.accountTaskSelect);
+  if (checkbox.checked) ACCOUNT_TASK_SELECTED.add(taskId);
+  else ACCOUNT_TASK_SELECTED.delete(taskId);
+  renderAccountTasks();
 });
 function getAccountsQuery() {
   const el = document.getElementById('qAccountsV2');

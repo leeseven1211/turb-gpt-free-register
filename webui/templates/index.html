@@ -442,7 +442,10 @@
     <section class="account-tasks-panel" id="accountTasksPanel" aria-label="统一任务中心">
       <div class="account-tasks-command-deck">
       <div class="jobs-toolbar-v2 list-action-toolbar account-tasks-toolbar">
-        <span class="list-selection-hint">注册、补跑与账号操作统一记录</span>
+        <span class="list-selection-hint" id="accountTaskSelectedHintV2">选择任务后批量操作</span>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--retry selection-only" id="btnRetrySelectedAccountTasksV2" disabled title="重跑选中的可重跑任务；废号或没有重跑来源的任务会跳过">重跑选中</button>
+        <button type="button" class="jobs-tb-btn selection-only" id="btnCancelSelectedAccountTasksV2" disabled title="只取消选中的排队任务，运行中的任务不受影响">取消排队</button>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--danger selection-only" id="btnTerminateSelectedAccountTasksV2" disabled title="终止选中的原生运行任务；远端结果可能需要人工核验">终止运行</button>
         <div class="list-toolbar-utilities">
           <span class="account-task-refresh-meta" id="accountTaskRefreshHint"></span>
           <button type="button" class="jobs-tb-btn" id="btnResetAccountTaskColumnsV2" title="恢复任务中心默认列宽">恢复列宽</button>
@@ -454,12 +457,13 @@
       <div class="account-tasks-table-wrap accounts-table-v2-wrap">
         <table class="account-tasks-table accounts-table-v2" data-resizable-table="accountTasks">
           <colgroup>
-            <col class="task-col-id"><col class="task-col-type"><col class="task-col-account"><col class="task-col-status">
+            <col class="task-col-check col-check"><col class="task-col-id"><col class="task-col-type"><col class="task-col-account"><col class="task-col-status">
             <col class="task-col-trigger"><col class="task-col-method"><col class="task-col-route"><col class="task-col-duration">
             <col class="task-col-time"><col class="task-col-result"><col class="task-col-actions">
           </colgroup>
           <thead>
             <tr>
+              <th class="task-col-check col-check"><input type="checkbox" id="accountTasksSelectAllV2" title="全选或取消全选当前页任务" aria-label="全选当前页任务"></th>
               <th class="task-col-id column-filter-header" data-column-filter="accountTaskIdFilterV2" data-filter-type="search" data-filter-placeholder="#" data-filter-label="按任务 ID 筛选" data-filter-inputmode="numeric">ID</th>
               <th class="task-col-type column-filter-header" data-column-filter="accountTaskTypeFilterV2" data-filter-type="select" data-filter-label="按任务类型筛选">类型</th>
               <th class="task-col-account column-filter-header" data-column-filter="accountTaskTargetFilterV2" data-filter-type="search" data-filter-placeholder="账号、邮箱或尝试" data-filter-label="按目标筛选">目标</th>
@@ -473,7 +477,7 @@
               <th class="task-col-actions"><div class="column-actions-heading"><span>操作</span><button type="button" class="column-filters-reset" id="btnResetAccountTaskFiltersV2" title="清除全部列筛选">清筛</button></div></th>
             </tr>
           </thead>
-          <tbody id="accountTasksBody"><tr class="list-state-row"><td class="table-state-cell" colspan="11"><div class="table-state is-loading" role="status"><span class="table-state-spinner" aria-hidden="true"></span><strong>正在加载任务记录</strong><small>正在同步统一任务链路</small></div></td></tr></tbody>
+          <tbody id="accountTasksBody"><tr class="list-state-row"><td class="table-state-cell" colspan="12"><div class="table-state is-loading" role="status"><span class="table-state-spinner" aria-hidden="true"></span><strong>正在加载任务记录</strong><small>正在同步统一任务链路</small></div></td></tr></tbody>
         </table>
       </div>
       <div class="jobs-v2-pager" id="pager-accountTasks-v2"></div>

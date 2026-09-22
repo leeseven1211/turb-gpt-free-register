@@ -4,6 +4,8 @@ let copySeq = 0;
 const copyStore = new Map();
 let ACCOUNTS = [], OUTLOOK = [], CONFIG = [];
 let ACCOUNT_TASKS = [], ACCOUNT_TASKS_TOTAL = 0;
+const ACCOUNT_TASK_SELECTED = new Set();
+let accountTasksReloadQueued = false;
 let ACCOUNTS_TOTAL = 0;
 let OUTLOOK_TOTAL = 0;
 let outlookLoading = false;
@@ -75,9 +77,14 @@ const LIST_FACET_LABELS = {
   task_type: {
     registration:'注册', registration_resume:'继续邮箱验证', twofa_retry:'2FA 配置补跑',
     account_setup_retry:'账号配置补跑', password_setup:'补密码', twofa_setup:'补 2FA', account_completion:'补全账号',
-    email_change:'换绑邮箱',
+    email_change:'换绑邮箱', password_change:'修改密码', twofa_change:'修改 2FA',
     codex_retry:'Codex 补跑', codex_token_refresh:'Codex Token 刷新',
     live_check:'查活', token_refresh:'AT 刷新', plan_check:'查套餐', deactivation_mail:'查封号邮件', extract_link:'提炼',
+  },
+  trigger: {
+    manual:'手动', manual_bulk:'手动批量', manual_retry:'失败重跑', scheduled:'定时',
+    registration_auto:'注册后自动', registration_job_retry:'注册任务重试', token_refresh_scheduled:'AT 定时刷新',
+    codex_token_refresh_scheduled:'Codex 定时刷新',
   },
   target_status: {
     not_created:'尚未创建', in_progress:'处理中', email_verification_pending:'待邮箱验证或资料补全',
@@ -262,9 +269,10 @@ const TABLE_DEFAULT_WIDTHS = {
   accounts: [3, 6, 17, 7, 6, 6, 7, 7, 8, 7, 9, 8, 8, 8, 10],
   codex:    [4, 19, 7, 9, 9, 11, 11, 11, 19],
   outlook:  [4, 20, 9, 9, 8, 14, 14, 18],
-  accountTasks: [6, 9, 18, 10, 11, 13, 10, 11, 17, 15, 10],
+  accountTasks: [4, 6, 9, 18, 10, 11, 13, 10, 11, 17, 15, 10],
 };
 const TABLE_WIDTH_STORAGE_PREFIX = 'gpt_console_table_widths_';
+const TABLE_WIDTH_TOTAL_STORAGE_PREFIX = 'gpt_console_table_total_';
 const TABLE_SAVED_WIDTH_MIN_RATIOS = {
   // The account ID search keeps a clear button beside the input; do not let
   // a previously saved narrow layout collapse the input to its intrinsic size.
@@ -285,16 +293,62 @@ function readSavedTableWidths(key, expectedLength) {
   } catch(e) { return null; }
 }
 
-function saveTableWidths(key, widths) {
+function readSavedTableTotal(key) {
+  const total = Number(localStorage.getItem(TABLE_WIDTH_TOTAL_STORAGE_PREFIX + key) || 0);
+  return Number.isFinite(total) && total > 0 ? total : 0;
+}
+
+function saveTableWidths(key, widths, total = 0) {
   localStorage.setItem(TABLE_WIDTH_STORAGE_PREFIX + key, JSON.stringify(widths.map(value => Number(value.toFixed(4)))));
+  if (total > 0) localStorage.setItem(TABLE_WIDTH_TOTAL_STORAGE_PREFIX + key, String(Math.round(total)));
 }
 
 function resetResizableTable(key) {
   const table = document.querySelector(`table[data-resizable-table="${key}"]`);
   if (!table) return;
   localStorage.removeItem(TABLE_WIDTH_STORAGE_PREFIX + key);
+  localStorage.removeItem(TABLE_WIDTH_TOTAL_STORAGE_PREFIX + key);
+  table.dataset.autoSized = '0';
+  table.style.removeProperty('width');
   applyResizableTableWidths(table, TABLE_DEFAULT_WIDTHS[key]);
   showToast('已恢复默认列宽');
+}
+
+function columnTextWidth(value) {
+  return Array.from(String(value || '')).reduce(
+    (total, char) => total + (/^[\x00-\x7f]$/.test(char) ? 7 : 12),
+    0,
+  );
+}
+
+function autoSizeResizableTableColumns(table) {
+  if (!table || table.dataset.resizableTable !== 'accountTasks') return;
+  if (table.dataset.autoSized === '1') return;
+  const cols = Array.from(table.querySelectorAll('colgroup col'));
+  const headers = Array.from(table.querySelectorAll('thead tr:first-child th'));
+  if (!cols.length || cols.length !== headers.length) return;
+  const key = table.dataset.resizableTable;
+  if (readSavedTableWidths(key, cols.length)) {
+    const savedTotal = readSavedTableTotal(key);
+    if (savedTotal) table.style.setProperty('width', `${Math.max(1240, savedTotal)}px`, 'important');
+    table.dataset.autoSized = '1';
+    return;
+  }
+  const minWidths = [44, 72, 96, 96, 96, 104, 112, 88, 104, 150, 220, 132];
+  const maxWidths = [56, 132, 240, 150, 160, 180, 220, 120, 200, 220, 420, 210];
+  const rows = Array.from(table.tBodies?.[0]?.rows || []).slice(0, 20);
+  const widths = headers.map((header, index) => {
+    const values = [header.dataset.filterLabel || header.textContent || ''];
+    rows.forEach(row => { if (row.cells[index]) values.push(row.cells[index].innerText || row.cells[index].textContent || ''); });
+    const natural = Math.max(...values.map(columnTextWidth), minWidths[index] || 64) + 30;
+    return Math.min(maxWidths[index] || 360, Math.max(minWidths[index] || 64, natural));
+  });
+  const total = widths.reduce((sum, value) => sum + value, 0);
+  const tableWidth = Math.max(1240, readSavedTableTotal(key), Math.ceil(total));
+  table.style.setProperty('width', `${tableWidth}px`, 'important');
+  localStorage.setItem(TABLE_WIDTH_TOTAL_STORAGE_PREFIX + key, String(tableWidth));
+  applyResizableTableWidths(table, widths.map(value => value / total));
+  table.dataset.autoSized = '1';
 }
 
 function initResizableTable(table) {
@@ -305,6 +359,10 @@ function initResizableTable(table) {
   if (!key || !cols.length || cols.length !== headers.length) return;
   table.dataset.resizableReady = '1';
   const savedWidths = readSavedTableWidths(key, cols.length);
+  if (savedWidths && key === 'accountTasks') {
+    const savedTotal = readSavedTableTotal(key);
+    if (savedTotal) table.style.setProperty('width', `${Math.max(1240, savedTotal)}px`, 'important');
+  }
   if (savedWidths) {
     const savedTotal = savedWidths.reduce((sum, value) => sum + Math.max(0, Number(value) || 0), 0) || 1;
     Object.entries(TABLE_SAVED_WIDTH_MIN_RATIOS[key] || {}).forEach(([index, ratio]) => {
@@ -315,7 +373,7 @@ function initResizableTable(table) {
   applyResizableTableWidths(table, savedWidths || TABLE_DEFAULT_WIDTHS[key]);
 
   headers.forEach((header, index) => {
-    if (index === 0 || index >= headers.length - 1) return;
+    if (header.classList.contains('col-check') || index >= headers.length - 1) return;
     const handle = document.createElement('span');
     handle.className = 'table-col-resizer';
     handle.title = '拖动调整列宽';
@@ -329,8 +387,8 @@ function initResizableTable(table) {
       const startX = event.clientX;
       const startWidths = headers.map(item => item.getBoundingClientRect().width);
       const nextIndex = index + 1;
-      const minCurrent = header.classList.contains('col-id') ? 72 : 64;
-      const minNext = headers[nextIndex].classList.contains('col-actions') ? 108 : 64;
+      const minCurrent = (header.classList.contains('col-id') || header.classList.contains('task-col-id')) ? 72 : 64;
+      const minNext = (headers[nextIndex].classList.contains('col-actions') || headers[nextIndex].classList.contains('task-col-actions')) ? 108 : 64;
       handle.classList.add('is-dragging');
       document.body.classList.add('is-resizing-table-column');
 
@@ -349,7 +407,8 @@ function initResizableTable(table) {
         handle.classList.remove('is-dragging');
         document.body.classList.remove('is-resizing-table-column');
         const finalWidth = Math.max(1, table.getBoundingClientRect().width);
-        saveTableWidths(key, headers.map(item => item.getBoundingClientRect().width / finalWidth));
+        saveTableWidths(key, headers.map(item => item.getBoundingClientRect().width / finalWidth), finalWidth);
+        table.dataset.autoSized = '1';
       };
       document.addEventListener('pointermove', onMove);
       document.addEventListener('pointerup', onUp);
@@ -439,7 +498,9 @@ function positionColumnFilterPopover(header) {
   if (!trigger || !popover) return;
   const rect = trigger.getBoundingClientRect();
   const type = header.dataset.filterType || 'search';
-  const preferredWidth = type === 'date-range'
+  const preferredWidth = type === 'select'
+    ? columnFilterOptionWidth(header)
+    : type === 'date-range'
     ? 292
     : type === 'date'
       ? 202
@@ -454,6 +515,13 @@ function positionColumnFilterPopover(header) {
     : Math.max(10, rect.top - estimatedHeight - 6);
   popover.style.left = `${left}px`;
   popover.style.top = `${top}px`;
+}
+
+function columnFilterOptionWidth(header) {
+  const labels = Array.from(header?.querySelectorAll('.column-filter-option span:first-child') || [])
+    .map(item => item.textContent || '');
+  const widest = Math.max(...labels.map(columnTextWidth), 0);
+  return Math.min(360, Math.max(148, widest + 54));
 }
 
 function renderColumnFilterOptions(select) {
@@ -602,11 +670,12 @@ function initColumnFilters() {
       trigger.setAttribute('aria-expanded', String(willOpen));
       if (willOpen) {
         requestAnimationFrame(() => {
-          positionColumnFilterPopover(header);
           if (type === 'select') {
             renderColumnFilterOptions(document.getElementById(header.dataset.columnFilter));
+            positionColumnFilterPopover(header);
             header.querySelector('.column-filter-option[aria-checked="true"], .column-filter-option')?.focus({preventScroll:true});
           } else {
+            positionColumnFilterPopover(header);
             header.querySelector('.column-filter-date-field input')?.focus({preventScroll:true});
           }
         });
@@ -691,15 +760,16 @@ function pill(status) {
   const map = { available:'可用', used:'已用', failed:'失败', partial_success:'部分成功', password_confirmation_pending:'待确认 · 密码已提交', disabled:'已停用', pending:'排队', running:'运行中', debug_paused:'调试暂停', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消' };
   return `<span class="pill status-${esc(status)}">${esc(map[status]||status||'-')}</span>`;
 }
-function pillV2(status) {
+function pillV2(status, group = 'status') {
   const s = String(status || '');
-  const map = { available:'可用', used:'已用', failed:'失败', partial_success:'部分成功', password_confirmation_pending:'待确认 · 密码已提交', disabled:'已停用', pending:'排队', queued:'排队中', running:'运行中', debug_paused:'调试暂停', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消', interrupted:'已中断', unsupported:'不支持', deactivated:'已停用', attention_required:'需要处理', not_created:'尚未创建', in_progress:'处理中', email_verification_pending:'待邮箱验证 / 资料', account_available:'账号可用', unknown:'状态待确认' };
+  const map = { debug_paused:'调试暂停' };
+  const label = map[s] || facetLabel(group, s);
   let cls = 'jobs-v2-pill--muted';
   if (s === 'success' || s === 'account_available' || s === 'available') cls = 'jobs-v2-pill--success';
   else if (s === 'failed' || s === 'interrupted' || s === 'deactivated' || s === 'attention_required' || s === 'password_confirmation_pending') cls = 'jobs-v2-pill--failed';
   else if (s === 'running' || s === 'debug_paused' || s === 'stopping' || s === 'in_progress' || s === 'email_verification_pending') cls = 'jobs-v2-pill--running';
   else if (s === 'pending' || s === 'queued' || s === 'cancelled' || s === 'stopped' || s === 'unsupported') cls = 'jobs-v2-pill--muted';
-  return `<span class="jobs-v2-pill ${cls}">${esc(map[s]||s||'-')}</span>`;
+  return `<span class="jobs-v2-pill ${cls}">${esc(label || s || '-')}</span>`;
 }
 function formatDateTime(v) {
   if (v == null || v === '') return '-';

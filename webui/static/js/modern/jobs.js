@@ -675,6 +675,7 @@ function closeLiveLogModal() {
   updateModalScrollLock();
 }
 function closeAccountTaskLogModal() {
+  accountTaskRequestId += 1;
   activeAccountTaskId = null;
   activeAccountTaskRunId = null;
   accountTaskSnapshot = null;

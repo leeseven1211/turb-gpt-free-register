@@ -5315,7 +5315,12 @@ def release_account_lease(run_id: int, lease_token: str = "") -> bool:
         return cur.rowcount > 0
 
 
-def request_run_cancel(run_id: int, *, reason: str = "用户手动停止") -> dict:
+def request_run_cancel(
+    run_id: int,
+    *,
+    reason: str = "用户手动停止",
+    expected_status: str | None = None,
+) -> dict:
     """协作式取消：排队任务立即取消；运行任务进入 cancelling 等待检查点收口。"""
     init()
     with _connect() as conn, conn.cursor() as cur:
@@ -5327,6 +5332,15 @@ def request_run_cancel(run_id: int, *, reason: str = "用户手动停止") -> di
         if not run:
             raise LookupError("执行实例不存在")
         status = str(run.get("status") or "")
+        if expected_status and status != str(expected_status):
+            return {
+                "id": int(run["id"]),
+                "task_id": int(run["task_id"]),
+                "status": status,
+                "state": status,
+                "cancel_skipped": True,
+                "message": "任务状态已变化，请刷新后重试",
+            }
         if status in _TERMINAL_STATUSES:
             return _row(dict(run)) or {}
         target = "cancelled" if status == "queued" else "cancelling"

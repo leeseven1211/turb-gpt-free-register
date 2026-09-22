@@ -729,6 +729,13 @@
       padding-left: 10px; border-left: 1px solid #e5e8ef;
     }
     table[data-resizable-table] { width: 100%; min-width: 100% !important; table-layout: fixed; }
+    /* 任务中心保留足够的表格宽度，复用统一列宽拖拽；横向滚动由外层容器负责。 */
+    table[data-resizable-table="accountTasks"] {
+      width: max(100%, 1240px) !important;
+      min-width: 1240px !important;
+      max-width: none !important;
+      table-layout: fixed !important;
+    }
     table[data-resizable-table] thead tr:first-child th:not(.col-check) { position: sticky; }
     .table-col-resizer {
       position: absolute; top: 7px; right: -4px; z-index: 15;
@@ -1033,6 +1040,9 @@
     .account-task-refresh-meta { color:#8b93a3; font-size:10px; white-space:nowrap; }
     .account-tasks-table-wrap { overflow:auto; }
     .account-tasks-table { min-width:1240px; }
+    .account-tasks-table .task-col-check { width:46px; text-align:center; }
+    .account-tasks-table tbody tr.is-selected { background:#f6f6ff; }
+    .account-tasks-table tbody tr.is-selected td:first-child { box-shadow: inset 3px 0 0 #6264e8; }
     .account-tasks-table .task-col-id { width:66px; }
     .account-tasks-table .task-col-type { width:94px; }
     .account-tasks-table .task-col-account { width:220px; }
