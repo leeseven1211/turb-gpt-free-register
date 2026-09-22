@@ -130,41 +130,32 @@
       <div>
         <div class="data-panel-kicker">Operations overview</div>
         <h2>整个平台，一屏看清</h2>
-        <p>账号、邮箱资源、注册队列、Codex 与代理运行状态会自动刷新。</p>
+        <p>只展示已启用且有意义的运行状态，卡片顺序和显示内容可按需调整。</p>
       </div>
-      <button type="button" class="overview-refresh" id="btnRefreshOverview">刷新数据</button>
+      <div class="overview-hero-actions">
+        <button type="button" class="overview-customize-trigger" id="btnCustomizeOverview" aria-expanded="false" aria-controls="overviewCustomizer">自定义总览</button>
+        <button type="button" class="overview-refresh" id="btnRefreshOverview">刷新数据</button>
+      </div>
     </section>
+
+    <div class="overview-customizer-backdrop hidden" id="overviewCustomizerBackdrop"></div>
+    <aside class="overview-customizer hidden" id="overviewCustomizer" role="dialog" aria-modal="true" aria-labelledby="overviewCustomizerTitle" aria-hidden="true">
+      <div class="overview-customizer-head">
+        <div>
+          <div class="data-panel-kicker">Customize overview</div>
+          <h3 id="overviewCustomizerTitle">显示与排序</h3>
+          <p>拖动卡片排序，也可以用上移/下移调整。未启用或未配置的功能不会出现在这里。</p>
+        </div>
+        <button type="button" class="overview-customizer-close" id="btnCloseOverviewCustomize" aria-label="关闭总览自定义面板">关闭</button>
+      </div>
+      <div class="overview-customizer-list" id="overviewCustomizeList"></div>
+      <div class="overview-customizer-foot">
+        <button type="button" class="overview-reset-layout" id="btnResetOverviewLayout">恢复默认布局</button>
+      </div>
+    </aside>
+
     <div class="overview-metrics" id="overviewMetrics"></div>
-    <div class="overview-grid">
-      <section class="overview-panel overview-panel--wide">
-        <div class="overview-panel-head">
-          <div><span>邮箱资源</span><h3>邮箱池与按需平台</h3></div>
-          <button type="button" data-overview-go="outlook">管理邮箱</button>
-        </div>
-        <div class="overview-source-grid" id="overviewEmailSources"></div>
-      </section>
-      <section class="overview-panel">
-        <div class="overview-panel-head">
-          <div><span>网络出口</span><h3>代理与网络</h3></div>
-          <button type="button" data-overview-config="代理与网络">配置</button>
-        </div>
-        <div id="overviewProxy"></div>
-      </section>
-      <section class="overview-panel">
-        <div class="overview-panel-head">
-          <div><span>注册流水线</span><h3>今日任务结果</h3></div>
-          <button type="button" data-overview-go="register">查看全部</button>
-        </div>
-        <div class="overview-job-list" id="overviewRecentJobs"></div>
-      </section>
-      <section class="overview-panel">
-        <div class="overview-panel-head">
-          <div><span>账号资产</span><h3>套餐分布</h3></div>
-          <button type="button" data-overview-go="accounts">管理账号</button>
-        </div>
-        <div class="overview-plan-list" id="overviewPlans"></div>
-      </section>
-    </div>
+    <div class="overview-grid" id="overviewPanels"></div>
   </div>
 
   <!-- ============ 注册 ============ -->

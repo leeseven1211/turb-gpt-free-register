@@ -19,8 +19,8 @@ class DashboardUiScriptTests(unittest.TestCase):
 
     def test_dashboard_proxy_summary_displays_at_most_three_exit_leases(self):
         source = self.MODERN_DASHBOARD_JS.read_text(encoding="utf-8")
-        start = source.index("function dashboardMetric")
-        end = source.index("async function loadDashboard", start)
+        start = 0
+        end = source.index("$('#btnRefreshOverview')", start)
         function_source = source[start:end]
         harness = f"""
 const targets = new Map();
@@ -37,6 +37,7 @@ renderDashboard({{
   email: {{sources: []}},
   jobs: {{counts: {{}}, today_counts: {{}}}},
   proxy: {{
+    platform: '1024',
     active_leases: 4,
     leases: Array.from({{length: 4}}, (_, index) => ({{
       endpoint: `192.0.2.${{index + 1}}:8080`,
@@ -45,8 +46,86 @@ renderDashboard({{
   }},
   codex: {{}},
 }});
-const exitRows = ($('#overviewProxy').innerHTML.match(/overview-exit-row/g) || []).length;
+const exitRows = ($('#overviewPanels').innerHTML.match(/overview-exit-row/g) || []).length;
 if (exitRows !== 3) throw new Error(`expected 3 exit rows, got ${{exitRows}}`);
+console.log('ok');
+"""
+        result = subprocess.run(
+            ["node", "--input-type=commonjs", "-e", harness],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertEqual(result.stdout.strip(), "ok")
+
+    def test_dashboard_hides_unavailable_cards_and_email_sources(self):
+        source = self.MODERN_DASHBOARD_JS.read_text(encoding="utf-8")
+        start = 0
+        end = source.index("$('#btnRefreshOverview')", start)
+        function_source = source[start:end]
+        harness = f"""
+const targets = new Map();
+function $(selector) {{
+  if (!targets.has(selector)) targets.set(selector, {{innerHTML: '', addEventListener() {{}}}});
+  return targets.get(selector);
+}}
+function esc(value) {{ return String(value ?? ''); }}
+function attrEsc(value) {{ return String(value ?? ''); }}
+function pill(status) {{ return String(status); }}
+let CAPABILITIES = {{
+  email_sources: {{
+    outlook: {{enabled: false}},
+    generic_api: {{enabled: false}},
+  }},
+  features: {{register: {{enabled: false}}}},
+  proxy: {{registration: {{enabled: false}}}},
+}};
+global.localStorage = {{getItem() {{ return null; }}, setItem() {{}}, removeItem() {{}}}};
+{function_source}
+renderDashboard({{
+  accounts: {{total: 0, active: 0, archived: 0, plans: {{}}}},
+  email: {{local_total: 0, local_available: 0, sources: [
+    {{source: 'outlook', label: 'Outlook', enabled: false, available: 4}},
+    {{source: 'generic_api', label: '通用 API', enabled: true, available: 0}},
+  ]}},
+  jobs: {{total: 0, counts: {{}}, today_counts: {{}}}},
+  proxy: {{platform: 'none', active_leases: 0, leases: []}},
+  codex: {{total: 0, pending: 0}},
+}});
+const allHtml = Array.from(targets.values()).map(item => item.innerHTML).join('\\n');
+if (allHtml.includes('Outlook') || allHtml.includes('通用 API')) throw new Error('unavailable email source rendered');
+if (allHtml.includes('data-overview-card="panel-email"')) throw new Error('unavailable email card rendered');
+if (allHtml.includes('data-overview-card="panel-proxy"')) throw new Error('unconfigured proxy card rendered');
+if (allHtml.includes('data-overview-card="metric-codex"')) throw new Error('empty Codex card rendered');
+console.log('ok');
+"""
+        result = subprocess.run(
+            ["node", "--input-type=commonjs", "-e", harness],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertEqual(result.stdout.strip(), "ok")
+
+    def test_dashboard_preferences_keep_order_and_remove_unknown_cards(self):
+        source = self.MODERN_DASHBOARD_JS.read_text(encoding="utf-8")
+        start = 0
+        end = source.index("function renderDashboard", start)
+        function_source = source[start:end]
+        harness = f"""
+{function_source}
+const prefs = normalizeOverviewPreferences({{
+  order: {{metrics: ['metric-jobs', 'metric-gone'], panels: ['panel-email']}},
+  hidden: ['panel-email', 'panel-gone'],
+}}, {{
+  metrics: ['metric-accounts', 'metric-jobs'],
+  panels: ['panel-email', 'panel-proxy'],
+}});
+if (JSON.stringify(prefs.order.metrics) !== JSON.stringify(['metric-jobs', 'metric-accounts'])) throw new Error('metric order not normalized');
+if (JSON.stringify(prefs.order.panels) !== JSON.stringify(['panel-email', 'panel-proxy'])) throw new Error('panel order not normalized');
+if (JSON.stringify(prefs.hidden) !== JSON.stringify(['panel-email'])) throw new Error('hidden cards not normalized');
 console.log('ok');
 """
         result = subprocess.run(
