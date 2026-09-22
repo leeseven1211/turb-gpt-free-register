@@ -214,6 +214,7 @@ _DEFAULTS: dict[str, Any] = {
     "ROXY_PROJECT_ID": "97471",
     "ROXY_WORKSPACE_LIST_PATH": "/browser/workspace",
     "ROXY_OPEN_PATH": "/browser/open",
+    "ROXY_CREATE_INTERVAL": 1.5,
     "ROXY_OPEN_HEADLESS": False,
     "ROXY_CODEX_OPEN_HEADLESS": False,
     "ROXY_CLOSE_PATH": "/browser/close",
@@ -644,6 +645,10 @@ _FIELD_DEFINITIONS = [
     {
         "key": "ROXY_OPEN_PATH", "file": "roxybrowser.py", "type": "str", "group": "RoxyBrowser",
         "label": "打开接口路径", "help": "默认 /browser/open；如 Roxy 版本不同可在此调整",
+    },
+    {
+        "key": "ROXY_CREATE_INTERVAL", "file": "roxybrowser.py", "type": "float", "group": "RoxyBrowser",
+        "label": "创建环境间隔", "help": "多线程时相邻 /browser/create 请求的最小间隔，默认 1.5 秒；设为 0 可关闭",
     },
     {
         "key": "ROXY_OPEN_HEADLESS", "file": "roxybrowser.py", "type": "bool", "group": "RoxyBrowser",
@@ -1433,6 +1438,7 @@ _RANGES: dict[str, tuple[int | float | None, int | float | None]] = {
     "REGISTRATION_DEBUG_QUEUE_SIZE": (1, 1000000),
     "ROXY_WINDOW_WAIT_TIMEOUT": (0, 86400),
     "ROXY_WINDOW_WAIT_INTERVAL": (1, 3600),
+    "ROXY_CREATE_INTERVAL": (0, 3600),
     "ROXY_CODEX_CALLBACK_TIMEOUT": (1, 86400),
     "OTP_MAX_WAIT": (1, 86400),
     "OTP_POLL_INTERVAL": (1, 3600),

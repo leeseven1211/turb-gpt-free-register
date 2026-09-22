@@ -60,6 +60,10 @@ _MAX_REDIRECTS = 15
 _NET_MAX_ATTEMPTS = 3
 _NET_BACKOFF_BASE = 2.0
 
+# Auth 响应设置 cookie 与后续 workspace/select 之间偶尔存在短暂竞态。
+_WORKSPACE_COOKIE_WAIT_SECONDS = 4.0
+_WORKSPACE_POLL_INTERVAL_SECONDS = 0.2
+
 
 def _with_net_retry(label: str, fn):
     """
@@ -746,7 +750,9 @@ def _post_json(session: BrowserSession, url: str, payload: dict, referer: str,
         headers["openai-sentinel-token"] = sentinel_header
     if so_header:
         headers["openai-sentinel-so-token"] = so_header
-    return session.post(url, headers=headers, data=json.dumps(payload), allow_redirects=False)
+    resp = session.post(url, headers=headers, data=json.dumps(payload), allow_redirects=False)
+    _cache_auth_session_metadata(session, resp)
+    return resp
 
 
 def _resp_json(resp) -> dict:
@@ -754,6 +760,31 @@ def _resp_json(resp) -> dict:
         return resp.json()
     except Exception:
         return {}
+
+
+def _decode_auth_session_metadata(value) -> dict:
+    """把响应中的 oai-client-auth-session 转成 workspace payload。"""
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    return _decode_jwt_segment(value.split(".", 1)[0])
+
+
+def _cache_auth_session_metadata(session: BrowserSession, resp) -> None:
+    """缓存 Auth 响应携带的 session 元数据，供 cookie 尚未落地时恢复 workspace。"""
+    try:
+        payload = _resp_json(resp)
+        if not isinstance(payload, dict):
+            return
+        value = payload.get("oai-client-auth-session")
+        if value is None:
+            value = payload.get("auth_session") or payload.get("authSession")
+        cached = _decode_auth_session_metadata(value)
+        if cached:
+            session._codex_auth_session_payload = cached
+    except Exception:
+        logger.debug("[Codex] 缓存 Auth session 元数据失败", exc_info=True)
 
 
 def _response_text(resp) -> str:
@@ -919,7 +950,7 @@ def _sleep_before_phone_retry(
     cancellable_sleep(seconds)
 
 
-def _do_phone_verification(session: BrowserSession) -> None:
+def _do_phone_verification(session: BrowserSession) -> dict:
     """
     用接码平台拿号 → add-phone/send 发短信 → 收码 → phone-otp/validate。
     一个号收不到码或被 OpenAI 拒就取消换号，最多 SMS_MAX_RETRIES 次（热加载）。
@@ -1016,7 +1047,7 @@ def _do_phone_verification(session: BrowserSession) -> None:
                 # 成功
                 sms_provider.complete(activation_id, http)
                 logger.info("[Codex] 手机号验证通过")
-                return
+                return _resp_json(val_resp)
 
             except OperationCancelled:
                 if activation_id:
@@ -1053,36 +1084,94 @@ def _do_phone_verification(session: BrowserSession) -> None:
 
 def _get_workspace_id(session: BrowserSession) -> str:
     """
-    从 oai-client-auth-session cookie 解出 workspaces[0].id。
-    cookie 形如 base64payload.sig.sig，取第一段 base64 解码后的 JSON。
+    优先从 oai-client-auth-session cookie 解出 workspace；cookie 尚未落地时，
+    退回 Auth 响应元数据，并在有界时间内等待 cookie/响应状态完成。
     """
-    raw = None
-    try:
-        # curl_cffi cookies
-        for c in session.session.cookies.jar:
-            if c.name == "oai-client-auth-session":
-                raw = c.value
-                break
-    except Exception:
-        pass
-    if not raw:
-        # 退而求其次：从 cookies 字典拿
-        try:
-            raw = session.session.cookies.get("oai-client-auth-session")
-        except Exception:
-            raw = None
-    if not raw:
-        raise RuntimeError("[Codex] 找不到 oai-client-auth-session cookie，无法取 workspace_id")
+    def find_workspace_id(payload: dict) -> str:
+        for workspace in payload.get("workspaces") or []:
+            if isinstance(workspace, dict) and workspace.get("id"):
+                return str(workspace["id"])
+        return ""
 
-    payload = _decode_jwt_segment(raw.split(".")[0])
-    workspaces = payload.get("workspaces") or []
-    if not workspaces:
-        raise RuntimeError(f"[Codex] cookie 里无 workspaces 字段: keys={list(payload.keys())}")
-    wid = workspaces[0].get("id")
-    if not wid:
-        raise RuntimeError(f"[Codex] workspaces[0] 无 id: {workspaces[0]}")
-    logger.info(f"[Codex] workspace_id={wid}")
-    return wid
+    deadline = time.monotonic() + max(0.0, float(_WORKSPACE_COOKIE_WAIT_SECONDS))
+    while True:
+        raw = None
+        try:
+            for c in session.session.cookies.jar:
+                if c.name == "oai-client-auth-session":
+                    raw = c.value
+                    break
+        except Exception:
+            pass
+        if not raw:
+            try:
+                raw = session.session.cookies.get("oai-client-auth-session")
+            except Exception:
+                raw = None
+
+        if raw:
+            wid = find_workspace_id(_decode_auth_session_metadata(raw))
+            if wid:
+                logger.info(f"[Codex] workspace_id={wid}")
+                return wid
+
+        wid = find_workspace_id(getattr(session, "_codex_auth_session_payload", {}) or {})
+        if wid:
+            logger.info(f"[Codex] workspace_id={wid}（来自 Auth 响应元数据）")
+            return wid
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            if not raw:
+                raise RuntimeError("[Codex] 找不到 oai-client-auth-session cookie，无法取 workspace_id")
+            raise RuntimeError("[Codex] oai-client-auth-session 中无可用 workspace_id")
+        time.sleep(min(_WORKSPACE_POLL_INTERVAL_SECONDS, remaining))
+
+
+def _extract_continue_url(result: dict | None) -> str:
+    """从 Auth JSON 响应中提取 continue/redirect URL。"""
+    if not isinstance(result, dict):
+        return ""
+    page = result.get("page") or {}
+    page = page if isinstance(page, dict) else {}
+    return str(
+        result.get("continue_url")
+        or result.get("external_url")
+        or result.get("redirect_url")
+        or result.get("url")
+        or page.get("continue_url")
+        or page.get("external_url")
+        or page.get("redirect_url")
+        or page.get("url")
+        or ""
+    ).strip()
+
+
+def _follow_login_continue(session: BrowserSession, continue_url: str, state: str) -> str | None:
+    """
+    手机验证成功后的 continue URL 可能直接跳 callback，也可能只把会话推进到
+    Codex consent/workspace 页面。这里只负责跟随重定向并保留 Cookie；停在页面时
+    返回 None，后续继续 workspace/select。
+    """
+    if not continue_url:
+        return None
+    url = continue_url if continue_url.startswith("http") else ("https://auth.openai.com" + continue_url)
+    for hop in range(_MAX_REDIRECTS):
+        if _is_redirect_uri(url):
+            return url
+        headers = session.get_auth_navigate_headers(
+            referer="https://auth.openai.com/", user_initiated=True
+        )
+        resp = session.get(url, headers=headers, allow_redirects=False)
+        loc = resp.headers.get("location") or resp.headers.get("Location")
+        logger.debug(
+            "[Codex] 登录 continue 跟随 hop %s: status=%s, location=%s",
+            hop, getattr(resp, "status_code", ""), loc,
+        )
+        if not loc:
+            return None
+        url = loc if loc.startswith("http") else ("https://auth.openai.com" + loc)
+    raise RuntimeError(f"[Codex] 登录 continue 跟随超过 {_MAX_REDIRECTS} 跳")
 
 
 def _select_workspace_and_get_callback(session: BrowserSession, state: str) -> str:
@@ -1613,12 +1702,16 @@ def run_codex_oauth(
 
         # 5. 手机号验证（接码，自动重试换号）
         report_stage("phone_check", "检查是否需要手机验证")
-        _do_phone_verification(session)
+        early_callback_url = None
+        phone_result = _do_phone_verification(session)
+        phone_continue = _extract_continue_url(phone_result)
+        if phone_continue:
+            early_callback_url = _follow_login_continue(session, phone_continue, state)
         report_stage("phone_check", "手机验证已完成或无需验证", state="success")
         human_delay("post_auth")
 
         # 6. 选 workspace → 拿 callback code
-        callback_url = _select_workspace_and_get_callback(session, state)
+        callback_url = early_callback_url or _select_workspace_and_get_callback(session, state)
         report_stage("callback", "已捕获 OAuth callback", state="success")
         code = _extract_code(callback_url, state)
         logger.info(f"[Codex] 已拿到 authorization code：{code[:24]}...")

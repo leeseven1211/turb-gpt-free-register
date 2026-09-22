@@ -559,6 +559,9 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
         self.assertIn("ROXY_WINDOW_WAIT_TIMEOUT", fields)
         self.assertIn("ROXY_WINDOW_WAIT_INTERVAL", fields)
+        self.assertIn("ROXY_CREATE_INTERVAL", fields)
+        self.assertEqual("float", fields["ROXY_CREATE_INTERVAL"]["type"])
+        self.assertEqual(1.5, fields["ROXY_CREATE_INTERVAL"]["default"])
         self.assertEqual(fields["ROXY_WINDOW_WAIT_TIMEOUT"]["group"], "RoxyBrowser")
 
     def test_registration_debug_limits_are_webui_editable_and_env_driven(self):

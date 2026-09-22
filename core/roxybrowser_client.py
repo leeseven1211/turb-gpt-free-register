@@ -19,6 +19,27 @@ from config import roxybrowser as _cfg
 
 logger = logging.getLogger(__name__)
 
+_CREATE_SLOT_LOCK = threading.Lock()
+_NEXT_CREATE_SLOT = 0.0
+
+
+def _wait_for_create_slot() -> None:
+    """等待进程内下一个 Roxy Profile 创建时隙。"""
+    global _NEXT_CREATE_SLOT
+
+    interval = max(0.0, float(getattr(_cfg, "ROXY_CREATE_INTERVAL", 1.5) or 0.0))
+    if interval <= 0:
+        return
+
+    with _CREATE_SLOT_LOCK:
+        now = time.monotonic()
+        wait_for = max(0.0, _NEXT_CREATE_SLOT - now)
+        _NEXT_CREATE_SLOT = max(now, _NEXT_CREATE_SLOT) + interval
+
+    if wait_for > 0:
+        logger.info("[Roxy] /browser/create 请求错峰，等待 %.2fs", wait_for)
+        time.sleep(wait_for)
+
 _RETRYABLE_HTTP_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 _HTTP_STATUS_RE = re.compile(
     r"\b(?:http|status\s+code|status)\s*[:=]?\s*(\d{3})\b",
@@ -654,6 +675,7 @@ class RoxyBrowserClient:
         with _PROFILE_CREATE_LOCK:
             for attempt in range(1, max_create_attempts + 1):
                 try:
+                    _wait_for_create_slot()
                     result = self.request(_cfg.ROXY_CREATE_METHOD, _cfg.ROXY_CREATE_PATH, json_body=body)
                     if attempt > 1:
                         logger.info(

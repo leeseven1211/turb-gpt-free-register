@@ -66,6 +66,10 @@ ROXY_KEEP_BROWSER_OPEN: bool = schema_default("ROXY_KEEP_BROWSER_OPEN")
 ROXY_API_RETRIES: int = 3
 ROXY_API_RETRY_DELAY: int = 2
 
+# 多线程注册时，所有 worker 共用的 /browser/create 请求起始间隔（秒）。
+# Roxy 在上一个环境仍处于创建中时可能返回“正在创建中”，默认错开 1.5 秒。
+ROXY_CREATE_INTERVAL: float = schema_default("ROXY_CREATE_INTERVAL")
+
 # Roxy 窗口达到套餐/本机上限时，不要让当前 worker 快速失败并继续消费后续
 # 排队任务。保持任务在“启动浏览器”阶段等待，直到前面的窗口释放。
 ROXY_WINDOW_WAIT_TIMEOUT: int = schema_default("ROXY_WINDOW_WAIT_TIMEOUT")
