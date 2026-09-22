@@ -144,6 +144,17 @@ assert.equal(readConfigElementValue(selected, field), 'mailnest,outlook');
         self.assertIn("@media (max-width: 860px)", FOUNDATION_CSS)
         self.assertIn("config-save-bar-v2", FOUNDATION_CSS)
 
+    def test_global_config_save_bar_is_hidden_until_changes_are_pending(self):
+        self.assertIn(
+            '<div class="config-save-bar-v2" id="configSaveBarV2" hidden>',
+            TEMPLATE,
+        )
+        self.assertIn(
+            "const saveBar = document.getElementById('configSaveBarV2');",
+            CONFIG_JS,
+        )
+        self.assertIn("if (saveBar) saveBar.hidden = count === 0;", CONFIG_JS)
+
     def test_config_wheel_guard_targets_the_real_vertical_scroll_container(self):
         self.assertIn("containVerticalScroll(document.querySelector('#configNavV2'));", COMMON_JS)
         self.assertIn("getComputedStyle(el).overflowY", COMMON_JS)
@@ -160,6 +171,18 @@ assert.equal(readConfigElementValue(selected, field), 'mailnest,outlook');
         self.assertIn('grid-template-columns: repeat(2, minmax(0, 1fr));', FOUNDATION_CSS)
         self.assertIn('.config-section-v2-body:has(> .config-field-v2:only-child)', FOUNDATION_CSS)
         self.assertIn('.config-section-v2-body > .config-field-v2:has(textarea)', FOUNDATION_CSS)
+
+    def test_config_section_subhelp_uses_the_same_content_rail(self):
+        self.assertIn(
+            "#tab-config .config-section-v2-subhelp {\n"
+            "  margin-inline: var(--ui-space-5);",
+            FOUNDATION_CSS,
+        )
+        self.assertIn(
+            "#tab-config .config-section-v2-subhelp {\n"
+            "    margin-inline: 14px;",
+            FOUNDATION_CSS,
+        )
 
     def test_switching_config_groups_resets_the_page_viewport(self):
         self.assertIn("resetConfigViewportV2", CONFIG_JS)

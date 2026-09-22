@@ -2438,6 +2438,10 @@ table[data-resizable-table="codex"] {
   overflow-wrap: anywhere;
 }
 
+#tab-config .config-section-v2-subhelp {
+  margin-inline: var(--ui-space-5);
+}
+
 #tab-config .config-section-v2-body {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
@@ -2778,6 +2782,10 @@ table[data-resizable-table="codex"] {
 
   #tab-config .config-section-v2-head {
     padding: 16px 14px 14px;
+  }
+
+  #tab-config .config-section-v2-subhelp {
+    margin-inline: 14px;
   }
 
   #tab-config .config-section-v2-body,

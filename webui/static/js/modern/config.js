@@ -56,6 +56,8 @@ function renderConfigSaveActions() {
 
 function updateConfigSaveUi(mode = 'idle') {
   const count = configPendingCount();
+  const saveBar = document.getElementById('configSaveBarV2');
+  if (saveBar) saveBar.hidden = count === 0;
   let copy = count ? `${count} 项更改未保存` : '所有更改已保存';
   if (mode === 'saving') copy = `正在保存 ${count} 项更改…`;
   if (mode === 'error') copy = '保存失败，请重试';
