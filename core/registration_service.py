@@ -947,6 +947,18 @@ def _should_retry_registration_with_new_proxy(
         return False
     if str(getattr(proxy_lease, "provider", "") or "").strip().lower() != "1024proxy":
         return False
+    # Auth authorize 在密码、OTP 和账号持久化之前被当前边缘路由拒绝时，
+    # Protocol 会明确标记 retry_as_new_route。此时可释放 1024Proxy 租约后
+    # 继续使用同一原邮箱重跑；任何未带该结构化标记的 HTTP 4xx 仍不自动重试。
+    if (
+        bool(result.get("retry_as_new_route"))
+        and str(result.get("error_code") or "") == "auth_route_rejected"
+    ):
+        return (
+            str(result.get("remote_identity") or "").strip().lower() in {"", "unknown"}
+            and not result.get("request_unknown")
+            and not result.get("manual_reconcile")
+        )
     try:
         from core.auth_challenge import safe_to_start_new_registration
 

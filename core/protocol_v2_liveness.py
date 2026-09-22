@@ -21,7 +21,7 @@ from urllib.parse import parse_qs, urlparse
 import pyotp
 
 from config import account as account_config
-from config.browser import IMPERSONATE
+from config.browser import IMPERSONATE, resolve_impersonate
 from core.account_export import fetch_session, follow_oauth_callback
 from core.account_liveness import (
     _network_preflight_with_retry,
@@ -767,7 +767,7 @@ def _success(
             profile_version=getattr(session, "protocol_profile_version", None),
             profile_ref=getattr(session, "protocol_profile_ref", None),
             route={"proxy_mode": "proxy" if getattr(session, "proxy", None) else "direct"},
-            transport_profile=f"curl_cffi:{IMPERSONATE}",
+            transport_profile=f"curl_cffi:{resolve_impersonate(IMPERSONATE)}",
         ),
     }
 

@@ -43,6 +43,7 @@ from config import (
     USER_AGENT,
     IMPERSONATE,
 )
+from config.browser import resolve_impersonate
 # OTP_POLL_INTERVAL / OTP_MAX_WAIT 是 WebUI 可热改的，从模块读
 from config import email as _email_cfg
 from core.otp_utils import looks_like_openai_email, extract_otp
@@ -77,7 +78,7 @@ class OutlookClientError(RuntimeError):
 
 
 def _http_session() -> CurlSession:
-    s = CurlSession(impersonate=IMPERSONATE)
+    s = CurlSession(impersonate=resolve_impersonate(IMPERSONATE))
     s.headers.update({
         "User-Agent": USER_AGENT,
         "Origin": OUTLOOK_API_BASE.rstrip("/"),
@@ -382,7 +383,7 @@ def _is_remote_disabled_error(exc: Exception | str) -> bool:
 
 
 def _ms_http() -> CurlSession:
-    s = CurlSession(impersonate=IMPERSONATE)
+    s = CurlSession(impersonate=resolve_impersonate(IMPERSONATE))
     s.headers.update({
         "User-Agent": USER_AGENT,
         "Accept": "application/json",

@@ -554,6 +554,12 @@ def insert_account(
         record_store.advisory_xact_lock(conn, f"registered-account:{normalized_email.lower()}")
         existing = _locked_row_by_email(conn, record_store.ACCOUNTS, normalized_email)
         outlook_row = _locked_row_by_email(conn, record_store.OUTLOOK_POOL, normalized_email)
+        if (
+            existing
+            and not str(access_token or "").strip()
+            and str(existing.get("access_token") or "").strip()
+        ):
+            raise RuntimeError("拒绝用空 access_token 覆盖已有 access token")
         now = _now()
         changes: dict[str, Any] = {
             "access_token": access_token,
@@ -815,6 +821,44 @@ def update_account_login_password(email: str, password: str, *, source: str = "p
         return {}
 
     return _mutate_account_extra(email, mutate)
+
+
+def update_account_email_verification_checkpoint(
+    email: str,
+    password: str,
+    *,
+    profile_metadata: dict | None = None,
+) -> bool:
+    """在行锁内更新待邮箱验证 checkpoint，不触碰已有 access token。"""
+    normalized_password = str(password or "").strip()
+    if not normalized_password:
+        return False
+    profile = dict(profile_metadata or {})
+    with record_store.transaction() as conn:
+        row = _locked_row_by_email(conn, record_store.ACCOUNTS, str(email or "").strip())
+        if row is None or str(row.get("access_token") or "").strip():
+            return False
+        extra = _account_extra(row)
+        extra.update({
+            "account_password": normalized_password,
+            "registration_checkpoint": "email_verification_pending",
+            "registration_pending_reason": "email_otp_pending",
+        })
+        if profile:
+            binding = extra.get("roxybrowser")
+            binding = dict(binding) if isinstance(binding, dict) else {}
+            binding.update(profile)
+            extra["roxybrowser"] = binding
+        record_store.patch_row(
+            record_store.ACCOUNTS,
+            int(row["id"]),
+            {
+                "extra_json": json.dumps(extra, ensure_ascii=False),
+                "updated_at": _now(),
+            },
+            conn=conn,
+        )
+    return True
 
 
 def update_account_roxy_profile(

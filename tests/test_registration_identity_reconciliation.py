@@ -244,6 +244,22 @@ class RegistrationServiceRetryBoundaryTests(unittest.TestCase):
         with patch.object(registration_service, "_registration_proxy_retry_limit", return_value=2):
             self.assertTrue(registration_service._should_retry_registration_with_new_proxy(result, proxy, 0))
 
+    def test_auth_route_rejection_before_account_creation_can_rotate_proxy(self):
+        proxy = MagicMock(provider="1024proxy")
+        result = {
+            "success": False,
+            "remote_identity": "unknown",
+            "remote_identity_state": "not_started",
+            "request_unknown": False,
+            "manual_reconcile": False,
+            "error_code": "auth_route_rejected",
+            "retry_as_new_route": True,
+            "error": "HTTP 403",
+        }
+
+        with patch.object(registration_service, "_registration_proxy_retry_limit", return_value=2):
+            self.assertTrue(registration_service._should_retry_registration_with_new_proxy(result, proxy, 0))
+
     def test_explicit_profile_rejection_never_starts_a_second_account(self):
         proxy = MagicMock(provider="1024proxy")
         result = {

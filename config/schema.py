@@ -317,7 +317,7 @@ _DEFAULTS: dict[str, Any] = {
     "PROXY_1024_API_TIMEOUT": 12.0,
     "PROXY_1024_MAX_ATTEMPTS": 5,
     "PROXY_1024_ACQUIRE_TIMEOUT": 60.0,
-    "REGISTRATION_PROXY_RETRIES": 2,
+    "REGISTRATION_PROXY_RETRIES": 3,
     "REGISTRATION_PROXY_RETRY_DELAY": 1.0,
     "ACCOUNT_ACTION_PROXY_RETRIES": 2,
     "ACCOUNT_ACTION_PROXY_RETRY_DELAY": 1.0,
@@ -438,7 +438,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "REGISTRATION_DRIVER", "file": "roxybrowser.py", "type": "str", "group": "注册主链路",
-        "label": "注册主流程驱动", "help": "选择注册所用的自动化方式：roxy=浏览器主流程，protocol=协议辅助/回退；默认推荐 roxy",
+        "label": "注册主流程驱动", "help": "选择注册所用的自动化方式：roxy=RoxyBrowser 主流程，protocol=新纯协议注册链路；默认推荐 roxy",
     },
     {
         "key": "REGISTRATION_AUTH_MODE", "file": "register.py", "type": "str", "group": "注册主链路",

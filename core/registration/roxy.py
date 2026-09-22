@@ -494,22 +494,17 @@ def _save_pending_email_verification_checkpoint(
     这组邮箱/密码，后续重试才能走登录流程继续收码。空 access_token 明确表示账号
     尚未完成邮箱验证，不能被套餐查询或 Codex 当成完整账号使用。
     """
-    from core.db import insert_account
+    from core.registration.checkpoints import save_email_verification_checkpoint
 
-    account_id = insert_account(
+    account_id = save_email_verification_checkpoint(
         email=email,
-        access_token="",
-        proxy_used=proxy or None,
-        email_source=email_source or resolve_email_source(email),
-        extra={
-            "account_password": openai_password,
-            "registration_checkpoint": "email_verification_pending",
-            "registration_pending_reason": "email_otp_pending",
-            "roxybrowser": {
-                "profile_id": opened.profile_id,
-                "open_result": opened.raw,
-                "retained": True,
-            },
+        password=openai_password,
+        proxy=proxy,
+        email_source=email_source,
+        profile_metadata={
+            "profile_id": opened.profile_id,
+            "open_result": opened.raw,
+            "retained": True,
         },
     )
     opened.account_bound = True

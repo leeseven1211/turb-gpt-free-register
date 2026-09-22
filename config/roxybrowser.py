@@ -13,7 +13,7 @@ from config.schema import schema_default
 
 # 注册驱动：
 #   "roxy"         = RoxyBrowser 主流程（推荐）
-#   "protocol"     = 协议辅助/回退流程
+#   "protocol"     = 新纯协议注册链路
 REGISTRATION_DRIVER: str = schema_default("REGISTRATION_DRIVER")
 
 # RoxyBrowser 本地 API

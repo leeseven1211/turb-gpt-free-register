@@ -1609,12 +1609,9 @@ async function main(argv = process.argv.slice(2), writeOutput = true) {
   if (context.SentinelSDK.sessionObserverToken) {
     const soText = await context.SentinelSDK.sessionObserverToken(flow);
     if (soText) {
-      try {
-        const soPayload = typeof soText === "string" ? JSON.parse(soText) : soText;
-        tokenPayload._so = soPayload?.so || soPayload;
-      } catch {
-        tokenPayload._so = soText;
-      }
+      // Auth Web 将 sessionObserverToken 的完整返回值直接作为
+      // OpenAI-Sentinel-SO-Token 发送；不能只取其中的 so 字段。
+      tokenPayload._so = typeof soText === "string" ? soText : JSON.stringify(soText);
     }
   }
   const outputText = JSON.stringify(tokenPayload);

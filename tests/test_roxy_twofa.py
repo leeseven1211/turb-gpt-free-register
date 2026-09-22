@@ -614,9 +614,9 @@ class RoxyTwoFactorTests(unittest.TestCase):
 
     def test_password_submission_saves_pending_email_verification_account(self):
         opened = SimpleNamespace(profile_id="profile-1", raw={"ok": True})
-        with patch("core.db.insert_account", return_value=19) as insert, patch.object(
-            roxy_registration, "resolve_email_source", return_value="icloud_hide"
-        ):
+        with patch("core.registration.checkpoints.db.get_account_by_email", return_value=None), patch(
+            "core.db.insert_account", return_value=19
+        ) as insert, patch("core.registration.checkpoints.resolve_email_source", return_value="icloud_hide"):
             row_id = roxy_registration._save_pending_email_verification_checkpoint(
                 email="pending@example.com",
                 openai_password="StoredPassword!123",
@@ -637,9 +637,10 @@ class RoxyTwoFactorTests(unittest.TestCase):
 
     def test_pending_checkpoint_prefers_explicit_task_email_source(self):
         opened = SimpleNamespace(profile_id="profile-1", raw={"ok": True})
-        with patch("core.db.insert_account", return_value=19) as insert, patch.object(
-            roxy_registration,
-            "resolve_email_source",
+        with patch("core.registration.checkpoints.db.get_account_by_email", return_value=None), patch(
+            "core.db.insert_account", return_value=19
+        ) as insert, patch(
+            "core.registration.checkpoints.resolve_email_source",
             side_effect=AssertionError("重跑任务不应按已有账号或当前配置改判邮箱来源"),
         ):
             roxy_registration._save_pending_email_verification_checkpoint(

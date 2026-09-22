@@ -547,6 +547,9 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         self.assertEqual(fields["PROXY_1024_API_URL"]["group"], "代理与网络")
         self.assertTrue(fields["PROXY_1024_API_URL"]["secret"])
 
+    def test_registration_proxy_retries_default_to_three_rotations(self):
+        self.assertEqual(3, proxy_config.REGISTRATION_PROXY_RETRIES)
+
     def test_retired_browser_driver_fields_are_not_webui_editable(self):
         fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
         for key in ("CLOAK_HUMAN_PRESET", "BROWSER_USE_API_KEY", "SKYVERN_API_KEY"):

@@ -20,6 +20,7 @@ from config import (
     REQUEST_TIMEOUT, pick_proxy, pick_browser_profile, build_browser_environment,
     validate_browser_profile,
 )
+from config.browser import resolve_chrome_identity
 
 
 logger = logging.getLogger(__name__)
@@ -142,8 +143,9 @@ class BrowserSession:
         self.react_container_key = "__reactContainer$" + uuid.uuid4().hex[:11]
         self.react_resources_key = "__reactResources$" + self.react_container_key.split("$", 1)[1]
 
-        # 创建 curl_cffi 会话
-        self.session = Session(impersonate=IMPERSONATE)
+        # TLS、HTTP 头与 Sentinel 环境必须共用一次解析出的 Chrome 版本。
+        self.chrome_identity = resolve_chrome_identity(IMPERSONATE)
+        self.session = Session(impersonate=self.chrome_identity["impersonate"])
 
         # 设置代理
         if self.proxy:
@@ -184,9 +186,13 @@ class BrowserSession:
             self.browser_profile = build_browser_environment(
                 self.exit_geo,
                 base_profile=dict(identity_profile),
+                chrome_identity=self.chrome_identity,
             )
         else:
-            self.browser_profile = pick_browser_profile(self.exit_geo)
+            self.browser_profile = pick_browser_profile(
+                self.exit_geo,
+                chrome_identity=self.chrome_identity,
+            )
         self.browser_profile["react_listening_key"] = self.react_listening_key
         self.browser_profile["react_container_key"] = self.react_container_key
         self.browser_profile["react_resources_key"] = self.react_resources_key
@@ -629,7 +635,7 @@ class BrowserSession:
         a retry after a classified transport error.
         """
         old_session = self.session
-        new_session = Session(impersonate=IMPERSONATE)
+        new_session = Session(impersonate=self.chrome_identity["impersonate"])
         if self.proxy:
             new_session.proxies = {
                 "http": self.proxy,

@@ -44,6 +44,48 @@ class RegistrationDispatcherTests(unittest.TestCase):
         self.assertIs(expected, result)
         run_protocol.assert_called_once_with(**self.args, email_source="icloud_hide")
 
+    def test_snapshot_protocol_driver_overrides_later_live_roxy_config(self):
+        expected = {"success": True, "email": self.args["email"]}
+        snapshot = {"registration_driver": "protocol"}
+        with (
+            patch.object(dispatcher._roxy_cfg, "REGISTRATION_DRIVER", "roxy"),
+            patch(
+                "core.registration.protocol.run_protocol_registration",
+                return_value=expected,
+            ) as run_protocol,
+            patch("core.registration.roxy.run_roxy_registration") as run_roxy,
+        ):
+            result = dispatcher.run_registration(
+                **self.args,
+                registration_options=snapshot,
+            )
+
+        self.assertIs(expected, result)
+        run_protocol.assert_called_once_with(**self.args, registration_options=snapshot)
+        run_roxy.assert_not_called()
+
+    def test_protocol_driver_forwards_saved_password_for_resume(self):
+        expected = {"success": True, "email": self.args["email"]}
+        with (
+            patch.object(dispatcher._roxy_cfg, "REGISTRATION_DRIVER", "protocol"),
+            patch(
+                "core.registration.protocol.run_protocol_registration",
+                return_value=expected,
+            ) as run_protocol,
+        ):
+            result = dispatcher.run_registration(
+                **self.args,
+                existing_password="saved-password",
+                existing_totp_secret="saved-totp",
+            )
+
+        self.assertIs(expected, result)
+        run_protocol.assert_called_once_with(
+            **self.args,
+            existing_password="saved-password",
+            existing_totp_secret="saved-totp",
+        )
+
     def test_main_keeps_compatibility_facade(self):
         import main
 

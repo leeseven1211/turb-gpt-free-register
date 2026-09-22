@@ -79,6 +79,9 @@ class OpenAIRegistrationFlowTests(unittest.TestCase):
                 self.header_args.append((referer, kwargs))
                 return {"sec-fetch-site": "none"}
 
+            def get_auth_navigate_headers(self, referer=""):
+                return {"referer": referer}
+
             def get(self, url, *, headers, allow_redirects, timeout):
                 self.requests.append((url, headers, allow_redirects, timeout))
                 return _Response(url=url)
@@ -100,6 +103,9 @@ class OpenAIRegistrationFlowTests(unittest.TestCase):
             def get_chatgpt_navigate_headers(self, referer=""):
                 return {"referer": referer}
 
+            def get_auth_navigate_headers(self, referer=""):
+                return {"referer": referer}
+
             def get(self, *_args, **_kwargs):
                 self.calls += 1
                 if self.calls == 1:
@@ -113,9 +119,130 @@ class OpenAIRegistrationFlowTests(unittest.TestCase):
         with patch.object(openai_auth, "_interruptible_sleep") as sleep:
             openai_auth.network_preflight(session)
 
-        self.assertEqual(session.calls, 2)
+        self.assertEqual(session.calls, 3)
         self.assertEqual(session.reset_count, 1)
         sleep.assert_called_once_with(1.0)
+
+    def test_network_preflight_retries_transient_auth_probe_failure(self):
+        class ProxyError(RuntimeError):
+            pass
+
+        class Session:
+            def __init__(self):
+                self.auth_probe_calls = 0
+                self.reset_count = 0
+
+            def get_chatgpt_navigate_headers(self, referer=""):
+                return {"referer": referer}
+
+            def get_auth_navigate_headers(self, referer=""):
+                return {"referer": referer}
+
+            def get(self, url, **_kwargs):
+                if "auth.openai.com" not in url:
+                    return _Response(status_code=200)
+                self.auth_probe_calls += 1
+                if self.auth_probe_calls == 1:
+                    raise ProxyError("connection reset by peer")
+                return _Response(status_code=302)
+
+            def reset_circuit_breaker(self):
+                self.reset_count += 1
+
+        session = Session()
+        with patch.object(openai_auth, "_interruptible_sleep") as sleep:
+            openai_auth.network_preflight(session)
+
+        self.assertEqual(session.auth_probe_calls, 2)
+        self.assertEqual(session.reset_count, 1)
+        sleep.assert_called_once_with(1.0)
+
+    def test_network_preflight_rejects_cf_blocked_auth_route_before_email_submission(self):
+        class Session:
+            def get_chatgpt_navigate_headers(self, referer=""):
+                return {"referer": referer}
+
+            def get_auth_navigate_headers(self, referer=""):
+                return {"referer": referer}
+
+            def get(self, url, **_kwargs):
+                if "auth.openai.com" in url:
+                    return _Response(status_code=403, text="Cloudflare challenge")
+                return _Response(status_code=200)
+
+        with self.assertRaises(openai_auth.AuthorizeRouteRejectedError) as caught:
+            openai_auth.network_preflight(Session())
+
+        self.assertEqual(caught.exception.code, "auth_route_rejected")
+        self.assertTrue(caught.exception.retry_with_new_proxy)
+
+    def test_network_preflight_accepts_auth_route_application_redirect(self):
+        class Session:
+            def __init__(self):
+                self.calls = []
+
+            def get_chatgpt_navigate_headers(self, referer=""):
+                return {"referer": referer}
+
+            def get_auth_navigate_headers(self, referer=""):
+                return {"referer": referer}
+
+            def get(self, url, **kwargs):
+                self.calls.append((url, kwargs))
+                if "auth.openai.com" in url:
+                    return _Response(status_code=302)
+                return _Response(status_code=200)
+
+        session = Session()
+        openai_auth.network_preflight(session)
+
+        auth_call = next(call for call in session.calls if "auth.openai.com" in call[0])
+        self.assertEqual(auth_call[0], "https://auth.openai.com/api/accounts/authorize")
+        self.assertFalse(auth_call[1]["allow_redirects"])
+
+    def test_network_preflight_accepts_no_argument_auth_application_400(self):
+        class Session:
+            def get_chatgpt_navigate_headers(self, referer=""):
+                return {"referer": referer}
+
+            def get_auth_navigate_headers(self, referer=""):
+                return {"referer": referer}
+
+            def get(self, url, **_kwargs):
+                if "auth.openai.com" in url:
+                    return _Response(status_code=400)
+                return _Response(status_code=200)
+
+        openai_auth.network_preflight(Session())
+
+    def test_authorize_403_exhaustion_marks_route_as_safe_to_rotate(self):
+        class AuthorizeHttpError(RuntimeError):
+            def __init__(self):
+                super().__init__("HTTP 403")
+                self.response = SimpleNamespace(
+                    status_code=403,
+                    url="https://auth.openai.com/api/accounts/authorize",
+                )
+
+        class Response:
+            def raise_for_status(self):
+                raise AuthorizeHttpError()
+
+        class Session:
+            def get_auth_navigate_headers(self, referer=""):
+                return {"referer": referer}
+
+            def get(self, _url, *, headers, allow_redirects):
+                self.headers = headers
+                self.allow_redirects = allow_redirects
+                return Response()
+
+        with patch.object(openai_auth, "_proxy_retry_config", return_value=(1, 0)):
+            with self.assertRaises(RuntimeError) as caught:
+                openai_auth.follow_authorize(Session(), "https://auth.openai.com/api/accounts/authorize?state=test")
+
+        self.assertEqual("auth_route_rejected", getattr(caught.exception, "code", None))
+        self.assertTrue(getattr(caught.exception, "retry_with_new_proxy", False))
 
     def test_sentinel_iframe_retries_socks5_proxy_failure(self):
         class ProxyError(RuntimeError):
@@ -188,6 +315,18 @@ class OpenAIRegistrationFlowTests(unittest.TestCase):
         self.assertTrue(redirects)
         self.assertEqual(final_url, "https://auth.openai.com/email-verification")
         self.assertEqual(session.document_navigation_id, "document-1-next")
+
+    def test_email_otp_send_uses_email_page_as_explicit_resume_referer(self):
+        session = _ProtocolSession()
+
+        final_url = openai_auth.navigate_email_otp_send(
+            session,
+            referer="https://auth.openai.com/email-verification",
+        )
+
+        _, headers, _ = session.gets[-1]
+        self.assertEqual(headers["referer"], "https://auth.openai.com/email-verification")
+        self.assertEqual(final_url, "https://auth.openai.com/email-verification")
 
     def test_validate_email_otp_forwards_both_sentinel_headers(self):
         session = _ProtocolSession()

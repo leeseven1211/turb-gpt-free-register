@@ -21,7 +21,12 @@ def run_registration(
     email_source: str | None = None,
 ):
     """按 `REGISTRATION_DRIVER` 分发一次注册任务。"""
-    driver_mode = str(getattr(_roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
+    snapshot_driver = ""
+    if isinstance(registration_options, dict):
+        snapshot_driver = str(registration_options.get("registration_driver") or "").strip()
+    driver_mode = str(
+        snapshot_driver or getattr(_roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol"
+    ).strip().lower()
 
     # Roxy 是唯一的浏览器注册驱动；旧别名保留用于兼容历史任务配置。
     if driver_mode in ("roxy", "roxybrowser", "fingerprint", "browser"):
@@ -43,9 +48,9 @@ def run_registration(
         kwargs["profile_id"] = profile_id
         return run_roxy_registration(**kwargs)
 
-    if existing_password:
+    if existing_password and driver_mode not in ("protocol", "api", "http"):
         raise RuntimeError(
-            f"待邮箱验证账号续跑当前仅支持 Roxy 注册驱动，当前 REGISTRATION_DRIVER={driver_mode!r}"
+            "待邮箱验证账号续跑当前仅支持 Roxy 或 Protocol 注册驱动"
         )
 
     if driver_mode not in ("protocol", "api", "http"):
@@ -66,4 +71,8 @@ def run_registration(
         kwargs["registration_options"] = registration_options
     if email_source is not None:
         kwargs["email_source"] = email_source
+    if existing_password is not None:
+        kwargs["existing_password"] = existing_password
+    if existing_totp_secret is not None:
+        kwargs["existing_totp_secret"] = existing_totp_secret
     return run_protocol_registration(**kwargs)

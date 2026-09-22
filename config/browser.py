@@ -34,8 +34,67 @@ SAFARI_WEBKIT_VERSION = "537.36"
 MAC_OS_UA_VERSION = "10_15_7"
 
 # ---------- curl_cffi 模拟浏览器 ----------
-# curl_cffi 0.15 当前最高内置到 chrome146；HTTP/JS 画像按抓包补齐到 Chrome/149。
+# HTTP/JS 画像按抓包补齐到 Chrome/149；curl_cffi 的可用版本可能只内置较旧
+# 的 TLS 指纹，因此实际创建会话时通过 resolve_impersonate() 做运行时解析。
 IMPERSONATE = "chrome146"
+
+
+def resolve_impersonate(value: str | None = None) -> str:
+    """把配置中的 TLS 画像解析为当前 curl_cffi 真正支持的值。
+
+    不同机器上的 curl_cffi 版本内置的指纹集合不同。旧版本可能接受未知
+    字符串直到第一条请求才报错，所以这里在发请求前将 Chrome 画像回退到
+    当前版本提供的 ``chrome`` 别名；其他合法值保持原样，便于显式使用
+    Safari/Edge 画像。
+    """
+    configured = str(value or IMPERSONATE).strip()
+    try:
+        from curl_cffi.requests import BrowserType
+
+        supported = {item.value for item in BrowserType}
+        if configured in supported:
+            return configured
+        if configured.startswith("chrome"):
+            chrome_values = [
+                item for item in supported
+                if re.fullmatch(r"chrome\d+[a-z]?", item)
+            ]
+            if chrome_values:
+                return max(
+                    chrome_values,
+                    key=lambda item: int(re.search(r"\d+", item).group()),
+                )
+    except Exception:
+        # 配置模块不能因可选 HTTP 客户端探测失败而阻塞整个应用启动；
+        # 真实请求仍会保留原配置并由上层记录明确错误。
+        pass
+    return configured
+
+
+def resolve_chrome_identity(value: str | None = None) -> dict[str, str]:
+    """解析 Protocol 会话实际使用的 Chrome TLS 与公开版本字段。"""
+    impersonate = resolve_impersonate(value)
+    match = re.fullmatch(r"chrome(\d+)[a-z]?", impersonate)
+    major = match.group(1) if match else CHROME_MAJOR
+    full_version = f"{major}.0.0.0"
+    return {
+        "impersonate": impersonate,
+        "major": major,
+        "full_version": full_version,
+        "user_agent": (
+            f"Mozilla/5.0 (Macintosh; Intel Mac OS X {MAC_OS_UA_VERSION}) "
+            f"AppleWebKit/{SAFARI_WEBKIT_VERSION} (KHTML, like Gecko) "
+            f"Chrome/{full_version} Safari/{SAFARI_WEBKIT_VERSION}"
+        ),
+        "sec_ch_ua": (
+            f'"Google Chrome";v="{major}", "Chromium";v="{major}", '
+            '"Not)A;Brand";v="24"'
+        ),
+        "sec_ch_ua_full_version_list": (
+            f'"Google Chrome";v="{full_version}", "Chromium";v="{full_version}", '
+            '"Not)A;Brand";v="24.0.0.0"'
+        ),
+    }
 
 # ---------- 桌面 Chrome 画像 ----------
 BROWSER_FAMILY = "chrome"
@@ -234,10 +293,23 @@ BROWSER_PROFILE_POOL = [
 ]
 
 
-def build_browser_environment(geo: dict | None = None, base_profile: dict | None = None) -> dict:
+def build_browser_environment(
+    geo: dict | None = None,
+    base_profile: dict | None = None,
+    *,
+    chrome_identity: dict[str, str] | None = None,
+) -> dict:
     """构建完整浏览器环境画像，作为所有指纹字段的单一数据源。"""
     locale = _build_locale_from_geo(geo)
     profile = dict(base_profile or random.choice(BROWSER_PROFILE_POOL))
+    chrome = dict(chrome_identity or {})
+    chrome_major = str(chrome.get("major") or CHROME_MAJOR)
+    chrome_full_version = str(chrome.get("full_version") or CHROME_FULL_VERSION)
+    user_agent = str(chrome.get("user_agent") or USER_AGENT)
+    sec_ch_ua = str(chrome.get("sec_ch_ua") or SEC_CH_UA)
+    sec_ch_ua_full_version_list = str(
+        chrome.get("sec_ch_ua_full_version_list") or SEC_CH_UA_FULL_VERSION_LIST
+    )
     profile.update({
         "locale_profile": locale.get("locale_profile", BROWSER_LOCALE_PROFILE),
         "geo": dict(geo or {}),
@@ -254,17 +326,17 @@ def build_browser_environment(geo: dict | None = None, base_profile: dict | None
         "user_agent_data_platform": USER_AGENT_DATA_PLATFORM,
         "safari_version": SAFARI_VERSION,
         "safari_webkit_version": SAFARI_WEBKIT_VERSION,
-        "chrome_major": CHROME_MAJOR,
-        "chrome_full_version": CHROME_FULL_VERSION,
-        "user_agent": USER_AGENT,
+        "chrome_major": chrome_major,
+        "chrome_full_version": chrome_full_version,
+        "user_agent": user_agent,
         "send_client_hints": SEND_CLIENT_HINTS,
-        "sec_ch_ua": SEC_CH_UA,
+        "sec_ch_ua": sec_ch_ua,
         "sec_ch_ua_platform": SEC_CH_UA_PLATFORM,
         "sec_ch_ua_platform_version": SEC_CH_UA_PLATFORM_VERSION,
         "sec_ch_ua_arch": SEC_CH_UA_ARCH,
         "sec_ch_ua_bitness": SEC_CH_UA_BITNESS,
         "sec_ch_ua_model": SEC_CH_UA_MODEL,
-        "sec_ch_ua_full_version_list": SEC_CH_UA_FULL_VERSION_LIST,
+        "sec_ch_ua_full_version_list": sec_ch_ua_full_version_list,
         "sec_ch_ua_mobile": SEC_CH_UA_MOBILE,
         "navigator_proto_samples": list(NAVIGATOR_PROTO_SAMPLES),
         "document_key_samples": list(DOCUMENT_KEY_SAMPLES),
@@ -293,9 +365,13 @@ def build_browser_environment(geo: dict | None = None, base_profile: dict | None
     return profile
 
 
-def pick_browser_profile(geo: dict | None = None) -> dict:
+def pick_browser_profile(
+    geo: dict | None = None,
+    *,
+    chrome_identity: dict[str, str] | None = None,
+) -> dict:
     """为一个 BrowserSession 随机挑选稳定桌面画像；HAR 尺寸只是候选之一。"""
-    return build_browser_environment(geo)
+    return build_browser_environment(geo, chrome_identity=chrome_identity)
 
 
 def validate_browser_profile(profile: dict) -> list[str]:

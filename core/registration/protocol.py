@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import time
+from urllib.parse import urlparse
 
 from config import email as _email_cfg
 from config import codex as _codex_cfg
@@ -17,7 +18,7 @@ from core.account_export import (
     follow_oauth_callback,
     setup_2fa_protocol,
 )
-from core.chatgpt_auth import get_csrf_token, get_providers, signin_openai
+from core.chatgpt_auth import get_csrf_token, get_providers, probe_auth_session, signin_openai
 from core.email_provider import validate_email_source, wait_for_otp
 from core.humanize import delay as human_delay
 from core.openai_auth import (
@@ -26,8 +27,13 @@ from core.openai_auth import (
     build_sentinel_header,
     create_account,
     follow_authorize,
+    generate_registration_password,
+    navigate_create_account_password,
+    navigate_email_otp_send,
     navigate_about_you,
     network_preflight,
+    register_user,
+    request_password_sentinel_bundle,
     request_sentinel_token,
     send_email_otp,
     validate_email_otp,
@@ -68,6 +74,191 @@ def _classify_registration_continuation(page_type: str, continue_url: str | None
 
 
 _FINALIZE_SESSION_BACKOFF_BASE = 2.0
+
+
+def _protocol_password_continue_url(register_result: object) -> str:
+    """从 user/register 响应中提取并校验邮箱 OTP 发送地址。"""
+    if not isinstance(register_result, dict):
+        raise RuntimeError("user/register 响应缺少 continue_url，无法发送邮箱验证码")
+
+    page = register_result.get("page")
+    page = page if isinstance(page, dict) else {}
+    continue_url = (
+        register_result.get("continue_url")
+        or register_result.get("url")
+        or page.get("continue_url")
+        or page.get("url")
+    )
+    normalized = str(continue_url or "").strip()
+    parsed = urlparse(normalized)
+    host = (parsed.hostname or "").lower()
+    path = parsed.path.rstrip("/").lower()
+    if host and host != "auth.openai.com":
+        raise RuntimeError("user/register 响应缺少 continue_url，无法发送邮箱验证码")
+    if path != "/api/accounts/email-otp/send":
+        raise RuntimeError("user/register 响应缺少 continue_url，无法发送邮箱验证码")
+    return normalized
+
+
+def _run_protocol_password_stage(
+    session: BrowserSession,
+    email: str,
+    *,
+    on_password_submitted=None,
+) -> dict:
+    """提交 Protocol 密码并进入邮箱验证码页面。"""
+    password = generate_registration_password()
+    # passwordless/send-otp 只属于无密码登录/注册页的首封验证码加载器。
+    # 密码注册页的邮箱验证码由 user/register 成功后返回的
+    # /api/accounts/email-otp/send 导航触发；提前调用会把密码注册会话打成
+    # 无效状态，并得到无正文的 HTTP 500。
+    navigate_create_account_password(session)
+    sentinel_response = request_password_sentinel_bundle(session)
+    sentinel_header, so_header = build_sentinel_header(
+        session,
+        sentinel_response,
+        "username_password_create",
+    )
+    human_delay("challenge")
+    try:
+        register_result = register_user(
+            session,
+            email,
+            password,
+            sentinel_header,
+            so_header,
+        )
+    except Exception as exc:
+        response = getattr(exc, "response", None)
+        try:
+            status_code = int(getattr(response, "status_code", 0) or 0)
+        except (TypeError, ValueError):
+            status_code = 0
+        if status_code == 0 or status_code >= 500:
+            raise RuntimeError(
+                f"user/register 请求结果未知: {type(exc).__name__}: {str(exc)[:180]}"
+            ) from exc
+        raise
+    # user/register 成功即代表远端已接受密码并创建可继续验证的邮箱身份。
+    # 在读取响应页形态、发送 OTP 前保存检查点，避免后续导航中断后丢失续跑凭据。
+    if on_password_submitted is not None:
+        on_password_submitted(password)
+    continue_url = _protocol_password_continue_url(register_result)
+    otp_url = navigate_email_otp_send(session, continue_url)
+    return {
+        "password": password,
+        "register_result": register_result,
+        "continue_url": continue_url,
+        "otp_url": otp_url,
+    }
+
+
+def _maybe_run_protocol_password_stage(
+    session: BrowserSession,
+    email: str,
+    *,
+    password_enabled: bool,
+    on_password_submitted=None,
+) -> dict | None:
+    """按任务快照决定是否进入密码注册阶段。"""
+    if not password_enabled:
+        return None
+    return _run_protocol_password_stage(
+        session,
+        email,
+        on_password_submitted=on_password_submitted,
+    )
+
+
+def _run_protocol_existing_password_stage(
+    session: BrowserSession,
+    email: str,
+    password: str,
+) -> dict:
+    """用同一协议会话验证已保存密码，继续进入邮箱验证页。"""
+    from core.protocol_v2_liveness import ProtocolV2AuthError, _password_verify
+
+    try:
+        result = _password_verify(session, password)
+    except ProtocolV2AuthError as exc:
+        if exc.code == "password_result_unknown":
+            raise RuntimeError(f"密码验证请求结果未知: {exc.code}") from exc
+        raise RuntimeError(f"协议续跑密码验证失败: {exc.code}") from exc
+    except Exception as exc:
+        raise RuntimeError(
+            f"密码验证请求结果未知: {type(exc).__name__}: {str(exc)[:180]}"
+        ) from exc
+
+    if not isinstance(result, dict):
+        raise RuntimeError("协议续跑密码验证响应未知，无法继续邮箱验证")
+    page = result.get("page") if isinstance(result.get("page"), dict) else {}
+    continue_url = str(
+        result.get("continue_url")
+        or result.get("external_url")
+        or result.get("url")
+        or page.get("continue_url")
+        or page.get("external_url")
+        or page.get("url")
+        or ""
+    ).lower()
+    page_type = str(page.get("type") or "").lower()
+    if "email-verification" not in continue_url and "email_otp" not in page_type:
+        raise RuntimeError("协议续跑密码验证后页面未知，已停止继续注册")
+    return result
+
+
+def _protocol_resume_requires_password(final_url: object) -> bool:
+    """判断待验证账号续跑是否真的落在登录密码页。"""
+    return "/email-verification" not in str(final_url or "").lower()
+
+
+def _send_protocol_resume_email_otp(session: BrowserSession) -> float:
+    """显式触发续跑账号的邮箱验证码，并返回本次发送的邮件筛选起点。"""
+    try:
+        otp_after_ts = time.time()
+        navigate_email_otp_send(
+            session,
+            referer="https://auth.openai.com/email-verification",
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"续跑邮箱验证码发送未确认: {type(exc).__name__}"
+        ) from exc
+    return otp_after_ts
+
+
+def _complete_protocol_resume_mfa(
+    session: BrowserSession,
+    mfa_result: dict,
+    continue_url: str,
+    totp_secret: str,
+) -> tuple[dict, str]:
+    """完成待验证账号的 TOTP 挑战，并返回已建立的 ChatGPT 会话。"""
+    from core.protocol_v2_liveness import ProtocolV2AuthError, _complete_mfa
+
+    secret = str(totp_secret or "").strip()
+    if not secret:
+        raise RuntimeError("协议续跑 TOTP 验证需要已保存的密钥")
+    try:
+        session_info, _auth_method = _complete_mfa(
+            session,
+            mfa_result,
+            continue_url,
+            secret,
+        )
+    except ProtocolV2AuthError as exc:
+        if str(getattr(exc, "category", "") or "") == "network":
+            raise RuntimeError(
+                f"协议续跑 TOTP 验证请求结果未知: {exc.code}"
+            ) from exc
+        raise RuntimeError(f"协议续跑 TOTP 验证失败: {exc.code}") from exc
+
+    if not isinstance(session_info, dict):
+        raise RuntimeError("协议续跑 TOTP 验证响应未知")
+    access_token = str(session_info.get("accessToken") or "").strip()
+    if not access_token:
+        raise RuntimeError("协议续跑 TOTP 验证后 session 响应缺少 accessToken")
+    return session_info, access_token
 
 
 def _protocol_terminal_state(value: object) -> PageState | None:
@@ -173,13 +364,17 @@ def run_protocol_registration(
     otp_code: str | None = None,
     registration_options: dict | None = None,
     email_source: str | None = None,
+    existing_password: str | None = None,
+    existing_totp_secret: str | None = None,
 ) -> dict:
     """执行完整的纯协议 ChatGPT 注册流程。"""
-    from core.registration_service import report_job_progress
+    from core.registration_service import report_job_progress, report_registered_account
 
     selected_email_source = validate_email_source(email_source) if email_source else None
     options = dict(registration_options or {})
-    password_required = bool(options.get("password_enabled", False))
+    existing_password = str(existing_password or "").strip() or None
+    existing_totp_secret = str(existing_totp_secret or "").strip() or None
+    password_required = bool(options.get("password_enabled", False) or existing_password)
     twofa_enabled = bool(options.get("twofa_enabled", _twofa_cfg.ENABLE_2FA))
     # ``dict.get`` evaluates its default argument eagerly.  Read the live
     # config only for legacy callers that did not provide a job snapshot.
@@ -217,6 +412,7 @@ def run_protocol_registration(
     remote_identity = "unknown"
     auth_challenge_chain: list[str] = []
     account_id: int | None = None
+    openai_password: str | None = None
     try:
         report_job_progress("page", "running", "正在初始化 ChatGPT 注册页状态")
         # 网络预检必须在 signin/follow_authorize 之前完成；预检不带邮箱，不会触发 OTP。
@@ -237,6 +433,12 @@ def run_protocol_registration(
         get_providers(session)
         human_delay("api")
 
+        # Auth Web 在邮箱提交前会读取一次匿名 NextAuth session；这一步会
+        # 固定当前匿名登录上下文，缺失时 passwordless/send-otp 可能只返回
+        # 无正文的 500，而不是可诊断的业务错误。
+        probe_auth_session(session)
+        human_delay("api")
+
         csrf_token = get_csrf_token(session)
         human_delay("api")
         report_job_progress("page", "success", "注册页状态已初始化")
@@ -251,9 +453,55 @@ def run_protocol_registration(
         otp_after_ts = time.time()
 
         # ==================== 阶段2: OpenAI Auth ====================
-        follow_authorize(session, authorize_url)
+        auth_final_url = follow_authorize(session, authorize_url)
         human_delay("navigate")
-        report_job_progress("auth_redirect", "success", "已进入邮箱验证码页")
+        report_job_progress("auth_redirect", "success", "已进入 OpenAI 认证下一步")
+
+        # 密码模式必须先完成 user/register 和邮箱验证码发送；否则仅记录
+        # password challenge 并不会在远端创建可继续验证的邮箱身份。
+        if existing_password:
+            report_job_progress("login_password", "running", "正在用已保存密码继续协议登录")
+            # 待邮箱验证检查点的 authorize 会话已经直接落在邮箱验证页。
+            # 这里的密码此前已成功提交，重复 POST password/verify 会把
+            # 已建立的邮箱验证状态打成 HTTP 400；只有真正落到登录密码页
+            # 时才需要再次提交已保存密码。
+            if _protocol_resume_requires_password(auth_final_url):
+                _run_protocol_existing_password_stage(session, email, existing_password)
+            # 续跑流程此前只依赖 authorize/password 的隐式发码；当上游没有
+            # 实际发送时会直接进入邮箱轮询并超时。这里显式发一次，未确认则
+            # 保留检查点，禁止把未确认的远端状态当作可重试的新注册。
+            otp_after_ts = _send_protocol_resume_email_otp(session)
+            openai_password = existing_password
+            auth_challenge_chain.append("password")
+            report_job_progress("login_password", "success", "已通过已保存密码进入邮箱验证码页")
+        elif password_required:
+            report_job_progress("login_password", "running", "正在提交账号密码并发送邮箱验证码")
+
+        def _checkpoint_submitted_password(password: str) -> None:
+            nonlocal account_id, create_acknowledged
+            if existing_password or account_id is not None:
+                return
+            from core.registration.checkpoints import save_email_verification_checkpoint
+
+            account_id = save_email_verification_checkpoint(
+                email=email,
+                password=password,
+                proxy=session.proxy or None,
+                email_source=selected_email_source,
+            )
+            report_registered_account(account_id)
+            create_acknowledged = True
+
+        password_stage = None if existing_password else _maybe_run_protocol_password_stage(
+            session,
+            email,
+            password_enabled=password_required,
+            on_password_submitted=_checkpoint_submitted_password,
+        )
+        if password_stage is not None:
+            openai_password = password_stage["password"]
+            auth_challenge_chain.append("password")
+            report_job_progress("login_password", "success", "账号密码已提交并进入邮箱验证码页")
 
         # ==================== 阶段3: 验证码验证 ====================
         report_job_progress("email_otp", "running", "正在等待并验证邮箱验证码")
@@ -320,8 +568,37 @@ def run_protocol_registration(
 
         # ==================== 阶段5/6: 完成注册或直接 OAuth 回调 ====================
         otp_continue_text = str(otp_continue_url or "")
-        continuation_identity = _classify_registration_continuation(page_type, otp_continue_text)
-        if continuation_identity == "existing":
+        from core.protocol_v2_liveness import _is_mfa
+
+        resume_mfa_required = bool(
+            existing_password and _is_mfa(validate_result, otp_continue_text)
+        )
+        if resume_mfa_required:
+            remote_identity = "existing"
+            continuation_identity = "existing"
+            report_job_progress("profile", "skipped", "已有账号状态，正在完成 TOTP 验证")
+            report_job_progress("token", "running", "正在完成 TOTP 验证并获取 Token")
+            session_info, access_token = _complete_protocol_resume_mfa(
+                session,
+                validate_result,
+                otp_continue_text,
+                existing_totp_secret or "",
+            )
+            create_acknowledged = True
+            auth_challenge_chain.append("totp")
+            report_job_progress("token", "success", "已获取 accessToken")
+            if getattr(_protocol_cfg, "CHATGPT_AUTH_BOOTSTRAP_ENABLED", True):
+                from core.chatgpt_bootstrap import authenticated_bootstrap
+
+                authenticated_bootstrap(
+                    session,
+                    access_token,
+                    strict=bool(getattr(_protocol_cfg, "CHATGPT_BOOTSTRAP_STRICT", False)),
+                )
+            human_delay("post_auth")
+        else:
+            continuation_identity = _classify_registration_continuation(page_type, otp_continue_text)
+        if not resume_mfa_required and continuation_identity == "existing":
             if page_type in {
                 "login_password",
                 "password_login",
@@ -355,10 +632,8 @@ def run_protocol_registration(
                     strict=bool(getattr(_protocol_cfg, "CHATGPT_BOOTSTRAP_STRICT", False)),
                 )
             human_delay("post_auth")
-        elif continuation_identity == "new_candidate":
+        elif not resume_mfa_required and continuation_identity == "new_candidate":
             remote_identity = "new_candidate"
-            if password_required:
-                auth_challenge_chain.insert(0, "password")
             report_job_progress("profile", "running", "正在填写账号资料")
             about_url = str(otp_continue_url) if otp_continue_url and "about-you" in str(otp_continue_url) else None
             navigate_about_you(session, about_url)
@@ -377,7 +652,7 @@ def run_protocol_registration(
 
             logger.info(f"[注册] 创建接口已通过：{email}，继续完成 OAuth 回调")
             human_delay("post_auth")
-        else:
+        elif not resume_mfa_required:
             remote_identity = "unknown"
             raise RuntimeError(
                 f"OTP 后续页面类型未知，不应盲目 create_account: "
@@ -429,6 +704,41 @@ def run_protocol_registration(
             },
         )
         logger.info("[核心完成] %s，账号ID=%s，Token 已获取（原值不写日志）", email, account_id)
+
+        # Roxy 在刚获取 Token 后、任何账号设置前从登录页读取权益。Protocol 也在
+        # 这个窗口复用同一 BrowserSession 和注册代理同步查询，避免 2FA/Codex
+        # 等后置动作改变首次登录态后才判断新账号的试用资格。
+        plan_result = {"status": "pending", "ok": False, "message": "套餐查询未执行"}
+        if plan_check_enabled:
+            try:
+                from core.plan_check_service import check_registration_account_plan
+
+                report_job_progress("plan_check", "running", "正在复用注册会话与代理查询套餐")
+                checked = check_registration_account_plan(
+                    account_id=account_id,
+                    email=email,
+                    access_token=access_token,
+                    proxy=session.proxy or "",
+                    session=session,
+                )
+                plan_result = dict(checked or {})
+                plan_result["ok"] = bool(plan_result.get("ok"))
+                plan_result["status"] = "success" if plan_result["ok"] else "failed"
+                plan_result["message"] = (
+                    "套餐查询完成"
+                    if plan_result["ok"]
+                    else str(plan_result.get("error") or "套餐查询失败")
+                )
+                report_job_progress(
+                    "plan_check",
+                    "success" if plan_result["ok"] else "failed",
+                    plan_result["message"][:300],
+                )
+            except Exception as exc:
+                plan_result = {"status": "failed", "ok": False, "message": f"{type(exc).__name__}: {str(exc)[:180]}"}
+                report_job_progress("plan_check", "failed", plan_result["message"])
+        else:
+            plan_result = {"status": "skipped", "ok": True, "message": "未启用注册后自动查套餐"}
 
         # ==================== 阶段7: 设置 2FA ====================
         totp_secret = None
@@ -516,31 +826,6 @@ def run_protocol_registration(
         elif twofa_enabled:
             db.update_account_twofa_status(email, "failed", "Authenticator 2FA 尚未完成")
 
-        # 套餐查询独立入队；注册主体不再等待它完成。
-        plan_result = {"status": "pending", "ok": False, "message": "套餐查询已独立入队"}
-        if plan_check_enabled:
-            try:
-                from core.plan_check_service import enqueue_account_plan_check
-
-                queued = enqueue_account_plan_check(
-                    account_id=account_id,
-                    email=email,
-                    access_token=access_token,
-                    trigger="registration_auto",
-                )
-                plan_result = {
-                    "status": "pending" if queued.get("accepted") or queued.get("busy") else "failed",
-                    # Enqueued/busy means the capability is not confirmed yet;
-                    # keep it visible as a plan_check next action until its worker
-                    # records a successful result.
-                    "ok": False,
-                    "message": "套餐查询已入队" if queued.get("accepted") else str(queued.get("error") or "套餐查询未入队"),
-                }
-            except Exception as exc:
-                plan_result = {"status": "failed", "ok": False, "message": f"{type(exc).__name__}: {str(exc)[:180]}"}
-        else:
-            plan_result = {"status": "skipped", "ok": True, "message": "未启用注册后自动查套餐"}
-
         # ==================== 阶段9: 后置自动触发 flow ====================
         flow_result = {"status": "skipped", "ok": False, "message": "未触发"}
         try:
@@ -617,15 +902,35 @@ def run_protocol_registration(
         logger.error(f"[失败] {email}: {type(exc).__name__}: {exc}")
         logger.debug("详细错误信息:", exc_info=True)
         error_text = str(exc)
+        auth_route_rejected = bool(
+            getattr(exc, "retry_with_new_proxy", False)
+            and str(getattr(exc, "code", "") or "") == "auth_route_rejected"
+        )
         request_unknown = any(marker in error_text for marker in (
             "后续页面类型未知",
             "响应缺少可跟随 URL",
             "响应缺少 continue_url",
+            "请求结果未知",
+            "密码验证请求结果未知",
+            "续跑邮箱验证码发送未确认",
+            "协议续跑密码验证后页面未知",
+            "协议续跑密码验证响应未知",
+            "协议续跑 TOTP 验证请求结果未知",
+            "协议续跑 TOTP 验证响应未知",
+            "协议续跑 TOTP 验证后 session 响应缺少 accessToken",
             "session 响应缺少 accessToken",
             "OAuth callback/session",
         ))
         remote_existing = remote_identity == "existing"
-        auth_error_code = "remote_existing" if remote_existing else "request_unknown" if request_unknown else "registration_failed"
+        auth_error_code = (
+            "remote_existing"
+            if remote_existing
+            else "auth_route_rejected"
+            if auth_route_rejected
+            else "request_unknown"
+            if request_unknown
+            else "registration_failed"
+        )
         account_unusable = isinstance(exc, AccountUnusableError)
 
         try:
@@ -655,6 +960,9 @@ def run_protocol_registration(
             "account_id": account_id,
             "request_unknown": request_unknown,
             "manual_reconcile": remote_existing,
+            # 只有 follow_authorize 的显式路由拒绝才允许外层重启整段协议。
+            # 该分支发生在账号创建之前，且不会覆盖 request_unknown/已有账号保护。
+            "retry_as_new_route": auth_route_rejected,
             "remote_identity": remote_identity,
             "remote_identity_state": "confirmed" if remote_existing else "unknown",
             "remote_account_state": "confirmed" if remote_existing else "request_unknown" if request_unknown else "not_started",

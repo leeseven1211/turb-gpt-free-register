@@ -1,8 +1,8 @@
 # Turb GPT 注册与账号管理工具
 
-ChatGPT / OpenAI 账号自动注册与 Codex OAuth 授权工具。当前项目的注册流程围绕 RoxyBrowser，Protocol 仅作为协议辅助/回退：
+ChatGPT / OpenAI 账号自动注册与 Codex OAuth 授权工具。注册主链路可按配置选择 RoxyBrowser 或新的纯协议实现：
 
-- **protocol**：原纯协议注册，基于 `curl_cffi` + Sentinel/PoW。
+- **protocol**：新纯协议注册链路，基于 `curl_cffi` + Sentinel/PoW。
 - **roxy**：RoxyBrowser 指纹浏览器 + Selenium 自动化注册，兼容新版页面流，例如 `create-account/password`、`about-you` 年龄/生日表单、地区本地化页面等。
 
 项目提供 **CLI** 和 **本地 WebUI** 两种使用方式，日常推荐使用 WebUI。本项目由我们自行维护，主仓库为
@@ -439,8 +439,8 @@ PROXY_1024_VALIDATE_ATTEMPTS=2
 PROXY_1024_RECENT_TTL=1800
 PROXY_1024_ACQUIRE_INTERVAL=0.6
 PROXY_1024_PERSIST_LEASES=True
-# 注册页遇到线路级瞬时失败时，最多释放旧租约并换线重试 2 次
-REGISTRATION_PROXY_RETRIES=2
+# 注册页遇到线路级瞬时失败时，最多释放旧租约并换线重试 3 次（初始线路共最多 4 条）
+REGISTRATION_PROXY_RETRIES=3
 REGISTRATION_PROXY_RETRY_DELAY=1
 # 查活/刷新 AT 申请线路遇到重复租约时，额外换线重试；不重跑已提交的认证步骤
 ACCOUNT_ACTION_PROXY_RETRIES=2

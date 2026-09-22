@@ -32,6 +32,7 @@ from curl_cffi.requests import Session as CurlSession
 # 这样 WebUI 调 config.reload_all() 后，本模块通过 codex.X 读到的是最新值。
 from config import codex as _cfg
 from config import IMPERSONATE
+from config.browser import resolve_impersonate
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +128,7 @@ def _release_operation_resource(activation_id: str, state: str) -> None:
 
 
 def _http() -> CurlSession:
-    s = CurlSession(impersonate=IMPERSONATE)
+    s = CurlSession(impersonate=resolve_impersonate(IMPERSONATE))
     s.timeout = _cfg.SMS_REQUEST_TIMEOUT
     return s
 
