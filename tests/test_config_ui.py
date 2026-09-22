@@ -219,6 +219,18 @@ assert.equal(readConfigElementValue(selected, field), 'mailnest,outlook');
             FOUNDATION_CSS,
         )
 
+    def test_config_subtabs_use_the_same_content_rail_on_desktop_and_mobile(self):
+        self.assertIn(
+            "#tab-config .config-subtabs-v2 {\n"
+            "  margin-inline: var(--ui-space-5);",
+            FOUNDATION_CSS,
+        )
+        self.assertIn(
+            "#tab-config .config-subtabs-v2 {\n"
+            "    margin-inline: 14px;",
+            FOUNDATION_CSS,
+        )
+
     def test_switching_config_groups_resets_the_page_viewport(self):
         self.assertIn("resetConfigViewportV2", CONFIG_JS)
         self.assertIn("window.scrollTo({ top: 0, left: 0, behavior: 'auto' })", CONFIG_JS)

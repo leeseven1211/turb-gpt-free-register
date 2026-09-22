@@ -3015,6 +3015,10 @@ table[data-resizable-table="codex"] {
 
 /* Configuration audit pass: custom content and dense forms use the same
    horizontal rail as the regular field cards. */
+#tab-config .config-subtabs-v2 {
+  margin-inline: var(--ui-space-5);
+}
+
 #tab-config .config-section-v2 > .config-tool-panel-v2,
 #tab-config .config-section-v2 > .config-lifecycle-note-v2,
 #tab-config .config-section-v2 > .config-lifecycle-driver-grid-v2,
@@ -3113,6 +3117,10 @@ table[data-resizable-table="codex"] {
 }
 
 @media (max-width: 600px) {
+  #tab-config .config-subtabs-v2 {
+    margin-inline: 14px;
+  }
+
   #tab-config .config-section-v2 > .config-tool-panel-v2,
   #tab-config .config-section-v2 > .config-lifecycle-note-v2,
   #tab-config .config-section-v2 > .config-lifecycle-driver-grid-v2,
