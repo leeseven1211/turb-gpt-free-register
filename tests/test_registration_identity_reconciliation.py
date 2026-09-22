@@ -1,4 +1,5 @@
 import unittest
+from contextlib import ExitStack
 from unittest.mock import MagicMock, patch
 
 from core.auth_challenge import (
@@ -65,6 +66,88 @@ class RegistrationIdentityContractTests(unittest.TestCase):
             registration_service.registration_result_status({"request_unknown": True}),
         )
 
+    def test_pre_auth_transport_unknown_is_retryable_failure_not_manual_confirmation(self):
+        result = {
+            "success": False,
+            "remote_identity": "unknown",
+            "remote_identity_state": "not_started",
+            "remote_account_state": "not_started",
+            "request_unknown": True,
+            "error": "request_unknown: RuntimeError: 邮箱提交/认证跳转超过总预算 60 秒，最后状态={'url': 'chrome-error://chromewebdata/'}",
+        }
+        proxy = MagicMock(provider="1024proxy")
+
+        self.assertEqual("failed", registration_service.registration_result_status(result))
+        with patch.object(registration_service, "_registration_proxy_retry_limit", return_value=2):
+            self.assertTrue(
+                registration_service._should_retry_registration_with_new_proxy(result, proxy, 0)
+            )
+
+    def test_post_submit_unknown_remains_a_reconciliation_fence(self):
+        result = {
+            "success": False,
+            "remote_identity": "unknown",
+            "request_unknown": True,
+            "error": "request_unknown: _PasswordTransitionTimeout: 密码提交后页面结果待确认",
+        }
+        proxy = MagicMock(provider="1024proxy")
+
+        self.assertEqual("request_unknown", registration_service.registration_result_status(result))
+        with patch.object(registration_service, "_registration_proxy_retry_limit", return_value=2):
+            self.assertFalse(
+                registration_service._should_retry_registration_with_new_proxy(result, proxy, 0)
+            )
+
+    def test_password_submit_unknown_with_browser_error_remains_a_reconciliation_fence(self):
+        result = {
+            "success": False,
+            "remote_identity": "unknown",
+            "request_unknown": True,
+            "error": "request_unknown: _PasswordTransitionTimeout: 密码提交后认证跳转超时，chrome-error://chromewebdata/",
+        }
+        proxy = MagicMock(provider="1024proxy")
+
+        self.assertEqual("request_unknown", registration_service.registration_result_status(result))
+        with patch.object(registration_service, "_registration_proxy_retry_limit", return_value=2):
+            self.assertFalse(
+                registration_service._should_retry_registration_with_new_proxy(result, proxy, 0)
+            )
+
+    def test_confirmed_checkpoint_never_uses_pre_auth_transport_retry(self):
+        result = {
+            "success": False,
+            "remote_identity": "unknown",
+            "remote_identity_state": "confirmed",
+            "remote_account_state": "confirmed",
+            "checkpoint": "account_confirmed",
+            "request_unknown": True,
+            "error": "request_unknown: ERR_SSL_PROTOCOL_ERROR",
+        }
+        proxy = MagicMock(provider="1024proxy")
+
+        self.assertEqual("request_unknown", registration_service.registration_result_status(result))
+        with patch.object(registration_service, "_registration_proxy_retry_limit", return_value=2):
+            self.assertFalse(
+                registration_service._should_retry_registration_with_new_proxy(result, proxy, 0)
+            )
+
+    def test_pre_auth_tls_error_is_retryable_failure_not_manual_confirmation(self):
+        result = {
+            "success": False,
+            "remote_identity": "unknown",
+            "remote_identity_state": "not_started",
+            "remote_account_state": "not_started",
+            "request_unknown": True,
+            "error": "request_unknown: RuntimeError: ERR_SSL_PROTOCOL_ERROR",
+        }
+        proxy = MagicMock(provider="1024proxy")
+
+        self.assertEqual("failed", registration_service.registration_result_status(result))
+        with patch.object(registration_service, "_registration_proxy_retry_limit", return_value=2):
+            self.assertTrue(
+                registration_service._should_retry_registration_with_new_proxy(result, proxy, 0)
+            )
+
     def test_roxy_login_password_page_raises_explicit_existing_identity_error(self):
         driver = MagicMock()
         driver.current_url = "https://auth.openai.com/log-in/password"
@@ -96,52 +179,77 @@ class RegistrationIdentityContractTests(unittest.TestCase):
         session.sentinel_sid = None
         session.browser_profile = None
 
-        with (
-            patch.object(protocol_registration, "BrowserSession", return_value=session),
-            patch.object(protocol_registration, "network_preflight"),
-            patch.object(protocol_registration, "get_providers"),
-            patch.object(protocol_registration, "get_csrf_token", return_value="csrf"),
-            patch.object(protocol_registration, "signin_openai", return_value="authorize"),
-            patch.object(protocol_registration, "follow_authorize", return_value="https://auth.openai.com/email-verification"),
-            patch.object(
-                protocol_registration,
-                "validate_email_otp",
-                return_value={
-                    "page": {"type": "about_you"},
-                    "continue_url": "https://auth.openai.com/about-you",
-                },
-            ),
-            patch.object(protocol_registration, "navigate_about_you"),
-            patch.object(protocol_registration, "request_sentinel_token", return_value={"token": "opaque"}),
-            patch.object(protocol_registration, "build_sentinel_header", return_value=("sentinel", None)),
-            patch.object(
-                protocol_registration,
-                "create_account",
-                return_value={"continue_url": "https://auth.openai.com/authorize/continue?state=opaque"},
-            ) as create_account,
-            patch.object(
-                protocol_registration,
-                "_finalize_registration_session",
-                return_value=({"accessToken": "fresh-token", "user": {}, "account": {}}, "fresh-token"),
-            ) as finalize,
-            patch("core.registration_service.persist_registration_core", return_value=7) as persist_core,
-            patch.object(protocol_registration, "wait_for_otp", return_value="123456") as wait_for_otp,
-            patch(
-                "core.codex_oauth.run_codex_oauth",
-                return_value={"status": "skipped", "ok": True, "message": "测试跳过"},
-            ) as run_codex_oauth,
-            patch("core.db.update_account_codex_status"),
-            patch("core.flow_trigger.trigger_flow", return_value={"status": "skipped", "ok": True}),
-            patch("core.registration_service.report_job_progress"),
-            patch.object(protocol_registration, "human_delay"),
-            patch.object(protocol_registration._email_cfg, "USE_EMAIL_SERVICE", True),
-            patch.multiple(
-                protocol_registration._protocol_cfg,
-                CHATGPT_ANON_BOOTSTRAP_ENABLED=False,
-                CHATGPT_AUTH_BOOTSTRAP_ENABLED=False,
-                create=True,
-            ),
-        ):
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(protocol_registration, "BrowserSession", return_value=session))
+            stack.enter_context(patch.object(protocol_registration, "network_preflight"))
+            stack.enter_context(patch.object(protocol_registration, "get_providers"))
+            stack.enter_context(patch.object(protocol_registration, "get_csrf_token", return_value="csrf"))
+            stack.enter_context(patch.object(protocol_registration, "signin_openai", return_value="authorize"))
+            stack.enter_context(
+                patch.object(
+                    protocol_registration,
+                    "follow_authorize",
+                    return_value="https://auth.openai.com/email-verification",
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    protocol_registration,
+                    "validate_email_otp",
+                    return_value={
+                        "page": {"type": "about_you"},
+                        "continue_url": "https://auth.openai.com/about-you",
+                    },
+                )
+            )
+            stack.enter_context(patch.object(protocol_registration, "navigate_about_you"))
+            stack.enter_context(
+                patch.object(protocol_registration, "request_sentinel_token", return_value={"token": "opaque"})
+            )
+            stack.enter_context(
+                patch.object(protocol_registration, "build_sentinel_header", return_value=("sentinel", None))
+            )
+            create_account = stack.enter_context(
+                patch.object(
+                    protocol_registration,
+                    "create_account",
+                    return_value={"continue_url": "https://auth.openai.com/authorize/continue?state=opaque"},
+                )
+            )
+            finalize = stack.enter_context(
+                patch.object(
+                    protocol_registration,
+                    "_finalize_registration_session",
+                    return_value=({"accessToken": "fresh-token", "user": {}, "account": {}}, "fresh-token"),
+                )
+            )
+            persist_core = stack.enter_context(
+                patch("core.registration_service.persist_registration_core", return_value=7)
+            )
+            wait_for_otp = stack.enter_context(
+                patch.object(protocol_registration, "wait_for_otp", return_value="123456")
+            )
+            run_codex_oauth = stack.enter_context(
+                patch(
+                    "core.codex_oauth.run_codex_oauth",
+                    return_value={"status": "skipped", "ok": True, "message": "测试跳过"},
+                )
+            )
+            stack.enter_context(patch("core.db.update_account_codex_status"))
+            stack.enter_context(
+                patch("core.flow_trigger.trigger_flow", return_value={"status": "skipped", "ok": True})
+            )
+            stack.enter_context(patch("core.registration_service.report_job_progress"))
+            stack.enter_context(patch.object(protocol_registration, "human_delay"))
+            stack.enter_context(patch.object(protocol_registration._email_cfg, "USE_EMAIL_SERVICE", True))
+            stack.enter_context(
+                patch.multiple(
+                    protocol_registration._protocol_cfg,
+                    CHATGPT_ANON_BOOTSTRAP_ENABLED=False,
+                    CHATGPT_AUTH_BOOTSTRAP_ENABLED=False,
+                    create=True,
+                )
+            )
             result = protocol_registration.run_protocol_registration(
                 "new@example.com",
                 "New User",
@@ -259,6 +367,47 @@ class RegistrationServiceRetryBoundaryTests(unittest.TestCase):
 
         with patch.object(registration_service, "_registration_proxy_retry_limit", return_value=2):
             self.assertTrue(registration_service._should_retry_registration_with_new_proxy(result, proxy, 0))
+
+    def test_auth_route_rejection_cannot_bypass_confirmed_checkpoint(self):
+        proxy = MagicMock(provider="1024proxy")
+        result = {
+            "success": False,
+            "remote_identity": "unknown",
+            "remote_identity_state": "confirmed",
+            "remote_account_state": "confirmed",
+            "checkpoint": "account_confirmed",
+            "error_code": "auth_route_rejected",
+            "retry_as_new_route": True,
+            "error": "Auth authorize 路由被拒绝: HTTP 403",
+        }
+
+        with patch.object(registration_service, "_registration_proxy_retry_limit", return_value=2):
+            self.assertFalse(registration_service._should_retry_registration_with_new_proxy(result, proxy, 0))
+
+    def test_explicit_account_deleted_cannot_bypass_route_retry_guard(self):
+        proxy = MagicMock(provider="1024proxy")
+        result = {
+            "success": False,
+            "remote_identity": "unknown",
+            "error_code": "account_deleted",
+            "retry_as_new_route": True,
+            "error": "账号已删除",
+        }
+
+        with patch.object(registration_service, "_registration_proxy_retry_limit", return_value=2):
+            self.assertFalse(registration_service._should_retry_registration_with_new_proxy(result, proxy, 0))
+
+    def test_new_candidate_identity_cannot_start_duplicate_registration(self):
+        proxy = MagicMock(provider="1024proxy")
+        result = {
+            "success": False,
+            "remote_identity": "new_candidate",
+            "request_unknown": False,
+            "error": "ERR_CONNECTION_RESET",
+        }
+
+        with patch.object(registration_service, "_registration_proxy_retry_limit", return_value=2):
+            self.assertFalse(registration_service._should_retry_registration_with_new_proxy(result, proxy, 0))
 
     def test_explicit_profile_rejection_never_starts_a_second_account(self):
         proxy = MagicMock(provider="1024proxy")

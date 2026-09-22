@@ -309,7 +309,7 @@ def registration_result_status(result: dict | None) -> str:
         return "failed"
     if result.get("manual_reconcile"):
         return "manual_reconcile"
-    if result.get("request_unknown"):
+    if result.get("request_unknown") and not _is_pre_account_transport_failure(result):
         return "request_unknown"
     return "success" if result.get("success") or result.get("registration_success") else "failed"
 
@@ -909,6 +909,12 @@ def _is_transient_registration_proxy_error(error: object) -> bool:
         "roxy registration stage timeout exhausted",
         "proxy connection",
         "ssl_error_syscall",
+        "err_ssl_protocol_error",
+        "err_ssl_version_or_cipher_mismatch",
+        "ssl handshake",
+        "ssl protocol",
+        "tls handshake",
+        "tls error",
         "unexpected eof while reading",
         "remote end closed connection",
         "connection aborted",
@@ -929,6 +935,48 @@ def _is_transient_registration_proxy_error(error: object) -> bool:
     )
 
 
+def _is_pre_account_transport_failure(result: dict | None) -> bool:
+    """识别认证页挂载前的线路失败，不把它升级成待人工对账。"""
+    if not isinstance(result, dict):
+        return False
+    if _has_registration_safety_fence(result):
+        return False
+    error_text = str(result.get("error") or "").strip().lower()
+    if any(marker in error_text for marker in ("passwordtransitiontimeout", "密码提交", "password submit")):
+        return False
+    return _is_transient_registration_proxy_error(result.get("error"))
+
+
+def _has_registration_safety_fence(result: dict) -> bool:
+    """判断结果是否已有账号、检查点或明确不可用状态，禁止从头换线。"""
+    dead_codes = {"account_deactivated", "account_deleted", "account_banned"}
+    if (
+        result.get("account_id") is not None
+        or result.get("registration_pending")
+        or str(result.get("access_token") or "").strip()
+        or result.get("manual_reconcile")
+        or result.get("email_permanently_unusable") is True
+        or str(result.get("error_code") or "").strip().lower() in dead_codes
+        or str(result.get("account_unusable_error_code") or "").strip().lower() in dead_codes
+    ):
+        return True
+    for key in ("remote_identity", "remote_identity_state"):
+        identity = str(result.get(key) or "").strip().lower()
+        if identity not in {"", "unknown", "not_started"}:
+            return True
+    if str(result.get("remote_account_state") or "").strip().lower() not in {
+        "", "unknown", "not_started"
+    }:
+        return True
+    checkpoint = str(
+        result.get("checkpoint") or result.get("registration_checkpoint") or ""
+    ).strip().lower()
+    if checkpoint not in {"", "created", "email_claimed", "auth_started"}:
+        return True
+    error_text = str(result.get("error") or "").strip().lower()
+    return any(marker in error_text for marker in ("passwordtransitiontimeout", "密码提交", "password submit"))
+
+
 def _should_retry_registration_with_new_proxy(
     result: object,
     proxy_lease: object,
@@ -945,6 +993,10 @@ def _should_retry_registration_with_new_proxy(
         return False
     if str(result.get("access_token") or "").strip():
         return False
+    # 本地尚未拿到 account_id 并不等于远端尚未创建账号；只要身份或
+    # checkpoint 已推进，就必须先走恢复/对账，禁止从头注册同一邮箱。
+    if _has_registration_safety_fence(result):
+        return False
     if str(getattr(proxy_lease, "provider", "") or "").strip().lower() != "1024proxy":
         return False
     # Auth authorize 在密码、OTP 和账号持久化之前被当前边缘路由拒绝时，
@@ -955,26 +1007,22 @@ def _should_retry_registration_with_new_proxy(
         and str(result.get("error_code") or "") == "auth_route_rejected"
     ):
         return (
-            str(result.get("remote_identity") or "").strip().lower() in {"", "unknown"}
+            not _has_registration_safety_fence(result)
+            and str(result.get("remote_identity") or "").strip().lower() in {"", "unknown"}
             and not result.get("request_unknown")
             and not result.get("manual_reconcile")
         )
     try:
         from core.auth_challenge import safe_to_start_new_registration
 
+        pre_auth_transport_failure = _is_pre_account_transport_failure(result)
         if not safe_to_start_new_registration(result):
             # Before the email/auth page mounts, the remote identity is often
             # still unknown. A pure transport failure at that point has not
             # acknowledged account creation, so it is safe to rotate the
-            # disposable registration route. Keep request_unknown and
-            # account/checkpoint guards above conservative.
-            identity = str(result.get("remote_identity") or "").strip().lower()
-            pre_auth_transport_failure = (
-                identity in {"", "unknown"}
-                and not result.get("request_unknown")
-                and not result.get("manual_reconcile")
-                and _is_transient_registration_proxy_error(result.get("error"))
-            )
+            # disposable registration route. A legacy driver may still carry
+            # request_unknown for this pre-account transport failure; the
+            # durable account/checkpoint guards above remain authoritative.
             if not pre_auth_transport_failure:
                 return False
     except Exception:
@@ -1687,7 +1735,8 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 result_email = (result or {}).get("email") if isinstance(result, dict) else None
                 request_unknown = bool(isinstance(result, dict) and result.get("request_unknown"))
                 manual_reconcile = bool(isinstance(result, dict) and result.get("manual_reconcile"))
-                if request_unknown:
+                pre_account_transport_failure = _is_pre_account_transport_failure(result)
+                if request_unknown and not pre_account_transport_failure:
                     _mark_registration_request_unknown(str(err or "密码提交结果待确认"))
                 if manual_reconcile:
                     _mark_registration_manual_reconcile(
@@ -1716,7 +1765,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 )
                 if manual_reconcile:
                     log_logger.warning("[Job %s] 检测到远端已有账号，已转人工协调，禁止新注册重试: %s", job_id, err)
-                elif request_unknown:
+                elif request_unknown and not pre_account_transport_failure:
                     log_logger.warning("[Job %s] 密码提交结果待确认，已保留为可对账状态: %s", job_id, err)
                 else:
                     log_logger.error(f"[Job {job_id}] 失败: {err}")

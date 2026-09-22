@@ -1357,7 +1357,14 @@ def run_roxy_registration(
         password_result_unknown = isinstance(exc, _PasswordTransitionTimeout)
         error_text = str(exc)
         account_unusable = isinstance(exc, AccountUnusableError)
-        request_unknown = password_result_unknown or _is_registration_request_unknown(error_text)
+        pre_account_transport_failure = _is_disposable_pre_account_failure(
+            error_text,
+            create_acknowledged=create_acknowledged,
+            account_id=account_id,
+        ) and not password_result_unknown
+        request_unknown = (
+            password_result_unknown or _is_registration_request_unknown(error_text)
+        ) and not pre_account_transport_failure
         remote_existing = isinstance(exc, RemoteExistingAccountError) or remote_identity == "existing"
         password_rejected = isinstance(exc, PasswordRejectedError)
         account_create_rejected = "account_create_rejected" in error_text.lower()
@@ -1379,11 +1386,7 @@ def run_roxy_registration(
             "没有可用 totp",
             "mfa_secret_missing",
         ))
-        disposable_proxy_failure = _is_disposable_pre_account_failure(
-            error_text,
-            create_acknowledged=create_acknowledged,
-            account_id=account_id,
-        )
+        disposable_proxy_failure = pre_account_transport_failure
         if disposable_proxy_failure and opened.created_by_run:
             try:
                 client.discard_profile(opened)
