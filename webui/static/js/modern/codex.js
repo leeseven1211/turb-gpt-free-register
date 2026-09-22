@@ -77,7 +77,11 @@ function _codexUpdateSelectedHint() {
   });
 }
 function _codexStatusBadge(r) {
-  const exported = (r.exported_count || 0) > 0;
+  const exported = r.exported === true || (r.exported_count || 0) > 0;
+  const linkedOnly = exported && (r.exported_count || 0) <= 0 && r.sub2api_account_id != null && String(r.sub2api_account_id).trim() !== '';
+  if (linkedOnly) {
+    return `<span class="pill status-used" title="Sub2API ID ${esc(r.sub2api_account_id)} 已有关联记录，本地下载 0 次">已关联</span>`;
+  }
   return exported
     ? `<span class="pill status-used" title="导出 ${esc(r.exported_count)} 次，最近 ${esc(r.exported_at || '-')}">已导出</span>`
     : `<span class="pill status-available">未导出</span>`;

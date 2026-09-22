@@ -15,6 +15,7 @@ from tests.support_pg import PostgresTestCase
 class DashboardUiScriptTests(unittest.TestCase):
     MODERN_DASHBOARD_JS = Path(__file__).resolve().parents[1] / "webui/static/js/modern/dashboard.js"
     MODERN_COMMON_JS = Path(__file__).resolve().parents[1] / "webui/static/js/modern/common.js"
+    MODERN_CODEX_JS = Path(__file__).resolve().parents[1] / "webui/static/js/modern/codex.js"
 
     def test_dashboard_proxy_summary_displays_at_most_three_exit_leases(self):
         source = self.MODERN_DASHBOARD_JS.read_text(encoding="utf-8")
@@ -72,6 +73,28 @@ const badge = taskErrorBadge(info);
 if (!badge.includes('AUTH-001')) throw new Error('short code missing');
 if (taskErrorDisplayText(info, 'TokenRefreshReauthRequiredError: long raw detail').includes('TokenRefresh')) throw new Error('raw error leaked');
 if (!taskErrorDisplayTitle(info, 'TokenRefreshReauthRequiredError: long raw detail').includes('AUTH-001')) throw new Error('title code missing');
+console.log('ok');
+"""
+        result = subprocess.run(
+            ["node", "--input-type=commonjs", "-e", harness],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertEqual(result.stdout.strip(), "ok")
+
+    def test_codex_export_badge_shows_sub2api_link_as_associated(self):
+        source = self.MODERN_CODEX_JS.read_text(encoding="utf-8")
+        start = source.index("function _codexStatusBadge")
+        end = source.index("function _codexOauthBadge", start)
+        function_source = source[start:end]
+        harness = f"""
+function esc(value) {{ return String(value ?? '').replace(/[&<>\"']/g, ''); }}
+{function_source}
+const badge = _codexStatusBadge({{exported: true, exported_count: 0, sub2api_account_id: 150}});
+if (!badge.includes('已关联')) throw new Error('Sub2API-linked badge missing');
+if (badge.includes('未导出')) throw new Error('linked credential still shown as unexported');
 console.log('ok');
 """
         result = subprocess.run(
@@ -502,6 +525,18 @@ console.log('ok');
         self.assertIn(">重试</button>", html)
         self.assertIn(">删除</button>", html)
         self.assertIn(">取消</button>", html)
+
+    def test_codex_resizable_defaults_match_all_table_columns(self):
+        response = self.client.get("/", headers=self.headers)
+        source = self._modern_page_source(response)
+        common_source = self.client.get("/static/js/modern/common.js").get_data(as_text=True)
+        defaults_start = common_source.index("[", common_source.index("codex:    [")) + 1
+        defaults_end = common_source.index("]", defaults_start)
+        default_count = len([item for item in common_source[defaults_start:defaults_end].split(",") if item.strip()])
+        table_start = source.index('<table class="codex-table-v2"')
+        colgroup_end = source.index("</colgroup>", table_start)
+        column_count = source[table_start:colgroup_end].count("<col ")
+        self.assertEqual(default_count, column_count)
 
     def test_task_center_uses_shared_resizable_table_layout(self):
         response = self.client.get("/", headers=self.headers)

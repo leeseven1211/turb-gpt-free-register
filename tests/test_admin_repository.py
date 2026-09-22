@@ -220,6 +220,51 @@ class AdminRepositoryTests(PostgresTestCase):
         self.assertEqual(listing["total"], 1)
         self.assertEqual(listing["accounts"][0]["sub2api_account_id"], 77)
 
+    def test_codex_list_treats_sub2api_link_as_exported_without_local_download(self):
+        filename = "codex-user3.json"
+        db.save_codex_credential_record(
+            filename,
+            {"email": "user3@example.test", "type": "codex", "access_token": "secret-token-3"},
+        )
+        rs.patch_row(
+            rs.ACCOUNTS,
+            self.account_ids[3],
+            {"extra_json": json.dumps({"sub2api_account_id": 207})},
+        )
+
+        exported = repo.list_codex(
+            repo.PageRequest(page=1, page_size=20, filters={"archived": "0", "status": "exported"})
+        )
+        linked = next(row for row in exported["accounts"] if row["filename"] == filename)
+        self.assertTrue(linked["exported"])
+        self.assertEqual(linked["exported_count"], 0)
+        self.assertEqual(linked["sub2api_account_id"], 207)
+        self.assertEqual(exported["summary"], {"total": 2, "exported": 1, "pending": 1})
+        self.assertEqual(
+            {item["value"] for item in exported["facets"]["status"]},
+            {"exported", "unexported"},
+        )
+
+        unexported = repo.list_codex(
+            repo.PageRequest(page=1, page_size=20, filters={"archived": "0", "status": "unexported"})
+        )
+        self.assertNotIn(filename, {row["filename"] for row in unexported["accounts"]})
+
+    def test_dashboard_codex_summary_counts_sub2api_link_as_exported(self):
+        db.save_codex_credential_record(
+            "codex-user4.json",
+            {"email": "user4@example.test", "type": "codex", "access_token": "secret-token-4"},
+        )
+        rs.patch_row(
+            rs.ACCOUNTS,
+            self.account_ids[4],
+            {"extra_json": json.dumps({"sub2api_account_id": 308})},
+        )
+
+        result = repo.dashboard_aggregates()
+
+        self.assertEqual(result["codex"], {"total": 2, "exported": 1, "pending": 1})
+
     def test_revision_changes_when_state_changes_inside_same_second(self):
         before_accounts = repo.list_account_statuses(repo.PageRequest(page=1, page_size=20))
         account_id = before_accounts["items"][0]["id"]

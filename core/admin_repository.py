@@ -55,6 +55,13 @@ CASE
 END
 """
 
+_CODEX_EXPORTED_SQL = f"""
+(
+    c.exported_count > 0
+    OR NULLIF(BTRIM({_SUB2API_ID_SQL}), '') IS NOT NULL
+)
+"""
+
 
 def _facet_dict(rows: list[dict]) -> dict[str, list[dict]]:
     grouped: dict[str, list[dict]] = {}
@@ -759,13 +766,14 @@ def _codex_item(row: dict) -> dict:
         oauth["oauth_status"] = "deactivated"
         oauth["oauth_reauth_required"] = True
     sub2api_account_id = row.get("sub2api_account_id")
-    if sub2api_account_id not in (None, ""):
+    if sub2api_account_id not in (None, "") and str(sub2api_account_id).strip():
         try:
             sub2api_account_id = int(sub2api_account_id)
         except (TypeError, ValueError):
             sub2api_account_id = str(sub2api_account_id)
     else:
         sub2api_account_id = None
+    exported_count = int(merged.get("exported_count") or 0)
     return {
         "filename": merged.get("filename"),
         "email": merged.get("email") or "",
@@ -781,7 +789,8 @@ def _codex_item(row: dict) -> dict:
         "size": int(merged.get("size") or 0),
         "mtime": merged.get("mtime") or merged.get("updated_at"),
         "exported_at": merged.get("exported_at"),
-        "exported_count": int(merged.get("exported_count") or 0),
+        "exported_count": exported_count,
+        "exported": exported_count > 0 or sub2api_account_id is not None,
         "sub2_uploaded_at": merged.get("sub2_uploaded_at"),
         "sub2_uploaded_count": int(merged.get("sub2_uploaded_count") or 0),
         "sub2_sync_error": merged.get("sub2_sync_error"),
@@ -827,9 +836,9 @@ def list_codex(request: PageRequest) -> dict:
             params.append(value)
     status = _text(filters.get("status")).lower()
     if status == "exported":
-        where.append("c.exported_count > 0")
+        where.append(_CODEX_EXPORTED_SQL)
     elif status == "unexported":
-        where.append("c.exported_count = 0")
+        where.append(f"NOT {_CODEX_EXPORTED_SQL}")
     account_id = _text(filters.get("account_id"))
     if account_id:
         where.append("COALESCE(c.account_id, '') ILIKE %s")
@@ -861,18 +870,18 @@ def list_codex(request: PageRequest) -> dict:
         rows = [_codex_item(row) for row in cur.fetchall()]
         cur.execute(
             f"""
-            SELECT 'plan' AS facet, LOWER(COALESCE(c.plan, '')) AS value, COUNT(*) AS count FROM {table} c GROUP BY 2
+            SELECT 'plan' AS facet, LOWER(COALESCE(c.plan, '')) AS value, COUNT(*) AS count FROM {from_clause} GROUP BY 2
             UNION ALL
-            SELECT 'status', CASE WHEN c.archived THEN 'archived' WHEN c.exported_count > 0 THEN 'exported' ELSE 'unexported' END, COUNT(*) FROM {table} c GROUP BY 2
+            SELECT 'status', CASE WHEN c.archived THEN 'archived' WHEN {_CODEX_EXPORTED_SQL} THEN 'exported' ELSE 'unexported' END, COUNT(*) FROM {from_clause} GROUP BY 2
             UNION ALL
-            SELECT 'oauth_status', LOWER(COALESCE(c.oauth_status, 'unknown')), COUNT(*) FROM {table} c GROUP BY 2
+            SELECT 'oauth_status', LOWER(COALESCE(c.oauth_status, 'unknown')), COUNT(*) FROM {from_clause} GROUP BY 2
             """
         )
         facets = _facet_dict(cur.fetchall())
         cur.execute(
-            f"SELECT COUNT(*) FILTER (WHERE archived IS FALSE) AS total, "
-            "COUNT(*) FILTER (WHERE archived IS FALSE AND exported_count > 0) AS exported "
-            f"FROM {table}"
+            f"SELECT COUNT(*) FILTER (WHERE c.archived IS FALSE) AS total, "
+            f"COUNT(*) FILTER (WHERE c.archived IS FALSE AND {_CODEX_EXPORTED_SQL}) AS exported "
+            f"FROM {from_clause}"
         )
         summary_row = cur.fetchone()
     total = int(aggregate["total"] or 0)
@@ -896,6 +905,10 @@ def dashboard_aggregates() -> dict:
     accounts = _q(record_store.ACCOUNTS)
     jobs = _q(record_store.JOBS)
     codex = _q(record_store.CODEX_CREDENTIALS)
+    codex_from_clause = (
+        f"{codex} c LEFT JOIN {accounts} a "
+        "ON LOWER(BTRIM(COALESCE(c.email, ''))) = LOWER(BTRIM(COALESCE(a.email, '')))"
+    )
     pool = _pool_union()
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
@@ -943,8 +956,8 @@ def dashboard_aggregates() -> dict:
         cur.execute(f"SELECT source, COALESCE(status, 'available') AS status, COUNT(*) AS count FROM ({pool}) p GROUP BY source, status")
         pool_rows = [dict(row) for row in cur.fetchall()]
         cur.execute(
-            f"SELECT COUNT(*) FILTER (WHERE archived IS FALSE) AS total, "
-            f"COUNT(*) FILTER (WHERE archived IS FALSE AND exported_count > 0) AS exported FROM {codex}"
+            f"SELECT COUNT(*) FILTER (WHERE c.archived IS FALSE) AS total, "
+            f"COUNT(*) FILTER (WHERE c.archived IS FALSE AND {_CODEX_EXPORTED_SQL}) AS exported FROM {codex_from_clause}"
         )
         codex_row = dict(cur.fetchone())
     return {
