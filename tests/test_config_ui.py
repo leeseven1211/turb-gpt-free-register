@@ -144,6 +144,41 @@ assert.equal(readConfigElementValue(selected, field), 'mailnest,outlook');
         self.assertIn("@media (max-width: 860px)", FOUNDATION_CSS)
         self.assertIn("config-save-bar-v2", FOUNDATION_CSS)
 
+    def test_config_workspace_uses_nested_scrolling_on_desktop(self):
+        desktop_scroll_rule = """
+@media (min-width: 861px) {
+  body:has(#tab-config:not(.hidden)) {
+    overflow-y: hidden;
+  }
+
+  #tab-config .config-workspace-v2 {
+    height: calc(100dvh - var(--topbar-height) - 54px);
+    padding-bottom: 0;
+    overflow: hidden;
+  }
+
+  #tab-config .config-layout-v2 {
+    height: 100%;
+    overflow: hidden;
+  }
+
+  #tab-config .config-nav-v2 {
+    height: 100%;
+    max-height: 100%;
+    overflow: hidden;
+  }
+
+  #tab-config .config-main-v2 {
+    height: 100%;
+    max-height: 100%;
+    overflow-y: auto;
+    padding: 0 6px 104px 0;
+    overscroll-behavior: contain;
+  }
+}
+"""
+        self.assertIn(desktop_scroll_rule, FOUNDATION_CSS)
+
     def test_global_config_save_bar_is_hidden_until_changes_are_pending(self):
         self.assertIn(
             '<div class="config-save-bar-v2" id="configSaveBarV2" hidden>',
