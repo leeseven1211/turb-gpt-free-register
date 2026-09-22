@@ -52,7 +52,7 @@ def _email_change_min_account_age_hours() -> int:
 
 
 def _account_age_gate_error(account: Mapping[str, Any]) -> str:
-    """Reject only parseable, clearly too-new accounts before leasing a mailbox."""
+    """仅对可解析且明确过新的账号在租用邮箱前拒绝提交。"""
     minimum_hours = _email_change_min_account_age_hours()
     if minimum_hours <= 0:
         return ""
@@ -73,7 +73,7 @@ def _account_age_gate_error(account: Mapping[str, Any]) -> str:
 
 
 def _safe_local_failure_message(stage: str, exc: BaseException) -> str:
-    """Keep task errors actionable without copying supplier paths or mailbox addresses."""
+    """保留可定位错误，不复制供应商路径或邮箱地址。"""
     raw = str(exc or "")
     if "EmailButler" in raw or "email_butler" in raw:
         category = "Email Butler 领取失败"
@@ -156,7 +156,7 @@ class EmailChangeProtocol:
 
     @staticmethod
     def _response_error_shape(response: Any) -> str:
-        """Return only a fixed structural label for a rejected JSON response."""
+        """对拒绝响应仅返回固定 JSON 结构标签。"""
         payload = EmailChangeProtocol._response_payload(response)
         if not isinstance(payload, dict):
             return ""
