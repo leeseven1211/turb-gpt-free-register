@@ -262,4 +262,38 @@ def create_operations_blueprint(context: WebUIContext):
         result = codex_operation_service.request_cancel(run_id=int(active["id"]))
         return jsonify(result), 200 if result.get("ok") else 409
 
+    @bp.post("/api/operations/<int:task_id>/terminate")
+    def api_operation_terminate(task_id: int):
+        """终止任务中心中的活动 durable operation；排队任务按取消收口。"""
+        task = operation_task_store.get_task(task_id)
+        if not task:
+            return jsonify({"ok": False, "error": "任务不存在"}), 404
+        task_type = str(task.get("task_type") or "").strip()
+        source_system = str(task.get("source_system") or "").strip()
+        action = task_gateway.operation_action(
+            task_type, "terminate", source_system=source_system,
+        )
+        if action is not None:
+            try:
+                result = action(task)
+            except Exception as exc:
+                logger.exception("统一任务类型终止 handler 失败：task_id=%s type=%s", task_id, task_type)
+                return jsonify({"ok": False, "error": f"终止入口异常：{type(exc).__name__}: {exc}"}), 503
+            payload = dict(result) if isinstance(result, dict) else {"ok": bool(result)}
+            payload.setdefault("ok", True)
+            return jsonify(payload), 200 if payload.get("ok") else 409
+        if source_system != "native_operations" or task_type != "codex_retry":
+            return jsonify({"ok": False, "error": "历史兼容任务请使用原任务终止入口"}), 409
+        active = next(
+            (
+                run for run in reversed(task.get("runs") or [])
+                if run.get("status") in {"queued", "running", "cancelling", "settling", "stopping", "waiting"}
+            ),
+            None,
+        )
+        if not active:
+            return jsonify({"ok": True, "state": "empty", "message": "任务没有活跃 attempt"})
+        result = codex_operation_service.terminate(run_id=int(active["id"]))
+        return jsonify(result), 200 if result.get("ok") else 409
+
     return bp

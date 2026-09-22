@@ -1051,6 +1051,8 @@
       background:#fff; color:#606266; font:inherit; font-size:11px; font-weight:650; cursor:pointer;
     }
     .account-tasks-table .task-row-action:hover:not(:disabled) { color:#4f51be; border-color:#c9cafa; background:#f6f6ff; }
+    .account-tasks-table .task-row-action--terminate { color:#b42318; border-color:#f0b4ad; background:#fff8f7; }
+    .account-tasks-table .task-row-action--terminate:hover:not(:disabled) { color:#912018; border-color:#e88b83; background:#fff1ef; }
     .account-tasks-table .task-row-action--retry { color:#4f51be; border-color:#d8d8fb; background:#f8f8ff; }
     .account-task-stage-progress {
       display:block; margin:0 0 10px; padding:12px 10px 10px;

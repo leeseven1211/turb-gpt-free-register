@@ -1734,7 +1734,10 @@ def update_account_deactivation_mail(acc_id: int, result: dict | None = None) ->
                 "deactivation_mail_confidence": str(result.get("confidence") or "high"),
             })
     elif status in {"failed", "unsupported"}:
-        changes["deactivation_mail_checked_at"] = result.get("checked_at") or now
+        # worker 重启导致的中断没有完成邮箱读取，不能把当前时间伪装成一次成功检查；
+        # 这样调度器仍会按上一次真实检查时间决定是否重新扫描。
+        if not bool(result.get("preserve_checked_at")):
+            changes["deactivation_mail_checked_at"] = result.get("checked_at") or now
         changes["deactivation_mail_error"] = str(result.get("error") or "")[:500]
     updated = _patch_account(int(acc_id), changes)
     if updated and status == "success" and bool(result.get("detected")):

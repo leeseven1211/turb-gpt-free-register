@@ -965,6 +965,73 @@ class OperationTaskStoreTests(PostgresTestCase):
             [event["event_type"] for event in detail["events"][-2:]],
         )
 
+    def test_terminate_queued_run_is_terminal_cancelled(self):
+        account_id = self._seed_runtime_account("terminate-queued@example.com")
+        task = operation_task_store.create_runtime_task(
+            task_type="codex_retry", account_id=account_id,
+            email="terminate-queued@example.com", trigger="test",
+        )
+        run_id = int(task["run"]["id"])
+
+        terminated = operation_task_store.terminate_run(run_id, reason="用户确认取消排队任务")
+
+        self.assertEqual("cancelled", terminated["status"])
+        self.assertEqual("用户确认取消排队任务", terminated["cancel_reason"])
+        detail = operation_task_store.get_task(int(task["id"]))
+        self.assertEqual("cancelled", detail["status"])
+        self.assertEqual("complete", detail["current_stage"])
+        self.assertEqual("run.cancelled", detail["events"][-1]["event_type"])
+
+    def test_terminate_running_run_forces_terminal_state_and_reconciles_resources(self):
+        account_id = self._seed_runtime_account("terminate-running@example.com")
+        task = operation_task_store.create_runtime_task(
+            task_type="codex_retry", account_id=account_id,
+            email="terminate-running@example.com", trigger="test",
+        )
+        run_id = int(task["run"]["id"])
+        operation_task_store.claim_run(run_id, execution_id="orphaned-worker", worker_pid=123)
+        operation_task_store.acquire_account_lease(account_id=account_id, run_id=run_id)
+        operation_task_store.register_resource(
+            run_id, resource_type="sms_activation", provider="test", external_id="terminate-orphan",
+        )
+
+        terminated = operation_task_store.terminate_run(run_id, reason="用户确认终止孤儿任务")
+
+        self.assertEqual("stopped", terminated["status"])
+        self.assertEqual("用户确认终止孤儿任务", terminated["cancel_reason"])
+        detail = operation_task_store.get_task(int(task["id"]))
+        self.assertEqual("stopped", detail["status"])
+        self.assertEqual("reconciliation_required", detail["resources"][0]["state"])
+        self.assertEqual("stopped", detail["resources"][0]["detail"]["terminal_run_status"])
+        self.assertEqual("run.stopped", detail["events"][-1]["event_type"])
+        self.assertIsNone(operation_task_store.active_run_for_account(account_id))
+
+    def test_terminate_preserves_unknown_remote_write_as_attention_required(self):
+        account_id = self._seed_runtime_account("terminate-unknown@example.com")
+        task = operation_task_store.create_runtime_task(
+            task_type="extract_link", account_id=account_id,
+            email="terminate-unknown@example.com", trigger="test",
+        )
+        run_id = int(task["run"]["id"])
+        execution_id = "remote-orphan-worker"
+        operation_task_store.claim_run(run_id, execution_id=execution_id, worker_pid=123)
+        lease_token = operation_task_store.acquire_account_lease(account_id=account_id, run_id=run_id)
+        operation_task_store.record_remote_intent(
+            run_id,
+            execution_id=execution_id,
+            lease_token=lease_token,
+            action="extract_link",
+        )
+
+        terminated = operation_task_store.terminate_run(run_id, reason="用户确认终止远端未知任务")
+
+        self.assertEqual("attention_required", terminated["status"])
+        self.assertEqual("request_unknown", terminated["result_summary"]["outcome"])
+        self.assertEqual("stopped", terminated["result_summary"]["requested_status"])
+        detail = operation_task_store.get_task(int(task["id"]))
+        self.assertEqual("attention_required", detail["status"])
+        self.assertEqual("run.attention_required", detail["events"][-1]["event_type"])
+
     def test_terminal_run_marks_unreleased_resource_for_reconciliation(self):
         account_id = self._seed_runtime_account("resource@example.com")
         task = operation_task_store.create_runtime_task(

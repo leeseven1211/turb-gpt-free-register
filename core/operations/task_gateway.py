@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 import uuid
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
@@ -54,6 +55,8 @@ _RUN_DISPATCH_STOP = threading.Event()
 _RUN_DISPATCH_THREAD: threading.Thread | None = None
 _RUN_DISPATCH_INTERVAL_SECONDS = 0.5
 _RUN_DISPATCH_BATCH_SIZE = 32
+_RUNTIME_RECOVERY_INTERVAL_SECONDS = 60.0
+_LAST_RUNTIME_RECOVERY_AT = 0.0
 
 
 _MISSING = object()
@@ -589,6 +592,7 @@ def register_operation_handler(
     config_allowlist: Iterable[str] | Mapping[str, str] | None = None,
     retry_handler: Callable[[Mapping[str, Any]], Any] | None = None,
     cancel_handler: Callable[[Mapping[str, Any]], Any] | None = None,
+    terminate_handler: Callable[[Mapping[str, Any]], Any] | None = None,
 ) -> None:
     """Register the reusable context-based durable handler contract.
 
@@ -619,6 +623,7 @@ def register_operation_handler(
         name,
         retry_handler=retry_handler or default_operation_retry,
         cancel_handler=cancel_handler or default_operation_cancel,
+        terminate_handler=terminate_handler or default_operation_terminate,
         source_systems=source_systems,
     )
 
@@ -638,6 +643,7 @@ def register_operation_actions(
     *,
     retry_handler: Callable[[Mapping[str, Any]], Any] | None = None,
     cancel_handler: Callable[[Mapping[str, Any]], Any] | None = None,
+    terminate_handler: Callable[[Mapping[str, Any]], Any] | None = None,
     source_systems: tuple[str, ...] | list[str] | None = ("native_operations",),
 ) -> None:
     """Register task-type route actions without coupling services to Flask.
@@ -650,7 +656,7 @@ def register_operation_actions(
     name = str(task_type or "").strip()
     if not name:
         raise ValueError("task_type 不能为空")
-    if retry_handler is None and cancel_handler is None:
+    if retry_handler is None and cancel_handler is None and terminate_handler is None:
         return
     with _DISPATCH_HANDLER_LOCK:
         actions = dict(_OPERATION_ACTIONS.get(name) or {})
@@ -658,6 +664,8 @@ def register_operation_actions(
             actions["retry"] = retry_handler
         if cancel_handler is not None:
             actions["cancel"] = cancel_handler
+        if terminate_handler is not None:
+            actions["terminate"] = terminate_handler
         _OPERATION_ACTIONS[name] = actions
         if source_systems is None:
             _OPERATION_ACTION_SOURCES[name] = None
@@ -760,6 +768,48 @@ def default_operation_cancel(task: Mapping[str, Any]) -> dict[str, Any]:
         "running": state != "cancelled",
         "state": state,
         "message": "已记录停止请求，任务将在安全检查点收口",
+    }
+
+
+def default_operation_terminate(task: Mapping[str, Any]) -> dict[str, Any]:
+    """强制收口一个已注册 durable operation；不尝试杀 worker 线程。"""
+    active = next(
+        (
+            run for run in reversed(task.get("runs") or [])
+            if isinstance(run, Mapping)
+            and str(run.get("status") or "").strip().lower()
+            in _ACTIVE_OPERATION_TASK_STATUSES
+        ),
+        None,
+    )
+    if not active:
+        return {
+            "ok": True,
+            "running": False,
+            "state": "empty",
+            "message": "任务没有活跃 attempt",
+        }
+    run_id = int(active.get("id") or 0)
+    if not run_id:
+        return {"ok": False, "error": "活动 attempt 缺少 id"}
+    try:
+        run = _operation().terminate_run(
+            run_id, reason="用户手动终止统一 durable operation",
+        )
+    except LookupError as exc:
+        return {"ok": False, "error": str(exc)}
+    notify_dispatch()
+    state = str(run.get("status") or "stopped")
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "running": state in _ACTIVE_OPERATION_TASK_STATUSES,
+        "state": state,
+        "message": (
+            "任务已取消" if state == "cancelled"
+            else "任务已终止，但远端结果待核验" if state == "attention_required"
+            else "任务已终止"
+        ),
     }
 
 
@@ -1424,8 +1474,37 @@ def notify_dispatch() -> None:
     _RUN_DISPATCH_WAKE.set()
 
 
+def _reconcile_recovered_projections() -> int:
+    """让维护服务收口通用恢复无法直接理解的业务状态投影。"""
+    try:
+        from core import deactivation_mail_service
+
+        return int(deactivation_mail_service.reconcile_interrupted_scans() or 0)
+    except Exception:
+        logger.exception("恢复中断 Run 的业务状态投影失败")
+        return 0
+
+
+def _recover_stale_runtime_runs_if_due(*, now: float | None = None) -> int:
+    """周期性收口失去 worker 的 Run，避免只在启动瞬间检查一次。"""
+    global _LAST_RUNTIME_RECOVERY_AT
+    current = time.monotonic() if now is None else float(now)
+    with _RUN_DISPATCH_LOCK:
+        if current - _LAST_RUNTIME_RECOVERY_AT < _RUNTIME_RECOVERY_INTERVAL_SECONDS:
+            return 0
+        _LAST_RUNTIME_RECOVERY_AT = current
+    try:
+        recovered = int(_operation().recover_interrupted_runtime_runs() or 0)
+    except Exception:
+        logger.exception("周期性恢复中断 Run 失败")
+        return 0
+    _reconcile_recovered_projections()
+    return recovered
+
+
 def _run_dispatch_loop() -> None:
     while not _RUN_DISPATCH_STOP.is_set():
+        _recover_stale_runtime_runs_if_due()
         submitted = dispatch_registered_once()
         if submitted:
             continue
@@ -1499,7 +1578,7 @@ __all__ = [
     "OperationTaskReporter", "OperationHandlerContext", "OperationContext",
     "register_operation_handler", "unregister_operation_handler", "registered_operation_types",
     "register_operation_actions", "operation_action", "operation_requires_reconciliation", "operation_is_deactivated",
-    "default_operation_retry", "default_operation_cancel",
+    "default_operation_retry", "default_operation_cancel", "default_operation_terminate",
     "list_reconciliation_accounts",
     "submit_durable_operation", "submit_operation", "register_durable_handler",
     "start_dispatcher", "stop_dispatcher", "dispatcher_status",

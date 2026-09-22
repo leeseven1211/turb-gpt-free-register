@@ -4,7 +4,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
-from core import account_operation_executor, db, record_store
+from core import account_operation_executor, db, postgres_store, record_store
 from core import deactivation_mail_service, extract_link_service, live_check_service, plan_check_service
 from core.operations import task_gateway
 from core.storage import operation
@@ -745,6 +745,43 @@ class MaintenanceDurableGatewayTests(PostgresTestCase):
         self.assertEqual("cancelled", db.get_account(second_id)["deactivation_mail_scan_status"])
         self.assertFalse(db.get_account(first_id).get("deactivation_mail_detected", False))
         self.assertFalse(db.get_account(second_id).get("deactivation_mail_detected", False))
+
+    def test_recovered_hme_run_closes_only_incomplete_account_projections(self):
+        first_id = self._account("restart-first@icloud.example", email_source="icloud_hide")
+        second_id = self._account("restart-second@icloud.example", email_source="icloud_hide")
+        submitted = deactivation_mail_service.enqueue_bulk(
+            [first_id, second_id],
+            trigger="scheduled",
+        )
+        run_id = int(submitted["started"][0]["run_id"])
+        db.update_account_deactivation_mail(first_id, {
+            "status": "running",
+            "trigger": "scheduled",
+        })
+        db.update_account_deactivation_mail(second_id, {
+            "status": "success",
+            "trigger": "scheduled",
+            "detected": False,
+            "checked_at": "2026-09-22T14:30:00+00:00",
+        })
+        operation.claim_run(run_id, execution_id="crashed-worker", worker_pid=987)
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {postgres_store.qualified('operation_runs')} "
+                "SET heartbeat_at=now() - interval '1 hour' WHERE id=%s",
+                (run_id,),
+            )
+
+        self.assertEqual(1, operation.recover_interrupted_runtime_runs())
+        self.assertEqual(1, deactivation_mail_service.reconcile_interrupted_scans())
+
+        first = db.get_account(first_id)
+        second = db.get_account(second_id)
+        self.assertEqual("failed", first["deactivation_mail_scan_status"])
+        self.assertIn("WebUI 重启", first["deactivation_mail_error"])
+        self.assertFalse(first.get("deactivation_mail_checked_at"))
+        self.assertEqual("success", second["deactivation_mail_scan_status"])
+        self.assertTrue(operation.get_run(run_id)["result_summary"]["projection_reconciled"])
 
     def test_deactivation_native_handler_scans_mailbox_and_never_uses_hme_consumer(self):
         account_id = self._account(

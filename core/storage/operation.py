@@ -3783,6 +3783,60 @@ def get_run(run_id: int) -> dict | None:
         return _row(dict(raw)) if raw else None
 
 
+def list_interrupted_runtime_runs(
+    *, task_type: str | None = None,
+    recovery_reason: str | None = None,
+    limit: int = 500,
+) -> list[dict]:
+    """列出因 worker 中断而收口、仍需业务投影清理的 Run。"""
+    init()
+    clauses = [
+        "r.status='interrupted'",
+        "r.result_summary->>'recovery_reason'=%s",
+        "COALESCE(r.result_summary->>'projection_reconciled', 'false') <> 'true'",
+    ]
+    params: list[Any] = [str(recovery_reason or "worker_restart")]
+    if task_type:
+        clauses.append("t.task_type=%s")
+        params.append(str(task_type))
+    params.append(max(1, min(5000, int(limit or 500))))
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT r.*, t.task_type, t.email_snapshot, t.trigger, t.parent_task_id
+            FROM {_table('operation_runs')} r
+            JOIN {_table('operation_tasks')} t ON t.id=r.task_id
+            WHERE {' AND '.join(clauses)}
+            ORDER BY r.id
+            LIMIT %s
+            """,
+            tuple(params),
+        )
+        return [_row(dict(row)) or {} for row in cur.fetchall()]
+
+
+def mark_runtime_run_projection_reconciled(run_id: int, *, repaired_count: int = 0) -> bool:
+    """标记一次中断 Run 的业务投影已经收口，避免周期重复扫描。"""
+    init()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            UPDATE {_table('operation_runs')}
+            SET result_summary=COALESCE(result_summary, '{{}}'::jsonb) ||
+                jsonb_build_object(
+                    'projection_reconciled', true,
+                    'projection_reconciled_count', %s
+                )
+            WHERE id=%s
+              AND status='interrupted'
+              AND result_summary->>'recovery_reason'='worker_restart'
+            RETURNING id
+            """,
+            (max(0, int(repaired_count or 0)), int(run_id)),
+        )
+        return cur.fetchone() is not None
+
+
 def active_run_for_account(account_id: int, resource_family: str = "openai_interactive") -> dict | None:
     init()
     with _connect() as conn, conn.cursor() as cur:
@@ -4295,7 +4349,10 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
                             run.data->'remote_intent'->>'state', 'started'
                         )
                     )
-                    ELSE run.result_summary
+                    ELSE COALESCE(run.result_summary, '{{}}'::jsonb) || jsonb_build_object(
+                        'outcome', 'interrupted',
+                        'recovery_reason', 'worker_restart'
+                    )
                 END
             FROM {_table('operation_tasks')} task
             WHERE run.task_id=task.id
@@ -5300,6 +5357,27 @@ def request_run_cancel(run_id: int, *, reason: str = "用户手动停止") -> di
         return _row(updated) or {}
 
 
+def terminate_run(run_id: int, *, reason: str = "用户手动终止任务") -> dict:
+    """强制收口一个活动 Run；排队任务按取消处理，运行任务按终止处理。
+
+    这里不会尝试杀掉进程内线程或外部浏览器。终态写入仍由 ``finish_run``
+    统一执行，因此远端写入 checkpoint、资源对账、lease 清理和父任务收口
+    与 worker 正常结束时保持同一套安全规则。
+    """
+    safe_reason = _text(reason, 500).strip() or "用户手动终止任务"
+    return finish_run(
+        int(run_id),
+        status="stopped",
+        message=safe_reason,
+        result_summary={
+            "termination": "manual",
+            "forced": True,
+            "cancel_reason": safe_reason,
+        },
+        force_terminate=True,
+    )
+
+
 def is_run_cancel_requested(run_id: int, cancellation_token: str = "") -> bool:
     init()
     with _connect() as conn, conn.cursor() as cur:
@@ -5395,6 +5473,7 @@ def finish_run(
     error: str | None = None,
     execution_id: str | None = None,
     lease_token: str | None = None,
+    force_terminate: bool = False,
 ) -> dict:
     init()
     status_value = _status(status)
@@ -5402,6 +5481,11 @@ def finish_run(
         raise ValueError(f"非法终态: {status_value}")
     parent_task_id: int | None = None
     dependency_result = dict(result_summary or {})
+    requested_terminal_status = status_value
+    cancel_reason = _text(
+        dependency_result.get("cancel_reason") or message or error or "任务被终止",
+        500,
+    ).strip() or "任务被终止"
     idempotent = False
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
@@ -5419,6 +5503,11 @@ def finish_run(
             raise LookupError("执行实例不存在")
         found = dict(found)
         parent_task_id = int(found["parent_task_id"]) if found.get("parent_task_id") else None
+        found_status = str(found.get("status") or "").strip().lower()
+        if force_terminate and found_status not in _TERMINAL_STATUSES:
+            # 在锁定 Run 行时决定终态，避免 worker 抢到排队 Run 后与取消语义竞争。
+            requested_terminal_status = "cancelled" if found_status == "queued" else "stopped"
+            status_value = requested_terminal_status
         if execution_id and str(found.get("execution_id") or "") != str(execution_id):
             raise PermissionError("执行实例 fence 不匹配，拒绝覆盖其他 worker 的结果")
         if lease_token:
@@ -5467,12 +5556,21 @@ def finish_run(
             cur.execute(
                 f"""
                 UPDATE {_table('operation_runs')}
-            SET status=%s, completed_at=now(), heartbeat_at=now(), progress_stage='complete',
+            SET status=%s,
+                cancel_requested_at=CASE WHEN %s IN ('cancelled', 'stopped')
+                    THEN COALESCE(cancel_requested_at, now()) ELSE cancel_requested_at END,
+                cancel_reason=CASE WHEN %s IN ('cancelled', 'stopped')
+                    THEN COALESCE(cancel_reason, %s) ELSE cancel_reason END,
+                completed_at=now(), heartbeat_at=now(), progress_stage='complete',
                 duration_ms=GREATEST(0, (EXTRACT(EPOCH FROM (now() - COALESCE(started_at, created_at))) * 1000)::BIGINT),
                 error_category=%s, error_code=%s, error_message=%s, result_summary=%s::jsonb
                 WHERE id=%s RETURNING *
                 """,
-                (status_value, category, code, error_message, _json(dependency_result), int(run_id)),
+                (
+                    status_value, requested_terminal_status, requested_terminal_status,
+                    cancel_reason, category, code, error_message,
+                    _json(dependency_result), int(run_id),
+                ),
             )
             run = dict(cur.fetchone())
             target_status = {

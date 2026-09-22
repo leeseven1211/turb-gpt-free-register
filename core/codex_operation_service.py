@@ -653,6 +653,49 @@ def request_cancel(*, run_id: int | None = None, email: str = "", account_id: in
     }
 
 
+def terminate(*, run_id: int | None = None, email: str = "", account_id: int | None = None) -> dict:
+    """强制收口 Codex durable Run，同时同步账号侧投影。"""
+    if run_id is None:
+        if account_id is None and email:
+            account = db.get_account_by_email(email) or {}
+            account_id = int(account.get("id") or 0) or None
+        if not account_id:
+            return {"ok": False, "error": "未找到账号"}
+        active = operation_task_store.active_run_for_account(int(account_id))
+        if not active:
+            return {"ok": True, "running": False, "state": "empty", "message": "没有排队或运行中的账号操作"}
+        run_id = int(active["id"])
+        email = str(active.get("email_snapshot") or email)
+    try:
+        run = operation_task_store.terminate_run(int(run_id), reason="用户手动终止 Codex 补跑")
+    except LookupError as exc:
+        return {"ok": False, "error": str(exc)}
+    with _LOCAL_TOKENS_LOCK:
+        token = _LOCAL_TOKENS.get(int(run_id))
+        if token:
+            token.request_local()
+    if not email:
+        current = operation_task_store.get_run(int(run_id)) or {}
+        email = str(current.get("email_snapshot") or "")
+    state = str(run.get("status") or "stopped")
+    terminal = state not in {"queued", "running", "cancelling", "settling", "stopping", "waiting"}
+    if email:
+        db.update_account_codex_operation_state(
+            email,
+            execution_status="empty" if terminal else state,
+            last_run_status=state if terminal else None,
+            error="用户手动终止 Codex 补跑",
+            active_run_id=0 if terminal else int(run_id),
+        )
+    return {
+        "ok": True,
+        "run_id": int(run_id),
+        "running": not terminal,
+        "state": state,
+        "message": "任务已取消" if state == "cancelled" else "任务已终止",
+    }
+
+
 def is_retrying(email: str) -> bool:
     account = db.get_account_by_email(str(email or "")) or {}
     account_id = int(account.get("id") or 0)

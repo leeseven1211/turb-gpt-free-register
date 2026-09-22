@@ -137,7 +137,8 @@ function renderAccountTasks() {
     const result = accountTaskResultText(task);
     const active = ['queued','running','stopping','cancelling','settling','waiting'].includes(String(task.status || ''));
     const retryable = accountTaskCanRetry(task);
-    const cancellable = task.source_system === 'native_operations' && active;
+    const terminable = task.source_system === 'native_operations' && active;
+    const terminationLabel = task.status === 'queued' ? '取消' : '终止';
     const target = task.account_id ? `账号 #${task.account_id}` : (task.attempt_id ? `注册尝试 #${task.attempt_id}` : '-');
     const batch = task.batch_title || (task.batch_uuid ? short(task.batch_uuid, 12) : '单任务');
     const trigger = ACCOUNT_TASK_TRIGGER_LABELS[task.trigger] || task.trigger || '-';
@@ -154,7 +155,7 @@ function renderAccountTasks() {
       <td>${esc(stage)}<div class="sub-cell">${esc(formatTaskDuration(task.duration_ms))}</div></td>
       <td title="${esc(formatDateTime(task.created_at))} → ${esc(formatDateTime(task.completed_at))}">${esc(formatDateTime(task.created_at))}<div class="sub-cell">${esc(formatDateTime(task.completed_at))}</div></td>
       <td class="task-error" title="${esc(error || result)}">${error ? `${taskErrorBadge(task.error_info)}<span class="task-error-cell-text">${esc(short(task.error_info?.summary || result, 90))}</span>` : esc(short(result, 90))}</td>
-      <td><div class="task-row-actions"><button type="button" class="task-row-action" data-account-task-log="${esc(task.id)}">日志</button>${cancellable ? `<button type="button" class="task-row-action danger" data-account-task-cancel="${esc(task.id)}">停止</button>` : ''}${retryable ? `<button type="button" class="task-row-action task-row-action--retry" data-account-task-retry="${esc(task.id)}">重跑</button>` : ''}</div></td>
+      <td><div class="task-row-actions"><button type="button" class="task-row-action" data-account-task-log="${esc(task.id)}">日志</button>${terminable ? `<button type="button" class="task-row-action task-row-action--terminate" data-account-task-terminate="${esc(task.id)}" aria-label="${terminationLabel}任务 #${esc(task.id)}">${terminationLabel}</button>` : ''}${retryable ? `<button type="button" class="task-row-action task-row-action--retry" data-account-task-retry="${esc(task.id)}">重跑</button>` : ''}</div></td>
     </tr>`;
   }).join('') || renderTableStateRow(11, '暂无任务记录', '调整搜索或筛选条件后再试。');
   const summary = $('#accountTaskPageSummary');
@@ -422,14 +423,22 @@ async function retryAccountTask(taskId, button) {
     button.disabled = false;
   }
 }
-async function cancelAccountTask(taskId, button) {
+async function terminateAccountTask(taskId, button) {
+  const task = ACCOUNT_TASKS.find(item => Number(item.id) === Number(taskId));
+  const queued = task?.status === 'queued';
+  const label = queued ? '取消' : '终止';
+  const message = queued
+    ? `确定${label}排队中的任务 #${taskId}？`
+    : `确定${label}任务 #${taskId}？\n\n任务会立即从任务中心收口；如果已经向远端发起写入，结果可能需要人工核验。`;
+  if (!window.confirm(message)) return;
   button.disabled = true;
   try {
-    await api(`/api/operations/${encodeURIComponent(taskId)}/cancel`, {method:'POST'});
-    showToast('已请求停止，任务将在安全检查点收口');
+    const result = await api(`/api/operations/${encodeURIComponent(taskId)}/terminate`, {method:'POST'});
+    const state = String(result.state || '');
+    showToast(state === 'cancelled' ? '任务已取消' : state === 'attention_required' ? '任务已终止，但远端结果待核验' : '任务已终止');
     loadAccountTasks();
   } catch (e) {
-    showToast('停止失败: ' + e.message);
+    showToast(`${label}失败: ` + e.message);
     button.disabled = false;
   }
 }
@@ -478,8 +487,8 @@ $('#accountTasksPanel')?.addEventListener('click', event => {
   if (logBtn) { openAccountTaskLog(Number(logBtn.dataset.accountTaskLog)); return; }
   const retryBtn = event.target.closest('[data-account-task-retry]');
   if (retryBtn) { retryAccountTask(Number(retryBtn.dataset.accountTaskRetry), retryBtn); return; }
-  const cancelBtn = event.target.closest('[data-account-task-cancel]');
-  if (cancelBtn) cancelAccountTask(Number(cancelBtn.dataset.accountTaskCancel), cancelBtn);
+  const terminateBtn = event.target.closest('[data-account-task-terminate]');
+  if (terminateBtn) terminateAccountTask(Number(terminateBtn.dataset.accountTaskTerminate), terminateBtn);
 });
 function getAccountsQuery() {
   const el = document.getElementById('qAccountsV2');

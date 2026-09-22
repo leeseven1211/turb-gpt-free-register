@@ -944,6 +944,22 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
         self.assertEqual(1, operation.recover_interrupted_runtime_runs())
         self.assertEqual("interrupted", operation.get_run(run_id)["status"])
 
+    def test_stale_runtime_recovery_tick_is_periodic_and_reconciles_projections(self):
+        previous = getattr(task_gateway, "_LAST_RUNTIME_RECOVERY_AT", None)
+        task_gateway._LAST_RUNTIME_RECOVERY_AT = 0.0
+        try:
+            with (
+                patch.object(task_gateway, "_operation") as operation_module,
+                patch.object(task_gateway, "_reconcile_recovered_projections") as reconcile,
+            ):
+                operation_module.return_value.recover_interrupted_runtime_runs.return_value = 1
+                self.assertEqual(1, task_gateway._recover_stale_runtime_runs_if_due(now=60.0))
+                self.assertEqual(0, task_gateway._recover_stale_runtime_runs_if_due(now=90.0))
+                self.assertEqual(1, task_gateway._recover_stale_runtime_runs_if_due(now=121.0))
+                self.assertEqual(2, reconcile.call_count)
+        finally:
+            task_gateway._LAST_RUNTIME_RECOVERY_AT = previous
+
 
 if __name__ == "__main__":
     import unittest

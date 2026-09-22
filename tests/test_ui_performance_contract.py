@@ -184,6 +184,13 @@ if (accountTaskCanRetry({
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_task_center_uses_cancel_for_queued_and_terminate_for_running_tasks(self):
+        source = (PROJECT_ROOT / 'webui/static/js/modern/accounts.js').read_text(encoding='utf-8')
+        self.assertIn("data-account-task-terminate", source)
+        self.assertIn("/terminate", source)
+        self.assertIn("status === 'queued' ? '取消' : '终止'", source)
+        self.assertIn("window.confirm", source)
+
     def test_account_ui_hides_actions_for_all_deactivation_projections(self):
         harness = r'''
 const fs = require('fs');

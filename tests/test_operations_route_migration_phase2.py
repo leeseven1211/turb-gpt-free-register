@@ -286,6 +286,56 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         request_cancel.assert_called_once_with(run_id=54)
 
+    def test_registered_maintenance_terminate_action_and_native_codex_terminate_are_separate(self):
+        maintenance_type = "deactivation_mail"
+        task_gateway.register_operation_handler(
+            maintenance_type,
+            lambda _context: task_gateway.OperationResult.success(),
+            source_systems=("native_operations",),
+        )
+        try:
+            client = self._client()
+            maintenance_task = self._task(
+                task_type=maintenance_type,
+                source_system="native_operations",
+                runs=[{"id": 63, "status": "running"}],
+            )
+            with (
+                patch.object(operations.operation_task_store, "get_task", return_value=maintenance_task),
+                patch.object(
+                    operation,
+                    "terminate_run",
+                    return_value={"id": 63, "status": "stopped"},
+                ) as terminate_run,
+                patch.object(task_gateway, "notify_dispatch") as notify,
+            ):
+                response = client.post("/api/operations/41/terminate")
+            self.assertEqual(200, response.status_code)
+            self.assertEqual("stopped", response.get_json()["state"])
+            terminate_run.assert_called_once_with(
+                63,
+                reason="用户手动终止统一 durable operation",
+            )
+            notify.assert_called_once()
+        finally:
+            task_gateway.unregister_operation_handler(maintenance_type)
+
+        native_task = self._task(
+            runs=[{"id": 64, "status": "running"}],
+        )
+        with (
+            patch.object(operations.operation_task_store, "get_task", return_value=native_task),
+            patch.object(
+                operations.codex_operation_service,
+                "terminate",
+                return_value={"ok": True, "run_id": 64, "state": "stopped"},
+            ) as terminate,
+        ):
+            response = client.post("/api/operations/41/terminate")
+
+        self.assertEqual(200, response.status_code)
+        terminate.assert_called_once_with(run_id=64)
+
 
 if __name__ == "__main__":
     unittest.main()

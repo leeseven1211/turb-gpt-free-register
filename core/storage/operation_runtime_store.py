@@ -26,6 +26,14 @@ def get_run(run_id: int) -> dict | None:
     return _operation().get_run(run_id)
 
 
+def list_interrupted_runtime_runs(**kwargs: Any) -> list[dict]:
+    return _operation().list_interrupted_runtime_runs(**kwargs)
+
+
+def mark_runtime_run_projection_reconciled(run_id: int, **kwargs: Any) -> bool:
+    return _operation().mark_runtime_run_projection_reconciled(run_id, **kwargs)
+
+
 def get_task(task_id: int, **kwargs: Any) -> dict | None:
     return _operation().get_task(task_id, **kwargs)
 
@@ -118,6 +126,10 @@ def request_run_cancel(run_id: int, **kwargs: Any) -> dict:
     return _operation().request_run_cancel(run_id, **kwargs)
 
 
+def terminate_run(run_id: int, **kwargs: Any) -> dict:
+    return _operation().terminate_run(run_id, **kwargs)
+
+
 def is_run_cancel_requested(run_id: int, cancellation_token: str = "", **kwargs: Any) -> bool:
     return _operation().is_run_cancel_requested(
         run_id=run_id,
@@ -180,12 +192,13 @@ def projection_worker_status() -> dict[str, object]:
 
 __all__ = [
     "create_runtime_batch", "create_runtime_task", "retry_runtime_task", "get_run",
+    "list_interrupted_runtime_runs", "mark_runtime_run_projection_reconciled",
     "get_task", "active_run_for_account", "has_active_runtime_operations", "list_active_runtime_recovery_exclusions", "list_reconciliation_accounts", "list_queued_runs", "list_dispatchable_runs", "recover_interrupted_runtime_runs",
     "claim_next_queued_run",
     "mark_runtime_batch_empty", "set_runtime_batch_skipped", "claim_run",
     "requeue_claimed_run",
     "append_runtime_event", "heartbeat_run", "record_remote_intent", "record_remote_receipt", "acquire_account_lease", "release_account_lease",
-    "request_run_cancel", "is_run_cancel_requested", "mark_run_settling", "register_resource",
+    "request_run_cancel", "terminate_run", "is_run_cancel_requested", "mark_run_settling", "register_resource",
     "release_resource", "finish_run", "register_task_dependency",
     "mark_task_dependency_ready", "list_ready_task_dependencies", "claim_task_dependency",
     "complete_task_dependency", "apply_task_dependency_result", "recover_stale_task_dependencies", "reconcile_parent_task", "projection_worker_status",

@@ -15,11 +15,10 @@ from webui.app import create_app
 class FlaskRouteContractTests(PostgresTestCase):
     # Snapshot history: commit 1006937 had the prior map; f33e523 intentionally
     # added /api/extract-link/types. The release then added /healthz and
-    # /readyz, followed by the reviewed config snapshot, durable operations,
-    # proxy-traffic APIs and protocol email-change routes. Keep these reviewed
-    # deltas explicit rather than deriving this contract from the current map.
-    EXPECTED_ROUTE_COUNT = 121
-    EXPECTED_SHA256 = "d4341ceebf4166bff13f2df51edee466c1bc33d8a5fe987c8e775f2ca9cc1ad0"
+    # /readyz，以及经过评审的配置快照、durable operations、proxy-traffic API、
+    # 协议邮箱换绑路由和任务终止入口。保持这些变更显式记录，不从当前路由表推导基线。
+    EXPECTED_ROUTE_COUNT = 122
+    EXPECTED_SHA256 = "28b0d1cc0a26095ec0155df999152ceee23bbe9d3dff355fd835411c1330466e"
 
     def test_public_route_map_matches_refactor_baseline(self):
         app = create_app(auth_code="route-contract")

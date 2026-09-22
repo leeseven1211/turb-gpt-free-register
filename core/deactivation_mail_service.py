@@ -17,6 +17,7 @@ from core import scheduler_state
 from core.operation_runtime import OperationCancelled
 from core.operations import task_gateway as account_task_store
 from core.storage import accounts as db
+from core.storage import operation_runtime_store
 from core.cf_temp_mail_client import CFTempMailError
 from core.cf_temp_mail_client import scan_openai_deactivation as scan_cloudflare_deactivation
 from core.email_butler_client import EmailButlerClientError, scan_openai_deactivation
@@ -54,6 +55,7 @@ _HME_VALIDATION_METHOD = "mailbox_recipient_search"
 # 调度器单轮最多读取 5000 个账号，因此 100 x 50 的两层结构足够覆盖当前上限。
 _HME_PAYLOAD_CHUNK_SIZE = 100
 _HME_PAYLOAD_MAX_ACCOUNTS = 5000
+_INTERRUPTED_SCAN_ERROR = "WebUI 重启导致封号邮件扫描中断，请重新扫描"
 _PERMANENT_EMAIL_BUTLER_SCAN_ERRORS = (
     ("http 404", "email account not found"),
     ("http 403", "email is not registered for openai"),
@@ -342,6 +344,79 @@ def _hme_entries_from_run_data(data: dict | None) -> list[dict]:
     if flattened:
         return _normalise_hme_entries(flattened)
     return _normalise_hme_entries(payload.get("accounts"))
+
+
+def _local_time(value: object) -> datetime | None:
+    """把账号兼容投影里的本地无时区时间转换成 UTC。"""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
+    return parsed.astimezone(timezone.utc)
+
+
+def _projection_was_requeued_after_recovery(account: dict, run: dict) -> bool:
+    """避免旧 Run 的恢复结果覆盖恢复后重新入队的扫描。"""
+    recovered_at = _parse_time(run.get("completed_at"))
+    if recovered_at is None:
+        return False
+    return any(
+        (timestamp := _local_time(account.get(key))) is not None and timestamp > recovered_at
+        for key in (
+            "deactivation_mail_scan_queued_at",
+            "deactivation_mail_scan_started_at",
+        )
+    )
+
+
+def reconcile_interrupted_scans(*, limit: int = 500) -> int:
+    """清理 worker 重启留下的封号邮件扫描投影，不覆盖后续新任务。"""
+    runs = operation_runtime_store.list_interrupted_runtime_runs(
+        task_type="deactivation_mail",
+        recovery_reason="worker_restart",
+        limit=limit,
+    )
+    repaired = 0
+    for run in runs:
+        run_repaired = 0
+        data = run.get("data") if isinstance(run.get("data"), dict) else {}
+        if bool(data.get("bulk")):
+            entries = _hme_entries_from_run_data(data)
+        elif run.get("account_id") is not None:
+            entries = [{"account_id": int(run["account_id"])}]
+        else:
+            entries = []
+        for entry in entries:
+            account_id = int(entry["account_id"])
+            account = db.get_account(account_id)
+            if not account:
+                continue
+            if str(account.get("deactivation_mail_scan_status") or "") not in {"queued", "running"}:
+                continue
+            if _projection_was_requeued_after_recovery(account, run):
+                continue
+            if db.update_account_deactivation_mail(account_id, {
+                "status": "failed",
+                "trigger": str(run.get("trigger") or "scheduled"),
+                "error": _INTERRUPTED_SCAN_ERROR,
+                "preserve_checked_at": True,
+            }):
+                repaired += 1
+                run_repaired += 1
+        operation_runtime_store.mark_runtime_run_projection_reconciled(
+            int(run["id"]), repaired_count=run_repaired,
+        )
+    if repaired:
+        logger.warning(
+            "[DeactivationMail] 已收口 %s 个因 WebUI 重启中断的扫描投影",
+            repaired,
+        )
+    return repaired
 
 
 def _scan_hme_group(
