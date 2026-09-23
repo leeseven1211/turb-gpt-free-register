@@ -546,6 +546,8 @@ def list_jobs(request: PageRequest, *, progress_batch_id: str = "") -> dict:
                    COUNT(*) FILTER (WHERE status = 'success') AS success,
                    COUNT(*) FILTER (WHERE status = 'failed') AS failed,
                    COUNT(*) FILTER (WHERE status = 'partial_success') AS partial_success,
+                   COUNT(*) FILTER (WHERE status = 'request_unknown') AS request_unknown,
+                   COUNT(*) FILTER (WHERE status = 'manual_reconcile') AS manual_reconcile,
                    COUNT(*) FILTER (WHERE status = 'stopped') AS stopped,
                    COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled,
                    COUNT(*) FILTER (WHERE status = 'running') AS running,
@@ -562,7 +564,7 @@ def list_jobs(request: PageRequest, *, progress_batch_id: str = "") -> dict:
         for batch in cur.fetchall():
             counts = {
                 key: int(batch.get(key) or 0)
-                for key in ("success", "failed", "partial_success", "stopped", "cancelled", "running", "stopping", "pending")
+                for key in ("success", "failed", "partial_success", "request_unknown", "manual_reconcile", "stopped", "cancelled", "running", "stopping", "pending")
             }
             counts["active"] = sum(counts[key] for key in ("running", "stopping", "pending"))
             progress_batches.append({

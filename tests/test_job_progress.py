@@ -169,6 +169,24 @@ class JobProgressTests(PostgresTestCase):
                 self.assertEqual(retry["batch_size"], 3)
                 self.assertEqual(retry["batch_workers"], 4)
 
+    def test_request_unknown_can_create_registration_retry_job_without_email(self):
+        with tempfile.TemporaryDirectory() as td:
+            patches = self._storage_patches(Path(td))
+            with patches[0], patches[1]:
+                source = db.create_job("icloud_hide")
+                db.update_job(source["id"], status="request_unknown")
+
+                retry, created = db.create_retry_job(
+                    source["id"],
+                    job_type="registration",
+                    email_source="icloud_hide",
+                    email=None,
+                )
+
+                self.assertTrue(created)
+                self.assertEqual("registration", retry["retry_action"])
+                self.assertIsNone(retry["email"])
+
     def test_service_retry_inherits_original_batch_slot(self):
         source = {
             "id": 21, "status": "partial_success", "job_type": "registration",

@@ -130,9 +130,9 @@ async function batchCancelJobs() {
 }
 
 async function retryBatchFailedJobs() {
-  const ids = currentBatchJobs().filter(job => ['failed', 'partial_success', 'stopped', 'cancelled', 'interrupted'].includes(String(job.status || '')) && job.retryable).map(job => Number(job.id));
+  const ids = currentBatchJobs().filter(job => ['failed', 'partial_success', 'stopped', 'cancelled', 'interrupted', 'request_unknown', 'manual_reconcile'].includes(String(job.status || '')) && job.retryable).map(job => Number(job.id));
   if (!ids.length) { showToast('当前批次没有可重跑的失败任务'); return; }
-  if (!confirm('确定重跑当前批次的 ' + ids.length + ' 个失败任务吗？完整注册重跑会复用原邮箱，不会换新邮箱；已创建账号的任务会只补跑 Codex。')) return;
+  if (!confirm('确定重跑当前批次的 ' + ids.length + ' 个失败任务吗？有原邮箱则复用原邮箱，没有原邮箱则重新领取；已创建账号的任务会按缺失步骤补跑。')) return;
   const btn = $('#btnBatchRetryV2');
   if (btn) btn.disabled = true;
   try {
@@ -264,7 +264,8 @@ function progressJobResult(job) {
   if (status === 'password_confirmation_pending') return { label: '待确认 · 密码已提交', cls: 'is-failed' };
   if (status === 'success') return { label: '成功', cls: '' };
   if (status === 'partial_success') return { label: '部分完成', cls: 'is-failed' };
-  if (status === 'request_unknown') return { label: '待确认', cls: 'is-failed' };
+  if (status === 'request_unknown') return { label: job.retryable ? '待确认（可重跑）' : '待确认', cls: 'is-failed' };
+  if (status === 'manual_reconcile') return { label: job.retryable ? '待人工确认（可重跑）' : '待人工确认', cls: 'is-failed' };
   if (status === 'interrupted') return { label: '服务中断', cls: 'is-failed' };
   if (status === 'failed') return { label: '失败', cls: 'is-failed' };
   if (status === 'cancelled') return { label: '已取消', cls: 'is-failed' };
@@ -292,7 +293,7 @@ function registrationBatchStateLabel(counts = {}) {
   const pending = Number(counts.pending || 0);
   const unfinished = running + pending;
   if (unfinished > 0) return `未完成 ${unfinished}（运行 ${running} / 等待 ${pending}）`;
-  const failures = Number(counts.failed || 0) + Number(counts.partial_success || 0) + Number(counts.request_unknown || 0) + Number(counts.stopped || 0) + Number(counts.cancelled || 0);
+  const failures = Number(counts.failed || 0) + Number(counts.partial_success || 0) + Number(counts.request_unknown || 0) + Number(counts.manual_reconcile || 0) + Number(counts.stopped || 0) + Number(counts.cancelled || 0);
   if (failures > 0) return `异常 ${failures}`;
   const interrupted = Number(counts.interrupted || 0);
   return interrupted > 0 ? `服务中断 ${interrupted}` : '已完成';
@@ -339,7 +340,7 @@ function renderBatchProgress() {
 
   const hasFailedStep = job => Object.values(job.progress_steps || {}).some(step => step && ['failed', 'stopped'].includes(step.state));
   const success = items.filter(job => job.status === 'success' && !hasFailedStep(job)).length;
-  const failed = items.filter(job => ['failed', 'cancelled', 'stopped'].includes(job.status) || hasFailedStep(job)).length;
+  const failed = items.filter(job => ['failed', 'cancelled', 'stopped', 'request_unknown', 'manual_reconcile'].includes(job.status) || hasFailedStep(job)).length;
   const interrupted = items.filter(job => job.status === 'interrupted').length;
   const active = items.filter(job => ['running', 'stopping'].includes(job.status) && !hasFailedStep(job)).length;
   const pending = items.filter(job => job.status === 'pending').length;
@@ -367,7 +368,7 @@ function renderBatchProgress() {
 
   const runningIds = items.filter(job => ['running', 'stopping'].includes(String(job.status || ''))).map(job => Number(job.id));
   const pendingIds = items.filter(job => String(job.status || '') === 'pending').map(job => Number(job.id));
-  const retryIds = items.filter(job => ['failed', 'partial_success', 'stopped', 'cancelled', 'interrupted'].includes(String(job.status || '')) && job.retryable).map(job => Number(job.id));
+  const retryIds = items.filter(job => ['failed', 'partial_success', 'stopped', 'cancelled', 'interrupted', 'request_unknown', 'manual_reconcile'].includes(String(job.status || '')) && job.retryable).map(job => Number(job.id));
   const stopBtn = $('#btnBatchStopV2');
   const cancelBtn = $('#btnBatchCancelV2');
   const retryBtn = $('#btnBatchRetryV2');
@@ -809,7 +810,7 @@ async function retryJob(jobId, btn) {
       ? '重新登录检查并补齐 Authenticator 2FA'
       : (job.retry_action === 'registration_resume'
         ? '使用已保存账号密码继续邮箱验证'
-        : '创建新的完整注册任务，并复用原邮箱，不会换新邮箱'));
+        : '创建新的完整注册任务，有原邮箱则复用，没有原邮箱则重新领取'));
   if (!confirm(`确定${job.retry_label || '重试'}任务 #${jobId}？\n\n${actionText}\n原任务记录和日志会保留。`)) return;
   btn.disabled = true;
   try {
@@ -829,7 +830,7 @@ async function retryJob(jobId, btn) {
 
 async function retrySelectedJobs() {
   const ids = Array.from(JOB_SELECTED);
-  if (!confirm(`确定重试选中的 ${ids.length} 个任务吗？\n\n后端会逐条校验；已创建账号的任务只补跑 Codex，其余任务会完整注册重跑并复用原邮箱，不会换新邮箱；不能重试的会自动跳过。`)) return;
+  if (!confirm(`确定重试选中的 ${ids.length} 个任务吗？\n\n后端会逐条校验；有原邮箱则复用，没有原邮箱则重新领取；已创建账号的任务会按缺失步骤补跑；不能重试的会自动跳过。`)) return;
   const btn = $('#btnRetrySelectedJobsV2');
   if (btn) btn.disabled = true;
   try {

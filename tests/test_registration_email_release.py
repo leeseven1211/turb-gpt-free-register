@@ -395,25 +395,39 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
         self.assertIn("原邮箱来源", result["error"])
         create_retry.assert_not_called()
 
-    def test_normal_registration_retry_without_original_email_is_rejected(self):
+    def test_normal_registration_retry_without_original_email_reacquires_email(self):
         source = {
             "id": 31,
             "status": "failed",
             "job_type": "registration",
+            "batch_id": "original-batch",
+            "batch_index": 3,
+            "batch_size": 10,
+            "batch_workers": 4,
             "email_source": "icloud_hide",
         }
+        retry_row = {
+            "id": 32,
+            "status": "pending",
+            "job_type": "registration",
+            "batch_id": "original-batch",
+            "batch_index": 3,
+            "batch_size": 10,
+            "batch_workers": 4,
+            "log_file": "/tmp/retry.log",
+        }
+        executor = Mock()
 
         with patch.object(svc.db, "get_job", return_value=source), patch.object(
             svc, "get_retry_info", return_value={"retryable": True, "retry_action": "registration"}
         ), patch.object(svc, "_account_for_job", return_value=None), patch.object(
-            svc.db, "create_retry_job"
-        ) as create_retry:
+            svc.db, "create_retry_job", return_value=(retry_row, True)
+        ) as create_retry, patch.object(svc, "get_executor", return_value=executor):
             result = svc.retry_job(31)
 
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["status"], 409)
-        self.assertIn("原注册邮箱", result["error"])
-        create_retry.assert_not_called()
+        self.assertTrue(result["ok"])
+        self.assertIsNone(create_retry.call_args.kwargs["email"])
+        executor.submit.assert_called_once_with(svc._run_one_job, 32, "/tmp/retry.log")
 
     def test_retry_child_reuses_stored_email_without_acquiring_another(self):
         job = {
@@ -480,6 +494,70 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
         )
         self.assertEqual(run_registration.call_args.kwargs["email"], "held@icloud.com")
         self.assertEqual(run_registration.call_args.kwargs["email_source"], "icloud_hide")
+
+    def test_retry_child_without_email_acquires_a_new_email(self):
+        job = {
+            "id": 2,
+            "status": "pending",
+            "email_source": "icloud_hide",
+            "job_type": "registration",
+            "parent_job_id": 1,
+            "root_job_id": 1,
+            "batch_id": "original-batch",
+            "email": None,
+        }
+        proxy = SimpleNamespace(
+            provider="test",
+            endpoint="127.0.0.1:8080",
+            exit_ip="127.0.0.1",
+            region="US",
+            acquired_at=SimpleNamespace(isoformat=lambda **_kwargs: "2026-08-13T00:00:00"),
+            expires_at=None,
+            proxy_url="http://127.0.0.1:8080",
+        )
+        result = {
+            "success": True,
+            "registration_success": True,
+            "postprocess_success": True,
+            "email": "new@icloud.com",
+            "account_id": 42,
+            "access_token": "token",
+        }
+
+        with tempfile.TemporaryDirectory() as td, patch.object(
+            task_run_log, "_LOG_ROOT", Path(td)
+        ), patch.object(
+            svc.db, "get_job", return_value=job
+        ), patch.object(svc.db, "update_job"), patch.object(
+            svc.db, "update_job_progress"
+        ), patch.object(svc.db, "finish_job_progress"), patch.object(
+            svc.db, "claim_job_for_execution", return_value=True
+        ), patch.object(svc.db, "update_account_registration_proxy"), patch.object(
+            svc, "_account_for_job", return_value=None
+        ), patch.object(
+            svc, "_prepare_registration_args", return_value=("new@icloud.com", "Test", "1990-01-01")
+        ) as prepare_args, patch(
+            "core.email_provider.restore_email_context"
+        ) as restore_email, patch.object(
+            svc, "_mark_completed_registration_email", return_value=True
+        ), patch(
+            "core.proxy_provider.acquire_registration_proxy", return_value=proxy
+        ), patch(
+            "core.proxy_provider.release_proxy"
+        ), patch(
+            "core.proxy_provider.mask_endpoint", return_value="masked"
+        ), patch(
+            "core.proxy_provider.mask_ip", return_value="masked"
+        ), patch(
+            "core.registration.dispatcher.run_registration", return_value=result
+        ) as run_registration:
+            svc._run_one_job(2, str(Path(td) / "job.log"))
+
+        prepare_args.assert_called_once_with(
+            "icloud_hide", batch_id="original-batch", job_id=2,
+        )
+        restore_email.assert_not_called()
+        self.assertEqual(run_registration.call_args.kwargs["email"], "new@icloud.com")
 
     def test_retry_child_with_source_different_from_root_is_rejected_before_restore(self):
         child = {

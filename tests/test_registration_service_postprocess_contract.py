@@ -8,6 +8,20 @@ from core.registration_service import _build_retry_info
 
 
 class RegistrationServicePostprocessContractTests(unittest.TestCase):
+    def test_request_unknown_without_account_is_retryable_registration(self):
+        info = _build_retry_info(
+            {
+                "status": "request_unknown",
+                "email_source": "icloud_hide",
+                "progress_steps": {"auth_redirect": {"state": "failed"}},
+            },
+            account=None,
+            successful_retry=None,
+        )
+
+        self.assertTrue(info["retryable"])
+        self.assertEqual("registration", info["retry_action"])
+
     def test_multiple_independent_actions_are_exposed(self):
         info = _build_retry_info(
             {

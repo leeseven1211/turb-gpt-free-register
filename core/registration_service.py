@@ -1409,11 +1409,14 @@ def _run_one_job(job_id: int, log_file: str) -> None:
             existing_password = ""
             existing_totp_secret = ""
             bound_profile_id = ""
-            reuses_original_email = (
+            is_registration_retry = (
                 is_retry_job
                 and str(current.get("job_type") or "") == "registration"
             )
-            if reuses_original_email:
+            root_email = ""
+            child_email = ""
+            reuses_original_email = False
+            if is_registration_retry:
                 root_job_id = int(current.get("root_job_id") or current.get("id") or job_id)
                 root_job = current if root_job_id == job_id else db.get_job(root_job_id)
                 if not root_job:
@@ -1432,6 +1435,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 if root_email and child_email and root_email.casefold() != child_email.casefold():
                     raise RuntimeError("重跑任务邮箱与根任务不一致，不能切换来源或邮箱")
                 selected_source = root_source
+                reuses_original_email = bool(root_email or child_email)
             else:
                 selected_source = str(current.get("email_source") or "").strip()
                 try:
@@ -1465,7 +1469,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 )
                 log_logger.info("[Job %s] 继续验证已保存账号：account_id=%s", job_id, (resume_account or {}).get("id"))
             elif reuses_original_email:
-                email = str(current.get("email") or "").strip()
+                email = child_email or root_email
                 if not email:
                     raise RuntimeError("重跑任务缺少原注册邮箱，不能改用其他邮箱")
                 from core.email_provider import restore_email_context
@@ -2257,6 +2261,16 @@ def _account_plan_ready(account: dict | None) -> bool:
 
 _DEACTIVATED_ATTEMPT_RETRY_REASON = "注册 Attempt 已被上游明确确认永久失效，禁止重跑"
 _ATTEMPT_READ_FAILED_RETRY_REASON = "注册 Attempt 读取失败，需人工确认后再重试"
+_RETRYABLE_REGISTRATION_JOB_STATUSES = (
+    "success",
+    "failed",
+    "partial_success",
+    "stopped",
+    "cancelled",
+    "interrupted",
+    "request_unknown",
+    "manual_reconcile",
+)
 
 
 def _attempt_is_deactivated(attempt: dict | None) -> bool:
@@ -2315,7 +2329,7 @@ def _build_retry_info(
         "display_status": status,
         "next_actions": [],
     }
-    if status not in ("success", "failed", "partial_success", "stopped", "cancelled", "interrupted"):
+    if status not in _RETRYABLE_REGISTRATION_JOB_STATUSES:
         return info
 
     if attempt_read_failed:
@@ -2501,7 +2515,7 @@ def _build_retry_info(
 def get_retry_info(job: dict, *, account_override: dict | None = None) -> dict:
     """返回给 API/UI 的重试能力描述，不依赖前端猜测错误阶段。"""
     status = str(job.get("status") or "")
-    if status not in ("success", "failed", "partial_success", "stopped", "cancelled", "interrupted"):
+    if status not in _RETRYABLE_REGISTRATION_JOB_STATUSES:
         return _build_retry_info(job, account=None, successful_retry=None)
     successful_retry = db.get_successful_retry_for_job(int(job.get("id") or 0))
     account = None if successful_retry is not None else (
@@ -2522,7 +2536,7 @@ def get_retry_info_bulk(jobs: list[dict]) -> dict[int, dict]:
     rows = [dict(job) for job in (jobs or [])]
     terminal = [
         job for job in rows
-        if str(job.get("status") or "") in ("success", "failed", "partial_success", "stopped", "cancelled", "interrupted")
+        if str(job.get("status") or "") in _RETRYABLE_REGISTRATION_JOB_STATUSES
     ]
     successful_by_job = db.get_successful_retries_for_jobs(terminal)
     needs_accounts = [job for job in terminal if int(job.get("id") or 0) not in successful_by_job]
@@ -2604,12 +2618,6 @@ def retry_job(
         # 普通注册重跑属于同一根任务链；根任务保存的地址才是不可替换的原邮箱。
         # 仅为兼容根记录尚未回填邮箱的历史链，才退回当前失败任务自身的快照。
         email = root_email or source_email
-    if action == "registration" and not email:
-        return {
-            "ok": False,
-            "error": "原注册邮箱未保存，不能使用其他邮箱重跑",
-            "status": 409,
-        }
     if action == "registration":
         if root_record is None and root_id != int(source.get("id") or 0):
             return {
@@ -2702,7 +2710,7 @@ def retry_job(
             int(job_id),
             job_type=job_type,
             email_source=retry_email_source,
-            email=email if action in {"codex", "twofa", "registration_resume", "registration"} else None,
+            email=(email or None) if action in {"codex", "twofa", "registration_resume", "registration"} else None,
             account_id=account_id if action in {"codex", "twofa", "registration_resume"} else None,
             batch_id=batch_id,
             batch_index=batch_index,

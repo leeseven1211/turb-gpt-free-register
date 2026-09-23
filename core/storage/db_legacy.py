@@ -3148,6 +3148,7 @@ def create_retry_job(
             raise LookupError("任务不存在")
         if source.get("status") not in (
             "success", "failed", "partial_success", "stopped", "cancelled", "interrupted",
+            "request_unknown", "manual_reconcile",
         ):
             raise ValueError(f"当前状态不支持重试：{source.get('status')}")
 
