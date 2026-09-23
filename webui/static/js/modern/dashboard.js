@@ -3,7 +3,9 @@ const OVERVIEW_PREFERENCE_KEY = 'gpt_console_overview_preferences_v1';
 const OVERVIEW_REGIONS = ['metrics', 'panels'];
 let LAST_DASHBOARD_DATA = null;
 let overviewDraggedCardId = '';
+let overviewPageDraggedCardId = '';
 let overviewCustomizerOpen = false;
+let overviewResizeState = null;
 
 async function loadSummary() {
   if (summaryLoading) return;
@@ -57,10 +59,22 @@ function overviewCardAvailable(card, data) {
   try { return Boolean(card.available(data)); } catch (_) { return false; }
 }
 
-function dashboardMetric(id, label, value, hint, color) {
-  return `<article class="overview-metric" data-overview-card="${attrEsc(id)}" style="--metric-color:${attrEsc(color)}">
-    <div class="overview-metric-top"><span>${esc(label)}</span><i class="overview-metric-dot" aria-hidden="true"></i></div>
-    <strong>${esc(value)}</strong><small>${esc(hint)}</small>
+function overviewDragHandle(label) {
+  return `<span class="overview-card-drag" draggable="true" role="button" tabindex="0" aria-label="拖动${attrEsc(label)}卡片排序，或使用方向键调整顺序" title="拖动排序；方向键调整顺序">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="5" cy="3" r="1"/><circle cx="11" cy="3" r="1"/><circle cx="5" cy="8" r="1"/><circle cx="11" cy="8" r="1"/><circle cx="5" cy="13" r="1"/><circle cx="11" cy="13" r="1"/></svg>
+  </span>`;
+}
+
+function overviewResizeHandle(label) {
+  return `<button type="button" class="overview-resize-handle" data-overview-resize aria-label="拖动调整${attrEsc(label)}卡片宽高；方向键可调整" title="拖动调整宽高；方向键调整">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 14l8-8M10 14l4-4"/></svg>
+  </button>`;
+}
+
+function dashboardMetric(id, label, value, hint, color, size = 'normal', height = 0) {
+  return `<article class="overview-metric" data-overview-card="${attrEsc(id)}" data-overview-size="${attrEsc(size)}" style="--metric-color:${attrEsc(color)};${height ? `min-height:${height}px` : ''}">
+    <div class="overview-metric-top"><span>${esc(label)}</span><div class="overview-card-tools"><i class="overview-metric-dot" aria-hidden="true"></i>${overviewDragHandle(label)}</div></div>
+    <strong>${esc(value)}</strong><small>${esc(hint)}</small>${overviewResizeHandle(label)}
   </article>`;
 }
 
@@ -72,35 +86,35 @@ const OVERVIEW_CARD_REGISTRY = [
   {
     id: 'metric-accounts', region: 'metrics', label: '有效账号',
     available: data => Number(data?.accounts?.total || 0) > 0,
-    render: data => dashboardMetric('metric-accounts', '有效账号', data.accounts.active || 0, `归档 ${data.accounts.archived || 0}`, '#5b5ce2'),
+    render: (data, preferences) => dashboardMetric('metric-accounts', '有效账号', data.accounts.active || 0, `归档 ${data.accounts.archived || 0}`, '#5b5ce2', preferences?.sizes?.['metric-accounts'], preferences?.heights?.['metric-accounts']),
   },
   {
     id: 'metric-email', region: 'metrics', label: '可用邮箱',
     available: data => overviewEmailSources(data).length > 0,
-    render: data => {
+    render: (data, preferences) => {
       const sources = overviewEmailSources(data);
       const onDemand = sources.some(source => source.kind === 'on_demand');
-      return dashboardMetric('metric-email', '可用邮箱', onDemand && !Number(data.email.local_available || 0) ? '按需' : (data.email.local_available || 0), `已启用来源 ${sources.length} 个`, '#2dbb8a');
+      return dashboardMetric('metric-email', '可用邮箱', onDemand && !Number(data.email.local_available || 0) ? '按需' : (data.email.local_available || 0), `已启用来源 ${sources.length} 个`, '#2dbb8a', preferences?.sizes?.['metric-email'], preferences?.heights?.['metric-email']);
     },
   },
   {
     id: 'metric-jobs', region: 'metrics', label: '运行任务',
     available: overviewJobsAvailable,
-    render: data => {
+    render: (data, preferences) => {
       const counts = data.jobs.counts || {};
       const active = Number(counts.running || 0) + Number(counts.pending || 0) + Number(counts.stopping || 0);
-      return dashboardMetric('metric-jobs', '运行任务', active, `累计任务 ${data.jobs.total || 0}`, '#e6a23c');
+      return dashboardMetric('metric-jobs', '运行任务', active, `累计任务 ${data.jobs.total || 0}`, '#e6a23c', preferences?.sizes?.['metric-jobs'], preferences?.heights?.['metric-jobs']);
     },
   },
   {
     id: 'metric-codex', region: 'metrics', label: 'Codex 凭证',
     available: data => Number(data?.codex?.total || 0) > 0,
-    render: data => dashboardMetric('metric-codex', 'Codex 凭证', data.codex.total || 0, `待导出 ${data.codex.pending || 0}`, '#377dff'),
+    render: (data, preferences) => dashboardMetric('metric-codex', 'Codex 凭证', data.codex.total || 0, `待导出 ${data.codex.pending || 0}`, '#377dff', preferences?.sizes?.['metric-codex'], preferences?.heights?.['metric-codex']),
   },
   {
     id: 'metric-proxy', region: 'metrics', label: '活跃出口',
     available: overviewProxyAvailable,
-    render: data => dashboardMetric('metric-proxy', '活跃出口', data.proxy.active_leases || 0, `代理平台 ${overviewProxyPlatformLabel(data.proxy.platform)}`, '#a855f7'),
+    render: (data, preferences) => dashboardMetric('metric-proxy', '活跃出口', data.proxy.active_leases || 0, `代理平台 ${overviewProxyPlatformLabel(data.proxy.platform)}`, '#a855f7', preferences?.sizes?.['metric-proxy'], preferences?.heights?.['metric-proxy']),
   },
   {
     id: 'panel-email', region: 'panels', label: '邮箱资源 · 邮箱池与按需平台',
@@ -197,7 +211,15 @@ function normalizeOverviewPreferences(raw, availableIds) {
       ...available.filter(id => !saved.includes(id)),
     ])];
   }
-  return {order, hidden};
+  const sizes = {};
+  const heights = {};
+  for (const id of known) {
+    const fallback = 'normal';
+    sizes[id] = ['normal', 'wide', 'full'].includes(source.sizes?.[id]) ? source.sizes[id] : fallback;
+    const height = Number(source.heights?.[id]);
+    if (Number.isFinite(height) && height >= 100 && height <= 800) heights[id] = Math.round(height);
+  }
+  return {order, hidden, sizes, heights};
 }
 
 function overviewStorage() {
@@ -226,14 +248,16 @@ function overviewActionMarkup(action) {
   return `<button type="button" ${dataAttribute}="${attrEsc(action.value)}">${esc(action.label)}</button>`;
 }
 
-function renderOverviewPanel(card, data) {
+function renderOverviewPanel(card, data, preferences) {
   const titleParts = card.label.split(' · ');
-  return `<section class="overview-panel" data-overview-card="${attrEsc(card.id)}">
+  const size = preferences?.sizes?.[card.id] || 'normal';
+  const height = preferences?.heights?.[card.id];
+  return `<section class="overview-panel" data-overview-card="${attrEsc(card.id)}" data-overview-size="${attrEsc(size)}"${height ? ` style="min-height:${height}px"` : ''}>
     <div class="overview-panel-head">
       <div><span>${esc(titleParts[0])}</span><h3>${esc(titleParts.slice(1).join(' · '))}</h3></div>
-      ${overviewActionMarkup(card.action)}
+      <div class="overview-card-tools">${overviewActionMarkup(card.action)}${overviewDragHandle(titleParts.slice(1).join(' · '))}</div>
     </div>
-    ${card.render(data)}
+    ${card.render(data)}${overviewResizeHandle(titleParts.slice(1).join(' · '))}
   </section>`;
 }
 
@@ -275,8 +299,8 @@ function renderDashboard(data) {
   const preferences = readOverviewPreferences(availableIds);
   const metricRoot = $('#overviewMetrics');
   const panelRoot = $('#overviewPanels');
-  if (metricRoot) metricRoot.innerHTML = overviewCardIdsForRender(LAST_DASHBOARD_DATA, preferences, 'metrics').map(card => card.render(LAST_DASHBOARD_DATA)).join('');
-  if (panelRoot) panelRoot.innerHTML = overviewCardIdsForRender(LAST_DASHBOARD_DATA, preferences, 'panels').map(card => renderOverviewPanel(card, LAST_DASHBOARD_DATA)).join('');
+  if (metricRoot) metricRoot.innerHTML = overviewCardIdsForRender(LAST_DASHBOARD_DATA, preferences, 'metrics').map(card => card.render(LAST_DASHBOARD_DATA, preferences)).join('');
+  if (panelRoot) panelRoot.innerHTML = overviewCardIdsForRender(LAST_DASHBOARD_DATA, preferences, 'panels').map(card => renderOverviewPanel(card, LAST_DASHBOARD_DATA, preferences)).join('');
   renderOverviewCustomizer(LAST_DASHBOARD_DATA, availableIds, preferences);
 }
 
@@ -298,6 +322,15 @@ function moveOverviewCard(region, cardId, direction) {
     if (index < 0 || nextIndex < 0 || nextIndex >= order.length) return;
     [order[index], order[nextIndex]] = [order[nextIndex], order[index]];
   });
+}
+
+function reorderOverviewCard(preferences, region, sourceId, targetId, after = false) {
+  const order = preferences.order[region] || [];
+  const from = order.indexOf(sourceId);
+  if (from < 0 || !order.includes(targetId) || sourceId === targetId) return;
+  order.splice(from, 1);
+  const to = order.indexOf(targetId);
+  order.splice(to + (after ? 1 : 0), 0, sourceId);
 }
 
 function toggleOverviewCard(cardId, visible) {
@@ -342,17 +375,68 @@ function closeOverviewCustomizer() {
   $('#btnCustomizeOverview')?.focus();
 }
 
-function handleOverviewCardDrop(targetId, targetRegion) {
-  if (!overviewDraggedCardId || !LAST_DASHBOARD_DATA) return;
-  const sourceCard = overviewRegistryCard(overviewDraggedCardId);
+function handleOverviewCardDrop(targetId, targetRegion, after = false, sourceId = overviewDraggedCardId) {
+  if (!sourceId || !LAST_DASHBOARD_DATA) return;
+  const sourceCard = overviewRegistryCard(sourceId);
   if (!sourceCard || sourceCard.region !== targetRegion || sourceCard.id === targetId) return;
+  updateOverviewPreferences(preferences => reorderOverviewCard(preferences, targetRegion, sourceId, targetId, after));
+}
+
+function overviewResizeSize(region, columns, span) {
+  if (span <= 1) return 'normal';
+  if (span >= Math.min(columns, region === 'metrics' ? 4 : 3) && columns >= 3) return 'full';
+  return 'wide';
+}
+
+function startOverviewResize(event, handle) {
+  const card = handle.closest('[data-overview-card]');
+  const grid = card?.parentElement;
+  if (!card || !grid) return;
+  const columns = getComputedStyle(grid).gridTemplateColumns.split(/\s+/).length;
+  const gap = parseFloat(getComputedStyle(grid).columnGap) || 0;
+  const region = grid.id === 'overviewMetrics' ? 'metrics' : 'panels';
+  const cardWidth = card.getBoundingClientRect().width;
+  const gridWidth = grid.getBoundingClientRect().width;
+  overviewResizeState = {
+    card, handle, region, id: card.dataset.overviewCard, columns, gap,
+    columnWidth: (gridWidth - gap * (columns - 1)) / columns,
+    startX: event.clientX, startY: event.clientY,
+    startWidth: cardWidth, startHeight: card.getBoundingClientRect().height,
+    startSize: card.dataset.overviewSize, startMinHeight: card.style.minHeight,
+    changed: false,
+  };
+  handle.setPointerCapture(event.pointerId);
+  card.classList.add('is-resizing');
+  event.preventDefault();
+}
+
+function moveOverviewResize(event) {
+  const state = overviewResizeState;
+  if (!state) return;
+  const width = state.startWidth + event.clientX - state.startX;
+  const span = Math.max(1, Math.min(state.columns, Math.round((width + state.gap) / (state.columnWidth + state.gap))));
+  const size = overviewResizeSize(state.region, state.columns, span);
+  state.card.dataset.overviewSize = size;
+  if (Math.abs(event.clientY - state.startY) > 4) {
+    state.card.style.minHeight = `${Math.max(160, Math.min(800, Math.round(state.startHeight + event.clientY - state.startY)))}px`;
+  }
+  state.changed = state.changed || Math.abs(event.clientX - state.startX) > 4 || Math.abs(event.clientY - state.startY) > 4;
+}
+
+function finishOverviewResize(cancelled = false) {
+  const state = overviewResizeState;
+  if (!state) return;
+  overviewResizeState = null;
+  state.card.classList.remove('is-resizing');
+  if (cancelled || !state.changed) {
+    state.card.dataset.overviewSize = state.startSize;
+    state.card.style.minHeight = state.startMinHeight;
+    return;
+  }
   updateOverviewPreferences(preferences => {
-    const order = preferences.order[targetRegion] || [];
-    const from = order.indexOf(overviewDraggedCardId);
-    const to = order.indexOf(targetId);
-    if (from < 0 || to < 0) return;
-    order.splice(from, 1);
-    order.splice(to, 0, overviewDraggedCardId);
+    preferences.sizes[state.id] = state.card.dataset.overviewSize;
+    const height = parseInt(state.card.style.minHeight, 10);
+    if (Number.isFinite(height)) preferences.heights[state.id] = height;
   });
 }
 
@@ -368,6 +452,74 @@ $('#tab-overview')?.addEventListener('click', e => {
   if (config) { openConfigGroup(config.dataset.overviewConfig); return; }
   const move = e.target.closest('[data-overview-move]');
   if (move) moveOverviewCard(move.dataset.overviewMoveRegion, move.dataset.overviewMoveId, move.dataset.overviewMove);
+});
+$('#tab-overview')?.addEventListener('keydown', e => {
+  const card = e.target.closest('[data-overview-card]');
+  if (!card) return;
+  const region = card.parentElement?.id === 'overviewMetrics' ? 'metrics' : 'panels';
+  if (e.target.closest('.overview-card-drag') && ['ArrowLeft', 'ArrowUp', 'ArrowRight', 'ArrowDown'].includes(e.key)) {
+    e.preventDefault();
+    const id = card.dataset.overviewCard;
+    moveOverviewCard(region, id, ['ArrowLeft', 'ArrowUp'].includes(e.key) ? 'up' : 'down');
+    $('#tab-overview')?.querySelector(`[data-overview-card="${id}"] .overview-card-drag`)?.focus();
+  }
+  if (e.target.closest('[data-overview-resize]') && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+    e.preventDefault();
+    const id = card.dataset.overviewCard;
+    updateOverviewPreferences(preferences => {
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        const options = ['normal', 'wide', 'full'];
+        const index = options.indexOf(preferences.sizes[id]);
+        preferences.sizes[id] = options[Math.max(0, Math.min(2, index + (e.key === 'ArrowRight' ? 1 : -1)))];
+      } else {
+        preferences.heights[id] = Math.max(160, Math.min(800, (preferences.heights[id] || Math.round(card.getBoundingClientRect().height)) + (e.key === 'ArrowDown' ? 40 : -40)));
+      }
+    });
+    $('#tab-overview')?.querySelector(`[data-overview-card="${id}"] [data-overview-resize]`)?.focus();
+  }
+});
+$('#tab-overview')?.addEventListener('pointerdown', e => {
+  const handle = e.target.closest('[data-overview-resize]');
+  if (handle) startOverviewResize(e, handle);
+});
+$('#tab-overview')?.addEventListener('pointermove', moveOverviewResize);
+$('#tab-overview')?.addEventListener('pointerup', () => finishOverviewResize());
+$('#tab-overview')?.addEventListener('pointercancel', () => finishOverviewResize(true));
+$('#tab-overview')?.addEventListener('dragstart', e => {
+  const handle = e.target.closest('.overview-card-drag');
+  const card = handle?.closest('[data-overview-card]');
+  if (!card) return;
+  overviewPageDraggedCardId = card.dataset.overviewCard;
+  card.classList.add('is-dragging');
+  e.dataTransfer?.setData('text/plain', overviewPageDraggedCardId);
+  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+});
+$('#tab-overview')?.addEventListener('dragover', e => {
+  if (!overviewPageDraggedCardId) return;
+  const card = e.target.closest('[data-overview-card]');
+  if (!card || card.dataset.overviewCard === overviewPageDraggedCardId) return;
+  const source = overviewRegistryCard(overviewPageDraggedCardId);
+  if (source?.region !== overviewRegistryCard(card.dataset.overviewCard)?.region) return;
+  e.preventDefault();
+  card.classList.add('is-drag-over');
+});
+$('#tab-overview')?.addEventListener('dragleave', e => {
+  e.target.closest('[data-overview-card]')?.classList.remove('is-drag-over');
+});
+$('#tab-overview')?.addEventListener('drop', e => {
+  if (!overviewPageDraggedCardId) return;
+  const card = e.target.closest('[data-overview-card]');
+  if (!card) return;
+  e.preventDefault();
+  const rect = card.getBoundingClientRect();
+  const singleColumn = getComputedStyle(card.parentElement).gridTemplateColumns.split(/\s+/).length === 1;
+  const after = singleColumn ? e.clientY >= rect.top + rect.height / 2 : e.clientX >= rect.left + rect.width / 2;
+  handleOverviewCardDrop(card.dataset.overviewCard, overviewRegistryCard(card.dataset.overviewCard)?.region, after, overviewPageDraggedCardId);
+  overviewPageDraggedCardId = '';
+});
+$('#tab-overview')?.addEventListener('dragend', () => {
+  $('#tab-overview')?.querySelectorAll('.is-dragging, .is-drag-over').forEach(card => card.classList.remove('is-dragging', 'is-drag-over'));
+  overviewPageDraggedCardId = '';
 });
 $('#tab-overview')?.addEventListener('change', e => {
   const toggle = e.target.closest('[data-overview-toggle]');

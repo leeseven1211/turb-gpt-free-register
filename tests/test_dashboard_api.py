@@ -137,6 +137,47 @@ console.log('ok');
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         self.assertEqual(result.stdout.strip(), "ok")
 
+    def test_overview_card_sizes_are_saved_and_bounded(self):
+        source = self.MODERN_DASHBOARD_JS.read_text(encoding="utf-8")
+        function_source = source[:source.index("function renderDashboard")]
+        harness = f"""
+function esc(value) {{ return String(value ?? ''); }}
+function attrEsc(value) {{ return String(value ?? ''); }}
+{function_source}
+const available = {{metrics: ['metric-accounts'], panels: ['panel-email', 'panel-proxy']}};
+const prefs = normalizeOverviewPreferences({{
+  sizes: {{'metric-accounts': 'wide', 'panel-email': 'invalid', 'panel-proxy': 'full', missing: 'full'}},
+}}, available);
+if (prefs.sizes['metric-accounts'] !== 'wide') throw new Error('metric width lost');
+if (prefs.sizes['panel-email'] !== 'normal') throw new Error('invalid width was not reset');
+if (prefs.sizes['panel-proxy'] !== 'full') throw new Error('panel width lost');
+if ('missing' in prefs.sizes) throw new Error('unknown size retained');
+const html = renderOverviewPanel(overviewRegistryCard('panel-email'), {{email: {{sources: [{{source: 'outlook', label: 'Outlook', enabled: true, available: 5}}]}}}}, prefs);
+if (!html.includes('data-overview-size="normal"')) throw new Error('normalized width not rendered');
+if (!html.includes('data-overview-resize')) throw new Error('resize handle missing');
+if (!html.includes('overview-card-drag')) throw new Error('page drag handle missing');
+console.log('ok');
+"""
+        result = subprocess.run(["node", "--input-type=commonjs", "-e", harness], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertEqual(result.stdout.strip(), "ok")
+
+    def test_overview_card_reorder_can_place_card_after_target(self):
+        source = self.MODERN_DASHBOARD_JS.read_text(encoding="utf-8")
+        function_source = source[:source.index("function toggleOverviewCard")]
+        harness = f"""
+{function_source}
+const prefs = {{order: {{metrics: [], panels: ['panel-email', 'panel-proxy', 'panel-jobs', 'panel-accounts']}}}};
+reorderOverviewCard(prefs, 'panels', 'panel-email', 'panel-jobs', true);
+if (JSON.stringify(prefs.order.panels) !== JSON.stringify(['panel-proxy', 'panel-jobs', 'panel-email', 'panel-accounts'])) throw new Error('card not placed after target');
+reorderOverviewCard(prefs, 'panels', 'panel-accounts', 'panel-proxy', false);
+if (JSON.stringify(prefs.order.panels) !== JSON.stringify(['panel-accounts', 'panel-proxy', 'panel-jobs', 'panel-email'])) throw new Error('card not placed before target');
+console.log('ok');
+"""
+        result = subprocess.run(["node", "--input-type=commonjs", "-e", harness], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertEqual(result.stdout.strip(), "ok")
+
     def test_task_error_ui_uses_short_code_and_summary_instead_of_raw_message(self):
         source = self.MODERN_COMMON_JS.read_text(encoding="utf-8")
         start = source.index("function taskErrorBadge")
