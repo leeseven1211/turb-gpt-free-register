@@ -27,6 +27,18 @@ class RoxyProfileNameTests(unittest.TestCase):
             source,
         )
 
+    def test_recent_fingerprint_section_exposes_roxy_profile_name(self):
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "webui/static/js/modern/accounts.js"
+        ).read_text(encoding="utf-8")
+        fingerprint_section = source[
+            source.index("function _accountDetailFingerprintMarkup"):
+            source.index("function _accountDetailRoxyProfileState")
+        ]
+
+        self.assertIn("_accountDetailRoxyProfileState(r)", fingerprint_section)
+
     def test_client_returns_window_name_from_active_profile(self):
         client = RoxyBrowserClient(api_base="http://roxy.example")
         with patch.object(

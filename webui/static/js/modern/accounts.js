@@ -1263,6 +1263,7 @@ function _accountDetailFingerprintMarkup(r) {
     <div class="account-detail-grid">
       ${_accountDetailState('来源', hasFingerprint ? source : '未记录', hasFingerprint ? 'info' : 'neutral')}
       ${_accountDetailState('Profile 摘要', fingerprint.profile_ref || '未记录', fingerprint.profile_ref ? 'info' : 'neutral')}
+      ${_accountDetailRoxyProfileState(r)}
       ${_accountDetailState('浏览器 / 系统', fingerprint.browser || '未记录')}
       ${_accountDetailState('屏幕 / DPR', fingerprint.screen ? `${fingerprint.screen} / ${dpr}` : '未记录')}
       ${_accountDetailState('语言', fingerprint.language || '未记录')}
@@ -1312,7 +1313,6 @@ function _accountDetailMarkup(r) {
       ${_accountDetailState('姓名', r.user_name || '未设置')}
       ${_accountDetailState('注册出口国家', r.registration_proxy_region || '未记录', r.registration_proxy_region ? 'info' : 'neutral')}
       ${_accountDetailState('注册代理', r.registration_proxy_provider || '未记录')}
-      ${_accountDetailRoxyProfileState(r)}
       ${_accountDetailState('注册时间', _fmtPlanTime(r.created_at) || '-')}
     </div>
     ${note ? `<div class="account-detail-note"><span>备注</span><p>${esc(note)}</p></div>` : ''}
