@@ -988,6 +988,15 @@ class RoxyBrowserClient:
                 return row
         return None
 
+    def get_active_profile_name(self, profile_id: str) -> str:
+        """读取活动 Profile 的窗口名称；查不到时返回空字符串。"""
+        row = self._find_active_profile_by_id(profile_id)
+        if not row:
+            return ""
+        return str(_first(row, [
+            ("windowName",), ("window_name",), ("name",), ("profileName",),
+        ]) or "").strip()[:200]
+
     def _find_profile_by_id(self, profile_id: str) -> dict | None:
         """按 dirId 查询 Profile，兼容活跃列表与回收站列表。"""
         normalized = str(profile_id or "").strip()

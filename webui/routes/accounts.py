@@ -178,6 +178,15 @@ def create_accounts_blueprint(context: WebUIContext):
             from core.storage.account_auth import latest_roxy_profile_id
 
             profile_id = latest_roxy_profile_id(acc_id)
+        if profile_id:
+            try:
+                from core.roxybrowser_client import RoxyBrowserClient
+
+                active_name = RoxyBrowserClient().get_active_profile_name(profile_id)
+                if active_name:
+                    profile["window_name"] = active_name
+            except Exception as exc:
+                logger.debug("读取 Roxy 当前窗口名称失败：%s", type(exc).__name__)
         return jsonify({
             "ok": True,
             "profile_id": profile_id,

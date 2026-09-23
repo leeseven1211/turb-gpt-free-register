@@ -60,7 +60,13 @@ class RoxyProfileNameTests(unittest.TestCase):
                 },
             },
         }
-        with patch("webui.routes.accounts.db.get_account", return_value=account):
+        with (
+            patch("webui.routes.accounts.db.get_account", return_value=account),
+            patch(
+                "core.roxybrowser_client.RoxyBrowserClient.get_active_profile_name",
+                return_value="rb-1790150160878-77e2",
+            ),
+        ):
             response = app.test_client().get("/api/accounts/1940/roxy-profile")
 
         self.assertEqual(200, response.status_code)
@@ -90,7 +96,13 @@ class RoxyProfileNameTests(unittest.TestCase):
                 },
             },
         }
-        with patch("webui.routes.accounts.db.get_account", return_value=account):
+        with (
+            patch("webui.routes.accounts.db.get_account", return_value=account),
+            patch(
+                "core.roxybrowser_client.RoxyBrowserClient.get_active_profile_name",
+                return_value="",
+            ),
+        ):
             response = app.test_client().get("/api/accounts/1940/roxy-profile")
 
         self.assertEqual(
@@ -111,6 +123,10 @@ class RoxyProfileNameTests(unittest.TestCase):
             patch(
                 "core.storage.account_auth.latest_roxy_profile_id",
                 return_value="context-profile",
+            ),
+            patch(
+                "core.roxybrowser_client.RoxyBrowserClient.get_active_profile_name",
+                return_value="",
             ),
         ):
             response = app.test_client().get("/api/accounts/1940/roxy-profile")
