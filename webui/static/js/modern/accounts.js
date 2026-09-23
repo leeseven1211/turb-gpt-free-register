@@ -1273,6 +1273,15 @@ function _accountDetailFingerprintMarkup(r) {
     </div>
   </div>`;
 }
+function _accountDetailRoxyProfileState(r) {
+  const profileName = String(r.roxy_profile_name || '').trim();
+  const loading = r.roxy_profile_loading === true;
+  return _accountDetailState(
+    'Roxy Profile 名称',
+    profileName || (loading ? '读取中…' : '未发现可用 Profile'),
+    profileName ? 'info' : 'neutral',
+  );
+}
 function _accountDetailMarkup(r) {
   const liveHttpStatus = _liveCheckHttpStatus(r);
   const liveHttpLabel = liveHttpStatus ? ` (HTTP ${liveHttpStatus})` : '';
@@ -1303,6 +1312,7 @@ function _accountDetailMarkup(r) {
       ${_accountDetailState('姓名', r.user_name || '未设置')}
       ${_accountDetailState('注册出口国家', r.registration_proxy_region || '未记录', r.registration_proxy_region ? 'info' : 'neutral')}
       ${_accountDetailState('注册代理', r.registration_proxy_provider || '未记录')}
+      ${_accountDetailRoxyProfileState(r)}
       ${_accountDetailState('注册时间', _fmtPlanTime(r.created_at) || '-')}
     </div>
     ${note ? `<div class="account-detail-note"><span>备注</span><p>${esc(note)}</p></div>` : ''}
@@ -1331,9 +1341,28 @@ function _accountDetailMarkup(r) {
     </div>
   </div>`;
 }
+async function refreshAccountRoxyProfile(account) {
+  if (!account || !account.id) return;
+  account.roxy_profile_loading = true;
+  $('#accountDetailBody').innerHTML = _accountDetailMarkup(account);
+  try {
+    const result = await api(`/api/accounts/${encodeURIComponent(account.id)}/roxy-profile`);
+    account.roxy_profile_name = String(result.profile_name || '').trim();
+  } catch (_) {
+    account.roxy_profile_name = '';
+  } finally {
+    account.roxy_profile_loading = false;
+    if (Number($('#accountDetailDrawer')?.dataset.accountId || 0) === Number(account.id)) {
+      $('#accountDetailBody').innerHTML = _accountDetailMarkup(account);
+    }
+  }
+}
 function openAccountDetail(id) {
   const account = ACCOUNTS.find(item => Number(item.id) === Number(id));
   if (!account) { showToast('账号详情暂不可用，请先刷新列表'); return; }
+  $('#accountDetailDrawer').dataset.accountId = String(account.id);
+  account.roxy_profile_name = '';
+  account.roxy_profile_loading = true;
   $('#accountDetailTitle').textContent = account.email || `账号 #${account.id}`;
   $('#accountDetailSubtitle').textContent = `账号 #${account.id} · ${facetLabel('source', account.email_source) || '未知来源'}`;
   $('#accountDetailBody').innerHTML = _accountDetailMarkup(account);
@@ -1342,11 +1371,13 @@ function openAccountDetail(id) {
   $('#accountDetailBackdrop').setAttribute('aria-hidden', 'false');
   updateModalScrollLock();
   $('#btnCloseAccountDetail')?.focus({preventScroll:true});
+  void refreshAccountRoxyProfile(account);
 }
 function closeAccountDetail() {
   $('#accountDetailDrawer')?.classList.add('hidden');
   $('#accountDetailBackdrop')?.classList.add('hidden');
   $('#accountDetailBackdrop')?.setAttribute('aria-hidden', 'true');
+  $('#accountDetailDrawer')?.removeAttribute('data-account-id');
   updateModalScrollLock();
 }
 $('#btnCloseAccountDetail')?.addEventListener('click', closeAccountDetail);
