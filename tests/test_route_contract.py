@@ -17,8 +17,8 @@ class FlaskRouteContractTests(PostgresTestCase):
     # added /api/extract-link/types. The release then added /healthz and
     # /readyz，以及经过评审的配置快照、durable operations、proxy-traffic API、
     # 协议邮箱换绑路由、任务终止入口和任务中心批量动作。保持这些变更显式记录，不从当前路由表推导基线。
-    EXPECTED_ROUTE_COUNT = 125
-    EXPECTED_SHA256 = "eb43a66d997d774ac3ab211ff1c244245747d3321f4f6b90b8798e7513893f53"
+    EXPECTED_ROUTE_COUNT = 126
+    EXPECTED_SHA256 = "852657cfb76131171bc0c5f9383f7935ddc397bdda41c0f07a4a72dfbc5cd289"
 
     def test_public_route_map_matches_refactor_baseline(self):
         app = create_app(auth_code="route-contract")

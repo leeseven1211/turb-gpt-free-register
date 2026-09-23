@@ -170,10 +170,22 @@ def create_accounts_blueprint(context: WebUIContext):
         account = db.get_account(acc_id)
         if not account:
             return jsonify({"ok": False, "error": "账号不存在"}), 404
-        from core.roxy_profile_binding import account_profile_id
+        from core.roxy_profile_binding import last_account_profile_id
 
-        profile_id = account_profile_id(account)
+        profile_id = last_account_profile_id(account)
         return jsonify({"ok": True, "profile_id": profile_id})
+
+    @bp.post("/api/accounts/roxy-profile/backfill-history")
+    def api_accounts_roxy_profile_backfill_history():
+        """把本地历史记录中的缺失 Profile ID 补入账号元数据。"""
+        from core.roxy_profile_binding import (
+            backfill_account_profile_ids,
+            load_historical_profile_ids,
+        )
+
+        profile_ids = load_historical_profile_ids()
+        result = backfill_account_profile_ids(profile_ids)
+        return jsonify({"ok": True, "source_profile_ids": len(profile_ids), **result})
 
     @bp.get("/api/accounts/plan-check-status")
     def api_account_plan_check_status():
