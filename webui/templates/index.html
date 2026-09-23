@@ -625,17 +625,19 @@
       <div><span>今日浏览器记录</span><strong data-proxy-summary="todayBrowserCount">—</strong></div>
       <div><span>今日新建线路</span><strong data-proxy-summary="todayRouteCount">—</strong></div>
     </div>
-    <p class="proxy-traffic-summary-note">按北京时间统计今日；流量仅含 Roxy/CDP 可观测字节，不等同于代理供应商计费流量。</p>
     <div class="proxy-traffic-view-bar">
       <div class="proxy-traffic-view-tabs" role="tablist" aria-label="代理与流量视图">
         <button type="button" class="is-active" role="tab" aria-selected="true" aria-controls="proxyTrafficPanelCurrent" data-proxy-view="current">当前租约 <span data-proxy-count="current">0</span></button>
         <button type="button" role="tab" aria-selected="false" aria-controls="proxyTrafficPanelHistory" data-proxy-view="history">线路历史 <span data-proxy-count="history">0</span></button>
         <button type="button" role="tab" aria-selected="false" aria-controls="proxyTrafficPanelTraffic" data-proxy-view="traffic">浏览器流量 <span data-proxy-count="traffic">0</span></button>
       </div>
-      <button type="button" class="proxy-traffic-clear-filters" id="btnClearProxyTrafficFilters" hidden>清筛</button>
+      <div class="proxy-traffic-view-actions">
+        <button type="button" class="proxy-traffic-reset-columns" id="btnResetProxyTrafficColumns" data-proxy-reset-columns="proxyCurrent">恢复列宽</button>
+        <button type="button" class="proxy-traffic-clear-filters" id="btnClearProxyTrafficFilters" hidden>清筛</button>
+      </div>
     </div>
     <section class="proxy-traffic-panel" id="proxyTrafficPanelCurrent" role="tabpanel" aria-label="当前租约" data-proxy-panel="current">
-      <div class="proxy-traffic-panel-head"><div><h3>当前租约</h3><p>来自持久化租约记录；不显示代理连接串或认证信息。</p></div><div class="proxy-traffic-panel-tools"><span class="proxy-traffic-panel-status" id="proxyTrafficPanelStatusCurrent" aria-live="polite">等待加载</span><button type="button" data-proxy-reset-columns="proxyCurrent">恢复列宽</button></div></div>
+      <span class="proxy-traffic-panel-status" id="proxyTrafficPanelStatusCurrent" aria-live="polite">等待加载</span>
       <div class="proxy-traffic-table-wrap">
         <table class="proxy-traffic-table" data-proxy-table="current" data-resizable-table="proxyCurrent">
           <colgroup><col class="proxy-col-lease"><col class="proxy-col-ip"><col class="proxy-col-status"><col class="proxy-col-account"><col class="proxy-col-purpose"><col class="proxy-col-correlation"><col class="proxy-col-attempt"><col class="proxy-col-time"></colgroup>
@@ -646,7 +648,7 @@
       <div class="proxy-traffic-pager" id="proxyTrafficPagerCurrent" aria-label="当前租约分页"></div>
     </section>
     <section class="proxy-traffic-panel hidden" id="proxyTrafficPanelHistory" role="tabpanel" aria-label="线路历史" data-proxy-panel="history" aria-hidden="true">
-      <div class="proxy-traffic-panel-head"><div><h3>线路历史</h3><p>关联 operation task/run、注册 job 和重试序号，便于回溯线路使用。</p></div><div class="proxy-traffic-panel-tools"><span class="proxy-traffic-panel-status" id="proxyTrafficPanelStatusHistory" aria-live="polite">等待加载</span><button type="button" data-proxy-reset-columns="proxyHistory">恢复列宽</button></div></div>
+      <span class="proxy-traffic-panel-status" id="proxyTrafficPanelStatusHistory" aria-live="polite">等待加载</span>
       <div class="proxy-traffic-table-wrap">
         <table class="proxy-traffic-table" data-proxy-table="history" data-resizable-table="proxyHistory">
           <colgroup><col class="proxy-col-lease"><col class="proxy-col-ip"><col class="proxy-col-status"><col class="proxy-col-account"><col class="proxy-col-purpose"><col class="proxy-col-correlation"><col class="proxy-col-time"><col class="proxy-col-details"></colgroup>
@@ -657,7 +659,7 @@
       <div class="proxy-traffic-pager" id="proxyTrafficPagerHistory" aria-label="线路历史分页"></div>
     </section>
     <section class="proxy-traffic-panel hidden" id="proxyTrafficPanelTraffic" role="tabpanel" aria-label="浏览器流量" data-proxy-panel="traffic" aria-hidden="true">
-      <div class="proxy-traffic-panel-head"><div><h3>浏览器流量</h3><p>只显示有 Roxy/CDP 采集结果的记录；协议任务的未采集标记不计入流量。</p></div><div class="proxy-traffic-panel-tools"><span class="proxy-traffic-panel-status" id="proxyTrafficPanelStatusTraffic" aria-live="polite">等待加载</span><button type="button" data-proxy-reset-columns="proxyTraffic">恢复列宽</button></div></div>
+      <span class="proxy-traffic-panel-status" id="proxyTrafficPanelStatusTraffic" aria-live="polite">等待加载</span>
       <div class="proxy-traffic-table-wrap">
         <table class="proxy-traffic-table" data-proxy-table="traffic" data-resizable-table="proxyTraffic">
           <colgroup><col class="proxy-col-source"><col class="proxy-col-method"><col class="proxy-col-status"><col class="proxy-col-bytes"><col class="proxy-col-counts"><col class="proxy-col-correlation"><col class="proxy-col-time"><col class="proxy-col-details"></colgroup>

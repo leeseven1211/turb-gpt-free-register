@@ -713,6 +713,13 @@ function proxyTrafficSetView(view, focus = false) {
     const active = panel.dataset.proxyPanel === view;
     panel.classList.toggle('hidden', !active);
     panel.setAttribute('aria-hidden', active ? 'false' : 'true');
+    if (active) {
+      const reset = document.getElementById('btnResetProxyTrafficColumns');
+      if (reset) {
+        reset.dataset.proxyResetColumns = panel.querySelector('[data-resizable-table]').dataset.resizableTable;
+        reset.setAttribute('aria-label', `恢复${panel.getAttribute('aria-label')}列宽`);
+      }
+    }
   });
 }
 
