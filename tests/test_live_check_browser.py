@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from core import live_check_browser
+from core import browser_flow_policy
 
 
 class _FakeDriver:
@@ -95,18 +96,29 @@ class LiveCheckBrowserProbeTests(unittest.TestCase):
         client = MagicMock()
         client.open_profile.return_value = opened
         expected = {"ok": True, "status": "live", "live_check_driver": "browser_roxy"}
+        saver = MagicMock()
+        events = []
+        install = MagicMock(side_effect=lambda *args, **kwargs: events.append("install") or saver)
 
         with (
             patch.object(live_check_browser, "available", return_value=True),
             patch.object(live_check_browser, "RoxyBrowserClient", return_value=client),
-            patch.object(live_check_browser, "build_driver", return_value=driver),
-            patch.object(live_check_browser, "safe_get") as safe_get,
+            patch.object(live_check_browser, "build_driver", side_effect=lambda opened: events.append("driver") or driver),
+            patch.object(live_check_browser, "safe_get", side_effect=lambda *args, **kwargs: events.append("navigate")) as safe_get,
             patch.object(live_check_browser, "_execute_probe", return_value=expected),
+            patch.object(browser_flow_policy, "install_for_flow", install),
+            patch("core.browser_traffic.bind_roxy_capture") as bind_capture,
         ):
             result = live_check_browser.run_probe(token="test-at", proxy="http://proxy.example:8080")
 
         self.assertEqual(expected, result)
-        client.open_profile.assert_called_once_with(proxy_url="http://proxy.example:8080")
+        client.open_profile.assert_called_once_with(
+            proxy_url="http://proxy.example:8080", data_saver_flow="live_check",
+        )
+        install.assert_called_once_with("live_check", opened, driver)
+        bind_capture.assert_called_once_with(opened, purpose="live_check")
+        saver.stop.assert_called_once_with()
+        self.assertEqual(["driver", "install", "navigate"], events)
         safe_get.assert_called_once()
         self.assertEqual("https://chatgpt.com/robots.txt", safe_get.call_args.args[1])
         driver.quit.assert_called_once_with()
@@ -118,6 +130,8 @@ class LiveCheckBrowserProbeTests(unittest.TestCase):
         client = MagicMock()
         client.open_profile_for_account.return_value = opened
         expected = {"ok": True, "status": "live", "live_check_driver": "browser_roxy"}
+        saver = MagicMock()
+        install = MagicMock(return_value=saver)
 
         with (
             patch.object(live_check_browser, "available", return_value=True),
@@ -126,6 +140,7 @@ class LiveCheckBrowserProbeTests(unittest.TestCase):
             patch.object(live_check_browser, "safe_get"),
             patch.object(live_check_browser, "_execute_probe", return_value=expected),
             patch("core.roxy_profile_binding.account_profile_id_by_email", return_value="profile-1"),
+            patch.object(browser_flow_policy, "install_for_flow", install),
         ):
             result = live_check_browser.run_probe(
                 token="test-at",
@@ -137,7 +152,10 @@ class LiveCheckBrowserProbeTests(unittest.TestCase):
         client.open_profile_for_account.assert_called_once_with(
             profile_id="profile-1",
             proxy_url="http://new-route.example:8080",
+            data_saver_flow="live_check",
         )
+        install.assert_called_once_with("live_check", opened, driver)
+        saver.stop.assert_called_once_with()
         client.open_profile.assert_not_called()
         client.cleanup_profile.assert_called_once_with(opened)
 

@@ -786,6 +786,7 @@ class AccountActionLoginTests(unittest.TestCase):
         driver = Mock(current_url="https://auth.openai.com/about-you")
         client = Mock()
         client.open_profile_for_account.return_value = opened
+        data_saver = Mock()
         session = {"accessToken": "fresh-token", "expires": "2026-09-01T00:00:00Z"}
         action = Mock(return_value=True)
         with (
@@ -800,6 +801,8 @@ class AccountActionLoginTests(unittest.TestCase):
             patch("core.profile_utils.generate_random_birthday", return_value="1995-01-02"),
             patch("core.roxy_profile_binding.account_profile_id_by_email", return_value=""),
             patch("core.roxy_profile_binding.persist_account_profile_id", return_value=True),
+            patch("core.browser_flow_policy.install_for_flow", return_value=data_saver) as install_for_flow,
+            patch("core.browser_traffic.bind_roxy_capture") as bind_capture,
             patch.object(roxy_codex_oauth._roxy_cfg, "ROXY_KEEP_BROWSER_OPEN", False),
         ):
             self.assertTrue(roxy_codex_oauth.run_roxy_chatgpt_account_action(
@@ -808,7 +811,14 @@ class AccountActionLoginTests(unittest.TestCase):
 
         complete_profile.assert_called_once()
         action.assert_called_once_with(driver, session)
-        client.open_profile_for_account.assert_called_once_with(profile_id=None, proxy_url=None)
+        client.open_profile_for_account.assert_called_once_with(
+            profile_id=None, proxy_url=None, data_saver_flow="account_action"
+        )
+        bind_capture.assert_called_once_with(opened, purpose="account_action")
+        install_for_flow.assert_called_once_with(
+            "account_action", opened, driver, label="ChatGPT 账号操作"
+        )
+        data_saver.stop.assert_called_once_with()
         client.open_profile.assert_not_called()
         driver.quit.assert_called_once_with()
         client.cleanup_profile.assert_called_once_with(opened)

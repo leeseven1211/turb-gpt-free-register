@@ -63,8 +63,12 @@ def _as_items(value: Any, *, lower: bool = True) -> list[str]:
 
 
 def configured_resource_types() -> list[str]:
+    return _normalized_resource_types(getattr(_cfg, "BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES", ()))
+
+
+def _normalized_resource_types(value: Any) -> list[str]:
     result: list[str] = []
-    for item in _as_items(getattr(_cfg, "BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES", ()), lower=True):
+    for item in _as_items(value, lower=True):
         item = _RESOURCE_TYPE_ALIASES.get(item, item)
         if item in _KNOWN_RESOURCE_TYPES and item not in result:
             result.append(item)
@@ -72,8 +76,12 @@ def configured_resource_types() -> list[str]:
 
 
 def configured_url_patterns() -> list[str]:
+    return _normalized_url_patterns(getattr(_cfg, "BROWSER_DATA_SAVER_BLOCKED_URL_PATTERNS", ()))
+
+
+def _normalized_url_patterns(value: Any) -> list[str]:
     result: list[str] = []
-    for item in _as_items(getattr(_cfg, "BROWSER_DATA_SAVER_BLOCKED_URL_PATTERNS", ()), lower=False):
+    for item in _as_items(value, lower=False):
         if item not in result:
             result.append(item)
     return result
@@ -82,11 +90,27 @@ def configured_url_patterns() -> list[str]:
 class BrowserDataSaver:
     """Install and report narrow CDP URL blocking for one browser session."""
 
-    def __init__(self, *, label: str = "Browser") -> None:
+    def __init__(
+        self,
+        *,
+        label: str = "Browser",
+        enabled: bool | None = None,
+        resource_types: Any = None,
+        url_patterns: Any = None,
+    ) -> None:
         self.label = str(label or "Browser")
-        self.enabled = bool(getattr(_cfg, "BROWSER_DATA_SAVER_MODE", False))
-        self.resource_types = configured_resource_types() if self.enabled else []
-        self.url_patterns = configured_url_patterns() if self.enabled else []
+        self.enabled = (
+            bool(getattr(_cfg, "BROWSER_DATA_SAVER_MODE", False))
+            if enabled is None else bool(enabled)
+        )
+        self.resource_types = (
+            _normalized_resource_types(resource_types)
+            if resource_types is not None else configured_resource_types()
+        ) if self.enabled else []
+        self.url_patterns = (
+            _normalized_url_patterns(url_patterns)
+            if url_patterns is not None else configured_url_patterns()
+        ) if self.enabled else []
         self.blocked_count = 0
         self.blocked_by_type: Counter[str] = Counter()
         self.blocked_by_url_pattern: Counter[str] = Counter()
@@ -127,6 +151,15 @@ class BrowserDataSaver:
         patterns.extend(pattern.replace("**", "*") for pattern in self.url_patterns)
         self._selenium_patterns = list(dict.fromkeys(patterns))
         if not self._selenium_patterns:
+            try:
+                try:
+                    self._driver.execute_cdp_cmd("Network.enable", {})
+                except Exception:
+                    pass
+                # 复用窗口时必须清掉上一个流程遗留的规则。
+                self._driver.execute_cdp_cmd("Network.setBlockedURLs", {"urls": []})
+            except Exception as exc:
+                logger.warning("[%s] 清除空省流量规则失败：%s: %s", self.label, type(exc).__name__, str(exc)[:180])
             self.method = "enabled_no_rules"
             return self
         try:

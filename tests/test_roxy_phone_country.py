@@ -469,6 +469,7 @@ class RoxyPhoneCountryTests(unittest.TestCase):
         order = []
         driver = MagicMock()
         opened = SimpleNamespace(profile_id="profile-1", raw={})
+        data_saver = MagicMock()
 
         def fill(_driver, _email, _otp_provider, url):
             order.append("chatgpt_login" if url == "https://chatgpt.com/auth/login" else "oauth_login")
@@ -488,6 +489,7 @@ class RoxyPhoneCountryTests(unittest.TestCase):
             patch("core.codex_oauth._submit_cpa_callback", return_value={"message": "ok"}),
             patch("core.codex_oauth._save_cpa_local_record", return_value=None),
             patch("core.roxy_codex_oauth._detect_browser_kind", return_value="roxy"),
+            patch("core.browser_flow_policy.install_for_flow", return_value=data_saver) as install_for_flow,
             patch("core.roxy_codex_oauth._fill_email_and_otp", side_effect=fill),
             patch(
                 "core.registration.selenium_auth.fetch_chatgpt_session",
@@ -522,6 +524,53 @@ class RoxyPhoneCountryTests(unittest.TestCase):
             order,
             ["chatgpt_login", "chatgpt_session", "twofa", "oauth_login", "phone", "callback"],
         )
+        install_for_flow.assert_called_once_with(
+            "codex_oauth", opened, driver, label="Codex OAuth"
+        )
+        data_saver.stop.assert_called_once_with()
+
+    def test_independent_oauth_opens_and_binds_codex_flow_before_navigation(self):
+        opened = SimpleNamespace(profile_id="profile-1", raw={})
+        driver = MagicMock()
+        client = MagicMock()
+        client.open_profile_for_account.return_value = opened
+        data_saver = MagicMock()
+
+        with (
+            patch("core.roxy_codex_oauth.RoxyBrowserClient", return_value=client),
+            patch("core.roxy_profile_binding.account_profile_id_by_email", return_value="profile-1"),
+            patch("core.codex_oauth._codex_auth_url_source", return_value="local"),
+            patch("core.codex_oauth._generate_pkce", return_value=("verifier", "challenge")),
+            patch("core.codex_oauth._generate_state", return_value="state-1"),
+            patch("core.codex_oauth._build_authorize_url", return_value="https://auth.openai.com/authorize"),
+            patch.object(roxy_codex_oauth, "_build_driver", return_value=driver),
+            patch.object(roxy_codex_oauth, "_detect_browser_kind", return_value="roxy"),
+            patch.object(roxy_codex_oauth, "_fill_email_and_otp", side_effect=RuntimeError("stop navigation")),
+            patch("core.browser_flow_policy.install_for_flow", return_value=data_saver) as install_for_flow,
+            patch("core.browser_traffic.bind_roxy_capture") as bind_capture,
+            patch.object(roxy_codex_oauth._roxy_cfg, "ROXY_KEEP_BROWSER_OPEN", False),
+        ):
+            result = _run_roxy_codex_oauth_once(
+                "a@example.com",
+                otp_provider=object(),
+                proxy="http://proxy.example:8080",
+                force=True,
+            )
+
+        self.assertFalse(result["ok"])
+        client.open_profile_for_account.assert_called_once_with(
+            profile_id="profile-1",
+            proxy_url="http://proxy.example:8080",
+            headless=roxy_codex_oauth._codex_open_headless(),
+            data_saver_flow="codex_oauth",
+        )
+        bind_capture.assert_called_once_with(opened, purpose="codex_oauth")
+        install_for_flow.assert_called_once_with(
+            "codex_oauth", opened, driver, label="Codex OAuth"
+        )
+        data_saver.stop.assert_called_once_with()
+        driver.quit.assert_called_once_with()
+        client.cleanup_profile.assert_called_once_with(opened)
 
     def test_selects_virtualized_react_aria_country_with_enter(self):
         driver = _CountryDriver(current_code="1")

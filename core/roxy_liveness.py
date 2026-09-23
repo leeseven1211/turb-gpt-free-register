@@ -192,7 +192,12 @@ def _complete_otp(
     raise RuntimeError("邮箱验证码连续错误/过期，已达到最大重试次数")
 
 
-def refresh_access_token(email: str, *, proxy: str | None = None) -> dict:
+def refresh_access_token(
+    email: str,
+    *,
+    proxy: str | None = None,
+    context_recorder=None,
+) -> dict:
     """复用账号绑定的 Roxy Profile 登录并返回刷新后的 Session/AT。"""
     checked_at = _now()
     if not available():
@@ -200,6 +205,8 @@ def refresh_access_token(email: str, *, proxy: str | None = None) -> dict:
     client = RoxyBrowserClient()
     opened = None
     driver = None
+    data_saver = None
+    refresh_result = None
     try:
         from core.roxy_profile_binding import (
             account_profile_id_by_email,
@@ -211,6 +218,7 @@ def refresh_access_token(email: str, *, proxy: str | None = None) -> dict:
         opened = client.open_profile_for_account(
             profile_id=bound_profile_id or None,
             proxy_url=proxy,
+            data_saver_flow="token_refresh",
         )
         profile_reused = bool(
             bound_profile_id
@@ -222,8 +230,31 @@ def refresh_access_token(email: str, *, proxy: str | None = None) -> dict:
                 raise RuntimeError("账号 Roxy Profile 绑定写回失败")
             opened.account_bound = True
             client.mark_profile_bound(opened.profile_id)
+        if context_recorder is not None:
+            context_recorder.open_roxy_profile(
+                opened,
+                route_attempt_no=1,
+                proxy_url=(None if profile_reused else proxy),
+                proxy_context=None,
+            )
+        else:
+            try:
+                from core import browser_traffic
+
+                browser_traffic.bind_roxy_capture(opened, purpose="token_refresh")
+            except Exception:
+                logger.exception("[浏览器流量] 关联刷新 AT 上下文失败；刷新继续")
         effective_proxy = None if profile_reused else proxy
         driver = _build_driver(opened)
+        try:
+            from core import browser_flow_policy
+
+            data_saver = browser_flow_policy.install_for_flow("token_refresh", opened, driver)
+        except Exception as exc:
+            logger.warning(
+                "[浏览器省流量] 刷新 AT 规则安装失败，继续刷新：%s",
+                type(exc).__name__,
+            )
         _center_browser_window(driver)
         driver.set_page_load_timeout(int(getattr(cfg, "ROXY_SELENIUM_TIMEOUT", 90) or 90))
         try:
@@ -241,13 +272,14 @@ def refresh_access_token(email: str, *, proxy: str | None = None) -> dict:
         _maybe_accept(driver)
         code = _page_account_unusable_code(driver)
         if code:
-            return {
+            refresh_result = {
                 "ok": False,
                 "status": "deactivated",
                 "checked_at": checked_at,
                 "error": code,
                 "validation_method": "roxy_email_otp",
             }
+            return refresh_result
         from core.roxy_codex_oauth import _account_login_credentials
 
         password, totp_secret = _account_login_credentials(email)
@@ -262,18 +294,19 @@ def refresh_access_token(email: str, *, proxy: str | None = None) -> dict:
             _complete_otp(driver, email, otp_after_ts, totp_secret=totp_secret)
         code = _page_account_unusable_code(driver)
         if code:
-            return {
+            refresh_result = {
                 "ok": False,
                 "status": "deactivated",
                 "checked_at": checked_at,
                 "error": code,
                 "validation_method": "roxy_email_otp",
             }
+            return refresh_result
         session_info = _fetch_chatgpt_session(driver, timeout=120)
         access_token = str(session_info.get("accessToken") or "").strip()
         if not access_token:
             raise RuntimeError("Roxy 登录完成但未拿到 accessToken")
-        return {
+        refresh_result = {
             "ok": True,
             "status": "live",
             "checked_at": checked_at,
@@ -282,22 +315,49 @@ def refresh_access_token(email: str, *, proxy: str | None = None) -> dict:
             "proxy_used": effective_proxy or None,
             "validation_method": "roxy_email_otp",
         }
+        return refresh_result
     except AccountUnusableError as exc:
         code = getattr(exc, "error_code", "") or detect_account_unusable_text(str(exc)) or "account_deactivated"
-        return {"ok": False, "status": "deactivated", "checked_at": checked_at, "error": code, "validation_method": "roxy_email_otp"}
+        refresh_result = {"ok": False, "status": "deactivated", "checked_at": checked_at, "error": code, "validation_method": "roxy_email_otp"}
+        return refresh_result
     except Exception as exc:
         code = detect_account_unusable_text(str(exc))
         if code:
-            return {"ok": False, "status": "deactivated", "checked_at": checked_at, "error": code, "validation_method": "roxy_email_otp"}
+            refresh_result = {"ok": False, "status": "deactivated", "checked_at": checked_at, "error": code, "validation_method": "roxy_email_otp"}
+            return refresh_result
         logger.warning("[查活][Roxy] 失败：%s: %s", type(exc).__name__, str(exc)[:260])
-        return {
+        refresh_result = {
             "ok": False,
             "status": "failed",
             "checked_at": checked_at,
             "error": f"Roxy {type(exc).__name__}: {str(exc)[:500]}",
             "validation_method": "roxy_email_otp",
         }
+        return refresh_result
     finally:
+        if data_saver is not None:
+            try:
+                data_saver.stop()
+            except Exception:
+                logger.exception("[浏览器省流量] 刷新 AT 统计停止失败")
+        if context_recorder is not None and opened is not None:
+            try:
+                succeeded = bool(refresh_result and refresh_result.get("ok"))
+                context_recorder.finish_roxy_profile(
+                    opened,
+                    status="success" if succeeded else "failed",
+                    result_code=(
+                        "authenticated"
+                        if succeeded
+                        else str(
+                            (refresh_result or {}).get("error_category")
+                            or (refresh_result or {}).get("status")
+                            or "refresh_failed"
+                        )[:160]
+                    ),
+                )
+            except Exception:
+                logger.exception("[浏览器流量] 收口刷新 AT 上下文失败；刷新结果保持不变")
         if driver is not None and not bool(getattr(cfg, "ROXY_KEEP_BROWSER_OPEN", False)):
             _quit_driver(driver)
         if opened is not None and not bool(getattr(cfg, "ROXY_KEEP_BROWSER_OPEN", False)):

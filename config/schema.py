@@ -297,6 +297,7 @@ _DEFAULTS: dict[str, Any] = {
     "AUTO_BROWSER_LOCALE_FROM_IP": True,
     "IP_GEO_TIMEOUT": 6.0,
     "BROWSER_DATA_SAVER_MODE": False,
+    "BROWSER_DATA_SAVER_AUTH_FLOWS": ["token_refresh", "live_check", "codex_oauth", "account_action"],
     "BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES": ["image", "media"],
     "BROWSER_DATA_SAVER_BLOCKED_URL_PATTERNS": [
         "**://auth.openai.com/awe/api/v2/rum**",
@@ -1005,7 +1006,11 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "BROWSER_DATA_SAVER_MODE", "file": "browser.py", "type": "bool", "group": "浏览器画像",
-        "label": "本地浏览器省流量模式", "help": "仅 Roxy/Cloak 本地浏览器生效；拦截图片、媒体、注册不需要的 ChatGPT SPA 脚本和明确配置的遥测/广告 URL，不拦截认证接口和 WebSocket",
+        "label": "Roxy 本地浏览器省流量模式", "help": "仅 Roxy 本地浏览器流程生效；注册流程按现有规则，认证流程仅拦截图片、媒体和固定遥测 URL，不拦截脚本、认证接口或 WebSocket",
+    },
+    {
+        "key": "BROWSER_DATA_SAVER_AUTH_FLOWS", "file": "browser.py", "type": "list_str_multiline", "group": "浏览器画像",
+        "label": "认证流程省流量范围", "help": "每行一个流程；默认 token_refresh、live_check、codex_oauth、account_action。注册流程始终跟随总开关",
     },
     {
         "key": "BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES", "file": "browser.py", "type": "list_str_multiline", "group": "浏览器画像",

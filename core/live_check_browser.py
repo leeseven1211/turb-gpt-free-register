@@ -184,6 +184,7 @@ def run_probe(
     bound_profile_id = ""
     opened = None
     driver = None
+    data_saver = None
     probe_result = None
     try:
         if email:
@@ -195,6 +196,7 @@ def run_probe(
                 opened = client.open_profile_for_account(
                     profile_id=bound_profile_id or None,
                     proxy_url=proxy,
+                    data_saver_flow="live_check",
                 )
                 if not bound_profile_id or str(opened.profile_id) != str(bound_profile_id):
                     from core.roxy_profile_binding import persist_account_profile_id
@@ -206,7 +208,7 @@ def run_probe(
             else:
                 # Preserve the low-level adapter contract for callers that do
                 # not have an account identity (and for legacy integrations).
-                opened = client.open_profile(proxy_url=proxy)
+                opened = client.open_profile(proxy_url=proxy, data_saver_flow="live_check")
             if context_recorder is not None:
                 context_recorder.open_roxy_profile(
                     opened,
@@ -214,6 +216,13 @@ def run_probe(
                     proxy_url=(None if bound_profile_id and opened.account_bound else proxy),
                     proxy_context=route_context,
                 )
+            else:
+                try:
+                    from core import browser_traffic
+
+                    browser_traffic.bind_roxy_capture(opened, purpose="live_check")
+                except Exception:
+                    logger.exception("[浏览器流量] 关联普通查活上下文失败；查活继续")
         except Exception as exc:
             return _failure(
                 f"Roxy Profile 创建/打开失败: {type(exc).__name__}: {str(exc)[:500]}",
@@ -229,6 +238,15 @@ def run_probe(
                 category="browser_driver",
                 checked_at=checked_at,
                 retryable=True,
+            )
+        try:
+            from core import browser_flow_policy
+
+            data_saver = browser_flow_policy.install_for_flow("live_check", opened, driver)
+        except Exception as exc:
+            logger.warning(
+                "[浏览器省流量] 普通查活规则安装失败，继续查活：%s",
+                type(exc).__name__,
             )
         driver.set_page_load_timeout(int(getattr(roxy_config, "ROXY_SELENIUM_TIMEOUT", 90) or 90))
         try:
@@ -262,6 +280,11 @@ def run_probe(
             retryable=True,
         )
     finally:
+        if data_saver is not None:
+            try:
+                data_saver.stop()
+            except Exception:
+                logger.exception("[浏览器省流量] 普通查活统计停止失败")
         if driver is not None:
             quit_driver(driver)
         if opened is not None:

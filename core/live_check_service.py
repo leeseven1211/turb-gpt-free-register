@@ -1145,7 +1145,10 @@ def _run_live_check(
                 def run_roxy_refresh(on_remote_request_started):
                     if on_remote_request_started:
                         on_remote_request_started()
-                    return refresh_access_token(email, proxy=roxy_proxy)
+                    refresh_kwargs = {"proxy": roxy_proxy}
+                    if auth_context_recorder is not None:
+                        refresh_kwargs["context_recorder"] = auth_context_recorder
+                    return refresh_access_token(email, **refresh_kwargs)
 
                 roxy_result = invoke_refresh(
                     run_roxy_refresh,

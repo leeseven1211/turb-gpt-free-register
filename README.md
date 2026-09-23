@@ -586,6 +586,12 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 - 从账号页独立补跑 Codex 时优先打开账号绑定的 Profile；只有账号没有绑定或 Roxy 明确报告 Profile 已不存在时才创建环境。这与“注册后立即 OAuth 复用登录态”仍是两个不同场景，但两者共享账号级 Profile 绑定。
 - Roxy 免费版界面显示的 5 个 Profile/窗口额度不等于整条注册链路必然能稳定并发 5。实际并发还受住宅代理提取频率、邮箱库存、OTP、接码平台和 OpenAI 风控限制；首次部署先跑通单任务，再逐步提高并发。
 
+#### Roxy 浏览器省流量
+
+- `BROWSER_DATA_SAVER_MODE` 是总开关。注册使用 `BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES` 和 `BROWSER_DATA_SAVER_BLOCKED_URL_PATTERNS`；刷新 AT、旧 AT 浏览器查活、独立 Codex OAuth 和账号操作使用固定的认证安全规则，只拦截图片、媒体及明确的遥测请求，不沿用注册脚本规则。注册窗口继续执行 Codex OAuth 时会切换为认证安全规则。
+- `BROWSER_DATA_SAVER_AUTH_FLOWS` 是可选流程列表，可填写 `token_refresh`、`live_check`、`codex_oauth`、`account_action`；默认全选，填 `[]` 可只保留注册省流量。它和总开关都可以在 WebUI「配置 → 浏览器画像」调整。流程开关同时控制 Roxy 启动参数和 Selenium CDP 拦截。
+- 省流量拦截失败会继续原浏览器业务。浏览器流量页统计 Roxy/CDP 可观测 HTTP/WebSocket 字节，不等于代理商计费流量；验证省流量效果应比较相同流程和网络条件下的成功率、请求数及代理商账单。当前未启用持久静态资源缓存。
+
 #### Codex、接码与 sub2api
 
 - Codex 的事实记录在 PostgreSQL 的 `codex_credentials`，`codex_accounts/` 下的 OAuth JSON 是为 CPA/sub2api 保留的兼容产物。旧 Codex Agent Token 生成、下载和上传接口已经移除；sub2api 导入直接上传 OAuth JSON，并支持按账号更新已有凭证。

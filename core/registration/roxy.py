@@ -343,6 +343,7 @@ def _open_roxy_profile_with_capacity_wait(
     *,
     profile_id: str | None = None,
     progress_callback=None,
+    data_saver_flow: str | None = None,
 ) -> RoxyOpenResult:
     """窗口满时保持当前 worker 等待，防止失败槽位快速消费整个任务队列。"""
     timeout = max(0, int(getattr(_cfg, "ROXY_WINDOW_WAIT_TIMEOUT", 900) or 0))
@@ -366,6 +367,8 @@ def _open_roxy_profile_with_capacity_wait(
             except Exception:
                 pass
             open_kwargs = {"proxy_url": proxy_url}
+            if data_saver_flow is not None:
+                open_kwargs["data_saver_flow"] = data_saver_flow
             if debug_headless is not None:
                 open_kwargs["headless"] = debug_headless
             if profile_id is None:
@@ -409,6 +412,22 @@ def _open_roxy_profile_with_capacity_wait(
                 str(exc)[:180],
             )
             _wait_for_roxy_window_retry(delay)
+
+
+def _install_registration_postprocess_data_saver(opened, driver):
+    """为注册后的 2FA/账号操作切换认证规则，并由外层统一收口统计。"""
+    try:
+        from core.browser_flow_policy import install_for_flow
+
+        return install_for_flow(
+            "account_action",
+            opened,
+            driver,
+            label="ChatGPT 账号操作",
+        )
+    except Exception:
+        logger.exception("[Roxy注册] 安装注册后账号操作省流量规则失败；后续流程继续")
+        return None
 
 
 
@@ -630,6 +649,7 @@ def run_roxy_registration(
         proxy,
         profile_id=profile_id,
         progress_callback=report_job_progress,
+        data_saver_flow="registration",
     )
     try:
         from core import browser_traffic
@@ -662,6 +682,7 @@ def run_roxy_registration(
             raise
     driver = None
     data_saver = None
+    postprocess_data_saver = None
     profile_discarded = False
     create_acknowledged = False
     openai_password: str | None = None
@@ -1142,12 +1163,26 @@ def run_roxy_registration(
                 )
             else:
                 logger.info("[Roxy注册][Codex] ENABLE_CODEX_AUTO=False，注册后跳过 Codex OAuth")
+                # Codex 未启用时，后续可能仍在同一窗口执行 2FA；切到
+                # account_action 规则并把统计留到注册 finally 统一收口。
+                postprocess_data_saver = _install_registration_postprocess_data_saver(
+                    opened,
+                    driver,
+                )
                 report_job_progress("codex", "skipped", "未启用 Codex 自动授权")
         except AccountUnusableError:
             raise
         except Exception as exc:
             codex_result = {"status": "failed", "ok": False, "message": f"{type(exc).__name__}: {str(exc)[:180]}"}
             report_job_progress("codex", "failed", codex_result["message"])
+
+        if codex_enabled and twofa_enabled:
+            # OAuth 自己会停止其 saver，但 2FA 仍需继续使用认证安全规则；
+            # 这里新建 account_action saver，统计延后到注册 finally 收口。
+            postprocess_data_saver = _install_registration_postprocess_data_saver(
+                opened,
+                driver,
+            )
 
         # 先跑 Codex，最大化复用注册完成后的 auth.openai.com 账号选择态；
         # 未完成的 MFA enrollment 会改变授权页状态，不能放在 Codex 前面。
@@ -1466,6 +1501,11 @@ def run_roxy_registration(
             "error": f"{error_prefix}{type(exc).__name__}: {str(exc)[:300]}",
         }
     finally:
+        if postprocess_data_saver is not None:
+            try:
+                postprocess_data_saver.stop()
+            except Exception:
+                logger.exception("[Roxy注册] 收口注册后账号操作省流量统计失败")
         if data_saver is not None:
             try:
                 data_saver.stop()

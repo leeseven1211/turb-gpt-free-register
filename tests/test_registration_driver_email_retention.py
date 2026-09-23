@@ -37,6 +37,21 @@ class RegistrationDriverEmailRetentionTests(unittest.TestCase):
         retain_email.assert_not_called()
         release_email.assert_not_called()
 
+    def test_registration_postprocess_switch_uses_account_action_policy(self):
+        opened = SimpleNamespace(profile_id="profile-1")
+        driver = MagicMock()
+        saver = MagicMock()
+        with patch(
+            "core.browser_flow_policy.install_for_flow", return_value=saver
+        ) as install_for_flow:
+            result = roxy._install_registration_postprocess_data_saver(opened, driver)
+
+        self.assertIs(result, saver)
+        install_for_flow.assert_called_once_with(
+            "account_action", opened, driver, label="ChatGPT 账号操作"
+        )
+        saver.stop.assert_not_called()
+
     def test_roxy_mid_flow_failure_retains_email_without_releasing_it(self):
         client = MagicMock()
         opened = SimpleNamespace(

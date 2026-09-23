@@ -57,6 +57,23 @@ class RoxyCapacityWaitTests(unittest.TestCase):
         progress.assert_called_once()
         self.assertIn("窗口已满", progress.call_args.args[2])
 
+    def test_registration_open_passes_registration_flow_to_roxy(self):
+        opened = RoxyOpenResult(profile_id="profile-1", raw={})
+        client = Mock()
+        client.open_profile.return_value = opened
+
+        result = roxy_registration._open_roxy_profile_with_capacity_wait(
+            client,
+            None,
+            data_saver_flow="registration",
+        )
+
+        self.assertIs(result, opened)
+        client.open_profile.assert_called_once_with(
+            proxy_url=None,
+            data_saver_flow="registration",
+        )
+
     def test_non_capacity_error_does_not_wait(self):
         client = Mock()
         client.open_profile.side_effect = RuntimeError("Roxy API 连接失败")

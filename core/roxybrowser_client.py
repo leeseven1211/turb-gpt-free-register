@@ -191,13 +191,18 @@ def _mask_proxy(proxy_url: str) -> str:
     return str(proxy_url or "").strip()
 
 
-def _apply_data_saver_open_args(params: dict) -> dict:
+def _apply_data_saver_open_args(params: dict, flow: str | None = None) -> dict:
     """Disable Chromium image loading before the first page request when enabled."""
     try:
         from config import browser as _browser_cfg
-        enabled = bool(getattr(_browser_cfg, "BROWSER_DATA_SAVER_MODE", False))
-        raw_types = getattr(_browser_cfg, "BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES", ())
-        types = {str(item or "").strip().lower() for item in (raw_types or ())}
+        if flow is None:
+            enabled = bool(getattr(_browser_cfg, "BROWSER_DATA_SAVER_MODE", False))
+            raw_types = getattr(_browser_cfg, "BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES", ())
+            types = {str(item or "").strip().lower() for item in (raw_types or ())}
+        else:
+            from core.browser_flow_policy import flow_enabled, opening_resource_types
+            enabled = flow_enabled(flow)
+            types = set(opening_resource_types(flow))
         if enabled and "image" in types:
             args = list(params.get("args") or [])
             flag = "--blink-settings=imagesEnabled=false"
@@ -743,6 +748,7 @@ class RoxyBrowserClient:
         *,
         proxy_url: str | None = None,
         headless: bool | None = None,
+        data_saver_flow: str | None = None,
     ) -> RoxyOpenResult:
         one_profile = bool(getattr(_cfg, "ROXY_ONE_PROFILE_PER_ACCOUNT", True))
         explicit_profile = profile_id is not None
@@ -779,7 +785,7 @@ class RoxyBrowserClient:
         params.setdefault("dirId", int(pid) if str(pid).isdigit() else pid)
         params.setdefault("args", [])
         params.setdefault("forceOpen", True)
-        _apply_data_saver_open_args(params)
+        _apply_data_saver_open_args(params, data_saver_flow)
         # ROXY_OPEN_HEADLESS 是显式开关，优先级应高于 ROXY_OPEN_EXTRA_PARAMS，
         # 否则 extra 里残留 headless=False 会导致 WebUI 保存无头后仍弹窗口。
         params["headless"] = (
@@ -836,6 +842,7 @@ class RoxyBrowserClient:
         profile_id: str | None = None,
         proxy_url: str | None = None,
         headless: bool | None = None,
+        data_saver_flow: str | None = None,
         progress_callback: Callable[[str, str, str], object] | None = None,
         stop_checker: Callable[[], object] | None = None,
     ) -> RoxyOpenResult:
@@ -855,6 +862,8 @@ class RoxyBrowserClient:
                     open_kwargs["profile_id"] = profile_id
                 if headless is not None:
                     open_kwargs["headless"] = headless
+                if data_saver_flow is not None:
+                    open_kwargs["data_saver_flow"] = data_saver_flow
                 return self.open_profile(**open_kwargs)
             except Exception as exc:
                 if not _is_window_capacity_error(exc) or timeout <= 0:
@@ -886,6 +895,7 @@ class RoxyBrowserClient:
         profile_id: str | None = None,
         proxy_url: str | None = None,
         headless: bool | None = None,
+        data_saver_flow: str | None = None,
         progress_callback: Callable[[str, str, str], object] | None = None,
         stop_checker: Callable[[], object] | None = None,
     ) -> RoxyOpenResult:
@@ -900,6 +910,8 @@ class RoxyBrowserClient:
                 kwargs["progress_callback"] = progress_callback
             if stop_checker is not None:
                 kwargs["stop_checker"] = stop_checker
+            if data_saver_flow is not None:
+                kwargs["data_saver_flow"] = data_saver_flow
             return self.open_profile_with_capacity_wait(**kwargs)
 
         if normalized_profile and reuse_enabled:
