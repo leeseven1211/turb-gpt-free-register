@@ -65,6 +65,25 @@ class RoxyProfileNameTests(unittest.TestCase):
             response.get_json(),
         )
 
+    def test_account_route_falls_back_to_latest_auth_context_profile_id(self):
+        app = Flask("roxy-profile-context")
+        app.register_blueprint(
+            create_accounts_blueprint(
+                runtime.WebUIContext(app, logging.getLogger("roxy-profile-context")),
+            )
+        )
+        account = {"id": 1940, "email": "account@example.test", "extra_json": {}}
+        with (
+            patch("webui.routes.accounts.db.get_account", return_value=account),
+            patch(
+                "core.storage.account_auth.latest_roxy_profile_id",
+                return_value="context-profile",
+            ),
+        ):
+            response = app.test_client().get("/api/accounts/1940/roxy-profile")
+
+        self.assertEqual({"ok": True, "profile_id": "context-profile"}, response.get_json())
+
     def test_last_profile_id_is_read_even_when_binding_is_not_reusable(self):
         from core.roxy_profile_binding import last_account_profile_id
 

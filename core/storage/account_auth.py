@@ -629,6 +629,33 @@ def get_auth_run_context(context_id: int) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def latest_roxy_profile_id(account_id: int | None) -> str:
+    """Return the latest Roxy Profile ID recorded in private auth contexts."""
+    if not account_id or not _raw_context_enabled():
+        return ""
+    try:
+        init_context()
+        from psycopg.rows import dict_row
+
+        with postgres_store.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT roxy_profile_id
+                  FROM {postgres_store.qualified(_CONTEXT_TABLE)}
+                 WHERE account_id=%s
+                   AND NULLIF(BTRIM(COALESCE(roxy_profile_id, '')), '') IS NOT NULL
+                 ORDER BY COALESCE(completed_at, created_at) DESC, id DESC
+                 LIMIT 1
+                """,
+                (int(account_id),),
+            )
+            row = cur.fetchone()
+        return str(row["roxy_profile_id"] or "").strip() if row else ""
+    except Exception as exc:
+        logger.warning("[认证上下文] 读取历史 Roxy Profile ID 失败：%s", type(exc).__name__)
+        return ""
+
+
 def audit_auth_run_context_access(
     context_id: int | None,
     *,
@@ -964,6 +991,7 @@ __all__ = [
     "get_active_account_protocol_identity",
     "get_auth_run_context",
     "get_auth_run_context_audited",
+    "latest_roxy_profile_id",
     "init",
     "init_context",
     "operation_run_id_for_account_action_task",

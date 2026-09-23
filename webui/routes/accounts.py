@@ -173,6 +173,10 @@ def create_accounts_blueprint(context: WebUIContext):
         from core.roxy_profile_binding import last_account_profile_id
 
         profile_id = last_account_profile_id(account)
+        if not profile_id:
+            from core.storage.account_auth import latest_roxy_profile_id
+
+            profile_id = latest_roxy_profile_id(acc_id)
         return jsonify({"ok": True, "profile_id": profile_id})
 
     @bp.post("/api/accounts/roxy-profile/backfill-history")
