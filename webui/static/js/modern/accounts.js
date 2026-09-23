@@ -1275,12 +1275,11 @@ function _accountDetailFingerprintMarkup(r) {
   </div>`;
 }
 function _accountDetailRoxyProfileState(r) {
-  const profileName = String(r.roxy_profile_name || '').trim();
-  const loading = r.roxy_profile_loading === true;
+  const profileId = String(r.roxy_profile_id || '').trim();
   return _accountDetailState(
-    'Roxy Profile 名称',
-    profileName || (loading ? '读取中…' : '未发现可用 Profile'),
-    profileName ? 'info' : 'neutral',
+    'Roxy Profile ID',
+    profileId || '未记录',
+    profileId ? 'info' : 'neutral',
   );
 }
 function _accountDetailMarkup(r) {
@@ -1343,15 +1342,13 @@ function _accountDetailMarkup(r) {
 }
 async function refreshAccountRoxyProfile(account) {
   if (!account || !account.id) return;
-  account.roxy_profile_loading = true;
   $('#accountDetailBody').innerHTML = _accountDetailMarkup(account);
   try {
     const result = await api(`/api/accounts/${encodeURIComponent(account.id)}/roxy-profile`);
-    account.roxy_profile_name = String(result.profile_name || '').trim();
+    account.roxy_profile_id = String(result.profile_id || '').trim();
   } catch (_) {
-    account.roxy_profile_name = '';
+    account.roxy_profile_id = '';
   } finally {
-    account.roxy_profile_loading = false;
     if (Number($('#accountDetailDrawer')?.dataset.accountId || 0) === Number(account.id)) {
       $('#accountDetailBody').innerHTML = _accountDetailMarkup(account);
     }
@@ -1361,8 +1358,7 @@ function openAccountDetail(id) {
   const account = ACCOUNTS.find(item => Number(item.id) === Number(id));
   if (!account) { showToast('账号详情暂不可用，请先刷新列表'); return; }
   $('#accountDetailDrawer').dataset.accountId = String(account.id);
-  account.roxy_profile_name = '';
-  account.roxy_profile_loading = true;
+  account.roxy_profile_id = '';
   $('#accountDetailTitle').textContent = account.email || `账号 #${account.id}`;
   $('#accountDetailSubtitle').textContent = `账号 #${account.id} · ${facetLabel('source', account.email_source) || '未知来源'}`;
   $('#accountDetailBody').innerHTML = _accountDetailMarkup(account);

@@ -166,27 +166,14 @@ def create_accounts_blueprint(context: WebUIContext):
 
     @bp.get("/api/accounts/<int:acc_id>/roxy-profile")
     def api_account_roxy_profile(acc_id: int):
-        """只读返回账号当前可用 Roxy Profile 名称。"""
+        """只读返回账号最后一次绑定的 Roxy Profile ID。"""
         account = db.get_account(acc_id)
         if not account:
             return jsonify({"ok": False, "error": "账号不存在"}), 404
         from core.roxy_profile_binding import account_profile_id
 
         profile_id = account_profile_id(account)
-        if not profile_id:
-            return jsonify({"ok": True, "profile_name": ""})
-        try:
-            from core.roxybrowser_client import RoxyBrowserClient
-
-            profile_name = RoxyBrowserClient().get_active_profile_name(profile_id)
-        except Exception as exc:
-            logger.warning(
-                "读取账号当前 Roxy Profile 名称失败：account_id=%s error_type=%s",
-                acc_id,
-                type(exc).__name__,
-            )
-            profile_name = ""
-        return jsonify({"ok": True, "profile_name": profile_name})
+        return jsonify({"ok": True, "profile_id": profile_id})
 
     @bp.get("/api/accounts/plan-check-status")
     def api_account_plan_check_status():
