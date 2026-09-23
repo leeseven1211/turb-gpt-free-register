@@ -20,10 +20,18 @@ def _account_extra(account: Mapping | None) -> dict:
     return dict(raw) if isinstance(raw, Mapping) else {}
 
 
+def _roxy_binding(account: Mapping | None) -> Mapping | None:
+    extra_binding = _account_extra(account).get("roxybrowser")
+    if isinstance(extra_binding, Mapping):
+        return extra_binding
+    direct_binding = account.get("roxybrowser") if isinstance(account, Mapping) else None
+    return direct_binding if isinstance(direct_binding, Mapping) else None
+
+
 def account_profile_id(account: Mapping | None) -> str:
     """Return a retained account Profile ID, or empty when none is usable."""
-    binding = _account_extra(account).get("roxybrowser")
-    if not isinstance(binding, Mapping):
+    binding = _roxy_binding(account)
+    if binding is None:
         return ""
     retained = binding.get("retained", True)
     if isinstance(retained, str) and retained.strip().lower() in {"0", "false", "no", "off"}:
@@ -35,8 +43,8 @@ def account_profile_id(account: Mapping | None) -> str:
 
 def last_account_profile_id(account: Mapping | None) -> str:
     """Return the last recorded Profile ID without checking reusability."""
-    binding = _account_extra(account).get("roxybrowser")
-    if not isinstance(binding, Mapping):
+    binding = _roxy_binding(account)
+    if binding is None:
         return ""
     return str(binding.get("profile_id") or "").strip()
 

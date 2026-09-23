@@ -74,6 +74,10 @@ class RoxyProfileNameTests(unittest.TestCase):
             },
         }
         self.assertEqual("deleted-profile", last_account_profile_id(account))
+        self.assertEqual(
+            "direct-profile",
+            last_account_profile_id({"roxybrowser": {"profile_id": "direct-profile"}}),
+        )
 
     def test_historical_backfill_only_fills_missing_display_ids(self):
         from core.roxy_profile_binding import backfill_account_profile_ids
