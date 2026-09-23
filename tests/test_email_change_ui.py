@@ -102,6 +102,68 @@ function activateTab(tab) {{ calls.push({{tab}}); }}
         self.assertEqual(0, result.returncode, result.stderr or result.stdout)
         self.assertEqual("ok", result.stdout.strip())
 
+    def test_modern_submit_bulk_email_change_posts_selected_accounts(self):
+        source = (ROOT / "webui/static/js/modern/accounts.js").read_text(encoding="utf-8")
+        start = source.index("async function submitEmailChange")
+        end = source.index("function closeAccountsV2MoreMenus", start)
+        function_source = source[start:end]
+        harness = f"""
+const calls = [];
+const nodes = {{
+  '#emailChangeModal': {{dataset: {{accountId: '', accountIds: '[7,8]'}}, classList: {{add() {{}}}}}},
+  '#emailChangeSource': {{value: 'outlook', checkValidity: () => true, reportValidity() {{}}, focus() {{}}}},
+  '#emailChangeSourceError': {{textContent: '', hidden: true}},
+  '#btnSubmitEmailChange': {{disabled: false, textContent: '提交换绑'}},
+  '#accountTaskTargetFilterV2': {{value: 'stale-filter'}},
+  '#accountTaskTypeFilterV2': {{value: ''}},
+}};
+const $ = selector => nodes[selector] || null;
+const ACCOUNTS = [];
+const PAGERS = {{accountTasks: {{page: 3}}}};
+async function api(url, options) {{ calls.push({{url, options}}); return {{started_count: 2, skipped_count: 1}}; }}
+function showToast() {{}}
+function closeEmailChangeModal() {{}}
+function loadAccounts() {{}}
+function activateTab(tab) {{ calls.push({{tab}}); }}
+{function_source}
+(async () => {{
+  await submitEmailChange({{preventDefault() {{}}}});
+  const request = calls.find(item => item.url);
+  const payload = JSON.parse(request.options.body);
+  const opened = calls.some(item => item.tab === 'tasks');
+  if (request.url !== '/api/accounts/email-change-bulk'
+      || JSON.stringify(payload) !== JSON.stringify({{account_ids: [7, 8], email_source: 'outlook'}})
+      || nodes['#accountTaskTargetFilterV2'].value !== ''
+      || nodes['#accountTaskTypeFilterV2'].value !== 'email_change'
+      || PAGERS.accountTasks.page !== 1
+      || !opened) {{
+    throw new Error(JSON.stringify({{request, payload, target: nodes['#accountTaskTargetFilterV2'].value, type: nodes['#accountTaskTypeFilterV2'].value, page: PAGERS.accountTasks.page, opened}}));
+  }}
+  console.log('ok');
+}})().catch(error => {{ console.error(error); process.exit(1); }});
+"""
+        result = subprocess.run(
+            ["node", "--input-type=commonjs", "-e", harness],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, result.returncode, result.stderr or result.stdout)
+        self.assertEqual("ok", result.stdout.strip())
+
+    def test_ui_exposes_bulk_email_change_button_for_selected_accounts(self):
+        response = self.client.get("/", headers=self.headers)
+        self.assertEqual(200, response.status_code)
+        source = response.get_data(as_text=True)
+        parser = _ElementCollector()
+        parser.feed(source)
+
+        button = parser.by_id("btnEmailChangeSelectedV2")
+        self.assertIsNotNone(button)
+        self.assertEqual("button", button[0])
+        self.assertIn("disabled", button[1])
+        self.assertIn("批量换绑邮箱", source)
+
     def test_ui_loads_email_change_sources_and_disables_unavailable_choices(self):
         source = (ROOT / "webui/static/js/modern/accounts.js").read_text(encoding="utf-8")
         self.assertIn("/api/email-sources", source)

@@ -1394,6 +1394,8 @@ async function openEmailChangeModal(id, trigger = null) {
   if (!modal || !source) return;
   emailChangeReturnFocus = trigger || document.activeElement;
   modal.dataset.accountId = String(account.id);
+  modal.dataset.accountIds = '';
+  $('#emailChangeTitle').textContent = '换绑邮箱';
   $('#emailChangeAccountLabel').textContent = `账号 #${account.id} · 当前邮箱 ${account.email || '-'}`;
   const preferredSource = String(account.email_source || '').trim().toLowerCase();
   source.setCustomValidity('');
@@ -1404,12 +1406,35 @@ async function openEmailChangeModal(id, trigger = null) {
   await loadEmailChangeSources(preferredSource);
   source.focus({preventScroll:true});
 }
+async function openBulkEmailChangeModal(ids, trigger = null) {
+  const accountIds = [...new Set((ids || []).map(Number).filter(id => Number.isInteger(id) && id > 0))];
+  if (!accountIds.length) { showToast('请先选择账号'); return; }
+  if (accountIds.length > 500) { showToast('单次最多换绑 500 个账号'); return; }
+  const modal = $('#emailChangeModal');
+  const source = $('#emailChangeSource');
+  const error = $('#emailChangeSourceError');
+  if (!modal || !source) return;
+  emailChangeReturnFocus = trigger || document.activeElement;
+  modal.dataset.accountId = '';
+  modal.dataset.accountIds = JSON.stringify(accountIds);
+  $('#emailChangeTitle').textContent = '批量换绑邮箱';
+  $('#emailChangeAccountLabel').textContent = `已选 ${accountIds.length} 个账号 · 将按账号分别领取新邮箱`;
+  source.setCustomValidity('');
+  if (error) { error.textContent = ''; error.hidden = true; }
+  modal.classList.remove('hidden');
+  modal.setAttribute('aria-hidden', 'false');
+  updateModalScrollLock();
+  await loadEmailChangeSources('');
+  source.focus({preventScroll:true});
+}
 function closeEmailChangeModal({restoreFocus = true} = {}) {
   const modal = $('#emailChangeModal');
   if (!modal || modal.classList.contains('hidden')) return;
   modal.classList.add('hidden');
   modal.setAttribute('aria-hidden', 'true');
   modal.dataset.accountId = '';
+  modal.dataset.accountIds = '';
+  $('#emailChangeTitle').textContent = '换绑邮箱';
   updateModalScrollLock();
   if (restoreFocus && emailChangeReturnFocus?.isConnected) {
     emailChangeReturnFocus.focus({preventScroll:true});
@@ -1438,11 +1463,19 @@ async function submitEmailChange(event) {
   const source = $('#emailChangeSource');
   const error = $('#emailChangeSourceError');
   const submit = $('#btnSubmitEmailChange');
+  let bulkIds = [];
+  try {
+    const rawIds = JSON.parse(String(modal?.dataset.accountIds || ''));
+    if (Array.isArray(rawIds)) {
+      bulkIds = [...new Set(rawIds.map(Number).filter(id => Number.isInteger(id) && id > 0))];
+    }
+  } catch (_) {}
+  const isBulk = bulkIds.length > 0;
   const accountId = Number(modal?.dataset.accountId || 0);
   const account = ACCOUNTS.find(item => Number(item.id) === accountId);
-  if (!accountId || !account) {
+  if ((!isBulk && (!accountId || !account)) || (isBulk && bulkIds.length > 500)) {
     closeEmailChangeModal();
-    showToast('账号已不在当前列表，请刷新后重试');
+    showToast(isBulk ? '批量换绑账号数量无效，请重新选择' : '账号已不在当前列表，请刷新后重试');
     return;
   }
   source?.setCustomValidity?.('');
@@ -1456,17 +1489,25 @@ async function submitEmailChange(event) {
   if (error) { error.textContent = ''; error.hidden = true; }
   if (submit) { submit.disabled = true; submit.textContent = '提交中…'; }
   try {
-    const result = await api(`/api/accounts/${encodeURIComponent(accountId)}/email-change`, {
+    const result = await api(isBulk ? '/api/accounts/email-change-bulk' : `/api/accounts/${encodeURIComponent(accountId)}/email-change`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({email_source: source.value}),
+      body: JSON.stringify(isBulk
+        ? {account_ids: bulkIds, email_source: source.value}
+        : {email_source: source.value}),
     });
-    showToast(result.message || `邮箱换绑已入队 · 任务 #${result.task_id || '-'}`);
+    if (isBulk) {
+      const started = Number(result.started_count || 0);
+      const skipped = Number(result.skipped_count || 0);
+      showToast(`批量换绑已入队 ${started} 个${skipped ? `，跳过 ${skipped} 个` : ''}`);
+    } else {
+      showToast(result.message || `邮箱换绑已入队 · 任务 #${result.task_id || '-'}`);
+    }
     closeEmailChangeModal({restoreFocus:false});
     loadAccounts();
     const search = $('#accountTaskTargetFilterV2');
     const typeFilter = $('#accountTaskTypeFilterV2');
-    if (search) search.value = account.email || `#${accountId}`;
+    if (search) search.value = isBulk ? '' : account.email || `#${accountId}`;
     if (typeFilter) typeFilter.value = 'email_change';
     PAGERS.accountTasks.page = 1;
     activateTab('tasks');
@@ -1587,7 +1628,7 @@ function updateAccountSelectionUi(pageRows = null) {
   const archiveLabel = SHOW_ARCHIVED_ACCOUNTS ? '恢复选中' : '归档选中';
   const archiveTitle = SHOW_ARCHIVED_ACCOUNTS ? '把选中的归档账号恢复到默认账号列表' : '归档选中的账号；默认账号列表将不再查询/显示这些账号';
   const v2Ids = [
-    'btnCheckSelectedLiveV2', 'btnRefreshSelectedTokenV2', 'btnCheckSelectedPlansV2', 'btnCheckSelectedDeactivationMailV2', 'btnExtractSelectedLinksV2',
+    'btnCheckSelectedLiveV2', 'btnRefreshSelectedTokenV2', 'btnCheckSelectedPlansV2', 'btnEmailChangeSelectedV2', 'btnCheckSelectedDeactivationMailV2', 'btnExtractSelectedLinksV2',
     'btnSetupSelectedAccountsV2', 'btnAddPasswordSelectedAccountsV2', 'btnAddTwofaSelectedAccountsV2', 'btnChangePasswordSelectedAccountsV2', 'btnChangeTwofaSelectedAccountsV2', 'btnCompleteSelectedAccountsV2', 'btnUploadSelectedCodexSub2V2', 'btnRetrySelectedCodexV2', 'btnDownloadSelectedCpaV2', 'btnStopSelectedCodexV2',
     'btnCopySelectedTokensV2', 'btnCopySelectedLinesV2', 'btnCopySelectedEmailsV2',
     'btnCopySelectedExtractLinksV2',
@@ -2699,6 +2740,10 @@ async function setupSelectedAccounts() {
   }
 }
 
+function openBulkEmailChangeForSelectedAccounts(event) {
+  return openBulkEmailChangeModal(Array.from(ACCOUNT_SELECTED), event?.currentTarget || null);
+}
+
 async function runSelectedAccountAction(action, label, taskType) {
   const ids = Array.from(ACCOUNT_SELECTED).map(Number);
   if (!ids.length) { showToast('请先选择账号'); return; }
@@ -2750,6 +2795,7 @@ async function copySelectedAccountTokens() {
     if (el) el.addEventListener('click', fn);
   };
   bind('btnCheckSelectedPlansV2', checkSelectedPlans);
+  bind('btnEmailChangeSelectedV2', openBulkEmailChangeForSelectedAccounts);
   bind('btnCheckSelectedDeactivationMailV2', checkSelectedDeactivationMail);
   bind('btnRefreshSelectedTokenV2', () => refreshSelectedToken());
   bind('btnExtractSelectedLinksV2', extractSelectedLinks);
