@@ -3,7 +3,7 @@ const OVERVIEW_PREFERENCE_KEY = 'gpt_console_overview_preferences_v1';
 const OVERVIEW_REGIONS = ['metrics', 'panels'];
 let LAST_DASHBOARD_DATA = null;
 let overviewDraggedCardId = '';
-let overviewPageDraggedCardId = '';
+let overviewPageDragState = null;
 let overviewCustomizerOpen = false;
 let overviewResizeState = null;
 
@@ -40,6 +40,10 @@ function overviewEmailSources(data) {
   });
 }
 
+function overviewLocalPools(data) {
+  return overviewEmailSources(data).filter(source => source.kind === 'local_pool');
+}
+
 function overviewProxyAvailable(data) {
   const platform = String(data?.proxy?.platform || 'none').trim().toLowerCase();
   if (!platform || platform === 'none' || platform === 'direct') return false;
@@ -60,7 +64,7 @@ function overviewCardAvailable(card, data) {
 }
 
 function overviewDragHandle(label) {
-  return `<span class="overview-card-drag" draggable="true" role="button" tabindex="0" aria-label="拖动${attrEsc(label)}卡片排序，或使用方向键调整顺序" title="拖动排序；方向键调整顺序">
+  return `<span class="overview-card-drag" role="button" tabindex="0" aria-label="拖动${attrEsc(label)}卡片排序，或使用方向键调整顺序" title="拖动排序；方向键调整顺序">
     <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="5" cy="3" r="1"/><circle cx="11" cy="3" r="1"/><circle cx="5" cy="8" r="1"/><circle cx="11" cy="8" r="1"/><circle cx="5" cy="13" r="1"/><circle cx="11" cy="13" r="1"/></svg>
   </span>`;
 }
@@ -80,6 +84,15 @@ function dashboardMetric(id, label, value, hint, color, size = 'normal', height 
 
 function jobStatusLabel(status) {
   return ({pending:'排队',running:'运行中',success:'成功',failed:'失败',partial_success:'部分成功',stopped:'已停止',cancelled:'已取消'})[status] || status || '未知';
+}
+
+function overviewMoreSummary(count, unit, density, paired = false, suffix = '，进入详情查看') {
+  return count > 0 ? `<div class="overview-more-summary overview-more-summary--${density}${paired ? ' overview-more-summary--paired' : ''}">另有 ${esc(count)} ${esc(unit)}${esc(suffix)}</div>` : '';
+}
+
+function overviewDensityForHeight(height) {
+  if (!height) return 'normal';
+  return height < 220 ? 'minimal' : height < 300 ? 'compact' : 'normal';
 }
 
 const OVERVIEW_CARD_REGISTRY = [
@@ -120,14 +133,17 @@ const OVERVIEW_CARD_REGISTRY = [
     id: 'panel-email', region: 'panels', label: '邮箱资源 · 邮箱池与按需平台',
     available: data => overviewEmailSources(data).length > 0,
     action: {type: 'go', value: 'outlook', label: '管理邮箱'},
-    render: data => `<div class="overview-source-grid">${overviewEmailSources(data).map(source => {
+    render: data => {
+      const sources = overviewEmailSources(data);
+      return `<div class="overview-source-grid">${sources.map((source, index) => {
       const onDemand = source.kind === 'on_demand';
-      return `<article class="overview-source">
+      return `<article class="overview-source${index >= 2 ? ' overview-density-secondary' : ''}${index >= 1 ? ' overview-density-minimal-extra' : ''}">
         <div class="overview-source-top"><span class="overview-source-name" title="${attrEsc(source.label)}">${esc(source.label)}</span><i class="overview-source-state is-on" aria-hidden="true"></i></div>
         <strong>${onDemand ? '按需' : esc(source.available || 0)}</strong>
         <small>${onDemand ? '运行时租用' : `总数 ${esc(source.total || 0)} · 已用 ${esc(source.used || 0)}`}</small>
       </article>`;
-    }).join('')}</div>`,
+      }).join('')}</div>${overviewMoreSummary(sources.length - 2, '个来源', 'compact', true)}${overviewMoreSummary(sources.length - 1, '个来源', 'minimal')}`;
+    },
   },
   {
     id: 'panel-proxy', region: 'panels', label: '网络出口 · 代理与网络',
@@ -136,12 +152,13 @@ const OVERVIEW_CARD_REGISTRY = [
     render: data => {
       const proxy = data.proxy || {};
       const leases = (proxy.leases || []).slice(0, 3);
+      const totalLeases = Math.max(Number(proxy.active_leases || 0), (proxy.leases || []).length);
       return `<div class="overview-proxy-grid">
         <div class="overview-proxy-item"><span>系统代理平台</span><strong>${esc(overviewProxyPlatformLabel(proxy.platform))}</strong></div>
         <div class="overview-proxy-item"><span>活跃出口</span><strong>${esc(proxy.active_leases || 0)} 个</strong></div>
-      </div><div class="overview-exit-list">${leases.map(lease => `<div class="overview-exit-row">
+      </div><div class="overview-exit-list">${leases.map((lease, index) => `<div class="overview-exit-row${index >= 1 ? ' overview-density-secondary' : ''}">
         <i aria-hidden="true"></i><span title="${attrEsc(lease.endpoint || lease.exit_ip || '')}">${esc(lease.endpoint || lease.exit_ip || '活跃出口')}</span><small>${esc(lease.region || lease.provider || '')}</small>
-      </div>`).join('') || '<div class="muted">当前没有活跃代理出口</div>'}</div>`;
+      </div>`).join('') || '<div class="muted">当前没有活跃代理出口</div>'}</div>${overviewMoreSummary(totalLeases - 1, '个出口', 'compact', false, '')}`;
     },
   },
   {
@@ -155,9 +172,9 @@ const OVERVIEW_CARD_REGISTRY = [
         ['partial_success', '部分成功', todayCounts.partial_success || 0],
         ['failed', '失败', todayCounts.failed || 0],
       ];
-      return `<div class="overview-job-list">${todayRows.map(([status, label, count]) => `<div class="overview-job-row">
+      return `<div class="overview-job-list">${todayRows.map(([status, label, count], index) => `<div class="overview-job-row${status === 'partial_success' || (index > 0 && !count) ? ' overview-density-secondary' : ''}">
         ${pill(status)}<div class="overview-job-main"><strong>${esc(count)} 个任务</strong><small>${esc(data.jobs.today || '今天')} · ${esc(label)}</small></div>
-      </div>`).join('')}</div>`;
+      </div>`).join('')}</div>${Number(todayCounts.partial_success || 0) ? `<div class="overview-more-summary overview-more-summary--compact">部分成功 ${esc(todayCounts.partial_success)}</div>` : ''}`;
     },
   },
   {
@@ -172,10 +189,63 @@ const OVERVIEW_CARD_REGISTRY = [
         free_discount_eligible:'Free · Plus 其他折扣', free_promo_unknown:'Free · 优惠待复查',
         plus:'Plus', pro:'Pro', team:'Team', go:'Go', unknown:'未检测',
       };
-      return `<div class="overview-plan-list">${plans.map(([plan,count]) => `<div class="overview-plan-row">
+      return `<div class="overview-plan-list">${plans.map(([plan,count], index) => `<div class="overview-plan-row${index >= 3 ? ' overview-density-secondary' : ''}${index >= 2 ? ' overview-density-minimal-extra' : ''}">
         <span>${esc(planLabels[plan] || plan)}</span><div class="overview-plan-bar"><i style="width:${Math.max(4, Math.round(Number(count || 0) / planMax * 100))}%"></i></div><strong>${esc(count)}</strong>
-      </div>`).join('')}</div>`;
+      </div>`).join('')}</div>${overviewMoreSummary(plans.length - 3, '种套餐', 'compact', true)}${overviewMoreSummary(plans.length - 2, '种套餐', 'minimal')}`;
     },
+  },
+  {
+    id: 'panel-task-queue', region: 'panels', label: '注册流水线 · 当前任务队列',
+    available: data => overviewJobsAvailable(data) && ['pending', 'running', 'stopping'].some(key => Number(data.jobs.counts?.[key] || 0) > 0),
+    action: {type: 'go', value: 'register', label: '查看任务'},
+    render: data => {
+      const counts = data.jobs.counts || {};
+      return `<div class="overview-status-grid">
+        <div class="overview-status-item"><span>待处理</span><strong>${esc(counts.pending || 0)}</strong></div>
+        <div class="overview-status-item"><span>运行中</span><strong>${esc(counts.running || 0)}</strong></div>
+        <div class="overview-status-item overview-density-secondary"><span>停止中</span><strong>${esc(counts.stopping || 0)}</strong></div>
+      </div>${Number(counts.stopping || 0) ? `<div class="overview-more-summary overview-more-summary--compact">停止中 ${esc(counts.stopping)}</div>` : ''}`;
+    },
+  },
+  {
+    id: 'panel-job-history', region: 'panels', label: '注册流水线 · 累计任务结果',
+    available: data => overviewJobsAvailable(data) && ['success', 'partial_success', 'failed', 'stopped', 'cancelled'].some(key => Number(data.jobs.counts?.[key] || 0) > 0),
+    action: {type: 'go', value: 'register', label: '查看任务'},
+    render: data => {
+      const counts = data.jobs.counts || {};
+      const stopped = Number(counts.stopped || 0) + Number(counts.cancelled || 0);
+      return `<div class="overview-status-grid">
+        <div class="overview-status-item"><span>成功</span><strong>${esc(counts.success || 0)}</strong></div>
+        <div class="overview-status-item"><span>失败</span><strong>${esc(counts.failed || 0)}</strong></div>
+        <div class="overview-status-item overview-density-secondary"><span>部分成功</span><strong>${esc(counts.partial_success || 0)}</strong></div>
+        <div class="overview-status-item overview-density-secondary"><span>已停止或取消</span><strong>${esc(stopped)}</strong></div>
+      </div>${Number(counts.partial_success || 0) || stopped ? `<div class="overview-more-summary overview-more-summary--compact">部分成功 ${esc(counts.partial_success || 0)} · 已停止或取消 ${esc(stopped)}</div>` : ''}`;
+    },
+  },
+  {
+    id: 'panel-email-health', region: 'panels', label: '邮箱资源 · 邮箱池状态',
+    available: data => overviewLocalPools(data).some(source => Number(source.total || 0) > 0),
+    action: {type: 'go', value: 'outlook', label: '查看邮箱'},
+    render: data => {
+      const pools = overviewLocalPools(data);
+      const count = key => pools.reduce((total, source) => total + Number(source[key] || 0), 0);
+      return `<div class="overview-status-grid">
+        <div class="overview-status-item"><span>可用邮箱</span><strong>${esc(count('available'))}</strong></div>
+        <div class="overview-status-item overview-density-secondary"><span>已用邮箱</span><strong>${esc(count('used'))}</strong></div>
+        <div class="overview-status-item"><span>失败邮箱</span><strong>${esc(count('failed'))}</strong></div>
+        <div class="overview-status-item overview-density-secondary"><span>停用邮箱</span><strong>${esc(count('disabled'))}</strong></div>
+      </div><div class="overview-more-summary overview-more-summary--compact">已用 ${esc(count('used'))} · 停用 ${esc(count('disabled'))}</div>`;
+    },
+  },
+  {
+    id: 'panel-codex-progress', region: 'panels', label: 'Codex 授权 · 凭证处理进度',
+    available: data => Number(data?.codex?.total || 0) > 0,
+    action: {type: 'go', value: 'codex', label: '查看凭证'},
+    render: data => `<div class="overview-status-grid">
+      <div class="overview-status-item"><span>已导出</span><strong>${esc(data.codex.exported || 0)}</strong></div>
+      <div class="overview-status-item"><span>待导出</span><strong>${esc(data.codex.pending || 0)}</strong></div>
+      <div class="overview-status-item overview-density-secondary"><span>账号 Codex 就绪</span><strong>${esc(data.accounts?.codex_ready || 0)}</strong></div>
+    </div><div class="overview-more-summary overview-more-summary--compact">账号 Codex 就绪 ${esc(data.accounts?.codex_ready || 0)}</div>`,
   },
 ];
 
@@ -252,7 +322,7 @@ function renderOverviewPanel(card, data, preferences) {
   const titleParts = card.label.split(' · ');
   const size = preferences?.sizes?.[card.id] || 'normal';
   const height = preferences?.heights?.[card.id];
-  return `<section class="overview-panel" data-overview-card="${attrEsc(card.id)}" data-overview-size="${attrEsc(size)}"${height ? ` style="min-height:${height}px"` : ''}>
+  return `<section class="overview-panel" data-overview-card="${attrEsc(card.id)}" data-overview-size="${attrEsc(size)}" data-overview-density="${overviewDensityForHeight(height)}"${height ? ` style="min-height:${height}px"` : ''}>
     <div class="overview-panel-head">
       <div><span>${esc(titleParts[0])}</span><h3>${esc(titleParts.slice(1).join(' · '))}</h3></div>
       <div class="overview-card-tools">${overviewActionMarkup(card.action)}${overviewDragHandle(titleParts.slice(1).join(' · '))}</div>
@@ -294,6 +364,7 @@ function overviewCardIdsForRender(data, preferences, region) {
 }
 
 function renderDashboard(data) {
+  if (overviewPageDragState) finishOverviewPageDrag(true);
   LAST_DASHBOARD_DATA = data || {};
   const availableIds = overviewAvailableCardIds(LAST_DASHBOARD_DATA);
   const preferences = readOverviewPreferences(availableIds);
@@ -382,6 +453,116 @@ function handleOverviewCardDrop(targetId, targetRegion, after = false, sourceId 
   updateOverviewPreferences(preferences => reorderOverviewCard(preferences, targetRegion, sourceId, targetId, after));
 }
 
+function startOverviewPageDrag(event, handle) {
+  if (event.button !== 0 || overviewPageDragState || overviewResizeState) return;
+  const card = handle.closest('[data-overview-card]');
+  const grid = card?.parentElement;
+  const root = $('#tab-overview');
+  if (!card || !grid || !root) return;
+  overviewPageDragState = {
+    root, grid, card, pointerId: event.pointerId,
+    region: grid.id === 'overviewMetrics' ? 'metrics' : 'panels',
+    startX: event.clientX, startY: event.clientY,
+    lastX: event.clientX, lastY: event.clientY,
+    originalNodes: [...grid.children], ghost: null, scrollFrame: null,
+  };
+  root.setPointerCapture(event.pointerId);
+  event.preventDefault();
+}
+
+function overviewPageDropAfter(state, target, clientX, clientY) {
+  const rect = target.getBoundingClientRect();
+  const sourceRect = state.card.getBoundingClientRect();
+  const singleColumn = getComputedStyle(state.grid).gridTemplateColumns.split(/\s+/).length === 1;
+  const otherRow = Math.abs(sourceRect.top - rect.top) > 8;
+  return singleColumn || otherRow || target.dataset.overviewSize === 'full'
+    ? clientY >= rect.top + rect.height / 2
+    : clientX >= rect.left + rect.width / 2;
+}
+
+function previewOverviewPageOrder(state, event) {
+  const target = document.elementFromPoint(event.clientX, event.clientY)?.closest('[data-overview-card]');
+  if (!target || target === state.card || target.parentElement !== state.grid) return;
+  const after = overviewPageDropAfter(state, target, event.clientX, event.clientY);
+  const reference = after ? target.nextElementSibling : target;
+  if (reference === state.card || state.card.nextElementSibling === reference) return;
+  const cards = [...state.grid.children];
+  for (const node of cards) node.getAnimations?.().forEach(animation => animation.cancel());
+  const before = new Map(cards.map(node => [node, node.getBoundingClientRect()]));
+  state.grid.insertBefore(state.card, reference);
+  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+  for (const node of cards) {
+    if (node === state.card) continue;
+    const previous = before.get(node);
+    const next = node.getBoundingClientRect();
+    const dx = previous.left - next.left;
+    const dy = previous.top - next.top;
+    if (dx || dy) node.animate?.([
+      {transform: `translate(${dx}px, ${dy}px)`},
+      {transform: 'translate(0, 0)'},
+    ], {duration: 180, easing: 'cubic-bezier(.2,.75,.2,1)'});
+  }
+}
+
+function continueOverviewDragScroll(state) {
+  state.scrollFrame = null;
+  if (overviewPageDragState !== state || !state.ghost) return;
+  const margin = 64;
+  const y = state.lastY;
+  const speed = y >= 0 && y < margin ? -Math.ceil((margin - y) / 4)
+    : y <= window.innerHeight && y > window.innerHeight - margin ? Math.ceil((y - window.innerHeight + margin) / 4) : 0;
+  if (!speed) return;
+  const scrolling = document.scrollingElement;
+  const before = scrolling?.scrollTop;
+  window.scrollBy(0, speed);
+  if (scrolling?.scrollTop === before) return;
+  previewOverviewPageOrder(state, {clientX: state.lastX, clientY: state.lastY});
+  state.scrollFrame = requestAnimationFrame(() => continueOverviewDragScroll(state));
+}
+
+function moveOverviewPageDrag(event) {
+  const state = overviewPageDragState;
+  if (!state || event.pointerId !== state.pointerId) return;
+  state.lastX = event.clientX;
+  state.lastY = event.clientY;
+  const dx = event.clientX - state.startX;
+  const dy = event.clientY - state.startY;
+  if (!state.ghost && Math.hypot(dx, dy) < 5) return;
+  if (!state.ghost) {
+    const rect = state.card.getBoundingClientRect();
+    const ghost = state.card.cloneNode(true);
+    ghost.classList.add('overview-drag-ghost');
+    ghost.setAttribute('aria-hidden', 'true');
+    Object.assign(ghost.style, {left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px`});
+    document.body.appendChild(ghost);
+    state.ghost = ghost;
+    state.card.classList.add('is-drag-placeholder');
+  }
+  state.ghost.style.transform = `translate3d(${dx}px, ${dy}px, 0)`;
+  previewOverviewPageOrder(state, event);
+  if (!state.scrollFrame) state.scrollFrame = requestAnimationFrame(() => continueOverviewDragScroll(state));
+}
+
+function finishOverviewPageDrag(cancelled = false, pointerId = null) {
+  const state = overviewPageDragState;
+  if (!state || (pointerId !== null && pointerId !== state.pointerId)) return;
+  overviewPageDragState = null;
+  if (state.scrollFrame) cancelAnimationFrame(state.scrollFrame);
+  if (state.root.hasPointerCapture?.(state.pointerId)) state.root.releasePointerCapture(state.pointerId);
+  state.ghost?.remove();
+  state.card.classList.remove('is-drag-placeholder');
+  if (cancelled) {
+    state.grid.replaceChildren(...state.originalNodes);
+    return;
+  }
+  if (!state.ghost) return;
+  const visibleOrder = [...state.grid.children].map(card => card.dataset.overviewCard);
+  updateOverviewPreferences(preferences => {
+    const previousOrder = preferences.order[state.region] || [];
+    preferences.order[state.region] = [...visibleOrder, ...previousOrder.filter(id => !visibleOrder.includes(id))];
+  });
+}
+
 function overviewResizeSize(region, columns, span) {
   if (span <= 1) return 'normal';
   if (span >= Math.min(columns, region === 'metrics' ? 4 : 3) && columns >= 3) return 'full';
@@ -389,6 +570,7 @@ function overviewResizeSize(region, columns, span) {
 }
 
 function startOverviewResize(event, handle) {
+  if (overviewResizeState || overviewPageDragState) return;
   const card = handle.closest('[data-overview-card]');
   const grid = card?.parentElement;
   if (!card || !grid) return;
@@ -398,11 +580,11 @@ function startOverviewResize(event, handle) {
   const cardWidth = card.getBoundingClientRect().width;
   const gridWidth = grid.getBoundingClientRect().width;
   overviewResizeState = {
-    card, handle, region, id: card.dataset.overviewCard, columns, gap,
+    card, handle, region, id: card.dataset.overviewCard, columns, gap, pointerId: event.pointerId,
     columnWidth: (gridWidth - gap * (columns - 1)) / columns,
     startX: event.clientX, startY: event.clientY,
     startWidth: cardWidth, startHeight: card.getBoundingClientRect().height,
-    startSize: card.dataset.overviewSize, startMinHeight: card.style.minHeight,
+    startSize: card.dataset.overviewSize, startDensity: card.dataset.overviewDensity, startMinHeight: card.style.minHeight,
     changed: false,
   };
   handle.setPointerCapture(event.pointerId);
@@ -412,24 +594,27 @@ function startOverviewResize(event, handle) {
 
 function moveOverviewResize(event) {
   const state = overviewResizeState;
-  if (!state) return;
+  if (!state || event.pointerId !== state.pointerId) return;
   const width = state.startWidth + event.clientX - state.startX;
   const span = Math.max(1, Math.min(state.columns, Math.round((width + state.gap) / (state.columnWidth + state.gap))));
   const size = overviewResizeSize(state.region, state.columns, span);
   state.card.dataset.overviewSize = size;
   if (Math.abs(event.clientY - state.startY) > 4) {
-    state.card.style.minHeight = `${Math.max(160, Math.min(800, Math.round(state.startHeight + event.clientY - state.startY)))}px`;
+    const height = Math.max(160, Math.min(800, Math.round(state.startHeight + event.clientY - state.startY)));
+    state.card.style.minHeight = `${height}px`;
+    if (state.region === 'panels') state.card.dataset.overviewDensity = overviewDensityForHeight(height);
   }
   state.changed = state.changed || Math.abs(event.clientX - state.startX) > 4 || Math.abs(event.clientY - state.startY) > 4;
 }
 
-function finishOverviewResize(cancelled = false) {
+function finishOverviewResize(cancelled = false, pointerId = null) {
   const state = overviewResizeState;
-  if (!state) return;
+  if (!state || (pointerId !== null && pointerId !== state.pointerId)) return;
   overviewResizeState = null;
   state.card.classList.remove('is-resizing');
   if (cancelled || !state.changed) {
     state.card.dataset.overviewSize = state.startSize;
+    if (state.region === 'panels') state.card.dataset.overviewDensity = state.startDensity;
     state.card.style.minHeight = state.startMinHeight;
     return;
   }
@@ -479,47 +664,22 @@ $('#tab-overview')?.addEventListener('keydown', e => {
   }
 });
 $('#tab-overview')?.addEventListener('pointerdown', e => {
-  const handle = e.target.closest('[data-overview-resize]');
-  if (handle) startOverviewResize(e, handle);
+  const resizeHandle = e.target.closest('[data-overview-resize]');
+  if (resizeHandle) { startOverviewResize(e, resizeHandle); return; }
+  const dragHandle = e.target.closest('.overview-card-drag');
+  if (dragHandle) startOverviewPageDrag(e, dragHandle);
 });
-$('#tab-overview')?.addEventListener('pointermove', moveOverviewResize);
-$('#tab-overview')?.addEventListener('pointerup', () => finishOverviewResize());
-$('#tab-overview')?.addEventListener('pointercancel', () => finishOverviewResize(true));
-$('#tab-overview')?.addEventListener('dragstart', e => {
-  const handle = e.target.closest('.overview-card-drag');
-  const card = handle?.closest('[data-overview-card]');
-  if (!card) return;
-  overviewPageDraggedCardId = card.dataset.overviewCard;
-  card.classList.add('is-dragging');
-  e.dataTransfer?.setData('text/plain', overviewPageDraggedCardId);
-  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+$('#tab-overview')?.addEventListener('pointermove', e => {
+  moveOverviewResize(e);
+  moveOverviewPageDrag(e);
 });
-$('#tab-overview')?.addEventListener('dragover', e => {
-  if (!overviewPageDraggedCardId) return;
-  const card = e.target.closest('[data-overview-card]');
-  if (!card || card.dataset.overviewCard === overviewPageDraggedCardId) return;
-  const source = overviewRegistryCard(overviewPageDraggedCardId);
-  if (source?.region !== overviewRegistryCard(card.dataset.overviewCard)?.region) return;
-  e.preventDefault();
-  card.classList.add('is-drag-over');
+$('#tab-overview')?.addEventListener('pointerup', e => {
+  finishOverviewResize(false, e.pointerId);
+  finishOverviewPageDrag(false, e.pointerId);
 });
-$('#tab-overview')?.addEventListener('dragleave', e => {
-  e.target.closest('[data-overview-card]')?.classList.remove('is-drag-over');
-});
-$('#tab-overview')?.addEventListener('drop', e => {
-  if (!overviewPageDraggedCardId) return;
-  const card = e.target.closest('[data-overview-card]');
-  if (!card) return;
-  e.preventDefault();
-  const rect = card.getBoundingClientRect();
-  const singleColumn = getComputedStyle(card.parentElement).gridTemplateColumns.split(/\s+/).length === 1;
-  const after = singleColumn ? e.clientY >= rect.top + rect.height / 2 : e.clientX >= rect.left + rect.width / 2;
-  handleOverviewCardDrop(card.dataset.overviewCard, overviewRegistryCard(card.dataset.overviewCard)?.region, after, overviewPageDraggedCardId);
-  overviewPageDraggedCardId = '';
-});
-$('#tab-overview')?.addEventListener('dragend', () => {
-  $('#tab-overview')?.querySelectorAll('.is-dragging, .is-drag-over').forEach(card => card.classList.remove('is-dragging', 'is-drag-over'));
-  overviewPageDraggedCardId = '';
+$('#tab-overview')?.addEventListener('pointercancel', e => {
+  finishOverviewResize(true, e.pointerId);
+  finishOverviewPageDrag(true, e.pointerId);
 });
 $('#tab-overview')?.addEventListener('change', e => {
   const toggle = e.target.closest('[data-overview-toggle]');
@@ -555,6 +715,7 @@ $('#overviewCustomizeList')?.addEventListener('dragend', e => {
   overviewDraggedCardId = '';
 });
 document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && overviewPageDragState) finishOverviewPageDrag(true);
   if (e.key === 'Escape' && overviewCustomizerOpen) closeOverviewCustomizer();
 });
 

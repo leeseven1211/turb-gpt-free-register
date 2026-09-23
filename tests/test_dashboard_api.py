@@ -178,6 +178,107 @@ console.log('ok');
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         self.assertEqual(result.stdout.strip(), "ok")
 
+    def test_overview_drag_uses_vertical_midpoint_across_grid_rows(self):
+        source = self.MODERN_DASHBOARD_JS.read_text(encoding="utf-8")
+        start = source.index("function overviewPageDropAfter")
+        end = source.index("function previewOverviewPageOrder", start)
+        function_source = source[start:end]
+        harness = f"""
+global.getComputedStyle = () => ({{gridTemplateColumns: '100px 100px'}});
+{function_source}
+const state = {{card: {{getBoundingClientRect: () => ({{left: 0, top: 0, width: 100, height: 100}})}}, grid: {{}}}};
+const sameRow = {{dataset: {{overviewSize: 'normal'}}, getBoundingClientRect: () => ({{left: 120, top: 0, width: 100, height: 100}})}};
+if (!overviewPageDropAfter(state, sameRow, 180, 10)) throw new Error('same-row target should use horizontal midpoint');
+const nextRow = {{dataset: {{overviewSize: 'normal'}}, getBoundingClientRect: () => ({{left: 0, top: 120, width: 100, height: 100}})}};
+if (overviewPageDropAfter(state, nextRow, 90, 140)) throw new Error('cross-row target should use vertical midpoint');
+if (!overviewPageDropAfter(state, nextRow, 10, 180)) throw new Error('cross-row lower half should insert after');
+const full = {{dataset: {{overviewSize: 'full'}}, getBoundingClientRect: () => ({{left: 0, top: 0, width: 220, height: 100}})}};
+if (overviewPageDropAfter(state, full, 200, 10)) throw new Error('full-width target should use vertical midpoint');
+console.log('ok');
+"""
+        result = subprocess.run(["node", "--input-type=commonjs", "-e", harness], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertEqual(result.stdout.strip(), "ok")
+
+    def test_overview_exposes_new_aggregate_cards(self):
+        source = self.MODERN_DASHBOARD_JS.read_text(encoding="utf-8")
+        function_source = source[:source.index("$('#btnRefreshOverview')")]
+        harness = f"""
+const targets = new Map();
+function $(selector) {{
+  if (!targets.has(selector)) targets.set(selector, {{innerHTML: ''}});
+  return targets.get(selector);
+}}
+function esc(value) {{ return String(value ?? ''); }}
+function attrEsc(value) {{ return String(value ?? ''); }}
+function pill(status) {{ return String(status); }}
+{function_source}
+renderDashboard({{
+  accounts: {{total: 20, active: 18, archived: 2, codex_ready: 9, plans: {{free: 18}}}},
+  email: {{local_available: 5, sources: [{{source: 'outlook', label: 'Outlook', kind: 'local_pool', enabled: true, total: 20, available: 5, used: 12, failed: 2, disabled: 1}}]}},
+  jobs: {{total: 30, counts: {{pending: 3, running: 2, stopping: 1, success: 20, failed: 4}}, today_counts: {{success: 4, failed: 1}}}},
+  proxy: {{platform: 'none', leases: []}},
+  codex: {{total: 12, exported: 7, pending: 5}},
+}});
+const html = $('#overviewPanels').innerHTML;
+for (const id of ['panel-task-queue', 'panel-email-health', 'panel-codex-progress', 'panel-job-history']) {{
+  if (!html.includes(`data-overview-card="${{id}}"`)) throw new Error(`${{id}} missing`);
+}}
+if (!html.includes('待处理') || !html.includes('失败邮箱') || !html.includes('已导出') || !html.includes('累计任务结果')) throw new Error('aggregate values missing');
+console.log('ok');
+"""
+        result = subprocess.run(["node", "--input-type=commonjs", "-e", harness], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertEqual(result.stdout.strip(), "ok")
+
+    def test_overview_data_rich_cards_explain_compact_hidden_rows(self):
+        source = self.MODERN_DASHBOARD_JS.read_text(encoding="utf-8")
+        function_source = source[:source.index("function renderDashboard")]
+        harness = f"""
+function esc(value) {{ return String(value ?? ''); }}
+function attrEsc(value) {{ return String(value ?? ''); }}
+function pill(status) {{ return String(status); }}
+{function_source}
+const email = overviewRegistryCard('panel-email').render({{email: {{sources: [
+  {{source: 'outlook', label: 'Outlook', kind: 'local_pool', enabled: true, available: 1}},
+  {{source: 'generic_api', label: 'API', kind: 'local_pool', enabled: true, available: 2}},
+  {{source: 'icloud_hide', label: 'iCloud', kind: 'local_pool', enabled: true, available: 3}},
+  {{source: 'email_butler', label: 'Butler', kind: 'on_demand', enabled: true}},
+]}}}});
+if (!email.includes('另有 2 个来源')) throw new Error('compact email summary missing');
+if (!email.includes('另有 3 个来源')) throw new Error('minimal email summary missing');
+const plans = overviewRegistryCard('panel-accounts').render({{accounts: {{plans: {{free: 10, plus: 8, pro: 6, team: 4, go: 2}}}}}});
+if (!plans.includes('另有 2 种套餐') || !plans.includes('另有 3 种套餐')) throw new Error('compact plan summaries missing');
+console.log('ok');
+"""
+        result = subprocess.run(["node", "--input-type=commonjs", "-e", harness], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertEqual(result.stdout.strip(), "ok")
+
+    def test_overview_compact_cards_keep_full_counts_and_priority_rows(self):
+        source = self.MODERN_DASHBOARD_JS.read_text(encoding="utf-8")
+        function_source = source[:source.index("function renderDashboard")]
+        harness = f"""
+function esc(value) {{ return String(value ?? ''); }}
+function attrEsc(value) {{ return String(value ?? ''); }}
+function pill(status) {{ return `<span class="pill">${{status}}</span>`; }}
+{function_source}
+const proxy = overviewRegistryCard('panel-proxy').render({{proxy: {{platform: '1024', active_leases: 4, leases: [
+  {{endpoint: 'a'}}, {{endpoint: 'b'}}, {{endpoint: 'c'}}, {{endpoint: 'd'}},
+]}}}});
+if (!proxy.includes('另有 3 个出口')) throw new Error('compact proxy count must include unrendered leases');
+const queue = overviewRegistryCard('panel-task-queue').render({{jobs: {{counts: {{pending: 3, running: 2, stopping: 1}}}}}});
+if (!queue.includes('overview-density-secondary"><span>停止中') || !queue.includes('停止中 1')) throw new Error('queue does not compact nonzero secondary status');
+const history = overviewRegistryCard('panel-job-history').render({{jobs: {{counts: {{success: 10, failed: 2, partial_success: 3, stopped: 1}}}}}});
+if (!history.includes('overview-density-secondary"><span>部分成功') || !history.includes('部分成功 3')) throw new Error('history does not compact nonzero secondary status');
+const today = overviewRegistryCard('panel-jobs').render({{jobs: {{today: 'today', today_counts: {{success: 10, partial_success: 3, failed: 2}}}}}});
+if (!/overview-density-secondary">\\s*<span class="pill">partial_success/.test(today) || !today.includes('部分成功 3')) throw new Error('today results do not compact partial success');
+console.log('ok');
+"""
+        result = subprocess.run(["node", "--input-type=commonjs", "-e", harness], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertEqual(result.stdout.strip(), "ok")
+
     def test_task_error_ui_uses_short_code_and_summary_instead_of_raw_message(self):
         source = self.MODERN_COMMON_JS.read_text(encoding="utf-8")
         start = source.index("function taskErrorBadge")
