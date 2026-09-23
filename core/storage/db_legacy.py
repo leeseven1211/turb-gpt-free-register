@@ -885,6 +885,22 @@ def update_account_roxy_profile(
     return _mutate_account_extra(str(email or "").strip(), mutate)
 
 
+def update_account_roxy_profile_window_name(email: str, window_name: str) -> bool:
+    """Persist a display-only Roxy window name without changing the binding."""
+    normalized_name = str(window_name or "").strip()[:200]
+    if not normalized_name:
+        return False
+
+    def mutate(_row, extra):
+        binding = extra.get("roxybrowser")
+        binding = dict(binding) if isinstance(binding, dict) else {}
+        binding["window_name"] = normalized_name
+        extra["roxybrowser"] = binding
+        return {}
+
+    return _mutate_account_extra(str(email or "").strip(), mutate)
+
+
 def update_account_password_capability(
     email: str,
     *,

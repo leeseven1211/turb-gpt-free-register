@@ -284,6 +284,30 @@ class RoxyProfileLifecycleTests(unittest.TestCase):
         self.assertEqual(changes, {})
         self.assertEqual(extra["roxybrowser"], {"profile_id": "profile-2", "retained": True})
 
+    def test_account_profile_window_name_update_preserves_existing_binding(self):
+        from core.storage import db_legacy
+
+        mutate = Mock(return_value=True)
+        with patch.object(db_legacy, "_mutate_account_extra", mutate):
+            self.assertTrue(
+                db_legacy.update_account_roxy_profile_window_name(
+                    "user@example.com",
+                    "rb-1790150160878-77e2",
+                )
+            )
+
+        row, extra = {}, {"roxybrowser": {"profile_id": "profile-2", "retained": False}}
+        changes = mutate.call_args.args[1](row, extra)
+        self.assertEqual(changes, {})
+        self.assertEqual(
+            extra["roxybrowser"],
+            {
+                "profile_id": "profile-2",
+                "retained": False,
+                "window_name": "rb-1790150160878-77e2",
+            },
+        )
+
     def test_dispatcher_forwards_bound_profile_only_to_roxy_driver(self):
         args = {
             "email": "user@example.com",

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""账号详情读取最后一次 Roxy Profile ID 的回归测试。"""
+"""账号详情读取最后一次 Roxy Profile 信息的回归测试。"""
 from __future__ import annotations
 
 import logging
@@ -14,20 +14,21 @@ from webui.routes.accounts import create_accounts_blueprint
 
 
 class RoxyProfileNameTests(unittest.TestCase):
-    def test_modern_account_detail_refreshes_last_profile_id(self):
+    def test_modern_account_detail_refreshes_profile_window_name_and_id(self):
         source = (
             Path(__file__).resolve().parents[1]
             / "webui/static/js/modern/accounts.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("Roxy Profile ID", source)
+        self.assertIn("Roxy Profile 窗口名称", source)
         self.assertIn(
             "/api/accounts/${encodeURIComponent(account.id)}/roxy-profile",
             source,
         )
         self.assertIn("account.roxy_profile_id = String(result.profile_id || '').trim()", source)
+        self.assertIn("account.roxy_profile_name = String(result.window_name || '').trim()", source)
 
-    def test_recent_fingerprint_section_exposes_roxy_profile_id(self):
+    def test_recent_fingerprint_section_exposes_roxy_profile_window_name(self):
         source = (
             Path(__file__).resolve().parents[1]
             / "webui/static/js/modern/accounts.js"
@@ -39,7 +40,7 @@ class RoxyProfileNameTests(unittest.TestCase):
 
         self.assertIn("_accountDetailRoxyProfileState(r)", fingerprint_section)
 
-    def test_account_route_returns_last_profile_id_without_active_profile_lookup(self):
+    def test_account_route_returns_saved_profile_window_name_and_id(self):
         app = Flask("roxy-profile-name")
         app.register_blueprint(
             create_accounts_blueprint(
@@ -53,6 +54,9 @@ class RoxyProfileNameTests(unittest.TestCase):
                 "roxybrowser": {
                     "profile_id": "profile-1",
                     "retained": True,
+                    "open_result": {
+                        "data": {"windowName": "rb-1790150160878-77e2"},
+                    },
                 },
             },
         }
@@ -61,7 +65,36 @@ class RoxyProfileNameTests(unittest.TestCase):
 
         self.assertEqual(200, response.status_code)
         self.assertEqual(
-            {"ok": True, "profile_id": "profile-1"},
+            {
+                "ok": True,
+                "profile_id": "profile-1",
+                "window_name": "rb-1790150160878-77e2",
+            },
+            response.get_json(),
+        )
+
+    def test_account_route_keeps_id_when_window_name_is_missing(self):
+        app = Flask("roxy-profile-id-fallback")
+        app.register_blueprint(
+            create_accounts_blueprint(
+                runtime.WebUIContext(app, logging.getLogger("roxy-profile-id-fallback")),
+            )
+        )
+        account = {
+            "id": 1940,
+            "email": "account@example.test",
+            "extra_json": {
+                "roxybrowser": {
+                    "profile_id": "profile-1",
+                    "retained": False,
+                },
+            },
+        }
+        with patch("webui.routes.accounts.db.get_account", return_value=account):
+            response = app.test_client().get("/api/accounts/1940/roxy-profile")
+
+        self.assertEqual(
+            {"ok": True, "profile_id": "profile-1", "window_name": ""},
             response.get_json(),
         )
 
@@ -82,10 +115,13 @@ class RoxyProfileNameTests(unittest.TestCase):
         ):
             response = app.test_client().get("/api/accounts/1940/roxy-profile")
 
-        self.assertEqual({"ok": True, "profile_id": "context-profile"}, response.get_json())
+        self.assertEqual(
+            {"ok": True, "profile_id": "context-profile", "window_name": ""},
+            response.get_json(),
+        )
 
     def test_last_profile_id_is_read_even_when_binding_is_not_reusable(self):
-        from core.roxy_profile_binding import last_account_profile_id
+        from core.roxy_profile_binding import last_account_profile_id, last_account_profile_name
 
         account = {
             "extra_json": {
@@ -96,6 +132,15 @@ class RoxyProfileNameTests(unittest.TestCase):
         self.assertEqual(
             "direct-profile",
             last_account_profile_id({"roxybrowser": {"profile_id": "direct-profile"}}),
+        )
+        self.assertEqual(
+            "rb-direct",
+            last_account_profile_name({
+                "roxybrowser": {
+                    "profile_id": "direct-profile",
+                    "open_result": {"windowName": "rb-direct"},
+                },
+            }),
         )
 
     def test_historical_backfill_only_fills_missing_display_ids(self):
@@ -121,12 +166,42 @@ class RoxyProfileNameTests(unittest.TestCase):
                 "matched_accounts": 2,
                 "already_recorded": 1,
                 "updated": 1,
+                "window_names_updated": 0,
                 "missing_accounts": 1,
                 "failed": 0,
             },
             result,
         )
         update.assert_called_once_with("missing@example.test", "profile-2", retained=False)
+
+    def test_historical_backfill_fills_name_only_for_the_same_profile_id(self):
+        from core.roxy_profile_binding import backfill_account_profile_ids
+
+        accounts = {
+            "same@example.test": {
+                "extra_json": {"roxybrowser": {"profile_id": "profile-1"}},
+            },
+            "different@example.test": {
+                "extra_json": {"roxybrowser": {"profile_id": "profile-other"}},
+            },
+        }
+        with (
+            patch("core.db.get_account_by_email", side_effect=accounts.get),
+            patch("core.db.update_account_roxy_profile_window_name", return_value=True) as update_name,
+        ):
+            result = backfill_account_profile_ids({
+                "same@example.test": {
+                    "profile_id": "profile-1",
+                    "window_name": "rb-same",
+                },
+                "different@example.test": {
+                    "profile_id": "profile-1",
+                    "window_name": "rb-wrong",
+                },
+            })
+
+        self.assertEqual(1, result["window_names_updated"])
+        update_name.assert_called_once_with("same@example.test", "rb-same")
 
     def test_history_backfill_route_returns_redacted_counts(self):
         app = Flask("roxy-profile-history")
@@ -137,8 +212,13 @@ class RoxyProfileNameTests(unittest.TestCase):
         )
         with (
             patch(
-                "core.roxy_profile_binding.load_historical_profile_ids",
-                return_value={"account@example.test": "profile-1"},
+                "core.roxy_profile_binding.load_historical_profile_bindings",
+                return_value={
+                    "account@example.test": {
+                        "profile_id": "profile-1",
+                        "window_name": "rb-history",
+                    },
+                },
             ),
             patch(
                 "core.roxy_profile_binding.backfill_account_profile_ids",
@@ -147,6 +227,7 @@ class RoxyProfileNameTests(unittest.TestCase):
                     "matched_accounts": 1,
                     "already_recorded": 0,
                     "updated": 1,
+                    "window_names_updated": 0,
                     "missing_accounts": 0,
                     "failed": 0,
                 },
@@ -163,6 +244,7 @@ class RoxyProfileNameTests(unittest.TestCase):
                 "matched_accounts": 1,
                 "already_recorded": 0,
                 "updated": 1,
+                "window_names_updated": 0,
                 "missing_accounts": 0,
                 "failed": 0,
             },

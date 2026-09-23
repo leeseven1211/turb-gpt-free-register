@@ -49,15 +49,61 @@ def last_account_profile_id(account: Mapping | None) -> str:
     return str(binding.get("profile_id") or "").strip()
 
 
-def load_historical_profile_ids(project_root: str | Path | None = None) -> dict[str, str]:
-    """Load historical Profile IDs without treating them as reusable bindings.
+def _profile_window_name(binding: Mapping | None) -> str:
+    """Read the safe Roxy window name from a binding or its open response."""
+    if not isinstance(binding, Mapping):
+        return ""
+    candidates: list[object] = [
+        binding.get("window_name"),
+        binding.get("windowName"),
+        binding.get("name"),
+        binding.get("profileName"),
+    ]
+    open_result = binding.get("open_result")
+    if isinstance(open_result, Mapping):
+        candidates.extend([
+            open_result.get("window_name"),
+            open_result.get("windowName"),
+            open_result.get("name"),
+            open_result.get("profileName"),
+        ])
+        data = open_result.get("data")
+        if isinstance(data, Mapping):
+            candidates.extend([
+                data.get("windowName"),
+                data.get("window_name"),
+                data.get("name"),
+                data.get("profileName"),
+            ])
+    for candidate in candidates:
+        value = str(candidate or "").strip()
+        if value:
+            return value[:200]
+    return ""
+
+
+def last_account_profile_name(account: Mapping | None) -> str:
+    """Return the last recorded Roxy window name, independent of retention."""
+    return _profile_window_name(_roxy_binding(account))
+
+
+def last_account_profile(account: Mapping | None) -> dict[str, str]:
+    """Return the display-safe last Profile ID and Roxy window name."""
+    return {
+        "profile_id": last_account_profile_id(account),
+        "window_name": last_account_profile_name(account),
+    }
+
+
+def load_historical_profile_bindings(project_root: str | Path | None = None) -> dict[str, dict[str, str]]:
+    """Load historical Profile IDs and window names without making them reusable.
 
     The structured registration export wins over log fallbacks when the same
-    email appears in both sources.  This function only returns identifiers;
-    callers decide whether and how to persist them.
+    email appears in both sources.  Only the display-safe ID and window name
+    are returned; raw Roxy responses stay local to the source data.
     """
     root = Path(project_root) if project_root is not None else Path(__file__).resolve().parents[1]
-    profile_ids: dict[str, str] = {}
+    bindings: dict[str, dict[str, str]] = {}
     export_path = root / "core" / "注册成功的邮箱.json"
     try:
         rows = json.loads(export_path.read_text(encoding="utf-8"))
@@ -80,8 +126,12 @@ def load_historical_profile_ids(project_root: str | Path | None = None) -> dict[
             email = str(user.get("email") or "").strip().lower() if isinstance(user, Mapping) else ""
         binding = raw.get("roxybrowser")
         profile_id = str(binding.get("profile_id") or "").strip() if isinstance(binding, Mapping) else ""
+        window_name = _profile_window_name(binding)
         if email and profile_id:
-            profile_ids[email] = profile_id
+            bindings[email] = {
+                "profile_id": profile_id,
+                "window_name": window_name,
+            }
 
     log_pattern = re.compile(r"\[Roxy注册\] 开始：([^，\s]+)，profile=([^\s]+)")
     for log_path in sorted((root / "core" / "注册日志").glob("*.log")):
@@ -93,12 +143,29 @@ def load_historical_profile_ids(project_root: str | Path | None = None) -> dict[
             normalized_email = str(email or "").strip().lower()
             normalized_profile = str(profile_id or "").strip()
             if normalized_email and normalized_profile:
-                profile_ids.setdefault(normalized_email, normalized_profile)
-    return profile_ids
+                bindings.setdefault(normalized_email, {
+                    "profile_id": normalized_profile,
+                    "window_name": "",
+                })
+    return bindings
 
 
-def backfill_account_profile_ids(profile_ids: Mapping[str, str]) -> dict[str, int]:
-    """Persist missing historical IDs as non-reusable display-only bindings."""
+def load_historical_profile_ids(project_root: str | Path | None = None) -> dict[str, str]:
+    """Load historical Profile IDs without treating them as reusable bindings.
+
+    The structured registration export wins over log fallbacks when the same
+    email appears in both sources.  This function only returns identifiers;
+    callers decide whether and how to persist them.
+    """
+    return {
+        email: binding["profile_id"]
+        for email, binding in load_historical_profile_bindings(project_root).items()
+        if binding.get("profile_id")
+    }
+
+
+def backfill_account_profile_ids(profile_ids: Mapping[str, str | Mapping]) -> dict[str, int]:
+    """Persist historical IDs and names as non-reusable display-only bindings."""
     from core import db
 
     result = {
@@ -106,11 +173,18 @@ def backfill_account_profile_ids(profile_ids: Mapping[str, str]) -> dict[str, in
         "matched_accounts": 0,
         "already_recorded": 0,
         "updated": 0,
+        "window_names_updated": 0,
         "missing_accounts": 0,
         "failed": 0,
     }
-    for raw_email, raw_profile_id in profile_ids.items():
+    for raw_email, raw_profile in profile_ids.items():
         email = str(raw_email or "").strip().lower()
+        if isinstance(raw_profile, Mapping):
+            raw_profile_id = raw_profile.get("profile_id")
+            window_name = _profile_window_name(raw_profile)
+        else:
+            raw_profile_id = raw_profile
+            window_name = ""
         profile_id = str(raw_profile_id or "").strip()
         if not email or not profile_id:
             continue
@@ -120,12 +194,30 @@ def backfill_account_profile_ids(profile_ids: Mapping[str, str]) -> dict[str, in
             result["missing_accounts"] += 1
             continue
         result["matched_accounts"] += 1
-        if last_account_profile_id(account):
+        recorded_profile_id = last_account_profile_id(account)
+        if recorded_profile_id:
             result["already_recorded"] += 1
+            if (
+                recorded_profile_id == profile_id
+                and window_name
+                and not last_account_profile_name(account)
+            ):
+                try:
+                    if db.update_account_roxy_profile_window_name(email, window_name):
+                        result["window_names_updated"] += 1
+                    else:
+                        result["failed"] += 1
+                except Exception:
+                    result["failed"] += 1
             continue
         try:
             if db.update_account_roxy_profile(email, profile_id, retained=False):
                 result["updated"] += 1
+                if window_name:
+                    if db.update_account_roxy_profile_window_name(email, window_name):
+                        result["window_names_updated"] += 1
+                    else:
+                        result["failed"] += 1
             else:
                 result["failed"] += 1
         except Exception:
@@ -166,6 +258,9 @@ def persist_account_profile_id(email: str, profile_id: str, *, retained: bool = 
 __all__ = [
     "account_profile_id",
     "last_account_profile_id",
+    "last_account_profile_name",
+    "last_account_profile",
+    "load_historical_profile_bindings",
     "load_historical_profile_ids",
     "backfill_account_profile_ids",
     "account_profile_id_by_email",

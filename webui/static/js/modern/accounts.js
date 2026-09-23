@@ -1275,11 +1275,13 @@ function _accountDetailFingerprintMarkup(r) {
   </div>`;
 }
 function _accountDetailRoxyProfileState(r) {
+  const profileName = String(r.roxy_profile_name || '').trim();
   const profileId = String(r.roxy_profile_id || '').trim();
   return _accountDetailState(
-    'Roxy Profile ID',
-    profileId || '未记录',
-    profileId ? 'info' : 'neutral',
+    'Roxy Profile 窗口名称',
+    profileName || '未记录',
+    profileName ? 'info' : 'neutral',
+    profileId ? `Profile ID: ${profileId}` : '',
   );
 }
 function _accountDetailMarkup(r) {
@@ -1346,8 +1348,10 @@ async function refreshAccountRoxyProfile(account) {
   try {
     const result = await api(`/api/accounts/${encodeURIComponent(account.id)}/roxy-profile`);
     account.roxy_profile_id = String(result.profile_id || '').trim();
+    account.roxy_profile_name = String(result.window_name || '').trim();
   } catch (_) {
     account.roxy_profile_id = '';
+    account.roxy_profile_name = '';
   } finally {
     if (Number($('#accountDetailDrawer')?.dataset.accountId || 0) === Number(account.id)) {
       $('#accountDetailBody').innerHTML = _accountDetailMarkup(account);
@@ -1359,6 +1363,7 @@ function openAccountDetail(id) {
   if (!account) { showToast('账号详情暂不可用，请先刷新列表'); return; }
   $('#accountDetailDrawer').dataset.accountId = String(account.id);
   account.roxy_profile_id = '';
+  account.roxy_profile_name = '';
   $('#accountDetailTitle').textContent = account.email || `账号 #${account.id}`;
   $('#accountDetailSubtitle').textContent = `账号 #${account.id} · ${facetLabel('source', account.email_source) || '未知来源'}`;
   $('#accountDetailBody').innerHTML = _accountDetailMarkup(account);

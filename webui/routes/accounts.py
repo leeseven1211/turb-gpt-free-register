@@ -166,30 +166,32 @@ def create_accounts_blueprint(context: WebUIContext):
 
     @bp.get("/api/accounts/<int:acc_id>/roxy-profile")
     def api_account_roxy_profile(acc_id: int):
-        """只读返回账号最后一次绑定的 Roxy Profile ID。"""
+        """只读返回账号最后一次绑定的 Roxy Profile 名称和 ID。"""
         account = db.get_account(acc_id)
         if not account:
             return jsonify({"ok": False, "error": "账号不存在"}), 404
-        from core.roxy_profile_binding import last_account_profile_id
+        from core.roxy_profile_binding import last_account_profile
 
-        profile_id = last_account_profile_id(account)
+        profile = last_account_profile(account)
+        profile_id = profile["profile_id"]
         if not profile_id:
             from core.storage.account_auth import latest_roxy_profile_id
 
             profile_id = latest_roxy_profile_id(acc_id)
-        return jsonify({"ok": True, "profile_id": profile_id})
+        return jsonify({
+            "ok": True,
+            "profile_id": profile_id,
+            "window_name": profile["window_name"],
+        })
 
     @bp.post("/api/accounts/roxy-profile/backfill-history")
     def api_accounts_roxy_profile_backfill_history():
-        """把本地历史记录中的缺失 Profile ID 补入账号元数据。"""
-        from core.roxy_profile_binding import (
-            backfill_account_profile_ids,
-            load_historical_profile_ids,
-        )
+        """把本地历史记录中的 Profile ID 和窗口名称补入账号元数据。"""
+        from core.roxy_profile_binding import backfill_account_profile_ids, load_historical_profile_bindings
 
-        profile_ids = load_historical_profile_ids()
-        result = backfill_account_profile_ids(profile_ids)
-        return jsonify({"ok": True, "source_profile_ids": len(profile_ids), **result})
+        profile_bindings = load_historical_profile_bindings()
+        result = backfill_account_profile_ids(profile_bindings)
+        return jsonify({"ok": True, "source_profile_ids": len(profile_bindings), **result})
 
     @bp.get("/api/accounts/plan-check-status")
     def api_account_plan_check_status():
