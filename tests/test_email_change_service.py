@@ -267,6 +267,82 @@ class EmailChangeProtocolContractTests(unittest.TestCase):
         self.assertEqual(0.0, session.blocked_until)
         self.assertEqual("", session.blocked_reason)
 
+
+class EmailChangeLoggingTests(unittest.TestCase):
+    def test_email_change_logs_allocated_mailbox_when_waiting_for_otp(self):
+        from core import email_change_service
+
+        class _Context:
+            account_id = 7
+            run_id = 29
+            task_id = 30
+            email = "old@example.test"
+            run = {"data": {"email_source": "outlook"}, "trigger": "test"}
+            config_snapshot = {"email_change_enabled": True}
+
+            def __init__(self):
+                self.events = []
+
+            def report(self, **event):
+                self.events.append(event)
+
+            @contextmanager
+            def lease(self, *, resource_family):
+                yield None
+
+            def checkpoint(self):
+                return None
+
+            def remote_request_started(self, *args, **kwargs):
+                return None
+
+            def remote_request_receipt(self, *args, **kwargs):
+                return None
+
+        context = _Context()
+        route = SimpleNamespace(
+            proxy_url="",
+            public_dict=lambda: {},
+            release=Mock(),
+        )
+        session = Mock()
+        identity = SimpleNamespace(session_payload=lambda: {})
+        begin = email_change_service.BeginChangeResult(
+            session=session,
+            access_token="fresh-at",
+            after_ts=123.0,
+            reauthenticated=False,
+        )
+        account = {
+            "email": "old@example.test",
+            "email_source": "outlook",
+            "access_token": "old-at",
+        }
+
+        with patch.object(email_change_service.db, "get_account", return_value=account), \
+            patch.object(email_change_service.email_provider, "validate_email_source", return_value="outlook"), \
+            patch("core.browser_traffic.record_unavailable"), \
+            patch.object(email_change_service.db, "claim_account_email_change", return_value=True), \
+            patch.object(email_change_service.email_provider, "acquire_email", return_value="new@example.test"), \
+            patch.object(email_change_service.db, "mark_account_email_change_running", return_value=True), \
+            patch.object(email_change_service, "acquire_account_proxy", return_value=route), \
+            patch.object(email_change_service, "_account_stable_identity", return_value=identity), \
+            patch("core.session.BrowserSession", return_value=session), \
+            patch.object(email_change_service, "begin_change_with_optional_reauth", return_value=begin), \
+            patch.object(email_change_service.email_provider, "wait_for_otp", side_effect=RuntimeError("mailbox wait timed out")), \
+            patch.object(email_change_service.db, "finish_account_email_change", return_value=True):
+            result = email_change_service._handle_email_change(context)
+
+        self.assertEqual("request_unknown", result.status)
+        self.assertIn(
+            ("email", "success", "新邮箱已领取：new@example.test"),
+            [(item["stage"], item["state"], item["message"]) for item in context.events],
+        )
+        self.assertIn(
+            ("email_otp", "running", "等待新邮箱验证码：new@example.test"),
+            [(item["stage"], item["state"], item["message"]) for item in context.events],
+        )
+
     def test_recent_login_unknown_landing_rejects_before_waiting_for_otp(self):
         from core import account_liveness
 

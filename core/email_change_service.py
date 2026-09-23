@@ -757,6 +757,7 @@ def _handle_email_change(context):
                 _release_unconsumed(new_email, account_id, "新邮箱与当前邮箱相同")
                 return task_gateway.OperationResult.failed("领取到的邮箱与当前邮箱相同")
             db.mark_account_email_change_running(account_id, new_email, source=source)
+            context.report(stage="email", state="success", message=f"新邮箱已领取：{new_email}")
             context.report(stage="network", state="running", message="分配邮箱换绑线路")
             route = acquire_account_proxy(
                 account_id=account_id,
@@ -797,7 +798,7 @@ def _handle_email_change(context):
                 detail={"reauthenticated": begin.reauthenticated},
             )
             context.checkpoint()
-            context.report(stage="email_otp", state="running", message="等待新邮箱验证码")
+            context.report(stage="email_otp", state="running", message=f"等待新邮箱验证码：{new_email}")
             try:
                 otp = email_provider.wait_for_otp(
                     new_email,
