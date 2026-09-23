@@ -76,6 +76,7 @@ const proxyTrafficPages = {
   history: {page: 1, size: 20, total: 0},
   traffic: {page: 1, size: 20, total: 0},
 };
+const proxyTrafficScrollResetViews = new Set();
 
 function proxyTrafficEsc(value) {
   return String(value == null ? '' : value)
@@ -413,6 +414,7 @@ function proxyTrafficBindFilterControls() {
       if (key === 'state' && view) {
         proxyTrafficStateFilters[view] = control.value;
         proxyTrafficPages[view].page = 1;
+        proxyTrafficScrollResetViews.add(view);
         proxyTrafficSyncFilterControls();
         proxyTrafficDesiredVersion += 1;
         loadProxyTraffic(view);
@@ -420,7 +422,10 @@ function proxyTrafficBindFilterControls() {
       }
       proxyTrafficFilters[key] = control.value;
       proxyTrafficSyncFilterControls();
-      Object.values(proxyTrafficPages).forEach((page) => { page.page = 1; });
+      Object.entries(proxyTrafficPages).forEach(([name, page]) => {
+        page.page = 1;
+        proxyTrafficScrollResetViews.add(name);
+      });
       proxyTrafficDesiredVersion += 1;
       if (proxyTrafficFilterTimer) clearTimeout(proxyTrafficFilterTimer);
       proxyTrafficFilterTimer = setTimeout(loadProxyTraffic, eventName === 'input' ? 260 : 0);
@@ -434,7 +439,10 @@ function proxyTrafficClearFilters() {
   proxyTrafficFilters.search = '';
   Object.keys(proxyTrafficStateFilters).forEach((view) => { proxyTrafficStateFilters[view] = 'all'; });
   proxyTrafficSyncFilterControls();
-  Object.values(proxyTrafficPages).forEach((page) => { page.page = 1; });
+  Object.entries(proxyTrafficPages).forEach(([name, page]) => {
+    page.page = 1;
+    proxyTrafficScrollResetViews.add(name);
+  });
   proxyTrafficDesiredVersion += 1;
   if (proxyTrafficFilterTimer) clearTimeout(proxyTrafficFilterTimer);
   loadProxyTraffic();
@@ -474,18 +482,25 @@ function proxyTrafficRenderPager(view) {
   const page = proxyTrafficPages[view];
   const pager = document.getElementById(`proxyTrafficPager${view[0].toUpperCase()}${view.slice(1)}`);
   if (!pager) return;
+  const activeControl = pager.contains(document.activeElement) ? document.activeElement : null;
+  const activePageButton = activeControl?.dataset?.proxyPage;
+  const activePageSize = activeControl?.hasAttribute?.('data-proxy-page-size');
   const pages = Math.max(1, Math.ceil(page.total / page.size));
   const first = page.total ? (page.page - 1) * page.size + 1 : 0;
   const last = Math.min(page.total, page.page * page.size);
-  pager.innerHTML = `<span class="proxy-traffic-page-total">${first}–${last} / 共 ${page.total} 条</span>
-    <div class="proxy-traffic-page-actions">
+  pager.innerHTML = `<span class="proxy-traffic-page-total">${page.total ? `显示 ${first}–${last} 条，共 ${page.total} 条` : '共 0 条'}</span>
+    <div class="proxy-traffic-page-actions" role="group" aria-label="翻页">
       <button type="button" data-proxy-pager="${view}" data-proxy-page="prev" aria-label="上一页" ${page.page <= 1 ? 'disabled' : ''}>上一页</button>
-      <span class="proxy-traffic-page-number">第 ${page.page} / ${pages} 页</span>
+      <span class="proxy-traffic-page-number" role="status" aria-live="polite" aria-label="第 ${page.page} 页，共 ${pages} 页">${page.page} / ${pages}</span>
       <button type="button" data-proxy-pager="${view}" data-proxy-page="next" aria-label="下一页" ${page.page >= pages ? 'disabled' : ''}>下一页</button>
-      <label>每页 <select data-proxy-page-size="${view}" aria-label="${view === 'current' ? '当前租约' : view === 'history' ? '线路历史' : '浏览器流量'}每页条数">
+    </div>
+    <label class="proxy-traffic-page-size">每页 <select data-proxy-page-size="${view}" aria-label="${view === 'current' ? '当前租约' : view === 'history' ? '线路历史' : '浏览器流量'}每页条数">
         ${[20, 50, 100].map((size) => `<option value="${size}" ${page.size === size ? 'selected' : ''}>${size}</option>`).join('')}
-      </select> 条</label>
-    </div>`;
+      </select> 条</label>`;
+  const replacement = activePageButton
+    ? pager.querySelector(`[data-proxy-page="${activePageButton}"]:not(:disabled)`) || pager.querySelector('[data-proxy-page]:not(:disabled)')
+    : activePageSize ? pager.querySelector('[data-proxy-page-size]') : null;
+  replacement?.focus({preventScroll: true});
 }
 
 function proxyTrafficRenderRows() {
@@ -663,6 +678,11 @@ async function loadProxyTraffic(view = null) {
       proxyTrafficRefreshFilterOptions();
     }
     proxyTrafficRenderRows();
+    proxyTrafficScrollResetViews.forEach((name) => {
+      const tableWrap = document.querySelector(`[data-proxy-panel="${name}"] .proxy-traffic-table-wrap`);
+      if (tableWrap) tableWrap.scrollTop = 0;
+      proxyTrafficScrollResetViews.delete(name);
+    });
     markViewReady('proxy-traffic');
   } catch (error) {
     if (error === PROXY_TRAFFIC_STALE) return;
@@ -732,6 +752,7 @@ function proxyTrafficBindControls() {
     if (!state) return;
     const maxPage = Math.max(1, Math.ceil(state.total / state.size));
     state.page = Math.max(1, Math.min(maxPage, state.page + (button.dataset.proxyPage === 'next' ? 1 : -1)));
+    proxyTrafficScrollResetViews.add(view);
     proxyTrafficDesiredVersion += 1;
     loadProxyTraffic(view);
   });
@@ -742,6 +763,7 @@ function proxyTrafficBindControls() {
     if (!state) return;
     state.size = Number(select.value) || 20;
     state.page = 1;
+    proxyTrafficScrollResetViews.add(select.dataset.proxyPageSize);
     proxyTrafficDesiredVersion += 1;
     loadProxyTraffic(select.dataset.proxyPageSize);
   });

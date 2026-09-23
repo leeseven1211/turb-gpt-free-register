@@ -1159,9 +1159,13 @@ tr:hover td,
    of the existing list pages while the scroll container owns narrow screens. */
 .proxy-traffic-page {
   display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   gap: var(--ui-space-4);
   min-width: 0;
+  min-height: 0;
   max-width: 100%;
+  height: calc(100vh - var(--topbar-height) - 42px);
+  height: calc(100dvh - var(--topbar-height) - 42px);
 }
 
 .proxy-traffic-view-bar {
@@ -1298,7 +1302,10 @@ tr:hover td,
 }
 
 .proxy-traffic-panel {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
+  min-height: 0;
   max-width: 100%;
   overflow: hidden;
   border: 1px solid var(--ui-color-border);
@@ -1311,6 +1318,7 @@ tr:hover td,
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
+  flex: 0 0 auto;
   gap: var(--ui-space-4);
   min-width: 0;
   padding: 15px 16px 13px;
@@ -1367,26 +1375,32 @@ tr:hover td,
 .proxy-traffic-pager button:disabled { cursor: default; opacity: .45; }
 
 .proxy-traffic-pager {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-areas: "total actions size";
   align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 10px;
-  min-height: 54px;
-  padding: 9px 16px;
+  flex: 0 0 auto;
+  gap: 12px;
+  min-height: 56px;
+  padding: 10px 16px;
   border-top: 1px solid var(--ui-color-border);
   color: var(--ui-color-text-muted);
+  background: var(--ui-color-surface-subtle);
   font-size: var(--ui-font-size-xs);
 }
 
-.proxy-traffic-page-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-.proxy-traffic-page-actions label { display: inline-flex; align-items: center; gap: 5px; }
-.proxy-traffic-page-number { min-width: 76px; text-align: center; }
+.proxy-traffic-page-total { grid-area: total; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.proxy-traffic-page-actions { grid-area: actions; display: flex; align-items: center; justify-self: center; gap: 8px; white-space: nowrap; }
+.proxy-traffic-page-size { grid-area: size; display: inline-flex; align-items: center; justify-self: end; gap: 5px; white-space: nowrap; }
+.proxy-traffic-page-number { min-width: 76px; color: var(--ui-color-text); text-align: center; font-variant-numeric: tabular-nums; font-weight: 700; }
 
 .proxy-traffic-table-wrap {
+  flex: 1 1 auto;
   max-width: 100%;
-  overflow-x: auto;
+  min-height: 0;
+  overflow: auto;
   overscroll-behavior-x: contain;
+  scrollbar-width: auto;
   -webkit-overflow-scrolling: touch;
   touch-action: pan-x pan-y;
 }
@@ -1755,10 +1769,37 @@ tr:hover td,
   .proxy-traffic-clear-filters { padding-inline: 9px; }
   .proxy-traffic-panel-head { align-items: flex-start; flex-direction: column; gap: 6px; padding-inline: 13px; }
   .proxy-traffic-panel-tools { width: 100%; justify-content: space-between; }
-  .proxy-traffic-pager { padding-inline: 12px; }
-  .proxy-traffic-page-actions { width: 100%; justify-content: space-between; }
+  .proxy-traffic-pager {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "total size" "actions actions";
+    order: 1;
+    gap: 8px;
+    padding: 10px 12px;
+    border-top: 0;
+    border-bottom: 1px solid var(--ui-color-border);
+  }
+  .proxy-traffic-page-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); width: 100%; }
+  .proxy-traffic-page-actions button { width: 100%; }
+  .proxy-traffic-table-wrap { order: 2; }
   .proxy-traffic-detail-item { grid-template-columns: 84px minmax(0, 1fr); }
   .proxy-traffic-table { min-width: 920px; }
+}
+
+@media (max-height: 740px) {
+  .proxy-traffic-page {
+    height: auto;
+    grid-template-rows: auto auto auto auto;
+  }
+  .proxy-traffic-pager {
+    order: 1;
+    border-top: 0;
+    border-bottom: 1px solid var(--ui-color-border);
+  }
+  .proxy-traffic-table-wrap { order: 2; flex: 0 0 auto; min-height: 240px; max-height: 320px; }
+}
+
+@media (max-height: 500px) and (min-width: 561px) {
+  #tab-proxy-traffic { gap: 4px; }
 }
 
 @media (max-width: 860px) {
