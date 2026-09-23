@@ -53,7 +53,7 @@ const LIST_FACET_LABELS = {
     queued:'排队中', pending:'排队中', running:'运行中', waiting:'等待中', stopping:'停止中', cancelling:'停止中', settling:'收尾中',
     failed:'失败', partial_success:'部分成功', password_confirmation_pending:'待确认 · 密码已提交', success:'成功', stopped:'已停止', cancelled:'已取消', interrupted:'执行中断',
     deactivated:'已停用', unsupported:'不支持', attention_required:'需人工处理', request_unknown:'待确认', manual_reconcile:'需人工对账',
-    available:'可用', used:'已使用', disabled:'停用', exported:'已导出', unexported:'未导出', archived:'已归档',
+    available:'可用', used:'已使用', replaced:'换绑后邮箱', disabled:'停用', exported:'已导出', unexported:'未导出', archived:'已归档',
   },
   source: {
     outlook:'Outlook', generic_api:'通用 API', cloudflare_domain:'域名邮箱', cloudflare_temp:'Cloudflare 临时邮箱',
@@ -761,7 +761,7 @@ function short(v, n=40) { const s = v || ''; return s.length > n ? s.slice(0,n)+
 function copyId(v) { if (!v) return ''; const id = 'c'+(++copySeq); copyStore.set(id, v); return id; }
 function cbtn(label, value, cls='') { const id = copyId(value); return `<button class="${cls}" data-copy-id="${id}" ${id?'':'disabled'}>${label}</button>`; }
 function pill(status) {
-  const map = { available:'可用', used:'已用', failed:'失败', partial_success:'部分成功', password_confirmation_pending:'待确认 · 密码已提交', disabled:'已停用', pending:'排队', running:'运行中', debug_paused:'调试暂停', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消', request_unknown:'待确认', manual_reconcile:'需人工对账' };
+  const map = { available:'可用', used:'已用', replaced:'换绑后邮箱', failed:'失败', partial_success:'部分成功', password_confirmation_pending:'待确认 · 密码已提交', disabled:'已停用', pending:'排队', running:'运行中', debug_paused:'调试暂停', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消', request_unknown:'待确认', manual_reconcile:'需人工对账' };
   return `<span class="pill status-${esc(status)}">${esc(map[status]||status||'-')}</span>`;
 }
 function pillV2(status, group = 'status') {

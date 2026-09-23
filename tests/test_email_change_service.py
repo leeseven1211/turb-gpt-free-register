@@ -863,6 +863,15 @@ class EmailChangeStorageTests(PostgresTestCase):
     def test_writeback_is_atomic_and_preserves_original_mailbox_material(self):
         from core.storage import accounts
 
+        record_store.insert_row(
+            record_store.OUTLOOK_POOL,
+            {
+                "email": "old@example.test",
+                "status": "used",
+                "used_at": "2026-09-01T12:00:00",
+                "registered_account_id": self.account_id,
+            },
+        )
         self.assertTrue(
             accounts.finish_account_email_change(
                 self.account_id,
@@ -884,6 +893,23 @@ class EmailChangeStorageTests(PostgresTestCase):
         self.assertIn("account_password", row["extra_json"])
         public_account = accounts.get_account(self.account_id)
         self.assertNotIn("email_change_material_line", public_account)
+
+        old_pool = record_store.get_row_by(
+            record_store.OUTLOOK_POOL, "email", "old@example.test", lower=True
+        )
+        self.assertEqual("replaced", old_pool["status"])
+        self.assertEqual(self.account_id, old_pool["registered_account_id"])
+        self.assertIn("邮箱已换绑", old_pool.get("note") or "")
+
+        from core import db
+
+        self.assertFalse(
+            db.release_unconsumed_outlook("old@example.test", note="不应恢复")
+        )
+        old_pool_after_release = record_store.get_row_by(
+            record_store.OUTLOOK_POOL, "email", "old@example.test", lower=True
+        )
+        self.assertEqual("replaced", old_pool_after_release["status"])
 
     def test_success_writeback_keeps_recent_login_token_for_post_change_live_check(self):
         from core.storage import accounts

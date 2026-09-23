@@ -76,6 +76,33 @@ class AdminCrudTests(PostgresTestCase):
             "pool@example.test----mail-password----client-id----refresh-secret",
         )
 
+    def test_replaced_email_cannot_be_restored_to_available(self):
+        record_store.insert_row(record_store.OUTLOOK_POOL, {
+            "email": "replaced@example.test",
+            "status": "replaced",
+            "note": "邮箱已换绑，原邮箱不再使用",
+        })
+        app = create_app(auth_code="test-auth")
+        response = app.test_client().post(
+            "/api/outlook/status",
+            json={
+                "email": "replaced@example.test",
+                "source": "outlook",
+                "status": "available",
+            },
+            headers={"X-Auth-Code": "test-auth"},
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            "replaced",
+            record_store.get_row_by(
+                record_store.OUTLOOK_POOL,
+                "email",
+                "replaced@example.test",
+                lower=True,
+            )["status"],
+        )
+
     def test_email_import_preview_is_resource_only_and_reports_duplicates(self):
         record_store.insert_row(record_store.OUTLOOK_POOL, {"email": "existing@example.test", "status": "available"})
         app = create_app(auth_code="test-auth")

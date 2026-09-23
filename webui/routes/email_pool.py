@@ -39,6 +39,17 @@ from webui.route_helpers import _pool_source_arg
 logger = logging.getLogger(__name__)
 
 
+def _pool_row_for_source(email: str, source: str) -> dict | None:
+    source = str(source or "").strip().lower()
+    if source == "generic_api":
+        return db.get_generic_api_email_by_email(email)
+    if source == "cloudflare_domain":
+        return db.get_domain_email_by_email(email)
+    if source == "icloud_hide":
+        return db.get_icloud_hide_email_by_email(email)
+    return db.get_outlook_by_email(email)
+
+
 def _parse_email_pool_import(text: str, source: str, *, include_account_fields: bool = False) -> dict:
     """Parse only the fields that belong to an email resource.
 
@@ -257,6 +268,9 @@ def create_email_pool_blueprint(context: WebUIContext):
         source = (data.get("source") or _pool_source_arg()).strip()
         if source == "all":
             source = "outlook"
+        current = _pool_row_for_source(email, source)
+        if status == "available" and str((current or {}).get("status") or "").strip().lower() == "replaced":
+            return jsonify({"ok": False, "error": "换绑后邮箱不能恢复为可用"}), 409
         if source == "generic_api":
             updated = db.release_generic_api_email(email, status=status, note=data.get("note"))
         elif source == "cloudflare_domain":
@@ -304,6 +318,10 @@ def create_email_pool_blueprint(context: WebUIContext):
                 continue
             seen.add(key)
             try:
+                current = _pool_row_for_source(email, item_source)
+                if status == "available" and str((current or {}).get("status") or "").strip().lower() == "replaced":
+                    skipped.append({"email": email, "source": item_source, "reason": "换绑后邮箱不能恢复为可用"})
+                    continue
                 if item_source == "generic_api":
                     changed = db.release_generic_api_email(email, status=status, note=note)
                 elif item_source == "cloudflare_domain":

@@ -2029,6 +2029,23 @@ def finish_account_email_change(
         if material_line is not None:
             changes["email_change_material_line"] = str(material_line or "")
         record_store.patch_row(record_store.ACCOUNTS, int(acc_id), changes, conn=conn)
+        old_source = str(row.get("email_source") or "").strip().lower()
+        old_pool_spec = _POOL_SOURCE_SPECS.get(old_source)
+        if old_pool_spec is not None and old_email:
+            old_pool_row = _locked_row_by_email(conn, old_pool_spec, old_email)
+            if old_pool_row is not None:
+                record_store.patch_row(
+                    old_pool_spec,
+                    int(old_pool_row["id"]),
+                    {
+                        "status": "replaced",
+                        "used_at": old_pool_row.get("used_at") or now,
+                        "registered_account_id": old_pool_row.get("registered_account_id") or int(acc_id),
+                        "replaced_at": now,
+                        "note": "邮箱已换绑，原邮箱不再释放为可用",
+                    },
+                    conn=conn,
+                )
     return True
 
 
@@ -2221,6 +2238,8 @@ def _pool_row_by_email(spec, email: str) -> dict | None:
 def _release_pool_email(spec, email: str, *, status: str, note: str | None = None, extra: dict | None = None) -> bool:
     row = _pool_row_by_email(spec, email)
     if row is None:
+        return False
+    if status == "available" and str(row.get("status") or "").strip().lower() == "replaced":
         return False
     changes = dict(extra or {})
     changes["status"] = status

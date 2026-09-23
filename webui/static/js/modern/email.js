@@ -36,6 +36,7 @@ const POOL_USAGE_LABELS = {
   available: '待领取',
   used_unbound: '已领取未绑定',
   bound: '已绑定账号',
+  replaced: '换绑后邮箱',
   failed: '失败',
   disabled: '已停用',
 };
@@ -227,10 +228,11 @@ async function copyPoolSecrets(rows, field='copy_line') {
 function _outlookMoreMenu(r) {
   const src = esc(r.source || 'outlook');
   const email = esc(r.email);
+  const canChangeStatus = r.status !== 'replaced';
   const items = [
-    r.status !== 'available' ? `<button type="button" data-pool-act="available" data-email="${email}" data-source="${src}">恢复可用</button>` : '',
-    r.status !== 'disabled' ? `<button type="button" data-pool-act="disabled" data-email="${email}" data-source="${src}">停用</button>` : '',
-    r.status !== 'failed' ? `<button type="button" data-pool-act="failed" data-email="${email}" data-source="${src}">标失败</button>` : '',
+    canChangeStatus && r.status !== 'available' ? `<button type="button" data-pool-act="available" data-email="${email}" data-source="${src}">恢复可用</button>` : '',
+    canChangeStatus && r.status !== 'disabled' ? `<button type="button" data-pool-act="disabled" data-email="${email}" data-source="${src}">停用</button>` : '',
+    canChangeStatus && r.status !== 'failed' ? `<button type="button" data-pool-act="failed" data-email="${email}" data-source="${src}">标失败</button>` : '',
   ].filter(Boolean).join('');
   return items;
 }

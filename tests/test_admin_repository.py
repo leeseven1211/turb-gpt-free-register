@@ -165,6 +165,26 @@ class AdminRepositoryTests(PostgresTestCase):
         self.assertNotIn("refresh_token", item)
         self.assertNotIn("account_copy_line", item)
 
+    def test_email_pool_can_filter_replaced_mailboxes(self):
+        rs.insert_row(rs.OUTLOOK_POOL, {
+            "email": "changed@example.test",
+            "status": "replaced",
+            "note": "邮箱已换绑，原邮箱不再使用",
+        })
+
+        result = repo.list_email_pool(
+            repo.PageRequest(
+                page=1,
+                page_size=20,
+                filters={"source": "outlook", "status": "replaced"},
+            )
+        )
+
+        self.assertEqual(1, result["total"])
+        self.assertEqual("changed@example.test", result["items"][0]["email"])
+        self.assertEqual("replaced", result["items"][0]["status"])
+        self.assertIn("replaced", {item["value"] for item in result["facets"]["status"]})
+
     def test_codex_list_uses_relational_table_and_hides_content(self):
         result = repo.list_codex(repo.PageRequest(page=1, page_size=20, filters={"archived": "0"}))
         self.assertEqual(result["total"], 1)
