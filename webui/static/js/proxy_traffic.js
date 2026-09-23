@@ -3,14 +3,13 @@ const PROXY_TRAFFIC_ENDPOINTS = Object.freeze({
   current: '/api/proxy-traffic/current',
   history: '/api/proxy-traffic/history',
   traffic: '/api/proxy-traffic/traffic',
+  summary: '/api/proxy-traffic/summary',
 });
-const PROXY_TRAFFIC_REQUEST_PAGE = Object.freeze({limit: 200, offset: 0});
 const PROXY_TRAFFIC_VIEWS = Object.freeze([
   {view: 'current', key: 'current_leases'},
   {view: 'history', key: 'lease_history'},
   {view: 'traffic', key: 'browser_traffic'},
 ]);
-const PROXY_TRAFFIC_KEYS = PROXY_TRAFFIC_VIEWS.map(({key}) => key);
 const PROXY_TRAFFIC_VIEW_CONFIG = {
   current: {
     key: 'current_leases',
@@ -34,7 +33,7 @@ const PROXY_TRAFFIC_VIEW_CONFIG = {
     status: 'proxyTrafficPanelStatusTraffic',
     columns: 8,
     title: '暂无浏览器流量',
-    description: '当前没有可显示的 Roxy/CDP 流量摘要；协议任务会显示为未采集。',
+    description: '当前没有可显示的 Roxy/CDP 流量摘要。协议任务没有浏览器采集结果。',
   },
 };
 const PROXY_TRAFFIC_STATUS_TEXT = {
@@ -63,10 +62,20 @@ const PROXY_TRAFFIC_WINDOW_OPTIONS = Object.freeze([
 ]);
 
 let proxyTrafficSnapshot = null;
+let proxyTrafficSummary = null;
 let proxyTrafficActiveView = 'current';
 let proxyTrafficLoading = false;
 let proxyTrafficReloadQueued = false;
-const proxyTrafficFilters = {window: 'all', purpose: 'all', state: 'all', search: ''};
+let proxyTrafficFilterTimer = null;
+let proxyTrafficDesiredVersion = 0;
+const PROXY_TRAFFIC_STALE = Symbol('proxy-traffic-stale');
+const proxyTrafficFilters = {window: 'all', purpose: 'all', search: ''};
+const proxyTrafficStateFilters = {current: 'all', history: 'all', traffic: 'all'};
+const proxyTrafficPages = {
+  current: {page: 1, size: 20, total: 0},
+  history: {page: 1, size: 20, total: 0},
+  traffic: {page: 1, size: 20, total: 0},
+};
 
 function proxyTrafficEsc(value) {
   return String(value == null ? '' : value)
@@ -120,10 +129,10 @@ function proxyTrafficField(label, value, className = '') {
   return `<div class="proxy-traffic-detail-item"><dt>${proxyTrafficEsc(label)}</dt><dd class="${className}">${proxyTrafficText(value)}</dd></div>`;
 }
 
-function proxyTrafficDetails(items) {
-  const visible = items.filter((item) => item[1] != null && item[1] !== '');
-  if (!visible.length) return '<span class="proxy-traffic-muted">—</span>';
-  return `<details class="proxy-traffic-row-details"><summary>详情</summary><dl>${visible.map((item) => proxyTrafficField(item[0], item[1], item[2] || '')).join('')}</dl></details>`;
+function proxyTrafficDetailsButton(view, row) {
+  const id = proxyTrafficValue(row, 'id');
+  if (id == null || id === '') return '<span class="proxy-traffic-muted">—</span>';
+  return `<button type="button" class="proxy-traffic-detail-button" data-proxy-detail="${proxyTrafficEsc(view)}" data-proxy-detail-id="${proxyTrafficEsc(id)}" aria-label="查看${view === 'history' ? '线路历史' : '浏览器流量'}详情">详情</button>`;
 }
 
 function proxyTrafficCorrelation(row, includeJob = false) {
@@ -166,12 +175,7 @@ function proxyTrafficRenderHistory(row) {
     <td>${proxyTrafficText(proxyTrafficValue(row, 'purpose'))}</td>
     <td>${proxyTrafficCorrelation(row, true)}</td>
     <td>${proxyTrafficLeaseTime(row, 'released_at')}</td>
-    <td>${proxyTrafficDetails([
-      ['租约 ID', proxyTrafficValue(row, 'lease_id'), 'proxy-traffic-id'],
-      ['重试序号', proxyTrafficValue(row, 'route_attempt_no')],
-      ['获取时间', proxyTrafficDate(proxyTrafficValue(row, 'acquired_at'))],
-      ['释放时间', proxyTrafficDate(proxyTrafficValue(row, 'released_at'))],
-    ])}</td>
+    <td>${proxyTrafficDetailsButton('history', row)}</td>
   </tr>`;
 }
 
@@ -197,14 +201,7 @@ function proxyTrafficRenderTraffic(row) {
     <td><span class="proxy-traffic-number" title="请求 / 失败 / 未完成 / 未知">${proxyTrafficEsc(countText)}</span></td>
     <td>${proxyTrafficCorrelation(row)}</td>
     <td>${proxyTrafficDate(proxyTrafficValue(row, 'started_at'))}</td>
-    <td>${proxyTrafficDetails([
-      ['来源', proxyTrafficValue(row, 'source')],
-      ['方法', proxyTrafficValue(row, 'method')],
-      ['上传字节', upload == null ? '' : proxyTrafficBytes(upload)],
-      ['下载字节', download == null ? '' : proxyTrafficBytes(download)],
-      ['总字节', total == null ? '' : proxyTrafficBytes(total)],
-      ['完成时间', proxyTrafficDate(proxyTrafficValue(row, 'ended_at'))],
-    ])}</td>
+    <td>${proxyTrafficDetailsButton('traffic', row)}</td>
   </tr>`;
 }
 
@@ -224,36 +221,9 @@ function proxyTrafficSetPanelState(view, kind, title, description) {
   if (status) status.textContent = PROXY_TRAFFIC_STATUS_TEXT[kind] || kind;
 }
 
-function proxyTrafficTimeLimit() {
-  const now = Date.now();
-  return {all: null, '1h': now - 60 * 60 * 1000, '24h': now - 24 * 60 * 60 * 1000, '7d': now - 7 * 24 * 60 * 60 * 1000}[proxyTrafficFilters.window];
-}
-
-function proxyTrafficInWindow(row) {
-  const limit = proxyTrafficTimeLimit();
-  if (limit == null) return true;
-  const values = ['acquired_at', 'released_at', 'started_at', 'ended_at']
-    .map((key) => new Date(proxyTrafficValue(row, key)).getTime())
-    .filter((value) => Number.isFinite(value));
-  return !values.length || values.some((value) => value >= limit);
-}
-
-function proxyTrafficMatches(row, view) {
-  if (view !== 'traffic' && proxyTrafficFilters.purpose !== 'all' && String(proxyTrafficValue(row, 'purpose')) !== proxyTrafficFilters.purpose) return false;
-  const rowState = proxyTrafficValue(row, 'state') || proxyTrafficValue(row, 'availability');
-  if (proxyTrafficFilters.state !== 'all' && String(rowState) !== proxyTrafficFilters.state) return false;
-  if (!proxyTrafficInWindow(row)) return false;
-  const search = proxyTrafficFilters.search.trim().toLowerCase();
-  if (!search) return true;
-  return [
-    'lease_id', 'provider', 'exit_ip', 'account_id', 'purpose', 'operation_task_id',
-    'operation_run_id', 'registration_job_id', 'proxy_lease_id', 'source', 'method', 'state', 'availability',
-  ].some((key) => String(proxyTrafficValue(row, key)).toLowerCase().includes(search));
-}
-
 function proxyTrafficRows(view) {
   const config = PROXY_TRAFFIC_VIEW_CONFIG[view];
-  return proxyTrafficSnapshot?.[config.key]?.filter((row) => proxyTrafficMatches(row, view)) || [];
+  return proxyTrafficSnapshot?.[config.key] || [];
 }
 
 function proxyTrafficFilterHeaders(key = '') {
@@ -419,8 +389,16 @@ function proxyTrafficSyncFilterControls() {
       proxyTrafficRefreshFilterControlState(control);
     });
   });
+  proxyTrafficFilterHeaders('state').forEach((header) => {
+    const view = header.closest('[data-proxy-panel]')?.dataset.proxyPanel;
+    const control = proxyTrafficFilterControl(header);
+    if (!view || !control) return;
+    control.value = proxyTrafficStateFilters[view];
+    proxyTrafficRefreshFilterControlState(control);
+  });
   const clear = document.getElementById('btnClearProxyTrafficFilters');
-  if (clear) clear.hidden = !Object.entries(proxyTrafficFilters).some(([key, value]) => value !== (key === 'search' ? '' : 'all'));
+  if (clear) clear.hidden = !Object.entries(proxyTrafficFilters).some(([key, value]) => value !== (key === 'search' ? '' : 'all'))
+    && !Object.values(proxyTrafficStateFilters).some((value) => value !== 'all');
 }
 
 function proxyTrafficBindFilterControls() {
@@ -430,9 +408,22 @@ function proxyTrafficBindFilterControls() {
     control.dataset.proxyFilterBound = '1';
     const eventName = control.matches('input[type="search"]') ? 'input' : 'change';
     control.addEventListener(eventName, () => {
-      proxyTrafficFilters[header.dataset.proxyFilterKey] = control.value;
+      const key = header.dataset.proxyFilterKey;
+      const view = header.closest('[data-proxy-panel]')?.dataset.proxyPanel;
+      if (key === 'state' && view) {
+        proxyTrafficStateFilters[view] = control.value;
+        proxyTrafficPages[view].page = 1;
+        proxyTrafficSyncFilterControls();
+        proxyTrafficDesiredVersion += 1;
+        loadProxyTraffic(view);
+        return;
+      }
+      proxyTrafficFilters[key] = control.value;
       proxyTrafficSyncFilterControls();
-      proxyTrafficRenderRows();
+      Object.values(proxyTrafficPages).forEach((page) => { page.page = 1; });
+      proxyTrafficDesiredVersion += 1;
+      if (proxyTrafficFilterTimer) clearTimeout(proxyTrafficFilterTimer);
+      proxyTrafficFilterTimer = setTimeout(loadProxyTraffic, eventName === 'input' ? 260 : 0);
     });
   });
 }
@@ -440,50 +431,61 @@ function proxyTrafficBindFilterControls() {
 function proxyTrafficClearFilters() {
   proxyTrafficFilters.window = 'all';
   proxyTrafficFilters.purpose = 'all';
-  proxyTrafficFilters.state = 'all';
   proxyTrafficFilters.search = '';
+  Object.keys(proxyTrafficStateFilters).forEach((view) => { proxyTrafficStateFilters[view] = 'all'; });
   proxyTrafficSyncFilterControls();
-  proxyTrafficRenderRows();
+  Object.values(proxyTrafficPages).forEach((page) => { page.page = 1; });
+  proxyTrafficDesiredVersion += 1;
+  if (proxyTrafficFilterTimer) clearTimeout(proxyTrafficFilterTimer);
+  loadProxyTraffic();
 }
 
 function proxyTrafficRefreshFilterOptions() {
-  if (!proxyTrafficSnapshot) return;
-  const purposes = new Set();
-  const states = new Set();
-  PROXY_TRAFFIC_KEYS.forEach((key) => {
-    proxyTrafficSnapshot[key].forEach((row) => {
-      const purpose = proxyTrafficValue(row, 'purpose');
-      const state = proxyTrafficValue(row, 'state') || proxyTrafficValue(row, 'availability');
-      if (purpose) purposes.add(String(purpose));
-      if (state) states.add(String(state));
-    });
+  if (!proxyTrafficSummary) return;
+  const purposes = Array.isArray(proxyTrafficSummary.purposes) ? proxyTrafficSummary.purposes : [];
+  const states = Array.isArray(proxyTrafficSummary.lease_states) ? proxyTrafficSummary.lease_states : [];
+  proxyTrafficPopulateSelects('purpose', purposes.map((value) => ({value, label: value})), '全部用途');
+  proxyTrafficFilterHeaders('state').forEach((header) => {
+    const view = header.closest('[data-proxy-panel]')?.dataset.proxyPanel;
+    const select = proxyTrafficFilterControl(header);
+    if (!view || !select) return;
+    const values = view === 'traffic' ? ['available']
+      : states.filter((value) => view === 'current' ? ['pending', 'leased'].includes(value) : !['pending', 'leased'].includes(value));
+    if (!values.includes(proxyTrafficStateFilters[view])) proxyTrafficStateFilters[view] = 'all';
+    select.innerHTML = '<option value="all">全部状态</option>' + values.map((value) => `<option value="${proxyTrafficEsc(value)}">${proxyTrafficEsc(PROXY_TRAFFIC_STATUS_LABELS[value] || value)}</option>`).join('');
   });
-  proxyTrafficPopulateSelects('purpose', [...purposes].sort().map((value) => ({value, label: value})), '全部用途');
-  proxyTrafficPopulateSelects('state', [...states].sort().map((value) => ({value, label: PROXY_TRAFFIC_STATUS_LABELS[value] || value})), '全部状态');
   proxyTrafficSyncFilterControls();
 }
 
 function proxyTrafficRenderSummary() {
-  const counts = {
-    current: proxyTrafficRows('current').length,
-    history: proxyTrafficRows('history').length,
-    traffic: proxyTrafficRows('traffic').length,
+  const values = {
+    totalBytes: proxyTrafficBytes(Number(proxyTrafficSummary?.total_bytes)),
+    todayBytes: proxyTrafficBytes(Number(proxyTrafficSummary?.today_bytes)),
+    todayBrowserCount: proxyTrafficSummary?.today_browser_count,
+    todayRouteCount: proxyTrafficSummary?.today_route_count,
   };
-  let totalBytes = 0;
-  let hasBytes = false;
-  proxyTrafficRows('traffic').forEach((row) => {
-    const value = proxyTrafficNumber(row, 'total_bytes');
-    if (value != null) {
-      totalBytes += value;
-      hasBytes = true;
-    }
-  });
-  Object.entries(counts).forEach(([key, value]) => {
+  Object.entries(values).forEach(([key, value]) => {
     const element = document.querySelector(`[data-proxy-summary="${key}"]`);
-    if (element) element.textContent = String(value);
+    if (element) element.textContent = value == null ? '—' : String(value);
   });
-  const bytes = document.querySelector('[data-proxy-summary="bytes"]');
-  if (bytes) bytes.textContent = hasBytes ? proxyTrafficBytes(totalBytes) : '未采集';
+}
+
+function proxyTrafficRenderPager(view) {
+  const page = proxyTrafficPages[view];
+  const pager = document.getElementById(`proxyTrafficPager${view[0].toUpperCase()}${view.slice(1)}`);
+  if (!pager) return;
+  const pages = Math.max(1, Math.ceil(page.total / page.size));
+  const first = page.total ? (page.page - 1) * page.size + 1 : 0;
+  const last = Math.min(page.total, page.page * page.size);
+  pager.innerHTML = `<span class="proxy-traffic-page-total">${first}–${last} / 共 ${page.total} 条</span>
+    <div class="proxy-traffic-page-actions">
+      <button type="button" data-proxy-pager="${view}" data-proxy-page="prev" aria-label="上一页" ${page.page <= 1 ? 'disabled' : ''}>上一页</button>
+      <span class="proxy-traffic-page-number">第 ${page.page} / ${pages} 页</span>
+      <button type="button" data-proxy-pager="${view}" data-proxy-page="next" aria-label="下一页" ${page.page >= pages ? 'disabled' : ''}>下一页</button>
+      <label>每页 <select data-proxy-page-size="${view}" aria-label="${view === 'current' ? '当前租约' : view === 'history' ? '线路历史' : '浏览器流量'}每页条数">
+        ${[20, 50, 100].map((size) => `<option value="${size}" ${page.size === size ? 'selected' : ''}>${size}</option>`).join('')}
+      </select> 条</label>
+    </div>`;
 }
 
 function proxyTrafficRenderRows() {
@@ -498,9 +500,10 @@ function proxyTrafficRenderRows() {
       ? rows.map(renderer).join('')
       : proxyTrafficStateRow(view, 'empty', config.title, config.description);
     const status = document.getElementById(config.status);
-    if (status) status.textContent = rows.length ? `${rows.length} 条记录` : PROXY_TRAFFIC_STATUS_TEXT.empty;
+    if (status) status.textContent = proxyTrafficPages[view].total ? `${proxyTrafficPages[view].total} 条记录` : PROXY_TRAFFIC_STATUS_TEXT.empty;
     const count = document.querySelector(`[data-proxy-count="${view}"]`);
-    if (count) count.textContent = String(rows.length);
+    if (count) count.textContent = String(proxyTrafficPages[view].total);
+    proxyTrafficRenderPager(view);
   });
   proxyTrafficRenderSummary();
 }
@@ -514,21 +517,65 @@ function proxyTrafficRenderError(error) {
   document.querySelectorAll('[data-proxy-summary]').forEach((element) => { element.textContent = '—'; });
 }
 
+function proxyTrafficOpenDetail(view, id) {
+  const row = proxyTrafficRows(view).find((item) => String(proxyTrafficValue(item, 'id')) === String(id));
+  const dialog = document.getElementById('proxyTrafficDetailDialog');
+  const body = document.getElementById('proxyTrafficDetailBody');
+  const title = document.getElementById('proxyTrafficDetailTitle');
+  if (!row || !dialog || !body || !title) return;
+  const items = view === 'history' ? [
+    ['租约 ID', proxyTrafficValue(row, 'lease_id')],
+    ['线路来源', proxyTrafficValue(row, 'provider')],
+    ['出口 IP', proxyTrafficValue(row, 'exit_ip')],
+    ['状态', PROXY_TRAFFIC_STATUS_LABELS[proxyTrafficValue(row, 'state')] || proxyTrafficValue(row, 'state')],
+    ['账号', proxyTrafficValue(row, 'account_id')],
+    ['用途', proxyTrafficValue(row, 'purpose')],
+    ['任务', proxyTrafficValue(row, 'operation_task_id')],
+    ['运行', proxyTrafficValue(row, 'operation_run_id')],
+    ['注册 job', proxyTrafficValue(row, 'registration_job_id')],
+    ['重试序号', proxyTrafficValue(row, 'route_attempt_no')],
+    ['获取时间', proxyTrafficDate(proxyTrafficValue(row, 'acquired_at'))],
+    ['到期时间', proxyTrafficDate(proxyTrafficValue(row, 'expires_at'))],
+    ['释放时间', proxyTrafficDate(proxyTrafficValue(row, 'released_at'))],
+  ] : [
+    ['来源', proxyTrafficValue(row, 'source')],
+    ['方法', proxyTrafficValue(row, 'method')],
+    ['上传流量', proxyTrafficBytes(proxyTrafficNumber(row, 'upload_bytes'))],
+    ['下载流量', proxyTrafficBytes(proxyTrafficNumber(row, 'download_bytes'))],
+    ['总流量', proxyTrafficBytes(proxyTrafficNumber(row, 'total_bytes'))],
+    ['请求数', proxyTrafficValue(row, 'request_count')],
+    ['失败数', proxyTrafficValue(row, 'failed_count')],
+    ['未完成数', proxyTrafficValue(row, 'unfinished_count')],
+    ['未知数', proxyTrafficValue(row, 'unknown_count')],
+    ['线路租约', proxyTrafficValue(row, 'proxy_lease_id')],
+    ['账号', proxyTrafficValue(row, 'account_id')],
+    ['任务', proxyTrafficValue(row, 'operation_task_id')],
+    ['运行', proxyTrafficValue(row, 'operation_run_id')],
+    ['开始时间', proxyTrafficDate(proxyTrafficValue(row, 'started_at'))],
+    ['完成时间', proxyTrafficDate(proxyTrafficValue(row, 'ended_at'))],
+  ];
+  title.textContent = view === 'history' ? '线路历史详情' : '浏览器流量详情';
+  body.innerHTML = items.filter((item) => item[1] != null && item[1] !== '').map((item) => proxyTrafficField(item[0], item[1])).join('');
+  dialog.showModal();
+}
+
 function proxyTrafficNormalizePage(view, payload) {
   if (!payload || typeof payload !== 'object') throw new Error('响应不是对象');
   if (payload.ok !== true) throw new Error(payload.error || `${view} 接口返回失败`);
   if (payload.view != null && payload.view !== view) throw new Error(`${view} 接口视图不匹配`);
   if (!Array.isArray(payload.items)) throw new Error(`${view} 接口缺少 items`);
   const count = Number(payload.count);
+  const total = Number(payload.total);
   const limit = Number(payload.limit);
   const offset = Number(payload.offset);
-  if (!Number.isInteger(count) || count < 0 || !Number.isInteger(limit) || limit < 1 || !Number.isInteger(offset) || offset < 0) {
+  if (!Number.isInteger(count) || count < 0 || count !== payload.items.length || !Number.isInteger(total) || total < count || !Number.isInteger(limit) || limit < 1 || !Number.isInteger(offset) || offset < 0) {
     throw new Error(`${view} 接口分页字段无效`);
   }
   return {
     view,
     items: payload.items,
     count,
+    total,
     limit,
     offset,
   };
@@ -537,43 +584,90 @@ function proxyTrafficNormalizePage(view, payload) {
 async function proxyTrafficRequestPage(view) {
   const source = window.__PROXY_TRAFFIC_DATA_SOURCE__;
   const endpoint = PROXY_TRAFFIC_ENDPOINTS[view];
-  const {limit, offset} = PROXY_TRAFFIC_REQUEST_PAGE;
-  if (typeof source === 'function') return source(endpoint, {view, limit, offset});
-  const params = new URLSearchParams({limit: String(limit), offset: String(offset)});
+  const state = proxyTrafficPages[view];
+  const options = {
+    view, limit: state.size, offset: (state.page - 1) * state.size,
+    window: proxyTrafficFilters.window,
+    purpose: view === 'traffic' ? 'all' : proxyTrafficFilters.purpose,
+    state: proxyTrafficStateFilters[view],
+    search: proxyTrafficFilters.search.trim(),
+  };
+  if (typeof source === 'function') return source(endpoint, options);
+  const params = new URLSearchParams(Object.fromEntries(Object.entries(options).filter(([key]) => key !== 'view')));
   return api(`${endpoint}?${params.toString()}`);
 }
 
-async function proxyTrafficRequest() {
-  const pages = await Promise.all(PROXY_TRAFFIC_VIEWS.map(async ({view, key}) => {
-    const page = proxyTrafficNormalizePage(view, await proxyTrafficRequestPage(view));
-    return {key, page};
-  }));
-  const firstPage = pages[0].page;
-  if (pages.some(({page}) => page.limit !== firstPage.limit || page.offset !== firstPage.offset)) {
-    throw new Error('代理与流量接口分页字段不一致');
+async function proxyTrafficRequestNormalizedPage(view, version = proxyTrafficDesiredVersion) {
+  let page = proxyTrafficNormalizePage(view, await proxyTrafficRequestPage(view));
+  if (version !== proxyTrafficDesiredVersion) throw PROXY_TRAFFIC_STALE;
+  if (page.total === 0) {
+    proxyTrafficPages[view].page = 1;
+    return page;
   }
+  if (page.offset >= page.total) {
+    proxyTrafficPages[view].page = Math.ceil(page.total / proxyTrafficPages[view].size);
+    page = proxyTrafficNormalizePage(view, await proxyTrafficRequestPage(view));
+    if (version !== proxyTrafficDesiredVersion) throw PROXY_TRAFFIC_STALE;
+  }
+  return page;
+}
+
+async function proxyTrafficRequestSummary() {
+  const source = window.__PROXY_TRAFFIC_DATA_SOURCE__;
+  const payload = typeof source === 'function'
+    ? await source(PROXY_TRAFFIC_ENDPOINTS.summary, {view: 'summary'})
+    : await api(PROXY_TRAFFIC_ENDPOINTS.summary);
+  if (!payload || payload.ok !== true || !Number.isFinite(Number(payload.total_bytes)) || !Number.isFinite(Number(payload.today_bytes))) {
+    throw new Error('流量统计接口响应无效');
+  }
+  return payload;
+}
+
+function proxyTrafficApplyPage(view, page) {
+  proxyTrafficSnapshot[PROXY_TRAFFIC_VIEW_CONFIG[view].key] = page.items;
+  proxyTrafficPages[view].total = page.total;
+}
+
+async function proxyTrafficRequest(version = proxyTrafficDesiredVersion) {
+  const [pages, summary] = await Promise.all([Promise.all(PROXY_TRAFFIC_VIEWS.map(async ({view, key}) => {
+    const page = await proxyTrafficRequestNormalizedPage(view, version);
+    return {key, page};
+  })), proxyTrafficRequestSummary()]);
+  if (version !== proxyTrafficDesiredVersion) throw PROXY_TRAFFIC_STALE;
+  proxyTrafficSummary = summary;
   return pages.reduce((snapshot, {key, page}) => {
     snapshot[key] = page.items;
+    const view = PROXY_TRAFFIC_VIEWS.find((item) => item.key === key).view;
+    proxyTrafficPages[view].total = page.total;
     return snapshot;
   }, {});
 }
 
-async function loadProxyTraffic() {
+async function loadProxyTraffic(view = null) {
   if (proxyTrafficLoading) {
     proxyTrafficReloadQueued = true;
     return;
   }
   proxyTrafficLoading = true;
-  Object.keys(PROXY_TRAFFIC_VIEW_CONFIG).forEach((view) => {
-    proxyTrafficSetPanelState(view, 'loading', `正在加载${view === 'current' ? '当前租约' : view === 'history' ? '线路历史' : '浏览器流量'}`, '正在同步代理与流量 API');
+  const version = proxyTrafficDesiredVersion;
+  (view ? [view] : Object.keys(PROXY_TRAFFIC_VIEW_CONFIG)).forEach((name) => {
+    proxyTrafficSetPanelState(name, 'loading', `正在加载${name === 'current' ? '当前租约' : name === 'history' ? '线路历史' : '浏览器流量'}`, '正在同步代理与流量 API');
   });
   try {
-    proxyTrafficSnapshot = await proxyTrafficRequest();
-    proxyTrafficRefreshFilterOptions();
+    if (view && proxyTrafficSnapshot) {
+      const page = await proxyTrafficRequestNormalizedPage(view, version);
+      if (version !== proxyTrafficDesiredVersion) throw PROXY_TRAFFIC_STALE;
+      proxyTrafficApplyPage(view, page);
+    } else {
+      proxyTrafficSnapshot = await proxyTrafficRequest(version);
+      proxyTrafficRefreshFilterOptions();
+    }
     proxyTrafficRenderRows();
     markViewReady('proxy-traffic');
   } catch (error) {
+    if (error === PROXY_TRAFFIC_STALE) return;
     proxyTrafficSnapshot = null;
+    proxyTrafficSummary = null;
     proxyTrafficRenderError(error);
   } finally {
     proxyTrafficLoading = false;
@@ -586,6 +680,8 @@ async function loadProxyTraffic() {
 
 function proxyTrafficSetView(view, focus = false) {
   if (!PROXY_TRAFFIC_VIEW_CONFIG[view]) return;
+  const dialog = document.getElementById('proxyTrafficDetailDialog');
+  if (dialog?.open) dialog.close();
   proxyTrafficActiveView = view;
   document.querySelectorAll('[data-proxy-view]').forEach((button) => {
     const active = button.dataset.proxyView === view;
@@ -601,6 +697,7 @@ function proxyTrafficSetView(view, focus = false) {
 }
 
 function proxyTrafficBindControls() {
+  const page = document.getElementById('tab-proxy-traffic');
   document.querySelectorAll('[data-proxy-view]').forEach((button) => {
     button.addEventListener('click', () => proxyTrafficSetView(button.dataset.proxyView));
   });
@@ -613,6 +710,44 @@ function proxyTrafficBindControls() {
     proxyTrafficSetView(buttons[next].dataset.proxyView, true);
   });
   document.getElementById('btnClearProxyTrafficFilters')?.addEventListener('click', proxyTrafficClearFilters);
+  page?.addEventListener('click', (event) => {
+    const reset = event.target.closest?.('[data-proxy-reset-columns]');
+    if (reset) {
+      resetResizableTable(reset.dataset.proxyResetColumns);
+      return;
+    }
+    const detail = event.target.closest?.('[data-proxy-detail]');
+    if (detail) {
+      proxyTrafficOpenDetail(detail.dataset.proxyDetail, detail.dataset.proxyDetailId);
+      return;
+    }
+    if (event.target.closest?.('[data-proxy-close-detail]')) {
+      document.getElementById('proxyTrafficDetailDialog')?.close();
+      return;
+    }
+    const button = event.target.closest?.('[data-proxy-pager]');
+    if (!button || button.disabled) return;
+    const view = button.dataset.proxyPager;
+    const state = proxyTrafficPages[view];
+    if (!state) return;
+    const maxPage = Math.max(1, Math.ceil(state.total / state.size));
+    state.page = Math.max(1, Math.min(maxPage, state.page + (button.dataset.proxyPage === 'next' ? 1 : -1)));
+    proxyTrafficDesiredVersion += 1;
+    loadProxyTraffic(view);
+  });
+  page?.addEventListener('change', (event) => {
+    const select = event.target.closest?.('[data-proxy-page-size]');
+    if (!select) return;
+    const state = proxyTrafficPages[select.dataset.proxyPageSize];
+    if (!state) return;
+    state.size = Number(select.value) || 20;
+    state.page = 1;
+    proxyTrafficDesiredVersion += 1;
+    loadProxyTraffic(select.dataset.proxyPageSize);
+  });
+  document.getElementById('proxyTrafficDetailDialog')?.addEventListener('click', (event) => {
+    if (event.target === event.currentTarget) event.currentTarget.close();
+  });
 }
 
 function initProxyTraffic() {

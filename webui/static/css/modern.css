@@ -739,6 +739,34 @@
       padding-left: 10px; border-left: 1px solid #e5e8ef;
     }
     table[data-resizable-table] { width: 100%; min-width: 100% !important; table-layout: fixed; }
+    .proxy-traffic-table[data-resizable-table] {
+      width: max(100%, 1080px) !important;
+      min-width: 1080px !important;
+      max-width: none !important;
+    }
+    @media (max-width: 860px) {
+      .proxy-traffic-table[data-resizable-table] {
+        width: max(100%, 980px) !important;
+        min-width: 980px !important;
+      }
+      .proxy-traffic-table[data-resizable-table] .column-filter-header { padding-block: 0; }
+      .proxy-traffic-table[data-resizable-table] .column-filter-trigger { min-height: 44px; }
+      .proxy-traffic-table[data-resizable-table] .table-col-resizer {
+        top: 50%; right: -14px; width: 28px; height: 44px;
+        transform: translateY(-50%);
+      }
+      .proxy-traffic-table[data-resizable-table] .table-col-resizer::after {
+        left: 13px; top: 6px; bottom: 6px;
+      }
+      .proxy-traffic-table[data-resizable-table] th:not(.column-filter-header) .table-col-resizer { right: 0; }
+      .proxy-traffic-table[data-resizable-table] th:not(.column-filter-header) .table-col-resizer::after { left: 27px; }
+    }
+    @media (max-width: 560px) {
+      .proxy-traffic-table[data-resizable-table] {
+        width: max(100%, 920px) !important;
+        min-width: 920px !important;
+      }
+    }
     /* 任务中心保留足够的表格宽度，复用统一列宽拖拽；横向滚动由外层容器负责。 */
     table[data-resizable-table="accountTasks"] {
       width: max(100%, 1240px) !important;

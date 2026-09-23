@@ -17,10 +17,25 @@ def _page_args() -> tuple[int, int]:
     return (limit if limit is not None else 200, offset if offset is not None else 0)
 
 
+def _filter_args() -> dict[str, str]:
+    window = str(request.args.get("window", "all") or "all").strip().lower()
+    if window not in {"all", "1h", "24h", "7d"}:
+        raise ValueError("时间范围必须是 all、1h、24h 或 7d")
+    return {
+        "window": window,
+        "state": str(request.args.get("state", "all") or "all").strip()[:40] or "all",
+        "purpose": str(request.args.get("purpose", "") or "").strip()[:80],
+        "search": str(request.args.get("search", "") or "").strip()[:160],
+    }
+
+
 def _lease_page(view: str, logger) -> tuple[Any, int] | Any:
     limit, offset = _page_args()
     try:
-        items = proxy_lease_store.list_page(view=view, limit=limit, offset=offset)
+        filters = _filter_args()
+        items, total = proxy_lease_store.list_page_with_total(
+            view=view, limit=limit, offset=offset, **filters,
+        )
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     except Exception as exc:  # pragma: no cover - driver failures vary by deployment
@@ -31,13 +46,20 @@ def _lease_page(view: str, logger) -> tuple[Any, int] | Any:
         "view": view,
         "items": items,
         "count": len(items),
+        "total": total,
+        "has_more": max(0, int(offset or 0)) + len(items) < total,
         "limit": max(1, min(500, int(limit or 200))),
         "offset": max(0, int(offset or 0)),
     })
 
 
-def _traffic_items(limit: int, offset: int) -> list[dict[str, Any]]:
-    return browser_traffic.list_summaries(limit=limit, offset=offset)
+def _traffic_items(limit: int, offset: int, *, available_only: bool = False, **filters: str) -> list[dict[str, Any]]:
+    return browser_traffic.list_summaries(
+        limit=limit,
+        offset=offset,
+        available_only=available_only,
+        **filters,
+    )
 
 
 def create_proxy_traffic_blueprint(context: WebUIContext):
@@ -74,13 +96,38 @@ def create_proxy_traffic_blueprint(context: WebUIContext):
     def api_proxy_traffic_history():
         return _lease_page("history", logger)
 
+    @blueprint.get("/api/proxy-traffic/summary")
+    def api_proxy_traffic_summary():
+        try:
+            metrics = browser_traffic.summary_metrics()
+            filter_values = proxy_lease_store.distinct_filter_values()
+            purposes = set(filter_values.get("purpose", []))
+        except Exception as exc:  # pragma: no cover - driver failures vary by deployment
+            logger.exception("读取代理与流量全局摘要失败")
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}"}), 503
+        return jsonify({
+            "ok": True,
+            **metrics,
+            "purposes": sorted(purposes),
+            "lease_states": sorted(set(filter_values.get("state", []))),
+            "browser_states": ["available"],
+        })
+
     @blueprint.get("/api/proxy-traffic/traffic")
     @blueprint.get("/api/proxy-traffic/summaries")
     def api_proxy_traffic_summaries():
         limit, offset = _page_args()
         try:
-            items = _traffic_items(limit, offset)
+            filters = _filter_args()
+            items, total = browser_traffic.list_summaries_with_total(
+                limit=limit,
+                offset=offset,
+                available_only=True,
+                **filters,
+            )
             aggregate = browser_traffic.aggregate_summaries(items)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
         except Exception as exc:  # pragma: no cover - driver failures vary by deployment
             logger.exception("读取浏览器流量摘要失败")
             return jsonify({"ok": False, "error": f"{type(exc).__name__}"}), 503
@@ -88,6 +135,8 @@ def create_proxy_traffic_blueprint(context: WebUIContext):
             "ok": True,
             "items": items,
             "count": len(items),
+            "total": total,
+            "has_more": max(0, int(offset or 0)) + len(items) < total,
             "aggregate": aggregate,
             "limit": max(1, min(500, int(limit or 200))),
             "offset": max(0, int(offset or 0)),

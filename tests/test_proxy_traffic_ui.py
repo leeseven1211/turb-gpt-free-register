@@ -69,12 +69,13 @@ class ProxyTrafficUiContractTest(unittest.TestCase):
             "'/api/proxy-traffic/current'",
             "'/api/proxy-traffic/history'",
             "'/api/proxy-traffic/traffic'",
+            "'/api/proxy-traffic/summary'",
         ):
             self.assertIn(endpoint, PROXY_JS)
         self.assertIn("Promise.all", PROXY_JS)
         self.assertIn("payload.view != null", PROXY_JS)
         self.assertIn("Array.isArray(payload.items)", PROXY_JS)
-        for page_field in ("count", "limit", "offset"):
+        for page_field in ("count", "total", "limit", "offset"):
             self.assertIn(f"payload.{page_field}", PROXY_JS)
         for field in ("current_leases", "lease_history", "browser_traffic"):
             self.assertIn(field, PROXY_JS)
@@ -82,7 +83,6 @@ class ProxyTrafficUiContractTest(unittest.TestCase):
             self.assertNotIn(secret_field, PROXY_JS)
         self.assertIn("exit_ip", PROXY_JS)
         self.assertNotIn("proxyTrafficNormalize(await proxyTrafficRequest())", PROXY_JS)
-        self.assertIn("proxyTrafficSnapshot = await proxyTrafficRequest();", PROXY_JS)
         self.assertIn("route_attempt_no", PROXY_JS)
         self.assertIn("availability", PROXY_JS)
         self.assertIn("ended_at", PROXY_JS)

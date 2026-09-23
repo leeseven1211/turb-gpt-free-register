@@ -2,7 +2,7 @@
 """PostgreSQL-backed cross-process coordination for 1024Proxy leases."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from psycopg.rows import dict_row
@@ -13,6 +13,7 @@ from core import postgres_store
 
 PROXY_LEASES = record_store.PROXY_LEASES
 ACTIVE_STATES = ("pending", "leased", "recent")
+LEASE_WINDOWS = frozenset({"all", "1h", "24h", "7d"})
 
 
 class DuplicateProxyLeaseError(RuntimeError):
@@ -243,7 +244,71 @@ def _relation_exists(cur, table_name: str) -> bool:
     return bool(cur.fetchone()["relation_name"])
 
 
-def _page_query(cur, *, view: str) -> tuple[str, list[Any]]:
+def _lease_window_cutoff(window: str | None) -> datetime | None:
+    value = str(window or "all").strip().lower()
+    if value not in LEASE_WINDOWS:
+        raise ValueError("线路时间范围必须是 all、1h、24h 或 7d")
+    hours = {"1h": 1, "24h": 24, "7d": 24 * 7}.get(value)
+    # 代理租约时间历史上按北京时间本地无时区 ISO 字符串保存，筛选沿用该表示。
+    return datetime.now() - timedelta(hours=hours) if hours else None
+
+
+def _lease_where(
+    *,
+    view: str,
+    window: str = "all",
+    state: str = "all",
+    purpose: str = "",
+    search: str = "",
+) -> tuple[str, list[Any]]:
+    conditions: list[str] = []
+    params: list[Any] = []
+    if view == "current":
+        conditions.append("p.state IN ('pending', 'leased')")
+    elif view == "history":
+        conditions.append("p.state NOT IN ('pending', 'leased')")
+    else:
+        raise ValueError("代理租约视图必须是 current 或 history")
+    state_value = str(state or "all").strip().lower()[:40]
+    if state_value and state_value != "all":
+        conditions.append("p.state = %s")
+        params.append(state_value)
+    purpose_value = str(purpose or "").strip()[:80]
+    if purpose_value and purpose_value.lower() != "all":
+        conditions.append("p.purpose = %s")
+        params.append(purpose_value)
+    search_value = str(search or "").strip()[:160]
+    if search_value:
+        pattern = f"%{search_value}%"
+        conditions.append(
+            "(" + " OR ".join(
+                f"CAST(p.{column} AS TEXT) ILIKE %s"
+                for column in (
+                    "lease_id", "provider", "endpoint", "exit_ip", "account_id", "purpose",
+                    "operation_task_id", "operation_run_id", "registration_job_id",
+                )
+            ) + ")"
+        )
+        params.extend([pattern] * 9)
+    cutoff = _lease_window_cutoff(window)
+    if cutoff is not None:
+        conditions.append(
+            "(NULLIF(p.acquired_at, '')::timestamp >= %s "
+            "OR NULLIF(p.released_at, '')::timestamp >= %s)"
+        )
+        params.extend([cutoff, cutoff])
+    return " AND ".join(conditions), params
+
+
+def _page_query(
+    cur,
+    *,
+    view: str,
+    window: str = "all",
+    state: str = "all",
+    purpose: str = "",
+    search: str = "",
+) -> tuple[str, list[Any], str]:
     """Build a secret-free page projection from PostgreSQL facts.
 
     The optional joins are discovered from the current test/runtime schema so
@@ -270,18 +335,18 @@ def _page_query(cur, *, view: str) -> tuple[str, list[Any]]:
             f"LEFT JOIN {registration_jobs} reg_job ON reg_job.id = p.registration_job_id"
         )
         columns.extend(("reg_job.job_uuid AS registration_job_uuid", "reg_job.status AS registration_job_status"))
-    where = ""
-    if view == "current":
-        where = "WHERE p.state IN ('pending', 'leased')"
-    elif view == "history":
-        where = "WHERE p.state NOT IN ('pending', 'leased')"
-    else:
-        raise ValueError("代理租约视图必须是 current 或 history")
+    where, params = _lease_where(
+        view=view,
+        window=window,
+        state=state,
+        purpose=purpose,
+        search=search,
+    )
     sql = (
         f"SELECT {', '.join(columns)} FROM {postgres_store.qualified(PROXY_LEASES.name)} p "
-        f"{' '.join(joins)} {where} ORDER BY p.id DESC LIMIT %s OFFSET %s"
+        f"{' '.join(joins)} WHERE {where} ORDER BY p.id DESC LIMIT %s OFFSET %s"
     )
-    return sql, []
+    return sql, params, where
 
 
 def _safe_page_row(row: dict) -> dict[str, Any]:
@@ -289,22 +354,125 @@ def _safe_page_row(row: dict) -> dict[str, Any]:
 
     out = {key: row.get(key) for key in row.keys() if key not in {"id", "endpoint", "exit_ip"}}
     out["endpoint"] = mask_endpoint(row.get("endpoint"))
-    # The page is the only proxy/traffic API allowed to show the complete exit
-    # IP.  The selected projection still excludes the credential-bearing URL.
+    # 只有代理页面允许展示完整出口 IP，投影仍然排除带凭据的代理地址。
     out["exit_ip"] = row.get("exit_ip")
     out["id"] = row.get("id")
     return out
 
 
-def list_page(*, view: str = "current", limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
+def list_page(
+    *,
+    view: str = "current",
+    limit: int = 200,
+    offset: int = 0,
+    window: str = "all",
+    state: str = "all",
+    purpose: str = "",
+    search: str = "",
+) -> list[dict[str, Any]]:
     """Return a persisted, credential-free proxy page projection."""
+    items, _ = list_page_with_total(
+        view=view,
+        limit=limit,
+        offset=offset,
+        window=window,
+        state=state,
+        purpose=purpose,
+        search=search,
+    )
+    return items
+
+
+def list_page_with_total(
+    *,
+    view: str = "current",
+    limit: int = 200,
+    offset: int = 0,
+    window: str = "all",
+    state: str = "all",
+    purpose: str = "",
+    search: str = "",
+) -> tuple[list[dict[str, Any]], int]:
+    """在同一事务快照内读取代理页面和筛选后总数。"""
     record_store.init()
     page_limit = max(1, min(500, int(limit or 200)))
     page_offset = max(0, int(offset or 0))
     with postgres_store.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
-        sql, _ = _page_query(cur, view=view)
-        cur.execute(sql, (page_limit, page_offset))
-        return [_safe_page_row(row) for row in cur.fetchall()]
+        # 列表和总数必须读取同一数据库快照，避免租约变化造成页数与总数不一致。
+        cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        sql, params, where = _page_query(
+            cur,
+            view=view,
+            window=window,
+            state=state,
+            purpose=purpose,
+            search=search,
+        )
+        cur.execute(sql, (*params, page_limit, page_offset))
+        items = [_safe_page_row(row) for row in cur.fetchall()]
+        cur.execute(
+            f"SELECT count(*) AS n FROM {postgres_store.qualified(PROXY_LEASES.name)} p WHERE {where}",
+            params,
+        )
+        total = int(cur.fetchone()["n"])
+        return items, total
+
+
+def count_leases(
+    *,
+    view: str | None = None,
+    window: str = "all",
+    state: str = "all",
+    purpose: str = "",
+    search: str = "",
+    acquired_since: datetime | None = None,
+    acquired_before: datetime | None = None,
+) -> int:
+    """按页面使用的限长筛选条件统计持久化租约。"""
+    record_store.init()
+    if acquired_since is not None or acquired_before is not None:
+        conditions = ["1 = 1"]
+        params: list[Any] = []
+        if acquired_since is not None:
+            conditions.append("NULLIF(p.acquired_at, '')::timestamp >= %s")
+            params.append(acquired_since)
+        if acquired_before is not None:
+            conditions.append("NULLIF(p.acquired_at, '')::timestamp < %s")
+            params.append(acquired_before)
+        where = " AND ".join(conditions)
+    else:
+        if view is None:
+            raise ValueError("统计线路总数需要指定视图或获取时间范围")
+        where, params = _lease_where(
+            view=view,
+            window=window,
+            state=state,
+            purpose=purpose,
+            search=search,
+        )
+    with postgres_store.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT count(*) AS n FROM {postgres_store.qualified(PROXY_LEASES.name)} p WHERE {where}",
+            params,
+        )
+        return int(cur.fetchone()["n"])
+
+
+def distinct_filter_values() -> dict[str, list[str]]:
+    """返回代理表筛选器使用的全库限长去重值。"""
+    record_store.init()
+    table = postgres_store.qualified(PROXY_LEASES.name)
+    result: dict[str, list[str]] = {}
+    with postgres_store.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
+        for key in ("purpose", "state"):
+            cur.execute(
+                f"SELECT DISTINCT {postgres_store.quote_identifier(key)} AS value "
+                f"FROM {table} WHERE NULLIF(BTRIM({postgres_store.quote_identifier(key)}), '') IS NOT NULL "
+                f"ORDER BY value LIMIT %s",
+                (500,),
+            )
+            result[key] = [str(row["value"])[:80] for row in cur.fetchall()]
+    return result
 
 
 def _find_lease_row_id(lease_id: str) -> int | None:

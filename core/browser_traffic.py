@@ -13,7 +13,7 @@ import logging
 import re
 import uuid
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping
 from urllib.parse import urlsplit
 
@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 TRAFFIC_SUMMARIES = record_store.BROWSER_TRAFFIC
 _HTTP_KINDS = {"http", "http_request", "network_request", "request"}
 _WEBSOCKET_KINDS = {"websocket_frame", "websocket_message"}
+_TRAFFIC_WINDOWS = frozenset({"all", "1h", "24h", "7d"})
+_BEIJING = timezone(timedelta(hours=8))
 
 
 def _now_iso() -> str:
@@ -236,13 +238,183 @@ def record_unavailable(
     )
 
 
-def list_summaries(*, limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
+def _traffic_window_cutoff(window: str | None) -> datetime | None:
+    value = str(window or "all").strip().lower()
+    if value not in _TRAFFIC_WINDOWS:
+        raise ValueError("流量时间范围必须是 all、1h、24h 或 7d")
+    hours = {"1h": 1, "24h": 24, "7d": 24 * 7}.get(value)
+    return datetime.now(timezone.utc) - timedelta(hours=hours) if hours else None
+
+
+def _traffic_filter_where(
+    *,
+    window: str = "all",
+    state: str = "all",
+    purpose: str = "",
+    search: str = "",
+    available_only: bool = False,
+) -> tuple[str, list[Any]]:
+    where = ["1 = 1"]
+    params: list[Any] = []
+    if available_only:
+        where.append('"availability" = %s')
+        params.append("available")
+    state_value = str(state or "all").strip().lower()[:40]
+    if state_value not in {"", "all"}:
+        state_value = "available" if state_value == "observed" else state_value
+        where.append('"availability" = %s')
+        params.append(state_value)
+    purpose_value = str(purpose or "").strip()[:80]
+    if purpose_value and purpose_value.lower() != "all":
+        where.append('"purpose" = %s')
+        params.append(purpose_value)
+    search_value = str(search or "").strip()[:160]
+    if search_value:
+        pattern = f"%{search_value}%"
+        where.append(
+            "(" + " OR ".join(
+                f'CAST("{column}" AS TEXT) ILIKE %s'
+                for column in (
+                    "summary_key", "source", "method", "proxy_lease_id", "account_id",
+                    "purpose", "operation_task_id", "operation_run_id", "registration_job_id",
+                )
+            ) + ")"
+        )
+        params.extend([pattern] * 9)
+    cutoff = _traffic_window_cutoff(window)
+    if cutoff is not None:
+        where.append(
+            "(NULLIF(\"started_at\", '')::timestamptz >= %s "
+            "OR NULLIF(\"ended_at\", '')::timestamptz >= %s)"
+        )
+        params.extend([cutoff, cutoff])
+    return " AND ".join(where), params
+
+
+def list_summaries(
+    *,
+    limit: int = 200,
+    offset: int = 0,
+    window: str = "all",
+    state: str = "all",
+    purpose: str = "",
+    search: str = "",
+    available_only: bool = False,
+) -> list[dict[str, Any]]:
+    where, params = _traffic_filter_where(
+        window=window,
+        state=state,
+        purpose=purpose,
+        search=search,
+        available_only=available_only,
+    )
     return record_store.list_rows(
         TRAFFIC_SUMMARIES,
+        where=where,
+        params=params,
         order_by="id DESC",
         limit=max(1, min(500, int(limit or 200))),
         offset=max(0, int(offset or 0)),
     )
+
+
+def list_summaries_with_total(
+    *,
+    limit: int = 200,
+    offset: int = 0,
+    window: str = "all",
+    state: str = "all",
+    purpose: str = "",
+    search: str = "",
+    available_only: bool = False,
+) -> tuple[list[dict[str, Any]], int]:
+    """在同一事务快照内读取流量页面和筛选后总数。"""
+    from core import postgres_store
+    from psycopg.rows import dict_row
+
+    where, params = _traffic_filter_where(
+        window=window,
+        state=state,
+        purpose=purpose,
+        search=search,
+        available_only=available_only,
+    )
+    record_store.init()
+    page_limit = max(1, min(500, int(limit or 200)))
+    page_offset = max(0, int(offset or 0))
+    table = postgres_store.qualified(TRAFFIC_SUMMARIES.name)
+    with postgres_store.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
+        # 列表和总数必须读取同一数据库快照，避免记录变化造成页数与总数不一致。
+        cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        cur.execute(
+            f"SELECT * FROM {table} WHERE {where} ORDER BY id DESC LIMIT %s OFFSET %s",
+            (*params, page_limit, page_offset),
+        )
+        items = [record_store.merge_row(TRAFFIC_SUMMARIES, row) for row in cur.fetchall()]
+        cur.execute(f"SELECT count(*) AS n FROM {table} WHERE {where}", params)
+        total = int(cur.fetchone()["n"])
+        return items, total
+
+
+def count_summaries(
+    *,
+    window: str = "all",
+    state: str = "all",
+    purpose: str = "",
+    search: str = "",
+    available_only: bool = False,
+) -> int:
+    where, params = _traffic_filter_where(
+        window=window,
+        state=state,
+        purpose=purpose,
+        search=search,
+        available_only=available_only,
+    )
+    return record_store.count_rows(TRAFFIC_SUMMARIES, where=where, params=params)
+
+
+def summary_metrics() -> dict[str, Any]:
+    """从可观测记录返回累计指标和北京时间当天指标。"""
+    from core import postgres_store
+    from psycopg.rows import dict_row
+
+    beijing_now = datetime.now(timezone.utc).astimezone(_BEIJING)
+    day_start = beijing_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_start_utc = day_start.astimezone(timezone.utc)
+    day_end_utc = day_start_utc + timedelta(days=1)
+    record_store.init()
+    table = postgres_store.qualified(TRAFFIC_SUMMARIES.name)
+    time_expr = 'NULLIF("started_at", \'\')::timestamptz'
+    with postgres_store.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT
+                COALESCE(SUM("total_bytes"), 0) AS total_observed_bytes,
+                COALESCE(SUM("total_bytes") FILTER (
+                    WHERE {time_expr} >= %s AND {time_expr} < %s
+                ), 0) AS today_observed_bytes,
+                COUNT(*) FILTER (
+                    WHERE {time_expr} >= %s AND {time_expr} < %s
+                ) AS today_observed_browser_records
+              FROM {table}
+             WHERE "availability" = %s
+            """,
+            (day_start_utc, day_end_utc, day_start_utc, day_end_utc, "available"),
+        )
+        traffic = cur.fetchone()
+    from core import proxy_lease_store
+
+    return {
+        "total_bytes": int(traffic["total_observed_bytes"] or 0),
+        "today_bytes": int(traffic["today_observed_bytes"] or 0),
+        "today_browser_count": int(traffic["today_observed_browser_records"] or 0),
+        # proxy_leases 历史上按北京时间本地无时区时间保存。
+        "today_route_count": proxy_lease_store.count_leases(
+            acquired_since=day_start.replace(tzinfo=None),
+            acquired_before=(day_start + timedelta(days=1)).replace(tzinfo=None),
+        ),
+    }
 
 
 def aggregate_summaries(rows: Iterable[Mapping[str, Any]] | None = None) -> dict[str, int]:
@@ -497,7 +669,9 @@ def finish_roxy_capture(opened) -> None:
 __all__ = [
     "TRAFFIC_SUMMARIES",
     "aggregate_summaries",
+    "count_summaries",
     "list_summaries",
+    "list_summaries_with_total",
     "persist_summary",
     "record_unavailable",
     "RoxyTrafficCapture",
@@ -505,4 +679,5 @@ __all__ = [
     "bind_roxy_capture",
     "finish_roxy_capture",
     "summarize_cdp_events",
+    "summary_metrics",
 ]

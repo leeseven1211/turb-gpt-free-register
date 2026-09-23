@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import json
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+from zoneinfo import ZoneInfo
 
 from core import browser_traffic, postgres_store, proxy_lease_store, proxy_provider, record_store
 from core import registration_service as registration_svc
@@ -69,6 +70,29 @@ class ProxyTrafficBackendTests(PostgresTestCase):
         )
         if state != "leased":
             proxy_lease_store.release(lease_id=lease_id, recent_until=None, reason="test-history")
+
+    @staticmethod
+    def _beijing_today_start_utc() -> datetime:
+        beijing = ZoneInfo("Asia/Shanghai")
+        now = datetime.now(timezone.utc).astimezone(beijing)
+        return now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+
+    def _seed_traffic(self, *, summary_key: str, started_at: datetime, total: int, purpose: str = "registration"):
+        browser_traffic.persist_summary(
+            summary_key=summary_key,
+            summary={
+                "source": "roxy_cdp",
+                "method": "cdp",
+                "availability": "available",
+                "started_at": started_at.isoformat(),
+                "ended_at": (started_at + timedelta(seconds=1)).isoformat(),
+                "upload_bytes": 0,
+                "download_bytes": total,
+                "total_bytes": total,
+                "request_count": 1,
+            },
+            purpose=purpose,
+        )
 
     def test_proxy_lease_migration_adds_nullable_correlation_columns_idempotently(self):
         record_store.init()
@@ -195,6 +219,178 @@ class ProxyTrafficBackendTests(PostgresTestCase):
         self.assertNotIn("proxy_url", encoded)
         self.assertNotIn("private-user", encoded)
         self.assertNotIn("private-password", encoded)
+
+    def test_proxy_traffic_summary_uses_full_database_and_beijing_day_boundaries(self):
+        today_start = self._beijing_today_start_utc()
+        self._seed_traffic(
+            summary_key="traffic-summary-today",
+            started_at=today_start + timedelta(hours=1),
+            total=5,
+        )
+        self._seed_traffic(
+            summary_key="traffic-summary-old",
+            started_at=today_start - timedelta(days=1, hours=1),
+            total=7,
+            purpose="live_check",
+        )
+        browser_traffic.persist_summary(
+            summary_key="traffic-summary-other-available",
+            summary={
+                "source": "other_observer",
+                "method": "summary",
+                "availability": "available",
+                "started_at": (today_start + timedelta(hours=2)).isoformat(),
+                "upload_bytes": 0,
+                "download_bytes": 3,
+                "total_bytes": 3,
+                "request_count": 1,
+            },
+            purpose="registration",
+        )
+        browser_traffic.record_unavailable(
+            summary_key="traffic-summary-protocol",
+            source="email_change",
+            method="protocol",
+            reason="protocol_no_browser_observation",
+            purpose="email_change",
+        )
+        self._seed_lease(lease_id="lease-summary-today")
+        old = today_start - timedelta(days=1, hours=1)
+        proxy_lease_store.reserve_pending(
+            lease_id="lease-summary-old",
+            provider="1024proxy",
+            endpoint="10.20.30.41:8080",
+            proxy_url="http://private-user:private-password@10.20.30.41:8080",
+            acquired_at=old.isoformat(),
+            expires_at=(old + timedelta(minutes=30)).isoformat(),
+            purpose="live_check",
+        )
+        app = create_app(auth_code="proxy-page-auth")
+        response = app.test_client().get(
+            "/api/proxy-traffic/summary",
+            headers={"X-Auth-Code": "proxy-page-auth"},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(
+            {
+                key: payload[key]
+                for key in (
+                    "total_bytes",
+                    "today_bytes",
+                    "today_browser_count",
+                    "today_route_count",
+                )
+            },
+            {
+                "total_bytes": 15,
+                "today_bytes": 8,
+                "today_browser_count": 2,
+                "today_route_count": 1,
+            },
+        )
+        self.assertEqual(payload["purposes"], ["live_check", "registration"])
+        self.assertEqual(payload["lease_states"], ["leased", "pending"])
+
+    def test_proxy_traffic_pages_return_filtered_total_but_count_is_page_size(self):
+        self._seed_lease(lease_id="lease-page-a")
+        self._seed_lease(
+            lease_id="lease-page-b",
+            endpoint="10.20.30.41:8080",
+            exit_ip="203.0.113.42",
+        )
+        response = create_app(auth_code="proxy-page-auth").test_client().get(
+            "/api/proxy-traffic/current?limit=1&offset=0&purpose=registration&search=lease-page",
+            headers={"X-Auth-Code": "proxy-page-auth"},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["total"], 2)
+        self.assertTrue(payload["has_more"])
+
+    def test_paginated_routes_use_combined_page_and_total_reads(self):
+        app = create_app(auth_code="proxy-page-auth")
+        client = app.test_client()
+        with patch.object(
+            proxy_lease_store,
+            "list_page_with_total",
+            return_value=([{"id": 1, "lease_id": "lease-snapshot"}], 19),
+        ) as lease_page, patch.object(
+            proxy_lease_store,
+            "count_leases",
+            side_effect=AssertionError("分页接口不应再次打开独立总数查询"),
+        ):
+            response = client.get(
+                "/api/proxy-traffic/current?limit=20",
+                headers={"X-Auth-Code": "proxy-page-auth"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["total"], 19)
+        lease_page.assert_called_once()
+
+        with patch.object(
+            browser_traffic,
+            "list_summaries_with_total",
+            return_value=([{"id": 2, "summary_key": "traffic-snapshot"}], 19),
+        ) as traffic_page, patch.object(
+            browser_traffic,
+            "count_summaries",
+            side_effect=AssertionError("分页接口不应再次打开独立总数查询"),
+        ):
+            response = client.get(
+                "/api/proxy-traffic/traffic?limit=20",
+                headers={"X-Auth-Code": "proxy-page-auth"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["total"], 19)
+        traffic_page.assert_called_once()
+
+    def test_lease_page_and_total_share_one_time_window_cutoff(self):
+        self._seed_lease(lease_id="lease-one-cutoff")
+        now = datetime.now()
+        with patch.object(
+            proxy_lease_store,
+            "_lease_window_cutoff",
+            side_effect=[now - timedelta(days=1), now + timedelta(days=1)],
+        ) as cutoff:
+            response = create_app(auth_code="proxy-page-auth").test_client().get(
+                "/api/proxy-traffic/current?window=24h",
+                headers={"X-Auth-Code": "proxy-page-auth"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["count"], 1)
+        self.assertEqual(response.get_json()["total"], 1)
+        cutoff.assert_called_once_with("24h")
+
+    def test_browser_traffic_page_hides_unavailable_rows_and_supports_window_filter(self):
+        today_start = self._beijing_today_start_utc()
+        self._seed_traffic(
+            summary_key="traffic-page-today",
+            started_at=today_start + timedelta(hours=1),
+            total=5,
+        )
+        self._seed_traffic(
+            summary_key="traffic-page-old",
+            started_at=today_start - timedelta(days=2),
+            total=7,
+        )
+        browser_traffic.record_unavailable(
+            summary_key="traffic-page-unavailable",
+            source="email_change",
+            method="protocol",
+            reason="protocol_no_browser_observation",
+        )
+        response = create_app(auth_code="proxy-page-auth").test_client().get(
+            "/api/proxy-traffic/traffic?limit=1&offset=0&window=24h",
+            headers={"X-Auth-Code": "proxy-page-auth"},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["total"], 1)
+        self.assertFalse(payload["has_more"])
+        self.assertEqual(payload["items"][0]["summary_key"], "traffic-page-today")
 
     def test_lease_correlation_is_idempotent_and_only_adds_missing_values(self):
         self._seed_lease(lease_id="lease-correlate-1")

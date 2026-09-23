@@ -271,6 +271,9 @@ const TABLE_DEFAULT_WIDTHS = {
   codex:    [4, 19, 7, 9, 9, 11, 11, 11, 11, 19],
   outlook:  [4, 20, 9, 9, 8, 14, 14, 18],
   accountTasks: [4, 6, 9, 18, 10, 11, 13, 10, 11, 17, 15, 10],
+  proxyCurrent: [145, 144, 108, 156, 126, 220, 88, 188],
+  proxyHistory: [145, 144, 108, 156, 126, 220, 188, 92],
+  proxyTraffic: [132, 92, 108, 170, 188, 220, 188, 92],
 };
 const TABLE_WIDTH_STORAGE_PREFIX = 'gpt_console_table_widths_';
 const TABLE_WIDTH_TOTAL_STORAGE_PREFIX = 'gpt_console_table_total_';
@@ -1077,6 +1080,8 @@ setInterval(updateTopbarClock, 30000);
 
 function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   if (!NAV_ALLOWED_TABS.includes(tab)) tab = 'overview';
+  const proxyTrafficDialog = document.getElementById('proxyTrafficDetailDialog');
+  if (tab !== 'proxy-traffic' && proxyTrafficDialog?.open) proxyTrafficDialog.close();
   ACTIVE_TAB = tab;
   $$('.sidebar-nav button[data-tab]').forEach(x => {
     const active = x.dataset.tab === tab;

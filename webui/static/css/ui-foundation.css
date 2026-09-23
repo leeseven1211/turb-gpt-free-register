@@ -1243,6 +1243,13 @@ tr:hover td,
   line-height: 1.25;
 }
 
+.proxy-traffic-summary-note {
+  margin: 0;
+  padding: 6px 16px 10px;
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-xs);
+}
+
 .proxy-traffic-view-tabs {
   display: flex;
   flex: 1 1 auto;
@@ -1329,6 +1336,52 @@ tr:hover td,
 }
 
 .proxy-traffic-panel-status { padding-top: 2px; }
+
+.proxy-traffic-panel-tools {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.proxy-traffic-panel-tools button,
+.proxy-traffic-pager button,
+.proxy-traffic-pager select {
+  min-height: 34px;
+  padding: 5px 10px;
+  border: 1px solid var(--ui-color-border-strong);
+  border-radius: var(--ui-radius-sm);
+  color: var(--ui-color-text-secondary);
+  background: var(--ui-color-surface);
+  font: inherit;
+  font-size: var(--ui-font-size-xs);
+  cursor: pointer;
+}
+
+.proxy-traffic-panel-tools button:hover,
+.proxy-traffic-pager button:hover:not(:disabled) {
+  color: var(--ui-color-brand);
+  border-color: var(--ui-color-brand);
+}
+
+.proxy-traffic-pager button:disabled { cursor: default; opacity: .45; }
+
+.proxy-traffic-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-height: 54px;
+  padding: 9px 16px;
+  border-top: 1px solid var(--ui-color-border);
+  color: var(--ui-color-text-muted);
+  font-size: var(--ui-font-size-xs);
+}
+
+.proxy-traffic-page-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.proxy-traffic-page-actions label { display: inline-flex; align-items: center; gap: 5px; }
+.proxy-traffic-page-number { min-width: 76px; text-align: center; }
 
 .proxy-traffic-table-wrap {
   max-width: 100%;
@@ -1592,40 +1645,80 @@ tr:hover td,
 .proxy-traffic-correlation small { margin: 0; }
 .proxy-traffic-time small { margin: 0; }
 
-.proxy-traffic-row-details {
-  min-width: 0;
-}
-
-.proxy-traffic-row-details summary {
-  min-height: 30px;
-  padding: 4px 2px;
+.proxy-traffic-detail-button {
+  min-height: 32px;
+  padding: 4px 9px;
+  border: 1px solid var(--ui-color-border-strong);
+  border-radius: var(--ui-radius-sm);
   color: var(--ui-color-brand);
+  background: var(--ui-color-surface);
+  font: inherit;
   font-size: var(--ui-font-size-xs);
   font-weight: 750;
   cursor: pointer;
 }
 
-.proxy-traffic-row-details summary:focus-visible {
+.proxy-traffic-detail-button:hover { background: var(--ui-color-brand-soft); }
+
+.proxy-traffic-detail-button:focus-visible,
+.proxy-traffic-panel-tools button:focus-visible,
+.proxy-traffic-pager button:focus-visible,
+.proxy-traffic-pager select:focus-visible,
+.proxy-traffic-detail-head button:focus-visible {
   outline: 3px solid color-mix(in srgb, var(--ui-color-brand) 24%, transparent);
   outline-offset: 2px;
 }
 
-.proxy-traffic-row-details dl {
-  display: grid;
-  gap: 7px;
-  min-width: 220px;
-  margin: 8px 0 2px;
-  padding: 10px;
+.proxy-traffic-detail-dialog {
+  width: min(620px, calc(100vw - 28px));
+  max-height: min(80vh, 760px);
+  padding: 0;
   border: 1px solid var(--ui-color-border);
+  border-radius: var(--ui-radius-md);
+  color: var(--ui-color-text);
+  background: var(--ui-color-surface);
+  box-shadow: var(--ui-shadow-md);
+}
+
+.proxy-traffic-detail-dialog::backdrop { background: rgb(12 20 37 / 52%); }
+
+.proxy-traffic-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--ui-color-border);
+}
+
+.proxy-traffic-detail-head h3 { margin: 0; font-size: var(--ui-font-size-lg); }
+.proxy-traffic-detail-head button {
+  min-height: 34px;
+  padding: 5px 10px;
+  border: 1px solid var(--ui-color-border-strong);
   border-radius: var(--ui-radius-sm);
-  background: var(--ui-color-surface-subtle);
+  color: var(--ui-color-text-secondary);
+  background: var(--ui-color-surface);
+  font: inherit;
+  cursor: pointer;
+}
+
+.proxy-traffic-detail-list {
+  display: grid;
+  gap: 0;
+  max-height: calc(min(80vh, 760px) - 70px);
+  margin: 0;
+  padding: 8px 20px 20px;
+  overflow-y: auto;
 }
 
 .proxy-traffic-detail-item {
   display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: 104px minmax(0, 1fr);
+  gap: 12px;
   min-width: 0;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--ui-color-border);
 }
 
 .proxy-traffic-detail-item dt {
@@ -1653,8 +1746,18 @@ tr:hover td,
   .proxy-traffic-view-bar { gap: 8px; }
   .proxy-traffic-view-tabs { overflow-x: auto; scrollbar-width: thin; }
   .proxy-traffic-view-tabs button { flex: 0 0 auto; padding-inline: 12px; }
-  .proxy-traffic-clear-filters { min-height: 32px; padding-inline: 9px; }
+  .proxy-traffic-clear-filters,
+  .proxy-traffic-panel-tools button,
+  .proxy-traffic-pager button,
+  .proxy-traffic-pager select,
+  .proxy-traffic-detail-button,
+  .proxy-traffic-detail-head button { min-height: 44px; }
+  .proxy-traffic-clear-filters { padding-inline: 9px; }
   .proxy-traffic-panel-head { align-items: flex-start; flex-direction: column; gap: 6px; padding-inline: 13px; }
+  .proxy-traffic-panel-tools { width: 100%; justify-content: space-between; }
+  .proxy-traffic-pager { padding-inline: 12px; }
+  .proxy-traffic-page-actions { width: 100%; justify-content: space-between; }
+  .proxy-traffic-detail-item { grid-template-columns: 84px minmax(0, 1fr); }
   .proxy-traffic-table { min-width: 920px; }
 }
 

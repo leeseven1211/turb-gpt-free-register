@@ -590,7 +590,7 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 
 - `BROWSER_DATA_SAVER_MODE` 是总开关。注册使用 `BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES` 和 `BROWSER_DATA_SAVER_BLOCKED_URL_PATTERNS`；刷新 AT、旧 AT 浏览器查活、独立 Codex OAuth 和账号操作使用固定的认证安全规则，只拦截图片、媒体及明确的遥测请求，不沿用注册脚本规则。注册窗口继续执行 Codex OAuth 时会切换为认证安全规则。
 - `BROWSER_DATA_SAVER_AUTH_FLOWS` 是可选流程列表，可填写 `token_refresh`、`live_check`、`codex_oauth`、`account_action`；默认全选，填 `[]` 可只保留注册省流量。它和总开关都可以在 WebUI「配置 → 浏览器画像」调整。流程开关同时控制 Roxy 启动参数和 Selenium CDP 拦截。
-- 省流量拦截失败会继续原浏览器业务。浏览器流量页统计 Roxy/CDP 可观测 HTTP/WebSocket 字节，不等于代理商计费流量；验证省流量效果应比较相同流程和网络条件下的成功率、请求数及代理商账单。当前未启用持久静态资源缓存。
+- 省流量拦截失败会继续原浏览器业务。「代理与流量」页的累计/今日流量只统计已采集的浏览器 HTTP/WebSocket 字节，今日浏览器记录按采集开始时间、今日新建线路按租约获取时间统计，日期边界为北京时间零点。协议任务的未采集标记仍保存在 PostgreSQL 中用于排障，但不出现在浏览器流量列表和流量合计中。页面列表支持服务端分页、筛选和列宽调整。这些可观测字节不等于代理商计费流量；验证省流量效果应比较相同流程和网络条件下的成功率、请求数及代理商账单。当前未启用持久静态资源缓存。
 
 #### Codex、接码与 sub2api
 
