@@ -364,6 +364,7 @@ class EmailChangeLoggingTests(unittest.TestCase):
 
         wait.assert_not_called()
 
+
     def test_remote_rejection_exposes_only_safe_status_and_error_code(self):
         from core.email_change_service import EmailChangeProtocol, RemoteRequestRejected
 
@@ -485,6 +486,132 @@ class EmailChangeLoggingTests(unittest.TestCase):
             caught.exception.response_error_hints,
         )
         self.assertNotIn("cannot be used", " ".join(caught.exception.response_error_hints))
+
+
+class EmailChangeCloseoutTests(unittest.TestCase):
+    def test_successful_email_change_closes_consumed_email_as_used(self):
+        from core import email_change_service
+
+        with patch.object(
+            email_change_service.email_provider,
+            "release_email",
+            return_value="email_butler",
+        ) as release_email:
+            result = email_change_service._finalize_consumed_email(
+                "new@example.test",
+                7,
+                "email_butler",
+            )
+
+        self.assertEqual("success", result["status"])
+        release_email.assert_called_once_with(
+            "new@example.test",
+            status="used",
+            source="email_butler",
+            note="账号 #7 邮箱换绑成功",
+        )
+
+    def test_email_closeout_failure_is_reported_without_raising(self):
+        from core import email_change_service
+
+        with patch.object(
+            email_change_service.email_provider,
+            "release_email",
+            side_effect=RuntimeError("Email Butler release failed"),
+        ):
+            result = email_change_service._finalize_consumed_email(
+                "new@example.test",
+                7,
+                "email_butler",
+            )
+
+        self.assertEqual("failed", result["status"])
+        self.assertEqual("RuntimeError", result["error_type"])
+
+    def test_successful_email_change_invokes_email_closeout(self):
+        from core import email_change_service
+
+        class _Context:
+            account_id = 7
+            run_id = 29
+            task_id = 30
+            email = "old@example.test"
+            run = {"data": {"email_source": "email_butler"}, "trigger": "test"}
+            config_snapshot = {"email_change_enabled": True}
+
+            def report(self, **event):
+                return None
+
+            @contextmanager
+            def lease(self, *, resource_family):
+                yield None
+
+            def checkpoint(self):
+                return None
+
+            def remote_request_started(self, *args, **kwargs):
+                return None
+
+            def remote_request_receipt(self, *args, **kwargs):
+                return None
+
+        context = _Context()
+        route = SimpleNamespace(
+            proxy_url="",
+            public_dict=lambda: {},
+            release=Mock(),
+        )
+        session = Mock()
+        identity = SimpleNamespace(session_payload=lambda: {})
+        begin = email_change_service.BeginChangeResult(
+            session=session,
+            access_token="fresh-at",
+            after_ts=123.0,
+            reauthenticated=False,
+        )
+        initial_account = {
+            "email": "old@example.test",
+            "email_source": "icloud_hide",
+            "access_token": "old-at",
+        }
+        updated_account = {
+            "email": "new@example.test",
+            "email_source": "email_butler",
+            "access_token": "fresh-at",
+        }
+
+        with (
+            patch.object(email_change_service.db, "get_account", side_effect=[initial_account, updated_account]),
+            patch.object(email_change_service.email_provider, "validate_email_source", return_value="email_butler"),
+            patch("core.browser_traffic.record_unavailable"),
+            patch.object(email_change_service.db, "claim_account_email_change", return_value=True),
+            patch.object(email_change_service.email_provider, "acquire_email", return_value="new@example.test"),
+            patch.object(email_change_service.db, "mark_account_email_change_running", return_value=True),
+            patch.object(email_change_service, "acquire_account_proxy", return_value=route),
+            patch.object(email_change_service, "_account_stable_identity", return_value=identity),
+            patch("core.session.BrowserSession", return_value=session),
+            patch.object(email_change_service, "begin_change_with_optional_reauth", return_value=begin),
+            patch.object(email_change_service.email_provider, "wait_for_otp", return_value="123456"),
+            patch.object(email_change_service.EmailChangeProtocol, "verify"),
+            patch.object(email_change_service.email_provider, "email_material_line", return_value="new@example.test"),
+            patch.object(email_change_service.db, "finish_account_email_change", return_value=True),
+            patch.object(email_change_service, "_enqueue_live_check_child", return_value={"accepted": False}),
+            patch.object(
+                email_change_service,
+                "_finalize_consumed_email",
+                return_value={
+                    "status": "failed",
+                    "source": "email_butler",
+                    "error_type": "EmailButlerClientError",
+                },
+            ) as finalize,
+        ):
+            result = email_change_service._handle_email_change(context)
+
+        self.assertEqual("success", result.status)
+        self.assertIn("邮箱服务收口失败", result.message)
+        self.assertEqual("failed", result.summary["email_closeout"]["status"])
+        finalize.assert_called_once_with("new@example.test", 7, "email_butler")
 
 
 class EmailChangeEligibilityTests(unittest.TestCase):
@@ -991,7 +1118,11 @@ class EmailChangeDurableOperationTests(PostgresTestCase):
         operation.init()
         self.account_id = record_store.insert_row(
             ACCOUNTS,
-            {"email": "queue@example.test", "access_token": "at"},
+            {
+                "email": "queue@example.test",
+                "access_token": "at",
+                "created_at": (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(),
+            },
         )
 
     def tearDown(self):

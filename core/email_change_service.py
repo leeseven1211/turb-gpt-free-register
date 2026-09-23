@@ -651,6 +651,35 @@ def _release_unconsumed(email: str, account_id: int, error: str) -> None:
         logger.exception("邮箱换绑失败邮箱回收异常: account_id=%s", account_id)
 
 
+def _finalize_consumed_email(email: str, account_id: int, source: str) -> dict[str, str]:
+    """在换绑成功后把新邮箱收口为已使用，但不覆盖已确认的换绑结果。"""
+    normalized_source = str(source or "").strip().lower()
+    try:
+        resolved_source = email_provider.release_email(
+            email,
+            status="used",
+            source=normalized_source,
+            note=f"账号 #{int(account_id)} 邮箱换绑成功",
+        )
+        return {
+            "status": "success",
+            "source": str(resolved_source or normalized_source),
+        }
+    except Exception as exc:
+        # OpenAI 远端换绑和本地写回已经确认；供应商收口失败不能把已完成的
+        # 换绑降级为 request_unknown，只保留无凭据的异常类型供任务中心追踪。
+        logger.exception(
+            "邮箱换绑成功后的邮箱收口失败: account_id=%s source=%s",
+            account_id,
+            normalized_source,
+        )
+        return {
+            "status": "failed",
+            "source": normalized_source,
+            "error_type": type(exc).__name__,
+        }
+
+
 def _close_protocol_session(session: BrowserSession | None) -> None:
     if session is None:
         return
@@ -743,6 +772,7 @@ def _handle_email_change(context):
     account_claimed = False
     remote_accepted = False
     writeback_confirmed = False
+    email_closeout: dict[str, str] | None = None
     context.report(stage="email", state="running", message="准备新邮箱")
     try:
         with context.lease(resource_family=EMAIL_CHANGE_RESOURCE_FAMILY):
@@ -896,6 +926,7 @@ def _handle_email_change(context):
                 )
                 return task_gateway.OperationResult.request_unknown("远端换绑成功但本地写回未确认")
             writeback_confirmed = True
+            email_closeout = _finalize_consumed_email(new_email, account_id, source)
             context.remote_request_receipt(
                 outcome="confirmed",
                 action="change_email.verify",
@@ -905,9 +936,19 @@ def _handle_email_change(context):
                     "remote_result_confirmed": True,
                     "local_business_writeback_confirmed": True,
                     "local_readback_confirmed": True,
+                    "email_closeout_status": email_closeout["status"],
                 },
             )
-            context.report(stage="complete", state="success", message="邮箱换绑本地写回已确认")
+            context.report(
+                stage="complete",
+                state="success" if email_closeout["status"] == "success" else "warning",
+                message=(
+                    "邮箱换绑本地写回已确认，邮箱已收口"
+                    if email_closeout["status"] == "success"
+                    else "邮箱换绑本地写回已确认，但邮箱服务收口失败"
+                ),
+                detail={"email_closeout": email_closeout},
+            )
     except task_gateway.OperationLeaseLost as exc:
         if account_claimed:
             if remote_accepted:
@@ -1025,6 +1066,7 @@ def _handle_email_change(context):
     summary = {
         "email_change_confirmed": True,
         "new_email": new_email,
+        "email_closeout": email_closeout or {"status": "not_attempted"},
         "post_change_live_check": {
             "accepted": bool(child.get("accepted")),
             "task_id": child.get("task_id"),
@@ -1033,14 +1075,20 @@ def _handle_email_change(context):
         },
     }
     if child.get("accepted"):
+        message = "邮箱换绑成功，已排队协议查活刷新 AT"
+        if (email_closeout or {}).get("status") != "success":
+            message = "邮箱换绑成功，但邮箱服务收口失败，已排队协议查活刷新 AT"
         return task_gateway.OperationResult.success(
             summary,
-            message="邮箱换绑成功，已排队协议查活刷新 AT",
+            message=message,
         )
     summary["post_change_live_check"]["error"] = child.get("error") or "查活子任务未入队"
+    message = "邮箱换绑成功，查活刷新 AT 待后续处理"
+    if (email_closeout or {}).get("status") != "success":
+        message = "邮箱换绑成功，但邮箱服务收口失败，查活刷新 AT 待后续处理"
     return task_gateway.OperationResult.success(
         summary,
-        message="邮箱换绑成功，查活刷新 AT 待后续处理",
+        message=message,
     )
 
 
