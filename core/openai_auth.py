@@ -7,6 +7,7 @@ OpenAI Auth 模块
 import json
 import logging
 import random
+import re
 import secrets
 import time
 from urllib.parse import urlsplit
@@ -38,9 +39,9 @@ class AuthorizeRouteRejectedError(RuntimeError):
     code = "auth_route_rejected"
     retry_with_new_proxy = True
 
-    def __init__(self, status_code: int):
+    def __init__(self, status_code: int, *, stage: str = "Auth authorize"):
         self.status_code = int(status_code or 0)
-        super().__init__(f"Auth authorize 路由被拒绝: HTTP {self.status_code or '-'}")
+        super().__init__(f"{stage} 路由被拒绝: HTTP {self.status_code or '-'}")
 
 
 class AccountUnusableError(Exception):
@@ -206,6 +207,15 @@ def _authorize_error_status(exc: Exception) -> int:
         return 0
 
 
+def _preflight_route_rejection_status(exc: Exception) -> int:
+    """仅在尚未提交邮箱的登录预检中识别可换线的 403/429。"""
+    status = _authorize_error_status(exc)
+    if status:
+        return status if status in {403, 429} else 0
+    match = re.search(r"(?i)\b(?:http(?: error)?\s*|status\s*=\s*)(403|429)\b", str(exc))
+    return int(match.group(1)) if match else 0
+
+
 def _reset_retryable_circuit(session: BrowserSession) -> None:
     """仅清除本地熔断，保留当前 Session 的 Cookie Jar 和完整身份上下文。"""
     reset = getattr(session, "reset_circuit_breaker", None)
@@ -288,7 +298,13 @@ def network_preflight(session: BrowserSession) -> None:
         )),
     ]
     for label, fn in checks:
-        resp = _request_with_proxy_retry(session, f"预检:{label}", fn)
+        try:
+            resp = _request_with_proxy_retry(session, f"预检:{label}", fn)
+        except Exception as exc:
+            status = _preflight_route_rejection_status(exc)
+            if label == "chatgpt-auth-login" and status:
+                raise AuthorizeRouteRejectedError(status, stage="ChatGPT 登录预检") from exc
+            raise
         observe = getattr(session, "observe_chatgpt_document", None)
         if callable(observe):
             observe(resp)
@@ -843,14 +859,14 @@ def validate_email_otp(session: BrowserSession, code: str, sentinel_header: str 
 
     body = json.dumps({"code": code})
 
-    logger.info(f"[步骤10] 提交邮箱验证码: {code}")
+    logger.info("[步骤10] 正在提交邮箱验证码")
     resp = session.post(url, headers=headers, data=body)
 
     if resp.status_code != 200:
-        logger.error(f"[步骤10] 请求失败, 状态码: {resp.status_code}")
-        logger.error(f"[步骤10] 响应内容: {resp.text}")
-        # 先看是不是"账号已废"——这类邮箱再试也没用，单独抛出让上层标 failed
         err_code = _extract_error_code(resp)
+        safe_error_code = err_code if re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", err_code) else "-"
+        logger.error("[步骤10] 验证码请求失败: status=%s error_code=%s", resp.status_code, safe_error_code)
+        # 先看是不是"账号已废"——这类邮箱再试也没用，单独抛出让上层标 failed
         if err_code in _ACCOUNT_DEAD_CODES:
             raise AccountUnusableError(
                 f"账号已废弃（{err_code}），邮箱不可再用", error_code=err_code,
@@ -860,13 +876,19 @@ def validate_email_otp(session: BrowserSession, code: str, sentinel_header: str 
             'invalid', 'incorrect', 'expired', 'code', 'otp', 'verification',
             '验证码', '認証コード', '確認コード', 'コード'
         )):
-            raise EmailOtpInvalidError(f"邮箱验证码无效或已过期: status={resp.status_code}, body={(resp.text or '')[:240]}")
+            raise EmailOtpInvalidError(
+                f"邮箱验证码无效或已过期: status={resp.status_code}, error_code={safe_error_code}"
+            )
         resp.raise_for_status()
 
     data = resp.json()
     page_type = data.get('page', {}).get('type')
-    logger.info(f"[步骤10] 验证码验证成功: {page_type}")
-    logger.info(f"[步骤10] 验证响应摘要: {json.dumps(data, ensure_ascii=False)[:1000]}")
+    safe_page_type = (
+        page_type
+        if isinstance(page_type, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", page_type)
+        else "-"
+    )
+    logger.info("[步骤10] 验证码验证成功: %s", safe_page_type)
     return data
 
 

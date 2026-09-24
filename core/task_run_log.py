@@ -27,6 +27,7 @@ _PRIVATE_IDENTIFIER_KEYS = frozenset({
     "session_identifiers",
     "sentinel_sid",
     "oai_session_id",
+    "oai-client-auth-session",
     "auth_session_logging_id",
     "datadog_trace_id",
     "datadog_parent_id",
@@ -54,6 +55,11 @@ _TEXT_SECRET_RE = re.compile(
     r"(?i)\b(password|passcode|otp|one[-_ ]time[ -]code|secret|token|access[_ -]?token|refresh[_ -]?token|authorization|cookie)\b"
     r"\s*[:=]\s*([^\s,;]+)"
 )
+_CHINESE_OTP_RE = re.compile(r"(?:邮箱)?验证码\s*[:=：]\s*([^\s,;，；]+)")
+_CLIENT_AUTH_SESSION_RE = re.compile(
+    r"\"?oai[-_ ]client[-_ ]auth[-_ ]session\"?\s*[:=：]\s*.*$",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _safe_component(value: Any) -> str:
@@ -79,6 +85,8 @@ def redact_text(value: Any, limit: int = 4000) -> str:
     text = _PROXY_RE.sub(r"\g<scheme>***@", text)
     text = _TEXT_IDENTIFIER_RE.sub(lambda match: f"{match.group(1)}=[REDACTED]", text)
     text = _TEXT_SECRET_RE.sub(lambda match: f"{match.group(1)}=[REDACTED]", text)
+    text = _CHINESE_OTP_RE.sub("验证码=[REDACTED]", text)
+    text = _CLIENT_AUTH_SESSION_RE.sub("oai-client-auth-session=[REDACTED]", text)
     return text[: max(0, int(limit))]
 
 

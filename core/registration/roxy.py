@@ -977,7 +977,7 @@ def run_roxy_registration(
                 human_delay("api")
                 current_otp = None
                 continue
-            logger.info("[Roxy注册][OTP] 收到验证码：%s", current_otp)
+            logger.info("[Roxy注册][OTP] 已收到验证码")
             _clear_otp_inputs(driver)
             otp_input_timeout = _budget_timeout(otp_budget, 20, minimum=1)
             if otp_input_timeout < 1:

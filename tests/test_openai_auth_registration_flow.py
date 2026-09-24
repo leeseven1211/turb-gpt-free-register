@@ -123,6 +123,42 @@ class OpenAIRegistrationFlowTests(unittest.TestCase):
         self.assertEqual(session.reset_count, 1)
         sleep.assert_called_once_with(1.0)
 
+    def test_network_preflight_marks_exhausted_login_403_as_route_rejection(self):
+        class Session:
+            def get_chatgpt_navigate_headers(self, referer=""):
+                return {"referer": referer}
+
+            def get(self, url, *, headers, allow_redirects, timeout):
+                return _Response(status_code=403, url=url)
+
+        with patch.object(openai_auth, "_proxy_retry_config", return_value=(1, 0)):
+            with self.assertRaises(openai_auth.AuthorizeRouteRejectedError) as caught:
+                openai_auth.network_preflight(Session())
+
+        self.assertEqual(caught.exception.code, "auth_route_rejected")
+        self.assertEqual(caught.exception.status_code, 403)
+
+    def test_network_preflight_keeps_structured_500_even_if_message_mentions_403(self):
+        class ServerError(RuntimeError):
+            def __init__(self):
+                super().__init__("outer HTTP 403")
+                self.response = SimpleNamespace(status_code=500)
+
+        error = ServerError()
+
+        class Session:
+            def get_chatgpt_navigate_headers(self, referer=""):
+                return {"referer": referer}
+
+            def get(self, url, *, headers, allow_redirects, timeout):
+                raise error
+
+        with patch.object(openai_auth, "_proxy_retry_config", return_value=(1, 0)):
+            with self.assertRaises(ServerError) as caught:
+                openai_auth.network_preflight(Session())
+
+        self.assertIs(caught.exception, error)
+
     def test_network_preflight_retries_transient_auth_probe_failure(self):
         class ProxyError(RuntimeError):
             pass
