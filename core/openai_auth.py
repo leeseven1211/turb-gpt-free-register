@@ -10,7 +10,7 @@ import random
 import re
 import secrets
 import time
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlsplit
 
 from config import openai_protocol as _protocol_cfg
 from core.session import BrowserSession
@@ -721,49 +721,6 @@ def navigate_email_otp_send(
         logger.warning("[OTP] 发送导航未到验证码页 status=%s path=%s", status, final_path or "-")
         raise RuntimeError(f"email_otp_send_unconfirmed status={status} path={final_path or '-'}")
     _rotate_document_navigation_id(session)
-    return final_url
-
-
-def resend_email_otp_via_form(
-    session: BrowserSession,
-    *,
-    referer: str = "https://auth.openai.com/email-verification",
-) -> str:
-    """沿验证码页的 resend 表单动作重发，并确认仍停在验证码页。"""
-    url = "https://auth.openai.com/email-verification"
-    # 表单请求仍携带当前 Auth Web 的 document/access-flow/RUM 上下文；
-    # 直接 GET send 会丢掉这层会话语义。
-    headers = session.get_auth_headers(referer=referer)
-    headers.update({
-        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "content-type": "application/x-www-form-urlencoded",
-        "sec-fetch-site": "same-origin",
-        "sec-fetch-mode": "navigate",
-        "sec-fetch-dest": "document",
-        "sec-fetch-user": "?1",
-        "origin": "https://auth.openai.com",
-    })
-    resp = session.post(url, headers=headers, data=urlencode({"code": "", "intent": "resend"}))
-    status = int(getattr(resp, "status_code", 0) or 0)
-    final_url = str(getattr(resp, "url", "") or "")
-    final_path = _url_path(final_url)
-    redirect_paths = []
-    for item in list(getattr(resp, "history", []) or []):
-        location = str((getattr(item, "headers", {}) or {}).get("location") or "")
-        redirect_paths.append(_url_path(location) or _url_path(getattr(item, "url", "")))
-    if not 200 <= status < 300:
-        raise RuntimeError(f"email_otp_resend_form_failed status={status} path={final_path or '-'}")
-    if "/error" in final_path.lower() or any("/error" in path.lower() for path in redirect_paths):
-        raise RuntimeError(
-            f"email_otp_resend_form_rejected status={status} path={final_path or '-'} "
-            f"redirect={','.join(redirect_paths[-3:]) or '-'}"
-        )
-    if final_path.lower() != "/email-verification":
-        raise RuntimeError(
-            f"email_otp_resend_form_unconfirmed status={status} path={final_path or '-'}"
-        )
-    _rotate_document_navigation_id(session)
-    logger.info("[OTP] 已沿验证码页 resend 表单重发，status=%s path=%s", status, final_path)
     return final_url
 
 

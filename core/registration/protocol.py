@@ -36,7 +36,7 @@ from core.openai_auth import (
     register_user,
     request_password_sentinel_bundle,
     request_sentinel_token,
-    resend_email_otp_via_form,
+    send_email_otp,
     validate_email_otp,
 )
 from core.profile_utils import generate_random_birthday
@@ -298,7 +298,7 @@ def _wait_for_resume_otp_with_resend(
             email,
         )
         resend_after_ts = time.time()
-        resend_email_otp_via_form(session)
+        send_email_otp(session)
         return wait_for_otp(
             email,
             after_ts=resend_after_ts,
@@ -644,7 +644,7 @@ def run_protocol_registration(
                     raise
                 logger.warning(f"[OTP] 验证码错误/过期：{str(exc)[:180]}，准备重新发送并重新获取验证码")
                 otp_after_ts = time.time()
-                resend_email_otp_via_form(session)
+                send_email_otp(session)
                 human_delay("api")
                 current_otp = None
 
