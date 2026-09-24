@@ -569,7 +569,7 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
                 "wait_for_otp",
                 side_effect=[protocol.ForwardIMAPNoMailTimeout("no mail"), "123456"],
             ) as wait,
-            patch.object(protocol, "send_email_otp") as resend,
+            patch.object(protocol, "resend_email_otp_via_form") as resend,
             patch.object(protocol.time, "time", return_value=1000.0),
         ):
             result = protocol._wait_for_resume_otp_with_resend(
@@ -591,7 +591,7 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
                 "wait_for_otp",
                 side_effect=ForwardIMAPError("offline"),
             ),
-            patch.object(protocol, "send_email_otp") as resend,
+            patch.object(protocol, "resend_email_otp_via_form") as resend,
         ):
             with self.assertRaises(ForwardIMAPError):
                 protocol._wait_for_resume_otp_with_resend(

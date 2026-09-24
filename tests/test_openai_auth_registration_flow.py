@@ -59,6 +59,8 @@ class _ProtocolSession:
         self.posts.append((url, headers, data))
         if url.endswith("/sentinel/req"):
             return _Response(payload={"token": "challenge", "persona": "p"})
+        if url.endswith("/email-verification"):
+            return _Response(url="https://auth.openai.com/email-verification")
         return _Response(payload={"continue_url": "/api/accounts/email-otp/send"})
 
     def get(self, url, *, headers, allow_redirects):
@@ -363,6 +365,20 @@ class OpenAIRegistrationFlowTests(unittest.TestCase):
         _, headers, _ = session.gets[-1]
         self.assertEqual(headers["referer"], "https://auth.openai.com/email-verification")
         self.assertEqual(final_url, "https://auth.openai.com/email-verification")
+
+    def test_email_otp_resend_uses_verification_form_intent(self):
+        session = _ProtocolSession()
+
+        final_url = openai_auth.resend_email_otp_via_form(session)
+
+        url, headers, body = session.posts[-1]
+        self.assertEqual(url, "https://auth.openai.com/email-verification")
+        self.assertEqual(headers["referer"], "https://auth.openai.com/email-verification")
+        self.assertEqual(headers["content-type"], "application/x-www-form-urlencoded")
+        self.assertEqual(headers["sec-fetch-mode"], "navigate")
+        self.assertEqual(body, "code=&intent=resend")
+        self.assertEqual(final_url, "https://auth.openai.com/email-verification")
+        self.assertEqual(session.document_navigation_id, "document-1-next")
 
     def test_email_otp_send_rejects_error_redirect_before_verification_page(self):
         session = _ProtocolSession()
