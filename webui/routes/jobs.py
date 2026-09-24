@@ -422,11 +422,17 @@ def create_jobs_blueprint(context: WebUIContext):
     def api_job_retry(job_id: int):
         """重试失败/停止/取消任务；服务端自动判断完整注册或 Codex 补跑。"""
         data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify({"ok": False, "error": "请求体必须是对象"}), 400
+        registration_driver = data.get("registration_driver") if "registration_driver" in data else None
+        if "registration_driver" in data and registration_driver != "roxy":
+            return jsonify({"ok": False, "error": "registration_driver 仅支持 roxy"}), 400
         try:
             workers = max(1, min(16, int(data.get("workers", svc.get_executor_workers()))))
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "workers 非法"}), 400
-        result = svc.retry_job(job_id, workers=workers)
+        retry_kwargs = {"registration_driver": registration_driver} if registration_driver else {}
+        result = svc.retry_job(job_id, workers=workers, **retry_kwargs)
         if not result.get("ok"):
             return jsonify(result), int(result.get("status") or 400)
         return jsonify(result)
@@ -435,6 +441,10 @@ def create_jobs_blueprint(context: WebUIContext):
     def api_jobs_retry_bulk():
         """批量重试任务；不支持项逐条跳过并返回原因。"""
         data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify({"ok": False, "error": "请求体必须是对象"}), 400
+        if "registration_driver" in data:
+            return jsonify({"ok": False, "error": "registration_driver 仅支持单任务待验证账号续跑"}), 400
         job_ids = data.get("job_ids") or data.get("ids") or []
         if not isinstance(job_ids, list) or not job_ids:
             return jsonify({"ok": False, "error": "job_ids 必须是非空数组"}), 400

@@ -2311,6 +2311,71 @@ def _read_linked_attempt_for_job(job: dict) -> tuple[dict | None, bool]:
         return None, True
 
 
+def _roxy_resume_facts_match(
+    source: dict,
+    root_job: dict,
+    account: dict | None,
+    attempt: dict | None,
+    *,
+    root_id: int,
+) -> bool:
+    """只允许同一待验证账号、原邮箱和原 Attempt 的 Roxy 续跑。"""
+    if not account or not attempt:
+        return False
+    extra = _account_extra(account)
+    if str(extra.get("registration_checkpoint") or "").strip().lower() != "email_verification_pending":
+        return False
+    if not _pending_registration_password(account):
+        return False
+    try:
+        account_id = int(account.get("id"))
+        attempt_id = int(attempt.get("id"))
+        source_attempt_id = int(source.get("attempt_id"))
+        root_attempt_id = int(root_job.get("attempt_id"))
+    except (TypeError, ValueError):
+        return False
+    if account_id <= 0 or attempt_id <= 0 or source_attempt_id != attempt_id or root_attempt_id != attempt_id:
+        return False
+    for item in (source, root_job, attempt):
+        linked_account_id = item.get("account_id")
+        if linked_account_id is not None:
+            try:
+                if int(linked_account_id) != account_id:
+                    return False
+            except (TypeError, ValueError):
+                return False
+    for field in ("root_job_id", "source_root_job_id"):
+        linked_root_id = attempt.get(field)
+        if linked_root_id is not None:
+            try:
+                if int(linked_root_id) != root_id:
+                    return False
+            except (TypeError, ValueError):
+                return False
+    if attempt.get("root_job_id") is None and attempt.get("source_root_job_id") is None:
+        return False
+    expected_email = str(root_job.get("email") or "").strip().casefold()
+    if not expected_email:
+        return False
+    for address in (
+        source.get("email"),
+        account.get("email"),
+        attempt.get("email"),
+        attempt.get("email_snapshot"),
+    ):
+        if str(address or "").strip().casefold() != expected_email:
+            return False
+    if str(attempt.get("checkpoint") or "").strip().lower() in {
+        "core_persisted", "completed", "failed", "manual_reconcile",
+    }:
+        return False
+    if str(attempt.get("target_status") or "").strip().lower() in {
+        "completed", "deactivated", "manual_reconcile",
+    }:
+        return False
+    return True
+
+
 def _build_retry_info(
     job: dict,
     *,
@@ -2582,8 +2647,11 @@ def retry_job(
     batch_id: str | None = None,
     batch_index: int | None = None,
     batch_size: int | None = None,
+    registration_driver: str | None = None,
 ) -> dict:
     """智能重试终态任务：未生成账号则重新注册，已有账号则仅补跑 Codex。"""
+    if registration_driver is not None and registration_driver != "roxy":
+        return {"ok": False, "error": "仅支持为单个待验证账号选择 roxy 续跑", "status": 400}
     source = db.get_job(job_id)
     if source is None:
         return {"ok": False, "error": "任务不存在", "status": 404}
@@ -2604,6 +2672,15 @@ def retry_job(
         return {"ok": False, "error": _ATTEMPT_READ_FAILED_RETRY_REASON, "status": 409}
     if _attempt_is_deactivated(attempt):
         return {"ok": False, "error": _DEACTIVATED_ATTEMPT_RETRY_REASON, "status": 409}
+    if registration_driver == "roxy":
+        if action != "registration_resume" or not _roxy_resume_facts_match(
+            source, root_job, account, attempt, root_id=root_id,
+        ):
+            return {
+                "ok": False,
+                "error": "Roxy 续跑仅适用于原邮箱、保存密码及注册 Attempt 均可核验的待验证账号",
+                "status": 409,
+            }
     if batch_id is None:
         batch_id = str(root_job.get("batch_id") or source.get("batch_id") or "") or None
         batch_index = int(root_job.get("batch_index") or source.get("batch_index") or 1)
@@ -2700,6 +2777,9 @@ def retry_job(
             return {"ok": False, "error": "该账号正在执行 Codex/2FA 补跑，请稍候", "status": 409}
         reserved_account_action = True
 
+    retry_snapshot = registration_options_for_job(source)
+    if registration_driver == "roxy":
+        retry_snapshot["registration_driver"] = "roxy"
     try:
         job_type = {
             "codex": "codex_retry",
@@ -2716,7 +2796,7 @@ def retry_job(
             batch_index=batch_index,
             batch_size=batch_size,
             batch_workers=workers,
-            data={"config_snapshot": registration_options_for_job(source)},
+            data={"config_snapshot": retry_snapshot},
         )
     except LookupError as exc:
         if reserved_account_action:
@@ -2730,6 +2810,17 @@ def retry_job(
     if not created:
         if reserved_account_action:
             codex_retry_service.release(email)
+        if registration_driver == "roxy":
+            active_snapshot = job.get("config_snapshot")
+            if not isinstance(active_snapshot, dict):
+                active_data = job.get("data")
+                active_snapshot = active_data.get("config_snapshot") if isinstance(active_data, dict) else None
+            if not isinstance(active_snapshot, dict) or active_snapshot.get("registration_driver") != "roxy":
+                return {
+                    "ok": False,
+                    "error": "同一 Attempt 已有其他驱动的任务在排队或运行",
+                    "status": 409,
+                }
         return {
             "ok": True,
             "created": False,
