@@ -691,11 +691,32 @@ def navigate_email_otp_send(
     headers["sec-fetch-site"] = "same-origin"
     headers["sec-fetch-user"] = "?1"
     resp = session.get(url, headers=headers, allow_redirects=True)
-    resp.raise_for_status()
-    _rotate_document_navigation_id(session)
+    status = int(getattr(resp, "status_code", 0) or 0)
     final_url = str(getattr(resp, "url", "") or "")
-    if "/email-verification" not in final_url:
-        raise RuntimeError(f"OTP 发送导航落点异常: {final_url}")
+    final_path = _url_path(final_url)
+    redirect_paths = []
+    for item in list(getattr(resp, "history", []) or []):
+        location = str((getattr(item, "headers", {}) or {}).get("location") or "")
+        redirect_paths.append(_url_path(location) or _url_path(getattr(item, "url", "")))
+
+    if not 200 <= status < 300:
+        logger.warning("[OTP] 发送导航失败 status=%s path=%s", status, final_path or "-")
+        raise RuntimeError(f"email_otp_send_failed status={status} path={final_path or '-'}")
+    if "/error" in final_path.lower() or any("/error" in path.lower() for path in redirect_paths):
+        logger.warning(
+            "[OTP] 发送导航被认证服务拒绝 status=%s path=%s redirect=%s",
+            status,
+            final_path or "-",
+            ",".join(redirect_paths[-3:]) or "-",
+        )
+        raise RuntimeError(
+            f"email_otp_send_rejected status={status} path={final_path or '-'} "
+            f"redirect={','.join(redirect_paths[-3:]) or '-'}"
+        )
+    if final_path.lower() != "/email-verification":
+        logger.warning("[OTP] 发送导航未到验证码页 status=%s path=%s", status, final_path or "-")
+        raise RuntimeError(f"email_otp_send_unconfirmed status={status} path={final_path or '-'}")
+    _rotate_document_navigation_id(session)
     return final_url
 
 # def get_create_account_page(session: BrowserSession) -> None:

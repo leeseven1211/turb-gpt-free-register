@@ -364,6 +364,67 @@ class OpenAIRegistrationFlowTests(unittest.TestCase):
         self.assertEqual(headers["referer"], "https://auth.openai.com/email-verification")
         self.assertEqual(final_url, "https://auth.openai.com/email-verification")
 
+    def test_email_otp_send_rejects_error_redirect_before_verification_page(self):
+        session = _ProtocolSession()
+        response = _Response(url="https://auth.openai.com/email-verification")
+        response.history = [
+            SimpleNamespace(
+                status_code=302,
+                url="https://auth.openai.com/api/accounts/email-otp/send",
+                headers={"location": "https://auth.openai.com/error?state=private"},
+            ),
+            SimpleNamespace(
+                status_code=302,
+                url="https://auth.openai.com/error?state=private",
+                headers={"location": "https://auth.openai.com/email-verification"},
+            ),
+        ]
+        session.get = lambda *_args, **_kwargs: response
+
+        with self.assertRaises(RuntimeError) as raised:
+            openai_auth.navigate_email_otp_send(session)
+
+        self.assertIn("status=200", str(raised.exception))
+        self.assertIn("/error", str(raised.exception))
+        self.assertNotIn("private", str(raised.exception))
+        self.assertEqual(session.document_navigation_id, "document-1")
+
+    def test_email_otp_send_rejects_verification_path_only_in_query(self):
+        session = _ProtocolSession()
+        response = _Response(
+            url="https://auth.openai.com/continue?next=/email-verification&state=private"
+        )
+        session.get = lambda *_args, **_kwargs: response
+
+        with self.assertRaises(RuntimeError) as raised:
+            openai_auth.navigate_email_otp_send(session)
+
+        self.assertIn("path=/continue", str(raised.exception))
+        self.assertNotIn("private", str(raised.exception))
+        self.assertEqual(session.document_navigation_id, "document-1")
+
+    def test_email_otp_send_http_error_does_not_expose_response_url(self):
+        session = _ProtocolSession()
+
+        class UrlLeakingResponse(_Response):
+            def raise_for_status(self):
+                raise RuntimeError("HTTP 403 https://auth.openai.com/error?state=private")
+
+        response = UrlLeakingResponse(
+            status_code=403,
+            url="https://auth.openai.com/error?state=private",
+        )
+        session.get = lambda *_args, **_kwargs: response
+
+        with self.assertLogs("core.openai_auth", level="WARNING") as captured:
+            with self.assertRaises(RuntimeError) as raised:
+                openai_auth.navigate_email_otp_send(session)
+
+        self.assertIn("status=403 path=/error", str(raised.exception))
+        self.assertNotIn("private", str(raised.exception))
+        self.assertNotIn("private", " ".join(captured.output))
+        self.assertEqual(session.document_navigation_id, "document-1")
+
     def test_validate_email_otp_forwards_both_sentinel_headers(self):
         session = _ProtocolSession()
 
