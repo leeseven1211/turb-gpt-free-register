@@ -3284,6 +3284,23 @@ def update_job(
         _patch_job(job_id, changes)
 
 
+def _cancel_queued_registration_runs(conn, job_ids: Iterable[int], *, completed_at: str, error_message: str) -> None:
+    """在取消 Job 的事务内收口尚未开始的 RegistrationRun。"""
+    ids = [int(job_id) for job_id in job_ids]
+    if not ids:
+        return
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            UPDATE {postgres_store.qualified('registration_runs')}
+               SET status='cancelled', completed_at=%s, heartbeat_at=%s,
+                   error_message=%s
+             WHERE job_id = ANY(%s) AND status='queued'
+            """,
+            (completed_at, completed_at, error_message, ids),
+        )
+
+
 def transition_job_status(
     job_id: int,
     from_statuses: tuple[str, ...] | list[str] | set[str],
@@ -3297,13 +3314,32 @@ def transition_job_status(
     placeholders = ", ".join("%s" for _ in allowed)
     changes = dict(changes)
     changes["status"] = str(to_status)
-    changed = record_store.claim_row(
-        record_store.JOBS,
-        int(job_id),
-        changes=changes,
-        guard=f'"status" IN ({placeholders})',
-        guard_params=allowed,
-    )
+    pending_cancel = to_status == "cancelled" and set(allowed) == {"pending"}
+    if pending_cancel:
+        completed_at = changes.get("completed_at") or _registration_now()
+        changes["completed_at"] = completed_at
+        with record_store.transaction() as conn:
+            changed = record_store.claim_row(
+                record_store.JOBS,
+                int(job_id),
+                changes=changes,
+                guard=f'"status" IN ({placeholders})',
+                guard_params=allowed,
+                conn=conn,
+            )
+            if changed:
+                _cancel_queued_registration_runs(
+                    conn, (job_id,), completed_at=completed_at,
+                    error_message=str(changes.get("error_message") or "用户手动取消"),
+                )
+    else:
+        changed = record_store.claim_row(
+            record_store.JOBS,
+            int(job_id),
+            changes=changes,
+            guard=f'"status" IN ({placeholders})',
+            guard_params=allowed,
+        )
     if changed:
         _sync_operation_job(job_id)
     return changed
@@ -3326,25 +3362,27 @@ def cancel_pending_jobs(*, batch_id: str | None = None) -> int:
     if batch_id:
         where += ' AND "batch_id" = %s'
         params.append(str(batch_id))
-    candidates = record_store.list_rows(
-        record_store.JOBS,
-        where=where,
-        params=params,
-        order_by="id",
-    )
-    changed = record_store.patch_rows_where(
-        record_store.JOBS,
-        changes={
-            "status": "cancelled",
-            "completed_at": _registration_now(),
-            "error_message": "用户手动取消",
-        },
-        where=where,
-        params=params,
-    )
-    for row in candidates:
+    completed_at = _registration_now()
+    error_message = "用户手动取消"
+    with record_store.transaction() as conn:
+        cancelled_rows = record_store.patch_rows_where_returning(
+            record_store.JOBS,
+            changes={
+                "status": "cancelled",
+                "completed_at": completed_at,
+                "error_message": error_message,
+            },
+            where=where,
+            params=params,
+            conn=conn,
+        )
+        _cancel_queued_registration_runs(
+            conn, (row["id"] for row in cancelled_rows),
+            completed_at=completed_at, error_message=error_message,
+        )
+    for row in cancelled_rows:
         _sync_operation_job(int(row["id"]))
-    return changed
+    return len(cancelled_rows)
 
 
 def update_job_progress(

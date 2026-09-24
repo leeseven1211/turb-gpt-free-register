@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import ANY, patch
 
 from core import admin_repository, db, registration_service
+from core.storage import registration
 from webui.app import _compact_job_for_list, _latest_progress_batch, create_app
 from tests.support_pg import PostgresTestCase
 
@@ -877,6 +878,46 @@ class JobProgressTests(PostgresTestCase):
         self.assertEqual(cancelled, 1)
         self.assertEqual(db.get_job(second["id"])["status"], "cancelled")
         self.assertEqual(db.get_job(other["id"])["status"], "running")
+
+    def test_batch_cancel_closes_only_cancelled_jobs_queued_runs(self):
+        first = db.create_job("icloud_hide", batch_id="cancel-a")
+        second = db.create_job("icloud_hide", batch_id="cancel-a")
+        other = db.create_job("icloud_hide", batch_id="cancel-b")
+
+        self.assertEqual(registration_service.cancel_pending_jobs(batch_id="cancel-a"), 2)
+
+        for job in (first, second):
+            run = registration.list_runs(int(job["attempt_id"]))[0]
+            self.assertEqual(db.get_job(int(job["id"]))["status"], "cancelled")
+            self.assertEqual(run["status"], "cancelled")
+            self.assertIsNotNone(run["completed_at"])
+        self.assertEqual(registration.list_runs(int(other["attempt_id"]))[0]["status"], "queued")
+        self.assertEqual(registration.verify()["checks"]["terminal_jobs_with_active_run"], 0)
+
+    def test_single_pending_cancel_closes_queued_run(self):
+        job = db.create_job("icloud_hide", batch_id="cancel-single")
+
+        result = registration_service.request_stop_job(int(job["id"]))
+
+        self.assertEqual(result["state"], "cancelled")
+        run = registration.list_runs(int(job["attempt_id"]))[0]
+        self.assertEqual(run["status"], "cancelled")
+        self.assertIsNotNone(run["completed_at"])
+
+    def test_retry_after_pending_cancel_gets_its_own_run(self):
+        root = db.create_job("icloud_hide", batch_id="cancel-retry")
+        self.assertEqual(registration_service.cancel_pending_jobs(batch_id="cancel-retry"), 1)
+
+        child, created = db.create_retry_job(
+            int(root["id"]), job_type="registration", email_source="icloud_hide",
+        )
+
+        self.assertTrue(created)
+        runs = registration.list_runs(int(root["attempt_id"]))
+        run_by_job = {int(run["job_id"]): run for run in runs}
+        self.assertEqual(set(run_by_job), {int(root["id"]), int(child["id"])})
+        self.assertEqual(run_by_job[int(root["id"])]["status"], "cancelled")
+        self.assertEqual(run_by_job[int(child["id"])]["status"], "queued")
 
 
 if __name__ == "__main__":
