@@ -2323,7 +2323,12 @@ def _roxy_resume_facts_match(
     if not account or not attempt:
         return False
     extra = _account_extra(account)
-    if str(extra.get("registration_checkpoint") or "").strip().lower() != "email_verification_pending":
+    registration_checkpoint = str(
+        extra.get("registration_checkpoint")
+        or account.get("registration_checkpoint")
+        or ""
+    ).strip().lower()
+    if registration_checkpoint != "email_verification_pending":
         return False
     if not _pending_registration_password(account):
         return False

@@ -421,7 +421,7 @@ def create_jobs_blueprint(context: WebUIContext):
     @bp.post("/api/jobs/<int:job_id>/retry")
     def api_job_retry(job_id: int):
         """重试失败/停止/取消任务；服务端自动判断完整注册或 Codex 补跑。"""
-        data = request.get_json(silent=True) or {}
+        data = request.get_json(silent=True)
         if not isinstance(data, dict):
             return jsonify({"ok": False, "error": "请求体必须是对象"}), 400
         registration_driver = data.get("registration_driver") if "registration_driver" in data else None
@@ -440,7 +440,7 @@ def create_jobs_blueprint(context: WebUIContext):
     @bp.post("/api/jobs/retry-bulk")
     def api_jobs_retry_bulk():
         """批量重试任务；不支持项逐条跳过并返回原因。"""
-        data = request.get_json(silent=True) or {}
+        data = request.get_json(silent=True)
         if not isinstance(data, dict):
             return jsonify({"ok": False, "error": "请求体必须是对象"}), 400
         if "registration_driver" in data:

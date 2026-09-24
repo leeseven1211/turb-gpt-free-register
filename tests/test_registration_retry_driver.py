@@ -158,6 +158,23 @@ class RegistrationRetryDriverTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         retry.assert_not_called()
 
+    def test_retry_apis_reject_non_object_json_bodies(self):
+        client = create_app(auth_code="test-auth").test_client()
+        for path, payload in (
+            ("/api/jobs/21/retry", []),
+            ("/api/jobs/21/retry", False),
+            ("/api/jobs/retry-bulk", []),
+            ("/api/jobs/retry-bulk", False),
+        ):
+            with self.subTest(path=path, payload=payload), patch("webui.app.svc.retry_job") as retry:
+                response = client.post(
+                    path,
+                    json=payload,
+                    headers={"X-Auth-Code": "test-auth"},
+                )
+                self.assertEqual(response.status_code, 400)
+                retry.assert_not_called()
+
     def test_bulk_retry_api_rejects_driver_choice(self):
         client = create_app(auth_code="test-auth").test_client()
         with patch("webui.app.svc.retry_job") as retry:
