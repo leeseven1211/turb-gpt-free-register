@@ -105,6 +105,7 @@ def _run_protocol_password_stage(
     session: BrowserSession,
     email: str,
     *,
+    referer: str = "https://auth.openai.com/email-verification",
     on_password_submitted=None,
 ) -> dict:
     """提交 Protocol 密码并进入邮箱验证码页面。"""
@@ -113,7 +114,7 @@ def _run_protocol_password_stage(
     # 密码注册页的邮箱验证码由 user/register 成功后返回的
     # /api/accounts/email-otp/send 导航触发；提前调用会把密码注册会话打成
     # 无效状态，并得到无正文的 HTTP 500。
-    navigate_create_account_password(session)
+    navigate_create_account_password(session, referer=referer)
     sentinel_response = request_password_sentinel_bundle(session)
     sentinel_header, so_header = build_sentinel_header(
         session,
@@ -159,6 +160,7 @@ def _maybe_run_protocol_password_stage(
     email: str,
     *,
     password_enabled: bool,
+    referer: str = "https://auth.openai.com/email-verification",
     on_password_submitted=None,
 ) -> dict | None:
     """按任务快照决定是否进入密码注册阶段。"""
@@ -167,6 +169,7 @@ def _maybe_run_protocol_password_stage(
     return _run_protocol_password_stage(
         session,
         email,
+        referer=referer,
         on_password_submitted=on_password_submitted,
     )
 
@@ -210,22 +213,63 @@ def _run_protocol_existing_password_stage(
 
 def _protocol_resume_requires_password(final_url: object) -> bool:
     """判断待验证账号续跑是否真的落在登录密码页。"""
-    return "/email-verification" not in str(final_url or "").lower()
+    parsed = urlparse(str(final_url or ""))
+    return parsed.path.rstrip("/").lower() != "/email-verification"
 
 
-def _send_protocol_resume_email_otp(session: BrowserSession) -> float:
-    """显式触发续跑账号的邮箱验证码，并返回本次发送的邮件筛选起点。"""
+def _protocol_resume_otp_continue_url(result: object) -> str | None:
+    """读取密码验证返回的下一步；验证码页本身不需要再次发码。"""
+    if not isinstance(result, dict):
+        return None
+    page = result.get("page") if isinstance(result.get("page"), dict) else {}
+    values = (
+        result.get("continue_url"), result.get("external_url"), result.get("url"),
+        page.get("continue_url"), page.get("external_url"), page.get("url"),
+    )
+    for value in values:
+        raw = str(value or "").strip()
+        if not raw:
+            continue
+        parsed = urlparse(raw)
+        path = parsed.path.rstrip("/").lower()
+        if path == "/email-verification":
+            return None
+        if path == "/api/accounts/email-otp/send":
+            return raw
+    page_type = str(page.get("type") or "").strip().lower()
+    if "email_otp" in page_type or "email-verification" in page_type:
+        return None
+    return ""
+
+
+def _send_protocol_resume_email_otp(
+    session: BrowserSession,
+    *,
+    after_ts: float,
+    auth_final_url: str,
+    continue_url: str | None = None,
+    otp_page_ready: bool = False,
+) -> float:
+    """沿服务端当前状态续跑验证码，避免重复发送已进入验证码页的会话。"""
+    final_path = urlparse(str(auth_final_url or "")).path.rstrip("/").lower()
+    if otp_page_ready or (final_path == "/email-verification" and continue_url is None):
+        logger.info("[OTP] 续跑认证已进入邮箱验证码页，保留当前会话，不重复请求发码")
+        return after_ts
+    if continue_url == "":
+        raise RuntimeError("续跑密码验证后未确认邮箱验证码页")
+    if continue_url is None:
+        raise RuntimeError("续跑认证页面未提供邮箱验证码继续地址")
     try:
-        otp_after_ts = time.time()
         navigate_email_otp_send(
             session,
+            continue_url=continue_url,
             referer="https://auth.openai.com/email-verification",
         )
     except Exception as exc:
         raise RuntimeError(
             f"续跑邮箱验证码发送未确认: {type(exc).__name__}"
         ) from exc
-    return otp_after_ts
+    return time.time()
 
 
 def _wait_for_resume_otp_with_resend(
@@ -501,12 +545,23 @@ def run_protocol_registration(
             # 这里的密码此前已成功提交，重复 POST password/verify 会把
             # 已建立的邮箱验证状态打成 HTTP 400；只有真正落到登录密码页
             # 时才需要再次提交已保存密码。
+            password_result = None
             if _protocol_resume_requires_password(auth_final_url):
-                _run_protocol_existing_password_stage(session, email, existing_password)
-            # 续跑流程此前只依赖 authorize/password 的隐式发码；当上游没有
-            # 实际发送时会直接进入邮箱轮询并超时。这里显式发一次，未确认则
-            # 保留检查点，禁止把未确认的远端状态当作可重试的新注册。
-            otp_after_ts = _send_protocol_resume_email_otp(session)
+                password_result = _run_protocol_existing_password_stage(
+                    session,
+                    email,
+                    existing_password,
+                )
+            # Roxy 保留已经到达的验证码页面；Protocol 也只沿服务端返回的
+            # continue_url 触发发码，禁止用固定地址重复请求已建立的 OTP 会话。
+            otp_continue_url = _protocol_resume_otp_continue_url(password_result)
+            otp_after_ts = _send_protocol_resume_email_otp(
+                session,
+                after_ts=otp_after_ts,
+                auth_final_url=auth_final_url,
+                continue_url=otp_continue_url,
+                otp_page_ready=password_result is not None and otp_continue_url is None,
+            )
             openai_password = existing_password
             auth_challenge_chain.append("password")
             report_job_progress("login_password", "success", "已通过已保存密码进入邮箱验证码页")
@@ -532,6 +587,7 @@ def run_protocol_registration(
             session,
             email,
             password_enabled=password_required,
+            referer=auth_final_url,
             on_password_submitted=_checkpoint_submitted_password,
         )
         if password_stage is not None:

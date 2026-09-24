@@ -9,6 +9,64 @@ from core.registration import protocol
 
 
 class ProtocolPasswordRegistrationTests(unittest.TestCase):
+    def test_resume_keeps_existing_email_verification_page_without_second_send(self):
+        with patch.object(protocol, "navigate_email_otp_send") as navigate:
+            after_ts = protocol._send_protocol_resume_email_otp(
+                object(),
+                after_ts=123.5,
+                auth_final_url="https://auth.openai.com/email-verification?state=opaque",
+            )
+
+        self.assertEqual(after_ts, 123.5)
+        navigate.assert_not_called()
+
+    def test_resume_follows_only_server_returned_otp_continue_url(self):
+        session = object()
+        with patch.object(
+            protocol,
+            "navigate_email_otp_send",
+            return_value="https://auth.openai.com/email-verification",
+        ) as navigate:
+            after_ts = protocol._send_protocol_resume_email_otp(
+                session,
+                after_ts=123.5,
+                auth_final_url="https://auth.openai.com/log-in/password",
+                continue_url="/api/accounts/email-otp/send",
+            )
+
+        self.assertGreater(after_ts, 123.5)
+        navigate.assert_called_once_with(
+            session,
+            continue_url="/api/accounts/email-otp/send",
+            referer="https://auth.openai.com/email-verification",
+        )
+
+    def test_resume_rejects_unknown_password_continuation_without_guessing_send_url(self):
+        with patch.object(protocol, "navigate_email_otp_send") as navigate:
+            with self.assertRaisesRegex(RuntimeError, "未确认邮箱验证码页"):
+                protocol._send_protocol_resume_email_otp(
+                    object(),
+                    after_ts=123.5,
+                    auth_final_url="https://auth.openai.com/log-in/password",
+                    continue_url="",
+                )
+
+        navigate.assert_not_called()
+
+    def test_resume_otp_continue_url_classifies_page_state(self):
+        self.assertIsNone(protocol._protocol_resume_otp_continue_url({
+            "page": {"type": "email_otp"},
+        }))
+        self.assertIsNone(protocol._protocol_resume_otp_continue_url({
+            "continue_url": "https://auth.openai.com/email-verification?state=opaque",
+        }))
+        self.assertEqual(
+            protocol._protocol_resume_otp_continue_url({
+                "continue_url": "/api/accounts/email-otp/send",
+            }),
+            "/api/accounts/email-otp/send",
+        )
+
     def test_password_stage_uses_one_bundle_then_registers_and_sends_otp(self):
         session = object()
         events = []
@@ -22,8 +80,8 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
             events.append("bundle")
             return bundle
 
-        def password_page_side_effect(_session):
-            events.append("password-page")
+        def password_page_side_effect(_session, **kwargs):
+            events.append(("password-page", kwargs.get("referer")))
             return "https://auth.openai.com/create-account/password"
 
         def header_side_effect(_session, received_bundle, flow):
@@ -58,7 +116,7 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
         self.assertEqual(result["password"], "Password!123")
         self.assertEqual(result["register_result"], register_result)
         self.assertEqual(result["otp_url"], "https://auth.openai.com/email-verification")
-        self.assertEqual(events[0], "password-page")
+        self.assertEqual(events[0], ("password-page", "https://auth.openai.com/email-verification"))
         self.assertEqual(events[1], "bundle")
         self.assertEqual(events[2], ("header", bundle, "username_password_create"))
         self.assertEqual(events[3], (
@@ -496,7 +554,12 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
             side_effect=TimeoutError("read timed out"),
         ):
             with self.assertRaisesRegex(RuntimeError, "续跑邮箱验证码发送未确认"):
-                protocol._send_protocol_resume_email_otp(object())
+                protocol._send_protocol_resume_email_otp(
+                    object(),
+                    after_ts=123.5,
+                    auth_final_url="https://auth.openai.com/log-in/password",
+                    continue_url="/api/accounts/email-otp/send",
+                )
 
     def test_resume_no_mail_timeout_resends_once_within_original_budget(self):
         with (
@@ -548,7 +611,15 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
             stack.enter_context(patch.object(
                 protocol,
                 "follow_authorize",
-                return_value="https://auth.openai.com/email-verification",
+                return_value="https://auth.openai.com/log-in/password",
+            ))
+            stack.enter_context(patch.object(
+                protocol,
+                "_run_protocol_existing_password_stage",
+                return_value={
+                    "page": {"type": "email_otp"},
+                    "continue_url": "/api/accounts/email-otp/send",
+                },
             ))
             stack.enter_context(patch.object(
                 protocol,
@@ -587,10 +658,6 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
         session = SimpleNamespace(proxy="", device_id="device-id", sentinel_sid=None, browser_profile=None)
         events = []
 
-        def send_resume_otp(_session, continue_url=None, *, referer):
-            events.append(("send", continue_url, referer))
-            return "https://auth.openai.com/email-verification"
-
         def wait_for_resume_otp(_email, **kwargs):
             events.append(("wait", kwargs["after_ts"]))
             return "123456"
@@ -612,10 +679,9 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
                 "_run_protocol_existing_password_stage",
                 return_value={"page": {"type": "email_otp"}, "continue_url": "/email-verification"},
             ))
-            stack.enter_context(patch.object(
+            navigate = stack.enter_context(patch.object(
                 protocol,
                 "navigate_email_otp_send",
-                side_effect=send_resume_otp,
             ))
             stack.enter_context(patch.object(protocol, "wait_for_otp", side_effect=wait_for_resume_otp))
             stack.enter_context(patch.object(protocol, "_maybe_run_protocol_password_stage"))
@@ -683,11 +749,8 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
         )
         create_account.assert_not_called()
         self.assertEqual(result["remote_identity"], "existing")
-        self.assertEqual(
-            events[0],
-            ("send", None, "https://auth.openai.com/email-verification"),
-        )
-        self.assertEqual(events[1][0], "wait")
+        self.assertEqual(events[0][0], "wait")
+        navigate.assert_not_called()
 
     def test_run_registration_keeps_password_transport_unknown_and_retains_email(self):
         session = SimpleNamespace(proxy="", device_id="device-id", sentinel_sid=None, browser_profile=None)

@@ -659,10 +659,14 @@ def register_user(
     return data
 
 
-def navigate_create_account_password(session: BrowserSession) -> str:
+def navigate_create_account_password(
+    session: BrowserSession,
+    *,
+    referer: str = "https://auth.openai.com/email-verification",
+) -> str:
     """从邮箱验证入口切换到新账号密码页，建立服务端密码步骤状态。"""
     url = "https://auth.openai.com/create-account/password"
-    headers = session.get_auth_navigate_headers(referer="https://auth.openai.com/email-verification")
+    headers = session.get_auth_navigate_headers(referer=referer)
     headers["sec-fetch-site"] = "same-origin"
     headers["sec-fetch-user"] = "?1"
     logger.info("[步骤6] 导航到创建账号密码页")
