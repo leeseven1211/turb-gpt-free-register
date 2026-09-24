@@ -27,6 +27,10 @@ class ForwardIMAPError(RuntimeError):
     pass
 
 
+class ForwardIMAPNoMailTimeout(ForwardIMAPError):
+    """IMAP 读取正常，但在本次发送窗口内没有找到新邮件。"""
+
+
 _DEFAULT_IMAP_RETRY_ATTEMPTS = 3
 _DEFAULT_IMAP_RETRY_DELAY_SECONDS = 0.5
 _EMAIL_RE = re.compile(r"(?i)\b[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+\b")
@@ -469,6 +473,7 @@ def _fetch_latest_otp_local(
     deadline = time.monotonic() + wait_seconds
     mail = None
     last_error = "尚未收到新的 OpenAI 验证码邮件"
+    successful_poll = False
     logger.info("[HME Forward IMAP] 本机 Gmail IMAP 等待验证码：%s，最长 %ss", target, wait_seconds)
     try:
         while time.monotonic() < deadline:
@@ -493,6 +498,8 @@ def _fetch_latest_otp_local(
                     pass
                 mail = None
             else:
+                successful_poll = True
+                last_error = "尚未收到新的 OpenAI 验证码邮件"
                 if otp:
                     logger.info("[HME Forward IMAP] 本机已取得新 OTP：%s", target)
                     return otp
@@ -506,4 +513,7 @@ def _fetch_latest_otp_local(
                 mail.logout()
             except Exception:
                 pass
-    raise ForwardIMAPError(f"本机 Gmail IMAP 等待验证码超时（>{wait_seconds}s）：{target}; {last_error}")
+    detail = f"本机 Gmail IMAP 等待验证码超时（>{wait_seconds}s）：{target}; {last_error}"
+    if successful_poll and last_error == "尚未收到新的 OpenAI 验证码邮件":
+        raise ForwardIMAPNoMailTimeout(detail)
+    raise ForwardIMAPError(detail)

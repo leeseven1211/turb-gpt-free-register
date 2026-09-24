@@ -4,6 +4,7 @@ from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from core.forward_imap_client import ForwardIMAPError
 from core.registration import protocol
 
 
@@ -496,6 +497,44 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "续跑邮箱验证码发送未确认"):
                 protocol._send_protocol_resume_email_otp(object())
+
+    def test_resume_no_mail_timeout_resends_once_within_original_budget(self):
+        with (
+            patch.object(protocol._email_cfg, "OTP_MAX_WAIT", 240),
+            patch.object(
+                protocol,
+                "wait_for_otp",
+                side_effect=[protocol.ForwardIMAPNoMailTimeout("no mail"), "123456"],
+            ) as wait,
+            patch.object(protocol, "send_email_otp") as resend,
+            patch.object(protocol.time, "time", return_value=1000.0),
+        ):
+            result = protocol._wait_for_resume_otp_with_resend(
+                object(), "alias@icloud.com", after_ts=900.0,
+            )
+
+        self.assertEqual(result, "123456")
+        self.assertEqual(wait.call_count, 2)
+        self.assertEqual(wait.call_args_list[0].kwargs["max_wait"], 120)
+        self.assertLessEqual(wait.call_args_list[1].kwargs["max_wait"], 120)
+        self.assertEqual(wait.call_args_list[1].kwargs["after_ts"], 1000.0)
+        resend.assert_called_once()
+
+    def test_resume_imap_failure_does_not_resend(self):
+        with (
+            patch.object(protocol._email_cfg, "OTP_MAX_WAIT", 240),
+            patch.object(
+                protocol,
+                "wait_for_otp",
+                side_effect=ForwardIMAPError("offline"),
+            ),
+            patch.object(protocol, "send_email_otp") as resend,
+        ):
+            with self.assertRaises(ForwardIMAPError):
+                protocol._wait_for_resume_otp_with_resend(
+                    object(), "alias@icloud.com", after_ts=900.0,
+                )
+        resend.assert_not_called()
 
     def test_resume_otp_send_failure_returns_request_unknown_and_retains_same_email(self):
         session = SimpleNamespace(proxy="", device_id="device-id", sentinel_sid=None, browser_profile=None)

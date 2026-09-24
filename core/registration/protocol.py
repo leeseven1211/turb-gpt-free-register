@@ -19,7 +19,8 @@ from core.account_export import (
     setup_2fa_protocol,
 )
 from core.chatgpt_auth import get_csrf_token, get_providers, probe_auth_session, signin_openai
-from core.email_provider import validate_email_source, wait_for_otp
+from core.email_provider import resolve_email_source, validate_email_source, wait_for_otp
+from core.forward_imap_client import ForwardIMAPNoMailTimeout
 from core.humanize import delay as human_delay
 from core.openai_auth import (
     AccountUnusableError,
@@ -225,6 +226,41 @@ def _send_protocol_resume_email_otp(session: BrowserSession) -> float:
             f"续跑邮箱验证码发送未确认: {type(exc).__name__}"
         ) from exc
     return otp_after_ts
+
+
+def _wait_for_resume_otp_with_resend(
+    session: BrowserSession,
+    email: str,
+    *,
+    after_ts: float,
+    email_source: str | None = "icloud_hide",
+) -> str:
+    """仅在 IMAP 正常但没有新邮件时，于原等待预算内重发一次。"""
+    total_wait = max(1, int(_email_cfg.OTP_MAX_WAIT))
+    first_wait = min(120, total_wait // 2)
+    kwargs = {"after_ts": after_ts, "email_source": email_source}
+    if first_wait < 30 or total_wait - first_wait < 30:
+        return wait_for_otp(email, max_wait=total_wait, **kwargs)
+
+    deadline = time.monotonic() + total_wait
+    try:
+        return wait_for_otp(email, max_wait=first_wait, **kwargs)
+    except ForwardIMAPNoMailTimeout:
+        remaining = min(total_wait - first_wait, int(deadline - time.monotonic()))
+        if remaining < 30:
+            raise
+        logger.warning(
+            "[OTP] Gmail IMAP 正常轮询但未收到新验证码，将在同一账号会话中重发一次：%s",
+            email,
+        )
+        resend_after_ts = time.time()
+        send_email_otp(session)
+        return wait_for_otp(
+            email,
+            after_ts=resend_after_ts,
+            email_source=email_source,
+            max_wait=remaining,
+        )
 
 
 def _complete_protocol_resume_mfa(
@@ -515,7 +551,20 @@ def run_protocol_registration(
                     otp_kwargs = {"after_ts": otp_after_ts}
                     if selected_email_source is not None:
                         otp_kwargs["email_source"] = selected_email_source
-                    current_otp = wait_for_otp(email, **otp_kwargs)
+                    if (
+                        existing_password
+                        and otp_attempt == 1
+                        and (selected_email_source or resolve_email_source(email)) == "icloud_hide"
+                        and str(_email_cfg.ICLOUD_HME_INBOX_MODE).strip().lower() == "forward_imap"
+                    ):
+                        current_otp = _wait_for_resume_otp_with_resend(
+                            session,
+                            email,
+                            after_ts=otp_after_ts,
+                            email_source=selected_email_source,
+                        )
+                    else:
+                        current_otp = wait_for_otp(email, **otp_kwargs)
                 else:
                     logger.info("")
                     logger.info(f"[OTP] 请检查邮箱，输入收到的 6 位验证码（第 {otp_attempt}/{max_otp_attempts} 次）:")

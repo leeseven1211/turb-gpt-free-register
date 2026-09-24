@@ -208,6 +208,29 @@ class ForwardIMAPTests(unittest.TestCase):
         self.assertEqual(result, "246810")
         fetch.assert_not_called()
 
+    def test_local_timeout_after_successful_scans_is_no_mail_timeout(self):
+        class Mail:
+            def logout(self):
+                return None
+
+        with (
+            patch.object(client, "_connect", return_value=Mail()),
+            patch.object(client, "_latest_forwarded_otp", return_value=None),
+            patch.object(client.time, "monotonic", side_effect=[0, 0, 1, 1]),
+        ):
+            with self.assertRaises(client.ForwardIMAPNoMailTimeout):
+                client._fetch_latest_otp_local("alias@icloud.com", 0, max_wait=1)
+
+    def test_local_timeout_after_connection_failure_is_not_no_mail_timeout(self):
+        with (
+            patch.object(client, "_connect", side_effect=client.ForwardIMAPError("offline")),
+            patch.object(client.time, "monotonic", side_effect=[0, 0, 1, 1]),
+            patch.object(client.time, "sleep"),
+        ):
+            with self.assertRaises(client.ForwardIMAPError) as raised:
+                client._fetch_latest_otp_local("alias@icloud.com", 0, max_wait=1)
+        self.assertNotIsInstance(raised.exception, client.ForwardIMAPNoMailTimeout)
+
     def test_deactivation_scan_matches_forwarded_alias_without_returning_body(self):
         class Mail:
             def logout(self):
