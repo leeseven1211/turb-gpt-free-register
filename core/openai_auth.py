@@ -277,7 +277,11 @@ def _request_with_proxy_retry(
     raise last_exc if last_exc else RuntimeError(f"{label} 重试耗尽但无异常记录")
 
 
-def network_preflight(session: BrowserSession) -> None:
+def network_preflight(
+    session: BrowserSession,
+    *,
+    include_auth_probe: bool = True,
+) -> None:
     """
     注册前网络预检：只建立边缘节点/cookie/基础连通性，不携带邮箱、不触发 OTP。
 
@@ -308,6 +312,10 @@ def network_preflight(session: BrowserSession) -> None:
         observe = getattr(session, "observe_chatgpt_document", None)
         if callable(observe):
             observe(resp)
+
+    if not include_auth_probe:
+        logger.info("[预检] 按当前认证流程跳过无参数 Auth authorize 探针")
+        return
 
     # `/api/accounts/authorize` 的无参导航不会提交邮箱、触发 OTP 或创建账号，
     # 但会经过与真实 authorize 相同的 Cloudflare 路由。实测可用出口返回应用层
@@ -720,6 +728,12 @@ def navigate_email_otp_send(
     if final_path.lower() != "/email-verification":
         logger.warning("[OTP] 发送导航未到验证码页 status=%s path=%s", status, final_path or "-")
         raise RuntimeError(f"email_otp_send_unconfirmed status={status} path={final_path or '-'}")
+    logger.info(
+        "[OTP] 发送导航已确认 status=%s path=%s redirect=%s",
+        status,
+        final_path or "-",
+        ",".join(redirect_paths[-3:]) or "-",
+    )
     _rotate_document_navigation_id(session)
     return final_url
 

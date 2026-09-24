@@ -146,12 +146,14 @@ def _run_protocol_password_stage(
     if on_password_submitted is not None:
         on_password_submitted(password)
     continue_url = _protocol_password_continue_url(register_result)
+    otp_requested_at = time.time()
     otp_url = navigate_email_otp_send(session, continue_url)
     return {
         "password": password,
         "register_result": register_result,
         "continue_url": continue_url,
         "otp_url": otp_url,
+        "otp_sent_at": otp_requested_at,
     }
 
 
@@ -272,7 +274,7 @@ def _send_protocol_resume_email_otp(
     return time.time()
 
 
-def _wait_for_resume_otp_with_resend(
+def _wait_for_otp_with_resend(
     session: BrowserSession,
     email: str,
     *,
@@ -305,6 +307,22 @@ def _wait_for_resume_otp_with_resend(
             email_source=email_source,
             max_wait=remaining,
         )
+
+
+def _wait_for_resume_otp_with_resend(
+    session: BrowserSession,
+    email: str,
+    *,
+    after_ts: float,
+    email_source: str | None = "icloud_hide",
+) -> str:
+    """兼容旧测试与调用方，统一使用验证码页的一次受控重发。"""
+    return _wait_for_otp_with_resend(
+        session,
+        email,
+        after_ts=after_ts,
+        email_source=email_source,
+    )
 
 
 def _complete_protocol_resume_mfa(
@@ -496,7 +514,9 @@ def run_protocol_registration(
     try:
         report_job_progress("page", "running", "正在初始化 ChatGPT 注册页状态")
         # 网络预检必须在 signin/follow_authorize 之前完成；预检不带邮箱，不会触发 OTP。
-        network_preflight(session)
+        # Roxy 的成功链路不会先请求无参数 Auth authorize；该探针在部分
+        # 代理上会被 403 拒绝，而带真实 state 的 authorize 才是有效判定。
+        network_preflight(session, include_auth_probe=False)
         human_delay("navigate")
 
         # 根据 HAR 补齐匿名态 ChatGPT 首屏/模型预热链路。
@@ -592,6 +612,8 @@ def run_protocol_registration(
         )
         if password_stage is not None:
             openai_password = password_stage["password"]
+            # 以发送导航发起前的时间作为边界，只接收本次请求之后的新邮件。
+            otp_after_ts = float(password_stage.get("otp_sent_at") or time.time())
             auth_challenge_chain.append("password")
             report_job_progress("login_password", "success", "账号密码已提交并进入邮箱验证码页")
 
@@ -608,12 +630,11 @@ def run_protocol_registration(
                     if selected_email_source is not None:
                         otp_kwargs["email_source"] = selected_email_source
                     if (
-                        existing_password
-                        and otp_attempt == 1
+                        otp_attempt == 1
                         and (selected_email_source or resolve_email_source(email)) == "icloud_hide"
                         and str(_email_cfg.ICLOUD_HME_INBOX_MODE).strip().lower() == "forward_imap"
                     ):
-                        current_otp = _wait_for_resume_otp_with_resend(
+                        current_otp = _wait_for_otp_with_resend(
                             session,
                             email,
                             after_ts=otp_after_ts,

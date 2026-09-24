@@ -94,6 +94,27 @@ class OpenAIRegistrationFlowTests(unittest.TestCase):
         self.assertEqual(session.requests[0][1]["sec-fetch-site"], "none")
         self.assertEqual(session.requests[0][3], 12.0)
 
+    def test_network_preflight_can_skip_auth_probe_for_browser_flow(self):
+        class Session:
+            def __init__(self):
+                self.requests = []
+
+            def get_chatgpt_navigate_headers(self, referer="", **kwargs):
+                return {"sec-fetch-site": "none"}
+
+            def get_auth_navigate_headers(self, referer=""):
+                return {"referer": referer}
+
+            def get(self, url, *, headers, allow_redirects, timeout):
+                self.requests.append((url, headers, allow_redirects, timeout))
+                return _Response(url=url)
+
+        session = Session()
+        openai_auth.network_preflight(session, include_auth_probe=False)
+
+        self.assertEqual(len(session.requests), 1)
+        self.assertEqual(session.requests[0][0], "https://chatgpt.com/auth/login")
+
     def test_network_preflight_retries_status_403_on_same_session(self):
         class Session:
             def __init__(self):
