@@ -23,11 +23,21 @@ function formatTaskDuration(ms) {
   const minutes = Math.floor(seconds / 60);
   return `${minutes}m ${Math.round(seconds % 60)}s`;
 }
+function accountTaskErrorDisplayText(info, raw = '') {
+  const summary = taskErrorDisplayText(info, raw);
+  return info?.code === 'request_unknown' && info?.cause_summary
+    ? `${summary} · ${info.cause_summary}` : summary;
+}
+function accountTaskErrorDisplayTitle(info, raw = '') {
+  const title = taskErrorDisplayTitle(info, raw);
+  return info?.code === 'request_unknown' && info?.cause_summary
+    ? `${title} · ${info.cause_display_code ? `${info.cause_display_code} · ` : ''}${info.cause_summary}` : title;
+}
 function accountTaskResultText(task) {
   const status = String(task.status || '');
   if (status === 'queued') return '等待执行';
   if (status === 'running') return '执行中';
-  if (task.error_message) return taskErrorDisplayText(task.error_info, task.error_message);
+  if (task.error_message) return accountTaskErrorDisplayText(task.error_info, task.error_message);
   const result = task.result_summary || {};
   if (task.task_type === 'registration' || task.task_type === 'registration_resume') {
     return facetLabel('target_status', task.target_status) || '注册执行已结束';
@@ -195,7 +205,7 @@ function renderAccountTasks() {
     const stage = facetLabel('stage', normalizeAccountTaskStage(task.current_stage));
     const error = task.error_message || '';
     const errorInfo = task.error_info || null;
-    const errorText = taskErrorDisplayText(errorInfo, error);
+    const errorText = accountTaskErrorDisplayText(errorInfo, error);
     return `<tr class="${ACCOUNT_TASK_SELECTED.has(Number(task.id)) ? 'is-selected' : ''}">
       <td class="task-col-check col-check"><input type="checkbox" data-account-task-select="${esc(task.id)}" ${ACCOUNT_TASK_SELECTED.has(Number(task.id)) ? 'checked' : ''} aria-label="选择任务 #${esc(task.id)}"></td>
       <td>#${esc(task.id)}</td>
@@ -207,7 +217,7 @@ function renderAccountTasks() {
       <td>${esc(task.run_count || 0)} 次<div class="sub-cell">最近 #${esc(task.last_run_no || '-')}</div></td>
       <td>${esc(stage)}<div class="sub-cell">${esc(formatTaskDuration(task.duration_ms))}</div></td>
       <td title="${esc(formatDateTime(task.created_at))} → ${esc(formatDateTime(task.completed_at))}">${esc(formatDateTime(task.created_at))}<div class="sub-cell">${esc(formatDateTime(task.completed_at))}</div></td>
-      <td class="task-error" title="${esc(error ? taskErrorDisplayTitle(errorInfo, error) : result)}">${error ? `${taskErrorBadge(errorInfo)}<span class="task-error-cell-text">${esc(short(errorText, 90))}</span>` : esc(short(result, 90))}</td>
+      <td class="task-error" title="${esc(error ? accountTaskErrorDisplayTitle(errorInfo, error) : result)}">${error ? `${taskErrorBadge(errorInfo)}<span class="task-error-cell-text">${esc(short(errorText, 90))}</span>` : esc(short(result, 90))}</td>
       <td><div class="task-row-actions"><button type="button" class="task-row-action" data-account-task-log="${esc(task.id)}">日志</button>${stoppable ? `<button type="button" class="task-row-action task-row-action--terminate" data-account-task-terminate="${esc(task.id)}" aria-label="${terminationLabel}任务 #${esc(task.id)}">${terminationLabel}</button>` : ''}${retryable ? `<button type="button" class="task-row-action task-row-action--retry" data-account-task-retry="${esc(task.id)}">重跑</button>` : ''}${!active ? `<button type="button" class="task-row-action task-row-action--delete" data-account-task-delete="${esc(task.id)}">删除</button>` : ''}</div></td>
     </tr>`;
   }).join('') || renderTableStateRow(12, '暂无任务记录', '调整搜索或筛选条件后再试。');
@@ -441,6 +451,15 @@ function openAccountTaskLog(taskId) {
   accountTaskLogTimer = setInterval(pollAccountTaskLog, 2000);
 }
 
+function renderAccountTaskSelectedRunError(run) {
+  const error = run?.error_message || '';
+  const info = run?.error_info || null;
+  renderTaskLogErrorSummary('accountTaskLogErrorSummary', {
+    error_message: error,
+    error_info: info ? {...info, summary: accountTaskErrorDisplayText(info, error)} : null,
+  });
+}
+
 async function pollAccountTaskLog() {
   if (!activeAccountTaskId || accountTaskPolling) return;
   const requestId = accountTaskRequestId;
@@ -451,11 +470,11 @@ async function pollAccountTaskLog() {
     if (requestId !== accountTaskRequestId || taskId !== Number(activeAccountTaskId)) return;
     const task = result.task || {};
     accountTaskSnapshot = task;
-    renderTaskLogErrorSummary('accountTaskLogErrorSummary', task);
     const previousRunId = activeAccountTaskRunId;
     syncAccountTaskRunPicker(task);
     if (requestId !== accountTaskRequestId || taskId !== Number(activeAccountTaskId)) return;
     const selectedRun = (task.runs || []).find(run => Number(run.id) === Number(activeAccountTaskRunId)) || {};
+    renderAccountTaskSelectedRunError(selectedRun.id ? selectedRun : task);
     $('#accountTaskDetailSummary').textContent = `${facetLabel('task_type', task.task_type)} · ${facetLabel('status', selectedRun.status || task.status)} · ${formatTaskDuration(selectedRun.duration_ms)}`;
     await pollAccountTaskProgress();
     if (requestId !== accountTaskRequestId || taskId !== Number(activeAccountTaskId)) return;

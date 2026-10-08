@@ -75,7 +75,9 @@ def _account_age_gate_error(account: Mapping[str, Any]) -> str:
 def _safe_local_failure_message(stage: str, exc: BaseException) -> str:
     """保留可定位错误，不复制供应商路径或邮箱地址。"""
     raw = str(exc or "")
-    if "EmailButler" in raw or "email_butler" in raw:
+    if isinstance(exc, LocalRequestPrepareError):
+        category = f"{exc.phase} 请求本地准备失败"
+    elif "EmailButler" in raw or "email_butler" in raw:
         category = "Email Butler 领取失败"
     elif "邮箱池" in raw or "邮箱来源" in raw:
         category = "邮箱来源领取失败"
@@ -129,12 +131,30 @@ class RemoteRequestUnknown(_RemoteRequestError):
     request_unknown = True
 
 
+class LocalRequestPrepareError(RuntimeError):
+    """请求尚未发出时的本地准备失败，不应记作远端结果未知。"""
+
+    def __init__(self, phase: str, exception_type: str):
+        self.phase = phase if phase in {"begin", "verify"} else "request"
+        super().__init__(f"{self.phase} 请求本地准备失败：{exception_type}")
+
+
 @dataclass(frozen=True)
 class BeginChangeResult:
     session: BrowserSession
     access_token: str
     after_ts: float
     reauthenticated: bool = False
+
+
+@dataclass(frozen=True, repr=False)
+class _PreparedEmailChangePost:
+    """仅在内存中保存已准备好的请求；默认 repr 不暴露授权头。"""
+
+    path: str
+    url: str
+    headers: dict[str, str]
+    data: str
 
 
 class EmailChangeProtocol:
@@ -310,7 +330,10 @@ class EmailChangeProtocol:
             "cf_ray_present": bool(headers.get("cf-ray")),
         }
 
-    def _post(self, session: BrowserSession, path: str, access_token: str, payload: dict) -> dict:
+    def _prepare_post(
+        self, session: BrowserSession, path: str, access_token: str, payload: dict,
+    ) -> _PreparedEmailChangePost:
+        """在持久化远端 intent 前完成请求头、JWT 和 JSON 的本地准备。"""
         headers = dict(session.get_chatgpt_headers(referer="https://chatgpt.com/") or {})
         token = str(access_token or "").strip()
         headers.update({
@@ -329,10 +352,20 @@ class EmailChangeProtocol:
         account_id = str(token_claims(token).get("account_id") or "").strip()
         if account_id:
             headers["chatgpt-account-id"] = account_id
-        response = session.post(
-            f"{self._BASE_URL}{path}",
+        return _PreparedEmailChangePost(
+            path=path,
+            url=f"{self._BASE_URL}{path}",
             headers=headers,
             data=json.dumps(payload, separators=(",", ":")),
+        )
+
+    def _post(self, session: BrowserSession, prepared: _PreparedEmailChangePost) -> dict:
+        """准备完成后仅发出一次请求并分类远端响应。"""
+        path = prepared.path
+        response = session.post(
+            prepared.url,
+            headers=prepared.headers,
+            data=prepared.data,
         )
         status_code = int(getattr(response, "status_code", 0) or 0)
         if status_code != 200:
@@ -381,21 +414,45 @@ class EmailChangeProtocol:
             )
         return result
 
-    def begin(self, session: BrowserSession, access_token: str, new_email: str) -> dict:
-        return self._post(
-            session,
-            "/backend-api/accounts/change_email/begin",
-            access_token,
-            {"email": str(new_email or "").strip()},
-        )
+    def prepare_begin(
+        self, session: BrowserSession, access_token: str, new_email: str,
+    ) -> _PreparedEmailChangePost:
+        try:
+            return self._prepare_post(
+                session,
+                "/backend-api/accounts/change_email/begin",
+                access_token,
+                {"email": str(new_email or "").strip()},
+            )
+        except Exception as exc:
+            raise LocalRequestPrepareError("begin", type(exc).__name__) from exc
 
-    def verify(self, session: BrowserSession, access_token: str, new_email: str, code: str) -> dict:
-        return self._post(
-            session,
-            "/backend-api/accounts/change_email/verify",
-            access_token,
-            {"email": str(new_email or "").strip(), "code": str(code or "").strip()},
-        )
+    def begin(
+        self, session: BrowserSession, access_token: str, new_email: str,
+        *, prepared: _PreparedEmailChangePost | None = None,
+    ) -> dict:
+        request = prepared if prepared is not None else self.prepare_begin(session, access_token, new_email)
+        return self._post(session, request)
+
+    def prepare_verify(
+        self, session: BrowserSession, access_token: str, new_email: str, code: str,
+    ) -> _PreparedEmailChangePost:
+        try:
+            return self._prepare_post(
+                session,
+                "/backend-api/accounts/change_email/verify",
+                access_token,
+                {"email": str(new_email or "").strip(), "code": str(code or "").strip()},
+            )
+        except Exception as exc:
+            raise LocalRequestPrepareError("verify", type(exc).__name__) from exc
+
+    def verify(
+        self, session: BrowserSession, access_token: str, new_email: str, code: str,
+        *, prepared: _PreparedEmailChangePost | None = None,
+    ) -> dict:
+        request = prepared if prepared is not None else self.prepare_verify(session, access_token, new_email, code)
+        return self._post(session, request)
 
 
 def _is_reauth_required(exc: BaseException) -> bool:
@@ -493,6 +550,7 @@ def begin_change_with_optional_reauth(
     protocol = EmailChangeProtocol()
     token = str(access_token or "").strip()
     after_ts = time.time()
+    first_prepared = protocol.prepare_begin(session, token, new_email)
     first_request_id = _remote_request_id(context, "begin") if context is not None else None
     if context is not None:
         context.remote_request_started(
@@ -501,7 +559,7 @@ def begin_change_with_optional_reauth(
             detail={"account_id": int(account_id), "phase": "initial"},
         )
     try:
-        protocol.begin(session, token, new_email)
+        protocol.begin(session, token, new_email, prepared=first_prepared)
     except task_gateway.OperationLeaseLost:
         raise
     except Exception as exc:
@@ -561,6 +619,7 @@ def begin_change_with_optional_reauth(
             raise RemoteRequestRejected("Recent Login 未返回新的协议会话")
         session = recent_session
         after_ts = time.time()
+        second_prepared = protocol.prepare_begin(session, token, new_email)
         second_request_id = _remote_request_id(context, "begin-reauth") if context is not None else None
         if context is not None:
             context.remote_request_started(
@@ -569,7 +628,7 @@ def begin_change_with_optional_reauth(
                 detail={"account_id": int(account_id), "phase": "recent_login"},
             )
         try:
-            protocol.begin(session, token, new_email)
+            protocol.begin(session, token, new_email, prepared=second_prepared)
         except task_gateway.OperationLeaseLost:
             raise
         except RemoteRequestRejected as second_exc:
@@ -848,6 +907,8 @@ def _handle_email_change(context):
                 return task_gateway.OperationResult.request_unknown("begin 已发送验证码，但新邮箱结果待核验")
             context.checkpoint()
             context.report(stage="email_otp", state="success", message="新邮箱验证码已获取")
+            protocol = EmailChangeProtocol()
+            prepared_verify = protocol.prepare_verify(session, token, new_email, otp)
             verify_request_id = _remote_request_id(context, "verify")
             context.remote_request_started(
                 "change_email.verify",
@@ -855,7 +916,7 @@ def _handle_email_change(context):
                 detail={"account_id": account_id},
             )
             try:
-                EmailChangeProtocol().verify(session, token, new_email, otp)
+                protocol.verify(session, token, new_email, otp, prepared=prepared_verify)
             except task_gateway.OperationLeaseLost:
                 raise
             except RemoteRequestRejected as exc:
@@ -1033,7 +1094,12 @@ def _handle_email_change(context):
                 error=local_error,
                 outcome="request_unknown",
             )
-            return task_gateway.OperationResult.request_unknown("邮箱换绑结果待核验")
+            summary = (
+                {"cause_code": "email_change_verify_prepare_failed", "remote_begin_accepted": True}
+                if isinstance(exc, LocalRequestPrepareError) and exc.phase == "verify"
+                else None
+            )
+            return task_gateway.OperationResult.request_unknown("邮箱换绑结果待核验", summary)
         if new_email:
             _release_unconsumed(new_email, account_id, local_error)
         db.finish_account_email_change(

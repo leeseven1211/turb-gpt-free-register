@@ -217,6 +217,201 @@ class TaskErrorClassificationTests(unittest.TestCase):
         self.assertEqual("未知错误", info["summary"])
         self.assertNotIn("opaque_failure_123", info["summary"])
 
+    def test_old_account_task_known_errors_no_longer_show_unknown(self):
+        cases = (
+            ("WebUI 重启导致任务中断，请重新执行", "token_refresh", "SYS-002"),
+            ("账号已删除或提链状态已被重置", "extract_link", "ACCT-002"),
+            ("HTTP 403", "plan_check", "OA-PLAN-403"),
+            ("Cloudflare 邮箱凭据缺失：请配置只读接口", "deactivation_mail", "CFG-001"),
+            ("账号配置重试未返回结果", "account_setup_retry", "SYS-CODE-001"),
+            ("StaleElementReferenceException: stale element reference", "password_setup", "SYS-BROWSER-001"),
+            ("InvalidSessionIdException: browser session closed", "account_setup_retry", "SYS-BROWSER-001"),
+            ("JavascriptException: script execution failed", "account_completion", "SYS-BROWSER-001"),
+            ("账号设置中未找到“Add password/设置密码”入口", "password_setup", "FLOW-PWD-004"),
+        )
+        for message, task_type, display_code in cases:
+            with self.subTest(message=message):
+                info = classify_task_error(message, task_type=task_type)
+                self.assertEqual(display_code, info["display_code"])
+                self.assertNotEqual("unknown.unclassified", info["code"])
+        self.assertEqual(
+            "unknown.unclassified",
+            classify_task_error("HTTP 403", task_type="password_setup")["code"],
+        )
+
+    def test_extract_create_explicit_rejection_uses_exact_safe_message(self):
+        for message in (
+            "提链创建请求被远端拒绝（HTTP 403）",
+            "ExtractCreateRejected: 提链创建请求被远端拒绝（HTTP 403）",
+        ):
+            with self.subTest(message=message):
+                info = classify_task_error(message, task_type="extract_link")
+                self.assertEqual("external.extract_link.rejected", info["code"])
+                self.assertEqual("LINK-HTTP-403", info["display_code"])
+                self.assertEqual("提链创建请求被远端拒绝（HTTP 403）", info["summary"])
+        self.assertEqual(
+            "unknown.unclassified",
+            classify_task_error("提链创建请求 HTTP 403", task_type="extract_link")["code"],
+        )
+
+    def test_email_change_begin_local_prepare_has_specific_code(self):
+        info = classify_task_error(
+            "邮箱换绑失败: begin 请求本地准备失败", task_type="email_change",
+        )
+        self.assertEqual("internal.request_prepare", info["code"])
+        self.assertEqual("SYS-REQ-001", info["display_code"])
+        self.assertEqual("邮箱换绑 begin 请求在本地准备阶段失败", info["summary"])
+        self.assertNotEqual(
+            "internal.request_prepare",
+            classify_task_error("邮箱换绑失败: verify 请求本地准备失败", task_type="email_change")["code"],
+        )
+
+    def test_request_unknown_keeps_fence_and_exposes_structured_cause(self):
+        info = classify_task_error(
+            "远端结果待确认：查活失败",
+            task_type="token_refresh",
+            error_code="request_unknown",
+            task_status="attention_required",
+            result_summary={
+                "outcome": "request_unknown",
+                "cause_code": "email_otp_failed",
+                "auth_diagnostics": {"operation": "email_otp", "failure_kind": "no_mail"},
+            },
+        )
+        self.assertEqual("request_unknown", info["code"])
+        self.assertEqual("REMOTE-001", info["display_code"])
+        self.assertEqual("MAIL-OTP-002", info["cause_display_code"])
+        self.assertEqual("未收到新的验证码邮件", info["cause_summary"])
+
+    def test_request_unknown_uses_safe_historical_evidence_without_guessing(self):
+        timeout = classify_task_error(
+            "远端结果待确认：查活失败",
+            error_code="request_unknown",
+            result_summary={
+                "outcome": "request_unknown",
+                "auth_diagnostics": {
+                    "operation": "mfa_verify", "failure_kind": "transport_error",
+                    "exception_type": "Timeout",
+                },
+            },
+        )
+        self.assertEqual("NET-MFA-001", timeout["cause_display_code"])
+        self.assertEqual("MFA 验证请求超时", timeout["cause_summary"])
+        email_stage = classify_task_error(
+            "远端结果待确认：查活失败",
+            task_type="token_refresh",
+            error_code="request_unknown",
+            result_summary={
+                "outcome": "request_unknown", "error_category": "email",
+                "auth_method": "email_otp",
+            },
+        )
+        self.assertEqual("MAIL-VERIFY-000", email_stage["cause_display_code"])
+        self.assertIn("细项未记录", email_stage["cause_summary"])
+        other_email_stage = classify_task_error(
+            "邮箱换绑结果待核验",
+            task_type="email_change",
+            error_code="request_unknown",
+            result_summary={"outcome": "request_unknown", "error_category": "email"},
+        )
+        self.assertEqual("MAIL-STAGE-000", other_email_stage["cause_display_code"])
+        self.assertEqual("邮箱阶段异常（细项未记录）", other_email_stage["cause_summary"])
+        missing = classify_task_error(
+            "邮箱换绑结果待核验",
+            error_code="request_unknown",
+            result_summary={"outcome": "request_unknown"},
+        )
+        self.assertIsNone(missing["cause_display_code"])
+        self.assertEqual("具体失败原因未记录", missing["cause_summary"])
+
+    def test_request_unknown_status_outweighs_intermediate_registration_http_status(self):
+        info = classify_task_error(
+            "registration_failed: HTTP Error 400: 远端结果待确认",
+            task_type="registration",
+            error_code="request_unknown",
+            task_status="request_unknown",
+        )
+        self.assertEqual("request_unknown", info["code"])
+        self.assertEqual("REMOTE-001", info["display_code"])
+        self.assertIsNone(info["cause_display_code"])
+        from_summary = classify_task_error(
+            "registration_failed: HTTP Error 400",
+            task_type="registration",
+            error_code="external.openai.registration_rejected",
+            result_summary={"outcome": "request_unknown"},
+        )
+        self.assertEqual("REMOTE-001", from_summary["display_code"])
+        self.assertEqual("request_unknown", from_summary["error_code"])
+        self.assertEqual("external.openai.registration_rejected", from_summary["original_error_code"])
+
+    def test_extract_link_unknown_keeps_outcome_and_shows_safe_response_failure(self):
+        cases = (
+            ("extract_create_invalid_json", "OA-EXTRACT-001", "提链创建响应无法解析"),
+            ("extract_create_missing_job_id", "OA-EXTRACT-002", "提链创建响应缺少任务 ID"),
+            ("extract_create_transport_error", "NET-EXTRACT-001", "提链创建网络请求中断"),
+        )
+        for cause_code, display_code, cause_summary in cases:
+            with self.subTest(cause_code=cause_code):
+                info = classify_task_error(
+                    "提链结果待核验", task_type="extract_link", error_code="request_unknown",
+                    result_summary={"outcome": "request_unknown", "cause_code": cause_code},
+                )
+                self.assertEqual("REMOTE-001", info["display_code"])
+                self.assertEqual(display_code, info["cause_display_code"])
+                self.assertEqual(cause_summary, info["cause_summary"])
+        http = classify_task_error(
+            "提链结果待核验", task_type="extract_link", error_code="request_unknown",
+            result_summary={
+                "outcome": "request_unknown", "cause_code": "extract_create_http_unknown",
+                "cause_diagnostics": {"http_status": 400},
+            },
+        )
+        self.assertEqual("OA-EXTRACT-HTTP", http["cause_display_code"])
+        self.assertEqual("提链创建请求返回 HTTP 400", http["cause_summary"])
+
+    def test_email_change_verify_prepare_failure_keeps_begin_reconciliation(self):
+        info = classify_task_error(
+            "邮箱换绑结果待核验", task_type="email_change", error_code="request_unknown",
+            result_summary={
+                "outcome": "request_unknown",
+                "cause_code": "email_change_verify_prepare_failed",
+                "remote_begin_accepted": True,
+            },
+        )
+        self.assertEqual("REMOTE-001", info["display_code"])
+        self.assertEqual("OA-EMAIL-VERIFY-001", info["cause_display_code"])
+        self.assertEqual(
+            "新邮箱验证请求在本地准备阶段失败；begin 已接受，待核验",
+            info["cause_summary"],
+        )
+
+    def test_registration_unknown_shows_only_confirmed_stage_cause(self):
+        causes = {
+            "user_register_result_unknown": "账号创建请求结果未确认",
+            "registration_checkpoint_failed": "注册检查点本地写入失败",
+            "user_register_continue_url_missing": "账号创建响应缺少后续验证地址",
+            "email_otp_send_rejected": "验证码发送请求被拒绝",
+            "email_otp_send_failed": "验证码发送请求失败",
+            "email_otp_send_unconfirmed": "验证码发送结果未获确认",
+            "email_otp_send_no_response": "验证码发送请求未收到响应",
+            "email_otp_send_unknown": "验证码发送结果未确认",
+            "email_otp_no_mail": "等待窗口内未收到验证码邮件",
+            "post_register_failure": "注册请求之后流程失败（细项未记录）",
+        }
+        for cause_code, cause_summary in causes.items():
+            with self.subTest(cause_code=cause_code):
+                info = classify_task_error(
+                    "远端结果待确认", task_type="registration",
+                    result_summary={"outcome": "request_unknown", "cause_code": cause_code},
+                )
+                self.assertEqual("REMOTE-001", info["display_code"])
+                self.assertEqual(cause_summary, info["cause_summary"])
+        generic = classify_task_error(
+            "远端结果待确认", task_type="registration",
+            result_summary={"outcome": "request_unknown", "cause_code": "registration_failed"},
+        )
+        self.assertIsNone(generic["cause_display_code"])
+
 
 if __name__ == "__main__":
     unittest.main()

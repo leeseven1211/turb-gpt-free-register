@@ -521,6 +521,88 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
         self.assertEqual("AUTH-002", info["display_code"])
         self.assertEqual("授权已失效，请重新登录", info["summary"])
 
+    def test_operation_list_keeps_remote_fence_and_shows_specific_cause(self):
+        client = self._client()
+        row = {
+            "id": 41,
+            "task_type": "token_refresh",
+            "status": "attention_required",
+            "current_stage": "complete",
+            "error_code": "request_unknown",
+            "error_message": "远端结果待确认：查活失败",
+            "result_summary": {
+                "outcome": "request_unknown",
+                "cause_code": "email_otp_failed",
+                "auth_diagnostics": {"operation": "email_otp", "failure_kind": "no_mail"},
+            },
+        }
+        with (
+            patch.object(operations.operation_task_store, "list_tasks", return_value={
+                "ok": True, "items": [row], "total": 1, "facets": {},
+            }),
+            patch.object(operations.operation_task_store, "list_batches", return_value=[]),
+        ):
+            response = client.get("/api/operations")
+
+        self.assertEqual(200, response.status_code)
+        info = response.get_json()["items"][0]["error_info"]
+        self.assertEqual("REMOTE-001", info["display_code"])
+        self.assertEqual("MAIL-OTP-002", info["cause_display_code"])
+
+    def test_operation_detail_projects_each_historical_run_error(self):
+        client = self._client()
+        task = self._task(
+            task_type="token_refresh", status="success", error_message=None,
+            runs=[{
+                "id": 51,
+                "run_no": 1,
+                "status": "attention_required",
+                "progress_stage": "complete",
+                "error_code": "request_unknown",
+                "error_message": "远端结果待确认：查活失败",
+                "result_summary": {
+                    "outcome": "request_unknown", "error_category": "email",
+                    "auth_method": "email_otp",
+                },
+            }, {
+                "id": 52,
+                "run_no": 2,
+                "status": "success",
+                "error_message": None,
+            }],
+        )
+        with patch.object(operations.operation_task_store, "get_task", return_value=task):
+            response = client.get("/api/operations/41?include_events=0")
+
+        self.assertEqual(200, response.status_code)
+        projected = response.get_json()["task"]
+        self.assertNotIn("error_info", projected)
+        self.assertEqual("REMOTE-001", projected["runs"][0]["error_info"]["display_code"])
+        self.assertEqual("MAIL-VERIFY-000", projected["runs"][0]["error_info"]["cause_display_code"])
+        self.assertNotIn("error_info", projected["runs"][1])
+
+    def test_legacy_account_tasks_api_uses_shared_error_classification(self):
+        client = self._client()
+        row = {
+            "id": 7,
+            "task_type": "deactivation_mail",
+            "status": "interrupted",
+            "error": "WebUI 重启导致任务中断，请重新执行",
+        }
+        with (
+            patch.object(operations.account_task_store, "list_tasks", return_value={
+                "items": [row], "total": 1,
+            }),
+            patch("core.token_refresh_service.settings", return_value={}),
+            patch.object(operations.codex_token_refresh_service, "settings", return_value={}),
+        ):
+            response = client.get("/api/account-tasks")
+
+        self.assertEqual(200, response.status_code)
+        info = response.get_json()["items"][0]["error_info"]
+        self.assertEqual("service.interrupted", info["code"])
+        self.assertEqual("SYS-002", info["display_code"])
+
 
 if __name__ == "__main__":
     unittest.main()

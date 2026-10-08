@@ -184,6 +184,7 @@ class MaintenanceDurableGatewayTests(PostgresTestCase):
 
         def create_job(**kwargs):
             create_seen.update(kwargs)
+            kwargs["on_request_started"]()
             return {"job_id": "snapshot-job", "cdk_remaining": 1}
 
         def iter_events(*, job_id, cdk, **kwargs):
@@ -328,6 +329,116 @@ class MaintenanceDurableGatewayTests(PostgresTestCase):
         self.assertEqual("request_unknown", result["status"])
         self.assertTrue(result["manual_reconcile"])
         self.assertEqual("request_unknown", db.get_account(account_id)["live_check_status"])
+
+    def test_refresh_cause_is_preserved_without_changing_unknown_fence(self):
+        account_id = self._account("refresh-cause@example.test")
+        with (
+            patch.object(live_check_service, "_append_log"),
+            patch.object(live_check_service, "_resolve_refresh_driver", return_value="protocol_v2"),
+            patch("core.account_proxy.acquire_account_proxy", return_value=_Route()),
+            patch("core.protocol_v2_liveness.refresh_access_token", return_value={
+                "ok": False,
+                "status": "failed",
+                "error": "email_otp_failed",
+                "error_category": "email",
+                "auth_method": "email_otp",
+                "remote_request_started": True,
+                "roxy_fallback_allowed": False,
+                "auth_diagnostics": {
+                    "operation": "email_otp",
+                    "failure_kind": "no_mail",
+                    "exception_type": "ForwardIMAPNoMailTimeout",
+                    "private_value": "private-token",
+                },
+            }),
+            patch.object(live_check_service, "_roxy_fallback_enabled", return_value=True),
+            patch("core.roxy_liveness.available", side_effect=AssertionError("unknown refresh must not fallback")),
+        ):
+            submitted = live_check_service.enqueue_account_live_check(
+                account_id=account_id,
+                email="refresh-cause@example.test",
+                trigger="token_refresh_manual",
+                force_refresh=True,
+            )
+            result = self._run_native("token_refresh", submitted["run_id"])
+
+        run = operation.get_run(submitted["run_id"])
+        self.assertEqual("request_unknown", result["status"])
+        self.assertEqual("attention_required", run["status"])
+        self.assertEqual("request_unknown", run["result_summary"]["outcome"])
+        self.assertEqual("email_otp_failed", run["result_summary"]["cause_code"])
+        self.assertEqual("no_mail", run["result_summary"]["auth_diagnostics"]["failure_kind"])
+        self.assertNotIn("private-token", str(run["result_summary"]))
+
+    def test_refresh_boundary_and_rejection_require_exact_evidence(self):
+        self.assertEqual("email_otp_failed", live_check_service._safe_refresh_cause_code({
+            "error_code": "request_unknown",
+            "error": "email_otp_failed",
+        }))
+        self.assertFalse(live_check_service._refresh_result_before_remote_boundary({
+            "remote_request_started": True,
+            "error": "auth_route_rejected",
+        }))
+        self.assertTrue(live_check_service._refresh_result_before_remote_boundary({
+            "remote_request_started": False,
+            "error": "auth_route_rejected",
+        }))
+        self.assertFalse(live_check_service._refresh_result_is_rejected({
+            "error": "password_rejected_email_fallback_failed",
+        }))
+        self.assertTrue(live_check_service._refresh_result_is_rejected({
+            "error": "password_rejected",
+        }))
+        self.assertTrue(live_check_service._refresh_result_is_rejected({
+            "status": "deactivated",
+            "error": "password_rejected_email_fallback_failed",
+            "password_auth_status": "rejected",
+        }))
+
+    def test_password_rejected_email_fallback_failure_keeps_unknown_receipt(self):
+        account_id = self._account("refresh-password-fallback@example.test")
+        with (
+            patch.object(live_check_service, "_append_log"),
+            patch.object(live_check_service, "_resolve_refresh_driver", return_value="protocol_v2"),
+            patch("core.account_proxy.acquire_account_proxy", return_value=_Route()),
+            patch("core.protocol_v2_liveness.refresh_access_token", return_value={
+                "ok": False,
+                "status": "failed",
+                "error": "password_rejected_email_fallback_failed",
+                "error_category": "email",
+                "password_auth_status": "rejected",
+                "auth_method": "protocol_v2",
+                "remote_request_started": True,
+                "roxy_fallback_allowed": False,
+                "auth": {
+                    "status": "password_rejected_email_fallback_failed",
+                    "code": "password_rejected_email_fallback_failed",
+                    "next_action": "stop",
+                },
+                "auth_diagnostics": {
+                    "operation": "password_email_fallback",
+                    "failure_kind": "fallback_failed",
+                    "cause_code": "email_otp_failed",
+                    "cause_failure_kind": "no_mail",
+                },
+            }),
+            patch.object(live_check_service, "_roxy_fallback_enabled", return_value=True),
+            patch("core.roxy_liveness.available", side_effect=AssertionError("unknown refresh must not fallback")),
+        ):
+            submitted = live_check_service.enqueue_account_live_check(
+                account_id=account_id,
+                email="refresh-password-fallback@example.test",
+                trigger="token_refresh_manual",
+                force_refresh=True,
+            )
+            result = self._run_native("token_refresh", submitted["run_id"])
+
+        run = operation.get_run(submitted["run_id"])
+        self.assertEqual("request_unknown", result["status"])
+        self.assertEqual("attention_required", run["status"])
+        self.assertEqual("unknown", run["data"]["remote_receipt"]["outcome"])
+        self.assertEqual("password_rejected_email_fallback_failed", run["result_summary"]["cause_code"])
+        self.assertEqual("email_otp_failed", run["result_summary"]["auth_diagnostics"]["cause_code"])
 
     def test_native_refresh_unknown_finishes_attention_required_after_business_writeback(self):
         account_id = self._account("native-refresh-unknown@example.test")
@@ -528,6 +639,8 @@ class MaintenanceDurableGatewayTests(PostgresTestCase):
         self.assertEqual("request_unknown", result["status"])
         run = operation.get_run(submitted["run_id"])
         self.assertEqual("attention_required", run["status"])
+        self.assertEqual("refresh_driver_exception", run["result_summary"]["cause_code"])
+        self.assertEqual("RuntimeError", run["result_summary"]["auth_diagnostics"]["exception_type"])
         self.assertEqual("unknown", run["data"]["remote_intent"]["receipt_state"])
         self.assertEqual("unknown", run["data"]["remote_receipt"]["outcome"])
         self.assertEqual("request_unknown", db.get_account(account_id)["live_check_status"])
@@ -895,7 +1008,10 @@ class MaintenanceDurableGatewayTests(PostgresTestCase):
                 "accepted": True,
                 "result": {"ok": True, "status": "live"},
             }),
-            patch.object(extract_link_service, "_create_extract_job", return_value={"job_id": "job-1", "cdk_remaining": 2}),
+            patch.object(extract_link_service, "_create_extract_job", side_effect=lambda **kwargs: (
+                kwargs["on_request_started"](),
+                {"job_id": "job-1", "cdk_remaining": 2},
+            )[1]),
             patch.object(extract_link_service, "_iter_sse_events", return_value=iter([
                 ("result", {"result": {"long_url": "https://links.invalid/one", "payment_method": "pix"}}),
             ])),
@@ -934,6 +1050,11 @@ class MaintenanceDurableGatewayTests(PostgresTestCase):
 
     def test_native_extract_job_create_exception_is_request_unknown_without_retry(self):
         account_id = self._account("extract-job-unknown@example.test")
+
+        def fail_create(**kwargs):
+            kwargs["on_request_started"]()
+            raise RuntimeError("extract service disconnected")
+
         with (
             patch.object(extract_link_service, "_cdk", return_value="test-cdk"),
             patch.object(extract_link_service, "_append_log", create=True),
@@ -944,7 +1065,7 @@ class MaintenanceDurableGatewayTests(PostgresTestCase):
             patch.object(
                 extract_link_service,
                 "_create_extract_job",
-                side_effect=RuntimeError("extract service disconnected"),
+                side_effect=fail_create,
             ),
             patch.object(extract_link_service, "_iter_sse_events", side_effect=AssertionError("no SSE after unknown create")),
             patch.object(extract_link_service, "TaskReporter", side_effect=AssertionError("native reporter")),

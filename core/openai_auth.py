@@ -670,7 +670,8 @@ def register_user(
     logger.info("[步骤7] 提交邮箱和密码：%s", email)
     resp = session.post(url, headers=headers, data=body)
     if resp.status_code != 200:
-        logger.error("[步骤7] user/register 失败 status=%s body=%s", resp.status_code, (resp.text or "")[:500])
+        # 上游正文可能包含账号或会话信息；这里只记录安全的状态码。
+        logger.error("[步骤7] user/register 失败 status=%s", resp.status_code)
         resp.raise_for_status()
     data = resp.json()
     return data
@@ -703,6 +704,7 @@ def navigate_email_otp_send(
     continue_url: str | None = None,
     *,
     referer: str = "https://auth.openai.com/create-account/password",
+    on_request_started=None,
 ) -> str:
     """跟随 user/register 返回地址发送 OTP，并建立新的验证页 document 状态。"""
     url = str(continue_url or "https://auth.openai.com/api/accounts/email-otp/send")
@@ -711,6 +713,8 @@ def navigate_email_otp_send(
     headers = session.get_auth_navigate_headers(referer=referer)
     headers["sec-fetch-site"] = "same-origin"
     headers["sec-fetch-user"] = "?1"
+    if callable(on_request_started):
+        on_request_started()
     resp = session.get(url, headers=headers, allow_redirects=True)
     status = int(getattr(resp, "status_code", 0) or 0)
     final_url = str(getattr(resp, "url", "") or "")
@@ -824,11 +828,11 @@ def navigate_about_you(session: BrowserSession, about_url: str | None = None) ->
     logger.info("[步骤10.5] 导航到 about-you 页面，建立资料页状态")
     resp = session.get(url, headers=headers, allow_redirects=True)
     if resp.status_code >= 400:
-        raise RuntimeError(f"about-you 导航失败 status={resp.status_code}: {(resp.text or '')[:240]}")
+        raise RuntimeError(f"about-you 导航失败 status={resp.status_code}")
     final_url = str(getattr(resp, "url", "") or url)
     if "/api/accounts/user/register" in final_url or "/create-account/password" in final_url:
-        raise RuntimeError(f"about-you 导航落入旧密码注册路径: {final_url}")
-    logger.info(f"[步骤10.5] about-you 导航完成，落点: {final_url}")
+        raise RuntimeError("about-you 导航落入旧密码注册路径")
+    logger.info("[步骤10.5] about-you 导航完成")
     return final_url
 
 
@@ -973,8 +977,7 @@ def create_account(session: BrowserSession, name: str, birthday: str, sentinel_h
     resp = session.post(url, headers=headers, data=body)
 
     if resp.status_code != 200:
-        logger.error(f"[步骤12] 请求失败, 状态码: {resp.status_code}")
-        logger.error(f"[步骤12] 响应内容: {resp.text}")
+        logger.error("[步骤12] create_account 失败 status=%s", resp.status_code)
         resp.raise_for_status()
 
     data = resp.json()

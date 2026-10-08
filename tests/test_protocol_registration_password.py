@@ -2,13 +2,85 @@
 import unittest
 from contextlib import ExitStack
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from core.forward_imap_client import ForwardIMAPError
+from core.forward_imap_client import ForwardIMAPError, ForwardIMAPNoMailTimeout
 from core.registration import protocol
 
 
 class ProtocolPasswordRegistrationTests(unittest.TestCase):
+    def _run_new_password_failure(
+        self,
+        *,
+        password_page_error=None,
+        otp_send_error=None,
+        otp_wait_error=None,
+        register_result=None,
+    ):
+        session = SimpleNamespace(proxy="", device_id="device-id", sentinel_sid=None, browser_profile=None)
+
+        def send_result(_session, _continue_url, *, on_request_started=None):
+            if callable(on_request_started):
+                on_request_started()
+            if otp_send_error is not None:
+                raise otp_send_error
+            return "https://auth.openai.com/email-verification"
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(protocol, "BrowserSession", return_value=session))
+            stack.enter_context(patch.object(protocol, "network_preflight"))
+            stack.enter_context(patch.object(protocol, "get_providers"))
+            stack.enter_context(patch.object(protocol, "probe_auth_session"))
+            stack.enter_context(patch.object(protocol, "get_csrf_token", return_value="csrf"))
+            stack.enter_context(patch.object(protocol, "signin_openai", return_value="authorize"))
+            stack.enter_context(patch.object(
+                protocol, "follow_authorize", return_value="https://auth.openai.com/email-verification",
+            ))
+            stack.enter_context(patch.object(protocol, "human_delay"))
+            stack.enter_context(patch.object(protocol._protocol_cfg, "CHATGPT_ANON_BOOTSTRAP_ENABLED", False, create=True))
+            stack.enter_context(patch.object(protocol._email_cfg, "USE_EMAIL_SERVICE", True))
+            stack.enter_context(patch("core.registration_service.report_job_progress"))
+            stack.enter_context(patch.object(protocol, "generate_registration_password", return_value="Password!123"))
+            password_page = stack.enter_context(patch.object(
+                protocol,
+                "navigate_create_account_password",
+                side_effect=password_page_error,
+                return_value="https://auth.openai.com/create-account/password",
+            ))
+            stack.enter_context(patch.object(protocol, "request_password_sentinel_bundle", return_value={"token": "challenge"}))
+            stack.enter_context(patch.object(protocol, "build_sentinel_header", return_value=("sentinel", "so")))
+            register = stack.enter_context(patch.object(
+                protocol,
+                "register_user",
+                return_value=(
+                    {"continue_url": "/api/accounts/email-otp/send"}
+                    if register_result is None else register_result
+                ),
+            ))
+            checkpoint = stack.enter_context(patch(
+                "core.registration.checkpoints.save_email_verification_checkpoint", return_value=701,
+            ))
+            send = stack.enter_context(patch.object(
+                protocol,
+                "navigate_email_otp_send",
+                side_effect=send_result,
+            ))
+            stack.enter_context(patch.object(protocol, "wait_for_otp", side_effect=otp_wait_error))
+            retain = stack.enter_context(patch("core.email_provider.retain_email", return_value="generic_api"))
+            result = protocol.run_protocol_registration(
+                "user@example.com",
+                "Test User",
+                "2000-01-01",
+                email_source="generic_api",
+                registration_options={
+                    "password_enabled": True,
+                    "twofa_enabled": False,
+                    "codex_enabled": False,
+                    "plan_check_enabled": False,
+                },
+            )
+        return result, password_page, register, checkpoint, send, retain
+
     def test_resume_keeps_existing_email_verification_page_without_second_send(self):
         with patch.object(protocol, "navigate_email_otp_send") as navigate:
             after_ts = protocol._send_protocol_resume_email_otp(
@@ -92,8 +164,10 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
             events.append(("register", email, password, sentinel, so))
             return register_result
 
-        def otp_side_effect(_session, continue_url):
+        def otp_side_effect(_session, continue_url, *, on_request_started=None):
             events.append(("otp", continue_url))
+            if callable(on_request_started):
+                on_request_started()
             return "https://auth.openai.com/email-verification"
 
         def checkpoint_side_effect(password):
@@ -146,16 +220,51 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
 
     def test_password_stage_marks_transport_failure_as_unknown(self):
         session = object()
+        for failure, expected_status in (
+            (TimeoutError("private response content"), "-"),
+            (RuntimeError("private response content"), "503"),
+        ):
+            with self.subTest(expected_status=expected_status):
+                if expected_status != "-":
+                    failure.response = SimpleNamespace(status_code=int(expected_status))
+                with (
+                    patch.object(protocol, "generate_registration_password", return_value="Password!123"),
+                    patch.object(protocol, "navigate_create_account_password", return_value="https://auth.openai.com/create-account/password"),
+                    patch.object(protocol, "request_password_sentinel_bundle", return_value={"token": "challenge"}),
+                    patch.object(protocol, "build_sentinel_header", return_value=("sentinel", "so")),
+                    patch.object(protocol, "register_user", side_effect=failure),
+                    patch.object(protocol, "human_delay"),
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "user/register 请求结果未知") as caught:
+                        protocol._run_protocol_password_stage(session, "user@example.com")
+                self.assertIn(f"http_status={expected_status}", str(caught.exception))
+                self.assertNotIn("private response content", str(caught.exception))
+                self.assertTrue(caught.exception.__suppress_context__)
+
+    def test_otp_send_header_failure_does_not_mark_request_started(self):
+        session = Mock()
+        session.get_auth_navigate_headers.side_effect = RuntimeError("local header preparation failed")
+        checkpoint = Mock()
+        send_started = Mock()
         with (
             patch.object(protocol, "generate_registration_password", return_value="Password!123"),
             patch.object(protocol, "navigate_create_account_password", return_value="https://auth.openai.com/create-account/password"),
             patch.object(protocol, "request_password_sentinel_bundle", return_value={"token": "challenge"}),
             patch.object(protocol, "build_sentinel_header", return_value=("sentinel", "so")),
-            patch.object(protocol, "register_user", side_effect=TimeoutError("read timed out")),
+            patch.object(protocol, "register_user", return_value={"continue_url": "/api/accounts/email-otp/send"}),
             patch.object(protocol, "human_delay"),
         ):
-            with self.assertRaisesRegex(RuntimeError, "user/register 请求结果未知"):
-                protocol._run_protocol_password_stage(session, "user@example.com")
+            with self.assertRaisesRegex(RuntimeError, "local header preparation failed"):
+                protocol._run_protocol_password_stage(
+                    session,
+                    "user@example.com",
+                    on_password_submitted=checkpoint,
+                    on_otp_send_started=send_started,
+                )
+
+        checkpoint.assert_called_once_with("Password!123")
+        send_started.assert_not_called()
+        session.get.assert_not_called()
 
     def test_password_stage_keeps_checkpoint_when_otp_navigation_fails(self):
         checkpointed = []
@@ -793,6 +902,130 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
         self.assertTrue(result["request_unknown"], result)
         self.assertEqual(result["error_code"], "request_unknown")
         retain.assert_called_once()
+
+    def test_confirmed_register_otp_rejection_keeps_identity_and_same_attempt_fence(self):
+        result, _page, register, checkpoint, send, retain = self._run_new_password_failure(
+            otp_send_error=RuntimeError("email_otp_send_rejected status=403 path=/error"),
+        )
+
+        self.assertFalse(result["success"])
+        self.assertTrue(result["request_unknown"])
+        self.assertEqual("request_unknown", result["error_code"])
+        self.assertEqual("email_otp_send_rejected", result["cause_code"])
+        self.assertTrue(result["register_response_confirmed"])
+        self.assertEqual("confirmed", result["remote_identity_state"])
+        self.assertEqual("request_unknown", result["remote_account_state"])
+        self.assertEqual(701, result["account_id"])
+        self.assertFalse(result["retry_as_new_route"])
+        register.assert_called_once()
+        checkpoint.assert_called_once()
+        send.assert_called_once()
+        retain.assert_called_once()
+
+    def test_confirmed_register_missing_otp_url_keeps_pending_identity(self):
+        result, _page, register, checkpoint, send, _retain = self._run_new_password_failure(
+            register_result={"page": {"type": "unknown"}},
+        )
+
+        self.assertTrue(result["request_unknown"])
+        self.assertEqual("user_register_continue_url_missing", result["cause_code"])
+        self.assertTrue(result["register_response_confirmed"])
+        self.assertEqual("confirmed", result["remote_identity_state"])
+        self.assertEqual("request_unknown", result["remote_account_state"])
+        register.assert_called_once()
+        checkpoint.assert_called_once()
+        send.assert_not_called()
+
+    def test_confirmed_register_otp_send_no_response_stays_unknown(self):
+        result, _page, register, checkpoint, send, _retain = self._run_new_password_failure(
+            otp_send_error=TimeoutError("read timed out"),
+        )
+
+        self.assertTrue(result["request_unknown"])
+        self.assertEqual("email_otp_send_no_response", result["cause_code"])
+        self.assertTrue(result["register_response_confirmed"])
+        self.assertEqual("confirmed", result["remote_identity_state"])
+        self.assertEqual("request_unknown", result["remote_account_state"])
+        register.assert_called_once()
+        checkpoint.assert_called_once()
+        send.assert_called_once()
+
+    def test_confirmed_register_mail_timeout_keeps_pending_identity(self):
+        result, _page, register, checkpoint, send, _retain = self._run_new_password_failure(
+            otp_wait_error=ForwardIMAPNoMailTimeout("没有新验证码邮件"),
+        )
+
+        self.assertTrue(result["request_unknown"])
+        self.assertEqual("email_otp_no_mail", result["cause_code"])
+        self.assertTrue(result["register_response_confirmed"])
+        self.assertEqual("confirmed", result["remote_identity_state"])
+        self.assertEqual("request_unknown", result["remote_account_state"])
+        register.assert_called_once()
+        checkpoint.assert_called_once()
+        send.assert_called_once()
+
+    def test_failure_before_user_register_has_no_false_remote_acceptance(self):
+        result, page, register, checkpoint, send, retain = self._run_new_password_failure(
+            password_page_error=RuntimeError("密码页本地准备失败"),
+        )
+
+        self.assertFalse(result["request_unknown"])
+        self.assertEqual("registration_failed", result["cause_code"])
+        self.assertFalse(result["register_response_confirmed"])
+        self.assertEqual("unknown", result["remote_identity_state"])
+        self.assertEqual("not_started", result["remote_account_state"])
+        page.assert_called_once()
+        register.assert_not_called()
+        checkpoint.assert_not_called()
+        send.assert_not_called()
+        retain.assert_called_once()
+
+    def test_protocol_failure_does_not_persist_raw_exception_or_remote_payload(self):
+        secret = "PRIVATE_SESSION_MARKER_7391"
+        cases = (
+            (
+                {"page": {"type": "external_url"}, "accessToken": secret},
+                None,
+                "OTP external_url 响应缺少可跟随 URL",
+            ),
+            (
+                {"page": {"type": "unknown"}, "accessToken": secret},
+                None,
+                "OTP 后续页面类型未知",
+            ),
+            (
+                {"page": {"type": "about_you"}, "continue_url": "https://auth.openai.com/about-you", "accessToken": secret},
+                {"accessToken": secret},
+                "create_account 响应缺少 continue_url",
+            ),
+        )
+        for validate_result, create_result, expected_error in cases:
+            with self.subTest(expected_error=expected_error):
+                with (
+                    patch.object(protocol, "validate_email_otp", return_value=validate_result),
+                    patch.object(protocol, "navigate_about_you"),
+                    patch.object(protocol, "request_sentinel_token", return_value={"token": "challenge"}),
+                    patch.object(protocol, "create_account", return_value=create_result),
+                    patch.object(protocol._protocol_cfg, "SEND_SENTINEL_ON_EMAIL_OTP_VALIDATE", False, create=True),
+                    self.assertLogs("core.registration.protocol", level="ERROR") as captured,
+                ):
+                    result, _page, _register, _checkpoint, _send, retain = self._run_new_password_failure()
+                self.assertFalse(result["success"])
+                self.assertIn("RuntimeError", result["error"])
+                self.assertNotIn(secret, result["error"])
+                self.assertNotIn(secret, retain.call_args.kwargs["note"])
+                self.assertNotIn(secret, " ".join(captured.output))
+
+    def test_protocol_failure_keeps_safe_type_and_status_without_body(self):
+        secret = "PRIVATE_RESPONSE_MARKER_8642"
+        with self.assertLogs("core.registration.protocol", level="ERROR") as captured:
+            result, _page, _register, _checkpoint, _send, retain = self._run_new_password_failure(
+                password_page_error=RuntimeError(f"HTTP 503 response={secret}"),
+            )
+        self.assertIn("RuntimeError HTTP 503", result["error"])
+        self.assertNotIn(secret, result["error"])
+        self.assertNotIn(secret, retain.call_args.kwargs["note"])
+        self.assertNotIn(secret, " ".join(captured.output))
 
     def test_authorize_route_rejection_is_safe_for_outer_proxy_rotation(self):
         class RouteRejectedError(RuntimeError):

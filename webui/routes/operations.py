@@ -161,6 +161,8 @@ def create_operations_blueprint(context: WebUIContext):
                 stage="complete",
                 task_type=str(task.get("task_type") or ""),
                 error_code=str(task.get("error_code") or ""),
+                result_summary=task.get("result_summary"),
+                task_status=str(task.get("status") or ""),
             )
             if error_info:
                 task["error_info"] = error_info
@@ -179,6 +181,8 @@ def create_operations_blueprint(context: WebUIContext):
             stage="complete",
             task_type=str(task.get("task_type") or ""),
             error_code=str(task.get("error_code") or ""),
+            result_summary=task.get("result_summary"),
+            task_status=str(task.get("status") or ""),
         )
         if error_info:
             task["error_info"] = error_info
@@ -217,6 +221,8 @@ def create_operations_blueprint(context: WebUIContext):
                     stage=str(task.get("current_stage") or ""),
                     task_type=str(task.get("task_type") or ""),
                     error_code=str(task.get("error_code") or ""),
+                    result_summary=task.get("result_summary"),
+                    task_status=str(task.get("status") or ""),
                 )
         result["batches"] = operation_task_store.list_batches(limit=50)
         return jsonify(result)
@@ -235,7 +241,19 @@ def create_operations_blueprint(context: WebUIContext):
                 stage=str(task.get("current_stage") or ""),
                 task_type=str(task.get("task_type") or ""),
                 error_code=str(task.get("error_code") or ""),
+                result_summary=task.get("result_summary"),
+                task_status=str(task.get("status") or ""),
             )
+        for run in task.get("runs") or []:
+            if run.get("error_message"):
+                run["error_info"] = classify_task_error(
+                    run.get("error_message"),
+                    stage=str(run.get("progress_stage") or ""),
+                    task_type=str(task.get("task_type") or ""),
+                    error_code=str(run.get("error_code") or ""),
+                    result_summary=run.get("result_summary"),
+                    task_status=str(run.get("status") or ""),
+                )
         return jsonify({"ok": True, "task": task})
 
     @bp.get("/api/operations/<int:task_id>/runs/<int:run_id>/progress")

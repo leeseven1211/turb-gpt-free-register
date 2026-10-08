@@ -139,6 +139,37 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
         )
         release_email.assert_not_called()
 
+    def test_saved_account_with_unknown_remote_result_is_not_partial_success(self):
+        with patch.object(svc, "_mark_registration_request_unknown") as mark_unknown, patch.object(
+            svc, "_mark_registration_result"
+        ) as mark_success:
+            _release_email, _update_progress, _finish_progress, update_job = self._run_job(
+                capture_job_updates=True,
+                result={
+                    "success": False,
+                    "email": "alias@icloud.com",
+                    "account_id": 42,
+                    "access_token": "",
+                    "request_unknown": True,
+                    "register_response_confirmed": True,
+                    "cause_code": "email_otp_no_mail",
+                    "error_code": "request_unknown",
+                    "error": "等待窗口内未收到验证码邮件：ForwardIMAPNoMailTimeout",
+                },
+            )
+
+        self.assertTrue(any(
+            call.kwargs.get("status") == "request_unknown"
+            for call in update_job.call_args_list
+        ))
+        self.assertFalse(any(
+            call.kwargs.get("status") == "partial_success"
+            for call in update_job.call_args_list
+        ))
+        mark_success.assert_not_called()
+        self.assertTrue(mark_unknown.call_args.kwargs["facts"]["register_response_confirmed"])
+        self.assertEqual("email_otp_no_mail", mark_unknown.call_args.kwargs["facts"]["cause_code"])
+
     def test_returned_success_closes_initial_registration_email(self):
         with patch("core.email_provider.release_email", return_value="icloud_hide") as release:
             self._run_job(

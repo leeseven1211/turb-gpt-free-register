@@ -8,7 +8,73 @@ from core.registration_service import _build_retry_info
 
 
 class RegistrationServicePostprocessContractTests(unittest.TestCase):
-    def test_request_unknown_without_account_is_retryable_registration(self):
+    def test_request_unknown_facts_only_keep_fixed_code_and_real_boolean(self):
+        facts = registration_service._registration_request_unknown_facts({
+            "cause_code": "registration_checkpoint_failed",
+            "register_response_confirmed": True,
+            "raw_response": "不可持久化",
+        })
+        self.assertEqual({
+            "outcome": "request_unknown",
+            "cause_code": "registration_checkpoint_failed",
+            "register_response_confirmed": True,
+        }, facts)
+        self.assertEqual(
+            {"outcome": "request_unknown"},
+            registration_service._registration_request_unknown_facts({
+                "cause_code": "untrusted_remote_body",
+                "register_response_confirmed": "true",
+            }),
+        )
+
+    def test_request_unknown_attempt_keeps_confirmed_register_response(self):
+        registration_service._THREAD_CTX.job_id = 99
+        registration_service._THREAD_CTX.attempt_id = 7
+        registration_service._THREAD_CTX.run_id = 12
+        registration_service._THREAD_CTX.execution_id = "test-execution"
+        try:
+            with patch("core.storage.registration.mark_request_unknown") as mark:
+                registration_service._mark_registration_request_unknown(
+                    "账号创建后邮箱验证未完成",
+                    facts={
+                        "cause_code": "email_otp_no_mail",
+                        "register_response_confirmed": True,
+                        "raw_response": "不可持久化",
+                    },
+                )
+            kwargs = mark.call_args.kwargs
+            self.assertTrue(kwargs["identity_response_confirmed"])
+            self.assertEqual("email_otp_no_mail", kwargs["detail"]["cause_code"])
+            self.assertNotIn("raw_response", kwargs["detail"])
+        finally:
+            for attr in ("job_id", "attempt_id", "run_id", "execution_id"):
+                try:
+                    delattr(registration_service._THREAD_CTX, attr)
+                except AttributeError:
+                    pass
+
+    def test_finish_unknown_run_writes_fence_and_resyncs_projection(self):
+        registration_service._THREAD_CTX.job_id = 99
+        registration_service._THREAD_CTX.run_id = 12
+        try:
+            with patch("core.storage.registration.finish_run") as finish, patch(
+                "core.operation_task_store.sync_registration_job"
+            ) as sync:
+                registration_service._finish_registration_run(
+                    "request_unknown",
+                    error_message="request_unknown",
+                    result_summary={"outcome": "request_unknown", "cause_code": "email_otp_no_mail"},
+                )
+            self.assertEqual("request_unknown", finish.call_args.kwargs["error_code"])
+            sync.assert_called_once_with(99)
+        finally:
+            for attr in ("job_id", "run_id"):
+                try:
+                    delattr(registration_service._THREAD_CTX, attr)
+                except AttributeError:
+                    pass
+
+    def test_request_unknown_without_account_cannot_start_new_registration(self):
         info = _build_retry_info(
             {
                 "status": "request_unknown",
@@ -19,8 +85,34 @@ class RegistrationServicePostprocessContractTests(unittest.TestCase):
             successful_retry=None,
         )
 
+        self.assertFalse(info["retryable"])
+        self.assertIsNone(info["retry_action"])
+        self.assertEqual([], info["next_actions"])
+
+    def test_request_unknown_with_matching_attempt_can_resume_email_verification(self):
+        job = {
+            "id": 21, "root_job_id": 21, "attempt_id": 70,
+            "status": "request_unknown", "account_id": 44,
+            "email": "pending@example.com",
+        }
+        account = {
+            "id": 44, "email": "pending@example.com", "access_token": "",
+            "extra_json": '{"registration_checkpoint":"email_verification_pending","registration_password":"example"}',
+        }
+        attempt = {
+            "id": 70, "source_root_job_id": 21, "account_id": 44,
+            "email_snapshot": "pending@example.com", "checkpoint": "otp_started",
+            "target_status": "request_unknown", "remote_identity_state": "confirmed",
+        }
+        info = _build_retry_info(job, account=account, successful_retry=None, attempt=attempt)
         self.assertTrue(info["retryable"])
-        self.assertEqual("registration", info["retry_action"])
+        self.assertEqual("registration_resume", info["retry_action"])
+        self.assertEqual("registration_resume", info["next_actions"][0]["action"])
+
+        mismatched = dict(attempt, remote_identity_state="request_unknown")
+        blocked = _build_retry_info(job, account=account, successful_retry=None, attempt=mismatched)
+        self.assertFalse(blocked["retryable"])
+        self.assertEqual([], blocked["next_actions"])
 
     def test_multiple_independent_actions_are_exposed(self):
         info = _build_retry_info(
@@ -125,7 +217,11 @@ class RegistrationServicePostprocessContractTests(unittest.TestCase):
 
     def test_pending_email_resume_is_same_attempt_action(self):
         info = _build_retry_info(
-            {"status": "partial_success", "account_id": 44},
+            {
+                "id": 21, "root_job_id": 21, "attempt_id": 70,
+                "status": "partial_success", "account_id": 44,
+                "email": "pending@example.com",
+            },
             account={
                 "id": 44,
                 "email": "pending@example.com",
@@ -133,6 +229,11 @@ class RegistrationServicePostprocessContractTests(unittest.TestCase):
                 "extra_json": '{"registration_checkpoint":"email_verification_pending","registration_password":"Password!123"}',
             },
             successful_retry=None,
+            attempt={
+                "id": 70, "source_root_job_id": 21, "account_id": 44,
+                "email_snapshot": "pending@example.com", "checkpoint": "otp_started",
+                "target_status": "email_verification_pending", "remote_identity_state": "confirmed",
+            },
         )
 
         self.assertEqual("registration_resume", info["retry_action"])
@@ -164,7 +265,7 @@ class RegistrationServicePostprocessContractTests(unittest.TestCase):
         self.assertFalse(info["retryable"])
         self.assertIn("禁止", info["retry_reason"])
 
-    def test_normalized_attempt_can_make_pending_registration_resumeable(self):
+    def test_normalized_target_without_account_checkpoint_cannot_resume(self):
         with patch(
             "core.storage.registration.get_latest_attempt_by_account",
             return_value={"target_status": "email_verification_pending"},
@@ -181,7 +282,8 @@ class RegistrationServicePostprocessContractTests(unittest.TestCase):
                 successful_retry=None,
             )
 
-        self.assertEqual("registration_resume", info["retry_action"])
+        self.assertFalse(info["retryable"])
+        self.assertIsNone(info["retry_action"])
 
     def test_attempt_run_adapter_uses_existing_attempt_id(self):
         registration_service._THREAD_CTX.job_id = 99

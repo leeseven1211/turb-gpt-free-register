@@ -8,6 +8,26 @@ from webui.routes import jobs
 
 
 class OperationProjectionContractTests(TestCase):
+    def test_registration_unknown_never_offers_full_retry_or_postprocess(self):
+        pending_account = {
+            "id": 7,
+            "email": "pending@example.test",
+            "access_token": "",
+            "extra_json": '{"registration_checkpoint":"email_verification_pending"}',
+        }
+        self.assertEqual([], operation._next_registration_actions(
+            {"id": 9, "status": "failed"}, None, "request_unknown",
+            remote_identity_state="confirmed", remote_account_state="request_unknown",
+        ))
+        self.assertEqual([], operation._next_registration_actions(
+            {"id": 9, "status": "failed"}, pending_account, "request_unknown",
+            remote_identity_state="confirmed", remote_account_state="request_unknown",
+        ))
+        self.assertEqual([], operation._next_registration_actions(
+            {"id": 9, "status": "failed"}, None, "not_created",
+            remote_identity_state="confirmed",
+        ))
+
     def test_deactivated_account_projection_has_no_registration_follow_up(self):
         account = {
             "id": 7,

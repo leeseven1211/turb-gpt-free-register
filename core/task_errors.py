@@ -26,12 +26,14 @@ class TaskErrorCode(str, Enum):
     EXTERNAL_EMAIL_EMAIL_BUTLER_PREPARE = "external.email.email_butler_prepare"
     EXTERNAL_EMAIL_SERVICE_UNAVAILABLE = "external.email.service_unavailable"
     EXTERNAL_EMAIL_ACCOUNT_MISSING = "external.email.account_missing"
+    EXTERNAL_EXTRACT_REJECTED = "external.extract_link.rejected"
     EXTERNAL_OPENAI = "external.openai"
     EXTERNAL_OPENAI_ACCOUNT_CREATION_REJECTED = "external.openai.account_creation_rejected"
     EXTERNAL_OPENAI_REGISTRATION_REJECTED = "external.openai.registration_rejected"
     EXTERNAL_OPENAI_CREDENTIAL_EXPIRED = "external.openai.credential_expired"
     EXTERNAL_OPENAI_AUTH_REAUTH_REQUIRED = "external.openai.auth_reauth_required"
     EXTERNAL_OPENAI_AUTH_ROUTE_REJECTED = "external.openai.auth_route_rejected"
+    EXTERNAL_OPENAI_PLAN_FORBIDDEN = "external.openai.plan_forbidden"
     EXTERNAL_OPENAI_EMAIL_CHANGE_ACCOUNT_TOO_NEW = "external.openai.email_change_account_too_new"
     EXTERNAL_OPENAI_EMAIL_CHANGE_FORBIDDEN = "external.openai.email_change_forbidden"
     EXTERNAL_OPENAI_EMAIL_CHANGE_RECENT_LOGIN = "external.openai.email_change_recent_login"
@@ -43,14 +45,17 @@ class TaskErrorCode(str, Enum):
     EXTERNAL_NETWORK_REGISTRATION_TIMEOUT = "external.network.registration_timeout"
     EXTERNAL_NETWORK = "external.network"
     ACCOUNT_DEACTIVATED = "account.deactivated"
+    ACCOUNT_TARGET_UNAVAILABLE = "account.target_unavailable"
     INTERNAL_STORAGE = "internal.storage"
     INTERNAL_CODE = "internal.code"
     INTERNAL_BROWSER = "internal.browser"
+    INTERNAL_REQUEST_PREPARE = "internal.request_prepare"
     WORKFLOW_VERIFICATION = "workflow.verification"
     WORKFLOW_PAGE_STATE = "workflow.page_state"
     WORKFLOW_PASSWORD_ENTRY_NOT_HYDRATED = "workflow.password_entry_not_hydrated"
     WORKFLOW_PASSWORD_ENTRY_NOT_OFFERED = "workflow.password_entry_not_offered"
     WORKFLOW_PASSWORD_ENTRY_RECOVERY_EXHAUSTED = "workflow.password_entry_recovery_exhausted"
+    WORKFLOW_PASSWORD_SETTINGS_ENTRY_UNAVAILABLE = "workflow.password_settings_entry_unavailable"
     WORKFLOW_RETRY_BLOCKED = "workflow.retry_blocked"
     WORKFLOW_UNSUPPORTED = "workflow.unsupported"
     TASK_PENDING = "task.pending"
@@ -98,6 +103,13 @@ _RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         ("account_deactivated", "账号已废", "账号已停用"),
     ),
     (
+        "account.target_unavailable",
+        "account",
+        "账号状态",
+        "操作目标已不可用",
+        ("账号已删除或提链状态已被重置",),
+    ),
+    (
         "task.pending",
         "system",
         "任务状态",
@@ -137,11 +149,18 @@ _RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         ("password_entry_recovery_exhausted",),
     ),
     (
+        "workflow.password_settings_entry_unavailable",
+        "workflow",
+        "流程错误",
+        "账号设置页没有添加密码入口",
+        ("未找到“add password/设置密码”入口", "只提供当前密码输入框"),
+    ),
+    (
         "configuration.missing",
         "configuration",
         "配置错误",
         "缺少配置",
-        ("未配置", "配置缺失", "请填写", "api key 为空", "token 为空", "不能为空"),
+        ("未配置", "配置缺失", "请填写", "api key 为空", "token 为空", "不能为空", "cloudflare 邮箱凭据缺失"),
     ),
     (
         "service.interrupted",
@@ -150,6 +169,7 @@ _RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         "服务重启中断",
         (
             "webui 进程重启导致任务中断",
+            "webui 重启导致任务中断，请重新执行",
             "执行进程中断，等待同一 attempt 恢复",
             "worker_interrupted",
             "run.interrupted",
@@ -208,7 +228,7 @@ _RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         "internal",
         "内部错误",
         "本地代码错误",
-        ("syntaxerror", "cannot schedule new futures after interpreter shutdown"),
+        ("syntaxerror", "cannot schedule new futures after interpreter shutdown", "账号配置重试未返回结果"),
     ),
     (
         "workflow.retry_blocked",
@@ -222,7 +242,7 @@ _RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         "workflow",
         "流程错误",
         "页面未进入下一步",
-        ("资料页点击提交后", "仍未离开", "页面未继续"),
+        ("资料页点击提交后", "仍未离开", "页面未继续", "提交本地 totp 后页面 20 秒未继续"),
     ),
     (
         "external.roxy_capacity",
@@ -315,7 +335,10 @@ _RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         "internal",
         "内部错误",
         "浏览器自动化",
-        ("playwright", "浏览器启动", "roxybrowser", "browsercontext", "page crashed"),
+        (
+            "playwright", "浏览器启动", "roxybrowser", "browsercontext", "page crashed",
+            "staleelementreferenceexception", "invalidsessionidexception", "javascriptexception",
+        ),
     ),
     (
         "workflow.verification",
@@ -417,6 +440,11 @@ _ERROR_METADATA: dict[str, dict[str, str]] = {
         "remote_state_impact": "remote_confirmed",
         "next_action": "none",
     },
+    "account.target_unavailable": {
+        "retryability": "not_retryable",
+        "remote_state_impact": "not_started",
+        "next_action": "inspect_account_state",
+    },
     "task.pending": {
         "retryability": "conditional",
         "remote_state_impact": "unknown",
@@ -501,6 +529,11 @@ _ERROR_METADATA: dict[str, dict[str, str]] = {
         "retryability": "conditional",
         "remote_state_impact": "remote_rejected",
         "next_action": "inspect_remote_rejection",
+    },
+    "external.openai.plan_forbidden": {
+        "retryability": "conditional",
+        "remote_state_impact": "remote_unchanged",
+        "next_action": "inspect_plan_auth_route",
     },
     "external.openai.email_domain_rejected": {
         "retryability": "not_retryable",
@@ -592,6 +625,11 @@ _ERROR_METADATA: dict[str, dict[str, str]] = {
         "remote_state_impact": "remote_may_be_pending",
         "next_action": "retry_registration",
     },
+    "workflow.password_settings_entry_unavailable": {
+        "retryability": "conditional",
+        "remote_state_impact": "remote_unchanged",
+        "next_action": "inspect_account_settings",
+    },
     "workflow.retry_blocked": {
         "retryability": "not_retryable",
         "remote_state_impact": "unknown",
@@ -619,6 +657,7 @@ _DISPLAY_CODES = {
     "user.interrupted": "USR-001",
     "service.interrupted": "SYS-002",
     "account.deactivated": "ACCT-001",
+    "account.target_unavailable": "ACCT-002",
     "task.pending": "STATE-001",
     "request_unknown": "REMOTE-001",
     "external.proxy": "PROXY-001",
@@ -628,12 +667,14 @@ _DISPLAY_CODES = {
     "external.email.email_butler_prepare": "MAIL-004",
     "external.email.service_unavailable": "MAIL-002",
     "external.email.account_missing": "MAIL-003",
+    "external.extract_link.rejected": "LINK-HTTP-000",
     "external.openai": "OA-000",
     "external.openai.account_creation_rejected": "OA-REG-001",
     "external.openai.registration_rejected": "OA-REG-000",
     "external.openai.credential_expired": "AUTH-001",
     "external.openai.auth_reauth_required": "AUTH-002",
     "external.openai.auth_route_rejected": "OA-AUTH-000",
+    "external.openai.plan_forbidden": "OA-PLAN-403",
     "external.openai.email_change_account_too_new": "OA-EMAIL-002",
     "external.openai.email_change_forbidden": "OA-EMAIL-003",
     "external.openai.email_change_recent_login": "OA-EMAIL-004",
@@ -647,11 +688,13 @@ _DISPLAY_CODES = {
     "internal.storage": "SYS-DB-001",
     "internal.code": "SYS-CODE-001",
     "internal.browser": "SYS-BROWSER-001",
+    "internal.request_prepare": "SYS-REQ-001",
     "workflow.verification": "FLOW-VERIFY-001",
     "workflow.page_state": "FLOW-PAGE-001",
     "workflow.password_entry_not_hydrated": "FLOW-PWD-001",
     "workflow.password_entry_not_offered": "FLOW-PWD-002",
     "workflow.password_entry_recovery_exhausted": "FLOW-PWD-003",
+    "workflow.password_settings_entry_unavailable": "FLOW-PWD-004",
     "workflow.retry_blocked": "FLOW-RETRY-001",
     "workflow.unsupported": "FLOW-UNSUPPORTED-001",
     "unknown.unclassified": "UNK-000",
@@ -662,6 +705,7 @@ _DISPLAY_SUMMARIES = {
     "user.interrupted": "任务已取消",
     "service.interrupted": "服务重启导致任务中断",
     "account.deactivated": "账号已停用",
+    "account.target_unavailable": "账号已删除或提链状态已重置",
     "task.pending": "套餐查询等待执行",
     "request_unknown": "远端结果待核验",
     "external.proxy": "代理获取失败",
@@ -671,11 +715,13 @@ _DISPLAY_SUMMARIES = {
     "external.email.email_butler_prepare": "邮箱准备失败",
     "external.email.service_unavailable": "邮箱服务暂时不可用",
     "external.email.account_missing": "邮箱服务账号不存在",
+    "external.extract_link.rejected": "提链创建请求被远端拒绝",
     "external.openai": "OpenAI / Codex 服务异常",
     "external.openai.account_creation_rejected": "账号创建被上游拒绝",
     "external.openai.credential_expired": "授权已失效，请刷新 AT",
     "external.openai.auth_reauth_required": "授权已失效，请重新登录",
     "external.openai.auth_route_rejected": "授权路由被拒绝",
+    "external.openai.plan_forbidden": "套餐查询接口返回 HTTP 403",
     "external.openai.email_change_account_too_new": "账号注册时间不足，暂不允许换绑",
     "external.openai.email_change_forbidden": "当前会话不允许换绑邮箱",
     "external.openai.email_change_recent_login": "Recent Login 认证失败",
@@ -689,11 +735,13 @@ _DISPLAY_SUMMARIES = {
     "internal.storage": "数据存储异常",
     "internal.code": "本地代码错误",
     "internal.browser": "浏览器自动化异常",
+    "internal.request_prepare": "请求在本地准备阶段失败",
     "workflow.verification": "验证流程失败",
     "workflow.page_state": "页面未进入下一步",
     "workflow.password_entry_not_hydrated": "密码入口页面未加载",
     "workflow.password_entry_not_offered": "当前流程未提供密码入口",
     "workflow.password_entry_recovery_exhausted": "密码入口页面恢复失败",
+    "workflow.password_settings_entry_unavailable": "账号设置页没有添加密码入口",
     "workflow.retry_blocked": "原邮箱不可用，不能安全重试",
     "workflow.unsupported": "当前功能不支持",
     "unknown.unclassified": "未知错误",
@@ -870,17 +918,180 @@ def _registration_error_projection(
     )
 
 
+_UNKNOWN_CAUSE_DETAILS: dict[str, tuple[str, str]] = {
+    "access_token_missing": ("AUTH-AT-001", "账号缺少可用 AT"),
+    "auth_page_unknown": ("AUTH-PAGE-001", "认证页面状态未识别"),
+    "auth_route_rejected": ("OA-AUTH-000", "授权路由被拒绝"),
+    "email_otp_failed": ("MAIL-OTP-001", "邮箱验证码验证未完成"),
+    "email_otp_send_failed": ("MAIL-SEND-001", "验证码发送请求失败"),
+    "email_otp_send_rejected": ("MAIL-SEND-002", "验证码发送请求被拒绝"),
+    "email_otp_send_unconfirmed": ("MAIL-SEND-003", "验证码发送结果未获确认"),
+    "email_otp_send_no_response": ("MAIL-SEND-004", "验证码发送请求未收到响应"),
+    "email_otp_send_unknown": ("MAIL-SEND-005", "验证码发送结果未确认"),
+    "email_otp_no_mail": ("MAIL-OTP-005", "等待窗口内未收到验证码邮件"),
+    "email_change_verify_prepare_failed": (
+        "OA-EMAIL-VERIFY-001", "新邮箱验证请求在本地准备阶段失败",
+    ),
+    "extract_create_invalid_json": ("OA-EXTRACT-001", "提链创建响应无法解析"),
+    "extract_create_missing_job_id": ("OA-EXTRACT-002", "提链创建响应缺少任务 ID"),
+    "extract_create_http_unknown": ("OA-EXTRACT-HTTP", "提链创建请求返回 HTTP 错误"),
+    "extract_create_transport_error": ("NET-EXTRACT-001", "提链创建网络请求中断"),
+    "mfa_code_missing": ("AUTH-MFA-001", "MFA 验证码不可用"),
+    "mfa_factor_missing": ("AUTH-MFA-002", "MFA 验证方式不可用"),
+    "mfa_issue_challenge_failed": ("AUTH-MFA-003", "MFA 挑战发起失败"),
+    "mfa_issue_challenge_invalid_response": ("AUTH-MFA-004", "MFA 挑战响应无效"),
+    "mfa_rejected": ("AUTH-MFA-005", "MFA 验证被拒绝"),
+    "mfa_secret_invalid": ("AUTH-MFA-006", "本地 MFA 密钥格式无效"),
+    "mfa_secret_missing": ("AUTH-MFA-007", "本地缺少 MFA 密钥"),
+    "mfa_verify_failed": ("AUTH-MFA-008", "MFA 验证请求未完成"),
+    "mfa_verify_invalid_response": ("AUTH-MFA-009", "MFA 验证响应无效"),
+    "network_preflight_failed": ("NET-ROUTE-001", "认证线路预检失败"),
+    "oauth_callback_failed": ("AUTH-CALLBACK-001", "OAuth 回调未完成"),
+    "password_missing": ("AUTH-PWD-001", "本地缺少账号密码"),
+    "password_rejected": ("AUTH-PWD-002", "账号密码被拒绝"),
+    "password_rejected_email_fallback_failed": ("AUTH-PWD-003", "密码被拒且邮箱兜底未完成"),
+    "password_result_unknown": ("AUTH-PWD-004", "密码提交结果未确认"),
+    "password_sentinel_failed": ("AUTH-PWD-005", "密码认证前置检查失败"),
+    "password_verify_failed": ("AUTH-PWD-006", "密码验证请求未完成"),
+    "password_verify_invalid_response": ("AUTH-PWD-007", "密码验证响应无效"),
+    "passwordless_fallback_unavailable": ("AUTH-PWD-008", "邮箱免密兜底不可用"),
+    "post_register_failure": ("OA-REG-POST-001", "注册请求之后流程失败（细项未记录）"),
+    "protocol_network_error": ("NET-AUTH-001", "协议认证网络请求失败"),
+    "protocol_v2_unknown_error": ("AUTH-PROTOCOL-001", "协议认证异常（细项未记录）"),
+    "refresh_driver_exception": ("SYS-REFRESH-001", "AT 刷新执行异常"),
+    "registration_checkpoint_failed": ("OA-REG-CHECKPOINT-001", "注册检查点本地写入失败"),
+    "user_register_continue_url_missing": ("OA-REG-RESPONSE-001", "账号创建响应缺少后续验证地址"),
+    "user_register_result_unknown": ("OA-REG-REQUEST-001", "账号创建请求结果未确认"),
+}
+
+
+# 注册驱动可以写入 Run 的固定原因码；拒绝从异常正文推断或透传任意字符串。
+REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES = frozenset({
+    "user_register_result_unknown",
+    "registration_checkpoint_failed",
+    "user_register_continue_url_missing",
+    "email_otp_send_rejected",
+    "email_otp_send_failed",
+    "email_otp_send_unconfirmed",
+    "email_otp_send_no_response",
+    "email_otp_send_unknown",
+    "email_otp_no_mail",
+    "post_register_failure",
+})
+
+
+def _request_unknown_cause(summary: dict[str, Any], *, task_type: str) -> dict[str, str | None]:
+    """远端结果待核验与失败原因分别表达；只读取已脱敏的结构化诊断。"""
+    diagnostics = summary.get("auth_diagnostics")
+    diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
+    code = str(summary.get("cause_code") or "").strip()
+    if code == "password_rejected_email_fallback_failed":
+        inner_code = str(diagnostics.get("cause_code") or "").strip()
+        if inner_code in _UNKNOWN_CAUSE_DETAILS:
+            code = inner_code
+    operation = str(diagnostics.get("cause_operation") or diagnostics.get("operation") or "").strip()
+    failure_kind = str(diagnostics.get("cause_failure_kind") or diagnostics.get("failure_kind") or "").strip()
+    exception_type = str(diagnostics.get("exception_type") or "").strip()
+
+    if operation == "mfa_verify" and failure_kind == "transport_error":
+        if exception_type in {"Timeout", "ReadTimeout", "ConnectTimeout"}:
+            return {"cause_code": "mfa_verify_transport_timeout", "cause_display_code": "NET-MFA-001", "cause_summary": "MFA 验证请求超时"}
+        if exception_type in {"SSLError", "SSLCertVerificationError"}:
+            return {"cause_code": "mfa_verify_transport_ssl", "cause_display_code": "NET-MFA-002", "cause_summary": "MFA 验证 SSL 连接失败"}
+        return {"cause_code": "mfa_verify_transport_error", "cause_display_code": "NET-MFA-000", "cause_summary": "MFA 验证网络请求失败"}
+    if code == "email_otp_failed":
+        detail = {
+            "no_mail": ("MAIL-OTP-002", "未收到新的验证码邮件"),
+            "imap_error": ("MAIL-IMAP-001", "转发邮箱读取失败"),
+            "manual_timeout": ("MAIL-OTP-003", "等待手动验证码超时"),
+            "invalid_code": ("MAIL-OTP-004", "邮箱验证码被拒绝"),
+        }.get(failure_kind)
+        if detail:
+            return {"cause_code": code, "cause_display_code": detail[0], "cause_summary": detail[1]}
+    if code == "extract_create_http_unknown":
+        cause_diagnostics = summary.get("cause_diagnostics")
+        cause_diagnostics = cause_diagnostics if isinstance(cause_diagnostics, dict) else {}
+        status = cause_diagnostics.get("http_status")
+        if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+            return {"cause_code": code, "cause_display_code": "OA-EXTRACT-HTTP", "cause_summary": f"提链创建请求返回 HTTP {status}"}
+    if code == "email_change_verify_prepare_failed" and summary.get("remote_begin_accepted") is True:
+        return {
+            "cause_code": code,
+            "cause_display_code": "OA-EMAIL-VERIFY-001",
+            "cause_summary": "新邮箱验证请求在本地准备阶段失败；begin 已接受，待核验",
+        }
+    if code in _UNKNOWN_CAUSE_DETAILS:
+        display_code, cause_summary = _UNKNOWN_CAUSE_DETAILS[code]
+        return {"cause_code": code, "cause_display_code": display_code, "cause_summary": cause_summary}
+    if str(summary.get("error_category") or "").strip() == "email":
+        auth_method = str(summary.get("auth_method") or "").strip()
+        if task_type in {"token_refresh", "live_check"} and auth_method in {"email_otp", "legacy_email_otp"}:
+            return {"cause_code": "email_stage_unfinished", "cause_display_code": "MAIL-VERIFY-000", "cause_summary": "邮箱验证未完成（细项未记录）"}
+        return {"cause_code": "email_stage_error", "cause_display_code": "MAIL-STAGE-000", "cause_summary": "邮箱阶段异常（细项未记录）"}
+    if str(summary.get("error_category") or "").strip() == "auth":
+        return {"cause_code": "auth_stage_unfinished", "cause_display_code": "AUTH-VERIFY-000", "cause_summary": "登录认证未完成（细项未记录）"}
+    return {"cause_code": None, "cause_display_code": None, "cause_summary": "具体失败原因未记录"}
+
+
 def classify_task_error(
     message: Any,
     *,
     stage: str = "",
     task_type: str = "",
     error_code: str = "",
-) -> dict[str, str] | None:
+    result_summary: dict[str, Any] | None = None,
+    task_status: str = "",
+) -> dict[str, Any] | None:
     """把原始错误投影成前端可读的稳定分类；空错误返回 ``None``。"""
     raw = str(message or "").strip()
     if not raw:
         return None
+    summary_data = result_summary if isinstance(result_summary, dict) else {}
+    unknown_outcome = (
+        str(task_status or "").strip().lower() == "request_unknown"
+        or str(error_code or "").strip().lower() == "request_unknown"
+        or str(summary_data.get("outcome") or "").strip().lower() == "request_unknown"
+    )
+    if unknown_outcome:
+        projection = _error_projection(
+            TaskErrorCode.REQUEST_UNKNOWN.value,
+            "external", "远端待核验", "远端请求结果待确认",
+            stage=stage, error_code=error_code, raw=raw,
+        )
+        # 原始分类只作诊断来源，安全围栏始终是本次 Run 的主错误码。
+        projection["error_code"] = TaskErrorCode.REQUEST_UNKNOWN.value
+        projection.update(_request_unknown_cause(summary_data, task_type=str(task_type or "").strip().lower()))
+        return projection
+    if str(task_type or "").strip().lower() == "plan_check" and raw.upper() == "HTTP 403":
+        return _error_projection(
+            TaskErrorCode.EXTERNAL_OPENAI_PLAN_FORBIDDEN.value,
+            "external", "OpenAI / ChatGPT", "套餐查询接口被拒绝",
+            stage=stage, error_code=error_code, raw=raw,
+        )
+    if str(task_type or "").strip().lower() == "extract_link":
+        rejected = re.fullmatch(
+            r"(?:ExtractCreateRejected:\s*)?提链创建请求被远端拒绝（HTTP ([1-5]\d{2})）",
+            raw,
+        )
+        if rejected:
+            status = rejected.group(1)
+            return _error_projection(
+                TaskErrorCode.EXTERNAL_EXTRACT_REJECTED.value,
+                "external", "提链服务", "创建请求被拒绝",
+                stage=stage, error_code=error_code, raw=raw,
+                summary=f"提链创建请求被远端拒绝（HTTP {status}）",
+                display_code=f"LINK-HTTP-{status}",
+            )
+    if str(task_type or "").strip().lower() == "email_change" and raw in {
+        "邮箱准备失败: begin 请求本地准备失败",
+        "邮箱换绑失败: begin 请求本地准备失败",
+    }:
+        return _error_projection(
+            TaskErrorCode.INTERNAL_REQUEST_PREPARE.value,
+            "internal", "本地流程", "请求准备失败",
+            stage=stage, error_code=error_code, raw=raw,
+            summary="邮箱换绑 begin 请求在本地准备阶段失败",
+        )
     # 以实际错误和失败阶段为准；不能因为任务类型是 codex_retry，就把其中的代理、
     # 数据库或页面状态错误统统误归为 OpenAI 上游错误。
     haystack = f"{stage} {raw}".lower()
@@ -926,6 +1137,7 @@ def classify_task_error(
 
 __all__ = [
     "ErrorCode",
+    "REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES",
     "TaskErrorCode",
     "classify_task_error",
     "is_request_unknown",

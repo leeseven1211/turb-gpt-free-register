@@ -22,6 +22,7 @@ from typing import Any
 from core import codex_retry_service, db, task_run_log
 from core.operations import task_gateway as account_task_store
 from core.registration_postprocess import summarize_postprocess, decide_recovery
+from core.task_errors import REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES
 
 logger = logging.getLogger(__name__)
 
@@ -262,7 +263,20 @@ def _advance_registration_checkpoint(stage: str, state: str, detail: str | None 
         logger.exception("[Job %s] 写入 Registration checkpoint 失败: %s/%s", getattr(_THREAD_CTX, "job_id", None), stage, state)
 
 
-def _mark_registration_request_unknown(message: str) -> None:
+def _registration_request_unknown_facts(result: dict | None) -> dict[str, object]:
+    """只保存注册驱动的固定原因码和明确响应布尔值。"""
+    facts: dict[str, object] = {"outcome": "request_unknown"}
+    if not isinstance(result, dict):
+        return facts
+    cause_code = result.get("cause_code")
+    if isinstance(cause_code, str) and cause_code in REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES:
+        facts["cause_code"] = cause_code
+    if type(result.get("register_response_confirmed")) is bool:
+        facts["register_response_confirmed"] = result["register_response_confirmed"]
+    return facts
+
+
+def _mark_registration_request_unknown(message: str, *, facts: dict[str, object] | None = None) -> None:
     """Persist an ambiguous password submit without allowing a fresh registration."""
     attempt_id = getattr(_THREAD_CTX, "attempt_id", None)
     if attempt_id is None:
@@ -270,14 +284,16 @@ def _mark_registration_request_unknown(message: str) -> None:
     try:
         from core.storage import registration
 
+        safe_facts = _registration_request_unknown_facts(facts)
         registration.mark_request_unknown(
             int(attempt_id),
             target="identity",
+            identity_response_confirmed=safe_facts.get("register_response_confirmed") is True,
             run_id=getattr(_THREAD_CTX, "run_id", None),
             job_id=getattr(_THREAD_CTX, "job_id", None),
             execution_id=getattr(_THREAD_CTX, "execution_id", None),
             message=str(message or "密码提交结果待确认")[:1000],
-            detail={"next_action": "reconcile_session"},
+            detail={"next_action": "reconcile_session", **safe_facts},
         )
     except Exception:
         logger.exception("[Job %s] 写入密码提交 request_unknown 失败", getattr(_THREAD_CTX, "job_id", None))
@@ -351,11 +367,23 @@ def _finish_registration_run(status: str, *, error_message: str | None = None, r
         registration.finish_run(
             int(run_id),
             status=str(status or "failed"),
+            error_code="request_unknown" if status == "request_unknown" else None,
             error_message=error_message,
             result_summary=result_summary or {},
         )
     except Exception:
         logger.exception("[Job %s] 收口 RegistrationRun 失败: run_id=%s", getattr(_THREAD_CTX, "job_id", None), run_id)
+        return
+    # 旧 job 先终态化，RegistrationRun 后收口；再同步一次才能把安全原因
+    # 带到统一任务中心的当前任务与历史 Run。
+    job_id = getattr(_THREAD_CTX, "job_id", None)
+    if job_id is not None:
+        try:
+            from core import operation_task_store
+
+            operation_task_store.sync_registration_job(int(job_id))
+        except Exception:
+            logger.exception("[Job %s] 同步 RegistrationRun 原因到任务中心失败", job_id)
 
 
 def _mark_registration_result(result: dict | None) -> None:
@@ -1356,6 +1384,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
 
     email: str | None = None
     proxy_lease = None
+    unknown_facts: dict[str, object] = {}
     try:
         with _JobLogContext(log_file, task_id=job_id):
             from core.registration.dispatcher import run_registration
@@ -1623,8 +1652,16 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 )
                 log_logger.warning(f"[Job {job_id}] 已按用户请求停止")
                 return
+            # 本地已保存 account_id 只说明有可续跑检查点；远端后续结果未知
+            # 必须优先保留待核验围栏，不能按部分成功收口。
+            remote_unknown = bool(
+                result_is_dict
+                and result.get("request_unknown")
+                and not _is_pre_account_transport_failure(result)
+            )
             registration_succeeded = bool(
                 result_is_dict
+                and not remote_unknown
                 and (
                     result.get("registration_success")
                     or result.get("success")
@@ -1741,7 +1778,10 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 manual_reconcile = bool(isinstance(result, dict) and result.get("manual_reconcile"))
                 pre_account_transport_failure = _is_pre_account_transport_failure(result)
                 if request_unknown and not pre_account_transport_failure:
-                    _mark_registration_request_unknown(str(err or "密码提交结果待确认"))
+                    unknown_facts = _registration_request_unknown_facts(result)
+                    _mark_registration_request_unknown(
+                        str(err or "密码提交结果待确认"), facts=unknown_facts,
+                    )
                 if manual_reconcile:
                     _mark_registration_manual_reconcile(
                         str(err or "远端账号已存在，需要人工协调"),
@@ -1820,7 +1860,10 @@ def _run_one_job(job_id: int, log_file: str) -> None:
         _finish_registration_run(
             final_status,
             error_message=str(final_job.get("error") or "")[:2000] or None,
-            result_summary={"job_id": job_id, "status": final_status},
+            result_summary={
+                "job_id": job_id, "status": final_status,
+                **(unknown_facts if final_status == "request_unknown" else {}),
+            },
         )
         if proxy_lease is not None:
             try:
@@ -2319,7 +2362,7 @@ def _roxy_resume_facts_match(
     *,
     root_id: int,
 ) -> bool:
-    """只允许同一待验证账号、原邮箱和原 Attempt 的 Roxy 续跑。"""
+    """只允许同一待验证账号、原邮箱和原 Attempt 的续跑。"""
     if not account or not attempt:
         return False
     extra = _account_extra(account)
@@ -2365,18 +2408,31 @@ def _roxy_resume_facts_match(
     for address in (
         source.get("email"),
         account.get("email"),
-        attempt.get("email"),
         attempt.get("email_snapshot"),
     ):
         if str(address or "").strip().casefold() != expected_email:
             return False
-    if str(attempt.get("checkpoint") or "").strip().lower() in {
+    legacy_attempt_email = str(attempt.get("email") or "").strip()
+    if legacy_attempt_email and legacy_attempt_email.casefold() != expected_email:
+        return False
+    attempt_checkpoint = str(attempt.get("checkpoint") or "").strip().lower()
+    if attempt_checkpoint in {
         "core_persisted", "completed", "failed", "manual_reconcile",
     }:
         return False
-    if str(attempt.get("target_status") or "").strip().lower() in {
+    if attempt_checkpoint not in {
+        "password_confirmed", "otp_started", "otp_confirmed",
+        "account_request_started", "account_confirmed", "token_obtained", "postprocessing",
+    }:
+        return False
+    attempt_target = str(attempt.get("target_status") or "").strip().lower()
+    if attempt_target in {
         "completed", "deactivated", "manual_reconcile",
     }:
+        return False
+    if attempt_target == "request_unknown" and str(
+        attempt.get("remote_identity_state") or ""
+    ).strip().lower() != "confirmed":
         return False
     return True
 
@@ -2416,6 +2472,21 @@ def _build_retry_info(
         })
         return info
 
+    attempt_target = str((attempt or {}).get("target_status") or "").strip().lower()
+    if status == "manual_reconcile" or attempt_target == "manual_reconcile":
+        info["retry_reason"] = "注册 Attempt 需要人工对账，不能重新提交注册"
+        return info
+    if status == "request_unknown" or attempt_target == "request_unknown":
+        root_id = _root_job_id_for_job(job)
+        can_resume = bool(
+            account
+            and root_id == int(job.get("id") or 0)
+            and _roxy_resume_facts_match(job, job, account, attempt, root_id=root_id)
+        )
+        if not can_resume:
+            info["retry_reason"] = "远端注册结果待核验，不能从头重跑；仅同一 Attempt 的待验证账号可续跑"
+            return info
+
     account_status = str((account or {}).get("account_status") or "").strip().lower()
     codex_status = str((account or {}).get("codex_status") or "").strip().lower()
     if account_status == "deactivated" or codex_status == "deactivated":
@@ -2441,6 +2512,12 @@ def _build_retry_info(
         return info
     pending_password = _pending_registration_password(account)
     if account and pending_password:
+        root_id = _root_job_id_for_job(job)
+        if root_id != int(job.get("id") or 0) or not _roxy_resume_facts_match(
+            job, job, account, attempt, root_id=root_id,
+        ):
+            info["retry_reason"] = "待验证账号与原注册 Attempt 未核验，不能续跑"
+            return info
         info.update({
             "display_status": "password_confirmation_pending",
             "retryable": True,
@@ -2677,10 +2754,16 @@ def retry_job(
         return {"ok": False, "error": _ATTEMPT_READ_FAILED_RETRY_REASON, "status": 409}
     if _attempt_is_deactivated(attempt):
         return {"ok": False, "error": _DEACTIVATED_ATTEMPT_RETRY_REASON, "status": 409}
+    if action == "registration_resume" and not _roxy_resume_facts_match(
+        source, root_job, account, attempt, root_id=root_id,
+    ):
+        return {
+            "ok": False,
+            "error": "续跑仅适用于原邮箱、保存密码及注册 Attempt 均可核验的待验证账号",
+            "status": 409,
+        }
     if registration_driver == "roxy":
-        if action != "registration_resume" or not _roxy_resume_facts_match(
-            source, root_job, account, attempt, root_id=root_id,
-        ):
+        if action != "registration_resume":
             return {
                 "ok": False,
                 "error": "Roxy 续跑仅适用于原邮箱、保存密码及注册 Attempt 均可核验的待验证账号",

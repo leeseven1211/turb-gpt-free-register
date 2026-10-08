@@ -204,6 +204,67 @@ class ProtocolV2LivenessTests(unittest.TestCase):
         self.assertFalse(result["roxy_fallback_allowed"])
         password.assert_not_called()
 
+    def test_password_email_fallback_preserves_inner_safe_cause(self):
+        from config import account as account_config
+        from core import live_check_service
+        from core import protocol_v2_liveness as v2
+
+        rejected = v2.ProtocolV2AuthError("password_rejected", roxy_fallback_allowed=False)
+        no_mail = v2.ProtocolV2AuthError("email_otp_failed", category="email", roxy_fallback_allowed=False)
+        no_mail.diagnostics = {
+            "operation": "email_otp",
+            "failure_kind": "no_mail",
+            "exception_type": "ForwardIMAPNoMailTimeout",
+        }
+        original = _Session()
+        fallback = _Session()
+        with (
+            patch.object(account_config, "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK", True),
+            patch.object(v2, "get_account_login_credentials", return_value=("saved-password", "")),
+            patch.object(v2, "_network_preflight_with_retry", return_value=(original, "authorize")),
+            patch.object(v2, "follow_authorize", return_value="https://auth.openai.com/log-in/password"),
+            patch.object(v2, "_password_verify", side_effect=rejected),
+            patch.object(v2, "_start_email_session", return_value=(fallback, 123.0)),
+            patch.object(v2, "_complete_email_otp", side_effect=no_mail),
+        ):
+            result = v2.refresh_access_token("account@example.com", proxy="")
+
+        self.assertEqual("password_rejected_email_fallback_failed", result["error"])
+        self.assertEqual("email_otp_failed", result["auth_diagnostics"]["cause_code"])
+        self.assertEqual("no_mail", result["auth_diagnostics"]["cause_failure_kind"])
+        self.assertEqual("email_otp", result["auth_diagnostics"]["cause_operation"])
+        self.assertEqual("rejected", result["password_auth_status"])
+        self.assertEqual("password_rejected_email_fallback_failed", result["auth"]["code"])
+        self.assertFalse(live_check_service._refresh_result_is_rejected(result))
+
+    def test_unhandled_auth_exception_keeps_safe_phase_without_raw_message(self):
+        from core import protocol_v2_liveness as v2
+
+        for after_boundary in (False, True):
+            with self.subTest(after_boundary=after_boundary):
+                private_message = "private-token private-password"
+                with (
+                    patch.object(v2, "get_account_login_credentials", return_value=("saved-password", "")),
+                    patch.object(
+                        v2,
+                        "_network_preflight_with_retry",
+                        side_effect=RuntimeError(private_message) if not after_boundary else None,
+                        return_value=(_Session(), "authorize"),
+                    ),
+                    patch.object(v2, "follow_authorize", side_effect=RuntimeError(private_message)),
+                ):
+                    result = v2.refresh_access_token("account@example.com", proxy="")
+                self.assertEqual(
+                    "protocol_v2_unknown_error" if after_boundary else "network_preflight_failed",
+                    result["error"],
+                )
+                self.assertEqual(
+                    "protocol_v2_auth" if after_boundary else "network_preflight",
+                    result["auth_diagnostics"]["operation"],
+                )
+                self.assertEqual("RuntimeError", result["auth_diagnostics"]["exception_type"])
+                self.assertNotIn(private_message, json.dumps(result))
+
     def test_email_auth_failure_is_reported_as_email_failure_not_password_failure(self):
         from core import live_check_service
 

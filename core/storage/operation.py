@@ -21,7 +21,7 @@ from core import postgres_store, record_store
 from core import task_run_log
 from core.operations import task_gateway as account_task_store
 from core.operation_runtime import OperationAccountDeactivated
-from core.task_errors import classify_task_error
+from core.task_errors import REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES, classify_task_error
 from core.task_progress import build_progress_snapshot
 from core.task_stages import flow_for, normalize_stage, normalize_step_state
 
@@ -918,6 +918,7 @@ def _apply_current_run_projection(task: dict, run: dict | None) -> dict:
         task["error_category"] = run.get("error_category")
         task["error_code"] = run.get("error_code")
         task["error_message"] = run.get("error_message")
+    task["result_summary"] = run.get("result_summary")
     return task
 
 
@@ -1000,13 +1001,39 @@ def _upsert_attempt(cur, *, root_job_id: int, job: dict, account: dict | None) -
                 ELSE {_table('registration_attempts')}.email_snapshot END,
             account_id=COALESCE(EXCLUDED.account_id, {_table('registration_attempts')}.account_id),
             checkpoint=CASE WHEN COALESCE(array_position(ARRAY['created','email_claimed','auth_started','password_request_started','password_confirmed','otp_started','otp_confirmed','account_request_started','account_confirmed','token_obtained','core_persisted','postprocessing','completed','manual_reconcile','failed']::text[], {_table('registration_attempts')}.checkpoint), 0) >= COALESCE(array_position(ARRAY['created','email_claimed','auth_started','password_request_started','password_confirmed','otp_started','otp_confirmed','account_request_started','account_confirmed','token_obtained','core_persisted','postprocessing','completed','manual_reconcile','failed']::text[], EXCLUDED.checkpoint), 0) THEN {_table('registration_attempts')}.checkpoint ELSE EXCLUDED.checkpoint END,
-            remote_identity_state=CASE WHEN EXCLUDED.remote_identity_state IN ('unknown','') OR ({_table('registration_attempts')}.remote_identity_state='request_unknown' AND EXCLUDED.remote_identity_state='unknown') THEN {_table('registration_attempts')}.remote_identity_state ELSE EXCLUDED.remote_identity_state END,
-            remote_account_state=CASE WHEN EXCLUDED.remote_account_state IN ('unknown','') OR ({_table('registration_attempts')}.remote_account_state='request_unknown' AND EXCLUDED.remote_account_state='unknown') THEN {_table('registration_attempts')}.remote_account_state ELSE EXCLUDED.remote_account_state END,
+            remote_identity_state=CASE WHEN
+                {_table('registration_attempts')}.remote_identity_state='confirmed'
+                AND EXCLUDED.remote_identity_state<>'confirmed'
+                THEN {_table('registration_attempts')}.remote_identity_state
+                WHEN {_table('registration_attempts')}.remote_identity_state='request_unknown'
+                AND EXCLUDED.remote_identity_state IN ('unknown','','not_started')
+                THEN {_table('registration_attempts')}.remote_identity_state
+                WHEN EXCLUDED.remote_identity_state IN ('unknown','')
+                THEN {_table('registration_attempts')}.remote_identity_state
+                ELSE EXCLUDED.remote_identity_state END,
+            remote_account_state=CASE WHEN
+                {_table('registration_attempts')}.remote_account_state='confirmed'
+                AND EXCLUDED.remote_account_state<>'confirmed'
+                THEN {_table('registration_attempts')}.remote_account_state
+                WHEN {_table('registration_attempts')}.remote_account_state='request_unknown'
+                AND EXCLUDED.remote_account_state IN ('unknown','','not_started')
+                THEN {_table('registration_attempts')}.remote_account_state
+                WHEN EXCLUDED.remote_account_state IN ('unknown','')
+                THEN {_table('registration_attempts')}.remote_account_state
+                ELSE EXCLUDED.remote_account_state END,
             local_account_state=CASE WHEN {_table('registration_attempts')}.local_account_state IN ('persisted','saved') AND EXCLUDED.local_account_state IN ('missing','checkpoint_saved') THEN {_table('registration_attempts')}.local_account_state ELSE EXCLUDED.local_account_state END,
             -- 永久失效是不可逆事实。兼容任务同步时没有 account 行，不能把
             -- 已停用 Attempt 回写成 not_created 并重新开放注册重试。
-            target_status=CASE WHEN {_table('registration_attempts')}.target_status='deactivated'
-                THEN {_table('registration_attempts')}.target_status ELSE EXCLUDED.target_status END,
+            target_status=CASE
+                WHEN {_table('registration_attempts')}.target_status='deactivated'
+                THEN {_table('registration_attempts')}.target_status
+                WHEN {_table('registration_attempts')}.target_status='request_unknown'
+                    AND (
+                        %s NOT IN ('success','partial_success')
+                        OR EXCLUDED.target_status IN ('not_created','attention_required','request_unknown')
+                    )
+                THEN {_table('registration_attempts')}.target_status
+                ELSE EXCLUDED.target_status END,
             updated_at=EXCLUDED.updated_at,
             completed_at=COALESCE(EXCLUDED.completed_at, {_table('registration_attempts')}.completed_at),
             data={_table('registration_attempts')}.data || EXCLUDED.data
@@ -1023,7 +1050,7 @@ def _upsert_attempt(cur, *, root_job_id: int, job: dict, account: dict | None) -
             or _legacy_registration_timestamp(job.get("completed_at")) or _now(),
             _legacy_registration_timestamp(job.get("completed_at"))
             if state["target_status"] == "account_available" else None,
-            _json(attempt_data),
+            _json(attempt_data), _status(job.get("status")),
         ),
     )
     return int(cur.fetchone()["id"])
@@ -1034,7 +1061,18 @@ def _registration_task_type(job: dict) -> str:
     return value if value in {"registration", "registration_resume", "codex_retry", "twofa_retry"} else "registration"
 
 
-def _next_registration_actions(job: dict, account: dict | None, target_status: str) -> list[dict[str, Any]]:
+def _next_registration_actions(
+    job: dict,
+    account: dict | None,
+    target_status: str,
+    *,
+    remote_identity_state: str = "not_started",
+    remote_account_state: str = "not_started",
+) -> list[dict[str, Any]]:
+    if str(target_status or "").strip().lower() in {
+        "request_unknown", "attention_required", "manual_reconcile",
+    }:
+        return []
     if _status(job.get("status")) not in _TERMINAL_STATUSES:
         return []
     if str(target_status or "").strip().lower() == "deactivated" or _account_is_deactivated(account):
@@ -1043,6 +1081,10 @@ def _next_registration_actions(job: dict, account: dict | None, target_status: s
     if target_status == "email_verification_pending":
         return [{"action": "registration_resume", "label": "继续邮箱验证", "source_job_id": source_job_id}]
     if not account:
+        if remote_identity_state in {"confirmed", "request_unknown"} or remote_account_state in {
+            "confirmed", "request_unknown",
+        }:
+            return []
         return [{"action": "registration_retry", "label": "重新执行注册", "source_job_id": source_job_id}]
     snapshot = job.get("config_snapshot")
     if not isinstance(snapshot, dict):
@@ -1080,6 +1122,28 @@ def _lookup_task(cur, source_system: str, source_id: str) -> int | None:
     return int(row["id"]) if row else None
 
 
+def _registration_run_cause_summary(cur, job_id: int, *, job_status: str) -> dict[str, Any]:
+    """只投影 RegistrationRun 中已持久化的固定原因事实。"""
+    if job_status != "request_unknown":
+        return {}
+    cur.execute(
+        f"SELECT status, result_summary FROM {_table('registration_runs')} WHERE job_id=%s",
+        (int(job_id),),
+    )
+    row = cur.fetchone()
+    if not row or str(row.get("status") or "") != "request_unknown":
+        return {}
+    source = _decode(row.get("result_summary"))
+    source = source if isinstance(source, dict) else {}
+    safe: dict[str, Any] = {"outcome": "request_unknown"}
+    cause_code = source.get("cause_code")
+    if isinstance(cause_code, str) and cause_code in REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES:
+        safe["cause_code"] = cause_code
+    if type(source.get("register_response_confirmed")) is bool:
+        safe["register_response_confirmed"] = source["register_response_confirmed"]
+    return safe
+
+
 def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], accounts_by_email: dict[str, dict]) -> int:
     job_id = int(job["id"])
     root_job_id = int(job.get("root_job_id") or job_id)
@@ -1092,23 +1156,16 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
     if account is None and job.get("email"):
         account = accounts_by_email.get(str(job.get("email") or "").strip().lower())
     attempt_id = _upsert_attempt(cur, root_job_id=root_job_id, job=job, account=account)
-    # _upsert_attempt 需要兼容旧任务的 account=None 投影，但不能覆盖已经
-    # 明确 deactivated 的事实。读取最终 Attempt 状态后再生成任务中心投影，
-    # 确保 operation_tasks 同样不会重新出现 registration_retry。
+    # Attempt 是已确认远端事实的来源。兼容旧 job 的 account=None 推断
+    # 不能覆盖 confirmed/request_unknown/deactivated 等持久化状态。
     cur.execute(
-        f"SELECT target_status FROM {_table('registration_attempts')} WHERE id=%s",
+        f"""SELECT checkpoint, remote_identity_state, remote_account_state,
+                   local_account_state, target_status
+              FROM {_table('registration_attempts')} WHERE id=%s""",
         (attempt_id,),
     )
     persisted_attempt = cur.fetchone()
-    if persisted_attempt and str(persisted_attempt.get("target_status") or "").strip().lower() == "deactivated":
-        state = dict(_account_state(account))
-        state["checkpoint"] = "failed"
-        state["remote_identity_state"] = "confirmed"
-        state["remote_account_state"] = "confirmed"
-        state["local_account_state"] = "persisted" if account else "none"
-        state["target_status"] = "deactivated"
-    else:
-        state = _account_state(account)
+    state = dict(persisted_attempt) if persisted_attempt else _account_state(account)
     projection_data = {
         "legacy_root_job_id": root_job_id,
         "latest_legacy_job_id": job_id,
@@ -1140,6 +1197,7 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
         job.get("error_message"), stage=str(job.get("progress_stage") or ""), task_type=task_type,
     )
     status = _status(job.get("status"))
+    safe_run_summary = _registration_run_cause_summary(cur, job_id, job_status=status)
     created_at = _legacy_registration_timestamp(job.get("created_at")) or _now()
     completed_at = (
         _legacy_registration_timestamp(job.get("completed_at"))
@@ -1149,7 +1207,11 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
     started_at = _legacy_registration_timestamp(job.get("started_at"))
     source_system = "registration_chains"
     task_uuid = _uuid("task", f"{source_system}:{task_source_id}")
-    next_actions = _next_registration_actions(job, account, state["target_status"])
+    next_actions = _next_registration_actions(
+        job, account, state["target_status"],
+        remote_identity_state=state["remote_identity_state"],
+        remote_account_state=state["remote_account_state"],
+    )
     cur.execute(
         f"""
         INSERT INTO {_table('operation_tasks')} (
@@ -1262,7 +1324,11 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
             str(job.get("job_uuid") or "") or None, normalize_stage(job.get("progress_stage")),
             _json(progress_steps), started_at, completed_at,
             _duration(started_at, completed_at), error_category, error_code,
-            error_message, _json({"account_id": (account or {}).get("id"), "retry_action": job.get("retry_action")}),
+            error_message, _json({
+                "account_id": (account or {}).get("id"),
+                "retry_action": job.get("retry_action"),
+                **safe_run_summary,
+            }),
             run_log_file, created_at,
             _json({
                 "legacy_job_id": job_id,
@@ -1334,7 +1400,11 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
     latest_status = str(latest["status"] or "queued") if latest else status
     latest_next_actions = (
         [] if latest_status in _ACTIVE_RUN_STATUSES
-        else _next_registration_actions(latest_job, account, state["target_status"])
+        else _next_registration_actions(
+            latest_job, account, state["target_status"],
+            remote_identity_state=state["remote_identity_state"],
+            remote_account_state=state["remote_account_state"],
+        )
     )
     cur.execute(
         f"""
@@ -2684,6 +2754,7 @@ def list_tasks(
                 "error_category": item.pop("__current_run_error_category", None),
                 "error_code": item.pop("__current_run_error_code", None),
                 "error_message": item.pop("__current_run_error_message", None),
+                "result_summary": item.get("result_summary"),
             }
             if current_run["id"] is not None:
                 current_run = _normalize_compatibility_run(current_run)

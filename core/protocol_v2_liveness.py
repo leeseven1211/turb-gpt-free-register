@@ -430,6 +430,7 @@ def _complete_email_otp(session, email: str, after_ts: float, *, auth_method: st
                 "ForwardIMAPNoMailTimeout": "no_mail",
                 "ForwardIMAPError": "imap_error",
                 "TimeoutError": "manual_timeout",
+                "EmailOtpInvalidError": "invalid_code",
             }.get(type(exc).__name__, "otp_error"),
             "exception_type": type(exc).__name__[:80],
         }
@@ -671,11 +672,31 @@ def _refresh_with_password(
                         retryable=fallback_exc.retryable,
                         roxy_fallback_allowed=False,
                     ) from fallback_exc
-                raise ProtocolV2AuthError(
+                error = ProtocolV2AuthError(
                     "password_rejected_email_fallback_failed",
                     category="email",
                     roxy_fallback_allowed=False,
-                ) from fallback_exc
+                )
+                # 外层保留“密码被拒绝且邮箱兜底失败”，同时记录内层安全码，
+                # 避免取码超时、回调异常等原因在任务摘要中消失。
+                error.diagnostics = {
+                    "operation": "password_email_fallback",
+                    "failure_kind": "fallback_failed",
+                    "exception_type": type(fallback_exc).__name__[:80],
+                }
+                if isinstance(fallback_exc, ProtocolV2AuthError):
+                    inner = fallback_exc.diagnostics if isinstance(fallback_exc.diagnostics, dict) else {}
+                    error.diagnostics["cause_code"] = fallback_exc.code
+                    for key, target in (
+                        ("operation", "cause_operation"),
+                        ("failure_kind", "cause_failure_kind"),
+                        ("http_status", "http_status"),
+                        ("response_observed", "response_observed"),
+                        ("exception_type", "exception_type"),
+                    ):
+                        if key in inner:
+                            error.diagnostics[target] = inner[key]
+                raise error from fallback_exc
 
         continue_url = _extract_continue_url(password_result)
         if _is_mfa(password_result, continue_url):
@@ -905,14 +926,24 @@ def refresh_access_token(
             result["password_auth_status"] = "rejected"
         return result
     except Exception as exc:
-        logger.warning("[查活][Protocol v2] 认证失败：%s: %s", type(exc).__name__, str(exc)[:160])
+        logger.warning("[查活][Protocol v2] 认证未完成：%s", type(exc).__name__)
         error = "protocol_v2_unknown_error" if remote_request_started else "network_preflight_failed"
+        status = _response_status(getattr(exc, "response", None))
+        diagnostics = {
+            "operation": "protocol_v2_auth" if remote_request_started else "network_preflight",
+            "failure_kind": "runtime_exception",
+            "exception_type": type(exc).__name__[:80],
+            "http_status": status,
+            "response_observed": status is not None,
+        }
         return {
             "ok": False,
             "status": "failed",
             "checked_at": checked_at,
             "error": error,
             "error_category": "runtime" if remote_request_started else "network",
+            "http_status": status,
+            "auth_diagnostics": diagnostics,
             "auth_method": "protocol_v2",
             "roxy_fallback_allowed": True,
             "remote_request_started": remote_request_started,

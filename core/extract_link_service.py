@@ -9,7 +9,8 @@ import threading
 import time
 import uuid
 from datetime import datetime
-from urllib.parse import quote, urlencode
+from urllib.error import HTTPError
+from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 try:
@@ -27,6 +28,37 @@ from core.operations import task_gateway as account_task_store
 from core.task_reporter import TaskReporter
 
 logger = logging.getLogger(__name__)
+
+
+class ExtractCreateRejected(RuntimeError):
+    """远端明确拒绝创建提链任务；只保留安全的 HTTP 状态码。"""
+
+    def __init__(self, http_status: int):
+        self.http_status = int(http_status)
+        self.response_observed = True
+        super().__init__(f"提链创建请求被远端拒绝（HTTP {self.http_status}）")
+
+
+class ExtractCreateResponseUnknown(RuntimeError):
+    """创建请求已有响应，但尚无法确认远端任务标识。"""
+
+    def __init__(self, http_status: int, *, failure_kind: str = "missing_job_id"):
+        self.http_status = int(http_status)
+        self.response_observed = True
+        self.failure_kind = failure_kind
+        message = (
+            "提链服务响应缺少可确认的 job_id，结果待确认"
+            if failure_kind == "missing_job_id"
+            else "提链服务响应格式异常，结果待确认"
+            if failure_kind == "invalid_json"
+            else f"提链创建请求 HTTP {self.http_status}，结果待确认"
+        )
+        super().__init__(message)
+
+
+def _create_http_rejected(status: int) -> bool:
+    # 408/409/425/429 仍可能对应超时、并发或限流中的未明结果。
+    return 400 <= status < 500 and status not in {408, 409, 425, 429}
 
 
 # API endpoint and timing are non-sensitive inputs needed by the durable
@@ -333,8 +365,13 @@ def _create_extract_job(
     payment_options: dict | None = None,
     api_base: str | None = None,
     request_timeout: int | float | None = None,
+    on_request_started=None,
 ) -> dict:
     base = _api_base(api_base)
+    parsed_base = urlsplit(base)
+    if parsed_base.scheme.lower() not in {"http", "https"} or not parsed_base.hostname:
+        raise ValueError("EXTRACT_LINK_API_BASE 地址无效")
+    request_url = f"{base}/api/extract"
     timeout = (
         _int_setting("EXTRACT_LINK_REQUEST_TIMEOUT", 30, 5, 300)
         if request_timeout is None
@@ -348,25 +385,42 @@ def _create_extract_job(
         if s is None:
             body = json.dumps(payload).encode("utf-8")
             req = Request(
-                f"{base}/api/extract",
+                request_url,
                 data=body,
                 headers={"Accept": "application/json", "Content-Type": "application/json"},
                 method="POST",
             )
-            with urlopen(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8", "replace") or "{}")
+            if callable(on_request_started):
+                on_request_started()
+            try:
+                with urlopen(req, timeout=timeout) as resp:
+                    status = int(getattr(resp, "status", 200) or 200)
+                    try:
+                        data = json.loads(resp.read().decode("utf-8", "replace") or "{}")
+                    except (AttributeError, TypeError, ValueError):
+                        raise ExtractCreateResponseUnknown(status, failure_kind="invalid_json") from None
+            except HTTPError as exc:
+                status = int(getattr(exc, "code", 0) or 0)
+                if _create_http_rejected(status):
+                    raise ExtractCreateRejected(status) from exc
+                raise ExtractCreateResponseUnknown(status, failure_kind="http_error") from exc
             if not isinstance(data, dict) or not data.get("job_id"):
-                raise RuntimeError(f"提链服务未返回 job_id: {data}")
+                raise ExtractCreateResponseUnknown(status)
             return data
-        resp = s.post(f"{base}/api/extract", json=payload, timeout=timeout)
+        if callable(on_request_started):
+            on_request_started()
+        resp = s.post(request_url, json=payload, timeout=timeout)
+        status = int(getattr(resp, "status_code", 0) or 0)
+        if status < 200 or status >= 300:
+            if _create_http_rejected(status):
+                raise ExtractCreateRejected(status)
+            raise ExtractCreateResponseUnknown(status, failure_kind="http_error")
         try:
             data = resp.json()
         except Exception:
-            data = {"error": (resp.text or "")[:300]}
-        if resp.status_code < 200 or resp.status_code >= 300:
-            raise RuntimeError(data.get("error") or f"HTTP {resp.status_code}")
+            raise ExtractCreateResponseUnknown(status, failure_kind="invalid_json") from None
         if not isinstance(data, dict) or not data.get("job_id"):
-            raise RuntimeError(f"提链服务未返回 job_id: {data}")
+            raise ExtractCreateResponseUnknown(status)
         return data
     finally:
         try:
@@ -738,11 +792,13 @@ def _run_extract(
         task_stage = "extract_link"
         reporter.stage("extract_link", "running", "正在创建提炼任务")
         _checkpoint(operation_context, "创建提链任务前检查取消状态")
-        request_id = None
-        if operation_context is not None:
+        def mark_remote_create_started() -> None:
+            nonlocal remote_boundary
+            if operation_context is None or remote_boundary is not None:
+                return
             request_id = f"extract-job:{operation_context.run_id}:{uuid.uuid4().hex}"
-            # This is the last durable action before the remote job-create
-            # request.  Never persist the AT, CDK, payment links, or raw body.
+            # 本地参数、请求对象及会话准备完成后，发送前记录远端 intent。
+            # 回执不得包含 AT、CDK、支付链接或原始正文。
             operation_context.remote_request_started(
                 "extract_job_create",
                 request_id=request_id,
@@ -776,9 +832,19 @@ def _run_extract(
                 link_type=link_type,
                 cdk=cdk,
                 payment_options=payment_options,
+                on_request_started=mark_remote_create_started,
                 **create_kwargs,
             )
         except account_task_store.OperationLeaseLost:
+            raise
+        except ExtractCreateRejected as exc:
+            if remote_boundary:
+                _record_extract_receipt(
+                    operation_context,
+                    remote_boundary,
+                    "rejected",
+                    {"response_observed": True, "http_status": exc.http_status},
+                )
             raise
         except OperationCancelled:
             if remote_boundary:
@@ -796,8 +862,10 @@ def _run_extract(
                     remote_boundary,
                     "unknown",
                     {
-                        "response_observed": False,
+                        "response_observed": bool(getattr(exc, "response_observed", False)),
                         "exception_type": type(exc).__name__,
+                        "http_status": getattr(exc, "http_status", None),
+                        "failure_kind": getattr(exc, "failure_kind", None),
                     },
                 )
             raise
@@ -1041,7 +1109,10 @@ def _run_extract(
                 logger.exception("[提链] 远端创建异常回执写入失败: account_id=%s", account_id)
         unknown = bool(job_id or _is_request_unknown_error(exc) or remote_unknown)
         reason = _format_failure_reason(exc, logs=logs, last_event=last_event)
-        explicit_remote_status = _explicit_remote_failure_status(last_event, reason)
+        explicit_remote_status = (
+            "failed" if isinstance(exc, ExtractCreateRejected)
+            else _explicit_remote_failure_status(last_event, reason)
+        )
         if explicit_remote_status:
             unknown = False
             remote_reason = _extract_error_message(last_event.get("data")) if last_event else ""
@@ -1064,8 +1135,31 @@ def _run_extract(
             result={}, link_type=link_type, job_id=job_id, ok=False,
         )
         failure_summary["remote_job_created"] = bool(job_id)
+        if isinstance(exc, ExtractCreateResponseUnknown):
+            failure_summary["cause_code"] = {
+                "http_error": "extract_create_http_unknown",
+                "invalid_json": "extract_create_invalid_json",
+                "missing_job_id": "extract_create_missing_job_id",
+            }.get(exc.failure_kind, "extract_create_response_unknown")
+            failure_summary["cause_diagnostics"] = {
+                "failure_kind": exc.failure_kind,
+                "http_status": exc.http_status,
+                "response_observed": True,
+            }
+        elif remote_boundary and not job_id and type(exc).__name__ in {
+            "Timeout", "TimeoutError", "ReadTimeout", "ConnectTimeout", "ConnectionError", "SSLError",
+        }:
+            failure_summary["cause_code"] = "extract_create_transport_error"
+            failure_summary["cause_diagnostics"] = {
+                "failure_kind": "transport_error",
+                "exception_type": type(exc).__name__,
+                "response_observed": False,
+            }
         if explicit_remote_status:
             failure_summary["remote_result_state"] = "rejected"
+        if isinstance(exc, ExtractCreateRejected):
+            failure_summary["cause_code"] = "extract_create_rejected"
+            failure_summary["http_status"] = exc.http_status
         stage_message = (
             "远端提炼结果待确认" if unknown
             else "当前支付方式不支持" if final_status == "unsupported"

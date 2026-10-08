@@ -777,6 +777,7 @@ def mark_request_unknown(
     attempt_id: int,
     *,
     target: str,
+    identity_response_confirmed: bool = False,
     run_id: int | None = None,
     job_id: int | None = None,
     execution_id: str | None = None,
@@ -797,10 +798,28 @@ def mark_request_unknown(
         required_checkpoint = "password_request_started" if field == "remote_identity_state" else "account_request_started"
         if CHECKPOINT_RANK.get(checkpoint, 0) < CHECKPOINT_RANK[required_checkpoint]:
             raise ValueError(f"{target} 请求未知前必须先写入 {required_checkpoint} checkpoint")
-        cur.execute(
-            f"UPDATE {_table('registration_attempts')} SET {field}='request_unknown', target_status='request_unknown', updated_at=%s WHERE id=%s",
-            (_now(), int(attempt_id)),
-        )
+        if field == "remote_identity_state":
+            # user/register 的明确成功响应是不可逆事实；后续邮箱验证未知
+            # 只影响账号完成状态，不能把已确认的身份重新写成未知。
+            cur.execute(
+                f"""
+                UPDATE {_table('registration_attempts')}
+                   SET remote_identity_state=CASE
+                           WHEN remote_identity_state='confirmed' OR %s THEN 'confirmed'
+                           ELSE 'request_unknown' END,
+                       remote_account_state=CASE
+                           WHEN %s AND remote_account_state<>'confirmed' THEN 'request_unknown'
+                           ELSE remote_account_state END,
+                       target_status='request_unknown', updated_at=%s
+                 WHERE id=%s
+                """,
+                (identity_response_confirmed is True, identity_response_confirmed is True, _now(), int(attempt_id)),
+            )
+        else:
+            cur.execute(
+                f"UPDATE {_table('registration_attempts')} SET {field}='request_unknown', target_status='request_unknown', updated_at=%s WHERE id=%s",
+                (_now(), int(attempt_id)),
+            )
         _insert_event(
             cur, attempt_id=int(attempt_id), run_id=run_id, job_id=job_id, checkpoint=checkpoint,
             event_type="request_unknown", level="WARNING", message=message or "远端请求结果未知",

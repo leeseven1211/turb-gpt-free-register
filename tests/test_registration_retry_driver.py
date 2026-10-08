@@ -48,6 +48,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
             "email_snapshot": "pending@example.test",
             "checkpoint": "otp_started",
             "target_status": "request_unknown",
+            "remote_identity_state": "confirmed",
             "remote_account_state": "request_unknown",
             "account_id": None,
         }

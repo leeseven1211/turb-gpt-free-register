@@ -357,6 +357,17 @@ class OpenAIRegistrationFlowTests(unittest.TestCase):
         })
         self.assertEqual(result["continue_url"], "/api/accounts/email-otp/send")
 
+    def test_register_rejection_log_excludes_response_body(self):
+        session = _ProtocolSession()
+        with (
+            patch.object(session, "post", return_value=_Response(status_code=400, text="private-token")),
+            self.assertLogs(openai_auth.logger, level="ERROR") as captured,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "HTTP 400"):
+                openai_auth.register_user(session, "user@example.com", "Password!123", "sentinel")
+
+        self.assertNotIn("private-token", " ".join(captured.output))
+
     def test_email_otp_send_accepts_relative_url_and_rotates_document_id(self):
         session = _ProtocolSession()
 
@@ -447,6 +458,31 @@ class OpenAIRegistrationFlowTests(unittest.TestCase):
         self.assertNotIn("private", str(raised.exception))
         self.assertNotIn("private", " ".join(captured.output))
         self.assertEqual(session.document_navigation_id, "document-1")
+
+    def test_about_you_failure_does_not_expose_response_body_or_redirect_query(self):
+        secret = "PRIVATE_RESPONSE_MARKER_1459"
+        session = _ProtocolSession()
+        session.get = lambda *_args, **_kwargs: _Response(status_code=403, text=secret)
+        with self.assertRaisesRegex(RuntimeError, "status=403") as raised:
+            openai_auth.navigate_about_you(session)
+        self.assertNotIn(secret, str(raised.exception))
+
+        session.get = lambda *_args, **_kwargs: _Response(
+            url=f"https://auth.openai.com/create-account/password?state={secret}",
+        )
+        with self.assertRaisesRegex(RuntimeError, "旧密码注册路径") as raised:
+            openai_auth.navigate_about_you(session)
+        self.assertNotIn(secret, str(raised.exception))
+
+    def test_create_account_failure_log_omits_response_body(self):
+        secret = "PRIVATE_RESPONSE_MARKER_2836"
+        session = _ProtocolSession()
+        session.post = lambda *_args, **_kwargs: _Response(status_code=403, text=secret)
+        with self.assertLogs("core.openai_auth", level="ERROR") as captured:
+            with self.assertRaisesRegex(RuntimeError, "HTTP 403"):
+                openai_auth.create_account(session, "Test User", "2000-01-01", "sentinel")
+        self.assertNotIn(secret, " ".join(captured.output))
+        self.assertIn("status=403", " ".join(captured.output))
 
     def test_validate_email_otp_forwards_both_sentinel_headers(self):
         session = _ProtocolSession()

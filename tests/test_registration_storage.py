@@ -88,6 +88,21 @@ class RegistrationFactsTests(PostgresTestCase):
         self.assertEqual(reconciled["checkpoint"], "manual_reconcile")
         self.assertEqual(reconciled["target_status"], "manual_reconcile")
 
+    def test_confirmed_register_response_stays_confirmed_when_later_result_is_unknown(self):
+        attempt = registration.create_attempt("confirmed-response@example.test")
+        attempt_id = int(attempt["id"])
+        registration.advance_checkpoint(attempt_id, "password_confirmed", remote_identity_state="confirmed")
+        unknown = registration.mark_request_unknown(
+            attempt_id,
+            target="identity",
+            identity_response_confirmed=True,
+            detail={"cause_code": "email_otp_no_mail"},
+        )
+        self.assertEqual("confirmed", unknown["remote_identity_state"])
+        self.assertEqual("request_unknown", unknown["remote_account_state"])
+        self.assertEqual("request_unknown", unknown["target_status"])
+        self.assertEqual("password_confirmed", unknown["checkpoint"])
+
     def test_startup_recovery_only_changes_active_registration_runs(self):
         attempt = registration.create_attempt("recovery@example.test")
         run = registration.start_run(int(attempt["id"]), execution_id="worker-1")

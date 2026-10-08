@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 import uuid
@@ -134,6 +135,68 @@ def _checkpoint(context, message: str = "用户手动停止维护任务") -> Non
             raise OperationCancelled(message)
 
 
+_SAFE_REFRESH_CAUSE_CODES = frozenset({
+    "access_token_missing", "account_deactivated", "auth_page_unknown",
+    "auth_route_rejected", "email_otp_failed", "email_otp_send_failed",
+    "mfa_code_missing", "mfa_factor_missing", "mfa_issue_challenge_failed",
+    "mfa_issue_challenge_invalid_response", "mfa_rejected", "mfa_secret_invalid",
+    "mfa_secret_missing", "mfa_verify_failed", "mfa_verify_invalid_response",
+    "network_preflight_failed", "oauth_callback_failed", "password_missing",
+    "password_rejected", "password_rejected_email_fallback_failed",
+    "password_result_unknown", "password_sentinel_failed",
+    "password_verify_failed", "password_verify_invalid_response",
+    "passwordless_fallback_unavailable", "protocol_network_error",
+    "protocol_v2_unknown_error", "refresh_driver_exception",
+})
+_SAFE_AUTH_DIAGNOSTIC_OPERATIONS = frozenset({
+    "email_otp", "email_otp_send", "mfa_issue_challenge", "mfa_verify",
+    "network_preflight", "password_email_fallback", "password_verify",
+    "protocol_v2_auth",
+})
+_SAFE_AUTH_FAILURE_KINDS = frozenset({
+    "fallback_failed", "http_error", "imap_error", "invalid_code", "manual_timeout",
+    "no_mail", "otp_error", "rejected", "runtime_exception", "transport_error",
+    "unconfirmed",
+})
+
+
+def _safe_refresh_cause_code(result: dict | None) -> str | None:
+    """只保存协议适配器定义的稳定码，不能把异常原文当作原因码。"""
+    value = result if isinstance(result, dict) else {}
+    for key in ("error_code", "error"):
+        code = str(value.get(key) or "").strip().lower()
+        if code in _SAFE_REFRESH_CAUSE_CODES:
+            return code
+    return None
+
+
+def _safe_refresh_auth_diagnostics(value: object) -> dict | None:
+    """把认证诊断限制为无凭据的字段和值，再写入任务事件和摘要。"""
+    if not isinstance(value, dict):
+        return None
+    safe: dict = {}
+    for key in ("operation", "cause_operation"):
+        text = str(value.get(key) or "").strip()
+        if text in _SAFE_AUTH_DIAGNOSTIC_OPERATIONS:
+            safe[key] = text
+    for key in ("failure_kind", "cause_failure_kind"):
+        text = str(value.get(key) or "").strip()
+        if text in _SAFE_AUTH_FAILURE_KINDS:
+            safe[key] = text
+    cause_code = str(value.get("cause_code") or "").strip()
+    if cause_code in _SAFE_REFRESH_CAUSE_CODES:
+        safe["cause_code"] = cause_code
+    exception_type = str(value.get("exception_type") or "").strip()
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", exception_type):
+        safe["exception_type"] = exception_type
+    status = value.get("http_status")
+    if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+        safe["http_status"] = status
+    if isinstance(value.get("response_observed"), bool):
+        safe["response_observed"] = value["response_observed"]
+    return safe or None
+
+
 def _refresh_result_is_unknown(result: dict | None) -> bool:
     """A refresh response without remote confirmation must remain reconcilable."""
     value = result if isinstance(result, dict) else {}
@@ -174,6 +237,8 @@ def _refresh_exception_is_unknown(exc: BaseException) -> bool:
 def _refresh_result_before_remote_boundary(result: dict | None) -> bool:
     """判断刷新结果是否明确发生在远端认证边界之前。"""
     value = result if isinstance(result, dict) else {}
+    if value.get("remote_request_started") is True:
+        return False
     if value.get("remote_request_started") is False:
         return True
     codes = {
@@ -195,6 +260,17 @@ def _refresh_result_is_rejected(result: dict | None) -> bool:
     if str(value.get("status") or "").strip().lower() == "deactivated":
         return True
     auth = value.get("auth") if isinstance(value.get("auth"), dict) else {}
+    final_codes = {
+        str(value.get(key) or "").strip().lower()
+        for key in ("error_code", "error", "status")
+    } | {
+        str(auth.get(key) or "").strip().lower()
+        for key in ("code", "status")
+    }
+    # 密码拒绝后进入邮箱兜底，后续失败并不能证明整条刷新已被远端拒绝。
+    # v2 会同时保留 password_auth_status=rejected，不能让这个步骤状态覆盖最终结果。
+    if "password_rejected_email_fallback_failed" in final_codes:
+        return False
     codes = [
         str(value.get(key) or "").strip().lower()
         for key in ("error_code", "error", "status", "password_auth_status")
@@ -207,7 +283,7 @@ def _refresh_result_is_rejected(result: dict | None) -> bool:
         "password_rejected",
         "passwordless_fallback_unavailable",
     )
-    return any(any(marker in code for marker in markers) for code in codes if code)
+    return any(code in markers for code in codes if code)
 
 
 def _mark_refresh_request_unknown(result: dict | None, error: str | None = None) -> dict:
@@ -529,7 +605,7 @@ def _report_protocol_v2_refresh(reporter: TaskReporter, result: dict) -> None:
             detail={
                 "error": result.get("error"),
                 "auth_method": auth_method,
-                "auth_diagnostics": result.get("auth_diagnostics"),
+                "auth_diagnostics": _safe_refresh_auth_diagnostics(result.get("auth_diagnostics")),
             },
         )
 
@@ -804,7 +880,15 @@ def _run_live_check(
                     },
                 )
                 return _mark_refresh_request_unknown(
-                    {}, f"刷新 AT 请求异常，结果待确认: {type(exc).__name__}: {str(exc)[:300]}"
+                    {
+                        "error": "refresh_driver_exception",
+                        "error_category": "runtime",
+                        "auth_diagnostics": {
+                            "operation": "protocol_v2_auth",
+                            "failure_kind": "runtime_exception",
+                            "exception_type": type(exc).__name__[:80],
+                        },
+                    },
                 )
 
             if not isinstance(remote_result, dict):
@@ -1264,6 +1348,7 @@ def _run_live_check(
                 "status": result.get("status"),
                 "http_status": result.get("http_status"),
                 "error_category": result.get("error_category"),
+                "cause_code": _safe_refresh_cause_code(result),
                 "checked_at": result.get("checked_at"),
                 "plan": (result.get("session") or {}).get("account", {}).get("planType"),
                 "live_check_driver": result.get("live_check_driver"),
@@ -1272,7 +1357,7 @@ def _run_live_check(
                 "auth_method": result.get("auth_method"),
                 "password_auth_status": result.get("password_auth_status"),
                 "fallback_used": result.get("fallback_used"),
-                "auth_diagnostics": result.get("auth_diagnostics"),
+                "auth_diagnostics": _safe_refresh_auth_diagnostics(result.get("auth_diagnostics")),
                 "fingerprint": result.get("fingerprint"),
                 "token_expired": result.get("token_expired"),
                 "needs_live_check": result.get("needs_live_check"),

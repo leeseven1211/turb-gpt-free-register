@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from urllib.parse import urlparse
 
@@ -77,6 +78,81 @@ def _classify_registration_continuation(page_type: str, continue_url: str | None
 _FINALIZE_SESSION_BACKOFF_BASE = 2.0
 
 
+def _protocol_registration_cause_code(
+    exc: BaseException,
+    error_text: str,
+    *,
+    register_accepted: bool,
+    checkpoint_account_id: int | None,
+    otp_send_in_flight: bool,
+) -> str:
+    """只用固定原因码描述失败，不把服务端正文或凭据写入任务结果。"""
+    if not register_accepted:
+        return (
+            "user_register_result_unknown"
+            if error_text.startswith("user/register 请求结果未知")
+            else "registration_failed"
+        )
+    if checkpoint_account_id is None:
+        return "registration_checkpoint_failed"
+    if error_text.startswith("user/register 响应缺少 continue_url"):
+        return "user_register_continue_url_missing"
+    for marker in (
+        "email_otp_send_rejected",
+        "email_otp_send_failed",
+        "email_otp_send_unconfirmed",
+    ):
+        if error_text.startswith(marker):
+            return marker
+    if otp_send_in_flight:
+        return "email_otp_send_no_response" if isinstance(exc, TimeoutError) else "email_otp_send_unknown"
+    if isinstance(exc, ForwardIMAPNoMailTimeout):
+        return "email_otp_no_mail"
+    return "post_register_failure"
+
+
+def _safe_protocol_registration_error(exc: BaseException, cause_code: str) -> str:
+    """仅保留固定阶段、异常类型和 HTTP 状态，不复制远端正文。"""
+    descriptions = {
+        "user_register_result_unknown": "账号创建请求结果待确认",
+        "registration_checkpoint_failed": "注册检查点本地写入失败",
+        "user_register_continue_url_missing": "账号创建响应缺少后续验证地址",
+        "email_otp_send_rejected": "验证码发送请求被拒绝",
+        "email_otp_send_failed": "验证码发送请求失败",
+        "email_otp_send_unconfirmed": "验证码发送结果未确认",
+        "email_otp_send_no_response": "验证码发送请求未收到响应",
+        "email_otp_send_unknown": "验证码发送结果待确认",
+        "email_otp_no_mail": "等待窗口内未收到验证码邮件",
+        "post_register_failure": "注册请求之后流程失败",
+        "registration_failed": "注册流程失败",
+    }
+    type_name = type(exc).__name__
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", type_name):
+        type_name = "Exception"
+    response = getattr(exc, "response", None)
+    status = None
+    for value in (
+        getattr(response, "status_code", None),
+        getattr(exc, "status_code", None),
+        getattr(exc, "http_status", None),
+    ):
+        try:
+            candidate = int(value)
+        except (TypeError, ValueError):
+            continue
+        if 100 <= candidate <= 599:
+            status = candidate
+            break
+    if status is None:
+        match = re.search(r"\b(?:HTTP(?:\s+Error)?\s*:?|status\s*[=:])\s*(\d{3})\b", str(exc), re.IGNORECASE)
+        if match:
+            candidate = int(match.group(1))
+            if 100 <= candidate <= 599:
+                status = candidate
+    suffix = f" HTTP {status}" if status is not None else ""
+    return f"{descriptions.get(cause_code, '注册流程失败')}：{type_name}{suffix}"
+
+
 def _protocol_password_continue_url(register_result: object) -> str:
     """从 user/register 响应中提取并校验邮箱 OTP 发送地址。"""
     if not isinstance(register_result, dict):
@@ -107,6 +183,7 @@ def _run_protocol_password_stage(
     *,
     referer: str = "https://auth.openai.com/email-verification",
     on_password_submitted=None,
+    on_otp_send_started=None,
 ) -> dict:
     """提交 Protocol 密码并进入邮箱验证码页面。"""
     password = generate_registration_password()
@@ -137,9 +214,10 @@ def _run_protocol_password_stage(
         except (TypeError, ValueError):
             status_code = 0
         if status_code == 0 or status_code >= 500:
+            # 异常正文可能包含响应内容或凭据；只保留类型与状态码。
             raise RuntimeError(
-                f"user/register 请求结果未知: {type(exc).__name__}: {str(exc)[:180]}"
-            ) from exc
+                f"user/register 请求结果未知: {type(exc).__name__[:80]} http_status={status_code or '-'}"
+            ) from None
         raise
     # user/register 成功即代表远端已接受密码并创建可继续验证的邮箱身份。
     # 在读取响应页形态、发送 OTP 前保存检查点，避免后续导航中断后丢失续跑凭据。
@@ -147,7 +225,11 @@ def _run_protocol_password_stage(
         on_password_submitted(password)
     continue_url = _protocol_password_continue_url(register_result)
     otp_requested_at = time.time()
-    otp_url = navigate_email_otp_send(session, continue_url)
+    otp_url = navigate_email_otp_send(
+        session,
+        continue_url,
+        on_request_started=on_otp_send_started,
+    )
     return {
         "password": password,
         "register_result": register_result,
@@ -164,6 +246,7 @@ def _maybe_run_protocol_password_stage(
     password_enabled: bool,
     referer: str = "https://auth.openai.com/email-verification",
     on_password_submitted=None,
+    on_otp_send_started=None,
 ) -> dict | None:
     """按任务快照决定是否进入密码注册阶段。"""
     if not password_enabled:
@@ -173,6 +256,7 @@ def _maybe_run_protocol_password_stage(
         email,
         referer=referer,
         on_password_submitted=on_password_submitted,
+        on_otp_send_started=on_otp_send_started,
     )
 
 
@@ -507,6 +591,8 @@ def run_protocol_registration(
     logger.debug("[注册] 设备/会话标识已生成（原值不写日志）")
 
     create_acknowledged = False
+    password_register_accepted = False
+    otp_send_in_flight = False
     remote_identity = "unknown"
     auth_challenge_chain: list[str] = []
     account_id: int | None = None
@@ -589,9 +675,13 @@ def run_protocol_registration(
             report_job_progress("login_password", "running", "正在提交账号密码并发送邮箱验证码")
 
         def _checkpoint_submitted_password(password: str) -> None:
-            nonlocal account_id, create_acknowledged
+            nonlocal account_id, create_acknowledged, password_register_accepted
             if existing_password or account_id is not None:
                 return
+            # 此回调只在 user/register 已返回成功响应后调用；即使本地检查点
+            # 写入失败，也不能把远端身份误标为尚未开始。
+            password_register_accepted = True
+            create_acknowledged = True
             from core.registration.checkpoints import save_email_verification_checkpoint
 
             account_id = save_email_verification_checkpoint(
@@ -601,7 +691,10 @@ def run_protocol_registration(
                 email_source=selected_email_source,
             )
             report_registered_account(account_id)
-            create_acknowledged = True
+
+        def _mark_otp_send_started() -> None:
+            nonlocal otp_send_in_flight
+            otp_send_in_flight = True
 
         password_stage = None if existing_password else _maybe_run_protocol_password_stage(
             session,
@@ -609,8 +702,10 @@ def run_protocol_registration(
             password_enabled=password_required,
             referer=auth_final_url,
             on_password_submitted=_checkpoint_submitted_password,
+            on_otp_send_started=_mark_otp_send_started,
         )
         if password_stage is not None:
+            otp_send_in_flight = False
             openai_password = password_stage["password"]
             # 以发送导航发起前的时间作为边界，只接收本次请求之后的新邮件。
             otp_after_ts = float(password_stage.get("otp_sent_at") or time.time())
@@ -738,7 +833,7 @@ def run_protocol_registration(
             remote_identity = "existing"
             report_job_progress("profile", "skipped", "已有账号状态，无需填写资料")
             if not otp_continue_url:
-                raise RuntimeError(f"OTP external_url 响应缺少可跟随 URL，无法继续: {validate_result}")
+                raise RuntimeError("OTP external_url 响应缺少可跟随 URL，无法继续")
             logger.info(f"[注册] OTP 后进入 OAuth 回调分支，跳过 create_account：{email}")
             create_acknowledged = True
             report_job_progress("token", "running", "正在完成 OAuth 回调并获取 Token")
@@ -781,14 +876,13 @@ def run_protocol_registration(
         elif not resume_mfa_required:
             remote_identity = "unknown"
             raise RuntimeError(
-                f"OTP 后续页面类型未知，不应盲目 create_account: "
-                f"page_type={page_type or '空'}, resp={validate_result}"
+                "OTP 后续页面类型未知，不应盲目 create_account"
             )
 
         if continuation_identity == "new_candidate":
             continue_url = create_result.get("continue_url")
             if not continue_url:
-                raise RuntimeError(f"create_account 响应缺少 continue_url，无法继续: {create_result}")
+                raise RuntimeError("create_account 响应缺少 continue_url，无法继续")
 
             report_job_progress("token", "running", "正在完成 OAuth 回调并获取 Token")
             session_info, access_token = _finalize_registration_session(
@@ -1025,14 +1119,12 @@ def run_protocol_registration(
         }
 
     except Exception as exc:
-        logger.error(f"[失败] {email}: {type(exc).__name__}: {exc}")
-        logger.debug("详细错误信息:", exc_info=True)
         error_text = str(exc)
         auth_route_rejected = bool(
             getattr(exc, "retry_with_new_proxy", False)
             and str(getattr(exc, "code", "") or "") == "auth_route_rejected"
-        )
-        request_unknown = any(marker in error_text for marker in (
+        ) and not password_register_accepted
+        request_unknown = password_register_accepted or any(marker in error_text for marker in (
             "后续页面类型未知",
             "响应缺少可跟随 URL",
             "响应缺少 continue_url",
@@ -1047,6 +1139,15 @@ def run_protocol_registration(
             "session 响应缺少 accessToken",
             "OAuth callback/session",
         ))
+        cause_code = _protocol_registration_cause_code(
+            exc,
+            error_text,
+            register_accepted=password_register_accepted,
+            checkpoint_account_id=account_id,
+            otp_send_in_flight=otp_send_in_flight,
+        )
+        safe_error_text = _safe_protocol_registration_error(exc, cause_code)
+        logger.error("协议注册失败：%s", safe_error_text)
         remote_existing = remote_identity == "existing"
         auth_error_code = (
             "remote_existing"
@@ -1066,7 +1167,7 @@ def run_protocol_registration(
                 src = mark_email_permanently_unusable(
                     email,
                     source=selected_email_source,
-                    note=f"上游明确确认账号永久失效: {str(exc)[:180]}",
+                    note=f"上游明确确认账号永久失效: {safe_error_text[:180]}",
                 )
                 logger.warning(f"[邮箱:{src}] {email} 已确认永久失效，标记 failed")
             elif email:
@@ -1075,7 +1176,7 @@ def run_protocol_registration(
                 src = retain_email(
                     email,
                     source=selected_email_source,
-                    note=f"协议注册中途失败，保留给原任务链: {str(exc)[:180]}",
+                    note=f"协议注册中途失败，保留给原任务链: {safe_error_text[:180]}",
                 )
                 logger.warning(f"[邮箱:{src}] {email} 注册中途失败，保留原邮箱等待重跑或对账")
         except Exception:
@@ -1089,8 +1190,10 @@ def run_protocol_registration(
             # 只有 follow_authorize 的显式路由拒绝才允许外层重启整段协议。
             # 该分支发生在账号创建之前，且不会覆盖 request_unknown/已有账号保护。
             "retry_as_new_route": auth_route_rejected,
+            "register_response_confirmed": password_register_accepted,
+            "cause_code": cause_code,
             "remote_identity": remote_identity,
-            "remote_identity_state": "confirmed" if remote_existing else "unknown",
+            "remote_identity_state": "confirmed" if remote_existing or password_register_accepted else "unknown",
             "remote_account_state": "confirmed" if remote_existing else "request_unknown" if request_unknown else "not_started",
             "error_code": auth_error_code,
             "email_permanently_unusable": account_unusable,
@@ -1105,5 +1208,5 @@ def run_protocol_registration(
                 remote_identity="existing" if remote_existing else remote_identity,
                 challenge_chain=auth_challenge_chain,
             ).as_dict(),
-            "error": error_text,
+            "error": safe_error_text,
         }

@@ -7,7 +7,7 @@ from unittest.mock import patch
 from psycopg.errors import DeadlockDetected
 
 from core import account_task_store, db, operation_task_store, postgres_store, record_store, task_run_log
-from core.storage import operation
+from core.storage import operation, registration
 from core.operations import task_gateway
 from tests.support_pg import PostgresTestCase
 from webui.app import create_app
@@ -83,6 +83,62 @@ class OperationTaskStoreTests(PostgresTestCase):
             "error_message": "停在 about-you，未取得 session",
         })
         return account_id, job_id
+
+    def test_registration_unknown_projection_keeps_confirmed_response_and_safe_cause(self):
+        job = db.create_job("outlook")
+        job_id = int(job["id"])
+        attempt_id = int(job["attempt_id"])
+        registration.advance_checkpoint(
+            attempt_id, "password_confirmed", remote_identity_state="confirmed",
+        )
+        registration.mark_request_unknown(
+            attempt_id, target="identity", identity_response_confirmed=True,
+            detail={"cause_code": "email_otp_no_mail"},
+        )
+        pending_account_id = record_store.insert_row(record_store.ACCOUNTS, {
+            "email": "pending-unknown@example.test",
+            "access_token": "",
+            "extra_json": json.dumps({"registration_checkpoint": "email_verification_pending"}),
+        })
+        db.update_job(
+            job_id, status="request_unknown", error="request_unknown",
+            email="pending-unknown@example.test", account_id=pending_account_id,
+            completed_at="2026-10-08T12:00:00+00:00",
+        )
+        registration_run = registration.list_runs(attempt_id)[0]
+        registration.finish_run(
+            int(registration_run["id"]), status="request_unknown", error_code="request_unknown",
+            error_message="request_unknown",
+            result_summary={
+                "outcome": "request_unknown", "cause_code": "email_otp_no_mail",
+                "register_response_confirmed": True, "raw_response": "不可投影",
+            },
+        )
+        operation_task_store.sync_registration_job(job_id)
+        operation_task_store.sync_registration_job(job_id)
+
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT id FROM {postgres_store.qualified('operation_tasks')} "
+                "WHERE source_system='registration_chains' AND source_id=%s",
+                (f"{job_id}:registration",),
+            )
+            task_id = int(cur.fetchone()[0])
+        detail = operation_task_store.get_task(task_id, include_events=False)
+        self.assertEqual("confirmed", detail["attempt"]["remote_identity_state"])
+        self.assertEqual("request_unknown", detail["attempt"]["remote_account_state"])
+        self.assertEqual("request_unknown", detail["target_status"])
+        self.assertEqual([], detail["next_actions"])
+        self.assertEqual("request_unknown", detail["result_summary"]["outcome"])
+        self.assertEqual("email_otp_no_mail", detail["result_summary"]["cause_code"])
+        self.assertTrue(detail["result_summary"]["register_response_confirmed"])
+        self.assertNotIn("raw_response", detail["result_summary"])
+        run = detail["runs"][-1]
+        self.assertEqual("request_unknown", run["error_code"])
+        self.assertEqual("email_otp_no_mail", run["result_summary"]["cause_code"])
+        listed = operation_task_store.list_tasks(page_size=20)["items"]
+        listed_task = next(item for item in listed if int(item["id"]) == task_id)
+        self.assertEqual("email_otp_no_mail", listed_task["result_summary"]["cause_code"])
 
     def test_reconcile_is_idempotent_and_preserves_pending_registration_target(self):
         account_id, job_id = self._seed_pending_registration()

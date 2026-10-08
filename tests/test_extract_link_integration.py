@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
+from contextlib import nullcontext
 import types
 import unittest
 from pathlib import Path
+from urllib.error import HTTPError
 from unittest.mock import Mock, patch
 
 from core import extract_link_service
@@ -243,6 +245,164 @@ class ExtractLinkServiceTests(unittest.TestCase):
         self.assertEqual(error_message, reporter.finish.call_args.kwargs["error"])
         mark_type_failed.assert_called_once_with(7, "momo", error_message)
         self.assertTrue(any(call.args[1]["status"] == "unsupported" for call in update_extract.call_args_list))
+
+    def test_create_local_validation_and_session_errors_do_not_record_remote_intent(self):
+        for payment_options, session_error, api_base in (
+            ({"paypal_region_selected": "invalid"}, None, "https://extract.example.test"),
+            ({"paypal_region_selected": "1"}, RuntimeError("local session preparation failed"), "https://extract.example.test"),
+            ({"paypal_region_selected": "1"}, None, "invalid-api-base"),
+        ):
+            with self.subTest(session_error=bool(session_error), api_base=api_base):
+                context = Mock(run_id=801)
+                with (
+                    patch.object(extract_link_service.db, "mark_account_extract_running", return_value=True),
+                    patch.object(extract_link_service.db, "update_account_extract"),
+                    patch.object(extract_link_service, "_ensure_extract_token", return_value="test-token"),
+                    patch.object(extract_link_service, "_api_base", return_value=api_base),
+                    patch.object(extract_link_service, "_session", side_effect=session_error) as prepare_session,
+                    patch.object(extract_link_service._QUEUE_SLOTS, "release"),
+                ):
+                    result = extract_link_service._run_extract(
+                        account_id=7,
+                        email="masked@example.test",
+                        access_token="test-token",
+                        link_type="paypal",
+                        cdk="test-cdk",
+                        trigger="manual",
+                        payment_options=payment_options,
+                        operation_context=context,
+                    )
+                self.assertEqual("failed", result["status"])
+                context.remote_request_started.assert_not_called()
+                context.remote_request_receipt.assert_not_called()
+                self.assertEqual(bool(session_error), prepare_session.called)
+
+    def test_create_http_rejection_is_failed_with_rejected_receipt(self):
+        context = Mock(run_id=801)
+        response = Mock(status_code=400, text="private response body")
+        session = Mock()
+        session.post.return_value = response
+        with (
+            patch.object(extract_link_service.db, "mark_account_extract_running", return_value=True),
+            patch.object(extract_link_service.db, "update_account_extract"),
+            patch.object(extract_link_service, "_ensure_extract_token", return_value="test-token"),
+            patch.object(extract_link_service, "_api_base", return_value="https://extract.example.test"),
+            patch.object(extract_link_service, "_session", return_value=session),
+            patch.object(extract_link_service._QUEUE_SLOTS, "release"),
+        ):
+            result = extract_link_service._run_extract(
+                account_id=7,
+                email="masked@example.test",
+                access_token="test-token",
+                link_type="pix",
+                cdk="test-cdk",
+                trigger="manual",
+                operation_context=context,
+            )
+
+        self.assertEqual("failed", result["status"])
+        self.assertNotIn("private response body", str(result))
+        response.json.assert_not_called()
+        context.remote_request_started.assert_called_once()
+        self.assertEqual("rejected", context.remote_request_receipt.call_args.kwargs["outcome"])
+        self.assertEqual(400, context.remote_request_receipt.call_args.kwargs["detail"]["http_status"])
+        self.assertEqual("rejected", context.finish.call_args.kwargs["result_summary"]["remote_result_state"])
+        self.assertEqual("extract_create_rejected", context.finish.call_args.kwargs["result_summary"]["cause_code"])
+
+    def test_create_stdlib_http_rejection_keeps_safe_status(self):
+        started = Mock()
+        rejection = HTTPError("https://extract.example.test/api/extract", 403, "private detail", {}, None)
+        with (
+            patch.object(extract_link_service, "_api_base", return_value="https://extract.example.test"),
+            patch.object(extract_link_service, "curl_requests", None),
+            patch.object(extract_link_service, "urlopen", side_effect=rejection),
+        ):
+            with self.assertRaises(extract_link_service.ExtractCreateRejected) as caught:
+                extract_link_service._create_extract_job(
+                    token="test-token",
+                    link_type="pix",
+                    cdk="test-cdk",
+                    on_request_started=started,
+                )
+        started.assert_called_once_with()
+        self.assertEqual(403, caught.exception.http_status)
+        self.assertNotIn("private detail", str(caught.exception))
+
+    def test_create_stdlib_invalid_json_records_observed_unknown_without_body(self):
+        context = Mock(run_id=801)
+        response = Mock(status=200)
+        response.read.return_value = b"private non-json response"
+        with (
+            patch.object(extract_link_service.db, "mark_account_extract_running", return_value=True),
+            patch.object(extract_link_service.db, "update_account_extract"),
+            patch.object(extract_link_service, "_ensure_extract_token", return_value="test-token"),
+            patch.object(extract_link_service, "_api_base", return_value="https://extract.example.test"),
+            patch.object(extract_link_service, "curl_requests", None),
+            patch.object(extract_link_service, "urlopen", return_value=nullcontext(response)),
+            patch.object(extract_link_service._QUEUE_SLOTS, "release"),
+        ):
+            result = extract_link_service._run_extract(
+                account_id=7,
+                email="masked@example.test",
+                access_token="test-token",
+                link_type="pix",
+                cdk="test-cdk",
+                trigger="manual",
+                operation_context=context,
+            )
+
+        self.assertEqual("request_unknown", result["status"])
+        self.assertNotIn("private non-json response", str(result))
+        self.assertEqual("unknown", context.remote_request_receipt.call_args.kwargs["outcome"])
+        detail = context.remote_request_receipt.call_args.kwargs["detail"]
+        self.assertTrue(detail["response_observed"])
+        self.assertEqual("invalid_json", detail["failure_kind"])
+        self.assertEqual(200, detail["http_status"])
+        self.assertEqual(
+            "extract_create_invalid_json",
+            context.finish.call_args.kwargs["result_summary"]["cause_code"],
+        )
+
+    def test_create_timeout_and_missing_job_id_keep_unknown_fence(self):
+        for response, failure, response_observed, cause_code in (
+            (None, TimeoutError("read timed out"), False, "extract_create_transport_error"),
+            (Mock(status_code=200), None, True, "extract_create_missing_job_id"),
+            (Mock(status_code=429), None, True, "extract_create_http_unknown"),
+        ):
+            with self.subTest(response_observed=response_observed):
+                context = Mock(run_id=801)
+                session = Mock()
+                if failure is not None:
+                    session.post.side_effect = failure
+                else:
+                    if response.status_code == 200:
+                        response.json.return_value = {}
+                    session.post.return_value = response
+                with (
+                    patch.object(extract_link_service.db, "mark_account_extract_running", return_value=True),
+                    patch.object(extract_link_service.db, "update_account_extract"),
+                    patch.object(extract_link_service, "_ensure_extract_token", return_value="test-token"),
+                    patch.object(extract_link_service, "_api_base", return_value="https://extract.example.test"),
+                    patch.object(extract_link_service, "_session", return_value=session),
+                    patch.object(extract_link_service._QUEUE_SLOTS, "release"),
+                ):
+                    result = extract_link_service._run_extract(
+                        account_id=7,
+                        email="masked@example.test",
+                        access_token="test-token",
+                        link_type="pix",
+                        cdk="test-cdk",
+                        trigger="manual",
+                        operation_context=context,
+                    )
+                self.assertEqual("request_unknown", result["status"])
+                context.remote_request_started.assert_called_once()
+                self.assertEqual("unknown", context.remote_request_receipt.call_args.kwargs["outcome"])
+                self.assertEqual(
+                    response_observed,
+                    context.remote_request_receipt.call_args.kwargs["detail"]["response_observed"],
+                )
+                self.assertEqual(cause_code, context.finish.call_args.kwargs["result_summary"]["cause_code"])
 
     def test_enqueue_creates_native_extract_run_without_legacy_executor(self):
         with (

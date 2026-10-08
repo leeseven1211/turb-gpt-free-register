@@ -3,7 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 import logging
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -343,6 +343,77 @@ class EmailChangeLoggingTests(unittest.TestCase):
             [(item["stage"], item["state"], item["message"]) for item in context.events],
         )
 
+    def test_verify_prepare_and_transport_failures_keep_accepted_mailbox(self):
+        from core import email_change_service
+
+        account = {
+            "email": "old@example.test",
+            "email_source": "outlook",
+            "access_token": "old-at",
+        }
+        route = SimpleNamespace(proxy_url="", public_dict=lambda: {}, release=Mock())
+        identity = SimpleNamespace(session_payload=lambda: {})
+        for failure in ("prepare", "transport"):
+            with self.subTest(failure=failure):
+                context = Mock(
+                    account_id=7,
+                    run_id=31,
+                    task_id=32,
+                    email="old@example.test",
+                    run={"data": {"email_source": "outlook"}, "trigger": "test"},
+                    config_snapshot={"email_change_enabled": True},
+                )
+                context.lease.return_value = nullcontext()
+                session = Mock()
+                session.get_chatgpt_headers.return_value = {}
+                session.device_id = "device-test"
+                session.navigator_language.return_value = "en-US"
+                order = []
+                context.remote_request_started.side_effect = lambda *_args, **_kwargs: order.append("intent")
+                if failure == "prepare":
+                    session.get_chatgpt_headers.side_effect = RuntimeError("private-token")
+                else:
+                    def disconnect(*_args, **_kwargs):
+                        order.append("post")
+                        raise ConnectionError("TLS reset")
+
+                    session.post.side_effect = disconnect
+                begin = email_change_service.BeginChangeResult(
+                    session=session,
+                    access_token="fresh-at",
+                    after_ts=123.0,
+                )
+                with (
+                    patch.object(email_change_service.db, "get_account", return_value=account),
+                    patch.object(email_change_service.email_provider, "validate_email_source", return_value="outlook"),
+                    patch("core.browser_traffic.record_unavailable"),
+                    patch.object(email_change_service.db, "claim_account_email_change", return_value=True),
+                    patch.object(email_change_service.email_provider, "acquire_email", return_value="new@example.test"),
+                    patch.object(email_change_service.db, "mark_account_email_change_running", return_value=True),
+                    patch.object(email_change_service, "acquire_account_proxy", return_value=route),
+                    patch.object(email_change_service, "_account_stable_identity", return_value=identity),
+                    patch("core.session.BrowserSession", return_value=session),
+                    patch.object(email_change_service, "begin_change_with_optional_reauth", return_value=begin),
+                    patch.object(email_change_service.email_provider, "wait_for_otp", return_value="123456"),
+                    patch.object(email_change_service.db, "finish_account_email_change", return_value=True) as finish,
+                    patch.object(email_change_service, "_release_unconsumed") as release,
+                ):
+                    result = email_change_service._handle_email_change(context)
+
+                self.assertEqual("request_unknown", result.status)
+                self.assertEqual("request_unknown", finish.call_args.kwargs["outcome"])
+                release.assert_not_called()
+                if failure == "prepare":
+                    self.assertEqual("email_change_verify_prepare_failed", result.summary["cause_code"])
+                    self.assertEqual([], order)
+                    session.post.assert_not_called()
+                    self.assertNotIn("private-token", finish.call_args.kwargs["error"])
+                    context.remote_request_receipt.assert_not_called()
+                else:
+                    self.assertEqual(["intent", "post"], order)
+                    session.post.assert_called_once()
+                    self.assertEqual("unknown", context.remote_request_receipt.call_args.kwargs["outcome"])
+
     def test_recent_login_unknown_landing_rejects_before_waiting_for_otp(self):
         from core import account_liveness
 
@@ -592,6 +663,7 @@ class EmailChangeCloseoutTests(unittest.TestCase):
             patch("core.session.BrowserSession", return_value=session),
             patch.object(email_change_service, "begin_change_with_optional_reauth", return_value=begin),
             patch.object(email_change_service.email_provider, "wait_for_otp", return_value="123456"),
+            patch.object(email_change_service.EmailChangeProtocol, "prepare_verify", return_value=Mock()),
             patch.object(email_change_service.EmailChangeProtocol, "verify"),
             patch.object(email_change_service.email_provider, "email_material_line", return_value="new@example.test"),
             patch.object(email_change_service.db, "finish_account_email_change", return_value=True),
@@ -757,6 +829,9 @@ class EmailChangeEligibilityTests(unittest.TestCase):
             "protocol_session": fresh_session,
         }
         with patch(
+            "core.email_change_service.EmailChangeProtocol.prepare_begin",
+            return_value=Mock(),
+        ), patch(
             "core.email_change_service.EmailChangeProtocol.begin",
             side_effect=[first, {"success": True}],
         ) as begin, patch(
@@ -800,6 +875,9 @@ class EmailChangeEligibilityTests(unittest.TestCase):
             http_status=403,
         )
         with patch(
+            "core.email_change_service.EmailChangeProtocol.prepare_begin",
+            return_value=Mock(),
+        ), patch(
             "core.email_change_service.EmailChangeProtocol.begin",
             side_effect=[first, proxy_forbidden],
         ) as begin, patch(
@@ -861,11 +939,109 @@ class EmailChangeEligibilityTests(unittest.TestCase):
         from core.email_change_service import RemoteRequestUnknown, begin_change_with_optional_reauth
 
         session = Mock()
+        session.get_chatgpt_headers.return_value = {}
+        session.device_id = "device-test"
+        session.navigator_language.return_value = "en-US"
         context = Mock(run_id=19)
+        order = []
+        context.remote_request_started.side_effect = lambda *_args, **_kwargs: order.append("intent")
+
+        def disconnect(*_args, **_kwargs):
+            order.append("post")
+            raise ConnectionError("TLS reset")
+
+        session.post.side_effect = disconnect
+        with self.assertRaises(RemoteRequestUnknown):
+            begin_change_with_optional_reauth(
+                session,
+                account_id=7,
+                current_email="old@example.test",
+                current_source="outlook",
+                new_email="new@example.test",
+                access_token="old-at",
+                context=context,
+            )
+
+        self.assertEqual(["intent", "post"], order)
+        session.post.assert_called_once()
+        context.remote_request_started.assert_called_once()
+        self.assertEqual(
+            "unknown",
+            context.remote_request_receipt.call_args.kwargs["outcome"],
+        )
+
+    def test_initial_begin_prepare_failure_is_local_without_remote_intent(self):
+        from core.email_change_service import LocalRequestPrepareError, begin_change_with_optional_reauth
+
+        session = Mock()
+        session.get_chatgpt_headers.side_effect = RuntimeError("private-token")
+        context = Mock(run_id=20)
+        with self.assertRaises(LocalRequestPrepareError) as caught:
+            begin_change_with_optional_reauth(
+                session,
+                account_id=7,
+                current_email="old@example.test",
+                current_source="outlook",
+                new_email="new@example.test",
+                access_token="old-at",
+                context=context,
+            )
+
+        session.post.assert_not_called()
+        context.remote_request_started.assert_not_called()
+        context.remote_request_receipt.assert_not_called()
+        self.assertNotIn("private-token", str(caught.exception))
+
+    def test_reauth_begin_prepare_failure_stops_before_second_intent(self):
+        from core.email_change_service import LocalRequestPrepareError, begin_change_with_optional_reauth
+
+        session = Mock()
+        session.get_chatgpt_headers.return_value = {}
+        session.device_id = "device-test"
+        session.navigator_language.return_value = "en-US"
+        session.post.return_value = _Response({"error": "recent login required"}, status_code=401)
+        fresh_session = Mock()
+        fresh_session.get_chatgpt_headers.side_effect = RuntimeError("private-token")
+        context = Mock(run_id=21)
         with patch(
-            "core.email_change_service.EmailChangeProtocol.begin",
-            side_effect=ConnectionError("TLS reset"),
-        ) as begin:
+            "core.email_change_service.perform_recent_login",
+            return_value={"access_token": "fresh-at", "protocol_session": fresh_session},
+        ):
+            with self.assertRaises(LocalRequestPrepareError):
+                begin_change_with_optional_reauth(
+                    session,
+                    account_id=7,
+                    current_email="old@example.test",
+                    current_source="outlook",
+                    new_email="new@example.test",
+                    access_token="old-at",
+                    context=context,
+                )
+
+        session.post.assert_called_once()
+        fresh_session.post.assert_not_called()
+        context.remote_request_started.assert_called_once()
+        context.remote_request_receipt.assert_called_once()
+        self.assertEqual("rejected", context.remote_request_receipt.call_args.kwargs["outcome"])
+
+    def test_reauth_begin_transport_failure_keeps_second_request_unknown(self):
+        from core.email_change_service import RemoteRequestUnknown, begin_change_with_optional_reauth
+
+        session = Mock()
+        session.get_chatgpt_headers.return_value = {}
+        session.device_id = "device-test"
+        session.navigator_language.return_value = "en-US"
+        session.post.return_value = _Response({"error": "recent login required"}, status_code=401)
+        fresh_session = Mock()
+        fresh_session.get_chatgpt_headers.return_value = {}
+        fresh_session.device_id = "device-test"
+        fresh_session.navigator_language.return_value = "en-US"
+        fresh_session.post.side_effect = ConnectionError("TLS reset")
+        context = Mock(run_id=22)
+        with patch(
+            "core.email_change_service.perform_recent_login",
+            return_value={"access_token": "fresh-at", "protocol_session": fresh_session},
+        ):
             with self.assertRaises(RemoteRequestUnknown):
                 begin_change_with_optional_reauth(
                     session,
@@ -877,11 +1053,12 @@ class EmailChangeEligibilityTests(unittest.TestCase):
                     context=context,
                 )
 
-        begin.assert_called_once()
-        context.remote_request_started.assert_called_once()
+        session.post.assert_called_once()
+        fresh_session.post.assert_called_once()
+        self.assertEqual(2, context.remote_request_started.call_count)
         self.assertEqual(
-            "unknown",
-            context.remote_request_receipt.call_args.kwargs["outcome"],
+            ["rejected", "unknown"],
+            [call.kwargs["outcome"] for call in context.remote_request_receipt.call_args_list],
         )
 
     def test_successful_begin_with_lost_receipt_is_request_unknown(self):
@@ -893,6 +1070,9 @@ class EmailChangeEligibilityTests(unittest.TestCase):
             "lease lost while persisting receipt"
         )
         with patch(
+            "core.email_change_service.EmailChangeProtocol.prepare_begin",
+            return_value=Mock(),
+        ), patch(
             "core.email_change_service.EmailChangeProtocol.begin",
             return_value={"success": True},
         ) as begin:
@@ -924,6 +1104,9 @@ class EmailChangeEligibilityTests(unittest.TestCase):
             task_gateway.OperationLeaseLost("lease lost while persisting receipt"),
         ]
         with patch(
+            "core.email_change_service.EmailChangeProtocol.prepare_begin",
+            return_value=Mock(),
+        ), patch(
             "core.email_change_service.EmailChangeProtocol.begin",
             side_effect=[
                 RemoteRequestRejected("recent login required", http_status=401),
@@ -960,6 +1143,38 @@ class EmailChangeEligibilityTests(unittest.TestCase):
         session.post.return_value = _Response({"error": {"code": "invalid_email"}}, status_code=400)
         with self.assertRaises(RemoteRequestRejected):
             EmailChangeProtocol().begin(session, "at-test", "new@example.test")
+
+    def test_prepared_verify_keeps_remote_response_classification(self):
+        from core.email_change_service import EmailChangeProtocol, RemoteRequestRejected, RemoteRequestUnknown
+
+        for status, expected in ((400, RemoteRequestRejected), (503, RemoteRequestUnknown)):
+            with self.subTest(status=status):
+                session = Mock()
+                session.get_chatgpt_headers.return_value = {}
+                session.device_id = "device-test"
+                session.navigator_language.return_value = "en-US"
+                protocol = EmailChangeProtocol()
+                prepared = protocol.prepare_verify(session, "at-test", "new@example.test", "123456")
+                session.get_chatgpt_headers.side_effect = AssertionError("verify 不应再次准备请求")
+                session.post.return_value = _Response({"error": {"code": "rejected"}}, status_code=status)
+
+                with self.assertRaises(expected):
+                    protocol.verify(session, "at-test", "new@example.test", "123456", prepared=prepared)
+
+                session.post.assert_called_once()
+
+        session = Mock()
+        session.get_chatgpt_headers.return_value = {}
+        session.device_id = "device-test"
+        session.navigator_language.return_value = "en-US"
+        protocol = EmailChangeProtocol()
+        prepared = protocol.prepare_verify(session, "at-test", "new@example.test", "123456")
+        response = Mock(status_code=200)
+        response.json.side_effect = ValueError("response lost")
+        session.post.return_value = response
+        with self.assertRaises(RemoteRequestUnknown):
+            protocol.verify(session, "at-test", "new@example.test", "123456", prepared=prepared)
+        session.post.assert_called_once()
 
 
 class EmailChangeStorageTests(PostgresTestCase):
