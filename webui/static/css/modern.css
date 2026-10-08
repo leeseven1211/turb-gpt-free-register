@@ -1075,7 +1075,8 @@
     .account-tasks-toolbar .jobs-tb-field { min-width: 156px; }
     .account-tasks-toolbar .account-task-search-field { flex: 1 1 270px; max-width: 390px; }
     .account-tasks-toolbar input, .account-tasks-toolbar select { width:100%; min-width:0; margin:0; }
-    .account-task-refresh-meta { color:#8b93a3; font-size:10px; white-space:nowrap; }
+    .account-task-refresh-meta, .account-task-timezone-hint { color:#8b93a3; font-size:10px; white-space:nowrap; }
+    .account-task-timezone-hint { max-width:220px; white-space:normal; line-height:1.35; }
     .account-tasks-table-wrap { overflow-x:hidden; }
     .account-tasks-table { width:100%; min-width:100%; table-layout:fixed; }
     .account-tasks-table th, .account-tasks-table td { overflow:hidden; text-overflow:ellipsis; }

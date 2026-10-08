@@ -239,6 +239,33 @@ def _read_event(row: dict) -> dict:
     return result
 
 
+def _normalize_compatibility_event(event: dict) -> dict:
+    """只归一化由旧 registration_jobs progress_steps 派生的事件。"""
+    if str(event.get("source_system") or "") != "registration_progress":
+        return event
+    detail = event.get("detail") if isinstance(event.get("detail"), dict) else {}
+    raw_stamp = detail.get("completed_at") or detail.get("started_at")
+    try:
+        normalized = _legacy_registration_timestamp(raw_stamp)
+    except (TypeError, ValueError, OverflowError):
+        normalized = None
+    if normalized is not None:
+        event["created_at"] = normalized.isoformat()
+    return event
+
+
+def _event_time_sort_key(event: dict) -> tuple[datetime, int]:
+    raw = event.get("created_at")
+    try:
+        parsed = _legacy_timestamp(raw)
+    except (TypeError, ValueError, OverflowError):
+        parsed = None
+    return (
+        parsed or datetime.min.replace(tzinfo=timezone.utc),
+        int(event.get("id") or 0),
+    )
+
+
 def reset_ready() -> None:
     global _READY_KEY
     with _LOCK:
@@ -826,6 +853,12 @@ def _compatibility_run_projection_sql(
         f"ELSE NULL END AS effective_created_at, "
         f"CASE "
         f"WHEN {run_alias}.source_system='registration_jobs' AND {registration_alias}.id IS NOT NULL "
+        f"THEN COALESCE(NULLIF({registration_alias}.data->>'started_at', ''), {run_alias}.started_at::text) "
+        f"WHEN {run_alias}.source_system='account_action_tasks' AND {account_alias}.id IS NOT NULL "
+        f"THEN COALESCE(NULLIF({account_alias}.started_at, ''), {run_alias}.started_at::text) "
+        f"ELSE {run_alias}.started_at::text END AS effective_started_at, "
+        f"CASE "
+        f"WHEN {run_alias}.source_system='registration_jobs' AND {registration_alias}.id IS NOT NULL "
         f"THEN NULLIF({registration_alias}.data->>'completed_at', '') "
         f"WHEN {run_alias}.source_system='account_action_tasks' AND {account_alias}.id IS NOT NULL "
         f"THEN NULLIF({account_alias}.finished_at, '') "
@@ -856,6 +889,7 @@ def _normalize_compatibility_run(run: dict) -> dict:
     effective_status = run.pop("effective_status", None)
     effective_stage = run.pop("effective_progress_stage", None)
     effective_created_at = run.pop("effective_created_at", None)
+    effective_started_at = run.pop("effective_started_at", None)
     run.pop("effective_created_at_sort", None)
     effective_completed_at = run.pop("effective_completed_at", None)
     effective_error_message = run.pop("effective_error_message", None)
@@ -875,6 +909,19 @@ def _normalize_compatibility_run(run: dict) -> dict:
         normalized_created_at = timestamp_normalizer(effective_created_at)
         if normalized_created_at is not None:
             run["created_at"] = normalized_created_at.isoformat()
+    if effective_started_at is not None:
+        normalized_started_at = (
+            timestamp_normalizer(effective_started_at)
+            if timestamp_normalizer else None
+        )
+        run["started_at"] = (
+            normalized_started_at.isoformat()
+            if normalized_started_at is not None else effective_started_at
+        )
+    if source_system == "registration_jobs":
+        run["progress_steps"] = _normalize_legacy_registration_progress_steps(
+            run.get("progress_steps")
+        )
     if effective_completed_at is not None:
         normalized_completed_at = (
             timestamp_normalizer(effective_completed_at)
@@ -892,6 +939,26 @@ def _normalize_compatibility_run(run: dict) -> dict:
             run["error_category"] = None
             run["error_code"] = None
     return run
+
+
+def _normalize_legacy_registration_progress_steps(value: Any) -> Any:
+    """仅在统一读模型中归一化旧注册阶段的时间字段。"""
+    if not isinstance(value, dict):
+        return value
+    normalized = dict(value)
+    for key, raw_step in value.items():
+        if not isinstance(raw_step, dict):
+            continue
+        step = dict(raw_step)
+        for stamp_key in ("started_at", "completed_at"):
+            try:
+                parsed = _legacy_registration_timestamp(step.get(stamp_key))
+            except (TypeError, ValueError, OverflowError):
+                parsed = None
+            if parsed is not None:
+                step[stamp_key] = parsed.isoformat()
+        normalized[key] = step
+    return normalized
 
 
 def _apply_current_run_projection(task: dict, run: dict | None) -> dict:
@@ -2836,7 +2903,8 @@ def get_task(task_id: int, *, include_events: bool = True) -> dict | None:
                 """,
                 (int(task_id),),
             )
-            events = [_read_event(dict(row)) for row in cur.fetchall()]
+            events = [_normalize_compatibility_event(_read_event(dict(row))) for row in cur.fetchall()]
+            events.sort(key=_event_time_sort_key)
         cur.execute(
             f"""
             SELECT resource.*
@@ -2969,7 +3037,8 @@ def get_run_progress(task_id: int, run_id: int) -> dict:
             """,
             (int(task_id), int(run_id)),
         )
-        events = [_read_event(dict(row)) for row in cur.fetchall()]
+        events = [_normalize_compatibility_event(_read_event(dict(row))) for row in cur.fetchall()]
+        events.sort(key=_event_time_sort_key)
     run = _normalize_compatibility_run(_row(dict(run_row)) or {})
     return build_progress_snapshot(
         int(task["id"]),
@@ -3021,7 +3090,7 @@ def list_task_events(
     rows = rows[:page_size]
     if after_id is None:
         rows.reverse()
-    items = [_read_event(dict(row)) for row in rows]
+    items = [_normalize_compatibility_event(_read_event(dict(row))) for row in rows]
     return {
         "items": items,
         "next_after_id": max([int(item["id"]) for item in items] or [int(after_id or 0)]),

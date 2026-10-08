@@ -440,6 +440,7 @@
         <button type="button" class="jobs-tb-btn jobs-tb-btn--danger selection-only" id="btnTerminateSelectedAccountTasksV2" disabled title="终止选中的原生运行任务；远端结果可能需要人工核验">终止运行</button>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--danger selection-only" id="btnDeleteSelectedAccountTasksV2" disabled title="删除选中的非执行中任务；删除后从任务中心隐藏，审计记录保留">删除选中</button>
         <div class="list-toolbar-utilities">
+          <span class="account-task-timezone-hint" data-browser-timezone-hint>时间按当前浏览器时区显示</span>
           <span class="account-task-refresh-meta" id="accountTaskRefreshHint"></span>
           <button type="button" class="jobs-tb-btn" id="btnResetAccountTaskColumnsV2" title="恢复任务中心默认列宽">恢复列宽</button>
           <button type="button" class="jobs-tb-btn" id="btnRefreshAccountTasks">刷新</button>
@@ -488,6 +489,7 @@
       <div class="task-error-summary hidden" id="accountTaskLogErrorSummary"></div>
       <div class="account-task-detail-toolbar">
         <div class="account-task-detail-summary" id="accountTaskDetailSummary">正在加载任务摘要…</div>
+        <span class="account-task-timezone-hint" data-browser-timezone-hint>时间按当前浏览器时区显示</span>
         <label class="account-task-run-picker">运行
           <select id="accountTaskRunSelect" aria-label="选择执行实例"></select>
         </label>

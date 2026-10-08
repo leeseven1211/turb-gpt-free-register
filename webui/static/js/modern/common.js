@@ -782,11 +782,21 @@ function formatDateTime(v) {
   if (v == null || v === '') return '-';
   const d = v instanceof Date ? v : new Date(v);
   if (Number.isNaN(d.getTime())) {
-    const s = String(v).replace('T', ' ').replace(/\.\d+.*$/, '').replace(/Z$/, '').replace(/[+-]\d{2}:\d{2}$/, '');
-    return s || '-';
+    const s = String(v).trim();
+    return s ? `无效时间：${s}` : '时间缺失';
   }
   const p = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+function browserTimeZoneName() {
+  try {
+    if (typeof Intl !== 'undefined' && Intl.DateTimeFormat) {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || '本地时区';
+    }
+  } catch (_) {
+    // 某些嵌入式浏览器可能不提供时区名称，仍保留日期显示能力。
+  }
+  return '本地时区';
 }
 function taskErrorBadge(info) {
   if (!info) return '';

@@ -299,7 +299,14 @@ function meaningfulTaskDetail(detail) {
 function renderAccountTaskEvents() {
   const content = $('#accountTaskLogContent');
   if (!content) return;
-  content.innerHTML = accountTaskEventCache.map(event => {
+  // 展示顺序按校正后的时间排列，保留缓存和接口游标的 ID 顺序。
+  const events = [...accountTaskEventCache].sort((left, right) => {
+    const leftTime = Date.parse(left.created_at);
+    const rightTime = Date.parse(right.created_at);
+    return (Number.isNaN(leftTime) ? 0 : leftTime) - (Number.isNaN(rightTime) ? 0 : rightTime)
+      || Number(left.id) - Number(right.id);
+  });
+  content.innerHTML = events.map(event => {
     const eventType = String(event.event_type || 'note.info');
     const level = String(event.level || 'INFO').toUpperCase();
     const state = accountTaskEventStepState(event);
@@ -318,9 +325,20 @@ function renderAccountTaskRunLog() {
   if (!panel) return;
   panel.textContent = accountTaskRunLogLines.map(item => {
     const fields = meaningfulTaskDetail(item.fields);
-    return `${item.ts || ''} ${item.level || 'INFO'} ${item.stage || 'event'} ${item.message || ''}${fields ? `\n${JSON.stringify(fields, null, 2)}` : ''}`;
+    const formattedTimestamp = formatDateTime(item.ts);
+    const timestamp = formattedTimestamp === '-' ? '时间缺失' : formattedTimestamp;
+    return `${timestamp} ${item.level || 'INFO'} ${item.stage || 'event'} ${item.message || ''}${fields ? `\n${JSON.stringify(fields, null, 2)}` : ''}`;
   }).join('\n') || '(当前 Run 暂无技术日志；旧任务可能只有事件时间线)';
 }
+
+function updateAccountTaskTimeZoneHints() {
+  const text = `时间按当前浏览器时区显示 · ${browserTimeZoneName()}`;
+  document.querySelectorAll('[data-browser-timezone-hint]').forEach(element => {
+    element.textContent = text;
+    element.title = text;
+  });
+}
+updateAccountTaskTimeZoneHints();
 
 function renderAccountTaskArtifacts(task) {
   const panel = $('#accountTaskArtifactContent');

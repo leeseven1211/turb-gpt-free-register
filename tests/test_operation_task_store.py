@@ -203,6 +203,166 @@ class OperationTaskStoreTests(PostgresTestCase):
         self.assertEqual("2026-08-25T02:00:00+00:00", registration["created_at"])
         self.assertEqual("2026-08-25T02:02:00+00:00", registration["completed_at"])
 
+    def test_legacy_registration_read_model_normalizes_run_start_steps_and_events(self):
+        account_id = record_store.insert_row(record_store.ACCOUNTS, {
+            "email": "legacy-time@example.test",
+            "access_token": "",
+            "codex_status": "failed",
+            "created_at": "2026-09-08T10:05:00",
+            "updated_at": "2026-09-08T10:11:15",
+            "extra_json": json.dumps({"registration_checkpoint": "failed"}),
+        })
+        job_id = record_store.insert_row(record_store.JOBS, {
+            "job_uuid": "legacy-time-job",
+            "email": "legacy-time@example.test",
+            "status": "failed",
+            "job_type": "registration",
+            "account_id": account_id,
+            "created_at": "2026-09-08T10:05:00",
+            "started_at": "2026-09-08T10:05:46",
+            "updated_at": "2026-09-08T10:11:15",
+            "completed_at": "2026-09-08T10:11:15",
+            "progress_stage": "complete",
+            "progress_steps": {
+                "network": {
+                    "state": "success",
+                    "started_at": "2026-09-08T10:05:46",
+                    "completed_at": "2026-09-08T10:05:53",
+                },
+                "profile": {
+                    "state": "failed",
+                    "started_at": "2026-09-08T10:08:00",
+                    "completed_at": "2026-09-08T10:08:12",
+                },
+            },
+            "error_message": "历史任务失败",
+        })
+        operation_task_store.reconcile_all()
+        task = operation_task_store.list_tasks(page_size=10, task_type="registration")["items"][0]
+        task_id = int(task["id"])
+        run_id = int(task["last_run_id"])
+
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {postgres_store.qualified('operation_runs')} "
+                "SET started_at=%s WHERE id=%s",
+                ("2026-09-08T10:05:46+00:00", run_id),
+            )
+            cur.execute(
+                f"UPDATE {postgres_store.qualified('operation_events')} "
+                "SET created_at=%s WHERE run_id=%s AND source_system='registration_progress'",
+                ("2026-09-08T10:08:12+00:00", run_id),
+            )
+
+        detail = operation_task_store.get_task(task_id)
+        run = detail["runs"][0]
+        self.assertEqual("2026-09-08T02:05:46+00:00", run["started_at"])
+        self.assertEqual(
+            "2026-09-08T02:05:46+00:00",
+            run["progress_steps"]["network"]["started_at"],
+        )
+        progress_events = [
+            event for event in detail["events"]
+            if event["source_system"] == "registration_progress"
+        ]
+        self.assertTrue(progress_events)
+        self.assertTrue(all(
+            str(event["created_at"]).startswith("2026-09-08T02:")
+            for event in progress_events
+        ))
+        self.assertEqual(
+            {"network": "2026-09-08T02:05:53+00:00", "profile": "2026-09-08T02:08:12+00:00"},
+            {event["stage"]: event["created_at"] for event in progress_events},
+        )
+
+        page = operation_task_store.list_task_events(task_id, run_id=run_id, limit=100)
+        ids = [int(event["id"]) for event in page["items"]]
+        self.assertEqual(sorted(ids), ids)
+        self.assertEqual(max(ids), int(page["next_after_id"]))
+        self.assertEqual(
+            {event["id"]: event["created_at"] for event in progress_events},
+            {event["id"]: event["created_at"] for event in page["items"]},
+        )
+        cursor, seen = 0, []
+        while True:
+            increment = operation_task_store.list_task_events(
+                task_id, run_id=run_id, after_id=cursor, limit=1,
+            )
+            seen.extend(event["id"] for event in increment["items"])
+            cursor = increment["next_after_id"]
+            if not increment["has_more"]:
+                break
+        self.assertEqual(ids, seen)
+        with patch.object(operation, "build_progress_snapshot", wraps=operation.build_progress_snapshot) as build:
+            operation_task_store.get_run_progress(task_id, run_id)
+        self.assertEqual("2026-09-08T02:05:46+00:00", build.call_args.args[3]["started_at"])
+        self.assertEqual(
+            [event["created_at"] for event in progress_events],
+            [event["created_at"] for event in build.call_args.args[4]],
+        )
+        # 读取只修正投影，不回写历史物理行或原始阶段快照。
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT started_at FROM {postgres_store.qualified('operation_runs')} WHERE id=%s",
+                (run_id,),
+            )
+            self.assertEqual("2026-09-08T10:05:46+00:00", cur.fetchone()[0].isoformat())
+            cur.execute(
+                f"SELECT created_at FROM {postgres_store.qualified('operation_events')} WHERE run_id=%s",
+                (run_id,),
+            )
+            self.assertTrue(all(row[0].isoformat() == "2026-09-08T10:08:12+00:00" for row in cur.fetchall()))
+        self.assertEqual("2026-09-08T10:05:46", record_store.get_row(record_store.JOBS, job_id)["started_at"])
+
+    def test_compatibility_time_read_preserves_aware_missing_and_native_values(self):
+        for source, detail, expected in (
+            ("registration_progress", {"completed_at": "2026-10-08T08:48:32Z"}, "2026-10-08T08:48:32+00:00"),
+            ("registration_progress", {"completed_at": "2026-10-08T08:48:32+09:00"}, "2026-10-07T23:48:32+00:00"),
+            ("registration_progress", {}, "2026-10-08T08:48:32+00:00"),
+            ("registration_progress", {"completed_at": "invalid"}, "2026-10-08T08:48:32+00:00"),
+            ("registration_events", {"completed_at": "2026-10-08T08:48:32+09:00"}, "2026-10-08T08:48:32+00:00"),
+            ("native_operations", {"completed_at": "2026-10-08T08:48:32+09:00"}, "2026-10-08T08:48:32+00:00"),
+        ):
+            with self.subTest(source=source, detail=detail):
+                event = operation._normalize_compatibility_event({
+                    "source_system": source, "created_at": "2026-10-08T08:48:32+00:00", "detail": detail,
+                })
+                self.assertEqual(expected, event["created_at"])
+        run = operation._normalize_compatibility_run({
+            "source_system": "registration_jobs", "started_at": "2026-10-08T08:48:32+00:00",
+        })
+        self.assertEqual("2026-10-08T08:48:32+00:00", run["started_at"])
+
+    def test_legacy_account_task_read_model_normalizes_started_at_from_source(self):
+        batch_id = account_task_store.create_batch(
+            action_type="account_setup_retry", trigger="test", total_count=1,
+        )
+        legacy_task_id = account_task_store.create_task(
+            task_type="account_setup_retry", account_id=7001,
+            email="legacy-account-time@example.test", trigger="test", batch_id=batch_id,
+        )
+        account_task_store.start_task(legacy_task_id)
+        account_task_store.finish_task(legacy_task_id, status="failed", message="历史任务失败")
+        operation_task_store.reconcile_all()
+        task = operation_task_store.list_tasks(page_size=10, task_type="account_setup_retry")["items"][0]
+        task_id = int(task["id"])
+        run_id = int(task["last_run_id"])
+
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {postgres_store.qualified('account_action_tasks')} "
+                "SET started_at=%s WHERE id=%s",
+                ("2026-09-08T10:05:46", legacy_task_id),
+            )
+            cur.execute(
+                f"UPDATE {postgres_store.qualified('operation_runs')} "
+                "SET started_at=%s WHERE id=%s",
+                ("2026-09-08T10:05:46+00:00", run_id),
+            )
+
+        detail = operation_task_store.get_task(task_id, include_events=False)
+        self.assertEqual("2026-09-08T02:05:46+00:00", detail["runs"][0]["started_at"])
+
     def test_task_list_sorts_by_current_run_creation_time(self):
         def seed_registration(email, created_at):
             account_id = record_store.insert_row(record_store.ACCOUNTS, {
