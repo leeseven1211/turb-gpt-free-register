@@ -8,6 +8,33 @@ from core.registration import roxy as roxy_registration
 
 
 class RoxyEmailOtpChallengeTests(unittest.TestCase):
+    def test_callback_log_path_drops_code_state_and_dynamic_challenge(self):
+        self.assertEqual(
+            "/auth/callback",
+            roxy_codex_oauth._auth_path_for_log(
+                "http://localhost:1455/auth/callback?code=private-code&state=private-state"
+            ),
+        )
+        self.assertEqual(
+            "/mfa-challenge/*",
+            roxy_codex_oauth._auth_path_for_log(
+                "https://auth.openai.com/mfa-challenge/private-factor?state=private-state"
+            ),
+        )
+        self.assertEqual("-", roxy_codex_oauth._auth_path_for_log("https://other.example/private-code"))
+        self.assertEqual("-", roxy_codex_oauth._auth_path_for_log("http://localhost:bad/auth/callback?code=private-code"))
+
+    def test_performance_callback_log_does_not_include_code_or_state(self):
+        callback = "http://localhost:1455/auth/callback?code=private-code&state=private-state"
+        driver = MagicMock()
+        driver.current_url = "https://auth.openai.com/sign-in-with-chatgpt/codex/consent"
+        driver.execute_script.return_value = [callback]
+        with patch.object(roxy_codex_oauth.logger, "info") as log_info:
+            self.assertEqual(callback, roxy_codex_oauth._extract_callback_url_from_page(driver))
+        logged = repr(log_info.call_args_list)
+        self.assertNotIn("private-code", logged)
+        self.assertNotIn("private-state", logged)
+
     def test_login_challenge_state_detects_structured_deactivation_error(self):
         state = {
             "url": "https://auth.openai.com/mfa-challenge/example",
