@@ -421,7 +421,8 @@ def _validate_with_retry(
                     email,
                     after_ts=otp_after_ts,
                     email_source=email_source,
-                    force_service=bool(email_source),
+                    # 未指定来源时遵循全局配置，并由取码器解析账号保存的邮箱来源。
+                    force_service=True if email_source else None,
                 )
             result = validate_email_otp(session, current_otp, sentinel_header=None, so_header=None)
             return result
