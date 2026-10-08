@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """Codex Protocol 登录挑战的本地响应模拟测试。"""
+import base64
 import unittest
 from contextlib import ExitStack
 from types import SimpleNamespace
@@ -18,6 +19,54 @@ class CodexOAuthChallengeTests(unittest.TestCase):
         ), patch.object(codex_oauth, "navigate_email_otp_send") as send:
             step = codex_oauth._submit_email(object(), "account@example.test")
         return step, send
+
+    def _run_after_login(
+        self, step, next_url, *, follow_result=None, otp_payload=None,
+        phone_payload=None, workspace_payload=None, workspace_cookie=None,
+    ):
+        callback = "http://localhost:1455/auth/callback?code=private-code&state=state"
+        otp_provider = Mock(return_value="123456")
+        with ExitStack() as stack:
+            browser = stack.enter_context(patch.object(codex_oauth, "BrowserSession"))
+            browser.return_value.session.cookies.jar = (
+                [SimpleNamespace(name="oai-client-auth-session", value=workspace_cookie)]
+                if workspace_cookie else []
+            )
+            browser.return_value.session.cookies.get.return_value = None
+            browser.return_value._codex_auth_session_payload = workspace_payload or {}
+            stack.enter_context(patch.object(codex_oauth, "check_cancelled"))
+            stack.enter_context(patch.object(codex_oauth, "report_stage"))
+            stack.enter_context(patch.object(codex_oauth, "human_delay"))
+            stack.enter_context(patch.object(codex_oauth, "_codex_auth_url_source", return_value="local"))
+            stack.enter_context(patch.object(codex_oauth, "_generate_pkce", return_value=("verifier", "challenge")))
+            stack.enter_context(patch.object(codex_oauth, "_generate_state", return_value="state"))
+            stack.enter_context(patch.object(codex_oauth, "network_preflight"))
+            stack.enter_context(patch.object(codex_oauth, "_bootstrap_authorize"))
+            stack.enter_context(patch.object(
+                codex_oauth, "_submit_email", return_value=(step, next_url, 100.0)
+            ))
+            if follow_result is not None:
+                stack.enter_context(patch.object(
+                    codex_oauth, "_follow_login_continue_step", return_value=follow_result
+                ))
+            if otp_payload is not None:
+                stack.enter_context(patch.object(
+                    codex_oauth, "_submit_email_otp", return_value=otp_payload
+                ))
+            select = stack.enter_context(patch.object(
+                codex_oauth, "_select_workspace_and_get_callback", return_value=callback
+            ))
+            phone = stack.enter_context(patch.object(codex_oauth, "_do_phone_verification"))
+            if phone_payload is not None:
+                phone.return_value = phone_payload
+            stack.enter_context(patch.object(
+                codex_oauth, "exchange_codex_token", side_effect=RuntimeError("换 token 前模拟停止")
+            ))
+            result = codex_oauth.run_codex_oauth(
+                "account@example.test", otp_provider=otp_provider,
+                proxy="", force=True, driver_override="protocol",
+            )
+        return result, select, phone, otp_provider
 
     def test_direct_email_verification_waits_without_extra_send(self):
         result, send = self._submit_with_response({
@@ -51,7 +100,7 @@ class CodexOAuthChallengeTests(unittest.TestCase):
         result, send = self._submit_with_response({
             "continue_url": "/api/accounts/workspace/select",
         })
-        self.assertEqual(result, ("continue", "", 100.0))
+        self.assertEqual(result, ("workspace", "", 100.0))
         send.assert_not_called()
 
     def test_callback_log_keeps_path_without_authorization_code(self):
@@ -60,12 +109,205 @@ class CodexOAuthChallengeTests(unittest.TestCase):
         )
         self.assertEqual(path, "/auth/callback")
 
+    def test_continue_json_callback_needs_no_workspace_cookie(self):
+        callback = "http://localhost:1455/auth/callback?code=private-code&state=state"
+        response = SimpleNamespace(
+            status_code=200,
+            url="https://auth.openai.com/api/accounts/continue",
+            headers={},
+            json=lambda: {"continue_url": callback},
+        )
+        session = SimpleNamespace(
+            get_auth_navigate_headers=Mock(return_value={}),
+            get=Mock(return_value=response),
+            session=SimpleNamespace(cookies=SimpleNamespace(jar=[], get=lambda _key: None)),
+        )
+        with self.assertLogs(codex_oauth.logger, level="INFO") as captured:
+            step, url = codex_oauth._follow_login_continue_step(
+                session, "/api/accounts/continue", "state"
+            )
+        self.assertEqual((step, url), ("callback", callback))
+        diagnostic = "\n".join(captured.output)
+        self.assertIn("status=200", diagnostic)
+        self.assertIn("page_type=unknown", diagnostic)
+        self.assertIn("path=/api/accounts/continue", diagnostic)
+        self.assertIn("cookie=False cache=False", diagnostic)
+        self.assertNotIn("private-code", diagnostic)
+        self.assertNotIn("state=state", diagnostic)
+        session.get.assert_called_once()
+
+    def test_continue_json_workspace_requires_explicit_selection(self):
+        response = SimpleNamespace(
+            status_code=200,
+            url="https://auth.openai.com/api/accounts/continue",
+            headers={},
+            json=lambda: {"continue_url": "/api/accounts/workspace/select"},
+        )
+        session = SimpleNamespace(
+            get_auth_navigate_headers=Mock(return_value={}),
+            get=Mock(return_value=response),
+        )
+        self.assertEqual(
+            codex_oauth._follow_login_continue_step(session, "/api/accounts/continue", "state"),
+            ("workspace", ""),
+        )
+        session.get.assert_called_once()
+
+    def test_continue_phone_challenge_does_not_get_send_endpoint(self):
+        response = SimpleNamespace(
+            status_code=200,
+            url="https://auth.openai.com/api/accounts/continue",
+            headers={},
+            json=lambda: {"continue_url": "/api/accounts/add-phone/send"},
+        )
+        session = SimpleNamespace(
+            get_auth_navigate_headers=Mock(return_value={}),
+            get=Mock(return_value=response),
+        )
+        self.assertEqual(
+            codex_oauth._follow_login_continue_step(session, "/api/accounts/continue", "state"),
+            ("phone", ""),
+        )
+        session.get.assert_called_once()
+
+    def test_continue_consent_without_next_step_stops_before_workspace(self):
+        result, select, phone, _ = self._run_after_login(
+            "continue", "/api/accounts/continue", follow_result=("consent", ""),
+        )
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("需使用浏览器驱动", result["message"])
+        self.assertNotIn("private-code", result["message"])
+        select.assert_not_called()
+        phone.assert_not_called()
+
+    def test_direct_callback_skips_workspace_selection(self):
+        callback = "http://localhost:1455/auth/callback?code=private-code&state=state"
+        result, select, phone, _ = self._run_after_login(
+            "continue", "/api/accounts/continue", follow_result=("callback", callback),
+        )
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("换 token 前模拟停止", result["message"])
+        select.assert_not_called()
+        phone.assert_not_called()
+
+    def test_only_explicit_workspace_step_selects_workspace(self):
+        result, select, phone, _ = self._run_after_login("workspace", "")
+        self.assertEqual(result["status"], "failed")
+        select.assert_called_once()
+        phone.assert_not_called()
+
+    def test_empty_phone_response_without_workspace_stops_safely(self):
+        result, select, phone, _ = self._run_after_login(
+            "phone", "/add-phone", phone_payload={},
+        )
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("未确认后续地址或工作区", result["message"])
+        select.assert_not_called()
+        phone.assert_called_once()
+
+    def test_empty_phone_response_uses_existing_workspace_id(self):
+        cookie = base64.urlsafe_b64encode(
+            b'{"workspaces":[{"id":"workspace-1"}]}'
+        ).decode().rstrip("=") + ".payload.signature"
+        for source, options in (
+            ("cache", {"workspace_payload": {"workspaces": [{"id": "workspace-1"}]}}),
+            ("cookie", {"workspace_cookie": cookie}),
+        ):
+            with self.subTest(source=source):
+                result, select, phone, _ = self._run_after_login(
+                    "phone", "/add-phone", phone_payload={}, **options,
+                )
+                self.assertEqual(result["status"], "failed")
+                self.assertIn("换 token 前模拟停止", result["message"])
+                select.assert_called_once()
+                phone.assert_called_once()
+
+    def test_empty_email_otp_response_does_not_trigger_phone_provider(self):
+        result, select, phone, otp_provider = self._run_after_login(
+            "verify", "/email-verification", otp_payload={},
+        )
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("未返回明确下一步", result["message"])
+        otp_provider.assert_called_once()
+        select.assert_not_called()
+        phone.assert_not_called()
+
+    def test_untrusted_continue_location_is_rejected_without_echo(self):
+        response = SimpleNamespace(
+            status_code=302,
+            url="https://auth.openai.com/api/accounts/continue",
+            headers={"Location": "https://untrusted.example/private-code?state=private-state"},
+            json=lambda: {},
+        )
+        session = SimpleNamespace(
+            get_auth_navigate_headers=Mock(return_value={}),
+            get=Mock(return_value=response),
+        )
+        with self.assertLogs(codex_oauth.logger, level="INFO") as captured:
+            with self.assertRaises(RuntimeError) as raised:
+                codex_oauth._follow_login_continue_step(session, "/api/accounts/continue", "state")
+        self.assertNotIn("private-code", str(raised.exception))
+        self.assertNotIn("private-state", str(raised.exception))
+        self.assertNotIn("private-code", "\n".join(captured.output))
+        self.assertNotIn("private-state", "\n".join(captured.output))
+        session.get.assert_called_once()
+
+    def test_untrusted_response_origin_is_rejected_before_metadata_cache(self):
+        response = SimpleNamespace(
+            status_code=200,
+            url="https://untrusted.example/api/accounts/continue",
+            headers={},
+            json=lambda: {"auth_session": {"workspaces": [{"id": "private-workspace"}]}},
+        )
+        session = SimpleNamespace(
+            get_auth_navigate_headers=Mock(return_value={}),
+            get=Mock(return_value=response),
+        )
+        with self.assertRaises(RuntimeError):
+            codex_oauth._follow_login_continue_step(session, "/api/accounts/continue", "state")
+        self.assertFalse(hasattr(session, "_codex_auth_session_payload"))
+
     def test_callback_error_does_not_echo_query(self):
         location = "http://localhost:1455/auth/callback?state=private-state&trace=private-value"
         with self.assertRaises(RuntimeError) as raised:
             codex_oauth._extract_code(location, "private-state")
         self.assertNotIn("private-state", str(raised.exception))
         self.assertNotIn("private-value", str(raised.exception))
+
+    def test_callback_requires_present_matching_state(self):
+        callback = "http://localhost:1455/auth/callback?code=private-code"
+        with self.assertRaises(RuntimeError) as missing:
+            codex_oauth._extract_code(callback, "expected-state")
+        with self.assertRaises(RuntimeError) as mismatch:
+            codex_oauth._extract_code(callback + "&state=other-state", "expected-state")
+        with self.assertRaises(RuntimeError) as duplicate:
+            codex_oauth._extract_code(
+                callback + "&state=expected-state&state=other-state", "expected-state"
+            )
+        self.assertNotIn("private-code", str(missing.exception))
+        self.assertNotIn("other-state", str(mismatch.exception))
+        self.assertNotIn("other-state", str(duplicate.exception))
+        self.assertEqual(
+            codex_oauth._extract_code(callback + "&state=expected-state", "expected-state"),
+            "private-code",
+        )
+
+    def test_phone_verification_logs_omit_number_and_activation(self):
+        response = SimpleNamespace(status_code=200, text="", json=lambda: {})
+        with patch.object(codex_oauth.sms_provider, "_http", return_value=Mock()), patch.object(
+            codex_oauth.sms_provider, "acquire_number", return_value=("private-activation", "15550000000")
+        ), patch.object(codex_oauth.sms_provider, "set_status"), patch.object(
+            codex_oauth.sms_provider, "wait_for_sms_code", return_value="123456"
+        ), patch.object(codex_oauth.sms_provider, "complete"), patch.object(
+            codex_oauth, "_post_json", side_effect=[response, response]
+        ), patch.object(codex_oauth, "_sms_provider_name", return_value="mock"), patch.object(
+            codex_oauth, "check_cancelled"
+        ), self.assertLogs(codex_oauth.logger, level="INFO") as captured:
+            self.assertEqual(codex_oauth._do_phone_verification(Mock()), {})
+        diagnostic = "\n".join(captured.output)
+        self.assertIn("provider=mock", diagnostic)
+        self.assertNotIn("15550000000", diagnostic)
+        self.assertNotIn("private-activation", diagnostic)
 
     def test_sub2_callback_summary_excludes_unknown_payload(self):
         summary = codex_oauth._summarize_sub2_response({
@@ -123,6 +365,7 @@ class CodexOAuthChallengeTests(unittest.TestCase):
             {"continue_url": "https://untrusted.example/api/accounts/email-otp/send"},
             {"continue_url": "https://auth.openai.com:bad/email-verification"},
             {"page": {"type": "login_password"}, "continue_url": "/api/accounts/email-otp/send"},
+            {"page": {"type": "phone_verification"}, "continue_url": "/sign-in-with-chatgpt/codex/consent"},
         ):
             with self.subTest(payload=payload):
                 with self.assertRaises(RuntimeError) as raised:
@@ -166,7 +409,11 @@ class CodexOAuthChallengeTests(unittest.TestCase):
         ), patch("core.protocol_v2_liveness._mfa_issue_challenge") as issue, patch(
             "core.protocol_v2_liveness._totp_code", return_value="123456"
         ), patch("core.protocol_v2_liveness._mfa_verify", return_value={
-            "continue_url": "/api/accounts/continue"
+            "continue_url": "/api/accounts/continue",
+            "auth_session": {
+                "workspaces": [{"id": "workspace-1", "private": "do-not-cache"}],
+                "private": "do-not-cache",
+            },
         }) as verify, patch.object(codex_oauth, "report_stage"), patch.object(
             codex_oauth, "check_cancelled"
         ):
@@ -176,6 +423,33 @@ class CodexOAuthChallengeTests(unittest.TestCase):
         self.assertEqual(step[0:2], ("continue", "/api/accounts/continue"))
         issue.assert_called_once_with(session, "factor-1")
         verify.assert_called_once_with(session, "factor-1", "123456")
+        self.assertEqual(session._codex_auth_session_payload, {
+            "workspaces": [{"id": "workspace-1"}],
+        })
+
+    def test_password_response_caches_only_workspace_id(self):
+        session = SimpleNamespace(
+            get_auth_navigate_headers=Mock(return_value={}),
+            get=Mock(return_value=SimpleNamespace(
+                status_code=200, url="https://auth.openai.com/log-in/password"
+            )),
+        )
+        password_result = {
+            "continue_url": "/api/accounts/continue",
+            "auth_session": {
+                "workspaces": [{"id": "workspace-1", "private": "do-not-cache"}],
+                "private": "do-not-cache",
+            },
+        }
+        with patch("core.protocol_v2_liveness._password_verify", return_value=password_result):
+            step = codex_oauth._verify_saved_login_password(
+                session, "account@example.test", "/log-in/password",
+                login_password="private-password",
+            )
+        self.assertEqual(step[0], "continue")
+        self.assertEqual(session._codex_auth_session_payload, {
+            "workspaces": [{"id": "workspace-1"}],
+        })
 
     def test_new_registration_credentials_need_no_database_read(self):
         session = SimpleNamespace(
@@ -259,7 +533,7 @@ class CodexOAuthChallengeTests(unittest.TestCase):
                 return_value=("continue", "/api/accounts/continue", 101.0),
             ))
             stack.enter_context(patch.object(
-                codex_oauth, "_follow_login_continue", side_effect=RuntimeError("授权后续模拟停止")
+                codex_oauth, "_follow_login_continue_step", side_effect=RuntimeError("授权后续模拟停止")
             ))
             submit_otp = stack.enter_context(patch.object(codex_oauth, "_submit_email_otp"))
             phone = stack.enter_context(patch.object(codex_oauth, "_do_phone_verification"))
