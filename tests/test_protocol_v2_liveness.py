@@ -50,7 +50,7 @@ class _OtpSession:
 
 
 class ProtocolV2LivenessTests(unittest.TestCase):
-    def test_authorize_email_challenge_uses_existing_session_without_password_or_resend(self):
+    def test_authorize_email_challenge_sends_code_before_waiting_without_password(self):
         from core import protocol_v2_liveness as v2
 
         for needs_mfa in (False, True):
@@ -60,14 +60,23 @@ class ProtocolV2LivenessTests(unittest.TestCase):
                     {"continue_url": "https://auth.openai.com/mfa-challenge/factor-1"}
                     if needs_mfa else {"accessToken": "fresh"}
                 )
+                call_order = []
+
+                def record_send(_session):
+                    call_order.append("send")
+
+                def record_wait(*_args, **_kwargs):
+                    call_order.append("wait")
+                    return email_result, "email_otp"
+
                 with (
                     patch.object(v2, "get_account_login_credentials", return_value=("saved-password", "secret")),
                     patch.object(v2, "_network_preflight_with_retry", return_value=(session, "authorize")),
                     patch.object(v2, "follow_authorize", return_value="https://auth.openai.com/email-verification?state=private"),
                     patch.object(v2, "_password_verify") as password,
                     patch.object(v2, "_start_email_session") as restart,
-                    patch("core.openai_auth.send_email_otp") as resend,
-                    patch.object(v2, "_complete_email_otp", return_value=(email_result, "email_otp")) as email,
+                    patch.object(v2, "send_email_otp", side_effect=record_send) as resend,
+                    patch.object(v2, "_complete_email_otp", side_effect=record_wait) as email,
                     patch.object(v2, "_complete_mfa", return_value=({"accessToken": "fresh"}, "password_mfa_totp")) as mfa,
                 ):
                     result = v2.refresh_access_token("account@example.com", proxy="")
@@ -79,8 +88,45 @@ class ProtocolV2LivenessTests(unittest.TestCase):
                 self.assertEqual(needs_mfa, mfa.called)
                 password.assert_not_called()
                 restart.assert_not_called()
-                resend.assert_not_called()
+                resend.assert_called_once_with(session)
+                self.assertEqual(["send", "wait"], call_order)
                 session.session.close.assert_called_once()
+
+    def test_authorize_email_send_failure_is_reported_without_waiting(self):
+        from core import protocol_v2_liveness as v2
+
+        session = _Session()
+        with (
+            patch.object(v2, "get_account_login_credentials", return_value=("saved-password", "")),
+            patch.object(v2, "_network_preflight_with_retry", return_value=(session, "authorize")),
+            patch.object(v2, "follow_authorize", return_value="https://auth.openai.com/email-verification"),
+            patch.object(v2, "send_email_otp", side_effect=RuntimeError("private response body")),
+            patch.object(v2, "_complete_email_otp") as wait,
+        ):
+            result = v2.refresh_access_token("account@example.com", proxy="")
+
+        self.assertEqual("email_otp_send_failed", result["error"])
+        self.assertEqual("email_otp_send", result["auth_diagnostics"]["operation"])
+        self.assertEqual("RuntimeError", result["auth_diagnostics"]["exception_type"])
+        self.assertNotIn("private response body", str(result))
+        wait.assert_not_called()
+        session.session.close.assert_called_once()
+
+    def test_authorize_email_send_rejection_retains_safe_status(self):
+        from core import openai_auth
+        from core import protocol_v2_liveness as v2
+
+        with (
+            patch.object(v2, "get_account_login_credentials", return_value=("saved-password", "")),
+            patch.object(v2, "_network_preflight_with_retry", return_value=(_Session(), "authorize")),
+            patch.object(v2, "follow_authorize", return_value="https://auth.openai.com/email-verification"),
+            patch.object(v2, "send_email_otp", side_effect=openai_auth.EmailOtpSendError("rejected", 200)),
+        ):
+            result = v2.refresh_access_token("account@example.com", proxy="")
+
+        self.assertEqual("email_otp_send_failed", result["error"])
+        self.assertEqual("rejected", result["auth_diagnostics"]["failure_kind"])
+        self.assertEqual(200, result["http_status"])
 
     def test_authorize_mfa_challenge_does_not_resubmit_password(self):
         from core import protocol_v2_liveness as v2
@@ -148,6 +194,7 @@ class ProtocolV2LivenessTests(unittest.TestCase):
             patch.object(v2, "_network_preflight_with_retry", return_value=(_Session(), "authorize")),
             patch.object(v2, "follow_authorize", return_value="https://auth.openai.com/email-verification"),
             patch.object(v2, "_password_verify") as password,
+            patch.object(v2, "send_email_otp"),
             patch.object(v2, "_complete_email_otp", side_effect=v2.ProtocolV2AuthError("email_otp_failed", category="email", roxy_fallback_allowed=False)),
         ):
             result = v2.refresh_access_token("account@example.com", proxy="")
@@ -608,7 +655,7 @@ class ProtocolV2LivenessTests(unittest.TestCase):
                 )
             ],
         )
-        with self.assertRaisesRegex(RuntimeError, "email_otp_send_rejected"):
+        with self.assertRaisesRegex(openai_auth.EmailOtpSendError, "email_otp_send_rejected"):
             openai_auth.send_email_otp(_OtpSession(response))
 
     def test_email_otp_send_accepts_explicit_json_success(self):

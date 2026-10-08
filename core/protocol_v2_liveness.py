@@ -34,8 +34,10 @@ from core.openai_auth import (
     build_sentinel_header,
     detect_account_unusable_response_body,
     detect_account_unusable_text,
+    EmailOtpSendError,
     follow_authorize,
     request_sentinel_token,
+    send_email_otp,
 )
 from core.account_credentials import get_account_login_credentials
 from core.auth_fingerprint import build_safe_fingerprint_summary
@@ -417,11 +419,21 @@ def _complete_email_otp(session, email: str, after_ts: float, *, auth_method: st
     except AccountUnusableError:
         raise
     except Exception as exc:
-        raise ProtocolV2AuthError(
+        error = ProtocolV2AuthError(
             "email_otp_failed",
             category="email",
             roxy_fallback_allowed=False,
-        ) from exc
+        )
+        error.diagnostics = {
+            "operation": "email_otp",
+            "failure_kind": {
+                "ForwardIMAPNoMailTimeout": "no_mail",
+                "ForwardIMAPError": "imap_error",
+                "TimeoutError": "manual_timeout",
+            }.get(type(exc).__name__, "otp_error"),
+            "exception_type": type(exc).__name__[:80],
+        }
+        raise error from exc
 
 
 def _start_email_session(email: str, proxy: str | None, *, identity=None, context_recorder=None):
@@ -525,6 +537,23 @@ def _refresh_with_password(
         if final_host == "auth.openai.com" and final_path == "/email-verification":
             auth_method = "email_otp"
             password_auth_status = "skipped"
+            # 到达验证页不代表已发信；显式发码后再开始等待本轮邮件。
+            otp_after_ts = time.time()
+            try:
+                send_email_otp(session)
+            except Exception as exc:
+                error = ProtocolV2AuthError(
+                    "email_otp_send_failed",
+                    category="email",
+                    roxy_fallback_allowed=False,
+                )
+                error.diagnostics = {
+                    "operation": "email_otp_send",
+                    "failure_kind": exc.reason if isinstance(exc, EmailOtpSendError) else "transport_error",
+                    "http_status": exc.status_code if isinstance(exc, EmailOtpSendError) else None,
+                    "exception_type": type(exc).__name__[:80],
+                }
+                raise error from exc
             email_result, auth_method = _complete_email_otp(
                 session,
                 email,

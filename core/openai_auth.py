@@ -33,6 +33,15 @@ class EmailOtpInvalidError(RuntimeError):
     """邮箱验证码无效/过期，可重新发送后重试。"""
 
 
+class EmailOtpSendError(RuntimeError):
+    """发码请求失败，仅向上层提供安全的类别与状态码。"""
+
+    def __init__(self, reason: str, status_code: int = 0):
+        self.reason = reason
+        self.status_code = int(status_code or 0)
+        super().__init__(f"email_otp_send_{reason} status={self.status_code or '-'}")
+
+
 class AuthorizeRouteRejectedError(RuntimeError):
     """Auth authorize 在账号创建前被当前代理线路拒绝，可由上层换线重试。"""
 
@@ -848,7 +857,7 @@ def send_email_otp(session: BrowserSession, referer: str = "https://auth.openai.
     # redirect chain and the final page are inspected.
     if status >= 400:
         logger.warning("[OTP] 重新发送验证码失败 status=%s path=%s", status, final_path or "-")
-        raise RuntimeError(f"email_otp_send_failed status={status} path={final_path or '-'}")
+        raise EmailOtpSendError("http_error", status)
     if "/error" in final_path.lower() or any("/error" in path.lower() for path in redirect_paths):
         logger.warning(
             "[OTP] 重新发送验证码被认证服务拒绝 status=%s path=%s redirect=%s",
@@ -856,7 +865,7 @@ def send_email_otp(session: BrowserSession, referer: str = "https://auth.openai.
             final_path or "-",
             ",".join(redirect_paths[-3:]) or "-",
         )
-        raise RuntimeError(f"email_otp_send_rejected status={status} path={final_path or '-'}")
+        raise EmailOtpSendError("rejected", status)
     content_type = str((getattr(resp, "headers", {}) or {}).get("content-type") or "").lower()
     if content_type.startswith("text/html") and final_path.lower() != "/email-verification":
         logger.warning(
@@ -865,7 +874,7 @@ def send_email_otp(session: BrowserSession, referer: str = "https://auth.openai.
             final_path or "-",
             content_type.split(";", 1)[0] or "-",
         )
-        raise RuntimeError(f"email_otp_send_unconfirmed status={status} path={final_path or '-'}")
+        raise EmailOtpSendError("unconfirmed", status)
     _rotate_document_navigation_id(session)
     logger.info("[OTP] 重新发送验证码请求完成，status=%s path=%s", status, final_path or "-")
 
