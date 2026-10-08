@@ -577,12 +577,21 @@ def submit_bulk(
     }
 
 
-def retry_task(task_id: int, *, trigger: str = "manual_retry") -> dict:
+def retry_task(
+    task_id: int,
+    *,
+    trigger: str = "manual_retry",
+    driver: str | None = None,
+) -> dict:
+    if driver is not None and (not isinstance(driver, str) or driver not in {"roxy", "protocol"}):
+        return {"accepted": False, "error": "driver 只能是 roxy 或 protocol"}
     task = operation_task_store.get_task(int(task_id))
     if not task:
         return {"accepted": False, "error": "任务不存在"}
     if str(task.get("source_system") or "") != "native_operations":
         return {"accepted": False, "error": "该历史任务尚未迁移为原生运行任务"}
+    if driver is not None and str(task.get("task_type") or "") != "codex_retry":
+        return {"accepted": False, "error": "只有 Codex 补跑任务支持指定 driver"}
     account_id = int(task.get("account_id") or 0)
     account = db.get_account(account_id) if account_id else None
     if task_gateway.operation_is_deactivated(task) or db.account_is_deactivated(account):
@@ -593,7 +602,11 @@ def retry_task(task_id: int, *, trigger: str = "manual_retry") -> dict:
     if not enabled:
         return {"accepted": False, "feature": "codex_retry", "error": reason, "unavailable": True}
     try:
-        run = operation_task_store.retry_runtime_task(int(task_id), trigger=trigger, data={"config_snapshot": _config_snapshot()})
+        run = operation_task_store.retry_runtime_task(
+            int(task_id),
+            trigger=trigger,
+            data={"config_snapshot": _config_snapshot(driver_override=driver)},
+        )
     except (LookupError, ValueError) as exc:
         return {"accepted": False, "error": str(exc)}
     email = str(task.get("email_snapshot") or "")

@@ -46,7 +46,13 @@ def create_operations_blueprint(context: WebUIContext):
         "queued", "running", "stopping", "cancelling", "settling", "waiting",
     }
 
-    def _perform_operation_action(task_id: int, action: str, *, expected_status: str | None = None):
+    def _perform_operation_action(
+        task_id: int,
+        action: str,
+        *,
+        expected_status: str | None = None,
+        driver_override: str | None = None,
+    ):
         """执行统一任务中心的单条动作，供单条和批量入口共用。"""
         task = operation_task_store.get_task(task_id)
         if not task:
@@ -58,6 +64,10 @@ def create_operations_blueprint(context: WebUIContext):
         if expected_status and current_status != expected_status:
             return {"ok": False, "error": "任务状态已变化，请刷新后重试"}, 409
         if action == "retry":
+            if driver_override is not None and not (
+                source_system == "native_operations" and task_type == "codex_retry"
+            ):
+                return {"ok": False, "error": "只有原生 Codex 补跑任务支持指定 driver"}, 400
             if task_gateway.operation_is_deactivated(task):
                 return {
                     "ok": False,
@@ -66,7 +76,8 @@ def create_operations_blueprint(context: WebUIContext):
                 }, 409
             if task.get("status") in active_operation_statuses:
                 return {"ok": False, "error": "任务仍在执行"}, 409
-            registered_action = task_gateway.operation_action(
+            # 显式指定驱动时必须走 Codex 服务，由它将驱动写入新 Run 的配置快照。
+            registered_action = None if driver_override is not None else task_gateway.operation_action(
                 task_type, "retry", source_system=source_system,
             )
             if registered_action is not None:
@@ -83,7 +94,10 @@ def create_operations_blueprint(context: WebUIContext):
                     return payload, 503 if payload.get("unavailable") else 409
                 return payload, 202
             if source_system == "native_operations" and task_type == "codex_retry":
-                queued = codex_operation_service.retry_task(int(task_id), trigger="manual_retry")
+                retry_kwargs = {"trigger": "manual_retry"}
+                if driver_override is not None:
+                    retry_kwargs["driver"] = driver_override
+                queued = codex_operation_service.retry_task(int(task_id), **retry_kwargs)
                 if queued.get("busy"):
                     return {"ok": False, **queued}, 409
                 if not queued.get("accepted"):
@@ -293,7 +307,15 @@ def create_operations_blueprint(context: WebUIContext):
     @bp.post("/api/operations/<int:task_id>/retry")
     def api_operation_retry(task_id: int):
         """由服务端 next_actions 和来源映射选择重跑入口，前端不猜流程。"""
-        payload, status = _perform_operation_action(task_id, "retry")
+        data = request.get_json(silent=True)
+        driver_override = None
+        if isinstance(data, dict) and "driver" in data:
+            driver_override = data["driver"]
+            if not isinstance(driver_override, str) or driver_override not in {"roxy", "protocol"}:
+                return jsonify({"ok": False, "error": "driver 只能是 roxy 或 protocol"}), 400
+        payload, status = _perform_operation_action(
+            task_id, "retry", driver_override=driver_override,
+        )
         return jsonify(payload), status
 
     @bp.post("/api/operations/<int:task_id>/delete")

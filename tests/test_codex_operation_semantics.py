@@ -131,6 +131,50 @@ class CodexCredentialSemanticsTests(unittest.TestCase):
         active.assert_not_called()
         retry.assert_not_called()
 
+    def test_retry_task_overrides_only_new_run_driver_snapshot(self):
+        task = {
+            "id": 41,
+            "task_type": "codex_retry",
+            "source_system": "native_operations",
+            "account_id": 7,
+            "email_snapshot": "user@example.test",
+            "status": "attention_required",
+        }
+        snapshot = {"oauth_driver": "roxy", "auth_source": "local"}
+        with (
+            patch.object(codex_operation_service.operation_task_store, "get_task", return_value=task),
+            patch.object(codex_operation_service.db, "get_account", return_value={"id": 7}),
+            patch.object(codex_operation_service.db, "account_is_deactivated", return_value=False),
+            patch.object(codex_operation_service.operation_task_store, "active_run_for_account", return_value=None),
+            patch.object(codex_operation_service, "_feature_ready", return_value=(True, "")),
+            patch.object(codex_operation_service, "_config_snapshot", return_value=snapshot) as config,
+            patch.object(
+                codex_operation_service.operation_task_store,
+                "retry_runtime_task",
+                return_value={"id": 52, "log_file": None},
+            ) as retry,
+            patch.object(codex_operation_service.db, "update_account_codex_operation_state"),
+            patch.object(codex_operation_service.task_run_log, "append"),
+            patch.object(codex_operation_service, "_dispatch") as dispatch,
+        ):
+            result = codex_operation_service.retry_task(41, driver="roxy")
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual(52, result["run_id"])
+        config.assert_called_once_with(driver_override="roxy")
+        retry.assert_called_once_with(
+            41,
+            trigger="manual_retry",
+            data={"config_snapshot": snapshot},
+        )
+        dispatch.assert_called_once_with(52)
+
+    def test_retry_task_rejects_unsupported_driver_before_storage_access(self):
+        with patch.object(codex_operation_service.operation_task_store, "get_task") as get_task:
+            result = codex_operation_service.retry_task(41, driver="api")
+        self.assertFalse(result["accepted"])
+        get_task.assert_not_called()
+
 
 class CancellationTokenTests(unittest.TestCase):
     def test_cancellation_is_cooperative_and_scoped_to_run(self):

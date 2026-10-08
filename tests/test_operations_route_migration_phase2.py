@@ -59,6 +59,47 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
         self.assertTrue(response.get_json()["ok"])
         retry_task.assert_called_once_with(41, trigger="manual_retry")
 
+    def test_native_codex_retry_passes_driver_to_codex_service(self):
+        client = self._client()
+        queued = {"accepted": True, "busy": False, "task_id": 41, "run_id": 52, "status": "queued"}
+        with (
+            patch.object(operations.operation_task_store, "get_task", return_value=self._task()),
+            patch.object(task_gateway, "operation_action") as action,
+            patch.object(operations.codex_operation_service, "retry_task", return_value=queued) as retry_task,
+        ):
+            response = client.post("/api/operations/41/retry", json={"driver": "roxy"})
+
+        self.assertEqual(202, response.status_code)
+        self.assertEqual(52, response.get_json()["run_id"])
+        retry_task.assert_called_once_with(41, trigger="manual_retry", driver="roxy")
+        action.assert_not_called()
+
+    def test_driver_override_rejects_other_task_types_and_sources(self):
+        client = self._client()
+        for task in (
+            self._task(task_type="live_check"),
+            self._task(source_system="account_action_tasks"),
+        ):
+            with self.subTest(task=task["task_type"], source=task["source_system"]):
+                with (
+                    patch.object(operations.operation_task_store, "get_task", return_value=task),
+                    patch.object(operations.codex_operation_service, "retry_task") as retry_task,
+                ):
+                    response = client.post("/api/operations/41/retry", json={"driver": "roxy"})
+                self.assertEqual(400, response.status_code)
+                retry_task.assert_not_called()
+
+    def test_driver_override_rejects_unknown_values(self):
+        client = self._client()
+        with (
+            patch.object(operations.operation_task_store, "get_task") as get_task,
+            patch.object(operations.codex_operation_service, "retry_task") as retry_task,
+        ):
+            response = client.post("/api/operations/41/retry", json={"driver": "api"})
+        self.assertEqual(400, response.status_code)
+        get_task.assert_not_called()
+        retry_task.assert_not_called()
+
     def test_unregistered_native_maintenance_type_cannot_fall_through_to_oauth(self):
         client = self._client()
         task = self._task(task_type="live_check")
