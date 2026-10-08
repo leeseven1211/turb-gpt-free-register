@@ -506,6 +506,10 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
             events.append("twofa")
             return "totp-secret"
 
+        def run_codex(*_args, **_kwargs):
+            events.append("codex")
+            return {"status": "success", "ok": True, "message": "已完成"}
+
         with ExitStack() as stack:
             stack.enter_context(patch.object(protocol, "BrowserSession", return_value=session))
             stack.enter_context(patch.object(protocol, "network_preflight"))
@@ -530,7 +534,7 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
                 "_finalize_registration_session",
                 return_value=({"accessToken": "fresh-token", "user": {}, "account": {}}, "fresh-token"),
             ))
-            stack.enter_context(patch("core.registration_service.persist_registration_core", side_effect=persist_core))
+            persist = stack.enter_context(patch("core.registration_service.persist_registration_core", side_effect=persist_core))
             stack.enter_context(patch(
                 "core.registration.checkpoints.save_email_verification_checkpoint",
                 return_value=19,
@@ -538,6 +542,7 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
             stack.enter_context(patch("core.registration_service.report_registered_account"))
             stack.enter_context(patch("core.plan_check_service.check_registration_account_plan", side_effect=check_plan))
             stack.enter_context(patch.object(protocol, "setup_2fa_protocol", side_effect=setup_twofa))
+            oauth = stack.enter_context(patch("core.codex_oauth.run_codex_oauth", side_effect=run_codex))
             stack.enter_context(patch.object(protocol, "human_delay"))
             stack.enter_context(patch.object(
                 protocol._protocol_cfg, "CHATGPT_ANON_BOOTSTRAP_ENABLED", False, create=True
@@ -567,13 +572,17 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
                 registration_options={
                     "password_enabled": True,
                     "twofa_enabled": True,
-                    "codex_enabled": False,
+                    "codex_enabled": True,
                     "plan_check_enabled": True,
                 },
             )
 
         self.assertTrue(result["success"], result)
-        self.assertEqual(["core_persisted", "plan_check", "twofa"], events)
+        self.assertEqual(events[:4], ["core_persisted", "plan_check", "twofa", "codex"])
+        self.assertEqual(persist.call_args.kwargs["extra"]["account_password"], "Password!123")
+        self.assertEqual(oauth.call_args.kwargs["login_password"], "Password!123")
+        self.assertEqual(oauth.call_args.kwargs["login_totp_secret"], "totp-secret")
+        self.assertEqual(["core_persisted", "plan_check", "twofa", "codex"], events)
 
     def test_password_disabled_does_not_enter_password_stage(self):
         session = object()

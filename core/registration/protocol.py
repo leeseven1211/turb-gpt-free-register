@@ -905,7 +905,6 @@ def run_protocol_registration(
         # entering any independent 2FA/Codex/plan work.  This is outside the
         # page-shape branches so the existing-session OAuth path is covered too.
         from core.registration_service import persist_registration_core
-        from core.email_provider import resolve_email_source
 
         account_id = persist_registration_core(
             email=email,
@@ -920,6 +919,7 @@ def run_protocol_registration(
                 "device_id": session.device_id,
                 "sentinel_sid": getattr(session, "sentinel_sid", None),
                 "browser_profile": getattr(session, "browser_profile", None),
+                **({"account_password": openai_password} if openai_password else {}),
                 "registration_checkpoint": "core_persisted",
             },
         )
@@ -993,7 +993,12 @@ def run_protocol_registration(
                         email_source=selected_email_source,
                         **kwargs,
                     )
-                codex_result = run_codex_oauth(email, **codex_kwargs)
+                codex_result = run_codex_oauth(
+                    email,
+                    login_password=openai_password,
+                    login_totp_secret=totp_secret,
+                    **codex_kwargs,
+                )
                 report_job_progress(
                     "codex",
                     "success"
@@ -1022,8 +1027,8 @@ def run_protocol_registration(
 
         if codex_result.get("ok"):
             logger.info(
-                f"[Codex] 成功：{email}，file={codex_result.get('file_path')}，"
-                f"callback={codex_result.get('callback_url')}"
+                "[Codex] 成功：%s，授权回调已处理",
+                email,
             )
         elif codex_result.get("status") == "skipped":
             logger.info(f"[Codex] 跳过：{email}，原因={codex_result.get('message')}")
@@ -1033,7 +1038,7 @@ def run_protocol_registration(
         # Post-processing is deliberately outside the core persistence call.
         # Keep the existing status projections for account setup/retry views.
         from core import db
-        if codex_result.get("status") in {"success", "failed", "skipped"}:
+        if codex_result.get("status") in {"success", "failed", "skipped", "attention_required"}:
             codex_status = "success" if codex_result.get("ok") and codex_result.get("status") != "skipped" else codex_result.get("status")
             db.update_account_codex_status(
                 email,
@@ -1068,7 +1073,7 @@ def run_protocol_registration(
                 f"原因={flow_result.get('message')}"
             )
 
-        logger.debug(f"[完成] TOTP Secret: {totp_secret or '(未设置)'}")
+        logger.debug("[完成] Authenticator 2FA 状态：%s", "已启用" if totp_secret else "未启用")
 
         codex_ok = codex_result.get("ok") or codex_result.get("status") == "skipped"
         twofa_ok = (not twofa_enabled) or bool(totp_secret)

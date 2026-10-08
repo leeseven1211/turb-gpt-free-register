@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 from core import cloakbrowser_registration, skyvern_registration
 from core.registration import browser_use, protocol, roxy
+from core.account_export import persist_account_core
 
 
 class EmailSourceCompatibilityTests(unittest.TestCase):
@@ -164,6 +165,7 @@ class EmailSourceCompatibilityTests(unittest.TestCase):
             stack.enter_context(patch.object(protocol, "follow_authorize"))
             stack.enter_context(patch.object(protocol, "human_delay"))
             stack.enter_context(patch.object(protocol, "wait_for_otp", wait_for_otp))
+            stack.enter_context(patch.object(protocol, "resolve_email_source", return_value="generic_api"))
             stack.enter_context(patch.object(protocol._email_cfg, "USE_EMAIL_SERVICE", True))
             stack.enter_context(
                 patch.multiple(
@@ -318,7 +320,11 @@ class EmailSourceCompatibilityTests(unittest.TestCase):
         self.assertEqual(result, "123456")
         self.assertNotIn("email_source", wait_for_otp.call_args.kwargs)
 
-    def _run_browser_use_codex(self, *, email_source=None):
+    def _run_browser_use_codex(
+        self, *, email_source=None, login_password=None, login_totp_secret=None,
+        codex_response=None, totp_write_ok=True, twofa_setup_error=None,
+        codex_auto_enabled=True,
+    ):
         client = MagicMock()
         client.open_session.return_value = SimpleNamespace(
             connect_url="ws://browser-use.test",
@@ -339,7 +345,24 @@ class EmailSourceCompatibilityTests(unittest.TestCase):
         sync_api.sync_playwright = MagicMock(return_value=playwright_manager)
         playwright_package = types.ModuleType("playwright")
         playwright_package.sync_api = sync_api
-        oauth = MagicMock(return_value={"ok": True, "status": "success", "message": "ok"})
+        events = []
+        def record_core(**_kwargs):
+            events.append("core")
+            return 17
+
+        def record_totp(*_args):
+            events.append("totp")
+            return totp_write_ok
+
+        def record_oauth(*_args, **_kwargs):
+            events.append("oauth")
+            return codex_response or {"ok": True, "status": "success", "message": "ok"}
+
+        def record_final(**_kwargs):
+            events.append("final")
+            return 17
+
+        oauth = MagicMock(side_effect=record_oauth)
 
         with ExitStack() as stack:
             stack.enter_context(patch.dict(sys.modules, {"playwright": playwright_package, "playwright.sync_api": sync_api}))
@@ -351,7 +374,7 @@ class EmailSourceCompatibilityTests(unittest.TestCase):
             stack.enter_context(patch.object(browser_use, "_check_manual_stop"))
             stack.enter_context(patch.object(browser_use, "_submit_email_until_transition", return_value="email_verification"))
             stack.enter_context(patch.object(browser_use, "_assert_not_external_idp"))
-            stack.enter_context(patch.object(browser_use, "_fill_password_if_present", return_value=None))
+            stack.enter_context(patch.object(browser_use, "_fill_password_if_present", return_value=login_password))
             stack.enter_context(patch.object(browser_use, "_browser_use_heartbeat", return_value=page))
             stack.enter_context(patch.object(browser_use, "_quick_auth_state", return_value={"state": "email_verification", "url": "https://auth.openai.com/email-verification"}))
             stack.enter_context(patch.object(browser_use, "_clear_otp_inputs"))
@@ -366,10 +389,18 @@ class EmailSourceCompatibilityTests(unittest.TestCase):
                     return_value={"accessToken": "token", "user": {}, "account": {}},
                 )
             )
-            stack.enter_context(patch.object(browser_use._twofa_cfg, "ENABLE_2FA", False))
-            stack.enter_context(patch("config.codex.ENABLE_CODEX_AUTO", True))
+            stack.enter_context(patch.object(browser_use._twofa_cfg, "ENABLE_2FA", bool(login_totp_secret)))
+            stack.enter_context(patch.object(browser_use._twofa_cfg, "get_twofa_driver_for_options", return_value="protocol"))
+            stack.enter_context(patch.object(browser_use, "BrowserSession"))
+            stack.enter_context(patch.object(
+                browser_use, "setup_2fa_protocol", return_value=login_totp_secret,
+                side_effect=twofa_setup_error,
+            ))
+            persist_core = stack.enter_context(patch("core.registration_service.persist_registration_core", side_effect=record_core))
+            update_totp = stack.enter_context(patch("core.db.update_account_totp_secret", side_effect=record_totp))
+            stack.enter_context(patch("config.codex.ENABLE_CODEX_AUTO", codex_auto_enabled))
             stack.enter_context(patch("core.codex_oauth.run_codex_oauth", oauth))
-            stack.enter_context(patch.object(browser_use, "save_account_data", return_value=17))
+            save = stack.enter_context(patch.object(browser_use, "save_account_data", side_effect=record_final))
             stack.enter_context(patch.object(browser_use, "resolve_email_source", return_value="generic_api"))
             result = browser_use.run_browser_use_registration(
                 self.email,
@@ -381,17 +412,43 @@ class EmailSourceCompatibilityTests(unittest.TestCase):
             )
 
         self.assertTrue(result["success"], result)
+        persist_core.assert_called_once()
+        self.assertEqual(persist_core.call_args.kwargs["extra"].get("account_password"), login_password)
+        self.assertEqual(persist_core.call_args.kwargs["extra"]["registration_checkpoint"], "core_persisted")
+        save.assert_called_once()
+        if login_totp_secret:
+            if twofa_setup_error is not None:
+                update_totp.assert_not_called()
+                oauth.assert_not_called()
+                self.assertEqual(events, ["core", "final"])
+                return None, result
+            update_totp.assert_called_once_with(self.email, login_totp_secret)
+            if not totp_write_ok:
+                oauth.assert_not_called()
+                self.assertEqual(events, ["core", "totp", "final"])
+                return None, result
+            self.assertEqual(
+                events,
+                ["core", "totp", "oauth", "final"] if codex_auto_enabled else
+                ["core", "totp", "final"],
+            )
+        else:
+            update_totp.assert_not_called()
+            self.assertEqual(events, ["core", "oauth", "final"] if codex_auto_enabled else ["core", "final"])
+        if not codex_auto_enabled:
+            oauth.assert_not_called()
+            return None, result
         oauth.assert_called_once()
-        return oauth.call_args
+        return oauth.call_args, result
 
     def test_browser_use_codex_legacy_call_keeps_original_otp_provider(self):
-        call = self._run_browser_use_codex()
+        call, _ = self._run_browser_use_codex()
 
         self.assertIs(call.kwargs["otp_provider"], browser_use.wait_for_otp)
 
     def test_browser_use_codex_binds_otp_provider_to_explicit_source(self):
         with patch.object(browser_use, "wait_for_otp", return_value="123456") as wait_for_otp:
-            call = self._run_browser_use_codex(email_source=self.email_source)
+            call, _ = self._run_browser_use_codex(email_source=self.email_source)
             provider = call.kwargs["otp_provider"]
             self.assertEqual(provider(self.email, after_ts=123.0, max_wait=30), "123456")
 
@@ -400,6 +457,74 @@ class EmailSourceCompatibilityTests(unittest.TestCase):
             after_ts=123.0,
             max_wait=30,
             email_source=self.email_source,
+        )
+
+    def test_browser_use_codex_passes_new_registration_credentials_in_memory(self):
+        call, _ = self._run_browser_use_codex(
+            login_password="Password!123",
+            login_totp_secret="totp-secret",
+        )
+        self.assertEqual(call.kwargs["login_password"], "Password!123")
+        self.assertEqual(call.kwargs["login_totp_secret"], "totp-secret")
+
+    def test_browser_use_codex_unknown_result_marks_registration_partial(self):
+        _, result = self._run_browser_use_codex(codex_response={
+            "ok": False, "status": "attention_required", "outcome": "request_unknown",
+            "message": "验证请求结果未知",
+        })
+        self.assertFalse(result["postprocess_success"])
+        self.assertTrue(result["partial_success"])
+        self.assertIn("待核对", result["error"])
+
+    def test_browser_use_stops_codex_if_2fa_secret_write_is_unconfirmed(self):
+        call, result = self._run_browser_use_codex(
+            login_password="Password!123",
+            login_totp_secret="totp-secret",
+            totp_write_ok=False,
+        )
+        self.assertIsNone(call)
+        self.assertTrue(result["partial_success"])
+        self.assertFalse(result["postprocess_success"])
+        self.assertEqual(result["codex"]["status"], "attention_required")
+        self.assertIn("待核对", result["error"])
+
+    def test_browser_use_stops_codex_if_2fa_setup_outcome_is_unknown(self):
+        call, result = self._run_browser_use_codex(
+            login_totp_secret="totp-secret",
+            twofa_setup_error=TimeoutError("2FA 结果未知"),
+        )
+        self.assertIsNone(call)
+        self.assertTrue(result["partial_success"])
+        self.assertEqual(result["codex"]["status"], "attention_required")
+
+    def test_browser_use_marks_2fa_unknown_partial_even_with_codex_disabled(self):
+        call, result = self._run_browser_use_codex(
+            login_totp_secret="totp-secret",
+            twofa_setup_error=TimeoutError("2FA 结果未知"),
+            codex_auto_enabled=False,
+        )
+        self.assertIsNone(call)
+        self.assertTrue(result["partial_success"])
+        self.assertFalse(result["postprocess_success"])
+        self.assertIn("待核对", result["error"])
+
+
+class CodexStatusProjectionTests(unittest.TestCase):
+    def test_attention_required_replaces_old_codex_error_with_fixed_message(self):
+        with patch("core.db.insert_account", return_value=17) as insert:
+            row_id = persist_account_core(
+                email="account@example.test",
+                access_token="private-token",
+                extra={"codex": {
+                    "status": "attention_required",
+                    "message": "private-remote-response",
+                }},
+            )
+        self.assertEqual(row_id, 17)
+        self.assertEqual(insert.call_args.kwargs["codex_status"], "attention_required")
+        self.assertEqual(
+            insert.call_args.kwargs["codex_error"],
+            "Codex 登录验证结果待核对，不能自动重新提交",
         )
 
 

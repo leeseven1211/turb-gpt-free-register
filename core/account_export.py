@@ -760,7 +760,11 @@ def persist_account_core(
     account = extra.get("account") or {}
     codex = extra.get("codex") or {}
     codex_status = codex.get("status")
-    codex_error = codex.get("message") if codex_status == "failed" else None
+    codex_error = (
+        "Codex 登录验证结果待核对，不能自动重新提交"
+        if codex_status == "attention_required"
+        else codex.get("message") if codex_status == "failed" else None
+    )
     row_id = insert_account(
         email=email,
         access_token=access_token,

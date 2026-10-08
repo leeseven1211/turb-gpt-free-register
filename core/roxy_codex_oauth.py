@@ -1446,7 +1446,6 @@ def _fill_email_and_otp(
     otp_after_ts = time.time()
     password, totp_secret = _account_login_credentials(email)
     logger.info("[Codex][Browser] 打开授权地址")
-    logger.info("[Codex][Browser] 完整授权地址: %s", auth_url)
     _safe_get(
         driver,
         auth_url,
@@ -3486,12 +3485,12 @@ def _run_roxy_codex_oauth_once(
             cpa_auth = proto._request_cpa_authorize_url()
             state = cpa_auth["state"]
             auth_url = cpa_auth["auth_url"]
-            logger.info("[Codex][Browser] 当前使用 CPA 授权地址: %s", auth_url)
+            logger.info("[Codex][Browser] 当前使用 CPA 授权地址 path=%s", proto._url_path_for_log(auth_url))
         elif auth_source == "sub2":
             sub2_auth = proto._request_sub2_authorize_url()
             state = sub2_auth["state"]
             auth_url = sub2_auth["auth_url"]
-            logger.info("[Codex][Browser] 当前使用 sub2 授权地址: %s", auth_url)
+            logger.info("[Codex][Browser] 当前使用 sub2 授权地址 path=%s", proto._url_path_for_log(auth_url))
         elif auth_source == "local":
             code_verifier, code_challenge = proto._generate_pkce()
             state = proto._generate_state()
@@ -3499,7 +3498,7 @@ def _run_roxy_codex_oauth_once(
             # 再登录一次。若现有 auth cookie 不可用，页面仍会自然回落到登录流程。
             prompt = None if reuse_existing_profile and not clear_existing_state else "login"
             auth_url = proto._build_authorize_url(state, code_challenge, prompt=prompt)
-            logger.info("[Codex][Browser] 当前使用本地 PKCE 授权地址: %s", auth_url)
+            logger.info("[Codex][Browser] 当前使用本地 PKCE 授权地址 path=%s", proto._url_path_for_log(auth_url))
         else:
             raise RuntimeError(f"[Codex][Browser] 不支持的 CODEX_AUTH_URL_SOURCE={auth_source!r}")
         report_stage("auth_url", "Codex 授权地址已准备", state="success", detail={"source": auth_source})
@@ -3562,7 +3561,7 @@ def _run_roxy_codex_oauth_once(
         callback_url = _finish_consent_workspace(driver, email=email)
         report_stage("callback", "已捕获 OAuth callback", state="success")
         code = proto._extract_code(callback_url, state)
-        logger.info("[Codex][Browser] 已捕获 callback code：%s...", code[:24])
+        logger.info("[Codex][Browser] 已捕获 OAuth callback code")
 
         if auth_source == "cpa":
             submit_payload = proto._submit_cpa_callback(callback_url)

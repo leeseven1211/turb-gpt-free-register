@@ -1770,7 +1770,7 @@ def run_browser_use_registration(
     email_source: str | None = None,
 ) -> dict:
     """Browser Use / Skyvern 云端浏览器注册入口。proxy 参数保留兼容。"""
-    from core.registration_service import report_job_progress
+    from core.registration_service import persist_registration_core, report_job_progress
 
     selected_email_source = validate_email_source(email_source) if email_source else None
     options = dict(registration_options or {})
@@ -2044,14 +2044,39 @@ def run_browser_use_registration(
             report_job_progress("token", "success", "已获取 accessToken")
             logger.info("[BrowserUse] 已拿到 accessToken：%s", email)
 
+            # Token 已确认，先保存账号并同步注册 Attempt；独立 Codex 浏览器需要
+            # 已存在的账号行来读取登录凭据及绑定 Roxy Profile。
+            account_id = persist_registration_core(
+                email=email,
+                access_token=access_token,
+                chatgpt_session=session_info,
+                email_source=selected_email_source or resolve_email_source(email),
+                proxy_used=proxy or f"{provider_prefix}:{session_info_open.proxy_country_code or 'default'}",
+                extra={
+                    "user": session_info.get("user"),
+                    "account": session_info.get("account"),
+                    "expires": session_info.get("expires"),
+                    **({"account_password": openai_password} if openai_password else {}),
+                    "registration_checkpoint": "core_persisted",
+                },
+            )
+
             totp_secret = None
+            totp_secret_persisted = True
             if _twofa_cfg.ENABLE_2FA:
                 try:
                     twofa_driver = _twofa_cfg.get_twofa_driver_for_options(options)
                     if twofa_driver == "protocol":
+                        # 设置请求可能在远端成功但本地超时，未确认写回前不能继续授权。
+                        totp_secret_persisted = False
                         protocol_session = BrowserSession(proxy=proxy or "")
                         plan_check_session = protocol_session
                         totp_secret = setup_2fa_protocol(protocol_session, access_token)
+                        from core import db
+
+                        if not db.update_account_totp_secret(email, totp_secret):
+                            raise RuntimeError("Authenticator 2FA 密钥写回未确认")
+                        totp_secret_persisted = True
                         report_job_progress("twofa", "success", "协议 2FA 已启用")
                     else:
                         logger.warning("[BrowserUse] browser 2FA 目前仅支持 RoxyBrowser 页面流程，已跳过")
@@ -2072,7 +2097,14 @@ def run_browser_use_registration(
                 from config import codex as _codex_cfg
                 codex_auto_enabled = bool(getattr(_codex_cfg, "ENABLE_CODEX_AUTO", False))
                 oauth_driver = str(getattr(_codex_cfg, "CODEX_OAUTH_DRIVER", "") or "").strip() or "same_as_registration"
-                if codex_auto_enabled:
+                if codex_auto_enabled and not totp_secret_persisted:
+                    codex_result = {
+                        "status": "attention_required",
+                        "ok": False,
+                        "message": "2FA 设置或密钥写回未确认，需核对后再执行 Codex 授权",
+                    }
+                    report_job_progress("codex", "failed", codex_result["message"])
+                elif codex_auto_enabled:
                     report_job_progress("codex", "running", "正在执行 Codex OAuth")
                     logger.info(
                         "[BrowserUse][Codex] ENABLE_CODEX_AUTO=True，注册成功后自动执行 Codex OAuth：driver=%s",
@@ -2102,7 +2134,12 @@ def run_browser_use_registration(
                             email_source=selected_email_source,
                             **kwargs,
                         )
-                    codex_result = run_codex_oauth(email, **codex_kwargs)
+                    codex_result = run_codex_oauth(
+                        email,
+                        login_password=openai_password,
+                        login_totp_secret=totp_secret,
+                        **codex_kwargs,
+                    )
                     report_job_progress("codex", "success" if codex_result.get("ok") else "failed", str(codex_result.get("message") or "Codex OAuth 已完成")[:300])
                 else:
                     logger.info("[BrowserUse][Codex] ENABLE_CODEX_AUTO=False，注册后跳过 Codex OAuth")
@@ -2142,15 +2179,26 @@ def run_browser_use_registration(
                     "codex": codex_result,
                 },
             )
-            _t_all.done("success")
+            postprocess_attention = (
+                codex_result.get("status") == "attention_required"
+                or not totp_secret_persisted
+            )
+            _t_all.done("partial_success" if postprocess_attention else "success")
             return {
                 "success": True,
+                "postprocess_success": False if postprocess_attention else None,
+                "partial_success": postprocess_attention,
                 "email": email,
                 "account_id": account_id,
                 "access_token": access_token,
                 "totp_secret": totp_secret,
                 "codex": codex_result,
-                "error": None,
+                "error": (
+                    "2FA 设置或密钥写回结果待核对，核对前不能补跑"
+                    if not totp_secret_persisted else
+                    "Codex 登录验证结果待核对，不能自动重新提交"
+                    if postprocess_attention else None
+                ),
             }
     except Exception as exc:
         logger.error("[BrowserUse] 注册失败：%s: %s", type(exc).__name__, exc)

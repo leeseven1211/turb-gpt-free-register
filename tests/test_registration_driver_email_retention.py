@@ -25,14 +25,17 @@ class RegistrationDriverEmailRetentionTests(unittest.TestCase):
         )
         release_email.assert_not_called()
 
-    def _assert_permanently_failed_without_release(self, result, mark_unusable, retain_email, release_email):
+    def _assert_permanently_failed_without_release(
+        self, result, mark_unusable, retain_email, release_email, *,
+        expected_note="上游明确确认账号永久失效: account deactivated",
+    ):
         self.assertFalse(result["success"])
         self.assertTrue(result["email_permanently_unusable"])
         self.assertEqual("account_deactivated", result["account_unusable_error_code"])
         mark_unusable.assert_called_once_with(
             self.email,
             source=self.email_source,
-            note="上游明确确认账号永久失效: account deactivated",
+            note=expected_note,
         )
         retain_email.assert_not_called()
         release_email.assert_not_called()
@@ -279,6 +282,7 @@ class RegistrationDriverEmailRetentionTests(unittest.TestCase):
             stack.enter_context(patch.object(browser_use, "_fetch_chatgpt_session", return_value={"accessToken": "token", "user": {}, "account": {}}))
             stack.enter_context(patch.object(browser_use._twofa_cfg, "ENABLE_2FA", False))
             stack.enter_context(patch("config.codex.ENABLE_CODEX_AUTO", False))
+            persist_core = stack.enter_context(patch("core.registration_service.persist_registration_core", return_value=17))
             save_account_data = stack.enter_context(patch.object(browser_use, "save_account_data", return_value=17))
             stack.enter_context(
                 patch.object(
@@ -297,6 +301,8 @@ class RegistrationDriverEmailRetentionTests(unittest.TestCase):
             )
 
         self.assertTrue(result["success"], result)
+        persist_core.assert_called_once()
+        self.assertEqual(persist_core.call_args.kwargs["email_source"], self.email_source)
         self.assertEqual(save_account_data.call_args.kwargs["email_source"], self.email_source)
 
     def test_cloak_mid_flow_failure_retains_email_without_releasing_it(self):
@@ -487,7 +493,10 @@ class RegistrationDriverEmailRetentionTests(unittest.TestCase):
                 },
             )
 
-        self._assert_permanently_failed_without_release(result, mark_unusable, retain_email, release_email)
+        self._assert_permanently_failed_without_release(
+            result, mark_unusable, retain_email, release_email,
+            expected_note="上游明确确认账号永久失效: 注册流程失败：AccountUnusableError",
+        )
         self.assertEqual(7, result["account_id"])
         persist_core.assert_called_once()
 
@@ -624,6 +633,7 @@ class RegistrationDriverEmailRetentionTests(unittest.TestCase):
             stack.enter_context(patch.object(browser_use._twofa_cfg, "ENABLE_2FA", False))
             stack.enter_context(patch("config.codex.ENABLE_CODEX_AUTO", True))
             stack.enter_context(patch("core.codex_oauth.run_codex_oauth", side_effect=AccountUnusableError("account deactivated", error_code="account_deactivated")))
+            persist_core = stack.enter_context(patch("core.registration_service.persist_registration_core", return_value=17))
             stack.enter_context(patch.object(browser_use, "save_account_data", return_value=17))
             stack.enter_context(patch.object(browser_use, "_close_browser_use_session"))
             mark_unusable = stack.enter_context(patch("core.email_provider.mark_email_permanently_unusable"))
@@ -640,7 +650,8 @@ class RegistrationDriverEmailRetentionTests(unittest.TestCase):
 
         self._assert_permanently_failed_without_release(result, mark_unusable, retain_email, release_email)
         self.assertIn("account_id", result)
-        self.assertIsNone(result["account_id"])
+        self.assertEqual(result["account_id"], 17)
+        persist_core.assert_called_once()
 
     def test_cloak_codex_oauth_unusable_error_reaches_outer_failure_contract(self):
         driver = MagicMock()

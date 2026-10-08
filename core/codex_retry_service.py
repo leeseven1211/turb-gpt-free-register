@@ -1907,8 +1907,8 @@ def _run_worker_legacy(
             result["proxy_mode"] = account_route.mode
         check_stop_requested(email)
         logger.info(
-            "[Codex 补跑] 结果：status=%s ok=%s file=%s callback=%s",
-            result.get("status"), result.get("ok"), result.get("file_path"), result.get("callback_url"),
+            "[Codex 补跑] 结果：status=%s ok=%s credential_saved=%s callback_captured=%s",
+            result.get("status"), result.get("ok"), bool(result.get("file_path")), bool(result.get("callback_url")),
         )
         account_task_store.append_event(
             task_id,

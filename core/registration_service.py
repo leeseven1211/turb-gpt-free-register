@@ -2639,6 +2639,10 @@ def _build_retry_info(
                 else "账号已完成，Codex 自动授权已跳过"
             )
             return info
+        if codex_status == "attention_required":
+            info["next_actions"] = []
+            info["retry_reason"] = "Codex 登录验证结果待核对，不能自动重新提交"
+            return info
         info.update({
             "retryable": True,
             "retry_action": "codex",

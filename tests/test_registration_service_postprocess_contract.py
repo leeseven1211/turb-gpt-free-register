@@ -142,6 +142,25 @@ class RegistrationServicePostprocessContractTests(unittest.TestCase):
             [action["action"] for action in info["next_actions"]],
         )
 
+    def test_codex_unknown_result_does_not_offer_retry(self):
+        info = _build_retry_info(
+            {"status": "partial_success", "account_id": 42},
+            account={
+                "id": 42,
+                "email": "account@example.com",
+                "access_token": "token",
+                "codex_status": "attention_required",
+                "plan_check_status": "success",
+                "totp_secret": "",
+                "extra_json": '{"account_password":"Password!123"}',
+            },
+            successful_retry=None,
+        )
+        self.assertFalse(info["retryable"])
+        self.assertIsNone(info["retry_action"])
+        self.assertEqual([], info["next_actions"])
+        self.assertIn("待核对", info["retry_reason"])
+
     def test_plan_only_retry_has_dedicated_action(self):
         info = _build_retry_info(
             {
