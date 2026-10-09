@@ -1549,7 +1549,6 @@ def _follow_login_continue_step(
             workspace_id = _confirmed_consent_workspace_id(session) if status == 200 and not payload else ""
             if workspace_id:
                 logger.info("[Codex] 已确认授权页及单一工作区，继续工作区选择")
-                report_stage("workspace", "授权确认页已确认单一工作区")
                 return "workspace", workspace_id
             return "consent", ""
         if final_path in ("/add-phone", "/api/accounts/add-phone/send"):
@@ -1575,6 +1574,7 @@ def _select_workspace_and_get_callback(
     POST workspace/select，然后跟随后续重定向/响应里的 URL 直到命中 localhost:1455 callback。
     返回完整 callback URL（含 code）。
     """
+    report_stage("workspace", "正在选择已确认的工作区并等待 OAuth 回调")
     wid = workspace_id if workspace_id is not None else _get_workspace_id(session)
     resp = _post_json(
         session,
@@ -1589,6 +1589,7 @@ def _select_workspace_and_get_callback(
         trusted_loc, callback = _trusted_login_target(loc)
         if callback:
             _extract_code(trusted_loc, state)
+            report_stage("workspace", "工作区选择已确认并收到有效 OAuth 回调", state="success")
             return trusted_loc
 
     # 2) 响应 JSON 里给了下一步 URL（continue_url / redirect_url / url / next）
@@ -1609,7 +1610,10 @@ def _select_workspace_and_get_callback(
         raise RuntimeError(f"[Codex] workspace/select 后找不到下一跳 URL: status={resp.status_code}")
 
     # 跟随重定向链直到命中 callback
-    return _follow_until_callback(session, next_url, state)
+    callback_url = _follow_until_callback(session, next_url, state)
+    _extract_code(callback_url, state)
+    report_stage("workspace", "工作区选择已确认并收到有效 OAuth 回调", state="success")
+    return callback_url
 
 
 def _follow_until_callback(session: BrowserSession, url: str, state: str) -> str:

@@ -951,6 +951,8 @@ def _execute_run(run_id: int) -> dict:
                     allow_password_reset=allow_password_reset,
                     on_password_reset_submitted=(_checkpoint_password_reset if allow_password_reset else None),
                 )
+            except (OperationCancelled, task_gateway.OperationLeaseLost):
+                raise
             except Exception as exc:
                 failed_stage = task_run_log.current_context().get("stage") or "auth_url"
                 report(
@@ -1131,9 +1133,11 @@ def _execute_run(run_id: int) -> dict:
             return {**result, "status": final_status, "run_id": run_id}
     except task_gateway.OperationLeaseLost as exc:
         if preflight_open:
-            report(stage="preflight", message="配置预检未完成", state="failed", level="ERROR", detail={"error": str(exc)[:180]})
+            report(stage="preflight", message="配置预检因租约丢失中断，结果待核验", event_type="note.warning", level="WARNING", detail={"lease_lost": True, "reconcile_required": True})
         if network_open:
-            report(stage="network", message="账号 OAuth 网络线路申请失败", state="failed", level="ERROR", detail={"error": str(exc)[:180]})
+            report(stage="network", message="账号 OAuth 网络线路申请因租约丢失中断，结果待核验", event_type="note.warning", level="WARNING", detail={"lease_lost": True, "reconcile_required": True})
+        if browser_open:
+            report(stage="browser", message="OAuth 驱动因租约丢失中断，结果待核验", event_type="note.warning", level="WARNING", detail={"lease_lost": True, "reconcile_required": True})
         message = str(exc) or "账号操作租约丢失，远端结果待核验"
         logger.error("Codex operation lease 丢失：run=%s", run_id)
         _finish_fenced(
@@ -1156,11 +1160,11 @@ def _execute_run(run_id: int) -> dict:
         }
     except OperationCancelled as exc:
         if preflight_open:
-            report(stage="preflight", message="配置预检未完成", state="failed", level="ERROR", detail={"error": str(exc)[:180]})
+            report(stage="preflight", message="配置预检已取消", event_type="note.warning", level="WARNING", detail={"cancelled": True})
         if network_open:
-            report(stage="network", message="账号 OAuth 网络线路申请失败", state="failed", level="ERROR", detail={"error": str(exc)[:180]})
+            report(stage="network", message="账号 OAuth 网络线路申请已取消", event_type="note.warning", level="WARNING", detail={"cancelled": True})
         if browser_open:
-            report(stage="browser", message="OAuth 驱动被取消", state="failed", level="ERROR", detail={"error": str(exc)[:180]})
+            report(stage="browser", message="OAuth 驱动已取消", event_type="note.warning", level="WARNING", detail={"cancelled": True})
         message = str(exc) or "用户手动停止 Codex 补跑"
         if remote_intent_started and remote_receipt_state != "rejected":
             _finish_fenced(

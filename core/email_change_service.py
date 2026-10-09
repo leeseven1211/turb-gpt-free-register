@@ -603,9 +603,11 @@ def begin_change_with_optional_reauth(
                 email_source=current_source,
                 access_token=token,
             )
-        except task_gateway.OperationLeaseLost:
+        except (task_gateway.OperationLeaseLost, OperationCancelled):
             raise
         except Exception as recent_exc:
+            if context is not None:
+                context.report(stage="login_password", state="failed", message="Recent Login 验证失败")
             # The first begin was explicitly rejected; Recent Login has not
             # crossed the email-change write boundary.
             raise RemoteRequestRejected(
@@ -613,10 +615,16 @@ def begin_change_with_optional_reauth(
             ) from recent_exc
         token = _access_token(recent)
         if not token:
+            if context is not None:
+                context.report(stage="login_password", state="failed", message="Recent Login 未返回新的 access_token")
             raise RemoteRequestRejected("Recent Login 未返回新的 access_token")
         recent_session = recent.get("protocol_session") if isinstance(recent, Mapping) else None
         if recent_session is None:
+            if context is not None:
+                context.report(stage="login_password", state="failed", message="Recent Login 未返回新的协议会话")
             raise RemoteRequestRejected("Recent Login 未返回新的协议会话")
+        if context is not None:
+            context.report(stage="login_password", state="success", message="已完成 Recent Login 重认证")
         session = recent_session
         after_ts = time.time()
         second_prepared = protocol.prepare_begin(session, token, new_email)
@@ -832,21 +840,26 @@ def _handle_email_change(context):
     remote_accepted = False
     writeback_confirmed = False
     email_closeout: dict[str, str] | None = None
+    active_stage = "email"
     context.report(stage="email", state="running", message="准备新邮箱")
     try:
         with context.lease(resource_family=EMAIL_CHANGE_RESOURCE_FAMILY):
             context.checkpoint()
             if not db.claim_account_email_change(account_id, source, str(context.run.get("trigger") or "manual")):
+                context.report(stage="email", state="failed", message="账号已有邮箱换绑状态")
                 return task_gateway.OperationResult.failed("账号已有邮箱换绑状态")
             account_claimed = True
             new_email = str(email_provider.acquire_email(source) or "").strip()
             if not new_email:
+                context.report(stage="email", state="failed", message="邮箱池未返回新邮箱")
                 return task_gateway.OperationResult.failed("邮箱池未返回新邮箱")
             if new_email.lower() == current_email.lower():
                 _release_unconsumed(new_email, account_id, "新邮箱与当前邮箱相同")
+                context.report(stage="email", state="failed", message="领取到的邮箱与当前邮箱相同")
                 return task_gateway.OperationResult.failed("领取到的邮箱与当前邮箱相同")
             db.mark_account_email_change_running(account_id, new_email, source=source)
             context.report(stage="email", state="success", message=f"新邮箱已领取：{new_email}")
+            active_stage = "network"
             context.report(stage="network", state="running", message="分配邮箱换绑线路")
             route = acquire_account_proxy(
                 account_id=account_id,
@@ -858,7 +871,6 @@ def _handle_email_change(context):
                     or ""
                 ).strip() or None,
             )
-            context.report(stage="network", state="success", message="邮箱换绑线路已就绪", detail=route.public_dict())
             identity = _account_stable_identity(account_id)
             from core.session import BrowserSession
 
@@ -866,7 +878,9 @@ def _handle_email_change(context):
                 proxy=route.proxy_url,
                 identity=identity.session_payload(),
             )
+            context.report(stage="network", state="success", message="邮箱换绑线路已就绪", detail=route.public_dict())
             context.checkpoint()
+            active_stage = "submit_email"
             context.report(stage="submit_email", state="running", message="发送新邮箱验证码")
             begin = begin_change_with_optional_reauth(
                 session,
@@ -880,13 +894,10 @@ def _handle_email_change(context):
             session = begin.session
             token = begin.access_token
             remote_accepted = True
-            context.report(
-                stage="login_password",
-                state="success" if begin.reauthenticated else "skipped",
-                message="已完成 Recent Login 重认证" if begin.reauthenticated else "现有 AT 满足重认证要求",
-                detail={"reauthenticated": begin.reauthenticated},
-            )
+            if not begin.reauthenticated:
+                context.report(stage="login_password", state="skipped", message="现有 AT 满足重认证要求")
             context.checkpoint()
+            active_stage = "email_otp"
             context.report(stage="email_otp", state="running", message=f"等待新邮箱验证码：{new_email}")
             try:
                 otp = email_provider.wait_for_otp(
@@ -895,7 +906,13 @@ def _handle_email_change(context):
                     email_source=source,
                     force_service=True,
                 )
+            except (task_gateway.OperationLeaseLost, OperationCancelled):
+                raise
             except Exception as exc:
+                context.report(
+                    stage="email_otp", state="failed",
+                    message=_safe_local_failure_message("新邮箱验证码获取失败", exc),
+                )
                 db.finish_account_email_change(
                     account_id,
                     ok=False,
@@ -907,6 +924,7 @@ def _handle_email_change(context):
                 return task_gateway.OperationResult.request_unknown("begin 已发送验证码，但新邮箱结果待核验")
             context.checkpoint()
             context.report(stage="email_otp", state="success", message="新邮箱验证码已获取")
+            active_stage = "submit_email"
             protocol = EmailChangeProtocol()
             prepared_verify = protocol.prepare_verify(session, token, new_email, otp)
             verify_request_id = _remote_request_id(context, "verify")
@@ -918,6 +936,8 @@ def _handle_email_change(context):
             try:
                 protocol.verify(session, token, new_email, otp, prepared=prepared_verify)
             except task_gateway.OperationLeaseLost:
+                raise
+            except OperationCancelled:
                 raise
             except RemoteRequestRejected as exc:
                 context.remote_request_receipt(
@@ -937,6 +957,7 @@ def _handle_email_change(context):
                     error=str(exc),
                 )
                 _release_unconsumed(new_email, account_id, str(exc))
+                context.report(stage="submit_email", state="failed", message="新邮箱验证码未通过", detail=_safe_remote_error_detail(exc))
                 return task_gateway.OperationResult.failed("新邮箱验证码未通过", {"error_code": "email_otp_rejected"})
             except Exception as exc:
                 context.remote_request_receipt(
@@ -965,6 +986,8 @@ def _handle_email_change(context):
                 detail={"response_observed": True, "remote_result_confirmed": True},
             )
             context.report(stage="submit_email", state="success", message="新邮箱验证码验证成功")
+            active_stage = "complete"
+            context.report(stage="complete", state="running", message="确认邮箱换绑本地写回与资源收口")
             material_line = email_provider.email_material_line(new_email, source)
             if not db.finish_account_email_change(
                 account_id,
@@ -1002,7 +1025,7 @@ def _handle_email_change(context):
             )
             context.report(
                 stage="complete",
-                state="success" if email_closeout["status"] == "success" else "warning",
+                state="success",
                 message=(
                     "邮箱换绑本地写回已确认，邮箱已收口"
                     if email_closeout["status"] == "success"
@@ -1010,6 +1033,12 @@ def _handle_email_change(context):
                 ),
                 detail={"email_closeout": email_closeout},
             )
+            if email_closeout["status"] != "success":
+                context.report(
+                    stage="complete", level="warning",
+                    message="邮箱服务收口失败，邮箱换绑本地写回已确认",
+                    detail={"email_closeout": email_closeout},
+                )
     except task_gateway.OperationLeaseLost as exc:
         if account_claimed:
             if remote_accepted:
@@ -1039,6 +1068,7 @@ def _handle_email_change(context):
                     logger.exception("lease 丢失后的邮箱换绑失败状态写回失败: account_id=%s", account_id)
         raise
     except OperationCancelled as exc:
+        context.report(stage=active_stage, message="邮箱换绑执行已取消", level="warning", detail={"cancelled": True})
         if remote_accepted:
             db.finish_account_email_change(
                 account_id,
@@ -1070,6 +1100,7 @@ def _handle_email_change(context):
         )
         return task_gateway.OperationResult.request_unknown(str(exc))
     except RemoteRequestRejected as exc:
+        context.report(stage=active_stage, state="failed", message="邮箱换绑请求被明确拒绝", detail=_safe_remote_error_detail(exc))
         if new_email:
             _release_unconsumed(new_email, account_id, str(exc))
         db.finish_account_email_change(
@@ -1100,6 +1131,7 @@ def _handle_email_change(context):
                 else None
             )
             return task_gateway.OperationResult.request_unknown("邮箱换绑结果待核验", summary)
+        context.report(stage=active_stage, state="failed", message=local_error)
         if new_email:
             _release_unconsumed(new_email, account_id, local_error)
         db.finish_account_email_change(

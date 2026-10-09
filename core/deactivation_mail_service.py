@@ -98,6 +98,7 @@ class _ReporterAdapter:
     def start(self, message: str = "开始执行") -> None:
         if self._context is None:
             self._legacy.start(message)
+            self._legacy.stage("preflight", "running", message)
         else:
             self._context.report(stage="preflight", state="running", message=message)
 
@@ -173,11 +174,14 @@ def _scan(
 ) -> None:
     reporter = _ReporterAdapter(task_id, operation_context)
     source = ""
+    active_stage = "preflight"
     lookback_days = _snapshot_lookback_days(config_snapshot)
     try:
         _checkpoint(operation_context)
+        reporter.start(message="校验封号邮件扫描账号与邮箱来源")
         account = db.get_account(account_id)
         if not account:
+            reporter.note("账号已删除，取消封号邮件扫描", stage="preflight", detail={"cancelled": True})
             reporter.finish(
                 status="cancelled",
                 message="账号已删除，取消封号邮件扫描",
@@ -190,6 +194,7 @@ def _scan(
                 "trigger": trigger,
                 "error": "该账号邮箱来源暂不支持封号邮件扫描",
             })
+            reporter.stage("preflight", "skipped", "该账号邮箱来源暂不支持封号邮件扫描")
             reporter.finish(
                 status="unsupported",
                 message="该账号邮箱来源暂不支持封号邮件扫描",
@@ -197,8 +202,16 @@ def _scan(
                 validation_method="mailbox_cache",
             )
             return
+        email = str(account.get("email") or "").strip()
+        if "@" not in email:
+            raise ValueError("封号邮件扫描缺少有效邮箱")
         db.update_account_deactivation_mail(account_id, {"status": "running", "trigger": trigger})
-        reporter.start(message="开始扫描封号邮件信号")
+        _checkpoint(operation_context, "封号邮件扫描预检完成前检查取消状态")
+        reporter.stage(
+            "preflight", "success", "封号邮件扫描预检通过",
+            detail={"email_source": source, "lookback_days": lookback_days},
+        )
+        active_stage = "mailbox_scan"
         reporter.stage(
             "mailbox_scan", "running",
             message=f"读取 {source} 邮箱缓存，回溯 {lookback_days} 天",
@@ -248,6 +261,7 @@ def _scan(
         db.update_account_deactivation_mail(account_id, {
             "status": "cancelled", "trigger": trigger, "error": error,
         })
+        reporter.note(error, stage=active_stage, level="WARNING", detail={"cancelled": True})
         reporter.finish(status="cancelled", message="封号邮件扫描任务已取消", error=error)
     except (EmailButlerClientError, CFTempMailError, ForwardIMAPError) as exc:
         if source == "email_butler" and _is_permanent_email_butler_scan_error(exc):
@@ -278,7 +292,7 @@ def _scan(
             "status": "failed", "trigger": trigger, "error": str(exc),
         })
         logger.warning("[DeactivationMail] account=%s scan failed: %s", account_id, exc)
-        reporter.stage("mailbox_scan", "failed", "封号邮件扫描失败", level="ERROR", detail={"error": str(exc)})
+        reporter.stage(active_stage, "failed", "封号邮件扫描失败", level="ERROR", detail={"error": str(exc)})
         reporter.finish(
             status="failed",
             message="封号邮件扫描失败",
@@ -293,7 +307,7 @@ def _scan(
         })
         logger.exception("[DeactivationMail] account=%s unexpected failure", account_id)
         reporter.stage(
-            "mailbox_scan", "failed", "封号邮件扫描异常",
+            active_stage, "failed", "封号邮件扫描预检失败" if active_stage == "preflight" else "封号邮件扫描异常",
             level="ERROR", detail={"error": f"{type(exc).__name__}: {exc}"},
         )
         reporter.finish(
@@ -433,8 +447,9 @@ def _scan_hme_group(
     alias independently so a missing result or a write error cannot erase the
     other aliases' evidence.
     """
-    entries = _normalise_hme_entries(entries)
-    lookback_days = _snapshot_lookback_days(config_snapshot)
+    submitted_entries = entries
+    entries = []
+    active_stage = "preflight"
     processed: dict[int, str] = {}
 
     def report_account(account_id: int, status: str, message: str, *, error: str | None = None) -> None:
@@ -446,13 +461,14 @@ def _scan_hme_group(
         }
         if error:
             detail["error"] = error[:500]
+        level = "INFO" if status == "success" else "WARNING" if status == "cancelled" else "ERROR"
+        # 单个别名的结果不代表共享扫描已完成；主阶段只由批次汇总收口。
+        event = {
+            "stage": active_stage, "message": message, "detail": detail,
+            "event_type": f"note.{level.lower()}", "level": level,
+        }
         try:
-            context.report(
-                stage="mailbox_scan",
-                state="success" if status == "success" else "failed",
-                message=message,
-                detail=detail,
-            )
+            context.report(**event)
         except Exception:
             # A reporting failure must not prevent the remaining aliases from
             # receiving their independent database result.
@@ -487,22 +503,30 @@ def _scan_hme_group(
             count += 1
         return count
 
-    if not entries:
-        context.finish(
-            status="failed",
-            message="iCloud HME 批量扫描缺少有效账号",
-            error="iCloud HME 批量扫描缺少有效账号",
-            result_summary={"account_count": 0, "scan_mode": _HME_SCAN_MODE},
-        )
-        return
-
     try:
+        context.report(stage="preflight", state="running", message="校验 HME 批量扫描账号与邮箱")
+        entries = _normalise_hme_entries(submitted_entries)
+        lookback_days = _snapshot_lookback_days(config_snapshot)
         _checkpoint(context, "批量读取 HME 邮箱前检查取消状态")
+        if not entries:
+            error = "iCloud HME 批量扫描缺少有效账号"
+            context.report(stage="preflight", state="failed", message=error, level="ERROR")
+            context.finish(
+                status="failed", message=error, error=error,
+                result_summary={"account_count": 0, "scan_mode": _HME_SCAN_MODE},
+            )
+            return
         for entry in entries:
             db.update_account_deactivation_mail(int(entry["account_id"]), {
                 "status": "running",
                 "trigger": trigger,
             })
+        _checkpoint(context, "HME 批量扫描预检完成前检查取消状态")
+        context.report(
+            stage="preflight", state="success", message="HME 批量扫描预检通过",
+            detail={"account_count": len(entries), "email_source": "icloud_hide", "lookback_days": lookback_days},
+        )
+        active_stage = "mailbox_scan"
         context.report(
             stage="mailbox_scan",
             state="running",
@@ -581,8 +605,13 @@ def _scan_hme_group(
         }
         if failed_count:
             error = f"{failed_count}/{len(entries)} 个 HME 别名扫描失败"
+            context.report(stage="mailbox_scan", state="failed", message=error, level="ERROR", detail=summary)
             context.finish(status="failed", message=error, error=error, result_summary=summary)
         else:
+            context.report(
+                stage="mailbox_scan", state="success", message=f"已完成 {len(entries)} 个 HME 别名扫描",
+                detail=summary,
+            )
             context.finish(
                 status="success",
                 message=f"已完成 {len(entries)} 个 HME 别名扫描",
@@ -593,6 +622,7 @@ def _scan_hme_group(
     except OperationCancelled as exc:
         reason = str(exc) or "封号邮件扫描任务已取消"
         cancelled_count = mark_remaining("cancelled", reason)
+        context.report(stage=active_stage, message=reason, event_type="note.warning", detail={"cancelled": True})
         context.finish(
             status="cancelled",
             message="封号邮件扫描任务已取消",
@@ -608,6 +638,11 @@ def _scan_hme_group(
     except Exception as exc:
         error = f"{type(exc).__name__}: {str(exc)[:500]}"
         failed_count = mark_remaining("failed", error)
+        context.report(
+            stage=active_stage, state="failed",
+            message="HME 批量扫描预检失败" if active_stage == "preflight" else "iCloud HME 批量扫描失败",
+            level="ERROR", detail={"error": error},
+        )
         context.finish(
             status="failed",
             message="iCloud HME 批量扫描失败",
@@ -690,6 +725,7 @@ def _native_response(submitted: dict, *, account_id: int, email: str, trigger: s
 
 def _handle_deactivation_operation(context):
     if context.account_id is None:
+        context.report(stage="preflight", state="failed", message="封号邮件扫描缺少账号", level="ERROR")
         context.finish(status="failed", message="封号邮件扫描缺少账号", error="封号邮件扫描缺少账号")
         return None
     data = context.run.get("data")

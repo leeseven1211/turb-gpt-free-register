@@ -741,6 +741,7 @@ def _run_extract(
     job_id = ""
     reporter = _ReporterAdapter(task_id, operation_context)
     refresh_started = False
+    preflight_open = False
     task_stage = "preflight"
     remote_boundary: dict | None = None
     try:
@@ -760,7 +761,10 @@ def _run_extract(
                 "link_type": link_type,
                 "message": message,
             })
-            reporter.note(safe_message, stage="preflight", event_type="extract.preflight")
+            reporter.note(
+                safe_message, stage=task_stage,
+                event_type="extract.preflight" if preflight_open else "extract.progress",
+            )
 
         def mark_refresh_start() -> None:
             nonlocal refresh_started, task_stage
@@ -769,9 +773,12 @@ def _run_extract(
             reporter.stage("refresh_token", "running", "现有 AT 已失效，正在刷新 AT")
 
         def mark_refresh_success() -> None:
+            nonlocal task_stage
             reporter.stage("refresh_token", "success", "AT 刷新成功")
+            task_stage = "preflight"
 
         reporter.stage("preflight", "running", "提炼前正在在线查活")
+        preflight_open = True
 
         # 不使用入队时传进来的 Token 快照；查活/刷新完成后重新从数据库读取，
         # 确保外部提链网站拿到的是刚刚验证过或刚刚刷新写回的 AT。
@@ -785,12 +792,13 @@ def _run_extract(
             config_snapshot=config_snapshot,
         )
         reporter.stage("preflight", "success", "提炼前 Token 检查完成")
+        preflight_open = False
         reporter.stage("access_token", "success", "已取得可用 AT")
         if not refresh_started:
             reporter.stage("refresh_token", "skipped", "现有 AT 有效，无需刷新")
-        progress("AT 已确认有效，正在创建提链任务")
         task_stage = "extract_link"
         reporter.stage("extract_link", "running", "正在创建提炼任务")
+        progress("AT 已确认有效，正在创建提链任务")
         _checkpoint(operation_context, "创建提链任务前检查取消状态")
         def mark_remote_create_started() -> None:
             nonlocal remote_boundary
@@ -1072,12 +1080,24 @@ def _run_extract(
                 db.mark_extract_link_type_failed(account_id, link_type, reason)
             except Exception:
                 logger.exception("[提链] 取消类型状态写入失败: account_id=%s type=%s", account_id, link_type)
-        reporter.stage(
-            task_stage,
-            "failed" if unknown else "cancelled",
+        interruption_detail = {
+            "error": safe_reason,
+            "remote_job_created": bool(job_id),
+            "reconcile_required": unknown,
+            "cancelled": not unknown,
+        }
+        if preflight_open and task_stage != "preflight":
+            reporter.note(
+                "提炼前 Token 检查结果待确认" if unknown else "提炼前 Token 检查已取消",
+                stage="preflight",
+                level="WARNING" if unknown else "INFO",
+                detail=interruption_detail,
+            )
+        reporter.note(
             "远端提链结果待确认" if unknown else "提炼已取消",
+            stage=task_stage,
             level="WARNING" if unknown else "INFO",
-            detail={"error": safe_reason, "remote_job_created": bool(job_id)},
+            detail=interruption_detail,
         )
         reporter.finish(
             status=status,
@@ -1165,13 +1185,33 @@ def _run_extract(
             else "当前支付方式不支持" if final_status == "unsupported"
             else "提炼失败"
         )
-        reporter.stage(
-            task_stage,
-            "failed",
-            stage_message,
-            level="WARNING" if unknown else "ERROR",
-            detail={"error": safe_reason},
-        )
+        # Token 刷新属于预检内部步骤；它失败时也要结束仍打开的预检，
+        # 但取消和远端结果不明不能被补成失败或成功。
+        if preflight_open and task_stage != "preflight":
+            if unknown:
+                reporter.note(
+                    "提炼前 Token 检查结果待确认",
+                    stage="preflight",
+                    level="WARNING",
+                    detail={"error": safe_reason, "reconcile_required": True},
+                )
+            else:
+                reporter.stage(
+                    "preflight", "failed", "提炼前 Token 检查失败",
+                    level="ERROR", detail={"error": safe_reason},
+                )
+        if unknown:
+            reporter.note(
+                stage_message,
+                stage=task_stage,
+                level="WARNING",
+                detail={"error": safe_reason, "reconcile_required": True},
+            )
+        else:
+            reporter.stage(
+                task_stage, "failed", stage_message,
+                level="ERROR", detail={"error": safe_reason},
+            )
         reporter.finish(
             status=final_status,
             message=stage_message,

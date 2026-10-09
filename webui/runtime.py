@@ -742,6 +742,13 @@ def _run_account_completion_worker(
                 return
             if not setup_result.get("ok"):
                 raise RuntimeError(setup_result.get("message") or "账号配置步骤未完成")
+            task_store.append_event(
+                task_id,
+                stage="account_setup",
+                message="账号配置实际执行已确认完成",
+                detail={"steps": sorted(setup_steps)},
+                state="success",
+            )
             plan_outcome = setup_result.get("plan_check") or {}
             remaining -= setup_steps
             if "plan_check" in setup_steps and not bool(plan_outcome.get("ok")):
@@ -961,6 +968,18 @@ def _handle_native_account_setup(context: task_gateway.OperationHandlerContext) 
                     "remote_receipt_state": receipt_state,
                     "local_readback_checks": receipt_detail.get("local_readback_checks") or {},
                 },
+            )
+        elif receipt_state == "confirmed" and normalized.status == "success":
+            context.report(
+                stage="account_setup", state="success",
+                message="账号配置实际执行与本地写回已确认完成",
+                detail={"steps": sorted(steps), "local_readback_confirmed": True},
+            )
+        elif receipt_state == "rejected" and normalized.status == "failed":
+            context.report(
+                stage="account_setup", state="failed", level="ERROR",
+                message="账号配置已明确失败",
+                detail={"steps": sorted(steps), "remote_result_state": "rejected"},
             )
         return _finish_native_context(context, normalized)
 

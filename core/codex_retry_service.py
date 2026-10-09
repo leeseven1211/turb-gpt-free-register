@@ -1499,7 +1499,7 @@ def run_twofa_worker(
                 error_type = type(exc).__name__
                 account_task_store.append_event(
                     task_id,
-                    stage="browser_retry",
+                    stage="browser",
                     message=(
                         f"浏览器账号配置遇到可恢复错误，准备刷新并更换线路重试 "
                         f"({browser_attempt + 1}/{_BROWSER_SETUP_RETRY_LIMIT})"
@@ -1513,7 +1513,7 @@ def run_twofa_worker(
                         "reason_code": str(reason_code),
                         "checkpoint_preserved": True,
                     },
-                    state="running",
+                    event_type="note.warning",
                 )
                 logger.warning(
                     "[账号配置重试] 可恢复浏览器错误，准备更换线路开启第 %s/%s 次：email=%s type=%s reason=%s",

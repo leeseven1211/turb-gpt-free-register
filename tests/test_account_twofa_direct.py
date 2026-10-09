@@ -430,8 +430,10 @@ class ProtocolDirectTwofaTests(unittest.TestCase):
         self.assertEqual(1, result["browser_retry_attempts"])
         route.release.assert_any_call(reason="browser-retry-1")
         route.release.assert_any_call(reason="twofa-retry-a@example.com")
-        retry_events = [call.kwargs for call in append_event.call_args_list if call.kwargs.get("stage") == "browser_retry"]
+        retry_events = [call.kwargs for call in append_event.call_args_list if call.kwargs.get("event_type") == "note.warning"]
         self.assertEqual(1, len(retry_events))
+        self.assertEqual("browser", retry_events[0]["stage"])
+        self.assertNotIn("state", retry_events[0])
         self.assertEqual("err_connection_closed", retry_events[0]["detail"]["reason_code"])
 
     def test_missing_at_uses_protocol_reauthentication_without_opening_roxy(self):

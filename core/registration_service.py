@@ -1971,6 +1971,7 @@ def _run_codex_retry_job(
             db.finish_job_progress(job_id, success=False, detail=str(result.get("message") or "用户手动停止")[:300], failure_state="stopped")
             db.update_job(job_id, status="stopped", email=email, account_id=account_id, error=str(result.get("message") or "用户手动停止")[:500], completed_at=now_iso, **proxy_fields)
         elif result.get("ok"):
+            db.update_job_progress(job_id, "codex", state="success", detail="Codex 补跑已确认完成")
             db.finish_job_progress(job_id, success=True)
             db.update_job(
                 job_id,
