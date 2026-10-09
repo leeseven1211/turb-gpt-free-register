@@ -241,7 +241,7 @@ def test_unexecuted_generated_steps_have_no_actual_order_or_fake_time():
     assert email['observed_order'] is None
     assert email['started_at'] is None
     assert snapshot['main_steps'][0]['id'] == 'network'
-    assert _step(snapshot, 'profile')['display_status'] == 'unconfirmed'
+    assert _step(snapshot, 'profile')['display_status'] == 'record_incomplete'
 
 
 def test_cancelled_before_start_has_explicit_unexecuted_template():
@@ -271,3 +271,229 @@ def test_all_registered_raw_stages_have_shared_chinese_labels():
     for stages in TASK_FLOWS.values():
         for stage in stages:
             assert stage_label(stage) != stage
+
+
+def test_historical_success_with_open_preflight_is_neutral_without_fabricated_success():
+    events = [_event(1, 'preflight', 'running'), _event(2, 'network', 'success'), _event(3, 'plan_check', 'success')]
+    snapshot = build_progress_snapshot(1, 2, 'plan_check', _run('success'), events)
+    preflight = _step(snapshot, 'preflight')
+    assert preflight['state'] == 'pending'
+    assert preflight['display_status'] == 'record_incomplete'
+    assert preflight['event_ids'] == ['1']
+    assert preflight['completed_at'] is None
+    assert _step(snapshot, 'plan_check')['state'] == 'success'
+
+
+def test_failed_authentication_leaves_unentered_token_steps_unexecuted():
+    events = [_event(1, 'preflight', 'running'), _event(2, 'network', 'success'), _event(3, 'email_otp', 'failed', message='本次认证未使用邮箱验证码')]
+    snapshot = build_progress_snapshot(1, 2, 'token_refresh', _run('failed'), events)
+    for step_id in ('refresh_token', 'token'):
+        step = _step(snapshot, step_id)
+        assert step['display_status'] == 'not_executed'
+        assert step['started_at'] is None
+        assert step['attempts'] == []
+        assert '失败' in step['reason']
+    assert _step(snapshot, 'preflight')['display_status'] == 'record_incomplete'
+    assert _step(snapshot, 'authenticate')['state'] == 'failed'
+
+
+def test_unknown_auth_receipt_keeps_result_unknown_and_later_local_steps_unexecuted():
+    events = [
+        _event(1, 'network', 'success'), _event(2, 'login_password', 'running'),
+        _event(3, 'login_password', detail={'remote_request_started': True}),
+        _event(4, 'login_password', detail={'remote_receipt': 'unknown'}),
+        _event(5, 'email_otp', 'failed', message='本次认证未使用邮箱验证码'),
+    ]
+    snapshot = build_progress_snapshot(1, 2, 'token_refresh', _run('attention_required'), events)
+    assert snapshot['outcome']['status'] == 'attention_required'
+    assert snapshot['failure']['reconcile_required'] is True
+    assert _step(snapshot, 'authenticate')['state'] == 'failed'
+    assert _step(snapshot, 'authenticate')['children'][0]['display_status'] == 'attention_required'
+    assert _step(snapshot, 'refresh_token')['display_status'] == 'not_executed'
+    assert _step(snapshot, 'token')['display_status'] == 'not_executed'
+
+
+def test_started_or_noted_later_stage_is_not_falsely_marked_unexecuted():
+    for event in (_event(2, 'refresh_token', 'running'), _event(2, 'refresh_token', message='刷新请求回执待确认')):
+        snapshot = build_progress_snapshot(1, 2, 'token_refresh', _run('request_unknown'), [_event(1, 'email_otp', 'failed'), event])
+        refresh = _step(snapshot, 'refresh_token')
+        assert refresh['display_status'] != 'not_executed'
+        if refresh['started_at'] or refresh['attempts']:
+            assert refresh['display_status'] == 'request_unknown'
+
+
+def test_terminal_without_explicit_failure_does_not_guess_unexecuted_steps():
+    for status in ('success', 'failed', 'attention_required'):
+        snapshot = build_progress_snapshot(1, 2, 'token_refresh', _run(status), [])
+        assert _step(snapshot, 'refresh_token')['display_status'] == 'record_incomplete'
+        assert _step(snapshot, 'refresh_token')['state'] == 'pending'
+
+
+def test_parent_parallel_child_summary_does_not_infer_unexecuted_by_template_order():
+    summary = {'child_tasks': [{'task_id': 3, 'run_id': 4, 'task_type': 'codex_retry', 'status': 'running', 'accepted': True}]}
+    snapshot = build_progress_snapshot(1, 2, 'account_completion', _run('failed', result_summary=summary), [_event(1, 'plan', 'failed')])
+    assert _step(snapshot, 'codex_dispatch')['display_status'] != 'not_executed'
+
+
+def test_declared_dependencies_propagate_failed_preflight_without_order_guessing():
+    for task_type, downstream in (
+        ('live_check', ('network', 'access_token')),
+        ('plan_check', ('network', 'plan_check')),
+        ('token_refresh', ('network', 'authenticate', 'refresh_token', 'token')),
+        ('codex_token_refresh', ('refresh_token', 'credential')),
+    ):
+        snapshot = build_progress_snapshot(1, 2, task_type, _run('failed'), [_event(1, 'preflight', 'failed')])
+        assert _step(snapshot, 'preflight')['state'] == 'failed'
+        for step_id in downstream:
+            assert _step(snapshot, step_id)['display_status'] == 'not_executed'
+
+
+def test_recovered_dependency_failure_does_not_block_unobserved_or_executed_steps():
+    events = [_event(1, 'network', 'failed'), _event(2, 'network', 'success'), _event(3, 'login_password', 'success')]
+    snapshot = build_progress_snapshot(1, 2, 'token_refresh', _run('success'), events)
+    assert snapshot['failure'] is None
+    assert _step(snapshot, 'refresh_token')['display_status'] == 'record_incomplete'
+    assert _step(snapshot, 'authenticate')['state'] == 'success'
+
+
+def test_dependency_cannot_overwrite_actual_reverse_order_or_started_later_step():
+    events = [
+        _event(1, 'token', 'success', created_at='2026-10-09T01:00:00Z'),
+        _event(2, 'email_otp', 'failed', created_at='2026-10-09T01:00:01Z'),
+        _event(3, 'refresh_token', 'running', created_at='2026-10-09T01:00:02Z'),
+    ]
+    snapshot = build_progress_snapshot(1, 2, 'token_refresh', _run('failed'), events)
+    assert [value['id'] for value in snapshot['main_steps']][:3] == ['token', 'authenticate', 'refresh_token']
+    assert _step(snapshot, 'token')['state'] == 'success'
+    assert _step(snapshot, 'refresh_token')['display_status'] == 'unconfirmed'
+
+
+def test_child_submission_evidence_blocks_unexecuted_inference():
+    summary = {'child_tasks': [{'task_id': 3, 'run_id': 4, 'step_id': 'refresh_token', 'status': 'running'}]}
+    snapshot = build_progress_snapshot(1, 2, 'token_refresh', _run('failed', result_summary=summary), [_event(1, 'email_otp', 'failed')])
+    assert _step(snapshot, 'refresh_token')['display_status'] == 'record_incomplete'
+    assert _step(snapshot, 'token')['display_status'] == 'record_incomplete'
+
+
+def test_unknown_failures_and_undeclared_branches_do_not_block_by_template_order():
+    unknown = build_progress_snapshot(1, 2, 'token_refresh', _run('failed'), [_event(1, 'new_driver_stage', 'failed')])
+    assert _step(unknown, 'refresh_token')['display_status'] == 'record_incomplete'
+    branch = build_progress_snapshot(1, 2, 'password_setup', _run('failed'), [_event(1, 'network', 'failed')])
+    assert _step(branch, 'set_password')['display_status'] == 'record_incomplete'
+
+
+def test_multiple_dependencies_only_block_on_unrecovered_failed_prerequisite(monkeypatch):
+    from core import task_stages
+    template = tuple(dict(value, depends_on=('network', 'preflight')) if value['id'] == 'plan_check' else dict(value) for value in task_stages.TASK_TEMPLATES['plan_check'])
+    monkeypatch.setitem(task_stages.TASK_TEMPLATES, 'plan_check', template)
+    events = [_event(1, 'preflight', 'failed'), _event(2, 'network', 'success')]
+    snapshot = build_progress_snapshot(1, 2, 'plan_check', _run('failed'), events)
+    assert _step(snapshot, 'plan_check')['display_status'] == 'not_executed'
+    recovered = build_progress_snapshot(1, 2, 'plan_check', _run('failed'), [*events, _event(3, 'preflight', 'success')])
+    assert _step(recovered, 'plan_check')['display_status'] == 'record_incomplete'
+
+
+def test_template_dependency_contract_uses_independent_immutable_values():
+    original = flow_for('token_refresh')
+    assert next(value for value in original if value['id'] == 'refresh_token')['depends_on'] == ('authenticate',)
+    next(value for value in original if value['id'] == 'refresh_token')['depends_on'] = ('unrelated',)
+    assert next(value for value in flow_for('token_refresh') if value['id'] == 'refresh_token')['depends_on'] == ('authenticate',)
+
+
+def test_cancellation_after_started_or_completed_preflight_does_not_invent_failure():
+    for status in ('cancelled', 'canceled', 'stopped', 'interrupted'):
+        for phase_state in ('running', 'success'):
+            run = _run(status, started_at='2026-10-09T01:00:00Z')
+            events = [_event(1, 'preflight', phase_state, message='套餐查询预检通过' if phase_state == 'success' else '开始查询账号套餐'), _event(2, 'preflight', detail={'cancelled': True})]
+            snapshot = build_progress_snapshot(1, 2, 'plan_check', run, events)
+            assert snapshot['failure'] is None
+            assert _step(snapshot, 'preflight')['display_status'] == ('success' if phase_state == 'success' else 'interrupted')
+
+
+def test_cancellation_keeps_real_unrecovered_failure_and_child_failure():
+    snapshot = build_progress_snapshot(1, 2, 'plan_check', _run('interrupted'), [_event(1, 'network', 'failed', message='网络线路申请失败')])
+    assert snapshot['failure']['stage'] == 'network'
+    assert snapshot['failure']['evidence'] == 'explicit'
+    child = {'task_id': 3, 'run_id': 4, 'task_type': 'token_refresh', 'status': 'failed', 'failure_stage': 'email_otp'}
+    parent = build_progress_snapshot(1, 2, 'account_completion', _run('cancelled', result_summary={'child_tasks': [child]}), [])
+    assert parent['failure']['child_task_id'] == 3
+
+
+def test_not_executed_evidence_never_copies_detail_timing_or_duration():
+    for evidence in ('not_executed', 'unobserved'):
+        event = _event(1, 'browser', 'skipped', detail={
+            'evidence': evidence, 'started_at': '2026-10-09T01:00:00Z',
+            'completed_at': '2026-10-09T01:00:01Z', 'duration_ms': 1000,
+        }, created_at='2026-10-09T01:00:02Z')
+        snapshot = build_progress_snapshot(1, 2, 'password_setup', _run('failed'), [event])
+        browser = _step(snapshot, 'browser')
+        assert browser['started_at'] is None
+        assert browser['completed_at'] is None
+        assert browser['duration_ms'] is None
+        assert browser['observed_order'] is None
+        assert browser['attempts'][0]['created_at'] is None
+        assert browser['attempts'][0].get('duration_ms') is None
+
+
+def test_missing_run_start_does_not_overwrite_resource_or_remote_activity_evidence():
+    for event_type in ('resource.acquired', 'remote.request_started', 'note.warning'):
+        event = _event(1, 'network', message='阶段已有实际活动记录')
+        event['event_type'] = event_type
+        snapshot = build_progress_snapshot(1, 2, 'plan_check', _run('cancelled', started_at=None), [event])
+        assert _step(snapshot, 'network')['display_status'] != 'not_executed'
+        assert snapshot['failure'] is None
+
+
+def test_unmapped_remote_or_dynamic_stage_activity_prevents_unexecuted_inference():
+    for event in (_event(2, 'future_driver_step', 'running'), _event(2, 'event', message='远端请求已发出')):
+        if event['stage'] == 'event':
+            event['event_type'] = 'remote.request_started'
+        snapshot = build_progress_snapshot(1, 2, 'token_refresh', _run('request_unknown'), [_event(1, 'email_otp', 'failed'), event])
+        assert _step(snapshot, 'refresh_token')['display_status'] == 'record_incomplete'
+        cancelled = build_progress_snapshot(1, 2, 'token_refresh', _run('cancelled', started_at=None), [event])
+        assert _step(cancelled, 'refresh_token')['display_status'] != 'not_executed'
+
+
+def test_real_token_refresh_boundary_events_bind_to_started_authentication():
+    started = _event(4, 'remote_request', detail={'action': 'token_refresh', 'intent_kind': 'remote_write'})
+    started['event_type'] = 'remote.request_started'
+    unknown = _event(5, 'reconcile', detail={'action': 'token_refresh', 'outcome': 'unknown', 'response_observed': False})
+    unknown['event_type'] = 'remote.receipt_unknown'
+    events = [
+        _event(1, 'preflight', 'running'), _event(2, 'network', 'success'),
+        _event(3, 'login_password', 'running'), started, unknown,
+        _event(6, 'login_password', 'skipped'), _event(7, 'mfa_challenge', 'skipped'),
+        _event(8, 'email_otp', 'failed', message='本次认证未使用邮箱验证码'),
+    ]
+    snapshot = build_progress_snapshot(1, 2, 'token_refresh', _run('attention_required'), events)
+    assert snapshot['outcome']['status'] == 'attention_required'
+    assert snapshot['failure']['reconcile_required'] is True
+    assert snapshot['failure']['stage'] == 'email_otp'
+    authenticate = _step(snapshot, 'authenticate')
+    assert authenticate['state'] == 'failed'
+    assert {'4', '5'} <= set(authenticate['event_ids'])
+    assert {'remote_request', 'reconcile'} <= set(authenticate['raw_stages'])
+    assert all(attempt['event_id'] not in {'4', '5'} for attempt in authenticate['attempts'])
+    assert _step(snapshot, 'refresh_token')['display_status'] == 'not_executed'
+    assert _step(snapshot, 'token')['display_status'] == 'not_executed'
+
+
+def test_remote_boundary_without_matching_action_or_auth_context_stays_conservative():
+    for action, raw, context in (
+        ('other_action', 'remote_request', [_event(1, 'login_password', 'running')]),
+        ('token_refresh', 'remote_request', [_event(1, 'network', 'success')]),
+        ('token_refresh', 'future_driver_stage', [_event(1, 'login_password', 'running')]),
+    ):
+        remote = _event(2, raw, detail={'action': action})
+        remote['event_type'] = 'remote.request_started'
+        snapshot = build_progress_snapshot(1, 2, 'token_refresh', _run('attention_required'), [*context, remote, _event(3, 'email_otp', 'failed')])
+        assert _step(snapshot, 'refresh_token')['display_status'] == 'record_incomplete'
+        assert _step(snapshot, 'token')['display_status'] == 'record_incomplete'
+
+
+def test_explicit_remote_trigger_stage_can_associate_without_text_inference():
+    remote = _event(1, 'reconcile', detail={'action': 'token_refresh', 'trigger_stage': 'login_password'})
+    remote['event_type'] = 'remote.receipt_unknown'
+    snapshot = build_progress_snapshot(1, 2, 'token_refresh', _run('attention_required'), [remote, _event(2, 'email_otp', 'failed')])
+    assert _step(snapshot, 'authenticate')['event_ids'] == ['1', '2']
+    assert _step(snapshot, 'refresh_token')['display_status'] == 'not_executed'

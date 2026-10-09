@@ -642,6 +642,7 @@ def _report_protocol_v2_refresh(reporter: TaskReporter, result: dict) -> None:
         detail={"auth_method": auth_method, "fallback_used": bool(result.get("fallback_used"))},
     )
     if result.get("ok"):
+        reporter.stage("authenticate", "success", "账号认证已完成", detail={"auth_method": auth_method, "fallback_used": bool(result.get("fallback_used"))})
         reporter.stage("token", "success", "最新 AT 已获取并保存")
 
 
@@ -1111,6 +1112,7 @@ def _run_live_check(
                 "error": "账号没有 accessToken，请点击“刷新AT”后再查活",
                 "validation_method": "access_token",
             }
+            reporter.stage("access_token", "failed", result["error"], level="ERROR", detail={"validation_method": "access_token"})
 
         if result is None:
             reporter.note(
@@ -1445,10 +1447,7 @@ def _run_live_check(
         except Exception:
             logger.exception("[查活] 取消状态写回失败: account_id=%s", account_id)
         if preflight_open:
-            reporter.stage(
-                "preflight", "failed", "查活预检未完成",
-                level="ERROR", detail={"error": result["error"]},
-            )
+            reporter.note("查活在预检完成前取消", stage="preflight", level="WARNING", detail={"cancelled": True})
         reporter.finish(
             status="request_unknown" if remote_unknown else "cancelled",
             message="刷新 AT 请求结果待确认，需人工对账" if remote_unknown else "查活任务已取消",
@@ -1507,7 +1506,7 @@ def _run_live_check(
                 "preflight", "failed", "查活预检失败",
                 level="ERROR", detail={"error": result["error"]},
             )
-        if network_open:
+        elif network_open:
             reporter.stage(
                 "network", "failed", "查活网络线路申请失败",
                 level="ERROR", detail={"error": result["error"]},
@@ -1579,6 +1578,7 @@ def _cancel_unclaimed_native_run(run_id: int | None, reason: str) -> None:
 
 def _handle_live_operation(context):
     if context.account_id is None:
+        _reporter(context.task_id, context).stage("preflight", "failed", "查活缺少账号", level="ERROR")
         context.finish(status="failed", message="查活缺少账号", error="查活缺少账号")
         return None
     data = context.run.get("data") if isinstance(context.run.get("data"), dict) else {}

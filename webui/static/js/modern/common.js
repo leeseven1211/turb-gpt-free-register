@@ -112,6 +112,7 @@ const LIST_FACET_LABELS = {
 const TASK_PROGRESS_STATUS_LABELS = {
   pending: '未开始', running: '执行中', success: '已完成', skipped: '已跳过', failed: '失败',
   recovered: '重试已恢复', unconfirmed: '未确认', not_executed: '未执行', request_unknown: '结果待确认',
+  record_incomplete: '记录不完整',
   stopped: '已中断', attention_required: '待人工处理', partial_success: '部分完成',
   unknown: '结果待确认', deactivated: '已停用', unsupported: '不支持', manual_reconcile: '需人工对账', password_confirmation_pending: '密码待确认',
   cancelled: '已取消', interrupted: '已中断', deferred: '已延后', awaiting_confirmation: '待确认',

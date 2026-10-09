@@ -508,6 +508,13 @@
         <div class="account-task-artifacts hidden" id="accountTaskArtifactContent" data-account-task-detail-view="artifacts">加载中…</div>
       </div>
       <button type="button" class="account-task-new-events hidden" id="accountTaskNewEvents">有新事件，回到底部</button>
+      <div class="account-task-step-detail-overlay hidden" id="accountTaskStepDetailOverlay">
+        <div class="account-task-step-detail-dialog" id="accountTaskStepDetailDialog" role="dialog" aria-modal="true" aria-labelledby="accountTaskStepDetailTitle">
+          <div class="account-task-step-detail-header"><h3 id="accountTaskStepDetailTitle">步骤详情</h3><button type="button" class="btn" id="btnCloseAccountTaskStepDetail">关闭</button></div>
+          <div class="account-task-step-detail-tabs" id="accountTaskStepDetailTabs" role="tablist" aria-label="步骤详情视图"></div>
+          <div class="account-task-step-detail-content" id="accountTaskStepDetailContent" role="tabpanel" tabindex="0"></div>
+        </div>
+      </div>
     </div>
   </div>
 

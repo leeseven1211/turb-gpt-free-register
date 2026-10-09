@@ -1147,87 +1147,98 @@
       .account-tasks-table { min-width:1080px; }
     }
     .account-task-stage-progress {
-      display:block; margin:0 0 10px; padding:12px 10px 10px;
-      border:1px solid #dfe7ef; border-radius:8px; background:#f8fafc; overflow:auto; max-height:45%; min-height:110px;
+      display:grid; grid-template-rows:24px 34px 132px 32px; gap:6px;
+      flex:0 0 auto; height:262px; box-sizing:border-box; margin:0 0 8px; padding:10px;
+      border:1px solid #dfe7ef; border-radius:8px; background:#f8fafc; overflow:hidden;
     }
-    .account-task-stage-current { display:flex; align-items:baseline; gap:8px; min-height:18px; margin:0 0 8px; color:#526071; font-size:11px; }
-    .account-task-stage-current strong { color:#263548; font-weight:700; }
-    .account-task-stage-current small { color:#8a93a2; font-size:10px; }
-    .account-task-stage-track { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); align-items:start; gap:8px; min-width:0; }
-    .account-task-stage-step {
-      position:relative; min-width:0; padding:10px 10px 10px 38px;
-      color:#687586; font-size:12px; font-weight:650; text-align:left; overflow-wrap:anywhere;
-    }
-    .account-task-stage-step::before {
-      content:none;
-    }
-    .account-task-stage-step:first-child::before { left:50%; width:50%; }
-    .account-task-stage-step:last-child::before { width:50%; }
-    .account-task-stage-node {
-      position:absolute; z-index:1; top:10px; left:10px; width:22px; height:22px;
-      display:grid; place-items:center; font-size:11px; line-height:1; color:#475569;
-      border:1px solid #cbd3dd; border-radius:50%; background:#fff; box-sizing:border-box;
-    }
+    .account-task-stage-current { display:flex; align-items:center; justify-content:space-between; gap:8px; min-width:0; color:#526071; font-size:11px; }
+    .account-task-stage-current strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#263548; font-weight:700; }
+    .account-task-stage-current small { flex:0 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#8a93a2; font-size:10px; }
+    .account-task-stage-brief { display:flex; align-items:stretch; gap:8px; min-width:0; overflow:hidden; }
+    .account-task-stage-brief-hint { align-self:center; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#6d7888; font-size:11px; }
+    .account-task-failure-brief { display:grid; gap:1px; flex:1; min-width:0; padding:3px 8px; border:1px solid #efb3a7; border-radius:6px; background:#fff6f3; color:#743d34; font:inherit; font-size:10px; line-height:1.25; text-align:left; cursor:pointer; }
+    .account-task-failure-brief strong, .account-task-failure-brief span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .account-task-failure-brief strong { color:#8b2e24; }
+    .account-task-child-brief { flex:none; padding:3px 8px; border:1px solid #cbd5e1; border-radius:6px; background:#fff; color:#526071; font:inherit; font-size:11px; cursor:pointer; }
+    .account-task-stage-track { display:grid; grid-template-columns:repeat(var(--task-step-columns, 4),minmax(0,1fr)); align-items:stretch; gap:8px; min-width:0; min-height:0; overflow:hidden; }
+    .account-task-stage-step { display:flex; flex-direction:column; position:relative; min-width:0; height:132px; box-sizing:border-box; border:1px solid #dfe7ef; border-radius:7px; background:#fff; color:#687586; font-size:12px; font-weight:650; text-align:left; overflow:hidden; }
+    .account-task-stage-step:hover { background:#f1f5fa; }
+    .account-task-stage-step.is-selected { background:#e8f0ff; box-shadow:inset 0 0 0 1px #8fb5ff; }
+    .account-task-stage-select { position:relative; flex:1; min-height:0; width:100%; padding:9px 8px 5px 36px; border:0; background:transparent; color:inherit; font:inherit; text-align:left; cursor:pointer; }
+    .account-task-stage-node { position:absolute; top:10px; left:8px; width:22px; height:22px; display:grid; place-items:center; font-size:11px; line-height:1; color:#475569; border:1px solid #cbd3dd; border-radius:50%; background:#fff; box-sizing:border-box; }
+    .account-task-stage-label, .account-task-stage-state { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .account-task-stage-state { margin-top:3px; font-size:11px; font-weight:550; }
+    .account-task-stage-reason { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; margin-top:4px; max-height:30px; overflow:hidden; overflow-wrap:anywhere; color:#526071; font-size:10px; font-weight:400; line-height:1.4; }
+    .account-task-stage-actions { display:flex; flex:none; gap:2px; padding:2px 4px; border-top:1px solid #edf0f4; }
+    .account-task-stage-actions button { flex:1; min-width:0; min-height:30px; padding:1px 2px; border:0; border-radius:4px; background:transparent; color:#526071; font:inherit; font-size:10px; font-weight:500; white-space:nowrap; cursor:pointer; }
+    .account-task-stage-actions button:hover { background:#e6edf7; }
+    .account-task-stage-pager { display:flex; align-items:center; justify-content:space-between; gap:8px; color:#6d7888; font-size:11px; }
+    .account-task-stage-pager > div { display:flex; align-items:center; gap:8px; }
+    .account-task-stage-pager button { min-height:32px; padding:3px 10px; border:1px solid #cbd5e1; border-radius:6px; background:#fff; color:#3f4d5f; font:inherit; cursor:pointer; }
+    .account-task-stage-pager button:disabled { color:#a0a9b6; background:#f3f5f8; cursor:default; }
+    .account-task-stage-progress button:focus-visible, .account-task-step-detail-dialog button:focus-visible, .account-task-step-detail-content:focus-visible { outline:2px solid #377dff; outline-offset:-2px; }
     .account-task-stage-step.is-success { color:#168f73; }
-    .account-task-stage-step.is-success::before { background:#36bf9d; }
     .account-task-stage-step.is-success .account-task-stage-node { border-color:#25bd96; background:#25bd96; color:#fff; }
     .account-task-stage-step.is-running { color:#377dff; }
-    .account-task-stage-step.is-running .account-task-stage-node { border-color:#377dff; box-shadow:0 0 0 4px rgba(55,125,255,.12); }
-    .account-task-stage-step.is-skipped { color:#7f8998; }
-    .account-task-stage-step.is-skipped .account-task-stage-node { border-color:#aeb7c4; background:#e7ebf0; }
+    .account-task-stage-step.is-running .account-task-stage-node { border-color:#377dff; box-shadow:0 0 0 3px rgba(55,125,255,.12); }
     .account-task-stage-step.is-failed { color:#d64755; }
-    .account-task-stage-step.is-failed::before { background:#ef9aa3; }
     .account-task-stage-step.is-failed .account-task-stage-node { border-color:#e35d6a; background:#e35d6a; color:#fff; }
-    .account-task-stage-label, .account-task-stage-state { display:block; }
-    .account-task-stage-state { margin-top:2px; font-size:11px; font-weight:550; }
-    .account-task-stage-children { display:flex; flex-direction:column; gap:2px; margin:5px auto 0; max-width:100%; color:#6d7888; font-size:9px; font-weight:500; line-height:1.25; }
-    .account-task-stage-child.is-running { color:#377dff; }
-    .account-task-stage-child.is-success { color:#168f73; }
-    .account-task-stage-child.is-failed { color:#d64755; }
-    .account-task-stage-step {
-      border:1px solid #dfe7ef; border-radius:7px; background:#fff; cursor:pointer;
-      outline:none; min-height:52px;
-    }
-    .account-task-stage-step:hover { background:#f1f5fa; }
-    .account-task-stage-step:focus-visible { box-shadow:0 0 0 3px rgba(55,125,255,.28); }
-    .account-task-stage-step.is-selected { background:#e8f0ff; box-shadow:inset 0 0 0 1px #8fb5ff; }
-    .account-task-stage-step.is-unconfirmed,
-    .account-task-stage-step.is-request_unknown,
-    .account-task-stage-step.is-attention_required { color:#9a6500; }
-    .account-task-stage-step.is-not_executed,
-    .account-task-stage-step.is-deferred,
-    .account-task-stage-step.is-pending { color:#7f8998; }
-    .account-task-stage-step.is-unconfirmed .account-task-stage-node,
-    .account-task-stage-step.is-request_unknown .account-task-stage-node,
-    .account-task-stage-step.is-attention_required .account-task-stage-node { border-color:#d89b2b; background:#fff4d6; }
-    .account-task-stage-step.is-not_executed .account-task-stage-node { border-style:dashed; }
-    .account-task-stage-hint { margin:0 0 8px; color:#6d7888; font-size:10px; line-height:1.4; }
-    .account-task-progress-failure { display:flex; flex-wrap:wrap; gap:4px 9px; margin:0 0 8px; padding:7px 9px; border:1px solid #efb3a7; border-radius:6px; background:#fff6f3; color:#743d34; font-size:10px; line-height:1.4; }
+    .account-task-stage-step.is-unconfirmed, .account-task-stage-step.is-request_unknown, .account-task-stage-step.is-attention_required { color:#9a6500; }
+    .account-task-stage-step.is-unconfirmed .account-task-stage-node, .account-task-stage-step.is-request_unknown .account-task-stage-node, .account-task-stage-step.is-attention_required .account-task-stage-node { border-color:#d89b2b; background:#fff4d6; }
+    .account-task-stage-step.is-not_executed, .account-task-stage-step.is-record_incomplete, .account-task-stage-step.is-skipped, .account-task-stage-step.is-stopped, .account-task-stage-step.is-deferred, .account-task-stage-step.is-pending { color:#7f8998; }
+    .account-task-stage-step.is-not_executed .account-task-stage-node, .account-task-stage-step.is-record_incomplete .account-task-stage-node { border-style:dashed; background:#f1f4f8; }
+    .account-task-progress-failure { display:grid; gap:8px; padding:10px; border:1px solid #efb3a7; border-radius:6px; background:#fff6f3; color:#743d34; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
     .account-task-progress-failure strong { color:#8b2e24; }
     .account-task-progress-flag { font-weight:700; }
-    .account-task-progress-failure details { flex-basis:100%; }
     .account-task-progress-failure details summary { cursor:pointer; color:#8b2e24; }
-    .account-task-progress-failure pre { max-height:140px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
-    .account-task-progress-filter { display:flex; flex-wrap:wrap; align-items:center; gap:7px; margin:0 0 8px; color:#5f6b7a; font-size:11px; }
+    .account-task-progress-failure pre { overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .account-task-progress-filter { display:flex; flex:0 0 auto; flex-wrap:wrap; align-items:center; gap:7px; margin:0 0 8px; color:#5f6b7a; font-size:11px; }
     .account-task-progress-filter button { min-height:30px; padding:3px 9px; border:1px solid #cbd5e1; border-radius:6px; background:#fff; color:#3f4d5f; font:inherit; cursor:pointer; }
-    .account-task-progress-filter button:disabled { cursor:default; opacity:.55; }
-    .account-task-stage-children { cursor:default; text-align:left; }
-    .account-task-stage-children summary { min-height:28px; padding-top:5px; text-align:left; }
-    .account-task-stage-children > div { text-align:left; }
-    .account-task-stage-step details { margin-top:5px; color:#64748b; font-size:11px; font-weight:500; line-height:1.35; text-align:left; }
-    .account-task-stage-step details summary { cursor:pointer; color:#526071; }
-    .account-task-stage-evidence { display:grid; gap:3px; overflow-wrap:anywhere; }
-    .account-task-stage-reason { margin-top:5px; color:#526071; font-size:11px; font-weight:400; line-height:1.5; }
-    .account-task-stage-step pre { max-width:100%; max-height:160px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .account-task-stage-evidence { display:grid; gap:6px; overflow-wrap:anywhere; color:#526071; font-size:12px; }
+    .account-task-step-detail-overlay { position:absolute; inset:0; z-index:20; display:grid; place-items:center; padding:16px; background:rgba(15,23,42,.42); }
+    .account-task-step-detail-dialog { display:flex; flex-direction:column; width:min(760px,100%); height:min(640px,100%); max-height:100%; min-height:0; border:1px solid #dce3ed; border-radius:10px; background:#fff; box-shadow:0 18px 60px rgba(15,23,42,.28); overflow:hidden; }
+    .account-task-step-detail-header { display:flex; flex:none; align-items:center; justify-content:space-between; gap:10px; padding:12px 16px; border-bottom:1px solid #e7edf5; }
+    #accountTaskLogPanel .account-task-step-detail-header h3 { margin:0; font-size:15px; }
+    .account-task-step-detail-header .btn { min-height:36px; }
+    .account-task-step-detail-tabs { display:flex; flex:none; gap:4px; padding:0 12px; border-bottom:1px solid #dce3ed; }
+    .account-task-step-detail-tabs button { min-height:44px; padding:0 8px; border:0; border-bottom:2px solid transparent; background:transparent; color:#687586; font:inherit; font-size:12px; cursor:pointer; }
+    .account-task-step-detail-tabs button.is-active { color:#315fba; border-bottom-color:#377dff; }
+    .account-task-step-detail-content { flex:1; min-height:0; overflow:auto; padding:16px; color:#344054; font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
+    .account-task-step-detail-content p { margin:0 0 10px; }
+    .account-task-step-detail-content .account-task-stage-reason { display:block; max-height:none; overflow:visible; font-size:12px; line-height:1.5; }
+    .account-task-step-time dl { display:grid; grid-template-columns:86px minmax(0,1fr); gap:8px 12px; margin:0 0 16px; }
+    .account-task-step-time dt { color:#667085; }
+    .account-task-step-time dd { margin:0; }
+    .account-task-attempt-list { display:grid; gap:10px; margin:0; padding:0; list-style:none; }
+    .account-task-attempt { padding:10px; border:1px solid #dfe7ef; border-radius:7px; background:#f8fafc; }
+    .account-task-attempt > div { display:flex; flex-wrap:wrap; gap:6px 12px; justify-content:space-between; margin-bottom:6px; }
+    .account-task-attempt time, .account-task-attempt small { color:#667085; font-size:11px; }
+    .account-task-step-detail-content details { margin-top:8px; color:#526071; font-size:12px; }
+    .account-task-step-detail-content summary { min-height:28px; cursor:pointer; }
+    .account-task-step-detail-content pre { max-width:100%; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font:11px/1.5 ui-monospace, Consolas, monospace; }
+    .account-task-step-child { padding:10px; margin-bottom:10px; border:1px solid #dfe7ef; border-radius:7px; }
+    .account-task-step-child h4 { display:flex; justify-content:space-between; gap:8px; margin:0 0 8px; font-size:13px; }
+    .account-task-step-child.is-failed h4 { color:#d64755; }
+    .account-task-step-child.is-success h4 { color:#168f73; }
     @media (max-width:640px) {
-      .account-task-stage-progress { overflow-x:hidden; }
-      .account-task-stage-track { width:100%; min-width:0; }
-      .account-task-stage-track { grid-template-columns:1fr; }
-      .account-task-stage-step { min-width:0; min-height:56px; }
-      .account-task-stage-children { max-width:100%; overflow-wrap:anywhere; }
-      .account-task-stage-current { align-items:flex-start; flex-direction:column; gap:2px; }
-      .account-task-progress-filter { align-items:stretch; flex-direction:column; }
-      .account-task-progress-filter button { width:100%; }
+      .account-task-stage-progress { height:274px; grid-template-rows:24px 34px 132px 44px; }
+      .account-task-stage-current small { display:none; }
+      .account-task-stage-actions button { min-height:40px; font-size:11px; }
+      .account-task-stage-pager button { min-height:44px; padding:3px 9px; }
+      .account-task-stage-pager > div { gap:6px; }
+      .account-task-progress-filter { gap:5px; margin-bottom:6px; }
+      .account-task-progress-filter button { min-height:32px; }
+      .account-task-step-detail-overlay { padding:8px; }
+      .account-task-step-detail-header, .account-task-step-detail-content { padding:12px; }
+      .account-task-step-detail-tabs { padding:0 6px; gap:0; }
+      .account-task-step-detail-tabs button { flex:1; padding:0 5px; font-size:11px; }
+    }
+    @media (max-height:680px) {
+      .account-task-stage-progress { height:234px; grid-template-rows:22px 28px 112px 32px; }
+      .account-task-stage-step { height:112px; }
+      .account-task-stage-actions button { min-height:26px; }
+      .account-task-stage-reason { -webkit-line-clamp:1; }
+      .account-task-stage-pager button { min-height:32px; }
     }
     .account-task-detail-toolbar {
       display:flex; align-items:center; justify-content:space-between; gap:12px; margin:0 0 10px;

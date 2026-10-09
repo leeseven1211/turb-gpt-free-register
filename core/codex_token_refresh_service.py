@@ -19,6 +19,7 @@ from core import scheduler_state, task_run_log
 from core.operations import task_gateway
 from core.storage import codex as db
 from core.storage import operation_runtime_store
+from core.operation_runtime import OperationCancelled
 from core.account_operation_executor import operation_log_context
 
 logger = logging.getLogger(__name__)
@@ -599,6 +600,9 @@ def _perform_refresh(
                 raise TokenRefreshError(
                     f"刷新请求意图写入失败: {_safe_error(exc)}",
                 ) from exc
+    except (TokenRefreshCancelledError, OperationCancelled):
+        _report(report, stage="preflight", level="WARNING", event_type="note.warning", message="Codex OAuth Token 在预检完成前取消", detail={"cancelled": True})
+        raise
     except Exception as exc:
         _report(
             report,
@@ -1284,7 +1288,7 @@ def _handle_operation_context(context: Any) -> Any:
         # B's dispatcher owns requeue/backoff for lease contention. Do not
         # turn this into a business failure or submit a second run here.
         raise
-    except OperationCancelled as exc:
+    except (OperationCancelled, TokenRefreshCancelledError) as exc:
         summary = _cancelled_summary(filename, str(exc))
         _update_account_state(
             email,

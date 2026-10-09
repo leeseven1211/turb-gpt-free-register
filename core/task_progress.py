@@ -105,6 +105,7 @@ def _step(item: dict[str, Any], *, planned: bool = True) -> dict[str, Any]:
     return {
         "id": step_id, "step_id": step_id, "label": item.get("label") or step_id,
         "group": item.get("group", "other"), "raw_stages": list(item.get("raw_stages") or [step_id]),
+        "depends_on": list(item.get("depends_on") or []),
         "state": "pending", "display_status": "pending", "active": False,
         "reason": "记录不足/未执行" if planned else None, "children": [], "attempts": [],
         "event_ids": [], "last_event_id": None, "started_at": None,
@@ -181,6 +182,8 @@ def _record(item: dict[str, Any], event: dict[str, Any], state: str, *, raw: str
         timestamp = None
     attempt = {"event_id": event_id, "event_uuid": event.get("event_uuid"), "transition_id": event.get("transition_id"), "state": state, "raw_stage": raw, "event_type": event.get("event_type"), "created_at": timestamp, "message": message, "evidence": evidence}
     for key in ("duration_ms", "wait_reason", "error_code", "state_before", "state_after", "transition_id", "child_task_id", "child_run_id", "child_task_type", "failure_stage", "failure_event_id", "failure_message"):
+        if key == "duration_ms" and not observed:
+            continue
         if detail.get(key) is not None:
             attempt[key] = detail[key]
     target = item
@@ -201,14 +204,14 @@ def _record(item: dict[str, Any], event: dict[str, Any], state: str, *, raw: str
         target["started_at"] = target.get("started_at") or timestamp
         if state in {"success", "failed", "skipped"}:
             target["completed_at"] = _event_completed_time(event) or timestamp
-    if detail.get("started_at"):
+    if observed and detail.get("started_at"):
         candidate_start = str(detail["started_at"])
         previous_time, candidate_time = _time_value(target.get("started_at")), _time_value(candidate_start)
         if previous_time is None or (candidate_time is not None and candidate_time < previous_time):
             target["started_at"] = candidate_start
-    if detail.get("completed_at"):
+    if observed and detail.get("completed_at"):
         target["completed_at"] = str(detail["completed_at"])
-    if detail.get("duration_ms") is not None:
+    if observed and detail.get("duration_ms") is not None:
         target["duration_ms"] = detail.get("duration_ms")
     elif target.get("started_at") and target.get("completed_at"):
         start, end = _time_value(target["started_at"]), _time_value(target["completed_at"])
@@ -237,7 +240,7 @@ def _record(item: dict[str, Any], event: dict[str, Any], state: str, *, raw: str
             item_end = _time_value(item.get("completed_at"))
             if not item.get("completed_at") or (target_end is not None and item_end is not None and target_end > item_end):
                 item["completed_at"] = target["completed_at"]
-        if detail.get("duration_ms") is not None:
+        if observed and detail.get("duration_ms") is not None:
             item["duration_ms"] = detail.get("duration_ms")
         elif item.get("started_at") and item.get("completed_at"):
             start, end = _time_value(item["started_at"]), _time_value(item["completed_at"])
@@ -389,9 +392,9 @@ def _failure(task_type: str, run: dict[str, Any], attempts: list[dict[str, Any]]
     if chosen is None and child_failure is None and status not in terminal:
         return None
     if chosen is None and child_failure is None:
-        if status == "partial_success" and not any((run.get("error_message"), summary.get("error_code"), summary.get("error_message"), summary.get("plan_check_error"))):
+        if status in {"cancelled", "canceled", "stopped", "interrupted"}:
             return None
-        if status in {"cancelled", "canceled"} and "started_at" in run and run.get("started_at") is None and not activity:
+        if status == "partial_success" and not any((run.get("error_message"), summary.get("error_code"), summary.get("error_message"), summary.get("plan_check_error"))):
             return None
     if child_failure is not None and (chosen is None or chosen.get("child_task_id") or chosen.get("main_step_id") in {"plan", "result", "refresh_dispatch", "account_setup_dispatch", "codex_dispatch"}):
         chosen = child_failure
@@ -473,11 +476,102 @@ def _legacy_events(run: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
+def _remote_boundary_step(task_type: str, event: dict[str, Any], steps: list[dict[str, Any]], attempts: list[dict[str, Any]]) -> str | None:
+    """把公共远端边界事件关联到有结构化证据的实际业务阶段。"""
+    detail = _event_detail(event)
+    if task_type != "token_refresh" or _raw_stage(event) not in {"remote_request", "reconcile"}:
+        return None
+    if not str(event.get("event_type") or "").startswith("remote.") or detail.get("action") != "token_refresh":
+        return None
+    trigger = detail.get("trigger_stage")
+    if trigger and _raw_to_main(task_type, normalize_stage(trigger), {}, steps) == "authenticate":
+        return "authenticate"
+    latest = next((value for value in reversed(attempts) if value.get("main_step_id") != "result"), {})
+    if latest.get("main_step_id") == "authenticate" and any(
+        value.get("main_step_id") == "authenticate" and value.get("state") == "running"
+        and value.get("evidence") not in {"not_executed", "unobserved"}
+        for value in attempts
+    ):
+        return "authenticate"
+    return None
+
+
+def _close_terminal_steps(
+    steps: list[dict[str, Any]], *, run: dict[str, Any], attempts: list[dict[str, Any]],
+    template_order: dict[str, int], recorded_steps: set[str], unmapped_activity: bool,
+) -> None:
+    """终态只关闭界面活动态，分别说明未执行与记录缺口。
+
+    仅根据模板声明的依赖和显式失败确认本地阶段未进入；这个判定
+    不确认远端请求结果，也不能用模板顺序替代实际开始记录。
+    """
+    status = str(run.get("status") or "").lower()
+    reconcile = status in {"attention_required", "request_unknown", "unknown", "manual_reconcile", "password_confirmation_pending"}
+    closed = status in {"success", "partial_success", "failed", "stopped", "cancelled", "canceled", "interrupted", "deactivated", "unsupported"} or reconcile
+    if not closed:
+        return
+    failures = [value for value in _unrecovered_failures(attempts)
+                if value.get("evidence") == "explicit" and not value.get("child_task_id")
+                and value.get("main_step_id") in template_order]
+    blocked_by = {value["main_step_id"]: value for value in failures}
+    if status not in {"success", "partial_success"} and not unmapped_activity:
+        for _ in range(len(steps)):
+            previous = len(blocked_by)
+            for item in steps:
+                if item["id"] in recorded_steps or item.get("started_at"):
+                    continue
+                failure = next((blocked_by[key] for key in item.get("depends_on", []) if key in blocked_by), None)
+                if failure:
+                    blocked_by[item["id"]] = failure
+            if len(blocked_by) == previous:
+                break
+    never_started = "started_at" in run and run.get("started_at") is None and not attempts and not recorded_steps and not unmapped_activity
+    cancel_status = status in {"cancelled", "canceled", "stopped", "interrupted"}
+    unresolved_display = status if reconcile else "interrupted" if cancel_status else "unconfirmed"
+    for item in steps:
+        step_id = item["id"]
+        if step_id == "result":
+            continue
+        position = template_order.get(step_id)
+        item_start = _time_value(item.get("started_at"))
+        first_sequence = next((value.get("sequence", 0) for value in attempts if value.get("main_step_id") == step_id), -1)
+        started_later = position is not None and any(
+            value.get("main_step_id") != "result"
+            and template_order.get(value.get("main_step_id"), -1) > position
+            and value.get("state") in {"running", "success", "failed"}
+            and value.get("evidence") not in {"not_executed", "unobserved"}
+            and (
+                _time_value(value.get("created_at")) > item_start
+                if item_start is not None and _time_value(value.get("created_at")) is not None
+                else value.get("sequence", 0) > first_sequence
+            )
+            for value in attempts
+        )
+        failure = blocked_by.get(step_id)
+        blocked = failure is not None and step_id not in recorded_steps and not item.get("started_at") and status not in {"success", "partial_success"}
+        if item.get("evidence") == "not_executed" or never_started or blocked:
+            reason = "本次执行未开始" if never_started else f"因“{failure.get('label') or failure['raw_stage']}”失败，未进入该阶段" if blocked else item.get("reason") or item.get("message") or "本次未执行该阶段"
+            _state(item, "pending" if item.get("state") != "skipped" else "skipped", display="not_executed", reason=reason)
+        elif item.get("evidence") == "unobserved":
+            _state(item, "pending", display="record_incomplete", reason="历史记录中缺少该阶段的执行证据")
+        elif item.get("state") == "running" or (item.get("state") == "pending" and item.get("evidence") == "unconfirmed"):
+            display = "record_incomplete" if started_later else unresolved_display
+            reason = "后续阶段已有执行记录，但本阶段缺少结束事件" if started_later else "阶段已开始，但没有记录结束结果"
+            _state(item, "pending", display=display, reason=reason)
+            item["evidence"] = "unconfirmed"
+        for child in item.get("children", []):
+            if child.get("state") == "running":
+                display = "record_incomplete" if started_later else unresolved_display
+                _state(child, "pending", display=display, reason="子阶段已开始，但缺少结束事件")
+                child["evidence"] = "unconfirmed"
+
+
 def build_progress_snapshot(task_id: int, run_id: int, task_type: str, run: dict[str, Any] | None, events: Iterable[dict[str, Any]] | None) -> dict[str, Any]:
     """构建安全的 v2 快照，同时保留 raw stage 证据。"""
     run_value = dict(run or {})
     task_key = str(task_type or "").strip().lower()
     steps = _template(task_key, run_value)
+    template_order = {item["id"]: index for index, item in enumerate(steps)}
     by_id = {item["id"]: item for item in steps}
     observations: dict[str, list[dict[str, Any]]] = {}
     activity: list[dict[str, Any]] = []
@@ -486,17 +580,35 @@ def build_progress_snapshot(task_id: int, run_id: int, task_type: str, run: dict
     order = 0
     source_events = [dict(value) for value in (events or []) if isinstance(value, dict)]
     source_events.extend(_legacy_events(run_value))
+    recorded_steps = {str(value.get("step_id") or value.get("main_step_id"))
+                      for value in _child_tasks(run_value.get("result_summary") or {})
+                      if value.get("step_id") or value.get("main_step_id")}
+    unmapped_activity = False
     for event in source_events:
         if not isinstance(event, dict):
             continue
         state = _event_state(event)
         raw = _raw_stage(event)
         detail = _event_detail(event)
+        recorded_id = _raw_to_main(task_key, raw, detail, steps)
+        boundary_id = _remote_boundary_step(task_key, event, steps, attempts) if recorded_id is None else None
+        if boundary_id:
+            recorded_id = boundary_id
+            boundary_step = _find_step(steps, boundary_id)
+            _append_unique(boundary_step["event_ids"], _event_id(event))
+            _append_unique(boundary_step["raw_stages"], _original_stage(event))
+        if recorded_id and detail.get("evidence") not in {"not_executed", "unobserved"}:
+            recorded_steps.add(recorded_id)
+        elif recorded_id is None and detail.get("evidence") not in {"not_executed", "unobserved"} and (
+            state is not None or str(event.get("event_type") or "").startswith(("resource.", "remote.", "note."))
+        ):
+            # 未能关联的新阶段或远端事件可能属于条件分支，不能推断其余步骤未进入。
+            unmapped_activity = True
         if state is None:
             continue
         if _event_id(event) or any(key in detail for key in ("step_id", "main_step_id", "child_step_id", "instance_id")):
             explicit = True
-        main_id = _raw_to_main(task_key, raw, detail, steps)
+        main_id = recorded_id
         if main_id is None:
             item = _add_unknown(steps, _original_stage(event) or raw)
             main_id = item["id"]
@@ -534,24 +646,7 @@ def build_progress_snapshot(task_id: int, run_id: int, task_type: str, run: dict
                     child["display_status"] = "recovered"
                     child["reason"] = "此前尝试失败，后续重试已恢复；原失败记录保留"
     outcome = _result(ordered, run_value, observations)
-    terminal = {"success", "partial_success", "failed", "stopped", "cancelled", "canceled", "interrupted", "attention_required", "request_unknown", "unknown", "manual_reconcile", "password_confirmation_pending", "deactivated", "unsupported"}
-    if str(run_value.get("status") or "").lower() in terminal:
-        terminal_status = str(run_value.get("status") or "").lower()
-        unresolved_display = "unconfirmed" if terminal_status in {"success", "partial_success"} else terminal_status if terminal_status in {"attention_required", "request_unknown", "unknown", "manual_reconcile", "password_confirmation_pending"} else "interrupted"
-        for item in ordered:
-            if item["id"] != "result" and item.get("evidence") == "unobserved":
-                never_started = "started_at" in run_value and run_value.get("started_at") is None and not activity
-                _state(item, "pending", display="not_executed" if never_started else "unconfirmed", reason="本次执行未开始" if never_started else "未发现该阶段的执行记录")
-            if item["id"] != "result" and item.get("state") == "running":
-                item["state"] = "pending"
-                item["display_status"] = unresolved_display
-                item["active"] = False
-                item["reason"] = "终态已记录但阶段没有收口事件"
-                item["evidence"] = "unconfirmed"
-            for child in item.get("children", []):
-                if child.get("state") == "running":
-                    _state(child, "pending", display=unresolved_display, reason="终态已记录但子阶段没有收口事件")
-                    child["evidence"] = "unconfirmed"
+    _close_terminal_steps(ordered, run=run_value, attempts=attempts, template_order=template_order, recorded_steps=recorded_steps, unmapped_activity=unmapped_activity)
     source = "explicit" if explicit else "legacy_derived" if activity else "insufficient_evidence"
     failure = _failure(task_key, run_value, attempts, activity)
     payload = {"steps": ordered, "run": {"id": run_value.get("id"), "status": run_value.get("status"), "progress_stage": run_value.get("progress_stage"), "result_summary": run_value.get("result_summary") or {}}, "events": attempts}

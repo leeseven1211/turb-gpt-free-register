@@ -120,7 +120,7 @@ ALIASES = {
 _FLOW = dict[str, tuple[dict[str, Any], ...]]
 
 
-def _step(step_id: str, label: str, group: str, *raw_stages: str) -> dict[str, Any]:
+def _step(step_id: str, label: str, group: str, *raw_stages: str, depends_on: tuple[str, ...] = ()) -> dict[str, Any]:
     """构建一个规范业务步骤。
 
     模板保留 ``raw_stages``，因为一个业务步骤可能对应多个 raw stage，
@@ -134,6 +134,7 @@ def _step(step_id: str, label: str, group: str, *raw_stages: str) -> dict[str, A
         "label": label,
         "group": group,
         "raw_stages": raw_values,
+        "depends_on": tuple(depends_on),
     }
 
 
@@ -145,9 +146,9 @@ def _flow(*steps: dict[str, Any]) -> tuple[dict[str, Any], ...]:
     return (*steps, _result())
 
 
-def _s(step_id: str, *raw: str) -> dict[str, Any]:
+def _s(step_id: str, *raw: str, depends_on: tuple[str, ...] = ()) -> dict[str, Any]:
     info = STAGES.get(step_id, {})
-    return _step(step_id, info.get("label", step_id), info.get("group", "other"), *(raw or (step_id,)))
+    return _step(step_id, info.get("label", step_id), info.get("group", "other"), *(raw or (step_id,)), depends_on=depends_on)
 
 
 # 这里是唯一模板源。即使执行器新增 raw stage，也保持业务 ID 稳定；
@@ -178,10 +179,12 @@ TASK_TEMPLATES: _FLOW = {
         _s("authenticate", "login", "login_password", "email_otp", "mfa_challenge"), _s("set_password", "password_reset", "password_checkpoint"),
         _s("set_twofa", "twofa", "twofa_result"), _s("codex_dispatch", "codex", "oauth", "dispatch"),
     ),
-    "live_check": _flow(_s("preflight"), _s("network"), _s("access_token")),
-    "token_refresh": _flow(_s("preflight"), _s("network"), _s("authenticate", "login", "login_password", "login_mfa", "email_otp", "mfa_challenge"), _s("refresh_token"), _s("token")),
-    "codex_token_refresh": _flow(_s("preflight"), _s("refresh_token"), _s("credential", "credential_confirm", "credential_persist")),
-    "plan_check": _flow(_s("preflight"), _s("network"), _s("plan_check")),
+    # 依赖只说明明确失败后哪些本地步骤无法进入，不强制按模板顺序运行。
+    # 注册、补全和配置分支含条件或独立子任务，保持无依赖推断。
+    "live_check": _flow(_s("preflight"), _s("network", depends_on=("preflight",)), _s("access_token", depends_on=("network",))),
+    "token_refresh": _flow(_s("preflight"), _s("network", depends_on=("preflight",)), _s("authenticate", "login", "login_password", "login_mfa", "email_otp", "mfa_challenge", depends_on=("network",)), _s("refresh_token", depends_on=("authenticate",)), _s("token", depends_on=("refresh_token",))),
+    "codex_token_refresh": _flow(_s("preflight"), _s("refresh_token", depends_on=("preflight",)), _s("credential", "credential_confirm", "credential_persist", depends_on=("refresh_token",))),
+    "plan_check": _flow(_s("preflight"), _s("network", depends_on=("preflight",)), _s("plan_check", depends_on=("network",))),
     "deactivation_mail": _flow(_s("preflight"), _s("mailbox_scan")),
     "extract_link": _flow(_s("preflight"), _s("access_token"), _s("refresh_token"), _s("extract_link")),
     "email_change": _flow(_s("email"), _s("network"), _s("login_password", "login_password", "reauth", "recent_login"), _s("email_otp", "email_otp", "new_email_otp"), _s("submit_email", "submit_email", "change_email", "change_email_begin", "change_email_verify", "writeback")),

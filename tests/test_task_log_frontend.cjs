@@ -279,9 +279,6 @@ test('切换 Run 会清除旧步骤筛选，同时保留显式传入的新筛选
     innerHTML: '', textContent: '',
     classList: {add() {}, remove() {}},
   });
-  assert.match(accountsSource, /expandedDetails/);
-  assert.match(accountsSource, /data-account-task-detail/);
-  assert.match(accountsSource, /event\.target\.closest\('details'\)/);
   const nodes = new Map([
     ['#accountTaskLogContent', node()],
     ['#accountTaskRunLogContent', node()],
@@ -308,6 +305,7 @@ test('切换 Run 会清除旧步骤筛选，同时保留显式传入的新筛选
     accountTaskProgressError: 'old',
     accountTaskProgressRequestId: 1,
     renderAccountTaskProgressSnapshot: () => {},
+    closeAccountTaskStepDialog: () => {},
   });
   assert.deepEqual(JSON.parse(sandbox.result), {
     first: {run: 22, filter: null},
@@ -315,6 +313,56 @@ test('切换 Run 会清除旧步骤筛选，同时保留显式传入的新筛选
     finalRun: 44,
     finalFilter: null,
   });
+});
+
+test('多步骤分页保持实际顺序，窄屏单卡可逐页查看全部步骤', () => {
+  const sandbox = runVm(`${progressFunctions}
+    const steps = Array.from({length: 17}, (_, index) => ({id: 'step-' + index}));
+    const desktopSize = accountTaskProgressPageSize(900);
+    const mobileSize = accountTaskProgressPageSize(335);
+    const desktop = accountTaskProgressPage(steps, 99, desktopSize);
+    const mobileIds = steps.flatMap((_, page) => accountTaskProgressPage(steps, page, mobileSize).steps.map(step => step.id));
+    result = JSON.stringify({desktopSize, mobileSize, page: desktop.page, pages: desktop.pages, desktopIds: desktop.steps.map(step => step.id), mobileIds});`);
+  const result = JSON.parse(sandbox.result);
+  assert.equal(result.desktopSize, 4);
+  assert.equal(result.mobileSize, 1);
+  assert.equal(result.page, 4);
+  assert.equal(result.pages, 5);
+  assert.deepEqual(result.desktopIds, ['step-16']);
+  assert.deepEqual(result.mobileIds, Array.from({length: 17}, (_, index) => `step-${index}`));
+});
+
+test('步骤卡片按服务端展示状态渲染，详情按钮与筛选入口分开', () => {
+  const sandbox = runVm(`${progressFunctions}
+    result = accountTaskProgressStepMarkup({id: 'preflight', label: '<配置预检>', state: 'pending', display_status: 'record_incomplete', reason: '旧记录漏收口', attempts: [{state: 'running'}], children: [{id: 'child'}]}, 0);`, {
+    ACCOUNT_TASK_PROGRESS_STATUS_LABELS: {record_incomplete: '记录不完整'},
+    TASK_PROGRESS_STATUS_LABELS: {},
+    esc: htmlEscape, attrEsc: htmlEscape,
+    taskProgressStepStatus: step => step.state,
+  });
+  assert.match(sandbox.result, /is-record_incomplete/);
+  assert.match(sandbox.result, /记录不完整/);
+  assert.match(sandbox.result, /data-account-task-step-filter="preflight"/);
+  assert.match(sandbox.result, /data-account-task-step-details="preflight" data-step-detail-tab="time"/);
+  assert.match(sandbox.result, /data-step-detail-tab="attempts"/);
+  assert.match(sandbox.result, /data-step-detail-tab="children"/);
+  assert.doesNotMatch(sandbox.result, /<details|<pre|is-unconfirmed|<配置预检>/);
+});
+
+test('旧 Run 弹窗在运行切换时关闭，恢复父弹窗的交互状态', () => {
+  const overlay = {classList: {add: () => {} }};
+  const sibling = {inert: true};
+  const sandbox = runVm(`${progressFunctions}
+    accountTaskStepDetailState = {context: '11:22', stepId: 'auth', tab: 'attempts'};
+    accountTaskStepDetailInert.set(sibling, false);
+    renderAccountTaskStepDialog();
+    result = {closed: accountTaskStepDetailState === null, restored: !sibling.inert};`, {
+    activeAccountTaskId: 11, activeAccountTaskRunId: 33,
+    $: selector => selector === '#accountTaskStepDetailOverlay' ? overlay : null,
+    sibling,
+  });
+  assert.equal(sandbox.result.closed, true);
+  assert.equal(sandbox.result.restored, true);
 });
 
 test('注册任务日志入口传递 operation task、Run 和步骤映射', () => {

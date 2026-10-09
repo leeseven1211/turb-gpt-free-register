@@ -423,7 +423,7 @@ def _run_plan_check(
         except Exception:
             logger.exception("[Plan] 取消状态写回失败: account_id=%s", account_id)
         if preflight_open:
-            reporter.stage("preflight", "failed", "套餐查询预检未完成", level="ERROR", detail={"error": result["error"]})
+            reporter.note("套餐查询在预检完成前取消", stage="preflight", level="WARNING", detail={"cancelled": True})
         reporter.finish(status="cancelled", message="套餐查询任务已取消", error=result["error"])
         return result
     except Exception as exc:
@@ -437,11 +437,9 @@ def _run_plan_check(
         except Exception:
             logger.exception("[Plan] 写入后台查询异常状态失败: account_id=%s", account_id)
         logger.exception("[Plan] 后台查询异常: %s", email)
-        if preflight_open:
-            reporter.stage("preflight", "failed", "套餐查询预检失败", level="ERROR", detail={"error": result["error"]})
         reporter.stage(
             failure_stage, "failed",
-            "套餐查询线路申请失败" if failure_stage == "network" else "套餐查询后台执行异常",
+            "套餐查询预检失败" if preflight_open else "套餐查询线路申请失败" if failure_stage == "network" else "套餐查询后台执行异常",
             level="ERROR", detail={"error": result["error"]},
         )
         reporter.finish(
@@ -481,6 +479,7 @@ def check_registration_account_plan(
         trigger=trigger,
     )
     reporter = TaskReporter(task_id)
+    preflight_open = True
     try:
         if not db.mark_account_plan_check_running(account_id):
             reporter.finish(
@@ -490,6 +489,7 @@ def check_registration_account_plan(
             return {"ok": False, "error": "账号已删除或套餐查询状态已被重置"}
         reporter.start(message="注册完成，开始自动查询套餐")
         reporter.stage("preflight", "success", "注册后套餐查询预检通过")
+        preflight_open = False
         reporter.stage("network", "success", "复用注册任务网络线路")
         reporter.stage("plan_check", "running", "复用注册线路请求套餐接口")
         query_kwargs = {
@@ -549,7 +549,8 @@ def check_registration_account_plan(
             logger.exception("[Plan] 写入同步查询异常状态失败: account_id=%s", account_id)
         logger.exception("[Plan] 注册代理同步查询异常: %s", email)
         reporter.stage(
-            "plan_check", "failed", "注册后套餐查询异常",
+            "preflight" if preflight_open else "plan_check", "failed",
+            "注册后套餐查询预检失败" if preflight_open else "注册后套餐查询异常",
             level="ERROR", detail={"error": result["error"]},
         )
         reporter.finish(
@@ -600,6 +601,7 @@ def _cancel_unclaimed_native_run(run_id: int | None) -> None:
 
 def _handle_plan_operation(context):
     if context.account_id is None:
+        _ReporterAdapter(context.task_id, context).stage("preflight", "failed", "套餐查询缺少账号", level="ERROR")
         context.finish(status="failed", message="套餐查询缺少账号", error="套餐查询缺少账号")
         return None
     data = context.run.get("data") if isinstance(context.run.get("data"), dict) else {}
@@ -611,6 +613,7 @@ def _handle_plan_operation(context):
     email = str((account or {}).get("email") or context.email or "").strip()
     if not access_token:
         error = "账号缺少 access_token"
+        _ReporterAdapter(context.task_id, context).stage("preflight", "failed", error, level="ERROR")
         db.update_account_plan_check(
             acc_id=int(context.account_id),
             result={"ok": False, "status": "failed", "error": error},
