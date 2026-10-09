@@ -147,7 +147,7 @@ function accountTaskProgressStepMarkup(step, index) {
   const id = accountTaskProgressStepId(step) || `step-${index + 1}`;
   const state = String(step?.display_status || taskProgressStepStatus(step));
   const selected = accountTaskStepFilter === id || (Array.isArray(step?.raw_stages) && step.raw_stages.includes(accountTaskStepFilter));
-  const children = Array.isArray(step?.children) ? step.children : [];
+  const children = taskProgressVisibleSteps(step?.children);
   const attempts = Array.isArray(step?.attempts) ? step.attempts : [];
   const label = accountTaskProgressStepLabel(step);
   const reason = String(step?.reason || step?.message || '');
@@ -182,7 +182,7 @@ function accountTaskStepDialogBody(step, tab) {
     return attempts.length ? `<ol class="account-task-attempt-list">${attempts.map(accountTaskStepAttemptMarkup).join('')}</ol>` : '<p>此步骤暂无尝试记录。</p>';
   }
   if (tab === 'children') {
-    const children = Array.isArray(step.children) ? step.children : [];
+    const children = taskProgressVisibleSteps(step.children);
     return children.map(child => `<section class="account-task-step-child is-${attrEsc(child.display_status || taskProgressStepStatus(child))}"><h4>${esc(accountTaskProgressStepLabel(child))}<span>${esc(accountTaskProgressStateLabel(child))}</span></h4>${accountTaskStepDetails(child)}</section>`).join('') || '<p>此步骤没有子步骤。</p>';
   }
   const evidence = accountTaskProgressStepEvidence(step);
@@ -193,7 +193,7 @@ function renderAccountTaskStepDialog() {
   if (accountTaskStepDetailState.context !== accountTaskStepDialogContext()) { closeAccountTaskStepDialog(false); return; }
   const state = accountTaskStepDetailState;
   const step = state.stepId ? (accountTaskProgressSnapshot?.main_steps || []).find(item => accountTaskProgressStepId(item) === state.stepId) : null;
-  if (state.stepId && !step) { closeAccountTaskStepDialog(false); return; }
+  if (state.stepId && (!step || taskProgressStepStatus(step) === 'skipped')) { closeAccountTaskStepDialog(); return; }
   const signature = JSON.stringify({state, step, failure: !step && accountTaskProgressSnapshot?.failure, children: !step && accountTaskProgressSnapshot?.outcome?.child_tasks});
   if (signature === accountTaskStepDetailSignature) return;
   accountTaskStepDetailSignature = signature;
@@ -201,7 +201,7 @@ function renderAccountTaskStepDialog() {
   const content = $('#accountTaskStepDetailContent');
   if (!title || !content) return;
   title.textContent = step ? accountTaskProgressStepLabel(step) : '任务诊断详情';
-  const tabs = step ? [['time', '阶段与时间'], ['attempts', `尝试记录（${(step.attempts || []).length}）`], ['children', `子步骤（${(step.children || []).length}）`]] : [['failure', '失败证据'], ['children', '独立子任务']];
+  const tabs = step ? [['time', '阶段与时间'], ['attempts', `尝试记录（${(step.attempts || []).length}）`], ['children', `子步骤（${taskProgressVisibleSteps(step.children).length}）`]] : [['failure', '失败证据'], ['children', '独立子任务']];
   const focusedTab = document.activeElement?.getAttribute?.('data-step-dialog-tab');
   $('#accountTaskStepDetailTabs').innerHTML = tabs.map(([id, label]) => `<button type="button" role="tab" data-step-dialog-tab="${id}" aria-selected="${state.tab === id}" class="${state.tab === id ? 'is-active' : ''}" aria-controls="accountTaskStepDetailContent">${esc(label)}</button>`).join('');
   const scrollTop = content.scrollTop;
@@ -251,16 +251,18 @@ function accountTaskProgressBrief(progress) {
 function renderAccountTaskProgressSnapshot(progress) {
   const panel = $('#accountTaskStageProgress');
   if (!panel) return;
-  const stages = Array.isArray(progress?.main_steps) ? progress.main_steps : [];
+  const stages = taskProgressVisibleSteps(progress?.main_steps);
+  if (accountTaskStepFilter && !stages.some(stage => accountTaskProgressStepId(stage) === accountTaskStepFilter || (stage.raw_stages || []).includes(accountTaskStepFilter))) accountTaskStepFilter = null;
   if (!stages.length) {
+    accountTaskStepPage = 0;
+    accountTaskStepPageSize = 0;
     panel.classList.add('hidden');
     panel.innerHTML = '';
-    closeAccountTaskStepDialog(false);
+    closeAccountTaskStepDialog();
     renderAccountTaskFilterBar();
     return;
   }
   const current = progress.current;
-  if (accountTaskStepFilter && !stages.some(stage => accountTaskProgressStepId(stage) === accountTaskStepFilter || (stage.raw_stages || []).includes(accountTaskStepFilter))) accountTaskStepFilter = null;
   const currentText = current
     ? `当前：${current.label || current.step_id}${current.child_label ? ` · ${current.child_label}` : ''}`
     : `结果：${taskProgressStatusLabel(progress.outcome?.status || 'pending')}`;

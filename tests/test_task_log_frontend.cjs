@@ -12,6 +12,7 @@ const jobsSource = fs.readFileSync(path.join(root, 'webui/static/js/modern/jobs.
 const dateStart = commonSource.indexOf('function formatDateTime(v)');
 const dateEnd = commonSource.indexOf('\nfunction taskErrorBadge', dateStart);
 const dateFunctions = commonSource.slice(dateStart, dateEnd);
+const stepFunctions = commonSource.slice(commonSource.indexOf('function taskProgressStepStatus'), commonSource.indexOf('function taskProgressStepMatches'));
 const detailStart = accountsSource.indexOf('function meaningfulTaskDetail(detail)');
 const detailEnd = accountsSource.indexOf('\nfunction renderAccountTaskEvents', detailStart);
 const detailFunction = accountsSource.slice(detailStart, detailEnd);
@@ -26,7 +27,7 @@ const logEnd = accountsSource.indexOf('\nfunction renderAccountTaskArtifacts', l
 const logRenderer = accountsSource.slice(logStart, logEnd);
 const progressStart = accountsSource.indexOf('function accountTaskProgressStateLabel');
 const progressEnd = accountsSource.indexOf('\nfunction accountTaskCanRetry', progressStart);
-const progressFunctions = accountsSource.slice(progressStart, progressEnd);
+const progressFunctions = `${stepFunctions}\n${accountsSource.slice(progressStart, progressEnd)}`;
 const resetStart = accountsSource.indexOf('function resetAccountTaskRunData');
 const resetEnd = accountsSource.indexOf('\nfunction syncAccountTaskRunPicker', resetStart);
 const resetFunction = accountsSource.slice(resetStart, resetEnd);
@@ -35,7 +36,7 @@ const openJobLogEnd = jobsSource.indexOf('\nfunction openLog', openJobLogStart);
 const openJobLogFunction = jobsSource.slice(openJobLogStart, openJobLogEnd);
 const batchHelperStart = jobsSource.indexOf('function jobProgressSnapshot');
 const batchHelperEnd = jobsSource.indexOf('\nfunction refreshBatchProgressDurations', batchHelperStart);
-const batchHelpers = jobsSource.slice(batchHelperStart, batchHelperEnd);
+const batchHelpers = `${stepFunctions}\n${jobsSource.slice(batchHelperStart, batchHelperEnd)}`;
 
 assert.ok(dateStart >= 0 && dateEnd > dateStart, '公共日期格式化函数应存在');
 assert.ok(detailStart >= 0 && detailEnd > detailStart, '技术日志字段整理函数应存在');
@@ -386,7 +387,8 @@ test('批次进度优先使用 v2 main_steps 的实际顺序并转义标签', ()
       progress: {},
       progress_snapshot: {flow_version: 'flow_version2', main_steps: [
         {id: 'observed', label: '<已观察>', state: 'request_unknown', raw_stages: ['oauth'], duration_ms: 'invalid'},
-        {id: 'pending', label: '未观察步骤', state: 'not_executed'},
+        {id: 'skipped', label: '已跳过步骤', state: 'skipped'},
+        {id: 'pending', label: '未观察步骤', state: 'skipped', display_status: 'not_executed'},
       ]},
     };
     const steps = jobProgressMainSteps(job, [{key: 'legacy', label: '错误旧顺序'}]);

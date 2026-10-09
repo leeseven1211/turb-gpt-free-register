@@ -124,6 +124,9 @@ function taskProgressStatusLabel(value) {
 function taskProgressStepStatus(step) {
   return String(step?.display_status || step?.state || 'pending').trim().toLowerCase();
 }
+function taskProgressVisibleSteps(steps) {
+  return (Array.isArray(steps) ? steps : []).filter(step => taskProgressStepStatus(step) !== 'skipped');
+}
 function taskProgressStepMatches(step, filter) {
   if (!filter) return true;
   const wanted = String(filter);

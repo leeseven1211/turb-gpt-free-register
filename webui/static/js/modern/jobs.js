@@ -299,13 +299,14 @@ function jobProgressSnapshot(job) {
 function jobProgressMainSteps(job, fallbackStages = []) {
   const snapshot = jobProgressSnapshot(job);
   if (Array.isArray(snapshot?.main_steps)) {
-    return snapshot.main_steps.map((step, index) => ({
+    return taskProgressVisibleSteps(snapshot.main_steps.map((step, index) => ({
       ...(step || {}),
       key: String(step?.id || step?.step_id || step?.key || `step-${index + 1}`),
       label: String(step?.label || step?.name || step?.id || step?.step_id || `步骤 ${index + 1}`),
-    }));
+    })));
   }
-  return fallbackStages.map(stage => ({...stage, key: String(stage.key), label: String(stage.label || stage.key)}));
+  return fallbackStages.filter(stage => taskProgressStepStatus(job?.progress_steps?.[stage.key]) !== 'skipped')
+    .map(stage => ({...stage, key: String(stage.key), label: String(stage.label || stage.key)}));
 }
 
 function jobProgressStepState(step) {
@@ -483,7 +484,7 @@ function renderBatchProgress() {
       : displayStages.map((stage, index) => {
       const step = steps[stage.key] || {};
       const state = String(step.state || 'pending');
-      const previous = index > 0 ? (steps[stages[index - 1].key] || {}) : {};
+      const previous = index > 0 ? (steps[displayStages[index - 1].key] || {}) : {};
       const reached = index > 0 && ['success', 'skipped'].includes(String(previous.state || ''));
       const symbol = state === 'success' ? '✓'
         : state === 'skipped' ? '–'
