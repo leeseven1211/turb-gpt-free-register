@@ -262,6 +262,20 @@ function closeAccountTaskStepDialog(restoreFocus = true) {
   }
   accountTaskStepDetailReturnFocus = null;
 }
+function scrollAccountTaskDialogFromWheel(event) {
+  if (event.defaultPrevented || event.ctrlKey || event.shiftKey || !event.deltaY) return;
+  const overlay = $('#accountTaskStepDetailOverlay');
+  const stepDialogOpen = overlay && !overlay.classList.contains('hidden');
+  const content = stepDialogOpen
+    ? $('#accountTaskStepDetailContent')
+    : $('#accountTaskLogPanel')?.querySelector('.account-task-detail-content');
+  // 正文及其内部代码块沿用浏览器滚动；标题、步骤与页签滚动当前弹窗正文。
+  if (!content || content.contains(event.target) || content.scrollHeight <= content.clientHeight) return;
+  const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? content.clientHeight : 1;
+  event.preventDefault();
+  hideAccountTaskStepTooltip();
+  content.scrollTop += event.deltaY * unit;
+}
 function accountTaskProgressBrief(progress) {
   const failure = progress?.failure;
   const children = (progress?.outcome?.child_tasks || []).filter(child => Number(child.task_id) > 0);
@@ -814,6 +828,7 @@ $('#accountTaskRunSelect')?.addEventListener('change', event => {
   resetAccountTaskRunData(Number(event.target.value || 0) || null);
   pollAccountTaskLog();
 });
+$('#accountTaskLogPanel')?.addEventListener('wheel', scrollAccountTaskDialogFromWheel, {passive:false});
 $('#accountTaskStageProgress')?.addEventListener('click', event => {
   const details = event.target.closest('[data-account-task-step-details]');
   if (details) { openAccountTaskStepDialog(details.dataset.accountTaskStepDetails, details.dataset.stepDetailTab, details); return; }
