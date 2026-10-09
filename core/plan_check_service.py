@@ -12,11 +12,12 @@ from datetime import datetime
 from config import proxy as proxy_cfg
 from config.schema import get_config_snapshot
 from core.operation_runtime import OperationCancelled
+from core import task_run_log
 from core.operations import task_gateway as account_task_store
 from core.storage import accounts as db
 from core.chatgpt_plan import check_account_plan
 from core.task_reporter import TaskReporter
-from core.account_operation_executor import configured_workers
+from core.account_operation_executor import configured_workers, operation_log_context
 from core.account_operation_executor import executor as _ACCOUNT_EXECUTOR
 
 logger = logging.getLogger(__name__)
@@ -103,25 +104,42 @@ class _ReporterAdapter:
         if self._context is None:
             self._legacy.start(message)
         else:
-            self._context.report(stage="preflight", state="running", message=message)
+            self._native_report("preflight", state="running", message=message)
+
+    def _native_report(self, stage: str, **event):
+        task_run_log.set_current_stage(
+            stage, task_id=getattr(self._context, "task_id", None),
+            run_id=getattr(self._context, "run_id", None),
+        )
+        result = self._context.report(stage=stage, **event)
+        if isinstance(result, dict):
+            task_run_log.set_current_stage(
+                stage,
+                event_id=result.get("event_id", result.get("id")),
+                event_uuid=result.get("event_uuid"),
+                source_event_id=result.get("source_event_id"),
+                source_system=result.get("source_system"),
+                main_step_id=result.get("main_step_id"),
+            )
+        return result
 
     def stage(self, stage: str, state: str, message: str, **kwargs) -> None:
         if self._context is None:
             self._legacy.stage(stage, state, message, **kwargs)
         else:
-            self._context.report(stage=stage, state=state, message=message, **kwargs)
+            self._native_report(stage, state=state, message=message, **kwargs)
 
     def note(self, message: str, *, stage: str = "event", **kwargs) -> None:
         if self._context is None:
             self._legacy.note(message, stage=stage, **kwargs)
         else:
-            self._context.report(stage=stage, message=message, **kwargs)
+            self._native_report(stage, message=message, **kwargs)
 
     def resource(self, event_type: str, message: str, *, stage: str = "network", **kwargs) -> None:
         if self._context is None:
             self._legacy.resource(event_type, message, stage=stage, **kwargs)
         else:
-            self._context.report(stage=stage, message=message, event_type=event_type, **kwargs)
+            self._native_report(stage, message=message, event_type=event_type, **kwargs)
 
     def finish(self, *, status: str, message: str, **kwargs) -> None:
         if self._context is None:
@@ -302,6 +320,8 @@ def _run_plan_check(
 ) -> dict:
     account_route = None
     reporter = _ReporterAdapter(task_id, operation_context)
+    preflight_open = True
+    failure_stage = "preflight"
     try:
         _checkpoint(operation_context)
         if not db.mark_account_plan_check_running(account_id):
@@ -311,6 +331,10 @@ def _run_plan_check(
             )
             return {"ok": False, "error": "账号已删除或套餐查询状态已被重置"}
         reporter.start(message="开始查询账号套餐")
+        # 预检只覆盖本地任务/账号状态和冻结的选路配置；网络租约单独计入
+        # network，避免线路申请异常被错误归到 plan_check。
+        reporter.stage("preflight", "success", "套餐查询预检通过")
+        preflight_open = False
 
         from core.account_proxy import acquire_account_proxy
         _checkpoint(operation_context, "套餐查询申请线路前检查取消状态")
@@ -323,9 +347,9 @@ def _run_plan_check(
         selected_source = proxy_source or _snapshot_value(config_snapshot, "route_source")
         if selected_source:
             route_kwargs["source"] = selected_source
-        account_route = acquire_account_proxy(
-            **route_kwargs,
-        )
+        failure_stage = "network"
+        reporter.stage("network", "running", "正在申请套餐查询线路")
+        account_route = acquire_account_proxy(**route_kwargs)
         reporter.resource(
             "resource.acquired",
             message="已选择套餐查询线路",
@@ -334,6 +358,7 @@ def _run_plan_check(
         )
         reporter.stage("network", "success", "套餐查询线路已就绪")
 
+        failure_stage = "plan_check"
         reporter.stage("plan_check", "running", "请求 ChatGPT 套餐接口")
         _checkpoint(operation_context, "请求套餐接口前检查取消状态")
         result = _query_account_plan(
@@ -397,6 +422,8 @@ def _run_plan_check(
             db.update_account_plan_check(acc_id=account_id, result=result)
         except Exception:
             logger.exception("[Plan] 取消状态写回失败: account_id=%s", account_id)
+        if preflight_open:
+            reporter.stage("preflight", "failed", "套餐查询预检未完成", level="ERROR", detail={"error": result["error"]})
         reporter.finish(status="cancelled", message="套餐查询任务已取消", error=result["error"])
         return result
     except Exception as exc:
@@ -410,8 +437,11 @@ def _run_plan_check(
         except Exception:
             logger.exception("[Plan] 写入后台查询异常状态失败: account_id=%s", account_id)
         logger.exception("[Plan] 后台查询异常: %s", email)
+        if preflight_open:
+            reporter.stage("preflight", "failed", "套餐查询预检失败", level="ERROR", detail={"error": result["error"]})
         reporter.stage(
-            "plan_check", "failed", "套餐查询后台执行异常",
+            failure_stage, "failed",
+            "套餐查询线路申请失败" if failure_stage == "network" else "套餐查询后台执行异常",
             level="ERROR", detail={"error": result["error"]},
         )
         reporter.finish(
@@ -459,6 +489,7 @@ def check_registration_account_plan(
             )
             return {"ok": False, "error": "账号已删除或套餐查询状态已被重置"}
         reporter.start(message="注册完成，开始自动查询套餐")
+        reporter.stage("preflight", "success", "注册后套餐查询预检通过")
         reporter.stage("network", "success", "复用注册任务网络线路")
         reporter.stage("plan_check", "running", "复用注册线路请求套餐接口")
         query_kwargs = {
@@ -587,23 +618,24 @@ def _handle_plan_operation(context):
         context.finish(status="failed", message=error, error=error)
         return None
     with context.lease(resource_family="openai_interactive"):
-        _run_plan_check(
-            account_id=int(context.account_id),
-            email=email,
-            access_token=access_token,
-            trigger=str(context.run.get("trigger") or "manual"),
-            proxy=None,
-            timezone_offset_min=str(data.get("timezone_offset_min") or "-"),
-            task_id=int(context.task_id),
-            operation_context=context,
-            release_queue_slot=False,
-            config_snapshot=context.config_snapshot,
-            proxy_source=str(
-                data.get("proxy_source")
-                or _snapshot_value(context.config_snapshot, "route_source")
-                or ""
-            ).strip() or None,
-        )
+        with operation_log_context(context, stage="preflight"):
+            _run_plan_check(
+                account_id=int(context.account_id),
+                email=email,
+                access_token=access_token,
+                trigger=str(context.run.get("trigger") or "manual"),
+                proxy=None,
+                timezone_offset_min=str(data.get("timezone_offset_min") or "-"),
+                task_id=int(context.task_id),
+                operation_context=context,
+                release_queue_slot=False,
+                config_snapshot=context.config_snapshot,
+                proxy_source=str(
+                    data.get("proxy_source")
+                    or _snapshot_value(context.config_snapshot, "route_source")
+                    or ""
+                ).strip() or None,
+            )
     return None
 
 

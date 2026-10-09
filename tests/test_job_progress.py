@@ -32,7 +32,7 @@ class JobProgressTests(PostgresTestCase):
                 db.update_job_progress(job["id"], "browser", "running", "启动浏览器")
 
                 row = db.get_job(job["id"])
-                self.assertEqual(row["progress_steps"]["email"]["state"], "success")
+                self.assertEqual(row["progress_steps"]["email"]["state"], "running")
                 self.assertEqual(row["progress_steps"]["browser"]["state"], "running")
                 self.assertEqual(row["batch_index"], 2)
                 self.assertEqual(row["batch_size"], 4)
@@ -588,11 +588,8 @@ class JobProgressTests(PostgresTestCase):
 
         compact = _compact_job_for_list(row)
 
-        self.assertEqual(compact["progress_steps"]["auth_redirect"]["state"], "skipped")
-        self.assertEqual(
-            compact["progress_steps"]["auth_redirect"]["started_at"],
-            "2026-08-13T12:00:20",
-        )
+        self.assertNotIn("auth_redirect", compact["progress_steps"])
+        self.assertEqual(2, compact["progress"]["flow_version"])
         self.assertNotIn("auth_redirect", row["progress_steps"])
 
     def test_historical_terminal_job_gets_plan_and_total_duration_stages(self):
@@ -613,10 +610,8 @@ class JobProgressTests(PostgresTestCase):
 
         compact = _compact_job_for_list(row)
 
-        self.assertEqual(compact["progress_steps"]["plan_check"]["state"], "skipped")
-        self.assertEqual(compact["progress_steps"]["complete"]["state"], "success")
-        self.assertEqual(compact["progress_steps"]["complete"]["started_at"], row["started_at"])
-        self.assertEqual(compact["progress_steps"]["complete"]["completed_at"], row["completed_at"])
+        self.assertNotIn("plan_check", compact["progress_steps"])
+        self.assertEqual("success", compact["progress"]["outcome"]["status"])
         self.assertNotIn("plan_check", row["progress_steps"])
 
     def test_progress_batch_groups_retry_job_into_original_slot(self):
@@ -669,9 +664,9 @@ class JobProgressTests(PostgresTestCase):
         self.assertTrue(compact["legacy_retry_timing"])
         self.assertNotIn("error_message", compact)
         self.assertIn("换线重试", compact["warning_summary"])
-        self.assertEqual(compact["progress_steps"]["network"]["state"], "success")
-        self.assertTrue(compact["progress_steps"]["network"]["inferred"])
-        self.assertNotIn("started_at", compact["progress_steps"]["network"])
+        self.assertNotIn("network", compact["progress_steps"])
+        network = next(step for step in compact["progress"]["main_steps"] if step["id"] == "network")
+        self.assertNotEqual("success", network["state"])
 
     def test_startup_recovers_interrupted_jobs_and_codex_account(self):
         with tempfile.TemporaryDirectory() as td:

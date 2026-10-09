@@ -23,7 +23,7 @@ from core.operations import task_gateway as account_task_store
 from core.operation_runtime import OperationAccountDeactivated
 from core.task_errors import REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES, classify_task_error
 from core.task_progress import build_progress_snapshot
-from core.task_stages import flow_for, normalize_stage, normalize_step_state
+from core.task_stages import flow_for, normalize_stage, normalize_step_state, resolve_step, stage_label
 
 
 _LOCK = threading.RLock()
@@ -231,6 +231,8 @@ def _read_event(row: dict) -> dict:
     result = _row(row) or {}
     result["detail"] = _scrub(result.get("detail") if isinstance(result.get("detail"), dict) else {})
     result["event_type"] = _legacy_event_type_for_read(result)
+    if result.get("source_system") == "account_action_events":
+        result["source_event_id"] = int(result["source_id"]) if str(result.get("source_id") or "").isdigit() else result.get("source_id")
     detail = result["detail"]
     result["has_detail"] = bool(
         isinstance(detail, dict)
@@ -239,9 +241,24 @@ def _read_event(row: dict) -> dict:
     return result
 
 
+def _annotate_stage(record: dict, task_type: str, run: dict | None = None) -> dict:
+    """事件和 JSONL 共用步骤关联，普通无上下文日志明确保持未关联。"""
+    detail = record.get("detail") or record.get("fields") or {}
+    if not isinstance(detail, dict):
+        detail = {}
+    raw_stage = str(detail.get("raw_stage") or record.get("stage") or "event")
+    record["raw_stage"] = raw_stage
+    record["stage_label"] = stage_label(raw_stage)
+    if raw_stage not in {"runtime", "registration", "event", "diagnostic"}:
+        record["main_step_id"] = resolve_step(task_type, raw_stage, detail, run)
+    else:
+        record["main_step_id"] = None
+    return record
+
+
 def _normalize_compatibility_event(event: dict) -> dict:
     """只归一化由旧 registration_jobs progress_steps 派生的事件。"""
-    if str(event.get("source_system") or "") != "registration_progress":
+    if str(event.get("source_system") or "") not in {"registration_progress", "registration_progress_events"}:
         return event
     detail = event.get("detail") if isinstance(event.get("detail"), dict) else {}
     raw_stamp = detail.get("completed_at") or detail.get("started_at")
@@ -986,6 +1003,12 @@ def _apply_current_run_projection(task: dict, run: dict | None) -> dict:
         task["error_code"] = run.get("error_code")
         task["error_message"] = run.get("error_message")
     task["result_summary"] = run.get("result_summary")
+    summary = run.get("result_summary") if isinstance(run.get("result_summary"), dict) else {}
+    data = run.get("data") if isinstance(run.get("data"), dict) else {}
+    task["failure_stage"] = summary.get("failure_stage") or data.get("failure_stage")
+    task["failure_event_id"] = summary.get("failure_event_id") or data.get("failure_event_id")
+    task["current_stage_label"] = stage_label(task.get("current_stage"))
+    task["failure_stage_label"] = stage_label(task["failure_stage"]) if task["failure_stage"] else None
     return task
 
 
@@ -1400,43 +1423,58 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
             _json({
                 "legacy_job_id": job_id,
                 "parent_job_id": job.get("parent_job_id"),
+                "route_attempts": job.get("route_attempts") or [],
+                "failure_stage": job.get("failure_stage"),
                 **({"config_snapshot": dict(job["config_snapshot"])} if isinstance(job.get("config_snapshot"), dict) else {}),
             }),
         ),
     )
     run_id = int(cur.fetchone()["id"])
-    for raw_stage, raw_step in progress_steps.items():
-        step = raw_step if isinstance(raw_step, dict) else {}
-        stage = normalize_stage(raw_stage)
-        state_value = str(step.get("state") or "pending")
-        level = "ERROR" if state_value in {"failed", "stopped"} else "INFO"
-        category, code, _ = _error_fields(
-            step.get("detail") if level == "ERROR" else None, stage=stage, task_type=task_type,
-        )
-        event_source_id = f"{job_id}:stage:{raw_stage}"
-        cur.execute(
-            f"""
-            INSERT INTO {_table('operation_events')} (
-                event_uuid, task_id, run_id, source_system, source_id, created_at, level,
-                stage, event_type, error_category, error_code, message, detail
-            ) VALUES (%s,%s,%s,'registration_progress',%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
-            ON CONFLICT (source_system, source_id) DO UPDATE SET
-                task_id=EXCLUDED.task_id, run_id=EXCLUDED.run_id, created_at=EXCLUDED.created_at,
-                level=EXCLUDED.level, stage=EXCLUDED.stage, event_type=EXCLUDED.event_type,
-                error_category=EXCLUDED.error_category, error_code=EXCLUDED.error_code,
-                message=EXCLUDED.message, detail=EXCLUDED.detail
-            """,
-            (
-                _uuid("event", f"registration_progress:{event_source_id}"), task_id, run_id,
-                event_source_id,
-                _legacy_registration_timestamp(step.get("completed_at"))
-                or _legacy_registration_timestamp(step.get("started_at"))
-                or updated_at or _now(),
-                level, stage, f"stage.{state_value}", category, code,
-                _text(step.get("detail") or state_value, 1200),
-                _json({"state": state_value, "started_at": step.get("started_at"), "completed_at": step.get("completed_at")}),
-            ),
-        )
+    for raw_stage, current_step in progress_steps.items():
+        current_step = current_step if isinstance(current_step, dict) else {}
+        transitions = [dict(item) for item in current_step.get("transitions") or [] if isinstance(item, dict)]
+        if not transitions or current_step.get("transition_id") not in {item.get("transition_id") for item in transitions}:
+            transitions.append(current_step)
+        for raw_step in transitions:
+            step = raw_step if isinstance(raw_step, dict) else {}
+            stage = normalize_stage(raw_stage)
+            state_value = str(step.get("state") or "pending")
+            level = "ERROR" if state_value in {"failed", "stopped"} else "INFO"
+            category, code, _ = _error_fields(
+                step.get("detail") if level == "ERROR" else None, stage=stage, task_type=task_type,
+            )
+            transition_id = str(step.get("transition_id") or "")
+            event_source_system = "registration_progress_events" if transition_id else "registration_progress"
+            event_source_id = f"{job_id}:stage:{raw_stage}" + (f":{transition_id}" if transition_id else "")
+            cur.execute(
+                f"""
+                INSERT INTO {_table('operation_events')} (
+                    event_uuid, task_id, run_id, source_system, source_id, created_at, level,
+                    stage, event_type, error_category, error_code, message, detail
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
+                ON CONFLICT (source_system, source_id) DO UPDATE SET
+                    task_id=EXCLUDED.task_id, run_id=EXCLUDED.run_id, created_at=EXCLUDED.created_at,
+                    level=EXCLUDED.level, stage=EXCLUDED.stage, event_type=EXCLUDED.event_type,
+                    error_category=EXCLUDED.error_category, error_code=EXCLUDED.error_code,
+                    message=EXCLUDED.message, detail=EXCLUDED.detail
+                """,
+                (
+                    transition_id or _uuid("event", f"registration_progress:{event_source_id}"), task_id, run_id,
+                    event_source_system,
+                    event_source_id,
+                    _legacy_registration_timestamp(step.get("completed_at"))
+                    or _legacy_registration_timestamp(step.get("started_at"))
+                    or updated_at or _now(),
+                    level, stage, f"stage.{state_value}", category, code,
+                    _text(step.get("detail") or state_value, 1200),
+                    _json({
+                        "state": state_value, "step_state": state_value, "raw_stage": raw_stage,
+                        "started_at": step.get("started_at"), "completed_at": step.get("completed_at"),
+                        "evidence": step.get("evidence") or "legacy_derived",
+                        "route_attempt_no": step.get("route_attempt_no"),
+                    }),
+                ),
+            )
     # A retry shares the logical task with its parent.  An older sync callback
     # may arrive after the newer attempt has started, so selecting by run_no
     # alone can temporarily put the task back into a historical terminal state.
@@ -1649,7 +1687,8 @@ def _upsert_account_event(cur, event: dict, task_map: dict[int, int]) -> None:
     level = str(event.get("level") or "INFO").upper()
     raw_stage = str(event.get("stage") or "event")
     stage = normalize_stage(raw_stage)
-    detail = event.get("detail") if isinstance(event.get("detail"), dict) else {}
+    detail = dict(event.get("detail")) if isinstance(event.get("detail"), dict) else {}
+    detail.setdefault("raw_stage", raw_stage)
     explicit_state = normalize_step_state(detail.get("step_state"))
     stored_event_type = str(event.get("event_type") or "").strip()
     if explicit_state is not None:
@@ -2129,7 +2168,7 @@ def _compat_registration_event_detail(event: dict) -> tuple[str, str, dict, str 
     stage = str(detail.get("stage") or detail.get("current_stage") or event.get("checkpoint") or "event")
     # D's fields are additive compatibility keys inside the existing detail JSONB.
     compatibility = {
-        "stage": stage,
+        "stage": stage, "raw_stage": stage,
         "state_before": detail.get("state_before"),
         "state_after": detail.get("state_after"),
         "duration_ms": detail.get("duration_ms"),
@@ -2864,7 +2903,10 @@ def list_tasks(
                 facet_params,
             )
             facets[facet_name] = [
-                {"value": str(row["value"] or ""), "count": int(row["count"] or 0)}
+                {
+                    "value": str(row["value"] or ""), "count": int(row["count"] or 0),
+                    **({"label": stage_label(row["value"])} if facet_name == "stage" else {}),
+                }
                 for row in cur.fetchall()
             ]
     return {"ok": True, "items": items, "total": total, "page": page, "page_size": page_size, "facets": facets}
@@ -2936,7 +2978,7 @@ def get_task(task_id: int, *, include_events: bool = True) -> dict | None:
         "resources": resources,
         "attempt": attempt,
         "parent": parent,
-        "flow": flow_for(result.get("task_type")),
+        "flow": flow_for(result.get("task_type"), _select_current_run(runs)),
     })
     return result
 
@@ -3049,6 +3091,45 @@ def get_run_progress(task_id: int, run_id: int) -> dict:
     )
 
 
+def get_registration_progress(job_ids: Iterable[int]) -> dict[int, dict]:
+    """批量读取注册页所需的统一 Run 快照，避免每个卡片分别查询数据库。"""
+    ids = sorted({int(value) for value in job_ids if int(value) > 0})
+    if not ids:
+        return {}
+    init()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT rr.*, t.task_type, {_compatibility_run_projection_sql()} "
+            f"FROM {_table('operation_runs')} rr JOIN {_table('operation_tasks')} t ON t.id=rr.task_id "
+            f"{_compatibility_run_joins_sql()} "
+            "WHERE rr.source_system='registration_jobs' AND rr.source_id=ANY(%s) "
+            "AND COALESCE(t.data->>'deleted_by_user', 'false') <> 'true'",
+            ([str(value) for value in ids],),
+        )
+        runs = [_normalize_compatibility_run(_row(dict(row)) or {}) for row in cur.fetchall()]
+        if not runs:
+            return {}
+        cur.execute(
+            f"SELECT * FROM {_table('operation_events')} WHERE run_id=ANY(%s) ORDER BY created_at, id",
+            ([int(run["id"]) for run in runs],),
+        )
+        by_run: dict[int, list[dict]] = {}
+        for raw in cur.fetchall():
+            event = _normalize_compatibility_event(_read_event(dict(raw)))
+            by_run.setdefault(int(event["run_id"]), []).append(event)
+    result: dict[int, dict] = {}
+    for run in runs:
+        task_id, run_id = int(run["task_id"]), int(run["id"])
+        events = by_run.get(run_id, [])
+        events.sort(key=_event_time_sort_key)
+        result[int(run["source_id"])] = {
+            "operation_task_id": task_id,
+            "operation_run_id": run_id,
+            "progress": build_progress_snapshot(task_id, run_id, str(run["task_type"]), run, events),
+        }
+    return result
+
+
 def list_task_events(
     task_id: int,
     *,
@@ -3060,8 +3141,9 @@ def list_task_events(
     init()
     page_size = max(1, min(1000, int(limit or 200)))
     with _connect() as conn, conn.cursor() as cur:
-        cur.execute(f"SELECT id FROM {_table('operation_tasks')} WHERE id=%s", (int(task_id),))
-        if not cur.fetchone():
+        cur.execute(f"SELECT id, task_type FROM {_table('operation_tasks')} WHERE id=%s", (int(task_id),))
+        task = cur.fetchone()
+        if not task:
             raise LookupError("任务不存在")
         params: list[Any] = [int(task_id)]
         where = ["e.task_id=%s"]
@@ -3090,7 +3172,7 @@ def list_task_events(
     rows = rows[:page_size]
     if after_id is None:
         rows.reverse()
-    items = [_normalize_compatibility_event(_read_event(dict(row))) for row in rows]
+    items = [_annotate_stage(_normalize_compatibility_event(_read_event(dict(row))), str(task["task_type"])) for row in rows]
     return {
         "items": items,
         "next_after_id": max([int(item["id"]) for item in items] or [int(after_id or 0)]),
@@ -3108,13 +3190,29 @@ def read_task_run_log(
     init()
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
-            f"SELECT log_file, status FROM {_table('operation_runs')} WHERE id=%s AND task_id=%s",
+            f"SELECT r.log_file, r.status, r.result_summary, t.task_type FROM {_table('operation_runs')} r "
+            f"JOIN {_table('operation_tasks')} t ON t.id=r.task_id WHERE r.id=%s AND r.task_id=%s",
             (int(run_id), int(task_id)),
         )
         run = cur.fetchone()
         if not run:
             raise LookupError("执行实例不存在")
     result = task_run_log.read_incremental(run.get("log_file"), cursor=cursor, limit=limit)
+    items = result.get("items") or []
+    event_uuids = [str(item["event_uuid"]) for item in items if item.get("event_uuid")]
+    correlations = {}
+    if event_uuids:
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT id, event_uuid FROM {_table('operation_events')} WHERE run_id=%s AND event_uuid=ANY(%s)",
+                (int(run_id), event_uuids),
+            )
+            correlations = {str(row["event_uuid"]): int(row["id"]) for row in cur.fetchall()}
+    for item in items:
+        _annotate_stage(item, str(run["task_type"]), dict(run))
+        item["task_id"], item["run_id"] = int(task_id), int(run_id)
+        if str(item.get("event_uuid") or "") in correlations:
+            item["event_id"] = correlations[str(item["event_uuid"])]
     result["run_terminal"] = str(run.get("status") or "") in _TERMINAL_STATUSES
     return result
 
@@ -3485,11 +3583,13 @@ def _reconcile_parent_task_cur(cur, parent_task_id: int, *, child_task_id: int |
         return None
     cur.execute(
         f"""
-        SELECT id, status, task_type, last_run_id
-        FROM {_table('operation_tasks')}
-        WHERE parent_task_id=%s
-        ORDER BY id
-        FOR UPDATE
+        SELECT t.id, t.status, t.task_type, t.last_run_id,
+               r.result_summary, r.error_message, r.error_code, r.data
+        FROM {_table('operation_tasks')} t
+        LEFT JOIN {_table('operation_runs')} r ON r.id=t.last_run_id
+        WHERE t.parent_task_id=%s
+        ORDER BY t.id
+        FOR UPDATE OF t
         """,
         (int(parent_task_id),),
     )
@@ -3589,6 +3689,18 @@ def _reconcile_parent_task_cur(cur, parent_task_id: int, *, child_task_id: int |
             summary["children"] = {
                 str(child["id"]): str(child.get("status") or "") for child in children
             }
+            summary["child_tasks"] = []
+            for child in children:
+                child_summary = _decode(child.get("result_summary")) or {}
+                child_data = _decode(child.get("data")) or {}
+                summary["child_tasks"].append({
+                    "task_id": int(child["id"]), "run_id": child.get("last_run_id"),
+                    "task_type": child.get("task_type"), "status": child.get("status"),
+                    "failure_stage": child_summary.get("failure_stage") or child_data.get("failure_stage"),
+                    "failure_event_id": child_summary.get("failure_event_id") or child_data.get("failure_event_id"),
+                    "error_code": child.get("error_code") or child_summary.get("error_code") or child_data.get("error_code"),
+                    "error_message": task_run_log.redact_text(child.get("error_message") or child_summary.get("error_message") or child_data.get("failure_message") or "", 500),
+                })
             cur.execute(
                 f"""
                 UPDATE {_table('operation_runs')}
@@ -5056,29 +5168,36 @@ def append_runtime_event(
             raise ValueError("任务步骤状态与事件类型不一致")
         state_value = event_state
     clean_detail = dict(detail or {})
+    clean_detail.setdefault("raw_stage", str(stage or "event"))
     if state_value is not None:
         clean_detail["step_state"] = state_value
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
-            f"SELECT task_id, log_file, source_system FROM {_table('operation_runs')} WHERE id=%s",
+            f"SELECT r.task_id, r.log_file, r.source_system, t.task_type "
+            f"FROM {_table('operation_runs')} r JOIN {_table('operation_tasks')} t ON t.id=r.task_id WHERE r.id=%s",
             (int(run_id),),
         )
         found = cur.fetchone()
         if not found:
             raise LookupError("执行实例不存在")
         task_id = int(found["task_id"])
+        category, code, _ = _error_fields(
+            message if state_value == "failed" or level_value == "ERROR" else None,
+            stage=stage_value, task_type=str(found.get("task_type") or ""),
+        )
         cur.execute(
             f"""
             INSERT INTO {_table('operation_events')} (
                 event_uuid, task_id, run_id, source_system, source_id,
-                level, stage, event_type, message, detail
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                level, stage, event_type, message, detail, error_category, error_code
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
             RETURNING *
             """,
             (
                 event_uuid, task_id, int(run_id), str(found.get("source_system") or "native_operations"),
                 event_uuid, level_value,
-                stage_value, event_type_value, _text(message, 1400), _json(clean_detail),
+                stage_value, event_type_value, task_run_log.redact_text(message, 1400), _json(clean_detail),
+                category, code,
             ),
         )
         event = dict(cur.fetchone())
@@ -5111,6 +5230,8 @@ def append_runtime_event(
     task_run_log.append(
         log_file, level=level_value, message=message, task_id=task_id, run_id=int(run_id),
         stage=stage_value, event_type=event_type_value, fields=clean_detail,
+        event_id=int(result["id"]), event_uuid=event_uuid,
+        created_at=result.get("created_at"),
     )
     return result
 
@@ -5798,8 +5919,31 @@ def finish_run(
                 )
                 message = error
             task_type = str(found.get("task_type") or "")
+            dependency_result.update({
+                "task_type": task_type, "task_id": int(found["task_id"]), "run_id": int(run_id),
+            })
+            # 终态仍叫 complete；失败位置独立保存，不能被收口阶段覆盖。
+            cur.execute(
+                f"SELECT * FROM {_table('operation_events')} WHERE run_id=%s ORDER BY created_at, id",
+                (int(run_id),),
+            )
+            failure_snapshot = build_progress_snapshot(
+                int(found["task_id"]), int(run_id), task_type,
+                {**(_row(found) or {}), "status": status_value, "error_message": error or "", "result_summary": dependency_result},
+                [_normalize_compatibility_event(_read_event(dict(row))) for row in cur.fetchall()],
+            )
+            failure = failure_snapshot.get("failure") or {}
+            failure_stage = failure.get("stage") or (
+                found.get("progress_stage") if status_value != "success" and error else None
+            )
+            failure_context = {
+                "failure_stage": failure_stage,
+                "failure_event_id": failure.get("event_id"),
+                "failure_evidence": failure.get("evidence"),
+            } if failure_stage and failure_stage not in {"complete", "queued"} else {}
+            dependency_result.update(failure_context)
             category, code, error_message = _error_fields(
-                error or "", stage="complete", task_type=task_type,
+                error or "", stage=str(failure_stage or "complete"), task_type=task_type,
             )
             cur.execute(
                 f"""
@@ -5811,13 +5955,14 @@ def finish_run(
                     THEN COALESCE(cancel_reason, %s) ELSE cancel_reason END,
                 completed_at=now(), heartbeat_at=now(), progress_stage='complete',
                 duration_ms=GREATEST(0, (EXTRACT(EPOCH FROM (now() - COALESCE(started_at, created_at))) * 1000)::BIGINT),
-                error_category=%s, error_code=%s, error_message=%s, result_summary=%s::jsonb
+                error_category=%s, error_code=%s, error_message=%s, result_summary=%s::jsonb,
+                data=data || %s::jsonb
                 WHERE id=%s RETURNING *
                 """,
                 (
                     status_value, requested_terminal_status, requested_terminal_status,
                     cancel_reason, category, code, error_message,
-                    _json(dependency_result), int(run_id),
+                    _json(dependency_result), _json(failure_context), int(run_id),
                 ),
             )
             run = dict(cur.fetchone())
@@ -5835,7 +5980,7 @@ def finish_run(
                 UPDATE {_table('operation_tasks')}
                 SET status=%s, target_status=%s, current_stage='complete', updated_at=now(),
                     completed_at=now(), error_category=%s, error_code=%s, error_message=%s,
-                    next_actions=%s::jsonb
+                    next_actions=%s::jsonb, data=data || %s::jsonb
                 WHERE id=%s AND last_run_id=%s
                 """,
                 (
@@ -5844,6 +5989,7 @@ def finish_run(
                         [] if status_value in {"success", "deactivated"}
                         else [{"action": "retry", "label": "重新执行"}]
                     ),
+                    _json(failure_context),
                     int(run["task_id"]), int(run_id),
                 ),
             )
@@ -5861,6 +6007,7 @@ def finish_run(
                     level, stage, event_type, error_category, error_code, message, detail
                 ) VALUES (%s, %s, %s, %s, %s, %s, 'complete', %s,
                           %s, %s, %s, %s::jsonb)
+                RETURNING id
                 """,
                 (
                     event_uuid, int(run["task_id"]), int(run_id),
@@ -5870,6 +6017,7 @@ def finish_run(
                     _json({"status": status_value}),
                 ),
             )
+            terminal_event_id = int(cur.fetchone()["id"])
             cur.execute(
                 f"""
                 UPDATE {_table('operation_resources')}
@@ -5885,6 +6033,8 @@ def finish_run(
             result = _row(run) or {}
             result["task_type"] = task_type
             result["parent_task_id"] = parent_task_id
+            result["terminal_event_id"] = terminal_event_id
+            result["terminal_event_uuid"] = event_uuid
         if parent_task_id:
             # Child terminal state is reflected in the same transaction.  The
             # helper is idempotent and also works when finish_run is retried.
@@ -5898,6 +6048,7 @@ def finish_run(
         stage="complete",
         event_type=f"run.{result.get('status') or status_value}",
         fields={"status": result.get("status") or status_value, "idempotent": idempotent},
+        event_id=result.get("terminal_event_id"), event_uuid=result.get("terminal_event_uuid"),
     )
     try:
         ready_dependencies = mark_task_dependency_ready(

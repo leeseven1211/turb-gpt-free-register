@@ -3391,11 +3391,11 @@ def update_job_progress(
     state: str = "running",
     detail: str | None = None,
 ) -> None:
-    """原子更新注册阶段；进入新阶段时自动结束仍在运行的前置阶段。"""
+    """记录明确的阶段转换；后续步骤开始不能代替前置步骤的成功证据。"""
     stage = str(stage or "").strip()
     state = str(state or "running").strip().lower()
-    if stage not in _JOB_PROGRESS_KEYS:
-        raise ValueError(f"未知任务阶段: {stage}")
+    if not stage or len(stage) > 80 or not all(char.isalnum() or char in "_-" for char in stage):
+        raise ValueError(f"无效任务阶段: {stage}")
     if state not in _JOB_PROGRESS_STATES:
         raise ValueError(f"未知阶段状态: {state}")
 
@@ -3408,18 +3408,13 @@ def update_job_progress(
         if not isinstance(steps, dict):
             steps = {}
 
-        current_index = _JOB_PROGRESS_KEYS.index(stage)
-        if state == "running":
-            for prior_key in _JOB_PROGRESS_KEYS[:current_index]:
-                prior = steps.get(prior_key)
-                if isinstance(prior, dict) and prior.get("state") == "running":
-                    prior["state"] = "success"
-                    prior["completed_at"] = now
-
         route_attempt_no = max(1, int(row.get("route_attempt_no") or 1))
         item = steps.get(stage)
         if not isinstance(item, dict):
             item = {}
+        transitions = list(item.get("transitions") or [])
+        if not transitions and item.get("transition_id"):
+            transitions.append({key: value for key, value in item.items() if key not in {"occurrences", "transitions"}})
         if state == "running" and (
             item.get("state") != "running"
             or int(item.get("route_attempt_no") or route_attempt_no) != route_attempt_no
@@ -3445,17 +3440,31 @@ def update_job_progress(
             item["completed_at"] = now
             item["route_attempt_no"] = route_attempt_no
         item["state"] = state
+        item["transition_id"] = uuid.uuid4().hex
+        item["evidence"] = "explicit"
         if detail is not None:
             item["detail"] = str(detail)[:300]
+        transitions.append({key: value for key, value in item.items() if key not in {"occurrences", "transitions"}})
+        item["transitions"] = transitions
         steps[stage] = item
         changes = {
             "progress_steps": steps,
             "progress_stage": stage,
             "progress_updated_at": now,
+            "progress_contract_version": 2,
         }
         if not row.get("route_attempt_no"):
             changes["route_attempt_no"] = route_attempt_no
         _patch_job(job_id, changes)
+        task_run_log.set_current_stage(stage, task_id=int(job_id))
+        task_run_log.append(
+            row.get("log_file"), level="ERROR" if state == "failed" else "INFO",
+            message=detail or f"任务阶段：{stage} · {state}", task_id=int(job_id),
+            stage=stage, event_type=f"stage.{state}",
+            event_uuid=item["transition_id"], source_system="registration_progress_events",
+            fields={"step_state": state, "route_attempt_no": route_attempt_no},
+            created_at=now,
+        )
 
 
 def begin_job_route_attempt(
@@ -3562,32 +3571,34 @@ def finish_job_progress(
         if not isinstance(steps, dict):
             steps = {}
         current = str(row.get("progress_stage") or "email")
-        if current not in _JOB_PROGRESS_KEYS:
+        if current not in _JOB_PROGRESS_KEYS and current not in steps:
             current = "email"
 
         overall_started_at = row.get("started_at") or row.get("created_at") or now
-        work_stage_keys = tuple(key for key in _JOB_PROGRESS_KEYS if key != "complete")
+        work_stage_keys = tuple(key for key in dict.fromkeys((*_JOB_PROGRESS_KEYS, *steps)) if key != "complete")
 
         if success:
             for key in work_stage_keys:
                 item = steps.get(key)
-                if not isinstance(item, dict) or item.get("state") in {None, "pending"}:
+                if not isinstance(item, dict) or (item.get("state") in {None, "pending"} and not item.get("started_at")):
                     # 没有任何流程上报的节点就是没有执行，不能因为任务整体
                     # 成功/部分成功就在 UI 上伪装成“成功 0 秒”。
                     item = {
                         **(item if isinstance(item, dict) else {}),
                         "state": "skipped",
-                        "started_at": now,
-                        "completed_at": now,
                         "detail": "该步骤未执行",
+                        "evidence": "not_executed",
+                        "transition_id": uuid.uuid4().hex,
                     }
                     steps[key] = item
                     continue
                 # 已由具体流程上报的终态不能被任务级 success 覆盖；例如账号
                 # 注册成功但 Codex 授权失败时，仍应保留失败节点供 UI 提示。
                 if item.get("state") not in {"skipped", "success", "failed", "stopped"}:
-                    item["state"] = "success"
-                item["completed_at"] = item.get("completed_at") or now
+                    item["state"] = "pending"
+                    item["evidence"] = "unconfirmed"
+                    item["detail"] = "任务已结束，缺少该步骤的完成记录"
+                    item["transition_id"] = uuid.uuid4().hex
                 steps[key] = item
         else:
             terminal_state = "stopped" if failure_state == "stopped" else "failed"
@@ -3602,8 +3613,10 @@ def finish_job_progress(
             item = steps.get(target_key)
             if not isinstance(item, dict):
                 item = {"started_at": now}
-            if item.get("state") not in {"failed", "stopped"}:
+            if item.get("state") not in {"failed", "stopped", "success", "skipped"}:
                 item["state"] = terminal_state
+                item["evidence"] = "last_activity"
+                item["transition_id"] = uuid.uuid4().hex
             item["completed_at"] = now
             if detail is not None and not item.get("detail"):
                 item["detail"] = str(detail)[:300]
@@ -3619,9 +3632,9 @@ def finish_job_progress(
                 steps[key] = {
                     **(later if isinstance(later, dict) else {}),
                     "state": "skipped",
-                    "started_at": now,
-                    "completed_at": now,
                     "detail": "前置步骤未完成，未执行",
+                    "evidence": "not_executed",
+                    "transition_id": uuid.uuid4().hex,
                 }
 
         complete_state = "success" if success else ("stopped" if failure_state == "stopped" else "failed")
@@ -3630,6 +3643,8 @@ def finish_job_progress(
             complete_item = {}
         complete_item.update({
             "state": complete_state,
+            "transition_id": uuid.uuid4().hex,
+            "evidence": "run_status",
             "started_at": overall_started_at,
             "completed_at": now,
             "detail": (
@@ -3643,6 +3658,8 @@ def finish_job_progress(
             "progress_stage": "complete",
             "progress_steps": steps,
             "progress_updated_at": now,
+            "progress_contract_version": 2,
+            **({"failure_stage": target_key} if not success else {}),
         })
 
 
@@ -3679,7 +3696,7 @@ def recover_interrupted_registration_jobs(
         )
         for row in rows:
             current = str(row.get("progress_stage") or "email")
-            if current not in _JOB_PROGRESS_KEYS:
+            if current not in _JOB_PROGRESS_KEYS and current not in (row.get("progress_steps") or {}):
                 current = "email"
             steps = row.get("progress_steps")
             if not isinstance(steps, dict):
@@ -3687,7 +3704,10 @@ def recover_interrupted_registration_jobs(
             item = steps.get(current)
             if not isinstance(item, dict):
                 item = {"started_at": row.get("started_at") or now}
-            item.update({"state": "failed", "detail": detail[:300], "completed_at": now})
+            item.update({
+                "state": "failed", "detail": detail[:300], "completed_at": now,
+                "transition_id": uuid.uuid4().hex, "evidence": "recovery",
+            })
             steps[current] = item
             changes: dict[str, Any] = {
                 # A process restart is not a business failure. Keep it as a
@@ -3699,6 +3719,8 @@ def recover_interrupted_registration_jobs(
                 "progress_steps": steps,
                 "progress_stage": current,
                 "progress_updated_at": now,
+                "progress_contract_version": 2,
+                "failure_stage": current,
             }
             if row.get("proxy_status") in {"acquiring", "leased"}:
                 changes["proxy_status"] = "interrupted"
@@ -3738,6 +3760,14 @@ def recover_interrupted_registration_jobs(
     recovered = len(recovered_rows)
     for row in recovered_rows:
         _sync_operation_job(int(row["id"]))
+        stage = str(row.get("progress_stage") or "interrupted")
+        item = (row.get("progress_steps") or {}).get(stage) or {}
+        task_run_log.append(
+            row.get("log_file"), level="WARNING", message=detail,
+            task_id=int(row["id"]), stage=stage, event_type="run.interrupted",
+            event_uuid=item.get("transition_id"), source_system="registration_progress_events",
+            fields={"evidence": "recovery", "step_state": "failed"}, created_at=now,
+        )
     try:
         from core.storage import registration
 

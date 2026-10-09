@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from typing import Callable, Iterator
 from typing import Any
 
+from core import task_run_log
+
 
 class OperationCancelled(RuntimeError):
     """任务在安全检查点响应了取消请求。"""
@@ -137,8 +139,20 @@ def report_stage(
     state: str = "running",
     level: str = "INFO",
     detail: dict | None = None,
-) -> None:
+) -> object | None:
     check_cancelled()
+    task_run_log.set_current_stage(stage)
     reporter = _CURRENT_REPORTER.get()
     if reporter is not None:
-        reporter(stage=stage, message=message, state=state, level=level, detail=detail or {})
+        event = reporter(stage=stage, message=message, state=state, level=level, detail=detail or {})
+        if isinstance(event, dict):
+            task_run_log.set_current_stage(
+                stage,
+                event_id=event.get("event_id", event.get("id")),
+                event_uuid=event.get("event_uuid"),
+                source_event_id=event.get("source_event_id"),
+                source_system=event.get("source_system"),
+                main_step_id=event.get("main_step_id"),
+            )
+        return event
+    return None

@@ -786,11 +786,30 @@ def _execute_run(run_id: int) -> dict:
     route = None
     route_resource_id: int | None = None
     result: dict = {"status": "failed", "ok": False, "message": "OAuth 未返回结果"}
+    preflight_open = True
+    network_open = False
+    browser_open = False
     root_logger = logging.getLogger()
     file_handler: logging.Handler | None = None
 
     def report(**event):
-        return operation_task_store.append_runtime_event(run_id, **event)
+        stage = str(event.get("stage") or "event")
+        task_run_log.set_current_stage(
+            stage,
+            task_id=int(current.get("task_id")) if current.get("task_id") else None,
+            run_id=run_id,
+        )
+        persisted = operation_task_store.append_runtime_event(run_id, **event)
+        if isinstance(persisted, dict):
+            task_run_log.set_current_stage(
+                stage,
+                event_id=persisted.get("event_id", persisted.get("id")),
+                event_uuid=persisted.get("event_uuid"),
+                source_event_id=persisted.get("source_event_id"),
+                source_system=persisted.get("source_system"),
+                main_step_id=persisted.get("main_step_id"),
+            )
+        return persisted
 
     def _finish_fenced(
         status: str,
@@ -824,6 +843,7 @@ def _execute_run(run_id: int) -> dict:
         _LOCAL_TOKENS[run_id] = token
     try:
         worker_name = threading.current_thread().name
+        worker_thread_id = threading.get_ident()
         file_handler = task_run_log.TaskRunLogHandler(
             str(current.get("log_file") or ""),
             task_id=int(current["task_id"]),
@@ -831,7 +851,7 @@ def _execute_run(run_id: int) -> dict:
             stage="codex",
         )
         file_handler.setLevel(logging.DEBUG)
-        file_handler.addFilter(lambda record: record.threadName == worker_name)
+        file_handler.addFilter(lambda record: record.thread == worker_thread_id)
         root_logger.addHandler(file_handler)
         lease_token = operation_task_store.acquire_account_lease(account_id=account_id, run_id=run_id) or ""
         if not lease_token:
@@ -848,15 +868,19 @@ def _execute_run(run_id: int) -> dict:
             report(stage="preflight", message="开始执行统一配置预检", state="running")
             enabled, reason = _feature_ready()
             if not enabled:
+                report(stage="preflight", message=f"配置预检失败：{reason}", state="failed", level="ERROR")
+                preflight_open = False
                 raise RuntimeError(f"配置预检失败：{reason}")
             raw_data = current.get("data") if isinstance(current.get("data"), dict) else {}
             snapshot = dict(raw_data.get("config_snapshot") or {}) if isinstance(raw_data.get("config_snapshot"), dict) else _config_snapshot()
             report(stage="preflight", message="配置预检通过", state="success", detail={"config_snapshot": snapshot})
+            preflight_open = False
             token.checkpoint()
 
             driver = str(snapshot.get("oauth_driver") or "protocol")
             from core.account_proxy import acquire_account_proxy
 
+            network_open = True
             report(stage="network", message="正在申请账号 OAuth 网络线路", state="running")
             route = acquire_account_proxy(account_id=account_id, email=email, purpose="codex-oauth")
             public = route.public_dict()
@@ -880,8 +904,19 @@ def _execute_run(run_id: int) -> dict:
                     "network_route": public.get("network_route"),
                 },
             )
+            network_open = False
 
-            report(stage="browser", message=f"启动 {driver} OAuth 驱动", state="running", detail={"oauth_driver": driver})
+            protocol_driver = driver in {"protocol", "protocol_v2", "protocol_current", "protocol_direct"}
+            if protocol_driver:
+                # 协议链路没有浏览器生命周期；明确 skipped，避免保留一个
+                # 永远 running 的 browser scope。
+                report(
+                    stage="browser", message="协议 OAuth 跳过浏览器启动", state="skipped",
+                    detail={"oauth_driver": driver, "reason": "protocol_flow"},
+                )
+            else:
+                browser_open = True
+                report(stage="browser", message=f"启动 {driver} OAuth 驱动", state="running", detail={"oauth_driver": driver})
             from core.codex_oauth import run_codex_oauth
 
             remote_intent_started = True
@@ -907,14 +942,29 @@ def _execute_run(run_id: int) -> dict:
                     detail={"saved": True, "checkpoint": "password_reset_submitted"},
                 )
 
-            result = run_codex_oauth(
-                email,
-                proxy=route.proxy_url if route is not None else None,
-                force=True,
-                driver_override=driver,
-                allow_password_reset=allow_password_reset,
-                on_password_reset_submitted=(_checkpoint_password_reset if allow_password_reset else None),
-            )
+            try:
+                result = run_codex_oauth(
+                    email,
+                    proxy=route.proxy_url if route is not None else None,
+                    force=True,
+                    driver_override=driver,
+                    allow_password_reset=allow_password_reset,
+                    on_password_reset_submitted=(_checkpoint_password_reset if allow_password_reset else None),
+                )
+            except Exception as exc:
+                failed_stage = task_run_log.current_context().get("stage") or "auth_url"
+                report(
+                    stage=failed_stage, message="OAuth 驱动执行失败", state="failed", level="ERROR",
+                    detail={"error": f"{type(exc).__name__}: {str(exc)[:180]}"},
+                )
+                browser_open = False
+                raise
+            if browser_open:
+                report(
+                    stage="browser", message="OAuth 驱动执行完成", state="success",
+                    detail={"oauth_driver": driver, "protocol_flow": protocol_driver},
+                )
+                browser_open = False
             confirmed = bool(result.get("credential_confirmed"))
             callback_submitted = bool(result.get("callback_submitted"))
             if callback_submitted or result.get("remote_response_received"):
@@ -1080,6 +1130,10 @@ def _execute_run(run_id: int) -> dict:
             )
             return {**result, "status": final_status, "run_id": run_id}
     except task_gateway.OperationLeaseLost as exc:
+        if preflight_open:
+            report(stage="preflight", message="配置预检未完成", state="failed", level="ERROR", detail={"error": str(exc)[:180]})
+        if network_open:
+            report(stage="network", message="账号 OAuth 网络线路申请失败", state="failed", level="ERROR", detail={"error": str(exc)[:180]})
         message = str(exc) or "账号操作租约丢失，远端结果待核验"
         logger.error("Codex operation lease 丢失：run=%s", run_id)
         _finish_fenced(
@@ -1101,6 +1155,12 @@ def _execute_run(run_id: int) -> dict:
             "run_id": run_id,
         }
     except OperationCancelled as exc:
+        if preflight_open:
+            report(stage="preflight", message="配置预检未完成", state="failed", level="ERROR", detail={"error": str(exc)[:180]})
+        if network_open:
+            report(stage="network", message="账号 OAuth 网络线路申请失败", state="failed", level="ERROR", detail={"error": str(exc)[:180]})
+        if browser_open:
+            report(stage="browser", message="OAuth 驱动被取消", state="failed", level="ERROR", detail={"error": str(exc)[:180]})
         message = str(exc) or "用户手动停止 Codex 补跑"
         if remote_intent_started and remote_receipt_state != "rejected":
             _finish_fenced(
@@ -1132,6 +1192,12 @@ def _execute_run(run_id: int) -> dict:
         )
         return {"status": "cancelled", "ok": False, "message": message, "run_id": run_id}
     except Exception as exc:
+        if preflight_open:
+            report(stage="preflight", message="配置预检失败", state="failed", level="ERROR", detail={"error": f"{type(exc).__name__}: {str(exc)[:180]}"})
+        if network_open:
+            report(stage="network", message="账号 OAuth 网络线路申请失败", state="failed", level="ERROR", detail={"error": f"{type(exc).__name__}: {str(exc)[:180]}"})
+        if browser_open:
+            report(stage="browser", message="OAuth 驱动执行失败", state="failed", level="ERROR", detail={"error": f"{type(exc).__name__}: {str(exc)[:180]}"})
         message = f"{type(exc).__name__}: {exc}"
         logger.exception("Codex operation 执行失败：run=%s email=%s", run_id, email)
         final_status = "attention_required" if (
@@ -1176,3 +1242,4 @@ def _execute_run(run_id: int) -> dict:
         with _LOCAL_TOKENS_LOCK:
             _LOCAL_TOKENS.pop(run_id, None)
         _forget_dispatched(run_id)
+        task_run_log.clear_current_context()

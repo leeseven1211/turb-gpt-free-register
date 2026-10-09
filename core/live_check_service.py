@@ -12,6 +12,7 @@ from pathlib import Path
 
 from config.schema import get_config_snapshot
 from core.operation_runtime import OperationCancelled
+from core import task_run_log
 from core.operations import task_gateway as account_task_store
 from core.storage import accounts as db
 from core.account_liveness import check_account_liveness, log_path
@@ -20,7 +21,7 @@ from core.chatgpt_plan import check_account_plan, token_claims
 from core.live_check_router import LiveCheckDriverError, resolve_driver, run_probe
 from core.openai_auth import detect_account_unusable_text
 from core.auth_challenge import auth_result_for_operation
-from core.account_operation_executor import configured_workers
+from core.account_operation_executor import configured_workers, operation_log_context
 from core.account_operation_executor import executor as _EXECUTOR
 
 logger = logging.getLogger(__name__)
@@ -77,25 +78,42 @@ class _ReporterAdapter:
         if self._context is None:
             self._legacy.start(message)
         else:
-            self._context.report(stage="preflight", state="running", message=message)
+            self._native_report("preflight", state="running", message=message)
+
+    def _native_report(self, stage: str, **event):
+        task_run_log.set_current_stage(
+            stage, task_id=getattr(self._context, "task_id", None),
+            run_id=getattr(self._context, "run_id", None),
+        )
+        result = self._context.report(stage=stage, **event)
+        if isinstance(result, dict):
+            task_run_log.set_current_stage(
+                stage,
+                event_id=result.get("event_id", result.get("id")),
+                event_uuid=result.get("event_uuid"),
+                source_event_id=result.get("source_event_id"),
+                source_system=result.get("source_system"),
+                main_step_id=result.get("main_step_id"),
+            )
+        return result
 
     def stage(self, stage: str, state: str, message: str, **kwargs) -> None:
         if self._context is None:
             self._legacy.stage(stage, state, message, **kwargs)
         else:
-            self._context.report(stage=stage, state=state, message=message, **kwargs)
+            self._native_report(stage, state=state, message=message, **kwargs)
 
     def note(self, message: str, *, stage: str = "event", **kwargs) -> None:
         if self._context is None:
             self._legacy.note(message, stage=stage, **kwargs)
         else:
-            self._context.report(stage=stage, message=message, **kwargs)
+            self._native_report(stage, message=message, **kwargs)
 
     def resource(self, event_type: str, message: str, *, stage: str = "network", **kwargs) -> None:
         if self._context is None:
             self._legacy.resource(event_type, message, stage=stage, **kwargs)
         else:
-            self._context.report(stage=stage, message=message, event_type=event_type, **kwargs)
+            self._native_report(stage, message=message, event_type=event_type, **kwargs)
 
     def finish(self, *, status: str, message: str, **kwargs) -> None:
         if self._context is None:
@@ -106,7 +124,7 @@ class _ReporterAdapter:
             if kwargs.get(key) is not None:
                 summary[key] = kwargs[key]
         if not self._finish_operation:
-            self._context.report(
+            self._native_report(
                 stage="nested_live_check",
                 message=message,
                 detail={**summary, "status": status},
@@ -667,6 +685,9 @@ def _run_live_check(
     route: dict = {}
     reporter = _reporter(task_id, operation_context, finish_operation=finish_operation)
     refresh_boundary: dict | None = None
+    preflight_open = True
+    network_open = False
+    network_started = False
     try:
         _checkpoint(operation_context)
         with _LOCK:
@@ -678,6 +699,7 @@ def _run_live_check(
                 message="账号已删除或查活状态已被重置",
             )
             return {"ok": False, "status": "failed", "error": "账号已删除或查活状态已被重置"}
+        reporter.start(message="开始刷新账号 AT" if force_refresh else "开始验证账号 accessToken")
         # 入队时已经解析并冻结了 driver；直接调用 worker 的旧测试/兼容入口
         # 没有传值时才在这里读取当前配置，避免任务排队期间热改配置导致中途换路。
         selected_live_check_driver = None if force_refresh else (
@@ -689,7 +711,12 @@ def _run_live_check(
             refresh_driver
             or _snapshot_value(config_snapshot, "refresh_protocol_version")
         ) if force_refresh else None
-        reporter.start(message="开始刷新账号 AT" if force_refresh else "开始验证账号 accessToken")
+        reporter.stage("preflight", "success", "查活配置预检通过", detail={
+            "force_refresh": bool(force_refresh),
+            "live_check_driver": selected_live_check_driver,
+            "refresh_driver": selected_refresh_driver,
+        })
+        preflight_open = False
         if selected_live_check_driver:
             reporter.note(
                 stage="access_token",
@@ -707,9 +734,17 @@ def _run_live_check(
             )
         from core.account_proxy import acquire_account_proxy
 
+        def begin_network_stage() -> None:
+            nonlocal network_open, network_started
+            network_open = True
+            if not network_started:
+                reporter.stage("network", "running", "正在申请查活网络线路")
+                network_started = True
+
         def acquire_retry_route(attempt: int) -> str:
             """网络预检每次重试都释放旧租约并申请新线路。"""
-            nonlocal account_route, route
+            nonlocal account_route, route, network_open
+            begin_network_stage()
             if account_route is not None:
                 account_route.release(reason=f"live-check-{account_id}-preflight-rotate")
             account_route = None
@@ -757,14 +792,16 @@ def _run_live_check(
                 key: route.get(key)
                 for key in ("network_route", "proxy_mode", "proxy_provider", "proxy_region")
             })
+            network_open = False
             if force_refresh:
                 reporter.stage("login_password", "running", "正在通过邮箱登录刷新 AT")
             return account_route.proxy_url
 
         def acquire_explicit_route() -> str:
             """显式代理只申请一次，后续步骤严格复用调用方指定线路。"""
-            nonlocal account_route, route
+            nonlocal account_route, route, network_open
             if account_route is None:
+                begin_network_stage()
                 account_route = acquire_account_proxy(
                     account_id=account_id,
                     email=email,
@@ -778,6 +815,7 @@ def _run_live_check(
                 route = account_route.public_dict()
                 reporter.resource("resource.acquired", "已选择指定账号线路", stage="network", detail=route)
                 reporter.stage("network", "success", "网络线路已就绪")
+                network_open = False
                 if force_refresh:
                     reporter.stage("login_password", "running", "正在通过邮箱登录刷新 AT")
             return account_route.proxy_url
@@ -1196,6 +1234,7 @@ def _run_live_check(
                             detail={"error": f"{type(error).__name__}: {str(error)[:300]}"},
                         )
 
+                    begin_network_stage()
                     account_route = _acquire_account_proxy_with_retries(
                         acquire_proxy=acquire_account_proxy,
                         account_id=account_id,
@@ -1224,6 +1263,7 @@ def _run_live_check(
                             for key in ("network_route", "proxy_mode", "proxy_provider", "proxy_region")
                         },
                     )
+                    network_open = False
                     roxy_proxy = account_route.proxy_url
 
                 def run_roxy_refresh(on_remote_request_started):
@@ -1404,6 +1444,11 @@ def _run_live_check(
             db.update_account_liveness(account_id, result)
         except Exception:
             logger.exception("[查活] 取消状态写回失败: account_id=%s", account_id)
+        if preflight_open:
+            reporter.stage(
+                "preflight", "failed", "查活预检未完成",
+                level="ERROR", detail={"error": result["error"]},
+            )
         reporter.finish(
             status="request_unknown" if remote_unknown else "cancelled",
             message="刷新 AT 请求结果待确认，需人工对账" if remote_unknown else "查活任务已取消",
@@ -1457,13 +1502,24 @@ def _run_live_check(
             _append_log(email, f"[查活] 后台异常：{result['error']}")
         except Exception:
             pass
-        reporter.stage(
-            "login_password" if force_refresh else "access_token",
-            "failed",
-            "刷新 AT 后台异常" if force_refresh else "AT 验证后台异常",
-            level="ERROR",
-            detail={"error": result["error"]},
-        )
+        if preflight_open:
+            reporter.stage(
+                "preflight", "failed", "查活预检失败",
+                level="ERROR", detail={"error": result["error"]},
+            )
+        if network_open:
+            reporter.stage(
+                "network", "failed", "查活网络线路申请失败",
+                level="ERROR", detail={"error": result["error"]},
+            )
+        else:
+            reporter.stage(
+                "login_password" if force_refresh else "access_token",
+                "failed",
+                "刷新 AT 后台异常" if force_refresh else "AT 验证后台异常",
+                level="ERROR",
+                detail={"error": result["error"]},
+            )
         reporter.finish(
             status="request_unknown" if unknown else "failed",
             message="刷新 AT 结果待确认，需人工对账" if unknown else "查活后台执行异常",
@@ -1534,27 +1590,28 @@ def _handle_live_operation(context):
     # row; using the frozen run family here keeps the lease fence consistent
     # for both paths.
     with context.lease(resource_family=context.resource_family):
-        _run_live_check(
-            account_id=int(context.account_id),
-            email=email,
-            proxy=None,
-            trigger=str(context.run.get("trigger") or "manual"),
-            task_id=int(context.task_id),
-            force_refresh=bool(data.get("force_refresh")),
-            driver=data.get("driver") or None,
-            refresh_driver=data.get("refresh_driver") or None,
-            release_queue_slot=False,
-            operation_context=context,
-            config_snapshot=context.config_snapshot,
-            proxy_source=str(
-                data.get("proxy_source")
-                or _snapshot_value(
-                    context.config_snapshot,
-                    "refresh_at_proxy_mode" if data.get("force_refresh") else "live_check_proxy_mode",
-                )
-                or ""
-            ).strip() or None,
-        )
+        with operation_log_context(context, stage="preflight"):
+            _run_live_check(
+                account_id=int(context.account_id),
+                email=email,
+                proxy=None,
+                trigger=str(context.run.get("trigger") or "manual"),
+                task_id=int(context.task_id),
+                force_refresh=bool(data.get("force_refresh")),
+                driver=data.get("driver") or None,
+                refresh_driver=data.get("refresh_driver") or None,
+                release_queue_slot=False,
+                operation_context=context,
+                config_snapshot=context.config_snapshot,
+                proxy_source=str(
+                    data.get("proxy_source")
+                    or _snapshot_value(
+                        context.config_snapshot,
+                        "refresh_at_proxy_mode" if data.get("force_refresh") else "live_check_proxy_mode",
+                    )
+                    or ""
+                ).strip() or None,
+            )
     return None
 
 

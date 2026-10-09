@@ -106,6 +106,30 @@ const LIST_FACET_LABELS = {
   },
   run_count: {'0':'0 次', '1':'1 次', '2':'2 次', '3':'3 次', '4+':'4 次及以上'},
 };
+
+// 任务进度快照的公共展示契约。服务端保留原始 status，页面统一把
+// display_status 映射成可读文字；这些语义不能只依赖颜色表达。
+const TASK_PROGRESS_STATUS_LABELS = {
+  pending: '未开始', running: '执行中', success: '已完成', skipped: '已跳过', failed: '失败',
+  recovered: '重试已恢复', unconfirmed: '未确认', not_executed: '未执行', request_unknown: '结果待确认',
+  stopped: '已中断', attention_required: '待人工处理', partial_success: '部分完成',
+  unknown: '结果待确认', deactivated: '已停用', unsupported: '不支持', manual_reconcile: '需人工对账', password_confirmation_pending: '密码待确认',
+  cancelled: '已取消', interrupted: '已中断', deferred: '已延后', awaiting_confirmation: '待确认',
+};
+function taskProgressStatusLabel(value) {
+  const key = String(value || 'pending').trim().toLowerCase();
+  return TASK_PROGRESS_STATUS_LABELS[key] || LIST_FACET_LABELS.status?.[key] || key || '未确认';
+}
+function taskProgressStepStatus(step) {
+  return String(step?.display_status || step?.state || 'pending').trim().toLowerCase();
+}
+function taskProgressStepMatches(step, filter) {
+  if (!filter) return true;
+  const wanted = String(filter);
+  const stepId = String(step?.id || step?.step_id || '');
+  const rawStages = Array.isArray(step?.raw_stages) ? step.raw_stages.map(String) : [];
+  return stepId === wanted || rawStages.includes(wanted);
+}
 function facetLabel(group, value) {
   const key = String(value || '').toLowerCase();
   if (group === 'plan') return key ? key.charAt(0).toUpperCase() + key.slice(1) : '-';
@@ -122,6 +146,7 @@ function syncFacetSelect(id, items, {group='', allValue='', allLabel='全部', v
     return value && Number(item?.count || 0) > 0;
   });
   const counts = new Map(dataRows.map(item => [String(item.value), Number(item.count || 0)]));
+  const labels = new Map(dataRows.map(item => [String(item.value), item.label]));
   const orderedValues = Array.isArray(values)
     ? values.map(String).filter(value => counts.has(value))
     : [];
@@ -131,7 +156,7 @@ function syncFacetSelect(id, items, {group='', allValue='', allLabel='全部', v
     : dataRows;
   const options = [{value: allValue, label: allLabel}].concat(rows.map(item => ({
     value: String(item.value || ''),
-    label: `${facetLabel(group, item.value)} · ${Number(item.count || 0)}`,
+    label: `${labels.get(String(item.value)) || facetLabel(group, item.value)} · ${Number(item.count || 0)}`,
   })));
   select.innerHTML = options.map(item => `<option value="${attrEsc(item.value)}">${esc(item.label)}</option>`).join('');
   select.value = options.some(item => item.value === current) ? current : allValue;

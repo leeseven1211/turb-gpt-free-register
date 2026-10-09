@@ -130,7 +130,7 @@ async function batchCancelJobs() {
 }
 
 async function retryBatchFailedJobs() {
-  const ids = currentBatchJobs().filter(job => ['failed', 'partial_success', 'stopped', 'cancelled', 'interrupted', 'request_unknown', 'manual_reconcile'].includes(String(job.status || '')) && job.retryable).map(job => Number(job.id));
+  const ids = currentBatchJobs().filter(job => ['failed', 'partial_success', 'stopped', 'cancelled', 'interrupted', 'request_unknown', 'manual_reconcile', 'attention_required'].includes(String(job.status || '')) && job.retryable).map(job => Number(job.id));
   if (!ids.length) { showToast('当前批次没有可重跑的失败任务'); return; }
   if (!confirm('确定重跑当前批次的 ' + ids.length + ' 个失败任务吗？有原邮箱则复用原邮箱，没有原邮箱则重新领取；已创建账号的任务会按缺失步骤补跑。')) return;
   const btn = $('#btnBatchRetryV2');
@@ -233,10 +233,21 @@ function bindJobsBodyEvents(bodyEl) {
   bindJobsBodyEvents($('#jobsBodyV2'));
   const progressListV2 = $('#batchProgressListV2');
   if (progressListV2) progressListV2.addEventListener('click', (e) => {
+    const step = e.target.closest('[data-progress-step]');
+    if (step && !e.target.closest('details')) {
+      openLog(parseInt(step.dataset.progressStepJob, 10), step.dataset.progressStep || null);
+      return;
+    }
     const logBtn = e.target.closest('[data-progress-log-job]');
     if (logBtn) openLog(parseInt(logBtn.dataset.progressLogJob, 10));
     const retryBtn = e.target.closest('[data-progress-retry-job]');
     if (retryBtn) retryJob(parseInt(retryBtn.dataset.progressRetryJob, 10), retryBtn);
+  });
+  if (progressListV2) progressListV2.addEventListener('keydown', (e) => {
+    const step = e.target.closest('[data-progress-step]');
+    if (!step || e.target.closest('details') || !['Enter', ' '].includes(e.key)) return;
+    e.preventDefault();
+    openLog(parseInt(step.dataset.progressStepJob, 10), step.dataset.progressStep || null);
   });
 })();
 
@@ -266,6 +277,9 @@ function progressJobResult(job) {
   if (status === 'partial_success') return { label: '部分完成', cls: 'is-failed' };
   if (status === 'request_unknown') return { label: job.retryable ? '待确认（可重跑）' : '待确认', cls: 'is-failed' };
   if (status === 'manual_reconcile') return { label: job.retryable ? '待人工确认（可重跑）' : '待人工确认', cls: 'is-failed' };
+  if (status === 'attention_required') return { label: '待人工处理', cls: 'is-failed' };
+  if (status === 'unsupported') return { label: '不支持', cls: 'is-failed' };
+  if (status === 'deactivated') return { label: '已停用', cls: 'is-failed' };
   if (status === 'interrupted') return { label: '服务中断', cls: 'is-failed' };
   if (status === 'failed') return { label: '失败', cls: 'is-failed' };
   if (status === 'cancelled') return { label: '已取消', cls: 'is-failed' };
@@ -273,6 +287,64 @@ function progressJobResult(job) {
   if (status === 'stopping') return { label: '停止中', cls: 'is-running' };
   if (status === 'running') return { label: '进行中', cls: 'is-running' };
   return { label: '等待中', cls: 'is-waiting' };
+}
+
+function jobProgressSnapshot(job) {
+  const candidates = [job?.progress, job?.progress_snapshot, job?.progress_v2];
+  return candidates.find(value => value && typeof value === 'object' && Array.isArray(value.main_steps))
+    || candidates.find(value => value && typeof value === 'object')
+    || null;
+}
+
+function jobProgressMainSteps(job, fallbackStages = []) {
+  const snapshot = jobProgressSnapshot(job);
+  if (Array.isArray(snapshot?.main_steps)) {
+    return snapshot.main_steps.map((step, index) => ({
+      ...(step || {}),
+      key: String(step?.id || step?.step_id || step?.key || `step-${index + 1}`),
+      label: String(step?.label || step?.name || step?.id || step?.step_id || `步骤 ${index + 1}`),
+    }));
+  }
+  return fallbackStages.map(stage => ({...stage, key: String(stage.key), label: String(stage.label || stage.key)}));
+}
+
+function jobProgressStepState(step) {
+  return typeof taskProgressStepStatus === 'function' ? taskProgressStepStatus(step) : String(step?.display_status || step?.state || step?.status || 'pending');
+}
+
+function jobProgressStepStatusLabel(step) {
+  const state = jobProgressStepState(step);
+  if (typeof taskProgressStatusLabel === 'function') return taskProgressStatusLabel(state);
+  return progressJobResult({status: state}).label;
+}
+
+function jobProgressStepMarkup(step, index, jobId) {
+  const state = jobProgressStepState(step);
+  const terminal = ['success', 'failed', 'skipped', 'stopped', 'cancelled', 'interrupted', 'not_executed'].includes(state);
+  const durationMs = step?.duration_ms == null ? NaN : Number(step.duration_ms);
+  const duration = Number.isFinite(durationMs)
+    ? `${Math.max(0, Math.round(durationMs / 1000))}秒`
+    : state === 'running' ? formatProgressDuration(step?.started_at) : step?.completed_at ? formatProgressDuration(step?.started_at, step.completed_at) : '';
+  const reason = step?.message || step?.reason || step?.detail || step?.error_info?.message || '';
+  const rawStages = Array.isArray(step?.raw_stages) ? step.raw_stages : [];
+  const evidence = step?.evidence && typeof step.evidence === 'object' ? step.evidence : null;
+  const attempts = Array.isArray(step?.attempts) ? step.attempts : [];
+  const detail = [
+    rawStages.length ? `<div>原始阶段：${esc(rawStages.join('、'))}</div>` : '',
+    step?.started_at ? `<div>开始：${esc(formatDateTime(step.started_at))}</div>` : '',
+    step?.completed_at ? `<div>结束：${esc(formatDateTime(step.completed_at))}</div>` : '',
+    duration ? `<div>耗时：${esc(duration)}</div>` : '',
+    reason ? `<div>原因：${esc(reason)}</div>` : '',
+    step?.event_ids?.length ? `<div>事件数：${esc(step.event_ids.length)}</div>` : '',
+    evidence ? `<details><summary>技术证据</summary><pre>${esc(JSON.stringify(evidence, null, 2))}</pre></details>` : '',
+    attempts.length ? `<details><summary>尝试记录（${attempts.length}）</summary><pre>${esc(JSON.stringify(attempts, null, 2))}</pre></details>` : '',
+  ].filter(Boolean).join('');
+  const symbol = state === 'success' ? '✓' : state === 'failed' ? '×' : state === 'stopped' ? '!' : state === 'running' ? '…' : String(index + 1);
+  return `<div class="batch-progress-v2-step is-${attrEsc(state)}" role="button" tabindex="0" data-progress-step="${attrEsc(step.key)}" data-progress-step-job="${attrEsc(jobId)}" aria-label="${esc(step.label)}：${esc(jobProgressStepStatusLabel(step))}">
+    <span class="batch-progress-v2-node" aria-hidden="true">${symbol}</span>
+    <span class="batch-progress-v2-step-label">${esc(step.label)}<span class="batch-progress-v2-step-state">${esc(jobProgressStepStatusLabel(step))}</span></span>
+    ${detail ? `<details class="batch-progress-v2-step-detail"><summary>详情</summary><div>${detail}</div></details>` : ''}
+  </div>`;
 }
 
 function refreshBatchProgressDurations() {
@@ -293,7 +365,7 @@ function registrationBatchStateLabel(counts = {}) {
   const pending = Number(counts.pending || 0);
   const unfinished = running + pending;
   if (unfinished > 0) return `未完成 ${unfinished}（运行 ${running} / 等待 ${pending}）`;
-  const failures = Number(counts.failed || 0) + Number(counts.partial_success || 0) + Number(counts.request_unknown || 0) + Number(counts.manual_reconcile || 0) + Number(counts.stopped || 0) + Number(counts.cancelled || 0);
+  const failures = Number(counts.failed || 0) + Number(counts.partial_success || 0) + Number(counts.request_unknown || 0) + Number(counts.manual_reconcile || 0) + Number(counts.attention_required || 0) + Number(counts.unsupported || 0) + Number(counts.deactivated || 0) + Number(counts.password_confirmation_pending || 0) + Number(counts.stopped || 0) + Number(counts.cancelled || 0);
   if (failures > 0) return `异常 ${failures}`;
   const interrupted = Number(counts.interrupted || 0);
   return interrupted > 0 ? `服务中断 ${interrupted}` : '已完成';
@@ -331,18 +403,19 @@ function renderBatchProgress() {
   const batch = JOB_PROGRESS_BATCH;
   const items = batch && Array.isArray(batch.items) ? batch.items : [];
   const stages = batch && Array.isArray(batch.stages) ? batch.stages : [];
-  if (!batch || !items.length || !stages.length) {
+  const hasUnifiedSteps = items.some(job => Array.isArray(jobProgressSnapshot(job)?.main_steps));
+  if (!batch || !items.length || (!stages.length && !hasUnifiedSteps)) {
     batchProgressRenderSignature = '';
     panel.classList.add('hidden');
     return;
   }
   panel.classList.remove('hidden');
 
-  const hasFailedStep = job => Object.values(job.progress_steps || {}).some(step => step && ['failed', 'stopped'].includes(step.state));
+  const hasFailedStep = job => jobProgressMainSteps(job, stages).some(step => ['failed', 'stopped', 'attention_required', 'request_unknown'].includes(jobProgressStepState(step)));
   const success = items.filter(job => job.status === 'success' && !hasFailedStep(job)).length;
-  const failed = items.filter(job => ['failed', 'cancelled', 'stopped', 'request_unknown', 'manual_reconcile'].includes(job.status) || hasFailedStep(job)).length;
+  const failed = items.filter(job => ['failed', 'partial_success', 'cancelled', 'stopped', 'request_unknown', 'manual_reconcile', 'attention_required', 'unsupported', 'deactivated', 'password_confirmation_pending'].includes(job.status) || hasFailedStep(job)).length;
   const interrupted = items.filter(job => job.status === 'interrupted').length;
-  const active = items.filter(job => ['running', 'stopping'].includes(job.status) && !hasFailedStep(job)).length;
+  const active = items.filter(job => ['running', 'stopping'].includes(job.status)).length;
   const pending = items.filter(job => job.status === 'pending').length;
   const total = Number(batch.total || items.length);
   const stateEl = $('#batchProgressStateV2');
@@ -361,6 +434,11 @@ function renderBatchProgress() {
   }
   const summaryEl = $('#batchProgressSummaryV2');
   if (summaryEl) summaryEl.textContent = `成功 ${success} · 失败 ${failed} · 中断 ${interrupted} · 运行 ${active} · 等待 ${pending} ｜ 共 ${total} · 并发 ${Number(batch.workers || 1)}`;
+  const distribution = $('#batchProgressStagesV2');
+  if (distribution) {
+    const groups = [['正在执行', batch.current_stage_counts || []], ['失败位置', batch.failure_stage_counts || []]];
+    distribution.innerHTML = groups.filter(([, values]) => values.length).map(([title, values]) => `<span>${esc(title)}：${values.map(item => `${esc(item.label)} ${esc(item.count)}`).join(' · ')}</span>`).join('');
+  }
   const allDone = active === 0 && pending === 0;
   const batchDuration = formatProgressDuration(batch.started_at || batch.created_at, allDone ? batch.completed_at : '');
   const timeEl = $('#batchProgressTimeV2');
@@ -368,7 +446,7 @@ function renderBatchProgress() {
 
   const runningIds = items.filter(job => ['running', 'stopping'].includes(String(job.status || ''))).map(job => Number(job.id));
   const pendingIds = items.filter(job => String(job.status || '') === 'pending').map(job => Number(job.id));
-  const retryIds = items.filter(job => ['failed', 'partial_success', 'stopped', 'cancelled', 'interrupted', 'request_unknown', 'manual_reconcile'].includes(String(job.status || '')) && job.retryable).map(job => Number(job.id));
+  const retryIds = items.filter(job => ['failed', 'partial_success', 'stopped', 'cancelled', 'interrupted', 'request_unknown', 'manual_reconcile', 'attention_required'].includes(String(job.status || '')) && job.retryable).map(job => Number(job.id));
   const stopBtn = $('#btnBatchStopV2');
   const cancelBtn = $('#btnBatchCancelV2');
   const retryBtn = $('#btnBatchRetryV2');
@@ -386,16 +464,23 @@ function renderBatchProgress() {
   }
   batchProgressRenderSignature = nextRenderSignature;
   list.innerHTML = items.map((job, itemIndex) => {
-    const steps = job.progress_steps && typeof job.progress_steps === 'object' ? job.progress_steps : {};
-    const terminal = ['success', 'partial_success', 'failed', 'cancelled', 'stopped', 'interrupted', 'request_unknown'].includes(String(job.status || ''));
+    const unifiedSnapshot = jobProgressSnapshot(job);
+    const displayStages = jobProgressMainSteps(job, stages);
+    const unified = Array.isArray(unifiedSnapshot?.main_steps);
+    const steps = unified
+      ? Object.fromEntries(displayStages.map(step => [step.key, step]))
+      : (job.progress_steps && typeof job.progress_steps === 'object' ? job.progress_steps : {});
+    const terminal = ['success', 'partial_success', 'failed', 'cancelled', 'stopped', 'interrupted', 'request_unknown', 'manual_reconcile', 'attention_required', 'password_confirmation_pending'].includes(String(job.status || job.display_status || ''));
     const duration = formatProgressDuration(job.started_at || job.created_at, terminal ? job.completed_at : '');
-    const failedStageIndex = stages.findIndex(stage => ['failed', 'stopped'].includes(String((steps[stage.key] || {}).state || '')));
-    const failedStep = failedStageIndex >= 0 ? (steps[stages[failedStageIndex].key] || {}) : null;
+    const failedStageIndex = displayStages.findIndex(stage => ['failed', 'stopped', 'attention_required', 'request_unknown'].includes(jobProgressStepState(steps[stage.key])));
+    const failedStep = failedStageIndex >= 0 ? (steps[displayStages[failedStageIndex].key] || {}) : null;
     const result = ['request_unknown', 'password_confirmation_pending'].includes(String(job.display_status || job.status || ''))
       ? progressJobResult(job)
       : failedStep ? { label: '部分失败', cls: 'is-failed' } : progressJobResult(job);
-    const cardFailed = ['failed', 'cancelled', 'stopped', 'interrupted', 'request_unknown'].includes(String(job.status || '')) || Boolean(failedStep);
-    const stepHtml = stages.map((stage, index) => {
+    const cardFailed = ['failed', 'cancelled', 'stopped', 'interrupted', 'request_unknown', 'manual_reconcile', 'attention_required', 'unsupported', 'deactivated', 'password_confirmation_pending'].includes(String(job.status || job.display_status || '')) || Boolean(failedStep);
+    const stepHtml = unified
+      ? displayStages.map((step, index) => jobProgressStepMarkup(step, index, job.id)).join('')
+      : displayStages.map((stage, index) => {
       const step = steps[stage.key] || {};
       const state = String(step.state || 'pending');
       const previous = index > 0 ? (steps[stages[index - 1].key] || {}) : {};
@@ -458,7 +543,8 @@ function renderBatchProgress() {
         </div>
       </div>
       ${attemptHistory}
-      <div class="batch-progress-v2-steps-scroll"><div class="batch-progress-v2-steps" style="--batch-progress-step-count:${Math.max(stages.length, 1)}">${stepHtml}</div></div>
+      ${unified ? '<div class="batch-progress-v2-observation-note">按实际执行记录排列，未执行步骤在后</div>' : '<div class="batch-progress-v2-observation-note">历史兼容数据未提供统一 Run 进度，步骤仅显示已保存证据</div>'}
+      <div class="batch-progress-v2-steps-scroll"><div class="batch-progress-v2-steps" style="--batch-progress-step-count:${Math.max(displayStages.length, 1)}">${stepHtml}</div></div>
     </article>`;
   }).join('');
   refreshBatchProgressDurations();
@@ -852,7 +938,18 @@ async function retrySelectedJobs() {
   }
 }
 
-function openLog(jobId) {
+function openJobLog(job, stepId = null) {
+  const operationTaskId = job?.operation_task_id;
+  const operationRunId = job?.operation_run_id;
+  if (!operationTaskId || typeof openAccountTaskLog !== 'function') return false;
+  openAccountTaskLog(Number(operationTaskId), operationRunId ? Number(operationRunId) : null, stepId || null);
+  return true;
+}
+
+function openLog(jobId, stepId = null) {
+  const row = JOBS.find(job => Number(job.id) === Number(jobId)) || currentBatchJobs().find(job => Number(job.id) === Number(jobId));
+  if (openJobLog(row, stepId)) return;
+  // 少数历史批次只返回旧任务 ID；保留旧的文本日志入口，直到后端补齐映射。
   activeLogJob = jobId;
   $('#logJobId').textContent = jobId;
   $('#logPanel').classList.remove('hidden');
@@ -884,7 +981,7 @@ async function pollLog() {
     c.textContent = r.log || '(暂无日志)';
     if (atBottom) c.scrollTop = c.scrollHeight;
     await pollRegistrationDebug(activeLogJob);
-    if (r.job && ['success','partial_success','failed','stopped','cancelled','interrupted','request_unknown'].includes(r.job.status)) clearInterval(logTimer);
+    if (r.job && ['success','partial_success','failed','stopped','cancelled','interrupted','request_unknown','manual_reconcile','attention_required','password_confirmation_pending','unsupported','deactivated'].includes(r.job.status)) clearInterval(logTimer);
   } catch(e) {}
 }
 

@@ -171,6 +171,7 @@ def _deactivate_job(job_id: int) -> None:
         sms_provider.clear_sms_batch_context()
     except Exception:
         pass
+    task_run_log.clear_current_context()
 
 
 def is_stop_requested(job_id: int | None = None) -> bool:
@@ -1284,18 +1285,27 @@ class _JobLogContext:
         self.log_path = log_path
         self.task_id = task_id
         self.handler: logging.Handler | None = None
+        self._stage_scope = None
 
     def __enter__(self):
         task_run_log.resolve_path(self.log_path, for_write=True).parent.mkdir(parents=True, exist_ok=True)
+        # 具体阶段由 report_job_progress/TaskReporter 推进；这里仅建立注册任务
+        # 的初始边界，ContextVar 退出时恢复，避免线程池复用污染下一任务。
+        self._stage_scope = task_run_log.stage_context(
+            "registration",
+            task_id=self.task_id,
+            run_id=getattr(_THREAD_CTX, "run_id", None),
+        )
+        self._stage_scope.__enter__()
         self.handler = task_run_log.TaskRunLogHandler(
             self.log_path,
             task_id=self.task_id,
             stage="registration",
         )
         self.handler.setLevel(logging.INFO)
-        # 仅给本线程过滤 —— 用 thread name 做区分，避免污染其他任务的日志
-        thread_name = threading.current_thread().name
-        self.handler.addFilter(lambda r: r.threadName == thread_name)
+        # 按线程 ID 过滤，重名线程也不能串写任务日志。
+        thread_id = threading.get_ident()
+        self.handler.addFilter(lambda r: r.thread == thread_id)
         logging.getLogger().addHandler(self.handler)
         return self
 
@@ -1303,6 +1313,9 @@ class _JobLogContext:
         if self.handler is not None:
             self.handler.close()
             logging.getLogger().removeHandler(self.handler)
+        if self._stage_scope is not None:
+            self._stage_scope.__exit__(exc_type, exc, tb)
+            self._stage_scope = None
 
 
 def _run_one_job(job_id: int, log_file: str) -> None:

@@ -82,7 +82,9 @@ const ACCOUNT_TASK_STEP_STATE_LABELS = {
 };
 const ACCOUNT_TASK_PROGRESS_STATUS_LABELS = {
   pending:'未开始', running:'执行中', success:'已完成', skipped:'已跳过', failed:'失败',
-  partial_success:'部分完成', cancelled:'已取消', interrupted:'已中断', attention_required:'待确认'
+  unconfirmed:'未确认', not_executed:'未执行', request_unknown:'结果待确认', stopped:'已中断',
+  partial_success:'部分完成', cancelled:'已取消', interrupted:'已中断', attention_required:'待人工处理',
+  deferred:'已延后', awaiting_confirmation:'待确认'
 };
 function accountTaskEventStepState(event) {
   const detail = event?.detail && typeof event.detail === 'object' ? event.detail : {};
@@ -93,8 +95,64 @@ function accountTaskEventStepState(event) {
   return String(event?.level || '').toUpperCase() === 'ERROR' ? 'failed' : null;
 }
 function accountTaskProgressStateLabel(step) {
-  const status = String(step?.display_status || step?.state || 'pending');
-  return ACCOUNT_TASK_PROGRESS_STATUS_LABELS[status] || ACCOUNT_TASK_STEP_STATE_LABELS[status] || status;
+  const status = String(step?.display_status || step?.state || 'pending').toLowerCase();
+  return ACCOUNT_TASK_PROGRESS_STATUS_LABELS[status] || TASK_PROGRESS_STATUS_LABELS[status] || ACCOUNT_TASK_STEP_STATE_LABELS[status] || status;
+}
+let accountTaskStepFilter = null;
+let accountTaskPendingStepFilter = null;
+function accountTaskProgressStepId(step) {
+  return String(step?.id || step?.step_id || '').trim();
+}
+function accountTaskProgressStepLabel(step) {
+  return String(step?.label || step?.name || accountTaskProgressStepId(step) || '未命名步骤');
+}
+function accountTaskProgressStepEvidence(step) {
+  const fields = [];
+  if (Array.isArray(step?.raw_stages) && step.raw_stages.length) fields.push(`原始阶段：${step.raw_stages.join('、')}`);
+  if (step?.observed_order != null) fields.push(`实际顺序：第 ${step.observed_order} 步`);
+  if (step?.started_at || step?.completed_at) fields.push(`${formatDateTime(step.started_at)} → ${formatDateTime(step.completed_at)}`);
+  if (step?.duration_ms != null) fields.push(`耗时 ${formatTaskDuration(step.duration_ms)}`);
+  return fields;
+}
+function accountTaskStepAttempts(step) {
+  const attempts = Array.isArray(step?.attempts) ? step.attempts : [];
+  return attempts.length ? `<details class="account-task-stage-attempts" data-account-task-detail="attempts"><summary>查看尝试记录（${attempts.length}）</summary><pre>${esc(JSON.stringify(attempts, null, 2))}</pre></details>` : '';
+}
+function accountTaskStepDetails(step) {
+  const rawDetail = step?.reason || step?.message || '';
+  const evidence = accountTaskProgressStepEvidence(step);
+  const evidenceHtml = evidence.length ? `<details class="account-task-stage-technical" data-account-task-detail="technical"><summary>阶段与时间</summary><div class="account-task-stage-evidence">${evidence.map(item => `<span>${esc(item)}</span>`).join('')}</div></details>` : '';
+  return `${rawDetail ? `<div class="account-task-stage-reason">${esc(rawDetail)}</div>` : ''}${evidenceHtml}${accountTaskStepAttempts(step)}`;
+}
+function accountTaskFailureSummary(progress) {
+  const failure = progress?.failure && typeof progress.failure === 'object' ? progress.failure : null;
+  if (!failure) return '';
+  const location = [failure.label || failure.step_id || '位置待确认', failure.stage].filter(Boolean).join(' · ');
+  const message = failure.message || (typeof failure.evidence === 'string' ? failure.evidence : '') || '失败位置待确认';
+  const reconcile = failure.reconcile_required || ['request_unknown', 'attention_required'].includes(String(progress?.outcome?.status || '').toLowerCase());
+  const inferred = failure.inferred === true || failure.evidence?.inferred === true || failure.evidence?.source === 'inferred' || failure.evidence?.kind === 'inferred' || failure.evidence === 'inferred' || failure.evidence === 'legacy' || failure.evidence === 'unobserved';
+  const locationTitle = inferred || (!failure.step_id && !failure.label && !failure.event_id) ? '待确认位置' : '失败位置';
+  const event = failure.event_id ? `<span>事件 ${esc(failure.event_id)}</span>` : '';
+  const errorSummary = failure.error_info?.summary || failure.error_info?.display_code || '';
+  const technical = failure.error_info || (failure.evidence && typeof failure.evidence === 'object')
+    ? `<details><summary>查看技术详情</summary><pre>${esc(JSON.stringify({error_info: failure.error_info || null, evidence: failure.evidence || null}, null, 2))}</pre></details>`
+    : '';
+  return `<div class="account-task-progress-failure" role="status"><strong>${esc(locationTitle)}：${esc(location)}</strong><span>${esc(message)}</span>${errorSummary ? `<span>错误：${esc(errorSummary)}</span>` : ''}${event}${reconcile ? '<span class="account-task-progress-flag">需要对账</span>' : ''}${technical}</div>`;
+}
+function accountTaskProgressStepMarkup(step, index) {
+  const id = accountTaskProgressStepId(step) || `step-${index + 1}`;
+  const state = taskProgressStepStatus(step);
+  const selected = accountTaskStepFilter === id || (Array.isArray(step?.raw_stages) && step.raw_stages.includes(accountTaskStepFilter));
+  const children = Array.isArray(step?.children) ? step.children : [];
+  const childrenHtml = children.length
+    ? `<details class="account-task-stage-children" data-account-task-detail="children"${children.some(child => child.state === 'running') ? ' open' : ''}><summary>子步骤（${children.length}）</summary><div>${children.map(child => `<div class="account-task-stage-child is-${attrEsc(taskProgressStepStatus(child))}"><span>${esc(accountTaskProgressStepLabel(child))}</span><span>${esc(accountTaskProgressStateLabel(child))}</span>${accountTaskStepDetails(child)}</div>`).join('')}</div></details>`
+    : '';
+  return `<div class="account-task-stage-step is-${attrEsc(state)}${selected ? ' is-selected' : ''}" role="button" tabindex="0" data-account-task-step="${attrEsc(id)}" aria-pressed="${selected ? 'true' : 'false'}" aria-label="${esc(accountTaskProgressStepLabel(step))}：${esc(accountTaskProgressStateLabel(step))}"><span class="account-task-stage-node" aria-hidden="true">${state === 'success' ? '✓' : state === 'failed' ? '×' : state === 'stopped' ? '!' : String(index + 1)}</span><span class="account-task-stage-label">${esc(accountTaskProgressStepLabel(step))}</span><span class="account-task-stage-state">${esc(accountTaskProgressStateLabel(step))}</span>${accountTaskStepDetails(step)}${childrenHtml}</div>`;
+}
+function accountTaskChildRuns(progress) {
+  const children = (progress?.outcome?.child_tasks || []).filter(child => Number(child.task_id) > 0);
+  if (!children.length) return '';
+  return `<div class="account-task-child-runs"><strong>独立子任务</strong>${children.map(child => `<button type="button" data-account-task-child="${attrEsc(child.task_id)}" data-child-run="${attrEsc(child.run_id || '')}">${esc(facetLabel('task_type', child.task_type) || '子任务')} #${esc(child.task_id)} · ${esc(taskProgressStatusLabel(child.status || 'queued'))}</button>`).join('')}</div>`;
 }
 function renderAccountTaskProgressSnapshot(progress) {
   const panel = $('#accountTaskStageProgress');
@@ -103,23 +161,32 @@ function renderAccountTaskProgressSnapshot(progress) {
   if (!stages.length) {
     panel.classList.add('hidden');
     panel.innerHTML = '';
+    renderAccountTaskFilterBar();
     return;
   }
   const current = progress.current;
+  if (accountTaskStepFilter && !stages.some(stage => accountTaskProgressStepId(stage) === accountTaskStepFilter || (stage.raw_stages || []).includes(accountTaskStepFilter))) accountTaskStepFilter = null;
   const currentText = current
     ? `当前：${current.label || current.step_id}${current.child_label ? ` · ${current.child_label}` : ''}`
-    : `结果：${progress.outcome?.status || '未开始'}`;
-  const sourceText = progress.source === 'legacy_derived' ? '历史记录按已有结构化事件还原' : '';
-  const track = stages.map(stage => {
-    const state = String(stage.state || 'pending');
-    const children = Array.isArray(stage.children) ? stage.children : [];
-    const childrenHtml = children.length
-      ? `<div class="account-task-stage-children">${children.map(child => `<span class="account-task-stage-child is-${attrEsc(child.state || 'pending')}">${esc(child.label || child.step_id)} · ${esc(accountTaskProgressStateLabel(child))}</span>`).join('')}</div>`
-      : '';
-    return `<div class="account-task-stage-step is-${attrEsc(state)}"><span class="account-task-stage-node"></span><span class="account-task-stage-label">${esc(stage.label || stage.id)}</span><span class="account-task-stage-state">${esc(accountTaskProgressStateLabel(stage))}</span>${childrenHtml}</div>`;
-  }).join('');
-  panel.innerHTML = `<div class="account-task-stage-current"><strong>${esc(currentText)}</strong>${sourceText ? `<small>${esc(sourceText)}</small>` : ''}</div><div class="account-task-stage-track">${track}</div>`;
+    : `结果：${taskProgressStatusLabel(progress.outcome?.status || 'pending')}`;
+  const sourceText = progress.source === 'legacy_derived' ? '历史记录按已有结构化事件还原' : progress.source === 'insufficient_evidence' ? '记录不足，步骤状态未确认' : '';
+  const activeElement = document.activeElement;
+  const focusedStep = activeElement?.getAttribute?.('data-account-task-step');
+  const expandedDetails = new Set(Array.from(panel.querySelectorAll('details[open]')).map(detail => {
+    const step = detail.closest('[data-account-task-step]');
+    return step ? `${step.getAttribute('data-account-task-step')}:${detail.dataset.accountTaskDetail || ''}` : '';
+  }).filter(Boolean));
+  const track = stages.map(accountTaskProgressStepMarkup).join('');
+  const filterText = accountTaskStepFilter ? `已筛选：${esc(accountTaskProgressStepLabel(stages.find(step => accountTaskProgressStepId(step) === accountTaskStepFilter) || {id: accountTaskStepFilter}))}` : '点击步骤可筛选事件和运行日志';
+  panel.innerHTML = `<div class="account-task-stage-current"><strong>${esc(currentText)}</strong>${sourceText ? `<small>${esc(sourceText)}</small>` : ''}</div><div class="account-task-stage-hint">共 ${stages.length} 个步骤 · 按实际执行记录排列，未执行步骤在后 · ${esc(filterText)}</div>${accountTaskFailureSummary(progress)}${accountTaskChildRuns(progress)}<div class="account-task-stage-track">${track}</div>`;
   panel.classList.remove('hidden');
+  panel.querySelectorAll('[data-account-task-step] details[data-account-task-detail]').forEach(detail => {
+    const step = detail.closest('[data-account-task-step]');
+    if (step && expandedDetails.has(`${step.getAttribute('data-account-task-step')}:${detail.dataset.accountTaskDetail || ''}`)) detail.open = true;
+  });
+  const restore = focusedStep && Array.from(panel.querySelectorAll('[data-account-task-step]')).find(item => item.getAttribute('data-account-task-step') === focusedStep);
+  if (restore) restore.focus({preventScroll:true});
+  renderAccountTaskFilterBar();
 }
 function renderAccountTaskStageProgress(task, selectedRunId = null) {
   renderAccountTaskProgressSnapshot(task?.progress || null);
@@ -202,7 +269,9 @@ function renderAccountTasks() {
     const target = task.account_id ? `账号 #${task.account_id}` : (task.attempt_id ? `注册尝试 #${task.attempt_id}` : '-');
     const batch = task.batch_title || (task.batch_uuid ? short(task.batch_uuid, 12) : '单任务');
     const trigger = facetLabel('trigger', task.trigger);
-    const stage = facetLabel('stage', normalizeAccountTaskStage(task.current_stage));
+    const stage = task.current_stage_label || facetLabel('stage', normalizeAccountTaskStage(task.current_stage));
+    const failureStage = task.failure_stage || task.result_summary?.failure_stage;
+    const failureLocation = failureStage && !active ? `失败于 ${task.failure_stage_label || facetLabel('stage', normalizeAccountTaskStage(failureStage))}` : '';
     const error = task.error_message || '';
     const errorInfo = task.error_info || null;
     const errorText = accountTaskErrorDisplayText(errorInfo, error);
@@ -215,7 +284,7 @@ function renderAccountTasks() {
       <td title="${esc(task.target_status || '')}">${pillV2(task.target_status, 'target_status')}</td>
       <td title="${esc(batch)} · ${esc(trigger)}">${esc(short(batch, 26))}<div class="sub-cell">${esc(trigger)}</div></td>
       <td>${esc(task.run_count || 0)} 次<div class="sub-cell">最近 #${esc(task.last_run_no || '-')}</div></td>
-      <td>${esc(stage)}<div class="sub-cell">${esc(formatTaskDuration(task.duration_ms))}</div></td>
+      <td>${esc(stage)}${failureLocation ? `<div class="sub-cell">${esc(failureLocation)}</div>` : ''}<div class="sub-cell">${esc(formatTaskDuration(task.duration_ms))}</div></td>
       <td title="${esc(formatDateTime(task.created_at))} → ${esc(formatDateTime(task.completed_at))}">${esc(formatDateTime(task.created_at))}<div class="sub-cell">${esc(formatDateTime(task.completed_at))}</div></td>
       <td class="task-error" title="${esc(error ? accountTaskErrorDisplayTitle(errorInfo, error) : result)}">${error ? `${taskErrorBadge(errorInfo)}<span class="task-error-cell-text">${esc(short(errorText, 90))}</span>` : esc(short(result, 90))}</td>
       <td><div class="task-row-actions"><button type="button" class="task-row-action" data-account-task-log="${esc(task.id)}">日志</button>${stoppable ? `<button type="button" class="task-row-action task-row-action--terminate" data-account-task-terminate="${esc(task.id)}" aria-label="${terminationLabel}任务 #${esc(task.id)}">${terminationLabel}</button>` : ''}${retryable ? `<button type="button" class="task-row-action task-row-action--retry" data-account-task-retry="${esc(task.id)}">重跑</button>` : ''}${!active ? `<button type="button" class="task-row-action task-row-action--delete" data-account-task-delete="${esc(task.id)}">删除</button>` : ''}</div></td>
@@ -295,40 +364,118 @@ function meaningfulTaskDetail(detail) {
   });
   return Object.keys(cleaned).length ? cleaned : null;
 }
+function rememberTaskLogDetails(panel, attribute) {
+  return new Set(Array.from(panel.querySelectorAll?.('details[open]') || []).map(item => item.closest(`[${attribute}]`)?.getAttribute(attribute)).filter(Boolean));
+}
+function restoreTaskLogDetails(panel, attribute, opened) {
+  Array.from(panel.querySelectorAll?.('details') || []).forEach(item => {
+    if (opened.has(item.closest(`[${attribute}]`)?.getAttribute(attribute))) item.open = true;
+  });
+}
+function accountTaskEventStepId(event) {
+  const detail = event?.detail && typeof event.detail === 'object' ? event.detail : {};
+  return String(event?.main_step_id || detail.main_step_id || '').trim();
+}
+function accountTaskEventStage(event) {
+  const detail = event?.detail && typeof event.detail === 'object' ? event.detail : {};
+  return String(event?.stage || detail.stage || event?.stage_label || '').trim();
+}
+function accountTaskFilterRawStages() {
+  const progress = Array.isArray(accountTaskProgressSnapshot?.main_steps) ? accountTaskProgressSnapshot.main_steps : [];
+  const step = progress.find(item => accountTaskProgressStepId(item) === accountTaskStepFilter || (item.raw_stages || []).includes(accountTaskStepFilter));
+  return Array.isArray(step?.raw_stages) ? step.raw_stages.map(String) : [];
+}
+function accountTaskEventMatchesFilter(event) {
+  if (!accountTaskStepFilter) return true;
+  const detail = event?.detail && typeof event.detail === 'object' ? event.detail : {};
+  const stepId = accountTaskEventStepId(event);
+  const stage = accountTaskEventStage(event);
+  const eventId = String(event?.event_id || event?.id || '');
+  const rawStages = Array.isArray(event?.raw_stages)
+    ? event.raw_stages.map(String)
+    : Array.isArray(detail.raw_stages) ? detail.raw_stages.map(String) : [];
+  const stageLabel = String(event?.stage_label || detail.stage_label || '').trim();
+  const selectedRawStages = accountTaskFilterRawStages();
+  return stepId === accountTaskStepFilter || stage === accountTaskStepFilter || stageLabel === accountTaskStepFilter || rawStages.includes(accountTaskStepFilter) || eventId === accountTaskStepFilter || selectedRawStages.includes(stage) || selectedRawStages.includes(stageLabel) || rawStages.some(item => selectedRawStages.includes(item));
+}
+function accountTaskLogItemMatchesFilter(item) {
+  if (!accountTaskStepFilter) return true;
+  const fields = item?.fields && typeof item.fields === 'object' ? item.fields : {};
+  const stepId = String(item?.main_step_id || fields.main_step_id || '').trim();
+  const stage = String(item?.stage || fields.stage || '').trim();
+  const eventId = String(item?.event_id || fields.event_id || '');
+  const rawStages = Array.isArray(item?.raw_stages) ? item.raw_stages.map(String) : Array.isArray(fields.raw_stages) ? fields.raw_stages.map(String) : [];
+  const selectedRawStages = accountTaskFilterRawStages();
+  return stepId === accountTaskStepFilter || stage === accountTaskStepFilter || rawStages.includes(accountTaskStepFilter) || eventId === accountTaskStepFilter || selectedRawStages.includes(stage) || rawStages.some(item => selectedRawStages.includes(item));
+}
+function accountTaskFilterLabel() {
+  if (!accountTaskStepFilter) return '全流程';
+  const progress = accountTaskProgressSnapshot?.main_steps || [];
+  const step = progress.find(item => accountTaskProgressStepId(item) === accountTaskStepFilter || (item.raw_stages || []).includes(accountTaskStepFilter));
+  return step ? accountTaskProgressStepLabel(step) : accountTaskStepFilter;
+}
+function renderAccountTaskFilterBar() {
+  const host = $('#accountTaskProgressFilter');
+  if (!host) return;
+  host.innerHTML = `<span class="account-task-filter-label">当前查看：<strong>${esc(accountTaskFilterLabel())}</strong></span>${accountTaskStepFilter ? '<button type="button" class="account-task-filter-clear" data-account-task-filter-clear>清除筛选 · 查看全流程</button>' : ''}`;
+}
+function setAccountTaskStepFilter(stepId) {
+  accountTaskStepFilter = stepId ? String(stepId) : null;
+  renderAccountTaskProgressSnapshot(accountTaskProgressSnapshot);
+  renderAccountTaskEvents();
+  renderAccountTaskRunLog();
+  renderAccountTaskFilterBar();
+}
 
 function renderAccountTaskEvents() {
   const content = $('#accountTaskLogContent');
   if (!content) return;
   // 展示顺序按校正后的时间排列，保留缓存和接口游标的 ID 顺序。
-  const events = [...accountTaskEventCache].sort((left, right) => {
+  const opened = rememberTaskLogDetails(content, 'data-event-id');
+  const events = [...accountTaskEventCache].filter(accountTaskEventMatchesFilter).sort((left, right) => {
     const leftTime = Date.parse(left.created_at);
     const rightTime = Date.parse(right.created_at);
     return (Number.isNaN(leftTime) ? 0 : leftTime) - (Number.isNaN(rightTime) ? 0 : rightTime)
       || Number(left.id) - Number(right.id);
   });
   content.innerHTML = events.map(event => {
-    const eventType = String(event.event_type || 'note.info');
     const level = String(event.level || 'INFO').toUpperCase();
     const state = accountTaskEventStepState(event);
     const detail = meaningfulTaskDetail(event.detail);
     const css = level === 'ERROR' || state === 'failed' ? ' is-error' : level === 'WARNING' ? ' is-warning' : state === 'success' ? ' is-success' : '';
+    const stepId = accountTaskEventStepId(event);
+    const stageLabel = event.stage_label || ACCOUNT_TASK_STAGE_LABELS[normalizeAccountTaskStage(event.stage)] || event.stage || '事件';
+    const mainSteps = accountTaskProgressSnapshot?.main_steps || [];
+    const mainStep = mainSteps.find(item => item.id === stepId || (item.raw_stages || []).includes(event.raw_stage || event.stage));
+    const association = mainStep ? ` · ${mainStep.label}` : stepId ? '' : ' · 未关联步骤';
     return `<div class="account-task-event${css}" data-event-id="${attrEsc(event.id)}">
-      <div class="account-task-event-head"><span>${esc(formatDateTime(event.created_at))}</span><span>${esc(level)}</span><span>${esc(ACCOUNT_TASK_STAGE_LABELS[normalizeAccountTaskStage(event.stage)] || event.stage || '事件')}</span><span class="account-task-event-type">${esc(eventType)}</span></div>
+      <div class="account-task-event-head"><span>${esc(formatDateTime(event.created_at))}</span><span>${esc(level)}</span><span>${esc(stageLabel)}${esc(association)}</span><span class="account-task-event-type">${esc(state ? ACCOUNT_TASK_STEP_STATE_LABELS[state] : '记录')}</span>${event.event_id ? `<span class="account-task-event-id">事件 ${esc(event.event_id)}</span>` : ''}</div>
       <div class="account-task-event-message">${esc(event.message || '-')}</div>
       ${detail ? `<details class="account-task-event-detail"><summary>查看技术详情</summary><pre>${esc(JSON.stringify(detail, null, 2))}</pre></details>` : ''}
     </div>`;
-  }).join('') || '<div class="account-task-empty">暂无事件</div>';
+  }).join('') || `<div class="account-task-empty">${accountTaskStepFilter ? '当前步骤暂无关联事件' : '暂无事件'}</div>`;
+  restoreTaskLogDetails(content, 'data-event-id', opened);
+  renderAccountTaskFilterBar();
 }
 
 function renderAccountTaskRunLog() {
   const panel = $('#accountTaskRunLogContent');
   if (!panel) return;
-  panel.textContent = accountTaskRunLogLines.map(item => {
+  const opened = rememberTaskLogDetails(panel, 'data-log-key');
+  const lines = accountTaskRunLogLines.filter(accountTaskLogItemMatchesFilter);
+  panel.innerHTML = lines.map(item => {
     const fields = meaningfulTaskDetail(item.fields);
     const formattedTimestamp = formatDateTime(item.ts);
     const timestamp = formattedTimestamp === '-' ? '时间缺失' : formattedTimestamp;
-    return `${timestamp} ${item.level || 'INFO'} ${item.stage || 'event'} ${item.message || ''}${fields ? `\n${JSON.stringify(fields, null, 2)}` : ''}`;
-  }).join('\n') || '(当前 Run 暂无技术日志；旧任务可能只有事件时间线)';
+    const rawStages = Array.isArray(item?.raw_stages) ? item.raw_stages : Array.isArray(item?.fields?.raw_stages) ? item.fields.raw_stages : [];
+    const stepId = item?.main_step_id || item?.fields?.main_step_id || '';
+    const label = stepId || rawStages.length ? (item.stage_label || item.stage || '未关联步骤') : '未关联步骤';
+    const detail = fields
+      ? `<details class="account-task-log-detail"><summary>查看技术详情</summary><pre>${esc(JSON.stringify(fields, null, 2))}</pre></details>`
+      : '';
+    return `<div class="account-task-log-line" data-log-key="${esc(`${item.event_uuid || item.event_id || ''}|${item.ts || ''}|${String(item.message || '').slice(0, 100)}`)}"><span>${esc(`${timestamp} ${item.level || 'INFO'} ${label} ${item.message || ''}`)}</span>${detail}</div>`;
+  }).join('') || `<div class="account-task-empty">${accountTaskStepFilter ? '当前步骤暂无关联运行日志' : '(当前 Run 暂无技术日志；旧任务可能只有事件时间线)'}</div>`;
+  restoreTaskLogDetails(panel, 'data-log-key', opened);
 }
 
 function updateAccountTaskTimeZoneHints() {
@@ -362,6 +509,8 @@ function setAccountTaskDetailView(view) {
 
 function resetAccountTaskRunData(runId) {
   activeAccountTaskRunId = runId ? Number(runId) : null;
+  accountTaskStepFilter = accountTaskPendingStepFilter || null;
+  accountTaskPendingStepFilter = null;
   accountTaskEventCursor = null;
   accountTaskEventCache = [];
   accountTaskNewEventCount = 0;
@@ -430,8 +579,7 @@ async function pollAccountTaskProgress() {
   } catch (e) {
     if (detailRequestId !== accountTaskRequestId || requestId !== accountTaskProgressRequestId || taskId !== Number(activeAccountTaskId) || runId !== Number(activeAccountTaskRunId)) return;
     accountTaskProgressError = e.message || '进度更新失败';
-    // Keep the last good snapshot. A first-load failure stays hidden rather
-    // than falling back to the incomplete event page.
+    // 保留最近的完整快照；首次读取失败时不从分页事件推导不完整进度。
     if (accountTaskProgressSnapshot) renderAccountTaskProgressSnapshot(accountTaskProgressSnapshot);
   }
 }
@@ -451,11 +599,12 @@ async function pollAccountTaskRunLog(reset = false) {
   renderAccountTaskRunLog();
 }
 
-function openAccountTaskLog(taskId) {
+function openAccountTaskLog(taskId, runId = null, stepId = null) {
   accountTaskRequestId += 1;
   activeAccountTaskId = Number(taskId);
+  accountTaskPendingStepFilter = stepId ? String(stepId) : null;
   accountTaskSnapshot = null;
-  resetAccountTaskRunData(null);
+  resetAccountTaskRunData(runId || null);
   setAccountTaskDetailView('events');
   $('#accountTaskLogId').textContent = taskId;
   $('#accountTaskDetailSummary').textContent = '正在加载任务摘要…';
@@ -522,6 +671,23 @@ async function pollAccountTaskLog() {
 $('#accountTaskRunSelect')?.addEventListener('change', event => {
   resetAccountTaskRunData(Number(event.target.value || 0) || null);
   pollAccountTaskLog();
+});
+$('#accountTaskStageProgress')?.addEventListener('click', event => {
+  const child = event.target.closest('[data-account-task-child]');
+  if (child) { openAccountTaskLog(Number(child.dataset.accountTaskChild), Number(child.dataset.childRun) || null); return; }
+  const step = event.target.closest('[data-account-task-step]');
+  if (!step || event.target.closest('details')) return;
+  const id = step.dataset.accountTaskStep || '';
+  setAccountTaskStepFilter(accountTaskStepFilter === id ? null : id);
+});
+$('#accountTaskStageProgress')?.addEventListener('keydown', event => {
+  const step = event.target.closest('[data-account-task-step]');
+  if (!step || event.target.closest('details') || !['Enter', ' '].includes(event.key)) return;
+  event.preventDefault();
+  step.click();
+});
+$('#accountTaskProgressFilter')?.addEventListener('click', event => {
+  if (event.target.closest('[data-account-task-filter-clear]') || event.target.closest('[data-account-task-filter-all]')) setAccountTaskStepFilter(null);
 });
 document.querySelectorAll('[data-account-task-detail-tab]').forEach(button => button.addEventListener('click', () => setAccountTaskDetailView(button.dataset.accountTaskDetailTab)));
 $('#accountTaskNewEvents')?.addEventListener('click', () => {

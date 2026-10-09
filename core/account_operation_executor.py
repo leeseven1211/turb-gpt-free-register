@@ -9,12 +9,54 @@ thread per account.
 from __future__ import annotations
 
 import threading
+import logging
+from contextlib import contextmanager
+from contextvars import ContextVar
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable
 
 
 _MIN_WORKERS = 1
 _MAX_WORKERS = 16
+_LOG_SCOPE = ContextVar("operation_log_scope", default=None)
+
+
+@contextmanager
+def operation_log_context(context: Any, *, stage: str = "runtime"):
+    """把 native operation 当前线程的普通 logger 接入对应 Run 日志。
+
+    handler 按线程过滤，ContextVar 在 scope 退出时恢复；因此共享 executor
+    的线程复用和内部 daemon 线程都不会串写另一个任务的阶段。
+    """
+    run = getattr(context, "run", {})
+    log_file = run.get("log_file") if isinstance(run, dict) else None
+    if not log_file:
+        yield
+        return
+    from core import task_run_log
+
+    task_id = getattr(context, "task_id", None)
+    run_id = getattr(context, "run_id", None)
+    identity = (task_id, run_id, str(log_file))
+    if _LOG_SCOPE.get() == identity:
+        yield
+        return
+    handler = task_run_log.TaskRunLogHandler(
+        str(log_file), task_id=task_id, run_id=run_id, stage=stage,
+    )
+    handler.setLevel(logging.DEBUG)
+    thread_id = threading.get_ident()
+    handler.addFilter(lambda record: record.thread == thread_id)
+    root_logger = logging.getLogger()
+    root_logger.addHandler(handler)
+    scope_token = _LOG_SCOPE.set(identity)
+    try:
+        with task_run_log.stage_context(stage, task_id=task_id, run_id=run_id):
+            yield
+    finally:
+        _LOG_SCOPE.reset(scope_token)
+        root_logger.removeHandler(handler)
+        handler.close()
 
 
 def configured_workers() -> int:
@@ -204,4 +246,4 @@ class AccountOperationExecutor:
 executor = AccountOperationExecutor()
 
 
-__all__ = ["AccountOperationExecutor", "configured_workers", "executor"]
+__all__ = ["AccountOperationExecutor", "configured_workers", "executor", "operation_log_context"]

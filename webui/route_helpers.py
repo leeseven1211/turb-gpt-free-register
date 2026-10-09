@@ -347,6 +347,7 @@ def _compact_job_for_list(row: dict) -> dict:
         "proxy_exit_ip", "proxy_region", "proxy_acquired_at", "proxy_expires_at",
         "batch_id", "batch_index", "batch_size", "batch_workers",
         "progress_stage", "progress_updated_at", "progress_steps",
+        "operation_task_id", "operation_run_id", "progress",
         "route_attempt_no", "route_attempts", "internal_retry_count",
         "internal_retry_kind", "internal_retry_last_reason",
         "legacy_retry_timing",
@@ -383,106 +384,14 @@ def _compact_job_for_list(row: dict) -> dict:
         out["legacy_retry_timing"] = True
         out.pop("error_message", None)
         out.pop("error_info", None)
-    raw_steps = out.get("progress_steps")
-    if isinstance(raw_steps, dict):
-        # 列表兼容字段只应作用于返回副本，不能改写历史任务原始数据。
-        steps = {key: dict(value) if isinstance(value, dict) else value for key, value in raw_steps.items()}
-        changed = False
-    else:
-        steps = None
-        changed = False
-    if isinstance(steps, dict) and "network" not in steps:
-        reached_later_stage = any(
-            isinstance(steps.get(key), dict)
-            for key in (
-                "browser", "page", "submit_email", "auth_redirect", "login_password",
-                "email_otp", "profile", "token", "codex", "twofa", "plan_check", "complete",
-            )
+    # 旧来源尚未映射到 operation Run 时，也使用同一个证据投影器。
+    if not out.get("progress"):
+        from core.task_progress import build_progress_snapshot
+
+        out["progress"] = build_progress_snapshot(
+            0, int(row.get("id") or 0), str(row.get("job_type") or "registration"),
+            {**row, "error_message": err}, [],
         )
-        if reached_later_stage:
-            # 独立 network 阶段上线前，注册任务把代理分配
-            # 记在 email 里。后续步骤已开始即可确定线路已分配；
-            # 但历史数据没有独立起止时间，因此只补状态不伪造耗时。
-            steps["network"] = {
-                "state": "success",
-                "detail": "历史任务未单独记录网络阶段，已根据后续步骤确认完成",
-                "inferred": True,
-            }
-            changed = True
-    if isinstance(steps, dict) and "auth_redirect" not in steps:
-        submit_step = steps.get("submit_email")
-        reached_later_stage = any(
-            isinstance(steps.get(key), dict)
-            for key in ("email_otp", "profile", "token", "twofa", "codex")
-        )
-        if isinstance(submit_step, dict) and reached_later_stage:
-            # 兼容新增“认证跳转”阶段之前的历史任务，避免已完成批次中间
-            # 永久出现一个 pending 节点；历史数据没有独立耗时，只能标记跳过。
-            completed_at = submit_step.get("completed_at") or submit_step.get("started_at")
-            steps["auth_redirect"] = {
-                "state": "skipped",
-                "detail": "历史任务未单独记录认证跳转耗时",
-                "started_at": completed_at,
-                "completed_at": completed_at,
-            }
-            changed = True
-    if isinstance(steps, dict) and "login_password" not in steps:
-        auth_step = steps.get("auth_redirect")
-        reached_later_stage = any(
-            isinstance(steps.get(key), dict)
-            for key in ("email_otp", "profile", "token", "twofa", "codex")
-        )
-        if isinstance(auth_step, dict) and reached_later_stage:
-            completed_at = (
-                auth_step.get("completed_at")
-                or auth_step.get("started_at")
-                or row.get("completed_at")
-            )
-            steps["login_password"] = {
-                "state": "skipped",
-                "detail": "历史任务未单独记录账号密码阶段",
-                "started_at": completed_at,
-                "completed_at": completed_at,
-            }
-            changed = True
-    terminal_status = str(row.get("status") or "")
-    if isinstance(steps, dict) and terminal_status in {"success", "partial_success", "failed", "cancelled", "stopped", "interrupted", "request_unknown"}:
-        completed_at = row.get("completed_at")
-        if "twofa" not in steps:
-            prior = steps.get("token") if isinstance(steps.get("token"), dict) else {}
-            twofa_timestamp = prior.get("completed_at") or completed_at
-            steps["twofa"] = {
-                "state": "skipped",
-                "detail": "历史任务未单独记录 2FA 设置耗时",
-                "started_at": twofa_timestamp,
-                "completed_at": twofa_timestamp,
-            }
-            changed = True
-        if "plan_check" not in steps:
-            prior = steps.get("codex") if isinstance(steps.get("codex"), dict) else {}
-            plan_timestamp = prior.get("completed_at") or completed_at
-            steps["plan_check"] = {
-                "state": "skipped",
-                "detail": "历史任务未单独记录套餐查询耗时",
-                "started_at": plan_timestamp,
-                "completed_at": plan_timestamp,
-            }
-            changed = True
-        if "complete" not in steps:
-            complete_state = "success" if terminal_status in {"success", "partial_success"} else "stopped" if terminal_status in {"cancelled", "stopped", "interrupted"} else "failed"
-            steps["complete"] = {
-                "state": complete_state,
-                "detail": (
-                    "远端提交结果待确认，请复用当前会话对账"
-                    if terminal_status == "request_unknown"
-                    else "历史任务已完成" if complete_state == "success" else "历史任务已结束"
-                ),
-                "started_at": row.get("started_at") or row.get("created_at") or completed_at,
-                "completed_at": completed_at,
-            }
-            changed = True
-    if changed:
-        out["progress_steps"] = steps
     return out
 
 
@@ -559,6 +468,16 @@ def _latest_progress_batch(rows: list[dict]) -> dict | None:
     items.sort(key=lambda row: (int(row.get("batch_index") or 0), int(row.get("root_job_id") or 0)))
     selected_rows.sort(key=lambda row: int((roots.get(int(row.get("root_job_id") or row.get("id") or 0)) or row).get("batch_index") or 0))
     counts = _job_status_counts(selected_rows)
+    stage_counts: dict[str, dict] = {}
+    failure_counts: dict[str, dict] = {}
+    for item in items:
+        progress = item.get("progress") or {}
+        for location, target in ((progress.get("current"), stage_counts), (progress.get("failure"), failure_counts)):
+            if not location:
+                continue
+            key = str(location.get("step_id") or "unknown")
+            bucket = target.setdefault(key, {"step_id": key, "label": location.get("label") or "位置待确认", "count": 0})
+            bucket["count"] += 1
     all_terminal = all(str(row.get("status") or "") not in {"pending", "running", "stopping"} for row in selected_rows)
     return {
         "batch_id": batch_id,
@@ -568,6 +487,8 @@ def _latest_progress_batch(rows: list[dict]) -> dict | None:
         "started_at": min((str(row.get("started_at") or "") for row in batch_rows if row.get("started_at")), default=""),
         "completed_at": max((str(row.get("completed_at") or "") for row in selected_rows if row.get("completed_at")), default="") if all_terminal else "",
         "status_counts": counts,
+        "current_stage_counts": list(stage_counts.values()),
+        "failure_stage_counts": list(failure_counts.values()),
         "stages": [
             {"key": key, "label": "本次总耗时" if key == "complete" else label}
             for key, label in db.JOB_PROGRESS_STAGES

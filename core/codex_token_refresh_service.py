@@ -15,10 +15,11 @@ from typing import Any
 import requests
 
 from config import codex as _cfg
-from core import scheduler_state
+from core import scheduler_state, task_run_log
 from core.operations import task_gateway
 from core.storage import codex as db
 from core.storage import operation_runtime_store
+from core.account_operation_executor import operation_log_context
 
 logger = logging.getLogger(__name__)
 
@@ -583,20 +584,32 @@ def _perform_refresh(
     persist_pending: bool = True,
 ) -> dict[str, Any]:
     """Run the single refresh attempt shared by native and compatibility handlers."""
-    content, actual_filename, old_refresh_token = _load_credential(filename)
     cancel = is_cancel_requested or (lambda: False)
     _report(report, stage="preflight", state="running", message="开始刷新 Codex OAuth Token")
-    _checkpoint(checkpoint)
-    if cancel():
-        raise TokenRefreshCancelledError("刷新请求发出前收到取消请求")
+    try:
+        content, actual_filename, old_refresh_token = _load_credential(filename)
+        _checkpoint(checkpoint)
+        if cancel():
+            raise TokenRefreshCancelledError("刷新请求发出前收到取消请求")
 
-    if persist_pending:
-        try:
-            db.mark_codex_oauth_refresh(actual_filename, error=_PENDING_MARKER)
-        except Exception as exc:
-            raise TokenRefreshError(
-                f"刷新请求意图写入失败: {_safe_error(exc)}",
-            ) from exc
+        if persist_pending:
+            try:
+                db.mark_codex_oauth_refresh(actual_filename, error=_PENDING_MARKER)
+            except Exception as exc:
+                raise TokenRefreshError(
+                    f"刷新请求意图写入失败: {_safe_error(exc)}",
+                ) from exc
+    except Exception as exc:
+        _report(
+            report,
+            stage="preflight",
+            state="failed",
+            level="ERROR",
+            message="Codex OAuth Token 预检失败",
+            detail={"error": _safe_error(exc)},
+        )
+        raise
+    _report(report, stage="preflight", state="success", message="Codex OAuth Token 预检通过")
     _report(
         report,
         stage="refresh_token",
@@ -1181,16 +1194,32 @@ def _handle_operation_context(context: Any) -> Any:
         )
 
     def report(**event: Any) -> Any:
-        return context.report(**event)
+        stage = str(event.get("stage") or "event")
+        task_run_log.set_current_stage(
+            stage, task_id=getattr(context, "task_id", None), run_id=run_id,
+        )
+        result = context.report(**event)
+        if isinstance(result, dict):
+            task_run_log.set_current_stage(
+                stage,
+                event_id=result.get("event_id", result.get("id")),
+                event_uuid=result.get("event_uuid"),
+                source_event_id=result.get("source_event_id"),
+                source_system=result.get("source_system"),
+                main_step_id=result.get("main_step_id"),
+            )
+        return result
 
     def checkpoint() -> None:
         context.checkpoint()
 
     try:
         if not filename:
+            report(stage="preflight", state="failed", level="ERROR", message="durable refresh task 缺少 credential_filename")
             raise TokenRefreshError("durable refresh task 缺少 credential_filename")
         account_id = int(getattr(context, "account_id", 0) or 0)
         if not account_id:
+            report(stage="preflight", state="failed", level="ERROR", message="durable refresh task 缺少 account_id")
             raise TokenRefreshError("durable refresh task 缺少 account_id")
         with context.lease(resource_family=RESOURCE_FAMILY, ttl_seconds=600) as lease:
             _update_account_state(email, execution_status="running", active_run_id=run_id)
@@ -1203,19 +1232,20 @@ def _handle_operation_context(context: Any) -> Any:
                         "账号 lease 心跳失败，远端结果必须重新核验",
                     )
 
-            result = _perform_refresh(
-                filename,
-                config_snapshot=snapshot,
-                report=report,
-                checkpoint=checkpoint,
-                post_response_fence=post_response_fence,
-                is_cancel_requested=lambda: bool(context.is_cancel_requested()),
-                mark_settling=lambda: operation_runtime_store.mark_run_settling(run_id),
-                on_remote_dispatch=on_remote_dispatch,
-                on_remote_response=on_remote_response,
-                on_remote_receipt=on_remote_receipt,
-                defer_refresh_marker_clear=True,
-            )
+            with operation_log_context(context, stage="preflight"):
+                result = _perform_refresh(
+                    filename,
+                    config_snapshot=snapshot,
+                    report=report,
+                    checkpoint=checkpoint,
+                    post_response_fence=post_response_fence,
+                    is_cancel_requested=lambda: bool(context.is_cancel_requested()),
+                    mark_settling=lambda: operation_runtime_store.mark_run_settling(run_id),
+                    on_remote_dispatch=on_remote_dispatch,
+                    on_remote_response=on_remote_response,
+                    on_remote_receipt=on_remote_receipt,
+                    defer_refresh_marker_clear=True,
+                )
         _update_account_state(
             email,
             credential_state="valid",

@@ -348,6 +348,45 @@ class WebUIRuntimeTests(unittest.TestCase):
         complete.assert_called_once_with(302, success=True)
         retry.assert_not_called()
 
+    def test_completion_dependency_failed_child_keeps_failure_context(self):
+        dependency = {
+            "id": 303,
+            "parent_source_system": "account_action_tasks",
+            "parent_source_id": "403",
+            "child_source_id": "child-303",
+            "child_status": "failed",
+            "child_result": {
+                "run_id": 1303,
+                "failure_stage": "network",
+                "failure_event_id": 2303,
+                "error": "网络线路申请失败",
+            },
+            "payload": {"remaining_steps": ["plan_check"]},
+        }
+        with (
+            patch.object(runtime.account_task_store, "append_event") as append_event,
+            patch.object(runtime.account_task_store, "finish_task") as finish_task,
+            patch.object(runtime.operation_task_store, "complete_task_dependency") as complete,
+        ):
+            runtime._handle_ready_completion_dependency(dependency)
+
+        append_event.assert_called_once()
+        event_kwargs = append_event.call_args.kwargs
+        self.assertEqual("failed", event_kwargs["state"])
+        self.assertEqual(
+            {
+                "child_status": "failed",
+                "child_task_id": "child-303",
+                "child_run_id": 1303,
+                "failure_stage": "network",
+                "failure_event_id": 2303,
+                "failure_message": "网络线路申请失败",
+            },
+            event_kwargs["detail"],
+        )
+        self.assertEqual("partial_success", finish_task.call_args.kwargs["status"])
+        complete.assert_called_once_with(303, success=True)
+
     def test_completion_setup_is_a_durable_child_before_parent_partial(self):
         class FakeContext:
             run = {

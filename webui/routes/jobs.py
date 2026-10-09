@@ -132,10 +132,20 @@ def create_jobs_blueprint(context: WebUIContext):
             progress_batch_id=progress_batch_id,
         )
         rows = result.get("items") or []
+        progress_rows = result.pop("progress_rows", [])
+        try:
+            snapshots = operation_task_store.get_registration_progress(
+                row["id"] for row in [*rows, *progress_rows] if row.get("id")
+            )
+        except Exception:
+            logger.exception("读取注册任务统一进度失败")
+            snapshots = {}
+        for row in [*rows, *progress_rows]:
+            row.update(snapshots.get(int(row.get("id") or 0), {}))
         for row in rows:
             row["manual_otp_required"] = manual_otp_required
         result["items"] = [_compact_job_for_list(row) for row in rows]
-        result["progress_batch"] = _latest_progress_batch(result.pop("progress_rows", []))
+        result["progress_batch"] = _latest_progress_batch(progress_rows)
         result = _attach_projection_status(result)
         result["compact"] = True
         if not (paged or page_arg is not None or page_size_arg is not None):

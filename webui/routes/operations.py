@@ -232,7 +232,7 @@ def create_operations_blueprint(context: WebUIContext):
             if task.get("error_message"):
                 task["error_info"] = classify_task_error(
                     task.get("error_message"),
-                    stage=str(task.get("current_stage") or ""),
+                    stage=str(task.get("failure_stage") or (task.get("result_summary") or {}).get("failure_stage") or task.get("current_stage") or ""),
                     task_type=str(task.get("task_type") or ""),
                     error_code=str(task.get("error_code") or ""),
                     result_summary=task.get("result_summary"),
@@ -252,7 +252,7 @@ def create_operations_blueprint(context: WebUIContext):
         if task.get("error_message"):
             task["error_info"] = classify_task_error(
                 task.get("error_message"),
-                stage=str(task.get("current_stage") or ""),
+                stage=str(task.get("failure_stage") or (task.get("result_summary") or {}).get("failure_stage") or task.get("current_stage") or ""),
                 task_type=str(task.get("task_type") or ""),
                 error_code=str(task.get("error_code") or ""),
                 result_summary=task.get("result_summary"),
@@ -262,7 +262,7 @@ def create_operations_blueprint(context: WebUIContext):
             if run.get("error_message"):
                 run["error_info"] = classify_task_error(
                     run.get("error_message"),
-                    stage=str(run.get("progress_stage") or ""),
+                    stage=str((run.get("result_summary") or {}).get("failure_stage") or (run.get("data") or {}).get("failure_stage") or run.get("progress_stage") or ""),
                     task_type=str(task.get("task_type") or ""),
                     error_code=str(run.get("error_code") or ""),
                     result_summary=run.get("result_summary"),

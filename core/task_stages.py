@@ -9,19 +9,20 @@ from __future__ import annotations
 from typing import Any
 
 
+FLOW_VERSION = 2
+
+
 STEP_STATES = frozenset({"pending", "running", "success", "skipped", "failed"})
 
-# Wait reasons are deliberately finite so duration reports can be aggregated
-# without parsing driver log prose.  ``unknown`` is explicit rather than an
-# omitted field: a missing reason and a measured non-waiting stage are distinct.
+# 等待原因使用有限枚举，便于聚合时长而无需解析驱动日志文本。
+# ``unknown`` 表示明确未知，区别于缺失原因和已测量的非等待阶段。
 WAIT_REASONS = frozenset({
     "resource_wait", "driver_command", "page_transition", "email_wait",
     "human_delay", "db_write", "projection", "cleanup", "unknown",
 })
 
-# Public event contract consumed by the task-center projection (window E).
-# Every diagnostic event carries the correlation fields and ``event_type``;
-# stage transitions additionally carry state_before/state_after and timing.
+# 任务中心投影消费的公开事件契约（窗口 E）。每个诊断事件都带关联字段和
+# ``event_type``；阶段转移还带 state_before/state_after 与时间信息。
 EVENT_TYPES = frozenset({
     "diagnostic",
     "capture_started", "capture_finished", "stage", "stage_timing",
@@ -49,6 +50,14 @@ STAGE_EVENT_FIELDS = frozenset({
 
 
 STAGES: dict[str, dict[str, str]] = {
+    "authenticate": {"label": "登录与身份验证", "group": "identity"},
+    "set_password": {"label": "设置账号密码", "group": "security"},
+    "set_twofa": {"label": "配置 Authenticator 2FA", "group": "security"},
+    "phone_verify": {"label": "手机验证", "group": "identity"},
+    "credential": {"label": "保存与确认凭证", "group": "codex"},
+    "refresh_dispatch": {"label": "提交 Token 刷新任务", "group": "account"},
+    "codex_dispatch": {"label": "提交 Codex 授权任务", "group": "codex"},
+    "result": {"label": "结果", "group": "system"},
     "queued": {"label": "进入队列", "group": "system"},
     "preflight": {"label": "配置预检", "group": "system"},
     "email": {"label": "准备邮箱", "group": "resource"},
@@ -64,7 +73,9 @@ STAGES: dict[str, dict[str, str]] = {
     "token": {"label": "获取 Token", "group": "account"},
     "oauth": {"label": "Codex 授权", "group": "codex"},
     "auth_url": {"label": "获取授权地址", "group": "codex"},
+    "workspace": {"label": "工作区", "group": "codex"},
     "login": {"label": "登录 OpenAI", "group": "identity"},
+    "login_mfa": {"label": "登录 MFA", "group": "identity"},
     "phone_check": {"label": "检查手机验证", "group": "codex"},
     "phone_acquire": {"label": "申请接码号码", "group": "resource"},
     "phone_otp": {"label": "短信验证", "group": "identity"},
@@ -79,6 +90,18 @@ STAGES: dict[str, dict[str, str]] = {
     "plan_check": {"label": "查询套餐", "group": "account"},
     "access_token": {"label": "校验 Token", "group": "account"},
     "refresh_token": {"label": "刷新 Token", "group": "account"},
+    "account_setup_dispatch": {"label": "提交账号配置任务", "group": "account"},
+    "account_setup": {"label": "执行账号配置", "group": "account"},
+    "dispatch": {"label": "提交独立子任务", "group": "system"},
+    "password_checkpoint": {"label": "保存密码检查点", "group": "security"},
+    "password_reset": {"label": "重置账号密码", "group": "security"},
+    "password_reset_otp": {"label": "验证密码重置邮件", "group": "identity"},
+    "change_email": {"label": "换绑邮箱", "group": "identity"},
+    "change_email_begin": {"label": "发起邮箱换绑", "group": "identity"},
+    "change_email_verify": {"label": "确认新邮箱", "group": "identity"},
+    "new_email_otp": {"label": "验证新邮箱验证码", "group": "identity"},
+    "recent_login": {"label": "登录重认证", "group": "identity"},
+    "writeback": {"label": "保存换绑结果", "group": "account"},
     "extract_link": {"label": "提炼", "group": "account"},
     "mailbox_scan": {"label": "扫描邮件", "group": "account"},
     "complete": {"label": "完成", "group": "system"},
@@ -89,39 +112,86 @@ ALIASES = {
     "running": "queued",
     "network_route": "network",
     "driver": "browser",
-    "account_setup": "twofa",
     "reauth": "login_password",
     "roxy_fallback": "browser",
     "plan_request": "plan_check",
 }
 
+_FLOW = dict[str, tuple[dict[str, Any], ...]]
+
+
+def _step(step_id: str, label: str, group: str, *raw_stages: str) -> dict[str, Any]:
+    """构建一个规范业务步骤。
+
+    模板保留 ``raw_stages``，因为一个业务步骤可能对应多个 raw stage，
+    后续投影仍需显示实际发生的具体阶段。
+    """
+    raw_values = list(raw_stages or (step_id,))
+    return {
+        "id": step_id,
+        "step_id": step_id,
+        "key": "complete" if step_id == "result" else raw_values[0],  # 兼容旧版 flow_for() 返回值
+        "label": label,
+        "group": group,
+        "raw_stages": raw_values,
+    }
+
+
+def _result() -> dict[str, Any]:
+    return _step("result", "结果", "system", "complete", "interrupted", "cancelling")
+
+
+def _flow(*steps: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+    return (*steps, _result())
+
+
+def _s(step_id: str, *raw: str) -> dict[str, Any]:
+    info = STAGES.get(step_id, {})
+    return _step(step_id, info.get("label", step_id), info.get("group", "other"), *(raw or (step_id,)))
+
+
+# 这里是唯一模板源。即使执行器新增 raw stage，也保持业务 ID 稳定；
+# 列表覆盖 operation 层当前发出的全部任务类型，包括此前缺失的两个 change 变体。
+TASK_TEMPLATES: _FLOW = {
+    "registration": _flow(
+        _s("network"), _s("email"), _s("browser"), _s("authenticate", "page", "submit_email", "auth_redirect", "login", "login_password", "email_otp"),
+        _s("profile"), _s("token"), _s("codex", "codex", "oauth"), _s("set_twofa", "twofa", "twofa_result"), _s("plan_check"),
+    ),
+    "registration_resume": _flow(
+        _s("network"), _step("email", "复用账号邮箱", "resource", "email"), _s("browser"), _s("authenticate", "login", "login_password", "email_otp"), _s("profile"), _s("token"),
+        _s("codex", "codex", "oauth"), _s("set_twofa", "twofa", "twofa_result"), _s("plan_check"),
+    ),
+    "codex_retry": _flow(
+        _s("preflight"), _s("network"), _s("browser"), _s("auth_url"),
+        _s("authenticate", "login", "login_password", "login_mfa", "email_otp", "mfa_challenge"),
+        _s("workspace"), _s("phone_verify", "phone_check", "phone_acquire", "phone_otp"),
+        _s("consent"), _s("callback"), _s("credential", "credential_confirm", "credential_persist"),
+    ),
+    "twofa_retry": _flow(_s("network"), _s("browser"), _s("authenticate", "login", "login_password", "email_otp", "mfa_challenge"), _s("set_twofa", "twofa", "twofa_result"), _s("plan_check")),
+    "account_setup_retry": _flow(_s("network"), _s("plan_check"), _s("browser"), _s("authenticate", "login", "email_otp", "mfa_challenge"), _s("set_password", "login_password", "password_reset", "password_reset_otp", "password_checkpoint"), _s("set_twofa", "twofa", "twofa_result")),
+    "password_setup": _flow(_s("network"), _s("browser"), _s("authenticate", "login", "email_otp", "mfa_challenge"), _s("set_password", "login_password", "password_reset", "password_reset_otp", "password_checkpoint")),
+    "password_change": _flow(_s("network"), _s("browser"), _s("authenticate", "login", "email_otp", "mfa_challenge"), _s("set_password", "login_password", "password_reset", "password_reset_otp", "password_checkpoint")),
+    "twofa_setup": _flow(_s("network"), _s("set_twofa", "twofa", "twofa_result")),
+    "twofa_change": _flow(_s("network"), _s("browser"), _s("authenticate", "login", "email_otp", "mfa_challenge"), _s("set_twofa", "twofa", "twofa_result")),
+    "account_completion": _flow(
+        _s("plan"), _s("refresh_dispatch", "refresh_token", "dispatch"), _s("account_setup_dispatch", "account_setup"), _s("network"), _s("plan_check"), _s("browser"),
+        _s("authenticate", "login", "login_password", "email_otp", "mfa_challenge"), _s("set_password", "password_reset", "password_checkpoint"),
+        _s("set_twofa", "twofa", "twofa_result"), _s("codex_dispatch", "codex", "oauth", "dispatch"),
+    ),
+    "live_check": _flow(_s("preflight"), _s("network"), _s("access_token")),
+    "token_refresh": _flow(_s("preflight"), _s("network"), _s("authenticate", "login", "login_password", "login_mfa", "email_otp", "mfa_challenge"), _s("refresh_token"), _s("token")),
+    "codex_token_refresh": _flow(_s("preflight"), _s("refresh_token"), _s("credential", "credential_confirm", "credential_persist")),
+    "plan_check": _flow(_s("preflight"), _s("network"), _s("plan_check")),
+    "deactivation_mail": _flow(_s("preflight"), _s("mailbox_scan")),
+    "extract_link": _flow(_s("preflight"), _s("access_token"), _s("refresh_token"), _s("extract_link")),
+    "email_change": _flow(_s("email"), _s("network"), _s("login_password", "login_password", "reauth", "recent_login"), _s("email_otp", "email_otp", "new_email_otp"), _s("submit_email", "submit_email", "change_email", "change_email_begin", "change_email_verify", "writeback")),
+}
+
+# 公开兼容视图仍保留 raw stage 元组，供只需要旧诊断词汇的调用方使用；
+# 新投影统一读取模板。
 TASK_FLOWS: dict[str, tuple[str, ...]] = {
-    "registration": (
-        "network", "email", "browser", "page", "submit_email", "auth_redirect",
-        "login_password", "email_otp", "profile", "token", "codex", "twofa",
-        "plan_check", "complete",
-    ),
-    "registration_resume": (
-        "network", "browser", "login_password", "email_otp", "profile", "token",
-        "codex", "twofa", "plan_check", "complete",
-    ),
-    "codex_retry": (
-        "preflight", "network", "browser", "auth_url", "login", "email_otp",
-        "phone_check", "phone_acquire", "phone_otp", "consent", "callback",
-        "credential_confirm", "credential_persist", "complete",
-    ),
-    "twofa_retry": ("network", "browser", "login_password", "twofa", "plan_check", "complete"),
-    "account_setup_retry": ("network", "plan_check", "browser", "login_password", "twofa", "complete"),
-    "password_setup": ("network", "browser", "login_password", "complete"),
-    "twofa_setup": ("network", "twofa", "complete"),
-    "account_completion": ("plan", "refresh_token", "network", "plan_check", "browser", "login_password", "twofa", "codex", "complete"),
-    "live_check": ("network", "access_token", "complete"),
-    "token_refresh": ("network", "login_password", "mfa_challenge", "email_otp", "token", "complete"),
-    "codex_token_refresh": ("refresh_token", "complete"),
-    "plan_check": ("network", "plan_check", "complete"),
-    "deactivation_mail": ("mailbox_scan", "complete"),
-    "extract_link": ("preflight", "access_token", "refresh_token", "extract_link", "complete"),
-    "email_change": ("email", "network", "login_password", "email_otp", "submit_email", "complete"),
+    task_type: tuple(raw for step in flow for raw in step["raw_stages"])
+    for task_type, flow in TASK_TEMPLATES.items()
 }
 
 
@@ -146,13 +216,111 @@ def stage_label(stage: Any) -> str:
     return STAGES.get(key, {}).get("label") or key
 
 
-def flow_for(task_type: Any) -> list[dict[str, str]]:
-    keys = TASK_FLOWS.get(str(task_type or "").strip().lower(), ("queued", "complete"))
-    return [
-        {
-            "key": key,
-            "label": stage_label(key),
-            "group": STAGES.get(key, {}).get("group", "other"),
-        }
-        for key in keys
-    ]
+def flow_for(task_type: Any, run: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """返回任务的规范 v2 业务模板。
+
+    只有 run summary 明确提供计划子集时才过滤计划项；实际观测到的 raw
+    stage 不在这里丢弃，投影层会追加动态节点，避免执行器更新抹掉证据。
+    """
+    task_key = str(task_type or "").strip().lower()
+    flow = TASK_TEMPLATES.get(task_key, _flow())
+    summary_value = (run or {}).get("result_summary")
+    result_summary = summary_value if isinstance(summary_value, dict) else {}
+    planned_value = result_summary.get("planned_steps")
+    planned_steps = planned_value if isinstance(planned_value, (list, tuple)) else []
+    planned = {str(value).strip().lower() for value in planned_steps if str(value).strip()}
+    if not planned or task_key not in {"password_setup", "password_change", "twofa_setup", "twofa_change", "twofa_retry", "account_setup_retry", "account_completion"}:
+        return [dict(item, raw_stages=list(item["raw_stages"])) for item in flow]
+    allowed = set()
+    # planned_steps 使用 operation 层名称而非 UI ID；在此做兼容翻译，
+    # 保证模板和投影共用一套定义，明确收窄的计划不会重新展示全部分支。
+    if task_key in {"password_setup", "password_change"}:
+        allowed = {"network", "browser", "authenticate", "set_password"}
+    elif task_key in {"twofa_setup", "twofa_change", "twofa_retry", "account_setup_retry"}:
+        allowed = {"network"}
+        if "plan_check" in planned:
+            allowed.add("plan_check")
+        if "password" in planned:
+            allowed |= {"browser", "authenticate", "set_password"}
+        if "twofa" in planned:
+            allowed |= {"browser", "authenticate", "set_twofa"}
+        # 没有计划详情时使用规范形状；有计划详情时，省略项表示明确跳过。
+    elif task_key == "account_completion":
+        allowed = {"plan"}
+        if "refresh_at" in planned:
+            allowed.add("refresh_dispatch")
+        if "account_setup" in planned:
+            allowed.add("account_setup_dispatch")
+        if "plan_check" in planned:
+            allowed |= {"network", "plan_check"}
+        if "password" in planned:
+            allowed |= {"browser", "authenticate", "set_password"}
+        if "twofa" in planned:
+            allowed |= {"set_twofa"}
+        if "codex" in planned:
+            allowed.add("codex_dispatch")
+    return [dict(item, raw_stages=list(item["raw_stages"])) for item in flow if item["id"] in allowed or item["id"] == "result"]
+
+
+def step_for_raw_stage(task_type: Any, raw_stage: Any, run: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """将执行器阶段解析为共享业务步骤描述。
+
+    函数无副作用，operation 写入方和日志补全可与进度投影使用同一映射。
+    未知阶段返回 ``None``，由投影层创建动态节点，不会静默归入邻近阶段。
+    """
+    raw = normalize_stage(raw_stage)
+    for item in flow_for(task_type, run):
+        if raw in {normalize_stage(value) for value in item.get("raw_stages", [])}:
+            return item
+    return None
+
+
+def business_step_id(task_type: Any, raw_stage: Any, run: dict[str, Any] | None = None) -> str | None:
+    """返回已知 raw stage 对应的稳定业务 ID。"""
+    item = step_for_raw_stage(task_type, raw_stage, run)
+    return item.get("id") if item else None
+
+
+def resolve_step(task_type: Any, stage: Any, detail: dict[str, Any] | None = None, run: dict[str, Any] | None = None) -> str | None:
+    """将 raw event 解析为稳定的顶层业务步骤 ID。
+
+    worker 已发出稳定 ID 时优先使用 ``detail.step_id``；其余兼容别名与
+    读侧投影一致。未知阶段返回 ``None``，调用方可保留为动态节点。
+    """
+    detail_value = detail if isinstance(detail, dict) else {}
+    task_key = str(task_type or "").strip().lower()
+    explicit = str(detail_value.get("main_step_id") or detail_value.get("step_id") or "").strip()
+    known = {item["id"] for item in flow_for(task_key, run)}
+    if explicit in known:
+        return explicit
+    raw = normalize_stage(stage)
+    if raw in known:
+        return raw
+    item = step_for_raw_stage(task_key, raw, run)
+    if item:
+        return item["id"]
+    aliases = {
+        "page": "authenticate", "submit_email": "authenticate", "auth_redirect": "authenticate",
+        "oauth": "codex", "phone_check": "phone_verify", "phone_acquire": "phone_verify",
+        "phone_otp": "phone_verify", "credential_confirm": "credential", "credential_persist": "credential",
+        "change_email": "submit_email", "change_email_begin": "submit_email", "change_email_verify": "submit_email",
+        "writeback": "submit_email", "reauth": "login_password", "proxy": "network",
+        "mailbox": "email", "email_prepare": "email", "dispatch": "refresh_dispatch",
+    }
+    mapped = aliases.get(raw)
+    if mapped in known:
+        return mapped
+    if raw == "account_setup":
+        if "account_setup_dispatch" in known:
+            return "account_setup_dispatch"
+        if "set_twofa" in known:
+            return "set_twofa"
+    if raw in {"login", "login_password", "login_mfa", "email_otp", "mfa_challenge", "password_reset", "password_reset_otp", "token"}:
+        for candidate in ("authenticate", "login_password", "set_password"):
+            if candidate in known:
+                return candidate
+    if raw == "browser" and "set_twofa" in known and "browser" not in known:
+        return "set_twofa"
+    if raw in {"complete", "interrupted", "cancelling"} and "result" in known:
+        return "result"
+    return None

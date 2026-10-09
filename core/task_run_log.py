@@ -9,6 +9,8 @@ import re
 import sys
 import tempfile
 import threading
+import contextvars
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -60,6 +62,71 @@ _CLIENT_AUTH_SESSION_RE = re.compile(
     r"\"?oai[-_ ]client[-_ ]auth[-_ ]session\"?\s*[:=：]\s*.*$",
     re.IGNORECASE | re.DOTALL,
 )
+
+
+# ContextVar 按线程/异步上下文隔离。日志 handler 只把它作为当前执行边界的
+# 覆盖值读取，因此线程池复用时不会把上一个任务的阶段带进下一个任务。
+_CURRENT_CONTEXT: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "task_run_log_context", default=None
+)
+
+
+def current_context() -> dict[str, Any]:
+    """返回当前任务日志上下文的副本，避免调用方修改 ContextVar 内部值。"""
+    value = _CURRENT_CONTEXT.get()
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def clear_current_context() -> None:
+    """清理当前 worker 的日志上下文，在线程池任务收口时调用。"""
+    _CURRENT_CONTEXT.set(None)
+
+
+def set_current_stage(
+    stage: str,
+    task_id: int | None = None,
+    run_id: int | None = None,
+    **metadata: Any,
+):
+    """设置当前执行上下文的阶段及可选关联字段。
+
+    返回 ContextVar token，调用方若建立了临时 scope 应在结束时 reset；长期任务
+    worker 也可以直接连续调用本函数推进阶段。未传入的关联字段会沿用当前值，
+    这样数据库阶段更新不会清掉 native Run 已建立的 ``run_id``。
+    """
+    value = current_context()
+    next_stage = str(stage or "event")[:80]
+    changed_task = task_id is not None and value.get("task_id") is not None and int(value["task_id"]) != int(task_id)
+    changed_run = run_id is not None and value.get("run_id") is not None and int(value["run_id"]) != int(run_id)
+    if value.get("stage") != next_stage or changed_task or changed_run:
+        for key in ("event_id", "event_uuid", "source_event_id", "source_system", "main_step_id"):
+            value.pop(key, None)
+    if changed_task and run_id is None:
+        value.pop("run_id", None)
+    value["stage"] = next_stage
+    if task_id is not None:
+        value["task_id"] = int(task_id)
+    if run_id is not None:
+        value["run_id"] = int(run_id)
+    for key in ("event_id", "event_uuid", "source_event_id", "source_system", "main_step_id"):
+        if metadata.get(key) is not None:
+            value[key] = metadata[key]
+    return _CURRENT_CONTEXT.set(value)
+
+
+@contextmanager
+def stage_context(
+    stage: str,
+    task_id: int | None = None,
+    run_id: int | None = None,
+    **metadata: Any,
+):
+    """在一个受控 scope 内使用阶段上下文，退出时恢复外层上下文。"""
+    token = set_current_stage(stage, task_id=task_id, run_id=run_id, **metadata)
+    try:
+        yield current_context()
+    finally:
+        _CURRENT_CONTEXT.reset(token)
 
 
 def _safe_component(value: Any) -> str:
@@ -151,10 +218,15 @@ def append(
     message: str,
     task_id: int | None = None,
     run_id: int | None = None,
-    stage: str = "event",
+    stage: str | None = None,
     event_type: str = "note.info",
     fields: dict | None = None,
     created_at: datetime | str | None = None,
+    event_id: int | str | None = None,
+    event_uuid: str | None = None,
+    source_event_id: int | str | None = None,
+    source_system: str | None = None,
+    main_step_id: int | str | None = None,
 ) -> bool:
     """Append one redacted JSONL record; logging failure never changes task result."""
     if not log_file:
@@ -165,16 +237,36 @@ def append(
             ts = created_at.astimezone(timezone.utc).isoformat()
         else:
             ts = str(created_at or datetime.now(timezone.utc).isoformat())
+        context = current_context()
+        effective_task_id = task_id if task_id is not None else context.get("task_id")
+        effective_run_id = run_id if run_id is not None else context.get("run_id")
+        effective_stage = stage if stage is not None else context.get("stage")
+        inherit_event = (
+            effective_stage == context.get("stage")
+            and effective_task_id == context.get("task_id")
+            and effective_run_id == context.get("run_id")
+            and (event_uuid is None or event_uuid == context.get("event_uuid"))
+        )
+        event_context = context if inherit_event else {}
         record = {
             "ts": ts,
             "level": str(level or "INFO").upper()[:16],
-            "task_id": int(task_id) if task_id is not None else None,
-            "run_id": int(run_id) if run_id is not None else None,
-            "stage": str(stage or "event")[:80],
+            "task_id": int(effective_task_id) if effective_task_id is not None else None,
+            "run_id": int(effective_run_id) if effective_run_id is not None else None,
+            "stage": str(effective_stage or "event")[:80],
             "event_type": str(event_type or "note.info")[:120],
             "message": redact_text(message, 4000),
             "fields": scrub(fields or {}),
         }
+        for key, value in (
+            ("event_id", event_id if event_id is not None else event_context.get("event_id")),
+            ("event_uuid", event_uuid if event_uuid is not None else event_context.get("event_uuid")),
+            ("source_event_id", source_event_id if source_event_id is not None else event_context.get("source_event_id")),
+            ("source_system", source_system if source_system is not None else event_context.get("source_system")),
+            ("main_step_id", main_step_id if main_step_id is not None else event_context.get("main_step_id")),
+        ):
+            if value is not None:
+                record[key] = scrub(value)
         line = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
         with _LOCK:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -207,13 +299,18 @@ class TaskRunLogHandler(logging.Handler):
             message = record.getMessage()
             if record.exc_info:
                 message = f"{message}\n{logging.Formatter().formatException(record.exc_info)}"
+            context = current_context()
+            if self.task_id is not None and context.get("task_id") not in (None, self.task_id):
+                return
+            if self.run_id is not None and context.get("run_id") not in (None, self.run_id):
+                return
             append(
                 self.log_file,
                 level=record.levelname,
                 message=message,
-                task_id=self.task_id,
-                run_id=self.run_id,
-                stage=self.stage,
+                task_id=context.get("task_id", self.task_id),
+                run_id=context.get("run_id", self.run_id),
+                stage=context.get("stage") or self.stage,
                 event_type="log.record",
                 fields={"logger": record.name, "thread": record.threadName},
                 created_at=datetime.fromtimestamp(record.created, tz=timezone.utc),

@@ -299,7 +299,18 @@ class OperationTaskReporter:
         self.run_id = int(run_id)
 
     def report(self, **event: Any) -> dict:
-        return _operation().append_runtime_event(self.run_id, **event)
+        from core import task_run_log
+
+        task_run_log.set_current_stage(str(event.get("stage") or "event"), run_id=self.run_id)
+        persisted = _operation().append_runtime_event(self.run_id, **event)
+        if isinstance(persisted, dict):
+            task_run_log.set_current_stage(
+                str(event.get("stage") or "event"),
+                task_id=persisted.get("task_id"), run_id=self.run_id,
+                event_id=persisted.get("id"), event_uuid=persisted.get("event_uuid"),
+                source_system=persisted.get("source_system"),
+            )
+        return persisted
 
     def stage(self, stage: str, state: str, message: str, **kwargs: Any) -> dict:
         return self.report(stage=stage, state=state, message=message, **kwargs)
@@ -1044,107 +1055,109 @@ def _execute_operation_handler(task_type: str, run_id: int) -> dict[str, Any]:
     if not claimed:
         return {"status": "not_claimed", "run_id": int(run_id)}
     context = OperationHandlerContext(claimed, execution_id=execution_id)
-    try:
-        with operation_context(context.cancellation, reporter=context.report):
-            context.checkpoint()
-            returned = handler(context)
-        if not context.finished:
-            if returned is None:
-                raise RuntimeError("durable operation handler 未报告 terminal result")
-            context.finish(returned)
-        if context.last_result is not None:
-            result = context.last_result
-        elif returned is not None:
-            result = _coerce_operation_result(returned, status="failed", message="")
-        else:
-            result = OperationResult.failed("durable operation handler 未报告 terminal result")
-        return _operation_handler_result_payload(
-            context, result,
-            database_status="attention_required" if result.status == "request_unknown" else result.status,
-        )
-    except OperationLeaseUnavailable as exc:
-        if context.is_cancel_requested(force=True):
-            result = OperationResult.cancelled("任务在取得账号 lease 前收到取消请求")
+    from core.account_operation_executor import operation_log_context
+
+    with operation_log_context(context):
+        try:
+            with operation_context(context.cancellation, reporter=context.report):
+                context.checkpoint()
+                returned = handler(context)
+            if not context.finished:
+                if returned is None:
+                    raise RuntimeError("durable operation handler 未报告 terminal result")
+                context.finish(returned)
+            if context.last_result is not None:
+                result = context.last_result
+            elif returned is not None:
+                result = _coerce_operation_result(returned, status="failed", message="")
+            else:
+                result = OperationResult.failed("durable operation handler 未报告 terminal result")
+            return _operation_handler_result_payload(
+                context, result,
+                database_status="attention_required" if result.status == "request_unknown" else result.status,
+            )
+        except OperationLeaseUnavailable as exc:
+            if context.is_cancel_requested(force=True):
+                result = OperationResult.cancelled("任务在取得账号 lease 前收到取消请求")
+                if not context.finished:
+                    context.finish(result)
+                return _operation_handler_result_payload(context, result)
+            requeued = _operation().requeue_claimed_run(
+                context.run_id,
+                execution_id=execution_id,
+                reason=str(exc),
+                delay_seconds=1.0,
+            )
+            if requeued:
+                notify_dispatch()
+            return {
+                "status": "deferred" if requeued else "not_claimed",
+                "run_id": context.run_id,
+                "task_id": context.task_id,
+                "reason": str(exc),
+            }
+        except OperationAccountDeactivated as exc:
+            result = OperationResult(
+                "deactivated",
+                {
+                    "status": "deactivated",
+                    "requested_status": "deactivated",
+                    "reason": "account_deactivated",
+                    "execution_id": execution_id,
+                },
+                str(exc) or "账号已废号，任务未执行",
+                str(exc) or "账号已废号，任务未执行",
+            )
             if not context.finished:
                 context.finish(result)
             return _operation_handler_result_payload(context, result)
-        requeued = _operation().requeue_claimed_run(
-            context.run_id,
-            execution_id=execution_id,
-            reason=str(exc),
-            delay_seconds=1.0,
-        )
-        if requeued:
-            notify_dispatch()
-        return {
-            "status": "deferred" if requeued else "not_claimed",
-            "run_id": context.run_id,
-            "task_id": context.task_id,
-            "reason": str(exc),
-        }
-    except OperationAccountDeactivated as exc:
-        result = OperationResult(
-            "deactivated",
-            {
-                "status": "deactivated",
-                "requested_status": "deactivated",
-                "reason": "account_deactivated",
-                "execution_id": execution_id,
-            },
-            str(exc) or "账号已废号，任务未执行",
-            str(exc) or "账号已废号，任务未执行",
-        )
-        if not context.finished:
-            context.finish(result)
-        return _operation_handler_result_payload(context, result)
-    except OperationLeaseLost as exc:
-        # A lost lease can mean that a remote write was accepted. Never
-        # requeue this run; preserve the attempt for reconciliation instead.
-        context.release_lease()
-        result = OperationResult.request_unknown(
-            "账号 lease 心跳失败，远端结果待核验",
-            {"lease_lost": True, "error": str(exc), "execution_id": execution_id},
-        )
-        try:
+        except OperationLeaseLost as exc:
+            # A lost lease can mean that a remote write was accepted. Never
+            # requeue this run; preserve the attempt for reconciliation instead.
+            context.release_lease()
+            result = OperationResult.request_unknown(
+                "账号 lease 心跳失败，远端结果待核验",
+                {"lease_lost": True, "error": str(exc), "execution_id": execution_id},
+            )
+            try:
+                if not context.finished:
+                    context.finish(result)
+            except PermissionError:
+                logger.error("写入 lease 丢失的 request_unknown 结果被 fence 拒绝：run_id=%s", run_id)
+                return {
+                    "status": "fenced",
+                    "run_id": context.run_id,
+                    "task_id": context.task_id,
+                    "reason": str(exc),
+                }
+            return _operation_handler_result_payload(context, result)
+        except OperationCancelled as exc:
+            result = OperationResult.cancelled(str(exc) or "任务已在安全检查点取消")
             if not context.finished:
                 context.finish(result)
-        except PermissionError:
-            logger.error("写入 lease 丢失的 request_unknown 结果被 fence 拒绝：run_id=%s", run_id)
+            return _operation_handler_result_payload(context, result)
+        except PermissionError as exc:
+            # A terminal write can race with lease expiry/recovery.  Keep this
+            # worker from reporting a misleading failure or touching a newer
+            # execution; the fenced row remains available for reconciliation.
+            logger.warning(
+                "durable operation result 被 execution/lease fence 拒绝：task_type=%s run_id=%s",
+                task_type, run_id,
+            )
             return {
                 "status": "fenced",
                 "run_id": context.run_id,
                 "task_id": context.task_id,
                 "reason": str(exc),
             }
-        return _operation_handler_result_payload(context, result)
-    except OperationCancelled as exc:
-        result = OperationResult.cancelled(str(exc) or "任务已在安全检查点取消")
-        if not context.finished:
-            context.finish(result)
-        return _operation_handler_result_payload(context, result)
-    except PermissionError as exc:
-        # A terminal write can race with lease expiry/recovery.  Keep this
-        # worker from reporting a misleading failure or touching a newer
-        # execution; the fenced row remains available for reconciliation.
-        logger.warning(
-            "durable operation result 被 execution/lease fence 拒绝：task_type=%s run_id=%s",
-            task_type, run_id,
-        )
-        return {
-            "status": "fenced",
-            "run_id": context.run_id,
-            "task_id": context.task_id,
-            "reason": str(exc),
-        }
-    except Exception as exc:
-        logger.exception("durable operation handler 执行失败：task_type=%s run_id=%s", task_type, run_id)
-        result = OperationResult.failed(f"{type(exc).__name__}: {exc}")
-        if not context.finished:
-            context.finish(result)
-        return _operation_handler_result_payload(context, result)
-    finally:
-        context.release_lease()
-
+        except Exception as exc:
+            logger.exception("durable operation handler 执行失败：task_type=%s run_id=%s", task_type, run_id)
+            result = OperationResult.failed(f"{type(exc).__name__}: {exc}")
+            if not context.finished:
+                context.finish(result)
+            return _operation_handler_result_payload(context, result)
+        finally:
+            context.release_lease()
 
 def init() -> None:
     return _legacy().init()

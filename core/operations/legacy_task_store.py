@@ -280,13 +280,20 @@ def create_task(*, task_type: str, account_id: int | None, email: str, trigger: 
         task_id = int(cur.fetchone()["id"])
         cur.execute(
             f"INSERT INTO {events} (task_id, created_at, level, stage, message, detail, event_type) "
-            "VALUES (%s, %s, 'INFO', 'queued', %s, '{}'::jsonb, 'run.queued')",
+            "VALUES (%s, %s, 'INFO', 'queued', %s, '{}'::jsonb, 'run.queued') RETURNING id",
             (task_id, now, "任务已加入队列"),
         )
+        source_event_id = int(cur.fetchone()["id"])
         _refresh_batch(cur, batch_id)
     task_run_log.append(
         log_file, level="INFO", message="任务已加入队列", task_id=task_id,
         stage="queued", event_type="run.queued", created_at=now,
+        event_uuid=uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"turb-console:event:account_action_events:{source_event_id}",
+        ).hex,
+        source_event_id=source_event_id,
+        source_system="account_action_events",
     )
     _sync_operation_task(task_id)
     return task_id
@@ -335,14 +342,17 @@ def append_event(
         cur.execute(
             f"INSERT INTO {_table('account_action_events')} "
             "(task_id, created_at, level, stage, message, detail, event_type, visibility) "
-            "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s)",
+            "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s) RETURNING id",
             (int(task_id), _now(), level_value, str(stage or "event")[:80],
              _redact_text(message, 1200), _json(clean_detail), event_type_value[:120], visibility_value),
         )
+        source_event_id = int(cur.fetchone()["id"])
         log_file = task.get("log_file")
     task_run_log.append(
         log_file, level=level_value, message=message, task_id=int(task_id),
         stage=str(stage or "event"), event_type=event_type_value, fields=clean_detail,
+        event_uuid=uuid.uuid5(uuid.NAMESPACE_URL, f"turb-console:event:account_action_events:{source_event_id}").hex,
+        source_event_id=source_event_id, source_system="account_action_events",
     )
     _sync_operation_task(int(task_id))
 
@@ -362,14 +372,21 @@ def start_task(task_id: int | None, *, message: str = "开始执行") -> None:
         cur.execute(f"UPDATE {tasks} SET status='running', started_at=%s WHERE id=%s", (now, int(task_id)))
         cur.execute(
             f"INSERT INTO {events} (task_id, created_at, level, stage, message, detail, event_type) "
-            "VALUES (%s, %s, 'INFO', 'queued', %s, '{}'::jsonb, 'run.running')",
+            "VALUES (%s, %s, 'INFO', 'queued', %s, '{}'::jsonb, 'run.running') RETURNING id",
             (int(task_id), now, _redact_text(message, 1200)),
         )
+        source_event_id = int(cur.fetchone()["id"])
         _refresh_batch(cur, row["batch_id"])
         log_file = row.get("log_file")
     task_run_log.append(
         log_file, level="INFO", message=message, task_id=int(task_id),
         stage="queued", event_type="run.running", created_at=now,
+        event_uuid=uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"turb-console:event:account_action_events:{source_event_id}",
+        ).hex,
+        source_event_id=source_event_id,
+        source_system="account_action_events",
     )
     _sync_operation_task(int(task_id))
 
@@ -416,10 +433,11 @@ def finish_task(task_id: int | None, *, status: str, message: str, error: str | 
         )
         cur.execute(
             f"INSERT INTO {events} (task_id, created_at, level, stage, message, detail, event_type) "
-            "VALUES (%s, %s, %s, 'complete', %s, %s::jsonb, %s)",
+            "VALUES (%s, %s, %s, 'complete', %s, %s::jsonb, %s) RETURNING id",
             (int(task_id), now, "ERROR" if final_status in {"failed", "interrupted"} else "INFO",
              _redact_text(message, 1200), _json(result_summary), f"run.{final_status}"),
         )
+        source_event_id = int(cur.fetchone()["id"])
         _refresh_batch(cur, row["batch_id"])
         log_file = row.get("log_file")
     task_run_log.append(
@@ -431,6 +449,12 @@ def finish_task(task_id: int | None, *, status: str, message: str, error: str | 
         event_type=f"run.{final_status}",
         fields=result_summary or {},
         created_at=now,
+        event_uuid=uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"turb-console:event:account_action_events:{source_event_id}",
+        ).hex,
+        source_event_id=source_event_id,
+        source_system="account_action_events",
     )
     _sync_operation_task(int(task_id))
 

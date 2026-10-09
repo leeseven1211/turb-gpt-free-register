@@ -528,7 +528,7 @@ class OperationTaskStoreTests(PostgresTestCase):
             ["network", "browser", "authenticate", "set_password", "result"],
             [item["id"] for item in snapshot["main_steps"]],
         )
-        self.assertEqual("authenticate", snapshot["current"]["step_id"])
+        self.assertEqual("set_password", snapshot["current"]["step_id"])
         self.assertEqual([], detail.get_json()["task"]["events"])
         self.assertEqual(200, timeline.status_code)
         self.assertEqual(1, len(timeline.get_json()["items"]))

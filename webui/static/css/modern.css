@@ -225,8 +225,7 @@
     #accountTaskLogPanel > h3,
     #accountTaskLogPanel > .task-error-summary,
     #accountTaskLogPanel > .account-task-detail-toolbar,
-    #accountTaskLogPanel > .account-task-stage-progress,
-    #accountTaskLogPanel > .account-task-detail-tabs { flex:0 0 auto; }
+        #accountTaskLogPanel > .account-task-detail-tabs { flex:0 0 auto; }
     #qrPanel img { display:block; max-width:min(360px, calc(100vw - 96px)); max-height:420px; margin:12px auto; border:1px solid var(--line); border-radius:10px; background:#fff; }
     #qrPanel .qr-link { display:block; word-break:break-all; white-space:normal; font-size:12px; color:var(--muted); margin-top:8px; }
     .hidden { display: none !important; }
@@ -995,13 +994,12 @@
     .batch-progress-v2-step-duration.is-legacy { color: #ad6b1d; font-size: 10px; }
     .batch-progress-v2-steps {
       display: grid;
-      grid-template-columns: repeat(var(--batch-progress-step-count, 1), minmax(64px, 1fr));
-      min-width: 768px; overflow: visible;
+      grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap:8px;
+      min-width: 0; overflow: visible;
     }
-    .batch-progress-v2-step { position: relative; text-align: center; color: #a6abb2; }
+    .batch-progress-v2-step { position: relative; padding:8px; text-align: center; color: #697586; }
     .batch-progress-v2-step::before {
-      content: ""; position: absolute; z-index: 0; top: 14px; left: -50%;
-      width: 100%; height: 2px; background: #e4e8eb;
+      content:none;
     }
     .batch-progress-v2-step:first-child::before { display: none; }
     .batch-progress-v2-step.is-reached::before { background: #25bd96; }
@@ -1028,8 +1026,25 @@
     }
     .batch-progress-v2-step-label {
       display: block; margin-top: 7px; color: inherit; font-size: 11px; line-height: 1.3;
-      white-space: nowrap;
+      white-space:normal; overflow-wrap:anywhere;
     }
+    .batch-progress-v2-step[role="button"] { min-height: 64px; border:1px solid #e4e8eb; border-radius:7px; background:#fff; cursor: pointer; font: inherit; outline: none; }
+    .batch-progress-v2-step[role="button"]:hover { background: #f3faf8; }
+    .batch-progress-v2-step[role="button"]:focus-visible { box-shadow: 0 0 0 3px rgba(55,125,255,.28); }
+    .batch-progress-v2-step-state { display: block; margin-top: 2px; color: #697586; font-size: 9px; font-weight: 550; }
+    .batch-progress-v2-step-detail { margin: 4px auto 0; max-width: 190px; color: #64748b; font-size: 9px; font-weight: 500; line-height: 1.35; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+    .batch-progress-v2-step-detail summary { cursor: pointer; color: #526071; text-align: center; }
+    .batch-progress-v2-step-detail pre { margin: 4px 0 0; max-height: 140px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .batch-progress-v2-observation-note { margin: 0 0 7px; color: #697586; font-size: 10px; line-height: 1.4; }
+    .batch-progress-v2-step.is-unconfirmed,
+    .batch-progress-v2-step.is-request_unknown,
+    .batch-progress-v2-step.is-attention_required { color: #9a6500; }
+    .batch-progress-v2-step.is-not_executed .batch-progress-v2-node { border-style: dashed; }
+    .batch-progress-v2-step.is-unconfirmed .batch-progress-v2-node,
+    .batch-progress-v2-step.is-request_unknown .batch-progress-v2-node,
+    .batch-progress-v2-step.is-attention_required .batch-progress-v2-node { border-color: #d89b2b; background: #fff4d6; color: #8b5e00; }
+    .batch-progress-v2-step.is-not_executed,
+    .batch-progress-v2-step.is-pending { color: #7d848d; }
     .batch-progress-v2-step-duration { display: block; margin-top: 2px; color: #a0a7b0; font-size: 9px; font-weight: 600; }
     .batch-progress-v2-step.is-running .batch-progress-v2-step-duration { color: #6e9df3; }
     .batch-progress-v2-step.is-failed .batch-progress-v2-step-duration,
@@ -1039,6 +1054,14 @@
     .batch-progress-v2-step.is-running { color: #377dff; font-weight: 600; }
     .batch-progress-v2-step.is-failed, .batch-progress-v2-step.is-stopped { color: #e45656; font-weight: 600; }
     .batch-progress-v2-steps-scroll { overflow-x: auto; padding: 1px 2px 2px; }
+    @media (max-width:640px) {
+      .batch-progress-v2 { margin-inline: 8px; padding: 12px 10px; }
+      .batch-progress-v2-head, .batch-progress-v2-card-top { align-items: stretch; flex-direction: column; gap: 8px; }
+      .batch-progress-v2-meta { flex-wrap: wrap; }
+      .batch-progress-v2-select { max-width: 100%; width: 100%; }
+      .batch-progress-v2-steps { min-width:0; grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .batch-progress-v2-step-detail { max-width: 150px; }
+    }
     .jobs-history-v2-label {
       padding: 0 16px 9px; color: #606266; font-size: 13px; font-weight: 600;
     }
@@ -1125,46 +1148,86 @@
     }
     .account-task-stage-progress {
       display:block; margin:0 0 10px; padding:12px 10px 10px;
-      border:1px solid #dfe7ef; border-radius:8px; background:#f8fafc; overflow-x:auto;
+      border:1px solid #dfe7ef; border-radius:8px; background:#f8fafc; overflow:auto; max-height:45%; min-height:110px;
     }
     .account-task-stage-current { display:flex; align-items:baseline; gap:8px; min-height:18px; margin:0 0 8px; color:#526071; font-size:11px; }
     .account-task-stage-current strong { color:#263548; font-weight:700; }
     .account-task-stage-current small { color:#8a93a2; font-size:10px; }
-    .account-task-stage-track { display:flex; align-items:flex-start; gap:0; min-width:max-content; }
+    .account-task-stage-track { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); align-items:start; gap:8px; min-width:0; }
     .account-task-stage-step {
-      position:relative; flex:1 0 92px; min-width:92px; padding-top:25px;
-      color:#8a93a2; font-size:10px; font-weight:650; text-align:center;
+      position:relative; min-width:0; padding:10px 10px 10px 38px;
+      color:#687586; font-size:12px; font-weight:650; text-align:left; overflow-wrap:anywhere;
     }
     .account-task-stage-step::before {
-      content:""; position:absolute; top:10px; left:0; width:100%; height:2px; background:#dfe4ea;
+      content:none;
     }
     .account-task-stage-step:first-child::before { left:50%; width:50%; }
     .account-task-stage-step:last-child::before { width:50%; }
     .account-task-stage-node {
-      position:absolute; z-index:1; top:4px; left:50%; width:14px; height:14px; margin-left:-7px;
-      border:2px solid #cbd3dd; border-radius:50%; background:#fff; box-sizing:border-box;
+      position:absolute; z-index:1; top:10px; left:10px; width:22px; height:22px;
+      display:grid; place-items:center; font-size:11px; line-height:1; color:#475569;
+      border:1px solid #cbd3dd; border-radius:50%; background:#fff; box-sizing:border-box;
     }
     .account-task-stage-step.is-success { color:#168f73; }
     .account-task-stage-step.is-success::before { background:#36bf9d; }
-    .account-task-stage-step.is-success .account-task-stage-node { border-color:#25bd96; background:#25bd96; }
+    .account-task-stage-step.is-success .account-task-stage-node { border-color:#25bd96; background:#25bd96; color:#fff; }
     .account-task-stage-step.is-running { color:#377dff; }
     .account-task-stage-step.is-running .account-task-stage-node { border-color:#377dff; box-shadow:0 0 0 4px rgba(55,125,255,.12); }
     .account-task-stage-step.is-skipped { color:#7f8998; }
     .account-task-stage-step.is-skipped .account-task-stage-node { border-color:#aeb7c4; background:#e7ebf0; }
     .account-task-stage-step.is-failed { color:#d64755; }
     .account-task-stage-step.is-failed::before { background:#ef9aa3; }
-    .account-task-stage-step.is-failed .account-task-stage-node { border-color:#e35d6a; background:#e35d6a; }
+    .account-task-stage-step.is-failed .account-task-stage-node { border-color:#e35d6a; background:#e35d6a; color:#fff; }
     .account-task-stage-label, .account-task-stage-state { display:block; }
-    .account-task-stage-state { margin-top:2px; font-size:9px; font-weight:550; opacity:.82; }
-    .account-task-stage-children { display:flex; flex-direction:column; gap:2px; margin:5px auto 0; max-width:136px; color:#6d7888; font-size:9px; font-weight:500; line-height:1.25; }
+    .account-task-stage-state { margin-top:2px; font-size:11px; font-weight:550; }
+    .account-task-stage-children { display:flex; flex-direction:column; gap:2px; margin:5px auto 0; max-width:100%; color:#6d7888; font-size:9px; font-weight:500; line-height:1.25; }
     .account-task-stage-child.is-running { color:#377dff; }
     .account-task-stage-child.is-success { color:#168f73; }
     .account-task-stage-child.is-failed { color:#d64755; }
+    .account-task-stage-step {
+      border:1px solid #dfe7ef; border-radius:7px; background:#fff; cursor:pointer;
+      outline:none; min-height:52px;
+    }
+    .account-task-stage-step:hover { background:#f1f5fa; }
+    .account-task-stage-step:focus-visible { box-shadow:0 0 0 3px rgba(55,125,255,.28); }
+    .account-task-stage-step.is-selected { background:#e8f0ff; box-shadow:inset 0 0 0 1px #8fb5ff; }
+    .account-task-stage-step.is-unconfirmed,
+    .account-task-stage-step.is-request_unknown,
+    .account-task-stage-step.is-attention_required { color:#9a6500; }
+    .account-task-stage-step.is-not_executed,
+    .account-task-stage-step.is-deferred,
+    .account-task-stage-step.is-pending { color:#7f8998; }
+    .account-task-stage-step.is-unconfirmed .account-task-stage-node,
+    .account-task-stage-step.is-request_unknown .account-task-stage-node,
+    .account-task-stage-step.is-attention_required .account-task-stage-node { border-color:#d89b2b; background:#fff4d6; }
+    .account-task-stage-step.is-not_executed .account-task-stage-node { border-style:dashed; }
+    .account-task-stage-hint { margin:0 0 8px; color:#6d7888; font-size:10px; line-height:1.4; }
+    .account-task-progress-failure { display:flex; flex-wrap:wrap; gap:4px 9px; margin:0 0 8px; padding:7px 9px; border:1px solid #efb3a7; border-radius:6px; background:#fff6f3; color:#743d34; font-size:10px; line-height:1.4; }
+    .account-task-progress-failure strong { color:#8b2e24; }
+    .account-task-progress-flag { font-weight:700; }
+    .account-task-progress-failure details { flex-basis:100%; }
+    .account-task-progress-failure details summary { cursor:pointer; color:#8b2e24; }
+    .account-task-progress-failure pre { max-height:140px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .account-task-progress-filter { display:flex; flex-wrap:wrap; align-items:center; gap:7px; margin:0 0 8px; color:#5f6b7a; font-size:11px; }
+    .account-task-progress-filter button { min-height:30px; padding:3px 9px; border:1px solid #cbd5e1; border-radius:6px; background:#fff; color:#3f4d5f; font:inherit; cursor:pointer; }
+    .account-task-progress-filter button:disabled { cursor:default; opacity:.55; }
+    .account-task-stage-children { cursor:default; text-align:left; }
+    .account-task-stage-children summary { min-height:28px; padding-top:5px; text-align:left; }
+    .account-task-stage-children > div { text-align:left; }
+    .account-task-stage-step details { margin-top:5px; color:#64748b; font-size:11px; font-weight:500; line-height:1.35; text-align:left; }
+    .account-task-stage-step details summary { cursor:pointer; color:#526071; }
+    .account-task-stage-evidence { display:grid; gap:3px; overflow-wrap:anywhere; }
+    .account-task-stage-reason { margin-top:5px; color:#526071; font-size:11px; font-weight:400; line-height:1.5; }
+    .account-task-stage-step pre { max-width:100%; max-height:160px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
     @media (max-width:640px) {
       .account-task-stage-progress { overflow-x:hidden; }
       .account-task-stage-track { width:100%; min-width:0; }
-      .account-task-stage-step { flex:1 1 0; min-width:0; padding-inline:2px; }
+      .account-task-stage-track { grid-template-columns:1fr; }
+      .account-task-stage-step { min-width:0; min-height:56px; }
       .account-task-stage-children { max-width:100%; overflow-wrap:anywhere; }
+      .account-task-stage-current { align-items:flex-start; flex-direction:column; gap:2px; }
+      .account-task-progress-filter { align-items:stretch; flex-direction:column; }
+      .account-task-progress-filter button { width:100%; }
     }
     .account-task-detail-toolbar {
       display:flex; align-items:center; justify-content:space-between; gap:12px; margin:0 0 10px;
@@ -1194,7 +1257,12 @@
     details.account-task-event-detail { margin-top:5px; color:#95a4bd; font-size:10px; }
     details.account-task-event-detail summary { cursor:pointer; color:#8497b8; user-select:none; }
     details.account-task-event-detail pre { margin:5px 0 0; white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; }
-    .account-task-run-log { margin:0; min-height:100%; white-space:pre-wrap; overflow-wrap:anywhere; font:12px/1.55 ui-monospace, Consolas, monospace; color:#cbd5e1; }
+    .account-task-run-log { margin:0; min-height:100%; white-space:normal; overflow-wrap:anywhere; font:12px/1.55 ui-monospace, Consolas, monospace; color:#cbd5e1; }
+    .account-task-log-line { padding:7px 0; border-bottom:1px solid rgba(148,163,184,.16); }
+    .account-task-log-line > span { display:block; white-space:pre-wrap; }
+    .account-task-log-detail { margin-top:4px; color:#95a4bd; font:11px/1.45 ui-sans-serif, system-ui, sans-serif; }
+    .account-task-log-detail summary { cursor:pointer; color:#8497b8; }
+    .account-task-log-detail pre { margin:5px 0 0; max-height:220px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
     .account-task-artifacts { display:grid; gap:8px; white-space:normal; }
     .account-task-artifact { padding:9px 10px; border:1px solid #26344a; border-radius:6px; background:#111a2c; }
     .account-task-empty { padding:28px 12px; color:#8491a8; text-align:center; white-space:normal; }
@@ -3293,3 +3361,10 @@
       .config-card-v2 { min-height: 116px; padding: 14px; }
       .config-card-v2-value { margin-top: 14px; font-size: 17px; }
     }
+
+.batch-progress-v2-distribution { display:grid; gap:4px; margin-bottom:10px; color:#526071; font-size:12px; overflow-wrap:anywhere; }
+
+.account-task-child-runs { display:flex; align-items:center; flex-wrap:wrap; gap:6px; margin:8px 0; color:#526071; font-size:12px; }
+.account-task-child-runs button { max-width:100%; min-height:32px; padding:5px 8px; border:1px solid #cbd5e1; border-radius:6px; background:#fff; color:#315da8; font:inherit; cursor:pointer; overflow-wrap:anywhere; }
+
+.account-task-stage-child.is-recovered { color:#526071; }

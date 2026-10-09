@@ -1347,13 +1347,41 @@ def _handle_ready_completion_dependency(dependency: dict) -> None:
         parent_task_id = int(parent_id)
         if child_status != "success":
             message = "子任务未成功，补全父任务保留待对账状态"
+            child_result = claimed.get("child_result")
+            if not isinstance(child_result, Mapping):
+                child_result = {}
+            child_context = {
+                "child_status": child_status or "unknown",
+                "child_task_id": (
+                    claimed.get("child_task_id")
+                    or claimed.get("child_source_id")
+                    or child_result.get("task_id")
+                ),
+                "child_run_id": (
+                    child_result.get("run_id")
+                    or child_result.get("child_run_id")
+                    or claimed.get("child_run_id")
+                ),
+                "failure_stage": child_result.get("failure_stage") or child_result.get("stage"),
+                "failure_event_id": child_result.get("failure_event_id") or child_result.get("event_id"),
+                "failure_message": (
+                    child_result.get("failure_message")
+                    or child_result.get("error_message")
+                    or child_result.get("error")
+                    or child_result.get("message")
+                ),
+            }
+            child_context = {
+                key: value for key, value in child_context.items()
+                if value not in (None, "")
+            }
             account_task_store.append_event(
                 parent_task_id,
                 stage="plan",
                 level="WARNING",
                 message=message,
-                detail={"child_status": child_status, "child_task_id": claimed.get("child_source_id")},
-                state="skipped",
+                detail=child_context,
+                state="failed",
             )
             account_task_store.finish_task(
                 parent_task_id,
