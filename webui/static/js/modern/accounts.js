@@ -143,7 +143,23 @@ function accountTaskFailureSummary(progress) {
     : '';
   return `<div class="account-task-progress-failure" role="status"><strong>${esc(locationTitle)}：${esc(location)}</strong><span>${esc(message)}</span>${errorSummary ? `<span>错误：${esc(errorSummary)}</span>` : ''}${event}${reconcile ? '<span class="account-task-progress-flag">需要对账</span>' : ''}${technical}</div>`;
 }
-function accountTaskProgressStepMarkup(step, index) {
+function accountTaskStepTooltipText(step) {
+  const attempts = Array.isArray(step?.attempts) ? step.attempts.length : 0;
+  const children = taskProgressVisibleSteps(step?.children).length;
+  return [
+    `${accountTaskProgressStepLabel(step)} · ${accountTaskProgressStateLabel(step)}`,
+    step?.reason || step?.message || '',
+    step?.started_at ? `开始：${formatDateTime(step.started_at)}` : '',
+    step?.completed_at ? `结束：${formatDateTime(step.completed_at)}` : '',
+    step?.duration_ms != null ? `耗时：${formatTaskDuration(step.duration_ms)}` : '',
+    attempts || children ? `尝试记录 ${attempts} 条 · 子步骤 ${children} 个` : '',
+    '点击“详情”查看阶段时间与执行记录',
+  ].filter(Boolean).join('\n');
+}
+function hideAccountTaskStepTooltip() {
+  if (typeof _accountsTooltipTarget !== 'undefined' && _accountsTooltipTarget?.closest?.('#accountTaskStageProgress')) _hideAccountsTooltip();
+}
+function accountTaskProgressStepMarkup(step, index, compact = false) {
   const id = accountTaskProgressStepId(step) || `step-${index + 1}`;
   const state = String(step?.display_status || taskProgressStepStatus(step));
   const selected = accountTaskStepFilter === id || (Array.isArray(step?.raw_stages) && step.raw_stages.includes(accountTaskStepFilter));
@@ -151,16 +167,21 @@ function accountTaskProgressStepMarkup(step, index) {
   const attempts = Array.isArray(step?.attempts) ? step.attempts : [];
   const label = accountTaskProgressStepLabel(step);
   const reason = String(step?.reason || step?.message || '');
-  const action = (tab, text) => `<button type="button" data-account-task-step-details="${attrEsc(id)}" data-step-detail-tab="${tab}" aria-haspopup="dialog">${text}</button>`;
-  return `<div class="account-task-stage-step is-${attrEsc(state)}${selected ? ' is-selected' : ''}" data-account-task-step="${attrEsc(id)}"><button type="button" class="account-task-stage-select" data-account-task-step-filter="${attrEsc(id)}" aria-pressed="${selected ? 'true' : 'false'}" aria-label="筛选${esc(label)}的事件和日志：${esc(accountTaskProgressStateLabel(step))}"><span class="account-task-stage-node" aria-hidden="true">${state === 'success' ? '✓' : state === 'failed' ? '×' : state === 'stopped' ? '!' : String(index + 1)}</span><span class="account-task-stage-label" title="${attrEsc(label)}">${esc(label)}</span><span class="account-task-stage-state">${esc(accountTaskProgressStateLabel(step))}</span><span class="account-task-stage-reason" title="${attrEsc(reason)}">${esc(reason || '点击筛选事件和日志')}</span></button><div class="account-task-stage-actions">${action('time', '阶段时间')}${attempts.length ? action('attempts', `尝试 ${attempts.length}`) : ''}${children.length ? action('children', `子步骤 ${children.length}`) : ''}</div></div>`;
+  const tooltip = attrEsc(accountTaskStepTooltipText(step));
+  const action = (tab, text) => `<button type="button" data-account-task-step-details="${attrEsc(id)}" data-step-detail-tab="${tab}" data-accounts-tooltip="${tooltip}" aria-haspopup="dialog" aria-label="查看${attrEsc(label)}${compact ? '详情' : text}">${text}</button>`;
+  const actions = compact ? action('time', '详情') : `${action('time', '阶段时间')}${attempts.length ? action('attempts', `尝试 ${attempts.length}`) : ''}${children.length ? action('children', `子步骤 ${children.length}`) : ''}`;
+  return `<div class="account-task-stage-step is-${attrEsc(state)}${selected ? ' is-selected' : ''}" data-account-task-step="${attrEsc(id)}"><button type="button" class="account-task-stage-select" data-account-task-step-filter="${attrEsc(id)}" data-accounts-tooltip="${tooltip}" aria-pressed="${selected ? 'true' : 'false'}" aria-label="筛选${esc(label)}的事件和日志：${esc(accountTaskProgressStateLabel(step))}"><span class="account-task-stage-node" aria-hidden="true">${state === 'success' ? '✓' : state === 'failed' ? '×' : state === 'stopped' ? '!' : String(index + 1)}</span><span class="account-task-stage-label">${esc(label)}</span><span class="account-task-stage-state">${esc(accountTaskProgressStateLabel(step))}</span><span class="account-task-stage-reason">${esc(reason || '点击筛选事件和日志')}</span></button><div class="account-task-stage-actions">${actions}</div></div>`;
 }
 function accountTaskChildRuns(progress) {
   const children = (progress?.outcome?.child_tasks || []).filter(child => Number(child.task_id) > 0);
   if (!children.length) return '';
   return `<div class="account-task-child-runs"><strong>独立子任务</strong>${children.map(child => `<button type="button" data-account-task-child="${attrEsc(child.task_id)}" data-child-run="${attrEsc(child.run_id || '')}">${esc(facetLabel('task_type', child.task_type) || '子任务')} #${esc(child.task_id)} · ${esc(taskProgressStatusLabel(child.status || 'queued'))}</button>`).join('')}</div>`;
 }
-function accountTaskProgressPageSize(width) {
-  return Math.max(1, Math.min(5, Math.floor((Number(width) || 1000) / 205)));
+function accountTaskProgressPageSize(width, count = 0) {
+  const available = Math.max(0, Number(width) || 1000);
+  const minWidth = available < 540 ? 136 : count > 8 ? 88 : count > 5 ? 114 : 144;
+  const capacity = Math.max(1, Math.floor((available + 6) / (minWidth + 6)));
+  return count > 0 ? Math.min(count, capacity) : capacity;
 }
 function accountTaskProgressPage(stages, page, size) {
   const pages = Math.max(1, Math.ceil(stages.length / size));
@@ -212,6 +233,7 @@ function renderAccountTaskStepDialog() {
   if (focusedTab) Array.from($('#accountTaskStepDetailTabs').querySelectorAll('button')).find(item => item.dataset.stepDialogTab === focusedTab)?.focus({preventScroll:true});
 }
 function openAccountTaskStepDialog(stepId = null, tab = 'time', trigger = null) {
+  hideAccountTaskStepTooltip();
   const overlay = $('#accountTaskStepDetailOverlay');
   if (!overlay) return;
   accountTaskStepDetailReturnFocus = trigger || document.activeElement;
@@ -251,6 +273,10 @@ function accountTaskProgressBrief(progress) {
 function renderAccountTaskProgressSnapshot(progress) {
   const panel = $('#accountTaskStageProgress');
   if (!panel) return;
+  const tooltipTarget = typeof _accountsTooltipTarget === 'undefined' ? null : _accountsTooltipTarget;
+  const tooltipStep = tooltipTarget?.closest?.('[data-account-task-step]')?.dataset.accountTaskStep;
+  const tooltipTab = tooltipTarget?.dataset.stepDetailTab;
+  hideAccountTaskStepTooltip();
   const stages = taskProgressVisibleSteps(progress?.main_steps);
   if (accountTaskStepFilter && !stages.some(stage => accountTaskProgressStepId(stage) === accountTaskStepFilter || (stage.raw_stages || []).includes(accountTaskStepFilter))) accountTaskStepFilter = null;
   if (!stages.length) {
@@ -272,7 +298,11 @@ function renderAccountTaskProgressSnapshot(progress) {
   const focusedDetails = activeElement?.getAttribute?.('data-account-task-step-details');
   const focusedTab = activeElement?.getAttribute?.('data-step-detail-tab');
   const focusedPage = activeElement?.getAttribute?.('data-account-task-step-page');
-  const size = accountTaskProgressPageSize(panel.clientWidth);
+  const width = panel.clientWidth - 16;
+  const size = accountTaskProgressPageSize(width, stages.length);
+  const compact = size >= 6 || width / size < 180;
+  panel.classList.toggle('is-compact', compact);
+  panel.classList.toggle('is-dense', size >= 9);
   if (!accountTaskStepPageSize && accountTaskStepFilter) {
     const selectedIndex = stages.findIndex(item => accountTaskProgressStepId(item) === accountTaskStepFilter || (item.raw_stages || []).includes(accountTaskStepFilter));
     if (selectedIndex >= 0) accountTaskStepPage = Math.floor(selectedIndex / size);
@@ -281,11 +311,18 @@ function renderAccountTaskProgressSnapshot(progress) {
   accountTaskStepPageSize = size;
   const page = accountTaskProgressPage(stages, accountTaskStepPage, size);
   accountTaskStepPage = page.page;
-  const track = page.steps.map((step, index) => accountTaskProgressStepMarkup(step, page.start + index)).join('');
-  panel.innerHTML = `<div class="account-task-stage-current"><strong>${esc(currentText)}</strong><small title="${attrEsc(sourceText || '按实际执行记录排列，未执行步骤在后')}">${esc(sourceText || '按实际执行记录排列')}</small></div>${accountTaskProgressBrief(progress)}<div class="account-task-stage-track" style="--task-step-columns:${size}">${track}</div><div class="account-task-stage-pager" aria-label="步骤翻页"><span>共 ${stages.length} 步 · ${page.start + 1}–${page.start + page.steps.length}</span><div><button type="button" data-account-task-step-page="${page.page - 1}"${page.page === 0 ? ' disabled' : ''} aria-label="上一页步骤">上一页</button><span aria-live="polite">${page.page + 1} / ${page.pages}</span><button type="button" data-account-task-step-page="${page.page + 1}"${page.page + 1 === page.pages ? ' disabled' : ''} aria-label="下一页步骤">下一页</button></div></div>`;
+  const track = page.steps.map((step, index) => accountTaskProgressStepMarkup(step, page.start + index, compact)).join('');
+  const pager = page.pages > 1
+    ? `<span>共 ${stages.length} 步 · ${page.start + 1}–${page.start + page.steps.length}</span><div><button type="button" data-account-task-step-page="${page.page - 1}"${page.page === 0 ? ' disabled' : ''} aria-label="上一页步骤">上一页</button><span aria-live="polite">${page.page + 1} / ${page.pages}</span><button type="button" data-account-task-step-page="${page.page + 1}"${page.page + 1 === page.pages ? ' disabled' : ''} aria-label="下一页步骤">下一页</button></div>`
+    : `<span>共 ${stages.length} 步</span><span>已全部显示</span>`;
+  panel.innerHTML = `<div class="account-task-stage-current"><strong>${esc(currentText)}</strong><small title="${attrEsc(sourceText || '按实际执行记录排列，未执行步骤在后')}">${esc(sourceText || '按实际执行记录排列')}</small></div>${accountTaskProgressBrief(progress)}<div class="account-task-stage-track" style="--task-step-columns:${size}">${track}</div><div class="account-task-stage-pager" aria-label="步骤翻页">${pager}</div>`;
   panel.classList.remove('hidden');
   const restore = Array.from(panel.querySelectorAll('button')).find(item => focusedFilter ? item.getAttribute('data-account-task-step-filter') === focusedFilter : focusedDetails ? item.getAttribute('data-account-task-step-details') === focusedDetails && item.getAttribute('data-step-detail-tab') === focusedTab : focusedPage != null && item.getAttribute('data-account-task-step-page') === focusedPage);
   if (restore) restore.focus({preventScroll:true});
+  if (tooltipStep && !accountTaskStepDetailState) {
+    const target = Array.from(panel.querySelectorAll('[data-accounts-tooltip]')).find(item => tooltipTab ? item.dataset.accountTaskStepDetails === tooltipStep && item.dataset.stepDetailTab === tooltipTab : item.dataset.accountTaskStepFilter === tooltipStep);
+    if (target && (target.matches(':hover') || target === document.activeElement)) _showAccountsTooltip(target);
+  }
   renderAccountTaskStepDialog();
   renderAccountTaskFilterBar();
 }
@@ -609,6 +646,7 @@ function setAccountTaskDetailView(view) {
 }
 
 function resetAccountTaskRunData(runId) {
+  hideAccountTaskStepTooltip();
   closeAccountTaskStepDialog(false);
   activeAccountTaskRunId = runId ? Number(runId) : null;
   accountTaskStepPage = 0;
@@ -807,7 +845,7 @@ $('#accountTaskStageProgress')?.addEventListener('keydown', event => {
   step.click();
 });
 $('#btnCloseAccountTaskStepDetail')?.addEventListener('click', () => closeAccountTaskStepDialog());
-$('#btnCloseAccountTaskLog')?.addEventListener('click', () => closeAccountTaskStepDialog(false));
+$('#btnCloseAccountTaskLog')?.addEventListener('click', () => { hideAccountTaskStepTooltip(); closeAccountTaskStepDialog(false); });
 $('#accountTaskStepDetailOverlay')?.addEventListener('click', event => {
   if (event.target.id === 'accountTaskStepDetailOverlay') { closeAccountTaskStepDialog(); return; }
   const tab = event.target.closest('[data-step-dialog-tab]');
@@ -841,7 +879,7 @@ document.addEventListener('keydown', event => {
 if (typeof ResizeObserver !== 'undefined' && $('#accountTaskStageProgress')) {
   new ResizeObserver(entries => {
     const width = entries[0]?.contentRect?.width || 0;
-    if (width > 0 && accountTaskProgressSnapshot && accountTaskProgressPageSize(width) !== accountTaskStepPageSize) renderAccountTaskProgressSnapshot(accountTaskProgressSnapshot);
+    if (width > 0 && accountTaskProgressSnapshot && accountTaskProgressPageSize(width, taskProgressVisibleSteps(accountTaskProgressSnapshot.main_steps).length) !== accountTaskStepPageSize) renderAccountTaskProgressSnapshot(accountTaskProgressSnapshot);
   }).observe($('#accountTaskStageProgress'));
 }
 $('#accountTaskProgressFilter')?.addEventListener('click', event => {
@@ -1205,28 +1243,40 @@ function _discountLabel(r) {
 
 let _accountsTooltipNode = null;
 let _accountsTooltipTarget = null;
+let _accountsTooltipDescription = null;
 
 function _accountsTooltipSelector() {
-  return '.accounts-table-v2 .col-plan [data-accounts-tooltip], .accounts-table-v2 .col-quota [data-accounts-tooltip]';
+  return '.accounts-table-v2 .col-plan [data-accounts-tooltip], .accounts-table-v2 .col-quota [data-accounts-tooltip], #accountTaskStageProgress [data-accounts-tooltip]';
 }
 
 function _hideAccountsTooltip() {
-  if (_accountsTooltipNode) _accountsTooltipNode.classList.remove('show');
+  if (_accountsTooltipNode) { _accountsTooltipNode.classList.remove('show'); _accountsTooltipNode.hidden = true; }
+  if (_accountsTooltipTarget) {
+    if (_accountsTooltipDescription == null) _accountsTooltipTarget.removeAttribute('aria-describedby');
+    else _accountsTooltipTarget.setAttribute('aria-describedby', _accountsTooltipDescription);
+  }
   _accountsTooltipTarget = null;
+  _accountsTooltipDescription = null;
 }
 
 function _showAccountsTooltip(target) {
   const message = target?.dataset?.accountsTooltip || '';
-  if (!message) return;
+  if (!message || !target.isConnected || !target.getClientRects().length) return;
+  _hideAccountsTooltip();
   if (!_accountsTooltipNode) {
     _accountsTooltipNode = document.createElement('div');
     _accountsTooltipNode.className = 'accounts-hover-tooltip';
+    _accountsTooltipNode.id = 'accountsHoverTooltip';
     _accountsTooltipNode.setAttribute('role', 'tooltip');
     document.body.appendChild(_accountsTooltipNode);
   }
 
   _accountsTooltipTarget = target;
+  _accountsTooltipDescription = target.getAttribute('aria-describedby');
+  target.setAttribute('aria-describedby', [_accountsTooltipDescription, _accountsTooltipNode.id].filter(Boolean).join(' '));
+  _accountsTooltipNode.classList.toggle('is-task-step', Boolean(target.closest('#accountTaskStageProgress')));
   _accountsTooltipNode.textContent = message;
+  _accountsTooltipNode.hidden = false;
   _accountsTooltipNode.style.left = '0px';
   _accountsTooltipNode.style.top = '0px';
   _accountsTooltipNode.classList.add('show');
@@ -1241,7 +1291,7 @@ function _showAccountsTooltip(target) {
     top = rect.top - tipRect.height - gap;
   }
   _accountsTooltipNode.style.left = `${left}px`;
-  _accountsTooltipNode.style.top = `${top}px`;
+  _accountsTooltipNode.style.top = `${Math.max(padding, Math.min(top, window.innerHeight - tipRect.height - padding))}px`;
 }
 
 (function bindAccountsHoverTooltips() {
@@ -1249,6 +1299,7 @@ function _showAccountsTooltip(target) {
   document.addEventListener('mouseover', (event) => {
     const target = targetFor(event.target);
     if (!target || (event.relatedTarget && target.contains(event.relatedTarget))) return;
+    if (target.closest('#accountTaskStageProgress') && !window.matchMedia('(hover: hover)').matches) return;
     _showAccountsTooltip(target);
   });
   document.addEventListener('mouseout', (event) => {
@@ -1258,7 +1309,7 @@ function _showAccountsTooltip(target) {
   });
   document.addEventListener('focusin', (event) => {
     const target = targetFor(event.target);
-    if (target) _showAccountsTooltip(target);
+    if (target && (!target.closest('#accountTaskStageProgress') || target.matches(':focus-visible'))) _showAccountsTooltip(target);
   });
   document.addEventListener('focusout', (event) => {
     const target = targetFor(event.target);
@@ -1267,6 +1318,12 @@ function _showAccountsTooltip(target) {
   });
   window.addEventListener('scroll', _hideAccountsTooltip, true);
   window.addEventListener('resize', _hideAccountsTooltip);
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape' || !_accountsTooltipTarget?.closest('#accountTaskStageProgress')) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    _hideAccountsTooltip();
+  }, true);
 })();
 
 function _planCell(r) {

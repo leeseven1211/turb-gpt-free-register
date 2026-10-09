@@ -307,6 +307,7 @@ test('切换 Run 会清除旧步骤筛选，同时保留显式传入的新筛选
     accountTaskProgressRequestId: 1,
     renderAccountTaskProgressSnapshot: () => {},
     closeAccountTaskStepDialog: () => {},
+    hideAccountTaskStepTooltip: () => {},
   });
   assert.deepEqual(JSON.parse(sandbox.result), {
     first: {run: 22, filter: null},
@@ -316,20 +317,21 @@ test('切换 Run 会清除旧步骤筛选，同时保留显式传入的新筛选
   });
 });
 
-test('多步骤分页保持实际顺序，窄屏单卡可逐页查看全部步骤', () => {
+test('多步骤按宽度紧凑排列，窄屏双卡分页仍保持实际顺序', () => {
   const sandbox = runVm(`${progressFunctions}
     const steps = Array.from({length: 17}, (_, index) => ({id: 'step-' + index}));
-    const desktopSize = accountTaskProgressPageSize(900);
-    const mobileSize = accountTaskProgressPageSize(335);
+    const desktopSize = accountTaskProgressPageSize(900, steps.length);
+    const mobileSize = accountTaskProgressPageSize(315, steps.length);
     const desktop = accountTaskProgressPage(steps, 99, desktopSize);
-    const mobileIds = steps.flatMap((_, page) => accountTaskProgressPage(steps, page, mobileSize).steps.map(step => step.id));
-    result = JSON.stringify({desktopSize, mobileSize, page: desktop.page, pages: desktop.pages, desktopIds: desktop.steps.map(step => step.id), mobileIds});`);
+    const mobileIds = Array.from({length: Math.ceil(steps.length / mobileSize)}, (_, page) => accountTaskProgressPage(steps, page, mobileSize).steps.map(step => step.id)).flat();
+    result = JSON.stringify({desktopSize, mobileSize, fullRow: accountTaskProgressPageSize(1048, 11), page: desktop.page, pages: desktop.pages, desktopIds: desktop.steps.map(step => step.id), mobileIds});`);
   const result = JSON.parse(sandbox.result);
-  assert.equal(result.desktopSize, 4);
-  assert.equal(result.mobileSize, 1);
-  assert.equal(result.page, 4);
-  assert.equal(result.pages, 5);
-  assert.deepEqual(result.desktopIds, ['step-16']);
+  assert.equal(result.desktopSize, 9);
+  assert.equal(result.mobileSize, 2);
+  assert.equal(result.fullRow, 11);
+  assert.equal(result.page, 1);
+  assert.equal(result.pages, 2);
+  assert.deepEqual(result.desktopIds, Array.from({length: 8}, (_, index) => `step-${index + 9}`));
   assert.deepEqual(result.mobileIds, Array.from({length: 17}, (_, index) => `step-${index}`));
 });
 
