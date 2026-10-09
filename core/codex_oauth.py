@@ -44,6 +44,10 @@ class CodexAuthResultUnknown(RuntimeError):
     """验证请求可能已被服务端处理，禁止在本轮盲目重交凭据。"""
 
 
+class CodexConsentUnverifiableError(RuntimeError):
+    """授权确认页缺少可确认的单一工作区，需交由浏览器处理。"""
+
+
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # 跟重定向链时的最大跳数，防死循环
@@ -1329,6 +1333,36 @@ def _current_workspace_id(session: BrowserSession) -> tuple[str, str, bool]:
     return "", "", bool(raw)
 
 
+def _confirmed_consent_workspace_id(session: BrowserSession) -> str:
+    """确认 Cookie 与本轮 Auth 元数据中只有一个一致的工作区。"""
+    payloads = [getattr(session, "_codex_auth_session_payload", {}) or {}]
+    raw_cookies = []
+    try:
+        raw_cookies = [
+            cookie.value for cookie in session.session.cookies.jar
+            if cookie.name == "oai-client-auth-session" and cookie.value
+        ]
+    except Exception:
+        pass
+    if not raw_cookies:
+        try:
+            raw = session.session.cookies.get("oai-client-auth-session")
+            if raw:
+                raw_cookies.append(raw)
+        except Exception:
+            pass
+    payloads.extend(_decode_auth_session_metadata(raw) for raw in raw_cookies)
+    workspace_ids = set()
+    for payload in payloads:
+        workspaces = payload.get("workspaces") if isinstance(payload, dict) else None
+        for workspace in workspaces if isinstance(workspaces, list) else []:
+            workspace_id = workspace.get("id") if isinstance(workspace, dict) else None
+            if not isinstance(workspace_id, str) or not workspace_id.strip():
+                return ""
+            workspace_ids.add(workspace_id.strip())
+    return next(iter(workspace_ids)) if len(workspace_ids) == 1 else ""
+
+
 def _get_workspace_id(session: BrowserSession) -> str:
     """
     优先从 oai-client-auth-session cookie 解出 workspace；cookie 尚未落地时，
@@ -1455,7 +1489,7 @@ def _login_page_type_for_log(payload: dict) -> str:
 def _follow_login_continue_step(
     session: BrowserSession, continue_url: str, state: str,
 ) -> tuple[str, str]:
-    """逐跳识别登录后续；不把无 Location 的响应猜成工作区选择。"""
+    """逐跳识别登录后续；工作区步骤可携带授权页已确认的 ID。"""
     if not continue_url:
         raise RuntimeError("[Codex] 登录后续响应缺少可跟随地址")
     url, callback = _trusted_login_target(continue_url)
@@ -1512,6 +1546,11 @@ def _follow_login_continue_step(
         if final_path == "/api/accounts/workspace/select":
             return "workspace", ""
         if final_path == "/sign-in-with-chatgpt/codex/consent":
+            workspace_id = _confirmed_consent_workspace_id(session) if status == 200 and not payload else ""
+            if workspace_id:
+                logger.info("[Codex] 已确认授权页及单一工作区，继续工作区选择")
+                report_stage("workspace", "授权确认页已确认单一工作区")
+                return "workspace", workspace_id
             return "consent", ""
         if final_path in ("/add-phone", "/api/accounts/add-phone/send"):
             return "phone", ""
@@ -1529,12 +1568,14 @@ def _follow_login_continue(session: BrowserSession, continue_url: str, state: st
     return url if step == "callback" else None
 
 
-def _select_workspace_and_get_callback(session: BrowserSession, state: str) -> str:
+def _select_workspace_and_get_callback(
+    session: BrowserSession, state: str, *, workspace_id: str | None = None,
+) -> str:
     """
     POST workspace/select，然后跟随后续重定向/响应里的 URL 直到命中 localhost:1455 callback。
     返回完整 callback URL（含 code）。
     """
-    wid = _get_workspace_id(session)
+    wid = workspace_id if workspace_id is not None else _get_workspace_id(session)
     resp = _post_json(
         session,
         "https://auth.openai.com/api/accounts/workspace/select",
@@ -2050,7 +2091,7 @@ def run_codex_oauth(
             raise RuntimeError("[Codex] 登录下一步未知，已停止等待邮箱验证码")
 
         # 5-6. 仅按明确挑战处理手机、继续跳转和工作区选择。
-        # consent 没有明确后续地址时交给可交互驱动，不能猜 workspace/select。
+        # 授权页须经 GET 确认且仅有一个一致的工作区，否则交给可交互驱动。
         phone_ran = False
         callback_url = ""
         for _ in range(_MAX_REDIRECTS):
@@ -2075,7 +2116,9 @@ def run_codex_oauth(
                 )
             elif login_step == "workspace":
                 human_delay("post_auth")
-                callback_url = _select_workspace_and_get_callback(session, state)
+                callback_url = _select_workspace_and_get_callback(
+                    session, state, workspace_id=login_continue or None,
+                )
                 break
             elif login_step == "callback":
                 callback_url, is_callback = _trusted_login_target(login_continue)
@@ -2089,7 +2132,9 @@ def run_codex_oauth(
                     )
                     if login_step != "consent":
                         continue
-                raise RuntimeError("[Codex] 已进入授权确认页，但服务端未返回可验证的下一步；需使用浏览器驱动")
+                raise CodexConsentUnverifiableError(
+                    "[Codex] 已进入授权确认页，但服务端未返回可验证的下一步；需使用浏览器驱动"
+                )
             else:
                 raise RuntimeError("[Codex] 登录后续步骤未知，已停止继续")
         else:
@@ -2169,6 +2214,19 @@ def run_codex_oauth(
             **_codex_result(status="attention_required", email=email, message=str(exc)),
             "outcome": "request_unknown",
             "reconcile_required": True,
+        }
+    except CodexConsentUnverifiableError as exc:
+        logger.warning("[Codex] 授权确认页无法确认单一工作区，需使用浏览器驱动")
+        return {
+            **_codex_result(status="failed", email=email, message=str(exc)),
+            "cause_code": "codex_consent_unverifiable",
+            "error_category": "auth",
+            "auth_diagnostics": {
+                "operation": "consent",
+                "failure_kind": "next_step_unverifiable",
+                "oauth_driver": "protocol",
+                "page_path": "/sign-in-with-chatgpt/codex/consent",
+            },
         }
     except Exception as exc:
         if _is_cpa_callback_reauth_error(exc) and _cpa_reauth_round < 2:

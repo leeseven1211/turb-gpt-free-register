@@ -922,6 +922,9 @@ _UNKNOWN_CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "access_token_missing": ("AUTH-AT-001", "账号缺少可用 AT"),
     "auth_page_unknown": ("AUTH-PAGE-001", "认证页面状态未识别"),
     "auth_route_rejected": ("OA-AUTH-000", "授权路由被拒绝"),
+    "codex_consent_unverifiable": (
+        "OA-CODEX-CONSENT-001", "Codex 授权确认页无法继续，需浏览器驱动",
+    ),
     "email_otp_failed": ("MAIL-OTP-001", "邮箱验证码验证未完成"),
     "email_otp_send_failed": ("MAIL-SEND-001", "验证码发送请求失败"),
     "email_otp_send_rejected": ("MAIL-SEND-002", "验证码发送请求被拒绝"),

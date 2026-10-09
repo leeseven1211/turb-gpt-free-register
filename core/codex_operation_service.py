@@ -42,6 +42,14 @@ _ACCOUNT_DEACTIVATED_MARKERS = (
     "账号已删除",
     "账号已封禁",
 )
+_CODEX_FAILURE_DIAGNOSTICS = {
+    "codex_consent_unverifiable": {
+        "operation": "consent",
+        "failure_kind": "next_step_unverifiable",
+        "oauth_driver": "protocol",
+        "page_path": "/sign-in-with-chatgpt/codex/consent",
+    },
+}
 
 # C's schema snapshot is intentionally broad because it is also consumed by
 # the configuration UI.  A Codex operation must capture only the choices that
@@ -65,6 +73,27 @@ def _is_confirmed_account_deactivation(result: Mapping[str, Any]) -> bool:
         for key in ("status", "error_code", "error", "reason", "message")
     ).casefold()
     return any(marker.casefold() in evidence for marker in _ACCOUNT_DEACTIVATED_MARKERS)
+
+
+def _safe_codex_failure_details(result: Mapping[str, Any]) -> dict[str, Any]:
+    """只持久化已知原因和固定诊断值，不透传驱动返回的认证上下文。"""
+    cause_code = result.get("cause_code")
+    if not isinstance(cause_code, str) or cause_code not in _CODEX_FAILURE_DIAGNOSTICS:
+        return {}
+    safe: dict[str, Any] = {"cause_code": cause_code}
+    if result.get("error_category") == "auth":
+        safe["error_category"] = "auth"
+    diagnostics = result.get("auth_diagnostics")
+    if isinstance(diagnostics, Mapping):
+        allowed = _CODEX_FAILURE_DIAGNOSTICS[cause_code]
+        selected = {
+            key: expected
+            for key, expected in allowed.items()
+            if isinstance(diagnostics.get(key), str) and diagnostics.get(key) == expected
+        }
+        if selected:
+            safe["auth_diagnostics"] = selected
+    return safe
 
 
 def classify_codex_operation_result(
@@ -942,6 +971,7 @@ def _execute_run(run_id: int) -> dict:
                 "execution_id": execution_id,
                 "lease_owner": execution_id,
             }
+            run_summary.update(_safe_codex_failure_details(result))
             if lease_guard is not None and lease_guard.lost:
                 raise task_gateway.OperationLeaseLost(
                     "Codex OAuth 执行期间账号 lease 心跳丢失"

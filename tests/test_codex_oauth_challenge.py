@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Codex Protocol 登录挑战的本地响应模拟测试。"""
 import base64
+import json
 import unittest
 from contextlib import ExitStack
 from types import SimpleNamespace
@@ -177,8 +178,127 @@ class CodexOAuthChallengeTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertIn("需使用浏览器驱动", result["message"])
         self.assertNotIn("private-code", result["message"])
+        self.assertEqual(result["cause_code"], "codex_consent_unverifiable")
+        self.assertEqual(result["auth_diagnostics"]["operation"], "consent")
         select.assert_not_called()
         phone.assert_not_called()
+
+    def _consent_session(self, workspaces, *, cookie_workspaces=None, status=200, path=None):
+        cookie = None
+        if cookie_workspaces is not None:
+            cookie = base64.urlsafe_b64encode(
+                json.dumps({"workspaces": cookie_workspaces}).encode()
+            ).decode().rstrip("=") + ".signature"
+        response = SimpleNamespace(
+            status_code=status,
+            url="https://auth.openai.com" + (path or "/sign-in-with-chatgpt/codex/consent"),
+            headers={"content-type": "text/html"},
+            json=lambda: {},
+        )
+        return SimpleNamespace(
+            get_auth_navigate_headers=Mock(return_value={}),
+            get_auth_headers=Mock(return_value={}),
+            get=Mock(return_value=response),
+            post=Mock(),
+            session=SimpleNamespace(cookies=SimpleNamespace(jar=[], get=lambda _key: cookie)),
+            _codex_auth_session_payload={"workspaces": workspaces},
+        )
+
+    def test_observed_consent_selects_unique_workspace_and_validates_callback(self):
+        # 浏览器实测：consent 页提交 workspace_id，响应 JSON 直接给 callback。
+        callback = "http://localhost:1455/auth/callback?code=private-code&state=state"
+        for source in ("cache", "cookie"):
+            with self.subTest(source=source):
+                workspaces = [{"id": "private-workspace"}]
+                session = self._consent_session(
+                    workspaces if source == "cache" else [],
+                    cookie_workspaces=workspaces if source == "cookie" else None,
+                )
+                session.post.return_value = SimpleNamespace(
+                    status_code=200, headers={},
+                    json=lambda: {"continue_url": callback},
+                )
+                with self.assertLogs(codex_oauth.logger, level="INFO") as captured:
+                    step, url = codex_oauth._follow_login_continue_step(
+                        session, "/sign-in-with-chatgpt/codex/consent", "state",
+                    )
+                    self.assertEqual((step, url), ("workspace", "private-workspace"))
+                    # 确认后的提交始终使用同一 ID，不重新从变化后的缓存中选首项。
+                    session._codex_auth_session_payload = {"workspaces": [{"id": "later-workspace"}]}
+                    actual = codex_oauth._select_workspace_and_get_callback(session, "state", workspace_id=url)
+                self.assertEqual(actual, callback)
+                session.post.assert_called_once()
+                self.assertEqual(session.post.call_args.args[0], "https://auth.openai.com/api/accounts/workspace/select")
+                self.assertEqual(json.loads(session.post.call_args.kwargs["data"]), {"workspace_id": "private-workspace"})
+                diagnostic = "\n".join(captured.output)
+                for secret in ("private-workspace", "private-code", "state=state"):
+                    self.assertNotIn(secret, diagnostic)
+
+    def test_consent_missing_or_ambiguous_workspaces_still_requires_browser(self):
+        for workspaces, cookie_workspaces in (
+            ([], None),
+            ([{"id": "one"}, {"id": "two"}], None),
+            ([{"id": "one"}], [{"id": "two"}]),
+            ([{"id": "one"}], [{"id": "one"}, {"id": "two"}]),
+            ([{"id": "one"}, {}], None),
+        ):
+            with self.subTest(workspaces=workspaces, cookie_workspaces=cookie_workspaces):
+                session = self._consent_session(workspaces, cookie_workspaces=cookie_workspaces)
+                self.assertEqual(codex_oauth._follow_login_continue_step(
+                    session, "/sign-in-with-chatgpt/codex/consent", "state",
+                ), ("consent", ""))
+                session.post.assert_not_called()
+
+    def test_consent_non_200_or_explicit_challenge_does_not_select_workspace(self):
+        for status, payload in (
+            (204, {}), (302, {}),
+            (200, {"page": {"type": "login_password"}}),
+            (200, {"page": {"type": "mfa_challenge"}}),
+            (200, {"page": {"type": "phone_verification"}}),
+            (200, {"error": {"code": "challenge_pending"}}),
+        ):
+            with self.subTest(status=status, payload=payload):
+                session = self._consent_session([{"id": "one"}], status=status)
+                session.get.return_value.json = lambda: payload
+                self.assertEqual(codex_oauth._follow_login_continue_step(
+                    session, "/sign-in-with-chatgpt/codex/consent", "state",
+                ), ("consent", ""))
+                session.post.assert_not_called()
+
+    def test_consent_selected_workspace_rejects_mismatched_callback_state(self):
+        session = self._consent_session([{"id": "one"}])
+        callback = "http://localhost:1455/auth/callback?code=private-code&state=other-private-state"
+        session.post.return_value = SimpleNamespace(
+            status_code=200, headers={}, json=lambda: {"continue_url": callback},
+        )
+        step, workspace_id = codex_oauth._follow_login_continue_step(
+            session, "/sign-in-with-chatgpt/codex/consent", "expected-state",
+        )
+        self.assertEqual(step, "workspace")
+        with self.assertRaises(RuntimeError) as raised:
+            codex_oauth._select_workspace_and_get_callback(
+                session, "expected-state", workspace_id=workspace_id,
+            )
+        self.assertNotIn("private-code", str(raised.exception))
+        self.assertNotIn("other-private-state", str(raised.exception))
+
+    def test_consent_confirmed_workspace_reaches_selection_in_main_flow(self):
+        _, select, phone, _ = self._run_after_login(
+            "continue", "/sign-in-with-chatgpt/codex/consent",
+            follow_result=("workspace", "confirmed-workspace"),
+        )
+        self.assertEqual(select.call_args.kwargs, {"workspace_id": "confirmed-workspace"})
+        phone.assert_not_called()
+
+    def test_only_successful_exact_consent_page_can_select_cached_workspace(self):
+        for status, path in ((403, None), (200, "/unknown-consent")):
+            with self.subTest(status=status, path=path):
+                session = self._consent_session([{"id": "one"}], status=status, path=path)
+                with self.assertRaises(RuntimeError):
+                    codex_oauth._follow_login_continue_step(
+                        session, "/sign-in-with-chatgpt/codex/consent", "state",
+                    )
+                session.post.assert_not_called()
 
     def test_direct_callback_skips_workspace_selection(self):
         callback = "http://localhost:1455/auth/callback?code=private-code&state=state"

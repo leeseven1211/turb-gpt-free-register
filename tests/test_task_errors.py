@@ -324,6 +324,24 @@ class TaskErrorClassificationTests(unittest.TestCase):
         self.assertIsNone(missing["cause_display_code"])
         self.assertEqual("具体失败原因未记录", missing["cause_summary"])
 
+    def test_codex_consent_cause_keeps_remote_reconciliation_fence(self):
+        info = classify_task_error(
+            "Codex 授权确认页无法继续，需浏览器驱动",
+            task_type="codex_retry", task_status="attention_required",
+            result_summary={
+                "outcome": "request_unknown", "reconcile_required": True,
+                "cause_code": "codex_consent_unverifiable", "error_category": "auth",
+            },
+        )
+
+        self.assertEqual("request_unknown", info["error_code"])
+        self.assertEqual("REMOTE-001", info["display_code"])
+        self.assertEqual("manual_only", info["retryability"])
+        self.assertEqual("manual_reconcile", info["next_action"])
+        self.assertEqual("codex_consent_unverifiable", info["cause_code"])
+        self.assertEqual("OA-CODEX-CONSENT-001", info["cause_display_code"])
+        self.assertEqual("Codex 授权确认页无法继续，需浏览器驱动", info["cause_summary"])
+
     def test_request_unknown_status_outweighs_intermediate_registration_http_status(self):
         info = classify_task_error(
             "registration_failed: HTTP Error 400: 远端结果待确认",

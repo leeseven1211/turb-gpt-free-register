@@ -1076,6 +1076,11 @@ WebUI 配置页保存后会调用热加载；Roxy、Codex、邮箱、代理、�
 关闭/删除 Roxy Profile
 ```
 
+Codex Protocol 登录后若进入 `/sign-in-with-chatgpt/codex/consent`，仅在受信任页面返回 HTTP 200、
+未返回 JSON 后续状态且当前 Cookie / Auth 元数据确认唯一一致的工作区时，继续提交工作区选择并校验
+callback 的 `state`。工作区缺失或冲突时仍需浏览器驱动；任务详情会显示
+`OA-CODEX-CONSENT-001` 和具体原因，同时保留远端结果核验状态。
+
 ### Codex Roxy 授权流程
 
 ```text

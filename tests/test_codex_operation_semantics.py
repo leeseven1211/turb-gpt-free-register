@@ -1,12 +1,19 @@
 # -*- coding: utf-8 -*-
+import json
+import os
+import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from core import codex_oauth
 from core import codex_operation_service
+from core import account_task_store, record_store, task_run_log
 from core.codex_operation_service import classify_codex_operation_result
 from core.operation_runtime import CancellationToken, OperationCancelled
+from core.task_errors import classify_task_error
+from tests.support_pg import PostgresTestCase
 
 
 class CodexCredentialSemanticsTests(unittest.TestCase):
@@ -174,6 +181,113 @@ class CodexCredentialSemanticsTests(unittest.TestCase):
             result = codex_operation_service.retry_task(41, driver="api")
         self.assertFalse(result["accepted"])
         get_task.assert_not_called()
+
+
+class CodexFailureDiagnosticsPersistenceTests(PostgresTestCase):
+    def setUp(self):
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        log_root = Path(stack.enter_context(tempfile.TemporaryDirectory()))
+        stack.enter_context(patch.object(task_run_log, "_LOG_ROOT", log_root))
+        stack.enter_context(patch.object(task_run_log, "_TASK_LOG_ROOT", log_root / "tasks"))
+        stack.enter_context(patch.dict(os.environ, {"OPERATION_TASK_DB_SCHEMA": self.schema}))
+        stack.enter_context(patch.object(account_task_store, "_SCHEMA", self.schema))
+        stack.enter_context(patch.object(account_task_store, "_READY_KEY", ""))
+        account_task_store.init()
+
+    def _execute_failed_consent(self, diagnostics, *, cause_code="codex_consent_unverifiable", error_category="auth"):
+        account_id = record_store.insert_row(record_store.ACCOUNTS, {
+            "email": "consent@example.test",
+            "codex_status": "failed",
+            "account_status": "active",
+        })
+        store = codex_operation_service.operation_task_store
+        task = store.create_runtime_task(
+            task_type="codex_retry", account_id=account_id, email="consent@example.test",
+            data={"config_snapshot": {"oauth_driver": "protocol"}},
+        )
+        route = Mock(proxy_url=None, provider="test", mode="direct", region="")
+        route.public_dict.return_value = {"network_route": "test-direct"}
+        with (
+            patch.object(codex_operation_service, "_feature_ready", return_value=(True, "")),
+            patch("core.account_proxy.acquire_account_proxy", return_value=route),
+            patch.object(codex_oauth, "run_codex_oauth", return_value={
+                "ok": False,
+                "status": "failed",
+                "message": "Codex 授权确认页无法继续，需浏览器驱动",
+                "cause_code": cause_code,
+                "error_category": error_category,
+                "auth_diagnostics": diagnostics,
+                "raw_response": "synthetic-private-response",
+            }),
+        ):
+            returned = codex_operation_service._execute_run(int(task["run"]["id"]))
+        detail = store.get_task(int(task["id"]))
+        run = store.get_run(int(task["run"]["id"]))
+        return returned, detail, run
+
+    def test_consent_cause_survives_run_and_task_projection_without_secret_fields(self):
+        expected = {
+            "operation": "consent",
+            "failure_kind": "next_step_unverifiable",
+            "oauth_driver": "protocol",
+            "page_path": "/sign-in-with-chatgpt/codex/consent",
+        }
+        returned, detail, run = self._execute_failed_consent({
+            **expected,
+            "access_token": "synthetic-private-access",
+            "cookie": "synthetic-private-cookie",
+            "response_body": "synthetic-private-body",
+            "opaque_value": "synthetic-private-opaque",
+        })
+
+        self.assertEqual("attention_required", returned["status"])
+        self.assertEqual("attention_required", run["status"])
+        for summary in (run["result_summary"], detail["result_summary"], detail["runs"][-1]["result_summary"]):
+            self.assertEqual("request_unknown", summary["outcome"])
+            self.assertTrue(summary["reconcile_required"])
+            self.assertEqual("codex_consent_unverifiable", summary["cause_code"])
+            self.assertEqual("auth", summary["error_category"])
+            self.assertEqual(expected, summary["auth_diagnostics"])
+            self.assertNotIn("raw_response", summary)
+        projection = classify_task_error(
+            detail["error_message"], task_type=detail["task_type"],
+            task_status=detail["status"], error_code=detail["error_code"],
+            result_summary=detail["result_summary"],
+        )
+        self.assertEqual("REMOTE-001", projection["display_code"])
+        self.assertEqual("manual_reconcile", projection["next_action"])
+        self.assertEqual("OA-CODEX-CONSENT-001", projection["cause_display_code"])
+        self.assertEqual("Codex 授权确认页无法继续，需浏览器驱动", projection["cause_summary"])
+        audit = json.dumps({"summary": run["result_summary"], "events": detail["events"]}, ensure_ascii=False)
+        audit += Path(run["log_file"]).read_text(encoding="utf-8")
+        self.assertNotIn("synthetic-private-", audit)
+
+    def test_consent_diagnostics_reject_unrecognized_values_in_allowlisted_fields(self):
+        _, _, run = self._execute_failed_consent({
+            "operation": "synthetic-private-operation",
+            "failure_kind": "next_step_unverifiable",
+            "oauth_driver": "synthetic-private-driver",
+            "page_path": "/sign-in-with-chatgpt/codex/consent?state=synthetic-private-state",
+        }, error_category="synthetic-private-category")
+
+        summary = run["result_summary"]
+        self.assertEqual("codex_consent_unverifiable", summary["cause_code"])
+        self.assertNotIn("error_category", summary)
+        self.assertEqual({"failure_kind": "next_step_unverifiable"}, summary["auth_diagnostics"])
+        self.assertNotIn("synthetic-private-", json.dumps(summary))
+
+    def test_unknown_cause_cannot_persist_arbitrary_diagnostics(self):
+        _, _, run = self._execute_failed_consent(
+            {"operation": "consent", "response_body": "synthetic-private-body"},
+            cause_code="synthetic-private-cause",
+        )
+
+        self.assertEqual("attention_required", run["status"])
+        self.assertTrue(run["result_summary"]["reconcile_required"])
+        self.assertNotIn("cause_code", run["result_summary"])
+        self.assertNotIn("error_category", run["result_summary"])
+        self.assertNotIn("auth_diagnostics", run["result_summary"])
 
 
 class CancellationTokenTests(unittest.TestCase):
