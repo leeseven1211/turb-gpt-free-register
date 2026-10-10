@@ -228,6 +228,7 @@ def create_operations_blueprint(context: WebUIContext):
             created_to=str(request.args.get("created_to") or "").strip(),
             result=str(request.args.get("result") or "").strip(),
         )
+        svc.attach_registration_resume_retry_info(result.get("items") or [])
         for task in result.get("items") or []:
             if task.get("error_message"):
                 task["error_info"] = classify_task_error(
@@ -249,6 +250,7 @@ def create_operations_blueprint(context: WebUIContext):
         task = operation_task_store.get_task(task_id, include_events=include_events)
         if not task:
             return jsonify({"ok": False, "error": "任务不存在"}), 404
+        svc.attach_registration_resume_retry_info([task])
         if task.get("error_message"):
             task["error_info"] = classify_task_error(
                 task.get("error_message"),

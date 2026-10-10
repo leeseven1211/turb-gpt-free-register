@@ -2395,6 +2395,8 @@ def _roxy_resume_facts_match(
     """只允许同一待验证账号、原邮箱和原 Attempt 的续跑。"""
     if not account or not attempt:
         return False
+    if not root_job:
+        return False
     extra = _account_extra(account)
     registration_checkpoint = str(
         extra.get("registration_checkpoint")
@@ -2406,6 +2408,8 @@ def _roxy_resume_facts_match(
     if not _pending_registration_password(account):
         return False
     try:
+        if int(root_job.get("id") or 0) != root_id:
+            return False
         account_id = int(account.get("id"))
         attempt_id = int(attempt.get("id"))
         source_attempt_id = int(source.get("attempt_id"))
@@ -2474,6 +2478,7 @@ def _build_retry_info(
     successful_retry: dict | None,
     attempt: dict | None = None,
     attempt_read_failed: bool = False,
+    root_job: dict | None = None,
 ) -> dict:
     """纯函数版本的任务重试投影；列表页可批量准备关联数据后复用。"""
     status = str(job.get("status") or "")
@@ -2503,15 +2508,16 @@ def _build_retry_info(
         return info
 
     attempt_target = str((attempt or {}).get("target_status") or "").strip().lower()
+    root_id = _root_job_id_for_job(job)
+    resume_root = job if root_id == int(job.get("id") or 0) else root_job
     if status == "manual_reconcile" or attempt_target == "manual_reconcile":
         info["retry_reason"] = "注册 Attempt 需要人工对账，不能重新提交注册"
         return info
     if status == "request_unknown" or attempt_target == "request_unknown":
-        root_id = _root_job_id_for_job(job)
         can_resume = bool(
             account
-            and root_id == int(job.get("id") or 0)
-            and _roxy_resume_facts_match(job, job, account, attempt, root_id=root_id)
+            and resume_root
+            and _roxy_resume_facts_match(job, resume_root, account, attempt, root_id=root_id)
         )
         if not can_resume:
             info["retry_reason"] = "远端注册结果待核验，不能从头重跑；仅同一 Attempt 的待验证账号可续跑"
@@ -2541,10 +2547,18 @@ def _build_retry_info(
         })
         return info
     pending_password = _pending_registration_password(account)
+    pending_checkpoint = str(
+        _account_extra(account).get("registration_checkpoint")
+        or (account or {}).get("registration_checkpoint")
+        or (account or {}).get("registration_target_status") or ""
+    ).strip().lower()
+    if (account and not str(account.get("access_token") or "").strip()
+            and pending_checkpoint == "email_verification_pending" and not pending_password):
+        info["retry_reason"] = "待验证账号缺少已保存密码，不能续跑"
+        return info
     if account and pending_password:
-        root_id = _root_job_id_for_job(job)
-        if root_id != int(job.get("id") or 0) or not _roxy_resume_facts_match(
-            job, job, account, attempt, root_id=root_id,
+        if not resume_root or not _roxy_resume_facts_match(
+            job, resume_root, account, attempt, root_id=root_id,
         ):
             info["retry_reason"] = "待验证账号与原注册 Attempt 未核验，不能续跑"
             return info
@@ -2703,13 +2717,39 @@ def get_retry_info(job: dict, *, account_override: dict | None = None) -> dict:
         account_override if account_override is not None else _account_for_job(job)
     )
     attempt, attempt_read_failed = _read_linked_attempt_for_job(job)
+    roots = _retry_roots_for_jobs([job], {int(job.get("id") or 0): account})
     return _build_retry_info(
         job,
         account=account,
         successful_retry=successful_retry,
         attempt=attempt,
         attempt_read_failed=attempt_read_failed,
+        root_job=roots.get(_root_job_id_for_job(job)),
     )
+
+
+def _retry_jobs_by_ids(job_ids: list[int]) -> dict[int, dict]:
+    """批量读取重试来源，避免任务中心每行单独查询。"""
+    if not job_ids:
+        return {}
+    from core import record_store
+
+    rows = record_store.list_rows(record_store.JOBS, where='id = ANY(%s)', params=(job_ids,))
+    return {int(row["id"]): row for row in rows}
+
+
+def _retry_roots_for_jobs(jobs: list[dict], accounts: dict) -> dict[int, dict]:
+    """子任务续跑必须核对根记录；缺失或读取失败时保持拒绝。"""
+    ids = sorted({
+        _root_job_id_for_job(job) for job in jobs
+        if _root_job_id_for_job(job) != int(job.get("id") or 0)
+        and _pending_registration_password(accounts.get(int(job.get("id") or 0)))
+    })
+    try:
+        return _retry_jobs_by_ids(ids)
+    except Exception:
+        logger.exception("读取续跑根任务失败，保持身份校验拒绝")
+        return {}
 
 
 def get_retry_info_bulk(jobs: list[dict]) -> dict[int, dict]:
@@ -2722,6 +2762,7 @@ def get_retry_info_bulk(jobs: list[dict]) -> dict[int, dict]:
     successful_by_job = db.get_successful_retries_for_jobs(terminal)
     needs_accounts = [job for job in terminal if int(job.get("id") or 0) not in successful_by_job]
     accounts_by_job = db.get_accounts_for_jobs(needs_accounts)
+    roots = _retry_roots_for_jobs(terminal, accounts_by_job)
     root_ids = sorted({
         root_job_id
         for job in terminal
@@ -2751,9 +2792,53 @@ def get_retry_info_bulk(jobs: list[dict]) -> dict[int, dict]:
             successful_retry=successful_by_job.get(int(job.get("id") or 0)),
             attempt=attempts_by_root.get(_root_job_id_for_job(job)),
             attempt_read_failed=_root_job_id_for_job(job) in attempt_read_failed_roots,
+            root_job=roots.get(_root_job_id_for_job(job)),
         )
         for job in rows
     }
+
+
+def attach_registration_resume_retry_info(tasks: list[dict]) -> None:
+    """任务中心继续注册按钮使用执行入口的同一套重试校验。"""
+    selected: list[tuple[dict, int]] = []
+    for task in tasks:
+        if task.get("task_type") != "registration_resume" or task.get("source_system") != "registration_chains":
+            continue
+        if task.get("target_status") not in {"email_verification_pending", "request_unknown", "attention_required", "manual_reconcile"}:
+            continue
+        task["retryable"] = False
+        if task.get("status") in {"queued", "running", "stopping", "cancelling", "settling", "waiting"}:
+            task["next_actions"] = []
+            task["retry_reason"] = "任务仍在执行"
+            continue
+        source_id = next((
+            action.get("source_job_id") for action in task.get("next_actions") or []
+            if isinstance(action, dict) and action.get("action") == "registration_resume"
+        ), None)
+        if not source_id:
+            runs = task.get("runs") or []
+            latest = runs[-1] if runs else {}
+            source_id = latest.get("source_id") if latest.get("source_system") == "registration_jobs" else None
+        if not source_id:
+            source_id = str(task.get("source_id") or "").split(":", 1)[0]
+        task["next_actions"] = []
+        task["retry_reason"] = "注册任务来源缺失，不能核验续跑身份"
+        if str(source_id).isdigit():
+            selected.append((task, int(source_id)))
+    if not selected:
+        return
+    try:
+        jobs = _retry_jobs_by_ids(sorted({ident for _, ident in selected}))
+        infos = get_retry_info_bulk(list(jobs.values()))
+    except Exception:
+        logger.exception("任务中心读取注册重试能力失败，暂不展示续跑按钮")
+        return
+    for task, ident in selected:
+        info = infos.get(ident) or {}
+        task["retry_reason"] = info.get("retry_reason") or task["retry_reason"]
+        if info.get("retryable") and info.get("retry_action") == "registration_resume":
+            task["retryable"] = True
+            task["next_actions"] = [{"action": "registration_resume", "label": "继续邮箱验证", "source_job_id": ident}]
 
 
 def retry_job(

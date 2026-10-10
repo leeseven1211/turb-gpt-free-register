@@ -135,6 +135,16 @@ class RegistrationRetryDriverTests(unittest.TestCase):
         self.assertIsNotNone(create_call)
         executor.submit.assert_not_called()
 
+    def test_roxy_resume_reuses_active_same_driver_without_resubmission(self):
+        source, account, attempt = self._facts()
+        active = {"id": 22, "status": "running", "job_type": "registration_resume",
+                  "config_snapshot": {"registration_driver": "roxy"}}
+        result, _, executor = self._retry(source, account, attempt, child=active)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["reused"])
+        self.assertEqual(result["job"]["id"], 22)
+        executor.submit.assert_not_called()
+
     def test_single_job_retry_api_passes_roxy_choice(self):
         client = create_app(auth_code="test-auth").test_client()
         with patch("webui.app.svc.retry_job", return_value={"ok": True, "created": True}) as retry:

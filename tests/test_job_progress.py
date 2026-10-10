@@ -191,6 +191,7 @@ class JobProgressTests(PostgresTestCase):
     def test_service_retry_inherits_original_batch_slot(self):
         source = {
             "id": 21, "status": "partial_success", "job_type": "registration",
+            "attempt_id": 70, "account_id": 44,
             "batch_id": "original-batch", "batch_index": 7, "batch_size": 10,
             "batch_workers": 5, "email_source": "icloud_hide", "email": "pending@example.com",
         }
@@ -210,6 +211,11 @@ class JobProgressTests(PostgresTestCase):
                 "retryable": True, "retry_action": "registration_resume",
             }),
             patch.object(registration_service, "_account_for_job", return_value=account),
+            patch.object(registration_service, "_read_linked_attempt_for_job", return_value=({
+                "id": 70, "source_root_job_id": 21, "account_id": 44,
+                "email_snapshot": "pending@example.com", "checkpoint": "otp_started",
+                "target_status": "email_verification_pending",
+            }, False)),
             patch.object(db, "create_retry_job", return_value=(retry_row, True)) as create_retry,
             patch.object(registration_service, "get_executor", return_value=executor),
         ):
@@ -550,6 +556,7 @@ class JobProgressTests(PostgresTestCase):
     def test_pending_email_verification_account_resumes_saved_login(self):
         job = {
             "id": 11,
+            "attempt_id": 70, "email": "pending@example.com",
             "status": "partial_success",
             "account_id": 44,
             "progress_steps": {"email_otp": {"state": "failed"}},
@@ -565,6 +572,12 @@ class JobProgressTests(PostgresTestCase):
         }
         with patch.object(db, "get_successful_retry_for_job", return_value=None), patch.object(
             registration_service, "_account_for_job", return_value=account
+        ), patch.object(
+            registration_service, "_read_linked_attempt_for_job", return_value=({
+                "id": 70, "source_root_job_id": 11, "account_id": 44,
+                "email_snapshot": "pending@example.com", "checkpoint": "otp_started",
+                "target_status": "email_verification_pending",
+            }, False)
         ):
             info = registration_service.get_retry_info(job)
 
