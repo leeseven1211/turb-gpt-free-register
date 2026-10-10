@@ -127,6 +127,41 @@ function taskProgressStepStatus(step) {
 function taskProgressVisibleSteps(steps) {
   return (Array.isArray(steps) ? steps : []).filter(step => taskProgressStepStatus(step) !== 'skipped');
 }
+function taskProgressCompactLabel(step) {
+  return {authenticate:'登录验证', set_twofa:'配置 2FA'}[step?.id || step?.key]
+    || step?.label || step?.name || step?.id || step?.key || '步骤';
+}
+function taskProgressStepDuration(step, now = Date.now()) {
+  const start = Date.parse(step?.started_at || '');
+  const end = Date.parse(step?.completed_at || '');
+  const running = taskProgressStepStatus(step) === 'running';
+  const recorded = step?.duration_ms == null || step.duration_ms === '' ? NaN : Number(step.duration_ms);
+  const ms = running && Number.isFinite(start) ? now - start
+    : Number.isFinite(recorded) ? recorded : Number.isFinite(start) && Number.isFinite(end) ? end - start : NaN;
+  if (!Number.isFinite(ms) || ms < 0) return '—';
+  const seconds = Math.round(ms / 100) / 10;
+  if (seconds < 60) return `${seconds}秒`;
+  const whole = Math.floor(seconds);
+  if (whole < 3600) return `${Math.floor(whole / 60)}分${whole % 60}秒`;
+  return `${Math.floor(whole / 3600)}时${Math.floor(whole % 3600 / 60)}分`;
+}
+function taskProgressStepTooltip(step) {
+  const attempts = Array.isArray(step?.attempts) ? step.attempts : [];
+  const children = taskProgressVisibleSteps(step?.children);
+  return [
+    `${step?.label || step?.name || step?.id || step?.key || '步骤'} · ${taskProgressStatusLabel(taskProgressStepStatus(step))}`,
+    step?.reason || step?.message || step?.detail || '',
+    `开始：${step?.started_at ? formatDateTime(step.started_at) : '—'}`,
+    `结束：${step?.completed_at ? formatDateTime(step.completed_at) : '—'}`,
+    `耗时：${taskProgressStepDuration(step)}`,
+    step?.raw_stages?.length ? `原始阶段：${step.raw_stages.join('、')}` : '',
+    attempts.length ? `\n尝试记录（${attempts.length}）` : '',
+    ...attempts.map((attempt, index) => `${index + 1}. ${taskProgressStatusLabel(taskProgressStepStatus(attempt))}${attempt.created_at ? ` · ${formatDateTime(attempt.created_at)}` : ''}${attempt.message ? `\n${attempt.message}` : ''}`),
+    children.length ? `\n子步骤（${children.length}）` : '',
+    ...children.map(child => `${child.label || child.id} · ${taskProgressStatusLabel(taskProgressStepStatus(child))} · ${taskProgressStepDuration(child)}${child.reason || child.message ? `\n${child.reason || child.message}` : ''}`),
+    '\n点击步骤查看对应日志',
+  ].filter(Boolean).join('\n');
+}
 function taskProgressStepMatches(step, filter) {
   if (!filter) return true;
   const wanted = String(filter);

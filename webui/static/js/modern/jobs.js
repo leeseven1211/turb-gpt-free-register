@@ -321,30 +321,13 @@ function jobProgressStepStatusLabel(step) {
 
 function jobProgressStepMarkup(step, index, jobId) {
   const state = jobProgressStepState(step);
-  const terminal = ['success', 'failed', 'skipped', 'stopped', 'cancelled', 'interrupted', 'not_executed'].includes(state);
-  const durationMs = step?.duration_ms == null ? NaN : Number(step.duration_ms);
-  const duration = Number.isFinite(durationMs)
-    ? `${Math.max(0, Math.round(durationMs / 1000))}秒`
-    : state === 'running' ? formatProgressDuration(step?.started_at) : step?.completed_at ? formatProgressDuration(step?.started_at, step.completed_at) : '';
-  const reason = step?.message || step?.reason || step?.detail || step?.error_info?.message || '';
-  const rawStages = Array.isArray(step?.raw_stages) ? step.raw_stages : [];
-  const evidence = step?.evidence && typeof step.evidence === 'object' ? step.evidence : null;
-  const attempts = Array.isArray(step?.attempts) ? step.attempts : [];
-  const detail = [
-    rawStages.length ? `<div>原始阶段：${esc(rawStages.join('、'))}</div>` : '',
-    step?.started_at ? `<div>开始：${esc(formatDateTime(step.started_at))}</div>` : '',
-    step?.completed_at ? `<div>结束：${esc(formatDateTime(step.completed_at))}</div>` : '',
-    duration ? `<div>耗时：${esc(duration)}</div>` : '',
-    reason ? `<div>原因：${esc(reason)}</div>` : '',
-    step?.event_ids?.length ? `<div>事件数：${esc(step.event_ids.length)}</div>` : '',
-    evidence ? `<details><summary>技术证据</summary><pre>${esc(JSON.stringify(evidence, null, 2))}</pre></details>` : '',
-    attempts.length ? `<details><summary>尝试记录（${attempts.length}）</summary><pre>${esc(JSON.stringify(attempts, null, 2))}</pre></details>` : '',
-  ].filter(Boolean).join('');
+  const duration = taskProgressStepDuration(step);
   const symbol = state === 'success' ? '✓' : state === 'failed' ? '×' : state === 'stopped' ? '!' : state === 'running' ? '…' : String(index + 1);
-  return `<div class="batch-progress-v2-step is-${attrEsc(state)}" role="button" tabindex="0" data-progress-step="${attrEsc(step.key)}" data-progress-step-job="${attrEsc(jobId)}" aria-label="${esc(step.label)}：${esc(jobProgressStepStatusLabel(step))}">
+  return `<div class="batch-progress-v2-step is-${attrEsc(state)}" role="button" tabindex="0" data-progress-step="${attrEsc(step.key)}" data-progress-step-job="${attrEsc(jobId)}" data-accounts-tooltip="${attrEsc(taskProgressStepTooltip(step))}" aria-label="${esc(step.label)}：${esc(jobProgressStepStatusLabel(step))}，耗时 ${esc(duration)}，点击查看日志">
     <span class="batch-progress-v2-node" aria-hidden="true">${symbol}</span>
-    <span class="batch-progress-v2-step-label">${esc(step.label)}<span class="batch-progress-v2-step-state">${esc(jobProgressStepStatusLabel(step))}</span></span>
-    ${detail ? `<details class="batch-progress-v2-step-detail"><summary>详情</summary><div>${detail}</div></details>` : ''}
+    <span class="batch-progress-v2-step-label">${esc(taskProgressCompactLabel(step))}</span>
+    <span class="batch-progress-v2-step-state">${esc(jobProgressStepStatusLabel(step))}</span>
+    <span class="batch-progress-v2-step-duration"${state === 'running' && step.started_at ? ` data-progress-duration-start="${attrEsc(step.started_at)}" data-progress-duration-prefix="耗时 "` : ''}>耗时 ${esc(duration)}</span>
   </div>`;
 }
 
@@ -464,6 +447,10 @@ function renderBatchProgress() {
     return;
   }
   batchProgressRenderSignature = nextRenderSignature;
+  const previousTooltip = typeof _accountsTooltipTarget !== 'undefined' && _accountsTooltipTarget?.closest?.('#batchProgressListV2') ? _accountsTooltipTarget.dataset : null;
+  const tooltipView = previousTooltip ? rememberTaskTooltipView() : null;
+  const previousFocus = document.activeElement?.closest?.('#batchProgressListV2 [data-progress-step]')?.dataset;
+  if (previousTooltip) _hideAccountsTooltip();
   list.innerHTML = items.map((job, itemIndex) => {
     const unifiedSnapshot = jobProgressSnapshot(job);
     const displayStages = jobProgressMainSteps(job, stages);
@@ -544,11 +531,17 @@ function renderBatchProgress() {
         </div>
       </div>
       ${attemptHistory}
-      ${unified ? '<div class="batch-progress-v2-observation-note">按实际执行记录排列，未执行步骤在后</div>' : '<div class="batch-progress-v2-observation-note">历史兼容数据未提供统一 Run 进度，步骤仅显示已保存证据</div>'}
+      ${unified ? '<div class="batch-progress-v2-observation-note">按实际执行记录排列 · 悬浮查看详情，点击查看日志</div>' : '<div class="batch-progress-v2-observation-note">历史兼容数据未提供统一 Run 进度，步骤仅显示已保存证据</div>'}
       <div class="batch-progress-v2-steps-scroll"><div class="batch-progress-v2-steps" style="--batch-progress-step-count:${Math.max(displayStages.length, 1)}">${stepHtml}</div></div>
     </article>`;
   }).join('');
   refreshBatchProgressDurations();
+  const cards = Array.from(list.querySelectorAll('[data-progress-step]'));
+  const findPrevious = data => data && cards.find(card => card.dataset.progressStepJob === data.progressStepJob && card.dataset.progressStep === data.progressStep);
+  const focus = findPrevious(previousFocus);
+  if (focus) focus.focus({preventScroll:true});
+  const tooltip = findPrevious(previousTooltip);
+  if (tooltip) restoreTaskTooltipView(tooltip, tooltipView);
 }
 
 function renderJobs() {

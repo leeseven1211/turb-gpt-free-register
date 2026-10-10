@@ -53,7 +53,7 @@ function htmlEscape(value) {
 }
 
 function runVm(source, context = {}) {
-  const sandbox = {Intl, Date, ...context};
+  const sandbox = {Intl, Date, taskProgressStatusLabel: String, ...context};
   vm.runInNewContext(source, sandbox);
   return sandbox;
 }
@@ -353,21 +353,49 @@ test('多步骤按宽度紧凑排列，窄屏双卡分页仍保持实际顺序',
   assert.deepEqual(result.mobileIds, Array.from({length: 17}, (_, index) => `step-${index}`));
 });
 
-test('步骤卡片按服务端展示状态渲染，详情按钮与筛选入口分开', () => {
+test('步骤卡片直接显示耗时，悬浮详情并保留日志筛选入口', () => {
   const sandbox = runVm(`${progressFunctions}
-    result = accountTaskProgressStepMarkup({id: 'preflight', label: '<配置预检>', state: 'pending', display_status: 'record_incomplete', reason: '旧记录漏收口', attempts: [{state: 'running'}], children: [{id: 'child'}]}, 0);`, {
+    result = accountTaskProgressStepMarkup({id: 'preflight', label: '<配置预检>', state: 'pending', display_status: 'record_incomplete', reason: '旧记录漏收口', duration_ms: 1200, attempts: [{state: 'running'}], children: [{id: 'child'}]}, 0);`, {
     ACCOUNT_TASK_PROGRESS_STATUS_LABELS: {record_incomplete: '记录不完整'},
     TASK_PROGRESS_STATUS_LABELS: {},
     esc: htmlEscape, attrEsc: htmlEscape,
     taskProgressStepStatus: step => step.state,
+    taskProgressStatusLabel: state => state,
+    formatTaskDuration: value => `${value}ms`,
   });
   assert.match(sandbox.result, /is-record_incomplete/);
   assert.match(sandbox.result, /记录不完整/);
   assert.match(sandbox.result, /data-account-task-step-filter="preflight"/);
-  assert.match(sandbox.result, /data-account-task-step-details="preflight" data-step-detail-tab="time"/);
-  assert.match(sandbox.result, /data-step-detail-tab="attempts"/);
-  assert.match(sandbox.result, /data-step-detail-tab="children"/);
-  assert.doesNotMatch(sandbox.result, /<details|<pre|is-unconfirmed|<配置预检>/);
+  assert.match(sandbox.result, /data-accounts-tooltip=/);
+  assert.match(sandbox.result, /耗时 1.2秒/);
+  assert.doesNotMatch(sandbox.result, /data-account-task-step-details|<details|<pre|is-unconfirmed|<配置预检>/);
+});
+
+test('注册步骤显示耗时和安全悬浮信息，整块卡片仍可查看日志', () => {
+  const sandbox = runVm(`${batchHelpers}
+    result = jobProgressStepMarkup({key:'network', label:'分配网络', state:'success', duration_ms:2200, started_at:'2026-10-10T00:00:00Z', completed_at:'2026-10-10T00:00:02.200Z', message:'<线路就绪>'},0,77);`, {
+    taskProgressStatusLabel: () => '已完成', formatDateTime: String,
+    esc: htmlEscape, attrEsc: htmlEscape,
+  });
+  assert.match(sandbox.result, /耗时 2.2秒/);
+  assert.match(sandbox.result, /data-accounts-tooltip=/);
+  assert.match(sandbox.result, /开始：2026-10-10T00:00:00Z/);
+  assert.match(sandbox.result, /&lt;线路就绪&gt;/);
+  assert.match(sandbox.result, /data-progress-step-job="77"/);
+  assert.doesNotMatch(sandbox.result, /<details|<summary|<线路就绪>/);
+});
+
+test('执行中的耗时使用当前时间，历史未收口的步骤不继续计时', () => {
+  const sandbox = runVm(`${stepFunctions}
+    const started_at='2026-10-10T00:00:00Z';
+    const now=Date.parse(started_at)+42000;
+    result = [
+      taskProgressStepDuration({state:'running',started_at,duration_ms:1000},now),
+      taskProgressStepDuration({state:'pending',display_status:'record_incomplete',started_at},now),
+      taskProgressStepDuration({state:'success',duration_ms:0},now),
+      taskProgressStepDuration({state:'pending'},now),
+    ];`);
+  assert.deepEqual(Array.from(sandbox.result), ['42秒','—','0秒','—']);
 });
 
 test('旧 Run 弹窗在运行切换时关闭，恢复父弹窗的交互状态', () => {

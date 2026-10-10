@@ -325,7 +325,27 @@ def _result(steps: list[dict[str, Any]], run: dict[str, Any], observations: dict
             children.append({key: _safe_message(child.get(key)) if key == "error_message" else child.get(key) for key in ("task_id", "run_id", "task_type", "status", "accepted", "busy", "failure_stage", "failure_event_id", "error_code", "error_message") if child.get(key) is not None})
         elif isinstance(child, (int, str)):
             children.append({"task_id": child})
-    return {"status": item["display_status"], "state": item["state"], "message": _safe_message(run.get("message") or run.get("error_message")) or "", "child_tasks": children}
+    outcome = {"status": item["display_status"], "state": item["state"], "message": _safe_message(run.get("message") or run.get("error_message")) or "", "child_tasks": children}
+    if run_status not in authoritative and not complete:
+        # 整体任务正在执行，不代表末尾的结果阶段已经开始。
+        _state(item, "pending", reason="等待前序步骤结束")
+        item["evidence"] = "unobserved"
+    return outcome
+
+
+def _skip_disabled_registration_steps(steps: list[dict[str, Any]], task_type: str, run: dict[str, Any], recorded_steps: set[str]) -> None:
+    """按本次执行保存的开关提前隐藏分支，已发生的执行证据优先。"""
+    if task_type not in {"registration", "registration_resume"}:
+        return
+    data = run.get("data") if isinstance(run.get("data"), dict) else {}
+    config = run.get("config_snapshot") or data.get("config_snapshot")
+    if not isinstance(config, dict):
+        return
+    for step_id, key in (("codex", "codex_enabled"), ("set_twofa", "twofa_enabled"), ("plan_check", "plan_check_enabled")):
+        item = _find_step(steps, step_id)
+        if config.get(key) is False and item and step_id not in recorded_steps and not item.get("started_at"):
+            _state(item, "skipped", reason="本次任务配置未启用该步骤")
+            item["evidence"] = "config_snapshot"
 
 
 def _current(steps: list[dict[str, Any]], activity: list[dict[str, Any]], run_status: str = "") -> dict[str, Any] | None:
@@ -647,6 +667,7 @@ def build_progress_snapshot(task_id: int, run_id: int, task_type: str, run: dict
                     child["reason"] = "此前尝试失败，后续重试已恢复；原失败记录保留"
     outcome = _result(ordered, run_value, observations)
     _close_terminal_steps(ordered, run=run_value, attempts=attempts, template_order=template_order, recorded_steps=recorded_steps, unmapped_activity=unmapped_activity)
+    _skip_disabled_registration_steps(ordered, task_key, run_value, recorded_steps)
     source = "explicit" if explicit else "legacy_derived" if activity else "insufficient_evidence"
     failure = _failure(task_key, run_value, attempts, activity)
     payload = {"steps": ordered, "run": {"id": run_value.get("id"), "status": run_value.get("status"), "progress_stage": run_value.get("progress_stage"), "result_summary": run_value.get("result_summary") or {}}, "events": attempts}

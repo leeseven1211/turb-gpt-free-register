@@ -33,6 +33,39 @@ def _step(snapshot, step_id):
     return next(item for item in snapshot["main_steps"] if item["id"] == step_id)
 
 
+def test_result_waits_for_its_own_event_while_run_is_active():
+    for status in ("queued", "running", "waiting", "settling", "stopping"):
+        snapshot = build_progress_snapshot(1, 2, "registration", _run(status), [_event(1, "login", "running")])
+        assert _step(snapshot, "result")["display_status"] == "pending"
+        assert not _step(snapshot, "result")["active"]
+        assert snapshot["outcome"]["status"] == status
+    snapshot = build_progress_snapshot(1, 2, "registration", _run(), [_event(1, "complete", "running")])
+    assert _step(snapshot, "result")["display_status"] == "running"
+
+
+def test_registration_disabled_branches_are_skipped_before_execution():
+    for task_type in ("registration", "registration_resume"):
+        for status in ("queued", "running", "success", "failed"):
+            run = _run(status, data={"config_snapshot": {
+                "codex_enabled": False, "twofa_enabled": False, "plan_check_enabled": False,
+            }})
+            snapshot = build_progress_snapshot(1, 2, task_type, run, [])
+            for step_id in ("codex", "set_twofa", "plan_check"):
+                step = _step(snapshot, step_id)
+                assert step["display_status"] == "skipped"
+                assert step["evidence"] == "config_snapshot"
+                assert not step["event_ids"] and step["started_at"] is None
+
+
+def test_registration_config_does_not_hide_observed_or_unknown_branches():
+    for state in ("running", "success", "failed", None):
+        snapshot = build_progress_snapshot(1, 2, "registration", _run(data={"config_snapshot": {"codex_enabled": False}}), [_event(1, "codex", state)])
+        assert _step(snapshot, "codex")["display_status"] != "skipped"
+    for config in ({}, {"codex_enabled": True}, {"codex_enabled": None}):
+        snapshot = build_progress_snapshot(1, 2, "registration", _run(data={"config_snapshot": config}), [])
+        assert _step(snapshot, "codex")["display_status"] == "pending"
+
+
 def test_all_task_types_share_v2_template_and_result_tail():
     for task_type in TASK_TYPES:
         flow = flow_for(task_type)
