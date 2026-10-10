@@ -7,6 +7,17 @@ from unittest.mock import patch
 from core import forward_imap_client as client
 
 
+class _Clock:
+    def __init__(self):
+        self.value = 0.0
+
+    def monotonic(self):
+        return self.value
+
+    def sleep(self, seconds):
+        self.value += seconds
+
+
 class ForwardIMAPTests(unittest.TestCase):
     def test_messages_use_imap_internaldate_as_received_time(self):
         msg = EmailMessage()
@@ -50,7 +61,7 @@ class ForwardIMAPTests(unittest.TestCase):
 
         with patch.object(
             client,
-            "_messages_for_recipient",
+            "_iter_messages_for_recipient",
             return_value=[(old_message, target, "4013")],
         ):
             result = client._latest_forwarded_otp(Mail(), target, clicked_at)
@@ -73,7 +84,7 @@ class ForwardIMAPTests(unittest.TestCase):
 
         with patch.object(
             client,
-            "_messages_for_recipient",
+            "_iter_messages_for_recipient",
             return_value=[(new_message, target, "4014")],
         ):
             result = client._latest_forwarded_otp(Mail(), target, clicked_at)
@@ -174,7 +185,7 @@ class ForwardIMAPTests(unittest.TestCase):
             patch.object(client, "_connect", return_value=Mail()),
             patch.object(
                 client,
-                "_messages_for_recipient",
+                "_iter_messages_for_recipient",
                 return_value=[(message, "alias@icloud.com", "1479")],
             ),
         ):
@@ -213,19 +224,22 @@ class ForwardIMAPTests(unittest.TestCase):
             def logout(self):
                 return None
 
+        clock = _Clock()
         with (
             patch.object(client, "_connect", return_value=Mail()),
             patch.object(client, "_latest_forwarded_otp", return_value=None),
-            patch.object(client.time, "monotonic", side_effect=[0, 0, 1, 1]),
+            patch.object(client.time, "monotonic", side_effect=clock.monotonic),
+            patch.object(client.time, "sleep", side_effect=clock.sleep),
         ):
             with self.assertRaises(client.ForwardIMAPNoMailTimeout):
                 client._fetch_latest_otp_local("alias@icloud.com", 0, max_wait=1)
 
     def test_local_timeout_after_connection_failure_is_not_no_mail_timeout(self):
+        clock = _Clock()
         with (
             patch.object(client, "_connect", side_effect=client.ForwardIMAPError("offline")),
-            patch.object(client.time, "monotonic", side_effect=[0, 0, 1, 1]),
-            patch.object(client.time, "sleep"),
+            patch.object(client.time, "monotonic", side_effect=clock.monotonic),
+            patch.object(client.time, "sleep", side_effect=clock.sleep),
         ):
             with self.assertRaises(client.ForwardIMAPError) as raised:
                 client._fetch_latest_otp_local("alias@icloud.com", 0, max_wait=1)

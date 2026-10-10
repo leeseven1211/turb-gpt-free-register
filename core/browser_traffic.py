@@ -26,6 +26,11 @@ _HTTP_KINDS = {"http", "http_request", "network_request", "request"}
 _WEBSOCKET_KINDS = {"websocket_frame", "websocket_message"}
 _TRAFFIC_WINDOWS = frozenset({"all", "1h", "24h", "7d"})
 _BEIJING = timezone(timedelta(hours=8))
+_CACHE_COUNTER_KEYS = (
+    "cache_local_request_count", "cache_native_request_count",
+    "cache_local_served_bytes", "cache_avoided_upstream_bytes",
+    "cache_fill_download_bytes", "cache_fill_request_count",
+)
 
 
 def _now_iso() -> str:
@@ -197,6 +202,7 @@ def persist_summary(
         registration_job_id=registration_job_id,
         route_attempt_no=route_attempt_no,
     ))
+    payload.update({key: _int_value(summary.get(key)) for key in _CACHE_COUNTER_KEYS})
     return record_store.upsert_row_by(TRAFFIC_SUMMARIES, "summary_key", payload)
 
 
@@ -495,16 +501,28 @@ class _SummaryOnlyCDPSession:
         self.unknown_count = 0
         self.resource_type_bytes: Counter[str] = Counter()
         self.resource_type_requests: Counter[str] = Counter()
+        self.cache_local_request_count = 0
+        self.cache_native_request_count = 0
+        self.cache_local_served_bytes = 0
 
     def record_network(self, record: Mapping[str, Any]) -> None:
         item = record if isinstance(record, Mapping) else {}
         self.request_count += 1
         blocked_by_data_saver = bool(item.get("_data_saver_blocked"))
         local_resource = _is_local_browser_resource(item.get("url"))
-        upload_bytes = 0 if blocked_by_data_saver or local_resource else (
+        cache_source = str(item.get("cache_source") or "network")
+        locally_fulfilled = cache_source == "local"
+        if locally_fulfilled:
+            self.cache_local_request_count += 1
+            self.cache_local_served_bytes += _int_value(item.get("encoded_data_length"))
+        elif cache_source == "native":
+            self.cache_native_request_count += 1
+        elif cache_source == "unknown":
+            self.unknown_count += 1
+        upload_bytes = 0 if blocked_by_data_saver or local_resource or locally_fulfilled else (
             _int_value(item.get("request_body_bytes")) or _content_size(item.get("request_body"))
         )
-        download_bytes = 0 if blocked_by_data_saver or local_resource else _int_value(item.get("encoded_data_length"))
+        download_bytes = 0 if blocked_by_data_saver or local_resource or locally_fulfilled else _int_value(item.get("encoded_data_length"))
         self.upload_bytes += upload_bytes
         self.download_bytes += download_bytes
         resource_type = str(item.get("resource_type") or "other").strip().lower() or "other"
@@ -550,6 +568,9 @@ class _SummaryOnlyCDPSession:
             "unknown_count": self.unknown_count,
             "resource_type_bytes": dict(sorted(self.resource_type_bytes.items())),
             "resource_type_requests": dict(sorted(self.resource_type_requests.items())),
+            "cache_local_request_count": self.cache_local_request_count,
+            "cache_native_request_count": self.cache_native_request_count,
+            "cache_local_served_bytes": self.cache_local_served_bytes,
         }
 
 
@@ -571,6 +592,7 @@ class RoxyTrafficCapture:
         self.summary_key = f"roxy:{uuid.uuid4().hex}"
         self.session = _SummaryOnlyCDPSession(getattr(opened, "profile_id", ""))
         self.data_saver = None
+        self.public_asset_cache = None
         self.correlation: dict[str, Any] = {}
         self.update_context(**dict(correlation or {}))
         self.collector = None
@@ -593,6 +615,12 @@ class RoxyTrafficCapture:
         self.data_saver = data_saver
         if self.collector is not None:
             self.collector.data_saver = data_saver
+
+    def set_public_asset_cache(self, cache: Any) -> None:
+        """本地回放与匿名填充分别计量，避免把 CDP 本地传输算成代理下载。"""
+        self.public_asset_cache = cache
+        if self.collector is not None:
+            self.collector.public_asset_cache = cache
 
     def update_context(self, **correlation: Any) -> None:
         for key in self._CORRELATION_KEYS:
@@ -624,6 +652,29 @@ class RoxyTrafficCapture:
                 )
             else:
                 summary = self.session.summary()
+                if self.public_asset_cache is not None:
+                    try:
+                        stats = self.public_asset_cache.snapshot()
+                    except Exception:
+                        stats = {}
+                        summary["unknown_count"] += 1
+                    if stats.get("anonymous_accounting_complete") is False:
+                        summary["unknown_count"] += 1
+                        logger.warning("[浏览器流量] 公共缓存填充尚未完全收口，下载字节为已观察下界")
+                    if stats.get("replay_accounting_complete") is False:
+                        summary["unknown_count"] += 1
+                        logger.warning("[浏览器流量] 公共缓存回放未完全确认，保留可观测字节并标记计量未知")
+                    fill_bytes = _int_value(stats.get("anonymous_fill_bytes"))
+                    summary["download_bytes"] += fill_bytes
+                    summary["total_bytes"] += fill_bytes
+                    summary["cache_fill_download_bytes"] = fill_bytes
+                    summary["cache_fill_request_count"] = _int_value(stats.get("anonymous_requests"))
+                    summary["cache_avoided_upstream_bytes"] = _int_value(stats.get("avoided_upstream_bytes"))
+                    logger.info(
+                        "[浏览器流量] 公共缓存：本地命中=%s，原生命中=%s，填充下载=%s 字节，预计避免上游=%s 字节",
+                        summary["cache_local_request_count"], summary["cache_native_request_count"],
+                        fill_bytes, summary["cache_avoided_upstream_bytes"],
+                    )
                 logger.info(
                     "[浏览器流量] Roxy资源类型汇总：bytes=%s requests=%s",
                     summary.get("resource_type_bytes") or {},

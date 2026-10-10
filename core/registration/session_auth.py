@@ -54,14 +54,34 @@ def _diagnostic_url(value: object) -> str:
     except Exception:
         return "<unknown>"
 
-def _has_access_token(driver) -> bool:
+def _has_access_token(driver, *, budget: StageBudget | None = None, timeout: float = 2.0) -> bool:
+    """仅在 ChatGPT 同源页面执行有界探测，认证站点交给本地页面状态识别。"""
+    _checkpoint()
+    probe_timeout = _budget_timeout(budget, max(0.0, min(timeout, 2.0)), minimum=0.0)
+    if probe_timeout <= 0:
+        return False
     try:
+        current = urlsplit(str(getattr(driver, "current_url", "") or ""))
+        if current.scheme != "https" or current.hostname != "chatgpt.com" or current.port not in (None, 443):
+            return False
         result = driver.execute_async_script(r"""
-        const done = arguments[0];
-        fetch('https://chatgpt.com/api/auth/session', {credentials:'include'})
-          .then(r => r.json()).then(j => done(Boolean(j && j.accessToken)))
-          .catch(() => done(false));
-        """)
+        const timeoutMs = arguments[0];
+        const done = arguments[arguments.length - 1];
+        // Python 检查后仍可能发生导航；浏览器内再次校验，禁止跨域探测。
+        if (location.origin !== 'https://chatgpt.com') { done(false); return; }
+        const controller = new AbortController();
+        let settled = false;
+        const finish = value => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          done(value);
+        };
+        const timer = setTimeout(() => { controller.abort(); finish(false); }, timeoutMs);
+        fetch('/api/auth/session', {credentials:'include', signal:controller.signal})
+          .then(r => r.json()).then(j => finish(Boolean(j && j.accessToken)))
+          .catch(() => finish(false));
+        """, max(1, int(probe_timeout * 1000)))
         return bool(result)
     except Exception:
         return False

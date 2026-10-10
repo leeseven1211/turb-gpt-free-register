@@ -1322,6 +1322,8 @@ class _RoxyTargetCollector:
             if record is None:
                 return
             response = params.get("response") or {}
+            if response.get("fromDiskCache") or response.get("fromPrefetchCache"):
+                record["cache_source"] = "native"
             if getattr(self.session, "summary_only", False):
                 record["status"] = response.get("status")
                 return
@@ -1337,6 +1339,10 @@ class _RoxyTargetCollector:
                 "from_service_worker": bool(response.get("fromServiceWorker")),
                 "timing": response.get("timing") or {},
             })
+        elif method == "Network.requestServedFromCache":
+            record = self._requests.get(str(params.get("requestId") or ""))
+            if record is not None:
+                record["cache_source"] = "native"
         elif method == "Network.responseReceivedExtraInfo":
             request_id = str(params.get("requestId") or "")
             if request_id in self._requests and not getattr(self.session, "summary_only", False):
@@ -1429,6 +1435,14 @@ class _RoxyTargetCollector:
             record["failure"] = str(failure)[:500]
         if body_unavailable and "response_body" not in record:
             record["response_body_omitted"] = body_unavailable
+        cache = getattr(self.owner, "public_asset_cache", None)
+        if cache is not None:
+            try:
+                source = cache.request_source(str(request_id), target_id=self.target_id)
+                if source in {"local", "unknown"}:
+                    record["cache_source"] = source
+            except Exception:
+                logger.debug("公共静态缓存来源识别失败", exc_info=True)
         self.session.record_network(record)
 
 
@@ -1438,6 +1452,7 @@ class RoxyCDPCollector:
     def __init__(self, session: RegistrationDebugSession, debugger_address: str):
         self.session = session
         self.data_saver = None
+        self.public_asset_cache = None
         address = str(debugger_address or "").strip().rstrip("/")
         self.http_base = address if address.startswith(("http://", "https://")) else f"http://{address}"
         self._stop = threading.Event()

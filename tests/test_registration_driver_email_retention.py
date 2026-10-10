@@ -16,6 +16,31 @@ class RegistrationDriverEmailRetentionTests(unittest.TestCase):
     failure = "ordinary mid-flow failure"
     email_source = "icloud_hide"
 
+    def test_roxy_email_submission_unknown_is_never_not_started_or_disposable(self):
+        from core.registration.email_otp import _EmailSubmissionUnknown
+        client = MagicMock()
+        opened = SimpleNamespace(profile_id="test-profile", debugger_address="127.0.0.1:9222", created_by_run=True)
+        # 即使消息同时含有旧首屏超时标记，专用结果未知异常仍须保留身份与环境。
+        failure = _EmailSubmissionUnknown("request_unknown: 邮箱提交结果未知; page_not_hydrated")
+        with (
+            patch("core.registration_service.report_job_progress"),
+            patch("core.registration_service.is_stop_requested", return_value=False),
+            patch("core.registration_debug.attach_current_roxy"),
+            patch("core.registration_debug.pause_current_failure"),
+            patch.object(roxy, "RoxyBrowserClient", return_value=client),
+            patch.object(roxy, "_open_roxy_profile_with_capacity_wait", return_value=opened),
+            patch.object(roxy, "_build_driver", side_effect=failure),
+            patch("core.email_provider.retain_email") as retain,
+            patch("core.email_provider.release_email") as release,
+        ):
+            result = roxy.run_roxy_registration(self.email, "Test", "2000-01-01", email_source=self.email_source,
+                registration_options={"password_enabled": False, "twofa_enabled": False, "codex_enabled": False, "plan_check_enabled": False})
+        self.assertTrue(result["request_unknown"])
+        self.assertEqual(result["remote_account_state"], "request_unknown")
+        release.assert_not_called()
+        retain.assert_called_once()
+        client.discard_profile.assert_not_called()
+
     def _assert_retained_without_release(self, result, retain_email, release_email, driver_name):
         self.assertFalse(result["success"])
         retain_email.assert_called_once_with(

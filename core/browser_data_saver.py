@@ -48,6 +48,24 @@ _POST_AUTH_URL_PATTERNS = (
     "**://auth-cdn.oaistatic.com/assets/**",
 )
 
+_AUTH_STATIC_PROBES = (
+    "https://chatgpt.com/cdn/assets/entry.client-example.js",
+    "https://chatgpt.com/cdn/assets/root-example.css",
+    "https://auth-cdn.oaistatic.com/assets/entry.client-example.js",
+    "https://auth-cdn.oaistatic.com/assets/root-example.css",
+)
+
+
+def _blocks_auth_static(pattern: str) -> bool:
+    """兼容旧配置：登录前不能拦截接管表单所需的脚本和样式。"""
+    value = pattern.lower()
+    if any(fnmatchcase(url, value) for url in _AUTH_STATIC_PROBES):
+        return True
+    # 精确指定旧版 bundle 的规则也必须失效，不能只识别当前文件名。
+    return any(prefix in value for prefix in (
+        "chatgpt.com/cdn/assets/", "auth-cdn.oaistatic.com/assets/",
+    )) and any(extension in value for extension in (".js", ".mjs", ".css"))
+
 
 def _as_items(value: Any, *, lower: bool = True) -> list[str]:
     if value is None:
@@ -111,6 +129,15 @@ class BrowserDataSaver:
             _normalized_url_patterns(url_patterns)
             if url_patterns is not None else configured_url_patterns()
         ) if self.enabled else []
+        unsafe_types = {"script", "stylesheet"}.intersection(self.resource_types)
+        unsafe_patterns = [pattern for pattern in self.url_patterns if _blocks_auth_static(pattern)]
+        self.resource_types = [item for item in self.resource_types if item not in unsafe_types]
+        self.url_patterns = [item for item in self.url_patterns if item not in unsafe_patterns]
+        if unsafe_types or unsafe_patterns:
+            logger.info(
+                "[%s] 登录静态资源保护：忽略 %s 个类型规则、%s 个 URL 规则",
+                self.label, len(unsafe_types), len(unsafe_patterns),
+            )
         self.blocked_count = 0
         self.blocked_by_type: Counter[str] = Counter()
         self.blocked_by_url_pattern: Counter[str] = Counter()

@@ -1,4 +1,5 @@
 import unittest
+from fnmatch import fnmatchcase
 from unittest.mock import patch
 from types import SimpleNamespace
 
@@ -32,6 +33,30 @@ class _Capture:
 
 
 class BrowserDataSaverTests(unittest.TestCase):
+    def test_login_assets_survive_legacy_and_broad_script_blocking(self):
+        driver = _Driver()
+        saver = BrowserDataSaver(
+            enabled=True,
+            resource_types=["image", "script", "stylesheet"],
+            url_patterns=[
+                "**://chatgpt.com/cdn/assets/*.js**",
+                "https://auth-cdn.oaistatic.com/assets/old-version.js",
+                "**/*.css*", "**://metrics.example/**",
+            ],
+        )
+        saver.install_selenium(driver)
+        patterns = driver.commands[-1][1]["urls"]
+        for url in (
+            "https://chatgpt.com/cdn/assets/entry.client-v123.js",
+            "https://auth-cdn.oaistatic.com/assets/old-version.js",
+            "https://auth-cdn.oaistatic.com/assets/page-v123.css",
+        ):
+            self.assertFalse(any(fnmatchcase(url, pattern) for pattern in patterns))
+        self.assertTrue(any(fnmatchcase("https://cdn.example/banner.png", pattern) for pattern in patterns))
+        self.assertIn("*://metrics.example/*", patterns)
+        self.assertEqual(saver.resource_types, ["image"])
+        self.assertEqual(saver.url_patterns, ["**://metrics.example/**"])
+
     def test_disabled_mode_is_a_noop(self):
         driver = _Driver()
         with patch("core.browser_data_saver._cfg.BROWSER_DATA_SAVER_MODE", False):

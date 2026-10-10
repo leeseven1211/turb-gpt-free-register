@@ -328,6 +328,7 @@ ICLOUD_HME_FORWARD_IMAP_PASSWORD=你的_Gmail_应用专用密码
 
 - `forward_butler` 仍表示 Oracle 接收 Gmail 后写入 Email Butler PG；生产切换时再单独配置该模式。
 - `forward_imap` 的 Gmail 应用专用密码只保存在本机 `.env`，不会写入仓库或日志。
+- 本机收码使用共同的单调时钟截止时间，覆盖建连、登录、只读选箱、搜索、逐封读取和轮询；每步还受 `ICLOUD_HME_REQUEST_TIMEOUT` 限制。按最新候选使用 `BODY.PEEK` 取信，取得有效码即停止扫描并直接关闭连接，不等待 LOGOUT。日志仅记录阶段、数量和耗时。异常网络执行最多占用 8 个后台槽位，等待槽位也计入收码预算；晚到连接会被关闭，不接受超过总期限才返回的验证码。
 - Apple 账号页面“隐藏邮件地址 → 转发到”的已选地址和 sidecar 返回的 `forwardToEmail` 才是转发目标的依据，不要根据当前浏览器登录的是哪个 Gmail 账号推断。
 - 新版 sidecar 会在别名列表返回 `forwardToEmail`。turb 同步时只启用与当前收件模式匹配的别名，避免把验证码发到 Gmail 却轮询 iCloud IMAP 的假成功。
 - 连接测试在 `forward_imap` 下应返回 `inbox_method=local_forward_imap`；在 `forward_butler` 下才返回 `email_butler_pg`。两种模式都要确认同步结果的 `forward_incompatible=0`。
@@ -602,7 +603,7 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 
 - `ROXY_ONE_PROFILE_PER_ACCOUNT=True` 时，每个账号最多绑定一个 Roxy Profile；账号记录的 `extra_json.roxybrowser.profile_id` 是复用入口，没有绑定时才创建环境。创建请求超时或断连属于“结果未知”，客户端会先按唯一环境名查询是否已经创建成功，不能盲目重试并制造孤儿环境。
 - Roxy 明确返回“窗口额度不足”时，当前 worker 会停留在“启动浏览器”阶段等待并重试，不会失败后继续消费后续排队任务。默认最多等待 `ROXY_WINDOW_WAIT_TIMEOUT=900` 秒，每 `ROXY_WINDOW_WAIT_INTERVAL=10` 秒重试；其他创建错误不进入容量等待。多 worker 创建 Profile 时，`ROXY_CREATE_INTERVAL=1.5` 秒限制相邻 `/browser/create` 请求的起始间隔，设为 `0` 可关闭。
-- 邮箱 UI 提交后如果进入登录空壳或邮箱框短暂清空，NextAuth 兜底会等待真实落点；只有确认页面仍未前进时才刷新或重填。页面已经到达密码、OTP 或登录完成状态时必须立即接受该状态，不能依据旧快照重复提交邮箱。
+- 邮箱 UI 提交前等待页面前端接管表单，避免 SSR 输入框可见但提交变成原生 GET 重载；异常时保留一次有界 NextAuth 兜底。页面已经到达密码、OTP 或登录完成状态时立即接受该状态，不能依据旧快照重复提交邮箱。认证域不跨域探测 ChatGPT session；同源探测主动取消超时请求。验证码入口的初始化/发码仍在进行时继续有界等待，不按固定 5 秒刷新，等待仍受阶段预算限制。已交给前端的邮箱提交在结果未确认时不重复点击或启动兜底；到期按结果未知收口。
 - 默认在任务结束时关闭浏览器但保留 Profile；账号级重试/补配置/查活/AT 刷新再次打开账号绑定的 Profile。复用前会先检查当前 workspace 的活动 Profile 列表：如果绑定记录已被 Roxy 手动删除、移入回收站或不再可用，就创建替代环境并回写账号绑定；活动列表探测本身失败时不会误清绑定或盲目创建。
 - `ROXY_DELETE_PROFILE_AFTER_RUN=True` 是高风险兼容开关，会删除本轮新建的 Profile，即使任务已经将其绑定到账号；默认关闭。开启后可释放 Roxy 的 Profile/窗口额度，但下一次使用该账号时需要重新创建环境。启动恢复对没有 `disposable` 标记的历史登记项永不自动删除。需要排查时仍可在发起注册页勾选「调试模式」：失败任务会在配置的超时时间内暂停并保留自己的 Roxy 窗口，用户可在任务日志中点击「释放现场」继续清理。`ROXY_KEEP_BROWSER_OPEN=True` 只保留为低层紧急诊断开关，不适合日常批量调试，因为它不受任务级超时和并发上限管理。
 - 注册后紧接着执行 Codex OAuth 时，复用同一个 driver、Profile、代理和 ChatGPT 登录态，授权 URL 不强制 `prompt=login`；若出现账号选择器，只允许选择与当前任务邮箱完全匹配的账号。
@@ -611,9 +612,11 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 
 #### Roxy 浏览器省流量
 
-- `BROWSER_DATA_SAVER_MODE` 是总开关。注册使用 `BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES` 和 `BROWSER_DATA_SAVER_BLOCKED_URL_PATTERNS`；刷新 AT、旧 AT 浏览器查活、独立 Codex OAuth 和账号操作使用固定的认证安全规则，只拦截图片、媒体及明确的遥测请求，不沿用注册脚本规则。注册窗口继续执行 Codex OAuth 时会切换为认证安全规则。
+- `BROWSER_DATA_SAVER_MODE` 是拦截总开关。注册使用 `BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES` 和 `BROWSER_DATA_SAVER_BLOCKED_URL_PATTERNS`；登录前自动忽略 script/stylesheet 类型和 ChatGPT/auth CDN 脚本、样式的旧拦截规则。注册资料提交后才按已有策略阻断后续 SPA 资源。刷新 AT、旧 AT 浏览器查活、独立 Codex OAuth 和账号操作使用固定的认证安全规则，只拦截图片、媒体及明确的遥测请求。注册窗口继续执行 Codex OAuth 时会切换为认证安全规则。
 - `BROWSER_DATA_SAVER_AUTH_FLOWS` 是可选流程列表，可填写 `token_refresh`、`live_check`、`codex_oauth`、`account_action`；默认全选，填 `[]` 可只保留注册省流量。它和总开关都可以在 WebUI「配置 → 浏览器画像」调整。流程开关同时控制 Roxy 启动参数和 Selenium CDP 拦截。
-- 省流量拦截失败会继续原浏览器业务。「代理与流量」页的累计/今日流量只统计已采集的浏览器 HTTP/WebSocket 字节，今日浏览器记录按采集开始时间、今日新建线路按租约获取时间统计，日期边界为北京时间零点。协议任务的未采集标记仍保存在 PostgreSQL 中用于排障，但不出现在浏览器流量列表和流量合计中。页面列表支持服务端分页、筛选和列宽调整。这些可观测字节不等于代理商计费流量；验证省流量效果应比较相同流程和网络条件下的成功率、请求数及代理商账单。当前未启用持久静态资源缓存。
+- `BROWSER_PUBLIC_ASSET_CACHE_MODE` 独立控制新启动的 Roxy 注册：默认 `off`；`observe` 仅统计候选，不下载或回放；`enabled` 在浏览器原生缓存之外跨 Profile 复用公共 JS/CSS。可在同一配置分组调整；`BROWSER_PUBLIC_ASSET_CACHE_MAX_MB` 默认 256 MiB。缓存位于忽略提交的 `run/public-asset-cache/`，最多 1000 项、单项 10 MiB、有效期不超过响应声明及 24 小时，旧资源自动淘汰。
+- 公共缓存只接受审核过的 ChatGPT/auth CDN 目录下带版本的 JS/CSS，要求 HTTP 200、明确公共缓存、正确 MIME、无 Set-Cookie 和敏感响应变体。仅收录已证实不携带 Cookie/Authorization 的浏览器响应；需要匿名验证时，只沿本次新建 Profile 的已知代理下载，不跟重定向、不回退直连。复用已有 Profile 时不猜测其代理线路。认证 API、HTML、session、OTP 和安全挑战不缓存。原 URL、内容完整性与安全响应头保留，过期、损坏、磁盘或连接异常均回到浏览器正常网络。首次填充可能额外下载，不能以冷缓存单次任务承诺省流量比例。
+- 省流量拦截或缓存失败会继续原浏览器业务。「代理与流量」页的累计/今日流量统计已采集的浏览器 HTTP/WebSocket 字节及缓存匿名填充下载，排除公共缓存本地回放字节；摘要另存本地/原生缓存命中、填充下载和预计避免的上游字节。今日浏览器记录按采集开始时间、今日新建线路按租约获取时间统计，日期边界为北京时间零点。协议任务的未采集标记保留在 PostgreSQL 排障，不进入浏览器列表与合计。未确认的本地回放不扣减可观测字节；后台填充未完全收口时记录已观察下界并标记计量未知。可观测字节仍不等于代理商账单；验证收益需比较相同流程和网络条件下的成功率、请求数及账单。
 
 #### Codex、接码与 sub2api
 
@@ -1076,7 +1079,7 @@ WebUI 配置页保存后会调用热加载；Roxy、Codex、邮箱、代理、�
   ↓
 提交邮箱表单
   ↓
-等待 OpenAI 认证跳转；首次确认空白壳时切换 NextAuth 兜底并等待真实落点
+等待 OpenAI 认证跳转；前端尚未接手且确认异常时使用一次 NextAuth 兜底，已提交但结果未知时继续等待同一预算
   ↓
 若页面已进入密码、OTP 或登录完成状态，停止刷新、重填和重复导航
   ↓

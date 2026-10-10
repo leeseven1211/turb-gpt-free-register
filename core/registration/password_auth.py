@@ -17,12 +17,12 @@ from core.auth_challenge import (
 from core.humanize import delay as _human_delay
 from core.registration.state_machine import PageState, StageBudget, StageTimeout, classify_page
 
-from .auth_context import install_dispatches, time_proxy
+from .auth_context import checkpoint as _checkpoint, install_dispatches, time_proxy
 from .email_otp import (
     _clear_otp_inputs, _is_email_verification_page, _type_otp,
 )
 from .selenium_dom import (
-    _button_after_input, _check_manual_stop, _click_any, _click_if_enabled_submit,
+    _budget_timeout, _button_after_input, _check_manual_stop, _click_any, _click_if_enabled_submit,
     _fill_birthday_or_age,
     _find_any, _human_click, _human_type_text, _is_login_password_page,
     _is_profile_like, _is_signup_password_page, _log_prefix, _maybe_accept,
@@ -289,6 +289,77 @@ def _click_passwordless_signup_if_present(driver) -> dict:
     except Exception as exc:
         return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
 
+_AUTH_INITIALIZATION_OBSERVER_JS = r"""
+(() => {
+  if (location.hostname !== 'auth.openai.com' || window.__turbAuthInitialization) return;
+  const paths = new Set(['/api/accounts/passwordless/send-otp', '/api/accounts/client_auth_session_dump']);
+  const state = {installedAt:performance.now(), started:0, failed:0, lastStarted:0,
+    early:document.readyState === 'loading'};
+  window.__turbAuthInitialization = state;
+  const original = window.fetch;
+  window.fetch = function(...args) {
+    let tracked = false;
+    try {
+      const url = new URL(typeof args[0] === 'string' || args[0] instanceof URL ? args[0] : args[0].url, location.href);
+      tracked = url.origin === location.origin && paths.has(url.pathname);
+    } catch (_) {}
+    if (tracked) { state.started++; state.lastStarted = performance.now(); }
+    let response;
+    try { response = original.apply(this, args); }
+    catch (error) { if (tracked) state.failed++; throw error; }
+    // 保留原 Promise/Response；成功要等 Resource Timing 的完整响应记录，不能把响应头当完成。
+    if (tracked) response.then(() => {}, () => { state.failed++; });
+    return response;
+  };
+})();
+"""
+
+
+def _install_auth_initialization_observer(driver) -> bool:
+    """尽早记录初始化请求数量，不读取内容，也不改变请求、响应或安全 SDK。"""
+    installed = getattr(driver, "_turb_auth_initialization_observer_installed", False) is True
+    if not installed:
+        try:
+            driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": _AUTH_INITIALIZATION_OBSERVER_JS})
+            driver._turb_auth_initialization_observer_installed = True
+            installed = True
+        except Exception:
+            pass
+    try:
+        driver.execute_script(_AUTH_INITIALIZATION_OBSERVER_JS)
+        installed = True
+    except Exception:
+        pass
+    return installed
+
+
+_AUTH_INITIALIZATION_SNAPSHOT_JS = _AUTH_INITIALIZATION_OBSERVER_JS + r"""
+const authInitialization = (() => {
+  const state = window.__turbAuthInitialization;
+  if (!state) return null;
+  const now = performance.now();
+  const paths = new Set(['/api/accounts/passwordless/send-otp', '/api/accounts/client_auth_session_dump']);
+  let completed = 0, lastActivity = state.lastStarted;
+  for (const item of performance.getEntriesByType('resource')) {
+    let url;
+    try { url = new URL(item.name); } catch (_) { continue; }
+    if (url.origin === location.origin && paths.has(url.pathname)) {
+      if (item.startTime >= state.installedAt && item.responseEnd > 0 && item.responseStatus !== 0) completed++;
+      lastActivity = Math.max(lastActivity, item.responseEnd || 0);
+    } else if (item.initiatorType === 'script' && url.hostname === 'auth-cdn.oaistatic.com') {
+      lastActivity = Math.max(lastActivity, item.responseEnd || 0);
+    }
+  }
+  const marks = performance.getEntriesByType('mark');
+  const hydrationStarted = marks.some(item => item.name === 'hydration_start');
+  const hydrationEnded = marks.some(item => item.name === 'hydration_end');
+  return {pending:Math.max(0, state.started - state.failed - completed), early:state.early,
+    ready:document.readyState, hydration_started:hydrationStarted, hydration_ended:hydrationEnded,
+    recent_activity:now - lastActivity < 5000};
+})();
+"""
+
+
 def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dict:
     """从新账号 OTP 页切换到 create-account/password。
 
@@ -298,6 +369,8 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
     started_at = time.time()
     wait_seconds = max(1, timeout)
     find_end = started_at + wait_seconds
+    hard_end = started_at + _budget_timeout(None, max(wait_seconds, 45.0), minimum=0.0)
+    find_end = min(find_end, hard_end)
     # SPA 首屏偶尔只完成了 OTP 页骨架，给它一次受控刷新机会；刷新后仍无入口
     # 就明确记录为 OTP-only 变体，不能无密码继续注册。
     refresh_after = (
@@ -306,10 +379,12 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
         else None
     )
     refresh_attempted = False
+    initialization_wait_logged = False
     last_result = {"ok": False, "reason": "missing_create_account_password_target"}
     while time.time() < find_end:
+        _checkpoint()
         try:
-            result = driver.execute_script(r"""
+            result = driver.execute_script(_AUTH_INITIALIZATION_SNAPSHOT_JS + r"""
         const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
           && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
         const enabled = el => !el.disabled && String(el.getAttribute('aria-disabled') || '').toLowerCase() !== 'true';
@@ -345,6 +420,7 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
         if (!target) return {
           ok:false,
           reason:'missing_create_account_password_target',
+          initialization: authInitialization,
           input_count: [...document.querySelectorAll('input')].filter(visible).length,
           button_count: candidates.length,
           body_text_length: String(document.body?.innerText || '').trim().length,
@@ -376,8 +452,9 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
         target = result.pop("target", None)
         if result.get("ok") and target is not None:
             _human_click(driver, target, label="signup_use_password")
-            wait_end = time.time() + max(1, timeout)
+            wait_end = min(hard_end, time.time() + max(1, timeout))
             while time.time() < wait_end:
+                _checkpoint()
                 if _is_signup_password_page(driver):
                     result["reason"] = "entered_create_account_password"
                     return result
@@ -391,7 +468,26 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
             return {"ok": True, "reason": "already_on_create_account_password"}
         if _has_access_token(driver):
             return {"ok": False, "reason": "logged_in_before_password_target"}
-        if refresh_after is not None and not refresh_attempted and time.time() >= refresh_after:
+        initialization = result.get("initialization") or {}
+        blank = not (result.get("input_count") or result.get("button_count") or result.get("body_text_length"))
+        pending = bool(initialization.get("pending"))
+        progressing = bool(initialization) and (
+            pending or initialization.get("ready") != "complete"
+            or initialization.get("recent_activity")
+            or (blank and time.time() - started_at < 15.0)
+            or (blank and initialization.get("hydration_started") and not initialization.get("hydration_ended"))
+        )
+        # 晚安装的观察器可能漏掉已发出的初始化请求，空白状态不允许靠刷新猜测结果。
+        uncertain = bool(initialization) and blank and not initialization.get("early")
+        if progressing:
+            find_end = max(find_end, min(hard_end, time.time() + 5.0))
+        if (pending or progressing or uncertain) and not initialization_wait_logged:
+            logger.info("%s 验证码页仍在初始化，继续有界等待密码入口：%s", _log_prefix(driver), initialization)
+            initialization_wait_logged = True
+        if (
+            refresh_after is not None and not refresh_attempted and time.time() >= refresh_after
+            and not pending and not progressing and not uncertain
+        ):
             refresh_attempted = True
             logger.warning(
                 "%s 密码入口在验证码页首轮扫描中未出现，执行一次受控刷新后重新扫描：last=%s",
@@ -402,14 +498,24 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
                 refresh = getattr(driver, "refresh", None)
                 if not callable(refresh):
                     raise AttributeError("driver.refresh unavailable")
-                refresh()
+                old_timeout = None
+                try:
+                    old_timeout = driver.timeouts.page_load
+                    driver.set_page_load_timeout(max(0.1, hard_end - time.time()))
+                except Exception:
+                    pass
+                try:
+                    refresh()
+                finally:
+                    if isinstance(old_timeout, (int, float)):
+                        driver.set_page_load_timeout(old_timeout)
             except Exception as exc:
                 logger.warning("%s 密码入口刷新失败，继续使用原页面诊断：%s", _log_prefix(driver), exc)
             time.sleep(0.8)
             # 刷新会重新挂载 auth.openai.com 的 React 树；不要把刷新本身
             # 计入原来的 15 秒硬窗口，否则空壳刚开始恢复就会被判失败。
             # 这是一次有界的额外等待，不改变页面分支或密码流程。
-            find_end = max(find_end, time.time() + min(10.0, wait_seconds))
+            find_end = min(hard_end, max(find_end, time.time() + min(10.0, wait_seconds)))
             continue
         time.sleep(0.4)
 
@@ -462,6 +568,7 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
         "button_count": button_count,
         "body_text_length": body_text_length,
         "last_reason": last_result.get("reason"),
+        "initialization": last_result.get("initialization"),
         "candidates": candidates,
     }
 
@@ -485,7 +592,7 @@ def _fill_password_page_if_present(
     while time.time() < end:
         if _is_email_verification_page(driver):
             if existing_password:
-                logger.info("%s 待验证账号已进入邮箱验证码页，沿用已保存登录密码：email=%s", _log_prefix(driver), email)
+                logger.info("%s 待验证账号已进入邮箱验证码页，沿用已保存登录密码", _log_prefix(driver))
                 return existing_password
             if auth_mode != 'password':
                 return None
@@ -499,15 +606,15 @@ def _fill_password_page_if_present(
                     f"密码注册模式下已进入验证码页，但无法切换到创建密码页：{switched} "
                     f"url={getattr(driver, 'current_url', '')}"
                 )
-            logger.info("%s 已从邮箱验证码页切换到创建密码页：email=%s detail=%s", _log_prefix(driver), email, switched)
+            logger.info("%s 已从邮箱验证码页切换到创建密码页：%s", _log_prefix(driver), switched.get("reason"))
             end = max(end, time.time() + min(10, max(3, timeout)))
             continue
-        if _has_access_token(driver):
-            return None
         last = _password_page_state(driver)
         is_signup_password = _is_signup_password_page(driver)
         is_login_password = _is_login_password_page(driver)
         if not (is_signup_password or is_login_password):
+            if _has_access_token(driver):
+                return None
             time.sleep(0.5)
             continue
         passwordless = (
@@ -516,7 +623,7 @@ def _fill_password_page_if_present(
             else {"ok": False, "reason": "password_mode_or_saved_password"}
         )
         if passwordless.get('ok'):
-            logger.info("%s 检测到 password 页，已点击一次性验证码入口：email=%s detail=%s", _log_prefix(driver), email, passwordless)
+            logger.info("%s 检测到 password 页，已点击一次性验证码入口：%s", _log_prefix(driver), passwordless.get("reason"))
             wait_end = time.time() + 20
             while time.time() < wait_end:
                 if _is_email_verification_page(driver):

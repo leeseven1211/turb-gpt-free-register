@@ -29,6 +29,9 @@ from core.operation_runtime import (
 from core.openai_auth import AccountUnusableError, detect_account_unusable_response_body
 from core.roxybrowser_client import RoxyBrowserClient
 from core.registration.auth_context import AuthExecutionContext, execution_context
+from core.registration.email_otp import (
+    _clear_confirmed_email_submission, _email_ui_submission_state, _EmailSubmissionUnknown,
+)
 from core.registration.selenium_auth import (
     build_driver as _build_driver,
     center_browser_window as _center_browser_window,
@@ -711,6 +714,7 @@ def _relogin_after_password_reset(
     stage_reporter=None,
 ) -> None:
     """Establish a normal ChatGPT session after reset APIs return without one."""
+    _clear_confirmed_email_submission(driver)
     _report_login_stage(stage_reporter, 'login', '密码重置已完成，使用新密码重新建立账号会话')
     _safe_get(
         driver,
@@ -995,6 +999,12 @@ def _complete_login_challenge_after_email(
         # variant waited until the whole challenge budget expired.  Treat the
         # route as a transient auth shell and use the same in-browser NextAuth
         # navigation fallback before deciding that login is broken.
+        if _email_ui_submission_state(driver) in {"queued", "dispatched", "unknown"} and (
+            "/auth/login" in url.lower() and not has_challenge_input
+        ):
+            # 前端已接手的请求共用当前等待预算，不能由清空输入框触发第二次认证。
+            time.sleep(0.5)
+            continue
         blank_login_shell = "/auth/login" in url.lower() and "email=" in url.lower() and not inputs
         if blank_login_shell:
             now = time.time()
@@ -1085,6 +1095,7 @@ def _complete_login_challenge_after_email(
         # TOTP may be rendered in-place while the stale URL still ends in
         # /log-in/password, so inspect the live controls before trusting the URL.
         if _is_totp_login_page(driver, state):
+            _clear_confirmed_email_submission(driver)
             if totp_submitted_at:
                 if state.get("errors") or any(
                     str(item.get("ariaInvalid") or "").lower() == "true" for item in (state.get("inputs") or [])
@@ -1115,6 +1126,7 @@ def _complete_login_challenge_after_email(
             continue
 
         if _is_login_password_page(driver):
+            _clear_confirmed_email_submission(driver)
             if force_password_reset:
                 if otp_provider is None:
                     raise RuntimeError("强制密码修改缺少邮箱验证码提供器")
@@ -1272,12 +1284,16 @@ def _complete_login_challenge_after_email(
             )
 
         if _is_email_verification_page(driver):
+            _clear_confirmed_email_submission(driver)
             logger.info("[Codex][Browser] 页面明确进入邮箱验证码分支：email=%s", email)
             return "email_otp"
         if _is_login_advanced(driver, state):
+            _clear_confirmed_email_submission(driver)
             return "advanced"
         time.sleep(0.5)
 
+    if _email_ui_submission_state(driver) in {"queued", "dispatched", "unknown"}:
+        raise _EmailSubmissionUnknown("request_unknown: 邮箱提交结果在认证预算内未确认，未重复发送")
     safe_state = {
         "url": last_state.get("url"),
         "inputs": last_state.get("inputs"),
@@ -1496,6 +1512,7 @@ def _fill_email_and_otp(
         if _is_login_password_page(driver) or _is_totp_login_page(driver, state) or _is_email_verification_page(driver):
             logger.info("[Codex][Browser] 邮箱输入阶段页面已进入下一登录分支，继续按页面状态处理")
         elif _is_login_advanced(driver, state):
+            _clear_confirmed_email_submission(driver)
             logger.info("[Codex][Browser] 当前会话已越过登录挑战，无需邮箱 OTP")
             return
         else:

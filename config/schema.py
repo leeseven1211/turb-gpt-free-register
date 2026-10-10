@@ -317,8 +317,9 @@ _DEFAULTS: dict[str, Any] = {
         "**://accounts.google.com/gsi/client**",
         "**://*/favicon.ico**",
         "**://chatgpt.com/ces/v1/rgstr**",
-        "**://chatgpt.com/cdn/assets/*.js**",
     ],
+    "BROWSER_PUBLIC_ASSET_CACHE_MODE": "off",
+    "BROWSER_PUBLIC_ASSET_CACHE_MAX_MB": 256,
     "REGISTRATION_PROXY_MODE": "pool",
     "PROXY_1024_API_URL": "",
     "PROXY_1024_REGION": "",
@@ -1056,11 +1057,19 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES", "file": "browser.py", "type": "list_str_multiline", "group": "浏览器画像",
-        "label": "省流量拦截类型", "help": "每行一种，默认 image、media；font/stylesheet 等类型需单独验证页面稳定性；填 [] 可关闭类型拦截",
+        "label": "省流量拦截类型", "help": "每行一种，默认 image、media；font 需单独验证页面稳定性；登录所需 script、stylesheet 自动放行；填 [] 可关闭类型拦截",
     },
     {
         "key": "BROWSER_DATA_SAVER_BLOCKED_URL_PATTERNS", "file": "browser.py", "type": "list_str_multiline", "group": "浏览器画像",
-        "label": "省流量 URL 规则", "help": "每行一个 URL glob；内置规则含遥测/广告和注册不需要的 ChatGPT SPA JS；不要加入 auth-cdn、session、sentinel 或注册接口；填 [] 可关闭 URL 规则",
+        "label": "省流量 URL 规则", "help": "每行一个 URL glob；内置规则仅含遥测/广告，旧配置中的登录脚本/样式拦截自动忽略；不要加入 session、sentinel 或注册接口；填 [] 可关闭 URL 规则",
+    },
+    {
+        "key": "BROWSER_PUBLIC_ASSET_CACHE_MODE", "file": "browser.py", "type": "str", "group": "浏览器画像",
+        "label": "注册公共静态资源缓存", "help": "off=关闭；observe=仅统计候选、不下载或回放；enabled=跨环境复用已验证的公共 JS/CSS。仅新启动的 Roxy 注册流程生效，认证接口和账号状态不缓存",
+    },
+    {
+        "key": "BROWSER_PUBLIC_ASSET_CACHE_MAX_MB", "file": "browser.py", "type": "int", "group": "浏览器画像",
+        "label": "公共静态缓存上限(MiB)", "help": "磁盘公共 JS/CSS 缓存的总容量上限，默认 256 MiB；达到上限后淘汰较少使用的资源；仅新启动的注册流程生效",
     },
 
     # ---- 代理与网络 ----
@@ -1322,6 +1331,9 @@ _FIELD_DEFINITIONS = [
 
 
 _OPTIONS: dict[str, tuple[ConfigOption, ...]] = {
+    "BROWSER_PUBLIC_ASSET_CACHE_MODE": _options(
+        ("off", "关闭"), ("observe", "仅观察"), ("enabled", "启用本地复用"),
+    ),
     "OPENAI_PROTOCOL_VERSION": _options(
         ("v1", "协议 v1（现有稳定实现）"),
         ("v2", "协议 v2（已支持的步骤）"),
@@ -1461,6 +1473,7 @@ _ALIASES: dict[str, Mapping[str, str]] = {
 
 
 _RANGES: dict[str, tuple[int | float | None, int | float | None]] = {
+    "BROWSER_PUBLIC_ASSET_CACHE_MAX_MB": (16, 4096),
     "ACCOUNT_BATCH_WORKERS": (1, 16),
     "EMAIL_BUTLER_RISK_SCAN_INTERVAL_SECONDS": (900, 604800),
     "EMAIL_BUTLER_RISK_SCAN_INITIAL_DELAY_SECONDS": (5, 3600),

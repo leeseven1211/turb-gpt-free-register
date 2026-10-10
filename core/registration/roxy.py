@@ -29,6 +29,7 @@ from core.registration.state_machine import (
     classify_page,
 )
 from core.registration.auth_context import AuthExecutionContext
+from core.registration.email_otp import _EmailSubmissionUnknown
 from core.auth_challenge import (
     MfaSecretMissingError,
     PasswordRejectedError,
@@ -84,6 +85,8 @@ class _OtpAttemptTracker:
 
 def _is_registration_request_unknown(error_text: object) -> bool:
     """Recognize an observed-but-unclassified remote registration state."""
+    if isinstance(error_text, _EmailSubmissionUnknown):
+        return True
     text = str(error_text or "")
     return any(marker in text for marker in _REGISTRATION_REQUEST_UNKNOWN_MARKERS)
 
@@ -682,6 +685,7 @@ def run_roxy_registration(
             raise
     driver = None
     data_saver = None
+    public_asset_cache = None
     postprocess_data_saver = None
     profile_discarded = False
     create_acknowledged = False
@@ -699,6 +703,10 @@ def run_roxy_registration(
         except Exception:
             logger.exception("[Roxy注册][Debug] 启动浏览器网络抓包失败；注册流程继续执行")
         driver = _build_driver(opened)
+        from .password_auth import _install_auth_initialization_observer
+        _install_auth_initialization_observer(driver)
+        from core.browser_asset_policy import start_registration_asset_cache
+        public_asset_cache = start_registration_asset_cache(opened, proxy_url=proxy)
         from core.browser_data_saver import BrowserDataSaver
         data_saver = BrowserDataSaver(label="Roxy注册")
         data_saver.install_selenium(driver)
@@ -1409,15 +1417,16 @@ def run_roxy_registration(
         # 该地址可能已经在 OpenAI 侧进入已有账号/半成品账号状态。继续放回池里只会
         # 让后续任务反复命中登录 OTP 页，永远无法完成“账号+密码”注册。
         password_result_unknown = isinstance(exc, _PasswordTransitionTimeout)
+        email_result_unknown = isinstance(exc, _EmailSubmissionUnknown)
         error_text = str(exc)
         account_unusable = isinstance(exc, AccountUnusableError)
         pre_account_transport_failure = _is_disposable_pre_account_failure(
             error_text,
             create_acknowledged=create_acknowledged,
             account_id=account_id,
-        ) and not password_result_unknown
+        ) and not (password_result_unknown or email_result_unknown)
         request_unknown = (
-            password_result_unknown or _is_registration_request_unknown(error_text)
+            password_result_unknown or _is_registration_request_unknown(exc)
         ) and not pre_account_transport_failure
         remote_existing = isinstance(exc, RemoteExistingAccountError) or remote_identity == "existing"
         password_rejected = isinstance(exc, PasswordRejectedError)
@@ -1525,6 +1534,8 @@ def run_roxy_registration(
                 postprocess_data_saver.stop()
             except Exception:
                 logger.exception("[Roxy注册] 收口注册后账号操作省流量统计失败")
+        from core.browser_asset_policy import stop_registration_asset_cache
+        stop_registration_asset_cache(public_asset_cache)
         if data_saver is not None:
             try:
                 data_saver.stop()
