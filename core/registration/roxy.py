@@ -766,14 +766,23 @@ def run_roxy_registration(
         # 新版注册流可能先进入 /create-account/password；参考 FlowPilot 的 fill-password 步骤，
         # 先设置密码并提交，然后再等待邮箱验证码页。
         password_stage_expected = password_required or bool(existing_password)
+        if existing_password:
+            password_progress_detail = "正在继续待验证账号的登录流程"
+        elif password_required:
+            password_progress_detail = "正在创建并确认账号密码"
+        else:
+            password_progress_detail = "一次性验证码模式，无需创建账号密码"
         report_job_progress(
             "login_password",
             "running" if password_stage_expected else "skipped",
-            "正在创建并确认账号密码" if password_stage_expected else "一次性验证码模式，无需创建账号密码",
+            password_progress_detail,
         )
 
+        password_submitted_this_run = False
+
         def _checkpoint_submitted_password(password: str) -> None:
-            nonlocal account_id, create_acknowledged
+            nonlocal account_id, create_acknowledged, password_submitted_this_run
+            password_submitted_this_run = True
             if existing_password or account_id is not None:
                 return
             account_id = _save_pending_email_verification_checkpoint(
@@ -808,15 +817,23 @@ def run_roxy_registration(
             raise
         else:
             if password_stage_expected:
-                password_skip_detail = (
-                    "当前认证流先验证邮箱，但密码流程未返回新密码"
-                    if _is_email_verification_page(driver)
-                    else "密码流程未返回新密码"
-                )
+                if password_submitted_this_run:
+                    password_result_state = "success"
+                    password_result_detail = "账号密码已提交并进入下一步"
+                elif existing_password and openai_password and _is_email_verification_page(driver):
+                    password_result_state = "success"
+                    password_result_detail = "已复用待验证账号的密码信息；本次直接进入邮箱验证码，未重新提交密码"
+                else:
+                    password_result_state = "success" if openai_password else "skipped"
+                    password_result_detail = (
+                        "当前认证流先验证邮箱，但密码流程未返回新密码"
+                        if _is_email_verification_page(driver)
+                        else "密码流程未返回新密码"
+                    )
                 report_job_progress(
                     "login_password",
-                    "success" if openai_password else "skipped",
-                    "账号密码已提交并进入下一步" if openai_password else password_skip_detail,
+                    password_result_state,
+                    password_result_detail,
                 )
         if existing_password or openai_password:
             auth_challenge_chain.append("password")
