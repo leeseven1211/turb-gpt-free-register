@@ -572,6 +572,13 @@ def _close_terminal_steps(
         if item.get("evidence") == "not_executed" or never_started or blocked:
             reason = "本次执行未开始" if never_started else f"因“{failure.get('label') or failure['raw_stage']}”失败，未进入该阶段" if blocked else item.get("reason") or item.get("message") or "本次未执行该阶段"
             _state(item, "pending" if item.get("state") != "skipped" else "skipped", display="not_executed", reason=reason)
+        elif (
+            step_id == "plan_check"
+            and item.get("state") == "pending"
+            and item.get("evidence") == "explicit"
+            and "等待查询结果" in str(item.get("message") or "")
+        ):
+            _state(item, "pending", display="waiting", reason=item.get("message"))
         elif item.get("evidence") == "unobserved":
             _state(item, "pending", display="record_incomplete", reason="历史记录中缺少该阶段的执行证据")
         elif item.get("state") == "running" or (item.get("state") == "pending" and item.get("evidence") == "unconfirmed"):

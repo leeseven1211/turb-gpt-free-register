@@ -1084,11 +1084,18 @@ def run_roxy_registration(
         token_budget = StageBudget.start(120)
         session_info = _fetch_chatgpt_session(driver, timeout=120, budget=token_budget)
         access_token = session_info["accessToken"]
-        captured_plan_result = (
-            registration_plan_capture.read_or_fetch_selenium(driver, access_token)
-            if plan_check_enabled
-            else None
-        )
+        captured_plan_result = None
+        if plan_check_enabled:
+            report_job_progress("plan_check", "running", "正在查询注册会话中的套餐与 Plus 优惠资格")
+            try:
+                captured_plan_result = registration_plan_capture.read_or_fetch_selenium(driver, access_token)
+            except Exception as exc:
+                # 套餐检查属于注册后的独立能力。浏览器查询失败时继续保存注册主体，
+                # 随后交由持久任务队列查询，避免套餐接口异常丢失已创建账号。
+                logger.warning(
+                    "[Roxy注册][套餐] 浏览器查询失败，将尝试后台查询：%s",
+                    type(exc).__name__,
+                )
         report_job_progress("token", "success", "已获取 accessToken")
         logger.info("[Roxy注册] 已拿到 accessToken：%s", email)
         _check_manual_stop()
@@ -1319,12 +1326,24 @@ def run_roxy_registration(
                     plan_result = {
                         "status": "pending" if queued.get("accepted") or queued.get("busy") else "failed",
                         "ok": False,
-                        "message": "套餐查询已入队" if queued.get("accepted") else str(queued.get("error") or "套餐查询未入队"),
+                        "message": (
+                            "套餐查询已提交后台任务，等待查询结果"
+                            if queued.get("accepted")
+                            else "账号已有套餐查询，等待查询结果"
+                            if queued.get("busy")
+                            else str(queued.get("error") or "套餐查询未入队")
+                        ),
                     }
             except Exception as exc:
                 plan_result = {"status": "failed", "ok": False, "message": f"{type(exc).__name__}: {str(exc)[:180]}"}
         else:
             plan_result = {"status": "skipped", "ok": True, "message": "未启用注册后自动查套餐"}
+        if plan_check_enabled:
+            report_job_progress(
+                "plan_check",
+                plan_result["status"] if plan_result["status"] in {"success", "failed"} else "pending",
+                plan_result["message"],
+            )
         codex_ok = codex_result.get("ok") or codex_result.get("status") == "skipped"
         twofa_ok = twofa_result.get("ok") or twofa_result.get("status") == "skipped"
         errors = []
