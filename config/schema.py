@@ -273,6 +273,14 @@ _DEFAULTS: dict[str, Any] = {
     "QQ_IMAP_PASSWORD": "",
     "MAIL_NEST_API_KEY": "",
     "MAIL_NEST_PROJECT_CODE": "chatgpt001",
+    "REMAIL_API_BASE": "https://remail.aishop6.com",
+    "REMAIL_API_KEY": "",
+    "REMAIL_PROJECT_ID": 2,
+    "REMAIL_EMAIL_SUFFIX": "outlook.com",
+    "REMAIL_SERVICE_MODE": "purchase",
+    "REMAIL_SUPPLY_POLICY": "public_only",
+    "REMAIL_ORDER_WAIT_SECONDS": 30,
+    "REMAIL_REQUEST_TIMEOUT": 20,
     "CLOUDMAIL_API_BASE": "",
     "CLOUDMAIL_ADMIN_EMAIL": "",
     "CLOUDMAIL_PASSWORD": "",
@@ -903,6 +911,40 @@ _FIELD_DEFINITIONS = [
         "label": "MailNest 项目代码", "help": "项目代码 默认 chatgpt001 获取页面 mailnest.top/buy-email",
     },
     {
+        "key": "REMAIL_API_BASE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "Remail API 地址", "help": "开放 API 根地址，默认 https://remail.aishop6.com",
+        "storage": "env",
+    },
+    {
+        "key": "REMAIL_API_KEY", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "Remail API Key", "help": "选择 remail 邮箱来源时必填；控制台生成的 API Key，只保存在 .env",
+        "storage": "env", "secret": True,
+    },
+    {
+        "key": "REMAIL_PROJECT_ID", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
+        "label": "Remail 项目 ID", "help": "用于 ChatGPT/OpenAI 验证码的项目 ID，默认 2；以平台项目列表为准",
+    },
+    {
+        "key": "REMAIL_EMAIL_SUFFIX", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "Remail 邮箱后缀", "help": "项目下单使用的邮箱后缀，默认 outlook.com",
+    },
+    {
+        "key": "REMAIL_SERVICE_MODE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "Remail 服务模式", "help": "purchase 为可重复收件的长效购买；code 为短效接码，后续登录收码受服务有效期限制",
+    },
+    {
+        "key": "REMAIL_SUPPLY_POLICY", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "Remail 库存策略", "help": "public_only 只使用公开库存；private_first 优先使用自己的库存",
+    },
+    {
+        "key": "REMAIL_ORDER_WAIT_SECONDS", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
+        "label": "Remail 订单等待(秒)", "help": "订单未立即返回收件凭证时，等待订单详情补齐凭证的最长时间，默认 30 秒",
+    },
+    {
+        "key": "REMAIL_REQUEST_TIMEOUT", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
+        "label": "Remail 请求超时(秒)", "help": "单次 HTTP 请求超时，默认 20 秒",
+    },
+    {
         "key": "CLOUDMAIL_API_BASE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
         "label": "CloudMail API 地址", "help": "Cloud Mail Worker/API 地址，例如 https://mail.example.com",
     },
@@ -1403,9 +1445,11 @@ _OPTIONS: dict[str, tuple[ConfigOption, ...]] = {
         ("outlook", "Outlook"), ("generic_api", "通用 API"),
         ("cloudflare_domain", "Cloudflare 域名邮箱"), ("cloudflare", "Cloudflare Worker"),
         ("email_butler", "Email Butler"), ("gptmail", "GPTMail"),
-        ("mailnest", "MailNest"), ("cloudmail", "CloudMail"),
+        ("mailnest", "MailNest"), ("remail", "Remail"), ("cloudmail", "CloudMail"),
         ("icloud_hide", "iCloud Hide My Email"),
     ),
+    "REMAIL_SERVICE_MODE": _options(("purchase", "长效购买"), ("code", "短效接码")),
+    "REMAIL_SUPPLY_POLICY": _options(("public_only", "只使用公开库存"), ("private_first", "优先自己的库存")),
 }
 
 
@@ -1448,6 +1492,9 @@ _RANGES: dict[str, tuple[int | float | None, int | float | None]] = {
     "OTP_MAX_WAIT": (1, 86400),
     "OTP_POLL_INTERVAL": (1, 3600),
     "EMAIL_BUTLER_REQUEST_TIMEOUT": (1, 3600),
+    "REMAIL_PROJECT_ID": (1, None),
+    "REMAIL_ORDER_WAIT_SECONDS": (0, 180),
+    "REMAIL_REQUEST_TIMEOUT": (1, 120),
     "CLOUDFLARE_REQUEST_TIMEOUT": (1, 3600),
     "CLOUDFLARE_NAME_LENGTH": (1, 128),
     "CLOUDMAIL_RANDOM_LOCAL_LENGTH": (1, 128),
@@ -1569,7 +1616,7 @@ _SECRET_KEYS = frozenset({
     "WEBUI_AUTH_CODE", "WEBUI_SESSION_SECRET", "ROXY_API_TOKEN",
     "EMAIL_BUTLER_API_KEY", "GPTMAIL_API_KEY", "CLOUDFLARE_API_KEY",
     "CLOUDFLARE_SIGNAL_API_KEY", "CLOUDFLARE_CUSTOM_AUTH", "QQ_IMAP_PASSWORD",
-    "MAIL_NEST_API_KEY", "CLOUDMAIL_PASSWORD", "CLOUDMAIL_AUTH_TOKEN",
+    "MAIL_NEST_API_KEY", "REMAIL_API_KEY", "CLOUDMAIL_PASSWORD", "CLOUDMAIL_AUTH_TOKEN",
     "ICLOUD_HME_API_TOKEN", "ICLOUD_HME_FORWARD_IMAP_PASSWORD",
     "PROXY_1024_API_URL", "PLAN_CHECK_PROXY", "ACCOUNT_ACTION_PROXY",
     "EXTRACT_LINK_CDK", "SUB2API_API_KEY", "CPA_MANAGEMENT_KEY", "SMS_API_KEY",

@@ -22,6 +22,7 @@ from typing import Any
 from core import codex_retry_service, db, task_run_log
 from core.operations import task_gateway as account_task_store
 from core.registration_postprocess import summarize_postprocess, decide_recovery
+from core.remail_client import RemailOrderUncertain
 from core.task_errors import REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES
 
 logger = logging.getLogger(__name__)
@@ -1826,6 +1827,21 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     log_logger.warning("[Job %s] 密码提交结果待确认，已保留为可对账状态: %s", job_id, err)
                 else:
                     log_logger.error(f"[Job {job_id}] 失败: {err}")
+    except RemailOrderUncertain:
+        # 邮箱供应商可能已经扣款；即使尚未取得地址，也不能按普通失败重新下单。
+        message = "Remail 邮箱订单结果待核验，请先核对原订单，禁止直接重试下单"
+        unknown_facts = {
+            "outcome": "request_unknown",
+            "cause_code": "remail_order_request_unknown",
+        }
+        db.finish_job_progress(job_id, success=False, detail=message)
+        db.update_job(
+            job_id,
+            status="request_unknown",
+            error=f"request_unknown: {message}",
+            completed_at=_now_iso(),
+        )
+        log_logger.warning("[Job %s] %s", job_id, message)
     except StopRequested as exc:
         _retain_job_email(email, str(exc), source=str(current.get("email_source") or "") or None)
         db.finish_job_progress(job_id, success=False, detail="用户手动停止", failure_state="stopped")

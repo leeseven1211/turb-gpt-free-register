@@ -755,7 +755,15 @@ def persist_account_core(
     """
     from core.db import insert_account
 
-    extra = extra or {}
+    extra = dict(extra or {})
+    if str(email_source or "").strip().lower() == "remail":
+        # 取件凭据随账号写入 PostgreSQL，供重启后的 OTP 流程恢复原订单。
+        # 普通账号列表不返回 extra_json；不能把 service token 写入日志。
+        from core.remail_client import get_account_context_metadata
+
+        metadata = get_account_context_metadata(email)
+        if metadata:
+            extra["email_service"] = metadata
     user = extra.get("user") or {}
     account = extra.get("account") or {}
     codex = extra.get("codex") or {}

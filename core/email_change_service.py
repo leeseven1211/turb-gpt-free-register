@@ -15,6 +15,7 @@ from core import email_provider
 from core.account_proxy import acquire_account_proxy
 from core.operation_runtime import OperationCancelled
 from core.operations import task_gateway
+from core.remail_client import RemailOrderUncertain
 from core.storage import accounts as db
 from core.storage import operation as operation_store
 
@@ -1089,6 +1090,21 @@ def _handle_email_change(context):
             error=str(exc) or "邮箱换绑任务已取消",
         )
         return task_gateway.OperationResult.cancelled(str(exc) or "邮箱换绑任务已取消")
+    except RemailOrderUncertain:
+        # 领取新邮箱可能已产生付费订单，尚未开始 OpenAI 换绑也必须阻止重复领取。
+        message = "Remail 邮箱订单结果待核验，请先核对原订单，禁止直接重试下单"
+        context.report(stage="email", state="failed", level="warning", message=message)
+        db.finish_account_email_change(
+            account_id,
+            ok=False,
+            new_email=new_email or None,
+            source=source,
+            error=message,
+            outcome="request_unknown",
+        )
+        return task_gateway.OperationResult.request_unknown(
+            message, {"cause_code": "remail_order_request_unknown"},
+        )
     except RemoteRequestUnknown as exc:
         db.finish_account_email_change(
             account_id,

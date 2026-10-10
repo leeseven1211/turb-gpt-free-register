@@ -262,6 +262,13 @@ def create_jobs_blueprint(context: WebUIContext):
                     "ok": False,
                     "error": "已选择 gptmail 邮箱来源，请填写 GPTMail API Key（配置 → 邮箱 / OTP）。",
                 }), 400
+        if "remail" in sources:
+            from core.remail_client import RemailError, validate_configuration
+
+            try:
+                validate_configuration()
+            except RemailError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 400
         if "cloudflare" in sources:
             api_base = str(getattr(_email_cfg, "CLOUDFLARE_API_BASE", "") or "").strip()
             if not api_base:
@@ -319,7 +326,7 @@ def create_jobs_blueprint(context: WebUIContext):
                     "ok": False,
                     "error": f"iCloud HME 服务不可用：{type(exc).__name__}: {str(exc)[:240]}",
                 }), 400
-        if "gptmail" in sources or "mailnest" in sources or "cloudmail" in sources or "cloudflare" in sources or "email_butler" in sources:
+        if any(source in sources for source in ("gptmail", "remail", "mailnest", "cloudmail", "cloudflare", "email_butler")):
             # 临时邮箱在任务开始时动态生成，不需要本地邮箱池容量提示。
             warning = ""
         elif sources == ["icloud_hide"]:

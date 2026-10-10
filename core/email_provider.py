@@ -11,6 +11,7 @@ EMAIL_SOURCE 支持单个或多个来源：
     "gptmail"
     "mailnest"
     "cloudmail"
+    "remail"
     "icloud_hide"
     "outlook,generic_api,mailnest,cloudmail"          # WebUI 可选来源列表
     ["outlook", "generic_api", "mailnest", "cloudmail"]  # 也兼容列表写法
@@ -23,7 +24,7 @@ from typing import Iterable
 
 logger = logging.getLogger(__name__)
 
-_VALID_SOURCES = ("outlook", "generic_api", "cloudflare_domain", "cloudflare", "email_butler", "gptmail", "mailnest", "cloudmail", "icloud_hide")
+_VALID_SOURCES = ("outlook", "generic_api", "cloudflare_domain", "cloudflare", "email_butler", "gptmail", "mailnest", "cloudmail", "remail", "icloud_hide")
 EMAIL_SOURCE_LABELS = {
     "outlook": "Outlook 邮箱池",
     "generic_api": "通用 API 邮箱",
@@ -33,6 +34,7 @@ EMAIL_SOURCE_LABELS = {
     "gptmail": "GPTMail",
     "mailnest": "MailNest",
     "cloudmail": "CloudMail",
+    "remail": "Remail",
     "icloud_hide": "iCloud 隐藏邮箱",
 }
 
@@ -204,6 +206,14 @@ def restore_email_context(
         _require_retained_local_email(row, address, selected)
         return selected
 
+    if selected == "remail":
+        from core.remail_client import restore_account_context
+
+        account = restore_account_context(address)
+        if account is None or str(account.email or "").strip().casefold() != address.casefold():
+            raise RuntimeError("原 Remail 订单取件上下文不可恢复，不能改用其他邮箱重跑")
+        return selected
+
     # 其余临时邮箱的可用性只存在于进程内上下文。上下文丢失时不能猜测
     # 该地址仍归当前任务链所有，必须让任务明确失败而不是悄悄换邮箱。
     context_getters = {
@@ -269,6 +279,9 @@ def _pick_from_source(
     if source == "cloudmail":
         from core.cloudmail_client import pick_account
         return pick_account().email
+    if source == "remail":
+        from core.remail_client import pick_account
+        return pick_account().email
     if source == "icloud_hide":
         from core.icloud_hme_client import pick_account
         return pick_account(batch_id=batch_id, job_id=job_id).email
@@ -293,6 +306,9 @@ def acquire_email(
             logger.info(f"[EmailProvider] 使用邮箱来源: {source}, email={email}")
             return email
         except Exception as exc:
+            # 邮箱下单结果不明时必须保留核验状态，不能包装成普通失败或换平台。
+            if getattr(exc, "request_unknown", False):
+                raise
             last_exc = exc
             logger.warning(f"[EmailProvider] 来源 {source} 领取邮箱失败: {type(exc).__name__}: {exc}")
             if explicit:
@@ -328,6 +344,9 @@ def resolve_email_source(email: str, *, fallback: bool = True) -> str | None:
     from core.cloudmail_client import get_account_context as get_cloudmail_context
     if get_cloudmail_context(email):
         return "cloudmail"
+    from core.remail_client import get_account_context as get_remail_context
+    if get_remail_context(email):
+        return "remail"
     from core.icloud_hme_client import get_account_context as get_icloud_context
     if get_icloud_context(email):
         return "icloud_hide"
@@ -416,6 +435,9 @@ def wait_for_otp(
     if source == "cloudmail":
         from core.cloudmail_client import fetch_latest_otp
         return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
+    if source == "remail":
+        from core.remail_client import fetch_latest_otp
+        return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
     if source == "icloud_hide":
         from core.icloud_hme_client import fetch_latest_otp
         return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
@@ -487,6 +509,9 @@ def release_email(
         release_account(email, status=status, note=note)
     elif selected == "cloudmail":
         from core.cloudmail_client import release_account
+        release_account(email, status=status, note=note)
+    elif selected == "remail":
+        from core.remail_client import release_account
         release_account(email, status=status, note=note)
     elif selected == "icloud_hide":
         from core.icloud_hme_client import release_account

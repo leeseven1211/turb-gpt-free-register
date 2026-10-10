@@ -89,7 +89,7 @@ function renderMailSourceCards(sources) {
     return `<article class="mail-source-card${source.enabled ? ' is-enabled' : ''}${clickable ? ' is-clickable' : ''}"${clickable ? ` data-mail-source="${attrEsc(source.source)}" role="button" tabindex="0"` : ''}>
       <div class="mail-source-card-head"><strong title="${attrEsc(source.label)}">${esc(source.label)}</strong><span>${source.enabled ? '已启用' : '未启用'}</span></div>
       <div class="mail-source-card-value">${onDemand ? '按需' : esc(source.available || 0)}</div>
-      <div class="mail-source-card-meta">${onDemand ? '运行时租用 / 创建' : `总数 ${esc(source.total || 0)} · 已用 ${esc(source.used || 0)} · 失败 ${esc(source.failed || 0)} · 停用 ${esc(source.disabled || 0)}`}</div>
+      <div class="mail-source-card-meta">${onDemand ? '运行时领取 / 创建' : `总数 ${esc(source.total || 0)} · 已用 ${esc(source.used || 0)} · 失败 ${esc(source.failed || 0)} · 停用 ${esc(source.disabled || 0)}`}</div>
     </article>`;
   }).join('') || '<div class="muted">暂无邮箱平台</div>';
 }

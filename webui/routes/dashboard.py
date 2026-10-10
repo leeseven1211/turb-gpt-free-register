@@ -78,8 +78,8 @@ def create_dashboard_blueprint(context: WebUIContext):
         from core.email_provider import parse_email_sources
         pool = {"total": 0, "available": 0, "used": 0, "failed": 0}
         for src in parse_email_sources(_email_cfg.EMAIL_SOURCE):
-            # GPTMail/MailNest/CloudMail 地址按需生成，不属于本地邮箱池。
-            if src in ("gptmail", "mailnest", "cloudmail", "cloudflare", "email_butler"):
+            # 远端地址按需领取，不属于本地邮箱池。
+            if src in ("gptmail", "remail", "mailnest", "cloudmail", "cloudflare", "email_butler"):
                 continue
             one = (
                 db.generic_api_email_pool_summary() if src == "generic_api"
@@ -140,7 +140,7 @@ def create_dashboard_blueprint(context: WebUIContext):
             }
             for source, label, summary in local_pools
         ]
-        on_demand_sources = ("email_butler", "gptmail", "mailnest", "cloudmail", "cloudflare")
+        on_demand_sources = ("email_butler", "gptmail", "remail", "mailnest", "cloudmail", "cloudflare")
         pool_rows.extend({
             "source": source,
             "label": EMAIL_SOURCE_LABELS.get(source, source),

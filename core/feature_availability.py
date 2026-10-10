@@ -56,6 +56,14 @@ def _email_source_features() -> dict[str, dict[str, Any]]:
     add("email_butler", ok, reason)
     ok, reason = _all_present([("GPTMAIL_API_KEY", getattr(cfg, "GPTMAIL_API_KEY", ""))])
     add("gptmail", ok, reason)
+    from core.remail_client import RemailError, validate_configuration
+
+    try:
+        validate_configuration()
+        ok, reason = True, ""
+    except RemailError as exc:
+        ok, reason = False, str(exc)
+    add("remail", ok, reason)
     ok, reason = _all_present([
         ("MAIL_NEST_API_KEY", getattr(cfg, "MAIL_NEST_API_KEY", "")),
         ("MAIL_NEST_PROJECT_CODE", getattr(cfg, "MAIL_NEST_PROJECT_CODE", "")),

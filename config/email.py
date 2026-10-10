@@ -22,6 +22,7 @@ USE_EMAIL_SERVICE = schema_default("USE_EMAIL_SERVICE")
 #   "generic_api"       — 通用 API 取码邮箱池（邮箱----取码地址）
 #   "gptmail"           — GPTMail 临时邮箱 API（运行时随机生成邮箱并自动收码）
 #   "mailnest"          — MailNest/迈巢临时邮箱 API（运行时购买邮箱并自动收码）
+#   "remail"            — Remail 开放 API（按项目下单并自动收取验证码）
 #   "cloudmail"         — CloudMail/Cloud Mail API（自动从平台获取域名并随机生成邮箱）
 #   "icloud_hide"       — iCloud Hide My Email 别名池（可用本机 Gmail IMAP 或 Email Butler 收码）
 EMAIL_SOURCE = schema_default("EMAIL_SOURCE")
@@ -145,6 +146,21 @@ MAIL_NEST_API_KEY = schema_default("MAIL_NEST_API_KEY")
 # MailNest 项目代码；OpenAI/ChatGPT 默认 chatgpt001。
 # 兼容旧源码检查：MAIL_NEST_PROJECT_CODE = "chatgpt001"
 MAIL_NEST_PROJECT_CODE = schema_default("MAIL_NEST_PROJECT_CODE")
+
+# ============================================================
+# Remail 开放 API：https://remail.aishop6.com/docs
+# ============================================================
+
+REMAIL_API_BASE = schema_default("REMAIL_API_BASE")
+# API Key 只保存在 .env；可在 WebUI「配置 → 邮箱 / OTP → Remail」填写。
+REMAIL_API_KEY = schema_default("REMAIL_API_KEY")
+REMAIL_PROJECT_ID = schema_default("REMAIL_PROJECT_ID")
+REMAIL_EMAIL_SUFFIX = schema_default("REMAIL_EMAIL_SUFFIX")
+# purchase 为长效购买，code 为短效接码。
+REMAIL_SERVICE_MODE = schema_default("REMAIL_SERVICE_MODE")
+REMAIL_SUPPLY_POLICY = schema_default("REMAIL_SUPPLY_POLICY")
+REMAIL_ORDER_WAIT_SECONDS = schema_default("REMAIL_ORDER_WAIT_SECONDS")
+REMAIL_REQUEST_TIMEOUT = schema_default("REMAIL_REQUEST_TIMEOUT")
 
 # ============================================================
 # CloudMail API 文档：https://doc.skymail.ink/api/api-doc

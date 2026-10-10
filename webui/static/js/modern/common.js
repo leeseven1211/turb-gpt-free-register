@@ -57,7 +57,7 @@ const LIST_FACET_LABELS = {
   },
   source: {
     outlook:'Outlook', generic_api:'通用 API', cloudflare_domain:'域名邮箱', cloudflare_temp:'Cloudflare 临时邮箱',
-    icloud_hide:'iCloud 隐藏邮箱', email_butler:'Email Butler', gptmail:'GPTMail', mailnest:'MailNest', cloudmail:'CloudMail',
+    icloud_hide:'iCloud 隐藏邮箱', email_butler:'Email Butler', gptmail:'GPTMail', mailnest:'MailNest', remail:'Remail', cloudmail:'CloudMail',
   },
   token: {has:'有 Token', none:'无 Token'},
   account_token: {

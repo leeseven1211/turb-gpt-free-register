@@ -35,6 +35,7 @@ SECRET_ENV_KEYS: dict[str, str] = {
     "CLOUDFLARE_SIGNAL_API_KEY": "Cloudflare 封号邮件只读信号 API Key",
     "CLOUDFLARE_CUSTOM_AUTH": "Cloudflare Worker 全局密码 x-custom-auth",
     "MAIL_NEST_API_KEY": "MailNest API Key",
+    "REMAIL_API_KEY": "Remail API Key",
     "CLOUDMAIL_AUTH_TOKEN": "CloudMail Authorization Token",
     "CLOUDMAIL_PASSWORD": "CloudMail 登录密码",
     "ICLOUD_HME_API_TOKEN": "iCloud HME 本地服务 API Token（可选）",

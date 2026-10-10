@@ -46,6 +46,7 @@ ChatGPT / OpenAI 账号自动注册与 Codex OAuth 授权工具。注册主链�
 - Cloudflare Worker 临时邮箱：自动创建 + JWT 取码（`cloudflare`，兼容 cloudflare_temp_email）
 - 通用 API 邮箱：`email----取码地址`
 - GPTMail 临时邮箱 API：运行时随机生成邮箱并自动收取验证码
+- Remail 开放 API：按项目下单领取邮箱并自动收取验证码（`remail`）
 - iCloud Hide My Email：同步本机 sidecar 的隐藏邮箱别名，并通过隐藏邮箱实际转发目标的收件箱自动收码（`icloud_hide`）
 - `EMAIL_SOURCE` 支持配置多个已启用来源，例如：
 
@@ -359,6 +360,28 @@ Cloudflare Email Routing 需要把域名邮件转发到 QQ 邮箱。此模式不
 
 - `api-key`获取页面：https://mailnest.top/account
 - 项目代码获取页面：https://mailnest.top/buy-email。默认为`chatgpt001`，可以直接使用
+
+#### Remail 开放 API（`remail`）
+
+在 WebUI「配置 → 邮箱 / OTP → Remail」填写 API Key，并在通用邮箱设置的「邮箱来源」中启用 Remail。发起注册或换绑邮箱时，再选择本次使用 Remail。也可以在 `.env` 中配置；默认值由 `config/schema.py` 统一维护：
+
+```dotenv
+EMAIL_SOURCE=remail
+REMAIL_API_BASE=https://remail.aishop6.com
+REMAIL_API_KEY=你的Remail_API_Key
+REMAIL_PROJECT_ID=2
+REMAIL_EMAIL_SUFFIX=outlook.com
+REMAIL_SERVICE_MODE=purchase
+REMAIL_SUPPLY_POLICY=public_only
+REMAIL_ORDER_WAIT_SECONDS=30
+REMAIL_REQUEST_TIMEOUT=20
+```
+
+项目 ID 和邮箱后缀应与平台项目列表一致。`purchase` 为可重复收件的长效购买，`code` 为短效接码，后续登录或账号操作能否收码取决于服务是否仍有效。`public_only` 只使用公开库存，`private_first` 优先使用自己的库存。订单未立即返回收件凭证时，客户端最多等待 `REMAIL_ORDER_WAIT_SECONDS` 秒；单次请求超时由 `REMAIL_REQUEST_TIMEOUT` 控制。接口说明见 [Remail 开放 API 文档](https://remail.aishop6.com/docs)。
+
+Remail 属于运行时按需领取来源，无需导入本地 Outlook 邮箱池。API Key 只保存在 `.env`。注册成功时订单取件凭据随账号私有上下文写入 PostgreSQL；进程重启后优先恢复该上下文。换绑邮箱或本地没有取件凭据时，使用同一 API Key 按完整邮箱查询原订单，不会改领其他邮箱。普通列表和日志不展示取件凭据。
+
+下单网络超时、服务端结果不明或订单交付凭据等待超时时，注册和换绑任务进入 `request_unknown`，禁止直接重试下单；需先在 Remail 控制台核对原订单，避免重复扣费。短效订单失效后不会自动购买新邮箱代替原地址。
 
 ---
 
