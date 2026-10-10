@@ -483,39 +483,6 @@
       </h3>
       <div class="log" id="liveLogContent">加载中…</div>
     </div>
-    <div class="body hidden" id="accountTaskLogPanel" role="dialog" aria-modal="true" aria-labelledby="accountTaskLogTitle">
-      <h3 id="accountTaskLogTitle">任务 #<span id="accountTaskLogId"></span>
-        <button class="btn" id="btnCloseAccountTaskLog" style="float:right;min-height:28px;">关闭</button>
-      </h3>
-      <div class="task-error-summary hidden" id="accountTaskLogErrorSummary"></div>
-      <div class="account-task-detail-toolbar">
-        <div class="account-task-detail-summary" id="accountTaskDetailSummary">正在加载任务摘要…</div>
-        <span class="account-task-timezone-hint" data-browser-timezone-hint>时间按当前浏览器时区显示</span>
-        <label class="account-task-run-picker">运行
-          <select id="accountTaskRunSelect" aria-label="选择执行实例"></select>
-        </label>
-      </div>
-      <div class="account-task-stage-progress hidden" id="accountTaskStageProgress"></div>
-      <div class="account-task-progress-filter" id="accountTaskProgressFilter" aria-live="polite"></div>
-      <div class="account-task-detail-tabs" role="tablist" aria-label="任务详情视图">
-        <button type="button" class="is-active" data-account-task-detail-tab="events" role="tab">事件时间线</button>
-        <button type="button" data-account-task-detail-tab="logs" role="tab">运行日志</button>
-        <button type="button" data-account-task-detail-tab="artifacts" role="tab">诊断资源</button>
-      </div>
-      <div class="account-task-detail-content">
-        <div class="account-task-events" id="accountTaskLogContent" data-account-task-detail-view="events">加载中…</div>
-        <div class="account-task-run-log hidden" id="accountTaskRunLogContent" data-account-task-detail-view="logs">加载中…</div>
-        <div class="account-task-artifacts hidden" id="accountTaskArtifactContent" data-account-task-detail-view="artifacts">加载中…</div>
-      </div>
-      <button type="button" class="account-task-new-events hidden" id="accountTaskNewEvents">有新事件，回到底部</button>
-      <div class="account-task-step-detail-overlay hidden" id="accountTaskStepDetailOverlay">
-        <div class="account-task-step-detail-dialog" id="accountTaskStepDetailDialog" role="dialog" aria-modal="true" aria-labelledby="accountTaskStepDetailTitle">
-          <div class="account-task-step-detail-header"><h3 id="accountTaskStepDetailTitle">步骤详情</h3><button type="button" class="btn" id="btnCloseAccountTaskStepDetail">关闭</button></div>
-          <div class="account-task-step-detail-tabs" id="accountTaskStepDetailTabs" role="tablist" aria-label="步骤详情视图"></div>
-          <div class="account-task-step-detail-content" id="accountTaskStepDetailContent" role="tabpanel" tabindex="0"></div>
-        </div>
-      </div>
-    </div>
   </div>
 
   <!-- ============ Codex 授权 ============ -->
@@ -751,6 +718,41 @@
     </div>
   </div>
 </main>
+
+<!-- 注册页与任务中心共用的任务详情，独立于各页面的显示状态。 -->
+<div class="body hidden" id="accountTaskLogPanel" role="dialog" aria-modal="true" aria-labelledby="accountTaskLogTitle">
+  <h3 id="accountTaskLogTitle">任务 #<span id="accountTaskLogId"></span>
+    <button class="btn" id="btnCloseAccountTaskLog" style="float:right;min-height:28px;">关闭</button>
+  </h3>
+  <div class="task-error-summary hidden" id="accountTaskLogErrorSummary"></div>
+  <div class="account-task-detail-toolbar">
+    <div class="account-task-detail-summary" id="accountTaskDetailSummary">正在加载任务摘要…</div>
+    <span class="account-task-timezone-hint" data-browser-timezone-hint>时间按当前浏览器时区显示</span>
+    <label class="account-task-run-picker">运行
+      <select id="accountTaskRunSelect" aria-label="选择执行实例"></select>
+    </label>
+  </div>
+  <div class="account-task-stage-progress hidden" id="accountTaskStageProgress"></div>
+  <div class="account-task-progress-filter" id="accountTaskProgressFilter" aria-live="polite"></div>
+  <div class="account-task-detail-tabs" role="tablist" aria-label="任务详情视图">
+    <button type="button" class="is-active" data-account-task-detail-tab="events" role="tab">事件时间线</button>
+    <button type="button" data-account-task-detail-tab="logs" role="tab">运行日志</button>
+    <button type="button" data-account-task-detail-tab="artifacts" role="tab">诊断资源</button>
+  </div>
+  <div class="account-task-detail-content">
+    <div class="account-task-events" id="accountTaskLogContent" data-account-task-detail-view="events">加载中…</div>
+    <div class="account-task-run-log hidden" id="accountTaskRunLogContent" data-account-task-detail-view="logs">加载中…</div>
+    <div class="account-task-artifacts hidden" id="accountTaskArtifactContent" data-account-task-detail-view="artifacts">加载中…</div>
+  </div>
+  <button type="button" class="account-task-new-events hidden" id="accountTaskNewEvents">有新事件，回到底部</button>
+  <div class="account-task-step-detail-overlay hidden" id="accountTaskStepDetailOverlay">
+    <div class="account-task-step-detail-dialog" id="accountTaskStepDetailDialog" role="dialog" aria-modal="true" aria-labelledby="accountTaskStepDetailTitle">
+      <div class="account-task-step-detail-header"><h3 id="accountTaskStepDetailTitle">步骤详情</h3><button type="button" class="btn" id="btnCloseAccountTaskStepDetail">关闭</button></div>
+      <div class="account-task-step-detail-tabs" id="accountTaskStepDetailTabs" role="tablist" aria-label="步骤详情视图"></div>
+      <div class="account-task-step-detail-content" id="accountTaskStepDetailContent" role="tabpanel" tabindex="0"></div>
+    </div>
+  </div>
+</div>
 
 <div id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 <div id="outlookImportModal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="outlookImportTitle">

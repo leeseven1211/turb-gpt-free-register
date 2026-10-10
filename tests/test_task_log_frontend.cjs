@@ -317,6 +317,24 @@ test('切换 Run 会清除旧步骤筛选，同时保留显式传入的新筛选
   });
 });
 
+test('注册步骤入口的筛选不会被加载中的空快照清除', () => {
+  const start = accountsSource.indexOf('function renderAccountTaskProgressSnapshot(');
+  const end = accountsSource.indexOf('\nfunction renderAccountTaskStageProgress(', start);
+  const sandbox = runVm(`${stepFunctions}\n${accountsSource.slice(start, end)}
+    renderAccountTaskProgressSnapshot(null);
+    const loadingFilter = accountTaskStepFilter;
+    renderAccountTaskProgressSnapshot({main_steps: []});
+    result = {loadingFilter, emptyFilter: accountTaskStepFilter};`, {
+    accountTaskStepFilter: 'network',
+    $: () => ({innerHTML: '', classList: {add() {}}}),
+    hideAccountTaskStepTooltip() {},
+    closeAccountTaskStepDialog() {},
+    renderAccountTaskFilterBar() {},
+  });
+  assert.equal(sandbox.result.loadingFilter, 'network');
+  assert.equal(sandbox.result.emptyFilter, null);
+});
+
 test('多步骤按宽度紧凑排列，窄屏双卡分页仍保持实际顺序', () => {
   const sandbox = runVm(`${progressFunctions}
     const steps = Array.from({length: 17}, (_, index) => ({id: 'step-' + index}));

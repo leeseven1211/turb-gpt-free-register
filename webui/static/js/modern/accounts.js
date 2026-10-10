@@ -292,7 +292,7 @@ function renderAccountTaskProgressSnapshot(progress) {
   const tooltipTab = tooltipTarget?.dataset.stepDetailTab;
   hideAccountTaskStepTooltip();
   const stages = taskProgressVisibleSteps(progress?.main_steps);
-  if (accountTaskStepFilter && !stages.some(stage => accountTaskProgressStepId(stage) === accountTaskStepFilter || (stage.raw_stages || []).includes(accountTaskStepFilter))) accountTaskStepFilter = null;
+  if (progress && accountTaskStepFilter && !stages.some(stage => accountTaskProgressStepId(stage) === accountTaskStepFilter || (stage.raw_stages || []).includes(accountTaskStepFilter))) accountTaskStepFilter = null;
   if (!stages.length) {
     accountTaskStepPage = 0;
     accountTaskStepPageSize = 0;

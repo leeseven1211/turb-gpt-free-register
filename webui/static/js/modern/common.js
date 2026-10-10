@@ -1119,6 +1119,9 @@ setInterval(updateTopbarClock, 30000);
 
 function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   if (!NAV_ALLOWED_TABS.includes(tab)) tab = 'overview';
+  const taskDialog = $('#accountTaskLogPanel');
+  if (tab !== ACTIVE_TAB && taskDialog && !taskDialog.classList.contains('hidden')
+      && typeof closeAccountTaskLogModal === 'function') closeAccountTaskLogModal();
   const proxyTrafficDialog = document.getElementById('proxyTrafficDetailDialog');
   if (tab !== 'proxy-traffic' && proxyTrafficDialog?.open) proxyTrafficDialog.close();
   ACTIVE_TAB = tab;

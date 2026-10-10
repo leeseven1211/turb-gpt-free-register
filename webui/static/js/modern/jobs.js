@@ -763,6 +763,8 @@ function closeLiveLogModal() {
   updateModalScrollLock();
 }
 function closeAccountTaskLogModal() {
+  if (typeof hideAccountTaskStepTooltip === 'function') hideAccountTaskStepTooltip();
+  if (typeof closeAccountTaskStepDialog === 'function') closeAccountTaskStepDialog(false);
   accountTaskRequestId += 1;
   activeAccountTaskId = null;
   activeAccountTaskRunId = null;
