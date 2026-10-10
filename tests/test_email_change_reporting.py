@@ -30,6 +30,7 @@ class EmailChangeReportingTests(unittest.TestCase):
             database.get_account.return_value = {
                 "email": context.email, "access_token": "fixture-at", "email_source": "outlook",
             }
+            database.get_account_by_email.return_value = None
             database.claim_account_email_change.return_value = True
             database.finish_account_email_change.return_value = True
             provider = stack.enter_context(patch.object(service, "email_provider"))

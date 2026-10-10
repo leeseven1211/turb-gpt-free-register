@@ -855,9 +855,35 @@ def _handle_email_change(context):
                 context.report(stage="email", state="failed", message="邮箱池未返回新邮箱")
                 return task_gateway.OperationResult.failed("邮箱池未返回新邮箱")
             if new_email.lower() == current_email.lower():
-                _release_unconsumed(new_email, account_id, "新邮箱与当前邮箱相同")
-                context.report(stage="email", state="failed", message="领取到的邮箱与当前邮箱相同")
-                return task_gateway.OperationResult.failed("领取到的邮箱与当前邮箱相同")
+                reason = "领取到的邮箱与当前邮箱相同，已停止换绑"
+                db.finish_account_email_change(
+                    account_id,
+                    ok=False,
+                    new_email=new_email,
+                    source=source,
+                    error=reason,
+                )
+                summary = {"cause_code": "email_change_same_email", "account_id": account_id}
+                context.report(
+                    stage="email", state="failed", message=reason,
+                    detail=summary,
+                )
+                return task_gateway.OperationResult.failed(reason, summary)
+            if db.get_account_by_email(new_email) is not None:
+                reason = "目标邮箱已被本地账号占用，已停止换绑"
+                db.finish_account_email_change(
+                    account_id,
+                    ok=False,
+                    new_email=new_email,
+                    source=source,
+                    error=reason,
+                )
+                summary = {"cause_code": "email_change_target_in_use", "account_id": account_id}
+                context.report(
+                    stage="email", state="failed", message=reason,
+                    detail=summary,
+                )
+                return task_gateway.OperationResult.failed(reason, summary)
             db.mark_account_email_change_running(account_id, new_email, source=source)
             context.report(stage="email", state="success", message=f"新邮箱已领取：{new_email}")
             active_stage = "network"

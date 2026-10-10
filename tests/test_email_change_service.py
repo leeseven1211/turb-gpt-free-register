@@ -269,6 +269,140 @@ class EmailChangeProtocolContractTests(unittest.TestCase):
 
 
 class EmailChangeLoggingTests(unittest.TestCase):
+    class _GuardContext:
+        account_id = 7
+        run_id = 29
+        task_id = 30
+        email = "old@example.test"
+        run = {"data": {"email_source": "outlook"}, "trigger": "test"}
+        config_snapshot = {"email_change_enabled": True}
+
+        def __init__(self):
+            self.events = []
+
+        def report(self, **event):
+            self.events.append(event)
+
+        @contextmanager
+        def lease(self, *, resource_family):
+            yield None
+
+        def checkpoint(self):
+            return None
+
+        def remote_request_started(self, *args, **kwargs):
+            return None
+
+        def remote_request_receipt(self, *args, **kwargs):
+            return None
+
+    def _guard_context(self):
+        return self._GuardContext()
+
+    def _source_account(self):
+        return {
+            "email": "old@example.test",
+            "email_source": "outlook",
+            "access_token": "old-at",
+        }
+
+    def test_target_owned_by_another_account_finishes_source_without_remote_begin(self):
+        from core import email_change_service
+
+        context = self._guard_context()
+        route = Mock()
+        begin = Mock()
+        with (
+            patch.object(email_change_service.db, "get_account", return_value=self._source_account()),
+            patch.object(email_change_service.db, "get_account_by_email", return_value={"id": 99, "email": "taken@example.test"}),
+            patch.object(email_change_service.email_provider, "validate_email_source", return_value="outlook"),
+            patch("core.browser_traffic.record_unavailable"),
+            patch.object(email_change_service.db, "claim_account_email_change", return_value=True),
+            patch.object(email_change_service.email_provider, "acquire_email", return_value="  Taken@Example.test "),
+            patch.object(email_change_service.db, "mark_account_email_change_running") as mark_running,
+            patch.object(email_change_service, "acquire_account_proxy", return_value=route) as acquire_proxy,
+            patch.object(email_change_service, "begin_change_with_optional_reauth", return_value=begin) as begin_call,
+            patch.object(email_change_service.db, "finish_account_email_change", return_value=True) as finish,
+            patch.object(email_change_service, "_release_unconsumed") as release,
+        ):
+            result = email_change_service._handle_email_change(context)
+
+        self.assertEqual("failed", result.status)
+        self.assertEqual("email_change_target_in_use", result.summary["cause_code"])
+        self.assertEqual(7, result.summary["account_id"])
+        self.assertFalse(result.summary.get("target_email"))
+        finish.assert_called_once_with(
+            7,
+            ok=False,
+            new_email="Taken@Example.test",
+            source="outlook",
+            error="目标邮箱已被本地账号占用，已停止换绑",
+        )
+        mark_running.assert_not_called()
+        acquire_proxy.assert_not_called()
+        begin_call.assert_not_called()
+        release.assert_not_called()
+        self.assertTrue(all("Taken@Example.test" not in str(event) for event in context.events))
+
+    def test_archived_or_disabled_account_email_remains_unavailable(self):
+        from core import email_change_service
+
+        for owner in (
+            {"id": 99, "email": "taken@example.test", "archived": True},
+            {"id": 100, "email": "taken@example.test", "deactivated": True},
+        ):
+            with self.subTest(owner=owner):
+                context = self._guard_context()
+                with (
+                    patch.object(email_change_service.db, "get_account", return_value=self._source_account()),
+                    patch.object(email_change_service.db, "get_account_by_email", return_value=owner),
+                    patch.object(email_change_service.email_provider, "validate_email_source", return_value="outlook"),
+                    patch("core.browser_traffic.record_unavailable"),
+                    patch.object(email_change_service.db, "claim_account_email_change", return_value=True),
+                    patch.object(email_change_service.email_provider, "acquire_email", return_value="taken@example.test"),
+                    patch.object(email_change_service, "acquire_account_proxy") as acquire_proxy,
+                    patch.object(email_change_service, "begin_change_with_optional_reauth") as begin_call,
+                    patch.object(email_change_service.db, "finish_account_email_change", return_value=True) as finish,
+                    patch.object(email_change_service, "_release_unconsumed") as release,
+                ):
+                    result = email_change_service._handle_email_change(context)
+
+                self.assertEqual("email_change_target_in_use", result.summary["cause_code"])
+                self.assertEqual(7, finish.call_args.args[0])
+                acquire_proxy.assert_not_called()
+                begin_call.assert_not_called()
+                release.assert_not_called()
+
+    def test_same_email_guard_finishes_source_without_releasing_bound_mailbox(self):
+        from core import email_change_service
+
+        context = self._guard_context()
+        with (
+            patch.object(email_change_service.db, "get_account", return_value=self._source_account()),
+            patch.object(email_change_service.email_provider, "validate_email_source", return_value="outlook"),
+            patch("core.browser_traffic.record_unavailable"),
+            patch.object(email_change_service.db, "claim_account_email_change", return_value=True),
+            patch.object(email_change_service.email_provider, "acquire_email", return_value=" OLD@example.test "),
+            patch.object(email_change_service.db, "finish_account_email_change", return_value=True) as finish,
+            patch.object(email_change_service, "_release_unconsumed") as release,
+            patch.object(email_change_service, "acquire_account_proxy") as acquire_proxy,
+            patch.object(email_change_service, "begin_change_with_optional_reauth") as begin_call,
+        ):
+            result = email_change_service._handle_email_change(context)
+
+        self.assertEqual("failed", result.status)
+        self.assertEqual("email_change_same_email", result.summary["cause_code"])
+        finish.assert_called_once_with(
+            7,
+            ok=False,
+            new_email="OLD@example.test",
+            source="outlook",
+            error="领取到的邮箱与当前邮箱相同，已停止换绑",
+        )
+        release.assert_not_called()
+        acquire_proxy.assert_not_called()
+        begin_call.assert_not_called()
+
     def test_email_change_logs_allocated_mailbox_when_waiting_for_otp(self):
         from core import email_change_service
 
@@ -320,6 +454,7 @@ class EmailChangeLoggingTests(unittest.TestCase):
         }
 
         with patch.object(email_change_service.db, "get_account", return_value=account), \
+            patch.object(email_change_service.db, "get_account_by_email", return_value=None), \
             patch.object(email_change_service.email_provider, "validate_email_source", return_value="outlook"), \
             patch("core.browser_traffic.record_unavailable"), \
             patch.object(email_change_service.db, "claim_account_email_change", return_value=True), \
@@ -328,12 +463,13 @@ class EmailChangeLoggingTests(unittest.TestCase):
             patch.object(email_change_service, "acquire_account_proxy", return_value=route), \
             patch.object(email_change_service, "_account_stable_identity", return_value=identity), \
             patch("core.session.BrowserSession", return_value=session), \
-            patch.object(email_change_service, "begin_change_with_optional_reauth", return_value=begin), \
+            patch.object(email_change_service, "begin_change_with_optional_reauth", return_value=begin) as begin_call, \
             patch.object(email_change_service.email_provider, "wait_for_otp", side_effect=RuntimeError("mailbox wait timed out")), \
             patch.object(email_change_service.db, "finish_account_email_change", return_value=True):
             result = email_change_service._handle_email_change(context)
 
         self.assertEqual("request_unknown", result.status)
+        begin_call.assert_called_once()
         self.assertIn(
             ("email", "success", "新邮箱已领取：new@example.test"),
             [(item["stage"], item["state"], item["message"]) for item in context.events],
@@ -385,6 +521,7 @@ class EmailChangeLoggingTests(unittest.TestCase):
                 )
                 with (
                     patch.object(email_change_service.db, "get_account", return_value=account),
+                    patch.object(email_change_service.db, "get_account_by_email", return_value=None),
                     patch.object(email_change_service.email_provider, "validate_email_source", return_value="outlook"),
                     patch("core.browser_traffic.record_unavailable"),
                     patch.object(email_change_service.db, "claim_account_email_change", return_value=True),
@@ -653,6 +790,7 @@ class EmailChangeCloseoutTests(unittest.TestCase):
 
         with (
             patch.object(email_change_service.db, "get_account", side_effect=[initial_account, updated_account]),
+            patch.object(email_change_service.db, "get_account_by_email", return_value=None),
             patch.object(email_change_service.email_provider, "validate_email_source", return_value="email_butler"),
             patch("core.browser_traffic.record_unavailable"),
             patch.object(email_change_service.db, "claim_account_email_change", return_value=True),
