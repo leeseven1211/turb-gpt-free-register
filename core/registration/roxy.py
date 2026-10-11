@@ -795,7 +795,7 @@ def run_roxy_registration(
             report_registered_account(account_id)
             create_acknowledged = True
             logger.info(
-                "[Roxy注册] 密码提交请求已发出，先保存可恢复检查点：id=%s email=%s",
+                "[Roxy注册] 密码提交结果待确认，已保存可恢复检查点：id=%s email=%s",
                 account_id,
                 email,
             )

@@ -647,63 +647,132 @@ def _fill_password_page_if_present(
             len(password),
             email,
         )
-        result = driver.execute_script(r"""
-        const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
-          && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none'
-          && !el.disabled && !el.readOnly;
+        target_script = r"""
+        const mode = arguments[0];
+        const expectedPassword = arguments[1];
+        const filledInput = arguments[2];
+        const visible = el => !!el && !!el.isConnected
+          && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+          && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+        const enabled = el => !el.disabled && !el.readOnly && !el.matches(':disabled')
+          && String(el.getAttribute('aria-disabled') || '').toLowerCase() !== 'true';
+        const selectTargets = () => {
         const input = [...document.querySelectorAll('input[type="password"],input[name*="password" i],input[autocomplete="new-password"]')]
-          .find(visible);
+          .find(el => visible(el) && enabled(el));
         if (!input) return {ok:false, reason:'missing_password_input'};
         const form = input.closest('form');
-        const scope = form || document;
-        const buttons = [...scope.querySelectorAll('button,input[type="submit"]')]
-          .filter(el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length) && !el.disabled && el.getAttribute('aria-disabled') !== 'true')
+        if (!form || !form.isConnected || input.form !== form) return {ok:false, reason:'missing_password_form'};
+        const props = node => Object.getOwnPropertyNames(node || {})
+          .filter(key => key.startsWith('__reactProps$') || key.startsWith('__reactEventHandlers$'))
+          .map(key => node[key]).filter(Boolean);
+        // 页面可见时 React 可能尚未接管表单，未挂载提交处理器前不填写或点击。
+        if (location.hostname === 'auth.openai.com'
+            && !props(form).some(value => typeof value.onSubmit === 'function')
+            && typeof form.onsubmit !== 'function') {
+          return {ok:false, reason:'password_frontend_not_ready'};
+        }
+        // 空密码时主按钮可能禁用，填写阶段只确认输入框就绪。
+        if (mode === 'input') return {ok:true, reason:'password_input_ready', input};
+        if (input !== filledInput) return {ok:false, reason:'password_input_replaced'};
+        if (input.value !== expectedPassword) return {ok:false, reason:'password_value_changed'};
+        if (input.validity?.valid === false || !form.checkValidity()) return {ok:false, reason:'password_form_invalid'};
+        const buttons = [...form.querySelectorAll('button,input[type="submit"]')]
+          .filter(el => visible(el) && enabled(el) && el.form === form)
           .map((el, idx) => {
-            const r = el.getBoundingClientRect();
-            const ir = input.getBoundingClientRect();
-            const type = String(el.getAttribute('type') || '').toLowerCase();
+            const type = String(el.type || el.getAttribute('type') || '').toLowerCase();
             const name = String(el.getAttribute('name') || '').toLowerCase();
-            const attrs = [
-              el.textContent, el.getAttribute('aria-label'), el.getAttribute('title'),
-              el.getAttribute('data-testid'), el.getAttribute('data-dd-action-name'),
-              type, name, el.getAttribute('value'),
-            ].join(' ').replace(/\s+/g, ' ').trim().slice(0, 160);
-            const normalized = attrs.toLowerCase();
-            const otpOrAlternate = /otp|one[-_ ]?time|passwordless|一次性验证码|一次性驗證碼|intent=/.test(normalized)
-              || name === 'intent';
-            const primaryText = /continue|proceed|next|submit|sign up|create|続行|次へ|注册|创建|继续|確認|確認する/.test(normalized);
-            const priority = otpOrAlternate ? 3 : type === 'submit' ? 0 : primaryText ? 1 : 2;
-            return {
-              el, idx, type, name, text: attrs,
-              priority,
-              below: r.top >= ir.bottom - 10,
-              dist: Math.max(0, r.top - ir.bottom) + Math.abs((r.left+r.right-ir.left-ir.right)/2)/10,
-            };
+            const value = String(el.getAttribute('value') || '').toLowerCase();
+            const text = [el.textContent, el.getAttribute('aria-label'), el.getAttribute('title')]
+              .join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
+            const alternate = name === 'connection' || name === 'provider'
+              || /google|apple|microsoft|github|facebook|oauth|social/.test(value)
+              || /otp|one[-_ ]?time|passwordless|resend|back|cancel|another[-_ ]?way/.test(value + ' ' + text)
+              || /一次性|验证码|驗證碼|返回|后退|取消|其他方式|其它方式|戻る|別の方法|ワンタイム|코드|뒤로/.test(text);
+            const passwordIntent = name === 'intent' && /password/.test(value) && !alternate;
+            return {el, idx, type, name, passwordIntent, alternate};
           })
-          .filter(x => x.below)
-          .sort((a,b) => a.priority - b.priority || a.dist - b.dist || a.idx - b.idx);
-        if (!buttons.length) return {ok:false, reason:'missing_submit'};
+          // 不把返回、显示密码或验证码入口当成提交候选；合法密码 intent 优先。
+          .filter(item => item.type === 'submit' && !item.alternate)
+          .sort((a,b) => Number(b.passwordIntent) - Number(a.passwordIntent) || a.idx - b.idx);
+        if (!buttons.length) return {ok:false, reason:'missing_password_submit'};
         buttons[0].el.scrollIntoView({block:'center'});
-        return {
-          ok:true,
-          reason:'password_targets',
-          input,
-          button: buttons[0].el,
-          button_type: buttons[0].type,
-          button_name: buttons[0].name,
-          button_text: buttons[0].text,
+        return {ok:true, reason:'password_targets', input, button:buttons[0].el};
         };
-        """) or {}
-        if not result.get('ok'):
-            raise RuntimeError(f"密码页处理失败：{result} state={last}")
-        _human_type_text(driver, result.get("input"), password, clear=True)
-        human_delay("form", minimum=0.4, maximum=1.4)
-        _human_click(driver, result.get("button"), label="password_submit")
-        logger.info("%s 已填写并提交%s密码页", _log_prefix(driver), "登录" if is_login_password else "注册")
+        const target = selectTargets();
+        if (mode !== 'queue' || !target.ok) return target;
+        const receipt = {phase:'queued'};
+        window.__turbPasswordSubmissionReceipt = receipt;
+        // 先返回排队回执，避免同步点击的页面跳转阻塞 WebDriver；仅此 timer 可以提交。
+        setTimeout(() => {
+          if (window.__turbPasswordSubmissionReceipt !== receipt || receipt.phase !== 'queued') return;
+          try {
+            const fresh = selectTargets();
+            if (!fresh.ok || fresh.input !== target.input || fresh.button !== target.button) {
+              receipt.phase = 'cancelled';
+              return;
+            }
+            receipt.phase = 'dispatched';
+            fresh.button.click();
+          } catch (_) {
+            receipt.phase = receipt.phase === 'dispatched' ? 'dispatch_unknown' : 'cancelled';
+          }
+        }, 80);
+        return {ok:true, reason:'password_submit_queued'};
+        """
+        filled_input = None
+        while True:
+            _check_manual_stop()
+            if filled_input is None:
+                result = driver.execute_script(target_script, "input", password, None) or {}
+                if result.get("ok"):
+                    filled_input = result.get("input")
+                    try:
+                        _human_type_text(driver, filled_input, password, clear=True)
+                    except Exception as exc:
+                        if not _is_stale_element_error(exc):
+                            raise
+                        filled_input = None
+                        result = {"ok": False, "reason": "password_input_replaced"}
+                    else:
+                        human_delay("form", minimum=0.4, maximum=1.4)
+            if filled_input is not None:
+                try:
+                    result = driver.execute_script(target_script, "queue", password, filled_input)
+                except Exception as exc:
+                    # 浏览器可能已经排队或派发；保留原密码后收口，不因桥接异常重复点击。
+                    if on_password_submitted is not None:
+                        on_password_submitted(password)
+                    raise _PasswordTransitionTimeout(
+                        "request_unknown: 密码提交排队回执丢失，已保留原密码且未重复提交"
+                    ) from exc
+                if isinstance(result, dict) and result.get("ok") is True and result.get("reason") == "password_submit_queued":
+                    break
+                # 只有明确的点击前拒绝才能重查；空值或不完整回执也可能已经提交。
+                if not (
+                    isinstance(result, dict) and result.get("ok") is False
+                    and result.get("reason") in {
+                        "missing_password_input", "missing_password_form", "password_frontend_not_ready",
+                        "password_input_replaced", "password_value_changed", "password_form_invalid",
+                        "missing_password_submit",
+                    }
+                ):
+                    if on_password_submitted is not None:
+                        on_password_submitted(password)
+                    raise _PasswordTransitionTimeout(
+                        "request_unknown: 密码提交排队回执无效，已保留原密码且未重复提交"
+                    )
+                if result.get("reason") in {"password_input_replaced", "password_value_changed"}:
+                    filled_input = None
+            if time.time() >= end:
+                raise RuntimeError(
+                    f"password_form_not_ready: 密码表单在提交前未就绪，尚未提交密码：{result.get('reason') or 'empty_result'}"
+                )
+            time.sleep(0.4)
+        logger.info("%s 已填写%s密码页并排队一次提交，等待页面确认", _log_prefix(driver), "登录" if is_login_password else "注册")
         if on_password_submitted is not None:
             on_password_submitted(password)
         # 密码页识别/切换已经消耗了外层 timeout 的一部分。表单提交属于新的远端请求，
-        # 必须从点击成功后使用独立预算；否则慢代理下页面会在任务判失败后才迟到进入 OTP。
+        # 从提交排队后使用独立预算；否则慢代理下页面会在任务判失败后才迟到进入 OTP。
         transition_timeout = _password_transition_timeout_seconds()
         wait_end = time.time() + transition_timeout
         transition_probe = 0
@@ -719,6 +788,16 @@ def _fill_password_page_if_present(
             # upstream create error quickly without turning every 500 ms loop
             # into another full DOM snapshot over the remote browser bridge.
             if transition_probe % 4 == 0:
+                try:
+                    receipt_phase = driver.execute_script(
+                        "return window.__turbPasswordSubmissionReceipt?.phase || 'unknown';"
+                    )
+                except Exception:
+                    receipt_phase = "unknown"
+                if receipt_phase == "cancelled":
+                    raise RuntimeError("password_form_not_ready: 提交前密码表单发生变化，已取消点击并保留原密码")
+                if receipt_phase == "dispatch_unknown":
+                    raise _PasswordTransitionTimeout("request_unknown: 密码点击后回执异常，已保留原密码且未重复提交")
                 post_submit_state = _password_page_state(driver)
                 if _password_submit_error_marker(post_submit_state):
                     raise _PasswordTransitionTimeout(

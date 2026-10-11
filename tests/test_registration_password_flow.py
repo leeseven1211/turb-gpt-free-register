@@ -1,9 +1,150 @@
+import ast
+import json
+from pathlib import Path
+import shutil
+import subprocess
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from core import browser_use_registration
 from core import roxy_registration
+from core.registration import password_auth
+
+
+def _password_target_script():
+    """执行生产中实际使用的选择脚本，避免仅对脚本文字做断言。"""
+    module = ast.parse(Path(password_auth.__file__).read_text(encoding="utf-8"))
+    return next(
+        node.value for node in ast.walk(module)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        and "missing_password_input" in node.value and "password_targets" in node.value
+    )
+
+
+def _password_target_result(**fixture):
+    source = r"""
+    const fixture = FIXTURE;
+    const window = {};
+    const timers = [];
+    const setTimeout = fn => timers.push(fn);
+    let clicks = 0;
+    const location = {hostname:'auth.openai.com'};
+    const getComputedStyle = el => ({visibility:'visible', display:el.hidden ? 'none' : 'block'});
+    const form = {id:'password-form', isConnected:true, getAttribute:key=>key === 'id' ? 'password-form' : ''};
+    const otherForm = {};
+    form.checkValidity = () => fixture.formValid !== false;
+    if (fixture.hydrated !== false) form.__reactProps$test = {onSubmit(){}};
+    const buttons = (fixture.buttons || [{id:'continue', type:'submit', text:'Continue'}]).map((item, index) => ({
+      ...item, tagName:'BUTTON', disabled:!!item.disabled, isConnected:true,
+      offsetWidth:100, offsetHeight:30, type:item.type || 'submit', textContent:item.text || '',
+      form:item.otherForm ? otherForm : form,
+      matches:()=>!!(fixture.fieldsetDisabled || item.fieldsetDisabled),
+      click:()=>{ clicks += 1; },
+      getAttribute:key=>({type:item.type || '', name:item.name || '', value:item.value || '',
+        'aria-disabled':item.ariaDisabled ? 'true' : ''}[key] || ''),
+      getBoundingClientRect:()=>({left:0,right:100,top:60 + index*40,bottom:90 + index*40}),
+      getClientRects:()=>[{}], scrollIntoView(){}, closest:()=>form,
+    }));
+    form.querySelectorAll = () => buttons;
+    const input = {id:'password', tagName:'INPUT', type:'password', disabled:false, readOnly:false,
+      offsetWidth:100, offsetHeight:40, isConnected:true,
+      value:fixture.inputValue === undefined ? 'ValidPass123!' : fixture.inputValue,
+      form:fixture.hasForm === false ? null : form,
+      matches:()=>!!fixture.fieldsetDisabled, validity:{valid:fixture.inputValid !== false},
+      closest:()=>fixture.hasForm === false ? null : form, getAttribute:()=>'',
+      getClientRects:()=>[{}], getBoundingClientRect:()=>({left:0,right:100,top:0,bottom:40})};
+    const document = {querySelectorAll:selector=>selector.includes('password') ? [input] : buttons};
+    const execute = function(){SCRIPT};
+    const result = execute(fixture.mode || 'submit', 'ValidPass123!', fixture.replaced ? {} : input);
+    if (fixture.valueAfterQueue !== undefined) input.value = fixture.valueAfterQueue;
+    if (fixture.superseded) window.__turbPasswordSubmissionReceipt = {};
+    for (const callback of timers) callback();
+    console.log(JSON.stringify({ok:result.ok, reason:result.reason, clicks,
+      phase:window.__turbPasswordSubmissionReceipt?.phase || null,
+      input:result.input?.id || null, button:result.button?.id || null}));
+    """.replace("FIXTURE", json.dumps(fixture)).replace("SCRIPT", _password_target_script())
+    result = subprocess.run(
+        [shutil.which("node"), "-e", source], check=True, capture_output=True, text=True, timeout=10,
+    )
+    return json.loads(result.stdout)
+
+
+@unittest.skipUnless(shutil.which("node"), "需要 Node 执行实际密码表单脚本")
+class PasswordFormTargetTests(unittest.TestCase):
+    def test_intent_password_submit_is_preferred_to_back(self):
+        result = _password_target_result(buttons=[
+            {"id": "continue", "type": "submit", "name": "intent", "value": "password_signup", "text": "Continue"},
+            {"id": "back", "type": "button", "text": "Back"},
+        ])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["button"], "continue")
+
+    def test_disabled_empty_form_allows_filling_before_submit_selection(self):
+        result = _password_target_result(
+            mode="input", inputValue="", buttons=[{"id": "continue", "type": "submit", "disabled": True}],
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["input"], "password")
+
+    def test_password_form_requires_frontend_submit_handler(self):
+        self.assertFalse(_password_target_result(hydrated=False)["ok"])
+
+    def test_input_without_form_does_not_use_page_wide_buttons(self):
+        self.assertFalse(_password_target_result(hasForm=False)["ok"])
+
+    def test_submit_button_must_belong_to_password_form(self):
+        result = _password_target_result(buttons=[
+            {"id": "foreign", "type": "submit", "text": "Continue", "otherForm": True},
+            {"id": "continue", "type": "submit", "text": "Continue"},
+        ])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["button"], "continue")
+
+    def test_alternative_buttons_are_never_used_as_password_submit(self):
+        for button in (
+            {"type": "submit", "name": "intent", "value": "passwordless_signup_send_otp", "text": "Continue"},
+            {"type": "submit", "text": "Back"},
+            {"type": "button", "text": "Try another way"},
+            {"type": "button", "text": "Show password"},
+        ):
+            with self.subTest(button=button):
+                self.assertFalse(_password_target_result(buttons=[button])["ok"])
+
+    def test_submit_rechecks_the_filled_input_after_replacement(self):
+        self.assertFalse(_password_target_result(replaced=True)["ok"])
+
+    def test_submit_rechecks_value_after_frontend_reset(self):
+        self.assertFalse(_password_target_result(inputValue="")["ok"])
+
+
+    def test_external_connection_buttons_are_not_password_submits(self):
+        for name, value in (("connection", "google-oauth2"), ("provider", "apple"), ("intent", "google_oauth")):
+            with self.subTest(name=name, value=value):
+                self.assertFalse(_password_target_result(buttons=[
+                    {"type": "submit", "name": name, "value": value, "text": "Continue"},
+                ])["ok"])
+
+    def test_disabled_fieldset_and_invalid_form_are_not_submitted(self):
+        for fixture in ({"fieldsetDisabled": True}, {"inputValid": False}, {"formValid": False}):
+            with self.subTest(fixture=fixture):
+                self.assertFalse(_password_target_result(**fixture)["ok"])
+
+    def test_password_submit_is_queued_once(self):
+        result = _password_target_result(mode="queue")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["clicks"], 1)
+        self.assertEqual(result["phase"], "dispatched")
+
+    def test_queued_submit_cancels_if_input_changes_before_click(self):
+        result = _password_target_result(mode="queue", valueAfterQueue="")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["clicks"], 0)
+        self.assertEqual(result["phase"], "cancelled")
+
+    def test_superseded_receipt_never_clicks(self):
+        result = _password_target_result(mode="queue", superseded=True)
+        self.assertEqual(result["clicks"], 0)
 
 
 class _RoxyDriver:
@@ -16,7 +157,9 @@ class _RoxyDriver:
             return "https://auth.openai.com/email-verification"
         return "https://auth.openai.com/create-account/password"
 
-    def execute_script(self, _script):
+    def execute_script(self, _script, *_args):
+        if _args and _args[0] == "queue":
+            return {"ok": True, "reason": "password_submit_queued"}
         return {"ok": True, "input": object(), "button": object()}
 
 
@@ -443,16 +586,18 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "request_unknown.*页面报告账号创建失败"):
                 roxy_registration._fill_password_page_if_present(driver, "new@example.com", timeout=2)
 
-    def test_roxy_password_is_checkpointed_immediately_after_submit_click(self):
+    def test_roxy_password_is_checkpointed_immediately_after_submit_is_queued(self):
         driver = _RoxyDriver()
         driver.state = "password"
         password = "ValidPass123!"
         order = []
 
-        def submit_password(_driver, _element, label=""):
-            self.assertEqual(label, "password_submit")
-            order.append("click")
-            driver.state = "otp"
+        def submit_password(_script, *args):
+            if args and args[0] == "queue":
+                order.append("queued")
+                driver.state = "otp"
+                return {"ok": True, "reason": "password_submit_queued"}
+            return {"ok": True, "input": object(), "button": object()}
 
         with (
             patch.object(roxy_registration, "_registration_auth_mode", return_value="password"),
@@ -463,7 +608,7 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
             patch.object(roxy_registration, "_is_login_password_page", return_value=False),
             patch.object(roxy_registration, "_registration_password", return_value=password),
             patch.object(roxy_registration, "_human_type_text"),
-            patch.object(roxy_registration, "_human_click", side_effect=submit_password),
+            patch.object(driver, "execute_script", side_effect=submit_password),
             patch.object(roxy_registration, "human_delay"),
         ):
             result = roxy_registration._fill_password_page_if_present(
@@ -474,7 +619,40 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
             )
 
         self.assertEqual(result, password)
-        self.assertEqual(order, ["click", ("checkpoint", password)])
+        self.assertEqual(order, ["queued", ("checkpoint", password)])
+
+    def test_roxy_password_submit_bridge_error_preserves_password_without_retry(self):
+        driver = _RoxyDriver()
+        password = "ValidPass123!"
+        submissions = []
+        saved = []
+
+        def execute(_script, *args):
+            if args and args[0] == "queue":
+                submissions.append("possibly_dispatched")
+                raise RuntimeError("bridge disconnected")
+            return {"ok": True, "input": object(), "button": object()}
+
+        with (
+            patch.object(driver, "execute_script", side_effect=execute),
+            patch.object(roxy_registration, "_registration_auth_mode", return_value="password"),
+            patch.object(roxy_registration, "_is_email_verification_page", side_effect=[False, True]),
+            patch.object(roxy_registration, "_has_access_token", return_value=False),
+            patch.object(roxy_registration, "_password_page_state", return_value={}),
+            patch.object(roxy_registration, "_is_signup_password_page", return_value=True),
+            patch.object(roxy_registration, "_is_login_password_page", return_value=False),
+            patch.object(roxy_registration, "_registration_password", return_value=password),
+            patch.object(roxy_registration, "_human_type_text"),
+            patch.object(roxy_registration, "_human_click"),
+            patch.object(roxy_registration, "human_delay"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "request_unknown"):
+                roxy_registration._fill_password_page_if_present(
+                    driver, "new@example.test", timeout=2, on_password_submitted=saved.append,
+                )
+
+        self.assertEqual(submissions, ["possibly_dispatched"])
+        self.assertEqual(saved, [password])
 
     def test_roxy_password_mode_switches_from_otp_before_filling_password(self):
         driver = _RoxyDriver()
@@ -484,9 +662,11 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
             driver.state = "password"
             return {"ok": True, "reason": "entered_create_account_password"}
 
-        def submit_password(_driver, _element, label=""):
-            if label == "password_submit":
+        def submit_password(_script, *args):
+            if args and args[0] == "queue":
                 driver.state = "otp"
+                return {"ok": True, "reason": "password_submit_queued"}
+            return {"ok": True, "input": object(), "button": object()}
 
         with (
             patch.object(roxy_registration, "_registration_auth_mode", return_value="password"),
@@ -498,13 +678,49 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
             patch.object(roxy_registration, "_is_login_password_page", return_value=False),
             patch.object(roxy_registration, "_registration_password", return_value=password),
             patch.object(roxy_registration, "_human_type_text"),
-            patch.object(roxy_registration, "_human_click", side_effect=submit_password),
+            patch.object(driver, "execute_script", side_effect=submit_password),
             patch.object(roxy_registration, "human_delay"),
         ):
             result = roxy_registration._fill_password_page_if_present(driver, "new@example.com", timeout=2)
 
         self.assertEqual(result, password)
         switch.assert_called_once()
+
+    def test_ambiguous_queue_response_preserves_password_without_resubmitting(self):
+        for response in (None, {}, [], True, {"ok": True}, {"ok": 1, "reason": "password_submit_queued"},
+                         {"ok": False, "reason": "unknown"}):
+            with self.subTest(response=response):
+                driver = _RoxyDriver()
+                submissions = []
+                saved = []
+
+                def execute(_script, *args):
+                    if args and args[0] == "queue":
+                        submissions.append("possibly_dispatched")
+                        if len(submissions) > 1:
+                            raise RuntimeError("unexpected repeated queue")
+                        return response
+                    return {"ok": True, "input": object()}
+
+                with (
+                    patch.object(driver, "execute_script", side_effect=execute),
+                    patch.object(roxy_registration, "_registration_auth_mode", return_value="password"),
+                    patch.object(roxy_registration, "_is_email_verification_page", return_value=False),
+                    patch.object(roxy_registration, "_has_access_token", return_value=False),
+                    patch.object(roxy_registration, "_password_page_state", return_value={}),
+                    patch.object(roxy_registration, "_is_signup_password_page", return_value=True),
+                    patch.object(roxy_registration, "_is_login_password_page", return_value=False),
+                    patch.object(roxy_registration, "_registration_password", return_value="ValidPass123!"),
+                    patch.object(roxy_registration, "_human_type_text"),
+                    patch.object(roxy_registration, "human_delay"),
+                    patch.object(roxy_registration, "_password_transition_timeout_seconds", return_value=0),
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "request_unknown"):
+                        roxy_registration._fill_password_page_if_present(
+                            driver, "new@example.test", timeout=2, on_password_submitted=saved.append,
+                        )
+                self.assertEqual(submissions, ["possibly_dispatched"])
+                self.assertEqual(saved, ["ValidPass123!"])
 
     def test_roxy_otp_mode_keeps_passwordless_registration(self):
         driver = _RoxyDriver()

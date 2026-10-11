@@ -285,6 +285,14 @@ def _email_submit_advanced_state(driver, *, budget: StageBudget | None = None) -
     if _is_signup_password_page(driver):
         _clear_confirmed_email_submission(driver)
         return "password"
+    receipt = getattr(driver, "_email_submission_receipt", None)
+    if isinstance(receipt, dict) and _is_email_login_page_still_present(driver):
+        # 明确仍在邮箱表单时，避免每轮都发送 session 请求；DOM 下一步始终优先。
+        now = time.monotonic()
+        last_probe = receipt.get("session_probe_at")
+        if isinstance(last_probe, (int, float)) and now - last_probe < 3.0:
+            return None
+        receipt["session_probe_at"] = now
     if (_has_access_token(driver, budget=budget) if budget is not None else _has_access_token(driver)):
         _clear_confirmed_email_submission(driver)
         return "logged_in"
@@ -505,18 +513,76 @@ def _email_ui_submission_state(driver) -> str | None:
     receipt = getattr(driver, "_email_submission_receipt", None)
     if not isinstance(receipt, dict):
         return None
+    snapshot = {"phase": "unknown", "same_document": False}
     try:
-        state = driver.execute_script("return window.__turbEmailSubmission || null;")
+        state = driver.execute_script("""
+        const receipt = window.__turbEmailSubmission;
+        return receipt && typeof receipt.snapshot === 'function'
+          ? receipt.snapshot() : receipt ? {id:receipt.id, phase:receipt.phase} : null;
+        """)
         if isinstance(state, dict) and state.get("id") == receipt.get("id"):
-            if state.get("phase") == "cancelled":
+            snapshot["same_document"] = True
+            phase = state.get("phase")
+            if phase in {"queued", "dispatched", "cancelled", "unknown"}:
+                snapshot["phase"] = phase
+            for key in ("input_connected", "form_connected", "submit_connected", "input_matches",
+                        "input_enabled", "submit_enabled", "input_valid", "form_valid"):
+                if type(state.get(key)) is bool:
+                    snapshot[key] = state[key]
+            for key in ("elapsed_ms", "dispatched_elapsed_ms"):
+                value = state.get(key)
+                if type(value) in (int, float) and math.isfinite(value) and value >= 0:
+                    snapshot[key] = round(value)
+            if state.get("reason") in {"queue_timeout", "input_changed", "input_invalid", "control_unavailable",
+                                        "frontend_unready", "detached", "click_error"}:
+                snapshot["reason"] = state["reason"]
+            driver._email_submission_diagnostics = snapshot
+            if phase == "cancelled":
                 driver._email_submission_receipt = None
                 return "cancelled"
-            if state.get("phase") in {"queued", "dispatched"}:
-                return state["phase"]
+            if phase in {"queued", "dispatched"}:
+                return phase
     except Exception:
         pass
     # 导航/执行上下文更换不能证明上一个文档没有发出 signin。
+    previous = getattr(driver, "_email_submission_diagnostics", None)
+    if isinstance(previous, dict) and previous.get("same_document"):
+        snapshot["last_confirmed_phase"] = previous["phase"]
+    elif isinstance(previous, dict) and previous.get("last_confirmed_phase"):
+        snapshot["last_confirmed_phase"] = previous["last_confirmed_phase"]
+    driver._email_submission_diagnostics = snapshot
     return "unknown"
+
+
+def _cancel_queued_email_submission(driver) -> bool:
+    """只在原文档原回执仍未点击时，原子取消定时器并释放提交屏障。"""
+    receipt = getattr(driver, "_email_submission_receipt", None)
+    if not isinstance(receipt, dict):
+        return False
+    try:
+        cancelled = driver.execute_script("""
+        const receipt = window.__turbEmailSubmission;
+        if (!receipt || receipt.id !== arguments[0] || receipt.phase !== 'queued') return false;
+        clearTimeout(receipt.timer);
+        receipt.phase = 'cancelled';
+        receipt.reason = 'queue_timeout';
+        return true;
+        """, receipt.get("id"))
+        if cancelled is True:
+            _email_ui_submission_state(driver)
+            driver._email_submission_receipt = None
+            return True
+    except Exception:
+        # 取消结果不明时仍保留屏障，不能因为读不到回执而重发。
+        pass
+    return False
+
+
+def _log_email_submission_timeout(driver) -> None:
+    """只记录白名单回执事实，工作回执清理后仍保留诊断快照。"""
+    _email_ui_submission_state(driver)
+    snapshot = getattr(driver, "_email_submission_diagnostics", None)
+    logger.warning("%s 邮箱提交等待超时，提交回执诊断=%s", _log_prefix(driver), snapshot)
 
 
 def _wait_email_frontend_ready(driver, timeout: float = 30.0) -> None:
@@ -608,18 +674,35 @@ def _submit_email_form_stable(driver, email: str) -> dict:
         // 不要在 execute_script 同步执行 submit.click()：
         // ChromeDriver 会等前端 submit/navigation，Roxy/Chrome 150 上可能卡到 page/script timeout。
         // setTimeout 让 Selenium 先返回，点击在页面事件循环里异步发生，和补交逻辑一致。
-        const receipt = {id:submissionId, phase:'queued'};
+        const receipt = {id:submissionId, phase:'queued', queuedAt:Date.now()};
+        const enabled = el => !el.disabled && !el.matches?.(':disabled')
+          && String(el.getAttribute('aria-disabled') || '').toLowerCase() !== 'true';
+        receipt.snapshot = () => ({
+          id:receipt.id, phase:receipt.phase, reason:receipt.reason || '',
+          elapsed_ms:Math.max(0, Date.now() - receipt.queuedAt),
+          dispatched_elapsed_ms:receipt.dispatchedAt === undefined ? null : Math.max(0, Date.now() - receipt.dispatchedAt),
+          input_connected:!!input.isConnected, form_connected:!!form.isConnected,
+          submit_connected:!!submit.isConnected,
+          input_matches:String(input.value || '').trim().toLowerCase() === email.toLowerCase(),
+          input_enabled:enabled(input) && !input.readOnly, submit_enabled:enabled(submit),
+          input_valid:input.validity?.valid !== false, form_valid:!form.matches?.(':invalid')
+        });
         window.__turbEmailSubmission = receipt;
-        setTimeout(() => {
+        receipt.timer = setTimeout(() => {
           try {
+            if (window.__turbEmailSubmission !== receipt || receipt.id !== submissionId || receipt.phase !== 'queued') return;
+            const state = receipt.snapshot();
             if (!input.isConnected || !form.isConnected || !submit?.isConnected
-                || input.closest('form') !== form || submit.form !== form
-                || !emailFrontendReady(input, form, submit) || submit.disabled) {
-              receipt.phase = 'cancelled'; return;
-            }
+                || input.closest('form') !== form || submit.form !== form) receipt.reason = 'detached';
+            else if (!state.input_matches) receipt.reason = 'input_changed';
+            else if (!state.input_valid || !state.form_valid) receipt.reason = 'input_invalid';
+            else if (!state.input_enabled || !state.submit_enabled) receipt.reason = 'control_unavailable';
+            else if (!emailFrontendReady(input, form, submit)) receipt.reason = 'frontend_unready';
+            if (receipt.reason) { receipt.phase = 'cancelled'; return; }
             receipt.phase = 'dispatched';
+            receipt.dispatchedAt = Date.now();
             submit.click();
-          } catch (_) { receipt.phase = 'unknown'; }
+          } catch (_) { receipt.phase = 'unknown'; receipt.reason = 'click_error'; }
         }, 80);
 
         window.__roxy_email_submit_debug = {
@@ -1003,6 +1086,7 @@ def _wait_email_submit_next_state(
     blank_shell_seen_at: float | None = None
     blank_shell_logged = False
     transient_shell_logged = False
+    queued_seen_at: float | None = None
     expected_email = str(email or "").strip().lower()
     try:
         blank_shell_grace = max(0.0, min(10.0, float(blank_shell_grace or 0.0)))
@@ -1019,8 +1103,19 @@ def _wait_email_submit_next_state(
             return advanced_state
         submission_state = _email_ui_submission_state(driver)
         if submission_state == "cancelled":
+            logger.info("%s 邮箱点击前校验未通过，未执行提交：%s", _log_prefix(driver),
+                        getattr(driver, "_email_submission_diagnostics", None))
             return "email_frontend_not_ready"
         if submission_state in {"queued", "dispatched", "unknown"}:
+            if submission_state == "queued":
+                if queued_seen_at is None:
+                    queued_seen_at = clock()
+                if clock() - queued_seen_at >= 3.0 and _cancel_queued_email_submission(driver):
+                    logger.info("%s 邮箱点击排队超时，已确认取消未执行的点击：%s", _log_prefix(driver),
+                                getattr(driver, "_email_submission_diagnostics", None))
+                    return "email_frontend_not_ready"
+            else:
+                queued_seen_at = None
             # 已交给前端的请求共享整个剩余预算；输入框清空不是提交失败证据。
             if budget is not None:
                 end = max(end, budget.deadline)
@@ -1094,6 +1189,7 @@ def _wait_email_submit_next_state(
         sleep_now = now if cleared_seen_at is not None else loop_now
         time.sleep(min(0.8, max(0.0, end - sleep_now)))
     if _email_ui_submission_state(driver) in {"queued", "dispatched", "unknown"}:
+        _log_email_submission_timeout(driver)
         raise _EmailSubmissionUnknown("request_unknown: 邮箱提交结果在共享预算内未确认，未重复点击或发送认证请求")
     logger.info("%s 邮箱提交后等待下一步超时，最后邮箱页状态=%s", _log_prefix(driver), last)
     return "email_page" if _is_email_login_page_still_present(driver) else "unknown"
@@ -1108,12 +1204,14 @@ def _submit_email_and_wait_next(
 ) -> str:
     """一次流程独占提交凭据，结束后不把状态带入下一账号或独立调用。"""
     driver._email_submission_receipt = None
+    driver._email_submission_diagnostics = None
     try:
         return _submit_email_and_wait_next_impl(
             driver, email, attempts, on_submitted, total_timeout, allow_login_password,
         )
     except StageTimeout as exc:
         if isinstance(getattr(driver, "_email_submission_receipt", None), dict):
+            _log_email_submission_timeout(driver)
             raise _EmailSubmissionUnknown("request_unknown: 邮箱提交后阶段预算耗尽，远端结果未确认") from exc
         raise
     finally:
