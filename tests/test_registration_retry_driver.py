@@ -54,7 +54,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
         }
         return source, account, attempt
 
-    def _retry(self, source, account, attempt, *, action="registration_resume", child=None):
+    def _retry(self, source, account, attempt, *, action="registration_resume", child=None, **kwargs):
         created = child is None
         child = child or {
             "id": 22,
@@ -64,7 +64,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
         }
         executor = Mock()
         with ExitStack() as stack:
-            stack.enter_context(patch.object(db, "get_job", return_value=source))
+            stack.enter_context(patch.object(db, "get_job", side_effect=lambda ident: child if ident == child["id"] else source))
             stack.enter_context(patch.object(registration_service, "_account_for_job", return_value=account))
             stack.enter_context(patch.object(registration_service, "_enrich_account_registration_state", side_effect=lambda value: value))
             stack.enter_context(patch.object(registration_service, "get_retry_info", return_value={
@@ -74,7 +74,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
             stack.enter_context(patch.object(registration_service, "_read_linked_attempt_for_job", return_value=(attempt, False)))
             create_retry = stack.enter_context(patch.object(db, "create_retry_job", return_value=(child, created)))
             stack.enter_context(patch.object(registration_service, "get_executor", return_value=executor))
-            result = registration_service.retry_job(21, registration_driver="roxy")
+            result = registration_service.retry_job(21, registration_driver="roxy", **kwargs)
             call = create_retry.call_args
         return result, call, executor
 
@@ -168,6 +168,47 @@ class RegistrationRetryDriverTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         retry.assert_not_called()
+
+    def test_single_retry_can_enable_capture_without_changing_source(self):
+        source, account, attempt = self._facts()
+        original = copy.deepcopy(source)
+        with patch("core.registration_debug.patch_job") as debug_patch:
+            result, _, executor = self._retry(source, account, attempt, debug_enabled=True)
+        self.assertTrue(result["ok"])
+        self.assertEqual(source, original)
+        self.assertEqual(debug_patch.call_args.args, (22,))
+        self.assertTrue(debug_patch.call_args.kwargs["debug_enabled"])
+        self.assertTrue(debug_patch.call_args.kwargs["debug_policy"]["hold_on_failure"])
+        executor.submit.assert_called_once()
+
+    def test_explicit_debug_off_overrides_inherited_capture(self):
+        source, account, attempt = self._facts()
+        source["debug_enabled"] = True
+        with patch("core.registration_debug.patch_job") as debug_patch:
+            result, _, _ = self._retry(source, account, attempt, debug_enabled=False)
+        self.assertTrue(result["ok"])
+        debug_patch.assert_not_called()
+
+    def test_debug_retry_does_not_reuse_an_active_run_without_capture(self):
+        source, account, attempt = self._facts()
+        child = {"id": 22, "status": "running", "job_type": "registration_resume",
+                 "config_snapshot": {"registration_driver": "roxy"}}
+        result, _, executor = self._retry(source, account, attempt, child=child, debug_enabled=True)
+        self.assertEqual(result["status"], 409)
+        executor.submit.assert_not_called()
+
+    def test_retry_debug_flag_is_strict_and_passes_to_service(self):
+        client = create_app(auth_code="test-auth").test_client()
+        for enabled in (True, False, "true", None):
+            with self.subTest(enabled=enabled), patch("webui.app.svc.retry_job", return_value={"ok": True}) as retry:
+                response = client.post("/api/jobs/21/retry", json={"workers": 1, "debug_enabled": enabled},
+                                       headers={"X-Auth-Code": "test-auth"})
+                if type(enabled) is bool:
+                    self.assertEqual(response.status_code, 200)
+                    retry.assert_called_once_with(21, workers=1, debug_enabled=enabled)
+                else:
+                    self.assertEqual(response.status_code, 400)
+                    retry.assert_not_called()
 
     def test_retry_apis_reject_non_object_json_bodies(self):
         client = create_app(auth_code="test-auth").test_client()

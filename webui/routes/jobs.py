@@ -444,11 +444,15 @@ def create_jobs_blueprint(context: WebUIContext):
         registration_driver = data.get("registration_driver") if "registration_driver" in data else None
         if "registration_driver" in data and registration_driver != "roxy":
             return jsonify({"ok": False, "error": "registration_driver 仅支持 roxy"}), 400
+        if "debug_enabled" in data and type(data["debug_enabled"]) is not bool:
+            return jsonify({"ok": False, "error": "debug_enabled 必须是布尔值"}), 400
         try:
             workers = max(1, min(16, int(data.get("workers", svc.get_executor_workers()))))
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "workers 非法"}), 400
         retry_kwargs = {"registration_driver": registration_driver} if registration_driver else {}
+        if "debug_enabled" in data:
+            retry_kwargs["debug_enabled"] = data["debug_enabled"]
         result = svc.retry_job(job_id, workers=workers, **retry_kwargs)
         if not result.get("ok"):
             return jsonify(result), int(result.get("status") or 400)

@@ -2916,10 +2916,13 @@ def retry_job(
     batch_index: int | None = None,
     batch_size: int | None = None,
     registration_driver: str | None = None,
+    debug_enabled: bool | None = None,
 ) -> dict:
     """智能重试终态任务：未生成账号则重新注册，已有账号则仅补跑 Codex。"""
     if registration_driver is not None and registration_driver != "roxy":
         return {"ok": False, "error": "仅支持为单个待验证账号选择 roxy 续跑", "status": 400}
+    if debug_enabled is not None and type(debug_enabled) is not bool:
+        return {"ok": False, "error": "debug_enabled 必须是布尔值", "status": 400}
     source = db.get_job(job_id)
     if source is None:
         return {"ok": False, "error": "任务不存在", "status": 404}
@@ -2931,6 +2934,8 @@ def retry_job(
         return {"ok": False, "error": reason, "status": 409}
 
     action = str(retry_info["retry_action"])
+    if debug_enabled and action not in {"registration", "registration_resume"}:
+        return {"ok": False, "error": "调试重跑仅适用于注册或继续邮箱验证", "status": 400}
     root_id = int(source.get("root_job_id") or source.get("id") or job_id)
     root_record = db.get_job(root_id)
     root_job = root_record or source
@@ -3084,6 +3089,8 @@ def retry_job(
     if not created:
         if reserved_account_action:
             codex_retry_service.release(email)
+        if debug_enabled is not None and bool(job.get("debug_enabled", False)) != debug_enabled:
+            return {"ok": False, "error": "同一 Attempt 已有不同调试设置的运行，不能中途切换抓包", "status": 409}
         if registration_driver == "roxy":
             active_snapshot = job.get("config_snapshot")
             if not isinstance(active_snapshot, dict):
@@ -3105,7 +3112,8 @@ def retry_job(
             "job": job,
         }
 
-    if bool(source.get("debug_enabled", False)) and action in {"registration", "registration_resume"}:
+    retry_debug_enabled = bool(source.get("debug_enabled", False)) if debug_enabled is None else debug_enabled
+    if retry_debug_enabled and action in {"registration", "registration_resume"}:
         from core.registration_debug import patch_job
         patch_job(
             int(job["id"]),
