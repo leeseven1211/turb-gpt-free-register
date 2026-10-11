@@ -3112,23 +3112,27 @@ def retry_job(
             "job": job,
         }
 
-    retry_debug_enabled = bool(source.get("debug_enabled", False)) if debug_enabled is None else debug_enabled
-    if retry_debug_enabled and action in {"registration", "registration_resume"}:
-        from core.registration_debug import patch_job
-        patch_job(
-            int(job["id"]),
-            debug_enabled=True,
-            debug_state="pending",
-            debug_policy=dict(source.get("debug_policy") or {
-                "capture_network": True,
-                "hold_on_failure": True,
-                "preserve_success_browser": False,
-            }),
-        )
-        job = db.get_job(int(job["id"])) or job
-
     account_task_id = None
     try:
+        retry_debug_enabled = bool(source.get("debug_enabled", False)) if debug_enabled is None else debug_enabled
+        if retry_debug_enabled and action in {"registration", "registration_resume"}:
+            from core.registration_debug import patch_job
+            if not patch_job(
+                int(job["id"]),
+                debug_enabled=True,
+                debug_state="pending",
+                debug_policy=dict(source.get("debug_policy") or {
+                    "capture_network": True,
+                    "hold_on_failure": True,
+                    "preserve_success_browser": False,
+                }),
+            ):
+                raise RuntimeError("重试任务调试设置保存失败")
+            debug_job = db.get_job(int(job["id"]))
+            if not debug_job or debug_job.get("debug_enabled") is not True:
+                raise RuntimeError("重试任务调试设置未确认保存成功")
+            job = debug_job
+
         if action in {"codex", "twofa"}:
             account_task_id = account_task_store.create_task(
                 task_type="codex_retry" if action == "codex" else "twofa_retry",

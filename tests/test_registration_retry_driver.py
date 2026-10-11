@@ -54,7 +54,8 @@ class RegistrationRetryDriverTests(unittest.TestCase):
         }
         return source, account, attempt
 
-    def _retry(self, source, account, attempt, *, action="registration_resume", child=None, **kwargs):
+    def _retry(self, source, account, attempt, *, action="registration_resume", child=None,
+               debug_patch=None, executor=None, **kwargs):
         created = child is None
         child = child or {
             "id": 22,
@@ -62,9 +63,18 @@ class RegistrationRetryDriverTests(unittest.TestCase):
             "job_type": "registration_resume",
             "log_file": "/tmp/test-registration-retry.log",
         }
-        executor = Mock()
+        executor = executor if executor is not None else Mock()
+
+        def patch_child(ident, **changes):
+            self.assertEqual(ident, child["id"])
+            child.update(changes)
+            return True
+
+        debug_patch = debug_patch if debug_patch is not None else Mock(side_effect=patch_child)
         with ExitStack() as stack:
             stack.enter_context(patch.object(db, "get_job", side_effect=lambda ident: child if ident == child["id"] else source))
+            stack.enter_context(patch.object(db, "update_job", side_effect=patch_child))
+            stack.enter_context(patch("core.registration_debug.patch_job", new=debug_patch))
             stack.enter_context(patch.object(registration_service, "_account_for_job", return_value=account))
             stack.enter_context(patch.object(registration_service, "_enrich_account_registration_state", side_effect=lambda value: value))
             stack.enter_context(patch.object(registration_service, "get_retry_info", return_value={
@@ -172,22 +182,51 @@ class RegistrationRetryDriverTests(unittest.TestCase):
     def test_single_retry_can_enable_capture_without_changing_source(self):
         source, account, attempt = self._facts()
         original = copy.deepcopy(source)
-        with patch("core.registration_debug.patch_job") as debug_patch:
-            result, _, executor = self._retry(source, account, attempt, debug_enabled=True)
+        submitted_jobs = []
+        executor = Mock()
+        executor.submit.side_effect = lambda run, job_id, log_file: submitted_jobs.append(copy.deepcopy(db.get_job(job_id)))
+        result, _, executor = self._retry(source, account, attempt, debug_enabled=True, executor=executor)
         self.assertTrue(result["ok"])
         self.assertEqual(source, original)
-        self.assertEqual(debug_patch.call_args.args, (22,))
-        self.assertTrue(debug_patch.call_args.kwargs["debug_enabled"])
-        self.assertTrue(debug_patch.call_args.kwargs["debug_policy"]["hold_on_failure"])
+        self.assertIs(result["job"]["debug_enabled"], True)
+        self.assertTrue(result["job"]["debug_policy"]["hold_on_failure"])
+        executor.submit.assert_called_once()
+        self.assertIs(submitted_jobs[0]["debug_enabled"], True)
+
+    def test_missing_debug_option_still_inherits_source_capture(self):
+        source, account, attempt = self._facts()
+        source["debug_enabled"] = True
+        result, _, executor = self._retry(source, account, attempt)
+        self.assertTrue(result["ok"])
+        self.assertIs(result["job"]["debug_enabled"], True)
         executor.submit.assert_called_once()
 
     def test_explicit_debug_off_overrides_inherited_capture(self):
         source, account, attempt = self._facts()
         source["debug_enabled"] = True
-        with patch("core.registration_debug.patch_job") as debug_patch:
-            result, _, _ = self._retry(source, account, attempt, debug_enabled=False)
+        debug_patch = Mock()
+        result, _, _ = self._retry(source, account, attempt, debug_patch=debug_patch, debug_enabled=False)
         self.assertTrue(result["ok"])
         debug_patch.assert_not_called()
+
+    def test_debug_setup_failure_closes_child_without_submitting_executor(self):
+        for debug_patch in (
+            Mock(return_value=False),
+            Mock(return_value=True),
+            Mock(side_effect=RuntimeError("测试调试元数据保存失败")),
+        ):
+            with self.subTest(debug_patch=debug_patch):
+                source, account, attempt = self._facts()
+                original = copy.deepcopy(source)
+                result, _, executor = self._retry(
+                    source, account, attempt, debug_patch=debug_patch, debug_enabled=True,
+                )
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["status"], 500)
+                self.assertEqual(result["job"]["status"], "failed")
+                self.assertTrue(result["job"]["completed_at"])
+                self.assertEqual(source, original)
+                executor.submit.assert_not_called()
 
     def test_debug_retry_does_not_reuse_an_active_run_without_capture(self):
         source, account, attempt = self._facts()
