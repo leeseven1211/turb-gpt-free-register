@@ -109,7 +109,7 @@ class RegistrationServicePostprocessContractTests(unittest.TestCase):
         self.assertEqual("registration_resume", info["retry_action"])
         self.assertEqual("registration_resume", info["next_actions"][0]["action"])
 
-        mismatched = dict(attempt, remote_identity_state="request_unknown")
+        mismatched = dict(attempt, email_snapshot="other@example.com")
         blocked = _build_retry_info(job, account=account, successful_retry=None, attempt=mismatched)
         self.assertFalse(blocked["retryable"])
         self.assertEqual([], blocked["next_actions"])
@@ -257,9 +257,9 @@ class RegistrationServicePostprocessContractTests(unittest.TestCase):
 
         self.assertEqual("registration_resume", info["retry_action"])
         self.assertEqual("registration_resume", info["next_actions"][0]["action"])
-        self.assertEqual("password_confirmation_pending", info["display_status"])
-        self.assertIn("密码已提交", info["retry_reason"])
-        self.assertIn("远端结果尚未确认", info["retry_reason"])
+        self.assertEqual("failed", info["display_status"])
+        self.assertIn("已保存密码", info["retry_reason"])
+        self.assertIn("同一账号验证", info["retry_reason"])
         self.assertNotIn("密码已创建", info["retry_reason"])
 
     def test_confirmed_deactivated_account_is_not_retryable_with_stale_codex_projection(self):

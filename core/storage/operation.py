@@ -1214,17 +1214,23 @@ def _lookup_task(cur, source_system: str, source_id: str) -> int | None:
 
 def _registration_run_cause_summary(cur, job_id: int, *, job_status: str) -> dict[str, Any]:
     """只投影 RegistrationRun 中已持久化的固定原因事实。"""
-    if job_status != "request_unknown":
+    if job_status not in {"request_unknown", "failed"}:
+        return {}
+    # 旧任务可早于 RegistrationRun 表，缺少原因事实时保持原失败投影。
+    cur.execute("SELECT to_regclass(%s) AS name", (f"{_schema_name()}.registration_runs",))
+    if not cur.fetchone()["name"]:
         return {}
     cur.execute(
         f"SELECT status, result_summary FROM {_table('registration_runs')} WHERE job_id=%s",
         (int(job_id),),
     )
     row = cur.fetchone()
-    if not row or str(row.get("status") or "") != "request_unknown":
+    if not row or str(row.get("status") or "") not in {"request_unknown", "failed"}:
         return {}
     source = _decode(row.get("result_summary"))
     source = source if isinstance(source, dict) else {}
+    if str(row.get("status") or "") == "failed" and source.get("outcome") != "request_unknown":
+        return {}
     safe: dict[str, Any] = {"outcome": "request_unknown"}
     cause_code = source.get("cause_code")
     if isinstance(cause_code, str) and cause_code in REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES:

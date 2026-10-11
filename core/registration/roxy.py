@@ -1526,6 +1526,7 @@ def run_roxy_registration(
             "access_token": access_token,
             "totp_secret": totp_secret,
             "request_unknown": request_unknown,
+            "email_submission_unconfirmed": bool(email_result_unknown and not create_acknowledged and account_id is None),
             "manual_reconcile": remote_existing,
             "remote_identity": "existing" if remote_existing else remote_identity,
             "remote_identity_state": "confirmed" if remote_existing else "unknown",

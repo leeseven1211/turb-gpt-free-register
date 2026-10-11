@@ -159,7 +159,7 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
             )
 
         self.assertTrue(any(
-            call.kwargs.get("status") == "request_unknown"
+            call.kwargs.get("status") == "failed"
             for call in update_job.call_args_list
         ))
         self.assertFalse(any(
@@ -169,6 +169,18 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
         mark_success.assert_not_called()
         self.assertTrue(mark_unknown.call_args.kwargs["facts"]["register_response_confirmed"])
         self.assertEqual("email_otp_no_mail", mark_unknown.call_args.kwargs["facts"]["cause_code"])
+
+    def test_email_submission_timeout_does_not_write_password_checkpoint(self):
+        with patch.object(svc, "_mark_registration_request_unknown") as mark_unknown:
+            release, _, finish, update = self._run_job(
+                capture_job_updates=True,
+                result={"success": False, "email": "alias@icloud.com", "request_unknown": True,
+                        "email_submission_unconfirmed": True, "error": "邮箱提交超时"},
+            )
+        mark_unknown.assert_not_called()
+        release.assert_not_called()
+        finish.assert_called_with(1, success=False, detail="request_unknown: 邮箱提交超时")
+        self.assertTrue(any(call.kwargs.get("status") == "failed" for call in update.call_args_list))
 
     def test_returned_success_closes_initial_registration_email(self):
         with patch("core.email_provider.release_email", return_value="icloud_hide") as release:
@@ -780,7 +792,7 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
             state="failed",
             detail="验证码等待超时",
         )
-        finish_progress.assert_called_with(1, success=True)
+        finish_progress.assert_called_with(1, success=False, detail="验证码等待超时")
 
     def test_transient_proxy_failure_reuses_original_email_on_new_route(self):
         job = {

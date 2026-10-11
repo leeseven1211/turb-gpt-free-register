@@ -55,7 +55,7 @@ class RegistrationDeactivationRetryTests(unittest.TestCase):
         self.assertFalse(info["retryable"])
         self.assertIsNone(info["retry_action"])
         self.assertIn("读取失败", info["retry_reason"])
-        self.assertIn("人工确认", info["retry_reason"])
+        self.assertIn("稍后重试", info["retry_reason"])
         get_attempt.assert_called_once_with(180)
 
     def test_unlinked_light_job_does_not_read_registration_attempt(self):
@@ -186,7 +186,7 @@ class RegistrationDeactivationRetryTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(409, result["status"])
         self.assertIn("读取失败", result["error"])
-        self.assertIn("人工确认", result["error"])
+        self.assertIn("稍后重试", result["error"])
         get_attempt.assert_called_once_with(180)
         create_retry.assert_not_called()
         executor.submit.assert_not_called()

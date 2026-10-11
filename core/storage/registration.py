@@ -1124,7 +1124,8 @@ def persist_core_account(
         current_checkpoint = str(attempt.get("checkpoint") or "created")
         if current_checkpoint not in CHECKPOINT_RANK:
             current_checkpoint = "created"
-        if CHECKPOINT_RANK[current_checkpoint] > CHECKPOINT_RANK["core_persisted"]:
+        recovering_terminal = current_checkpoint in {"manual_reconcile", "failed"}
+        if CHECKPOINT_RANK[current_checkpoint] > CHECKPOINT_RANK["core_persisted"] and not recovering_terminal:
             raise ValueError(f"核心账号落库不能倒退已完成的 checkpoint: {current_checkpoint}")
         email = str(payload.get("email") or attempt.get("email") or attempt.get("email_snapshot") or "").strip()
         if not email:
@@ -1132,12 +1133,39 @@ def persist_core_account(
         payload["email"] = email
         payload["access_token"] = token
         account_id = payload.get("id") or attempt.get("account_id")
+        if recovering_terminal:
+            # 失败终态不是已完成注册的证据。仅允许当前续跑以原身份拿到 Token
+            # 后确认成功；普通进度上报仍不能倒退或清除历史失败断点。
+            expected_email = str(attempt.get("email_snapshot") or attempt.get("email") or "").strip().casefold()
+            if (attempt.get("target_status") == "deactivated" or not expected_email
+                    or email.casefold() != expected_email
+                    or (attempt.get("email") and str(attempt["email"]).strip().casefold() != expected_email)
+                    or not attempt.get("account_id") or str(account_id) != str(attempt["account_id"])):
+                raise ValueError("失败续跑的原账号或邮箱不匹配，不能确认注册成功")
+            current_execution = str(execution_id or "").strip()
+            if not current_execution or run_id is None:
+                raise ValueError("失败续跑确认成功需要当前执行实例")
+            cur.execute(f"SELECT * FROM {_table('registration_runs')} WHERE id=%s", (int(run_id),))
+            run = _row(cur.fetchone()) or {}
+            if (run.get("attempt_id") != int(attempt_id) or run.get("status") != "running"
+                    or run.get("action_type") != "registration_resume"
+                    or run.get("execution_id") != current_execution
+                    or (job_id is not None and run.get("job_id") != int(job_id))
+                    or (attempt.get("active_execution_id") and attempt["active_execution_id"] != current_execution)):
+                raise ValueError("失败续跑执行实例已变化，不能覆盖注册断点")
         if account_id is not None:
             cur.execute(
                 f"SELECT * FROM {postgres_store.qualified(record_store.ACCOUNTS.name)} WHERE id=%s",
                 (int(account_id),),
             )
             existing = cur.fetchone()
+            if recovering_terminal:
+                saved_account = record_store.merge_row(record_store.ACCOUNTS, existing) or {}
+                if (str(saved_account.get("email") or "").strip().casefold() != expected_email
+                        or saved_account.get("deactivated") is True
+                        or any(str(saved_account.get(key) or "").lower() == "deactivated"
+                               for key in ("account_status", "codex_status", "codex_credential_state"))):
+                    raise ValueError("原账号缺失、邮箱不匹配或已停用，不能确认注册成功")
             if existing is None:
                 payload["id"] = int(account_id)
                 account_id = record_store.insert_row(record_store.ACCOUNTS, payload, conn=conn)
@@ -1150,8 +1178,9 @@ def persist_core_account(
             f"""
             UPDATE {_table('registration_attempts')}
             SET account_id=%s, checkpoint='core_persisted', local_account_state='persisted',
-                remote_account_state='confirmed',
+                remote_account_state='confirmed', remote_identity_state='confirmed',
                 target_status='account_available', updated_at=%s, heartbeat_at=%s,
+                completed_at=NULL, terminal_at=NULL,
                 active_execution_id=COALESCE(%s, active_execution_id)
             WHERE id=%s
             """,
@@ -1160,7 +1189,9 @@ def persist_core_account(
         _insert_event(
             cur, attempt_id=int(attempt_id), run_id=run_id, job_id=job_id, checkpoint="core_persisted",
             event_type="core_persisted", level="INFO", message="Token 后核心账号已落库",
-            detail={"account_id": int(account_id), "email": email}, execution_id=execution_id, event_uuid=None,
+            detail={"account_id": int(account_id), "email": email,
+                    **({"recovered_checkpoint": current_checkpoint} if recovering_terminal else {})},
+            execution_id=execution_id, event_uuid=None,
         )
         if job_id is not None:
             cur.execute(f"UPDATE {_table('registration_jobs')} SET account_id=%s, attempt_id=%s WHERE id=%s", (int(account_id), int(attempt_id), int(job_id)))

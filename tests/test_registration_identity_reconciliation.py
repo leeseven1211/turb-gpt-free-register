@@ -56,13 +56,13 @@ class RegistrationIdentityContractTests(unittest.TestCase):
 
         self.assertEqual(["email_otp", "totp"], projection.as_dict()["challenge_chain"])
 
-    def test_registration_result_status_preserves_reconciliation_states(self):
+    def test_registration_result_status_reports_unconfirmed_as_failed(self):
         self.assertEqual(
-            "manual_reconcile",
+            "failed",
             registration_service.registration_result_status({"manual_reconcile": True}),
         )
         self.assertEqual(
-            "request_unknown",
+            "failed",
             registration_service.registration_result_status({"request_unknown": True}),
         )
 
@@ -92,7 +92,7 @@ class RegistrationIdentityContractTests(unittest.TestCase):
         }
         proxy = MagicMock(provider="1024proxy")
 
-        self.assertEqual("request_unknown", registration_service.registration_result_status(result))
+        self.assertEqual("failed", registration_service.registration_result_status(result))
         with patch.object(registration_service, "_registration_proxy_retry_limit", return_value=2):
             self.assertFalse(
                 registration_service._should_retry_registration_with_new_proxy(result, proxy, 0)
@@ -107,7 +107,7 @@ class RegistrationIdentityContractTests(unittest.TestCase):
         }
         proxy = MagicMock(provider="1024proxy")
 
-        self.assertEqual("request_unknown", registration_service.registration_result_status(result))
+        self.assertEqual("failed", registration_service.registration_result_status(result))
         with patch.object(registration_service, "_registration_proxy_retry_limit", return_value=2):
             self.assertFalse(
                 registration_service._should_retry_registration_with_new_proxy(result, proxy, 0)
@@ -125,7 +125,7 @@ class RegistrationIdentityContractTests(unittest.TestCase):
         }
         proxy = MagicMock(provider="1024proxy")
 
-        self.assertEqual("request_unknown", registration_service.registration_result_status(result))
+        self.assertEqual("failed", registration_service.registration_result_status(result))
         with patch.object(registration_service, "_registration_proxy_retry_limit", return_value=2):
             self.assertFalse(
                 registration_service._should_retry_registration_with_new_proxy(result, proxy, 0)

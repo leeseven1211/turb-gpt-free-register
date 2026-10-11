@@ -612,8 +612,11 @@ def _submit_email_form_stable(driver, email: str) -> dict:
         window.__turbEmailSubmission = receipt;
         setTimeout(() => {
           try {
-            if (!input.isConnected || !form.isConnected || !emailFrontendReady(input, form, submit)
-                || !submit || submit.disabled) { receipt.phase = 'cancelled'; return; }
+            if (!input.isConnected || !form.isConnected || !submit?.isConnected
+                || input.closest('form') !== form || submit.form !== form
+                || !emailFrontendReady(input, form, submit) || submit.disabled) {
+              receipt.phase = 'cancelled'; return;
+            }
             receipt.phase = 'dispatched';
             submit.click();
           } catch (_) { receipt.phase = 'unknown'; }

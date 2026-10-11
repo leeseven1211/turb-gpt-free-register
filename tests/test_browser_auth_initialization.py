@@ -372,6 +372,7 @@ class BrowserAuthInitializationTests(unittest.TestCase):
         const submit={offsetWidth:1,isConnected:true,getAttribute:k=>k==='type'?'submit':'',querySelectorAll:()=>[],
           querySelector:()=>null,scrollIntoView(){},click(){clicks++;}};
         const form={isConnected:true,getAttribute:()=>'',querySelectorAll:()=>[submit]};
+        submit.form=form;
         const document={querySelectorAll:()=>[input]};
         const execute=function(){SCRIPT};
         const ssr=execute('unit@example.test');
@@ -380,10 +381,16 @@ class BrowserAuthInitializationTests(unittest.TestCase):
         delete form.__reactProps$test; queued.shift()();
         const afterUnmount=clicks;
         form.__reactProps$test={onSubmit(){}};
+        execute('unit@example.test'); submit.isConnected=false; queued.shift()();
+        const afterDetached=clicks;
+        submit.isConnected=true;
+        execute('unit@example.test'); submit.form={}; queued.shift()();
+        const afterWrongForm=clicks;
+        submit.form=form;
         execute('unit@example.test'); queued.shift()();
-        console.log(JSON.stringify({ssr:ssr.ok,hydrated:hydrated.ok,afterUnmount,clicks,keyEvents}));
+        console.log(JSON.stringify({ssr:ssr.ok,hydrated:hydrated.ok,afterUnmount,afterDetached,afterWrongForm,clicks,keyEvents}));
         """.replace("SCRIPT", script)
-        self.assertEqual(_run_js(source), {"ssr": False, "hydrated": True, "afterUnmount": 0, "clicks": 1, "keyEvents": 0})
+        self.assertEqual(_run_js(source), {"ssr": False, "hydrated": True, "afterUnmount": 0, "afterDetached": 0, "afterWrongForm": 0, "clicks": 1, "keyEvents": 0})
 
     @unittest.skipUnless(shutil.which("node"), "需要 Node 执行实际页面脚本语义测试")
     def test_session_abort_completes_once_even_when_fetch_never_settles(self):

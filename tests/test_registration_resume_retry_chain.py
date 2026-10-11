@@ -92,7 +92,7 @@ class ResumeRetryChainTests(unittest.TestCase):
 
     def test_child_partial_and_unknown_can_resume_with_matching_root(self):
         root, child, account, attempt = facts()
-        for status in ('failed', 'partial_success', 'request_unknown', 'interrupted'):
+        for status in ('failed', 'partial_success', 'request_unknown', 'manual_reconcile', 'interrupted'):
             with self.subTest(status=status):
                 info = svc._build_retry_info(dict(child, status=status), account=account,
                     successful_retry=None, attempt=attempt, root_job=root)
@@ -101,7 +101,7 @@ class ResumeRetryChainTests(unittest.TestCase):
 
     def test_identity_and_terminal_fences_are_preserved(self):
         for mutation in ('missing_root', 'root_id', 'root_email', 'root_attempt', 'child_email',
-                         'child_attempt', 'password', 'account_id', 'deactivated', 'manual', 'active'):
+                         'child_attempt', 'password', 'account_id', 'deactivated', 'active'):
             with self.subTest(mutation=mutation):
                 root, child, account, attempt = facts()
                 if mutation == 'missing_root': root = None
@@ -113,7 +113,6 @@ class ResumeRetryChainTests(unittest.TestCase):
                 if mutation == 'password': account['extra_json']['account_password'] = ''
                 if mutation == 'account_id': account['id'] = 999
                 if mutation == 'deactivated': attempt['target_status'] = 'deactivated'
-                if mutation == 'manual': child['status'] = 'manual_reconcile'
                 if mutation == 'active': child['status'] = 'running'
                 info = svc._build_retry_info(child, account=account, successful_retry=None, attempt=attempt, root_job=root)
                 self.assertFalse(info['retryable'])
