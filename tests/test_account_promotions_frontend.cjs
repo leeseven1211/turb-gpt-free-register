@@ -37,63 +37,133 @@ const goTrial = {plan: 'go', kind: 'free_trial', eligible: true, duration_num_pe
 const plusDiscount = {plan: 'plus', kind: 'discount', eligible: true, discount_percentage: 50, duration_num_periods: 2, duration_period: 'month', campaign_id: 'plus-half-two'};
 const checked = {id: 1, current_plan_type: 'free', plan_check_status: 'success', account_promotions: [goTrial, plusDiscount]};
 
-test('同时显示 Go 免费和 Plus 折扣，活动详情可通过键盘焦点查看', () => {
+function visiblePromotionLabels(html) {
+  return [...html.matchAll(/<span class="account-promotion-label">([^<]*)<\/span>/g)].map(match => match[1]);
+}
+
+function promotionTooltip(html) {
+  return [...html.matchAll(/data-accounts-tooltip="([^"]*)"/g)].map(match => match[1]).join('\n');
+}
+
+function assertSinglePromotion(html, expected) {
+  assert.deepEqual(visiblePromotionLabels(html), [expected], '列表只显示最高优惠或一个状态');
+  assert.equal((html.match(/class="pill /g) || []).length, 1);
+  assert.equal((html.match(/tabindex="0"/g) || []).length, 1);
+  assert.equal((html.match(/data-accounts-tooltip=/g) || []).length, 1);
+}
+
+test('列表只显示 Go 免费最高优惠，悬停和键盘焦点可查看 Go 与 Plus 全部优惠', () => {
   const html = view._promotionCell(checked);
-  assert.match(html, /Go: 免费 1个月/);
-  assert.match(html, /Plus: 五折 2个月/);
-  assert.match(html, /go-free-one/);
-  assert.match(html, /plus-half-two/);
-  assert.equal((html.match(/tabindex="0"/g) || []).length, 2);
-  assert.equal((html.match(/data-accounts-tooltip=/g) || []).length, 2);
+  assertSinglePromotion(html, 'Go: 免费 1个月');
+  const tooltip = promotionTooltip(html);
+  assert.match(tooltip, /Go: 免费 1个月/);
+  assert.match(tooltip, /Plus: 五折 2个月/);
+  assert.match(tooltip, /go-free-one/);
+  assert.match(tooltip, /plus-half-two/);
 });
 
-test('旧 Plus 快照保留原优惠，Go 显示待查询而不误判无优惠', () => {
+test('旧 Plus 快照展示其优惠，提示中的 Go 保留待查询而不误判无优惠', () => {
   const html = view._promotionCell({current_plan_type: 'free', plan_check_status: 'success', plus_promo_kind: 'discount', plus_promo_discount_percentage: 50, plus_promo_duration_num_periods: 3, plus_promo_duration_period: 'month'});
-  assert.match(html, /Go: 待查询/);
-  assert.match(html, /Plus: 五折 3个月/);
-  assert.doesNotMatch(html, /Go: 无优惠/);
+  assertSinglePromotion(html, 'Plus: 五折 3个月');
+  assert.match(promotionTooltip(html), /Go: 待查询/);
+  assert.doesNotMatch(promotionTooltip(html), /Go: 无优惠/);
 });
 
-test('只有成功查询明确返回 none 才显示该套餐无优惠', () => {
+test('明确无优惠合并为一个状态，部分未知记录不隐藏已知优惠', () => {
   const html = view._promotionCell({...checked, account_promotions: [{plan: 'go', kind: 'none', eligible: false}, {plan: 'plus', kind: 'none', eligible: false}]});
-  assert.match(html, /Go: 无优惠/);
-  assert.match(html, /Plus: 无优惠/);
+  assertSinglePromotion(html, '无优惠');
+  assert.match(promotionTooltip(html), /Go: 无优惠/);
+  assert.match(promotionTooltip(html), /Plus: 无优惠/);
   const partial = view._promotionCell({...checked, account_promotions: [plusDiscount]});
-  assert.match(partial, /Go: 待核验/);
-  assert.doesNotMatch(partial, /Go: 无优惠/);
+  assertSinglePromotion(partial, 'Plus: 五折 2个月');
+  assert.match(promotionTooltip(partial), /Go: 待核验/);
+  assert.doesNotMatch(promotionTooltip(partial), /Go: 无优惠/);
+});
+
+test('未查询和排队执行中的记录只展示一个待查询状态', () => {
+  for (const status of ['', 'queued', 'running']) {
+    const html = view._promotionCell({...checked, plan_check_status: status});
+    assertSinglePromotion(html, '待查询');
+    assert.match(promotionTooltip(html), /Go: 待查询/);
+    assert.match(promotionTooltip(html), /Plus: 待查询/);
+  }
 });
 
 test('当前 Go 套餐不代表获得 Go 免费资格，未知活动不猜优惠类型', () => {
   const legacy = view._promotionCell({current_plan_type: 'go', plan_check_status: 'success'});
-  assert.match(legacy, /Go: 待查询/);
-  assert.doesNotMatch(legacy, /Go: 免费/);
+  assertSinglePromotion(legacy, '待查询');
+  assert.match(promotionTooltip(legacy), /Go: 待查询/);
+  assert.doesNotMatch(promotionTooltip(legacy), /Go: 免费/);
   const unknown = view._promotionCell({...checked, current_plan_type: 'go', account_promotions: [{plan: 'go', kind: 'new-structure', campaign_id: 'go-free-trial'}, plusDiscount]});
-  assert.match(unknown, /Go: 待核验/);
-  assert.doesNotMatch(unknown, /Go: 免费/);
+  assertSinglePromotion(unknown, 'Plus: 五折 2个月');
+  assert.match(promotionTooltip(unknown), /Go: 待核验/);
+  assert.doesNotMatch(promotionTooltip(unknown), /Go: 免费/);
+  const unverified = view._promotionCell({...checked, account_promotions: [{plan: 'go', kind: 'new-structure'}, {plan: 'plus', kind: 'none'}]});
+  assertSinglePromotion(unverified, '待核验');
 });
 
-test('失败显示两项上次成功优惠和错误，没有成功快照则显示失败', () => {
+test('失败保留上次最高优惠，提示包含完整成功快照和错误，没有快照仅显示失败', () => {
   const html = view._promotionCell({...checked, plan_check_status: 'failed', plan_last_success_at: '2026-10-12 12:00:00', plan_check_error: 'HTTP 401'});
-  assert.match(html, /Go: 免费 1个月/);
-  assert.match(html, /Plus: 五折 2个月/);
-  assert.match(html, /显示上次成功快照/);
-  assert.match(html, /2026-10-12 12:00:00/);
-  assert.match(html, /本次查询失败: HTTP 401/);
+  assertSinglePromotion(html, 'Go: 免费 1个月');
+  const tooltip = promotionTooltip(html);
+  assert.match(tooltip, /Go: 免费 1个月/);
+  assert.match(tooltip, /Plus: 五折 2个月/);
+  assert.match(tooltip, /显示上次成功快照/);
+  assert.match(tooltip, /2026-10-12 12:00:00/);
+  assert.match(tooltip, /本次查询失败: HTTP 401/);
   const noSnapshot = view._promotionCell({...checked, plan_check_status: 'failed', plan_check_error: 'HTTP 401'});
-  assert.match(noSnapshot, /Go: 查询失败/);
-  assert.match(noSnapshot, /Plus: 查询失败/);
-  assert.doesNotMatch(noSnapshot, /免费/);
+  assertSinglePromotion(noSnapshot, '查询失败');
+  assert.match(promotionTooltip(noSnapshot), /本次查询失败: HTTP 401/);
+  assert.doesNotMatch(promotionTooltip(noSnapshot), /免费/);
 });
 
-test('同一套餐多活动保持两行摘要，提示保留全部活动并转义内容', () => {
+test('同一套餐多活动只显示最高优惠，提示保留全部活动并转义内容', () => {
   const other = {...goTrial, kind: 'discount', discount_percentage: 20, campaign_id: 'go-discount-other', title: '"><script>alert(1)</script>'};
   const html = view._promotionCell({...checked, account_promotions: [other, plusDiscount, goTrial]});
-  assert.match(html, /Go: 免费 1个月 \+1/);
-  assert.match(html, /减 20% 1个月/);
-  assert.match(html, /go-discount-other/);
-  assert.equal((html.match(/tabindex="0"/g) || []).length, 2);
+  assertSinglePromotion(html, 'Go: 免费 1个月');
+  const tooltip = promotionTooltip(html);
+  assert.match(tooltip, /Go: 免费 1个月/);
+  assert.match(tooltip, /Plus: 五折 2个月/);
+  assert.match(tooltip, /减 20% 1个月/);
+  assert.match(tooltip, /go-discount-other/);
   assert.doesNotMatch(html, /<script>/);
-  assert.match(html, /&lt;script&gt;/);
+  assert.match(tooltip, /&lt;script&gt;/);
+});
+
+test('免费资格优先于长期高额折扣；折扣按减免比例选择最高优惠', () => {
+  const highDiscount = {...plusDiscount, discount_percentage: 90, duration_num_periods: 1, duration_period: 'year'};
+  assertSinglePromotion(view._promotionCell({...checked, account_promotions: [highDiscount, goTrial]}), 'Go: 免费 1个月');
+  const goDiscount = {...goTrial, kind: 'discount', discount_percentage: 60};
+  for (const offers of [[plusDiscount, goDiscount], [goDiscount, plusDiscount]]) {
+    assertSinglePromotion(view._promotionCell({...checked, account_promotions: offers}), 'Go: 减 60% 1个月');
+  }
+});
+
+test('同类优惠比较实际期限，年与月、月与周、周与天可以交叉选择', () => {
+  const cases = [
+    {kind: 'free_trial', go: [1, 'year'], plus: [11, 'month'], expected: 'Go: 免费 1年'},
+    {kind: 'free_trial', go: [2, 'month'], plus: [8, 'week'], expected: 'Go: 免费 2个月'},
+    {kind: 'free_trial', go: [2, 'week'], plus: [13, 'day'], expected: 'Go: 免费 2周'},
+    {kind: 'discount', go: [13, 'day'], plus: [2, 'week'], expected: 'Plus: 五折 2周'},
+  ];
+  for (const item of cases) {
+    const go = {...goTrial, kind: item.kind, discount_percentage: 50, duration_num_periods: item.go[0], duration_period: item.go[1]};
+    const plus = {...plusDiscount, kind: item.kind, duration_num_periods: item.plus[0], duration_period: item.plus[1]};
+    assertSinglePromotion(view._promotionCell({...checked, account_promotions: [go, plus]}), item.expected);
+  }
+  const longerGo = {...goTrial, duration_num_periods: 3, campaign_id: 'go-free-three'};
+  assertSinglePromotion(view._promotionCell({...checked, account_promotions: [goTrial, plusDiscount, longerGo]}), 'Go: 免费 3个月');
+});
+
+test('类型、折扣和期限同等时优先 Plus，选择不依赖接口活动顺序', () => {
+  for (const kind of ['free_trial', 'discount']) {
+    const go = {...goTrial, kind, discount_percentage: 50};
+    const plus = {...plusDiscount, kind, duration_num_periods: 1};
+    const expected = kind === 'free_trial' ? 'Plus: 免费 1个月' : 'Plus: 五折 1个月';
+    for (const offers of [[go, plus], [plus, go]]) {
+      assertSinglePromotion(view._promotionCell({...checked, account_promotions: offers}), expected);
+    }
+  }
 });
 
 test('Go 免费资格不开放 Plus 提链，原确认 Plus 免费资格仍可提链', () => {

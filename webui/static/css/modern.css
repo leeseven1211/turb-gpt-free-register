@@ -1379,6 +1379,10 @@
       transition: opacity 0.12s ease, transform 0.12s ease;
     }
     .accounts-hover-tooltip.show { opacity: 1; transform: translateY(0); }
+    .accounts-hover-tooltip.is-promotion {
+      max-height: min(480px, calc(100dvh - 16px)); box-sizing: border-box;
+      white-space: pre-line; overflow: auto; overscroll-behavior: contain; pointer-events: auto;
+    }
     .accounts-hover-tooltip.is-task-step { max-width:min(380px,calc(100vw - 24px)); max-height:min(480px,calc(100dvh - 16px)); box-sizing:border-box; white-space:pre-line; overflow:auto; overscroll-behavior:contain; pointer-events:auto; }
     @media (prefers-reduced-motion: reduce) {
       .accounts-hover-tooltip { transition: none; }
@@ -1399,7 +1403,7 @@
       font-size: 13px; font-weight: 500; line-height: 1; white-space: nowrap;
     }
     .accounts-table-v2 .account-promotion-cell {
-      display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0;
+      display: flex; align-items: center; min-width: 0;
     }
     .accounts-table-v2 .account-promotion-cell .pill { max-width: 100%; min-width: 0; }
     .accounts-table-v2 .account-promotion-label {

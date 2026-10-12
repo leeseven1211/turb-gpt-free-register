@@ -1312,7 +1312,8 @@ function _showAccountsTooltip(target) {
   _accountsTooltipDescription = target.getAttribute('aria-describedby');
   target.setAttribute('aria-describedby', [_accountsTooltipDescription, _accountsTooltipNode.id].filter(Boolean).join(' '));
   _accountsTooltipNode.classList.toggle('is-task-step', Boolean(target.closest('#accountTaskStageProgress, #batchProgressListV2')));
-  _accountsTooltipNode.tabIndex = target.closest('#accountTaskStageProgress, #batchProgressListV2') ? 0 : -1;
+  _accountsTooltipNode.classList.toggle('is-promotion', Boolean(target.closest('.col-trial')));
+  _accountsTooltipNode.tabIndex = target.closest('#accountTaskStageProgress, #batchProgressListV2, .col-trial') ? 0 : -1;
   _accountsTooltipNode.textContent = message;
   _accountsTooltipNode.hidden = false;
   _accountsTooltipNode.style.left = '0px';
@@ -1359,10 +1360,15 @@ function _showAccountsTooltip(target) {
   }, true);
   window.addEventListener('resize', _hideAccountsTooltip);
   document.addEventListener('click', event => {
+    const target = targetFor(event.target);
+    if (target?.closest('.col-trial')) {
+      _showAccountsTooltip(target);
+      return;
+    }
     if (!_accountsTooltipNode?.contains(event.target)) _hideAccountsTooltip();
   }, true);
   document.addEventListener('keydown', event => {
-    if (!_accountsTooltipTarget?.closest('#accountTaskStageProgress, #batchProgressListV2')) return;
+    if (!_accountsTooltipTarget?.closest('#accountTaskStageProgress, #batchProgressListV2, .col-trial')) return;
     if (event.key === 'ArrowDown' && document.activeElement === _accountsTooltipTarget) {
       event.preventDefault();
       _accountsTooltipNode?.focus({preventScroll:true});
@@ -1582,10 +1588,31 @@ function _accountPromotionTone(item) {
   if (item.kind === 'failed') return 'danger';
   return ['discount', 'other_promo', 'unknown', 'pending'].includes(item.kind) ? 'warning' : 'neutral';
 }
-function _accountPromotionGroups(items) {
+function _compareAccountPromotions(a, b) {
   const priority = {free_trial: 0, discount: 1, other_promo: 2, unknown: 3, pending: 4, failed: 5, none: 6, not_applicable: 7};
+  const kind = (priority[a.kind] ?? 3) - (priority[b.kind] ?? 3);
+  if (kind) return kind;
+  if (['free_trial', 'discount'].includes(a.kind)) {
+    const percentage = item => {
+      const value = Number(item.discount_percentage);
+      return Number.isFinite(value) && value > 0 && value <= 100 ? value : 0;
+    };
+    const discount = percentage(b) - percentage(a);
+    if (a.kind === 'discount' && discount) return discount;
+    // 期限只用于展示排序，按近似天数比较，标签仍保留实际账单周期。
+    const duration = item => {
+      const units = {day: 1, week: 7, month: 30, year: 365};
+      const count = typeof item.duration_num_periods === 'boolean' ? 0 : Number(item.duration_num_periods);
+      return Number.isFinite(count) && count > 0 ? count * (units[String(item.duration_period || '').toLowerCase()] || 0) : 0;
+    };
+    const length = duration(b) - duration(a);
+    if (length) return length;
+  }
+  return Number(b.plan === 'plus') - Number(a.plan === 'plus');
+}
+function _accountPromotionGroups(items) {
   return ['go', 'plus'].map(plan => {
-    const matches = items.filter(item => item.plan === plan).sort((a, b) => priority[a.kind] - priority[b.kind]);
+    const matches = items.filter(item => item.plan === plan).sort(_compareAccountPromotions);
     return {plan, items: matches, lead: matches[0]};
   });
 }
@@ -1601,9 +1628,12 @@ function _accountPromotionGroupDetail(group, context = '') {
 function _promotionCell(r) {
   const display = _accountPromotionDisplay(r);
   const classes = {success: 'status-success', danger: 'status-failed', warning: 'status-running', neutral: 'status-used'};
-  return `<div class="account-promotion-cell">${_accountPromotionGroups(display.items).map(group => {
-    return `<span class="pill ${classes[_accountPromotionTone(group.lead)]}" data-accounts-tooltip="${esc(_accountPromotionGroupDetail(group, display.context))}" tabindex="0"><span class="account-promotion-label">${esc(_accountPromotionGroupLabel(group))}</span></span>`;
-  }).join('')}</div>`;
+  const best = [...display.items].sort(_compareAccountPromotions)[0];
+  const hasOffer = ['free_trial', 'discount', 'other_promo'].includes(best.kind);
+  const label = `${hasOffer ? `${_promotionPlanLabel(best.plan)}: ` : ''}${_accountPromotionLabel(best)}`;
+  const detail = _accountPromotionGroups(display.items).flatMap(group => group.items.map(item => _accountPromotionDetail(item))).join('\n');
+  const tooltip = [detail, display.context].filter(Boolean).join('\n');
+  return `<div class="account-promotion-cell"><span class="pill ${classes[_accountPromotionTone(best)]}" data-accounts-tooltip="${esc(tooltip)}" tabindex="0"><span class="account-promotion-label">${esc(label)}</span></span></div>`;
 }
 function _planAction(r) {
   if (accountIsDeactivated(r)) return '';
