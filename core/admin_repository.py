@@ -372,6 +372,7 @@ def list_account_statuses(
         "plus_promo_promotion_type_label", "plus_trial_campaign_id", "plus_trial_title",
         "plus_trial_discount_percentage", "plus_trial_duration_num_periods",
         "plus_trial_duration_period", "plus_trial_promotion_type_label",
+        "account_promotions", "promotion_query_snapshot",
         "extract_link_message", "extract_link_error", "extract_link_long_url", "extract_link_copy_paste",
         "extract_link_failed_types", "extract_link_last_failed_type", "extract_link_last_failed_at",
         "extract_link_image_url_png", "extract_link_image_url_svg", "extract_link_expires_at", "codex_status",

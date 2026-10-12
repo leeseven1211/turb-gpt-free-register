@@ -120,7 +120,7 @@ ThreadPoolExecutor.submit(_run_one_job)
 | `token` | 完成 OAuth 回调并取得 Token | `account_export.py` 或浏览器驱动 | `accessToken` 非空 |
 | `codex` | Codex OAuth | `core/codex_oauth.py` 或对应驱动 | 成功、跳过或失败 |
 | `twofa` | Authenticator 2FA | `account_export.py` / Roxy 页面流程 | 成功、跳过或失败 |
-| `plan_check` | 查套餐、Plus 优惠和额度 | `plan_check_service.py` | 同步完成、后台入队、跳过或失败 |
+| `plan_check` | 查套餐、Go / Plus 优惠和额度 | `plan_check_service.py` | 同步完成、后台入队、跳过或失败 |
 | `complete` | 汇总任务结果 | `registration_service.py` | 记录总耗时和总状态 |
 
 `finish_job_progress()` 会把失败节点之后未执行的阶段标记为 `skipped`，不会把真实失败节点覆盖成成功。

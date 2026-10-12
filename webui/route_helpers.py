@@ -243,6 +243,7 @@ def _compact_account_for_list(row: dict) -> dict:
         "plus_promo_promotion_type_label", "plus_trial_campaign_id", "plus_trial_title",
         "plus_trial_discount_percentage", "plus_trial_duration_num_periods",
         "plus_trial_duration_period", "plus_trial_promotion_type_label",
+        "account_promotions", "promotion_query_snapshot",
         # 额度窗口快照（来自 ChatGPT /wham/usage，不返回原始响应）。
         "quota_status", "quota_checked_at", "quota_http_status", "quota_error",
         "quota_type", "quota_windows", "quota_last_success_at",

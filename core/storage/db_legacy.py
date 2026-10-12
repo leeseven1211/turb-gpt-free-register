@@ -1233,7 +1233,7 @@ def recover_interrupted_plan_checks(
 
 
 def update_account_plan_check(acc_id: int | None = None, email: str | None = None, result: dict | None = None) -> bool:
-    """更新账号套餐、Plus 优惠与额度查询结果。"""
+    """更新账号套餐、Go/Plus 优惠与额度查询结果。"""
     result = result or {}
     row = (
         record_store.get_row(record_store.ACCOUNTS, int(acc_id))
@@ -1258,7 +1258,7 @@ def update_account_plan_check(acc_id: int | None = None, email: str | None = Non
     if result.get("account_id"):
         changes["account_id"] = result.get("account_id")
     # 查询失败只更新本次错误和网络信息，不覆盖上一次成功拿到的套餐、
-    # Plus 优惠及有效期，避免临时网络故障把真实权益清空。
+    # Go/Plus 优惠及有效期，避免临时网络故障把真实权益清空。
     if ok:
         promo_kind = promotion_kind_from_record(result)
         promo_eligible = promo_kind in ELIGIBLE_PROMO_KINDS
@@ -1306,6 +1306,11 @@ def update_account_plan_check(acc_id: int | None = None, email: str | None = Non
             "plan_last_success_at": checked_at,
             "plan_last_success_result_json": json.dumps(result, ensure_ascii=False),
         })
+        # 新调用显式返回空数组时可以清空过期优惠；未带新字段的旧调用
+        # 则保留上次成功快照，避免兼容入口把已识别的 Go 优惠清掉。
+        for key in ("account_promotions", "promotion_query_snapshot"):
+            if key in result:
+                changes[key] = result[key]
         # 额度是套餐查询的附带快照。额度接口偶发失败时保留上次成功的
         # 窗口和类型，只更新独立的失败状态，避免把真实额度清空。
         quota_status = result.get("quota_status")

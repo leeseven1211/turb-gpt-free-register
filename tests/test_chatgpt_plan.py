@@ -2,7 +2,7 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from core import chatgpt_plan
+from core import chatgpt_plan, registration_plan_capture
 
 
 class ChatGPTPlanTests(unittest.TestCase):
@@ -47,6 +47,89 @@ class ChatGPTPlanTests(unittest.TestCase):
         self.assertEqual(discount["plus_promo_duration_num_periods"], 2)
         self.assertEqual(no_promo["plus_promo_kind"], "none")
         self.assertFalse(no_promo["plus_promo_eligible"])
+
+    def test_parse_accounts_check_keeps_go_trial_and_plus_discount_separate(self):
+        payload = self._accounts_check_payload({
+            "id": "plus-half-price",
+            "metadata": {"discount": {"percentage": 50}, "duration": {"num_periods": 2, "period": "month"}},
+        })
+        payload["accounts"]["default"]["eligible_promo_campaigns"]["go"] = {
+            "id": "go-one-month-free",
+            "metadata": {"discount": {"percentage": 100}, "duration": {"num_periods": 1, "period": "month"}},
+        }
+
+        result = chatgpt_plan.parse_accounts_check(payload)
+
+        self.assertEqual([item["plan"] for item in result["account_promotions"]], ["go", "plus"])
+        self.assertEqual([item["kind"] for item in result["account_promotions"]], ["free_trial", "discount"])
+        self.assertEqual(result["plus_promo_kind"], "discount")
+        self.assertEqual(result["plus_promo_campaign_id"], "plus-half-price")
+        self.assertFalse(result["plus_trial_eligible"])
+        self.assertEqual(result["promotion_query_snapshot"]["version"], 1)
+        self.assertEqual(result["promotion_query_snapshot"]["source"], "accounts_check")
+        self.assertEqual(result["promotion_query_snapshot"]["campaign_keys"], ["plus", "go"])
+
+    def test_go_only_promotion_does_not_enable_plus_link_extraction(self):
+        payload = self._accounts_check_payload()
+        payload["accounts"]["default"]["eligible_promo_campaigns"] = {
+            "go": {"id": "go-free", "metadata": {"discount": {"percentage": 100}}},
+        }
+
+        result = chatgpt_plan.parse_accounts_check(payload)
+
+        self.assertEqual(result["account_promotions"][0]["kind"], "free_trial")
+        self.assertEqual(result["account_promotions"][1]["kind"], "none")
+        self.assertFalse(result["plus_trial_eligible"])
+        self.assertFalse(result["plus_promo_eligible"])
+        self.assertIsNone(result["plus_trial_campaign_id"])
+
+    def test_go_offer_is_not_a_free_promotion(self):
+        payload = self._accounts_check_payload()
+        payload["accounts"]["default"]["eligible_offers"] = {
+            "offers": [{"id": "chatgptgoplan"}],
+        }
+
+        result = chatgpt_plan.parse_accounts_check(payload)
+
+        self.assertEqual(result["eligible_offer_ids"], ["chatgptgoplan"])
+        self.assertEqual([item["kind"] for item in result["account_promotions"]], ["none", "none"])
+        self.assertFalse(any(item["eligible"] for item in result["account_promotions"]))
+
+    def test_nonfree_account_keeps_previous_plus_eligibility_boundary(self):
+        payload = self._accounts_check_payload({"id": "plus-free", "metadata": {"discount": {"percentage": 100}}})
+        item = payload["accounts"]["default"]
+        item["account"]["plan_type"] = "go"
+        item["entitlement"]["subscription_plan"] = "chatgptgoplan"
+        item["eligible_promo_campaigns"]["go"] = {"id": "go-free", "metadata": {"discount": {"percentage": 100}}}
+
+        result = chatgpt_plan.parse_accounts_check(payload)
+
+        self.assertEqual([entry["kind"] for entry in result["account_promotions"]], ["none", "none"])
+        self.assertFalse(result["plus_trial_eligible"])
+        self.assertEqual(len(result["promotion_query_snapshot"]["campaigns"]), 2)
+
+    def test_malformed_promotion_metadata_keeps_plan_query_successful(self):
+        payload = self._accounts_check_payload({"id": "plus-free", "metadata": ["unsupported"]})
+        payload["accounts"]["default"]["eligible_promo_campaigns"]["go"] = "unsupported"
+
+        result = chatgpt_plan.parse_accounts_check(payload)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual([entry["kind"] for entry in result["account_promotions"]], ["unknown", "unknown"])
+        self.assertFalse(result["plus_trial_eligible"])
+
+    def test_registration_capture_returns_the_same_go_plus_evidence(self):
+        payload = self._accounts_check_payload()
+        payload["accounts"]["default"]["eligible_promo_campaigns"] = {
+            "go": {"id": "go-free", "metadata": {"discount": {"percentage": 100}}},
+        }
+        result = chatgpt_plan.parse_accounts_check(payload)
+
+        captured = registration_plan_capture._normalize_capture({"status": 200, "data": payload}, token="")
+
+        self.assertEqual(captured["account_promotions"], result["account_promotions"])
+        self.assertEqual(captured["promotion_query_snapshot"], result["promotion_query_snapshot"])
+        self.assertFalse(captured["plus_trial_eligible"])
 
     def test_parse_quota_usage_classifies_windows_and_calculates_remaining(self):
         result = chatgpt_plan.parse_quota_usage({
@@ -156,6 +239,8 @@ class ChatGPTPlanTests(unittest.TestCase):
         self.assertEqual(result["http_status"], 200)
         self.assertEqual(result["quota_type"], "5小时限额")
         self.assertEqual(result["quota_windows"][0]["remaining_percent"], 88.0)
+        self.assertEqual([item["plan"] for item in result["account_promotions"]], ["go", "plus"])
+        self.assertEqual(result["promotion_query_snapshot"]["source"], "accounts_check")
         browser_session.assert_not_called()
         self.assertEqual(session.get.call_count, 2)
         session.session.close.assert_not_called()

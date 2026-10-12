@@ -88,6 +88,50 @@ class AdminRepositoryTests(PostgresTestCase):
         item = next(row for row in result["items"] if row["id"] == account_id)
         self.assertNotIn("chatgpt_session", item)
 
+    def test_account_promotions_are_returned_by_list_and_status_projection(self):
+        promotions = [{
+            "plan": "go", "kind": "free_trial", "eligible": True,
+            "campaign_id": "go-free-1-month", "summary": "免费1个月",
+        }, {
+            "plan": "plus", "kind": "discount", "eligible": True,
+            "campaign_id": "plus-50-off-1-month", "summary": "50%折扣1个月",
+        }]
+        snapshot = {
+            "version": 1,
+            "source": "accounts_check",
+            "eligible_promo_campaigns": {
+                "go": {"campaign_id": "go-free-1-month"},
+                "plus": {"campaign_id": "plus-50-off-1-month"},
+            },
+        }
+        account_id = rs.insert_row(rs.ACCOUNTS, {
+            "email": "promotion-query@example.test",
+            "account_promotions": promotions,
+            "promotion_query_snapshot": snapshot,
+        })
+
+        for query in (repo.list_accounts, repo.list_account_statuses):
+            with self.subTest(query=query.__name__):
+                result = query(repo.PageRequest(page=1, page_size=100))
+                item = next(row for row in result["items"] if row["id"] == account_id)
+                self.assertEqual(item["account_promotions"], promotions)
+                self.assertEqual(item["promotion_query_snapshot"], snapshot)
+
+    def test_status_projection_keeps_explicitly_empty_promotions(self):
+        account_id = rs.insert_row(rs.ACCOUNTS, {
+            "email": "promotion-empty@example.test",
+            "account_promotions": [],
+            "promotion_query_snapshot": {
+                "version": 1, "source": "accounts_check", "eligible_promo_campaigns": {},
+            },
+        })
+
+        result = repo.list_account_statuses(repo.PageRequest(page=1, page_size=100))
+        item = next(row for row in result["items"] if row["id"] == account_id)
+
+        self.assertEqual(item["account_promotions"], [])
+        self.assertEqual(item["promotion_query_snapshot"]["eligible_promo_campaigns"], {})
+
     def test_accounts_can_filter_and_report_account_status(self):
         account_id = rs.insert_row(rs.ACCOUNTS, {
             "email": "deactivated@example.test",

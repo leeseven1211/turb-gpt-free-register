@@ -1324,7 +1324,7 @@
     .accounts-table-v2 .col-account-status { width: 104px; }
     .accounts-table-v2 .col-plan { width: 120px; }
     .accounts-table-v2 .col-quota { width: 146px; }
-    .accounts-table-v2 .col-trial { width: 136px; }
+    .accounts-table-v2 .col-trial { width: 166px; }
     .accounts-table-v2 .col-small { width: 72px; }
     .accounts-table-v2 .col-risk-mail { width: 112px; }
     .accounts-table-v2 .col-status { width: 100px; }
@@ -1397,6 +1397,13 @@
       height: 26px; padding: 0 10px; border-radius: 4px;
       border: 1px solid transparent; box-sizing: border-box;
       font-size: 13px; font-weight: 500; line-height: 1; white-space: nowrap;
+    }
+    .accounts-table-v2 .account-promotion-cell {
+      display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0;
+    }
+    .accounts-table-v2 .account-promotion-cell .pill { max-width: 100%; min-width: 0; }
+    .accounts-table-v2 .account-promotion-label {
+      min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
     .accounts-table-v2 .pill.status-used {
       color: #9e9ea8; background: #fafafa; border-color: #ebebef;

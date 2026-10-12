@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""套餐/Plus 资格查询后台队列。"""
+"""套餐、Go / Plus 优惠查询后台队列。"""
 from __future__ import annotations
 
 import logging
@@ -16,6 +16,7 @@ from core import task_run_log
 from core.operations import task_gateway as account_task_store
 from core.storage import accounts as db
 from core.chatgpt_plan import check_account_plan
+from core.plus_promotion import sanitize_promotion_text
 from core.task_reporter import TaskReporter
 from core.account_operation_executor import configured_workers, operation_log_context
 from core.account_operation_executor import executor as _ACCOUNT_EXECUTOR
@@ -243,6 +244,7 @@ def _query_account_plan(
     if session is not None:
         query_kwargs["session"] = session
     result = check_account_plan(access_token, **query_kwargs)
+    query_history = [_plan_query_record(result, phase="initial")]
 
     recheck_delay = _registration_recheck_delay(config_snapshot)
     should_recheck = (
@@ -276,6 +278,7 @@ def _query_account_plan(
         if session is not None:
             recheck_kwargs["session"] = session
         recheck_result = check_account_plan(access_token, **recheck_kwargs)
+        query_history.append(_plan_query_record(recheck_result, phase="registration_recheck"))
         if recheck_result.get("ok"):
             result = recheck_result
         else:
@@ -284,7 +287,62 @@ def _query_account_plan(
                 email,
                 recheck_result.get("error") or "未知错误",
             )
+    result["promotion_query_history"] = query_history
     return result
+
+
+def _plan_query_record(result: dict, *, phase: str) -> dict:
+    """逐次保存已脱敏活动信息，首次响应不会被注册复查覆盖。"""
+    record = {
+        "phase": phase,
+        "ok": bool(result.get("ok")),
+        "http_status": result.get("http_status"),
+        "checked_at": result.get("checked_at"),
+        "current_plan_type": result.get("current_plan_type"),
+    }
+    if not result.get("ok"):
+        record["error"] = sanitize_promotion_text(result.get("error"))
+    for key in ("account_promotions", "promotion_query_snapshot"):
+        if key in result:
+            record[key] = result[key]
+    return record
+
+
+def _record_promotion_queries(reporter, result: dict) -> None:
+    """每次响应单独写入任务事件，证据保持扁平以兼容日志深度限制。"""
+    records = result.get("promotion_query_history")
+    if not isinstance(records, list):
+        records = [_plan_query_record(result, phase="initial")]
+    for record in records:
+        detail = {key: value for key, value in record.items() if key != "promotion_query_snapshot"}
+        snapshot = record.get("promotion_query_snapshot")
+        if isinstance(snapshot, dict):
+            detail.update(snapshot)
+        reporter.note(
+            "已保存套餐优惠响应记录", stage="plan_check",
+            event_type="promotion.query.recorded", detail=detail,
+        )
+
+
+def _plan_result_summary(result: dict) -> dict:
+    """把套餐结果和活动证据写入每次任务，避免账号快照更新后丢失历史。"""
+    keys = (
+        "http_status", "current_plan_type", "plus_trial_eligible",
+        "plus_discount_eligible", "plus_promo_kind", "plus_promo_discount_percentage",
+        "plus_promo_duration_num_periods", "plus_promo_duration_period",
+        "checked_at", "token_expires_at",
+    )
+    summary = {"ok": bool(result.get("ok")), **{key: result.get(key) for key in keys}}
+    for key in ("account_promotions", "promotion_query_snapshot"):
+        if key in result:
+            summary[key] = result[key]
+    if isinstance(result.get("promotion_query_history"), list):
+        # 完整证据按响应保存在独立任务事件中，摘要只保存查询索引。
+        summary["promotion_query_history"] = [
+            {key: record.get(key) for key in ("phase", "ok", "http_status", "checked_at", "current_plan_type")}
+            for record in result["promotion_query_history"]
+        ]
+    return summary
 
 
 def _log_plan_result(email: str, trigger: str, result: dict) -> None:
@@ -377,6 +435,7 @@ def _run_plan_check(
             for key, value in account_route.public_dict().items()
             if key not in {"proxy_mode", "network_route", "proxy_used"} or not result.get(key)
         })
+        _record_promotion_queries(reporter, result)
         db.update_account_plan_check(acc_id=account_id, result=result)
         _log_plan_result(email, trigger, result)
         reporter.stage(
@@ -387,25 +446,14 @@ def _run_plan_check(
                 "http_status": result.get("http_status"),
                 "current_plan_type": result.get("current_plan_type"),
                 "plus_promo_kind": result.get("plus_promo_kind"),
+                "account_promotions": result.get("account_promotions"),
             },
         )
         reporter.finish(
             status="success" if result.get("ok") else "failed",
             message="套餐查询成功" if result.get("ok") else "套餐查询失败",
             error=result.get("error") if not result.get("ok") else None,
-            result_summary={
-                "ok": bool(result.get("ok")),
-                "http_status": result.get("http_status"),
-                "current_plan_type": result.get("current_plan_type"),
-                "plus_trial_eligible": result.get("plus_trial_eligible"),
-                "plus_discount_eligible": result.get("plus_discount_eligible"),
-                "plus_promo_kind": result.get("plus_promo_kind"),
-                "plus_promo_discount_percentage": result.get("plus_promo_discount_percentage"),
-                "plus_promo_duration_num_periods": result.get("plus_promo_duration_num_periods"),
-                "plus_promo_duration_period": result.get("plus_promo_duration_period"),
-                "checked_at": result.get("checked_at"),
-                "token_expires_at": result.get("token_expires_at"),
-            },
+            result_summary=_plan_result_summary(result),
             route=account_route.public_dict(),
             validation_method="access_token",
         )
@@ -507,6 +555,7 @@ def check_registration_account_plan(
         result = _query_account_plan(
             **query_kwargs,
         )
+        _record_promotion_queries(reporter, result)
         db.update_account_plan_check(acc_id=account_id, result=result)
         _log_plan_result(str(email or "").strip(), trigger, result)
         reporter.stage(
@@ -517,25 +566,14 @@ def check_registration_account_plan(
                 "http_status": result.get("http_status"),
                 "current_plan_type": result.get("current_plan_type"),
                 "plus_promo_kind": result.get("plus_promo_kind"),
+                "account_promotions": result.get("account_promotions"),
             },
         )
         reporter.finish(
             status="success" if result.get("ok") else "failed",
             message="注册后套餐查询成功" if result.get("ok") else "注册后套餐查询失败",
             error=result.get("error") if not result.get("ok") else None,
-            result_summary={
-                "ok": bool(result.get("ok")),
-                "http_status": result.get("http_status"),
-                "current_plan_type": result.get("current_plan_type"),
-                "plus_trial_eligible": result.get("plus_trial_eligible"),
-                "plus_discount_eligible": result.get("plus_discount_eligible"),
-                "plus_promo_kind": result.get("plus_promo_kind"),
-                "plus_promo_discount_percentage": result.get("plus_promo_discount_percentage"),
-                "plus_promo_duration_num_periods": result.get("plus_promo_duration_num_periods"),
-                "plus_promo_duration_period": result.get("plus_promo_duration_period"),
-                "checked_at": result.get("checked_at"),
-                "token_expires_at": result.get("token_expires_at"),
-            },
+            result_summary=_plan_result_summary(result),
             route={"network_route": "registration_proxy", "proxy_used": proxy},
             validation_method="access_token",
         )

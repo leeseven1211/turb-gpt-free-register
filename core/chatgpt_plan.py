@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""ChatGPT 账号套餐、Plus 优惠与额度查询。"""
+"""ChatGPT 账号套餐、Go / Plus 优惠与额度查询。"""
 from __future__ import annotations
 
 import base64
@@ -15,10 +15,9 @@ from urllib.parse import quote, urlparse
 
 from core.plus_promotion import (
     DISCOUNT,
-    ELIGIBLE_PROMO_KINDS,
     FREE_TRIAL,
-    classify_plus_campaign,
-    normalize_percentage,
+    parse_account_promotions,
+    primary_plan_promotion,
 )
 from core.session import BrowserSession
 
@@ -439,7 +438,7 @@ def query_account_quota(
 
 
 def parse_accounts_check(data: dict, *, token: str = "") -> dict:
-    """从 accounts/check 响应提取套餐、Plus 优惠与有效期。"""
+    """从 accounts/check 响应提取套餐、Go / Plus 优惠与有效期。"""
     claims = token_claims(token) if token else {}
     claim_account_id = claims.get("account_id")
     accounts = data.get("accounts") if isinstance(data, dict) else None
@@ -467,21 +466,19 @@ def parse_accounts_check(data: dict, *, token: str = "") -> dict:
     account = item.get("account") or {}
     entitlement = item.get("entitlement") or {}
     last_sub = item.get("last_active_subscription") or {}
-    eligible_promo_campaigns = item.get("eligible_promo_campaigns") or {}
-    plus_campaign = eligible_promo_campaigns.get("plus") if isinstance(eligible_promo_campaigns, dict) else None
-    plus_meta = (plus_campaign or {}).get("metadata") or {}
-    discount = plus_meta.get("discount") or {}
-    duration = plus_meta.get("duration") or {}
-
     plan_type = account.get("plan_type") or claims.get("claim_plan_type") or ""
     subscription_plan = entitlement.get("subscription_plan") or ""
     has_active_subscription = bool(entitlement.get("has_active_subscription"))
     is_free = str(plan_type).lower() == "free" or str(subscription_plan).lower() == "chatgptfreeplan"
-    plus_promo_kind = classify_plus_campaign(plus_campaign) if is_free else "none"
-    plus_promo_eligible = plus_promo_kind in ELIGIBLE_PROMO_KINDS
+    account_promotions, promotion_query_snapshot = parse_account_promotions(
+        item.get("eligible_promo_campaigns"), is_free=is_free,
+    )
+    plus_promotion = primary_plan_promotion(account_promotions, "plus")
+    plus_promo_kind = plus_promotion["kind"]
+    plus_promo_eligible = plus_promotion["eligible"]
     plus_trial_eligible = plus_promo_kind == FREE_TRIAL
     plus_discount_eligible = plus_promo_kind == DISCOUNT
-    promo_percentage = normalize_percentage(discount.get("percentage"))
+    promo_percentage = plus_promotion["discount_percentage"]
 
     offers = ((item.get("eligible_offers") or {}).get("offers") or [])
     eligible_offer_ids = [o.get("id") for o in offers if isinstance(o, dict) and o.get("id")]
@@ -509,26 +506,28 @@ def parse_accounts_check(data: dict, *, token: str = "") -> dict:
         "discount_promo_campaign_id": (entitlement.get("discount") or {}).get("promo_campaign_id"),
         "last_purchase_origin_platform": last_sub.get("purchase_origin_platform"),
         "last_will_renew": bool(last_sub.get("will_renew")),
+        "account_promotions": account_promotions,
+        "promotion_query_snapshot": promotion_query_snapshot,
         "plus_promo_eligible": plus_promo_eligible,
         "plus_promo_kind": plus_promo_kind,
         "plus_discount_eligible": plus_discount_eligible,
-        "plus_promo_campaign_id": (plus_campaign or {}).get("id"),
-        "plus_promo_title": plus_meta.get("title"),
-        "plus_promo_summary": plus_meta.get("summary"),
+        "plus_promo_campaign_id": plus_promotion["campaign_id"],
+        "plus_promo_title": plus_promotion["title"],
+        "plus_promo_summary": plus_promotion["summary"],
         "plus_promo_discount_percentage": promo_percentage,
-        "plus_promo_duration_num_periods": duration.get("num_periods"),
-        "plus_promo_duration_period": duration.get("period"),
-        "plus_promo_promotion_type": plus_meta.get("promotion_type"),
-        "plus_promo_promotion_type_label": plus_meta.get("promotion_type_label"),
+        "plus_promo_duration_num_periods": plus_promotion["duration_num_periods"],
+        "plus_promo_duration_period": plus_promotion["duration_period"],
+        "plus_promo_promotion_type": plus_promotion["promotion_type"],
+        "plus_promo_promotion_type_label": plus_promotion["promotion_type_label"],
         # 旧字段保留给历史调用方；其中 eligible 从现在起只代表真正免费试用。
         "plus_trial_eligible": plus_trial_eligible,
-        "plus_trial_campaign_id": (plus_campaign or {}).get("id"),
-        "plus_trial_title": plus_meta.get("title"),
-        "plus_trial_summary": plus_meta.get("summary"),
+        "plus_trial_campaign_id": plus_promotion["campaign_id"],
+        "plus_trial_title": plus_promotion["title"],
+        "plus_trial_summary": plus_promotion["summary"],
         "plus_trial_discount_percentage": promo_percentage,
-        "plus_trial_duration_num_periods": duration.get("num_periods"),
-        "plus_trial_duration_period": duration.get("period"),
-        "plus_trial_promotion_type_label": plus_meta.get("promotion_type_label"),
+        "plus_trial_duration_num_periods": plus_promotion["duration_num_periods"],
+        "plus_trial_duration_period": plus_promotion["duration_period"],
+        "plus_trial_promotion_type_label": plus_promotion["promotion_type_label"],
         "eligible_offer_ids": eligible_offer_ids,
         "features_count": len(item.get("features") or []),
         "can_access_with_session": bool(item.get("can_access_with_session")),

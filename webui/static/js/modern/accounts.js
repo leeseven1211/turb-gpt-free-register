@@ -44,6 +44,10 @@ function accountTaskResultText(task) {
   }
   if (task.task_type === 'plan_check') {
     const plan = String(result.current_plan_type || '');
+    if (Array.isArray(result.account_promotions)) {
+      const promotions = _accountPromotionGroups(_accountPromotions(result)).map(_accountPromotionGroupLabel).join(' · ');
+      return `${plan ? `套餐 ${plan} · ` : ''}${promotions}`;
+    }
     return plan ? (plan.toLowerCase() === 'free' ? `套餐 ${plan} · Plus ${_plusPromotionLabel(result)}` : `套餐 ${plan}`) : '查询完成';
   }
   if (task.task_type === 'deactivation_mail') {
@@ -1267,7 +1271,7 @@ function restoreTaskTooltipView(target, view) {
 }
 
 function _accountsTooltipSelector() {
-  return '.accounts-table-v2 .col-plan [data-accounts-tooltip], .accounts-table-v2 .col-quota [data-accounts-tooltip], #accountTaskStageProgress [data-accounts-tooltip], #batchProgressListV2 [data-accounts-tooltip]';
+  return '.accounts-table-v2 .col-plan [data-accounts-tooltip], .accounts-table-v2 .col-quota [data-accounts-tooltip], .accounts-table-v2 .col-trial [data-accounts-tooltip], #accountTaskStageProgress [data-accounts-tooltip], #batchProgressListV2 [data-accounts-tooltip]';
 }
 
 function _hideAccountsTooltip() {
@@ -1506,31 +1510,100 @@ function _plusPromotionDetail(r) {
 function _isFreeTrialPromotion(r) {
   return _plusPromotionKind(r) === 'free_trial';
 }
-function _promotionCell(r) {
-  const plan = (r.current_plan_type || r.plan_type || '').toString().toLowerCase();
-  const status = (r.plan_check_status || '').toString().toLowerCase();
-  const err = r.plan_check_error || '';
-  if (plan && plan !== 'free') return '<span class="acc-v2-muted">-</span>';
-  if (!plan) return '<span class="pill status-running">待查询</span>';
-  if (status === 'queued' || status === 'running') {
+function _promotionPlanLabel(plan) {
+  return plan === 'go' ? 'Go' : 'Plus';
+}
+function _accountPromotions(r) {
+  if (Array.isArray(r.account_promotions)) {
+    return ['go', 'plus'].flatMap(plan => {
+      const items = r.account_promotions.filter(item => item && String(item.plan || '').toLowerCase() === plan);
+      if (!items.length) return [{plan, kind: 'unknown'}];
+      return items.map(item => {
+        const kind = String(item.kind || '').toLowerCase();
+        return {...item, plan, kind: ['free_trial', 'discount', 'other_promo', 'none', 'unknown'].includes(kind) ? kind : 'unknown'};
+      });
+    });
+  }
+  const plan = String(r.current_plan_type || r.plan_type || '').toLowerCase();
+  return [
+    {plan: 'go', kind: 'pending', summary: '旧查询未记录 Go 优惠，请重新查询套餐'},
+    {
+      plan: 'plus', kind: plan && plan !== 'free' ? 'not_applicable' : _plusPromotionKind(r),
+      title: r.plus_promo_title || r.plus_trial_title,
+      campaign_id: r.plus_promo_campaign_id || r.plus_trial_campaign_id,
+      discount_percentage: r.plus_promo_discount_percentage ?? r.plus_trial_discount_percentage,
+      duration_num_periods: r.plus_promo_duration_num_periods ?? r.plus_trial_duration_num_periods,
+      duration_period: r.plus_promo_duration_period || r.plus_trial_duration_period,
+    },
+  ];
+}
+function _accountPromotionLabel(item) {
+  const periods = Number(item.duration_num_periods);
+  const units = {month: '个月', year: '年', week: '周', day: '天'};
+  const unit = units[String(item.duration_period || '').toLowerCase()];
+  const duration = Number.isFinite(periods) && periods > 0 && unit ? ` ${periods}${unit}` : '';
+  if (item.kind === 'free_trial') return `免费${duration}`;
+  if (item.kind === 'discount') {
+    const raw = item.discount_percentage;
+    const percentage = raw === null || raw === undefined || raw === '' ? NaN : Number(raw);
+    const discount = percentage === 50 ? '五折' : (Number.isFinite(percentage) && percentage > 0 && percentage < 100 ? `减 ${percentage}%` : '折扣');
+    return `${discount}${duration}`;
+  }
+  const labels = {other_promo: '其他优惠', none: '无优惠', unknown: '待核验', pending: '待查询', failed: '查询失败', not_applicable: '不适用'};
+  return labels[item.kind] || '待核验';
+}
+function _accountPromotionDetail(item, context = '') {
+  const label = `${_promotionPlanLabel(item.plan)}: ${_accountPromotionLabel(item)}`;
+  const details = [label];
+  if (item.summary && item.summary !== _accountPromotionLabel(item)) details.push(String(item.summary));
+  if (item.title) details.push(String(item.title));
+  if (item.campaign_id) details.push(`活动 ${item.campaign_id}`);
+  if (context) details.push(context);
+  return details.join('；');
+}
+function _accountPromotionDisplay(r) {
+  const status = String(r.plan_check_status || '').toLowerCase();
+  if (['queued', 'running'].includes(status)) {
     const stamp = status === 'queued' ? r.plan_check_queued_at : r.plan_check_started_at;
-    return `<span class="pill status-running" title="${esc(stamp || '套餐查询正在执行')}">待查询</span>`;
+    return {items: ['go', 'plus'].map(plan => ({plan, kind: 'pending'})), context: `套餐查询${status === 'queued' ? '排队中' : '正在执行'}${stamp ? `: ${stamp}` : ''}`};
   }
   if (status === 'failed') {
-    if (r.plan_last_success_at) {
-      const kind = _plusPromotionKind(r);
-      const cls = kind === 'free_trial' ? 'status-success' : (['discount', 'other_promo'].includes(kind) ? 'status-running' : 'status-used');
-      const detail = `${_plusPromotionDetail(r)}；上次成功查询: ${r.plan_last_success_at}；本次查询失败: ${err || '未知错误'}`;
-      return `<span class="pill ${cls}" data-accounts-tooltip="${esc(detail)}" tabindex="0">${esc(_plusPromotionLabel(r))}</span>`;
-    }
-    return `<span class="pill status-failed" data-accounts-tooltip="${esc(err || '套餐查询失败')}" tabindex="0">查询失败</span>`;
+    const error = `本次查询失败: ${r.plan_check_error || '未知错误'}`;
+    if (r.plan_last_success_at) return {items: _accountPromotions(r), context: `显示上次成功快照；上次成功查询: ${r.plan_last_success_at}；${error}`};
+    return {items: ['go', 'plus'].map(plan => ({plan, kind: 'failed'})), context: error};
   }
   if (status !== 'success' && r.plan_check_ok !== true) {
-    return '<span class="pill status-running">待查询</span>';
+    return {items: ['go', 'plus'].map(plan => ({plan, kind: 'pending'})), context: '尚未查询套餐优惠'};
   }
-  const kind = _plusPromotionKind(r);
-  const cls = kind === 'free_trial' ? 'status-success' : (['discount', 'other_promo'].includes(kind) ? 'status-running' : 'status-used');
-  return `<span class="pill ${cls}" data-accounts-tooltip="${esc(_plusPromotionDetail(r))}" tabindex="0">${esc(_plusPromotionLabel(r))}</span>`;
+  return {items: _accountPromotions(r), context: r.plan_checked_at ? `查询于 ${r.plan_checked_at}` : ''};
+}
+function _accountPromotionTone(item) {
+  if (item.kind === 'free_trial') return 'success';
+  if (item.kind === 'failed') return 'danger';
+  return ['discount', 'other_promo', 'unknown', 'pending'].includes(item.kind) ? 'warning' : 'neutral';
+}
+function _accountPromotionGroups(items) {
+  const priority = {free_trial: 0, discount: 1, other_promo: 2, unknown: 3, pending: 4, failed: 5, none: 6, not_applicable: 7};
+  return ['go', 'plus'].map(plan => {
+    const matches = items.filter(item => item.plan === plan).sort((a, b) => priority[a.kind] - priority[b.kind]);
+    return {plan, items: matches, lead: matches[0]};
+  });
+}
+function _accountPromotionGroupLabel(group) {
+  const extra = group.items.length > 1 ? ` +${group.items.length - 1}` : '';
+  return `${_promotionPlanLabel(group.plan)}: ${_accountPromotionLabel(group.lead)}${extra}`;
+}
+function _accountPromotionGroupDetail(group, context = '') {
+  const details = group.items.map(item => _accountPromotionDetail(item));
+  if (context) details.push(context);
+  return details.join('；');
+}
+function _promotionCell(r) {
+  const display = _accountPromotionDisplay(r);
+  const classes = {success: 'status-success', danger: 'status-failed', warning: 'status-running', neutral: 'status-used'};
+  return `<div class="account-promotion-cell">${_accountPromotionGroups(display.items).map(group => {
+    return `<span class="pill ${classes[_accountPromotionTone(group.lead)]}" data-accounts-tooltip="${esc(_accountPromotionGroupDetail(group, display.context))}" tabindex="0"><span class="account-promotion-label">${esc(_accountPromotionGroupLabel(group))}</span></span>`;
+  }).join('')}</div>`;
 }
 function _planAction(r) {
   if (accountIsDeactivated(r)) return '';
@@ -1540,7 +1613,7 @@ function _planAction(r) {
     const label = automatic ? (queued ? '自动查询排队中…' : '自动查询中…') : (queued ? '查询排队中…' : '查询中…');
     return `<button data-plan-check="${esc(r.id)}" disabled title="套餐查询正在执行，完成后可再次查询">${label}</button>`;
   }
-  return `<button data-plan-check="${esc(r.id)}" title="查询当前套餐；free 账号会检查 Plus 免费试用或折扣优惠">查套餐</button>`;
+  return `<button data-plan-check="${esc(r.id)}" title="查询当前套餐以及 Go、Plus 免费试用或折扣优惠">查套餐</button>`;
 }
 function _fmtExtractExpire(v) {
   if (!v) return '';
@@ -1758,9 +1831,7 @@ function _accountDetailMarkup(r) {
   const liveState = r.live_check_status === 'live' ? '查活正常' : (r.live_check_status === 'failed' ? `查活失败${liveHttpLabel}` : (r.live_check_status === 'running' ? '查活中' : '未查活'));
   const liveTone = r.live_check_status === 'live' ? 'success' : (r.live_check_status === 'failed' ? 'danger' : (r.live_check_status === 'running' ? 'warning' : 'neutral'));
   const plan = (r.current_plan_type || r.plan_type || '未查询').toString();
-  const promotionKind = plan.toLowerCase() === 'free' ? _plusPromotionKind(r) : 'not_applicable';
-  const promotion = promotionKind === 'not_applicable' ? '不适用' : _plusPromotionLabel(r);
-  const promotionTone = promotionKind === 'free_trial' ? 'success' : (['discount', 'other_promo'].includes(promotionKind) ? 'warning' : 'neutral');
+  const promotionDisplay = _accountPromotionDisplay(r);
   const codexRaw = (r.codex_status || r.codex_execution_status || '').toString().toLowerCase();
   const codexLabels = { success: '已通过', completed: '已通过', failed: '失败', deactivated: '已废号', running: '补跑中', queued: '排队中', cancelling: '停止中', retrying: '补跑中', stopped: '已停止', pending_confirmation: '待确认', skipped: '已跳过' };
   const codex = codexLabels[codexRaw] || '未授权';
@@ -1800,7 +1871,7 @@ function _accountDetailMarkup(r) {
     <div class="account-detail-section-title">套餐与授权</div>
     <div class="account-detail-grid">
       ${_accountDetailState('当前套餐', plan, plan.toLowerCase() === 'free' ? 'info' : 'success', r.plan_checked_at ? `检查于 ${_fmtPlanTime(r.plan_checked_at)}` : '')}
-      ${_accountDetailState('Plus 优惠', promotion, promotionTone, promotionKind === 'not_applicable' ? '' : _plusPromotionDetail(r))}
+      ${_accountPromotionGroups(promotionDisplay.items).map(group => _accountDetailState(`${_promotionPlanLabel(group.plan)} 优惠`, _accountPromotionGroupLabel(group), _accountPromotionTone(group.lead), _accountPromotionGroupDetail(group, promotionDisplay.context))).join('')}
       ${_accountDetailState('Codex', codex, codexTone)}
       ${_accountDetailState('套餐检查', r.plan_checked_at ? _fmtPlanTime(r.plan_checked_at) : '未检查')}
     </div>
