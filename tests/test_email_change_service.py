@@ -306,6 +306,61 @@ class EmailChangeLoggingTests(unittest.TestCase):
             "access_token": "old-at",
         }
 
+    def test_email_butler_owned_target_is_marked_used_and_reacquired(self):
+        from core import email_change_service
+
+        context = self._guard_context()
+        with (
+            patch.object(email_change_service.email_provider, "acquire_email", side_effect=[
+                "used@example.test",
+                "fresh@example.test",
+            ]) as acquire_email,
+            patch.object(email_change_service.db, "get_account_by_email", side_effect=[
+                {"id": 99, "email": "used@example.test"},
+                None,
+            ]),
+            patch.object(email_change_service.email_provider, "release_email") as release_email,
+        ):
+            target, failure = email_change_service._acquire_email_change_target(
+                context,
+                account_id=7,
+                source="email_butler",
+                current_email="old@example.test",
+            )
+
+        self.assertIsNone(failure)
+        self.assertEqual("fresh@example.test", target)
+        self.assertEqual(2, acquire_email.call_count)
+        release_email.assert_called_once_with(
+            "used@example.test",
+            status="used",
+            source="email_butler",
+            note="本地账号 #99 已使用该邮箱",
+        )
+        self.assertEqual("running", context.events[-1]["state"])
+        self.assertIn("正在重新领取", context.events[-1]["message"])
+
+    def test_email_butler_owned_target_stops_when_used_closeout_fails(self):
+        from core import email_change_service
+
+        context = self._guard_context()
+        with (
+            patch.object(email_change_service.email_provider, "acquire_email", return_value="used@example.test") as acquire_email,
+            patch.object(email_change_service.db, "get_account_by_email", return_value={"id": 99, "email": "used@example.test"}),
+            patch.object(email_change_service.email_provider, "release_email", side_effect=RuntimeError("closeout failed")),
+        ):
+            target, failure = email_change_service._acquire_email_change_target(
+                context,
+                account_id=7,
+                source="email_butler",
+                current_email="old@example.test",
+            )
+
+        self.assertEqual("used@example.test", target)
+        self.assertEqual("failed", failure.status)
+        self.assertEqual("email_change_target_in_use", failure.summary["cause_code"])
+        acquire_email.assert_called_once()
+
     def test_target_owned_by_another_account_finishes_source_without_remote_begin(self):
         from core import email_change_service
 

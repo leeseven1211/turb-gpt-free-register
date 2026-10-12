@@ -28,6 +28,7 @@ EMAIL_CHANGE_TASK_TYPE = "email_change"
 EMAIL_CHANGE_SOURCE_SYSTEM = "native_operations"
 EMAIL_CHANGE_RESOURCE_FAMILY = "openai_interactive"
 EMAIL_CHANGE_LIVE_RESOURCE_FAMILY = "email_change_live_check"
+EMAIL_CHANGE_MAX_DUPLICATE_TARGET_REACQUISITIONS = 10
 
 EMAIL_CHANGE_CONFIG_ALLOWLIST = {
     "email_change_enabled": "ACCOUNT_EMAIL_CHANGE_ENABLED",
@@ -719,6 +720,87 @@ def _release_unconsumed(email: str, account_id: int, error: str) -> None:
         logger.exception("邮箱换绑失败邮箱回收异常: account_id=%s", account_id)
 
 
+def _acquire_email_change_target(
+    context: Any,
+    *,
+    account_id: int,
+    source: str,
+    current_email: str,
+) -> tuple[str, task_gateway.OperationResult | None]:
+    """领取未登记的新邮箱；Email Butler 的已用目标先收口再有限重领。"""
+    duplicate_count = 0
+    while True:
+        context.checkpoint()
+        target = str(email_provider.acquire_email(source) or "").strip()
+        if not target:
+            return "", task_gateway.OperationResult.failed(
+                "邮箱池未返回新邮箱",
+                {"cause_code": "email_change_target_unavailable", "account_id": account_id},
+            )
+
+        same_email = target.casefold() == str(current_email or "").strip().casefold()
+        if same_email and source != "email_butler":
+            reason = "领取到的邮箱与当前邮箱相同，已停止换绑"
+            return target, task_gateway.OperationResult.failed(
+                reason,
+                {"cause_code": "email_change_same_email", "account_id": account_id},
+            )
+
+        owner = db.get_account_by_email(target)
+        if not same_email and owner is None:
+            return target, None
+        if source != "email_butler":
+            reason = "目标邮箱已被本地账号占用，已停止换绑"
+            return target, task_gateway.OperationResult.failed(
+                reason,
+                {"cause_code": "email_change_target_in_use", "account_id": account_id},
+            )
+
+        owner_id = int((owner or {}).get("id") or account_id)
+        try:
+            email_provider.release_email(
+                target,
+                status="used",
+                source=source,
+                note=f"本地账号 #{owner_id} 已使用该邮箱",
+            )
+        except Exception as exc:
+            logger.warning(
+                "Email Butler 已登记邮箱标记为已使用失败: account_id=%s owner_id=%s error_type=%s",
+                account_id,
+                owner_id,
+                type(exc).__name__,
+            )
+            reason = "Email Butler 未能将已登记目标邮箱标记为已使用，已停止换绑"
+            return target, task_gateway.OperationResult.failed(
+                reason,
+                {
+                    "cause_code": "email_change_target_in_use",
+                    "account_id": account_id,
+                    "target_account_id": owner_id,
+                    "target_closeout_error_type": type(exc).__name__,
+                },
+            )
+
+        context.report(
+            stage="email",
+            state="running",
+            message="Email Butler 返回的邮箱已属于本地账号，已标记为已使用，正在重新领取",
+            detail={"target_account_id": owner_id, "target_marked_used": True},
+        )
+        duplicate_count += 1
+        if duplicate_count > EMAIL_CHANGE_MAX_DUPLICATE_TARGET_REACQUISITIONS:
+            reason = f"连续领取到 {duplicate_count} 个本地已使用邮箱，已标记为已使用并停止换绑"
+            summary = {
+                "cause_code": "email_change_target_in_use",
+                "account_id": account_id,
+                "target_account_id": owner_id,
+                "duplicate_targets_marked_used": duplicate_count,
+            }
+            context.report(stage="email", state="failed", message=reason, detail=summary)
+            return target, task_gateway.OperationResult.failed(reason, summary)
+
+
 def _finalize_consumed_email(email: str, account_id: int, source: str) -> dict[str, str]:
     """在换绑成功后把新邮箱收口为已使用，但不覆盖已确认的换绑结果。"""
     normalized_source = str(source or "").strip().lower()
@@ -850,40 +932,26 @@ def _handle_email_change(context):
                 context.report(stage="email", state="failed", message="账号已有邮箱换绑状态")
                 return task_gateway.OperationResult.failed("账号已有邮箱换绑状态")
             account_claimed = True
-            new_email = str(email_provider.acquire_email(source) or "").strip()
-            if not new_email:
-                context.report(stage="email", state="failed", message="邮箱池未返回新邮箱")
-                return task_gateway.OperationResult.failed("邮箱池未返回新邮箱")
-            if new_email.lower() == current_email.lower():
-                reason = "领取到的邮箱与当前邮箱相同，已停止换绑"
+            new_email, acquisition_failure = _acquire_email_change_target(
+                context,
+                account_id=account_id,
+                source=source,
+                current_email=current_email,
+            )
+            if acquisition_failure is not None:
+                reason = acquisition_failure.message
                 db.finish_account_email_change(
                     account_id,
                     ok=False,
-                    new_email=new_email,
+                    new_email=new_email or None,
                     source=source,
                     error=reason,
                 )
-                summary = {"cause_code": "email_change_same_email", "account_id": account_id}
                 context.report(
                     stage="email", state="failed", message=reason,
-                    detail=summary,
+                    detail=dict(acquisition_failure.summary),
                 )
-                return task_gateway.OperationResult.failed(reason, summary)
-            if db.get_account_by_email(new_email) is not None:
-                reason = "目标邮箱已被本地账号占用，已停止换绑"
-                db.finish_account_email_change(
-                    account_id,
-                    ok=False,
-                    new_email=new_email,
-                    source=source,
-                    error=reason,
-                )
-                summary = {"cause_code": "email_change_target_in_use", "account_id": account_id}
-                context.report(
-                    stage="email", state="failed", message=reason,
-                    detail=summary,
-                )
-                return task_gateway.OperationResult.failed(reason, summary)
+                return acquisition_failure
             db.mark_account_email_change_running(account_id, new_email, source=source)
             context.report(stage="email", state="success", message=f"新邮箱已领取：{new_email}")
             active_stage = "network"
