@@ -33,6 +33,7 @@
 
 - [发布与验证](development/release-verification.md)：隔离测试、发布检查和运行时验收方法。
 - [协议指纹 HAR 参考](reference/protocol-fingerprint-har-analysis.md)：纯协议链路和指纹分析背景。
+- [协议注册主流程对比](reference/2026-10-12-protocol-registration-comparison.md)：2026-10-12 固定版本审查，核对公开项目差异、截图结论与本地优化优先级。
 
 ## 历史记录
 
