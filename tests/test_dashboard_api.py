@@ -327,6 +327,15 @@ console.log('ok');
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         self.assertEqual(result.stdout.strip(), "ok")
 
+    def test_codex_resizable_table_uses_fixed_column_layout(self):
+        css_path = Path(__file__).resolve().parents[1] / "webui/static/css/ui-foundation.css"
+        source = css_path.read_text(encoding="utf-8")
+        selector = 'table[data-resizable-table="codex"] {'
+        rule_start = source.rindex(selector)
+        rule_end = source.index("}", rule_start)
+
+        self.assertIn("table-layout: fixed !important;", source[rule_start:rule_end])
+
 
 class DashboardApiTests(PostgresTestCase):
     MODERN_COMMON_JS = Path(__file__).resolve().parents[1] / "webui/static/js/modern/common.js"
