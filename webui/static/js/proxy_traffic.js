@@ -149,6 +149,31 @@ function proxyTrafficCorrelation(row, includeJob = false) {
   return `<div class="proxy-traffic-correlation">${visible.map((item) => `<span><small>${proxyTrafficEsc(item[0])}</small><strong class="${item[2]}">${proxyTrafficText(item[1])}</strong></span>`).join('')}</div>`;
 }
 
+function proxyTrafficTaskTypeLabel(row) {
+  const taskId = proxyTrafficValue(row, 'operation_task_id');
+  const registrationJobId = proxyTrafficValue(row, 'registration_job_id');
+  const hasRegistrationJob = registrationJobId != null && registrationJobId !== '';
+  if ((taskId == null || taskId === '') && !hasRegistrationJob) return '未关联任务';
+  const taskType = String(proxyTrafficValue(row, 'operation_task_type') || (hasRegistrationJob ? 'registration' : '')).trim();
+  if (!taskType) return '未关联任务';
+  return typeof LIST_FACET_LABELS !== 'undefined'
+    ? (LIST_FACET_LABELS.task_type?.[taskType] || taskType)
+    : taskType;
+}
+
+function proxyTrafficTaskSummary(row) {
+  const taskId = proxyTrafficValue(row, 'operation_task_id');
+  const runId = proxyTrafficValue(row, 'operation_run_id');
+  const identifiers = [];
+  if (taskId != null && taskId !== '') identifiers.push(`任务 #${proxyTrafficEsc(taskId)}`);
+  if (runId != null && runId !== '') identifiers.push(`运行 #${proxyTrafficEsc(runId)}`);
+  const registrationJobId = proxyTrafficValue(row, 'registration_job_id');
+  if ((taskId == null || taskId === '') && registrationJobId != null && registrationJobId !== '') {
+    identifiers.push(`注册 job #${proxyTrafficEsc(registrationJobId)}`);
+  }
+  return `<div class="proxy-traffic-correlation"><strong>${proxyTrafficEsc(proxyTrafficTaskTypeLabel(row))}</strong>${identifiers.length ? `<small>${identifiers.join(' · ')}</small>` : ''}</div>`;
+}
+
 function proxyTrafficLeaseTime(row, endKey = 'expires_at') {
   const start = proxyTrafficValue(row, 'acquired_at');
   const end = proxyTrafficValue(row, endKey);
@@ -203,7 +228,7 @@ function proxyTrafficRenderTraffic(row) {
     <td>${proxyTrafficStatus(unavailable ? 'unavailable' : 'observed')}</td>
     <td><span class="proxy-traffic-number" title="${proxyTrafficEsc(byteText)}">${proxyTrafficEsc(byteText)}</span></td>
     <td><span class="proxy-traffic-number" title="请求 / 失败 / 未完成 / 未知">${proxyTrafficEsc(countText)}</span></td>
-    <td>${proxyTrafficCorrelation(row)}</td>
+    <td>${proxyTrafficTaskSummary(row)}</td>
     <td>${proxyTrafficDate(proxyTrafficValue(row, 'started_at'))}</td>
     <td>${proxyTrafficDetailsButton('traffic', row)}</td>
   </tr>`;
@@ -575,6 +600,8 @@ function proxyTrafficOpenDetail(view, id) {
     ['未知数', proxyTrafficValue(row, 'unknown_count')],
     ['线路租约', proxyTrafficValue(row, 'proxy_lease_id')],
     ['账号', proxyTrafficValue(row, 'account_id')],
+    ['任务类型', proxyTrafficTaskTypeLabel(row)],
+    ['注册 job', proxyTrafficValue(row, 'registration_job_id')],
     ['任务', proxyTrafficValue(row, 'operation_task_id')],
     ['运行', proxyTrafficValue(row, 'operation_run_id')],
     ['开始时间', proxyTrafficDate(proxyTrafficValue(row, 'started_at'))],

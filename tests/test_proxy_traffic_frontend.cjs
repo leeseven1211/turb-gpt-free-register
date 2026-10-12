@@ -16,13 +16,15 @@ function createView() {
   };
   const window = {};
   const context = {document, window, URLSearchParams, setTimeout, setInterval};
-  vm.runInNewContext(`${source}\n;globalThis.proxyTest = {
+  vm.runInNewContext(`const LIST_FACET_LABELS = {task_type: {plan_check: '查套餐'}};\n${source}\n;globalThis.proxyTest = {
     requestPage: proxyTrafficRequestPage,
     requestAll: proxyTrafficRequest,
     requestNormalizedPage: (...args) => proxyTrafficRequestNormalizedPage(...args),
     normalizePage: proxyTrafficNormalizePage,
     renderSummary: proxyTrafficRenderSummary,
     renderTraffic: proxyTrafficRenderTraffic,
+    openDetail: proxyTrafficOpenDetail,
+    setSnapshot(value) { proxyTrafficSnapshot = value; },
     setView: proxyTrafficSetView,
     setSummary(value) { proxyTrafficSummary = value; },
     setState(view, value) { proxyTrafficStateFilters[view] = value; },
@@ -137,6 +139,85 @@ test('浏览器详情用独立触发按钮避免单元格内展开裁切', () =>
   });
   assert.match(html, /data-proxy-detail="traffic"/);
   assert.doesNotMatch(html, /<details\b/);
+});
+
+test('请求流量展示任务类型和关联编号，未关联任务有明确提示', () => {
+  const {api} = createView();
+  const linked = api.renderTraffic({
+    id: 8, source: 'roxy_cdp', method: 'cdp', availability: 'available',
+    upload_bytes: 1, download_bytes: 2, total_bytes: 3,
+    operation_task_id: 41, operation_run_id: 42, operation_task_type: 'plan_check',
+  });
+  assert.match(linked, /查套餐/);
+  assert.match(linked, /任务 #41/);
+  assert.match(linked, /运行 #42/);
+
+  const unlinked = api.renderTraffic({
+    id: 9, source: 'protocol_http', method: 'GET', availability: 'available',
+    upload_bytes: 1, download_bytes: 2, total_bytes: 3,
+  });
+  assert.match(unlinked, /未关联任务/);
+
+  const deleted = api.renderTraffic({
+    id: 10, source: 'protocol_http', method: 'GET', availability: 'available',
+    upload_bytes: 1, download_bytes: 2, total_bytes: 3,
+    operation_task_id: 99,
+  });
+  assert.match(deleted, /未关联任务/);
+
+  const registration = api.renderTraffic({
+    id: 11, source: 'roxy_cdp', method: 'cdp', availability: 'available',
+    upload_bytes: 1, download_bytes: 2, total_bytes: 3,
+    operation_run_id: 76, registration_job_id: 77, operation_task_type: 'registration',
+  });
+  assert.match(registration, /注册/);
+  assert.match(registration, /运行 #76/);
+  assert.match(registration, /注册 job #77/);
+});
+
+test('请求流量详情显示任务类型及任务和运行编号', () => {
+  const {api, nodes} = createView();
+  const dialog = {showModal() { this.open = true; }};
+  const body = {innerHTML: ''};
+  const title = {textContent: ''};
+  nodes.set('proxyTrafficDetailDialog', dialog);
+  nodes.set('proxyTrafficDetailBody', body);
+  nodes.set('proxyTrafficDetailTitle', title);
+  api.setSnapshot({browser_traffic: [{
+    id: 10, source: 'roxy_cdp', method: 'cdp', availability: 'available',
+    upload_bytes: 1, download_bytes: 2, total_bytes: 3,
+    operation_task_id: 51, operation_run_id: 52, operation_task_type: 'plan_check',
+  }]});
+
+  api.openDetail('traffic', 10);
+
+  assert.equal(dialog.open, true);
+  assert.match(body.innerHTML, /任务类型/);
+  assert.match(body.innerHTML, /查套餐/);
+  assert.match(body.innerHTML, /51/);
+  assert.match(body.innerHTML, /52/);
+});
+
+test('请求流量详情保留注册 job 关联', () => {
+  const {api, nodes} = createView();
+  const dialog = {showModal() { this.open = true; }};
+  const body = {innerHTML: ''};
+  const title = {textContent: ''};
+  nodes.set('proxyTrafficDetailDialog', dialog);
+  nodes.set('proxyTrafficDetailBody', body);
+  nodes.set('proxyTrafficDetailTitle', title);
+  api.setSnapshot({browser_traffic: [{
+    id: 12, source: 'roxy_cdp', method: 'cdp', availability: 'available',
+    upload_bytes: 1, download_bytes: 2, total_bytes: 3,
+    operation_run_id: 76, registration_job_id: 77, operation_task_type: 'registration',
+  }]});
+
+  api.openDetail('traffic', 12);
+
+  assert.match(body.innerHTML, /任务类型/);
+  assert.match(body.innerHTML, /注册/);
+  assert.match(body.innerHTML, /注册 job/);
+  assert.match(body.innerHTML, /77/);
 });
 
 test('切换代理子视图时关闭已打开的详情弹窗', () => {

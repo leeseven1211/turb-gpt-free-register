@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from zoneinfo import ZoneInfo
 
-from core import browser_traffic, postgres_store, proxy_lease_store, proxy_provider, record_store
+from core import browser_traffic, operation_task_store, postgres_store, proxy_lease_store, proxy_provider, record_store
 from core import registration_service as registration_svc
 from tests.support_pg import PostgresTestCase
 from webui.app import create_app
@@ -77,7 +77,17 @@ class ProxyTrafficBackendTests(PostgresTestCase):
         now = datetime.now(timezone.utc).astimezone(beijing)
         return now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
 
-    def _seed_traffic(self, *, summary_key: str, started_at: datetime, total: int, purpose: str = "registration"):
+    def _seed_traffic(
+        self,
+        *,
+        summary_key: str,
+        started_at: datetime,
+        total: int,
+        purpose: str = "registration",
+        operation_task_id: int | None = None,
+        operation_run_id: int | None = None,
+        registration_job_id: int | None = None,
+    ):
         browser_traffic.persist_summary(
             summary_key=summary_key,
             summary={
@@ -92,6 +102,9 @@ class ProxyTrafficBackendTests(PostgresTestCase):
                 "request_count": 1,
             },
             purpose=purpose,
+            operation_task_id=operation_task_id,
+            operation_run_id=operation_run_id,
+            registration_job_id=registration_job_id,
         )
 
     def test_proxy_lease_migration_adds_nullable_correlation_columns_idempotently(self):
@@ -391,6 +404,84 @@ class ProxyTrafficBackendTests(PostgresTestCase):
         self.assertEqual(payload["total"], 1)
         self.assertFalse(payload["has_more"])
         self.assertEqual(payload["items"][0]["summary_key"], "traffic-page-today")
+
+    def test_browser_traffic_page_includes_task_types_in_one_batch_without_private_data(self):
+        operation_task_store.reset_ready()
+        operation_task_store.init()
+        plan_task = operation_task_store.create_runtime_task(
+            task_type="plan_check",
+            account_id=None,
+            email="plan-private@example.test",
+        )
+        live_task = operation_task_store.create_runtime_task(
+            task_type="live_check",
+            account_id=None,
+            email="live-private@example.test",
+        )
+        deleted_task = operation_task_store.create_runtime_task(
+            task_type="token_refresh",
+            account_id=None,
+            email="deleted-private@example.test",
+            data={"deleted_by_user": True},
+        )
+        started_at = datetime.now(timezone.utc)
+        self._seed_traffic(
+            summary_key="traffic-task-plan-check",
+            started_at=started_at,
+            total=11,
+            operation_task_id=plan_task["id"],
+            operation_run_id=plan_task["run"]["id"],
+        )
+        self._seed_traffic(
+            summary_key="traffic-task-live-check",
+            started_at=started_at + timedelta(seconds=1),
+            total=12,
+            operation_task_id=live_task["id"],
+            operation_run_id=live_task["run"]["id"],
+        )
+        self._seed_traffic(
+            summary_key="traffic-task-deleted",
+            started_at=started_at + timedelta(seconds=2),
+            total=13,
+            operation_task_id=deleted_task["id"],
+            operation_run_id=deleted_task["run"]["id"],
+        )
+        self._seed_traffic(
+            summary_key="traffic-task-unlinked",
+            started_at=started_at + timedelta(seconds=3),
+            total=14,
+        )
+        self._seed_traffic(
+            summary_key="traffic-registration-job",
+            started_at=started_at + timedelta(seconds=4),
+            total=15,
+            registration_job_id=1234,
+        )
+
+        with patch.object(
+            operation_task_store,
+            "get_task_types",
+            wraps=operation_task_store.get_task_types,
+        ) as get_task_types:
+            response = create_app(auth_code="proxy-page-auth").test_client().get(
+                "/api/proxy-traffic/traffic?limit=20",
+                headers={"X-Auth-Code": "proxy-page-auth"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        items = {item["summary_key"]: item for item in response.get_json()["items"]}
+        self.assertEqual(items["traffic-task-plan-check"]["operation_task_type"], "plan_check")
+        self.assertEqual(items["traffic-task-live-check"]["operation_task_type"], "live_check")
+        self.assertIsNone(items["traffic-task-deleted"]["operation_task_type"])
+        self.assertIsNone(items["traffic-task-unlinked"]["operation_task_type"])
+        self.assertEqual(items["traffic-registration-job"]["operation_task_type"], "registration")
+        get_task_types.assert_called_once_with([
+            plan_task["id"], live_task["id"], deleted_task["id"],
+        ])
+        response_text = response.get_data(as_text=True)
+        self.assertNotIn("plan-private@example.test", response_text)
+        self.assertNotIn("live-private@example.test", response_text)
+        self.assertNotIn("deleted-private@example.test", response_text)
 
     def test_lease_correlation_is_idempotent_and_only_adds_missing_values(self):
         self._seed_lease(lease_id="lease-correlate-1")

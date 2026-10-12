@@ -2919,6 +2919,36 @@ def list_tasks(
     return {"ok": True, "items": items, "total": total, "page": page, "page_size": page_size, "facets": facets}
 
 
+def get_task_types(task_ids: Iterable[int]) -> dict[int, str]:
+    """批量读取未隐藏任务的类型，不加载任务详情或账号信息。"""
+    normalized: set[int] = set()
+    for value in task_ids or ():
+        try:
+            task_id = int(value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if task_id > 0:
+            normalized.add(task_id)
+    if not normalized:
+        return {}
+
+    init()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT id, task_type
+            FROM {_table('operation_tasks')}
+            WHERE id=ANY(%s)
+              AND lower(COALESCE(data->>'deleted_by_user', '')) <> 'true'
+            """,
+            (sorted(normalized),),
+        )
+        return {
+            int(row["id"]): str(row.get("task_type") or "")
+            for row in cur.fetchall()
+        }
+
+
 def get_task(task_id: int, *, include_events: bool = True) -> dict | None:
     init()
     with _connect() as conn, conn.cursor() as cur:

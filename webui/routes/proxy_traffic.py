@@ -6,7 +6,7 @@ from typing import Any
 
 from flask import jsonify, request
 
-from core import browser_traffic, proxy_lease_store
+from core import browser_traffic, operation_task_store, proxy_lease_store
 from webui.blueprint import LegacyEndpointBlueprint
 from webui.runtime import WebUIContext
 
@@ -60,6 +60,29 @@ def _traffic_items(limit: int, offset: int, *, available_only: bool = False, **f
         available_only=available_only,
         **filters,
     )
+
+
+def _include_task_types(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    task_ids: set[int] = set()
+    for item in items:
+        try:
+            task_id = int(item.get("operation_task_id"))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if task_id > 0:
+            task_ids.add(task_id)
+    normalized_task_ids = sorted(task_ids)
+    task_types = operation_task_store.get_task_types(normalized_task_ids) if normalized_task_ids else {}
+    for item in items:
+        try:
+            task_id = int(item.get("operation_task_id"))
+        except (TypeError, ValueError, OverflowError):
+            task_id = 0
+        task_type = task_types.get(task_id)
+        if task_type is None and item.get("registration_job_id") not in (None, ""):
+            task_type = "registration"
+        item["operation_task_type"] = task_type
+    return items
 
 
 def create_proxy_traffic_blueprint(context: WebUIContext):
@@ -125,6 +148,7 @@ def create_proxy_traffic_blueprint(context: WebUIContext):
                 available_only=True,
                 **filters,
             )
+            _include_task_types(items)
             aggregate = browser_traffic.aggregate_summaries(items)
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
