@@ -52,7 +52,7 @@
     .stat-icon--failed { color: #f56c6c; background: color-mix(in srgb, #f56c6c 12%, transparent); }
     .stat strong {
       display: block; margin-top: 10px; color: #303133; font-size: 20px;
-      font-weight: 600; line-height: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      font-weight: 600; line-height: 1; overflow: hidden; text-overflow: clip; white-space: nowrap;
     }
     @media (max-width: 1100px) {
       .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -109,7 +109,7 @@
     .inline-num input { width:70px; min-height:38px; margin-top:0; padding:4px 8px; }
     .table-wrap { overflow: auto; border-top: 1px solid #edf1f5; }
     table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 13px; }
-    th, td { padding: 10px 12px; border-bottom: 1px solid #edf1f5; text-align: left; white-space: nowrap; vertical-align: middle; overflow: hidden; text-overflow: ellipsis; }
+    th, td { padding: 10px 12px; border-bottom: 1px solid #edf1f5; text-align: left; white-space: nowrap; vertical-align: middle; overflow: hidden; text-overflow: clip; }
     th { user-select: none; }
     td.wrap, th.wrap { white-space: normal; word-break: break-word; }
     td.center, th.center { text-align: center; }
@@ -280,7 +280,7 @@
     }
     .sidebar-brand-title {
       font-size: 15px; font-weight: 800; color: #0f172a;
-      letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: clip;
     }
     .sidebar-nav {
       flex: 1; overflow-y: auto; overflow-x: hidden;
@@ -557,7 +557,7 @@
     .jobs-table-v2 th, .jobs-table-v2 td {
       padding: 12px 12px; border-bottom: 1px solid #ebeef5;
       text-align: left; vertical-align: middle;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      overflow: hidden; text-overflow: clip; white-space: nowrap;
       color: #606266; box-sizing: border-box;
     }
     .jobs-table-v2 thead th {
@@ -620,7 +620,7 @@
       text-align: left; cursor: pointer; white-space: nowrap;
     }
     .column-filter-trigger:hover { color: #4f51be; }
-    .column-filter-trigger-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .column-filter-trigger-label { min-width: 0; overflow: hidden; text-overflow: clip; }
     .column-filter-trigger-icon {
       width: 12px; height: 12px; flex: 0 0 auto; color: #a2a9b7;
       fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
@@ -787,7 +787,7 @@
     body.is-resizing-table-column { cursor: col-resize; user-select: none; }
     table[data-resizable-table] thead tr:first-child th.col-id { min-width: 72px; }
     .jobs-table-v2 td.col-error {
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; overflow: hidden; text-overflow: clip;
     }
     .jobs-table-v2 .jobs-v2-pill {
       display: inline-flex; align-items: center; justify-content: center;
@@ -964,7 +964,7 @@
       flex: 0 0 auto; padding: 2px 7px; border-radius: 6px;
       background: #f1f3f5; color: #70757d; font-size: 12px; font-weight: 600;
     }
-    .batch-progress-v2-email { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .batch-progress-v2-email { overflow: hidden; text-overflow: clip; white-space: nowrap; }
     .batch-progress-v2-retry-pill {
       flex: 0 0 auto; padding: 2px 7px; border: 1px solid #d8d9fb; border-radius: 999px;
       background: #f7f7ff; color: #5658bd; font-size: 10px; font-weight: 700;
@@ -1014,7 +1014,7 @@
     .batch-progress-v2-step.is-failed .batch-progress-v2-node,
     .batch-progress-v2-step.is-stopped .batch-progress-v2-node { border-color:#e45656; background:#e45656; color:#fff; }
     .batch-progress-v2-step-label {
-      grid-column:2; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;
+      grid-column:2; display:block; max-height:32px;
       overflow:hidden; color:inherit; font-size:12px; line-height:16px; font-weight:600; overflow-wrap:anywhere;
     }
     .batch-progress-v2-step[role="button"] {
@@ -1095,7 +1095,7 @@
     .account-task-timezone-hint { max-width:220px; white-space:normal; line-height:1.35; }
     .account-tasks-table-wrap { overflow-x:hidden; }
     .account-tasks-table { width:100%; min-width:100%; table-layout:fixed; }
-    .account-tasks-table th, .account-tasks-table td { overflow:hidden; text-overflow:ellipsis; }
+    .account-tasks-table th, .account-tasks-table td { overflow:hidden; text-overflow:clip; }
     .account-tasks-table .task-col-check { width:38px; text-align:center; }
     .account-tasks-table tbody tr.is-selected { background:#f6f6ff; }
     .account-tasks-table tbody tr.is-selected td:first-child { box-shadow: inset 3px 0 0 #6264e8; }
@@ -1145,12 +1145,12 @@
       border:1px solid #dfe7ef; border-radius:8px; background:#f8fafc; overflow:hidden;
     }
     .account-task-stage-current { display:flex; align-items:center; justify-content:space-between; gap:8px; min-width:0; color:#526071; font-size:11px; }
-    .account-task-stage-current strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#263548; font-weight:700; }
-    .account-task-stage-current small { flex:0 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#8a93a2; font-size:10px; }
+    .account-task-stage-current strong { overflow:hidden; text-overflow:clip; white-space:nowrap; color:#263548; font-weight:700; }
+    .account-task-stage-current small { flex:0 1 auto; overflow:hidden; text-overflow:clip; white-space:nowrap; color:#8a93a2; font-size:10px; }
     .account-task-stage-brief { display:flex; align-items:stretch; gap:8px; min-width:0; overflow:hidden; }
-    .account-task-stage-brief-hint { align-self:center; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#6d7888; font-size:11px; }
+    .account-task-stage-brief-hint { align-self:center; overflow:hidden; text-overflow:clip; white-space:nowrap; color:#6d7888; font-size:11px; }
     .account-task-failure-brief { display:flex; align-items:center; gap:6px; flex:1; min-width:0; padding:3px 8px; border:1px solid #efb3a7; border-radius:6px; background:#fff6f3; color:#743d34; font:inherit; font-size:10px; line-height:1.25; text-align:left; cursor:pointer; }
-    .account-task-failure-brief strong, .account-task-failure-brief span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .account-task-failure-brief strong, .account-task-failure-brief span { min-width:0; overflow:hidden; text-overflow:clip; white-space:nowrap; }
     .account-task-failure-brief strong { flex:0 1 auto; max-width:min(42%,280px); color:#8b2e24; }
     .account-task-failure-brief span { flex:1; }
     .account-task-child-brief { flex:none; padding:3px 8px; border:1px solid #cbd5e1; border-radius:6px; background:#fff; color:#526071; font:inherit; font-size:11px; cursor:pointer; }
@@ -1160,17 +1160,17 @@
     .account-task-stage-step.is-selected { background:#e8f0ff; box-shadow:inset 0 0 0 1px #8fb5ff; }
     .account-task-stage-select { position:relative; flex:1; min-height:0; width:100%; padding:8px 6px 6px 30px; border:0; background:transparent; color:inherit; font:inherit; text-align:left; cursor:pointer; }
     .account-task-stage-node { position:absolute; top:7px; left:6px; width:18px; height:18px; display:grid; place-items:center; font-size:10px; line-height:1; color:#475569; border:1px solid #cbd3dd; border-radius:50%; background:#fff; box-sizing:border-box; }
-    .account-task-stage-label, .account-task-stage-state { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .account-task-stage-label, .account-task-stage-state { display:block; overflow:hidden; text-overflow:clip; white-space:nowrap; }
     .account-task-stage-label { line-height:14px; }
     .account-task-stage-state { margin-top:2px; font-size:11px; font-weight:550; line-height:12px; }
-    .account-task-stage-reason { display:block; margin-top:3px; max-height:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#526071; font-size:10px; font-weight:400; line-height:12px; }
+    .account-task-stage-reason { display:block; margin-top:3px; max-height:12px; overflow:hidden; text-overflow:clip; white-space:nowrap; color:#526071; font-size:10px; font-weight:400; line-height:12px; }
     .account-task-stage-duration { display:block; margin-top:5px; color:#526071; font-size:11px; line-height:16px; font-weight:500; font-variant-numeric:tabular-nums; white-space:nowrap; }
     .account-task-selected-timing { flex-basis:100%; color:#64748b; font-size:11px; line-height:16px; }
     .account-task-stage-actions { display:flex; flex:none; gap:2px; padding:2px 4px; border-top:1px solid #edf0f4; }
     .account-task-stage-actions button { flex:1; min-width:0; min-height:26px; padding:1px 2px; border:0; border-radius:4px; background:transparent; color:#526071; font:inherit; font-size:10px; font-weight:500; white-space:nowrap; cursor:pointer; }
     .account-task-stage-actions button:hover { background:#e6edf7; }
     .account-task-stage-progress.is-compact .account-task-stage-track { gap:12px; }
-    .account-task-stage-progress.is-compact .account-task-stage-label { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; max-height:28px; white-space:normal; overflow-wrap:anywhere; }
+    .account-task-stage-progress.is-compact .account-task-stage-label { display:block; max-height:28px; white-space:normal; overflow-wrap:anywhere; }
     .account-task-stage-progress.is-compact .account-task-stage-reason { display:none; }
     .account-task-stage-progress.is-dense .account-task-stage-track { gap:12px; }
     .account-task-stage-progress.is-dense .account-task-stage-select { padding:6px 5px 2px; font-size:11px; }
@@ -1254,7 +1254,7 @@
       display:flex; align-items:center; justify-content:space-between; gap:12px; margin:0 0 10px;
       color:#667085; font-size:11px;
     }
-    .account-task-detail-summary { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .account-task-detail-summary { min-width:0; overflow:hidden; text-overflow:clip; white-space:nowrap; }
     .account-task-run-picker { display:flex; align-items:center; gap:6px; white-space:nowrap; }
     .account-task-run-picker select { min-width:150px; min-height:30px; margin:0; padding:0 26px 0 9px; font-size:11px; }
     .account-task-detail-tabs { display:flex; gap:4px; margin:0 0 8px; border-bottom:1px solid #dce3ed; }
@@ -1304,7 +1304,7 @@
     .accounts-table-v2 th, .accounts-table-v2 td {
       padding: 12px 12px; border-bottom: 1px solid #ebeef5;
       text-align: left; vertical-align: middle;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      overflow: hidden; text-overflow: clip; white-space: nowrap;
       color: #606266; box-sizing: border-box;
     }
     .accounts-table-v2 thead th {
@@ -1389,11 +1389,11 @@
     }
     .accounts-table-v2 .acc-v2-email {
       font-weight: 700; color: #303133; line-height: 1.35;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      overflow: hidden; text-overflow: clip; white-space: nowrap;
     }
     .accounts-table-v2 .acc-v2-sub {
       margin-top: 2px; color: #909399; font-size: 12px; line-height: 1.3;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      overflow: hidden; text-overflow: clip; white-space: nowrap;
     }
     .accounts-table-v2 .acc-v2-muted { color: #c0c4cc; }
     .accounts-table-v2 .pill {
@@ -1407,7 +1407,7 @@
     }
     .accounts-table-v2 .account-promotion-cell .pill { max-width: 100%; min-width: 0; }
     .accounts-table-v2 .account-promotion-label {
-      min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      min-width: 0; overflow: hidden; text-overflow: clip; white-space: nowrap;
     }
     .accounts-table-v2 .pill.status-used {
       color: #9e9ea8; background: #fafafa; border-color: #ebebef;
@@ -1678,7 +1678,7 @@
     .codex-stat-meta strong {
       display: block; margin-top: 6px; color: #303133; font-size: 24px;
       font-weight: 700; line-height: 1.1;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      overflow: hidden; text-overflow: clip; white-space: nowrap;
     }
     @media (max-width: 700px) {
       .codex-stats-v2 { grid-template-columns: 1fr; }
@@ -1738,7 +1738,7 @@
     .codex-table-v2 th, .codex-table-v2 td {
       padding: 12px; border-bottom: 1px solid #ebeef5;
       text-align: left; vertical-align: middle;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      overflow: hidden; text-overflow: clip; white-space: nowrap;
       color: #606266; box-sizing: border-box;
     }
     .codex-table-v2 thead th {
@@ -1764,11 +1764,11 @@
     }
     .codex-table-v2 .acc-v2-email {
       font-weight: 700; color: #303133; line-height: 1.35;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      overflow: hidden; text-overflow: clip; white-space: nowrap;
     }
     .codex-table-v2 .acc-v2-sub {
       margin-top: 2px; color: #909399; font-size: 12px; line-height: 1.3;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      overflow: hidden; text-overflow: clip; white-space: nowrap;
     }
     .codex-table-v2 .pill {
       display: inline-flex; align-items: center; justify-content: center;
@@ -1981,7 +1981,7 @@
     .outlook-table-v2 th, .outlook-table-v2 td {
       padding: 12px; border-bottom: 1px solid #ebeef5;
       text-align: left; vertical-align: middle;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      overflow: hidden; text-overflow: clip; white-space: nowrap;
       color: #606266; box-sizing: border-box;
     }
     .outlook-table-v2 thead th {
@@ -1996,7 +1996,7 @@
       width: 48px; padding-left: 16px; padding-right: 8px;
       text-align: left; vertical-align: middle;
     }
-    .outlook-table-v2 .col-email { width: 240px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .outlook-table-v2 .col-email { width: 240px; white-space: nowrap; overflow: hidden; text-overflow: clip; }
     .outlook-table-v2 .col-source { width: 112px; }
     .outlook-table-v2 .col-status { width: 92px; }
     .outlook-table-v2 .col-usage { width: 160px; }
@@ -2008,11 +2008,11 @@
     }
     .outlook-table-v2 .acc-v2-email {
       font-weight: 700; color: #303133; line-height: 1.35;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      overflow: hidden; text-overflow: clip; white-space: nowrap;
     }
     .outlook-table-v2 .pool-remote {
       display: block; margin-top: 3px; color: #8b93a3; font-size: 10px; line-height: 1.2;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      overflow: hidden; text-overflow: clip; white-space: nowrap;
     }
     .outlook-table-v2 .pool-usage {
       display: inline-flex; align-items: center; min-height: 26px; padding: 0 9px;
@@ -2025,7 +2025,7 @@
     .outlook-table-v2 .col-credentials small,
     .outlook-table-v2 .pool-activity small { display: block; margin-top: 3px; color: #929aaa; font-size: 10px; line-height: 1.25; }
     .outlook-table-v2 .pool-activity span { display: block; color: #586174; font-size: 11px; line-height: 1.3; }
-    .outlook-table-v2 .pool-note { display: -webkit-box; color: #697386; font-size: 11px; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+    .outlook-table-v2 .pool-note { display: block; max-height: calc(1.4em * 2); color: #697386; font-size: 11px; line-height: 1.4; overflow: hidden; }
     .outlook-table-v2 .pool-note.is-empty { color: #a0a6b1; }
     .outlook-table-v2 .pill {
       display: inline-flex; align-items: center; justify-content: center;
@@ -2328,7 +2328,7 @@
       stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
     }
     .config-nav-v2-item span {
-      min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      min-width: 0; overflow: hidden; text-overflow: clip; white-space: nowrap;
     }
     .config-main-v2 { min-width: 0; display: grid; gap: 16px; }
     .config-cards-v2 {
@@ -2782,7 +2782,7 @@
     .topbar-eyebrow { color: #9299aa; font-size: 10px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
     .topbar-title-row { display: flex; align-items: center; gap: 9px; margin-top: 3px; }
     .topbar-title { font-size: 20px; font-weight: 760; line-height: 1.15; letter-spacing: -.025em; }
-    .topbar-description { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .topbar-description { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: clip; }
     .topbar-actions { display: flex; align-items: center; gap: 10px; }
     .system-health {
       min-height: 36px; display: inline-flex; align-items: center; gap: 8px; padding: 0 12px;
@@ -2980,17 +2980,17 @@
     .overview-proxy-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 9px; }
     .overview-proxy-item { padding: 12px; border-radius: 9px; background: #f7f8fb; }
     .overview-proxy-item span { color: #9299aa; font-size: 10px; }
-    .overview-proxy-item strong { display: block; margin-top: 5px; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .overview-proxy-item strong { display: block; margin-top: 5px; font-size: 14px; overflow: hidden; text-overflow: clip; white-space: nowrap; }
     .overview-exit-list { display: grid; gap: 7px; margin-top: 10px; }
     .overview-exit-row { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 9px 10px; border-radius: 8px; background: #f8f9fb; }
     .overview-exit-row i { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #2dbb8a; box-shadow: 0 0 0 3px rgba(45,187,138,.1); }
-    .overview-exit-row span { flex: 1; overflow: hidden; color: #596274; font-size: 11px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+    .overview-exit-row span { flex: 1; overflow: hidden; color: #596274; font-size: 11px; font-weight: 700; text-overflow: clip; white-space: nowrap; }
     .overview-exit-row small { color: #9299aa; font-size: 9px; }
     .overview-job-list, .overview-plan-list { display: grid; gap: 7px; }
     .overview-job-row, .overview-plan-row { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 9px 10px; border-radius: 8px; background: #f8f9fb; }
     .overview-job-row .pill { flex: 0 0 auto; }
     .overview-job-main { flex: 1; min-width: 0; }
-    .overview-job-main strong { display: block; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+    .overview-job-main strong { display: block; overflow: hidden; font-size: 11px; text-overflow: clip; white-space: nowrap; }
     .overview-job-main small { color: #989faf; font-size: 9px; }
     .overview-plan-row span { flex: 1; color: #626b7d; font-size: 11px; font-weight: 650; }
     .overview-plan-bar { flex: 2; height: 6px; overflow: hidden; border-radius: 999px; background: #eceef3; }
@@ -3053,7 +3053,7 @@
     .overview-drag-handle:active { cursor: grabbing; }
     .overview-customizer-item label { min-width: 0; display: flex; align-items: center; gap: 7px; color: #424b60; font-size: 12px; font-weight: 700; cursor: pointer; }
     .overview-customizer-item input { width: 16px; min-height: 16px; margin: 0; accent-color: #5b5ce2; }
-    .overview-customizer-item label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .overview-customizer-item label span { overflow: hidden; text-overflow: clip; white-space: nowrap; }
     .overview-customizer-move { display: flex; gap: 5px; }
     .overview-customizer-move button { min-height: 32px; padding-inline: 8px; font-size: 11px; }
     .overview-customizer-empty { padding: 14px; border: 1px dashed #dfe3ed; border-radius: 9px; color: #9299aa; font-size: 12px; text-align: center; }
@@ -3288,7 +3288,7 @@
     .mail-source-card.is-clickable:hover, .mail-source-card.is-clickable:focus-visible { border-color: #b8b9ef; box-shadow: 0 6px 16px rgba(91,92,226,.12); outline: none; transform: translateY(-1px); }
     .mail-source-card.is-enabled { border-color: #d9dafa; background: #f8f8ff; }
     .mail-source-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-    .mail-source-card-head strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+    .mail-source-card-head strong { overflow: hidden; font-size: 12px; text-overflow: clip; white-space: nowrap; }
     .mail-source-card-head span { color: #9098a9; font-size: 9px; }
     .mail-source-card-value { margin-top: 12px; font-size: 21px; font-weight: 760; }
     .mail-source-card-meta { margin-top: 5px; color: #9098a9; font-size: 10px; }
@@ -3303,7 +3303,7 @@
     .butler-lease-empty { color: #969dae; font-size: 11px; text-align: center; }
     .butler-lease-row { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 8px 10px; border-radius: 8px; background: #fff; }
     .butler-lease-row-main { flex: 1; min-width: 0; }
-    .butler-lease-row-main strong { display: block; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+    .butler-lease-row-main strong { display: block; overflow: hidden; font-size: 11px; text-overflow: clip; white-space: nowrap; }
     .butler-lease-row-main small { color: #969dae; font-size: 9px; }
     .butler-lease-row button { min-height: 26px; border: 1px solid #efc7ca; border-radius: 6px; color: #c43d47; background: #fff; font: inherit; font-size: 10px; cursor: pointer; }
 

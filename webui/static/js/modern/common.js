@@ -824,7 +824,7 @@ function isPlaceholderEmpty(v) {
   const s = String(v == null ? '' : v).trim();
   return !s || ['-', '—', '无', '空', 'none', 'null', 'n/a', 'na'].includes(s.toLowerCase());
 }
-function short(v, n=40) { const s = v || ''; return s.length > n ? s.slice(0,n)+'…' : s; }
+function short(v, n=40) { const s = v || ''; return s.length > n ? s.slice(0,n) : s; }
 function copyId(v) { if (!v) return ''; const id = 'c'+(++copySeq); copyStore.set(id, v); return id; }
 function cbtn(label, value, cls='') { const id = copyId(value); return `<button class="${cls}" data-copy-id="${id}" ${id?'':'disabled'}>${label}</button>`; }
 function pill(status) {

@@ -138,13 +138,16 @@ def _account_risk_value(row: dict) -> str:
 
 def _account_promotion_value(row: dict) -> str:
     """返回账号列表筛选使用的标准 Plus 优惠状态。"""
+    status = str(row.get("plan_check_status") or "").lower()
+    if status in {"queued", "running"}:
+        return "pending"
+
     plan = str(row.get("current_plan_type") or row.get("plan_type") or "").strip().lower()
     if plan and plan != "free":
         return "not_applicable"
-    if not plan or str(row.get("plan_check_status") or "").lower() in {"queued", "running"}:
+    if not plan:
         return "pending"
 
-    status = str(row.get("plan_check_status") or "").lower()
     if status == "failed":
         return promotion_kind_from_record(row) if row.get("plan_last_success_at") else "failed"
     if status != "success" and row.get("plan_check_ok") is not True:

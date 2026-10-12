@@ -651,7 +651,7 @@ tr:hover td,
   color: var(--ui-color-text);
   font-size: 20px;
   line-height: 1.25;
-  text-overflow: ellipsis;
+  text-overflow: clip;
   white-space: nowrap;
 }
 
@@ -863,7 +863,7 @@ tr:hover td,
   overflow: hidden;
   color: var(--ui-color-text);
   font-size: 13px;
-  text-overflow: ellipsis;
+  text-overflow: clip;
   white-space: nowrap;
 }
 
@@ -874,7 +874,7 @@ tr:hover td,
   color: var(--ui-color-text-subtle);
   font-size: 11px;
   line-height: 1.4;
-  text-overflow: ellipsis;
+  text-overflow: clip;
   white-space: nowrap;
 }
 
@@ -1430,7 +1430,7 @@ tr:hover td,
 }
 
 .proxy-traffic-page .column-filter-trigger:hover { color: var(--ui-color-brand); }
-.proxy-traffic-page .column-filter-trigger-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.proxy-traffic-page .column-filter-trigger-label { min-width: 0; overflow: hidden; text-overflow: clip; }
 
 .proxy-traffic-page .column-filter-trigger-icon,
 .proxy-traffic-page .column-filter-search-icon,
@@ -2058,7 +2058,7 @@ table[data-resizable-table="accounts"] {
     padding-left: 6px !important;
     padding-right: 6px !important;
     overflow: hidden !important;
-    text-overflow: ellipsis !important;
+    text-overflow: clip !important;
     white-space: nowrap !important;
   }
 
@@ -2077,7 +2077,7 @@ table[data-resizable-table="accounts"] {
   #accountsPanelV2 table[data-resizable-table="accounts"] .col-trial,
   #accountsPanelV2 table[data-resizable-table="accounts"] .col-actions {
     overflow: hidden !important;
-    text-overflow: ellipsis !important;
+    text-overflow: clip !important;
     white-space: nowrap !important;
   }
 
@@ -2086,7 +2086,7 @@ table[data-resizable-table="accounts"] {
     display: block !important;
     max-width: 100%;
     overflow: hidden;
-    text-overflow: ellipsis;
+    text-overflow: clip;
     white-space: nowrap;
   }
 
@@ -2116,7 +2116,7 @@ table[data-resizable-table="codex"] {
   max-width: 100%;
   margin-top: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
+  text-overflow: clip;
   white-space: nowrap;
 }
 
@@ -2409,7 +2409,7 @@ table[data-resizable-table="codex"] {
   font-size: var(--ui-font-size-sm);
   font-weight: 720;
   line-height: 1.25;
-  text-overflow: ellipsis;
+  text-overflow: clip;
   white-space: nowrap;
 }
 
@@ -2502,7 +2502,7 @@ table[data-resizable-table="codex"] {
   font-size: clamp(18px, 2vw, 23px);
   font-weight: 800;
   letter-spacing: -.03em;
-  text-overflow: ellipsis;
+  text-overflow: clip;
   white-space: nowrap;
 }
 

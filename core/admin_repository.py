@@ -141,6 +141,11 @@ _ACCOUNT_PROMO_KIND = """CASE
 END"""
 
 _ACCOUNT_PROMOTION_VALUE = "a.account_promotion_value"
+_ACCOUNT_PROMOTION_FACET_VALUE = f"""CASE
+    WHEN LOWER(COALESCE(a.plan_check_status, '')) IN ('queued', 'running')
+      THEN 'pending'
+    ELSE {_ACCOUNT_PROMOTION_VALUE}
+END"""
 
 _ACCOUNT_RISK_VALUE = """CASE
     WHEN COALESCE(a.account_deactivation_detected, FALSE) THEN 'detected'
@@ -205,7 +210,12 @@ def _account_where(
     if value == "discount":
         # 兼容旧链接：未细分的 discount 仍表示所有折扣优惠。
         where.append(f"({_ACCOUNT_PROMOTION_VALUE}) IN ('half_price', 'other_discount')")
-    elif value in {"free_trial", "half_price", "other_discount", "other_promo", "none", "unknown", "pending", "failed", "not_applicable"}:
+    elif value == "pending":
+        where.append(
+            f"(({_ACCOUNT_PROMOTION_VALUE}) = 'pending' "
+            "OR LOWER(COALESCE(a.plan_check_status, '')) IN ('queued', 'running'))"
+        )
+    elif value in {"free_trial", "half_price", "other_discount", "other_promo", "none", "unknown", "failed", "not_applicable"}:
         where.append(f"({_ACCOUNT_PROMOTION_VALUE}) = %s")
         params.append(value)
     value = _text(filters.get("totp")).lower()
@@ -252,7 +262,7 @@ def list_accounts(
                 {_ACCOUNT_TOKEN_STATE} AS token,
                 CASE WHEN {_ACCOUNT_PASSWORD_PRESENT} THEN 'has' ELSE 'none' END AS password,
                 LOWER(COALESCE(a.current_plan_type, a.plan_type, '')) AS plan,
-                {_ACCOUNT_PROMOTION_VALUE} AS promotion,
+                {_ACCOUNT_PROMOTION_FACET_VALUE} AS promotion,
                 CASE WHEN {_ACCOUNT_TOTP_PRESENT} THEN 'enabled' ELSE 'disabled' END AS totp,
                 {_ACCOUNT_RISK_VALUE} AS risk,
                 LOWER(COALESCE(a.codex_status, '')) AS codex,
