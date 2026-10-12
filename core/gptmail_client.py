@@ -2,6 +2,7 @@
 """GPTMail 临时邮箱客户端。"""
 from __future__ import annotations
 
+from core.mailbox_wait import bounded_sleep, bounded_timeout
 import logging
 import time
 from dataclasses import dataclass
@@ -50,7 +51,7 @@ def _get(path: str, params: dict | None = None) -> dict:
             BASE_URL + path,
             headers=_headers(),
             params=params,
-            timeout=REQUEST_TIMEOUT,
+            timeout=bounded_timeout(REQUEST_TIMEOUT),
         )
     except requests.RequestException as exc:
         raise GPTMailError(f"GPTMail 请求失败 ({path}): {type(exc).__name__}: {exc}") from exc
@@ -195,7 +196,7 @@ def fetch_latest_otp(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
-        time.sleep(min(interval, remaining))
+        bounded_sleep(min(interval, remaining))
 
     if best_otp:
         return best_otp

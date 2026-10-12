@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+from core.mailbox_wait import WAIT_INTERRUPTED, bounded_sleep, bounded_timeout, current_budget
 import email as email_lib
 import imaplib
 import logging
@@ -92,11 +93,15 @@ class _IMAPBudget:
     def __init__(self, seconds: float):
         self.deadline = time.monotonic() + seconds
         self.request_timeout = _configured_socket_timeout()
+        self.parent = current_budget()
 
     def remaining(self) -> float:
-        return max(0.0, self.deadline - time.monotonic())
+        remaining = max(0.0, self.deadline - time.monotonic())
+        return min(remaining, self.parent.remaining()) if self.parent is not None else remaining
 
     def require(self) -> float:
+        if self.parent is not None:
+            self.parent.require("本机 IMAP 收码")
         remaining = self.remaining()
         if remaining <= 0:
             raise _IMAPDeadlineExceeded("本机 IMAP 收码总预算已耗尽")
@@ -112,8 +117,12 @@ class _IMAPBudget:
         try:
             # 槽位等待也计入总预算，不向执行器提交无界排队的工作。
             slots = _IMAP_IO_SLOTS
-            if not slots.acquire(timeout=self.require()):
-                raise _IMAPDeadlineExceeded("本机 IMAP 等待网络执行槽位超时")
+            if self.parent is None:
+                if not slots.acquire(timeout=self.require()):
+                    raise _IMAPDeadlineExceeded("本机 IMAP 等待网络执行槽位超时")
+            else:
+                while not slots.acquire(timeout=min(0.1, self.require())):
+                    pass
             try:
                 timeout = self.socket_timeout()
                 sock = getattr(mail, "sock", None)
@@ -155,7 +164,27 @@ class _IMAPBudget:
             except BaseException:
                 slots.release()
                 raise
-            if not finished.wait(min(timeout, self.remaining())):
+            wait_deadline = time.monotonic() + min(timeout, self.remaining())
+            try:
+                while not finished.wait(min(0.1, max(0.0, wait_deadline - time.monotonic()))):
+                    self.require()
+                    if time.monotonic() >= wait_deadline:
+                        break
+            except BaseException:
+                completed_connection = None
+                with lock:
+                    if not finished.is_set():
+                        cancelled.set()
+                    elif connection_result and result and result[0][0]:
+                        # worker 已成功产出但调用方尚未接管，取消竞态必须
+                        # 在调用方释放这条连接，不能依赖 worker 的 abandoned。
+                        completed_connection = result[0][1]
+                if cancelled.is_set():
+                    _abort_imap_socket(mail)
+                if completed_connection is not None:
+                    _close_imap(completed_connection)
+                raise
+            if not finished.is_set():
                 with lock:
                     if not finished.is_set():
                         cancelled.set()
@@ -168,7 +197,7 @@ class _IMAPBudget:
             ok, value = result[0]
             try:
                 self.require()
-            except _IMAPDeadlineExceeded:
+            except BaseException:
                 _close_imap(value if connection_result and ok else mail)
                 outcome = "超时"
                 raise
@@ -189,6 +218,9 @@ class _IMAPBudget:
 
 
 def _imap_call(mail, stage: str, operation, budget: _IMAPBudget | None = None):
+    parent = current_budget()
+    if budget is None and parent is not None:
+        budget = _IMAPBudget(parent.require("本机 IMAP 命令"))
     return budget.call(stage, operation, mail=mail) if budget is not None else operation()
 
 
@@ -205,16 +237,19 @@ def _settings() -> tuple[str, int, str, str]:
 
 
 def _connect(*, budget: _IMAPBudget | None = None) -> imaplib.IMAP4_SSL:
+    parent = current_budget()
+    if budget is None and parent is not None:
+        budget = _IMAPBudget(parent.require("本机 IMAP 建连"))
     server, port, username, password = _settings()
     timeout = _configured_socket_timeout()
     mail = None
     try:
         if budget is None:
-            mail = imaplib.IMAP4_SSL(server, port, timeout=timeout)
+            mail = imaplib.IMAP4_SSL(server, port, timeout=bounded_timeout(timeout))
         else:
             mail = budget.call(
                 "连接及TLS",
-                lambda: imaplib.IMAP4_SSL(server, port, timeout=budget.socket_timeout()),
+                lambda: imaplib.IMAP4_SSL(server, port, timeout=bounded_timeout(budget.socket_timeout())),
                 connection_result=True,
             )
         _imap_call(mail, "登录", lambda: mail.login(username, password), budget)
@@ -222,6 +257,9 @@ def _connect(*, budget: _IMAPBudget | None = None) -> imaplib.IMAP4_SSL:
         if status != "OK":
             raise ForwardIMAPError("隐藏邮箱转发 IMAP 无法打开 INBOX")
         return mail
+    except WAIT_INTERRUPTED:
+        _close_imap(mail)
+        raise
     except ForwardIMAPError:
         _close_imap(mail)
         raise
@@ -248,6 +286,8 @@ def _run_with_imap_retry(operation):
     for attempt in range(1, attempts + 1):
         try:
             return operation()
+        except WAIT_INTERRUPTED:
+            raise
         except (ForwardIMAPError, imaplib.IMAP4.error, OSError, TimeoutError) as exc:
             last_error = exc
             if attempt >= attempts:
@@ -260,7 +300,7 @@ def _run_with_imap_retry(operation):
                 attempts,
                 str(exc)[:180],
             )
-            time.sleep(delay)
+            bounded_sleep(delay)
     if isinstance(last_error, ForwardIMAPError):
         raise last_error
     raise ForwardIMAPError(
@@ -498,6 +538,8 @@ def _latest_forwarded_otp(
     """从已打开的转发收件箱中读取目标别名最新的新 OTP。"""
     try:
         _imap_call(mail, "NOOP", mail.noop, budget)
+    except WAIT_INTERRUPTED:
+        raise
     except Exception:
         if budget is not None:
             raise
@@ -638,6 +680,8 @@ def fetch_latest_otp(
 
         try:
             mail = _connect()
+        except WAIT_INTERRUPTED:
+            raise
         except Exception as exc:
             logger.warning(
                 "[HME Forward IMAP] 本机 IMAP 兜底不可用，仅等待 Email Butler PG：%s: %s",
@@ -661,12 +705,20 @@ def fetch_latest_otp(
             settle_seconds=settle_seconds,
             local_probe=_probe if mail is not None else None,
         )
+    except WAIT_INTERRUPTED:
+        raise
     except Exception as exc:
         raise ForwardIMAPError(f"Email Butler PG 缓存取码失败: {exc}") from exc
     finally:
         if mail is not None:
+            if current_budget() is not None:
+                _close_imap(mail)
+                mail = None
+        if mail is not None:
             try:
                 mail.logout()
+            except WAIT_INTERRUPTED:
+                raise
             except Exception:
                 pass
 
@@ -693,6 +745,8 @@ def _fetch_latest_otp_local(
                 try:
                     mail = _connect(budget=budget)
                     budget.require()
+                except WAIT_INTERRUPTED:
+                    raise
                 except _IMAPDeadlineExceeded:
                     last_error = "连接阶段耗尽总预算"
                     break
@@ -701,11 +755,13 @@ def _fetch_latest_otp_local(
                     logger.warning("[HME Forward IMAP] 建连失败，将在剩余预算内重试：%s", last_error)
                     remaining = budget.remaining()
                     if remaining > 0:
-                        time.sleep(min(interval, remaining))
+                        bounded_sleep(min(interval, remaining))
                     continue
             try:
                 otp = _latest_forwarded_otp(mail, target, anchor, budget=budget)
                 budget.require()
+            except WAIT_INTERRUPTED:
+                raise
             except _IMAPDeadlineExceeded:
                 last_error = "读取阶段耗尽总预算"
                 break
@@ -724,7 +780,7 @@ def _fetch_latest_otp_local(
 
             remaining = budget.remaining()
             if remaining > 0:
-                time.sleep(min(interval, remaining))
+                bounded_sleep(min(interval, remaining))
     finally:
         started = time.monotonic()
         _close_imap(mail)

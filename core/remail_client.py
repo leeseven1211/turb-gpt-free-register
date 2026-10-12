@@ -12,6 +12,7 @@ Remail 的开放 API 与本项目已有的“生成随机邮箱”类服务不�
 """
 from __future__ import annotations
 
+from core.mailbox_wait import bounded_sleep, bounded_timeout
 import json
 import logging
 import math
@@ -148,7 +149,7 @@ def _request(
             session.trust_env = False
             response = session.request(
                 method.upper(), url, params=params, json=json_body,
-                headers=request_headers, timeout=request_timeout, allow_redirects=False,
+                headers=request_headers, timeout=bounded_timeout(request_timeout), allow_redirects=False,
             )
     except requests.RequestException as exc:
         category = "请求超时" if isinstance(exc, requests.Timeout) else "网络连接失败"
@@ -505,7 +506,7 @@ def _wait_for_order_credentials(order: dict) -> tuple[str, str, str]:
                 return credentials
         remaining = deadline - time.monotonic()
         if remaining > 0:
-            time.sleep(min(1, remaining))
+            bounded_sleep(min(1, remaining))
     raise RemailOrderUncertain("Remail 等待订单取件凭证超时；请先核对订单，勿重复下单")
 
 
@@ -708,7 +709,7 @@ def fetch_latest_otp(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
-        time.sleep(min(interval, remaining))
+        bounded_sleep(min(interval, remaining))
 
     if best_otp:
         return best_otp

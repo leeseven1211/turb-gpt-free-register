@@ -203,6 +203,21 @@ def persist_summary(
         route_attempt_no=route_attempt_no,
     ))
     payload.update({key: _int_value(summary.get(key)) for key in _CACHE_COUNTER_KEYS})
+    if payload["source"] == "protocol_http":
+        # 协议统计只接受固定数值/枚举；原始诊断字段不能进入普通汇总。
+        payload.update({key: _int_value(summary.get(key)) for key in (
+            "duration_ms", "redirect_count", "decoded_response_bytes",
+            "upload_observed_count", "download_observed_count", "byte_unknown_count",
+        )})
+        families = summary.get("status_families")
+        payload["status_families"] = {
+            family: _int_value(families.get(family)) if isinstance(families, Mapping) else 0
+            for family in ("1xx", "2xx", "3xx", "4xx", "5xx", "unknown")
+        }
+        payload["byte_semantics"] = "http_transfer_body_without_headers_tls"
+        for field in ("registration_attempt_id", "registration_run_id"):
+            identifier = summary.get(field)
+            payload[field] = int(identifier) if identifier is not None else None
     return record_store.upsert_row_by(TRAFFIC_SUMMARIES, "summary_key", payload)
 
 
@@ -402,11 +417,20 @@ def summary_metrics() -> dict[str, Any]:
                 ), 0) AS today_observed_bytes,
                 COUNT(*) FILTER (
                     WHERE {time_expr} >= %s AND {time_expr} < %s
-                ) AS today_observed_browser_records
+                    AND "source" <> 'protocol_http'
+                ) AS today_observed_browser_records,
+                COUNT(*) FILTER (
+                    WHERE {time_expr} >= %s AND {time_expr} < %s
+                ) AS today_observed_request_records,
+                COUNT(*) FILTER (
+                    WHERE {time_expr} >= %s AND {time_expr} < %s
+                    AND "source" = 'protocol_http'
+                ) AS today_observed_protocol_records
               FROM {table}
              WHERE "availability" = %s
             """,
-            (day_start_utc, day_end_utc, day_start_utc, day_end_utc, "available"),
+            (day_start_utc, day_end_utc, day_start_utc, day_end_utc,
+             day_start_utc, day_end_utc, day_start_utc, day_end_utc, "available"),
         )
         traffic = cur.fetchone()
     from core import proxy_lease_store
@@ -415,6 +439,8 @@ def summary_metrics() -> dict[str, Any]:
         "total_bytes": int(traffic["total_observed_bytes"] or 0),
         "today_bytes": int(traffic["today_observed_bytes"] or 0),
         "today_browser_count": int(traffic["today_observed_browser_records"] or 0),
+        "today_request_count": int(traffic["today_observed_request_records"] or 0),
+        "today_protocol_count": int(traffic["today_observed_protocol_records"] or 0),
         # proxy_leases 历史上按北京时间本地无时区时间保存。
         "today_route_count": proxy_lease_store.count_leases(
             acquired_since=day_start.replace(tzinfo=None),

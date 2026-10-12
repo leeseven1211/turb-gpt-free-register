@@ -119,14 +119,21 @@ def stage_context(
     stage: str,
     task_id: int | None = None,
     run_id: int | None = None,
+    *,
+    inherit: bool = True,
     **metadata: Any,
 ):
-    """在一个受控 scope 内使用阶段上下文，退出时恢复外层上下文。"""
-    token = set_current_stage(stage, task_id=task_id, run_id=run_id, **metadata)
+    """临时阶段默认继承外层；独立业务入口可禁用继承，退出仍恢复外层。"""
+    outer_token = _CURRENT_CONTEXT.set(None) if not inherit else None
     try:
-        yield current_context()
+        token = set_current_stage(stage, task_id=task_id, run_id=run_id, **metadata)
+        try:
+            yield current_context()
+        finally:
+            _CURRENT_CONTEXT.reset(token)
     finally:
-        _CURRENT_CONTEXT.reset(token)
+        if outer_token is not None:
+            _CURRENT_CONTEXT.reset(outer_token)
 
 
 def _safe_component(value: Any) -> str:

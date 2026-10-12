@@ -8,6 +8,7 @@ QQ 邮箱 IMAP 客户端（Cloudflare 域名邮箱模式）
 
 依赖：Python 标准库（imaplib, email, ssl），无新增第三方包。
 """
+from core.mailbox_wait import WAIT_INTERRUPTED, bounded_sleep, close_imap, imap_call, request_kwargs
 import imaplib
 import email as email_lib
 import logging
@@ -89,6 +90,8 @@ def _get_msg_text(msg) -> str:
                     if payload:
                         charset = part.get_content_charset() or "utf-8"
                         text_parts.append(payload.decode(charset, errors="replace"))
+                except WAIT_INTERRUPTED:
+                    raise
                 except Exception:
                     pass
         if text_parts:
@@ -106,6 +109,8 @@ def _get_msg_text(msg) -> str:
                     if payload:
                         charset = part.get_content_charset() or "utf-8"
                         return payload.decode(charset, errors="replace")
+                except WAIT_INTERRUPTED:
+                    raise
                 except Exception:
                     pass
         return ""
@@ -116,6 +121,8 @@ def _get_msg_text(msg) -> str:
         if payload:
             charset = msg.get_content_charset() or "utf-8"
             return payload.decode(charset, errors="replace")
+    except WAIT_INTERRUPTED:
+        raise
     except Exception:
         pass
     return ""
@@ -161,14 +168,20 @@ def _connect_imap() -> imaplib.IMAP4_SSL:
             "QQ 邮箱 IMAP 未配置，请在 config/email.py 中设置 QQ_EMAIL 和 QQ_IMAP_PASSWORD"
         )
 
+    mail = None
     try:
-        mail = imaplib.IMAP4_SSL(server, port)
-        mail.login(qq_email, password)
-        mail.select("INBOX")
+        mail = imaplib.IMAP4_SSL(server, port, **request_kwargs())
+        imap_call(mail, 'login', qq_email, password)
+        imap_call(mail, 'select', "INBOX")
         return mail
+    except WAIT_INTERRUPTED:
+        close_imap(mail)
+        raise
     except imaplib.IMAP4.error as exc:
+        close_imap(mail)
         raise QQMailClientError(f"QQ 邮箱 IMAP 登录失败: {exc}")
     except Exception as exc:
+        close_imap(mail)
         raise QQMailClientError(f"QQ 邮箱 IMAP 连接失败: {exc}")
 
 
@@ -179,7 +192,7 @@ def _search_messages(mail: imaplib.IMAP4_SSL, after_dt: datetime | None = None) 
         date_str = after_dt.strftime("%d-%b-%Y")
         search_criteria = f'(SINCE {date_str})'
 
-    status, msg_ids = mail.search(None, search_criteria)
+    status, msg_ids = imap_call(mail, 'search', None, search_criteria)
     if status != "OK":
         logger.warning(f"[QQMail] IMAP search 失败: {status}")
         return []
@@ -193,7 +206,7 @@ def _search_messages(mail: imaplib.IMAP4_SSL, after_dt: datetime | None = None) 
 
     messages = []
     for mid in recent_ids:
-        status, data = mail.fetch(mid, "(RFC822)")
+        status, data = imap_call(mail, 'fetch', mid, "(RFC822)")
         if status != "OK":
             continue
         raw_email = data[0][1]
@@ -292,7 +305,9 @@ def fetch_latest_otp(
         finally:
             if mail:
                 try:
-                    mail.logout()
+                    imap_call(mail, 'logout')
+                except WAIT_INTERRUPTED:
+                    raise
                 except Exception:
                     pass
 
@@ -323,6 +338,8 @@ def fetch_latest_otp(
                         datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
                         .timestamp()
                     )
+                except WAIT_INTERRUPTED:
+                    raise
                 except Exception:
                     ts = 0.0
 
@@ -364,7 +381,7 @@ def fetch_latest_otp(
             logger.info(
                 f"[QQMail] 暂未收到 OpenAI 邮件，{interval}s 后重试（剩余 {remaining}s）..."
             )
-        time.sleep(interval)
+        bounded_sleep(interval)
 
     # 超时但有候选
     if best_otp:

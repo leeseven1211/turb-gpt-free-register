@@ -1,5 +1,6 @@
 """历史失败续跑必须在首次账号写入前核验当前执行实例。"""
 from types import SimpleNamespace
+import json
 import unittest
 from unittest.mock import Mock, patch
 
@@ -41,7 +42,10 @@ class RegistrationCoreRecoveryTests(unittest.TestCase):
         self.assertEqual(result, 4)
         self.assertEqual([call[0] for call in calls.mock_calls], ["persist", "export", "advance", "report"])
         persist.assert_called_once_with(7, access_token="test-token",
-            account={"id": 4, "email": "original@example.test"}, run_id=9, job_id=11, execution_id="current")
+            account={"id": 4, "email": "original@example.test", "chatgpt_session": session,
+                     "totp_secret": "test-secret", "extra_json": json.dumps(extra, ensure_ascii=False),
+                     "email_source": "icloud_hide", "proxy_used": "http://proxy.example.test"},
+            run_id=9, job_id=11, execution_id="current")
         export.assert_called_once_with(email="original@example.test", access_token="test-token",
             totp_secret="test-secret", extra=extra, chatgpt_session=session,
             email_source="icloud_hide", proxy_used="http://proxy.example.test")

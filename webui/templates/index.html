@@ -600,14 +600,14 @@
     <div class="proxy-traffic-summary" id="proxyTrafficSummary" aria-label="代理与流量摘要">
       <div><span>累计可观测流量</span><strong data-proxy-summary="totalBytes">—</strong></div>
       <div><span>今日可观测流量</span><strong data-proxy-summary="todayBytes">—</strong></div>
-      <div><span>今日浏览器记录</span><strong data-proxy-summary="todayBrowserCount">—</strong></div>
+      <div><span>今日请求记录</span><strong data-proxy-summary="todayRequestCount">—</strong></div>
       <div><span>今日新建线路</span><strong data-proxy-summary="todayRouteCount">—</strong></div>
     </div>
     <div class="proxy-traffic-view-bar">
       <div class="proxy-traffic-view-tabs" role="tablist" aria-label="代理与流量视图">
         <button type="button" class="is-active" role="tab" aria-selected="true" aria-controls="proxyTrafficPanelCurrent" data-proxy-view="current">当前租约 <span data-proxy-count="current">0</span></button>
         <button type="button" role="tab" aria-selected="false" aria-controls="proxyTrafficPanelHistory" data-proxy-view="history">线路历史 <span data-proxy-count="history">0</span></button>
-        <button type="button" role="tab" aria-selected="false" aria-controls="proxyTrafficPanelTraffic" data-proxy-view="traffic">浏览器流量 <span data-proxy-count="traffic">0</span></button>
+        <button type="button" role="tab" aria-selected="false" aria-controls="proxyTrafficPanelTraffic" data-proxy-view="traffic">请求流量 <span data-proxy-count="traffic">0</span></button>
       </div>
       <div class="proxy-traffic-view-actions">
         <button type="button" class="proxy-traffic-reset-columns" id="btnResetProxyTrafficColumns" data-proxy-reset-columns="proxyCurrent">恢复列宽</button>
@@ -636,16 +636,16 @@
       </div>
       <div class="proxy-traffic-pager" id="proxyTrafficPagerHistory" aria-label="线路历史分页"></div>
     </section>
-    <section class="proxy-traffic-panel hidden" id="proxyTrafficPanelTraffic" role="tabpanel" aria-label="浏览器流量" data-proxy-panel="traffic" aria-hidden="true">
+    <section class="proxy-traffic-panel hidden" id="proxyTrafficPanelTraffic" role="tabpanel" aria-label="请求流量" data-proxy-panel="traffic" aria-hidden="true">
       <span class="proxy-traffic-panel-status" id="proxyTrafficPanelStatusTraffic" aria-live="polite">等待加载</span>
       <div class="proxy-traffic-table-wrap">
         <table class="proxy-traffic-table" data-proxy-table="traffic" data-resizable-table="proxyTraffic">
           <colgroup><col class="proxy-col-source"><col class="proxy-col-method"><col class="proxy-col-status"><col class="proxy-col-bytes"><col class="proxy-col-counts"><col class="proxy-col-correlation"><col class="proxy-col-time"><col class="proxy-col-details"></colgroup>
-          <thead><tr><th class="column-filter-header" data-column-filter="proxyTrafficSearchTraffic" data-filter-type="search" data-filter-placeholder="来源、方法或关联 ID" data-filter-label="搜索浏览器流量关联信息" data-proxy-filter-key="search">来源</th><th>方法</th><th class="column-filter-header" data-column-filter="proxyTrafficStateTraffic" data-filter-type="select" data-filter-empty-value="all" data-filter-label="按采集状态筛选" data-proxy-filter-key="state">采集状态</th><th>上传 / 下载 / 总计</th><th>请求 / 失败 / 未完成 / 未知</th><th>任务 / 运行</th><th class="column-filter-header" data-column-filter="proxyTrafficWindowTraffic" data-filter-type="select" data-filter-empty-value="all" data-filter-label="按采集时间范围筛选" data-proxy-filter-key="window">采集时间</th><th>详情</th></tr></thead>
-          <tbody id="proxyTrafficTrafficBody"><tr class="list-state-row"><td class="table-state-cell" colspan="8"><div class="table-state is-loading" role="status"><span class="table-state-spinner" aria-hidden="true"></span><strong>正在加载浏览器流量</strong><small>正在同步 Roxy/CDP 流量摘要</small></div></td></tr></tbody>
+          <thead><tr><th class="column-filter-header" data-column-filter="proxyTrafficSearchTraffic" data-filter-type="search" data-filter-placeholder="来源、方法或关联 ID" data-filter-label="搜索请求流量关联信息" data-proxy-filter-key="search">来源</th><th>方法</th><th class="column-filter-header" data-column-filter="proxyTrafficStateTraffic" data-filter-type="select" data-filter-empty-value="all" data-filter-label="按采集状态筛选" data-proxy-filter-key="state">采集状态</th><th>上传 / 下载 / 总计</th><th>请求 / 失败 / 未完成 / 未知</th><th>任务 / 运行</th><th class="column-filter-header" data-column-filter="proxyTrafficWindowTraffic" data-filter-type="select" data-filter-empty-value="all" data-filter-label="按采集时间范围筛选" data-proxy-filter-key="window">采集时间</th><th>详情</th></tr></thead>
+          <tbody id="proxyTrafficTrafficBody"><tr class="list-state-row"><td class="table-state-cell" colspan="8"><div class="table-state is-loading" role="status"><span class="table-state-spinner" aria-hidden="true"></span><strong>正在加载请求流量</strong><small>正在同步浏览器与协议 HTTP 流量摘要</small></div></td></tr></tbody>
         </table>
       </div>
-      <div class="proxy-traffic-pager" id="proxyTrafficPagerTraffic" aria-label="浏览器流量分页"></div>
+      <div class="proxy-traffic-pager" id="proxyTrafficPagerTraffic" aria-label="请求流量分页"></div>
     </section>
     <dialog class="proxy-traffic-detail-dialog" id="proxyTrafficDetailDialog" aria-labelledby="proxyTrafficDetailTitle">
       <div class="proxy-traffic-detail-head"><h3 id="proxyTrafficDetailTitle">记录详情</h3><button type="button" data-proxy-close-detail aria-label="关闭详情">关闭</button></div>

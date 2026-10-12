@@ -37,6 +37,7 @@ core/account_task_store.py  账号操作任务的三张关系表（更早就已�
 |---|---|
 | `registered_accounts` | 注册成功的账号 |
 | `registration_jobs` | 注册/Codex 任务 |
+| `registration_attempts` / `registration_runs` | 原始注册意图、检查点与每次执行实例；CLI 与 WebUI 都持久化恢复事实 |
 | `registration_batch_email_claims` | 注册批次内邮箱领取历史；失败任务释放邮箱后仍保留去重记录 |
 | `email_pool_outlook` | Outlook 邮箱池 |
 | `email_pool_generic_api` | 通用 API 邮箱池 |
@@ -82,6 +83,8 @@ Plus 优惠属于高频筛选字段，因此 `plus_promo_kind`、折扣比例、
 `registered_accounts.chatgpt_session` 是例外：它保存完整 `/api/auth/session` 响应，和
 `access_token` 分开维护，供后续登录态恢复/续期使用；管理列表、兼容导出和普通账号读模型
 均不返回该敏感字段。
+
+`registration_attempts.private_context` 保存协议注册的原密码及私有恢复上下文，仅内部恢复接口读取；普通 Attempt/Run、operation 读模型与事件投影不返回该列。公开检查点只暴露 `has_password` 和 `password_state` 等阶段信息，区分准备、开始提交和远端确认；写入必须匹配当前 Run/执行实例。CLI 按规范化邮箱绑定稳定 Attempt，不能接管已有 WebUI 意图或正在运行的实例。2FA 待确认密钥不会写成已启用的 `totp_secret`，核心账号和完整 session 在后处理前保存。
 
 **派生列** 由 `TableSpec.derived` 声明：`deactivated` 从 `account_status` 推导。
 部分更新时，只有来源字段出现在本次改动里才重算，避免无关更新把它连带清零。

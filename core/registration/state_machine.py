@@ -226,6 +226,15 @@ class StageBudget:
     def child(self, cap: float | None = None) -> "StageBudget":
         return StageBudget(self.clock() + self.remaining(cap), self.clock, self.cancellation)
 
+    def sleep(self, seconds: float, *, sleeper: Callable[[float], None] | None = None) -> None:
+        """退避和轮询沿用阶段截止时间，每 100ms 检查取消。"""
+        end = self.clock() + min(max(0.0, float(seconds)), self.require("等待"))
+        sleeper = sleeper or time.sleep
+        while self.clock() < end:
+            remaining = self.require("等待")
+            sleeper(min(0.1, remaining, end - self.clock()))
+        self.check_cancelled()
+
 
 def _text(snapshot: Mapping[str, Any]) -> str:
     fields = [snapshot.get("url"), snapshot.get("title"), snapshot.get("text")]

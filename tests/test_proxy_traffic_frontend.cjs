@@ -106,15 +106,27 @@ test('筛选发生变化时丢弃旧请求结果', async () => {
 
 test('摘要取全库统计且与当前列表页无关', () => {
   const {api, elements} = createView();
-  for (const key of ['totalBytes', 'todayBytes', 'todayBrowserCount', 'todayRouteCount']) {
+  for (const key of ['totalBytes', 'todayBytes', 'todayRequestCount', 'todayRouteCount']) {
     elements.set(`[data-proxy-summary="${key}"]`, {textContent: ''});
   }
-  api.setSummary({total_bytes: 1024, today_bytes: 512, today_browser_count: 3, today_route_count: 5});
+  api.setSummary({total_bytes: 1024, today_bytes: 512, today_browser_count: 3, today_protocol_count: 2, today_request_count: 5, today_route_count: 5});
   api.renderSummary();
   assert.equal(elements.get('[data-proxy-summary="totalBytes"]').textContent, '1.00 KB');
   assert.equal(elements.get('[data-proxy-summary="todayBytes"]').textContent, '512 B');
-  assert.equal(elements.get('[data-proxy-summary="todayBrowserCount"]').textContent, '3');
+  assert.equal(elements.get('[data-proxy-summary="todayRequestCount"]').textContent, '5');
   assert.equal(elements.get('[data-proxy-summary="todayRouteCount"]').textContent, '5');
+});
+
+test('请求记录摘要兼容旧响应并保留新响应的零计数', () => {
+  const {api, elements} = createView();
+  const selector = '[data-proxy-summary="todayRequestCount"]';
+  elements.set(selector, {textContent: ''});
+  api.setSummary({today_browser_count: 3});
+  api.renderSummary();
+  assert.equal(elements.get(selector).textContent, '3');
+  api.setSummary({today_browser_count: 3, today_request_count: 0});
+  api.renderSummary();
+  assert.equal(elements.get(selector).textContent, '0');
 });
 
 test('浏览器详情用独立触发按钮避免单元格内展开裁切', () => {

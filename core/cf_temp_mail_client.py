@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+from core.mailbox_wait import bounded_sleep, bounded_timeout
 import logging
 import re
 import secrets
@@ -199,7 +200,7 @@ def _request(
             headers=headers,
             json=json_body,
             params=query or None,
-            timeout=_timeout(),
+            timeout=bounded_timeout(_timeout()),
         )
     except requests.RequestException as exc:
         raise CFTempMailError(f"Cloudflare 请求失败 ({path}): {type(exc).__name__}: {exc}") from exc
@@ -250,7 +251,7 @@ def _request_signal(email: str, lookback_days: int) -> dict:
                 "x-admin-auth": key,
             },
             json={"email": _cache_key(email), "lookback_days": lookback_days},
-            timeout=_timeout(),
+            timeout=bounded_timeout(_timeout()),
         )
     except requests.RequestException as exc:
         raise CFTempMailError(
@@ -758,7 +759,7 @@ def fetch_latest_otp(
         except CFTempMailError as exc:
             last_error = str(exc)
             logger.warning("[Cloudflare] 拉取邮件失败: %s", exc)
-            time.sleep(interval)
+            bounded_sleep(interval)
             continue
 
         if messages:
@@ -851,7 +852,7 @@ def fetch_latest_otp(
             )
         if remaining <= 0:
             break
-        time.sleep(min(interval, max(1, remaining)))
+        bounded_sleep(min(interval, max(1, remaining)))
 
     if best_otp:
         logger.warning("[Cloudflare] 总超时但已有候选，返回 OTP=%s", best_otp)

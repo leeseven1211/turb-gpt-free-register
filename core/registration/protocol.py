@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from contextlib import nullcontext
 from urllib.parse import urlparse
 
 from config import email as _email_cfg
@@ -42,7 +43,7 @@ from core.openai_auth import (
 )
 from core.profile_utils import generate_random_birthday
 from core.session import BrowserSession
-from core.auth_challenge import auth_result_for_registration
+from core.auth_challenge import AuthCancelledError, auth_result_for_registration
 from core.registration.state_machine import PageState, StageBudget, StageTimeout, classify_page
 
 logger = logging.getLogger(__name__)
@@ -182,11 +183,16 @@ def _run_protocol_password_stage(
     email: str,
     *,
     referer: str = "https://auth.openai.com/email-verification",
+    password: str | None = None,
+    on_password_prepared=None,
+    on_password_started=None,
     on_password_submitted=None,
     on_otp_send_started=None,
 ) -> dict:
     """提交 Protocol 密码并进入邮箱验证码页面。"""
-    password = generate_registration_password()
+    password = password or generate_registration_password()
+    if on_password_prepared is not None:
+        on_password_prepared(password)
     # passwordless/send-otp 只属于无密码登录/注册页的首封验证码加载器。
     # 密码注册页的邮箱验证码由 user/register 成功后返回的
     # /api/accounts/email-otp/send 导航触发；提前调用会把密码注册会话打成
@@ -199,6 +205,8 @@ def _run_protocol_password_stage(
         "username_password_create",
     )
     human_delay("challenge")
+    if on_password_started is not None:
+        on_password_started(password)
     try:
         register_result = register_user(
             session,
@@ -207,6 +215,8 @@ def _run_protocol_password_stage(
             sentinel_header,
             so_header,
         )
+    except AuthCancelledError:
+        raise
     except Exception as exc:
         response = getattr(exc, "response", None)
         try:
@@ -245,6 +255,9 @@ def _maybe_run_protocol_password_stage(
     *,
     password_enabled: bool,
     referer: str = "https://auth.openai.com/email-verification",
+    password: str | None = None,
+    on_password_prepared=None,
+    on_password_started=None,
     on_password_submitted=None,
     on_otp_send_started=None,
 ) -> dict | None:
@@ -255,6 +268,9 @@ def _maybe_run_protocol_password_stage(
         session,
         email,
         referer=referer,
+        password=password,
+        on_password_prepared=on_password_prepared,
+        on_password_started=on_password_started,
         on_password_submitted=on_password_submitted,
         on_otp_send_started=on_otp_send_started,
     )
@@ -270,14 +286,16 @@ def _run_protocol_existing_password_stage(
 
     try:
         result = _password_verify(session, password)
+    except AuthCancelledError:
+        raise
     except ProtocolV2AuthError as exc:
         if exc.code == "password_result_unknown":
             raise RuntimeError(f"密码验证请求结果未知: {exc.code}") from exc
         raise RuntimeError(f"协议续跑密码验证失败: {exc.code}") from exc
     except Exception as exc:
         raise RuntimeError(
-            f"密码验证请求结果未知: {type(exc).__name__}: {str(exc)[:180]}"
-        ) from exc
+            f"密码验证请求结果未知: {type(exc).__name__}"
+        ) from None
 
     if not isinstance(result, dict):
         raise RuntimeError("协议续跑密码验证响应未知，无法继续邮箱验证")
@@ -292,7 +310,11 @@ def _run_protocol_existing_password_stage(
         or ""
     ).lower()
     page_type = str(page.get("type") or "").lower()
-    if "email-verification" not in continue_url and "email_otp" not in page_type:
+    from core.protocol_v2_liveness import _is_mfa
+    continuation = _classify_registration_continuation(page_type, continue_url)
+    if ("email-verification" not in continue_url and "email_otp" not in page_type
+            and urlparse(continue_url).path.rstrip("/") != "/api/accounts/email-otp/send"
+            and not _is_mfa(result, continue_url) and continuation not in {"existing", "new_candidate"}):
         raise RuntimeError("协议续跑密码验证后页面未知，已停止继续注册")
     return result
 
@@ -300,7 +322,7 @@ def _run_protocol_existing_password_stage(
 def _protocol_resume_requires_password(final_url: object) -> bool:
     """判断待验证账号续跑是否真的落在登录密码页。"""
     parsed = urlparse(str(final_url or ""))
-    return parsed.path.rstrip("/").lower() != "/email-verification"
+    return parsed.path.rstrip("/").lower() == "/log-in/password"
 
 
 def _protocol_resume_otp_continue_url(result: object) -> str | None:
@@ -351,6 +373,8 @@ def _send_protocol_resume_email_otp(
             continue_url=continue_url,
             referer="https://auth.openai.com/email-verification",
         )
+    except (AuthCancelledError, StageTimeout):
+        raise
     except Exception as exc:
         raise RuntimeError(
             f"续跑邮箱验证码发送未确认: {type(exc).__name__}"
@@ -364,19 +388,24 @@ def _wait_for_otp_with_resend(
     *,
     after_ts: float,
     email_source: str | None = "icloud_hide",
+    budget: StageBudget | None = None,
 ) -> str:
     """仅在 IMAP 正常但没有新邮件时，于原等待预算内重发一次。"""
     total_wait = max(1, int(_email_cfg.OTP_MAX_WAIT))
     first_wait = min(120, total_wait // 2)
+    shared_budget = budget or StageBudget.start(total_wait)
+    total_wait = min(total_wait, shared_budget.require("邮箱验证码"))
+    first_wait = min(first_wait, total_wait)
     kwargs = {"after_ts": after_ts, "email_source": email_source}
+    if budget is not None:
+        kwargs["budget"] = budget
     if first_wait < 30 or total_wait - first_wait < 30:
         return wait_for_otp(email, max_wait=total_wait, **kwargs)
 
-    deadline = time.monotonic() + total_wait
     try:
         return wait_for_otp(email, max_wait=first_wait, **kwargs)
     except ForwardIMAPNoMailTimeout:
-        remaining = min(total_wait - first_wait, int(deadline - time.monotonic()))
+        remaining = min(total_wait - first_wait, shared_budget.require("邮箱验证码重发"))
         if remaining < 30:
             raise
         logger.warning(
@@ -384,12 +413,14 @@ def _wait_for_otp_with_resend(
             email,
         )
         resend_after_ts = time.time()
-        send_email_otp(session)
+        with session.request_budget(shared_budget) if budget is not None else nullcontext():
+            send_email_otp(session)
         return wait_for_otp(
             email,
             after_ts=resend_after_ts,
             email_source=email_source,
             max_wait=remaining,
+            **({"budget": budget} if budget is not None else {}),
         )
 
 
@@ -399,6 +430,7 @@ def _wait_for_resume_otp_with_resend(
     *,
     after_ts: float,
     email_source: str | None = "icloud_hide",
+    budget: StageBudget | None = None,
 ) -> str:
     """兼容旧测试与调用方，统一使用验证码页的一次受控重发。"""
     return _wait_for_otp_with_resend(
@@ -406,6 +438,7 @@ def _wait_for_resume_otp_with_resend(
         email,
         after_ts=after_ts,
         email_source=email_source,
+        **({"budget": budget} if budget is not None else {}),
     )
 
 
@@ -414,6 +447,8 @@ def _complete_protocol_resume_mfa(
     mfa_result: dict,
     continue_url: str,
     totp_secret: str,
+    *,
+    budget: StageBudget | None = None,
 ) -> tuple[dict, str]:
     """完成待验证账号的 TOTP 挑战，并返回已建立的 ChatGPT 会话。"""
     from core.protocol_v2_liveness import ProtocolV2AuthError, _complete_mfa
@@ -422,13 +457,19 @@ def _complete_protocol_resume_mfa(
     if not secret:
         raise RuntimeError("协议续跑 TOTP 验证需要已保存的密钥")
     try:
-        session_info, _auth_method = _complete_mfa(
-            session,
-            mfa_result,
-            continue_url,
-            secret,
-        )
+        with session.request_budget(budget) if budget is not None else nullcontext():
+            session_info, _auth_method = _complete_mfa(
+                session,
+                mfa_result,
+                continue_url,
+                secret,
+            )
     except ProtocolV2AuthError as exc:
+        cause = exc.__cause__
+        while cause is not None:
+            if isinstance(cause, (AuthCancelledError, StageTimeout)):
+                raise cause
+            cause = cause.__cause__
         if str(getattr(exc, "category", "") or "") == "network":
             raise RuntimeError(
                 f"协议续跑 TOTP 验证请求结果未知: {exc.code}"
@@ -440,6 +481,8 @@ def _complete_protocol_resume_mfa(
     access_token = str(session_info.get("accessToken") or "").strip()
     if not access_token:
         raise RuntimeError("协议续跑 TOTP 验证后 session 响应缺少 accessToken")
+    if budget is not None:
+        budget.require("TOTP 认证")
     return session_info, access_token
 
 
@@ -482,12 +525,13 @@ def _finalize_registration_session(
     total_timeout: float = 90.0,
     budget: StageBudget | None = None,
 ) -> tuple[dict, str]:
-    """完成 OAuth 回调并拉取 accessToken under one shared stage budget."""
+    """共用阶段预算；回调成功后仅重试读取同一会话。"""
     if not continue_url:
         raise RuntimeError("create_account 响应缺少 continue_url，无法完成 OAuth 回调")
 
     budget = budget or StageBudget.start(total_timeout)
     last_exc: Exception | None = None
+    callback_completed = False
     for attempt in range(1, _FINALIZE_SESSION_MAX_ATTEMPTS + 1):
         budget.require("OAuth callback/session")
         try:
@@ -495,12 +539,18 @@ def _finalize_registration_session(
                 f"[登录态] 完成 OAuth 回调并拉取 Token：{email} "
                 f"(尝试 {attempt}/{_FINALIZE_SESSION_MAX_ATTEMPTS})"
             )
-            callback_url = follow_oauth_callback(session, continue_url, referer=callback_referer)
-            terminal = _protocol_terminal_state(callback_url)
-            if terminal in (PageState.AUTH_ERROR, PageState.LOGGED_OUT):
-                raise RuntimeError(f"OAuth callback reached terminal state: {terminal.value}")
-            human_delay("post_auth")
-            session_info = fetch_session(session)
+            if not callback_completed:
+                callback_url = follow_oauth_callback(
+                    session, continue_url, referer=callback_referer,
+                    timeout=budget.require("OAuth 回调"),
+                )
+                terminal = _protocol_terminal_state(callback_url)
+                if terminal in (PageState.AUTH_ERROR, PageState.LOGGED_OUT):
+                    raise RuntimeError(f"OAuth callback reached terminal state: {terminal.value}")
+                callback_completed = True
+                human_delay("post_auth", budget=budget)
+            session_info = fetch_session(session, timeout=budget.require("ChatGPT session"))
+            budget.require("ChatGPT session")
             terminal = _protocol_terminal_state(session_info)
             if terminal in (PageState.AUTH_ERROR, PageState.LOGGED_OUT):
                 raise RuntimeError(f"ChatGPT session reached terminal state: {terminal.value}")
@@ -509,6 +559,8 @@ def _finalize_registration_session(
                 raise RuntimeError("session 响应缺少 accessToken")
             logger.info(f"[登录态] 已拿到 accessToken：{email}")
             return session_info, access_token
+        except (AuthCancelledError, StageTimeout):
+            raise
         except Exception as exc:
             last_exc = exc
             terminal = _protocol_terminal_state(exc)
@@ -516,6 +568,13 @@ def _finalize_registration_session(
                 raise RuntimeError(
                     f"OAuth callback/session entered terminal state {terminal.value}: {str(exc)[:240]}"
                 ) from exc
+            if not callback_completed:
+                response = getattr(exc, "response", None)
+                status = int(getattr(response, "status_code", 0) or 0)
+                # 只有明确限流拒绝才重试未完成回调；5xx 或响应丢失
+                # 都不能证明一次性授权码未被消费。
+                if status != 429:
+                    raise RuntimeError("OAuth 回调请求结果未知，保留原注册意图等待恢复") from exc
             if attempt >= _FINALIZE_SESSION_MAX_ATTEMPTS:
                 break
             backoff = _FINALIZE_SESSION_BACKOFF_BASE ** (attempt - 1)
@@ -526,7 +585,7 @@ def _finalize_registration_session(
                 f"[登录态] 回调或拉取 Token 失败：{email}，"
                 f"{type(exc).__name__}: {str(exc)[:180]}，{backoff:.1f}s 后重试"
             )
-            time.sleep(min(backoff, remaining))
+            budget.sleep(min(backoff, remaining))
 
     if budget.expired():
         raise StageTimeout(
@@ -550,7 +609,14 @@ def run_protocol_registration(
     existing_totp_secret: str | None = None,
 ) -> dict:
     """执行完整的纯协议 ChatGPT 注册流程。"""
-    from core.registration_service import report_job_progress, report_registered_account
+    from core.registration_service import StopRequested, check_stop_requested, report_job_progress, report_registered_account
+
+    def _cancelled() -> bool:
+        try:
+            check_stop_requested()
+        except StopRequested:
+            return True
+        return False
 
     selected_email_source = validate_email_source(email_source) if email_source else None
     options = dict(registration_options or {})
@@ -597,7 +663,22 @@ def run_protocol_registration(
     auth_challenge_chain: list[str] = []
     account_id: int | None = None
     openai_password: str | None = None
+    password_request_started = False
+    core_persisted = False
+    bootstrap_error = None
+    direct_result = None
+    password_validated = bool(existing_password)
     try:
+        if existing_password:
+            from core.registration_service import registration_fact_context
+            from core.storage import registration
+            facts = registration_fact_context()
+            if facts.get("attempt_id") is not None:
+                private = registration.get_private_resume_context(int(facts["attempt_id"]), email=email)
+                if private.get("password"):
+                    if private["password"] != existing_password:
+                        raise RuntimeError("原 Attempt 的恢复密码不一致，已停止")
+                    password_validated = private.get("password_state") == "confirmed"
         report_job_progress("page", "running", "正在初始化 ChatGPT 注册页状态")
         # 网络预检必须在 signin/follow_authorize 之前完成；预检不带邮箱，不会触发 OTP。
         # Roxy 的成功链路不会先请求无参数 Auth authorize；该探针在部分
@@ -645,130 +726,170 @@ def run_protocol_registration(
 
         # 密码模式必须先完成 user/register 和邮箱验证码发送；否则仅记录
         # password challenge 并不会在远端创建可继续验证的邮箱身份。
-        if existing_password:
-            report_job_progress("login_password", "running", "正在用已保存密码继续协议登录")
+        reuse_for_registration = bool(existing_password and
+            urlparse(str(auth_final_url)).path.rstrip("/").lower() == "/create-account/password")
+        if not existing_password and _protocol_resume_requires_password(auth_final_url):
+            remote_identity = "existing"
+            raise RuntimeError("已有账号密码页缺少原密码，已停止新注册")
+        if not existing_password:
+            from core.protocol_v2_liveness import _is_mfa
+            if _is_mfa({}, str(auth_final_url or "")):
+                remote_identity = "existing"
+                raise RuntimeError("已有账号 MFA 页面缺少原恢复凭据，已停止新注册")
+        if existing_password and not reuse_for_registration:
+            report_job_progress("resume_auth", "running", "正在用原身份继续协议认证")
             # 待邮箱验证检查点的 authorize 会话已经直接落在邮箱验证页。
             # 这里的密码此前已成功提交，重复 POST password/verify 会把
             # 已建立的邮箱验证状态打成 HTTP 400；只有真正落到登录密码页
             # 时才需要再次提交已保存密码。
             password_result = None
             if _protocol_resume_requires_password(auth_final_url):
+                report_job_progress("login_password", "running", "正在验证已保存的原密码")
                 password_result = _run_protocol_existing_password_stage(
                     session,
                     email,
                     existing_password,
                 )
+                password_validated = True
             # Roxy 保留已经到达的验证码页面；Protocol 也只沿服务端返回的
             # continue_url 触发发码，禁止用固定地址重复请求已建立的 OTP 会话。
+            if password_result is None and not _protocol_resume_requires_password(auth_final_url):
+                password_result = {"continue_url": auth_final_url}
             otp_continue_url = _protocol_resume_otp_continue_url(password_result)
-            otp_after_ts = _send_protocol_resume_email_otp(
-                session,
-                after_ts=otp_after_ts,
-                auth_final_url=auth_final_url,
-                continue_url=otp_continue_url,
-                otp_page_ready=password_result is not None and otp_continue_url is None,
-            )
+            if otp_continue_url == "":
+                direct_result = password_result
+            else:
+                otp_after_ts = _send_protocol_resume_email_otp(
+                    session, after_ts=otp_after_ts, auth_final_url=auth_final_url,
+                    continue_url=otp_continue_url,
+                    otp_page_ready=password_result is not None and otp_continue_url is None,
+                )
             openai_password = existing_password
             auth_challenge_chain.append("password")
-            report_job_progress("login_password", "success", "已通过已保存密码进入邮箱验证码页")
+            if _protocol_resume_requires_password(auth_final_url):
+                report_job_progress("login_password", "success", "本次密码验证已确认，继续服务端认证状态")
+            else:
+                report_job_progress("resume_auth", "success", "已复用原身份继续服务端认证状态")
         elif password_required:
-            report_job_progress("login_password", "running", "正在提交账号密码并发送邮箱验证码")
+            report_job_progress("credential_prepare", "running", "正在保存原密码并准备注册请求")
 
         def _checkpoint_submitted_password(password: str) -> None:
-            nonlocal account_id, create_acknowledged, password_register_accepted
-            if existing_password or account_id is not None:
+            nonlocal account_id, create_acknowledged, password_register_accepted, password_validated
+            if account_id is not None:
                 return
             # 此回调只在 user/register 已返回成功响应后调用；即使本地检查点
             # 写入失败，也不能把远端身份误标为尚未开始。
             password_register_accepted = True
+            password_validated = True
             create_acknowledged = True
-            from core.registration.checkpoints import save_email_verification_checkpoint
+            from core.registration.checkpoints import save_protocol_password_checkpoint
 
-            account_id = save_email_verification_checkpoint(
+            saved = save_protocol_password_checkpoint(
                 email=email,
                 password=password,
+                state="confirmed",
                 proxy=session.proxy or None,
                 email_source=selected_email_source,
             )
+            account_id = int(saved["account_id"])
             report_registered_account(account_id)
+
+        def _checkpoint_password(password: str, state: str) -> None:
+            nonlocal openai_password, password_request_started
+            from core.registration.checkpoints import save_protocol_password_checkpoint
+            check_stop_requested()
+            save_protocol_password_checkpoint(email=email, password=password, state=state)
+            openai_password = password
+            if state == "started":
+                password_request_started = True
 
         def _mark_otp_send_started() -> None:
             nonlocal otp_send_in_flight
             otp_send_in_flight = True
 
-        password_stage = None if existing_password else _maybe_run_protocol_password_stage(
+        password_stage = None if existing_password and not reuse_for_registration else _maybe_run_protocol_password_stage(
             session,
             email,
             password_enabled=password_required,
             referer=auth_final_url,
+            password=existing_password if reuse_for_registration else None,
+            on_password_prepared=lambda password: _checkpoint_password(password, "prepared"),
+            on_password_started=lambda password: _checkpoint_password(password, "started"),
             on_password_submitted=_checkpoint_submitted_password,
             on_otp_send_started=_mark_otp_send_started,
         )
         if password_stage is not None:
             otp_send_in_flight = False
             openai_password = password_stage["password"]
+            password_validated = True
             # 以发送导航发起前的时间作为边界，只接收本次请求之后的新邮件。
             otp_after_ts = float(password_stage.get("otp_sent_at") or time.time())
             auth_challenge_chain.append("password")
             report_job_progress("login_password", "success", "账号密码已提交并进入邮箱验证码页")
 
-        # ==================== 阶段3: 验证码验证 ====================
-        report_job_progress("email_otp", "running", "正在等待并验证邮箱验证码")
-        validate_result = None
-        max_otp_attempts = 3
-        current_otp = otp_code
-        for otp_attempt in range(1, max_otp_attempts + 1):
-            if current_otp is None:
-                if _email_cfg.USE_EMAIL_SERVICE:
-                    logger.info(f"[OTP] 等待验证码：{email}（第 {otp_attempt}/{max_otp_attempts} 次）")
-                    otp_kwargs = {"after_ts": otp_after_ts}
-                    if selected_email_source is not None:
-                        otp_kwargs["email_source"] = selected_email_source
-                    if (
-                        otp_attempt == 1
-                        and (selected_email_source or resolve_email_source(email)) == "icloud_hide"
-                        and str(_email_cfg.ICLOUD_HME_INBOX_MODE).strip().lower() == "forward_imap"
-                    ):
-                        current_otp = _wait_for_otp_with_resend(
-                            session,
-                            email,
-                            after_ts=otp_after_ts,
-                            email_source=selected_email_source,
-                        )
-                    else:
-                        current_otp = wait_for_otp(email, **otp_kwargs)
-                else:
-                    logger.info("")
-                    logger.info(f"[OTP] 请检查邮箱，输入收到的 6 位验证码（第 {otp_attempt}/{max_otp_attempts} 次）:")
-                    current_otp = input(">>> 验证码: ").strip()
+        validate_result = direct_result
+        if direct_result is None:
+            otp_budget = StageBudget.start(_email_cfg.OTP_MAX_WAIT, cancel=_cancelled)
+            # ==================== 阶段3: 验证码验证 ====================
+            report_job_progress("email_otp", "running", "正在等待并验证邮箱验证码")
+            validate_result = None
+            max_otp_attempts = 3
+            current_otp = otp_code
+            with (session.request_budget(otp_budget) if callable(getattr(session, "request_budget", None)) else nullcontext()):
+                for otp_attempt in range(1, max_otp_attempts + 1):
+                    if current_otp is None:
+                        if _email_cfg.USE_EMAIL_SERVICE:
+                            logger.info(f"[OTP] 等待验证码：{email}（第 {otp_attempt}/{max_otp_attempts} 次）")
+                            otp_kwargs = {"after_ts": otp_after_ts, "budget": otp_budget}
+                            if selected_email_source is not None:
+                                otp_kwargs["email_source"] = selected_email_source
+                            if (
+                                otp_attempt == 1
+                                and (selected_email_source or resolve_email_source(email)) == "icloud_hide"
+                                and str(_email_cfg.ICLOUD_HME_INBOX_MODE).strip().lower() == "forward_imap"
+                            ):
+                                current_otp = _wait_for_otp_with_resend(
+                                    session,
+                                    email,
+                                    after_ts=otp_after_ts,
+                                    email_source=selected_email_source,
+                                    budget=otp_budget,
+                                )
+                            else:
+                                current_otp = wait_for_otp(email, **otp_kwargs)
+                        else:
+                            logger.info("")
+                            logger.info(f"[OTP] 请检查邮箱，输入收到的 6 位验证码（第 {otp_attempt}/{max_otp_attempts} 次）:")
+                            current_otp = wait_for_otp(email, force_service=False, budget=otp_budget,
+                                after_ts=otp_after_ts, email_source=selected_email_source)
 
-            human_delay("otp_input")
-            try:
-                sentinel_header_9 = None
-                so_header_9 = None
-                if getattr(_protocol_cfg, "SEND_SENTINEL_ON_EMAIL_OTP_VALIDATE", False):
-                    sentinel_resp_9 = request_sentinel_token(session, "authorize_continue")
-                    sentinel_header_9, so_header_9 = build_sentinel_header(
-                        session, sentinel_resp_9, "authorize_continue"
-                    )
-                    human_delay("challenge")
+                    human_delay("otp_input", budget=otp_budget)
+                    try:
+                        sentinel_header_9 = None
+                        so_header_9 = None
+                        if getattr(_protocol_cfg, "SEND_SENTINEL_ON_EMAIL_OTP_VALIDATE", False):
+                            sentinel_resp_9 = request_sentinel_token(session, "authorize_continue")
+                            sentinel_header_9, so_header_9 = build_sentinel_header(
+                                session, sentinel_resp_9, "authorize_continue"
+                            )
+                            human_delay("challenge", budget=otp_budget)
 
-                validate_result = validate_email_otp(session, current_otp, sentinel_header_9, so_header_9)
-                break
-            except EmailOtpInvalidError as exc:
-                if otp_attempt >= max_otp_attempts:
-                    raise
-                logger.warning(f"[OTP] 验证码错误/过期：{str(exc)[:180]}，准备重新发送并重新获取验证码")
-                otp_after_ts = time.time()
-                send_email_otp(session)
-                human_delay("api")
-                current_otp = None
+                        validate_result = validate_email_otp(session, current_otp, sentinel_header_9, so_header_9)
+                        break
+                    except EmailOtpInvalidError as exc:
+                        if otp_attempt >= max_otp_attempts:
+                            raise
+                        logger.warning(f"[OTP] 验证码错误/过期：{str(exc)[:180]}，准备重新发送并重新获取验证码")
+                        otp_after_ts = time.time()
+                        send_email_otp(session)
+                        human_delay("api", budget=otp_budget)
+                        current_otp = None
 
-        if validate_result is None:
-            raise RuntimeError("OTP 验证未完成")
-        report_job_progress("email_otp", "success", "邮箱验证码已通过")
-        auth_challenge_chain.append("email_otp")
-        human_delay("api")
+            if validate_result is None:
+                raise RuntimeError("OTP 验证未完成")
+            report_job_progress("email_otp", "success", "邮箱验证码已通过")
+            auth_challenge_chain.append("email_otp")
+            human_delay("api")
 
         # OTP 校验后的下一步由服务端 auth session 决定。
         page = validate_result.get("page") if isinstance(validate_result, dict) else {}
@@ -804,19 +925,11 @@ def run_protocol_registration(
                 validate_result,
                 otp_continue_text,
                 existing_totp_secret or "",
+                budget=StageBudget.start(90, cancel=_cancelled),
             )
             create_acknowledged = True
             auth_challenge_chain.append("totp")
             report_job_progress("token", "success", "已获取 accessToken")
-            if getattr(_protocol_cfg, "CHATGPT_AUTH_BOOTSTRAP_ENABLED", True):
-                from core.chatgpt_bootstrap import authenticated_bootstrap
-
-                authenticated_bootstrap(
-                    session,
-                    access_token,
-                    strict=bool(getattr(_protocol_cfg, "CHATGPT_BOOTSTRAP_STRICT", False)),
-                )
-            human_delay("post_auth")
         else:
             continuation_identity = _classify_registration_continuation(page_type, otp_continue_text)
         if not resume_mfa_required and continuation_identity == "existing":
@@ -842,17 +955,9 @@ def run_protocol_registration(
                 otp_continue_url,
                 email,
                 callback_referer="https://auth.openai.com/email-verification",
+                budget=StageBudget.start(90, cancel=_cancelled),
             )
             report_job_progress("token", "success", "已获取 accessToken")
-            if getattr(_protocol_cfg, "CHATGPT_AUTH_BOOTSTRAP_ENABLED", True):
-                from core.chatgpt_bootstrap import authenticated_bootstrap
-
-                authenticated_bootstrap(
-                    session,
-                    access_token,
-                    strict=bool(getattr(_protocol_cfg, "CHATGPT_BOOTSTRAP_STRICT", False)),
-                )
-            human_delay("post_auth")
         elif not resume_mfa_required and continuation_identity == "new_candidate":
             remote_identity = "new_candidate"
             report_job_progress("profile", "running", "正在填写账号资料")
@@ -889,17 +994,9 @@ def run_protocol_registration(
                 session,
                 continue_url,
                 email,
+                budget=StageBudget.start(90, cancel=_cancelled),
             )
             report_job_progress("token", "success", "已获取 accessToken")
-            if getattr(_protocol_cfg, "CHATGPT_AUTH_BOOTSTRAP_ENABLED", True):
-                from core.chatgpt_bootstrap import authenticated_bootstrap
-
-                authenticated_bootstrap(
-                    session,
-                    access_token,
-                    strict=bool(getattr(_protocol_cfg, "CHATGPT_BOOTSTRAP_STRICT", False)),
-                )
-            human_delay("post_auth")
 
         # Token is the registration boundary.  Persist the core account before
         # entering any independent 2FA/Codex/plan work.  This is outside the
@@ -919,11 +1016,25 @@ def run_protocol_registration(
                 "device_id": session.device_id,
                 "sentinel_sid": getattr(session, "sentinel_sid", None),
                 "browser_profile": getattr(session, "browser_profile", None),
-                **({"account_password": openai_password} if openai_password else {}),
+                **({"account_password": openai_password} if openai_password and password_validated else {}),
                 "registration_checkpoint": "core_persisted",
             },
         )
+        core_persisted = True
         logger.info("[核心完成] %s，账号ID=%s，Token 已获取（原值不写日志）", email, account_id)
+        if getattr(_protocol_cfg, "CHATGPT_AUTH_BOOTSTRAP_ENABLED", True):
+            from core.chatgpt_bootstrap import authenticated_bootstrap
+            try:
+                authenticated_bootstrap(session, access_token,
+                    strict=bool(getattr(_protocol_cfg, "CHATGPT_BOOTSTRAP_STRICT", False)))
+            except (AuthCancelledError, StopRequested):
+                raise
+            except Exception as exc:
+                # 已保存核心凭据，预热失败仅影响后处理。
+                logger.warning("登录态预热失败，核心账号已保存：%s", type(exc).__name__)
+                if bool(getattr(_protocol_cfg, "CHATGPT_BOOTSTRAP_STRICT", False)):
+                    bootstrap_error = f"登录态预热未完成：{type(exc).__name__}"
+        human_delay("post_auth")
 
         # Roxy 在刚获取 Token 后、任何账号设置前从登录页读取权益。Protocol 也在
         # 这个窗口复用同一 BrowserSession 和注册代理同步查询，避免 2FA/Codex
@@ -954,6 +1065,8 @@ def run_protocol_registration(
                     "success" if plan_result["ok"] else "failed",
                     plan_result["message"][:300],
                 )
+            except (AuthCancelledError, StopRequested):
+                raise
             except Exception as exc:
                 plan_result = {"status": "failed", "ok": False, "message": f"{type(exc).__name__}: {str(exc)[:180]}"}
                 report_job_progress("plan_check", "failed", plan_result["message"])
@@ -968,13 +1081,18 @@ def run_protocol_registration(
                 twofa_driver = _twofa_cfg.get_twofa_driver_for_options(options)
                 if twofa_driver != "protocol":
                     raise RuntimeError("协议注册驱动只支持 protocol 2FA；browser 模式请切换到 RoxyBrowser 注册")
-                totp_secret = setup_2fa_protocol(session, access_token)
+                from core.registration.checkpoints import save_protocol_totp_checkpoint
+                candidate_secret = setup_2fa_protocol(session, access_token,
+                    on_secret=lambda secret: save_protocol_totp_checkpoint(email=email, secret=secret, confirmed=False))
+                save_protocol_totp_checkpoint(email=email, secret=candidate_secret, confirmed=True)
+                totp_secret = candidate_secret
                 report_job_progress("twofa", "success", "协议 2FA 已启用")
+            except (AuthCancelledError, StopRequested):
+                raise
             except Exception as exc:
-                logger.error(f"2FA 设置失败: {exc}")
-                logger.debug("2FA 错误详情:", exc_info=True)
-                logger.warning("将继续保存账号信息（不含 TOTP secret），可后续手动设置")
-                report_job_progress("twofa", "failed", f"2FA 设置失败: {type(exc).__name__}: {str(exc)[:180]}")
+                logger.error("2FA 设置未完成：%s", type(exc).__name__)
+                logger.warning("核心账号已保存；如已取得密钥，保留待确认状态供后续协调")
+                report_job_progress("twofa", "failed", f"2FA 设置未完成：{type(exc).__name__}")
         else:
             logger.debug("已跳过 2FA 设置 (config.ENABLE_2FA=False)")
             report_job_progress("twofa", "skipped", "未启用 Authenticator 2FA")
@@ -995,7 +1113,7 @@ def run_protocol_registration(
                     )
                 codex_result = run_codex_oauth(
                     email,
-                    login_password=openai_password,
+                    login_password=openai_password if password_validated else None,
                     login_totp_secret=totp_secret,
                     **codex_kwargs,
                 )
@@ -1015,6 +1133,8 @@ def run_protocol_registration(
                     "message": "ENABLE_CODEX_AUTO=False，跳过 Codex",
                 }
                 report_job_progress("codex", "skipped", codex_result["message"])
+        except (AuthCancelledError, StopRequested):
+            raise
         except AccountUnusableError:
             raise
         except Exception as exc:
@@ -1045,11 +1165,7 @@ def run_protocol_registration(
                 codex_status,
                 None if codex_status in {"success", "skipped"} else str(codex_result.get("message") or "")[:500],
             )
-        if totp_secret:
-            db.update_account_totp_secret(email, totp_secret)
-            db.update_account_twofa_status(email, "success", "协议 2FA 已启用")
-        elif twofa_enabled:
-            db.update_account_twofa_status(email, "failed", "Authenticator 2FA 尚未完成")
+        # 待确认密钥的状态已由早存入口写入，不能在末尾覆盖成已失败。
 
         # ==================== 阶段9: 后置自动触发 flow ====================
         flow_result = {"status": "skipped", "ok": False, "message": "未触发"}
@@ -1077,18 +1193,21 @@ def run_protocol_registration(
 
         codex_ok = codex_result.get("ok") or codex_result.get("status") == "skipped"
         twofa_ok = (not twofa_enabled) or bool(totp_secret)
-        postprocess_success = bool(codex_ok and twofa_ok and plan_result.get("ok"))
+        password_ok = not password_required or bool(openai_password and password_validated)
+        postprocess_success = bool(codex_ok and twofa_ok and password_ok and plan_result.get("ok") and not bootstrap_error)
         task_error = None if postprocess_success else "; ".join(
             item for item in (
                 None if codex_ok else f"Codex 未完成: {codex_result.get('message', '未知')}",
                 None if twofa_ok else "2FA 未完成",
                 None if plan_result.get("ok") else "套餐查询待重试",
+                bootstrap_error,
+                None if password_ok else "原密码尚未确认生效",
             ) if item
         )
         from core.registration_postprocess import summarize_postprocess
         readiness = summarize_postprocess(
             core_success=True,
-            password_present=True,
+            password_present=bool(openai_password and password_validated),
             outcomes={"twofa": {"status": "success" if twofa_ok else "failed", "ok": twofa_ok},
                       "codex": codex_result, "plan_check": plan_result},
             password_required=password_required,
@@ -1109,6 +1228,7 @@ def run_protocol_registration(
             "flow": flow_result,
             "codex": codex_result,
             "plan_check": plan_result,
+            "postprocess_warnings": [bootstrap_error] if bootstrap_error else [],
             "next_actions": [action.as_dict() for action in readiness.next_actions],
             "account_readiness": readiness.account_readiness,
             "remote_identity": remote_identity,
@@ -1123,6 +1243,18 @@ def run_protocol_registration(
             "error": task_error,
         }
 
+    except AuthCancelledError:
+        if password_request_started and not core_persisted:
+            from core.registration_service import _mark_registration_request_unknown
+            _mark_registration_request_unknown("密码请求开始后用户停止，保留原身份等待确认",
+                facts={"register_response_confirmed": password_register_accepted})
+        raise StopRequested("用户停止协议注册") from None
+    except StopRequested:
+        if password_request_started and not core_persisted:
+            from core.registration_service import _mark_registration_request_unknown
+            _mark_registration_request_unknown("密码请求开始后用户停止，保留原身份等待确认",
+                facts={"register_response_confirmed": password_register_accepted})
+        raise
     except Exception as exc:
         error_text = str(exc)
         auth_route_rejected = bool(
@@ -1215,3 +1347,10 @@ def run_protocol_registration(
             ).as_dict(),
             "error": safe_error_text,
         }
+    finally:
+        close = getattr(session, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception as exc:
+                logger.warning("协议会话收口失败：%s", type(exc).__name__)

@@ -1023,7 +1023,7 @@ const TAB_META = {
   accounts: { title: '账号资产', description: '查询、筛选和批量维护已注册账号' },
   codex: { title: 'Codex 授权', description: '管理 OAuth 凭证、归档与导出状态' },
   outlook: { title: '邮箱资源池', description: '统一维护注册邮箱素材及可用状态' },
-  'proxy-traffic': { title: '代理与流量', description: '查看持久化线路租约、线路历史和浏览器流量' },
+  'proxy-traffic': { title: '代理与流量', description: '查看持久化线路租约、线路历史和请求流量' },
   config: { title: '运行配置', description: '调整安全的运行参数与服务集成' },
 };
 const NAV_ALLOWED_TABS = ['overview','register','tasks','accounts','codex','outlook','proxy-traffic','config'];

@@ -378,12 +378,29 @@ def wait_for_otp(
     *,
     email_source: str | None = None,
     force_service: bool | None = None,
+    budget=None,
 ) -> str:
     """等待并返回该邮箱最新的 ChatGPT OTP（6 位数字字符串）。
 
     USE_EMAIL_SERVICE=False 时走手动验证码通道（WebUI 提交 / CLI 输入），
     不再强制要求 Outlook clientId/refreshToken。
     """
+    if budget is not None:
+        import math
+        from core.mailbox_wait import use_budget
+        with use_budget(budget):
+            remaining = budget.require("邮箱验证码")
+            # 旧 provider 会把 max_wait 转成整数；向上取整避免不足一秒时被
+            # 提前判超时，实际网络和轮询仍由精确的共享预算裁剪。
+            wait_seconds = math.ceil(min(remaining, max_wait) if max_wait is not None else remaining)
+            otp = wait_for_otp(
+                email, after_ts=after_ts,
+                max_wait=wait_seconds,
+                poll_interval=poll_interval, settle_seconds=settle_seconds,
+                email_source=email_source, force_service=force_service,
+            )
+            budget.require("邮箱验证码")
+            return otp
     try:
         from config import email as _email_cfg
         use_service = bool(

@@ -32,8 +32,8 @@ const PROXY_TRAFFIC_VIEW_CONFIG = {
     body: 'proxyTrafficTrafficBody',
     status: 'proxyTrafficPanelStatusTraffic',
     columns: 8,
-    title: '暂无浏览器流量',
-    description: '当前没有可显示的 Roxy/CDP 流量摘要。协议任务没有浏览器采集结果。',
+    title: '暂无请求流量',
+    description: '当前没有可显示的浏览器或协议 HTTP 流量摘要。',
   },
 };
 const PROXY_TRAFFIC_STATUS_TEXT = {
@@ -135,7 +135,7 @@ function proxyTrafficField(label, value, className = '') {
 function proxyTrafficDetailsButton(view, row) {
   const id = proxyTrafficValue(row, 'id');
   if (id == null || id === '') return '<span class="proxy-traffic-muted">—</span>';
-  return `<button type="button" class="proxy-traffic-detail-button" data-proxy-detail="${proxyTrafficEsc(view)}" data-proxy-detail-id="${proxyTrafficEsc(id)}" aria-label="查看${view === 'history' ? '线路历史' : '浏览器流量'}详情">详情</button>`;
+  return `<button type="button" class="proxy-traffic-detail-button" data-proxy-detail="${proxyTrafficEsc(view)}" data-proxy-detail-id="${proxyTrafficEsc(id)}" aria-label="查看${view === 'history' ? '线路历史' : '请求流量'}详情">详情</button>`;
 }
 
 function proxyTrafficCorrelation(row, includeJob = false) {
@@ -189,7 +189,8 @@ function proxyTrafficRenderTraffic(row) {
   const total = proxyTrafficNumber(row, 'total_bytes');
   const availability = String(proxyTrafficValue(row, 'availability') || '').toLowerCase();
   const unavailable = availability !== 'available' || total == null;
-  const byteText = unavailable ? '未采集' : `${proxyTrafficBytes(upload)} / ${proxyTrafficBytes(download)} / ${proxyTrafficBytes(total)}`;
+  const measuredText = `${proxyTrafficBytes(upload)} / ${proxyTrafficBytes(download)} / ${proxyTrafficBytes(total)}`;
+  const byteText = unavailable ? '未采集' : `${measuredText}${source === 'protocol_http' && proxyTrafficNumber(row, 'byte_unknown_count') > 0 ? '（部分字节未知）' : ''}`;
   const countText = [
     proxyTrafficNumber(row, 'request_count'),
     proxyTrafficNumber(row, 'failed_count'),
@@ -471,7 +472,7 @@ function proxyTrafficRenderSummary() {
   const values = {
     totalBytes: proxyTrafficBytes(Number(proxyTrafficSummary?.total_bytes)),
     todayBytes: proxyTrafficBytes(Number(proxyTrafficSummary?.today_bytes)),
-    todayBrowserCount: proxyTrafficSummary?.today_browser_count,
+    todayRequestCount: proxyTrafficSummary?.today_request_count ?? proxyTrafficSummary?.today_browser_count,
     todayRouteCount: proxyTrafficSummary?.today_route_count,
   };
   Object.entries(values).forEach(([key, value]) => {
@@ -496,7 +497,7 @@ function proxyTrafficRenderPager(view) {
       <span class="proxy-traffic-page-number" role="status" aria-live="polite" aria-label="第 ${page.page} 页，共 ${pages} 页">${page.page} / ${pages}</span>
       <button type="button" data-proxy-pager="${view}" data-proxy-page="next" aria-label="下一页" ${page.page >= pages ? 'disabled' : ''}>下一页</button>
     </div>
-    <label class="proxy-traffic-page-size">每页 <select data-proxy-page-size="${view}" aria-label="${view === 'current' ? '当前租约' : view === 'history' ? '线路历史' : '浏览器流量'}每页条数">
+    <label class="proxy-traffic-page-size">每页 <select data-proxy-page-size="${view}" aria-label="${view === 'current' ? '当前租约' : view === 'history' ? '线路历史' : '请求流量'}每页条数">
         ${[20, 50, 100].map((size) => `<option value="${size}" ${page.size === size ? 'selected' : ''}>${size}</option>`).join('')}
       </select> 条</label>`;
   const replacement = activePageButton
@@ -556,6 +557,14 @@ function proxyTrafficOpenDetail(view, id) {
     ['释放时间', proxyTrafficDate(proxyTrafficValue(row, 'released_at'))],
   ] : [
     ['来源', proxyTrafficValue(row, 'source')],
+    ['字节口径', proxyTrafficValue(row, 'source') === 'protocol_http' ? 'HTTP 传输正文；不含请求/响应头、TLS、隧道或代理商账单' : '浏览器可观测字节；不等同代理商账单'],
+    ['总请求耗时', proxyTrafficValue(row, 'duration_ms') == null ? null : `${proxyTrafficValue(row, 'duration_ms')} 毫秒`],
+    ['状态族', row.status_families ? Object.entries(row.status_families).map(([family, count]) => `${family}: ${count}`).join(' / ') : null],
+    ['重定向次数', proxyTrafficValue(row, 'redirect_count')],
+    ['解压后响应正文', proxyTrafficValue(row, 'decoded_response_bytes') == null ? null : proxyTrafficBytes(proxyTrafficNumber(row, 'decoded_response_bytes'))],
+    ['字节未知请求数', proxyTrafficValue(row, 'byte_unknown_count')],
+    ['注册 Attempt', proxyTrafficValue(row, 'registration_attempt_id')],
+    ['注册 Run', proxyTrafficValue(row, 'registration_run_id')],
     ['方法', proxyTrafficValue(row, 'method')],
     ['上传流量', proxyTrafficBytes(proxyTrafficNumber(row, 'upload_bytes'))],
     ['下载流量', proxyTrafficBytes(proxyTrafficNumber(row, 'download_bytes'))],
@@ -571,7 +580,7 @@ function proxyTrafficOpenDetail(view, id) {
     ['开始时间', proxyTrafficDate(proxyTrafficValue(row, 'started_at'))],
     ['完成时间', proxyTrafficDate(proxyTrafficValue(row, 'ended_at'))],
   ];
-  title.textContent = view === 'history' ? '线路历史详情' : '浏览器流量详情';
+  title.textContent = view === 'history' ? '线路历史详情' : '请求流量详情';
   body.innerHTML = items.filter((item) => item[1] != null && item[1] !== '').map((item) => proxyTrafficField(item[0], item[1])).join('');
   dialog.showModal();
 }
@@ -668,7 +677,7 @@ async function loadProxyTraffic(view = null) {
   proxyTrafficLoading = true;
   const version = proxyTrafficDesiredVersion;
   (view ? [view] : Object.keys(PROXY_TRAFFIC_VIEW_CONFIG)).forEach((name) => {
-    proxyTrafficSetPanelState(name, 'loading', `正在加载${name === 'current' ? '当前租约' : name === 'history' ? '线路历史' : '浏览器流量'}`, '正在同步代理与流量 API');
+    proxyTrafficSetPanelState(name, 'loading', `正在加载${name === 'current' ? '当前租约' : name === 'history' ? '线路历史' : '请求流量'}`, '正在同步代理与流量 API');
   });
   try {
     if (view && proxyTrafficSnapshot) {

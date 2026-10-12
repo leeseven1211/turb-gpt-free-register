@@ -184,6 +184,7 @@ def _row(row: dict | None) -> dict | None:
     if row is None:
         return None
     result = dict(row)
+    result.pop("private_context", None)
     for key in ("next_actions", "progress_steps", "result_summary", "detail", "data"):
         if key in result:
             result[key] = _decode(result[key])

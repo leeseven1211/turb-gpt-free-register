@@ -9,6 +9,7 @@
     submit_registration(email_source="outlook", count=5)
     → 创建 5 个任务，丢入线程池，立即返回 [job_dict, ...]
 """
+import json
 import logging
 import os
 import threading
@@ -471,12 +472,17 @@ def persist_registration_core(
         from core.storage import registration
 
         attempt = registration.get_attempt(int(attempt_id)) or {}
-        if attempt.get("checkpoint") in {"failed", "manual_reconcile"}:
+        if attempt.get("checkpoint") in {"failed", "manual_reconcile"} or getattr(_THREAD_CTX, "execution_id", None):
             # 先在同一事务中核验恢复身份和执行实例，再写原账号 Token。
             # 拒绝必须向驱动抛出，不能先写兼容账号后再吞掉校验异常。
             recovered_core = registration.persist_core_account(
                 int(attempt_id), access_token=access_token,
-                account={"id": attempt.get("account_id"), "email": email},
+                account={"id": attempt.get("account_id"), "email": email,
+                         **({"chatgpt_session": chatgpt_session} if chatgpt_session is not None else {}),
+                         **({"totp_secret": totp_secret} if totp_secret else {}),
+                         **({"email_source": email_source} if email_source else {}),
+                         **({"proxy_used": proxy_used} if proxy_used else {}),
+                         **({"extra_json": json.dumps(extra, ensure_ascii=False)} if extra else {})},
                 run_id=getattr(_THREAD_CTX, "run_id", None),
                 job_id=getattr(_THREAD_CTX, "job_id", None),
                 execution_id=getattr(_THREAD_CTX, "execution_id", None),
@@ -561,6 +567,7 @@ def report_job_progress(stage: str, state: str = "running", detail: str | None =
     """注册驱动调用的轻量进度上报；CLI 场景没有 job_id 时自动忽略。"""
     job_id = getattr(_THREAD_CTX, "job_id", None)
     if not job_id:
+        _advance_registration_checkpoint(stage, state, detail)
         return
     try:
         from core import registration_debug
@@ -1565,6 +1572,12 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 root_job_id=int(current.get("root_job_id") or job_id),
             )
             db.update_job(job_id, email=email)
+            if reuses_original_email and not existing_password:
+                attempt_id = getattr(_THREAD_CTX, "attempt_id", None)
+                if attempt_id is not None:
+                    from core.storage import registration
+                    private_resume = registration.get_private_resume_context(int(attempt_id), email=email)
+                    existing_password = str(private_resume.get("password") or "").strip()
             if not existing_password:
                 if not reuses_original_email:
                     db.update_job_progress(job_id, "email", state="success", detail=f"已从 {selected_source} 领取邮箱")
@@ -1577,17 +1590,23 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 # retry so the next attempt opens that replacement instead of
                 # retrying the stale Profile ID.
                 bound_profile_id = account_profile_id(_account_for_job(current))
-                result = run_registration(
-                    email=email,
-                    name=name,
-                    birthday=birthday,
-                    proxy=proxy_lease.proxy_url,
-                    existing_password=existing_password or None,
-                    existing_totp_secret=existing_totp_secret or None,
-                    profile_id=bound_profile_id or None,
-                    registration_options=registration_options_for_job(current),
-                    email_source=selected_source,
-                )
+                from core.protocol_traffic import correlation_context
+                with correlation_context(**{**proxy_correlation,
+                        "proxy_lease_id": getattr(proxy_lease, "lease_id", None),
+                        "route_attempt_no": initial_route_attempt_no + retry_attempt,
+                        "registration_attempt_id": getattr(_THREAD_CTX, "attempt_id", None),
+                        "registration_run_id": getattr(_THREAD_CTX, "run_id", None)}):
+                    result = run_registration(
+                        email=email,
+                        name=name,
+                        birthday=birthday,
+                        proxy=proxy_lease.proxy_url,
+                        existing_password=existing_password or None,
+                        existing_totp_secret=existing_totp_secret or None,
+                        profile_id=bound_profile_id or None,
+                        registration_options=registration_options_for_job(current),
+                        email_source=selected_source,
+                    )
                 if not _should_retry_registration_with_new_proxy(result, proxy_lease, retry_attempt):
                     break
 
@@ -2512,6 +2531,11 @@ def _pre_account_retry_facts_match(job: dict, root: dict | None, attempt: dict |
         job.get("email"), attempt.get("email_snapshot"),
     )):
         return False
+    private_password_saved = bool((attempt.get("data") or {}).get("has_password"))
+    if private_password_saved:
+        return (attempt.get("local_account_state") in {"none", "not_started"}
+                and attempt.get("remote_account_state") != "confirmed"
+                and attempt.get("target_status") not in {"deactivated", "completed"})
     return (
         attempt.get("checkpoint") in {"created", "email_claimed", "auth_started"}
         and attempt.get("remote_identity_state") == "not_started"

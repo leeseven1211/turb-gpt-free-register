@@ -8,6 +8,7 @@
 注册时领取 email；取码时直接 GET code_url，并从响应中提取 6 位验证码。
 响应可以是纯文本、HTML 或 JSON，只要其中包含 6 位验证码即可。
 """
+from core.mailbox_wait import WAIT_INTERRUPTED, bounded_sleep, bounded_timeout
 import json
 import logging
 import re
@@ -322,7 +323,7 @@ def _fetch_yangyang_otp(
     # 一般第一页足够；保守支持最多翻 5 页。
     for _ in range(5):
         url = api_url if not cursor else f"{api_url}?cursor={quote(str(cursor), safe='')}"
-        resp = session.get(url, headers={**headers, "Accept": "application/json"}, timeout=20, verify=False)
+        resp = session.get(url, headers={**headers, "Accept": "application/json"}, timeout=bounded_timeout(20), verify=False)
         if resp.status_code != 200:
             if resp.status_code == 404:
                 # 兼容 mail.ai1998.xyz 这类同样是 /messages/{token}/{email}，
@@ -360,10 +361,12 @@ def _fetch_yangyang_otp(
             continue
         detail_url = f"{origin}/message/{quote(str(msg_id), safe='')}/{token_q}/{email_q}"
         try:
-            detail_resp = session.get(detail_url, headers={**headers, "Accept": "application/json"}, timeout=20, verify=False)
+            detail_resp = session.get(detail_url, headers={**headers, "Accept": "application/json"}, timeout=bounded_timeout(20), verify=False)
             if detail_resp.status_code != 200:
                 continue
             detail = detail_resp.json()
+        except WAIT_INTERRUPTED:
+            raise
         except Exception as exc:
             logger.debug(f"[GenericAPI] yangyang 邮件详情读取失败: {type(exc).__name__}: {exc}")
             continue
@@ -414,13 +417,15 @@ def _fetch_inline_messages_page_otp(
         resp = session.get(
             code_url,
             headers={**headers, "Accept": "text/html,application/xhtml+xml,text/plain,*/*"},
-            timeout=20,
+            timeout=bounded_timeout(20),
             verify=False,
         )
         if resp.status_code != 200:
             logger.debug("[GenericAPI] inline messages 页面 HTTP %s: %s", resp.status_code, (resp.text or "")[:160])
             return None
         html = resp.text or ""
+    except WAIT_INTERRUPTED:
+        raise
     except Exception as exc:
         logger.debug("[GenericAPI] inline messages 页面读取失败: %s: %s", type(exc).__name__, exc)
         return None
@@ -606,7 +611,7 @@ def fetch_latest_otp(
                     resp = None
                     text = ""
                 else:
-                    resp = session.get(account.code_url, headers=headers, timeout=20, verify=False)
+                    resp = session.get(account.code_url, headers=headers, timeout=bounded_timeout(20), verify=False)
                     text = resp.text or ""
             if resp is None:
                 pass
@@ -652,6 +657,8 @@ def fetch_latest_otp(
                     last_error = f"HTTP 200 但未提取到 6 位验证码，响应预览: {text[:160]}"
             else:
                 last_error = f"HTTP {resp.status_code}: {text[:160]}"
+        except WAIT_INTERRUPTED:
+            raise
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
 
@@ -674,7 +681,7 @@ def fetch_latest_otp(
                 f"[GenericAPI] 暂未从取码接口拿到验证码，"
                 f"{interval}s 后重试（剩余 {remaining}s）..."
             )
-        time.sleep(interval)
+        bounded_sleep(interval)
 
     if best_otp:
         logger.warning(f"[GenericAPI] 总超时但已有候选，返回 OTP={best_otp}")

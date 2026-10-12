@@ -2,6 +2,7 @@
 """Email Butler `/v1` 通用邮箱 API 客户端。"""
 from __future__ import annotations
 
+from core.mailbox_wait import WAIT_INTERRUPTED, bounded_sleep, bounded_timeout
 import logging
 import math
 import re
@@ -107,7 +108,7 @@ def _request(
                     "Accept": "application/json",
                     "Content-Type": "application/json",
                 },
-                timeout=timeout if timeout is not None else _request_timeout(),
+                timeout=bounded_timeout(timeout if timeout is not None else _request_timeout()),
             )
             break
         except requests.ConnectionError as exc:
@@ -117,7 +118,7 @@ def _request(
                     path,
                     str(exc)[:180],
                 )
-                time.sleep(0.5)
+                bounded_sleep(0.5)
                 continue
             raise EmailButlerClientError(
                 f"Email Butler 请求失败 ({path}): {type(exc).__name__}: {exc}"
@@ -402,6 +403,8 @@ def fetch_inbound_otp(
         if local_probe is not None:
             try:
                 local_otp = str(local_probe() or "").strip()
+            except WAIT_INTERRUPTED:
+                raise
             except Exception as exc:
                 logger.warning(
                     "[EmailButler] 本机收件兜底探测失败，继续等待 PG：%s: %s",
@@ -418,7 +421,7 @@ def fetch_inbound_otp(
         if remaining <= 0:
             break
         if interval:
-            time.sleep(min(interval, remaining))
+            bounded_sleep(min(interval, remaining))
 
     elapsed = time.monotonic() - started
     logger.warning("[EmailButler] PG 入站等待结束但没有 OTP，累计等待 %.1fs", elapsed)
@@ -478,7 +481,7 @@ def fetch_latest_otp(
         remaining_float = deadline - time.monotonic()
         if remaining_float <= 0:
             break
-        time.sleep(min(interval, remaining_float))
+        bounded_sleep(min(interval, remaining_float))
 
     if best_otp:
         return best_otp

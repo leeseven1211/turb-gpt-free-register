@@ -8,6 +8,12 @@ from core.registration import dispatcher
 
 class RegistrationDispatcherTests(unittest.TestCase):
     def setUp(self):
+        # 此类只验证分发契约；独立入口的持久生命周期由专门 PG 测试覆盖。
+        context = patch("core.registration_service.registration_fact_context", return_value={
+            "attempt_id": 1, "run_id": 2, "execution_id": "dispatcher-fixture", "job_id": 3,
+        })
+        context.start()
+        self.addCleanup(context.stop)
         self.args = {
             "email": "test@example.com",
             "name": "Test User",

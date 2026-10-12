@@ -159,7 +159,9 @@ class RegistrationStateMachineContractTests(unittest.TestCase):
             now[0] += 2.0
             raise RuntimeError("temporary connection reset")
 
-        with patch.object(protocol, "follow_oauth_callback", side_effect=transient) as callback, patch.object(
+        with patch.object(protocol, "follow_oauth_callback", return_value="https://chatgpt.com/") as callback, patch.object(
+            protocol, "fetch_session", side_effect=transient
+        ), patch.object(protocol, "human_delay"), patch.object(
             protocol.time, "sleep", side_effect=lambda seconds: now.__setitem__(0, now[0] + seconds)
         ) as sleep:
             with self.assertRaises(StageTimeout):
@@ -171,7 +173,8 @@ class RegistrationStateMachineContractTests(unittest.TestCase):
                 )
 
         self.assertEqual(callback.call_count, 1)
-        self.assertEqual(sleep.call_count, 1)
+        self.assertAlmostEqual(sum(call.args[0] for call in sleep.call_args_list), 1.0)
+        self.assertTrue(all(call.args[0] <= 0.1 for call in sleep.call_args_list))
 
     def test_roxy_session_wait_stops_on_known_callback_error(self):
         try:

@@ -12,6 +12,7 @@ from core import registration_service
 from core.openai_auth import AccountUnusableError
 from core.registration import roxy as roxy_registration
 from core.registration import protocol as protocol_registration
+from core.registration.state_machine import StageBudget
 from core import roxy_codex_oauth
 
 
@@ -276,10 +277,15 @@ class RegistrationIdentityContractTests(unittest.TestCase):
         self.assertEqual(wait_for_otp.call_args.kwargs["email_source"], "icloud_hide")
         self.assertEqual(persist_core.call_args.kwargs["email_source"], "icloud_hide")
         self.assertEqual(wait_for_otp.call_count, 2)
+        budget = finalize.call_args.kwargs["budget"]
+        self.assertIsInstance(budget, StageBudget)
+        self.assertLessEqual(budget.remaining(), 90.0)
+        self.assertTrue(callable(budget.cancellation))
         finalize.assert_called_once_with(
             session,
             "https://auth.openai.com/authorize/continue?state=opaque",
             "new@example.com",
+            budget=budget,
         )
 
     def test_protocol_marks_confirmed_unusable_account_failed_without_disabling(self):

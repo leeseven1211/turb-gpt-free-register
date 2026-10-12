@@ -293,7 +293,7 @@ def _run_reauth_step_with_retry(
     raise RuntimeError(f"{operation} 重试耗尽")
 
 
-def follow_oauth_callback(session: BrowserSession, continue_url: str, referer: str = "https://auth.openai.com/about-you") -> str:
+def follow_oauth_callback(session: BrowserSession, continue_url: str, referer: str = "https://auth.openai.com/about-you", *, timeout: float | None = None) -> str:
     """
     步骤12.5: 跟随 create_account 返回的 continue_url，完成 OAuth 回调。
 
@@ -319,7 +319,8 @@ def follow_oauth_callback(session: BrowserSession, continue_url: str, referer: s
         headers = session.get_auth_navigate_headers(referer=referer)
 
     logger.info(f"[OAuth回调] 跟随 continue_url 完成 OAuth 回调...")
-    resp = session.get(continue_url, headers=headers, allow_redirects=True)
+    request_kwargs = {} if timeout is None else {"timeout": timeout}
+    resp = session.get(continue_url, headers=headers, allow_redirects=True, **request_kwargs)
     # 必须在本阶段暴露 callback 的 403/429；否则 BrowserSession 虽已熔断，
     # 错误却会延迟到 fetch_session，查活无法针对 callback 原请求重试。
     resp.raise_for_status()
@@ -330,7 +331,7 @@ def follow_oauth_callback(session: BrowserSession, continue_url: str, referer: s
     return resp.url
 
 
-def fetch_session(session: BrowserSession) -> dict:
+def fetch_session(session: BrowserSession, *, timeout: float | None = None) -> dict:
     """
     GET https://chatgpt.com/api/auth/session
     注册成功后立刻调用，拿到 accessToken / user / account / expires。
@@ -346,7 +347,8 @@ def fetch_session(session: BrowserSession) -> dict:
     headers = session.get_nextauth_headers(referer="https://chatgpt.com/")
 
     logger.info("[Session] 拉取 ChatGPT session 信息...")
-    resp = session.get(url, headers=headers)
+    request_kwargs = {} if timeout is None else {"timeout": timeout}
+    resp = session.get(url, headers=headers, **request_kwargs)
     resp.raise_for_status()
     data = resp.json()
 

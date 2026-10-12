@@ -9,13 +9,14 @@ import re
 import threading
 import time
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from urllib.parse import urlparse
 from curl_cffi.requests import Session
 
 from config import (
     USER_AGENT, SEC_CH_UA, SEC_CH_UA_PLATFORM, SEC_CH_UA_MOBILE,
-    SEC_CH_UA_FULL_VERSION_LIST, SEC_CH_UA_PLATFORM_VERSION, SEC_CH_UA_ARCH,
-    SEC_CH_UA_BITNESS, SEC_CH_UA_MODEL, SEND_HIGH_ENTROPY_CLIENT_HINTS,
+    SEND_HIGH_ENTROPY_CLIENT_HINTS,
     ACCEPT_LANGUAGE, IMPERSONATE, OAI_CLIENT_BUILD_NUMBER, OAI_CLIENT_VERSION,
     REQUEST_TIMEOUT, pick_proxy, pick_browser_profile, build_browser_environment,
     validate_browser_profile,
@@ -27,6 +28,7 @@ logger = logging.getLogger(__name__)
 _GEO_CACHE: dict[str, dict] = {}
 _GEO_CACHE_LOCK = threading.Lock()
 _CF_COOKIE_NAMES = ("cf_clearance", "__cf_bm", "__cfseq", "cf_chl_rc_i", "cf_chl_rc_ni", "cf_chl_rc_m")
+_REQUEST_BUDGETS = ContextVar("browser_session_request_budgets", default=())
 
 
 def _normalize_geo_payload(data: dict) -> dict:
@@ -208,6 +210,13 @@ class BrowserSession:
 
         # Cloudflare 状态只能来自真实响应 Set-Cookie；这里仅记录变化，不主动伪造/覆盖。
         self._cf_cookie_seen = self.cf_cookie_snapshot()
+        # 裸会话不触碰统计数据库；只有业务 Task/Run 或显式关联作用域才采集。
+        self.protocol_traffic = None
+        try:
+            from core.protocol_traffic import ProtocolTrafficCapture
+            self.protocol_traffic = ProtocolTrafficCapture.for_current_context()
+        except Exception:
+            logger.debug("[流量] 初始化协议计量失败；业务继续")
 
     def cf_cookie_snapshot(self) -> dict:
         """返回当前 CookieJar 中的 Cloudflare 关键 Cookie 摘要，便于确认同 IP/同会话连续性。"""
@@ -337,13 +346,15 @@ class BrowserSession:
             if profile.get("sec_ch_ua_platform") or SEC_CH_UA_PLATFORM:
                 headers["sec-ch-ua-platform"] = str(profile.get("sec_ch_ua_platform") or SEC_CH_UA_PLATFORM)
             if SEND_HIGH_ENTROPY_CLIENT_HINTS:
-                headers.update({
-                    "sec-ch-ua-full-version-list": SEC_CH_UA_FULL_VERSION_LIST,
-                    "sec-ch-ua-platform-version": SEC_CH_UA_PLATFORM_VERSION,
-                    "sec-ch-ua-arch": SEC_CH_UA_ARCH,
-                    "sec-ch-ua-bitness": SEC_CH_UA_BITNESS,
-                    "sec-ch-ua-model": SEC_CH_UA_MODEL,
-                })
+                for header, field in (
+                    ("sec-ch-ua-full-version-list", "sec_ch_ua_full_version_list"),
+                    ("sec-ch-ua-platform-version", "sec_ch_ua_platform_version"),
+                    ("sec-ch-ua-arch", "sec_ch_ua_arch"),
+                    ("sec-ch-ua-bitness", "sec_ch_ua_bitness"),
+                    ("sec-ch-ua-model", "sec_ch_ua_model"),
+                ):
+                    if field in profile:
+                        headers[header] = str(profile[field])
         return headers
 
     def navigator_language(self) -> str:
@@ -661,14 +672,77 @@ class BrowserSession:
         except Exception:
             logger.debug("[Session] 清理旧 HTTP transport 失败", exc_info=True)
 
+    @contextmanager
+    def request_budget(self, budget):
+        """把同一阶段截止时间传给每次真实 I/O，嵌套作用域取最小剩余额度。"""
+        token = _REQUEST_BUDGETS.set((*_REQUEST_BUDGETS.get(), (self, budget)))
+        try:
+            yield self
+        finally:
+            _REQUEST_BUDGETS.reset(token)
+
+    def _bounded_request_kwargs(self, kwargs: dict) -> dict:
+        budgets = [budget for owner, budget in _REQUEST_BUDGETS.get() if owner is self]
+        if not budgets:
+            return kwargs
+        remaining = min(budget.require("协议 HTTP 请求") for budget in budgets)
+        if remaining < 0.001:
+            # libcurl 按毫秒向下取整；小于 1ms 会变成 0（关闭总超时）。
+            from core.registration.state_machine import StageTimeout
+            raise StageTimeout("协议 HTTP 请求剩余预算不足 1 毫秒")
+        requested = kwargs.get("timeout", getattr(self.session, "timeout", None))
+        if isinstance(requested, (tuple, list)):
+            connect, read = (max(0.0, float(value)) for value in requested)
+            # curl 用两段之和作为总超时；保留连接上限并裁剪总和，不能各占满预算。
+            total = min(remaining, connect + read) if connect + read > 0 else remaining
+            bounded_connect = min(connect, total)
+            return {**kwargs, "timeout": (bounded_connect, total - bounded_connect)}
+        # curl 的 timeout=0 表示关闭超时；阶段预算存在时仍必须使用剩余上限。
+        if requested is not None and float(requested) > 0:
+            remaining = min(remaining, float(requested))
+        return {**kwargs, "timeout": remaining}
+
+    def bind_protocol_traffic(self, **correlation) -> None:
+        """仅从调用方持有的任务/租约事实补充关联，不接受请求私有内容。"""
+        from core.protocol_traffic import ProtocolTrafficCapture
+        capture = getattr(self, "protocol_traffic", None)
+        if capture is None:
+            capture = ProtocolTrafficCapture(correlation)
+            self.protocol_traffic = capture
+        else:
+            capture.bind(**correlation)
+
+    def _record_traffic(self, started_at: float, response=None, error=None) -> None:
+        capture = getattr(self, "protocol_traffic", None)
+        if capture is not None:
+            try:
+                capture.record(started_at=started_at, response=response, error=error)
+            except Exception:
+                logger.debug("[流量] 协议请求计量失败；业务继续")
+
+    def close(self) -> None:
+        """任务收口时落库尚未写入的聚合统计，并关闭底层连接。"""
+        capture = getattr(self, "protocol_traffic", None)
+        if capture is not None:
+            try:
+                capture.flush()
+            except Exception:
+                logger.debug("[流量] 协议计量收口失败；业务继续")
+        try:
+            self.session.close()
+        except Exception:
+            logger.debug("[Session] 关闭 HTTP transport 失败")
+
     def get(self, url: str, headers: dict = None, **kwargs):
         """发送 GET 请求"""
         self._raise_if_circuit_open()
+        kwargs = self._bounded_request_kwargs(kwargs)
         headers = self._attach_openai_target_headers_for_url(url, headers)
         debug_started = time.perf_counter()
         try:
             resp = self.session.get(url, headers=headers, **kwargs)
         except BaseException as exc:
+            self._record_traffic(debug_started, error=exc)
             try:
                 from core.registration_debug import record_protocol_exchange
                 record_protocol_exchange(
@@ -682,6 +756,7 @@ class BrowserSession:
             except Exception:
                 logger.debug("[Debug] 记录协议 GET 失败", exc_info=True)
             raise
+        self._record_traffic(debug_started, response=resp)
         try:
             from core.registration_debug import record_protocol_exchange
             record_protocol_exchange(
@@ -698,12 +773,14 @@ class BrowserSession:
     def post(self, url: str, headers: dict = None, **kwargs):
         """发送 POST 请求"""
         self._raise_if_circuit_open()
+        kwargs = self._bounded_request_kwargs(kwargs)
         headers = self._attach_openai_target_headers_for_url(url, headers)
         debug_started = time.perf_counter()
         request_body = kwargs.get("json") if "json" in kwargs else kwargs.get("data")
         try:
             resp = self.session.post(url, headers=headers, **kwargs)
         except BaseException as exc:
+            self._record_traffic(debug_started, error=exc)
             try:
                 from core.registration_debug import record_protocol_exchange
                 record_protocol_exchange(
@@ -718,6 +795,7 @@ class BrowserSession:
             except Exception:
                 logger.debug("[Debug] 记录协议 POST 失败", exc_info=True)
             raise
+        self._record_traffic(debug_started, response=resp)
         try:
             from core.registration_debug import record_protocol_exchange
             record_protocol_exchange(

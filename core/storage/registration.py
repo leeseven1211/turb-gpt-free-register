@@ -108,6 +108,8 @@ def _row(row: dict | None) -> dict | None:
     if row is None:
         return None
     result = dict(row)
+    # 私有恢复凭据只能通过专用入口读取，不能进入任务列表或详情投影。
+    result.pop("private_context", None)
     for key in ("data", "detail", "result_summary"):
         if key in result:
             result[key] = _decode(result[key])
@@ -304,6 +306,7 @@ def init() -> None:
             ("active_execution_id", "TEXT"),
             ("heartbeat_at", "TIMESTAMPTZ"),
             ("terminal_at", "TIMESTAMPTZ"),
+            ("private_context", "JSONB NOT NULL DEFAULT '{}'::jsonb"),
         )
         for name, sql_type in columns:
             cur.execute(f'ALTER TABLE {attempts} ADD COLUMN IF NOT EXISTS "{name}" {sql_type}')
@@ -1097,6 +1100,124 @@ def recover_interrupted_runs(
     return recovered
 
 
+def _require_current_execution(cur, attempt: dict, *, run_id, execution_id, email: str) -> None:
+    """凭据写入必须来自持有原身份的当前执行实例。"""
+    execution = str(execution_id or "").strip()
+    expected = str(attempt.get("email_snapshot") or attempt.get("email") or "").strip()
+    if not execution or run_id is None or not expected or expected.casefold() != email.casefold():
+        raise ValueError("注册凭据写入缺少原邮箱或当前执行实例")
+    cur.execute(f"SELECT * FROM {_table('registration_runs')} WHERE id=%s", (int(run_id),))
+    run = _row(cur.fetchone()) or {}
+    if (run.get("attempt_id") != int(attempt["id"]) or run.get("status") != "running"
+            or run.get("execution_id") != execution
+            or (attempt.get("active_execution_id") and attempt["active_execution_id"] != execution)):
+        raise ValueError("注册执行实例已变化，拒绝写入凭据")
+
+
+def get_private_resume_context(attempt_id: int, *, email: str) -> dict:
+    """只向内部恢复入口返回同一邮箱的私有上下文。"""
+    init()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT email_snapshot, email, private_context FROM {_table('registration_attempts')} WHERE id=%s", (int(attempt_id),))
+        row = cur.fetchone() or {}
+        expected = str(row.get("email_snapshot") or row.get("email") or "").strip()
+        if not expected or expected.casefold() != str(email).strip().casefold():
+            raise ValueError("恢复凭据的原邮箱不匹配")
+        return dict(_decode(row.get("private_context")) or {})
+
+
+def save_password_checkpoint(attempt_id: int, *, email: str, password: str, state: str,
+                             run_id: int, execution_id: str, job_id=None, account: dict | None = None) -> dict:
+    """原密码在远端请求前保存；确认后才建立待验证账号。"""
+    if state not in {"prepared", "started", "confirmed"} or not str(password or "").strip():
+        raise ValueError("密码检查点状态或凭据不完整")
+    init()
+    record_store.init()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT * FROM {_table('registration_attempts')} WHERE id=%s FOR UPDATE", (int(attempt_id),))
+        raw = cur.fetchone()
+        attempt = _row(raw)
+        if attempt is None:
+            raise LookupError("注册 Attempt 不存在")
+        _require_current_execution(cur, attempt, run_id=run_id, execution_id=execution_id, email=email)
+        private = dict(_decode(raw.get("private_context")) or {})
+        if private.get("password") and private["password"] != password:
+            raise ValueError("原 Attempt 已有保存密码，拒绝替换")
+        order = {"prepared": 0, "started": 1, "confirmed": 2}
+        prior = str(private.get("password_state") or "prepared")
+        if order.get(prior, 0) > order[state]:
+            state = prior
+        private.update({"password": password, "password_state": state})
+        account_id = attempt.get("account_id")
+        if state == "confirmed" and account is not None:
+            record_store.advisory_xact_lock(conn, f"registered-account:{email.lower()}")
+            existing = record_store.get_row_by(record_store.ACCOUNTS, "email", email, conn=conn, lower=True, for_update=True)
+            if existing and str(existing.get("access_token") or "").strip():
+                raise ValueError("同邮箱账号已有 Token，拒绝降级为待验证状态")
+            extra = _decode((existing or {}).get("extra_json")) or {}
+            extra.update({"account_password": password, "registration_checkpoint": "email_verification_pending",
+                          "registration_pending_reason": "email_otp_pending"})
+            payload = {**dict(account), "email": email, "access_token": "", "extra_json": json.dumps(extra, ensure_ascii=False)}
+            if existing:
+                account_id = int(existing["id"])
+                record_store.patch_row(record_store.ACCOUNTS, account_id, payload, conn=conn)
+            else:
+                account_id = record_store.upsert_row_by(record_store.ACCOUNTS, "email", payload, conn=conn)
+        checkpoint = {"prepared": "auth_started", "started": "password_request_started", "confirmed": "password_confirmed"}[state]
+        current = str(attempt.get("checkpoint") or "created")
+        if CHECKPOINT_RANK.get(current, 0) > CHECKPOINT_RANK[checkpoint]:
+            checkpoint = current
+        data = dict(attempt.get("data") or {})
+        data.update({"has_password": True, "password_state": state})
+        cur.execute(f"UPDATE {_table('registration_attempts')} SET private_context=%s::jsonb, data=%s::jsonb, checkpoint=%s, account_id=%s, updated_at=%s WHERE id=%s",
+                    (json.dumps(private), json.dumps(data), checkpoint, account_id, _now(), int(attempt_id)))
+        if state == "confirmed":
+            cur.execute(f"UPDATE {_table('registration_attempts')} SET remote_identity_state='confirmed' WHERE id=%s", (int(attempt_id),))
+        _insert_event(cur, attempt_id=int(attempt_id), run_id=run_id, job_id=job_id, checkpoint=checkpoint,
+                      event_type=f"credential_{state}", level="INFO", message="原密码恢复检查点已保存",
+                      detail={"phase": state}, execution_id=execution_id, event_uuid=None)
+        return {"account_id": account_id, "state": state}
+
+
+def save_totp_checkpoint(attempt_id: int, *, email: str, secret: str, confirmed: bool,
+                         run_id: int, execution_id: str) -> None:
+    """激活前保存待确认密钥；只有激活响应成功才更新启用凭据。"""
+    if not str(secret or "").strip():
+        raise ValueError("2FA 检查点缺少密钥")
+    init()
+    record_store.init()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT * FROM {_table('registration_attempts')} WHERE id=%s FOR UPDATE", (int(attempt_id),))
+        attempt = _row(cur.fetchone())
+        if not attempt:
+            raise LookupError("注册 Attempt 不存在")
+        _require_current_execution(cur, attempt, run_id=run_id, execution_id=execution_id, email=email)
+        record_store.advisory_xact_lock(conn, f"registered-account:{email.lower()}")
+        account = record_store.get_row_by(record_store.ACCOUNTS, "email", email, conn=conn, lower=True, for_update=True)
+        if not account or int(account["id"]) != int(attempt.get("account_id") or 0):
+            raise ValueError("2FA 检查点原账号不匹配")
+        extra = dict(_decode(account.get("extra_json")) or {})
+        changes = {}
+        if confirmed:
+            pending = str(extra.get("totp_pending_secret") or "")
+            if pending and pending != secret:
+                raise ValueError("2FA 确认密钥与待确认密钥不匹配")
+            extra.pop("totp_pending_secret", None)
+            extra.pop("totp_setup_pending", None)
+            extra["twofa"] = {"status": "success", "message": "协议 2FA 已启用"}
+            changes["totp_secret"] = secret
+        else:
+            extra["totp_pending_secret"] = secret
+            extra["totp_setup_pending"] = True
+            extra["twofa"] = {"status": "pending", "message": "2FA 密钥已保存，激活结果待确认"}
+        changes["extra_json"] = json.dumps(extra, ensure_ascii=False)
+        record_store.patch_row(record_store.ACCOUNTS, int(account["id"]), changes, conn=conn)
+        if confirmed:
+            pool = record_store.get_row_by(record_store.OUTLOOK_POOL, "email", email, conn=conn, lower=True, for_update=True)
+            if pool:
+                record_store.patch_row(record_store.OUTLOOK_POOL, int(pool["id"]), {"totp_secret": secret}, conn=conn)
+
+
 def persist_core_account(
     attempt_id: int,
     *,
@@ -1130,6 +1251,8 @@ def persist_core_account(
         email = str(payload.get("email") or attempt.get("email") or attempt.get("email_snapshot") or "").strip()
         if not email:
             raise ValueError("核心账号落库需要 email")
+        if execution_id is not None or run_id is not None:
+            _require_current_execution(cur, attempt, run_id=run_id, execution_id=execution_id, email=email)
         payload["email"] = email
         payload["access_token"] = token
         account_id = payload.get("id") or attempt.get("account_id")
@@ -1137,10 +1260,12 @@ def persist_core_account(
             # 失败终态不是已完成注册的证据。仅允许当前续跑以原身份拿到 Token
             # 后确认成功；普通进度上报仍不能倒退或清除历史失败断点。
             expected_email = str(attempt.get("email_snapshot") or attempt.get("email") or "").strip().casefold()
+            private = get_private_resume_context(int(attempt_id), email=email)
+            private_resume = bool(not attempt.get("account_id") and private.get("password"))
             if (attempt.get("target_status") == "deactivated" or not expected_email
                     or email.casefold() != expected_email
                     or (attempt.get("email") and str(attempt["email"]).strip().casefold() != expected_email)
-                    or not attempt.get("account_id") or str(account_id) != str(attempt["account_id"])):
+                    or (not private_resume and (not attempt.get("account_id") or str(account_id) != str(attempt["account_id"])))):
                 raise ValueError("失败续跑的原账号或邮箱不匹配，不能确认注册成功")
             current_execution = str(execution_id or "").strip()
             if not current_execution or run_id is None:
@@ -1148,7 +1273,7 @@ def persist_core_account(
             cur.execute(f"SELECT * FROM {_table('registration_runs')} WHERE id=%s", (int(run_id),))
             run = _row(cur.fetchone()) or {}
             if (run.get("attempt_id") != int(attempt_id) or run.get("status") != "running"
-                    or run.get("action_type") != "registration_resume"
+                    or run.get("action_type") not in ({"registration", "registration_resume"} if private_resume else {"registration_resume"})
                     or run.get("execution_id") != current_execution
                     or (job_id is not None and run.get("job_id") != int(job_id))
                     or (attempt.get("active_execution_id") and attempt["active_execution_id"] != current_execution)):
@@ -1170,6 +1295,11 @@ def persist_core_account(
                 payload["id"] = int(account_id)
                 account_id = record_store.insert_row(record_store.ACCOUNTS, payload, conn=conn)
             else:
+                if "extra_json" in payload:
+                    current_account = record_store.merge_row(record_store.ACCOUNTS, existing) or {}
+                    previous_extra = dict(_decode(current_account.get("extra_json")) or {})
+                    previous_extra.update(dict(_decode(payload["extra_json"]) or {}))
+                    payload["extra_json"] = json.dumps(previous_extra, ensure_ascii=False)
                 record_store.patch_row(record_store.ACCOUNTS, int(account_id), payload, conn=conn)
         else:
             account_id = record_store.upsert_row_by(record_store.ACCOUNTS, "email", payload, conn=conn)

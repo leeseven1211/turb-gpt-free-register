@@ -90,6 +90,10 @@ def pop_manual_otp(email: str) -> str | None:
 
 def wait_for_manual_otp(email: str, *, timeout: int = 180, job_id: int | None = None) -> str:
     """阻塞等待手动验证码。优先吃已提交的 code，否则轮询/事件等待。"""
+    from core.mailbox_wait import bounded_timeout, current_budget
+    budget = current_budget()
+    if budget is not None:
+        budget.require("手动验证码")
     key = _norm(email)
     if not key:
         raise RuntimeError("手动 OTP：email 为空")
@@ -120,17 +124,23 @@ def wait_for_manual_otp(email: str, *, timeout: int = 180, job_id: int | None = 
     ev = _event_for(key)
     try:
         while time.time() < end:
+            if budget is not None:
+                budget.require("手动验证码")
             code = pop_manual_otp(email)
             if code:
                 return code
 
             if has_tty:
                 # 非阻塞感：短暂等事件，再提示一次
-                if ev.wait(timeout=1.0):
+                if ev.wait(timeout=bounded_timeout(0.1 if budget is not None else 1.0)):
                     code = pop_manual_otp(email)
                     if code:
                         return code
                 # 给 CLI 一次机会
+                if budget is not None:
+                    import select
+                    if not select.select([sys.stdin], [], [], 0)[0]:
+                        continue
                 try:
                     typed = input(f">>> 手动输入 {email} 的邮箱验证码: ").strip()
                 except EOFError:
@@ -141,14 +151,15 @@ def wait_for_manual_otp(email: str, *, timeout: int = 180, job_id: int | None = 
                     if code:
                         return code
             else:
-                ev.wait(timeout=1.0)
+                ev.wait(timeout=bounded_timeout(0.1 if budget is not None else 1.0))
 
             # 支持任务被手动停止
             try:
                 from core.registration_service import check_stop_requested
                 check_stop_requested()
-            except Exception:
-                pass
+            except Exception as exc:
+                if type(exc).__name__ == "StopRequested":
+                    raise
         raise TimeoutError(f"等待手动验证码超时（{timeout}s）：{email}")
     finally:
         clear_waiting(email)

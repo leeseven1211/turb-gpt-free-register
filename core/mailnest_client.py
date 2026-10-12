@@ -2,6 +2,7 @@
 """MailNest/迈巢临时邮箱客户端。"""
 from __future__ import annotations
 
+from core.mailbox_wait import WAIT_INTERRUPTED, bounded_sleep, bounded_timeout
 import logging
 import time
 from dataclasses import dataclass
@@ -57,7 +58,7 @@ def _request(method: str, path: str, *, params: dict | None = None, json: dict |
             params=params,
             json=json,
             headers={"Authorization": f"Bearer {_api_key()}", "Accept": "application/json"},
-            timeout=REQUEST_TIMEOUT,
+            timeout=bounded_timeout(REQUEST_TIMEOUT),
         )
     except requests.RequestException as exc:
         raise MailNestClientError(f"MailNest 请求失败 ({path}): {type(exc).__name__}: {exc}") from exc
@@ -192,6 +193,8 @@ def fetch_latest_otp(
             now = time.monotonic()
             if best_otp and settle_until is not None and now >= settle_until:
                 return best_otp
+        except WAIT_INTERRUPTED:
+            raise
         except MailNestClientError as exc:
             last_error = str(exc)
         except Exception as exc:
@@ -200,7 +203,7 @@ def fetch_latest_otp(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
-        time.sleep(min(interval, remaining))
+        bounded_sleep(min(interval, remaining))
 
     if best_otp:
         return best_otp

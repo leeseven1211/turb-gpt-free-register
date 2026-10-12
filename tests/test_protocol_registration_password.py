@@ -2,13 +2,26 @@
 import unittest
 from contextlib import ExitStack
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 from core.forward_imap_client import ForwardIMAPError, ForwardIMAPNoMailTimeout
 from core.registration import protocol
 
 
 class ProtocolPasswordRegistrationTests(unittest.TestCase):
+    def setUp(self):
+        # 旧流程矩阵只模拟账号检查点；私有 Attempt 写入由独立存储测试核验。
+        def save_private(**kwargs):
+            if kwargs["state"] != "confirmed":
+                return {"account_id": None}
+            from core.registration.checkpoints import save_email_verification_checkpoint
+            account_id = save_email_verification_checkpoint(
+                email=kwargs["email"], password=kwargs["password"], proxy=kwargs.get("proxy"),
+                email_source=kwargs.get("email_source"))
+            return {"account_id": account_id}
+        self.enterContext(patch("core.registration.checkpoints.save_protocol_password_checkpoint", side_effect=save_private))
+        self.enterContext(patch("core.registration.checkpoints.save_protocol_totp_checkpoint"))
+
     def _run_new_password_failure(
         self,
         *,
@@ -864,6 +877,7 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
             mfa_response,
             "https://auth.openai.com/mfa-challenge?factor_id=factor-1",
             "SavedTotpSecret",
+            budget=ANY,
         )
         create_account.assert_not_called()
         self.assertEqual(result["remote_identity"], "existing")

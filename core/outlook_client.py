@@ -19,6 +19,7 @@ Outlook 邮箱客户端（mail.chatai.codes 双协议）
 只用 Outlook 提供的 refresh_token 调远端的 mail.chatai.codes 服务，
 不直连 Microsoft Graph，因为后者要 access_token + 复杂 OAuth 协议。
 """
+from core.mailbox_wait import WAIT_INTERRUPTED, bounded_sleep, imap_call, request_kwargs
 import base64
 import email as email_lib
 import hashlib
@@ -141,6 +142,7 @@ def _get_security_session(http: CurlSession) -> dict:
             f"{OUTLOOK_API_BASE.rstrip('/')}/api/security-session",
             headers={"Content-Type": "application/json"},
             data="{}",
+            **request_kwargs(),
         )
         if resp.status_code != 200:
             raise OutlookClientError(
@@ -203,8 +205,8 @@ def _secure_post(http: CurlSession, url: str, payload: dict, retry: int = 0) -> 
         url,
         headers={"Content-Type": "application/json"},
         data=json.dumps(envelope),
+        **request_kwargs(),
     )
-
     if resp.status_code in (401, 403) and retry < 1:
         logger.warning(f"[Outlook] {resp.status_code}，刷新安全会话后重试...")
         with _sec_session_lock:
@@ -464,6 +466,8 @@ def _get_msg_text(msg) -> str:
                     continue
                 charset = part.get_content_charset() or "utf-8"
                 text = payload.decode(charset, errors="replace")
+            except WAIT_INTERRUPTED:
+                raise
             except Exception:
                 continue
             if ctype == "text/plain":
@@ -477,6 +481,8 @@ def _get_msg_text(msg) -> str:
         if payload:
             charset = msg.get_content_charset() or "utf-8"
             return payload.decode(charset, errors="replace")
+    except WAIT_INTERRUPTED:
+        raise
     except Exception:
         pass
     return str(msg.get_payload() or "")
@@ -594,12 +600,15 @@ def _ms_access_token(
                 url,
                 headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
                 data=urlencode(payload),
+                **request_kwargs(),
             )
             text = resp.text or ""
             last_text = text[:500]
             data = {}
             try:
                 data = resp.json()
+            except WAIT_INTERRUPTED:
+                raise
             except Exception:
                 pass
             if resp.status_code == 200 and isinstance(data, dict) and data.get("access_token"):
@@ -646,11 +655,14 @@ def _live_imap_access_token(account: OutlookAccount, http: CurlSession | None = 
                 "grant_type": "refresh_token",
                 "refresh_token": account.refresh_token,
             }),
+            **request_kwargs(),
         )
         text = resp.text or ""
         data = {}
         try:
             data = resp.json()
+        except WAIT_INTERRUPTED:
+            raise
         except Exception:
             pass
         token = str((data or {}).get("access_token") or "")
@@ -699,7 +711,7 @@ def _fetch_graph_messages(http: CurlSession, token: str) -> list[dict]:
         "$orderby": "receivedDateTime desc",
         "$select": "id,subject,from,receivedDateTime,bodyPreview,body",
     }
-    resp = http.get(url, headers=headers, params=params)
+    resp = http.get(url, headers=headers, params=params, **request_kwargs())
     text = resp.text or ""
     if resp.status_code != 200:
         raise OutlookClientError(f"Microsoft Graph messages HTTP {resp.status_code}: {text[:500]}")
@@ -736,7 +748,7 @@ def _fetch_outlook_rest_messages(http: CurlSession, token: str) -> list[dict]:
     last_text = ""
     data = None
     for params in attempts:
-        resp = http.get(url, headers=headers, params=params)
+        resp = http.get(url, headers=headers, params=params, **request_kwargs())
         text = resp.text or ""
         last_text = text[:500]
         if resp.status_code == 200:
@@ -789,18 +801,20 @@ def _fetch_imap_direct_messages(account: OutlookAccount) -> list[dict]:
         try:
             token = _live_imap_access_token(account, http=http)
             token_source = "live_imap_new"
+        except WAIT_INTERRUPTED:
+            raise
         except Exception as live_exc:
             logger.debug("[Outlook] Live IMAP(New) token 获取失败，尝试 Entra IMAP token: %s", str(live_exc)[:220])
             token, _kind = _ms_access_token(account, http=http, preferred_kind="outlook")
             token_source = "entra_outlook"
         auth_string = f"user={account.email}\x01auth=Bearer {token}\x01\x01"
-        mail = imaplib.IMAP4_SSL("outlook.office365.com", 993)
-        mail.authenticate("XOAUTH2", lambda _challenge: auth_string.encode("utf-8"))
-        status, _data = mail.select("INBOX")
+        mail = imaplib.IMAP4_SSL("outlook.office365.com", 993, **request_kwargs())
+        imap_call(mail, 'authenticate', "XOAUTH2", lambda _challenge: auth_string.encode("utf-8"))
+        status, _data = imap_call(mail, 'select', "INBOX")
         if status != "OK":
             raise OutlookClientError(f"IMAP select INBOX 失败: {status}")
 
-        status, msg_ids = mail.search(None, "ALL")
+        status, msg_ids = imap_call(mail, 'search', None, "ALL")
         if status != "OK":
             raise OutlookClientError(f"IMAP search 失败: {status}")
         ids = msg_ids[0].split() if msg_ids and msg_ids[0] else []
@@ -810,7 +824,7 @@ def _fetch_imap_direct_messages(account: OutlookAccount) -> list[dict]:
 
         out = []
         for mid in ids[-20:]:
-            status, data = mail.fetch(mid, "(RFC822)")
+            status, data = imap_call(mail, 'fetch', mid, "(RFC822)")
             if status != "OK" or not data:
                 continue
             try:
@@ -821,6 +835,8 @@ def _fetch_imap_direct_messages(account: OutlookAccount) -> list[dict]:
                 item = _imap_msg_to_dict(msg)
                 item["_fetch_source"] = "imap_new" if token_source == "live_imap_new" else "imap_entra_outlook"
                 out.append(item)
+            except WAIT_INTERRUPTED:
+                raise
             except Exception as exc:
                 logger.debug("[Outlook] 本地 IMAP 解析邮件失败 mid=%s: %s", mid, exc)
         if token_source == "live_imap_new":
@@ -828,13 +844,17 @@ def _fetch_imap_direct_messages(account: OutlookAccount) -> list[dict]:
         else:
             logger.info("[Outlook] 本地 IMAP 直连拿到 %s 封邮件 token_source=%s", len(out), token_source)
         return out
+    except WAIT_INTERRUPTED:
+        raise
     except Exception as exc:
         logger.warning("[Outlook] 本地 IMAP 直连失败: %s: %s", type(exc).__name__, exc)
         return []
     finally:
         try:
             if mail is not None:
-                mail.logout()
+                imap_call(mail, 'logout')
+        except WAIT_INTERRUPTED:
+            raise
         except Exception:
             pass
         http.close()
@@ -854,6 +874,8 @@ def _fetch_via_graph_direct(account: OutlookAccount) -> list[dict]:
                 out = _fetch_graph_messages(http, token)
                 logger.debug(f"[Outlook] Microsoft Graph 直连拿到 {len(out)} 封邮件")
                 return out
+            except WAIT_INTERRUPTED:
+                raise
             except Exception as exc:
                 logger.warning(f"[Outlook] Microsoft Graph 读取失败，尝试 Outlook REST: {type(exc).__name__}: {exc}")
                 # 重新取 Outlook REST token。注意不能继续复用 Graph token；
@@ -864,6 +886,8 @@ def _fetch_via_graph_direct(account: OutlookAccount) -> list[dict]:
         out = _fetch_outlook_rest_messages(http, token)
         logger.debug(f"[Outlook] Outlook REST 直连拿到 {len(out)} 封邮件")
         return out
+    except WAIT_INTERRUPTED:
+        raise
     except Exception as exc:
         logger.warning(f"[Outlook] Microsoft/Outlook 直连失败: {type(exc).__name__}: {exc}")
         return []
@@ -907,6 +931,8 @@ def _fetch_via(session: CurlSession, protocol: str, account: OutlookAccount) -> 
     }
     try:
         data = _secure_post(session, url, payload)
+    except WAIT_INTERRUPTED:
+        raise
     except OutlookClientError as exc:
         logger.warning(f"[Outlook] {protocol} 请求失败: {exc}")
         if mode == "auto" and _is_remote_disabled_error(exc):
@@ -1098,7 +1124,7 @@ def fetch_latest_otp(
             logger.info(
                 f"[Outlook] 暂未收到符合条件的 OpenAI 邮件，{interval}s 后重试（剩余 {remaining}s）..."
             )
-        time.sleep(interval)
+        bounded_sleep(interval)
 
     # 超时但已经锁定过候选（settle 没等到结束就到 deadline 了）
     if best_otp:

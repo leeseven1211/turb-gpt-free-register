@@ -59,6 +59,7 @@ def run_registration(
         )
 
     from core.registration.protocol import run_protocol_registration
+    from core.registration.standalone import run_protocol_in_context
 
     kwargs = dict(
         email=email,
@@ -75,4 +76,4 @@ def run_registration(
         kwargs["existing_password"] = existing_password
     if existing_totp_secret is not None:
         kwargs["existing_totp_secret"] = existing_totp_secret
-    return run_protocol_registration(**kwargs)
+    return run_protocol_in_context(run_protocol_registration, kwargs)

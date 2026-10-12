@@ -2,6 +2,7 @@
 """CloudMail/Cloud Mail API 邮箱客户端。"""
 from __future__ import annotations
 
+from core.mailbox_wait import WAIT_INTERRUPTED, bounded_sleep, bounded_timeout
 import logging
 import random
 import re
@@ -100,9 +101,11 @@ def gen_token(email: str | None = None, password: str | None = None, path: str |
                 url,
                 json={"email": email, "password": password},
                 headers={"Accept": "application/json"},
-                timeout=REQUEST_TIMEOUT,
+                timeout=bounded_timeout(REQUEST_TIMEOUT),
             )
             payload = resp.json()
+        except WAIT_INTERRUPTED:
+            raise
         except Exception as exc:
             last_error = f"{token_path}: {type(exc).__name__}: {exc}"
             continue
@@ -142,7 +145,7 @@ def _request(path: str, body: dict | None = None):
             url,
             json=body or {},
             headers={"Authorization": _token(), "Accept": "application/json"},
-            timeout=REQUEST_TIMEOUT,
+            timeout=bounded_timeout(REQUEST_TIMEOUT),
         )
     except requests.RequestException as exc:
         raise CloudMailError(f"CloudMail 请求失败 ({path}): {type(exc).__name__}: {exc}") from exc
@@ -166,9 +169,9 @@ def _request_raw(method: str, path: str, *, body: dict | None = None, token: str
         headers["Authorization"] = token
     try:
         if method.upper() == "GET":
-            resp = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+            resp = requests.get(url, headers=headers, timeout=bounded_timeout(REQUEST_TIMEOUT))
         else:
-            resp = requests.post(url, json=body or {}, headers=headers, timeout=REQUEST_TIMEOUT)
+            resp = requests.post(url, json=body or {}, headers=headers, timeout=bounded_timeout(REQUEST_TIMEOUT))
     except requests.RequestException as exc:
         raise CloudMailError(f"CloudMail 请求失败 ({path}): {type(exc).__name__}: {exc}") from exc
 
@@ -264,6 +267,8 @@ def fetch_domains(force: bool = False) -> list[str]:
                 logger.info("[CloudMail] 已从平台获取可用域名：%s", ",".join(domains))
                 return list(domains)
             errors.append(f"{path}: 响应中没有 domainList")
+        except WAIT_INTERRUPTED:
+            raise
         except Exception as exc:
             errors.append(f"{path}: {type(exc).__name__}: {exc}")
 
@@ -402,6 +407,8 @@ def fetch_latest_otp(
             now = time.monotonic()
             if best_otp and settle_until is not None and now >= settle_until:
                 return best_otp
+        except WAIT_INTERRUPTED:
+            raise
         except CloudMailError as exc:
             last_error = str(exc)
         except Exception as exc:
@@ -410,7 +417,7 @@ def fetch_latest_otp(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
-        time.sleep(min(interval, remaining))
+        bounded_sleep(min(interval, remaining))
 
     if best_otp:
         return best_otp

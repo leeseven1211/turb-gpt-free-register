@@ -9,6 +9,7 @@ turb 只保存别名领取状态，不保存 Apple Cookie 或 App 专用密码�
 """
 from __future__ import annotations
 
+from core.mailbox_wait import bounded_sleep, bounded_timeout
 import logging
 import threading
 import time
@@ -167,7 +168,7 @@ def _request(
             headers=_headers(),
             params=params,
             json=json_body,
-            timeout=_timeout(timeout),
+            timeout=bounded_timeout(_timeout(timeout)),
         )
     except requests.RequestException as exc:
         raise ICloudHMEError(f"无法连接 iCloud HME 服务: {type(exc).__name__}: {exc}") from exc
@@ -556,7 +557,7 @@ def fetch_latest_otp(
         except ICloudHMEError as exc:
             last_error = str(exc)
             logger.warning("[iCloud HME] 拉取邮件失败: %s", exc)
-            time.sleep(interval)
+            bounded_sleep(interval)
             continue
 
         ordered = sorted(
@@ -587,7 +588,7 @@ def fetch_latest_otp(
         if best_otp and settle_until is not None and time.monotonic() >= settle_until:
             logger.info("[iCloud HME] 已取得 OTP: %s", target)
             return best_otp
-        time.sleep(interval)
+        bounded_sleep(interval)
 
     if best_otp:
         return best_otp

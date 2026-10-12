@@ -7,7 +7,7 @@ import time
 logger = logging.getLogger(__name__)
 
 
-def delay(kind: str = "api", *, minimum: float | None = None, maximum: float | None = None) -> float:
+def delay(kind: str = "api", *, minimum: float | None = None, maximum: float | None = None, budget=None) -> float:
     """
     按配置随机 sleep，返回实际 sleep 秒数。
 
@@ -33,5 +33,8 @@ def delay(kind: str = "api", *, minimum: float | None = None, maximum: float | N
     hi = max(lo, float(maximum) * factor)
     seconds = random.uniform(lo, hi)
     logger.debug(f"[Humanize] delay kind={kind}, seconds={seconds:.2f}")
-    time.sleep(seconds)
+    if budget is None:
+        time.sleep(seconds)
+    else:
+        budget.sleep(seconds)
     return seconds
