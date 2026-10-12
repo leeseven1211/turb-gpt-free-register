@@ -73,6 +73,7 @@ PLAN_CONFIG_ALLOWLIST = {
     "jitter": "PLAN_CHECK_JITTER",
     "route_source": "ACCOUNT_PLAN_CHECK_PROXY_MODE",
     "driver": "ACCOUNT_PLAN_CHECK_DRIVER",
+    "proxy_allow_reuse": "PLAN_CHECK_PROXY_ALLOW_REUSE",
 }
 
 
@@ -344,6 +345,8 @@ def _run_plan_check(
             "purpose": "plan-check",
             "explicit_proxy": proxy,
         }
+        if isinstance(config_snapshot, dict) and "proxy_allow_reuse" in config_snapshot:
+            route_kwargs["allow_reuse"] = bool(config_snapshot["proxy_allow_reuse"])
         selected_source = proxy_source or _snapshot_value(config_snapshot, "route_source")
         if selected_source:
             route_kwargs["source"] = selected_source

@@ -153,6 +153,12 @@ class TaskPreflightReportingTests(unittest.TestCase):
                 self.assertEqual("success", scenario.finish.call_args.kwargs["status"])
                 scenario.route.release.assert_called_once()
 
+    def test_plan_route_uses_frozen_reuse_switch_after_configuration_changes(self):
+        with self._scenario(plan_check_service) as scenario, patch("config.proxy.PLAN_CHECK_PROXY_ALLOW_REUSE", True):
+            result = self._run(plan_check_service, scenario, config_snapshot={"proxy_allow_reuse": False})
+            self.assertTrue(result["ok"])
+            self.assertIs(False, scenario.network.call_args.kwargs["allow_reuse"])
+
     def test_live_success_closes_preflight_before_requests_for_both_reporters(self):
         for native in (True, False):
             with self.subTest(native=native), self._scenario(live_check_service, native=native) as scenario:

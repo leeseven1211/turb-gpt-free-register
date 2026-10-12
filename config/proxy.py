@@ -66,6 +66,9 @@ PLAN_CHECK_PROXY_MODE = schema_default("PLAN_CHECK_PROXY_MODE")
 # 代理可能包含账号密码，因此 WebUI 会把它保存到 .env。
 PLAN_CHECK_PROXY = schema_default("PLAN_CHECK_PROXY")
 
+# 仅 1024Proxy 查套餐允许复用 IP，仍验证出口国家；注册与认证任务保持独占租约。
+PLAN_CHECK_PROXY_ALLOW_REUSE = schema_default("PLAN_CHECK_PROXY_ALLOW_REUSE")
+
 # 注册完成后的 OpenAI 账号功能（查套餐、查活、Codex OAuth）代理来源：
 #   registration = 跟随 REGISTRATION_PROXY_MODE（推荐；1024 平台会按账号申请新租约）
 #   1024         = 始终从 1024Proxy 为每个账号/功能申请独立短期租约

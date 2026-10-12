@@ -4046,7 +4046,8 @@ def retry_runtime_task(task_id: int, *, trigger: str = "manual_retry", data: dic
             or _account_is_deactivated(account)
         ):
             raise ValueError("账号已废号，禁止重跑")
-        if str(task.get("task_type") or "").strip() in {"live_check", "token_refresh"} and account_id and account:
+        task_type = str(task.get("task_type") or "").strip()
+        if task_type in {"live_check", "token_refresh"} and account_id and account:
             # 持久化重试和账号侧投影必须是同一个状态迁移。否则 worker 可能先收到新 Run，
             # 而 mark_account_live_check_running 仍读到 request_unknown，在发起外部请求前取消任务。
             queued_at = _now().isoformat(timespec="seconds")
@@ -4062,6 +4063,26 @@ def retry_runtime_task(task_id: int, *, trigger: str = "manual_retry", data: dic
                     "live_checked_at": None,
                     "live_check_error": None,
                     "live_check_http_status": None,
+                    "updated_at": queued_at,
+                },
+                conn=conn,
+            )
+        elif task_type == "plan_check" and account_id and account:
+            # 套餐查询 worker 只接受已排队的账号投影；状态重置与新 Run 必须同事务提交。
+            # 只清理本次查询状态，保留之前成功取得的套餐、优惠和额度。
+            queued_at = _now().isoformat(timespec="seconds")
+            record_store.patch_row(
+                record_store.ACCOUNTS,
+                account_id,
+                changes={
+                    "plan_check_status": "queued",
+                    "plan_check_ok": False,
+                    "plan_check_trigger": str(trigger or "manual_retry"),
+                    "plan_check_queued_at": queued_at,
+                    "plan_check_started_at": None,
+                    "plan_check_completed_at": None,
+                    "plan_check_error": None,
+                    "plan_check_http_status": None,
                     "updated_at": queued_at,
                 },
                 conn=conn,

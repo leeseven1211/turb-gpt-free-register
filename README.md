@@ -492,6 +492,8 @@ ACCOUNT_ACTION_PROXY_MODE=registration
 建议继续使用注册同类线路。邮箱、短信、CPA/Sub2、提链服务、Roxy 控制 API 等第三方或本地接口
 保持直连，不消耗住宅代理流量。
 
+在同一「账号动作线路」页可设置 `PLAN_CHECK_PROXY_ALLOW_REUSE`（查询套餐允许复用 IP），默认 `True`，保存后热加载。它仅影响使用 1024Proxy 的查套餐：允许复用 IP，但仍验证出口国家；设为 `False` 后查套餐恢复严格去重。注册及认证任务继续使用独占租约，其他账号动作不受此开关影响。
+
 ---
 
 ### 4. 配置 Codex OAuth

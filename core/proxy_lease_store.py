@@ -12,7 +12,7 @@ from core import postgres_store
 
 
 PROXY_LEASES = record_store.PROXY_LEASES
-ACTIVE_STATES = ("pending", "leased", "recent")
+ACTIVE_STATES = ("pending", "leased", "recent", "shared_pending", "shared_leased")
 LEASE_WINDOWS = frozenset({"all", "1h", "24h", "7d"})
 
 
@@ -31,7 +31,7 @@ def _cleanup_expired() -> None:
         record_store.patch_rows_where(
             PROXY_LEASES,
             changes={"state": "released", "released_at": now},
-            where='"state" IN (\'pending\', \'leased\') AND "expires_at" IS NOT NULL AND "expires_at" <= %s',
+            where='"state" IN (\'pending\', \'leased\', \'shared_pending\', \'shared_leased\') AND "expires_at" IS NOT NULL AND "expires_at" <= %s',
             params=(now,),
             conn=conn,
         )
@@ -60,6 +60,7 @@ def reserve_pending(
     operation_run_id: int | None = None,
     registration_job_id: int | None = None,
     route_attempt_no: int | None = None,
+    allow_reuse: bool = False,
 ) -> None:
     """Reserve an endpoint before network validation.
 
@@ -67,28 +68,44 @@ def reserve_pending(
     WebUI/CLI processes. A duplicate is reported separately from database errors
     so the provider can fetch another endpoint.
     """
+    if allow_reuse and purpose != "plan-check":
+        raise ValueError("仅套餐查询允许建立共享代理租约")
     _cleanup_expired()
     try:
-        record_store.insert_row(
-            PROXY_LEASES,
-            {
-                "lease_id": lease_id,
-                "provider": provider,
-                "endpoint": endpoint,
-                "proxy_url": proxy_url,
-                "state": "pending",
-                "acquired_at": acquired_at,
-                "expires_at": expires_at,
-                "batch_id": batch_id,
-                "job_id": str(job_id) if job_id is not None else None,
-                "account_id": _optional_int(account_id),
-                "purpose": str(purpose or "").strip()[:80] or None,
-                "operation_task_id": _optional_int(operation_task_id),
-                "operation_run_id": _optional_int(operation_run_id),
-                "registration_job_id": _optional_int(registration_job_id),
-                "route_attempt_no": _optional_int(route_attempt_no),
-            },
-        )
+        with record_store.transaction() as conn:
+            # 两类租约按端点串行检查和创建；严格模式不能绕过已活跃的共享查询。
+            record_store.advisory_xact_lock(conn, f"proxy-endpoint:{endpoint}")
+            if not allow_reuse and record_store.count_rows(
+                PROXY_LEASES,
+                where='"endpoint" = %s AND "state" IN (\'shared_pending\', \'shared_leased\') '
+                      'AND ("expires_at" IS NULL OR "expires_at" > %s)',
+                params=(endpoint, _now()),
+                conn=conn,
+            ):
+                raise DuplicateProxyLeaseError(f"端点已被其他进程占用: {endpoint}")
+            record_store.insert_row(
+                PROXY_LEASES,
+                {
+                    "lease_id": lease_id,
+                    "provider": provider,
+                    "endpoint": endpoint,
+                    "proxy_url": proxy_url,
+                    # 共享状态不进入端点/出口 IP 独占索引，但每个查询仍有独立租约。
+                    "state": "shared_pending" if allow_reuse else "pending",
+                    "allow_reuse": bool(allow_reuse),
+                    "acquired_at": acquired_at,
+                    "expires_at": expires_at,
+                    "batch_id": batch_id,
+                    "job_id": str(job_id) if job_id is not None else None,
+                    "account_id": _optional_int(account_id),
+                    "purpose": str(purpose or "").strip()[:80] or None,
+                    "operation_task_id": _optional_int(operation_task_id),
+                    "operation_run_id": _optional_int(operation_run_id),
+                    "registration_job_id": _optional_int(registration_job_id),
+                    "route_attempt_no": _optional_int(route_attempt_no),
+                },
+                conn=conn,
+            )
     except Exception as exc:
         text = str(exc).lower()
         if "duplicate key" in text or "unique constraint" in text or "unique index" in text:
@@ -153,17 +170,42 @@ def activate(
 ) -> None:
     """Promote a pending lease after exit validation."""
     try:
-        if not record_store.patch_row(
-            PROXY_LEASES,
-            _lease_row_id(lease_id),
-            {
-                "state": "leased",
-                "exit_ip": exit_ip,
-                "region": region,
-                "expires_at": expires_at,
-            },
-        ):
-            raise RuntimeError(f"代理租约不存在或已失效: {lease_id}")
+        with record_store.transaction() as conn:
+            if exit_ip:
+                record_store.advisory_xact_lock(conn, f"proxy-exit-ip:{exit_ip}")
+            row = record_store.get_row_by(
+                PROXY_LEASES, "lease_id", str(lease_id), conn=conn, for_update=True,
+            )
+            if row is None:
+                raise RuntimeError(f"代理租约不存在: {lease_id}")
+            now = _now()
+            if (
+                row.get("state") not in {"pending", "leased", "shared_pending", "shared_leased"}
+                or (row.get("expires_at") and str(row["expires_at"]) <= now)
+            ):
+                raise RuntimeError(f"代理租约已结束，不能恢复为使用中: {lease_id}")
+            if exit_ip:
+                # 出口尚未被唯一索引保护的共享租约也参与严格模式的重复检查。
+                if not row.get("allow_reuse") and record_store.count_rows(
+                    PROXY_LEASES,
+                    where='"exit_ip" = %s AND "id" <> %s AND "state" = \'shared_leased\' '
+                          'AND ("expires_at" IS NULL OR "expires_at" > %s)',
+                    params=(exit_ip, int(row["id"]), _now()),
+                    conn=conn,
+                ):
+                    raise DuplicateProxyLeaseError(f"出口 IP 已被其他进程占用: {exit_ip}")
+            if not record_store.patch_row(
+                PROXY_LEASES,
+                int(row["id"]),
+                {
+                    "state": "shared_leased" if row.get("allow_reuse") else "leased",
+                    "exit_ip": exit_ip,
+                    "region": region,
+                    "expires_at": expires_at,
+                },
+                conn=conn,
+            ):
+                raise RuntimeError(f"代理租约不存在或已失效: {lease_id}")
     except Exception as exc:
         text = str(exc).lower()
         if "duplicate key" in text or "unique constraint" in text or "unique index" in text:
@@ -177,16 +219,24 @@ def release(
     recent_until: str | None,
     reason: str,
 ) -> None:
-    row_id = _find_lease_row_id(lease_id)
-    if row_id is None:
-        return
-    changes: dict[str, Any] = {
-        "state": "recent" if recent_until else "released",
-        "recent_until": recent_until,
-        "released_at": _now(),
-        "release_reason": str(reason or "completed")[:120],
-    }
-    record_store.patch_row(PROXY_LEASES, row_id, changes)
+    with record_store.transaction() as conn:
+        row = record_store.get_row_by(
+            PROXY_LEASES, "lease_id", str(lease_id), conn=conn, for_update=True,
+        )
+        if row is None or row.get("state") not in ACTIVE_STATES:
+            return
+        now = _now()
+        expired_at = row.get("recent_until") if row.get("state") == "recent" else row.get("expires_at")
+        if row.get("allow_reuse") or (expired_at and str(expired_at) <= now):
+            # 共享查询没有独占冷却期；已过期租约不能因迟到的释放再次占用线路。
+            recent_until = None
+        changes: dict[str, Any] = {
+            "state": "recent" if recent_until else "released",
+            "recent_until": recent_until,
+            "released_at": now,
+            "release_reason": str(reason or "completed")[:120],
+        }
+        record_store.patch_row(PROXY_LEASES, int(row["id"]), changes, conn=conn)
 
 
 def abort(lease_id: str) -> None:
@@ -199,7 +249,7 @@ def abort(lease_id: str) -> None:
 def active_rows() -> list[dict]:
     return record_store.list_rows(
         PROXY_LEASES,
-        where='"state" IN (\'pending\', \'leased\', \'recent\')',
+        where='"state" IN (\'pending\', \'leased\', \'recent\', \'shared_pending\', \'shared_leased\')',
         order_by='"id" DESC',
     )
 
@@ -264,9 +314,9 @@ def _lease_where(
     conditions: list[str] = []
     params: list[Any] = []
     if view == "current":
-        conditions.append("p.state IN ('pending', 'leased')")
+        conditions.append("p.state IN ('pending', 'leased', 'shared_pending', 'shared_leased')")
     elif view == "history":
-        conditions.append("p.state NOT IN ('pending', 'leased')")
+        conditions.append("p.state NOT IN ('pending', 'leased', 'shared_pending', 'shared_leased')")
     else:
         raise ValueError("代理租约视图必须是 current 或 history")
     state_value = str(state or "all").strip().lower()[:40]

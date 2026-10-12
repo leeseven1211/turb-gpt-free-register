@@ -340,6 +340,7 @@ _DEFAULTS: dict[str, Any] = {
     "PROXY_POOL": ["socks5://127.0.0.1:7897"],
     "PLAN_CHECK_PROXY_MODE": "auto",
     "PLAN_CHECK_PROXY": "",
+    "PLAN_CHECK_PROXY_ALLOW_REUSE": True,
     "ACCOUNT_ACTION_PROXY_MODE": "registration",
     "ACCOUNT_ACTION_PROXY": "",
     "PLAN_CHECK_TIMEOUT": 15.0,
@@ -516,6 +517,10 @@ _FIELD_DEFINITIONS = [
     {
         "key": "ACCOUNT_PLAN_CHECK_PROXY_MODE", "file": "account.py", "type": "str", "group": "代理与网络",
         "label": "查套餐代理来源", "help": "默认 direct。查套餐只读现有 Token，可按需选择 registration、pool 或 provider:<id>。",
+    },
+    {
+        "key": "PLAN_CHECK_PROXY_ALLOW_REUSE", "file": "proxy.py", "type": "bool", "group": "代理与网络",
+        "label": "查询套餐允许复用 IP", "help": "仅影响使用 1024Proxy 的查套餐；开启后允许复用 IP，仍验证出口国家。关闭后查套餐恢复严格去重，注册及认证任务继续使用独占租约。",
     },
     {
         "key": "ACCOUNT_LIVE_CHECK_PROXY_MODE", "file": "account.py", "type": "str", "group": "代理与网络",

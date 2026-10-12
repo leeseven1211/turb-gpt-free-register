@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 _ACQUIRE_LOCK = threading.RLock()
 _STATE_LOCK = threading.RLock()
 _ACTIVE_ENDPOINTS: dict[str, "ProxyLease"] = {}
+# 套餐只读请求按租约 ID 独立记录，共享端点不能覆盖独占任务的内存租约。
+_SHARED_LEASES: dict[str, "ProxyLease"] = {}
 _RECENT_ENDPOINTS: dict[str, float] = {}
 _PENDING_ENDPOINTS: set[str] = set()
 _LAST_ACQUIRE_AT = 0.0
@@ -378,9 +380,12 @@ def acquire_1024_proxy(
     operation_run_id: int | None = None,
     registration_job_id: int | None = None,
     route_attempt_no: int | None = None,
+    allow_reuse: bool = False,
 ) -> ProxyLease:
     from config import proxy as cfg
 
+    if allow_reuse and purpose != "plan-check":
+        raise ValueError("仅套餐查询允许复用代理 IP")
     configured_url = api_url if api_url is not None else getattr(cfg, "PROXY_1024_API_URL", "")
     configured_region = region if region is not None else getattr(cfg, "PROXY_1024_REGION", "")
     configured_protocol = protocol if protocol is not None else getattr(cfg, "PROXY_1024_PROTOCOL", "http")
@@ -391,7 +396,7 @@ def acquire_1024_proxy(
     validate_attempts = max(1, min(3, int(getattr(cfg, "PROXY_1024_VALIDATE_ATTEMPTS", 2) or 2)))
     acquire_timeout = max(timeout, float(getattr(cfg, "PROXY_1024_ACQUIRE_TIMEOUT", 60.0) or 60.0))
     should_validate = bool(getattr(cfg, "PROXY_1024_VALIDATE", True)) if validate is None else bool(validate)
-    recent_ttl = max(0, int(getattr(cfg, "PROXY_1024_RECENT_TTL", minutes * 60) or 0))
+    recent_ttl = 0 if allow_reuse else max(0, int(getattr(cfg, "PROXY_1024_RECENT_TTL", minutes * 60) or 0))
     interval = max(0.0, float(getattr(cfg, "PROXY_1024_ACQUIRE_INTERVAL", 0.6) or 0.0))
     proxy_protocol = _normalize_protocol(configured_protocol)
     persist_lease = _persistent_lease_enabled()
@@ -447,11 +452,13 @@ def acquire_1024_proxy(
                         endpoint in _ACTIVE_ENDPOINTS
                         or endpoint in _RECENT_ENDPOINTS
                         or endpoint in _PENDING_ENDPOINTS
+                        or any(lease.endpoint == endpoint for lease in _SHARED_LEASES.values())
                     )
-                    if endpoint_duplicate:
+                    if endpoint_duplicate and not allow_reuse:
                         raise DuplicateProxyError(f"提取到正在使用或隔离期内的重复代理: {mask_endpoint(endpoint)}")
-                    _PENDING_ENDPOINTS.add(endpoint)
-                    endpoint_reserved = True
+                    if not allow_reuse:
+                        _PENDING_ENDPOINTS.add(endpoint)
+                        endpoint_reserved = True
                     if persist_lease:
                         from core import proxy_lease_store
 
@@ -473,6 +480,7 @@ def acquire_1024_proxy(
                                 operation_run_id=operation_run_id,
                                 registration_job_id=registration_job_id,
                                 route_attempt_no=route_attempt_no,
+                                **({"allow_reuse": True} if allow_reuse else {}),
                             )
                             persistent_reserved = True
                         except proxy_lease_store.DuplicateProxyLeaseError as exc:
@@ -503,8 +511,9 @@ def acquire_1024_proxy(
                     endpoint in _ACTIVE_ENDPOINTS
                     or uniqueness_key in _RECENT_ENDPOINTS
                     or any(exit_ip and lease.exit_ip == exit_ip for lease in _ACTIVE_ENDPOINTS.values())
+                    or any(exit_ip and lease.exit_ip == exit_ip for lease in _SHARED_LEASES.values())
                 )
-                if duplicate:
+                if duplicate and not allow_reuse:
                     raise DuplicateProxyError(f"提取到正在使用或隔离期内的重复代理: {mask_endpoint(endpoint)}")
                 acquired_at = datetime.now()
                 expires_at = acquired_at + timedelta(minutes=request_minutes)
@@ -535,6 +544,7 @@ def acquire_1024_proxy(
                         "recent_ttl": recent_ttl,
                         "uniqueness_key": uniqueness_key,
                         "session_minutes": request_minutes,
+                        "allow_reuse": bool(allow_reuse),
                         **_correlation_metadata(
                             account_id=account_id,
                             purpose=purpose,
@@ -545,8 +555,11 @@ def acquire_1024_proxy(
                         ),
                     },
                 )
-                _ACTIVE_ENDPOINTS[endpoint] = lease
-                _PENDING_ENDPOINTS.discard(endpoint)
+                if allow_reuse:
+                    _SHARED_LEASES[lease_id] = lease
+                else:
+                    _ACTIVE_ENDPOINTS[endpoint] = lease
+                    _PENDING_ENDPOINTS.discard(endpoint)
                 endpoint_reserved = False
                 persistent_reserved = False
             logger.info(
@@ -1160,7 +1173,10 @@ def release_proxy(lease: ProxyLease | None, *, reason: str = "completed") -> Non
         except Exception:
             logger.exception("[代理平台] 写入持久化代理释放状态失败: lease_id=%s", lease.lease_id)
     with _STATE_LOCK:
-        _ACTIVE_ENDPOINTS.pop(lease.endpoint, None)
+        if lease.metadata.get("allow_reuse"):
+            _SHARED_LEASES.pop(lease.lease_id, None)
+        elif _ACTIVE_ENDPOINTS.get(lease.endpoint) is lease:
+            _ACTIVE_ENDPOINTS.pop(lease.endpoint, None)
         if recent_ttl > 0:
             _RECENT_ENDPOINTS[lease.endpoint] = now + recent_ttl
             _RECENT_ENDPOINTS[uniqueness_key] = now + recent_ttl
@@ -1169,4 +1185,4 @@ def release_proxy(lease: ProxyLease | None, *, reason: str = "completed") -> Non
 
 def active_proxy_leases() -> list[dict[str, Any]]:
     with _STATE_LOCK:
-        return [lease.public_dict() for lease in _ACTIVE_ENDPOINTS.values()]
+        return [lease.public_dict() for lease in (*_ACTIVE_ENDPOINTS.values(), *_SHARED_LEASES.values())]

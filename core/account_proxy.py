@@ -39,6 +39,7 @@ class AccountProxyRoute:
             "proxy_used": mask_proxy_url(self.proxy_url) or None,
             "proxy_region": self.region,
             "proxy_fallback_reason": None,
+            "proxy_allow_reuse": bool(self.lease and self.lease.metadata.get("allow_reuse")),
         }
 
     def release(self, reason: str = "completed") -> None:
@@ -252,6 +253,7 @@ def acquire_account_proxy(
     region: str | None = None,
     source: str | None = None,
     rotation_index: int = 0,
+    allow_reuse: bool | None = None,
 ) -> AccountProxyRoute:
     """为一次账号功能调用获取线路；调用方必须在 finally 中 release。"""
     if explicit_proxy is not None:
@@ -289,7 +291,7 @@ def acquire_account_proxy(
         purpose=purpose,
         region=region,
         mode=mode,
-        **({"rotation_index": max(0, int(rotation_index or 0))} if provider_id == "1024proxy" else {}),
+        **({"rotation_index": max(0, int(rotation_index or 0)), "allow_reuse": allow_reuse} if provider_id == "1024proxy" else {}),
     )
 
 
@@ -311,7 +313,11 @@ def _acquire_1024proxy(
     region: str | None,
     mode: str,
     rotation_index: int = 0,
+    allow_reuse: bool | None = None,
 ) -> AccountProxyRoute:
+    from config import proxy as cfg
+    from core.task_run_log import current_context
+
     selected_region = str(region or "").strip().upper() or resolve_account_region(
         account_id=account_id,
         email=email,
@@ -322,10 +328,19 @@ def _acquire_1024proxy(
     normalized_rotation = max(0, int(rotation_index or 0))
     if normalized_rotation:
         seed = f"{seed}-rotation-{normalized_rotation}"
+    reuse = purpose == "plan-check" and bool(
+        getattr(cfg, "PLAN_CHECK_PROXY_ALLOW_REUSE", True) if allow_reuse is None else allow_reuse
+    )
+    correlation = current_context()
     lease = acquire_1024_proxy(
         region=selected_region,
         validate=True,
         job_id=seed,
+        account_id=account_id,
+        purpose=purpose,
+        operation_task_id=correlation.get("task_id"),
+        operation_run_id=correlation.get("run_id"),
+        **({"allow_reuse": True} if reuse else {}),
     )
     return AccountProxyRoute(
         proxy_url=lease.proxy_url,

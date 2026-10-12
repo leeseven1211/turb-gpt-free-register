@@ -43,6 +43,8 @@ const PROXY_TRAFFIC_STATUS_TEXT = {
   error: '加载失败',
 };
 const PROXY_TRAFFIC_STATUS_LABELS = {
+  shared_pending: '共享线路检测中',
+  shared_leased: '共享查询中',
   leased: '租约中',
   recent: '最近释放',
   released: '已释放',
@@ -458,7 +460,7 @@ function proxyTrafficRefreshFilterOptions() {
     const select = proxyTrafficFilterControl(header);
     if (!view || !select) return;
     const values = view === 'traffic' ? ['available']
-      : states.filter((value) => view === 'current' ? ['pending', 'leased'].includes(value) : !['pending', 'leased'].includes(value));
+      : states.filter((value) => view === 'current' ? ['pending', 'leased', 'shared_pending', 'shared_leased'].includes(value) : !['pending', 'leased', 'shared_pending', 'shared_leased'].includes(value));
     if (!values.includes(proxyTrafficStateFilters[view])) proxyTrafficStateFilters[view] = 'all';
     select.innerHTML = '<option value="all">全部状态</option>' + values.map((value) => `<option value="${proxyTrafficEsc(value)}">${proxyTrafficEsc(PROXY_TRAFFIC_STATUS_LABELS[value] || value)}</option>`).join('');
   });
