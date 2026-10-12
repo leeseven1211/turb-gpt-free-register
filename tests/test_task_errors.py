@@ -126,6 +126,37 @@ class TaskErrorClassificationTests(unittest.TestCase):
                 self.assertEqual(info["next_action"], next_action)
                 self.assertEqual(info["summary"], summary)
 
+    def test_email_change_local_email_conflicts_are_known_and_not_submitted(self):
+        cases = {
+            "目标邮箱已被本地账号占用，已停止换绑": (
+                "account.email_already_used",
+                "ACCT-003",
+                "目标邮箱已被使用",
+                "目标邮箱已被本地账号使用，换绑尚未提交；请更换邮箱后重试",
+            ),
+            "领取到的邮箱与当前邮箱相同，已停止换绑": (
+                "account.email_matches_current",
+                "ACCT-004",
+                "目标邮箱与当前邮箱相同",
+                "领取到的邮箱与当前邮箱相同，换绑尚未提交；请重新领取邮箱后重试",
+            ),
+        }
+        for message, (code, display_code, label, summary) in cases.items():
+            with self.subTest(message=message):
+                info = classify_task_error(
+                    message,
+                    task_type="email_change",
+                    stage="email",
+                    error_code="unknown.unclassified",
+                )
+                self.assertEqual(code, info["code"])
+                self.assertEqual(code, info["error_code"])
+                self.assertEqual(display_code, info["display_code"])
+                self.assertEqual(label, info["kind_label"])
+                self.assertEqual(summary, info["summary"])
+                self.assertEqual("retryable", info["retryability"])
+                self.assertEqual("not_started", info["remote_state_impact"])
+
     def test_email_change_projection_upgrades_coarse_persisted_error_code(self):
         info = classify_task_error(
             "/backend-api/accounts/change_email/begin 返回 422 (email_domain_rejected)",

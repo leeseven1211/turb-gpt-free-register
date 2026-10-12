@@ -46,6 +46,8 @@ class TaskErrorCode(str, Enum):
     EXTERNAL_NETWORK = "external.network"
     ACCOUNT_DEACTIVATED = "account.deactivated"
     ACCOUNT_TARGET_UNAVAILABLE = "account.target_unavailable"
+    ACCOUNT_EMAIL_ALREADY_USED = "account.email_already_used"
+    ACCOUNT_EMAIL_MATCHES_CURRENT = "account.email_matches_current"
     INTERNAL_STORAGE = "internal.storage"
     INTERNAL_CODE = "internal.code"
     INTERNAL_BROWSER = "internal.browser"
@@ -402,6 +404,20 @@ _COARSE_PROJECTED_ERROR_CODES = {
 
 _EMAIL_CHANGE_RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
     (
+        TaskErrorCode.ACCOUNT_EMAIL_ALREADY_USED.value,
+        "账号状态",
+        "目标邮箱已被使用",
+        "目标邮箱已被本地账号使用，换绑尚未提交；请更换邮箱后重试",
+        ("目标邮箱已被本地账号占用",),
+    ),
+    (
+        TaskErrorCode.ACCOUNT_EMAIL_MATCHES_CURRENT.value,
+        "邮箱准备",
+        "目标邮箱与当前邮箱相同",
+        "领取到的邮箱与当前邮箱相同，换绑尚未提交；请重新领取邮箱后重试",
+        ("领取到的邮箱与当前邮箱相同",),
+    ),
+    (
         TaskErrorCode.EXTERNAL_OPENAI_EMAIL_DOMAIN_REJECTED.value,
         "OpenAI / ChatGPT",
         "目标邮箱域名被拒绝",
@@ -439,6 +455,16 @@ _ERROR_METADATA: dict[str, dict[str, str]] = {
         "retryability": "not_retryable",
         "remote_state_impact": "remote_confirmed",
         "next_action": "none",
+    },
+    "account.email_already_used": {
+        "retryability": "retryable",
+        "remote_state_impact": "not_started",
+        "next_action": "retry_email_prepare",
+    },
+    "account.email_matches_current": {
+        "retryability": "retryable",
+        "remote_state_impact": "not_started",
+        "next_action": "retry_email_prepare",
     },
     "account.target_unavailable": {
         "retryability": "not_retryable",
@@ -658,6 +684,8 @@ _DISPLAY_CODES = {
     "service.interrupted": "SYS-002",
     "account.deactivated": "ACCT-001",
     "account.target_unavailable": "ACCT-002",
+    "account.email_already_used": "ACCT-003",
+    "account.email_matches_current": "ACCT-004",
     "task.pending": "STATE-001",
     "request_unknown": "REMOTE-001",
     "external.proxy": "PROXY-001",
@@ -706,6 +734,8 @@ _DISPLAY_SUMMARIES = {
     "service.interrupted": "服务重启导致任务中断",
     "account.deactivated": "账号已停用",
     "account.target_unavailable": "账号已删除或提链状态已重置",
+    "account.email_already_used": "目标邮箱已被使用",
+    "account.email_matches_current": "目标邮箱与当前邮箱相同",
     "task.pending": "套餐查询等待执行",
     "request_unknown": "远端结果待核验",
     "external.proxy": "代理获取失败",
