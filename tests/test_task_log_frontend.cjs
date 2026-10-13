@@ -484,3 +484,14 @@ test('进度详情按真实阶段显示事件，不把开始和完成算成重�
   assert.match(sandbox.result, /2\. 打开页面 · 已完成 · 2026-10-13T08:49:09Z/);
   assert.doesNotMatch(sandbox.result, /尝试记录|原始阶段|login_password|email_otp/);
 });
+
+test('旧阶段事件缺少实际时间时明确提示，不能借用阶段开始时间', () => {
+  const sandbox = runVm(`${stepFunctions}
+    result = taskProgressStepTooltip({
+      id: 'authenticate', label: '登录与身份验证', state: 'running',
+      attempts: [{raw_stage: 'submit_email', raw_stage_label: '提交邮箱', state: 'running',
+        started_at: '2026-10-13T09:24:23Z', created_at: null, event_time_known: false}],
+    });`, {formatDateTime: value => value});
+  assert.match(sandbox.result, /提交邮箱.*发生时间未记录/);
+  assert.doesNotMatch(sandbox.result, /2026-10-13T09:24:23Z/);
+});

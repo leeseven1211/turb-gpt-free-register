@@ -16,6 +16,70 @@ class OperationProjectionContractTests(TestCase):
         })
         self.assertEqual("2026-10-13T09:24:53+00:00", event["created_at"])
 
+    def test_legacy_running_preserves_independent_row_time(self):
+        event = operation._normalize_compatibility_event({
+            "source_system": "registration_progress_events", "event_type": "stage.running",
+            "created_at": "2026-10-13T09:24:53+00:00",
+            "detail": {"started_at": "2026-10-13T09:24:23+00:00"},
+        })
+        self.assertEqual("2026-10-13T09:24:53+00:00", event["created_at"])
+        self.assertTrue(event["event_time_known"])
+
+    def test_legacy_running_synthetic_time_is_unknown_without_losing_sort_order(self):
+        event = operation._normalize_compatibility_event({
+            "id": 9, "source_system": "registration_progress_events", "event_type": "stage.running",
+            "created_at": "2026-10-13T09:24:23+00:00",
+            "detail": {"started_at": "2026-10-13T09:24:23+00:00"},
+        })
+        self.assertIsNone(event["created_at"])
+        self.assertFalse(event["event_time_known"])
+        self.assertEqual("2026-10-13T09:24:23+00:00", operation._event_time_sort_key(event)[0].isoformat())
+
+    def test_terminal_time_takes_precedence_over_inherited_running_time(self):
+        event = operation._normalize_compatibility_event({
+            "source_system": "registration_progress_events", "event_type": "stage.failed",
+            "created_at": "2026-10-13T09:24:23+00:00",
+            "detail": {
+                "occurred_at": "2026-10-13T09:24:23+00:00",
+                "started_at": "2026-10-13T09:24:23+00:00",
+                "completed_at": "2026-10-13T09:25:03+00:00",
+            },
+        })
+        self.assertEqual("2026-10-13T09:25:03+00:00", event["created_at"])
+        self.assertTrue(event["event_time_known"])
+
+    def test_legacy_naive_stage_time_misstored_as_utc_is_not_independent_evidence(self):
+        event = operation._normalize_compatibility_event({
+            "source_system": "registration_progress_events", "event_type": "stage.running",
+            "created_at": "2026-10-13T17:24:23+00:00",
+            "detail": {"started_at": "2026-10-13T17:24:23"},
+        })
+        self.assertIsNone(event["created_at"])
+        self.assertFalse(event["event_time_known"])
+
+    def test_legacy_mutable_stage_row_time_cannot_confirm_new_running_event(self):
+        event = operation._normalize_compatibility_event({
+            "source_system": "registration_progress", "event_type": "stage.running",
+            "created_at": "2026-10-13T09:24:53+00:00",
+            "detail": {"started_at": "2026-10-13T09:25:23+00:00"},
+        })
+        self.assertIsNone(event["created_at"])
+        self.assertFalse(event["event_time_known"])
+
+    def test_old_unconfirmed_closeout_does_not_reuse_inherited_running_time(self):
+        detail = {
+            "state": "pending", "evidence": "unconfirmed",
+            "started_at": "2026-10-13T09:24:23+00:00", "occurred_at": "2026-10-13T09:24:53+00:00",
+        }
+        for confirmed in (False, True):
+            event = operation._normalize_compatibility_event({
+                "source_system": "registration_progress_events", "event_type": "stage.pending",
+                "created_at": "2026-10-13T09:24:53+00:00",
+                "detail": {**detail, **({"event_time_known": True} if confirmed else {})},
+            })
+            self.assertEqual("2026-10-13T09:24:53+00:00" if confirmed else None, event["created_at"])
+            self.assertEqual(confirmed, event["event_time_known"])
+
     def test_registration_unknown_never_offers_full_retry_or_postprocess(self):
         pending_account = {
             "id": 7,

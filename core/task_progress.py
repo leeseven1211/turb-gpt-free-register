@@ -96,6 +96,8 @@ def _original_stage(event: dict[str, Any]) -> str:
 def _event_time(event: dict[str, Any]) -> str | None:
     """事件发生时间与阶段开始时间分开，完成事件不能显示成开始时刻。"""
     detail = _event_detail(event)
+    if event.get("event_time_known", detail.get("event_time_known")) is False:
+        return None
     for key in ("created_at", "captured_at", "timestamp", "ts"):
         if event.get(key):
             return str(event[key])
@@ -208,6 +210,8 @@ def _record(item: dict[str, Any], event: dict[str, Any], state: str, *, raw: str
     if not observed:
         timestamp = None
     attempt = {"event_id": event_id, "event_uuid": event.get("event_uuid"), "transition_id": event.get("transition_id"), "state": state, "raw_stage": raw, "raw_stage_label": stage_label(raw), "event_type": event.get("event_type"), "created_at": timestamp, "message": message, "evidence": evidence}
+    if observed:
+        attempt["event_time_known"] = timestamp is not None
     if observed and detail.get("started_at") is not None:
         attempt["started_at"] = str(detail["started_at"])
     if observed and detail.get("completed_at") is not None:
@@ -540,6 +544,11 @@ def _legacy_events(run: dict[str, Any]) -> list[dict[str, Any]]:
             for key in ("step_id", "main_step_id", "evidence", "occurred_at", "started_at", "completed_at", "duration_ms", "message", "error_code", "route_attempt_no"):
                 if item.get(key) is not None:
                     detail[key] = item[key]
+            detail["event_time_known"] = bool(detail.get("occurred_at") or detail.get("captured_at") or detail.get("created_at") or (
+                state in {"success", "failed", "skipped", "stopped"} and detail.get("completed_at")
+            ))
+            if state == "pending" and detail.get("evidence") == "unconfirmed":
+                detail["event_time_known"] = item.get("event_time_known") is True
             result.append({"stage": stage, "event_type": "legacy.progress", "detail": {"step_state": state, **detail}, "message": item.get("message"), "legacy_index": index})
     if any(_event_detail(value).get("started_at") for value in result):
         result.sort(key=lambda value: (_time_value(_event_detail(value).get("started_at")) is None, _time_value(_event_detail(value).get("started_at")) or 0))
@@ -704,6 +713,8 @@ def _project_step_instances(steps: list[dict[str, Any]], attempts: list[dict[str
                 # 同一实例已经有终态后，迟到 running 仍保留事件编号供审计，
                 # 但不能清空完成时间或把主卡片退回运行中。
                 late_terminal_running = attempt_state == "running" and found.get("state") in terminal_states
+                if late_terminal_running:
+                    attempt["late_terminal_running"] = True
                 if not late_terminal_running:
                     found["state"] = attempt_state
                 if (attempt.get("started_at") or attempt.get("created_at")) and not found.get("started_at"):
@@ -806,9 +817,11 @@ def _project_current_instances(steps: list[dict[str, Any]]) -> dict[tuple[str, s
 def _attempts_for_current_instances(
     attempts: list[dict[str, Any]], selected: dict[tuple[str, str | None], str],
 ) -> list[dict[str, Any]]:
-    """过滤历史实例，避免旧失败覆盖当前卡片。"""
+    """过滤历史实例和终态后的审计回调，避免覆盖当前卡片。"""
     result = []
     for attempt in attempts:
+        if attempt.get("late_terminal_running"):
+            continue
         instance_id = attempt.get("step_instance_id")
         if instance_id:
             key = (str(attempt.get("main_step_id") or ""),

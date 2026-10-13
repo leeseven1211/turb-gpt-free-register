@@ -373,6 +373,54 @@ def test_registration_confirmed_otp_duration_stays_closed_when_token_arrives():
         assert auth["reason"] is None
 
 
+def test_registration_late_running_does_not_reopen_confirmed_authentication():
+    events = [
+        _event("otp-start", "email_otp", "running", created_at="2026-10-13T09:25:54Z", detail={
+            "step_instance_id": "otp-a", "started_at": "2026-10-13T09:25:54Z",
+        }),
+        _event("otp-end", "email_otp", "success", created_at="2026-10-13T09:26:23Z", detail={
+            "step_instance_id": "otp-a", "started_at": "2026-10-13T09:25:54Z",
+            "completed_at": "2026-10-13T09:26:23Z",
+        }),
+        _event("otp-late", "email_otp", "running", created_at="2026-10-13T09:26:25Z", detail={
+            "step_instance_id": "otp-a", "started_at": "2026-10-13T09:26:25Z",
+        }),
+    ]
+    for task_type in ("registration", "registration_resume"):
+        snapshot = build_progress_snapshot(1, 2, task_type, _run(), events)
+        auth = _step(snapshot, "authenticate")
+        assert auth["state"] == "success"
+        assert auth["completed_at"] == "2026-10-13T09:26:23Z"
+        assert auth["duration_ms"] == 29000
+        assert len(auth["attempts"]) == 3
+        assert auth["last_event_id"] == "otp-end"
+        assert snapshot["current"]["state"] == "success"
+        new_instance = _event("otp-reentry", "email_otp", "running", created_at="2026-10-13T09:26:30Z", detail={
+            "step_instance_id": "otp-b", "started_at": "2026-10-13T09:26:30Z",
+        })
+        reopened = _step(build_progress_snapshot(1, 2, task_type, _run(), [*events, new_instance]), "authenticate")
+        assert reopened["state"] == "running"
+        assert reopened["completed_at"] is None
+
+
+def test_unknown_legacy_event_time_does_not_fall_back_to_stage_start():
+    event = _event("old-running", "submit_email", "running", detail={
+        "started_at": "2026-10-13T09:24:23Z", "event_time_known": False,
+    })
+    for run, events in (
+        (_run(), [event]),
+        (_run(progress_steps={"submit_email": {"state": "running", "started_at": "2026-10-13T09:24:23Z"}}), []),
+        (_run(progress_steps={"submit_email": {
+            "state": "pending", "evidence": "unconfirmed", "started_at": "2026-10-13T09:24:23Z",
+            "occurred_at": "2026-10-13T09:24:53Z",
+        }}), []),
+    ):
+        auth = _step(build_progress_snapshot(1, 2, "registration", run, events), "authenticate")
+        assert auth["started_at"] == "2026-10-13T09:24:23Z"
+        assert auth["attempts"][0]["created_at"] is None
+        assert auth["attempts"][0]["event_time_known"] is False
+
+
 def test_same_route_authenticate_reentry_closes_parent_only_for_current_children():
     run = _run("running", route_attempt_no=2)
     events = [

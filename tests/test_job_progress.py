@@ -11,6 +11,99 @@ from tests.support_pg import PostgresTestCase
 
 
 class JobProgressTests(PostgresTestCase):
+    def _project_job_progress(self, job_id):
+        from core import account_task_store
+        from core.storage import operation
+
+        with patch.object(account_task_store, "_SCHEMA", self.schema), patch.object(account_task_store, "_READY_KEY", ""):
+            operation.sync_registration_job(job_id)
+            return operation.get_registration_progress([job_id])[job_id]["progress"]
+
+    def test_closeout_events_have_own_time_and_preserve_running_history(self):
+        from core.storage import operation
+
+        start, update, end = (f"2026-10-13T09:24:{second}+00:00" for second in ("23", "28", "53"))
+        for success, failure_state in ((True, "failed"), (False, "failed"), (False, "stopped")):
+            with self.subTest(success=success, failure_state=failure_state):
+                job = db.create_job("icloud_hide")
+                with patch.object(db, "_registration_now", return_value=start):
+                    db.update_job_progress(job["id"], "profile", "pending")
+                    db.update_job_progress(job["id"], "complete", "running")
+                    db.update_job_progress(job["id"], "email_otp", "running", step_instance_id="otp-a")
+                with patch.object(db, "_registration_now", return_value=update):
+                    db.update_job_progress(job["id"], "email_otp", "running", step_instance_id="otp-a")
+                with patch.object(db, "_registration_now", return_value=end):
+                    db.finish_job_progress(job["id"], success=success, failure_state=failure_state)
+                steps = db.get_job(job["id"])["progress_steps"]
+                self.assertEqual(end, steps["email_otp"]["occurred_at"])
+                self.assertEqual(start, steps["email_otp"]["started_at"])
+                self.assertEqual([start, update], [item["occurred_at"] for item in steps["email_otp"]["transitions"]])
+                self.assertEqual("pending" if success else failure_state, steps["email_otp"]["state"])
+                self.assertEqual(None if success else end, steps["email_otp"].get("completed_at"))
+                for stage in ("profile", "complete"):
+                    self.assertEqual(end, steps[stage]["occurred_at"])
+                self.assertNotIn("started_at", steps["profile"])
+                self.assertNotIn("completed_at", steps["profile"])
+                progress = self._project_job_progress(job["id"])
+                events = operation.list_task_events(progress["task_id"], run_id=progress["run_id"])["items"]
+                self.assertEqual([start, update, end], [item["created_at"] for item in events if item["raw_stage"] == "email_otp"])
+
+    def test_closeout_preserves_explicit_terminal_time_and_refreshes_complete_time(self):
+        start, terminal, end, repeat = (f"2026-10-13T09:24:{second}+00:00" for second in ("20", "23", "28", "53"))
+        for terminal_state in ("success", "failed", "stopped", "skipped"):
+            with self.subTest(terminal_state=terminal_state):
+                job = db.create_job("icloud_hide")
+                with patch.object(db, "_registration_now", return_value=start):
+                    db.update_job_progress(job["id"], "email_otp", "running")
+                with patch.object(db, "_registration_now", return_value=terminal):
+                    db.update_job_progress(job["id"], "email_otp", terminal_state)
+                before = db.get_job(job["id"])["progress_steps"]["email_otp"]
+                with patch.object(db, "_registration_now", return_value=end):
+                    db.finish_job_progress(job["id"], success=False)
+                after = db.get_job(job["id"])["progress_steps"]["email_otp"]
+                self.assertEqual(before, after)
+                self.assertEqual(end, db.get_job(job["id"])["progress_steps"]["complete"]["occurred_at"])
+                with patch.object(db, "_registration_now", return_value=repeat):
+                    db.finish_job_progress(job["id"], success=False)
+                self.assertEqual(repeat, db.get_job(job["id"])["progress_steps"]["complete"]["occurred_at"])
+
+    def test_recovery_event_uses_recovery_time_without_changing_running_history(self):
+        start, end = "2026-10-13T09:24:23+00:00", "2026-10-13T09:25:03+00:00"
+        job = db.create_job("icloud_hide")
+        db.update_job(job["id"], status="running")
+        with patch.object(db, "_registration_now", return_value=start):
+            db.update_job_progress(job["id"], "email_otp", "running", step_instance_id="otp-a")
+        with patch.object(db, "_registration_now", return_value=end):
+            self.assertEqual(1, db.recover_interrupted_registration_jobs())
+        step = db.get_job(job["id"])["progress_steps"]["email_otp"]
+        self.assertEqual(start, step["started_at"])
+        self.assertEqual(start, step["transitions"][0]["occurred_at"])
+        self.assertEqual(end, step["completed_at"])
+        self.assertEqual(end, step["occurred_at"])
+        progress = self._project_job_progress(job["id"])
+        auth = next(item for item in progress["main_steps"] if item["id"] == "authenticate")
+        self.assertEqual([start, end], [item["created_at"] for item in auth["attempts"]])
+
+    def test_legacy_sync_keeps_independent_row_time_and_marks_synthetic_time_unknown(self):
+        from core.storage import operation
+
+        start, actual = "2026-10-13T09:24:23+00:00", "2026-10-13T09:24:53+00:00"
+        job = db.create_job("icloud_hide")
+        db._patch_job(job["id"], {"progress_steps": {"submit_email": {
+            "state": "running", "started_at": start, "transition_id": "legacy-event",
+            "route_attempt_no": 1,
+        }}})
+        progress = self._project_job_progress(job["id"])
+        auth = next(item for item in progress["main_steps"] if item["id"] == "authenticate")
+        self.assertIsNone(auth["attempts"][0]["created_at"])
+        self.assertFalse(auth["attempts"][0]["event_time_known"])
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {operation._table('operation_events')} SET created_at=%s WHERE event_uuid=%s", (actual, "legacy-event"))
+        progress = self._project_job_progress(job["id"])
+        auth = next(item for item in progress["main_steps"] if item["id"] == "authenticate")
+        self.assertEqual(actual, auth["attempts"][0]["created_at"])
+        self.assertTrue(auth["attempts"][0]["event_time_known"])
+
     def test_repeated_running_events_keep_own_time_and_original_stage_start(self):
         from core import account_task_store
         from core.storage import operation

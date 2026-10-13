@@ -257,23 +257,60 @@ def _annotate_stage(record: dict, task_type: str, run: dict | None = None) -> di
     return record
 
 
+def _registration_progress_occurrence(detail: dict, state: str) -> datetime | None:
+    """只采用事件自身的时间；阶段开始不能代表后续每条消息发生的时刻。"""
+    if state == "pending" and detail.get("evidence") == "unconfirmed" and detail.get("event_time_known") is not True:
+        # 旧任务收尾曾继承 running 的 occurred_at，没有独立结束时间可用于恢复。
+        return None
+    keys = ("completed_at", "occurred_at") if not state or state in {"success", "failed", "skipped", "stopped"} else ("occurred_at",)
+    for key in keys:
+        try:
+            value = _legacy_registration_timestamp(detail.get(key))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if value is not None:
+            return value
+    return None
+
+
 def _normalize_compatibility_event(event: dict) -> dict:
     """只归一化由旧 registration_jobs progress_steps 派生的事件。"""
     if str(event.get("source_system") or "") not in {"registration_progress", "registration_progress_events"}:
         return event
     detail = event.get("detail") if isinstance(event.get("detail"), dict) else {}
-    raw_stamp = detail.get("occurred_at") or detail.get("completed_at") or detail.get("started_at")
-    try:
-        normalized = _legacy_registration_timestamp(raw_stamp)
-    except (TypeError, ValueError, OverflowError):
-        normalized = None
+    state = str(detail.get("step_state") or detail.get("state") or str(event.get("event_type") or "").removeprefix("stage.")).strip().lower()
+    normalized = _registration_progress_occurrence(detail, state)
     if normalized is not None:
         event["created_at"] = normalized.isoformat()
+        event["event_time_known"] = True
+        return event
+    # 旧投影曾把阶段起止时间写进 created_at。原行另有独立事件时间时保留；
+    # 与旧合成值相同的记录无法证明真实发生时间，只保留内部排序依据。
+    try:
+        stored = _legacy_timestamp(event.get("created_at"))
+        started = _legacy_registration_timestamp(detail.get("started_at"))
+        boundaries = {_legacy_registration_timestamp(detail.get(key)) for key in ("started_at", "completed_at")}
+        for key in ("started_at", "completed_at"):
+            if detail.get(key):
+                raw = datetime.fromisoformat(str(detail[key]).replace("Z", "+00:00"))
+                if raw.tzinfo is None:
+                    # 更早的行曾把本地墙钟误按 UTC 落库，同样不能当成独立事件时间。
+                    boundaries.add(raw.replace(tzinfo=timezone.utc))
+    except (TypeError, ValueError, OverflowError):
+        stored, started, boundaries = None, None, set()
+    if (not (state == "pending" and detail.get("evidence") == "unconfirmed")
+            and event.get("source_system") == "registration_progress_events"
+            and stored is not None and started is not None and stored >= started and stored not in boundaries):
+        event["event_time_known"] = True
+    else:
+        event["_sort_created_at"] = event.get("created_at") or event.get("_sort_created_at")
+        event["created_at"] = None
+        event["event_time_known"] = False
     return event
 
 
 def _event_time_sort_key(event: dict) -> tuple[datetime, int]:
-    raw = event.get("created_at")
+    raw = event.get("created_at") or event.get("_sort_created_at")
     try:
         parsed = _legacy_timestamp(raw)
     except (TypeError, ValueError, OverflowError):
@@ -1458,6 +1495,7 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
             transition_id = str(step.get("transition_id") or "")
             event_source_system = "registration_progress_events" if transition_id else "registration_progress"
             event_source_id = f"{job_id}:stage:{raw_stage}" + (f":{transition_id}" if transition_id else "")
+            occurred_at = _registration_progress_occurrence(step, state_value)
             cur.execute(
                 f"""
                 INSERT INTO {_table('operation_events')} (
@@ -1465,7 +1503,9 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
                     stage, event_type, error_category, error_code, message, detail
                 ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
                 ON CONFLICT (source_system, source_id) DO UPDATE SET
-                    task_id=EXCLUDED.task_id, run_id=EXCLUDED.run_id, created_at=EXCLUDED.created_at,
+                    task_id=EXCLUDED.task_id, run_id=EXCLUDED.run_id,
+                    created_at=CASE WHEN EXCLUDED.detail->>'event_time_known'='true'
+                                    THEN EXCLUDED.created_at ELSE {_table('operation_events')}.created_at END,
                     level=EXCLUDED.level, stage=EXCLUDED.stage, event_type=EXCLUDED.event_type,
                     error_category=EXCLUDED.error_category, error_code=EXCLUDED.error_code,
                     message=EXCLUDED.message, detail=EXCLUDED.detail
@@ -1474,9 +1514,7 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
                     transition_id or _uuid("event", f"registration_progress:{event_source_id}"), task_id, run_id,
                     event_source_system,
                     event_source_id,
-                    _legacy_registration_timestamp(step.get("occurred_at"))
-                    or _legacy_registration_timestamp(step.get("completed_at"))
-                    or _legacy_registration_timestamp(step.get("started_at"))
+                    occurred_at or _legacy_registration_timestamp(step.get("started_at"))
                     or updated_at or _now(),
                     level, stage, f"stage.{state_value}", category, code,
                     _text(step.get("detail") or state_value, 1200),
@@ -1484,6 +1522,7 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
                         "state": state_value, "step_state": state_value, "raw_stage": raw_stage,
                         "started_at": step.get("started_at"), "completed_at": step.get("completed_at"),
                         "occurred_at": step.get("occurred_at"),
+                        "event_time_known": occurred_at is not None,
                         "evidence": step.get("evidence") or "legacy_derived",
                         "route_attempt_no": step.get("route_attempt_no"),
                         "step_instance_id": step.get("step_instance_id") or step.get("transition_id"),

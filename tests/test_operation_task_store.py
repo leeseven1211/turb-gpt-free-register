@@ -318,8 +318,9 @@ class OperationTaskStoreTests(PostgresTestCase):
         for source, detail, expected in (
             ("registration_progress", {"completed_at": "2026-10-08T08:48:32Z"}, "2026-10-08T08:48:32+00:00"),
             ("registration_progress", {"completed_at": "2026-10-08T08:48:32+09:00"}, "2026-10-07T23:48:32+00:00"),
-            ("registration_progress", {}, "2026-10-08T08:48:32+00:00"),
-            ("registration_progress", {"completed_at": "invalid"}, "2026-10-08T08:48:32+00:00"),
+            # 旧快照没有可靠事件时间时，数据库默认时间也不能冒充实际发生时间。
+            ("registration_progress", {}, None),
+            ("registration_progress", {"completed_at": "invalid"}, None),
             ("registration_events", {"completed_at": "2026-10-08T08:48:32+09:00"}, "2026-10-08T08:48:32+00:00"),
             ("native_operations", {"completed_at": "2026-10-08T08:48:32+09:00"}, "2026-10-08T08:48:32+00:00"),
         ):

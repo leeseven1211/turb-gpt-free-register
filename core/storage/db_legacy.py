@@ -3666,6 +3666,7 @@ def finish_job_progress(
                         "detail": "该步骤未执行",
                         "evidence": "not_executed",
                         "transition_id": uuid.uuid4().hex,
+                        "occurred_at": now,
                     }
                     steps[key] = item
                     continue
@@ -3676,6 +3677,8 @@ def finish_job_progress(
                     item["evidence"] = "unconfirmed"
                     item["detail"] = "任务已结束，缺少该步骤的完成记录"
                     item["transition_id"] = uuid.uuid4().hex
+                    item["occurred_at"] = now
+                    item["event_time_known"] = True
                 steps[key] = item
         else:
             terminal_state = "stopped" if failure_state == "stopped" else "failed"
@@ -3694,7 +3697,8 @@ def finish_job_progress(
                 item["state"] = terminal_state
                 item["evidence"] = "last_activity"
                 item["transition_id"] = uuid.uuid4().hex
-            item["completed_at"] = now
+                item["occurred_at"] = now
+                item["completed_at"] = now
             if detail is not None and not item.get("detail"):
                 item["detail"] = str(detail)[:300]
             steps[target_key] = item
@@ -3712,6 +3716,7 @@ def finish_job_progress(
                     "detail": "前置步骤未完成，未执行",
                     "evidence": "not_executed",
                     "transition_id": uuid.uuid4().hex,
+                    "occurred_at": now,
                 }
 
         complete_state = "success" if success else ("stopped" if failure_state == "stopped" else "failed")
@@ -3721,6 +3726,7 @@ def finish_job_progress(
         complete_item.update({
             "state": complete_state,
             "transition_id": uuid.uuid4().hex,
+            "occurred_at": now,
             "evidence": "run_status",
             "started_at": overall_started_at,
             "completed_at": now,
@@ -3784,6 +3790,7 @@ def recover_interrupted_registration_jobs(
             item.update({
                 "state": "failed", "detail": detail[:300], "completed_at": now,
                 "transition_id": uuid.uuid4().hex, "evidence": "recovery",
+                "occurred_at": now,
             })
             steps[current] = item
             changes: dict[str, Any] = {
