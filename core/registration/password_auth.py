@@ -31,7 +31,7 @@ from .selenium_dom import (
     _safe_get, _select_or_type, _settings_page_not_ready, _set_element_value,
     _type_any,
 )
-from .session_auth import _has_access_token
+from .session_auth import _has_access_token, _read_profile_session_once
 from .mfa_auth import (
     _click_chatgpt_settings_control, _click_password_setting_fallback,
     _complete_settings_email_reauth, _dismiss_chatgpt_pricing_modal,
@@ -991,7 +991,8 @@ def _accept_profile_consents(driver) -> int:
         logger.debug('%s 勾选 profile consent 失败：%s', _log_prefix(driver), exc)
         return 0
 
-def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45, on_submit=None) -> bool:
+def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45, on_submit=None,
+                           *, expected_email: str | None = None) -> bool:
     """等待并完成姓名/生日页；若已经登录成功则返回 False，不把它当失败。"""
     end = time.time() + timeout
     y, m, d = birthday.split('-')
@@ -999,14 +1000,24 @@ def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45, 
     today = date.today()
     age = today.year - int(y) - ((today.month, today.day) < (int(m), int(d)))
     last_snapshot = {}
+
+    def confirm_session(snapshot: dict, deadline: float) -> bool:
+        current = urlsplit(str(snapshot.get("url") or ""))
+        if current.scheme != "https" or current.hostname != "chatgpt.com" or current.port not in (None, 443):
+            return False
+        _read_profile_session_once(driver, timeout=max(0.0, deadline - time.time()), expected_email=expected_email)
+        return True
+
     while time.time() < end:
         _check_manual_stop()
         time.sleep(1)
-        if _has_access_token(driver):
-            logger.info('%s 已检测到登录态，资料页可能已跳过', _log_prefix(driver))
-            return False
         snap = _page_snapshot(driver)
         last_snapshot = snap
+        if classify_page(snap) in {PageState.AUTH_ERROR, PageState.LOGGED_OUT}:
+            raise RuntimeError("request_unknown: 资料阶段进入认证错误页，账号创建结果未确认")
+        if confirm_session(snap, end):
+            logger.info('%s 已确认完整登录会话，资料页可能已跳过', _log_prefix(driver))
+            return False
         if not _is_profile_like(snap):
             logger.info('%s 等待资料页中：url=%s', _log_prefix(driver), snap.get('url'))
             continue
@@ -1070,14 +1081,15 @@ def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45, 
                     logger.debug('%s 资料页提交前切换 post-auth 省流量规则失败', _log_prefix(driver), exc_info=True)
             if _click_if_enabled_submit(driver):
                 logger.info('%s 已点击资料页提交按钮，等待 OAuth 跳转', _log_prefix(driver))
-                submit_end = time.time() + 45
+                submit_end = min(end, time.time() + 45)
                 while time.time() < submit_end:
+                    _check_manual_stop()
                     time.sleep(0.5)
-                    if _has_access_token(driver):
-                        return True
                     submitted_snapshot = _page_snapshot(driver)
                     if classify_page(submitted_snapshot) in {PageState.AUTH_ERROR, PageState.LOGGED_OUT}:
                         raise RuntimeError("request_unknown: 资料提交后进入认证错误页，账号创建结果未确认")
+                    if confirm_session(submitted_snapshot, submit_end):
+                        return True
                     rejection_marker = _profile_account_rejection_marker(driver)
                     if rejection_marker:
                         raise RuntimeError(

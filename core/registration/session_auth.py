@@ -86,21 +86,57 @@ def _has_access_token(driver, *, budget: StageBudget | None = None, timeout: flo
     except Exception:
         return False
 
-def _read_chatgpt_session_once(driver) -> dict | None:
+def _read_chatgpt_session_once(driver, *, timeout: float | None = None) -> dict | None:
     """当前页面必须在 chatgpt.com；读取 /api/auth/session，拿不到 token 返回 None。"""
     script = r"""
-    const done = arguments[0];
-    fetch('/api/auth/session', {credentials: 'include'})
+    const done = arguments[arguments.length - 1];
+    const timeoutMs = arguments.length > 1 ? Number(arguments[0]) : 0;
+    if (timeoutMs > 0 && location.origin !== 'https://chatgpt.com') {
+      done({ok:false, error_type:'origin_changed'}); return;
+    }
+    const controller = timeoutMs > 0 ? new AbortController() : null;
+    let settled = false, timer = null;
+    const finish = result => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      done(result);
+    };
+    if (controller) timer = setTimeout(() => {
+      controller.abort(); finish({ok:false, error_type:'timeout'});
+    }, timeoutMs);
+    fetch('/api/auth/session', {credentials: 'include', ...(controller ? {signal:controller.signal} : {})})
       .then(async r => {
         const text = await r.text();
         let data = {};
         try { data = JSON.parse(text || '{}'); } catch (_) { data = {text: text}; }
         if (data && typeof data === 'object') data._http_status = r.status;
-        done({ok: true, status: r.status, data: data});
+        finish({ok: true, status: r.status, data: data});
       })
-      .catch(e => done({ok: false, error: String(e)}));
+      .catch(() => finish({ok:false, error_type:'session_read_failed'}));
     """
-    result = driver.execute_async_script(script)
+    old_script_timeout = None
+    if timeout is not None:
+        timeout = _budget_timeout(None, max(0.0, float(timeout)), minimum=0.0)
+        if timeout <= 0:
+            raise StageTimeout("资料会话读取预算已耗尽")
+        current = urlsplit(str(getattr(driver, "current_url", "") or ""))
+        if current.scheme != "https" or current.hostname != "chatgpt.com" or current.port not in (None, 443):
+            return None
+        # Selenium 导航路径可能留下 8 秒脚本上限；只为本次完整响应体读取放宽并恢复。
+        previous = getattr(getattr(driver, "timeouts", None), "script", None)
+        if isinstance(previous, (int, float)) and callable(getattr(driver, "set_script_timeout", None)):
+            driver.set_script_timeout(timeout + 1.0)
+            old_script_timeout = previous
+    try:
+        result = (driver.execute_async_script(script) if timeout is None else
+                  driver.execute_async_script(script, max(1, int(timeout * 1000))))
+    finally:
+        if old_script_timeout is not None:
+            try:
+                driver.set_script_timeout(old_script_timeout)
+            except Exception:
+                logger.debug("%s 恢复 session 读取脚本超时失败", _log_prefix(driver))
     if result and result.get("ok"):
         data = result.get("data") or {}
         if data.get("accessToken"):
@@ -115,6 +151,28 @@ def _read_chatgpt_session_once(driver) -> dict | None:
             _log_prefix(driver), list(data.keys()), result.get("status"),
         )
     return None
+
+
+def _read_profile_session_once(driver, *, timeout: float, expected_email: str | None = None) -> dict:
+    """资料提交后只读取一次完整会话，身份匹配后供紧接着的 Token 阶段复用。"""
+    try:
+        data = _read_chatgpt_session_once(driver, timeout=timeout)
+    except Exception as exc:
+        _checkpoint()
+        raise RuntimeError("request_unknown: 资料提交后的会话读取未完成，已保留原提交") from exc
+    if not isinstance(data, dict) or not data.get("accessToken"):
+        raise RuntimeError("request_unknown: 资料提交后的会话尚未确认登录态，已保留原提交")
+    expected = str(expected_email or "").strip().casefold()
+    if expected:
+        user = data.get("user")
+        actual = str(user.get("email") or "").strip().casefold() if isinstance(user, dict) else ""
+        if not actual or actual != expected:
+            raise RuntimeError("request_unknown: session_identity_mismatch: 资料会话身份未匹配任务邮箱，已停止确认")
+        driver._registration_verified_session = {
+            "data": data, "email": expected, "url": str(driver.current_url),
+            "expires_at": time.monotonic() + 30.0,
+        }
+    return data
 
 
 def _read_chatgpt_session_document(driver) -> dict | None:
@@ -182,6 +240,17 @@ def _fetch_chatgpt_session(
         budget = context.budget
     timeout = _budget_timeout(budget, timeout, minimum=0.0)
     end = time.monotonic() + max(0.0, timeout)
+    cached = getattr(driver, "_registration_verified_session", None)
+    if isinstance(cached, dict):
+        driver._registration_verified_session = None
+        data = cached.get("data")
+        user = data.get("user") if isinstance(data, dict) else None
+        actual = str(user.get("email") or "").strip().casefold() if isinstance(user, dict) else ""
+        if (timeout > 0 and isinstance(data, dict) and data.get("accessToken") and actual
+                and actual == cached.get("email") and time.monotonic() < cached.get("expires_at", 0)
+                and str(getattr(driver, "current_url", "")) == cached.get("url")):
+            logger.info("%s 复用资料阶段已确认身份的完整会话", _log_prefix(driver))
+            return data
     auto_jump_end = time.monotonic() + max(3, int(auto_jump_wait or 15))
     last_data = None
     forced_chatgpt_open = False

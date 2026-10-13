@@ -106,7 +106,8 @@ class ProfilePageRegressionTests(unittest.TestCase):
 
         driver.execute_script.side_effect = [{"valid": True, "fields": []}, []]
         with (
-            patch.object(roxy_registration, "_has_access_token", side_effect=[False, False, True]) as session,
+            patch.object(roxy_registration, "_has_access_token") as short_probe,
+            patch.object(password_auth, "_read_profile_session_once", return_value={"accessToken": "test-token"}) as session,
             patch.object(roxy_registration, "_page_snapshot", side_effect=[profile, completed]),
             patch.object(roxy_registration, "_fill_birthday_or_age", side_effect=fill_birth),
             patch.object(roxy_registration, "_select_or_type", side_effect=fill_name),
@@ -123,7 +124,8 @@ class ProfilePageRegressionTests(unittest.TestCase):
             )
 
         self.assertEqual(order, ["birth", "name"])
-        self.assertEqual(session.call_count, 3)
+        session.assert_called_once()
+        short_probe.assert_not_called()
 
     def test_profile_error_landing_is_not_registration_success(self):
         driver = Mock()

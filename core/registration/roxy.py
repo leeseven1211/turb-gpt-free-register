@@ -1342,6 +1342,7 @@ def run_roxy_registration(
             birthday,
             timeout=60,
             on_submit=(data_saver.activate_post_auth if data_saver is not None else None),
+            expected_email=email,
         )
         if profile_submitted:
             remote_identity = "new_candidate"

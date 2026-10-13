@@ -244,7 +244,7 @@ def run_cloak_registration(
 
         report_job_progress("email_otp", "success", "邮箱验证码已通过")
         report_job_progress("profile", "running", "正在填写账号资料")
-        profile_submitted = _complete_profile_page(driver, name, birthday, timeout=60)
+        profile_submitted = _complete_profile_page(driver, name, birthday, timeout=60, expected_email=email)
         if profile_submitted:
             create_acknowledged = True
             human_delay("post_auth")
