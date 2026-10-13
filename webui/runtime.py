@@ -1875,6 +1875,13 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
             return False
 
         operation_task_store.init()
+        try:
+            from core import proxy_pool
+
+            # 代理池独立维护库存；任务线程只负责有界领取租约。
+            proxy_pool.start(prewarm=True)
+        except Exception:
+            active_logger.exception("独立代理池启动失败；代理任务将在领取时返回明确错误")
         _register_runtime_handlers()
         recovered_operation_runs = operation_task_store.recover_interrupted_runtime_runs()
         if recovered_operation_runs:

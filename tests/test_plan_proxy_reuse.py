@@ -34,7 +34,7 @@ class PlanProxyReuseTests(PostgresTestCase):
                 self.stack.enter_context(patch.object(proxy_provider, name, type(value)()))
 
     def _acquire(self, *, shared=False, purpose="plan-check"):
-        return proxy_provider.acquire_1024_proxy(
+        return proxy_provider.fetch_1024_proxy(
             api_url="https://proxy.example.test/api", region="US", validate=True,
             purpose=purpose, allow_reuse=shared,
         )
@@ -160,7 +160,7 @@ class PlanProxyReusePolicyTests(unittest.TestCase):
     def test_reuse_is_rejected_for_authentication_purposes(self):
         with patch("core.proxy_provider._direct_session") as request:
             with self.assertRaisesRegex(ValueError, "套餐查询"):
-                proxy_provider.acquire_1024_proxy(
+                proxy_provider.fetch_1024_proxy(
                     api_url="https://proxy.example.test/api", purpose="token-refresh", allow_reuse=True,
                 )
         request.assert_not_called()
@@ -173,7 +173,7 @@ class PlanProxyReusePolicyTests(unittest.TestCase):
             with (
                 self.subTest(purpose=purpose, override=override),
                 patch("config.proxy.PLAN_CHECK_PROXY_ALLOW_REUSE", True, create=True),
-                patch("core.account_proxy.acquire_1024_proxy", return_value=SimpleNamespace(
+                patch("core.proxy_pool.acquire", return_value=SimpleNamespace(
                     proxy_url="http://192.0.2.10:8080", provider="1024proxy", region="US",
                 )) as acquire,
             ):
@@ -181,4 +181,5 @@ class PlanProxyReusePolicyTests(unittest.TestCase):
                     account_id=7, purpose=purpose, region="US", source="provider:1024proxy",
                     allow_reuse=override,
                 )
+                self.assertEqual("1024proxy", acquire.call_args.kwargs["provider"])
                 self.assertEqual(expected, acquire.call_args.kwargs.get("allow_reuse", False))

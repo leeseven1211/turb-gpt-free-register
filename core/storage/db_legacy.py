@@ -3395,6 +3395,10 @@ def update_job_progress(
     stage: str,
     state: str = "running",
     detail: str | None = None,
+    *,
+    route_attempt_no: int | None = None,
+    step_instance_id: str | None = None,
+    operation_run_id: int | None = None,
 ) -> None:
     """记录明确的阶段转换；后续步骤开始不能代替前置步骤的成功证据。"""
     stage = str(stage or "").strip()
@@ -3413,13 +3417,72 @@ def update_job_progress(
         if not isinstance(steps, dict):
             steps = {}
 
-        route_attempt_no = max(1, int(row.get("route_attempt_no") or 1))
+        current_route_no = max(1, int(row.get("route_attempt_no") or 1))
+        event_route_no = max(1, int(route_attempt_no or current_route_no))
+        # 回调若明确携带旧线路上下文，只记录事实，不得把旧阶段写回
+        # 当前 progress_steps。这样晚到回调不会覆盖当前线路卡片。
+        if route_attempt_no is not None and event_route_no != current_route_no:
+            transition_id = uuid.uuid4().hex
+            task_run_log.append(
+                row.get("log_file"), level="ERROR" if state == "failed" else "INFO",
+                message=detail or f"任务阶段：{stage} · {state}", task_id=int(job_id),
+                stage=stage, event_type=f"stage.{state}", event_uuid=transition_id,
+                source_system="registration_progress_events", fields={
+                    "step_state": state, "route_attempt_no": event_route_no,
+                    "step_instance_id": str(step_instance_id or transition_id),
+                    "operation_run_id": operation_run_id,
+                }, created_at=now,
+            )
+            return
+        route_attempt_no = event_route_no
         item = steps.get(stage)
         if not isinstance(item, dict):
             item = {}
         transitions = list(item.get("transitions") or [])
         if not transitions and item.get("transition_id"):
             transitions.append({key: value for key, value in item.items() if key not in {"occurrences", "transitions"}})
+        terminal_states = {"success", "failed", "skipped", "stopped"}
+        # 同一显式实例已经结束时，迟到的 running 只是审计事实，不能重新打开
+        # 当前卡片。新的显式实例仍会正常走下面的 running 分支。
+        late_terminal_running = (
+            state == "running"
+            and step_instance_id is not None
+            and str(item.get("step_instance_id") or "") == str(step_instance_id)
+            and int(item.get("route_attempt_no") or route_attempt_no) == route_attempt_no
+            and item.get("state") in terminal_states
+        )
+        if late_terminal_running:
+            transition_id = uuid.uuid4().hex
+            audit_transition = {
+                "state": state,
+                "started_at": now,
+                "route_attempt_no": route_attempt_no,
+                "step_instance_id": str(step_instance_id),
+                "transition_id": transition_id,
+                "evidence": "explicit",
+            }
+            if detail is not None:
+                audit_transition["detail"] = str(detail)[:300]
+            transitions.append(audit_transition)
+            item["transitions"] = transitions
+            steps[stage] = item
+            _patch_job(job_id, {
+                "progress_steps": steps,
+                "progress_updated_at": now,
+                "progress_contract_version": 2,
+            })
+            task_run_log.append(
+                row.get("log_file"), level="INFO",
+                message=detail or f"任务阶段：{stage} · {state}", task_id=int(job_id),
+                stage=stage, event_type=f"stage.{state}", event_uuid=transition_id,
+                source_system="registration_progress_events", fields={
+                    "step_state": state,
+                    "route_attempt_no": route_attempt_no,
+                    "step_instance_id": str(step_instance_id),
+                    "operation_run_id": operation_run_id,
+                }, created_at=now,
+            )
+            return
         if state == "running" and (
             item.get("state") != "running"
             or int(item.get("route_attempt_no") or route_attempt_no) != route_attempt_no
@@ -3446,6 +3509,7 @@ def update_job_progress(
             item["route_attempt_no"] = route_attempt_no
         item["state"] = state
         item["transition_id"] = uuid.uuid4().hex
+        item["step_instance_id"] = str(step_instance_id or item["transition_id"])
         item["evidence"] = "explicit"
         if detail is not None:
             item["detail"] = str(detail)[:300]
@@ -3467,7 +3531,12 @@ def update_job_progress(
             message=detail or f"任务阶段：{stage} · {state}", task_id=int(job_id),
             stage=stage, event_type=f"stage.{state}",
             event_uuid=item["transition_id"], source_system="registration_progress_events",
-            fields={"step_state": state, "route_attempt_no": route_attempt_no},
+            fields={
+                "step_state": state,
+                "route_attempt_no": route_attempt_no,
+                "step_instance_id": item["step_instance_id"],
+                "operation_run_id": operation_run_id,
+            },
             created_at=now,
         )
 

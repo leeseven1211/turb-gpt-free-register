@@ -101,7 +101,7 @@ def create_proxy_traffic_blueprint(context: WebUIContext):
                 view="history", limit=limit, offset=offset,
             )
             browser_items = _traffic_items(limit, offset)
-        except Exception as exc:  # pragma: no cover - driver failures vary by deployment
+        except Exception as exc:  # pragma: no cover - 数据库异常依部署环境而异
             logger.exception("读取代理与流量聚合页面失败")
             return jsonify({"ok": False, "error": f"{type(exc).__name__}"}), 503
         return jsonify({
@@ -110,6 +110,20 @@ def create_proxy_traffic_blueprint(context: WebUIContext):
             "lease_history": lease_history,
             "browser_traffic": browser_items,
         })
+
+    @blueprint.get("/api/proxy-pool")
+    def api_proxy_pool():
+        """返回独立代理池只读快照；库存详情由核心层统一脱敏。"""
+        try:
+            from core import proxy_pool
+
+            snapshot = proxy_pool.snapshot()
+            if not isinstance(snapshot, dict):
+                raise ValueError("代理池快照格式无效")
+            return jsonify({"ok": True, **snapshot})
+        except Exception as exc:  # pragma: no cover - driver failures vary by deployment
+            logger.exception("读取独立代理池快照失败")
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}"}), 503
 
     @blueprint.get("/api/proxy-traffic/current")
     def api_proxy_traffic_current():

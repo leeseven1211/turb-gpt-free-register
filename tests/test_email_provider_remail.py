@@ -25,14 +25,20 @@ class RemailProviderTests(unittest.TestCase):
         with patch("core.remail_client.pick_account", return_value=SimpleNamespace(email="one@example.test")), patch(
             "core.email_provider._registered_email_source", return_value=None
         ):
-            self.assertEqual(email_provider.acquire_email("remail"), "one@example.test")
+            self.assertEqual(email_provider.acquire_email("remail", legacy_remail_compatibility=True), "one@example.test")
             self.assertEqual(email_provider.resolve_email_source("one@example.test"), "remail")
         with patch("core.remail_client.pick_account", side_effect=RuntimeError("订单待确认")), patch(
             "core.outlook_client.pick_account"
         ) as outlook:
             with self.assertRaisesRegex(RuntimeError, "所选邮箱来源 remail 领取失败"):
-                email_provider.acquire_email("remail")
+                email_provider.acquire_email("remail", legacy_remail_compatibility=True)
             outlook.assert_not_called()
+
+    def test_ownerless_remail_does_not_invoke_client(self):
+        with patch("core.remail_client.pick_account") as pick:
+            with self.assertRaisesRegex(RuntimeError, "缺少稳定 owner/acquisition_id"):
+                email_provider.acquire_email("remail")
+        pick.assert_not_called()
 
     def test_uncertain_order_preserves_reconciliation_without_fallback(self):
         from core.remail_client import RemailOrderUncertain
@@ -41,7 +47,7 @@ class RemailProviderTests(unittest.TestCase):
             "core.remail_client.pick_account", side_effect=RemailOrderUncertain("订单结果待核验")
         ), patch("core.outlook_client.pick_account") as outlook:
             with self.assertRaises(RemailOrderUncertain):
-                email_provider.acquire_email()
+                email_provider.acquire_email(legacy_remail_compatibility=True)
         outlook.assert_not_called()
 
     def test_otp_routes_explicit_source_with_time_and_wait_options(self):
@@ -63,8 +69,8 @@ class RemailProviderTests(unittest.TestCase):
         )) as restore, patch("core.remail_client.pick_account") as pick, patch.object(
             email_provider, "_is_configured_manual_email", return_value=False
         ):
-            self.assertEqual(email_provider.restore_email_context("one@example.test", source="remail"), "remail")
-        restore.assert_called_once_with("one@example.test")
+            self.assertEqual(email_provider.restore_email_context("one@example.test", source="remail", legacy_remail_compatibility=True), "remail")
+        restore.assert_called_once_with("one@example.test", compatibility=True)
         pick.assert_not_called()
 
     def test_restart_rejects_missing_or_mismatched_order(self):
@@ -75,7 +81,7 @@ class RemailProviderTests(unittest.TestCase):
                 email_provider, "_is_configured_manual_email", return_value=False
             ):
                 with self.assertRaisesRegex(RuntimeError, "不能改用其他邮箱重跑"):
-                    email_provider.restore_email_context("one@example.test", source="remail")
+                    email_provider.restore_email_context("one@example.test", source="remail", legacy_remail_compatibility=True)
                 pick.assert_not_called()
 
     def test_failure_retains_order_and_explicit_release_uses_remail(self):

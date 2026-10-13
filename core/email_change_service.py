@@ -731,7 +731,20 @@ def _acquire_email_change_target(
     duplicate_count = 0
     while True:
         context.checkpoint()
-        target = str(email_provider.acquire_email(source) or "").strip()
+        if str(source or "").strip().lower() == "remail":
+            run_data = context.run.get("data") if isinstance(context.run, Mapping) and isinstance(context.run.get("data"), Mapping) else {}
+            acquisition_id = str(run_data.get("remail_acquisition_id") or "").strip() or None
+            if acquisition_id:
+                target = str(email_provider.acquire_email(
+                    source,
+                    owner_kind="email_change",
+                    owner_id=int(context.task_id),
+                    acquisition_id=acquisition_id,
+                ) or "").strip()
+            else:
+                raise RuntimeError("Remail 换绑运行缺少稳定 acquisition_id，已停止下单")
+        else:
+            target = str(email_provider.acquire_email(source) or "").strip()
         if not target:
             return "", task_gateway.OperationResult.failed(
                 "邮箱池未返回新邮箱",
@@ -1184,10 +1197,11 @@ def _handle_email_change(context):
             error=str(exc) or "邮箱换绑任务已取消",
         )
         return task_gateway.OperationResult.cancelled(str(exc) or "邮箱换绑任务已取消")
-    except RemailOrderUncertain:
+    except RemailOrderUncertain as exc:
         # 领取新邮箱可能已产生付费订单，尚未开始 OpenAI 换绑也必须阻止重复领取。
         message = "Remail 邮箱订单结果待核验，请先核对原订单，禁止直接重试下单"
-        context.report(stage="email", state="failed", level="warning", message=message)
+        safe_details = exc.safe_details()
+        context.report(stage="email", state="failed", level="warning", message=message, detail={"safe_details": safe_details})
         db.finish_account_email_change(
             account_id,
             ok=False,
@@ -1197,7 +1211,7 @@ def _handle_email_change(context):
             outcome="request_unknown",
         )
         return task_gateway.OperationResult.request_unknown(
-            message, {"cause_code": "remail_order_request_unknown"},
+            message, {"cause_code": "remail_order_request_unknown", "safe_details": safe_details},
         )
     except RemoteRequestUnknown as exc:
         db.finish_account_email_change(
@@ -1363,6 +1377,7 @@ def submit_email_change(
         f"email-change:{int(account_id)}:{key}"
         if key else f"email-change:{int(account_id)}:{uuid.uuid4().hex}"
     )
+    acquisition_id = f"email-change:{int(account_id)}:{key or uuid.uuid4().hex}"
     submitted = task_gateway.submit_durable_operation(
         task_type=EMAIL_CHANGE_TASK_TYPE,
         account_id=int(account_id),
@@ -1377,6 +1392,7 @@ def submit_email_change(
         data={
             "email_source": selected_source,
             "proxy_source": _captured_proxy_source(None),
+            "remail_acquisition_id": acquisition_id,
         },
         config_snapshot_provider=_config_snapshot,
         config_allowlist=EMAIL_CHANGE_CONFIG_ALLOWLIST,

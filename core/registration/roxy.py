@@ -30,6 +30,7 @@ from core.registration.state_machine import (
 )
 from core.registration.auth_context import AuthExecutionContext
 from core.registration.email_otp import _EmailSubmissionUnknown
+from core.registration.browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact
 from core.auth_challenge import (
     MfaSecretMissingError,
     PasswordRejectedError,
@@ -40,6 +41,42 @@ from core.auth_challenge import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _receipt_accepts_submission_endpoint(receipt, endpoint_kind: str) -> bool:
+    expected = str(getattr(receipt, "endpoint_kind", "") or "")
+    endpoint_kind = str(endpoint_kind or "")
+    if expected == "nextauth_signin":
+        return endpoint_kind in {"nextauth_csrf", "nextauth_signin"}
+    return bool(expected and expected == endpoint_kind)
+
+
+def _unique_submission_receipt_for_endpoint(driver, endpoint_kind: str):
+    """仅在本 Run 存在唯一候选时把 CDP request 关联到提交事实。"""
+    history = getattr(driver, "_browser_submission_receipts", None)
+    if not isinstance(history, list):
+        history = []
+    candidates = [
+        item for item in history
+        if getattr(item, "phase", "") not in {"prepared", "not_dispatched"}
+        and _receipt_accepts_submission_endpoint(item, endpoint_kind)
+    ]
+    # 同 target/endpoint 的迟到 request 无法证明属于哪一次提交时，宁可不
+    # 补 request_fact，页面回执仍保留原有的安全结论。
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _submission_response_fact(endpoint_kind: str, status: object) -> tuple[str, str]:
+    """把已绑定响应转换为保守事实，不把 CSRF 失败冒充 signin 拒绝。"""
+    try:
+        code = int(status or 0)
+    except (TypeError, ValueError):
+        code = 0
+    if endpoint_kind != "nextauth_csrf" and code in {400, 401}:
+        return "rejected", "failure"
+    if 100 <= code < 400:
+        return "response_observed", "success"
+    return "response_observed", ""
 
 # These failures happen before a local account checkpoint exists. Keeping the
 # temporary Profile for them only consumes a Roxy slot; failures after a
@@ -703,6 +740,29 @@ def run_roxy_registration(
         except Exception:
             logger.exception("[Roxy注册][Debug] 启动浏览器网络抓包失败；注册流程继续执行")
         driver = _build_driver(opened)
+        # 认证事实共用当前 Attempt/Run；CDP 观察器只需从 driver 读取这份只读
+        # 上下文，不另起消费者或在事件里复制敏感凭据。
+        try:
+            from core.registration_service import registration_fact_context
+            driver._registration_fact_context = dict(registration_fact_context())
+        except Exception:
+            driver._registration_fact_context = None
+        # 只有明确的 registration_resume Run 才能进入恢复登录 action scope。
+        # 普通注册人工重跑即使带着旧密码，也不能借 resume_login 绕过旧未知围栏。
+        resume_scope = False
+        context = driver._registration_fact_context or {}
+        if existing_password and context.get("run_id") is not None:
+            try:
+                from core.storage import registration
+
+                run = registration.get_run(int(context["run_id"])) or {}
+                resume_scope = (
+                    str(run.get("action_type") or "") == "registration_resume"
+                    and str(run.get("status") or "") in {"queued", "running"}
+                )
+            except Exception:
+                logger.exception("[Roxy注册] 校验 registration_resume Run 失败，关闭恢复提交范围")
+        driver._registration_resume_login = resume_scope
         from .password_auth import _install_auth_initialization_observer
         _install_auth_initialization_observer(driver)
         from core.browser_asset_policy import start_registration_asset_cache
@@ -715,6 +775,50 @@ def run_roxy_registration(
             setter = getattr(traffic_capture, "set_data_saver", None)
             if callable(setter):
                 setter(data_saver)
+            observe = getattr(traffic_capture, "set_submission_observer", None)
+            if callable(observe):
+                submission_requests = {}
+
+                def _observe_auth_submission(meta):
+                    request_key = (
+                        str(meta.get("target_id") or ""),
+                        str(meta.get("request_id") or ""),
+                    )
+                    endpoint_kind = str(meta.get("endpoint_kind") or "")
+                    # 没有 CDP requestId 时无法把 response 与同端点提交绑定；
+                    # 不使用空键，避免两个并发请求互相覆盖。
+                    if not request_key[1]:
+                        return
+                    if meta.get("response"):
+                        receipt = submission_requests.pop(request_key, None)
+                        if receipt is None:
+                            # 只接受当前连接内已见 request 的 response；避免
+                            # A 请求迟到时被当前 B receipt 错配。
+                            return
+                    else:
+                        receipt = _unique_submission_receipt_for_endpoint(driver, endpoint_kind)
+                        if receipt is None:
+                            return
+                        submission_requests[request_key] = receipt
+                    phase = "response_observed" if meta.get("response") else "request_observed"
+                    try:
+                        status = int(meta.get("http_status") or 0)
+                    except (TypeError, ValueError):
+                        status = 0
+                    # 只有同一已匹配提交的 signin/业务 POST 收到明确 400/401
+                    # 才能收口为拒绝；CSRF 端点的 400 只说明读取失败。
+                    phase, response_result = _submission_response_fact(endpoint_kind, status)
+                    if not meta.get("response"):
+                        phase, response_result = "request_observed", ""
+                    record_browser_submission_fact(
+                        driver, phase, receipt=receipt,
+                        endpoint_kind=endpoint_kind,
+                        http_method=meta.get("http_method"),
+                        http_status=meta.get("http_status"),
+                        duration_ms=meta.get("duration_ms"),
+                        result=response_result,
+                    )
+                observe(_observe_auth_submission)
         from core import registration_plan_capture
         registration_plan_capture.install_selenium(driver)
         report_job_progress("browser", "success", "Roxy 浏览器环境已启动")
@@ -755,7 +859,7 @@ def run_roxy_registration(
             email,
             attempts=3,
             on_submitted=_mark_email_submitted,
-            allow_login_password=bool(existing_password),
+            allow_login_password=resume_scope,
         )
         remote_identity = classify_registration_identity(next_state)
         _check_manual_stop()
@@ -779,26 +883,40 @@ def run_roxy_registration(
         )
 
         password_submitted_this_run = False
+        password_prepared_this_run = False
+
+        def _checkpoint_prepared_password(password: str) -> None:
+            """在异步密码点击前保存原密码，供同一 Attempt 续跑。"""
+            nonlocal password_prepared_this_run
+            password_prepared_this_run = True
+            try:
+                from core.registration.checkpoints import save_protocol_password_checkpoint
+
+                save_protocol_password_checkpoint(
+                    email=email, password=password, state="prepared", proxy=proxy,
+                    email_source=selected_email_source,
+                )
+            except Exception:
+                # 生产浏览器入口没有 Attempt 就不能证明原密码已持久化；
+                # 只有测试/显式旧适配器标记允许继续，避免异步点击后丢失恢复凭据。
+                context = getattr(driver, "_registration_fact_context", {}) or {}
+                if context.get("attempt_id") is not None or not getattr(driver, "_registration_legacy_compat", False):
+                    raise
 
         def _checkpoint_submitted_password(password: str) -> None:
-            nonlocal account_id, create_acknowledged, password_submitted_this_run
+            nonlocal password_submitted_this_run
             password_submitted_this_run = True
-            if existing_password or account_id is not None:
-                return
-            account_id = _save_pending_email_verification_checkpoint(
-                email=email,
-                openai_password=password,
-                opened=opened,
-                proxy=proxy,
-                email_source=selected_email_source,
-            )
-            report_registered_account(account_id)
-            create_acknowledged = True
-            logger.info(
-                "[Roxy注册] 密码提交结果待确认，已保存可恢复检查点：id=%s email=%s",
-                account_id,
-                email,
-            )
+            try:
+                from core.registration.checkpoints import save_protocol_password_checkpoint
+
+                save_protocol_password_checkpoint(
+                    email=email, password=password, state="started", proxy=proxy,
+                    email_source=selected_email_source,
+                )
+            except Exception:
+                context = getattr(driver, "_registration_fact_context", {}) or {}
+                if context.get("attempt_id") is not None or not getattr(driver, "_registration_legacy_compat", False):
+                    raise
 
         try:
             openai_password = _fill_password_page_if_present(
@@ -806,6 +924,7 @@ def run_roxy_registration(
                 email,
                 timeout=25,
                 existing_password=existing_password,
+                on_password_prepared=_checkpoint_prepared_password,
                 on_password_submitted=_checkpoint_submitted_password,
             )
         except _PasswordTransitionTimeout:
@@ -918,7 +1037,10 @@ def run_roxy_registration(
                     }
                     if selected_email_source is not None:
                         otp_kwargs["email_source"] = selected_email_source
-                    current_otp = wait_for_otp(email, **otp_kwargs)
+                    # 将同一份 240 秒总预算传入邮箱 provider；provider 内部会
+                    # 通过 mailbox_wait 裁剪实际 HTTP/IMAP I/O，不能只限制外层
+                    # Python 循环的 max_wait。
+                    current_otp = wait_for_otp(email, budget=otp_budget, **otp_kwargs)
                 except Exception as exc:
                     if otp_attempt >= max_otp_attempts:
                         failure_code, failure_detail = _classify_otp_wait_failure(
@@ -964,7 +1086,7 @@ def run_roxy_registration(
                         ui_ack=last_otp_ui_ack,
                         detail="等待超时后请求重新发送验证码",
                     )
-                    human_delay("api")
+                    human_delay("api", budget=otp_budget)
                     current_otp = None
                     continue
             if not submitted_otps.accept(current_otp):
@@ -999,10 +1121,23 @@ def run_roxy_registration(
                     ui_ack=last_otp_ui_ack,
                     detail="拒绝重复验证码后请求重新发送",
                 )
-                human_delay("api")
+                human_delay("api", budget=otp_budget)
                 current_otp = None
                 continue
             logger.info("[Roxy注册][OTP] 已收到验证码")
+            # 某些验证码控件在最后一位输入后可能自动提交；因此在清空/填写
+            # 之前先落库本次提交意图和页面基线，任何自动提交都归属于本回执。
+            otp_submission = BrowserSubmissionReceipt(
+                kind="resume_login" if getattr(driver, "_registration_resume_login", False) else "otp",
+                stage="email_otp", endpoint_kind="otp_submit", http_method="POST",
+            )
+            driver._browser_submission_receipt = otp_submission
+            record_browser_submission_fact(driver, "prepared", receipt=otp_submission)
+            record_browser_submission_fact(driver, "dispatch_intent", receipt=otp_submission)
+            try:
+                otp_submit_baseline = _email_otp_page_state(driver)
+            except Exception:
+                otp_submit_baseline = {}
             _clear_otp_inputs(driver)
             otp_input_timeout = _budget_timeout(otp_budget, 20, minimum=1)
             if otp_input_timeout < 1:
@@ -1012,14 +1147,35 @@ def run_roxy_registration(
             _check_manual_stop()
             # OTP 页面已经确认可提交；保留极短的人类化停顿，但不要让默认
             # 的“切回邮箱/阅读验证码”长区间拖慢每个批次。
-            human_delay("otp_input", minimum=0.35, maximum=1.0)
+            human_delay("otp_input", minimum=0.35, maximum=1.0, budget=otp_budget)
             try:
                 _click_continue(driver)
+                record_browser_submission_fact(driver, "ui_dispatched", receipt=otp_submission)
                 logger.info("[Roxy注册][OTP] 已提交邮箱验证码，等待资料页或登录态")
             except Exception as exc:
+                # 点击回调抛错不能证明没有派发；保守保留未知围栏，禁止同一候选重放。
+                record_browser_submission_fact(
+                    driver, "unknown", receipt=otp_submission, result="unknown",
+                    error_type=type(exc).__name__,
+                )
                 logger.info("[Roxy注册][OTP] 未找到显式提交按钮，继续等待页面状态：%s", str(exc)[:120])
 
-            outcome = _wait_after_email_otp_submit(driver, timeout=30, budget=otp_budget)
+            outcome = _wait_after_email_otp_submit(
+                driver, timeout=60, budget=otp_budget,
+                baseline_state=otp_submit_baseline,
+            )
+            if outcome in ("accepted", "email_verified", "totp_required"):
+                record_browser_submission_fact(driver, "confirmed", receipt=otp_submission, result="success")
+            elif outcome == "invalid":
+                record_browser_submission_fact(driver, "rejected", receipt=otp_submission, result="failure")
+            elif outcome == "stuck":
+                # 60 秒确认截止仍未知时，不能把停页解释为验证码错误并重发。
+                record_browser_submission_fact(driver, "unknown", receipt=otp_submission, result="timeout")
+                failure_code = "otp_request_unconfirmed"
+                failure_detail = "验证码提交可能已派发，但 60 秒内未确认结果；保留原 Attempt，未自动重发"
+                report_job_otp_evidence(detail=failure_detail, failure_code=failure_code)
+                report_job_progress("email_otp", "failed", f"{failure_code}: {failure_detail}")
+                raise RuntimeError(f"{failure_code}: {failure_detail}")
             if outcome == "totp_required":
                 # A TOTP challenge after email verification proves that this
                 # address is continuing an existing account authentication;
@@ -1072,7 +1228,7 @@ def run_roxy_registration(
                 ui_ack=last_otp_ui_ack,
                 detail="验证码无效或页面未推进后请求重新发送",
             )
-            human_delay("api")
+            human_delay("api", budget=otp_budget)
             current_otp = None
 
         report_job_progress(

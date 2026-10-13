@@ -83,6 +83,33 @@ class ProtocolStandaloneTests(PostgresTestCase):
             run_protocol_in_context(lambda **kwargs: self.fail("不应调用驱动"), {"email": self.email})
         self.assertEqual(registration.list_runs(original["id"]), [])
 
+    def test_existing_cli_attempt_rejects_source_or_driver_switch(self):
+        registration_standalone.prepare_attempt(
+            self.email, email_source="outlook", entrypoint="protocol_cli", driver="protocol",
+        )
+        with self.assertRaisesRegex(RuntimeError, "邮箱来源不一致"):
+            registration_standalone.prepare_attempt(
+                self.email, email_source="remail", entrypoint="protocol_cli", driver="protocol",
+            )
+        with self.assertRaisesRegex(RuntimeError, "驱动不一致"):
+            registration_standalone.prepare_attempt(
+                self.email, email_source="outlook", entrypoint="protocol_cli", driver="roxy",
+            )
+
+    def test_cli_resume_without_source_reuses_attempt_source(self):
+        registration_standalone.prepare_attempt(
+            self.email, email_source="remail", entrypoint="protocol_cli", driver="protocol",
+        )
+
+        seen_sources = []
+
+        def driver(**kwargs):
+            seen_sources.append(kwargs.get("email_source"))
+            return {"registration_success": False, "status": "failed"}
+
+        run_protocol_in_context(driver, {"email": self.email, "name": "Fixture", "email_source": None})
+        self.assertEqual(seen_sources, ["remail"])
+
     def test_existing_complete_context_does_not_create_another_attempt(self):
         for key, value in {"attempt_id": 11, "run_id": 12, "execution_id": "fixture", "job_id": 13}.items():
             setattr(service._THREAD_CTX, key, value)
@@ -90,6 +117,50 @@ class ProtocolStandaloneTests(PostgresTestCase):
         with patch.object(registration_standalone, "prepare_attempt") as prepare:
             self.assertIs(run_protocol_in_context(lambda **kwargs: expected, {"email": self.email}), expected)
         prepare.assert_not_called()
+
+    def test_roxy_cli_without_context_persists_driver_identity_and_unknown_run(self):
+        from core.registration import dispatcher
+        seen = {}
+
+        def roxy(**kwargs):
+            facts = service.registration_fact_context()
+            seen.update(facts)
+            registration.advance_checkpoint(
+                facts["attempt_id"], "password_request_started",
+                run_id=facts["run_id"], execution_id=facts["execution_id"],
+            )
+            return {
+                "success": False,
+                "registration_success": False,
+                "request_unknown": True,
+                "error_code": "request_unknown",
+                "error": "Roxy 提交结果待核验",
+            }
+
+        with patch.object(dispatcher._roxy_cfg, "REGISTRATION_DRIVER", "roxy"), patch(
+            "core.registration.roxy.run_roxy_registration", side_effect=roxy,
+        ):
+            result = dispatcher.run_registration(
+                email=self.email, name="Fixture", birthday="1990-01-01",
+            )
+
+        self.assertTrue(result["request_unknown"])
+        self.assertIsNotNone(seen["attempt_id"])
+        self.assertIsNotNone(seen["run_id"])
+        self.assertTrue(seen["execution_id"])
+        attempt = registration_standalone.prepare_attempt(
+            self.email, entrypoint="roxy_cli", driver="roxy",
+        )
+        self.assertEqual(attempt["driver"], "roxy")
+        self.assertEqual(attempt["data"]["entrypoint"], "roxy_cli")
+        runs = registration.list_runs(attempt["id"])
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["status"], "request_unknown")
+        self.assertEqual(runs[0]["error_code"], "request_unknown")
+        self.assertEqual(
+            registration.get_attempt(attempt["id"])["remote_identity_state"],
+            "request_unknown",
+        )
 
     def test_partial_context_fails_before_driver_and_db_mutation(self):
         service._THREAD_CTX.job_id = 13
@@ -138,6 +209,7 @@ class ProtocolStandaloneTests(PostgresTestCase):
         global_recovery.assert_not_called()
         self.assertEqual(registration.get_run(run["id"])["status"], "request_unknown")
         self.assertEqual(registration.get_run(other_run["id"])["status"], "running")
+        self.assertEqual(registration.get_attempt(attempt["id"])["target_status"], "request_unknown")
         self.assertEqual(len(registration.list_runs(attempt["id"])), 2)
 
     def test_dead_prepared_run_stays_interrupted_and_does_not_claim_submission(self):

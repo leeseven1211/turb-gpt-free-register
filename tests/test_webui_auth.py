@@ -55,7 +55,7 @@ class WebUiAuthTests(PostgresTestCase):
             r.close()
 
     @patch("core.proxy_provider.release_proxy")
-    @patch("core.proxy_provider.acquire_1024_proxy")
+    @patch("core.proxy_provider.fetch_1024_proxy")
     def test_proxy_provider_test_endpoint(self, acquire, release):
         lease = SimpleNamespace(public_dict=lambda: {
             "provider": "1024proxy",

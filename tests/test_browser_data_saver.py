@@ -13,6 +13,14 @@ from core.browser_flow_policy import (
     install_for_flow,
     opening_resource_types,
 )
+from core.registration.browser_submission import (
+    BrowserSubmissionReceipt,
+    record_browser_submission_fact,
+)
+from core.registration.roxy import (
+    _submission_response_fact,
+    _unique_submission_receipt_for_endpoint,
+)
 
 
 class _Driver:
@@ -229,6 +237,60 @@ class BrowserDataSaverTests(unittest.TestCase):
         summary = session.summary()
         self.assertEqual(summary["total_bytes"], 0)
         self.assertEqual(summary["request_count"], 1)
+
+    def test_submission_observer_emits_endpoint_kind_and_keeps_request_identity(self):
+        session = _SummaryOnlyCDPSession("profile-test")
+        observed = []
+        session.submission_observer = observed.append
+        session._observe_submission({
+            "url": "https://chatgpt.com/api/auth/signin/openai?state=private",
+            "method": "POST",
+            "request_id": "request-a",
+            "target_id": "target-a",
+        })
+        session.record_network({
+            "url": "https://chatgpt.com/api/auth/signin/openai?state=private",
+            "method": "POST",
+            "status": 302,
+            "request_id": "request-a",
+            "target_id": "target-a",
+        })
+        self.assertEqual([item["endpoint_kind"] for item in observed], ["nextauth_signin", "nextauth_signin"])
+        self.assertEqual(
+            [(item["request_id"], item["target_id"]) for item in observed],
+            [("request-a", "target-a"), ("request-a", "target-a")],
+        )
+        self.assertNotIn("state", observed[0])
+
+    def test_submission_receipt_updates_after_durable_helper_and_rejects_ambiguous_late_request(self):
+        driver = SimpleNamespace(_registration_fact_context=None)
+        receipt = BrowserSubmissionReceipt(
+            kind="otp", stage="email_otp", endpoint_kind="otp_submit", http_method="POST",
+        )
+        driver._browser_submission_receipt = receipt
+        record_browser_submission_fact(driver, "prepared", receipt=receipt)
+        record_browser_submission_fact(driver, "dispatch_intent", receipt=receipt)
+        self.assertEqual(receipt.phase, "dispatch_intent")
+        self.assertIs(_unique_submission_receipt_for_endpoint(driver, "otp_submit"), receipt)
+
+        # 页面确认先到时，迟到的 CDP request 不能把回执倒退为 request_observed。
+        record_browser_submission_fact(driver, "confirmed", receipt=receipt, result="success")
+        record_browser_submission_fact(driver, "request_observed", receipt=receipt)
+        self.assertEqual(receipt.phase, "confirmed")
+
+        # 同一端点存在两个可能提交时无法证明迟到请求属于哪一次，宁可不绑定。
+        second = BrowserSubmissionReceipt(
+            kind="otp", stage="email_otp", endpoint_kind="otp_submit", http_method="POST",
+        )
+        driver._browser_submission_receipt = second
+        record_browser_submission_fact(driver, "dispatch_intent", receipt=second)
+        self.assertIsNone(_unique_submission_receipt_for_endpoint(driver, "otp_submit"))
+
+    def test_submission_response_rejection_requires_non_csrf_explicit_status(self):
+        self.assertEqual(_submission_response_fact("nextauth_signin", 401), ("rejected", "failure"))
+        self.assertEqual(_submission_response_fact("password_submit", 400), ("rejected", "failure"))
+        self.assertEqual(_submission_response_fact("nextauth_csrf", 400), ("response_observed", ""))
+        self.assertEqual(_submission_response_fact("nextauth_signin", 503), ("response_observed", ""))
 
 
 if __name__ == "__main__":

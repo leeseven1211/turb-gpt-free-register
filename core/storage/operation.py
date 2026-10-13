@@ -1266,6 +1266,9 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
     projection_data = {
         "legacy_root_job_id": root_job_id,
         "latest_legacy_job_id": job_id,
+        # 线路号属于本次 Run 的上下文；投影器据此隔离晚到的旧线路事件。
+        "route_attempt_no": max(1, int(job.get("route_attempt_no") or 1)),
+        "selected_route_attempt_no": max(1, int(job.get("route_attempt_no") or 1)),
     }
     if isinstance(job.get("config_snapshot"), dict):
         projection_data["config_snapshot"] = dict(job["config_snapshot"])
@@ -1430,6 +1433,8 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
             _json({
                 "legacy_job_id": job_id,
                 "parent_job_id": job.get("parent_job_id"),
+                "route_attempt_no": max(1, int(job.get("route_attempt_no") or 1)),
+                "selected_route_attempt_no": max(1, int(job.get("route_attempt_no") or 1)),
                 "route_attempts": job.get("route_attempts") or [],
                 "failure_stage": job.get("failure_stage"),
                 **({"config_snapshot": dict(job["config_snapshot"])} if isinstance(job.get("config_snapshot"), dict) else {}),
@@ -1479,6 +1484,7 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
                         "started_at": step.get("started_at"), "completed_at": step.get("completed_at"),
                         "evidence": step.get("evidence") or "legacy_derived",
                         "route_attempt_no": step.get("route_attempt_no"),
+                        "step_instance_id": step.get("step_instance_id") or step.get("transition_id"),
                     }),
                 ),
             )
@@ -2247,7 +2253,9 @@ def _project_registration_fact_events(cur, batch_id: int) -> int:
             )
             operation_run = cur.fetchone()
             event_run_id = int(operation_run["id"]) if operation_run else None
-        event_run_id = event_run_id or (int(task["last_run_id"]) if task.get("last_run_id") else None)
+        # registration_events 可能来自旧导出，缺少 job/run 关联时只能保留
+        # 未知归属；不能把迟到事件借当前 task.last_run_id 伪装成当前 Run。
+        # 否则历史线路的回调会在下一次执行中显示为当前步骤事实。
         stage, event_type, detail, error, level = _compat_registration_event_detail(event)
         category, code, _ = _error_fields(error, stage=stage, task_type="registration")
         source_event_id = str(event.get("event_uuid") or event.get("id"))

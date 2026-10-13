@@ -18,6 +18,7 @@ from core.humanize import delay as _human_delay
 from core.registration.state_machine import PageState, StageBudget, StageTimeout, classify_page
 
 from .auth_context import checkpoint as _checkpoint, install_dispatches, time_proxy
+from .browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact
 from .email_otp import (
     _clear_otp_inputs, _is_email_verification_page, _type_otp,
 )
@@ -578,6 +579,7 @@ def _fill_password_page_if_present(
     timeout: int = 25,
     *,
     existing_password: str | None = None,
+    on_password_prepared=None,
     on_password_submitted=None,
 ) -> str | None:
     """处理注册/登录密码页，并返回本次确认可用的 OpenAI 账号密码。
@@ -720,6 +722,15 @@ def _fill_password_page_if_present(
         return {ok:true, reason:'password_submit_queued'};
         """
         filled_input = None
+        prepared_reported = False
+        submission_receipt = BrowserSubmissionReceipt(
+            kind="resume_login" if getattr(driver, "_registration_resume_login", False) else "password",
+            stage="login_password" if is_login_password else "password_create",
+            endpoint_kind="password_submit",
+            http_method="POST",
+        )
+        driver._browser_submission_receipt = submission_receipt
+        last_safe_pre_dispatch_failure = False
         while True:
             _check_manual_stop()
             if filled_input is None:
@@ -735,17 +746,35 @@ def _fill_password_page_if_present(
                         result = {"ok": False, "reason": "password_input_replaced"}
                     else:
                         human_delay("form", minimum=0.4, maximum=1.4)
+                        if not prepared_reported:
+                            # 原密码在异步点击前先保存；保存失败时不进入提交窗口。
+                            if on_password_prepared is not None:
+                                on_password_prepared(password)
+                            record_browser_submission_fact(
+                                driver, "prepared", receipt=submission_receipt,
+                            )
+                            prepared_reported = True
             if filled_input is not None:
+                # 定时器排队前建立持久围栏，UI queued/click 不等于 HTTP 成功。
+                record_browser_submission_fact(
+                    driver, "dispatch_intent", receipt=submission_receipt,
+                )
+                last_safe_pre_dispatch_failure = False
                 try:
                     result = driver.execute_script(target_script, "queue", password, filled_input)
                 except Exception as exc:
                     # 浏览器可能已经排队或派发；保留原密码后收口，不因桥接异常重复点击。
+                    record_browser_submission_fact(
+                        driver, "unknown", receipt=submission_receipt, result="unknown",
+                        error_type=type(exc).__name__,
+                    )
                     if on_password_submitted is not None:
                         on_password_submitted(password)
                     raise _PasswordTransitionTimeout(
                         "request_unknown: 密码提交排队回执丢失，已保留原密码且未重复提交"
                     ) from exc
                 if isinstance(result, dict) and result.get("ok") is True and result.get("reason") == "password_submit_queued":
+                    record_browser_submission_fact(driver, "ui_queued", receipt=submission_receipt)
                     break
                 # 只有明确的点击前拒绝才能重查；空值或不完整回执也可能已经提交。
                 if not (
@@ -756,6 +785,7 @@ def _fill_password_page_if_present(
                         "missing_password_submit",
                     }
                 ):
+                    record_browser_submission_fact(driver, "unknown", receipt=submission_receipt, result="unknown")
                     if on_password_submitted is not None:
                         on_password_submitted(password)
                     raise _PasswordTransitionTimeout(
@@ -763,7 +793,15 @@ def _fill_password_page_if_present(
                     )
                 if result.get("reason") in {"password_input_replaced", "password_value_changed"}:
                     filled_input = None
+                # 这些结果明确发生在点击前，允许在同一回执内修复页面；若整段
+                # 准备预算耗尽，下面会以 not_dispatched 收口，不留下假的未知围栏。
+                last_safe_pre_dispatch_failure = True
             if time.time() >= end:
+                if last_safe_pre_dispatch_failure:
+                    record_browser_submission_fact(
+                        driver, "not_dispatched", receipt=submission_receipt,
+                        result="cancelled",
+                    )
                 raise RuntimeError(
                     f"password_form_not_ready: 密码表单在提交前未就绪，尚未提交密码：{result.get('reason') or 'empty_result'}"
                 )
@@ -779,9 +817,11 @@ def _fill_password_page_if_present(
         while time.time() < wait_end:
             _check_manual_stop()
             if _is_email_verification_page(driver):
+                record_browser_submission_fact(driver, "confirmed", receipt=submission_receipt, result="success")
                 logger.info("%s 密码提交后已进入邮箱验证码页", _log_prefix(driver))
                 return password
             if _has_access_token(driver):
+                record_browser_submission_fact(driver, "confirmed", receipt=submission_receipt, result="success")
                 logger.info("%s 密码提交后已检测到登录态", _log_prefix(driver))
                 return password
             # Poll the body only every two seconds.  This catches an explicit
@@ -795,9 +835,15 @@ def _fill_password_page_if_present(
                 except Exception:
                     receipt_phase = "unknown"
                 if receipt_phase == "cancelled":
+                    record_browser_submission_fact(
+                        driver, "not_dispatched", receipt=submission_receipt, result="cancelled",
+                    )
                     raise RuntimeError("password_form_not_ready: 提交前密码表单发生变化，已取消点击并保留原密码")
                 if receipt_phase == "dispatch_unknown":
+                    record_browser_submission_fact(driver, "unknown", receipt=submission_receipt, result="unknown")
                     raise _PasswordTransitionTimeout("request_unknown: 密码点击后回执异常，已保留原密码且未重复提交")
+                if receipt_phase == "dispatched":
+                    record_browser_submission_fact(driver, "ui_dispatched", receipt=submission_receipt)
                 post_submit_state = _password_page_state(driver)
                 if _password_submit_error_marker(post_submit_state):
                     raise _PasswordTransitionTimeout(
@@ -805,9 +851,11 @@ def _fill_password_page_if_present(
                     )
             transition_probe += 1
             if not (_is_signup_password_page(driver) or _is_login_password_page(driver)):
+                record_browser_submission_fact(driver, "confirmed", receipt=submission_receipt, result="success")
                 return password
             time.sleep(0.5)
         stuck_state = _password_page_state(driver)
+        record_browser_submission_fact(driver, "unknown", receipt=submission_receipt, result="timeout")
         raise _PasswordTransitionTimeout(
             f"request_unknown: 密码提交后等待 {int(transition_timeout)} 秒仍未确认远端结果，"
             f"页面仍停留在密码页：{_password_page_state_summary(stuck_state)}"

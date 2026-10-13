@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 from core import browser_use_registration
 from core import roxy_registration
 from core.registration import password_auth
+from core.registration.browser_submission import unresolved_submission_ids
 
 
 def _password_target_script():
@@ -260,6 +261,65 @@ class RegistrationFailureClassificationTests(unittest.TestCase):
 
 
 class RegistrationPasswordFlowTests(unittest.TestCase):
+    def test_unresolved_submission_fence_survives_new_run_fact_projection(self):
+        facts = [
+            {"submission_id": "old", "phase": "dispatch_intent"},
+            {"submission_id": "old", "phase": "unknown"},
+            {"submission_id": "closed", "phase": "dispatch_intent"},
+            {"submission_id": "closed", "phase": "confirmed"},
+        ]
+        self.assertEqual(unresolved_submission_ids(facts), {"old"})
+        self.assertEqual(
+            unresolved_submission_ids([
+                {"submission_id": "confirmed", "phase": "confirmed"},
+                {"submission_id": "confirmed", "phase": "request_observed"},
+            ]),
+            set(),
+        )
+
+    def test_real_password_driver_path_persists_prepared_before_dispatch(self):
+        """走共享密码 driver 实现，验证持久化回调先于异步提交围栏。"""
+        driver = _RoxyDriver()
+        driver.state = "password"
+        password = "ValidPass123!"
+        events = []
+
+        def submit_password(_script, *args):
+            if args and args[0] == "queue":
+                events.append("browser_queue")
+                driver.state = "otp"
+                return {"ok": True, "reason": "password_submit_queued"}
+            return {"ok": True, "input": object(), "button": object()}
+
+        with (
+            patch.object(password_auth, "_registration_auth_mode", return_value="password"),
+            patch.object(password_auth, "_is_email_verification_page", side_effect=lambda _driver: driver.state == "otp"),
+            patch.object(password_auth, "_has_access_token", return_value=False),
+            patch.object(password_auth, "_password_page_state", return_value={}),
+            patch.object(password_auth, "_is_signup_password_page", side_effect=lambda _driver: driver.state == "password"),
+            patch.object(password_auth, "_is_login_password_page", return_value=False),
+            patch.object(password_auth, "_registration_password", return_value=password),
+            patch.object(password_auth, "_human_type_text"),
+            patch.object(password_auth, "human_delay"),
+            patch.object(password_auth, "_check_manual_stop"),
+            patch.object(password_auth, "record_browser_submission_fact", side_effect=lambda _driver, phase, **_kwargs: events.append(phase)),
+            patch.object(driver, "execute_script", side_effect=submit_password),
+            patch.object(password_auth, "time", SimpleNamespace(time=lambda: 1, sleep=lambda _seconds: None)),
+        ):
+            result = password_auth._fill_password_page_if_present(
+                driver,
+                "new@example.com",
+                timeout=2,
+                on_password_prepared=lambda value: events.append(("prepared_checkpoint", value)),
+                on_password_submitted=lambda value: events.append(("started_checkpoint", value)),
+            )
+
+        self.assertEqual(result, password)
+        self.assertLess(events.index(("prepared_checkpoint", password)), events.index("browser_queue"))
+        self.assertLess(events.index("prepared"), events.index("dispatch_intent"))
+        self.assertIn(("started_checkpoint", password), events)
+        self.assertEqual(events.count("browser_queue"), 1)
+
     def test_roxy_empty_otp_shell_does_not_force_password_route(self):
         driver = _RoxyDriver()
         driver.refresh_count = 0
@@ -721,6 +781,36 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
                         )
                 self.assertEqual(submissions, ["possibly_dispatched"])
                 self.assertEqual(saved, ["ValidPass123!"])
+
+    def test_repeated_explicit_pre_dispatch_queue_failures_close_as_not_dispatched(self):
+        driver = _RoxyDriver()
+        phases = []
+        ticks = iter((0, 0, 2, 3))
+
+        def execute(_script, *args):
+            if args and args[0] == "queue":
+                return {"ok": False, "reason": "missing_password_submit"}
+            return {"ok": True, "input": object()}
+
+        with (
+            patch.object(driver, "execute_script", side_effect=execute),
+            patch.object(password_auth, "_registration_auth_mode", return_value="password"),
+            patch.object(password_auth, "_is_email_verification_page", return_value=False),
+            patch.object(password_auth, "_has_access_token", return_value=False),
+            patch.object(password_auth, "_password_page_state", return_value={}),
+            patch.object(password_auth, "_is_signup_password_page", return_value=True),
+            patch.object(password_auth, "_is_login_password_page", return_value=False),
+            patch.object(password_auth, "_registration_password", return_value="ValidPass123!"),
+            patch.object(password_auth, "_human_type_text"),
+            patch.object(password_auth, "human_delay"),
+            patch.object(password_auth, "record_browser_submission_fact", side_effect=lambda _driver, phase, **_kwargs: phases.append(phase)),
+            patch.object(password_auth, "time", SimpleNamespace(time=lambda: next(ticks), sleep=lambda _seconds: None)),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "password_form_not_ready"):
+                password_auth._fill_password_page_if_present(driver, "new@example.test", timeout=1)
+
+        self.assertIn("not_dispatched", phases)
+        self.assertNotIn("unknown", phases)
 
     def test_roxy_otp_mode_keeps_passwordless_registration(self):
         driver = _RoxyDriver()

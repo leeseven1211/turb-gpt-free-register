@@ -73,6 +73,101 @@ class JobProgressTests(PostgresTestCase):
         self.assertEqual(row["route_attempts"][0]["progress_steps"]["browser"]["started_at"], "2026-08-28T11:12:17")
         self.assertEqual(row["route_attempts"][0]["progress_steps"]["browser"]["completed_at"], "2026-08-28T11:12:40")
 
+    def test_late_callback_with_old_route_context_does_not_mutate_current_steps(self):
+        job = db.create_job("icloud_hide", batch_id="late-route")
+        db.update_job_progress(job["id"], "email", "running")
+        db.begin_job_route_attempt(job["id"], retry_kind="proxy_rotation")
+        db.update_job_progress(
+            job["id"], "browser", "failed", "旧线路回调",
+            route_attempt_no=1, step_instance_id="old-instance", operation_run_id=11,
+        )
+        row = db.get_job(job["id"])
+        self.assertEqual(2, row["route_attempt_no"])
+        self.assertEqual({}, row["progress_steps"])
+
+    def test_late_running_same_step_instance_only_appends_audit_transition(self):
+        job = db.create_job("icloud_hide", batch_id="late-instance")
+        db.update_job_progress(
+            job["id"], "network", "running", "申请线路",
+            route_attempt_no=1, step_instance_id="network-instance", operation_run_id=7,
+        )
+        db.update_job_progress(
+            job["id"], "network", "success", "线路已就绪",
+            route_attempt_no=1, step_instance_id="network-instance", operation_run_id=7,
+        )
+        before = db.get_job(job["id"])["progress_steps"]["network"]
+        db.update_job_progress(
+            job["id"], "network", "running", "迟到线路回调",
+            route_attempt_no=1, step_instance_id="network-instance", operation_run_id=7,
+        )
+        after = db.get_job(job["id"])["progress_steps"]["network"]
+        self.assertEqual("success", after["state"])
+        self.assertEqual(before["started_at"], after["started_at"])
+        self.assertEqual(before["completed_at"], after["completed_at"])
+        self.assertEqual(3, len(after["transitions"]))
+        self.assertEqual(3, len({item["transition_id"] for item in after["transitions"]}))
+        self.assertTrue(all(item["step_instance_id"] == "network-instance" for item in after["transitions"]))
+
+    def test_service_progress_callback_reuses_stage_instance_and_rotates_with_route(self):
+        from core import registration_service
+
+        job = db.create_job("icloud_hide", batch_id="service-route-context")
+        registration_service._THREAD_CTX.job_id = int(job["id"])
+        registration_service._THREAD_CTX.run_id = 77
+        registration_service._THREAD_CTX.operation_run_id = 88
+        registration_service._THREAD_CTX.execution_id = "service-test"
+        try:
+            registration_service._bind_progress_route_context(1)
+            registration_service._persist_job_progress(job["id"], "network", "running", "申请线路")
+            registration_service._persist_job_progress(job["id"], "network", "success", "线路已就绪")
+            first = db.get_job(job["id"])["progress_steps"]["network"]
+            first_instance = first["step_instance_id"]
+            self.assertEqual(first_instance, first["transitions"][0]["step_instance_id"])
+            self.assertEqual(first_instance, first["transitions"][1]["step_instance_id"])
+
+            db.begin_job_route_attempt(job["id"], retry_kind="service_test_route")
+            registration_service._bind_progress_route_context(2)
+            registration_service._persist_job_progress(job["id"], "network", "running", "换线申请")
+            second = db.get_job(job["id"])["progress_steps"]["network"]
+            self.assertNotEqual(first_instance, second["step_instance_id"])
+            self.assertEqual(2, second["route_attempt_no"])
+        finally:
+            for attr in ("job_id", "run_id", "operation_run_id", "execution_id", "route_attempt_no", "step_instances", "progress_context"):
+                try:
+                    delattr(registration_service._THREAD_CTX, attr)
+                except AttributeError:
+                    pass
+
+    def test_service_callback_snapshot_survives_worker_thread_handoff(self):
+        import threading
+        from core import registration_service
+
+        job = db.create_job("icloud_hide", batch_id="async-route-context")
+        registration_service._THREAD_CTX.job_id = int(job["id"])
+        registration_service._THREAD_CTX.operation_run_id = 88
+        try:
+            registration_service._bind_progress_route_context(1)
+            registration_service._persist_job_progress(job["id"], "network", "running", "申请线路")
+            instance_id = db.get_job(job["id"])["progress_steps"]["network"]["step_instance_id"]
+
+            callback = lambda: registration_service._persist_job_progress(
+                job["id"], "network", "running", "异步回调",
+                route_attempt_no=1, operation_run_id=88, step_instance_id=instance_id,
+            )
+            worker = threading.Thread(target=callback)
+            worker.start()
+            worker.join(timeout=5)
+            self.assertFalse(worker.is_alive())
+            transitions = db.get_job(job["id"])["progress_steps"]["network"]["transitions"]
+            self.assertEqual(2, len(transitions))
+            self.assertEqual(instance_id, transitions[-1]["step_instance_id"])
+        finally:
+            for attr in ("job_id", "operation_run_id", "route_attempt_no", "step_instances", "progress_context"):
+                try:
+                    delattr(registration_service._THREAD_CTX, attr)
+                except AttributeError:
+                    pass
+
     def test_otp_evidence_is_redacted_and_classified(self):
         job = db.create_job("icloud_hide")
         db.record_job_otp_evidence(

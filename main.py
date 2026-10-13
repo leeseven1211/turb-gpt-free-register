@@ -53,7 +53,10 @@ def generate_display_name() -> str:
     return random_display_name()
 
 
-def prepare_registration_inputs() -> tuple[str, str, str]:
+def prepare_registration_inputs(*, email_source: str | None = None,
+                                owner_kind: str | None = None,
+                                owner_id: str | int | None = None,
+                                acquisition_id: str | None = None) -> tuple[str, str, str]:
     """按 CLI 规则准备一次注册所需的邮箱、显示名和生日。"""
     email = REGISTER_EMAIL
     name = REGISTER_NAME
@@ -62,7 +65,19 @@ def prepare_registration_inputs() -> tuple[str, str, str]:
     # 邮箱：留空 + USE_EMAIL_SERVICE=True 时从 Outlook 池领取
     if not email:
         if _email_cfg.USE_EMAIL_SERVICE:
-            email = acquire_email()
+            selected_cli_source = str(email_source or "").strip().lower()
+            if not selected_cli_source:
+                from core.email_provider import parse_email_sources
+                selected_cli_source = parse_email_sources(getattr(_email_cfg, "EMAIL_SOURCE", ""))[0]
+            if selected_cli_source != "remail":
+                email = acquire_email(email_source) if email_source is not None else acquire_email()
+            else:
+                email = acquire_email(
+                    email_source,
+                    owner_kind=owner_kind,
+                    owner_id=owner_id,
+                    acquisition_id=acquisition_id,
+                )
             logger.debug(f"自动获取邮箱: {email}")
         else:
             email = input("请输入注册邮箱: ").strip()
@@ -114,6 +129,12 @@ def main():
     parser.add_argument("--workers", type=int, default=1, help="并发注册线程数，默认 1（串行）")
     parser.add_argument("--delay", type=float, default=0, help="每次注册结束后的间隔秒数")
     parser.add_argument("--continue-on-fail", action="store_true", help="单个账号失败后继续注册下一个")
+    parser.add_argument("--email-source", default=None, help="本批明确使用的邮箱来源，例如 remail")
+    parser.add_argument(
+        "--remail-acquisition-id",
+        default=None,
+        help="继续原 Remail 领取意图的稳定 ID 前缀；首次运行可省略，未知订单重跑时必须复用原值",
+    )
     parser.add_argument("--verbose", action="store_true", help="显示详细步骤日志和错误堆栈")
     args = parser.parse_args()
     configure_logging(args.verbose)
@@ -143,9 +164,15 @@ def main():
         args.workers = args.count
 
     if args.workers > 1:
-        results = run_parallel_batch(args.count, args.workers, args.delay, args.continue_on_fail)
+        results = run_parallel_batch(
+            args.count, args.workers, args.delay, args.continue_on_fail,
+            args.email_source, args.remail_acquisition_id,
+        )
     else:
-        results = run_serial_batch(args.count, args.delay, args.continue_on_fail)
+        results = run_serial_batch(
+            args.count, args.delay, args.continue_on_fail,
+            args.email_source, args.remail_acquisition_id,
+        )
 
     success_count = sum(1 for r in results if _is_success(r))
     flow_success_count = sum(
@@ -196,6 +223,8 @@ def run_one_batch_item(
     total: int,
     batch_id: str | None = None,
     batch_workers: int = 1,
+    email_source: str | None = None,
+    acquisition_id_prefix: str | None = None,
 ) -> dict:
     """执行批量注册中的一个任务，返回结构化结果。"""
     logger.info(f"[批量] 开始第 {index + 1}/{total} 个注册")
@@ -213,12 +242,20 @@ def run_one_batch_item(
             batch_size=total,
             batch_workers=batch_workers,
         )
-        email, name, birthday = prepare_registration_inputs()
+        prefix = str(acquisition_id_prefix or f"cli:{batch_id or 'single'}").strip().rstrip(":")
+        stable_acquisition_id = f"{prefix}:{index + 1}"
+        email, name, birthday = prepare_registration_inputs(
+            email_source=email_source,
+            owner_kind="cli",
+            owner_id=stable_acquisition_id,
+            acquisition_id=stable_acquisition_id,
+        )
         return run_registration(
             email=email,
             name=name,
             birthday=birthday,
             proxy=proxy_lease.proxy_url,
+            email_source=email_source,
         )
     except Exception as exc:
         logger.error(f"[批量] 第 {index + 1} 个注册准备阶段失败: {type(exc).__name__}: {exc}")
@@ -236,13 +273,15 @@ def run_one_batch_item(
         sms_provider.clear_sms_batch_context()
 
 
-def run_serial_batch(count: int, delay: float, continue_on_fail: bool) -> list[dict]:
+def run_serial_batch(count: int, delay: float, continue_on_fail: bool,
+                     email_source: str | None = None,
+                     acquisition_id_prefix: str | None = None) -> list[dict]:
     """按原有串行方式执行批量注册。"""
     results = []
     batch_id = f"cli:{time.time_ns()}"
     try:
         for index in range(count):
-            result = run_one_batch_item(index, count, batch_id, 1)
+            result = run_one_batch_item(index, count, batch_id, 1, email_source, acquisition_id_prefix)
             results.append(result)
             if not _is_success(result) and not continue_on_fail:
                 logger.error("[批量] 当前账号失败，已停止。需要继续跑可加 --continue-on-fail")
@@ -264,6 +303,8 @@ def run_parallel_batch(
     workers: int,
     delay: float,
     continue_on_fail: bool,
+    email_source: str | None = None,
+    acquisition_id_prefix: str | None = None,
 ) -> list[dict]:
     """使用线程池并发执行批量注册。"""
     logger.info(f"[批量] 启用多线程注册：目标 {count}，并发 {workers}")
@@ -280,7 +321,10 @@ def run_parallel_batch(
         nonlocal next_index
         if stop_submitting or next_index >= count:
             return False
-        future = executor.submit(run_one_batch_item, next_index, count, batch_id, workers)
+        future = executor.submit(
+            run_one_batch_item, next_index, count, batch_id, workers,
+            email_source, acquisition_id_prefix,
+        )
         future_to_index[future] = next_index
         next_index += 1
         if delay > 0 and next_index < count:

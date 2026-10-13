@@ -344,6 +344,25 @@ PROXY_LEASES = TableSpec(
     ),
 )
 
+PROXY_POOL_RESOURCES = TableSpec(
+    name="proxy_pool_resources",
+    promoted={
+        "resource_id": "TEXT NOT NULL",
+        "profile_key": "TEXT NOT NULL",
+        "provider": "TEXT NOT NULL",
+        "state": "TEXT NOT NULL",
+        "anchor_lease_id": "TEXT",
+        "owner_token": "TEXT",
+        "checked_at": "TEXT",
+        "expires_at": "TEXT NOT NULL",
+        "last_used_at": "TEXT NOT NULL",
+        "created_at": "TEXT NOT NULL",
+        "updated_at": "TEXT NOT NULL",
+    },
+    unique=("resource_id",),
+    indexes=(("profile_key", "state"), ("state", "expires_at"), ("anchor_lease_id",)),
+)
+
 BROWSER_TRAFFIC = TableSpec(
     name="browser_traffic_summaries",
     promoted={
@@ -392,6 +411,7 @@ ALL_TABLES: tuple[TableSpec, ...] = (
     ICLOUD_HIDE_POOL,
     CODEX_CREDENTIALS,
     PROXY_LEASES,
+    PROXY_POOL_RESOURCES,
     BROWSER_TRAFFIC,
 )
 _BY_NAME = {spec.name: spec for spec in ALL_TABLES}

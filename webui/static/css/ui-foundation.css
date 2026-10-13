@@ -1586,6 +1586,16 @@ tr:hover td,
 .proxy-traffic-muted { color: var(--ui-color-text-muted); font-size: 11px; }
 .proxy-traffic-table small { display: block; margin-top: 4px; overflow-wrap: anywhere; }
 
+.proxy-pool-panel { margin-top: 12px; }
+.proxy-pool-table { min-width: 980px; }
+.proxy-pool-col-resource { width: 150px; }
+.proxy-pool-col-state { width: 110px; }
+.proxy-pool-col-source { width: 150px; }
+.proxy-pool-col-endpoint { width: 180px; }
+.proxy-pool-col-ip { width: 150px; }
+.proxy-pool-col-time { width: 210px; }
+.proxy-pool-col-error { width: 160px; }
+
 .proxy-traffic-status {
   display: inline-flex;
   min-height: 24px;
@@ -3274,3 +3284,6 @@ table[data-resizable-table="codex"] {
     overscroll-behavior: contain;
   }
 }
+
+.proxy-pool-header { padding: 14px 16px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; }
+.proxy-pool-header h3 { margin: 0; font-size: 14px; }

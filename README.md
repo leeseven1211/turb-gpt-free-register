@@ -180,7 +180,7 @@ WebUI 配置页保存这些字段时会写入 `.env`（不是 config 源码）�
 
 PostgreSQL 是**唯一事实来源**，没有纯文件模式回退：`DATABASE_URL` 缺失或库连不上时进程会在启动时直接终止，而不是静默改用文件（那会让两份副本悄悄分叉）。
 
-账号、注册任务、四类邮箱池、代理租约和 Codex 凭证均由 PostgreSQL 行级表支撑（`registered_accounts` / `registration_jobs` / `email_pool_*` / `proxy_leases` / `codex_credentials`），可行级更新、可跨进程原子抢占。`app_collections` 仅保留调度状态、兼容集合和迁移期旧数据，不是正常列表的事实来源。
+账号、注册任务、四类邮箱池、代理租约、代理池库存、Remail 订单意图和 Codex 凭证均由 PostgreSQL 行级表支撑（`registered_accounts` / `registration_jobs` / `email_pool_*` / `proxy_leases` / `proxy_pool_resources` / `remail_order_intents` / `codex_credentials`），可行级更新、可跨进程原子抢占。`app_collections` 仅保留调度状态、兼容集合和迁移期旧数据，不是正常列表的事实来源。
 
 账号、注册任务、Outlook 和 iCloud 邮箱池不再生成根目录 JSON/TXT、`accounts/` 批次归档或 `accounts_viewer.html`，运行时只读写 PostgreSQL。仍有外部消费者的通用 API、域名邮箱和 Codex 兼容产物由后台按需生成；日志和浏览器缓存仍保留在文件系统。
 
@@ -383,7 +383,17 @@ REMAIL_REQUEST_TIMEOUT=20
 
 项目 ID 和邮箱后缀应与平台项目列表一致。`purchase` 为可重复收件的长效购买，`code` 为短效接码，后续登录或账号操作能否收码取决于服务是否仍有效。`public_only` 只使用公开库存，`private_first` 优先使用自己的库存。订单未立即返回收件凭证时，客户端最多等待 `REMAIL_ORDER_WAIT_SECONDS` 秒；单次请求超时由 `REMAIL_REQUEST_TIMEOUT` 控制。接口说明见 [Remail 开放 API 文档](https://remail.aishop6.com/docs)。
 
-Remail 属于运行时按需领取来源，无需导入本地 Outlook 邮箱池。API Key 只保存在 `.env`。注册成功时订单取件凭据随账号私有上下文写入 PostgreSQL；进程重启后优先恢复该上下文。换绑邮箱或本地没有取件凭据时，使用同一 API Key 按完整邮箱查询原订单，不会改领其他邮箱。普通列表和日志不展示取件凭据。
+注册和换绑统一通过 Remail coordinator。`remail_order_intents` 是下单事实表：先持久化 `prepared`，只有一个进程能 CAS 到 `submitting` 后发出付费 POST；POST 返回订单号后立即写入 `order_created`，再进行有界 GET 取回完整凭证。进程在 `submitting` 或 `request_unknown` 中断时只恢复原订单，不按幂等请求头自动重放 POST。订单交付前的私有凭证会先写入数据库，只有 durable 状态为 `delivered` 且凭证完整时才交给注册或换绑流程。
+
+CLI 支持 `--email-source remail` 和 `--remail-acquisition-id PREFIX`。首次运行可以省略前缀，程序会按批次和序号生成持久标识；对未知订单重跑时必须复用同一个前缀，例如：
+
+```bash
+python main.py --count 1 --email-source remail --remail-acquisition-id cli:recovery-20261013
+```
+
+该参数是稳定标识前缀，不是供应商订单号；批量任务会在末尾追加 `:1`、`:2` 等序号。WebUI/任务恢复使用原注册 root 的 acquisition ID，续跑子任务不会另起一份领取意图。核验接口只返回脱敏订单摘要，不返回邮箱、取件凭证或供应商私有字段。
+
+Remail 属于运行时按需领取来源，无需导入本地 Outlook 邮箱池。API Key 只保存在 `.env`。订单关联、状态和恢复所需私有取件凭据写入 PostgreSQL 的 `remail_order_intents`；注册成功后账号私有上下文也可引用该恢复事实。进程重启后优先恢复原意图和原订单号。缺少原领取意图或订单号时保持待核验，不按完整邮箱搜索最新订单，也不会改领其他邮箱。普通列表和日志不展示取件凭据。
 
 下单网络超时、服务端结果不明或订单交付凭据等待超时时，注册和换绑任务进入 `request_unknown`，禁止直接重试下单；需先在 Remail 控制台核对原订单，避免重复扣费。短效订单失效后不会自动购买新邮箱代替原地址。
 
@@ -449,9 +459,15 @@ Roxy 的字段不是普通浏览器代理 URL，而是 `proxyMethod/proxyCategor
 （有鉴权时再加 `proxyUserName/proxyPassword`）；任务日志只记录脱敏端点。
 
 也可以在 WebUI「配置 → 代理与网络 → 代理提供商」中选择 1024Proxy，填写白名单提取 API。
-平台模式会为每个注册任务提取一个独立粘性代理，并在领取邮箱前检测出口；注册与紧接着执行的
-自动 Codex OAuth 共用该代理。建议把粘性时长设为至少 30 分钟。动态住宅流量套餐按实际流量计费，
-延长粘性时间本身不会持续产生流量。当前平台模式支持 protocol 和 RoxyBrowser。
+凡启用代理的注册、账号功能和套餐查询任务都先从独立 PostgreSQL 代理库存领取已检测线路；供应商提取、出口复检和补货在代理池后台 worker 中执行，任务线程不直接调用供应商 API。WebUI 启动时预热代理池，CLI 在首次领取时懒启动；数据库不可用时直接报错，不降级为直连。显式选择 `direct` 的配置仍保持直连，不会被代理池强制覆盖。代理池 worker 数量支持热加载，但 WebUI 的 worker 统计只代表当前进程；库存容量和租约仍由 PostgreSQL 在多个进程间统一协调。
+
+代理池的默认策略是全局最大容量 20、每个活动 profile 最少保持 2 条可用库存，任务最多等待 60 秒，领取时要求剩余寿命至少 300 秒，后台每 60 秒复检，空闲回收阈值 300 秒，worker 数 2。`PROXY_POOL_MAX_SIZE` 是所有配置共同使用的全局上限；容量缩减只退役 `ready` 库存，不踢出正在使用的线路。有其他配置的任务等待时，池可以回收其他配置的空闲 `ready` 库存来满足等待者。
+
+注册和认证使用独占子租约 `pool_leased`；只有套餐查询明确启用复用时才使用 `shared`/共享子租约。正常释放进入按 `PROXY_1024_RECENT_TTL` 配置的 cooldown，冷却结束后可再次领取；明确的线路传输故障进入 quarantine 并保留到资源到期。 无活跃关联的库存终态保留 7 天后分批清理；任务子租约历史保留。`PROXY_POOL_MIN_TTL` 必须小于 1024Proxy 会话时长，并为检测预留时间，不可能满足的组合会在提取前被拒绝。`PROXY_1024_MAX_ATTEMPTS`、`PROXY_1024_ROTATE_SESSION_TIME` 和旧 batch/rotate 开关仅为旧诊断或兼容调用保留，正常代理池不依赖它们，也不按任务 ID 派生供应商参数。
+
+当前供应商请求固定 `region` 和 `time`，`num` 使用有界候选窗口；跳过已占用或冷却线路，只检测并交付本轮预留槽位所需的数量，避免反复困在供应商返回的同一列表前缀。候选全重复会记录明确原因并退避，不声称增加数量就保证获得新 IP。`time` 是供应商的粘性窗口，不保证每次领取都是新会话或新 IP；系统只记录实际检测到的出口 IP 和地区，不把“新租约”写成“已换新 IP”。可参考 [1024Proxy 动态住宅 API 文档](https://help.1024proxy.com/1024/1024proxy/dynamic-residential-traffic/api)，该文档只说明 `region`、`time`、`num` 等请求参数；连接池的并发和回收语义参考 [Psycopg 连接池文档](https://www.psycopg.org/psycopg3/docs/advanced/pool.html)。
+
+WebUI「代理与流量」中的“代理池库存”只显示脱敏库存快照、状态和统计，不提供领取或释放操作。当前配置页的代理池字段只保存策略；完整供应商 URL、账号和密码仍只允许保存在 `.env`。
 
 1024Proxy 推荐基线：
 
@@ -461,15 +477,20 @@ PROXY_1024_API_URL=https://white.1024proxy.com/white/api?region=US&num=1&time=30
 PROXY_1024_REGION=US
 PROXY_1024_PROTOCOL=http
 PROXY_1024_SESSION_MINUTES=30
-PROXY_1024_ROTATE_SESSION_TIME=True
 PROXY_1024_API_TIMEOUT=12
-PROXY_1024_MAX_ATTEMPTS=5
 PROXY_1024_ACQUIRE_TIMEOUT=60
 PROXY_1024_VALIDATE=True
 PROXY_1024_VALIDATE_ATTEMPTS=2
 PROXY_1024_RECENT_TTL=1800
 PROXY_1024_ACQUIRE_INTERVAL=0.6
-PROXY_1024_PERSIST_LEASES=True
+# 独立库存默认值：全局容量 20，最少可用 2，领取等待 60 秒
+PROXY_POOL_MIN_READY=2
+PROXY_POOL_MAX_SIZE=20
+PROXY_POOL_WAIT_TIMEOUT=60
+PROXY_POOL_MIN_TTL=300
+PROXY_POOL_CHECK_INTERVAL=60
+PROXY_POOL_MAX_IDLE=300
+PROXY_POOL_WORKERS=2
 # 注册页遇到线路级瞬时失败时，最多释放旧租约并换线重试 3 次（初始线路共最多 4 条）
 REGISTRATION_PROXY_RETRIES=3
 REGISTRATION_PROXY_RETRY_DELAY=1
@@ -479,10 +500,8 @@ ACCOUNT_ACTION_PROXY_RETRY_DELAY=1
 ACCOUNT_ACTION_PROXY_MODE=registration
 ```
 
-- 单任务会使用 `num=1`；注册批次会按待执行任务数批量设置 `num`，再并行检测并分配给任务。
-- 平台返回代理后会检测实际出口国家；实际国家与请求国家不一致时会拒绝并重新提取。
-- 已占用/隔离期内的重复粘性 IP 不再消耗“有效失败次数”，会在 60 秒总预算内快速重取；出口检测的超时、连接和 SSL 瞬时错误会先对同一端点重试一次。
-- `PROXY_1024_ROTATE_SESSION_TIME=True` 会按任务 ID 在基础时长到 120 分钟间派生不同的 `time` 参数，避免平台在相同 `region/time` 窗口内返回同一粘性会话。`PROXY_1024_PERSIST_LEASES=True` 时，租约会在 PostgreSQL 中记录 pending/leased/recent 状态，多个 WebUI/CLI 进程共享端点和出口 IP 去重；白名单 API 没有单独的远程释放调用。
+- 后台按固定供给参数补充库存并检测实际出口国家；实际国家与请求国家不一致时，该库存不会发布给任务。
+- 领取与释放通过 PostgreSQL 原子租约完成，多个 WebUI/CLI 进程共享同一库存；供应商白名单 API 没有单独的远程释放调用。
 - OpenAI 注册实测优先固定 `region=US`。`Rand` 可能落到画像不完整或高风控地区，增加挑战概率。
 - 粘性时间延长本身不产生流量，只有浏览器实际发出请求才消耗代理流量。30 分钟是注册 + 邮件等待的最低建议值，必要时可设更长。
 - 日志和 UI 只应显示脱敏后的代理端点/出口 IP；完整 API URL 属于私密配置，只放 `.env`。
@@ -628,7 +647,7 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 - `BROWSER_PUBLIC_ASSET_CACHE_MODE` 独立控制新启动的 Roxy 注册：默认 `off`；`observe` 仅统计候选，不下载或回放；`enabled` 在浏览器原生缓存之外跨 Profile 复用公共 JS/CSS。可在同一配置分组调整；`BROWSER_PUBLIC_ASSET_CACHE_MAX_MB` 默认 256 MiB。缓存位于忽略提交的 `run/public-asset-cache/`，最多 1000 项、单项 10 MiB、有效期不超过响应声明及 24 小时，旧资源自动淘汰。
 - 公共缓存只接受审核过的 ChatGPT/auth CDN 目录下带版本的 JS/CSS，要求 HTTP 200、明确公共缓存、正确 MIME、无 Set-Cookie 和敏感响应变体。仅收录已证实不携带 Cookie/Authorization 的浏览器响应；需要匿名验证时，只沿本次新建 Profile 的已知代理下载，不跟重定向、不回退直连。复用已有 Profile 时不猜测其代理线路。认证 API、HTML、session、OTP 和安全挑战不缓存。原 URL、内容完整性与安全响应头保留，过期、损坏、磁盘或连接异常均回到浏览器正常网络。首次填充可能额外下载，不能以冷缓存单次任务承诺省流量比例。
 - 省流量拦截或缓存失败会继续原浏览器业务。「代理与流量」页分别标明浏览器和协议采集来源：浏览器统计已采集的 HTTP/WebSocket 字节及缓存匿名填充下载，排除公共缓存本地回放；协议统计已接入 `BrowserSession` 的业务请求，字节使用后端报告的传输正文大小，不含请求头、TLS 或代理隧道，解码后的正文大小另存。协议请求数按每次 `get/post` 调用累计，自动重定向另计；其他客户端、外部脚本和未接入的请求不在此范围。
-- 今日请求记录按采集记录的开始时间计数，不是 HTTP 请求数；今日新建线路按租约获取时间计数，日期边界为北京时间零点。旧协议未采集标记保留在 PostgreSQL 排障但不进入可用记录合计。常规协议采集只存聚合统计和任务归属，不存 URL、正文或凭据；计量异常不改变业务结果。浏览器未确认的本地回放不扣减可观测字节，后台填充未收口时记录下界并标记未知。所有可观测字节都不等于代理商账单。
+- 今日请求记录按采集记录的开始时间计数，不是 HTTP 请求数；今日新建线路按任务租约获取时间计数，后台库存锚点不计任务线路，日期边界为北京时间零点。旧协议未采集标记保留在 PostgreSQL 排障但不进入可用记录合计。常规协议采集只存聚合统计和任务归属，不存 URL、正文或凭据；计量异常不改变业务结果。浏览器未确认的本地回放不扣减可观测字节，后台填充未收口时记录下界并标记未知。所有可观测字节都不等于代理商账单。
 
 #### Codex、接码与 sub2api
 
@@ -734,21 +753,25 @@ REGISTRATION_DRIVER=roxy
 ENABLE_CODEX_AUTO=False
 CODEX_OAUTH_DRIVER=same_as_registration
 
-# 一个任务一个 1024Proxy 美国住宅 IP
+# 由独立代理池提供已检测的 1024Proxy 美国线路
 REGISTRATION_PROXY_MODE=1024
 PROXY_1024_API_URL=请替换为你的白名单提取_API
 PROXY_1024_REGION=US
 PROXY_1024_PROTOCOL=http
 PROXY_1024_SESSION_MINUTES=30
-PROXY_1024_ROTATE_SESSION_TIME=True
 PROXY_1024_API_TIMEOUT=12
-PROXY_1024_MAX_ATTEMPTS=5
 PROXY_1024_ACQUIRE_TIMEOUT=60
 PROXY_1024_VALIDATE=True
 PROXY_1024_VALIDATE_ATTEMPTS=2
 PROXY_1024_RECENT_TTL=1800
 PROXY_1024_ACQUIRE_INTERVAL=0.6
-PROXY_1024_PERSIST_LEASES=True
+PROXY_POOL_MIN_READY=2
+PROXY_POOL_MAX_SIZE=20
+PROXY_POOL_WAIT_TIMEOUT=60
+PROXY_POOL_MIN_TTL=300
+PROXY_POOL_CHECK_INTERVAL=60
+PROXY_POOL_MAX_IDLE=300
+PROXY_POOL_WORKERS=2
 ACCOUNT_ACTION_PROXY_MODE=registration
 
 # WebUI 启用 Email Butler 与 iCloud 两个可选邮箱来源；本地通过 HTTPS 直连生产 Butler，不需要 SSH 隧道
@@ -1024,7 +1047,7 @@ OpenAI 新版注册通常先展示邮箱验证码页；新账号页面同时提�
 - `otp`：直接使用邮箱一次性验证码完成无密码注册（默认）。
 - `password`：在验证码页主动进入 `/create-account/password`，设置随机密码后再完成邮箱验证。
 
-`REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS` 控制密码提交后等待验证码页、资料页或登录态的独立预算，默认 `60` 秒。该预算从点击密码页“继续”后重新计时，不占用前面的密码页识别/填写时间；密码提交请求一发出就会先保存可恢复检查点，超时且没有明确远端结果时，不会丢失已生成的密码或把邮箱重新放回注册池。邮箱表单提交后的认证跳转也会重新获得独立预算；纯代理隧道、空登录壳、页面未水合或注册前阶段预算耗尽且未产生账号状态时，会先自动刷新/强制新导航，仍为空壳才软删除本轮临时 Roxy Profile、释放代理租约并换新 IP 重试。普通页面识别失败仍保留现场，已保存账号检查点的失败不会触发这项回收。
+`REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS` 控制密码提交后等待验证码页、资料页或登录态的独立预算，默认 `60` 秒。该预算从点击密码页“继续”后重新计时，不占用前面的密码页识别/填写时间；密码提交请求一发出就会先保存可恢复检查点，超时且没有明确远端结果时，不会丢失已生成的密码或把邮箱重新放回注册池。邮箱表单提交后的认证跳转也会重新获得独立预算；纯代理隧道、空登录壳、页面未水合或注册前阶段预算耗尽且未产生账号状态时，会先自动刷新/强制新导航，仍为空壳才软删除本轮临时 Roxy Profile、释放代理租约并换代理线路重试。普通页面识别失败仍保留现场，已保存账号检查点的失败不会触发这项回收。
 
 邮箱验证码是 OpenAI 的邮箱所有权验证步骤；即使选择 `password`，设置密码后仍然需要邮箱 OTP。若 password 模式下页面没有提供创建密码入口，任务会明确失败，避免把无密码账号误报为密码注册成功。
 

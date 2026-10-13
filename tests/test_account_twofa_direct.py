@@ -428,7 +428,7 @@ class ProtocolDirectTwofaTests(unittest.TestCase):
         self.assertEqual(2, run_browser.call_count)
         self.assertEqual(2, acquire_route.call_count)
         self.assertEqual(1, result["browser_retry_attempts"])
-        route.release.assert_any_call(reason="browser-retry-1")
+        route.release.assert_any_call(reason="browser-retry-1", fault=True)
         route.release.assert_any_call(reason="twofa-retry-a@example.com")
         retry_events = [call.kwargs for call in append_event.call_args_list if call.kwargs.get("event_type") == "note.warning"]
         self.assertEqual(1, len(retry_events))

@@ -530,9 +530,48 @@ class _SummaryOnlyCDPSession:
         self.cache_local_request_count = 0
         self.cache_native_request_count = 0
         self.cache_local_served_bytes = 0
+        # 与现有 CDP 消费者共享同一条事件流，仅向认证回执分发白名单元数据。
+        self.submission_observer = None
+
+    @staticmethod
+    def _submission_endpoint_kind(url: Any) -> str:
+        path = str(urlsplit(str(url or "")).path or "").lower()
+        if path.endswith("/api/auth/csrf"):
+            return "nextauth_csrf"
+        if "/api/auth/signin/" in path:
+            return "nextauth_signin"
+        if path.endswith("/api/accounts/password") or "/password" in path and "/api/" in path:
+            return "password_submit"
+        if "email-otp" in path and (path.endswith("/send") or path.endswith("/verify")):
+            return "otp_submit"
+        if "email-otp" in path and "resend" in path:
+            return "otp_resend"
+        return ""
+
+    def _observe_submission(self, record: Mapping[str, Any], *, response: bool = False) -> None:
+        callback = self.submission_observer
+        if not callable(callback):
+            return
+        endpoint_kind = self._submission_endpoint_kind(record.get("url"))
+        if not endpoint_kind:
+            return
+        try:
+            callback({
+                "endpoint_kind": endpoint_kind,
+                "http_method": str(record.get("method") or "POST"),
+                "http_status": record.get("status") if response else None,
+                "duration_ms": record.get("duration_ms"),
+                "response": bool(response),
+                # 仅在当前 CDP 连接内做请求/响应配对；不进入持久事实或公共投影。
+                "request_id": record.get("request_id"),
+                "target_id": record.get("target_id"),
+            })
+        except Exception:
+            logger.debug("[浏览器流量] 认证提交事实分发失败", exc_info=True)
 
     def record_network(self, record: Mapping[str, Any]) -> None:
         item = record if isinstance(record, Mapping) else {}
+        self._observe_submission(item, response=True)
         self.request_count += 1
         blocked_by_data_saver = bool(item.get("_data_saver_blocked"))
         local_resource = _is_local_browser_resource(item.get("url"))
@@ -641,6 +680,10 @@ class RoxyTrafficCapture:
         self.data_saver = data_saver
         if self.collector is not None:
             self.collector.data_saver = data_saver
+
+    def set_submission_observer(self, callback: Any) -> None:
+        """把认证请求元数据分发给同一 CDP 采集连接的回执接收者。"""
+        self.session.submission_observer = callback
 
     def set_public_asset_cache(self, cache: Any) -> None:
         """本地回放与匿名填充分别计量，避免把 CDP 本地传输算成代理下载。"""

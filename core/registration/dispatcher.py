@@ -31,6 +31,7 @@ def run_registration(
     # Roxy 是唯一的浏览器注册驱动；旧别名保留用于兼容历史任务配置。
     if driver_mode in ("roxy", "roxybrowser", "fingerprint", "browser"):
         from core.registration.roxy import run_roxy_registration
+        from core.registration.standalone import run_registration_in_context
 
         kwargs = dict(
             email=email,
@@ -46,7 +47,12 @@ def run_registration(
         if email_source is not None:
             kwargs["email_source"] = email_source
         kwargs["profile_id"] = profile_id
-        return run_roxy_registration(**kwargs)
+        return run_registration_in_context(
+            run_roxy_registration,
+            kwargs,
+            entrypoint="roxy_cli",
+            driver_name="roxy",
+        )
 
     if existing_password and driver_mode not in ("protocol", "api", "http"):
         raise RuntimeError(

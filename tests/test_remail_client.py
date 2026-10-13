@@ -57,7 +57,7 @@ class RemailClientTests(unittest.TestCase):
         for mode in ("code", "purchase"):
             with self.subTest(mode=mode), patch.object(email_config, "REMAIL_SERVICE_MODE", mode):
                 self.request.return_value = self.response(self.order(), 201)
-                account = remail_client.pick_account()
+                account = remail_client.pick_account(compatibility=True)
                 self.assertEqual(account.email, "fresh@outlook.test")
                 self.assertIs(remail_client.get_account_context("FRESH@OUTLOOK.TEST"), account)
                 args, kwargs = self.request.call_args
@@ -72,6 +72,12 @@ class RemailClientTests(unittest.TestCase):
     def test_configuration_validation_is_local(self):
         remail_client.validate_configuration()
         self.factory.assert_not_called()
+
+    def test_ownerless_purchase_is_rejected_before_http(self):
+        with self.assertRaisesRegex(remail_client.RemailError, "缺少稳定 owner/acquisition_id") as raised:
+            remail_client.pick_account()
+        self.assertEqual(raised.exception.cause_code, "remail_missing_owner")
+        self.request.assert_not_called()
         for key, value in {"REMAIL_API_KEY": "", "REMAIL_PROJECT_ID": 0, "REMAIL_EMAIL_SUFFIX": "", "REMAIL_SERVICE_MODE": "unknown", "REMAIL_SUPPLY_POLICY": "unknown", "REMAIL_API_BASE": "https://secret@remail.test"}.items():
             with self.subTest(key=key), patch.object(email_config, key, value):
                 with self.assertRaises(remail_client.RemailError):
@@ -87,7 +93,7 @@ class RemailClientTests(unittest.TestCase):
 
     def test_order_wait_queries_existing_order_only(self):
         self.request.side_effect = [self.response(self.order(deliveryEmail="", serviceToken="", status="paid"), 201), self.response(self.order())]
-        account = remail_client.pick_account()
+        account = remail_client.pick_account(compatibility=True)
         self.assertEqual(account.email, "fresh@outlook.test")
         self.assertEqual([call.args[0] for call in self.request.call_args_list], ["POST", "GET"])
         self.assertEqual(self.request.call_args.args[1], "https://remail.aishop6.com/v1/open/orders/R1")
@@ -97,7 +103,7 @@ class RemailClientTests(unittest.TestCase):
         self.request.return_value = self.response(self.order(deliveryEmail="", serviceToken="", status="paid"))
         with patch.object(email_config, "REMAIL_ORDER_WAIT_SECONDS", 2), patch.object(remail_client.time, "monotonic", side_effect=lambda: clock[0]), patch.object(remail_client.time, "sleep", side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)):
             with self.assertRaisesRegex(remail_client.RemailOrderUncertain, "超时"):
-                remail_client.pick_account()
+                remail_client.pick_account(compatibility=True)
         self.assertEqual(clock[0], 2)
         self.assertEqual([call.args[0] for call in self.request.call_args_list], ["POST", "GET", "GET"])
         self.assertEqual([call.kwargs["timeout"] for call in self.request.call_args_list[1:]], [2, 1])
@@ -107,7 +113,7 @@ class RemailClientTests(unittest.TestCase):
             with self.subTest(status=status):
                 self.request.return_value = self.response(self.order(status=status, failureCode="secret"))
                 with self.assertRaisesRegex(remail_client.RemailError, f"status={status}") as raised:
-                    remail_client.pick_account()
+                    remail_client.pick_account(compatibility=True)
                 self.assertNotIn("secret", str(raised.exception))
                 self.assertNotIsInstance(raised.exception, remail_client.RemailOrderUncertain)
         self.assertIsNone(remail_client.get_account_context("fresh@outlook.test"))
@@ -152,24 +158,24 @@ class RemailClientTests(unittest.TestCase):
     def test_saved_metadata_for_other_email_is_ignored(self):
         self.saved.return_value = {"email": "other@outlook.test", "service_token": "st-wrong", "order_no": "R-wrong"}
         self.request.return_value = self.response({"items": []})
-        self.assertIsNone(remail_client.restore_account_context("fresh@outlook.test"))
+        self.assertIsNone(remail_client.restore_account_context("fresh@outlook.test", compatibility=True))
         self.request.assert_called_once()
         self.assertEqual(self.request.call_args.args[1], "https://remail.aishop6.com/v1/open/orders")
 
     def test_order_search_exact_match_and_pagination(self):
         self.request.side_effect = [self.response({"items": [self.order(deliveryEmail="prefixfresh@outlook.test"), self.order(status="refunded")], "hasNext": True, "nextAfterId": 20}), self.response({"items": [self.order(deliveryEmail="FRESH@OUTLOOK.TEST")], "hasNext": False})]
-        account = remail_client.restore_account_context("fresh@outlook.test")
+        account = remail_client.restore_account_context("fresh@outlook.test", compatibility=True)
         self.assertEqual(account.service_token, "st-test-token")
         self.assertEqual(self.request.call_args.kwargs["params"], {"search": "fresh@outlook.test", "limit": 100, "afterId": 20})
 
     def test_detail_lookup_also_rejects_wrong_email(self):
         self.request.side_effect = [self.response({"items": [self.order(serviceToken="")]}), self.response(self.order(deliveryEmail="other@outlook.test"))]
-        self.assertIsNone(remail_client.restore_account_context("fresh@outlook.test"))
+        self.assertIsNone(remail_client.restore_account_context("fresh@outlook.test", compatibility=True))
         self.assertEqual(self.request.call_count, 2)
 
     def test_restore_prefers_newest_detail_over_older_list_token(self):
         self.request.side_effect = [self.response({"items": [self.order(serviceToken="old", updatedAt=100), self.order(orderNo="R2", serviceToken="", updatedAt=200)]}), self.response(self.order(orderNo="R2", serviceToken="new"))]
-        self.assertEqual(remail_client.restore_account_context("fresh@outlook.test").service_token, "new")
+        self.assertEqual(remail_client.restore_account_context("fresh@outlook.test", compatibility=True).service_token, "new")
 
     def test_request_errors_never_expose_credentials_or_body(self):
         secret = "rk-secret st-secret fresh@outlook.test OTP=123456 password=test"
@@ -193,7 +199,7 @@ class RemailClientTests(unittest.TestCase):
     def test_create_network_failure_is_not_retried(self):
         self.request.side_effect = requests.Timeout("private request")
         with self.assertRaisesRegex(remail_client.RemailOrderUncertain, "结果不明"):
-            remail_client.pick_account()
+            remail_client.pick_account(compatibility=True)
         self.request.assert_called_once()
 
     def test_uncertain_post_outcomes_are_classified_without_retry(self):
@@ -215,7 +221,7 @@ class RemailClientTests(unittest.TestCase):
                 self.request.side_effect = scenario if isinstance(scenario, Exception) else None
                 self.request.return_value = scenario
                 with self.assertRaises(remail_client.RemailOrderUncertain) as raised:
-                    remail_client.pick_account()
+                    remail_client.pick_account(compatibility=True)
                 self.assertTrue(raised.exception.request_unknown)
                 self.assertEqual(raised.exception.error_code, "remail_order_request_unknown")
                 self.assertNotIn("private-", str(raised.exception))
@@ -232,7 +238,7 @@ class RemailClientTests(unittest.TestCase):
     def test_logs_and_repr_do_not_expose_account_credentials(self):
         self.request.return_value = self.response(self.order())
         with self.assertLogs("core.remail_client", level="INFO") as logs:
-            account = remail_client.pick_account()
+            account = remail_client.pick_account(compatibility=True)
             remail_client.release_account(account.email, note="password=secret", status="OTP=123456")
         text = " ".join(logs.output) + repr(account)
         for value in (account.email, account.service_token, "password=secret", "123456"):

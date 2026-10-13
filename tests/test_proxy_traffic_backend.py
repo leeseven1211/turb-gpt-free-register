@@ -197,6 +197,22 @@ class ProxyTrafficBackendTests(PostgresTestCase):
         self.assertEqual(len(history.get_json()["items"]), 1)
         self.assertEqual(history.get_json()["items"][0]["exit_ip"], "203.0.113.41")
 
+    def test_proxy_pool_snapshot_route_is_authenticated_and_read_only(self):
+        app = create_app(auth_code="proxy-page-auth")
+        client = app.test_client()
+        self.assertEqual(client.get("/api/proxy-pool").status_code, 401)
+        snapshot = {
+            "policy": {"min_ready": 2, "max_size": 20},
+            "counts": {"ready": 2, "leased": 1, "quarantine": 3},
+            "items": [{"resource_id": "pool-1", "state": "ready", "endpoint": "***:8080", "exit_ip": "203.0.113.0/24"}],
+        }
+        with patch("core.proxy_pool.snapshot", return_value=snapshot):
+            response = client.get("/api/proxy-pool", headers={"X-Auth-Code": "proxy-page-auth"})
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["counts"]["ready"], 2)
+        self.assertNotIn("proxy_url", json.dumps(payload, ensure_ascii=False))
+
     def test_proxy_traffic_aggregate_route_is_authenticated_and_returns_ui_arrays(self):
         self._seed_lease(lease_id="lease-aggregate-current")
         self._seed_lease(
@@ -232,6 +248,67 @@ class ProxyTrafficBackendTests(PostgresTestCase):
         self.assertNotIn("proxy_url", encoded)
         self.assertNotIn("private-user", encoded)
         self.assertNotIn("private-password", encoded)
+
+    def test_pool_anchor_is_hidden_from_task_lease_counts_but_child_is_counted(self):
+        from core import proxy_pool_store
+
+        now = datetime.now()
+        anchor = proxy_provider.ProxyLease(
+            "pool-anchor-counts", "1024proxy", "http://10.20.30.60:8080", "10.20.30.60:8080",
+            now, expires_at=now + timedelta(minutes=30), exit_ip="203.0.113.60", region="US",
+        )
+        slot = proxy_pool_store.reserve_slot("default", "1024proxy", max_size=20, timeout=60)
+        self.assertIsNotNone(slot)
+        proxy_lease_store.reserve_pending(
+            lease_id=anchor.lease_id, provider=anchor.provider, endpoint=anchor.endpoint,
+            proxy_url=anchor.proxy_url, acquired_at=now.isoformat(),
+            expires_at=anchor.expires_at.isoformat(), purpose="pool-reserve",
+        )
+        proxy_lease_store.activate(
+            lease_id=anchor.lease_id, exit_ip=anchor.exit_ip, region=anchor.region,
+            expires_at=anchor.expires_at.isoformat(),
+        )
+        self.assertTrue(proxy_pool_store.publish(slot, anchor))
+
+        # 租约历史使用本地无时区时间；测试范围按本次连接的本地日期计算。
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        self.assertEqual(proxy_lease_store.count_leases(view="current"), 0)
+        self.assertEqual(proxy_lease_store.list_page(view="current"), [])
+        self.assertEqual(
+            proxy_lease_store.count_leases(
+                acquired_since=today_start,
+                acquired_before=today_start + timedelta(days=1),
+            ),
+            0,
+        )
+        self.assertNotIn("pool-reserve", proxy_lease_store.distinct_filter_values()["purpose"])
+
+        child = proxy_pool_store.claim(
+            "default", min_ttl=300, max_age=60,
+            correlation={"purpose": "registration", "registration_job_id": 801},
+        )
+        self.assertIsNotNone(child)
+        self.assertEqual(proxy_lease_store.count_leases(view="current"), 1)
+        self.assertEqual(len(proxy_lease_store.list_page(view="current")), 1)
+        self.assertEqual(
+            proxy_lease_store.count_leases(
+                acquired_since=today_start,
+                acquired_before=today_start + timedelta(days=1),
+            ),
+            1,
+        )
+
+        proxy_pool_store.release(child, reason="completed")
+        self.assertEqual(proxy_lease_store.count_leases(view="current"), 0)
+        self.assertEqual(proxy_lease_store.count_leases(view="history"), 1)
+        self.assertEqual(len(proxy_lease_store.list_page(view="history")), 1)
+        self.assertEqual(
+            proxy_lease_store.count_leases(
+                acquired_since=today_start,
+                acquired_before=today_start + timedelta(days=1),
+            ),
+            1,
+        )
 
     def test_proxy_traffic_summary_uses_full_database_and_beijing_day_boundaries(self):
         today_start = self._beijing_today_start_utc()
@@ -684,7 +761,7 @@ class ProxyTrafficBackendTests(PostgresTestCase):
                 PROXY_1024_ACQUIRE_INTERVAL=0.0,
                 PROXY_1024_ROTATE_SESSION_TIME=False,
             ):
-                lease = proxy_provider.acquire_1024_proxy(
+                lease = proxy_provider.fetch_1024_proxy(
                     api_url="https://proxy.example.test/api?type=txt",
                     protocol="http",
                     region="US",

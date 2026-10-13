@@ -7,6 +7,11 @@ import unittest
 
 from core import db, postgres_store, record_store
 from core.storage import operation, registration
+from core.registration.browser_submission import (
+    BrowserSubmissionReceipt,
+    record_browser_submission_fact,
+    unresolved_submission_ids,
+)
 from tests.support_pg import PostgresTestCase
 
 
@@ -55,6 +60,251 @@ class RegistrationFactsTests(PostgresTestCase):
         resumed = next(item for item in events if item["event_uuid"] == "event-3")
         self.assertEqual(resumed["detail"]["attempt_checkpoint_preserved"], "auth_started")
         self.assertEqual(resumed["detail"]["run_checkpoint"], "created")
+
+    def test_submission_fence_preserves_unresolved_fact_beyond_history_window(self):
+        attempt = registration.create_attempt("submission-fence@example.test")
+        attempt_id = int(attempt["id"])
+        run = registration.start_run(
+            attempt_id,
+            execution_id="submission-fence-execution",
+            initial_status="running",
+        )
+        run_id = int(run["id"])
+        historical = [{
+            "submission_id": "old-unknown", "kind": "email", "stage": "submit_email",
+            "phase": "dispatch_intent", "endpoint_kind": "email_submit",
+        }]
+        historical.extend({
+            "submission_id": f"closed-{index}", "kind": "email", "stage": "submit_email",
+            "phase": "confirmed", "endpoint_kind": "email_submit",
+        } for index in range(140))
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {postgres_store.qualified('registration_attempts')} "
+                "SET private_context=%s::jsonb WHERE id=%s",
+                (json.dumps({"submission_facts": historical}, ensure_ascii=False), attempt_id),
+            )
+
+        registration.record_submission_fact(
+            attempt_id,
+            submission_id="old-unknown",
+            kind="email", stage="submit_email", phase="unknown",
+            endpoint_kind="email_submit", result="unknown", run_id=run_id,
+            execution_id="submission-fence-execution",
+        )
+        private = registration.get_private_resume_context(
+            attempt_id, email="submission-fence@example.test",
+        )
+        facts = private.get("submission_facts") or []
+        self.assertIn("old-unknown", unresolved_submission_ids(facts))
+
+        registration.record_submission_fact(
+            attempt_id,
+            submission_id="old-unknown",
+            kind="email", stage="submit_email", phase="confirmed",
+            endpoint_kind="email_submit", result="success", run_id=run_id,
+            execution_id="submission-fence-execution",
+        )
+        registration.record_submission_fact(
+            attempt_id,
+            submission_id="old-unknown",
+            kind="email", stage="submit_email", phase="request_observed",
+            endpoint_kind="email_submit", run_id=run_id,
+            execution_id="submission-fence-execution",
+        )
+        loaded = registration.get_attempt(attempt_id)
+        self.assertEqual("confirmed", (loaded.get("data") or {}).get("last_submission_phase"))
+
+    def test_browser_submission_helper_persists_before_advancing_receipt_phase(self):
+        attempt = registration.create_attempt("receipt-helper@example.test")
+        attempt_id = int(attempt["id"])
+        run = registration.start_run(
+            attempt_id,
+            execution_id="receipt-helper-execution",
+            initial_status="running",
+        )
+        driver = type("Driver", (), {})()
+        driver._registration_fact_context = {
+            "attempt_id": attempt_id,
+            "run_id": int(run["id"]),
+            "execution_id": "receipt-helper-execution",
+            "job_id": None,
+        }
+        receipt = BrowserSubmissionReceipt(
+            kind="otp", stage="email_otp", endpoint_kind="otp_submit", http_method="POST",
+        )
+        driver._browser_submission_receipt = receipt
+        record_browser_submission_fact(driver, "prepared", receipt=receipt)
+        record_browser_submission_fact(driver, "dispatch_intent", receipt=receipt)
+        self.assertEqual(receipt.phase, "dispatch_intent")
+        record_browser_submission_fact(driver, "confirmed", receipt=receipt, result="success")
+        record_browser_submission_fact(driver, "request_observed", receipt=receipt)
+        self.assertEqual(receipt.phase, "confirmed")
+        private = registration.get_private_resume_context(
+            attempt_id, email="receipt-helper@example.test",
+        )
+        phases = [
+            item["phase"] for item in private.get("submission_facts", [])
+            if item.get("submission_id") == receipt.submission_id
+        ]
+        self.assertIn("dispatch_intent", phases)
+        self.assertIn("confirmed", phases)
+
+    def test_explicit_resume_login_can_create_new_email_submission_after_unknown(self):
+        attempt = registration.create_attempt("resume-login@example.test")
+        attempt_id = int(attempt["id"])
+        run = registration.start_run(
+            attempt_id,
+            execution_id="resume-login-execution",
+            initial_status="running",
+            action_type="registration_resume",
+        )
+        run_id = int(run["id"])
+        registration.save_password_checkpoint(
+            attempt_id,
+            email="resume-login@example.test",
+            password="SavedPass123!",
+            state="started",
+            run_id=run_id,
+            execution_id="resume-login-execution",
+        )
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {postgres_store.qualified('registration_attempts')} "
+                "SET private_context = private_context || %s::jsonb WHERE id=%s",
+                (json.dumps({"submission_facts": [{
+                    "submission_id": "old", "kind": "email", "stage": "submit_email",
+                    "phase": "unknown", "endpoint_kind": "email_submit",
+                }]}), attempt_id),
+            )
+
+        registration.record_submission_fact(
+            attempt_id,
+            submission_id="resume-new",
+            kind="resume_login",
+            stage="submit_email",
+            phase="dispatch_intent",
+            endpoint_kind="email_submit",
+            http_method="POST",
+            run_id=run_id,
+            execution_id="resume-login-execution",
+        )
+        for submission_id, stage, endpoint_kind in (
+            ("resume-new", "submit_email", "email_submit"),
+            ("resume-password", "login_password", "password_submit"),
+            ("resume-otp", "email_otp", "otp_submit"),
+        ):
+            registration.record_submission_fact(
+                attempt_id,
+                submission_id=submission_id,
+                kind="resume_login",
+                stage=stage,
+                phase="confirmed" if submission_id == "resume-new" else "dispatch_intent",
+                endpoint_kind=endpoint_kind,
+                http_method="POST",
+                run_id=run_id,
+                execution_id="resume-login-execution",
+            )
+            if submission_id != "resume-new":
+                registration.record_submission_fact(
+                    attempt_id,
+                    submission_id=submission_id,
+                    kind="resume_login",
+                    stage=stage,
+                    phase="confirmed",
+                    endpoint_kind=endpoint_kind,
+                    http_method="POST",
+                    result="success",
+                    run_id=run_id,
+                    execution_id="resume-login-execution",
+                )
+        private = registration.get_private_resume_context(
+            attempt_id, email="resume-login@example.test",
+        )
+        self.assertIn(
+            "resume-new",
+            {item.get("submission_id") for item in private.get("submission_facts") or []},
+        )
+        self.assertEqual(
+            {"old"},
+            unresolved_submission_ids(private.get("submission_facts") or []),
+        )
+
+    def test_plain_registration_run_cannot_use_resume_kind_to_bypass_unknown(self):
+        attempt = registration.create_attempt("plain-registration-fence@example.test")
+        attempt_id = int(attempt["id"])
+        run = registration.start_run(
+            attempt_id,
+            execution_id="plain-registration-execution",
+            initial_status="running",
+            action_type="registration",
+        )
+        registration.save_password_checkpoint(
+            attempt_id,
+            email="plain-registration-fence@example.test",
+            password="SavedPass123!",
+            state="started",
+            run_id=int(run["id"]),
+            execution_id="plain-registration-execution",
+        )
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {postgres_store.qualified('registration_attempts')} "
+                "SET private_context = private_context || %s::jsonb WHERE id=%s",
+                (json.dumps({"submission_facts": [{
+                    "submission_id": "old-plain", "kind": "email", "stage": "submit_email",
+                    "phase": "unknown", "endpoint_kind": "email_submit",
+                }]}), attempt_id),
+            )
+        with self.assertRaises(ValueError):
+            registration.record_submission_fact(
+                attempt_id,
+                submission_id="new-plain",
+                kind="resume_login",
+                stage="submit_email",
+                phase="dispatch_intent",
+                endpoint_kind="email_submit",
+                run_id=int(run["id"]),
+                execution_id="plain-registration-execution",
+            )
+
+    def test_resume_run_cannot_repeat_unknown_otp_resend(self):
+        attempt = registration.create_attempt("resume-resend-fence@example.test")
+        attempt_id = int(attempt["id"])
+        run = registration.start_run(
+            attempt_id,
+            execution_id="resume-resend-execution",
+            initial_status="running",
+            action_type="registration_resume",
+        )
+        registration.save_password_checkpoint(
+            attempt_id,
+            email="resume-resend-fence@example.test",
+            password="SavedPass123!",
+            state="started",
+            run_id=int(run["id"]),
+            execution_id="resume-resend-execution",
+        )
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {postgres_store.qualified('registration_attempts')} "
+                "SET private_context = private_context || %s::jsonb WHERE id=%s",
+                (json.dumps({"submission_facts": [{
+                    "submission_id": "old-resend", "kind": "resume_login", "stage": "otp_resend",
+                    "phase": "unknown", "endpoint_kind": "otp_resend",
+                }]}), attempt_id),
+            )
+        with self.assertRaises(ValueError):
+            registration.record_submission_fact(
+                attempt_id,
+                submission_id="new-resend",
+                kind="resume_login",
+                stage="otp_resend",
+                phase="dispatch_intent",
+                endpoint_kind="otp_resend",
+                run_id=int(run["id"]),
+                execution_id="resume-resend-execution",
+            )
 
     def test_existing_queued_job_run_is_started_by_worker(self):
         job_id = self._job("queued-run@example.test")

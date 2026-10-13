@@ -98,6 +98,13 @@ def _account_setup_retry_reason(exc: BaseException) -> str:
     return code or "browser_transient_error"
 
 
+def _account_setup_transport_failure(exc: BaseException) -> bool:
+    """仅隔离明确的连接故障；渲染器、DevTools 和页面等待失败不代表坏代理。"""
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(marker in text for marker in _BROWSER_SETUP_TRANSPORT_MARKERS
+               if marker.startswith(("err_connection_", "err_tunnel_", "err_proxy_")))
+
+
 def _account_deactivation_code(exc: BaseException) -> str:
     """Return a confirmed dead-account code without classifying generic failures."""
     if isinstance(exc, AccountUnusableError):
@@ -1524,7 +1531,10 @@ def run_twofa_worker(
                     str(reason_code),
                 )
                 if account_route is not None:
-                    account_route.release(reason=f"browser-retry-{browser_attempt}")
+                    if _account_setup_transport_failure(exc):
+                        account_route.release(reason=f"browser-retry-{browser_attempt}", fault=True)
+                    else:
+                        account_route.release(reason=f"browser-retry-{browser_attempt}")
                     account_route = None
                 check_stop_requested(email)
                 time.sleep(min(3.0, float(browser_attempt)))

@@ -146,6 +146,145 @@ def test_run_status_remains_authoritative_over_complete_event():
     assert snapshot["current"] is None
 
 
+def test_route_projection_keeps_old_route_failure_out_of_current_run_step():
+    run = _run("running", route_attempt_no=2, duration_ms=12000)
+    events = [
+        _event("old-network", "network", "failed", message="旧线路不可用", detail={"route_attempt_no": 1, "started_at": "2026-10-13T01:00:00Z", "completed_at": "2026-10-13T01:00:04Z"}),
+        _event("old-login", "login", "failed", message="旧线路登录失败", detail={"route_attempt_no": 1, "started_at": "2026-10-13T01:00:04Z", "completed_at": "2026-10-13T01:00:05Z"}),
+        _event("current-network", "network", "running", detail={"route_attempt_no": 2, "started_at": "2026-10-13T01:00:10Z"}),
+    ]
+    snapshot = build_progress_snapshot(1, 2, "registration", run, events)
+    assert snapshot["selected_route_attempt_no"] == 2
+    assert _step(snapshot, "network")["state"] == "running"
+    assert snapshot["failure"] is None
+    assert {route["route_attempt_no"] for route in snapshot["routes"]} == {1, 2}
+    assert next(route for route in snapshot["routes"] if route["route_attempt_no"] == 1)["failure"]["step_id"] == "authenticate"
+    assert snapshot["time_basis"]["run_duration_ms"] == 12000
+
+
+def test_projection_ignores_event_from_another_run_even_when_route_matches():
+    run = _run("running", route_attempt_no=2)
+    events = [
+        _event("foreign", "network", "failed", detail={"route_attempt_no": 2}),
+        {**_event("current", "network", "running", detail={"route_attempt_no": 2}), "run_id": 2},
+    ]
+    events[0]["run_id"] = 99
+    snapshot = build_progress_snapshot(1, 2, "registration", run, events)
+    assert _step(snapshot, "network")["state"] == "running"
+    assert _step(snapshot, "network")["event_ids"] == ["current"]
+
+
+def test_late_old_route_event_cannot_change_current_route_duration_or_state():
+    run = _run("running", route_attempt_no=2)
+    events = [
+        _event("current-start", "login", "running", detail={"route_attempt_no": 2, "started_at": "2026-10-13T02:00:00Z"}),
+        _event("old-late", "login", "failed", created_at="2026-10-13T01:00:00Z", detail={"route_attempt_no": 1, "started_at": "2026-10-13T00:59:00Z", "completed_at": "2026-10-13T01:00:00Z"}),
+    ]
+    snapshot = build_progress_snapshot(1, 2, "registration", run, events)
+    login = _step(snapshot, "authenticate")
+    assert login["state"] == "running"
+    assert login["started_at"] == "2026-10-13T02:00:00Z"
+    assert login["event_ids"] == ["current-start"]
+
+
+def test_explicit_step_instances_are_retained_under_selected_route():
+    run = _run("running", route_attempt_no=2)
+    events = [
+        _event("instance-a-start", "login", "running", detail={"route_attempt_no": 2, "step_instance_id": "a", "started_at": "2026-10-13T03:00:00Z"}),
+        _event("instance-a-end", "login", "failed", detail={"route_attempt_no": 2, "step_instance_id": "a", "completed_at": "2026-10-13T03:00:01Z"}),
+        _event("instance-b-start", "login", "running", detail={"route_attempt_no": 2, "step_instance_id": "b", "started_at": "2026-10-13T03:00:03Z"}),
+    ]
+    snapshot = build_progress_snapshot(1, 2, "registration", run, events)
+    login = _step(snapshot, "authenticate")
+    assert [item["step_instance_id"] for item in login["step_instances"]] == ["a", "b"]
+    assert login["step_instances"][0]["state"] == "failed"
+    assert login["step_instances"][1]["state"] == "running"
+
+
+def test_late_running_same_step_instance_does_not_reopen_completed_projection():
+    run = _run("running", route_attempt_no=2)
+    events = [
+        _event("network-start", "network", "running", detail={
+            "route_attempt_no": 2, "step_instance_id": "network-a",
+            "started_at": "2026-10-13T03:00:00Z",
+        }),
+        _event("network-end", "network", "success", detail={
+            "route_attempt_no": 2, "step_instance_id": "network-a",
+            "started_at": "2026-10-13T03:00:00Z",
+            "completed_at": "2026-10-13T03:00:01Z",
+        }),
+        _event("network-late", "network", "running", detail={
+            "route_attempt_no": 2, "step_instance_id": "network-a",
+            "started_at": "2026-10-13T03:00:03Z",
+        }),
+    ]
+    network = _step(build_progress_snapshot(1, 2, "registration", run, events), "network")
+    assert network["state"] == "success"
+    assert network["completed_at"] == "2026-10-13T03:00:01Z"
+    assert network["duration_ms"] == 1000
+    assert network["step_instances"][0]["state"] == "success"
+    assert network["step_instances"][0]["completed_at"] == "2026-10-13T03:00:01Z"
+    assert network["step_instances"][0]["duration_ms"] == 1000
+    assert set(network["step_instances"][0]["event_ids"]) == {"network-start", "network-end", "network-late"}
+
+
+def test_unmarked_late_event_is_history_unknown_when_run_and_route_are_known():
+    run = _run("running", route_attempt_no=2)
+    events = [
+        {**_event("current", "login", "running", detail={"route_attempt_no": 2}), "run_id": 2},
+        _event("late-unknown", "login", "failed", detail={"message": "旧回调"}),
+    ]
+    snapshot = build_progress_snapshot(1, 2, "registration", run, events)
+    login = _step(snapshot, "authenticate")
+    assert login["state"] == "running"
+    assert login["event_ids"] == ["current"]
+    assert snapshot["history_unknown"][0]["event_id"] == "late-unknown"
+    assert snapshot["history_unknown"][0]["reason"] in {"事件缺少 Run 归属", "事件缺少线路归属"}
+
+
+def test_known_run_job_level_prepare_event_can_precede_route_assignment():
+    run = _run("running", route_attempt_no=2)
+    events = [
+        {**_event("prepare", "network", "running", detail={"job_level": True}), "run_id": 2},
+        {**_event("route", "network", "success", detail={"route_attempt_no": 2}), "run_id": 2},
+    ]
+    snapshot = build_progress_snapshot(1, 2, "registration", run, events)
+    network = _step(snapshot, "network")
+    assert network["state"] == "success"
+    assert "prepare" in network["event_ids"]
+    assert not snapshot.get("history_unknown")
+
+
+def test_current_authenticate_time_uses_each_child_instance_union():
+    run = _run("running", route_attempt_no=2)
+    events = [
+        _event("login-start", "login", "running", detail={"route_attempt_no": 2, "step_instance_id": "login-a", "started_at": "2026-10-13T03:00:00Z"}),
+        _event("login-end", "login", "success", detail={"route_attempt_no": 2, "step_instance_id": "login-a", "completed_at": "2026-10-13T03:00:01Z"}),
+        _event("otp-start", "email_otp", "running", detail={"route_attempt_no": 2, "step_instance_id": "otp-a", "started_at": "2026-10-13T03:00:02Z"}),
+        _event("otp-end", "email_otp", "success", detail={"route_attempt_no": 2, "step_instance_id": "otp-a", "completed_at": "2026-10-13T03:00:03Z"}),
+    ]
+    authenticate = _step(build_progress_snapshot(1, 2, "registration", run, events), "authenticate")
+    assert authenticate["state"] == "success"
+    assert authenticate["started_at"] == "2026-10-13T03:00:00Z"
+    assert authenticate["completed_at"] == "2026-10-13T03:00:03Z"
+    assert authenticate["duration_ms"] == 3000
+
+
+def test_same_route_authenticate_reentry_closes_parent_only_for_current_children():
+    run = _run("running", route_attempt_no=2)
+    events = [
+        _event("login-old", "login", "success", detail={"route_attempt_no": 2, "step_instance_id": "login-old", "started_at": "2026-10-13T03:00:00Z", "completed_at": "2026-10-13T03:00:01Z"}),
+        _event("otp-current", "email_otp", "success", detail={"route_attempt_no": 2, "step_instance_id": "otp-current", "started_at": "2026-10-13T03:00:01Z", "completed_at": "2026-10-13T03:00:02Z"}),
+        _event("login-new", "login", "running", detail={"route_attempt_no": 2, "step_instance_id": "login-new", "started_at": "2026-10-13T03:00:03Z"}),
+    ]
+    authenticate = _step(build_progress_snapshot(1, 2, "registration", run, events), "authenticate")
+    login = next(child for child in authenticate["children"] if child["id"] == "login")
+    assert authenticate["state"] == "running"
+    assert authenticate["completed_at"] is None
+    assert [item["step_instance_id"] for item in login["step_instances"]] == ["login-old", "login-new"]
+    assert login["state"] == "running"
+
+
 def test_legacy_progress_steps_preserve_evidence_without_events():
     run = _run("running")
     run["progress_steps"] = {

@@ -296,6 +296,15 @@ function jobProgressSnapshot(job) {
     || null;
 }
 
+function jobProgressRouteText(job) {
+  const snapshot = jobProgressSnapshot(job);
+  const selected = snapshot?.selected_route_attempt_no || job?.route_attempt_no;
+  if (!selected) return '';
+  const routes = Array.isArray(snapshot?.routes) ? snapshot.routes : [];
+  const history = routes.filter(route => Number(route?.route_attempt_no) !== Number(selected));
+  return `当前线路 ${selected}${history.length ? ` · 历史线路 ${history.length}` : ''}`;
+}
+
 function jobProgressMainSteps(job, fallbackStages = []) {
   const snapshot = jobProgressSnapshot(job);
   if (Array.isArray(snapshot?.main_steps)) {
@@ -395,9 +404,10 @@ function renderBatchProgress() {
   }
   panel.classList.remove('hidden');
 
-  const hasFailedStep = job => jobProgressMainSteps(job, stages).some(step => ['failed', 'stopped', 'attention_required', 'request_unknown'].includes(jobProgressStepState(step)));
-  const success = items.filter(job => job.status === 'success' && !hasFailedStep(job)).length;
-  const failed = items.filter(job => ['failed', 'partial_success', 'cancelled', 'stopped', 'request_unknown', 'manual_reconcile', 'attention_required', 'unsupported', 'deactivated', 'password_confirmation_pending'].includes(job.status) || hasFailedStep(job)).length;
+  // 卡片总状态取本 Run 的业务结果；历史线路中的失败步骤仅作为线路证据展示，
+  // 不能把当前 Run 的成功/运行中覆盖成“部分失败”。
+  const success = items.filter(job => job.status === 'success').length;
+  const failed = items.filter(job => ['failed', 'partial_success', 'cancelled', 'stopped', 'request_unknown', 'manual_reconcile', 'attention_required', 'unsupported', 'deactivated', 'password_confirmation_pending'].includes(job.status)).length;
   const interrupted = items.filter(job => job.status === 'interrupted').length;
   const active = items.filter(job => ['running', 'stopping'].includes(job.status)).length;
   const pending = items.filter(job => job.status === 'pending').length;
@@ -460,12 +470,8 @@ function renderBatchProgress() {
       : (job.progress_steps && typeof job.progress_steps === 'object' ? job.progress_steps : {});
     const terminal = ['success', 'partial_success', 'failed', 'cancelled', 'stopped', 'interrupted', 'request_unknown', 'manual_reconcile', 'attention_required', 'password_confirmation_pending'].includes(String(job.status || job.display_status || ''));
     const duration = formatProgressDuration(job.started_at || job.created_at, terminal ? job.completed_at : '');
-    const failedStageIndex = displayStages.findIndex(stage => ['failed', 'stopped', 'attention_required', 'request_unknown'].includes(jobProgressStepState(steps[stage.key])));
-    const failedStep = failedStageIndex >= 0 ? (steps[displayStages[failedStageIndex].key] || {}) : null;
-    const result = ['request_unknown', 'password_confirmation_pending'].includes(String(job.display_status || job.status || ''))
-      ? progressJobResult(job)
-      : failedStep ? { label: '部分失败', cls: 'is-failed' } : progressJobResult(job);
-    const cardFailed = ['failed', 'cancelled', 'stopped', 'interrupted', 'request_unknown', 'manual_reconcile', 'attention_required', 'unsupported', 'deactivated', 'password_confirmation_pending'].includes(String(job.status || job.display_status || '')) || Boolean(failedStep);
+    const result = progressJobResult(job);
+    const cardFailed = ['failed', 'cancelled', 'stopped', 'interrupted', 'request_unknown', 'manual_reconcile', 'attention_required', 'unsupported', 'deactivated', 'password_confirmation_pending'].includes(String(job.status || job.display_status || ''));
     const stepHtml = unified
       ? displayStages.map((step, index) => jobProgressStepMarkup(step, index, job.id)).join('')
       : displayStages.map((stage, index) => {
@@ -499,7 +505,9 @@ function renderBatchProgress() {
     const retryBadges = `${manualRetryCount > 0 ? `<span class="batch-progress-v2-retry-pill">人工重试 ${manualRetryCount} 次</span>` : ''}${internalRetryCount > 0 ? `<span class="batch-progress-v2-retry-pill is-auto">自动换线 ${internalRetryCount} 次</span>` : ''}`;
     const attemptRows = Array.isArray(job.attempts) ? job.attempts : [];
     const routeRows = Array.isArray(job.route_attempts) ? job.route_attempts : [];
-    const attemptHistory = (attemptRows.length > 1 || routeRows.length > 0 || internalRetryCount > 0) ? `<details class="batch-progress-v2-attempts">
+    const snapshotRoutes = Array.isArray(unifiedSnapshot?.routes) ? unifiedSnapshot.routes : [];
+    const routeHistoryRows = snapshotRoutes.filter(route => !route.selected).map(route => `<div><strong>历史线路 ${esc(route.route_attempt_no || 1)}</strong><span class="batch-progress-v2-result ${route.status === 'success' ? '' : 'is-failed'}">${route.status === 'success' ? '已完成' : route.status === 'running' ? '执行中' : route.status === 'unknown' ? '记录不足' : '曾失败/已结束'}</span>${route.retry_reason ? ` · ${esc(route.retry_reason)}` : ''}</div>`).join('');
+    const attemptHistory = (attemptRows.length > 1 || routeRows.length > 0 || snapshotRoutes.length > 1 || internalRetryCount > 0) ? `<details class="batch-progress-v2-attempts">
       <summary>尝试记录（${attemptRows.length || 1} 次执行${routeRows.length ? `，${routeRows.length + 1} 次线路尝试` : ''}）</summary>
       <div class="batch-progress-v2-attempt-list">
         ${attemptRows.map((attempt, attemptIndex) => {
@@ -511,8 +519,9 @@ function renderBatchProgress() {
           const warning = attempt.warning_summary ? ` · 换线原因：${esc(attempt.warning_summary)}` : '';
           return `<div><strong>第 ${attemptIndex + 1} 次执行 #${esc(attempt.id)}</strong><span class="batch-progress-v2-result ${attemptResult.cls}">${attemptResult.label}</span>${attemptDuration ? ` · ${esc(attemptDuration)}` : ''}${error}${warning}</div>`;
         }).join('')}
-        ${routeRows.map(route => `<div><strong>线路尝试 ${esc(route.route_attempt_no || 1)}</strong><span class="batch-progress-v2-result is-failed">已换线</span>${route.retry_reason ? ` · ${esc(route.retry_reason)}` : ''}</div>`).join('')}
-        ${!routeRows.length && internalRetryCount > 0 ? `<div><strong>历史线路重试</strong><span class="batch-progress-v2-result is-failed">已换线 ${internalRetryCount} 次</span>${job.internal_retry_last_reason ? ` · ${esc(job.internal_retry_last_reason)}` : ''}</div>` : ''}
+        ${(snapshotRoutes.length ? [] : routeRows).map(route => `<div><strong>线路尝试 ${esc(route.route_attempt_no || 1)}</strong><span class="batch-progress-v2-result is-failed">已换线</span>${route.retry_reason ? ` · ${esc(route.retry_reason)}` : ''}</div>`).join('')}
+        ${routeHistoryRows}
+        ${!routeRows.length && !snapshotRoutes.length && internalRetryCount > 0 ? `<div><strong>历史线路重试</strong><span class="batch-progress-v2-result is-failed">已换线 ${internalRetryCount} 次</span>${job.internal_retry_last_reason ? ` · ${esc(job.internal_retry_last_reason)}` : ''}</div>` : ''}
       </div>
     </details>` : '';
     return `<article class="batch-progress-v2-card${cardFailed ? ' is-failed' : ''}">
@@ -521,6 +530,7 @@ function renderBatchProgress() {
           <span class="batch-progress-v2-index">#${esc(batchIndex)}</span>
           <span class="batch-progress-v2-email" title="${esc(email)}">${esc(email)}</span>
           <span class="sub-cell">${esc(sourceLabel)}</span>
+          ${jobProgressRouteText(job) ? `<span class="sub-cell">${esc(jobProgressRouteText(job))}</span>` : ''}
           ${retryBadges}
         </div>
         <div class="batch-progress-v2-meta">

@@ -1126,6 +1126,21 @@ def get_private_resume_context(attempt_id: int, *, email: str) -> dict:
         return dict(_decode(row.get("private_context")) or {})
 
 
+def has_unresolved_submission_facts(attempt_id: int) -> bool:
+    """只返回提交围栏是否仍未收口，不向任务投影暴露私有事实。"""
+    from core.registration.browser_submission import unresolved_submission_ids
+
+    init()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT private_context FROM {_table('registration_attempts')} WHERE id=%s",
+            (int(attempt_id),),
+        )
+        row = cur.fetchone() or {}
+    private = dict(_decode(row.get("private_context")) or {})
+    return bool(unresolved_submission_ids(private.get("submission_facts") or []))
+
+
 def save_password_checkpoint(attempt_id: int, *, email: str, password: str, state: str,
                              run_id: int, execution_id: str, job_id=None, account: dict | None = None) -> dict:
     """原密码在远端请求前保存；确认后才建立待验证账号。"""
@@ -1177,6 +1192,151 @@ def save_password_checkpoint(attempt_id: int, *, email: str, password: str, stat
                       event_type=f"credential_{state}", level="INFO", message="原密码恢复检查点已保存",
                       detail={"phase": state}, execution_id=execution_id, event_uuid=None)
         return {"account_id": account_id, "state": state}
+
+
+def record_submission_fact(
+    attempt_id: int,
+    *,
+    submission_id: str,
+    kind: str,
+    stage: str,
+    phase: str,
+    run_id: int | None = None,
+    execution_id: str | None = None,
+    job_id: int | None = None,
+    endpoint_kind: str = "unknown",
+    http_method: str = "",
+    http_status: int | None = None,
+    result: str = "",
+    error_type: str = "",
+    duration_ms: int | None = None,
+) -> dict:
+    """追加浏览器提交事实并建立同一 Attempt 的 dispatch 围栏。
+
+    该接口只接受白名单元数据。``private_context`` 是已有的私有恢复列，因而
+    不新增主存储 schema；公开事件仅携带同一白名单，绝不写入请求体、Token、
+    Cookie、密码或 OTP。
+    """
+    from core.registration.browser_submission import (
+        _PHASE_PRIORITY,
+        fact_from_mapping,
+        unresolved_submission_ids,
+    )
+
+    fact = fact_from_mapping({
+        "submission_id": submission_id, "kind": kind, "stage": stage, "phase": phase,
+        "endpoint_kind": endpoint_kind, "http_method": http_method, "http_status": http_status,
+        "result": result, "error_type": error_type, "duration_ms": duration_ms,
+    })
+    init()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT * FROM {_table('registration_attempts')} WHERE id=%s FOR UPDATE", (int(attempt_id),))
+        raw = cur.fetchone()
+        attempt = _row(raw)
+        if attempt is None:
+            raise LookupError("注册 Attempt 不存在")
+        email = str(attempt.get("email_snapshot") or attempt.get("email") or "").strip()
+        _require_current_execution(cur, attempt, run_id=run_id, execution_id=execution_id, email=email)
+        private = dict(_decode(raw.get("private_context")) or {})
+        facts = private.get("submission_facts")
+        facts = list(facts) if isinstance(facts, list) else []
+        key = (fact["submission_id"], fact["phase"])
+        # dispatch_intent 是跨 Run 的唯一发送围栏。若 Attempt 上仍有另一条
+        # 未决动作，当前 Run 只能恢复/观察原动作，不能重新创建 POST/OTP。
+        if fact["phase"] == "dispatch_intent":
+            unresolved = unresolved_submission_ids(facts)
+            unresolved_items = [
+                item for item in facts
+                if isinstance(item, dict)
+                and item.get("submission_id") in unresolved
+                and item.get("submission_id") != fact["submission_id"]
+            ]
+            explicit_resume_run = False
+            if run_id is not None:
+                cur.execute(
+                    f"SELECT attempt_id, status, action_type, execution_id FROM {_table('registration_runs')} WHERE id=%s",
+                    (int(run_id),),
+                )
+                run_row = _row(cur.fetchone()) or {}
+                explicit_resume_run = bool(
+                    run_row.get("attempt_id") == int(attempt_id)
+                    and str(run_row.get("action_type") or "") == "registration_resume"
+                    and str(run_row.get("status") or "") in {"queued", "running"}
+                    and (execution_id is None or str(run_row.get("execution_id") or "") == str(execution_id))
+                )
+            resume_login = (
+                fact["kind"] == "resume_login"
+                and explicit_resume_run
+                and fact["stage"] in {
+                    "submit_email", "nextauth", "login_password", "email_otp", "otp_resend",
+                }
+                and bool((attempt.get("data") or {}).get("has_password"))
+                and bool(private.get("password"))
+                and str(attempt.get("checkpoint") or "") in {
+                    "password_request_started", "password_confirmed", "otp_started",
+                    "otp_confirmed", "account_request_started", "account_confirmed",
+                    "token_obtained", "postprocessing", "manual_reconcile", "failed",
+                }
+            )
+            # 重发结果未知时，续跑可以只读核对或提交已收到的验证码，
+            # 但不能借宽泛的 resume_login 标记再次点击重发。
+            if resume_login and fact["stage"] == "otp_resend" and any(
+                str(item.get("stage") or "") == "otp_resend" for item in unresolved_items
+            ):
+                resume_login = False
+            if any(item != fact["submission_id"] for item in unresolved) and not resume_login:
+                raise ValueError("同一 Attempt 仍有未决浏览器提交，拒绝重新派发请求")
+        if not any((item.get("submission_id"), item.get("phase")) == key for item in facts if isinstance(item, dict)):
+            facts.append(fact)
+        # 只保留最近事实，避免一个 Attempt 的浏览器恢复历史无限增长；但每个
+        # 仍未收口的 submission 必须保留其最高阶段事实，否则旧 Run 的未知
+        # POST 会在大量观测后从 durable fence 中消失，下一 Run 可能重复派发。
+        recent_facts = facts[-128:]
+        unresolved = unresolved_submission_ids(facts)
+        required: dict[tuple[str, str], dict] = {}
+        for index, item in enumerate(facts):
+            if not isinstance(item, dict) or item.get("submission_id") not in unresolved:
+                continue
+            item_key = (str(item.get("submission_id") or ""), str(item.get("phase") or ""))
+            rank = (_PHASE_PRIORITY.get(item_key[1], 0), index)
+            previous = required.get((item_key[0], ""))
+            previous_rank = previous.get("_rank", (-1, -1)) if previous else (-1, -1)
+            if rank >= previous_rank:
+                required[(item_key[0], "")] = {"_fact": item, "_rank": rank}
+        preserved = [entry["_fact"] for entry in required.values()]
+        preserved_keys = {(item.get("submission_id"), item.get("phase")) for item in preserved}
+        private["submission_facts"] = preserved + [
+            item for item in recent_facts
+            if isinstance(item, dict) and (item.get("submission_id"), item.get("phase")) not in preserved_keys
+        ]
+        data = dict(attempt.get("data") or {})
+        # CDP response/request 事件可能晚于页面 confirmed 抵达；同一提交只能
+        # 向更高阶段推进，不能让 UI 投影回退到 request_observed。
+        same_submission = [
+            item for item in facts
+            if isinstance(item, dict) and item.get("submission_id") == fact["submission_id"]
+        ]
+        effective = max(
+            same_submission,
+            key=lambda item: _PHASE_PRIORITY.get(str(item.get("phase") or ""), 0),
+            default=fact,
+        )
+        data["last_submission_phase"] = effective["phase"]
+        data["last_submission_kind"] = effective["kind"]
+        cur.execute(
+            f"UPDATE {_table('registration_attempts')} SET private_context=%s::jsonb, data=%s::jsonb, updated_at=%s WHERE id=%s",
+            (json.dumps(private, ensure_ascii=False), json.dumps(data, ensure_ascii=False), _now(), int(attempt_id)),
+        )
+        _insert_event(
+            cur, attempt_id=int(attempt_id), run_id=run_id, job_id=job_id,
+            checkpoint=str(attempt.get("checkpoint") or "created"), event_type="auth_submission_fact",
+            level="INFO" if fact["phase"] not in {"unknown", "rejected"} else "WARNING",
+            message=f"浏览器认证提交事实：{fact['kind']} {fact['phase']}", detail=fact,
+            execution_id=execution_id, event_uuid=str(uuid.uuid5(
+                uuid.NAMESPACE_URL, f"turb-auth-submission:{attempt_id}:{fact['submission_id']}:{fact['phase']}"
+            )),
+        )
+        return fact
 
 
 def save_totp_checkpoint(attempt_id: int, *, email: str, secret: str, confirmed: bool,
@@ -1438,7 +1598,7 @@ __all__ = [
     "CHECKPOINTS", "CHECKPOINT_RANK", "LEGACY_CHECKPOINT_MAP", "REMOTE_STATES", "LOCAL_ACCOUNT_STATES", "RUN_STATUSES",
     "init", "reset_ready", "create_attempt", "ensure_attempt_for_job", "get_attempt", "get_attempt_by_job", "get_attempts_for_root_jobs",
     "list_attempts", "advance_checkpoint", "mark_request_unknown", "mark_manual_reconcile", "start_run",
-    "retry_run", "list_runs", "get_run", "finish_run", "persist_core_account", "events", "list_events",
+    "retry_run", "list_runs", "get_run", "finish_run", "persist_core_account", "record_submission_fact", "events", "list_events",
     "mark_checkpoint", "record_checkpoint", "persist_account_core", "recover_interrupted_runs",
     "backfill", "verify",
 ]

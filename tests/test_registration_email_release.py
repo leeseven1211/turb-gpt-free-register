@@ -786,12 +786,18 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
             }
         )
 
-        update_progress.assert_any_call(
-            1,
-            "email_otp",
-            state="failed",
-            detail="验证码等待超时",
-        )
+        matching = [
+            call for call in update_progress.call_args_list
+            if call.args[:2] == (1, "email_otp")
+            and call.kwargs.get("state") == "failed"
+            and call.kwargs.get("detail") == "验证码等待超时"
+        ]
+        self.assertEqual(len(matching), 1)
+        failed_call = matching[0]
+        self.assertEqual(failed_call.kwargs.get("route_attempt_no"), 1)
+        self.assertTrue(failed_call.kwargs.get("step_instance_id"))
+        # 兼容旧任务没有 operation run 的情况，但字段必须保留在事件中。
+        self.assertIn("operation_run_id", failed_call.kwargs)
         finish_progress.assert_called_with(1, success=False, detail="验证码等待超时")
 
     def test_transient_proxy_failure_reuses_original_email_on_new_route(self):
@@ -872,7 +878,7 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
             [call.kwargs["email_source"] for call in run_registration.call_args_list],
             ["icloud_hide", "icloud_hide"],
         )
-        self.assertEqual(acquire_proxy.call_args_list[1].kwargs["batch_id"], None)
+        self.assertNotIn("batch_id", acquire_proxy.call_args_list[1].kwargs)
         release_proxy.assert_any_call(proxy1, reason="registration_proxy_retry_1")
         release_proxy.assert_any_call(proxy2, reason="pending")
         stage_transitions = [
@@ -890,16 +896,9 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
             ("email", "success"),
         ])
 
-    def test_proxy_acquisition_retries_before_registration(self):
-        proxy = SimpleNamespace(
-            provider="1024proxy",
-            endpoint="1.1.1.1:8080",
-            exit_ip="1.1.1.1",
-            region="US",
-            proxy_url="http://1.1.1.1:8080",
-        )
+    def test_proxy_acquisition_failure_is_returned_without_outer_retry(self):
         acquire_proxy = unittest.mock.Mock(
-            side_effect=[RuntimeError("1024Proxy 获取失败：连接超时"), proxy]
+            side_effect=RuntimeError("代理池暂时没有符合要求的可用线路")
         )
         with patch.object(svc.db, "update_job"), patch.object(
             svc.db, "update_job_progress"
@@ -912,30 +911,20 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
         ), patch.object(
             svc, "check_stop_requested"
         ), patch.object(svc.time, "sleep"):
-            result = svc._acquire_registration_proxy_with_retries(
-                acquire_proxy=acquire_proxy,
-                job_id=17,
-                batch_id=None,
-                batch_size=1,
-                batch_workers=1,
-                progress_callback=None,
-                log_logger=svc.logger,
-            )
+            with self.assertRaisesRegex(RuntimeError, "代理池"):
+                svc._acquire_registration_proxy_with_retries(
+                    acquire_proxy=acquire_proxy,
+                    job_id=17,
+                    batch_id=None,
+                    batch_size=1,
+                    batch_workers=1,
+                    progress_callback=None,
+                    log_logger=svc.logger,
+                )
 
-        self.assertIs(result, proxy)
-        self.assertEqual(acquire_proxy.call_count, 2)
-        begin_route_attempt.assert_called_once_with(
-            17,
-            retry_kind="proxy_acquisition",
-            retry_reason="RuntimeError: 1024Proxy 获取失败：连接超时",
-        )
-        self.assertEqual(
-            [
-                (call.args[1], call.kwargs["state"])
-                for call in update_progress.call_args_list
-            ],
-            [("network", "failed"), ("network", "running")],
-        )
+        self.assertEqual(acquire_proxy.call_count, 1)
+        begin_route_attempt.assert_not_called()
+        update_progress.assert_not_called()
 
     def test_manual_registration_retry_uses_independent_proxy_allocation(self):
         job = {
@@ -997,9 +986,10 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
             svc._run_one_job(2, str(Path(td) / "job.log"))
 
         acquire_proxy.assert_called_once()
-        self.assertEqual(acquire_proxy.call_args.kwargs["batch_id"], None)
-        self.assertEqual(acquire_proxy.call_args.kwargs["batch_size"], 1)
-        self.assertEqual(acquire_proxy.call_args.kwargs["batch_workers"], 1)
+        acquire_kwargs = acquire_proxy.call_args.kwargs
+        self.assertNotIn("batch_id", acquire_kwargs)
+        self.assertEqual(acquire_kwargs["job_id"], 2)
+        self.assertEqual(acquire_kwargs["registration_job_id"], 2)
         finalize_batch.assert_not_called()
         prepare_args.assert_not_called()
         restore_email.assert_called_once_with(

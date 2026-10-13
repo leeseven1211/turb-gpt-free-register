@@ -338,6 +338,13 @@ _DEFAULTS: dict[str, Any] = {
     "PROXY_1024_RECENT_TTL": 1800,
     "PROXY_1024_ACQUIRE_INTERVAL": 0.6,
     "PROXY_POOL": ["socks5://127.0.0.1:7897"],
+    "PROXY_POOL_MIN_READY": 2,
+    "PROXY_POOL_MAX_SIZE": 20,
+    "PROXY_POOL_WAIT_TIMEOUT": 60,
+    "PROXY_POOL_MIN_TTL": 300,
+    "PROXY_POOL_CHECK_INTERVAL": 60,
+    "PROXY_POOL_MAX_IDLE": 300,
+    "PROXY_POOL_WORKERS": 2,
     "PLAN_CHECK_PROXY_MODE": "auto",
     "PLAN_CHECK_PROXY": "",
     "PLAN_CHECK_PROXY_ALLOW_REUSE": True,
@@ -1080,11 +1087,11 @@ _FIELD_DEFINITIONS = [
     # ---- 代理与网络 ----
     {
         "key": "REGISTRATION_PROXY_MODE", "file": "proxy.py", "type": "str", "group": "代理与网络",
-        "label": "注册代理来源", "help": "pool=现有静态代理池；1024=每个注册任务从 1024Proxy 提取独立 IP；none=直连",
+        "label": "注册代理来源", "help": "pool=独立代理池已检测库存；1024=兼容旧供应商配置并由代理池统一补货；none=直连",
     },
     {
         "key": "PROXY_1024_API_URL", "file": "proxy.py", "type": "str", "group": "代理与网络",
-        "label": "1024Proxy 提取 API", "help": "粘贴白名单 API 完整 URL；单任务使用 num=1，注册批次会按待执行任务数批量提取，并用下方粘性时长覆盖 URL 的 time 参数；仅保存到 .env",
+        "label": "1024Proxy 供给 API", "help": "粘贴白名单 API 完整 URL；代理池按固定 region、time、num 参数补货，任务只领取已检测租约；time 不保证每次领取都是新会话或新 IP；仅保存到 .env",
         "storage": "env", "secret": True,
     },
     {
@@ -1097,11 +1104,11 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "PROXY_1024_SESSION_MINUTES", "file": "proxy.py", "type": "int", "group": "代理与网络",
-        "label": "粘性时长(分钟)", "help": "默认 30，允许 1~120；延长时间本身不增加按 GB 套餐流量，只增加同一 IP 可使用的窗口",
+        "label": "粘性时长(分钟)", "help": "默认 30，允许 1~120；延长时间本身不增加按 GB 套餐流量，作为预估的粘性会话窗口，实际可用期仍由供应商决定",
     },
     {
         "key": "PROXY_1024_ROTATE_SESSION_TIME", "file": "proxy.py", "type": "bool", "group": "代理与网络",
-        "label": "每任务轮换远端会话", "help": "推荐开启；按任务在基础时长至 120 分钟间轮换 time 参数，避免白名单 API 在粘性窗口内重复返回同一 IP",
+        "label": "兼容旧会话参数", "help": "仅保留旧配置兼容性；独立代理池使用固定供给参数，不能据此保证新会话或新 IP，线路复用由租约生命周期和供应商行为决定",
     },
     {
         "key": "PROXY_1024_API_TIMEOUT", "file": "proxy.py", "type": "float", "group": "代理与网络",
@@ -1109,15 +1116,15 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "PROXY_1024_MAX_ATTEMPTS", "file": "proxy.py", "type": "int", "group": "代理与网络",
-        "label": "最大有效失败次数", "help": "空响应、不可用代理或地区不符的最大次数；重复粘性 IP 另有快速重取额度，不消耗该次数",
+        "label": "旧提取失败次数", "help": "仅用于供应商配置诊断的旧提取器；独立代理池每轮提取一次，由后台退避补货",
     },
     {
         "key": "PROXY_1024_ACQUIRE_TIMEOUT", "file": "proxy.py", "type": "float", "group": "代理与网络",
-        "label": "代理获取总预算(秒)", "help": "包含重复 IP 重取和出口检测的整段硬上限；建议 60 秒",
+        "label": "后台补货预算(秒)", "help": "锁等待、节流、提取和出口检测共享的预算；在途网络请求受底层超时约束，任务领取等待另行设置",
     },
     {
         "key": "REGISTRATION_PROXY_RETRIES", "file": "proxy.py", "type": "int", "group": "代理与网络",
-        "label": "注册代理换线重试次数", "help": "只对隧道、连接重置和认证跳转超时等明确代理瞬时错误换线重试；不改变并发数，也不重试密码入口缺失",
+        "label": "注册代理换线重试次数", "help": "只对隧道、连接重置等明确代理传输错误换线重试；不改变并发数，也不重试密码入口缺失",
     },
     {
         "key": "REGISTRATION_PROXY_RETRY_DELAY", "file": "proxy.py", "type": "float", "group": "代理与网络",
@@ -1133,7 +1140,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "PROXY_1024_VALIDATE", "file": "proxy.py", "type": "bool", "group": "代理与网络",
-        "label": "使用前检测出口", "help": "领取邮箱前先通过该代理访问 IPInfo，确认代理可用并记录出口地区",
+        "label": "旧提取出口检测", "help": "旧供应商诊断入口的检测开关；独立代理池始终检测候选及出口地区，仅向任务发放合格库存",
     },
     {
         "key": "PROXY_1024_VALIDATE_ATTEMPTS", "file": "proxy.py", "type": "int", "group": "代理与网络",
@@ -1145,12 +1152,41 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "PROXY_1024_ACQUIRE_INTERVAL", "file": "proxy.py", "type": "float", "group": "代理与网络",
-        "label": "提取最小间隔(秒)", "help": "并发任务调用提取 API 的最小间隔，默认 0.6 秒，避免瞬间突发",
+        "label": "提取最小间隔(秒)", "help": "单个进程后台调用提取 API 的最小间隔，默认 0.6 秒，避免瞬间突发",
     },
     {
         "key": "PROXY_POOL", "file": "proxy.py", "type": "list_str_multiline", "group": "代理与网络",
-        "label": "代理池(每行一个)", "help": "每行一个代理 URL，留空行会被忽略；为空则不使用代理",
+        "label": "代理池(每行一个)", "help": "每行一个静态代理 URL，留空行会被忽略；显式选择 pool 来源但列表为空时申请失败",
         "storage": "env", "secret": True,
+    },
+    {
+        "key": "PROXY_POOL_MIN_READY", "file": "proxy.py", "type": "int", "group": "代理与网络",
+        "label": "代理池最小可用库存", "help": "后台至少保持的活跃来源/地区可用库存数量；任务领取时只使用已检测通过且剩余寿命足够的线路",
+    },
+    {
+        "key": "PROXY_POOL_MAX_SIZE", "file": "proxy.py", "type": "int", "group": "代理与网络",
+        "label": "代理池最大容量", "help": "全池 fetching、checking、ready、leased、shared 状态的总容量上限；冷却和历史状态不占容量",
+    },
+    {
+        "key": "PROXY_POOL_WAIT_TIMEOUT", "file": "proxy.py", "type": "int", "group": "代理与网络",
+        "label": "领取等待超时(秒)", "help": "任务等待代理池分配可用线路的最长时间；到期返回明确的代理池等待超时",
+    },
+    {
+        "key": "PROXY_POOL_MIN_TTL", "file": "proxy.py", "type": "int", "group": "代理与网络",
+        "label": "领取最低剩余寿命(秒)", "help": "只有剩余寿命达到该值的库存才允许分配给任务",
+    },
+    {
+        "key": "PROXY_POOL_CHECK_INTERVAL", "file": "proxy.py", "type": "int", "group": "代理与网络",
+        "label": "库存复检间隔(秒)", "help": "后台对已登记库存进行出口复检的间隔；复检失败的库存会退役",
+    },
+    {
+        "key": "PROXY_POOL_MAX_IDLE", "file": "proxy.py", "type": "int", "group": "代理与网络",
+        "label": "空闲库存回收时间(秒)", "help": "没有等待任务时，来源/地区 profile 长时间未使用后停止继续补充库存",
+    },
+    {
+        "key": "PROXY_POOL_WORKERS", "file": "proxy.py", "type": "int", "group": "代理与网络",
+        "label": "代理池后台 worker 数", "help": "单个进程后台维护代理库存和复检的 worker 数量；热加载后当前维护结束再调整",
+        "restart": True,
     },
     {
         "key": "PLAN_CHECK_PROXY_MODE", "file": "proxy.py", "type": "str", "group": "代理与网络",
@@ -1534,6 +1570,13 @@ _RANGES: dict[str, tuple[int | float | None, int | float | None]] = {
     "PROXY_1024_VALIDATE_ATTEMPTS": (1, 100),
     "PROXY_1024_RECENT_TTL": (0, 604800),
     "PROXY_1024_ACQUIRE_INTERVAL": (0, 300.0),
+    "PROXY_POOL_MIN_READY": (0, 1000),
+    "PROXY_POOL_MAX_SIZE": (1, 1000),
+    "PROXY_POOL_WAIT_TIMEOUT": (0, 86400),
+    "PROXY_POOL_MIN_TTL": (0, 604800),
+    "PROXY_POOL_CHECK_INTERVAL": (1, 86400),
+    "PROXY_POOL_MAX_IDLE": (0, 604800),
+    "PROXY_POOL_WORKERS": (1, 32),
     "PLAN_CHECK_TIMEOUT": (1.0, 60.0),
     "PLAN_CHECK_MAX_ATTEMPTS": (1, 4),
     "PLAN_CHECK_RETRY_DELAY": (0, 30.0),
@@ -1973,6 +2016,20 @@ def _cross_field_errors(values: Mapping[str, Any]) -> dict[str, str]:
         errors["ACCOUNT_LIVE_CHECK_DRIVER"] = (
             "选择 browser_roxy 前必须开启 ACCOUNT_LIVE_CHECK_BROWSER_ENABLED"
         )
+    try:
+        pool_min = int(values.get("PROXY_POOL_MIN_READY"))
+        pool_max = int(values.get("PROXY_POOL_MAX_SIZE"))
+        if pool_min > pool_max:
+            errors["PROXY_POOL_MIN_READY"] = "代理池最小可用库存不能超过最大容量"
+            errors["PROXY_POOL_MAX_SIZE"] = "代理池最大容量不能小于最小可用库存"
+    except (TypeError, ValueError):
+        # 各字段自身的类型/范围错误已由 _validate_value 报告。
+        pass
+    try:
+        if int(values.get("PROXY_1024_SESSION_MINUTES")) * 60 <= int(values.get("PROXY_POOL_MIN_TTL")):
+            errors["PROXY_POOL_MIN_TTL"] = "最短剩余寿命必须小于 1024Proxy 会话时长，并为出口检测预留时间"
+    except (TypeError, ValueError):
+        pass
     return errors
 
 

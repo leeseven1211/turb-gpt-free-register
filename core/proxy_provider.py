@@ -270,7 +270,7 @@ def _validate_proxy(proxy_url: str, timeout: float) -> tuple[str | None, str | N
     response = session.get(
         "https://ipinfo.io/json",
         proxies={"http": proxy_url, "https": proxy_url},
-        timeout=max(3.0, min(float(timeout or 12.0), 30.0)),
+        timeout=max(0.001, min(float(timeout or 12.0), 30.0)),
         headers={"Accept": "application/json", "User-Agent": "turb-gpt-free-register/proxy-check"},
     )
     response.raise_for_status()
@@ -294,13 +294,20 @@ def _validate_proxy_with_retries(
     timeout: float,
     *,
     attempts: int = 2,
+    deadline: float | None = None,
 ) -> tuple[str | None, str | None]:
     """同一端点的瞬时网络/SSL 校验失败先原地重试，避免立刻浪费一条新代理。"""
     attempts = max(1, min(3, int(attempts or 1)))
     last_error: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
-            return _validate_proxy(proxy_url, timeout)
+            remaining = timeout if deadline is None else min(timeout, deadline - time.monotonic())
+            if remaining <= 0:
+                raise TimeoutError("代理检测预算已耗尽")
+            result = _validate_proxy(proxy_url, remaining)
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("代理检测结果晚于截止时间")
+            return result
         except Exception as exc:
             last_error = exc
             text = str(exc).lower()
@@ -311,7 +318,7 @@ def _validate_proxy_with_retries(
                 "timed out", "timeout", "connection reset", "connection aborted",
                 "remote disconnected", "ssl", "temporarily unavailable",
             ))
-            if not transient or attempt >= attempts:
+            if not transient or attempt >= attempts or (deadline is not None and time.monotonic() >= deadline):
                 raise
             delay = min(1.0, 0.35 * attempt)
             logger.warning(
@@ -321,7 +328,7 @@ def _validate_proxy_with_retries(
                 attempts,
                 f"{type(exc).__name__}: {str(exc)[:140]}",
             )
-            time.sleep(delay)
+            time.sleep(delay if deadline is None else min(delay, max(0, deadline - time.monotonic())))
     raise last_error or RuntimeError("代理出口检测失败")
 
 
@@ -365,7 +372,7 @@ def _correlation_metadata(
     }
 
 
-def acquire_1024_proxy(
+def fetch_1024_proxy(
     *,
     api_url: str | None = None,
     protocol: str | None = None,
@@ -382,6 +389,7 @@ def acquire_1024_proxy(
     route_attempt_no: int | None = None,
     allow_reuse: bool = False,
 ) -> ProxyLease:
+    """供应商适配器；业务任务通过独立代理池领取。"""
     from config import proxy as cfg
 
     if allow_reuse and purpose != "plan-check":
@@ -1069,6 +1077,12 @@ def discard_registration_proxy_batch(batch_id: str | None) -> None:
         release_proxy(lease, reason="registration_batch_discarded")
 
 
+def acquire_1024_proxy(**kwargs) -> ProxyLease:
+    """所有账号任务统一从已校验的独立库存领取。"""
+    from core.proxy_pool import acquire
+    return acquire(provider="1024proxy", **kwargs)
+
+
 def acquire_registration_proxy(
     *,
     job_id: int | str | None = None,
@@ -1082,25 +1096,13 @@ def acquire_registration_proxy(
     operation_run_id: int | None = None,
     registration_job_id: int | None = None,
     route_attempt_no: int | None = None,
+    cancel=None,
+    timeout: float | None = None,
 ) -> ProxyLease:
     from config import proxy as cfg
 
     mode = registration_proxy_mode()
     if mode == "1024":
-        if batch_id and int(batch_size or 1) > 1:
-            return _acquire_registration_proxy_from_batch(
-                batch_id=batch_id,
-                batch_size=batch_size,
-                batch_workers=batch_workers,
-                job_id=job_id,
-                progress_callback=progress_callback,
-                account_id=account_id,
-                purpose=purpose,
-                operation_task_id=operation_task_id,
-                operation_run_id=operation_run_id,
-                registration_job_id=registration_job_id,
-                route_attempt_no=route_attempt_no,
-            )
         return acquire_1024_proxy(
             job_id=job_id,
             progress_callback=progress_callback,
@@ -1110,6 +1112,8 @@ def acquire_registration_proxy(
             operation_run_id=operation_run_id,
             registration_job_id=registration_job_id,
             route_attempt_no=route_attempt_no,
+            cancel=cancel,
+            timeout=timeout,
         )
     if mode == "none":
         return ProxyLease(
@@ -1130,30 +1134,31 @@ def acquire_registration_proxy(
         )
     if mode != "pool":
         raise RuntimeError(f"不支持的 REGISTRATION_PROXY_MODE={mode!r}，可选 pool / 1024 / none")
-    proxy_url = str(cfg.pick_proxy() or "").strip()
-    endpoint = proxy_url.rsplit("@", 1)[-1].split("://", 1)[-1] if proxy_url else ""
-    return ProxyLease(
-        str(uuid.uuid4()),
-        "proxy_pool" if proxy_url else "direct",
-        proxy_url,
-        endpoint,
-        datetime.now(),
-        metadata=_correlation_metadata(
-            account_id=account_id,
-            purpose=purpose,
-            operation_task_id=operation_task_id,
-            operation_run_id=operation_run_id,
-            registration_job_id=registration_job_id,
-            route_attempt_no=route_attempt_no,
-        ),
-    )
+    from core.proxy_pool import acquire
+    return acquire(provider="proxy_pool", static_urls=list(cfg.PROXY_POOL), job_id=job_id,
+                   account_id=account_id, purpose=purpose, operation_task_id=operation_task_id,
+                   operation_run_id=operation_run_id, registration_job_id=registration_job_id,
+                   route_attempt_no=route_attempt_no, progress_callback=progress_callback,
+                   cancel=cancel, timeout=timeout)
 
 
-def release_proxy(lease: ProxyLease | None, *, reason: str = "completed") -> None:
+def release_proxy(
+    lease: ProxyLease | None,
+    *,
+    reason: str = "completed",
+    fault: bool | None = None,
+) -> None:
     if lease is None or lease.state == "released":
         return
+    # 保留注册换线的既有隔离规则；账号动作只有在调用方提供明确故障分类时才隔离。
+    if fault is None:
+        fault = reason.startswith("registration_proxy_retry_") or reason == "transport_failure"
+    if lease.metadata.get("pool_resource_id"):
+        from core.proxy_pool import release
+        release(lease, reason=reason, fault=bool(fault))
+        return
     lease.state = "released"
-    if lease.provider != "1024proxy":
+    if lease.provider != "1024proxy" and not lease.metadata.get("persistent_lease"):
         return
     now = time.time()
     recent_ttl = max(0, int(lease.metadata.get("recent_ttl") or 0))

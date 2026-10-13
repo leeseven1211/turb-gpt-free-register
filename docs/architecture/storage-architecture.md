@@ -29,6 +29,9 @@ core/record_store.py     全部正常业务行级表：可行级 UPDATE、可跨
 core/compat_export.py    兼容文件的去抖导出器（后台，不在写入主路径上）
 core/db.py               业务数据层，建在上面三者之上
 core/account_task_store.py  账号操作任务的三张关系表（更早就已拆表）
+core/proxy_pool_store.py  代理库存与独占/共享子租约的 PostgreSQL 协调
+core/proxy_supply.py      代理供应商后台补货、出口检测和固定供给参数适配
+core/remail_order_coordinator.py  Remail 意图 CAS、原订单恢复和交付收口
 ```
 
 ### 表
@@ -45,8 +48,24 @@ core/account_task_store.py  账号操作任务的三张关系表（更早就已�
 | `email_pool_icloud_hide` | iCloud Hide My Email 别名池 |
 | `codex_credentials` | Codex OAuth 凭证 |
 | `proxy_leases` | 1024Proxy 端点、出口 IP 和隔离期的跨进程租约 |
+| `proxy_pool_resources` | 独立代理库存的 profile、后台提取/检测状态、容量和生命周期事实；全局容量由数据库协调 |
+| `remail_order_intents` | Remail 付费领取意图、供应商订单关联、CAS 提交状态、核验结果和私有恢复凭据 |
 | `account_action_batches` / `_tasks` / `_events` | 账号操作任务（早于本次改造） |
 | `app_collections` | 调度状态、兼容集合、迁移期旧数据；不是正常账号/邮箱/Codex 列表的事实来源 |
+
+### 独立代理库存
+
+`proxy_pool_resources` 是独立的 PostgreSQL 库存事实，容量按所有供应商 profile 全局计算。默认策略为：最少可用库存 2、最大容量 20、领取等待 60 秒、领取最低剩余寿命 300 秒、后台复检间隔 60 秒、空闲回收 300 秒、后台 worker 2 个。WebUI 启动时预热；CLI 在第一次领取时懒启动。凡启用代理的注册、账号功能和套餐查询任务只领取已经检测通过的库存，供应商提取、出口检测和补货都在后台执行。数据库不可用时直接失败，不降级为直连；显式配置的 `direct` 路线仍保持直连。worker 数量支持热加载，但 WebUI 展示的 worker 数只代表当前进程，库存容量和租约由 PostgreSQL 跨进程协调。
+
+资源状态和任务租约分开保存。注册及认证任务创建独占 `pool_leased` 子租约；套餐查询只有在显式允许复用时才创建 `shared_leased` 子租约。正常释放进入 cooldown，冷却结束后可以重新领取；明确的线路传输故障进入 quarantine，并保留到资源自然到期。容量缩减只退役 `ready` 资源，不驱逐仍在使用的租约；有 profile 等待者时，维护任务可以回收其他 profile 的空闲 `ready` 资源。供应商 `time` 是固定粘性窗口，不代表一定更换会话或出口 IP，系统只把实际检测结果写入租约。
+
+代理池的 WebUI 入口是只读快照，返回脱敏状态、统计和生命周期信息，不承载领取/释放操作。完整供应商地址和凭据仍属于环境私密配置。旧 `PROXY_1024_MAX_ATTEMPTS`、`PROXY_1024_ROTATE_SESSION_TIME` 以及 batch/rotate 参数仅为诊断兼容保留，正常库存补货不按任务派生 `time`，也不按注册批次把 `num` 预取后分配。
+
+### Remail 订单意图
+
+付费邮箱领取不以 HTTP 返回值作为唯一事实。`remail_order_intents` 先记录 `prepared`，再由数据库 CAS 选出唯一执行者写入 `submitting`；只有该执行者可以发出付费 POST。POST 返回订单号后立即持久化 `order_created`，再在有限时间内 GET 原订单补齐凭证。异常退出或网络结果未知时保持 `submitting`/`request_unknown`，恢复流程只能查询同一 `acquisition_id` 对应的原订单，不能因为幂等请求头而自动重放未知 POST。
+
+订单私有凭证写入 `private_json`，普通查询只返回显式安全字段白名单。只有订单号、供应商/项目/模式/库存策略匹配，且 durable 状态为 `delivered` 并已保存完整私有凭证时，协调器才向注册或换绑流程交付邮箱。`owner_kind`、`owner_id` 和稳定 `acquisition_id` 将 root 任务与 retry/resume 子任务绑定，缺少身份上下文时拒绝付费下单。核验接口只能恢复当前操作所属意图，并返回脱敏订单摘要。
 
 ### 字段策略：提升列 + JSONB
 

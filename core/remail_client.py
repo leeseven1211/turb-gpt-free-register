@@ -38,7 +38,42 @@ _FINAL_ORDER_STATUSES = {"failed", "refunded", "closed"}
 
 
 class RemailError(RuntimeError):
-    """Remail API 请求、下单或取码失败。"""
+    """Remail API 请求、下单或取码失败。
+
+    错误文本面向操作者，不能承载响应体、URL 或认证资料；结构化字段供
+    任务中心和订单协调器保存安全原因。
+    """
+
+    error_code = "remail_error"
+    request_unknown = False
+
+    def __init__(self, message: str, *, operation_phase: str = "request",
+                 http_status: int | None = None, cause_code: str | None = None,
+                 unknown_scope: str | None = None, allowed_error: str | None = None,
+                 missing_fields: tuple[str, ...] | list[str] | None = None,
+                 elapsed_ms: int | None = None, order_known: bool = False):
+        super().__init__(str(message or "Remail 操作失败"))
+        self.operation_phase = str(operation_phase or "request")
+        self.http_status = int(http_status) if http_status is not None else None
+        self.cause_code = str(cause_code or self.error_code)
+        self.unknown_scope = str(unknown_scope or ("mailbox_order" if self.request_unknown else "none"))
+        self.allowed_error = str(allowed_error or "") or None
+        self.missing_fields = tuple(str(x) for x in (missing_fields or ()) if str(x))
+        self.elapsed_ms = int(elapsed_ms) if elapsed_ms is not None else None
+        self.order_known = bool(order_known)
+
+    def safe_details(self) -> dict:
+        """返回可持久化的白名单详情，绝不包含原始响应或凭据。"""
+        return {
+            "unknown_scope": self.unknown_scope,
+            "operation_phase": self.operation_phase,
+            "cause_code": self.cause_code,
+            "http_status": self.http_status,
+            "allowed_error": self.allowed_error,
+            "missing_fields": list(self.missing_fields),
+            "elapsed_ms": self.elapsed_ms,
+            "order_known": self.order_known,
+        }
 
 
 class RemailOrderUncertain(RemailError):
@@ -47,9 +82,38 @@ class RemailOrderUncertain(RemailError):
     request_unknown = True
     error_code = "remail_order_request_unknown"
 
+    def __init__(self, message: str, **kwargs):
+        kwargs.setdefault("operation_phase", "post")
+        kwargs.setdefault("unknown_scope", "mailbox_order")
+        kwargs.setdefault("cause_code", self.error_code)
+        super().__init__(message, **kwargs)
+
+
+class RemailOrderRejected(RemailError):
+    """供应商明确拒绝且没有跨越付费结果未知边界。"""
+
+    error_code = "remail_order_rejected"
+
+
+class RemailOrderReadBlocked(RemailError):
+    """已知订单的 GET 核验被权限或网络阻断，不能覆盖原订单事实。"""
+
+    error_code = "remail_order_read_blocked"
+
 
 # 兼容调用方可能使用的命名。
 RemailClientError = RemailError
+
+
+def safe_error_details(exc: BaseException) -> dict:
+    """把任意 Remail 异常转换为可持久化的安全白名单。"""
+    if isinstance(exc, RemailError):
+        return exc.safe_details()
+    return {
+        "unknown_scope": "none", "operation_phase": "local", "cause_code": type(exc).__name__,
+        "http_status": None, "allowed_error": None, "missing_fields": [],
+        "elapsed_ms": None, "order_known": False,
+    }
 
 
 @dataclass
@@ -61,6 +125,7 @@ class RemailAccount:
     order_no: str = field(repr=False)
     project_id: int
     email_suffix: str
+    acquisition_id: str = field(default="", repr=False)
 
 
 _CONTEXT_CACHE: dict[str, RemailAccount] = {}
@@ -143,6 +208,7 @@ def _request(
         request_headers.update(headers)
     url = _base_url() + (path if str(path).startswith("/") else f"/{path}")
     request_timeout = _request_timeout() if timeout is None else min(_request_timeout(), max(0.001, timeout))
+    started = time.monotonic()
     try:
         # 每次请求独立 Session，避免多线程共享 Cookie；忽略进程代理环境与 netrc。
         with requests.Session() as session:
@@ -152,15 +218,33 @@ def _request(
                 headers=request_headers, timeout=bounded_timeout(request_timeout), allow_redirects=False,
             )
     except requests.RequestException as exc:
+        elapsed_ms = max(0, int((time.monotonic() - started) * 1000))
         category = "请求超时" if isinstance(exc, requests.Timeout) else "网络连接失败"
         if method.upper() == "POST":
-            raise RemailOrderUncertain(f"Remail {category}；下单结果不明，请先核对订单，勿直接重复下单") from None
-        raise RemailError(f"Remail {category}") from None
+            raise RemailOrderUncertain(
+                f"Remail {category}；下单结果不明，请先核对订单，勿直接重复下单",
+                cause_code="remail_post_timeout" if isinstance(exc, requests.Timeout) else "remail_post_network_error",
+                elapsed_ms=elapsed_ms,
+            ) from None
+        raise RemailError(
+            f"Remail {category}", operation_phase="get", cause_code="remail_get_timeout" if isinstance(exc, requests.Timeout) else "remail_get_network_error", elapsed_ms=elapsed_ms,
+        ) from None
 
     if response.status_code >= 300:
+        elapsed_ms = max(0, int((time.monotonic() - started) * 1000))
         if method.upper() == "POST" and (response.status_code >= 500 or response.status_code == 409):
             raise RemailOrderUncertain(
-                f"Remail 下单结果不明 (HTTP {response.status_code})；请先核对订单，勿直接重复下单"
+                f"Remail 下单结果不明 (HTTP {response.status_code})；请先核对订单，勿直接重复下单",
+                http_status=response.status_code,
+                cause_code="remail_post_http_unknown",
+                allowed_error="server_error" if response.status_code >= 500 else "conflict",
+                elapsed_ms=elapsed_ms,
+            )
+        if method.upper() == "GET" and response.status_code in (401, 403):
+            raise RemailOrderReadBlocked(
+                f"Remail 原订单核验被拒绝 (HTTP {response.status_code})",
+                operation_phase="get", http_status=response.status_code,
+                cause_code="remail_order_read_blocked", allowed_error="unauthorized" if response.status_code == 401 else "forbidden", elapsed_ms=elapsed_ms,
             )
         descriptions = {
             400: "请求参数无效", 401: "API Key 无效或已失效" if authenticated else "取件凭证无效或已失效",
@@ -168,12 +252,24 @@ def _request(
             422: "请求参数或订单状态无效", 429: "请求过于频繁",
         }
         reason = descriptions.get(response.status_code, "服务暂时不可用" if response.status_code >= 500 else "响应状态异常")
-        raise RemailError(f"Remail {reason} (HTTP {response.status_code})")
+        error_type = RemailOrderRejected if method.upper() == "POST" else RemailError
+        raise error_type(
+            f"Remail {reason} (HTTP {response.status_code})",
+            operation_phase="post" if method.upper() == "POST" else "get",
+            http_status=response.status_code,
+            cause_code="remail_post_rejected" if method.upper() == "POST" else "remail_get_error",
+            allowed_error={400: "invalid_request", 401: "unauthorized", 403: "forbidden", 404: "not_found", 409: "conflict", 422: "invalid_state", 429: "rate_limited"}.get(response.status_code),
+            elapsed_ms=elapsed_ms,
+        ) from None
     try:
         return response.json()
     except ValueError:
         if method.upper() == "POST":
-            raise RemailOrderUncertain("Remail 下单响应不是有效 JSON，结果不明；请先核对订单，勿重复下单") from None
+            raise RemailOrderUncertain(
+                "Remail 下单响应不是有效 JSON，结果不明；请先核对订单，勿重复下单",
+                cause_code="remail_post_invalid_json",
+                elapsed_ms=max(0, int((time.monotonic() - started) * 1000)),
+            ) from None
         raise RemailError("Remail 响应不是有效 JSON") from None
 
 
@@ -188,7 +284,7 @@ def _first_value(data: dict, *keys: str):
 def _unwrap_order(payload) -> dict:
     """读取 OpenAPI 定义的 Order，并兼容少数网关包裹 data/order 的响应。"""
     if not isinstance(payload, dict):
-        raise RemailError("Remail 下单响应不是对象")
+        raise RemailError("Remail 下单响应不是对象", cause_code="remail_response_shape", missing_fields=("order",))
     if any(
         k in payload
         for k in ("orderNo", "order_no", "deliveryEmail", "delivery_email", "serviceToken", "service_token")
@@ -198,7 +294,7 @@ def _unwrap_order(payload) -> dict:
         value = payload.get(key)
         if isinstance(value, dict):
             return value
-    raise RemailError("Remail 下单响应缺少订单数据")
+    raise RemailError("Remail 下单响应缺少订单数据", cause_code="remail_response_missing_order", missing_fields=("order",))
 
 
 def _project_id() -> int:
@@ -378,12 +474,13 @@ def get_account_context_metadata(email: str) -> dict | None:
     }
 
 
-def restore_account_context(email: str) -> RemailAccount | None:
+def restore_account_context(email: str, *, compatibility: bool = False) -> RemailAccount | None:
     """恢复已注册账号的 Remail 取件上下文。
 
     进程重启后 ``_CONTEXT_CACHE`` 会丢失。优先使用账号保存的 service token，
-    其次按保存的订单号查详情，最后用 API Key 按邮箱搜索订单。所有候选订单
-    都必须与目标邮箱大小写不敏感地完全匹配，避免拿错其他邮箱的验证码。
+    其次按保存的订单号查详情。旧的“按邮箱搜索最新订单”仅由显式兼容入口
+    开启；正常注册/换绑恢复没有原订单号时必须停在核验围栏，不能猜测同邮箱
+    的其他订单。
     """
     target = str(email or "").strip()
     if not target:
@@ -425,7 +522,10 @@ def restore_account_context(email: str) -> RemailAccount | None:
                 logger.info("[Remail] 已按订单号恢复取件上下文")
                 return _cache_context(account)
 
-    # 搜索是服务端模糊过滤，客户端仍检查完整邮箱；最多读取五页，避免无限翻页。
+    if not compatibility:
+        return None
+
+    # 兼容旧账号数据：搜索是服务端模糊过滤，客户端仍检查完整邮箱；最多读取五页，避免无限翻页。
     candidates = []
     cursor = None
     seen_cursors = set()
@@ -488,7 +588,11 @@ def _wait_for_order_credentials(order: dict) -> tuple[str, str, str]:
         return credentials
     order_no = str(_first_value(order, "orderNo", "order_no") or "").strip()
     if not order_no:
-        raise RemailOrderUncertain("Remail 下单响应缺少 service token 或订单号；请先核对订单，勿重复下单")
+        raise RemailOrderUncertain(
+            "Remail 下单响应缺少 service token 或订单号；请先核对订单，勿重复下单",
+            cause_code="remail_response_missing_credentials",
+            missing_fields=("service_token", "order_no"),
+        )
 
     deadline = time.monotonic() + _order_wait_seconds()
     while (remaining := deadline - time.monotonic()) > 0:
@@ -510,8 +614,26 @@ def _wait_for_order_credentials(order: dict) -> tuple[str, str, str]:
     raise RemailOrderUncertain("Remail 等待订单取件凭证超时；请先核对订单，勿重复下单")
 
 
-def pick_account() -> RemailAccount:
-    """按配置创建一个 Remail 接码/长效购买订单并返回交付邮箱。"""
+def pick_account(*, owner_kind: str | None = None, owner_id: str | int | None = None,
+                 acquisition_id: str | None = None, compatibility: bool = False) -> RemailAccount:
+    """按配置创建订单。
+
+    显式提供 owner 身份时走持久订单协调器。无身份的旧入口只有在调用方
+    明确传入 ``compatibility=True`` 时才保留；业务注册/换绑路径不得使用它。
+    """
+    if owner_kind and owner_id is not None:
+        from core.remail_order_coordinator import RemailOrderCoordinator
+        return RemailOrderCoordinator().acquire(
+            owner_kind=str(owner_kind), owner_id=str(owner_id), acquisition_id=acquisition_id,
+        )
+    if not compatibility:
+        raise RemailError(
+            "Remail 领取缺少稳定 owner/acquisition_id，已停止下单",
+            operation_phase="prepare",
+            cause_code="remail_missing_owner",
+            missing_fields=("owner_kind", "owner_id", "acquisition_id"),
+        )
+    logger.warning("[Remail] 使用显式兼容入口；本次订单不会绑定可恢复任务意图")
     validate_configuration()
     project_id = _project_id()
     email_suffix = _email_suffix()

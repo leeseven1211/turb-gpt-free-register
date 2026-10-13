@@ -156,7 +156,7 @@ function taskProgressStepTooltip(step) {
     `耗时：${taskProgressStepDuration(step)}`,
     step?.raw_stages?.length ? `原始阶段：${step.raw_stages.join('、')}` : '',
     attempts.length ? `\n尝试记录（${attempts.length}）` : '',
-    ...attempts.map((attempt, index) => `${index + 1}. ${taskProgressStatusLabel(taskProgressStepStatus(attempt))}${attempt.created_at ? ` · ${formatDateTime(attempt.created_at)}` : ''}${attempt.message ? `\n${attempt.message}` : ''}`),
+    ...attempts.map((attempt, index) => `${index + 1}. ${taskProgressStatusLabel(taskProgressStepStatus(attempt))}${attempt.step_instance_id ? ` · 实例 ${attempt.step_instance_id}` : ''}${attempt.created_at ? ` · ${formatDateTime(attempt.created_at)}` : ''}${attempt.message ? `\n${attempt.message}` : ''}`),
     children.length ? `\n子步骤（${children.length}）` : '',
     ...children.map(child => `${child.label || child.id} · ${taskProgressStatusLabel(taskProgressStepStatus(child))} · ${taskProgressStepDuration(child)}${child.reason || child.message ? `\n${child.reason || child.message}` : ''}`),
     '\n点击步骤查看对应日志',

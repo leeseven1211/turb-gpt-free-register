@@ -11,6 +11,7 @@ from config import account as account_config
 from config import openai_protocol as openai_protocol_config
 from config import operations as operations_config
 from config import proxy as proxy_config
+from config import schema as config_schema
 from config import env_loader
 from config import extract_link as extract_link_config
 from core import account_export
@@ -84,6 +85,22 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             env_loader._LOADED = old_loaded
 
         self.assertEqual(namespace["PROXY_POOL"], [])
+
+    def test_independent_proxy_pool_policy_defaults_and_bounds(self):
+        fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
+        self.assertEqual(2, fields["PROXY_POOL_MIN_READY"]["default"])
+        self.assertEqual(20, fields["PROXY_POOL_MAX_SIZE"]["default"])
+        self.assertEqual(60, fields["PROXY_POOL_WAIT_TIMEOUT"]["default"])
+        self.assertEqual(300, fields["PROXY_POOL_MIN_TTL"]["default"])
+        self.assertEqual(60, fields["PROXY_POOL_CHECK_INTERVAL"]["default"])
+        self.assertEqual(300, fields["PROXY_POOL_MAX_IDLE"]["default"])
+        self.assertEqual(2, fields["PROXY_POOL_WORKERS"]["default"])
+        with self.assertRaises(config_schema.ConfigValidationError):
+            config_schema.validate_config_updates({"PROXY_POOL_MIN_READY": 21, "PROXY_POOL_MAX_SIZE": 20})
+        values = config_schema.validate_config_updates({"PROXY_POOL_MIN_READY": 3, "PROXY_POOL_MAX_SIZE": 5})
+        self.assertEqual(values["PROXY_POOL_MIN_READY"], 3)
+        with self.assertRaises(config_schema.ConfigValidationError):
+            config_schema.validate_config_updates({"PROXY_1024_SESSION_MINUTES": 5, "PROXY_POOL_MIN_TTL": 300})
 
     def test_config_editor_formats_empty_list_as_literal_empty_list(self):
         self.assertEqual(config_editor._format_env_value([], "list_str_multiline"), "[]")

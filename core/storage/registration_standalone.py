@@ -1,4 +1,4 @@
-"""为无 WebUI 任务的协议入口保留稳定的注册意图。"""
+"""为无 WebUI 的 Protocol/Roxy CLI 入口保留稳定的注册意图。"""
 from __future__ import annotations
 
 import uuid
@@ -21,7 +21,7 @@ def _local_pid_exited(pid) -> bool:
     return False
 
 
-def _recover_exited_cli_run(cur, raw_attempt) -> None:
+def _recover_exited_cli_run(cur, raw_attempt, *, entrypoint: str = "protocol_cli") -> None:
     """持有原 Attempt 锁，只收口具有本机归属且 PID 已退出的 CLI Run。"""
     cur.execute(
         f"SELECT * FROM {registration._table('registration_runs')} "
@@ -30,7 +30,7 @@ def _recover_exited_cli_run(cur, raw_attempt) -> None:
     )
     for run in cur.fetchall():
         data = dict(registration._decode(run.get("data")) or {})
-        if (run.get("job_id") is not None or data.get("entrypoint") != "protocol_cli"
+        if (run.get("job_id") is not None or data.get("entrypoint") != entrypoint
                 or data.get("worker_host") != socket.gethostname()
                 or not _local_pid_exited(run.get("worker_pid"))):
             continue
@@ -45,15 +45,16 @@ def _recover_exited_cli_run(cur, raw_attempt) -> None:
             "result_summary=COALESCE(result_summary,'{}'::jsonb) || %s::jsonb, "
             "error_code='cli_worker_exited', error_message='本机旧 CLI 进程已退出，保留原意图继续执行' "
             "WHERE id=%s AND status='running'",
-            (status, completed, registration._json({"entrypoint": "protocol_cli", "registration_success": bool(core_saved),
+            (status, completed, registration._json({"entrypoint": entrypoint, "registration_success": bool(core_saved),
                 "postprocess_success": False, "core_persisted": bool(core_saved), "worker_recovered": True}), int(run["id"])),
         )
         cur.execute(
             f"UPDATE {registration._table('registration_attempts')} "
             "SET active_execution_id=CASE WHEN active_execution_id=%s THEN NULL ELSE active_execution_id END, "
             "remote_account_state=CASE WHEN %s AND remote_account_state<>'confirmed' THEN 'request_unknown' ELSE remote_account_state END, "
+            "target_status=CASE WHEN %s THEN 'request_unknown' ELSE target_status END, "
             "updated_at=%s WHERE id=%s",
-            (run.get("execution_id"), unknown and not core_saved, completed, int(raw_attempt["id"])),
+            (run.get("execution_id"), unknown and not core_saved, unknown and not core_saved, completed, int(raw_attempt["id"])),
         )
         registration._insert_event(
             cur, attempt_id=int(raw_attempt["id"]), run_id=int(run["id"]), job_id=None,
@@ -64,12 +65,21 @@ def _recover_exited_cli_run(cur, raw_attempt) -> None:
         )
 
 
-def prepare_attempt(email: str, *, email_source: str | None = None) -> dict:
+def prepare_attempt(
+    email: str,
+    *,
+    email_source: str | None = None,
+    entrypoint: str = "protocol_cli",
+    driver: str = "protocol",
+) -> dict:
     """同邮箱 CLI 重跑复用原意图，已有其他任务链时停止而不猜测归属。"""
     address = str(email or "").strip()
     if not address:
-        raise ValueError("协议注册缺少邮箱")
-    identifier = str(uuid.uuid5(uuid.NAMESPACE_URL, "turb:protocol-cli:" + address.casefold()))
+        raise ValueError("CLI 注册缺少邮箱")
+    source = str(entrypoint or "protocol_cli").strip() or "protocol_cli"
+    driver_name = str(driver or "protocol").strip() or "protocol"
+    identifier_namespace = "protocol-cli" if source == "protocol_cli" else source
+    identifier = str(uuid.uuid5(uuid.NAMESPACE_URL, f"turb:{identifier_namespace}:" + address.casefold()))
     registration.init()
     blocked_reason = None
     with registration._connect() as conn, conn.cursor() as cur:
@@ -83,7 +93,16 @@ def prepare_attempt(email: str, *, email_source: str | None = None) -> dict:
         if any(row["attempt_uuid"] != identifier for row in candidates):
             raise RuntimeError("此邮箱已有注册任务链，请从原任务继续执行")
         if candidates:
-            _recover_exited_cli_run(cur, candidates[0])
+            existing = candidates[0]
+            existing_source = str(existing.get("email_source") or "").strip().lower()
+            requested_source = str(email_source or "").strip().lower()
+            if existing_source and requested_source and existing_source != requested_source:
+                raise RuntimeError("原注册 Attempt 的邮箱来源不一致，拒绝切换来源")
+            existing_driver = str(existing.get("driver") or "").strip().lower()
+            requested_driver = driver_name.lower()
+            if existing_driver and requested_driver and existing_driver != requested_driver:
+                raise RuntimeError("原注册 Attempt 的驱动不一致，拒绝切换驱动")
+            _recover_exited_cli_run(cur, candidates[0], entrypoint=source)
             attempt = registration._row(candidates[0])
             if attempt.get("account_id") and attempt.get("local_account_state") == "persisted":
                 blocked_reason = "此邮箱的核心账号已保存，请使用账号后处理入口"
@@ -102,8 +121,9 @@ def prepare_attempt(email: str, *, email_source: str | None = None) -> dict:
             cur.execute(
                 f"INSERT INTO {registration._table('registration_attempts')} "
                 "(attempt_uuid,email_snapshot,email,email_source,driver,data) "
-                "VALUES (%s,%s,%s,%s,'protocol',%s::jsonb) RETURNING *",
-                (identifier, address, address, email_source, '{"entrypoint":"protocol_cli"}'),
+                "VALUES (%s,%s,%s,%s,%s,%s::jsonb) RETURNING *",
+                (identifier, address, address, email_source, driver_name,
+                 registration._json({"entrypoint": source, "driver": driver_name})),
             )
             return registration._row(cur.fetchone())
     # 恢复收口先提交，再拒绝重复注册；在事务内抛错会回滚旧 Run 的收口。

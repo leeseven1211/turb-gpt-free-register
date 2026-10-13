@@ -27,7 +27,7 @@ class AccountProxyTests(unittest.TestCase):
                 "config.account",
                 ACCOUNT_PLAN_CHECK_PROXY_MODE="direct",
             ),
-            patch("core.account_proxy.acquire_1024_proxy") as acquire,
+            patch("core.proxy_pool.acquire") as acquire,
         ):
             route = account_proxy.acquire_account_proxy(
                 account_id=1,
@@ -59,7 +59,7 @@ class AccountProxyTests(unittest.TestCase):
         with (
             patch("core.account_proxy.registration_proxy_mode", return_value="1024"),
             patch("core.account_proxy.resolve_account_region", return_value="JP"),
-            patch("core.account_proxy.acquire_1024_proxy", return_value=lease) as acquire,
+            patch("core.proxy_pool.acquire", return_value=lease) as acquire,
             patch.multiple("config.proxy", ACCOUNT_ACTION_PROXY_MODE="registration"),
             patch.multiple("config.account", ACCOUNT_PLAN_CHECK_PROXY_MODE="registration"),
         ):
@@ -69,6 +69,7 @@ class AccountProxyTests(unittest.TestCase):
                 purpose="plan-check",
             )
         acquire.assert_called_once_with(
+            provider="1024proxy",
             region="JP", validate=True, job_id="plan-check-7", account_id=7,
             purpose="plan-check", operation_task_id=None, operation_run_id=None, allow_reuse=True,
         )
@@ -88,7 +89,7 @@ class AccountProxyTests(unittest.TestCase):
         with (
             patch("core.account_proxy.registration_proxy_mode", return_value="1024"),
             patch("core.account_proxy.resolve_account_region", return_value="JP"),
-            patch("core.account_proxy.acquire_1024_proxy", return_value=lease) as acquire,
+            patch("core.proxy_pool.acquire", return_value=lease) as acquire,
             patch.multiple("config.proxy", ACCOUNT_ACTION_PROXY_MODE="registration"),
             patch.multiple("config.account", ACCOUNT_PLAN_CHECK_PROXY_MODE="registration"),
         ):
@@ -99,6 +100,7 @@ class AccountProxyTests(unittest.TestCase):
                 rotation_index=3,
             )
         acquire.assert_called_once_with(
+            provider="1024proxy",
             region="JP",
             validate=True,
             job_id="plan-check-7-rotation-3",
@@ -110,12 +112,29 @@ class AccountProxyTests(unittest.TestCase):
         )
 
     def test_pool_mode_uses_dedicated_account_proxy_first(self):
+        lease = ProxyLease(
+            lease_id="pool-lease",
+            provider="proxy_pool",
+            proxy_url="http://fixed.example:8080",
+            endpoint="fixed.example:8080",
+            acquired_at=datetime.now(),
+            region="US",
+        )
         with patch.multiple(
             "config.proxy",
             ACCOUNT_ACTION_PROXY_MODE="pool",
             ACCOUNT_ACTION_PROXY="http://fixed.example:8080",
-        ):
+        ), patch("core.proxy_pool.acquire", return_value=lease) as acquire:
             route = account_proxy.acquire_account_proxy(account_id=1, purpose="live-check")
+        acquire.assert_called_once_with(
+            provider="proxy_pool",
+            static_urls=["http://fixed.example:8080"],
+            purpose="live-check",
+            account_id=1,
+            operation_task_id=None,
+            operation_run_id=None,
+            allow_reuse=False,
+        )
         self.assertEqual(route.proxy_url, "http://fixed.example:8080")
         self.assertEqual(route.provider, "proxy_pool")
 

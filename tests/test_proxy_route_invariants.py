@@ -8,6 +8,38 @@ from urllib.parse import parse_qs, urlparse
 
 
 class ProxyRouteInvariantTests(unittest.TestCase):
+    def test_browser_runtime_timeout_does_not_quarantine_proxy(self):
+        from core import codex_retry_service
+
+        self.assertTrue(codex_retry_service._account_setup_transport_failure(RuntimeError("net::ERR_PROXY_CONNECTION_FAILED")))
+        for message in ("page load timeout", "timed out receiving message from renderer", "disconnected: not connected to devtools"):
+            with self.subTest(message=message):
+                self.assertFalse(codex_retry_service._account_setup_transport_failure(RuntimeError(message)))
+
+    def test_live_check_only_marks_explicit_network_preflight_as_proxy_fault(self):
+        from core import live_check_service
+
+        self.assertTrue(
+            live_check_service._is_proxy_transport_failure(
+                {"error": "network_preflight_failed", "error_category": "network"}
+            )
+        )
+        self.assertTrue(
+            live_check_service._is_proxy_transport_failure(
+                {"error": "线路连接失败", "error_code": "network_preflight_failed"}
+            )
+        )
+        self.assertFalse(
+            live_check_service._is_proxy_transport_failure(
+                {"error": "auth_route_rejected", "error_category": "network"}
+            )
+        )
+        self.assertFalse(
+            live_check_service._is_proxy_transport_failure(
+                {"error": "TimeoutError: page load timeout"}
+            )
+        )
+
     def test_account_action_proxy_acquisition_retries_duplicate_with_new_rotation_index(self):
         from core import live_check_service
 

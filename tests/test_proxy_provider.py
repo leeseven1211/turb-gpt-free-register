@@ -101,6 +101,20 @@ class ProxyProviderTests(unittest.TestCase):
         proxy_provider._BATCH_STATES.clear()
         browser_session._GEO_CACHE.clear()
 
+    def test_pool_release_honors_explicit_transport_fault(self):
+        lease = proxy_provider.ProxyLease(
+            lease_id="pool-child",
+            provider="proxy_pool",
+            proxy_url="http://proxy.example:8080",
+            endpoint="proxy.example:8080",
+            acquired_at=datetime.now(),
+            metadata={"pool_resource_id": "resource-1", "pool_anchor_id": "anchor-1"},
+        )
+        with patch("core.proxy_pool.release") as pool_release:
+            proxy_provider.release_proxy(lease, reason="browser-retry-1", fault=True)
+
+        pool_release.assert_called_once_with(lease, reason="browser-retry-1", fault=True)
+
     @patch("core.proxy_provider._direct_session")
     @patch("core.proxy_lease_store.release")
     @patch("core.proxy_lease_store.activate")
@@ -118,7 +132,7 @@ class ProxyProviderTests(unittest.TestCase):
             PROXY_1024_ACQUIRE_INTERVAL=0.0,
             PROXY_1024_ROTATE_SESSION_TIME=False,
         ):
-            lease = proxy_provider.acquire_1024_proxy(
+            lease = proxy_provider.fetch_1024_proxy(
                 api_url="https://white.1024proxy.com/white/api?region=US&type=txt",
                 protocol="http",
                 region="US",
@@ -166,7 +180,7 @@ class ProxyProviderTests(unittest.TestCase):
             PROXY_1024_ROTATE_SESSION_TIME=False,
         ):
             with self.assertRaises(CodexRetryStopped):
-                proxy_provider.acquire_1024_proxy(
+                proxy_provider.fetch_1024_proxy(
                     api_url="https://white.1024proxy.com/white/api?region=US&type=txt",
                     protocol="http",
                     region="US",
@@ -212,7 +226,7 @@ class ProxyProviderTests(unittest.TestCase):
             PROXY_1024_ACQUIRE_INTERVAL=0.0,
             PROXY_1024_ROTATE_SESSION_TIME=False,
         ):
-            lease = proxy_provider.acquire_1024_proxy(
+            lease = proxy_provider.fetch_1024_proxy(
                 api_url="https://white.1024proxy.com/white/api?region=Rand&num=1&time=10&type=txt",
                 protocol="http",
                 region="US",
@@ -247,7 +261,7 @@ class ProxyProviderTests(unittest.TestCase):
             PROXY_1024_ACQUIRE_INTERVAL=0.0,
             PROXY_1024_ROTATE_SESSION_TIME=False,
         ):
-            lease = proxy_provider.acquire_1024_proxy(
+            lease = proxy_provider.fetch_1024_proxy(
                 api_url="https://white.1024proxy.com/white/api?region=US&type=txt",
                 protocol="http",
                 region="US",
@@ -301,7 +315,7 @@ class ProxyProviderTests(unittest.TestCase):
             PROXY_1024_ACQUIRE_INTERVAL=0.0,
             PROXY_1024_ROTATE_SESSION_TIME=True,
         ):
-            lease = proxy_provider.acquire_1024_proxy(
+            lease = proxy_provider.fetch_1024_proxy(
                 api_url="https://white.1024proxy.com/white/api?region=US&num=1&time=10&type=txt",
                 protocol="http",
                 session_minutes=30,
@@ -327,7 +341,7 @@ class ProxyProviderTests(unittest.TestCase):
             PROXY_1024_ACQUIRE_INTERVAL=0.0,
             PROXY_1024_ROTATE_SESSION_TIME=False,
         ):
-            lease = proxy_provider.acquire_1024_proxy(
+            lease = proxy_provider.fetch_1024_proxy(
                 api_url="https://white.1024proxy.com/white/api?region=US&type=txt",
                 protocol="http",
                 region="US",
@@ -358,7 +372,7 @@ class ProxyProviderTests(unittest.TestCase):
             PROXY_1024_ACQUIRE_INTERVAL=0.0,
             PROXY_1024_ROTATE_SESSION_TIME=False,
         ):
-            lease = proxy_provider.acquire_1024_proxy(
+            lease = proxy_provider.fetch_1024_proxy(
                 api_url="https://white.1024proxy.com/white/api?region=US&type=txt",
                 protocol="http",
                 region="US",
@@ -401,7 +415,7 @@ class ProxyProviderTests(unittest.TestCase):
         ), patch("core.proxy_provider._validate_proxy", side_effect=validate):
             with ThreadPoolExecutor(max_workers=2) as executor:
                 leases = list(executor.map(
-                    lambda job_id: proxy_provider.acquire_1024_proxy(
+                    lambda job_id: proxy_provider.fetch_1024_proxy(
                         api_url="https://white.1024proxy.com/white/api?region=US&type=txt",
                         protocol="http",
                         region="US",
@@ -530,7 +544,8 @@ class ProxyProviderTests(unittest.TestCase):
             proxy_provider.release_proxy(lease, reason="test")
 
     @patch("core.proxy_provider.acquire_1024_proxy_batch")
-    def test_registration_batch_shares_prefetched_leases_and_releases_leftovers(self, acquire_batch):
+    @patch("core.proxy_pool.acquire")
+    def test_registration_batch_claims_independent_pool_leases(self, acquire_pool, acquire_batch):
         leases = [
             proxy_provider.ProxyLease(
                 lease_id=f"lease-{index}",
@@ -541,9 +556,9 @@ class ProxyProviderTests(unittest.TestCase):
                 exit_ip=f"8.8.8.{index}",
                 metadata={"uniqueness_key": f"8.8.8.{index}"},
             )
-            for index in (1, 2, 3, 4)
+            for index in (1, 2, 3)
         ]
-        acquire_batch.return_value = leases
+        acquire_pool.side_effect = leases
 
         with patch.multiple(
             "config.proxy",
@@ -562,13 +577,13 @@ class ProxyProviderTests(unittest.TestCase):
                 (101, 102, 103),
             ))
 
-        self.assertEqual(acquire_batch.call_count, 1)
-        self.assertEqual(acquire_batch.call_args.kwargs["count"], 3)
-        self.assertEqual({lease.metadata["job_id"] for lease in acquired}, {101, 102, 103})
-        for _ in acquired:
-            proxy_provider.finalize_registration_proxy_batch("batch-1")
+        self.assertEqual(acquire_pool.call_count, 3)
+        self.assertEqual({call.kwargs["provider"] for call in acquire_pool.call_args_list}, {"1024proxy"})
+        self.assertEqual({call.kwargs["job_id"] for call in acquire_pool.call_args_list}, {101, 102, 103})
+        acquire_batch.assert_not_called()
+        self.assertEqual({lease.lease_id for lease in acquired}, {"lease-1", "lease-2", "lease-3"})
+        proxy_provider.finalize_registration_proxy_batch("batch-1")
         self.assertNotIn("batch-1", proxy_provider._BATCH_STATES)
-        self.assertEqual([lease.state for lease in leases], ["leased", "leased", "leased", "released"])
         for lease in acquired:
             proxy_provider.release_proxy(lease, reason="test")
 
@@ -586,7 +601,7 @@ class ProxyProviderTests(unittest.TestCase):
             PROXY_1024_ACQUIRE_INTERVAL=0.0,
             PROXY_1024_ROTATE_SESSION_TIME=False,
         ):
-            lease = proxy_provider.acquire_1024_proxy(
+            lease = proxy_provider.fetch_1024_proxy(
                 api_url="https://white.1024proxy.com/white/api?region=US&type=txt",
                 protocol="http",
                 region="US",

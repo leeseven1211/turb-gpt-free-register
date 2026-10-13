@@ -30,6 +30,7 @@ class WebUIRuntimeTests(unittest.TestCase):
                 patch.object(runtime.account_task_store, "recover_interrupted", return_value=1)
             )
             init_operations = stack.enter_context(patch.object(runtime.operation_task_store, "init"))
+            start_proxy_pool = stack.enter_context(patch("core.proxy_pool.start"))
             start_projection = stack.enter_context(
                 patch.object(runtime.operation_task_store, "start_projection_worker")
             )
@@ -119,10 +120,12 @@ class WebUIRuntimeTests(unittest.TestCase):
             start_codex_refresh,
             start_auth_context_cleanup,
             start_task_center_cleanup,
+            start_proxy_pool,
         ):
             self.assertEqual(1, mock.call_count, getattr(mock, "_mock_name", "mock"))
         self.assertEqual(5, recovery_exclusions.call_count)
         self.assertGreaterEqual(init_operations.call_count, 1)
+        start_proxy_pool.assert_called_once_with(prewarm=True)
 
     def test_runtime_status_is_read_only_and_contains_release_health_components(self):
         runtime._runtime_started = True

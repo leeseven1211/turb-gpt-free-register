@@ -12,7 +12,7 @@ from core import postgres_store
 
 
 PROXY_LEASES = record_store.PROXY_LEASES
-ACTIVE_STATES = ("pending", "leased", "recent", "shared_pending", "shared_leased")
+ACTIVE_STATES = ("pending", "leased", "recent", "shared_pending", "shared_leased", "pool_leased")
 LEASE_WINDOWS = frozenset({"all", "1h", "24h", "7d"})
 
 
@@ -31,7 +31,7 @@ def _cleanup_expired() -> None:
         record_store.patch_rows_where(
             PROXY_LEASES,
             changes={"state": "released", "released_at": now},
-            where='"state" IN (\'pending\', \'leased\', \'shared_pending\', \'shared_leased\') AND "expires_at" IS NOT NULL AND "expires_at" <= %s',
+            where='"state" IN (\'pending\', \'leased\', \'shared_pending\', \'shared_leased\', \'pool_leased\') AND "expires_at" IS NOT NULL AND "expires_at" <= %s',
             params=(now,),
             conn=conn,
         )
@@ -77,7 +77,7 @@ def reserve_pending(
             record_store.advisory_xact_lock(conn, f"proxy-endpoint:{endpoint}")
             if not allow_reuse and record_store.count_rows(
                 PROXY_LEASES,
-                where='"endpoint" = %s AND "state" IN (\'shared_pending\', \'shared_leased\') '
+                where='"endpoint" = %s AND "state" IN (\'shared_pending\', \'shared_leased\', \'pool_leased\') '
                       'AND ("expires_at" IS NULL OR "expires_at" > %s)',
                 params=(endpoint, _now()),
                 conn=conn,
@@ -188,7 +188,7 @@ def activate(
                 # 出口尚未被唯一索引保护的共享租约也参与严格模式的重复检查。
                 if not row.get("allow_reuse") and record_store.count_rows(
                     PROXY_LEASES,
-                    where='"exit_ip" = %s AND "id" <> %s AND "state" = \'shared_leased\' '
+                    where='"exit_ip" = %s AND "id" <> %s AND "state" IN (\'shared_leased\', \'pool_leased\') '
                           'AND ("expires_at" IS NULL OR "expires_at" > %s)',
                     params=(exit_ip, int(row["id"]), _now()),
                     conn=conn,
@@ -249,7 +249,7 @@ def abort(lease_id: str) -> None:
 def active_rows() -> list[dict]:
     return record_store.list_rows(
         PROXY_LEASES,
-        where='"state" IN (\'pending\', \'leased\', \'recent\', \'shared_pending\', \'shared_leased\')',
+        where='"state" IN (\'pending\', \'leased\', \'recent\', \'shared_pending\', \'shared_leased\', \'pool_leased\')',
         order_by='"id" DESC',
     )
 
@@ -311,12 +311,14 @@ def _lease_where(
     purpose: str = "",
     search: str = "",
 ) -> tuple[str, list[Any]]:
-    conditions: list[str] = []
+    # 独立代理池的 leased 锚点只用于库存去重，不是业务任务租约。
+    # 使用 IS DISTINCT FROM 保留旧记录中 purpose 为 NULL 的线路。
+    conditions: list[str] = ["p.purpose IS DISTINCT FROM 'pool-reserve'"]
     params: list[Any] = []
     if view == "current":
-        conditions.append("p.state IN ('pending', 'leased', 'shared_pending', 'shared_leased')")
+        conditions.append("p.state IN ('pending', 'leased', 'shared_pending', 'shared_leased', 'pool_leased')")
     elif view == "history":
-        conditions.append("p.state NOT IN ('pending', 'leased', 'shared_pending', 'shared_leased')")
+        conditions.append("p.state NOT IN ('pending', 'leased', 'shared_pending', 'shared_leased', 'pool_leased')")
     else:
         raise ValueError("代理租约视图必须是 current 或 history")
     state_value = str(state or "all").strip().lower()[:40]
@@ -481,7 +483,7 @@ def count_leases(
     """按页面使用的限长筛选条件统计持久化租约。"""
     record_store.init()
     if acquired_since is not None or acquired_before is not None:
-        conditions = ["1 = 1"]
+        conditions = ["p.purpose IS DISTINCT FROM 'pool-reserve'"]
         params: list[Any] = []
         if acquired_since is not None:
             conditions.append("NULLIF(p.acquired_at, '')::timestamp >= %s")
@@ -517,7 +519,8 @@ def distinct_filter_values() -> dict[str, list[str]]:
         for key in ("purpose", "state"):
             cur.execute(
                 f"SELECT DISTINCT {postgres_store.quote_identifier(key)} AS value "
-                f"FROM {table} WHERE NULLIF(BTRIM({postgres_store.quote_identifier(key)}), '') IS NOT NULL "
+                f"FROM {table} WHERE purpose IS DISTINCT FROM 'pool-reserve' "
+                f"AND NULLIF(BTRIM({postgres_store.quote_identifier(key)}), '') IS NOT NULL "
                 f"ORDER BY value LIMIT %s",
                 (500,),
             )

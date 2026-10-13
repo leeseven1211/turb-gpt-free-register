@@ -23,6 +23,7 @@ from .auth_context import (
     install_dispatches,
     time_proxy,
 )
+from .browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact
 from .selenium_dom import (
     _auth_terminal_page_state, _budget_timeout, _check_manual_stop, _click_any,
     _click_continue, _find_any, _human_click,
@@ -38,6 +39,12 @@ wait_for_otp = _wait_for_otp
 resolve_email_source = _resolve_email_source
 logger = logging.getLogger(__name__)
 time = time_proxy
+
+# 邮箱阶段的三个边界：准备、一次提交链路、整个阶段。提交后的确认不得因为
+# 页面准备消耗时间而重新获得一份 60 秒；三者都由同一 monotonic 时钟约束。
+EMAIL_PREPARATION_TIMEOUT = 30
+EMAIL_SUBMISSION_TIMEOUT = 60
+EMAIL_OUTER_TIMEOUT = 90
 
 _EMAIL_INPUT_SELECTORS = [
     "input[type='email']",
@@ -274,15 +281,27 @@ def _clear_confirmed_email_submission(driver) -> None:
         driver._email_submission_receipt = None
 
 
+def _confirm_email_submission_fact(driver, *, result: str = "success") -> None:
+    receipt = getattr(driver, "_browser_submission_receipt", None)
+    if receipt is None:
+        return
+    # 已有 Attempt 上下文时，确认事实落库失败必须向上抛出；否则页面成功会
+    # 被错误地当作本地已确认，后续恢复无法知道原提交边界。
+    record_browser_submission_fact(driver, "confirmed", receipt=receipt, result=result)
+
+
 def _email_submit_advanced_state(driver, *, budget: StageBudget | None = None) -> str | None:
     """识别邮箱提交后已经到达的稳定下一步，避免按过期页面状态继续重试。"""
     if _is_login_password_page(driver):
+        _confirm_email_submission_fact(driver)
         _clear_confirmed_email_submission(driver)
         return "login_password"
     if _is_email_verification_page(driver):
+        _confirm_email_submission_fact(driver)
         _clear_confirmed_email_submission(driver)
         return "otp"
     if _is_signup_password_page(driver):
+        _confirm_email_submission_fact(driver)
         _clear_confirmed_email_submission(driver)
         return "password"
     receipt = getattr(driver, "_email_submission_receipt", None)
@@ -294,6 +313,7 @@ def _email_submit_advanced_state(driver, *, budget: StageBudget | None = None) -
             return None
         receipt["session_probe_at"] = now
     if (_has_access_token(driver, budget=budget) if budget is not None else _has_access_token(driver)):
+        _confirm_email_submission_fact(driver)
         _clear_confirmed_email_submission(driver)
         return "logged_in"
     return None
@@ -419,8 +439,24 @@ def _submit_nearest_form_for_active_input(driver) -> bool:
     if result.get("ok"):
         target = result.get("target")
         if target:
-            driver._email_submission_receipt = {"id": uuid.uuid4().hex}
-            _human_click(driver, target, label="email_submit")
+            submission_id = uuid.uuid4().hex
+            receipt = BrowserSubmissionReceipt(
+                kind="resume_login" if getattr(driver, "_registration_resume_login", False) else "email",
+                stage="submit_email", submission_id=submission_id,
+                endpoint_kind="email_submit", http_method="POST",
+            )
+            driver._browser_submission_receipt = receipt
+            driver._email_submission_receipt = {"id": submission_id}
+            record_browser_submission_fact(driver, "dispatch_intent", receipt=receipt)
+            try:
+                _human_click(driver, target, label="email_submit")
+                record_browser_submission_fact(driver, "ui_dispatched", receipt=receipt)
+            except Exception as exc:
+                record_browser_submission_fact(
+                    driver, "unknown", receipt=receipt, result="unknown",
+                    error_type=type(exc).__name__,
+                )
+                raise
         else:
             logger.warning("%s 邮箱提交未返回目标元素，保留页面等待恢复", _log_prefix(driver))
             return False
@@ -538,8 +574,29 @@ def _email_ui_submission_state(driver) -> str | None:
                 snapshot["reason"] = state["reason"]
             driver._email_submission_diagnostics = snapshot
             if phase == "cancelled":
+                try:
+                    record_browser_submission_fact(
+                        driver, "not_dispatched", receipt=getattr(driver, "_browser_submission_receipt", None),
+                        result="cancelled",
+                    )
+                except Exception:
+                    logger.exception("%s 邮箱提交取消事实保存失败", _log_prefix(driver))
                 driver._email_submission_receipt = None
                 return "cancelled"
+            if phase == "dispatched":
+                try:
+                    record_browser_submission_fact(
+                        driver, "ui_dispatched", receipt=getattr(driver, "_browser_submission_receipt", None),
+                    )
+                except Exception:
+                    logger.exception("%s 邮箱 UI 派发事实保存失败", _log_prefix(driver))
+            elif phase == "queued":
+                try:
+                    record_browser_submission_fact(
+                        driver, "ui_queued", receipt=getattr(driver, "_browser_submission_receipt", None),
+                    )
+                except Exception:
+                    logger.exception("%s 邮箱 UI 排队事实保存失败", _log_prefix(driver))
             if phase in {"queued", "dispatched"}:
                 return phase
     except Exception:
@@ -615,6 +672,14 @@ def _submit_email_form_stable(driver, email: str) -> dict:
     if _email_ui_submission_state(driver) in {"queued", "dispatched", "unknown"}:
         return {"ok": True, "reason": "email_submission_pending"}
     submission_id = uuid.uuid4().hex
+    receipt = BrowserSubmissionReceipt(
+        kind="resume_login" if getattr(driver, "_registration_resume_login", False) else "email",
+        stage="submit_email", submission_id=submission_id,
+        endpoint_kind="email_submit", http_method="POST",
+    )
+    driver._browser_submission_receipt = receipt
+    # 围栏必须在定时器排队和 click 之前落库；UI queued/click 不是 HTTP 成功。
+    record_browser_submission_fact(driver, "dispatch_intent", receipt=receipt)
     driver._email_submission_receipt = {"id": submission_id}
     try:
         result = driver.execute_script(_EMAIL_FRONTEND_READY_JS + r"""
@@ -719,11 +784,21 @@ def _submit_email_form_stable(driver, email: str) -> dict:
         };
         """, email, submission_id) or {}
         if isinstance(result, dict) and result.get("ok") is False:
+            record_browser_submission_fact(driver, "not_dispatched", receipt=receipt, result="cancelled")
             driver._email_submission_receipt = None
+            # 明确未排队时，NextAuth 兜底必须建立新的 submission_id；复用已
+            # not_dispatched 的回执会把两个动作混成一条事实链，破坏跨 Run 围栏。
+            driver._browser_submission_receipt = None
             return result
+        record_browser_submission_fact(driver, "ui_queued", receipt=receipt)
         return result if isinstance(result, dict) and result.get("ok") is True else {"ok": True, "reason": "email_submission_result_unknown"}
     except Exception:
         # 驱动没有收到脚本结果时，排队动作仍可能已经生效。
+        # 此处不能把异常当作未派发，保留 dispatch_intent/unknown 围栏。
+        try:
+            record_browser_submission_fact(driver, "unknown", receipt=receipt, result="unknown")
+        except Exception:
+            logger.exception("%s 邮箱提交事实保存失败", _log_prefix(driver))
         return {"ok": True, "reason": "email_submission_result_unknown"}
 
 def _submit_email_step(driver, email: str | None = None) -> None:
@@ -733,6 +808,11 @@ def _submit_email_step(driver, email: str | None = None) -> None:
     stable = _stabilize_email_input_before_submit(driver, email_value)
     logger.info("%s 邮箱提交前状态稳定：ok=%s", _log_prefix(driver), stable.get("ok"))
     time.sleep(random.uniform(0.8, 1.8) if _browser_actions_enabled() else 0.4)
+    before_dispatch = getattr(driver, "_registration_before_email_dispatch", None)
+    if callable(before_dispatch):
+        # 前端已接管且即将进入稳定提交函数；从此处开始使用唯一 60 秒
+        # submission_budget，避免 click 后才新开预算。
+        before_dispatch()
 
     stable_submit = _submit_email_form_stable(driver, email_value)
     if stable_submit.get("ok"):
@@ -798,6 +878,15 @@ def _submit_email_via_browser_nextauth(driver, email: str) -> dict:
 
     did = str(uuid.uuid4())
     auth_log_id = str(uuid.uuid4())
+    nextauth_receipt = getattr(driver, "_browser_submission_receipt", None)
+    if nextauth_receipt is None:
+        nextauth_receipt = BrowserSubmissionReceipt(
+            kind="resume_login" if getattr(driver, "_registration_resume_login", False) else "email",
+            stage="nextauth", endpoint_kind="nextauth_signin", http_method="POST",
+        )
+        driver._browser_submission_receipt = nextauth_receipt
+        # NextAuth 兜底同样是唯一可能派发的认证动作，必须先建立持久围栏。
+        record_browser_submission_fact(driver, "dispatch_intent", receipt=nextauth_receipt)
     old_script_timeout = int(getattr(_cfg, "ROXY_SELENIUM_TIMEOUT", 90) or 90)
     fetch_timeout = _budget_timeout(budget, 25.0, minimum=0.0)
     try:
@@ -848,7 +937,8 @@ def _submit_email_via_browser_nextauth(driver, email: str) -> dict:
             try { csrfData = JSON.parse(csrfText); } catch (_) {}
             const csrfToken = csrfData.csrfToken || '';
             if (!csrfResp.ok || !csrfToken) {
-              done({ok:false, stage:'csrf', status:csrfResp.status, body:csrfText.slice(0, 500)});
+              // 不把响应体带回 Python；CSRF/Token 只用于本次页面内请求。
+              done({ok:false, stage:'csrf', status:csrfResp.status, error_type:'csrf_http'});
               return;
             }
 
@@ -882,7 +972,7 @@ def _submit_email_via_browser_nextauth(driver, email: str) -> dict:
             try { data = JSON.parse(text); } catch (_) {}
             let url = data.url || '';
             if (!resp.ok || !url) {
-              done({ok:false, stage:'signin', status:resp.status, body:text.slice(0, 700)});
+              done({ok:false, stage:'signin', status:resp.status, error_type:'signin_http'});
               return;
             }
 
@@ -899,13 +989,26 @@ def _submit_email_via_browser_nextauth(driver, email: str) -> dict:
             // 最终表现为 execute_async_script 超时，实际跳转结果也无法确认。
             done({ok:true, stage:'redirect_ready', url});
           } catch (e) {
-            done({ok:false, stage:'exception', error:String(e && (e.stack || e.message) || e).slice(0, 700)});
+            done({ok:false, stage:'exception', error_type:'nextauth_exception'});
           }
         })();
         """, email, did, auth_log_id, max(1, int(fetch_timeout * 1000) - 50)) or {}
         if not isinstance(result, dict):
+            record_browser_submission_fact(driver, "unknown", receipt=nextauth_receipt, result="unknown")
             return {"ok": False, "reason": "invalid_result", "result": str(result)[:300]}
         if not result.get("ok"):
+            status = result.get("status")
+            try:
+                status_code = int(status)
+            except (TypeError, ValueError):
+                status_code = 0
+            # 400/401 是本次 CSRF/signin 请求被明确拒绝且没有可用跳转；
+            # 5xx、超时或无状态仍是未知，不能自动重放 POST。
+            phase = "rejected" if status_code in {400, 401} else "response_observed"
+            record_browser_submission_fact(
+                driver, phase, receipt=nextauth_receipt,
+                http_status=status, result="failure", error_type=str(result.get("stage") or "nextauth_error"),
+            )
             return result
 
         target_url = str(result.get("url") or "").strip()
@@ -914,12 +1017,14 @@ def _submit_email_via_browser_nextauth(driver, email: str) -> dict:
         except Exception:
             parsed = None
         if not parsed or parsed.scheme != "https" or parsed.hostname not in ("auth.openai.com", "chatgpt.com"):
+            record_browser_submission_fact(driver, "rejected", receipt=nextauth_receipt, result="failure", error_type="unsafe_redirect")
             return {"ok": False, "reason": "unsafe_redirect_url", "url": _diagnostic_url(target_url)}
 
         if budget is not None:
             budget.require("邮箱认证跳转")
             # 同一剩余预算内交给调用方确认落点，不让 WebDriver 导航另启 45 秒等待。
             driver.execute_script("const target = arguments[0]; setTimeout(() => location.assign(target), 0);", target_url)
+            record_browser_submission_fact(driver, "ui_dispatched", receipt=nextauth_receipt)
             return {"ok": True, "stage": "redirect_dispatched", "target_url": _diagnostic_url(target_url)}
 
         _safe_get(
@@ -934,6 +1039,7 @@ def _submit_email_via_browser_nextauth(driver, email: str) -> dict:
         landing_url = str(getattr(driver, "current_url", "") or "")
         advanced_state = _email_submit_advanced_state(driver)
         if advanced_state:
+            record_browser_submission_fact(driver, "confirmed", receipt=nextauth_receipt, result="success")
             return {
                 "ok": True,
                 "stage": "landed",
@@ -959,6 +1065,10 @@ def _submit_email_via_browser_nextauth(driver, email: str) -> dict:
             "target_url": _diagnostic_url(target_url),
         }
     except Exception as exc:
+        try:
+            record_browser_submission_fact(driver, "unknown", receipt=nextauth_receipt, result="unknown", error_type=type(exc).__name__)
+        except Exception:
+            logger.exception("%s NextAuth 提交未知事实保存失败", _log_prefix(driver))
         return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
     finally:
         try:
@@ -1199,12 +1309,17 @@ def _submit_email_and_wait_next(
     email: str,
     attempts: int = 3,
     on_submitted=None,
-    total_timeout: int = 60,
+    total_timeout: int = EMAIL_OUTER_TIMEOUT,
     allow_login_password: bool = False,
 ) -> str:
     """一次流程独占提交凭据，结束后不把状态带入下一账号或独立调用。"""
     driver._email_submission_receipt = None
     driver._email_submission_diagnostics = None
+    # 仅显式续跑入口可标记为 resume_login；存储层仍会核对原 Attempt
+    # 已保存密码和恢复 checkpoint，普通入口不能借此绕过未知提交围栏。
+    had_resume_scope = hasattr(driver, "_registration_resume_login")
+    previous_resume_scope = getattr(driver, "_registration_resume_login", False)
+    driver._registration_resume_login = bool(allow_login_password)
     try:
         return _submit_email_and_wait_next_impl(
             driver, email, attempts, on_submitted, total_timeout, allow_login_password,
@@ -1216,6 +1331,17 @@ def _submit_email_and_wait_next(
         raise
     finally:
         driver._email_submission_receipt = None
+        try:
+            delattr(driver, "_registration_before_email_dispatch")
+        except AttributeError:
+            pass
+        if had_resume_scope:
+            driver._registration_resume_login = previous_resume_scope
+        else:
+            try:
+                delattr(driver, "_registration_resume_login")
+            except AttributeError:
+                pass
 
 
 def _submit_email_and_wait_next_impl(
@@ -1223,14 +1349,32 @@ def _submit_email_and_wait_next_impl(
     email: str,
     attempts: int = 3,
     on_submitted=None,
-    total_timeout: int = 60,
+    total_timeout: int = EMAIL_OUTER_TIMEOUT,
     allow_login_password: bool = False,
 ) -> str:
-    """填写并提交邮箱，必须确认进入下一步；整个跳转链路最多占用 total_timeout 秒。"""
+    """填写并提交邮箱：准备最多 30 秒，提交/落点最多 60 秒，外层最多 90 秒。"""
     last_state = None
     nextauth_fallback_done = False
     submitted_reported = False
-    budget = StageBudget.start(max(10, int(total_timeout or 60)))
+    requested_timeout = EMAIL_OUTER_TIMEOUT if total_timeout is None else float(total_timeout)
+    # 90 秒是默认软上限；调用方传入更小预算时必须原样收紧，不能用历史的
+    # “至少 10 秒”兜底把测试/取消预算重新放大。
+    outer_budget = StageBudget.start(max(0.0, min(float(EMAIL_OUTER_TIMEOUT), requested_timeout)))
+    # 准备和提交各自只有一份子预算。提交预算只在真正进入提交/兜底阶段时
+    # 创建一次，且两者都受同一个外层截止时间约束。
+    def _phase_budget(limit: float, *, initial: bool = False):
+        child = getattr(outer_budget, "child", None)
+        if callable(child):
+            return child(limit)
+        if initial:
+            return outer_budget
+        # 兼容旧测试/适配器提供的最小预算替身；生产 StageBudget 始终受
+        # outer_budget 截止时间约束。
+        return StageBudget.start(limit)
+
+    preparation_budget = _phase_budget(EMAIL_PREPARATION_TIMEOUT, initial=True)
+    submission_budget = None
+    budget = preparation_budget
     # Keep the helper's historical call signature stable for integrations that
     # patch it, while still sharing the active budget with the real helper.
     try:
@@ -1239,7 +1383,18 @@ def _submit_email_and_wait_next_impl(
         pass
 
     def _remaining(limit: int) -> int:
-        return max(1, min(int(limit), int(math.ceil(budget.remaining()))))
+        return max(0.0, min(float(limit), budget.remaining()))
+
+    def _use_submission_budget() -> StageBudget:
+        nonlocal submission_budget, budget
+        if submission_budget is None:
+            submission_budget = _phase_budget(EMAIL_SUBMISSION_TIMEOUT)
+        budget = submission_budget
+        try:
+            setattr(driver, "_registration_stage_budget", submission_budget)
+        except Exception:
+            pass
+        return submission_budget
 
     def _accept_advanced_state(state_name: str | None, source: str) -> str | None:
         if state_name == "login_password":
@@ -1261,8 +1416,18 @@ def _submit_email_and_wait_next_impl(
 
     for attempt in range(1, attempts + 1):
         _check_manual_stop()
-        if budget.expired():
+        if outer_budget.expired():
             break
+        if isinstance(getattr(driver, "_email_submission_receipt", None), dict):
+            # 提交后所有观察、NextAuth 兜底和落点确认共用同一份 60 秒预算。
+            budget = submission_budget or preparation_budget
+        else:
+            # 重填只继续消耗唯一准备预算；不能每轮重新获得 30 秒。
+            budget = submission_budget or preparation_budget
+            try:
+                setattr(driver, "_registration_stage_budget", budget)
+            except Exception:
+                pass
         entry_state = _type_email_address(
             driver,
             email,
@@ -1283,6 +1448,10 @@ def _submit_email_and_wait_next_impl(
         human_delay("form")
         frontend_not_ready = False
         try:
+            setattr(driver, "_registration_before_email_dispatch", _use_submission_budget)
+        except Exception:
+            pass
+        try:
             _submit_email_step(driver, email)
         except _EmailFrontendNotReady:
             frontend_not_ready = True
@@ -1294,13 +1463,9 @@ def _submit_email_and_wait_next_impl(
             # auth result is a new request and must receive a fresh budget.  Otherwise
             # the first state check can fail immediately even though the page is still
             # legitimately transitioning (observed with a 91-second proxy response).
-            if not isinstance(getattr(driver, "_email_submission_receipt", None), dict):
-                # 兼容没有异步提交凭据的旧适配层：同步调用返回后才开始确认落点。
-                budget = StageBudget.start(max(10, int(total_timeout or 60)))
-                try:
-                    setattr(driver, "_registration_stage_budget", budget)
-                except Exception:
-                    pass
+            # 进入可能派发窗口后，确认链路获得至多 60 秒；不再重置为一份新的
+            # 外层预算，且继续受 outer_budget 的 90 秒截止约束。
+            _use_submission_budget()
             if not submitted_reported and on_submitted is not None:
                 try:
                     on_submitted()
@@ -1323,6 +1488,23 @@ def _submit_email_and_wait_next_impl(
             _log_blank_auth_shell_diagnostics(driver, last_state)
             logger.info("%s 首次确认登录空壳，立即切换 NextAuth 导航兜底", _log_prefix(driver))
         if state_name in ("email_page", "email_cleared", "unknown", "blank_shell", "email_frontend_not_ready") and not nextauth_fallback_done:
+            # 稳定脚本已经进入 unknown 后，NextAuth 也属于第二次认证 POST；
+            # 只有明确 not_dispatched 才允许建立新的 submission_id 走兜底。
+            submission_state = _email_ui_submission_state(driver)
+            active_receipt = getattr(driver, "_browser_submission_receipt", None)
+            if submission_state in {"queued", "dispatched", "unknown"} or (
+                active_receipt is not None
+                and getattr(active_receipt, "phase", "") in {
+                    "dispatch_intent", "ui_queued", "ui_dispatched", "request_observed",
+                    "response_observed", "unknown",
+                }
+            ):
+                raise _EmailSubmissionUnknown(
+                    "request_unknown: 邮箱提交已进入可能派发窗口，禁止 NextAuth 重复认证导航"
+                )
+            # 前端未接管时没有 UI dispatch；唯一的 NextAuth 兜底在同一外层
+            # 截止内获得唯一提交预算，不能继续沿用已经耗尽的准备预算。
+            _use_submission_budget()
             budget.require("邮箱认证导航兜底")
             nextauth_fallback_done = True
             logger.warning("%s 邮箱认证未进入下一步，启用一次 NextAuth 导航兜底", _log_prefix(driver))
@@ -1359,7 +1541,7 @@ def _submit_email_and_wait_next_impl(
             elif state_name == "blank_shell" and _is_blank_chatgpt_auth_shell(driver):
                 # NextAuth 自身也失败时才刷新页面，保留一次 UI 重试机会。
                 _reload_blank_chatgpt_auth_shell(driver)
-        if frontend_not_ready and budget.expired():
+        if frontend_not_ready and outer_budget.expired():
             break
         late_state = _email_submit_advanced_state(driver)
         accepted = _accept_advanced_state(late_state, "重试前页面")
@@ -1372,8 +1554,8 @@ def _submit_email_and_wait_next_impl(
         last_state = current_state
         logger.warning("%s 邮箱提交后仍未进入下一步：%s，准备重填重试 state=%s", _log_prefix(driver), retry_state_name, current_state)
         time.sleep(min(1.0, max(0.0, budget.remaining())))
-    if budget.expired():
-        raise RuntimeError(f"邮箱提交/认证跳转超过总预算 {int(total_timeout or 60)} 秒，最后状态={last_state}")
+    if outer_budget.expired():
+        raise RuntimeError(f"邮箱提交/认证跳转超过总预算 {EMAIL_OUTER_TIMEOUT} 秒，最后状态={last_state}")
     raise RuntimeError(f"邮箱提交后未进入密码页/验证码页，最后状态={last_state}")
 
 def _type_otp(driver, code: str, *, timeout: int = 20) -> None:
@@ -1513,13 +1695,54 @@ def _clear_otp_inputs(driver) -> None:
     except Exception:
         pass
 
+
+def _read_resend_receipt(driver, receipt: dict, *, timeout: float, budget: StageBudget | None,
+                         initial_now: float | None = None) -> dict:
+    """重发已点击后的只读收口；读取异常不能再次点击同一控件。"""
+    now = initial_now if initial_now is not None else time.monotonic()
+    end = now + _budget_timeout(budget, timeout, minimum=0.1)
+    last_error = None
+    while now < end:
+        _check_manual_stop()
+        try:
+            state_after = _email_otp_page_state(driver)
+            buttons_after = state_after.get("buttons") if isinstance(state_after, dict) else []
+            buttons_after = buttons_after if isinstance(buttons_after, list) else []
+            resend_pattern = re.compile(r"resend|send.*new|send.*again|重新发送|重发|再次发送|再送信|届かない", re.I)
+            matching = [
+                item for item in buttons_after
+                if resend_pattern.search(" ".join(str(item.get(key) or "") for key in ("text", "action", "aria", "value")))
+            ]
+            ui_ack = "confirmed" if (
+                not _is_email_verification_page(driver)
+                or any(bool(item.get("disabled")) for item in matching)
+            ) else "unconfirmed"
+            result = {
+                "ok": True, "text": receipt.get("text", ""), "ui_ack": ui_ack,
+                "requested_after_ts": receipt.get("requested_after_ts"),
+            }
+            # 读取已经完成，下一次独立重发可建立新的围栏；本次读取失败则保留围栏。
+            driver._otp_resend_receipt = None
+            return result
+        except Exception as exc:
+            last_error = exc
+            now = time.monotonic()
+            time.sleep(min(0.5, max(0.0, end - now)))
+    raise RuntimeError(f"验证码重发点击后状态读取未确认，禁止再次点击: {type(last_error).__name__ if last_error else 'timeout'}")
+
 def _click_resend_email_otp(driver, timeout: int = 20, *, budget: StageBudget | None = None) -> dict:
     """点击重新发送邮箱验证码。优先按 DOM 属性识别，文本仅兜底。"""
+    prior = getattr(driver, "_otp_resend_receipt", None)
+    if isinstance(prior, dict) and prior.get("clicked"):
+        return _read_resend_receipt(driver, prior, timeout=timeout, budget=budget)
     timeout = _budget_timeout(budget, timeout, minimum=0.1)
     end = time.monotonic() + timeout
     last = None
     while time.monotonic() < end:
         _check_manual_stop()
+        prior = getattr(driver, "_otp_resend_receipt", None)
+        if isinstance(prior, dict) and prior.get("clicked"):
+            return _read_resend_receipt(driver, prior, timeout=max(0.1, end - time.monotonic()), budget=budget)
         try:
             btn = driver.execute_script(r"""
             const visible = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
@@ -1543,33 +1766,41 @@ def _click_resend_email_otp(driver, timeout: int = 20, *, budget: StageBudget | 
                 # 以真正派发点击的时刻作为下一封邮件的时间边界。必须在 click
                 # 前立即取值，既排除点击前旧码，也不会漏掉点击后瞬间到达的邮件。
                 requested_after_ts = time.time()
-                _human_click(driver, btn, label="resend_otp")
+                resend_receipt = {
+                    "clicked": True, "text": text, "requested_after_ts": requested_after_ts,
+                }
+                driver._otp_resend_receipt = resend_receipt
+                browser_receipt = BrowserSubmissionReceipt(
+                    kind="resume_login" if getattr(driver, "_registration_resume_login", False) else "otp",
+                    stage="otp_resend", endpoint_kind="otp_resend", http_method="POST",
+                )
+                driver._browser_submission_receipt = browser_receipt
+                # 重发点击前先建立 durable dispatch 围栏；点击或读取结果未知时，
+                # 下一 Run 只能核对原动作，不能再次点击。
+                record_browser_submission_fact(driver, "prepared", receipt=browser_receipt)
+                record_browser_submission_fact(driver, "dispatch_intent", receipt=browser_receipt)
+                try:
+                    _human_click(driver, btn, label="resend_otp")
+                    record_browser_submission_fact(driver, "ui_dispatched", receipt=browser_receipt)
+                except Exception as exc:
+                    # click 结果不明时保存围栏，后续只读，不再点第二次。
+                    record_browser_submission_fact(
+                        driver, "unknown", receipt=browser_receipt, result="unknown",
+                        error_type=type(exc).__name__,
+                    )
+                    raise RuntimeError("验证码重发点击结果未知，已禁止重复点击") from exc
                 logger.info("%s[OTP] 已点击重新发送验证码按钮：%s", _log_prefix(driver), text or '-')
                 delay = random.uniform(1.1, 2.4) if _browser_actions_enabled() else 1.5
                 if budget is not None:
                     delay = min(delay, budget.remaining())
                 if delay > 0:
                     time.sleep(delay)
-                state_after = _email_otp_page_state(driver)
-                buttons_after = state_after.get("buttons") if isinstance(state_after, dict) else []
-                if not isinstance(buttons_after, list):
-                    buttons_after = []
-                resend_pattern = re.compile(r"resend|send.*new|send.*again|重新发送|重发|再次发送|再送信|届かない", re.I)
-                matching = [
-                    item for item in buttons_after
-                    if resend_pattern.search(" ".join(str(item.get(key) or "") for key in ("text", "action", "aria", "value")))
-                ]
-                ui_ack = "confirmed" if (
-                    not _is_email_verification_page(driver)
-                    or any(bool(item.get("disabled")) for item in matching)
-                ) else "unconfirmed"
-                logger.info("%s[OTP] 重发请求页面确认：%s", _log_prefix(driver), ui_ack)
-                return {
-                    "ok": True,
-                    "text": text,
-                    "ui_ack": ui_ack,
-                    "requested_after_ts": requested_after_ts,
-                }
+                result = _read_resend_receipt(
+                    driver, resend_receipt, timeout=max(0.1, timeout - delay), budget=budget,
+                    initial_now=end - max(0.0, timeout - delay),
+                )
+                logger.info("%s[OTP] 重发请求页面确认：%s", _log_prefix(driver), result.get("ui_ack"))
+                return result
         except Exception as exc:
             last = exc
         time.sleep(min(0.5, max(0.0, budget.remaining())) if budget is not None else 0.5)
@@ -1636,9 +1867,10 @@ def _complete_registration_totp_after_email_otp(
 
 def _wait_after_email_otp_submit(
     driver,
-    timeout: int = 30,
+    timeout: int = 60,
     *,
     budget: StageBudget | None = None,
+    baseline_state: dict | None = None,
 ) -> str:
     """提交 OTP 后等待页面离开验证码页。
 
@@ -1650,9 +1882,35 @@ def _wait_after_email_otp_submit(
     timeout = _budget_timeout(budget, timeout, minimum=0.0)
     end = time.monotonic() + max(0.0, timeout)
     last = {}
-    while time.monotonic() < end:
+    diagnostic_logged = False
+    diagnostic_at = min(30.0, max(0.0, timeout))
+    started = time.monotonic()
+    baseline_state = baseline_state if isinstance(baseline_state, dict) else {}
+    baseline_errors = tuple(str(item) for item in (baseline_state.get("errors") or []))
+    baseline_invalid = tuple(
+        str(item.get("id") or item.get("name") or index)
+        for index, item in enumerate(baseline_state.get("inputs") or [])
+        if isinstance(item, dict) and str(item.get("ariaInvalid") or "").lower() == "true"
+    )
+
+    def _new_error_mark(state: dict) -> bool:
+        errors = tuple(str(item) for item in (state.get("errors") or []))
+        invalid = tuple(
+            str(item.get("id") or item.get("name") or index)
+            for index, item in enumerate(state.get("inputs") or [])
+            if isinstance(item, dict) and str(item.get("ariaInvalid") or "").lower() == "true"
+        )
+        return bool(set(errors) - set(baseline_errors) or set(invalid) - set(baseline_invalid))
+
+    while True:
         _check_manual_stop()
-        time.sleep(min(0.5, max(0.0, end - time.monotonic())))
+        now = time.monotonic()
+        if now >= end:
+            break
+        if not diagnostic_logged and now - started >= diagnostic_at:
+            diagnostic_logged = True
+            logger.info("%s[OTP] 提交后 30 秒诊断检查点：仍等待原提交确认，不重发验证码", _log_prefix(driver))
+        time.sleep(min(0.5, max(0.0, end - now)))
         last = _email_otp_page_state(driver)
         if not isinstance(last, dict):
             last = {}
@@ -1663,21 +1921,18 @@ def _wait_after_email_otp_submit(
             return "email_verified"
         if not _is_email_verification_page(driver):
             return 'accepted'
-        invalid = any(str(i.get('ariaInvalid') or '').lower() == 'true' for i in (last.get('inputs') or []))
-        if invalid or (last.get('errors') or []):
+        if _new_error_mark(last):
             return 'invalid'
     if _is_email_verification_page(driver):
         # 超时仍停留：有错误标记是 invalid；没有错误标记也说明提交没有产生跳转，
         # 返回 stuck 让上层重发/重新取最新验证码。
         last = _email_otp_page_state(driver)
-        has_error_mark = bool(last.get('errors')) or any(
-            str(i.get('ariaInvalid') or '').lower() == 'true' for i in (last.get('inputs') or [])
-        )
+        has_error_mark = _new_error_mark(last)
         if has_error_mark:
             logger.warning("%s[OTP] 提交后仍停留验证码页且存在错误标记，按验证码无效处理 snapshot=%s", _log_prefix(driver), last)
             return 'invalid'
         logger.warning(
-            "%s[OTP] 提交后 %ss 仍在验证码页但无错误标记，按页面卡住处理并重新取码 snapshot=%s",
+            "%s[OTP] 提交后 %ss 仍在验证码页但无错误标记，原提交结果未知，保留恢复上下文 snapshot=%s",
             _log_prefix(driver), timeout, last
         )
         return 'stuck'
@@ -1705,7 +1960,8 @@ install_dispatches(globals(), (
 ))
 
 __all__ = [
-    "_EMAIL_INPUT_SELECTORS", "human_delay", "wait_for_otp", "resolve_email_source",
+    "_EMAIL_INPUT_SELECTORS", "EMAIL_PREPARATION_TIMEOUT", "EMAIL_SUBMISSION_TIMEOUT", "EMAIL_OUTER_TIMEOUT",
+    "human_delay", "wait_for_otp", "resolve_email_source",
     "_email_entry_state", "_find_visible_email_input_js", "_is_oauth_consent_like",
     "_is_external_idp_url", "_assert_not_external_idp", "_click_email_entry_option",
     "_is_blank_chatgpt_auth_shell", "_reload_blank_chatgpt_auth_shell",

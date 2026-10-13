@@ -2,7 +2,7 @@
 """
 代理池配置
 
-每次注册随机抽取一个代理，保证不同 sid 之间彼此独立，避免风控关联。
+独立库存负责后台检查和补货；业务任务领取独立租约，按用途决定是否允许共享。
 
 协议说明：
     - http:// / https://   HTTP(S) 代理
@@ -17,34 +17,43 @@ import random
 # 本地代理入口；实际出口地区以代理/分流规则为准。
 # 推荐使用 socks5h://（DNS 在代理端解析），避免本地 DNS 与出口 IP 地区错配。
 PROXY_POOL = schema_default("PROXY_POOL")
+# 独立代理池生命周期策略：任务只领取已检测库存，不在任务线程内提取或校验。
+PROXY_POOL_MIN_READY = schema_default("PROXY_POOL_MIN_READY")
+PROXY_POOL_MAX_SIZE = schema_default("PROXY_POOL_MAX_SIZE")
+PROXY_POOL_WAIT_TIMEOUT = schema_default("PROXY_POOL_WAIT_TIMEOUT")
+PROXY_POOL_MIN_TTL = schema_default("PROXY_POOL_MIN_TTL")
+PROXY_POOL_CHECK_INTERVAL = schema_default("PROXY_POOL_CHECK_INTERVAL")
+PROXY_POOL_MAX_IDLE = schema_default("PROXY_POOL_MAX_IDLE")
+PROXY_POOL_WORKERS = schema_default("PROXY_POOL_WORKERS")
 
 # 注册任务代理来源：
-#   pool = 使用上面的静态代理池（兼容原行为）
-#   1024 = 每个注册任务从 1024Proxy API 提取一个独立的粘性住宅代理
+#   pool = 使用独立代理池中的已检测库存
+#   1024 = 兼容旧配置；由代理池按固定供给参数维护库存，再向任务发放租约
 #   none = 注册任务显式直连
 REGISTRATION_PROXY_MODE = schema_default("REGISTRATION_PROXY_MODE")
 
 # 1024Proxy 白名单 API。完整 URL 仅保存到 .env，源码默认留空。
-# 客户端会保留 URL 中的筛选参数；单任务强制 num=1，注册批次按并发量批量设置 num，均使用下面配置的粘性时长。
+# 代理池预热/补货使用 URL 与下方固定的 region、time、num 参数；任务只领取库存，不在业务线程内提取。
+# time 是供应商的粘性窗口参数，不承诺每次领取都是新会话或新 IP。
 PROXY_1024_API_URL = schema_default("PROXY_1024_API_URL")
 # 国家/地区代码；留空时沿用 API URL 中原有的 region 参数。
 # 1024Proxy 使用 ISO 3166-1 两位代码，例如 US / JP / GB；Rand 表示随机地区。
 PROXY_1024_REGION = schema_default("PROXY_1024_REGION")
 PROXY_1024_PROTOCOL = schema_default("PROXY_1024_PROTOCOL")
 PROXY_1024_SESSION_MINUTES = schema_default("PROXY_1024_SESSION_MINUTES")
-# 1024 白名单接口会在相同 region/time 参数的粘性窗口内复用同一远端会话。
-# 开启后按任务 ID 在基础时长到 120 分钟之间轮换 time，确保新任务建立新会话/IP。
+# 兼容旧配置项；独立代理池使用固定供给参数，不能通过改变 time 推断新会话或新 IP。
+# 是否复用线路由代理池租约生命周期与供应商实际行为决定。
 PROXY_1024_ROTATE_SESSION_TIME = schema_default("PROXY_1024_ROTATE_SESSION_TIME")
 PROXY_1024_API_TIMEOUT = schema_default("PROXY_1024_API_TIMEOUT")
 PROXY_1024_MAX_ATTEMPTS = schema_default("PROXY_1024_MAX_ATTEMPTS")
-# 整段代理获取硬上限；重复粘性端点会额外快速重取，但不能无限占用任务线程。
+# 后台补货轮次预算；锁等待、节流、请求和出口检测共用。
 PROXY_1024_ACQUIRE_TIMEOUT = schema_default("PROXY_1024_ACQUIRE_TIMEOUT")
 PROXY_1024_VALIDATE = schema_default("PROXY_1024_VALIDATE")
 # 同一代理出口检测遇到超时/连接/SSL 瞬时错误时，先原地重试次数。
 PROXY_1024_VALIDATE_ATTEMPTS = schema_default("PROXY_1024_VALIDATE_ATTEMPTS")
 PROXY_1024_RECENT_TTL = schema_default("PROXY_1024_RECENT_TTL")
 PROXY_1024_ACQUIRE_INTERVAL = schema_default("PROXY_1024_ACQUIRE_INTERVAL")
-# 跨进程代理端点租约。关闭后仅保留当前进程内的去重，默认保持开启。
+# 旧提取器兼容项；独立代理池始终通过 PostgreSQL 协调库存和租约。
 PROXY_1024_PERSIST_LEASES = True
 
 # 注册浏览器遇到明确的代理瞬时错误时，释放当前租约并换一条线路重试。
@@ -66,7 +75,7 @@ PLAN_CHECK_PROXY_MODE = schema_default("PLAN_CHECK_PROXY_MODE")
 # 代理可能包含账号密码，因此 WebUI 会把它保存到 .env。
 PLAN_CHECK_PROXY = schema_default("PLAN_CHECK_PROXY")
 
-# 仅 1024Proxy 查套餐允许复用 IP，仍验证出口国家；注册与认证任务保持独占租约。
+# 查套餐允许共享已检测库存；注册与认证任务保持独占租约。
 PLAN_CHECK_PROXY_ALLOW_REUSE = schema_default("PLAN_CHECK_PROXY_ALLOW_REUSE")
 
 # 注册完成后的 OpenAI 账号功能（查套餐、查活、Codex OAuth）代理来源：

@@ -109,6 +109,22 @@ def _raw_url(value: object) -> str:
     return str(value or "")
 
 
+def _submission_endpoint_kind(url: object) -> str:
+    """把认证请求归为白名单类别，不把 URL 查询参数交给提交事实。"""
+    path = str(urlsplit(str(url or "")).path or "").lower()
+    if path.endswith("/api/auth/csrf"):
+        return "nextauth_csrf"
+    if "/api/auth/signin/" in path:
+        return "nextauth_signin"
+    if path.endswith("/api/accounts/password") or ("/password" in path and "/api/" in path):
+        return "password_submit"
+    if "email-otp" in path and (path.endswith("/send") or path.endswith("/verify")):
+        return "otp_submit"
+    if "email-otp" in path and "resend" in path:
+        return "otp_resend"
+    return ""
+
+
 def _raw_headers(headers: object) -> dict[str, Any]:
     return dict(headers) if isinstance(headers, dict) else {}
 
@@ -1289,11 +1305,29 @@ class _RoxyTargetCollector:
             if getattr(self.session, "summary_only", False):
                 post_data = request.get("postData")
                 self._requests[request_id] = {
+                    "request_id": request_id,
+                    "target_id": self.target_id,
                     "started_monotonic": params.get("timestamp"),
+                    "method": request.get("method"),
                     "request_body_bytes": len(str(post_data).encode("utf-8")) if post_data is not None else 0,
                     "url": _raw_url(request.get("url")),
                     "resource_type": params.get("type"),
                 }
+                observer = getattr(self.session, "submission_observer", None)
+                if callable(observer):
+                    try:
+                        endpoint_kind = _submission_endpoint_kind(request.get("url"))
+                        if not endpoint_kind:
+                            return
+                        observer({
+                            "endpoint_kind": endpoint_kind,
+                            "http_method": request.get("method"),
+                            "request": True,
+                            "request_id": request_id,
+                            "target_id": self.target_id,
+                        })
+                    except Exception:
+                        logger.debug("[Debug] 认证请求事实分发失败", exc_info=True)
                 return
             post_body, post_truncated = _raw_body(request.get("postData"), str((request.get("headers") or {}).get("content-type") or ""))
             self._requests[request_id] = {
@@ -1430,6 +1464,10 @@ class _RoxyTargetCollector:
         record = self._requests.pop(str(request_id or ""), None)
         if not record:
             return
+        # summary_only 也需要同一 target 内的 requestId 做提交请求/响应配对；
+        # 该 ID 只存于本次 CDP 回调，不进入 traffic summary 或提交事实。
+        record.setdefault("request_id", str(request_id or ""))
+        record.setdefault("target_id", self.target_id)
         record.pop("started_monotonic", None)
         if failure:
             record["failure"] = str(failure)[:500]

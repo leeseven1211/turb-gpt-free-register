@@ -92,6 +92,30 @@ def create_jobs_blueprint(context: WebUIContext):
     bp = LegacyEndpointBlueprint("jobs", __name__)
     logger = context.logger
 
+    @bp.get("/api/remail/orders/reconciliation")
+    def api_remail_order_reconciliation():
+        """返回待核验的原 Remail 订单摘要；不返回邮箱凭据或 API Key。"""
+        from core.storage import remail_orders
+        try:
+            return jsonify({"ok": True, "items": remail_orders.list_reconciliation(limit=request.args.get("limit", 100, type=int))})
+        except Exception as exc:
+            logger.exception("读取 Remail 原订单核验清单失败")
+            return jsonify({"ok": False, "error": f"读取 Remail 核验清单失败：{type(exc).__name__}"}), 503
+
+    @bp.post("/api/remail/orders/<acquisition_id>/verify")
+    def api_remail_order_verify(acquisition_id: str):
+        """核验原订单；该动作只 GET 原订单，绝不创建新邮箱。"""
+        from core.remail_order_coordinator import RemailOrderCoordinator
+        from core.storage import remail_orders
+        try:
+            account = RemailOrderCoordinator().verify_original_order(acquisition_id)
+            intent = remail_orders.get_intent(acquisition_id, private=True)
+            return jsonify({"ok": True, "status": "delivered", "order": remail_orders.public_summary(intent)})
+        except Exception as exc:
+            details = exc.safe_details() if hasattr(exc, "safe_details") else {"cause_code": type(exc).__name__}
+            intent = remail_orders.get_intent(acquisition_id)
+            return jsonify({"ok": False, "error": "原 Remail 订单仍待核验", "details": details, "order": remail_orders.public_summary(intent)}), 409
+
 
     @bp.get("/api/jobs")
     def api_jobs():

@@ -28,6 +28,7 @@ _CHILD_LABELS = {
     "change_email_verify": "确认新邮箱", "recent_login": "Recent Login 重认证",
     "new_email_otp": "验证新邮箱验证码",
 }
+_ACTIVE_PROGRESS_STATUSES = {"queued", "running", "stopping", "cancelling", "settling", "waiting"}
 
 
 def _safe_message(value: Any) -> str | None:
@@ -44,6 +45,33 @@ def _event_detail(event: dict[str, Any]) -> dict[str, Any]:
 def _event_id(event: dict[str, Any]) -> str | None:
     value = event.get("event_id") or event.get("id") or event.get("transition_id") or event.get("event_uuid") or event.get("source_id")
     return str(value) if value is not None else None
+
+
+def _event_run_id(event: dict[str, Any]) -> str | None:
+    """返回事件所属 Run；没有该字段的旧事件保持兼容。"""
+    value = event.get("run_id") or event.get("operation_run_id")
+    return str(value) if value is not None else None
+
+
+def _event_route_attempt_no(event: dict[str, Any]) -> int | None:
+    detail = _event_detail(event)
+    value = detail.get("route_attempt_no")
+    if value is None:
+        value = event.get("route_attempt_no")
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _event_is_job_level(event: dict[str, Any]) -> bool:
+    """线路尚未分配时，允许明确标记为任务级准备事件。"""
+    detail = _event_detail(event)
+    return bool(
+        detail.get("job_level") is True
+        or str(detail.get("scope") or detail.get("route_scope") or "").strip().lower() in {"job", "task"}
+    )
 
 
 def _event_state(event: dict[str, Any]) -> str | None:
@@ -111,6 +139,7 @@ def _step(item: dict[str, Any], *, planned: bool = True) -> dict[str, Any]:
         "event_ids": [], "last_event_id": None, "started_at": None,
         "completed_at": None, "duration_ms": None, "message": None,
         "evidence": "unobserved" if planned else "explicit", "observed_order": None,
+        "step_instances": [],
     }
 
 
@@ -120,7 +149,7 @@ def _child(child_id: str) -> dict[str, Any]:
         "state": "pending", "display_status": "pending", "active": False,
         "reason": "记录不足/未执行", "attempts": [], "event_ids": [], "last_event_id": None,
         "started_at": None, "completed_at": None, "duration_ms": None, "message": None,
-        "evidence": "unobserved", "observed_order": None,
+        "evidence": "unobserved", "observed_order": None, "step_instances": [],
     }
 
 
@@ -181,7 +210,11 @@ def _record(item: dict[str, Any], event: dict[str, Any], state: str, *, raw: str
     if not observed:
         timestamp = None
     attempt = {"event_id": event_id, "event_uuid": event.get("event_uuid"), "transition_id": event.get("transition_id"), "state": state, "raw_stage": raw, "event_type": event.get("event_type"), "created_at": timestamp, "message": message, "evidence": evidence}
-    for key in ("duration_ms", "wait_reason", "error_code", "state_before", "state_after", "transition_id", "child_task_id", "child_run_id", "child_task_type", "failure_stage", "failure_event_id", "failure_message"):
+    if observed and detail.get("started_at") is not None:
+        attempt["started_at"] = str(detail["started_at"])
+    if observed and detail.get("completed_at") is not None:
+        attempt["completed_at"] = str(detail["completed_at"])
+    for key in ("duration_ms", "wait_reason", "error_code", "state_before", "state_after", "transition_id", "child_task_id", "child_run_id", "child_task_type", "failure_stage", "failure_event_id", "failure_message", "route_attempt_no", "step_instance_id", "execution_id"):
         if key == "duration_ms" and not observed:
             continue
         if detail.get(key) is not None:
@@ -468,8 +501,27 @@ def _legacy_events(run: dict[str, Any]) -> list[dict[str, Any]]:
             value = owner.get(key)
             if value:
                 sources.append(value)
-    result: list[dict[str, Any]] = []
+    # 先把嵌套历史复制成普通来源，避免在迭代中修改 sources。
+    expanded: list[Any] = []
     for source in sources:
+        if isinstance(source, list) and all(isinstance(value, dict) and (value.get("progress_steps") is not None or value.get("route_attempt_no") is not None) for value in source):
+            for route in source:
+                route_no = route.get("route_attempt_no")
+                nested = route.get("progress_steps")
+                if not isinstance(nested, dict):
+                    continue
+                for stage, raw_item in nested.items():
+                    item = dict(raw_item) if isinstance(raw_item, dict) else {"state": raw_item}
+                    item.setdefault("stage", stage)
+                    if route_no is not None:
+                        item.setdefault("route_attempt_no", route_no)
+                    # 用单元素列表标记“这是一个步骤对象”，否则旧映射
+                    # 适配会把 state/stage 等字段误当成阶段名。
+                    expanded.append([item])
+        else:
+            expanded.append(source)
+    result: list[dict[str, Any]] = []
+    for source in expanded:
         entries = list(source.items()) if isinstance(source, dict) else list(source) if isinstance(source, (list, tuple)) else []
         for index, entry in enumerate(entries):
             if isinstance(source, dict):
@@ -494,6 +546,34 @@ def _legacy_events(run: dict[str, Any]) -> list[dict[str, Any]]:
     if any(_event_detail(value).get("started_at") for value in result):
         result.sort(key=lambda value: (_time_value(_event_detail(value).get("started_at")) is None, _time_value(_event_detail(value).get("started_at")) or 0))
     return result
+
+
+def _route_numbers(events: list[dict[str, Any]], run: dict[str, Any]) -> list[int]:
+    values = {_event_route_attempt_no(event) for event in events}
+    data = run.get("data") if isinstance(run.get("data"), dict) else {}
+    for owner in (run, data):
+        for key in ("route_attempt_no", "selected_route_attempt_no"):
+            try:
+                value = int(owner.get(key))
+            except (TypeError, ValueError):
+                value = 0
+            if value > 0:
+                values.add(value)
+    return sorted(value for value in values if value is not None)
+
+
+def _selected_route_attempt_no(events: list[dict[str, Any]], run: dict[str, Any]) -> int | None:
+    data = run.get("data") if isinstance(run.get("data"), dict) else {}
+    for owner in (run, data):
+        for key in ("selected_route_attempt_no", "route_attempt_no"):
+            try:
+                value = int(owner.get(key))
+            except (TypeError, ValueError):
+                value = 0
+            if value > 0:
+                return value
+    values = [value for value in (_event_route_attempt_no(event) for event in events) if value is not None]
+    return max(values) if values else None
 
 
 def _remote_boundary_step(task_type: str, event: dict[str, Any], steps: list[dict[str, Any]], attempts: list[dict[str, Any]]) -> str | None:
@@ -593,7 +673,163 @@ def _close_terminal_steps(
                 child["evidence"] = "unconfirmed"
 
 
-def build_progress_snapshot(task_id: int, run_id: int, task_type: str, run: dict[str, Any] | None, events: Iterable[dict[str, Any]] | None) -> dict[str, Any]:
+def _project_step_instances(steps: list[dict[str, Any]], attempts: list[dict[str, Any]]) -> None:
+    """把同一线路内的显式阶段实例作为追加证据保留。
+
+    旧事件没有实例号时继续使用原有聚合逻辑；有实例号时，晚到的另一个
+    实例只进入历史列表，不覆盖当前实例的定位信息。
+    """
+    by_step: dict[tuple[str, str | None], list[dict[str, Any]]] = {}
+    for attempt in attempts:
+        instance_id = attempt.get("step_instance_id")
+        if not instance_id:
+            continue
+        key = (str(attempt.get("main_step_id") or ""), str(attempt.get("child_step_id")) if attempt.get("child_step_id") else None)
+        by_step.setdefault(key, []).append(attempt)
+        if attempt.get("child_step_id"):
+            # 父步骤也保留实例索引，详情页无需先展开子步骤才能定位。
+            by_step.setdefault((str(attempt.get("main_step_id") or ""), None), []).append(attempt)
+    for item in steps:
+        for key, target in [((item["id"], None), item), *[((item["id"], child["id"]), child) for child in item.get("children", [])]]:
+            values = by_step.get(key) or []
+            if not values:
+                continue
+            instances: list[dict[str, Any]] = []
+            for attempt in values:
+                instance_id = str(attempt["step_instance_id"])
+                found = next((value for value in instances if value["step_instance_id"] == instance_id), None)
+                if found is None:
+                    found = {"step_instance_id": instance_id, "state": attempt.get("state"), "started_at": attempt.get("started_at") or attempt.get("created_at"), "completed_at": None, "event_ids": []}
+                    instances.append(found)
+                terminal_states = {"success", "failed", "skipped", "stopped"}
+                attempt_state = attempt.get("state") or found.get("state")
+                # 同一实例已经有终态后，迟到 running 仍保留事件编号供审计，
+                # 但不能清空完成时间或把主卡片退回运行中。
+                late_terminal_running = attempt_state == "running" and found.get("state") in terminal_states
+                if not late_terminal_running:
+                    found["state"] = attempt_state
+                if (attempt.get("started_at") or attempt.get("created_at")) and not found.get("started_at"):
+                    found["started_at"] = attempt.get("started_at") or attempt["created_at"]
+                if attempt_state == "running" and not late_terminal_running:
+                    found["completed_at"] = None
+                elif attempt_state in terminal_states:
+                    found["completed_at"] = attempt.get("completed_at") or attempt.get("created_at")
+                if not late_terminal_running and found.get("started_at") and found.get("completed_at"):
+                    start = _time_value(found["started_at"])
+                    end = _time_value(found["completed_at"])
+                    if start is not None and end is not None and end > start:
+                        found["duration_ms"] = max(0, int((end - start) * 1000))
+                _append_unique(found["event_ids"], attempt.get("event_id"))
+                if not late_terminal_running:
+                    for key_name in ("duration_ms", "error_code", "message"):
+                        if attempt.get(key_name) is not None:
+                            found[key_name] = attempt[key_name]
+            target["step_instances"] = instances
+
+
+def _latest_instance_id(target: dict[str, Any]) -> str | None:
+    """返回当前步骤实例；历史实例只用于详情审计。"""
+    values = target.get("step_instances") or []
+    if not values:
+        return None
+    ranked = list(enumerate(values))
+    ranked.sort(key=lambda pair: (_time_value(pair[1].get("started_at")) is None,
+                                 _time_value(pair[1].get("started_at")) or 0,
+                                 pair[0]))
+    return str(ranked[-1][1].get("step_instance_id"))
+
+
+def _project_current_instances(steps: list[dict[str, Any]]) -> dict[tuple[str, str | None], str]:
+    """让主卡片使用当前实例，保留旧实例供历史定位。"""
+    selected: dict[tuple[str, str | None], str] = {}
+    for item in steps:
+        children = item.get("children") or []
+        if children:
+            for child in children:
+                instance_id = _latest_instance_id(child)
+                if instance_id:
+                    selected[(item["id"], child["id"])] = instance_id
+                    current = next((value for value in child["step_instances"]
+                                    if str(value.get("step_instance_id")) == instance_id), None)
+                    if current:
+                        for key in ("state", "started_at", "completed_at", "duration_ms", "message"):
+                            child[key] = current.get(key)
+                        child["active"] = child.get("state") == "running"
+                        child["display_status"] = child.get("state") or "pending"
+            current_children = [child for child in children if (item["id"], child["id"]) in selected]
+            if current_children:
+                starts = [_time_value(child.get("started_at")) for child in current_children]
+                ends = [_time_value(child.get("completed_at")) for child in current_children]
+                item["started_at"] = min(
+                    (child.get("started_at") for child in current_children if child.get("started_at")),
+                    key=lambda value: _time_value(value) if _time_value(value) is not None else float("inf"),
+                    default=None,
+                )
+                if any(child.get("state") == "running" for child in current_children):
+                    state = "running"
+                elif any(child.get("state") == "failed" for child in current_children):
+                    state = "failed"
+                elif all(child.get("state") in {"success", "skipped"} for child in current_children):
+                    state = "success"
+                else:
+                    state = next((child.get("state") for child in current_children if child.get("state")), "pending")
+                _state(item, state)
+                if state != "running" and all(value is not None for value in ends):
+                    item["completed_at"] = max(
+                        (child.get("completed_at") for child in current_children if child.get("completed_at")),
+                        key=lambda value: _time_value(value) if _time_value(value) is not None else float("-inf"),
+                        default=None,
+                    )
+                else:
+                    item["completed_at"] = None
+                start, end = _time_value(item.get("started_at")), _time_value(item.get("completed_at"))
+                item["duration_ms"] = max(0, int((end - start) * 1000)) if start is not None and end is not None and end > start else None
+                latest_child = max(current_children, key=lambda child: _time_value(child.get("started_at")) or 0)
+                item["message"] = latest_child.get("message")
+                item["last_event_id"] = latest_child.get("last_event_id")
+        else:
+            instance_id = _latest_instance_id(item)
+            if not instance_id:
+                continue
+            selected[(item["id"], None)] = instance_id
+            current = next((value for value in item["step_instances"]
+                            if str(value.get("step_instance_id")) == instance_id), None)
+            if not current:
+                continue
+            for key in ("state", "started_at", "completed_at", "duration_ms", "message"):
+                item[key] = current.get(key)
+            if current.get("state") == "running":
+                item["completed_at"] = None
+            item["active"] = item.get("state") == "running"
+            item["display_status"] = item.get("state") or "pending"
+    return selected
+
+
+def _attempts_for_current_instances(
+    attempts: list[dict[str, Any]], selected: dict[tuple[str, str | None], str],
+) -> list[dict[str, Any]]:
+    """过滤历史实例，避免旧失败覆盖当前卡片。"""
+    result = []
+    for attempt in attempts:
+        instance_id = attempt.get("step_instance_id")
+        if instance_id:
+            key = (str(attempt.get("main_step_id") or ""),
+                   str(attempt.get("child_step_id")) if attempt.get("child_step_id") else None)
+            if selected.get(key) != str(instance_id):
+                continue
+        result.append(attempt)
+    return result
+
+
+def build_progress_snapshot(
+    task_id: int,
+    run_id: int,
+    task_type: str,
+    run: dict[str, Any] | None,
+    events: Iterable[dict[str, Any]] | None,
+    *,
+    _include_routes: bool = True,
+) -> dict[str, Any]:
     """构建安全的 v2 快照，同时保留 raw stage 证据。"""
     run_value = dict(run or {})
     task_key = str(task_type or "").strip().lower()
@@ -607,6 +843,34 @@ def build_progress_snapshot(task_id: int, run_id: int, task_type: str, run: dict
     order = 0
     source_events = [dict(value) for value in (events or []) if isinstance(value, dict)]
     source_events.extend(_legacy_events(run_value))
+    # 只有完全没有 Run 标识的旧单次任务可以继续兼容；一旦同一输入中
+    # 出现明确 Run，未标识事件就无法安全归属，必须单独展示为历史未知。
+    explicit_run_ids = {_event_run_id(value) for value in source_events if _event_run_id(value) is not None}
+    current_run = str(run_id)
+    unknown_events: list[dict[str, Any]] = []
+    run_filtered: list[dict[str, Any]] = []
+    for value in source_events:
+        event_run = _event_run_id(value)
+        if event_run == current_run or (event_run is None and not explicit_run_ids):
+            run_filtered.append(value)
+        elif event_run is None and explicit_run_ids:
+            unknown_events.append({**value, "unknown_reason": "事件缺少 Run 归属"})
+    # 已知其他 Run 的事件是历史事实，但不属于当前快照；不把它们伪装成
+    # 当前线路，也不从它们推断成功或失败。
+    source_events = run_filtered
+    route_numbers = _route_numbers(source_events, run_value)
+    selected_route = _selected_route_attempt_no(source_events, run_value)
+    explicit_routes = {_event_route_attempt_no(value) for value in source_events if _event_route_attempt_no(value) is not None}
+    if selected_route is not None:
+        filtered_routes: list[dict[str, Any]] = []
+        for value in source_events:
+            route_no = _event_route_attempt_no(value)
+            if route_no == selected_route or (route_no is None and (_event_is_job_level(value) or (not explicit_routes and selected_route is None))):
+                filtered_routes.append(value)
+            elif route_no is None:
+                unknown_events.append({**value, "unknown_reason": "事件缺少线路归属"})
+            # 其他已知线路保留给下方 routes 历史视图。
+        source_events = filtered_routes
     recorded_steps = {str(value.get("step_id") or value.get("main_step_id"))
                       for value in _child_tasks(run_value.get("result_summary") or {})
                       if value.get("step_id") or value.get("main_step_id")}
@@ -657,14 +921,21 @@ def build_progress_snapshot(task_id: int, run_id: int, task_type: str, run: dict
         attempts.append(record)
         activity.append(record)
         order += 1
+    _project_step_instances(steps, attempts)
+    selected_instances = _project_current_instances(steps) if any(
+        item.get("step_instances") or any(child.get("step_instances") for child in item.get("children", []))
+        for item in steps
+    ) else {}
+    current_attempts = _attempts_for_current_instances(attempts, selected_instances)
+    current_activity = _attempts_for_current_instances(activity, selected_instances)
     ordered = _ordered_steps(steps)
     # 一个登录子步骤成功不能遮住另一个子步骤的失败。
-    unresolved = _unrecovered_failures(attempts)
+    unresolved = _unrecovered_failures(current_attempts)
     for item in ordered:
         if item["id"] != "result" and any(value.get("main_step_id") == item["id"] for value in unresolved):
             _state(item, "failed")
         elif item.get("children") and any(child.get("state") == "running" for child in item["children"]):
-            last = next((value for value in reversed(attempts) if value.get("main_step_id") == item["id"]), {})
+            last = next((value for value in reversed(current_attempts) if value.get("main_step_id") == item["id"]), {})
             if not (item["id"] in {"set_twofa", "set_password"} and last.get("state") == "success"):
                 _state(item, "running")
         if item.get("state") == "success":
@@ -676,7 +947,90 @@ def build_progress_snapshot(task_id: int, run_id: int, task_type: str, run: dict
     _close_terminal_steps(ordered, run=run_value, attempts=attempts, template_order=template_order, recorded_steps=recorded_steps, unmapped_activity=unmapped_activity)
     _skip_disabled_registration_steps(ordered, task_key, run_value, recorded_steps)
     source = "explicit" if explicit else "legacy_derived" if activity else "insufficient_evidence"
-    failure = _failure(task_key, run_value, attempts, activity)
-    payload = {"steps": ordered, "run": {"id": run_value.get("id"), "status": run_value.get("status"), "progress_stage": run_value.get("progress_stage"), "result_summary": run_value.get("result_summary") or {}}, "events": attempts}
+    failure = _failure(task_key, run_value, current_attempts, current_activity)
+    payload = {"flow_version": 3 if route_numbers else 2, "selected_route_attempt_no": selected_route, "steps": ordered, "run": {"id": run_value.get("id"), "status": run_value.get("status"), "progress_stage": run_value.get("progress_stage"), "result_summary": run_value.get("result_summary") or {}}, "events": attempts, "history_unknown": [{"event_id": _event_id(value), "reason": value.get("unknown_reason")} for value in unknown_events]}
     revision = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]
-    return {"task_id": int(task_id), "run_id": int(run_id), "flow_version": 2, "revision": revision, "source": source, "main_steps": ordered, "current": _current(ordered, activity, str(run_value.get("status") or "")), "outcome": outcome, "failure": failure}
+    result = {
+        "task_id": int(task_id), "run_id": int(run_id), "flow_version": 3 if route_numbers else 2,
+        "revision": revision, "source": source, "main_steps": ordered,
+        "current": _current(ordered, current_activity, str(run_value.get("status") or "")),
+        "outcome": outcome, "failure": failure,
+        "selected_route_attempt_no": selected_route,
+        "time_basis": {
+            "run_duration_ms": run_value.get("duration_ms"),
+            "step_duration": "selected_route_attempt",
+            "history_duration": "per_route_attempt",
+        },
+    }
+    if unknown_events:
+        result["history_unknown"] = [
+            {
+                "event_id": _event_id(value),
+                "run_id": _event_run_id(value),
+                "route_attempt_no": _event_route_attempt_no(value),
+                "stage": _original_stage(value),
+                "state": _event_state(value),
+                "created_at": _event_time(value),
+                "reason": value.get("unknown_reason") or "无法安全归属当前执行",
+                "message": _safe_message(_event_detail(value).get("message") or value.get("message")),
+            }
+            for value in unknown_events
+        ]
+    if _include_routes and route_numbers:
+        route_items = []
+        route_source_events = [dict(value) for value in (events or []) if isinstance(value, dict)]
+        route_source_events.extend(_legacy_events(run_value))
+        route_source_events = [value for value in route_source_events
+                               if _event_run_id(value) == current_run
+                               or (_event_run_id(value) is None and not explicit_run_ids)]
+        route_meta = {}
+        data = run_value.get("data") if isinstance(run_value.get("data"), dict) else {}
+        for owner in (run_value, data):
+            for item in owner.get("route_attempts") or [] if isinstance(owner.get("route_attempts"), list) else []:
+                if isinstance(item, dict):
+                    try:
+                        route_meta[int(item.get("route_attempt_no"))] = item
+                    except (TypeError, ValueError):
+                        continue
+        for route_no in route_numbers:
+            route_events = [value for value in route_source_events if _event_route_attempt_no(value) == route_no]
+            if not route_events and route_no != selected_route:
+                continue
+            history = route_meta.get(route_no) or {}
+            if not route_events and route_no == selected_route:
+                route_items.append({
+                    "route_attempt_no": route_no,
+                    "selected": True,
+                    "status": run_value.get("status"),
+                    "retry_kind": history.get("retry_kind"),
+                    "retry_reason": _safe_message(history.get("retry_reason")),
+                    "started_at": run_value.get("started_at"),
+                    "completed_at": run_value.get("completed_at"),
+                    "steps": ordered,
+                    "failure": failure,
+                })
+                continue
+            route_run = dict(run_value)
+            route_run.pop("progress_steps", None)
+            route_run["route_attempt_no"] = route_no
+            route_run["route_attempts"] = []
+            history_status = str(history.get("status") or "").lower()
+            route_run["status"] = (
+                "failed" if history_status in {"retried", "failed", "error"} and any(_event_state(value) == "failed" for value in route_events)
+                else history.get("status")
+                or ("running" if route_no == selected_route and str(run_value.get("status") or "").lower() in _ACTIVE_PROGRESS_STATUSES else "failed" if any(_event_state(value) == "failed" for value in route_events) else "success")
+            )
+            route_snapshot = build_progress_snapshot(task_id, run_id, task_type, route_run, route_events, _include_routes=False)
+            route_items.append({
+                "route_attempt_no": route_no,
+                "selected": route_no == selected_route,
+                "status": route_run.get("status"),
+                "retry_kind": history.get("retry_kind"),
+                "retry_reason": _safe_message(history.get("retry_reason")),
+                "started_at": history.get("started_at") or next((value.get("started_at") for value in route_snapshot["main_steps"] if value.get("started_at")), None),
+                "completed_at": history.get("completed_at"),
+                "steps": route_snapshot["main_steps"],
+                "failure": route_snapshot.get("failure"),
+            })
+        result["routes"] = route_items
+    return result

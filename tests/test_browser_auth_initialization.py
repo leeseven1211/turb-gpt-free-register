@@ -155,7 +155,8 @@ class BrowserAuthInitializationTests(unittest.TestCase):
         result, stable, native, fallback, budgets, clock = self._run_email_flow(False)
         self.assertEqual(result, "otp")
         self.assertEqual(len(budgets), 1)
-        self.assertEqual(budgets[0].remaining(), 30)
+        # 前端准备预算耗尽后，兜底必须切换到同一外层截止内剩余的提交预算。
+        self.assertEqual(budgets[0].remaining(), 60)
         stable.assert_not_called()
         native.assert_not_called()
         self.assertEqual(fallback.call_count, 1)
@@ -166,6 +167,42 @@ class BrowserAuthInitializationTests(unittest.TestCase):
         self.assertEqual(stable.call_count, 1)
         native.assert_not_called()
         fallback.assert_not_called()
+
+    def test_ui_dispatch_switches_to_one_submission_budget_before_click(self):
+        clock = _Clock()
+        driver = SimpleNamespace(current_url="https://chatgpt.com/auth/login", execute_script=Mock(return_value=True))
+        seen = []
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(email_otp, "time", clock))
+            stack.enter_context(patch.object(email_otp, "_type_email_address", return_value="email"))
+            stack.enter_context(patch.object(email_otp, "_email_input_value_state", return_value={"inputs": [{"value": "unit@example.test"}]}))
+            stack.enter_context(patch.object(email_otp, "human_delay"))
+            stack.enter_context(patch.object(email_otp, "_browser_actions_enabled", return_value=False))
+            stack.enter_context(patch.object(email_otp, "_stabilize_email_input_before_submit", return_value={"ok": True}))
+            stack.enter_context(patch.object(email_otp, "_submit_email_form_stable", return_value={"ok": True}))
+            stack.enter_context(patch.object(email_otp, "_wait_email_submit_next_state", return_value="otp"))
+            result = email_otp._submit_email_and_wait_next(driver, "unit@example.test")
+
+        self.assertEqual(result, "otp")
+        # _submit_email_step 使用真实实现；提交前钩子会在进入
+        # _submit_email_form_stable 前观察共享提交预算。
+        self.assertIsInstance(driver._registration_stage_budget, StageBudget)
+        self.assertLessEqual(driver._registration_stage_budget.remaining(), 60)
+
+    def test_total_timeout_smaller_than_soft_outer_limit_is_preserved(self):
+        clock = _Clock()
+        driver = SimpleNamespace(current_url="https://chatgpt.com/auth/login")
+        budgets = []
+
+        def start_budget(timeout):
+            budgets.append(timeout)
+            return StageBudget(clock.now + timeout, clock=clock.time)
+
+        with patch.object(email_otp, "time", clock), patch.object(email_otp.StageBudget, "start", side_effect=start_budget), patch.object(
+            email_otp, "_type_email_address", return_value="otp"
+        ):
+            self.assertEqual(email_otp._submit_email_and_wait_next(driver, "unit@example.test", total_timeout=2), "otp")
+        self.assertEqual(budgets, [2.0])
 
     def test_slow_signin_keeps_one_click_and_never_uses_fallback(self):
         for arrived in (True, False):

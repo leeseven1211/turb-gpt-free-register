@@ -67,9 +67,9 @@ def create_integrations_blueprint(context: WebUIContext):
         data = request.get_json(silent=True) or {}
         lease = None
         try:
-            from core.proxy_provider import acquire_1024_proxy, release_proxy
+            from core.proxy_provider import fetch_1024_proxy, release_proxy
 
-            lease = acquire_1024_proxy(
+            lease = fetch_1024_proxy(
                 api_url=str(data.get("api_url") or "").strip() or None,
                 protocol=str(data.get("protocol") or "").strip() or None,
                 # 空字符串有明确语义：本次测试沿用 API URL 里的 region，

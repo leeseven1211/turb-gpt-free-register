@@ -9,6 +9,7 @@ from unittest.mock import ANY, MagicMock, patch
 from core import cloakbrowser_registration
 from core.openai_auth import AccountUnusableError
 from core.registration import browser_use, protocol, roxy
+from core.registration.state_machine import StageBudget
 
 
 class RegistrationDriverEmailRetentionTests(unittest.TestCase):
@@ -425,11 +426,12 @@ class RegistrationDriverEmailRetentionTests(unittest.TestCase):
             )
 
         self.assertTrue(result["success"], result)
-        wait_for_otp.assert_called_once_with(
-            self.email,
-            after_ts=ANY,
-            email_source=self.email_source,
-        )
+        wait_for_otp.assert_called_once()
+        otp_call = wait_for_otp.call_args
+        self.assertEqual(otp_call.args[0], self.email)
+        self.assertEqual(otp_call.kwargs["email_source"], self.email_source)
+        self.assertIsInstance(otp_call.kwargs["budget"], StageBudget)
+        self.assertLessEqual(otp_call.kwargs["budget"].remaining(), 240)
         self.assertEqual(save_account_data.call_args.kwargs["email_source"], self.email_source)
 
     def test_protocol_codex_oauth_unusable_error_reaches_outer_failure_contract(self):

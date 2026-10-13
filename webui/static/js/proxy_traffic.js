@@ -4,6 +4,7 @@ const PROXY_TRAFFIC_ENDPOINTS = Object.freeze({
   history: '/api/proxy-traffic/history',
   traffic: '/api/proxy-traffic/traffic',
   summary: '/api/proxy-traffic/summary',
+  pool: '/api/proxy-pool',
 });
 const PROXY_TRAFFIC_VIEWS = Object.freeze([
   {view: 'current', key: 'current_leases'},
@@ -43,8 +44,16 @@ const PROXY_TRAFFIC_STATUS_TEXT = {
   error: '加载失败',
 };
 const PROXY_TRAFFIC_STATUS_LABELS = {
+  fetching: '提取中',
+  checking: '复检中',
+  ready: '可领取',
+  shared: '共享库存',
   shared_pending: '共享线路检测中',
   shared_leased: '共享查询中',
+  pool_leased: '任务独占中',
+  cooldown: '冷却中',
+  quarantine: '故障隔离',
+  retired: '已退役',
   leased: '租约中',
   recent: '最近释放',
   released: '已释放',
@@ -65,6 +74,7 @@ const PROXY_TRAFFIC_WINDOW_OPTIONS = Object.freeze([
 
 let proxyTrafficSnapshot = null;
 let proxyTrafficSummary = null;
+let proxyPoolSnapshot = null;
 let proxyTrafficActiveView = 'current';
 let proxyTrafficLoading = false;
 let proxyTrafficReloadQueued = false;
@@ -486,7 +496,7 @@ function proxyTrafficRefreshFilterOptions() {
     const select = proxyTrafficFilterControl(header);
     if (!view || !select) return;
     const values = view === 'traffic' ? ['available']
-      : states.filter((value) => view === 'current' ? ['pending', 'leased', 'shared_pending', 'shared_leased'].includes(value) : !['pending', 'leased', 'shared_pending', 'shared_leased'].includes(value));
+      : states.filter((value) => view === 'current' ? ['pending', 'leased', 'shared_pending', 'shared_leased', 'pool_leased'].includes(value) : !['pending', 'leased', 'shared_pending', 'shared_leased', 'pool_leased'].includes(value));
     if (!values.includes(proxyTrafficStateFilters[view])) proxyTrafficStateFilters[view] = 'all';
     select.innerHTML = '<option value="all">全部状态</option>' + values.map((value) => `<option value="${proxyTrafficEsc(value)}">${proxyTrafficEsc(PROXY_TRAFFIC_STATUS_LABELS[value] || value)}</option>`).join('');
   });
@@ -504,6 +514,50 @@ function proxyTrafficRenderSummary() {
     const element = document.querySelector(`[data-proxy-summary="${key}"]`);
     if (element) element.textContent = value == null ? '—' : String(value);
   });
+  const pool = proxyPoolSnapshot || {};
+  const counts = pool.counts || {};
+  const poolValues = {
+    poolCapacity: `${['fetching', 'checking', 'ready', 'leased', 'shared'].reduce((sum, key) => sum + (Number(counts[key]) || 0), 0)} / ${Number(pool.policy?.max_size || 0) || '—'}`,
+    poolReady: counts.ready || 0,
+    poolFetching: counts.fetching || 0,
+    poolChecking: counts.checking || 0,
+    poolLeased: counts.leased || 0,
+    poolShared: counts.shared || 0,
+  };
+  Object.entries(poolValues).forEach(([key, value]) => {
+    const element = document.querySelector(`[data-proxy-summary="${key}"]`);
+    if (element) element.textContent = String(value);
+  });
+}
+
+function proxyPoolRender() {
+  const body = document.getElementById('proxyPoolBody');
+  const status = document.getElementById('proxyPoolPanelStatus');
+  if (!body || !status) return;
+  const pool = proxyPoolSnapshot;
+  if (!pool) {
+    status.textContent = '代理池快照暂不可用';
+    body.innerHTML = '<tr class="list-state-row"><td class="table-state-cell" colspan="7"><div class="table-state is-empty"><strong>暂时没有代理池快照</strong><small>代理池服务或旧版本接口暂未返回脱敏库存</small></div></td></tr>';
+    return;
+  }
+  const items = Array.isArray(pool.items) ? pool.items : [];
+  const errorLabels = {
+    supply_unavailable: '补货暂不可用',
+    supply_candidates_duplicate: '供应商返回的候选均已占用或处于冷却期',
+    transport_failure: '线路连接失败',
+    check_interrupted: '复检中断',
+    health_check_failed: '健康检查失败',
+  };
+  status.textContent = `显示最近 ${items.length} 条库存 · 最小可用 ${Number(pool.policy?.min_ready || 0)} · 本进程等待 ${Number(pool.waiting_local || 0)} / 维护线程 ${Number(pool.workers_local || 0)}`;
+  body.innerHTML = items.length ? items.map((item) => `<tr>
+    <td><span class="proxy-traffic-id">${proxyTrafficText(item.resource_id)}</span></td>
+    <td>${proxyTrafficStatus(item.state)}</td>
+    <td>${proxyTrafficText(item.provider)}<small>${proxyTrafficText(item.region)}</small></td>
+    <td><span class="proxy-traffic-mono">${proxyTrafficText(item.endpoint)}</span></td>
+    <td><span class="proxy-traffic-ip">${proxyTrafficText(item.exit_ip)}</span></td>
+    <td><small>校验 ${proxyTrafficDate(item.checked_at)}<br>到期 ${proxyTrafficDate(item.expires_at)}</small></td>
+    <td>${proxyTrafficText(errorLabels[item.last_error_code] || item.last_error_code)}</td>
+  </tr>`).join('') : '<tr class="list-state-row"><td class="table-state-cell" colspan="7"><div class="table-state is-empty"><strong>暂无脱敏库存</strong><small>等待后台补货或复检</small></div></td></tr>';
 }
 
 function proxyTrafficRenderPager(view) {
@@ -549,6 +603,7 @@ function proxyTrafficRenderRows() {
     proxyTrafficRenderPager(view);
   });
   proxyTrafficRenderSummary();
+  proxyPoolRender();
 }
 
 function proxyTrafficRenderError(error) {
@@ -558,6 +613,8 @@ function proxyTrafficRenderError(error) {
   });
   document.querySelectorAll('[data-proxy-count]').forEach((element) => { element.textContent = '—'; });
   document.querySelectorAll('[data-proxy-summary]').forEach((element) => { element.textContent = '—'; });
+  proxyPoolSnapshot = null;
+  proxyPoolRender();
 }
 
 function proxyTrafficOpenDetail(view, id) {
@@ -676,18 +733,33 @@ async function proxyTrafficRequestSummary() {
   return payload;
 }
 
+async function proxyTrafficRequestPool() {
+  const source = window.__PROXY_TRAFFIC_DATA_SOURCE__;
+  try {
+    const payload = typeof source === 'function'
+      ? await source(PROXY_TRAFFIC_ENDPOINTS.pool, {view: 'pool'})
+      : await api(PROXY_TRAFFIC_ENDPOINTS.pool);
+    if (!payload || payload.ok !== true || !payload.policy || typeof payload.counts !== 'object') return null;
+    return payload;
+  } catch (_) {
+    // 代理池为附加摘要；旧服务或数据库暂不可用时不影响租约/流量页面。
+    return null;
+  }
+}
+
 function proxyTrafficApplyPage(view, page) {
   proxyTrafficSnapshot[PROXY_TRAFFIC_VIEW_CONFIG[view].key] = page.items;
   proxyTrafficPages[view].total = page.total;
 }
 
 async function proxyTrafficRequest(version = proxyTrafficDesiredVersion) {
-  const [pages, summary] = await Promise.all([Promise.all(PROXY_TRAFFIC_VIEWS.map(async ({view, key}) => {
+  const [pages, summary, pool] = await Promise.all([Promise.all(PROXY_TRAFFIC_VIEWS.map(async ({view, key}) => {
     const page = await proxyTrafficRequestNormalizedPage(view, version);
     return {key, page};
-  })), proxyTrafficRequestSummary()]);
+  })), proxyTrafficRequestSummary(), proxyTrafficRequestPool()]);
   if (version !== proxyTrafficDesiredVersion) throw PROXY_TRAFFIC_STALE;
   proxyTrafficSummary = summary;
+  proxyPoolSnapshot = pool;
   return pages.reduce((snapshot, {key, page}) => {
     snapshot[key] = page.items;
     const view = PROXY_TRAFFIC_VIEWS.find((item) => item.key === key).view;
@@ -711,6 +783,8 @@ async function loadProxyTraffic(view = null) {
       const page = await proxyTrafficRequestNormalizedPage(view, version);
       if (version !== proxyTrafficDesiredVersion) throw PROXY_TRAFFIC_STALE;
       proxyTrafficApplyPage(view, page);
+      proxyPoolSnapshot = await proxyTrafficRequestPool();
+      if (version !== proxyTrafficDesiredVersion) throw PROXY_TRAFFIC_STALE;
     } else {
       proxyTrafficSnapshot = await proxyTrafficRequest(version);
       proxyTrafficRefreshFilterOptions();

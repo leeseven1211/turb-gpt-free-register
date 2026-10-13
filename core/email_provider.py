@@ -153,6 +153,8 @@ def restore_email_context(
     *,
     source: str,
     purpose: str = "registration_retry",
+    acquisition_id: str | None = None,
+    legacy_remail_compatibility: bool = False,
 ) -> str:
     """恢复原邮箱的必要上下文；无法安全恢复时拒绝改领新邮箱。"""
     address = str(email or "").strip()
@@ -207,11 +209,30 @@ def restore_email_context(
         return selected
 
     if selected == "remail":
-        from core.remail_client import restore_account_context
+        stable_id = str(acquisition_id or "").strip()
+        if not stable_id:
+            if not legacy_remail_compatibility:
+                raise RuntimeError("原 Remail 恢复缺少稳定 acquisition_id，不能按邮箱猜测订单")
+            from core.remail_client import restore_account_context
 
-        account = restore_account_context(address)
-        if account is None or str(account.email or "").strip().casefold() != address.casefold():
-            raise RuntimeError("原 Remail 订单取件上下文不可恢复，不能改用其他邮箱重跑")
+            account = restore_account_context(address, compatibility=True)
+            if account is None or str(account.email or "").strip().casefold() != address.casefold():
+                raise RuntimeError("原 Remail 订单取件上下文不可恢复，不能改用其他邮箱重跑")
+            return selected
+
+        from core.remail_order_coordinator import RemailOrderCoordinator
+        from core.storage import remail_orders
+
+        intent = remail_orders.get_intent(stable_id, private=True)
+        if not intent:
+            raise RuntimeError("原 Remail 领取意图不存在，不能按邮箱猜测订单")
+        account = RemailOrderCoordinator().acquire(
+            owner_kind=str(intent.get("owner_kind") or ""),
+            owner_id=str(intent.get("owner_id") or ""),
+            acquisition_id=stable_id,
+        )
+        if str(account.email or "").strip().casefold() != address.casefold():
+            raise RuntimeError("原 Remail 订单邮箱与注册任务不匹配，不能继续")
         return selected
 
     # 其余临时邮箱的可用性只存在于进程内上下文。上下文丢失时不能猜测
@@ -257,6 +278,10 @@ def _pick_from_source(
     *,
     batch_id: str | None = None,
     job_id: int | None = None,
+    owner_kind: str | None = None,
+    owner_id: str | int | None = None,
+    acquisition_id: str | None = None,
+    legacy_remail_compatibility: bool = False,
 ) -> str:
     if source == "gptmail":
         from core.gptmail_client import pick_account
@@ -281,7 +306,14 @@ def _pick_from_source(
         return pick_account().email
     if source == "remail":
         from core.remail_client import pick_account
-        return pick_account().email
+        kwargs = {}
+        if owner_kind and owner_id is not None and acquisition_id:
+            kwargs.update(owner_kind=owner_kind, owner_id=owner_id, acquisition_id=acquisition_id)
+        elif not legacy_remail_compatibility:
+            raise RuntimeError("Remail 领取缺少稳定 owner/acquisition_id，已停止下单")
+        else:
+            kwargs["compatibility"] = True
+        return pick_account(**kwargs).email
     if source == "icloud_hide":
         from core.icloud_hme_client import pick_account
         return pick_account(batch_id=batch_id, job_id=job_id).email
@@ -294,6 +326,10 @@ def acquire_email(
     *,
     batch_id: str | None = None,
     job_id: int | None = None,
+    owner_kind: str | None = None,
+    owner_id: str | int | None = None,
+    acquisition_id: str | None = None,
+    legacy_remail_compatibility: bool = False,
 ) -> str:
     """领取邮箱；任务传入 source 时严格使用该来源，不自动切换平台。"""
     explicit = source is not None
@@ -301,7 +337,11 @@ def acquire_email(
     last_exc: Exception | None = None
     for source in sources:
         try:
-            email = _pick_from_source(source, batch_id=batch_id, job_id=job_id)
+            email = _pick_from_source(
+                source, batch_id=batch_id, job_id=job_id,
+                owner_kind=owner_kind, owner_id=owner_id, acquisition_id=acquisition_id,
+                legacy_remail_compatibility=legacy_remail_compatibility,
+            )
             remember_email_source(email, source)
             logger.info(f"[EmailProvider] 使用邮箱来源: {source}, email={email}")
             return email

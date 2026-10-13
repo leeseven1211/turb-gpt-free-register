@@ -22,11 +22,13 @@ function createView() {
     requestNormalizedPage: (...args) => proxyTrafficRequestNormalizedPage(...args),
     normalizePage: proxyTrafficNormalizePage,
     renderSummary: proxyTrafficRenderSummary,
+    renderPool: proxyPoolRender,
     renderTraffic: proxyTrafficRenderTraffic,
     openDetail: proxyTrafficOpenDetail,
     setSnapshot(value) { proxyTrafficSnapshot = value; },
     setView: proxyTrafficSetView,
     setSummary(value) { proxyTrafficSummary = value; },
+    setPool(value) { proxyPoolSnapshot = value; },
     setState(view, value) { proxyTrafficStateFilters[view] = value; },
     setPage(view, value) { proxyTrafficPages[view].page = value; },
     invalidate() { proxyTrafficDesiredVersion += 1; },
@@ -129,6 +131,27 @@ test('请求记录摘要兼容旧响应并保留新响应的零计数', () => {
   api.setSummary({today_browser_count: 3, today_request_count: 0});
   api.renderSummary();
   assert.equal(elements.get(selector).textContent, '0');
+});
+
+test('代理池摘要展示各状态并只渲染脱敏库存字段', () => {
+  const {api, elements, nodes} = createView();
+  for (const key of ['poolCapacity', 'poolReady', 'poolFetching', 'poolChecking', 'poolLeased', 'poolShared']) {
+    elements.set(`[data-proxy-summary="${key}"]`, {textContent: ''});
+  }
+  nodes.set('proxyPoolPanelStatus', {textContent: ''});
+  nodes.set('proxyPoolBody', {innerHTML: ''});
+  api.setPool({
+    policy: {max_size: 20},
+    counts: {fetching: 1, checking: 2, ready: 3, leased: 4, shared: 5},
+    items: [{resource_id: 'resource-1', provider: '1024proxy', state: 'ready', region: 'US', endpoint: 'proxy:8080', exit_ip: '203.0.113.0/24', checked_at: '2026-10-13T00:00:00Z', expires_at: '2026-10-13T01:00:00Z', last_error_code: null}],
+  });
+  api.renderSummary();
+  api.renderPool();
+  assert.equal(elements.get('[data-proxy-summary="poolCapacity"]').textContent, '15 / 20');
+  assert.equal(elements.get('[data-proxy-summary="poolChecking"]').textContent, '2');
+  assert.equal(elements.get('[data-proxy-summary="poolShared"]').textContent, '5');
+  assert.match(nodes.get('proxyPoolBody').innerHTML, /203\.0\.113\.0\/24/);
+  assert.doesNotMatch(nodes.get('proxyPoolBody').innerHTML, /proxy_url|username|password/);
 });
 
 test('浏览器详情用独立触发按钮避免单元格内展开裁切', () => {

@@ -67,7 +67,7 @@ class RegistrationIdentityContractTests(unittest.TestCase):
             registration_service.registration_result_status({"request_unknown": True}),
         )
 
-    def test_pre_auth_transport_unknown_is_retryable_failure_not_manual_confirmation(self):
+    def test_pre_auth_transport_unknown_remains_reconciliation_fence(self):
         result = {
             "success": False,
             "remote_identity": "unknown",
@@ -80,7 +80,7 @@ class RegistrationIdentityContractTests(unittest.TestCase):
 
         self.assertEqual("failed", registration_service.registration_result_status(result))
         with patch.object(registration_service, "_registration_proxy_retry_limit", return_value=2):
-            self.assertTrue(
+            self.assertFalse(
                 registration_service._should_retry_registration_with_new_proxy(result, proxy, 0)
             )
 
@@ -132,7 +132,7 @@ class RegistrationIdentityContractTests(unittest.TestCase):
                 registration_service._should_retry_registration_with_new_proxy(result, proxy, 0)
             )
 
-    def test_pre_auth_tls_error_is_retryable_failure_not_manual_confirmation(self):
+    def test_pre_auth_tls_unknown_remains_reconciliation_fence(self):
         result = {
             "success": False,
             "remote_identity": "unknown",
@@ -145,7 +145,7 @@ class RegistrationIdentityContractTests(unittest.TestCase):
 
         self.assertEqual("failed", registration_service.registration_result_status(result))
         with patch.object(registration_service, "_registration_proxy_retry_limit", return_value=2):
-            self.assertTrue(
+            self.assertFalse(
                 registration_service._should_retry_registration_with_new_proxy(result, proxy, 0)
             )
 
@@ -346,7 +346,7 @@ class RegistrationServiceRetryBoundaryTests(unittest.TestCase):
         with patch.object(registration_service, "_registration_proxy_retry_limit", return_value=2):
             self.assertFalse(registration_service._should_retry_registration_with_new_proxy(result, proxy, 0))
 
-    def test_registration_stage_timeout_can_rotate_before_remote_identity_is_known(self):
+    def test_registration_stage_timeout_does_not_rotate_before_remote_identity_is_known(self):
         proxy = MagicMock(provider="1024proxy")
         result = {
             "success": False,
@@ -356,7 +356,7 @@ class RegistrationServiceRetryBoundaryTests(unittest.TestCase):
         }
 
         with patch.object(registration_service, "_registration_proxy_retry_limit", return_value=2):
-            self.assertTrue(registration_service._should_retry_registration_with_new_proxy(result, proxy, 0))
+            self.assertFalse(registration_service._should_retry_registration_with_new_proxy(result, proxy, 0))
 
     def test_auth_route_rejection_before_account_creation_can_rotate_proxy(self):
         proxy = MagicMock(provider="1024proxy")

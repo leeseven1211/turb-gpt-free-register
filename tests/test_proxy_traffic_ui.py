@@ -83,11 +83,25 @@ class ProxyTrafficUiContractTest(unittest.TestCase):
             self.assertNotIn(secret_field, PROXY_JS)
         self.assertIn("exit_ip", PROXY_JS)
         self.assertNotIn("proxyTrafficNormalize(await proxyTrafficRequest())", PROXY_JS)
+        self.assertIn("'/api/proxy-pool'", PROXY_JS)
+        self.assertIn("poolCapacity", PROXY_JS)
+        self.assertIn("poolReady", PROXY_JS)
+        self.assertIn("poolFetching", PROXY_JS)
+        self.assertIn("poolShared", PROXY_JS)
         self.assertIn("route_attempt_no", PROXY_JS)
         self.assertIn("availability", PROXY_JS)
         self.assertIn("ended_at", PROXY_JS)
         self.assertNotIn("finished_at", PROXY_JS)
         self.assertNotIn("proxyTrafficValue(row, 'status')", PROXY_JS)
+
+    def test_template_exposes_proxy_pool_capacity_summary_without_inventory_secrets(self):
+        for key in ("poolCapacity", "poolReady", "poolFetching", "poolChecking", "poolLeased", "poolShared"):
+            self.assertIn(f'data-proxy-summary="{key}"', TEMPLATE)
+        for label in ("proxyPoolBody", "脱敏端点", "脱敏出口", "最近错误"):
+            self.assertIn(label, TEMPLATE)
+        self.assertIn("独立代理池", MODERN_COMMON + PROXY_JS + TEMPLATE)
+        for secret_field in ("proxy_url", "username", "password"):
+            self.assertNotIn(secret_field, PROXY_JS)
 
     def test_proxy_traffic_css_is_responsive_and_keeps_long_values_readable(self):
         self.assertIn(".proxy-traffic-table-wrap", FOUNDATION_CSS)

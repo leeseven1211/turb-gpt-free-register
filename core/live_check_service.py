@@ -266,6 +266,13 @@ def _refresh_result_before_remote_boundary(result: dict | None) -> bool:
     return bool(codes & {"auth_route_rejected", "network_preflight_failed"})
 
 
+def _is_proxy_transport_failure(result: dict | None) -> bool:
+    """仅把明确的预检网络失败标记为代理故障。"""
+    value = result if isinstance(result, dict) else {}
+    codes = {str(value.get(key) or "").strip().lower() for key in ("error", "error_code")}
+    return "network_preflight_failed" in codes
+
+
 def _refresh_result_is_rejected(result: dict | None) -> bool:
     """Return true only for an explicit, safe remote rejection.
 
@@ -683,6 +690,7 @@ def _run_live_check(
     proxy_source: str | None = None,
 ) -> dict:
     account_route = None
+    result = None
     route: dict = {}
     reporter = _reporter(task_id, operation_context, finish_operation=finish_operation)
     refresh_boundary: dict | None = None
@@ -857,7 +865,6 @@ def _run_live_check(
                     )
         saved_access_token = str(account.get("access_token") or "").strip()
         saved_claims = token_claims(saved_access_token) if saved_access_token else {}
-        result = None
         last_probe_error = ""
         last_probe_error_category = None
         last_probe_http_status = None
@@ -1222,7 +1229,13 @@ def _run_live_check(
                     # (403/TLS/proxy corruption). Do not send the browser
                     # fallback through that same lease; rotate once while
                     # keeping explicit caller-selected proxies untouched.
-                    account_route.release(reason=f"live-check-{account_id}-roxy-fallback-rotate")
+                    if _is_proxy_transport_failure(result):
+                        account_route.release(
+                            reason=f"live-check-{account_id}-roxy-fallback-rotate",
+                            fault=True,
+                        )
+                    else:
+                        account_route.release(reason=f"live-check-{account_id}-roxy-fallback-rotate")
                     account_route = None
                     route = {}
 
@@ -1528,7 +1541,10 @@ def _run_live_check(
         return result
     finally:
         if account_route is not None:
-            account_route.release(reason=f"live-check-{account_id}")
+            if _is_proxy_transport_failure(result):
+                account_route.release(reason=f"live-check-{account_id}", fault=True)
+            else:
+                account_route.release(reason=f"live-check-{account_id}")
         with _LOCK:
             _RUNNING.discard(int(account_id))
         if release_queue_slot:

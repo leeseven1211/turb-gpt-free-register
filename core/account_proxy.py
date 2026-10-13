@@ -42,8 +42,9 @@ class AccountProxyRoute:
             "proxy_allow_reuse": bool(self.lease and self.lease.metadata.get("allow_reuse")),
         }
 
-    def release(self, reason: str = "completed") -> None:
-        release_proxy(self.lease, reason=reason)
+    def release(self, reason: str = "completed", *, fault: bool | None = None) -> None:
+        """释放账号线路；只有调用方明确确认代理传输故障时才隔离线路。"""
+        release_proxy(self.lease, reason=reason, fault=fault)
 
 
 _ACTION_PROXY_CONFIG = {
@@ -273,11 +274,19 @@ def acquire_account_proxy(
     from config import proxy as cfg
     if mode == "pool":
         selected = str(getattr(cfg, "ACCOUNT_ACTION_PROXY", "") or "").strip()
-        if not selected:
-            selected = str(cfg.pick_proxy() or "").strip()
-        if not selected:
+        urls = [selected] if selected else list(cfg.PROXY_POOL)
+        if not urls:
             raise RuntimeError("账号功能代理来源为 pool，但 ACCOUNT_ACTION_PROXY/PROXY_POOL 均为空")
-        return AccountProxyRoute(selected, "proxy_pool", mode, purpose=purpose)
+        from core.proxy_pool import acquire
+        from core.task_run_log import current_context
+        context = current_context()
+        lease = acquire(provider="proxy_pool", static_urls=urls, purpose=purpose,
+                        account_id=account_id, operation_task_id=context.get("task_id"),
+                        operation_run_id=context.get("run_id"),
+                        allow_reuse=purpose == "plan-check" and (
+                            bool(getattr(cfg, "PLAN_CHECK_PROXY_ALLOW_REUSE", True)) if allow_reuse is None else bool(allow_reuse)
+                        ))
+        return AccountProxyRoute(lease.proxy_url, "proxy_pool", mode, region=lease.region, lease=lease, purpose=purpose)
 
     if not mode.startswith("provider:"):
         raise RuntimeError(f"不支持的账号代理来源: {mode}")
@@ -300,8 +309,12 @@ def _status_1024proxy() -> dict[str, Any]:
 
     if not str(getattr(cfg, "PROXY_1024_API_URL", "") or "").strip():
         return {"ok": False, "reason": "未配置 1024Proxy 提取 API"}
-    if not bool(getattr(cfg, "PROXY_1024_VALIDATE", True)):
-        return {"ok": False, "reason": "代理平台必须开启使用前出口检测"}
+    # 独立池始终验证候选；旧诊断开关不影响任务的库存准入。
+    from core.proxy_pool import _provider_options, _validate_lifetime, settings
+    try:
+        _validate_lifetime("1024proxy", _provider_options(), settings())
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
     return {"ok": True, "reason": None}
 
 

@@ -608,7 +608,23 @@
       <div><span>今日可观测流量</span><strong data-proxy-summary="todayBytes">—</strong></div>
       <div><span>今日请求记录</span><strong data-proxy-summary="todayRequestCount">—</strong></div>
       <div><span>今日新建线路</span><strong data-proxy-summary="todayRouteCount">—</strong></div>
+      <div><span>代理池容量</span><strong data-proxy-summary="poolCapacity">—</strong></div>
+      <div><span>可领取</span><strong data-proxy-summary="poolReady">—</strong></div>
+      <div><span>补货中</span><strong data-proxy-summary="poolFetching">—</strong></div>
+      <div><span>复检中</span><strong data-proxy-summary="poolChecking">—</strong></div>
+      <div><span>独占使用</span><strong data-proxy-summary="poolLeased">—</strong></div>
+      <div><span>共享使用</span><strong data-proxy-summary="poolShared">—</strong></div>
     </div>
+    <section class="proxy-traffic-panel proxy-pool-panel" aria-label="独立代理池库存">
+      <header class="proxy-pool-header"><h3>代理池库存</h3><span class="sub-cell" id="proxyPoolPanelStatus" role="status" aria-live="polite" aria-atomic="true">等待加载</span></header>
+      <div class="proxy-traffic-table-wrap">
+        <table class="proxy-traffic-table proxy-pool-table" data-proxy-table="pool">
+          <colgroup><col class="proxy-pool-col-resource"><col class="proxy-pool-col-state"><col class="proxy-pool-col-source"><col class="proxy-pool-col-endpoint"><col class="proxy-pool-col-ip"><col class="proxy-pool-col-time"><col class="proxy-pool-col-error"></colgroup>
+          <thead><tr><th>资源</th><th>状态</th><th>供应商 / 地区</th><th>脱敏端点</th><th>脱敏出口</th><th>校验 / 到期</th><th>最近错误</th></tr></thead>
+          <tbody id="proxyPoolBody"><tr class="list-state-row"><td class="table-state-cell" colspan="7"><div class="table-state is-loading" role="status"><span class="table-state-spinner" aria-hidden="true"></span><strong>正在加载代理池库存</strong><small>正在同步脱敏库存状态</small></div></td></tr></tbody>
+        </table>
+      </div>
+    </section>
     <div class="proxy-traffic-view-bar">
       <div class="proxy-traffic-view-tabs" role="tablist" aria-label="代理与流量视图">
         <button type="button" class="is-active" role="tab" aria-selected="true" aria-controls="proxyTrafficPanelCurrent" data-proxy-view="current">当前租约 <span data-proxy-count="current">0</span></button>

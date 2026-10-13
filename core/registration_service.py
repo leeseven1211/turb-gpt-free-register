@@ -97,9 +97,12 @@ _PROGRESS_CHECKPOINTS = {
     ("email", "success"): "email_claimed",
     ("auth_redirect", "running"): "auth_started",
     ("auth_redirect", "success"): "auth_started",
-    ("password", "running"): "password_request_started",
+    # running 只表示进入密码阶段；密码输入完成后的 prepared/started 事实由
+    # password_auth 的回调持久化。这里提前推进到 request_started 会把“页面已
+    # 进入”误报成“请求已发出”。
+    ("password", "running"): "auth_started",
     ("password", "success"): "password_confirmed",
-    ("login_password", "running"): "password_request_started",
+    ("login_password", "running"): "auth_started",
     ("login_password", "success"): "password_confirmed",
     ("email_otp", "running"): "otp_started",
     ("email_otp", "success"): "otp_confirmed",
@@ -120,7 +123,11 @@ def _activate_job(job_id: int) -> None:
     # registration's Attempt/Run identifiers into the next task.
     _THREAD_CTX.attempt_id = None
     _THREAD_CTX.run_id = None
+    _THREAD_CTX.operation_run_id = None
     _THREAD_CTX.execution_id = None
+    _THREAD_CTX.route_attempt_no = None
+    _THREAD_CTX.step_instances = {}
+    _THREAD_CTX.progress_context = None
     try:
         from core import registration_debug
 
@@ -162,7 +169,7 @@ def _deactivate_job(job_id: int) -> None:
         delattr(_THREAD_CTX, "debug_token")
     except Exception:
         pass
-    for attr in ("attempt_id", "run_id", "execution_id"):
+    for attr in ("attempt_id", "run_id", "operation_run_id", "execution_id", "route_attempt_no", "step_instances", "progress_context"):
         try:
             delattr(_THREAD_CTX, attr)
         except Exception:
@@ -240,6 +247,72 @@ def _ensure_registration_run_context(job: dict | None) -> dict | None:
         # until the next worker/recovery pass can persist the B facts.
         logger.exception("[Job %s] 绑定 RegistrationAttempt/Run 失败，沿用旧任务生命周期", job_id)
         return None
+
+
+def _bind_progress_route_context(route_attempt_no: int | None) -> None:
+    """固定当前线路上下文，并在换线时丢弃旧阶段实例。"""
+    try:
+        route_no = max(1, int(route_attempt_no or 1))
+    except (TypeError, ValueError):
+        route_no = 1
+    previous = getattr(_THREAD_CTX, "route_attempt_no", None)
+    if previous is not None and int(previous) != route_no:
+        _THREAD_CTX.step_instances = {}
+    _THREAD_CTX.route_attempt_no = route_no
+    if not isinstance(getattr(_THREAD_CTX, "step_instances", None), dict):
+        _THREAD_CTX.step_instances = {}
+    _THREAD_CTX.progress_context = {
+        "route_attempt_no": route_no,
+        "operation_run_id": getattr(_THREAD_CTX, "operation_run_id", None),
+    }
+
+
+def _progress_step_instance(stage: str, state: str) -> str:
+    """同一阶段生命周期复用实例，重新进入阶段才创建新实例。"""
+    stage_key = str(stage or "event").strip().lower()
+    state_key = str(state or "running").strip().lower()
+    instances = getattr(_THREAD_CTX, "step_instances", None)
+    if not isinstance(instances, dict):
+        instances = {}
+        _THREAD_CTX.step_instances = instances
+    current = instances.get(stage_key)
+    terminal_states = {"success", "failed", "skipped", "stopped"}
+    if not current or (state_key == "running" and current.get("state") in terminal_states):
+        current = {"id": uuid.uuid4().hex, "state": state_key}
+        instances[stage_key] = current
+    else:
+        current["state"] = state_key
+    return str(current["id"])
+
+
+def _persist_job_progress(
+    job_id: int,
+    stage: str,
+    state: str = "running",
+    detail: str | None = None,
+    *,
+    route_attempt_no: int | None = None,
+    operation_run_id: int | None = None,
+    step_instance_id: str | None = None,
+) -> None:
+    """统一把不可变 Run/线路/步骤实例上下文写入进度事件。"""
+    fixed_context = getattr(_THREAD_CTX, "progress_context", None)
+    fixed_context = fixed_context if isinstance(fixed_context, dict) else {}
+    route_no = route_attempt_no if route_attempt_no is not None else fixed_context.get("route_attempt_no")
+    if route_no is None:
+        route_no = getattr(_THREAD_CTX, "route_attempt_no", None)
+    operation_run_id = operation_run_id if operation_run_id is not None else fixed_context.get("operation_run_id")
+    if operation_run_id is None:
+        operation_run_id = getattr(_THREAD_CTX, "operation_run_id", None)
+    if route_no is None:
+        db.update_job_progress(int(job_id), stage, state=state, detail=detail)
+        return
+    step_instance_id = step_instance_id or _progress_step_instance(stage, state)
+    db.update_job_progress(
+        int(job_id), stage, state=state, detail=detail,
+        route_attempt_no=int(route_no), step_instance_id=step_instance_id,
+        operation_run_id=operation_run_id,
+    )
 
 
 def _advance_registration_checkpoint(stage: str, state: str, detail: str | None = None) -> None:
@@ -576,7 +649,7 @@ def report_job_progress(stage: str, state: str = "running", detail: str | None =
     except Exception:
         logger.exception("[Job %s] 写入调试阶段标记失败: stage=%s state=%s", job_id, stage, state)
     try:
-        db.update_job_progress(int(job_id), stage, state=state, detail=detail)
+        _persist_job_progress(int(job_id), stage, state=state, detail=detail)
     except Exception:
         logger.exception("[Job %s] 写入进度失败: stage=%s state=%s", job_id, stage, state)
     _advance_registration_checkpoint(stage, state, detail)
@@ -669,6 +742,9 @@ def _prepare_registration_args(
     *,
     batch_id: str | None = None,
     job_id: int | None = None,
+    owner_kind: str | None = None,
+    owner_id: str | int | None = None,
+    acquisition_id: str | None = None,
 ) -> tuple[str, str, str]:
     """复用 CLI 的默认规则，为旧 Web 任务入口补齐注册参数。"""
     # 用模块属性读，支持 WebUI 热加载
@@ -710,14 +786,21 @@ def _prepare_registration_args(
             attempt = 0
             while not email:
                 attempt += 1
-                candidate = str(
-                    acquire_email(
-                        email_source,
-                        batch_id=normalized_batch_id or None,
-                        job_id=job_id,
-                    )
-                    or ""
-                ).strip()
+                acquire_kwargs = {
+                    "batch_id": normalized_batch_id or None,
+                    "job_id": job_id,
+                }
+                # Remail 付费领取必须有 root owner 与稳定 acquisition_id；
+                # 旧的无身份入口只继续支持非付费邮箱来源，不能静默生成临时 ID。
+                if str(email_source or "").strip().lower() == "remail":
+                    if not owner_kind or owner_id is None or not str(acquisition_id or "").strip():
+                        raise RuntimeError("Remail 注册领取缺少稳定 owner/acquisition_id，已停止下单")
+                    acquire_kwargs.update({
+                        "owner_kind": owner_kind,
+                        "owner_id": owner_id,
+                        "acquisition_id": str(acquisition_id).strip(),
+                    })
+                candidate = str(acquire_email(email_source, **acquire_kwargs) or "").strip()
                 if not candidate:
                     raise RuntimeError("邮箱来源返回空地址，无法继续注册")
                 try:
@@ -962,7 +1045,6 @@ def _is_transient_registration_proxy_error(error: object) -> bool:
         "err_connection_reset",
         "err_connection_closed",
         "err_timed_out",
-        "roxy registration stage timeout exhausted",
         "proxy connection",
         "ssl_error_syscall",
         "err_ssl_protocol_error",
@@ -976,7 +1058,7 @@ def _is_transient_registration_proxy_error(error: object) -> bool:
         "connection aborted",
         "chrome-error://chromewebdata/",
     )
-    if any(marker in text for marker in markers) or "邮箱提交/认证跳转超过总预算" in str(error or ""):
+    if any(marker in text for marker in markers):
         return True
     # A blank ChatGPT auth shell is recorded as an element-not-found error,
     # but it is a recoverable line-level failure when no account checkpoint
@@ -1008,6 +1090,8 @@ def _has_registration_safety_fence(result: dict) -> bool:
     dead_codes = {"account_deactivated", "account_deleted", "account_banned"}
     if (
         result.get("account_id") is not None
+        or result.get("request_unknown")
+        or result.get("pending_submission_id")
         or result.get("registration_pending")
         or str(result.get("access_token") or "").strip()
         or result.get("manual_reconcile")
@@ -1115,7 +1199,7 @@ def _registration_proxy_correlation(job_id: int, job: dict | None) -> dict[str, 
     if operation_run_id is None:
         operation_run_id = data.get("operation_run_id")
     if operation_run_id is None:
-        operation_run_id = getattr(_THREAD_CTX, "run_id", None)
+        operation_run_id = getattr(_THREAD_CTX, "operation_run_id", None)
 
     # Projection writes may lag the legacy job row. When the mapping is already
     # present, fill the correlation from its durable task/current run; a
@@ -1173,73 +1257,19 @@ def _acquire_registration_proxy_with_retries(
     route_attempt_no: int | None = None,
     retry_kind: str = "proxy_acquisition",
 ):
-    """申请注册代理；仅在代理平台/线路错误时有限重试。"""
-    retry_limit = _registration_proxy_retry_limit()
-    if registration_job_id is None:
-        registration_job_id = job_id
-    for attempt in range(retry_limit + 1):
-        try:
-            acquire_kwargs = {
-                "job_id": job_id,
-                "batch_id": batch_id,
-                "batch_size": batch_size,
-                "batch_workers": batch_workers,
-                "progress_callback": progress_callback,
-            }
-            correlation = {
-                "account_id": account_id,
-                "purpose": purpose,
-                "operation_task_id": operation_task_id,
-                "operation_run_id": operation_run_id,
-                "registration_job_id": registration_job_id,
-                "route_attempt_no": route_attempt_no,
-            }
-            acquire_kwargs.update({
-                key: value for key, value in correlation.items()
-                if value is not None
-            })
-            return acquire_proxy(**acquire_kwargs)
-        except Exception as exc:
-            error_text = f"{type(exc).__name__}: {exc}"[:300]
-            if attempt >= retry_limit or not _is_retryable_registration_proxy_acquisition_error(exc):
-                raise
-
-            next_attempt = attempt + 1
-            log_logger.warning(
-                "[Job %s] 申请代理失败，准备重试 (%s/%s): %s",
-                job_id,
-                next_attempt,
-                retry_limit,
-                error_text,
-            )
-            db.update_job(
-                job_id,
-                proxy_status="acquiring",
-                error=f"申请代理失败，准备重试: {error_text}",
-            )
-            db.update_job_progress(
-                job_id,
-                "network",
-                state="failed",
-                detail=f"申请代理失败，准备重试 ({next_attempt}/{retry_limit}): {error_text}",
-            )
-            db.begin_job_route_attempt(
-                job_id,
-                retry_kind=retry_kind,
-                retry_reason=error_text,
-            )
-            db.update_job_progress(
-                job_id,
-                "network",
-                state="running",
-                detail=f"正在重试申请网络线路 ({next_attempt}/{retry_limit})",
-            )
-            retry_delay = _registration_proxy_retry_delay()
-            if retry_delay:
-                time.sleep(retry_delay)
-            check_stop_requested()
-
-    raise RuntimeError("代理申请重试流程异常结束")
+    """兼容调用入口；供应商重试由独立池维护，任务只等待一次领取。"""
+    check_stop_requested()
+    correlation = {
+        "account_id": account_id, "purpose": purpose,
+        "operation_task_id": operation_task_id, "operation_run_id": operation_run_id,
+        "registration_job_id": registration_job_id if registration_job_id is not None else job_id,
+        "route_attempt_no": route_attempt_no,
+    }
+    return acquire_proxy(
+        job_id=job_id, progress_callback=progress_callback,
+        cancel=check_stop_requested,
+        **{key: value for key, value in correlation.items() if value is not None},
+    )
 
 
 def _normalize_workers(max_workers: int | None) -> int:
@@ -1411,7 +1441,10 @@ def _run_one_job(job_id: int, log_file: str) -> None:
         _deactivate_job(job_id)
         return
     _ensure_registration_run_context(db.get_job(job_id) or current)
+    _bind_progress_route_context((db.get_job(job_id) or current).get("route_attempt_no") or 1)
     proxy_correlation = _registration_proxy_correlation(job_id, db.get_job(job_id) or current)
+    _THREAD_CTX.operation_run_id = proxy_correlation.get("operation_run_id")
+    _bind_progress_route_context((db.get_job(job_id) or current).get("route_attempt_no") or 1)
     try:
         initial_route_attempt_no = max(1, int(current.get("route_attempt_no") or 1))
     except (TypeError, ValueError):
@@ -1420,7 +1453,11 @@ def _run_one_job(job_id: int, log_file: str) -> None:
         "registration_job_id": job_id,
         "route_attempt_no": initial_route_attempt_no,
     })
-    db.update_job_progress(job_id, "network", state="running", detail="正在申请或分配网络线路")
+    _bind_progress_route_context(initial_route_attempt_no)
+    _persist_job_progress(job_id, "network", state="running", detail="正在申请或分配网络线路")
+    # 代理申请回调可能由供应商适配层的其他线程触发；提前捕获步骤实例，
+    # 回调不依赖目标线程的 thread-local 状态。
+    initial_network_instance = _progress_step_instance("network", "running")
 
     email: str | None = None
     proxy_lease = None
@@ -1446,10 +1483,8 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     proxy_acquired_at=lease.acquired_at.isoformat(timespec="seconds"),
                     proxy_expires_at=lease.expires_at.isoformat(timespec="seconds") if lease.expires_at else "-",
                 )
-                # 批次模式会在首个 worker 进入时预取全批代理。单任务
-                # 时间线记录的是“该任务拿到租约”，而不是把早于任务启动
-                # 的批次预取时间硬塞进任务耗时。
-                db.update_job_progress(
+                # 库存由独立池提前维护；本任务只记录领取租约的时间。
+                _persist_job_progress(
                     job_id,
                     "network",
                     state="success",
@@ -1458,23 +1493,34 @@ def _run_one_job(job_id: int, log_file: str) -> None:
 
             log_logger.info(f"[Job {job_id}] 开始注册任务")
             db.update_job(job_id, proxy_status="acquiring")
+            proxy_progress_route = int(proxy_correlation["route_attempt_no"] or 1)
+            proxy_progress_run = proxy_correlation.get("operation_run_id")
+
+            def _proxy_progress(
+                detail: str,
+                *,
+                _route=proxy_progress_route,
+                _run=proxy_progress_run,
+                _instance=initial_network_instance,
+            ) -> None:
+                _persist_job_progress(
+                    job_id, "network", state="running", detail=detail,
+                    route_attempt_no=_route, operation_run_id=_run,
+                    step_instance_id=_instance,
+                )
+
             proxy_lease = _acquire_registration_proxy_with_retries(
                 acquire_proxy=acquire_registration_proxy,
                 job_id=job_id,
                 batch_id=proxy_batch_id,
                 batch_size=proxy_batch_size,
                 batch_workers=proxy_batch_workers,
-                progress_callback=lambda detail: db.update_job_progress(
-                    job_id,
-                    "network",
-                    state="running",
-                    detail=detail,
-                ),
+                progress_callback=_proxy_progress,
                 log_logger=log_logger,
                 **proxy_correlation,
             )
             _bind_proxy_lease(proxy_lease)
-            db.update_job_progress(job_id, "email", state="running", detail="正在领取或复用注册邮箱")
+            _persist_job_progress(job_id, "email", state="running", detail="正在领取或复用注册邮箱")
             existing_password = ""
             existing_totp_secret = ""
             bound_profile_id = ""
@@ -1485,6 +1531,11 @@ def _run_one_job(job_id: int, log_file: str) -> None:
             root_email = ""
             child_email = ""
             reuses_original_email = False
+            try:
+                registration_root_id = int(current.get("root_job_id") or current.get("id") or job_id)
+            except (TypeError, ValueError):
+                registration_root_id = int(job_id)
+            registration_acquisition_id = _registration_acquisition_id_for_root(registration_root_id)
             if is_registration_retry:
                 root_job_id = int(current.get("root_job_id") or current.get("id") or job_id)
                 root_job = current if root_job_id == job_id else db.get_job(root_job_id)
@@ -1526,11 +1577,19 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 existing_totp_secret = str((resume_account or {}).get("totp_secret") or "").strip()
                 if not email or not existing_password:
                     raise RuntimeError("待邮箱验证账号缺少邮箱或已保存账号密码，无法继续验证")
+                if selected_source == "remail":
+                    # registration_resume 也必须恢复根任务的原领取意图；否则
+                    # wait_for_otp 会在重启后失去 service token，不能按邮箱猜测新订单。
+                    _restore_remail_registration_resume_context(
+                        email=email,
+                        registration_root_id=registration_root_id,
+                        acquisition_id=registration_acquisition_id,
+                    )
                 from core.profile_utils import generate_random_birthday
 
                 name = _random_display_name()
                 birthday = generate_random_birthday()
-                db.update_job_progress(
+                _persist_job_progress(
                     job_id,
                     "email",
                     state="success",
@@ -1541,17 +1600,45 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 email = child_email or root_email
                 if not email:
                     raise RuntimeError("重跑任务缺少原注册邮箱，不能改用其他邮箱")
-                from core.email_provider import restore_email_context
                 from core.profile_utils import generate_random_birthday
+                if selected_source == "remail":
+                    # Remail 重跑只能按根任务稳定 acquisition_id 恢复原意图；
+                    # 不按同邮箱搜索最新订单，也不在原意图缺失时新下单。
+                    from core.remail_order_coordinator import RemailOrderCoordinator
+                    from core.storage import remail_orders
 
-                restore_email_context(
-                    email,
-                    source=selected_source,
-                    purpose="registration_retry",
-                )
+                    intent = remail_orders.get_intent(registration_acquisition_id, private=True)
+                    if not intent:
+                        raise RuntimeError("重跑任务缺少原 Remail 领取意图，不能按邮箱猜测订单或重新下单")
+                    if (
+                        str(intent.get("owner_kind") or "") != "registration_root"
+                        or str(intent.get("owner_id") or "") != str(registration_root_id)
+                        or str(intent.get("acquisition_id") or "") != str(registration_acquisition_id)
+                    ):
+                        raise RuntimeError("原 Remail 领取意图与注册根任务不匹配，不能继续")
+                    coordinator = RemailOrderCoordinator()
+                    durable_account = coordinator._account_from_intent(intent)
+                    if not durable_account and str(intent.get("supplier_identity_ref") or "") != coordinator._supplier_ref():
+                        raise RuntimeError("原 Remail 订单供应商身份与当前配置不匹配，不能继续")
+                    account = coordinator.acquire(
+                        owner_kind="registration_root",
+                        owner_id=registration_root_id,
+                        acquisition_id=registration_acquisition_id,
+                    )
+                    if str(account.email or "").strip().casefold() != email.casefold():
+                        raise RuntimeError("原 Remail 订单邮箱与注册根任务不匹配，不能继续")
+                    email = account.email
+                else:
+                    from core.email_provider import restore_email_context
+
+                    restore_email_context(
+                        email,
+                        source=selected_source,
+                        purpose="registration_retry",
+                    )
                 name = _random_display_name()
                 birthday = generate_random_birthday()
-                db.update_job_progress(
+                _persist_job_progress(
                     job_id,
                     "email",
                     state="success",
@@ -1562,6 +1649,11 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     selected_source,
                     batch_id=batch_id,
                     job_id=job_id,
+                    **({
+                        "owner_kind": "registration_root",
+                        "owner_id": registration_root_id,
+                        "acquisition_id": registration_acquisition_id,
+                    } if selected_source == "remail" else {}),
                 )
             from core.email_provider import remember_email_source
 
@@ -1580,7 +1672,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     existing_password = str(private_resume.get("password") or "").strip()
             if not existing_password:
                 if not reuses_original_email:
-                    db.update_job_progress(job_id, "email", state="success", detail=f"已从 {selected_source} 领取邮箱")
+                    _persist_job_progress(job_id, "email", state="success", detail=f"已从 {selected_source} 领取邮箱")
             check_stop_requested()
             retry_attempt = 0
             while True:
@@ -1593,7 +1685,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 from core.protocol_traffic import correlation_context
                 with correlation_context(**{**proxy_correlation,
                         "proxy_lease_id": getattr(proxy_lease, "lease_id", None),
-                        "route_attempt_no": initial_route_attempt_no + retry_attempt,
+                        "route_attempt_no": proxy_correlation["route_attempt_no"],
                         "registration_attempt_id": getattr(_THREAD_CTX, "attempt_id", None),
                         "registration_run_id": getattr(_THREAD_CTX, "run_id", None)}):
                     result = run_registration(
@@ -1626,56 +1718,70 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     proxy_status="acquiring",
                     error=f"代理线路瞬时失败，准备换线重试: {retry_error}",
                 )
-                db.begin_job_route_attempt(
+                next_route_no = db.begin_job_route_attempt(
                     job_id,
                     retry_kind="proxy_rotation",
                     retry_reason=retry_error,
                 )
-                db.update_job_progress(
+                _bind_progress_route_context(next_route_no)
+                _persist_job_progress(
                     job_id,
                     "network",
                     state="running",
                     detail=f"线路瞬时失败，正在更换代理重试 ({retry_attempt}/{_registration_proxy_retry_limit()})",
                 )
+                retry_network_instance = _progress_step_instance("network", "running")
                 retry_delay = _registration_proxy_retry_delay()
                 if retry_delay:
                     time.sleep(retry_delay)
                 check_stop_requested()
                 retry_proxy_correlation = dict(proxy_correlation)
-                retry_proxy_correlation["route_attempt_no"] = initial_route_attempt_no + retry_attempt
+                retry_proxy_correlation["route_attempt_no"] = int(next_route_no)
+                proxy_correlation["route_attempt_no"] = int(next_route_no)
+                proxy_progress_route = int(next_route_no)
+                proxy_progress_run = proxy_correlation.get("operation_run_id")
+
+                def _retry_proxy_progress(
+                    detail: str,
+                    *,
+                    _route=proxy_progress_route,
+                    _run=proxy_progress_run,
+                    _instance=retry_network_instance,
+                ) -> None:
+                    _persist_job_progress(
+                        job_id, "network", state="running", detail=detail,
+                        route_attempt_no=_route, operation_run_id=_run,
+                        step_instance_id=_instance,
+                    )
+
                 proxy_lease = _acquire_registration_proxy_with_retries(
                     acquire_proxy=acquire_registration_proxy,
                     job_id=job_id,
-                    # 批次首轮租约已经释放；重试必须单独申请新线路，不能消耗批次剩余槽位。
+                    # 换线仍向同一个独立池申请，供应商细节不进入任务循环。
                     batch_id=None,
                     batch_size=1,
                     batch_workers=1,
-                    progress_callback=lambda detail: db.update_job_progress(
-                        job_id,
-                        "network",
-                        state="running",
-                        detail=detail,
-                    ),
+                    progress_callback=_retry_proxy_progress,
                     log_logger=log_logger,
                     retry_kind="proxy_rotation_acquisition",
                     **retry_proxy_correlation,
                 )
                 _bind_proxy_lease(proxy_lease)
-                db.update_job_progress(
+                _persist_job_progress(
                     job_id,
                     "email",
                     state="running",
                     detail="新线路已就绪，将继续使用原注册邮箱",
                 )
                 if not existing_password:
-                    db.update_job_progress(
+                    _persist_job_progress(
                         job_id,
                         "email",
                         state="success",
                         detail="换线重试继续使用原注册邮箱，不会改领新邮箱",
                     )
                 else:
-                    db.update_job_progress(
+                    _persist_job_progress(
                         job_id,
                         "email",
                         state="success",
@@ -1776,7 +1882,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     failed_stage = str(progress.get("progress_stage") or "email_otp")
                     if failed_stage not in {key for key, _label in db.JOB_PROGRESS_STAGES} or failed_stage == "complete":
                         failed_stage = "email_otp"
-                    db.update_job_progress(
+                    _persist_job_progress(
                         job_id,
                         failed_stage,
                         state="failed",
@@ -1833,7 +1939,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     failed_stage = str(progress.get("progress_stage") or "email_otp")
                     if failed_stage not in {key for key, _label in db.JOB_PROGRESS_STAGES} or failed_stage == "complete":
                         failed_stage = "email_otp"
-                    db.update_job_progress(job_id, failed_stage, state="failed", detail=persisted_err[:300])
+                    _persist_job_progress(job_id, failed_stage, state="failed", detail=persisted_err[:300])
                 try:
                     from core.registration_debug import capture_current_failure
                     capture_current_failure(str(err)[:1000])
@@ -1858,12 +1964,14 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     log_logger.warning("[Job %s] 注册未确认成功，按失败收口；保留原邮箱和恢复断点供重跑: %s", job_id, err)
                 else:
                     log_logger.error(f"[Job {job_id}] 失败: {err}")
-    except RemailOrderUncertain:
+    except RemailOrderUncertain as exc:
         # 邮箱供应商可能已经扣款；即使尚未取得地址，也不能按普通失败重新下单。
         message = "Remail 邮箱订单结果待核验，请先核对原订单，禁止直接重试下单"
+        safe_details = exc.safe_details()
         unknown_facts = {
             "outcome": "request_unknown",
             "cause_code": "remail_order_request_unknown",
+            "safe_details": safe_details,
         }
         db.finish_job_progress(job_id, success=False, detail=message)
         db.update_job(
@@ -1994,10 +2102,11 @@ def _run_codex_retry_job(
         _deactivate_job(job_id)
         return
     _ensure_registration_run_context(db.get_job(job_id) or current)
+    _bind_progress_route_context((db.get_job(job_id) or current).get("route_attempt_no") or 1)
     for stage, _label in db.JOB_PROGRESS_STAGES:
         if stage not in {"codex", "complete"}:
-            db.update_job_progress(job_id, stage, state="skipped", detail="Codex 补跑任务")
-    db.update_job_progress(job_id, "codex", state="running", detail="正在补跑 Codex 授权")
+            _persist_job_progress(job_id, stage, state="skipped", detail="Codex 补跑任务")
+    _persist_job_progress(job_id, "codex", state="running", detail="正在补跑 Codex 授权")
     try:
         result = codex_retry_service.run_worker(
             email,
@@ -2018,7 +2127,7 @@ def _run_codex_retry_job(
             db.finish_job_progress(job_id, success=False, detail=str(result.get("message") or "用户手动停止")[:300], failure_state="stopped")
             db.update_job(job_id, status="stopped", email=email, account_id=account_id, error=str(result.get("message") or "用户手动停止")[:500], completed_at=now_iso, **proxy_fields)
         elif result.get("ok"):
-            db.update_job_progress(job_id, "codex", state="success", detail="Codex 补跑已确认完成")
+            _persist_job_progress(job_id, "codex", state="success", detail="Codex 补跑已确认完成")
             db.finish_job_progress(job_id, success=True)
             db.update_job(
                 job_id,
@@ -2115,10 +2224,11 @@ def _run_twofa_retry_job(
         _deactivate_job(job_id)
         return
     _ensure_registration_run_context(db.get_job(job_id) or current)
+    _bind_progress_route_context((db.get_job(job_id) or current).get("route_attempt_no") or 1)
     for stage, _label in db.JOB_PROGRESS_STAGES:
         if stage not in {"twofa", "complete"}:
-            db.update_job_progress(job_id, stage, state="skipped", detail="账号配置重试任务")
-    db.update_job_progress(job_id, "twofa", state="running", detail="正在补齐账号密码、套餐和 Authenticator 2FA")
+            _persist_job_progress(job_id, stage, state="skipped", detail="账号配置重试任务")
+    _persist_job_progress(job_id, "twofa", state="running", detail="正在补齐账号密码、套餐和 Authenticator 2FA")
     try:
         result = codex_retry_service.run_twofa_worker(
             email,
@@ -2139,15 +2249,15 @@ def _run_twofa_retry_job(
             db.finish_job_progress(job_id, success=False, detail=str(result.get("message") or "用户手动停止")[:300], failure_state="stopped")
             db.update_job(job_id, status="stopped", email=email, account_id=account_id, error=str(result.get("message") or "用户手动停止")[:500], completed_at=now_iso, **proxy_fields)
         elif result.get("ok"):
-            db.update_job_progress(job_id, "twofa", state="success", detail="账号密码、套餐和 Authenticator 2FA 已确认")
+            _persist_job_progress(job_id, "twofa", state="success", detail="账号密码、套餐和 Authenticator 2FA 已确认")
             db.finish_job_progress(job_id, success=True)
             db.update_job(job_id, status="success", email=email, account_id=account_id, completed_at=now_iso, **proxy_fields)
         else:
-            db.update_job_progress(job_id, "twofa", state="failed", detail=str(result.get("message") or "账号配置重试失败")[:300])
+            _persist_job_progress(job_id, "twofa", state="failed", detail=str(result.get("message") or "账号配置重试失败")[:300])
             db.finish_job_progress(job_id, success=False, detail=str(result.get("message") or "账号配置重试失败")[:300])
             db.update_job(job_id, status="failed", email=email, account_id=account_id, error=str(result.get("message") or "账号配置重试失败")[:500], completed_at=now_iso, **proxy_fields)
     except Exception as exc:
-        db.update_job_progress(job_id, "twofa", state="failed", detail=f"{type(exc).__name__}: {exc}"[:300])
+        _persist_job_progress(job_id, "twofa", state="failed", detail=f"{type(exc).__name__}: {exc}"[:300])
         db.finish_job_progress(job_id, success=False, detail=f"{type(exc).__name__}: {exc}"[:300])
         db.update_job(
             job_id,
@@ -2341,6 +2451,58 @@ def _pending_registration_password(account: dict | None) -> str:
     ).strip()
 
 
+def _restore_remail_registration_resume_context(
+    *,
+    email: str,
+    registration_root_id: int,
+    acquisition_id: str,
+):
+    """恢复 registration_resume 的原 Remail 上下文。
+
+    优先读取注册根任务对应的持久领取意图；只有旧数据已经把 service token
+    （或原订单号）保存到账号私有字段时，才允许在缺少意图的情况下恢复。这里
+    不调用按邮箱搜索订单的兼容入口，避免重启后把同邮箱的其他订单误认成原订单。
+    """
+    address = str(email or "").strip()
+    stable_id = str(acquisition_id or "").strip()
+    if not address or not stable_id:
+        raise RuntimeError("待邮箱验证账号缺少稳定 Remail 领取身份，无法继续验证")
+
+    from core.storage import remail_orders
+
+    intent = remail_orders.get_intent(stable_id, private=True)
+    if intent:
+        if (
+            str(intent.get("owner_kind") or "") != "registration_root"
+            or str(intent.get("owner_id") or "") != str(registration_root_id)
+            or str(intent.get("acquisition_id") or "") != stable_id
+        ):
+            raise RuntimeError("原 Remail 领取意图与注册根任务不匹配，不能继续验证")
+        from core.remail_order_coordinator import RemailOrderCoordinator
+
+        coordinator = RemailOrderCoordinator()
+        durable_account = coordinator._account_from_intent(intent)
+        if not durable_account and str(intent.get("supplier_identity_ref") or "") != coordinator._supplier_ref():
+            raise RuntimeError("原 Remail 订单供应商身份与当前配置不匹配，不能继续验证")
+        account = coordinator.acquire(
+            owner_kind="registration_root",
+            owner_id=registration_root_id,
+            acquisition_id=stable_id,
+        )
+    else:
+        # 旧账号没有 remail_order_intents 时，只接受账号私有保存的 token/order_no。
+        # restore_account_context 默认禁止按邮箱搜索最新订单。
+        from core.remail_client import restore_account_context
+
+        account = restore_account_context(address)
+        if account is None:
+            raise RuntimeError("原 Remail 领取意图和账号私有取件凭据均不存在，不能按邮箱猜测订单")
+
+    if str(account.email or "").strip().casefold() != address.casefold():
+        raise RuntimeError("原 Remail 订单邮箱与待验证账号不匹配，不能继续")
+    return account
+
+
 def _account_login_password(account: dict | None) -> str:
     """读取账号当前密码；旧账号兼容历史字段。"""
     extra = _account_extra(account)
@@ -2396,6 +2558,17 @@ def _root_job_id_for_job(job: dict) -> int:
     except (TypeError, ValueError):
         return 0
     return root_job_id if root_job_id > 0 else 0
+
+
+def _registration_acquisition_id_for_root(root_job_id: int | str) -> str:
+    """同一注册根任务在首次领取、子 Run 和人工重跑间共用的领取 ID。"""
+    try:
+        value = int(root_job_id)
+    except (TypeError, ValueError):
+        value = 0
+    if value <= 0:
+        raise ValueError("注册根任务缺少有效 ID，不能创建 Remail 领取意图")
+    return f"registration:{value}"
 
 
 def _read_linked_attempt_for_job(job: dict) -> tuple[dict | None, bool]:
@@ -2530,6 +2703,17 @@ def _pre_account_retry_facts_match(job: dict, root: dict | None, attempt: dict |
     if not email or any(str(value or "").strip().casefold() != email for value in (
         job.get("email"), attempt.get("email_snapshot"),
     )):
+        return False
+    # 只要原 Attempt 仍有未收口的提交事实，普通注册重试不能再次显示为可重放。
+    # 新 Run 的创建不会清除旧围栏；恢复登录必须由显式 registration_resume
+    # 入口核对远端检查点后进入，不复用这里的普通注册 admission。
+    try:
+        from core.storage import registration as registration_store
+
+        if registration_store.has_unresolved_submission_facts(int(attempt["id"])):
+            return False
+    except Exception:
+        # 无法读取持久围栏时保守关闭重试，避免 UI 点击绕过未知提交。
         return False
     private_password_saved = bool((attempt.get("data") or {}).get("has_password"))
     if private_password_saved:
