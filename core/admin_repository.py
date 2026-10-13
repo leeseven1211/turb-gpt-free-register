@@ -154,6 +154,32 @@ _ACCOUNT_RISK_VALUE = """CASE
 END"""
 
 
+_PROTOCOL_REGISTRATION_QUERY_VALUES = frozenset({
+    "协议注册", "protocol", "api", "http",
+})
+_ROXY_REGISTRATION_QUERY_VALUES = frozenset({
+    "浏览器", "浏览器注册", "roxy", "roxy注册", "roxybrowser",
+    "roxybrowser注册", "browser", "browser_use", "skyvern", "fingerprint",
+    "cloak", "cloakbrowser",
+})
+
+
+def _registration_driver_exists(drivers: frozenset[str]) -> tuple[str, list[Any]]:
+    """按账号最新注册任务的配置快照匹配注册驱动，不扫描整段任务 JSON。"""
+    jobs = _q(record_store.JOBS)
+    return (
+        f"EXISTS (SELECT 1 FROM {jobs} j "
+        "WHERE j.account_id = a.id "
+        "AND j.id = (SELECT latest.id FROM "
+        f"{jobs} latest WHERE latest.account_id = a.id "
+        "AND LOWER(COALESCE(latest.job_type, 'registration')) "
+        "IN ('registration', 'registration_resume') "
+        "ORDER BY latest.id DESC LIMIT 1) "
+        "AND LOWER(COALESCE(j.data #>> '{config_snapshot,registration_driver}', '')) = ANY(%s))",
+        [sorted(drivers)],
+    )
+
+
 def _account_where(
     archived: str,
     plan: str,
@@ -176,9 +202,33 @@ def _account_where(
         else:
             where.append("LOWER(COALESCE(a.current_plan_type, a.plan_type, '')) = %s")
             params.append(plan.lower())
-    if q:
-        where.append("(a.email ILIKE %s OR COALESCE(a.data->>'user_name', '') ILIKE %s)")
-        params.extend((f"%{q}%", f"%{q}%"))
+    query = _text(q)
+    if query:
+        normalized_query = query.lower()
+        if normalized_query in _PROTOCOL_REGISTRATION_QUERY_VALUES:
+            predicate, predicate_params = _registration_driver_exists(
+                frozenset({"protocol", "api", "http"}),
+            )
+            where.append(predicate)
+            params.extend(predicate_params)
+        elif normalized_query in _ROXY_REGISTRATION_QUERY_VALUES:
+            predicate, predicate_params = _registration_driver_exists(
+                frozenset({
+                    "roxy", "roxybrowser", "browser", "browser_use", "skyvern",
+                    "fingerprint", "cloak", "cloakbrowser",
+                }),
+            )
+            where.append(predicate)
+            params.extend(predicate_params)
+        else:
+            # 只搜索列表可安全展示的固定字段；不要把整段 JSONB 或凭证纳入 ILIKE。
+            where.append(
+                "concat_ws(' ', "
+                "CAST(a.id AS TEXT), a.email, COALESCE(a.data->>'user_name', ''), "
+                "COALESCE(a.email_source, ''), COALESCE(a.data->>'note', '')"
+                ") ILIKE %s"
+            )
+            params.append(f"%{query}%")
     if date_from:
         where.append("LEFT(a.created_at, 10) >= %s")
         params.append(date_from[:10])

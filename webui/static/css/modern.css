@@ -3166,6 +3166,34 @@
     .list-action-toolbar .list-toolbar-utilities {
       min-height: 34px; margin-left: auto; padding-left: 12px; border-left: 1px solid #e5e8ef;
     }
+    #accountsToolbarV2 .list-toolbar-utilities { min-width: 0; max-width: 100%; flex-wrap: wrap; }
+    .account-advanced-search {
+      display: flex; align-items: center; gap: 8px; width: 310px; max-width: 100%; min-height: 34px;
+      padding: 0 8px 0 10px; box-sizing: border-box; border: 1px solid #dfe2e9;
+      border-radius: 8px; background: #fff;
+    }
+    .account-advanced-search:focus-within { border-color: #5b5ce2; box-shadow: 0 0 0 2px #ededff; }
+    .account-advanced-search label { flex: 0 0 auto; color: #5f687a; font-size: 11px; font-weight: 700; }
+    .account-advanced-search input {
+      flex: 1; width: 0; min-width: 0; height: 32px; min-height: 0 !important; margin: 0; padding: 0;
+      border: 0; border-radius: 0; background: transparent; box-shadow: none !important; outline: none;
+      color: #30384b; font: inherit; font-size: 12px;
+    }
+    .account-advanced-search input::placeholder { color: #727b8d; }
+    .account-advanced-search input::-webkit-search-cancel-button { display: none; }
+    .account-advanced-search button {
+      flex: 0 0 24px; width: 24px; height: 24px; min-height: 24px; margin: 0; padding: 0;
+      border: 0; border-radius: 4px; background: transparent; color: #5f687a; font-size: 18px;
+      line-height: 1; cursor: pointer;
+    }
+    .account-advanced-search button:hover { background: #f0f1f8; }
+    .account-advanced-search button:focus-visible { outline: 2px solid #5b5ce2; outline-offset: 1px; }
+    .account-advanced-search button[hidden] { display: none; }
+    @media (max-width: 640px) {
+      #accountsToolbarV2 .list-toolbar-utilities { flex: 1 1 100%; margin-left: 0; padding-left: 0; border-left: 0; }
+      .account-advanced-search { flex: 1 1 100%; width: 100%; }
+      .account-advanced-search input { font-size: 16px; }
+    }
     .accounts-command-deck #accountsToolbarV2,
     #codexToolbarV2, #outlookToolbarV2 { padding: 10px 16px; }
     #outlookToolbarV2.list-action-toolbar { border-bottom: 1px solid #e7eaf0; }

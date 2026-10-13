@@ -78,6 +78,102 @@ class AdminRepositoryTests(PostgresTestCase):
         self.assertIn("source", result["facets"])
         self.assertTrue(all(item["email_source"] == "icloud_hide" for item in result["items"]))
 
+    def test_account_query_matches_registration_driver_and_safe_display_fields(self):
+        protocol_id = rs.insert_row(rs.ACCOUNTS, {
+            "email": "protocol-search@example.test",
+            "email_source": "protocol-source",
+            "user_name": "协议用户",
+            "note": "协议注册样本",
+        })
+        roxy_id = rs.insert_row(rs.ACCOUNTS, {
+            "email": "roxy-search@example.test",
+            "email_source": "outlook",
+            "user_name": "浏览器用户",
+            "note": "Roxy 样本",
+        })
+        rs.insert_row(rs.ACCOUNTS, {
+            "email": "contains-protocol@example.test",
+            "email_source": "outlook",
+        })
+        rs.insert_row(rs.JOBS, {
+            "job_uuid": "driver-protocol-search",
+            "email": "protocol-search@example.test",
+            "account_id": protocol_id,
+            "job_type": "registration",
+            "data": {"config_snapshot": {"registration_driver": "protocol"}},
+        })
+        rs.insert_row(rs.JOBS, {
+            "job_uuid": "driver-roxy-search",
+            "email": "roxy-search@example.test",
+            "account_id": roxy_id,
+            "job_type": "registration",
+            "data": {"config_snapshot": {"registration_driver": "roxy"}},
+        })
+
+        for query in ("protocol", "协议注册"):
+            with self.subTest(query=query):
+                result = repo.list_accounts(repo.PageRequest(page=1, page_size=20), q=query)
+                self.assertEqual(result["total"], 1)
+                self.assertEqual(result["items"][0]["id"], protocol_id)
+
+        for query in ("roxy", "浏览器"):
+            with self.subTest(query=query):
+                result = repo.list_accounts(repo.PageRequest(page=1, page_size=20), q=query)
+                self.assertEqual(result["total"], 1)
+                self.assertEqual(result["items"][0]["id"], roxy_id)
+
+        for query, expected in (
+            (str(protocol_id), protocol_id),
+            ("协议用户", protocol_id),
+            ("protocol-source", protocol_id),
+            ("协议注册样本", protocol_id),
+        ):
+            with self.subTest(query=query):
+                result = repo.list_accounts(repo.PageRequest(page=1, page_size=20), q=query)
+                self.assertEqual(result["total"], 1)
+                self.assertEqual(result["items"][0]["id"], expected)
+
+        # 轻量状态接口必须沿用相同的账号搜索条件。
+        status = repo.list_account_statuses(repo.PageRequest(page=1, page_size=20), q="protocol")
+        self.assertEqual(status["total"], 1)
+        self.assertEqual(status["items"][0]["id"], protocol_id)
+
+    def test_account_query_does_not_scan_arbitrary_json_or_credentials(self):
+        rs.insert_row(rs.ACCOUNTS, {
+            "email": "safe-fields-only@example.test",
+            "access_token": "credential-only-marker",
+            "secret_marker": "private-json-marker",
+        })
+
+        for query in ("credential-only-marker", "private-json-marker"):
+            with self.subTest(query=query):
+                result = repo.list_accounts(repo.PageRequest(page=1, page_size=20), q=query)
+                self.assertEqual(result["total"], 0)
+
+    def test_registration_query_uses_latest_registration_attempt_driver(self):
+        account_id = rs.insert_row(rs.ACCOUNTS, {
+            "email": "driver-history@example.test",
+        })
+        rs.insert_row(rs.JOBS, {
+            "job_uuid": "driver-history-protocol",
+            "email": "driver-history@example.test",
+            "account_id": account_id,
+            "job_type": "registration",
+            "data": {"config_snapshot": {"registration_driver": "protocol"}},
+        })
+        rs.insert_row(rs.JOBS, {
+            "job_uuid": "driver-history-roxy",
+            "email": "driver-history@example.test",
+            "account_id": account_id,
+            "job_type": "registration_resume",
+            "data": {"config_snapshot": {"registration_driver": "roxy"}},
+        })
+
+        protocol = repo.list_accounts(repo.PageRequest(page=1, page_size=20), q="protocol")
+        roxy = repo.list_accounts(repo.PageRequest(page=1, page_size=20), q="roxy")
+        self.assertNotIn(account_id, {item["id"] for item in protocol["items"]})
+        self.assertIn(account_id, {item["id"] for item in roxy["items"]})
+
     def test_account_list_does_not_return_full_chatgpt_session(self):
         account_id = rs.insert_row(rs.ACCOUNTS, {
             "email": "session-hidden@example.test",

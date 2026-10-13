@@ -1054,6 +1054,7 @@ $('#accountTasksPanel')?.addEventListener('change', event => {
   else ACCOUNT_TASK_SELECTED.delete(taskId);
   renderAccountTasks();
 });
+let accountAdvancedSearchQuery = '';
 function getAccountsQuery() {
   const el = document.getElementById('qAccountsV2');
   return (el ? el.value : '').trim();
@@ -1077,10 +1078,11 @@ function accountListQueryParams() {
   const archived = SHOW_ARCHIVED_ACCOUNTS ? 'only' : '0';
   const plan = document.getElementById('accountPlanFilterV2')?.value || (SHOW_PLUS_ACCOUNTS_ONLY ? 'plus' : '');
   const email = getAccountsQuery();
+  const q = accountAdvancedSearchQuery;
   const dateFrom = document.getElementById('dateFromAccountsV2')?.value || '';
   const dateTo = document.getElementById('dateToAccountsV2')?.value || '';
   const p = PAGERS.accounts;
-  const params = new URLSearchParams({paged:'1', page:String(p.page), page_size:String(p.size), archived, plan, email, date_from:dateFrom, date_to:dateTo});
+  const params = new URLSearchParams({paged:'1', page:String(p.page), page_size:String(p.size), archived, plan, email, q, date_from:dateFrom, date_to:dateTo});
   const accountFilters = {
     id: 'accountIdFilterV2', source: 'accountSourceFilterV2', token: 'accountTokenFilterV2',
     password: 'accountPasswordFilterV2', promotion: 'accountTrialFilterV2', totp: 'accountTotpFilterV2', risk: 'accountRiskFilterV2', codex: 'accountCodexFilterV2', account_status: 'accountStatusFilterV2',
@@ -1100,6 +1102,10 @@ async function loadAccounts() {
     const p = PAGERS.accounts;
     const params = accountListQueryParams();
     const res = await api(`/api/accounts?${params.toString()}`);
+    if (params.toString() !== accountListQueryParams().toString()) {
+      accountsReloadQueued = true;
+      return;
+    }
     const facets = res.facets || {};
     syncFacetSelect('accountSourceFilterV2', facets.source, {group:'source'});
     syncFacetSelect('accountTokenFilterV2', facets.token, {
@@ -1140,7 +1146,9 @@ async function pollAccountPlanStatuses() {
   if (planStatusLoading || accountsLoading) return;
   planStatusLoading = true;
   try {
-    const snapshot = await api(`/api/accounts/plan-check-status?${accountListQueryParams().toString()}`);
+    const params = accountListQueryParams().toString();
+    const snapshot = await api(`/api/accounts/plan-check-status?${params}`);
+    if (accountsLoading || params !== accountListQueryParams().toString()) return;
     const items = snapshot.items || [];
     const accountById = new Map(ACCOUNTS.map(r => [Number(r.id), r]));
     const hasUnknown = items.some(item => !accountById.has(Number(item.id)));
@@ -2588,11 +2596,41 @@ async function refreshAccountsList(btn) {
   }
 }
 (function bindAccountsFilterV2() {
-  const reload = debounce(() => {
+  let timer = null;
+  let composing = false;
+  const search = $('#accountAdvancedSearchV2');
+  const clearSearch = $('#btnClearAccountSearchV2');
+  const syncSearch = () => { if (clearSearch) clearSearch.hidden = !search?.value; };
+  const apply = () => {
+    clearTimeout(timer);
+    accountAdvancedSearchQuery = search?.value.trim() || '';
     ACCOUNT_SELECTED.clear();
+    updateAccountSelectionUi();
     PAGERS.accounts.page = 1;
     loadAccounts();
-  }, 250);
+  };
+  const reload = () => { clearTimeout(timer); timer = setTimeout(apply, 250); };
+  search?.addEventListener('compositionstart', () => { composing = true; clearTimeout(timer); });
+  search?.addEventListener('compositionend', () => { composing = false; syncSearch(); reload(); });
+  search?.addEventListener('input', event => {
+    syncSearch();
+    if (!composing && !event.isComposing) reload();
+  });
+  const resetSearch = () => {
+    if (!search) return;
+    search.value = '';
+    composing = false;
+    syncSearch();
+    apply();
+    search.focus();
+  };
+  search?.addEventListener('keydown', event => {
+    if (composing || event.isComposing || event.keyCode === 229) return;
+    if (event.key === 'Enter') { event.preventDefault(); apply(); }
+    if (event.key === 'Escape') { event.preventDefault(); resetSearch(); }
+  });
+  clearSearch?.addEventListener('click', resetSearch);
+  syncSearch();
   ['accountIdFilterV2','qAccountsV2'].forEach(id => {
     document.getElementById(id)?.addEventListener('input', reload);
   });
@@ -2607,10 +2645,10 @@ async function refreshAccountsList(btn) {
   const refreshV2 = $('#btnRefreshAccountsV2');
   if (refreshV2) refreshV2.addEventListener('click', () => refreshAccountsList(refreshV2));
   $('#btnResetAccountFiltersV2')?.addEventListener('click', () => {
-    ['accountIdFilterV2','qAccountsV2','accountSourceFilterV2','accountTokenFilterV2','accountStatusFilterV2','accountPasswordFilterV2','accountPlanFilterV2','accountTrialFilterV2','accountTotpFilterV2','accountRiskFilterV2','accountCodexFilterV2','dateFromAccountsV2','dateToAccountsV2'].forEach(id => {
+    ['accountAdvancedSearchV2','accountIdFilterV2','qAccountsV2','accountSourceFilterV2','accountTokenFilterV2','accountStatusFilterV2','accountPasswordFilterV2','accountPlanFilterV2','accountTrialFilterV2','accountTotpFilterV2','accountRiskFilterV2','accountCodexFilterV2','dateFromAccountsV2','dateToAccountsV2'].forEach(id => {
       const el = document.getElementById(id); if (el) el.value = '';
     });
-    ACCOUNT_SELECTED.clear(); PAGERS.accounts.page = 1; refreshColumnFilterStates(); loadAccounts();
+    syncSearch(); refreshColumnFilterStates(); apply();
   });
 })();
 
