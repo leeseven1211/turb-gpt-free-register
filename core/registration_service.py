@@ -2737,6 +2737,20 @@ def _pre_account_retry_facts_match(job: dict, root: dict | None, attempt: dict |
     )
 
 
+def _pre_account_submission_retry_reason(attempt: dict | None) -> str:
+    """解释为什么账号尚未落库的注册任务不能重新派发。"""
+    if not attempt or attempt.get("id") is None:
+        return "缺少可核验的原邮箱或注册 Attempt，无法重跑原任务"
+    try:
+        from core.storage import registration as registration_store
+
+        if registration_store.has_unresolved_submission_facts(int(attempt["id"])):
+            return "同一 Attempt 仍有未决浏览器提交，需先核对原请求结果"
+    except Exception:
+        return "同一 Attempt 的浏览器提交事实暂不可核验，不能重跑"
+    return "缺少可核验的原邮箱或注册 Attempt，无法重跑原任务"
+
+
 def _build_retry_info(
     job: dict,
     *,
@@ -2780,6 +2794,9 @@ def _build_retry_info(
     if "remail_order_request_unknown" in error or ("Remail" in error and "订单结果待核验" in error):
         info["retry_reason"] = "邮箱订单结果待核验，不能重复下单；需先恢复原订单邮箱"
         return info
+    pre_account_retryable = account is None and _pre_account_retry_facts_match(
+        job, resume_root, attempt,
+    )
     if status in {"request_unknown", "manual_reconcile"} or attempt_target in {"request_unknown", "manual_reconcile"}:
         info["display_status"] = "failed"
         can_resume = bool(
@@ -2787,7 +2804,7 @@ def _build_retry_info(
             and resume_root
             and _roxy_resume_facts_match(job, resume_root, account, attempt, root_id=root_id)
         )
-        can_retry = account is None and _pre_account_retry_facts_match(job, resume_root, attempt)
+        can_retry = pre_account_retryable
         confirmed_core = bool(
             account and str(account.get("access_token") or "").strip()
             and attempt and attempt.get("remote_account_state") == "confirmed"
@@ -2812,6 +2829,11 @@ def _build_retry_info(
     if successful_retry is not None:
         info["retry_reason"] = f"后续重试任务 #{successful_retry.get('id')} 已成功"
         info["successful_retry_job_id"] = successful_retry.get("id")
+        return info
+
+    if account is None and not pre_account_retryable:
+        info["display_status"] = "failed"
+        info["retry_reason"] = _pre_account_submission_retry_reason(attempt)
         return info
 
     if status == "success" and account is None:

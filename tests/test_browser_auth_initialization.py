@@ -291,23 +291,93 @@ class BrowserAuthInitializationTests(unittest.TestCase):
             current_url="https://chatgpt.com/auth/login",
             _registration_stage_budget=StageBudget(0.3, clock=lambda: 0.0),
             timeouts=SimpleNamespace(script=8), set_script_timeout=Mock(), execute_script=Mock(),
-            execute_async_script=Mock(return_value={"ok": True, "url": "https://auth.openai.com/authorize"}),
+            execute_async_script=Mock(),
         )
-        with patch.object(email_otp, "_email_submit_advanced_state", return_value=None), patch.object(
-            email_otp, "_safe_get"
-        ) as navigation:
-            result = email_otp._submit_email_via_browser_nextauth(driver, "unit@example.test")
+        timeline = []
+        scripts = []
+
+        def execute_async_script(*args):
+            scripts.append(args[0])
+            timeline.append("csrf_script" if len(scripts) == 1 else "signin_script")
+            return {"ok": True, "stage": "csrf_ready", "csrf_token": "test-token"} if len(scripts) == 1 else {
+                "ok": True, "url": "https://auth.openai.com/authorize",
+            }
+
+        driver.execute_async_script.side_effect = execute_async_script
+        with patch.object(
+            email_otp, "record_browser_submission_fact",
+            side_effect=lambda _driver, phase, **_kwargs: timeline.append(phase),
+        ):
+            with patch.object(email_otp, "_email_submit_advanced_state", return_value=None), patch.object(
+                email_otp, "_safe_get"
+            ) as navigation:
+                result = email_otp._submit_email_via_browser_nextauth(driver, "unit@example.test")
         self.assertEqual(result["stage"], "redirect_dispatched")
+        self.assertEqual(driver.execute_async_script.call_count, 2)
+        self.assertEqual(timeline, ["csrf_script", "dispatch_intent", "signin_script", "ui_dispatched"])
+        self.assertIn("/api/auth/csrf", scripts[0])
+        self.assertIn("csrf_token:csrfToken", scripts[0])
+        self.assertIn("const csrfToken = String(arguments[3] || '')", scripts[1])
         self.assertEqual(driver.execute_async_script.call_args.args[-1], 250)
         self.assertEqual(driver.set_script_timeout.call_args_list[0].args, (0.3,))
         self.assertEqual(driver.set_script_timeout.call_args_list[-1].args, (8,))
         navigation.assert_not_called()
+
+        runtime = """
+        const scripts = SCRIPT_ARRAY;
+        const window = {};
+        const location = {origin:'https://chatgpt.com', href:'https://chatgpt.com/auth/login'};
+        const requests = [];
+        const fetch = async (url, options) => {
+          const path = String(url).split('?')[0];
+          requests.push({path, method:options.method});
+          if (path === '/api/auth/csrf') {
+            return {ok:true, status:200, text:async()=>JSON.stringify({csrfToken:'csrf-secret'})};
+          }
+          return {ok:true, status:200, text:async()=>JSON.stringify({url:'https://auth.openai.com/authorize'})};
+        };
+        const run = (script, args) => new Promise(resolve => {
+          const execute = new Function('location','window','fetch','AbortController','URLSearchParams','URL','setTimeout','clearTimeout','args','callback',
+            `return (function(){${script}}).apply(null,args.concat(callback));`);
+          execute(location,window,fetch,AbortController,URLSearchParams,URL,setTimeout,clearTimeout,args,resolve);
+        });
+        (async () => {
+          const first = await run(scripts[0], ['unit@example.test','device','log',1000]);
+          const second = await run(scripts[1], ['unit@example.test','device','log',first.csrf_token,1000]);
+          console.log(JSON.stringify({first:first.stage,second:second.stage,requests,
+            token_exposed:Object.values(window).some(value=>value==='csrf-secret')}));
+        })().catch(error=>{console.error(error);process.exit(1)});
+        """.replace("SCRIPT_ARRAY", json.dumps(scripts))
+        self.assertEqual(_run_js(runtime), {
+            "first": "csrf_ready", "second": "redirect_ready",
+            "requests": [
+                {"path": "/api/auth/csrf", "method": "GET"},
+                {"path": "/api/auth/signin/openai", "method": "POST"},
+            ],
+            "token_exposed": False,
+        })
 
     def test_nextauth_exhausted_budget_does_not_send_request(self):
         driver = SimpleNamespace(_registration_stage_budget=StageBudget(0, clock=lambda: 0.0), execute_async_script=Mock())
         with self.assertRaises(StageTimeout):
             email_otp._submit_email_via_browser_nextauth(driver, "unit@example.test")
         driver.execute_async_script.assert_not_called()
+
+    def test_nextauth_browser_error_does_not_echo_csrf_token(self):
+        driver = SimpleNamespace(
+            current_url="https://chatgpt.com/auth/login",
+            set_script_timeout=Mock(), execute_async_script=Mock(side_effect=[
+                {"ok": True, "stage": "csrf_ready", "csrf_token": "csrf-secret"},
+                RuntimeError("webdriver detail csrf-secret"),
+            ]),
+        )
+        phases = []
+        with patch.object(email_otp, "record_browser_submission_fact",
+                          side_effect=lambda _driver, phase, **_kwargs: phases.append(phase)), \
+             patch.object(email_otp, "_email_submit_advanced_state", return_value=None):
+            result = email_otp._submit_email_via_browser_nextauth(driver, "unit@example.test")
+        self.assertNotIn("csrf-secret", result["reason"])
+        self.assertEqual(phases, ["dispatch_intent", "unknown"])
 
     def test_next_state_session_probe_obeys_fallback_budget(self):
         budget = StageBudget(0.3, clock=lambda: 0.0)
@@ -323,8 +393,12 @@ class BrowserAuthInitializationTests(unittest.TestCase):
     def test_nextauth_timeout_aborts_pending_csrf_without_sending_signin(self):
         driver = SimpleNamespace(current_url="https://chatgpt.com/auth/login", set_script_timeout=Mock(),
                                  execute_async_script=Mock(return_value={"ok": False}))
-        with patch.object(email_otp, "_email_submit_advanced_state", return_value=None):
+        phases = []
+        with patch.object(email_otp, "record_browser_submission_fact",
+                          side_effect=lambda _driver, phase, **_kwargs: phases.append(phase)), \
+             patch.object(email_otp, "_email_submit_advanced_state", return_value=None):
             email_otp._submit_email_via_browser_nextauth(driver, "unit@example.test")
+        self.assertNotIn("dispatch_intent", phases)
         script = driver.execute_async_script.call_args.args[0]
         source = """
         let requests=0, aborted=false;

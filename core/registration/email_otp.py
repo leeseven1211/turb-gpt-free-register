@@ -888,10 +888,9 @@ def _submit_email_via_browser_nextauth(driver, email: str) -> dict:
             stage="nextauth", endpoint_kind="nextauth_signin", http_method="POST",
         )
         driver._browser_submission_receipt = nextauth_receipt
-        # NextAuth 兜底同样是唯一可能派发的认证动作，必须先建立持久围栏。
-        record_browser_submission_fact(driver, "dispatch_intent", receipt=nextauth_receipt)
     old_script_timeout = int(getattr(_cfg, "ROXY_SELENIUM_TIMEOUT", 90) or 90)
     fetch_timeout = _budget_timeout(budget, 25.0, minimum=0.0)
+    signin_dispatch_started = False
     try:
         try:
             previous = driver.timeouts.script
@@ -903,10 +902,7 @@ def _submit_email_via_browser_nextauth(driver, email: str) -> dict:
             driver.set_script_timeout(fetch_timeout)
         except Exception:
             pass
-        result = driver.execute_async_script(r"""
-        const email = String(arguments[0] || '').trim();
-        const did = String(arguments[1] || '');
-        const authLogId = String(arguments[2] || '');
+        csrf_result = driver.execute_async_script(r"""
         const callback = arguments[arguments.length - 1];
         const controller = new AbortController();
         let settled = false;
@@ -940,11 +936,63 @@ def _submit_email_via_browser_nextauth(driver, email: str) -> dict:
             try { csrfData = JSON.parse(csrfText); } catch (_) {}
             const csrfToken = csrfData.csrfToken || '';
             if (!csrfResp.ok || !csrfToken) {
-              // 不把响应体带回 Python；CSRF/Token 只用于本次页面内请求。
               done({ok:false, stage:'csrf', status:csrfResp.status, error_type:'csrf_http'});
               return;
             }
+            // Token 仅经当前 WebDriver 调用返回，不落库、不写日志。
+            done({ok:true, stage:'csrf_ready', csrf_token:csrfToken});
+          } catch (e) {
+            done({ok:false, stage:'exception', error_type:'nextauth_exception'});
+          }
+        })();
+        """, email, did, auth_log_id, max(1, int(fetch_timeout * 1000) - 50)) or {}
+        if not isinstance(csrf_result, dict):
+            return {"ok": False, "reason": "csrf_preflight_result_unknown"}
+        if not csrf_result.get("ok") or csrf_result.get("stage") != "csrf_ready":
+            return csrf_result
+        csrf_token = str(csrf_result.get("csrf_token") or "")
+        if not csrf_token:
+            return {"ok": False, "reason": "csrf_preflight_token_missing"}
 
+        if budget is not None:
+            budget.require("NextAuth signin 请求")
+        signin_timeout = _budget_timeout(budget, 25.0, minimum=0.0)
+        if signin_timeout <= 0:
+            return {"ok": False, "reason": "nextauth_budget_exhausted"}
+        try:
+            driver.set_script_timeout(signin_timeout)
+        except Exception:
+            pass
+        # CSRF 是只读预检；只有它成功后才为即将发送的 signin POST 建立围栏。
+        record_browser_submission_fact(driver, "dispatch_intent", receipt=nextauth_receipt)
+        signin_dispatch_started = True
+        result = driver.execute_async_script(r"""
+        const email = String(arguments[0] || '').trim();
+        const did = String(arguments[1] || '');
+        const authLogId = String(arguments[2] || '');
+        const csrfToken = String(arguments[3] || '');
+        const callback = arguments[arguments.length - 1];
+        const controller = new AbortController();
+        let settled = false;
+        const done = value => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          callback(value);
+        };
+        const timer = setTimeout(() => {
+          controller.abort();
+          done({ok:false, stage:'timeout', reason:'nextauth_budget_exhausted'});
+        }, arguments[4]);
+        if (location.origin !== 'https://chatgpt.com') {
+          done({ok:false, not_dispatched:true, reason:'not_on_chatgpt'}); return;
+        }
+        (async () => {
+          if (!csrfToken) {
+            done({ok:false, stage:'signin', not_dispatched:true, error_type:'csrf_state_missing'});
+            return;
+          }
+          try {
             const q = new URLSearchParams({
               prompt: 'login',
               'ext-oai-did': did,
@@ -954,14 +1002,10 @@ def _submit_email_via_browser_nextauth(driver, email: str) -> dict:
               login_hint: email
             });
             const body = new URLSearchParams({
-              callbackUrl: 'https://chatgpt.com/',
-              csrfToken,
-              json: 'true'
+              callbackUrl: 'https://chatgpt.com/', csrfToken, json: 'true'
             });
             const resp = await fetch('/api/auth/signin/openai?' + q.toString(), {
-              method: 'POST',
-              signal: controller.signal,
-              credentials: 'include',
+              method: 'POST', signal: controller.signal, credentials: 'include',
               headers: {
                 'accept': 'application/json',
                 'content-type': 'application/x-www-form-urlencoded',
@@ -978,7 +1022,6 @@ def _submit_email_via_browser_nextauth(driver, email: str) -> dict:
               done({ok:false, stage:'signin', status:resp.status, error_type:'signin_http'});
               return;
             }
-
             try {
               const u = new URL(url, location.href);
               if (!u.searchParams.get('screen_hint')) u.searchParams.set('screen_hint', 'login_or_signup');
@@ -995,18 +1038,23 @@ def _submit_email_via_browser_nextauth(driver, email: str) -> dict:
             done({ok:false, stage:'exception', error_type:'nextauth_exception'});
           }
         })();
-        """, email, did, auth_log_id, max(1, int(fetch_timeout * 1000) - 50)) or {}
+        """, email, did, auth_log_id, csrf_token, max(1, int(signin_timeout * 1000) - 50)) or {}
         if not isinstance(result, dict):
             record_browser_submission_fact(driver, "unknown", receipt=nextauth_receipt, result="unknown")
             return {"ok": False, "reason": "invalid_result", "result": str(result)[:300]}
         if not result.get("ok"):
+            if result.get("not_dispatched"):
+                record_browser_submission_fact(
+                    driver, "not_dispatched", receipt=nextauth_receipt,
+                    result="cancelled", error_type=str(result.get("error_type") or "not_dispatched"),
+                )
+                return result
             status = result.get("status")
             try:
                 status_code = int(status)
             except (TypeError, ValueError):
                 status_code = 0
-            # 400/401 是本次 CSRF/signin 请求被明确拒绝且没有可用跳转；
-            # 5xx、超时或无状态仍是未知，不能自动重放 POST。
+            # signin POST 被明确拒绝才可收口；预检 GET 不进入提交事实。
             phase = "rejected" if status_code in {400, 401} else "response_observed"
             record_browser_submission_fact(
                 driver, phase, receipt=nextauth_receipt,
@@ -1020,7 +1068,7 @@ def _submit_email_via_browser_nextauth(driver, email: str) -> dict:
         except Exception:
             parsed = None
         if not parsed or parsed.scheme != "https" or parsed.hostname not in ("auth.openai.com", "chatgpt.com"):
-            record_browser_submission_fact(driver, "rejected", receipt=nextauth_receipt, result="failure", error_type="unsafe_redirect")
+            record_browser_submission_fact(driver, "unknown", receipt=nextauth_receipt, result="unknown", error_type="unsafe_redirect")
             return {"ok": False, "reason": "unsafe_redirect_url", "url": _diagnostic_url(target_url)}
 
         if budget is not None:
@@ -1068,11 +1116,12 @@ def _submit_email_via_browser_nextauth(driver, email: str) -> dict:
             "target_url": _diagnostic_url(target_url),
         }
     except Exception as exc:
-        try:
-            record_browser_submission_fact(driver, "unknown", receipt=nextauth_receipt, result="unknown", error_type=type(exc).__name__)
-        except Exception:
-            logger.exception("%s NextAuth 提交未知事实保存失败", _log_prefix(driver))
-        return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
+        if signin_dispatch_started:
+            try:
+                record_browser_submission_fact(driver, "unknown", receipt=nextauth_receipt, result="unknown", error_type=type(exc).__name__)
+            except Exception:
+                logger.exception("%s NextAuth 提交未知事实保存失败", _log_prefix(driver))
+        return {"ok": False, "reason": f"NextAuth 浏览器请求失败（{type(exc).__name__}）"}
     finally:
         try:
             driver.set_script_timeout(old_script_timeout)

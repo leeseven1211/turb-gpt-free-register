@@ -612,10 +612,11 @@ class RoxyEmailRecoveryTests(unittest.TestCase):
     def test_nextauth_does_not_treat_chatgpt_login_as_final_landing(self):
         driver = _FakeDriver()
         driver.set_script_timeout = lambda _timeout: None
-        driver.execute_async_script = lambda *_args: {
-            "ok": True,
-            "url": "https://chatgpt.com/api/auth/signin?csrf=true",
-        }
+        responses = iter((
+            {"ok": True, "stage": "csrf_ready", "csrf_token": "test-token"},
+            {"ok": True, "url": "https://chatgpt.com/api/auth/signin?csrf=true"},
+        ))
+        driver.execute_async_script = lambda *_args: next(responses)
 
         def _land_back_on_login(current_driver, *_args, **_kwargs):
             current_driver.current_url = "https://chatgpt.com/auth/login?callbackUrl=https%3A%2F%2Fchatgpt.com%2F"

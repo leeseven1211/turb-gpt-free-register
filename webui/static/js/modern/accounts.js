@@ -124,7 +124,7 @@ function accountTaskProgressStepEvidence(step) {
 }
 function accountTaskStepAttempts(step) {
   const attempts = Array.isArray(step?.attempts) ? step.attempts : [];
-  return attempts.length ? `<details class="account-task-stage-attempts" data-account-task-detail="attempts"><summary>查看尝试记录（${attempts.length}）</summary><pre>${esc(JSON.stringify(attempts, null, 2))}</pre></details>` : '';
+  return attempts.length ? `<details class="account-task-stage-attempts" data-account-task-detail="attempts"><summary>查看阶段事件（${attempts.length}）</summary><pre>${esc(JSON.stringify(attempts, null, 2))}</pre></details>` : '';
 }
 function accountTaskStepDetails(step) {
   const rawDetail = step?.reason || step?.message || '';
@@ -192,7 +192,7 @@ function accountTaskStepDialogBody(step, tab) {
   if (!step) return tab === 'children' ? accountTaskChildRuns(accountTaskProgressSnapshot) || '<p>当前 Run 没有独立子任务。</p>' : accountTaskFailureSummary(accountTaskProgressSnapshot) || '<p>当前 Run 没有失败记录。</p>';
   if (tab === 'attempts') {
     const attempts = Array.isArray(step.attempts) ? step.attempts : [];
-    return attempts.length ? `<ol class="account-task-attempt-list">${attempts.map(accountTaskStepAttemptMarkup).join('')}</ol>` : '<p>此步骤暂无尝试记录。</p>';
+    return attempts.length ? `<ol class="account-task-attempt-list">${attempts.map(accountTaskStepAttemptMarkup).join('')}</ol>` : '<p>此步骤暂无阶段事件。</p>';
   }
   if (tab === 'children') {
     const children = taskProgressVisibleSteps(step.children);
@@ -214,7 +214,7 @@ function renderAccountTaskStepDialog() {
   const content = $('#accountTaskStepDetailContent');
   if (!title || !content) return;
   title.textContent = step ? accountTaskProgressStepLabel(step) : '任务诊断详情';
-  const tabs = step ? [['time', '阶段与时间'], ['attempts', `尝试记录（${(step.attempts || []).length}）`], ['children', `子步骤（${taskProgressVisibleSteps(step.children).length}）`]] : [['failure', '失败证据'], ['children', '独立子任务']];
+  const tabs = step ? [['time', '阶段与时间'], ['attempts', `阶段事件（${(step.attempts || []).length}）`], ['children', `子步骤（${taskProgressVisibleSteps(step.children).length}）`]] : [['failure', '失败证据'], ['children', '独立子任务']];
   const focusedTab = document.activeElement?.getAttribute?.('data-step-dialog-tab');
   $('#accountTaskStepDetailTabs').innerHTML = tabs.map(([id, label]) => `<button type="button" role="tab" data-step-dialog-tab="${id}" aria-selected="${state.tab === id}" class="${state.tab === id ? 'is-active' : ''}" aria-controls="accountTaskStepDetailContent">${esc(label)}</button>`).join('');
   const scrollTop = content.scrollTop;
@@ -274,7 +274,7 @@ function accountTaskProgressBrief(progress) {
   const location = failure ? `${failure.label || failure.step_id || '位置待确认'}${failure.stage ? ` · ${failure.stage}` : ''}` : '';
   const message = failure?.message || '';
   const inferred = failure?.inferred === true || failure?.evidence?.inferred === true || ['inferred', 'legacy', 'unobserved'].includes(failure?.evidence) || ['inferred'].includes(failure?.evidence?.source || failure?.evidence?.kind);
-  return `<div class="account-task-stage-brief">${failure ? `<button type="button" class="account-task-failure-brief" data-account-task-failure-details aria-haspopup="dialog" title="${attrEsc(`${location}：${message}`)}"><strong>${inferred ? '待确认位置' : '失败'}：${esc(location)}</strong><span>${esc(message || '查看定位与证据')}</span></button>` : '<span class="account-task-stage-brief-hint">悬浮查看时间与尝试记录，点击步骤筛选日志。</span>'}${children.length ? `<button type="button" class="account-task-child-brief" data-account-task-child-details aria-haspopup="dialog">子任务 ${children.length}</button>` : ''}</div>`;
+  return `<div class="account-task-stage-brief">${failure ? `<button type="button" class="account-task-failure-brief" data-account-task-failure-details aria-haspopup="dialog" title="${attrEsc(`${location}：${message}`)}"><strong>${inferred ? '待确认位置' : '失败'}：${esc(location)}</strong><span>${esc(message || '查看定位与证据')}</span></button>` : '<span class="account-task-stage-brief-hint">悬浮查看时间与阶段事件，点击步骤筛选日志。</span>'}${children.length ? `<button type="button" class="account-task-child-brief" data-account-task-child-details aria-haspopup="dialog">子任务 ${children.length}</button>` : ''}</div>`;
 }
 function renderAccountTaskProgressSnapshot(progress) {
   const panel = $('#accountTaskStageProgress');

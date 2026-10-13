@@ -519,3 +519,10 @@ test('旧阶段事件缺少实际时间时明确提示，不能借用阶段开�
   assert.match(sandbox.result, /提交邮箱.*发生时间未记录/);
   assert.doesNotMatch(sandbox.result, /2026-10-13T09:24:23Z/);
 });
+
+
+test('任务步骤入口统一称为阶段事件，不把事件条数写成尝试次数', () => {
+  assert.doesNotMatch(accountsSource, /尝试记录/);
+  assert.match(accountsSource, /悬浮查看时间与阶段事件/);
+  assert.match(accountsSource, /查看阶段事件/);
+});

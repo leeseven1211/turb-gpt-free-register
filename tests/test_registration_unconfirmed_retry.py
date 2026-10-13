@@ -65,6 +65,16 @@ class UnconfirmedRegistrationRetryTests(unittest.TestCase):
                 self.assertEqual(info["retry_action"], "registration")
                 self.assertEqual(info["display_status"], "failed")
 
+    def test_failed_pre_account_task_with_unresolved_submission_is_not_retryable(self):
+        job, attempt = pre_account_facts()
+        job["status"] = "failed"
+        with patch("core.storage.registration.has_unresolved_submission_facts", return_value=True):
+            info = svc._build_retry_info(
+                job, account=None, attempt=attempt, successful_retry=None,
+            )
+        self.assertFalse(info["retryable"])
+        self.assertIn("未决", info["retry_reason"])
+
     def test_old_unconfirmed_child_loads_root_for_single_and_bulk_retry(self):
         root, attempt = pre_account_facts()
         child = dict(root, id=22, root_job_id=21, parent_job_id=21)
