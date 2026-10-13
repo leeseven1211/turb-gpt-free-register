@@ -352,6 +352,27 @@ def test_registration_later_phase_start_cannot_confirm_authentication():
     assert auth["reason"] == "已取得登录会话，身份验证已确认"
 
 
+def test_registration_confirmed_otp_duration_stays_closed_when_token_arrives():
+    events = [
+        _event("page", "page", "success", detail={
+            "step_instance_id": "page-a", "started_at": "2026-10-13T09:23:57Z",
+            "completed_at": "2026-10-13T09:24:20Z",
+        }),
+        _event("otp", "email_otp", "success", detail={
+            "step_instance_id": "otp-a", "started_at": "2026-10-13T09:25:54Z",
+            "completed_at": "2026-10-13T09:26:23Z",
+        }),
+    ]
+    before = _step(build_progress_snapshot(1, 2, "registration", _run(), events), "authenticate")
+    events.append(_event("token", "token", "success", created_at="2026-10-13T09:26:55Z"))
+    after = _step(build_progress_snapshot(1, 2, "registration", _run("success"), events), "authenticate")
+    for auth in (before, after):
+        assert auth["state"] == "success"
+        assert auth["completed_at"] == "2026-10-13T09:26:23Z"
+        assert auth["duration_ms"] == 146000
+        assert auth["reason"] is None
+
+
 def test_same_route_authenticate_reentry_closes_parent_only_for_current_children():
     run = _run("running", route_attempt_no=2)
     events = [

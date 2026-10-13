@@ -99,7 +99,7 @@ def _event_time(event: dict[str, Any]) -> str | None:
     for key in ("created_at", "captured_at", "timestamp", "ts"):
         if event.get(key):
             return str(event[key])
-    for key in ("captured_at", "created_at", "completed_at", "started_at"):
+    for key in ("occurred_at", "captured_at", "created_at", "completed_at", "started_at"):
         if detail.get(key):
             return str(detail[key])
     return None
@@ -537,7 +537,7 @@ def _legacy_events(run: dict[str, Any]) -> list[dict[str, Any]]:
                 continue
             raw_detail = item.get("detail")
             detail = dict(raw_detail) if isinstance(raw_detail, dict) else {"message": _safe_message(raw_detail)} if raw_detail else {}
-            for key in ("step_id", "main_step_id", "evidence", "started_at", "completed_at", "duration_ms", "message", "error_code", "route_attempt_no"):
+            for key in ("step_id", "main_step_id", "evidence", "occurred_at", "started_at", "completed_at", "duration_ms", "message", "error_code", "route_attempt_no"):
                 if item.get(key) is not None:
                     detail[key] = item[key]
             result.append({"stage": stage, "event_type": "legacy.progress", "detail": {"step_state": state, **detail}, "message": item.get("message"), "legacy_index": index})
@@ -856,8 +856,12 @@ def _project_registration_authentication(
              or value.get("raw_stage") == "authenticate" and value.get("state") == "success")
         or value.get("main_step_id") == "token" and value.get("state") == "success"
     )]
-    confirmation = confirmations[-1] if confirmations else None
-    confirmation_is_current = bool(confirmation and (not latest or confirmation.get("sequence", -1) >= latest.get("sequence", -1)))
+    # 当前认证阶段第一次取得确认就已闭合；后续 Token 落点不能延长已完成的 OTP 时间。
+    # 若认证步骤重新进入，则只接受本次最新认证事件之后的确认。
+    confirmation = next((value for value in confirmations if (
+        not latest or value.get("sequence", -1) >= latest.get("sequence", -1)
+    )), None)
+    confirmation_is_current = confirmation is not None
     if any(child.get("state") == "failed" for child in observed):
         state = "failed"
     elif any(child.get("state") == "running" for child in observed):

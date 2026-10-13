@@ -262,7 +262,7 @@ def _normalize_compatibility_event(event: dict) -> dict:
     if str(event.get("source_system") or "") not in {"registration_progress", "registration_progress_events"}:
         return event
     detail = event.get("detail") if isinstance(event.get("detail"), dict) else {}
-    raw_stamp = detail.get("completed_at") or detail.get("started_at")
+    raw_stamp = detail.get("occurred_at") or detail.get("completed_at") or detail.get("started_at")
     try:
         normalized = _legacy_registration_timestamp(raw_stamp)
     except (TypeError, ValueError, OverflowError):
@@ -1474,7 +1474,8 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
                     transition_id or _uuid("event", f"registration_progress:{event_source_id}"), task_id, run_id,
                     event_source_system,
                     event_source_id,
-                    _legacy_registration_timestamp(step.get("completed_at"))
+                    _legacy_registration_timestamp(step.get("occurred_at"))
+                    or _legacy_registration_timestamp(step.get("completed_at"))
                     or _legacy_registration_timestamp(step.get("started_at"))
                     or updated_at or _now(),
                     level, stage, f"stage.{state_value}", category, code,
@@ -1482,6 +1483,7 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
                     _json({
                         "state": state_value, "step_state": state_value, "raw_stage": raw_stage,
                         "started_at": step.get("started_at"), "completed_at": step.get("completed_at"),
+                        "occurred_at": step.get("occurred_at"),
                         "evidence": step.get("evidence") or "legacy_derived",
                         "route_attempt_no": step.get("route_attempt_no"),
                         "step_instance_id": step.get("step_instance_id") or step.get("transition_id"),

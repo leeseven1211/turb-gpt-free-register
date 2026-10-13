@@ -11,6 +11,28 @@ from tests.support_pg import PostgresTestCase
 
 
 class JobProgressTests(PostgresTestCase):
+    def test_repeated_running_events_keep_own_time_and_original_stage_start(self):
+        from core import account_task_store
+        from core.storage import operation
+
+        with patch.object(account_task_store, "_SCHEMA", self.schema), patch.object(account_task_store, "_READY_KEY", ""):
+            account_task_store.init()
+        job = db.create_job("icloud_hide", batch_id="stage-event-time")
+        stamps = ["2026-10-13T09:24:23+00:00", "2026-10-13T09:24:28+00:00", "2026-10-13T09:24:53+00:00"]
+        for stamp, message in zip(stamps, ["等待输入框", "邮箱已填写", "等待认证跳转"]):
+            with patch.object(db, "_registration_now", return_value=stamp):
+                db.update_job_progress(job["id"], "submit_email", "running", message, step_instance_id="email-instance")
+        step = db.get_job(job["id"])["progress_steps"]["submit_email"]
+        self.assertEqual(stamps[0], step["started_at"])
+        self.assertEqual(stamps, [item["occurred_at"] for item in step["transitions"]])
+        operation.sync_registration_job(job["id"])
+        progress = operation.get_registration_progress([job["id"]])[job["id"]]["progress"]
+        auth = next(item for item in progress["main_steps"] if item["id"] == "authenticate")
+        attempts = [item for item in auth["attempts"] if item["raw_stage"] == "submit_email"]
+        self.assertEqual(stamps, [item["created_at"] for item in attempts])
+        self.assertEqual(stamps[0], auth["started_at"])
+        self.assertEqual("running", auth["state"])
+
     def _storage_patches(self, root: Path):
         return (
             patch.object(db, "_DATA_DIR", root),

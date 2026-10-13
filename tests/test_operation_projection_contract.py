@@ -8,6 +8,14 @@ from webui.routes import jobs
 
 
 class OperationProjectionContractTests(TestCase):
+    def test_explicit_progress_event_time_is_not_replaced_by_stage_start(self):
+        event = operation._normalize_compatibility_event({
+            "source_system": "registration_progress_events",
+            "created_at": "2026-10-13T09:24:53+00:00",
+            "detail": {"started_at": "2026-10-13T09:24:23+00:00", "occurred_at": "2026-10-13T09:24:53+00:00"},
+        })
+        self.assertEqual("2026-10-13T09:24:53+00:00", event["created_at"])
+
     def test_registration_unknown_never_offers_full_retry_or_postprocess(self):
         pending_account = {
             "id": 7,

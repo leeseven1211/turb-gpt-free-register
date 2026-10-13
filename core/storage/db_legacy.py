@@ -3456,6 +3456,7 @@ def update_job_progress(
             audit_transition = {
                 "state": state,
                 "started_at": now,
+                "occurred_at": now,
                 "route_attempt_no": route_attempt_no,
                 "step_instance_id": str(step_instance_id),
                 "transition_id": transition_id,
@@ -3508,6 +3509,8 @@ def update_job_progress(
             item["completed_at"] = now
             item["route_attempt_no"] = route_attempt_no
         item["state"] = state
+        # 阶段开始时间保持不变，每条进度消息另存实际发生时间。
+        item["occurred_at"] = now
         item["transition_id"] = uuid.uuid4().hex
         item["step_instance_id"] = str(step_instance_id or item["transition_id"])
         item["evidence"] = "explicit"
