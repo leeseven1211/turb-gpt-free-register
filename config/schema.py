@@ -690,11 +690,11 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "ROXY_WINDOW_WAIT_TIMEOUT", "file": "roxybrowser.py", "type": "int", "group": "RoxyBrowser",
-        "label": "窗口满等待上限(秒)", "help": "Roxy 返回窗口额度不足时保持当前任务等待的最长时间；默认 900 秒，避免快速失败并启动全部排队任务",
+        "label": "窗口忙等待上限(秒)", "help": "仅在 /browser/open 因窗口忙暂时无法打开时等待；/browser/create 的 Profile 总额度不足会立即失败。默认 900 秒",
     },
     {
         "key": "ROXY_WINDOW_WAIT_INTERVAL", "file": "roxybrowser.py", "type": "int", "group": "RoxyBrowser",
-        "label": "窗口满重试间隔(秒)", "help": "等待 Roxy 空闲窗口时重新尝试创建环境的间隔；默认 10 秒",
+        "label": "窗口忙重试间隔(秒)", "help": "等待 /browser/open 的临时窗口忙状态时重新尝试打开的间隔；默认 10 秒",
     },
     {
         "key": "ROXY_ONE_PROFILE_PER_ACCOUNT", "file": "roxybrowser.py", "type": "bool", "group": "RoxyBrowser",

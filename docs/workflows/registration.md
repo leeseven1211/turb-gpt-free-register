@@ -319,7 +319,7 @@ email_butler / gptmail / mailnest / cloudmail / icloud_hide
 
 驱动差异：
 
-- Roxy 创建环境遇到窗口额度不足时，当前 worker 在 `ROXY_WINDOW_WAIT_TIMEOUT` 内等待，不会快速失败并消耗后续任务槽位；页面跳转超时会先 `window.stop()` 检查 DOM，目标页面可用时继续。
+- Roxy `/browser/create` 明确返回 Profile 总额度不足时立即失败；仅 `/browser/open` 遇到可恢复的窗口忙状态时，当前 worker 才在 `ROXY_WINDOW_WAIT_TIMEOUT` 内等待。页面跳转超时会先 `window.stop()` 检查 DOM，目标页面可用时继续。
 - Cloak 复用 Roxy 的页面操作函数，但使用 Cloak 的输入和浏览器生命周期。
 - Browser Use/Skyvern 通过 CDP 连接远端浏览器，远程页面关闭时有心跳和存活页选择逻辑；任务结束默认关闭连接和 Skyvern browser session。
 

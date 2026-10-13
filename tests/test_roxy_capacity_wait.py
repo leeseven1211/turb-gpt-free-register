@@ -13,7 +13,7 @@ class RoxyCapacityWaitTests(unittest.TestCase):
         opened = RoxyOpenResult(profile_id="profile-1", raw={})
         client = RoxyBrowserClient(api_base="http://roxy.example")
         client.open_profile = Mock(side_effect=[
-            RuntimeError("Roxy API 返回失败 POST /browser/create: 窗口额度不足"),
+            RuntimeError("Roxy API 返回失败 POST /browser/open: 窗口额度不足"),
             opened,
         ])
         progress = Mock()
@@ -36,7 +36,7 @@ class RoxyCapacityWaitTests(unittest.TestCase):
         opened = RoxyOpenResult(profile_id="profile-1", raw={})
         client = Mock()
         client.open_profile.side_effect = [
-            RuntimeError("Roxy API 返回失败 POST /browser/create: 窗口额度不足"),
+            RuntimeError("Roxy API 返回失败 POST /browser/open: 窗口额度不足"),
             opened,
         ]
         progress = Mock()
@@ -56,6 +56,40 @@ class RoxyCapacityWaitTests(unittest.TestCase):
         wait_retry.assert_called_once_with(10.0)
         progress.assert_called_once()
         self.assertIn("窗口已满", progress.call_args.args[2])
+
+    def test_account_client_does_not_wait_for_profile_create_quota(self):
+        client = RoxyBrowserClient(api_base="http://roxy.example")
+        error = roxybrowser_client.RoxyProfileQuotaExceeded(
+            "Roxy API 返回失败 POST /browser/create: 窗口额度不足"
+        )
+        client.open_profile = Mock(side_effect=error)
+
+        with patch.object(roxybrowser_client._cfg, "ROXY_WINDOW_WAIT_TIMEOUT", 60), patch.object(
+            roxybrowser_client.time, "sleep"
+        ) as mocked_sleep:
+            with self.assertRaises(roxybrowser_client.RoxyProfileQuotaExceeded):
+                client.open_profile_with_capacity_wait(
+                    proxy_url="http://proxy.example:8080",
+                )
+
+        client.open_profile.assert_called_once_with(proxy_url="http://proxy.example:8080")
+        mocked_sleep.assert_not_called()
+
+    def test_registration_does_not_wait_for_profile_create_quota(self):
+        client = Mock()
+        error = roxybrowser_client.RoxyProfileQuotaExceeded(
+            "Roxy API 返回失败 POST /browser/create: 窗口额度不足"
+        )
+        client.open_profile.side_effect = error
+
+        with patch.object(roxy_registration._cfg, "ROXY_WINDOW_WAIT_TIMEOUT", 60), patch.object(
+            roxy_registration, "_wait_for_roxy_window_retry"
+        ) as wait_retry:
+            with self.assertRaises(roxybrowser_client.RoxyProfileQuotaExceeded):
+                roxy_registration._open_roxy_profile_with_capacity_wait(client, None)
+
+        client.open_profile.assert_called_once_with(proxy_url=None)
+        wait_retry.assert_not_called()
 
     def test_registration_open_passes_registration_flow_to_roxy(self):
         opened = RoxyOpenResult(profile_id="profile-1", raw={})

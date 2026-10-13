@@ -19,7 +19,7 @@ from core.account_export import setup_2fa_protocol
 from core.email_provider import wait_for_otp, resolve_email_source, validate_email_source
 from core.humanize import delay as human_delay
 from core.openai_auth import AccountUnusableError
-from core.roxybrowser_client import RoxyBrowserClient, RoxyOpenResult
+from core.roxybrowser_client import RoxyBrowserClient, RoxyOpenResult, RoxyProfileQuotaExceeded
 from core.session import BrowserSession
 from core.registration.state_machine import (
     PageState,
@@ -490,7 +490,7 @@ def _open_roxy_profile_with_capacity_wait(
     progress_callback=None,
     data_saver_flow: str | None = None,
 ) -> RoxyOpenResult:
-    """窗口满时保持当前 worker 等待，防止失败槽位快速消费整个任务队列。"""
+    """仅在 /browser/open 遇到可恢复的窗口忙时等待，避免快速消费后续任务槽位。"""
     timeout = max(0, int(getattr(_cfg, "ROXY_WINDOW_WAIT_TIMEOUT", 900) or 0))
     interval = max(1, int(getattr(_cfg, "ROXY_WINDOW_WAIT_INTERVAL", 10) or 10))
     started = time.monotonic()
@@ -532,6 +532,8 @@ def _open_roxy_profile_with_capacity_wait(
                 )
             return opened
         except Exception as exc:
+            if isinstance(exc, RoxyProfileQuotaExceeded):
+                raise
             if not _is_roxy_window_capacity_error(exc) or timeout <= 0:
                 raise
 

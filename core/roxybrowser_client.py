@@ -82,7 +82,7 @@ _ROXY_PROFILE_NOT_FOUND_MARKERS = (
 
 
 def _is_window_capacity_error(error: object) -> bool:
-    """Return whether Roxy explicitly rejected creation because slots are full."""
+    """识别 Roxy 明确返回的窗口容量信息；具体接口由调用方区分。"""
     text = str(error or "").strip().lower()
     return bool(text) and any(marker in text for marker in _ROXY_WINDOW_CAPACITY_MARKERS)
 
@@ -172,6 +172,10 @@ class RoxyOpenResult:
     created_by_run: bool = False
     account_bound: bool = False
     traffic_capture: object | None = None
+
+
+class RoxyProfileQuotaExceeded(RuntimeError):
+    """Roxy 拒绝创建 Profile 的明确总额度错误，不应等待窗口释放。"""
 
 
 def _strip_slashes(value: str) -> str:
@@ -689,6 +693,10 @@ class RoxyBrowserClient:
                         )
                     break
                 except Exception as exc:
+                    if _is_window_capacity_error(exc):
+                        raise RoxyProfileQuotaExceeded(
+                            f"Roxy /browser/create Profile 总额度不足，无法创建环境：{str(exc)}"
+                        ) from exc
                     # “返回失败”说明本地 API 已给出确定的业务响应；requests 自身
                     # timeout/connection error 属于结果未知，不能安全地重复 create。
                     error_text = str(exc)
@@ -846,7 +854,7 @@ class RoxyBrowserClient:
         progress_callback: Callable[[str, str, str], object] | None = None,
         stop_checker: Callable[[], object] | None = None,
     ) -> RoxyOpenResult:
-        """Open a profile, waiting when Roxy's window quota is full."""
+        """打开 Roxy 环境；仅对 /browser/open 的临时窗口忙等待。"""
         timeout = max(0, int(getattr(_cfg, "ROXY_WINDOW_WAIT_TIMEOUT", 900) or 0))
         interval = max(1, int(getattr(_cfg, "ROXY_WINDOW_WAIT_INTERVAL", 10) or 10))
         started = time.monotonic()
@@ -866,6 +874,8 @@ class RoxyBrowserClient:
                     open_kwargs["data_saver_flow"] = data_saver_flow
                 return self.open_profile(**open_kwargs)
             except Exception as exc:
+                if isinstance(exc, RoxyProfileQuotaExceeded):
+                    raise
                 if not _is_window_capacity_error(exc) or timeout <= 0:
                     raise
                 elapsed = time.monotonic() - started

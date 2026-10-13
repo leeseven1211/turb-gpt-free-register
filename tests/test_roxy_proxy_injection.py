@@ -133,6 +133,37 @@ class RoxyProxyInjectionTests(unittest.TestCase):
         )
         self.assertEqual(calls[0][2]["windowName"], calls[2][2]["windowName"])
 
+    def test_create_profile_quota_is_typed_and_not_reconciled_or_retried(self):
+        client = roxybrowser_client.RoxyBrowserClient()
+        calls = []
+
+        def fake_request(_method, path, *, params=None, json_body=None):
+            calls.append(path)
+            raise RuntimeError("Roxy API 返回失败 POST /browser/create: 窗口额度不足")
+
+        with patch.multiple(
+            roxybrowser_client._cfg,
+            ROXY_PROFILE_CREATE_PAYLOAD={"windowName": "quota-name"},
+            ROXY_RANDOM_PROFILE_NAME_ON_CREATE=False,
+            ROXY_RANDOM_OS_ON_CREATE=False,
+            ROXY_DEFAULT_OS="macOS",
+            ROXY_DEFAULT_OS_VERSION="",
+            ROXY_WORKSPACE_ID="123",
+            ROXY_PROJECT_ID="456",
+            ROXY_CREATE_USE_PROXY_POOL=False,
+            ROXY_CREATE_METHOD="POST",
+            ROXY_CREATE_PATH="/browser/create",
+            ROXY_API_RETRIES=3,
+            ROXY_API_RETRY_DELAY=1,
+        ), patch.object(client, "request", side_effect=fake_request), patch.object(
+            roxybrowser_client, "_wait_for_create_slot"
+        ) as wait_slot:
+            with self.assertRaises(roxybrowser_client.RoxyProfileQuotaExceeded):
+                client.create_profile()
+
+        self.assertEqual(calls, ["/browser/create"])
+        wait_slot.assert_called_once_with()
+
     def test_create_reconciles_existing_profile_instead_of_duplicating(self):
         client = roxybrowser_client.RoxyBrowserClient()
         calls = []

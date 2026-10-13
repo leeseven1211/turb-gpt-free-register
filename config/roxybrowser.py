@@ -70,8 +70,8 @@ ROXY_API_RETRY_DELAY: int = 2
 # Roxy 在上一个环境仍处于创建中时可能返回“正在创建中”，默认错开 1.5 秒。
 ROXY_CREATE_INTERVAL: float = schema_default("ROXY_CREATE_INTERVAL")
 
-# Roxy 窗口达到套餐/本机上限时，不要让当前 worker 快速失败并继续消费后续
-# 排队任务。保持任务在“启动浏览器”阶段等待，直到前面的窗口释放。
+# Roxy /browser/open 暂时因窗口忙而无法打开时，保持当前 worker 等待，避免
+# 快速失败并继续消费后续任务。/browser/create 的 Profile 总额度不足会立即失败。
 ROXY_WINDOW_WAIT_TIMEOUT: int = schema_default("ROXY_WINDOW_WAIT_TIMEOUT")
 ROXY_WINDOW_WAIT_INTERVAL: int = schema_default("ROXY_WINDOW_WAIT_INTERVAL")
 
