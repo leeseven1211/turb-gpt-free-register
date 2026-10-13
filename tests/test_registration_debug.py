@@ -354,9 +354,15 @@ class RegistrationDebugTests(unittest.TestCase):
         worker = threading.Thread(target=run_pause)
         worker.start()
         deadline = time.time() + 3
-        while session.debug_state != "paused" and time.time() < deadline:
+        while not any(call.kwargs.get("debug_state") == "paused" for call in session._patch_job.call_args_list) and time.time() < deadline:
             time.sleep(0.02)
         self.assertEqual(session.debug_state, "paused")
+        paused = next(call.kwargs for call in session._patch_job.call_args_list if call.kwargs.get("debug_state") == "paused")
+        self.assertTrue(session.paused_at)
+        self.assertEqual(paused["debug_paused_at"], session.paused_at)
+        self.assertLess(session.paused_at, session.hold_until)
+        self.assertNotIn("status", paused)
+        self.assertNotIn("completed_at", paused)
         result = debug.release_job(4)
         self.assertTrue(result["ok"])
         worker.join(timeout=3)

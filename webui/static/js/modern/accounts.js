@@ -296,7 +296,9 @@ function renderAccountTaskProgressSnapshot(progress) {
     return;
   }
   const current = progress.current;
-  const currentText = current
+  const currentText = progress?.debug_pause
+    ? taskDebugPauseSummary(progress.debug_pause)
+    : current
     ? `当前：${current.label || current.step_id}${current.child_label ? ` · ${current.child_label}` : ''}`
     : `结果：${taskProgressStatusLabel(progress.outcome?.status || 'pending')}`;
   const sourceText = progress.source === 'legacy_derived' ? '历史记录按已有结构化事件还原' : progress.source === 'insufficient_evidence' ? '记录不足，步骤状态未确认' : '';
@@ -425,7 +427,7 @@ function renderAccountTasks() {
       <td>#${esc(task.id)}</td>
       <td title="${esc(task.task_type || '')}">${esc(facetLabel('task_type', task.task_type))}</td>
       <td title="${esc(task.email_snapshot)}"><strong>${esc(target)}</strong><div class="sub-cell">${esc(task.email_snapshot || '-')}</div></td>
-      <td title="${esc(task.status || '')}">${pillV2(task.status, 'status')}</td>
+      <td title="${esc(task.status || '')}">${pillV2(task.debug_pause ? 'debug_paused' : task.status, 'status')}${task.debug_pause ? '<div class="sub-cell">等待结束调试</div>' : ''}</td>
       <td title="${esc(task.target_status || '')}">${pillV2(task.target_status, 'target_status')}</td>
       <td title="${esc(batch)} · ${esc(trigger)}">${esc(short(batch, 26))}<div class="sub-cell">${esc(trigger)}</div></td>
       <td>${esc(task.run_count || 0)} 次<div class="sub-cell">最近 #${esc(task.last_run_no || '-')}</div></td>
@@ -792,7 +794,7 @@ async function pollAccountTaskLog() {
     if (requestId !== accountTaskRequestId || taskId !== Number(activeAccountTaskId)) return;
     const selectedRun = (task.runs || []).find(run => Number(run.id) === Number(activeAccountTaskRunId)) || {};
     renderAccountTaskSelectedRunError(selectedRun.id ? selectedRun : task);
-    $('#accountTaskDetailSummary').textContent = `${facetLabel('task_type', task.task_type)} · ${facetLabel('status', selectedRun.status || task.status)} · ${formatTaskDuration(selectedRun.duration_ms)}`;
+    $('#accountTaskDetailSummary').textContent = `${facetLabel('task_type', task.task_type)} · ${selectedRun.debug_pause ? taskDebugPauseSummary(selectedRun.debug_pause) : `${facetLabel('status', selectedRun.status || task.status)} · ${formatTaskDuration(selectedRun.duration_ms)}`}`;
     await pollAccountTaskProgress();
     if (requestId !== accountTaskRequestId || taskId !== Number(activeAccountTaskId)) return;
     if (previousRunId !== activeAccountTaskRunId || accountTaskEventCursor == null) {

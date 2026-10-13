@@ -112,7 +112,7 @@ const LIST_FACET_LABELS = {
 const TASK_PROGRESS_STATUS_LABELS = {
   pending: '未开始', running: '执行中', success: '已完成', skipped: '已跳过', failed: '失败',
   recovered: '重试已恢复', unconfirmed: '未确认', not_executed: '未执行', request_unknown: '结果待确认',
-  record_incomplete: '记录不完整',
+  record_incomplete: '记录不完整', debug_paused: '调试暂停',
   stopped: '已中断', attention_required: '待人工处理', partial_success: '部分完成',
   unknown: '结果待确认', deactivated: '已停用', unsupported: '不支持', manual_reconcile: '需人工对账', password_confirmation_pending: '密码待确认',
   cancelled: '已取消', interrupted: '已中断', deferred: '已延后', awaiting_confirmation: '待确认',
@@ -123,6 +123,10 @@ function taskProgressStatusLabel(value) {
 }
 function taskProgressStepStatus(step) {
   return String(step?.display_status || step?.state || 'pending').trim().toLowerCase();
+}
+function taskDebugPauseSummary(pause) {
+  if (pause?.state !== 'paused') return '';
+  return `调试暂停 · 等待结束调试${pause.paused_at ? ` · 暂停于 ${formatDateTime(pause.paused_at)}` : ' · 暂停时间未记录'}${pause.hold_until ? ` · 保留至 ${formatDateTime(pause.hold_until)}` : ''}`;
 }
 function taskProgressVisibleSteps(steps) {
   return (Array.isArray(steps) ? steps : []).filter(step => taskProgressStepStatus(step) !== 'skipped');
@@ -135,8 +139,11 @@ function taskProgressStepDuration(step, now = Date.now()) {
   const start = Date.parse(step?.started_at || '');
   const end = Date.parse(step?.completed_at || '');
   const running = taskProgressStepStatus(step) === 'running';
+  const paused = taskProgressStepStatus(step) === 'debug_paused';
+  const pausedAt = Date.parse(step?.debug_pause?.paused_at || '');
   const recorded = step?.duration_ms == null || step.duration_ms === '' ? NaN : Number(step.duration_ms);
-  const ms = running && Number.isFinite(start) ? now - start
+  const ms = paused ? Number.isFinite(start) && Number.isFinite(pausedAt) ? pausedAt - start : NaN
+    : running && Number.isFinite(start) ? now - start
     : Number.isFinite(recorded) ? recorded : Number.isFinite(start) && Number.isFinite(end) ? end - start : NaN;
   if (!Number.isFinite(ms) || ms < 0) return '—';
   const seconds = Math.round(ms / 100) / 10;
@@ -153,6 +160,7 @@ function taskProgressStepTooltip(step) {
   const observedStages = [...new Set(attempts.map(stageLabel))];
   return [
     `${step?.label || step?.name || step?.id || step?.key || '步骤'} · ${taskProgressStatusLabel(taskProgressStepStatus(step))}`,
+    taskDebugPauseSummary(step?.debug_pause),
     step?.reason || step?.message || step?.detail || '',
     `开始：${step?.started_at ? formatDateTime(step.started_at) : '—'}`,
     `结束：${step?.completed_at ? formatDateTime(step.completed_at) : '—'}`,

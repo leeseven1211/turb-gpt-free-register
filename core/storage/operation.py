@@ -924,7 +924,13 @@ def _compatibility_run_projection_sql(
         f"THEN {registration_alias}.data->>'error_message' "
         f"WHEN {run_alias}.source_system='account_action_tasks' AND {account_alias}.id IS NOT NULL "
         f"THEN {account_alias}.error "
-        f"ELSE {run_alias}.error_message END AS effective_error_message"
+        f"ELSE {run_alias}.error_message END AS effective_error_message, "
+        f"CASE WHEN {run_alias}.source_system='registration_jobs' "
+        f"AND {registration_alias}.data->>'debug_state'='paused' "
+        f"THEN jsonb_build_object('state', 'paused', "
+        f"'paused_at', {registration_alias}.data->>'debug_paused_at', "
+        f"'hold_until', {registration_alias}.data->>'debug_hold_until') "
+        f"ELSE NULL END AS effective_debug_pause"
     )
 
 
@@ -948,6 +954,8 @@ def _normalize_compatibility_run(run: dict) -> dict:
     run.pop("effective_created_at_sort", None)
     effective_completed_at = run.pop("effective_completed_at", None)
     effective_error_message = run.pop("effective_error_message", None)
+    debug_pause = run.pop("effective_debug_pause", None)
+    run.pop("debug_pause", None)
     if effective_status:
         run["status"] = _status(effective_status)
     if effective_stage is not None:
@@ -993,6 +1001,15 @@ def _normalize_compatibility_run(run: dict) -> dict:
         if run.get("status") in _ACTIVE_RUN_STATUSES:
             run["error_category"] = None
             run["error_code"] = None
+    if source_system == "registration_jobs" and run.get("status") in _ACTIVE_RUN_STATUSES and isinstance(debug_pause, dict):
+        pause = {"state": "paused"}
+        for key in ("paused_at", "hold_until"):
+            try:
+                stamp = _legacy_registration_timestamp(debug_pause.get(key))
+            except (TypeError, ValueError, OverflowError):
+                stamp = None
+            pause[key] = stamp.isoformat() if stamp is not None else None
+        run["debug_pause"] = pause
     return run
 
 
@@ -1023,6 +1040,9 @@ def _apply_current_run_projection(task: dict, run: dict | None) -> dict:
     status = str(run.get("status") or task.get("status") or "queued").lower()
     task["last_run_id"] = run.get("id")
     task["status"] = status
+    task.pop("debug_pause", None)
+    if run.get("debug_pause"):
+        task["debug_pause"] = dict(run["debug_pause"])
     if str(run.get("source_system") or "") in {"registration_jobs", "account_action_tasks"} and run.get("created_at"):
         task["created_at"] = run["created_at"]
     if run.get("progress_stage"):
@@ -2890,6 +2910,7 @@ def list_tasks(
                    r.effective_progress_stage AS __current_run_stage,
                    r.effective_created_at AS __current_run_created_at,
                    r.effective_completed_at AS __current_run_completed_at,
+                   r.effective_debug_pause AS __current_run_debug_pause,
                    r.error_category AS __current_run_error_category,
                    r.error_code AS __current_run_error_code,
                    r.effective_error_message AS __current_run_error_message,
@@ -2913,6 +2934,7 @@ def list_tasks(
                 "progress_stage": item.pop("__current_run_stage", None),
                 "effective_created_at": item.pop("__current_run_created_at", None),
                 "effective_completed_at": item.pop("__current_run_completed_at", None),
+                "effective_debug_pause": item.pop("__current_run_debug_pause", None),
                 "error_category": item.pop("__current_run_error_category", None),
                 "error_code": item.pop("__current_run_error_code", None),
                 "error_message": item.pop("__current_run_error_message", None),

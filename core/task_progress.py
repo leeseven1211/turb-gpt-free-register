@@ -900,6 +900,26 @@ def _project_registration_authentication(
     item["duration_ms"] = max(0, int((end - start) * 1000)) if start is not None and end is not None else None
 
 
+def _project_debug_pause(steps: list[dict[str, Any]], run: dict[str, Any], current: dict[str, Any] | None) -> dict[str, Any] | None:
+    """调试保留只改变展示和计时，不改变运行与阶段事实。"""
+    source = run.get("debug_pause")
+    if str(run.get("status") or "") not in _ACTIVE_PROGRESS_STATUSES or not isinstance(source, dict) or source.get("state") != "paused":
+        return None
+    pause = {"state": "paused", **{
+        key: source.get(key) if _time_value(source.get(key)) is not None else None
+        for key in ("paused_at", "hold_until")
+    }}
+    if current:
+        parent = _find_step(steps, current["step_id"])
+        if parent is not None:
+            child = next((item for item in parent.get("children", []) if item["id"] == current.get("child_step_id")), None)
+            for item in (parent, child):
+                if item is not None and item.get("state") == "running" and not item.get("completed_at"):
+                    item["display_status"] = "debug_paused"
+                    item["debug_pause"] = dict(pause)
+    return pause
+
+
 def build_progress_snapshot(
     task_id: int,
     run_id: int,
@@ -1030,12 +1050,15 @@ def build_progress_snapshot(
     _skip_disabled_registration_steps(ordered, task_key, run_value, recorded_steps)
     source = "explicit" if explicit else "legacy_derived" if activity else "insufficient_evidence"
     failure = _failure(task_key, run_value, current_attempts, current_activity)
+    current = _current(ordered, current_activity, str(run_value.get("status") or ""))
+    debug_pause = _project_debug_pause(ordered, run_value, current)
     payload = {"flow_version": 3 if route_numbers else 2, "selected_route_attempt_no": selected_route, "steps": ordered, "run": {"id": run_value.get("id"), "status": run_value.get("status"), "progress_stage": run_value.get("progress_stage"), "result_summary": run_value.get("result_summary") or {}}, "events": attempts, "history_unknown": [{"event_id": _event_id(value), "reason": value.get("unknown_reason")} for value in unknown_events]}
+    payload["debug_pause"] = debug_pause
     revision = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]
     result = {
         "task_id": int(task_id), "run_id": int(run_id), "flow_version": 3 if route_numbers else 2,
         "revision": revision, "source": source, "main_steps": ordered,
-        "current": _current(ordered, current_activity, str(run_value.get("status") or "")),
+        "current": current,
         "outcome": outcome, "failure": failure,
         "selected_route_attempt_no": selected_route,
         "time_basis": {
@@ -1044,6 +1067,8 @@ def build_progress_snapshot(
             "history_duration": "per_route_attempt",
         },
     }
+    if debug_pause:
+        result["debug_pause"] = debug_pause
     if unknown_events:
         result["history_unknown"] = [
             {

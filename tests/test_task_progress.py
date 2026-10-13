@@ -33,6 +33,43 @@ def _step(snapshot, step_id):
     return next(item for item in snapshot["main_steps"] if item["id"] == step_id)
 
 
+def test_debug_pause_preserves_execution_facts_and_only_marks_current_running_steps():
+    events = [
+        _event(1, "page", "running", created_at="2026-10-13T10:00:00Z"),
+        _event(2, "page", "success", created_at="2026-10-13T10:00:10Z"),
+        _event(3, "submit_email", "running", created_at="2026-10-13T10:00:12Z"),
+    ]
+    pause = {"state": "paused", "paused_at": "2026-10-13T10:00:30Z", "hold_until": "2026-10-13T10:30:30Z", "reason": "不可投影"}
+    run = _run(debug_pause=pause)
+    snapshot = build_progress_snapshot(1, 2, "registration_resume", run, events)
+    auth = _step(snapshot, "authenticate")
+    assert run["status"] == "running"
+    assert auth["state"] == "running"
+    assert auth["display_status"] == "debug_paused"
+    assert auth["completed_at"] is None
+    assert auth["duration_ms"] is None
+    assert [(child["id"], child["display_status"]) for child in auth["children"]] == [("page", "success"), ("submit_email", "debug_paused")]
+    assert _step(snapshot, "profile")["display_status"] == "pending"
+    assert _step(snapshot, "result")["display_status"] == "pending"
+    assert "reason" not in snapshot["debug_pause"]
+    assert snapshot["debug_pause"]["paused_at"] == pause["paused_at"]
+    resumed = build_progress_snapshot(1, 2, "registration_resume", _run(), events)
+    assert _step(resumed, "authenticate")["display_status"] == "running"
+    assert snapshot["revision"] != resumed["revision"]
+    assert "debug_pause" not in resumed
+
+
+def test_debug_pause_does_not_override_failed_steps_or_invent_missing_time():
+    events = [_event(1, "login_password", "failed", created_at="2026-10-13T10:00:00Z")]
+    snapshot = build_progress_snapshot(1, 2, "registration", _run(debug_pause={"state": "paused", "hold_until": "2026-10-13T10:30:00Z"}), events)
+    auth = _step(snapshot, "authenticate")
+    assert auth["state"] == auth["display_status"] == "failed"
+    assert auth["children"][0]["display_status"] == "failed"
+    assert snapshot["debug_pause"]["paused_at"] is None
+    terminal = build_progress_snapshot(1, 2, "registration", _run("failed", debug_pause={"state": "paused"}), events)
+    assert "debug_pause" not in terminal
+
+
 def test_result_waits_for_its_own_event_while_run_is_active():
     for status in ("queued", "running", "waiting", "settling", "stopping"):
         snapshot = build_progress_snapshot(1, 2, "registration", _run(status), [_event(1, "login", "running")])

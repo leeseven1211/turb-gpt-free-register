@@ -382,6 +382,7 @@ class RegistrationDebugSession:
         self.current_stage = normalize_stage(job.get("progress_stage") or "browser")
         self.started_at = _now_iso()
         self.debug_state = "recording"
+        self.paused_at = ""
         self.hold_until = ""
         self.pause_reason = ""
         self.release_action = ""
@@ -1022,10 +1023,12 @@ class RegistrationDebugSession:
             self._patch_job(debug_state=self.debug_state, debug_pause_reason="保留现场数量已达上限")
             return self.debug_state
         self.pause_reason = str(reason or "")[:1000]
+        self.paused_at = _now_iso()
         self.hold_until = deadline.isoformat(timespec="seconds")
-        self.record({"kind": "debug_paused", "reason": self.pause_reason, "hold_until": self.hold_until})
+        self.record({"kind": "debug_paused", "captured_at": self.paused_at, "reason": self.pause_reason, "hold_until": self.hold_until})
         self._patch_job(
             debug_state="paused",
+            debug_paused_at=self.paused_at,
             debug_pause_reason=self.pause_reason,
             debug_hold_until=self.hold_until,
             debug_capture_summary=self.summary(),

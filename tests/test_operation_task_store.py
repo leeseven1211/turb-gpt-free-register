@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from psycopg.errors import DeadlockDetected
 
-from core import account_task_store, db, operation_task_store, postgres_store, record_store, task_run_log
+from core import account_task_store, db, operation_task_store, postgres_store, record_store, registration_debug, task_run_log
 from core.storage import operation, registration
 from core.operations import task_gateway
 from tests.support_pg import PostgresTestCase
@@ -202,6 +202,115 @@ class OperationTaskStoreTests(PostgresTestCase):
         )["items"][0]
         self.assertEqual("2026-08-25T02:00:00+00:00", registration["created_at"])
         self.assertEqual("2026-08-25T02:02:00+00:00", registration["completed_at"])
+
+    def _seed_running_debug_registration(self):
+        job = db.create_job("icloud_hide")
+        job_id = int(job["id"])
+        db.update_job(job_id, status="running", email="debug-pause@example.test")
+        db.update_job_progress(job_id, "submit_email", "running", "等待邮箱提交结果")
+        task = operation_task_store.list_tasks(page_size=10, task_type="registration")["items"][0]
+        return job_id, int(task["id"]), int(task["last_run_id"])
+
+    def test_registration_debug_pause_projects_live_json_without_finishing_run(self):
+        job_id, task_id, run_id = self._seed_running_debug_registration()
+        registration_debug.patch_job(
+            job_id, debug_state="paused",
+            debug_paused_at="2026-10-13T18:00:30",
+            debug_hold_until="2026-10-13T18:30:30+08:00",
+            debug_pause_reason="private-debug-pause-reason",
+        )
+        pause = {
+            "state": "paused", "paused_at": "2026-10-13T10:00:30+00:00",
+            "hold_until": "2026-10-13T10:30:30+00:00",
+        }
+        app = create_app(auth_code="test-auth")
+        client = app.test_client()
+        client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
+        listed = client.get("/api/operations?task_type=registration").get_json()["items"][0]
+        detail = client.get(f"/api/operations/{task_id}?include_events=0").get_json()["task"]
+        selected = next(run for run in detail["runs"] if int(run["id"]) == run_id)
+        progress = client.get(f"/api/operations/{task_id}/runs/{run_id}/progress").get_json()["progress"]
+        for value in (listed, detail, selected):
+            self.assertEqual(pause, value.get("debug_pause"))
+            self.assertEqual("running", value["status"])
+            self.assertIsNone(value["completed_at"])
+        self.assertEqual(pause, progress["debug_pause"])
+        authentication = next(step for step in progress["main_steps"] if step["id"] == "authenticate")
+        self.assertEqual("running", authentication["state"])
+        self.assertEqual("debug_paused", authentication["display_status"])
+        self.assertIsNone(authentication["completed_at"])
+        self.assertEqual(pause, authentication["debug_pause"])
+        self.assertNotIn("private-debug-pause-reason", json.dumps([listed, detail, progress]))
+        persisted = operation_task_store.get_run(run_id)
+        self.assertEqual("running", persisted["status"])
+        self.assertIsNone(persisted["completed_at"])
+        self.assertNotIn("debug_pause", persisted)
+
+    def test_registration_debug_pause_is_scoped_to_source_job_and_selected_run(self):
+        job_id, task_id, first_run_id = self._seed_running_debug_registration()
+        db.update_job_progress(job_id, "submit_email", "failed", "第一 Run 失败")
+        db.update_job(job_id, status="failed", completed_at="2026-10-13T10:00:10Z")
+        retry, created = db.create_retry_job(
+            job_id, job_type="registration", email_source="icloud_hide",
+            email="debug-pause@example.test",
+        )
+        self.assertTrue(created)
+        retry_id = int(retry["id"])
+        db.update_job(retry_id, status="running")
+        db.update_job_progress(retry_id, "submit_email", "running", "第二 Run 等待结果")
+        registration_debug.patch_job(
+            retry_id, debug_state="paused", debug_paused_at="2026-10-13T10:01:00Z",
+            debug_hold_until="2026-10-13T10:31:00Z",
+        )
+        detail = operation_task_store.get_task(task_id, include_events=False)
+        first, second = detail["runs"]
+        self.assertEqual(first_run_id, int(first["id"]))
+        self.assertEqual("failed", first["status"])
+        self.assertTrue(first["completed_at"])
+        self.assertNotIn("debug_pause", first)
+        self.assertEqual("running", second["status"])
+        self.assertIsNone(second["completed_at"])
+        self.assertEqual(second["debug_pause"], detail["debug_pause"])
+        self.assertEqual(int(second["id"]), int(detail["last_run_id"]))
+        old_progress = operation_task_store.get_run_progress(task_id, first_run_id)
+        self.assertNotIn("debug_pause", old_progress)
+        self.assertNotIn("debug_paused", [step["display_status"] for step in old_progress["main_steps"]])
+        current_progress = operation_task_store.get_run_progress(task_id, int(second["id"]))
+        self.assertEqual(second["debug_pause"], current_progress["debug_pause"])
+        listed = operation_task_store.list_tasks(page_size=10, task_type="registration")["items"][0]
+        self.assertEqual(second["debug_pause"], listed["debug_pause"])
+
+    def test_registration_debug_pause_sanitizes_time_and_clears_on_release_or_terminal(self):
+        job_id, task_id, run_id = self._seed_running_debug_registration()
+        registration_debug.patch_job(
+            job_id, debug_state="paused", debug_paused_at="private-invalid-time",
+            debug_hold_until={"private": "invalid-time"},
+        )
+        for value in (
+            operation_task_store.get_task(task_id, include_events=False),
+            operation_task_store.get_run_progress(task_id, run_id),
+        ):
+            self.assertEqual({"state": "paused", "paused_at": None, "hold_until": None}, value["debug_pause"])
+            self.assertNotIn("private-invalid-time", json.dumps(value))
+        registration_debug.patch_job(job_id, debug_state="released")
+        for value in (
+            operation_task_store.list_tasks(page_size=10)["items"][0],
+            operation_task_store.get_task(task_id, include_events=False),
+            operation_task_store.get_run_progress(task_id, run_id),
+        ):
+            self.assertNotIn("debug_pause", value)
+        # 即使旧调试字段未清理，终态也必须保留其成功/失败事实。
+        registration_debug.patch_job(job_id, debug_state="paused")
+        for status in ("success", "failed"):
+            with self.subTest(status=status):
+                db.update_job(job_id, status=status, completed_at="2026-10-13T10:02:00Z")
+                detail = operation_task_store.get_task(task_id, include_events=False)
+                selected = detail["runs"][0]
+                for value in (operation_task_store.list_tasks(page_size=10)["items"][0], detail, selected):
+                    self.assertEqual(status, value["status"])
+                    self.assertTrue(value["completed_at"])
+                    self.assertNotIn("debug_pause", value)
+                self.assertNotIn("debug_pause", operation_task_store.get_run_progress(task_id, run_id))
 
     def test_legacy_registration_read_model_normalizes_run_start_steps_and_events(self):
         account_id = record_store.insert_row(record_store.ACCOUNTS, {

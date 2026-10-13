@@ -398,6 +398,30 @@ test('执行中的耗时使用当前时间，历史未收口的步骤不继续�
   assert.deepEqual(Array.from(sandbox.result), ['42秒','—','0秒','—']);
 });
 
+test('调试暂停冻结当前步骤计时，历史缺失暂停时间不倒推', () => {
+  const sandbox = runVm(`${stepFunctions}
+    const started_at='2026-10-13T10:00:00Z';
+    const debug_pause={state:'paused',paused_at:'2026-10-13T10:00:42Z',hold_until:'2026-10-13T10:30:42Z',reason:'不可显示'};
+    const step={state:'running',display_status:'debug_paused',started_at,debug_pause};
+    result = [taskProgressStepDuration(step,Date.parse(started_at)+90000),
+      taskProgressStepDuration(step,Date.parse(started_at)+180000),
+      taskProgressStepDuration({...step,debug_pause:{state:'paused'},duration_ms:1000}),
+      taskProgressStepDuration({state:'failed',duration_ms:2000,debug_pause}),
+      taskDebugPauseSummary(debug_pause),
+      taskDebugPauseSummary({state:'paused'})];`, {formatDateTime:String});
+  assert.deepEqual(Array.from(sandbox.result).slice(0,4), ['42秒','42秒','—','2秒']);
+  assert.match(sandbox.result[4], /调试暂停 · 等待结束调试/);
+  assert.match(sandbox.result[4], /暂停于.*10:00:42Z.*保留至.*10:30:42Z/);
+  assert.doesNotMatch(sandbox.result[4], /不可显示/);
+  assert.match(sandbox.result[5], /暂停时间未记录/);
+});
+
+test('任务列表和所选Run详情展示调试暂停而不更改底层状态', () => {
+  assert.match(accountsSource, /pillV2\(task\.debug_pause \? 'debug_paused' : task\.status, 'status'\)/);
+  assert.match(accountsSource, /selectedRun\.debug_pause \? taskDebugPauseSummary\(selectedRun\.debug_pause\)/);
+  assert.match(accountsSource, /taskDebugPauseSummary\(progress\.debug_pause\)/);
+});
+
 test('旧 Run 弹窗在运行切换时关闭，恢复父弹窗的交互状态', () => {
   const overlay = {classList: {add: () => {} }};
   const sibling = {inert: true};
