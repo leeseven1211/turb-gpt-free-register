@@ -113,6 +113,26 @@ def _validate_registration_session_identity(session_info: dict, email: str) -> N
         raise RuntimeError("session_identity_mismatch: 登录会话与任务邮箱不一致，已停止保存凭据")
 
 
+def _read_registration_resume_session(driver, email: str) -> dict | None:
+    """原环境在 ChatGPT 同源页时，只读一次完整会话；未知结果不触发新的登录提交。"""
+    from .session_auth import ChatGPTSessionUnavailable, _read_chatgpt_session_once
+
+    current = urlsplit(str(getattr(driver, "current_url", "") or ""))
+    if current.scheme != "https" or current.hostname != "chatgpt.com" or current.port not in (None, 443):
+        return None
+    try:
+        session = _read_chatgpt_session_once(driver, timeout=30, strict_read=True)
+    except ChatGPTSessionUnavailable:
+        return None
+    except Exception as exc:
+        _check_manual_stop()
+        raise RuntimeError("request_unknown: resume_session_probe_incomplete: 原环境会话读取未完成，已保留原提交") from exc
+    if session is not None:
+        _validate_registration_session_identity(session, email)
+        logger.info("[Roxy注册] 原环境会话已核验：token_present=%s identity_matched=%s", True, True)
+    return session
+
+
 _OTP_PREPARE_CURRENT_FORM_SCRIPT = r"""
 const inputs = arguments[0];
 const ready = el => !!(el && el.isConnected && el.getClientRects().length)
@@ -208,6 +228,8 @@ def _is_registration_request_unknown(error_text: object) -> bool:
     if isinstance(error_text, _EmailSubmissionUnknown):
         return True
     text = str(error_text or "")
+    if text.startswith("request_unknown:"):
+        return True
     return any(marker in text for marker in _REGISTRATION_REQUEST_UNKNOWN_MARKERS)
 
 
@@ -914,27 +936,32 @@ def run_roxy_registration(
             pass
         logger.info("[Roxy注册] 开始：%s，profile=%s", email, opened.profile_id)
 
+        verified_resume_session = None
+        if resume_scope and existing_password and profile_id and str(opened.profile_id) == str(profile_id):
+            report_job_progress("page", "running", "正在核验原浏览器环境的登录态")
+            verified_resume_session = _read_registration_resume_session(driver, email)
         otp_after_ts = time.time()
-        report_job_progress("page", "running", "正在打开 ChatGPT 注册页")
-        logger.info("[Roxy注册] 打开登录页：https://chatgpt.com/auth/login")
-        _safe_get(
-            driver,
-            "https://chatgpt.com/auth/login",
-            timeout=min(45, int(getattr(_cfg, "ROXY_SELENIUM_TIMEOUT", 90) or 90)),
-            attempts=2,
-            accept_hosts=("chatgpt.com", "auth.openai.com"),
-        )
-        human_delay("navigate")
-        _page_warmup(driver, reason="login_page")
-        report_job_progress("page", "success", "登录页已打开，待确认邮箱入口")
-        logger.info("[Roxy注册] 登录页已打开，开始确认邮箱入口")
-        _maybe_accept(driver)
+        if verified_resume_session:
+            report_job_progress("page", "skipped", "原环境登录态已核验，无需打开登录页")
+        else:
+            report_job_progress("page", "running", "正在打开 ChatGPT 注册页")
+            logger.info("[Roxy注册] 打开登录页：https://chatgpt.com/auth/login")
+            _safe_get(
+                driver,
+                "https://chatgpt.com/auth/login",
+                timeout=min(45, int(getattr(_cfg, "ROXY_SELENIUM_TIMEOUT", 90) or 90)),
+                attempts=2,
+                accept_hosts=("chatgpt.com", "auth.openai.com"),
+            )
+            human_delay("navigate")
+            _page_warmup(driver, reason="login_page")
+            report_job_progress("page", "success", "登录页已打开，待确认邮箱入口")
+            logger.info("[Roxy注册] 登录页已打开，开始确认邮箱入口")
+            _maybe_accept(driver)
         _check_manual_stop()
 
         # 填邮箱。OpenAI UI 会随出口 IP/语言变化；这里只按 DOM 技术属性找邮箱入口，
         # 并排除 Google/Apple/Microsoft 等第三方入口，不依赖按钮可见文字。
-        report_job_progress("submit_email", "running", "正在等待可见的邮箱输入框")
-
         def _report_email_progress(phase: str, detail: str) -> None:
             report_job_progress("submit_email", "skipped" if phase == "skipped" else "running", detail)
             if phase in {"pending", "fallback"}:
@@ -943,24 +970,33 @@ def run_roxy_registration(
         def _mark_email_submitted() -> None:
             report_job_progress("submit_email", "success", "邮箱认证已确认进入下一步")
 
-        next_state = _submit_email_and_wait_next(
-            driver,
-            email,
-            attempts=3,
-            on_submitted=_mark_email_submitted,
-            allow_login_password=resume_scope,
-            on_progress=_report_email_progress,
-        )
+        if verified_resume_session:
+            next_state = "authenticated"
+            report_job_progress("submit_email", "skipped", "原环境登录态已核验，无需再次提交邮箱")
+            report_job_progress("auth_redirect", "skipped", "原环境登录态已核验，无需认证跳转")
+        else:
+            report_job_progress("submit_email", "running", "正在等待可见的邮箱输入框")
+            next_state = _submit_email_and_wait_next(
+                driver,
+                email,
+                attempts=3,
+                on_submitted=_mark_email_submitted,
+                allow_login_password=resume_scope,
+                on_progress=_report_email_progress,
+            )
         remote_identity = classify_registration_identity(next_state)
         _check_manual_stop()
         # 只要已经到达 OpenAI 的密码/OTP 等下一页，认证跳转就已经完成。密码创建是
         # 独立业务阶段，不能继续挂在 auth_redirect 上导致失败原因误导。
-        report_job_progress("auth_redirect", "success", f"已进入认证下一步：{next_state}")
+        if not verified_resume_session:
+            report_job_progress("auth_redirect", "success", f"已进入认证下一步：{next_state}")
 
         # 新版注册流可能先进入 /create-account/password；参考 FlowPilot 的 fill-password 步骤，
         # 先设置密码并提交，然后再等待邮箱验证码页。
         password_stage_expected = password_required or bool(existing_password)
-        if existing_password:
+        if verified_resume_session:
+            password_progress_detail = "原环境登录态已核验，保留原密码且无需再次提交"
+        elif existing_password:
             password_progress_detail = "正在继续待验证账号的登录流程"
         elif password_required:
             password_progress_detail = "正在创建并确认账号密码"
@@ -968,7 +1004,7 @@ def run_roxy_registration(
             password_progress_detail = "一次性验证码模式，无需创建账号密码"
         report_job_progress(
             "login_password",
-            "running" if password_stage_expected else "skipped",
+            "running" if password_stage_expected and not verified_resume_session else "skipped",
             password_progress_detail,
         )
 
@@ -1009,23 +1045,26 @@ def run_roxy_registration(
                     raise
 
         try:
-            openai_password = _fill_password_page_if_present(
-                driver,
-                email,
-                timeout=25,
-                existing_password=existing_password,
-                on_password_prepared=_checkpoint_prepared_password,
-                on_password_submitted=_checkpoint_submitted_password,
-            )
+            if verified_resume_session:
+                openai_password = existing_password
+            else:
+                openai_password = _fill_password_page_if_present(
+                    driver,
+                    email,
+                    timeout=25,
+                    existing_password=existing_password,
+                    on_password_prepared=_checkpoint_prepared_password,
+                    on_password_submitted=_checkpoint_submitted_password,
+                )
         except _PasswordTransitionTimeout:
             report_job_progress("login_password", "failed", "已触发密码提交操作，远端结果仍待确认")
             raise
         except Exception as exc:
-            if password_stage_expected:
+            if password_stage_expected and not verified_resume_session:
                 report_job_progress("login_password", "failed", f"账号密码处理失败: {type(exc).__name__}: {str(exc)[:180]}")
             raise
         else:
-            if password_stage_expected:
+            if password_stage_expected and not verified_resume_session:
                 if password_submitted_this_run:
                     password_result_state = "success"
                     password_result_detail = "账号密码已提交并进入下一步"
@@ -1044,9 +1083,9 @@ def run_roxy_registration(
                     password_result_state,
                     password_result_detail,
                 )
-        if existing_password or openai_password:
+        if not verified_resume_session and (existing_password or openai_password):
             auth_challenge_chain.append("password")
-        if openai_password and account_id is None:
+        if not verified_resume_session and openai_password and account_id is None:
             account_id = _save_pending_email_verification_checkpoint(
                 email=email,
                 openai_password=openai_password,
@@ -1063,7 +1102,7 @@ def run_roxy_registration(
                 bool(existing_password),
             )
         resume_login_state = ""
-        if existing_password:
+        if existing_password and not verified_resume_session:
             # 密码提交后可能进入邮箱 OTP，也可能进入 Authenticator TOTP。
             # 两种页面外观相似，必须与 Codex OAuth 共用同一个认证状态机。
             from core.roxy_codex_oauth import complete_openai_login_challenge
@@ -1089,12 +1128,13 @@ def run_roxy_registration(
             )
         _check_manual_stop()
 
-        report_job_progress("email_otp", "running", "正在等待并验证邮箱验证码")
-        report_job_otp_evidence(
-            request_kind="resume_login" if existing_password else "initial",
-            ui_ack="unconfirmed",
-            detail="页面已进入邮箱验证码步骤，但仅凭页面状态不能确认邮件请求已被接受",
-        )
+        if not verified_resume_session:
+            report_job_progress("email_otp", "running", "正在等待并验证邮箱验证码")
+            report_job_otp_evidence(
+                request_kind="resume_login" if existing_password else "initial",
+                ui_ack="unconfirmed",
+                detail="页面已进入邮箱验证码步骤，但仅凭页面状态不能确认邮件请求已被接受",
+            )
         last_otp_ui_ack = "unconfirmed"
         current_otp = otp_code
         submitted_otps = _OtpAttemptTracker()
@@ -1106,7 +1146,7 @@ def run_roxy_registration(
             otp_total_wait = 240
         otp_budget = StageBudget.start(otp_total_wait)
         otp_wait_deadline = otp_budget.deadline
-        otp_already_complete = resume_login_state == "advanced" or _has_access_token(driver)
+        otp_already_complete = bool(verified_resume_session) or resume_login_state == "advanced" or _has_access_token(driver)
         for otp_attempt in range(1, max_otp_attempts + 1):
             if otp_already_complete:
                 break
@@ -1333,17 +1373,19 @@ def run_roxy_registration(
             "已有登录态，无需再次验证邮箱" if otp_already_complete else "邮箱验证码已通过",
         )
         # about-you / profile 信息页：必须完成或确认已有登录态，不能静默跳过。
-        report_job_progress("profile", "running", "正在填写账号资料")
-        logger.info("[Roxy注册] 开始等待资料页/登录态")
         _check_manual_stop()
-        profile_submitted = _complete_profile_page(
-            driver,
-            name,
-            birthday,
-            timeout=60,
-            on_submit=(data_saver.activate_post_auth if data_saver is not None else None),
-            expected_email=email,
-        )
+        profile_submitted = False
+        if not verified_resume_session:
+            report_job_progress("profile", "running", "正在填写账号资料")
+            logger.info("[Roxy注册] 开始等待资料页/登录态")
+            profile_submitted = _complete_profile_page(
+                driver,
+                name,
+                birthday,
+                timeout=60,
+                on_submit=(data_saver.activate_post_auth if data_saver is not None else None),
+                expected_email=email,
+            )
         if profile_submitted:
             remote_identity = "new_candidate"
             create_acknowledged = True
@@ -1360,7 +1402,7 @@ def run_roxy_registration(
         logger.info("[Roxy注册] 等待 ChatGPT 跳转并写入 session/accessToken")
         _check_manual_stop()
         token_budget = StageBudget.start(120)
-        session_info = _fetch_chatgpt_session(driver, timeout=120, budget=token_budget)
+        session_info = verified_resume_session or _fetch_chatgpt_session(driver, timeout=120, budget=token_budget)
         _validate_registration_session_identity(session_info, email)
         access_token = session_info["accessToken"]
         captured_plan_result = None

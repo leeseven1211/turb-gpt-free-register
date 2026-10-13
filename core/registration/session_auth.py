@@ -86,7 +86,7 @@ def _has_access_token(driver, *, budget: StageBudget | None = None, timeout: flo
     except Exception:
         return False
 
-def _read_chatgpt_session_once(driver, *, timeout: float | None = None) -> dict | None:
+def _read_chatgpt_session_once(driver, *, timeout: float | None = None, strict_read: bool = False) -> dict | None:
     """当前页面必须在 chatgpt.com；读取 /api/auth/session，拿不到 token 返回 None。"""
     script = r"""
     const done = arguments[arguments.length - 1];
@@ -108,10 +108,10 @@ def _read_chatgpt_session_once(driver, *, timeout: float | None = None) -> dict 
     fetch('/api/auth/session', {credentials: 'include', ...(controller ? {signal:controller.signal} : {})})
       .then(async r => {
         const text = await r.text();
-        let data = {};
-        try { data = JSON.parse(text || '{}'); } catch (_) { data = {text: text}; }
+        let data = {}, jsonValid = Boolean(text.trim());
+        try { data = JSON.parse(text || '{}'); } catch (_) { data = {text: text}; jsonValid = false; }
         if (data && typeof data === 'object') data._http_status = r.status;
-        finish({ok: true, status: r.status, data: data});
+        finish({ok: true, status: r.status, data: data, json_valid: jsonValid});
       })
       .catch(() => finish({ok:false, error_type:'session_read_failed'}));
     """
@@ -122,6 +122,8 @@ def _read_chatgpt_session_once(driver, *, timeout: float | None = None) -> dict 
             raise StageTimeout("资料会话读取预算已耗尽")
         current = urlsplit(str(getattr(driver, "current_url", "") or ""))
         if current.scheme != "https" or current.hostname != "chatgpt.com" or current.port not in (None, 443):
+            if strict_read:
+                raise RuntimeError("request_unknown: session_probe_origin_changed: 会话读取页面已变化")
             return None
         # Selenium 导航路径可能留下 8 秒脚本上限；只为本次完整响应体读取放宽并恢复。
         previous = getattr(getattr(driver, "timeouts", None), "script", None)
@@ -137,6 +139,14 @@ def _read_chatgpt_session_once(driver, *, timeout: float | None = None) -> dict 
                 driver.set_script_timeout(old_script_timeout)
             except Exception:
                 logger.debug("%s 恢复 session 读取脚本超时失败", _log_prefix(driver))
+    if strict_read:
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            raise RuntimeError("request_unknown: session_probe_incomplete: 会话响应未完整读取")
+        if result.get("status") in {401, 403}:
+            raise ChatGPTSessionUnavailable(_session_unavailable_message({}, result.get("status")))
+        if (result.get("status") != 200 or result.get("json_valid") is False
+                or not isinstance(result.get("data"), dict)):
+            raise RuntimeError("request_unknown: session_probe_incomplete: 会话响应无法核验")
     if result and result.get("ok"):
         data = result.get("data") or {}
         if data.get("accessToken"):
