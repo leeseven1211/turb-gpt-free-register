@@ -399,6 +399,15 @@ def registration_result_status(result: dict | None) -> str:
     """注册未确认完成一律按失败收口，远端未知事实另存于 Attempt。"""
     if not isinstance(result, dict):
         return "failed"
+    if "core_persisted" in result:
+        # 待验证账号也有 account_id，浏览器拿到的 Token 仍可能只在内存中。
+        # 新驱动必须明确确认核心落库，不能用这两个字段推断持久化成功。
+        return "success" if (
+            result.get("core_persisted") is True
+            and result.get("account_id")
+            and not result.get("registration_pending")
+        ) else "failed"
+    # 兼容尚未提供明确落库事实的外部驱动与历史结果。
     if not result.get("registration_pending") and result.get("account_id") and str(result.get("access_token") or "").strip():
         return "success"
     if result.get("manual_reconcile") or result.get("request_unknown") or result.get("registration_pending"):

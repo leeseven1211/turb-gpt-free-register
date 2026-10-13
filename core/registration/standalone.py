@@ -77,7 +77,13 @@ def run_registration_in_context(
             result = driver(**restored)
         if not isinstance(result, dict):
             raise RuntimeError("注册驱动未返回有效注册结果")
-        if result.get("registration_success"):
+        # CLI 与 WebUI 共用明确落库事实；旧调用继续使用既有结果契约。
+        core_saved = (
+            service.registration_result_status(result) == "success"
+            if "core_persisted" in result
+            else bool(result.get("registration_success"))
+        )
+        if core_saved:
             status = "success" if result.get("postprocess_success") else "partial_success"
             service._mark_registration_result(result)
         else:
@@ -95,7 +101,10 @@ def run_registration_in_context(
             elif reported in registration.TERMINAL_RUN_STATUSES and reported != "success":
                 # 没有 registration_success 事实时，驱动返回 success 文案不能单独
                 # 将远端注册或后处理标为成功。
-                status = reported
+                status = (
+                    "failed" if "core_persisted" in result and reported == "partial_success"
+                    else reported
+                )
             else:
                 status = "failed"
         return result
@@ -120,9 +129,8 @@ def run_registration_in_context(
             try:
                 registration.finish_run(
                     int(run["id"]), status=status, error_code="request_unknown" if status == "request_unknown" else None,
-                    result_summary={"entrypoint": source, "driver": persisted_driver, "registration_success": core_saved or bool(
-                        isinstance(result, dict) and result.get("registration_success")),
-                        "postprocess_success": bool(isinstance(result, dict) and result.get("postprocess_success"))},
+                    result_summary={"entrypoint": source, "driver": persisted_driver, "registration_success": core_saved,
+                        "postprocess_success": bool(core_saved and isinstance(result, dict) and result.get("postprocess_success"))},
                 )
             except Exception as exc:
                 if not driver_raised:

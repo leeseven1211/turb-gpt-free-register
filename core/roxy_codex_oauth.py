@@ -1719,7 +1719,7 @@ def _wait_for_fresh_email_otp(otp_provider, email: str, after_ts: float, used_co
         time.sleep(min(5, max(1, remaining)))
 
 
-def _install_email_otp_validate_hook(driver) -> None:
+def _install_email_otp_validate_hook(driver, *, capture_responses: bool = True) -> None:
     """
     在页面内 hook fetch/XHR，捕获 email-otp/validate 的接口响应体。
 
@@ -1729,12 +1729,17 @@ def _install_email_otp_validate_hook(driver) -> None:
     script = r"""
     (() => {
       window.__codexEmailOtpValidateResponses = [];
+      window.__codexEmailOtpValidateCaptureResponses = arguments[0] !== false;
+      window.__codexEmailOtpValidateRequestCount = Number(window.__codexEmailOtpValidateRequestCount || 0);
       if (window.__codexEmailOtpValidateHooked) return true;
       window.__codexEmailOtpValidateHooked = true;
       const hit = (url) => String(url || '').includes('/api/accounts/email-otp/validate');
+      const markRequest = url => {
+        if (hit(url)) window.__codexEmailOtpValidateRequestCount += 1;
+      };
       const save = (url, status, body) => {
         try {
-          if (!hit(url)) return;
+          if (!hit(url) || !window.__codexEmailOtpValidateCaptureResponses) return;
           window.__codexEmailOtpValidateResponses.push({
             url: String(url || ''),
             status: Number(status || 0),
@@ -1746,10 +1751,11 @@ def _install_email_otp_validate_hook(driver) -> None:
       const origFetch = window.fetch;
       if (origFetch) {
         window.fetch = async function(input, init) {
+          const url = (typeof input === 'string') ? input : (input && (input.url || input.href));
+          markRequest(url);
           const resp = await origFetch.apply(this, arguments);
           try {
-            const url = (typeof input === 'string') ? input : (input && input.url);
-            if (hit(url)) {
+            if (hit(url) && window.__codexEmailOtpValidateCaptureResponses) {
               resp.clone().text().then(t => save(url, resp.status, t)).catch(() => {});
             }
           } catch (e) {}
@@ -1764,19 +1770,22 @@ def _install_email_otp_validate_hook(driver) -> None:
       };
       XMLHttpRequest.prototype.send = function() {
         try {
+          markRequest(this.__codexOtpValidateUrl);
           this.addEventListener('loadend', function() {
             try {
-              if (hit(this.__codexOtpValidateUrl)) save(this.__codexOtpValidateUrl, this.status, this.responseText);
+              if (hit(this.__codexOtpValidateUrl) && window.__codexEmailOtpValidateCaptureResponses)
+                save(this.__codexOtpValidateUrl, this.status, this.responseText);
             } catch (e) {}
           });
         } catch (e) {}
         return origSend.apply(this, arguments);
       };
+      window.__codexEmailOtpValidateRequestCounterInstalled = true;
       return true;
     })();
     """
     try:
-        driver.execute_script(script)
+        driver.execute_script(script, capture_responses)
     except Exception as exc:
         logger.debug("[Codex][Browser] 注入 email-otp/validate 响应 hook 失败：%s", type(exc).__name__)
 

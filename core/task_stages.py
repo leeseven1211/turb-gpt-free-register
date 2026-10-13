@@ -11,6 +11,9 @@ from typing import Any
 
 FLOW_VERSION = 2
 
+# 注册页面、邮箱、密码和验证码是同一认证主步骤中的独立阶段。
+REGISTRATION_AUTH_STAGES = ("page", "submit_email", "auth_redirect", "login", "login_password", "email_otp")
+
 
 STEP_STATES = frozenset({"pending", "running", "success", "skipped", "failed"})
 
@@ -155,11 +158,11 @@ def _s(step_id: str, *raw: str, depends_on: tuple[str, ...] = ()) -> dict[str, A
 # 列表覆盖 operation 层当前发出的全部任务类型，包括此前缺失的两个 change 变体。
 TASK_TEMPLATES: _FLOW = {
     "registration": _flow(
-        _s("network"), _s("email"), _s("browser"), _s("authenticate", "page", "submit_email", "auth_redirect", "login", "login_password", "email_otp"),
+        _s("network"), _s("email"), _s("browser"), _s("authenticate", *REGISTRATION_AUTH_STAGES),
         _s("profile"), _s("token"), _s("codex", "codex", "oauth"), _s("set_twofa", "twofa", "twofa_result"), _s("plan_check"),
     ),
     "registration_resume": _flow(
-        _s("network"), _step("email", "复用账号邮箱", "resource", "email"), _s("browser"), _s("authenticate", "login", "login_password", "email_otp"), _s("profile"), _s("token"),
+        _s("network"), _step("email", "复用账号邮箱", "resource", "email"), _s("browser"), _s("authenticate", *REGISTRATION_AUTH_STAGES), _s("profile"), _s("token"),
         _s("codex", "codex", "oauth"), _s("set_twofa", "twofa", "twofa_result"), _s("plan_check"),
     ),
     "codex_retry": _flow(

@@ -326,7 +326,10 @@ def _type_email_address(
     stop_on_advanced: bool = False,
 ) -> str | None:
     """进入邮箱登录/注册方式并填写邮箱。全程不依赖页面可见文字，避免非日本出口本地化后误点 Google。"""
-    end = time.time() + (timeout or int(_cfg.ROXY_SELENIUM_TIMEOUT))
+    wait_seconds = int(_cfg.ROXY_SELENIUM_TIMEOUT) if timeout is None else max(0.0, float(timeout))
+    if wait_seconds <= 0:
+        raise StageTimeout("邮箱输入准备预算已耗尽，未填写或提交邮箱")
+    end = time.time() + wait_seconds
     last_state = None
     clicked_email_option = False
     reloaded_blank_shell = False
@@ -1311,6 +1314,7 @@ def _submit_email_and_wait_next(
     on_submitted=None,
     total_timeout: int = EMAIL_OUTER_TIMEOUT,
     allow_login_password: bool = False,
+    on_progress=None,
 ) -> str:
     """一次流程独占提交凭据，结束后不把状态带入下一账号或独立调用。"""
     driver._email_submission_receipt = None
@@ -1322,7 +1326,7 @@ def _submit_email_and_wait_next(
     driver._registration_resume_login = bool(allow_login_password)
     try:
         return _submit_email_and_wait_next_impl(
-            driver, email, attempts, on_submitted, total_timeout, allow_login_password,
+            driver, email, attempts, on_submitted, total_timeout, allow_login_password, on_progress,
         )
     except StageTimeout as exc:
         if isinstance(getattr(driver, "_email_submission_receipt", None), dict):
@@ -1351,11 +1355,20 @@ def _submit_email_and_wait_next_impl(
     on_submitted=None,
     total_timeout: int = EMAIL_OUTER_TIMEOUT,
     allow_login_password: bool = False,
+    on_progress=None,
 ) -> str:
     """填写并提交邮箱：准备最多 30 秒，提交/落点最多 60 秒，外层最多 90 秒。"""
     last_state = None
     nextauth_fallback_done = False
     submitted_reported = False
+    submission_started = False
+
+    def _progress(phase: str, detail: str) -> None:
+        if on_progress is not None:
+            try:
+                on_progress(phase, detail)
+            except Exception:
+                logger.exception("%s 上报邮箱观察进度失败", _log_prefix(driver))
     requested_timeout = EMAIL_OUTER_TIMEOUT if total_timeout is None else float(total_timeout)
     # 90 秒是默认软上限；调用方传入更小预算时必须原样收紧，不能用历史的
     # “至少 10 秒”兜底把测试/取消预算重新放大。
@@ -1397,6 +1410,7 @@ def _submit_email_and_wait_next_impl(
         return submission_budget
 
     def _accept_advanced_state(state_name: str | None, source: str) -> str | None:
+        nonlocal submitted_reported
         if state_name == "login_password":
             if allow_login_password:
                 logger.info(
@@ -1404,13 +1418,23 @@ def _submit_email_and_wait_next_impl(
                     _log_prefix(driver),
                     source,
                 )
-                return state_name
-            raise RemoteExistingAccountError(
-                f"邮箱提交后进入登录密码页，已注册/不可用邮箱；检测到远端已有账号，进入人工协调: "
-                f"url={getattr(driver, 'current_url', '') or 'https://auth.openai.com/log-in/password'}"
-            )
-        if state_name in ("password", "otp", "logged_in"):
+            else:
+                raise RemoteExistingAccountError(
+                    f"邮箱提交后进入登录密码页，已注册/不可用邮箱；检测到远端已有账号，进入人工协调: "
+                    f"url={getattr(driver, 'current_url', '') or 'https://auth.openai.com/log-in/password'}"
+                )
+        if state_name in ("password", "otp", "logged_in", "login_password"):
             logger.info("%s %s已进入下一步：%s", _log_prefix(driver), source, state_name)
+            if not submitted_reported:
+                if submission_started and on_submitted is not None:
+                    try:
+                        # 保留零参回调契约；只有明确下一页才能结束邮箱提交步骤。
+                        on_submitted()
+                    except Exception:
+                        logger.exception("%s 上报邮箱确认阶段失败", _log_prefix(driver))
+                elif not submission_started:
+                    _progress("skipped", "当前已在认证下一步，本次无需填写或提交邮箱")
+                submitted_reported = True
             return state_name
         return None
 
@@ -1428,6 +1452,7 @@ def _submit_email_and_wait_next_impl(
                 setattr(driver, "_registration_stage_budget", budget)
             except Exception:
                 pass
+        _progress("waiting_input", "正在等待可见的邮箱输入框")
         entry_state = _type_email_address(
             driver,
             email,
@@ -1445,6 +1470,7 @@ def _submit_email_and_wait_next_impl(
             time.sleep(0.8)
             continue
         logger.info("%s 已填写邮箱并校验通过", _log_prefix(driver))
+        _progress("filled", "邮箱已填写并校验，正在等待表单就绪")
         human_delay("form")
         frontend_not_ready = False
         try:
@@ -1452,8 +1478,10 @@ def _submit_email_and_wait_next_impl(
         except Exception:
             pass
         try:
+            submission_started = True
             _submit_email_step(driver, email)
         except _EmailFrontendNotReady:
+            submission_started = False
             frontend_not_ready = True
             state_name = "email_frontend_not_ready"
             logger.warning("%s 登录表单未接管提交，保留当前预算转入一次导航兜底", _log_prefix(driver))
@@ -1466,13 +1494,8 @@ def _submit_email_and_wait_next_impl(
             # 进入可能派发窗口后，确认链路获得至多 60 秒；不再重置为一份新的
             # 外层预算，且继续受 outer_budget 的 90 秒截止约束。
             _use_submission_budget()
-            if not submitted_reported and on_submitted is not None:
-                try:
-                    on_submitted()
-                except Exception:
-                    logger.exception("%s 上报邮箱提交阶段失败", _log_prefix(driver))
-                submitted_reported = True
-            logger.info("%s 已提交邮箱，等待进入密码页或验证码页（%s/%s）", _log_prefix(driver), attempt, attempts)
+            _progress("pending", "邮箱提交已进入排队或派发阶段，正在确认认证下一页")
+            logger.info("%s 邮箱提交尚待页面确认，等待密码页或验证码页（%s/%s）", _log_prefix(driver), attempt, attempts)
             state_name = _wait_email_submit_next_state(
                 driver,
                 email,
@@ -1507,6 +1530,8 @@ def _submit_email_and_wait_next_impl(
             _use_submission_budget()
             budget.require("邮箱认证导航兜底")
             nextauth_fallback_done = True
+            submission_started = True
+            _progress("fallback", "邮箱表单未确认派发，正在通过当前浏览器建立认证跳转")
             logger.warning("%s 邮箱认证未进入下一步，启用一次 NextAuth 导航兜底", _log_prefix(driver))
             fallback = _submit_email_via_browser_nextauth(driver, email)
             logger.info(
@@ -1514,12 +1539,6 @@ def _submit_email_and_wait_next_impl(
                 _log_prefix(driver),
                 {k: v for k, v in fallback.items() if k != "url"} | ({"url": str(fallback.get("url") or "")[:180]} if fallback.get("url") else {}),
             )
-            if fallback.get("ok") and not submitted_reported and on_submitted is not None:
-                try:
-                    on_submitted()
-                except Exception:
-                    logger.exception("%s 上报邮箱提交阶段失败", _log_prefix(driver))
-                submitted_reported = True
             fallback_state = str(fallback.get("state") or "")
             accepted = _accept_advanced_state(fallback_state, "NextAuth 兜底前页面")
             if accepted:
@@ -1558,7 +1577,7 @@ def _submit_email_and_wait_next_impl(
         raise RuntimeError(f"邮箱提交/认证跳转超过总预算 {EMAIL_OUTER_TIMEOUT} 秒，最后状态={last_state}")
     raise RuntimeError(f"邮箱提交后未进入密码页/验证码页，最后状态={last_state}")
 
-def _type_otp(driver, code: str, *, timeout: int = 20) -> None:
+def _type_otp(driver, code: str, *, timeout: int = 20, before_input=None) -> None:
     from selenium.webdriver.common.by import By
 
     # 邮件通常比认证页渲染更快。收到验证码后继续等输入框出现，避免把页面竞态
@@ -1601,6 +1620,8 @@ def _type_otp(driver, code: str, *, timeout: int = 20) -> None:
         ]:
             els = [e for e in driver.find_elements(By.CSS_SELECTOR, selector) if _visible(e)]
             if len(els) == 1:
+                if before_input is not None:
+                    before_input([els[0]])
                 _human_type_text(driver, els[0], code, clear=True)
                 return
 
@@ -1612,7 +1633,10 @@ def _type_otp(driver, code: str, *, timeout: int = 20) -> None:
             if any(x in attrs.lower() for x in ("numeric", "one-time", "code", "otp", "tel")):
                 numeric_boxes.append(e)
         if len(numeric_boxes) >= len(code):
-            for e, ch in zip(numeric_boxes, code):
+            selected_boxes = numeric_boxes[:len(code)]
+            if before_input is not None:
+                before_input(selected_boxes)
+            for e, ch in zip(selected_boxes, code):
                 if _browser_actions_enabled():
                     _human_scroll_to(driver, e)
                     time.sleep(random.uniform(0.04, 0.18))
@@ -1872,12 +1896,11 @@ def _wait_after_email_otp_submit(
     budget: StageBudget | None = None,
     baseline_state: dict | None = None,
 ) -> str:
-    """提交 OTP 后等待页面离开验证码页。
+    """提交 OTP 后等待明确的资料页、邮箱已验证提示或登录态。
 
     只有页面明确出现验证码错误（aria-invalid / 错误文案）才判定为无效；
-    网络慢时最多等待完整 timeout；超时后仍停在验证码页，即使页面没有显式
-    aria-invalid，也必须按 stuck 处理并重新取码。旧逻辑把这种状态当 accepted，
-    后续资料页会再白等 60 秒才失败。
+    网络慢时最多等待完整 timeout；超时没有明确成功证据时按 stuck 保留
+    原提交，不把空壳、未知跳转或无错误标记当成验证成功，也不自动重发。
     """
     timeout = _budget_timeout(budget, timeout, minimum=0.0)
     end = time.monotonic() + max(0.0, timeout)
@@ -1914,18 +1937,21 @@ def _wait_after_email_otp_submit(
         last = _email_otp_page_state(driver)
         if not isinstance(last, dict):
             last = {}
-        if classify_page(last) == PageState.MFA_TOTP:
+        page_state = classify_page(last)
+        if page_state == PageState.MFA_TOTP:
             logger.info("%s[OTP] 邮箱验证码后进入 Authenticator TOTP，交给公共登录状态机", _log_prefix(driver))
             return "totp_required"
         if last.get("emailVerified"):
             return "email_verified"
-        if not _is_email_verification_page(driver):
+        if page_state == PageState.PROFILE or _has_access_token(driver, budget=budget):
             return 'accepted'
-        if _new_error_mark(last):
+        if page_state in {PageState.AUTH_ERROR, PageState.LOGGED_OUT}:
+            return 'stuck'
+        if _is_email_verification_page(driver) and _new_error_mark(last):
             return 'invalid'
     if _is_email_verification_page(driver):
         # 超时仍停留：有错误标记是 invalid；没有错误标记也说明提交没有产生跳转，
-        # 返回 stuck 让上层重发/重新取最新验证码。
+        # 返回 stuck，让上层保留原提交并等待同一 Attempt 恢复。
         last = _email_otp_page_state(driver)
         has_error_mark = _new_error_mark(last)
         if has_error_mark:
@@ -1938,7 +1964,8 @@ def _wait_after_email_otp_submit(
         return 'stuck'
     if isinstance(last, dict) and last.get("emailVerified"):
         return "email_verified"
-    return 'accepted'
+    # 页面离开验证码路由不代表验证成功；空壳或未知跳转保持原提交待确认。
+    return 'stuck'
 
 
 install_dispatches(globals(), (

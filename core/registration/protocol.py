@@ -1219,6 +1219,7 @@ def run_protocol_registration(
         return {
             "success": True,
             "registration_success": True,
+            "core_persisted": core_persisted,
             "postprocess_success": postprocess_success,
             "partial_success": not postprocess_success,
             "email": email,
@@ -1320,6 +1321,7 @@ def run_protocol_registration(
             pass
         return {
             "success": False,
+            "core_persisted": core_persisted,
             "email": email,
             "account_id": account_id,
             "request_unknown": request_unknown,

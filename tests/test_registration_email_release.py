@@ -139,6 +139,25 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
         )
         release_email.assert_not_called()
 
+    def test_failed_core_write_keeps_email_and_does_not_finish_as_success(self):
+        with patch.object(svc, "_mark_registration_result") as mark_success, patch.object(
+            svc, "_mark_completed_registration_email"
+        ) as mark_email_used, patch.object(svc, "_retain_job_email") as retain:
+            _release, _progress, finish_progress, update_job = self._run_job(
+                capture_job_updates=True,
+                result={
+                    "success": False, "core_persisted": False,
+                    "email": "alias@icloud.com", "account_id": 42,
+                    "access_token": "memory-only-token", "error": "核心账号保存失败",
+                },
+            )
+        mark_success.assert_not_called()
+        mark_email_used.assert_not_called()
+        retain.assert_called_once()
+        self.assertFalse(finish_progress.call_args.kwargs["success"])
+        statuses = [call.kwargs["status"] for call in update_job.call_args_list if "status" in call.kwargs]
+        self.assertEqual(statuses[-1], "failed")
+
     def test_saved_account_with_unknown_remote_result_is_not_partial_success(self):
         with patch.object(svc, "_mark_registration_request_unknown") as mark_unknown, patch.object(
             svc, "_mark_registration_result"

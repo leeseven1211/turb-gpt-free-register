@@ -261,6 +261,37 @@ class RegistrationFailureClassificationTests(unittest.TestCase):
 
 
 class RegistrationPasswordFlowTests(unittest.TestCase):
+    def test_password_requires_positive_landing_and_never_confirms_blank_or_error(self):
+        for landing in ("https://auth.openai.com/", "https://chatgpt.com/auth/error", "https://auth.openai.com/about-you"):
+            driver = _RoxyDriver()
+            driver.state = "password"
+            phases = []
+            clock = _SteppingClock(step=1)
+            snapshots = [{"url": driver.current_url}, {"url": landing, "inputs": []}]
+            with (
+                self.subTest(landing=landing),
+                patch.object(password_auth, "_registration_auth_mode", return_value="password"),
+                patch.object(password_auth, "_is_email_verification_page", return_value=False),
+                patch.object(password_auth, "_has_access_token", return_value=False),
+                patch.object(password_auth, "_password_page_state", side_effect=lambda _driver: snapshots.pop(0) if len(snapshots) > 1 else snapshots[0]),
+                patch.object(password_auth, "_is_signup_password_page", side_effect=[True, False]),
+                patch.object(password_auth, "_is_login_password_page", return_value=False),
+                patch.object(password_auth, "_registration_password", return_value="ValidPass123!"),
+                patch.object(password_auth, "_password_transition_timeout_seconds", return_value=3),
+                patch.object(password_auth, "_human_type_text"),
+                patch.object(password_auth, "human_delay"),
+                patch.object(password_auth, "_check_manual_stop"),
+                patch.object(password_auth, "record_browser_submission_fact", side_effect=lambda _driver, phase, **_kwargs: phases.append(phase)),
+                patch.object(password_auth, "time", SimpleNamespace(time=clock, sleep=lambda _seconds: None)),
+            ):
+                if landing.endswith("about-you"):
+                    self.assertEqual(password_auth._fill_password_page_if_present(driver, "new@example.test", timeout=10), "ValidPass123!")
+                    self.assertIn("confirmed", phases)
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "request_unknown"):
+                        password_auth._fill_password_page_if_present(driver, "new@example.test", timeout=10)
+                    self.assertNotIn("confirmed", phases)
+
     def test_unresolved_submission_fence_survives_new_run_fact_projection(self):
         facts = [
             {"submission_id": "old", "phase": "dispatch_intent"},
@@ -586,7 +617,7 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
                 SimpleNamespace(time=Mock(side_effect=[0, 0, 0, 31]), sleep=Mock()),
             ),
         ):
-            with self.assertRaisesRegex(RuntimeError, "仍停留在密码页"):
+            with self.assertRaisesRegex(RuntimeError, "尚未确认下一步"):
                 roxy_registration._fill_password_page_if_present(driver, "new@example.com", timeout=2)
 
     def test_roxy_password_submit_uses_independent_transition_budget(self):

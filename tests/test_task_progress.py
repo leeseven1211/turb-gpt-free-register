@@ -270,6 +270,88 @@ def test_current_authenticate_time_uses_each_child_instance_union():
     assert authenticate["duration_ms"] == 3000
 
 
+def test_registration_page_completion_keeps_authentication_open_and_its_own_duration():
+    for task_type in ("registration", "registration_resume"):
+        events = [
+            _event("page-start", "page", "running", created_at="2026-10-13T08:48:18Z", detail={
+                "step_instance_id": "page-a", "started_at": "2026-10-13T08:48:18Z",
+            }),
+            _event("page-end", "page", "success", created_at="2026-10-13T08:49:09Z", detail={
+                "step_instance_id": "page-a", "started_at": "2026-10-13T08:48:18Z",
+                "completed_at": "2026-10-13T08:49:09Z",
+            }),
+        ]
+        auth = _step(build_progress_snapshot(1, 2, task_type, _run(), events), "authenticate")
+        assert auth["state"] == "running"
+        assert auth["completed_at"] is None
+        assert auth["children"][0]["state"] == "success"
+        assert auth["children"][0]["duration_ms"] == 51000
+        assert auth["attempts"][1]["created_at"] == "2026-10-13T08:49:09Z"
+        assert auth["attempts"][1]["started_at"] == "2026-10-13T08:48:18Z"
+        assert auth["attempts"][1]["raw_stage_label"] == "打开页面"
+
+        events.append(_event("email-start", "submit_email", "running", created_at="2026-10-13T08:49:09Z", detail={
+            "step_instance_id": "email-a", "started_at": "2026-10-13T08:49:09Z",
+        }))
+        auth = _step(build_progress_snapshot(1, 2, task_type, _run(), events), "authenticate")
+        assert [child["id"] for child in auth["children"]] == ["page", "submit_email"]
+        assert auth["started_at"] == "2026-10-13T08:48:18Z"
+        assert auth["children"][0]["duration_ms"] == 51000
+        assert auth["children"][1]["started_at"] == "2026-10-13T08:49:09Z"
+        assert auth["children"][1]["completed_at"] is None
+
+
+def test_registration_authentication_children_finish_only_after_confirmed_verification():
+    for explicit_instances in (True, False):
+        events = []
+        for index, raw_stage in enumerate(("page", "submit_email", "auth_redirect", "login_password", "email_otp")):
+            start = f"2026-10-13T09:00:{index * 2:02d}Z"
+            end = f"2026-10-13T09:00:{index * 2 + 1:02d}Z"
+            detail = {"started_at": start, "completed_at": end}
+            if explicit_instances:
+                detail["step_instance_id"] = raw_stage + "-a"
+            events.append(_event(raw_stage, raw_stage, "success", created_at=end, detail=detail))
+            auth = _step(build_progress_snapshot(1, 2, "registration", _run(), events), "authenticate")
+            assert auth["state"] == ("success" if raw_stage == "email_otp" else "running")
+        assert [child["id"] for child in auth["children"]] == ["page", "submit_email", "auth_redirect", "login_password", "email_otp"]
+        assert all(child["duration_ms"] == 1000 for child in auth["children"])
+        assert auth["duration_ms"] == 9000
+        assert auth["started_at"] == "2026-10-13T09:00:00Z"
+        assert auth["completed_at"] == "2026-10-13T09:00:09Z"
+
+
+def test_registration_redirect_cannot_be_hidden_by_completed_password_child():
+    events = [
+        _event("password-end", "login_password", "success", detail={
+            "step_instance_id": "password-a", "started_at": "2026-10-13T09:00:00Z",
+            "completed_at": "2026-10-13T09:00:01Z",
+        }),
+        _event("redirect-start", "auth_redirect", "running", detail={
+            "step_instance_id": "redirect-a", "started_at": "2026-10-13T09:00:02Z",
+        }),
+    ]
+    auth = _step(build_progress_snapshot(1, 2, "registration", _run(), events), "authenticate")
+    assert auth["state"] == "running"
+    assert auth["completed_at"] is None
+    assert [(child["id"], child["state"]) for child in auth["children"]] == [
+        ("login_password", "success"), ("auth_redirect", "running"),
+    ]
+
+
+def test_registration_later_phase_start_cannot_confirm_authentication():
+    events = [
+        _event("password-end", "login_password", "success", created_at="2026-10-13T09:00:01Z"),
+        _event("profile-start", "profile", "running", created_at="2026-10-13T09:00:02Z"),
+    ]
+    auth = _step(build_progress_snapshot(1, 2, "registration", _run(), events), "authenticate")
+    assert auth["state"] == "running"
+    events.append(_event("token-confirmed", "token", "success", created_at="2026-10-13T09:00:03Z"))
+    auth = _step(build_progress_snapshot(1, 2, "registration", _run(), events), "authenticate")
+    assert auth["state"] == "success"
+    assert auth["completed_at"] == "2026-10-13T09:00:03Z"
+    assert auth["reason"] == "已取得登录会话，身份验证已确认"
+
+
 def test_same_route_authenticate_reentry_closes_parent_only_for_current_children():
     run = _run("running", route_attempt_no=2)
     events = [

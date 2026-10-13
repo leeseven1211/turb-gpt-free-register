@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Any, Iterable
 
 from core.task_run_log import redact_text
-from core.task_stages import flow_for, normalize_stage, normalize_step_state, resolve_step
+from core.task_stages import REGISTRATION_AUTH_STAGES, flow_for, normalize_stage, normalize_step_state, resolve_step, stage_label
 
 
 _CHILD_LABELS = {
@@ -94,14 +94,12 @@ def _original_stage(event: dict[str, Any]) -> str:
 
 
 def _event_time(event: dict[str, Any]) -> str | None:
+    """事件发生时间与阶段开始时间分开，完成事件不能显示成开始时刻。"""
     detail = _event_detail(event)
-    for key in ("started_at", "captured_at"):
-        if detail.get(key):
-            return str(detail[key])
     for key in ("created_at", "captured_at", "timestamp", "ts"):
         if event.get(key):
             return str(event[key])
-    for key in ("created_at", "completed_at"):
+    for key in ("captured_at", "created_at", "completed_at", "started_at"):
         if detail.get(key):
             return str(detail[key])
     return None
@@ -145,7 +143,7 @@ def _step(item: dict[str, Any], *, planned: bool = True) -> dict[str, Any]:
 
 def _child(child_id: str) -> dict[str, Any]:
     return {
-        "id": child_id, "step_id": child_id, "label": _CHILD_LABELS.get(child_id, child_id),
+        "id": child_id, "step_id": child_id, "label": _CHILD_LABELS.get(child_id, stage_label(child_id)),
         "state": "pending", "display_status": "pending", "active": False,
         "reason": "记录不足/未执行", "attempts": [], "event_ids": [], "last_event_id": None,
         "started_at": None, "completed_at": None, "duration_ms": None, "message": None,
@@ -209,7 +207,7 @@ def _record(item: dict[str, Any], event: dict[str, Any], state: str, *, raw: str
     observed = evidence not in {"not_executed", "unobserved"}
     if not observed:
         timestamp = None
-    attempt = {"event_id": event_id, "event_uuid": event.get("event_uuid"), "transition_id": event.get("transition_id"), "state": state, "raw_stage": raw, "event_type": event.get("event_type"), "created_at": timestamp, "message": message, "evidence": evidence}
+    attempt = {"event_id": event_id, "event_uuid": event.get("event_uuid"), "transition_id": event.get("transition_id"), "state": state, "raw_stage": raw, "raw_stage_label": stage_label(raw), "event_type": event.get("event_type"), "created_at": timestamp, "message": message, "evidence": evidence}
     if observed and detail.get("started_at") is not None:
         attempt["started_at"] = str(detail["started_at"])
     if observed and detail.get("completed_at") is not None:
@@ -821,6 +819,70 @@ def _attempts_for_current_instances(
     return result
 
 
+def _project_registration_authentication(
+    steps: list[dict[str, Any]], task_type: str, attempts: list[dict[str, Any]],
+) -> None:
+    """注册认证按全部已观察子阶段聚合，准备完成不能代替身份验证完成。"""
+    if task_type not in {"registration", "registration_resume"}:
+        return
+    item = _find_step(steps, "authenticate")
+    if not item:
+        return
+    children = item.get("children") or []
+    if not children:
+        return
+    children.sort(key=lambda child: (
+        _time_value(child.get("started_at")) is None,
+        _time_value(child.get("started_at")) or 0,
+        child.get("observed_order") if child.get("observed_order") is not None else float("inf"),
+    ))
+    observed = [child for child in children if child.get("evidence") not in {"unobserved", "not_executed"}]
+    if not observed:
+        return
+    item["started_at"] = min(
+        (child["started_at"] for child in observed if child.get("started_at")),
+        key=lambda value: _time_value(value) if _time_value(value) is not None else float("inf"),
+        default=None,
+    )
+    latest = next((value for value in reversed(attempts) if value.get("main_step_id") == "authenticate"), None)
+    if latest:
+        item["message"] = latest.get("message")
+        item["last_event_id"] = latest.get("event_id")
+    # OTP 明确通过/无需验证，或拿到登录会话，才是认证完成证据。
+    # 只有各个已开始的子阶段都收口，主步骤才可完成；后续阶段开始不能补写缺失结果。
+    confirmations = [value for value in attempts if (
+        value.get("main_step_id") == "authenticate"
+        and (value.get("raw_stage") == "email_otp" and value.get("state") in {"success", "skipped"}
+             or value.get("raw_stage") == "authenticate" and value.get("state") == "success")
+        or value.get("main_step_id") == "token" and value.get("state") == "success"
+    )]
+    confirmation = confirmations[-1] if confirmations else None
+    confirmation_is_current = bool(confirmation and (not latest or confirmation.get("sequence", -1) >= latest.get("sequence", -1)))
+    if any(child.get("state") == "failed" for child in observed):
+        state = "failed"
+    elif any(child.get("state") == "running" for child in observed):
+        state = "running"
+    elif all(child.get("state") in {"success", "skipped"} for child in observed):
+        state = "success" if confirmation_is_current else "running"
+    else:
+        state = "pending"
+    _state(item, state)
+    if state == "running" and all(child.get("state") in {"success", "skipped"} for child in observed):
+        item["reason"] = "已完成当前准备阶段，等待身份验证结果"
+    elif state == "success" and confirmation and confirmation.get("main_step_id") == "token":
+        item["reason"] = "已取得登录会话，身份验证已确认"
+    else:
+        item["reason"] = None
+    ends = [child.get("completed_at") for child in observed]
+    if state == "success" and confirmation:
+        ends.append(confirmation.get("completed_at") or confirmation.get("created_at"))
+    item["completed_at"] = max(
+        (value for value in ends if value), key=lambda value: _time_value(value) or 0, default=None,
+    ) if state in {"success", "failed"} and all(ends) else None
+    start, end = _time_value(item.get("started_at")), _time_value(item.get("completed_at"))
+    item["duration_ms"] = max(0, int((end - start) * 1000)) if start is not None and end is not None else None
+
+
 def build_progress_snapshot(
     task_id: int,
     run_id: int,
@@ -911,6 +973,8 @@ def build_progress_snapshot(
             # 旧 progress_steps 只补充缺失证据，不能覆盖 transition 事件事实。
             continue
         child_id = _child_id(raw, detail) if main_id != "result" else None
+        if task_key in {"registration", "registration_resume"} and main_id == "authenticate" and raw in REGISTRATION_AUTH_STAGES:
+            child_id = child_id or raw
         if main_id == "set_twofa" and raw in {"twofa", "twofa_result"}:
             child_id = "twofa_remote_confirm" if _original_stage(event) == "twofa_result" else ("browser_fallback" if str(detail.get("driver") or "").lower() == "browser_fallback" else "protocol_attempt")
         if main_id == "set_password" and detail.get("checkpoint"):
@@ -928,6 +992,7 @@ def build_progress_snapshot(
     ) else {}
     current_attempts = _attempts_for_current_instances(attempts, selected_instances)
     current_activity = _attempts_for_current_instances(activity, selected_instances)
+    _project_registration_authentication(steps, task_key, current_attempts)
     ordered = _ordered_steps(steps)
     # 一个登录子步骤成功不能遮住另一个子步骤的失败。
     unresolved = _unrecovered_failures(current_attempts)

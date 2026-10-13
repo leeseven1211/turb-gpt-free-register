@@ -214,20 +214,25 @@ class EmailSourceCompatibilityTests(unittest.TestCase):
 
         self.assertEqual(run.call_args.kwargs["email_source"], self.email_source)
 
-    def _run_cloak_codex(self, *, email_source=None):
+    def _run_cloak_codex(self, *, email_source=None, already_advanced=False):
         driver = MagicMock()
         opened = SimpleNamespace(profile_id="compat-profile", raw={})
         oauth = MagicMock(return_value={"ok": True, "status": "success", "message": "ok"})
 
+        def email_step(_driver, _email, **kwargs):
+            if already_advanced:
+                kwargs["on_progress"]("skipped", "当前已在认证下一步，本次无需填写或提交邮箱")
+            return "otp"
+
         with ExitStack() as stack:
-            stack.enter_context(patch("core.registration_service.report_job_progress"))
+            progress = stack.enter_context(patch("core.registration_service.report_job_progress"))
             stack.enter_context(patch.object(cloakbrowser_registration, "build_cloak_driver", return_value=(driver, opened)))
             stack.enter_context(patch("core.registration_plan_capture.install_selenium"))
             stack.enter_context(patch("core.registration_plan_capture.read_selenium", return_value={}))
             stack.enter_context(patch.object(cloakbrowser_registration, "human_delay"))
             stack.enter_context(patch.object(cloakbrowser_registration, "_maybe_accept"))
             stack.enter_context(patch.object(cloakbrowser_registration, "_check_manual_stop"))
-            stack.enter_context(patch.object(cloakbrowser_registration, "_submit_email_and_wait_next", return_value="email_verification"))
+            stack.enter_context(patch.object(cloakbrowser_registration, "_submit_email_and_wait_next", side_effect=email_step))
             stack.enter_context(patch.object(cloakbrowser_registration, "_fill_password_page_if_present", return_value=None))
             stack.enter_context(patch.object(cloakbrowser_registration, "_clear_otp_inputs"))
             stack.enter_context(patch.object(cloakbrowser_registration, "_type_otp"))
@@ -255,8 +260,14 @@ class EmailSourceCompatibilityTests(unittest.TestCase):
             )
 
         self.assertTrue(result["success"], result)
+        if already_advanced:
+            progress.assert_any_call("submit_email", "skipped", "当前已在认证下一步，本次无需填写或提交邮箱")
+            progress.assert_any_call("auth_redirect", "success", "已进入认证下一步：otp")
         oauth.assert_called_once()
         return oauth.call_args
+
+    def test_cloak_existing_next_page_reports_email_step_skipped(self):
+        self._run_cloak_codex(already_advanced=True)
 
     def test_cloak_codex_legacy_call_omits_otp_provider(self):
         call = self._run_cloak_codex()

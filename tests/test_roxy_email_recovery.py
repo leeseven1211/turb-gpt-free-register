@@ -3,6 +3,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 from core import roxy_registration
+from core.registration import email_otp
+from core.registration.state_machine import StageTimeout
 
 
 class _FakeDriver:
@@ -18,6 +20,99 @@ class _FakeDriver:
 
 
 class RoxyEmailRecoveryTests(unittest.TestCase):
+    def test_zero_email_input_budget_does_not_restore_default_timeout(self):
+        driver = _FakeDriver()
+        with patch.object(roxy_registration, "_find_visible_email_input_js") as find_input:
+            with self.assertRaises(StageTimeout):
+                roxy_registration._type_email_address(driver, "test@example.com", timeout=0)
+        find_input.assert_not_called()
+
+    def test_email_success_waits_for_next_page_instead_of_queue_return(self):
+        driver = _FakeDriver()
+        confirmed = Mock()
+        progress = Mock()
+
+        def wait_next(*_args, **_kwargs):
+            confirmed.assert_not_called()
+            return "otp"
+
+        with (
+            patch.object(roxy_registration, "_type_email_address", return_value="email"),
+            patch.object(roxy_registration, "_email_input_value_state", return_value={"inputs": [{"value": "test@example.com"}]}),
+            patch.object(roxy_registration, "human_delay"),
+            patch.object(roxy_registration, "_submit_email_step"),
+            patch.object(roxy_registration, "_wait_email_submit_next_state", side_effect=wait_next),
+        ):
+            result = roxy_registration._submit_email_and_wait_next(
+                driver, "test@example.com", on_submitted=confirmed, on_progress=progress,
+            )
+        self.assertEqual(result, "otp")
+        confirmed.assert_called_once_with()
+        self.assertEqual([call.args[0] for call in progress.call_args_list], ["waiting_input", "filled", "pending"])
+
+    def test_unknown_email_dispatch_never_reports_success(self):
+        driver = _FakeDriver()
+        confirmed = Mock()
+        with (
+            patch.object(roxy_registration, "_type_email_address", return_value="email"),
+            patch.object(roxy_registration, "_email_input_value_state", return_value={"inputs": [{"value": "test@example.com"}]}),
+            patch.object(roxy_registration, "human_delay"),
+            patch.object(roxy_registration, "_submit_email_step"),
+            patch.object(roxy_registration, "_wait_email_submit_next_state", side_effect=email_otp._EmailSubmissionUnknown("request_unknown")),
+        ):
+            with self.assertRaises(email_otp._EmailSubmissionUnknown):
+                roxy_registration._submit_email_and_wait_next(driver, "test@example.com", on_submitted=confirmed)
+        confirmed.assert_not_called()
+
+    def test_existing_next_page_closes_email_step_as_skipped(self):
+        confirmed = Mock()
+        progress = Mock()
+        with (
+            patch.object(roxy_registration, "_type_email_address", return_value="otp"),
+            patch.object(roxy_registration, "_submit_email_step") as submit,
+        ):
+            result = roxy_registration._submit_email_and_wait_next(
+                _FakeDriver(), "test@example.com", on_submitted=confirmed, on_progress=progress,
+            )
+        self.assertEqual(result, "otp")
+        self.assertEqual(progress.call_args.args[0], "skipped")
+        confirmed.assert_not_called()
+        submit.assert_not_called()
+
+    def test_nextauth_navigation_dispatch_alone_never_reports_email_success(self):
+        confirmed = Mock()
+        with (
+            patch.object(roxy_registration, "_type_email_address", return_value="email"),
+            patch.object(roxy_registration, "_email_input_value_state", return_value={"inputs": [{"value": "test@example.com"}]}),
+            patch.object(roxy_registration, "human_delay"),
+            patch.object(roxy_registration, "_submit_email_step", side_effect=email_otp._EmailFrontendNotReady("未派发")),
+            patch.object(roxy_registration, "_submit_email_via_browser_nextauth", return_value={"ok": True, "stage": "redirect_dispatched"}) as fallback,
+            patch.object(roxy_registration, "_wait_email_submit_next_state", side_effect=email_otp._EmailSubmissionUnknown("request_unknown")),
+        ):
+            with self.assertRaises(email_otp._EmailSubmissionUnknown):
+                roxy_registration._submit_email_and_wait_next(_FakeDriver(), "test@example.com", on_submitted=confirmed)
+        confirmed.assert_not_called()
+        fallback.assert_called_once()
+
+    def test_otp_unknown_landing_is_not_accepted(self):
+        for url in ("https://auth.openai.com/", "https://chatgpt.com/auth/error"):
+            with (
+                self.subTest(url=url),
+                patch.object(roxy_registration, "_email_otp_page_state", return_value={"url": url, "inputs": []}),
+                patch.object(roxy_registration, "_is_email_verification_page", return_value=False),
+                patch.object(roxy_registration, "_has_access_token", return_value=False),
+                patch.object(roxy_registration.time, "monotonic", side_effect=[0, 0, 0, 2]),
+                patch.object(roxy_registration.time, "sleep"),
+            ):
+                self.assertEqual(roxy_registration._wait_after_email_otp_submit(_FakeDriver(), timeout=1), "stuck")
+
+    def test_otp_profile_landing_is_accepted(self):
+        with (
+            patch.object(roxy_registration, "_email_otp_page_state", return_value={"url": "https://auth.openai.com/about-you", "inputs": []}),
+            patch.object(roxy_registration.time, "sleep"),
+        ):
+            self.assertEqual(roxy_registration._wait_after_email_otp_submit(_FakeDriver(), timeout=1), "accepted")
+
     def test_chatgpt_login_shell_is_not_oauth_consent(self):
         driver = _FakeDriver()
         driver.current_url = "https://chatgpt.com/auth/login?email=masked%40icloud.com"
@@ -162,13 +257,17 @@ class RoxyEmailRecoveryTests(unittest.TestCase):
                 return [field] if self.calls == 6 else []
 
         driver = DelayedOtpDriver()
+        preparation_order = []
+        preparation = Mock(side_effect=lambda _fields: preparation_order.append("prepared"))
         with patch.object(
             roxy_registration.time, "monotonic", side_effect=[100.0, 100.0, 101.0]
         ), patch.object(roxy_registration.time, "sleep"), patch.object(
-            roxy_registration, "_human_type_text"
+            roxy_registration, "_human_type_text", side_effect=lambda *_args, **_kwargs: preparation_order.append("typed")
         ) as type_text:
-            roxy_registration._type_otp(driver, "123456", timeout=2)
+            roxy_registration._type_otp(driver, "123456", timeout=2, before_input=preparation)
 
+        preparation.assert_called_once_with([field])
+        self.assertEqual(preparation_order, ["prepared", "typed"])
         type_text.assert_called_once_with(driver, field, "123456", clear=True)
 
     def test_type_otp_recovers_from_email_otp_send_api_route(self):

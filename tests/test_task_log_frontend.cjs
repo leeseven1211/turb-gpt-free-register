@@ -459,3 +459,28 @@ test('批次进度优先使用 v2 main_steps 的实际顺序并转义标签', ()
   assert.match(result.html, /结果待确认/);
   assert.match(result.html, /未执行/);
 });
+
+test('进度详情按真实阶段显示事件，不把开始和完成算成重试', () => {
+  const sandbox = runVm(`${stepFunctions}
+    result = taskProgressStepTooltip({
+      id: 'authenticate', label: '登录与身份验证', state: 'running',
+      raw_stages: ['page', 'submit_email', 'auth_redirect', 'login_password', 'email_otp'],
+      children: [
+        {id: 'page', label: '打开页面', state: 'success', duration_ms: 51000},
+        {id: 'submit_email', label: '提交邮箱', state: 'running', started_at: '2026-10-13T08:49:09Z'},
+      ],
+      attempts: [
+        {raw_stage: 'page', raw_stage_label: '打开页面', state: 'running', created_at: '2026-10-13T08:48:18Z', step_instance_id: 'page-a'},
+        {raw_stage: 'page', raw_stage_label: '打开页面', state: 'success', created_at: '2026-10-13T08:49:09Z', step_instance_id: 'page-a'},
+        {raw_stage: 'submit_email', raw_stage_label: '提交邮箱', state: 'running', created_at: '2026-10-13T08:49:09Z', step_instance_id: 'email-a'},
+      ],
+    });`, {
+    formatDateTime: value => value,
+    taskProgressStatusLabel: value => ({running: '执行中', success: '已完成'}[value] || value),
+  });
+  assert.match(sandbox.result, /已记录阶段：打开页面、提交邮箱/);
+  assert.match(sandbox.result, /打开页面 · 已完成 · 51秒/);
+  assert.match(sandbox.result, /阶段事件（3 条）/);
+  assert.match(sandbox.result, /2\. 打开页面 · 已完成 · 2026-10-13T08:49:09Z/);
+  assert.doesNotMatch(sandbox.result, /尝试记录|原始阶段|login_password|email_otp/);
+});

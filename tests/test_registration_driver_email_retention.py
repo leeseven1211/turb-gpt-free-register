@@ -569,7 +569,7 @@ class RegistrationDriverEmailRetentionTests(unittest.TestCase):
                 patch.object(
                     roxy,
                     "_fetch_chatgpt_session",
-                    return_value={"accessToken": "token", "user": {}, "account": {}},
+                    return_value={"accessToken": "token", "user": {"email": self.email}, "account": {}},
                 )
             )
             persist_core = stack.enter_context(

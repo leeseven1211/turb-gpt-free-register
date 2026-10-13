@@ -33,6 +33,28 @@ class UnconfirmedRegistrationRetryTests(unittest.TestCase):
             "request_unknown": True, "error": "注册后的配置请求超时",
         }), "success")
 
+    def test_unpersisted_core_cannot_be_confirmed_by_pending_id_and_memory_token(self):
+        for core_persisted in (False, None, "true", 1):
+            with self.subTest(core_persisted=core_persisted):
+                self.assertEqual(svc.registration_result_status({
+                    "success": True, "registration_success": True,
+                    "account_id": 44, "access_token": "test-token",
+                    "core_persisted": core_persisted,
+                }), "failed")
+
+    def test_explicitly_persisted_core_survives_later_postprocess_failure(self):
+        self.assertEqual(svc.registration_result_status({
+            "success": False, "account_id": 44, "core_persisted": True,
+            "request_unknown": True, "error": "注册后的配置请求超时",
+        }), "success")
+
+    def test_core_marker_requires_account_and_completed_email_verification(self):
+        for fields in ({}, {"account_id": 44, "registration_pending": True}):
+            with self.subTest(fields=fields):
+                self.assertEqual(svc.registration_result_status({
+                    "success": True, "core_persisted": True, **fields,
+                }), "failed")
+
     def test_old_email_submission_unknown_can_retry_original_email(self):
         job, attempt = pre_account_facts()
         for status in ("failed", "request_unknown", "manual_reconcile"):

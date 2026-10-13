@@ -14,7 +14,8 @@ from tests.support_pg import PostgresTestCase
 class ProtocolCredentialBoundaryTests(unittest.TestCase):
     def _run(self, *, response=None, existing_password=None, register_error=None,
              save_error_phase=None, twofa=False, setup=None, warmup_error=None,
-             totp_save_error_phase=None, resume_state=None, auth_url=None):
+             totp_save_error_phase=None, resume_state=None, auth_url=None,
+             core_save_error=None):
         events = []
         session = SimpleNamespace(proxy="", device_id="offline", close=lambda: events.append("close"))
         def save_password(**kwargs):
@@ -31,6 +32,11 @@ class ProtocolCredentialBoundaryTests(unittest.TestCase):
             events.append("warmup")
             if warmup_error:
                 raise warmup_error
+        def persist_core(**kwargs):
+            events.append("core")
+            if core_save_error:
+                raise core_save_error
+            return 7
         with ExitStack() as stack:
             if resume_state:
                 stack.enter_context(patch("core.registration_service.registration_fact_context", return_value={"attempt_id": 7}))
@@ -55,7 +61,7 @@ class ProtocolCredentialBoundaryTests(unittest.TestCase):
             create = stack.enter_context(patch.object(protocol, "create_account", return_value={"continue_url": "https://auth.openai.com/authorize/continue"}))
             final = stack.enter_context(patch.object(protocol, "_finalize_registration_session", return_value=({"accessToken": "offline-token"}, "offline-token")))
             mfa = stack.enter_context(patch.object(protocol, "_complete_protocol_resume_mfa", return_value=({"accessToken": "offline-token"}, "offline-token")))
-            persist = stack.enter_context(patch("core.registration_service.persist_registration_core", side_effect=lambda **kw: events.append("core") or 7))
+            persist = stack.enter_context(patch("core.registration_service.persist_registration_core", side_effect=persist_core))
             stack.enter_context(patch("core.registration.checkpoints.save_protocol_password_checkpoint", side_effect=save_password))
             stack.enter_context(patch("core.registration.checkpoints.save_protocol_totp_checkpoint", side_effect=save_totp))
             stack.enter_context(patch("core.registration_service.report_job_progress"))
@@ -118,7 +124,18 @@ class ProtocolCredentialBoundaryTests(unittest.TestCase):
     def test_core_persists_before_failing_warmup(self):
         result, events, _ = self._run(warmup_error=TimeoutError())
         self.assertTrue(result["registration_success"])
+        self.assertTrue(result["core_persisted"])
         self.assertLess(events.index("core"), events.index("warmup"))
+
+    def test_core_save_failure_does_not_confirm_pending_account(self):
+        from core.registration_service import registration_result_status
+
+        result, events, calls = self._run(core_save_error=OSError("离线核心落库失败"))
+        self.assertFalse(result["core_persisted"])
+        self.assertEqual(result["account_id"], 7)
+        self.assertEqual(registration_result_status(result), "failed")
+        calls["persist"].assert_called_once()
+        self.assertNotIn("warmup", events)
 
     def test_strict_warmup_failure_keeps_core_and_reports_partial_result(self):
         with patch.object(protocol._protocol_cfg, "CHATGPT_BOOTSTRAP_STRICT", True):

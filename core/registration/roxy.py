@@ -92,12 +92,95 @@ _DISPOSABLE_PRE_ACCOUNT_FAILURE_MARKERS = (
 )
 
 _REGISTRATION_REQUEST_UNKNOWN_MARKERS = (
+    "session_identity_unverified",
+    "session_identity_mismatch",
     "邮箱提交后未识别到",
     "邮箱提交/认证跳转超过总预算",
     "注册页状态未知",
     "后续页面类型未知",
     "认证跳转结果未知",
 )
+
+
+def _validate_registration_session_identity(session_info: dict, email: str) -> None:
+    """保存凭据前确认浏览器会话确实属于本任务邮箱。"""
+    user = session_info.get("user") if isinstance(session_info, dict) else None
+    actual = str(user.get("email") or "").strip().casefold() if isinstance(user, dict) else ""
+    expected = str(email or "").strip().casefold()
+    if not actual or not expected:
+        raise RuntimeError("session_identity_unverified: 登录会话缺少可核验的邮箱身份，已停止保存凭据")
+    if actual != expected:
+        raise RuntimeError("session_identity_mismatch: 登录会话与任务邮箱不一致，已停止保存凭据")
+
+
+_OTP_PREPARE_CURRENT_FORM_SCRIPT = r"""
+const inputs = arguments[0];
+const ready = el => !!(el && el.isConnected && el.getClientRects().length)
+  && !el.matches(':disabled') && !el.readOnly;
+const form = inputs?.[0]?.form;
+if (!Array.isArray(inputs) || !inputs.length || !form
+    || !inputs.every(el => ready(el) && el.form === form)
+    || window.__codexEmailOtpValidateRequestCounterInstalled !== true) return false;
+const previous = window.__turbRegistrationOtpSubmitGuard;
+if (previous?.listener) document.removeEventListener('submit', previous.listener, true);
+const guard = {form, inputs, submitted: false,
+  requestCount: Number(window.__codexEmailOtpValidateRequestCount || 0)};
+const listener = event => {
+  if (event.target !== guard.form) return;
+  guard.submitted = true;
+  document.removeEventListener('submit', listener, true);
+};
+guard.listener = listener;
+window.__turbRegistrationOtpSubmitGuard = guard;
+document.addEventListener('submit', listener, true);
+return true;
+"""
+
+
+_OTP_SUBMIT_CURRENT_FORM_SCRIPT = r"""
+const visible = el => !!(el && el.getClientRects().length);
+const path = location.pathname.toLowerCase();
+if (!path.includes('email-verification')) return {clicked: false, reason: 'page_advanced'};
+const guard = window.__turbRegistrationOtpSubmitGuard;
+if (!guard) return {clicked: false, reason: 'otp_guard_missing'};
+if (guard.submitted || Number(window.__codexEmailOtpValidateRequestCount || 0) > guard.requestCount)
+  return {clicked: false, reason: 'submission_pending'};
+const {form, inputs} = guard;
+if (!form?.isConnected || !inputs.every(el => el.isConnected && el.form === form))
+  return {clicked: false, reason: 'otp_form_replaced'};
+const button = [...form.querySelectorAll('button[type="submit"],input[type="submit"]')].find(el =>
+  visible(el) && !el.matches(':disabled') && el.getAttribute('aria-disabled') !== 'true'
+  && !/resend/.test([el.name, el.value, el.getAttribute('data-dd-action-name')].join(' ').toLowerCase())
+);
+if (!button || !inputs.every(el => !!el.value) || !form.checkValidity())
+  return {clicked: false, reason: 'otp_form_not_ready'};
+guard.submitted = true;
+button.click();
+return {clicked: true, reason: 'otp_form_submitted'};
+"""
+
+
+def _prepare_email_otp_current_form(driver, inputs, *, budget: StageBudget | None = None) -> None:
+    """输入控件实际挂载后，复用验证码请求观察器并绑定同一表单。"""
+    from core.roxy_codex_oauth import _install_email_otp_validate_hook
+
+    if budget is not None:
+        budget.require("验证码输入准备")
+    _install_email_otp_validate_hook(driver, capture_responses=False)
+    if driver.execute_script(_OTP_PREPARE_CURRENT_FORM_SCRIPT, inputs) is not True:
+        record_browser_submission_fact(driver, "not_dispatched", result="cancelled")
+        raise RuntimeError("otp_form_not_ready: 验证码输入前表单未就绪，未填写或提交验证码")
+
+
+def _submit_email_otp_current_form(driver) -> dict:
+    """仅点击当前邮箱验证码表单，自动跳转后不触碰下一页按钮。"""
+    receipt = getattr(driver, "_browser_submission_receipt", None)
+    if getattr(receipt, "endpoint_kind", "") == "otp_submit" and getattr(receipt, "phase", "") in {
+        "request_observed", "response_observed", "confirmed", "rejected", "unknown",
+    }:
+        return {"clicked": False, "reason": "request_observed"}
+    result = driver.execute_script(_OTP_SUBMIT_CURRENT_FORM_SCRIPT)
+    return result if isinstance(result, dict) else {"clicked": False, "reason": "receipt_unknown"}
 
 _PASSWORD_ENTRY_FAILURE_MARKERS = (
     "password_entry_page_not_hydrated",
@@ -728,6 +811,7 @@ def run_roxy_registration(
     create_acknowledged = False
     openai_password: str | None = None
     access_token: str | None = None
+    core_persisted = False
     account_id: int | None = None
     totp_secret: str | None = None
     plan_check_session = None
@@ -842,17 +926,22 @@ def run_roxy_registration(
         )
         human_delay("navigate")
         _page_warmup(driver, reason="login_page")
-        report_job_progress("page", "success", "注册页已加载")
-        logger.info("[Roxy注册] 登录页加载完成，准备填写邮箱")
+        report_job_progress("page", "success", "登录页已打开，待确认邮箱入口")
+        logger.info("[Roxy注册] 登录页已打开，开始确认邮箱入口")
         _maybe_accept(driver)
         _check_manual_stop()
 
         # 填邮箱。OpenAI UI 会随出口 IP/语言变化；这里只按 DOM 技术属性找邮箱入口，
         # 并排除 Google/Apple/Microsoft 等第三方入口，不依赖按钮可见文字。
-        report_job_progress("submit_email", "running", "正在填写并提交邮箱")
+        report_job_progress("submit_email", "running", "正在等待可见的邮箱输入框")
+
+        def _report_email_progress(phase: str, detail: str) -> None:
+            report_job_progress("submit_email", "skipped" if phase == "skipped" else "running", detail)
+            if phase in {"pending", "fallback"}:
+                report_job_progress("auth_redirect", "running", "正在确认密码页、邮箱验证码页或登录态")
+
         def _mark_email_submitted() -> None:
-            report_job_progress("submit_email", "success", "邮箱表单已提交")
-            report_job_progress("auth_redirect", "running", "正在等待 OpenAI 认证页并处理异常跳转")
+            report_job_progress("submit_email", "success", "邮箱认证已确认进入下一步")
 
         next_state = _submit_email_and_wait_next(
             driver,
@@ -860,6 +949,7 @@ def run_roxy_registration(
             attempts=3,
             on_submitted=_mark_email_submitted,
             allow_login_password=resume_scope,
+            on_progress=_report_email_progress,
         )
         remote_identity = classify_registration_identity(next_state)
         _check_manual_stop()
@@ -1142,16 +1232,22 @@ def run_roxy_registration(
             otp_input_timeout = _budget_timeout(otp_budget, 20, minimum=1)
             if otp_input_timeout < 1:
                 raise StageTimeout("email OTP input budget exhausted")
-            _type_otp(driver, current_otp, timeout=max(1, int(otp_input_timeout)))
+            _type_otp(
+                driver, current_otp, timeout=max(1, int(otp_input_timeout)),
+                before_input=lambda inputs: _prepare_email_otp_current_form(driver, inputs, budget=otp_budget),
+            )
             logger.info("[Roxy注册][OTP] 已填写邮箱验证码")
             _check_manual_stop()
             # OTP 页面已经确认可提交；保留极短的人类化停顿，但不要让默认
             # 的“切回邮箱/阅读验证码”长区间拖慢每个批次。
             human_delay("otp_input", minimum=0.35, maximum=1.0, budget=otp_budget)
             try:
-                _click_continue(driver)
-                record_browser_submission_fact(driver, "ui_dispatched", receipt=otp_submission)
-                logger.info("[Roxy注册][OTP] 已提交邮箱验证码，等待资料页或登录态")
+                otp_click = _submit_email_otp_current_form(driver)
+                if otp_click.get("clicked") is True:
+                    record_browser_submission_fact(driver, "ui_dispatched", receipt=otp_submission)
+                    logger.info("[Roxy注册][OTP] 已点击当前验证码表单，等待资料页或登录态")
+                else:
+                    logger.info("[Roxy注册][OTP] 未追加点击，继续确认原验证码输入结果：reason=%s", otp_click.get("reason"))
             except Exception as exc:
                 # 点击回调抛错不能证明没有派发；保守保留未知围栏，禁止同一候选重放。
                 record_browser_submission_fact(
@@ -1264,6 +1360,7 @@ def run_roxy_registration(
         _check_manual_stop()
         token_budget = StageBudget.start(120)
         session_info = _fetch_chatgpt_session(driver, timeout=120, budget=token_budget)
+        _validate_registration_session_identity(session_info, email)
         access_token = session_info["accessToken"]
         captured_plan_result = None
         if plan_check_enabled:
@@ -1304,6 +1401,7 @@ def run_roxy_registration(
                 "registration_checkpoint": "core_persisted",
             },
         )
+        core_persisted = True
         opened.account_bound = True
         client.mark_profile_bound(opened.profile_id)
         logger.info("[Roxy注册] 注册主体已保存检查点：id=%s email=%s", account_id, email)
@@ -1550,6 +1648,7 @@ def run_roxy_registration(
             # 属于后置能力，失败时返回部分成功，不能让服务层误判为“没注册出账号”。
             "success": True,
             "registration_success": True,
+            "core_persisted": core_persisted,
             "postprocess_success": postprocess_ok,
             "partial_success": not postprocess_ok,
             "email": email,
@@ -1676,6 +1775,7 @@ def run_roxy_registration(
         )
         return {
             "success": False,
+            "core_persisted": core_persisted,
             "registration_pending": bool(account_id and not access_token),
             "email": email,
             "account_id": account_id,
@@ -1720,7 +1820,7 @@ def run_roxy_registration(
                 _quit_driver(driver)
             except Exception:
                 pass
-        if not profile_discarded and not bool(_cfg.ROXY_KEEP_BROWSER_OPEN):
+        if not profile_discarded:
             client.cleanup_profile(opened)
         if plan_check_session is not None:
             try:

@@ -147,18 +147,21 @@ function taskProgressStepDuration(step, now = Date.now()) {
 }
 function taskProgressStepTooltip(step) {
   const attempts = Array.isArray(step?.attempts) ? step.attempts : [];
-  const children = taskProgressVisibleSteps(step?.children);
+  const children = Array.isArray(step?.children) ? step.children : [];
+  const stageLabel = attempt => attempt.raw_stage_label
+    || children.find(child => child.id === attempt.raw_stage)?.label || attempt.raw_stage || '阶段';
+  const observedStages = [...new Set(attempts.map(stageLabel))];
   return [
     `${step?.label || step?.name || step?.id || step?.key || '步骤'} · ${taskProgressStatusLabel(taskProgressStepStatus(step))}`,
     step?.reason || step?.message || step?.detail || '',
     `开始：${step?.started_at ? formatDateTime(step.started_at) : '—'}`,
     `结束：${step?.completed_at ? formatDateTime(step.completed_at) : '—'}`,
     `耗时：${taskProgressStepDuration(step)}`,
-    step?.raw_stages?.length ? `原始阶段：${step.raw_stages.join('、')}` : '',
-    attempts.length ? `\n尝试记录（${attempts.length}）` : '',
-    ...attempts.map((attempt, index) => `${index + 1}. ${taskProgressStatusLabel(taskProgressStepStatus(attempt))}${attempt.step_instance_id ? ` · 实例 ${attempt.step_instance_id}` : ''}${attempt.created_at ? ` · ${formatDateTime(attempt.created_at)}` : ''}${attempt.message ? `\n${attempt.message}` : ''}`),
+    observedStages.length ? `已记录阶段：${observedStages.join('、')}` : '',
     children.length ? `\n子步骤（${children.length}）` : '',
     ...children.map(child => `${child.label || child.id} · ${taskProgressStatusLabel(taskProgressStepStatus(child))} · ${taskProgressStepDuration(child)}${child.reason || child.message ? `\n${child.reason || child.message}` : ''}`),
+    attempts.length ? `\n阶段事件（${attempts.length} 条）` : '',
+    ...attempts.map((attempt, index) => `${index + 1}. ${stageLabel(attempt)} · ${taskProgressStatusLabel(taskProgressStepStatus(attempt))}${attempt.created_at ? ` · ${formatDateTime(attempt.created_at)}` : ''}${attempt.message ? `\n${attempt.message}` : ''}`),
     '\n点击步骤查看对应日志',
   ].filter(Boolean).join('\n');
 }

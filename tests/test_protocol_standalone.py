@@ -314,3 +314,34 @@ class ProtocolStandaloneTests(PostgresTestCase):
         run_protocol_in_context(lambda **kwargs: {"status": "partial_success", "registration_success": False}, {"email": self.email})
         attempt = registration_standalone.prepare_attempt(self.email)
         self.assertFalse(registration.list_runs(attempt["id"])[0]["result_summary"]["registration_success"])
+
+    def test_unpersisted_core_overrides_success_claims_in_cli_result(self):
+        run_protocol_in_context(lambda **kwargs: {
+            "success": True, "registration_success": True,
+            "status": "partial_success",
+            "postprocess_success": True, "core_persisted": False,
+            "account_id": 44, "access_token": "memory-only-token",
+        }, {"email": self.email})
+        attempt = registration_standalone.prepare_attempt(self.email)
+        run = registration.list_runs(attempt["id"])[0]
+        self.assertEqual(run["status"], "failed")
+        self.assertFalse(run["result_summary"]["registration_success"])
+        self.assertFalse(run["result_summary"]["postprocess_success"])
+
+    def test_saved_core_reports_partial_success_after_driver_error(self):
+        seen = []
+        def fail_postprocess(**kwargs):
+            facts = service.registration_fact_context()
+            seen.append(facts)
+            persisted = registration.persist_core_account(
+                facts["attempt_id"], access_token="fixture-access-token",
+                account={"email": self.email}, run_id=facts["run_id"],
+                execution_id=facts["execution_id"],
+            )
+            return {"success": False, "core_persisted": True,
+                    "account_id": persisted["account_id"], "error": "离线后处理故障"}
+
+        run_protocol_in_context(fail_postprocess, {"email": self.email})
+        run = registration.get_run(seen[0]["run_id"])
+        self.assertEqual(run["status"], "partial_success")
+        self.assertTrue(run["result_summary"]["registration_success"])

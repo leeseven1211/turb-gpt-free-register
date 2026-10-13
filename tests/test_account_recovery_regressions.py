@@ -104,14 +104,15 @@ class ProfilePageRegressionTests(unittest.TestCase):
             order.append("name")
             return True
 
-        driver.execute_script.return_value = {"valid": True, "fields": []}
+        driver.execute_script.side_effect = [{"valid": True, "fields": []}, []]
         with (
-            patch.object(roxy_registration, "_has_access_token", return_value=False),
+            patch.object(roxy_registration, "_has_access_token", side_effect=[False, False, True]) as session,
             patch.object(roxy_registration, "_page_snapshot", side_effect=[profile, completed]),
             patch.object(roxy_registration, "_fill_birthday_or_age", side_effect=fill_birth),
             patch.object(roxy_registration, "_select_or_type", side_effect=fill_name),
             patch.object(roxy_registration, "_accept_profile_consents"),
             patch.object(roxy_registration, "_click_if_enabled_submit", return_value=True),
+            patch.object(password_auth, "_profile_account_rejection_marker", return_value=None),
             patch.object(roxy_registration, "human_delay"),
             patch.object(roxy_registration.time, "sleep"),
         ):
@@ -122,6 +123,27 @@ class ProfilePageRegressionTests(unittest.TestCase):
             )
 
         self.assertEqual(order, ["birth", "name"])
+        self.assertEqual(session.call_count, 3)
+
+    def test_profile_error_landing_is_not_registration_success(self):
+        driver = Mock()
+        driver.execute_script.return_value = {"valid": True, "fields": []}
+        with (
+            patch.object(roxy_registration, "_has_access_token", return_value=False),
+            patch.object(roxy_registration, "_page_snapshot", side_effect=[
+                {"url": "https://auth.openai.com/about-you", "inputs": [{"name": "name"}, {"name": "age"}]},
+                {"url": "https://chatgpt.com/auth/error", "inputs": []},
+            ]),
+            patch.object(roxy_registration, "_fill_birthday_or_age", return_value="age"),
+            patch.object(roxy_registration, "_select_or_type", return_value=True),
+            patch.object(roxy_registration, "_accept_profile_consents"),
+            patch.object(roxy_registration, "_click_if_enabled_submit", return_value=True) as submit,
+            patch.object(roxy_registration, "human_delay"),
+            patch.object(roxy_registration.time, "sleep"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "request_unknown"):
+                roxy_registration._complete_profile_page(driver, "Example User", "2000-01-02", timeout=5)
+        submit.assert_called_once()
 
 
 if __name__ == "__main__":

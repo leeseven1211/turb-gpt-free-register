@@ -92,15 +92,20 @@ def run_cloak_registration(
         report_job_progress("page", "running", "正在打开 ChatGPT 注册页")
         logger.info("[Cloak注册] 打开登录页：https://chatgpt.com/auth/login")
         driver.get("https://chatgpt.com/auth/login")
-        report_job_progress("page", "success", "注册页已加载")
+        report_job_progress("page", "success", "登录页已打开，待确认邮箱入口")
         human_delay("navigate")
         _maybe_accept(driver)
         _check_manual_stop()
 
-        report_job_progress("submit_email", "running", "正在填写并提交邮箱")
+        report_job_progress("submit_email", "running", "正在等待可见的邮箱输入框")
+
+        def _report_email_progress(phase: str, detail: str) -> None:
+            report_job_progress("submit_email", "skipped" if phase == "skipped" else "running", detail)
+            if phase in {"pending", "fallback"}:
+                report_job_progress("auth_redirect", "running", "正在确认密码页、邮箱验证码页或登录态")
+
         def _mark_email_submitted() -> None:
-            report_job_progress("submit_email", "success", "邮箱表单已提交")
-            report_job_progress("auth_redirect", "running", "正在等待 OpenAI 认证页并处理异常跳转")
+            report_job_progress("submit_email", "success", "邮箱认证已确认进入下一步")
 
         next_state = _submit_email_and_wait_next(
             driver,
@@ -108,7 +113,9 @@ def run_cloak_registration(
             attempts=3,
             on_submitted=_mark_email_submitted,
             allow_login_password=resume_scope,
+            on_progress=_report_email_progress,
         )
+        report_job_progress("auth_redirect", "success", f"已进入认证下一步：{next_state}")
         _check_manual_stop()
 
         def _checkpoint_prepared_password(password: str) -> None:
@@ -142,7 +149,6 @@ def run_cloak_registration(
             on_password_prepared=_checkpoint_prepared_password,
             on_password_submitted=_checkpoint_submitted_password,
         )
-        report_job_progress("auth_redirect", "success", f"已进入认证下一步：{next_state}")
         _check_manual_stop()
 
         report_job_progress("email_otp", "running", "正在等待并验证邮箱验证码")

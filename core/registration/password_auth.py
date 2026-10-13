@@ -849,16 +849,21 @@ def _fill_password_page_if_present(
                     raise _PasswordTransitionTimeout(
                         "request_unknown: 密码提交后页面报告账号创建失败，远端结果待确认"
                     )
+                next_page = classify_page(post_submit_state)
+                if next_page in {PageState.AUTH_ERROR, PageState.LOGGED_OUT}:
+                    record_browser_submission_fact(driver, "unknown", receipt=submission_receipt, result="unknown")
+                    raise _PasswordTransitionTimeout("request_unknown: 密码提交后进入认证错误页，未确认密码结果")
+                if next_page == PageState.PROFILE or (existing_password and next_page == PageState.MFA_TOTP):
+                    record_browser_submission_fact(driver, "confirmed", receipt=submission_receipt, result="success")
+                    return password
             transition_probe += 1
-            if not (_is_signup_password_page(driver) or _is_login_password_page(driver)):
-                record_browser_submission_fact(driver, "confirmed", receipt=submission_receipt, result="success")
-                return password
+            # 离开密码页可能只是空壳或错误跳转；继续等待明确的下一页。
             time.sleep(0.5)
         stuck_state = _password_page_state(driver)
         record_browser_submission_fact(driver, "unknown", receipt=submission_receipt, result="timeout")
         raise _PasswordTransitionTimeout(
             f"request_unknown: 密码提交后等待 {int(transition_timeout)} 秒仍未确认远端结果，"
-            f"页面仍停留在密码页：{_password_page_state_summary(stuck_state)}"
+            f"尚未确认下一步：{_password_page_state_summary(stuck_state)}"
         )
     if auth_mode == "password" and not existing_password and not _has_access_token(driver):
         raise RuntimeError(
@@ -1008,8 +1013,8 @@ def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45, 
                     if _has_access_token(driver):
                         return True
                     submitted_snapshot = _page_snapshot(driver)
-                    if not _is_profile_like(submitted_snapshot):
-                        return True
+                    if classify_page(submitted_snapshot) in {PageState.AUTH_ERROR, PageState.LOGGED_OUT}:
+                        raise RuntimeError("request_unknown: 资料提交后进入认证错误页，账号创建结果未确认")
                     rejection_marker = _profile_account_rejection_marker(driver)
                     if rejection_marker:
                         raise RuntimeError(
@@ -1027,7 +1032,7 @@ def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45, 
                     if errors:
                         raise RuntimeError(f"资料页提交被拒绝：{errors[:3]}")
                 raise RuntimeError(
-                    f"资料页点击提交后 45 秒仍未离开：{_page_snapshot(driver)}"
+                    "request_unknown: 资料提交后 45 秒内未确认登录态，已保留原提交且未重复点击"
                 )
             time.sleep(1)
         logger.warning('%s 找不到可点击的资料页提交按钮 snapshot=%s', _log_prefix(driver), _page_snapshot(driver))
