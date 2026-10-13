@@ -165,6 +165,47 @@ def _password_page_state_summary(state: object) -> str:
     )
 
 
+def _password_submission_snapshot(driver, receipt: BrowserSubmissionReceipt, *, stop_observing: bool = False) -> dict:
+    """只读取本次原页面的提交元数据；未观察到请求不等于没有请求。"""
+    try:
+        observed = driver.execute_script(r"""
+        const receipt = window.__turbPasswordSubmissionReceipt;
+        if (!receipt || receipt.submission_id !== arguments[0]) return null;
+        if (arguments[1] && typeof receipt.stop_observing === 'function') receipt.stop_observing();
+        return {phase:receipt.phase, click_called:receipt.click_called,
+          submit_event_observed:receipt.submit_event_observed,
+          submit_default_prevented:receipt.submit_default_prevented,
+          submitter_matches:receipt.submitter_matches};
+        """, receipt.submission_id, stop_observing)
+    except Exception:
+        observed = None
+    observed = observed if isinstance(observed, dict) else {}
+    phase = observed.get("phase")
+    phase = phase if isinstance(phase, str) and phase in {"queued", "dispatched", "cancelled", "dispatch_unknown"} else "unknown"
+    snapshot = {"phase": phase, "receipt_present": phase != "unknown"}
+    for key in ("click_called", "submit_event_observed", "submit_default_prevented", "submitter_matches"):
+        value = observed.get(key)
+        snapshot[key] = value if type(value) is bool else None
+    # 复用既有 CDP 提交事实，不注入 fetch/XHR hook，也不把 UI 点击升级成请求事实。
+    snapshot["request_observed"] = True if (
+        receipt.phase in {"request_observed", "response_observed"} or receipt.http_status is not None
+    ) else None
+    return snapshot
+
+
+def _password_submission_summary(snapshot: dict) -> str:
+    """摘要只允许固定阶段和布尔字段，不能带入表单内容。"""
+    fields = ("receipt_present", "click_called", "submit_event_observed",
+              "submit_default_prevented", "submitter_matches", "request_observed")
+    values = " ".join(
+        f"{key}={'true' if snapshot.get(key) is True else 'false' if snapshot.get(key) is False else 'unknown'}"
+        for key in fields
+    )
+    phase = snapshot.get("phase")
+    phase = phase if isinstance(phase, str) and phase in {"queued", "dispatched", "cancelled", "dispatch_unknown"} else "unknown"
+    return f"phase={phase} {values}"
+
+
 def _click_passwordless_signup_if_present(driver) -> dict:
     """
     新版注册/登录流在 password 页可能默认要求密码。
@@ -698,25 +739,45 @@ def _fill_password_page_if_present(
           .sort((a,b) => Number(b.passwordIntent) - Number(a.passwordIntent) || a.idx - b.idx);
         if (!buttons.length) return {ok:false, reason:'missing_password_submit'};
         buttons[0].el.scrollIntoView({block:'center'});
-        return {ok:true, reason:'password_targets', input, button:buttons[0].el};
+        return {ok:true, reason:'password_targets', input, form, button:buttons[0].el};
         };
         const target = selectTargets();
         if (mode !== 'queue' || !target.ok) return target;
-        const receipt = {phase:'queued'};
+        const previousReceipt = window.__turbPasswordSubmissionReceipt;
+        if (typeof previousReceipt?.stop_observing === 'function') previousReceipt.stop_observing();
+        const receipt = {phase:'queued', submission_id:arguments[3], click_called:false,
+          submit_event_observed:false, submit_default_prevented:null, submitter_matches:null};
         window.__turbPasswordSubmissionReceipt = receipt;
+        const stopObserving = () => target.form.removeEventListener('submit', observeSubmit, true);
+        const observeSubmit = event => {
+          if (event.target !== target.form || window.__turbPasswordSubmissionReceipt !== receipt) return;
+          receipt.submit_event_observed = true;
+          receipt.submitter_matches = event.submitter === target.button;
+          stopObserving();
+          // 等本轮传播结束再读取，覆盖 React 在祖先节点上的 preventDefault。
+          setTimeout(() => { receipt.submit_default_prevented = event.defaultPrevented; }, 0);
+        };
+        Object.defineProperty(receipt, 'stop_observing', {value:stopObserving});
+        target.form.addEventListener('submit', observeSubmit, true);
         // 先返回排队回执，避免同步点击的页面跳转阻塞 WebDriver；仅此 timer 可以提交。
         setTimeout(() => {
-          if (window.__turbPasswordSubmissionReceipt !== receipt || receipt.phase !== 'queued') return;
+          if (window.__turbPasswordSubmissionReceipt !== receipt || receipt.phase !== 'queued') {
+            stopObserving();
+            return;
+          }
           try {
             const fresh = selectTargets();
             if (!fresh.ok || fresh.input !== target.input || fresh.button !== target.button) {
               receipt.phase = 'cancelled';
+              stopObserving();
               return;
             }
             receipt.phase = 'dispatched';
+            receipt.click_called = true;
             fresh.button.click();
           } catch (_) {
             receipt.phase = receipt.phase === 'dispatched' ? 'dispatch_unknown' : 'cancelled';
+            stopObserving();
           }
         }, 80);
         return {ok:true, reason:'password_submit_queued'};
@@ -761,7 +822,7 @@ def _fill_password_page_if_present(
                 )
                 last_safe_pre_dispatch_failure = False
                 try:
-                    result = driver.execute_script(target_script, "queue", password, filled_input)
+                    result = driver.execute_script(target_script, "queue", password, filled_input, submission_receipt.submission_id)
                 except Exception as exc:
                     # 浏览器可能已经排队或派发；保留原密码后收口，不因桥接异常重复点击。
                     record_browser_submission_fact(
@@ -814,6 +875,7 @@ def _fill_password_page_if_present(
         transition_timeout = _password_transition_timeout_seconds()
         wait_end = time.time() + transition_timeout
         transition_probe = 0
+        last_submission_snapshot = None
         while time.time() < wait_end:
             _check_manual_stop()
             if _is_email_verification_page(driver):
@@ -828,12 +890,11 @@ def _fill_password_page_if_present(
             # upstream create error quickly without turning every 500 ms loop
             # into another full DOM snapshot over the remote browser bridge.
             if transition_probe % 4 == 0:
-                try:
-                    receipt_phase = driver.execute_script(
-                        "return window.__turbPasswordSubmissionReceipt?.phase || 'unknown';"
-                    )
-                except Exception:
-                    receipt_phase = "unknown"
+                submission_snapshot = _password_submission_snapshot(driver, submission_receipt)
+                if submission_snapshot != last_submission_snapshot:
+                    logger.info("%s 密码提交观测：%s", _log_prefix(driver), _password_submission_summary(submission_snapshot))
+                    last_submission_snapshot = submission_snapshot
+                receipt_phase = submission_snapshot["phase"]
                 if receipt_phase == "cancelled":
                     record_browser_submission_fact(
                         driver, "not_dispatched", receipt=submission_receipt, result="cancelled",
@@ -860,10 +921,12 @@ def _fill_password_page_if_present(
             # 离开密码页可能只是空壳或错误跳转；继续等待明确的下一页。
             time.sleep(0.5)
         stuck_state = _password_page_state(driver)
+        submission_snapshot = _password_submission_snapshot(driver, submission_receipt, stop_observing=True)
         record_browser_submission_fact(driver, "unknown", receipt=submission_receipt, result="timeout")
         raise _PasswordTransitionTimeout(
-            f"request_unknown: 密码提交后等待 {int(transition_timeout)} 秒仍未确认远端结果，"
-            f"尚未确认下一步：{_password_page_state_summary(stuck_state)}"
+            f"request_unknown: 已触发密码提交操作，等待 {int(transition_timeout)} 秒仍未确认远端结果，"
+            f"尚未确认下一步：{_password_page_state_summary(stuck_state)}；"
+            f"提交观测：{_password_submission_summary(submission_snapshot)}"
         )
     if auth_mode == "password" and not existing_password and not _has_access_token(driver):
         raise RuntimeError(

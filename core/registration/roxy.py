@@ -1018,7 +1018,7 @@ def run_roxy_registration(
                 on_password_submitted=_checkpoint_submitted_password,
             )
         except _PasswordTransitionTimeout:
-            report_job_progress("login_password", "failed", "密码已提交，但远端结果仍待确认")
+            report_job_progress("login_password", "failed", "已触发密码提交操作，远端结果仍待确认")
             raise
         except Exception as exc:
             if password_stage_expected:

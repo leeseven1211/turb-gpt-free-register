@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 from core import browser_use_registration
 from core import roxy_registration
 from core.registration import password_auth
-from core.registration.browser_submission import unresolved_submission_ids
+from core.registration.browser_submission import BrowserSubmissionReceipt, unresolved_submission_ids
 
 
 def _password_target_script():
@@ -34,6 +34,10 @@ def _password_target_result(**fixture):
     const getComputedStyle = el => ({visibility:'visible', display:el.hidden ? 'none' : 'block'});
     const form = {id:'password-form', isConnected:true, getAttribute:key=>key === 'id' ? 'password-form' : ''};
     const otherForm = {};
+    const listeners = new Set();
+    form.addEventListener = (name, callback) => { if (name === 'submit') listeners.add(callback); };
+    form.removeEventListener = (name, callback) => { if (name === 'submit') listeners.delete(callback); };
+    let submitEvents = 0;
     form.checkValidity = () => fixture.formValid !== false;
     if (fixture.hydrated !== false) form.__reactProps$test = {onSubmit(){}};
     const buttons = (fixture.buttons || [{id:'continue', type:'submit', text:'Continue'}]).map((item, index) => ({
@@ -41,7 +45,18 @@ def _password_target_result(**fixture):
       offsetWidth:100, offsetHeight:30, type:item.type || 'submit', textContent:item.text || '',
       form:item.otherForm ? otherForm : form,
       matches:()=>!!(fixture.fieldsetDisabled || item.fieldsetDisabled),
-      click:()=>{ clicks += 1; },
+      click(){
+        clicks += 1;
+        if (fixture.suppressSubmit) return;
+        if (fixture.foreignSubmitFirst) {
+          for (const listener of [...listeners]) listener({target:otherForm, submitter:this, defaultPrevented:false});
+        }
+        const event = {target:form, submitter:fixture.mismatchedSubmitter ? {} : this, defaultPrevented:false};
+        submitEvents += 1;
+        for (const listener of [...listeners]) listener(event);
+        // 模拟祖先 React 委托处理器晚于 form 捕获监听器阻止默认提交。
+        if (fixture.preventDefault) event.defaultPrevented = true;
+      },
       getAttribute:key=>({type:item.type || '', name:item.name || '', value:item.value || '',
         'aria-disabled':item.ariaDisabled ? 'true' : ''}[key] || ''),
       getBoundingClientRect:()=>({left:0,right:100,top:60 + index*40,bottom:90 + index*40}),
@@ -57,12 +72,14 @@ def _password_target_result(**fixture):
       getClientRects:()=>[{}], getBoundingClientRect:()=>({left:0,right:100,top:0,bottom:40})};
     const document = {querySelectorAll:selector=>selector.includes('password') ? [input] : buttons};
     const execute = function(){SCRIPT};
-    const result = execute(fixture.mode || 'submit', 'ValidPass123!', fixture.replaced ? {} : input);
+    const result = execute(fixture.mode || 'submit', 'ValidPass123!', fixture.replaced ? {} : input, 'test-submission');
     if (fixture.valueAfterQueue !== undefined) input.value = fixture.valueAfterQueue;
     if (fixture.superseded) window.__turbPasswordSubmissionReceipt = {};
     for (const callback of timers) callback();
+    if (fixture.stopObserving) window.__turbPasswordSubmissionReceipt?.stop_observing?.();
     console.log(JSON.stringify({ok:result.ok, reason:result.reason, clicks,
       phase:window.__turbPasswordSubmissionReceipt?.phase || null,
+      receipt:window.__turbPasswordSubmissionReceipt || null, listeners:listeners.size, submitEvents,
       input:result.input?.id || null, button:result.button?.id || null}));
     """.replace("FIXTURE", json.dumps(fixture)).replace("SCRIPT", _password_target_script())
     result = subprocess.run(
@@ -136,16 +153,77 @@ class PasswordFormTargetTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["clicks"], 1)
         self.assertEqual(result["phase"], "dispatched")
+        self.assertEqual(result["receipt"], {
+            "phase": "dispatched", "submission_id": "test-submission", "click_called": True,
+            "submit_event_observed": True, "submit_default_prevented": False, "submitter_matches": True,
+        })
+        self.assertEqual(result["listeners"], 0)
+
+    def test_click_without_submit_does_not_claim_form_submission_or_retry(self):
+        result = _password_target_result(mode="queue", suppressSubmit=True, stopObserving=True)
+        self.assertEqual(result["clicks"], 1)
+        self.assertTrue(result["receipt"]["click_called"])
+        self.assertFalse(result["receipt"]["submit_event_observed"])
+        self.assertIsNone(result["receipt"]["submit_default_prevented"])
+        self.assertIsNone(result["receipt"]["submitter_matches"])
+        self.assertEqual(result["listeners"], 0)
+
+    def test_delegated_prevent_default_is_read_after_event_propagation(self):
+        result = _password_target_result(mode="queue", preventDefault=True)
+        self.assertEqual(result["clicks"], 1)
+        self.assertTrue(result["receipt"]["submit_event_observed"])
+        self.assertTrue(result["receipt"]["submit_default_prevented"])
+
+    def test_only_original_form_submission_is_observed_and_submitter_is_checked(self):
+        result = _password_target_result(mode="queue", foreignSubmitFirst=True, mismatchedSubmitter=True)
+        self.assertEqual(result["clicks"], 1)
+        self.assertTrue(result["receipt"]["submit_event_observed"])
+        self.assertFalse(result["receipt"]["submitter_matches"])
+        self.assertEqual(result["listeners"], 0)
 
     def test_queued_submit_cancels_if_input_changes_before_click(self):
         result = _password_target_result(mode="queue", valueAfterQueue="")
         self.assertTrue(result["ok"])
         self.assertEqual(result["clicks"], 0)
         self.assertEqual(result["phase"], "cancelled")
+        self.assertFalse(result["receipt"]["click_called"])
+        self.assertFalse(result["receipt"]["submit_event_observed"])
+        self.assertEqual(result["listeners"], 0)
 
     def test_superseded_receipt_never_clicks(self):
         result = _password_target_result(mode="queue", superseded=True)
         self.assertEqual(result["clicks"], 0)
+        self.assertEqual(result["listeners"], 0)
+
+
+class PasswordSubmissionEvidenceTests(unittest.TestCase):
+    def test_snapshot_keeps_only_whitelisted_metadata_and_existing_request_fact(self):
+        receipt = BrowserSubmissionReceipt(kind="password", stage="password_create", endpoint_kind="password_submit")
+        receipt.phase = "request_observed"
+        driver = SimpleNamespace(execute_script=Mock(return_value={
+            "phase": "dispatched", "click_called": True, "submit_event_observed": True,
+            "submit_default_prevented": True, "submitter_matches": True,
+            "password": "private-test-value", "email": "private@example.test",
+        }))
+        snapshot = password_auth._password_submission_snapshot(driver, receipt, stop_observing=True)
+        self.assertTrue(snapshot["request_observed"])
+        self.assertTrue(snapshot["receipt_present"])
+        self.assertNotIn("password", snapshot)
+        self.assertNotIn("email", snapshot)
+        self.assertEqual(driver.execute_script.call_args.args[1:], (receipt.submission_id, True))
+
+    def test_missing_or_unreadable_original_receipt_leaves_evidence_unknown(self):
+        receipt = BrowserSubmissionReceipt(kind="password", stage="password_create")
+        for raw in (None, {}, {"phase": {"secret": "private-test-value"}, "click_called": "private-test-value"}):
+            with self.subTest(raw=raw):
+                driver = SimpleNamespace(execute_script=Mock(return_value=raw))
+                snapshot = password_auth._password_submission_snapshot(driver, receipt)
+                self.assertFalse(snapshot["receipt_present"])
+                self.assertIsNone(snapshot["click_called"])
+                self.assertIsNone(snapshot["request_observed"])
+                self.assertNotIn("private-test-value", password_auth._password_submission_summary(snapshot))
+        driver.execute_script.side_effect = RuntimeError("private-test-value")
+        self.assertFalse(password_auth._password_submission_snapshot(driver, receipt)["receipt_present"])
 
 
 class _RoxyDriver:
@@ -261,6 +339,49 @@ class RegistrationFailureClassificationTests(unittest.TestCase):
 
 
 class RegistrationPasswordFlowTests(unittest.TestCase):
+    def test_password_timeout_reports_submit_evidence_without_repeating_click(self):
+        driver = _RoxyDriver()
+        driver.state = "password"
+        queues = []
+        phases = []
+
+        def execute(_script, *args):
+            if args and args[0] == "queue":
+                queues.append(args[3])
+                return {"ok": True, "reason": "password_submit_queued"}
+            if args and args[0] == "input":
+                return {"ok": True, "input": object()}
+            return {"phase": "dispatched", "click_called": True, "submit_event_observed": True,
+                    "submit_default_prevented": True, "submitter_matches": True}
+
+        with (
+            patch.object(driver, "execute_script", side_effect=execute),
+            patch.object(password_auth, "_registration_auth_mode", return_value="password"),
+            patch.object(password_auth, "_is_email_verification_page", return_value=False),
+            patch.object(password_auth, "_has_access_token", return_value=False),
+            patch.object(password_auth, "_password_page_state", return_value={"url": driver.current_url}),
+            patch.object(password_auth, "_is_signup_password_page", return_value=True),
+            patch.object(password_auth, "_is_login_password_page", return_value=False),
+            patch.object(password_auth, "_registration_password", return_value="ValidPass123!"),
+            patch.object(password_auth, "_password_transition_timeout_seconds", return_value=3),
+            patch.object(password_auth, "_human_type_text"),
+            patch.object(password_auth, "human_delay"),
+            patch.object(password_auth, "_check_manual_stop"),
+            patch.object(password_auth, "record_browser_submission_fact", side_effect=lambda _driver, phase, **_kw: phases.append(phase)),
+            patch.object(password_auth, "time", SimpleNamespace(time=_SteppingClock(step=1), sleep=lambda _seconds: None)),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "request_unknown") as caught:
+                password_auth._fill_password_page_if_present(driver, "new@example.test", timeout=10)
+        self.assertEqual(len(queues), 1)
+        self.assertIn("click_called=true", str(caught.exception))
+        self.assertIn("submit_default_prevented=true", str(caught.exception))
+        self.assertIn("request_observed=unknown", str(caught.exception))
+        self.assertNotIn("ValidPass123!", str(caught.exception))
+        self.assertNotIn("new@example.test", str(caught.exception))
+        self.assertIn("unknown", phases)
+        self.assertNotIn("not_dispatched", phases)
+        self.assertNotIn("confirmed", phases)
+
     def test_password_requires_positive_landing_and_never_confirms_blank_or_error(self):
         for landing in ("https://auth.openai.com/", "https://chatgpt.com/auth/error", "https://auth.openai.com/about-you"):
             driver = _RoxyDriver()
