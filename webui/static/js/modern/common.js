@@ -1043,7 +1043,7 @@ let ACTIVE_TAB = 'overview';
 let navigationHistoryBound = false;
 
 function navigationModuleForTab(tab) {
-  return ['register', 'accounts', 'outlook'].includes(tab) ? tab : null;
+  return ['register', 'accounts', 'outlook', 'proxy-traffic'].includes(tab) ? tab : null;
 }
 function normalizeNavigationState(raw) {
   const tab = NAV_ALLOWED_TABS.includes(raw?.tab) ? raw.tab : 'overview';
@@ -1229,6 +1229,10 @@ const MODULE_VIEW_META = {
     overview: '查看邮箱供给、使用情况与 Email Butler 租约',
     list: '查询、导入和批量维护邮箱资源',
   },
+  'proxy-traffic': {
+    pool: '查看独立代理池库存、容量和线路状态',
+    records: '查看当前租约、线路历史和请求流量',
+  },
 };
 function setModuleView(module, view, persist=true, historyMode='push') {
   const tab = document.getElementById(`tab-${module}`);
@@ -1246,6 +1250,11 @@ function setModuleView(module, view, persist=true, historyMode='push') {
   if (module === 'outlook') view === 'overview'
     ? ensureViewLoaded('outlook:overview', loadMailResources)
     : ensureViewLoaded('outlook:list', loadOutlook);
+  if (module === 'proxy-traffic') {
+    const dialog = document.getElementById('proxyTrafficDetailDialog');
+    if (view === 'pool' && dialog?.open) dialog.close();
+    ensureViewLoaded('proxy-traffic', loadProxyTraffic);
+  }
   closeMobileSidebar();
   if (historyMode === 'push') recordNavigationHistory();
   else updateNavigationBackButton();
@@ -1263,6 +1272,7 @@ $$('[data-module-subnav]').forEach(nav => nav.addEventListener('click', event =>
     if (module === 'accounts') SHOW_ARCHIVED_ACCOUNTS = btn.dataset.view === 'archived';
     if (module === 'accounts') localStorage.setItem('gpt_console_module_view_accounts', btn.dataset.view);
     if (module === 'outlook') localStorage.setItem('gpt_console_module_view_outlook', btn.dataset.view);
+    if (module === 'proxy-traffic') localStorage.setItem('gpt_console_module_view_proxy-traffic', btn.dataset.view);
     nav.querySelectorAll('[data-view]').forEach(item => item.classList.toggle('is-active', item === btn));
     activateTab(module);
     return;
