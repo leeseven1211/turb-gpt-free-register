@@ -57,6 +57,20 @@ class ProfileSessionReadTests(unittest.TestCase):
         driver.execute_async_script.assert_called_once()
         self.assertEqual([c.args[0] for c in driver.set_script_timeout.call_args_list], [16.0, 8])
 
+    def test_read_failure_keeps_exception_type_without_copying_private_message(self):
+        driver = self.driver()
+        original = TimeoutError("unit@example.test password=private-value token=private-token")
+        driver.execute_async_script.side_effect = original
+        with self.assertLogs(session_auth.logger, level="WARNING") as logged:
+            with self.assertRaisesRegex(RuntimeError, "profile_session_read_failed.*异常类型=TimeoutError") as raised:
+                session_auth._read_profile_session_once(driver, timeout=15, expected_email="unit@example.test")
+        self.assertIs(raised.exception.__cause__, original)
+        summary = str(raised.exception) + str(logged.output)
+        for private_value in ("unit@example.test", "private-value", "private-token"):
+            self.assertNotIn(private_value, summary)
+        driver.execute_async_script.assert_called_once()
+        self.assertFalse(hasattr(driver, "_registration_verified_session"))
+
     def test_zero_budget_or_foreign_origin_does_not_start_read(self):
         driver = self.driver()
         with self.assertRaises(StageTimeout):

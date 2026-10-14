@@ -267,7 +267,7 @@ class TaskErrorClassificationTests(unittest.TestCase):
             "request_unknown: _PasswordTransitionTimeout: 密码提交后页面报告账号创建失败，远端结果待确认",
             stage="login_password",
         )
-        self.assertEqual(info["code"], "external.network")
+        self.assertEqual(info["code"], "password_result_unknown")
         self.assertEqual(info["retryability"], "manual_only")
         self.assertEqual(info["next_action"], "manual_reconcile")
 
@@ -674,6 +674,93 @@ class TaskErrorClassificationTests(unittest.TestCase):
         )
         self.assertEqual("registration_receipt_missing", generic["code"])
         self.assertEqual("注册任务未保留回执或失败细项", generic["summary"])
+
+
+class RegistrationBrowserFailureCauseTests(unittest.TestCase):
+    """真实阶段异常不能被通用网络或回执分类覆盖。"""
+
+    def test_existing_browser_messages_keep_the_known_failure_stage(self):
+        cases = (
+            (
+                "_EmailSubmissionUnknown: request_unknown: 邮箱提交结果在共享预算内未确认，未重复点击或发送认证请求",
+                "registration_receipt_missing", "email_submit_unconfirmed", "FLOW-EMAIL-001",
+                "邮箱提交后未确认下一步", True,
+            ),
+            (
+                "_EmailSubmissionUnknown: request_unknown: 邮箱提交后阶段预算耗尽，远端结果未确认",
+                "registration_receipt_missing", "email_submit_unconfirmed", "FLOW-EMAIL-001",
+                "邮箱提交后未确认下一步", True,
+            ),
+            (
+                "_PasswordTransitionTimeout: request_unknown: 已触发密码提交操作，等待 120 秒仍未确认远端结果",
+                "external.network", "password_result_unknown", "AUTH-PWD-004",
+                "密码提交结果未确认", True,
+            ),
+            (
+                "RuntimeError: request_unknown: 资料提交后的会话读取未完成，已保留原提交",
+                "registration_receipt_missing", "profile_session_read_failed", "FLOW-PROFILE-001",
+                "资料提交后的会话读取未完成", True,
+            ),
+            (
+                "RuntimeError: request_unknown: 资料提交后的会话尚未确认登录态，已保留原提交",
+                "registration_receipt_missing", "profile_session_unconfirmed", "FLOW-PROFILE-002",
+                "资料提交后的登录态未确认", True,
+            ),
+            (
+                "RuntimeError: request_unknown: 资料提交后进入认证错误页，账号创建结果未确认",
+                "registration_receipt_missing", "profile_auth_error", "FLOW-PROFILE-003",
+                "资料阶段进入认证错误页", True,
+            ),
+            (
+                "registration_failed: RuntimeError: 邮箱提交/认证跳转超过总预算 180 秒",
+                "external.openai", "email_transition_timeout", "FLOW-EMAIL-002",
+                "邮箱提交或认证跳转预算耗尽", False,
+            ),
+            (
+                "registration_failed: RuntimeError: 无法切换到创建密码页：create_account_password_navigation_timeout",
+                "external.openai", "password_entry_navigation_timeout", "FLOW-PWD-005",
+                "创建密码页跳转超时", False,
+            ),
+        )
+        for task_type in ("registration", "registration_resume"):
+            for raw, original_code, code, display, summary, unknown in cases:
+                with self.subTest(task_type=task_type, code=code, original_code=original_code):
+                    info = classify_task_error(raw, task_type=task_type, error_code=original_code)
+                    self.assertEqual(code, info["code"])
+                    self.assertEqual(display, info["display_code"])
+                    self.assertEqual(summary, info["summary"])
+                    self.assertEqual(original_code, info["original_error_code"])
+                    self.assertEqual(unknown, info.get("reconcile_required", False))
+                    if unknown:
+                        self.assertEqual("manual_only", info["retryability"])
+                        self.assertEqual("manual_reconcile", info["next_action"])
+
+    def test_specific_structured_diagnostics_keep_precedence(self):
+        info = classify_task_error(
+            "_PasswordTransitionTimeout: request_unknown: 密码提交结果未确认",
+            task_type="registration", result_summary={
+                "cause_code": "password_verify_failed",
+                "auth_diagnostics": {"operation": "password_verify", "curl_error_code": 35},
+            },
+        )
+        self.assertEqual("password_verify_transport_tls", info["code"])
+        self.assertEqual("manual_reconcile", info["next_action"])
+
+    def test_browser_cause_does_not_reclassify_other_task_types(self):
+        info = classify_task_error(
+            "RuntimeError: 资料提交后的会话读取未完成",
+            task_type="extract_link",
+        )
+        self.assertNotEqual("profile_session_read_failed", info["code"])
+
+    def test_fixed_summary_does_not_copy_identity_or_credentials(self):
+        info = classify_task_error(
+            "_PasswordTransitionTimeout: request_unknown: unit@example.test password=unit-secret",
+            task_type="registration",
+        )
+        self.assertEqual("password_result_unknown", info["code"])
+        self.assertNotIn("unit@example.test", str(info))
+        self.assertNotIn("unit-secret", str(info))
 
 
 if __name__ == "__main__":

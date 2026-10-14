@@ -169,9 +169,15 @@ def _read_profile_session_once(driver, *, timeout: float, expected_email: str | 
         data = _read_chatgpt_session_once(driver, timeout=timeout)
     except Exception as exc:
         _checkpoint()
-        raise RuntimeError("request_unknown: 资料提交后的会话读取未完成，已保留原提交") from exc
+        # 只记录异常类型，避免把浏览器原文中的 Cookie、Token 或账号带入摘要。
+        exception_type = type(exc).__name__
+        logger.warning("%s 资料会话读取未完成，异常类型=%s", _log_prefix(driver), exception_type)
+        raise RuntimeError(
+            "request_unknown: profile_session_read_failed: "
+            f"资料提交后的会话读取未完成，已保留原提交（异常类型={exception_type}）"
+        ) from exc
     if not isinstance(data, dict) or not data.get("accessToken"):
-        raise RuntimeError("request_unknown: 资料提交后的会话尚未确认登录态，已保留原提交")
+        raise RuntimeError("request_unknown: profile_session_unconfirmed: 资料提交后的会话尚未确认登录态，已保留原提交")
     expected = str(expected_email or "").strip().casefold()
     if expected:
         user = data.get("user")

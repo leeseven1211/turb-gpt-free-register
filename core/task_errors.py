@@ -946,6 +946,8 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "email_otp_send_no_response": ("MAIL-SEND-004", "验证码发送请求未收到响应"),
     "email_otp_send_unknown": ("MAIL-SEND-005", "验证码发送结果未确认"),
     "email_otp_no_mail": ("MAIL-OTP-005", "等待窗口内未收到验证码邮件"),
+    "email_submit_unconfirmed": ("FLOW-EMAIL-001", "邮箱提交后未确认下一步"),
+    "email_transition_timeout": ("FLOW-EMAIL-002", "邮箱提交或认证跳转预算耗尽"),
     "email_change_verify_prepare_failed": (
         "OA-EMAIL-VERIFY-001", "新邮箱验证请求在本地准备阶段失败",
     ),
@@ -972,6 +974,10 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "password_verify_failed": ("AUTH-PWD-006", "密码验证请求未完成"),
     "password_verify_invalid_response": ("AUTH-PWD-007", "密码验证响应无效"),
     "passwordless_fallback_unavailable": ("AUTH-PWD-008", "邮箱免密兜底不可用"),
+    "password_entry_navigation_timeout": ("FLOW-PWD-005", "创建密码页跳转超时"),
+    "profile_session_read_failed": ("FLOW-PROFILE-001", "资料提交后的会话读取未完成"),
+    "profile_session_unconfirmed": ("FLOW-PROFILE-002", "资料提交后的登录态未确认"),
+    "profile_auth_error": ("FLOW-PROFILE-003", "资料阶段进入认证错误页"),
     "post_register_failure": ("OA-REG-POST-001", "注册请求之后流程失败（细项未记录）"),
     "protocol_network_error": ("NET-AUTH-001", "协议认证网络请求失败"),
     "protocol_v2_unknown_error": ("AUTH-PROTOCOL-001", "协议认证异常（细项未记录）"),
@@ -1097,6 +1103,26 @@ def _specific_error_cause(summary: dict[str, Any]) -> dict[str, str] | None:
     if code in _CAUSE_DETAILS:
         display_code, cause_summary = _CAUSE_DETAILS[code]
         return {"cause_code": code, "cause_display_code": display_code, "cause_summary": cause_summary}
+    return None
+
+
+def _registration_browser_error_cause(raw: str, *, task_type: str) -> dict[str, str] | None:
+    """识别浏览器已记录的阶段症状，不把类名里的 Timeout 当作网络证据。"""
+    if str(task_type or "").strip().lower() not in {"", "registration", "registration_resume"}:
+        return None
+    markers = (
+        ("_EmailSubmissionUnknown", "email_submit_unconfirmed"),
+        ("_PasswordTransitionTimeout", "password_result_unknown"),
+        ("资料提交后的会话读取未完成", "profile_session_read_failed"),
+        ("资料提交后的会话尚未确认登录态", "profile_session_unconfirmed"),
+        ("资料提交后进入认证错误页", "profile_auth_error"),
+        ("资料阶段进入认证错误页", "profile_auth_error"),
+        ("邮箱提交/认证跳转超过总预算", "email_transition_timeout"),
+        ("create_account_password_navigation_timeout", "password_entry_navigation_timeout"),
+    )
+    for marker, code in markers:
+        if marker in raw:
+            return _specific_error_cause({"cause_code": code})
     return None
 
 
@@ -1259,7 +1285,7 @@ def _cause_error_projection(
         else ("internal", "内部错误") if display_code.startswith("SYS-")
         else ("external", "网络 / 上游服务") if display_code.startswith("NET-")
         else ("external", "邮箱 / 验证码服务") if display_code.startswith("MAIL-")
-        else ("workflow", "流程错误") if cause["cause_code"].endswith("_receipt_missing")
+        else ("workflow", "流程错误") if display_code.startswith("FLOW-") or cause["cause_code"].endswith("_receipt_missing")
         else ("external", "远端服务")
     )
     projection = _error_projection(
@@ -1309,6 +1335,8 @@ def classify_task_error(
             if re.search(rf"(?<![\w]){re.escape(candidate)}(?![\w])", raw):
                 cause = _specific_error_cause({"cause_code": candidate})
                 break
+    if cause is None:
+        cause = _registration_browser_error_cause(raw, task_type=task_type)
     raw_projection = None
     if cause is not None and cause["cause_code"] in {
         "refresh_driver_exception", "protocol_v2_unknown_error", "post_register_failure",
