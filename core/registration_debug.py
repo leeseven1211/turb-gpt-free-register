@@ -118,9 +118,9 @@ def _submission_endpoint_kind(url: object) -> str:
         return "nextauth_signin"
     if path.endswith("/api/accounts/password") or ("/password" in path and "/api/" in path):
         return "password_submit"
-    if "email-otp" in path and (path.endswith("/send") or path.endswith("/verify")):
+    if "email-otp" in path and path.endswith(("/validate", "/verify")):
         return "otp_submit"
-    if "email-otp" in path and "resend" in path:
+    if "email-otp" in path and path.endswith(("/send", "/resend")):
         return "otp_resend"
     return ""
 
@@ -1316,15 +1316,25 @@ class _RoxyTargetCollector:
                     "url": _raw_url(request.get("url")),
                     "resource_type": params.get("type"),
                 }
-                observer = getattr(self.session, "submission_observer", None)
-                if callable(observer):
+                observe_submission = getattr(self.session, "_observe_submission", None)
+                if callable(observe_submission):
+                    # 请求与响应复用相同的端点、方法与元数据白名单。
+                    observe_submission(self._requests[request_id])
+                else:
+                    observer = getattr(self.session, "submission_observer", None)
+                    if not callable(observer):
+                        return
                     try:
                         endpoint_kind = _submission_endpoint_kind(request.get("url"))
                         if not endpoint_kind:
                             return
+                        http_method = str(request.get("method") or "").strip().upper()
+                        expected_method = "GET" if endpoint_kind == "nextauth_csrf" else "POST"
+                        if http_method != expected_method:
+                            return
                         observer({
                             "endpoint_kind": endpoint_kind,
-                            "http_method": request.get("method"),
+                            "http_method": http_method,
                             "request": True,
                             "request_id": request_id,
                             "target_id": self.target_id,

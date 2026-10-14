@@ -159,16 +159,63 @@ if (!Array.isArray(inputs) || !inputs.length || !form
     || window.__codexEmailOtpValidateRequestCounterInstalled !== true) return false;
 const previous = window.__turbRegistrationOtpSubmitGuard;
 if (previous?.listener) document.removeEventListener('submit', previous.listener, true);
-const guard = {form, inputs, submitted: false,
+const guard = {form, inputs, clickIssued: false, submitEventSeen: false,
+  submitDefaultPrevented: false, nativeSubmitPossible: false,
+  formPostCalls: 0, unknownFormPostCalls: 0,
   requestCount: Number(window.__codexEmailOtpValidateRequestCount || 0)};
 const listener = event => {
   if (event.target !== guard.form) return;
-  guard.submitted = true;
-  document.removeEventListener('submit', listener, true);
+  guard.submitEventSeen = true;
+  // 捕获阶段早于框架取消事件；事件本身不能证明验证码请求已派发。
+  queueMicrotask(() => {
+    guard.submitDefaultPrevented = event.defaultPrevented === true;
+    guard.nativeSubmitPossible = guard.nativeSubmitPossible || (!event.defaultPrevented
+      && String(guard.form.method || '').toLowerCase() === 'post');
+  });
 };
 guard.listener = listener;
 window.__turbRegistrationOtpSubmitGuard = guard;
 document.addEventListener('submit', listener, true);
+// Remix 表单也可能 POST 当前页面路径；只读取 intent，不保存请求正文。
+if (!window.__turbRegistrationOtpFormRequestHooked) {
+  const markFormPost = (url, method, body) => {
+    const active = window.__turbRegistrationOtpSubmitGuard;
+    if (!active?.form || !url || String(method || 'GET').toUpperCase() !== 'POST') return;
+    try {
+      const target = new URL(String(url || ''), location.href);
+      const action = new URL(active.form.action, location.href);
+      if (target.origin !== action.origin || target.pathname !== action.pathname) return;
+      let intent = null;
+      if (body && typeof body.get === 'function') intent = body.get('intent');
+      else if (typeof body === 'string') intent = new URLSearchParams(body).get('intent');
+      if (intent === 'resend') return;
+      if (intent === 'validate') active.formPostCalls += 1;
+      else active.unknownFormPostCalls += 1;
+    } catch (_) {}
+  };
+  const originalFetch = window.fetch;
+  if (typeof originalFetch === 'function') {
+    window.fetch = function(input, init) {
+      markFormPost(typeof input === 'string' ? input : input?.url || input?.href,
+        init?.method || input?.method || 'GET', init?.body);
+      return originalFetch.apply(this, arguments);
+    };
+  }
+  if (typeof XMLHttpRequest !== 'undefined') {
+    const originalOpen = XMLHttpRequest.prototype.open;
+    const originalSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function(method, url) {
+      this.__turbOtpFormMethod = method;
+      this.__turbOtpFormUrl = url;
+      return originalOpen.apply(this, arguments);
+    };
+    XMLHttpRequest.prototype.send = function(body) {
+      markFormPost(this.__turbOtpFormUrl, this.__turbOtpFormMethod, body);
+      return originalSend.apply(this, arguments);
+    };
+  }
+  window.__turbRegistrationOtpFormRequestHooked = true;
+}
 return true;
 """
 
@@ -176,23 +223,38 @@ return true;
 _OTP_SUBMIT_CURRENT_FORM_SCRIPT = r"""
 const visible = el => !!(el && el.getClientRects().length);
 const path = location.pathname.toLowerCase();
-if (!path.includes('email-verification')) return {clicked: false, reason: 'page_advanced'};
 const guard = window.__turbRegistrationOtpSubmitGuard;
-if (!guard) return {clicked: false, reason: 'otp_guard_missing'};
-if (guard.submitted || Number(window.__codexEmailOtpValidateRequestCount || 0) > guard.requestCount)
-  return {clicked: false, reason: 'submission_pending'};
+const count = value => Number.isFinite(Number(value)) ? Math.max(0, Math.trunc(Number(value))) : 0;
+const result = (clicked, reason) => ({clicked, reason, diagnostics: {
+  submit_event_seen: guard?.submitEventSeen === true,
+  submit_default_prevented: guard?.submitDefaultPrevented === true,
+  native_submit_possible: guard?.nativeSubmitPossible === true,
+  explicit_click_issued: guard?.clickIssued === true,
+  form_connected: guard?.form?.isConnected === true,
+  baseline_request_count: count(guard?.requestCount),
+  validate_request_count: count(window.__codexEmailOtpValidateRequestCount),
+  form_post_call_count: count(guard?.formPostCalls),
+  unknown_form_post_call_count: count(guard?.unknownFormPostCalls),
+}});
+if (!path.includes('email-verification')) return result(false, 'page_advanced');
+if (!guard) return result(false, 'otp_guard_missing');
+if (guard.clickIssued) return result(false, 'explicit_click_pending');
+if (Number(window.__codexEmailOtpValidateRequestCount || 0) > guard.requestCount)
+  return result(false, 'validate_request_observed');
+if (guard.formPostCalls || guard.unknownFormPostCalls) return result(false, 'form_post_observed');
+if (guard.nativeSubmitPossible) return result(false, 'native_submit_pending');
 const {form, inputs} = guard;
 if (!form?.isConnected || !inputs.every(el => el.isConnected && el.form === form))
-  return {clicked: false, reason: 'otp_form_replaced'};
+  return result(false, 'otp_form_replaced');
 const button = [...form.querySelectorAll('button[type="submit"],input[type="submit"]')].find(el =>
   visible(el) && !el.matches(':disabled') && el.getAttribute('aria-disabled') !== 'true'
   && !/resend/.test([el.name, el.value, el.getAttribute('data-dd-action-name')].join(' ').toLowerCase())
 );
 if (!button || !inputs.every(el => !!el.value) || !form.checkValidity())
-  return {clicked: false, reason: 'otp_form_not_ready'};
-guard.submitted = true;
+  return result(false, 'otp_form_not_ready');
+guard.clickIssued = true;
 button.click();
-return {clicked: true, reason: 'otp_form_submitted'};
+return result(true, 'otp_form_submitted');
 """
 
 
@@ -216,6 +278,16 @@ def _submit_email_otp_current_form(driver) -> dict:
     }:
         return {"clicked": False, "reason": "request_observed"}
     result = driver.execute_script(_OTP_SUBMIT_CURRENT_FORM_SCRIPT)
+    if isinstance(result, dict):
+        diagnostics = result.get("diagnostics") or {}
+        safe_diagnostics = {
+            key: value for key, value in diagnostics.items()
+            if key in {"submit_event_seen", "submit_default_prevented", "native_submit_possible", "explicit_click_issued",
+                       "form_connected", "baseline_request_count", "validate_request_count", "form_post_call_count",
+                       "unknown_form_post_call_count"}
+            and type(value) in (bool, int)
+        } if isinstance(diagnostics, dict) else {}
+        logger.info("[Roxy注册][OTP] 提交控件判断：clicked=%s diagnostics=%s", result.get("clicked") is True, safe_diagnostics)
     return result if isinstance(result, dict) else {"clicked": False, "reason": "receipt_unknown"}
 
 _PASSWORD_ENTRY_FAILURE_MARKERS = (

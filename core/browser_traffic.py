@@ -542,9 +542,9 @@ class _SummaryOnlyCDPSession:
             return "nextauth_signin"
         if path.endswith("/api/accounts/password") or "/password" in path and "/api/" in path:
             return "password_submit"
-        if "email-otp" in path and (path.endswith("/send") or path.endswith("/verify")):
+        if "email-otp" in path and path.endswith(("/validate", "/verify")):
             return "otp_submit"
-        if "email-otp" in path and "resend" in path:
+        if "email-otp" in path and path.endswith(("/send", "/resend")):
             return "otp_resend"
         return ""
 
@@ -555,10 +555,15 @@ class _SummaryOnlyCDPSession:
         endpoint_kind = self._submission_endpoint_kind(record.get("url"))
         if not endpoint_kind:
             return
+        http_method = str(record.get("method") or "").strip().upper()
+        expected_method = "GET" if endpoint_kind == "nextauth_csrf" else "POST"
+        # 方法缺失或页面 GET 不能证明业务提交，禁止补成 POST。
+        if http_method != expected_method:
+            return
         try:
             callback({
                 "endpoint_kind": endpoint_kind,
-                "http_method": str(record.get("method") or "POST"),
+                "http_method": http_method,
                 "http_status": record.get("status") if response else None,
                 "duration_ms": record.get("duration_ms"),
                 "response": bool(response),

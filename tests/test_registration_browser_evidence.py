@@ -41,6 +41,184 @@ class RegistrationBrowserEvidenceTests(unittest.TestCase):
                 roxy._prepare_email_otp_current_form(driver, [object()])
         record.assert_called_once_with(driver, "not_dispatched", result="cancelled")
 
+    def _run_current_otp_form_script(self, scenario):
+        """执行生产脚本，模拟同一表单的事件结束与请求派发。"""
+        source = r"""
+        (async () => {
+          const prepare = new Function(PREPARE);
+          const submit = new Function(SUBMIT);
+          const scenario = SCENARIO;
+          let listener = null, clicks = 0;
+          const form = {
+            isConnected: true, method: 'post', action: 'https://auth.openai.com/email-verification',
+            getAttribute: name => name === 'method' ? 'post' : name === 'action' ? '/email-verification' : null,
+            querySelectorAll: () => [button], checkValidity: () => true,
+          };
+          const dispatchSubmit = canceled => {
+            const event = {target: form, submitter: button, defaultPrevented: false,
+              cancelable: true, isTrusted: true,
+              preventDefault() { this.defaultPrevented = true; }};
+            listener?.(event);
+            if (canceled) event.preventDefault();
+          };
+          const button = {
+            tagName: 'BUTTON', type: 'submit', name: 'intent', value: 'validate', form,
+            disabled: false, isConnected: true,
+            getClientRects: () => [1], matches: () => button.disabled,
+            getAttribute: name => name === 'type' ? 'submit' : name === 'aria-disabled' ? null : '',
+            click() { clicks++; dispatchSubmit(true); },
+          };
+          const input = {
+            isConnected: true, form, readOnly: false, value: 'test-only-code',
+            getClientRects: () => [1], matches: () => false,
+          };
+          global.location = {pathname: '/email-verification', href: form.action};
+          global.window = {
+            __codexEmailOtpValidateRequestCounterInstalled: true,
+            __codexEmailOtpValidateRequestCount: 0,
+            fetch: async () => ({status: 200}),
+          };
+          global.XMLHttpRequest = function() {};
+          XMLHttpRequest.prototype.open = function() {};
+          XMLHttpRequest.prototype.send = function() {};
+          XMLHttpRequest.prototype.addEventListener = function() {};
+          window.XMLHttpRequest = XMLHttpRequest;
+          global.document = {
+            addEventListener: (_name, callback) => { listener = callback; },
+            removeEventListener: (_name, callback) => { if (listener === callback) listener = null; },
+          };
+          if (prepare([input]) !== true) throw Error('生产验证码准备脚本未绑定表单');
+          if (['canceled', 'request', 'form-get', 'form-resend'].includes(scenario))
+            dispatchSubmit(true);
+          if (scenario === 'native') dispatchSubmit(false);
+          if (scenario === 'native-then-canceled') {
+            dispatchSubmit(false);
+            await new Promise(resolve => setTimeout(resolve, 0));
+            dispatchSubmit(true);
+          }
+          if (scenario === 'request') window.__codexEmailOtpValidateRequestCount++;
+          if (scenario === 'form-post' || scenario === 'form-get' || scenario === 'form-resend') {
+            const init = {method: scenario === 'form-get' ? 'GET' : 'POST'};
+            if (init.method === 'POST') init.body = new URLSearchParams({
+              intent: scenario === 'form-resend' ? 'resend' : 'validate', code: 'test-only-code',
+            });
+            await window.fetch(form.action, init);
+          }
+          if (scenario === 'form-xhr') {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', form.action);
+            xhr.send(new URLSearchParams({intent: 'validate', code: 'test-only-code'}));
+          }
+          if (scenario === 'external-url') {
+            await window.fetch(new URL('https://telemetry.example.test/collect'), {
+              method: 'POST', body: new URLSearchParams({intent: 'validate'}),
+            });
+          }
+          if (scenario === 'replaced') form.isConnected = false;
+          if (scenario === 'disabled') button.disabled = true;
+          // 捕获期之后页面才能取消事件，等待生产监听器读取最终状态。
+          await new Promise(resolve => setTimeout(resolve, 0));
+          const first = submit();
+          await new Promise(resolve => setTimeout(resolve, 0));
+          const second = submit();
+          console.log(JSON.stringify({first, second, clicks}));
+        })().catch(error => { console.error(error); process.exitCode = 1; });
+        """.replace("PREPARE", json.dumps(roxy._OTP_PREPARE_CURRENT_FORM_SCRIPT)).replace(
+            "SUBMIT", json.dumps(roxy._OTP_SUBMIT_CURRENT_FORM_SCRIPT)
+        ).replace("SCENARIO", json.dumps(scenario))
+        result = subprocess.run(
+            [shutil.which("node"), "-e", source], capture_output=True, text=True, check=True, timeout=10,
+        )
+        return json.loads(result.stdout)
+
+    @unittest.skipUnless(shutil.which("node"), "需要 Node 验证验证码首次点击")
+    def test_canceled_submit_without_request_does_not_skip_first_click(self):
+        result = self._run_current_otp_form_script("canceled")
+        self.assertTrue(result["first"]["clicked"])
+        self.assertFalse(result["second"]["clicked"])
+        self.assertEqual(result["clicks"], 1)
+
+    @unittest.skipUnless(shutil.which("node"), "需要 Node 验证验证码首次点击")
+    def test_ready_current_form_is_clicked_once(self):
+        result = self._run_current_otp_form_script("ready")
+        self.assertTrue(result["first"]["clicked"])
+        self.assertFalse(result["second"]["clicked"])
+        self.assertEqual(result["clicks"], 1)
+
+    @unittest.skipUnless(shutil.which("node"), "需要 Node 验证验证码请求去重")
+    def test_automatic_validate_request_is_not_clicked_again(self):
+        result = self._run_current_otp_form_script("request")
+        self.assertFalse(result["first"]["clicked"])
+        self.assertFalse(result["second"]["clicked"])
+        self.assertEqual(result["clicks"], 0)
+
+    @unittest.skipUnless(shutil.which("node"), "需要 Node 验证同路径验证码请求")
+    def test_same_form_fetch_validate_post_is_not_clicked_again(self):
+        result = self._run_current_otp_form_script("form-post")
+        self.assertFalse(result["first"]["clicked"])
+        self.assertFalse(result["second"]["clicked"])
+        self.assertEqual(result["clicks"], 0)
+        self.assertNotIn("test-only-code", json.dumps(result))
+
+    @unittest.skipUnless(shutil.which("node"), "需要 Node 验证同路径验证码请求")
+    def test_same_form_xhr_validate_post_is_not_clicked_again(self):
+        result = self._run_current_otp_form_script("form-xhr")
+        self.assertFalse(result["first"]["clicked"])
+        self.assertFalse(result["second"]["clicked"])
+        self.assertEqual(result["clicks"], 0)
+        self.assertNotIn("test-only-code", json.dumps(result))
+
+    @unittest.skipUnless(shutil.which("node"), "需要 Node 验证同路径请求分类")
+    def test_same_form_get_does_not_skip_validate_click(self):
+        result = self._run_current_otp_form_script("form-get")
+        self.assertTrue(result["first"]["clicked"])
+        self.assertFalse(result["second"]["clicked"])
+        self.assertEqual(result["clicks"], 1)
+
+    @unittest.skipUnless(shutil.which("node"), "需要 Node 验证同路径请求分类")
+    def test_explicit_resend_post_does_not_skip_validate_click(self):
+        result = self._run_current_otp_form_script("form-resend")
+        self.assertTrue(result["first"]["clicked"])
+        self.assertFalse(result["second"]["clicked"])
+        self.assertEqual(result["clicks"], 1)
+
+    @unittest.skipUnless(shutil.which("node"), "需要 Node 验证验证码原生提交")
+    def test_uncanceled_native_post_is_not_clicked_again(self):
+        result = self._run_current_otp_form_script("native")
+        self.assertFalse(result["first"]["clicked"])
+        self.assertFalse(result["second"]["clicked"])
+        self.assertEqual(result["clicks"], 0)
+
+    @unittest.skipUnless(shutil.which("node"), "需要 Node 验证验证码原生提交")
+    def test_later_canceled_event_cannot_clear_pending_native_post(self):
+        result = self._run_current_otp_form_script("native-then-canceled")
+        self.assertFalse(result["first"]["clicked"])
+        self.assertEqual(result["clicks"], 0)
+
+    @unittest.skipUnless(shutil.which("node"), "需要 Node 验证验证码请求来源")
+    def test_external_url_object_post_does_not_block_first_click(self):
+        result = self._run_current_otp_form_script("external-url")
+        self.assertTrue(result["first"]["clicked"])
+        self.assertEqual(result["clicks"], 1)
+
+    @unittest.skipUnless(shutil.which("node"), "需要 Node 验证验证码表单状态")
+    def test_replaced_or_disabled_form_is_not_clicked(self):
+        for scenario in ("replaced", "disabled"):
+            with self.subTest(scenario=scenario):
+                result = self._run_current_otp_form_script(scenario)
+                self.assertFalse(result["first"]["clicked"])
+                self.assertFalse(result["second"]["clicked"])
+                self.assertEqual(result["clicks"], 0)
+
+    @unittest.skipUnless(shutil.which("node"), "需要 Node 验证验证码诊断脱敏")
+    def test_submit_diagnostics_only_contain_booleans_and_counts(self):
+        result = self._run_current_otp_form_script("canceled")
+        diagnostics = result["first"].get("diagnostics")
+        self.assertIsInstance(diagnostics, dict)
+        self.assertTrue(diagnostics)
+        self.assertTrue(all(type(value) in (bool, int) for value in diagnostics.values()))
+        self.assertNotIn("test-only-code", json.dumps(result))
+
     @unittest.skipUnless(shutil.which("node"), "需要 Node 验证验证码请求观察器")
     def test_direct_fetch_and_xhr_are_observed_before_response_without_rehooking(self):
         tree = ast.parse(inspect.getsource(_install_email_otp_validate_hook))
