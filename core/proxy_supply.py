@@ -3,11 +3,16 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+import logging
 import time
 import uuid
 
+import requests
+
 from core import proxy_lease_store
 from core import proxy_provider as provider
+
+logger = logging.getLogger(__name__)
 
 
 class ProxySupplyDuplicateCandidatesError(RuntimeError):
@@ -24,6 +29,15 @@ def _remaining(deadline: float, cap: float = 30) -> float:
     if value <= 0:
         raise TimeoutError("代理池本轮补充预算已耗尽")
     return value
+
+
+def _log_candidate_failure(endpoint: str, exc: requests.RequestException) -> None:
+    """候选故障只记录安全字段，避免异常正文带出完整代理或请求 URL。"""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    logger.warning(
+        "代理池候选出口检测失败：stage=exit_check class=%s status=%s endpoint=%s",
+        type(exc).__name__, status if isinstance(status, int) else "-", provider.mask_endpoint(endpoint),
+    )
 
 
 @contextmanager
@@ -69,12 +83,20 @@ def fetch_candidates(
             return
         acquired = datetime.now()
         expires = acquired + timedelta(minutes=minutes)
-        with provider._direct_session() as session:
-            response = session.get(url, timeout=_remaining(deadline, float(cfg.PROXY_1024_API_TIMEOUT)),
-                                   allow_redirects=False, headers={"Accept": "text/plain, application/json"})
-            provider._LAST_ACQUIRE_AT = time.monotonic()
-            response.raise_for_status()
-            endpoints = provider.parse_proxy_responses(response.text)[:window]
+        try:
+            with provider._direct_session() as session:
+                response = session.get(url, timeout=_remaining(deadline, float(cfg.PROXY_1024_API_TIMEOUT)),
+                                       allow_redirects=False, headers={"Accept": "text/plain, application/json"})
+                provider._LAST_ACQUIRE_AT = time.monotonic()
+                response.raise_for_status()
+                endpoints = provider.parse_proxy_responses(response.text)[:window]
+        except requests.RequestException as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            logger.warning(
+                "代理池供应商提取失败：stage=supply_request class=%s status=%s",
+                type(exc).__name__, status if isinstance(status, int) else "-",
+            )
+            raise
     _remaining(deadline)
     delivered = 0
     duplicate_candidates = 0
@@ -99,10 +121,18 @@ def fetch_candidates(
                 duplicate_candidates += 1
                 continue
             reserved = True
-            exit_ip, actual_region = provider._validate_proxy_with_retries(
-                proxy_url, _remaining(deadline, float(cfg.PROXY_1024_API_TIMEOUT)),
-                attempts=int(cfg.PROXY_1024_VALIDATE_ATTEMPTS), deadline=deadline,
-            )
+            try:
+                exit_ip, actual_region = provider._validate_proxy_with_retries(
+                    proxy_url, _remaining(deadline, float(cfg.PROXY_1024_API_TIMEOUT)),
+                    attempts=int(cfg.PROXY_1024_VALIDATE_ATTEMPTS), deadline=deadline,
+                )
+            except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as exc:
+                # 网络故障只淘汰当前候选；共同预算和取消仍约束整轮补货。
+                _log_candidate_failure(endpoint, exc)
+                _remaining(deadline)
+                if cancelled():
+                    return
+                continue
             _remaining(deadline)
             if region and region != "Rand" and actual_region != region:
                 raise ValueError("代理出口地区与池配置不符")

@@ -22,30 +22,87 @@ def reserve_slot(profile_key: str, provider: str, *, max_size: int, timeout: flo
     record_store.init()
     with record_store.transaction() as conn:
         record_store.advisory_xact_lock(conn, "proxy-pool-capacity")
-        count = record_store.count_rows(RESOURCES, where='state = ANY(%s)', params=(list(LIVE),), conn=conn)
-        if count >= max_size:
-            # 有真实等待者时允许退役其他配置的空闲库存，避免旧地区占满全池。
-            with conn.cursor() as cur:
-                cur.execute(f"SELECT * FROM {postgres_store.qualified(RESOURCES.name)} "
-                            "WHERE state = 'ready' AND profile_key <> %s AND %s "
-                            "ORDER BY last_used_at FOR UPDATE SKIP LOCKED LIMIT 1", (profile_key, reclaim_idle))
-                raw = cur.fetchone()
-            if not raw or count > max_size:
-                return None
-            idle = record_store.merge_row(RESOURCES, raw)
-            record_store.patch_row(RESOURCES, idle["id"], {"state": "retired"}, conn=conn)
-            anchor = record_store.get_row_by(LEASES, "lease_id", idle["anchor_lease_id"], conn=conn, for_update=True)
-            if anchor and anchor["state"] == "leased":
-                record_store.patch_row(LEASES, anchor["id"], {
-                    "state": "recent", "recent_until": idle["expires_at"], "released_at": _stamp(),
-                    "release_reason": "pool_rebalanced",
-                }, conn=conn)
-        token = uuid.uuid4().hex
-        row = {"resource_id": uuid.uuid4().hex, "profile_key": profile_key, "provider": provider,
-               "state": "fetching", "owner_token": token, "expires_at": _stamp(timeout),
-               "last_used_at": _stamp()}
-        row["id"] = record_store.insert_row(RESOURCES, row, conn=conn)
-        return row
+        return _reserve_slot(conn, profile_key, provider, max_size=max_size, timeout=timeout,
+                             reclaim_idle=reclaim_idle)
+
+
+def _reserve_slot(conn, profile_key: str, provider: str, *, max_size: int, timeout: float,
+                  reclaim_idle: bool) -> dict | None:
+    """调用者持有容量事务锁，预留一个补货槽位。"""
+    count = record_store.count_rows(RESOURCES, where='state = ANY(%s)', params=(list(LIVE),), conn=conn)
+    if count >= max_size:
+        # 有真实等待者时允许退役其他配置的空闲库存，避免旧地区占满全池。
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT * FROM {postgres_store.qualified(RESOURCES.name)} "
+                        "WHERE state = 'ready' AND profile_key <> %s AND %s "
+                        "ORDER BY last_used_at FOR UPDATE SKIP LOCKED LIMIT 1", (profile_key, reclaim_idle))
+            raw = cur.fetchone()
+        if not raw or count > max_size:
+            return None
+        idle = record_store.merge_row(RESOURCES, raw)
+        record_store.patch_row(RESOURCES, idle["id"], {"state": "retired"}, conn=conn)
+        _close_anchor(conn, idle, reason="pool_rebalanced")
+    token = uuid.uuid4().hex
+    row = {"resource_id": uuid.uuid4().hex, "profile_key": profile_key, "provider": provider,
+           "state": "fetching", "owner_token": token, "expires_at": _stamp(timeout),
+           "last_used_at": _stamp()}
+    row["id"] = record_store.insert_row(RESOURCES, row, conn=conn)
+    return row
+
+
+def _available_rows(conn, profile_key: str, *, min_ttl: float, max_age: float,
+                    include_stale: bool = False) -> list[dict]:
+    """与独占领取相同的准入条件；进行中的供给不计入空闲库存。"""
+    from psycopg.rows import dict_row
+
+    resources = postgres_store.qualified(RESOURCES.name)
+    leases = postgres_store.qualified(LEASES.name)
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            f"SELECT r.id, r.state FROM {resources} r LEFT JOIN {leases} anchor "
+            "ON anchor.lease_id = r.anchor_lease_id WHERE r.profile_key = %s AND ("
+            "(r.state = 'fetching' AND r.expires_at > %s) OR "
+            "(r.state IN ('ready', 'checking') AND r.expires_at > %s "
+            "AND anchor.state = 'leased' AND anchor.expires_at > %s "
+            "AND NOT EXISTS ("
+            f"SELECT 1 FROM {leases} child WHERE child.data->>'pool_anchor_id' = r.anchor_lease_id "
+            "AND child.state IN ('pool_leased', 'shared_leased') AND child.expires_at > %s) "
+            "AND ((r.state = 'ready' AND (r.checked_at >= %s OR (%s AND r.checked_at IS NOT NULL))) OR "
+            "(r.state = 'checking' AND r.data->>'check_deadline' > %s))))",
+            (profile_key, _stamp(), _stamp(min_ttl), _stamp(min_ttl), _stamp(), _stamp(-max_age), include_stale, _stamp()),
+        )
+        return cur.fetchall()
+
+
+def availability(profile_key: str, *, min_ttl: float, max_age: float, conn=None) -> dict[str, int]:
+    """ready 只表示能立即独占领取的线路；fetching/checking 仅抵扣重复补货。"""
+    if conn is None:
+        record_store.init()
+        with postgres_store.connect() as connection:
+            return availability(profile_key, min_ttl=min_ttl, max_age=max_age, conn=connection)
+    result = {"ready": 0, "fetching": 0, "checking": 0}
+    for row in _available_rows(conn, profile_key, min_ttl=min_ttl, max_age=max_age):
+        result[row["state"]] += 1
+    return result
+
+
+def reserve_refill_slots(profile_key: str, provider: str, *, target: int, max_size: int,
+                         min_ttl: float, max_age: float, limit: int, timeout: float,
+                         reclaim_idle: bool = False) -> list[dict]:
+    """在同一容量事务内计算缺口并预留，多个 worker 不会重复补同一份库存。"""
+    record_store.init()
+    with record_store.transaction() as conn:
+        record_store.advisory_xact_lock(conn, "proxy-pool-capacity")
+        prepared = availability(profile_key, min_ttl=min_ttl, max_age=max_age, conn=conn)
+        deficit = max(0, min(target, max_size) - sum(prepared.values()))
+        slots = []
+        for _ in range(min(max(0, limit), deficit)):
+            slot = _reserve_slot(conn, profile_key, provider, max_size=max_size, timeout=timeout,
+                                 reclaim_idle=reclaim_idle)
+            if slot is None:
+                break
+            slots.append(slot)
+        return slots
 
 
 def publish(slot: dict, lease) -> bool:
@@ -274,9 +331,18 @@ def maintenance(*, max_age: float, max_idle: float, min_ready: int, min_ttl: flo
                 continue
             idle = row["state"] == "ready" and row["last_used_at"] < _stamp(-max_idle)
             if idle:
-                count = record_store.count_rows(RESOURCES, where="profile_key = %s AND state = 'ready'", params=(row["profile_key"],), conn=conn)
+                available = {item["id"] for item in _available_rows(
+                    conn, row["profile_key"], min_ttl=min_ttl, max_age=max_age,
+                ) if item["state"] == "ready"}
                 minimum = min_ready if warm_profiles is None or row["profile_key"] in warm_profiles else 0
-                idle = count > minimum
+                if row["id"] in available:
+                    idle = len(available) > minimum
+                else:
+                    recoverable = {item["id"] for item in _available_rows(
+                        conn, row["profile_key"], min_ttl=min_ttl, max_age=max_age, include_stale=True,
+                    ) if item["state"] == "ready"}
+                    # 检测过期的底数库存先保留供复检，不让供给故障期间丢掉健康旧线路。
+                    idle = row["id"] not in recoverable or len(recoverable) > minimum
             too_short = row["state"] == "ready" and row["expires_at"] <= _stamp(min_ttl)
             over_capacity = max_size is not None and live_count > max_size and row["state"] == "ready"
             if expired or idle or too_short or over_capacity:

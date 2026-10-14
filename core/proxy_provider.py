@@ -322,11 +322,13 @@ def _validate_proxy_with_retries(
                 raise
             delay = min(1.0, 0.35 * attempt)
             logger.warning(
-                "[代理平台] 出口检测瞬时失败，同一端点 %.2fs 后重试（%s/%s）：%s",
+                "[代理平台] 出口检测瞬时失败，同一端点 %.2fs 后重试（%s/%s）：class=%s status=%s endpoint=%s",
                 delay,
                 attempt + 1,
                 attempts,
-                f"{type(exc).__name__}: {str(exc)[:140]}",
+                type(exc).__name__,
+                getattr(getattr(exc, "response", None), "status_code", None) or "-",
+                mask_endpoint(urlparse(proxy_url).netloc.rsplit("@", 1)[-1]),
             )
             time.sleep(delay if deadline is None else min(delay, max(0, deadline - time.monotonic())))
     raise last_error or RuntimeError("代理出口检测失败")

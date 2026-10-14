@@ -18,6 +18,7 @@ import random
 # 推荐使用 socks5h://（DNS 在代理端解析），避免本地 DNS 与出口 IP 地区错配。
 PROXY_POOL = schema_default("PROXY_POOL")
 # 独立代理池生命周期策略：任务只领取已检测库存，不在任务线程内提取或校验。
+# MIN_READY 是每个活跃配置的空闲底数，领取后后台补足；占用与检查中不计入。
 PROXY_POOL_MIN_READY = schema_default("PROXY_POOL_MIN_READY")
 PROXY_POOL_MAX_SIZE = schema_default("PROXY_POOL_MAX_SIZE")
 PROXY_POOL_WAIT_TIMEOUT = schema_default("PROXY_POOL_WAIT_TIMEOUT")

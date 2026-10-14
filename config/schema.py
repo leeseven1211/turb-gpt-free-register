@@ -1161,7 +1161,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "PROXY_POOL_MIN_READY", "file": "proxy.py", "type": "int", "group": "代理与网络",
-        "label": "代理池最小可用库存", "help": "后台至少保持的活跃来源/地区可用库存数量；任务领取时只使用已检测通过且剩余寿命足够的线路",
+        "label": "代理池最小可用库存", "help": "每个活跃来源/地区预留的空闲线路底数；设为 5 时，后台补足等待任务所需线路后仍以 5 条可立即领取的线路为目标。占用、提取中和复检中不计入可用库存；受供应商可用性和全池容量限制",
     },
     {
         "key": "PROXY_POOL_MAX_SIZE", "file": "proxy.py", "type": "int", "group": "代理与网络",

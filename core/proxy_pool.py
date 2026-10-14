@@ -250,39 +250,35 @@ def maintain_once() -> bool:
     with _lock:
         profiles = sorted(_profiles.values(), key=lambda item: (-item.waiting, item.touched))
     for profile in profiles:
-        if profile.retry_after > time.monotonic():
-            continue
         if not profile.waiting and time.monotonic() - profile.touched > policy["max_idle"]:
             continue
         try:
             _validate_lifetime(profile.provider, profile.options, policy)
         except ProxyPoolConfigurationError as exc:
-            profile.retry_after = time.monotonic() + 60
-            logger.warning("代理池供给配置不兼容，暂停补货：%s", exc)
+            if profile.retry_after <= time.monotonic():
+                profile.retry_after = time.monotonic() + 60
+                logger.warning("代理池供给配置不兼容，暂停补货：%s", exc)
             continue
+        # 先复检已有线路，避免新供应失败时健康旧库存一直无法恢复可领取状态。
         check = store.take_check(profile.key, max_age=policy["max_age"], timeout=float(cfg.PROXY_1024_ACQUIRE_TIMEOUT) + 30)
         if check:
             _check(check, policy)
             return True
-        count = store.counts(profile.key)
-        available = sum(count.get(key, 0) for key in ("ready", "fetching", "checking"))
-        target = max(policy["min_ready"], profile.waiting)
+        if profile.retry_after > time.monotonic():
+            continue
+        # 等待任务获得线路后，仍保留配置的空闲底数；占用线路不计入底数。
+        target = policy["min_ready"] + profile.waiting
         if profile.provider == "proxy_pool":
             target = min(target, len(profile.options["urls"]))
-        if available >= target:
+        slots = store.reserve_refill_slots(
+            profile.key, profile.provider, target=target, max_size=policy["max_size"],
+            min_ttl=policy["min_ttl"], max_age=policy["max_age"],
+            limit=policy["workers"] if profile.provider == "1024proxy" else 1,
+            timeout=float(cfg.PROXY_1024_ACQUIRE_TIMEOUT) + 60,
+            reclaim_idle=profile.waiting > 0,
+        )
+        if not slots:
             continue
-        slot = store.reserve_slot(profile.key, profile.provider, max_size=policy["max_size"],
-                                  timeout=float(cfg.PROXY_1024_ACQUIRE_TIMEOUT) + 60,
-                                  reclaim_idle=profile.waiting > 0)
-        if not slot:
-            continue
-        slots = [slot]
-        if profile.provider == "1024proxy":
-            for _ in range(min(policy["workers"], target - available) - 1):
-                extra = store.reserve_slot(profile.key, profile.provider, max_size=policy["max_size"],
-                                           timeout=float(cfg.PROXY_1024_ACQUIRE_TIMEOUT) + 60)
-                if extra:
-                    slots.append(extra)
         delivered = 0
         failure_code = "supply_unavailable"
         try:
@@ -293,7 +289,7 @@ def maintain_once() -> bool:
                 candidates = fetch_candidates(profile.options, count=len(slots),
                                               candidate_count=policy["max_size"], cancelled=_stop.is_set)
             else:
-                candidates = iter([_fetch_static(profile, slot, policy)])
+                candidates = iter([_fetch_static(profile, slots[0], policy)])
             for lease in candidates:
                 if delivered >= len(slots):
                     provider.release_proxy(lease, reason="pool_candidate_unused")
