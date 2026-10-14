@@ -404,7 +404,10 @@ def _run_plan_check(
             "email": email,
             "purpose": "plan-check",
             "explicit_proxy": proxy,
+            "progress_callback": lambda message: reporter.note(message, stage="network"),
         }
+        if operation_context is not None:
+            route_kwargs["cancel"] = lambda: _checkpoint(operation_context, "套餐查询等待线路时检查取消状态")
         if isinstance(config_snapshot, dict) and "proxy_allow_reuse" in config_snapshot:
             route_kwargs["allow_reuse"] = bool(config_snapshot["proxy_allow_reuse"])
         if isinstance(config_snapshot, dict):

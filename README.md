@@ -462,7 +462,7 @@ Roxy 的字段不是普通浏览器代理 URL，而是 `proxyMethod/proxyCategor
 也可以在 WebUI「配置 → 代理与网络 → 代理提供商」中选择 1024Proxy，填写白名单提取 API。
 凡启用代理的注册、账号功能和套餐查询任务都先从独立 PostgreSQL 代理库存领取已检测线路；供应商提取、出口复检和补货在代理池后台 worker 中执行，任务线程不直接调用供应商 API。WebUI 启动时预热代理池，CLI 在首次领取时懒启动；数据库不可用时直接报错，不降级为直连。显式选择 `direct` 的配置仍保持直连，不会被代理池强制覆盖。代理池 worker 数量支持热加载，但 WebUI 的 worker 统计只代表当前进程；库存容量和租约仍由 PostgreSQL 在多个进程间统一协调。
 
-代理池的默认策略是全局最大容量 20、每个活动 profile 最少保持 2 条可用库存，任务最多等待 60 秒，领取时要求剩余寿命至少 300 秒，后台每 60 秒复检，空闲回收阈值 300 秒，worker 数 2。`PROXY_POOL_MAX_SIZE` 是所有配置共同使用的全局上限；容量缩减只退役 `ready` 库存，不踢出正在使用的线路。有其他配置的任务等待时，池可以回收其他配置的空闲 `ready` 库存来满足等待者。
+代理池的默认策略是全局最大容量 20、每个活动 profile 最少保持 2 条可用库存，代理不足时持续等待补货或线路释放，领取时要求剩余寿命至少 300 秒，后台每 60 秒复检，空闲回收阈值 300 秒，worker 数 2。`PROXY_POOL_WAIT_TIMEOUT=0` 表示持续等待，可手动停止任务；设为正数时才限制领取总等待时间并在到期后失败，调用方显式指定的 `timeout` 仍按指定期限执行。等待进度每 30 秒记录一次，供应商提取和出口检测仍使用各自的有界预算并退避重试；缺少配置或不可能满足的寿命策略仍立即报错。`PROXY_POOL_MAX_SIZE` 是所有配置共同使用的全局上限；容量缩减只退役 `ready` 库存，不踢出正在使用的线路。有其他配置的任务等待时，池可以回收其他配置的空闲 `ready` 库存来满足等待者。
 
 `PROXY_POOL_MIN_READY` 表示每个活跃来源/地区预留的空闲底数，只计算检测新鲜、剩余寿命足够、没有任务占用且锚点有效的可立即领取线路。配置为 5 时，后台持续以 5 条空闲线路为目标；领取后不足 5 就唤醒补货。有任务等待时，目标是等待数加空闲底数，例如 3 个任务等待时准备 8 条。提取中、复检中的槽位只用于防止多个 worker 重复补货，不算可用线路。全局容量必须为正在使用的线路和空闲底数预留空间；供应商不可用、检测失败或容量不足时仍可能等待。
 
@@ -488,10 +488,10 @@ PROXY_1024_VALIDATE=True
 PROXY_1024_VALIDATE_ATTEMPTS=2
 PROXY_1024_RECENT_TTL=1800
 PROXY_1024_ACQUIRE_INTERVAL=0.6
-# 独立库存默认值：全局容量 20，最少可用 2，领取等待 60 秒
+# 独立库存默认值：全局容量 20，最少可用 2，代理不足时持续等待
 PROXY_POOL_MIN_READY=2
 PROXY_POOL_MAX_SIZE=20
-PROXY_POOL_WAIT_TIMEOUT=60
+PROXY_POOL_WAIT_TIMEOUT=0
 PROXY_POOL_MIN_TTL=300
 PROXY_POOL_CHECK_INTERVAL=60
 PROXY_POOL_MAX_IDLE=300
@@ -774,7 +774,7 @@ PROXY_1024_RECENT_TTL=1800
 PROXY_1024_ACQUIRE_INTERVAL=0.6
 PROXY_POOL_MIN_READY=2
 PROXY_POOL_MAX_SIZE=20
-PROXY_POOL_WAIT_TIMEOUT=60
+PROXY_POOL_WAIT_TIMEOUT=0
 PROXY_POOL_MIN_TTL=300
 PROXY_POOL_CHECK_INTERVAL=60
 PROXY_POOL_MAX_IDLE=300

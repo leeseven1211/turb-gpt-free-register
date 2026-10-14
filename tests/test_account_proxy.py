@@ -1,13 +1,72 @@
 # -*- coding: utf-8 -*-
 import unittest
+import logging
+import tempfile
 from datetime import datetime
 from unittest.mock import patch
 
 from core import account_proxy
+from core import proxy_pool
+from core.operation_runtime import OperationCancelled
 from core.proxy_provider import ProxyLease
 
 
 class AccountProxyTests(unittest.TestCase):
+    def test_wait_observes_explicit_cancellation_for_both_builtin_sources(self):
+        def cancel():
+            raise OperationCancelled("离线模拟用户取消线路等待")
+
+        for source in ("provider:1024proxy", "pool"):
+            with (
+                self.subTest(source=source),
+                patch.object(proxy_pool, "start"),
+                patch.object(proxy_pool.store, "claim", return_value=None),
+                patch.multiple("config.proxy", ACCOUNT_ACTION_PROXY="http://192.0.2.1:8080",
+                               PROXY_1024_API_URL="https://example.test/proxies", PROXY_1024_SESSION_MINUTES=30),
+            ):
+                with self.assertRaisesRegex(OperationCancelled, "取消线路等待"):
+                    account_proxy.acquire_account_proxy(
+                        account_id=1, purpose="plan-check", region="US", source=source,
+                        cancel=cancel, timeout=1,
+                    )
+
+    def test_wait_reports_progress_for_both_builtin_sources(self):
+        lease = ProxyLease(
+            "waiting-route", "1024proxy", "http://192.0.2.1:8080", "192.0.2.1:8080",
+            datetime.now(), exit_ip="198.51.100.1", region="US",
+        )
+        for source in ("provider:1024proxy", "pool"):
+            progress = []
+            with (
+                self.subTest(source=source),
+                patch.object(proxy_pool, "start"),
+                patch.object(proxy_pool.store, "claim", return_value=lease),
+                patch.object(proxy_pool._stop, "is_set", return_value=False),
+                patch.multiple("config.proxy", ACCOUNT_ACTION_PROXY="http://192.0.2.1:8080",
+                               PROXY_1024_API_URL="https://example.test/proxies", PROXY_1024_SESSION_MINUTES=30),
+            ):
+                route = account_proxy.acquire_account_proxy(
+                    account_id=1, purpose="plan-check", region="US", source=source,
+                    progress_callback=progress.append, timeout=1,
+                )
+                self.assertIs(route.lease, lease)
+                self.assertTrue(any("代理池" in message for message in progress))
+
+    def test_explicit_zero_timeout_is_preserved_for_both_builtin_sources(self):
+        for source in ("provider:1024proxy", "pool"):
+            with (
+                self.subTest(source=source),
+                patch.object(proxy_pool, "start"),
+                patch.object(proxy_pool.store, "claim", return_value=None),
+                patch.multiple("config.proxy", ACCOUNT_ACTION_PROXY="http://192.0.2.1:8080",
+                               PROXY_1024_API_URL="https://example.test/proxies", PROXY_1024_SESSION_MINUTES=30),
+            ):
+                with self.assertRaises(proxy_pool.ProxyPoolTimeout):
+                    account_proxy.acquire_account_proxy(
+                        account_id=1, purpose="plan-check", region="US", source=source,
+                        timeout=0,
+                    )
+
     def test_plan_route_preserves_frozen_reuse_limit_for_provider_and_static_pool(self):
         lease = ProxyLease(
             "limited-route", "1024proxy", "http://192.0.2.1:8080", "192.0.2.1:8080",
@@ -175,6 +234,47 @@ class AccountProxyTests(unittest.TestCase):
         )
         self.assertIsNone(route.lease)
         self.assertEqual(route.mode, "request")
+
+
+class LegacyAccountProxyCancellationTests(unittest.TestCase):
+    def test_setup_wait_stops_without_starting_browser_or_plan_request(self):
+        from core import codex_retry_service
+
+        for steps, native_cancel in (({"plan_check"}, False), ({"password"}, False), ({"password"}, True)):
+            def acquire(**kwargs):
+                if native_cancel:
+                    raise OperationCancelled("离线模拟持久任务取消线路等待")
+                cancel = kwargs.get("cancel")
+                if cancel is None:
+                    raise RuntimeError("旧账号配置线路等待未连接取消检查")
+                cancel()
+                raise AssertionError("取消后不能交付线路")
+
+            with (
+                self.subTest(steps=steps, native_cancel=native_cancel),
+                tempfile.NamedTemporaryFile(suffix=".log") as output,
+                patch.object(codex_retry_service.db, "get_account_by_email", return_value={"id": 1}),
+                patch.object(codex_retry_service.account_task_store, "get_task", return_value={}),
+                patch.object(codex_retry_service.account_task_store, "append_event"),
+                patch.object(codex_retry_service.task_run_log, "TaskRunLogHandler", return_value=logging.NullHandler()),
+                patch("config.reload_all"),
+                patch.object(codex_retry_service, "is_stop_requested", side_effect=[False, True]),
+                patch("core.account_proxy.acquire_account_proxy", side_effect=acquire),
+                patch.object(codex_retry_service, "_run_retry_plan_check") as query,
+                patch("core.roxy_codex_oauth.run_roxy_chatgpt_account_action") as browser,
+                patch.object(codex_retry_service, "_RUNNING_THREADS", {}),
+                patch.object(codex_retry_service, "_RESERVED_AT", {}),
+                patch.object(codex_retry_service, "_STOP_REQUESTED", set()),
+            ):
+                result = codex_retry_service.run_twofa_worker(
+                    "legacy-wait@example.test", task_id=101, target_log_path=output.name,
+                    steps=steps, manage_task=False, password_driver_override="roxy",
+                    plan_driver_override="protocol",
+                )
+                self.assertEqual("stopped", result["status"])
+                self.assertFalse(result["ok"])
+                query.assert_not_called()
+                browser.assert_not_called()
 
 
 if __name__ == "__main__":

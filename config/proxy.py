@@ -21,6 +21,7 @@ PROXY_POOL = schema_default("PROXY_POOL")
 # MIN_READY 是每个活跃配置的空闲底数，领取后后台补足；占用与检查中不计入。
 PROXY_POOL_MIN_READY = schema_default("PROXY_POOL_MIN_READY")
 PROXY_POOL_MAX_SIZE = schema_default("PROXY_POOL_MAX_SIZE")
+# 0 表示代理不足时持续等待；正数限制领取总等待时间，后台补货预算独立。
 PROXY_POOL_WAIT_TIMEOUT = schema_default("PROXY_POOL_WAIT_TIMEOUT")
 PROXY_POOL_MIN_TTL = schema_default("PROXY_POOL_MIN_TTL")
 PROXY_POOL_CHECK_INTERVAL = schema_default("PROXY_POOL_CHECK_INTERVAL")

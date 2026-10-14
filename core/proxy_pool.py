@@ -116,7 +116,9 @@ atexit.register(stop)
 def acquire(*, provider: str = "1024proxy", progress_callback=None, cancel=None, timeout: float | None = None,
             allow_reuse: bool = False, reuse_limit: int | None = None,
             static_urls: list[str] | None = None, **kwargs):
-    """任务侧没有供应商提取、校验或重试循环，只有有界排队领取。"""
+    """任务只等待已校验库存；默认持续等待，可显式限制领取期限。"""
+    from core.operation_runtime import check_cancelled
+
     policy = settings()
     options = _provider_options(**kwargs) if provider == "1024proxy" else {"urls": list(static_urls or [])}
     if provider == "1024proxy" and not str(options["api_url"] or "").strip():
@@ -135,18 +137,34 @@ def acquire(*, provider: str = "1024proxy", progress_callback=None, cancel=None,
             raise ValueError("套餐查询每 IP 最多查询次数必须为 1 到 100")
     correlation = {key: kwargs.get(key) for key in ("job_id", "account_id", "operation_task_id", "operation_run_id", "registration_job_id", "route_attempt_no")}
     correlation["purpose"] = purpose
-    deadline = time.monotonic() + max(0, float(policy["wait_timeout"] if timeout is None else timeout))
+    started = time.monotonic()
+    budget = max(0, float(policy["wait_timeout"] if timeout is None else timeout))
+    # 配置为 0 表示持续等待；调用方显式传 timeout=0 仍表示立即到期。
+    deadline = started + budget if timeout is not None or budget > 0 else None
+    next_notice = started
     exhausted_message = None
+
+    def checkpoint() -> None:
+        check_cancelled("任务在等待代理线路时收到取消请求")
+        if cancel:
+            cancel()
+
+    def report(message: str) -> None:
+        if progress_callback:
+            progress_callback(message)
+        else:
+            logger.info("%s", message)
+
     with _lock:
         profile.waiting += 1
     try:
         start()
-        if progress_callback:
-            progress_callback("正在从代理池申请已校验线路")
+        report("正在从代理池申请已校验线路")
         while True:
-            if cancel:
-                cancel()
-            if time.monotonic() >= deadline:
+            checkpoint()
+            if _stop.is_set():
+                raise ProxyPoolTimeout("代理池已停止，未分配线路")
+            if deadline is not None and time.monotonic() >= deadline:
                 raise ProxyPoolTimeout(exhausted_message or "代理池暂时没有符合要求的可用线路，领取等待超时")
             try:
                 lease = store.claim(profile.key, min_ttl=policy["min_ttl"], max_age=policy["max_age"],
@@ -155,15 +173,14 @@ def acquire(*, provider: str = "1024proxy", progress_callback=None, cancel=None,
             except proxy_lease_store.ProxyReuseLimitError as exc:
                 # 次数耗尽后仍等待其他库存；所有轮次共用原来的领取期限。
                 message = str(exc)
-                if progress_callback and message != exhausted_message:
-                    progress_callback(message)
+                if message != exhausted_message:
+                    report(message)
                 exhausted_message = message
                 lease = None
             if lease:
                 try:
-                    if cancel:
-                        cancel()
-                    if time.monotonic() >= deadline or _stop.is_set():
+                    checkpoint()
+                    if _stop.is_set() or (deadline is not None and time.monotonic() >= deadline):
                         raise ProxyPoolTimeout("代理池领取已超时或停止，晚到线路已归还")
                 except BaseException:
                     # 只领取但未交给调用方，不进入实际使用后的冷却期。
@@ -173,8 +190,12 @@ def acquire(*, provider: str = "1024proxy", progress_callback=None, cancel=None,
                 return lease
             if _stop.is_set():
                 raise ProxyPoolTimeout("代理池已停止，未分配线路")
+            now = time.monotonic()
+            if now >= next_notice:
+                report(f"代理池暂无符合要求的可用线路，等待后台补货或线路释放（已等待 {int(now - started)} 秒）")
+                next_notice = now + 30
             _wake.set()
-            _stop.wait(min(0.2, max(0, deadline - time.monotonic())))
+            _stop.wait(0.2 if deadline is None else min(0.2, max(0, deadline - time.monotonic())))
     finally:
         with _lock:
             profile.waiting -= 1

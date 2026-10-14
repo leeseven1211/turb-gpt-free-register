@@ -5,7 +5,99 @@ import pytest
 
 from config import proxy as cfg
 from core import proxy_pool
+from core.operation_runtime import CancellationToken, OperationCancelled, operation_context
 from core.proxy_lease_store import ProxyReuseLimitError
+
+
+@pytest.mark.parametrize("provider", ["1024proxy", "proxy_pool"])
+def test_zero_configured_timeout_waits_past_sixty_seconds_for_inventory(provider):
+    clock = [0.0]
+    lease = object()
+    progress = []
+
+    def wait_for_supply(_seconds):
+        clock[0] += 65.0
+
+    with patch.object(cfg, "PROXY_POOL_WAIT_TIMEOUT", 0), \
+         patch.object(proxy_pool, "start"), patch.object(proxy_pool, "_profiles", {}), \
+         patch.object(proxy_pool.time, "monotonic", side_effect=lambda: clock[0]), \
+         patch.object(proxy_pool._stop, "wait", side_effect=wait_for_supply), \
+         patch.object(proxy_pool.store, "claim", side_effect=[None, None, lease]):
+        received = proxy_pool.acquire(
+            provider=provider, api_url="https://example.test/proxies",
+            static_urls=["http://192.0.2.1:8080"], progress_callback=progress.append,
+        )
+        assert all(profile.waiting == 0 for profile in proxy_pool._profiles.values())
+
+    assert received is lease
+    assert clock[0] == 130.0
+    assert any("等待" in message and "65" in message for message in progress)
+
+
+def test_waiting_for_inventory_obeys_operation_cancellation_without_explicit_callback():
+    token = CancellationToken(run_id=1, token="test", checker=lambda *_args: False)
+
+    def no_inventory(*_args, **_kwargs):
+        token.request_local()
+        return None
+
+    with operation_context(token), patch.object(cfg, "PROXY_POOL_WAIT_TIMEOUT", 0), \
+         patch.object(proxy_pool, "start"), patch.object(proxy_pool, "_profiles", {}), \
+         patch.object(proxy_pool._stop, "wait"), \
+         patch.object(proxy_pool.store, "claim", side_effect=no_inventory) as claim:
+        with pytest.raises(OperationCancelled):
+            proxy_pool.acquire(api_url="https://example.test/proxies")
+        assert all(profile.waiting == 0 for profile in proxy_pool._profiles.values())
+    claim.assert_called_once()
+
+
+def test_operation_cancellation_returns_just_claimed_route_without_delivery():
+    token = CancellationToken(run_id=1, token="test", checker=lambda *_args: False)
+    lease = object()
+
+    def late_claim(*_args, **_kwargs):
+        token.request_local()
+        return lease
+
+    with operation_context(token), patch.object(cfg, "PROXY_POOL_WAIT_TIMEOUT", 0), \
+         patch.object(proxy_pool, "start"), \
+         patch.object(proxy_pool.store, "claim", side_effect=late_claim), \
+         patch.object(proxy_pool.store, "release") as release:
+        with pytest.raises(OperationCancelled):
+            proxy_pool.acquire(api_url="https://example.test/proxies")
+    release.assert_called_once_with(lease, reason="allocation_cancelled", cooldown=0)
+
+
+def test_stopped_pool_ends_unbounded_wait():
+    with patch.object(cfg, "PROXY_POOL_WAIT_TIMEOUT", 0), patch.object(proxy_pool, "start"), \
+         patch.object(proxy_pool._stop, "is_set", return_value=True), \
+         patch.object(proxy_pool.store, "claim", return_value=None):
+        with pytest.raises(proxy_pool.ProxyPoolTimeout, match="已停止"):
+            proxy_pool.acquire(api_url="https://example.test/proxies")
+
+
+def test_explicit_zero_timeout_still_ends_immediately():
+    with patch.object(cfg, "PROXY_POOL_WAIT_TIMEOUT", 0), patch.object(proxy_pool, "start"), \
+         patch.object(proxy_pool.store, "claim") as claim:
+        with pytest.raises(proxy_pool.ProxyPoolTimeout):
+            proxy_pool.acquire(api_url="https://example.test/proxies", timeout=0)
+    claim.assert_not_called()
+
+
+def test_positive_configured_timeout_keeps_its_wait_budget():
+    clock = [0.0]
+
+    def no_inventory(*_args, **_kwargs):
+        clock[0] = 2.0
+        return None
+
+    with patch.object(cfg, "PROXY_POOL_WAIT_TIMEOUT", 1), patch.object(proxy_pool, "start"), \
+         patch.object(proxy_pool.time, "monotonic", side_effect=lambda: clock[0]), \
+         patch.object(proxy_pool._stop, "wait"), \
+         patch.object(proxy_pool.store, "claim", side_effect=no_inventory) as claim:
+        with pytest.raises(proxy_pool.ProxyPoolTimeout, match="等待超时"):
+            proxy_pool.acquire(api_url="https://example.test/proxies")
+    claim.assert_called_once()
 
 
 def test_reuse_limit_exhaustion_waits_for_other_inventory_in_same_budget():

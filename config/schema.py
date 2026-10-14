@@ -340,7 +340,7 @@ _DEFAULTS: dict[str, Any] = {
     "PROXY_POOL": ["socks5://127.0.0.1:7897"],
     "PROXY_POOL_MIN_READY": 2,
     "PROXY_POOL_MAX_SIZE": 20,
-    "PROXY_POOL_WAIT_TIMEOUT": 60,
+    "PROXY_POOL_WAIT_TIMEOUT": 0,
     "PROXY_POOL_MIN_TTL": 300,
     "PROXY_POOL_CHECK_INTERVAL": 60,
     "PROXY_POOL_MAX_IDLE": 300,
@@ -1174,7 +1174,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "PROXY_POOL_WAIT_TIMEOUT", "file": "proxy.py", "type": "int", "group": "代理与网络",
-        "label": "领取等待超时(秒)", "help": "任务等待代理池分配可用线路的最长时间；到期返回明确的代理池等待超时",
+        "label": "领取最长等待(秒)", "help": "默认 0：代理不足时持续等待补货或线路释放，可手动停止任务；设为正数时才在到期后返回等待超时",
     },
     {
         "key": "PROXY_POOL_MIN_TTL", "file": "proxy.py", "type": "int", "group": "代理与网络",

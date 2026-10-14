@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from core import db, task_run_log
+from core.operation_runtime import OperationCancelled
 from core.operations import task_gateway as account_task_store
 from core.auth_challenge import (
     PasswordSetupNotReadyError,
@@ -1247,6 +1248,7 @@ def run_twofa_worker(
                 account_id=int(account.get("id") or 0) or None,
                 email=email,
                 purpose="plan-check",
+                cancel=lambda: check_stop_requested(email),
             )
             plan_route_summary = plan_route.public_dict()
             route_summary = plan_route_summary
@@ -1309,6 +1311,7 @@ def run_twofa_worker(
             account_id=int(account.get("id") or 0) or None,
             email=email,
             purpose=setup_proxy_purpose,
+            cancel=lambda: check_stop_requested(email),
         )
         route_summary = account_route.public_dict()
         account_task_store.append_event(
@@ -1542,6 +1545,7 @@ def run_twofa_worker(
                     account_id=int(account.get("id") or 0) or None,
                     email=email,
                     purpose=f"{setup_proxy_purpose}-retry-{browser_attempt + 1}",
+                    cancel=lambda: check_stop_requested(email),
                 )
                 route_summary = account_route.public_dict()
                 account_task_store.append_event(
@@ -1587,7 +1591,7 @@ def run_twofa_worker(
             "browser_retry_attempts": browser_retry_attempts,
         }
         return result
-    except CodexRetryStopped as exc:
+    except (CodexRetryStopped, OperationCancelled) as exc:
         if browser_stage_started and not browser_stage_finished:
             account_task_store.append_event(
                 task_id,
@@ -1811,6 +1815,7 @@ def _run_worker_legacy(
             account_id=int(account.get("id") or 0) or None,
             email=email,
             purpose="plan-check",
+            cancel=lambda: check_stop_requested(email),
         )
         try:
             _run_retry_plan_check(
@@ -1827,6 +1832,7 @@ def _run_worker_legacy(
             account_id=int(account.get("id") or 0) or None,
             email=email,
             purpose="codex-oauth",
+            cancel=lambda: check_stop_requested(email),
         )
         route_summary = account_route.public_dict()
         logger.info(
@@ -1954,7 +1960,7 @@ def _run_worker_legacy(
             db.update_account_codex_status(email, result_status, result.get("message"))
             logger.warning("[Codex 补跑] %s 失败: %s", email, result.get("message"))
         return result
-    except CodexRetryStopped as exc:
+    except (CodexRetryStopped, OperationCancelled) as exc:
         result = {"status": "stopped", "ok": False, "message": str(exc) or "用户手动停止 Codex 补跑"}
         db.update_account_codex_status(email, "stopped", result["message"])
         logger.warning("[Codex 补跑] %s 已停止: %s", email, result["message"])

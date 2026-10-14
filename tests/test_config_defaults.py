@@ -90,7 +90,7 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
         self.assertEqual(2, fields["PROXY_POOL_MIN_READY"]["default"])
         self.assertEqual(20, fields["PROXY_POOL_MAX_SIZE"]["default"])
-        self.assertEqual(60, fields["PROXY_POOL_WAIT_TIMEOUT"]["default"])
+        self.assertEqual(0, fields["PROXY_POOL_WAIT_TIMEOUT"]["default"])
         self.assertEqual(300, fields["PROXY_POOL_MIN_TTL"]["default"])
         self.assertEqual(60, fields["PROXY_POOL_CHECK_INTERVAL"]["default"])
         self.assertEqual(300, fields["PROXY_POOL_MAX_IDLE"]["default"])

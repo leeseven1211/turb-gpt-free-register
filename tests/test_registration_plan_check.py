@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 from core import account_export
 from core import plan_check_service
@@ -41,6 +41,7 @@ class RegistrationPlanCheckTests(unittest.TestCase):
             email="old@example.com",
             purpose="plan-check",
             explicit_proxy=None,
+            progress_callback=ANY,
         )
         self.assertEqual(query.call_args.kwargs["proxy"], "http://fresh-jp.example:8080")
         route.release.assert_called_once_with(reason="plan-check-9")

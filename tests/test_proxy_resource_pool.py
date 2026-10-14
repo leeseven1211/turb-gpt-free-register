@@ -300,6 +300,38 @@ class ProxyResourcePoolTests(PostgresTestCase):
             with self.assertRaises(proxy_pool.ProxyPoolTimeout):
                 proxy_pool.acquire(api_url="https://example.test/api", purpose="registration", timeout=0.01)
 
+    def test_waiter_receives_database_inventory_published_after_old_deadline(self):
+        clock = [0.0]
+        progress = []
+        profile_key = None
+
+        def publish_after_wait(_seconds):
+            self.assertEqual(store.counts(), {})
+            clock[0] = 65.0
+            self.seed_ready(profile=profile_key)
+
+        with patch("config.proxy.PROXY_POOL_WAIT_TIMEOUT", 0), \
+             patch.object(proxy_pool, "start"), patch.object(proxy_pool, "_profiles", {}), \
+             patch.object(proxy_pool.time, "monotonic", side_effect=lambda: clock[0]), \
+             patch.object(proxy_pool._stop, "wait", side_effect=publish_after_wait), \
+             patch("core.proxy_provider._direct_session", side_effect=AssertionError("领取不能访问网络")):
+            profile_key = proxy_pool._profile("1024proxy", proxy_pool._provider_options(
+                api_url="https://example.test/api",
+            )).key
+            lease = proxy_pool.acquire(
+                api_url="https://example.test/api", purpose="plan-check",
+                allow_reuse=True, account_id=101, progress_callback=progress.append,
+            )
+            self.assertEqual(proxy_pool._profiles[profile_key].waiting, 0)
+
+        self.assertEqual(clock[0], 65.0)
+        self.assertEqual(lease.exit_ip, "198.51.100.1")
+        row = record_store.get_row_by(store.LEASES, "lease_id", lease.lease_id)
+        self.assertEqual(row["state"], "shared_leased")
+        self.assertEqual(row["account_id"], 101)
+        store.release(lease, reason="completed")
+        self.assertEqual(store.counts(), {"ready": 1})
+
     def test_non_query_cannot_request_shared_lease(self):
         with self.assertRaises(ValueError):
             self.claim(shared=True, purpose="registration")
