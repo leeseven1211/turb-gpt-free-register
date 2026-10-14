@@ -164,11 +164,12 @@ _SAFE_REFRESH_CAUSE_CODES = frozenset({
     "password_result_unknown", "password_sentinel_failed",
     "password_verify_failed", "password_verify_invalid_response",
     "passwordless_fallback_unavailable", "protocol_network_error",
-    "protocol_v2_unknown_error", "refresh_driver_exception",
+    "protocol_v2_unknown_error", "refresh_driver_exception", "refresh_result_invalid",
+    "refresh_cancelled", "refresh_local_commit_failed", "remote_response_missing",
 })
 _SAFE_AUTH_DIAGNOSTIC_OPERATIONS = frozenset({
     "email_otp", "email_otp_send", "mfa_issue_challenge", "mfa_verify",
-    "network_preflight", "password_email_fallback", "password_verify",
+    "network_preflight", "password_email_fallback", "password_verify", "password_sentinel",
     "protocol_v2_auth",
 })
 _SAFE_AUTH_FAILURE_KINDS = frozenset({
@@ -212,6 +213,9 @@ def _safe_refresh_auth_diagnostics(value: object) -> dict | None:
         safe["http_status"] = status
     if isinstance(value.get("response_observed"), bool):
         safe["response_observed"] = value["response_observed"]
+    curl_code = value.get("curl_error_code")
+    if isinstance(curl_code, int) and not isinstance(curl_code, bool) and curl_code in {28, 35, 56, 60}:
+        safe["curl_error_code"] = curl_code
     return safe or None
 
 
@@ -232,7 +236,7 @@ def _refresh_result_is_unknown(result: dict | None) -> bool:
         "oauth_callback_failed",
     )
     return bool(
-        value.get("request_unknown") or value.get("manual_reconcile") or
+        value.get("request_unknown") or value.get("manual_reconcile") or value.get("reconcile_required") or
         any(any(marker in code for marker in markers) for code in result_codes)
         or (
             not _refresh_result_before_remote_boundary(value)
@@ -255,6 +259,8 @@ def _refresh_exception_is_unknown(exc: BaseException) -> bool:
 def _refresh_result_before_remote_boundary(result: dict | None) -> bool:
     """判断刷新结果是否明确发生在远端认证边界之前。"""
     value = result if isinstance(result, dict) else {}
+    if _refresh_result_not_submitted(value):
+        return True
     if value.get("remote_request_started") is True:
         return False
     if value.get("remote_request_started") is False:
@@ -264,6 +270,12 @@ def _refresh_result_before_remote_boundary(result: dict | None) -> bool:
         for key in ("error_code", "error", "status")
     }
     return bool(codes & {"auth_route_rejected", "network_preflight_failed"})
+
+
+def _refresh_result_not_submitted(result: dict | None) -> bool:
+    """只有适配器同时确认认证未提交和动作未派发，才能关闭旧请求边界。"""
+    value = result if isinstance(result, dict) else {}
+    return value.get("mutation_submitted") is False and value.get("action_dispatched") is False
 
 
 def _is_proxy_transport_failure(result: dict | None) -> bool:
@@ -311,19 +323,27 @@ def _refresh_result_is_rejected(result: dict | None) -> bool:
     return any(code in markers for code in codes if code)
 
 
-def _mark_refresh_request_unknown(result: dict | None, error: str | None = None) -> dict:
+def _mark_refresh_reconcile_required(result: dict | None, error: str | None = None) -> dict:
     value = dict(result) if isinstance(result, dict) else {}
+    value.pop("request_unknown", None)
     value.update({
         "ok": False,
-        "status": "request_unknown",
-        "request_unknown": True,
+        "status": "failed",
+        "reconcile_required": True,
         "manual_reconcile": True,
         "next_action": "manual_reconcile",
     })
+    cause = _safe_refresh_cause_code(value)
+    if str(value.get("error_code") or "").strip() == "request_unknown":
+        value["error_code"] = cause or "remote_response_missing"
+    if str(value.get("error") or "").strip() == "request_unknown":
+        value["error"] = cause or "remote_response_missing"
     if error:
         value.setdefault("error", str(error)[:500])
     else:
-        value.setdefault("error", "刷新 AT 的远端结果待确认，需人工对账")
+        value.setdefault("error", "remote_response_missing")
+    if _safe_refresh_cause_code(value) is None:
+        value.setdefault("error_code", "remote_response_missing")
     return value
 
 
@@ -369,7 +389,8 @@ def _confirm_refresh_receipt(
         _record_refresh_receipt(context, boundary, "confirmed", evidence)
         return True
     _record_refresh_receipt(context, boundary, "local_commit_required", evidence)
-    result.update(_mark_refresh_request_unknown(
+    result["error_code"] = "refresh_local_commit_failed"
+    result.update(_mark_refresh_reconcile_required(
         result, "刷新 AT 已收到远端响应，但本地业务写回/读回未完成，需人工对账"
     ))
     return False
@@ -925,7 +946,7 @@ def _run_live_check(
                         "exception_type": type(exc).__name__,
                     },
                 )
-                return _mark_refresh_request_unknown(
+                return _mark_refresh_reconcile_required(
                     {
                         "error": "refresh_driver_exception",
                         "error_category": "runtime",
@@ -944,7 +965,19 @@ def _run_live_check(
                     "unknown",
                     {"response_observed": True, "response_type": type(remote_result).__name__},
                 )
-                return _mark_refresh_request_unknown({}, "刷新 AT 返回格式异常，结果待确认")
+                return _mark_refresh_reconcile_required({"error": "refresh_result_invalid"})
+            if _refresh_result_not_submitted(remote_result):
+                _record_refresh_receipt(
+                    operation_context, refresh_boundary, "not_submitted",
+                    {
+                        "mutation_submitted": False,
+                        "action_dispatched": False,
+                        "cause_code": _safe_refresh_cause_code(remote_result),
+                    },
+                )
+                # 旧认证没有提交，浏览器兜底应建立自己的全新 intent。
+                refresh_boundary = None
+                return remote_result
             if _refresh_result_is_unknown(remote_result) and not _refresh_result_before_remote_boundary(remote_result):
                 _record_refresh_receipt(
                     operation_context,
@@ -952,7 +985,7 @@ def _run_live_check(
                     "unknown",
                     {"response_observed": True, "status": remote_result.get("status")},
                 )
-                return _mark_refresh_request_unknown(remote_result)
+                return _mark_refresh_reconcile_required(remote_result)
             if remote_result.get("ok") and str(remote_result.get("access_token") or "").strip():
                 _record_refresh_receipt(
                     operation_context,
@@ -985,7 +1018,7 @@ def _run_live_check(
                 "unknown",
                 {"response_observed": True, "status": remote_result.get("status")},
             )
-            return _mark_refresh_request_unknown(remote_result)
+            return _mark_refresh_reconcile_required(remote_result)
         if saved_access_token and not force_refresh:
             probe_attempts = 4 if proxy is None else 1
             _append_log(email, "[查活] 优先验证现有 accessToken；有效则无需重复发送邮箱验证码")
@@ -1314,14 +1347,7 @@ def _run_live_check(
                 ),
             )
         if force_refresh and _refresh_result_is_unknown(result):
-            result.update({
-                "ok": False,
-                "status": "request_unknown",
-                "request_unknown": True,
-                "manual_reconcile": True,
-                "next_action": "manual_reconcile",
-            })
-            result.setdefault("error", "刷新 AT 的远端结果待确认，需人工对账")
+            result.update(_mark_refresh_reconcile_required(result))
         if selected_refresh_driver:
             result.setdefault("token_refresh_driver", selected_refresh_driver)
             result.setdefault("protocol_version", _refresh_protocol_version(selected_refresh_driver))
@@ -1383,7 +1409,6 @@ def _run_live_check(
             _append_log(email, f"[查活] 完成：失败 {result.get('error') or ''}")
         final_status = "success" if result.get("ok") else (
             "deactivated" if result.get("status") == "deactivated"
-            else "request_unknown" if result.get("status") == "request_unknown"
             else "failed"
         )
         reporter.finish(
@@ -1395,7 +1420,7 @@ def _run_live_check(
                 if result.get("ok")
                 else "账号已确认停用"
                 if final_status == "deactivated"
-                else "查活失败"
+                else f"查活失败：{_safe_refresh_cause_code(result) or '认证未完成'}"
             ),
             error=result.get("error") if not result.get("ok") else None,
             result_summary={
@@ -1404,6 +1429,9 @@ def _run_live_check(
                 "http_status": result.get("http_status"),
                 "error_category": result.get("error_category"),
                 "cause_code": _safe_refresh_cause_code(result),
+                "reconcile_required": bool(result.get("reconcile_required")),
+                "manual_reconcile": bool(result.get("manual_reconcile")),
+                "next_action": result.get("next_action"),
                 "checked_at": result.get("checked_at"),
                 "plan": (result.get("session") or {}).get("account", {}).get("planType"),
                 "live_check_driver": result.get("live_check_driver"),
@@ -1430,7 +1458,7 @@ def _run_live_check(
         remote_unknown = bool(
             force_refresh
             and refresh_boundary
-            and receipt_outcome != "rejected"
+            and receipt_outcome not in {"rejected", "not_submitted"}
         )
         if remote_unknown and receipt_outcome not in {"unknown", "local_commit_required", "confirmed"}:
             _record_refresh_receipt(
@@ -1441,17 +1469,18 @@ def _run_live_check(
             )
         result = {
             "ok": False,
-            "status": "request_unknown" if remote_unknown else "cancelled",
+            "status": "failed" if remote_unknown else "cancelled",
             "checked_at": datetime.now().isoformat(timespec="seconds"),
             "error": (
                 "刷新 AT 请求已跨越远端边界，取消结果待确认"
                 if remote_unknown else str(exc) or "查活任务已取消"
             ),
             "cancelled": not remote_unknown,
+            "error_code": "refresh_cancelled" if remote_unknown else "cancelled",
         }
         if remote_unknown:
             result.update({
-                "request_unknown": True,
+                "reconcile_required": True,
                 "manual_reconcile": True,
                 "next_action": "manual_reconcile",
             })
@@ -1462,9 +1491,15 @@ def _run_live_check(
         if preflight_open:
             reporter.note("查活在预检完成前取消", stage="preflight", level="WARNING", detail={"cancelled": True})
         reporter.finish(
-            status="request_unknown" if remote_unknown else "cancelled",
+            status="failed" if remote_unknown else "cancelled",
             message="刷新 AT 请求结果待确认，需人工对账" if remote_unknown else "查活任务已取消",
             error=result["error"],
+            result_summary={
+                "cause_code": result["error_code"],
+                "reconcile_required": remote_unknown,
+                "manual_reconcile": remote_unknown,
+                "next_action": result.get("next_action"),
+            },
         )
         return result
     except Exception as exc:
@@ -1472,7 +1507,7 @@ def _run_live_check(
         remote_unknown = bool(
             force_refresh
             and refresh_boundary
-            and receipt_outcome != "rejected"
+            and receipt_outcome not in {"rejected", "not_submitted"}
         )
         if remote_unknown and receipt_outcome not in {"unknown", "local_commit_required", "confirmed"}:
             try:
@@ -1487,17 +1522,20 @@ def _run_live_check(
         unknown = bool(force_refresh and (_refresh_exception_is_unknown(exc) or remote_unknown))
         result = {
             "ok": False,
-            "status": "request_unknown" if unknown else "failed",
+            "status": "failed",
             "checked_at": datetime.now().isoformat(timespec="seconds"),
             "error": f"{type(exc).__name__}: {str(exc)[:500]}",
             "error_code": str(
                 getattr(exc, "code", "") or getattr(exc, "error_code", "") or ""
-            ).strip() or None,
+            ).strip() or (
+                "refresh_local_commit_failed" if receipt_outcome == "local_commit_required"
+                else "refresh_driver_exception"
+            ),
             "auth_method": "legacy_email_otp" if force_refresh else "access_token",
         }
         if unknown:
             result.update({
-                "request_unknown": True,
+                "reconcile_required": True,
                 "manual_reconcile": True,
                 "next_action": "manual_reconcile",
             })
@@ -1533,10 +1571,16 @@ def _run_live_check(
                 detail={"error": result["error"]},
             )
         reporter.finish(
-            status="request_unknown" if unknown else "failed",
+            status="failed",
             message="刷新 AT 结果待确认，需人工对账" if unknown else "查活后台执行异常",
             error=result["error"],
             route=route,
+            result_summary={
+                "cause_code": _safe_refresh_cause_code(result),
+                "reconcile_required": unknown,
+                "manual_reconcile": unknown,
+                "next_action": result.get("next_action"),
+            },
         )
         return result
     finally:

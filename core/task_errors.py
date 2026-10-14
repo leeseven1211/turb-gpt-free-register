@@ -10,7 +10,7 @@ import re
 from enum import Enum
 from typing import Any
 
-from core.task_stages import normalize_stage
+from core.task_stages import STAGES, normalize_stage
 
 
 class TaskErrorCode(str, Enum):
@@ -83,7 +83,7 @@ def stable_error_code(value: Any, *, default: str = TaskErrorCode.UNKNOWN.value)
 
 
 def is_request_unknown(value: Any) -> bool:
-    """未知远端结果是一等状态，不能被任务层当成普通可重试错误。"""
+    """兼容读取远端回执状态；只决定恢复约束，不作为展示的主错误码。"""
     if isinstance(value, dict) and (
         value.get("request_unknown") is True
         or value.get("reconcile_required") is True
@@ -117,17 +117,6 @@ _RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         "任务状态",
         "套餐查询等待执行",
         ("套餐查询待处理", "套餐查询待重试", "套餐查询已入队"),
-    ),
-    (
-        "request_unknown",
-        "external",
-        "远端待核验",
-        "远端请求结果待确认",
-        (
-            "request_unknown", "远端请求结果待确认", "需人工对账", "结果待确认",
-            "结果未知", "远端写请求尚未完成整条任务核验", "远端账号状态待核验",
-            "禁止直接重试", "远端结果待确认",
-        ),
     ),
     (
         "workflow.password_entry_not_hydrated",
@@ -400,6 +389,7 @@ _COARSE_PROJECTED_ERROR_CODES = {
     TaskErrorCode.EXTERNAL_EMAIL.value,
     TaskErrorCode.EXTERNAL_OPENAI.value,
     TaskErrorCode.UNKNOWN.value,
+    TaskErrorCode.REQUEST_UNKNOWN.value,
 }
 
 _EMAIL_CHANGE_RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
@@ -475,11 +465,6 @@ _ERROR_METADATA: dict[str, dict[str, str]] = {
         "retryability": "conditional",
         "remote_state_impact": "unknown",
         "next_action": "wait_for_task",
-    },
-    "request_unknown": {
-        "retryability": "manual_only",
-        "remote_state_impact": "unknown",
-        "next_action": "manual_reconcile",
     },
     "service.interrupted": {
         "retryability": "retryable",
@@ -687,7 +672,6 @@ _DISPLAY_CODES = {
     "account.email_already_used": "ACCT-003",
     "account.email_matches_current": "ACCT-004",
     "task.pending": "STATE-001",
-    "request_unknown": "REMOTE-001",
     "external.proxy": "PROXY-001",
     "external.roxy_capacity": "ROXY-002",
     "external.roxy": "ROXY-001",
@@ -737,7 +721,6 @@ _DISPLAY_SUMMARIES = {
     "account.email_already_used": "目标邮箱已被使用",
     "account.email_matches_current": "目标邮箱与当前邮箱相同",
     "task.pending": "套餐查询等待执行",
-    "request_unknown": "远端结果待核验",
     "external.proxy": "代理获取失败",
     "external.roxy_capacity": "Roxy 窗口额度不足",
     "external.roxy": "Roxy 浏览器服务异常",
@@ -948,7 +931,8 @@ def _registration_error_projection(
     )
 
 
-_UNKNOWN_CAUSE_DETAILS: dict[str, tuple[str, str]] = {
+_CAUSE_DETAILS: dict[str, tuple[str, str]] = {
+    "worker_interrupted": ("SYS-WORKER-001", "执行进程中断"),
     "access_token_missing": ("AUTH-AT-001", "账号缺少可用 AT"),
     "auth_page_unknown": ("AUTH-PAGE-001", "认证页面状态未识别"),
     "auth_route_rejected": ("OA-AUTH-000", "授权路由被拒绝"),
@@ -992,6 +976,11 @@ _UNKNOWN_CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "protocol_network_error": ("NET-AUTH-001", "协议认证网络请求失败"),
     "protocol_v2_unknown_error": ("AUTH-PROTOCOL-001", "协议认证异常（细项未记录）"),
     "refresh_driver_exception": ("SYS-REFRESH-001", "AT 刷新执行异常"),
+    "refresh_result_invalid": ("SYS-REFRESH-RESULT", "AT 刷新驱动返回结果无效"),
+    "refresh_cancelled": ("USR-REFRESH-001", "AT 刷新已取消"),
+    "refresh_local_commit_failed": ("SYS-REFRESH-WRITEBACK", "AT 刷新本地写回或读回未完成"),
+    "account_setup_local_commit_failed": ("SYS-SETUP-WRITEBACK", "账号配置本地写回或读回未完成"),
+    "remote_response_missing": ("REQ-RESPONSE-001", "远端响应缺失"),
     "registration_checkpoint_failed": ("OA-REG-CHECKPOINT-001", "注册检查点本地写入失败"),
     "user_register_continue_url_missing": ("OA-REG-RESPONSE-001", "账号创建响应缺少后续验证地址"),
     "user_register_result_unknown": ("OA-REG-REQUEST-001", "账号创建请求结果未确认"),
@@ -1013,25 +1002,77 @@ REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES = frozenset({
 })
 
 
-def _request_unknown_cause(summary: dict[str, Any], *, task_type: str) -> dict[str, str | None]:
-    """远端结果待核验与失败原因分别表达；只读取已脱敏的结构化诊断。"""
-    diagnostics = summary.get("auth_diagnostics")
-    diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
-    code = str(summary.get("cause_code") or "").strip()
-    if code == "password_rejected_email_fallback_failed":
-        inner_code = str(diagnostics.get("cause_code") or "").strip()
-        if inner_code in _UNKNOWN_CAUSE_DETAILS:
-            code = inner_code
+def _auth_request_diagnostic_cause(diagnostics: dict[str, Any], *, code: str) -> dict[str, str] | None:
+    """同一诊断来源内的请求操作和网络细项一起解析，避免跨请求拼接根因。"""
     operation = str(diagnostics.get("cause_operation") or diagnostics.get("operation") or "").strip()
     failure_kind = str(diagnostics.get("cause_failure_kind") or diagnostics.get("failure_kind") or "").strip()
     exception_type = str(diagnostics.get("exception_type") or "").strip()
+    if not operation and code == "password_sentinel_failed":
+        operation = "password_sentinel"
+    request_template = {
+        "password_sentinel": ("密码认证前置检查", "NET-SENTINEL", "OA-SENTINEL"),
+        "password_verify": ("密码验证", "NET-PWD", "OA-PWD"),
+        "mfa_verify": ("MFA 验证", "NET-MFA", "OA-MFA"),
+    }.get(operation)
+    if request_template is None or code in {"password_rejected", "mfa_rejected"}:
+        return None
+    label, network_prefix, http_prefix = request_template
+    curl_code = diagnostics.get("curl_error_code")
+    curl_code = curl_code if isinstance(curl_code, int) and not isinstance(curl_code, bool) else None
+    transport_detail = {
+        28: ("timeout", "001", "请求超时"),
+        35: ("tls", "002", " TLS 握手失败"),
+        56: ("connection", "003", "连接中断"),
+        60: ("certificate", "004", " TLS 证书校验失败"),
+    }.get(curl_code)
+    if transport_detail is None:
+        if exception_type in {"Timeout", "ReadTimeout", "ConnectTimeout", "TimeoutError"}:
+            transport_detail = ("timeout", "001", "请求超时")
+        elif exception_type == "SSLCertVerificationError":
+            transport_detail = ("certificate", "004", " TLS 证书校验失败")
+        elif exception_type == "SSLError":
+            transport_detail = ("tls", "002", " TLS 握手失败")
+        elif exception_type in {"ConnectionError", "ConnectionResetError", "ConnectionAbortedError"}:
+            transport_detail = ("connection", "003", "连接中断")
+    if transport_detail is not None:
+        return {
+            "cause_code": f"{operation}_transport_{transport_detail[0]}",
+            "cause_display_code": f"{network_prefix}-{transport_detail[1]}",
+            "cause_summary": f"{label}{transport_detail[2]}",
+        }
+    status = diagnostics.get("http_status")
+    if isinstance(status, int) and not isinstance(status, bool) and 400 <= status <= 599:
+        if operation == "password_sentinel" and status < 500:
+            code_suffix, message = "http_rejected", f"{label}被拒绝（HTTP {status}）"
+        else:
+            code_suffix, message = "http_error", f"{label}请求返回 HTTP {status}"
+        return {
+            "cause_code": f"{operation}_{code_suffix}",
+            "cause_display_code": f"{http_prefix}-{status}", "cause_summary": message,
+        }
+    if failure_kind == "transport_error":
+        return {
+            "cause_code": f"{operation}_transport_error", "cause_display_code": f"{network_prefix}-000",
+            "cause_summary": f"{label}网络请求失败",
+        }
+    return None
 
-    if operation == "mfa_verify" and failure_kind == "transport_error":
-        if exception_type in {"Timeout", "ReadTimeout", "ConnectTimeout"}:
-            return {"cause_code": "mfa_verify_transport_timeout", "cause_display_code": "NET-MFA-001", "cause_summary": "MFA 验证请求超时"}
-        if exception_type in {"SSLError", "SSLCertVerificationError"}:
-            return {"cause_code": "mfa_verify_transport_ssl", "cause_display_code": "NET-MFA-002", "cause_summary": "MFA 验证 SSL 连接失败"}
-        return {"cause_code": "mfa_verify_transport_error", "cause_display_code": "NET-MFA-000", "cause_summary": "MFA 验证网络请求失败"}
+
+def _specific_error_cause(summary: dict[str, Any]) -> dict[str, str] | None:
+    """从固定原因码和安全诊断选出主错误，不让远端回执状态盖住失败原因。"""
+    diagnostic_sources = [value for key in ("auth_diagnostics", "cause_diagnostics")
+                          if isinstance(value := summary.get(key), dict)]
+    diagnostics = diagnostic_sources[0] if diagnostic_sources else {}
+    code = str(summary.get("cause_code") or "").strip()
+    if code == "password_rejected_email_fallback_failed":
+        inner_code = str(diagnostics.get("cause_code") or "").strip()
+        if inner_code in _CAUSE_DETAILS:
+            code = inner_code
+    for diagnostic_source in diagnostic_sources:
+        cause = _auth_request_diagnostic_cause(diagnostic_source, code=code)
+        if cause is not None:
+            return cause
+    failure_kind = str(diagnostics.get("cause_failure_kind") or diagnostics.get("failure_kind") or "").strip()
     if code == "email_otp_failed":
         detail = {
             "no_mail": ("MAIL-OTP-002", "未收到新的验证码邮件"),
@@ -1053,48 +1094,23 @@ def _request_unknown_cause(summary: dict[str, Any], *, task_type: str) -> dict[s
             "cause_display_code": "OA-EMAIL-VERIFY-001",
             "cause_summary": "新邮箱验证请求在本地准备阶段失败；begin 已接受，待核验",
         }
-    if code in _UNKNOWN_CAUSE_DETAILS:
-        display_code, cause_summary = _UNKNOWN_CAUSE_DETAILS[code]
+    if code in _CAUSE_DETAILS:
+        display_code, cause_summary = _CAUSE_DETAILS[code]
         return {"cause_code": code, "cause_display_code": display_code, "cause_summary": cause_summary}
-    if str(summary.get("error_category") or "").strip() == "email":
-        auth_method = str(summary.get("auth_method") or "").strip()
-        if task_type in {"token_refresh", "live_check"} and auth_method in {"email_otp", "legacy_email_otp"}:
-            return {"cause_code": "email_stage_unfinished", "cause_display_code": "MAIL-VERIFY-000", "cause_summary": "邮箱验证未完成（细项未记录）"}
-        return {"cause_code": "email_stage_error", "cause_display_code": "MAIL-STAGE-000", "cause_summary": "邮箱阶段异常（细项未记录）"}
-    if str(summary.get("error_category") or "").strip() == "auth":
-        return {"cause_code": "auth_stage_unfinished", "cause_display_code": "AUTH-VERIFY-000", "cause_summary": "登录认证未完成（细项未记录）"}
-    return {"cause_code": None, "cause_display_code": None, "cause_summary": "具体失败原因未记录"}
+    return None
 
 
-def classify_task_error(
+def _classify_raw_task_error(
     message: Any,
     *,
     stage: str = "",
     task_type: str = "",
     error_code: str = "",
-    result_summary: dict[str, Any] | None = None,
-    task_status: str = "",
 ) -> dict[str, Any] | None:
     """把原始错误投影成前端可读的稳定分类；空错误返回 ``None``。"""
     raw = str(message or "").strip()
     if not raw:
         return None
-    summary_data = result_summary if isinstance(result_summary, dict) else {}
-    unknown_outcome = (
-        str(task_status or "").strip().lower() == "request_unknown"
-        or str(error_code or "").strip().lower() == "request_unknown"
-        or str(summary_data.get("outcome") or "").strip().lower() == "request_unknown"
-    )
-    if unknown_outcome:
-        projection = _error_projection(
-            TaskErrorCode.REQUEST_UNKNOWN.value,
-            "external", "远端待核验", "远端请求结果待确认",
-            stage=stage, error_code=error_code, raw=raw,
-        )
-        # 原始分类只作诊断来源，安全围栏始终是本次 Run 的主错误码。
-        projection["error_code"] = TaskErrorCode.REQUEST_UNKNOWN.value
-        projection.update(_request_unknown_cause(summary_data, task_type=str(task_type or "").strip().lower()))
-        return projection
     if str(task_type or "").strip().lower() == "plan_check" and raw.upper() == "HTTP 403":
         return _error_projection(
             TaskErrorCode.EXTERNAL_OPENAI_PLAN_FORBIDDEN.value,
@@ -1125,9 +1141,8 @@ def classify_task_error(
             stage=stage, error_code=error_code, raw=raw,
             summary="邮箱换绑 begin 请求在本地准备阶段失败",
         )
-    # 以实际错误和失败阶段为准；不能因为任务类型是 codex_retry，就把其中的代理、
-    # 数据库或页面状态错误统统误归为 OpenAI 上游错误。
-    haystack = f"{stage} {raw}".lower()
+    # 只匹配实际错误；Codex 等阶段名只定位发生位置，不能证明上游服务失败。
+    haystack = raw.lower()
     if str(task_type or "").strip().lower() == "email_change":
         projection = _email_change_error_projection(
             raw,
@@ -1166,6 +1181,149 @@ def classify_task_error(
         error_code=error_code,
         raw=raw,
     )
+
+
+_RECEIPT_TASK_LABELS = {
+    "registration": ("OA-REG-RECEIPT", "注册"),
+    "registration_resume": ("OA-REG-RESUME-RECEIPT", "继续注册"),
+    "token_refresh": ("AUTH-REFRESH-RECEIPT", "AT 刷新"),
+    "live_check": ("AUTH-LIVE-RECEIPT", "账号查活"),
+    "codex_retry": ("AUTH-CODEX-RECEIPT", "Codex 授权"),
+    "codex_token_refresh": ("AUTH-CODEX-REFRESH-RECEIPT", "Codex Token 刷新"),
+    "twofa_retry": ("AUTH-MFA-RECEIPT", "2FA 补跑"),
+    "twofa_setup": ("AUTH-MFA-SETUP-RECEIPT", "2FA 设置"),
+    "twofa_change": ("AUTH-MFA-CHANGE-RECEIPT", "2FA 修改"),
+    "password_setup": ("AUTH-PWD-SETUP-RECEIPT", "密码设置"),
+    "password_change": ("AUTH-PWD-CHANGE-RECEIPT", "密码修改"),
+    "account_completion": ("ACCT-COMPLETE-RECEIPT", "账号补全"),
+    "account_setup_retry": ("ACCT-SETUP-RECEIPT", "账号配置补跑"),
+    "email_change": ("OA-EMAIL-RECEIPT", "邮箱换绑"),
+    "extract_link": ("LINK-RECEIPT", "提链"),
+    "plan_check": ("OA-PLAN-RECEIPT", "套餐查询"),
+    "deactivation_mail": ("MAIL-SCAN-RECEIPT", "停用邮件检查"),
+}
+
+
+def _receipt_missing_cause(
+    *, stage: str, task_type: str, summary: dict[str, Any],
+) -> dict[str, str]:
+    """历史记录没有细项时只说已知任务或阶段，不从待核验状态猜测根因。"""
+    stage_key = normalize_stage(stage) if stage else ""
+    if stage_key in STAGES and stage_key not in {"result", "complete", "queued", "interrupted"}:
+        display_code, label = {
+            "login_password": ("AUTH-PWD-RECEIPT", "密码验证"),
+            "email_otp": ("MAIL-OTP-RECEIPT", "邮箱验证"),
+            "mfa_challenge": ("AUTH-MFA-RECEIPT", "MFA 验证"),
+            "login_mfa": ("AUTH-MFA-RECEIPT", "MFA 验证"),
+        }.get(stage_key, (f"STAGE-{stage_key.upper().replace('_', '-')}-RECEIPT", STAGES[stage_key]["label"]))
+        return {
+            "cause_code": f"{stage_key}_receipt_missing", "cause_display_code": display_code,
+            "cause_summary": f"{label}阶段未保留回执或失败细项",
+        }
+    category = str(summary.get("error_category") or "").strip()
+    if category in {"auth", "email"}:
+        display_code, label = {
+            "auth": ("AUTH-RECEIPT", "登录认证"),
+            "email": ("MAIL-RECEIPT", "邮箱验证"),
+        }[category]
+        return {
+            "cause_code": f"{category}_receipt_missing", "cause_display_code": display_code,
+            "cause_summary": f"{label}阶段未保留回执或失败细项",
+        }
+    task_key = str(task_type or "").strip().lower()
+    if task_key in _RECEIPT_TASK_LABELS:
+        display_code, label = _RECEIPT_TASK_LABELS[task_key]
+        return {
+            "cause_code": f"{task_key}_receipt_missing", "cause_display_code": display_code,
+            "cause_summary": f"{label}任务未保留回执或失败细项",
+        }
+    return {
+        "cause_code": "task_receipt_missing", "cause_display_code": "TASK-RECEIPT-000",
+        "cause_summary": "任务未保留回执或失败细项",
+    }
+
+
+def _cause_error_projection(
+    cause: dict[str, str], *, stage: str, error_code: str, raw: str,
+) -> dict[str, Any]:
+    display_code = cause["cause_display_code"]
+    source, source_label = (
+        ("user", "用户操作") if display_code.startswith("USR-")
+        else ("internal", "内部错误") if display_code.startswith("SYS-")
+        else ("external", "网络 / 上游服务") if display_code.startswith("NET-")
+        else ("external", "邮箱 / 验证码服务") if display_code.startswith("MAIL-")
+        else ("workflow", "流程错误") if cause["cause_code"].endswith("_receipt_missing")
+        else ("external", "远端服务")
+    )
+    projection = _error_projection(
+        cause["cause_code"], source, source_label, cause["cause_summary"],
+        stage=stage, error_code="", raw=raw,
+        summary=cause["cause_summary"], display_code=display_code,
+    )
+    projection.update(cause)
+    projection.update({
+        "retryability": "conditional", "remote_state_impact": "unknown",
+        "next_action": "inspect_failure",
+    })
+    if error_code:
+        projection["original_error_code"] = error_code
+    return projection
+
+
+def classify_task_error(
+    message: Any,
+    *,
+    stage: str = "",
+    task_type: str = "",
+    error_code: str = "",
+    result_summary: dict[str, Any] | None = None,
+    task_status: str = "",
+) -> dict[str, Any] | None:
+    """具体原因优先展示；回执缺失只约束后续操作，不充当通用主错误。"""
+    raw = str(message or "").strip()
+    summary_data = result_summary if isinstance(result_summary, dict) else {}
+    reconcile_required = (
+        str(task_status or "").strip().lower() == "request_unknown"
+        or str(error_code or "").strip().lower() == "request_unknown"
+        or is_request_unknown(summary_data)
+        or any(marker in raw.lower() for marker in (
+            "request_unknown", "password_result_unknown", "远端请求结果待确认", "需人工对账",
+            "结果待确认", "结果未知", "远端写请求尚未完成整条任务核验", "远端账号状态待核验",
+            "禁止直接重试", "远端结果待确认", "结果待核验",
+        ))
+    )
+    cause = _specific_error_cause(summary_data)
+    if cause is None:
+        # 旧记录可能只把固定原因码写在正文中；只识别整词，不输出任意诊断原文。
+        for candidate in sorted(_CAUSE_DETAILS, key=len, reverse=True):
+            if candidate == "auth_route_rejected":
+                # 历史原文的 HTTP 状态继续交给已有授权路由分类读取。
+                continue
+            if re.search(rf"(?<![\w]){re.escape(candidate)}(?![\w])", raw):
+                cause = _specific_error_cause({"cause_code": candidate})
+                break
+    raw_projection = None
+    if cause is not None and cause["cause_code"] in {
+        "refresh_driver_exception", "protocol_v2_unknown_error", "post_register_failure",
+    }:
+        raw_projection = _classify_raw_task_error(raw, stage=stage, task_type=task_type, error_code=error_code)
+        # 驱动兜底异常只定位失败范围；明确的代理、数据库等原始错误仍应作为主原因。
+        if raw_projection is not None and raw_projection["code"] != TaskErrorCode.UNKNOWN.value:
+            cause = None
+    if cause is not None:
+        projection = _cause_error_projection(cause, stage=stage, error_code=error_code, raw=raw)
+    else:
+        projection = raw_projection or _classify_raw_task_error(raw, stage=stage, task_type=task_type, error_code=error_code)
+        if reconcile_required and (projection is None or projection["code"] == TaskErrorCode.UNKNOWN.value):
+            cause = _receipt_missing_cause(stage=stage, task_type=task_type, summary=summary_data)
+            projection = _cause_error_projection(cause, stage=stage, error_code=error_code, raw=raw)
+    if projection is not None and reconcile_required:
+        # 保留防重复执行的恢复语义，但主错误仍是已证实的具体失败原因。
+        projection.update({
+            "reconcile_required": True, "retryability": "manual_only",
+            "remote_state_impact": "unknown", "next_action": "manual_reconcile",
+        })
+    return projection
 
 
 __all__ = [

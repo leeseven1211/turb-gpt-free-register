@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -282,23 +283,35 @@ def _safe_operation_result(
     *,
     default_message: str = "账号操作未完成",
 ) -> task_gateway.OperationResult:
-    """Map service results to the durable terminal contract without secrets."""
+    """保留具体失败原因，仅将无凭据的诊断字段写入任务摘要。"""
     if isinstance(value, task_gateway.OperationResult):
         return value
     result = dict(value) if isinstance(value, Mapping) else {}
     status = str(result.get("status") or "").strip().lower()
     message = str(result.get("message") or default_message)
+    error = str(result.get("error") or "") or None
     summary = {
         key: result.get(key)
         for key in (
             "status", "ok", "message", "plan_check", "twofa_driver", "auth_source",
             "browser_opened", "account_status_persisted", "proxy_provider",
             "proxy_region", "proxy_mode", "credential_confirmed",
+            "mutation_submitted", "action_dispatched", "reconcile_required", "manual_reconcile",
         )
         if key in result and result.get(key) is not None
     }
-    if status in {"unknown", "request_unknown", "pending_confirmation", "attention_required"}:
-        return task_gateway.OperationResult.request_unknown(message, summary)
+    cause_code = str(result.get("cause_code") or "")
+    if re.fullmatch(r"[a-z][a-z0-9_]{0,79}", cause_code):
+        summary["cause_code"] = cause_code
+    for key in ("auth_diagnostics", "cause_diagnostics"):
+        diagnostics = live_check_service._safe_refresh_auth_diagnostics(result.get(key))
+        if diagnostics:
+            summary[key] = diagnostics
+    if (
+        status in {"unknown", "request_unknown", "pending_confirmation", "attention_required"}
+        or summary.get("reconcile_required") is True or summary.get("manual_reconcile") is True
+    ):
+        return task_gateway.OperationResult.request_unknown(message, summary, error=error)
     if status in {"success", "completed"} or bool(result.get("ok")):
         return task_gateway.OperationResult.success(summary, message=message)
     if status in {"cancelled", "stopped"}:
@@ -307,7 +320,7 @@ def _safe_operation_result(
         return task_gateway.OperationResult("deactivated", summary, message, message)
     if status == "unsupported":
         return task_gateway.OperationResult("unsupported", summary, message, message)
-    return task_gateway.OperationResult.failed(message, summary)
+    return task_gateway.OperationResult("failed", summary, message, error or message)
 
 
 class _NativeTaskLifecycle:
@@ -340,7 +353,8 @@ class _NativeTaskLifecycle:
         summary = dict(summary) if isinstance(summary, Mapping) else {}
         if str(summary.get("outcome") or "").lower() == "request_unknown":
             result = task_gateway.OperationResult.request_unknown(
-                str(kwargs.get("message") or "远端请求结果待确认"), summary,
+                str(kwargs.get("message") or "当前步骤未保存完整回执"), summary,
+                error=str(kwargs.get("error") or "") or None,
             )
         elif status == "cancelled":
             result = task_gateway.OperationResult.cancelled(
@@ -349,7 +363,8 @@ class _NativeTaskLifecycle:
         elif status == "attention_required":
             summary.update({"outcome": "request_unknown", "reconcile_required": True})
             result = task_gateway.OperationResult.request_unknown(
-                str(kwargs.get("message") or "远端请求结果待确认"), summary,
+                str(kwargs.get("message") or "当前步骤未保存完整回执"), summary,
+                error=str(kwargs.get("error") or "") or None,
             )
         else:
             result = task_gateway.OperationResult(
@@ -961,13 +976,22 @@ def _handle_native_account_setup(context: task_gateway.OperationHandlerContext) 
             detail=receipt_detail,
         )
         if receipt_state not in {"confirmed", "rejected"}:
+            pending_summary = dict(normalized.summary)
+            pending_error = normalized.error
+            pending_message = normalized.message
+            if receipt_state == "local_commit_required" and not pending_error:
+                pending_error = "account_setup_local_commit_failed"
+                pending_summary["cause_code"] = pending_error
+                pending_message = "账号配置本地写回或读回未完成"
             normalized = task_gateway.OperationResult.request_unknown(
-                str((result or {}).get("message") or "账号配置远端结果待核验"),
+                pending_message or "账号配置步骤未保存完整回执",
                 {
+                    **pending_summary,
                     "status": str((result or {}).get("status") or "failed"),
                     "remote_receipt_state": receipt_state,
                     "local_readback_checks": receipt_detail.get("local_readback_checks") or {},
                 },
+                error=pending_error,
             )
         elif receipt_state == "confirmed" and normalized.status == "success":
             context.report(

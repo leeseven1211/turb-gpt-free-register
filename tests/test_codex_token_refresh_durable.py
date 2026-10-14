@@ -669,7 +669,8 @@ class CodexTokenRefreshDurablePostgresTests(PostgresTestCase):
         ):
             returned = task_gateway._execute_operation_handler(service.TASK_TYPE, run_id)
 
-        self.assertEqual(service.REQUEST_UNKNOWN, returned["status"])
+        self.assertEqual("failed", returned["status"])
+        self.assertTrue(returned["reconcile_required"])
         self.assertEqual(1, post.call_count)
         persist.assert_not_called()
         run = operation.get_run(run_id)
@@ -691,7 +692,8 @@ class CodexTokenRefreshDurablePostgresTests(PostgresTestCase):
                 int(created["run"]["id"]),
             )
 
-        self.assertEqual("request_unknown", returned["status"])
+        self.assertEqual("failed", returned["status"])
+        self.assertTrue(returned["reconcile_required"])
         self.assertEqual(1, post.call_count)
         run = operation.get_run(int(created["run"]["id"]))
         self.assertEqual("attention_required", run["status"])
@@ -713,7 +715,8 @@ class CodexTokenRefreshDurablePostgresTests(PostgresTestCase):
                 int(created["run"]["id"]),
             )
 
-        self.assertEqual(service.REQUEST_UNKNOWN, returned["status"])
+        self.assertEqual("failed", returned["status"])
+        self.assertTrue(returned["reconcile_required"])
         db.mark_codex_oauth_refresh(filename, error=None)
         row = record_store.get_row_by(record_store.CODEX_CREDENTIALS, "filename", filename)
         self.assertIsNone(row["oauth_refresh_error"])
@@ -806,7 +809,8 @@ class CodexTokenRefreshDurablePostgresTests(PostgresTestCase):
                 int(created["run"]["id"]),
             )
 
-        self.assertEqual("request_unknown", returned["status"])
+        self.assertEqual("failed", returned["status"])
+        self.assertTrue(returned["reconcile_required"])
         self.assertGreaterEqual(reads, 2)
         run = operation.get_run(int(created["run"]["id"]))
         intent = (run.get("data") or {}).get("remote_intent")

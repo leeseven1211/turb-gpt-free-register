@@ -862,6 +862,8 @@ WebUI「账号 → 任务实例」统一保存以下账号操作：
 
 每个任务实例保存任务 ID、账号快照、触发方式、状态、验证方式、脱敏线路、开始/完成时间、耗时、结果摘要和阶段事件。账号密码、AT、验证码、邮箱正文、callback 和完整代理凭据不会写入任务库。WebUI 重启时，仍处于排队或运行状态的历史实例会标记为中断，可从实例列表重新执行。
 
+失败分类优先使用实际阶段、固定原因码和脱敏诊断，例如密码认证前置 TLS 失败、验证码未收到、MFA 请求超时或本地写回失败；不再统一包装成 `request_unknown` / `REMOTE-001`。历史任务也按已有证据展示具体原因，没有记录细项时明确标注对应步骤缺少回执。远端提交与回执核验状态独立保留，避免丢失原请求记录或自动重复提交。
+
 任务中心列表、事件时间线和运行日志的时间由 WebUI 按当前浏览器时区显示，页面会标注当前时区；原始 `run.jsonl` 中的 `ts` 保持 UTC ISO 8601 值，便于跨环境排障。缺失或非法时间会保留诊断提示，不静默伪装成本地时间。
 旧注册/账号任务的开始时间、注册阶段时间和派生事件按保留的源时间快照进行兼容读取；已有时区偏移的时间不会重复偏移，也不回写历史记录。事件分页仍使用 ID 游标，页面按校正后的时间排列。
 
@@ -895,7 +897,7 @@ LIVE_CHECK_ROXY_FALLBACK_ENABLED=True
 账号补全遇到“本地没有 OpenAI 密码、远端显示登录密码页”时，只有明确打开 `ACCOUNT_PASSWORD_RESET_ENABLED=True` 才会执行：点击多语言“忘记密码”链接 → 在重置页点击继续 → 等待该次请求之后的新邮箱验证码 → 提交验证码 → 填写并提交新密码。新密码提交后立即写入账号的 `extra_json.account_password` 检查点；若远端结果无法确认，任务会失败但保留检查点，后续重试使用该密码，不会再次盲发重置邮件。该流程只属于账号补全，不影响注册恢复、普通查活或刷新 AT。
 `ACCOUNT_AUTH_PROFILE_MODE=current` 保持现有每个会话随机设备画像；只有实际使用 v2 协议刷新且明确改为 `account_stable` 时，才按账号懒创建私有稳定 Protocol identity。它不修改注册时的 `device_id`，不影响普通查活、v1 协议刷新或浏览器兜底；画像的原始 profile key 不进入账号 JSON、导出和普通 API。
 `ACCOUNT_AUTH_RAW_CONTEXT_ENABLED` 默认关闭；开启后才会为 v2 协议的实际认证 session 按白名单保存受限 run context，包含原始 device/session 标识和当次代理上下文，不会作为后续任务的代理或会话来源。默认保留 30 天，`ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS=0` 关闭自动清理；这些原始值不进入普通账号 API、任务事件和导出。
-`LIVE_CHECK_ROXY_FALLBACK_ENABLED` 只控制 v1 协议刷新 AT 失败后的既有 Roxy 登录兜底，不影响普通查活；普通查活是否使用浏览器由 `ACCOUNT_LIVE_CHECK_BROWSER_ENABLED` 与 `ACCOUNT_LIVE_CHECK_DRIVER` 独立控制。历史 `.env` 中的 `ACCOUNT_TOKEN_REFRESH_DRIVER` 和 `ACCOUNT_AUTH_V2_ENABLED` 仍可被兼容读取，但不再是新配置项，也不在 WebUI 展示。
+`LIVE_CHECK_ROXY_FALLBACK_ENABLED` 控制协议刷新 AT 失败后的 Roxy 登录兜底，不影响普通查活。v2 密码认证的 Sentinel 前置步骤失败且已确认密码请求未提交时，可以切换浏览器；密码或验证码已经提交但没有完整回执时，保留具体失败原因和核验记录，不自动重新提交。普通查活是否使用浏览器由 `ACCOUNT_LIVE_CHECK_BROWSER_ENABLED` 与 `ACCOUNT_LIVE_CHECK_DRIVER` 独立控制。历史 `.env` 中的 `ACCOUNT_TOKEN_REFRESH_DRIVER` 和 `ACCOUNT_AUTH_V2_ENABLED` 仍可被兼容读取，但不再是新配置项，也不在 WebUI 展示。
 
 已有账号单独执行“补 2FA”时，`ACCOUNT_2FA_DRIVER` 独立于注册 `TWOFA_DRIVER`：
 

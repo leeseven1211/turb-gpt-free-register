@@ -88,7 +88,9 @@ class AuthCompletionMatrixTests(unittest.TestCase):
         )
 
         self.assertEqual("authenticated", success.status)
-        self.assertEqual("request_unknown", failure.status)
+        self.assertEqual("failed", failure.status)
+        self.assertEqual("auth_failed", failure.code)
+        self.assertFalse(failure.reconcile_required)
         self.assertNotIn("message", failure.as_dict())
 
     def test_browser_error_text_with_explicit_password_code_keeps_stop_policy(self):

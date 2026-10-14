@@ -299,6 +299,48 @@ class MaintenanceDurableGatewayTests(PostgresTestCase):
         self.assertFalse(hasattr(deactivation_mail_service, "_HME_QUEUE"))
         self.assertFalse(hasattr(deactivation_mail_service, "_ensure_hme_coordinator"))
 
+    def test_sentinel_failure_closes_protocol_receipt_then_browser_uses_new_intent(self):
+        account_id = self._account("sentinel-browser@example.test")
+
+        def sentinel_failure(_email, **kwargs):
+            kwargs["on_remote_request_started"]()
+            return {
+                "ok": False, "status": "failed", "error": "password_sentinel_failed",
+                "mutation_submitted": False, "action_dispatched": False,
+                "remote_request_started": True, "roxy_fallback_allowed": True,
+                "auth_diagnostics": {"operation": "password_sentinel", "curl_error_code": 35},
+            }
+
+        with (
+            patch.object(live_check_service, "_append_log"),
+            patch.object(live_check_service, "_resolve_refresh_driver", return_value="protocol_v2"),
+            patch("core.account_proxy.acquire_account_proxy", return_value=_Route()),
+            patch("core.protocol_v2_liveness.refresh_access_token", side_effect=sentinel_failure),
+            patch.object(live_check_service, "_roxy_fallback_enabled", return_value=True),
+            patch("core.roxy_liveness.available", return_value=True),
+            patch("core.roxy_liveness.refresh_access_token", return_value={
+                "ok": True, "status": "live", "access_token": "synthetic-refreshed-token",
+            }) as browser,
+        ):
+            submitted = live_check_service.enqueue_account_live_check(
+                account_id=account_id, email="sentinel-browser@example.test",
+                trigger="token_refresh_manual", force_refresh=True,
+            )
+            result = self._run_native("token_refresh", submitted["run_id"])
+
+        self.assertTrue(result["ok"])
+        browser.assert_called_once()
+        run = operation.get_run(submitted["run_id"])
+        self.assertEqual("success", run["status"])
+        self.assertEqual("confirmed", run["data"]["remote_receipt"]["outcome"])
+        events = operation.list_task_events(submitted["task_id"], run_id=submitted["run_id"], limit=100)["items"]
+        starts = [event for event in events if event.get("event_type") == "remote.request_started"]
+        self.assertEqual(2, len(starts))
+        self.assertTrue(any(
+            event.get("event_type") == "remote.receipt_received"
+            and event.get("detail", {}).get("outcome") == "not_submitted" for event in events
+        ))
+
     def test_refresh_unknown_is_terminal_reconcile_state_and_does_not_fallback_or_retry(self):
         account_id = self._account("refresh-unknown@example.test")
         route = _Route()
@@ -326,9 +368,81 @@ class MaintenanceDurableGatewayTests(PostgresTestCase):
             )
 
         refresh.assert_called_once()
-        self.assertEqual("request_unknown", result["status"])
+        self.assertEqual("failed", result["status"])
+        self.assertTrue(result["reconcile_required"])
         self.assertTrue(result["manual_reconcile"])
-        self.assertEqual("request_unknown", db.get_account(account_id)["live_check_status"])
+        self.assertEqual("failed", db.get_account(account_id)["live_check_status"])
+
+    def test_sentinel_failure_without_browser_keeps_specific_failed_result(self):
+        account_id = self._account("sentinel-no-browser@example.test")
+
+        def fail_before_password(_email, **kwargs):
+            kwargs["on_remote_request_started"]()
+            return {
+                "ok": False, "status": "failed", "error": "password_sentinel_failed",
+                "mutation_submitted": False, "action_dispatched": False,
+                "remote_request_started": True, "roxy_fallback_allowed": True,
+                "auth_diagnostics": {
+                    "operation": "password_sentinel", "curl_error_code": 56,
+                    "exception_type": "ConnectionError", "private_value": "synthetic-secret",
+                },
+            }
+
+        with (
+            patch.object(live_check_service, "_append_log"),
+            patch.object(live_check_service, "_resolve_refresh_driver", return_value="protocol_v2"),
+            patch("core.account_proxy.acquire_account_proxy", return_value=_Route()),
+            patch("core.protocol_v2_liveness.refresh_access_token", side_effect=fail_before_password),
+            patch.object(live_check_service, "_roxy_fallback_enabled", return_value=False),
+        ):
+            submitted = live_check_service.enqueue_account_live_check(
+                account_id=account_id, email="sentinel-no-browser@example.test",
+                trigger="token_refresh_manual", force_refresh=True,
+            )
+            result = self._run_native("token_refresh", submitted["run_id"])
+
+        self.assertEqual("failed", result["status"])
+        self.assertFalse(result.get("reconcile_required"))
+        run = operation.get_run(submitted["run_id"])
+        self.assertEqual("failed", run["status"])
+        self.assertEqual("not_submitted", run["data"]["remote_receipt"]["outcome"])
+        self.assertEqual("password_sentinel_failed", run["result_summary"]["cause_code"])
+        self.assertEqual("password_sentinel", run["result_summary"]["auth_diagnostics"]["operation"])
+        self.assertEqual(56, run["result_summary"]["auth_diagnostics"]["curl_error_code"])
+        self.assertNotIn("synthetic-secret", str(run["result_summary"]))
+
+    def test_password_connection_loss_keeps_concrete_cause_and_prevents_browser_retry(self):
+        account_id = self._account("password-disconnected@example.test")
+
+        def lost_password_receipt(_email, **kwargs):
+            kwargs["on_remote_request_started"]()
+            return {
+                "ok": False, "status": "failed", "error": "password_result_unknown",
+                "mutation_submitted": True, "action_dispatched": True,
+                "remote_response_received": False, "reconcile_required": True,
+                "auth_diagnostics": {"operation": "password_verify", "curl_error_code": 56},
+            }
+
+        with (
+            patch.object(live_check_service, "_append_log"),
+            patch.object(live_check_service, "_resolve_refresh_driver", return_value="protocol_v2"),
+            patch("core.account_proxy.acquire_account_proxy", return_value=_Route()),
+            patch("core.protocol_v2_liveness.refresh_access_token", side_effect=lost_password_receipt),
+            patch.object(live_check_service, "_roxy_fallback_enabled", return_value=True),
+            patch("core.roxy_liveness.available", side_effect=AssertionError("已派发密码时禁止自动重提")),
+        ):
+            submitted = live_check_service.enqueue_account_live_check(
+                account_id=account_id, email="password-disconnected@example.test",
+                trigger="token_refresh_manual", force_refresh=True,
+            )
+            result = self._run_native("token_refresh", submitted["run_id"])
+
+        self.assertEqual("failed", result["status"])
+        self.assertTrue(result["reconcile_required"])
+        run = operation.get_run(submitted["run_id"])
+        self.assertEqual("attention_required", run["status"])
+        self.assertEqual("password_result_unknown", run["result_summary"]["cause_code"])
+        self.assertEqual("unknown", run["data"]["remote_receipt"]["outcome"])
 
     def test_refresh_cause_is_preserved_without_changing_unknown_fence(self):
         account_id = self._account("refresh-cause@example.test")
@@ -363,9 +477,11 @@ class MaintenanceDurableGatewayTests(PostgresTestCase):
             result = self._run_native("token_refresh", submitted["run_id"])
 
         run = operation.get_run(submitted["run_id"])
-        self.assertEqual("request_unknown", result["status"])
+        self.assertEqual("failed", result["status"])
+        self.assertTrue(result["reconcile_required"])
         self.assertEqual("attention_required", run["status"])
         self.assertEqual("request_unknown", run["result_summary"]["outcome"])
+        self.assertTrue(run["result_summary"]["reconcile_required"])
         self.assertEqual("email_otp_failed", run["result_summary"]["cause_code"])
         self.assertEqual("no_mail", run["result_summary"]["auth_diagnostics"]["failure_kind"])
         self.assertNotIn("private-token", str(run["result_summary"]))
@@ -434,7 +550,8 @@ class MaintenanceDurableGatewayTests(PostgresTestCase):
             result = self._run_native("token_refresh", submitted["run_id"])
 
         run = operation.get_run(submitted["run_id"])
-        self.assertEqual("request_unknown", result["status"])
+        self.assertEqual("failed", result["status"])
+        self.assertTrue(result["reconcile_required"])
         self.assertEqual("attention_required", run["status"])
         self.assertEqual("unknown", run["data"]["remote_receipt"]["outcome"])
         self.assertEqual("password_rejected_email_fallback_failed", run["result_summary"]["cause_code"])
@@ -463,12 +580,14 @@ class MaintenanceDurableGatewayTests(PostgresTestCase):
             )
             result = self._run_native("token_refresh", submitted["run_id"])
 
-        self.assertEqual("request_unknown", result["status"])
+        self.assertEqual("failed", result["status"])
+        self.assertTrue(result["reconcile_required"])
         self.assertEqual("attention_required", result["database_status"])
         run = operation.get_run(submitted["run_id"])
         self.assertEqual("attention_required", run["status"])
         self.assertEqual("request_unknown", run["result_summary"]["outcome"])
-        self.assertEqual("request_unknown", db.get_account(account_id)["live_check_status"])
+        self.assertTrue(run["result_summary"]["reconcile_required"])
+        self.assertEqual("failed", db.get_account(account_id)["live_check_status"])
 
     def test_native_refresh_route_rejection_does_not_open_remote_boundary(self):
         account_id = self._account("native-refresh-route-rejected@example.test")
@@ -532,7 +651,7 @@ class MaintenanceDurableGatewayTests(PostgresTestCase):
             )
             self._run_native("token_refresh", submitted["run_id"])
 
-        self.assertEqual("request_unknown", db.get_account(account_id)["live_check_status"])
+        self.assertEqual("failed", db.get_account(account_id)["live_check_status"])
         task = {
             "id": submitted["task_id"],
             "account_id": account_id,
@@ -636,14 +755,15 @@ class MaintenanceDurableGatewayTests(PostgresTestCase):
             )
             result = self._run_native("token_refresh", submitted["run_id"])
 
-        self.assertEqual("request_unknown", result["status"])
+        self.assertEqual("failed", result["status"])
+        self.assertTrue(result["reconcile_required"])
         run = operation.get_run(submitted["run_id"])
         self.assertEqual("attention_required", run["status"])
         self.assertEqual("refresh_driver_exception", run["result_summary"]["cause_code"])
         self.assertEqual("RuntimeError", run["result_summary"]["auth_diagnostics"]["exception_type"])
         self.assertEqual("unknown", run["data"]["remote_intent"]["receipt_state"])
         self.assertEqual("unknown", run["data"]["remote_receipt"]["outcome"])
-        self.assertEqual("request_unknown", db.get_account(account_id)["live_check_status"])
+        self.assertEqual("failed", db.get_account(account_id)["live_check_status"])
 
     def test_native_queued_run_survives_startup_recovery_until_dispatch(self):
         account_id = self._account("restart-maintenance@example.test")
@@ -1080,7 +1200,8 @@ class MaintenanceDurableGatewayTests(PostgresTestCase):
             )
             result = self._run_native("extract_link", submitted["run_id"])
 
-        self.assertEqual("request_unknown", result["status"])
+        self.assertEqual("failed", result["status"])
+        self.assertTrue(result["reconcile_required"])
         run = operation.get_run(submitted["run_id"])
         self.assertEqual("attention_required", run["status"])
         self.assertEqual("unknown", run["data"]["remote_intent"]["receipt_state"])

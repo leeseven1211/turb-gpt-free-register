@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from datetime import datetime
 from typing import Callable
@@ -99,6 +100,9 @@ class ProtocolV2AuthError(RuntimeError):
             "mfa_secret_missing",
         }
         self.response_observed = bool(response_observed)
+        self.mutation_submitted: bool | None = None
+        self.action_dispatched: bool | None = None
+        self.reconcile_required = self.code == "password_result_unknown"
         self.diagnostics: dict = {}
         super().__init__(message or self.code)
 
@@ -141,13 +145,37 @@ def _request_diagnostics(exc: BaseException, *, operation: str, response_observe
     """Return only safe metadata for diagnosing an auth request failure."""
     response = getattr(exc, "response", None)
     status = _response_status(response)
-    return {
+    result = {
         "operation": str(operation),
         "failure_kind": "http_error" if response_observed else "transport_error",
         "exception_type": type(exc).__name__[:80],
         "http_status": status,
         "response_observed": bool(response_observed),
     }
+    # 只读取 curl 稳定数值，不透传含 Token、代理或 URL 的异常原文。
+    curl_code = getattr(exc, "code", None)
+    if not isinstance(curl_code, int) or isinstance(curl_code, bool):
+        match = re.search(r"curl:\s*\((28|35|56|60)\)", str(exc))
+        curl_code = int(match.group(1)) if match else None
+    if curl_code in {28, 35, 56, 60}:
+        result["curl_error_code"] = int(curl_code)
+    return result
+
+
+def _mark_auth_submission(error: ProtocolV2AuthError) -> ProtocolV2AuthError:
+    """认证 POST 已派发；保留原因，同时独立阻止不明回执的重复提交。"""
+    error.mutation_submitted = True
+    error.action_dispatched = True
+    error.roxy_fallback_allowed = False
+    error.reconcile_required = bool(
+        not error.response_observed or error.code == "password_result_unknown"
+        or error.code.endswith("_invalid_response")
+        or error.code == "protocol_network_error"
+    )
+    if error.reconcile_required:
+        error.roxy_fallback_allowed = False
+        error.retryable = False
+    return error
 
 
 def _request_error(exc: BaseException, *, operation: str) -> ProtocolV2AuthError:
@@ -222,7 +250,7 @@ def _post_json(session, url: str, *, headers: dict, payload: dict, operation: st
             operation=operation,
             response_observed=error.response_observed,
         )
-        raise error from exc
+        raise _mark_auth_submission(error) from exc
 
     status = _response_status(response)
     if status is None or status < 200 or status >= 300:
@@ -234,23 +262,23 @@ def _post_json(session, url: str, *, headers: dict, payload: dict, operation: st
             operation=operation,
             response_observed=error.response_observed,
         )
-        raise error from exc
+        raise _mark_auth_submission(error) from exc
     try:
         data = response.json()
     except Exception as exc:
-        raise ProtocolV2AuthError(
+        raise _mark_auth_submission(ProtocolV2AuthError(
             f"{operation}_invalid_response",
             category="response",
             roxy_fallback_allowed=True,
             response_observed=True,
-        ) from exc
+        )) from exc
     if not isinstance(data, dict):
-        raise ProtocolV2AuthError(
+        raise _mark_auth_submission(ProtocolV2AuthError(
             f"{operation}_invalid_response",
             category="response",
             roxy_fallback_allowed=True,
             response_observed=True,
-        )
+        ))
     return data
 
 
@@ -266,12 +294,19 @@ def _password_verify(session, password: str) -> dict:
         sentinel = request_sentinel_token(session, "password_verify")
         sentinel_header, so_header = build_sentinel_header(session, sentinel, "password_verify")
     except Exception as exc:
-        raise ProtocolV2AuthError(
+        error = ProtocolV2AuthError(
             "password_sentinel_failed",
             category="network",
             retryable=True,
             roxy_fallback_allowed=True,
-        ) from exc
+        )
+        # Sentinel 失败时尚未派发密码 POST，明确证据允许上层安全转浏览器。
+        error.mutation_submitted = False
+        error.action_dispatched = False
+        error.diagnostics = _request_diagnostics(
+            exc, operation="password_sentinel", response_observed=_response_status(getattr(exc, "response", None)) is not None,
+        )
+        raise error from exc
     headers = session.get_auth_headers(referer=_PASSWORD_PATH)
     headers["openai-sentinel-token"] = sentinel_header
     if so_header:
@@ -912,6 +947,13 @@ def refresh_access_token(
             "remote_request_started": remote_request_started,
             "live_check_driver": "protocol_v2",
         }
+        if exc.mutation_submitted is not None:
+            result["mutation_submitted"] = exc.mutation_submitted
+        if exc.action_dispatched is not None:
+            result["action_dispatched"] = exc.action_dispatched
+            result["remote_response_received"] = exc.response_observed
+        if exc.reconcile_required:
+            result.update({"reconcile_required": True, "manual_reconcile": True, "next_action": "manual_reconcile"})
         if getattr(exc, "password_auth_status", ""):
             result["password_auth_status"] = exc.password_auth_status
         if getattr(exc, "diagnostics", None):

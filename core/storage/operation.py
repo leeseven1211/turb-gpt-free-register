@@ -816,9 +816,15 @@ def _finish_deactivated_before_execution(
     )
 
 
-def _error_fields(message: Any, *, stage: str = "", task_type: str = "") -> tuple[str | None, str | None, str | None]:
+def _error_fields(
+    message: Any, *, stage: str = "", task_type: str = "",
+    result_summary: dict | None = None, task_status: str = "",
+) -> tuple[str | None, str | None, str | None]:
     raw = _text(message, 1600).strip()
-    info = classify_task_error(raw, stage=stage, task_type=task_type) if raw else None
+    info = classify_task_error(
+        raw, stage=stage, task_type=task_type,
+        result_summary=result_summary, task_status=task_status,
+    ) if raw else None
     return (
         str((info or {}).get("source") or "") or None,
         str((info or {}).get("code") or "") or None,
@@ -1350,11 +1356,12 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
     parent_task_id = None
     if task_type != "registration":
         parent_task_id = _lookup_task(cur, "registration_chains", f"{root_job_id}:registration")
-    error_category, error_code, error_message = _error_fields(
-        job.get("error_message"), stage=str(job.get("progress_stage") or ""), task_type=task_type,
-    )
     status = _status(job.get("status"))
     safe_run_summary = _registration_run_cause_summary(cur, job_id, job_status=status)
+    error_category, error_code, error_message = _error_fields(
+        job.get("error_message"), stage=str(job.get("progress_stage") or ""), task_type=task_type,
+        result_summary=safe_run_summary, task_status=status,
+    )
     created_at = _legacy_registration_timestamp(job.get("created_at")) or _now()
     completed_at = (
         _legacy_registration_timestamp(job.get("completed_at"))
@@ -1639,7 +1646,10 @@ def _upsert_account_task(
     legacy_id = int(task["id"])
     task_type = str(task.get("task_type") or "unknown")
     status = _status(task.get("status"))
-    category, code, error = _error_fields(task.get("error"), stage="complete", task_type=task_type)
+    category, code, error = _error_fields(
+        task.get("error"), stage="complete", task_type=task_type,
+        result_summary=task.get("result_summary"), task_status=status,
+    )
     batch_id = batch_map.get(str(task.get("batch_id") or ""))
     account_id = int(task["account_id"]) if task.get("account_id") is not None else None
     account = (accounts_by_id or {}).get(account_id) if account_id is not None else None
@@ -4451,6 +4461,8 @@ def list_reconciliation_accounts(
     fenced, including ``started``, ``response_received``,
     ``local_commit_required`` and ``confirmed`` while the attempt is not
     terminal. Explicit ``rejected`` is deliberately not returned.
+
+    已确认未提交的 ``not_submitted`` 回执也不会阻止下一次认证。
     """
     init()
     clauses = [
@@ -4469,7 +4481,7 @@ def list_reconciliation_accounts(
         "'interrupted','deactivated','unsupported','attention_required') "
         "AND r.data->'remote_intent'->>'kind'='remote_write' "
         "AND COALESCE(r.data->'remote_intent'->>'receipt_state',"
-        "r.data->'remote_intent'->>'state','started') <> 'rejected'"
+        "r.data->'remote_intent'->>'state','started') NOT IN ('rejected','not_submitted')"
         ")"
         ")",
     ]
@@ -4790,7 +4802,7 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
                          run.data->'remote_intent'->>'receipt_state',
                          run.data->'remote_intent'->>'state', 'started'
                      )
-                         <> 'rejected'
+                         NOT IN ('rejected', 'not_submitted')
                     THEN 'attention_required'
                     ELSE 'interrupted'
                 END,
@@ -4802,8 +4814,8 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
                          run.data->'remote_intent'->>'receipt_state',
                          run.data->'remote_intent'->>'state', 'started'
                      )
-                         <> 'rejected'
-                    THEN '远端写请求结果未知，已保留原记录，可重新执行'
+                         NOT IN ('rejected', 'not_submitted')
+                    THEN '执行进程已中断，当前步骤未完成回执核验'
                     ELSE '执行进程已重启，原 attempt 中断'
                 END,
                 result_summary=CASE
@@ -4812,10 +4824,11 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
                          run.data->'remote_intent'->>'receipt_state',
                          run.data->'remote_intent'->>'state', 'started'
                      )
-                         <> 'rejected'
+                         NOT IN ('rejected', 'not_submitted')
                     THEN COALESCE(run.result_summary, '{{}}'::jsonb) || jsonb_build_object(
                         'outcome', 'request_unknown',
                         'reconcile_required', true,
+                        'cause_code', COALESCE(run.result_summary->>'cause_code', 'worker_interrupted'),
                         'execution_id', COALESCE(run.execution_id, ''),
                         'lease_owner', COALESCE(run.execution_id, ''),
                         'remote_action', run.data->'remote_intent'->>'action',
@@ -4826,6 +4839,7 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
                     )
                     ELSE COALESCE(run.result_summary, '{{}}'::jsonb) || jsonb_build_object(
                         'outcome', 'interrupted',
+                        'cause_code', COALESCE(run.result_summary->>'cause_code', 'worker_interrupted'),
                         'recovery_reason', 'worker_restart'
                     )
                 END
@@ -4840,7 +4854,7 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
               )
             RETURNING run.id, run.task_id, run.account_id, run.batch_id,
                       run.status, run.data, run.execution_id, task.source_system,
-                      task.task_type
+                      run.result_summary, run.error_message, task.task_type
             """,
             (stale_seconds,),
         )
@@ -4864,6 +4878,14 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
             }
             for row in recovered:
                 recovered_status = status_by_task[int(row["task_id"])]
+                category, code, error_message = _error_fields(
+                    row.get("error_message"), stage="complete", task_type=str(row.get("task_type") or ""),
+                    result_summary=_decode(row.get("result_summary")), task_status=recovered_status,
+                )
+                cur.execute(
+                    f"UPDATE {_table('operation_runs')} SET error_category=%s, error_code=%s WHERE id=%s",
+                    (category, code, int(row["id"])),
+                )
                 cur.execute(
                     f"""
                     UPDATE {_table('operation_tasks')}
@@ -4871,7 +4893,7 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
                         current_stage=%s,
                         completed_at=now(),
                         updated_at=now(),
-                        error_message=%s,
+                        error_message=%s, error_category=%s, error_code=%s,
                         target_status=CASE WHEN %s='attention_required'
                             THEN 'attention_required' ELSE target_status END,
                         next_actions=%s::jsonb
@@ -4880,9 +4902,7 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
                     (
                         recovered_status,
                         "complete" if recovered_status == "attention_required" else "interrupted",
-                        "远端写请求结果未知，已保留原记录，可重新执行"
-                        if recovered_status == "attention_required"
-                        else "执行进程已重启，原 attempt 中断",
+                        error_message, category, code,
                         recovered_status,
                         _json([{"action": "retry", "label": "重新执行"}]),
                         int(row["task_id"]), int(row["id"]),
@@ -4915,10 +4935,8 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
                         source_by_task.get(int(row["task_id"]), "native_operations"),
                         event_uuid,
                         "complete" if recovered_status == "attention_required" else "interrupted",
-                        "run.request_unknown" if recovered_status == "attention_required" else "run.interrupted",
-                        "远端写请求结果未知，已保留原记录，可重新执行"
-                        if recovered_status == "attention_required"
-                        else "执行进程已重启，原 attempt 中断",
+                        "run.attention_required" if recovered_status == "attention_required" else "run.interrupted",
+                        str(row.get("error_message") or "执行进程已中断，当前步骤未完成"),
                         _json({
                             "reason": "worker_restart",
                             "outcome": "request_unknown"
@@ -5313,6 +5331,7 @@ def append_runtime_event(
         category, code, _ = _error_fields(
             message if state_value == "failed" or level_value == "ERROR" else None,
             stage=stage_value, task_type=str(found.get("task_type") or ""),
+            result_summary=clean_detail,
         )
         cur.execute(
             f"""
@@ -5368,7 +5387,7 @@ def append_runtime_event(
 _REMOTE_INTENT_KINDS = frozenset({"remote_write", "read"})
 _REMOTE_RECEIPT_OUTCOMES = frozenset({
     "confirmed", "rejected", "unknown", "response_received",
-    "local_commit_required",
+    "local_commit_required", "not_submitted",
 })
 
 
@@ -5500,7 +5519,7 @@ def record_remote_intent(
             for key, value in previous_receipt_detail.items()
             if key in {"phase_complete", "allow_next_intent"}
         )
-        if previous_intent and previous_receipt not in {"confirmed", "rejected"} and not (
+        if previous_intent and previous_receipt not in {"confirmed", "rejected", "not_submitted"} and not (
             previous_receipt == "response_received" and phase_complete
         ):
             raise ValueError("前一个远端写请求尚未核验，不能覆盖其 checkpoint")
@@ -5560,6 +5579,9 @@ def record_remote_receipt(
     local readback.  A crash before :func:`finish_run` still requires
     reconciliation for every non-rejected write checkpoint, including
     ``confirmed``; the receipt never makes a Run terminal by itself.
+
+    ``not_submitted`` 只接受明确的未派发、未提交证据，允许前置失败结束当前
+    认证边界；已有响应或未确认结果不能被改写成未提交。
     """
     outcome_value = str(receipt_state or outcome or "unknown").strip().lower()
     outcome_value = {
@@ -5572,6 +5594,11 @@ def record_remote_receipt(
     action_value = _text(action, 160).strip() if action else ""
     request_value = _text(request_id, 240).strip() if request_id else ""
     raw_detail = dict(detail or {})
+    if outcome_value == "not_submitted" and not (
+        raw_detail.get("mutation_submitted") is False
+        and raw_detail.get("action_dispatched") is False
+    ):
+        raise ValueError("未提交回执必须明确证明 mutation_submitted=false 和 action_dispatched=false")
     if outcome_value == "confirmed":
         def _confirmed_marker(*names: str) -> bool:
             for name in names:
@@ -5623,8 +5650,13 @@ def record_remote_receipt(
             raise ValueError("remote receipt request_id 与 intent 不匹配")
         if not request_value:
             request_value = str(intent.get("request_id") or "")
-        if intent.get("receipt_state") == "confirmed" and outcome_value != "confirmed":
+        previous_receipt = str(intent.get("receipt_state") or intent.get("state") or "started")
+        if previous_receipt == "confirmed" and outcome_value != "confirmed":
             raise ValueError("已确认的远端写回执不能降级或改为 rejected")
+        if outcome_value == "not_submitted" and previous_receipt not in {
+            "started", "not_submitted",
+        }:
+            raise ValueError("已记录响应或未确认结果的请求不能改成未提交回执")
         intent["state"] = outcome_value
         intent["receipt_state"] = outcome_value
         intent["receipt_at"] = _now().isoformat()
@@ -6029,7 +6061,7 @@ def finish_run(
                 and status_value in {"failed", "unsupported"}
                 and str(dependency_result.get("remote_result_state") or "").lower() == "rejected"
             )
-            if status_value != "deactivated" and intent and receipt != "rejected" and (
+            if status_value != "deactivated" and intent and receipt not in {"rejected", "not_submitted"} and (
                 not explicit_remote_rejection
                 and (status_value != "success" or receipt != "confirmed")
             ):
@@ -6043,10 +6075,9 @@ def finish_run(
                     "remote_intent_state": receipt,
                 })
                 status_value = "attention_required"
-                error = "远端写请求尚未完成整条任务核验，结果未知，已保留原记录，可重新执行" + (
-                    f"：{error}" if error else ""
-                )
-                message = error
+                # 回执是否完整独立保留，不覆盖驱动已经报告的具体失败。
+                if not error:
+                    error = message or f"{intent.get('action') or '远端请求'}未保存完整回执"
             task_type = str(found.get("task_type") or "")
             dependency_result.update({
                 "task_type": task_type, "task_id": int(found["task_id"]), "run_id": int(run_id),
@@ -6073,6 +6104,7 @@ def finish_run(
             dependency_result.update(failure_context)
             category, code, error_message = _error_fields(
                 error or "", stage=str(failure_stage or "complete"), task_type=task_type,
+                result_summary=dependency_result, task_status=status_value,
             )
             cur.execute(
                 f"""

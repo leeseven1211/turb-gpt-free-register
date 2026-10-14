@@ -134,7 +134,7 @@ class OperationTaskStoreTests(PostgresTestCase):
         self.assertTrue(detail["result_summary"]["register_response_confirmed"])
         self.assertNotIn("raw_response", detail["result_summary"])
         run = detail["runs"][-1]
-        self.assertEqual("request_unknown", run["error_code"])
+        self.assertEqual("email_otp_no_mail", run["error_code"])
         self.assertEqual("email_otp_no_mail", run["result_summary"]["cause_code"])
         listed = operation_task_store.list_tasks(page_size=20)["items"]
         listed_task = next(item for item in listed if int(item["id"]) == task_id)

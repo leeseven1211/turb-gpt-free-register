@@ -587,7 +587,7 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
 
         self.assertEqual(200, response.status_code)
         info = response.get_json()["items"][0]["error_info"]
-        self.assertEqual("REMOTE-001", info["display_code"])
+        self.assertEqual("MAIL-OTP-002", info["display_code"])
         self.assertEqual("MAIL-OTP-002", info["cause_display_code"])
 
     def test_operation_detail_projects_each_historical_run_error(self):
@@ -618,8 +618,8 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         projected = response.get_json()["task"]
         self.assertNotIn("error_info", projected)
-        self.assertEqual("REMOTE-001", projected["runs"][0]["error_info"]["display_code"])
-        self.assertEqual("MAIL-VERIFY-000", projected["runs"][0]["error_info"]["cause_display_code"])
+        self.assertEqual("MAIL-RECEIPT", projected["runs"][0]["error_info"]["display_code"])
+        self.assertEqual("MAIL-RECEIPT", projected["runs"][0]["error_info"]["cause_display_code"])
         self.assertNotIn("error_info", projected["runs"][1])
 
     def test_legacy_account_tasks_api_uses_shared_error_classification(self):

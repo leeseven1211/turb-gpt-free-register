@@ -21,6 +21,36 @@ class WebUIRuntimeTests(unittest.TestCase):
         runtime._runtime_started_at = None
         runtime._RUNTIME_HANDLERS_REGISTERED = False
 
+    def test_native_lifecycle_preserves_specific_error_with_pending_receipt(self):
+        class Context:
+            def finish(self, result):
+                return result.as_dict()
+
+        for status, summary in (
+            ("attention_required", {}),
+            ("failed", {"outcome": "request_unknown"}),
+        ):
+            with self.subTest(status=status):
+                result = runtime._NativeTaskLifecycle(Context()).finish_task(
+                    1, status=status, message="密码认证未完成",
+                    error="password_sentinel_failed", result_summary=summary,
+                )
+                self.assertEqual("password_sentinel_failed", result["error"])
+                self.assertTrue(result["result_summary"]["reconcile_required"])
+
+    def test_safe_operation_result_preserves_specific_cause_without_private_payload(self):
+        result = runtime._safe_operation_result({
+            "status": "attention_required", "message": "密码认证未完成",
+            "error": "password_sentinel_failed", "cause_code": "password_sentinel_failed",
+            "auth_diagnostics": {"operation": "password_sentinel", "curl_error_code": 35, "cookie": "private"},
+            "password": "private",
+        })
+        self.assertEqual("password_sentinel_failed", result.error)
+        self.assertEqual("password_sentinel_failed", result.summary["cause_code"])
+        self.assertEqual(35, result.summary["auth_diagnostics"]["curl_error_code"])
+        self.assertNotIn("cookie", result.summary["auth_diagnostics"])
+        self.assertNotIn("password", result.summary)
+
     def test_start_runtime_recovers_and_starts_periodic_workers_once(self):
         with ExitStack() as stack:
             recover_jobs = stack.enter_context(
@@ -273,11 +303,28 @@ class WebUIRuntimeTests(unittest.TestCase):
         self.assertTrue(context.finished)
         self.assertIsNotNone(result)
         self.assertEqual("request_unknown", result.status)
+        self.assertEqual("account_setup_local_commit_failed", result.error)
+        self.assertEqual("account_setup_local_commit_failed", result.summary["cause_code"])
         self.assertEqual("account_setup", context.started[0][0])
         self.assertEqual("remote_write", context.started[1]["intent_kind"])
         self.assertEqual("local_commit_required", context.receipts[0]["outcome"])
         self.assertEqual(0, worker.call_args.kwargs["task_id"])
         self.assertFalse(worker.call_args.kwargs["manage_task"])
+
+        failed_context = FakeContext()
+        with (
+            patch.object(runtime.codex_retry_service, "run_twofa_worker", return_value={
+                "status": "failed", "message": "密码认证未完成", "error": "password_sentinel_failed",
+                "cause_code": "password_sentinel_failed",
+                "auth_diagnostics": {"operation": "password_sentinel", "curl_error_code": 35},
+            }),
+            patch.object(runtime, "_account_setup_receipt", return_value=("unknown", {})),
+        ):
+            failed_result = runtime._handle_native_account_setup(failed_context)
+        self.assertEqual("password_sentinel_failed", failed_result.error)
+        self.assertEqual("password_sentinel_failed", failed_result.summary["cause_code"])
+        self.assertEqual(35, failed_result.summary["auth_diagnostics"]["curl_error_code"])
+        self.assertTrue(failed_result.summary["reconcile_required"])
 
     def test_completion_dependency_worker_uses_scanner_claim_without_reclaiming(self):
         dependency = {

@@ -226,6 +226,18 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
         self.assertEqual("success", result.status)
         self.assertEqual({"receipt": "synthetic"}, result.summary)
 
+    def test_unknown_result_keeps_specific_error_and_returns_failed_business_status(self):
+        result = task_gateway._coerce_operation_result(
+            {"status": "request_unknown", "message": "密码认证未完成", "error": "password_sentinel_failed"},
+            message="",
+        )
+        self.assertEqual("password_sentinel_failed", result.error)
+        context = type("ResultContext", (), {"finished": False, "task_id": 1, "run_id": 2, "source_system": "test"})()
+        payload = task_gateway._operation_handler_result_payload(context, result)
+        self.assertEqual("failed", payload["status"])
+        self.assertEqual("attention_required", payload["database_status"])
+        self.assertEqual("password_sentinel_failed", payload["error"])
+
     def test_request_unknown_is_retryable_as_a_new_run(self):
         completed = threading.Event()
 
@@ -421,6 +433,105 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
             lease_token=lease_token,
             result_summary={"confirmed": True},
         )
+
+    def _started_refresh(self, source_id):
+        account_id = self._runtime_account(f"{source_id}@example.test")
+        task = operation.create_runtime_task(
+            task_type="token_refresh", account_id=account_id,
+            email=f"{source_id}@example.test", source_system="synthetic_service",
+            source_id=source_id,
+        )
+        run_id = int(task["run"]["id"])
+        operation.claim_run(run_id, execution_id=source_id, worker_pid=505)
+        lease = operation.acquire_account_lease(account_id=account_id, run_id=run_id)
+        fence = {"execution_id": source_id, "lease_token": lease}
+        operation.record_remote_intent(run_id, action="token_refresh", **fence)
+        return run_id, fence
+
+    def test_unconfirmed_receipt_preserves_specific_failure(self):
+        run_id, fence = self._started_refresh("specific-failure")
+        operation.append_runtime_event(
+            run_id, stage="email_otp", state="failed", message="邮箱验证码未完成",
+            detail={"error": "email_otp_failed", "cause_code": "email_otp_failed"},
+        )
+        finished = operation.finish_run(
+            run_id, status="failed", message="邮箱验证码未完成", error="email_otp_failed",
+            result_summary={"cause_code": "email_otp_failed"}, **fence,
+        )
+        self.assertEqual("attention_required", finished["status"])
+        self.assertEqual("email_otp_failed", finished["error_code"])
+        self.assertEqual("email_otp_failed", finished["error_message"])
+        self.assertTrue(finished["result_summary"]["reconcile_required"])
+        task = operation.get_task(finished["task_id"])
+        self.assertEqual("email_otp_failed", task["events"][-2]["error_code"])
+        self.assertEqual("邮箱验证码未完成", task["events"][-1]["message"])
+
+    def test_not_submitted_receipt_requires_explicit_proof(self):
+        run_id, fence = self._started_refresh("not-submitted-proof")
+        for detail in ({}, {"mutation_submitted": True}, {"mutation_submitted": False, "action_dispatched": True}):
+            with self.subTest(detail=detail), self.assertRaisesRegex(ValueError, "未提交"):
+                operation.record_remote_receipt(run_id, outcome="not_submitted", detail=detail, **fence)
+
+    def test_not_submitted_cannot_downgrade_current_or_legacy_receipt(self):
+        for legacy in (False, True):
+            for state in ("unknown", "response_received", "local_commit_required", "confirmed"):
+                with self.subTest(legacy=legacy, state=state):
+                    run_id, fence = self._started_refresh(f"prior-{legacy}-{state}")
+                    intent = dict(operation.get_run(run_id)["data"]["remote_intent"])
+                    intent["state"] = state
+                    if legacy:
+                        intent.pop("receipt_state", None)
+                    else:
+                        intent["receipt_state"] = state
+                    with operation._connect() as conn, conn.cursor() as cur:
+                        cur.execute(
+                            f"UPDATE {operation._table('operation_runs')} "
+                            "SET data=jsonb_set(data, '{remote_intent}', %s::jsonb) WHERE id=%s",
+                            (operation._json(intent), run_id),
+                        )
+                    with self.assertRaises(ValueError):
+                        operation.record_remote_receipt(
+                            run_id, outcome="not_submitted",
+                            detail={"mutation_submitted": False, "action_dispatched": False}, **fence,
+                        )
+                    self.assertEqual(state, operation.get_run(run_id)["data"]["remote_intent"]["state"])
+
+    def test_not_submitted_receipt_closes_failure_and_allows_new_boundary(self):
+        run_id, fence = self._started_refresh("not-submitted-close")
+        operation.record_remote_receipt(
+            run_id, outcome="not_submitted",
+            detail={"mutation_submitted": False, "action_dispatched": False}, **fence,
+        )
+        finished = operation.finish_run(
+            run_id, status="failed", error="password_sentinel_failed",
+            result_summary={"cause_code": "password_sentinel_failed"}, **fence,
+        )
+        self.assertEqual("failed", finished["status"])
+        self.assertFalse(finished["result_summary"].get("reconcile_required", False))
+        second_id, second_fence = self._started_refresh("not-submitted-next")
+        operation.record_remote_receipt(
+            second_id, outcome="not_submitted",
+            detail={"mutation_submitted": False, "action_dispatched": False}, **second_fence,
+        )
+        next_run = operation.record_remote_intent(
+            second_id, action="browser_refresh", request_id="browser-next", **second_fence,
+        )
+        self.assertEqual("browser-next", next_run["data"]["remote_intent"]["request_id"])
+
+    def test_not_submitted_receipt_recovery_reports_worker_interruption(self):
+        run_id, fence = self._started_refresh("not-submitted-recovery")
+        operation.record_remote_receipt(
+            run_id, outcome="not_submitted",
+            detail={"mutation_submitted": False, "action_dispatched": False}, **fence,
+        )
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {operation._table('operation_runs')} SET heartbeat_at=now()-interval '1 hour' WHERE id=%s", (run_id,))
+            cur.execute(f"UPDATE {operation._table('account_operation_leases')} SET expires_at=now()-interval '1 minute' WHERE run_id=%s", (run_id,))
+        self.assertEqual(1, operation.recover_interrupted_runtime_runs())
+        recovered = operation.get_run(run_id)
+        self.assertEqual("interrupted", recovered["status"])
+        self.assertFalse(recovered["result_summary"].get("reconcile_required", False))
+        self.assertNotEqual("request_unknown", recovered["error_code"])
 
     def test_explicit_remote_rejection_after_confirmed_request_is_terminal_and_retryable(self):
         account_id = self._runtime_account("unsupported-payment@example.test")
@@ -643,7 +754,8 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
                 persisted = operation.get_run(submitted["run_id"])
                 self.assertEqual("attention_required", persisted["status"])
                 self.assertEqual("request_unknown", persisted["result_summary"]["outcome"])
-                self.assertEqual("request_unknown", result["status"])
+                self.assertEqual("failed", result["status"])
+                self.assertTrue(result["reconcile_required"])
                 self.assertFalse(result["ok"])
                 self.assertEqual("attention_required", result["database_status"])
                 task = operation.get_task(submitted["task_id"])

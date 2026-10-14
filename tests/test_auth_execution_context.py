@@ -12,7 +12,7 @@ from core.registration.state_machine import StageBudget, StageTimeout
 
 
 class AuthExecutionContextTests(TestCase):
-    def test_dispatched_action_without_response_is_request_unknown(self):
+    def test_dispatched_action_without_response_preserves_cause_and_requires_reconcile(self):
         result = StepResult(
             stage="password",
             ok=False,
@@ -22,7 +22,8 @@ class AuthExecutionContextTests(TestCase):
             evidence={"url": "https://chatgpt.com/auth/callback?code=secret", "password": "secret"},
         )
 
-        self.assertEqual(AuthErrorCode.REQUEST_UNKNOWN.value, result.code)
+        self.assertEqual(AuthErrorCode.NETWORK_ERROR.value, result.code)
+        self.assertTrue(result.reconcile_required)
         self.assertFalse(result.ok)
         self.assertEqual("manual_reconcile", result.next_action)
         self.assertFalse(result.retryable)

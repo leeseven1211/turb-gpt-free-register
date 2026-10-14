@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import re
 from typing import Any, Mapping
 from urllib.parse import urlsplit
 
@@ -87,8 +88,8 @@ class StepResult:
     """一个可审计认证动作的非敏感结果。
 
     ``action_dispatched`` 与 ``remote_response_received`` 必须分开保存：已发出
-    密码、OTP 或 MFA 请求但没有收到结果时，步骤是 ``request_unknown``，不能
-    被上层改写成密码错误、成功或新的自动重试。
+    密码、OTP 或 MFA 请求但没有收到结果时，保留具体原因并设置独立对账标记，
+    不能被上层改写成密码错误、成功或新的自动重试。
     """
 
     stage: str
@@ -102,6 +103,7 @@ class StepResult:
     remote_identity: str = "unknown"
     next_action: str = "continue"
     evidence: Mapping[str, Any] = field(default_factory=dict)
+    reconcile_required: bool = False
 
     def __post_init__(self) -> None:
         stage = str(self.stage or "unknown").strip().lower()
@@ -110,18 +112,20 @@ class StepResult:
         next_state = str(self.next_state or "").strip().lower()
         checkpoint = str(self.checkpoint or "").strip().lower()
         next_action = str(self.next_action or "continue").strip().lower()
-        # A dispatched request without a response is always an unknown result,
-        # even if a caller supplied a generic timeout or transport code.
-        if self.action_dispatched and not self.remote_response_received:
-            code = AuthErrorCode.REQUEST_UNKNOWN.value
+        # 提交回执不明是独立安全属性，不能覆盖超时、断线等实际原因。
+        reconcile_required = bool(
+            self.reconcile_required or (self.action_dispatched and not self.remote_response_received)
+            or code == AuthErrorCode.REQUEST_UNKNOWN.value
+        )
+        if code == AuthErrorCode.REQUEST_UNKNOWN.value:
+            code = "remote_response_missing"
+        if reconcile_required:
+            code = code or "remote_response_missing"
             next_action = "manual_reconcile"
             retryable = False
         else:
             retryable = bool(self.retryable)
-        if code == AuthErrorCode.REQUEST_UNKNOWN.value:
-            next_action = "manual_reconcile"
-            retryable = False
-        ok = bool(self.ok) and code != AuthErrorCode.REQUEST_UNKNOWN.value
+        ok = bool(self.ok) and not reconcile_required
         object.__setattr__(self, "stage", stage)
         object.__setattr__(self, "ok", ok)
         object.__setattr__(self, "code", code)
@@ -130,6 +134,7 @@ class StepResult:
         object.__setattr__(self, "remote_identity", identity)
         object.__setattr__(self, "next_action", next_action)
         object.__setattr__(self, "retryable", retryable)
+        object.__setattr__(self, "reconcile_required", reconcile_required)
         object.__setattr__(self, "evidence", _safe_step_evidence(self.evidence))
 
     @property
@@ -139,7 +144,8 @@ class StepResult:
 
     @property
     def request_unknown(self) -> bool:
-        return self.code == AuthErrorCode.REQUEST_UNKNOWN.value
+        """兼容旧调用方的安全判断，不再作为业务错误码。"""
+        return self.reconcile_required
 
     @classmethod
     def success(cls, stage: str, *, next_state: str = "", checkpoint: str = "", **kwargs: Any) -> "StepResult":
@@ -163,6 +169,7 @@ class StepResult:
             "action_dispatched": bool(self.action_dispatched),
             "remote_identity": self.remote_identity,
             "next_action": self.next_action,
+            "reconcile_required": self.reconcile_required,
             "evidence": dict(self.evidence),
         }
 
@@ -172,12 +179,12 @@ class StepResult:
 AuthStepResult = StepResult
 
 
-def normalize_step_result(value: Any, *, stage: str = "unknown", default_code: str = "request_unknown") -> StepResult:
+def normalize_step_result(value: Any, *, stage: str = "unknown", default_code: str = "auth_result_missing") -> StepResult:
     """把旧 mapping/异常边界投影到 ``StepResult``，不透传敏感字段。"""
     if isinstance(value, StepResult):
         return value
     if not isinstance(value, Mapping):
-        return StepResult.failure(stage, default_code, next_action="manual_reconcile")
+        return StepResult.failure(stage, default_code, next_action="stop")
     raw_code = value.get("code") or value.get("error_code") or value.get("status") or default_code
     code = raw_code.value if isinstance(raw_code, Enum) else str(raw_code or default_code).strip().lower()
     ok = bool(value.get("ok"))
@@ -195,10 +202,14 @@ def normalize_step_result(value: Any, *, stage: str = "unknown", default_code: s
         remote_identity=str(value.get("remote_identity") or "unknown"),
         next_action=str(value.get("next_action") or ("continue" if ok else "stop")),
         evidence=value.get("evidence") or {},
+        reconcile_required=bool(
+            value.get("reconcile_required") or value.get("manual_reconcile") or value.get("request_unknown")
+        ),
     )
 
 
 class AuthStatus(str, Enum):
+    FAILED = "failed"
     AUTHENTICATED = "authenticated"
     PASSWORD_REQUIRED = "password_required"
     PASSWORD_REJECTED = "password_rejected"
@@ -257,6 +268,16 @@ _RETRYABLE_CODES = {
     "network_error",
     "email_otp_delivery_missing",
 }
+_PROTOCOL_FAILURE_CODES = {
+    "access_token_missing", "auth_page_unknown", "auth_route_rejected", "email_otp_failed",
+    "email_otp_send_failed", "mfa_code_missing", "mfa_factor_missing",
+    "mfa_issue_challenge_failed", "mfa_issue_challenge_invalid_response", "mfa_secret_invalid",
+    "mfa_verify_failed", "mfa_verify_invalid_response", "network_preflight_failed",
+    "oauth_callback_failed", "password_missing", "password_sentinel_failed",
+    "password_verify_failed", "password_verify_invalid_response", "protocol_v2_unknown_error",
+    "refresh_driver_exception", "refresh_result_invalid", "refresh_local_commit_failed",
+    "remote_response_missing", "auth_failed", "auth_result_missing",
+}
 _SAFE_STATUS_VALUES = {item.value for item in AuthStatus}
 
 
@@ -278,8 +299,12 @@ def _clean_chain(value: Any) -> tuple[str, ...]:
 
 def _result_code(value: Mapping[str, Any]) -> str:
     """Read a stable code without exposing or persisting the full error text."""
-    raw = _clean_text(value.get("code") or value.get("error_code") or value.get("error")).lower()
-    if raw in _SAFE_STATUS_VALUES or raw in _NO_FALLBACK_CODES or raw in _RETRYABLE_CODES:
+    explicit_code = value.get("code") or value.get("error_code")
+    raw = _clean_text(explicit_code or value.get("error")).lower()
+    # 显式 code 允许驱动扩展稳定码；异常原文仅接受已有的原因词表。
+    if explicit_code and re.fullmatch(r"[a-z][a-z0-9_]{0,79}", raw) and raw != "failed":
+        return raw
+    if raw in _SAFE_STATUS_VALUES or raw in _NO_FALLBACK_CODES or raw in _RETRYABLE_CODES or raw in _PROTOCOL_FAILURE_CODES:
         return raw
     text = raw
     candidates = sorted(
@@ -307,13 +332,30 @@ class AuthAttemptResult:
     retryable: bool = False
     roxy_fallback_allowed: bool = True
     next_action: str = "continue"
+    reconcile_required: bool = False
 
     def __post_init__(self) -> None:
-        status = _clean_text(self.status).lower() or AuthStatus.REQUEST_UNKNOWN.value
+        status = _clean_text(self.status).lower() or AuthStatus.FAILED.value
         code = _clean_text(self.code).lower()
         auth_method = _clean_text(self.auth_method).lower()
         remote_identity = _clean_text(self.remote_identity).lower() or "unknown"
         next_action = _clean_text(self.next_action).lower() or "continue"
+        reconcile_required = bool(
+            self.reconcile_required or status == AuthStatus.REQUEST_UNKNOWN.value
+            or code in {"request_unknown", "password_result_unknown"}
+            or next_action == "manual_reconcile"
+        )
+        if status == AuthStatus.REQUEST_UNKNOWN.value:
+            status = AuthStatus.FAILED.value
+        if code == "request_unknown":
+            code = "remote_response_missing"
+        if reconcile_required:
+            object.__setattr__(self, "roxy_fallback_allowed", False)
+            object.__setattr__(self, "retryable", False)
+            next_action = "manual_reconcile"
+            if status == AuthStatus.AUTHENTICATED.value:
+                status = AuthStatus.FAILED.value
+            code = code or "remote_response_missing"
         if code in _NO_FALLBACK_CODES:
             object.__setattr__(self, "roxy_fallback_allowed", False)
             if next_action == "continue":
@@ -324,10 +366,11 @@ class AuthAttemptResult:
         object.__setattr__(self, "challenge_chain", _clean_chain(self.challenge_chain))
         object.__setattr__(self, "remote_identity", remote_identity)
         object.__setattr__(self, "next_action", next_action)
+        object.__setattr__(self, "reconcile_required", reconcile_required)
 
     def as_dict(self) -> dict[str, Any]:
         """Return only non-sensitive fields suitable for task events/UI."""
-        return {
+        result = {
             "status": self.status,
             "code": self.code,
             "auth_method": self.auth_method,
@@ -337,14 +380,17 @@ class AuthAttemptResult:
             "roxy_fallback_allowed": bool(self.roxy_fallback_allowed),
             "next_action": self.next_action,
         }
+        if self.reconcile_required:
+            result["reconcile_required"] = True
+        return result
 
 
-def normalize_auth_result(value: Any, *, default_status: str = "request_unknown") -> AuthAttemptResult:
+def normalize_auth_result(value: Any, *, default_status: str = "failed") -> AuthAttemptResult:
     """Normalize a driver mapping without copying provider payloads."""
     if isinstance(value, AuthAttemptResult):
         return value
     if not isinstance(value, Mapping):
-        return AuthAttemptResult(status=default_status, code=default_status, next_action="manual_reconcile")
+        return AuthAttemptResult(status=default_status, code="auth_result_missing", next_action="stop")
 
     raw_code = _result_code(value)
     raw_status = _clean_text(value.get("status") or value.get("auth_status")).lower()
@@ -369,7 +415,7 @@ def normalize_auth_result(value: Any, *, default_status: str = "request_unknown"
         elif raw_code == "request_unknown":
             next_action = "manual_reconcile"
         else:
-            next_action = "continue"
+            next_action = "continue" if value.get("ok") or raw_status == "authenticated" else "stop"
 
     return AuthAttemptResult(
         status=raw_status,
@@ -380,6 +426,10 @@ def normalize_auth_result(value: Any, *, default_status: str = "request_unknown"
         retryable=retryable,
         roxy_fallback_allowed=fallback,
         next_action=next_action,
+        reconcile_required=bool(
+            value.get("reconcile_required") or value.get("manual_reconcile") or value.get("request_unknown")
+            or (value.get("action_dispatched") is True and not value.get("remote_response_received", value.get("response_observed", False)))
+        ),
     )
 
 
@@ -398,7 +448,7 @@ def safe_to_start_new_registration(value: Any) -> bool:
     if isinstance(value, AuthAttemptResult):
         identity = value.remote_identity
         status = value.status
-        return identity not in {"existing", "unknown"} and status not in {
+        return not value.reconcile_required and identity not in {"existing", "unknown"} and status not in {
             AuthStatus.REMOTE_EXISTING.value,
             AuthStatus.REQUEST_UNKNOWN.value,
         }
@@ -406,7 +456,7 @@ def safe_to_start_new_registration(value: Any) -> bool:
         return False
     identity = _clean_text(value.get("remote_identity")).lower()
     status = _clean_text(value.get("status")).lower()
-    return not bool(value.get("request_unknown") or value.get("manual_reconcile")) and identity not in {
+    return not bool(value.get("request_unknown") or value.get("manual_reconcile") or value.get("reconcile_required")) and identity not in {
         "existing", "unknown",
     } and status not in {AuthStatus.REMOTE_EXISTING.value, AuthStatus.REQUEST_UNKNOWN.value}
 
@@ -427,8 +477,14 @@ def auth_result_for_operation(
     elif code in _NO_FALLBACK_CODES or code in _SAFE_STATUS_VALUES:
         status = code
     else:
-        status = AuthStatus.REQUEST_UNKNOWN.value
-        code = code or AuthStatus.REQUEST_UNKNOWN.value
+        status = AuthStatus.FAILED.value
+        code = code or "auth_failed"
+
+    reconcile_required = bool(
+        mapping.get("reconcile_required") or mapping.get("manual_reconcile") or mapping.get("request_unknown")
+        or code in {"request_unknown", "password_result_unknown"}
+        or (mapping.get("action_dispatched") is True and not mapping.get("remote_response_received", mapping.get("response_observed", False)))
+    )
 
     chain: list[str] = list(_clean_chain(mapping.get("challenge_chain")))
     password_verified = str(mapping.get("password_auth_status") or "").lower() == "verified"
@@ -449,7 +505,8 @@ def auth_result_for_operation(
         remote_identity=remote_identity,
         retryable=bool(mapping.get("retryable", False)),
         roxy_fallback_allowed=bool(mapping.get("roxy_fallback_allowed", code not in _NO_FALLBACK_CODES)),
-        next_action="continue" if ok else "manual_reconcile" if status == AuthStatus.REQUEST_UNKNOWN.value else "stop",
+        next_action="continue" if ok else "manual_reconcile" if reconcile_required else "stop",
+        reconcile_required=reconcile_required,
     )
 
 

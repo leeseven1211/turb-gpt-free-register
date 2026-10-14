@@ -50,6 +50,43 @@ class _OtpSession:
 
 
 class ProtocolV2LivenessTests(unittest.TestCase):
+    def test_sentinel_transport_failure_reports_safe_details_and_no_password_submission(self):
+        from core import protocol_v2_liveness as v2
+
+        session = _Session()
+        for curl_code in (28, 35, 56, 60):
+            with self.subTest(curl_code=curl_code):
+                error = RuntimeError(f"curl: ({curl_code}) private token=https://secret.example")
+                error.code = curl_code
+                with (
+                    patch.object(v2, "get_account_login_credentials", return_value=("saved-password", "")),
+                    patch.object(v2, "_network_preflight_with_retry", return_value=(session, "authorize")),
+                    patch.object(v2, "follow_authorize", return_value="https://auth.openai.com/log-in/password"),
+                    patch.object(v2, "request_sentinel_token", side_effect=error),
+                ):
+                    result = v2.refresh_access_token("account@example.test", proxy="")
+                self.assertEqual("password_sentinel_failed", result["error"])
+                self.assertEqual("failed", result["auth"]["status"])
+                self.assertIs(result["mutation_submitted"], False)
+                self.assertIs(result["action_dispatched"], False)
+                self.assertEqual("password_sentinel", result["auth_diagnostics"]["operation"])
+                self.assertEqual(curl_code, result["auth_diagnostics"]["curl_error_code"])
+                self.assertNotIn("secret.example", str(result))
+                self.assertTrue(result["roxy_fallback_allowed"])
+                self.assertEqual([], session.posts)
+
+    def test_mfa_transport_failure_never_allows_browser_resubmission(self):
+        from core import protocol_v2_liveness as v2
+
+        session = _Session()
+        session.post = MagicMock(side_effect=RuntimeError("connection closed"))
+        with self.assertRaises(v2.ProtocolV2AuthError) as caught:
+            v2._mfa_verify(session, "factor", "synthetic-code")
+        self.assertEqual("mfa_verify_failed", caught.exception.code)
+        self.assertTrue(caught.exception.reconcile_required)
+        self.assertTrue(caught.exception.action_dispatched)
+        self.assertFalse(caught.exception.roxy_fallback_allowed)
+
     def test_authorize_email_challenge_sends_code_before_waiting_without_password(self):
         from core import protocol_v2_liveness as v2
 

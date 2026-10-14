@@ -166,7 +166,7 @@ def _stored_config_snapshot(run: Mapping[str, Any]) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class OperationResult:
-    """显式 handler 结果；``request_unknown`` 保留旧 Run 供后续人工重跑。"""
+    """显式 handler 结果；旧回执标记保留原 Run 供后续核验。"""
 
     status: str
     summary: Mapping[str, Any] = field(default_factory=dict)
@@ -188,12 +188,14 @@ class OperationResult:
     @classmethod
     def request_unknown(
         cls,
-        message: str = "远端请求结果待确认",
+        message: str = "当前步骤未保存完整回执",
         summary: Mapping[str, Any] | None = None,
+        *,
+        error: str | None = None,
     ) -> "OperationResult":
         values = dict(summary or {})
         values.update({"outcome": "request_unknown", "reconcile_required": True})
-        return cls("request_unknown", values, message, message)
+        return cls("request_unknown", values, message, error or message)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -559,13 +561,15 @@ def _coerce_operation_result(
         result_message = str(result.get("message") or message or "")
         result_error = str(result.get("error") or error) if (result.get("error") or error) else None
         if result_status in {"unknown", "request_unknown"}:
-            return OperationResult.request_unknown(result_message or "远端请求结果待确认", dict(summary))
+            return OperationResult.request_unknown(
+                result_message or result_error or "当前步骤未保存完整回执", dict(summary), error=result_error,
+            )
         return OperationResult(result_status or "failed", dict(summary), result_message, result_error)
     result_status = str(status or "").strip().lower()
     if not result_status:
         raise ValueError("handler 必须返回 OperationResult 或显式 status")
     if result_status in {"unknown", "request_unknown"}:
-        return OperationResult.request_unknown(message or "远端请求结果待确认", result_summary)
+        return OperationResult.request_unknown(message or error or "当前步骤未保存完整回执", result_summary, error=error)
     return OperationResult(result_status, dict(result_summary or {}), message, error)
 
 
@@ -1039,6 +1043,12 @@ def _operation_handler_result_payload(
             "attention_required" if result.status == "request_unknown" else result.status
         ),
     })
+    if result.status in {"request_unknown", "attention_required"}:
+        # 业务调用方接收具体失败；数据库的待核验状态继续保护原始请求。
+        payload.update({
+            "status": "failed", "ok": False, "reconcile_required": True,
+            "manual_reconcile": True, "next_action": "manual_reconcile",
+        })
     return payload
 
 
