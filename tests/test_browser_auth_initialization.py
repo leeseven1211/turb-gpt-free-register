@@ -377,6 +377,7 @@ class BrowserAuthInitializationTests(unittest.TestCase):
              patch.object(email_otp, "_email_submit_advanced_state", return_value=None):
             result = email_otp._submit_email_via_browser_nextauth(driver, "unit@example.test")
         self.assertNotIn("csrf-secret", result["reason"])
+        self.assertIs(result["not_dispatched"], False)
         self.assertEqual(phases, ["dispatch_intent", "unknown"])
 
     def test_next_state_session_probe_obeys_fallback_budget(self):
@@ -397,7 +398,8 @@ class BrowserAuthInitializationTests(unittest.TestCase):
         with patch.object(email_otp, "record_browser_submission_fact",
                           side_effect=lambda _driver, phase, **_kwargs: phases.append(phase)), \
              patch.object(email_otp, "_email_submit_advanced_state", return_value=None):
-            email_otp._submit_email_via_browser_nextauth(driver, "unit@example.test")
+            result = email_otp._submit_email_via_browser_nextauth(driver, "unit@example.test")
+        self.assertIs(result["not_dispatched"], True)
         self.assertNotIn("dispatch_intent", phases)
         script = driver.execute_async_script.call_args.args[0]
         source = """
