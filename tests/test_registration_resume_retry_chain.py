@@ -169,6 +169,68 @@ class ResumeRetryChainTests(unittest.TestCase):
         self.assertEqual(create.call_args.kwargs['account_id'], 44)
         executor.submit.assert_called_once()
 
+    def test_terminal_job_with_active_worker_cannot_create_or_enqueue_retry(self):
+        root, child, account, attempt = facts()
+        child['status'] = 'failed'
+        executor = Mock()
+        with patch.object(svc, '_ACTIVE_JOBS', {22}), \
+             patch.object(svc.db, 'get_job', side_effect=lambda ident: {21: root, 22: child}.get(ident)), \
+             patch.object(svc.db, 'get_successful_retry_for_job', return_value=None), \
+             patch.object(svc, '_account_for_job', return_value=account), \
+             patch.object(svc, '_enrich_account_registration_state', side_effect=lambda x: x), \
+             patch.object(svc, '_read_linked_attempt_for_job', return_value=(attempt, False)), \
+             patch.object(svc, '_retry_jobs_by_ids', return_value={21: root}), \
+             patch.object(svc.db, 'create_retry_job', return_value=({'id': 23, 'log_file': '/tmp/resume-test.log'}, True)) as create, \
+             patch.object(svc, 'get_executor', return_value=executor):
+            result = svc.retry_job(22, registration_driver='roxy')
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['status'], 409)
+        self.assertIn('原任务仍在收口', result['error'])
+        create.assert_not_called()
+        executor.submit.assert_not_called()
+
+    def test_deactivated_terminal_worker_allows_existing_identity_retry(self):
+        from core import registration_debug
+
+        root, child, account, attempt = facts()
+        child['status'] = 'failed'
+        executor = Mock()
+        with patch.object(svc, '_ACTIVE_JOBS', {22}), \
+             patch.object(svc, '_STOP_EVENTS', {}), \
+             patch.object(registration_debug, 'deactivate_for_job'), \
+             patch.object(svc.db, 'get_job', side_effect=lambda ident: {21: root, 22: child}.get(ident)), \
+             patch.object(svc.db, 'get_successful_retry_for_job', return_value=None), \
+             patch.object(svc, '_account_for_job', return_value=account), \
+             patch.object(svc, '_enrich_account_registration_state', side_effect=lambda x: x), \
+             patch.object(svc, '_read_linked_attempt_for_job', return_value=(attempt, False)), \
+             patch.object(svc, '_retry_jobs_by_ids', return_value={21: root}), \
+             patch.object(svc.db, 'create_retry_job', return_value=({'id': 23, 'log_file': '/tmp/resume-test.log'}, True)) as create, \
+             patch.object(svc, 'get_executor', return_value=executor):
+            svc._deactivate_job(22)
+            result = svc.retry_job(22, registration_driver='roxy')
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['retry_action'], 'registration_resume')
+        self.assertEqual(create.call_args.args, (22,))
+        self.assertEqual(create.call_args.kwargs['email'], root['email'])
+        self.assertEqual(create.call_args.kwargs['account_id'], 44)
+        executor.submit.assert_called_once_with(svc._run_one_job, 23, '/tmp/resume-test.log')
+
+    def test_running_job_without_local_worker_still_cannot_retry(self):
+        _, child, account, _ = facts()
+        child['status'] = 'running'
+        executor = Mock()
+        with patch.object(svc, '_ACTIVE_JOBS', set()), \
+             patch.object(svc.db, 'get_job', return_value=child), \
+             patch.object(svc, '_account_for_job', return_value=account), \
+             patch.object(svc, '_enrich_account_registration_state', side_effect=lambda x: x), \
+             patch.object(svc.db, 'create_retry_job') as create, \
+             patch.object(svc, 'get_executor', return_value=executor):
+            result = svc.retry_job(22)
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['status'], 409)
+        create.assert_not_called()
+        executor.submit.assert_not_called()
+
     def test_task_center_hides_rejected_actions_and_preserves_unrelated_tasks(self):
         task = {'id': 9, 'task_type': 'registration_resume', 'source_system': 'registration_chains',
                 'source_id': '21:registration_resume', 'status': 'partial_success', 'target_status': 'email_verification_pending',

@@ -68,6 +68,17 @@ class ResumeSessionReadTests(unittest.TestCase):
         self.assertEqual(driver.execute_async_script.call_args.args[1], 30000)
         self.assertEqual([c.args[0] for c in driver.set_script_timeout.call_args_list], [31.0, 12])
 
+    def test_confirmation_session_read_uses_only_remaining_otp_budget(self):
+        driver = session_driver()
+        budget = roxy.StageBudget(2.0, clock=lambda: 0.0)
+        self.assertIs(roxy._read_registration_resume_session(driver, EMAIL, budget=budget), SESSION)
+        self.assertEqual(driver.execute_async_script.call_args.args[1], 2000)
+        self.assertEqual(driver.set_script_timeout.call_args_list[0].args[0], 3.0)
+        expired_driver = session_driver()
+        with patch.object(roxy, "_check_manual_stop"), self.assertRaisesRegex(RuntimeError, "request_unknown"):
+            roxy._read_registration_resume_session(expired_driver, EMAIL, budget=roxy.StageBudget(0, clock=lambda: 0.0))
+        expired_driver.execute_async_script.assert_not_called()
+
     def test_explicit_unauthenticated_responses_allow_normal_login(self):
         for status in (200, 401, 403):
             with self.subTest(status=status):
@@ -136,6 +147,9 @@ class ResumeSessionFlowTests(unittest.TestCase):
             mock("context", "core.registration_service.registration_fact_context",
                  return_value={"run_id": 71, "attempt_id": 41, "job_id": 31})
             mock("run", "core.storage.registration.get_run", return_value={"action_type": action, "status": status})
+            mock("take_default", "core.registration.roxy.take_failed_browser", return_value=None)
+            mock("bound_default", "core.registration.roxy.recover_bound_failed_browser", return_value=None, create=True)
+            mock("retain_default", "core.registration.roxy.retain_failed_browser", return_value=False)
             mock("binding", "core.roxy_profile_binding.persist_account_profile_id", return_value=True)
             mock("attach", "core.registration_debug.attach_current_roxy")
             mock("pause", "core.registration_debug.pause_current_failure")
@@ -220,6 +234,7 @@ class ResumeSessionFlowTests(unittest.TestCase):
                 mocks["navigate"].assert_called_once()
                 mocks["persist"].assert_not_called()
 
+
     def test_unverified_resume_never_navigates_or_submits_or_persists(self):
         for response in (
             {"ok": False, "error_type": "timeout"},
@@ -250,3 +265,168 @@ class ResumeSessionFlowTests(unittest.TestCase):
                 driver.execute_async_script.assert_not_called()
                 mocks["navigate"].assert_called_once()
                 mocks["persist"].assert_not_called()
+
+class RetainedWindowFlowTests(unittest.TestCase):
+    run_context = ResumeSessionFlowTests.run_context
+    run_registration = ResumeSessionFlowTests.run_registration
+
+    @contextmanager
+    def retained_context(self, *, page=roxy.PageState.OTP_EMAIL, pending=None):
+        with self.run_context() as (driver, mocks), ExitStack() as stack:
+            driver.current_url = "https://auth.openai.com/email-verification"
+            driver._registration_otp_after_ts = 1234.5
+            opened = mocks["opened"].return_value
+            candidate = SimpleNamespace(driver=driver, opened=opened, otp_after_ts=1234.5)
+            for name, value in (
+                ("take_failed_browser", candidate), ("retain_failed_browser", True),
+                ("prepare_retained_resume", SimpleNamespace(
+                    page_state=page, password="unit-original-password", pending_otp=pending)),
+                ("_wait_email_otp_page_ready", "accepted"),
+                ("_wait_after_email_otp_submit", "accepted"),
+                ("record_browser_submission_fact", {}),
+            ):
+                mocks[name] = stack.enter_context(patch.object(roxy, name, return_value=value, create=True))
+            if pending is not None:
+                mocks["prepare_retained_resume"].side_effect = [
+                    mocks["prepare_retained_resume"].return_value,
+                    SimpleNamespace(page_state=roxy.PageState.PROFILE, password="unit-original-password", pending_otp=None),
+                ]
+            mocks["start_capture"] = stack.enter_context(patch("core.browser_traffic.start_roxy_capture"))
+            for name in ("_clear_otp_inputs", "_type_otp", "_submit_email_otp_current_form", "_resend_email_otp_after_failure"):
+                mocks[name] = stack.enter_context(patch.object(roxy, name))
+            mocks["_has_access_token"].return_value = False
+            mocks["_fetch_chatgpt_session"].return_value = SESSION
+            mocks["_complete_profile_page"].return_value = False
+            yield driver, mocks
+
+    def test_retry_claims_original_live_driver_without_opening_or_navigating(self):
+        with self.retained_context() as (driver, mocks):
+            result = self.run_registration()
+            self.assertTrue(result["success"], result.get("error"))
+            self.assertEqual(driver._registration_otp_after_ts, 1234.5)
+            for name in ("opened", "driver", "navigate", "_submit_email_and_wait_next", "_fill_password_page_if_present", "login"):
+                mocks[name].assert_not_called()
+            mocks["take_failed_browser"].assert_called_once()
+            mocks["start_capture"].assert_called_once()
+            mocks["retain_failed_browser"].assert_not_called()
+
+    def test_pre_account_retry_uses_original_window_and_saved_password(self):
+        with self.retained_context() as (_, mocks):
+            result = self.run_registration(profile_id=None, existing_password=None)
+        self.assertTrue(result["success"], result.get("error"))
+        self.assertEqual(mocks["persist"].call_args.kwargs["extra"]["account_password"], "unit-original-password")
+        mocks["opened"].assert_not_called()
+        mocks["navigate"].assert_not_called()
+
+    def test_durable_binding_connects_saved_browser_without_open_or_navigation(self):
+        with self.retained_context() as (driver, mocks):
+            candidate = mocks["take_failed_browser"].return_value
+            candidate.driver = None
+            mocks["take_failed_browser"].return_value = None
+            mocks["bound_default"].return_value = candidate
+            mocks["client"].return_value._find_active_profile_by_id.return_value = {"openStatus": 1}
+            result = self.run_registration()
+        self.assertTrue(result["success"], result.get("error"))
+        self.assertTrue(driver._registration_retained_identity_required)
+        mocks["driver"].assert_called_once_with(candidate.opened)
+        mocks["opened"].assert_not_called()
+        mocks["navigate"].assert_not_called()
+
+    def test_explicitly_closed_saved_browser_uses_existing_profile_open_path(self):
+        with self.retained_context() as (_, mocks):
+            candidate = mocks["take_failed_browser"].return_value
+            candidate.driver = None
+            mocks["client"].return_value._find_active_profile_by_id.return_value = {"openStatus": 0}
+            result = self.run_registration()
+        self.assertFalse(result["success"])
+        mocks["opened"].assert_called_once()
+        self.assertEqual(mocks["opened"].call_args.kwargs["profile_id"], "unit-profile")
+        mocks["prepare_retained_resume"].assert_not_called()
+
+    def test_uncertain_saved_browser_state_never_opens_another_environment(self):
+        with self.retained_context() as (_, mocks):
+            mocks["take_failed_browser"].return_value.driver = None
+            mocks["client"].return_value._find_active_profile_by_id.side_effect = TimeoutError("unit lookup failed")
+            with self.assertRaisesRegex(RuntimeError, "request_unknown"):
+                self.run_registration()
+        mocks["opened"].assert_not_called()
+        mocks["navigate"].assert_not_called()
+
+    def test_unknown_original_otp_only_observes_and_confirms_same_receipt(self):
+        pending = roxy.BrowserSubmissionReceipt(kind="otp", stage="email_otp", phase="unknown", endpoint_kind="otp_submit")
+        with self.retained_context(pending=pending) as (_, mocks):
+            result = self.run_registration()
+        self.assertTrue(result["success"], result.get("error"))
+        mocks["_wait_after_email_otp_submit"].assert_called_once()
+        self.assertEqual(mocks["prepare_retained_resume"].call_count, 2)
+        for name in ("wait_for_otp", "_clear_otp_inputs", "_type_otp", "_submit_email_otp_current_form", "_resend_email_otp_after_failure", "login"):
+            mocks[name].assert_not_called()
+
+    def test_unknown_original_otp_stays_unknown_without_extra_submission(self):
+        pending = roxy.BrowserSubmissionReceipt(kind="otp", stage="email_otp", phase="unknown", endpoint_kind="otp_submit")
+        with self.retained_context(pending=pending) as (_, mocks):
+            mocks["_wait_after_email_otp_submit"].return_value = "stuck"
+            result = self.run_registration()
+        self.assertFalse(result["success"])
+        self.assertTrue(result["request_unknown"])
+        for name in ("wait_for_otp", "_type_otp", "_submit_email_otp_current_form", "_resend_email_otp_after_failure", "navigate", "login", "persist"):
+            mocks[name].assert_not_called()
+        mocks["retain_failed_browser"].assert_called_once()
+
+    def test_pending_otp_checks_identity_again_before_confirming_or_continuing(self):
+        pending = roxy.BrowserSubmissionReceipt(kind="otp", stage="email_otp", phase="unknown", endpoint_kind="otp_submit")
+        for message in ("原窗口来源无法核验", "原窗口的邮箱身份与原任务不一致"):
+            with self.subTest(message=message), self.retained_context(pending=pending) as (_, mocks):
+                initial = mocks["prepare_retained_resume"].return_value
+                mocks["prepare_retained_resume"].side_effect = [initial, RuntimeError("request_unknown: " + message)]
+                result = self.run_registration()
+            self.assertFalse(result["success"])
+            self.assertTrue(result["request_unknown"])
+            mocks["record_browser_submission_fact"].assert_not_called()
+            for name in ("persist", "_complete_profile_page", "wait_for_otp", "_type_otp", "_resend_email_otp_after_failure"):
+                mocks[name].assert_not_called()
+
+    def test_unknown_mail_boundary_allows_only_original_pending_observation(self):
+        pending = roxy.BrowserSubmissionReceipt(kind="otp", stage="email_otp", phase="unknown", endpoint_kind="otp_submit")
+        with self.retained_context(pending=pending) as (_, mocks):
+            mocks["take_failed_browser"].return_value.otp_after_ts = None
+            result = self.run_registration()
+        self.assertTrue(result["success"], result.get("error"))
+        mocks["_wait_after_email_otp_submit"].assert_called_once()
+        mocks["wait_for_otp"].assert_not_called()
+        with self.retained_context() as (_, mocks):
+            mocks["take_failed_browser"].return_value.otp_after_ts = None
+            result = self.run_registration()
+        self.assertFalse(result["success"])
+        self.assertTrue(result["request_unknown"])
+        mocks["wait_for_otp"].assert_not_called()
+
+    def test_password_page_cannot_start_mail_read_with_unknown_original_boundary(self):
+        with self.retained_context(page=roxy.PageState.PASSWORD_CREATE) as (_, mocks):
+            mocks["take_failed_browser"].return_value.otp_after_ts = None
+            mocks["_fill_password_page_if_present"].return_value = "unit-original-password"
+            mocks["_wait_email_otp_page_ready"].return_value = "ready"
+            result = self.run_registration()
+        self.assertFalse(result["success"])
+        self.assertTrue(result["request_unknown"])
+        mocks["wait_for_otp"].assert_not_called()
+        mocks["_resend_email_otp_after_failure"].assert_not_called()
+
+    def test_profile_page_resumes_profile_without_password_or_mail(self):
+        with self.retained_context(page=roxy.PageState.PROFILE) as (_, mocks):
+            result = self.run_registration()
+        self.assertTrue(result["success"], result.get("error"))
+        for name in ("navigate", "_fill_password_page_if_present", "login", "wait_for_otp", "_wait_email_otp_page_ready"):
+            mocks[name].assert_not_called()
+        mocks["_complete_profile_page"].assert_called_once()
+
+    def test_failed_window_is_remembered_after_previous_resources_finish(self):
+        with self.retained_context() as (driver, mocks):
+            finished = []
+            mocks["client"].return_value.cleanup_profile.side_effect = lambda _: finished.append("cleanup")
+            mocks["retain_failed_browser"].side_effect = lambda *_args, **_kwargs: finished.append("remember")
+            mocks["prepare_retained_resume"].side_effect = RuntimeError("request_unknown: 原页面读取未完成")
+            result = self.run_registration()
+        self.assertFalse(result["success"])
+        self.assertEqual(finished, ["cleanup", "remember"])
+        self.assertIs(mocks["retain_failed_browser"].call_args.args[0], driver)

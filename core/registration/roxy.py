@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import copy
 import json
 import math
 import random
@@ -31,6 +32,8 @@ from core.registration.state_machine import (
 from core.registration.auth_context import AuthExecutionContext
 from core.registration.email_otp import _EmailSubmissionUnknown
 from core.registration.browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact
+from core.registration.retained_browser import recover_bound_failed_browser, retain_failed_browser, take_failed_browser
+from core.registration.retained_resume import prepare_retained_resume
 from core.auth_challenge import (
     MfaSecretMissingError,
     PasswordRejectedError,
@@ -113,7 +116,7 @@ def _validate_registration_session_identity(session_info: dict, email: str) -> N
         raise RuntimeError("session_identity_mismatch: 登录会话与任务邮箱不一致，已停止保存凭据")
 
 
-def _read_registration_resume_session(driver, email: str) -> dict | None:
+def _read_registration_resume_session(driver, email: str, *, budget: StageBudget | None = None) -> dict | None:
     """原环境在 ChatGPT 同源页时，只读一次完整会话；未知结果不触发新的登录提交。"""
     from .session_auth import ChatGPTSessionUnavailable, _read_chatgpt_session_once
 
@@ -121,7 +124,8 @@ def _read_registration_resume_session(driver, email: str) -> dict | None:
     if current.scheme != "https" or current.hostname != "chatgpt.com" or current.port not in (None, 443):
         return None
     try:
-        session = _read_chatgpt_session_once(driver, timeout=30, strict_read=True)
+        timeout = min(30, budget.require("原浏览器会话核验")) if budget is not None else 30
+        session = _read_chatgpt_session_once(driver, timeout=timeout, strict_read=True)
     except ChatGPTSessionUnavailable:
         return None
     except Exception as exc:
@@ -131,6 +135,18 @@ def _read_registration_resume_session(driver, email: str) -> dict | None:
         _validate_registration_session_identity(session, email)
         logger.info("[Roxy注册] 原环境会话已核验：token_present=%s identity_matched=%s", True, True)
     return session
+
+
+def _retained_profile_can_attach(client, opened) -> bool:
+    """只把明确关闭或缺失当成原窗口不可用；查询未知不能新建环境。"""
+    try:
+        row = client._find_active_profile_by_id(opened.profile_id)
+    except Exception:
+        raise RuntimeError("request_unknown: 原浏览器状态未能核验，已保留原提交") from None
+    if row is None:
+        return False
+    status = str(row.get("openStatus", row.get("open_status", ""))).strip().lower()
+    return status not in {"0", "false", "closed", "close"}
 
 
 _OTP_PREPARE_CURRENT_FORM_SCRIPT = r"""
@@ -792,20 +808,55 @@ def run_roxy_registration(
     )
     plan_check_enabled = bool(options.get("plan_check_enabled", True))
 
-    report_job_progress("browser", "running", "正在打开或创建 Roxy 浏览器环境")
+    from core.registration_service import registration_fact_context
+
+    facts = registration_fact_context()
+    retained = take_failed_browser(email=email, profile_id=profile_id, facts=facts)
+    if retained is None:
+        retained = recover_bound_failed_browser(email=email, profile_id=profile_id, facts=facts)
+    report_job_progress("browser", "running", "正在接管原失败窗口" if retained else "正在打开或创建 Roxy 浏览器环境")
     client = RoxyBrowserClient()
-    opened = _open_roxy_profile_with_capacity_wait(
-        client,
-        proxy,
-        profile_id=profile_id,
-        progress_callback=report_job_progress,
-        data_saver_flow="registration",
-    )
+    retained_driver = None
+    if retained:
+        retained_driver = retained.driver
+        try:
+            if retained_driver is None:
+                raise RuntimeError("原 Selenium 连接未保存在当前进程")
+            str(retained_driver.current_url)
+        except Exception:
+            try:
+                if not _retained_profile_can_attach(client, retained.opened):
+                    retained = None
+                    retained_driver = None
+                else:
+                    # 只连接保存的原 debugger；重连的活页还需独立核验邮箱身份。
+                    retained_driver = _build_driver(retained.opened)
+                    retained_driver._registration_retained_identity_required = True
+                    for attr in ("_browser_submission_receipt", "_browser_submission_receipts",
+                                 "_registration_otp_after_ts", "_registration_otp_tracker", "_email_otp_page_refresh_done"):
+                        if retained.driver is not None and hasattr(retained.driver, attr):
+                            setattr(retained_driver, attr, getattr(retained.driver, attr))
+            except Exception:
+                if retained.driver is not None:
+                    retain_failed_browser(retained.driver, retained.opened, email=email, facts=facts)
+                raise RuntimeError("request_unknown: 原浏览器连接未能恢复，已保留原提交") from None
+    if retained:
+        # 旧 worker 已退出；沿用原连接，重新建立本轮观察器，不发送 browser/open。
+        opened = copy.copy(retained.opened)
+        opened.created_by_run = False
+        opened.traffic_capture = None
+    else:
+        opened = _open_roxy_profile_with_capacity_wait(
+            client,
+            proxy,
+            profile_id=profile_id,
+            progress_callback=report_job_progress,
+            data_saver_flow="registration",
+        )
     try:
         from core import browser_traffic
-        from core.registration_service import registration_fact_context
-
-        facts = registration_fact_context()
+        if retained:
+            browser_traffic.start_roxy_capture(opened, purpose="registration")
         browser_traffic.bind_roxy_capture(
             opened,
             purpose="registration",
@@ -830,7 +881,7 @@ def run_roxy_registration(
             except Exception:
                 logger.exception("[Roxy注册] 绑定失败后的替代环境清理失败")
             raise
-    driver = None
+    driver = retained_driver
     data_saver = None
     public_asset_cache = None
     postprocess_data_saver = None
@@ -844,13 +895,15 @@ def run_roxy_registration(
     plan_check_session = None
     remote_identity = "unknown"
     auth_challenge_chain: list[str] = []
+    failed = False
     try:
         try:
             from core.registration_debug import attach_current_roxy
             attach_current_roxy(opened.debugger_address)
         except Exception:
             logger.exception("[Roxy注册][Debug] 启动浏览器网络抓包失败；注册流程继续执行")
-        driver = _build_driver(opened)
+        if driver is None:
+            driver = _build_driver(opened)
         # 认证事实共用当前 Attempt/Run；CDP 观察器只需从 driver 读取这份只读
         # 上下文，不另起消费者或在事件里复制敏感凭据。
         try:
@@ -942,12 +995,25 @@ def run_roxy_registration(
         logger.info("[Roxy注册] 开始：%s，profile=%s", email, opened.profile_id)
 
         verified_resume_session = None
-        if resume_scope and existing_password and profile_id and str(opened.profile_id) == str(profile_id):
+        retained_state = None
+        if retained or (resume_scope and existing_password and profile_id and str(opened.profile_id) == str(profile_id)):
             report_job_progress("page", "running", "正在核验原浏览器环境的登录态")
             verified_resume_session = _read_registration_resume_session(driver, email)
-        otp_after_ts = time.time()
+        if retained:
+            retained_state = prepare_retained_resume(
+                driver, email=email, existing_password=existing_password, facts=context,
+                verified_session=verified_resume_session,
+            )
+            existing_password = retained_state.password
+        otp_after_ts = retained.otp_after_ts if retained else time.time()
+        if (retained_state and retained_state.page_state == PageState.OTP_EMAIL
+                and retained_state.pending_otp is None and otp_after_ts is None):
+            raise RuntimeError("request_unknown: 原验证码邮件时间未能核验，已保留原浏览器")
+        driver._registration_otp_after_ts = otp_after_ts
         if verified_resume_session:
             report_job_progress("page", "skipped", "原环境登录态已核验，无需打开登录页")
+        elif retained_state:
+            report_job_progress("page", "skipped", "已接管原失败窗口，从当前认证页面继续")
         else:
             report_job_progress("page", "running", "正在打开 ChatGPT 注册页")
             logger.info("[Roxy注册] 打开登录页：https://chatgpt.com/auth/login")
@@ -979,6 +1045,14 @@ def run_roxy_registration(
             next_state = "authenticated"
             report_job_progress("submit_email", "skipped", "原环境登录态已核验，无需再次提交邮箱")
             report_job_progress("auth_redirect", "skipped", "原环境登录态已核验，无需认证跳转")
+        elif retained_state:
+            next_state = {
+                PageState.PASSWORD_CREATE: "password", PageState.PASSWORD_LOGIN: "login_password",
+                PageState.OTP_EMAIL: "otp", PageState.PROFILE: "profile",
+                PageState.MFA_TOTP: "totp", PageState.EMAIL_VERIFIED: "email_verified",
+            }.get(retained_state.page_state, "authenticated")
+            report_job_progress("submit_email", "skipped", "已核验原任务窗口，无需再次提交邮箱")
+            report_job_progress("auth_redirect", "skipped", "从原窗口当前认证步骤继续")
         else:
             report_job_progress("submit_email", "running", "正在等待可见的邮箱输入框")
             next_state = _submit_email_and_wait_next(
@@ -993,7 +1067,7 @@ def run_roxy_registration(
         _check_manual_stop()
         # 只要已经到达 OpenAI 的密码/OTP 等下一页，认证跳转就已经完成。密码创建是
         # 独立业务阶段，不能继续挂在 auth_redirect 上导致失败原因误导。
-        if not verified_resume_session:
+        if not verified_resume_session and not retained_state:
             report_job_progress("auth_redirect", "success", f"已进入认证下一步：{next_state}")
 
         # 新版注册流可能先进入 /create-account/password；参考 FlowPilot 的 fill-password 步骤，
@@ -1050,7 +1124,9 @@ def run_roxy_registration(
                     raise
 
         try:
-            if verified_resume_session:
+            if verified_resume_session or (retained_state and retained_state.page_state not in {
+                PageState.PASSWORD_CREATE, PageState.PASSWORD_LOGIN,
+            }):
                 openai_password = existing_password
             else:
                 openai_password = _fill_password_page_if_present(
@@ -1107,7 +1183,7 @@ def run_roxy_registration(
                 bool(existing_password),
             )
         resume_login_state = ""
-        if existing_password and not verified_resume_session:
+        if existing_password and not verified_resume_session and not retained_state:
             # 密码提交后可能进入邮箱 OTP，也可能进入 Authenticator TOTP。
             # 两种页面外观相似，必须与 Codex OAuth 共用同一个认证状态机。
             from core.roxy_codex_oauth import complete_openai_login_challenge
@@ -1142,7 +1218,10 @@ def run_roxy_registration(
             )
         last_otp_ui_ack = "unconfirmed"
         current_otp = otp_code
-        submitted_otps = _OtpAttemptTracker()
+        submitted_otps = getattr(driver, "_registration_otp_tracker", None) if retained else None
+        if not isinstance(submitted_otps, _OtpAttemptTracker):
+            submitted_otps = _OtpAttemptTracker()
+        driver._registration_otp_tracker = submitted_otps
         max_otp_attempts = 3
         try:
             from config import email as _email_cfg
@@ -1151,7 +1230,35 @@ def run_roxy_registration(
             otp_total_wait = 240
         otp_budget = StageBudget.start(otp_total_wait)
         otp_wait_deadline = otp_budget.deadline
-        otp_already_complete = bool(verified_resume_session) or resume_login_state == "advanced" or _has_access_token(driver)
+        otp_already_complete = (
+            bool(verified_resume_session)
+            or bool(retained_state and retained_state.page_state in {PageState.PROFILE, PageState.EMAIL_VERIFIED})
+            or resume_login_state == "advanced" or _has_access_token(driver)
+        )
+        if retained_state and retained_state.pending_otp:
+            # 未确认的原 POST 只观察同一回执；不进入收码、填码或重发分支。
+            outcome = _wait_after_email_otp_submit(driver, timeout=60, budget=otp_budget)
+            if outcome not in {"accepted", "email_verified", "totp_required"}:
+                raise RuntimeError("request_unknown: otp_request_unconfirmed: 原验证码提交仍未确认，已保留原窗口，未重新填码或重发")
+            # 观察期间页面可能变更；同源页面/完整会话再次核验后才收口原回执。
+            otp_budget.require("原验证码提交再次核验")
+            verified_resume_session = _read_registration_resume_session(driver, email, budget=otp_budget)
+            retained_state = prepare_retained_resume(
+                driver, email=email, existing_password=existing_password, facts=context,
+                verified_session=verified_resume_session,
+            )
+            if retained_state.pending_otp is not None or retained_state.page_state not in {
+                PageState.PROFILE, PageState.EMAIL_VERIFIED, PageState.MFA_TOTP, PageState.AUTHENTICATED,
+            }:
+                raise RuntimeError("request_unknown: 原验证码提交未能再次核验，已保留原窗口")
+            if retained_state.page_state == PageState.MFA_TOTP:
+                _complete_registration_totp_after_email_otp(
+                    driver, email, existing_password, existing_totp_secret, budget=otp_budget,
+                )
+                remote_identity = "existing"
+                auth_challenge_chain.append("totp")
+            otp_already_complete = True
+            auth_challenge_chain.append("email_otp")
         for otp_attempt in range(1, max_otp_attempts + 1):
             if otp_already_complete:
                 break
@@ -1180,6 +1287,8 @@ def run_roxy_registration(
                     auth_challenge_chain.append("email_otp")
                 break
             if current_otp is None:
+                if otp_after_ts is None:
+                    raise RuntimeError("request_unknown: 原验证码邮件时间未能核验，已保留原窗口，未收码或重发")
                 logger.info("[Roxy注册][OTP] 等待验证码：%s（第 %s/%s 次）", email, otp_attempt, max_otp_attempts)
                 try:
                     attempt_wait = _registration_otp_attempt_wait_seconds(
@@ -1239,6 +1348,7 @@ def run_roxy_registration(
                         report_job_progress("email_otp", "failed", f"{failure_code}: {failure_detail}")
                         raise RuntimeError(f"{failure_code}: {failure_detail}") from resend_exc
                     otp_after_ts = float(resend_result.get("requested_after_ts") or time.time())
+                    driver._registration_otp_after_ts = otp_after_ts
                     last_otp_ui_ack = str(resend_result.get("ui_ack") or "unconfirmed")
                     report_job_otp_evidence(
                         request_kind="resend",
@@ -1274,6 +1384,7 @@ def run_roxy_registration(
                     report_job_progress("email_otp", "failed", f"{failure_code}: {failure_detail}")
                     raise RuntimeError(f"{failure_code}: {failure_detail}") from resend_exc
                 otp_after_ts = float(resend_result.get("requested_after_ts") or time.time())
+                driver._registration_otp_after_ts = otp_after_ts
                 last_otp_ui_ack = str(resend_result.get("ui_ack") or "unconfirmed")
                 report_job_otp_evidence(
                     request_kind="resend",
@@ -1388,6 +1499,7 @@ def run_roxy_registration(
                 report_job_progress("email_otp", "failed", f"{failure_code}: {failure_detail}")
                 raise RuntimeError(f"{failure_code}: {failure_detail}") from resend_exc
             otp_after_ts = float(resend_result.get("requested_after_ts") or time.time())
+            driver._registration_otp_after_ts = otp_after_ts
             last_otp_ui_ack = str(resend_result.get("ui_ack") or "unconfirmed")
             report_job_otp_evidence(
                 request_kind="resend",
@@ -1745,6 +1857,7 @@ def run_roxy_registration(
             "error": None if not errors else "; ".join(errors),
         }
     except Exception as exc:
+        failed = True
         logger.error("[Roxy注册] 失败：%s: %s", type(exc).__name__, exc)
         logger.debug("[Roxy注册] 失败详情", exc_info=True)
         try:
@@ -1894,7 +2007,11 @@ def run_roxy_registration(
             except Exception:
                 pass
         if not profile_discarded:
-            client.cleanup_profile(opened)
+            try:
+                client.cleanup_profile(opened)
+            finally:
+                if failed and driver is not None and bool(_cfg.ROXY_KEEP_BROWSER_OPEN):
+                    retain_failed_browser(driver, opened, email=email, facts=facts)
         if plan_check_session is not None:
             try:
                 plan_check_session.session.close()

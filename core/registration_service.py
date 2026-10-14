@@ -183,6 +183,12 @@ def _deactivate_job(job_id: int) -> None:
     task_run_log.clear_current_context()
 
 
+def is_job_worker_active(job_id: int) -> bool:
+    """确认当前进程的原任务 worker 是否尚未完成收口。"""
+    with _STOP_LOCK:
+        return int(job_id) in _ACTIVE_JOBS
+
+
 def is_stop_requested(job_id: int | None = None) -> bool:
     if job_id is None:
         job_id = getattr(_THREAD_CTX, "job_id", None)
@@ -3165,6 +3171,10 @@ def retry_job(
     source = db.get_job(job_id)
     if source is None:
         return {"ok": False, "error": "任务不存在", "status": 404}
+    # 终态会先于 worker 的代理、调试记录器及浏览器资源收口写入数据库。
+    # 等原 worker 完成退出后才能重跑，避免旧清理动作关闭新任务复用的现场。
+    if is_job_worker_active(job_id):
+        return {"ok": False, "error": "原任务仍在收口，暂不能重跑", "status": 409}
 
     account = _enrich_account_registration_state(_account_for_job(source))
     retry_info = get_retry_info(source, account_override=account)
