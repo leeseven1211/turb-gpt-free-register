@@ -939,7 +939,8 @@ def _fill_password_page_if_present(
                         result="cancelled",
                     )
                 raise RuntimeError(
-                    f"password_form_not_ready: 密码表单在提交前未就绪，尚未提交密码：{result.get('reason') or 'empty_result'}"
+                    f"password_form_not_ready: 密码表单在提交前未就绪，尚未提交密码："
+                    f"{result.get('reason') or 'empty_result'}；{_password_page_state_summary(last)}"
                 )
             time.sleep(0.4)
         logger.info("%s 已填写%s密码页并排队一次提交，等待页面确认", _log_prefix(driver), "登录" if is_login_password else "注册")

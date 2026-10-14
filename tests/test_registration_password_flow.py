@@ -197,6 +197,23 @@ class PasswordFormTargetTests(unittest.TestCase):
 
 
 class PasswordSubmissionEvidenceTests(unittest.TestCase):
+    def test_password_page_summary_excludes_url_query_and_page_text(self):
+        summary = password_auth._password_page_state_summary({
+            "url": "https://auth.openai.com/create-account/password?email=private@example.test",
+            "inputs": [{"type": "password", "value": "private-password"}],
+            "buttons": [{"text": "private-button-text"}],
+            "text": "private-page-copy",
+        })
+
+        self.assertEqual(
+            summary,
+            "path=/create-account/password inputs=1 buttons=1 text_length=17",
+        )
+        for private_value in (
+            "private@example.test", "private-password", "private-button-text", "private-page-copy",
+        ):
+            self.assertNotIn(private_value, summary)
+
     def test_snapshot_keeps_only_whitelisted_metadata_and_existing_request_fact(self):
         receipt = BrowserSubmissionReceipt(kind="password", stage="password_create", endpoint_kind="password_submit")
         receipt.phase = "request_observed"
