@@ -617,7 +617,7 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
 def _fill_password_page_if_present(
     driver,
     email: str,
-    timeout: int = 25,
+    timeout: int = 60,
     *,
     existing_password: str | None = None,
     on_password_prepared=None,

@@ -579,11 +579,11 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
             ) as switch,
         ):
             with self.assertRaisesRegex(RuntimeError, "stop after checking timeout"):
-                roxy_registration._fill_password_page_if_present(driver, "masked@example.test", timeout=25)
+                roxy_registration._fill_password_page_if_present(driver, "masked@example.test", timeout=60)
 
         switch_timeout = switch.call_args.kwargs["timeout"]
         self.assertGreater(switch_timeout, 15)
-        self.assertLessEqual(switch_timeout, 25)
+        self.assertLessEqual(switch_timeout, 60)
 
     def test_roxy_empty_otp_shell_exhausts_without_direct_navigation(self):
         driver = _RoxyDriver()

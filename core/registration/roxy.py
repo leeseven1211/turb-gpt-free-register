@@ -1221,7 +1221,7 @@ def run_roxy_registration(
                 openai_password = _fill_password_page_if_present(
                     driver,
                     email,
-                    timeout=25,
+                    timeout=60,
                     existing_password=existing_password,
                     on_password_prepared=_checkpoint_prepared_password,
                     on_password_submitted=_checkpoint_submitted_password,
