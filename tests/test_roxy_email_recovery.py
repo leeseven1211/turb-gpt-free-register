@@ -260,7 +260,7 @@ class RoxyEmailRecoveryTests(unittest.TestCase):
         preparation_order = []
         preparation = Mock(side_effect=lambda _fields: preparation_order.append("prepared"))
         with patch.object(
-            roxy_registration.time, "monotonic", side_effect=[100.0, 100.0, 101.0]
+            roxy_registration.time, "monotonic", return_value=100.0
         ), patch.object(roxy_registration.time, "sleep"), patch.object(
             roxy_registration, "_human_type_text", side_effect=lambda *_args, **_kwargs: preparation_order.append("typed")
         ) as type_text:

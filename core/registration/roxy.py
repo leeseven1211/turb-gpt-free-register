@@ -384,6 +384,9 @@ _wait_email_submit_next_state = _make_shared_compatibility_wrapper("_wait_email_
 _submit_email_and_wait_next = _make_shared_compatibility_wrapper("_submit_email_and_wait_next")
 _type_otp = _make_shared_compatibility_wrapper("_type_otp")
 _email_otp_page_state = _make_shared_compatibility_wrapper("_email_otp_page_state")
+_wait_email_otp_page_ready = _make_shared_compatibility_wrapper("_wait_email_otp_page_ready")
+_recover_email_otp_page_if_needed = _make_shared_compatibility_wrapper("_recover_email_otp_page_if_needed")
+_email_otp_page_recovery_reason = _make_shared_compatibility_wrapper("_email_otp_page_recovery_reason")
 _is_email_verification_page = _make_shared_compatibility_wrapper("_is_email_verification_page")
 _clear_otp_inputs = _make_shared_compatibility_wrapper("_clear_otp_inputs")
 _click_resend_email_otp = _make_shared_compatibility_wrapper("_click_resend_email_otp")
@@ -1152,6 +1155,30 @@ def run_roxy_registration(
         for otp_attempt in range(1, max_otp_attempts + 1):
             if otp_already_complete:
                 break
+            ready_outcome = _wait_email_otp_page_ready(driver, budget=otp_budget)
+            if ready_outcome == "stuck":
+                failure_code = "otp_request_unconfirmed"
+                failure_detail = "验证码页表单未就绪，受限恢复后仍未确认；保留原 Attempt，未自动重发"
+                report_job_otp_evidence(detail=failure_detail, failure_code=failure_code)
+                report_job_progress("email_otp", "failed", f"{failure_code}: {failure_detail}")
+                raise RuntimeError(f"{failure_code}: {failure_detail}")
+            if ready_outcome == "totp_required":
+                remote_identity = "existing"
+                post_otp_state = _complete_registration_totp_after_email_otp(
+                    driver, email, existing_password, existing_totp_secret,
+                    timeout=min(45, otp_budget.require("邮箱验证后 TOTP")),
+                    budget=otp_budget,
+                )
+                if "email_otp" not in auth_challenge_chain:
+                    auth_challenge_chain.append("email_otp")
+                if "totp" not in auth_challenge_chain:
+                    auth_challenge_chain.append("totp")
+                resume_login_state = "advanced"
+                break
+            if ready_outcome in ("accepted", "email_verified"):
+                if "email_otp" not in auth_challenge_chain:
+                    auth_challenge_chain.append("email_otp")
+                break
             if current_otp is None:
                 logger.info("[Roxy注册][OTP] 等待验证码：%s（第 %s/%s 次）", email, otp_attempt, max_otp_attempts)
                 try:
@@ -1324,6 +1351,7 @@ def run_roxy_registration(
                     email,
                     existing_password,
                     existing_totp_secret,
+                    budget=otp_budget,
                 )
                 if "email_otp" not in auth_challenge_chain:
                     auth_challenge_chain.append("email_otp")

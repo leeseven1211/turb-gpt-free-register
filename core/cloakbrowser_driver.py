@@ -6,6 +6,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 from config import cloakbrowser as _cfg
@@ -179,6 +180,11 @@ class CloakSeleniumDriver:
         return str(getattr(self.page, "url", "") or "")
 
     @property
+    def timeouts(self) -> SimpleNamespace:
+        """提供共享恢复逻辑需要的当前页面加载超时，单位与 Selenium 一致。"""
+        return SimpleNamespace(page_load=self._page_load_timeout_ms / 1000)
+
+    @property
     def window_handles(self) -> list[str]:
         pages = self._pages()
         return [str(i) for i in range(len(pages))]
@@ -207,8 +213,8 @@ class CloakSeleniumDriver:
         except Exception:
             pass
 
-    def set_page_load_timeout(self, seconds: int) -> None:
-        self._page_load_timeout_ms = int(seconds) * 1000
+    def set_page_load_timeout(self, seconds: float) -> None:
+        self._page_load_timeout_ms = float(seconds) * 1000
         try:
             self.page.set_default_navigation_timeout(self._page_load_timeout_ms)
             self.page.set_default_timeout(self._page_load_timeout_ms)

@@ -28,7 +28,9 @@ from core.operation_runtime import (
 )
 from core.openai_auth import AccountUnusableError, detect_account_unusable_response_body
 from core.roxybrowser_client import RoxyBrowserClient
-from core.registration.auth_context import AuthExecutionContext, execution_context
+from core.registration.auth_context import (
+    AuthExecutionContext, checkpoint as _auth_checkpoint, current_execution_context, execution_context,
+)
 from core.registration.email_otp import (
     _clear_confirmed_email_submission, _email_ui_submission_state, _EmailSubmissionUnknown,
 )
@@ -129,7 +131,14 @@ def _is_empty_auth_challenge_state(state: dict | None) -> bool:
 
 def _refresh_auth_challenge_after_submit(driver, stage: str) -> None:
     """Refresh one stuck auth page without resubmitting a password or TOTP."""
+    context = current_execution_context()
+    remaining = context.remaining() if context is not None else None
+    old_timeout = None
     try:
+        _auth_checkpoint()
+        if remaining is not None:
+            old_timeout = float(driver.timeouts.page_load)
+            driver.set_page_load_timeout(min(10, remaining))
         driver.refresh()
         logger.warning(
             "[Codex][Browser] %s 提交后页面未推进，执行一次受限刷新（不重复提交凭据）",
@@ -148,7 +157,16 @@ def _refresh_auth_challenge_after_submit(driver, stage: str) -> None:
             driver.execute_script("window.stop();")
         except Exception:
             pass
-    human_delay("navigate")
+    finally:
+        if old_timeout is not None:
+            try:
+                driver.set_page_load_timeout(old_timeout)
+            except Exception:
+                pass
+    if context is not None and context.budget is not None:
+        human_delay("navigate", budget=context.budget)
+    else:
+        human_delay("navigate")
 
 
 def _codex_prefix() -> str:
@@ -848,7 +866,12 @@ def _submit_saved_login_totp(driver, email: str, totp_secret: str) -> None:
 
     remaining = 30 - (int(time.time()) % 30)
     if remaining < 6:
-        time.sleep(remaining + 1)
+        context = current_execution_context()
+        if context is not None and context.budget is not None:
+            context.budget.sleep(remaining + 1, sleeper=time.sleep)
+        else:
+            time.sleep(remaining + 1)
+    _auth_checkpoint()
     _type_otp(driver, pyotp.TOTP(totp_secret).now(), timeout=15)
     if not _click_if_present(driver, [
         "button[type='submit']",
@@ -956,6 +979,8 @@ def _complete_login_challenge_after_email(
     last_state: dict = {}
     last_url = ""
     while time.time() < end:
+        # 注册的邮箱验证恢复携带原阶段预算，页面转换不能重新延长它。
+        _auth_checkpoint()
         state = _login_challenge_state(driver)
         last_state = state
         dead_code = _detect_account_unusable_login_state(state)
@@ -1103,12 +1128,21 @@ def _complete_login_challenge_after_email(
                     raise RuntimeError(f"本地 TOTP 未通过页面校验：errors={(state.get('errors') or [])[:3]}")
                 if time.time() - totp_submitted_at > 20:
                     raise RuntimeError("提交本地 TOTP 后页面 20 秒未继续，已在手机号验证前停止")
-                time.sleep(0.5)
+                context = current_execution_context()
+                if context is not None and context.budget is not None:
+                    context.budget.sleep(0.5, sleeper=time.sleep)
+                else:
+                    time.sleep(0.5)
                 continue
+            _auth_checkpoint()
             _submit_saved_login_totp(driver, email, totp_secret)
             totp_submitted_at = time.time()
             end = max(end, totp_submitted_at + 25)
-            human_delay("form")
+            context = current_execution_context()
+            if context is not None and context.budget is not None:
+                human_delay("form", budget=context.budget)
+            else:
+                human_delay("form")
             continue
 
         # After a valid TOTP submit, OpenAI can briefly leave the browser on

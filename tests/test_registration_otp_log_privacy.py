@@ -125,6 +125,7 @@ class RegistrationOtpLogPrivacyTests(unittest.TestCase):
             stack.enter_context(patch.object(roxy, "_submit_email_and_wait_next", return_value="email_otp"))
             stack.enter_context(patch.object(roxy, "_fill_password_page_if_present", return_value=None))
             stack.enter_context(patch.object(roxy, "_has_access_token", return_value=False))
+            stack.enter_context(patch.object(roxy, "_wait_email_otp_page_ready", return_value="ready"))
             stack.enter_context(patch.object(roxy, "wait_for_otp", return_value=fake_code))
             stack.enter_context(patch.object(roxy, "_wait_after_email_otp_submit", side_effect=RuntimeError("测试在提交验证码后结束")))
             with self.assertLogs(roxy.logger, level="INFO") as captured:

@@ -8,6 +8,7 @@ import random
 import re
 import time
 import uuid
+from dataclasses import replace
 from urllib.parse import urlsplit
 
 from config import roxybrowser as _cfg
@@ -17,9 +18,11 @@ from core.humanize import delay as _human_delay
 from core.registration.state_machine import PageState, StageBudget, StageTimeout, can_resend_otp, classify_page
 
 from .auth_context import (
+    AuthExecutionContext,
     checkpoint as _checkpoint,
     current_execution_context,
     current_override,
+    execution_context,
     install_dispatches,
     time_proxy,
 )
@@ -1631,7 +1634,9 @@ def _type_otp(driver, code: str, *, timeout: int = 20, before_input=None) -> Non
 
     # 邮件通常比认证页渲染更快。收到验证码后继续等输入框出现，避免把页面竞态
     # 误判成注册失败；同时保留硬超时，防止页面真的卡死。
-    deadline = time.monotonic() + max(1, int(timeout or 20))
+    input_timeout = _budget_timeout(None, max(1, int(timeout or 20)), minimum=0)
+    deadline = time.monotonic() + input_timeout
+    input_budget = StageBudget(deadline, clock=time.monotonic)
     otp_send_route_seen_at = None
     otp_send_route_recovered = False
     while time.monotonic() < deadline:
@@ -1693,7 +1698,9 @@ def _type_otp(driver, code: str, *, timeout: int = 20, before_input=None) -> Non
                 if _browser_actions_enabled():
                     human_delay("keystroke")
             return
-        time.sleep(0.35)
+        # 这里只在尚未输入任何验证码时恢复空壳，不重放已经填写的验证码。
+        _recover_email_otp_page_if_needed(driver, budget=input_budget)
+        time.sleep(min(0.35, max(0.0, deadline - time.monotonic())))
 
     raise RuntimeError(
         f"等待 OTP 输入框超时（{int(timeout or 20)} 秒），当前页面={str(getattr(driver, 'current_url', '') or '')[:180]}"
@@ -1724,10 +1731,152 @@ def _email_otp_page_state(driver) -> dict:
         }));
         const errors = [...document.querySelectorAll('.react-aria-FieldError,[slot="errorMessage"],[id$="-error"],[aria-invalid="true"] + *,[class*="error"]')]
           .filter(visible).map(el => (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim()).filter(Boolean);
-        return {url: location.href, title: document.title, inputs, buttons, errors, text: bodyText.slice(0, 1200), emailVerified};
+        const challengePresent = [...document.querySelectorAll(
+          'iframe[src*="challenges.cloudflare.com"],iframe[src*="captcha"],[data-sitekey],#challenge-running,#challenge-stage'
+        )].some(visible);
+        return {url: location.href, title: document.title, inputs, buttons, errors, text: bodyText.slice(0, 1200), emailVerified, challengePresent};
         """) or {}
     except Exception as exc:
         return {"url": getattr(driver, 'current_url', ''), "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _email_otp_form_is_ready(state: dict) -> bool:
+    """以实际挂载的验证码输入框判断就绪，不能只相信 SPA 路由。"""
+    for item in state.get("inputs") or []:
+        if not isinstance(item, dict) or item.get("visible") is False:
+            continue
+        attrs = " ".join(str(item.get(key) or "") for key in (
+            "type", "name", "id", "autocomplete", "inputmode",
+        )).lower()
+        if any(marker in attrs for marker in ("one-time-code", "otp", "code", "numeric", "tel")):
+            return True
+    return False
+
+
+def _email_otp_page_recovery_reason(state: dict) -> str:
+    """只恢复邮箱验证路由的空壳和已观察到的 HTML 内容类型错误。"""
+    if not isinstance(state, dict):
+        return ""
+    try:
+        parsed = urlsplit(str(state.get("url") or ""))
+        if parsed.scheme != "https" or parsed.hostname != "auth.openai.com" or parsed.path.rstrip("/") != "/email-verification":
+            return ""
+    except ValueError:
+        return ""
+    if state.get("error") or state.get("emailVerified") or state.get("challengePresent") or state.get("inputs"):
+        return ""
+    text = str(state.get("text") or "").strip().lower()
+    if any(marker in text for marker in (
+        "captcha", "challenge", "verify you are human", "checking your browser", "account_deactivated",
+        "deactivated", "disabled", "banned", "account deleted", "账号停用", "账号禁用", "账号已删除",
+    )):
+        return ""
+    if all(marker in text for marker in ("route error", "400", "invalid content type", "text/html")):
+        return "route_content_type_error"
+    if state.get("errors") or "text" not in state:
+        return ""
+    for button in state.get("buttons") or []:
+        if str(button.get("tag") or "").upper() != "A":
+            return ""
+        text = text.replace(str(button.get("text") or "").strip().lower(), "")
+    if text.replace("chatgpt", "").replace("openai", "").strip():
+        return ""
+    return "blank_shell"
+
+
+def _recover_email_otp_page_if_needed(driver, state: dict | None = None, *, budget: StageBudget | None = None) -> bool:
+    """每个浏览器执行最多刷新一次，保留 Python 中的原提交回执。"""
+    state = state if isinstance(state, dict) else _email_otp_page_state(driver)
+    reason = _email_otp_page_recovery_reason(state)
+    if not reason:
+        driver._email_otp_blank_seen_at = None
+        return False
+    if getattr(driver, "_email_otp_page_refresh_done", False):
+        return False
+    if budget is not None and budget.remaining() < 1:
+        return False
+    if reason == "blank_shell":
+        now = time.monotonic()
+        seen_at = getattr(driver, "_email_otp_blank_seen_at", None)
+        if seen_at is None:
+            driver._email_otp_blank_seen_at = now
+            return False
+        if now - seen_at < 3:
+            return False
+    # 刷新前重新读取现场，避免用旧快照刷新已经进入资料页的浏览器。
+    fresh = _email_otp_page_state(driver)
+    if _email_otp_page_recovery_reason(fresh) != reason or str(getattr(driver, "current_url", "")) != str(fresh.get("url") or ""):
+        driver._email_otp_blank_seen_at = None
+        return False
+    try:
+        refresh_timeout = _budget_timeout(budget, 10, minimum=0)
+    except StageTimeout:
+        return False
+    if refresh_timeout < 1:
+        return False
+    driver._email_otp_page_refresh_done = True
+    setter = getattr(driver, "set_page_load_timeout", None)
+    old_timeout = None
+    try:
+        if callable(setter):
+            old_timeout = float(driver.timeouts.page_load)
+            setter(refresh_timeout)
+        logger.warning("%s[OTP] 验证码页异常，执行一次受限刷新；保留原提交且不重发：reason=%s", _log_prefix(driver), reason)
+        driver.refresh()
+        return True
+    except Exception as exc:
+        from selenium.common.exceptions import TimeoutException
+
+        logger.warning("%s[OTP] 验证码页刷新异常，继续确认原结果，不追加刷新或提交：%s", _log_prefix(driver), type(exc).__name__)
+        if isinstance(exc, TimeoutException):
+            try:
+                driver.execute_script("window.stop();")
+            except Exception:
+                pass
+        return False
+    finally:
+        if old_timeout is not None:
+            try:
+                setter(old_timeout)
+            except Exception:
+                pass
+
+
+def _wait_email_otp_page_ready(driver, timeout: float = 15, *, budget: StageBudget | None = None) -> str:
+    """收码前等待表单挂载；页面恢复与轮询共用原阶段的剩余预算。"""
+    if budget is not None and budget.expired():
+        return "stuck"
+    timeout = _budget_timeout(budget, timeout, minimum=0)
+    ready_budget = budget.child(timeout) if budget is not None else StageBudget.start(timeout, clock=time.monotonic)
+    while not ready_budget.expired():
+        _check_manual_stop()
+        state = _email_otp_page_state(driver)
+        if not isinstance(state, dict):
+            return "stuck"
+        try:
+            parsed = urlsplit(str(state.get("url") or ""))
+        except ValueError:
+            return "stuck"
+        page_state = classify_page(state)
+        if page_state == PageState.MFA_TOTP:
+            return "totp_required"
+        if state.get("emailVerified") or page_state == PageState.EMAIL_VERIFIED:
+            return "email_verified"
+        if page_state in (PageState.PROFILE, PageState.AUTHENTICATED):
+            return "accepted"
+        if page_state in (PageState.AUTH_ERROR, PageState.LOGGED_OUT):
+            return "stuck"
+        if _email_otp_form_is_ready(state):
+            driver._email_otp_blank_seen_at = None
+            return "ready"
+        # 未确认的其他路由不进入收码，避免把未知页面当成就绪表单。
+        if parsed.hostname != "auth.openai.com" or parsed.path.rstrip("/") != "/email-verification":
+            return "stuck"
+        if _recover_email_otp_page_if_needed(driver, state, budget=ready_budget):
+            continue
+        time.sleep(min(0.35, ready_budget.remaining()))
+    return "stuck"
+
 
 def _is_email_verification_page(driver) -> bool:
     try:
@@ -1912,6 +2061,7 @@ def _complete_registration_totp_after_email_otp(
     existing_totp_secret: str | None,
     *,
     timeout: int = 45,
+    budget: StageBudget | None = None,
     challenge_resolver=None,
 ) -> str:
     """Finish an existing-account login when email OTP is followed by TOTP."""
@@ -1927,13 +2077,18 @@ def _complete_registration_totp_after_email_otp(
     )
     if not callable(resolver):
         raise RuntimeError("邮箱验证码后需要 TOTP，但未注入登录 challenge resolver")
-    state = resolver(
-        driver,
-        email,
-        existing_password,
-        str(existing_totp_secret),
-        timeout=timeout,
-    )
+    if budget is not None:
+        timeout = _budget_timeout(budget, timeout)
+        child = budget.child(timeout)
+        context = replace(context, budget=child) if context is not None else AuthExecutionContext(budget=child)
+    with execution_context(context):
+        state = resolver(
+            driver,
+            email,
+            existing_password,
+            str(existing_totp_secret),
+            timeout=timeout,
+        )
     if state != "advanced":
         raise RuntimeError(f"邮箱验证码后 TOTP 登录链未完成：state={state}")
     return state
@@ -1953,6 +2108,7 @@ def _wait_after_email_otp_submit(
     """
     timeout = _budget_timeout(budget, timeout, minimum=0.0)
     end = time.monotonic() + max(0.0, timeout)
+    confirmation_budget = StageBudget(end, clock=time.monotonic, cancellation=budget.cancellation if budget is not None else None)
     last = {}
     diagnostic_logged = False
     diagnostic_at = min(30.0, max(0.0, timeout))
@@ -1996,14 +2152,16 @@ def _wait_after_email_otp_submit(
             return 'accepted'
         if page_state in {PageState.AUTH_ERROR, PageState.LOGGED_OUT}:
             return 'stuck'
-        if _is_email_verification_page(driver) and _new_error_mark(last):
+        if _recover_email_otp_page_if_needed(driver, last, budget=confirmation_budget):
+            continue
+        if not _email_otp_page_recovery_reason(last) and _is_email_verification_page(driver) and _new_error_mark(last):
             return 'invalid'
     if _is_email_verification_page(driver):
         # 超时仍停留：有错误标记是 invalid；没有错误标记也说明提交没有产生跳转，
         # 返回 stuck，让上层保留原提交并等待同一 Attempt 恢复。
         last = _email_otp_page_state(driver)
         has_error_mark = _new_error_mark(last)
-        if has_error_mark:
+        if has_error_mark and not _email_otp_page_recovery_reason(last):
             logger.warning("%s[OTP] 提交后仍停留验证码页且存在错误标记，按验证码无效处理 snapshot=%s", _log_prefix(driver), last)
             return 'invalid'
         logger.warning(
@@ -2030,6 +2188,7 @@ install_dispatches(globals(), (
     "_is_email_login_page_still_present", "_diagnostic_url", "_redact_diagnostic_text",
     "_log_blank_auth_shell_diagnostics", "_wait_email_submit_next_state",
     "_submit_email_and_wait_next", "_type_otp", "_email_otp_page_state",
+    "_email_otp_page_recovery_reason", "_recover_email_otp_page_if_needed", "_wait_email_otp_page_ready",
     "_is_email_verification_page", "_clear_otp_inputs", "_click_resend_email_otp",
     "_resend_email_otp_after_failure", "_classify_otp_wait_failure",
     "_complete_registration_totp_after_email_otp", "_wait_after_email_otp_submit",
@@ -2049,6 +2208,7 @@ __all__ = [
     "_is_email_login_page_still_present", "_diagnostic_url", "_redact_diagnostic_text",
     "_log_blank_auth_shell_diagnostics", "_wait_email_submit_next_state",
     "_submit_email_and_wait_next", "_type_otp", "_email_otp_page_state",
+    "_email_otp_page_recovery_reason", "_recover_email_otp_page_if_needed", "_wait_email_otp_page_ready",
     "_is_email_verification_page", "_clear_otp_inputs", "_click_resend_email_otp",
     "_resend_email_otp_after_failure", "_classify_otp_wait_failure",
     "_complete_registration_totp_after_email_otp", "_wait_after_email_otp_submit",

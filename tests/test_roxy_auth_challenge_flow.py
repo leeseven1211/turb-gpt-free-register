@@ -1,13 +1,67 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from core import roxy_codex_oauth
 from core import roxy_liveness
 from core.auth_challenge import MfaSecretMissingError
 from core.registration import roxy as roxy_registration
+from core.registration.auth_context import AuthExecutionContext, current_execution_context, execution_context
+from core.registration.state_machine import StageBudget, StageTimeout
 
 
 class RoxyEmailOtpChallengeTests(unittest.TestCase):
+    def test_post_refresh_totp_delay_cannot_outlive_original_budget(self):
+        now = [100.0]
+        budget = StageBudget.start(1, clock=lambda: now[0])
+
+        def advance(seconds):
+            now[0] += seconds
+
+        def form_delay(_kind, *, budget=None):
+            if budget is None:
+                advance(5)
+            else:
+                budget.sleep(5, sleeper=advance)
+
+        state = {"url": "https://auth.openai.com/mfa-challenge/test-factor", "inputs": [{"name": "totp"}], "text": "Authenticator"}
+        fake_time = SimpleNamespace(time=lambda: now[0], sleep=advance)
+        with execution_context(AuthExecutionContext(budget=budget)), patch.object(
+            roxy_codex_oauth, "time", fake_time,
+        ), patch.object(roxy_codex_oauth, "_login_challenge_state", return_value=state), patch.object(
+            roxy_codex_oauth, "_submit_saved_login_totp",
+        ) as submit, patch.object(roxy_codex_oauth, "human_delay", side_effect=form_delay):
+            with self.assertRaises(StageTimeout):
+                roxy_codex_oauth.complete_openai_login_challenge(MagicMock(), "account@example.test", "password", "secret")
+        self.assertEqual(submit.call_count, 1)
+        self.assertLessEqual(now[0], budget.deadline)
+
+    def test_post_refresh_totp_inherits_the_original_stage_budget(self):
+        budget = StageBudget.start(3)
+
+        def resolve(*_args, **kwargs):
+            context = current_execution_context()
+            self.assertIsNotNone(context.budget)
+            self.assertLessEqual(context.budget.deadline, budget.deadline)
+            self.assertLessEqual(kwargs["timeout"], 3)
+            return "advanced"
+
+        with patch.object(roxy_codex_oauth, "complete_openai_login_challenge", side_effect=resolve):
+            self.assertEqual(roxy_registration._complete_registration_totp_after_email_otp(
+                MagicMock(), "account@example.test", "test-password", "test-totp-secret", budget=budget,
+            ), "advanced")
+
+    def test_login_resolver_checks_parent_budget_before_reading_or_submitting(self):
+        now = [100.0]
+        budget = StageBudget.start(1, clock=lambda: now[0])
+        with execution_context(AuthExecutionContext(budget=budget)), patch.object(
+            roxy_codex_oauth, "_login_challenge_state", return_value={"url": "https://auth.openai.com/about-you"},
+        ) as snapshot, patch.object(roxy_codex_oauth, "_is_login_advanced", return_value=True):
+            now[0] = 102.0
+            with self.assertRaises(StageTimeout):
+                roxy_codex_oauth.complete_openai_login_challenge(MagicMock(), "account@example.test", "password", "secret")
+        snapshot.assert_not_called()
+
     def test_callback_log_path_drops_code_state_and_dynamic_challenge(self):
         self.assertEqual(
             "/auth/callback",

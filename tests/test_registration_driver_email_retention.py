@@ -560,6 +560,7 @@ class RegistrationDriverEmailRetentionTests(unittest.TestCase):
             stack.enter_context(patch.object(roxy, "_submit_email_and_wait_next", return_value="email_verification"))
             stack.enter_context(patch.object(roxy, "_fill_password_page_if_present", return_value=None))
             stack.enter_context(patch.object(roxy, "_has_access_token", return_value=False))
+            stack.enter_context(patch.object(roxy, "_wait_email_otp_page_ready", return_value="ready"))
             stack.enter_context(patch.object(roxy, "_clear_otp_inputs"))
             stack.enter_context(patch.object(roxy, "_type_otp"))
             stack.enter_context(patch.object(roxy, "_click_continue"))

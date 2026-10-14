@@ -72,6 +72,7 @@ _CAPABILITY_NAMES = (
     "_is_email_login_page_still_present", "_diagnostic_url", "_redact_diagnostic_text",
     "_log_blank_auth_shell_diagnostics", "_wait_email_submit_next_state",
     "_submit_email_and_wait_next", "_type_otp", "_email_otp_page_state",
+    "_email_otp_page_recovery_reason", "_recover_email_otp_page_if_needed", "_wait_email_otp_page_ready",
     "_is_email_verification_page", "_clear_otp_inputs", "_click_resend_email_otp",
     "_resend_email_otp_after_failure", "_classify_otp_wait_failure",
     "_complete_registration_totp_after_email_otp", "_wait_after_email_otp_submit",
