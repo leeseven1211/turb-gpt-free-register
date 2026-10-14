@@ -1,11 +1,36 @@
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from contextlib import ExitStack
 
 from core import browser_flow_policy, roxy_liveness
 
 
 class RoxyLivenessFlowPolicyTests(unittest.TestCase):
+    def test_auth_cache_and_traffic_finish_before_cleanup_including_kept_browser(self):
+        from core import browser_asset_policy
+        for keep_open in (False, True):
+            with self.subTest(keep_open=keep_open):
+                events = []
+                opened = SimpleNamespace(profile_id="profile-1", account_bound=True)
+                client, driver, cache = MagicMock(), MagicMock(), MagicMock()
+                client.open_profile_for_account.return_value = opened
+                client.cleanup_profile.side_effect = lambda *args: events.append("cleanup")
+                cache.stop.side_effect = lambda: events.append("cache") or {}
+                dependencies = self._patch_refresh_dependencies(
+                    client=client, opened=opened, driver=driver, install=MagicMock(),
+                )
+                with ExitStack() as stack:
+                    for dependency in dependencies:
+                        stack.enter_context(dependency)
+                    stack.enter_context(patch.object(browser_asset_policy, "start_auth_asset_cache", create=True, return_value=cache))
+                    stack.enter_context(patch("core.browser_traffic.finish_roxy_capture", side_effect=lambda *args: events.append("traffic")))
+                    stack.enter_context(patch.object(roxy_liveness, "_quit_driver", side_effect=lambda *args: events.append("quit")))
+                    stack.enter_context(patch.object(roxy_liveness.cfg, "ROXY_KEEP_BROWSER_OPEN", keep_open))
+                    result = roxy_liveness.refresh_access_token("account@example.test")
+                self.assertTrue(result["ok"])
+                self.assertEqual(events, ["cache", "traffic"] if keep_open else ["cache", "traffic", "quit", "cleanup"])
+
     def _patch_refresh_dependencies(self, *, client, opened, driver, install):
         return (
             patch.object(roxy_liveness, "available", return_value=True),

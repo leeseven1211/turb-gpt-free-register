@@ -1,4 +1,4 @@
-"""Roxy 注册公共静态缓存的配置与生命周期边界。"""
+"""Roxy 公共静态缓存的流程、线路与生命周期边界。"""
 from __future__ import annotations
 
 import logging
@@ -10,7 +10,33 @@ logger = logging.getLogger(__name__)
 
 
 def start_registration_asset_cache(opened, *, proxy_url: str | None = None):
-    """仅新注册入口启用；匿名填充只能沿本次新建环境的已知线路。"""
+    """注册匿名填充只能沿本次新建环境的已知线路。"""
+    fill_proxy = proxy_url if getattr(opened, "created_by_run", False) else None
+    return _start_asset_cache(opened, flow="registration", proxy_url=fill_proxy)
+
+
+def start_auth_asset_cache(opened, driver, *, flow: str):
+    """认证只复用公共响应，不额外下载；不接管父注册流程的缓存。"""
+    from core.browser_flow_policy import AUTH_FLOW_NAMES
+
+    mode = str(getattr(_cfg, "BROWSER_PUBLIC_ASSET_CACHE_MODE", "off") or "off")
+    if mode not in {"observe", "enabled"} or flow not in AUTH_FLOW_NAMES:
+        return None
+    capture = getattr(opened, "traffic_capture", None)
+    if getattr(capture, "public_asset_cache", None) is not None:
+        return None
+    try:
+        info = driver.execute_cdp_cmd("Target.getTargetInfo", {}).get("targetInfo", {})
+        target_id = info.get("targetId")
+        if not isinstance(target_id, str) or not target_id or info.get("type") != "page":
+            return None
+    except Exception as exc:
+        logger.warning("[公共资源缓存] 无法确认当前认证页面，继续正常加载：%s", type(exc).__name__)
+        return None
+    return _start_asset_cache(opened, flow=flow, target_id=target_id)
+
+
+def _start_asset_cache(opened, *, flow: str, proxy_url: str | None = None, target_id: str | None = None):
     mode = str(getattr(_cfg, "BROWSER_PUBLIC_ASSET_CACHE_MODE", "off") or "off")
     if mode not in {"observe", "enabled"}:
         return None
@@ -18,15 +44,14 @@ def start_registration_asset_cache(opened, *, proxy_url: str | None = None):
     try:
         from core.public_asset_cache import PublicAssetCache
 
-        # 已有 Profile 的实际线路可能与本次参数不同，不能猜测并回退直连。
-        fill_proxy = proxy_url if getattr(opened, "created_by_run", False) else None
         cache = PublicAssetCache(
             getattr(opened, "debugger_address", ""),
             Path(__file__).resolve().parent.parent / "run" / "public-asset-cache",
             mode=mode,
             max_total_bytes=int(_cfg.BROWSER_PUBLIC_ASSET_CACHE_MAX_MB) * 1024 * 1024,
-            proxy_url=fill_proxy,
+            proxy_url=proxy_url,
             allow_direct=False,
+            target_id=target_id,
         )
         if not cache.start():
             cache.stop()
@@ -34,7 +59,7 @@ def start_registration_asset_cache(opened, *, proxy_url: str | None = None):
         capture = getattr(opened, "traffic_capture", None)
         if capture is not None:
             capture.set_public_asset_cache(cache)
-        logger.info("[公共资源缓存] 注册缓存已启动：模式=%s", mode)
+        logger.info("[公共资源缓存] 缓存已启动：流程=%s，模式=%s", flow, mode)
         return cache
     except Exception as exc:
         if cache is not None:
@@ -46,7 +71,7 @@ def start_registration_asset_cache(opened, *, proxy_url: str | None = None):
         return None
 
 
-def stop_registration_asset_cache(cache) -> None:
+def stop_asset_cache(cache) -> None:
     """停止回放与后台填充，保留摘要供稍后的流量采集收口。"""
     if cache is None:
         return
@@ -58,3 +83,8 @@ def stop_registration_asset_cache(cache) -> None:
         )
     except Exception as exc:
         logger.warning("[公共资源缓存] 停止异常：%s", type(exc).__name__)
+
+
+def stop_registration_asset_cache(cache) -> None:
+    """兼容注册入口，由持有缓存的外层流程停止。"""
+    stop_asset_cache(cache)

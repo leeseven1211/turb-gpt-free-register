@@ -770,6 +770,19 @@ class RoxyTrafficCapture:
 
 
 def start_roxy_capture(opened, **correlation: Any) -> RoxyTrafficCapture:
+    # 普通流量归属独立于原始认证上下文开关；只继承同一 native 执行边界。
+    from core.task_run_log import current_context
+
+    context = current_context()
+    task_id, run_id = context.get("task_id"), context.get("run_id")
+    if context.get("identifier_namespace") == "operation" and task_id and run_id and all(
+        correlation.get(key) in (None, "") or str(correlation[key]) == str(value)
+        for key, value in (("operation_task_id", task_id), ("operation_run_id", run_id))
+    ):
+        correlation = dict(correlation)
+        for key, value in (("operation_task_id", task_id), ("operation_run_id", run_id)):
+            if correlation.get(key) in (None, ""):
+                correlation[key] = value
     existing = getattr(opened, "traffic_capture", None)
     if isinstance(existing, RoxyTrafficCapture):
         existing.update_context(**correlation)

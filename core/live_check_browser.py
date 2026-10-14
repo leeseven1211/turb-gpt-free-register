@@ -185,6 +185,7 @@ def run_probe(
     opened = None
     driver = None
     data_saver = None
+    asset_cache = None
     probe_result = None
     try:
         if email:
@@ -248,6 +249,9 @@ def run_probe(
                 "[浏览器省流量] 普通查活规则安装失败，继续查活：%s",
                 type(exc).__name__,
             )
+        from core import browser_asset_policy
+
+        asset_cache = browser_asset_policy.start_auth_asset_cache(opened, driver, flow="live_check")
         driver.set_page_load_timeout(int(getattr(roxy_config, "ROXY_SELENIUM_TIMEOUT", 90) or 90))
         try:
             driver.set_script_timeout(_PROBE_TIMEOUT_SECONDS)
@@ -280,11 +284,16 @@ def run_probe(
             retryable=True,
         )
     finally:
+        from core import browser_asset_policy, browser_traffic
+
+        browser_asset_policy.stop_asset_cache(asset_cache)
         if data_saver is not None:
             try:
                 data_saver.stop()
             except Exception:
                 logger.exception("[浏览器省流量] 普通查活统计停止失败")
+        if opened is not None:
+            browser_traffic.finish_roxy_capture(opened)
         if driver is not None:
             quit_driver(driver)
         if opened is not None:

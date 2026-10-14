@@ -69,6 +69,11 @@ def _request_bypasses_cache(headers: dict) -> bool:
                 or {"no-cache", "no-store", "max-age=0"} & directives or "no-cache" in h.get("pragma", "").lower())
 
 
+def _request_has_credentials(headers: dict) -> bool:
+    """带凭据请求不做本地回放；注册匿名验证仍遵循独立线路边界。"""
+    return bool({"cookie", "authorization", "proxy-authorization"} & _headers(headers).keys())
+
+
 def _unsafe_headers(headers: dict) -> bool:
     return any(k in _HEADER_NAMES and (len(v) > 4096 or "\n" in v or "\r" in v) for k, v in _headers(headers).items())
 
@@ -496,7 +501,7 @@ class PublicAssetCache:
         if method == "Fetch.requestPaused":
             request = p.get("request") or {}
             url = request.get("url", "")
-            if self.mode != "enabled" or request.get("method") != "GET" or _request_bypasses_cache(request.get("headers") or {}) or _asset_type(url) != p.get("resourceType") or not p.get("networkId"):
+            if self.mode != "enabled" or request.get("method") != "GET" or _request_has_credentials(request.get("headers") or {}) or _request_bypasses_cache(request.get("headers") or {}) or _asset_type(url) != p.get("resourceType") or not p.get("networkId"):
                 self._continue(rid)
                 return
             # 冷请求不等待磁盘或下载；其它进程新增条目由后台周期刷新索引。

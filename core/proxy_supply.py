@@ -71,9 +71,10 @@ def fetch_candidates(
     minutes = max(1, min(120, int(options["session_minutes"])))
     protocol = provider._normalize_protocol(options["protocol"])
     region = provider._normalize_region(options["region"])
-    # 沿用客户端每轮最多 64 个候选的边界；不代表供应商容量或全部校验入池。
-    window = min(64, window)
-    url = provider._build_api_url(options["api_url"], minutes, region, count=window)
+    # 池候选窗口跟随容量，不套用旧批量客户端的 64 条限制。
+    # 1000 是本项目的容量上限，不代表供应商保证返回该数量。
+    window = min(1000, window)
+    url = provider._build_api_url(options["api_url"], minutes, region, count=window, count_limit=1000)
     # time 仅按供应商会话时长使用，不把更改时长当成已保证的新会话接口。
     with _request_lock(deadline):
         delay = max(0, float(cfg.PROXY_1024_ACQUIRE_INTERVAL) - (time.monotonic() - provider._LAST_ACQUIRE_AT))

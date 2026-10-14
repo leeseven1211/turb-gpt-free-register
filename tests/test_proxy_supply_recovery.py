@@ -115,6 +115,24 @@ def test_all_bad_candidates_are_aborted_without_delivery(supply_harness):
     harness.activate.assert_not_called()
 
 
+def test_pool_window_can_skip_more_than_64_reserved_candidates(supply_harness):
+    """较大库存不能永久困在旧批量客户端的 64 个候选前缀。"""
+    harness = supply_harness
+    harness.response.text = "\n".join(f"192.0.2.1:{8000 + n}" for n in range(65))
+    def reserve(**kwargs):
+        if int(kwargs["endpoint"].split(":")[-1]) < 8064:
+            raise proxy_lease_store.DuplicateProxyLeaseError("测试重复候选")
+    harness.reserve.side_effect = reserve
+
+    leases = list(proxy_supply.fetch_candidates(harness.options, count=1, candidate_count=200))
+
+    assert [lease.endpoint for lease in leases] == ["192.0.2.1:8064"]
+    assert harness.reserve.call_count == 65
+    harness.validate.assert_called_once()
+    from urllib.parse import parse_qs, urlsplit
+    assert parse_qs(urlsplit(harness.session.get.call_args.args[0]).query)["num"] == ["200"]
+
+
 def test_candidate_recovery_uses_remaining_shared_budget(supply_harness):
     harness = supply_harness
     def validate(url, timeout, *, attempts, deadline):

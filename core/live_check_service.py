@@ -84,6 +84,7 @@ class _ReporterAdapter:
         task_run_log.set_current_stage(
             stage, task_id=getattr(self._context, "task_id", None),
             run_id=getattr(self._context, "run_id", None),
+            identifier_namespace="operation",
         )
         result = self._context.report(stage=stage, **event)
         if isinstance(result, dict):

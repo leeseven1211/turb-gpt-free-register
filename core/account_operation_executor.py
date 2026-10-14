@@ -51,7 +51,7 @@ def operation_log_context(context: Any, *, stage: str = "runtime"):
     root_logger.addHandler(handler)
     scope_token = _LOG_SCOPE.set(identity)
     try:
-        with task_run_log.stage_context(stage, task_id=task_id, run_id=run_id):
+        with task_run_log.stage_context(stage, task_id=task_id, run_id=run_id, identifier_namespace="operation"):
             yield
     finally:
         _LOG_SCOPE.reset(scope_token)

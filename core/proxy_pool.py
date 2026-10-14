@@ -20,6 +20,7 @@ _stop = threading.Event()
 _threads: list[threading.Thread] = []
 _profiles: dict[str, "Profile"] = {}
 _prewarm = False
+_maintenance_turn = 0
 
 
 class ProxyPoolTimeout(TimeoutError):
@@ -41,6 +42,7 @@ class Profile:
     touched: float = field(default_factory=time.monotonic)
     failures: int = 0
     retry_after: float = 0
+    last_served: int = 0
 
 
 def settings() -> dict:
@@ -272,6 +274,7 @@ def maintain_once() -> bool:
     """一轮检查一条或补充小窗口，逐条交付，不等待整批。"""
     from config import proxy as cfg
     from core import proxy_provider as provider
+    global _maintenance_turn
     policy = settings()
     if _prewarm:
         mode = str(cfg.REGISTRATION_PROXY_MODE)
@@ -285,10 +288,20 @@ def maintain_once() -> bool:
                                       min_ttl=policy["min_ttl"], max_size=policy["max_size"], warm_profiles=warm):
         _retire(resource)
     with _lock:
-        profiles = sorted(_profiles.values(), key=lambda item: (-item.waiting, item.touched))
-    for profile in profiles:
+        profiles = sorted(_profiles.values(), key=lambda item: (
+            not bool(item.waiting), item.last_served, -item.waiting, item.touched,
+        ))
+        # 排序与首个维护机会的预留在同一锁内，两个 worker 不反复抢同一地区。
+        if profiles:
+            _maintenance_turn += 1
+            profiles[0].last_served = _maintenance_turn
+    for index, profile in enumerate(profiles):
         if not profile.waiting and time.monotonic() - profile.touched > policy["max_idle"]:
             continue
+        if index:
+            with _lock:
+                _maintenance_turn += 1
+                profile.last_served = _maintenance_turn
         try:
             _validate_lifetime(profile.provider, profile.options, policy)
         except ProxyPoolConfigurationError as exc:

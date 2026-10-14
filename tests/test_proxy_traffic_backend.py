@@ -87,6 +87,7 @@ class ProxyTrafficBackendTests(PostgresTestCase):
         operation_task_id: int | None = None,
         operation_run_id: int | None = None,
         registration_job_id: int | None = None,
+        account_id: int | None = None,
     ):
         browser_traffic.persist_summary(
             summary_key=summary_key,
@@ -105,6 +106,7 @@ class ProxyTrafficBackendTests(PostgresTestCase):
             operation_task_id=operation_task_id,
             operation_run_id=operation_run_id,
             registration_job_id=registration_job_id,
+            account_id=account_id,
         )
 
     def test_proxy_lease_migration_adds_nullable_correlation_columns_idempotently(self):
@@ -559,6 +561,82 @@ class ProxyTrafficBackendTests(PostgresTestCase):
         self.assertNotIn("plan-private@example.test", response_text)
         self.assertNotIn("live-private@example.test", response_text)
         self.assertNotIn("deleted-private@example.test", response_text)
+
+    def test_run_only_auth_traffic_recovers_visible_task_without_rewriting_history(self):
+        task = operation_task_store.create_runtime_task(
+            task_type="token_refresh", account_id=41, email="private@example.test",
+        )
+        deleted = operation_task_store.create_runtime_task(
+            task_type="token_refresh", account_id=43, email="deleted@example.test",
+            data={"deleted_by_user": True},
+        )
+        now = datetime.now(timezone.utc)
+        examples = (
+            ("auth-run-only", "token_refresh", task["run"]["id"], None, 41),
+            ("registration-run-collision", "registration", task["run"]["id"], 71, 41),
+            ("wrong-task-kind", "live_check", task["run"]["id"], None, 41),
+            ("wrong-account", "token_refresh", task["run"]["id"], None, 42),
+            ("hidden-task", "token_refresh", deleted["run"]["id"], None, 43),
+        )
+        for key, purpose, run_id, job_id, account_id in examples:
+            self._seed_traffic(
+                summary_key=key, started_at=now, total=12, purpose=purpose,
+                operation_run_id=run_id, registration_job_id=job_id, account_id=account_id,
+            )
+        with patch.object(operation_task_store, "get_run_task_links", create=True,
+                          wraps=getattr(operation_task_store, "get_run_task_links", None)) as links:
+            response = create_app(auth_code="proxy-page-auth").test_client().get(
+                "/api/proxy-traffic/traffic?limit=20",
+                headers={"X-Auth-Code": "proxy-page-auth"},
+            )
+        self.assertEqual(response.status_code, 200)
+        items = {item["summary_key"]: item for item in response.get_json()["items"]}
+        self.assertEqual(items["auth-run-only"]["operation_task_id"], task["id"])
+        self.assertEqual(items["auth-run-only"]["operation_task_type"], "token_refresh")
+        for key in ("registration-run-collision", "wrong-task-kind", "wrong-account", "hidden-task"):
+            self.assertIsNone(items[key]["operation_task_id"])
+        links.assert_called_once_with(sorted([task["run"]["id"], deleted["run"]["id"]]))
+        rows = {row["summary_key"]: row for row in browser_traffic.list_summaries()}
+        self.assertIsNone(rows["auth-run-only"]["operation_task_id"])
+        self.assertNotIn("private@example.test", response.get_data(as_text=True))
+
+    def test_roxy_capture_inherits_current_task_without_raw_auth_context(self):
+        from core import task_run_log
+        opened = SimpleNamespace(profile_id="test", debugger_address="127.0.0.1:9222")
+        with task_run_log.stage_context("browser", task_id=501, run_id=601, identifier_namespace="operation"), \
+             patch.object(browser_traffic, "_new_roxy_collector"), \
+             patch.object(browser_traffic, "persist_summary") as persist:
+            browser_traffic.start_roxy_capture(opened, purpose="roxy_browser", operation_task_id=None)
+            browser_traffic.bind_roxy_capture(opened, purpose="token_refresh", account_id=41)
+            browser_traffic.finish_roxy_capture(opened)
+        self.assertEqual(persist.call_args.kwargs.get("operation_task_id"), 501)
+        self.assertEqual(persist.call_args.kwargs["operation_run_id"], 601)
+        self.assertEqual(persist.call_args.kwargs["purpose"], "token_refresh")
+
+    def test_explicit_other_run_never_borrows_current_task(self):
+        from core import task_run_log
+        opened = SimpleNamespace(profile_id="test", debugger_address="127.0.0.1:9222")
+        with task_run_log.stage_context("browser", task_id=501, run_id=601, identifier_namespace="operation"), \
+             patch.object(browser_traffic, "_new_roxy_collector"), \
+             patch.object(browser_traffic, "persist_summary") as persist:
+            browser_traffic.start_roxy_capture(opened, purpose="live_check", operation_run_id=701)
+            browser_traffic.finish_roxy_capture(opened)
+        self.assertIsNone(persist.call_args.kwargs.get("operation_task_id"))
+        self.assertEqual(persist.call_args.kwargs["operation_run_id"], 701)
+
+    def test_registration_job_context_never_becomes_operation_task_correlation(self):
+        from core import task_run_log
+        opened = SimpleNamespace(profile_id="test", debugger_address="127.0.0.1:9222")
+        with task_run_log.stage_context("registration", task_id=501, run_id=601, identifier_namespace="registration"), \
+             patch.object(browser_traffic, "_new_roxy_collector"), \
+             patch.object(browser_traffic, "persist_summary") as persist:
+            task_run_log.set_current_stage("network")
+            browser_traffic.start_roxy_capture(opened, purpose="roxy_browser")
+            browser_traffic.bind_roxy_capture(opened, purpose="registration", registration_job_id=501)
+            browser_traffic.finish_roxy_capture(opened)
+        self.assertIsNone(persist.call_args.kwargs.get("operation_task_id"))
+        self.assertIsNone(persist.call_args.kwargs.get("operation_run_id"))
+        self.assertEqual(persist.call_args.kwargs["registration_job_id"], 501)
 
     def test_lease_correlation_is_idempotent_and_only_adds_missing_values(self):
         self._seed_lease(lease_id="lease-correlate-1")

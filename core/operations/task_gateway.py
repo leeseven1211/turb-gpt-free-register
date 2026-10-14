@@ -303,7 +303,7 @@ class OperationTaskReporter:
     def report(self, **event: Any) -> dict:
         from core import task_run_log
 
-        task_run_log.set_current_stage(str(event.get("stage") or "event"), run_id=self.run_id)
+        task_run_log.set_current_stage(str(event.get("stage") or "event"), run_id=self.run_id, identifier_namespace="operation")
         persisted = _operation().append_runtime_event(self.run_id, **event)
         if isinstance(persisted, dict):
             task_run_log.set_current_stage(

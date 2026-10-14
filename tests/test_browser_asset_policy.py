@@ -8,6 +8,45 @@ from core.registration_debug import _RoxyTargetCollector
 
 
 class BrowserAssetPolicyTests(TestCase):
+    def test_auth_cache_uses_current_target_without_anonymous_network_fill(self):
+        capture = SimpleNamespace(public_asset_cache=None, set_public_asset_cache=Mock())
+        opened = SimpleNamespace(debugger_address="127.0.0.1:9222", created_by_run=True, traffic_capture=capture)
+        driver = Mock()
+        driver.execute_cdp_cmd.return_value = {"targetInfo": {"targetId": "current-page", "type": "page"}}
+        start = getattr(browser_asset_policy, "start_auth_asset_cache", lambda *args, **kwargs: None)
+        with patch.object(browser_asset_policy._cfg, "BROWSER_PUBLIC_ASSET_CACHE_MODE", "enabled"), patch(
+            "core.public_asset_cache.PublicAssetCache"
+        ) as cls:
+            result = start(opened, driver, flow="token_refresh")
+        self.assertIs(result, cls.return_value)
+        self.assertEqual(cls.call_args.kwargs["target_id"], "current-page")
+        self.assertIsNone(cls.call_args.kwargs["proxy_url"])
+        self.assertFalse(cls.call_args.kwargs["allow_direct"])
+        self.assertNotIn("anonymous_fetcher", cls.call_args.kwargs)
+        capture.set_public_asset_cache.assert_called_once_with(result)
+
+    def test_auth_cache_does_not_take_ownership_of_registration_cache(self):
+        parent = Mock()
+        opened = SimpleNamespace(traffic_capture=SimpleNamespace(public_asset_cache=parent))
+        start = getattr(browser_asset_policy, "start_auth_asset_cache", lambda *args, **kwargs: None)
+        with patch.object(browser_asset_policy._cfg, "BROWSER_PUBLIC_ASSET_CACHE_MODE", "enabled"), patch(
+            "core.public_asset_cache.PublicAssetCache"
+        ) as cls:
+            self.assertIsNone(start(opened, Mock(), flow="codex_oauth"))
+        cls.assert_not_called()
+        parent.stop.assert_not_called()
+
+    def test_auth_cache_without_current_page_target_keeps_normal_network(self):
+        opened = SimpleNamespace(traffic_capture=None)
+        driver = Mock()
+        driver.execute_cdp_cmd.return_value = {}
+        start = getattr(browser_asset_policy, "start_auth_asset_cache", lambda *args, **kwargs: None)
+        with patch.object(browser_asset_policy._cfg, "BROWSER_PUBLIC_ASSET_CACHE_MODE", "enabled"), patch(
+            "core.public_asset_cache.PublicAssetCache"
+        ) as cls:
+            self.assertIsNone(start(opened, driver, flow="token_refresh"))
+        cls.assert_not_called()
+
     def test_off_does_not_open_cache_or_browser_connection(self):
         with patch.object(browser_asset_policy._cfg, "BROWSER_PUBLIC_ASSET_CACHE_MODE", "off"), patch(
             "core.public_asset_cache.PublicAssetCache"

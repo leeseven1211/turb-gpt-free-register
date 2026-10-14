@@ -143,6 +143,7 @@ def _build_api_url(
     region: str | None = None,
     *,
     count: int = 1,
+    count_limit: int = 64,
 ) -> str:
     text = str(api_url or "").strip()
     if not text:
@@ -154,7 +155,8 @@ def _build_api_url(
     configured_region = _normalize_region(region)
     if configured_region:
         query["region"] = configured_region
-    query["num"] = str(max(1, min(64, int(count or 1))))
+    limit = max(1, min(1000, int(count_limit)))
+    query["num"] = str(max(1, min(limit, int(count or 1))))
     query["time"] = str(max(1, min(120, int(session_minutes or 30))))
     return urlunparse(parsed._replace(query=urlencode(query)))
 

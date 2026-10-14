@@ -3541,6 +3541,7 @@ def _run_roxy_codex_oauth_once(
     driver = existing_driver if reuse_existing_profile else None
     owns_driver = not reuse_existing_profile
     data_saver = None
+    asset_cache = None
     try:
         auth_source = proto._codex_auth_url_source()
         code_verifier = None
@@ -3582,6 +3583,9 @@ def _run_roxy_codex_oauth_once(
             )
         except Exception:
             logger.exception("[Codex][浏览器] 安装 OAuth 省流量规则失败；授权流程继续")
+        from core import browser_asset_policy
+
+        asset_cache = browser_asset_policy.start_auth_asset_cache(opened, driver, flow="codex_oauth")
         driver.set_page_load_timeout(int(_roxy_cfg.ROXY_SELENIUM_TIMEOUT))
         logger.info("[Codex][Browser] 开始授权：%s，profile=%s，reuse_existing_profile=%s", email, opened.profile_id, reuse_existing_profile)
         if reuse_existing_profile and clear_existing_state:
@@ -3682,6 +3686,9 @@ def _run_roxy_codex_oauth_once(
         logger.warning("[Codex][Browser] 授权失败：%s", type(exc).__name__)
         return proto._codex_result(status="failed", email=email, message=f"{type(exc).__name__}: 浏览器授权流程未完成")
     finally:
+        from core import browser_asset_policy, browser_traffic
+
+        browser_asset_policy.stop_asset_cache(asset_cache)
         if data_saver is not None:
             try:
                 data_saver.stop()
@@ -3689,6 +3696,8 @@ def _run_roxy_codex_oauth_once(
                 logger.exception("[Codex][浏览器] 收口 OAuth 省流量统计失败")
         # 注册后复用窗口时，driver/profile 生命周期由注册流程统一清理，
         # 这里不能 quit/delete，否则会提前销毁注册环境。
+        if owns_driver and opened is not None:
+            browser_traffic.finish_roxy_capture(opened)
         if owns_driver and driver and not bool(_roxy_cfg.ROXY_KEEP_BROWSER_OPEN):
             _quit_driver(driver)
         if owns_driver and client and not bool(_roxy_cfg.ROXY_KEEP_BROWSER_OPEN):
@@ -3757,6 +3766,7 @@ def run_roxy_chatgpt_account_action(
     browser_kind_token = _CODEX_BROWSER_KIND.set(_detect_browser_kind(opened))
     driver = None
     data_saver = None
+    asset_cache = None
     try:
         driver = _build_driver(opened)
         _center_browser_window(driver)
@@ -3771,6 +3781,9 @@ def run_roxy_chatgpt_account_action(
             )
         except Exception:
             logger.exception("[Codex][浏览器] 安装账号操作省流量规则失败；账号操作继续")
+        from core import browser_asset_policy
+
+        asset_cache = browser_asset_policy.start_auth_asset_cache(opened, driver, flow="account_action")
         driver.set_page_load_timeout(int(_roxy_cfg.ROXY_SELENIUM_TIMEOUT))
         clear_roxy_browser_auth_state(driver)
         logger.info("[Codex][Browser] 开始建立 ChatGPT 账号会话：%s", email)
@@ -3806,11 +3819,15 @@ def run_roxy_chatgpt_account_action(
         logger.info("[Codex][Browser] ChatGPT 账号操作已完成：%s", email)
         return result
     finally:
+        from core import browser_asset_policy, browser_traffic
+
+        browser_asset_policy.stop_asset_cache(asset_cache)
         if data_saver is not None:
             try:
                 data_saver.stop()
             except Exception:
                 logger.exception("[Codex][浏览器] 收口账号操作省流量统计失败")
+        browser_traffic.finish_roxy_capture(opened)
         if driver and not bool(_roxy_cfg.ROXY_KEEP_BROWSER_OPEN):
             _quit_driver(driver)
         if not bool(_roxy_cfg.ROXY_KEEP_BROWSER_OPEN):

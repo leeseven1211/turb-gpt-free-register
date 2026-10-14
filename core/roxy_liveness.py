@@ -206,6 +206,7 @@ def refresh_access_token(
     opened = None
     driver = None
     data_saver = None
+    asset_cache = None
     refresh_result = None
     try:
         from core.roxy_profile_binding import (
@@ -246,6 +247,9 @@ def refresh_access_token(
                 logger.exception("[浏览器流量] 关联刷新 AT 上下文失败；刷新继续")
         effective_proxy = None if profile_reused else proxy
         driver = _build_driver(opened)
+        from core import browser_asset_policy
+
+        asset_cache = browser_asset_policy.start_auth_asset_cache(opened, driver, flow="token_refresh")
         try:
             from core import browser_flow_policy
 
@@ -335,6 +339,9 @@ def refresh_access_token(
         }
         return refresh_result
     finally:
+        from core import browser_asset_policy, browser_traffic
+
+        browser_asset_policy.stop_asset_cache(asset_cache)
         if data_saver is not None:
             try:
                 data_saver.stop()
@@ -358,6 +365,8 @@ def refresh_access_token(
                 )
             except Exception:
                 logger.exception("[浏览器流量] 收口刷新 AT 上下文失败；刷新结果保持不变")
+        if opened is not None:
+            browser_traffic.finish_roxy_capture(opened)
         if driver is not None and not bool(getattr(cfg, "ROXY_KEEP_BROWSER_OPEN", False)):
             _quit_driver(driver)
         if opened is not None and not bool(getattr(cfg, "ROXY_KEEP_BROWSER_OPEN", False)):

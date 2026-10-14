@@ -3030,6 +3030,33 @@ def get_task_types(task_ids: Iterable[int]) -> dict[int, str]:
         }
 
 
+def get_run_task_links(run_ids: Iterable[int]) -> dict[int, dict[str, Any]]:
+    """批量读取可见运行的任务归属，不返回账号凭据或任务详情。"""
+    normalized: set[int] = set()
+    for value in run_ids or ():
+        try:
+            run_id = int(value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if run_id > 0:
+            normalized.add(run_id)
+    if not normalized:
+        return {}
+    init()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT r.id AS run_id, t.id AS task_id, t.task_type, t.account_id
+            FROM {_table('operation_runs')} r
+            JOIN {_table('operation_tasks')} t ON t.id=r.task_id
+            WHERE r.id=ANY(%s)
+              AND lower(COALESCE(t.data->>'deleted_by_user', '')) <> 'true'
+            """,
+            (sorted(normalized),),
+        )
+        return {int(row["run_id"]): dict(row) for row in cur.fetchall()}
+
+
 def get_task(task_id: int, *, include_events: bool = True) -> dict | None:
     init()
     with _connect() as conn, conn.cursor() as cur:

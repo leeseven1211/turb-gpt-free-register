@@ -98,6 +98,8 @@ def set_current_stage(
     next_stage = str(stage or "event")[:80]
     changed_task = task_id is not None and value.get("task_id") is not None and int(value["task_id"]) != int(task_id)
     changed_run = run_id is not None and value.get("run_id") is not None and int(value["run_id"]) != int(run_id)
+    if changed_task or changed_run:
+        value.pop("identifier_namespace", None)
     if value.get("stage") != next_stage or changed_task or changed_run:
         for key in ("event_id", "event_uuid", "source_event_id", "source_system", "main_step_id"):
             value.pop(key, None)
@@ -108,7 +110,7 @@ def set_current_stage(
         value["task_id"] = int(task_id)
     if run_id is not None:
         value["run_id"] = int(run_id)
-    for key in ("event_id", "event_uuid", "source_event_id", "source_system", "main_step_id"):
+    for key in ("event_id", "event_uuid", "source_event_id", "source_system", "main_step_id", "identifier_namespace"):
         if metadata.get(key) is not None:
             value[key] = metadata[key]
     return _CURRENT_CONTEXT.set(value)

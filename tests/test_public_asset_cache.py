@@ -238,6 +238,16 @@ class PublicAssetEventTests(_TempFiles):
             self.event(c, "Fetch.requestPaused", requestId="fetch-1", networkId="net-1", resourceType="Script", request={"method": "GET", "url": URL, "headers": header})
             self.assertEqual(c._ws.commands[-1]["method"], "Fetch.continueRequest")
 
+    def test_credentialed_requests_bypass_warm_public_cache(self):
+        for headers in ({"Cookie": "test=private"}, {"authorization": "Bearer test"}, {"Proxy-Authorization": "Basic test"}):
+            with self.subTest(headers=headers):
+                c = self.client()
+                c._store.put(URL, PUBLIC, BODY)
+                self.event(c, "Fetch.requestPaused", requestId="fetch-1", networkId="net-1", resourceType="Script", request={"method": "GET", "url": URL, "headers": headers})
+                self.assertEqual(c._ws.commands[-1]["method"], "Fetch.continueRequest")
+                self.assertFalse(c._paused)
+                self.assertTrue(c._lookup_queue.empty())
+
     def test_late_lookup_cannot_leave_request_paused_or_double_fulfill(self):
         c = self.client()
         c._store.put(URL, PUBLIC, BODY)

@@ -1,5 +1,7 @@
 """验证不可能满足的池策略在访问供应商之前失败。"""
 from unittest.mock import patch
+from concurrent.futures import ThreadPoolExecutor
+import threading
 
 import pytest
 
@@ -133,6 +135,45 @@ def test_reuse_limit_exhaustion_remains_visible_when_wait_budget_ends():
                 api_url="https://example.test/proxies", purpose="plan-check", allow_reuse=True,
                 reuse_limit=3, timeout=1,
             )
+
+
+def test_equal_demand_profiles_both_receive_maintenance():
+    """某地区持续复检不能占满另一地区的全部维护机会。"""
+    first = proxy_pool.Profile("first", "1024proxy", {"session_minutes": 30}, waiting=1, touched=1)
+    second = proxy_pool.Profile("second", "1024proxy", {"session_minutes": 30}, waiting=1, touched=2)
+    seen = []
+    def take_check(key, **kwargs):
+        seen.append(key)
+        return {"id": len(seen)}
+    with patch.object(proxy_pool, "_profiles", {"first": first, "second": second}), \
+         patch.object(proxy_pool, "_prewarm", False), \
+         patch.object(proxy_pool.store, "maintenance", return_value=[]), \
+         patch.object(proxy_pool.store, "take_check", side_effect=take_check), \
+         patch.object(proxy_pool, "_check"):
+        for _ in range(4):
+            assert proxy_pool.maintain_once() is True
+    assert set(seen) == {"first", "second"}
+    assert abs(seen.count("first") - seen.count("second")) <= 1
+
+
+def test_two_workers_reserve_different_waiting_profiles_before_network_work():
+    first = proxy_pool.Profile("first", "1024proxy", {"session_minutes": 30}, waiting=1)
+    second = proxy_pool.Profile("second", "1024proxy", {"session_minutes": 30}, waiting=1)
+    seen = []
+    barrier = threading.Barrier(2)
+    def check(resource, policy):
+        barrier.wait(timeout=3)
+    def take_check(key, **kwargs):
+        seen.append(key)
+        return {"id": key}
+    with patch.object(proxy_pool, "_profiles", {"first": first, "second": second}), \
+         patch.object(proxy_pool, "_prewarm", False), \
+         patch.object(proxy_pool.store, "maintenance", return_value=[]), \
+         patch.object(proxy_pool.store, "take_check", side_effect=take_check), \
+         patch.object(proxy_pool, "_check", side_effect=check), \
+         ThreadPoolExecutor(max_workers=2) as executor:
+        assert all(executor.map(lambda _: proxy_pool.maintain_once(), range(2)))
+    assert set(seen) == {"first", "second"}
 
 
 def test_impossible_lifetime_fails_before_start_or_supplier_request():

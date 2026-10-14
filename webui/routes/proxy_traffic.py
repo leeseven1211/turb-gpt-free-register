@@ -63,6 +63,32 @@ def _traffic_items(limit: int, offset: int, *, available_only: bool = False, **f
 
 
 def _include_task_types(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # 注册历史 run 使用另一个编号空间，不能按 operation run 猜测归属。
+    run_only = [
+        item for item in items
+        if item.get("source") == "roxy_cdp"
+        and item.get("purpose") in {"token_refresh", "live_check"}
+        and item.get("operation_task_id") in (None, "")
+        and item.get("registration_job_id") in (None, "")
+        and item.get("account_id") is not None
+    ]
+    run_ids: set[int] = set()
+    for item in run_only:
+        try:
+            run_id = int(item.get("operation_run_id"))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if run_id > 0:
+            run_ids.add(run_id)
+    links = operation_task_store.get_run_task_links(sorted(run_ids)) if run_ids else {}
+    for item in run_only:
+        try:
+            link = links.get(int(item.get("operation_run_id")))
+            account_id = int(item["account_id"])
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if link and link["task_type"] == item["purpose"] and link["account_id"] == account_id:
+            item["operation_task_id"] = link["task_id"]
     task_ids: set[int] = set()
     for item in items:
         try:

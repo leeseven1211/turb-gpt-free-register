@@ -1367,6 +1367,7 @@ class _JobLogContext:
             "registration",
             task_id=self.task_id,
             run_id=getattr(_THREAD_CTX, "run_id", None),
+            identifier_namespace="registration",
         )
         self._stage_scope.__enter__()
         self.handler = task_run_log.TaskRunLogHandler(

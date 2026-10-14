@@ -1082,11 +1082,11 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "BROWSER_PUBLIC_ASSET_CACHE_MODE", "file": "browser.py", "type": "str", "group": "浏览器画像",
-        "label": "注册公共静态资源缓存", "help": "off=关闭；observe=仅统计候选、不下载或回放；enabled=跨环境复用已验证的公共 JS/CSS。仅新启动的 Roxy 注册流程生效，认证接口和账号状态不缓存",
+        "label": "公共静态资源缓存", "help": "off=关闭；observe=仅统计候选、不下载或回放；enabled=注册及账号认证流程跨环境复用公开 JS/CSS。认证流程只收录浏览器已下载且确认无凭据的公共响应，认证接口和账号状态不缓存",
     },
     {
         "key": "BROWSER_PUBLIC_ASSET_CACHE_MAX_MB", "file": "browser.py", "type": "int", "group": "浏览器画像",
-        "label": "公共静态缓存上限(MiB)", "help": "磁盘公共 JS/CSS 缓存的总容量上限，默认 256 MiB；达到上限后淘汰较少使用的资源；仅新启动的注册流程生效",
+        "label": "公共静态缓存上限(MiB)", "help": "注册及账号认证流程共享的公共 JS/CSS 磁盘缓存上限，默认 256 MiB；达到上限后淘汰较少使用的资源",
     },
 
     # ---- 代理与网络 ----

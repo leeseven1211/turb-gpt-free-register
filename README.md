@@ -468,7 +468,7 @@ Roxy 的字段不是普通浏览器代理 URL，而是 `proxyMethod/proxyCategor
 
 注册和认证使用独占子租约 `pool_leased`；只有套餐查询明确启用复用时才使用 `shared`/共享子租约。正常释放进入按 `PROXY_1024_RECENT_TTL` 配置的 cooldown，冷却结束后可再次领取；明确的线路传输故障进入 quarantine 并保留到资源到期。 无活跃关联的库存终态保留 7 天后分批清理；任务子租约历史保留。`PROXY_POOL_MIN_TTL` 必须小于 1024Proxy 会话时长，并为检测预留时间，不可能满足的组合会在提取前被拒绝。`PROXY_1024_MAX_ATTEMPTS`、`PROXY_1024_ROTATE_SESSION_TIME` 和旧 batch/rotate 开关仅为旧诊断或兼容调用保留，正常代理池不依赖它们，也不按任务 ID 派生供应商参数。
 
-当前供应商请求固定 `region` 和 `time`，`num` 使用有界候选窗口；跳过已占用或冷却线路，只检测并交付本轮预留槽位所需的数量，避免反复困在供应商返回的同一列表前缀。候选全重复会记录明确原因并退避，不声称增加数量就保证获得新 IP。`time` 是供应商的粘性窗口，不保证每次领取都是新会话或新 IP；系统只记录实际检测到的出口 IP 和地区，不把“新租约”写成“已换新 IP”。可参考 [1024Proxy 动态住宅 API 文档](https://help.1024proxy.com/1024/1024proxy/dynamic-residential-traffic/api)，该文档只说明 `region`、`time`、`num` 等请求参数；连接池的并发和回收语义参考 [Psycopg 连接池文档](https://www.psycopg.org/psycopg3/docs/advanced/pool.html)。
+当前供应商请求固定 `region` 和 `time`，`num` 使用与池最大容量一致的有界候选窗口，上限 1000；跳过已占用或冷却线路，只检测并交付本轮预留槽位所需的数量，避免较大库存反复困在旧批量客户端的 64 条前缀。维护线程优先处理有等待任务的地区，并轮换各地区的复检与补货机会。候选全重复会记录明确原因并退避，不声称增加数量就保证获得新 IP。`time` 是供应商的粘性窗口，不保证每次领取都是新会话或新 IP；系统只记录实际检测到的出口 IP 和地区，不把“新租约”写成“已换新 IP”。可参考 [1024Proxy 动态住宅 API 文档](https://help.1024proxy.com/1024/1024proxy/dynamic-residential-traffic/api)，该文档只说明 `region`、`time`、`num` 等请求参数；连接池的并发和回收语义参考 [Psycopg 连接池文档](https://www.psycopg.org/psycopg3/docs/advanced/pool.html)。
 
 单条候选的出口检测发生 HTTP、连接或超时错误时，清理该候选并在共同预算内继续检测后面的候选；供应商提取失败、整轮预算耗尽或取消仍终止本轮。候选故障日志只记录检测阶段、异常类型、HTTP 状态码和脱敏端点。
 
@@ -650,8 +650,8 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 
 - `BROWSER_DATA_SAVER_MODE` 是拦截总开关。注册使用 `BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES` 和 `BROWSER_DATA_SAVER_BLOCKED_URL_PATTERNS`；登录前自动忽略 script/stylesheet 类型和 ChatGPT/auth CDN 脚本、样式的旧拦截规则。注册资料提交后才按已有策略阻断后续 SPA 资源。刷新 AT、旧 AT 浏览器查活、独立 Codex OAuth 和账号操作使用固定的认证安全规则，只拦截图片、媒体及明确的遥测请求。注册窗口继续执行 Codex OAuth 时会切换为认证安全规则。
 - `BROWSER_DATA_SAVER_AUTH_FLOWS` 是可选流程列表，可填写 `token_refresh`、`live_check`、`codex_oauth`、`account_action`；默认全选，填 `[]` 可只保留注册省流量。它和总开关都可以在 WebUI「配置 → 浏览器画像」调整。流程开关同时控制 Roxy 启动参数和 Selenium CDP 拦截。
-- `BROWSER_PUBLIC_ASSET_CACHE_MODE` 独立控制新启动的 Roxy 注册：默认 `off`；`observe` 仅统计候选，不下载或回放；`enabled` 在浏览器原生缓存之外跨 Profile 复用公共 JS/CSS。可在同一配置分组调整；`BROWSER_PUBLIC_ASSET_CACHE_MAX_MB` 默认 256 MiB。缓存位于忽略提交的 `run/public-asset-cache/`，最多 1000 项、单项 10 MiB、有效期不超过响应声明及 24 小时，旧资源自动淘汰。
-- 公共缓存只接受审核过的 ChatGPT/auth CDN 目录下带版本的 JS/CSS，要求 HTTP 200、明确公共缓存、正确 MIME、无 Set-Cookie 和敏感响应变体。仅收录已证实不携带 Cookie/Authorization 的浏览器响应；需要匿名验证时，只沿本次新建 Profile 的已知代理下载，不跟重定向、不回退直连。复用已有 Profile 时不猜测其代理线路。认证 API、HTML、session、OTP 和安全挑战不缓存。原 URL、内容完整性与安全响应头保留，过期、损坏、磁盘或连接异常均回到浏览器正常网络。首次填充可能额外下载，不能以冷缓存单次任务承诺省流量比例。
+- `BROWSER_PUBLIC_ASSET_CACHE_MODE` 独立控制 Roxy 注册及账号认证流程（刷新 AT、普通查活、Codex OAuth、账号操作）：默认 `off`；`observe` 仅统计候选，不下载或回放；`enabled` 在浏览器原生缓存之外跨 Profile 复用公共 JS/CSS。可在同一配置分组调整；`BROWSER_PUBLIC_ASSET_CACHE_MAX_MB` 默认 256 MiB。缓存位于忽略提交的 `run/public-asset-cache/`，最多 1000 项、单项 10 MiB、有效期不超过响应声明及 24 小时，旧资源自动淘汰。
+- 公共缓存只接受审核过的 ChatGPT/auth CDN 目录下带版本的 JS/CSS，要求 HTTP 200、明确公共缓存、正确 MIME、无 Set-Cookie 和敏感响应变体。仅收录已证实不携带 Cookie/Authorization 的浏览器响应；注册需要匿名验证时，只沿本次新建 Profile 的已知代理下载，不跟重定向、不回退直连。账号认证流程只读取浏览器已经完成的公共响应，不额外发起匿名下载；缓存只连接当前业务页面，复用注册窗口时由注册外层持有并收口，保留窗口也会停止本轮缓存及流量统计。认证 API、HTML、session、OTP 和安全挑战不缓存。原 URL、内容完整性与安全响应头保留，过期、损坏、磁盘或连接异常均回到浏览器正常网络。注册首次填充可能额外下载，不能以冷缓存单次任务承诺省流量比例。
 - 省流量拦截或缓存失败会继续原浏览器业务。「代理与流量」页分别标明浏览器和协议采集来源：浏览器统计已采集的 HTTP/WebSocket 字节及缓存匿名填充下载，排除公共缓存本地回放；协议统计已接入 `BrowserSession` 的业务请求，字节使用后端报告的传输正文大小，不含请求头、TLS 或代理隧道，解码后的正文大小另存。协议请求数按每次 `get/post` 调用累计，自动重定向另计；其他客户端、外部脚本和未接入的请求不在此范围。
 - 今日请求记录按采集记录的开始时间计数，不是 HTTP 请求数；今日新建线路按任务租约获取时间计数，后台库存锚点不计任务线路，日期边界为北京时间零点。旧协议未采集标记保留在 PostgreSQL 排障但不进入可用记录合计。常规协议采集只存聚合统计和任务归属，不存 URL、正文或凭据；计量异常不改变业务结果。浏览器未确认的本地回放不扣减可观测字节，后台填充未收口时记录下界并标记未知。所有可观测字节都不等于代理商账单。
 
