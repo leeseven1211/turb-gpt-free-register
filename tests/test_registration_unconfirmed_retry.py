@@ -65,15 +65,15 @@ class UnconfirmedRegistrationRetryTests(unittest.TestCase):
                 self.assertEqual(info["retry_action"], "registration")
                 self.assertEqual(info["display_status"], "failed")
 
-    def test_failed_pre_account_task_with_unresolved_submission_is_not_retryable(self):
+    def test_failed_pre_account_task_with_unresolved_submission_can_retry(self):
         job, attempt = pre_account_facts()
         job["status"] = "failed"
         with patch("core.storage.registration.has_unresolved_submission_facts", return_value=True):
             info = svc._build_retry_info(
                 job, account=None, attempt=attempt, successful_retry=None,
             )
-        self.assertFalse(info["retryable"])
-        self.assertIn("未决", info["retry_reason"])
+        self.assertTrue(info["retryable"])
+        self.assertEqual("registration", info["retry_action"])
 
     def test_saved_private_password_allows_automatic_resume_with_unknown_submission(self):
         job, attempt = pre_account_facts()
@@ -85,19 +85,26 @@ class UnconfirmedRegistrationRetryTests(unittest.TestCase):
         self.assertEqual(info["retry_action"], "registration_resume")
         self.assertEqual(info["display_status"], "failed")
 
-    def test_private_resume_rejects_missing_password_completed_or_other_identity(self):
+    def test_missing_resume_facts_fall_back_to_registration_but_identity_mismatches_block(self):
         job, attempt = pre_account_facts()
         attempt.update(checkpoint="password_request_started", target_status="request_unknown",
                        remote_identity_state="request_unknown", data={"has_password": True})
-        for changes in ({"data": {}}, {"target_status": "completed"},
-                        {"email_snapshot": "other@example.test"}, {"account_id": 99},
-                        {"checkpoint": "created"}):
+        for changes in ({"target_status": "completed"},
+                        {"email_snapshot": "other@example.test"}, {"account_id": 99}):
             with self.subTest(changes=changes), patch(
                 "core.storage.registration.has_unresolved_submission_facts", return_value=True,
             ):
                 info = svc._build_retry_info(job, account=None, attempt={**attempt, **changes},
                                             successful_retry=None)
                 self.assertFalse(info["retryable"])
+
+        for changes in ({"data": {}}, {"checkpoint": "created"}):
+            with self.subTest(fallback=changes):
+                restarted = svc._build_retry_info(
+                    job, account=None, attempt={**attempt, **changes}, successful_retry=None,
+                )
+                self.assertTrue(restarted["retryable"])
+                self.assertEqual("registration", restarted["retry_action"])
 
     def test_old_unconfirmed_child_loads_root_for_single_and_bulk_retry(self):
         root, attempt = pre_account_facts()
@@ -113,11 +120,17 @@ class UnconfirmedRegistrationRetryTests(unittest.TestCase):
              patch.object(svc, "_retry_jobs_by_ids", side_effect=lambda ids: {21: root} if 21 in ids else {}):
             self.assertTrue(svc.get_retry_info_bulk([child])[22]["retryable"])
 
-    def test_unknown_identity_without_recovery_context_is_not_resubmitted(self):
+    def test_original_attempt_with_unknown_remote_facts_can_be_retried(self):
         job, attempt = pre_account_facts()
         for changes in ({"remote_account_state": "confirmed"}, {"remote_identity_state": "request_unknown"},
-                        {"checkpoint": "password_request_started"}, {"email_snapshot": "other@example.test"},
-                        {"id": 999}, {"source_root_job_id": 999}):
+                        {"checkpoint": "password_request_started"}):
+            with self.subTest(changes=changes):
+                info = svc._build_retry_info(job, account=None, attempt=dict(attempt, **changes),
+                                            successful_retry=None)
+                self.assertTrue(info["retryable"])
+                self.assertEqual("registration", info["retry_action"])
+
+        for changes in ({"email_snapshot": "other@example.test"}, {"id": 999}, {"source_root_job_id": 999}):
             with self.subTest(changes=changes):
                 info = svc._build_retry_info(job, account=None, attempt=dict(attempt, **changes),
                                             successful_retry=None)

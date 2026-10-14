@@ -2761,30 +2761,13 @@ def _private_registration_resume_password(job: dict) -> str:
 
 
 def _pre_account_retry_facts_match(job: dict, root: dict | None, attempt: dict | None) -> bool:
-    """旧待确认任务仅在同一原邮箱且尚未提交账号创建时走注册重跑。"""
+    """未落库任务按原邮箱和 Attempt 身份重跑，远端未知状态不关闭入口。"""
     if not _pre_account_identity_facts_match(job, root, attempt):
         return False
-    # 只要原 Attempt 仍有未收口的提交事实，普通注册重试不能再次显示为可重放。
-    # 新 Run 的创建不会清除旧围栏；恢复登录必须由显式 registration_resume
-    # 入口核对远端检查点后进入，不复用这里的普通注册 admission。
-    try:
-        from core.storage import registration as registration_store
-
-        if registration_store.has_unresolved_submission_facts(int(attempt["id"])):
-            return False
-    except Exception:
-        # 无法读取持久围栏时保守关闭重试，避免 UI 点击绕过未知提交。
-        return False
-    private_password_saved = bool((attempt.get("data") or {}).get("has_password"))
-    if private_password_saved:
-        return (attempt.get("local_account_state") in {"none", "not_started"}
-                and attempt.get("remote_account_state") != "confirmed"
-                and attempt.get("target_status") not in {"deactivated", "completed"})
+    # 新 Run 复用原邮箱和 Attempt；旧回执、远端状态与历史检查点不作为重跑门槛。
     return (
-        attempt.get("checkpoint") in {"created", "email_claimed", "auth_started"}
-        and attempt.get("remote_identity_state") == "not_started"
-        and attempt.get("remote_account_state") == "not_started"
-        and attempt.get("local_account_state") in {"none", "not_started"}
+        attempt.get("local_account_state") not in {"persisted", "saved"}
+        and attempt.get("target_status") not in {"deactivated", "completed"}
     )
 
 
@@ -2792,13 +2775,6 @@ def _pre_account_submission_retry_reason(attempt: dict | None) -> str:
     """解释为什么账号尚未落库的注册任务不能重新派发。"""
     if not attempt or attempt.get("id") is None:
         return "缺少可核验的原邮箱或注册 Attempt，无法重跑原任务"
-    try:
-        from core.storage import registration as registration_store
-
-        if registration_store.has_unresolved_submission_facts(int(attempt["id"])):
-            return "同一 Attempt 仍有未决浏览器提交，需先核对原请求结果"
-    except Exception:
-        return "同一 Attempt 的浏览器提交事实暂不可核验，不能重跑"
     return "缺少可核验的原邮箱或注册 Attempt，无法重跑原任务"
 
 

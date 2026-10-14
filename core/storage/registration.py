@@ -1311,11 +1311,11 @@ def record_submission_fact(
     error_type: str = "",
     duration_ms: int | None = None,
 ) -> dict:
-    """追加浏览器提交事实并建立同一 Attempt 的 dispatch 围栏。
+    """追加浏览器提交事实并建立当前 Run 的 dispatch 围栏。
 
     该接口只接受白名单元数据。``private_context`` 是已有的私有恢复列，因而
     不新增主存储 schema；公开事件仅携带同一白名单，绝不写入请求体、Token、
-    Cookie、密码或 OTP。
+    Cookie、密码或 OTP。旧 Run 的未决事实保留作审计，但不阻止新的重试 Run 派发。
     """
     from core.registration.browser_submission import (
         _PHASE_PRIORITY,
@@ -1341,8 +1341,8 @@ def record_submission_fact(
         facts = private.get("submission_facts")
         facts = list(facts) if isinstance(facts, list) else []
         key = (fact["submission_id"], fact["phase"])
-        # dispatch_intent 是跨 Run 的唯一发送围栏。若 Attempt 上仍有另一条
-        # 未决动作，当前 Run 只能恢复/观察原动作，不能重新创建 POST/OTP。
+        # 每个 Run 内的未决动作仍阻止本 Run 重复派发；旧 Run 的未知结果保留记录，
+        # 但显式重试会创建新 Run，因此不作为新 Run 的派发门槛。
         if fact["phase"] == "dispatch_intent":
             unresolved = unresolved_submission_ids(facts)
             unresolved_items = [
@@ -1350,6 +1350,13 @@ def record_submission_fact(
                 if isinstance(item, dict)
                 and item.get("submission_id") in unresolved
                 and item.get("submission_id") != fact["submission_id"]
+                and (
+                    (run_id is None and item.get("run_id") is None)
+                    or (
+                        run_id is not None
+                        and str(item.get("run_id") or "") == str(int(run_id))
+                    )
+                )
             ]
             explicit_resume_run = False
             if run_id is not None:
@@ -1378,19 +1385,24 @@ def record_submission_fact(
                     "token_obtained", "postprocessing", "manual_reconcile", "failed",
                 }
             )
-            # 重发结果未知时，续跑可以只读核对或提交已收到的验证码，
-            # 但不能借宽泛的 resume_login 标记再次点击重发。
+            # 只有 registration_resume Run 可以用 resume_login 标记登录请求。
+            # 普通注册重跑使用自己的初始注册流程，不能伪装成登录续跑。
+            if fact["kind"] == "resume_login" and not explicit_resume_run:
+                raise ValueError("resume_login 提交必须使用显式 registration_resume Run")
+            # 同一 Run 中 OTP 重发结果未知时，不允许再次点击重发。
             if resume_login and fact["stage"] == "otp_resend" and any(
                 str(item.get("stage") or "") == "otp_resend" for item in unresolved_items
             ):
                 resume_login = False
-            if any(item != fact["submission_id"] for item in unresolved) and not resume_login:
-                raise ValueError("同一 Attempt 仍有未决浏览器提交，拒绝重新派发请求")
+            if unresolved_items and not resume_login:
+                raise ValueError("当前 Run 仍有未决浏览器提交，拒绝重复派发请求")
         if not any((item.get("submission_id"), item.get("phase")) == key for item in facts if isinstance(item, dict)):
-            facts.append(fact)
-        # 只保留最近事实，避免一个 Attempt 的浏览器恢复历史无限增长；但每个
-        # 仍未收口的 submission 必须保留其最高阶段事实，否则旧 Run 的未知
-        # POST 会在大量观测后从 durable fence 中消失，下一 Run 可能重复派发。
+            stored_fact = dict(fact)
+            if run_id is not None:
+                stored_fact["run_id"] = int(run_id)
+            facts.append(stored_fact)
+        # 只保留最近事实，避免一个 Attempt 的浏览器恢复历史无限增长；每个仍未收口的
+        # submission 继续保留最高阶段，方便后续核对其跨 Run 的完整历史。
         recent_facts = facts[-128:]
         unresolved = unresolved_submission_ids(facts)
         required: dict[tuple[str, str], dict] = {}

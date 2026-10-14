@@ -300,7 +300,7 @@ class RegistrationFactsTests(PostgresTestCase):
                 execution_id="plain-registration-execution",
             )
 
-    def test_resume_run_cannot_repeat_unknown_otp_resend(self):
+    def test_resume_run_cannot_repeat_unknown_otp_resend_within_same_run(self):
         attempt = registration.create_attempt("resume-resend-fence@example.test")
         attempt_id = int(attempt["id"])
         run = registration.start_run(
@@ -323,7 +323,7 @@ class RegistrationFactsTests(PostgresTestCase):
                 "SET private_context = private_context || %s::jsonb WHERE id=%s",
                 (json.dumps({"submission_facts": [{
                     "submission_id": "old-resend", "kind": "resume_login", "stage": "otp_resend",
-                    "phase": "unknown", "endpoint_kind": "otp_resend",
+                    "phase": "unknown", "endpoint_kind": "otp_resend", "run_id": int(run["id"]),
                 }]}), attempt_id),
             )
         with self.assertRaises(ValueError):
