@@ -1,7 +1,7 @@
 """无账号记录的失败任务自动续跑，原密码与未知提交始终留在同一 Attempt。"""
 from unittest.mock import Mock, patch
 
-from core import account_task_store, db, operation_task_store, record_store
+from core import account_task_store, admin_repository, db, operation_task_store, record_store
 from core import registration_service as service
 from core.registration.browser_submission import unresolved_submission_ids
 from core.storage import registration
@@ -24,6 +24,7 @@ class PrivatePasswordResumeFlowTests(PostgresTestCase):
         root_id = record_store.insert_row(record_store.JOBS, {
             "job_uuid": "automatic-resume-root", "email": address,
             "email_source": "icloud_hide", "status": "running", "job_type": "registration",
+            "batch_id": "automatic-resume-batch", "batch_index": 1, "batch_size": 1,
             "data": {"config_snapshot": {"registration_driver": "roxy"}},
         })
         attempt = registration.ensure_attempt_for_job(root_id)
@@ -49,6 +50,13 @@ class PrivatePasswordResumeFlowTests(PostgresTestCase):
             info = service.get_retry_info(db.get_job(source_id))
             self.assertTrue(info["retryable"], info)
             self.assertEqual(info["retry_action"], "registration_resume")
+            listing = admin_repository.list_jobs(
+                admin_repository.PageRequest(filters={"id": str(source_id)}),
+                progress_batch_id="automatic-resume-batch",
+            )
+            self.assertTrue(listing["items"][0].get("retryable"), listing["items"][0].get("retry_reason"))
+            progress_row = next(row for row in listing["progress_rows"] if row["id"] == source_id)
+            self.assertTrue(progress_row.get("retryable"))
             with patch.object(service, "get_executor", return_value=Mock()), \
                  patch.object(service, "is_job_worker_active", return_value=False):
                 result = service.retry_job(source_id)

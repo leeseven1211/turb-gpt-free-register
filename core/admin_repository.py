@@ -641,7 +641,8 @@ def list_jobs(request: PageRequest, *, progress_batch_id: str = "") -> dict:
     projected = {int(raw["id"]): str(raw.get("projected_display_status") or "") for raw in raw_page}
     retry_rows = {int(row.get("id") or 0): row for row in [*page_rows, *progress_rows]}
     retry = service.get_retry_info_bulk(list(retry_rows.values()))
-    for row in retry_rows.values():
+    # 列表和批次可能各有同一任务的独立字典；统一计算后更新两处展示对象。
+    for row in [*page_rows, *progress_rows]:
         info = retry.get(int(row.get("id") or 0), {})
         row.update(info)
         if not info.get("display_status"):
