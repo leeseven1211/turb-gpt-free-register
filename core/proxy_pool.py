@@ -11,7 +11,7 @@ import threading
 import time
 import uuid
 
-from core import proxy_pool_store as store, record_store
+from core import proxy_pool_store as store, proxy_lease_store, record_store
 
 logger = logging.getLogger(__name__)
 _lock = threading.RLock()
@@ -114,7 +114,8 @@ atexit.register(stop)
 
 
 def acquire(*, provider: str = "1024proxy", progress_callback=None, cancel=None, timeout: float | None = None,
-            allow_reuse: bool = False, static_urls: list[str] | None = None, **kwargs):
+            allow_reuse: bool = False, reuse_limit: int | None = None,
+            static_urls: list[str] | None = None, **kwargs):
     """任务侧没有供应商提取、校验或重试循环，只有有界排队领取。"""
     policy = settings()
     options = _provider_options(**kwargs) if provider == "1024proxy" else {"urls": list(static_urls or [])}
@@ -127,9 +128,15 @@ def acquire(*, provider: str = "1024proxy", progress_callback=None, cancel=None,
     purpose = str(kwargs.get("purpose") or "registration")
     if allow_reuse and purpose != "plan-check":
         raise ValueError("仅套餐查询允许复用代理")
+    if allow_reuse:
+        from config import proxy as cfg
+        reuse_limit = int(getattr(cfg, "PLAN_CHECK_PROXY_REUSE_LIMIT", 3) if reuse_limit is None else reuse_limit)
+        if not 1 <= reuse_limit <= 100:
+            raise ValueError("套餐查询每 IP 最多查询次数必须为 1 到 100")
     correlation = {key: kwargs.get(key) for key in ("job_id", "account_id", "operation_task_id", "operation_run_id", "registration_job_id", "route_attempt_no")}
     correlation["purpose"] = purpose
     deadline = time.monotonic() + max(0, float(policy["wait_timeout"] if timeout is None else timeout))
+    exhausted_message = None
     with _lock:
         profile.waiting += 1
     try:
@@ -140,9 +147,18 @@ def acquire(*, provider: str = "1024proxy", progress_callback=None, cancel=None,
             if cancel:
                 cancel()
             if time.monotonic() >= deadline:
-                raise ProxyPoolTimeout("代理池暂时没有符合要求的可用线路，领取等待超时")
-            lease = store.claim(profile.key, min_ttl=policy["min_ttl"], max_age=policy["max_age"],
-                                correlation=correlation, allow_reuse=allow_reuse)
+                raise ProxyPoolTimeout(exhausted_message or "代理池暂时没有符合要求的可用线路，领取等待超时")
+            try:
+                lease = store.claim(profile.key, min_ttl=policy["min_ttl"], max_age=policy["max_age"],
+                                    correlation=correlation, allow_reuse=allow_reuse,
+                                    **({"reuse_limit": reuse_limit} if allow_reuse else {}))
+            except proxy_lease_store.ProxyReuseLimitError as exc:
+                # 次数耗尽后仍等待其他库存；所有轮次共用原来的领取期限。
+                message = str(exc)
+                if progress_callback and message != exhausted_message:
+                    progress_callback(message)
+                exhausted_message = message
+                lease = None
             if lease:
                 try:
                     if cancel:

@@ -14,14 +14,62 @@ from core import postgres_store
 PROXY_LEASES = record_store.PROXY_LEASES
 ACTIVE_STATES = ("pending", "leased", "recent", "shared_pending", "shared_leased", "pool_leased")
 LEASE_WINDOWS = frozenset({"all", "1h", "24h", "7d"})
+REUSE_LIMIT_DEFAULT = 3
+REUSE_LIMIT_MIN = 1
+REUSE_LIMIT_MAX = 100
 
 
 class DuplicateProxyLeaseError(RuntimeError):
     """Another process already owns the endpoint or exit IP."""
 
 
+class ProxyReuseLimitError(DuplicateProxyLeaseError):
+    """套餐查询出口 IP 已达到持久化复用上限。"""
+
+    def __init__(self, exit_ip: str, limit: int):
+        self.exit_ip = str(exit_ip)
+        self.limit = int(limit)
+        super().__init__("当前线路已达到查询次数上限，等待其他可用线路")
+
+
+def normalize_reuse_limit(value: int = REUSE_LIMIT_DEFAULT) -> int:
+    """在存储边界校验有界的套餐查询复用次数。"""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("套餐查询复用次数必须是 1 到 100 的整数")
+    if not REUSE_LIMIT_MIN <= value <= REUSE_LIMIT_MAX:
+        raise ValueError("套餐查询复用次数必须在 1 到 100 之间")
+    return value
+
+
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def plan_check_exit_ip_count(
+    conn,
+    exit_ip: str,
+    *,
+    now: str | None = None,
+    exclude_lease_id: str | None = None,
+) -> int:
+    """统计当前事务中某出口 IP 的已交付套餐查询租约。
+
+    调用方必须先持有 ``proxy-exit-ip:<exit_ip>`` 锁。释放记录在原始过期前仍计数，
+    pending 记录不计数。
+    """
+    timestamp = now or _now()
+    clauses = (
+        '"purpose" = \'plan-check\'',
+        '"exit_ip" = %s',
+        '"expires_at" IS NOT NULL',
+        '"expires_at" > %s',
+        '"state" NOT IN (\'pending\', \'shared_pending\')',
+    )
+    params: list[Any] = [exit_ip, timestamp]
+    if exclude_lease_id is not None:
+        clauses += ('"lease_id" <> %s',)
+        params.append(str(exclude_lease_id))
+    return record_store.count_rows(PROXY_LEASES, where=" AND ".join(clauses), params=params, conn=conn)
 
 
 def _cleanup_expired() -> None:
@@ -167,26 +215,45 @@ def activate(
     exit_ip: str | None,
     region: str | None,
     expires_at: str,
+    reuse_limit: int = REUSE_LIMIT_DEFAULT,
 ) -> None:
     """Promote a pending lease after exit validation."""
     try:
         with record_store.transaction() as conn:
-            if exit_ip:
-                record_store.advisory_xact_lock(conn, f"proxy-exit-ip:{exit_ip}")
             row = record_store.get_row_by(
                 PROXY_LEASES, "lease_id", str(lease_id), conn=conn, for_update=True,
             )
             if row is None:
                 raise RuntimeError(f"代理租约不存在: {lease_id}")
             now = _now()
+            shared = bool(row.get("allow_reuse"))
+            if shared and row.get("purpose") != "plan-check":
+                raise ValueError("仅套餐查询允许建立共享代理租约")
+            if shared:
+                if not exit_ip:
+                    raise ValueError("共享代理租约必须确认实际出口 IP")
+                limit = normalize_reuse_limit(reuse_limit)
+            elif exit_ip:
+                # 严格租约保留原有行为；reuse_limit 只对共享套餐查询生效。
+                limit = None
+            else:
+                limit = None
+            if exit_ip:
+                record_store.advisory_xact_lock(conn, f"proxy-exit-ip:{exit_ip}")
             if (
                 row.get("state") not in {"pending", "leased", "shared_pending", "shared_leased"}
                 or (row.get("expires_at") and str(row["expires_at"]) <= now)
             ):
                 raise RuntimeError(f"代理租约已结束，不能恢复为使用中: {lease_id}")
+            if row.get("state") in {"leased", "shared_leased"}:
+                if str(row.get("exit_ip") or "") != str(exit_ip or ""):
+                    raise RuntimeError(f"代理租约已经绑定其他出口 IP，不能改写: {lease_id}")
+                return
             if exit_ip:
                 # 出口尚未被唯一索引保护的共享租约也参与严格模式的重复检查。
-                if not row.get("allow_reuse") and record_store.count_rows(
+                if shared and plan_check_exit_ip_count(conn, exit_ip, now=now) >= int(limit):
+                    raise ProxyReuseLimitError(exit_ip, int(limit))
+                if not shared and record_store.count_rows(
                     PROXY_LEASES,
                     where='"exit_ip" = %s AND "id" <> %s AND "state" IN (\'shared_leased\', \'pool_leased\') '
                           'AND ("expires_at" IS NULL OR "expires_at" > %s)',

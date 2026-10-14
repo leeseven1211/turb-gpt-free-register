@@ -164,9 +164,14 @@ class PlanCheckRetryTests(PostgresTestCase):
             public_dict=lambda: {"network_route": "direct", "proxy_provider": "test"},
             release=Mock(),
         )
-        retry = operation.retry_runtime_task(int(task["id"]), trigger="test_retry")
+        retry = operation.retry_runtime_task(
+            int(task["id"]), trigger="test_retry", data={
+                "config_snapshot": {"proxy_allow_reuse": True, "proxy_reuse_limit": 5},
+            },
+        )
 
         with (
+            patch("config.proxy.PLAN_CHECK_PROXY_REUSE_LIMIT", 3, create=True),
             patch("core.account_proxy.acquire_account_proxy", return_value=route) as acquire,
             patch.object(plan_check_service, "_query_account_plan", return_value={
                 "ok": True, "http_status": 200, "current_plan_type": "plus",
@@ -178,6 +183,7 @@ class PlanCheckRetryTests(PostgresTestCase):
         acquire.assert_called_once()
         self.assertEqual(account_id, acquire.call_args.kwargs["account_id"])
         self.assertEqual("plan-check", acquire.call_args.kwargs["purpose"])
+        self.assertEqual(5, acquire.call_args.kwargs.get("reuse_limit"))
         query.assert_called_once()
         self.assertEqual("test_retry", query.call_args.kwargs["trigger"])
         self.assertEqual("success", result["status"])
@@ -186,3 +192,29 @@ class PlanCheckRetryTests(PostgresTestCase):
         self.assertEqual("success", account["plan_check_status"])
         self.assertTrue(account["plan_check_ok"])
         route.release.assert_called_once()
+
+    def test_plan_release_quarantines_only_confirmed_transport_failure(self):
+        for transport_failure in (False, True):
+            with self.subTest(transport_failure=transport_failure):
+                account_id, task = self._terminal_plan(
+                    "failed", email=f"plan-route-fault-{transport_failure}@example.test",
+                )
+                retry = operation.retry_runtime_task(int(task["id"]), trigger="test_retry")
+                route = SimpleNamespace(
+                    proxy_url="http://192.0.2.1:8080",
+                    public_dict=lambda: {"network_route": "proxy", "proxy_provider": "test"},
+                    release=Mock(),
+                )
+                with (
+                    patch("core.account_proxy.acquire_account_proxy", return_value=route),
+                    patch.object(plan_check_service, "_query_account_plan", return_value={
+                        "ok": False, "http_status": None if transport_failure else 403,
+                        "error": "线路连接失败" if transport_failure else "HTTP 403",
+                        "proxy_transport_failure": transport_failure,
+                    }),
+                ):
+                    task_gateway._execute_operation_handler("plan_check", int(retry["id"]))
+                expected = {"reason": f"plan-check-{account_id}"}
+                if transport_failure:
+                    expected["fault"] = True
+                route.release.assert_called_once_with(**expected)

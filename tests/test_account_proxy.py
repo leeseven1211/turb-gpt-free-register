@@ -8,6 +8,26 @@ from core.proxy_provider import ProxyLease
 
 
 class AccountProxyTests(unittest.TestCase):
+    def test_plan_route_preserves_frozen_reuse_limit_for_provider_and_static_pool(self):
+        lease = ProxyLease(
+            "limited-route", "1024proxy", "http://192.0.2.1:8080", "192.0.2.1:8080",
+            datetime.now(), exit_ip="198.51.100.1", region="US",
+        )
+        for source in ("provider:1024proxy", "pool"):
+            with (
+                self.subTest(source=source),
+                patch("core.proxy_pool.acquire", return_value=lease) as acquire,
+                patch.multiple("config.proxy", PLAN_CHECK_PROXY_ALLOW_REUSE=True,
+                               PLAN_CHECK_PROXY_REUSE_LIMIT=3, ACCOUNT_ACTION_PROXY="http://192.0.2.1:8080",
+                               create=True),
+            ):
+                route = account_proxy.acquire_account_proxy(
+                    account_id=1, purpose="plan-check", region="US", source=source,
+                    allow_reuse=True, reuse_limit=5,
+                )
+                self.assertEqual("US", route.region)
+                self.assertEqual(5, acquire.call_args.kwargs.get("reuse_limit"))
+
     def test_action_proxy_mode_uses_action_specific_config(self):
         with (
             patch.multiple(
@@ -71,7 +91,7 @@ class AccountProxyTests(unittest.TestCase):
         acquire.assert_called_once_with(
             provider="1024proxy",
             region="JP", validate=True, job_id="plan-check-7", account_id=7,
-            purpose="plan-check", operation_task_id=None, operation_run_id=None, allow_reuse=True,
+            purpose="plan-check", operation_task_id=None, operation_run_id=None, allow_reuse=True, reuse_limit=3,
         )
         self.assertEqual(route.provider, "1024proxy")
         self.assertEqual(route.region, "JP")
@@ -109,6 +129,7 @@ class AccountProxyTests(unittest.TestCase):
             operation_task_id=None,
             operation_run_id=None,
             allow_reuse=True,
+            reuse_limit=3,
         )
 
     def test_pool_mode_uses_dedicated_account_proxy_first(self):

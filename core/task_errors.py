@@ -1163,6 +1163,12 @@ def _classify_raw_task_error(
         return registration_projection
     for code, source, source_label, kind_label, needles in _RULES:
         if any(needle in haystack for needle in needles):
+            summary = None
+            if code == "external.proxy" and "proxypooltimeout" in haystack:
+                summary = (
+                    "IP 查询次数已用尽，等待换线超时"
+                    if "查询次数上限" in raw else "等待可用线路超时"
+                )
             return _error_projection(
                 code,
                 source,
@@ -1171,6 +1177,7 @@ def _classify_raw_task_error(
                 stage=stage,
                 error_code=error_code,
                 raw=raw,
+                summary=summary,
             )
     return _error_projection(
         TaskErrorCode.UNKNOWN.value,

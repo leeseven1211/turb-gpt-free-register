@@ -11,12 +11,15 @@ from core.proxy_provider import ProxyLease
 
 
 class ProxyResourcePoolTests(PostgresTestCase):
-    def seed_ready(self, number=1, *, seconds=1800, profile="default"):
+    def seed_ready(self, number=1, *, seconds=1800, profile="default", endpoint=None,
+                   exit_ip=None):
         slot = store.reserve_slot(profile, "1024proxy", max_size=20, timeout=60)
         now = datetime.now()
-        lease = ProxyLease(uuid.uuid4().hex, "1024proxy", f"http://192.0.2.{number}:8080",
-                           f"192.0.2.{number}:8080", now, expires_at=now + timedelta(seconds=seconds),
-                           exit_ip=f"198.51.100.{number}", region="US", metadata={"persistent_lease": True})
+        endpoint = endpoint or f"192.0.2.{number}:8080"
+        exit_ip = exit_ip or f"198.51.100.{number}"
+        lease = ProxyLease(uuid.uuid4().hex, "1024proxy", f"http://{endpoint}", endpoint, now,
+                           expires_at=now + timedelta(seconds=seconds), exit_ip=exit_ip,
+                           region="US", metadata={"persistent_lease": True})
         proxy_lease_store.reserve_pending(lease_id=lease.lease_id, provider=lease.provider,
                                          endpoint=lease.endpoint, proxy_url=lease.proxy_url,
                                          acquired_at=now.isoformat(), expires_at=lease.expires_at.isoformat(),
@@ -26,8 +29,14 @@ class ProxyResourcePoolTests(PostgresTestCase):
         self.assertTrue(store.publish(slot, lease))
         return slot, lease
 
-    def claim(self, *, shared=False, purpose=None):
+    def alias_ready_resource(self, anchor, *, profile="default"):
+        slot = store.reserve_slot(profile, "1024proxy", max_size=20, timeout=60)
+        self.assertTrue(store.publish(slot, anchor))
+        return slot
+
+    def claim(self, *, shared=False, purpose=None, reuse_limit=3):
         return store.claim("default", min_ttl=300, max_age=60, allow_reuse=shared,
+                           reuse_limit=reuse_limit,
                            correlation={"purpose": purpose or ("plan-check" if shared else "registration"),
                                         "job_id": "101", "registration_job_id": 101, "route_attempt_no": 7})
 
@@ -63,6 +72,78 @@ class ProxyResourcePoolTests(PostgresTestCase):
         self.assertEqual(record_store.get_row_by(record_store.PROXY_LEASES, "lease_id", second.lease_id)["state"], "shared_leased")
         store.release(second, reason="completed")
         self.assertIsNotNone(self.claim())
+
+    def test_shared_reuse_limit_counts_same_exit_ip_across_resources_and_skips_exhausted_ip(self):
+        _, same_ip_anchor = self.seed_ready(1, exit_ip="198.51.100.77")
+        self.alias_ready_resource(same_ip_anchor)
+        self.seed_ready(3, exit_ip="198.51.100.88")
+
+        first = self.claim(shared=True, reuse_limit=2)
+        second = self.claim(shared=True, reuse_limit=2)
+        self.assertEqual("198.51.100.77", first.exit_ip)
+        self.assertEqual("198.51.100.77", second.exit_ip)
+        third = self.claim(shared=True, reuse_limit=2)
+        self.assertIsNotNone(third)
+        self.assertEqual("198.51.100.88", third.exit_ip)
+
+    def test_released_shared_lease_keeps_count_until_expiry(self):
+        self.seed_ready(exit_ip="198.51.100.77")
+        first = self.claim(shared=True, reuse_limit=1)
+        store.release(first, reason="completed")
+        with self.assertRaises(proxy_lease_store.ProxyReuseLimitError):
+            self.claim(shared=True, reuse_limit=1)
+
+    def test_exhausted_resource_is_retired_and_does_not_fill_ready_inventory(self):
+        slot, anchor = self.seed_ready(exit_ip="198.51.100.77")
+        first = self.claim(shared=True, reuse_limit=1)
+        store.release(first, reason="completed")
+        with self.assertRaises(proxy_lease_store.ProxyReuseLimitError):
+            self.claim(shared=True, reuse_limit=1)
+        resource = record_store.get_row_by(store.RESOURCES, "resource_id", slot["resource_id"])
+        anchor_row = record_store.get_row_by(store.LEASES, "lease_id", anchor.lease_id)
+        self.assertEqual("retired", resource["state"])
+        self.assertEqual("recent", anchor_row["state"])
+        self.assertEqual({"retired": 1}, store.counts())
+
+    def test_expired_released_shared_lease_no_longer_counts(self):
+        self.seed_ready(exit_ip="198.51.100.77")
+        first = self.claim(shared=True, reuse_limit=1)
+        store.release(first, reason="completed")
+        row = record_store.get_row_by(store.LEASES, "lease_id", first.lease_id)
+        record_store.patch_row(store.LEASES, row["id"], {
+            "expires_at": store._stamp(-1),
+        })
+        self.assertIsNotNone(self.claim(shared=True, reuse_limit=1))
+
+    def test_released_strict_pool_child_counts_against_shared_limit(self):
+        _, same_ip_anchor = self.seed_ready(1, exit_ip="198.51.100.77")
+        self.alias_ready_resource(same_ip_anchor)
+        strict = self.claim(purpose="plan-check")
+        store.release(strict, reason="completed")
+        with self.assertRaises(proxy_lease_store.ProxyReuseLimitError):
+            self.claim(shared=True, reuse_limit=1)
+
+    def test_shared_reuse_limit_is_atomic_across_threads(self):
+        self.seed_ready(1, exit_ip="198.51.100.77")
+        barrier = threading.Barrier(2)
+
+        def claim_once(_):
+            barrier.wait()
+            try:
+                return self.claim(shared=True, reuse_limit=1)
+            except proxy_lease_store.ProxyReuseLimitError:
+                return None
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            leases = list(executor.map(claim_once, range(2)))
+        self.assertEqual(1, sum(lease is not None for lease in leases))
+
+    def test_shared_reuse_limit_must_be_bounded(self):
+        self.seed_ready()
+        with self.assertRaises(ValueError):
+            self.claim(shared=True, reuse_limit=0)
+        with self.assertRaises(ValueError):
+            self.claim(shared=True, reuse_limit=101)
 
     def test_faulted_shared_resource_cannot_return_to_ready(self):
         self.seed_ready()

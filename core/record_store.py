@@ -337,6 +337,7 @@ PROXY_LEASES = TableSpec(
         ("operation_task_id", "operation_run_id"),
         ("registration_job_id", "route_attempt_no"),
         ("purpose", "created_at"),
+        ("exit_ip", "purpose", "expires_at"),
     ),
     partial_unique=(
         (("endpoint",), '"state" IN (\'pending\', \'leased\', \'recent\')'),

@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import quote, urlparse
 
+from curl_cffi import requests as curl_requests
+
 from core.plus_promotion import (
     DISCOUNT,
     FREE_TRIAL,
@@ -560,6 +562,18 @@ def _retryable_plan_error(http_status: int | None) -> bool:
     return http_status in {408, 409, 425, 429} or http_status >= 500
 
 
+def _is_proxy_transport_failure(exc: BaseException, *, selected_proxy: str, resp: Any) -> bool:
+    """仅识别已选代理上的实际 curl_cffi 传输失败。"""
+    if not str(selected_proxy or "").strip() or resp is not None:
+        return False
+    return isinstance(exc, (
+        curl_requests.exceptions.ProxyError,
+        curl_requests.exceptions.ConnectionError,
+        curl_requests.exceptions.SSLError,
+        curl_requests.exceptions.Timeout,
+    ))
+
+
 def _retry_wait_seconds(resp: Any, base_delay: float, attempt: int) -> float:
     try:
         retry_after = (getattr(resp, "headers", {}) or {}).get("retry-after")
@@ -696,6 +710,8 @@ def check_account_plan(
                 "error": f"{type(exc).__name__}: {exc}",
                 "retryable": True,
             }
+            if _is_proxy_transport_failure(exc, selected_proxy=route["proxy"], resp=resp):
+                last_result["proxy_transport_failure"] = True
             probe_result = last_result
         finally:
             if context_recorder is not None and env is not None:

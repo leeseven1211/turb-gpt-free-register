@@ -202,6 +202,17 @@ class TaskErrorClassificationTests(unittest.TestCase):
                 self.assertEqual(message, info["summary"])
                 self.assertEqual("manual_reconcile", info["next_action"])
 
+    def test_proxy_pool_wait_and_reuse_exhaustion_show_specific_reasons(self):
+        for message, expected in (
+            ("ProxyPoolTimeout: 代理池暂时没有符合要求的可用线路，领取等待超时", "等待可用线路超时"),
+            ("ProxyPoolTimeout: 当前线路已达到查询次数上限，等待其他可用线路", "IP 查询次数已用尽，等待换线超时"),
+            ("RuntimeError: 1024Proxy 获取失败：上游超时", "代理获取失败"),
+        ):
+            with self.subTest(message=message):
+                info = classify_task_error(message, task_type="plan_check", stage="network")
+                self.assertEqual("external.proxy", info["code"])
+                self.assertEqual(expected, info["summary"])
+
     def test_proxy_failure_is_external(self):
         info = classify_task_error("RuntimeError: 1024Proxy 获取失败：上游超时")
         self.assertEqual(info["code"], "external.proxy")

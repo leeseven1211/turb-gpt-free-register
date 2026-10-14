@@ -75,6 +75,7 @@ PLAN_CONFIG_ALLOWLIST = {
     "route_source": "ACCOUNT_PLAN_CHECK_PROXY_MODE",
     "driver": "ACCOUNT_PLAN_CHECK_DRIVER",
     "proxy_allow_reuse": "PLAN_CHECK_PROXY_ALLOW_REUSE",
+    "proxy_reuse_limit": "PLAN_CHECK_PROXY_REUSE_LIMIT",
 }
 
 
@@ -378,6 +379,7 @@ def _run_plan_check(
     proxy_source: str | None = None,
 ) -> dict:
     account_route = None
+    result = None
     reporter = _ReporterAdapter(task_id, operation_context)
     preflight_open = True
     failure_stage = "preflight"
@@ -405,6 +407,8 @@ def _run_plan_check(
         }
         if isinstance(config_snapshot, dict) and "proxy_allow_reuse" in config_snapshot:
             route_kwargs["allow_reuse"] = bool(config_snapshot["proxy_allow_reuse"])
+        if isinstance(config_snapshot, dict):
+            route_kwargs["reuse_limit"] = int(config_snapshot.get("proxy_reuse_limit", 3))
         selected_source = proxy_source or _snapshot_value(config_snapshot, "route_source")
         if selected_source:
             route_kwargs["source"] = selected_source
@@ -503,7 +507,10 @@ def _run_plan_check(
         return result
     finally:
         if account_route is not None:
-            account_route.release(reason=f"plan-check-{account_id}")
+            if result and not result.get("ok") and result.get("proxy_transport_failure") is True:
+                account_route.release(reason=f"plan-check-{account_id}", fault=True)
+            else:
+                account_route.release(reason=f"plan-check-{account_id}")
         if release_queue_slot:
             _QUEUE_SLOTS.release()
 

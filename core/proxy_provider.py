@@ -390,12 +390,16 @@ def fetch_1024_proxy(
     registration_job_id: int | None = None,
     route_attempt_no: int | None = None,
     allow_reuse: bool = False,
+    reuse_limit: int | None = None,
 ) -> ProxyLease:
     """供应商适配器；业务任务通过独立代理池领取。"""
     from config import proxy as cfg
 
     if allow_reuse and purpose != "plan-check":
         raise ValueError("仅套餐查询允许复用代理 IP")
+    limit = int(getattr(cfg, "PLAN_CHECK_PROXY_REUSE_LIMIT", 3) if reuse_limit is None else reuse_limit)
+    if allow_reuse and not 1 <= limit <= 100:
+        raise ValueError("套餐查询每 IP 最多查询次数必须为 1 到 100")
     configured_url = api_url if api_url is not None else getattr(cfg, "PROXY_1024_API_URL", "")
     configured_region = region if region is not None else getattr(cfg, "PROXY_1024_REGION", "")
     configured_protocol = protocol if protocol is not None else getattr(cfg, "PROXY_1024_PROTOCOL", "http")
@@ -409,7 +413,8 @@ def fetch_1024_proxy(
     recent_ttl = 0 if allow_reuse else max(0, int(getattr(cfg, "PROXY_1024_RECENT_TTL", minutes * 60) or 0))
     interval = max(0.0, float(getattr(cfg, "PROXY_1024_ACQUIRE_INTERVAL", 0.6) or 0.0))
     proxy_protocol = _normalize_protocol(configured_protocol)
-    persist_lease = _persistent_lease_enabled()
+    # 有限复用必须由数据库协调，内存租约不能保证重启和多进程的累计上限。
+    persist_lease = _persistent_lease_enabled() or allow_reuse
 
     def request_minutes_for_attempt(attempt_number: int) -> int:
         if not rotate_session_time or not job_id or minutes >= 120:
@@ -536,6 +541,7 @@ def fetch_1024_proxy(
                             exit_ip=exit_ip,
                             region=region,
                             expires_at=expires_at.isoformat(timespec="seconds"),
+                            **({"reuse_limit": limit} if allow_reuse else {}),
                         )
                     except proxy_lease_store.DuplicateProxyLeaseError as exc:
                         raise DuplicateProxyError(str(exc)) from exc

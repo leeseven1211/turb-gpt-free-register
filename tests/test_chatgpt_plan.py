@@ -2,6 +2,8 @@
 import unittest
 from unittest.mock import Mock, patch
 
+from curl_cffi import requests as curl_requests
+
 from core import chatgpt_plan, registration_plan_capture
 
 
@@ -289,6 +291,100 @@ class ChatGPTPlanTests(unittest.TestCase):
         recorder.finish_session.assert_called_once_with(
             session, status="success", result_code="authenticated",
         )
+
+    @staticmethod
+    def _plan_check_session():
+        session = Mock()
+        session.get_chatgpt_headers.return_value = {}
+        session.js_timezone_offset_min.return_value = -480
+        return session
+
+    def test_plan_check_marks_final_proxy_transport_failure(self):
+        for exception_type in (
+            curl_requests.exceptions.ProxyError,
+            curl_requests.exceptions.ConnectionError,
+            curl_requests.exceptions.SSLError,
+            curl_requests.exceptions.Timeout,
+        ):
+            with self.subTest(exception=exception_type.__name__):
+                session = self._plan_check_session()
+                session.get.side_effect = exception_type("proxy transport failed")
+
+                result = chatgpt_plan.check_account_plan(
+                    "access-token",
+                    proxy="http://proxy.example.test:8080",
+                    session=session,
+                    max_attempts=1,
+                )
+
+                self.assertFalse(result["ok"])
+                self.assertTrue(result["proxy_transport_failure"])
+                self.assertIsNone(result["http_status"])
+
+    def test_plan_check_does_not_mark_local_or_direct_transport_errors(self):
+        for proxy, exception in (
+            ("http://proxy.example.test:8080", RuntimeError("local setup failed")),
+            ("", curl_requests.exceptions.ProxyError("direct request failed")),
+        ):
+            with self.subTest(proxy=proxy, exception=type(exception).__name__):
+                session = self._plan_check_session()
+                session.get.side_effect = exception
+
+                result = chatgpt_plan.check_account_plan(
+                    "access-token",
+                    proxy=proxy,
+                    session=session,
+                    max_attempts=1,
+                )
+
+                self.assertFalse(result["ok"])
+                self.assertNotIn("proxy_transport_failure", result)
+
+    def test_plan_check_does_not_mark_http_failures_as_proxy_transport_failure(self):
+        for status_code in (401, 403, 429, 502):
+            with self.subTest(status_code=status_code):
+                response = Mock()
+                response.status_code = status_code
+                response.text = "upstream error"
+                session = self._plan_check_session()
+                session.get.return_value = response
+
+                result = chatgpt_plan.check_account_plan(
+                    "access-token",
+                    proxy="http://proxy.example.test:8080",
+                    session=session,
+                    max_attempts=1,
+                )
+
+                self.assertFalse(result["ok"])
+                self.assertNotIn("proxy_transport_failure", result)
+
+    def test_plan_check_successful_retry_does_not_keep_old_proxy_failure_marker(self):
+        response = Mock()
+        response.status_code = 200
+        response.text = "{}"
+        response.json.return_value = self._accounts_check_payload()
+        quota_response = Mock()
+        quota_response.status_code = 200
+        quota_response.text = "{}"
+        quota_response.json.return_value = {"rate_limit": {"allowed": True}}
+        session = self._plan_check_session()
+        session.get.side_effect = [
+            curl_requests.exceptions.ProxyError("temporary proxy failure"),
+            response,
+            quota_response,
+        ]
+
+        result = chatgpt_plan.check_account_plan(
+            "access-token",
+            proxy="http://proxy.example.test:8080",
+            session=session,
+            max_attempts=2,
+            retry_delay=0,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertNotIn("proxy_transport_failure", result)
 
 
 if __name__ == "__main__":

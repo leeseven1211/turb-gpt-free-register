@@ -3,6 +3,7 @@ from contextlib import ExitStack
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+import uuid
 import unittest
 from unittest.mock import patch
 
@@ -38,6 +39,17 @@ class PlanProxyReuseTests(PostgresTestCase):
             api_url="https://proxy.example.test/api", region="US", validate=True,
             purpose=purpose, allow_reuse=shared,
         )
+
+    def _reserve_shared(self, *, exit_ip="203.0.113.30", expires_in=1800):
+        now = datetime.now()
+        lease_id = uuid.uuid4().hex
+        proxy_lease_store.reserve_pending(
+            lease_id=lease_id, provider="1024proxy", endpoint=f"198.18.0.{lease_id[:4]}:8080",
+            proxy_url="http://198.18.0.1:8080", acquired_at=now.isoformat(),
+            expires_at=(now + timedelta(seconds=expires_in)).isoformat(),
+            purpose="plan-check", allow_reuse=True,
+        )
+        return lease_id, now + timedelta(seconds=expires_in)
 
     def test_shared_queries_release_only_their_own_leases(self):
         strict = self._acquire(purpose="registration")
@@ -120,6 +132,54 @@ class PlanProxyReuseTests(PostgresTestCase):
                 expires_at=shared.expires_at.isoformat(timespec="seconds"),
             )
         self.assertIs(strict, proxy_provider._ACTIVE_ENDPOINTS[strict.endpoint])
+
+    def test_shared_activation_limit_counts_released_leases_and_is_idempotent(self):
+        first_id, first_expires = self._reserve_shared()
+        proxy_lease_store.activate(
+            lease_id=first_id, exit_ip="203.0.113.30", region="US",
+            expires_at=first_expires.isoformat(timespec="seconds"), reuse_limit=1,
+        )
+        proxy_lease_store.activate(
+            lease_id=first_id, exit_ip="203.0.113.30", region="US",
+            expires_at=first_expires.isoformat(timespec="seconds"), reuse_limit=1,
+        )
+        proxy_lease_store.release(lease_id=first_id, reason="completed", recent_until=None)
+
+        second_id, second_expires = self._reserve_shared()
+        with self.assertRaises(proxy_lease_store.DuplicateProxyLeaseError):
+            proxy_lease_store.activate(
+                lease_id=second_id, exit_ip="203.0.113.30", region="US",
+                expires_at=second_expires.isoformat(timespec="seconds"), reuse_limit=1,
+            )
+
+    def test_shared_activation_does_not_count_failed_pending_or_expired_leases(self):
+        first_id, first_expires = self._reserve_shared(exit_ip="203.0.113.31")
+        proxy_lease_store.abort(first_id)
+        second_id, second_expires = self._reserve_shared(exit_ip="203.0.113.31")
+        proxy_lease_store.activate(
+            lease_id=second_id, exit_ip="203.0.113.31", region="US",
+            expires_at=second_expires.isoformat(timespec="seconds"), reuse_limit=1,
+        )
+
+        expired_id, expired_at = self._reserve_shared(exit_ip="203.0.113.32", expires_in=-1)
+        with self.assertRaises(RuntimeError):
+            proxy_lease_store.activate(
+                lease_id=expired_id, exit_ip="203.0.113.32", region="US",
+                expires_at=expired_at.isoformat(timespec="seconds"), reuse_limit=1,
+            )
+
+    def test_shared_activation_rejects_unknown_exit_ip_and_invalid_limit(self):
+        lease_id, expires_at = self._reserve_shared(exit_ip="203.0.113.33")
+        with self.assertRaises(ValueError):
+            proxy_lease_store.activate(
+                lease_id=lease_id, exit_ip=None, region="US",
+                expires_at=expires_at.isoformat(timespec="seconds"), reuse_limit=1,
+            )
+        with self.assertRaises(ValueError):
+            proxy_lease_store.activate(
+                lease_id=lease_id, exit_ip="203.0.113.33", region="US",
+                expires_at=expires_at.isoformat(timespec="seconds"), reuse_limit=0,
+            )
 
     def test_strict_acquisition_blocks_existing_shared_queries_across_processes(self):
         shared = self._acquire(shared=True)

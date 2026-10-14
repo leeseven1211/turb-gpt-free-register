@@ -348,6 +348,7 @@ _DEFAULTS: dict[str, Any] = {
     "PLAN_CHECK_PROXY_MODE": "auto",
     "PLAN_CHECK_PROXY": "",
     "PLAN_CHECK_PROXY_ALLOW_REUSE": True,
+    "PLAN_CHECK_PROXY_REUSE_LIMIT": 3,
     "ACCOUNT_ACTION_PROXY_MODE": "registration",
     "ACCOUNT_ACTION_PROXY": "",
     "PLAN_CHECK_TIMEOUT": 15.0,
@@ -527,7 +528,11 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "PLAN_CHECK_PROXY_ALLOW_REUSE", "file": "proxy.py", "type": "bool", "group": "代理与网络",
-        "label": "查询套餐允许复用 IP", "help": "仅影响使用 1024Proxy 的查套餐；开启后允许复用 IP，仍验证出口国家。关闭后查套餐恢复严格去重，注册及认证任务继续使用独占租约。",
+        "label": "查询套餐允许复用 IP", "help": "仅影响使用代理池的查套餐（1024Proxy/静态代理池）；开启后允许复用 IP，1024Proxy 仍验证出口国家，静态代理池仍使用健康校验。关闭后查套餐恢复严格独占和冷却，注册及认证任务继续使用独占租约。",
+    },
+    {
+        "key": "PLAN_CHECK_PROXY_REUSE_LIMIT", "file": "proxy.py", "type": "int", "group": "代理与网络",
+        "label": "查询套餐同一 IP 租用次数上限", "help": "仅影响使用代理池的查套餐（1024Proxy/静态代理池）；按实际出口 IP 在租约有效期内累计，包含首次租用。释放或进程重启不会清零，达到上限后换线；1024Proxy 仍验证出口国家，静态代理池仍使用健康校验。仅在允许复用 IP 开启时生效。",
     },
     {
         "key": "ACCOUNT_LIVE_CHECK_PROXY_MODE", "file": "account.py", "type": "str", "group": "代理与网络",
@@ -1579,6 +1584,7 @@ _RANGES: dict[str, tuple[int | float | None, int | float | None]] = {
     "PROXY_POOL_WORKERS": (1, 32),
     "PLAN_CHECK_TIMEOUT": (1.0, 60.0),
     "PLAN_CHECK_MAX_ATTEMPTS": (1, 4),
+    "PLAN_CHECK_PROXY_REUSE_LIMIT": (1, 100),
     "PLAN_CHECK_RETRY_DELAY": (0, 30.0),
     "PLAN_CHECK_REGISTRATION_RECHECK_DELAY": (0, 30.0),
     "PLAN_CHECK_MIN_INTERVAL": (0, 30.0),

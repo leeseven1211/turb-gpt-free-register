@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import uuid
 
 from core import postgres_store, record_store
+from core import proxy_lease_store
 
 RESOURCES = record_store.PROXY_POOL_RESOURCES
 LEASES = record_store.PROXY_LEASES
@@ -134,6 +135,19 @@ def _children(conn, anchor_id: str) -> list[dict]:
                                  params=(anchor_id, _stamp()), conn=conn)
 
 
+def _mark_reuse_exhausted(conn, resource: dict, anchor: dict) -> list[dict]:
+    """保留次数耗尽标记，不提前收口其他任务的子租约。"""
+    children = _children(conn, anchor["lease_id"])
+    record_store.patch_row(RESOURCES, resource["id"], {
+        "reuse_exhausted": True,
+        "reuse_exhausted_at": _stamp(),
+        "state": "shared" if children else "retired",
+    }, conn=conn)
+    resource["reuse_exhausted"] = True
+    resource["state"] = "shared" if children else "retired"
+    return children
+
+
 def _close_anchor(conn, resource: dict, *, reason: str) -> None:
     """在资源终态事务中收口独占锚点，不触碰任务子租约。"""
     anchor_id = str(resource.get("anchor_lease_id") or "").strip()
@@ -202,40 +216,73 @@ def _lease_object(row: dict, resource: dict, *, shared: bool):
     )
 
 
-def claim(profile_key: str, *, min_ttl: float, max_age: float, correlation: dict, allow_reuse: bool = False):
+def claim(profile_key: str, *, min_ttl: float, max_age: float, correlation: dict,
+          allow_reuse: bool = False,
+          reuse_limit: int = proxy_lease_store.REUSE_LIMIT_DEFAULT):
     """只领取已检查且寿命足够的库存；此路径不执行任何网络操作。"""
     if allow_reuse and correlation.get("purpose") != "plan-check":
         raise ValueError("只有套餐查询允许共享代理")
+    if allow_reuse:
+        reuse_limit = proxy_lease_store.normalize_reuse_limit(reuse_limit)
     record_store.init()
+    reuse_limit_error = None
     with record_store.transaction() as conn, conn.cursor() as cur:
         states = ["ready", "shared"] if allow_reuse else ["ready"]
-        cur.execute(f"SELECT * FROM {postgres_store.qualified(RESOURCES.name)} "
-                    "WHERE profile_key = %s AND state = ANY(%s) AND expires_at > %s AND checked_at >= %s "
-                    "ORDER BY expires_at, id FOR UPDATE SKIP LOCKED LIMIT 1",
-                    (profile_key, states, _stamp(min_ttl), _stamp(-max_age)))
-        raw = cur.fetchone()
-        resource = record_store.merge_row(RESOURCES, raw) if raw else None
-        if not resource:
-            return None
-        anchor = record_store.get_row_by(LEASES, "lease_id", resource["anchor_lease_id"], conn=conn, for_update=True)
-        if not anchor or anchor["state"] != "leased" or str(anchor["expires_at"]) <= _stamp(min_ttl):
-            record_store.patch_row(RESOURCES, resource["id"], {"state": "expired"}, conn=conn)
-            _close_anchor(conn, resource, reason="pool_anchor_stale")
-            return None
-        if not allow_reuse and _children(conn, anchor["lease_id"]):
-            return None
-        allowed = {key: value for key, value in correlation.items() if key in {
-            "job_id", "account_id", "purpose", "operation_task_id", "operation_run_id",
-            "registration_job_id", "route_attempt_no"}}
-        # 锚点负责跨池去重，任务租约单独保存；再次领取不能改写上次任务的关联。
-        row = {key: anchor.get(key) for key in ("provider", "endpoint", "proxy_url", "exit_ip", "region", "expires_at")}
-        row.update(allowed)
-        row.update(lease_id=uuid.uuid4().hex, state="shared_leased" if allow_reuse else "pool_leased", acquired_at=_stamp(),
-                   allow_reuse=allow_reuse, pool_resource_id=resource["resource_id"], pool_anchor_id=anchor["lease_id"])
-        record_store.insert_row(LEASES, row, conn=conn)
-        record_store.patch_row(RESOURCES, resource["id"], {"state": "shared" if allow_reuse else "leased",
-                                                        "last_used_at": _stamp()}, conn=conn)
-        return _lease_object(row, resource, shared=allow_reuse)
+        exhausted_exit_ip = None
+        seen_ids = []
+        while True:
+            # 每次只锁一个候选，其他并发领取仍可取得其余库存。
+            cur.execute(f"SELECT * FROM {postgres_store.qualified(RESOURCES.name)} "
+                        "WHERE profile_key = %s AND state = ANY(%s) AND expires_at > %s AND checked_at >= %s "
+                        "AND NOT (id = ANY(%s)) ORDER BY expires_at, id FOR UPDATE SKIP LOCKED LIMIT 1",
+                        (profile_key, states, _stamp(min_ttl), _stamp(-max_age), seen_ids))
+            raw = cur.fetchone()
+            if raw is None:
+                break
+            resource = record_store.merge_row(RESOURCES, raw)
+            seen_ids.append(resource["id"])
+            anchor = record_store.get_row_by(LEASES, "lease_id", resource["anchor_lease_id"], conn=conn, for_update=True)
+            if anchor and anchor["state"] == "recent":
+                record_store.patch_row(RESOURCES, resource["id"], {"state": "retired"}, conn=conn)
+                continue
+            if not anchor or anchor["state"] != "leased" or str(anchor["expires_at"]) <= _stamp(min_ttl):
+                record_store.patch_row(RESOURCES, resource["id"], {"state": "expired"}, conn=conn)
+                _close_anchor(conn, resource, reason="pool_anchor_stale")
+                continue
+            if not allow_reuse and _children(conn, anchor["lease_id"]):
+                continue
+            if correlation.get("purpose") == "plan-check" and anchor.get("exit_ip"):
+                # 严格套餐查询也会计入后续共享上限；与共享领取共用同一出口锁，
+                # 确保计数和插入之间不会被另一个进程穿插。
+                record_store.advisory_xact_lock(conn, f"proxy-exit-ip:{anchor['exit_ip']}")
+            if allow_reuse:
+                exit_ip = str(anchor.get("exit_ip") or "").strip()
+                if not exit_ip:
+                    raise ValueError("共享代理租约必须确认实际出口 IP")
+                if proxy_lease_store.plan_check_exit_ip_count(conn, exit_ip) >= reuse_limit:
+                    children = _mark_reuse_exhausted(conn, resource, anchor)
+                    if not children:
+                        _close_anchor(conn, resource, reason="pool_reuse_exhausted")
+                    exhausted_exit_ip = exit_ip
+                    continue
+            allowed = {key: value for key, value in correlation.items() if key in {
+                "job_id", "account_id", "purpose", "operation_task_id", "operation_run_id",
+                "registration_job_id", "route_attempt_no"}}
+            # 锚点负责跨池去重，任务租约单独保存；再次领取不能改写上次任务的关联。
+            row = {key: anchor.get(key) for key in ("provider", "endpoint", "proxy_url", "exit_ip", "region", "expires_at")}
+            row.update(allowed)
+            row.update(lease_id=uuid.uuid4().hex, state="shared_leased" if allow_reuse else "pool_leased", acquired_at=_stamp(),
+                       allow_reuse=allow_reuse, pool_resource_id=resource["resource_id"], pool_anchor_id=anchor["lease_id"])
+            record_store.insert_row(LEASES, row, conn=conn)
+            record_store.patch_row(RESOURCES, resource["id"], {"state": "shared" if allow_reuse else "leased",
+                                                            "last_used_at": _stamp()}, conn=conn)
+            return _lease_object(row, resource, shared=allow_reuse)
+        if exhausted_exit_ip:
+            # 先让事务提交退役标记和锚点收口，再向调用方报告等待原因。
+            reuse_limit_error = proxy_lease_store.ProxyReuseLimitError(exhausted_exit_ip, reuse_limit)
+    if reuse_limit_error:
+        raise reuse_limit_error
+    return None
 
 
 def release(lease, *, reason: str, fault: bool = False, cooldown: float = 0) -> None:
@@ -264,7 +311,11 @@ def release(lease, *, reason: str, fault: bool = False, cooldown: float = 0) -> 
                 "last_used_at": _stamp(),
             }, conn=conn)
         elif resource["state"] == "shared" and not _children(conn, resource["anchor_lease_id"]):
-            record_store.patch_row(RESOURCES, resource["id"], {"state": "ready", "last_used_at": _stamp()}, conn=conn)
+            if resource.get("reuse_exhausted"):
+                record_store.patch_row(RESOURCES, resource["id"], {"state": "retired"}, conn=conn)
+                _close_anchor(conn, resource, reason="pool_reuse_exhausted")
+            else:
+                record_store.patch_row(RESOURCES, resource["id"], {"state": "ready", "last_used_at": _stamp()}, conn=conn)
 
 
 def maintenance(*, max_age: float, max_idle: float, min_ready: int, min_ttl: float = 0,
@@ -321,8 +372,13 @@ def maintenance(*, max_age: float, max_idle: float, min_ready: int, min_ttl: flo
                 continue
             if row["state"] == "shared" and not _children(conn, row["anchor_lease_id"]) and not expired:
                 # 子租约仅在显式释放后结束；进程失联仍保留至自然到期。
-                record_store.patch_row(RESOURCES, row["id"], {"state": "ready"}, conn=conn)
-                row["state"] = "ready"
+                if row.get("reuse_exhausted"):
+                    record_store.patch_row(RESOURCES, row["id"], {"state": "retired"}, conn=conn)
+                    _close_anchor(conn, row, reason="pool_reuse_exhausted")
+                    row["state"] = "retired"
+                else:
+                    record_store.patch_row(RESOURCES, row["id"], {"state": "ready"}, conn=conn)
+                    row["state"] = "ready"
             if row["state"] == "checking" and str(row.get("check_deadline") or row["expires_at"]) <= _stamp():
                 record_store.patch_row(RESOURCES, row["id"], {"state": "quarantine", "last_error_code": "check_interrupted"}, conn=conn)
                 _close_anchor(conn, row, reason="check_interrupted")

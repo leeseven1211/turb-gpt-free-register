@@ -255,6 +255,7 @@ def acquire_account_proxy(
     source: str | None = None,
     rotation_index: int = 0,
     allow_reuse: bool | None = None,
+    reuse_limit: int | None = None,
 ) -> AccountProxyRoute:
     """为一次账号功能调用获取线路；调用方必须在 finally 中 release。"""
     if explicit_proxy is not None:
@@ -285,7 +286,7 @@ def acquire_account_proxy(
                         operation_run_id=context.get("run_id"),
                         allow_reuse=purpose == "plan-check" and (
                             bool(getattr(cfg, "PLAN_CHECK_PROXY_ALLOW_REUSE", True)) if allow_reuse is None else bool(allow_reuse)
-                        ))
+                        ), **({"reuse_limit": reuse_limit} if purpose == "plan-check" and reuse_limit is not None else {}))
         return AccountProxyRoute(lease.proxy_url, "proxy_pool", mode, region=lease.region, lease=lease, purpose=purpose)
 
     if not mode.startswith("provider:"):
@@ -300,7 +301,8 @@ def acquire_account_proxy(
         purpose=purpose,
         region=region,
         mode=mode,
-        **({"rotation_index": max(0, int(rotation_index or 0)), "allow_reuse": allow_reuse} if provider_id == "1024proxy" else {}),
+        **({"rotation_index": max(0, int(rotation_index or 0)), "allow_reuse": allow_reuse,
+            "reuse_limit": reuse_limit} if provider_id == "1024proxy" else {}),
     )
 
 
@@ -327,6 +329,7 @@ def _acquire_1024proxy(
     mode: str,
     rotation_index: int = 0,
     allow_reuse: bool | None = None,
+    reuse_limit: int | None = None,
 ) -> AccountProxyRoute:
     from config import proxy as cfg
     from core.task_run_log import current_context
@@ -353,7 +356,9 @@ def _acquire_1024proxy(
         purpose=purpose,
         operation_task_id=correlation.get("task_id"),
         operation_run_id=correlation.get("run_id"),
-        **({"allow_reuse": True} if reuse else {}),
+        **({"allow_reuse": True, "reuse_limit": int(
+            getattr(cfg, "PLAN_CHECK_PROXY_REUSE_LIMIT", 3) if reuse_limit is None else reuse_limit,
+        )} if reuse else {}),
     )
     return AccountProxyRoute(
         proxy_url=lease.proxy_url,
