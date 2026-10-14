@@ -80,6 +80,112 @@ def test_result_waits_for_its_own_event_while_run_is_active():
     assert _step(snapshot, "result")["display_status"] == "running"
 
 
+def test_registration_task_closeout_without_route_preserves_total_duration():
+    started_at, completed_at = "2026-10-14T01:00:00Z", "2026-10-14T01:02:00Z"
+    events = [
+        {**_event("network", "network", "success", detail={
+            "route_attempt_no": 1, "started_at": started_at,
+            "completed_at": "2026-10-14T01:00:05Z",
+        }), "run_id": 2},
+        {**_event("complete", "complete", "success", created_at=completed_at, detail={
+            "evidence": "run_status", "started_at": started_at, "completed_at": completed_at,
+        }), "run_id": 2, "source_system": "registration_progress_events"},
+    ]
+    for task_type in ("registration", "registration_resume"):
+        snapshot = build_progress_snapshot(1, 2, task_type, _run("success", route_attempt_no=1), events)
+        result = _step(snapshot, "result")
+        assert result["display_status"] == "success"
+        assert result["started_at"] == started_at
+        assert result["completed_at"] == completed_at
+        assert result["duration_ms"] == 120000
+        assert result["event_ids"] == ["complete"]
+        assert not snapshot.get("history_unknown")
+
+
+def test_registration_closeout_rejects_late_old_route_foreign_run_and_unowned_events():
+    started_at, completed_at = "2026-10-14T01:00:00Z", "2026-10-14T01:02:00Z"
+    events = [
+        {**_event("current-network", "network", "success", detail={
+            "route_attempt_no": 2, "started_at": "2026-10-14T01:01:00Z",
+            "completed_at": "2026-10-14T01:01:05Z",
+        }), "run_id": 2},
+        {**_event("current-complete", "complete", "success", created_at=completed_at, detail={
+            "evidence": "run_status", "started_at": started_at, "completed_at": completed_at,
+        }), "run_id": 2},
+        {**_event("late-old-route", "complete", "success", created_at="2026-10-14T01:03:00Z", detail={
+            "evidence": "run_status", "route_attempt_no": 1,
+            "started_at": "2026-10-14T00:50:00Z", "completed_at": "2026-10-14T01:03:00Z",
+        }), "run_id": 2},
+        {**_event("foreign-run", "complete", "success", created_at="2026-10-14T01:04:00Z", detail={
+            "evidence": "run_status", "started_at": "2026-10-14T00:40:00Z",
+            "completed_at": "2026-10-14T01:04:00Z",
+        }), "run_id": 99},
+        _event("unowned", "complete", "success", created_at="2026-10-14T01:05:00Z", detail={
+            "evidence": "run_status", "started_at": "2026-10-14T00:30:00Z",
+            "completed_at": "2026-10-14T01:05:00Z",
+        }),
+    ]
+    snapshot = build_progress_snapshot(1, 2, "registration", _run("success", route_attempt_no=2), events)
+    result = _step(snapshot, "result")
+    assert snapshot["selected_route_attempt_no"] == 2
+    assert result["started_at"] == started_at
+    assert result["completed_at"] == completed_at
+    assert result["duration_ms"] == 120000
+    assert result["event_ids"] == ["current-complete"]
+    assert [item["event_id"] for item in snapshot["history_unknown"]] == ["unowned"]
+    assert snapshot["history_unknown"][0]["reason"] == "事件缺少 Run 归属"
+
+
+def test_registration_current_run_legacy_closeout_survives_explicit_event_run_filter():
+    started_at, completed_at = "2026-10-14T01:00:00Z", "2026-10-14T01:02:00Z"
+    run = _run("success", route_attempt_no=1, progress_steps={
+        "complete": {
+            "state": "success", "evidence": "run_status", "started_at": started_at,
+            "completed_at": completed_at, "occurred_at": completed_at,
+        },
+    })
+    events = [{**_event("network", "network", "success", detail={
+        "route_attempt_no": 1, "started_at": started_at,
+        "completed_at": "2026-10-14T01:00:05Z",
+    }), "run_id": 2}]
+    snapshot = build_progress_snapshot(1, 2, "registration", run, events)
+    result = _step(snapshot, "result")
+    assert result["display_status"] == "success"
+    assert result["started_at"] == started_at
+    assert result["completed_at"] == completed_at
+    assert result["duration_ms"] == 120000
+    assert len(result["attempts"]) == 1
+    assert result["attempts"][0]["evidence"] == "run_status"
+    assert not snapshot.get("history_unknown")
+
+
+def test_registration_closeout_missing_time_does_not_invent_total_duration():
+    run = _run("success", route_attempt_no=1, duration_ms=120000)
+    events = [
+        {**_event("network", "network", "success", detail={"route_attempt_no": 1}), "run_id": 2},
+        {**_event("complete", "complete", "success", detail={"evidence": "run_status"}), "run_id": 2},
+    ]
+    result = _step(build_progress_snapshot(1, 2, "registration", run, events), "result")
+    assert result["display_status"] == "success"
+    assert result["started_at"] is None
+    assert result["completed_at"] is None
+    assert result["duration_ms"] is None
+
+
+def test_active_registration_without_closeout_keeps_result_pending_without_time():
+    for status in ("queued", "running", "waiting", "settling", "stopping"):
+        run = _run(status, route_attempt_no=1, started_at="2026-10-14T01:00:00Z")
+        events = [{**_event("network", "network", "running", detail={
+            "route_attempt_no": 1, "started_at": "2026-10-14T01:00:00Z",
+        }), "run_id": 2}]
+        result = _step(build_progress_snapshot(1, 2, "registration", run, events), "result")
+        assert result["display_status"] == "pending"
+        assert not result["active"]
+        assert result["started_at"] is None
+        assert result["completed_at"] is None
+        assert result["duration_ms"] is None
+
+
 def test_registration_disabled_branches_are_skipped_before_execution():
     for task_type in ("registration", "registration_resume"):
         for status in ("queued", "running", "success", "failed"):

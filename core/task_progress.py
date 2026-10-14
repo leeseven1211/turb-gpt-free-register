@@ -66,11 +66,13 @@ def _event_route_attempt_no(event: dict[str, Any]) -> int | None:
 
 
 def _event_is_job_level(event: dict[str, Any]) -> bool:
-    """线路尚未分配时，允许明确标记为任务级准备事件。"""
+    """任务级准备与收尾证据不依赖某一条线路。"""
     detail = _event_detail(event)
     return bool(
         detail.get("job_level") is True
         or str(detail.get("scope") or detail.get("route_scope") or "").strip().lower() in {"job", "task"}
+        # 注册收尾记录保存任务整体起止时间，兼容未显式标记任务级的历史记录。
+        or (_raw_stage(event) == "complete" and detail.get("evidence") == "run_status")
     )
 
 
@@ -941,10 +943,11 @@ def build_progress_snapshot(
     explicit = False
     order = 0
     source_events = [dict(value) for value in (events or []) if isinstance(value, dict)]
-    source_events.extend(_legacy_events(run_value))
     # 只有完全没有 Run 标识的旧单次任务可以继续兼容；一旦同一输入中
     # 出现明确 Run，未标识事件就无法安全归属，必须单独展示为历史未知。
     explicit_run_ids = {_event_run_id(value) for value in source_events if _event_run_id(value) is not None}
+    # 这些兼容事件来自当前 Run 自身的快照，不改变外部旧事件的归属判据。
+    source_events.extend({**value, "run_id": run_id} for value in _legacy_events(run_value))
     current_run = str(run_id)
     unknown_events: list[dict[str, Any]] = []
     run_filtered: list[dict[str, Any]] = []
