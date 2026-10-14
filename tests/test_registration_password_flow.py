@@ -653,8 +653,11 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
         def execute(script, *args):
             if args and args[0] is target:
                 native_click_scripts.append(script)
-                driver.state = "password"
                 return None
+            if "document.querySelectorAll('a[href]')" in script:
+                native_click_scripts.append(script)
+                driver.state = "password"
+                return {"ok": True, "reason": "password_anchor_clicked"}
             return {
                 "ok": True,
                 "reason": "create_account_password_target",
@@ -679,7 +682,10 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["reason"], "entered_create_account_password")
         self.assertTrue(result["native_click_fallback"])
-        self.assertEqual(native_click_scripts, ["arguments[0].click();"])
+        self.assertEqual(len(native_click_scripts), 1)
+        self.assertIn("document.querySelectorAll('a[href]')", native_click_scripts[0])
+        self.assertIn("url.pathname === '/create-account/password'", native_click_scripts[0])
+        self.assertNotIn("location.href =", native_click_scripts[0])
 
     def test_roxy_password_target_supports_japanese_text_only_link(self):
         driver = _RoxyDriver()

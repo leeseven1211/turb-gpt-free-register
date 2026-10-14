@@ -517,12 +517,39 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
                     and not native_click_fallback_used
                     and time.time() >= native_click_fallback_at
                 ):
-                    # CDP 点击若没有让官方密码入口导航，使用同一个 DOM 链接再触发一次原生 click。
-                    # 只针对同源 /create-account/password 锚点，不直接构造认证 URL。
+                    # CDP 点击可能触发 SPA 重绘并替换原元素；重新从当前 DOM 查找同源入口，
+                    # 避免对过期 WebElement 再次点击。只触发页面现存锚点，不构造认证 URL。
                     native_click_fallback_used = True
+                    fallback_result = {}
                     try:
-                        driver.execute_script("arguments[0].click();", target)
+                        fallback_result = driver.execute_script(r"""
+                        const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+                          && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+                        const enabled = el => !el.disabled && String(el.getAttribute('aria-disabled') || '').toLowerCase() !== 'true';
+                        const anchor = [...document.querySelectorAll('a[href]')].find(el => {
+                          if (!visible(el) || !enabled(el)) return false;
+                          try {
+                            const url = new URL(el.getAttribute('href'), location.href);
+                            return location.protocol === 'https:' && location.hostname === 'auth.openai.com'
+                              && url.origin === location.origin && url.pathname === '/create-account/password';
+                          } catch (_) { return false; }
+                        });
+                        if (!anchor) return {ok:false, reason:'password_anchor_missing'};
+                        anchor.click();
+                        return {ok:true, reason:'password_anchor_clicked'};
+                        """) or {}
+                        if isinstance(fallback_result, dict):
+                            fallback_reason = fallback_result.get("reason")
+                            result["native_click_fallback_reason"] = (
+                                fallback_reason
+                                if isinstance(fallback_reason, str)
+                                and fallback_reason in {"password_anchor_missing", "password_anchor_clicked"}
+                                else "unknown"
+                            )
+                        else:
+                            result["native_click_fallback_reason"] = "unknown"
                     except Exception as exc:
+                        result["native_click_fallback_reason"] = type(exc).__name__
                         logger.debug(
                             "%s 密码入口原生点击兜底未完成：%s",
                             _log_prefix(driver),
@@ -530,14 +557,18 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
                         )
                     if _is_signup_password_page(driver):
                         result["reason"] = "entered_create_account_password"
-                        result["native_click_fallback"] = True
+                        result["native_click_fallback"] = bool(
+                            isinstance(fallback_result, dict) and fallback_result.get("ok")
+                        )
                         return result
                     if _has_access_token(driver):
                         return {
                             **result,
                             "ok": False,
                             "reason": "logged_in_before_password_page",
-                            "native_click_fallback": True,
+                            "native_click_fallback": bool(
+                                isinstance(fallback_result, dict) and fallback_result.get("ok")
+                            ),
                         }
                 time.sleep(0.4)
             return {
