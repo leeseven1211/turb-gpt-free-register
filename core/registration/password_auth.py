@@ -495,6 +495,16 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
         if result.get("ok") and target is not None:
             _human_click(driver, target, label="signup_use_password")
             wait_end = min(hard_end, time.time() + max(1, timeout))
+            target_href = str(result.get("href") or "").strip()
+            parsed_target_href = urlsplit(target_href)
+            allow_native_click_fallback = (
+                str(result.get("tag") or "").strip().upper() == "A"
+                and parsed_target_href.path == "/create-account/password"
+                and parsed_target_href.netloc.lower() in {"", "auth.openai.com"}
+            )
+            clicked_at = time.time()
+            native_click_fallback_at = clicked_at + min(2.0, max(0.5, wait_seconds / 3.0))
+            native_click_fallback_used = False
             while time.time() < wait_end:
                 _checkpoint()
                 if _is_signup_password_page(driver):
@@ -502,8 +512,40 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
                     return result
                 if _has_access_token(driver):
                     return {**result, "ok": False, "reason": "logged_in_before_password_page"}
+                if (
+                    allow_native_click_fallback
+                    and not native_click_fallback_used
+                    and time.time() >= native_click_fallback_at
+                ):
+                    # CDP 点击若没有让官方密码入口导航，使用同一个 DOM 链接再触发一次原生 click。
+                    # 只针对同源 /create-account/password 锚点，不直接构造认证 URL。
+                    native_click_fallback_used = True
+                    try:
+                        driver.execute_script("arguments[0].click();", target)
+                    except Exception as exc:
+                        logger.debug(
+                            "%s 密码入口原生点击兜底未完成：%s",
+                            _log_prefix(driver),
+                            type(exc).__name__,
+                        )
+                    if _is_signup_password_page(driver):
+                        result["reason"] = "entered_create_account_password"
+                        result["native_click_fallback"] = True
+                        return result
+                    if _has_access_token(driver):
+                        return {
+                            **result,
+                            "ok": False,
+                            "reason": "logged_in_before_password_page",
+                            "native_click_fallback": True,
+                        }
                 time.sleep(0.4)
-            return {**result, "ok": False, "reason": "create_account_password_navigation_timeout"}
+            return {
+                **result,
+                "ok": False,
+                "reason": "create_account_password_navigation_timeout",
+                "native_click_fallback": native_click_fallback_used,
+            }
 
         last_result = result
         if _is_signup_password_page(driver):

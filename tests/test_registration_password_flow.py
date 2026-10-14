@@ -645,6 +645,42 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
         self.assertEqual(result["reason"], "entered_create_account_password")
         self.assertEqual(calls, 3)
 
+    def test_roxy_password_anchor_uses_native_click_fallback_after_cdp_click_stalls(self):
+        driver = _RoxyDriver()
+        target = object()
+        native_click_scripts = []
+
+        def execute(script, *args):
+            if args and args[0] is target:
+                native_click_scripts.append(script)
+                driver.state = "password"
+                return None
+            return {
+                "ok": True,
+                "reason": "create_account_password_target",
+                "target": target,
+                "tag": "A",
+                "href": "/create-account/password",
+            }
+
+        driver.execute_script = execute
+        with (
+            patch.object(password_auth, "_human_click"),
+            patch.object(password_auth, "_is_signup_password_page", side_effect=lambda _driver: driver.state == "password"),
+            patch.object(password_auth, "_has_access_token", return_value=False),
+            patch.object(
+                password_auth,
+                "time",
+                SimpleNamespace(time=_SteppingClock(), sleep=Mock()),
+            ),
+        ):
+            result = password_auth._click_signup_password_from_otp_if_present(driver, timeout=3)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["reason"], "entered_create_account_password")
+        self.assertTrue(result["native_click_fallback"])
+        self.assertEqual(native_click_scripts, ["arguments[0].click();"])
+
     def test_roxy_password_target_supports_japanese_text_only_link(self):
         driver = _RoxyDriver()
         target = object()
