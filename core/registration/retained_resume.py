@@ -1,4 +1,4 @@
-"""只读核验原失败窗口，并沿用同一 Attempt 的提交回执。"""
+"""检查原失败窗口，并选择继续当前步骤或自动登录原身份。"""
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
@@ -20,11 +20,16 @@ from .state_machine import PageState, classify_page
 
 @dataclass(frozen=True)
 class RetainedResumeState:
-    """原页的可继续步骤；未决 OTP 必须先观察原提交。"""
+    """原页可继续的步骤，以及显式续跑是否需要重新登录。"""
 
     page_state: PageState
     password: str | None
     pending_otp: BrowserSubmissionReceipt | None = None
+    restart_login: bool = False
+
+
+class _MultiplePendingSubmissions(RuntimeError):
+    """历史多次提交均未知时，显式续跑可保留原事实并重新登录。"""
 
 
 _EMAIL_HINT = re.compile(r"[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9-]+(?:\.[A-Z0-9-]+)+", re.I)
@@ -43,13 +48,17 @@ _ROUTES = {
     PageState.PROFILE: {"/about-you", "/profile", "/signup/profile", "/create-account/profile"},
     PageState.MFA_TOTP: {"/mfa-challenge/totp", "/mfa-challenge"},
 }
+_LOGIN_ENTRY_ROUTES = {
+    "auth.openai.com": {"/log-in", "/login", "/sign-up", "/signup"},
+    "chatgpt.com": {"/auth/login"},
+}
 
 
 def _unknown(detail: str) -> RuntimeError:
     return RuntimeError(f"request_unknown: {detail}，已保留原窗口，未重新提交")
 
 
-def _page_state(driver: Any, email: str) -> PageState:
+def _page_state(driver: Any, email: str, *, allow_restart: bool = False) -> PageState:
     """来源、可见身份及当前页面必须同时可核验。"""
     _check_manual_stop()
     try:
@@ -83,9 +92,27 @@ def _page_state(driver: Any, email: str) -> PageState:
     expected = str(email or "").strip().casefold()
     if not expected or any(hint.casefold() != expected for hint in hints):
         raise _unknown("原窗口的邮箱身份与原任务不一致")
+    state = PageState.EMAIL_VERIFIED if snapshot.get("emailVerified") else classify_page(snapshot)
+    path = url.path.rstrip("/")
+    known_route = path in _LOGIN_ENTRY_ROUTES.get(url.hostname, set()) or (
+        url.hostname == "auth.openai.com" and any(path in routes for routes in _ROUTES.values())
+    )
+    visible_inputs = any(
+        isinstance(item, Mapping) and item.get("visible") is not False
+        and str(item.get("type") or "").casefold() != "hidden"
+        for item in snapshot.get("inputs") or ()
+    )
+    blank_form = not visible_inputs and (
+        not text.strip() or state == PageState.OTP_EMAIL
+    )
+    if allow_restart and known_route and (
+        state in {PageState.EMAIL_FORM, PageState.AUTH_TRANSIENT, PageState.UNKNOWN}
+        or blank_form
+        or (getattr(driver, "_registration_retained_identity_required", False) and not hints)
+    ):
+        return PageState.AUTH_TRANSIENT
     if getattr(driver, "_registration_retained_identity_required", False) and not hints:
         raise _unknown("重新连接的原窗口缺少可核验的邮箱身份")
-    state = PageState.EMAIL_VERIFIED if snapshot.get("emailVerified") else classify_page(snapshot)
     # 页面技术属性可能匹配 OTP，但陌生路由不能据此接管或确认旧提交。
     if url.path.rstrip("/") not in _ROUTES.get(state, set()):
         raise _unknown("原窗口当前认证步骤无法核验")
@@ -109,7 +136,7 @@ def _submission_kind(fact: Mapping[str, Any]) -> str:
     return kind if endpoint in allowed.get(kind, set()) else ""
 
 
-def _pending_receipts(driver: Any, facts: Any) -> dict[str, BrowserSubmissionReceipt]:
+def _pending_receipts(driver: Any, facts: Any, *, allow_login: bool = False) -> dict[str, BrowserSubmissionReceipt]:
     """先核验全部未决动作，避免确认一部分后才发现另一条围栏。"""
     if facts is None:
         facts = []
@@ -132,12 +159,16 @@ def _pending_receipts(driver: Any, facts: Any) -> dict[str, BrowserSubmissionRec
     pending: dict[str, BrowserSubmissionReceipt] = {}
     for submission_id in pending_ids:
         records = [item for item in facts if item.get("submission_id") == submission_id]
-        kinds = {_submission_kind(item) for item in records}
+        kinds = {
+            "otp_resend" if allow_login and (
+                item.get("stage") == "otp_resend" or item.get("endpoint_kind") == "otp_resend"
+            ) else _submission_kind(item) for item in records
+        }
         if len(kinds) != 1 or not next(iter(kinds)):
             raise _unknown("原任务仍有无法核验的未决提交")
         kind = next(iter(kinds))
         if kind in pending:
-            raise _unknown("原任务存在多条同类未决提交")
+            raise _MultiplePendingSubmissions(str(_unknown("原任务存在多条同类未决提交")))
         # 迟到的 UI/CDP 低阶段事实不能把 unknown 降回待派发状态。
         raw = max((item for item in records if item.get("phase") in _UNRESOLVED_PHASES),
                   key=lambda item: _UNRESOLVED_PHASE_ORDER.index(item["phase"]))
@@ -155,7 +186,7 @@ def _pending_receipts(driver: Any, facts: Any) -> dict[str, BrowserSubmissionRec
 
 def prepare_retained_resume(driver: Any, *, email: str, existing_password: str | None,
                             facts: Mapping[str, Any], verified_session: dict | None = None) -> RetainedResumeState:
-    """只观察原页，确认已前进的原提交；不导航、刷新、填写或点击。"""
+    """只读选择恢复路径；原身份续跑可自动进入新的登录流程。"""
     _check_manual_stop()
     try:
         attempt_id = int(facts["attempt_id"])
@@ -172,7 +203,7 @@ def prepare_retained_resume(driver: Any, *, email: str, existing_password: str |
     if original_password and existing_password and original_password != existing_password:
         raise _unknown("原任务密码与恢复凭据不一致")
     password = original_password or existing_password or None
-    pending = _pending_receipts(driver, private.get("submission_facts"))
+    automatic_login = bool(password and getattr(driver, "_registration_resume_login", False))
     if verified_session is not None:
         user = verified_session.get("user") if isinstance(verified_session, Mapping) else None
         actual = str(user.get("email") or "").strip() if isinstance(user, Mapping) else ""
@@ -181,7 +212,25 @@ def prepare_retained_resume(driver: Any, *, email: str, existing_password: str |
             raise _unknown("原窗口登录态与原任务邮箱身份不一致")
         state = PageState.AUTHENTICATED
     else:
-        state = _page_state(driver, email)
+        state = _page_state(driver, email, allow_restart=automatic_login)
+    try:
+        pending = _pending_receipts(driver, private.get("submission_facts"), allow_login=automatic_login)
+    except _MultiplePendingSubmissions:
+        if not automatic_login:
+            raise
+        return RetainedResumeState(
+            state, password, restart_login=state in _PASSWORD_STATES | {PageState.OTP_EMAIL, PageState.AUTH_TRANSIENT},
+        )
+    if automatic_login and (
+        ("password" in pending and state in _PASSWORD_STATES)
+        or (("otp" in pending or "otp_resend" in pending) and state == PageState.OTP_EMAIL)
+        or state == PageState.AUTH_TRANSIENT
+    ):
+        # 不把旧未知动作写成成功，也不重复操作旧表单；新 Run 使用原密码重新登录。
+        return RetainedResumeState(state, password, restart_login=True)
+    if automatic_login:
+        # 新登录页的进展不能证明旧 Run 的 POST 成功，继续流程并保留旧未知结果。
+        return RetainedResumeState(state, password)
     if "password" in pending and state in _PASSWORD_STATES:
         deadline = time.monotonic() + 25.0
         while state in _PASSWORD_STATES and time.monotonic() < deadline:

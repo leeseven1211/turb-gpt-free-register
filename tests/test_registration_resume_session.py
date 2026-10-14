@@ -420,6 +420,28 @@ class RetainedWindowFlowTests(unittest.TestCase):
             mocks[name].assert_not_called()
         mocks["_complete_profile_page"].assert_called_once()
 
+    def test_unknown_retained_password_automatically_reenters_login_with_original_password(self):
+        with self.retained_context(page=roxy.PageState.PASSWORD_CREATE) as (driver, mocks):
+            state = mocks["prepare_retained_resume"].return_value
+            state.restart_login = True
+            mocks["navigate"].side_effect = None
+            mocks["_submit_email_and_wait_next"].return_value = "password"
+            mocks["_fill_password_page_if_present"].return_value = "unit-original-password"
+            mocks["login"].return_value = "advanced"
+            driver._registration_otp_tracker = object()
+            result = self.run_registration()
+        self.assertTrue(result["success"], result.get("error"))
+        mocks["opened"].assert_not_called()
+        mocks["navigate"].assert_called_once()
+        self.assertEqual(mocks["navigate"].call_args.args[1], "https://chatgpt.com/auth/login")
+        mocks["_submit_email_and_wait_next"].assert_called_once()
+        self.assertTrue(mocks["_submit_email_and_wait_next"].call_args.kwargs["allow_login_password"])
+        mocks["_fill_password_page_if_present"].assert_called_once()
+        self.assertEqual(mocks["_fill_password_page_if_present"].call_args.kwargs["existing_password"],
+                         "unit-original-password")
+        self.assertGreater(driver._registration_otp_after_ts, 1234.5)
+        mocks["_wait_after_email_otp_submit"].assert_not_called()
+
     def test_failed_window_is_remembered_after_previous_resources_finish(self):
         with self.retained_context() as (driver, mocks):
             finished = []

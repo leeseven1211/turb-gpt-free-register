@@ -230,6 +230,38 @@ class RegistrationFactsTests(PostgresTestCase):
             unresolved_submission_ids(private.get("submission_facts") or []),
         )
 
+    def test_private_password_resume_can_continue_fresh_create_form_after_unknown(self):
+        address = "resume-create-form@example.test"
+        attempt = registration.create_attempt(address)
+        attempt_id = int(attempt["id"])
+        original = registration.start_run(
+            attempt_id, execution_id="original-create", initial_status="running",
+        )
+        registration.save_password_checkpoint(
+            attempt_id, email=address, password="OriginalSavedPass123!", state="started",
+            run_id=original["id"], execution_id="original-create",
+        )
+        registration.record_submission_fact(
+            attempt_id, submission_id="original-password", kind="password",
+            stage="password_create", phase="unknown", endpoint_kind="password_submit",
+            http_method="POST", run_id=original["id"], execution_id="original-create",
+        )
+        registration.finish_run(original["id"], status="failed")
+        resumed = registration.start_run(
+            attempt_id, action_type="registration_resume", execution_id="resume-create",
+            initial_status="running",
+        )
+        registration.record_submission_fact(
+            attempt_id, submission_id="resume-password", kind="resume_login",
+            stage="password_create", phase="dispatch_intent", endpoint_kind="password_submit",
+            http_method="POST", run_id=resumed["id"], execution_id="resume-create",
+        )
+        private = registration.get_private_resume_context(attempt_id, email=address)
+        self.assertEqual(private["password"], "OriginalSavedPass123!")
+        self.assertEqual(unresolved_submission_ids(private["submission_facts"]),
+                         {"original-password", "resume-password"})
+        self.assertIsNone(registration.get_attempt(attempt_id)["account_id"])
+
     def test_plain_registration_run_cannot_use_resume_kind_to_bypass_unknown(self):
         attempt = registration.create_attempt("plain-registration-fence@example.test")
         attempt_id = int(attempt["id"])

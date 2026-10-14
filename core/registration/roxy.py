@@ -1068,6 +1068,7 @@ def run_roxy_registration(
 
         verified_resume_session = None
         retained_state = None
+        restart_login = False
         if retained or (resume_scope and existing_password and profile_id and str(opened.profile_id) == str(profile_id)):
             report_job_progress("page", "running", "正在核验原浏览器环境的登录态")
             verified_resume_session = _read_registration_resume_session(driver, email)
@@ -1077,7 +1078,12 @@ def run_roxy_registration(
                 verified_session=verified_resume_session,
             )
             existing_password = retained_state.password
-        otp_after_ts = retained.otp_after_ts if retained else time.time()
+            restart_login = bool(getattr(retained_state, "restart_login", False))
+            if restart_login:
+                logger.info("[Roxy注册] 原认证提交仍未确认，使用原邮箱和保存密码自动继续登录")
+                retained_state = None
+                driver._registration_otp_tracker = None
+        otp_after_ts = retained.otp_after_ts if retained and not restart_login else time.time()
         if (retained_state and retained_state.page_state == PageState.OTP_EMAIL
                 and retained_state.pending_otp is None and otp_after_ts is None):
             raise RuntimeError("request_unknown: 原验证码邮件时间未能核验，已保留原浏览器")

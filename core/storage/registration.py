@@ -1268,7 +1268,7 @@ def record_submission_fact(
                 fact["kind"] == "resume_login"
                 and explicit_resume_run
                 and fact["stage"] in {
-                    "submit_email", "nextauth", "login_password", "email_otp", "otp_resend",
+                    "submit_email", "nextauth", "login_password", "password_create", "email_otp", "otp_resend",
                 }
                 and bool((attempt.get("data") or {}).get("has_password"))
                 and bool(private.get("password"))

@@ -1589,6 +1589,8 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 email = str((resume_account or {}).get("email") or current.get("email") or "").strip()
                 bound_profile_id = account_profile_id(resume_account)
                 existing_password = _pending_registration_password(resume_account)
+                if resume_account is None:
+                    existing_password = _private_registration_resume_password(current)
                 existing_totp_secret = str((resume_account or {}).get("totp_secret") or "").strip()
                 if not email or not existing_password:
                     raise RuntimeError("待邮箱验证账号缺少邮箱或已保存账号密码，无法继续验证")
@@ -1608,7 +1610,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     job_id,
                     "email",
                     state="success",
-                    detail="已复用待邮箱验证账号和保存的账号密码",
+                    detail="已复用原任务邮箱和保存的账号密码",
                 )
                 log_logger.info("[Job %s] 继续验证已保存账号：account_id=%s", job_id, (resume_account or {}).get("id"))
             elif reuses_original_email:
@@ -2696,8 +2698,8 @@ def _roxy_resume_facts_match(
     return True
 
 
-def _pre_account_retry_facts_match(job: dict, root: dict | None, attempt: dict | None) -> bool:
-    """旧待确认任务仅在同一原邮箱且尚未提交账号创建时走注册重跑。"""
+def _pre_account_identity_facts_match(job: dict, root: dict | None, attempt: dict | None) -> bool:
+    """无账号记录时，自动确认原任务链和 Attempt 使用同一邮箱。"""
     if not root or not attempt:
         return False
     root_id = _root_job_id_for_job(job)
@@ -2718,6 +2720,48 @@ def _pre_account_retry_facts_match(job: dict, root: dict | None, attempt: dict |
     if not email or any(str(value or "").strip().casefold() != email for value in (
         job.get("email"), attempt.get("email_snapshot"),
     )):
+        return False
+    if attempt.get("email") and str(attempt["email"]).strip().casefold() != email:
+        return False
+    return True
+
+
+def _pre_account_resume_facts_match(job: dict, root: dict | None, attempt: dict | None) -> bool:
+    """原密码已保存时直接续跑；旧提交未知不要求人工核对。"""
+    if not _pre_account_identity_facts_match(job, root, attempt):
+        return False
+    return (
+        (attempt.get("data") or {}).get("has_password") is True
+        and attempt.get("checkpoint") in {
+            "password_request_started", "password_confirmed", "otp_started", "otp_confirmed",
+            "account_request_started", "account_confirmed", "token_obtained", "postprocessing",
+            "manual_reconcile", "failed",
+        }
+        and attempt.get("local_account_state") in {"none", "not_started"}
+        and attempt.get("remote_account_state") != "confirmed"
+        and attempt.get("target_status") not in {"completed", "deactivated"}
+    )
+
+
+def _private_registration_resume_password(job: dict) -> str:
+    """执行时读取原 Attempt 私有密码，不创建待验证账号或替换凭据。"""
+    from core.storage import registration
+
+    root_id = _root_job_id_for_job(job)
+    root = job if root_id == int(job.get("id") or 0) else db.get_job(root_id)
+    attempt, read_failed = _read_linked_attempt_for_job(job)
+    if read_failed or not _pre_account_resume_facts_match(job, root, attempt):
+        raise RuntimeError("原任务邮箱或密码恢复资料不完整，无法继续原注册任务")
+    private = registration.get_private_resume_context(int(attempt["id"]), email=str(job["email"]).strip())
+    password = private.get("password")
+    if not isinstance(password, str) or not password.strip():
+        raise RuntimeError("原注册 Attempt 缺少已保存密码，无法继续原任务")
+    return password
+
+
+def _pre_account_retry_facts_match(job: dict, root: dict | None, attempt: dict | None) -> bool:
+    """旧待确认任务仅在同一原邮箱且尚未提交账号创建时走注册重跑。"""
+    if not _pre_account_identity_facts_match(job, root, attempt):
         return False
     # 只要原 Attempt 仍有未收口的提交事实，普通注册重试不能再次显示为可重放。
     # 新 Run 的创建不会清除旧围栏；恢复登录必须由显式 registration_resume
@@ -2803,9 +2847,10 @@ def _build_retry_info(
     pre_account_retryable = account is None and _pre_account_retry_facts_match(
         job, resume_root, attempt,
     )
+    private_resume = account is None and _pre_account_resume_facts_match(job, resume_root, attempt)
     if status in {"request_unknown", "manual_reconcile"} or attempt_target in {"request_unknown", "manual_reconcile"}:
         info["display_status"] = "failed"
-        can_resume = bool(
+        can_resume = private_resume or bool(
             account
             and resume_root
             and _roxy_resume_facts_match(job, resume_root, account, attempt, root_id=root_id)
@@ -2835,6 +2880,18 @@ def _build_retry_info(
     if successful_retry is not None:
         info["retry_reason"] = f"后续重试任务 #{successful_retry.get('id')} 已成功"
         info["successful_retry_job_id"] = successful_retry.get("id")
+        return info
+
+    if private_resume:
+        info.update({
+            "display_status": "failed",
+            "retryable": True,
+            "retry_action": "registration_resume",
+            "retry_label": "继续注册",
+            "retry_reason": "复用原邮箱和已保存密码，自动继续同一注册 Attempt",
+            "next_actions": [{"action": "registration_resume", "retryable": True,
+                              "reason": "使用原密码自动继续认证"}],
+        })
         return info
 
     if account is None and not pre_account_retryable:
@@ -3194,8 +3251,9 @@ def retry_job(
         return {"ok": False, "error": _ATTEMPT_READ_FAILED_RETRY_REASON, "status": 409}
     if _attempt_is_deactivated(attempt):
         return {"ok": False, "error": _DEACTIVATED_ATTEMPT_RETRY_REASON, "status": 409}
-    if action == "registration_resume" and not _roxy_resume_facts_match(
-        source, root_job, account, attempt, root_id=root_id,
+    if action == "registration_resume" and not (
+        _roxy_resume_facts_match(source, root_job, account, attempt, root_id=root_id)
+        or (account is None and _pre_account_resume_facts_match(source, root_job, attempt))
     ):
         return {
             "ok": False,

@@ -141,6 +141,74 @@ class RetainedResumeTests(unittest.TestCase):
             self.assertLessEqual(tick[0], 25.01)
             write.assert_not_called()
 
+    def test_explicit_resume_restarts_login_for_unknown_password_or_otp_without_waiting(self):
+        cases = [
+            (snapshot("/create-account/password", inputs=[{"type": "password"}]), "password"),
+            (snapshot(), "otp"),
+        ]
+        for page, kind in cases:
+            with self.subTest(kind=kind), self.context(snapshots=[page], private={
+                "password": PASSWORD, "submission_facts": [fact(kind, "old-unknown")],
+            }) as (driver, _, _, write, tick):
+                driver._registration_resume_login = True
+                result = self.prepare(driver)
+                self.assertTrue(result.restart_login)
+                self.assertEqual(result.password, PASSWORD)
+                self.assertIsNone(result.pending_otp)
+                self.assertEqual(tick[0], 0)
+                write.assert_not_called()
+
+    def test_explicit_resume_can_restart_after_two_unknown_password_attempts(self):
+        page = snapshot("/log-in/password", inputs=[{"type": "password"}])
+        private = {"password": PASSWORD, "submission_facts": [
+            fact("password", "original-password"),
+            fact("resume_login", "resumed-password", endpoint="password_submit"),
+        ]}
+        with self.context(snapshots=[page], private=private) as (driver, _, _, write, tick):
+            driver._registration_resume_login = True
+            self.assertTrue(self.prepare(driver).restart_login)
+            self.assertEqual(tick[0], 0)
+            write.assert_not_called()
+
+    def test_explicit_resume_still_rejects_wrong_browser_identity(self):
+        private = {"password": PASSWORD, "submission_facts": [fact("password", "original-password")]}
+        page = snapshot("/create-account/password", text="other@example.test", inputs=[{"type": "password"}])
+        with self.context(snapshots=[page], private=private) as (driver, _, _, write, _):
+            driver._registration_resume_login = True
+            with self.assertRaisesRegex(RuntimeError, "request_unknown"):
+                self.prepare(driver)
+            write.assert_not_called()
+
+    def test_explicit_resume_restarts_from_email_form_or_known_blank_auth_page(self):
+        pages = [snapshot("/log-in", inputs=[{"type": "email", "value": EMAIL}]),
+                 snapshot("/email-verification", text="", inputs=[]),
+                 snapshot(url="https://chatgpt.com/auth/login", text="", inputs=[])]
+        private = {"password": PASSWORD, "submission_facts": [fact("password", "original-password")]}
+        for page, reconnected in ((page, flag) for page in pages for flag in (False, True)):
+            with self.subTest(page=page, reconnected=reconnected), self.context(
+                snapshots=[page], private=private,
+            ) as (driver, _, _, write, _):
+                driver._registration_resume_login = True
+                driver._registration_retained_identity_required = reconnected
+                self.assertTrue(self.prepare(driver).restart_login)
+                write.assert_not_called()
+
+    def test_explicit_resume_does_not_confirm_old_password_from_new_otp_page(self):
+        private = {"password": PASSWORD, "submission_facts": [fact("password", "original-password")]}
+        with self.context(snapshots=[snapshot()], private=private) as (driver, _, _, write, _):
+            driver._registration_resume_login = True
+            result = self.prepare(driver)
+            self.assertEqual(result.page_state, PageState.OTP_EMAIL)
+            self.assertFalse(result.restart_login)
+            write.assert_not_called()
+
+    def test_explicit_resume_unknown_resend_uses_new_login_without_replaying_resend(self):
+        private = {"password": PASSWORD, "submission_facts": [fact("otp_resend", "original-resend")]}
+        with self.context(snapshots=[snapshot()], private=private) as (driver, _, _, write, _):
+            driver._registration_resume_login = True
+            self.assertTrue(self.prepare(driver).restart_login)
+            write.assert_not_called()
+
     def test_password_form_without_pending_submission_returns_original_password(self):
         for path, expected in (("/create-account/password", PageState.PASSWORD_CREATE), ("/log-in/password", PageState.PASSWORD_LOGIN)):
             with self.subTest(path=path), self.context(snapshots=[snapshot(path, inputs=[{"type": "password"}])]) as (driver, _, _, write, _):
