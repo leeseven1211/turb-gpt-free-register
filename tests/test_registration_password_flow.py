@@ -567,6 +567,24 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "password_entry_not_offered"):
                 roxy_registration._fill_password_page_if_present(driver, "masked@example.test", timeout=2)
 
+    def test_roxy_password_entry_navigation_uses_remaining_page_budget(self):
+        driver = _RoxyDriver()
+        with (
+            patch.object(roxy_registration, "_registration_auth_mode", return_value="password"),
+            patch.object(roxy_registration, "_is_email_verification_page", return_value=True),
+            patch.object(
+                roxy_registration,
+                "_click_signup_password_from_otp_if_present",
+                side_effect=RuntimeError("stop after checking timeout"),
+            ) as switch,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "stop after checking timeout"):
+                roxy_registration._fill_password_page_if_present(driver, "masked@example.test", timeout=25)
+
+        switch_timeout = switch.call_args.kwargs["timeout"]
+        self.assertGreater(switch_timeout, 15)
+        self.assertLessEqual(switch_timeout, 25)
+
     def test_roxy_empty_otp_shell_exhausts_without_direct_navigation(self):
         driver = _RoxyDriver()
         driver.refresh_count = 0

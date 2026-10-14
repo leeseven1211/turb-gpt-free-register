@@ -643,7 +643,9 @@ def _fill_password_page_if_present(
                 time.sleep(0.4)
                 continue
             switched_from_otp = True
-            switched = _click_signup_password_from_otp_if_present(driver, timeout=min(15, timeout))
+            # 密码页跳转复用调用方剩余预算，固定 15 秒会截断较慢的认证页跳转。
+            remaining = max(1, int(end - time.time()))
+            switched = _click_signup_password_from_otp_if_present(driver, timeout=remaining)
             if not switched.get('ok'):
                 raise RuntimeError(
                     f"密码注册模式下已进入验证码页，但无法切换到创建密码页：{switched} "
