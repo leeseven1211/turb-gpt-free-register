@@ -32,7 +32,10 @@ from core.registration.state_machine import (
 from core.registration.auth_context import AuthExecutionContext
 from core.registration.email_otp import _EmailSubmissionUnknown
 from core.registration.browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact
-from core.registration.retained_browser import recover_bound_failed_browser, retain_failed_browser, take_failed_browser
+from core.registration.retained_browser import (
+    persist_browser_resume_context, recover_attempt_failed_browser,
+    recover_bound_failed_browser, retain_failed_browser, take_failed_browser,
+)
 from core.registration.retained_resume import prepare_retained_resume
 from core.auth_challenge import (
     MfaSecretMissingError,
@@ -885,6 +888,8 @@ def run_roxy_registration(
     facts = registration_fact_context()
     retained = take_failed_browser(email=email, profile_id=profile_id, facts=facts)
     if retained is None:
+        retained = recover_attempt_failed_browser(email=email, profile_id=profile_id, facts=facts)
+    if retained is None:
         retained = recover_bound_failed_browser(email=email, profile_id=profile_id, facts=facts)
     report_job_progress("browser", "running", "正在接管原失败窗口" if retained else "正在打开或创建 Roxy 浏览器环境")
     client = RoxyBrowserClient()
@@ -974,6 +979,12 @@ def run_roxy_registration(
             attach_current_roxy(opened.debugger_address)
         except Exception:
             logger.exception("[Roxy注册][Debug] 启动浏览器网络抓包失败；注册流程继续执行")
+        if bool(_cfg.ROXY_KEEP_BROWSER_OPEN):
+            if retained is not None and driver is not None:
+                # 新 Selenium 连接没有旧 driver 属性；首次保存前恢复原邮件
+                # 边界，避免在认证页读取失败时把持久时间覆盖为空。
+                driver._registration_otp_after_ts = retained.otp_after_ts
+            persist_browser_resume_context(driver, opened, email=email, facts=facts)
         if driver is None:
             driver = _build_driver(opened)
         # 认证事实共用当前 Attempt/Run；CDP 观察器只需从 driver 读取这份只读
@@ -2089,6 +2100,10 @@ def run_roxy_registration(
                 client.cleanup_profile(opened)
             finally:
                 if failed and driver is not None and bool(_cfg.ROXY_KEEP_BROWSER_OPEN):
+                    try:
+                        persist_browser_resume_context(driver, opened, email=email, facts=facts)
+                    except Exception:
+                        logger.error("[Roxy注册] 原窗口恢复关联保存失败，仍保留当前进程连接")
                     retain_failed_browser(driver, opened, email=email, facts=facts)
         if plan_check_session is not None:
             try:

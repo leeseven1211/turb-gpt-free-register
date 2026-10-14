@@ -148,7 +148,9 @@ class ResumeSessionFlowTests(unittest.TestCase):
                  return_value={"run_id": 71, "attempt_id": 41, "job_id": 31})
             mock("run", "core.storage.registration.get_run", return_value={"action_type": action, "status": status})
             mock("take_default", "core.registration.roxy.take_failed_browser", return_value=None)
+            mock("attempt_default", "core.registration.roxy.recover_attempt_failed_browser", return_value=None, create=True)
             mock("bound_default", "core.registration.roxy.recover_bound_failed_browser", return_value=None, create=True)
+            mock("browser_resume_persist", "core.registration.roxy.persist_browser_resume_context", return_value=True, create=True)
             mock("retain_default", "core.registration.roxy.retain_failed_browser", return_value=False)
             mock("binding", "core.roxy_profile_binding.persist_account_profile_id", return_value=True)
             mock("attach", "core.registration_debug.attach_current_roxy")
@@ -329,6 +331,51 @@ class RetainedWindowFlowTests(unittest.TestCase):
         self.assertTrue(result["success"], result.get("error"))
         self.assertTrue(driver._registration_retained_identity_required)
         mocks["driver"].assert_called_once_with(candidate.opened)
+        mocks["opened"].assert_not_called()
+        mocks["navigate"].assert_not_called()
+
+    def test_pre_account_durable_context_reconnects_without_opening_another_profile(self):
+        with self.retained_context() as (driver, mocks):
+            saved_mail_times = []
+            mocks["browser_resume_persist"].side_effect = lambda active_driver, *_args, **_kwargs: saved_mail_times.append(
+                getattr(active_driver, "_registration_otp_after_ts", None))
+            candidate = mocks["take_failed_browser"].return_value
+            candidate.driver = None
+            candidate.opened.account_bound = False
+            mocks["take_failed_browser"].return_value = None
+            mocks["attempt_default"].return_value = candidate
+            mocks["client"].return_value._find_active_profile_by_id.return_value = {"openStatus": 1}
+            result = self.run_registration(profile_id=None)
+        self.assertTrue(result["success"], result.get("error"))
+        self.assertTrue(driver._registration_retained_identity_required)
+        self.assertEqual(driver._registration_otp_after_ts, 1234.5)
+        mocks["attempt_default"].assert_called_once_with(
+            email=EMAIL, profile_id=None,
+            facts={"run_id": 71, "attempt_id": 41, "job_id": 31},
+        )
+        mocks["bound_default"].assert_not_called()
+        mocks["driver"].assert_called_once_with(candidate.opened)
+        mocks["opened"].assert_not_called()
+        mocks["client"].return_value.open_profile.assert_not_called()
+        mocks["client"].return_value.open_profile_for_account.assert_not_called()
+        mocks["navigate"].assert_not_called()
+        mocks["browser_resume_persist"].assert_called_once()
+        self.assertEqual(saved_mail_times, [1234.5])
+
+    def test_reconnected_window_keeps_mail_boundary_if_page_probe_fails(self):
+        with self.retained_context() as (_, mocks):
+            candidate = mocks["take_failed_browser"].return_value
+            candidate.driver = None
+            mocks["take_failed_browser"].return_value = None
+            mocks["attempt_default"].return_value = candidate
+            mocks["client"].return_value._find_active_profile_by_id.return_value = {"openStatus": 1}
+            saved_mail_times = []
+            mocks["browser_resume_persist"].side_effect = lambda active_driver, *_args, **_kwargs: saved_mail_times.append(
+                getattr(active_driver, "_registration_otp_after_ts", None))
+            mocks["prepare_retained_resume"].side_effect = RuntimeError("request_unknown: 原页暂不可读取")
+            result = self.run_registration(profile_id=None)
+        self.assertFalse(result["success"])
+        self.assertEqual(saved_mail_times, [1234.5, 1234.5])
         mocks["opened"].assert_not_called()
         mocks["navigate"].assert_not_called()
 

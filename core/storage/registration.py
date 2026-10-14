@@ -9,10 +9,14 @@ table remains the execution compatibility table and is linked by ``attempt_id``.
 from __future__ import annotations
 
 import json
+import math
 import uuid
 from contextlib import nullcontext
 from datetime import datetime, timezone
+from ipaddress import ip_address
+from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import urlsplit
 
 from core import postgres_store, record_store
 
@@ -1124,6 +1128,102 @@ def get_private_resume_context(attempt_id: int, *, email: str) -> dict:
         if not expected or expected.casefold() != str(email).strip().casefold():
             raise ValueError("恢复凭据的原邮箱不匹配")
         return dict(_decode(row.get("private_context")) or {})
+
+
+def _browser_resume_connection(*, profile_id, debugger_address, driver_path, otp_after_ts) -> dict:
+    """只接受本机连接元数据，不保留浏览器服务的完整返回内容。"""
+    profile = str(profile_id or "").strip()
+    address = str(debugger_address or "").strip()
+    path = str(driver_path or "").strip()
+    if not profile or any(ord(char) < 32 for char in profile):
+        raise ValueError("保留浏览器缺少有效的环境标识")
+    if (not address or any(char in address for char in "/@?#\\")
+            or any(char.isspace() for char in address)):
+        raise ValueError("保留浏览器调试地址必须是本机 host:port")
+    try:
+        parsed = urlsplit(f"//{address}")
+        host = parsed.hostname or ""
+        port = parsed.port
+        local = host.casefold() == "localhost" or ip_address(host).is_loopback
+        if not local or not port or not 1 <= port <= 65535:
+            raise ValueError
+    except ValueError:
+        raise ValueError("保留浏览器调试地址必须是本机 host:port") from None
+    if path and (not Path(path).is_absolute() or any(ord(char) < 32 for char in path)):
+        raise ValueError("保留浏览器驱动地址必须是本机绝对路径")
+    timestamp = None
+    if otp_after_ts is not None:
+        try:
+            timestamp = float(otp_after_ts)
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("保留浏览器验证码时间必须是有限的非负时间") from None
+        if isinstance(otp_after_ts, bool) or not math.isfinite(timestamp) or timestamp < 0:
+            raise ValueError("保留浏览器验证码时间必须是有限的非负时间")
+    return {
+        "profile_id": profile, "debugger_address": address,
+        "driver_path": path, "otp_after_ts": timestamp,
+    }
+
+
+def save_browser_resume_context(
+    attempt_id: int, *, email: str, run_id: int, execution_id: str, job_id: int,
+    profile_id: str, debugger_address: str, driver_path: str = "", otp_after_ts=None,
+) -> dict:
+    """在原 Attempt 内保存窗口连接，使无账号的失败任务也能跨进程续跑。"""
+    connection = _browser_resume_connection(
+        profile_id=profile_id, debugger_address=debugger_address,
+        driver_path=driver_path, otp_after_ts=otp_after_ts,
+    )
+    init()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT * FROM {_table('registration_attempts')} WHERE id=%s FOR UPDATE", (int(attempt_id),))
+        raw = cur.fetchone()
+        attempt = _row(raw)
+        if attempt is None:
+            raise LookupError("注册 Attempt 不存在")
+        address = str(email or "").strip()
+        _require_current_execution(cur, attempt, run_id=run_id, execution_id=execution_id, email=address)
+        cur.execute(f"SELECT job_id FROM {_table('registration_runs')} WHERE id=%s", (int(run_id),))
+        run = cur.fetchone() or {}
+        if run.get("job_id") != int(job_id):
+            raise ValueError("保留浏览器连接的执行任务不匹配")
+        root_id = int(attempt.get("root_job_id") or attempt.get("source_root_job_id") or 0)
+        if not root_id or any(
+            value is not None and int(value) != root_id
+            for value in (attempt.get("root_job_id"), attempt.get("source_root_job_id"))
+        ):
+            raise ValueError("保留浏览器连接的原任务链不匹配")
+        current_id = int(job_id)
+        visited = set()
+        while current_id not in visited:
+            visited.add(current_id)
+            cur.execute(
+                f"SELECT id, attempt_id, email, root_job_id, parent_job_id, job_type "
+                f"FROM {_table('registration_jobs')} WHERE id=%s", (current_id,),
+            )
+            job = cur.fetchone() or {}
+            if (job.get("attempt_id") != int(attempt_id)
+                    or str(job.get("email") or "").strip().casefold() != address.casefold()
+                    or str(job.get("job_type") or "") not in {"registration", "registration_resume"}
+                    or int(job.get("root_job_id") or current_id) != root_id):
+                raise ValueError("保留浏览器连接的原任务身份不匹配")
+            if current_id == root_id:
+                if job.get("parent_job_id") is not None:
+                    raise ValueError("保留浏览器连接的原任务链不匹配")
+                break
+            if not job.get("parent_job_id"):
+                raise ValueError("保留浏览器连接的原任务链不匹配")
+            current_id = int(job["parent_job_id"])
+        else:
+            raise ValueError("保留浏览器连接的原任务链不匹配")
+        connection.update({"job_id": int(job_id), "root_job_id": root_id, "run_id": int(run_id)})
+        private = dict(_decode(raw.get("private_context")) or {})
+        private["retained_browser"] = connection
+        cur.execute(
+            f"UPDATE {_table('registration_attempts')} SET private_context=%s::jsonb, updated_at=%s WHERE id=%s",
+            (json.dumps(private, ensure_ascii=False), _now(), int(attempt_id)),
+        )
+        return connection
 
 
 def has_unresolved_submission_facts(attempt_id: int) -> bool:
