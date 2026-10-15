@@ -370,6 +370,37 @@ class RegistrationDebugTests(unittest.TestCase):
         self.assertEqual(result_box["state"], "released")
         session.finalize("failed")
 
+    def test_each_proxy_retry_failure_waits_for_its_own_debug_release(self):
+        session = debug.RegistrationDebugSession(self.job(4))
+        with debug._ACTIVE_LOCK:
+            debug._ACTIVE[4] = session
+        entered = threading.Event()
+        states = []
+        original_wait = session._release_event.wait
+
+        def wait(timeout):
+            states.append(session._release_event.is_set())
+            entered.set()
+            return original_wait(timeout)
+
+        worker = None
+        try:
+            with patch.object(session._release_event, "wait", side_effect=wait):
+                for generation in range(2):
+                    entered.clear()
+                    worker = threading.Thread(target=session.pause_failure, args=(object(), f"线路失败 {generation}"))
+                    worker.start()
+                    self.assertTrue(entered.wait(timeout=3))
+                    self.assertFalse(states[-1], "上一条线路的释放不能自动结束下一条失败现场")
+                    self.assertTrue(debug.release_job(4)["ok"])
+                    worker.join(timeout=3)
+                    self.assertFalse(worker.is_alive())
+        finally:
+            session._release_event.set()
+            if worker is not None:
+                worker.join(timeout=3)
+            session.finalize("failed")
+
     def test_compare_aligns_same_endpoint_and_reports_status_change(self):
         baseline = debug.RegistrationDebugSession(self.job(5))
         target = debug.RegistrationDebugSession(self.job(6))

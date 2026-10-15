@@ -1017,6 +1017,9 @@ class RegistrationDebugSession:
                 self.debug_state = "hold_skipped"
             else:
                 # 在同一把锁内完成计数和占位，避免多并发任务同时越过现场上限。
+                # 同一任务换线后可能再次失败，上一轮释放不能跳过新的失败现场。
+                self._release_event.clear()
+                self.release_action = ""
                 self.debug_state = "paused"
         if self.debug_state == "hold_skipped":
             self.record({"kind": "debug_hold_skipped", "reason": "held_session_limit", "limit": max_held})

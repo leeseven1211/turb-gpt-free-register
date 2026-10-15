@@ -121,6 +121,38 @@ def _center_browser_window(driver) -> None:
     except Exception as exc:
         logger.warning("[Roxy] 浏览器窗口居中失败，继续执行：%s", exc)
 
+def _wait_navigation_form_after_transport_error(driver, hosts: tuple[str, ...], *, timeout: float) -> bool:
+    """隧道报错后只读等待已发出的导航，不重新 GET 或提交表单。"""
+    deadline = time.monotonic() + min(10.0, max(0.0, float(timeout)))
+    old_timeout = getattr(getattr(driver, "timeouts", None), "script", 8)
+    try:
+        while time.monotonic() < deadline:
+            _checkpoint()
+            try:
+                driver.set_script_timeout(min(2.0, max(0.1, deadline - time.monotonic())))
+                state = driver.execute_script(r"""
+                const visible = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+                return {url:location.href,usable:[...document.querySelectorAll('input,button,[role="button"],[contenteditable="true"]')]
+                  .some(el => visible(el) && !el.disabled && !el.readOnly)};
+                """)
+                if isinstance(state, dict) and state.get("usable") is True:
+                    current = urlsplit(str(state.get("url") or ""))
+                    if (current.scheme == "https" and current.hostname in hosts and current.port in (None, 443)
+                            and not current.username and not current.password):
+                        logger.info("%s 导航隧道报错后已确认目标页可用表单，继续原任务", _log_prefix(driver))
+                        return True
+            except Exception:
+                pass
+            time.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
+        return False
+    finally:
+        if isinstance(old_timeout, (int, float)):
+            try:
+                driver.set_script_timeout(old_timeout)
+            except Exception:
+                logger.debug("%s 导航确认后恢复脚本超时失败", _log_prefix(driver))
+
+
 def _safe_get(driver, url: str, *, timeout: int = 45, attempts: int = 2, accept_hosts: tuple[str, ...] = ()) -> None:
     """带容错的页面跳转。
 
@@ -184,6 +216,12 @@ def _safe_get(driver, url: str, *, timeout: int = 45, attempts: int = 2, accept_
                 logger.warning("%s 页面跳转失败，准备重试：url=%s attempt=%s/%s error=%s", _log_prefix(driver), url, attempt, attempts, exc)
                 time.sleep(1.5 * attempt)
                 continue
+            if any(marker in str(exc) for marker in (
+                "ERR_TUNNEL_CONNECTION_FAILED", "ERR_PROXY_CONNECTION_FAILED", "ERR_CONNECTION_RESET",
+            )) and _wait_navigation_form_after_transport_error(
+                driver, hosts or (str(urlsplit(url).hostname or ""),), timeout=timeout,
+            ):
+                return
             raise
         finally:
             try:
