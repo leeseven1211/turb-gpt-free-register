@@ -2699,7 +2699,9 @@ def _roxy_resume_facts_match(
     return True
 
 
-def _pre_account_identity_facts_match(job: dict, root: dict | None, attempt: dict | None) -> bool:
+def _pre_account_identity_facts_match(
+    job: dict, root: dict | None, attempt: dict | None, *, allow_unclaimed_email: bool = False,
+) -> bool:
     """无账号记录时，自动确认原任务链和 Attempt 使用同一邮箱。"""
     if not root or not attempt:
         return False
@@ -2718,6 +2720,22 @@ def _pre_account_identity_facts_match(job: dict, root: dict | None, attempt: dic
            for key in ("root_job_id", "source_root_job_id")):
         return False
     email = str(root.get("email") or "").strip().casefold()
+    if not email and allow_unclaimed_email:
+        # 邮箱尚未领取、注册尚未开始时没有原邮箱可复用；仍核对同一来源及 Attempt，
+        # 让新 Run 继续领取。已有邮箱、密码或任何远端提交事实都不能进入此分支。
+        source = str(root.get("email_source") or "").strip()
+        return bool(
+            source and str(job.get("email_source") or "").strip() == source
+            and (not attempt.get("email_source") or str(attempt["email_source"]).strip() == source)
+            and not any(str(value or "").strip() for value in (
+                job.get("email"), attempt.get("email_snapshot"), attempt.get("email"),
+            ))
+            and attempt.get("checkpoint") == "created"
+            and attempt.get("remote_identity_state") == "not_started"
+            and attempt.get("remote_account_state") == "not_started"
+            and attempt.get("local_account_state") in {"none", "not_started"}
+            and (attempt.get("data") or {}).get("has_password") is not True
+        )
     if not email or any(str(value or "").strip().casefold() != email for value in (
         job.get("email"), attempt.get("email_snapshot"),
     )):
@@ -2762,7 +2780,7 @@ def _private_registration_resume_password(job: dict) -> str:
 
 def _pre_account_retry_facts_match(job: dict, root: dict | None, attempt: dict | None) -> bool:
     """未落库任务按原邮箱和 Attempt 身份重跑，远端未知状态不关闭入口。"""
-    if not _pre_account_identity_facts_match(job, root, attempt):
+    if not _pre_account_identity_facts_match(job, root, attempt, allow_unclaimed_email=True):
         return False
     # 新 Run 复用原邮箱和 Attempt；旧回执、远端状态与历史检查点不作为重跑门槛。
     return (

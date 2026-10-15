@@ -1315,10 +1315,34 @@ def _wait_email_submit_next_state(
         if loop_now >= end:
             break
         active_receipt = isinstance(getattr(driver, "_email_submission_receipt", None), dict)
+        submission_state = _email_ui_submission_state(driver)
+        if submission_state in {"queued", "dispatched", "unknown"} and budget is not None:
+            end = max(end, budget.deadline)
+        # NextAuth 落点也可能只加载了验证码页 HTML，尚未挂载表单。
+        # 必须先于按路由判断的下一步检测，避免把空壳确认成 OTP 并清除提交屏障。
+        try:
+            current = urlsplit(str(getattr(driver, "current_url", "") or ""))
+            at_verification = current.hostname == "auth.openai.com" and current.path.rstrip("/") == "/email-verification"
+        except ValueError:
+            at_verification = False
+        if at_verification:
+            otp_state = _email_otp_page_state(driver)
+            if _email_otp_page_recovery_reason(otp_state):
+                refreshed = _recover_email_otp_page_if_needed(driver, otp_state, budget=StageBudget(end, clock=clock))
+                if getattr(driver, "_email_otp_page_refresh_done", False):
+                    recovery_attempted = True
+                if loop_now >= next_diagnostic_at:
+                    log_submission_diagnostics(
+                        driver, "email", "waiting_for_verification_form",
+                        receipt=getattr(driver, "_browser_submission_receipt", None),
+                    )
+                    next_diagnostic_at = loop_now + 15.0
+                if not refreshed:
+                    time.sleep(min(0.4, max(0.0, end - clock())))
+                continue
         advanced_state = _email_submit_advanced_state(driver, budget=budget) if active_receipt else _email_submit_advanced_state(driver)
         if advanced_state:
             return advanced_state
-        submission_state = _email_ui_submission_state(driver)
         if submission_state == "cancelled":
             logger.info("%s 邮箱点击前校验未通过，未执行提交：%s", _log_prefix(driver),
                         getattr(driver, "_email_submission_diagnostics", None))
@@ -1334,8 +1358,6 @@ def _wait_email_submit_next_state(
             else:
                 queued_seen_at = None
             # 已交给前端的请求共享整个剩余预算；输入框清空不是提交失败证据。
-            if budget is not None:
-                end = max(end, budget.deadline)
             if loop_now >= next_diagnostic_at:
                 log_submission_diagnostics(
                     driver, "email", "waiting", receipt=getattr(driver, "_browser_submission_receipt", None),

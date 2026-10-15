@@ -20,6 +20,29 @@ def pre_account_facts():
 
 
 class UnconfirmedRegistrationRetryTests(unittest.TestCase):
+    def test_email_acquisition_failure_can_retry_before_any_identity_was_started(self):
+        job, attempt = pre_account_facts()
+        job.update(status="failed", email=None, failure_stage="email")
+        attempt.update(email_snapshot=None, checkpoint="created")
+        original = copy.deepcopy((job, attempt))
+        info = svc._build_retry_info(job, account=None, attempt=attempt, successful_retry=None)
+        self.assertTrue(info["retryable"], info)
+        self.assertEqual(info["retry_action"], "registration")
+        self.assertEqual((job, attempt), original)
+
+    def test_missing_email_is_not_replaced_after_auth_or_unknown_remote_submission(self):
+        for changes in ({"checkpoint": "auth_started"}, {"remote_identity_state": "request_unknown"},
+                        {"remote_account_state": "confirmed"}, {"local_account_state": "persisted"},
+                        {"email_snapshot": "already-held@example.test"}, {"source_root_job_id": 99},
+                        {"id": 99}, {"data": {"has_password": True}}):
+            with self.subTest(changes=changes):
+                job, attempt = pre_account_facts()
+                job.update(status="failed", email=None, failure_stage="email")
+                attempt.update(email_snapshot=None, checkpoint="created")
+                attempt.update(changes)
+                info = svc._build_retry_info(job, account=None, attempt=attempt, successful_retry=None)
+                self.assertFalse(info["retryable"])
+
     def test_unconfirmed_driver_results_are_failed(self):
         for result in ({"request_unknown": True}, {"manual_reconcile": True},
                        {"account_id": 44},

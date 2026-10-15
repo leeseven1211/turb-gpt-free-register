@@ -564,6 +564,67 @@ class SubmissionRecoveryIntegrationTests(unittest.TestCase):
             with self.subTest(snapshot=snapshot):
                 self.assertFalse(recovery.has_visible_auth_inputs(snapshot, allow_password=False))
 
+    def _wait_nextauth_blank_verification(self, *, deadline=20, mounted_after_refresh=True, ui_state=None):
+        driver, clock = _driver("https://auth.openai.com/email-verification"), _Clock()
+        receipt = BrowserSubmissionReceipt(kind="email", stage="submit_email", phase="unknown")
+        driver._browser_submission_receipt = receipt
+        if ui_state:
+            driver._email_submission_receipt = {"id": "original"}
+
+        def snapshot(_driver):
+            mounted = mounted_after_refresh and driver.get.called
+            return {"url": driver.current_url, "text": "Verification code" if mounted else "",
+                    "inputs": [{"type": "text", "name": "code", "visible": True}] if mounted else [],
+                    "buttons": [], "errors": []}
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(email_otp, "time", clock))
+            stack.enter_context(patch.object(email_otp, "_check_manual_stop"))
+            stack.enter_context(patch.object(recovery, "_check_manual_stop"))
+            stack.enter_context(patch.object(email_otp, "_is_login_password_page", return_value=False))
+            stack.enter_context(patch.object(email_otp, "_is_signup_password_page", return_value=False))
+            stack.enter_context(patch.object(email_otp, "_has_access_token", return_value=False))
+            stack.enter_context(patch.object(email_otp, "_email_ui_submission_state", return_value=ui_state))
+            stack.enter_context(patch.object(email_otp, "_email_otp_page_state", side_effect=snapshot))
+            stack.enter_context(patch.object(email_otp, "_email_input_value_state", side_effect=snapshot))
+            stack.enter_context(patch.object(email_otp, "_is_blank_chatgpt_auth_shell", return_value=False))
+            stack.enter_context(patch.object(email_otp, "_is_email_login_page_still_present", return_value=False))
+            stack.enter_context(patch.object(email_otp, "log_submission_diagnostics"))
+            try:
+                result = email_otp._wait_email_submit_next_state(
+                    driver, "unit@example.test", timeout=deadline, wait_through_transient=True,
+                    budget=StageBudget(deadline, clock=clock.time),
+                )
+            except email_otp._EmailSubmissionUnknown:
+                result = "request_unknown"
+        self.assertIs(driver._browser_submission_receipt, receipt)
+        driver.submit.assert_not_called()
+        return result, driver, clock
+
+    def test_nextauth_landing_blank_verification_refreshes_before_waiting_for_otp(self):
+        result, driver, clock = self._wait_nextauth_blank_verification()
+        self.assertEqual(result, "otp")
+        driver.get.assert_called_once_with("https://auth.openai.com/email-verification")
+        self.assertEqual(driver._browser_submission_receipt.phase, "confirmed")
+        self.assertGreaterEqual(clock.now, 3)
+        self.assertLess(clock.now, 20)
+
+    def test_nextauth_blank_verification_never_extends_short_submission_budget(self):
+        result, driver, clock = self._wait_nextauth_blank_verification(deadline=2)
+        self.assertEqual(result, "unknown")
+        driver.get.assert_not_called()
+        self.assertEqual(clock.now, 2)
+        self.assertEqual(driver._browser_submission_receipt.phase, "unknown")
+
+    def test_pending_email_blank_verification_uses_only_one_refresh(self):
+        result, driver, clock = self._wait_nextauth_blank_verification(
+            mounted_after_refresh=False, ui_state="dispatched",
+        )
+        self.assertEqual(result, "request_unknown")
+        driver.get.assert_called_once_with("https://auth.openai.com/email-verification")
+        self.assertEqual(clock.now, 20)
+        self.assertEqual(driver._browser_submission_receipt.phase, "unknown")
+
     def test_email_refresh_to_blank_otp_route_keeps_unknown_result(self):
         driver, clock = _driver("https://chatgpt.com/auth/login"), _Clock()
         driver._email_submission_receipt = {"id": "original"}
