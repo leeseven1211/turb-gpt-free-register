@@ -136,6 +136,41 @@ class ProfileSessionReadTests(unittest.TestCase):
 
 
 class ProfileDeadlineTests(unittest.TestCase):
+    def test_registration_transition_budget_starts_after_preparing_and_submitting_profile(self):
+        driver = SimpleNamespace(execute_script=Mock(return_value={"valid": True, "fields": []}))
+        now = [0.0]
+        clock = SimpleNamespace(time=lambda: now[0], sleep=lambda seconds: now.__setitem__(0, now[0] + seconds))
+        profile = {"url": "https://auth.openai.com/about-you", "inputs": [{"name": "name"}, {"name": "age"}]}
+        submitted = [False]
+
+        def submit(_driver):
+            submitted[0] = True
+            return True
+
+        def read(_driver, *, timeout, expected_email):
+            self.assertGreaterEqual(timeout, 35)
+            now[0] += 35
+            return {"accessToken": "test-token"}
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(password_auth, "time", clock))
+            for name in ("_check_manual_stop", "_accept_profile_consents", "human_delay", "log_submission_diagnostics"):
+                stack.enter_context(patch.object(password_auth, name))
+            stack.enter_context(patch.object(password_auth, "_page_snapshot", side_effect=lambda _d:
+                                            {"url": "https://chatgpt.com/"} if submitted[0] else profile))
+            stack.enter_context(patch.object(password_auth, "_fill_birthday_or_age", side_effect=lambda *_a:
+                                            now.__setitem__(0, now[0] + 40) or "age"))
+            stack.enter_context(patch.object(password_auth, "_select_or_type", return_value=True))
+            click = stack.enter_context(patch.object(password_auth, "_click_if_enabled_submit", side_effect=submit))
+            session = stack.enter_context(patch.object(password_auth, "_read_profile_session_once", side_effect=read))
+            self.assertTrue(password_auth._complete_profile_page(
+                driver, "Example User", "2000-01-02", timeout=60, transition_timeout=90,
+                expected_email="unit@example.test",
+            ))
+        click.assert_called_once()
+        session.assert_called_once()
+        self.assertLessEqual(now[0], 131)
+
     def test_failed_profile_click_does_not_call_submission_callback(self):
         driver = SimpleNamespace(execute_script=Mock(return_value={"valid": True}))
         now = [0.0]

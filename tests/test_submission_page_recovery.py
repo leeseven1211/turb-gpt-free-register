@@ -308,10 +308,12 @@ class SubmissionDiagnosticsTests(unittest.TestCase):
 
 
 class SubmissionRecoveryIntegrationTests(unittest.TestCase):
-    def _resume_with_offered_password(self, *, navigation_timeout=False, visible_password=True, expired_once=False):
+    def _resume_with_offered_password(self, *, navigation_timeout=False, visible_password=True, expired_once=False,
+                                     create_password=False):
         driver, clock = _driver("https://auth.openai.com/email-verification"), _Clock()
         driver._registration_resume_login = True
         queues = []
+        target = "https://auth.openai.com/" + ("create-account/password" if create_password else "log-in/password")
 
         if navigation_timeout:
             def navigate(target):
@@ -347,8 +349,11 @@ class SubmissionRecoveryIntegrationTests(unittest.TestCase):
                 driver.current_url = "https://auth.openai.com/email-verification"
                 return "otp"
             stack.enter_context(patch.object(email_otp, "_submit_email_and_wait_next", side_effect=submit_email))
-            stack.enter_context(patch.object(password_auth, "_resume_login_password_url", return_value="https://auth.openai.com/log-in/password"))
-            stack.enter_context(patch.object(password_auth, "_is_signup_password_page", return_value=False))
+            stack.enter_context(patch.object(password_auth, "_resume_login_password_url", return_value=None if create_password else target))
+            if create_password:
+                stack.enter_context(patch.object(password_auth, "_offered_password_url", return_value=target))
+            stack.enter_context(patch.object(password_auth, "_is_signup_password_page",
+                                            side_effect=lambda _d: "create-account/password" in driver.current_url))
             stack.enter_context(patch.object(password_auth, "_is_login_password_page", side_effect=lambda _d: "log-in/password" in driver.current_url))
             stack.enter_context(patch.object(password_auth, "_is_email_verification_page", side_effect=lambda _d: "email-verification" in driver.current_url))
             stack.enter_context(patch.object(password_auth, "_has_access_token", return_value=False))
@@ -360,8 +365,7 @@ class SubmissionRecoveryIntegrationTests(unittest.TestCase):
         generate.assert_not_called()
         self.assertEqual(len(queues), 1)
         self.assertEqual([call.args[0] for call in driver.get.call_args_list], (
-            ["https://chatgpt.com/auth/login", "https://auth.openai.com/log-in/password"] if expired_once
-            else ["https://auth.openai.com/log-in/password"]
+            ["https://chatgpt.com/auth/login", target] if expired_once else [target]
         ))
         self.assertEqual(driver._browser_submission_receipt.phase, "confirmed")
 
@@ -370,6 +374,12 @@ class SubmissionRecoveryIntegrationTests(unittest.TestCase):
 
     def test_expired_resume_session_restarts_login_once_before_using_original_password(self):
         self._resume_with_offered_password(expired_once=True)
+
+    def test_resume_uses_original_password_when_server_still_offers_creating_one(self):
+        self._resume_with_offered_password(create_password=True)
+
+    def test_offered_create_password_navigation_timeout_accepts_mounted_form(self):
+        self._resume_with_offered_password(create_password=True, navigation_timeout=True)
 
     def test_expired_resume_can_continue_when_new_login_document_load_times_out(self):
         self._resume_with_offered_password(expired_once=True, navigation_timeout=True)

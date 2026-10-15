@@ -1638,6 +1638,7 @@ def run_roxy_registration(
                 birthday,
                 timeout=60,
                 expected_email=email,
+                transition_timeout=90,
             )
         if profile_submitted:
             remote_identity = "new_candidate"

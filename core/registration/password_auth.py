@@ -691,8 +691,10 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
         "candidates": candidates,
     }
 
-def _resume_login_password_url(driver) -> str | None:
-    """只选择验证码页实际提供的同源登录密码链接，不猜测路由。"""
+def _offered_password_url(driver, path: str = "/log-in/password") -> str | None:
+    """只选择页面实际提供的同源密码链接，不猜测服务器认证步骤。"""
+    if path not in {"/log-in/password", "/create-account/password"}:
+        return None
     try:
         current = urlsplit(str(getattr(driver, "current_url", "")))
         if (current.scheme != "https" or current.hostname != "auth.openai.com" or current.port not in (None, 443)
@@ -701,6 +703,7 @@ def _resume_login_password_url(driver) -> str | None:
     except ValueError:
         return None
     target = driver.execute_script(r"""
+    const path = arguments[0];
     const visible = el => !!(el && el.isConnected && el.getClientRects().length)
       && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
     if (location.origin !== 'https://auth.openai.com') return null;
@@ -708,21 +711,25 @@ def _resume_login_password_url(driver) -> str | None:
       if (!visible(el) || el.getAttribute('aria-disabled') === 'true') return false;
       try {
         const url = new URL(el.href, location.href);
-        return url.origin === location.origin && url.pathname === '/log-in/password';
+        return url.origin === location.origin && url.pathname === path;
       } catch (_) { return false; }
     });
     return target ? target.href : null;
-    """)
+    """, path)
     if not isinstance(target, str):
         return None
     try:
         parsed = urlsplit(target)
         if (parsed.scheme == "https" and parsed.hostname == "auth.openai.com" and parsed.port in (None, 443)
-                and not parsed.username and not parsed.password and parsed.path == "/log-in/password"):
+                and not parsed.username and not parsed.password and parsed.path == path):
             return target
     except ValueError:
         pass
     return None
+
+
+def _resume_login_password_url(driver) -> str | None:
+    return _offered_password_url(driver)
 
 
 def _restart_expired_resume_auth(driver, email: str, *, budget: StageBudget) -> bool:
@@ -800,6 +807,8 @@ def _fill_password_page_if_present(
                             continue
                         raise RuntimeError("request_unknown: auth_session_unavailable: 原身份登录的认证会话不可用，已保留原 Attempt")
                     target = _resume_login_password_url(driver) if ready == "ready" else None
+                    if target is None and ready == "ready" and auth_mode == "password":
+                        target = _offered_password_url(driver, "/create-account/password")
                     if target is not None and time.time() < end:
                         switched_from_otp = True
                         driver._registration_resume_password_attempted = True
@@ -814,7 +823,7 @@ def _fill_password_page_if_present(
                             location = urlsplit(str(state.get("url") or ""))
                             form_ready = (
                                 location.scheme == "https" and location.hostname == "auth.openai.com"
-                                and location.port in (None, 443) and location.path == "/log-in/password"
+                                and location.port in (None, 443) and location.path == urlsplit(target).path
                                 and time.time() < end and any(
                                     isinstance(item, dict) and item.get("visible", True)
                                     and str(item.get("type") or "").lower() == "password"
@@ -1232,7 +1241,7 @@ def _accept_profile_consents(driver) -> int:
         return 0
 
 def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45, on_submit=None,
-                           *, expected_email: str | None = None) -> bool:
+                           *, expected_email: str | None = None, transition_timeout: float | None = None) -> bool:
     """等待并完成姓名/生日页；若已经登录成功则返回 False，不把它当失败。"""
     end = time.time() + timeout
     y, m, d = birthday.split('-')
@@ -1383,7 +1392,10 @@ def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45, 
                         logger.debug('%s 资料页提交后回调失败', _log_prefix(driver), exc_info=True)
                 logger.info('%s 已点击资料页提交按钮，等待 OAuth 跳转', _log_prefix(driver))
                 log_submission_diagnostics(driver, "profile", "submitted")
-                submit_end = min(end, time.time() + 45)
+                if transition_timeout is not None:
+                    # 注册入口显式分开准备和提交后的完整会话预算，慢表单不能挤掉收尾时间。
+                    end = time.time() + _budget_timeout(None, max(0.0, float(transition_timeout)), minimum=0)
+                submit_end = end if transition_timeout is not None else min(end, time.time() + 45)
                 while time.time() < submit_end:
                     _check_manual_stop()
                     time.sleep(0.5)
