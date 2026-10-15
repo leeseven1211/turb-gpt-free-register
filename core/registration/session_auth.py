@@ -20,6 +20,83 @@ from .selenium_resource import _log_prefix, _safe_get
 logger = logging.getLogger(__name__)
 time = time_proxy
 _CHATGPT_SESSION_URL = "https://chatgpt.com/api/auth/session"
+_CHATGPT_HOME_URL = "https://chatgpt.com/"
+
+
+def _wait_registration_homepage(driver, *, timeout: float = 30, budget: StageBudget | None = None) -> dict:
+    """只观察正常首页就绪；失败时保留已取得的会话和完整资源，不重新认证。"""
+    wait = budget.child(timeout) if budget is not None else StageBudget.start(timeout)
+    wait.check_cancelled()
+
+    def pending(reason: str) -> dict:
+        return {"ready": False, "reason": reason}
+
+    try:
+        current = urlsplit(str(driver.current_url or ""))
+        if current.scheme != "https" or current.hostname != "chatgpt.com" or current.port not in (None, 443):
+            return pending("foreign_origin")
+        if current.path == "/api/auth/session":
+            _check_manual_stop()
+            if wait.expired():
+                return pending("timeout")
+            old_timeout = driver.timeouts.page_load
+            try:
+                driver.set_page_load_timeout(max(0.1, min(15, wait.remaining())))
+                driver.get(_CHATGPT_HOME_URL)
+            finally:
+                driver.set_page_load_timeout(old_timeout)
+    except Exception:
+        wait.check_cancelled()
+        _check_manual_stop()
+        return pending("navigation_failed")
+
+    while not wait.expired():
+        _check_manual_stop()
+        wait.check_cancelled()
+        try:
+            state = driver.execute_script(r"""
+            const trusted = location.origin === 'https://chatgpt.com';
+            const path = location.pathname || '/';
+            if (!trusted) return {ready:false, reason:'foreign_origin'};
+            if (path.startsWith('/api/') || path.startsWith('/auth/') || path === '/login') {
+              return {ready:false, reason:'auth_page'};
+            }
+            const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+              && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+            const hydrated = el => {
+              for (let node = el, depth = 0; node && depth < 6; node = node.parentElement, depth++) {
+                if (Object.keys(node).some(key => key.startsWith('__reactProps$') || key.startsWith('__reactFiber$'))) return true;
+              }
+              return false;
+            };
+            const composer = document.querySelector('#prompt-textarea');
+            const editable = composer && (['INPUT','TEXTAREA'].includes(composer.tagName)
+              ? !composer.disabled && !composer.readOnly : composer.isContentEditable === true);
+            const composerReady = visible(composer) && editable
+              && composer.getAttribute('aria-disabled') !== 'true' && hydrated(composer);
+            const dialogVisible = [...document.querySelectorAll('[role="dialog"],[role="alertdialog"]')].some(visible);
+            const ready = composerReady && !dialogVisible;
+            return {ready, reason:ready ? 'ready' : 'app_loading'};
+            """)
+        except Exception:
+            wait.check_cancelled()
+            _check_manual_stop()
+            return pending("probe_failed")
+        wait.check_cancelled()
+        _check_manual_stop()
+        if wait.expired():
+            return pending("timeout")
+        if not isinstance(state, dict) or type(state.get("ready")) is not bool:
+            return pending("probe_unavailable")
+        if state["ready"]:
+            return {"ready": True, "reason": "ready"}
+        if state.get("reason") == "foreign_origin":
+            return pending("foreign_origin")
+        try:
+            wait.sleep(min(0.5, wait.remaining()))
+        except StageTimeout:
+            return pending("timeout")
+    return pending("timeout")
 
 
 class ChatGPTSessionUnavailable(RuntimeError):
@@ -267,12 +344,14 @@ def _fetch_chatgpt_session(
     auto_jump_wait: int = 15,
     *,
     budget: StageBudget | None = None,
+    prefer_homepage: bool = False,
 ) -> dict:
     """等待页面完成跳转并从 ChatGPT 页面内读取登录 session/accessToken。
 
     旧逻辑会在 auth.openai.com 上一直等到总超时，Cloak/部分 Chromium 场景下
     实际账号已创建成功但当前句柄 URL 没及时更新，导致白等 120 秒。现在只给
     自动跳转 `auto_jump_wait` 秒；超过后立即主动打开 chatgpt.com 读 session。
+    Roxy 注册通过 prefer_homepage 保留正常首页，其他认证调用沿用原有文档读取路径。
     """
     context = current_execution_context()
     if budget is None and context is not None:
@@ -346,7 +425,7 @@ def _fetch_chatgpt_session(
                         raise StageTimeout("OAuth session navigation budget exhausted")
                     _safe_get(
                         driver,
-                        _CHATGPT_SESSION_URL,
+                        _CHATGPT_HOME_URL if prefer_homepage else _CHATGPT_SESSION_URL,
                         timeout=max(1, int(safe_timeout)),
                         attempts=2,
                         accept_hosts=("chatgpt.com",),
@@ -369,6 +448,7 @@ def _fetch_chatgpt_session(
             'chatgpt.com' in current
             and not forced_chatgpt_open
             and "/api/auth/session" not in current_lower
+            and not prefer_homepage
         ):
             try:
                 safe_timeout = _budget_timeout(budget, 35, minimum=1)
@@ -419,10 +499,10 @@ def _fetch_chatgpt_session(
 
 install_dispatches(globals(), (
     "_read_chatgpt_session_once", "_switch_to_chatgpt_window_if_any",
-    "_fetch_chatgpt_session", "_has_access_token", "_diagnostic_url",
+    "_fetch_chatgpt_session", "_wait_registration_homepage", "_has_access_token", "_diagnostic_url",
 ))
 
 __all__ = [
     "_read_chatgpt_session_once", "_switch_to_chatgpt_window_if_any",
-    "_fetch_chatgpt_session", "_has_access_token", "ChatGPTSessionUnavailable",
+    "_fetch_chatgpt_session", "_wait_registration_homepage", "_has_access_token", "ChatGPTSessionUnavailable",
 ]

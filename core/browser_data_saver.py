@@ -42,8 +42,7 @@ _URL_EXTENSIONS_BY_TYPE = {
     "script": (".js", ".mjs"),
 }
 _POST_AUTH_URL_PATTERNS = (
-    # After the auth/profile form is submitted, registration only needs the
-    # session JSON document. Do not load the ChatGPT SPA or auth static chunks.
+    # 仅在登录会话与正常首页就绪都已确认后收紧，不能在资料提交或认证回调前启用。
     "**://chatgpt.com/cdn/assets/**",
     "**://auth-cdn.oaistatic.com/assets/**",
 )
@@ -211,7 +210,7 @@ class BrowserDataSaver:
                 logger.warning("[%s] 安装省流量拦截失败，继续不拦截：%s: %s", self.label, type(exc).__name__, str(exc)[:180])
 
     def activate_post_auth(self) -> bool:
-        """Block the ChatGPT SPA only after the auth/profile form is submitted."""
+        """由调用方确认登录会话及正常首页就绪后，再拦截后续静态资源。"""
         if not self.enabled or self._stopped or self._post_auth_activated:
             return False
         self._post_auth_activated = True

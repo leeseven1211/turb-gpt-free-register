@@ -649,7 +649,7 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 
 #### Roxy 浏览器省流量
 
-- `BROWSER_DATA_SAVER_MODE` 是拦截总开关。注册使用 `BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES` 和 `BROWSER_DATA_SAVER_BLOCKED_URL_PATTERNS`；登录前自动忽略 script/stylesheet 类型和 ChatGPT/auth CDN 脚本、样式的旧拦截规则。注册资料提交后才按已有策略阻断后续 SPA 资源。刷新 AT、旧 AT 浏览器查活、独立 Codex OAuth 和账号操作使用固定的认证安全规则，只拦截图片、媒体及明确的遥测请求。注册窗口继续执行 Codex OAuth 时会切换为认证安全规则。
+- `BROWSER_DATA_SAVER_MODE` 是拦截总开关。注册使用 `BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES` 和 `BROWSER_DATA_SAVER_BLOCKED_URL_PATTERNS`；认证及资料提交期间自动忽略 script/stylesheet 类型和 ChatGPT/auth CDN 脚本、样式的旧拦截规则。Roxy 保存账号和完整登录会话后，以 Token 阶段剩余时间分配最多 30 秒的首页轮询预算；确认正常首页出现前端已接管的可见可编辑输入区、且没有弹窗遮挡，才收紧后续静态资源。单次浏览器命令仍受 WebDriver 超时控制，超出观察预算的结果不计为就绪。首页未确认就绪时保留账号并继续放行核心资源，不刷新、重登或重提注册。Roxy 取得会话时优先保留正常首页，不主动改为 session JSON 页面。刷新 AT、旧 AT 浏览器查活、独立 Codex OAuth 和账号操作使用固定的认证安全规则，只拦截图片、媒体及明确的遥测请求。注册窗口继续执行 Codex OAuth 时会切换为认证安全规则。
 - `BROWSER_DATA_SAVER_AUTH_FLOWS` 是可选流程列表，可填写 `token_refresh`、`live_check`、`codex_oauth`、`account_action`；默认全选，填 `[]` 可只保留注册省流量。它和总开关都可以在 WebUI「配置 → 浏览器画像」调整。流程开关同时控制 Roxy 启动参数和 Selenium CDP 拦截。
 - `BROWSER_PUBLIC_ASSET_CACHE_MODE` 独立控制 Roxy 注册及账号认证流程（刷新 AT、普通查活、Codex OAuth、账号操作）：默认 `off`；`observe` 仅统计候选，不下载或回放；`enabled` 在浏览器原生缓存之外跨 Profile 复用公共 JS/CSS。可在同一配置分组调整；`BROWSER_PUBLIC_ASSET_CACHE_MAX_MB` 默认 256 MiB。缓存位于忽略提交的 `run/public-asset-cache/`，最多 1000 项、单项 10 MiB、有效期不超过响应声明及 24 小时，旧资源自动淘汰。
 - 公共缓存只接受审核过的 ChatGPT/auth CDN 目录下带版本的 JS/CSS，要求 HTTP 200、明确公共缓存、正确 MIME、无 Set-Cookie 和敏感响应变体。仅收录已证实不携带 Cookie/Authorization 的浏览器响应；注册需要匿名验证时，只沿本次新建 Profile 的已知代理下载，不跟重定向、不回退直连。账号认证流程只读取浏览器已经完成的公共响应，不额外发起匿名下载；缓存只连接当前业务页面，复用注册窗口时由注册外层持有并收口，保留窗口也会停止本轮缓存及流量统计。认证 API、HTML、session、OTP 和安全挑战不缓存。原 URL、内容完整性与安全响应头保留，过期、损坏、磁盘或连接异常均回到浏览器正常网络。注册首次填充可能额外下载，不能以冷缓存单次任务承诺省流量比例。

@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from core.registration import roxy, session_auth
+from core.registration.state_machine import StageBudget
 
 
 EMAIL = "resume@example.test"
@@ -227,6 +228,59 @@ class ResumeSessionFlowTests(unittest.TestCase):
         for name in ("persist", "codex", "twofa", "plan_read", "plan_save"):
             mocks[name].assert_called_once()
         mocks["navigate"].assert_not_called()
+
+    def test_homepage_is_checked_after_persist_and_only_ready_page_enables_deep_saving(self):
+        for ready in (True, False):
+            with self.subTest(ready=ready), self.run_context() as (_, mocks):
+                def homepage(*args, **kwargs):
+                    mocks["persist"].assert_called_once()
+                    mocks["saver"].return_value.activate_post_auth.assert_not_called()
+                    return {"ready": ready, "reason": "ready" if ready else "timeout"}
+
+                with patch.object(roxy, "_wait_registration_homepage", side_effect=homepage):
+                    result = self.run_registration()
+                self.assertTrue(result["success"], result.get("error"))
+                self.assertTrue(result["core_persisted"])
+                self.assertEqual(mocks["saver"].return_value.activate_post_auth.call_count, int(ready))
+
+    def test_new_registration_keeps_profile_and_callback_resources_until_homepage_ready(self):
+        with self.run_context(action="registration") as (_, mocks):
+            mocks["navigate"].side_effect = None
+            mocks["_submit_email_and_wait_next"].return_value = "otp"
+            mocks["_fill_password_page_if_present"].return_value = "unit-new-password"
+            mocks["_has_access_token"].return_value = True
+            mocks["_fetch_chatgpt_session"].return_value = SESSION
+
+            def profile(*args, **kwargs):
+                self.assertNotIn("on_submit", kwargs)
+                mocks["saver"].return_value.activate_post_auth.assert_not_called()
+                return True
+
+            def homepage(*args, **kwargs):
+                mocks["persist"].assert_called_once()
+                mocks["saver"].return_value.activate_post_auth.assert_not_called()
+                return {"ready": True, "reason": "ready"}
+
+            mocks["_complete_profile_page"].side_effect = profile
+            with patch.object(roxy, "_wait_registration_homepage", side_effect=homepage):
+                result = self.run_registration(existing_password=None, profile_id=None)
+            self.assertTrue(result["success"], result.get("error"))
+            self.assertTrue(mocks["_fetch_chatgpt_session"].call_args.kwargs["prefer_homepage"])
+            mocks["saver"].return_value.activate_post_auth.assert_called_once()
+
+    def test_exhausted_homepage_budget_does_not_turn_saved_account_into_registration_failure(self):
+        with self.run_context() as (driver, mocks):
+            entrypoint = roxy._wait_registration_homepage
+
+            def homepage(*args, **kwargs):
+                mocks["persist"].assert_called_once()
+                return entrypoint(driver, budget=StageBudget(0, clock=lambda: 1))
+
+            with patch.object(roxy, "_wait_registration_homepage", side_effect=homepage):
+                result = self.run_registration()
+            self.assertTrue(result["success"], result.get("error"))
+            self.assertTrue(result["core_persisted"])
+            mocks["saver"].return_value.activate_post_auth.assert_not_called()
 
     def test_explicit_no_token_resumes_existing_login_path(self):
         for status in (200, 401, 403):

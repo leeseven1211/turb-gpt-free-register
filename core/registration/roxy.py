@@ -511,6 +511,7 @@ _click_if_enabled_submit = _make_shared_compatibility_wrapper("_click_if_enabled
 _read_chatgpt_session_once = _make_shared_compatibility_wrapper("_read_chatgpt_session_once")
 _switch_to_chatgpt_window_if_any = _make_shared_compatibility_wrapper("_switch_to_chatgpt_window_if_any")
 _fetch_chatgpt_session = _make_shared_compatibility_wrapper("_fetch_chatgpt_session")
+_wait_registration_homepage = _make_shared_compatibility_wrapper("_wait_registration_homepage")
 _check_manual_stop = _make_shared_compatibility_wrapper("_check_manual_stop")
 _probe_chatgpt_password_eligibility = _make_shared_compatibility_wrapper("_probe_chatgpt_password_eligibility")
 _totp_secret_candidate = _make_shared_compatibility_wrapper("_totp_secret_candidate")
@@ -1632,7 +1633,6 @@ def run_roxy_registration(
                 name,
                 birthday,
                 timeout=60,
-                on_submit=(data_saver.activate_post_auth if data_saver is not None else None),
                 expected_email=email,
             )
         if profile_submitted:
@@ -1651,7 +1651,9 @@ def run_roxy_registration(
         logger.info("[Roxy注册] 等待 ChatGPT 跳转并写入 session/accessToken")
         _check_manual_stop()
         token_budget = StageBudget.start(120)
-        session_info = verified_resume_session or _fetch_chatgpt_session(driver, timeout=120, budget=token_budget)
+        session_info = verified_resume_session or _fetch_chatgpt_session(
+            driver, timeout=120, budget=token_budget, prefer_homepage=True,
+        )
         _validate_registration_session_identity(session_info, email)
         access_token = session_info["accessToken"]
         captured_plan_result = None
@@ -1666,7 +1668,6 @@ def run_roxy_registration(
                     "[Roxy注册][套餐] 浏览器查询失败，将尝试后台查询：%s",
                     type(exc).__name__,
                 )
-        report_job_progress("token", "success", "已获取 accessToken")
         logger.info("[Roxy注册] 已拿到 accessToken：%s", email)
         _check_manual_stop()
 
@@ -1697,6 +1698,20 @@ def run_roxy_registration(
         opened.account_bound = True
         client.mark_profile_bound(opened.profile_id)
         logger.info("[Roxy注册] 注册主体已保存检查点：id=%s email=%s", account_id, email)
+
+        report_job_progress("token", "running", "登录会话已保存，正在确认正常首页就绪")
+        try:
+            homepage = _wait_registration_homepage(driver, budget=token_budget)
+        except StageTimeout:
+            # 会话已经保存；可选首页观察不能把阶段预算耗尽变成再次注册的理由。
+            homepage = {"ready": False, "reason": "timeout"}
+        if homepage["ready"]:
+            if data_saver is not None:
+                data_saver.activate_post_auth()
+            report_job_progress("token", "success", "已获取 accessToken，正常首页已就绪")
+        else:
+            logger.warning("[Roxy注册] 首页未确认就绪，保持核心资源加载：reason=%s", homepage["reason"])
+            report_job_progress("token", "success", "已获取 accessToken；首页未确认就绪，保持核心资源加载")
 
         codex_result = {
             "status": "skipped",

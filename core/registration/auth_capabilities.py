@@ -89,6 +89,7 @@ _CAPABILITY_NAMES = (
     "_PasswordTransitionTimeout", "_probe_chatgpt_password_eligibility",
     # session
     "_read_chatgpt_session_once", "_switch_to_chatgpt_window_if_any", "_fetch_chatgpt_session",
+    "_wait_registration_homepage",
     # MFA/security
     "_totp_secret_candidate", "_first_visible_css", "_is_stale_element_error",
     "_visible_new_password_inputs", "_wait_visible_css", "_detect_mfa_enrollment_step",

@@ -1308,14 +1308,14 @@ def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45, 
             logger.warning('%s 资料页提交前表单校验未通过 state=%s', _log_prefix(driver), form_state)
             continue
         for _ in range(3):
-            if callable(on_submit):
-                try:
-                    on_submit()
-                except Exception:
-                    logger.debug('%s 资料页提交前切换 post-auth 省流量规则失败', _log_prefix(driver), exc_info=True)
             log_submission_diagnostics(driver, "profile", "before_submit")
             if _click_if_enabled_submit(driver):
                 profile_submitted = True
+                if callable(on_submit):
+                    try:
+                        on_submit()
+                    except Exception:
+                        logger.debug('%s 资料页提交后回调失败', _log_prefix(driver), exc_info=True)
                 logger.info('%s 已点击资料页提交按钮，等待 OAuth 跳转', _log_prefix(driver))
                 log_submission_diagnostics(driver, "profile", "submitted")
                 submit_end = min(end, time.time() + 45)

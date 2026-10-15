@@ -128,6 +128,7 @@ class EmailSourceCompatibilityTests(unittest.TestCase):
             stack.enter_context(patch.object(roxy, "_is_email_verification_page", return_value=True))
             stack.enter_context(patch.object(roxy, "_has_access_token", return_value=False))
             stack.enter_context(patch.object(roxy, "_registration_auth_mode", return_value="passwordless"))
+            stack.enter_context(patch.object(roxy, "_wait_email_otp_page_ready", return_value="ready"))
             stack.enter_context(patch.object(roxy, "wait_for_otp", wait_for_otp))
             stack.enter_context(patch("core.email_provider.retain_email"))
             with self.assertRaises(StopAfterOtp):

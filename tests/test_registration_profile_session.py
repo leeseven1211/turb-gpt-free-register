@@ -136,6 +136,26 @@ class ProfileSessionReadTests(unittest.TestCase):
 
 
 class ProfileDeadlineTests(unittest.TestCase):
+    def test_failed_profile_click_does_not_call_submission_callback(self):
+        driver = SimpleNamespace(execute_script=Mock(return_value={"valid": True}))
+        now = [0.0]
+        clock = SimpleNamespace(time=lambda: now[0], sleep=lambda seconds: now.__setitem__(0, now[0] + seconds))
+        callback = Mock()
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(password_auth, "time", clock))
+            for name in ("_check_manual_stop", "_accept_profile_consents", "human_delay", "log_submission_diagnostics"):
+                stack.enter_context(patch.object(password_auth, name))
+            stack.enter_context(patch.object(password_auth, "_page_snapshot", return_value={
+                "url": "https://auth.openai.com/about-you", "inputs": [{"name": "name"}, {"name": "age"}],
+            }))
+            stack.enter_context(patch.object(password_auth, "_fill_birthday_or_age", return_value="age"))
+            stack.enter_context(patch.object(password_auth, "_select_or_type", return_value=True))
+            submit = stack.enter_context(patch.object(password_auth, "_click_if_enabled_submit", return_value=False))
+            with self.assertRaisesRegex(RuntimeError, "资料页超时"):
+                password_auth._complete_profile_page(driver, "Example User", "2000-01-02", timeout=3, on_submit=callback)
+        self.assertEqual(submit.call_count, 3)
+        callback.assert_not_called()
+
     def test_profile_uses_remaining_total_deadline_for_one_complete_read(self):
         driver = SimpleNamespace(execute_script=Mock(return_value={"valid": True, "fields": []}))
         now = [0.0]
@@ -151,10 +171,12 @@ class ProfileDeadlineTests(unittest.TestCase):
             stack.enter_context(patch.object(password_auth, "_fill_birthday_or_age", return_value="age"))
             stack.enter_context(patch.object(password_auth, "_select_or_type", return_value=True))
             submit = stack.enter_context(patch.object(password_auth, "_click_if_enabled_submit", return_value=True))
+            callback = Mock(side_effect=lambda: self.assertEqual(submit.call_count, 1))
             short = stack.enter_context(patch.object(password_auth, "_has_access_token"))
             read = stack.enter_context(patch.object(password_auth, "_read_profile_session_once", return_value={"accessToken": "test-token"}))
             self.assertTrue(password_auth._complete_profile_page(driver, "Example User", "2000-01-02", timeout=5,
-                                                               expected_email="unit@example.test"))
+                                                               expected_email="unit@example.test", on_submit=callback))
         read.assert_called_once_with(driver, timeout=3.5, expected_email="unit@example.test")
         submit.assert_called_once()
+        callback.assert_called_once()
         short.assert_not_called()
