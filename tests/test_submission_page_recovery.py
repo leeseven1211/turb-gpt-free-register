@@ -318,6 +318,8 @@ class SubmissionRecoveryIntegrationTests(unittest.TestCase):
         if navigation_timeout:
             def navigate(target):
                 driver.current_url = target
+                if target == "about:blank":
+                    return
                 raise TimeoutException("模拟页面已有表单但其余资源仍在加载")
             driver.get.side_effect = navigate
 
@@ -365,7 +367,7 @@ class SubmissionRecoveryIntegrationTests(unittest.TestCase):
         generate.assert_not_called()
         self.assertEqual(len(queues), 1)
         self.assertEqual([call.args[0] for call in driver.get.call_args_list], (
-            ["https://chatgpt.com/auth/login", target] if expired_once else [target]
+            ["about:blank", "https://chatgpt.com/auth/login", target] if expired_once else [target]
         ))
         self.assertEqual(driver._browser_submission_receipt.phase, "confirmed")
 
@@ -396,7 +398,8 @@ class SubmissionRecoveryIntegrationTests(unittest.TestCase):
               patch.object(email_otp, "_submit_email_and_wait_next", return_value="otp") as email_submit):
             self.assertTrue(password_auth._restart_expired_resume_auth(driver, "unit@example.test", budget=budget))
             self.assertFalse(password_auth._restart_expired_resume_auth(driver, "unit@example.test", budget=budget))
-        driver.get.assert_called_once_with("https://chatgpt.com/auth/login")
+        self.assertEqual([call.args[0] for call in driver.get.call_args_list],
+                         ["about:blank", "https://chatgpt.com/auth/login"])
         self.assertEqual(email_submit.call_args.kwargs["total_timeout"], 5)
         self.assertEqual(vars(receipt), before)
         self.assertEqual(driver._registration_otp_after_ts, 0)
@@ -408,6 +411,42 @@ class SubmissionRecoveryIntegrationTests(unittest.TestCase):
                     driver, "unit@example.test", budget=StageBudget(deadline, clock=clock.time),
                 ))
                 driver.get.assert_not_called()
+
+    def test_expired_auth_navigation_cannot_accept_the_previous_otp_document(self):
+        driver, clock = _driver("https://auth.openai.com/email-verification"), _Clock()
+        driver._registration_resume_login = True
+        detached = [False]
+
+        def navigate(target):
+            if target == "about:blank":
+                detached[0] = True
+                driver.current_url = target
+            elif detached[0]:
+                driver.current_url = target
+            # 模拟旧页仍活跃时取消新导航，WebDriver 没有抛错且仍停在旧 OTP 页。
+
+        def submit(*_args, **_kwargs):
+            self.assertEqual(driver.current_url, "https://chatgpt.com/auth/login")
+            return "otp"
+
+        driver.get.side_effect = navigate
+        with (patch.object(password_auth, "time", clock), patch.object(password_auth, "_check_manual_stop"),
+              patch.object(email_otp, "_submit_email_and_wait_next", side_effect=submit)):
+            self.assertTrue(password_auth._restart_expired_resume_auth(
+                driver, "unit@example.test", budget=StageBudget(30, clock=clock.time),
+            ))
+
+    def test_cancelled_new_login_navigation_never_submits_from_blank_document(self):
+        driver, clock = _driver("https://auth.openai.com/email-verification"), _Clock()
+        driver._registration_resume_login = True
+        driver.get.side_effect = lambda target: setattr(driver, "current_url", "about:blank")
+        with (patch.object(password_auth, "time", clock), patch.object(password_auth, "_check_manual_stop"),
+              patch.object(email_otp, "_submit_email_and_wait_next") as submit):
+            with self.assertRaisesRegex(RuntimeError, "新登录页面尚未确认"):
+                password_auth._restart_expired_resume_auth(
+                    driver, "unit@example.test", budget=StageBudget(30, clock=clock.time),
+                )
+        submit.assert_not_called()
 
     def test_resume_navigation_timeout_continues_when_password_form_is_already_visible(self):
         self._resume_with_offered_password(navigation_timeout=True)

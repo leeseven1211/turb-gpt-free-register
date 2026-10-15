@@ -749,9 +749,14 @@ def _restart_expired_resume_auth(driver, email: str, *, budget: StageBudget) -> 
     log_submission_diagnostics(driver, "password", "before_expired_session_login")
     driver._registration_auth_restart_done = True
     driver._registration_otp_after_ts = time.time()
-    begin_auth_session(driver)
     old_timeout = getattr(getattr(driver, "timeouts", None), "page_load", None)
     try:
+        driver.set_page_load_timeout(min(10.0, budget.require("恢复原身份登录")))
+        # 旧页仍在初始化时可能取消跨站导航；先退出旧文档，不能把旧 OTP 页当成新登录。
+        driver.get("about:blank")
+        if str(driver.current_url or "") != "about:blank":
+            raise RuntimeError("request_unknown: auth_session_unavailable: 失效页面尚未退出，未重新提交邮箱")
+        begin_auth_session(driver)
         driver.set_page_load_timeout(min(10.0, budget.require("恢复原身份登录")))
         driver.get("https://chatgpt.com/auth/login")
     except TimeoutException:
@@ -764,6 +769,10 @@ def _restart_expired_resume_auth(driver, email: str, *, budget: StageBudget) -> 
         if isinstance(old_timeout, (int, float)):
             driver.set_page_load_timeout(old_timeout)
     budget.require("恢复原身份登录")
+    current = urlsplit(str(driver.current_url or ""))
+    if (current.scheme != "https" or current.hostname not in {"chatgpt.com", "auth.openai.com"}
+            or current.port not in (None, 443) or current.username or current.password):
+        raise RuntimeError("request_unknown: auth_session_unavailable: 新登录页面尚未确认，未重新提交邮箱")
     driver._email_otp_page_refresh_done = False
     driver._email_otp_blank_seen_at = None
     driver._registration_resume_password_attempted = False
