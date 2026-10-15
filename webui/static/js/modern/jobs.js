@@ -129,6 +129,11 @@ async function batchCancelJobs() {
   finally { if (btn) btn.disabled = false; }
 }
 
+function registrationRetryPayload(payload = {}) {
+  const debug = $('#regDebugV2');
+  return debug ? {...payload, debug_enabled: Boolean(debug.checked)} : payload;
+}
+
 async function retryBatchFailedJobs() {
   const ids = currentBatchJobs().filter(job => ['failed', 'partial_success', 'stopped', 'cancelled', 'interrupted', 'request_unknown', 'manual_reconcile', 'attention_required'].includes(String(job.status || '')) && job.retryable).map(job => Number(job.id));
   if (!ids.length) { showToast('当前批次没有可重跑的失败任务'); return; }
@@ -136,9 +141,9 @@ async function retryBatchFailedJobs() {
   const btn = $('#btnBatchRetryV2');
   if (btn) btn.disabled = true;
   try {
-    const result = await api('/api/jobs/retry-bulk', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({job_ids: ids})});
+    const result = await api('/api/jobs/retry-bulk', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(registrationRetryPayload({job_ids: ids}))});
     if (result.batch_id) setJobProgressBatch(result.batch_id);
-    showToast('已提交 ' + (result.started_count || 0) + ' 个失败任务' + (result.skipped?.length ? '，跳过 ' + result.skipped.length + ' 个' : ''));
+    showToast('已提交 ' + (result.started_count || 0) + ' 个失败任务' + (result.skipped?.length ? '，跳过 ' + result.skipped.length + ' 个' : '') + (result.debug_warnings?.length ? '；其中 ' + result.debug_warnings.length + ' 个任务仅保存步骤日志' : ''));
     refreshJobs();
   } catch (e) { showToast('批次重跑失败: ' + e.message); }
 }
@@ -909,9 +914,9 @@ async function retryJob(jobId, btn) {
     const r = await api(`/api/jobs/${jobId}/retry`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({}),
+      body: JSON.stringify(registrationRetryPayload()),
     });
-    showToast(r.message || '已提交重试任务');
+    showToast((r.message || '已提交重试任务') + (r.debug_warning ? '；' + r.debug_warning : ''));
     JOB_SELECTED.delete(Number(jobId));
     refreshJobs();
   } catch (e) {
@@ -929,13 +934,13 @@ async function retrySelectedJobs() {
     const r = await api('/api/jobs/retry-bulk', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({job_ids: ids}),
+      body: JSON.stringify(registrationRetryPayload({job_ids: ids})),
     });
     if (r.batch_id) setJobProgressBatch(r.batch_id);
     ids.forEach(id => JOB_SELECTED.delete(Number(id)));
     const skippedCount = (r.skipped || []).length;
     const reusedCount = r.reused_count || 0;
-    showToast(`已提交 ${r.started_count || 0} 个${reusedCount ? `，复用 ${reusedCount} 个` : ''}${skippedCount ? `，跳过 ${skippedCount} 个` : ''}`);
+    showToast(`已提交 ${r.started_count || 0} 个${reusedCount ? `，复用 ${reusedCount} 个` : ''}${skippedCount ? `，跳过 ${skippedCount} 个` : ''}${r.debug_warnings?.length ? `；其中 ${r.debug_warnings.length} 个任务仅保存步骤日志` : ''}`);
     refreshJobs();
   } catch (e) {
     showToast('批量重试失败: ' + e.message);

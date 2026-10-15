@@ -11,6 +11,7 @@ from core.registration import submission_recovery as recovery
 from core.registration import email_otp, password_auth
 from core.registration_debug import _RoxyTargetCollector
 from core.registration.state_machine import CancellationRequested, StageBudget
+from selenium.common.exceptions import TimeoutException
 
 
 class _Clock:
@@ -294,10 +295,16 @@ class SubmissionDiagnosticsTests(unittest.TestCase):
 
 
 class SubmissionRecoveryIntegrationTests(unittest.TestCase):
-    def test_saved_identity_resume_uses_only_the_offered_login_password_link_once(self):
+    def _resume_with_offered_password(self, *, navigation_timeout=False, visible_password=True):
         driver, clock = _driver("https://auth.openai.com/email-verification"), _Clock()
         driver._registration_resume_login = True
         queues = []
+
+        if navigation_timeout:
+            def navigate(target):
+                driver.current_url = target
+                raise TimeoutException("模拟页面已有表单但其余资源仍在加载")
+            driver.get.side_effect = navigate
 
         def execute(_script, *args):
             if args and args[0] == "queue":
@@ -317,7 +324,8 @@ class SubmissionRecoveryIntegrationTests(unittest.TestCase):
             stack.enter_context(patch.object(password_auth, "_password_transition_timeout_seconds", return_value=30))
             stack.enter_context(patch.object(password_auth, "_password_page_state", side_effect=lambda _d: {
                 "url": driver.current_url,
-                "inputs": [{"type": "text", "name": "code", "visible": True}] if "email-verification" in driver.current_url else [{"type": "password"}],
+                "inputs": [{"type": "text", "name": "code", "visible": True}] if "email-verification" in driver.current_url else (
+                    [{"type": "password", "visible": True}] if visible_password else []),
             }))
             stack.enter_context(patch.object(password_auth, "_wait_email_otp_page_ready", return_value="ready"))
             stack.enter_context(patch.object(password_auth, "_resume_login_password_url", return_value="https://auth.openai.com/log-in/password"))
@@ -334,6 +342,16 @@ class SubmissionRecoveryIntegrationTests(unittest.TestCase):
         self.assertEqual(len(queues), 1)
         driver.get.assert_called_once_with("https://auth.openai.com/log-in/password")
         self.assertEqual(driver._browser_submission_receipt.phase, "confirmed")
+
+    def test_saved_identity_resume_uses_only_the_offered_login_password_link_once(self):
+        self._resume_with_offered_password()
+
+    def test_resume_navigation_timeout_continues_when_password_form_is_already_visible(self):
+        self._resume_with_offered_password(navigation_timeout=True)
+
+    def test_resume_navigation_timeout_keeps_failure_when_no_password_form_appears(self):
+        with self.assertRaises(TimeoutException):
+            self._resume_with_offered_password(navigation_timeout=True, visible_password=False)
 
     def test_login_password_target_cannot_be_guessed_or_cross_origin(self):
         for target in (None, "https://evil.test/log-in/password", "https://auth.openai.com/create-account/password",

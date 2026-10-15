@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 import unittest
+import ast
+import inspect
+import json
+import shutil
+import subprocess
 from unittest.mock import Mock
+from types import SimpleNamespace
 
 from core import registration_plan_capture
 
@@ -83,6 +89,70 @@ class RegistrationPlanCaptureTests(unittest.TestCase):
         self.assertTrue(result["plus_trial_eligible"])
         self.assertEqual(result["source"], "browser_fallback_request")
         driver.execute_async_script.assert_called_once()
+
+    def test_browser_fetch_restores_script_timeout_after_success_and_failure(self):
+        for fails in (False, True):
+            with self.subTest(fails=fails):
+                driver = SimpleNamespace(timeouts=SimpleNamespace(script=8),
+                    set_script_timeout=Mock(), execute_async_script=Mock(return_value={
+                        "status": 200, "data": self._payload(),
+                    }))
+                if fails:
+                    driver.execute_async_script.side_effect = TimeoutError("模拟套餐请求超时")
+                result = registration_plan_capture.fetch_selenium(driver, "unit-token", timeout_seconds=3)
+                self.assertEqual(bool(result), not fails)
+                self.assertEqual(driver.set_script_timeout.call_args_list[-1].args, (8,))
+
+    @unittest.skipUnless(shutil.which("node"), "需要 Node 验证浏览器请求的实际超时")
+    def test_browser_timeout_aborts_pending_fetch_and_settles_once(self):
+        tree = ast.parse(inspect.getsource(registration_plan_capture.fetch_selenium))
+        script = next(node.value for node in ast.walk(tree) if isinstance(node, ast.Constant)
+                      and isinstance(node.value, str) and "const token = arguments[0]" in node.value)
+        harness = r"""
+        global.location={origin:'https://chatgpt.com'};
+        global.localStorage={getItem:()=>null};
+        let aborted=false, callbackCount=0;
+        global.fetch=(_url, options)=>new Promise((_resolve,reject)=>{
+          if(options.signal) options.signal.addEventListener('abort',()=>{
+            aborted=true;reject(new Error('aborted'));
+          });
+        });
+        (async()=>{
+          const result=await Promise.race([
+            new Promise(resolve=>new Function(SCRIPT)('unit-token','/unit',15,value=>{
+              callbackCount++;resolve(value);
+            })),
+            new Promise(resolve=>setTimeout(()=>resolve(null),100)),
+          ]);
+          console.log(JSON.stringify({timed_out:result?.error_type==='timeout',aborted,callbackCount}));
+        })();
+        """.replace("SCRIPT", json.dumps(script))
+        output = subprocess.run([shutil.which("node"), "-e", harness], capture_output=True,
+                                text=True, check=True, timeout=10)
+        self.assertEqual(json.loads(output.stdout), {"timed_out": True, "aborted": True, "callbackCount": 1})
+
+    @unittest.skipUnless(shutil.which("node"), "需要 Node 验证套餐请求的来源边界")
+    def test_browser_fetch_does_not_send_token_from_auth_or_untrusted_origin(self):
+        tree = ast.parse(inspect.getsource(registration_plan_capture.fetch_selenium))
+        script = next(node.value for node in ast.walk(tree) if isinstance(node, ast.Constant)
+                      and isinstance(node.value, str) and "const token = arguments[0]" in node.value)
+        harness = r"""
+        global.localStorage={getItem:()=>null};
+        let requests=0;
+        global.fetch=async()=>{requests++;return {status:200,json:async()=>({})};};
+        (async()=>{
+          const results=[];
+          for(const origin of ['https://auth.openai.com','https://chatgpt.com.other.test']) {
+            global.location={origin};
+            const result=await new Promise(resolve=>new Function(SCRIPT)('unit-token','/unit',15,resolve));
+            results.push(result.error_type==='origin_changed');
+          }
+          console.log(JSON.stringify({requests,results}));
+        })();
+        """.replace("SCRIPT", json.dumps(script))
+        output = subprocess.run([shutil.which("node"), "-e", harness], capture_output=True,
+                                text=True, check=True, timeout=10)
+        self.assertEqual(json.loads(output.stdout), {"requests": 0, "results": [True, True]})
 
 
 if __name__ == "__main__":

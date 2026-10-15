@@ -3734,13 +3734,17 @@ def run_roxy_chatgpt_account_action(
         otp_provider = wait_for_otp
 
     client = RoxyBrowserClient()
+    from core import registration_debug
     from core.roxy_profile_binding import account_profile_id_by_email
 
+    debug_session = registration_debug.current_session()
+    debug_open_options = {"headless": False} if getattr(debug_session, "capture_mode", "") == "full" else {}
     profile_id = account_profile_id_by_email(email, strict=True) or None
     opened = client.open_profile_for_account(
         profile_id=profile_id,
         proxy_url=proxy,
         data_saver_flow="account_action",
+        **debug_open_options,
     )
     try:
         from core import browser_traffic
@@ -3769,6 +3773,7 @@ def run_roxy_chatgpt_account_action(
     asset_cache = None
     try:
         driver = _build_driver(opened)
+        registration_debug.attach_current_roxy(getattr(opened, "debugger_address", None))
         _center_browser_window(driver)
         try:
             from core.browser_flow_policy import install_for_flow
@@ -3818,6 +3823,18 @@ def run_roxy_chatgpt_account_action(
         result = action(driver, session_info)
         logger.info("[Codex][Browser] ChatGPT 账号操作已完成：%s", email)
         return result
+    except Exception as exc:
+        from core.codex_retry_service import CodexRetryStopped
+        from core.operation_runtime import OperationCancelled
+        from core.registration.state_machine import CancellationRequested
+        from core.registration_service import StopRequested
+
+        if not isinstance(exc, (CodexRetryStopped, OperationCancelled, CancellationRequested, StopRequested)):
+            try:
+                registration_debug.pause_current_failure(driver, f"账号配置补跑失败：{type(exc).__name__}")
+            except Exception:
+                logger.exception("[Codex][调试] 保存账号操作失败现场失败，继续原异常收口")
+        raise
     finally:
         from core import browser_asset_policy, browser_traffic
 

@@ -1687,18 +1687,6 @@ def run_roxy_registration(
         logger.info("[Roxy注册] 注册主体已保存检查点：id=%s email=%s", account_id, email)
 
         _check_manual_stop()
-        captured_plan_result = None
-        if plan_check_enabled:
-            report_job_progress("plan_check", "running", "正在查询注册会话中的套餐与 Plus 优惠资格")
-            try:
-                captured_plan_result = registration_plan_capture.read_or_fetch_selenium(driver, access_token)
-            except Exception as exc:
-                # 注册主体已保存；套餐捕获失败后交由持久任务队列补查。
-                logger.warning(
-                    "[Roxy注册][套餐] 浏览器查询失败，将尝试后台查询：%s",
-                    type(exc).__name__,
-                )
-
         report_job_progress("token", "running", "登录会话已保存，正在确认正常首页就绪")
         try:
             homepage = _wait_registration_homepage(driver, budget=token_budget)
@@ -1712,6 +1700,12 @@ def run_roxy_registration(
         else:
             logger.warning("[Roxy注册] 首页未确认就绪，保持核心资源加载：reason=%s", homepage["reason"])
             report_job_progress("token", "success", "已获取 accessToken；首页未确认就绪，保持核心资源加载")
+
+        # 先保留首页自然返回的权益快照，避免后续安全设置导航清空页面内缓存。
+        # 此处不等待、不主动请求；需要补查时统一计入最后的套餐阶段。
+        captured_plan_result = None
+        if plan_check_enabled:
+            captured_plan_result = registration_plan_capture.read_selenium(driver, access_token, wait_seconds=0)
 
         codex_result = {
             "status": "skipped",
@@ -1887,7 +1881,16 @@ def run_roxy_registration(
         # registration success.
         plan_result = {"status": "pending", "ok": False, "message": "套餐查询已独立入队"}
         if plan_check_enabled:
+            _check_manual_stop()
+            report_job_progress("plan_check", "running", "正在查询注册会话中的套餐与 Plus 优惠资格")
+            plan_started = time.monotonic()
             try:
+                # 在同一个阶段完成套餐捕获与额度读取，计时不再跨越首页观察和 2FA。
+                try:
+                    if captured_plan_result is None:
+                        captured_plan_result = registration_plan_capture.read_or_fetch_selenium(driver, access_token)
+                except Exception as exc:
+                    logger.warning("[Roxy注册][套餐] 浏览器查询失败，将尝试后台查询：%s", type(exc).__name__)
                 from core import db
                 if isinstance(captured_plan_result, dict) and captured_plan_result.get("ok"):
                     captured = dict(captured_plan_result)
@@ -1922,6 +1925,10 @@ def run_roxy_registration(
                     }
             except Exception as exc:
                 plan_result = {"status": "failed", "ok": False, "message": f"{type(exc).__name__}: {str(exc)[:180]}"}
+            finally:
+                source = (captured_plan_result or {}).get("source", "browser_response") if isinstance(captured_plan_result, dict) else "background_queue"
+                logger.info("[Roxy注册][套餐] 本轮查询结束：耗时=%.3fs 来源=%s 状态=%s",
+                            max(0.0, time.monotonic() - plan_started), source, plan_result["status"])
         else:
             plan_result = {"status": "skipped", "ok": True, "message": "未启用注册后自动查套餐"}
         if plan_check_enabled:

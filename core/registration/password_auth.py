@@ -9,6 +9,7 @@ import re
 import string
 import time
 from urllib.parse import urlsplit
+from selenium.common.exceptions import TimeoutException
 
 from config import roxybrowser as _cfg
 from core.auth_challenge import (
@@ -762,6 +763,25 @@ def _fill_password_page_if_present(
                         try:
                             driver.set_page_load_timeout(max(0.1, min(10.0, end - time.time())))
                             driver.get(target)
+                        except TimeoutException:
+                            _check_manual_stop()
+                            state = _password_page_state(driver)
+                            location = urlsplit(str(state.get("url") or ""))
+                            form_ready = (
+                                location.scheme == "https" and location.hostname == "auth.openai.com"
+                                and location.port in (None, 443) and location.path == "/log-in/password"
+                                and time.time() < end and any(
+                                    isinstance(item, dict) and item.get("visible", True)
+                                    and str(item.get("type") or "").lower() == "password"
+                                    and not item.get("disabled") and not item.get("read_only", item.get("readOnly", False))
+                                    for item in state.get("inputs") or []
+                                )
+                            )
+                            if not form_ready:
+                                log_submission_diagnostics(driver, "password", "resume_navigation_unconfirmed")
+                                raise
+                            logger.warning("%s 登录密码页整体加载超时，但可用密码框已出现，继续原身份登录", _log_prefix(driver))
+                            log_submission_diagnostics(driver, "password", "resume_form_ready_after_navigation_timeout")
                         finally:
                             if isinstance(old_timeout, (int, float)):
                                 driver.set_page_load_timeout(old_timeout)

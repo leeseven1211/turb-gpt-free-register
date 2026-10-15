@@ -169,17 +169,32 @@ def fetch_selenium(driver: Any, token: str, timeout_seconds: float = 12.0) -> di
     token = str(token or "").strip()
     if not token:
         return None
+    timeout_seconds = max(1.0, float(timeout_seconds))
+    previous_timeout = getattr(getattr(driver, "timeouts", None), "script", None)
     try:
         try:
-            driver.set_script_timeout(max(1.0, float(timeout_seconds)))
+            driver.set_script_timeout(timeout_seconds + 1.0)
         except Exception:
             pass
         raw = driver.execute_async_script(
             r"""
             const token = arguments[0];
             const path = arguments[1];
+            const timeoutMs = Number(arguments[2]);
             const done = arguments[arguments.length - 1];
-            const finish = value => { try { done(value); } catch (_) {} };
+            if (location.origin !== 'https://chatgpt.com') {
+              done({error_type:'origin_changed'}); return;
+            }
+            const controller = new AbortController();
+            let settled = false, timer;
+            const finish = value => {
+              if (settled) return;
+              settled = true; clearTimeout(timer);
+              try { done(value); } catch (_) {}
+            };
+            timer = setTimeout(() => {
+              controller.abort(); finish({error_type:'timeout'});
+            }, timeoutMs);
             const headers = {
               accept: '*/*',
               authorization: `Bearer ${token}`,
@@ -193,11 +208,12 @@ def fetch_selenium(driver: Any, token: str, timeout_seconds: float = 12.0) -> di
                 || localStorage.getItem('device_id');
               if (deviceId) headers['oai-device-id'] = deviceId;
             } catch (_) {}
-            fetch(`${path}?timezone_offset_min=-`, {
+            Promise.resolve().then(() => fetch(`${path}?timezone_offset_min=-`, {
               method: 'GET',
               credentials: 'include',
               headers,
-            }).then(async response => {
+              signal: controller.signal,
+            })).then(async response => {
               let data = null;
               try { data = await response.json(); } catch (_) {}
               finish({
@@ -205,13 +221,20 @@ def fetch_selenium(driver: Any, token: str, timeout_seconds: float = 12.0) -> di
                 data,
                 captured_at: new Date().toISOString(),
               });
-            }).catch(error => finish({error: String(error || 'browser fetch failed')}));
+            }).catch(() => finish({error_type:'request_failed'}));
             """,
             token,
             _ACCOUNTS_CHECK_PATH,
+            max(1, int(timeout_seconds * 1000)),
         )
     except Exception:
         return None
+    finally:
+        if isinstance(previous_timeout, (int, float)):
+            try:
+                driver.set_script_timeout(previous_timeout)
+            except Exception:
+                pass
     result = _normalize_capture(raw, token)
     if result:
         result["source"] = "browser_fallback_request"

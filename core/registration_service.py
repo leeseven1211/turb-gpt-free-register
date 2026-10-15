@@ -3217,8 +3217,11 @@ def retry_job(
         return {"ok": False, "error": reason, "status": 409}
 
     action = str(retry_info["retry_action"])
-    if debug_enabled and action not in {"registration", "registration_resume"}:
-        return {"ok": False, "error": "调试重跑仅适用于注册或继续邮箱验证", "status": 400}
+    retry_debug_enabled = bool(source.get("debug_enabled", False)) if debug_enabled is None else debug_enabled
+    debug_notice = ({
+        "debug_enabled": False,
+        "debug_warning": "此类补跑暂不支持完整网络抓包，已正常入队并保留步骤日志",
+    } if retry_debug_enabled and action in {"codex", "plan_check"} else {})
     root_id = int(source.get("root_job_id") or source.get("id") or job_id)
     root_record = db.get_job(root_id)
     root_job = root_record or source
@@ -3302,6 +3305,7 @@ def retry_job(
             "operation_task_id": queued.get("task_id"),
             "run_id": queued.get("run_id"),
             "message": "套餐查询已入队" if queued.get("accepted") else "已有套餐查询正在执行",
+            **debug_notice,
         }
     if action == "codex":
         # 注册任务只提供父上下文；Codex 补跑本身由原生 operation run 执行，
@@ -3331,6 +3335,7 @@ def retry_job(
             "operation_task_id": queued["task_id"],
             "run_id": queued["run_id"],
             "job": source,
+            **debug_notice,
         }
     reserved_account_action = False
     if action == "twofa":
@@ -3398,8 +3403,7 @@ def retry_job(
 
     account_task_id = None
     try:
-        retry_debug_enabled = bool(source.get("debug_enabled", False)) if debug_enabled is None else debug_enabled
-        if retry_debug_enabled and action in {"registration", "registration_resume"}:
+        if retry_debug_enabled and action in {"registration", "registration_resume", "twofa"}:
             from core.registration_debug import patch_job
             if not patch_job(
                 int(job["id"]),

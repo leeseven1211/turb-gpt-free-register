@@ -164,6 +164,7 @@ class ResumeSessionFlowTests(unittest.TestCase):
             mock("plan_install", "core.registration_plan_capture.install_selenium")
             mock("plan_read", "core.registration_plan_capture.read_or_fetch_selenium",
                  return_value={"ok": True, "quota_status": "success"})
+            mock("plan_cached", "core.registration_plan_capture.read_selenium", return_value=None)
             mock("plan_save", "core.db.update_account_plan_check")
             mock("plan_enqueue", "core.plan_check_service.enqueue_account_plan_check", return_value={"accepted": True})
             mock("persist", "core.registration_service.persist_registration_core", return_value=19)
@@ -255,6 +256,38 @@ class ResumeSessionFlowTests(unittest.TestCase):
                 self.assertIs(mocks["persist"].call_args.kwargs["chatgpt_session"], SESSION)
                 self.assertEqual(mocks["plan_enqueue"].call_count, int(plan_fails))
                 mocks["release"].assert_not_called()
+
+    def test_plan_query_timer_excludes_homepage_wait_and_twofa(self):
+        with self.run_context() as (_, mocks):
+            events = []
+            mocks["progress"].side_effect = lambda stage, state, *_args, **_kwargs: (
+                events.append("plan_start") if (stage, state) == ("plan_check", "running") else None)
+            mocks["twofa"].side_effect = lambda *_args, **_kwargs: events.append("twofa") or "unit-totp"
+            with patch.object(roxy, "_wait_registration_homepage", side_effect=lambda *_a, **_k: (
+                events.append("homepage") or {"ready": True})):
+                result = self.run_registration(registration_options={
+                    "password_enabled": True, "twofa_enabled": True,
+                    "codex_enabled": False, "plan_check_enabled": True,
+                })
+        self.assertTrue(result["success"], result.get("error"))
+        self.assertGreater(events.index("plan_start"), events.index("homepage"))
+        self.assertGreater(events.index("plan_start"), events.index("twofa"))
+
+    def test_natural_plan_capture_survives_twofa_navigation_without_refetch(self):
+        captured = {"ok": True, "quota_status": "success", "source": "browser_response"}
+        with self.run_context() as (_, mocks):
+            mocks["plan_cached"].return_value = captured
+            mocks["twofa"].side_effect = lambda *_a, **_k: (
+                setattr(mocks["plan_cached"], "return_value", None) or "unit-totp")
+            with patch.object(roxy, "_wait_registration_homepage", return_value={"ready": True}):
+                result = self.run_registration(registration_options={
+                    "password_enabled": True, "twofa_enabled": True,
+                    "codex_enabled": False, "plan_check_enabled": True,
+                })
+        self.assertTrue(result["postprocess_success"], result)
+        mocks["plan_cached"].assert_called_once()
+        mocks["plan_read"].assert_not_called()
+        self.assertEqual(mocks["plan_save"].call_args.kwargs["result"]["source"], "browser_response")
 
     def test_stop_after_confirmed_token_preserves_core_before_honoring_stop(self):
         from core.registration_service import StopRequested

@@ -55,7 +55,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
         return source, account, attempt
 
     def _retry(self, source, account, attempt, *, action="registration_resume", child=None,
-               debug_patch=None, executor=None, **kwargs):
+               debug_patch=None, executor=None, driver_choice="roxy", **kwargs):
         created = child is None
         child = child or {
             "id": 22,
@@ -84,7 +84,10 @@ class RegistrationRetryDriverTests(unittest.TestCase):
             stack.enter_context(patch.object(registration_service, "_read_linked_attempt_for_job", return_value=(attempt, False)))
             create_retry = stack.enter_context(patch.object(db, "create_retry_job", return_value=(child, created)))
             stack.enter_context(patch.object(registration_service, "get_executor", return_value=executor))
-            result = registration_service.retry_job(21, registration_driver="roxy", **kwargs)
+            stack.enter_context(patch.object(registration_service.codex_retry_service, "reserve", return_value=True))
+            stack.enter_context(patch.object(registration_service.codex_retry_service, "release"))
+            stack.enter_context(patch.object(registration_service.account_task_store, "create_task", return_value=77))
+            result = registration_service.retry_job(21, registration_driver=driver_choice, **kwargs)
             call = create_retry.call_args
         return result, call, executor
 
@@ -277,6 +280,57 @@ class RegistrationRetryDriverTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         retry.assert_not_called()
+
+    def test_bulk_retry_preserves_explicit_debug_setting_for_each_job(self):
+        client = create_app(auth_code="test-auth").test_client()
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled), patch("webui.app.svc.retry_job", return_value={"ok": True}) as retry:
+                response = client.post("/api/jobs/retry-bulk", json={
+                    "job_ids": [21, 23], "workers": 1, "debug_enabled": enabled,
+                }, headers={"X-Auth-Code": "test-auth"})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual([call.kwargs for call in retry.call_args_list], [
+                    {"workers": 1, "debug_enabled": enabled},
+                    {"workers": 1, "debug_enabled": enabled},
+                ])
+
+    def test_bulk_retry_rejects_invalid_debug_flag_before_submitting_any_job(self):
+        client = create_app(auth_code="test-auth").test_client()
+        for enabled in ("true", None, 1):
+            with self.subTest(enabled=enabled), patch("webui.app.svc.retry_job") as retry:
+                response = client.post("/api/jobs/retry-bulk", json={
+                    "job_ids": [21, 23], "debug_enabled": enabled,
+                }, headers={"X-Auth-Code": "test-auth"})
+                self.assertEqual(response.status_code, 400)
+                retry.assert_not_called()
+
+    def test_twofa_retry_enables_capture_before_worker_submission(self):
+        source, account, attempt = self._facts()
+        account["access_token"] = "unit-existing-token"
+        result, _, executor = self._retry(source, account, attempt, action="twofa",
+                                         driver_choice=None, debug_enabled=True)
+        self.assertTrue(result["ok"], result)
+        self.assertIs(result["job"]["debug_enabled"], True)
+        self.assertEqual(executor.submit.call_args.args[0], registration_service._run_twofa_retry_job)
+
+    def test_debug_request_does_not_block_native_codex_or_plan_retry(self):
+        for action in ("codex", "plan_check"):
+            with self.subTest(action=action):
+                source, account, attempt = self._facts()
+                account["access_token"] = "unit-existing-token"
+                with patch("core.codex_operation_service.submit", return_value={
+                    "accepted": True, "task_id": 81, "run_id": 82,
+                }), patch("core.operation_task_store.find_task_by_source", return_value=None), patch(
+                    "core.plan_check_service.enqueue_account_plan_check", return_value={
+                        "accepted": True, "task_id": 83, "run_id": 84,
+                    },
+                ):
+                    result, _, executor = self._retry(source, account, attempt, action=action,
+                                                     driver_choice=None, debug_enabled=True)
+                self.assertTrue(result["ok"], result)
+                self.assertIs(result["debug_enabled"], False)
+                self.assertTrue(result["debug_warning"])
+                executor.submit.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -490,6 +490,9 @@ def create_jobs_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error": "请求体必须是对象"}), 400
         if "registration_driver" in data:
             return jsonify({"ok": False, "error": "registration_driver 仅支持单任务待验证账号续跑"}), 400
+        if "debug_enabled" in data and type(data["debug_enabled"]) is not bool:
+            return jsonify({"ok": False, "error": "debug_enabled 必须是布尔值"}), 400
+        retry_kwargs = {"debug_enabled": data["debug_enabled"]} if "debug_enabled" in data else {}
         job_ids = data.get("job_ids") or data.get("ids") or []
         if not isinstance(job_ids, list) or not job_ids:
             return jsonify({"ok": False, "error": "job_ids 必须是非空数组"}), 400
@@ -520,6 +523,7 @@ def create_jobs_blueprint(context: WebUIContext):
             result = svc.retry_job(
                 one_id,
                 workers=workers,
+                **retry_kwargs,
             )
             result_job = result.get("job") or {}
             if result_job.get("batch_id"):
@@ -538,6 +542,7 @@ def create_jobs_blueprint(context: WebUIContext):
             "reused_count": len(reused),
             "skipped": skipped,
             "skipped_count": len(skipped),
+            "debug_warnings": [row["debug_warning"] for row in started + reused if row.get("debug_warning")],
             "workers": workers,
             "batch_id": next(iter(affected_batch_ids)) if len(affected_batch_ids) == 1 else "",
             "affected_batch_ids": sorted(affected_batch_ids),
