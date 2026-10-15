@@ -121,6 +121,15 @@ class RegistrationStateMachineContractTests(unittest.TestCase):
             PageState.LOGGED_OUT,
         )
 
+    def test_session_ended_text_overrides_stale_verification_route_in_supported_languages(self):
+        for text in ("Your session has ended", "Your session has expired", "会话已结束", "会话已过期",
+                     "セッションが終了しました", "セッションの有効期限が切れました"):
+            with self.subTest(text=text):
+                self.assertEqual(classify_page({
+                    "url": "https://auth.openai.com/email-verification", "text": text,
+                    "inputs": [{"type": "text", "autocomplete": "one-time-code"}],
+                }), PageState.LOGGED_OUT)
+
     def test_protocol_callback_error_stops_without_retrying_session(self):
         try:
             from core.registration import protocol

@@ -26,6 +26,7 @@ _SAFE_PATH_PARTS = frozenset({
     "password", "email-otp", "send", "resend", "validate", "verify", "authorize", "login", "logout",
     "error", "register", "user", "create", "create-account", "log-in", "email-verification", "about-you",
     "profile", "token", "refresh", "account", "check", "continue", "consent", "set-password",
+    "client_auth_session_dump", "passwordless", "send-otp",
 })
 _PAGE_SCRIPT = r"""
 const visible = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
@@ -34,6 +35,8 @@ const markers = {
   invalid_auth_step:['invalid_auth_step'],
   route_content_type:['invalid content type: text/html'],
   auth_error:['authentication error','callback error','oauth error','认证失败','登录失败'],
+  auth_session_ended:['your session has ended','session has expired','session ended','session expired',
+    '会话已结束','会话已过期','会话已失效','セッションが終了しました','セッションの有効期限が切れ'],
   account_create_rejected:['account could not be created',"couldn't create account",'无法创建账号'],
   rate_limited:['too many requests','rate limit'],
   challenge:['verify you are human','checking your browser'],
@@ -156,8 +159,23 @@ def diagnostics_for(driver) -> SubmissionDiagnostics:
     diagnostics = getattr(driver, "_registration_submission_diagnostics", None)
     if not isinstance(diagnostics, SubmissionDiagnostics):
         diagnostics = SubmissionDiagnostics()
-        driver._registration_submission_diagnostics = diagnostics
+        try:
+            driver._registration_submission_diagnostics = diagnostics
+        except (AttributeError, TypeError):
+            # 只读适配器仍可返回本次诊断，观测不能阻断认证状态判断。
+            pass
     return diagnostics
+
+
+def auth_session_unavailable(driver) -> bool:
+    """只读取本浏览器最近一次认证会话接口结果，不主动请求或重放认证。"""
+    for item in reversed(diagnostics_for(driver).recent_network()):
+        if (item.get("origin") == "https://auth.openai.com"
+                and item.get("path") == "/api/accounts/client_auth_session_dump"):
+            # 实际抓包出现 404 / missing_session；404 本身只确认接口不可用。
+            # 较新的成功或尚未完成请求优先，不能沿用旧失败误判新会话。
+            return item.get("status") == 404
+    return False
 
 
 def _log_diagnostic_chunks(driver, safe: dict) -> None:
@@ -230,7 +248,7 @@ def log_submission_diagnostics(driver, stage: str, point: str, *, receipt=None, 
         "text_length": _number(raw.get("text_length"), 10_000_000),
         "html_length": _number(raw.get("html_length"), 10_000_000),
         "error_markers": [item for item in raw.get("error_markers", []) if isinstance(item, str) and item in {
-            "invalid_auth_step", "route_content_type", "auth_error", "account_create_rejected", "rate_limited", "challenge",
+            "invalid_auth_step", "route_content_type", "auth_error", "auth_session_ended", "account_create_rejected", "rate_limited", "challenge",
         }] if isinstance(raw.get("error_markers"), list) else [],
         "controls": controls[:20], "resources": resources[-10:], "network": diagnostics.recent_network(),
     }

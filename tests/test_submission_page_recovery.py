@@ -155,6 +155,11 @@ class SubmissionPageRecoveryTests(unittest.TestCase):
 
 
 class SubmissionDiagnosticsTests(unittest.TestCase):
+    def test_readonly_driver_adapter_does_not_fail_when_diagnostics_cannot_be_attached(self):
+        safe = recovery.log_submission_diagnostics(object(), "otp", "waiting")
+        self.assertEqual(safe['capture_error'], 'AttributeError')
+        self.assertFalse(recovery.auth_session_unavailable(object()))
+
     def test_diagnostic_capture_has_short_timeout_and_restores_original_setting(self):
         driver = _driver()
         driver.timeouts.script = 30
@@ -200,6 +205,28 @@ class SubmissionDiagnosticsTests(unittest.TestCase):
         diagnostics.observe_network({"url": "https://other.test/api/auth/signin", "method": "POST"}, phase="request")
         self.assertEqual(len(diagnostics.network), 40)
         self.assertEqual(len(diagnostics.recent_network()), 20)
+
+    def test_auth_session_failure_is_superseded_by_a_new_pending_or_successful_request(self):
+        driver = _driver()
+        diagnostics = recovery.diagnostics_for(driver)
+        record = {"url": "https://auth.openai.com/api/accounts/client_auth_session_dump", "method": "GET",
+                  "request_id": "old", "status": 404}
+        diagnostics.observe_network(record, phase="response")
+        self.assertTrue(recovery.auth_session_unavailable(driver))
+        diagnostics.observe_network({**record, "request_id": "new", "status": None}, phase="request")
+        self.assertFalse(recovery.auth_session_unavailable(driver))
+        diagnostics.observe_network({**record, "request_id": "new", "status": 200}, phase="response")
+        self.assertFalse(recovery.auth_session_unavailable(driver))
+        diagnostics.observe_network(record, phase="complete")
+        self.assertFalse(recovery.auth_session_unavailable(driver))
+
+    def test_other_origin_auth_session_failure_cannot_stop_this_auth_flow(self):
+        driver = _driver()
+        recovery.diagnostics_for(driver).observe_network({
+            "url": "https://chatgpt.com/api/accounts/client_auth_session_dump", "method": "GET",
+            "request_id": "other", "status": 404,
+        }, phase="response")
+        self.assertFalse(recovery.auth_session_unavailable(driver))
 
     def test_shared_cdp_records_unknown_auth_endpoints_and_response_headers(self):
         diagnostics = recovery.SubmissionDiagnostics()

@@ -299,6 +299,13 @@ class _SteppingClock:
 
 
 class RegistrationFailureClassificationTests(unittest.TestCase):
+    def test_missing_auth_session_keeps_original_attempt_in_unknown_state(self):
+        error = "auth_session_unavailable: 验证码页认证会话不可用"
+        self.assertTrue(roxy_registration._is_registration_request_unknown(error))
+        self.assertFalse(roxy_registration._is_disposable_pre_account_failure(
+            error, create_acknowledged=False, account_id=None,
+        ))
+
     def test_pre_account_shell_failures_are_disposable_but_checkpointed_failures_are_not(self):
         disposable_errors = (
             "Roxy registration stage timeout exhausted",

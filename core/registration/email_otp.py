@@ -28,7 +28,7 @@ from .auth_context import (
 )
 from .browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact
 from .submission_recovery import (
-    RECOVERY_WINDOW_SECONDS, has_visible_auth_inputs, log_submission_diagnostics, recover_submission_page,
+    RECOVERY_WINDOW_SECONDS, auth_session_unavailable, has_visible_auth_inputs, log_submission_diagnostics, recover_submission_page,
 )
 from .selenium_dom import (
     _auth_terminal_page_state, _budget_timeout, _check_manual_stop, _click_any,
@@ -1986,6 +1986,9 @@ def _wait_email_otp_page_ready(driver, timeout: float = 45, *, budget: StageBudg
             return "email_verified"
         if page_state in (PageState.PROFILE, PageState.AUTHENTICATED):
             return "accepted"
+        if page_state == PageState.LOGGED_OUT or auth_session_unavailable(driver):
+            log_submission_diagnostics(driver, "otp", "auth_session_unavailable", receipt=getattr(driver, "_browser_submission_receipt", None))
+            return "session_expired"
         if page_state in (PageState.AUTH_ERROR, PageState.LOGGED_OUT):
             return "stuck"
         if _email_otp_form_is_ready(state):
@@ -2266,7 +2269,9 @@ def _wait_after_email_otp_submit(
         state = _email_otp_page_state(driver)
         state = state if isinstance(state, dict) else {}
         page_state = classify_page(state)
-        if page_state in {PageState.AUTH_ERROR, PageState.LOGGED_OUT}:
+        if page_state == PageState.LOGGED_OUT:
+            return "session_expired"
+        if page_state == PageState.AUTH_ERROR:
             return None
         if state.get("emailVerified"):
             return "email_verified"
@@ -2277,6 +2282,8 @@ def _wait_after_email_otp_submit(
                 return "accepted"
         if _has_access_token(driver, budget=recovery_budget):
             return "accepted"
+        if auth_session_unavailable(driver):
+            return "session_expired"
         if _email_otp_form_is_ready(state) and _new_error_mark(state) and not _email_otp_page_recovery_reason(state):
             return "invalid"
         return None
@@ -2316,6 +2323,9 @@ def _wait_after_email_otp_submit(
         if (page_state == PageState.PROFILE and (not recovery_attempted or has_visible_auth_inputs(last, allow_password=False))
                 or _has_access_token(driver, budget=confirmation_budget)):
             return 'accepted'
+        if page_state == PageState.LOGGED_OUT or auth_session_unavailable(driver):
+            log_submission_diagnostics(driver, "otp", "auth_session_unavailable", receipt=receipt)
+            return "session_expired"
         if not _email_otp_page_recovery_reason(last) and _is_email_verification_page(driver) and _new_error_mark(last):
             return 'invalid'
         reason = _email_otp_page_recovery_reason(last)

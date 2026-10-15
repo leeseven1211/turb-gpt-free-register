@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 
 from selenium.common.exceptions import TimeoutException
 
-from core.registration import email_otp, roxy
+from core.registration import email_otp, roxy, submission_recovery
 from core.registration.browser_submission import BrowserSubmissionReceipt
 from core.registration.state_machine import StageBudget
 from core.cloakbrowser_driver import CloakSeleniumDriver
@@ -132,6 +132,34 @@ class EmailOtpPageRecoveryTests(unittest.TestCase):
         self.assertFalse(self._recover(driver, state=driver.state, budget=self._budget(15)))
         self.assertEqual(self._wait_ready(driver, budget=self._budget(15)), "ready")
         self.assertEqual(driver.refresh_count, 0)
+
+    def test_missing_auth_session_stops_even_when_otp_form_is_visible(self):
+        driver = _FakeDriver(_form_state())
+        receipt = BrowserSubmissionReceipt(kind="otp", stage="email_otp", endpoint_kind="otp_submit", phase="unknown")
+        driver._browser_submission_receipt = receipt
+        submission_recovery.diagnostics_for(driver).observe_network({
+            "url": "https://auth.openai.com/api/accounts/client_auth_session_dump", "method": "GET",
+            "request_id": "missing-session", "status": 404,
+        }, phase="response")
+        with (
+            patch.object(email_otp, "_type_otp") as fill,
+            patch.object(email_otp, "_click_resend_email_otp") as resend,
+        ):
+            self.assertEqual(self._wait_ready(driver, budget=self._budget(45)), "session_expired")
+            self.assertEqual(self._wait_after_submit(driver, timeout=60, budget=self._budget(80)), "session_expired")
+        self.assertEqual(driver.get_calls, [])
+        self.assertEqual(receipt.phase, "unknown")
+        self.assertLess(self.clock.now, 102)
+        fill.assert_not_called()
+        resend.assert_not_called()
+
+    def test_japanese_ended_session_is_not_an_otp_form_or_refresh_candidate(self):
+        state = _blank_state()
+        state['text'] = 'セッションが終了しました ログインして続行する'
+        driver = _FakeDriver(state)
+        self.assertEqual(self._wait_ready(driver, budget=self._budget(45)), "session_expired")
+        self.assertEqual(self._wait_after_submit(driver, timeout=60, budget=self._budget(80)), "session_expired")
+        self.assertEqual(driver.get_calls, [])
 
     def test_blank_shell_must_persist_three_seconds_before_one_refresh(self):
         driver = _FakeDriver(_blank_state(), refreshed_state=_form_state())

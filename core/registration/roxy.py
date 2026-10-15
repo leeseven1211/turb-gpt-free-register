@@ -99,6 +99,7 @@ _DISPOSABLE_PRE_ACCOUNT_FAILURE_MARKERS = (
 )
 
 _REGISTRATION_REQUEST_UNKNOWN_MARKERS = (
+    "auth_session_unavailable:",
     "session_identity_unverified",
     "session_identity_mismatch",
     "邮箱提交后未识别到",
@@ -1331,6 +1332,8 @@ def run_roxy_registration(
         if retained_state and retained_state.pending_otp:
             # 未确认的原 POST 只观察同一回执；不进入收码、填码或重发分支。
             outcome = _wait_after_email_otp_submit(driver, timeout=60, budget=otp_budget)
+            if outcome == "session_expired":
+                raise RuntimeError("request_unknown: auth_session_unavailable: 原验证码页认证会话不可用，已保留原 Attempt，需沿用原身份重新登录")
             if outcome not in {"accepted", "email_verified", "totp_required"}:
                 raise RuntimeError("request_unknown: otp_request_unconfirmed: 原验证码提交仍未确认，已保留原窗口，未重新填码或重发")
             # 观察期间页面可能变更；同源页面/完整会话再次核验后才收口原回执。
@@ -1356,9 +1359,11 @@ def run_roxy_registration(
             if otp_already_complete:
                 break
             ready_outcome = _wait_email_otp_page_ready(driver, budget=otp_budget)
-            if ready_outcome == "stuck":
-                failure_code = "otp_request_unconfirmed"
-                failure_detail = "验证码页表单未就绪，受限恢复后仍未确认；保留原 Attempt，本轮未追加重发"
+            if ready_outcome in {"stuck", "session_expired"}:
+                failure_code = "auth_session_unavailable" if ready_outcome == "session_expired" else "otp_request_unconfirmed"
+                failure_detail = ("验证码页认证会话不可用；保留原 Attempt，需沿用原身份重新登录，未填码或追加重发"
+                                  if ready_outcome == "session_expired" else
+                                  "验证码页表单未就绪，受限恢复后仍未确认；保留原 Attempt，本轮未追加重发")
                 latest_submission = getattr(driver, "_browser_submission_receipt", None)
                 if isinstance(latest_submission, BrowserSubmissionReceipt) and latest_submission.endpoint_kind == "otp_resend":
                     status = latest_submission.http_status
@@ -1543,11 +1548,14 @@ def run_roxy_registration(
                 record_browser_submission_fact(driver, "confirmed", receipt=otp_submission, result="success")
             elif outcome == "invalid":
                 record_browser_submission_fact(driver, "rejected", receipt=otp_submission, result="failure")
-            elif outcome == "stuck":
+            elif outcome in {"stuck", "session_expired"}:
                 # 60 秒确认截止仍未知时，不能把停页解释为验证码错误并重发。
-                record_browser_submission_fact(driver, "unknown", receipt=otp_submission, result="timeout")
-                failure_code = "otp_request_unconfirmed"
-                failure_detail = "验证码提交可能已派发，但 60 秒内未确认结果；保留原 Attempt，未自动重发"
+                record_browser_submission_fact(driver, "unknown", receipt=otp_submission,
+                                               result="unknown" if outcome == "session_expired" else "timeout")
+                failure_code = "auth_session_unavailable" if outcome == "session_expired" else "otp_request_unconfirmed"
+                failure_detail = ("验证码提交后的认证会话不可用；保留原提交和原 Attempt，需沿用原身份重新登录，未追加提交或重发"
+                                  if outcome == "session_expired" else
+                                  "验证码提交可能已派发，但 60 秒内未确认结果；保留原 Attempt，未自动重发")
                 report_job_otp_evidence(detail=failure_detail, failure_code=failure_code)
                 report_job_progress("email_otp", "failed", f"{failure_code}: {failure_detail}")
                 raise RuntimeError(f"{failure_code}: {failure_detail}")

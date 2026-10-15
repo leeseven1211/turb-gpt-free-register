@@ -269,6 +269,12 @@ def classify_page(snapshot: Mapping[str, Any] | None, *, access_token: bool = Fa
         "登录失败", "认证失败",
     )):
         return PageState.AUTH_ERROR
+    # 会话结束页可能继续保留验证码路由，不能据此进入收码或提交分支。
+    if any(marker in text for marker in (
+        "your session has ended", "session has expired", "session ended", "session expired",
+        "会话已结束", "会话已过期", "会话已失效", "セッションが終了しました", "セッションの有効期限が切れ",
+    )):
+        return PageState.LOGGED_OUT
     if any(marker in text for marker in (
         "email verified", "email verification complete", "邮箱已验证", "邮箱验证完成", "認証が完了",
     )):
