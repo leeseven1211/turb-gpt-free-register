@@ -365,10 +365,10 @@
           <div class="account-search-control">
             <div class="account-advanced-search">
               <label for="accountAdvancedSearchV2">高级搜索</label>
-              <input type="search" id="accountAdvancedSearchV2" placeholder="协议 jp / 备注:待整理" autocomplete="off" aria-describedby="accountAdvancedSearchHintV2 accountAdvancedSearchErrorV2" aria-invalid="false">
+              <input type="search" id="accountAdvancedSearchV2" placeholder="空格或 / 组合，如：协议 jp" title="支持方式、地区、邮箱、姓名、来源、备注、ID；完整文字加双引号，如 备注:&quot;a/b&quot;。" autocomplete="off" aria-describedby="accountAdvancedSearchHintV2 accountAdvancedSearchErrorV2" aria-invalid="false">
               <button type="button" id="btnClearAccountSearchV2" aria-label="清空高级搜索" title="清空高级搜索" hidden>×</button>
             </div>
-            <p id="accountAdvancedSearchHintV2" class="account-search-help">空格或 / 表示同时满足，如「协议 jp」；支持方式、地区、邮箱、姓名、来源、备注、ID。完整文字加双引号，如 备注:"a/b"。</p>
+            <span id="accountAdvancedSearchHintV2" hidden>空格或 / 表示同时满足，如「协议 jp」；支持方式、地区、邮箱、姓名、来源、备注、ID。完整文字加双引号，如 备注:"a/b"。</span>
             <p id="accountAdvancedSearchErrorV2" class="account-search-error" role="status" aria-live="polite" hidden></p>
           </div>
           <button type="button" class="jobs-tb-btn" id="btnResetAccountsColumnsV2" title="恢复账号列表默认列宽">恢复列宽</button>
