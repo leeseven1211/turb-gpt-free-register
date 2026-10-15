@@ -30,6 +30,7 @@ from core import (
     plan_check_service,
 )
 from core import registration_service as svc
+from core.account_search import AccountSearchError, account_search_filters, parse_account_search
 from core.live_check_router import LiveCheckDriverError
 from core.plus_promotion import is_free_trial_record
 from core.task_errors import classify_task_error
@@ -46,6 +47,12 @@ def create_accounts_blueprint(context: WebUIContext):
     _enqueue_account_setup = context.enqueue_account_setup
     _enqueue_account_completion = context.enqueue_account_completion
     _put_prepared_download = context.put_prepared_download
+
+    # 该 Blueprint 保留无前缀 endpoint，异常处理必须注册到应用层。
+    @bp.app_errorhandler(AccountSearchError)
+    def invalid_account_search(error):
+        return jsonify({"ok": False, "code": "account_search_invalid", "error": str(error)}), 400
+
     def _is_extract_eligible(acc: dict) -> bool:
         return is_free_trial_record(acc)
     def _join_sub2_url(base: str, path: str) -> str:
@@ -137,6 +144,7 @@ def create_accounts_blueprint(context: WebUIContext):
         archived = str(request.args.get("archived", default="0") or "0").lower()
         plan_filter = str(request.args.get("plan", default="") or "").lower()
         q = str(request.args.get("q", default="") or "").strip()
+        search_terms = parse_account_search(q)
         column_filters = {
             key: str(request.args.get(key, default="") or "").strip().lower()
             for key in ("id", "email", "source", "token", "password", "promotion", "trial", "totp", "risk", "codex", "account_status")
@@ -158,7 +166,10 @@ def create_accounts_blueprint(context: WebUIContext):
             date_to=date_to or "",
         )
         result["items"] = [_compact_account_for_list(r) for r in (result.get("items") or [])]
-        result.update({"ok": True, "page": page, "page_size": page_size, "compact": True})
+        result.update({
+            "ok": True, "page": page, "page_size": page_size, "compact": True,
+            "search_terms": account_search_filters(search_terms),
+        })
         # 旧调用方不传分页参数时仍返回数组，但底层也只执行 SQL 分页，不再加载全表。
         if not (paged or page_arg is not None or page_size_arg is not None):
             return jsonify(result["items"])

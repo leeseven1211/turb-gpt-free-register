@@ -1057,6 +1057,25 @@ $('#accountTasksPanel')?.addEventListener('change', event => {
   renderAccountTasks();
 });
 let accountAdvancedSearchQuery = '';
+let accountSearchTerms = [];
+let accountSearchErrorQuery = null;
+function renderAccountSearchTerms(terms) {
+  accountSearchTerms = terms;
+  const summary = $('#accountSearchSummaryV2');
+  if (!summary) return;
+  summary.hidden = !terms.length;
+  summary.innerHTML = terms.length ? `
+    <span class="column-filter-summary-label">高级搜索 · 同时满足</span>
+    ${terms.map((term, index) => `<button type="button" class="column-filter-chip" data-account-search-term="${index}" aria-label="移除${attrEsc(term.label)}：${attrEsc(term.display_value)}"><span>${esc(term.label)}：${esc(term.display_value)}</span><span class="column-filter-chip-close" aria-hidden="true">×</span></button>`).join('')}` : '';
+}
+function showAccountSearchError(message = '') {
+  const error = $('#accountAdvancedSearchErrorV2');
+  if (error) {
+    error.textContent = message;
+    error.hidden = !message;
+  }
+  $('#accountAdvancedSearchV2')?.setAttribute('aria-invalid', message ? 'true' : 'false');
+}
 function getAccountsQuery() {
   const el = document.getElementById('qAccountsV2');
   return (el ? el.value : '').trim();
@@ -1100,14 +1119,17 @@ async function loadAccounts() {
   accountsLoading = true;
   accountsReloadQueued = false;
   setListBusy('accountsPanelV2', true);
+  const params = accountListQueryParams();
   try {
     const p = PAGERS.accounts;
-    const params = accountListQueryParams();
     const res = await api(`/api/accounts?${params.toString()}`);
     if (params.toString() !== accountListQueryParams().toString()) {
       accountsReloadQueued = true;
       return;
     }
+    accountSearchErrorQuery = null;
+    showAccountSearchError();
+    renderAccountSearchTerms(res.search_terms || []);
     const facets = res.facets || {};
     syncFacetSelect('accountSourceFilterV2', facets.source, {group:'source'});
     syncFacetSelect('accountTokenFilterV2', facets.token, {
@@ -1136,6 +1158,19 @@ async function loadAccounts() {
     renderAccounts();
     markViewReady(`accounts:${SHOW_ARCHIVED_ACCOUNTS ? 'archived' : 'active'}`);
   } catch(e) {
+    if (params.toString() !== accountListQueryParams().toString()) {
+      accountsReloadQueued = true;
+      return;
+    }
+    if (e.code === 'account_search_invalid') {
+      accountSearchErrorQuery = accountAdvancedSearchQuery;
+      showAccountSearchError(e.message);
+      renderAccountSearchTerms([]);
+      ACCOUNTS = [];
+      ACCOUNTS_TOTAL = 0;
+      renderAccounts();
+      return;
+    }
     if (!ACCOUNTS.length) $('#accountsBodyV2').innerHTML = renderTableStateRow(15, '账号加载失败', '请检查服务状态后刷新列表。', 'error');
     showToast('加载账号失败: ' + e.message);
   }
@@ -1149,7 +1184,7 @@ async function loadAccounts() {
   }
 }
 async function pollAccountPlanStatuses() {
-  if (planStatusLoading || accountsLoading) return;
+  if (planStatusLoading || accountsLoading || accountSearchErrorQuery === accountAdvancedSearchQuery) return;
   planStatusLoading = true;
   try {
     const params = accountListQueryParams().toString();
@@ -2220,7 +2255,9 @@ function renderAccounts() {
 
   const bodyV2 = $('#accountsBodyV2');
   if (bodyV2) {
-    bodyV2.innerHTML = rows.map(rowHtmlV2).join('') || renderTableStateRow(15, '暂无匹配账号', '调整筛选条件，或切换活跃与归档账号视图。');
+    bodyV2.innerHTML = rows.map(rowHtmlV2).join('') || (accountSearchErrorQuery === accountAdvancedSearchQuery
+      ? renderTableStateRow(15, '搜索条件有误', '请按输入框旁的提示修改，或清空高级搜索。', 'error')
+      : renderTableStateRow(15, '暂无匹配账号', '可移除部分搜索条件，或切换活跃与归档账号视图。'));
     if (openMoreId) requestAnimationFrame(() => restoreAccountsV2MoreMenu(openMoreId));
   }
   const summary = $('#accountsPageSummary');
@@ -2610,6 +2647,9 @@ async function refreshAccountsList(btn) {
   const apply = () => {
     clearTimeout(timer);
     accountAdvancedSearchQuery = search?.value.trim() || '';
+    accountSearchErrorQuery = null;
+    showAccountSearchError();
+    renderAccountSearchTerms([]);
     ACCOUNT_SELECTED.clear();
     updateAccountSelectionUi();
     PAGERS.accounts.page = 1;
@@ -2636,6 +2676,15 @@ async function refreshAccountsList(btn) {
     if (event.key === 'Escape') { event.preventDefault(); resetSearch(); }
   });
   clearSearch?.addEventListener('click', resetSearch);
+  $('#accountSearchSummaryV2')?.addEventListener('click', event => {
+    const button = event.target.closest('[data-account-search-term]');
+    const term = button && accountSearchTerms[Number(button.dataset.accountSearchTerm)];
+    if (!term || !search || composing) return;
+    search.value = term.query_without;
+    syncSearch();
+    apply();
+    search.focus();
+  });
   syncSearch();
   ['accountIdFilterV2','qAccountsV2'].forEach(id => {
     document.getElementById(id)?.addEventListener('input', reload);

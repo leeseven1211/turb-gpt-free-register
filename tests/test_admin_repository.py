@@ -150,6 +150,69 @@ class AdminRepositoryTests(PostgresTestCase):
                 result = repo.list_accounts(repo.PageRequest(page=1, page_size=20), q=query)
                 self.assertEqual(result["total"], 0)
 
+    def test_combined_account_search_uses_historical_method_and_country(self):
+        account_ids = {}
+        for name, driver, region in (
+            ("protocol-jp", "protocol", "JP"),
+            ("protocol-us", "protocol", "US"),
+            ("browser-jp", "roxy", "JP"),
+            ("missing-country", "protocol", None),
+            ("missing-method", None, "JP"),
+        ):
+            account_id = rs.insert_row(rs.ACCOUNTS, {
+                "email": f"{name}@search.test", "email_source": "outlook",
+                "registration_proxy_region": region, "note": "协议 jp 待整理",
+            })
+            account_ids[name] = account_id
+            if driver:
+                rs.insert_row(rs.JOBS, {
+                    "job_uuid": f"search-{name}", "account_id": account_id,
+                    "job_type": "registration", "data": {"config_snapshot": {"registration_driver": driver}},
+                })
+        for query, expected in (
+            ("协议 jp", "protocol-jp"), ("协议/jp注册", "protocol-jp"),
+            ("方式:协议 地区:日本", "protocol-jp"), ("浏览器 JP", "browser-jp"),
+            ("协议 jp 备注:待整理 邮箱:search.test 来源:outlook", "protocol-jp"),
+        ):
+            for query_fn in (repo.list_accounts, repo.list_account_statuses):
+                with self.subTest(query=query, endpoint=query_fn.__name__):
+                    result = query_fn(repo.PageRequest(page_size=1), q=query)
+                    self.assertEqual(result["total"], 1)
+                    self.assertEqual(result["items"][0]["id"], account_ids[expected])
+
+    def test_combined_account_search_keeps_pagination_archive_and_column_filters(self):
+        expected = []
+        for index in range(4):
+            account_id = rs.insert_row(rs.ACCOUNTS, {
+                "email": f"page-{index}@search.test", "email_source": "outlook" if index < 3 else "icloud_hide",
+                "registration_proxy_region": "JP", "archived": index == 2,
+            })
+            rs.insert_row(rs.JOBS, {
+                "job_uuid": f"search-page-{index}", "account_id": account_id,
+                "data": {"config_snapshot": {"registration_driver": "protocol"}},
+            })
+            if index < 2:
+                expected.append(account_id)
+        for query_fn in (repo.list_accounts, repo.list_account_statuses):
+            pages = [query_fn(repo.PageRequest(page=page, page_size=1, filters={"source": "outlook"}), q="协议/jp") for page in (1, 2)]
+            self.assertEqual([result["total"] for result in pages], [2, 2])
+            self.assertEqual({result["items"][0]["id"] for result in pages}, set(expected))
+
+    def test_scoped_account_search_preserves_literal_text_and_field_boundaries(self):
+        target = rs.insert_row(rs.ACCOUNTS, {
+            "email": "literal@search.test", "user_name": "Alice Smith", "note": "jp a/b 100% ready_one",
+        })
+        rs.insert_row(rs.ACCOUNTS, {
+            "email": "jp@search.test", "user_name": "Alice Jones", "note": "a b 1000 readyXone",
+            "access_token": "credential-only-marker",
+        })
+        for query in ('备注:jp', '姓名:"Alice Smith"', '备注:"a/b"', '备注:100%', '备注:ready_one', f'ID:{target}', '"jp" 姓名:Smith'):
+            with self.subTest(query=query):
+                result = repo.list_accounts(repo.PageRequest(), q=query)
+                self.assertEqual([row["id"] for row in result["items"]], [target])
+        for query in ('备注:credential-only-marker', '邮箱:jp 姓名:Smith'):
+            self.assertEqual(repo.list_accounts(repo.PageRequest(), q=query)["total"], 0)
+
     def test_registration_query_uses_latest_registration_attempt_driver(self):
         account_id = rs.insert_row(rs.ACCOUNTS, {
             "email": "driver-history@example.test",

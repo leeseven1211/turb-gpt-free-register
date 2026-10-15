@@ -362,17 +362,21 @@
           </div>
         </details>
         <div class="list-toolbar-utilities">
-          <div class="account-advanced-search">
-            <label for="accountAdvancedSearchV2">高级搜索</label>
-            <input type="search" id="accountAdvancedSearchV2" placeholder="协议注册 / 邮箱 / 备注" autocomplete="off" aria-describedby="accountAdvancedSearchHintV2">
-            <button type="button" id="btnClearAccountSearchV2" aria-label="清空高级搜索" title="清空高级搜索" hidden>×</button>
-            <span id="accountAdvancedSearchHintV2" hidden>搜索全部账号，支持协议注册、浏览器注册、ID、邮箱、姓名、来源和备注；可与列筛选组合使用。</span>
+          <div class="account-search-control">
+            <div class="account-advanced-search">
+              <label for="accountAdvancedSearchV2">高级搜索</label>
+              <input type="search" id="accountAdvancedSearchV2" placeholder="协议 jp / 备注:待整理" autocomplete="off" aria-describedby="accountAdvancedSearchHintV2 accountAdvancedSearchErrorV2" aria-invalid="false">
+              <button type="button" id="btnClearAccountSearchV2" aria-label="清空高级搜索" title="清空高级搜索" hidden>×</button>
+            </div>
+            <p id="accountAdvancedSearchHintV2" class="account-search-help">空格或 / 表示同时满足，如「协议 jp」；支持方式、地区、邮箱、姓名、来源、备注、ID。完整文字加双引号，如 备注:"a/b"。</p>
+            <p id="accountAdvancedSearchErrorV2" class="account-search-error" role="status" aria-live="polite" hidden></p>
           </div>
           <button type="button" class="jobs-tb-btn" id="btnResetAccountsColumnsV2" title="恢复账号列表默认列宽">恢复列宽</button>
           <button type="button" class="jobs-tb-btn" id="btnRefreshAccountsV2" title="重新加载当前筛选条件和当前页账号列表">刷新</button>
         </div>
       </div>
       </div>
+      <div class="column-filter-summary account-search-summary" id="accountSearchSummaryV2" aria-label="已生效的高级搜索条件" hidden></div>
       <div class="column-filter-summary" data-filter-summary="accounts" hidden></div>
       <div class="accounts-table-v2-wrap">
         <table class="accounts-table-v2" data-resizable-table="accounts" data-filter-multiple="true">

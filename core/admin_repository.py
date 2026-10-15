@@ -14,6 +14,7 @@ from typing import Any
 from psycopg.rows import dict_row
 
 from core import postgres_store, record_store
+from core.account_search import REGISTRATION_DRIVERS, parse_account_search
 
 
 @dataclass(frozen=True)
@@ -163,16 +164,6 @@ _ACCOUNT_RISK_VALUE = """CASE
 END"""
 
 
-_PROTOCOL_REGISTRATION_QUERY_VALUES = frozenset({
-    "协议注册", "protocol", "api", "http",
-})
-_ROXY_REGISTRATION_QUERY_VALUES = frozenset({
-    "浏览器", "浏览器注册", "roxy", "roxy注册", "roxybrowser",
-    "roxybrowser注册", "browser", "browser_use", "skyvern", "fingerprint",
-    "cloak", "cloakbrowser",
-})
-
-
 def _registration_driver_exists(drivers: frozenset[str]) -> tuple[str, list[Any]]:
     """按账号最新注册任务的配置快照匹配注册驱动，不扫描整段任务 JSON。"""
     jobs = _q(record_store.JOBS)
@@ -213,33 +204,32 @@ def _account_where(
             predicate = f"({predicate} OR (({_ACCOUNT_PLAN_VALUE}) LIKE %s AND ({_ACCOUNT_PLAN_VALUE}) NOT LIKE %s))"
             params.extend(("%plus%", "%free%"))
         where.append(predicate)
-    query = _text(q)
-    if query:
-        normalized_query = query.lower()
-        if normalized_query in _PROTOCOL_REGISTRATION_QUERY_VALUES:
-            predicate, predicate_params = _registration_driver_exists(
-                frozenset({"protocol", "api", "http"}),
-            )
+    for term in parse_account_search(q):
+        if term.field == "method":
+            predicate, predicate_params = _registration_driver_exists(REGISTRATION_DRIVERS[term.value])
             where.append(predicate)
             params.extend(predicate_params)
-        elif normalized_query in _ROXY_REGISTRATION_QUERY_VALUES:
-            predicate, predicate_params = _registration_driver_exists(
-                frozenset({
-                    "roxy", "roxybrowser", "browser", "browser_use", "skyvern",
-                    "fingerprint", "cloak", "cloakbrowser",
-                }),
-            )
-            where.append(predicate)
-            params.extend(predicate_params)
+        elif term.field == "region":
+            where.append("UPPER(BTRIM(COALESCE(a.data->>'registration_proxy_region', ''))) = %s")
+            params.append(term.value)
+        elif term.field == "id":
+            where.append("CAST(a.id AS TEXT) = %s")
+            params.append(term.value)
         else:
             # 只搜索列表可安全展示的固定字段；不要把整段 JSONB 或凭证纳入 ILIKE。
-            where.append(
+            columns = {
+                "email": "a.email", "name": "COALESCE(a.data->>'user_name', '')",
+                "source": "COALESCE(a.email_source, '')", "note": "COALESCE(a.data->>'note', '')",
+            }
+            expression = columns.get(term.field) or (
                 "concat_ws(' ', "
                 "CAST(a.id AS TEXT), a.email, COALESCE(a.data->>'user_name', ''), "
                 "COALESCE(a.email_source, ''), COALESCE(a.data->>'note', '')"
-                ") ILIKE %s"
+                ")"
             )
-            params.append(f"%{query}%")
+            where.append(f"{expression} ILIKE %s")
+            literal = term.value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            params.append(f"%{literal}%")
     if date_from:
         where.append("LEFT(a.created_at, 10) >= %s")
         params.append(date_from[:10])

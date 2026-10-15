@@ -1007,7 +1007,11 @@ async function api(url, opts = {}) {
   const request = (async () => {
     const r = await fetch(url, opts);
     const j = await r.json().catch(()=>({}));
-    if (!r.ok) throw new Error(j.error || ('HTTP '+r.status));
+    if (!r.ok) {
+      const error = new Error(j.error || ('HTTP '+r.status));
+      error.code = j.code || '';
+      throw error;
+    }
     return j;
   })();
   if (key) {

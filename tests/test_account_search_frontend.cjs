@@ -7,10 +7,9 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../webui/static/js/modern/accounts.js'), 'utf8');
 const commonSource = fs.readFileSync(path.join(__dirname, '../webui/static/js/modern/common.js'), 'utf8');
 
-function functionSource(name) {
-  const start = source.indexOf(`function ${name}(`);
-  const next = source.slice(start + 1).search(/\n(?:async )?function /);
-  return source.slice(start, next < 0 ? undefined : start + 1 + next);
+function functionSource(name, script = source) {
+  const start = script.indexOf(`function ${name}(`);
+  return script.slice(start, script.indexOf('\n}', start) + 2);
 }
 
 function harness() {
@@ -20,7 +19,8 @@ function harness() {
   let timerId = 0;
   function element(id) {
     if (!elements.has(id)) elements.set(id, {
-      value: '', hidden: false, handlers: {},
+      value: '', hidden: false, handlers: {}, attributes: {}, innerHTML: '',
+      setAttribute(name, value) { this.attributes[name] = value; },
       addEventListener(type, callback) { this.handlers[type] = callback; },
       focus() { this.focused = true; },
       dispatch(type, data = {}) { this.handlers[type]?.({preventDefault() {}, ...data}); },
@@ -31,17 +31,21 @@ function harness() {
     document: {getElementById: element}, $: selector => element(selector.slice(1)),
     URLSearchParams, SHOW_ARCHIVED_ACCOUNTS: false, SHOW_PLUS_ACCOUNTS_ONLY: false,
     accountAdvancedSearchQuery: '',
+    accountSearchTerms: [], accountSearchErrorQuery: null,
+    esc: value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;'),
     PAGERS: {accounts: {page: 3, size: 20}}, ACCOUNT_SELECTED: new Set([7]),
     updateAccountSelectionUi() {}, refreshColumnFilterStates() {},
     setTimeout(callback) { const id = ++timerId; timers.set(id, callback); return id; },
     clearTimeout(id) { timers.delete(id); },
     loadAccounts() { requests.push(view.accountListQueryParams()); },
   };
+  view.attrEsc = view.esc;
   view.debounce = callback => { let id; return () => { view.clearTimeout(id); id = view.setTimeout(callback); }; };
   vm.createContext(view);
-  vm.runInContext(commonSource.slice(commonSource.indexOf('function columnFilterValue('), commonSource.indexOf('// ---------- 分页状态 ----------')), view);
   const bindingStart = source.indexOf('(function bindAccountsFilterV2()');
   vm.runInContext([
+    ...['columnFilterValue', 'setColumnFilterValue'].filter(name => commonSource.includes(`function ${name}(`)).map(name => functionSource(name, commonSource)),
+    functionSource('renderAccountSearchTerms'), functionSource('showAccountSearchError'),
     functionSource('getAccountsQuery'), functionSource('accountListQueryParams'),
     source.slice(bindingStart, source.indexOf('\n})();', bindingStart) + 6),
   ].join('\n'), view);
@@ -50,6 +54,30 @@ function harness() {
   }
   return {view, element, requests, flush, timers};
 }
+
+test('组合搜索原样提交，条件标签可单独移除并保留列筛选', () => {
+  const {view, element, requests} = harness();
+  const input = element('accountAdvancedSearchV2');
+  input.value = '协议/jp 备注:"a/b 待整理"';
+  input.dispatch('keydown', {key: 'Enter'});
+  assert.equal(requests[0].get('q'), '协议/jp 备注:"a/b 待整理"');
+  view.renderAccountSearchTerms([
+    {label: '注册出口', display_value: '日本 JP', query_without: '协议 备注:"a/b 待整理"'},
+  ]);
+  assert.equal(element('accountSearchSummaryV2').hidden, false);
+  assert.match(element('accountSearchSummaryV2').innerHTML, /注册出口：日本 JP/);
+  element('accountSourceFilterV2').value = 'outlook';
+  element('accountSearchSummaryV2').dispatch('click', {target: {closest: () => ({dataset: {accountSearchTerm: '0'}})}});
+  assert.equal(requests.at(-1).get('q'), '协议 备注:"a/b 待整理"');
+  assert.equal(requests.at(-1).get('source'), 'outlook');
+  assert.equal(input.focused, true);
+});
+
+test('条件回显转义输入文字，避免把备注作为 HTML 执行', () => {
+  const {view, element} = harness();
+  view.renderAccountSearchTerms([{label: '备注', display_value: '<img src=x>', query_without: ''}]);
+  assert.doesNotMatch(element('accountSearchSummaryV2').innerHTML, /<img/);
+});
 
 test('高级搜索和邮箱列筛选分别传递，并保留分页与归档条件', () => {
   const {view, element} = harness();
@@ -170,4 +198,71 @@ test('旧响应和轮询读取已提交搜索词，不会在中文组合输入�
   assert.equal(new URL(pending[1].url, 'http://example.test').searchParams.get('q'), '协议注册');
   pending[1].resolve({items: [{id: 2}], total: 25});
   await new Promise(resolve => setImmediate(resolve));
+});
+
+test('错误搜索显示行内提示并清除旧结果，修正后正常恢复', async () => {
+  const {view, element} = harness();
+  const pending = [];
+  Object.assign(view, {
+    accountsLoading: false, accountsReloadQueued: false, planStatusLoading: false,
+    ACCOUNTS: [{id: 7}], ACCOUNTS_TOTAL: 1,
+    setListBusy() {}, syncFacetSelect() {}, markViewReady() {}, showToast() {}, renderAccounts() {},
+    api: url => new Promise((resolve, reject) => pending.push({url, resolve, reject})),
+  });
+  const start = source.indexOf('async function loadAccounts(');
+  vm.runInContext(source.slice(start, source.indexOf('\nfunction _codexCell(', start)), view);
+  view.accountAdvancedSearchQuery = '地区:JJ';
+  const invalid = view.loadAccounts();
+  pending[0].reject(Object.assign(new Error('请填写有效国家代码'), {code: 'account_search_invalid'}));
+  await invalid;
+  assert.equal(element('accountAdvancedSearchV2').attributes['aria-invalid'], 'true');
+  assert.equal(element('accountAdvancedSearchErrorV2').hidden, false);
+  assert.match(element('accountAdvancedSearchErrorV2').textContent, /有效国家代码/);
+  assert.equal(view.ACCOUNTS.length, 0);
+  assert.equal(view.ACCOUNTS_TOTAL, 0);
+  await view.pollAccountPlanStatuses();
+  assert.equal(pending.length, 1, '错误查询不应继续轮询');
+  element('accountAdvancedSearchV2').value = '协议 jp';
+  element('accountAdvancedSearchV2').dispatch('keydown', {key: 'Enter'});
+  assert.equal(element('accountAdvancedSearchErrorV2').hidden, true);
+  pending[1].resolve({items: [{id: 9}], total: 1, search_terms: [{label: '注册出口', display_value: '日本 JP', query_without: '协议'}]});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(view.ACCOUNTS[0].id, 9);
+  assert.equal(element('accountAdvancedSearchV2').attributes['aria-invalid'], 'false');
+  assert.match(element('accountSearchSummaryV2').innerHTML, /日本 JP/);
+});
+
+test('过期搜索错误不会覆盖新条件或显示过期提示', async () => {
+  const {view, element} = harness();
+  const pending = [];
+  Object.assign(view, {
+    accountsLoading: false, accountsReloadQueued: false, ACCOUNTS: [], ACCOUNTS_TOTAL: 0,
+    setListBusy() {}, syncFacetSelect() {}, markViewReady() {}, showToast() {}, renderAccounts() {},
+    api: url => new Promise((resolve, reject) => pending.push({url, resolve, reject})),
+  });
+  const start = source.indexOf('async function loadAccounts(');
+  vm.runInContext(source.slice(start, source.indexOf('\nasync function pollAccountPlanStatuses(', start)), view);
+  view.accountAdvancedSearchQuery = '地区:JJ';
+  const invalid = view.loadAccounts();
+  view.accountAdvancedSearchQuery = '协议 jp';
+  pending[0].reject(Object.assign(new Error('过期错误'), {code: 'account_search_invalid'}));
+  await invalid;
+  assert.notEqual(element('accountAdvancedSearchErrorV2').textContent, '过期错误');
+  assert.equal(pending.length, 2);
+  pending[1].resolve({items: [{id: 9}], total: 1});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(view.ACCOUNTS[0].id, 9);
+});
+
+test('API 错误保留业务错误码，供搜索框显示语法提示', async () => {
+  const common = fs.readFileSync(path.join(__dirname, '../webui/static/js/modern/common.js'), 'utf8');
+  const start = common.indexOf('async function api(');
+  const view = {
+    API_INFLIGHT: new Map(),
+    fetch: async () => ({ok: false, status: 400, json: async () => ({error: '国家代码有误', code: 'account_search_invalid'})}),
+  };
+  vm.createContext(view);
+  vm.runInContext(common.slice(start, common.indexOf('\nasync function apiCached(', start)), view);
+  await assert.rejects(view.api('/api/accounts?q=invalid'), error => error.message === '国家代码有误' && error.code === 'account_search_invalid');
+  assert.equal(view.API_INFLIGHT.size, 0);
 });

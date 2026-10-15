@@ -3173,8 +3173,9 @@
       min-height: 34px; margin-left: auto; padding-left: 12px; border-left: 1px solid #e5e8ef;
     }
     #accountsToolbarV2 .list-toolbar-utilities { min-width: 0; max-width: 100%; flex-wrap: wrap; }
+    .account-search-control { width: 360px; max-width: 100%; min-width: 0; }
     .account-advanced-search {
-      display: flex; align-items: center; gap: 8px; width: 310px; max-width: 100%; min-height: 34px;
+      display: flex; align-items: center; gap: 8px; width: 100%; max-width: 100%; min-height: 34px;
       padding: 0 8px 0 10px; box-sizing: border-box; border: 1px solid #dfe2e9;
       border-radius: 8px; background: #fff;
     }
@@ -3195,9 +3196,15 @@
     .account-advanced-search button:hover { background: #f0f1f8; }
     .account-advanced-search button:focus-visible { outline: 2px solid #5b5ce2; outline-offset: 1px; }
     .account-advanced-search button[hidden] { display: none; }
+    .account-search-help, .account-search-error { margin: 5px 0 0; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+    .account-search-help { color: #5f687a; }
+    .account-search-error { color: #b42335; }
+    .account-search-error[hidden], .account-search-summary[hidden] { display: none; }
+    .account-advanced-search:has(input[aria-invalid="true"]) { border-color: #b42335; }
+    .account-search-summary .column-filter-chip { max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: left; }
     @media (max-width: 640px) {
       #accountsToolbarV2 .list-toolbar-utilities { flex: 1 1 100%; margin-left: 0; padding-left: 0; border-left: 0; }
-      .account-advanced-search { flex: 1 1 100%; width: 100%; }
+      .account-search-control { flex: 1 1 100%; width: 100%; }
       .account-advanced-search input { font-size: 16px; }
     }
     .accounts-command-deck #accountsToolbarV2,
