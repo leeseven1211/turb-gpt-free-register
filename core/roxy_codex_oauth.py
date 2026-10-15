@@ -1574,13 +1574,29 @@ def _fill_email_and_otp(
     # 可能已经处于账号选择/授权页；如果有邮箱输入框则完整登录。
     # 非日本出口时按钮文案/顺序会变，不能按可见文字点“继续”，否则可能误点 Google。
     try:
-        _type_email_address(driver, email, timeout=12)
-        logger.info("[Codex][Browser] 已填写邮箱：%s", email)
-        human_delay("form")
-        _submit_email_step(driver)
-        _report_login_stage(stage_reporter, "login", "已提交 OpenAI 登录邮箱", state="success")
-        logger.info("[Codex][Browser] 已提交邮箱，识别密码、TOTP 或邮箱 OTP 分支")
+        entry = urlparse(auth_url)
+        if (entry.scheme == "https" and entry.hostname == "chatgpt.com"
+                and entry.port in (None, 443) and entry.path.rstrip("/") == "/auth/login"):
+            from core.registration.email_otp import _submit_email_and_wait_next
+
+            # 账号补全也可能先看到未水合的 SSR 表单。复用注册的准备/提交预算、
+            # 派发回执和一次导航恢复；不能吞掉未提交错误后直接读取未登录 session。
+            _submit_email_and_wait_next(
+                driver, email, allow_login_password=True,
+                on_progress=lambda phase, message: _report_login_stage(
+                    stage_reporter, "login", message, detail={"email_phase": phase},
+                ),
+            )
+            _report_login_stage(stage_reporter, "login", "已确认邮箱登录的后续认证页面", state="success")
+        else:
+            _type_email_address(driver, email, timeout=12)
+            logger.info("[Codex][Browser] 已填写邮箱：%s", email)
+            human_delay("form")
+            _submit_email_step(driver)
+            _report_login_stage(stage_reporter, "login", "已提交 OpenAI 登录邮箱", state="success")
+        logger.info("[Codex][Browser] 继续识别密码、TOTP 或邮箱 OTP 分支")
     except Exception as exc:
+        check_cancelled()
         state = _login_challenge_state(driver)
         if _is_login_password_page(driver) or _is_totp_login_page(driver, state) or _is_email_verification_page(driver):
             logger.info("[Codex][Browser] 邮箱输入阶段页面已进入下一登录分支，继续按页面状态处理")
@@ -1589,8 +1605,8 @@ def _fill_email_and_otp(
             logger.info("[Codex][Browser] 当前会话已越过登录挑战，无需邮箱 OTP")
             return
         else:
-            logger.info("[Codex][Browser] 未检测到邮箱输入框，可能已登录或进入下一步：%s", type(exc).__name__)
-            return
+            logger.warning("[Codex][Browser] 邮箱提交尚未进入后续认证页面，保留原始错误：%s", type(exc).__name__)
+            raise
 
     next_state = complete_openai_login_challenge(
         driver,

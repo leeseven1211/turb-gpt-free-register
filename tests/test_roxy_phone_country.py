@@ -445,6 +445,7 @@ class RoxyPhoneCountryTests(unittest.TestCase):
             patch.object(roxy_codex_oauth, "_account_login_credentials", return_value=("", "")),
             patch.object(roxy_codex_oauth, "_type_email_address"),
             patch.object(roxy_codex_oauth, "_submit_email_step"),
+            patch("core.registration.email_otp._submit_email_and_wait_next", return_value="otp"),
             patch.object(roxy_codex_oauth, "complete_openai_login_challenge", resolver),
             patch.object(roxy_codex_oauth, "_wait_for_fresh_email_otp", return_value="123456"),
             patch.object(roxy_codex_oauth, "_wait_for_otp_input"),
