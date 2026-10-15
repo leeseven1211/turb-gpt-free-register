@@ -27,6 +27,9 @@ from .auth_context import (
     time_proxy,
 )
 from .browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact
+from .submission_recovery import (
+    RECOVERY_WINDOW_SECONDS, has_visible_auth_inputs, log_submission_diagnostics, recover_submission_page,
+)
 from .selenium_dom import (
     _auth_terminal_page_state, _budget_timeout, _check_manual_stop, _click_any,
     _click_continue, _find_any, _human_click,
@@ -712,6 +715,7 @@ def _submit_email_form_stable(driver, email: str) -> dict:
         endpoint_kind="email_submit", http_method="POST",
     )
     driver._browser_submission_receipt = receipt
+    log_submission_diagnostics(driver, "email", "before_submit", receipt=receipt)
     # 围栏必须在定时器排队和 click 之前落库；UI queued/click 不是 HTTP 成功。
     record_browser_submission_fact(driver, "dispatch_intent", receipt=receipt)
     driver._email_submission_receipt = {"id": submission_id}
@@ -1289,6 +1293,17 @@ def _wait_email_submit_next_state(
     blank_shell_logged = False
     transient_shell_logged = False
     queued_seen_at: float | None = None
+    recovery_attempted = False
+    wait_started = end - max(0.0, timeout)
+    next_diagnostic_at = wait_started + 15.0
+
+    def observe_recovery(recovery_budget):
+        snapshot = _page_snapshot(driver)
+        if classify_page(snapshot) in {PageState.PASSWORD_CREATE, PageState.PASSWORD_LOGIN, PageState.OTP_EMAIL}:
+            if not has_visible_auth_inputs(snapshot):
+                return None
+        return _email_submit_advanced_state(driver, budget=recovery_budget)
+
     expected_email = str(email or "").strip().lower()
     try:
         blank_shell_grace = max(0.0, min(10.0, float(blank_shell_grace or 0.0)))
@@ -1321,6 +1336,23 @@ def _wait_email_submit_next_state(
             # 已交给前端的请求共享整个剩余预算；输入框清空不是提交失败证据。
             if budget is not None:
                 end = max(end, budget.deadline)
+            if loop_now >= next_diagnostic_at:
+                log_submission_diagnostics(
+                    driver, "email", "waiting", receipt=getattr(driver, "_browser_submission_receipt", None),
+                    ui=getattr(driver, "_email_submission_diagnostics", None),
+                )
+                next_diagnostic_at = loop_now + 15.0
+            if (not recovery_attempted and loop_now - wait_started >= 5.0
+                    and loop_now >= end - RECOVERY_WINDOW_SECONDS):
+                recovery_attempted = True
+                recovered = recover_submission_page(
+                    driver, "email", observe_recovery,
+                    budget=StageBudget(end, clock=clock),
+                    receipt=getattr(driver, "_browser_submission_receipt", None), sleeper=time.sleep,
+                )
+                if recovered:
+                    logger.info("%s 邮箱提交等待已通过刷新进入下一步：%s", _log_prefix(driver), recovered)
+                    return recovered
             time.sleep(min(0.4, max(0.0, end - clock())))
             continue
         state = _email_input_value_state(driver)
@@ -1392,6 +1424,10 @@ def _wait_email_submit_next_state(
         time.sleep(min(0.8, max(0.0, end - sleep_now)))
     if _email_ui_submission_state(driver) in {"queued", "dispatched", "unknown"}:
         _log_email_submission_timeout(driver)
+        log_submission_diagnostics(
+            driver, "email", "timeout", receipt=getattr(driver, "_browser_submission_receipt", None),
+            ui=getattr(driver, "_email_submission_diagnostics", None),
+        )
         raise _EmailSubmissionUnknown("request_unknown: 邮箱提交结果在共享预算内未确认，未重复点击或发送认证请求")
     logger.info("%s 邮箱提交后等待下一步超时，最后邮箱页状态=%s", _log_prefix(driver), last)
     return "email_page" if _is_email_login_page_still_present(driver) else "unknown"

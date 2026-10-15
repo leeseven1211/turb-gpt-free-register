@@ -19,6 +19,9 @@ from core.registration.state_machine import PageState, StageBudget, StageTimeout
 
 from .auth_context import checkpoint as _checkpoint, install_dispatches, time_proxy
 from .browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact
+from .submission_recovery import (
+    RECOVERY_WINDOW_SECONDS, has_visible_auth_inputs, log_submission_diagnostics, recover_submission_page,
+)
 from .email_otp import (
     _clear_otp_inputs, _is_email_verification_page, _type_otp,
 )
@@ -866,6 +869,7 @@ def _fill_password_page_if_present(
             http_method="POST",
         )
         driver._browser_submission_receipt = submission_receipt
+        log_submission_diagnostics(driver, "password", "before_submit", receipt=submission_receipt)
         last_safe_pre_dispatch_failure = False
         while True:
             _check_manual_stop()
@@ -949,7 +953,33 @@ def _fill_password_page_if_present(
         # 密码页识别/切换已经消耗了外层 timeout 的一部分。表单提交属于新的远端请求，
         # 从提交排队后使用独立预算；否则慢代理下页面会在任务判失败后才迟到进入 OTP。
         transition_timeout = _password_transition_timeout_seconds()
-        wait_end = time.time() + transition_timeout
+        wait_started = time.time()
+        wait_end = wait_started + transition_timeout
+        recovery_at = wait_started + max(5.0, transition_timeout - RECOVERY_WINDOW_SECONDS)
+        recovery_attempted = False
+        next_diagnostic_at = wait_started + 15.0
+
+        def observe_recovery(_budget):
+            snapshot = _password_page_state(driver)
+            recovered_state = classify_page(snapshot)
+            next_form = recovered_state in {PageState.OTP_EMAIL, PageState.PROFILE} or (
+                existing_password and recovered_state == PageState.MFA_TOTP
+            )
+            if (next_form and has_visible_auth_inputs(snapshot, allow_password=False)) or _has_access_token(driver, budget=_budget):
+                record_browser_submission_fact(driver, "confirmed", receipt=submission_receipt, result="success")
+                return True
+            return None
+
+        def recover_once():
+            nonlocal recovery_attempted
+            if recovery_attempted:
+                return None
+            recovery_attempted = True
+            return recover_submission_page(
+                driver, "password", observe_recovery,
+                budget=StageBudget(wait_end, clock=time.time), receipt=submission_receipt, sleeper=time.sleep,
+            )
+
         transition_probe = 0
         last_submission_snapshot = None
         while time.time() < wait_end:
@@ -988,15 +1018,28 @@ def _fill_password_page_if_present(
                     )
                 next_page = classify_page(post_submit_state)
                 if next_page in {PageState.AUTH_ERROR, PageState.LOGGED_OUT}:
+                    if recover_once():
+                        logger.info("%s 密码提交后的认证异常已通过刷新恢复，继续原任务", _log_prefix(driver))
+                        return password
                     record_browser_submission_fact(driver, "unknown", receipt=submission_receipt, result="unknown")
                     raise _PasswordTransitionTimeout("request_unknown: 密码提交后进入认证错误页，未确认密码结果")
                 if next_page == PageState.PROFILE or (existing_password and next_page == PageState.MFA_TOTP):
                     record_browser_submission_fact(driver, "confirmed", receipt=submission_receipt, result="success")
                     return password
+            if time.time() >= next_diagnostic_at:
+                log_submission_diagnostics(driver, "password", "waiting", receipt=submission_receipt,
+                                           ui=last_submission_snapshot)
+                next_diagnostic_at = time.time() + 15.0
+            if not recovery_attempted and time.time() >= recovery_at:
+                if recover_once():
+                    logger.info("%s 密码提交等待已通过刷新进入下一步，继续原任务", _log_prefix(driver))
+                    return password
             transition_probe += 1
             # 离开密码页可能只是空壳或错误跳转；继续等待明确的下一页。
             time.sleep(0.5)
         stuck_state = _password_page_state(driver)
+        log_submission_diagnostics(driver, "password", "timeout", receipt=submission_receipt,
+                                   ui=last_submission_snapshot)
         submission_snapshot = _password_submission_snapshot(driver, submission_receipt, stop_observing=True)
         record_browser_submission_fact(driver, "unknown", receipt=submission_receipt, result="timeout")
         raise _PasswordTransitionTimeout(
@@ -1076,6 +1119,9 @@ def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45, 
     today = date.today()
     age = today.year - int(y) - ((today.month, today.day) < (int(m), int(d)))
     last_snapshot = {}
+    recovery_attempted = False
+    profile_submitted = False
+    next_diagnostic_at = time.time() + 15.0
 
     def confirm_session(snapshot: dict, deadline: float) -> bool:
         current = urlsplit(str(snapshot.get("url") or ""))
@@ -1084,17 +1130,56 @@ def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45, 
         _read_profile_session_once(driver, timeout=max(0.0, deadline - time.time()), expected_email=expected_email)
         return True
 
+    def observe_recovery(recovery_budget):
+        snapshot = _page_snapshot(driver)
+        if classify_page(snapshot) in {PageState.AUTH_ERROR, PageState.LOGGED_OUT}:
+            return None
+        try:
+            if confirm_session(snapshot, recovery_budget.deadline):
+                return "session_confirmed"
+        except RuntimeError as exc:
+            # 完整会话读取的传输失败可以在剩余预算内观察；身份不匹配仍立即拦截。
+            if "profile_session_read_failed" not in str(exc):
+                raise
+        if not profile_submitted and has_visible_auth_inputs(snapshot, allow_password=False) and _is_profile_like(snapshot):
+            return "profile_ready"
+        return None
+
+    def recover_once():
+        nonlocal recovery_attempted
+        if recovery_attempted:
+            return None
+        recovery_attempted = True
+        return recover_submission_page(
+            driver, "profile", observe_recovery, budget=StageBudget(end, clock=time.time),
+            allow_back=True, sleeper=time.sleep,
+        )
+
     while time.time() < end:
         _check_manual_stop()
         time.sleep(1)
         snap = _page_snapshot(driver)
         last_snapshot = snap
         if classify_page(snap) in {PageState.AUTH_ERROR, PageState.LOGGED_OUT}:
+            recovered = recover_once()
+            if recovered == "session_confirmed":
+                return False
+            if recovered == "profile_ready":
+                continue
             raise RuntimeError("request_unknown: 资料阶段进入认证错误页，账号创建结果未确认")
         if confirm_session(snap, end):
             logger.info('%s 已确认完整登录会话，资料页可能已跳过', _log_prefix(driver))
             return False
         if not _is_profile_like(snap):
+            if time.time() >= next_diagnostic_at:
+                log_submission_diagnostics(driver, "profile", "waiting_for_form")
+                next_diagnostic_at = time.time() + 15.0
+            if not recovery_attempted and time.time() >= end - RECOVERY_WINDOW_SECONDS:
+                recovered = recover_once()
+                if recovered == "session_confirmed":
+                    return False
+                if recovered == "profile_ready":
+                    continue
             logger.info('%s 等待资料页中：url=%s', _log_prefix(driver), snap.get('url'))
             continue
 
@@ -1155,14 +1240,19 @@ def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45, 
                     on_submit()
                 except Exception:
                     logger.debug('%s 资料页提交前切换 post-auth 省流量规则失败', _log_prefix(driver), exc_info=True)
+            log_submission_diagnostics(driver, "profile", "before_submit")
             if _click_if_enabled_submit(driver):
+                profile_submitted = True
                 logger.info('%s 已点击资料页提交按钮，等待 OAuth 跳转', _log_prefix(driver))
+                log_submission_diagnostics(driver, "profile", "submitted")
                 submit_end = min(end, time.time() + 45)
                 while time.time() < submit_end:
                     _check_manual_stop()
                     time.sleep(0.5)
                     submitted_snapshot = _page_snapshot(driver)
                     if classify_page(submitted_snapshot) in {PageState.AUTH_ERROR, PageState.LOGGED_OUT}:
+                        if recover_once() == "session_confirmed":
+                            return True
                         raise RuntimeError("request_unknown: 资料提交后进入认证错误页，账号创建结果未确认")
                     if confirm_session(submitted_snapshot, submit_end):
                         return True
@@ -1182,8 +1272,15 @@ def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45, 
                     """) or []
                     if errors:
                         raise RuntimeError(f"资料页提交被拒绝：{errors[:3]}")
+                    if time.time() >= next_diagnostic_at:
+                        log_submission_diagnostics(driver, "profile", "waiting_for_session")
+                        next_diagnostic_at = time.time() + 15.0
+                    if not recovery_attempted and time.time() >= submit_end - RECOVERY_WINDOW_SECONDS:
+                        if recover_once() == "session_confirmed":
+                            return True
+                log_submission_diagnostics(driver, "profile", "timeout")
                 raise RuntimeError(
-                    "request_unknown: 资料提交后 45 秒内未确认登录态，已保留原提交且未重复点击"
+                    "request_unknown: 资料提交后预算内未确认登录态，已尝试有界页面恢复并保留原提交"
                 )
             time.sleep(1)
         logger.warning('%s 找不到可点击的资料页提交按钮 snapshot=%s', _log_prefix(driver), _page_snapshot(driver))

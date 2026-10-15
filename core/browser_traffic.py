@@ -532,6 +532,7 @@ class _SummaryOnlyCDPSession:
         self.cache_local_served_bytes = 0
         # 与现有 CDP 消费者共享同一条事件流，仅向认证回执分发白名单元数据。
         self.submission_observer = None
+        self.auth_diagnostic_observer = None
 
     @staticmethod
     def _submission_endpoint_kind(url: Any) -> str:
@@ -549,6 +550,7 @@ class _SummaryOnlyCDPSession:
         return ""
 
     def _observe_submission(self, record: Mapping[str, Any], *, response: bool = False) -> None:
+        self._observe_auth_diagnostic(record, phase="complete" if response else "request")
         callback = self.submission_observer
         if not callable(callback):
             return
@@ -573,6 +575,14 @@ class _SummaryOnlyCDPSession:
             })
         except Exception:
             logger.debug("[浏览器流量] 认证提交事实分发失败", exc_info=True)
+
+    def _observe_auth_diagnostic(self, record: Mapping[str, Any], *, phase: str) -> None:
+        callback = self.auth_diagnostic_observer
+        if callable(callback):
+            try:
+                callback(record, phase=phase)
+            except Exception:
+                logger.debug("[浏览器流量] 认证接口诊断分发失败", exc_info=True)
 
     def record_network(self, record: Mapping[str, Any]) -> None:
         item = record if isinstance(record, Mapping) else {}
@@ -689,6 +699,10 @@ class RoxyTrafficCapture:
     def set_submission_observer(self, callback: Any) -> None:
         """把认证请求元数据分发给同一 CDP 采集连接的回执接收者。"""
         self.session.submission_observer = callback
+
+    def set_auth_diagnostic_observer(self, callback: Any) -> None:
+        """共用已有 CDP 连接记录认证接口元数据，回调负责限制字段和容量。"""
+        self.session.auth_diagnostic_observer = callback
 
     def set_public_asset_cache(self, cache: Any) -> None:
         """本地回放与匿名填充分别计量，避免把 CDP 本地传输算成代理下载。"""

@@ -1373,6 +1373,10 @@ class _RoxyTargetCollector:
                 record["cache_source"] = "native"
             if getattr(self.session, "summary_only", False):
                 record["status"] = response.get("status")
+                # 响应头已到、响应体仍挂起时也留下观测，不能等 loadingFinished 才记录状态。
+                observe = getattr(self.session, "_observe_auth_diagnostic", None)
+                if callable(observe):
+                    observe(record, phase="response")
                 return
             record.update({
                 "status": response.get("status"),

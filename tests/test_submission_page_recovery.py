@@ -1,0 +1,363 @@
+"""提交后的刷新、回退、原回执保留、剩余预算与脱敏接口观测。"""
+import json
+from contextlib import ExitStack
+from types import SimpleNamespace
+import unittest
+from unittest.mock import Mock, patch
+
+from core.browser_traffic import _SummaryOnlyCDPSession
+from core.registration.browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact
+from core.registration import submission_recovery as recovery
+from core.registration import email_otp, password_auth
+from core.registration_debug import _RoxyTargetCollector
+from core.registration.state_machine import CancellationRequested, StageBudget
+
+
+class _Clock:
+    def __init__(self):
+        self.now = 0.0
+
+    def time(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+def _driver(url="https://auth.openai.com/create-account/password"):
+    driver = SimpleNamespace(
+        current_url=url, timeouts=SimpleNamespace(page_load=30),
+        set_page_load_timeout=Mock(), execute_script=Mock(return_value={"url": url}),
+        execute_cdp_cmd=Mock(return_value={"currentIndex": 0, "entries": []}),
+        submit=Mock(), refresh=Mock(), back=Mock(),
+    )
+    driver.get = Mock(side_effect=lambda target: setattr(driver, "current_url", target))
+    return driver
+
+
+class SubmissionPageRecoveryTests(unittest.TestCase):
+    def run_recovery(self, driver, clock, observe, **kwargs):
+        with patch.object(recovery, "_check_manual_stop"):
+            return recovery.recover_submission_page(
+                driver, kwargs.pop("stage", "password"), observe,
+                budget=StageBudget(kwargs.pop("deadline", 20), clock=clock.time),
+                sleeper=clock.sleep, **kwargs,
+            )
+
+    def test_refresh_uses_current_auth_get_and_confirms_original_receipt(self):
+        driver, clock = _driver(), _Clock()
+        receipt = BrowserSubmissionReceipt(kind="password", stage="password_create", phase="ui_dispatched")
+        phases = []
+
+        def observe(_budget):
+            if driver.get.called:
+                record_browser_submission_fact(driver, "confirmed", receipt=receipt, result="success")
+                return "otp"
+            return None
+
+        original_record = recovery.record_browser_submission_fact
+        with patch.object(recovery, "record_browser_submission_fact", side_effect=lambda *a, **k: (
+            phases.append(a[1]), original_record(*a, **k)
+        )[1]):
+            result = self.run_recovery(driver, clock, observe, receipt=receipt)
+        self.assertEqual(result, "otp")
+        self.assertEqual(phases, ["unknown"])
+        self.assertEqual(receipt.phase, "confirmed")
+        driver.get.assert_called_once_with("https://auth.openai.com/create-account/password")
+        driver.submit.assert_not_called()
+        driver.refresh.assert_not_called()
+        self.assertEqual(driver.set_page_load_timeout.call_args.args, (30,))
+
+    def test_profile_refresh_then_back_checks_session_without_reposting(self):
+        driver, clock = _driver("https://chatgpt.com/auth/error"), _Clock()
+        previous = "https://auth.openai.com/about-you"
+        driver.execute_cdp_cmd.return_value = {
+            "currentIndex": 2, "entries": [{"url": "https://evil.test/"}, {"url": previous},
+                                           {"url": driver.current_url}],
+        }
+        result = self.run_recovery(driver, clock, lambda _budget: (
+            "session" if driver.current_url == previous else None
+        ), stage="profile", allow_back=True)
+        self.assertEqual(result, "session")
+        self.assertEqual([call.args[0] for call in driver.get.call_args_list],
+                         ["https://chatgpt.com/auth/error", previous])
+        self.assertLessEqual(clock.now, 20)
+        driver.submit.assert_not_called()
+        driver.back.assert_not_called()
+
+    def test_no_progress_keeps_unknown_receipt_and_spends_only_remaining_budget(self):
+        driver, clock = _driver(), _Clock()
+        receipt = BrowserSubmissionReceipt(kind="password", stage="password_create", phase="ui_dispatched")
+        result = self.run_recovery(driver, clock, lambda _budget: None, deadline=4, receipt=receipt)
+        self.assertIsNone(result)
+        self.assertEqual(clock.now, 4)
+        self.assertEqual(receipt.phase, "unknown")
+        driver.get.assert_called_once()
+        driver.submit.assert_not_called()
+
+    def test_advanced_page_is_accepted_before_navigation(self):
+        driver, clock = _driver(), _Clock()
+        result = self.run_recovery(driver, clock, lambda _budget: "otp")
+        self.assertEqual(result, "otp")
+        driver.get.assert_not_called()
+
+    def test_foreign_origin_or_expired_budget_does_not_navigate(self):
+        for url, deadline in (("https://auth.openai.com.evil.test/", 20),
+                              ("https://auth.openai.com/api/accounts/email-otp/send", 20),
+                              ("https://chatgpt.com/api/auth/callback?code=private-code", 20),
+                              ("https://auth.openai.com/", 0)):
+            with self.subTest(url=url, deadline=deadline):
+                driver, clock = _driver(url), _Clock()
+                self.assertIsNone(self.run_recovery(driver, clock, Mock(), deadline=deadline))
+                driver.get.assert_not_called()
+
+    def test_identity_or_fact_errors_propagate_without_more_navigation(self):
+        driver, clock = _driver(), _Clock()
+        with self.assertRaisesRegex(RuntimeError, "身份不匹配"):
+            self.run_recovery(driver, clock, Mock(side_effect=RuntimeError("身份不匹配")))
+        driver.get.assert_not_called()
+
+    def test_navigation_timeout_is_observed_and_old_timeout_is_restored(self):
+        driver, clock = _driver(), _Clock()
+        driver.get.side_effect = TimeoutError("私有错误内容")
+        with self.assertLogs(recovery.logger, level="WARNING") as logs:
+            result = self.run_recovery(driver, clock, lambda _budget: "otp" if driver.get.called else None)
+        self.assertEqual(result, "otp")
+        self.assertNotIn("私有错误内容", " ".join(logs.output))
+        self.assertEqual(driver.set_page_load_timeout.call_args.args, (30,))
+
+    def test_budget_cancellation_stops_before_get(self):
+        driver, clock = _driver(), _Clock()
+        with patch.object(recovery, "_check_manual_stop"), self.assertRaises(CancellationRequested):
+            recovery.recover_submission_page(driver, "password", Mock(),
+                budget=StageBudget(20, clock=clock.time, cancellation=lambda: True), sleeper=clock.sleep)
+        driver.get.assert_not_called()
+
+    def test_foreign_redirect_cannot_be_confirmed_as_next_auth_step(self):
+        driver, clock = _driver(), _Clock()
+        driver.get.side_effect = lambda _url: setattr(driver, "current_url", "https://other.test/about-you")
+        observe = Mock(side_effect=lambda _budget: "profile" if driver.get.called else None)
+        self.assertIsNone(self.run_recovery(driver, clock, observe))
+        self.assertEqual(observe.call_count, 1)
+
+
+class SubmissionDiagnosticsTests(unittest.TestCase):
+    def test_diagnostic_capture_has_short_timeout_and_restores_original_setting(self):
+        driver = _driver()
+        driver.timeouts.script = 30
+        driver.set_script_timeout = Mock()
+        driver.execute_script.side_effect = TimeoutError("private-token")
+        safe = recovery.log_submission_diagnostics(driver, "password", "waiting")
+        self.assertEqual([call.args[0] for call in driver.set_script_timeout.call_args_list], [2.0, 30])
+        self.assertEqual(safe["capture_error"], "TimeoutError")
+        self.assertNotIn("private-token", json.dumps(safe))
+
+    def test_snapshot_and_network_keep_only_non_private_metadata(self):
+        driver = _driver()
+        driver.execute_script.return_value = {
+            "url": "https://auth.openai.com/create-account/password?email=private@example.test&token=private-token",
+            "ready_state": "complete", "text_length": 145, "html_length": 5000,
+            "text": "private@example.test private-password", "title": "private-token",
+            "controls": [{"type": "password", "value": "private-password", "disabled": True,
+                          "read_only": False, "value_present": True, "valid": True}],
+            "error_markers": ["invalid_auth_step", "private-token"],
+            "resources": [{"url": "https://auth.openai.com/api/accounts/password?code=private-code", "duration_ms": 321, "status": 0}],
+        }
+        diagnostics = recovery.diagnostics_for(driver)
+        diagnostics.observe_network({
+            "url": "https://auth.openai.com/api/accounts/password?token=private-token", "method": "POST",
+            "request_id": "request", "target_id": "target", "status": 400,
+            "request_body": "private-password", "request_headers": {"Cookie": "private-cookie"},
+        }, phase="response")
+        with self.assertLogs(recovery.logger, level="INFO") as logs:
+            safe = recovery.log_submission_diagnostics(driver, "password", "waiting",
+                ui={"phase": "dispatched", "input_matches": True, "password": "private-password"})
+        encoded = json.dumps(safe) + " ".join(logs.output)
+        for private in ("private@example.test", "private-password", "private-token", "private-code", "private-cookie"):
+            self.assertNotIn(private, encoded)
+        self.assertIsNone(safe["resources"][0]["status"])
+        self.assertEqual(safe["network"][0]["status"], 400)
+        self.assertEqual(safe["controls"][0]["disabled"], True)
+
+    def test_network_buffer_is_bounded_and_ignores_foreign_origins(self):
+        diagnostics = recovery.SubmissionDiagnostics()
+        for index in range(45):
+            diagnostics.observe_network({"url": "https://auth.openai.com/api/accounts/authorize",
+                "method": "POST", "request_id": str(index)}, phase="request")
+        diagnostics.observe_network({"url": "https://other.test/api/auth/signin", "method": "POST"}, phase="request")
+        self.assertEqual(len(diagnostics.network), 40)
+        self.assertEqual(len(diagnostics.recent_network()), 20)
+
+    def test_shared_cdp_records_unknown_auth_endpoints_and_response_headers(self):
+        diagnostics = recovery.SubmissionDiagnostics()
+        session = _SummaryOnlyCDPSession("unit-profile")
+        session.auth_diagnostic_observer = diagnostics.observe_network
+        record = {"url": "https://auth.openai.com/api/accounts/user/register", "method": "POST",
+                  "request_id": "request", "target_id": "target"}
+        session._observe_submission(record)
+        self.assertEqual(diagnostics.recent_network()[0]["phase"], "request")
+        record["status"] = 503
+        session._observe_auth_diagnostic(record, phase="response")
+        self.assertEqual(diagnostics.recent_network()[0]["status"], 503)
+        session._observe_submission({**record, "duration_ms": 2000, "failure": "net::ERR_TIMED_OUT private-token"}, response=True)
+        summary = diagnostics.recent_network()[0]
+        self.assertEqual(summary["duration_ms"], 2000)
+        self.assertEqual(summary["network_error"], "net::ERR_TIMED_OUT")
+        self.assertEqual(summary["phase"], "complete")
+
+    def test_cdp_header_event_is_recorded_while_response_body_is_pending(self):
+        diagnostics = recovery.SubmissionDiagnostics()
+        session = _SummaryOnlyCDPSession("unit-profile")
+        session.auth_diagnostic_observer = diagnostics.observe_network
+        collector = _RoxyTargetCollector(SimpleNamespace(session=session), "target", "ws://unit-only", "page")
+        collector._handle({"method": "Network.requestWillBeSent", "params": {
+            "requestId": "request", "type": "Fetch", "request": {
+                "url": "https://auth.openai.com/api/accounts/password", "method": "POST",
+            },
+        }})
+        collector._handle({"method": "Network.responseReceived", "params": {
+            "requestId": "request", "response": {"status": 504},
+        }})
+        self.assertEqual(diagnostics.recent_network()[0]["status"], 504)
+        self.assertEqual(diagnostics.recent_network()[0]["phase"], "response")
+        self.assertIn("request", collector._requests)
+
+    def test_tokens_in_path_are_fingerprinted(self):
+        safe = recovery._safe_location("https://auth.openai.com/api/accounts/privatelettertoken")
+        self.assertNotIn("privatelettertoken", json.dumps(safe))
+        self.assertEqual(safe["path"], "其他认证路径")
+
+
+class SubmissionRecoveryIntegrationTests(unittest.TestCase):
+    def test_password_pending_refresh_reaches_otp_with_one_password_submission(self):
+        driver, clock = _driver(), _Clock()
+        queues = []
+
+        def execute(_script, *args):
+            if args and args[0] == "queue":
+                queues.append(args[3])
+                return {"ok": True, "reason": "password_submit_queued"}
+            if args and args[0] == "input":
+                return {"ok": True, "input": object()}
+            return {"phase": "dispatched", "click_called": True, "submit_event_observed": True,
+                    "submit_default_prevented": True, "submitter_matches": True}
+
+        driver.execute_script.side_effect = execute
+        driver.get.side_effect = lambda _target: setattr(driver, "current_url", "https://auth.openai.com/email-verification")
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(password_auth, "time", SimpleNamespace(time=clock.time, sleep=clock.sleep)))
+            stack.enter_context(patch.object(password_auth, "_registration_auth_mode", return_value="password"))
+            stack.enter_context(patch.object(password_auth, "_registration_password", return_value="UnitPassword123!"))
+            stack.enter_context(patch.object(password_auth, "_password_transition_timeout_seconds", return_value=30))
+            stack.enter_context(patch.object(password_auth, "_password_page_state", side_effect=lambda _d: {
+                "url": driver.current_url,
+                "inputs": [{"type": "text", "name": "code", "visible": True}] if "email-verification" in driver.current_url else [],
+            }))
+            stack.enter_context(patch.object(password_auth, "_is_signup_password_page", return_value=True))
+            stack.enter_context(patch.object(password_auth, "_is_login_password_page", return_value=False))
+            stack.enter_context(patch.object(password_auth, "_is_email_verification_page", side_effect=lambda _d: "email-verification" in driver.current_url))
+            stack.enter_context(patch.object(password_auth, "_has_access_token", return_value=False))
+            for name in ("human_delay", "_human_type_text", "_check_manual_stop"):
+                stack.enter_context(patch.object(password_auth, name))
+            stack.enter_context(patch.object(recovery, "_check_manual_stop"))
+            result = password_auth._fill_password_page_if_present(driver, "unit@example.test", timeout=5)
+        self.assertEqual(result, "UnitPassword123!")
+        self.assertEqual(len(queues), 1)
+        driver.get.assert_called_once()
+        self.assertEqual(driver._browser_submission_receipt.phase, "confirmed")
+        self.assertLess(clock.now, 30)
+
+    def test_email_pending_refresh_reaches_next_page_with_original_receipt(self):
+        driver, clock = _driver("https://chatgpt.com/auth/login"), _Clock()
+        driver.execute_script.side_effect = lambda *_args: {
+            "url": driver.current_url, "inputs": [{"type": "text", "name": "code", "visible": True}]
+            if "email-verification" in driver.current_url else [],
+        }
+        driver._email_submission_receipt = {"id": "original"}
+        receipt = BrowserSubmissionReceipt(kind="email", stage="submit_email", phase="ui_dispatched")
+        driver._browser_submission_receipt = receipt
+        driver.get.side_effect = lambda _url: setattr(driver, "current_url", "https://auth.openai.com/email-verification")
+
+        def advanced(_driver, **_kwargs):
+            if "email-verification" in driver.current_url:
+                email_otp._confirm_email_submission_fact(driver)
+                email_otp._clear_confirmed_email_submission(driver)
+                return "otp"
+            return None
+
+        with (
+            patch.object(email_otp, "time", clock),
+            patch.object(email_otp, "_email_submit_advanced_state", side_effect=advanced),
+            patch.object(email_otp, "_email_ui_submission_state", return_value="dispatched"),
+            patch.object(email_otp, "_check_manual_stop"),
+            patch.object(recovery, "_check_manual_stop"),
+        ):
+            result = email_otp._wait_email_submit_next_state(driver, "unit@example.test", timeout=20,
+                                                           budget=StageBudget(60, clock=clock.time))
+        self.assertEqual(result, "otp")
+        driver.get.assert_called_once_with("https://chatgpt.com/auth/login")
+        driver.submit.assert_not_called()
+        self.assertEqual(receipt.phase, "confirmed")
+        self.assertLess(clock.now, 60)
+
+    def test_empty_next_route_and_hidden_inputs_do_not_confirm_recovery(self):
+        for snapshot in ({"url": "https://auth.openai.com/email-verification", "inputs": []},
+                         {"inputs": [{"type": "hidden", "visible": True}]},
+                         {"inputs": [{"type": "text", "visible": False}]},
+                         {"inputs": [{"type": "password", "visible": True}]}):
+            with self.subTest(snapshot=snapshot):
+                self.assertFalse(recovery.has_visible_auth_inputs(snapshot, allow_password=False))
+
+    def test_email_refresh_to_blank_otp_route_keeps_unknown_result(self):
+        driver, clock = _driver("https://chatgpt.com/auth/login"), _Clock()
+        driver._email_submission_receipt = {"id": "original"}
+        driver._browser_submission_receipt = BrowserSubmissionReceipt(kind="email", stage="submit_email", phase="ui_dispatched")
+        driver.get.side_effect = lambda _url: setattr(driver, "current_url", "https://auth.openai.com/email-verification")
+        driver.execute_script.side_effect = lambda *_args: {"url": driver.current_url, "inputs": []}
+        with (
+            patch.object(email_otp, "time", clock),
+            patch.object(email_otp, "_email_submit_advanced_state", side_effect=lambda _d, **_kw: "otp" if driver.get.called else None),
+            patch.object(email_otp, "_email_ui_submission_state", return_value="dispatched"),
+            patch.object(email_otp, "_check_manual_stop"),
+            patch.object(recovery, "_check_manual_stop"),
+        ):
+            with self.assertRaises(email_otp._EmailSubmissionUnknown):
+                email_otp._wait_email_submit_next_state(driver, "unit@example.test", timeout=20,
+                                                       budget=StageBudget(60, clock=clock.time))
+        self.assertEqual(driver._browser_submission_receipt.phase, "unknown")
+        driver.get.assert_called_once()
+
+    def test_profile_auth_error_refresh_and_back_recover_verified_session(self):
+        driver, clock = _driver("https://auth.openai.com/about-you"), _Clock()
+        error_url = "https://chatgpt.com/auth/error"
+        profile_url = driver.current_url
+        driver.execute_cdp_cmd.return_value = {
+            "currentIndex": 1, "entries": [{"url": profile_url}, {"url": error_url}],
+        }
+        driver.execute_script.return_value = {"valid": True, "fields": []}
+        driver.get.side_effect = lambda url: setattr(driver, "current_url", "https://chatgpt.com/" if url == profile_url else url)
+
+        def submit(_driver):
+            driver.current_url = error_url
+            return True
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(password_auth, "time", SimpleNamespace(time=clock.time, sleep=clock.sleep)))
+            stack.enter_context(patch.object(password_auth, "_page_snapshot", side_effect=lambda _d: {
+                "url": driver.current_url, "inputs": [{"name": "name"}, {"name": "age"}] if driver.current_url == profile_url else [],
+            }))
+            for name in ("human_delay", "_accept_profile_consents", "_check_manual_stop"):
+                stack.enter_context(patch.object(password_auth, name))
+            stack.enter_context(patch.object(recovery, "_check_manual_stop"))
+            stack.enter_context(patch.object(password_auth, "_fill_birthday_or_age", return_value="age"))
+            stack.enter_context(patch.object(password_auth, "_select_or_type", return_value=True))
+            click = stack.enter_context(patch.object(password_auth, "_click_if_enabled_submit", side_effect=submit))
+            session = stack.enter_context(patch.object(password_auth, "_read_profile_session_once", return_value={"accessToken": "test-session"}))
+            result = password_auth._complete_profile_page(driver, "Unit User", "2000-01-02", timeout=60,
+                                                          expected_email="unit@example.test")
+        self.assertTrue(result)
+        self.assertEqual([call.args[0] for call in driver.get.call_args_list], [error_url, profile_url])
+        click.assert_called_once()
+        session.assert_called_once()
+        self.assertEqual(session.call_args.kwargs["expected_email"], "unit@example.test")
+        self.assertLess(clock.now, 60)

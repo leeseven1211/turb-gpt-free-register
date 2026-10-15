@@ -1019,6 +1019,11 @@ def run_roxy_registration(
         data_saver.install_selenium(driver)
         traffic_capture = getattr(opened, "traffic_capture", None)
         if traffic_capture is not None:
+            from .submission_recovery import diagnostics_for
+
+            diagnostic_observer = getattr(traffic_capture, "set_auth_diagnostic_observer", None)
+            if callable(diagnostic_observer):
+                diagnostic_observer(diagnostics_for(driver).observe_network)
             setter = getattr(traffic_capture, "set_data_saver", None)
             if callable(setter):
                 setter(data_saver)
