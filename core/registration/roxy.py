@@ -1284,6 +1284,8 @@ def run_roxy_registration(
             from core.roxy_codex_oauth import complete_openai_login_challenge
 
             resume_kwargs = {"timeout": 45}
+            if password_submitted_this_run:
+                resume_kwargs["password_already_submitted"] = True
             if selected_email_source is not None:
                 resume_kwargs["otp_provider"] = lambda address, **kwargs: wait_for_otp(
                     address,

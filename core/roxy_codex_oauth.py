@@ -129,6 +129,34 @@ def _is_empty_auth_challenge_state(state: dict | None) -> bool:
     return not (state.get("inputs") or state.get("buttons") or state.get("errors"))
 
 
+def _open_offered_saved_password(driver, deadline: float) -> bool:
+    """已有密码时只使用验证码页真实提供的登录入口，沿用本轮预算。"""
+    from core.registration.password_auth import _resume_login_password_url
+    from selenium.common.exceptions import TimeoutException
+
+    target = _resume_login_password_url(driver)
+    if target is None:
+        return False
+    _auth_checkpoint()
+    remaining = max(0.0, deadline - time.time())
+    context = current_execution_context()
+    if context is not None and context.remaining() is not None:
+        remaining = min(remaining, context.remaining())
+    if remaining <= 0:
+        return False
+    old_timeout = getattr(getattr(driver, "timeouts", None), "page_load", None)
+    try:
+        driver.set_page_load_timeout(min(10.0, remaining))
+        driver.get(target)
+        logger.info("[Codex][Browser] 验证码页已提供密码登录入口，继续使用原保存密码")
+    except TimeoutException:
+        logger.warning("[Codex][Browser] 密码入口导航超时，继续在原预算内识别真实表单")
+    finally:
+        if isinstance(old_timeout, (int, float)):
+            driver.set_page_load_timeout(old_timeout)
+    return True
+
+
 def _refresh_auth_challenge_after_submit(driver, stage: str) -> None:
     """Refresh one stuck auth page without resubmitting a password or TOTP."""
     context = current_execution_context()
@@ -958,6 +986,7 @@ def _complete_login_challenge_after_email(
     on_password_confirmed=None,
     force_password_reset: bool = False,
     stage_reporter=None,
+    password_already_submitted: bool = False,
 ) -> str:
     """Resolve password/TOTP challenges and return ``email_otp`` or ``advanced``."""
     end = time.time() + max(5, int(timeout))
@@ -976,6 +1005,9 @@ def _complete_login_challenge_after_email(
     blank_login_shell_seen_at = 0.0
     email_resubmit_done = False
     nextauth_fallback_done = False
+    # 注册驱动可能已提交过保存密码，再交给公共状态机处理 OTP/TOTP。
+    # 这次交接不能重新获得一次密码入口和提交机会。
+    offered_password_attempted = password_already_submitted
     last_state: dict = {}
     last_url = ""
     while time.time() < end:
@@ -1318,6 +1350,10 @@ def _complete_login_challenge_after_email(
             )
 
         if _is_email_verification_page(driver):
+            if password and not offered_password_attempted and not password_submitted_at:
+                offered_password_attempted = True
+                if _open_offered_saved_password(driver, end):
+                    continue
             _clear_confirmed_email_submission(driver)
             logger.info("[Codex][Browser] 页面明确进入邮箱验证码分支：email=%s", email)
             return "email_otp"
@@ -1349,6 +1385,7 @@ def complete_openai_login_challenge(
     on_password_confirmed=None,
     force_password_reset: bool = False,
     stage_reporter=None,
+    password_already_submitted: bool = False,
 ) -> str:
     """注册恢复与 Codex OAuth 共用的密码/TOTP/邮箱 OTP 状态机。"""
     extra_kwargs = {}
@@ -1364,6 +1401,8 @@ def complete_openai_login_challenge(
         extra_kwargs['force_password_reset'] = True
     if stage_reporter is not None:
         extra_kwargs['stage_reporter'] = stage_reporter
+    if password_already_submitted:
+        extra_kwargs['password_already_submitted'] = True
     return _complete_login_challenge_after_email(
         driver,
         email,

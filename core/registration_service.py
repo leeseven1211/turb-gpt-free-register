@@ -2385,6 +2385,14 @@ def _account_for_job(job: dict) -> dict | None:
         except (TypeError, ValueError):
             pass
     email = str(job.get("email") or "").strip()
+    if not email and _attempt_id_for_job(job) is not None:
+        attempt, read_failed = _read_linked_attempt_for_job(job)
+        if not read_failed and attempt:
+            email = _registration_identity_email(job, job, attempt)
+            if email and attempt.get("account_id") is not None:
+                account = db.get_account(int(attempt["account_id"]))
+                if account and str(account.get("email") or "").strip().casefold() == email:
+                    return account
     batch_id = str(job.get("batch_id") or "").strip()
     if batch_id and email:
         try:
@@ -2606,6 +2614,36 @@ def _read_linked_attempt_for_job(job: dict) -> tuple[dict | None, bool]:
         return None, True
 
 
+def _registration_identity_email(source: dict, root: dict, attempt: dict | None) -> str:
+    """从同一根链核验邮箱；空根记录只复用 Attempt 已领取的身份。"""
+    if not attempt:
+        return ""
+    root_id = _root_job_id_for_job(source)
+    attempt_id = _attempt_id_for_job(source)
+    if (not root_id or str(root.get("id")) != str(root_id) or not attempt_id
+            or _attempt_id_for_job(root) != attempt_id or str(attempt.get("id")) != str(attempt_id)):
+        return ""
+    links = [attempt[key] for key in ("root_job_id", "source_root_job_id") if attempt.get(key) is not None]
+    if not links or any(str(value) != str(root_id) for value in links):
+        return ""
+    root_email = str(root.get("email") or "").strip().casefold()
+    snapshot = str(attempt.get("email_snapshot") or "").strip().casefold()
+    source_email = str(source.get("email") or "").strip().casefold()
+    expected = root_email or snapshot
+    if not expected or snapshot != expected:
+        return ""
+    if not root_email:
+        selected = str(root.get("email_source") or "").strip()
+        if (not selected or str(source.get("email_source") or "").strip() != selected
+                or (attempt.get("email_source") and str(attempt["email_source"]).strip() != selected)):
+            return ""
+        # 根任务领邮箱前即失败时没有地址；子任务仍必须保存同一领取结果。
+        if not source_email and str(source.get("id")) == str(root_id):
+            source_email = expected
+    legacy = str(attempt.get("email") or "").strip().casefold()
+    return expected if source_email == expected and (not legacy or legacy == expected) else ""
+
+
 def _registration_identity_facts_match(
     source: dict,
     root_job: dict,
@@ -2648,11 +2686,10 @@ def _registration_identity_facts_match(
                 return False
     if attempt.get("root_job_id") is None and attempt.get("source_root_job_id") is None:
         return False
-    expected_email = str(root_job.get("email") or "").strip().casefold()
+    expected_email = _registration_identity_email(source, root_job, attempt)
     if not expected_email:
         return False
     for address in (
-        source.get("email"),
         account.get("email"),
         attempt.get("email_snapshot"),
     ):
@@ -2719,8 +2756,9 @@ def _pre_account_identity_facts_match(
     if any(attempt.get(key) is not None and str(attempt[key]) != str(root_id)
            for key in ("root_job_id", "source_root_job_id")):
         return False
-    email = str(root.get("email") or "").strip().casefold()
-    if not email and allow_unclaimed_email:
+    email = _registration_identity_email(job, root, attempt)
+    if (not str(root.get("email") or "").strip() and not str(attempt.get("email_snapshot") or "").strip()
+            and allow_unclaimed_email):
         # 邮箱尚未领取、注册尚未开始时没有原邮箱可复用；仍核对同一来源及 Attempt，
         # 让新 Run 继续领取。已有邮箱、密码或任何远端提交事实都不能进入此分支。
         source = str(root.get("email_source") or "").strip()
@@ -2736,13 +2774,7 @@ def _pre_account_identity_facts_match(
             and attempt.get("local_account_state") in {"none", "not_started"}
             and (attempt.get("data") or {}).get("has_password") is not True
         )
-    if not email or any(str(value or "").strip().casefold() != email for value in (
-        job.get("email"), attempt.get("email_snapshot"),
-    )):
-        return False
-    if attempt.get("email") and str(attempt["email"]).strip().casefold() != email:
-        return False
-    return True
+    return bool(email)
 
 
 def _pre_account_resume_facts_match(job: dict, root: dict | None, attempt: dict | None) -> bool:
@@ -3117,7 +3149,6 @@ def get_retry_info_bulk(jobs: list[dict]) -> dict[int, dict]:
     ]
     successful_by_job = db.get_successful_retries_for_jobs(terminal)
     needs_accounts = [job for job in terminal if int(job.get("id") or 0) not in successful_by_job]
-    accounts_by_job = db.get_accounts_for_jobs(needs_accounts)
     roots = _retry_roots_for_jobs(terminal)
     root_ids = sorted({
         root_job_id
@@ -3141,6 +3172,18 @@ def get_retry_info_bulk(jobs: list[dict]) -> dict[int, dict]:
         else:
             # 查询成功但缺少某个已链接根任务，同样属于事实链损坏。
             attempt_read_failed_roots.update(set(root_ids) - set(attempts_by_root))
+    account_lookup_jobs = []
+    for job in needs_accounts:
+        lookup = job
+        if not str(job.get("email") or "").strip():
+            root_id = _root_job_id_for_job(job)
+            attempt = attempts_by_root.get(root_id)
+            root = roots.get(root_id) or job
+            email = _registration_identity_email(job, root, attempt)
+            if email:
+                lookup = dict(job, email=email, account_id=job.get("account_id") or attempt.get("account_id"))
+        account_lookup_jobs.append(lookup)
+    accounts_by_job = db.get_accounts_for_jobs(account_lookup_jobs)
     return {
         int(job.get("id") or 0): _build_retry_info(
             job,
@@ -3278,7 +3321,9 @@ def retry_job(
     if action == "registration":
         # 普通注册重跑属于同一根任务链；根任务保存的地址才是不可替换的原邮箱。
         # 仅为兼容根记录尚未回填邮箱的历史链，才退回当前失败任务自身的快照。
-        email = root_email or source_email
+        email = root_email or source_email or _registration_identity_email(source, root_job, attempt)
+    elif action == "registration_resume" and not email:
+        email = _registration_identity_email(source, root_job, attempt)
     if action == "registration":
         if root_record is None and root_id != int(source.get("id") or 0):
             return {

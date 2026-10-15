@@ -379,6 +379,24 @@ class ResumeSessionFlowTests(unittest.TestCase):
                 mocks["navigate"].assert_called_once()
                 mocks["persist"].assert_not_called()
 
+    def test_submitted_resume_password_is_forwarded_to_shared_challenge_without_replay(self):
+        with self.run_context() as (driver, mocks), patch(
+            "core.registration.checkpoints.save_protocol_password_checkpoint",
+        ):
+            driver.execute_async_script.return_value = {"ok": True, "status": 200, "data": {}, "json_valid": True}
+            mocks["navigate"].side_effect = None
+            mocks["_submit_email_and_wait_next"].return_value = "otp"
+
+            def password_submitted(*_args, **kwargs):
+                kwargs["on_password_submitted"]("unit-original-password")
+                return "unit-original-password"
+
+            mocks["_fill_password_page_if_present"].side_effect = password_submitted
+            mocks["login"].side_effect = RuntimeError("单测在公共登录边界结束")
+            self.run_registration()
+        mocks["login"].assert_called_once()
+        self.assertIs(mocks["login"].call_args.kwargs.get("password_already_submitted"), True)
+
 
     def test_unverified_resume_never_navigates_or_submits_or_persists(self):
         for response in (

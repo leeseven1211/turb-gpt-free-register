@@ -11,6 +11,72 @@ from core.registration.state_machine import StageBudget, StageTimeout
 
 
 class RoxyEmailOtpChallengeTests(unittest.TestCase):
+    def _resolve_offered_password(self, *, password="saved-password", offered=True, navigation_works=True,
+                                 password_already_submitted=False):
+        driver = MagicMock()
+        driver.current_url = "https://auth.openai.com/email-verification"
+        target = "https://auth.openai.com/log-in/password"
+        driver.get.side_effect = lambda url: setattr(driver, "current_url", url) if navigation_works else None
+        clock = [100.0]
+
+        def state(_driver):
+            return {"url": driver.current_url, "inputs": [{"name": "code"}], "errors": [], "buttons": []}
+
+        with (
+            patch.object(roxy_codex_oauth, "check_cancelled"),
+            patch.object(roxy_codex_oauth, "_login_challenge_state", side_effect=state),
+            patch.object(roxy_codex_oauth, "_is_totp_login_page", return_value=False),
+            patch.object(roxy_codex_oauth, "_is_login_password_page", side_effect=lambda _d: driver.current_url == target),
+            patch.object(roxy_codex_oauth, "_is_email_verification_page", side_effect=lambda _d: driver.current_url.endswith("email-verification")),
+            patch.object(roxy_codex_oauth, "_is_login_advanced", side_effect=lambda *_a: driver.current_url == "https://chatgpt.com/"),
+            patch("core.registration.password_auth._resume_login_password_url", return_value=target if offered else None),
+            patch.object(roxy_codex_oauth, "_submit_saved_login_password", side_effect=lambda *_a: setattr(driver, "current_url", "https://chatgpt.com/")) as submit,
+            patch.object(roxy_codex_oauth, "time", SimpleNamespace(time=lambda: clock[0], monotonic=lambda: clock[0], sleep=lambda s: clock.__setitem__(0, clock[0]+s))),
+            patch.object(roxy_codex_oauth, "human_delay"),
+        ):
+            result = roxy_codex_oauth.complete_openai_login_challenge(
+                driver, "unit@example.test", password, "", timeout=30,
+                **({"password_already_submitted": True} if password_already_submitted else {}),
+            )
+        return result, driver, submit
+
+    def test_saved_password_uses_offered_login_entry_before_waiting_for_email(self):
+        result, driver, submit = self._resolve_offered_password()
+        self.assertEqual(result, "advanced")
+        driver.get.assert_called_once_with("https://auth.openai.com/log-in/password")
+        submit.assert_called_once()
+
+    def test_missing_password_or_unoffered_entry_keeps_email_otp_flow(self):
+        for kwargs in ({"password": ""}, {"offered": False}):
+            with self.subTest(kwargs=kwargs):
+                result, driver, submit = self._resolve_offered_password(**kwargs)
+                self.assertEqual(result, "email_otp")
+                driver.get.assert_not_called()
+                submit.assert_not_called()
+
+    def test_offered_password_navigation_does_not_loop_when_page_stays_on_otp(self):
+        result, driver, submit = self._resolve_offered_password(navigation_works=False)
+        self.assertEqual(result, "email_otp")
+        driver.get.assert_called_once()
+        submit.assert_not_called()
+
+    def test_registration_password_already_submitted_continues_otp_without_password_replay(self):
+        result, driver, submit = self._resolve_offered_password(password_already_submitted=True)
+        self.assertEqual(result, "email_otp")
+        driver.get.assert_not_called()
+        submit.assert_not_called()
+
+    def test_offered_password_navigation_uses_remaining_parent_budget_and_restores_timeout(self):
+        driver = MagicMock()
+        driver.timeouts.page_load = 30
+        now = [100.0]
+        budget = StageBudget.start(2, clock=lambda: now[0])
+        with execution_context(AuthExecutionContext(budget=budget)), \
+             patch.object(roxy_codex_oauth.time, "time", side_effect=lambda: now[0]), \
+             patch("core.registration.password_auth._resume_login_password_url", return_value="https://auth.openai.com/log-in/password"):
+            self.assertTrue(roxy_codex_oauth._open_offered_saved_password(driver, 130))
+        self.assertEqual([c.args[0] for c in driver.set_page_load_timeout.call_args_list], [2, 30])
+
     def test_post_refresh_totp_delay_cannot_outlive_original_budget(self):
         now = [100.0]
         budget = StageBudget.start(1, clock=lambda: now[0])

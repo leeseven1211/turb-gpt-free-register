@@ -20,6 +20,54 @@ def pre_account_facts():
 
 
 class UnconfirmedRegistrationRetryTests(unittest.TestCase):
+    def test_child_acquired_email_keeps_retry_and_resume_when_root_has_no_email(self):
+        root, attempt = pre_account_facts()
+        child = dict(root, id=22, root_job_id=21, parent_job_id=21, status="failed")
+        root.update(email=None, status="failed")
+        for source in (root, child):
+            for has_password in (False, True):
+                with self.subTest(source=source["id"], has_password=has_password):
+                    saved = dict(attempt, checkpoint="password_request_started",
+                                 remote_identity_state="request_unknown", data={"has_password": has_password})
+                    info = svc._build_retry_info(source, account=None, attempt=saved,
+                                                successful_retry=None, root_job=root)
+                    self.assertTrue(info["retryable"], info)
+                    self.assertEqual(info["retry_action"], "registration_resume" if has_password else "registration")
+
+    def test_pending_account_can_resume_email_acquired_by_child(self):
+        root, child, account, attempt = facts()
+        root.update(email=None, account_id=None)
+        info = svc._build_retry_info(child, account=account, attempt=attempt,
+                                    successful_retry=None, root_job=root)
+        self.assertTrue(info["retryable"], info)
+        self.assertEqual(info["retry_action"], "registration_resume")
+
+    def test_empty_root_does_not_hide_email_or_source_conflicts(self):
+        for changes in ({"email": "other@example.test"}, {"email_source": "outlook"},
+                        {"email": None}, {"attempt_id": 99}):
+            with self.subTest(changes=changes):
+                root, attempt = pre_account_facts()
+                child = dict(root, id=22, root_job_id=21, status="failed", **changes)
+                root.update(email=None, status="failed")
+                info = svc._build_retry_info(child, account=None, attempt=attempt,
+                                            successful_retry=None, root_job=root)
+                self.assertFalse(info["retryable"])
+
+    def test_retry_from_empty_root_reuses_attempt_email_instead_of_acquiring_again(self):
+        root, attempt = pre_account_facts()
+        original_email = root["email"]
+        root.update(email=None, status="failed")
+        with patch.object(svc.db, "get_job", return_value=root), \
+             patch.object(svc, "is_job_worker_active", return_value=False), \
+             patch.object(svc, "_account_for_job", return_value=None), \
+             patch.object(svc, "_read_linked_attempt_for_job", return_value=(attempt, False)), \
+             patch.object(svc.db, "get_successful_retry_for_job", return_value=None), \
+             patch.object(svc.db, "create_retry_job", return_value=({"id": 23, "log_file": "/tmp/retry-empty-root.log"}, True)) as create, \
+             patch.object(svc, "get_executor", return_value=Mock()):
+            result = svc.retry_job(21)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(create.call_args.kwargs["email"], original_email)
+
     def test_email_acquisition_failure_can_retry_before_any_identity_was_started(self):
         job, attempt = pre_account_facts()
         job.update(status="failed", email=None, failure_stage="email")
@@ -33,7 +81,7 @@ class UnconfirmedRegistrationRetryTests(unittest.TestCase):
     def test_missing_email_is_not_replaced_after_auth_or_unknown_remote_submission(self):
         for changes in ({"checkpoint": "auth_started"}, {"remote_identity_state": "request_unknown"},
                         {"remote_account_state": "confirmed"}, {"local_account_state": "persisted"},
-                        {"email_snapshot": "already-held@example.test"}, {"source_root_job_id": 99},
+                        {"email_snapshot": "already-held@example.test", "email": "different@example.test"}, {"source_root_job_id": 99},
                         {"id": 99}, {"data": {"has_password": True}}):
             with self.subTest(changes=changes):
                 job, attempt = pre_account_facts()
@@ -42,6 +90,25 @@ class UnconfirmedRegistrationRetryTests(unittest.TestCase):
                 attempt.update(changes)
                 info = svc._build_retry_info(job, account=None, attempt=attempt, successful_retry=None)
                 self.assertFalse(info["retryable"])
+
+    def test_empty_root_account_lookup_and_bulk_reuse_linked_attempt_identity(self):
+        root, _child, account, attempt = facts()
+        root.update(email=None, account_id=None)
+        with patch.object(svc, "_read_linked_attempt_for_job", return_value=(attempt, False)), \
+             patch.object(svc.db, "get_account", return_value=account):
+            self.assertEqual(svc._account_for_job(root), account)
+
+        def account_lookup(jobs):
+            self.assertEqual(jobs[0]["email"], account["email"])
+            self.assertEqual(jobs[0]["account_id"], account["id"])
+            return {21: account}
+
+        with patch.object(svc.db, "get_successful_retries_for_jobs", return_value={}), \
+             patch.object(svc.db, "get_accounts_for_jobs", side_effect=account_lookup), \
+             patch("core.storage.registration.get_attempts_for_root_jobs", return_value={21: attempt}):
+            info = svc.get_retry_info_bulk([root])[21]
+        self.assertTrue(info["retryable"], info)
+        self.assertEqual(info["retry_action"], "registration_resume")
 
     def test_unconfirmed_driver_results_are_failed(self):
         for result in ({"request_unknown": True}, {"manual_reconcile": True},
