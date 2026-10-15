@@ -40,6 +40,21 @@ class ProfileSessionReadTests(unittest.TestCase):
         navigate.assert_not_called()
         self.assertIsNone(driver._registration_verified_session)
 
+    def test_otp_verified_session_is_reused_by_profile_then_consumed_by_token(self):
+        driver = self.driver()
+        expected = session_auth._read_profile_session_once(driver, timeout=15, expected_email="unit@example.test")
+        self.assertIs(session_auth._read_profile_session_once(driver, timeout=15, expected_email="unit@example.test"), expected)
+        self.assertIs(session_auth._fetch_chatgpt_session(driver, timeout=15), expected)
+        driver.execute_async_script.assert_called_once()
+        self.assertIsNone(driver._registration_verified_session)
+
+    def test_expired_verified_session_is_read_again_without_extending_old_cache(self):
+        driver = self.driver()
+        session_auth._read_profile_session_once(driver, timeout=15, expected_email="unit@example.test")
+        driver._registration_verified_session["expires_at"] = -1
+        session_auth._read_profile_session_once(driver, timeout=15, expected_email="unit@example.test")
+        self.assertEqual(driver.execute_async_script.call_count, 2)
+
     def test_missing_or_mismatched_identity_is_not_cached(self):
         for user in ({}, {"email": "other@example.test"}):
             driver = self.driver()

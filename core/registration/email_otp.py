@@ -38,7 +38,7 @@ from .selenium_dom import (
     _visible, _page_warmup,
 )
 from .selenium_resource import _browser_actions_enabled
-from .session_auth import _has_access_token
+from .session_auth import _has_access_token, _read_profile_session_once
 
 human_delay = _human_delay
 wait_for_otp = _wait_for_otp
@@ -2268,6 +2268,7 @@ def _wait_after_email_otp_submit(
     *,
     budget: StageBudget | None = None,
     baseline_state: dict | None = None,
+    expected_email: str | None = None,
 ) -> str:
     """提交 OTP 后等待明确的资料页、邮箱已验证提示或登录态。
 
@@ -2296,7 +2297,38 @@ def _wait_after_email_otp_submit(
     recovery_attempted = getattr(driver, "_email_otp_submission_recovery_id", None) == recovery_id
     recovery_at = started + max(5.0, timeout - RECOVERY_WINDOW_SECONDS)
     next_diagnostic_at = started + 15.0
+    session_probe_started = False
+    session_probe_failed = False
+    recovery_session_probes = 0
     log_submission_diagnostics(driver, "otp", "submitted", receipt=receipt)
+
+    def authenticated_home(read_budget, *, recovery=False):
+        nonlocal session_probe_started, session_probe_failed, recovery_session_probes
+        if not expected_email:
+            return _has_access_token(driver, budget=read_budget)
+        current = urlsplit(str(getattr(driver, "current_url", "") or ""))
+        if (current.scheme != "https" or current.hostname != "chatgpt.com" or current.port not in (None, 443)
+                or current.username or current.password or current.path.startswith(("/api/", "/auth/", "/login"))):
+            return False
+        if recovery:
+            if recovery_session_probes >= 2:
+                return False
+            recovery_session_probes += 1
+        elif session_probe_started:
+            return False
+        session_probe_started = True
+        remaining = read_budget.remaining(5 if recovery else 30)
+        if remaining <= 0:
+            return False
+        try:
+            _read_profile_session_once(driver, timeout=remaining, expected_email=expected_email)
+            return True
+        except RuntimeError as exc:
+            if not any(marker in str(exc) for marker in ("profile_session_read_failed", "profile_session_unconfirmed")):
+                raise
+            session_probe_failed = True
+            log_submission_diagnostics(driver, "otp", "session_read_failed", receipt=receipt)
+            return False
 
     def _new_error_mark(state: dict) -> bool:
         errors = tuple(str(item) for item in (state.get("errors") or []))
@@ -2322,7 +2354,7 @@ def _wait_after_email_otp_submit(
                 return "totp_required"
             if page_state == PageState.PROFILE:
                 return "accepted"
-        if _has_access_token(driver, budget=recovery_budget):
+        if authenticated_home(recovery_budget, recovery=True):
             return "accepted"
         if auth_session_unavailable(driver):
             return "session_expired"
@@ -2363,7 +2395,7 @@ def _wait_after_email_otp_submit(
         if last.get("emailVerified"):
             return "email_verified"
         if (page_state == PageState.PROFILE and (not recovery_attempted or has_visible_auth_inputs(last, allow_password=False))
-                or _has_access_token(driver, budget=confirmation_budget)):
+                or authenticated_home(confirmation_budget)):
             return 'accepted'
         if page_state == PageState.LOGGED_OUT or auth_session_unavailable(driver):
             log_submission_diagnostics(driver, "otp", "auth_session_unavailable", receipt=receipt)
@@ -2379,7 +2411,7 @@ def _wait_after_email_otp_submit(
                 reason = ""
         else:
             driver._email_otp_blank_seen_at = None
-        if not recovery_attempted and (reason or page_state in {PageState.AUTH_ERROR, PageState.LOGGED_OUT}
+        if not recovery_attempted and (reason or session_probe_failed or page_state in {PageState.AUTH_ERROR, PageState.LOGGED_OUT}
                                        or time.monotonic() >= recovery_at):
             recovered = recover_once()
             if recovered:

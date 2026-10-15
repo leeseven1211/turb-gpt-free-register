@@ -1336,7 +1336,7 @@ def run_roxy_registration(
         )
         if retained_state and retained_state.pending_otp:
             # 未确认的原 POST 只观察同一回执；不进入收码、填码或重发分支。
-            outcome = _wait_after_email_otp_submit(driver, timeout=60, budget=otp_budget)
+            outcome = _wait_after_email_otp_submit(driver, timeout=60, budget=otp_budget, expected_email=email)
             if outcome == "session_expired":
                 raise RuntimeError("request_unknown: auth_session_unavailable: 原验证码页认证会话不可用，已保留原 Attempt，需沿用原身份重新登录")
             if outcome not in {"accepted", "email_verified", "totp_required"}:
@@ -1548,6 +1548,7 @@ def run_roxy_registration(
             outcome = _wait_after_email_otp_submit(
                 driver, timeout=60, budget=otp_budget,
                 baseline_state=otp_submit_baseline,
+                expected_email=email,
             )
             if outcome in ("accepted", "email_verified", "totp_required"):
                 record_browser_submission_fact(driver, "confirmed", receipt=otp_submission, result="success")

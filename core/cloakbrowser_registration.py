@@ -226,6 +226,7 @@ def run_cloak_registration(
                 timeout=60,
                 budget=otp_budget,
                 baseline_state=otp_submit_baseline,
+                expected_email=email,
             )
             if outcome in ("accepted", "email_verified", "totp_required"):
                 record_browser_submission_fact(driver, "confirmed", receipt=otp_submission, result="success")

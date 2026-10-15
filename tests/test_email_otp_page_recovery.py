@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 
 from selenium.common.exceptions import TimeoutException
 
-from core.registration import email_otp, roxy, submission_recovery
+from core.registration import email_otp, roxy, session_auth, submission_recovery
 from core.registration.browser_submission import BrowserSubmissionReceipt
 from core.registration.state_machine import StageBudget
 from core.cloakbrowser_driver import CloakSeleniumDriver
@@ -132,6 +132,62 @@ class EmailOtpPageRecoveryTests(unittest.TestCase):
         self.assertFalse(self._recover(driver, state=driver.state, budget=self._budget(15)))
         self.assertEqual(self._wait_ready(driver, budget=self._budget(15)), "ready")
         self.assertEqual(driver.refresh_count, 0)
+
+    def test_otp_home_confirmation_reads_one_complete_identity_matched_session(self):
+        state = {"url": "https://chatgpt.com/", "text": "ChatGPT", "inputs": [], "errors": []}
+        driver = _FakeDriver(state)
+
+        def complete_read(_script, timeout_ms):
+            self.assertGreater(timeout_ms, 3500)
+            self.clock.now += 3.5
+            return {"ok": True, "status": 200, "json_valid": True,
+                    "data": {"accessToken": "test-token", "user": {"email": "unit@example.test"}}}
+
+        driver.execute_async_script = Mock(side_effect=complete_read)
+        with patch.object(session_auth, "time", self.clock), patch.object(email_otp, "_has_access_token") as quick:
+            self.assertEqual(email_otp._wait_after_email_otp_submit(
+                driver, timeout=15, budget=self._budget(20), expected_email="unit@example.test",
+            ), "accepted")
+        driver.execute_async_script.assert_called_once()
+        quick.assert_not_called()
+        self.assertEqual(driver._registration_verified_session["email"], "unit@example.test")
+        self.assertEqual(driver.get_calls, [])
+
+    def test_otp_home_confirmation_rejects_a_different_session_identity(self):
+        driver = _FakeDriver({"url": "https://chatgpt.com/", "text": "ChatGPT", "inputs": []})
+        driver.execute_async_script = Mock(return_value={
+            "ok": True, "status": 200, "json_valid": True,
+            "data": {"accessToken": "test-token", "user": {"email": "other@example.test"}},
+        })
+        with patch.object(session_auth, "time", self.clock), self.assertRaisesRegex(RuntimeError, "session_identity_mismatch"):
+            email_otp._wait_after_email_otp_submit(driver, timeout=15, expected_email="unit@example.test")
+        self.assertEqual(driver.get_calls, [])
+
+    def test_slow_session_confirmation_does_not_keep_starting_short_probes_or_replay_otp(self):
+        driver = _FakeDriver({"url": "https://chatgpt.com/", "text": "ChatGPT", "inputs": []})
+        receipt = BrowserSubmissionReceipt(kind="otp", stage="email_otp", endpoint_kind="otp_submit", phase="unknown")
+        driver._browser_submission_receipt = receipt
+
+        def incomplete(_script, timeout_ms):
+            self.clock.now += timeout_ms / 1000
+            return {"ok": False, "error_type": "timeout"}
+
+        driver.execute_async_script = Mock(side_effect=incomplete)
+        budget = self._budget(60)
+        with (patch.object(session_auth, "time", self.clock),
+              patch.object(email_otp, "_has_access_token") as quick,
+              patch.object(email_otp, "_type_otp") as fill,
+              patch.object(email_otp, "_click_resend_email_otp") as resend):
+            self.assertEqual(email_otp._wait_after_email_otp_submit(
+                driver, budget=budget, expected_email="unit@example.test",
+            ), "stuck")
+        self.assertLessEqual(driver.execute_async_script.call_count, 3)
+        self.assertEqual(driver.get_calls, ["https://chatgpt.com/"])
+        self.assertEqual(receipt.phase, "unknown")
+        self.assertLessEqual(self.clock.now, budget.deadline + 0.01)
+        quick.assert_not_called()
+        fill.assert_not_called()
+        resend.assert_not_called()
 
     def test_missing_auth_session_stops_even_when_otp_form_is_visible(self):
         driver = _FakeDriver(_form_state())

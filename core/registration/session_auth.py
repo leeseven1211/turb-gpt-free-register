@@ -264,26 +264,35 @@ def _read_chatgpt_session_once(driver, *, timeout: float | None = None, strict_r
 
 
 def _read_profile_session_once(driver, *, timeout: float, expected_email: str | None = None) -> dict:
-    """资料提交后只读取一次完整会话，身份匹配后供紧接着的 Token 阶段复用。"""
+    """认证后读取完整会话，匹配身份后供资料确认和 Token 阶段短时复用。"""
+    expected = str(expected_email or "").strip().casefold()
+    cached = getattr(driver, "_registration_verified_session", None)
+    if timeout > 0 and expected and isinstance(cached, dict):
+        data = cached.get("data")
+        user = data.get("user") if isinstance(data, dict) else None
+        actual = str(user.get("email") or "").strip().casefold() if isinstance(user, dict) else ""
+        if (isinstance(data, dict) and data.get("accessToken") and actual == expected == cached.get("email")
+                and time.monotonic() < cached.get("expires_at", 0)
+                and str(getattr(driver, "current_url", "")) == cached.get("url")):
+            return data
     try:
         data = _read_chatgpt_session_once(driver, timeout=timeout)
     except Exception as exc:
         _checkpoint()
         # 只记录异常类型，避免把浏览器原文中的 Cookie、Token 或账号带入摘要。
         exception_type = type(exc).__name__
-        logger.warning("%s 资料会话读取未完成，异常类型=%s", _log_prefix(driver), exception_type)
+        logger.warning("%s 完整会话读取未完成，异常类型=%s", _log_prefix(driver), exception_type)
         raise RuntimeError(
             "request_unknown: profile_session_read_failed: "
-            f"资料提交后的会话读取未完成，已保留原提交（异常类型={exception_type}）"
+            f"认证提交后的会话读取未完成，已保留原提交（异常类型={exception_type}）"
         ) from exc
     if not isinstance(data, dict) or not data.get("accessToken"):
-        raise RuntimeError("request_unknown: profile_session_unconfirmed: 资料提交后的会话尚未确认登录态，已保留原提交")
-    expected = str(expected_email or "").strip().casefold()
+        raise RuntimeError("request_unknown: profile_session_unconfirmed: 认证提交后的会话尚未确认登录态，已保留原提交")
     if expected:
         user = data.get("user")
         actual = str(user.get("email") or "").strip().casefold() if isinstance(user, dict) else ""
         if not actual or actual != expected:
-            raise RuntimeError("request_unknown: session_identity_mismatch: 资料会话身份未匹配任务邮箱，已停止确认")
+            raise RuntimeError("request_unknown: session_identity_mismatch: 会话身份未匹配任务邮箱，已停止确认")
         driver._registration_verified_session = {
             "data": data, "email": expected, "url": str(driver.current_url),
             "expires_at": time.monotonic() + 30.0,
