@@ -1884,7 +1884,7 @@ def _email_otp_form_is_ready(state: dict) -> bool:
 
 
 def _email_otp_page_recovery_reason(state: dict) -> str:
-    """只恢复邮箱验证路由的空壳和已观察到的 HTML 内容类型错误。"""
+    """只恢复邮箱验证路由的空壳、内容类型错误和明确的服务端路由错误。"""
     if not isinstance(state, dict):
         return ""
     try:
@@ -1904,6 +1904,8 @@ def _email_otp_page_recovery_reason(state: dict) -> str:
         return ""
     if all(marker in text for marker in ("route error", "400", "invalid content type", "text/html")):
         return "route_content_type_error"
+    if re.search(r"route error\s*\(\s*5\d{2}\b", text):
+        return "route_server_error"
     if state.get("errors") or "text" not in state:
         return ""
     for button in state.get("buttons") or []:

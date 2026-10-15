@@ -14,6 +14,18 @@ from core.registration.state_machine import (
 
 
 class RegistrationStateMachineContractTests(unittest.TestCase):
+    def test_sleep_crossing_poll_deadline_between_clock_reads_never_uses_negative_delay(self):
+        ticks = iter((0.0, 0.0, 0.099, 0.099, 0.101))
+        budget = StageBudget(10, clock=lambda: next(ticks, 0.101))
+        delays = []
+
+        def sleeper(seconds):
+            self.assertGreaterEqual(seconds, 0)
+            delays.append(seconds)
+
+        budget.sleep(0.1, sleeper=sleeper)
+        self.assertEqual(delays, [])
+
     def test_roxy_page_states_are_explicit_and_password_intent_is_not_guessed(self):
         self.assertEqual(
             classify_page({

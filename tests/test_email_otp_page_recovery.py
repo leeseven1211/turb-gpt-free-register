@@ -208,6 +208,49 @@ class EmailOtpPageRecoveryTests(unittest.TestCase):
         self.assertLess(self.clock.now, 103.0)
         self.assertEqual(self._wait_ready(driver, budget=self._budget(15)), "ready")
 
+    def test_observed_internal_route_error_recovers_form_with_original_budget(self):
+        state = _route_error_state()
+        state["text"] = '不明なエラーが発生しました Route Error (500 Internal Server Error): {"isTrusted": true} もう一度試す'
+        state["errors"] = [state["text"]]
+        driver = _FakeDriver(state, refreshed_state=_form_state())
+        budget = self._budget(8)
+        deadline = budget.deadline
+        self.assertEqual(self._reason(state), "route_server_error")
+        self.assertEqual(self._wait_ready(driver, budget=budget), "ready")
+        self.assertEqual(driver.get_calls, [_OTP_URL])
+        self.assertEqual(budget.deadline, deadline)
+        self.assertLessEqual(self.clock.now, deadline)
+
+    def test_route_server_error_requires_route_signature_and_has_no_security_challenge(self):
+        for text in ("500 Internal Server Error", "Route Error (403 Forbidden)",
+                     "Route Error (500 Internal Server Error) verify you are human",
+                     "Route Error (500 Internal Server Error) account_deactivated"):
+            with self.subTest(text=text):
+                state = _route_error_state()
+                state["text"] = text
+                self.assertEqual(self._reason(state), "")
+
+    def test_internal_route_error_after_submit_keeps_unknown_receipt_and_never_replays_otp(self):
+        state = _route_error_state()
+        state["text"] = 'Route Error (500 Internal Server Error): {"isTrusted": true}'
+        driver = _FakeDriver(state, refreshed_state=_form_state())
+        receipt = BrowserSubmissionReceipt(
+            kind="otp", stage="email_otp", endpoint_kind="otp_submit", phase="unknown", result="unknown",
+        )
+        driver._browser_submission_receipt = receipt
+        before = vars(receipt).copy()
+        with (
+            patch.object(email_otp, "_type_otp") as fill,
+            patch.object(email_otp, "_click_resend_email_otp") as resend,
+            patch.object(roxy, "_submit_email_otp_current_form") as submit,
+        ):
+            self.assertEqual(self._wait_after_submit(driver, budget=self._budget(8)), "stuck")
+        self.assertEqual(driver.get_calls, [_OTP_URL])
+        self.assertEqual(vars(receipt), before)
+        fill.assert_not_called()
+        resend.assert_not_called()
+        submit.assert_not_called()
+
     def test_refresh_keeps_the_original_submitted_or_unknown_receipt_unchanged(self):
         for phase in ("request_observed", "unknown"):
             with self.subTest(phase=phase):
@@ -432,7 +475,7 @@ class EmailOtpPageRecoveryTests(unittest.TestCase):
         disabled = _blank_state()
         disabled.update(text="Your account has been deactivated", errors=["account_deactivated"])
         other_error = _route_error_state()
-        other_error["text"] = "Route Error (500 Internal Server Error)"
+        other_error["text"] = "Route Error (403 Forbidden)"
         external = _route_error_state()
         external["url"] = "https://example.test/email-verification"
         deceptive_host = _route_error_state()

@@ -541,7 +541,7 @@ class _SummaryOnlyCDPSession:
             return "nextauth_csrf"
         if "/api/auth/signin/" in path:
             return "nextauth_signin"
-        if path.endswith("/api/accounts/password") or "/password" in path and "/api/" in path:
+        if path.endswith(("/api/accounts/password", "/api/accounts/user/register")) or "/password" in path and "/api/" in path:
             return "password_submit"
         if "email-otp" in path and path.endswith(("/validate", "/verify")):
             return "otp_submit"

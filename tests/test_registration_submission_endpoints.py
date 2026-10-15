@@ -68,15 +68,27 @@ class RegistrationSubmissionEndpointTests(unittest.TestCase):
         self.assertEqual([event["endpoint_kind"] for event in observed], ["password_submit"] * 2)
         self.assertEqual([event["http_method"] for event in observed], ["POST"] * 2)
 
+    def test_create_password_register_post_pairs_with_original_password_receipt(self):
+        receipt = BrowserSubmissionReceipt(
+            kind="password", stage="password_create", phase="dispatch_intent", endpoint_kind="password_submit",
+        )
+        driver = SimpleNamespace(_browser_submission_receipts=[receipt])
+        observed = self._observe_request_and_response("/api/accounts/user/register")
+        self.assertEqual([event["endpoint_kind"] for event in observed], ["password_submit"] * 2)
+        self.assertTrue(all(
+            _unique_submission_receipt_for_endpoint(driver, event["endpoint_kind"]) is receipt
+            for event in observed
+        ))
+
     def test_business_get_cannot_create_dispatch_evidence(self):
-        for path in ("/api/accounts/password", "/api/accounts/email-otp/validate",
+        for path in ("/api/accounts/password", "/api/accounts/user/register", "/api/accounts/email-otp/validate",
                      "/api/accounts/email-otp/verify", "/api/accounts/email-otp/send",
                      "/api/accounts/email-otp/resend"):
             with self.subTest(path=path):
                 self.assertEqual(self._observe_request_and_response(path, "GET"), [])
 
     def test_missing_business_method_is_not_defaulted_to_post(self):
-        for path in ("/api/accounts/password", "/api/accounts/email-otp/validate",
+        for path in ("/api/accounts/password", "/api/accounts/user/register", "/api/accounts/email-otp/validate",
                      "/api/accounts/email-otp/send"):
             with self.subTest(path=path):
                 self.assertEqual(self._observe_request_and_response(path, None), [])

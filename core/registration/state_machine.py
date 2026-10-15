@@ -232,7 +232,11 @@ class StageBudget:
         sleeper = sleeper or time.sleep
         while self.clock() < end:
             remaining = self.require("等待")
-            sleeper(min(0.1, remaining, end - self.clock()))
+            delay = min(0.1, remaining, end - self.clock())
+            # 两次读时钟之间可能跨过轮询截止点，不能把负数交给 time.sleep。
+            if delay <= 0:
+                break
+            sleeper(delay)
         self.check_cancelled()
 
 
