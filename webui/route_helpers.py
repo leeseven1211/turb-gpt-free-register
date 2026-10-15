@@ -246,7 +246,7 @@ def _compact_account_for_list(row: dict) -> dict:
         "plus_promo_promotion_type_label", "plus_trial_campaign_id", "plus_trial_title",
         "plus_trial_discount_percentage", "plus_trial_duration_num_periods",
         "plus_trial_duration_period", "plus_trial_promotion_type_label",
-        "account_promotions", "promotion_query_snapshot",
+        "account_promotions", "promotion_query_snapshot", "plan_check_countries", "plan_check_partial",
         # 额度窗口快照（来自 ChatGPT /wham/usage，不返回原始响应）。
         "quota_status", "quota_checked_at", "quota_http_status", "quota_error",
         "quota_type", "quota_windows", "quota_last_success_at",
@@ -271,6 +271,9 @@ def _compact_account_for_list(row: dict) -> dict:
         value = row.get(key)
         if value is not None and value != "":
             out[key] = value
+    if "plan_check_country_results" in row:
+        from core.plan_check_countries import public_country_results
+        out["plan_check_country_results"] = public_country_results(row["plan_check_country_results"])
     fingerprint_summary = _compact_fingerprint_summary(row)
     if fingerprint_summary:
         out["fingerprint_summary"] = fingerprint_summary

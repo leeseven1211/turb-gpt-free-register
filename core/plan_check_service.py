@@ -76,6 +76,10 @@ PLAN_CONFIG_ALLOWLIST = {
     "driver": "ACCOUNT_PLAN_CHECK_DRIVER",
     "proxy_allow_reuse": "PLAN_CHECK_PROXY_ALLOW_REUSE",
     "proxy_reuse_limit": "PLAN_CHECK_PROXY_REUSE_LIMIT",
+    "countries": "PLAN_CHECK_COUNTRIES",
+    "country_wait_timeout": "PLAN_CHECK_COUNTRY_WAIT_TIMEOUT",
+    "legacy_route_source": "ACCOUNT_ACTION_PROXY_MODE",
+    "registration_route_source": "REGISTRATION_PROXY_MODE",
 }
 
 
@@ -331,7 +335,8 @@ def _plan_result_summary(result: dict) -> dict:
         "http_status", "current_plan_type", "plus_trial_eligible",
         "plus_discount_eligible", "plus_promo_kind", "plus_promo_discount_percentage",
         "plus_promo_duration_num_periods", "plus_promo_duration_period",
-        "checked_at", "token_expires_at",
+        "checked_at", "token_expires_at", "plan_check_countries", "plan_check_partial",
+        "country_success_count", "country_total_count", "failed_countries",
     )
     summary = {"ok": bool(result.get("ok")), **{key: result.get(key) for key in keys}}
     for key in ("account_promotions", "promotion_query_snapshot"):
@@ -340,10 +345,111 @@ def _plan_result_summary(result: dict) -> dict:
     if isinstance(result.get("promotion_query_history"), list):
         # 完整证据按响应保存在独立任务事件中，摘要只保存查询索引。
         summary["promotion_query_history"] = [
-            {key: record.get(key) for key in ("phase", "ok", "http_status", "checked_at", "current_plan_type")}
+            {key: record.get(key) for key in ("phase", "country", "ok", "http_status", "checked_at", "current_plan_type")}
             for record in result["promotion_query_history"]
         ]
     return summary
+
+
+def _run_country_plan_checks(
+    *, account_id: int, email: str, access_token: str, trigger: str, proxy: str | None,
+    timezone_offset_min: str, countries: list[str], reporter, operation_context,
+    config_snapshot: dict | None, proxy_source: str | None, fence: dict | None = None,
+) -> dict:
+    """逐国查询并立即保存结果，单国缺货或请求失败不会跳过后续国家。"""
+    from core.account_proxy import acquire_account_proxy
+    from core.plan_check_countries import aggregate_country_results, now_iso
+    from core.storage import plan_countries
+
+    from config.countries import normalize_plan_check_countries
+    countries = normalize_plan_check_countries(countries)
+    timeout = max(1, min(60, float(_snapshot_value(config_snapshot, "plan_check_timeout", 15))))
+    attempts = max(1, min(4, int(_snapshot_value(config_snapshot, "plan_check_max_attempts", 2))))
+    wait_timeout = float(_snapshot_value(config_snapshot, "country_wait_timeout", getattr(proxy_cfg, "PLAN_CHECK_COUNTRY_WAIT_TIMEOUT", 60)))
+    rate_budget = (float(_snapshot_value(config_snapshot, "min_interval", .4)) + float(_snapshot_value(config_snapshot, "jitter", .3))) * (configured_workers() + 1)
+    budget = len(countries) * (wait_timeout + timeout * (attempts + 1) + 30 * (attempts - 1) + rate_budget + 35)
+    rows = plan_countries.begin_country_checks(account_id, countries, fence=fence, budget_seconds=budget)
+    history = []
+    for country in countries:
+        _checkpoint(operation_context, "逐国查询前检查取消状态")
+        plan_countries.set_country_running(account_id, country, fence=fence)
+        route = None
+        answer = None
+        try:
+            reporter.stage("network", "running", f"正在申请 {country} 套餐查询线路")
+            def report_wait(message, selected=country):
+                plan_countries.set_country_running(account_id, selected, fence=fence)
+                reporter.note(f"{selected} · {message}", stage="network")
+            route = acquire_account_proxy(
+                account_id=account_id, email=email, purpose="plan-check", region=country,
+                explicit_proxy=proxy,
+                source=proxy_source or _snapshot_value(config_snapshot, "route_source") or None,
+                allow_reuse=bool(_snapshot_value(config_snapshot, "proxy_allow_reuse", getattr(proxy_cfg, "PLAN_CHECK_PROXY_ALLOW_REUSE", True))),
+                reuse_limit=int(_snapshot_value(config_snapshot, "proxy_reuse_limit", getattr(proxy_cfg, "PLAN_CHECK_PROXY_REUSE_LIMIT", 3))),
+                timeout=float(_snapshot_value(config_snapshot, "country_wait_timeout", getattr(proxy_cfg, "PLAN_CHECK_COUNTRY_WAIT_TIMEOUT", 60))),
+                cancel=lambda: _checkpoint(operation_context, "等待国家代理时检查取消状态"),
+                progress_callback=report_wait,
+            )
+            route_info = route.public_dict()
+            actual_country = str(route_info.get("proxy_region") or getattr(route, "region", "") or "").upper()
+            if actual_country != country:
+                raise ValueError(f"请求 {country} 出口，实际检测为 {actual_country or '未知'}，未执行该国查询；请使用支持指定国家的代理来源")
+            reporter.resource("resource.acquired", message=f"已领取 {country} 查询线路", detail={**route_info, "country": country})
+            reporter.stage("network", "success", f"{country} 查询线路已就绪")
+            reporter.stage("plan_check", "running", f"正在查询 {country} 套餐优惠")
+            _checkpoint(operation_context)
+            answer = _query_account_plan(
+                email=email, access_token=access_token, trigger=trigger, proxy=route.proxy_url,
+                timezone_offset_min=timezone_offset_min, config_snapshot=config_snapshot,
+            )
+            answer.update({key: value for key, value in route_info.items() if key not in {"proxy_used", "proxy_url"}})
+        except (account_task_store.OperationLeaseLost, OperationCancelled):
+            raise
+        except Exception as exc:
+            answer = {"ok": False, "checked_at": now_iso(), "error": sanitize_promotion_text(f"{type(exc).__name__}: {exc}")}
+        finally:
+            if route is not None:
+                route.release(reason=f"plan-check-{account_id}-{country}", **(
+                    {"fault": True} if answer and answer.get("proxy_transport_failure") is True else {}
+                ))
+        _checkpoint(operation_context, "保存国家查询结果前检查取消状态")
+        rows = plan_countries.record_country_result(account_id, country, answer, fence=fence)
+        records = answer.get("promotion_query_history") or [_plan_query_record(answer, phase="initial")]
+        for record in records:
+            record["country"] = country
+        history.extend(records)
+        _record_promotion_queries(reporter, {**answer, "promotion_query_history": records})
+        reporter.note(
+            f"{country} 套餐查询{'成功' if answer.get('ok') else '失败，继续其他国家'}",
+            stage="plan_check", level="INFO" if answer.get("ok") else "WARNING",
+            detail={"country": country, "ok": bool(answer.get("ok")), "error": sanitize_promotion_text(answer.get("error"))},
+        )
+    result = aggregate_country_results(rows)
+    result["promotion_query_history"] = history
+    plan_countries.save_country_summary(account_id, result, fence=fence)
+    count = result["country_success_count"]
+    message = f"国家查询完成：{count}/{len(countries)} 成功"
+    if result["failed_countries"]:
+        message += "；失败国家：" + "、".join(result["failed_countries"])
+    reporter.stage("plan_check", "success" if result["ok"] else "failed", message)
+    task_status = "partial_success" if result["plan_check_partial"] else "success" if result["ok"] else "failed"
+    reporter.finish(status=task_status, message=message,
+                    error=result.get("error"), result_summary=_plan_result_summary(result), validation_method="access_token")
+    return result
+
+
+def _interrupted_country_result(account_id: int, error_result: dict, *, fence: dict | None) -> dict:
+    from core.storage.plan_countries import finish_unfinished_countries
+    from core.plan_check_countries import aggregate_country_results
+    rows = finish_unfinished_countries(account_id, status=error_result.get("status") or "failed", error=error_result["error"], fence=fence)
+    result = aggregate_country_results(rows)
+    result.update(error_result)
+    result["promotion_query_history"] = [
+        {"phase": "initial", "country": row["country"], "ok": row.get("status") == "success",
+         "http_status": row.get("http_status"), "checked_at": row.get("checked_at")}
+        for row in rows
+    ]
+    return result
 
 
 def _log_plan_result(email: str, trigger: str, result: dict) -> None:
@@ -377,15 +483,26 @@ def _run_plan_check(
     release_queue_slot: bool = False,
     config_snapshot: dict | None = None,
     proxy_source: str | None = None,
+    countries: list[str] | None = None,
 ) -> dict:
     account_route = None
     result = None
     reporter = _ReporterAdapter(task_id, operation_context)
     preflight_open = True
     failure_stage = "preflight"
+    multi_country = bool(countries) and not str(trigger).startswith("registration")
+    fence = None
+    if multi_country:
+        from core.storage import plan_countries
     try:
+        if multi_country:
+            fence = getattr(operation_context, "execution_fence", None)
         _checkpoint(operation_context)
-        if not db.mark_account_plan_check_running(account_id):
+        if multi_country:
+            marked = plan_countries.mark_country_task_running(account_id, fence=fence)
+        else:
+            marked = db.mark_account_plan_check_running(account_id)
+        if not marked:
             reporter.finish(
                 status="cancelled",
                 message="账号已删除或套餐查询状态已被重置",
@@ -396,6 +513,14 @@ def _run_plan_check(
         # network，避免线路申请异常被错误归到 plan_check。
         reporter.stage("preflight", "success", "套餐查询预检通过")
         preflight_open = False
+
+        if multi_country:
+            return _run_country_plan_checks(
+                account_id=account_id, email=email, access_token=access_token, trigger=trigger,
+                proxy=proxy, timezone_offset_min=timezone_offset_min, countries=countries,
+                reporter=reporter, operation_context=operation_context,
+                config_snapshot=config_snapshot, proxy_source=proxy_source, fence=fence,
+            )
 
         from core.account_proxy import acquire_account_proxy
         _checkpoint(operation_context, "套餐查询申请线路前检查取消状态")
@@ -437,6 +562,8 @@ def _run_plan_check(
             timezone_offset_min=timezone_offset_min,
             config_snapshot=config_snapshot,
         )
+        if countries == [] and not str(trigger).startswith("registration"):
+            result.update(plan_check_countries=[], plan_check_partial=False)
         result.update({
             key: value
             for key, value in account_route.public_dict().items()
@@ -476,13 +603,20 @@ def _run_plan_check(
             "error": str(exc) or "套餐查询任务已取消",
             "cancelled": True,
         }
+        if multi_country:
+            result = _interrupted_country_result(account_id, result, fence=fence)
         try:
-            db.update_account_plan_check(acc_id=account_id, result=result)
+            if multi_country:
+                plan_countries.save_country_summary(account_id, result, fence=fence)
+            else:
+                db.update_account_plan_check(acc_id=account_id, result=result)
+        except account_task_store.OperationLeaseLost:
+            raise
         except Exception:
             logger.exception("[Plan] 取消状态写回失败: account_id=%s", account_id)
         if preflight_open:
             reporter.note("套餐查询在预检完成前取消", stage="preflight", level="WARNING", detail={"cancelled": True})
-        reporter.finish(status="cancelled", message="套餐查询任务已取消", error=result["error"])
+        reporter.finish(status="cancelled", message="套餐查询任务已取消", error=result["error"], result_summary=_plan_result_summary(result))
         return result
     except Exception as exc:
         result = {
@@ -490,8 +624,15 @@ def _run_plan_check(
             "checked_at": datetime.now().isoformat(timespec="seconds"),
             "error": f"{type(exc).__name__}: {str(exc)[:180]}",
         }
+        if multi_country:
+            result = _interrupted_country_result(account_id, result, fence=fence)
         try:
-            db.update_account_plan_check(acc_id=account_id, result=result)
+            if multi_country:
+                plan_countries.save_country_summary(account_id, result, fence=fence)
+            else:
+                db.update_account_plan_check(acc_id=account_id, result=result)
+        except account_task_store.OperationLeaseLost:
+            raise
         except Exception:
             logger.exception("[Plan] 写入后台查询异常状态失败: account_id=%s", account_id)
         logger.exception("[Plan] 后台查询异常: %s", email)
@@ -506,6 +647,7 @@ def _run_plan_check(
             error=result["error"],
             route=account_route.public_dict() if account_route is not None else None,
             validation_method="access_token",
+            result_summary=_plan_result_summary(result),
         )
         return result
     finally:
@@ -689,6 +831,7 @@ def _handle_plan_operation(context):
                     or _snapshot_value(context.config_snapshot, "route_source")
                     or ""
                 ).strip() or None,
+                countries=data.get("countries") if isinstance(data.get("countries"), list) else None,
             )
     return None
 
@@ -713,6 +856,28 @@ def start_dispatcher() -> bool:
     return bool(starter()) if callable(starter) else False
 
 
+def _country_proxy_source(snapshot) -> str:
+    """国家、线路与预算都从同一不可变配置版本派生。"""
+    from core.account_proxy import normalize_proxy_source
+    values = snapshot.as_dict() if callable(getattr(snapshot, "as_dict", None)) else snapshot
+    configured = str(values.get("ACCOUNT_PLAN_CHECK_PROXY_MODE", "direct") or "direct")
+    legacy = str(values.get("ACCOUNT_ACTION_PROXY_MODE", "registration") or "registration")
+    sources = getattr(snapshot, "sources", {})
+    if sources.get("ACCOUNT_PLAN_CHECK_PROXY_MODE", "default") == "default" and configured == "direct" and normalize_proxy_source(legacy) != "registration":
+        configured = legacy
+    mode = normalize_proxy_source(configured)
+    if mode != "registration":
+        return mode
+    registration = str(values.get("REGISTRATION_PROXY_MODE", "pool") or "none").lower()
+    if registration in {"none", "direct"}:
+        return "direct"
+    if registration == "pool":
+        return "pool"
+    if registration in {"1024", "1024proxy", "provider"}:
+        return "provider:1024proxy"
+    raise ValueError("无法解析冻结的注册代理来源")
+
+
 def _submit_native_plan(
     *, account_id: int, email: str, trigger: str, timezone_offset_min: str,
     batch_id: str | None, idempotency_key: str | None,
@@ -723,6 +888,17 @@ def _submit_native_plan(
         f"maintenance:plan_check:{account_id}:{key}"
         if key else f"maintenance:plan_check:{account_id}:{uuid.uuid4().hex}"
     )
+    country_data = {}
+    snapshot_kwargs = {"config_snapshot_provider": get_config_snapshot}
+    if not str(trigger).startswith("registration"):
+        from config.countries import normalize_plan_check_countries
+        snapshot = get_config_snapshot()
+        values = snapshot.as_dict() if callable(getattr(snapshot, "as_dict", None)) else snapshot
+        country_data["countries"] = normalize_plan_check_countries(values.get("PLAN_CHECK_COUNTRIES", []))
+        source = _country_proxy_source(snapshot)
+        snapshot_kwargs = {"config_snapshot": snapshot}
+    else:
+        source = _captured_proxy_source("plan-check")
     return account_task_store.submit_durable_operation(
         task_type="plan_check",
         account_id=account_id,
@@ -734,14 +910,15 @@ def _submit_native_plan(
         batch_id=_numeric_batch_id(batch_id),
         resource_family="openai_interactive",
         data={
+            **country_data,
             "timezone_offset_min": str(timezone_offset_min or "-"),
             # This is a route mode, never a proxy URL.  Capturing the
             # effective source also preserves the legacy registration-mode
             # fallback while preventing a queued Run from changing route
             # halfway through execution.
-            "proxy_source": _captured_proxy_source("plan-check"),
+            "proxy_source": source,
         },
-        config_snapshot_provider=get_config_snapshot,
+        **snapshot_kwargs,
         config_allowlist=PLAN_CONFIG_ALLOWLIST,
         dispatch=True,
     )

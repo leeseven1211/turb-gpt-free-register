@@ -834,6 +834,9 @@ class MaintenanceDurableGatewayTests(PostgresTestCase):
         account_id = self._account("plan-maintenance@example.test")
         route = _Route()
         with (
+            patch.object(plan_check_service, "get_config_snapshot", return_value=_ConfigSnapshot({
+                "PLAN_CHECK_COUNTRIES": [], "ACCOUNT_PLAN_CHECK_PROXY_MODE": "direct",
+            }, revision=702)),
             patch.object(plan_check_service, "_query_account_plan", return_value={
                 "ok": True,
                 "http_status": 200,

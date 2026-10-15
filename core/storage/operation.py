@@ -4219,6 +4219,7 @@ def retry_runtime_task(task_id: int, *, trigger: str = "manual_retry", data: dic
                     "plan_check_trigger": str(trigger or "manual_retry"),
                     "plan_check_queued_at": queued_at,
                     "plan_check_started_at": None,
+                    "plan_check_deadline_at": None,
                     "plan_check_completed_at": None,
                     "plan_check_error": None,
                     "plan_check_http_status": None,
@@ -5473,6 +5474,11 @@ def _remote_checkpoint_fence(
     elif run.get("account_id") is not None and require_lease:
         raise PermissionError("账号 remote write 缺少 lease")
     return run
+
+
+def fence_execution(cur, run_id: int, *, execution_id: str, lease_token: str) -> dict:
+    """在调用方事务中按 Run → 账号顺序锁定并校验结果写入所有权。"""
+    return _remote_checkpoint_fence(cur, run_id, execution_id=execution_id, lease_token=lease_token, require_lease=True)
 
 
 def _remote_checkpoint_event(

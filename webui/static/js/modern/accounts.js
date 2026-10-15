@@ -44,6 +44,8 @@ function accountTaskResultText(task) {
   }
   if (task.task_type === 'plan_check') {
     const plan = String(result.current_plan_type || '');
+    const countrySummary = _accountCountryTaskSummary(result, task.status);
+    if (countrySummary) return `${plan ? `套餐 ${plan} · ` : ''}${countrySummary}`;
     if (Array.isArray(result.account_promotions)) {
       const promotions = _accountPromotionGroups(_accountPromotions(result)).map(_accountPromotionGroupLabel).join(' · ');
       return `${plan ? `套餐 ${plan} · ` : ''}${promotions}`;
@@ -1384,6 +1386,10 @@ function _showAccountsTooltip(target) {
 
 (function bindAccountsHoverTooltips() {
   const targetFor = (node) => node?.closest?.(_accountsTooltipSelector()) || null;
+  const showFocusedTooltip = (event) => {
+    const target = targetFor(event.target);
+    if (target && (!target.closest('#accountTaskStageProgress, #batchProgressListV2') || target.matches(':focus-visible'))) _showAccountsTooltip(target);
+  };
   document.addEventListener('mouseover', (event) => {
     const target = targetFor(event.target);
     if (!target || (event.relatedTarget && target.contains(event.relatedTarget))) return;
@@ -1395,17 +1401,26 @@ function _showAccountsTooltip(target) {
     if (!target || (event.relatedTarget && target.contains(event.relatedTarget))) return;
     if (!_accountsTooltipTarget || _accountsTooltipTarget === target) _scheduleAccountsTooltipHide();
   });
-  document.addEventListener('focusin', (event) => {
-    const target = targetFor(event.target);
-    if (target && (!target.closest('#accountTaskStageProgress, #batchProgressListV2') || target.matches(':focus-visible'))) _showAccountsTooltip(target);
-  });
+  document.addEventListener('focusin', showFocusedTooltip);
+  // 捕获 focus 与 focusin 共用入口，键盘聚焦也能打开完整优惠提示。
+  document.addEventListener('focus', showFocusedTooltip, true);
   document.addEventListener('focusout', (event) => {
     const target = targetFor(event.target);
     if (!target || (event.relatedTarget && target.contains(event.relatedTarget))) return;
     if (!_accountsTooltipTarget || _accountsTooltipTarget === target) _scheduleAccountsTooltipHide();
   });
   window.addEventListener('scroll', event => {
-    if (!_accountsTooltipNode?.contains(event.target)) _hideAccountsTooltip();
+    if (_accountsTooltipNode?.contains(event.target)) return;
+    const target = _accountsTooltipTarget;
+    // 聚焦可触发表格自动横向滚动，仍可见的国家优惠需要重新定位提示。
+    if (target?.closest('.col-trial') && document.activeElement === target) {
+      const rect = target.getBoundingClientRect();
+      if (rect.right > 0 && rect.left < window.innerWidth && rect.bottom > 0 && rect.top < window.innerHeight) {
+        _showAccountsTooltip(target);
+        return;
+      }
+    }
+    _hideAccountsTooltip();
   }, true);
   window.addEventListener('resize', _hideAccountsTooltip);
   document.addEventListener('click', event => {
@@ -1592,6 +1607,126 @@ function _accountPromotions(r) {
     },
   ];
 }
+function _accountCountryResultError(entry) {
+  const error = String(entry?.error || '').trim();
+  if (error) return error;
+  const status = Number(entry?.http_status);
+  return Number.isFinite(status) && status > 0 ? `HTTP ${status}` : '';
+}
+function _accountCountryResultItems(entry, overallStatus = '') {
+  const country = String(entry?.country || '').trim().toUpperCase();
+  const status = String(entry?.status || '').trim().toLowerCase();
+  const overall = String(overallStatus || '').trim().toLowerCase();
+  const result = entry?.result && typeof entry.result === 'object' ? entry.result : null;
+  const hasSnapshot = Boolean(result && Object.keys(result).length && entry?.last_success_at);
+  const withMeta = (items, stale = false) => items.map(item => ({...item, country, stale}));
+  const overallPending = ['queued', 'running'].includes(overall);
+  const overallAborted = ['failed', 'cancelled'].includes(overall);
+  if (status === 'success' && overallPending) {
+    const items = result ? _accountPromotions(result) : ['go', 'plus'].map(plan => ({plan, kind: 'unknown'}));
+    return {country, items: withMeta(items, true), stale: true,
+      context: `${country}：${overall === 'queued' ? '新任务排队中' : '新任务正在执行'}；沿用上次成功快照${entry?.checked_at ? `；上次成功查询: ${entry.checked_at}` : ''}`};
+  }
+  if (['queued', 'running'].includes(status) && overallAborted) {
+    const cancelled = overall === 'cancelled';
+    if (hasSnapshot) {
+      return {country, items: withMeta(_accountPromotions(result), true), stale: true,
+        context: `${country}：${cancelled ? '已取消' : '查询中断'}；显示上次成功快照；上次成功查询: ${entry.last_success_at}`};
+    }
+    return {country, items: ['go', 'plus'].map(plan => ({plan, kind: cancelled ? 'cancelled' : 'failed', country})), stale: false,
+      context: `${country}：${cancelled ? '已取消' : '查询中断'}`};
+  }
+  if (status === 'queued' || status === 'running') {
+    return {country, items: ['go', 'plus'].map(plan => ({plan, kind: 'pending', country})), stale: false,
+      context: `${country}：${status === 'queued' ? '查询排队中' : '查询中'}${entry?.checked_at ? `；记录于 ${entry.checked_at}` : ''}`};
+  }
+  if (status === 'success') {
+    const items = result ? _accountPromotions(result) : ['go', 'plus'].map(plan => ({plan, kind: 'unknown'}));
+    return {country, items: withMeta(items), stale: false, context: entry?.checked_at ? `${country}：查询于 ${entry.checked_at}` : `${country}：查询完成`};
+  }
+  const error = _accountCountryResultError(entry) || (status === 'cancelled' ? '查询已取消' : '未知错误');
+  if (hasSnapshot) {
+    return {country, items: withMeta(_accountPromotions(result), true), stale: true,
+      context: `${country}：显示上次成功快照；上次成功查询: ${entry.last_success_at}；本次查询${status === 'cancelled' ? '取消' : '失败'}: ${error}`};
+  }
+  return {country, items: ['go', 'plus'].map(plan => ({plan, kind: status === 'cancelled' ? 'cancelled' : 'failed', country})), stale: false,
+    context: `${country}：本次查询${status === 'cancelled' ? '取消' : '失败'}: ${error}`};
+}
+function _accountCountryPromotionDisplays(r) {
+  // 空数组是后端明确关闭多国查询的信号；历史国家结果必须留在数据中，但不能覆盖最新单次查询投影。
+  if (Array.isArray(r?.plan_check_countries) && r.plan_check_countries.length === 0) return [];
+  const countryResults = Array.isArray(r?.plan_check_country_results)
+    ? r.plan_check_country_results.filter(item => item && String(item.country || '').trim())
+    : [];
+  if (countryResults.length) return countryResults.map(item => _accountCountryResultItems(item, r?.plan_check_status));
+  const items = Array.isArray(r?.account_promotions)
+    ? _accountPromotions(r).filter(item => String(item.country || '').trim())
+    : [];
+  if (!items.length) return [];
+  const grouped = new Map();
+  items.forEach(item => {
+    const country = String(item.country || '').trim().toUpperCase();
+    if (!grouped.has(country)) grouped.set(country, []);
+    grouped.get(country).push({...item, country});
+  });
+  return [...grouped.entries()].map(([country, countryItems]) => ({
+    country,
+    items: ['go', 'plus'].flatMap(plan => {
+      const matches = countryItems.filter(item => item.plan === plan);
+      return matches.length ? matches : [{plan, kind: 'unknown', country}];
+    }),
+    stale: countryItems.some(item => item.stale === true),
+    context: `${country}：${countryItems.some(item => item.stale === true) ? '显示上次成功快照' : '查询结果'}`,
+  }));
+}
+function _accountCountryPromotionBest(display) {
+  return [...(display?.items || [])].sort(_compareAccountPromotions)[0] || {plan: 'go', kind: 'unknown'};
+}
+function _accountCountryPromotionDetail(display) {
+  const details = (display?.items || []).map(item => _accountPromotionDetail(item));
+  return [details.join('；'), display?.context || ''].filter(Boolean).join('；');
+}
+function _accountCountryTaskSummaryData(r) {
+  const countries = Array.isArray(r?.plan_check_countries)
+    ? r.plan_check_countries.map(value => String(value || '').trim().toUpperCase()).filter(Boolean)
+    : [];
+  const totalRaw = r?.country_total_count;
+  const successRaw = r?.country_success_count;
+  const totalIsNumber = typeof totalRaw === 'number' && Number.isFinite(totalRaw) && totalRaw > 0;
+  const successIsNumber = typeof successRaw === 'number' && Number.isFinite(successRaw) && successRaw >= 0;
+  const failedCountries = Array.isArray(r?.failed_countries)
+    ? r.failed_countries.map(value => typeof value === 'object' ? value?.country : value).map(value => String(value || '').trim().toUpperCase()).filter(Boolean)
+    : [];
+  const hasCounts = totalIsNumber || countries.length > 0;
+  if (!hasCounts) return null;
+  const total = totalIsNumber ? totalRaw : countries.length;
+  const success = successIsNumber ? successRaw : 0;
+  return {countries, total, success, failedCountries};
+}
+function _accountCountryTaskSummary(r, overallTaskStatus = '') {
+  const results = Array.isArray(r?.plan_check_country_results)
+    ? r.plan_check_country_results.filter(item => item && String(item.country || '').trim())
+    : [];
+  const summaryData = _accountCountryTaskSummaryData(r);
+  if (!results.length && !summaryData) return '';
+  const success = results.length ? results.filter(item => String(item.status || '').toLowerCase() === 'success').length : summaryData.success;
+  const total = results.length ? results.length : summaryData.total;
+  const failed = results.length
+    ? results.filter(item => ['failed', 'cancelled'].includes(String(item.status || '').toLowerCase())).length
+    : summaryData.failedCountries.length;
+  const active = results.some(item => ['queued', 'running'].includes(String(item.status || '').toLowerCase())) || ['queued', 'running'].includes(String(overallTaskStatus || '').toLowerCase());
+  const allFailed = total > 0 && success === 0 && failed >= total;
+  const interrupted = ['failed', 'cancelled'].includes(String(overallTaskStatus || '').toLowerCase()) && active;
+  const state = allFailed ? ' · 全部失败' : interrupted ? ` · ${overallTaskStatus === 'cancelled' ? '已取消' : '查询中断'}` : failed && success ? ' · 部分失败' : active ? ' · 查询中' : '';
+  const failedText = (!results.length && summaryData.failedCountries.length) ? ` · 失败国家：${summaryData.failedCountries.join('、')}` : '';
+  const offers = _accountCountryPromotionDisplays(r).map(display => {
+    const best = _accountCountryPromotionBest(display);
+    const label = _accountPromotionLabel(best);
+    const plan = ['free_trial', 'discount', 'other_promo'].includes(best.kind) ? `${_promotionPlanLabel(best.plan)}: ` : '';
+    return `${display.country} ${plan}${label}`;
+  }).join(' · ');
+  return `国家查询 ${success}/${total} 个国家成功${state}${failedText}${offers ? ` · ${offers}` : ''}`;
+}
 function _accountPromotionLabel(item) {
   const periods = Number(item.duration_num_periods);
   const units = {month: '个月', year: '年', week: '周', day: '天'};
@@ -1604,7 +1739,7 @@ function _accountPromotionLabel(item) {
     const discount = percentage === 50 ? '五折' : (Number.isFinite(percentage) && percentage > 0 && percentage < 100 ? `减 ${percentage}%` : '折扣');
     return `${discount}${duration}`;
   }
-  const labels = {other_promo: '其他优惠', none: '无优惠', unknown: '待核验', pending: '待查询', failed: '查询失败', not_applicable: '不适用'};
+  const labels = {other_promo: '其他优惠', none: '无优惠', unknown: '待核验', pending: '待查询', failed: '查询失败', cancelled: '已取消', not_applicable: '不适用'};
   return labels[item.kind] || '待核验';
 }
 function _accountPromotionDetail(item, context = '') {
@@ -1635,10 +1770,11 @@ function _accountPromotionDisplay(r) {
 function _accountPromotionTone(item) {
   if (item.kind === 'free_trial') return 'success';
   if (item.kind === 'failed') return 'danger';
+  if (item.kind === 'cancelled') return 'danger';
   return ['discount', 'other_promo', 'unknown', 'pending'].includes(item.kind) ? 'warning' : 'neutral';
 }
 function _compareAccountPromotions(a, b) {
-  const priority = {free_trial: 0, discount: 1, other_promo: 2, unknown: 3, pending: 4, failed: 5, none: 6, not_applicable: 7};
+  const priority = {free_trial: 0, discount: 1, other_promo: 2, unknown: 3, pending: 4, failed: 5, cancelled: 5, none: 6, not_applicable: 7};
   const kind = (priority[a.kind] ?? 3) - (priority[b.kind] ?? 3);
   if (kind) return kind;
   if (['free_trial', 'discount'].includes(a.kind)) {
@@ -1675,8 +1811,19 @@ function _accountPromotionGroupDetail(group, context = '') {
   return details.join('；');
 }
 function _promotionCell(r) {
-  const display = _accountPromotionDisplay(r);
   const classes = {success: 'status-success', danger: 'status-failed', warning: 'status-running', neutral: 'status-used'};
+  const countryDisplays = _accountCountryPromotionDisplays(r);
+  if (countryDisplays.length) {
+    return `<div class="account-promotion-cell account-promotion-cell--countries">${countryDisplays.map(display => {
+      const best = _accountCountryPromotionBest(display);
+      const hasOffer = ['free_trial', 'discount', 'other_promo'].includes(best.kind);
+      const bestLabel = `${hasOffer ? `${_promotionPlanLabel(best.plan)}: ` : ''}${_accountPromotionLabel(best)}`;
+      const detail = _accountCountryPromotionDetail(display);
+      const countryBadge = `<span class="account-promotion-country">${esc(display.country)}${display.stale ? '<span class="account-promotion-stale">历史</span>' : ''}</span>`;
+      return `<span class="pill ${classes[_accountPromotionTone(best)]}${display.stale ? ' is-stale' : ''}" data-accounts-tooltip="${esc(detail)}" tabindex="0">${countryBadge}<span class="account-promotion-label">${esc(bestLabel)}</span></span>`;
+    }).join('')}</div>`;
+  }
+  const display = _accountPromotionDisplay(r);
   const best = [...display.items].sort(_compareAccountPromotions)[0];
   const hasOffer = ['free_trial', 'discount', 'other_promo'].includes(best.kind);
   const label = `${hasOffer ? `${_promotionPlanLabel(best.plan)}: ` : ''}${_accountPromotionLabel(best)}`;
@@ -1900,6 +2047,34 @@ function _accountDetailRoxyProfileState(r) {
     profileId ? `Profile ID: ${profileId}` : '',
   );
 }
+function _accountCountryDetailMarkup(r, displays) {
+  const resultByCountry = new Map((Array.isArray(r?.plan_check_country_results) ? r.plan_check_country_results : [])
+    .filter(item => item && String(item.country || '').trim())
+    .map(item => [String(item.country).trim().toUpperCase(), item]));
+  const statusLabels = {queued: '排队中', running: '查询中', success: '已完成', failed: '失败', cancelled: '已取消'};
+  const success = [...resultByCountry.values()].filter(item => String(item.status || '').toLowerCase() === 'success').length;
+  const total = resultByCountry.size;
+  const failed = [...resultByCountry.values()].filter(item => ['failed', 'cancelled'].includes(String(item.status || '').toLowerCase())).length;
+  const active = [...resultByCountry.values()].some(item => ['queued', 'running'].includes(String(item.status || '').toLowerCase()));
+  const overallStatus = String(r?.plan_check_status || '').toLowerCase();
+  const overallAborted = ['failed', 'cancelled'].includes(overallStatus) && active;
+  const allFailed = total > 0 && success === 0 && failed >= total;
+  const partial = !allFailed && ((success > 0 && failed > 0) || (r.plan_check_partial === true && success > 0));
+  const state = allFailed ? ' · 全部失败' : overallAborted ? ` · ${overallStatus === 'cancelled' ? '已取消' : '查询中断'}` : partial ? ' · 部分失败' : active ? ' · 查询中' : '';
+  const summary = total ? `${success}/${total} 个国家成功${state}` : '未记录国家结果';
+  return `${displays.map(display => {
+    const entry = resultByCountry.get(display.country);
+    const best = _accountCountryPromotionBest(display);
+    const status = String(entry?.status || '').toLowerCase();
+    const statusText = display.stale && ['queued', 'running'].includes(overallStatus)
+      ? (overallStatus === 'queued' ? '新任务排队中' : '新任务正在执行')
+      : overallAborted && ['queued', 'running'].includes(status)
+        ? (overallStatus === 'cancelled' ? '已取消' : '查询中断')
+        : statusLabels[status] || '结果待确认';
+    const context = [statusText, _accountCountryPromotionDetail(display)].filter(Boolean).join('；');
+    return _accountDetailState(`${display.country} 优惠`, _accountPromotionGroupLabel({plan: best.plan, items: [best], lead: best}), _accountPromotionTone(best), context);
+  }).join('')}${_accountDetailState('多国套餐检查', summary, allFailed || overallAborted ? 'danger' : partial || active ? 'warning' : 'success', r.plan_checked_at ? `检查于 ${_fmtPlanTime(r.plan_checked_at)}` : '')}`;
+}
 function _accountDetailMarkup(r) {
   const liveHttpStatus = _liveCheckHttpStatus(r);
   const liveHttpLabel = liveHttpStatus ? ` (HTTP ${liveHttpStatus})` : '';
@@ -1911,6 +2086,7 @@ function _accountDetailMarkup(r) {
   const liveTone = r.live_check_status === 'live' ? 'success' : (r.live_check_status === 'failed' ? 'danger' : (r.live_check_status === 'running' ? 'warning' : 'neutral'));
   const plan = (r.current_plan_type || r.plan_type || '未查询').toString();
   const promotionDisplay = _accountPromotionDisplay(r);
+  const countryDisplays = _accountCountryPromotionDisplays(r);
   const codexRaw = (r.codex_status || r.codex_execution_status || '').toString().toLowerCase();
   const codexLabels = { success: '已通过', completed: '已通过', failed: '失败', deactivated: '已废号', running: '补跑中', queued: '排队中', cancelling: '停止中', retrying: '补跑中', stopped: '已停止', pending_confirmation: '待确认', skipped: '已跳过' };
   const codex = codexLabels[codexRaw] || '未授权';
@@ -1950,7 +2126,7 @@ function _accountDetailMarkup(r) {
     <div class="account-detail-section-title">套餐与授权</div>
     <div class="account-detail-grid">
       ${_accountDetailState('当前套餐', plan, plan.toLowerCase() === 'free' ? 'info' : 'success', r.plan_checked_at ? `检查于 ${_fmtPlanTime(r.plan_checked_at)}` : '')}
-      ${_accountPromotionGroups(promotionDisplay.items).map(group => _accountDetailState(`${_promotionPlanLabel(group.plan)} 优惠`, _accountPromotionGroupLabel(group), _accountPromotionTone(group.lead), _accountPromotionGroupDetail(group, promotionDisplay.context))).join('')}
+      ${countryDisplays.length ? _accountCountryDetailMarkup(r, countryDisplays) : _accountPromotionGroups(promotionDisplay.items).map(group => _accountDetailState(`${_promotionPlanLabel(group.plan)} 优惠`, _accountPromotionGroupLabel(group), _accountPromotionTone(group.lead), _accountPromotionGroupDetail(group, promotionDisplay.context))).join('')}
       ${_accountDetailState('Codex', codex, codexTone)}
       ${_accountDetailState('套餐检查', r.plan_checked_at ? _fmtPlanTime(r.plan_checked_at) : '未检查')}
     </div>

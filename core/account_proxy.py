@@ -284,15 +284,25 @@ def acquire_account_proxy(
         from core.proxy_pool import acquire
         from core.task_run_log import current_context
         context = current_context()
-        lease = acquire(provider="proxy_pool", static_urls=urls, purpose=purpose,
-                        account_id=account_id, operation_task_id=context.get("task_id"),
-                        operation_run_id=context.get("run_id"),
-                        allow_reuse=purpose == "plan-check" and (
-                            bool(getattr(cfg, "PLAN_CHECK_PROXY_ALLOW_REUSE", True)) if allow_reuse is None else bool(allow_reuse)
-                        ), **({"reuse_limit": reuse_limit} if purpose == "plan-check" and reuse_limit is not None else {}),
-                        **{key: value for key, value in {
-                            "cancel": cancel, "progress_callback": progress_callback, "timeout": timeout,
-                        }.items() if value is not None})
+        pool_kwargs = {
+            "provider": "proxy_pool", "static_urls": urls, "purpose": purpose,
+            "account_id": account_id, "operation_task_id": context.get("task_id"),
+            "operation_run_id": context.get("run_id"),
+            "allow_reuse": purpose == "plan-check" and (
+                bool(getattr(cfg, "PLAN_CHECK_PROXY_ALLOW_REUSE", True)) if allow_reuse is None else bool(allow_reuse)
+            ),
+        }
+        # 多国家查询明确传入目标国家时，静态池按国家建立独立 profile；
+        # 注册和旧的单国家静态路径不传 region，继续沿用原 profile。
+        selected_region = str(region or "").strip().upper()
+        if selected_region:
+            pool_kwargs["region"] = selected_region
+        if purpose == "plan-check" and reuse_limit is not None:
+            pool_kwargs["reuse_limit"] = reuse_limit
+        pool_kwargs.update({key: value for key, value in {
+            "cancel": cancel, "progress_callback": progress_callback, "timeout": timeout,
+        }.items() if value is not None})
+        lease = acquire(**pool_kwargs)
         return AccountProxyRoute(lease.proxy_url, "proxy_pool", mode, region=lease.region, lease=lease, purpose=purpose)
 
     if not mode.startswith("provider:"):

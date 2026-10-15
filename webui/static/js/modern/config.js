@@ -174,7 +174,7 @@ function proxyConfigSectionForKey(key) {
   if (key === 'PROXY_POOL' || key.startsWith('PROXY_POOL_')) {
     return ['独立代理池', '后台统一维护可用代理库存；注册、续跑和套餐查询等任务只领取满足用途、地区与剩余寿命要求的租约。'];
   }
-  if (['ACCOUNT_PASSWORD_PROXY_MODE','ACCOUNT_2FA_PROXY_MODE','ACCOUNT_PLAN_CHECK_PROXY_MODE','PLAN_CHECK_PROXY_ALLOW_REUSE','PLAN_CHECK_PROXY_REUSE_LIMIT','ACCOUNT_LIVE_CHECK_PROXY_MODE','ACCOUNT_REFRESH_AT_PROXY_MODE','ACCOUNT_CODEX_PROXY_MODE','ACCOUNT_EMAIL_CHANGE_PROXY_MODE'].includes(key)) {
+  if (['ACCOUNT_PASSWORD_PROXY_MODE','ACCOUNT_2FA_PROXY_MODE','ACCOUNT_PLAN_CHECK_PROXY_MODE','PLAN_CHECK_PROXY_ALLOW_REUSE','PLAN_CHECK_PROXY_REUSE_LIMIT','PLAN_CHECK_COUNTRIES','PLAN_CHECK_COUNTRY_WAIT_TIMEOUT','ACCOUNT_LIVE_CHECK_PROXY_MODE','ACCOUNT_REFRESH_AT_PROXY_MODE','ACCOUNT_CODEX_PROXY_MODE','ACCOUNT_EMAIL_CHANGE_PROXY_MODE'].includes(key)) {
     return ['账号动作线路', '分别设置补密码、补 2FA、查套餐、查活、刷新 AT、邮箱换绑和 Codex OAuth 的代理来源。'];
   }
   if (key === 'REGISTRATION_PROXY_MODE') {
@@ -755,7 +755,8 @@ function renderConfigControlMarkupV2(f) {
   } else if (f.type === 'bool') {
     control = `<input class="config-switch-v2-toggle config-setting-toggle-v2" type="checkbox" role="switch" data-key="${attrEsc(f.key)}"${fv ? ' checked' : ''} aria-label="${attrEsc(f.label)}">`;
   } else if (f.type === 'list_str_multiline') {
-    control = `<textarea data-key="${attrEsc(f.key)}" placeholder="每行一条，可留空">${attrEsc((fv || []).join('\n'))}</textarea>`;
+    const placeholder = f.key === 'PLAN_CHECK_COUNTRIES' ? '支持换行、逗号或空格分隔，可留空' : '每行一条，可留空';
+    control = `<textarea data-key="${attrEsc(f.key)}" placeholder="${attrEsc(placeholder)}">${attrEsc((fv || []).join('\n'))}</textarea>`;
   } else {
     const shown = isPlaceholderEmpty(fv) ? '' : fv;
     const inputType = f.secret ? 'password' : 'text';
@@ -1451,7 +1452,10 @@ function readConfigElementValue(el, f) {
   if (!f) return undefined;
   if (el.dataset.toggleOnValue) return el.checked ? el.dataset.toggleOnValue : el.dataset.toggleOffValue;
   if (el.multiple) return Array.from(el.selectedOptions || []).map(option => option.value).join(',');
-  if (f.type === 'list_str_multiline') return el.value.split('\n').map(s=>s.trim()).filter(Boolean);
+  if (f.type === 'list_str_multiline') {
+    const separator = f.key === 'PLAN_CHECK_COUNTRIES' ? /[\s,]+/ : /\n/;
+    return el.value.split(separator).map(s=>s.trim()).filter(Boolean);
+  }
   if (f.type === 'bool') {
     if (el.type === 'checkbox') return !!el.checked;
     return el.value === 'true';

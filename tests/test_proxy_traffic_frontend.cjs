@@ -154,6 +154,30 @@ test('代理池摘要展示各状态并只渲染脱敏库存字段', () => {
   assert.doesNotMatch(nodes.get('proxyPoolBody').innerHTML, /proxy_url|username|password/);
 });
 
+test('代理池库存显示按国家的脱敏统计并保留等待与目标库存', () => {
+  const {api, nodes} = createView();
+  nodes.set('proxyPoolPanelStatus', {textContent: ''});
+  nodes.set('proxyPoolBody', {innerHTML: ''});
+  api.setPool({
+    policy: {max_size: 20, min_ready: 2},
+    counts: {ready: 3},
+    waiting_local: 4,
+    country_pools: [
+      {provider: '1024proxy', region: 'JP', counts: {ready: 2, checking: 1}, waiting_local: 3, target_ready: 5},
+      {provider: 'roxy', region: 'VN', counts: {ready: 1, leased: 2}, waiting_local: 1, target_ready: 4},
+    ],
+    items: [],
+  });
+  api.renderPool();
+  const html = nodes.get('proxyPoolBody').innerHTML;
+  assert.match(html, /JP/);
+  assert.match(html, /VN/);
+  assert.match(html, /可领取 2/);
+  assert.match(html, /等待 3/);
+  assert.match(html, /目标 5/);
+  assert.doesNotMatch(html, /proxy_url|username|password/);
+});
+
 test('浏览器详情用独立触发按钮避免单元格内展开裁切', () => {
   const {api} = createView();
   const html = api.renderTraffic({

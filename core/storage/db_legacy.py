@@ -309,21 +309,21 @@ def _save_jobs(rows: list[dict]) -> None:
 compat_export.register("generic_api_emails", _export_generic_api_emails)
 
 
-def _patch_row_and_export(spec, row_id: int, changes: dict, kind: str) -> bool:
+def _patch_row_and_export(spec, row_id: int, changes: dict, kind: str, *, conn=None) -> bool:
     """单行更新的快路径。
 
     走 _load_X/_save_X 那条接缝要读全表并逐行比对签名（243 个账号约 210 ms）；
     只改一行时没必要——直接发一条 UPDATE 即可（约 18 ms）。热路径用这个，
     需要整表语义的地方（批量导入、跨表事务）仍走接缝。
     """
-    changed = record_store.patch_row(spec, int(row_id), changes)
+    changed = record_store.patch_row(spec, int(row_id), changes, **({"conn": conn} if conn is not None else {}))
     if changed and kind not in {"accounts", "jobs", "outlook", "icloud_hide_emails"}:
         compat_export.schedule(kind)
     return changed
 
 
-def _patch_account(acc_id: int, changes: dict) -> bool:
-    return _patch_row_and_export(record_store.ACCOUNTS, acc_id, changes, "accounts")
+def _patch_account(acc_id: int, changes: dict, *, conn=None) -> bool:
+    return _patch_row_and_export(record_store.ACCOUNTS, acc_id, changes, "accounts", conn=conn)
 
 
 def _ensure_compat_schema(name: str, initializer) -> None:
@@ -424,7 +424,12 @@ def _decorate_account(row: dict) -> dict:
             stamp_key = "plan_check_queued_at" if plan_status == "queued" else "plan_check_started_at"
             stale_after = _PLAN_CHECK_QUEUE_STALE_SECONDS if plan_status == "queued" else _PLAN_CHECK_STALE_SECONDS
             started_at = datetime.fromisoformat(str(out.get(stamp_key) or ""))
-            if (datetime.now() - started_at).total_seconds() >= stale_after:
+            deadline_text = out.get("plan_check_deadline_at") if plan_status == "running" else None
+            try:
+                within_budget = bool(deadline_text and datetime.fromisoformat(str(deadline_text)) > datetime.now())
+            except (TypeError, ValueError):
+                within_budget = False
+            if not within_budget and (datetime.now() - started_at).total_seconds() >= stale_after:
                 out["plan_check_status"] = "failed"
                 out["plan_check_error"] = "上次套餐查询状态已超时，可重新查询"
                 out["plan_check_stale"] = True
@@ -1144,6 +1149,10 @@ def _stage_claim_guard(prefix: str, *, require_alive: bool = False) -> tuple[str
         f"      OR {started_at} < %s)))"
     )
     params = [queue_before, run_before]
+    if prefix == "plan_check":
+        deadline = storage_expr("plan_check_deadline_at")
+        guard = f"({guard}) AND NOT ({status} = 'running' AND COALESCE({deadline}, '') ~ '^[0-9]{{4}}-' AND {deadline} > %s)"
+        params.append(now.isoformat(timespec="seconds"))
     if require_alive:
         guard = f"deactivated = FALSE AND {guard}"
     return guard, params
@@ -1189,6 +1198,7 @@ def claim_account_plan_check(
         "plan_check_trigger": str(trigger or "manual"),
         "plan_check_queued_at": now,
         "plan_check_started_at": None,
+        "plan_check_deadline_at": None,
         "plan_check_completed_at": None,
         "plan_check_error": None,
         "updated_at": now,
@@ -1217,28 +1227,34 @@ def recover_interrupted_plan_checks(
     if excluded:
         where += ' AND "id" <> ALL(%s)'
         params.append(excluded)
-    recovered = record_store.patch_rows_where(
-        record_store.ACCOUNTS,
-        changes={
-            "plan_check_status": "failed",
-            "plan_check_ok": False,
-            "plan_check_error": "WebUI 重启导致套餐查询中断，请重新查询",
-            "plan_check_completed_at": now,
-            "updated_at": now,
-        },
-        where=where,
-        params=params,
-    )
-    return recovered
+    with record_store._connect() as conn:
+        recovered_rows = record_store.patch_rows_where_returning(
+            record_store.ACCOUNTS,
+            changes={
+                "plan_check_status": "failed",
+                "plan_check_ok": False,
+                "plan_check_error": "WebUI 重启导致套餐查询中断，请重新查询",
+                "plan_check_completed_at": now,
+                "updated_at": now,
+            },
+            where=where,
+            params=params,
+            conn=conn,
+        )
+        from core.storage.plan_countries import finish_unfinished_countries
+        for account in recovered_rows:
+            if account.get("plan_check_country_results"):
+                finish_unfinished_countries(int(account["id"]), status="failed", error="WebUI 重启导致国家查询中断，请重新查询", conn=conn)
+    return len(recovered_rows)
 
 
-def update_account_plan_check(acc_id: int | None = None, email: str | None = None, result: dict | None = None) -> bool:
+def update_account_plan_check(acc_id: int | None = None, email: str | None = None, result: dict | None = None, *, conn=None) -> bool:
     """更新账号套餐、Go/Plus 优惠与额度查询结果。"""
     result = result or {}
     row = (
-        record_store.get_row(record_store.ACCOUNTS, int(acc_id))
+        record_store.get_row(record_store.ACCOUNTS, int(acc_id), **({"conn": conn, "for_update": True} if conn is not None else {}))
         if acc_id is not None
-        else record_store.get_row_by(record_store.ACCOUNTS, "email", email or "", lower=True)
+        else record_store.get_row_by(record_store.ACCOUNTS, "email", email or "", lower=True, **({"conn": conn, "for_update": True} if conn is not None else {}))
     )
     if row is None:
         return False
@@ -1253,7 +1269,14 @@ def update_account_plan_check(acc_id: int | None = None, email: str | None = Non
         "plan_check_completed_at": now,
         "plan_check_http_status": result.get("http_status"),
         "plan_check_error": None if ok else result.get("error"),
+        "plan_check_deadline_at": None,
     }
+    if "plan_check_country_results" in result:
+        from core.plan_check_countries import public_country_results
+        changes["plan_check_country_results"] = public_country_results(result["plan_check_country_results"])
+    if "plan_check_countries" in result:
+        changes["plan_check_countries"] = list(result.get("plan_check_countries") or [])
+        changes["plan_check_partial"] = bool(result.get("plan_check_partial"))
 
     if result.get("account_id"):
         changes["account_id"] = result.get("account_id")
@@ -1340,7 +1363,7 @@ def update_account_plan_check(acc_id: int | None = None, email: str | None = Non
         "plan_check_result_json": json.dumps(result, ensure_ascii=False),
         "updated_at": now,
     })
-    return _patch_account(int(row["id"]), changes)
+    return _patch_account(int(row["id"]), changes, conn=conn)
 
 
 def claim_account_extract(acc_id: int, trigger: str = "manual", link_type: str = "pix") -> bool:

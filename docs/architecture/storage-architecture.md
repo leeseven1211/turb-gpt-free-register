@@ -103,6 +103,17 @@ Plus 优惠属于高频筛选字段，因此 `plus_promo_kind`、折扣比例、
 `access_token` 分开维护，供后续登录态恢复/续期使用；管理列表、兼容导出和普通账号读模型
 均不返回该敏感字段。
 
+独立多国家套餐查询在账号 `data` 中保存 `plan_check_countries`、`plan_check_country_results` 和
+`plan_check_partial`，不新增全表迁移。`core/storage/plan_countries.py` 在同一短事务内先锁定并
+校验当前 Run、执行实例和账号租约，再以账号行锁逐国合并检查点，阻止失去租约的旧执行
+覆盖新结果；成功写入该国白名单结果及成功时间，失败保留该国上次成功结果。公开列表和轮询均
+经过同一白名单投影，不返回账号凭据、原始响应或完整代理地址。现有 Plus 优惠筛选字段由
+国家快照汇总更新，各国的本次响应另外保存在任务事件中，后续查询不会覆盖旧 Run 证据。
+注册查询不清空国家历史；国家列表留空后的独立查询使用原单次路径，页面不把历史国家
+快照当作这次单次结果。多国家任务的 `plan_check_deadline_at` 按国家数和等待、请求预算
+计算，轮询与恢复共用该期限。启动恢复在同一事务收口账号与未完成国家状态，已完成快照
+和账号行数保持不变。
+
 `registration_attempts.private_context` 保存协议注册的原密码及私有恢复上下文，仅内部恢复接口读取；普通 Attempt/Run、operation 读模型与事件投影不返回该列。公开检查点只暴露 `has_password` 和 `password_state` 等阶段信息，区分准备、开始提交和远端确认；写入必须匹配当前 Run/执行实例。CLI 按规范化邮箱绑定稳定 Attempt，不能接管已有 WebUI 意图或正在运行的实例。2FA 待确认密钥不会写成已启用的 `totp_secret`，核心账号和完整 session 在后处理前保存。
 
 **派生列** 由 `TableSpec.derived` 声明：`deactivated` 从 `account_status` 推导。

@@ -362,6 +362,7 @@ def list_account_statuses(
     date_from: str = "",
     date_to: str = "",
 ) -> dict:
+    from core import db
     accounts = _q(record_store.ACCOUNTS)
     where, params = _account_where(
         archived,
@@ -414,7 +415,7 @@ def list_account_statuses(
         "plus_promo_promotion_type_label", "plus_trial_campaign_id", "plus_trial_title",
         "plus_trial_discount_percentage", "plus_trial_duration_num_periods",
         "plus_trial_duration_period", "plus_trial_promotion_type_label",
-        "account_promotions", "promotion_query_snapshot",
+        "account_promotions", "promotion_query_snapshot", "plan_check_countries", "plan_check_country_results", "plan_check_partial",
         "extract_link_message", "extract_link_error", "extract_link_long_url", "extract_link_copy_paste",
         "extract_link_failed_types", "extract_link_last_failed_type", "extract_link_last_failed_at",
         "extract_link_image_url_png", "extract_link_image_url_svg", "extract_link_expires_at", "codex_status",
@@ -423,9 +424,12 @@ def list_account_statuses(
     }
     items = []
     for raw in raw_rows:
-        row = record_store.merge_row(record_store.ACCOUNTS, raw)
+        row = db.decorate_account(record_store.merge_row(record_store.ACCOUNTS, raw))
         item = {key: value for key, value in row.items() if key in wanted | {"id", "email", "archived", "plan_type", "current_plan_type", "plus_trial_eligible"} and value not in (None, "")}
         item["has_access_token"] = bool(_text(row.get("has_access_token")))
+        if "plan_check_country_results" in item:
+            from core.plan_check_countries import public_country_results
+            item["plan_check_country_results"] = public_country_results(item["plan_check_country_results"])
         items.append(item)
     total = int(aggregate["total"] or 0)
     return {

@@ -58,11 +58,16 @@ def settings() -> dict:
 
 
 def _profile(provider: str, options: dict) -> Profile:
-    key = hashlib.sha256(json.dumps([provider, options], sort_keys=True).encode()).hexdigest()
+    key = _profile_key(provider, options)
     with _lock:
         profile = _profiles.setdefault(key, Profile(key, provider, dict(options)))
         profile.touched = time.monotonic()
         return profile
+
+
+def _profile_key(provider: str, options: dict) -> str:
+    """根据完整供应商参数生成 profile 键，保留同地区不同配置的历史 profile。"""
+    return hashlib.sha256(json.dumps([provider, options], sort_keys=True).encode()).hexdigest()
 
 
 def _provider_options(**kwargs) -> dict:
@@ -71,6 +76,50 @@ def _provider_options(**kwargs) -> dict:
             "protocol": kwargs.get("protocol") or cfg.PROXY_1024_PROTOCOL,
             "region": kwargs.get("region") if kwargs.get("region") is not None else cfg.PROXY_1024_REGION,
             "session_minutes": kwargs.get("session_minutes") or cfg.PROXY_1024_SESSION_MINUTES}
+
+
+def _plan_check_provider_enabled() -> bool:
+    """仅当账号查套餐实际解析为 provider:1024proxy 时允许国家预热。"""
+    try:
+        from core.account_proxy import account_action_proxy_mode
+
+        return account_action_proxy_mode("plan-check") == "provider:1024proxy"
+    except Exception:
+        return False
+
+
+def _plan_check_static_pool_enabled() -> bool:
+    """返回账号查套餐是否明确使用静态池。"""
+    try:
+        from core.account_proxy import account_action_proxy_mode
+
+        return account_action_proxy_mode("plan-check") == "pool"
+    except Exception:
+        return False
+
+
+def _prewarm_plan_country_profiles(policy: dict) -> None:
+    """把当前配置的查套餐国家注册为独立 profile。
+
+    profile 的 touched 由每轮配置读取更新；移除国家后不再触碰旧 profile，
+    由空闲回收自然停止预热，已领取租约仍按原生命周期保留。
+    """
+    if not _prewarm or not _plan_check_provider_enabled():
+        return
+    from config import proxy as cfg
+    from config.countries import normalize_plan_check_countries
+
+    if not str(cfg.PROXY_1024_API_URL or "").strip():
+        return
+    options = _provider_options()
+    try:
+        _validate_lifetime("1024proxy", options, policy)
+        countries = normalize_plan_check_countries(getattr(cfg, "PLAN_CHECK_COUNTRIES", []))
+    except (TypeError, ValueError) as exc:
+        logger.warning("查套餐国家预热配置无效，跳过预热：%s", exc)
+        return
+    for country in countries:
+        _profile("1024proxy", _provider_options(region=country))
 
 
 def _validate_lifetime(provider: str, options: dict, policy: dict) -> None:
@@ -122,7 +171,15 @@ def acquire(*, provider: str = "1024proxy", progress_callback=None, cancel=None,
     from core.operation_runtime import check_cancelled
 
     policy = settings()
-    options = _provider_options(**kwargs) if provider == "1024proxy" else {"urls": list(static_urls or [])}
+    if provider == "1024proxy":
+        options = _provider_options(**kwargs)
+    else:
+        options = {"urls": list(static_urls or [])}
+        # 只有调用方明确提供目标国家时才分裂静态池 profile；保持注册和
+        # 单国家旧路径的 key 与候选选择不变。
+        selected_region = str(kwargs.get("region") or "").strip().upper()
+        if selected_region:
+            options["region"] = selected_region
     if provider == "1024proxy" and not str(options["api_url"] or "").strip():
         raise ValueError("代理池缺少 1024Proxy 提取配置")
     if provider == "proxy_pool" and not options["urls"]:
@@ -233,25 +290,91 @@ def _fetch_static(profile: Profile, slot: dict, policy: dict):
     from core.proxy_provider import ProxyLease, _validate_proxy_with_retries
     from core import proxy_lease_store
     from config import proxy as cfg
-    urls = profile.options["urls"]
-    # 槽位 ID 由数据库单调生成，跨轮补充不会重置候选序号。
-    url = urls[(slot["id"] - 1) % len(urls)]
+    urls = [str(url).strip() for url in profile.options["urls"] if str(url).strip()]
+    if not urls:
+        raise RuntimeError("静态代理池为空")
+    target_region = str(profile.options.get("region") or "").strip().upper()
+    # 槽位 ID 由数据库单调生成，跨轮补充不会重置候选序号。无目标地区时
+    # 保持旧行为，只验证一个候选，不引入新的总预算或停止检查。
+    start = (int(slot["id"]) - 1) % len(urls)
     from urllib.parse import urlsplit
-    parsed = urlsplit(url)
-    endpoint = f"{parsed.hostname}:{parsed.port}"
-    lease_id = uuid.uuid4().hex
-    acquired = datetime.now()
-    expires = acquired + timedelta(seconds=max(policy["min_ttl"] * 2, policy["max_idle"] * 2, 600))
-    proxy_lease_store.reserve_pending(lease_id=lease_id, provider="proxy_pool", endpoint=endpoint, proxy_url=url,
-                                     acquired_at=acquired.isoformat(), expires_at=expires.isoformat(), purpose="pool-reserve")
-    try:
-        exit_ip, region = _validate_proxy_with_retries(url, float(cfg.PROXY_1024_API_TIMEOUT), attempts=1)
-        proxy_lease_store.activate(lease_id=lease_id, exit_ip=exit_ip, region=region, expires_at=expires.isoformat())
-        return ProxyLease(lease_id, "proxy_pool", url, endpoint, acquired, expires_at=expires, exit_ip=exit_ip,
-                          region=region, metadata={"persistent_lease": True})
-    except BaseException:
-        proxy_lease_store.abort(lease_id)
-        raise
+
+    if not target_region:
+        url = urls[start]
+        lease_id = uuid.uuid4().hex
+        try:
+            parsed = urlsplit(url)
+            endpoint = f"{parsed.hostname}:{parsed.port}"
+            acquired = datetime.now()
+            expires = acquired + timedelta(seconds=max(policy["min_ttl"] * 2, policy["max_idle"] * 2, 600))
+            proxy_lease_store.reserve_pending(lease_id=lease_id, provider="proxy_pool", endpoint=endpoint, proxy_url=url,
+                                             acquired_at=acquired.isoformat(), expires_at=expires.isoformat(), purpose="pool-reserve")
+            exit_ip, region = _validate_proxy_with_retries(url, float(cfg.PROXY_1024_API_TIMEOUT), attempts=1)
+            proxy_lease_store.activate(lease_id=lease_id, exit_ip=exit_ip, region=region,
+                                       expires_at=expires.isoformat())
+            return ProxyLease(lease_id, "proxy_pool", url, endpoint, acquired, expires_at=expires, exit_ip=exit_ip,
+                              region=region, metadata={"persistent_lease": True})
+        except BaseException:
+            proxy_lease_store.abort(lease_id)
+            raise
+
+    # 多国家 profile 的候选检测共享一次有界提取预算，避免混合池在每个
+    # URL 上重复消耗完整等待时间。每次检测前都检查停止状态。
+    candidate_indexes = [(start + offset) % len(urls) for offset in range(len(urls))]
+    budget = max(0.0, float(cfg.PROXY_1024_ACQUIRE_TIMEOUT))
+    deadline = time.monotonic() + budget
+    last_error = None
+    for index in candidate_indexes:
+        url = urls[index]
+        if _stop.is_set():
+            raise ProxyPoolTimeout("代理池已停止，未检测后续静态候选")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ProxyPoolTimeout("静态代理池候选检测等待超时")
+        candidate_timeout = min(float(cfg.PROXY_1024_API_TIMEOUT), remaining)
+        lease_id = uuid.uuid4().hex
+        try:
+            parsed = urlsplit(url)
+            endpoint = f"{parsed.hostname}:{parsed.port}"
+            acquired = datetime.now()
+            expires = acquired + timedelta(seconds=max(policy["min_ttl"] * 2, policy["max_idle"] * 2, 600))
+            proxy_lease_store.reserve_pending(lease_id=lease_id, provider="proxy_pool", endpoint=endpoint, proxy_url=url,
+                                             acquired_at=acquired.isoformat(), expires_at=expires.isoformat(), purpose="pool-reserve")
+            exit_ip, region = _validate_proxy_with_retries(url, candidate_timeout, attempts=1)
+        except Exception as exc:
+            proxy_lease_store.abort(lease_id)
+            last_error = exc
+            continue
+        except BaseException:
+            proxy_lease_store.abort(lease_id)
+            raise
+        if _stop.is_set():
+            proxy_lease_store.abort(lease_id)
+            raise ProxyPoolTimeout("代理池已停止，未发布静态候选")
+        if time.monotonic() >= deadline:
+            proxy_lease_store.abort(lease_id)
+            raise ProxyPoolTimeout("静态代理池候选检测等待超时")
+        actual_region = str(region or "").strip().upper()
+        if actual_region != target_region:
+            proxy_lease_store.abort(lease_id)
+            continue
+        try:
+            proxy_lease_store.activate(lease_id=lease_id, exit_ip=exit_ip, region=actual_region,
+                                       expires_at=expires.isoformat())
+            return ProxyLease(lease_id, "proxy_pool", url, endpoint, acquired, expires_at=expires, exit_ip=exit_ip,
+                              region=actual_region, metadata={"persistent_lease": True})
+        except Exception as exc:
+            proxy_lease_store.abort(lease_id)
+            last_error = exc
+            continue
+        except BaseException:
+            proxy_lease_store.abort(lease_id)
+            raise
+    if target_region:
+        raise RuntimeError("静态代理池没有符合目标国家的可用线路") from last_error
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("静态代理池为空")
 
 
 def _check(resource: dict, policy: dict) -> None:
@@ -282,6 +405,7 @@ def maintain_once() -> bool:
             _profile("1024proxy", _provider_options())
         elif mode == "pool" and cfg.PROXY_POOL:
             _profile("proxy_pool", {"urls": list(cfg.PROXY_POOL)})
+        _prewarm_plan_country_profiles(policy)
     with _lock:
         warm = {item.key for item in _profiles.values() if item.waiting or time.monotonic() - item.touched <= policy["max_idle"]}
     for resource in store.maintenance(max_age=policy["max_age"], max_idle=policy["max_idle"], min_ready=policy["min_ready"],
@@ -388,8 +512,55 @@ def _worker(index: int) -> None:
 
 
 def snapshot() -> dict:
+    policy = settings()
+    from config import proxy as cfg
+    from config.countries import normalize_plan_check_countries
+
+    try:
+        configured_countries = normalize_plan_check_countries(
+            getattr(cfg, "PLAN_CHECK_COUNTRIES", [])
+        )
+    except (TypeError, ValueError):
+        configured_countries = []
+    current_1024_keys = {
+        _profile_key("1024proxy", _provider_options(region=country))
+        for country in configured_countries
+    }
+    current_static_urls = []
+    if _plan_check_static_pool_enabled():
+        selected = str(getattr(cfg, "ACCOUNT_ACTION_PROXY", "") or "").strip()
+        current_static_urls = [selected] if selected else list(getattr(cfg, "PROXY_POOL", []) or [])
+    current_static_keys = {
+        _profile_key("proxy_pool", {"urls": list(current_static_urls), "region": country})
+        for country in configured_countries
+        if current_static_urls
+    }
     with _lock:
         waiting = sum(profile.waiting for profile in _profiles.values())
         workers = sum(thread.is_alive() for thread in _threads)
-    return {"policy": settings(), "counts": store.counts(), "waiting_local": waiting,
-            "workers_local": workers, "items": store.public_items()}
+        country_profiles = []
+        for profile in _profiles.values():
+            if profile.provider not in {"1024proxy", "proxy_pool"}:
+                continue
+            region = str(profile.options.get("region") or "").strip().upper()
+            if not region:
+                continue
+            counts = dict(store.counts(profile.key))
+            active = sum(counts.get(state, 0) for state in ("fetching", "checking", "ready", "leased", "shared"))
+            configured = profile.key in (current_1024_keys | current_static_keys)
+            # 配置移除后保留仍有等待或活跃库存的历史 profile；仅有空闲索引的 profile 不再展示。
+            if configured or profile.waiting > 0 or active > 0:
+                country_profiles.append((profile, region, counts, configured))
+        country_profiles.sort(key=lambda item: (item[1], not item[3], item[0].provider, item[0].key))
+    country_pools = []
+    for profile, region, counts, configured in country_profiles:
+        country_pools.append({
+            "provider": profile.provider,
+            "region": region,
+            "counts": counts,
+            "waiting_local": profile.waiting,
+            "target_ready": min(policy["max_size"], profile.waiting + (policy["min_ready"] if configured else 0)),
+            "configured": configured,
+        })
+    return {"policy": policy, "counts": store.counts(), "waiting_local": waiting,
+            "workers_local": workers, "items": store.public_items(), "country_pools": country_pools}

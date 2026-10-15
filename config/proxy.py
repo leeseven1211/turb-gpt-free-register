@@ -81,6 +81,9 @@ PLAN_CHECK_PROXY = schema_default("PLAN_CHECK_PROXY")
 PLAN_CHECK_PROXY_ALLOW_REUSE = schema_default("PLAN_CHECK_PROXY_ALLOW_REUSE")
 # 开启复用时，同一实际出口 IP 在租约有效期内允许建立的套餐查询租约数；包含首次租用。
 PLAN_CHECK_PROXY_REUSE_LIMIT = schema_default("PLAN_CHECK_PROXY_REUSE_LIMIT")
+# 独立账号查套餐按此顺序冻结国家；空列表保持旧的注册国家单次查询路径。
+PLAN_CHECK_COUNTRIES = schema_default("PLAN_CHECK_COUNTRIES")
+PLAN_CHECK_COUNTRY_WAIT_TIMEOUT = schema_default("PLAN_CHECK_COUNTRY_WAIT_TIMEOUT")
 
 # 注册完成后的 OpenAI 账号功能（查套餐、查活、Codex OAuth）代理来源：
 #   registration = 跟随 REGISTRATION_PROXY_MODE（推荐；1024 平台会按账号申请新租约）

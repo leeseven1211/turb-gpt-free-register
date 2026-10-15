@@ -530,6 +530,36 @@ function proxyTrafficRenderSummary() {
   });
 }
 
+function proxyPoolCountryStatsMarkup(pool) {
+  const pools = Array.isArray(pool?.country_pools) ? pool.country_pools : [];
+  if (!pools.length) return '';
+  const countLabels = [
+    ['ready', '可领取'],
+    ['fetching', '补货中'],
+    ['checking', '复检中'],
+    ['leased', '独占使用'],
+    ['shared', '共享使用'],
+  ];
+  const countText = (counts, key) => {
+    const value = Number(counts?.[key]);
+    return Number.isFinite(value) && value >= 0 ? String(value) : '—';
+  };
+  return `<tr class="proxy-pool-country-summary-row"><td class="proxy-pool-country-summary-cell" colspan="7">
+    <div class="proxy-pool-country-summary" aria-label="分国家代理池统计">
+      <strong>分国家库存</strong>
+      <div class="proxy-pool-country-cards">${pools.map(item => {
+        const country = String(item?.region || item?.country || '未标注').trim() || '未标注';
+        const provider = String(item?.provider || '未标注').trim() || '未标注';
+        const counts = item?.counts && typeof item.counts === 'object' ? item.counts : {};
+        const details = countLabels.map(([key, label]) => `${label} ${countText(counts, key)}`).join(' · ');
+        const waiting = countText({value: item?.waiting_local}, 'value');
+        const target = countText({value: item?.target_ready}, 'value');
+        return `<div class="proxy-pool-country-card"><div><strong>${proxyTrafficEsc(country)}</strong><small>${proxyTrafficEsc(provider)}</small></div><p>${proxyTrafficEsc(details)}</p><small>等待 ${proxyTrafficEsc(waiting)} · 目标 ${proxyTrafficEsc(target)}</small></div>`;
+      }).join('')}</div>
+    </div>
+  </td></tr>`;
+}
+
 function proxyPoolRender() {
   const body = document.getElementById('proxyPoolBody');
   const status = document.getElementById('proxyPoolPanelStatus');
@@ -548,8 +578,9 @@ function proxyPoolRender() {
     check_interrupted: '复检中断',
     health_check_failed: '健康检查失败',
   };
-  status.textContent = `显示最近 ${items.length} 条库存 · 最小可用 ${Number(pool.policy?.min_ready || 0)} · 本进程等待 ${Number(pool.waiting_local || 0)} / 维护线程 ${Number(pool.workers_local || 0)}`;
-  body.innerHTML = items.length ? items.map((item) => `<tr>
+  const countryPools = Array.isArray(pool.country_pools) ? pool.country_pools : [];
+  status.textContent = `显示最近 ${items.length} 条库存 · 最小可用 ${Number(pool.policy?.min_ready || 0)} · 本进程等待 ${Number(pool.waiting_local || 0)} / 维护线程 ${Number(pool.workers_local || 0)}${countryPools.length ? ` · 分国家 ${countryPools.length} 组` : ''}`;
+  const itemRows = items.length ? items.map((item) => `<tr>
     <td><span class="proxy-traffic-id">${proxyTrafficText(item.resource_id)}</span></td>
     <td>${proxyTrafficStatus(item.state)}</td>
     <td>${proxyTrafficText(item.provider)}<small>${proxyTrafficText(item.region)}</small></td>
@@ -558,6 +589,7 @@ function proxyPoolRender() {
     <td><small>校验 ${proxyTrafficDate(item.checked_at)}<br>到期 ${proxyTrafficDate(item.expires_at)}</small></td>
     <td>${proxyTrafficText(errorLabels[item.last_error_code] || item.last_error_code)}</td>
   </tr>`).join('') : '<tr class="list-state-row"><td class="table-state-cell" colspan="7"><div class="table-state is-empty"><strong>暂无脱敏库存</strong><small>等待后台补货或复检</small></div></td></tr>';
+  body.innerHTML = `${proxyPoolCountryStatsMarkup(pool)}${itemRows}`;
 }
 
 function proxyTrafficRenderPager(view) {

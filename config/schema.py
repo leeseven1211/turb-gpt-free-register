@@ -349,6 +349,8 @@ _DEFAULTS: dict[str, Any] = {
     "PLAN_CHECK_PROXY": "",
     "PLAN_CHECK_PROXY_ALLOW_REUSE": True,
     "PLAN_CHECK_PROXY_REUSE_LIMIT": 3,
+    "PLAN_CHECK_COUNTRIES": ["JP", "VN", "IN"],
+    "PLAN_CHECK_COUNTRY_WAIT_TIMEOUT": 60,
     "ACCOUNT_ACTION_PROXY_MODE": "registration",
     "ACCOUNT_ACTION_PROXY": "",
     "PLAN_CHECK_TIMEOUT": 15.0,
@@ -533,6 +535,14 @@ _FIELD_DEFINITIONS = [
     {
         "key": "PLAN_CHECK_PROXY_REUSE_LIMIT", "file": "proxy.py", "type": "int", "group": "代理与网络",
         "label": "查询套餐同一 IP 租用次数上限", "help": "仅影响使用代理池的查套餐（1024Proxy/静态代理池）；按实际出口 IP 在租约有效期内累计，包含首次租用。释放或进程重启不会清零，达到上限后换线；1024Proxy 仍验证出口国家，静态代理池仍使用健康校验。仅在允许复用 IP 开启时生效。",
+    },
+    {
+        "key": "PLAN_CHECK_COUNTRIES", "file": "proxy.py", "type": "list_str_multiline", "group": "代理与网络",
+        "label": "独立查套餐国家列表", "help": "账号页独立查套餐按此顺序查询；支持换行、逗号或空格分隔，自动大写去重。留空沿用账号注册国家的单次查询路径；不影响注册查套餐。",
+    },
+    {
+        "key": "PLAN_CHECK_COUNTRY_WAIT_TIMEOUT", "file": "proxy.py", "type": "int", "group": "代理与网络",
+        "label": "查套餐单国线路等待（秒）", "help": "独立查套餐每个国家领取已验证线路的最长等待时间，范围 5-300 秒；某国缺货超时后继续后续国家。",
     },
     {
         "key": "ACCOUNT_LIVE_CHECK_PROXY_MODE", "file": "account.py", "type": "str", "group": "代理与网络",
@@ -1582,6 +1592,7 @@ _RANGES: dict[str, tuple[int | float | None, int | float | None]] = {
     "PROXY_POOL_CHECK_INTERVAL": (1, 86400),
     "PROXY_POOL_MAX_IDLE": (0, 604800),
     "PROXY_POOL_WORKERS": (1, 32),
+    "PLAN_CHECK_COUNTRY_WAIT_TIMEOUT": (5, 300),
     "PLAN_CHECK_TIMEOUT": (1.0, 60.0),
     "PLAN_CHECK_MAX_ATTEMPTS": (1, 4),
     "PLAN_CHECK_PROXY_REUSE_LIMIT": (1, 100),
@@ -1963,6 +1974,10 @@ def _coerce(value: Any, field: ConfigField, *, strict: bool) -> Any:
 
 def _validate_value(field: ConfigField, value: Any, *, strict: bool) -> Any:
     result = _coerce(value, field, strict=strict)
+    if field.key == "PLAN_CHECK_COUNTRIES":
+        from config.countries import normalize_plan_check_countries
+
+        return normalize_plan_check_countries(result)
     if field.type in {"int", "float"}:
         if field.min_value is not None and result < field.min_value:
             raise ValueError(f"不得小于 {field.min_value}")
@@ -2091,7 +2106,11 @@ def resolve_field(field: ConfigField, values: Mapping[str, str], *, strict: bool
     if raw is None:
         return ConfigResolution(field.clone_default(), "default", configured=False)
     text = str(raw).strip()
-    explicit_empty_list = field.type == "list_str_multiline" and field.key == "PROXY_POOL" and text == ""
+    explicit_empty_list = (
+        field.type == "list_str_multiline"
+        and field.key in {"PROXY_POOL", "PLAN_CHECK_COUNTRIES"}
+        and text == ""
+    )
     if not text and not explicit_empty_list:
         return ConfigResolution(field.clone_default(), "default", source_key=source_key, configured=False)
     try:
@@ -2380,7 +2399,10 @@ def apply_env_namespace(namespace: dict[str, Any], explicit_schema: Mapping[str,
         if os.getenv(field.key) is None:
             continue
         raw = os.getenv(field.key, "")
-        if not str(raw).strip() and not (field.type == "list_str_multiline" and field.key == "PROXY_POOL"):
+        if not str(raw).strip() and not (
+            field.type == "list_str_multiline"
+            and field.key in {"PROXY_POOL", "PLAN_CHECK_COUNTRIES"}
+        ):
             continue
         try:
             # 兼容旧模块的 protocol_direct 等别名：模块常量保留旧值，API 再公共化。

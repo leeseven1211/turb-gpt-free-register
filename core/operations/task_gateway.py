@@ -369,6 +369,13 @@ class OperationHandlerContext:
                 raise OperationLeaseLost("账号 lease 心跳失败，远端结果必须重新核验")
         self._token.checkpoint(message)
 
+    @property
+    def execution_fence(self) -> dict[str, Any]:
+        """内部仓储在同事务写入前校验当前执行与账号租约。"""
+        if self._lease is None or self._lease.released:
+            raise OperationLeaseLost("当前执行已没有账号租约，禁止写入任务结果")
+        return {"run_id": self.run_id, "execution_id": self.execution_id, "lease_token": self._lease.token}
+
     def is_cancel_requested(self, *, force: bool = False) -> bool:
         return self._token.requested(force=force)
 
