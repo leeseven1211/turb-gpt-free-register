@@ -1867,7 +1867,8 @@ def _email_otp_page_recovery_reason(state: dict) -> str:
         return ""
     try:
         parsed = urlsplit(str(state.get("url") or ""))
-        if parsed.scheme != "https" or parsed.hostname != "auth.openai.com" or parsed.path.rstrip("/") != "/email-verification":
+        if (parsed.scheme != "https" or parsed.hostname != "auth.openai.com" or parsed.port not in (None, 443)
+                or parsed.username or parsed.password or parsed.path.rstrip("/") != "/email-verification"):
             return ""
     except ValueError:
         return ""
@@ -1922,15 +1923,25 @@ def _recover_email_otp_page_if_needed(driver, state: dict | None = None, *, budg
         return False
     if refresh_timeout < 1:
         return False
-    driver._email_otp_page_refresh_done = True
     setter = getattr(driver, "set_page_load_timeout", None)
     old_timeout = None
     try:
+        logger.warning("%s[OTP] 验证码页异常，执行一次受限刷新；保留原提交且不重发：reason=%s", _log_prefix(driver), reason)
+        log_submission_diagnostics(driver, "otp", "before_form_refresh", receipt=getattr(driver, "_browser_submission_receipt", None))
+        latest = _email_otp_page_state(driver)
+        if (_email_otp_page_recovery_reason(latest) != reason
+                or str(getattr(driver, "current_url", "")) != str(fresh.get("url") or "")):
+            return False
+        refresh_timeout = _budget_timeout(budget, 10, minimum=0)
+        if refresh_timeout < 1:
+            return False
         if callable(setter):
             old_timeout = float(driver.timeouts.page_load)
             setter(refresh_timeout)
-        logger.warning("%s[OTP] 验证码页异常，执行一次受限刷新；保留原提交且不重发：reason=%s", _log_prefix(driver), reason)
-        driver.refresh()
+        driver._email_otp_page_refresh_done = True
+        # 明确 GET 验证码页面，避免浏览器重新发送上一份表单 POST。
+        driver.get(str(fresh.get("url")))
+        log_submission_diagnostics(driver, "otp", "after_form_refresh", receipt=getattr(driver, "_browser_submission_receipt", None))
         return True
     except Exception as exc:
         from selenium.common.exceptions import TimeoutException
@@ -1950,14 +1961,17 @@ def _recover_email_otp_page_if_needed(driver, state: dict | None = None, *, budg
                 pass
 
 
-def _wait_email_otp_page_ready(driver, timeout: float = 15, *, budget: StageBudget | None = None) -> str:
+def _wait_email_otp_page_ready(driver, timeout: float = 45, *, budget: StageBudget | None = None) -> str:
     """收码前等待表单挂载；页面恢复与轮询共用原阶段的剩余预算。"""
     if budget is not None and budget.expired():
         return "stuck"
     timeout = _budget_timeout(budget, timeout, minimum=0)
     ready_budget = budget.child(timeout) if budget is not None else StageBudget.start(timeout, clock=time.monotonic)
+    # 页面慢挂载时给刷新后的观察留出时间，仍受原 OTP 总预算裁剪。
+    log_submission_diagnostics(driver, "otp", "waiting_for_form", receipt=getattr(driver, "_browser_submission_receipt", None))
     while not ready_budget.expired():
         _check_manual_stop()
+        ready_budget.check_cancelled()
         state = _email_otp_page_state(driver)
         if not isinstance(state, dict):
             return "stuck"
@@ -1983,6 +1997,7 @@ def _wait_email_otp_page_ready(driver, timeout: float = 15, *, budget: StageBudg
         if _recover_email_otp_page_if_needed(driver, state, budget=ready_budget):
             continue
         time.sleep(min(0.35, ready_budget.remaining()))
+    log_submission_diagnostics(driver, "otp", "form_timeout", receipt=getattr(driver, "_browser_submission_receipt", None))
     return "stuck"
 
 
@@ -2130,6 +2145,7 @@ def _click_resend_email_otp(driver, timeout: int = 20, *, budget: StageBudget | 
                     initial_now=end - max(0.0, timeout - delay),
                 )
                 logger.info("%s[OTP] 重发请求页面确认：%s", _log_prefix(driver), result.get("ui_ack"))
+                log_submission_diagnostics(driver, "otp", "resend_observed", receipt=browser_receipt)
                 return result
         except Exception as exc:
             last = exc
@@ -2228,6 +2244,14 @@ def _wait_after_email_otp_submit(
         for index, item in enumerate(baseline_state.get("inputs") or [])
         if isinstance(item, dict) and str(item.get("ariaInvalid") or "").lower() == "true"
     )
+    receipt = getattr(driver, "_browser_submission_receipt", None)
+    if not isinstance(receipt, BrowserSubmissionReceipt) or receipt.endpoint_kind != "otp_submit":
+        receipt = None
+    recovery_id = receipt.submission_id if receipt is not None else "without_receipt"
+    recovery_attempted = getattr(driver, "_email_otp_submission_recovery_id", None) == recovery_id
+    recovery_at = started + max(5.0, timeout - RECOVERY_WINDOW_SECONDS)
+    next_diagnostic_at = started + 15.0
+    log_submission_diagnostics(driver, "otp", "submitted", receipt=receipt)
 
     def _new_error_mark(state: dict) -> bool:
         errors = tuple(str(item) for item in (state.get("errors") or []))
@@ -2238,14 +2262,47 @@ def _wait_after_email_otp_submit(
         )
         return bool(set(errors) - set(baseline_errors) or set(invalid) - set(baseline_invalid))
 
+    def observe_recovery(recovery_budget):
+        state = _email_otp_page_state(driver)
+        state = state if isinstance(state, dict) else {}
+        page_state = classify_page(state)
+        if page_state in {PageState.AUTH_ERROR, PageState.LOGGED_OUT}:
+            return None
+        if state.get("emailVerified"):
+            return "email_verified"
+        if has_visible_auth_inputs(state, allow_password=False):
+            if page_state == PageState.MFA_TOTP:
+                return "totp_required"
+            if page_state == PageState.PROFILE:
+                return "accepted"
+        if _has_access_token(driver, budget=recovery_budget):
+            return "accepted"
+        if _email_otp_form_is_ready(state) and _new_error_mark(state) and not _email_otp_page_recovery_reason(state):
+            return "invalid"
+        return None
+
+    def recover_once():
+        nonlocal recovery_attempted
+        if recovery_attempted:
+            return None
+        recovery_attempted = True
+        driver._email_otp_submission_recovery_id = recovery_id
+        # 收码前的空壳恢复与这次提交的恢复分别计数；不重新填码或点击。
+        return recover_submission_page(driver, "otp", observe_recovery, budget=confirmation_budget,
+                                       receipt=receipt, sleeper=time.sleep)
+
     while True:
         _check_manual_stop()
+        confirmation_budget.check_cancelled()
         now = time.monotonic()
         if now >= end:
             break
         if not diagnostic_logged and now - started >= diagnostic_at:
             diagnostic_logged = True
             logger.info("%s[OTP] 提交后 30 秒诊断检查点：仍等待原提交确认，不重发验证码", _log_prefix(driver))
+        if now >= next_diagnostic_at:
+            log_submission_diagnostics(driver, "otp", "waiting", receipt=receipt)
+            next_diagnostic_at = time.monotonic() + 15.0
         time.sleep(min(0.5, max(0.0, end - now)))
         last = _email_otp_page_state(driver)
         if not isinstance(last, dict):
@@ -2256,14 +2313,28 @@ def _wait_after_email_otp_submit(
             return "totp_required"
         if last.get("emailVerified"):
             return "email_verified"
-        if page_state == PageState.PROFILE or _has_access_token(driver, budget=budget):
+        if (page_state == PageState.PROFILE and (not recovery_attempted or has_visible_auth_inputs(last, allow_password=False))
+                or _has_access_token(driver, budget=confirmation_budget)):
             return 'accepted'
-        if page_state in {PageState.AUTH_ERROR, PageState.LOGGED_OUT}:
-            return 'stuck'
-        if _recover_email_otp_page_if_needed(driver, last, budget=confirmation_budget):
-            continue
         if not _email_otp_page_recovery_reason(last) and _is_email_verification_page(driver) and _new_error_mark(last):
             return 'invalid'
+        reason = _email_otp_page_recovery_reason(last)
+        if reason == "blank_shell":
+            seen_at = getattr(driver, "_email_otp_blank_seen_at", None)
+            if seen_at is None:
+                driver._email_otp_blank_seen_at = time.monotonic()
+            if seen_at is None or time.monotonic() - seen_at < 3.0:
+                reason = ""
+        else:
+            driver._email_otp_blank_seen_at = None
+        if not recovery_attempted and (reason or page_state in {PageState.AUTH_ERROR, PageState.LOGGED_OUT}
+                                       or time.monotonic() >= recovery_at):
+            recovered = recover_once()
+            if recovered:
+                return recovered
+        if page_state in {PageState.AUTH_ERROR, PageState.LOGGED_OUT}:
+            return 'stuck'
+    log_submission_diagnostics(driver, "otp", "timeout", receipt=receipt)
     if _is_email_verification_page(driver):
         # 超时仍停留：有错误标记是 invalid；没有错误标记也说明提交没有产生跳转，
         # 返回 stuck，让上层保留原提交并等待同一 Attempt 恢复。

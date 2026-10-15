@@ -58,17 +58,22 @@ class _FakeDriver:
         self.refreshed_state = deepcopy(refreshed_state) if refreshed_state is not None else None
         self.refresh_error = refresh_error
         self.refresh_count = 0
+        self.get_calls = []
 
     def execute_script(self, *_args):
         return deepcopy(self.state)
 
-    def refresh(self):
+    def get(self, url):
+        self.get_calls.append(url)
         self.refresh_count += 1
         if self.refresh_error is not None:
             raise self.refresh_error
         if self.refreshed_state is not None:
             self.state = deepcopy(self.refreshed_state)
             self.current_url = self.state["url"]
+
+    def refresh(self):
+        raise AssertionError("验证码页恢复必须使用 GET，不能重放表单 POST")
 
 
 class EmailOtpPageRecoveryTests(unittest.TestCase):
@@ -79,9 +84,11 @@ class EmailOtpPageRecoveryTests(unittest.TestCase):
         driver.set_page_load_timeout(30)
         with patch.object(email_otp, "_email_otp_page_state", return_value=_route_error_state()):
             self.assertTrue(self._recover(driver, state=_route_error_state(), budget=self._budget(7.5)))
-        page.reload.assert_called_once()
-        self.assertGreater(page.reload.call_args.kwargs["timeout"], 0)
-        self.assertLessEqual(page.reload.call_args.kwargs["timeout"], 7500)
+        page.goto.assert_called_once()
+        self.assertEqual(page.goto.call_args.args[0], _OTP_URL)
+        self.assertGreater(page.goto.call_args.kwargs["timeout"], 0)
+        self.assertLessEqual(page.goto.call_args.kwargs["timeout"], 7500)
+        page.reload.assert_not_called()
         self.assertEqual(driver._page_load_timeout_ms, 30000)
 
     def setUp(self):
@@ -92,6 +99,9 @@ class EmailOtpPageRecoveryTests(unittest.TestCase):
         self.stop_patch = patch.object(email_otp, "_check_manual_stop")
         self.stop_patch.start()
         self.addCleanup(self.stop_patch.stop)
+        self.recovery_stop_patch = patch("core.registration.submission_recovery._check_manual_stop")
+        self.recovery_stop_patch.start()
+        self.addCleanup(self.recovery_stop_patch.stop)
         self.token_patch = patch.object(email_otp, "_has_access_token", return_value=False)
         self.token_patch.start()
         self.addCleanup(self.token_patch.stop)
@@ -148,6 +158,19 @@ class EmailOtpPageRecoveryTests(unittest.TestCase):
         self.assertGreaterEqual(self.clock.now, 103.0)
         self.assertEqual(budget.deadline, deadline)
         self.assertLessEqual(self.clock.now, deadline)
+
+    def test_slow_form_mount_after_refresh_uses_45_seconds_within_original_otp_budget(self):
+        driver = _FakeDriver(_blank_state())
+        mounts_at = self.clock.now + 25.0
+        budget = self._budget(240)
+        deadline = budget.deadline
+        with patch.object(driver, "execute_script", side_effect=lambda *_args:
+                          _blank_state() if self.clock.now < mounts_at else _form_state()):
+            self.assertEqual(email_otp._wait_email_otp_page_ready(driver, budget=budget), "ready")
+        self.assertEqual(driver.get_calls, [_OTP_URL])
+        self.assertEqual(budget.deadline, deadline)
+        self.assertGreaterEqual(self.clock.now, mounts_at)
+        self.assertLess(self.clock.now, 145)
 
     def test_actual_route_error_snapshot_refreshes_without_blank_grace(self):
         driver = _FakeDriver(_route_error_state(), refreshed_state=_form_state())

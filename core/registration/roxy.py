@@ -32,6 +32,7 @@ from core.registration.state_machine import (
 from core.registration.auth_context import AuthExecutionContext
 from core.registration.email_otp import _EmailSubmissionUnknown
 from core.registration.browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact
+from core.registration.submission_recovery import diagnostics_for, log_submission_diagnostics
 from core.registration.retained_browser import (
     persist_browser_resume_context, recover_attempt_failed_browser,
     recover_bound_failed_browser, retain_failed_browser, take_failed_browser,
@@ -1019,8 +1020,6 @@ def run_roxy_registration(
         data_saver.install_selenium(driver)
         traffic_capture = getattr(opened, "traffic_capture", None)
         if traffic_capture is not None:
-            from .submission_recovery import diagnostics_for
-
             diagnostic_observer = getattr(traffic_capture, "set_auth_diagnostic_observer", None)
             if callable(diagnostic_observer):
                 diagnostic_observer(diagnostics_for(driver).observe_network)
@@ -1359,7 +1358,12 @@ def run_roxy_registration(
             ready_outcome = _wait_email_otp_page_ready(driver, budget=otp_budget)
             if ready_outcome == "stuck":
                 failure_code = "otp_request_unconfirmed"
-                failure_detail = "验证码页表单未就绪，受限恢复后仍未确认；保留原 Attempt，未自动重发"
+                failure_detail = "验证码页表单未就绪，受限恢复后仍未确认；保留原 Attempt，本轮未追加重发"
+                latest_submission = getattr(driver, "_browser_submission_receipt", None)
+                if isinstance(latest_submission, BrowserSubmissionReceipt) and latest_submission.endpoint_kind == "otp_resend":
+                    status = latest_submission.http_status
+                    failure_detail += (f"；此前已尝试重发，接口 HTTP {status}" if status is not None
+                                       else "；此前已尝试重发，接口结果未确认")
                 report_job_otp_evidence(detail=failure_detail, failure_code=failure_code)
                 report_job_progress("email_otp", "failed", f"{failure_code}: {failure_detail}")
                 raise RuntimeError(f"{failure_code}: {failure_detail}")
@@ -1498,6 +1502,7 @@ def run_roxy_registration(
             driver._browser_submission_receipt = otp_submission
             record_browser_submission_fact(driver, "prepared", receipt=otp_submission)
             record_browser_submission_fact(driver, "dispatch_intent", receipt=otp_submission)
+            log_submission_diagnostics(driver, "otp", "before_submit", receipt=otp_submission)
             try:
                 otp_submit_baseline = _email_otp_page_state(driver)
             except Exception:
@@ -1961,6 +1966,9 @@ def run_roxy_registration(
             stopped = False
         if not stopped:
             try:
+                if driver is not None:
+                    log_submission_diagnostics(driver, diagnostics_for(driver).stage, "final_failure",
+                                               receipt=getattr(driver, "_browser_submission_receipt", None))
                 from core.registration_debug import pause_current_failure
                 pause_current_failure(driver, f"{type(exc).__name__}: {str(exc)[:500]}")
             except Exception:

@@ -130,15 +130,38 @@ def _read_chatgpt_session_once(driver, *, timeout: float | None = None, strict_r
         if isinstance(previous, (int, float)) and callable(getattr(driver, "set_script_timeout", None)):
             driver.set_script_timeout(timeout + 1.0)
             old_script_timeout = previous
+    read_started = time.monotonic()
+    driver._registration_session_diagnostic = {"status": None, "token_present": None}
     try:
         result = (driver.execute_async_script(script) if timeout is None else
                   driver.execute_async_script(script, max(1, int(timeout * 1000))))
+    except Exception:
+        driver._registration_session_diagnostic = {
+            "status": None, "token_present": None, "error_type": "browser_read_failed",
+            "duration_ms": max(0, int((time.monotonic() - read_started) * 1000)),
+        }
+        raise
     finally:
         if old_script_timeout is not None:
             try:
                 driver.set_script_timeout(old_script_timeout)
             except Exception:
                 logger.debug("%s 恢复 session 读取脚本超时失败", _log_prefix(driver))
+    response = result if isinstance(result, dict) else {}
+    response_data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    body_confirmed = response.get("ok") is True and isinstance(response.get("data"), dict) and response.get("json_valid") is not False
+    status = response.get("status")
+    driver._registration_session_diagnostic = {
+        "status": status if type(status) is int and 100 <= status <= 599 else None,
+        "duration_ms": max(0, int((time.monotonic() - read_started) * 1000)),
+        "token_present": bool(response_data.get("accessToken")) if body_confirmed else None,
+        "json_valid": response.get("json_valid") if type(response.get("json_valid")) is bool else None,
+        "marker": ("" if response_data.get("accessToken") else
+                   "WARNING_BANNER" if _session_warning_banner(response_data) else "no_access_token" if body_confirmed else ""),
+        "error_type": response.get("error_type") if response.get("error_type") in {
+            "origin_changed", "timeout", "session_read_failed",
+        } else "",
+    }
     if strict_read:
         if not isinstance(result, dict) or result.get("ok") is not True:
             raise RuntimeError("request_unknown: session_probe_incomplete: 会话响应未完整读取")

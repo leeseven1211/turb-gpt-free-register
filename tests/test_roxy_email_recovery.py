@@ -96,13 +96,18 @@ class RoxyEmailRecoveryTests(unittest.TestCase):
 
     def test_otp_unknown_landing_is_not_accepted(self):
         for url in ("https://auth.openai.com/", "https://chatgpt.com/auth/error"):
+            now = [0.0]
+
+            def sleep(seconds):
+                now[0] += seconds
+
             with (
                 self.subTest(url=url),
                 patch.object(roxy_registration, "_email_otp_page_state", return_value={"url": url, "inputs": []}),
                 patch.object(roxy_registration, "_is_email_verification_page", return_value=False),
                 patch.object(roxy_registration, "_has_access_token", return_value=False),
-                patch.object(roxy_registration.time, "monotonic", side_effect=[0, 0, 0, 2]),
-                patch.object(roxy_registration.time, "sleep"),
+                patch.object(roxy_registration.time, "monotonic", side_effect=lambda: now[0]),
+                patch.object(roxy_registration.time, "sleep", side_effect=sleep),
             ):
                 self.assertEqual(roxy_registration._wait_after_email_otp_submit(_FakeDriver(), timeout=1), "stuck")
 

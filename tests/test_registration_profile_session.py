@@ -57,6 +57,32 @@ class ProfileSessionReadTests(unittest.TestCase):
         driver.execute_async_script.assert_called_once()
         self.assertEqual([c.args[0] for c in driver.set_script_timeout.call_args_list], [16.0, 8])
 
+    def test_unavailable_session_keeps_status_and_marker_without_response_secrets(self):
+        driver = self.driver()
+        driver.execute_async_script.return_value = {
+            "ok": True, "status": 401, "json_valid": True,
+            "data": {"WARNING_BANNER": "unit@example.test private-cookie", "user": {"email": "unit@example.test"}},
+        }
+        with self.assertRaisesRegex(RuntimeError, "profile_session_read_failed"):
+            session_auth._read_profile_session_once(driver, timeout=15, expected_email="unit@example.test")
+        diagnostic = driver._registration_session_diagnostic
+        self.assertEqual(diagnostic["status"], 401)
+        self.assertEqual(diagnostic["marker"], "WARNING_BANNER")
+        self.assertFalse(diagnostic["token_present"])
+        self.assertNotIn("unit@example.test", json.dumps(diagnostic))
+        self.assertNotIn("private-cookie", json.dumps(diagnostic))
+
+    def test_incomplete_session_body_does_not_claim_token_is_absent(self):
+        driver = self.driver()
+        driver.execute_async_script.return_value = {"ok": False, "error_type": "timeout"}
+        with self.assertRaisesRegex(RuntimeError, "profile_session_unconfirmed"):
+            session_auth._read_profile_session_once(driver, timeout=15)
+        diagnostic = driver._registration_session_diagnostic
+        self.assertIsNone(diagnostic["status"])
+        self.assertIsNone(diagnostic["token_present"])
+        self.assertEqual(diagnostic["marker"], "")
+        self.assertEqual(diagnostic["error_type"], "timeout")
+
     def test_read_failure_keeps_exception_type_without_copying_private_message(self):
         driver = self.driver()
         original = TimeoutError("unit@example.test password=private-value token=private-token")

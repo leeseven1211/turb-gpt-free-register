@@ -8,7 +8,10 @@ import logging
 import re
 import threading
 import time
+import uuid
 from urllib.parse import urlsplit
+
+from selenium.common.exceptions import TimeoutException
 
 from .auth_context import checkpoint
 from .browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact
@@ -157,6 +160,29 @@ def diagnostics_for(driver) -> SubmissionDiagnostics:
     return diagnostics
 
 
+def _log_diagnostic_chunks(driver, safe: dict) -> None:
+    """按同一采集 ID 拆分元数据，避免任务日志的 4000 字符上限截断 JSON。"""
+    capture_id = uuid.uuid4().hex[:12]
+
+    def emit(payload):
+        logger.info("%s 认证提交诊断：%s", _log_prefix(driver),
+                    json.dumps({"capture_id": capture_id, **payload}, ensure_ascii=False, separators=(",", ":")))
+
+    emit({"section": "page", **{key: value for key, value in safe.items()
+                               if key not in {"controls", "resources", "network"}}})
+    for section in ("controls", "resources", "network"):
+        chunk, part = [], 1
+        for item in safe[section]:
+            if chunk and len(json.dumps(chunk + [item], ensure_ascii=False)) > 2200:
+                emit({"stage": safe["stage"], "point": safe["point"], "section": section,
+                      "part": part, "items": chunk})
+                chunk, part = [], part + 1
+            chunk.append(item)
+        if chunk:
+            emit({"stage": safe["stage"], "point": safe["point"], "section": section,
+                  "part": part, "items": chunk})
+
+
 def log_submission_diagnostics(driver, stage: str, point: str, *, receipt=None, ui=None) -> dict:
     diagnostics = diagnostics_for(driver)
     diagnostics.stage = stage
@@ -216,7 +242,19 @@ def log_submission_diagnostics(driver, stage: str, point: str, *, receipt=None, 
         safe["ui"] = {key: value for key, value in ui.items() if type(value) is bool or (
             key == "phase" and isinstance(value, str) and value in {"queued", "dispatched", "cancelled", "dispatch_unknown", "unknown"}
         )}
-    logger.info("%s 认证提交诊断：%s", _log_prefix(driver), json.dumps(safe, ensure_ascii=False))
+    session = getattr(driver, "_registration_session_diagnostic", None)
+    if isinstance(session, dict):
+        safe["session"] = {
+            "status": _number(session.get("status"), 599),
+            "duration_ms": _number(session.get("duration_ms")),
+            **{key: session.get(key) if type(session.get(key)) is bool else None
+               for key in ("token_present", "json_valid")},
+            "marker": session.get("marker") if session.get("marker") in {"WARNING_BANNER", "no_access_token"} else "",
+            "error_type": session.get("error_type") if session.get("error_type") in {
+                "origin_changed", "timeout", "session_read_failed", "browser_read_failed",
+            } else "",
+        }
+    _log_diagnostic_chunks(driver, safe)
     return safe
 
 
@@ -264,11 +302,15 @@ def recover_submission_page(driver, stage: str, observe, *, budget: StageBudget,
         if result:
             log_submission_diagnostics(driver, stage, "already_confirmed", receipt=receipt)
             return result
+        if recovery.expired():
+            break
         log_submission_diagnostics(driver, stage, f"before_{action}", receipt=receipt)
-        if receipt is not None and receipt.phase not in {"confirmed", "rejected", "not_dispatched"}:
+        if receipt is not None and receipt.phase not in {"confirmed", "rejected", "not_dispatched", "unknown"}:
             record_browser_submission_fact(driver, "unknown", receipt=receipt, result="unknown")
+        if recovery.remaining() < 0.1:
+            break
         logger.warning("%s %s提交未确认，执行一次%s并观察原结果", _log_prefix(driver),
-                       {"email": "邮箱", "password": "密码", "profile": "资料"}.get(stage, "认证"),
+                       {"email": "邮箱", "password": "密码", "profile": "资料", "otp": "验证码"}.get(stage, "认证"),
                        "受控刷新" if action == "refresh" else "认证页面回退")
         old_timeout = None
         try:
@@ -281,6 +323,11 @@ def recover_submission_page(driver, stage: str, observe, *, budget: StageBudget,
             get(url)
         except Exception as exc:
             logger.warning("%s 认证页面%s未完成，异常类型=%s，继续观察页面", _log_prefix(driver), action, type(exc).__name__)
+            if isinstance(exc, TimeoutException):
+                try:
+                    driver.execute_script("window.stop();")
+                except Exception:
+                    pass
         finally:
             if isinstance(old_timeout, (int, float)):
                 try:

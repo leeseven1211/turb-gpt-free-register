@@ -20,6 +20,9 @@ class _Clock:
     def time(self):
         return self.now
 
+    def monotonic(self):
+        return self.now
+
     def sleep(self, seconds):
         self.now += seconds
 
@@ -99,6 +102,16 @@ class SubmissionPageRecoveryTests(unittest.TestCase):
         driver, clock = _driver(), _Clock()
         result = self.run_recovery(driver, clock, lambda _budget: "otp")
         self.assertEqual(result, "otp")
+        driver.get.assert_not_called()
+
+    def test_slow_observation_exhausting_budget_cannot_start_navigation(self):
+        driver, clock = _driver(), _Clock()
+
+        def observe(_budget):
+            clock.sleep(5)
+            return None
+
+        self.assertIsNone(self.run_recovery(driver, clock, observe, deadline=5))
         driver.get.assert_not_called()
 
     def test_foreign_origin_or_expired_budget_does_not_navigate(self):
@@ -227,8 +240,154 @@ class SubmissionDiagnosticsTests(unittest.TestCase):
         self.assertNotIn("privatelettertoken", json.dumps(safe))
         self.assertEqual(safe["path"], "其他认证路径")
 
+    def test_long_diagnostics_remain_valid_json_after_task_log_limit(self):
+        from core.task_run_log import redact_text
+
+        driver = _driver()
+        driver.execute_script.return_value = {
+            "controls": [{"type": "password", "value_present": True, "disabled": True}] * 20,
+            "resources": [{"url": "https://auth.openai.com/api/accounts/authorize", "status": 200}] * 10,
+        }
+        diagnostics = recovery.diagnostics_for(driver)
+        for index in range(20):
+            diagnostics.observe_network({"url": "https://auth.openai.com/api/accounts/email-otp/resend",
+                "method": "POST", "request_id": str(index), "status": 409, "duration_ms": 9000}, phase="response")
+        with self.assertLogs(recovery.logger, level="INFO") as logs:
+            safe = recovery.log_submission_diagnostics(driver, "otp", "final_failure")
+        records = []
+        for record in logs.records:
+            message = record.getMessage()
+            self.assertLess(len(message), 3000)
+            records.append(json.loads(redact_text(message).split("认证提交诊断：", 1)[1]))
+        self.assertEqual(len({record["capture_id"] for record in records}), 1)
+        network = [item for record in records if record["section"] == "network" for item in record["items"]]
+        self.assertEqual(network, safe["network"])
+        self.assertEqual(len(network), 20)
+        self.assertTrue(all(item["status"] == 409 for item in network))
+
 
 class SubmissionRecoveryIntegrationTests(unittest.TestCase):
+    def _profile_session_failure(self, error_code, *, slow_first_read=False):
+        driver, clock = _driver("https://auth.openai.com/about-you"), _Clock()
+        profile_url = driver.current_url
+        driver.execute_script.return_value = {"valid": True, "fields": []}
+
+        def submit(_driver):
+            driver.current_url = "https://chatgpt.com/"
+            return True
+
+        def session_read(_driver, **kwargs):
+            if driver.get.called:
+                return {"accessToken": "test-session"}
+            if slow_first_read:
+                clock.sleep(kwargs["timeout"])
+            raise RuntimeError(f"request_unknown: {error_code}: 测试会话未确认")
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(password_auth, "time", clock))
+            stack.enter_context(patch.object(password_auth, "_page_snapshot", side_effect=lambda _d: {
+                "url": driver.current_url, "inputs": [{"name": "name"}, {"name": "age"}] if driver.current_url == profile_url else [],
+            }))
+            for name in ("human_delay", "_accept_profile_consents", "_check_manual_stop"):
+                stack.enter_context(patch.object(password_auth, name))
+            stack.enter_context(patch.object(recovery, "_check_manual_stop"))
+            stack.enter_context(patch.object(password_auth, "_fill_birthday_or_age", return_value="age"))
+            stack.enter_context(patch.object(password_auth, "_select_or_type", return_value=True))
+            click = stack.enter_context(patch.object(password_auth, "_click_if_enabled_submit", side_effect=submit))
+            stack.enter_context(patch.object(password_auth, "_read_profile_session_once", side_effect=session_read))
+            if error_code == "session_identity_mismatch":
+                with self.assertRaisesRegex(RuntimeError, error_code):
+                    password_auth._complete_profile_page(driver, "Unit User", "2000-01-02", timeout=60,
+                                                         expected_email="unit@example.test")
+                driver.get.assert_not_called()
+            else:
+                self.assertTrue(password_auth._complete_profile_page(driver, "Unit User", "2000-01-02", timeout=60,
+                                                                    expected_email="unit@example.test"))
+                driver.get.assert_called_once_with("https://chatgpt.com/")
+            click.assert_called_once()
+            self.assertLess(clock.now, 60)
+
+    def test_profile_read_failure_and_missing_token_trigger_get_recovery(self):
+        for error_code in ("profile_session_read_failed", "profile_session_unconfirmed"):
+            with self.subTest(error_code=error_code):
+                self._profile_session_failure(error_code)
+
+    def test_profile_slow_session_read_reserves_time_for_recovery(self):
+        self._profile_session_failure("profile_session_read_failed", slow_first_read=True)
+
+    def test_profile_identity_mismatch_cannot_be_recovered_as_success(self):
+        self._profile_session_failure("session_identity_mismatch")
+
+    def test_otp_stalled_submission_refreshes_after_pre_form_refresh_without_resubmit(self):
+        driver, clock = _driver("https://auth.openai.com/email-verification"), _Clock()
+        receipt = BrowserSubmissionReceipt(kind="otp", stage="email_otp", endpoint_kind="otp_submit", phase="ui_dispatched")
+        driver._browser_submission_receipt = receipt
+        driver._email_otp_page_refresh_done = True
+        driver.get.side_effect = lambda _url: setattr(driver, "current_url", "https://auth.openai.com/about-you")
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(email_otp, "time", clock))
+            stack.enter_context(patch.object(email_otp, "_email_otp_page_state", side_effect=lambda _d: {
+                "url": driver.current_url, "inputs": [{"type": "text", "name": "code" if "email-verification" in driver.current_url else "name"}],
+                "errors": [],
+            }))
+            stack.enter_context(patch.object(email_otp, "_is_email_verification_page", side_effect=lambda _d: "email-verification" in driver.current_url))
+            stack.enter_context(patch.object(email_otp, "_has_access_token", return_value=False))
+            stack.enter_context(patch.object(email_otp, "_check_manual_stop"))
+            stack.enter_context(patch.object(recovery, "_check_manual_stop"))
+            retype = stack.enter_context(patch.object(email_otp, "_type_otp"))
+            resend = stack.enter_context(patch.object(email_otp, "_click_resend_email_otp"))
+            self.assertEqual(email_otp._wait_after_email_otp_submit(driver, timeout=60,
+                                                                  budget=StageBudget(80, clock=clock.time)), "accepted")
+        driver.get.assert_called_once_with("https://auth.openai.com/email-verification")
+        driver.submit.assert_not_called()
+        retype.assert_not_called()
+        resend.assert_not_called()
+        self.assertGreaterEqual(clock.now, 40)
+        self.assertLessEqual(clock.now, 60)
+        self.assertIs(driver._browser_submission_receipt, receipt)
+        self.assertEqual(receipt.phase, "unknown")
+
+    def test_otp_refresh_to_profile_shell_keeps_original_submission_unknown(self):
+        driver, clock = _driver("https://auth.openai.com/email-verification"), _Clock()
+        receipt = BrowserSubmissionReceipt(kind="otp", stage="email_otp", endpoint_kind="otp_submit", phase="unknown")
+        driver._browser_submission_receipt = receipt
+        driver.get.side_effect = lambda _url: setattr(driver, "current_url", "https://auth.openai.com/about-you")
+        with (
+            patch.object(email_otp, "time", clock),
+            patch.object(email_otp, "_email_otp_page_state", side_effect=lambda _d: {
+                "url": driver.current_url, "inputs": [], "text": "Loading", "errors": [],
+            }),
+            patch.object(email_otp, "_is_email_verification_page", side_effect=lambda _d: "email-verification" in driver.current_url),
+            patch.object(email_otp, "_has_access_token", return_value=False),
+            patch.object(email_otp, "_check_manual_stop"),
+            patch.object(recovery, "_check_manual_stop"),
+        ):
+            self.assertEqual(email_otp._wait_after_email_otp_submit(driver, timeout=60,
+                                                                  budget=StageBudget(70, clock=clock.time)), "stuck")
+        driver.get.assert_called_once()
+        self.assertEqual(receipt.phase, "unknown")
+        self.assertLessEqual(clock.now, 60)
+
+    def test_otp_same_submission_reentry_does_not_refresh_twice(self):
+        driver, clock = _driver("https://auth.openai.com/email-verification"), _Clock()
+        receipt = BrowserSubmissionReceipt(kind="otp", stage="email_otp", endpoint_kind="otp_submit", phase="unknown")
+        driver._browser_submission_receipt = receipt
+        driver._email_otp_submission_recovery_id = receipt.submission_id
+        with (
+            patch.object(email_otp, "time", clock),
+            patch.object(email_otp, "_email_otp_page_state", return_value={
+                "url": driver.current_url, "inputs": [{"name": "code", "type": "text"}], "errors": [],
+            }),
+            patch.object(email_otp, "_is_email_verification_page", return_value=True),
+            patch.object(email_otp, "_has_access_token", return_value=False),
+            patch.object(email_otp, "_check_manual_stop"),
+        ):
+            self.assertEqual(email_otp._wait_after_email_otp_submit(driver, timeout=10,
+                                                                  budget=StageBudget(60, clock=clock.time)), "stuck")
+        driver.get.assert_not_called()
+        self.assertEqual(receipt.phase, "unknown")
+        self.assertLessEqual(clock.now, 10)
+
     def test_password_pending_refresh_reaches_otp_with_one_password_submission(self):
         driver, clock = _driver(), _Clock()
         queues = []

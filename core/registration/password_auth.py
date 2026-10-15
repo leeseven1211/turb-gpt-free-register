@@ -1123,23 +1123,29 @@ def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45, 
     profile_submitted = False
     next_diagnostic_at = time.time() + 15.0
 
-    def confirm_session(snapshot: dict, deadline: float) -> bool:
+    def confirm_session(snapshot: dict, deadline: float, *, reserve_recovery: bool = False) -> bool:
         current = urlsplit(str(snapshot.get("url") or ""))
         if current.scheme != "https" or current.hostname != "chatgpt.com" or current.port not in (None, 443):
             return False
-        _read_profile_session_once(driver, timeout=max(0.0, deadline - time.time()), expected_email=expected_email)
+        remaining = max(0.0, deadline - time.time())
+        if reserve_recovery and remaining > RECOVERY_WINDOW_SECONDS:
+            remaining -= RECOVERY_WINDOW_SECONDS
+        _read_profile_session_once(driver, timeout=remaining, expected_email=expected_email)
         return True
+
+    def recoverable_session_error(exc: RuntimeError) -> bool:
+        return any(code in str(exc) for code in ("profile_session_read_failed", "profile_session_unconfirmed"))
 
     def observe_recovery(recovery_budget):
         snapshot = _page_snapshot(driver)
         if classify_page(snapshot) in {PageState.AUTH_ERROR, PageState.LOGGED_OUT}:
             return None
         try:
-            if confirm_session(snapshot, recovery_budget.deadline):
+            if confirm_session(snapshot, min(recovery_budget.deadline, time.time() + 5.0)):
                 return "session_confirmed"
         except RuntimeError as exc:
             # 完整会话读取的传输失败可以在剩余预算内观察；身份不匹配仍立即拦截。
-            if "profile_session_read_failed" not in str(exc):
+            if not recoverable_session_error(exc):
                 raise
         if not profile_submitted and has_visible_auth_inputs(snapshot, allow_password=False) and _is_profile_like(snapshot):
             return "profile_ready"
@@ -1167,9 +1173,20 @@ def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45, 
             if recovered == "profile_ready":
                 continue
             raise RuntimeError("request_unknown: 资料阶段进入认证错误页，账号创建结果未确认")
-        if confirm_session(snap, end):
-            logger.info('%s 已确认完整登录会话，资料页可能已跳过', _log_prefix(driver))
-            return False
+        try:
+            if confirm_session(snap, end, reserve_recovery=not recovery_attempted):
+                logger.info('%s 已确认完整登录会话，资料页可能已跳过', _log_prefix(driver))
+                return False
+        except RuntimeError as exc:
+            if not recoverable_session_error(exc):
+                raise
+            log_submission_diagnostics(driver, "profile", "session_read_failed")
+            recovered = recover_once()
+            if recovered == "session_confirmed":
+                return False
+            if recovered == "profile_ready":
+                continue
+            raise
         if not _is_profile_like(snap):
             if time.time() >= next_diagnostic_at:
                 log_submission_diagnostics(driver, "profile", "waiting_for_form")
@@ -1254,8 +1271,16 @@ def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45, 
                         if recover_once() == "session_confirmed":
                             return True
                         raise RuntimeError("request_unknown: 资料提交后进入认证错误页，账号创建结果未确认")
-                    if confirm_session(submitted_snapshot, submit_end):
-                        return True
+                    try:
+                        if confirm_session(submitted_snapshot, submit_end, reserve_recovery=not recovery_attempted):
+                            return True
+                    except RuntimeError as exc:
+                        if not recoverable_session_error(exc):
+                            raise
+                        log_submission_diagnostics(driver, "profile", "session_read_failed")
+                        if recover_once() == "session_confirmed":
+                            return True
+                        raise
                     rejection_marker = _profile_account_rejection_marker(driver)
                     if rejection_marker:
                         raise RuntimeError(
