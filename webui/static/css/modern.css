@@ -688,6 +688,12 @@
       fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round;
     }
     .column-filter-option[aria-checked="true"] .column-filter-option-check { opacity: 1; }
+    .column-filter-option[role="menuitemcheckbox"] .column-filter-option-check { opacity: 1; color: #a8adb7; }
+    .column-filter-option[role="menuitemcheckbox"] .column-filter-option-check path { opacity: 0; }
+    .column-filter-option[role="menuitemcheckbox"][aria-checked="true"] .column-filter-option-check { color: #5b5ce2; }
+    .column-filter-option[role="menuitemcheckbox"][aria-checked="true"] .column-filter-option-check path { opacity: 1; }
+    .column-filter-multiple-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 9px 0; border-top: 1px solid #e0e3ea; color: #596274; font-size: 11px; }
+    .column-filter-multiple-footer button { min-height: 28px; padding: 3px 8px; border: 0; border-radius: 5px; color: #4f51be; background: #efefff; font: inherit; cursor: pointer; }
     .column-filter-popover--date { padding: 9px; }
     .column-filter-popover--range { grid-template-columns: 1fr 1fr; width: min(292px, calc(100vw - 20px)); }
     .column-filter-date-field { min-width: 0; display: grid; gap: 4px; }

@@ -1078,7 +1078,7 @@ async function loadRuntimeUiSettings() {
 }
 function accountListQueryParams() {
   const archived = SHOW_ARCHIVED_ACCOUNTS ? 'only' : '0';
-  const plan = document.getElementById('accountPlanFilterV2')?.value || (SHOW_PLUS_ACCOUNTS_ONLY ? 'plus' : '');
+  const plan = columnFilterValue(document.getElementById('accountPlanFilterV2')) || (SHOW_PLUS_ACCOUNTS_ONLY ? 'plus' : '');
   const email = getAccountsQuery();
   const q = accountAdvancedSearchQuery;
   const dateFrom = document.getElementById('dateFromAccountsV2')?.value || '';
@@ -1089,7 +1089,7 @@ function accountListQueryParams() {
     id: 'accountIdFilterV2', source: 'accountSourceFilterV2', token: 'accountTokenFilterV2',
     password: 'accountPasswordFilterV2', promotion: 'accountTrialFilterV2', totp: 'accountTotpFilterV2', risk: 'accountRiskFilterV2', codex: 'accountCodexFilterV2', account_status: 'accountStatusFilterV2',
   };
-  Object.entries(accountFilters).forEach(([key, id]) => params.set(key, document.getElementById(id)?.value || ''));
+  Object.entries(accountFilters).forEach(([key, id]) => params.set(key, columnFilterValue(document.getElementById(id))));
   return params;
 }
 async function loadAccounts() {
@@ -1121,6 +1121,10 @@ async function loadAccounts() {
     syncFacetSelect('accountRiskFilterV2', facets.risk, {group:'risk'});
     syncFacetSelect('accountCodexFilterV2', facets.codex, {group:'codex'});
     syncFacetSelect('accountStatusFilterV2', facets.account_status, {group:'account_status', values:['active','deactivated']});
+    if (params.toString() !== accountListQueryParams().toString()) {
+      accountsReloadQueued = true;
+      return;
+    }
     ACCOUNTS = res.items || [];
     ACCOUNTS_TOTAL = Number(res.total || ACCOUNTS.length || 0);
     const totalPages = Math.max(1, Math.ceil(ACCOUNTS_TOTAL / p.size));
@@ -1395,7 +1399,7 @@ function _showAccountsTooltip(target) {
 function _planCell(r) {
   const ok = r.plan_check_ok;
   const err = r.plan_check_error || '';
-  const plan = (r.current_plan_type || r.plan_type || '-').toString();
+  const plan = String(r.current_plan_type || '').trim() || String(r.plan_type || '').trim() || '未查询';
   const checked = r.plan_checked_at ? `查询: ${r.plan_checked_at}` : '未查询实时套餐';
   const route = (r.plan_check_network_route || '').toString();
   const routeLabel = route === 'proxy' ? `网络: 代理${r.plan_check_proxy_used ? ` (${r.plan_check_proxy_used})` : ''}` :
@@ -1412,7 +1416,7 @@ function _planCell(r) {
     return `<span class="pill ${cls}" data-accounts-tooltip="${esc(title)}" tabindex="0">${esc(text)}</span>`;
   }
 
-  const cls = lower === '-' ? 'status-used' : 'status-success';
+  const cls = lower === '未查询' ? 'status-used' : 'status-success';
   const expireRaw = r.plan_expires_at || r.expires_at || r.plan_renews_at || r.renews_at || '';
   const expire = _fmtPlanTime(expireRaw, true);
   const billing = _billingLabel(r.billing_period);
@@ -2648,7 +2652,7 @@ async function refreshAccountsList(btn) {
   if (refreshV2) refreshV2.addEventListener('click', () => refreshAccountsList(refreshV2));
   $('#btnResetAccountFiltersV2')?.addEventListener('click', () => {
     ['accountAdvancedSearchV2','accountIdFilterV2','qAccountsV2','accountSourceFilterV2','accountTokenFilterV2','accountStatusFilterV2','accountPasswordFilterV2','accountPlanFilterV2','accountTrialFilterV2','accountTotpFilterV2','accountRiskFilterV2','accountCodexFilterV2','dateFromAccountsV2','dateToAccountsV2'].forEach(id => {
-      const el = document.getElementById(id); if (el) el.value = '';
+      setColumnFilterValue(document.getElementById(id), '');
     });
     syncSearch(); refreshColumnFilterStates(); apply();
   });

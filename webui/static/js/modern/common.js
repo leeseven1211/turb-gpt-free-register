@@ -182,14 +182,14 @@ function taskProgressStepMatches(step, filter) {
 }
 function facetLabel(group, value) {
   const key = String(value || '').toLowerCase();
-  if (group === 'plan') return key ? key.charAt(0).toUpperCase() + key.slice(1) : '-';
+  if (group === 'plan') return key === 'unqueried' ? '未查询' : key ? key.charAt(0).toUpperCase() + key.slice(1) : '-';
   return LIST_FACET_LABELS[group]?.[key] || key || '-';
 }
 function syncFacetSelect(id, items, {group='', allValue='', allLabel='全部', values=[]} = {}) {
   const select = document.getElementById(id);
   if (!select) return;
   if (select.dataset) select.dataset.facetGroup = group;
-  const current = select.value;
+  const current = columnFilterValue(select);
   const sourceRows = Array.isArray(items) ? items : [];
   const dataRows = sourceRows.filter(item => {
     const value = String(item?.value || '').trim();
@@ -209,9 +209,32 @@ function syncFacetSelect(id, items, {group='', allValue='', allLabel='全部', v
     label: `${labels.get(String(item.value)) || facetLabel(group, item.value)} · ${Number(item.count || 0)}`,
   })));
   select.innerHTML = options.map(item => `<option value="${attrEsc(item.value)}">${esc(item.label)}</option>`).join('');
-  select.value = options.some(item => item.value === current) ? current : allValue;
+  const available = new Set(options.map(item => item.value));
+  const retained = select.multiple
+    ? current.split(',').filter(value => available.has(value)).join(',')
+    : available.has(current) ? current : allValue;
+  setColumnFilterValue(select, retained);
   refreshColumnFilterState(select);
   renderColumnFilterOptions(select);
+}
+
+function columnFilterValue(control) {
+  if (control?.multiple) {
+    return Array.from(control.selectedOptions).map(option => option.value).filter(Boolean).sort().join(',');
+  }
+  return control?.value || '';
+}
+
+function setColumnFilterValue(control, value) {
+  if (!control) return;
+  if (!control.multiple) {
+    control.value = value;
+    return;
+  }
+  const selected = new Set(String(value || '').split(',').filter(Boolean));
+  Array.from(control.options).forEach(option => {
+    option.selected = option.value ? selected.has(option.value) : selected.size === 0;
+  });
 }
 
 // ---------- 分页状态 ----------
@@ -543,7 +566,7 @@ function columnFilterEmptyValue(header, control) {
 function refreshColumnFilterState(control) {
   const header = control?.closest?.('[data-column-filter]');
   if (!header) return;
-  const hasValue = columnFilterControls(header).some(item => String(item.value ?? '') !== columnFilterEmptyValue(header, item));
+  const hasValue = columnFilterControls(header).some(item => columnFilterValue(item) !== columnFilterEmptyValue(header, item));
   header.classList.toggle('has-filter-value', hasValue);
   if (control.matches?.('select')) renderColumnFilterOptions(control);
   renderColumnFilterSummaryForTable(header.closest('table[data-resizable-table]'));
@@ -610,12 +633,21 @@ function renderColumnFilterOptions(select) {
   const list = header?.querySelector('[data-column-filter-options]');
   if (!header || !list) return;
   const statusFilter = select.dataset.facetGroup === 'status';
+  const focusedValue = list.contains(document.activeElement)
+    ? document.activeElement?.closest('[data-column-filter-option]')?.dataset.columnFilterOption
+    : null;
+  const scrollTop = list.scrollTop;
   list.innerHTML = Array.from(select.options).map(option => `
-    <button type="button" class="column-filter-option" role="menuitemradio"
+    <button type="button" class="column-filter-option" role="${select.multiple ? 'menuitemcheckbox' : 'menuitemradio'}"
       data-column-filter-option="${attrEsc(option.value)}"${statusFilter && option.value ? ` data-filter-status="${attrEsc(option.value)}"` : ''} aria-checked="${option.selected ? 'true' : 'false'}">
       <span>${esc(option.textContent || option.label || '全部')}</span>
-      <svg class="column-filter-option-check" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8.3 3.1 3L13 4.7"></path></svg>
+      <svg class="column-filter-option-check" viewBox="0 0 16 16" aria-hidden="true">${select.multiple ? '<rect x="1" y="1" width="14" height="14" rx="3"></rect>' : ''}<path d="m3 8.3 3.1 3L13 4.7"></path></svg>
     </button>`).join('');
+  list.scrollTop = scrollTop;
+  if (focusedValue != null) {
+    const buttons = Array.from(list.querySelectorAll('[data-column-filter-option]'));
+    (buttons.find(button => button.dataset.columnFilterOption === focusedValue) || buttons[0])?.focus({preventScroll:true});
+  }
 }
 
 function columnFilterDisplayValue(header) {
@@ -623,8 +655,8 @@ function columnFilterDisplayValue(header) {
   const primary = document.getElementById(header.dataset.columnFilter);
   if (!primary) return '';
   if (type === 'select') {
-    const selected = primary.options?.[primary.selectedIndex];
-    return selected ? String(selected.textContent || '').replace(/\s*·\s*\d+\s*$/, '') : '';
+    const selected = primary.multiple ? Array.from(primary.selectedOptions).filter(option => option.value) : [primary.options?.[primary.selectedIndex]].filter(Boolean);
+    return selected.map(option => String(option.textContent || '').replace(/\s*·\s*\d+\s*$/, '')).join('、');
   }
   if (type === 'date-range') {
     const end = document.getElementById(header.dataset.filterEndId || '');
@@ -658,7 +690,7 @@ function clearColumnFilterHeader(header, {focus=false, close=false} = {}) {
   if (!header) return;
   const controls = columnFilterControls(header);
   const primary = document.getElementById(header.dataset.columnFilter);
-  controls.forEach(control => { control.value = columnFilterEmptyValue(header, control); });
+  controls.forEach(control => setColumnFilterValue(control, columnFilterEmptyValue(header, control)));
   if (primary) {
     refreshColumnFilterState(primary);
     const eventName = primary.matches('input[type="search"]') ? 'input' : 'change';
@@ -694,10 +726,12 @@ function initColumnFilters() {
       return;
     }
     if (type === 'select') {
+      const multiple = header.dataset.filterMultiple === 'true' || header.closest('table')?.dataset.filterMultiple === 'true';
       header.innerHTML = `${trigger}
-        <select id="${attrEsc(id)}" class="column-filter-native" hidden tabindex="-1" aria-hidden="true"><option value="${attrEsc(emptyValue)}">全部</option></select>
+        <select id="${attrEsc(id)}" class="column-filter-native" hidden${multiple ? ' multiple' : ''} tabindex="-1" aria-hidden="true"><option value="${attrEsc(emptyValue)}" selected>全部</option></select>
         <div class="column-filter-popover column-filter-popover--select" role="menu" aria-label="${attrEsc(filterLabel)}">
           <div class="column-filter-options" data-column-filter-options></div>
+          ${multiple ? '<div class="column-filter-multiple-footer"><span>可多选</span><button type="button" data-close-column-filter>完成</button></div>' : ''}
         </div>`;
       header.querySelector('[data-column-filter-trigger]')?.setAttribute('aria-haspopup', 'menu');
       renderColumnFilterOptions(document.getElementById(id));
@@ -771,11 +805,27 @@ function initColumnFilters() {
       const header = option.closest('.column-filter-header');
       const select = document.getElementById(header?.dataset.columnFilter || '');
       if (!select) return;
-      select.value = option.dataset.columnFilterOption ?? '';
+      const value = option.dataset.columnFilterOption ?? '';
+      if (select.multiple) {
+        const selected = new Set(columnFilterValue(select).split(',').filter(Boolean));
+        if (!value) selected.clear();
+        else if (selected.has(value)) selected.delete(value);
+        else selected.add(value);
+        setColumnFilterValue(select, Array.from(selected).join(','));
+      } else select.value = value;
       refreshColumnFilterState(select);
       select.dispatchEvent(new Event('change', {bubbles:true}));
+      if (!select.multiple) {
+        closeColumnFilterPopovers();
+        header.querySelector('[data-column-filter-trigger]')?.focus({preventScroll:true});
+      }
+      return;
+    }
+    const done = event.target.closest('[data-close-column-filter]');
+    if (done) {
+      const header = done.closest('.column-filter-header');
       closeColumnFilterPopovers();
-      header.querySelector('[data-column-filter-trigger]')?.focus({preventScroll:true});
+      header?.querySelector('[data-column-filter-trigger]')?.focus({preventScroll:true});
       return;
     }
     const clear = event.target.closest('[data-clear-column-filter]');
@@ -793,6 +843,16 @@ function initColumnFilters() {
     else if (event.target.closest('.toolbar-overflow-menu button')) event.target.closest('.toolbar-overflow')?.removeAttribute('open');
   });
   document.addEventListener('keydown', event => {
+    const option = event.target.closest?.('[data-column-filter-option]');
+    if (option && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+      event.preventDefault();
+      const options = Array.from(option.closest('[data-column-filter-options]').querySelectorAll('[data-column-filter-option]'));
+      const index = options.indexOf(option);
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? options.length - 1
+        : (index + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length;
+      options[next]?.focus();
+      return;
+    }
     const search = event.target.closest?.('.column-filter-search input');
     if (search && (event.key === 'Enter' || event.key === 'Escape')) {
       event.preventDefault();

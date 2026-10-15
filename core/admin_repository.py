@@ -129,6 +129,15 @@ _ACCOUNT_TOKEN_STATE = f"""CASE
 END"""
 _ACCOUNT_PASSWORD_PRESENT = "COALESCE(a.account_has_password, FALSE)"
 _ACCOUNT_TOTP_PRESENT = "COALESCE(a.account_totp_enabled, FALSE)"
+_ACCOUNT_PLAN_VALUE = """LOWER(COALESCE(
+    NULLIF(BTRIM(a.current_plan_type), ''),
+    NULLIF(BTRIM(a.plan_type), ''), 'unqueried'
+))"""
+
+
+def _filter_values(value: str) -> list[str]:
+    """同列多选使用逗号分隔，保留旧单值查询并去除重复项。"""
+    return list(dict.fromkeys(part.strip().lower() for part in _text(value).split(",") if part.strip()))
 
 _ACCOUNT_PROMO_KIND = """CASE
     WHEN LOWER(COALESCE(a.plus_promo_kind, '')) IN
@@ -195,13 +204,15 @@ def _account_where(
         where.append("a.archived IS TRUE")
     elif archived not in {"all", "include"}:
         where.append("a.archived IS FALSE")
-    if plan:
-        if plan == "plus":
-            where.append("LOWER(COALESCE(a.current_plan_type, a.plan_type, '')) LIKE %s AND LOWER(COALESCE(a.current_plan_type, a.plan_type, '')) NOT LIKE %s")
+    plans = _filter_values(plan)
+    if plans:
+        predicate = f"({_ACCOUNT_PLAN_VALUE}) = ANY(%s)"
+        params.append(plans)
+        if "plus" in plans:
+            # 保留旧版 Plus 入口对 Plus 套餐变体的匹配。
+            predicate = f"({predicate} OR (({_ACCOUNT_PLAN_VALUE}) LIKE %s AND ({_ACCOUNT_PLAN_VALUE}) NOT LIKE %s))"
             params.extend(("%plus%", "%free%"))
-        else:
-            where.append("LOWER(COALESCE(a.current_plan_type, a.plan_type, '')) = %s")
-            params.append(plan.lower())
+        where.append(predicate)
     query = _text(q)
     if query:
         normalized_query = query.lower()
@@ -244,45 +255,26 @@ def _account_where(
     if value:
         where.append("(a.email ILIKE %s OR COALESCE(a.data->>'user_name', '') ILIKE %s)")
         params.extend((f"%{value}%", f"%{value}%"))
-    value = _text(filters.get("source")).lower()
-    if value:
-        where.append("LOWER(COALESCE(a.email_source, '')) = %s")
-        params.append(value)
-    value = _text(filters.get("token")).lower()
-    if value in {"has", "expired", "invalid_401", "invalid_403", "invalid_other", "none"}:
-        where.append(f"({_ACCOUNT_TOKEN_STATE}) = %s")
-        params.append(value)
-    value = _text(filters.get("password")).lower()
-    if value in {"has", "none"}:
-        where.append(_ACCOUNT_PASSWORD_PRESENT if value == "has" else f"NOT {_ACCOUNT_PASSWORD_PRESENT}")
-    value = _text(filters.get("promotion") or filters.get("trial")).lower()
-    value = {"eligible": "free_trial", "ineligible": "none"}.get(value, value)
-    if value == "discount":
-        # 兼容旧链接：未细分的 discount 仍表示所有折扣优惠。
-        where.append(f"({_ACCOUNT_PROMOTION_VALUE}) IN ('half_price', 'other_discount')")
-    elif value == "pending":
-        where.append(
-            f"(({_ACCOUNT_PROMOTION_VALUE}) = 'pending' "
-            "OR LOWER(COALESCE(a.plan_check_status, '')) IN ('queued', 'running'))"
-        )
-    elif value in {"free_trial", "half_price", "other_discount", "other_promo", "none", "unknown", "failed", "not_applicable"}:
-        where.append(f"({_ACCOUNT_PROMOTION_VALUE}) = %s")
-        params.append(value)
-    value = _text(filters.get("totp")).lower()
-    if value in {"enabled", "disabled"}:
-        where.append(_ACCOUNT_TOTP_PRESENT if value == "enabled" else f"NOT {_ACCOUNT_TOTP_PRESENT}")
-    value = _text(filters.get("risk")).lower()
-    if value:
-        where.append(f"({_ACCOUNT_RISK_VALUE}) = %s")
-        params.append(value)
-    value = _text(filters.get("codex")).lower()
-    if value:
-        where.append("LOWER(COALESCE(a.codex_status, '')) = %s")
-        params.append(value)
-    value = _text(filters.get("account_status")).lower()
-    if value in {"active", "deactivated"}:
-        where.append(f"({_ACCOUNT_STATUS}) = %s")
-        params.append(value)
+    enum_filters = {
+        "source": "LOWER(COALESCE(a.email_source, ''))",
+        "token": _ACCOUNT_TOKEN_STATE,
+        "password": f"CASE WHEN {_ACCOUNT_PASSWORD_PRESENT} THEN 'has' ELSE 'none' END",
+        "totp": f"CASE WHEN {_ACCOUNT_TOTP_PRESENT} THEN 'enabled' ELSE 'disabled' END",
+        "risk": _ACCOUNT_RISK_VALUE,
+        "codex": "LOWER(COALESCE(a.codex_status, ''))",
+        "account_status": _ACCOUNT_STATUS,
+    }
+    for key, expression in enum_filters.items():
+        values = _filter_values(filters.get(key))
+        if values:
+            where.append(f"({expression}) = ANY(%s)")
+            params.append(values)
+    promotions = _filter_values(filters.get("promotion") or filters.get("trial"))
+    if promotions:
+        aliases = {"eligible": ["free_trial"], "ineligible": ["none"], "discount": ["half_price", "other_discount"]}
+        values = list(dict.fromkeys(item for value in promotions for item in aliases.get(value, [value])))
+        where.append(f"({_ACCOUNT_PROMOTION_FACET_VALUE}) = ANY(%s)")
+        params.append(values)
     return where, params
 
 
@@ -311,7 +303,7 @@ def list_accounts(
                 LOWER(COALESCE(a.email_source, '')) AS source,
                 {_ACCOUNT_TOKEN_STATE} AS token,
                 CASE WHEN {_ACCOUNT_PASSWORD_PRESENT} THEN 'has' ELSE 'none' END AS password,
-                LOWER(COALESCE(a.current_plan_type, a.plan_type, '')) AS plan,
+                {_ACCOUNT_PLAN_VALUE} AS plan,
                 {_ACCOUNT_PROMOTION_FACET_VALUE} AS promotion,
                 CASE WHEN {_ACCOUNT_TOTP_PRESENT} THEN 'enabled' ELSE 'disabled' END AS totp,
                 {_ACCOUNT_RISK_VALUE} AS risk,

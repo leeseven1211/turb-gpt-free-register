@@ -5,6 +5,7 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '../webui/static/js/modern/accounts.js'), 'utf8');
+const commonSource = fs.readFileSync(path.join(__dirname, '../webui/static/js/modern/common.js'), 'utf8');
 
 function functionSource(name) {
   const start = source.indexOf(`function ${name}(`);
@@ -38,6 +39,7 @@ function harness() {
   };
   view.debounce = callback => { let id; return () => { view.clearTimeout(id); id = view.setTimeout(callback); }; };
   vm.createContext(view);
+  vm.runInContext(commonSource.slice(commonSource.indexOf('function columnFilterValue('), commonSource.indexOf('// ---------- 分页状态 ----------')), view);
   const bindingStart = source.indexOf('(function bindAccountsFilterV2()');
   vm.runInContext([
     functionSource('getAccountsQuery'), functionSource('accountListQueryParams'),
