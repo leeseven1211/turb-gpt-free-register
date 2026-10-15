@@ -1656,23 +1656,10 @@ def run_roxy_registration(
         )
         _validate_registration_session_identity(session_info, email)
         access_token = session_info["accessToken"]
-        captured_plan_result = None
-        if plan_check_enabled:
-            report_job_progress("plan_check", "running", "正在查询注册会话中的套餐与 Plus 优惠资格")
-            try:
-                captured_plan_result = registration_plan_capture.read_or_fetch_selenium(driver, access_token)
-            except Exception as exc:
-                # 套餐检查属于注册后的独立能力。浏览器查询失败时继续保存注册主体，
-                # 随后交由持久任务队列查询，避免套餐接口异常丢失已创建账号。
-                logger.warning(
-                    "[Roxy注册][套餐] 浏览器查询失败，将尝试后台查询：%s",
-                    type(exc).__name__,
-                )
         logger.info("[Roxy注册] 已拿到 accessToken：%s", email)
-        _check_manual_stop()
 
         # 注册主体到这里已经成功。先保存账号、随机登录密码和 Token，并立即绑定任务；
-        # 后续 Codex/2FA 或 WebUI 进程即使中断，也不能把已创建账号当成注册失败丢掉。
+        # 再响应停止请求或查询套餐，避免后续操作中断时丢失已经核验的完整会话。
         from core.registration_service import persist_registration_core
 
         account_id = persist_registration_core(
@@ -1698,6 +1685,19 @@ def run_roxy_registration(
         opened.account_bound = True
         client.mark_profile_bound(opened.profile_id)
         logger.info("[Roxy注册] 注册主体已保存检查点：id=%s email=%s", account_id, email)
+
+        _check_manual_stop()
+        captured_plan_result = None
+        if plan_check_enabled:
+            report_job_progress("plan_check", "running", "正在查询注册会话中的套餐与 Plus 优惠资格")
+            try:
+                captured_plan_result = registration_plan_capture.read_or_fetch_selenium(driver, access_token)
+            except Exception as exc:
+                # 注册主体已保存；套餐捕获失败后交由持久任务队列补查。
+                logger.warning(
+                    "[Roxy注册][套餐] 浏览器查询失败，将尝试后台查询：%s",
+                    type(exc).__name__,
+                )
 
         report_job_progress("token", "running", "登录会话已保存，正在确认正常首页就绪")
         try:

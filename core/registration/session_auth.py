@@ -196,7 +196,7 @@ def _read_chatgpt_session_once(driver, *, timeout: float | None = None, strict_r
     if timeout is not None:
         timeout = _budget_timeout(None, max(0.0, float(timeout)), minimum=0.0)
         if timeout <= 0:
-            raise StageTimeout("资料会话读取预算已耗尽")
+            raise StageTimeout("会话读取预算已耗尽")
         current = urlsplit(str(getattr(driver, "current_url", "") or ""))
         if current.scheme != "https" or current.hostname != "chatgpt.com" or current.port not in (None, 443):
             if strict_read:
@@ -477,8 +477,13 @@ def _fetch_chatgpt_session(
             )
             if document_data:
                 return document_data
+            _checkpoint()
+            # 页面识别、跳转和前次轮询已经消耗的时间不能再分配给本次读取。
+            read_timeout = _budget_timeout(budget, max(0.0, end - time.monotonic()), minimum=0.0)
+            if read_timeout <= 0:
+                break
             try:
-                data = _read_chatgpt_session_once(driver)
+                data = _read_chatgpt_session_once(driver, timeout=read_timeout)
                 if data:
                     return data
                 last_data = "session 暂无 accessToken"

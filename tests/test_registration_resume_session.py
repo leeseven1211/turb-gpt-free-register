@@ -165,6 +165,7 @@ class ResumeSessionFlowTests(unittest.TestCase):
             mock("plan_read", "core.registration_plan_capture.read_or_fetch_selenium",
                  return_value={"ok": True, "quota_status": "success"})
             mock("plan_save", "core.db.update_account_plan_check")
+            mock("plan_enqueue", "core.plan_check_service.enqueue_account_plan_check", return_value={"accepted": True})
             mock("persist", "core.registration_service.persist_registration_core", return_value=19)
             mock("retain", "core.email_provider.retain_email")
             mock("release", "core.email_provider.release_email")
@@ -228,6 +229,61 @@ class ResumeSessionFlowTests(unittest.TestCase):
         for name in ("persist", "codex", "twofa", "plan_read", "plan_save"):
             mocks[name].assert_called_once()
         mocks["navigate"].assert_not_called()
+
+    def test_core_and_profile_are_saved_before_plan_capture_even_when_it_fails(self):
+        for plan_fails in (False, True):
+            with self.subTest(plan_fails=plan_fails), self.run_context() as (_, mocks):
+                events = []
+                mocks["persist"].side_effect = lambda **_kwargs: events.append("persist") or 19
+                mocks["client"].return_value.mark_profile_bound.side_effect = lambda *_args: events.append("bind")
+
+                def capture_plan(*_args):
+                    events.append("plan")
+                    if plan_fails:
+                        raise TimeoutError("模拟套餐捕获失败")
+                    return {"ok": True, "quota_status": "success"}
+
+                mocks["plan_read"].side_effect = capture_plan
+                result = self.run_registration(registration_options={
+                    "password_enabled": True, "twofa_enabled": False,
+                    "codex_enabled": False, "plan_check_enabled": True,
+                })
+                self.assertTrue(result["success"], result.get("error"))
+                self.assertTrue(result["core_persisted"])
+                self.assertEqual(result["account_id"], 19)
+                self.assertEqual(events[:3], ["persist", "bind", "plan"])
+                self.assertIs(mocks["persist"].call_args.kwargs["chatgpt_session"], SESSION)
+                self.assertEqual(mocks["plan_enqueue"].call_count, int(plan_fails))
+                mocks["release"].assert_not_called()
+
+    def test_stop_after_confirmed_token_preserves_core_before_honoring_stop(self):
+        from core.registration_service import StopRequested
+
+        with self.run_context(action="registration") as (_, mocks):
+            mocks["navigate"].side_effect = None
+            mocks["_submit_email_and_wait_next"].return_value = "otp"
+            mocks["_fill_password_page_if_present"].return_value = "unit-new-password"
+            mocks["_has_access_token"].return_value = True
+            confirmed = [False]
+
+            def fetch_session(*_args, **_kwargs):
+                confirmed[0] = True
+                return SESSION
+
+            def stop_if_confirmed():
+                if confirmed[0]:
+                    raise StopRequested("模拟会话确认后收到停止请求")
+
+            mocks["_fetch_chatgpt_session"].side_effect = fetch_session
+            mocks["_check_manual_stop"].side_effect = stop_if_confirmed
+            result = self.run_registration(existing_password=None)
+        self.assertFalse(result["success"])
+        self.assertTrue(result["core_persisted"])
+        self.assertEqual(result["account_id"], 19)
+        mocks["persist"].assert_called_once()
+        mocks["client"].return_value.mark_profile_bound.assert_called_once_with("unit-profile")
+        mocks["plan_read"].assert_not_called()
+        mocks["release"].assert_not_called()
 
     def test_homepage_is_checked_after_persist_and_only_ready_page_enables_deep_saving(self):
         for ready in (True, False):
