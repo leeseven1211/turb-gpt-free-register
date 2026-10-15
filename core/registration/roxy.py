@@ -1278,6 +1278,8 @@ def run_roxy_registration(
                 bool(existing_password),
             )
         resume_login_state = ""
+        # 会话失效后的新登录必须按新的邮件时间收码，不能沿用原表单的邮件边界。
+        otp_after_ts = getattr(driver, "_registration_otp_after_ts", otp_after_ts)
         if existing_password and not verified_resume_session and not retained_state:
             # 密码提交后可能进入邮箱 OTP，也可能进入 Authenticator TOTP。
             # 两种页面外观相似，必须与 Codex OAuth 共用同一个认证状态机。

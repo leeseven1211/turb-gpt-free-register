@@ -21,7 +21,7 @@ from core.registration.state_machine import PageState, StageBudget, StageTimeout
 from .auth_context import checkpoint as _checkpoint, install_dispatches, time_proxy
 from .browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact
 from .submission_recovery import (
-    RECOVERY_WINDOW_SECONDS, has_visible_auth_inputs, log_submission_diagnostics, recover_submission_page,
+    RECOVERY_WINDOW_SECONDS, begin_auth_session, has_visible_auth_inputs, log_submission_diagnostics, recover_submission_page,
 )
 from .email_otp import (
     _clear_otp_inputs, _is_email_verification_page, _type_otp, _wait_email_otp_page_ready,
@@ -725,6 +725,49 @@ def _resume_login_password_url(driver) -> str | None:
     return None
 
 
+def _restart_expired_resume_auth(driver, email: str, *, budget: StageBudget) -> bool:
+    """原身份显式续跑在剩余预算内最多重新登录一次，不重放失效表单。"""
+    if (not getattr(driver, "_registration_resume_login", False)
+            or getattr(driver, "_registration_auth_restart_done", False) or budget.remaining() < 1):
+        return False
+    try:
+        location = urlsplit(str(driver.current_url or ""))
+        if (location.scheme != "https" or location.hostname != "auth.openai.com"
+                or location.port not in (None, 443) or location.username or location.password
+                or location.path.rstrip("/") != "/email-verification"):
+            return False
+    except ValueError:
+        return False
+    _check_manual_stop()
+    log_submission_diagnostics(driver, "password", "before_expired_session_login")
+    driver._registration_auth_restart_done = True
+    driver._registration_otp_after_ts = time.time()
+    begin_auth_session(driver)
+    old_timeout = getattr(getattr(driver, "timeouts", None), "page_load", None)
+    try:
+        driver.set_page_load_timeout(min(10.0, budget.require("恢复原身份登录")))
+        driver.get("https://chatgpt.com/auth/login")
+    except TimeoutException:
+        current = urlsplit(str(driver.current_url or ""))
+        if (current.scheme != "https" or current.hostname not in {"chatgpt.com", "auth.openai.com"}
+                or current.port not in (None, 443) or current.username or current.password):
+            raise
+        logger.warning("%s 新登录页整体加载超时，继续在原预算内等待邮箱表单", _log_prefix(driver))
+    finally:
+        if isinstance(old_timeout, (int, float)):
+            driver.set_page_load_timeout(old_timeout)
+    budget.require("恢复原身份登录")
+    driver._email_otp_page_refresh_done = False
+    driver._email_otp_blank_seen_at = None
+    driver._registration_resume_password_attempted = False
+    logger.warning("%s 原身份认证会话失效，在剩余预算内重新登录一次，沿用原邮箱和密码", _log_prefix(driver))
+    from .email_otp import _submit_email_and_wait_next
+
+    _submit_email_and_wait_next(driver, email, total_timeout=budget.remaining(), allow_login_password=True)
+    log_submission_diagnostics(driver, "password", "after_expired_session_login")
+    return True
+
+
 def _fill_password_page_if_present(
     driver,
     email: str,
@@ -753,6 +796,8 @@ def _fill_password_page_if_present(
                         budget=StageBudget(end, clock=time.time),
                     )
                     if ready == "session_expired":
+                        if _restart_expired_resume_auth(driver, email, budget=StageBudget(end, clock=time.time)):
+                            continue
                         raise RuntimeError("request_unknown: auth_session_unavailable: 原身份登录的认证会话不可用，已保留原 Attempt")
                     target = _resume_login_password_url(driver) if ready == "ready" else None
                     if target is not None and time.time() < end:

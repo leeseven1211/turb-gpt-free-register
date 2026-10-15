@@ -1838,7 +1838,10 @@ def _type_otp(driver, code: str, *, timeout: int = 20, before_input=None) -> Non
 
 def _email_otp_page_state(driver) -> dict:
     try:
-        return driver.execute_script(r"""
+        # 与密码入口共用初始化观测，空白的认证页仍可能在加载会话和发码接口。
+        from .password_auth import _AUTH_INITIALIZATION_SNAPSHOT_JS
+
+        return driver.execute_script(_AUTH_INITIALIZATION_SNAPSHOT_JS + r"""
         const bodyText = (document.body?.innerText || '').replace(/\s+/g, ' ').trim();
         const bodyLower = bodyText.toLowerCase();
         const emailVerified = /email\s+verified|email\s+verification\s+(?:complete|completed)|邮箱已验证|邮箱验证完成|認証が完了/.test(bodyLower);
@@ -1864,7 +1867,7 @@ def _email_otp_page_state(driver) -> dict:
         const challengePresent = [...document.querySelectorAll(
           'iframe[src*="challenges.cloudflare.com"],iframe[src*="captcha"],[data-sitekey],#challenge-running,#challenge-stage'
         )].some(visible);
-        return {url: location.href, title: document.title, inputs, buttons, errors, text: bodyText.slice(0, 1200), emailVerified, challengePresent};
+        return {url: location.href, title: document.title, inputs, buttons, errors, text: bodyText.slice(0, 1200), emailVerified, challengePresent, initialization:authInitialization};
         """) or {}
     except Exception as exc:
         return {"url": getattr(driver, 'current_url', ''), "error": f"{type(exc).__name__}: {exc}"}
@@ -1917,6 +1920,15 @@ def _email_otp_page_recovery_reason(state: dict) -> str:
     return "blank_shell"
 
 
+def _email_otp_initialization_pending(state: dict) -> bool:
+    initialization = state.get("initialization")
+    return bool(isinstance(initialization, dict) and initialization and (
+        initialization.get("pending") or initialization.get("ready") != "complete"
+        or initialization.get("recent_activity")
+        or (initialization.get("hydration_started") and not initialization.get("hydration_ended"))
+    ))
+
+
 def _recover_email_otp_page_if_needed(driver, state: dict | None = None, *, budget: StageBudget | None = None) -> bool:
     """每个浏览器执行最多刷新一次，保留 Python 中的原提交回执。"""
     state = state if isinstance(state, dict) else _email_otp_page_state(driver)
@@ -1929,6 +1941,9 @@ def _recover_email_otp_page_if_needed(driver, state: dict | None = None, *, budg
     if budget is not None and budget.remaining() < 1:
         return False
     if reason == "blank_shell":
+        if _email_otp_initialization_pending(state):
+            driver._email_otp_blank_seen_at = None
+            return False
         now = time.monotonic()
         seen_at = getattr(driver, "_email_otp_blank_seen_at", None)
         if seen_at is None:
@@ -1938,7 +1953,9 @@ def _recover_email_otp_page_if_needed(driver, state: dict | None = None, *, budg
             return False
     # 刷新前重新读取现场，避免用旧快照刷新已经进入资料页的浏览器。
     fresh = _email_otp_page_state(driver)
-    if _email_otp_page_recovery_reason(fresh) != reason or str(getattr(driver, "current_url", "")) != str(fresh.get("url") or ""):
+    if (_email_otp_page_recovery_reason(fresh) != reason
+            or (reason == "blank_shell" and _email_otp_initialization_pending(fresh))
+            or str(getattr(driver, "current_url", "")) != str(fresh.get("url") or "")):
         driver._email_otp_blank_seen_at = None
         return False
     try:
@@ -1954,6 +1971,7 @@ def _recover_email_otp_page_if_needed(driver, state: dict | None = None, *, budg
         log_submission_diagnostics(driver, "otp", "before_form_refresh", receipt=getattr(driver, "_browser_submission_receipt", None))
         latest = _email_otp_page_state(driver)
         if (_email_otp_page_recovery_reason(latest) != reason
+                or (reason == "blank_shell" and _email_otp_initialization_pending(latest))
                 or str(getattr(driver, "current_url", "")) != str(fresh.get("url") or "")):
             return False
         refresh_timeout = _budget_timeout(budget, 10, minimum=0)

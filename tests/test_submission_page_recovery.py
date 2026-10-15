@@ -221,6 +221,19 @@ class SubmissionDiagnosticsTests(unittest.TestCase):
         diagnostics.observe_network(record, phase="complete")
         self.assertFalse(recovery.auth_session_unavailable(driver))
 
+    def test_new_login_preserves_old_diagnostics_without_reusing_their_session_failure(self):
+        driver = _driver()
+        diagnostics = recovery.diagnostics_for(driver)
+        record = {"url": "https://auth.openai.com/api/accounts/client_auth_session_dump", "method": "GET",
+                  "request_id": "old", "status": 404}
+        diagnostics.observe_network(record, phase="response")
+        recovery.begin_auth_session(driver)
+        diagnostics.observe_network(record, phase="complete")
+        self.assertFalse(recovery.auth_session_unavailable(driver))
+        self.assertEqual(diagnostics.recent_network()[0]["status"], 404)
+        diagnostics.observe_network({**record, "request_id": "new"}, phase="response")
+        self.assertTrue(recovery.auth_session_unavailable(driver))
+
     def test_other_origin_auth_session_failure_cannot_stop_this_auth_flow(self):
         driver = _driver()
         recovery.diagnostics_for(driver).observe_network({
@@ -295,7 +308,7 @@ class SubmissionDiagnosticsTests(unittest.TestCase):
 
 
 class SubmissionRecoveryIntegrationTests(unittest.TestCase):
-    def _resume_with_offered_password(self, *, navigation_timeout=False, visible_password=True):
+    def _resume_with_offered_password(self, *, navigation_timeout=False, visible_password=True, expired_once=False):
         driver, clock = _driver("https://auth.openai.com/email-verification"), _Clock()
         driver._registration_resume_login = True
         queues = []
@@ -327,7 +340,13 @@ class SubmissionRecoveryIntegrationTests(unittest.TestCase):
                 "inputs": [{"type": "text", "name": "code", "visible": True}] if "email-verification" in driver.current_url else (
                     [{"type": "password", "visible": True}] if visible_password else []),
             }))
-            stack.enter_context(patch.object(password_auth, "_wait_email_otp_page_ready", return_value="ready"))
+            stack.enter_context(patch.object(password_auth, "_wait_email_otp_page_ready",
+                                            side_effect=["session_expired", "ready"] if expired_once else None,
+                                            return_value="ready"))
+            def submit_email(*_args, **_kwargs):
+                driver.current_url = "https://auth.openai.com/email-verification"
+                return "otp"
+            stack.enter_context(patch.object(email_otp, "_submit_email_and_wait_next", side_effect=submit_email))
             stack.enter_context(patch.object(password_auth, "_resume_login_password_url", return_value="https://auth.openai.com/log-in/password"))
             stack.enter_context(patch.object(password_auth, "_is_signup_password_page", return_value=False))
             stack.enter_context(patch.object(password_auth, "_is_login_password_page", side_effect=lambda _d: "log-in/password" in driver.current_url))
@@ -340,11 +359,45 @@ class SubmissionRecoveryIntegrationTests(unittest.TestCase):
         self.assertEqual(result, "SavedPassword123!")
         generate.assert_not_called()
         self.assertEqual(len(queues), 1)
-        driver.get.assert_called_once_with("https://auth.openai.com/log-in/password")
+        self.assertEqual([call.args[0] for call in driver.get.call_args_list], (
+            ["https://chatgpt.com/auth/login", "https://auth.openai.com/log-in/password"] if expired_once
+            else ["https://auth.openai.com/log-in/password"]
+        ))
         self.assertEqual(driver._browser_submission_receipt.phase, "confirmed")
 
     def test_saved_identity_resume_uses_only_the_offered_login_password_link_once(self):
         self._resume_with_offered_password()
+
+    def test_expired_resume_session_restarts_login_once_before_using_original_password(self):
+        self._resume_with_offered_password(expired_once=True)
+
+    def test_expired_resume_can_continue_when_new_login_document_load_times_out(self):
+        self._resume_with_offered_password(expired_once=True, navigation_timeout=True)
+
+    def test_expired_session_login_is_limited_to_once_and_original_budget(self):
+        driver, clock = _driver("https://auth.openai.com/email-verification"), _Clock()
+        driver._registration_resume_login = True
+        receipt = BrowserSubmissionReceipt(kind="resume_login", stage="email_otp", phase="unknown")
+        driver._browser_submission_receipt = receipt
+        before = vars(receipt).copy()
+        budget = StageBudget(5, clock=clock.time)
+        with (patch.object(password_auth, "time", clock),
+              patch.object(password_auth, "_check_manual_stop"),
+              patch.object(email_otp, "_submit_email_and_wait_next", return_value="otp") as email_submit):
+            self.assertTrue(password_auth._restart_expired_resume_auth(driver, "unit@example.test", budget=budget))
+            self.assertFalse(password_auth._restart_expired_resume_auth(driver, "unit@example.test", budget=budget))
+        driver.get.assert_called_once_with("https://chatgpt.com/auth/login")
+        self.assertEqual(email_submit.call_args.kwargs["total_timeout"], 5)
+        self.assertEqual(vars(receipt), before)
+        self.assertEqual(driver._registration_otp_after_ts, 0)
+        for allowed, deadline in ((False, 5), (True, 0)):
+            driver = _driver("https://auth.openai.com/email-verification")
+            driver._registration_resume_login = allowed
+            with self.subTest(allowed=allowed, deadline=deadline):
+                self.assertFalse(password_auth._restart_expired_resume_auth(
+                    driver, "unit@example.test", budget=StageBudget(deadline, clock=clock.time),
+                ))
+                driver.get.assert_not_called()
 
     def test_resume_navigation_timeout_continues_when_password_form_is_already_visible(self):
         self._resume_with_offered_password(navigation_timeout=True)

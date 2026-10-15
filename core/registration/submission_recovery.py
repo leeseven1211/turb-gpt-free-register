@@ -169,13 +169,24 @@ def diagnostics_for(driver) -> SubmissionDiagnostics:
 
 def auth_session_unavailable(driver) -> bool:
     """只读取本浏览器最近一次认证会话接口结果，不主动请求或重放认证。"""
+    ignored = getattr(driver, "_registration_previous_auth_session_requests", ())
     for item in reversed(diagnostics_for(driver).recent_network()):
         if (item.get("origin") == "https://auth.openai.com"
-                and item.get("path") == "/api/accounts/client_auth_session_dump"):
+                and item.get("path") == "/api/accounts/client_auth_session_dump"
+                and item.get("request") not in ignored):
             # 实际抓包出现 404 / missing_session；404 本身只确认接口不可用。
             # 较新的成功或尚未完成请求优先，不能沿用旧失败误判新会话。
             return item.get("status") == 404
     return False
+
+
+def begin_auth_session(driver) -> None:
+    """新登录保留旧诊断，旧请求的迟到响应不能判定新会话失效。"""
+    driver._registration_previous_auth_session_requests = frozenset(
+        item.get("request") for item in diagnostics_for(driver).recent_network()
+        if item.get("origin") == "https://auth.openai.com"
+        and item.get("path") == "/api/accounts/client_auth_session_dump"
+    )
 
 
 def _log_diagnostic_chunks(driver, safe: dict) -> None:

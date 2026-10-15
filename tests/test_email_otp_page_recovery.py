@@ -177,6 +177,44 @@ class EmailOtpPageRecoveryTests(unittest.TestCase):
         self.assertEqual(driver.refresh_count, 1)
         self.assertEqual(self._wait_ready(driver, budget=budget), "ready")
 
+    def test_blank_shell_during_auth_initialization_is_not_refreshed(self):
+        for initialization in (
+            {"early": True, "ready": "interactive", "pending": 0},
+            {"early": True, "ready": "complete", "pending": 1},
+            {"early": True, "ready": "complete", "pending": 0, "recent_activity": True},
+            {"early": True, "ready": "complete", "pending": 0,
+             "hydration_started": True, "hydration_ended": False},
+        ):
+            with self.subTest(initialization=initialization):
+                state = _blank_state()
+                state["initialization"] = initialization
+                driver = _FakeDriver(state)
+                budget = self._budget(8)
+                self.assertEqual(self._wait_ready(driver, budget=budget), "stuck")
+                self.assertEqual(driver.get_calls, [])
+
+    def test_initialization_finishing_can_mount_form_without_refresh(self):
+        driver = _FakeDriver(_blank_state())
+        budget = self._budget(12)
+
+        def snapshot(*_args):
+            if self.clock.now >= 107:
+                return _form_state()
+            return {**_blank_state(), "initialization": {"early": True, "ready": "complete", "pending": 1}}
+
+        with patch.object(driver, "execute_script", side_effect=snapshot):
+            self.assertEqual(self._wait_ready(driver, budget=budget), "ready")
+        self.assertEqual(driver.get_calls, [])
+
+    def test_initialization_starting_after_blank_snapshot_cancels_refresh(self):
+        driver = _FakeDriver(_blank_state())
+        budget = self._budget(12)
+        self.assertFalse(self._recover(driver, state=driver.state, budget=budget))
+        self.clock.now += 4
+        driver.state["initialization"] = {"early": True, "ready": "complete", "pending": 1}
+        self.assertFalse(self._recover(driver, state=_blank_state(), budget=budget))
+        self.assertEqual(driver.get_calls, [])
+
     def test_wait_ready_recovers_persistent_blank_shell_with_original_budget(self):
         driver = _FakeDriver(_blank_state(), refreshed_state=_form_state())
         budget = self._budget(8)
