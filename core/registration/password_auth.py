@@ -23,7 +23,7 @@ from .submission_recovery import (
     RECOVERY_WINDOW_SECONDS, has_visible_auth_inputs, log_submission_diagnostics, recover_submission_page,
 )
 from .email_otp import (
-    _clear_otp_inputs, _is_email_verification_page, _type_otp,
+    _clear_otp_inputs, _is_email_verification_page, _type_otp, _wait_email_otp_page_ready,
 )
 from .selenium_dom import (
     _budget_timeout, _button_after_input, _check_manual_stop, _click_any, _click_if_enabled_submit,
@@ -690,6 +690,40 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
         "candidates": candidates,
     }
 
+def _resume_login_password_url(driver) -> str | None:
+    """只选择验证码页实际提供的同源登录密码链接，不猜测路由。"""
+    try:
+        current = urlsplit(str(getattr(driver, "current_url", "")))
+        if (current.scheme != "https" or current.hostname != "auth.openai.com" or current.port not in (None, 443)
+                or current.username or current.password):
+            return None
+    except ValueError:
+        return None
+    target = driver.execute_script(r"""
+    const visible = el => !!(el && el.isConnected && el.getClientRects().length)
+      && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+    if (location.origin !== 'https://auth.openai.com') return null;
+    const target = [...document.querySelectorAll('a[href]')].find(el => {
+      if (!visible(el) || el.getAttribute('aria-disabled') === 'true') return false;
+      try {
+        const url = new URL(el.href, location.href);
+        return url.origin === location.origin && url.pathname === '/log-in/password';
+      } catch (_) { return false; }
+    });
+    return target ? target.href : null;
+    """)
+    if not isinstance(target, str):
+        return None
+    try:
+        parsed = urlsplit(target)
+        if (parsed.scheme == "https" and parsed.hostname == "auth.openai.com" and parsed.port in (None, 443)
+                and not parsed.username and not parsed.password and parsed.path == "/log-in/password"):
+            return target
+    except ValueError:
+        pass
+    return None
+
+
 def _fill_password_page_if_present(
     driver,
     email: str,
@@ -711,6 +745,28 @@ def _fill_password_page_if_present(
     while time.time() < end:
         if _is_email_verification_page(driver):
             if existing_password:
+                if (getattr(driver, "_registration_resume_login", False) and not switched_from_otp
+                        and not getattr(driver, "_registration_resume_password_attempted", False)):
+                    ready = _wait_email_otp_page_ready(
+                        driver, timeout=min(45.0, max(0.0, end - time.time())),
+                        budget=StageBudget(end, clock=time.time),
+                    )
+                    if ready == "session_expired":
+                        raise RuntimeError("request_unknown: auth_session_unavailable: 原身份登录的认证会话不可用，已保留原 Attempt")
+                    target = _resume_login_password_url(driver) if ready == "ready" else None
+                    if target is not None and time.time() < end:
+                        switched_from_otp = True
+                        driver._registration_resume_password_attempted = True
+                        log_submission_diagnostics(driver, "password", "resume_password_offered")
+                        old_timeout = getattr(getattr(driver, "timeouts", None), "page_load", None)
+                        try:
+                            driver.set_page_load_timeout(max(0.1, min(10.0, end - time.time())))
+                            driver.get(target)
+                        finally:
+                            if isinstance(old_timeout, (int, float)):
+                                driver.set_page_load_timeout(old_timeout)
+                        logger.info("%s 原身份续跑已进入页面提供的登录密码入口，沿用原密码", _log_prefix(driver))
+                        continue
                 logger.info("%s 待验证账号已进入邮箱验证码页，沿用已保存登录密码", _log_prefix(driver))
                 return existing_password
             if auth_mode != 'password':

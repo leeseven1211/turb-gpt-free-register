@@ -294,6 +294,58 @@ class SubmissionDiagnosticsTests(unittest.TestCase):
 
 
 class SubmissionRecoveryIntegrationTests(unittest.TestCase):
+    def test_saved_identity_resume_uses_only_the_offered_login_password_link_once(self):
+        driver, clock = _driver("https://auth.openai.com/email-verification"), _Clock()
+        driver._registration_resume_login = True
+        queues = []
+
+        def execute(_script, *args):
+            if args and args[0] == "queue":
+                queues.append(True)
+                driver.current_url = "https://auth.openai.com/email-verification"
+                return {"ok": True, "reason": "password_submit_queued"}
+            if args and args[0] == "input":
+                return {"ok": True, "input": object()}
+            return {"phase": "dispatched", "click_called": True, "submit_event_observed": True,
+                    "submit_default_prevented": True, "submitter_matches": True}
+
+        driver.execute_script.side_effect = execute
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(password_auth, "time", clock))
+            stack.enter_context(patch.object(password_auth, "_registration_auth_mode", return_value="password"))
+            generate = stack.enter_context(patch.object(password_auth, "_registration_password"))
+            stack.enter_context(patch.object(password_auth, "_password_transition_timeout_seconds", return_value=30))
+            stack.enter_context(patch.object(password_auth, "_password_page_state", side_effect=lambda _d: {
+                "url": driver.current_url,
+                "inputs": [{"type": "text", "name": "code", "visible": True}] if "email-verification" in driver.current_url else [{"type": "password"}],
+            }))
+            stack.enter_context(patch.object(password_auth, "_wait_email_otp_page_ready", return_value="ready"))
+            stack.enter_context(patch.object(password_auth, "_resume_login_password_url", return_value="https://auth.openai.com/log-in/password"))
+            stack.enter_context(patch.object(password_auth, "_is_signup_password_page", return_value=False))
+            stack.enter_context(patch.object(password_auth, "_is_login_password_page", side_effect=lambda _d: "log-in/password" in driver.current_url))
+            stack.enter_context(patch.object(password_auth, "_is_email_verification_page", side_effect=lambda _d: "email-verification" in driver.current_url))
+            stack.enter_context(patch.object(password_auth, "_has_access_token", return_value=False))
+            for name in ("human_delay", "_human_type_text", "_check_manual_stop"):
+                stack.enter_context(patch.object(password_auth, name))
+            result = password_auth._fill_password_page_if_present(driver, "unit@example.test", timeout=60,
+                                                                 existing_password="SavedPassword123!")
+        self.assertEqual(result, "SavedPassword123!")
+        generate.assert_not_called()
+        self.assertEqual(len(queues), 1)
+        driver.get.assert_called_once_with("https://auth.openai.com/log-in/password")
+        self.assertEqual(driver._browser_submission_receipt.phase, "confirmed")
+
+    def test_login_password_target_cannot_be_guessed_or_cross_origin(self):
+        for target in (None, "https://evil.test/log-in/password", "https://auth.openai.com/create-account/password",
+                       "https://auth.openai.com:8443/log-in/password", "https://name:private@auth.openai.com/log-in/password"):
+            driver = _driver("https://auth.openai.com/email-verification")
+            driver.execute_script.return_value = target
+            with self.subTest(target=target):
+                self.assertIsNone(password_auth._resume_login_password_url(driver))
+                driver.get.assert_not_called()
+        driver.execute_script.return_value = "https://auth.openai.com/log-in/password"
+        self.assertEqual(password_auth._resume_login_password_url(driver), driver.execute_script.return_value)
+
     def _profile_session_failure(self, error_code, *, slow_first_read=False):
         driver, clock = _driver("https://auth.openai.com/about-you"), _Clock()
         profile_url = driver.current_url
