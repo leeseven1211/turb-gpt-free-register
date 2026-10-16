@@ -35,6 +35,10 @@ class ConfigSchemaTests(unittest.TestCase):
             {field.key for field in fields},
             {field["key"] for field in config_editor.EDITABLE_FIELDS},
         )
+        editor_keys = [field["key"] for field in config_editor.EDITABLE_FIELDS]
+        self.assertEqual(len(editor_keys), len(set(editor_keys)))
+        runtime_keys = [field["key"] for field in effective_config_metadata()]
+        self.assertEqual(editor_keys, runtime_keys)
         schema_source = Path(config_schema.__file__).read_text(encoding="utf-8")
         self.assertNotIn("from webui", schema_source)
 
@@ -55,6 +59,35 @@ class ConfigSchemaTests(unittest.TestCase):
                 self.assertIn("type", metadata)
                 self.assertIn("secret", metadata)
                 self.assertIn("hot_edit", metadata)
+
+    def test_codex_refresh_settings_have_one_complete_scheduled_group(self):
+        """定时刷新参数集中维护，开关与调度预算不会散落到其他页面。"""
+        refresh_keys = {
+            "CODEX_TOKEN_AUTO_REFRESH_ENABLED", "CODEX_TOKEN_REFRESH_BEFORE_HOURS",
+            "CODEX_TOKEN_REFRESH_SCAN_INTERVAL_SECONDS", "CODEX_TOKEN_REFRESH_INITIAL_DELAY_SECONDS",
+            "CODEX_TOKEN_REFRESH_MAX_PER_CYCLE", "CODEX_TOKEN_AUTO_SYNC_SUB2API",
+        }
+        metadata = CONFIG_SCHEMA.editor_metadata()
+        for key in refresh_keys:
+            entries = [field for field in metadata if field["key"] == key]
+            self.assertEqual(len(entries), 1, key)
+            self.assertEqual(entries[0]["group"], "定时任务", key)
+
+    def test_unused_cloudflare_paths_are_removed_from_config_contract(self):
+        """不再开放客户端从未调用的预留接口，现有 .env 无需改写。"""
+        from config import email
+
+        removed = {"CLOUDFLARE_PATH_DOMAINS", "CLOUDFLARE_PATH_TOKEN"}
+        for key in removed:
+            self.assertNotIn(key, CONFIG_SCHEMA)
+            self.assertNotIn(key, config_schema.DEFAULTS)
+            self.assertNotIn(key, config.__all__)
+            self.assertFalse(hasattr(email, key))
+            self.assertFalse(hasattr(config, key))
+        with self.assertRaises(ConfigValidationError):
+            validate_config_updates({"CLOUDFLARE_PATH_TOKEN": "/unused"})
+        for key in ("CLOUDFLARE_PATH_ACCOUNTS", "CLOUDFLARE_PATH_MESSAGES", "CLOUDFLARE_DEFAULT_DOMAINS"):
+            self.assertIn(key, CONFIG_SCHEMA)
 
     def test_schema_defaults_match_loaded_module_defaults(self):
         for field in CONFIG_SCHEMA.fields:

@@ -2,8 +2,8 @@
 """
 RoxyBrowser 指纹浏览器自动化注册配置。
 
-官方文档：
-- API 默认 host: http://127.0.0.1:50000
+连接说明：
+- 本项目默认 API 地址: http://127.0.0.1:50100，需与 Roxy 应用配置一致
 - 所有接口请求头必须带 token
 - 可配合 Selenium / Puppeteer / Playwright 自动化
 """

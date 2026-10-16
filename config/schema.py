@@ -265,8 +265,6 @@ _DEFAULTS: dict[str, Any] = {
     "CLOUDFLARE_CUSTOM_AUTH": "",
     "CLOUDFLARE_PATH_ACCOUNTS": "/api/new_address",
     "CLOUDFLARE_PATH_MESSAGES": "/api/mails",
-    "CLOUDFLARE_PATH_DOMAINS": "/api/domains",
-    "CLOUDFLARE_PATH_TOKEN": "/api/token",
     "CLOUDFLARE_DEFAULT_DOMAINS": [],
     "CLOUDFLARE_REQUEST_TIMEOUT": 20,
     "CLOUDFLARE_NAME_LENGTH": 10,
@@ -661,7 +659,7 @@ _FIELD_DEFINITIONS = [
 
     {
         "key": "ROXY_API_BASE", "file": "roxybrowser.py", "type": "str", "group": "RoxyBrowser",
-        "label": "Roxy API 地址", "help": "默认 http://127.0.0.1:50000；需在 Roxy 应用 API 配置中开启",
+        "label": "Roxy API 地址", "help": "默认 http://127.0.0.1:50100；需在 Roxy 应用 API 配置中开启",
     },
     {
         "key": "ROXY_API_TOKEN", "file": "roxybrowser.py", "type": "str", "group": "RoxyBrowser",
@@ -761,27 +759,27 @@ _FIELD_DEFINITIONS = [
         "label": "Codex 授权驱动", "help": "选择 Codex OAuth 所用的自动化方式：protocol=纯协议，roxy=浏览器，same_as_registration=跟随注册主流程驱动",
     },
     {
-        "key": "CODEX_TOKEN_AUTO_REFRESH_ENABLED", "file": "codex.py", "type": "bool", "group": "Codex",
+        "key": "CODEX_TOKEN_AUTO_REFRESH_ENABLED", "file": "codex.py", "type": "bool", "group": "定时任务",
         "label": "自动刷新 OAuth Token", "help": "进入到期窗口后使用 refresh_token 换新 access token；不重新登录，不收邮箱或短信验证码",
     },
     {
-        "key": "CODEX_TOKEN_REFRESH_BEFORE_HOURS", "file": "codex.py", "type": "int", "group": "Codex",
+        "key": "CODEX_TOKEN_REFRESH_BEFORE_HOURS", "file": "codex.py", "type": "int", "group": "定时任务",
         "label": "提前刷新(小时)", "help": "Codex access token 距离过期多少小时开始自动刷新，默认 24",
     },
     {
-        "key": "CODEX_TOKEN_REFRESH_SCAN_INTERVAL_SECONDS", "file": "codex.py", "type": "int", "group": "Codex",
+        "key": "CODEX_TOKEN_REFRESH_SCAN_INTERVAL_SECONDS", "file": "codex.py", "type": "int", "group": "定时任务",
         "label": "刷新巡检间隔(秒)", "help": "后台检查 Codex OAuth 到期状态的间隔，默认 86400 秒（每天一次），最小按 300 秒执行",
     },
     {
-        "key": "CODEX_TOKEN_REFRESH_INITIAL_DELAY_SECONDS", "file": "codex.py", "type": "int", "group": "Codex",
+        "key": "CODEX_TOKEN_REFRESH_INITIAL_DELAY_SECONDS", "file": "codex.py", "type": "int", "group": "定时任务",
         "label": "启动后首次巡检(秒)", "help": "WebUI 启动后等待多久执行第一次 Codex OAuth 到期巡检",
     },
     {
-        "key": "CODEX_TOKEN_REFRESH_MAX_PER_CYCLE", "file": "codex.py", "type": "int", "group": "Codex",
+        "key": "CODEX_TOKEN_REFRESH_MAX_PER_CYCLE", "file": "codex.py", "type": "int", "group": "定时任务",
         "label": "单轮最多刷新", "help": "每轮自动巡检最多加入队列的 Codex 凭证数量",
     },
     {
-        "key": "CODEX_TOKEN_AUTO_SYNC_SUB2API", "file": "codex.py", "type": "bool", "group": "Codex",
+        "key": "CODEX_TOKEN_AUTO_SYNC_SUB2API", "file": "codex.py", "type": "bool", "group": "定时任务",
         "label": "刷新后同步 sub2api", "help": "仅对曾由当前页面成功上传过 sub2api 的凭证自动更新，避免 refresh_token 轮换后 sub2api 仍使用旧值",
     },
     {
@@ -822,7 +820,7 @@ _FIELD_DEFINITIONS = [
         "label": "手动注册邮箱", "help": "USE_EMAIL_SERVICE=False 时必填。例如你的 outlook.com 地址；OTP 去网页邮箱看，再回任务页提交",
     },
     {
-        "key": "REGISTER_NAME", "file": "register.py", "type": "str", "group": "邮箱 / OTP",
+        "key": "REGISTER_NAME", "file": "register.py", "type": "str", "group": "注册主链路",
         "label": "显示名称", "help": "留空则自动生成英文名",
     },
     {
@@ -891,14 +889,6 @@ _FIELD_DEFINITIONS = [
     {
         "key": "CLOUDFLARE_PATH_MESSAGES", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
         "label": "Cloudflare 邮件路径", "help": "默认 /api/mails",
-    },
-    {
-        "key": "CLOUDFLARE_PATH_DOMAINS", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
-        "label": "Cloudflare 域名路径", "help": "默认 /api/domains（预留）",
-    },
-    {
-        "key": "CLOUDFLARE_PATH_TOKEN", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
-        "label": "Cloudflare Token路径", "help": "默认 /api/token（fallback 预留）",
     },
     {
         "key": "CLOUDFLARE_DEFAULT_DOMAINS", "file": "email.py", "type": "list_str_multiline", "group": "邮箱 / OTP",
@@ -1722,14 +1712,6 @@ _DYNAMIC_PATTERNS = {
     "ROXY_RANDOM_OS_CHOICES": re.compile(r"^[^\r\n]+(?:,[^\r\n]+)*$"),
 }
 
-# 旧版 WebUI 曾在“定时任务”和“Codex”两个位置展示这两个 Codex
-# refresh 字段。canonical registry 只保留一份定义，editor_metadata() 在
-# schema 内部按旧顺序生成展示投影，不再复制第二份静态字段元数据。
-_LEGACY_SCHEDULED_DISPLAY_KEYS = (
-    "CODEX_TOKEN_AUTO_REFRESH_ENABLED",
-    "CODEX_TOKEN_REFRESH_SCAN_INTERVAL_SECONDS",
-)
-
 _PLACEHOLDER_EMPTY = {
     "", "-", "—", "无", "空", "none", "null", "n/a", "na", "未设置", "未配置",
 }
@@ -1742,24 +1724,6 @@ def _legacy_fields() -> list[dict[str, Any]]:
     ``webui.config_editor``。
     """
     return [copy.deepcopy(field) for field in _FIELD_DEFINITIONS]
-
-
-def _editor_field_definitions() -> list[dict[str, Any]]:
-    """构造兼容旧 UI 顺序的展示投影；canonical 定义仍只有一份。"""
-    definitions = _legacy_fields()
-    by_key = {definition["key"]: definition for definition in definitions}
-    scheduled = [
-        dict(by_key[key], group="定时任务")
-        for key in _LEGACY_SCHEDULED_DISPLAY_KEYS
-    ]
-    projected: list[dict[str, Any]] = []
-    inserted = False
-    for definition in definitions:
-        if not inserted and definition.get("key") == "WEBUI_AUTH_CODE":
-            projected.extend(scheduled)
-            inserted = True
-        projected.append(definition)
-    return projected
 
 
 def _build_fields(legacy_fields: Iterable[Mapping[str, Any]]) -> tuple[ConfigField, ...]:
@@ -1883,15 +1847,11 @@ class ConfigSchema:
         return fields
 
     def editor_metadata(self, legacy_fields: Iterable[Mapping[str, Any]] | None = None) -> list[dict[str, Any]]:
-        # 参数仅保留给旧测试/调用方；WebUI 默认直接消费本 schema。旧版 UI
-        # 曾在“定时任务”和“Codex”两个位置展示同一组 Codex refresh 字段，
-        # 因而这里保留展示顺序/重复展示；CONFIG_SCHEMA.fields 和
-        # _FIELD_DEFINITIONS 本身均按 key 唯一，校验、解析和 snapshot 使用唯一字段。
-        definitions = list(
-            legacy_fields if legacy_fields is not None else _editor_field_definitions()
-        )
-        fields = [field for definition in definitions for field in _build_fields([definition])]
-        return [field.metadata() for field in fields if field.editable]
+        # 参数只为兼容旧调用方保留；展示、解析和快照都按 key 唯一，
+        # 同一定时任务的全部参数只在“定时任务”中维护。
+        if legacy_fields is None:
+            return self.metadata()
+        return [field.metadata() for field in _build_fields(legacy_fields) if field.editable]
 
 
 CONFIG_SCHEMA = ConfigSchema()
@@ -2185,9 +2145,7 @@ def effective_config_metadata() -> list[dict[str, Any]]:
     # 尚未生效的值伪装成当前 effective value。
     revision = published.revision
     out: list[dict[str, Any]] = []
-    # 保留旧 WebUI 的展示分组/顺序投影（其中两项 Codex refresh 字段在
-    # “定时任务”和“Codex”各显示一次），但每个 key 的解析和 snapshot 仍只
-    # 使用 CONFIG_SCHEMA 中的一份 canonical 定义。
+    # 每个配置只生成一个展示项，分组与 canonical 定义保持一致。
     for item in CONFIG_SCHEMA.editor_metadata():
         field = CONFIG_SCHEMA.get(item["key"])
         if field is None:

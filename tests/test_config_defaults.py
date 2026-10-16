@@ -496,7 +496,7 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             "CODEX_TOKEN_AUTO_SYNC_SUB2API",
         }
         self.assertTrue(expected.issubset(fields))
-        self.assertTrue(all(fields[key]["group"] == "Codex" for key in expected))
+        self.assertTrue(all(fields[key]["group"] == "定时任务" for key in expected))
 
         old_loaded = env_loader._LOADED
         env_loader._LOADED = True

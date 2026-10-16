@@ -6,13 +6,62 @@ let CONFIG_PROXY_ACTIVE_SECTION_V2 = '注册线路';
 let CONFIG_ACTIVE_GROUP_V2 = '';
 let CONFIG_NAV_QUERY_V2 = '';
 const CONFIG_PENDING_UPDATES = {};
-const CONFIG_LEGACY_LIFECYCLE_GROUPS_V2 = new Set(['注册与账号', '执行方式']);
+const CONFIG_ACTIVE_DOMAIN_V2 = {};
+// 菜单集中定义；schema 的 group 继续表示配置所属领域。
+const CONFIG_MENU_DOMAINS_V2 = {
+  '注册设置': ['注册主链路', '注册调试'],
+  '账号补全': ['账号补全'],
+  '邮箱 / OTP': ['邮箱 / OTP'],
+  '接码平台': ['接码平台'],
+  '代理与网络': ['代理与网络'],
+  '浏览器设置': ['RoxyBrowser', '浏览器画像', '人工节奏'],
+  'Codex': ['Codex'],
+  '提链': ['提链'],
+  '系统设置': ['通用配置', 'WebUI 授权', '定时任务', '任务中心'],
+};
+const CONFIG_DOMAIN_ALIASES_V2 = {
+  '注册与账号': '注册主链路',
+  '执行方式': '注册主链路',
+  '网站配置': 'WebUI 授权',
+};
 const CONFIG_NAV_CATEGORY_ORDER_V2 = ['运行链路', '资源与服务', '系统'];
 const CONFIG_NAV_CATEGORY_RULES_V2 = {
-  '运行链路': new Set(['通用配置', '注册主链路', '账号补全', '注册调试', '邮箱 / OTP', '接码平台', '人工节奏']),
-  '资源与服务': new Set(['RoxyBrowser', 'Browser Use', '代理与网络', '浏览器画像']),
-  '系统': new Set(['Codex', '定时任务', '网站配置', '提链']),
+  '运行链路': new Set(['注册设置', '账号补全', '邮箱 / OTP', '接码平台']),
+  '资源与服务': new Set(['代理与网络', '浏览器设置', 'Codex', '提链']),
+  '系统': new Set(['系统设置']),
 };
+
+function configMenuGroupV2(name) {
+  const domain = CONFIG_DOMAIN_ALIASES_V2[name] || name || '其他';
+  return Object.keys(CONFIG_MENU_DOMAINS_V2).find(menu => CONFIG_MENU_DOMAINS_V2[menu].includes(domain)) || domain;
+}
+
+function configDomainGroupsV2(fields) {
+  const groups = {};
+  (fields || []).forEach(field => {
+    const domain = field.group || '其他';
+    (groups[domain] = groups[domain] || []).push(field);
+  });
+  return groups;
+}
+
+function configMenuDomainNamesV2(menu, fields) {
+  const domains = Object.keys(configDomainGroupsV2(fields));
+  const preferred = CONFIG_MENU_DOMAINS_V2[menu] || [];
+  return preferred.filter(domain => domains.includes(domain)).concat(domains.filter(domain => !preferred.includes(domain)));
+}
+
+function setConfigDestinationV2(name) {
+  const domain = CONFIG_DOMAIN_ALIASES_V2[name] || name;
+  const menu = configMenuGroupV2(domain);
+  CONFIG_ACTIVE_GROUP_V2 = menu;
+  if ((CONFIG_MENU_DOMAINS_V2[menu] || []).includes(domain)) CONFIG_ACTIVE_DOMAIN_V2[menu] = domain;
+  return menu;
+}
+
+function rememberConfigDestinationV2() {
+  localStorage.setItem('gpt_console_config_group', CONFIG_ACTIVE_DOMAIN_V2[CONFIG_ACTIVE_GROUP_V2] || CONFIG_ACTIVE_GROUP_V2);
+}
 
 function configFieldValueV2(key, fallback = '') {
   const field = (CONFIG || []).find(item => item.key === key);
@@ -102,9 +151,12 @@ function updateConfigSaveUi(mode = 'idle') {
 
 function configGroups() {
   const groups = {};
+  const seen = new Set();
   CONFIG.forEach(f => {
+    if (seen.has(f.key)) return;
+    seen.add(f.key);
     const rawGroup = f.group || '其他';
-    const group = rawGroup || '其他';
+    const group = configMenuGroupV2(rawGroup);
     (groups[group] = groups[group] || []).push(f);
   });
   return groups;
@@ -155,7 +207,7 @@ function renderConfigFieldStatusV2(f) {
 }
 
 function emailConfigSectionForKey(key) {
-  if (['USE_EMAIL_SERVICE','REGISTER_EMAIL','REGISTER_NAME','OTP_MAX_WAIT','OTP_POLL_INTERVAL','EMAIL_SOURCE'].includes(key)) {
+  if (['USE_EMAIL_SERVICE','REGISTER_EMAIL','OTP_MAX_WAIT','OTP_POLL_INTERVAL','EMAIL_SOURCE'].includes(key)) {
     return ['通用邮箱 / OTP', '邮箱来源选择、OTP 等待参数、手动邮箱等通用设置'];
   }
   if (key.startsWith('EMAIL_BUTLER_')) return ['Email Butler', 'Email Butler 通用 /v1 发号、收信、释放与封号信号配置'];
@@ -174,10 +226,10 @@ function proxyConfigSectionForKey(key) {
   if (key === 'PROXY_POOL' || key.startsWith('PROXY_POOL_')) {
     return ['独立代理池', '后台统一维护可用代理库存；注册、续跑和套餐查询等任务只领取满足用途、地区与剩余寿命要求的租约。'];
   }
-  if (['ACCOUNT_PASSWORD_PROXY_MODE','ACCOUNT_2FA_PROXY_MODE','ACCOUNT_PLAN_CHECK_PROXY_MODE','PLAN_CHECK_PROXY_ALLOW_REUSE','PLAN_CHECK_PROXY_REUSE_LIMIT','PLAN_CHECK_COUNTRIES','PLAN_CHECK_COUNTRY_WAIT_TIMEOUT','ACCOUNT_LIVE_CHECK_PROXY_MODE','ACCOUNT_REFRESH_AT_PROXY_MODE','ACCOUNT_CODEX_PROXY_MODE','ACCOUNT_EMAIL_CHANGE_PROXY_MODE'].includes(key)) {
+  if (['ACCOUNT_PASSWORD_PROXY_MODE','ACCOUNT_2FA_PROXY_MODE','ACCOUNT_PLAN_CHECK_PROXY_MODE','PLAN_CHECK_PROXY_ALLOW_REUSE','PLAN_CHECK_PROXY_REUSE_LIMIT','PLAN_CHECK_COUNTRIES','PLAN_CHECK_COUNTRY_WAIT_TIMEOUT','ACCOUNT_LIVE_CHECK_PROXY_MODE','ACCOUNT_REFRESH_AT_PROXY_MODE','ACCOUNT_CODEX_PROXY_MODE','ACCOUNT_EMAIL_CHANGE_PROXY_MODE','ACCOUNT_ACTION_PROXY_RETRIES','ACCOUNT_ACTION_PROXY_RETRY_DELAY','PLAN_CHECK_TIMEOUT','PLAN_CHECK_MAX_ATTEMPTS','PLAN_CHECK_RETRY_DELAY','PLAN_CHECK_REGISTRATION_RECHECK_DELAY','PLAN_CHECK_MIN_INTERVAL','PLAN_CHECK_JITTER'].includes(key)) {
     return ['账号动作线路', '分别设置补密码、补 2FA、查套餐、查活、刷新 AT、邮箱换绑和 Codex OAuth 的代理来源。'];
   }
-  if (key === 'REGISTRATION_PROXY_MODE') {
+  if (['REGISTRATION_PROXY_MODE', 'REGISTRATION_PROXY_RETRIES', 'REGISTRATION_PROXY_RETRY_DELAY'].includes(key)) {
     return ['注册线路', '注册主流程使用的代理来源；这是账号风险最高、最需要保持地区一致的线路。'];
   }
   if (key.startsWith('PROXY_1024_') || key.startsWith('REGISTRATION_PROXY_')) {
@@ -250,13 +302,13 @@ function bindRoxyWorkspaceToolsV2() {
 }
 
 function configGroupSlug(name) {
-  return 'cfg-' + String(name || '')
+  return 'cfg-' + String(configMenuGroupV2(name))
     .replace(/[^\w\u4e00-\u9fff]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .toLowerCase();
 }
 function configGroupDisplayName(name) {
-  return name;
+  return configMenuGroupV2(name);
 }
 function configNavCategoryV2(name) {
   for (const category of CONFIG_NAV_CATEGORY_ORDER_V2) {
@@ -267,7 +319,40 @@ function configNavCategoryV2(name) {
   return '系统';
 }
 function configNavSearchTextV2(name, fields) {
-  return [name, ...(fields || []).flatMap(f => [f.key, f.label, f.help || ''])].join(' ');
+  return [name, ...(fields || []).flatMap(f => [f.group, f.key, f.label, f.help || '', configFieldSubsectionV2(f)])].join(' ');
+}
+function configFieldSubsectionV2(field) {
+  if (field.group === '邮箱 / OTP') return emailConfigSectionForKey(field.key)[0];
+  if (field.group === '接码平台') return smsConfigSectionForKey(field.key)[0];
+  if (field.group === '代理与网络') return proxyConfigSectionForKey(field.key)[0];
+  if (field.group === 'Codex') return codexConfigSectionForKey(field.key)[0];
+  return '';
+}
+function configFieldMatchesQueryV2(field, query = CONFIG_NAV_QUERY_V2) {
+  const needle = String(query || '').trim().toLowerCase();
+  return !!needle && configNavSearchTextV2('', [field]).toLowerCase().includes(needle);
+}
+function selectConfigSearchDestinationV2(name = CONFIG_ACTIVE_GROUP_V2) {
+  const query = CONFIG_NAV_QUERY_V2.trim().toLowerCase();
+  if (!query) return;
+  const groups = configGroups();
+  const names = Object.keys(CONFIG_MENU_DOMAINS_V2).filter(menu => groups[menu])
+    .concat(Object.keys(groups).filter(menu => !CONFIG_MENU_DOMAINS_V2[menu]));
+  const matches = menu => configNavSearchTextV2(menu, groups[menu]).toLowerCase().includes(query);
+  // 完整配置键优先精确匹配，避免 PLAN_CHECK_PROXY 命中较长的账号配置键。
+  const exactField = CONFIG.find(field => field.key.toLowerCase() === query);
+  const menu = exactField ? configMenuGroupV2(exactField.group)
+    : (groups[name] && matches(name) ? name : names.find(matches));
+  if (!menu) return;
+  CONFIG_ACTIVE_GROUP_V2 = menu;
+  const field = exactField || groups[menu].find(item => configFieldMatchesQueryV2(item, query));
+  if (!field) return;
+  CONFIG_ACTIVE_DOMAIN_V2[menu] = field.group;
+  const subsection = configFieldSubsectionV2(field);
+  if (field.group === '邮箱 / OTP') CONFIG_EMAIL_ACTIVE_SECTION_V2 = subsection;
+  if (field.group === '接码平台') CONFIG_SMS_ACTIVE_SECTION_V2 = subsection;
+  if (field.group === '代理与网络') CONFIG_PROXY_ACTIVE_SECTION_V2 = subsection;
+  if (field.group === 'Codex') CONFIG_CODEX_ACTIVE_SECTION_V2 = subsection;
 }
 function configNavDirtyV2(fields) {
   return (fields || []).some(f => Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key));
@@ -319,27 +404,24 @@ function configNavIcon(name) {
   if (n.includes('画像') || n.includes('指纹')) return '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>';
   if (n.includes('人工') || n.includes('节奏')) return '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>';
   if (n.includes('提链')) return '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>';
-  if (n.includes('Browser') || n.includes('Roxy') || n.includes('注册')) return '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>';
+  if (n.includes('Browser') || n.includes('Roxy') || n.includes('浏览器') || n.includes('注册')) return '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>';
   return '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>';
 }
 function getConfigGroupNames() {
-  const groups = {};
-  (CONFIG || []).forEach(f => { groups[f.group || '其他'] = true; });
-  return Object.keys(groups);
+  return Object.keys(configGroups());
 }
 function configSectionIntro(name) {
-  if (name === '网站配置') return '配置网站登录授权码与 Session 签名密钥。';
+  if (name === 'WebUI 授权') return '配置网站登录授权码与 Session 签名密钥。';
   if (name === '通用配置') return '账号批量操作等跨页面的通用运行参数。';
   if (name === '注册主链路') return '配置注册主流程、密码/验证码模式，以及注册后可选能力。';
   if (name === '账号补全') return '配置“补全账号”处理哪些缺失能力，以及账号操作使用的执行策略。';
   if (name === '注册调试') return '配置注册失败诊断、现场保留和抓包存储，不改变正常注册流程。';
-  if (name === 'Browser Use') return 'Browser Use Cloud 远端浏览器与代理参数。';
   if (name === 'RoxyBrowser') return 'RoxyBrowser API、环境与代理相关设置。';
-  if (name === 'Codex') return 'Codex Token、CPA 与 sub2api 相关设置。授权驱动已归入注册主链路。';
+  if (name === 'Codex') return '配置 Codex 授权地址来源、CPA 与 sub2api；Token 自动刷新归入系统设置的定时任务。';
   if (name === '邮箱 / OTP') return '邮箱来源、OTP 等待与各邮箱服务商参数。';
   if (name === '接码平台') return '接码通道、国家代码与本地取号服务参数。';
   if (name === '定时任务') return '后台周期任务的开关与执行间隔。上次执行时间保存在数据库中，重启服务会按剩余时间接续，不会重复执行。';
-  if (name === '人工节奏') return '注册流程中的随机停顿节奏。';
+  if (name === '人工节奏') return '配置流程操作的随机停顿节奏，适用于协议全链路和浏览器操作。';
   if (name === '浏览器画像') return '浏览器语言、时区与出口 IP 画像。';
   if (name === '代理与网络') return '统一管理注册线路、账号动作线路、代理提供商和静态代理池。';
   if (name === '提链') return '提链服务地址、CDK 与并发参数。';
@@ -371,6 +453,8 @@ function configFeatureIcon(key) {
 }
 function renderConfigSectionHead(name, meta = '') {
   const title = configGroupDisplayName(name);
+  const fields = configGroups()[title] || [];
+  const domains = configMenuDomainNamesV2(title, fields);
   return `
     <div class="config-section-v2-head">
       <div class="config-section-v2-head-main">
@@ -381,6 +465,9 @@ function renderConfigSectionHead(name, meta = '') {
         <svg viewBox="0 0 24 24">${configNavIcon(name)}</svg>
       </span>
     </div>
+    ${domains.length > 1 ? `<div class="config-subtabs-v2" role="group" aria-label="${attrEsc(title)}分类">
+      ${domains.map(domain => `<button type="button" data-config-domain-v2="${attrEsc(domain)}" class="${domain === name ? 'active' : ''}" aria-pressed="${domain === name}">${esc(domain)}</button>`).join('')}
+    </div>` : ''}
   `;
 }
 function registrationDriverChoices() {
@@ -545,6 +632,7 @@ function renderRegistrationMainSectionV2(fields) {
   const primaryKeys = [
     'REGISTRATION_DRIVER',
     'REGISTRATION_AUTH_MODE',
+    'REGISTER_NAME',
     'REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS',
   ];
   const postRegistrationKeys = [
@@ -561,7 +649,8 @@ function renderRegistrationMainSectionV2(fields) {
   const extra = fields.filter(f => !known.has(f.key));
   const auth = fields.find(f => f.key === 'REGISTRATION_AUTH_MODE');
   const authValue = auth ? configFieldValueV2(auth.key, auth.value || 'otp') : 'otp';
-  const filteredPrimary = String(authValue).trim().toLowerCase() === 'password'
+  const showPasswordTimeout = primary.some(f => f.key === 'REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS' && configFieldMatchesQueryV2(f));
+  const filteredPrimary = String(authValue).trim().toLowerCase() === 'password' || showPasswordTimeout
     ? primary
     : primary.filter(f => f.key !== 'REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS');
   return `
@@ -722,6 +811,7 @@ function configDriverChoices(f) {
   const choices = configSchemaOptions(f);
   return choices.length ? choices : null;
 }
+
 function configCountryCodesV2(value) {
   const text = Array.isArray(value) ? value.join(' ') : String(value || '');
   return [...new Set(text.toUpperCase().split(/[\s,]+/).filter(Boolean))];
@@ -1254,12 +1344,39 @@ function renderCodexSectionV2(fields) {
   `;
 }
 
+function renderScheduledConfigSectionV2(fields) {
+  const sections = [
+    ['Email Butler 风险扫描', fields.filter(f => f.key.startsWith('EMAIL_BUTLER_'))],
+    ['ChatGPT AT 自动刷新', fields.filter(f => f.key.startsWith('AT_'))],
+    ['Codex Token 自动刷新', fields.filter(f => f.key.startsWith('CODEX_TOKEN_'))],
+  ];
+  const known = new Set(sections.flatMap(([, items]) => items.map(f => f.key)));
+  return `
+    <section class="config-section-v2" id="${esc(configGroupSlug('定时任务'))}" data-config-section="定时任务">
+      ${renderConfigSectionHead('定时任务', configSectionIntro('定时任务'))}
+      ${sections.map(([title, items]) => renderConfigSettingGroupV2(title, items)).join('')}
+      ${renderConfigSettingGroupV2('其他定时任务', fields.filter(f => !known.has(f.key)))}
+      ${renderConfigSaveActions()}
+    </section>
+  `;
+}
+
 function renderConfigSectionV2(name, fields) {
+  const byDomain = configDomainGroupsV2(fields);
+  const domains = configMenuDomainNamesV2(name, fields);
+  let domain = CONFIG_ACTIVE_DOMAIN_V2[name];
+  if (!domains.includes(domain)) domain = domains[0] || name;
+  CONFIG_ACTIVE_DOMAIN_V2[name] = domain;
+  return renderConfigDomainSectionV2(domain, byDomain[domain] || []);
+}
+
+function renderConfigDomainSectionV2(name, fields) {
   const slug = configGroupSlug(name);
   if (name === '注册主链路') return renderRegistrationMainSectionV2(fields);
   if (name === '账号补全') return renderAccountCompletionSectionV2(fields);
   if (name === '注册调试') return renderRegistrationDebugSectionV2(fields);
-  if (name === '网站配置') {
+  if (name === '定时任务') return renderScheduledConfigSectionV2(fields);
+  if (name === 'WebUI 授权') {
     return `
       <section class="config-section-v2" id="${esc(slug)}" data-config-section="${esc(name)}">
         ${renderConfigSectionHead(name, configSectionIntro(name))}
@@ -1331,7 +1448,7 @@ function renderConfigLayoutV2() {
   const sections = document.getElementById('configSectionsV2');
   if (!nav || !sections) return;
   const groups = configGroups();
-  const preferredNames = ['通用配置', '注册主链路', '账号补全', '注册调试'];
+  const preferredNames = Object.keys(CONFIG_MENU_DOMAINS_V2);
   const names = preferredNames.filter(name => groups[name])
     .concat(Object.keys(groups).filter(name => !preferredNames.includes(name)));
   if (!names.length) {
@@ -1343,9 +1460,8 @@ function renderConfigLayoutV2() {
     return;
   }
   const savedGroup = localStorage.getItem('gpt_console_config_group');
-  if (CONFIG_LEGACY_LIFECYCLE_GROUPS_V2.has(CONFIG_ACTIVE_GROUP_V2)) CONFIG_ACTIVE_GROUP_V2 = '注册主链路';
-  if (!CONFIG_ACTIVE_GROUP_V2 && CONFIG_LEGACY_LIFECYCLE_GROUPS_V2.has(savedGroup)) CONFIG_ACTIVE_GROUP_V2 = '注册主链路';
-  if (!CONFIG_ACTIVE_GROUP_V2 && savedGroup && names.includes(savedGroup)) CONFIG_ACTIVE_GROUP_V2 = savedGroup;
+  if (CONFIG_ACTIVE_GROUP_V2) setConfigDestinationV2(CONFIG_ACTIVE_GROUP_V2);
+  if (!CONFIG_ACTIVE_GROUP_V2 && savedGroup) setConfigDestinationV2(savedGroup);
   if (!CONFIG_ACTIVE_GROUP_V2 || !names.includes(CONFIG_ACTIVE_GROUP_V2)) CONFIG_ACTIVE_GROUP_V2 = names[0];
   nav.innerHTML = renderConfigNavV2(names, groups);
   applyConfigNavFilter();
@@ -1388,8 +1504,11 @@ function setActiveConfigNav(slug) {
   });
 }
 function openConfigGroup(name) {
-  CONFIG_ACTIVE_GROUP_V2 = String(name || '');
-  localStorage.setItem('gpt_console_config_group', CONFIG_ACTIVE_GROUP_V2);
+  setConfigDestinationV2(String(name || ''));
+  CONFIG_NAV_QUERY_V2 = '';
+  const search = document.getElementById('configNavSearchV2');
+  if (search) search.value = '';
+  rememberConfigDestinationV2();
   activateTab('config');
   if (CONFIG.length) renderConfigLayoutV2();
   resetConfigViewportV2();
@@ -1402,7 +1521,8 @@ function bindConfigLayoutV2() {
     search.value = CONFIG_NAV_QUERY_V2;
     search.addEventListener('input', () => {
       CONFIG_NAV_QUERY_V2 = search.value;
-      applyConfigNavFilter();
+      selectConfigSearchDestinationV2();
+      renderConfigLayoutV2();
     });
   }
   if (!nav || nav.dataset.bound) return;
@@ -1410,8 +1530,9 @@ function bindConfigLayoutV2() {
   nav.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-config-nav]');
     if (!btn) return;
-    CONFIG_ACTIVE_GROUP_V2 = btn.dataset.configNav;
-    localStorage.setItem('gpt_console_config_group', CONFIG_ACTIVE_GROUP_V2);
+    setConfigDestinationV2(btn.dataset.configNav);
+    selectConfigSearchDestinationV2(CONFIG_ACTIVE_GROUP_V2);
+    rememberConfigDestinationV2();
     renderConfigLayoutV2();
     resetConfigViewportV2();
   });
@@ -1419,6 +1540,14 @@ function bindConfigLayoutV2() {
   if (layout && !layout.dataset.epBound) {
     layout.dataset.epBound = '1';
     layout.addEventListener('click', (e) => {
+      const domainTab = e.target.closest('[data-config-domain-v2]');
+      if (domainTab) {
+        e.preventDefault();
+        setConfigDestinationV2(domainTab.dataset.configDomainV2);
+        rememberConfigDestinationV2();
+        renderConfigLayoutV2();
+        return;
+      }
       const codexTab = e.target.closest('[data-codex-section-v2]');
       if (codexTab) {
         e.preventDefault();

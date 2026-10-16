@@ -204,6 +204,11 @@ assert.equal(readConfigElementValue(selected, field), 'mailnest,outlook');
     overflow: hidden;
   }
 
+  /* 待保存栏出现时，导航列表仍能滚动到最后一个菜单。 */
+  #tab-config:has(#configSaveBarV2:not([hidden])) .config-nav-v2 {
+    padding-bottom: 104px;
+  }
+
   #tab-config .config-main-v2 {
     height: 100%;
     max-height: 100%;
@@ -214,6 +219,13 @@ assert.equal(readConfigElementValue(selected, field), 'mailnest,outlook');
 }
 """
         self.assertIn(desktop_scroll_rule, FOUNDATION_CSS)
+
+    def test_pending_save_bar_reserves_space_for_the_last_desktop_menu(self):
+        self.assertIn(
+            "#tab-config:has(#configSaveBarV2:not([hidden])) .config-nav-v2 {\n"
+            "    padding-bottom: 104px;",
+            FOUNDATION_CSS,
+        )
 
     def test_global_config_save_bar_is_hidden_until_changes_are_pending(self):
         self.assertIn(
@@ -276,12 +288,26 @@ assert.equal(readConfigElementValue(selected, field), 'mailnest,outlook');
         self.assertIn('data-config-setting="${attrEsc(displayKey)}"', CONFIG_JS)
         self.assertIn('由注册主链路统一维护', CONFIG_JS)
 
-    def test_lifecycle_groups_are_first_class_config_pages(self):
-        self.assertIn("const group = rawGroup || '其他';", CONFIG_JS)
+    def test_config_domains_are_merged_into_menus_without_changing_schema_groups(self):
+        self.assertIn("const group = configMenuGroupV2(rawGroup);", CONFIG_JS)
+        self.assertIn("'注册设置': ['注册主链路', '注册调试']", CONFIG_JS)
+        self.assertIn("'浏览器设置': ['RoxyBrowser', '浏览器画像', '人工节奏']", CONFIG_JS)
+        self.assertIn("'系统设置': ['通用配置', 'WebUI 授权', '定时任务', '任务中心']", CONFIG_JS)
+        self.assertIn('data-config-domain-v2', CONFIG_JS)
         self.assertIn("if (name === '注册主链路')", CONFIG_JS)
         self.assertIn("if (name === '账号补全')", CONFIG_JS)
         self.assertIn("if (name === '注册调试')", CONFIG_JS)
-        self.assertNotIn("CONFIG_LIFECYCLE_SOURCE_GROUPS_V2.has(rawGroup) ? CONFIG_LIFECYCLE_GROUP_V2 : rawGroup", CONFIG_JS)
+
+    def test_navigation_and_pending_save_behavior(self):
+        result = subprocess.run(
+            ["node", "--test", "tests/test_config_navigation_frontend.cjs"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=20,
+        )
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
     def test_lifecycle_pages_use_rows_without_execution_submenu(self):
         self.assertIn('config-setting-list-v2', CONFIG_JS)

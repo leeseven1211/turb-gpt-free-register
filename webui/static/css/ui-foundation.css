@@ -3370,6 +3370,11 @@ table[data-resizable-table="codex"] {
     overflow: hidden;
   }
 
+  /* 待保存栏出现时，导航列表仍能滚动到最后一个菜单。 */
+  #tab-config:has(#configSaveBarV2:not([hidden])) .config-nav-v2 {
+    padding-bottom: 104px;
+  }
+
   #tab-config .config-main-v2 {
     height: 100%;
     max-height: 100%;

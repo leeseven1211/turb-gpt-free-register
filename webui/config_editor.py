@@ -34,8 +34,7 @@ EXPLICIT_EMPTY_LIST_KEYS = {"PROXY_POOL"}
 
 
 # schema 拥有字段文案、分组、默认值、类型、选项、范围、敏感性和生效策略；
-# 本模块只投影兼容的 WebUI metadata 接口。重复的旧展示项仅保留在该投影中，
-# 解析、校验和 snapshot registry 始终按唯一 key 工作。
+# 本模块只投影 WebUI metadata 接口；展示、解析、校验和快照均按唯一 key 工作。
 from config.schema import (
     CONFIG_SCHEMA,
     build_non_sensitive_snapshot,
