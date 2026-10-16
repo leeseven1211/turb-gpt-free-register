@@ -129,18 +129,21 @@ def promotion_country_from_row(row: dict | None) -> str | None:
 
 def safe_country_result(result: dict) -> dict:
     """只接收套餐字段与有限活动证据，未知嵌套对象不会进入公开快照。"""
+    from core.checkout_probe import public_checkout_details
+
     safe = _scalars(result, (*_RESULT_FIELDS, *(f"plus_{key}" for key in _PLUS_FIELDS)))
     promotions = result.get("account_promotions")
     if isinstance(promotions, list):
         safe["account_promotions"] = [
-            _scalars(item, _PROMOTION_FIELDS) for item in promotions[:32] if isinstance(item, dict)
+            {**_scalars(item, _PROMOTION_FIELDS), **public_checkout_details(item)}
+            for item in promotions[:32] if isinstance(item, dict)
         ]
     snapshot = result.get("promotion_query_snapshot")
     if isinstance(snapshot, dict):
         evidence = _scalars(snapshot, ("version", "source", "container_type", "truncated"))
         evidence["campaign_keys"] = [sanitize_promotion_text(item) for item in _items(snapshot.get("campaign_keys"))[:32] if isinstance(item, str)]
         evidence["campaigns"] = [
-            _scalars(item, (*_PROMOTION_FIELDS, "index"))
+            {**_scalars(item, (*_PROMOTION_FIELDS, "index")), **public_checkout_details(item)}
             for item in _items(snapshot.get("campaigns"))[:64] if isinstance(item, dict)
         ]
         safe["promotion_query_snapshot"] = evidence

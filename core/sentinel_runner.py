@@ -12,6 +12,7 @@ Sentinel Runner 适配层
 """
 import json
 import logging
+import math
 import os
 import subprocess
 import sys
@@ -95,6 +96,7 @@ def generate_sentinel_token(
     react_container_key: str | None = None,
     react_resources_key: str | None = None,
     cookie: str | None = None,
+    timeout_seconds: float | None = None,
 ) -> str:
     """
     把 sentinel.openai.com 返回的 challenge 喂给 sdk.js，生成最终 sentinel-token 字符串。
@@ -113,6 +115,10 @@ def generate_sentinel_token(
         FileNotFoundError: runner.js 或 sdk.js 缺失
         RuntimeError: Node 子进程异常或返回非零退出码
     """
+    runner_timeout = _RUNNER_TIMEOUT if timeout_seconds is None else float(timeout_seconds)
+    if not math.isfinite(runner_timeout) or runner_timeout < 1:
+        raise TimeoutError("Sentinel 剩余执行预算不足 1 秒")
+    runner_timeout = min(_RUNNER_TIMEOUT, runner_timeout)
     _ensure_runner_environment()
 
     if not flow:
@@ -265,12 +271,12 @@ def generate_sentinel_token(
                 text=True,
                 encoding="utf-8",
                 cwd=str(_PROJECT_ROOT),
-                timeout=_RUNNER_TIMEOUT,
+                timeout=runner_timeout,
                 env=env,
             )
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(
-                f"sentinel-runner.js 执行超时（>{_RUNNER_TIMEOUT}s），flow={flow}"
+                f"sentinel-runner.js 执行超时（>{runner_timeout:g}s），flow={flow}"
             ) from exc
         except FileNotFoundError as exc:
             raise RuntimeError(

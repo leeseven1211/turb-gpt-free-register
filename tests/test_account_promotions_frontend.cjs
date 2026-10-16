@@ -419,7 +419,7 @@ test('各国尚未查询只显示待查询，未知 Plus 不受 Go 免费影响'
   assert.doesNotMatch(promotionTooltip(unknown), /Go:/);
 });
 
-test('折扣期限缺失不补月份，非月周期保留单位，支付方式内容安全转义', () => {
+test('折扣期限缺失不补月份，非月周期保留单位，非法支付方式代码不展示', () => {
   const cases = [
     [{duration_num_periods: 3, duration_period: 'month'}, 'JP-50%-3'],
     [{duration_num_periods: 2, duration_period: 'week'}, 'JP-50%-2周'],
@@ -433,8 +433,95 @@ test('折扣期限缺失不补月份，非月周期保留单位，支付方式�
     ]}}]});
     assert.ok(html.includes(`class="account-promotion-country">${heading}：`));
     assert.doesNotMatch(html, /<img/);
-    assert.match(html, /&lt;img/);
+    assert.doesNotMatch(html, /onerror|&lt;img/);
+    assert.deepEqual(visiblePromotionLabels(html), ['支付方式待查询']);
   }
+});
+
+test('结账预检成功在原国家格式显示真实零金额、会话类型与该活动的支付方式', () => {
+  const country = (code, offer) => ({country: code, status: 'success', result: {account_promotions: [
+    {...goTrial, checkout_status: 'success', session_type: 'cs_live', payment_method_types: ['upi']}, offer,
+  ]}});
+  const html = view._promotionCell({plan_check_status: 'success', plan_check_country_results: [
+    country('JP', {...goTrial, plan: 'plus', checkout_status: 'success', checkout_country: 'JP', session_type: 'oaics', payment_method_types: ['card', 'link'], checkout_amount_due_minor: 0, checkout_currency: 'jpy', checkout_currency_exponent: 0}),
+    country('IN', {...plusDiscount, checkout_status: 'success', checkout_country: 'IN', session_type: 'cs_live', payment_method_types: ['card', 'upi'], checkout_amount_due_minor: 99900, checkout_currency: 'inr', checkout_currency_exponent: 2}),
+  ]});
+  assert.deepEqual(visiblePromotionLabels(html), ['0 JPY · oaics · 银行卡 Link', '999 INR · cs_live · 银行卡 UPI']);
+  assert.match(html, /class="account-promotion-country">JP：/);
+  assert.match(html, /class="account-promotion-country">IN-50%-2：/);
+  assert.match(promotionTooltip(html), /Plus: 免费 1个月；实际应付: 0 JPY；结账会话: oaics；支付方式: 银行卡 Link/);
+  assert.match(promotionTooltip(html), /Plus: 五折 2个月；实际应付: 999 INR；结账会话: cs_live/);
+  assert.equal((html.match(/tabindex="0"/g) || []).length, 2);
+  assert.doesNotMatch(html, /class="pill /);
+});
+
+test('实际应付按提供的币种小数位展示，缺失或无效金额不推断为免费', () => {
+  const amountLabel = (amount, currency, exponent) => visiblePromotionLabels(view._promotionCell({
+    ...checked, account_promotions: [{...plusDiscount, checkout_status: 'success', session_type: 'oaics', payment_method_types: ['card'], checkout_amount_due_minor: amount, checkout_currency: currency, checkout_currency_exponent: exponent}],
+  }))[0];
+  assert.equal(amountLabel(1, 'USD', 2), '0.01 USD · oaics · 银行卡');
+  assert.equal(amountLabel(1001, 'KWD', 3), '1.001 KWD · oaics · 银行卡');
+  assert.equal(amountLabel(100000, 'VND', 0), '100000 VND · oaics · 银行卡');
+  for (const [amount, currency, exponent] of [[null, 'USD', 2], [undefined, 'USD', 2], ['', 'USD', 2], ['0', 'USD', 2], [true, 'USD', 2], [-1, 'USD', 2], [1.5, 'USD', 2], [0, '', 2], [0, 'USD', null], [0, 'USD', 4]]) {
+    assert.equal(amountLabel(amount, currency, exponent), 'oaics · 银行卡');
+  }
+  const empty = view._promotionCell({...checked, account_promotions: [{...plusDiscount, checkout_status: 'success', session_type: 'unknown'}]});
+  assert.deepEqual(visiblePromotionLabels(empty), ['支付方式未返回']);
+  assert.doesNotMatch(empty, /0元|0 USD|unknown/);
+});
+
+test('支付预检失败保留半价优惠与失败原因，不展示混入的成功结账字段', () => {
+  const html = view._promotionCell({...checked, plan_promotion_country: 'JP', account_promotions: [{
+    ...plusDiscount, checkout_status: 'failed', checkout_http_status: 403, checkout_error: '结账接口访问受限',
+    session_type: 'oaics', payment_method_types: ['upi'], checkout_amount_due_minor: 0, checkout_currency: 'JPY', checkout_currency_exponent: 0,
+  }]});
+  assert.deepEqual(visiblePromotionLabels(html), ['支付方式查询失败']);
+  assert.match(html, /JP-50%-2：/);
+  assert.match(promotionTooltip(html), /Plus: 五折 2个月；支付方式查询失败；结账接口访问受限/);
+  assert.doesNotMatch(html, /无优惠|0 JPY|oaics|UPI/);
+  const httpOnly = view._promotionCell({...checked, account_promotions: [{...plusDiscount, checkout_status: 'failed', checkout_http_status: 429}]});
+  assert.match(promotionTooltip(httpOnly), /支付方式查询失败；HTTP 429/);
+});
+
+test('跳过支付预检与国家不匹配保持待查询，不借用其他活动或国家的结果', () => {
+  for (const fields of [{checkout_status: 'skipped', checkout_error: '未取得结账会话'}, {checkout_status: 'success', country: 'JP', checkout_country: 'IN'}]) {
+    const html = view._promotionCell({...checked, plan_promotion_country: 'JP', account_promotions: [
+      {...goTrial, checkout_status: 'success', session_type: 'cs_live', payment_method_types: ['upi']},
+      {...plusDiscount, ...fields, session_type: 'oaics', payment_method_types: ['card'], checkout_amount_due_minor: 0, checkout_currency: 'INR', checkout_currency_exponent: 2},
+    ]});
+    assert.deepEqual(visiblePromotionLabels(html), ['支付方式待查询']);
+    assert.match(promotionTooltip(html), /Plus: 五折 2个月/);
+    assert.doesNotMatch(html, /UPI|银行卡|oaics|cs_live|0 INR/);
+  }
+});
+
+test('结账展示只接受枚举与支付代码，不输出完整会话、URL、secret或注入内容', () => {
+  const malicious = {
+    ...plusDiscount, checkout_status: 'success', session_type: 'cs_live_sensitiveid',
+    payment_method_types: ['card', '<img src=x onerror=alert(1)>', 'https://checkout.example/session', 'cs_live_sensitiveid', 'oaics_sensitiveid', 'sk_live_private', 'client_secret_private', 'paypal'],
+    checkout_url: 'https://checkout.example/private', checkout_session_id: 'cs_live_private', checkout_client_secret: 'private-secret',
+    checkout_amount_due_minor: 0, checkout_currency: '<script>', checkout_currency_exponent: 2,
+  };
+  const success = view._promotionCell({...checked, account_promotions: [malicious]});
+  assert.deepEqual(visiblePromotionLabels(success), ['银行卡 paypal']);
+  assert.doesNotMatch(success, /<img|&lt;img|script|https:|sensitiveid|private|secret/);
+  const failure = view._promotionCell({...checked, account_promotions: [{...malicious, checkout_status: 'failed', checkout_error: '接口失败 https://checkout.example/private cs_live_sensitiveid oaics_sensitiveid client_secret=private <img src=x>'}]});
+  assert.match(promotionTooltip(failure), /接口失败/);
+  assert.match(promotionTooltip(failure), /&lt;img src=x&gt;/);
+  assert.doesNotMatch(failure, /<img|https:|sensitiveid|private|client_secret/);
+});
+
+test('多国结账结果仍只占两行，悬浮提示保留各国真实金额和会话', () => {
+  const html = view._promotionCell({plan_check_status: 'success', plan_check_country_results: ['JP', 'IN', 'VN'].map((country, index) => ({
+    country, status: 'success', result: {account_promotions: [{...goTrial, plan: 'plus', checkout_country: country, checkout_status: 'success', session_type: index === 1 ? 'cs_live' : 'oaics', payment_method_types: index === 1 ? ['card', 'link', 'upi'] : ['card', 'link'], checkout_amount_due_minor: 0, checkout_currency: ['JPY', 'INR', 'VND'][index], checkout_currency_exponent: index === 1 ? 2 : 0}]},
+  }))});
+  assert.equal((html.match(/class="account-promotion-country-row /g) || []).length, 2);
+  assert.deepEqual(visiblePromotionLabels(html), ['0 JPY · oaics · 银行卡 Link']);
+  assert.match(html, /另 2 国/);
+  const tooltip = promotionTooltip(html);
+  assert.match(tooltip, /JP Plus:[^\n]*0 JPY[^\n]*oaics[^\n]*银行卡 Link/);
+  assert.match(tooltip, /IN Plus:[^\n]*0 INR[^\n]*cs_live[^\n]*银行卡 Link UPI/);
+  assert.match(tooltip, /VN Plus:[^\n]*0 VND[^\n]*oaics/);
 });
 
 test('多国详情保留成功总数，任务摘要只展示国家结果和异常状态', () => {

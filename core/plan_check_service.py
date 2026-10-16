@@ -224,6 +224,9 @@ def _query_account_plan(
     timezone_offset_min: str,
     session=None,
     config_snapshot: dict | None = None,
+    include_checkout: bool = False,
+    checkout_country: str | None = None,
+    checkout_checkpoint=None,
 ) -> dict:
     """执行套餐查询和新注册账号复查，不负责队列/数据库状态流转。"""
     _wait_for_rate_slot(config_snapshot)
@@ -260,6 +263,9 @@ def _query_account_plan(
         })
     if session is not None:
         query_kwargs["session"] = session
+    if include_checkout:
+        query_kwargs.update(include_checkout=True, checkout_country=checkout_country,
+                            checkout_checkpoint=checkout_checkpoint)
     result = check_account_plan(access_token, **query_kwargs)
     query_history = [_plan_query_record(result, phase="initial")]
 
@@ -341,6 +347,23 @@ def _record_promotion_queries(reporter, result: dict) -> None:
         )
 
 
+def _checkout_summary(result: dict) -> dict:
+    """套餐成功与支付预检成功分别统计，半价不按零金额判断成功。"""
+    items = [item for item in (result.get("account_promotions") or []) if isinstance(item, dict)
+             and item.get("plan") == "plus" and item.get("checkout_status") in {"success", "failed", "skipped"}
+             and not item.get("stale")]
+    succeeded = sum(item.get("checkout_status") == "success" for item in items)
+    failed = sum(item.get("checkout_status") != "success" for item in items)
+    return {"checkout_check_count": len(items), "checkout_success_count": succeeded,
+            "checkout_failed_count": failed}
+
+
+def _checkout_message(result: dict) -> str:
+    counts = _checkout_summary(result)
+    return (f"；支付预检 {counts['checkout_success_count']}/{counts['checkout_check_count']} 成功"
+            if counts["checkout_check_count"] else "")
+
+
 def _plan_result_summary(result: dict) -> dict:
     """把套餐结果和活动证据写入每次任务，避免账号快照更新后丢失历史。"""
     keys = (
@@ -351,6 +374,7 @@ def _plan_result_summary(result: dict) -> dict:
         "country_success_count", "country_total_count", "failed_countries",
     )
     summary = {"ok": bool(result.get("ok")), **{key: result.get(key) for key in keys}}
+    summary.update(_checkout_summary(result))
     for key in ("account_promotions", "promotion_query_snapshot"):
         if key in result:
             summary[key] = result[key]
@@ -469,6 +493,8 @@ def _run_country_plan_checks(
                     access_token, proxy=route.proxy_url, timezone_offset_min=timezone_offset_min,
                     timeout=min(timeout, remaining / 2), max_attempts=1, retry_delay=0,
                     deadline_at=progress["deadline_at"],
+                    include_checkout=True, checkout_country=country,
+                    checkout_checkpoint=lambda message: _checkpoint(operation_context, message),
                 )
                 answer.update({key: value for key, value in route_info.items() if key not in {"proxy_used", "proxy_url"}})
             except (account_task_store.OperationLeaseLost, OperationCancelled):
@@ -512,8 +538,10 @@ def _run_country_plan_checks(
     message = f"国家查询完成：{count}/{len(countries)} 成功"
     if result["failed_countries"]:
         message += "；失败国家：" + "、".join(result["failed_countries"])
+    message += _checkout_message(result)
     reporter.stage("plan_check", "success" if result["ok"] else "failed", message)
-    task_status = "partial_success" if result["plan_check_partial"] else "success" if result["ok"] else "failed"
+    task_status = ("partial_success" if result["ok"] and (result["plan_check_partial"] or _checkout_summary(result)["checkout_failed_count"])
+                   else "success" if result["ok"] else "failed")
     reporter.finish(status=task_status, message=message,
                     error=result.get("error"), result_summary=_plan_result_summary(result), validation_method="access_token")
     return result
@@ -642,6 +670,9 @@ def _run_plan_check(
             proxy=account_route.proxy_url,
             timezone_offset_min=timezone_offset_min,
             config_snapshot=config_snapshot,
+            include_checkout=not str(trigger).startswith("registration"),
+            checkout_country=account_route.public_dict().get("proxy_region") or getattr(account_route, "region", None),
+            checkout_checkpoint=lambda message: _checkpoint(operation_context, message),
         )
         if countries == [] and not str(trigger).startswith("registration"):
             result.update(plan_check_countries=[], plan_check_partial=False)
@@ -665,8 +696,9 @@ def _run_plan_check(
             },
         )
         reporter.finish(
-            status="success" if result.get("ok") else "failed",
-            message="套餐查询成功" if result.get("ok") else "套餐查询失败",
+            status=("partial_success" if result.get("ok") and _checkout_summary(result)["checkout_failed_count"]
+                    else "success" if result.get("ok") else "failed"),
+            message=("套餐查询成功" + _checkout_message(result)) if result.get("ok") else "套餐查询失败",
             error=result.get("error") if not result.get("ok") else None,
             result_summary=_plan_result_summary(result),
             route=account_route.public_dict(),

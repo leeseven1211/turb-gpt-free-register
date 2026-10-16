@@ -22,6 +22,8 @@ from core.plus_promotion import (
     primary_plan_promotion,
 )
 from core.session import BrowserSession
+from core.operation_runtime import OperationAccountDeactivated, OperationCancelled
+from core.operations.task_gateway import OperationLeaseLost
 
 logger = logging.getLogger(__name__)
 
@@ -595,6 +597,44 @@ def _retry_wait_seconds(resp: Any, base_delay: float, attempt: int) -> float:
     return max(0.0, min(30.0, base_delay * attempt))
 
 
+def _query_promotion_checkout(result: dict, token: str, env: BrowserSession, *, country: str | None,
+                              timeout: float, deadline_at: float | None, checkpoint=None,
+                              claims: dict | None = None) -> None:
+    """只为当前国家最优 Plus 活动预检；支付异常不改变套餐查询结论。"""
+    from core.checkout_probe import public_checkout_details, query_checkout_details
+
+    promotions = result.get("account_promotions") or []
+    candidates = [item for item in promotions if isinstance(item, dict)
+                  and item.get("plan") == "plus" and item.get("eligible") is True]
+    if not candidates:
+        return
+    priority = {"free_trial": 0, "discount": 1, "other_promo": 2}
+
+    def order(item):
+        percentage = item.get("discount_percentage")
+        percentage = float(percentage) if isinstance(percentage, (int, float)) and not isinstance(percentage, bool) else 0
+        count = item.get("duration_num_periods")
+        count = float(count) if isinstance(count, (int, float)) and not isinstance(count, bool) else 0
+        days = {"day": 1, "week": 7, "month": 30, "year": 365}.get(item.get("duration_period"), 0)
+        return priority.get(item.get("kind"), 3), -percentage, -(count * days)
+
+    selected = min(candidates, key=order)
+    # 一次预检共享一分钟预算；已有国家总截止时间更早时服从原截止时间。
+    probe_deadline = min(deadline_at, time.time() + 60) if deadline_at is not None else time.time() + 60
+    try:
+        details = query_checkout_details(
+            token, session=env, country=country or "", campaign_id=selected.get("campaign_id") or "",
+            plan="plus", timeout=timeout, deadline_at=probe_deadline,
+            checkpoint=checkpoint, claims=claims,
+        )
+    except (OperationCancelled, OperationAccountDeactivated, OperationLeaseLost):
+        raise
+    except Exception:
+        details = {"checkout_status": "failed", "checkout_checked_at": now_iso(),
+                   "checkout_country": country, "checkout_error": "结账预检失败"}
+    selected.update(public_checkout_details(details))
+
+
 def check_account_plan(
     token: str,
     *,
@@ -606,6 +646,9 @@ def check_account_plan(
     retry_delay: float | None = None,
     context_recorder=None,
     deadline_at: float | None = None,
+    include_checkout: bool = False,
+    checkout_country: str | None = None,
+    checkout_checkpoint=None,
 ) -> dict:
     token = normalize_token(token)
     if not token:
@@ -713,8 +756,15 @@ def check_account_plan(
                     parsed.update(_query_account_quota(env, token, claims, timeout_seconds, deadline_at))
                     if deadline_at is not None and time.time() > deadline_at:
                         raise TimeoutError("国家查询总期限已到")
+                    if include_checkout:
+                        _query_promotion_checkout(
+                            parsed, token, env, country=checkout_country, timeout=timeout_seconds,
+                            deadline_at=deadline_at, checkpoint=checkout_checkpoint, claims=claims,
+                        )
                     probe_result = parsed
                     return parsed
+        except (OperationCancelled, OperationAccountDeactivated, OperationLeaseLost):
+            raise
         except Exception as exc:
             logger.debug("套餐查询失败: %s: %s", type(exc).__name__, exc, exc_info=True)
             last_result = {

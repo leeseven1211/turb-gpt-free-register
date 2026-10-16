@@ -1757,8 +1757,7 @@ function _accountPromotionDetail(item, context = '') {
   if (item.summary && item.summary !== _accountPromotionLabel(item)) details.push(String(item.summary));
   if (item.title) details.push(String(item.title));
   if (item.campaign_id) details.push(`活动 ${item.campaign_id}`);
-  const methods = _accountPromotionPaymentMethods(item);
-  if (methods.length) details.push(`支付方式: ${methods.join(' ')}`);
+  if (['free_trial', 'discount', 'other_promo'].includes(item.kind)) details.push(..._accountPromotionCheckoutDetail(item));
   if (context) details.push(context);
   return details.join('；');
 }
@@ -1828,10 +1827,61 @@ function _accountPromotionPaymentMethods(item) {
   // 支付方式必须属于该套餐活动，不能按国家推断或借用 Go 的结账结果。
   const methods = Array.isArray(item.payment_method_types) ? item.payment_method_types : [];
   const labels = {card: '银行卡', link: 'Link', upi: 'UPI'};
-  return [...new Set(methods.filter(value => typeof value === 'string' && value.trim()).map(value => {
-    const method = value.trim();
-    return Object.hasOwn(labels, method.toLowerCase()) ? labels[method.toLowerCase()] : method;
+  return [...new Set(methods.filter(value => typeof value === 'string').map(value => value.trim().toLowerCase()).filter(value => {
+    // 仅接受支付方式代码，避免把链接、会话标识或凭据误显示成支付方式。
+    return /^[a-z][a-z0-9_-]{0,63}$/.test(value) && !/^(?:cs_(?:live|test)|oaics|(?:pk|sk)_(?:live|test))(?:_|$)/.test(value) && !value.includes('secret');
+  }).map(method => {
+    return Object.hasOwn(labels, method) ? labels[method] : method;
   }))];
+}
+function _accountPromotionCheckoutStatus(item) {
+  const country = String(item.country || '').trim().toUpperCase();
+  const checkoutCountry = String(item.checkout_country || '').trim().toUpperCase();
+  if (country && checkoutCountry && country !== checkoutCountry) return 'mismatched';
+  const status = String(item.checkout_status || '').toLowerCase();
+  return ['success', 'failed', 'skipped'].includes(status) ? status : '';
+}
+function _accountPromotionCheckoutAmount(item) {
+  const amount = item.checkout_amount_due_minor;
+  const exponent = item.checkout_currency_exponent;
+  const currency = typeof item.checkout_currency === 'string' ? item.checkout_currency.trim().toUpperCase() : '';
+  if (!Number.isSafeInteger(amount) || amount < 0 || !Number.isInteger(exponent) || exponent < 0 || exponent > 3 || !/^[A-Z]{3}$/.test(currency)) return '';
+  const digits = String(amount).padStart(exponent + 1, '0');
+  const value = exponent ? `${digits.slice(0, -exponent)}.${digits.slice(-exponent)}`.replace(/\.?0+$/, '') : digits;
+  return `${value} ${currency}`;
+}
+function _accountPromotionCheckoutSession(item) {
+  const type = String(item.session_type || '').toLowerCase();
+  return ['cs_live', 'oaics'].includes(type) ? type : '';
+}
+function _accountPromotionCheckoutError(item) {
+  // 后端只保存安全错误摘要；前端仍过滤意外传入的完整链接和结账凭据。
+  const error = typeof item.checkout_error === 'string' ? item.checkout_error : '';
+  return error.replace(/https?:\/\/[^\s；，]+/gi, '[链接已隐藏]')
+    .replace(/\b(?:cs_(?:live|test)|oaics|(?:pk|sk)_(?:live|test))_[a-z0-9_-]+\b/gi, '[结账标识已隐藏]')
+    .replace(/\b[^\s；，]*secret[^\s；，]*\b/gi, '[凭据已隐藏]').slice(0, 240).trim();
+}
+function _accountPromotionCheckoutLabel(item) {
+  const status = _accountPromotionCheckoutStatus(item);
+  if (status === 'failed') return '支付方式查询失败';
+  if (['skipped', 'mismatched'].includes(status)) return '支付方式待查询';
+  const methods = _accountPromotionPaymentMethods(item).join(' ');
+  if (status !== 'success') return methods || '支付方式待查询';
+  return [_accountPromotionCheckoutAmount(item), _accountPromotionCheckoutSession(item), methods].filter(Boolean).join(' · ') || '支付方式未返回';
+}
+function _accountPromotionCheckoutDetail(item) {
+  const status = _accountPromotionCheckoutStatus(item);
+  if (status === 'failed' || status === 'skipped') {
+    const error = _accountPromotionCheckoutError(item);
+    const httpStatus = item.checkout_http_status;
+    const http = Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599 ? `HTTP ${httpStatus}` : '';
+    return [status === 'failed' ? '支付方式查询失败' : '支付方式待查询', error || http].filter(Boolean);
+  }
+  if (status === 'mismatched') return ['支付方式: 待查询'];
+  const methods = _accountPromotionPaymentMethods(item);
+  const amount = status === 'success' ? _accountPromotionCheckoutAmount(item) : '';
+  const session = status === 'success' ? _accountPromotionCheckoutSession(item) : '';
+  return [amount ? `实际应付: ${amount}` : '', session ? `结账会话: ${session}` : '', `支付方式: ${methods.join(' ') || (status === 'success' ? '未返回' : '待查询')}`].filter(Boolean);
 }
 function _accountPlusCellLabel(item) {
   if (item.kind === 'unknown') return '待查询';
@@ -1841,8 +1891,7 @@ function _accountPlusCellLabel(item) {
 function _accountPromotionTooltip(item) {
   const details = [`${_promotionPlanLabel(item.plan)}: ${_accountPromotionLabel(item)}`];
   if (['free_trial', 'discount', 'other_promo'].includes(item.kind)) {
-    const methods = _accountPromotionPaymentMethods(item);
-    details.push(`支付方式: ${methods.join(' ') || '待查询'}`);
+    details.push(..._accountPromotionCheckoutDetail(item));
   }
   return details.join('；');
 }
@@ -1900,8 +1949,7 @@ function _promotionCell(r) {
     ].filter(Boolean).join('');
     const countryMarkup = ({display, best}) => {
       const hasOffer = ['free_trial', 'discount', 'other_promo'].includes(best.kind);
-      const methods = _accountPromotionPaymentMethods(best);
-      const label = hasOffer ? (methods.join(' ') || '支付方式待查询') : _accountPlusCellLabel(best);
+      const label = hasOffer ? _accountPromotionCheckoutLabel(best) : _accountPlusCellLabel(best);
       return _accountPromotionRowMarkup({best, country: display.country, stale: display.stale, label, tooltip: detail});
     };
     const first = visibleRows[0];
@@ -1918,7 +1966,7 @@ function _promotionCell(r) {
   const hasOffer = ['free_trial', 'discount', 'other_promo'].includes(best.kind);
   const countryValue = String(r.plan_promotion_country || best.country || '').trim().toUpperCase();
   const country = /^[A-Z]{2}$/.test(countryValue) ? countryValue : '国家未记录';
-  const label = hasOffer ? (_accountPromotionPaymentMethods(best).join(' ') || '支付方式待查询') : _accountPlusCellLabel(best);
+  const label = hasOffer ? _accountPromotionCheckoutLabel(best) : _accountPlusCellLabel(best);
   const historical = r.plan_check_status === 'failed' && !!r.plan_last_success_at;
   const tooltip = [
     `${hasOffer ? `${country} ` : ''}${_accountPromotionTooltip(best)}`,
