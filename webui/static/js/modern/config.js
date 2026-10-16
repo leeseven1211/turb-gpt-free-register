@@ -722,11 +722,115 @@ function configDriverChoices(f) {
   const choices = configSchemaOptions(f);
   return choices.length ? choices : null;
 }
+function configCountryCodesV2(value) {
+  const text = Array.isArray(value) ? value.join(' ') : String(value || '');
+  return [...new Set(text.toUpperCase().split(/[\s,]+/).filter(Boolean))];
+}
+
+function configCountryNameV2(code) {
+  try {
+    const names = configCountryNameV2.names ||= new Intl.DisplayNames(['zh-CN'], {type: 'region'});
+    return names.of(code) || code;
+  } catch {
+    return code;
+  }
+}
+
+function configCountryOptionsV2(f, query = '') {
+  const common = ['JP', 'US', 'SG', 'HK', 'TW', 'KR', 'VN', 'IN', 'TH', 'MY', 'GB', 'DE', 'FR', 'CA', 'AU'];
+  const search = String(query).trim().toLowerCase();
+  return (f.country_codes || []).map(code => ({code, name: configCountryNameV2(code)}))
+    .filter(item => `${item.name} ${item.code}`.toLowerCase().includes(search))
+    .sort((a, b) => {
+      const rank = code => common.includes(code) ? common.indexOf(code) : common.length;
+      return rank(a.code) - rank(b.code) || a.name.localeCompare(b.name, 'zh-CN');
+    });
+}
+
+function renderConfigCountryChipsV2(codes) {
+  if (!codes.length) return '<span class="hint">未选择额外预热国家</span>';
+  return codes.map(code => `<button type="button" class="config-country-chip-v2" data-country-remove="${attrEsc(code)}" aria-label="移除 ${attrEsc(configCountryNameV2(code))} ${attrEsc(code)}">${esc(configCountryNameV2(code))} <code>${esc(code)}</code><span aria-hidden="true">×</span></button>`).join('');
+}
+
+function renderConfigCountryOptionsV2(f, codes, query = '') {
+  const options = configCountryOptionsV2(f, query);
+  if (!options.length) return '<span class="hint">未找到国家，请尝试中文名称或两位代码</span>';
+  return options.map((item, index) => `<button type="button" class="config-country-option-v2" data-country-code="${attrEsc(item.code)}" aria-pressed="${codes.includes(item.code)}" tabindex="${index ? '-1' : '0'}"><span>${esc(item.name)}</span><code>${esc(item.code)}</code></button>`).join('');
+}
+
+function renderConfigCountryControlV2(f, value) {
+  const codes = configCountryCodesV2(value);
+  return `<div class="config-country-picker-v2" data-country-picker="${attrEsc(f.key)}">
+    <div class="config-country-chips-v2" data-country-chips role="group" aria-label="已选国家，可点击移除">${renderConfigCountryChipsV2(codes)}</div>
+    <details class="config-country-choices-v2">
+      <summary>选择国家 / 地区（可多选）</summary>
+      <input type="search" data-country-search placeholder="搜索中文名称或代码，如 日本 / JP" aria-label="搜索国家或地区" autocomplete="off">
+      <div class="config-country-options-v2" data-country-options role="group" aria-label="国家列表，可用方向键切换">${renderConfigCountryOptionsV2(f, codes)}</div>
+      <span class="hint">可选 ${configCountryOptionsV2(f).length} 个国家 / 地区；实际可用线路取决于代理来源和库存。</span>
+    </details>
+    <details class="config-country-raw-v2">
+      <summary>粘贴或编辑国家代码</summary>
+      <textarea rows="2" data-key="${attrEsc(f.key)}" aria-label="${attrEsc(f.label)}国家代码" placeholder="如 JP, US, SG；留空不额外预热" title="支持换行、逗号或空格分隔 ISO 两位代码，自动大写去重。留空不额外预热。">${attrEsc(codes.join('\n'))}</textarea>
+    </details>
+  </div>`;
+}
+
+function syncConfigCountryPickerV2(picker) {
+  const field = configSchemaField(picker.dataset.countryPicker);
+  const textarea = picker.querySelector('[data-key]');
+  const codes = configCountryCodesV2(textarea.value);
+  picker.querySelector('[data-country-chips]').innerHTML = renderConfigCountryChipsV2(codes);
+  picker.querySelector('[data-country-options]').innerHTML = renderConfigCountryOptionsV2(field, codes, picker.querySelector('[data-country-search]').value);
+}
+
+function bindConfigCountryPickersV2() {
+  document.querySelectorAll('#tab-config [data-country-picker]').forEach(picker => {
+    picker.addEventListener('input', e => {
+      if (e.target.matches('[data-country-search], [data-key]')) syncConfigCountryPickerV2(picker);
+    });
+    picker.addEventListener('click', e => {
+      const button = e.target.closest('[data-country-code], [data-country-remove]');
+      if (!button) return;
+      const textarea = picker.querySelector('[data-key]');
+      const code = button.dataset.countryCode || button.dataset.countryRemove;
+      const codes = configCountryCodesV2(textarea.value);
+      textarea.value = (codes.includes(code) ? codes.filter(item => item !== code) : [...codes, code]).join('\n');
+      textarea.dispatchEvent(new Event('input', {bubbles: true}));
+      const focusTarget = button.dataset.countryCode
+        ? picker.querySelector(`[data-country-code="${code}"]`)
+        : picker.querySelector('[data-country-chips] button') || picker.querySelector('summary');
+      if (focusTarget) {
+        if (focusTarget.dataset.countryCode) {
+          picker.querySelectorAll('[data-country-code]').forEach(item => { item.tabIndex = item === focusTarget ? 0 : -1; });
+        }
+        focusTarget.focus();
+      }
+    });
+    picker.addEventListener('keydown', e => {
+      if (e.key === 'Escape') {
+        const details = e.target.closest('details');
+        if (details) { details.open = false; details.querySelector('summary').focus(); }
+        return;
+      }
+      const current = e.target.closest('[data-country-code]');
+      if (!current || !['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+      e.preventDefault();
+      const options = [...picker.querySelectorAll('[data-country-code]')];
+      const delta = ['ArrowUp', 'ArrowLeft'].includes(e.key) ? -1 : 1;
+      const index = e.key === 'Home' ? 0 : e.key === 'End' ? options.length - 1 : (options.indexOf(current) + delta + options.length) % options.length;
+      options.forEach((item, i) => { item.tabIndex = i === index ? 0 : -1; });
+      options[index].focus();
+    });
+  });
+}
+
 function renderConfigControlMarkupV2(f) {
   const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
   let control = '';
   const driverChoices = configDriverChoices(f);
-  if (f.key === 'EMAIL_SOURCE') {
+  if (f.key === 'PROXY_POOL_COUNTRIES') {
+    control = renderConfigCountryControlV2(f, fv);
+  } else if (f.key === 'EMAIL_SOURCE') {
     const selectedValues = String(fv || '').split(',').map(value => value.trim().toLowerCase()).filter(Boolean);
     const allOptions = configSchemaOptions(f);
     const orderedOptions = [
@@ -783,15 +887,17 @@ function renderConfigSettingRowV2(f, controlMarkup = null, options = {}) {
   `;
 }
 function renderConfigPlainFieldV2(f) {
+  // 国家选择器含多个交互控件，不能放进关联单个输入框的 label。
+  const tag = f.key === 'PROXY_POOL_COUNTRIES' ? 'div' : 'label';
   return `
-    <label class="fld config-field-v2">
+    <${tag} class="fld config-field-v2">
       <span class="config-field-v2-head">
         <span class="config-field-label-v2">${esc(f.label)} ${renderConfigFieldStatusV2(f)}</span>
         <code class="config-field-key-v2">${esc(f.key)}</code>
       </span>
       <span class="hint">${esc(f.help || '')}</span>
       ${renderConfigControlMarkupV2(f)}
-    </label>
+    </${tag}>
   `;
 }
 function renderProxyProviderToolsV2() {
@@ -1253,6 +1359,7 @@ function renderConfigLayoutV2() {
   bindCloudMailToolsV2();
   bindICloudHMEToolsV2();
   bindProxyProviderToolsV2();
+  bindConfigCountryPickersV2();
   updateConfigSaveUi();
 }
 
@@ -1453,6 +1560,7 @@ function readConfigElementValue(el, f) {
   if (el.dataset.toggleOnValue) return el.checked ? el.dataset.toggleOnValue : el.dataset.toggleOffValue;
   if (el.multiple) return Array.from(el.selectedOptions || []).map(option => option.value).join(',');
   if (f.type === 'list_str_multiline') {
+    if (f.key === 'PROXY_POOL_COUNTRIES') return configCountryCodesV2(el.value);
     const separator = f.key === 'PLAN_CHECK_COUNTRIES' ? /[\s,]+/ : /\n/;
     return el.value.split(separator).map(s=>s.trim()).filter(Boolean);
   }

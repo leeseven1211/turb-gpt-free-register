@@ -32,9 +32,12 @@ function extractFunction(source, name) {
 const context = vm.createContext({
   assert, CONFIG: [], CONFIG_PENDING_UPDATES: {}, esc: String, attrEsc: String,
 });
+vm.runInContext(common.slice(common.indexOf('function fmt('), common.indexOf('function isPlaceholderEmpty(')), context);
 vm.runInContext(extractFunction(common, 'isPlaceholderEmpty'), context);
 for (const name of [
   'configSchemaOptions', 'configDriverChoices',
+  'configCountryCodesV2', 'configCountryNameV2', 'configCountryOptionsV2',
+  'renderConfigCountryChipsV2', 'renderConfigCountryOptionsV2', 'renderConfigCountryControlV2',
   'renderConfigControlMarkupV2', 'readConfigElementValue',
 ]) {
   vm.runInContext(extractFunction(config, name), context);
@@ -50,6 +53,35 @@ vm.runInContext(process.argv[2], context);
             timeout=15,
         )
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
+    def test_pool_country_picker_searches_chinese_names_and_codes_and_keeps_pending_selection(self):
+        self._run_config_control_js(r'''
+const field = {key: 'PROXY_POOL_COUNTRIES', type: 'list_str_multiline',
+  label: '代理池预热国家', value: [], country_codes: ['US', 'JP', 'SG', 'DE']};
+assert.ok(renderConfigControlMarkupV2(field).includes('。"></textarea>'));
+assert.deepEqual(Array.from(configCountryOptionsV2(field, '日本'), item => item.code), ['JP']);
+assert.deepEqual(Array.from(configCountryOptionsV2(field, ' de '), item => item.code), ['DE']);
+assert.equal(configCountryOptionsV2(field, '不存在的国家').length, 0);
+CONFIG_PENDING_UPDATES.PROXY_POOL_COUNTRIES = ['SG', 'JP'];
+const markup = renderConfigControlMarkupV2(field);
+assert.ok(markup.includes('data-country-code="SG" aria-pressed="true"'));
+assert.ok(markup.includes('data-country-code="US" aria-pressed="false"'));
+assert.ok(markup.indexOf('data-country-remove="SG"') < markup.indexOf('data-country-remove="JP"'));
+assert.ok(markup.includes('SG\nJP</textarea>'));
+assert.ok(markup.includes('可选 4 个国家 / 地区'));
+''')
+
+    def test_pool_country_input_normalizes_separators_without_dropping_invalid_values_or_splitting_proxies(self):
+        self._run_config_control_js(r'''
+const field = {key: 'PROXY_POOL_COUNTRIES', type: 'list_str_multiline'};
+const read = value => Array.from(readConfigElementValue({dataset: {}, value}, field));
+assert.deepEqual(read('jp, US\n sg jp'), ['JP', 'US', 'SG']);
+assert.deepEqual(read(''), []);
+// 无效代码保留给后端校验，不能在多选操作时静默丢弃。
+assert.deepEqual(read('jp ZZ'), ['JP', 'ZZ']);
+const proxies = {key: 'PROXY_POOL', type: 'list_str_multiline'};
+assert.deepEqual(Array.from(readConfigElementValue({dataset: {}, value: 'http://proxy.test/a,b'}, proxies)), ['http://proxy.test/a,b']);
+''')
 
     def test_config_enum_values_preserve_none_without_changing_text_placeholders(self):
         self._run_config_control_js(r'''

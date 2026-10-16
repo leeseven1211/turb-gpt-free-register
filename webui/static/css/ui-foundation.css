@@ -2581,7 +2581,7 @@ table[data-resizable-table="codex"] {
   padding: 16px 20px 20px;
 }
 
-#tab-config .config-section-v2-body label.fld {
+#tab-config .config-section-v2-body .config-field-v2 {
   display: grid;
   align-content: start;
   gap: 0;
@@ -2619,7 +2619,7 @@ table[data-resizable-table="codex"] {
   text-align: right;
 }
 
-#tab-config .config-section-v2-body label.fld > .hint {
+#tab-config .config-section-v2-body .config-field-v2 > .hint {
   min-height: 34px;
   margin-top: 7px;
   overflow-wrap: anywhere;
@@ -3242,6 +3242,86 @@ table[data-resizable-table="codex"] {
 
 #tab-config .config-section-v2-body > .config-field-v2:has(textarea) {
   grid-column: 1 / -1;
+}
+
+#tab-config .config-country-picker-v2 {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  margin-top: 10px;
+}
+
+#tab-config .config-country-chips-v2 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+#tab-config .config-country-picker-v2 summary {
+  min-height: 44px;
+  padding: 12px;
+  border: 1px solid var(--ui-color-border);
+  border-radius: var(--ui-radius-md);
+  background: var(--ui-color-surface);
+  color: var(--ui-color-text);
+  cursor: pointer;
+}
+
+#tab-config .config-country-picker-v2 input,
+#tab-config .config-country-picker-v2 textarea {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  margin-top: 10px;
+}
+
+#tab-config .config-country-picker-v2 textarea {
+  min-height: 68px;
+}
+
+#tab-config .config-country-options-v2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(170px, 100%), 1fr));
+  gap: 8px;
+  max-height: 260px;
+  margin-block: 10px;
+  padding: 3px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+#tab-config .config-country-option-v2,
+#tab-config .config-country-chip-v2 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--ui-color-border-strong);
+  border-radius: var(--ui-radius-md);
+  background: var(--ui-color-surface);
+  color: var(--ui-color-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+#tab-config .config-country-option-v2[aria-pressed="true"],
+#tab-config .config-country-chip-v2 {
+  border-color: var(--ui-color-brand);
+  background: var(--ui-color-brand-soft);
+}
+
+#tab-config .config-country-option-v2[aria-pressed="true"] > span::before {
+  content: '✓ ';
+}
+
+#tab-config .config-country-picker-v2 :is(button, summary, input, textarea):focus-visible {
+  outline: 2px solid var(--ui-color-brand);
+  outline-offset: 2px;
 }
 
 #tab-config .config-switches-v2 {

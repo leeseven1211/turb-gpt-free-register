@@ -122,6 +122,10 @@ class ConfigField:
             out["allow_prefix"] = self.allow_prefix
         if self.csv_options:
             out["csv_options"] = list(self.csv_options)
+        if self.key == "PROXY_POOL_COUNTRIES":
+            from config.countries import ISO_3166_ALPHA2
+
+            out["country_codes"] = sorted(ISO_3166_ALPHA2)
         return out
 
 
@@ -1961,6 +1965,9 @@ def _coerce(value: Any, field: ConfigField, *, strict: bool) -> Any:
             values = value
         else:
             raise ValueError("必须是字符串列表")
+        if field.key in {"PROXY_POOL_COUNTRIES", "PLAN_CHECK_COUNTRIES"}:
+            # NA 是纳米比亚的合法代码，不能按通用空占位过滤。
+            return [str(item).strip() for item in values if item is not None and str(item).strip()]
         return [item for item in (_normalize_string(item) for item in values) if item]
 
     if field.type != "str":

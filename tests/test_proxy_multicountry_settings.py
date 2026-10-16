@@ -10,12 +10,31 @@ import pytest
 
 import config
 from config import account as account_cfg, env_loader, proxy as cfg, schema
+from config.countries import ISO_3166_ALPHA2
 from core import proxy_pool
 from core.proxy_provider import ProxyLease
 
 
 POLICY = {"min_ready": 2, "max_size": 20, "wait_timeout": 0, "min_ttl": 300,
           "max_age": 60, "max_idle": 300, "workers": 5}
+
+
+def test_pool_country_picker_uses_the_same_catalog_as_configuration_validation():
+    """国家选择目录与后端校验保持一致，且不改变其他字段的元数据。"""
+    field = schema.CONFIG_SCHEMA["PROXY_POOL_COUNTRIES"]
+    metadata = field.metadata()
+    countries = metadata["country_codes"]
+    assert countries == sorted(ISO_3166_ALPHA2)
+    assert schema.validate_value("PROXY_POOL_COUNTRIES", countries) == countries
+    for key in ("PROXY_POOL_COUNTRIES", "PLAN_CHECK_COUNTRIES"):
+        for value in ("NA", "na", ["NA"], '["NA"]'):
+            assert schema.validate_value(key, value) == ["NA"]
+    assert "options" not in metadata
+    assert "Rand" not in countries
+    assert "country_codes" not in schema.CONFIG_SCHEMA["PLAN_CHECK_COUNTRIES"].metadata()
+    assert "country_codes" not in schema.CONFIG_SCHEMA["PROXY_POOL"].metadata()
+    countries.clear()
+    assert field.metadata()["country_codes"] == sorted(ISO_3166_ALPHA2)
 
 
 def test_pool_countries_validate_and_reload_without_changing_plan_countries():
