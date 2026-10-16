@@ -11,6 +11,7 @@ class AccountSearchError(ValueError):
 
 REGISTRATION_DRIVERS = {
     "protocol": frozenset({"protocol", "api", "http"}),
+    "protocol_oss": frozenset({"protocol_oss"}),
     "browser": frozenset({
         "roxy", "roxybrowser", "browser", "browser_use", "skyvern",
         "fingerprint", "cloak", "cloakbrowser",
@@ -18,6 +19,8 @@ REGISTRATION_DRIVERS = {
 }
 _METHOD_ALIASES = {
     **dict.fromkeys(("协议", "协议注册", "protocol", "api", "http"), "protocol"),
+    **dict.fromkeys(("优化协议", "本地优化协议"), "protocol"),
+    **dict.fromkeys(("开源协议", "开源协议注册", "protocol_oss"), "protocol_oss"),
     **dict.fromkeys((
         "浏览器", "浏览器注册", "roxy", "roxy注册", "roxybrowser",
         "roxybrowser注册", "browser", "browser_use", "skyvern", "fingerprint",
@@ -70,7 +73,11 @@ class AccountSearchTerm:
     def display(self, query_without: str) -> dict[str, str]:
         value = self.value
         if self.field == "method":
-            value = {"protocol": "协议", "browser": "浏览器"}[value]
+            value = {
+                "protocol": "本地优化协议",
+                "protocol_oss": "开源协议",
+                "browser": "浏览器",
+            }[value]
         elif self.field == "region" and value in _COUNTRY_LABELS:
             value = f"{_COUNTRY_LABELS[value]} {value}"
         return {
@@ -152,7 +159,7 @@ def parse_account_search(query: str) -> list[AccountSearchTerm]:
         if field == "method":
             value = _METHOD_ALIASES.get(value.lower())
             if value is None:
-                raise AccountSearchError("注册方式不支持该值，请输入「方式:协议」或「方式:浏览器」。")
+                raise AccountSearchError("注册方式不支持该值，请输入「方式:本地优化协议」「方式:开源协议」或「方式:浏览器」。")
         elif field == "region":
             value = _country(value)
             if value is None:

@@ -48,6 +48,87 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+_REGISTRATION_DRIVER_LABELS = {
+    "protocol": "本地优化 Protocol",
+    "protocol_oss": "开源 Protocol",
+    "roxy": "RoxyBrowser",
+}
+_REGISTRATION_DRIVER_HINTS = {
+    "protocol": "本项目优化实现；认证方式按本批密码配置执行。",
+    "protocol_oss": "上游流程固定使用邮箱验证码和密码，后续账号处理仍走本地服务。",
+    "roxy": "使用本地 RoxyBrowser 注册与账号后处理流程。",
+}
+_REGISTRATION_DRIVER_ALIASES = {
+    "api": "protocol",
+    "http": "protocol",
+    "roxybrowser": "roxy",
+    "fingerprint": "roxy",
+    "browser": "roxy",
+}
+
+
+def registration_driver_choices() -> list[dict[str, str]]:
+    """返回注册页使用的 canonical driver 名称和标签。"""
+    return [
+        {"value": value, "label": label, "description": _REGISTRATION_DRIVER_HINTS[value]}
+        for value, label in _REGISTRATION_DRIVER_LABELS.items()
+    ]
+
+
+def configured_registration_driver() -> str:
+    """读取并归一化全局默认 driver，兼容历史别名。"""
+    from config import roxybrowser as roxy_cfg
+
+    raw = str(getattr(roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
+    return _REGISTRATION_DRIVER_ALIASES.get(raw, raw)
+
+
+def validate_registration_driver(value: object) -> str:
+    """校验注册批次显式选择的 canonical driver。"""
+    driver = str(value or "").strip().lower()
+    if driver not in _REGISTRATION_DRIVER_LABELS:
+        raise ValueError("registration_driver 只能是 protocol、protocol_oss 或 roxy")
+    return driver
+
+
+def codex_driver_for_registration(options: dict | None = None) -> str:
+    """按注册任务快照解析当前支持的 Codex OAuth 驱动。"""
+    from config import codex as codex_cfg
+
+    values = options if isinstance(options, dict) else {}
+    driver = str(
+        values.get("codex_driver")
+        or getattr(codex_cfg, "CODEX_OAUTH_DRIVER", "same_as_registration")
+        or "same_as_registration"
+    ).strip().lower()
+    if driver == "same_as_registration":
+        registration_driver = str(
+            values.get("registration_driver") or configured_registration_driver()
+        ).strip().lower()
+        registration_driver = _REGISTRATION_DRIVER_ALIASES.get(registration_driver, registration_driver)
+        driver = "protocol" if registration_driver == "protocol_oss" else registration_driver
+    driver = {
+        "api": "protocol",
+        "http": "protocol",
+        "roxybrowser": "roxy",
+        "fingerprint": "roxy",
+        "browser": "roxy",
+    }.get(driver, driver)
+    if driver not in {"protocol", "roxy"}:
+        raise ValueError(f"注册后的 Codex OAuth 不支持 driver {driver}")
+    return driver
+
+
+def _apply_registration_driver_snapshot(snapshot: dict[str, object], driver: str) -> dict[str, object]:
+    """把所选注册驱动及其固有认证要求写入任务快照。"""
+    canonical = _REGISTRATION_DRIVER_ALIASES.get(str(driver or "").strip().lower(), str(driver or "").strip().lower())
+    snapshot["registration_driver"] = canonical
+    if canonical == "protocol_oss":
+        snapshot["password_enabled"] = True
+        snapshot["password_mode"] = "password"
+    return snapshot
+
+
 def registration_config_snapshot() -> dict[str, object]:
     """Return the non-sensitive registration choices captured per job.
 
@@ -64,7 +145,7 @@ def registration_config_snapshot() -> dict[str, object]:
     if auth_mode not in {"otp", "password"}:
         auth_mode = "otp"
     registration_driver = str(getattr(roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
-    return {
+    snapshot = {
         "registration_driver": registration_driver,
         # 注册国家在入队时冻结；worker 领取线路时只使用这个快照，避免
         # 排队期间修改池默认国家改变已经提交的任务。
@@ -80,6 +161,7 @@ def registration_config_snapshot() -> dict[str, object]:
         "codex_driver": str(getattr(codex_cfg, "CODEX_OAUTH_DRIVER", "same_as_registration") or "same_as_registration").strip().lower(),
         "plan_check_enabled": bool(getattr(register_cfg, "REGISTRATION_PLAN_CHECK_ENABLED", True)),
     }
+    return _apply_registration_driver_snapshot(snapshot, registration_driver)
 
 
 def _normalize_registration_country(value: object) -> str:
@@ -2416,6 +2498,7 @@ def submit_registration(
     workers: int | None = None,
     *,
     debug_enabled: bool = False,
+    registration_driver: str | None = None,
 ) -> list[dict]:
     """
     创建 N 个注册任务并提交到线程池。
@@ -2424,6 +2507,11 @@ def submit_registration(
     Returns:
         N 个新创建的 job dict
     """
+    selected_driver = (
+        validate_registration_driver(registration_driver)
+        if registration_driver is not None
+        else None
+    )
     if email_source is None:
         from config import email as _email_cfg
         from core.email_provider import parse_email_sources
@@ -2440,6 +2528,8 @@ def submit_registration(
         # 同一批任务共享入队瞬间的国家快照；即使配置在提交循环期间热加载，
         # 也不能让同一批排队任务分裂到不同的默认国家。
         registration_snapshot = registration_config_snapshot()
+        if selected_driver is not None:
+            _apply_registration_driver_snapshot(registration_snapshot, selected_driver)
         jobs = []
         for index in range(count):
             job = db.create_job(
@@ -2475,9 +2565,10 @@ def submit_registration(
                 logger.exception("[Service] 注册任务 #%s 提交线程池失败", job["id"])
             jobs.append(db.get_job(int(job["id"])) or job)
     logger.info(
-        "[Service] 已提交 %s 个注册任务，源=%s，workers=%s，debug=%s",
+        "[Service] 已提交 %s 个注册任务，源=%s，driver=%s，workers=%s，debug=%s",
         count,
         email_source,
+        selected_driver or registration_snapshot.get("registration_driver"),
         effective_workers,
         bool(debug_enabled),
     )

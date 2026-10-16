@@ -227,6 +227,12 @@
               <option value="">加载邮箱来源…</option>
             </select>
           </label>
+          <label class="jobs-tb-field">注册协议
+            <select class="jobs-tb-select" id="regDriverV2" aria-label="本次注册协议">
+              <option value="">加载注册协议…</option>
+            </select>
+            <small class="jobs-driver-hint" id="regDriverHintV2" aria-live="polite"></small>
+          </label>
           <label class="jobs-tb-field">注册数量
             <span class="el-input-number">
               <input id="regCountV2" type="number" min="1" max="200" value="1" inputmode="numeric">
@@ -291,7 +297,7 @@
       <div class="jobs-table-v2-wrap module-tasks-only">
         <table class="jobs-table-v2" data-resizable-table="jobs">
           <colgroup>
-            <col class="col-check"><col class="col-id"><col class="col-email"><col class="col-source"><col class="col-proxy"><col class="col-status">
+            <col class="col-check"><col class="col-id"><col class="col-email"><col class="col-source"><col class="col-driver"><col class="col-proxy"><col class="col-status">
             <col class="col-time"><col class="col-time"><col class="col-error"><col class="col-actions">
           </colgroup>
           <thead>
@@ -300,6 +306,7 @@
               <th class="col-id column-filter-header" data-column-filter="jobIdFilterV2" data-filter-type="search" data-filter-placeholder="#" data-filter-label="按任务 ID 筛选" data-filter-inputmode="numeric">ID</th>
               <th class="col-email column-filter-header" data-column-filter="jobEmailFilterV2" data-filter-type="search" data-filter-placeholder="输入邮箱" data-filter-label="按邮箱筛选">邮箱</th>
               <th class="col-source column-filter-header" data-column-filter="jobSourceColumnFilterV2" data-filter-type="select" data-filter-label="按邮箱来源筛选">邮箱来源</th>
+              <th class="col-driver">注册协议</th>
               <th class="col-proxy column-filter-header" data-column-filter="jobProxyFilterV2" data-filter-type="search" data-filter-placeholder="输入代理" data-filter-label="按代理筛选">代理</th>
               <th class="col-status column-filter-header" data-column-filter="jobStatusColumnFilterV2" data-filter-type="select" data-filter-label="按任务状态筛选">状态</th>
               <th class="col-time column-filter-header" data-column-filter="jobDateFromV2" data-filter-type="date" data-filter-label="按开始日期筛选">开始</th>
@@ -308,7 +315,7 @@
               <th class="col-actions"><div class="column-actions-heading"><span>操作</span><button type="button" class="column-filters-reset" id="btnResetJobFiltersV2" title="清除全部列筛选">清筛</button></div></th>
             </tr>
           </thead>
-          <tbody id="jobsBodyV2"><tr class="list-state-row"><td class="table-state-cell" colspan="10"><div class="table-state is-loading" role="status"><span class="table-state-spinner" aria-hidden="true"></span><strong>正在加载任务</strong><small>正在同步最新注册批次与执行状态</small></div></td></tr></tbody>
+          <tbody id="jobsBodyV2"><tr class="list-state-row"><td class="table-state-cell" colspan="11"><div class="table-state is-loading" role="status"><span class="table-state-spinner" aria-hidden="true"></span><strong>正在加载任务</strong><small>正在同步最新注册批次与执行状态</small></div></td></tr></tbody>
         </table>
       </div>
       <div class="jobs-v2-pager module-tasks-only" id="pager-jobs-v2"></div>

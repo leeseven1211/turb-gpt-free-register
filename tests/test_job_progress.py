@@ -891,6 +891,20 @@ class JobProgressTests(PostgresTestCase):
         network = next(step for step in compact["progress"]["main_steps"] if step["id"] == "network")
         self.assertNotEqual("success", network["state"])
 
+    def test_compact_job_exposes_only_the_registration_driver_from_its_snapshot(self):
+        compact = _compact_job_for_list({
+            "id": 912,
+            "status": "pending",
+            "data": {
+                "config_snapshot": {"registration_driver": "protocol_oss"},
+                "private_config": {"token": "must-not-be-exposed"},
+            },
+        })
+
+        self.assertEqual(compact["registration_driver"], "protocol_oss")
+        self.assertNotIn("data", compact)
+        self.assertNotIn("private_config", compact)
+
     def test_startup_recovers_interrupted_jobs_and_codex_account(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

@@ -1108,7 +1108,12 @@ def run_protocol_registration(
 
             if codex_enabled:
                 report_job_progress("codex", "running", "正在执行 Codex OAuth")
-                codex_kwargs = {"proxy": session.proxy}
+                from core.registration_service import codex_driver_for_registration
+
+                codex_kwargs = {
+                    "proxy": session.proxy,
+                    "driver_override": codex_driver_for_registration(options),
+                }
                 if selected_email_source is not None:
                     codex_kwargs["otp_provider"] = lambda address, **kwargs: wait_for_otp(
                         address,

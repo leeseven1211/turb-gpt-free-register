@@ -106,7 +106,7 @@ def require_email_source(source: str) -> tuple[bool, str]:
 def _registration_driver_status() -> dict[str, Any]:
     from config import roxybrowser as roxy
     driver = str(getattr(roxy, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
-    if driver in {"protocol", "api", "http"}:
+    if driver in {"protocol", "protocol_oss", "api", "http"}:
         return _feature(True) | {"driver": driver}
     if driver in {"roxy", "roxybrowser", "fingerprint", "browser"}:
         ok, reason = _all_present([

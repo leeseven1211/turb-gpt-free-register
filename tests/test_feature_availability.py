@@ -8,6 +8,14 @@ from tests.support_pg import PostgresTestCase
 
 
 class FeatureAvailabilityTests(PostgresTestCase):
+    def test_open_source_registration_driver_does_not_require_roxy_configuration(self):
+        with patch("config.roxybrowser.REGISTRATION_DRIVER", "protocol_oss"):
+            result = feature_availability._registration_driver_status()
+
+        self.assertTrue(result["enabled"])
+        self.assertEqual(result["driver"], "protocol_oss")
+        self.assertEqual(result["reason"], "")
+
     def test_icloud_hide_allows_dynamic_account_discovery_without_account_id(self):
         with (
             patch.multiple(

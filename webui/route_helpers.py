@@ -350,6 +350,17 @@ def _compact_job_for_list(row: dict) -> dict:
         "id": row.get("id"),
         "status": row.get("status"),
     }
+    config_snapshot = row.get("config_snapshot")
+    if not isinstance(config_snapshot, dict):
+        row_data = row.get("data")
+        config_snapshot = row_data.get("config_snapshot") if isinstance(row_data, dict) else None
+    registration_driver = (
+        config_snapshot.get("registration_driver")
+        if isinstance(config_snapshot, dict)
+        else row.get("registration_driver")
+    )
+    if registration_driver:
+        out["registration_driver"] = str(registration_driver)
     for key in (
         "parent_job_id", "root_job_id", "retry_attempt", "email", "started_at", "completed_at",
         "email_source",

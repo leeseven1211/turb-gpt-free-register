@@ -1,8 +1,9 @@
 # Turb GPT 注册与账号管理工具
 
-ChatGPT / OpenAI 账号自动注册与 Codex OAuth 授权工具。注册主链路可按配置选择 RoxyBrowser 或新的纯协议实现：
+ChatGPT / OpenAI 账号自动注册与 Codex OAuth 授权工具。注册批次可分别选择本地优化 Protocol、固定上游快照适配的开源 Protocol 或 RoxyBrowser：
 
-- **protocol**：新纯协议注册链路，基于 `curl_cffi` + Sentinel/PoW。
+- **protocol**：本项目持续优化的纯协议注册链路，包含本地恢复、检查点、错误分类与阶段预算。
+- **protocol_oss**：隔离接入上游开源注册协议，保留独立协议流程；邮箱、代理、任务状态、PostgreSQL 和注册后处理继续使用本项目能力。
 - **roxy**：RoxyBrowser 指纹浏览器 + Selenium 自动化注册，兼容新版页面流，例如 `create-account/password`、`about-you` 年龄/生日表单、地区本地化页面等。
 
 项目提供 **CLI** 和 **本地 WebUI** 两种使用方式，日常推荐使用 WebUI。本项目由我们自行维护，主仓库为
@@ -26,7 +27,9 @@ ChatGPT / OpenAI 账号自动注册与 Codex OAuth 授权工具。注册主链�
 - 批量注册 ChatGPT 账号。
 - 支持注册驱动切换：
   - `REGISTRATION_DRIVER = "protocol"`
+  - `REGISTRATION_DRIVER = "protocol_oss"`
   - `REGISTRATION_DRIVER = "roxy"`
+- 注册页可按批次选择协议；每个任务都会冻结所选 driver，任务列表和账号高级搜索可区分两种协议。
 - 支持 RoxyBrowser 一号一环境：账号首次需要时创建 Profile，后续注册续跑、Codex、账号配置、查活和 AT 刷新优先复用同一 Profile。
 - 支持 Roxy 无头启动：`ROXY_OPEN_HEADLESS=True`。
 - Roxy 浏览器注册已兼容：
@@ -80,7 +83,7 @@ WebUI 启动注册前会显示“本次注册邮箱来源”下拉框，操作�
 - 左侧主导航会在当前大菜单下展开二级菜单；注册中心拆分为「发起注册 / 任务记录」，任务记录可在 ID、邮箱、邮箱来源、代理、状态、开始/完成日期和错误列内直接组合筛选，并可查看日志或按原断点语义重试。
 - 任务记录、账号、Codex 凭证和邮箱池列表采用统一结构：文字列点击列名后直接在表头输入搜索；状态、来源、套餐等枚举列使用基于后端真实数据的紧凑选项菜单；日期列使用单日或起止日期控件。支持多列组合筛选、条件标签回显、单列清空和一键清筛，不再额外占用第二行表头。
 - 账号列表的枚举列支持多选：同列满足任一所选项，不同列同时满足；选项及数量覆盖当前活跃或归档视图的全部分页，只显示有记录的值。套餐为空时统一显示并提供「未查询」筛选；有套餐值时沿用该套餐。点击「全部」清空该列，点击「完成」关闭菜单，已选条件会在列表上方回显，分页和状态轮询沿用同一组条件。
-- 账号列表右上角提供「高级搜索」：多个条件用空格或 `/` 分隔，全部条件同时满足。例如 `协议 jp`、`协议/jp` 表示协议注册且历史注册出口国家为日本；`协议注册` / `protocol`、`浏览器注册` / `browser`、`jp` / `JP` / `日本` 可互换，地区也支持 `jp注册` 写法。注册方式按账号关联的最新注册任务快照判断，地区按账号记录的注册出口国家判断，缺失记录不会按当前配置猜测。普通文字搜索 ID、邮箱、姓名、邮箱来源和备注；也支持 `方式:协议 地区:JP`、`邮箱:example.com`、`姓名:张三`、`来源:outlook`、`备注:待整理` 和精确 `ID:123`。完整文字用双引号包裹，例如 `备注:"a/b"`、`姓名:"Alice Smith"`；`备注:jp` 或 `"jp"` 可搜索文字而不识别为国家。搜索覆盖全部分页并与列筛选组合，已生效的条件以可单独移除的标签回显；语法错误会在输入框旁提示。输入后自动搜索，回车立即搜索，清空恢复原列筛选结果，「清筛」同时移除全部条件。
+- 账号列表右上角提供「高级搜索」：多个条件用空格或 `/` 分隔，全部条件同时满足。例如 `优化协议 jp`、`开源协议/jp` 表示对应协议注册且历史注册出口国家为日本；`协议注册` / `protocol`、`开源协议` / `protocol_oss`、`浏览器注册` / `browser`、`jp` / `JP` / `日本` 可互换，地区也支持 `jp注册` 写法。历史搜索「协议」和 `方式:protocol` 仍只匹配本地优化 Protocol。注册方式按账号关联的最新注册任务快照判断，地区按账号记录的注册出口国家判断，缺失记录不会按当前配置猜测。普通文字搜索 ID、邮箱、姓名、邮箱来源和备注；也支持 `方式:开源协议 地区:JP`、`邮箱:example.com`、`姓名:张三`、`来源:outlook`、`备注:待整理` 和精确 `ID:123`。完整文字用双引号包裹，例如 `备注:"a/b"`、`姓名:"Alice Smith"`；`备注:jp` 或 `"jp"` 可搜索文字而不识别为国家。搜索覆盖全部分页并与列筛选组合，已生效的条件以可单独移除的标签回显；语法错误会在输入框旁提示。输入后自动搜索，回车立即搜索，清空恢复原列筛选结果，「清筛」同时移除全部条件。
 - 页面刷新会恢复当前大菜单、二级菜单和配置分组，不会自动跳回总览；列表表头保持固定，长列表滚动时筛选条件和列名不会丢失。
 - 四类列表保留原有全部功能，并统一面板外框、操作栏、按钮和表头样式；批量动作只在选中记录后出现，低频动作收进「更多操作」。列宽可拖动、自动记忆，也可一键恢复默认宽度。账号批量操作并发数位于「配置 → 系统设置 → 通用配置」。
 - 账号列表默认每页 10 条，桌面行高随可用空间收紧，每格最多两行；时间列上方为创建、下方为更新，操作列上方为删除、下方为更多。2FA 已配置时直接复制验证码，未配置时提供「补充」。封号邮件平时仅显示「复查」，确认收到封号通知后显示红色「封号」；扫描中及不支持的来源禁用复查，原因保留在提示中。账号列宽可独立缩放，包括最后的操作列；拖动时优先与后一列交换空间，邻列达到最小宽度后再扩展整表，末列可独立调整；列宽自动记忆，仅在超出可用宽度时出现横向滚动条。
@@ -406,12 +409,12 @@ Remail 属于运行时按需领取来源，无需导入本地 Outlook 邮箱池�
 
 ### 2. 配置注册驱动
 
-在 WebUI「配置 → 注册设置 → 注册主链路」选择注册驱动，Roxy API 和环境参数在「配置 → 浏览器设置 → RoxyBrowser」调整；也可以在 `.env` 中设置对应键。默认值由 `config/schema.py` 统一维护。
+注册页「注册协议」选择仅作用于本批任务；未显式提交 driver 的 CLI/旧 API 调用仍使用全局默认。全局默认可在 WebUI「配置 → 注册设置 → 注册主链路」设置，Roxy API 和环境参数在「配置 → 浏览器设置 → RoxyBrowser」调整；`.env` 中也可设置 `REGISTRATION_DRIVER`。配置默认值和可选项由 `config/schema.py` 统一维护。
 
 #### 使用 RoxyBrowser 注册
 
 ```python
-REGISTRATION_DRIVER = "roxy"  # 可选 protocol / roxy
+REGISTRATION_DRIVER = "roxy"  # 可选 protocol / protocol_oss / roxy
 ROXY_API_BASE = "http://127.0.0.1:50100"
 ROXY_API_TOKEN = "你的Roxy API Key"
 ROXY_WORKSPACE_ID = "你的workspaceId"
@@ -433,17 +436,34 @@ Codex OAuth 使用独立的 `ROXY_CODEX_OPEN_HEADLESS` 开关，默认显示窗�
 `ROXY_CODEX_OPEN_HEADLESS` 设为 `True`。
 
 
-#### 使用协议注册
+#### 使用本地优化 Protocol 注册
 
 ```python
 REGISTRATION_DRIVER = "protocol"
 ```
 
-协议注册会使用 `curl_cffi`、Sentinel/PoW、代理池等配置。
+本地优化 Protocol 基于 `curl_cffi`、Sentinel/PoW 和代理池，带有本项目维护的阶段预算、密码/注册检查点、错误分类、未知结果保护和同 Attempt 续跑。已有优化与恢复逻辑留在 `core/registration/protocol.py`。
 
 协议驱动在原注册 Attempt 内提前保存密码和提交阶段；超时或取消后沿用原邮箱、密码与 Attempt，按照服务端返回的密码、OTP、MFA、回调或资料页继续。CLI 也使用持久化 Attempt/Run；已保存核心账号后应补跑后处理，不重复注册。2FA 密钥在激活前保存为待确认，只有激活确认后才显示启用。完整 session 与 AT 在登录态预热、Codex 等后处理之前持久化，后处理失败不会抹掉核心成功。
 
 OTP 轮询、验证码重试、退避与网络请求共用阶段预算；同步 HTTP 在途请求仍受底层 connect/read 超时约束，不保证持续响应的硬总耗时上限或即时取消。回调成功后只重试 session 获取，回调结果未知时停止自动重放。实现与验证边界见[协议注册可靠性实施记录](docs/development/2026-10-12-protocol-reliability-plan.md)。`wreq` 仅完成本地兼容性评估，默认后端仍为 `curl_cffi`。
+
+#### 使用开源 Protocol 注册
+
+```python
+REGISTRATION_DRIVER = "protocol_oss"
+```
+
+该 driver 固定同步自 [myfanhua/turb-gpt-free-register](https://github.com/myfanhua/turb-gpt-free-register)，基线提交为 `83721dc33a83b3e09dfdf7d91cc511b0124d9b4c`，许可证为 MIT。注册协议代码和许可证位于 `core/registration/protocol_oss/upstream/`，本地适配位于 `core/registration/protocol_oss/__init__.py`；上游入口 `main.py` 不直接运行。
+
+| 对比项 | `protocol` 本地优化版 | `protocol_oss` 开源版 |
+| --- | --- | --- |
+| 注册请求流程 | 本项目维护，含阶段预算、密码检查点和同 Attempt 恢复 | 固定上游协议顺序，单独适配，不回退到本地实现 |
+| 认证方式 | 按 `REGISTRATION_AUTH_MODE` 选择 OTP 或密码 | 上游固定邮箱 + 密码；入队快照会记录实际 password 模式 |
+| 本地能力 | 本地邮箱、代理、Attempt/Run、PostgreSQL 和后处理 | 同样使用本地邮箱、代理、Attempt/Run、PostgreSQL 和后处理 |
+| 后续更新 | 直接维护本项目实现 | 按 `upstream/UPSTREAM.md` 更新隔离源码，再验证适配器 |
+
+OSS 版本的 Codex OAuth 仍调用本项目的 Codex 实现；`CODEX_OAUTH_DRIVER=same_as_registration` 在 OSS 批次中解析为本地 Protocol OAuth，因为 Codex 不运行上游注册 driver。任务列表按每个任务的冻结快照显示来源；账号搜索使用「优化协议」和「开源协议」分别匹配，历史搜索「协议」仍指本地优化 Protocol。
 
 ---
 

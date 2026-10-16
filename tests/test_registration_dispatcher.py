@@ -36,6 +36,37 @@ class RegistrationDispatcherTests(unittest.TestCase):
         self.assertIs(expected, result)
         run_protocol.assert_called_once_with(**self.args)
 
+    def test_open_source_protocol_driver_uses_own_flow_and_attempt_name(self):
+        expected = {"success": True, "email": self.args["email"]}
+        snapshot = {"registration_driver": "protocol_oss"}
+        kwargs = {**self.args, "profile_id": None, "registration_options": snapshot}
+        with (
+            patch.object(dispatcher._roxy_cfg, "REGISTRATION_DRIVER", "protocol"),
+            patch(
+                "core.registration.protocol_oss.run_protocol_oss_registration",
+                return_value=expected,
+                create=True,
+            ) as run_protocol_oss,
+            patch("core.registration.protocol.run_protocol_registration") as run_protocol,
+            patch(
+                "core.registration.standalone.run_registration_in_context",
+                return_value=expected,
+            ) as run_in_context,
+        ):
+            result = dispatcher.run_registration(
+                **self.args,
+                registration_options=snapshot,
+            )
+
+        self.assertIs(expected, result)
+        run_in_context.assert_called_once_with(
+            run_protocol_oss,
+            kwargs,
+            entrypoint="protocol_cli",
+            driver_name="protocol_oss",
+        )
+        run_protocol.assert_not_called()
+
     def test_protocol_driver_forwards_selected_email_source(self):
         expected = {"success": True, "email": self.args["email"]}
         with (
@@ -183,7 +214,7 @@ class RegistrationDispatcherTests(unittest.TestCase):
     def test_removed_browser_drivers_are_rejected(self):
         for driver in ("cloak", "browser_use", "skyvern"):
             with self.subTest(driver=driver), patch.object(dispatcher._roxy_cfg, "REGISTRATION_DRIVER", driver):
-                with self.assertRaisesRegex(RuntimeError, "仅支持 protocol / roxy"):
+                with self.assertRaisesRegex(RuntimeError, "仅支持 protocol / protocol_oss / roxy"):
                     dispatcher.run_registration(**self.args)
 
     def test_non_roxy_resume_is_rejected_before_driver_import(self):
@@ -193,7 +224,7 @@ class RegistrationDispatcherTests(unittest.TestCase):
 
     def test_unknown_driver_fails_with_available_driver_names(self):
         with patch.object(dispatcher._roxy_cfg, "REGISTRATION_DRIVER", "unknown"):
-            with self.assertRaisesRegex(RuntimeError, "仅支持 protocol / roxy"):
+            with self.assertRaisesRegex(RuntimeError, "仅支持 protocol / protocol_oss / roxy"):
                 dispatcher.run_registration(**self.args)
 
 

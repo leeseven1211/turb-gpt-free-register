@@ -17,14 +17,15 @@
 ## 组件与边界
 
 1. 上游快照：新增独立目录保存注册所需的上游源码、MIT `LICENSE` 和 `UPSTREAM.md`。`UPSTREAM.md` 记录仓库地址、基准 commit、同步范围、本地补丁边界及更新步骤。上游文件尽量保持原貌；本地适配不散落在上游文件中。
-2. 适配驱动：新增 `protocol_oss` 注册 driver，实现 dispatcher 的统一参数契约。它把本地传入的邮箱、姓名、生日、代理和取消/进度回调传给上游流程；邮箱 OTP 始终通过所选 `email_source` 的本地 provider 取得。代理由任务服务提前分配，driver 不自行抽取代理或直连。
-3. 本地结果适配：取得上游 session/access token 后，交给现有 PostgreSQL 核心账号保存接口；后续套餐、2FA、Codex、Flow 和状态收口走本地已有服务。不得调用或复制上游 SQLite/文件账号存储作为事实来源。对未确认的远端写入保留原 Attempt 与凭据事实，失败重跑由本地任务恢复策略决定，不切换到另一 driver 或新邮箱。
+2. 适配驱动：新增 `protocol_oss` 注册 driver，实现 dispatcher 的统一参数契约。它把本地传入的邮箱、姓名、生日、代理和取消/进度回调传给上游流程；邮箱 OTP 始终通过所选 `email_source` 的本地 provider 取得。上游固定使用邮箱 + 密码注册，因此任务快照强制记录 `password_enabled=true`、`password_mode=password`，不伪称遵循本地 OTP-only 选项。代理由任务服务提前分配，driver 不自行抽取代理或直连。
+3. 本地结果适配：取得上游 session/access token 后，交给现有 PostgreSQL 核心账号保存接口；后续套餐、2FA、Codex、Flow 和状态收口走本地已有服务。Codex 不支持上游注册 driver，因此 `same_as_registration` 在 OSS 批次中解析为本地 Protocol OAuth。不得调用或复制上游 SQLite/文件账号存储作为事实来源。对未确认的远端写入保留原 Attempt 与凭据事实，失败重跑由本地任务恢复策略决定，不切换到另一 driver 或新邮箱。
 4. 选择与快照：注册页增加 driver 选择并发送给 `/api/jobs`；服务端校验白名单，在提交批次时将 driver 写入每个任务的 `config_snapshot`。兼容 CLI 和历史任务继续使用全局 `REGISTRATION_DRIVER` 回退。`registration_options_for_job()` 以及任务重试须保留来源快照。
 5. 可观察性：任务行和账号高级搜索须能区分优化 Protocol 与开源 Protocol；Attempt/Run driver 字段使用稳定名称 `protocol`、`protocol_oss`、`roxy`。配置页的全局 driver 仍作为未指定任务时的默认值，不替代注册页的每批选择。
 
 ## 失败、恢复与并发
 
 - 新 driver 不得在协议步骤失败时自动切到本地优化 Protocol 或 Roxy；切换会改变远端请求与尝试身份。
+- 上游响应不能明确归类为已有账号 OAuth 回调或新账号 about-you 资料页时，适配器停止后续写请求，不能把未知状态当作新账号。
 - 邮箱租约释放、远端未知结果、同 Attempt 续跑和任务取消继续遵守本地服务现有合同。若上游流程无法暴露必要的阶段回调或请求结果分类，只在适配器或 vendor 边界增加最小 hook，并记录本地差异。
 - 并发数由已有注册任务线程池控制；服务端每任务快照确保同一批次不会因配置热更新而混用 driver。
 - 协议共用函数只在能保持两个实现语义独立、且不修改现有优化流程时抽取；否则保留在 driver 内，避免把上游实现绑定到优化 Protocol 的内部细节。

@@ -28,6 +28,39 @@ class AccountSearchApiTests(PostgresTestCase):
                 self.assertEqual(payload["search_terms"][1]["display_value"], "日本 JP")
                 self.assertEqual(payload["search_terms"][1]["query_without"], '协议 备注:"a/b 待整理"')
 
+    def test_open_source_and_optimized_protocol_search_are_distinct(self):
+        account_ids = {}
+        for driver, email in (
+            ("protocol", "optimized-search@example.test"),
+            ("protocol_oss", "open-source-search@example.test"),
+        ):
+            account_id = rs.insert_row(rs.ACCOUNTS, {"email": email})
+            account_ids[driver] = account_id
+            rs.insert_row(rs.JOBS, {
+                "job_uuid": f"search-api-{driver}",
+                "email": email,
+                "account_id": account_id,
+                "job_type": "registration",
+                "data": {"config_snapshot": {"registration_driver": driver}},
+            })
+
+        for query, driver in (
+            ("优化协议", "protocol"),
+            ("协议", "protocol"),
+            ("开源协议", "protocol_oss"),
+            ("方式:protocol_oss", "protocol_oss"),
+        ):
+            with self.subTest(query=query):
+                response = self.client.get(
+                    "/api/accounts",
+                    query_string={"paged": "1", "q": query},
+                    headers=self.headers,
+                )
+                self.assertEqual(response.status_code, 200)
+                payload = response.get_json()
+                self.assertEqual(payload["total"], 1)
+                self.assertEqual(payload["items"][0]["id"], account_ids[driver])
+
     def test_both_endpoints_report_invalid_search_as_a_client_error(self):
         for endpoint in ("/api/accounts", "/api/accounts/plan-check-status"):
             for query in ("地区:JJ", "错误字段:内容", '备注:"未闭合'):

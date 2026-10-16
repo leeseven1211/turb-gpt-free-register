@@ -178,7 +178,7 @@ def create_jobs_blueprint(context: WebUIContext):
 
     @bp.get("/api/email-sources")
     def api_email_sources():
-        """返回注册页可明确选择的邮箱来源；顺序来自全局启用列表。"""
+        """返回注册页可选择的邮箱来源、注册驱动和各自默认值。"""
         from config import email as _email_cfg
         from core.email_provider import EMAIL_SOURCE_LABELS, parse_email_sources
         from core.feature_availability import email_source_availability
@@ -189,6 +189,8 @@ def create_jobs_blueprint(context: WebUIContext):
         return jsonify({
             "ok": True,
             "manual_mode": not use_service,
+            "registration_drivers": svc.registration_driver_choices(),
+            "default_registration_driver": svc.configured_registration_driver(),
             "sources": [
                 {
                     "value": source,
@@ -202,9 +204,18 @@ def create_jobs_blueprint(context: WebUIContext):
 
     @bp.post("/api/jobs")
     def api_jobs_create():
-        """启动批量注册：body {count, workers, email_source, debug_enabled}。"""
+        """启动批量注册：body {count, workers, email_source, registration_driver, debug_enabled}。"""
         data = request.get_json(silent=True) or {}
         debug_enabled = bool(data.get("debug_enabled", False))
+        driver_was_explicit = "registration_driver" in data
+        try:
+            selected_driver = svc.validate_registration_driver(
+                data.get("registration_driver")
+                if driver_was_explicit
+                else svc.configured_registration_driver()
+            )
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
         try:
             count = int(data.get("count", 1))
         except (TypeError, ValueError):
@@ -219,12 +230,10 @@ def create_jobs_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error": "workers 非法"}), 400
 
         if debug_enabled:
-            from config import roxybrowser as _roxy_cfg
-            driver_mode = str(getattr(_roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
-            if driver_mode not in {"protocol", "api", "http", "roxy", "roxybrowser", "fingerprint", "browser"}:
+            if selected_driver not in {"protocol", "protocol_oss", "roxy"}:
                 return jsonify({
                     "ok": False,
-                    "error": f"调试抓包当前仅支持 Roxy 和 protocol，当前注册驱动为 {driver_mode}",
+                    "error": f"调试抓包当前不支持注册驱动 {selected_driver}",
                 }), 400
 
         # 提交前先确认池里有足够可用邮箱，给前端一个温和提示（不阻断）
@@ -244,6 +253,8 @@ def create_jobs_blueprint(context: WebUIContext):
                     "error": "手动模式建议每次只跑 1 个任务（同一 REGISTER_EMAIL）。请把数量设为 1。",
                 }), 400
             submit_kwargs = {"count": count, "workers": workers}
+            if driver_was_explicit:
+                submit_kwargs["registration_driver"] = selected_driver
             if debug_enabled:
                 submit_kwargs["debug_enabled"] = True
             jobs = svc.submit_registration(**submit_kwargs)
@@ -253,6 +264,7 @@ def create_jobs_blueprint(context: WebUIContext):
                 "jobs": jobs,
                 "warning": f"手动 OTP 模式：将使用 {reg_email}；验证码请在任务页提交",
                 "workers": workers,
+                "registration_driver": selected_driver,
                 "debug_enabled": debug_enabled,
             })
         try:
@@ -389,6 +401,8 @@ def create_jobs_blueprint(context: WebUIContext):
             if pool.get("available", 0) < count:
                 warning = f"可用邮箱仅 {pool.get('available', 0)} 个，少于任务数 {count}，不足的会失败"
         submit_kwargs = {"count": count, "email_source": selected_source, "workers": workers}
+        if driver_was_explicit:
+            submit_kwargs["registration_driver"] = selected_driver
         if debug_enabled:
             submit_kwargs["debug_enabled"] = True
         jobs = svc.submit_registration(**submit_kwargs)
@@ -399,6 +413,7 @@ def create_jobs_blueprint(context: WebUIContext):
             "warning": warning,
             "workers": workers,
             "email_source": selected_source,
+            "registration_driver": selected_driver,
             "debug_enabled": debug_enabled,
         })
 

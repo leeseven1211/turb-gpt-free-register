@@ -3,15 +3,44 @@ function registrationEmailSourceLabel(value) {
   const source = REGISTRATION_EMAIL_SOURCES.find(item => item.value === String(value || ''));
   return source?.label || String(value || '-');
 }
+let REGISTRATION_DRIVERS = [];
+function registrationDriverLabel(value) {
+  const driver = REGISTRATION_DRIVERS.find(item => item.value === String(value || ''));
+  return driver?.label || ({
+    protocol: '本地优化 Protocol',
+    protocol_oss: '开源 Protocol',
+    roxy: 'RoxyBrowser',
+  }[String(value || '')] || '未知');
+}
+function updateRegistrationDriverHint(select) {
+  const hint = $('#regDriverHintV2');
+  if (!hint) return;
+  const selected = REGISTRATION_DRIVERS.find(item => item.value === String(select?.value || ''));
+  hint.textContent = selected?.description || '';
+}
 async function loadRegistrationEmailSources() {
   const select = $('#regEmailSourceV2');
-  if (!select) return;
+  const driverSelect = $('#regDriverV2');
+  if (!select && !driverSelect) return;
   try {
     const [result, capabilities] = await Promise.all([
       apiCached('/api/email-sources', {}, 30000),
       apiCached('/api/capabilities', {}, 30000),
     ]);
     CAPABILITIES = capabilities;
+    REGISTRATION_DRIVERS = Array.isArray(result.registration_drivers) ? result.registration_drivers : [];
+    if (driverSelect) {
+      driverSelect.innerHTML = REGISTRATION_DRIVERS.map(item =>
+        `<option value="${esc(item.value)}">${esc(item.label)}</option>`
+      ).join('');
+      if (REGISTRATION_DRIVERS.some(item => item.value === result.default_registration_driver)) {
+        driverSelect.value = result.default_registration_driver;
+      }
+      driverSelect.disabled = REGISTRATION_DRIVERS.length < 2;
+      updateRegistrationDriverHint(driverSelect);
+      driverSelect.onchange = () => updateRegistrationDriverHint(driverSelect);
+    }
+    if (!select) return;
     const sourceCaps = capabilities.email_sources || {};
     REGISTRATION_EMAIL_SOURCES = (Array.isArray(result.sources) ? result.sources : []).map(item => ({
       ...item,
@@ -28,19 +57,32 @@ async function loadRegistrationEmailSources() {
       `<option value="${esc(item.value)}" ${item.enabled === false ? 'disabled' : ''} title="${esc(item.reason || '')}">${esc(item.label)}${item.enabled === false ? '（未配置）' : ''}</option>`
     ).join('');
   } catch (error) {
-    select.innerHTML = '<option value="">邮箱来源加载失败</option>';
-    select.disabled = true;
+    if (select) {
+      select.innerHTML = '<option value="">邮箱来源加载失败</option>';
+      select.disabled = true;
+    }
+    if (driverSelect) {
+      driverSelect.innerHTML = '<option value="">注册协议加载失败</option>';
+      driverSelect.disabled = true;
+    }
   }
 }
-async function startRegistrationFromInputs(countEl, workersEl, sourceEl, startBtn) {
+async function startRegistrationFromInputs(countEl, workersEl, sourceEl, driverEl, startBtn) {
   const count = parseInt((countEl?.value || '1'), 10);
   const workers = parseInt((workersEl?.value || '3'), 10);
   const emailSource = String(sourceEl?.value || '').trim();
+  const registrationDriver = String(driverEl?.value || '').trim();
   const debugEnabled = Boolean($('#regDebugV2')?.checked);
   if (!emailSource) {
     const warnEl = $('#regWarnV2');
     if (warnEl) warnEl.innerHTML = '<div class="banner warn">请选择本次注册使用的邮箱来源</div>';
     sourceEl?.focus();
+    return;
+  }
+  if (!registrationDriver) {
+    const warnEl = $('#regWarnV2');
+    if (warnEl) warnEl.innerHTML = '<div class="banner warn">请选择本次注册协议</div>';
+    driverEl?.focus();
     return;
   }
   const activeCount = Number(JOB_STATUS_COUNTS.active || 0);
@@ -59,11 +101,12 @@ async function startRegistrationFromInputs(countEl, workersEl, sourceEl, startBt
   };
   const b2 = $('#btnStartV2'); if (b2) b2.disabled = true;
   try {
-    const r = await api('/api/jobs', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({count, workers, email_source:emailSource, debug_enabled:debugEnabled}) });
+    const r = await api('/api/jobs', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({count, workers, email_source:emailSource, registration_driver:registrationDriver, debug_enabled:debugEnabled}) });
     setJobProgressBatch(r.jobs?.[0]?.batch_id || '');
     const sourceLabel = registrationEmailSourceLabel(r.email_source || emailSource);
+    const driverLabel = registrationDriverLabel(r.registration_driver || registrationDriver);
     const debugLabel = debugEnabled ? ' · 网络调试已开启' : '';
-    const warnHtml = r.warning ? `<div class="banner warn">${esc(r.warning)}（邮箱 ${esc(sourceLabel)} · 并发 ${r.workers || workers}${debugLabel}）</div>` : `<div class="banner info">已提交 ${r.submitted} 个任务 · 邮箱 ${esc(sourceLabel)} · 并发 ${r.workers || workers}${debugLabel}</div>`;
+    const warnHtml = r.warning ? `<div class="banner warn">${esc(r.warning)}（${esc(driverLabel)} · 邮箱 ${esc(sourceLabel)} · 并发 ${r.workers || workers}${debugLabel}）</div>` : `<div class="banner info">已提交 ${r.submitted} 个任务 · ${esc(driverLabel)} · 邮箱 ${esc(sourceLabel)} · 并发 ${r.workers || workers}${debugLabel}</div>`;
     const warnEl = $('#regWarnV2'); if (warnEl) warnEl.innerHTML = warnHtml;
     const c2 = $('#regCountV2'); if (c2) c2.value = count;
     const w2 = $('#regWorkersV2'); if (w2) w2.value = workers;
@@ -199,7 +242,7 @@ function bindJobsBodyEvents(bodyEl) {
 (() => {
   const startV2 = $('#btnStartV2');
   loadRegistrationEmailSources();
-  if (startV2) startV2.addEventListener('click', () => startRegistrationFromInputs($('#regCountV2'), $('#regWorkersV2'), $('#regEmailSourceV2'), startV2));
+  if (startV2) startV2.addEventListener('click', () => startRegistrationFromInputs($('#regCountV2'), $('#regWorkersV2'), $('#regEmailSourceV2'), $('#regDriverV2'), startV2));
   const delV2 = $('#btnDeleteSelectedJobsV2');
   if (delV2) delV2.addEventListener('click', deleteSelectedJobs);
   const retryV2 = $('#btnRetrySelectedJobsV2');
@@ -505,6 +548,7 @@ function renderBatchProgress() {
     const batchIndex = Number(job.batch_index || itemIndex + 1);
     const email = job.email || (job.status === 'pending' ? '等待领取邮箱…' : '准备邮箱中…');
     const sourceLabel = registrationEmailSourceLabel(job.email_source);
+    const driverLabel = registrationDriverLabel(job.registration_driver);
     const manualRetryCount = Number(job.retry_count || job.retry_attempt || 0);
     const internalRetryCount = Number(job.internal_retry_count || 0);
     const retryBadges = `${manualRetryCount > 0 ? `<span class="batch-progress-v2-retry-pill">人工重试 ${manualRetryCount} 次</span>` : ''}${internalRetryCount > 0 ? `<span class="batch-progress-v2-retry-pill is-auto">自动换线 ${internalRetryCount} 次</span>` : ''}`;
@@ -535,6 +579,7 @@ function renderBatchProgress() {
           <span class="batch-progress-v2-index">#${esc(batchIndex)}</span>
           <span class="batch-progress-v2-email" title="${esc(email)}">${esc(email)}</span>
           <span class="sub-cell">${esc(sourceLabel)}</span>
+          <span class="sub-cell">${esc(driverLabel)}</span>
           ${jobProgressRouteText(job) ? `<span class="sub-cell">${esc(jobProgressRouteText(job))}</span>` : ''}
           ${retryBadges}
         </div>
@@ -579,6 +624,7 @@ function renderJobs() {
         <td class="col-id">#${esc(j.id)}${j.parent_job_id ? `<div class="sub-cell" title="重试自任务 #${esc(j.parent_job_id)}">↳ #${esc(j.parent_job_id)} · ${esc(j.retry_attempt || 1)}</div>` : ''}</td>
         <td class="col-email" title="${esc(j.email || '-')}">${esc(j.email || '-')}</td>
         <td class="col-source" title="${esc(registrationEmailSourceLabel(j.email_source))}">${esc(registrationEmailSourceLabel(j.email_source))}</td>
+        <td class="col-driver" title="${esc(registrationDriverLabel(j.registration_driver))}">${esc(registrationDriverLabel(j.registration_driver))}</td>
         <td class="col-proxy" title="${esc(proxyLabel)} · ${esc(j.proxy_status || '-')}">${esc(proxyLabel)}</td>
         <td class="col-status">${pillV2(j.debug_state === 'paused' ? 'debug_paused' : (j.display_status || j.status))}</td>
         <td class="col-time" title="${esc(started)}">${esc(started)}</td>
@@ -594,7 +640,7 @@ function renderJobs() {
           </div>
         </td>
       </tr>`;
-    }).join('') || renderTableStateRow(10, '暂无匹配任务', '调整筛选条件，或发起新的注册批次。');
+    }).join('') || renderTableStateRow(11, '暂无匹配任务', '调整筛选条件，或发起新的注册批次。');
   }
 
 

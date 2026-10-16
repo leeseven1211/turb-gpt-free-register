@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from unittest.mock import Mock, patch
 
+import pytest
+
 from core import registration_service as service
 
 
@@ -28,6 +30,83 @@ def test_submit_registration_freezes_one_country_for_the_whole_queued_batch():
     assert [item[1]["data"]["config_snapshot"]["proxy_country"] for item in created] == ["JP", "JP"]
     assert [item["id"] for item in queued] == [1, 2]
     assert executor.submit.call_count == 2
+
+
+def test_submit_registration_freezes_the_selected_driver_for_the_whole_batch():
+    executor = Mock()
+    created = []
+
+    def create_job(**kwargs):
+        row = {"id": len(created) + 1, "log_file": f"/tmp/job-{len(created) + 1}.log"}
+        created.append((row, kwargs))
+        return row
+
+    with patch.object(service, "get_executor", return_value=executor), \
+            patch.object(service, "get_executor_workers", return_value=2), \
+            patch.object(service.db, "create_job", side_effect=create_job), \
+            patch.object(service.db, "get_job", return_value=None), \
+            patch.object(service, "registration_config_snapshot", return_value={
+                "registration_driver": "roxy",
+                "password_enabled": False,
+                "password_mode": "otp",
+                "proxy_country": "JP",
+            }):
+        queued = service.submit_registration(
+            count=2,
+            email_source="outlook",
+            workers=2,
+            registration_driver="protocol_oss",
+        )
+
+    snapshots = [item[1]["data"]["config_snapshot"] for item in created]
+    assert [snapshot["registration_driver"] for snapshot in snapshots] == [
+        "protocol_oss",
+        "protocol_oss",
+    ]
+    assert [snapshot["password_enabled"] for snapshot in snapshots] == [True, True]
+    assert [snapshot["password_mode"] for snapshot in snapshots] == ["password", "password"]
+    assert [snapshot["proxy_country"] for snapshot in snapshots] == ["JP", "JP"]
+    assert [item["id"] for item in queued] == [1, 2]
+
+
+def test_submit_registration_rejects_unknown_driver_before_creating_jobs():
+    with patch.object(service.db, "create_job") as create_job:
+        with pytest.raises(ValueError, match="registration_driver"):
+            service.submit_registration(
+                count=1,
+                email_source="outlook",
+                registration_driver="unknown",
+            )
+
+    create_job.assert_not_called()
+
+
+def test_registration_codex_driver_follows_the_selected_driver_snapshot():
+    assert service.codex_driver_for_registration({
+        "registration_driver": "protocol_oss",
+        "codex_driver": "same_as_registration",
+    }) == "protocol"
+    assert service.codex_driver_for_registration({
+        "registration_driver": "roxy",
+        "codex_driver": "same_as_registration",
+    }) == "roxy"
+    assert service.codex_driver_for_registration({
+        "registration_driver": "protocol_oss",
+        "codex_driver": "roxy",
+    }) == "roxy"
+
+
+def test_global_open_source_driver_freezes_its_password_auth_mode():
+    with (
+        patch("config.roxybrowser.REGISTRATION_DRIVER", "protocol_oss"),
+        patch("config.register.REGISTRATION_AUTH_MODE", "otp"),
+        patch("core.proxy_pool.default_country", return_value="US"),
+    ):
+        snapshot = service.registration_config_snapshot()
+
+    assert snapshot["registration_driver"] == "protocol_oss"
+    assert snapshot["password_enabled"] is True
+    assert snapshot["password_mode"] == "password"
 
 
 def test_registration_retry_keeps_frozen_country_after_default_changes():

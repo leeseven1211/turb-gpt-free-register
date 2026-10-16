@@ -111,6 +111,29 @@ class RegistrationRetryDriverTests(unittest.TestCase):
         self.assertEqual(source, original)
         executor.submit.assert_called_once()
 
+    def test_open_source_protocol_resume_keeps_frozen_driver_and_password_mode(self):
+        source, account, attempt = self._facts()
+        source["config_snapshot"] = {
+            "registration_driver": "protocol_oss",
+            "password_enabled": True,
+            "password_mode": "password",
+            "twofa_enabled": True,
+        }
+
+        result, create_call, executor = self._retry(
+            source,
+            account,
+            attempt,
+            driver_choice=None,
+        )
+
+        self.assertTrue(result["ok"])
+        snapshot = create_call.kwargs["data"]["config_snapshot"]
+        self.assertEqual(snapshot["registration_driver"], "protocol_oss")
+        self.assertTrue(snapshot["password_enabled"])
+        self.assertEqual(snapshot["password_mode"], "password")
+        executor.submit.assert_called_once()
+
     def test_roxy_resume_rejects_non_resume_and_unverified_identity(self):
         for changed, action in (
             ({}, "registration"),

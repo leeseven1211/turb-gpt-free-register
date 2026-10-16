@@ -1417,7 +1417,11 @@ _OPTIONS: dict[str, tuple[ConfigOption, ...]] = {
         ("v1", "协议 v1（现有稳定实现）"),
         ("v2", "协议 v2（已支持的步骤）"),
     ),
-    "REGISTRATION_DRIVER": _options(("protocol", "纯协议注册"), ("roxy", "RoxyBrowser")),
+    "REGISTRATION_DRIVER": _options(
+        ("protocol", "本地优化 Protocol"),
+        ("protocol_oss", "开源 Protocol"),
+        ("roxy", "RoxyBrowser"),
+    ),
     "REGISTRATION_AUTH_MODE": _options(
         ("otp", "不设置密码（邮箱验证码）"), ("password", "设置账号密码")
     ),

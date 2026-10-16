@@ -91,6 +91,12 @@ class AdminRepositoryTests(PostgresTestCase):
             "user_name": "浏览器用户",
             "note": "Roxy 样本",
         })
+        open_source_id = rs.insert_row(rs.ACCOUNTS, {
+            "email": "open-source-search@example.test",
+            "email_source": "outlook",
+            "user_name": "开源用户",
+            "note": "开源协议样本",
+        })
         rs.insert_row(rs.ACCOUNTS, {
             "email": "contains-protocol@example.test",
             "email_source": "outlook",
@@ -109,6 +115,13 @@ class AdminRepositoryTests(PostgresTestCase):
             "job_type": "registration",
             "data": {"config_snapshot": {"registration_driver": "roxy"}},
         })
+        rs.insert_row(rs.JOBS, {
+            "job_uuid": "driver-protocol-oss-search",
+            "email": "open-source-search@example.test",
+            "account_id": open_source_id,
+            "job_type": "registration",
+            "data": {"config_snapshot": {"registration_driver": "protocol_oss"}},
+        })
 
         for query in ("protocol", "协议注册"):
             with self.subTest(query=query):
@@ -121,6 +134,12 @@ class AdminRepositoryTests(PostgresTestCase):
                 result = repo.list_accounts(repo.PageRequest(page=1, page_size=20), q=query)
                 self.assertEqual(result["total"], 1)
                 self.assertEqual(result["items"][0]["id"], roxy_id)
+
+        for query in ("开源协议", "开源协议注册", "方式:protocol_oss"):
+            with self.subTest(query=query):
+                result = repo.list_accounts(repo.PageRequest(page=1, page_size=20), q=query)
+                self.assertEqual(result["total"], 1)
+                self.assertEqual(result["items"][0]["id"], open_source_id)
 
         for query, expected in (
             (str(protocol_id), protocol_id),

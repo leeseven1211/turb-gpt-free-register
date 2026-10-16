@@ -16,6 +16,11 @@ class AccountSearchTests(unittest.TestCase):
         self.assertEqual([(term.field, term.value) for term in terms], [("method", "browser"), ("region", "GB")])
         self.assertEqual(parse_account_search("地区:IS")[0].value, "IS")
 
+    def test_protocol_drivers_have_distinct_search_aliases(self):
+        self.assertEqual(parse_account_search("开源协议")[0].value, "protocol_oss")
+        self.assertEqual(parse_account_search("优化协议")[0].value, "protocol")
+        self.assertEqual(parse_account_search("协议")[0].value, "protocol")
+
     def test_quoted_keywords_are_literal_and_keep_spaces_and_slashes(self):
         terms = parse_account_search('"协议" "jp" 备注:"a/b 待整理" 姓名:"Alice Smith"')
         self.assertEqual([(term.field, term.value) for term in terms], [

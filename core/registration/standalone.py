@@ -152,3 +152,10 @@ def run_protocol_in_context(driver, kwargs: dict):
     return run_registration_in_context(
         driver, kwargs, entrypoint="protocol_cli", driver_name="protocol",
     )
+
+
+def run_protocol_oss_in_context(driver, kwargs: dict):
+    """开源 Protocol 入口包装；Attempt/Run 使用独立 driver 标识。"""
+    return run_registration_in_context(
+        driver, kwargs, entrypoint="protocol_cli", driver_name="protocol_oss",
+    )
