@@ -106,7 +106,28 @@ test('账号分页默认 10 条，其他表仍默认 20 条且无效重置不退
   assert.match(elements.get('pager-accounts-v2').innerHTML, /10条\/页/);
 });
 
-test('账号列大幅拖动只改变当前列并保存整表宽度，刷新后按用户比例恢复', () => {
+test('Codex 普通拖动只与创建时间列交换宽度，操作列位置不变', () => {
+  const pixels = [36, 72, 160, 80, 84, 88, 72, 88, 88, 192, 72, 88, 72, 96, 108];
+  const total = pixels.reduce((sum, width) => sum + width, 0);
+  const table = createResizableTable('accounts', pixels.map(width => width / total), total);
+  const before = pixelWidths(table.table);
+  const index = pixels.length - 3;
+  table.headers[index].handle.onpointerdown({button: 0, clientX: 100, preventDefault() {}, stopPropagation() {}});
+  table.listeners.get('pointermove')({clientX: 150});
+  const dragged = pixelWidths(table.table);
+
+  assert.equal(table.table.getBoundingClientRect().width, total);
+  before.slice(0, index).forEach((width, i) => assertPixels(dragged[i], width, `当前列前第 ${i} 列`));
+  assertPixels(dragged[index], before[index] + 50, '当前列');
+  assertPixels(dragged[index + 1], before[index + 1] - 50, '相邻列');
+  before.slice(index + 2).forEach((width, i) => assertPixels(dragged[index + i + 2], width, `当前列后第 ${i} 列`));
+  assertPixels(dragged.slice(0, index + 2).reduce((sum, width) => sum + width, 0), before.slice(0, index + 2).reduce((sum, width) => sum + width, 0), '操作列左边界');
+  assertPixels(dragged.reduce((sum, width) => sum + width, 0), before.reduce((sum, width) => sum + width, 0), '操作列右边界');
+  table.listeners.get('pointerup')();
+  assert.equal(table.storage.get('gpt_console_table_total_accounts'), String(total));
+});
+
+test('账号列继续向右拖动时先耗尽相邻列，再扩表并保持更远列宽度', () => {
   const pixels = [100, 200, 100, 100, 100, 50, 50, 50, 50, 50, 50, 25, 25, 25, 25];
   const ratios = pixels.map(width => width / 1000);
   const first = createResizableTable('accounts', ratios, 1000);
@@ -114,17 +135,19 @@ test('账号列大幅拖动只改变当前列并保存整表宽度，刷新后�
   first.headers[0].handle.onpointerdown({button: 0, clientX: 100, preventDefault() {}, stopPropagation() {}});
   first.listeners.get('pointermove')({clientX: 600});
   const dragged = pixelWidths(first.table);
-  assert.equal(first.table.getBoundingClientRect().width, 1500);
+  assert.equal(first.table.getBoundingClientRect().width, 1328);
   assertPixels(dragged[0], 600);
-  before.slice(1).forEach((width, index) => assertPixels(dragged[index + 1], width));
+  assertPixels(dragged[1], 28, '相邻列最小宽度');
+  before.slice(2).forEach((width, index) => assertPixels(dragged[index + 2], width));
   first.listeners.get('pointerup')();
-  assert.equal(first.storage.get('gpt_console_table_total_accounts'), '1500');
+  assert.equal(first.storage.get('gpt_console_table_total_accounts'), '1328');
 
   const saved = JSON.parse(first.storage.get('gpt_console_table_widths_accounts'));
-  const reloaded = createResizableTable('accounts', saved, 1500, {layoutVersion: true});
+  const reloaded = createResizableTable('accounts', saved, 1328, {layoutVersion: true});
   const restored = pixelWidths(reloaded.table);
   assertPixels(restored[0], 600);
-  before.slice(1).forEach((width, index) => assertPixels(restored[index + 1], width));
+  assertPixels(restored[1], 28, '重载后的相邻列');
+  before.slice(2).forEach((width, index) => assertPixels(restored[index + 2], width));
   assert.deepEqual(JSON.parse(reloaded.storage.get('gpt_console_table_widths_accounts')), saved);
 });
 
@@ -190,7 +213,7 @@ test('未标记但末列不明显过宽的历史布局保持原比例', () => {
   assert.equal(table.storage.get(table.layoutStorageKey), '1');
 });
 
-test('账号列可继续缩到极小正宽度，邻列不被最小宽度卡住；其他表保持相邻列拖动', () => {
+test('账号列向左拖动保持整表宽度并把空间交给邻列；其他表保持相邻列拖动', () => {
   const savedRatios = [0.1, 0.2, 0.1, 0.1, 0.1, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.025, 0.025, 0.025, 0.025];
   const account = createResizableTable('accounts', savedRatios, 1000);
   const tinyIdRatio = [...savedRatios];
@@ -201,8 +224,8 @@ test('账号列可继续缩到极小正宽度，邻列不被最小宽度卡住�
   account.listeners.get('pointermove')({clientX: -10000});
   const narrowed = pixelWidths(account.table);
   assertPixels(narrowed[0], 28);
-  assert.equal(account.table.getBoundingClientRect().width, 928);
-  assertPixels(narrowed[1], 200);
+  assert.equal(account.table.getBoundingClientRect().width, 1000);
+  assertPixels(narrowed[1], 272);
 
   const jobs = createResizableTable('jobs', Array(10).fill(0.1), 1000);
   jobs.headers[2].handle.onpointerdown({button: 0, clientX: 100, preventDefault() {}, stopPropagation() {}});

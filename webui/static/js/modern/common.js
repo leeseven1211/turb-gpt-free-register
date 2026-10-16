@@ -525,12 +525,27 @@ function initResizableTable(table) {
       const onMove = moveEvent => {
         let delta = moveEvent.clientX - startX;
         if (key === 'accounts') {
-          // 账号表的右边界属于当前列：只改变当前列，并同步改变整表宽度，
-          // 其他列继续保持拖动开始时的像素宽度，不受邻列最小宽度阻挡。
-          delta = Math.max(minCurrent - startWidths[index], delta);
           const nextWidths = [...startWidths];
-          nextWidths[index] += delta;
-          const nextTableWidth = Math.max(1, tableWidth + delta);
+          const isLastColumn = index >= headers.length - 1;
+          if (isLastColumn) {
+            // 末列没有可交换的邻列，沿用独立调整整表宽度的行为。
+            delta = Math.max(minCurrent - startWidths[index], delta);
+            nextWidths[index] += delta;
+            const nextTableWidth = Math.max(1, tableWidth + delta);
+            table.style.setProperty('width', `${nextTableWidth}px`, 'important');
+            applyResizableTableWidths(table, nextWidths.map(value => value / nextTableWidth));
+            return;
+          }
+
+          // 普通拖动先在当前列和下一列之间交换宽度，避免整表右侧整体后移。
+          // 下一列收缩到 28px 后，继续向右拖才把超出的部分加到整表宽度。
+          const requestedDelta = Math.max(minCurrent - startWidths[index], delta);
+          const nextShrinkRoom = Math.max(0, startWidths[nextIndex] - ACCOUNT_COLUMN_MIN_WIDTH);
+          const transferredDelta = Math.min(requestedDelta, nextShrinkRoom);
+          const tableGrowth = Math.max(0, requestedDelta - transferredDelta);
+          nextWidths[index] += requestedDelta;
+          nextWidths[nextIndex] -= transferredDelta;
+          const nextTableWidth = Math.max(1, tableWidth + tableGrowth);
           table.style.setProperty('width', `${nextTableWidth}px`, 'important');
           applyResizableTableWidths(table, nextWidths.map(value => value / nextTableWidth));
           return;
