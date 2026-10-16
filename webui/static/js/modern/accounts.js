@@ -1680,6 +1680,7 @@ function _accountCountryPromotionDisplays(r) {
     : [];
   if (countryResults.length) return countryResults.map(item => ({
     ..._accountCountryResultItems(item, r?.plan_check_status),
+    checkedAt: [item.checked_at, item.last_success_at].map(value => Date.parse(value || '')).find(Number.isFinite) ?? 0,
     queryContext: ['failed', 'cancelled'].includes(String(item.status || '').toLowerCase())
       ? _accountPromotionQueryTooltip(item.status, _accountCountryResultError(item)) : '',
   }));
@@ -1994,29 +1995,17 @@ function _promotionCell(r) {
     if ((allNone || allPending) && rows.every(({display}) => !display.stale)) {
       return cell([_accountPromotionRowMarkup({best: {kind: allNone ? 'none' : 'pending'}, label: allNone ? '无优惠' : '待查询', tooltip: detail})]);
     }
-    // 先按 Plus 结果优先级排列，同级仍保留配置国家顺序。
+    // 显示最新两个国家，同一查询时间或未记录时间时保留配置国家顺序。
     const visibleRows = rows
       .filter(({display, best}) => display.stale || !['none', 'not_applicable'].includes(best.kind))
-      .sort((left, right) => _compareAccountPromotions(left.best, right.best));
-    const failedCount = rows.filter(({display, best}) => ['failed', 'cancelled'].includes(best.kind) || /本次查询(失败|取消)|查询中断/.test(display.context || '')).length;
-    const staleCount = rows.filter(({display}) => display.stale).length;
-    const summaryBadges = [
-      failedCount ? `<span class="account-promotion-summary-badge is-failed">失败 ${failedCount}</span>` : '',
-      staleCount ? `<span class="account-promotion-summary-badge is-stale">历史 ${staleCount}</span>` : '',
-    ].filter(Boolean).join('');
+      .sort((left, right) => (right.display.checkedAt || 0) - (left.display.checkedAt || 0))
+      .slice(0, 2);
     const countryMarkup = ({display, best}) => {
       const hasOffer = ['free_trial', 'discount', 'other_promo'].includes(best.kind);
       const label = hasOffer ? _accountPromotionCheckoutLabel(best) : _accountPlusCellLabel(best);
       return _accountPromotionRowMarkup({best, country: display.country, stale: display.stale, label, tooltip: detail});
     };
-    const first = visibleRows[0];
-    const lines = first ? [countryMarkup(first)] : [];
-    if (rows.length > 2) {
-      lines.push(`<span class="account-promotion-country-row account-promotion-country-summary" data-accounts-tooltip="${esc(detail)}" tabindex="0"><span class="account-promotion-country-summary-count">另 ${rows.length - 1} 国</span>${summaryBadges}</span>`);
-    } else {
-      lines.push(...visibleRows.slice(1).map(countryMarkup));
-    }
-    return cell(lines);
+    return cell(visibleRows.map(countryMarkup));
   }
   const display = _accountPromotionDisplay(r);
   const best = _accountPlusPromotion(display.items);

@@ -50,6 +50,10 @@ function visiblePromotionLabels(html) {
   return [...html.matchAll(/<span class="account-promotion-label">([^<]*)<\/span>/g)].map(match => match[1]);
 }
 
+function visiblePromotionCountries(html) {
+  return [...html.matchAll(/<span class="account-promotion-country">([A-Z][A-Z0-9])/g)].map(match => match[1]);
+}
+
 function promotionTooltip(html) {
   return [...html.matchAll(/data-accounts-tooltip="([^"]*)"/g)].map(match => match[1]).join('\n');
 }
@@ -383,8 +387,9 @@ test('国家行按免费与折扣格式显示 Plus 支付方式，不借用 Go �
     ]}},
   ]});
   assert.match(html, /class="account-promotion-country">JP：<\/span>/);
-  assert.match(html, /另 2 国/);
-  assert.deepEqual(visiblePromotionLabels(html), ['银行卡 Link']);
+  assert.deepEqual(visiblePromotionCountries(html), ['JP', 'IN']);
+  assert.doesNotMatch(html, /另 \d+ 国|account-promotion-country-summary/);
+  assert.deepEqual(visiblePromotionLabels(html), ['银行卡 Link', '银行卡 Link UPI']);
   assert.doesNotMatch(promotionTooltip(html), /Go:/);
   assert.match(promotionTooltip(html), /Plus: 五折 3个月/);
   assert.match(promotionTooltip(html), /银行卡 Link UPI/);
@@ -513,11 +518,12 @@ test('结账展示只接受枚举与支付代码，不输出完整会话、URL�
 
 test('多国结账结果仍只占两行，悬浮提示保留各国真实金额和会话', () => {
   const html = view._promotionCell({plan_check_status: 'success', plan_check_country_results: ['JP', 'IN', 'VN'].map((country, index) => ({
-    country, status: 'success', result: {account_promotions: [{...goTrial, plan: 'plus', checkout_country: country, checkout_status: 'success', session_type: index === 1 ? 'cs_live' : 'oaics', payment_method_types: index === 1 ? ['card', 'link', 'upi'] : ['card', 'link'], checkout_amount_due_minor: 0, checkout_currency: ['JPY', 'INR', 'VND'][index], checkout_currency_exponent: index === 1 ? 2 : 0}]},
+    country, status: 'success', checked_at: `2026-10-16T0${index + 1}:00:00Z`, result: {account_promotions: [{...goTrial, plan: 'plus', checkout_country: country, checkout_status: 'success', session_type: index === 1 ? 'cs_live' : 'oaics', payment_method_types: index === 1 ? ['card', 'link', 'upi'] : ['card', 'link'], checkout_amount_due_minor: 0, checkout_currency: ['JPY', 'INR', 'VND'][index], checkout_currency_exponent: index === 1 ? 2 : 0}]},
   }))});
   assert.equal((html.match(/class="account-promotion-country-row /g) || []).length, 2);
-  assert.deepEqual(visiblePromotionLabels(html), ['0 JPY · oaics · 银行卡 Link']);
-  assert.match(html, /另 2 国/);
+  assert.deepEqual(visiblePromotionCountries(html), ['VN', 'IN']);
+  assert.deepEqual(visiblePromotionLabels(html), ['0 VND · oaics · 银行卡 Link', '0 INR · cs_live · 银行卡 Link UPI']);
+  assert.doesNotMatch(html, /另 \d+ 国|account-promotion-country-summary/);
   const tooltip = promotionTooltip(html);
   assert.match(tooltip, /JP Plus:[^\n]*0 JPY[^\n]*oaics[^\n]*银行卡 Link/);
   assert.match(tooltip, /IN Plus:[^\n]*0 INR[^\n]*cs_live[^\n]*银行卡 Link UPI/);
@@ -743,38 +749,80 @@ test('历史徽标与国家代码独立于可裁切优惠文案渲染', () => {
   assert.deepEqual(visiblePromotionLabels(html), ['支付方式待查询']);
 });
 
-test('三国优惠按 Plus 结果优先级保留两轨摘要和各国优惠浮窗', () => {
+test('三国优惠只显示最新两国，较旧免费优惠不覆盖最新折扣且浮窗保留各国', () => {
   const html = view._promotionCell({
     plan_check_country_results: [
-      {country: 'JP', status: 'success', result: {account_promotions: [{plan: 'plus', kind: 'discount', discount_percentage: 20}]}},
-      {country: 'VN', status: 'success', result: {account_promotions: [{plan: 'plus', kind: 'free_trial', duration_num_periods: 1, duration_period: 'month'}]}},
-      {country: 'IN', status: 'success', result: {account_promotions: [{plan: 'plus', kind: 'discount', discount_percentage: 50}]}},
+      {country: 'JP', status: 'success', checked_at: '2026-10-16T12:00:00Z', result: {account_promotions: [{plan: 'plus', kind: 'discount', discount_percentage: 20}]}},
+      {country: 'VN', status: 'success', checked_at: '2026-10-16T09:00:00Z', result: {account_promotions: [{plan: 'plus', kind: 'free_trial', duration_num_periods: 1, duration_period: 'month'}]}},
+      {country: 'IN', status: 'success', checked_at: '2026-10-16T10:00:00Z', result: {account_promotions: [{plan: 'plus', kind: 'discount', discount_percentage: 50}]}},
     ],
   });
   assert.equal((html.match(/class="account-promotion-country-row /g) || []).length, 2);
-  assert.equal((html.match(/class="account-promotion-country">/g) || []).length, 1);
-  assert.match(html, /VN：/);
-  assert.match(html, /另 2 国/);
+  assert.deepEqual(visiblePromotionCountries(html), ['JP', 'IN']);
+  assert.doesNotMatch(html, /另 \d+ 国|account-promotion-country-summary/);
   assert.match(promotionTooltip(html), /JP/);
   assert.match(promotionTooltip(html), /VN/);
   assert.match(promotionTooltip(html), /IN/);
 });
 
-test('十国摘要的失败与历史计数独立显示且不受支付方式文案影响', () => {
+test('十国仅显示最新两国，失败历史国家仍保留标记和全部国家浮窗', () => {
   const countries = Array.from({length: 10}, (_, index) => ({
     country: `C${index}`,
     status: index === 8 ? 'failed' : 'success',
+    checked_at: `2026-10-16T${String(index + 1).padStart(2, '0')}:00:00Z`,
     error: index === 8 ? 'HTTP 429' : '',
     last_success_at: index === 8 ? '2026-10-14' : undefined,
     result: {account_promotions: [{plan: 'plus', kind: 'free_trial', duration_num_periods: 1, duration_period: 'month', payment_method_types: ['card', 'link', 'upi', 'very-long-payment-provider-name']}]},
   }));
   const html = view._promotionCell({plan_check_country_results: countries});
   assert.equal((html.match(/class="account-promotion-country-row /g) || []).length, 2);
-  assert.equal((html.match(/class="account-promotion-country">/g) || []).length, 1);
-  assert.match(html, /另 9 国/);
-  assert.match(html, /失败 1/);
-  assert.match(html, /历史 1/);
-  assert.match(promotionTooltip(html), /C8/);
+  assert.deepEqual(visiblePromotionCountries(html), ['C9', 'C8']);
+  assert.doesNotMatch(html, /另 \d+ 国|account-promotion-country-summary|account-promotion-summary-badge/);
+  assert.match(html, /class="account-promotion-stale">历史/);
+  assert.match(promotionTooltip(html), /C8（历史）[\s\S]*本次查询失败: HTTP 429/);
+  assert.match(promotionTooltip(html), /C0 Plus:/);
+});
+
+test('国家时间相同或缺失时按原输入顺序显示，缺失时间不压过有效时间', () => {
+  const country = (code, fields = {}) => ({country: code, status: 'success', ...fields, result: {account_promotions: [plusDiscount]}});
+  for (const countries of [
+    [country('VN'), country('JP'), country('IN')],
+    ['VN', 'JP', 'IN'].map(code => country(code, {checked_at: '2026-10-16T09:00:00Z'})),
+  ]) {
+    assert.deepEqual(visiblePromotionCountries(view._promotionCell({plan_check_country_results: countries})), ['VN', 'JP']);
+  }
+  const html = view._promotionCell({plan_check_country_results: [
+    country('VN'), country('JP', {checked_at: '2026-10-16T09:00:00Z'}), country('IN', {checked_at: '2026-10-16T10:00:00Z'}),
+  ]});
+  assert.deepEqual(visiblePromotionCountries(html), ['IN', 'JP']);
+});
+
+test('国家查询时间优先于成功快照时间，无效查询时间回退成功时间', () => {
+  const country = (code, fields = {}) => ({country: code, status: 'success', ...fields, result: {account_promotions: [plusDiscount]}});
+  const html = view._promotionCell({plan_check_country_results: [
+    country('JP', {checked_at: '2026-10-16T09:00:00Z', last_success_at: '2026-10-16T13:00:00Z'}),
+    country('VN', {checked_at: '无效时间', last_success_at: '2026-10-16T11:00:00Z'}),
+    country('IN', {last_success_at: '2026-10-16T10:00:00Z'}),
+    country('US', {checked_at: '无效时间', last_success_at: '也无效'}),
+  ]});
+  assert.deepEqual(visiblePromotionCountries(html), ['VN', 'IN']);
+  assert.match(promotionTooltip(html), /JP Plus:/);
+  assert.match(promotionTooltip(html), /US Plus:/);
+});
+
+test('最新无优惠国家仍被过滤，失败历史按最新尝试时间排序并保留其支付方式', () => {
+  const html = view._promotionCell({plan_check_country_results: [
+    {country: 'JP', status: 'success', checked_at: '2026-10-16T09:00:00Z', result: {account_promotions: [{...plusDiscount, payment_method_types: ['card']}]}},
+    {country: 'VN', status: 'failed', checked_at: '2026-10-16T12:00:00Z', last_success_at: '2026-10-14T09:00:00Z', error: 'HTTP 403', result: {account_promotions: [{...plusDiscount, payment_method_types: ['upi']}]}},
+    {country: 'IN', status: 'success', checked_at: '2026-10-16T10:00:00Z', result: {account_promotions: [{...plusDiscount, payment_method_types: ['link']}]}},
+    {country: 'US', status: 'success', checked_at: '2026-10-16T14:00:00Z', result: {account_promotions: [{plan: 'plus', kind: 'none'}]}},
+  ]});
+  assert.deepEqual(visiblePromotionCountries(html), ['VN', 'IN']);
+  assert.deepEqual(visiblePromotionLabels(html), ['UPI', 'Link']);
+  assert.match(html, /class="account-promotion-stale">历史/);
+  assert.match(promotionTooltip(html), /VN（历史）[\s\S]*本次查询失败: HTTP 403/);
+  assert.match(promotionTooltip(html), /JP Plus:[^\n]*银行卡/);
+  assert.match(promotionTooltip(html), /US Plus: 无优惠/);
 });
 
 test('明确空国家列表关闭多国时，最新单次查询不被历史国家结果覆盖', () => {
