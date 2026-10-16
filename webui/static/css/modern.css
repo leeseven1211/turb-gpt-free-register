@@ -394,7 +394,10 @@
     }
     .jobs-toolbar-v2 .jobs-tb-select:hover,
     .jobs-toolbar-v2 .jobs-tb-select:focus { border-color: #409eff; outline: none; }
-    .jobs-toolbar-v2 .jobs-driver-hint { max-width: 220px; color: #7b8494; font-size: 10px; line-height: 1.35; }
+    .jobs-toolbar-v2 .jobs-driver-hint {
+      display: block; min-width: 0; max-width: 220px; white-space: normal;
+      color: #7b8494; font-size: 10px; line-height: 1.35;
+    }
     .accounts-filter-v2 .acc-v2-date {
       height: 40px; padding: 0 8px;
       border: 1px solid #dcdfe6; border-radius: 6px;
