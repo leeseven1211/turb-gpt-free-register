@@ -1887,10 +1887,14 @@ function _promotionCell(r) {
   const display = _accountPromotionDisplay(r);
   const best = _accountPlusPromotion(display.items);
   const hasOffer = ['free_trial', 'discount', 'other_promo'].includes(best.kind);
-  const label = `${hasOffer ? 'Plus: ' : ''}${_accountPlusCellLabel(best)}`;
+  const countryValue = String(r.plan_promotion_country || best.country || '').trim().toUpperCase();
+  const country = /^[A-Z]{2}$/.test(countryValue) ? countryValue : '国家未记录';
+  const label = hasOffer ? (_accountPromotionPaymentMethods(best).join(' ') || '支付方式待查询') : _accountPlusCellLabel(best);
+  const historical = r.plan_check_status === 'failed' && !!r.plan_last_success_at;
+  const heading = hasOffer ? `<span class="account-promotion-country">${esc(_accountCountryPlusHeading(country, best))}${historical ? '<span class="account-promotion-stale">历史</span>' : ''}：</span>` : '';
   const detail = _accountPromotionGroups(display.items).flatMap(group => group.items.map(item => _accountPromotionDetail(item))).join('\n');
-  const tooltip = [detail, display.context].filter(Boolean).join('\n');
-  return `<div class="account-promotion-cell"><span class="pill ${classes[_accountPromotionTone(best)]}" data-accounts-tooltip="${esc(tooltip)}" tabindex="0"><span class="account-promotion-label">${esc(label)}</span></span></div>`;
+  const tooltip = [hasOffer ? `${country} Plus: ${_accountPromotionLabel(best)}` : '', detail, display.context].filter(Boolean).join('\n');
+  return `<div class="account-promotion-cell"><span class="pill ${classes[_accountPromotionTone(best)]}" data-accounts-tooltip="${esc(tooltip)}" tabindex="0">${heading}<span class="account-promotion-label">${esc(label)}</span></span></div>`;
 }
 function _planAction(r) {
   if (accountIsDeactivated(r)) return '';
@@ -1994,13 +1998,24 @@ function _passwordCellV2(r) {
   return `<button type="button" class="acc-v2-token-copy" data-account-copy-secret="account_password" data-account-id="${esc(r.id)}" title="复制该账号密码">复制</button>`;
 }
 function _totpCellV2(r) {
-  if (!r.totp_enabled) return '<span class="acc-v2-muted">未启用</span>';
+  const button = r.totp_enabled
+    ? `<button type="button" data-account-totp-copy="${esc(r.id)}" title="获取并复制当前 6 位 TOTP 验证码">复制</button>`
+    : `<button type="button" data-account-action="twofa" data-account-id="${esc(r.id)}"${accountIsDeactivated(r) ? ' disabled title="账号已停用，无法补充 2FA"' : ' title="为该账号补充 Authenticator 2FA"'}>补充</button>`;
   return `
     <div class="account-cell-lines status-action-cell" data-account-totp-cell="${esc(r.id)}">
-      <div class="account-cell-line"><span class="pill status-success">已启用</span></div>
-      <div class="account-cell-line"><button type="button" data-account-totp-copy="${esc(r.id)}" title="获取并复制当前 6 位 TOTP 验证码">复制</button></div>
+      <div class="account-cell-line">${button}</div>
     </div>
   `;
+}
+function _accountTimesCellV2(r) {
+  const full = value => String(value || '-').replace('T', ' ');
+  const shortTime = value => {
+    const text = full(value);
+    const match = text.match(/^\d{4}-(\d{2}-\d{2})(?:\s+(\d{2}:\d{2}))?/);
+    return match ? [match[1], match[2]].filter(Boolean).join(' ') : text;
+  };
+  const line = (label, value) => `<div class="account-cell-line"><span class="account-time-label">${label}</span><time datetime="${esc(value || '')}">${esc(shortTime(value))}</time></div>`;
+  return `<div class="account-cell-lines account-times-cell" title="${esc(`创建 ${full(r.created_at)}；更新 ${full(r.updated_at)}`)}">${line('创建', r.created_at)}${line('更新', r.updated_at)}</div>`;
 }
 function _deactivationMailCell(r) {
   const detected = r.deactivation_mail_detected === true;
@@ -2032,7 +2047,7 @@ function _deactivationMailCell(r) {
   const button = supported && !['queued','running'].includes(status)
     ? `<button type="button" data-deactivation-mail-check="${esc(r.id)}" title="扫描该账号对应邮箱；不会刷新 AT">复查</button>`
     : '';
-  return `<div class="account-cell-lines" title="${esc(title)}"><div class="account-cell-line">${badge}</div>${button ? `<div class="account-cell-line">${button}</div>` : ''}</div>`;
+  return `<div class="account-cell-lines status-action-cell" title="${esc(title)}"><div class="account-cell-line">${badge}</div>${button ? `<div class="account-cell-line">${button}</div>` : ''}</div>`;
 }
 function _accountsV2MoreMenu(r) {
   const parts = [
@@ -2484,14 +2499,14 @@ function renderAccounts() {
       <td class="col-small">${_totpCellV2(r)}</td>
       <td class="col-risk-mail">${_deactivationMailCell(r)}</td>
       <td class="col-status"><div class="account-cell-lines"><div class="account-cell-line">${_codexCellV2(r)}</div>${codexSummary ? `<div class="account-cell-line account-cell-line--sub" title="${esc(codexSummary)}">${esc(short(codexSummary, 34))}</div>` : ''}</div></td>
-      <td class="col-time" title="${esc(r.created_at || '-')}"><div class="account-cell-lines"><div class="account-cell-line">${esc((r.created_at || '-').replace('T', ' ').split(/[ ]/)[0])}</div><div class="account-cell-line account-cell-line--sub">${esc((r.created_at || '').replace('T', ' ').split(/[ ]/)[1] || '')}</div></div></td>
+      <td class="col-time">${_accountTimesCellV2(r)}</td>
       <td class="col-actions">
         <div class="account-cell-lines acc-v2-actions">
+          <button type="button" class="danger" data-account-delete="${esc(r.id)}" data-email="${esc(r.email)}">删除</button>
           <div class="acc-v2-more" data-account-more-id="${esc(r.id)}">
             <button type="button" class="acc-v2-more-btn" data-acc-more-toggle aria-haspopup="true" aria-expanded="false">更多</button>
             <div class="acc-v2-more-menu" role="menu">${_accountsV2MoreMenu(r)}</div>
           </div>
-          <button type="button" class="danger" data-account-delete="${esc(r.id)}" data-email="${esc(r.email)}">删除</button>
         </div>
       </td>
     </tr>`;
@@ -2509,6 +2524,24 @@ function renderAccounts() {
   updateAccountSelectionUi(rows);
   _renderPager('accounts', total);
 }
+
+function updateAccountRowDensity() {
+  const wrap = document.querySelector('#accountsPanelV2 > .accounts-table-v2-wrap');
+  const table = wrap?.querySelector('table');
+  if (!table || wrap.clientHeight <= 0) return;
+  const minimum = window.matchMedia('(max-width: 860px)').matches ? 60 : 44;
+  const available = wrap.clientHeight - (table.tHead?.getBoundingClientRect().height || 0) - 2;
+  const height = Math.max(minimum, Math.min(56, Math.floor(available / 10)));
+  table.style.setProperty('--account-row-height', `${height}px`);
+}
+
+(function bindAccountRowDensity() {
+  const wrap = document.querySelector('#accountsPanelV2 > .accounts-table-v2-wrap');
+  if (wrap && typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(updateAccountRowDensity).observe(wrap);
+  }
+  window.addEventListener('resize', updateAccountRowDensity);
+})();
 
 function updateAccountSelectionUi(pageRows = null) {
   const none = ACCOUNT_SELECTED.size === 0;

@@ -421,6 +421,7 @@ def list_account_statuses(
         "extract_link_image_url_png", "extract_link_image_url_svg", "extract_link_expires_at", "codex_status",
         "codex_credential_state", "codex_execution_status", "codex_last_run_status", "codex_active_run_id",
         "codex_error", "access_token", "account_status", "account_status_reason", "account_status_at",
+        "updated_at",
     }
     items = []
     for raw in raw_rows:
@@ -430,6 +431,10 @@ def list_account_statuses(
         if "plan_check_country_results" in item:
             from core.plan_check_countries import public_country_results
             item["plan_check_country_results"] = public_country_results(item["plan_check_country_results"])
+        from core.plan_check_countries import promotion_country_from_row
+        promotion_country = promotion_country_from_row(row)
+        # 轮询结果必须显式返回 null，前端 Object.assign 才能清除旧单国投影。
+        item["plan_promotion_country"] = promotion_country
         items.append(item)
     total = int(aggregate["total"] or 0)
     return {

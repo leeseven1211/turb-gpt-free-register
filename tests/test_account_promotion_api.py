@@ -30,6 +30,7 @@ class AccountPromotionApiTests(PostgresTestCase):
                 }},
             },
         }}})
+        self.result.update({"proxy_region": "JP", "proxy_provider": "1024proxy"})
         self.assertTrue(db.update_account_plan_check(acc_id=self.account_id, result=self.result))
 
     def _assert_promotions(self, item):
@@ -41,6 +42,8 @@ class AccountPromotionApiTests(PostgresTestCase):
             [100, 50],
         )
         self.assertTrue(item["has_access_token"])
+        self.assertEqual("JP", item["plan_promotion_country"])
+        self.assertTrue(item.get("updated_at"))
         self.assertNotIn("access_token", item)
         self.assertNotIn("password", item)
 
@@ -64,3 +67,25 @@ class AccountPromotionApiTests(PostgresTestCase):
         items = response.get_json()["items"]
         self.assertEqual(len(items), 1)
         self._assert_promotions(items[0])
+
+    def test_plan_status_poll_clears_stale_single_country_after_multi_country_result(self):
+        rs.patch_row(rs.ACCOUNTS, self.account_id, {
+            "plan_promotion_country": "JP",
+            "plan_check_status": "success",
+            "plan_check_ok": True,
+            "plan_check_countries": ["JP", "US"],
+            "plan_check_country_results": [
+                {"country": "JP", "status": "success", "result": {"proxy_region": "JP"}},
+                {"country": "US", "status": "success", "result": {"proxy_region": "US"}},
+            ],
+            "account_promotions": [
+                {"plan": "plus", "kind": "none", "country": "JP"},
+                {"plan": "plus", "kind": "free_trial", "country": "US"},
+            ],
+        })
+
+        response = self.client.get("/api/accounts/plan-check-status", headers=self.headers)
+
+        self.assertEqual(response.status_code, 200)
+        item = response.get_json()["items"][0]
+        self.assertIsNone(item["plan_promotion_country"])

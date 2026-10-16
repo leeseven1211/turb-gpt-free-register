@@ -219,7 +219,7 @@ def _compact_account_for_list(row: dict) -> dict:
 
     # 这些是列表固定列直接展示字段。
     for key in (
-        "user_name", "email_source", "note", "archived", "created_at",
+        "user_name", "email_source", "note", "archived", "created_at", "updated_at",
         "plan_type", "current_plan_type", "plus_trial_eligible",
         "plan_check_status", "codex_status", "codex_credential_state",
         "codex_execution_status", "codex_last_run_status", "codex_active_run_id", "account_status",
@@ -274,6 +274,10 @@ def _compact_account_for_list(row: dict) -> dict:
     if "plan_check_country_results" in row:
         from core.plan_check_countries import public_country_results
         out["plan_check_country_results"] = public_country_results(row["plan_check_country_results"])
+    from core.plan_check_countries import promotion_country_from_row
+    promotion_country = promotion_country_from_row(row)
+    if promotion_country:
+        out["plan_promotion_country"] = promotion_country
     fingerprint_summary = _compact_fingerprint_summary(row)
     if fingerprint_summary:
         out["fingerprint_summary"] = fingerprint_summary

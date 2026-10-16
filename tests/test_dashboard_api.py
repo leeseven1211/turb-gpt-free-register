@@ -778,7 +778,7 @@ console.log('ok');
         self.assertIn('table[data-resizable-table="accountTasks"] {', source)
         self.assertIn('width: max(100%, 1240px) !important;', source)
         self.assertIn('min-width: 1240px !important;', source)
-        self.assertIn("if (header.classList.contains('col-check') || index >= headers.length - 1) return;", source)
+        self.assertIn("if (header.classList.contains('col-check') || (key !== 'accounts' && index >= headers.length - 1)) return;", source)
         self.assertIn("header.classList.contains('task-col-id')", source)
         self.assertIn("headers[nextIndex].classList.contains('task-col-actions')", source)
 

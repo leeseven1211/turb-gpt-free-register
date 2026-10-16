@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 
 from core.plus_promotion import ELIGIBLE_PROMO_KINDS, _safe_scalar, sanitize_promotion_text
 
@@ -38,6 +39,92 @@ def _scalars(value: dict, fields) -> dict:
 
 def _items(value) -> list:
     return value if isinstance(value, list) else []
+
+
+def _public_country_code(value) -> str | None:
+    """只接受可公开展示的 ISO 3166-1 alpha-2 国家代码。"""
+    country = str(value or "").strip().upper()
+    if not country:
+        return None
+    from config.countries import ISO_3166_ALPHA2
+    return country if country in ISO_3166_ALPHA2 else None
+
+
+def _decode_result_json(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        decoded = json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def _has_multi_country_evidence(result: dict) -> bool:
+    """识别聚合结果，避免把首个国家误当成优惠所属国家。"""
+    countries = result.get("plan_check_countries")
+    if isinstance(countries, list) and countries:
+        return True
+    if public_country_results(result.get("plan_check_country_results")):
+        return True
+    promotions = result.get("account_promotions")
+    return isinstance(promotions, list) and any(
+        _public_country_code(item.get("country"))
+        for item in promotions
+        if isinstance(item, dict)
+    )
+
+
+def promotion_country_from_row(row: dict | None) -> str | None:
+    """从套餐查询成功证据提取单国优惠展示国家。
+
+    多国结果已有逐国公开证据，交给调用方按国家渲染；不能用单值覆盖它。
+    失败的新请求可能仍带失败线路，因此只有 ``last_success`` 或明确成功的
+    当前结果可以提供单国国家。
+    """
+    if not isinstance(row, dict):
+        return None
+
+    # 显式空列表表示最新任务关闭多国查询；此时历史多国结果不能遮挡
+    # 最新单次成功快照。未明确关闭时，继续保护已有逐国证据。
+    multi_country_disabled = (
+        isinstance(row.get("plan_check_countries"), list)
+        and not row.get("plan_check_countries")
+    )
+    if not multi_country_disabled:
+        country_results = public_country_results(row.get("plan_check_country_results"))
+        if country_results:
+            return None
+        promotions = row.get("account_promotions")
+        if isinstance(promotions, list) and any(
+            _public_country_code(item.get("country"))
+            for item in promotions
+            if isinstance(item, dict)
+        ):
+            return None
+
+    last_success = _decode_result_json(row.get("plan_last_success_result_json"))
+    country = (
+        None
+        if _has_multi_country_evidence(last_success)
+        else _public_country_code(last_success.get("proxy_region"))
+    )
+    if country:
+        return country
+
+    # plan_check_result_json 失败时也会写入。只有终态成功且结果明确成功时才读取。
+    if str(row.get("plan_check_status") or "").strip().lower() != "success":
+        return None
+    current = _decode_result_json(row.get("plan_check_result_json"))
+    if (
+        current.get("ok") is not True
+        or row.get("plan_check_ok") is False
+        or _has_multi_country_evidence(current)
+    ):
+        return None
+    return _public_country_code(current.get("proxy_region"))
 
 
 def safe_country_result(result: dict) -> dict:

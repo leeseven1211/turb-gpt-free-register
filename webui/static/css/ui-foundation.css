@@ -3305,17 +3305,21 @@ table[data-resizable-table="codex"] {
 /* 账号表使用两条稳定内容轨道，横向滚动留在现有表格容器内。 */
 #accountsPanelV2 table[data-resizable-table="accounts"] {
   width: 1396px !important;
-  min-width: 1396px !important;
+  min-width: 0 !important;
   max-width: none !important;
   table-layout: fixed !important;
 }
 
 #accountsPanelV2 > .accounts-table-v2-wrap { overflow-x: auto; }
 
+#accountsPanelV2 table[data-resizable-table="accounts"] tbody tr,
 #accountsPanelV2 table[data-resizable-table="accounts"] tbody td {
-  height: 72px;
-  padding-top: 6px !important;
-  padding-bottom: 6px !important;
+  height: var(--account-row-height, 44px);
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] tbody td {
+  padding-top: 1px !important;
+  padding-bottom: 1px !important;
   vertical-align: middle !important;
 }
 
@@ -3323,9 +3327,10 @@ table[data-resizable-table="codex"] {
   display: grid;
   grid-template-rows: repeat(2, minmax(0, 1fr));
   align-items: center;
-  gap: 2px;
+  gap: 0;
   min-width: 0;
-  min-height: 52px;
+  min-height: 0;
+  height: calc(var(--account-row-height, 44px) - 4px);
   width: 100%;
 }
 
@@ -3349,13 +3354,46 @@ table[data-resizable-table="codex"] {
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-cell-line button { flex: 0 0 auto; }
 
+#accountsPanelV2 table[data-resizable-table="accounts"] .pill {
+  min-height: 0;
+  padding-top: 1px;
+  padding-bottom: 1px;
+  line-height: 16px;
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-cell-line button,
+#accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-actions > button,
+#accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-more-btn {
+  min-height: 20px;
+  height: 20px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 18px;
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-time-label {
+  flex: 0 0 auto;
+  color: #737d8d;
+  font-size: 10px;
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-times-cell { font-size: 10px; }
+#accountsPanelV2 table[data-resizable-table="accounts"] td.col-time { padding-left: 6px !important; padding-right: 6px !important; }
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-times-cell .account-cell-line { gap: 3px; }
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-times-cell time {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
 #accountsPanelV2 table[data-resizable-table="accounts"] .quota-cell {
   display: grid;
   grid-template-rows: repeat(2, minmax(0, 1fr));
   align-items: center;
-  gap: 2px;
+  gap: 0;
   min-width: 0;
-  min-height: 40px;
+  min-height: 0;
+  height: calc(var(--account-row-height, 44px) - 4px);
   line-height: 1.2;
 }
 
@@ -3380,15 +3418,16 @@ table[data-resizable-table="codex"] {
   grid-template-rows: repeat(2, minmax(0, 1fr));
   justify-items: start;
   align-items: center;
-  gap: 2px;
-  min-height: 52px;
+  gap: 0;
+  min-height: 0;
   overflow: visible !important;
 }
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-cell--countries {
   display: grid;
-  grid-template-rows: repeat(2, 24px);
-  gap: 2px;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  height: calc(var(--account-row-height, 44px) - 4px);
+  gap: 0;
   align-items: center;
 }
 
@@ -3432,9 +3471,9 @@ table[data-resizable-table="codex"] {
 }
 
 @media (max-width: 860px) {
-  #accountsPanelV2 table[data-resizable-table="accounts"] tbody td { height: 80px; }
-  #accountsPanelV2 table[data-resizable-table="accounts"] .account-cell-lines,
-  #accountsPanelV2 table[data-resizable-table="accounts"] .col-actions .acc-v2-actions { min-height: 60px; }
-  #accountsPanelV2 table[data-resizable-table="accounts"] .account-cell-line button { min-height: 30px; }
-  #accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-country-row { min-height: 24px; }
+  #accountsPanelV2 table[data-resizable-table="accounts"] { --account-row-height: 60px; }
+  #accountsPanelV2 table[data-resizable-table="accounts"] .account-cell-line button,
+  #accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-actions > button,
+  #accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-more-btn { min-height: 26px; height: 26px; }
+  #accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-country-row { min-height: 20px; }
 }

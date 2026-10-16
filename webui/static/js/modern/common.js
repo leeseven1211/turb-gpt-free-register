@@ -240,7 +240,7 @@ function setColumnFilterValue(control, value) {
 // ---------- 分页状态 ----------
 const PAGERS = {
   jobs:     { page: 1, size: 20 },
-  accounts: { page: 1, size: 20 },
+  accounts: { page: 1, size: 10 },
   outlook:  { page: 1, size: 20 },
   codex:    { page: 1, size: 20 },
   accountTasks: { page: 1, size: 20 },
@@ -252,7 +252,7 @@ function _renderPager(id, total) {
   if (p.page > totalPages) p.page = Math.max(1, totalPages);
   const start = total > 0 ? (p.page - 1) * p.size + 1 : 0;
   const end = Math.min(p.page * p.size, total);
-  const sizes = [20, 50, 100];
+  const sizes = id === 'accounts' ? [10, 20, 50, 100] : [20, 50, 100];
   const html = `
     <button onclick="pagerGo('${id}',-1)"${p.page <= 1 ? ' disabled' : ''}>← 上一页</button>
     <span class="pager-info">${total > 0 ? `第 ${start}–${end} 条 / 共 ${total} 条（第 ${p.page} / ${totalPages} 页）` : '无数据'}</span>
@@ -355,14 +355,20 @@ function pagerGo(id, dir) {
   _reloadPagedList(id);
 }
 function pagerSetSize(id, val) {
-  PAGERS[id].size = parseInt(val, 10) || 20;
-  PAGERS[id].page = 1;
+  const pager = PAGERS[id];
+  if (!pager) return;
+  const parsed = parseInt(val, 10);
+  // 账号表默认 10 条/页；无效输入沿用当前值，避免分页重置时退回 20。
+  pager.size = Number.isFinite(parsed) && parsed > 0
+    ? parsed
+    : (pager.size || (id === 'accounts' ? 10 : 20));
+  pager.page = 1;
   _reloadPagedList(id);
 }
 
 // ---------- 统一列表列宽 ----------
-// 账号表各列需保留的最低像素宽度，调宽和恢复历史比例时共用。
-const ACCOUNT_COLUMN_MIN_WIDTHS = [36, 72, 160, 80, 84, 88, 72, 88, 88, 168, 72, 88, 72, 96, 108];
+// 账号表允许内容截断；只保留足以抓住拖动手柄的极小正宽度。
+const ACCOUNT_COLUMN_MIN_WIDTH = 28;
 const TABLE_DEFAULT_WIDTHS = {
   jobs:     [4, 6, 15, 9, 11, 8, 9, 9, 13, 16],
   // 默认账号行按桌面视口排布；长内容仍可从单元格提示和详情抽屉查看。
@@ -376,11 +382,6 @@ const TABLE_DEFAULT_WIDTHS = {
 };
 const TABLE_WIDTH_STORAGE_PREFIX = 'gpt_console_table_widths_';
 const TABLE_WIDTH_TOTAL_STORAGE_PREFIX = 'gpt_console_table_total_';
-const TABLE_SAVED_WIDTH_MIN_RATIOS = {
-  // The account ID search keeps a clear button beside the input; do not let
-  // a previously saved narrow layout collapse the input to its intrinsic size.
-  accounts: { 1: 0.05 },
-};
 
 function applyResizableTableWidths(table, widths) {
   const cols = Array.from(table.querySelectorAll('colgroup col'));
@@ -470,29 +471,18 @@ function initResizableTable(table) {
   if (savedWidths && key === 'accountTasks') {
     table.style.removeProperty('width');
   }
-  if (savedWidths) {
-    const savedTotal = savedWidths.reduce((sum, value) => sum + Math.max(0, Number(value) || 0), 0) || 1;
-    Object.entries(TABLE_SAVED_WIDTH_MIN_RATIOS[key] || {}).forEach(([index, ratio]) => {
-      const columnIndex = Number(index);
-      if (savedWidths[columnIndex] / savedTotal < ratio) savedWidths[columnIndex] = savedTotal * ratio;
-    });
-  }
   const effectiveWidths = savedWidths || TABLE_DEFAULT_WIDTHS[key];
   if (key === 'accounts') {
-    ACCOUNT_COLUMN_MIN_WIDTHS.forEach((minimum, index) => {
-      if (!(Number(effectiveWidths[index]) > 0)) effectiveWidths[index] = minimum;
-    });
-    const widthTotal = effectiveWidths.reduce((sum, value) => sum + Math.max(0, Number(value) || 0), 0) || 1;
-    const minWidthForColumns = ACCOUNT_COLUMN_MIN_WIDTHS.reduce((requiredWidth, minimum, index) => {
-      const ratio = Math.max(0, Number(effectiveWidths[index]) || 0) / widthTotal;
-      return Math.max(requiredWidth, Math.ceil(minimum / ratio));
-    }, 1396);
-    table.style.setProperty('width', `${Math.max(minWidthForColumns, readSavedTableTotal(key))}px`, 'important');
+    // 保存值中的 widths 是比例，total 是用户实际调整后的整表宽度。
+    // 不再按默认列宽扩表或修正比例，以便窄列在刷新后仍保持用户选择。
+    const savedTotal = readSavedTableTotal(key);
+    table.style.setProperty('width', `${savedTotal || 1396}px`, 'important');
   }
   applyResizableTableWidths(table, effectiveWidths);
 
   headers.forEach((header, index) => {
-    if (header.classList.contains('col-check') || index >= headers.length - 1) return;
+    // 账号表最后一列也需要可调宽；其他表继续沿用末列无拖动手柄的旧行为。
+    if (header.classList.contains('col-check') || (key !== 'accounts' && index >= headers.length - 1)) return;
     const handle = document.createElement('span');
     handle.className = 'table-col-resizer';
     handle.title = '拖动调整列宽';
@@ -507,16 +497,27 @@ function initResizableTable(table) {
       const startWidths = headers.map(item => item.getBoundingClientRect().width);
       const nextIndex = index + 1;
       const minCurrent = key === 'accounts'
-        ? ACCOUNT_COLUMN_MIN_WIDTHS[index]
+        ? ACCOUNT_COLUMN_MIN_WIDTH
         : (header.classList.contains('col-id') || header.classList.contains('task-col-id')) ? 72 : 64;
       const minNext = key === 'accounts'
-        ? ACCOUNT_COLUMN_MIN_WIDTHS[nextIndex]
+        ? 0
         : (headers[nextIndex].classList.contains('col-actions') || headers[nextIndex].classList.contains('task-col-actions')) ? 108 : 64;
       handle.classList.add('is-dragging');
       document.body.classList.add('is-resizing-table-column');
 
       const onMove = moveEvent => {
         let delta = moveEvent.clientX - startX;
+        if (key === 'accounts') {
+          // 账号表的右边界属于当前列：只改变当前列，并同步改变整表宽度，
+          // 其他列继续保持拖动开始时的像素宽度，不受邻列最小宽度阻挡。
+          delta = Math.max(minCurrent - startWidths[index], delta);
+          const nextWidths = [...startWidths];
+          nextWidths[index] += delta;
+          const nextTableWidth = Math.max(1, tableWidth + delta);
+          table.style.setProperty('width', `${nextTableWidth}px`, 'important');
+          applyResizableTableWidths(table, nextWidths.map(value => value / nextTableWidth));
+          return;
+        }
         delta = Math.max(minCurrent - startWidths[index], Math.min(delta, startWidths[nextIndex] - minNext));
         const nextWidths = [...startWidths];
         nextWidths[index] += delta;
