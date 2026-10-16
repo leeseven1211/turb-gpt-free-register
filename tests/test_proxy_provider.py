@@ -544,7 +544,7 @@ class ProxyProviderTests(unittest.TestCase):
             proxy_provider.release_proxy(lease, reason="test")
 
     @patch("core.proxy_provider.acquire_1024_proxy_batch")
-    @patch("core.proxy_pool.acquire")
+    @patch("core.proxy_pool.acquire_proxy")
     def test_registration_batch_claims_independent_pool_leases(self, acquire_pool, acquire_batch):
         leases = [
             proxy_provider.ProxyLease(
@@ -578,14 +578,56 @@ class ProxyProviderTests(unittest.TestCase):
             ))
 
         self.assertEqual(acquire_pool.call_count, 3)
-        self.assertEqual({call.kwargs["provider"] for call in acquire_pool.call_args_list}, {"1024proxy"})
         self.assertEqual({call.kwargs["job_id"] for call in acquire_pool.call_args_list}, {101, 102, 103})
+        self.assertTrue(all("provider" not in call.kwargs for call in acquire_pool.call_args_list))
         acquire_batch.assert_not_called()
         self.assertEqual({lease.lease_id for lease in acquired}, {"lease-1", "lease-2", "lease-3"})
         proxy_provider.finalize_registration_proxy_batch("batch-1")
         self.assertNotIn("batch-1", proxy_provider._BATCH_STATES)
         for lease in acquired:
             proxy_provider.release_proxy(lease, reason="test")
+
+    def test_registration_batch_claims_one_lease_even_when_workers_exceed_pool_capacity(self):
+        lease = proxy_provider.ProxyLease(
+            lease_id="partial", provider="1024proxy", proxy_url="http://1.2.3.4:8080",
+            endpoint="1.2.3.4:8080", acquired_at=datetime.now(), exit_ip="8.8.8.8",
+        )
+        proxy_provider._BATCH_STATES.clear()
+        with patch("core.proxy_pool.acquire_proxy", return_value=lease) as acquire:
+            result = proxy_provider._acquire_registration_proxy_from_batch(
+                batch_id="batch-partial", batch_size=64, batch_workers=64,
+                job_id=1,
+            )
+
+        self.assertIs(result, lease)
+        acquire.assert_called_once()
+        self.assertFalse(proxy_provider._BATCH_STATES["batch-partial"].loading)
+        self.assertEqual([], proxy_provider._BATCH_STATES["batch-partial"].leases)
+        proxy_provider._BATCH_STATES.pop("batch-partial", None)
+
+    def test_acquire_1024_proxy_filters_legacy_supplier_kwargs(self):
+        lease = object()
+        with patch("core.proxy_pool.acquire_proxy", return_value=lease) as acquire:
+            result = proxy_provider.acquire_1024_proxy(
+                purpose="account-action",
+                country="JP",
+                rotation_index=3,
+                api_url="https://white.1024proxy.com/white/api?region=JP&type=txt",
+                protocol="http",
+                session_minutes=30,
+                validate=True,
+                provider="1024proxy",
+            )
+
+        self.assertIs(result, lease)
+        self.assertEqual(
+            {
+                "purpose": "account-action",
+                "country": "JP",
+                "correlation_id": "legacy-rotation-3",
+            },
+            acquire.call_args.kwargs,
+        )
 
     @patch("core.proxy_provider.time.sleep", return_value=None)
     @patch("core.proxy_provider._validate_proxy", side_effect=[("1.1.1.1", "CA"), ("8.8.8.8", "US")])

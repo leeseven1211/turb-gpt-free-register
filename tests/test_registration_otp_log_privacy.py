@@ -133,6 +133,7 @@ class RegistrationOtpLogPrivacyTests(unittest.TestCase):
                     "alias@example.test",
                     "Test User",
                     "2000-01-01",
+                    proxy="http://pool.example:8080",
                     registration_options={"password_enabled": False, "twofa_enabled": False, "codex_enabled": False, "plan_check_enabled": False},
                     email_source="icloud_hide",
                 )

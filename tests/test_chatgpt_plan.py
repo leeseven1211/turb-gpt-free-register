@@ -265,7 +265,8 @@ class ChatGPTPlanTests(unittest.TestCase):
             "oai-session-id": "session-1",
         }
 
-        with patch.object(chatgpt_plan, "BrowserSession") as browser_session:
+        with patch.object(chatgpt_plan, "BrowserSession") as browser_session, \
+             patch.object(chatgpt_plan, "resolve_plan_check_route", return_value={"proxy": "http://192.0.2.10:8080"}):
             result = chatgpt_plan.check_account_plan(
                 "access-token",
                 proxy="",
@@ -311,13 +312,14 @@ class ChatGPTPlanTests(unittest.TestCase):
         session.get_chatgpt_headers.return_value = {"oai-session-id": "session-1"}
         recorder = Mock()
 
-        result = chatgpt_plan.check_account_plan(
-            "access-token",
-            proxy="",
-            session=session,
-            max_attempts=1,
-            context_recorder=recorder,
-        )
+        with patch.object(chatgpt_plan, "resolve_plan_check_route", return_value={"proxy": "http://192.0.2.10:8080"}):
+            result = chatgpt_plan.check_account_plan(
+                "access-token",
+                proxy="",
+                session=session,
+                max_attempts=1,
+                context_recorder=recorder,
+            )
 
         self.assertTrue(result["ok"])
         self.assertEqual(session.get.call_count, 2)

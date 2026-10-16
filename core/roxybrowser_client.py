@@ -627,20 +627,18 @@ class RoxyBrowserClient:
         if project_id:
             body.setdefault("projectId", project_id)
         explicit_proxy_info = bool((payload or {}).get("proxyInfo"))
+        if body.get("proxyInfo") and not explicit_proxy_info:
+            raise RuntimeError(
+                "Roxy Profile 的固定 proxyInfo 已停用，请使用统一代理池已领取线路"
+            )
         if explicit_proxy_info:
             # registration_service 为每个任务领取的 1024Proxy/静态池租约优先级最高。
             # 它必须随新 Profile 一起写入，不能退回 Roxy 配置里的固定代理。
             proxy_source = "task_lease"
         if bool(getattr(_cfg, "ROXY_CREATE_USE_PROXY_POOL", False)) and not body.get("proxyInfo") and not explicit_proxy_info:
-            from config import proxy as _proxy_cfg
-
-            proxy_url = _proxy_cfg.pick_proxy()
-            if proxy_url:
-                proxy_info = _proxy_url_to_roxy_info(proxy_url)
-                body["proxyInfo"] = proxy_info
-                proxy_source = "static_pool"
-            else:
-                logger.warning("[Roxy] 已启用 ROXY_CREATE_USE_PROXY_POOL，但 PROXY_POOL 为空，本次创建环境不设置代理")
+            raise RuntimeError(
+                "Roxy Profile 必须绑定统一代理池已领取线路，禁止回退静态 PROXY_POOL"
+            )
         if payload:
             body.update(payload)
         # 兼容用户已有的旧配置，但发给 Roxy 时统一使用官方 windowName。
@@ -924,19 +922,58 @@ class RoxyBrowserClient:
                 kwargs["data_saver_flow"] = data_saver_flow
             return self.open_profile_with_capacity_wait(**kwargs)
 
+        def update_bound_profile_proxy() -> None:
+            """只更新绑定 Profile 的代理字段，保留现有身份与登录态。"""
+            if not str(proxy_url or "").strip():
+                return
+            proxy_info = _proxy_url_to_roxy_info(proxy_url)
+            # 官方接口为 POST /browser/mdf；只提交 workspaceId、dirId、proxyInfo。
+            # 不提交 cookie/fingerInfo/clearCookie，避免更新租约时清理登录态或重置指纹。
+            self.request(
+                "POST",
+                "/browser/mdf",
+                json_body={
+                    "workspaceId": _workspace_id_value(),
+                    "dirId": normalized_profile,
+                    "proxyInfo": proxy_info,
+                },
+            )
+            logger.info("[Roxy] 已为绑定 Profile 更新本次代理租约（代理内容不写日志）")
+
+        def create_replacement_profile():
+            if not str(proxy_url or "").strip():
+                raise RuntimeError(
+                    "Roxy 新建账号 Profile 必须使用统一代理池已领取线路，禁止无代理创建"
+                )
+            return open_with(profile_id="", proxy_url=proxy_url)
+
         if normalized_profile and reuse_enabled:
             try:
                 # Roxy may keep a deleted Profile in its recycle-bin view while
                 # still returning a generic window-quota error from /browser/open.
                 # Probe the active view first so a stale DB binding is replaced
                 # instead of waiting for capacity on an unusable Profile.
-                if self._find_active_profile_by_id(normalized_profile) is None:
+                active_profile = self._find_active_profile_by_id(normalized_profile)
+                if active_profile is None:
                     logger.warning(
                         "[Roxy] 账号绑定 Profile 不在当前活动环境列表，创建替代环境并回写绑定"
                     )
-                    return open_with(profile_id="", proxy_url=proxy_url)
-                # A bound Profile carries its own Roxy proxy configuration.  A
-                # newly acquired task route must not overwrite that identity.
+                    return create_replacement_profile()
+                open_status = active_profile.get("openStatus", active_profile.get("open_status"))
+                status_text = "" if open_status is None else str(open_status).strip().lower()
+                explicitly_closed = open_status is False or open_status == 0 or status_text in {
+                    "0", "false", "closed", "close", "not_open", "not-open", "inactive",
+                }
+                if str(proxy_url or "").strip() and not explicitly_closed:
+                    # /browser/mdf 保存配置后，运行中的窗口可能仍持有旧网络会话。
+                    # 先确认关闭，再写入新租约并重新打开，禁止带旧出口继续执行。
+                    if not self.close_profile(normalized_profile):
+                        raise RuntimeError(
+                            "Roxy 绑定 Profile 关闭未确认，不能切换代理后继续打开"
+                        )
+                # 绑定 Profile 仍复用其 cookies/指纹，但每次动作必须把新租约
+                # 写入 Roxy，否则 /browser/open 会继续使用旧代理。
+                update_bound_profile_proxy()
                 opened = open_with(profile_id=normalized_profile, proxy_url=None)
                 opened.account_bound = True
                 # A crash can leave the profile in the process registry after
@@ -954,7 +991,7 @@ class RoxyBrowserClient:
 
         # An explicit empty profile_id bypasses the global ROXY_PROFILE_ID;
         # account isolation must never silently fall back to a shared Profile.
-        return open_with(profile_id="", proxy_url=proxy_url)
+        return create_replacement_profile()
 
     @staticmethod
     def mark_profile_bound(profile_id: str) -> None:

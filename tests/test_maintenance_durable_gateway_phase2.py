@@ -155,7 +155,7 @@ class MaintenanceDurableGatewayTests(PostgresTestCase):
         self.assertEqual(7.0, seen["timeout"])
         self.assertEqual(1, seen["max_attempts"])
         self.assertEqual(0.0, seen["retry_delay"])
-        self.assertEqual("direct", acquire.call_args.kwargs["source"])
+        self.assertEqual("pool", acquire.call_args.kwargs["source"])
         self.assertEqual(701, operation.get_run(submitted["run_id"])["data"]["config_snapshot"]["config_snapshot_revision"])
 
     def test_extract_handler_consumes_captured_transport_config_and_reads_cdk_on_demand(self):

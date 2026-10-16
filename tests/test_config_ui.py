@@ -35,7 +35,8 @@ const context = vm.createContext({
 vm.runInContext(common.slice(common.indexOf('function fmt('), common.indexOf('function isPlaceholderEmpty(')), context);
 vm.runInContext(extractFunction(common, 'isPlaceholderEmpty'), context);
 for (const name of [
-  'configSchemaOptions', 'configDriverChoices',
+  'configSchemaOptions', 'configSchemaField', 'configRangeAttrs', 'configDriverChoices',
+  'configListValuesV2', 'configListOptionValuesV2', 'configListSummaryV2', 'renderConfigMultiSelectV2',
   'configCountryCodesV2', 'configCountryNameV2', 'configCountryOptionsV2',
   'configCountrySummaryV2',
   'renderConfigCountryChipsV2', 'renderConfigCountryOptionsV2', 'renderConfigCountryControlV2',
@@ -137,6 +138,8 @@ const region = {key: 'PROXY_1024_REGION', type: 'str', options: [
 ]};
 assert.equal(readConfigElementValue({dataset: {}, value: ''}, region), '');
 assert.equal(readConfigElementValue({dataset: {}, value: 'jp'}, region), 'JP');
+const defaultCountry = {key: 'PROXY_POOL_DEFAULT_COUNTRY', type: 'str', country_codes: ['JP', 'NA']};
+assert.equal(readConfigElementValue({dataset: {}, value: 'NA'}, defaultCountry), 'NA');
 ''')
 
     def test_region_select_preserves_empty_and_canonical_options(self):
@@ -167,11 +170,24 @@ const field = {key: 'EMAIL_SOURCE', type: 'str', value: 'mailnest,outlook', csv_
   {value: 'outlook', label: 'Outlook'}, {value: 'mailnest', label: 'MailNest'},
 ]};
 const markup = renderConfigControlMarkupV2(field);
-assert.ok(markup.includes('<select multiple'));
+assert.ok(markup.includes('<select class="config-multi-compat-v2" multiple'));
 assert.ok(markup.includes('<option value="outlook" selected>Outlook</option>'));
 assert.ok(markup.includes('<option value="mailnest" selected>MailNest</option>'));
 const selected = {multiple: true, selectedOptions: [{value: 'mailnest'}, {value: 'outlook'}], dataset: {}};
 assert.equal(readConfigElementValue(selected, field), 'mailnest,outlook');
+''')
+
+    def test_regular_config_controls_expose_field_labels(self):
+        self._run_config_control_js(r'''
+for (const field of [
+  {key: 'COUNT', label: '数量', type: 'int', value: 2},
+  {key: 'RATIO', label: '比例', type: 'float', value: 0.5},
+  {key: 'NAME', label: '名称', type: 'str', value: 'demo'},
+  {key: 'LINES', label: '多行', type: 'list_str_multiline', value: ['a']},
+]) {
+  const markup = renderConfigControlMarkupV2(field);
+  assert.ok(markup.includes(`aria-label="${field.label}"`));
+}
 ''')
 
     def test_config_page_exposes_runtime_status_and_refreshes_after_save(self):
@@ -322,9 +338,10 @@ assert.equal(readConfigElementValue(selected, field), 'mailnest,outlook');
 
     def test_config_domains_are_merged_into_menus_without_changing_schema_groups(self):
         self.assertIn("const group = configMenuGroupV2(rawGroup);", CONFIG_JS)
-        self.assertIn("'注册设置': ['注册主链路', '注册调试']", CONFIG_JS)
-        self.assertIn("'浏览器设置': ['RoxyBrowser', '浏览器画像', '人工节奏']", CONFIG_JS)
-        self.assertIn("'系统设置': ['通用配置', 'WebUI 授权', '定时任务', '任务中心']", CONFIG_JS)
+        self.assertIn("'注册与账号': ['注册主链路', '账号补全', '注册与账号']", CONFIG_JS)
+        self.assertIn("'邮箱与验证码': ['邮箱 / OTP', '接码平台']", CONFIG_JS)
+        self.assertIn("'浏览器': ['RoxyBrowser', '浏览器画像', '人工节奏']", CONFIG_JS)
+        self.assertIn("'系统与维护': ['通用配置', 'WebUI 授权', '定时任务', '任务中心', '注册调试']", CONFIG_JS)
         self.assertIn('data-config-domain-v2', CONFIG_JS)
         self.assertIn("if (name === '注册主链路')", CONFIG_JS)
         self.assertIn("if (name === '账号补全')", CONFIG_JS)

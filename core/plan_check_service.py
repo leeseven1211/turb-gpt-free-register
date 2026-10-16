@@ -460,7 +460,6 @@ def _run_country_plan_checks(
                         raise TimeoutError("国家线路等待切片期限已到")
                     route = acquire_account_proxy(
                         account_id=account_id, email=email, purpose="plan-check", region=country,
-                        explicit_proxy=proxy,
                         source=proxy_source or _snapshot_value(config_snapshot, "route_source") or None,
                         allow_reuse=bool(_snapshot_value(config_snapshot, "proxy_allow_reuse", getattr(proxy_cfg, "PLAN_CHECK_PROXY_ALLOW_REUSE", True))),
                         reuse_limit=int(_snapshot_value(config_snapshot, "proxy_reuse_limit", getattr(proxy_cfg, "PLAN_CHECK_PROXY_REUSE_LIMIT", 3))),
@@ -981,25 +980,18 @@ def start_dispatcher() -> bool:
 
 
 def _country_proxy_source(snapshot) -> str:
-    """国家、线路与预算都从同一不可变配置版本派生。"""
+    """历史快照只保留兼容值；新领取统一使用当前代理池来源。"""
     from core.account_proxy import normalize_proxy_source
+
     values = snapshot.as_dict() if callable(getattr(snapshot, "as_dict", None)) else snapshot
-    configured = str(values.get("ACCOUNT_PLAN_CHECK_PROXY_MODE", "direct") or "direct")
-    legacy = str(values.get("ACCOUNT_ACTION_PROXY_MODE", "registration") or "registration")
-    sources = getattr(snapshot, "sources", {})
-    if sources.get("ACCOUNT_PLAN_CHECK_PROXY_MODE", "default") == "default" and configured == "direct" and normalize_proxy_source(legacy) != "registration":
-        configured = legacy
-    mode = normalize_proxy_source(configured)
-    if mode != "registration":
-        return mode
-    registration = str(values.get("REGISTRATION_PROXY_MODE", "pool") or "none").lower()
-    if registration in {"none", "direct"}:
-        return "direct"
-    if registration == "pool":
-        return "pool"
-    if registration in {"1024", "1024proxy", "provider"}:
-        return "provider:1024proxy"
-    raise ValueError("无法解析冻结的注册代理来源")
+    for key in ("ACCOUNT_PLAN_CHECK_PROXY_MODE", "ACCOUNT_ACTION_PROXY_MODE", "REGISTRATION_PROXY_MODE"):
+        try:
+            normalize_proxy_source(str((values or {}).get(key) or "registration"))
+        except ValueError:
+            # 旧快照可能带未来供应商 ID，不能因选路字段阻断重跑；供应商
+            # 解析已迁移到池配置，目标国家和原预算仍由同一快照继续使用。
+            continue
+    return "pool"
 
 
 def _submit_native_plan(

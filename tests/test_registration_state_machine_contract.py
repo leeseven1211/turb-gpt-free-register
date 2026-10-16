@@ -294,6 +294,7 @@ class RegistrationStateMachineContractTests(unittest.TestCase):
                     "test@example.com",
                     "Test User",
                     birthday="1990-01-01",
+                    proxy="http://pool.example:8080",
                     registration_options={"codex_enabled": False},
                 )
 

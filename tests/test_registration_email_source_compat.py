@@ -56,6 +56,7 @@ class EmailSourceCompatibilityTests(unittest.TestCase):
                 self.email,
                 "Test User",
                 "2000-01-01",
+                proxy="http://pool.example:8080",
                 existing_password="StoredPassword!123",
                 registration_options={
                     "password_enabled": True,
@@ -136,6 +137,7 @@ class EmailSourceCompatibilityTests(unittest.TestCase):
                     self.email,
                     "Test User",
                     "2000-01-01",
+                    proxy="http://pool.example:8080",
                     registration_options={
                         "password_enabled": False,
                         "twofa_enabled": False,
@@ -181,6 +183,7 @@ class EmailSourceCompatibilityTests(unittest.TestCase):
                     self.email,
                     "Test User",
                     "2000-01-01",
+                    proxy="http://pool.example:8080",
                     registration_options={
                         "password_enabled": False,
                         "twofa_enabled": False,

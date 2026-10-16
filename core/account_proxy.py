@@ -161,17 +161,10 @@ def _configured_action_source(purpose: str | None) -> str:
 
 
 def _resolve_proxy_source(source: str | None) -> str:
-    normalized = normalize_proxy_source(source)
-    if normalized != "registration":
-        return normalized
-    registration = str(registration_proxy_mode() or "none").strip().lower()
-    if registration in {"none", "direct"}:
-        return "direct"
-    if registration == "pool":
-        return "pool"
-    if registration in {"1024", "1024proxy", "provider"}:
-        return "provider:1024proxy"
-    raise ValueError(f"不支持的注册代理来源: {registration!r}")
+    # source 可能来自旧任务快照。它只用于兼容解析，不能让新领取固定
+    # 旧供应商、静态 URL 或 direct；实际来源由统一代理池当前配置决定。
+    normalize_proxy_source(source)
+    return "pool"
 
 
 def account_action_proxy_mode(purpose: str | None = None) -> str:
@@ -179,6 +172,8 @@ def account_action_proxy_mode(purpose: str | None = None) -> str:
 
 
 def _region_from_extra(account: dict) -> str:
+    from config.countries import ISO_3166_ALPHA2
+
     raw = account.get("extra_json")
     if not raw:
         return ""
@@ -188,7 +183,7 @@ def _region_from_extra(account: dict) -> str:
         return ""
     for provider in ("browser_use", "skyvern"):
         value = str(((extra.get(provider) or {}).get("proxy_country_code") or "")).strip().upper()
-        if len(value) == 2:
+        if value in ISO_3166_ALPHA2:
             return value
     return ""
 
@@ -201,8 +196,10 @@ def resolve_account_region(*, account_id: int | None = None, email: str | None =
     if account is None and email:
         account = db.get_account_by_email(str(email))
     if account:
+        from config.countries import ISO_3166_ALPHA2
+
         saved = str(account.get("registration_proxy_region") or "").strip().upper()
-        if len(saved) == 2:
+        if saved in ISO_3166_ALPHA2:
             return saved
         inferred = _region_from_extra(account)
         if inferred:
@@ -215,12 +212,12 @@ def resolve_account_region(*, account_id: int | None = None, email: str | None =
             if not (same_account or same_email):
                 continue
             region = str(job.get("proxy_region") or "").strip().upper()
-            if len(region) == 2:
+            if region in ISO_3166_ALPHA2:
                 return region
 
-    from config import proxy as cfg
-    configured = str(getattr(cfg, "PROXY_1024_REGION", "") or "").strip().upper()
-    return configured if len(configured) == 2 else ""
+    from core.proxy_pool import default_country
+
+    return default_country()
 
 
 def proxy_configuration_status(purpose: str | None = None) -> dict[str, Any]:
@@ -230,19 +227,17 @@ def proxy_configuration_status(purpose: str | None = None) -> dict[str, Any]:
     except Exception as exc:
         return {"ok": False, "mode": "invalid", "reason": str(exc)}
     from config import proxy as cfg
-    if mode.startswith("provider:"):
-        provider_id = mode.split(":", 1)[1]
-        spec = PROXY_PROVIDER_REGISTRY.get(provider_id)
-        if spec is None:
-            return {"ok": False, "mode": mode, "reason": f"未注册代理提供商: {provider_id}"}
-        status = spec.get("status")
-        if status is not None:
-            return {"mode": mode, **status()}
-    elif mode == "pool":
-        fixed = str(getattr(cfg, "ACCOUNT_ACTION_PROXY", "") or "").strip()
-        if not fixed and not list(getattr(cfg, "PROXY_POOL", []) or []):
-            return {"ok": False, "mode": mode, "reason": "账号功能代理池为空"}
-    return {"ok": True, "mode": mode, "reason": None}
+    try:
+        from core.proxy_pool import pool_source
+
+        source = pool_source()
+    except Exception as exc:
+        return {"ok": False, "mode": mode, "reason": str(exc)}
+    if source == "1024proxy" and not str(getattr(cfg, "PROXY_1024_API_URL", "") or "").strip():
+        return {"ok": False, "mode": mode, "reason": "统一代理池未配置 1024Proxy 提取 API"}
+    if source == "manual" and not list(getattr(cfg, "PROXY_POOL", []) or []):
+        return {"ok": False, "mode": mode, "reason": "统一代理池未配置手动代理地址"}
+    return {"ok": True, "mode": mode, "pool_source": source, "reason": None}
 
 
 def acquire_account_proxy(
@@ -261,68 +256,48 @@ def acquire_account_proxy(
     timeout: float | None = None,
 ) -> AccountProxyRoute:
     """为一次账号功能调用获取线路；调用方必须在 finally 中 release。"""
-    if explicit_proxy is not None:
-        selected = str(explicit_proxy or "").strip()
+    selected = str(explicit_proxy or "").strip()
+    if selected and not str(region or "").strip():
+        # 显式地址只复用同一链的线路，不能把调用方要求的国家写成实测国家。
+        # 有目标国家的业务必须重新从池领取并验证。
         return AccountProxyRoute(
             proxy_url=selected,
             provider="request" if selected else "direct",
             mode="request",
-            region=str(region or "").strip().upper() or None,
+            region=None,
             purpose=purpose,
         )
+    # 调用方会把可选快照字段原样传入；空字符串表示没有同链线路，必须
+    # 重新从当前统一池领取，不能借空值绕过池回到直连。
 
     mode = account_action_proxy_mode(purpose) if source is None else _resolve_proxy_source(source)
-    if mode == "direct":
-        return AccountProxyRoute("", "direct", mode, purpose=purpose)
-
-    from config import proxy as cfg
     if mode == "pool":
-        selected = str(getattr(cfg, "ACCOUNT_ACTION_PROXY", "") or "").strip()
-        urls = [selected] if selected else list(cfg.PROXY_POOL)
-        if not urls:
-            raise RuntimeError("账号功能代理来源为 pool，但 ACCOUNT_ACTION_PROXY/PROXY_POOL 均为空")
-        from core.proxy_pool import acquire
+        from config import proxy as cfg
+        from core.proxy_pool import acquire_proxy
         from core.task_run_log import current_context
         context = current_context()
+        selected_region = str(region or "").strip().upper() or resolve_account_region(
+            account_id=account_id, email=email,
+        )
         pool_kwargs = {
-            "provider": "proxy_pool", "static_urls": urls, "purpose": purpose,
+            "purpose": purpose, "country": selected_region or None,
             "account_id": account_id, "operation_task_id": context.get("task_id"),
             "operation_run_id": context.get("run_id"),
             "allow_reuse": purpose == "plan-check" and (
                 bool(getattr(cfg, "PLAN_CHECK_PROXY_ALLOW_REUSE", True)) if allow_reuse is None else bool(allow_reuse)
             ),
         }
-        # 多国家查询明确传入目标国家时，静态池按国家建立独立 profile；
-        # 注册和旧的单国家静态路径不传 region，继续沿用原 profile。
-        selected_region = str(region or "").strip().upper()
-        if selected_region:
-            pool_kwargs["region"] = selected_region
         if purpose == "plan-check" and reuse_limit is not None:
             pool_kwargs["reuse_limit"] = reuse_limit
         pool_kwargs.update({key: value for key, value in {
             "cancel": cancel, "progress_callback": progress_callback, "timeout": timeout,
         }.items() if value is not None})
-        lease = acquire(**pool_kwargs)
-        return AccountProxyRoute(lease.proxy_url, "proxy_pool", mode, region=lease.region, lease=lease, purpose=purpose)
+        if rotation_index:
+            pool_kwargs["correlation_id"] = f"{purpose}-{account_id or email or 'account'}-rotation-{max(0, int(rotation_index))}"
+        lease = acquire_proxy(**{key: value for key, value in pool_kwargs.items() if value is not None})
+        return AccountProxyRoute(lease.proxy_url, lease.provider, mode, region=lease.region, lease=lease, purpose=purpose)
 
-    if not mode.startswith("provider:"):
-        raise RuntimeError(f"不支持的账号代理来源: {mode}")
-    provider_id = mode.split(":", 1)[1]
-    spec = PROXY_PROVIDER_REGISTRY.get(provider_id)
-    if spec is None:
-        raise RuntimeError(f"未注册代理提供商: {provider_id}")
-    return spec["acquire"](
-        account_id=account_id,
-        email=email,
-        purpose=purpose,
-        region=region,
-        mode=mode,
-        **({"rotation_index": max(0, int(rotation_index or 0)), "allow_reuse": allow_reuse,
-            "reuse_limit": reuse_limit,
-            **{key: value for key, value in {
-                "cancel": cancel, "progress_callback": progress_callback, "timeout": timeout,
-            }.items() if value is not None}} if provider_id == "1024proxy" else {}),
-    )
+    raise RuntimeError(f"不支持的统一代理池来源: {mode}")
 
 
 def _status_1024proxy() -> dict[str, Any]:

@@ -80,6 +80,8 @@ def test_prewarm_unions_extra_registration_and_plan_countries():
          patch.object(cfg, "PLAN_CHECK_COUNTRIES", ["JP", "VN"]), \
          patch.object(cfg, "REGISTRATION_PROXY_MODE", "1024"), \
          patch.object(cfg, "PROXY_1024_REGION", "US"), \
+             patch.object(cfg, "PROXY_POOL_SOURCE", "1024proxy", create=True), \
+             patch.object(cfg, "PROXY_POOL_DEFAULT_COUNTRY", "US", create=True), \
          patch.object(cfg, "PROXY_1024_API_URL", "https://proxy.example.test/api"), \
          patch.object(account_cfg, "ACCOUNT_PLAN_CHECK_PROXY_MODE", "provider:1024proxy"):
         proxy_pool.maintain_once()
@@ -97,12 +99,13 @@ def test_static_country_profiles_are_prewarmed_for_actual_plan_source():
          patch.object(cfg, "PROXY_POOL_COUNTRIES", ["US"], create=True), \
          patch.object(cfg, "PLAN_CHECK_COUNTRIES", ["JP", "VN"]), \
          patch.object(cfg, "REGISTRATION_PROXY_MODE", "none"), \
+             patch.object(cfg, "PROXY_POOL_SOURCE", "manual", create=True), \
          patch.object(cfg, "ACCOUNT_ACTION_PROXY", ""), \
          patch.object(cfg, "PROXY_POOL", ["http://static.example.test:1234"]), \
          patch.object(account_cfg, "ACCOUNT_PLAN_CHECK_PROXY_MODE", "pool"):
         proxy_pool.maintain_once()
         profiles = list(proxy_pool._profiles.values())
-        assert {profile.options["region"] for profile in profiles} == {"US", "JP", "VN"}
+        assert {profile.options.get("region") for profile in profiles if profile.options.get("region")} == {"US", "JP", "VN"}
         assert all(profile.provider == "proxy_pool" for profile in profiles)
 
 
@@ -118,6 +121,7 @@ def test_supply_role_can_publish_while_existing_inventory_needs_check():
 
     with patch.object(proxy_pool, "_profiles", {profile.key: profile}), \
          patch.object(proxy_pool, "_prewarm", False), \
+         patch.object(proxy_pool, "_current_profile_keys", return_value={"jp"}), \
          patch.object(proxy_pool, "settings", return_value=POLICY), \
          patch.object(proxy_pool.store, "maintenance", return_value=[]), \
          patch.object(proxy_pool.store, "take_check", return_value={"resource_id": "old"}), \

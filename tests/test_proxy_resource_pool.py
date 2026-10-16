@@ -11,6 +11,18 @@ from core.proxy_provider import ProxyLease
 
 
 class ProxyResourcePoolTests(PostgresTestCase):
+    def setUp(self):
+        self._pool_config = patch.multiple(
+            "config.proxy",
+            PROXY_POOL_SOURCE="1024proxy",
+            PROXY_POOL_DEFAULT_COUNTRY="US",
+            PROXY_1024_API_URL="https://example.test/api",
+            PROXY_1024_PROTOCOL="http",
+            PROXY_1024_SESSION_MINUTES=30,
+        )
+        self._pool_config.start()
+        self.addCleanup(self._pool_config.stop)
+
     def seed_ready(self, number=1, *, seconds=1800, profile="default", endpoint=None,
                    exit_ip=None):
         slot = store.reserve_slot(profile, "1024proxy", max_size=20, timeout=60)
@@ -375,7 +387,7 @@ class ProxyResourcePoolTests(PostgresTestCase):
              patch.object(proxy_pool, "settings", return_value=policy), \
              patch.object(proxy_pool._stop, "is_set", return_value=False), \
              patch("core.proxy_supply.fetch_candidates", side_effect=candidates) as fetch:
-            proxy_pool._profile("1024proxy", {"api_url": "https://example.test/api", "session_minutes": 30})
+            proxy_pool._profile("1024proxy", {"api_url": "https://example.test/api", "protocol": "http", "session_minutes": 30})
             self.assertTrue(proxy_pool.maintain_once())
             self.assertFalse(proxy_pool.maintain_once())
             self.assertEqual(fetch.call_count, 1)
@@ -387,7 +399,7 @@ class ProxyResourcePoolTests(PostgresTestCase):
         with patch.object(proxy_pool, "_profiles", {}), patch.object(proxy_pool, "_prewarm", False), \
              patch.object(proxy_pool, "settings", return_value=policy), \
              patch("core.proxy_supply.fetch_candidates", side_effect=TimeoutError("模拟失败")) as fetch:
-            proxy_pool._profile("1024proxy", {"api_url": "https://example.test/api", "session_minutes": 30})
+            proxy_pool._profile("1024proxy", {"api_url": "https://example.test/api", "protocol": "http", "session_minutes": 30})
             self.assertFalse(proxy_pool.maintain_once())
             self.assertFalse(proxy_pool.maintain_once())
             self.assertEqual(fetch.call_count, 1)

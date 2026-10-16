@@ -32,6 +32,7 @@ def test_prewarm_only_creates_configured_plan_country_profiles_for_valid_1024_ro
          patch.object(proxy_pool.store, "take_check", return_value=None), \
          patch.object(proxy_pool.store, "reserve_refill_slots", return_value=[]), \
          patch.object(cfg, "PLAN_CHECK_COUNTRIES", ["JP", "VN"]), \
+         patch.object(cfg, "PROXY_POOL_SOURCE", "1024proxy", create=True), \
          patch.object(cfg, "REGISTRATION_PROXY_MODE", "none"), \
          patch.object(account_cfg, "ACCOUNT_PLAN_CHECK_PROXY_MODE", "provider:1024proxy"), \
          patch.object(cfg, "ACCOUNT_ACTION_PROXY_MODE", "provider:1024proxy"), \
@@ -41,7 +42,7 @@ def test_prewarm_only_creates_configured_plan_country_profiles_for_valid_1024_ro
     assert regions == {"JP", "VN"}
 
 
-def test_prewarm_does_not_start_for_direct_plan_route():
+def test_prewarm_ignores_legacy_direct_plan_route_and_uses_current_pool():
     policy = {
         "min_ready": 2, "max_size": 20, "wait_timeout": 0, "min_ttl": 300,
         "max_age": 60, "max_idle": 300, "workers": 2,
@@ -53,12 +54,13 @@ def test_prewarm_does_not_start_for_direct_plan_route():
          patch.object(proxy_pool.store, "take_check", return_value=None), \
          patch.object(proxy_pool.store, "reserve_refill_slots", return_value=[]), \
          patch.object(cfg, "PLAN_CHECK_COUNTRIES", ["JP"]), \
+         patch.object(cfg, "PROXY_POOL_SOURCE", "1024proxy", create=True), \
          patch.object(cfg, "REGISTRATION_PROXY_MODE", "none"), \
          patch.object(account_cfg, "ACCOUNT_PLAN_CHECK_PROXY_MODE", "direct"), \
          patch.object(cfg, "ACCOUNT_ACTION_PROXY_MODE", "direct"), \
          patch.object(cfg, "PROXY_1024_API_URL", "https://proxy.example.test/api"):
         proxy_pool.maintain_once()
-        assert proxy_pool._profiles == {}
+        assert {profile.options.get("region") for profile in proxy_pool._profiles.values()} == {"JP"}
 
 
 def test_snapshot_country_pools_contains_only_safe_aggregates():
@@ -131,6 +133,7 @@ def test_snapshot_includes_region_scoped_static_profiles():
              "max_age": 60, "max_idle": 300, "workers": 1,
          }), \
          patch.object(cfg, "PLAN_CHECK_COUNTRIES", ["JP"]), \
+         patch.object(cfg, "PROXY_POOL_SOURCE", "manual", create=True), \
          patch.object(cfg, "ACCOUNT_ACTION_PROXY", ""), \
          patch.object(cfg, "PROXY_POOL", urls), \
          patch.object(account_cfg, "ACCOUNT_PLAN_CHECK_PROXY_MODE", "pool"), \
@@ -149,14 +152,14 @@ def test_snapshot_includes_region_scoped_static_profiles():
 def test_static_pool_forwards_explicit_plan_country_but_keeps_legacy_path_unchanged():
     lease = ProxyLease("pool-lease", "proxy_pool", "http://192.0.2.1:8080", "192.0.2.1:8080",
                        datetime.now(), exit_ip="198.51.100.1", region="JP")
-    with patch("core.proxy_pool.acquire", return_value=lease) as acquire, \
-         patch.multiple(cfg, ACCOUNT_ACTION_PROXY="http://192.0.2.1:8080", PROXY_POOL=[]):
+    with patch("core.proxy_pool.acquire_proxy", return_value=lease) as acquire, \
+         patch.multiple(cfg, PROXY_POOL_SOURCE="manual", PROXY_POOL=["http://192.0.2.1:8080"]):
         account_proxy.acquire_account_proxy(account_id=1, purpose="plan-check", source="pool", region="JP")
         plan_call = acquire.call_args
         account_proxy.acquire_account_proxy(account_id=1, purpose="live-check", source="pool")
         legacy_call = acquire.call_args
 
-    assert plan_call.kwargs["region"] == "JP"
+    assert plan_call.kwargs["country"] == "JP"
     assert "region" not in legacy_call.kwargs
 
 
@@ -277,6 +280,9 @@ class StaticCountryProxyPoolPostgresTests(PostgresTestCase):
         with patch.object(proxy_pool, "_profiles", {}), \
              patch.object(proxy_pool, "_prewarm", False), \
              patch.object(proxy_pool, "settings", return_value=policy), \
+             patch.object(cfg, "PROXY_POOL_SOURCE", "manual", create=True), \
+             patch.object(cfg, "PROXY_POOL", urls, create=True), \
+             patch.object(cfg, "PROXY_POOL_COUNTRIES", ["JP", "VN"], create=True), \
              patch.object(proxy_pool._stop, "is_set", return_value=False), \
              patch("config.proxy.PROXY_1024_API_TIMEOUT", 1), \
              patch("core.proxy_provider._validate_proxy_with_retries",

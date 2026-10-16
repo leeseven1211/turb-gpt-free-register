@@ -9,13 +9,31 @@ const source = fs.readFileSync(path.join(__dirname, '../webui/static/js/modern/c
 function createConfigView(fields = []) {
   const storage = new Map();
   const nodes = new Map();
+  const domErrors = [];
+  const saveCopy = {textContent: ''};
+  const saveHint = {textContent: ''};
+  const saveState = {
+    classList: {toggle() {}},
+    querySelector(selector) { return selector.includes('data-config-save-copy') ? saveCopy : null; },
+  };
+  const saveButton = {disabled: false, textContent: ''};
+  nodes.set('configSaveBarV2', {hidden: false});
+  nodes.set('configDirtyBadge', {hidden: false, textContent: '', setAttribute() {}});
   const root = {addEventListener() {}};
   const context = {
     CONFIG: fields,
+    domErrors, saveCopy, saveHint,
     document: {
       getElementById(id) { return nodes.get(id) || null; },
-      querySelector() { return null; },
-      querySelectorAll() { return []; },
+      querySelector(selector) {
+        return selector.includes('data-config-save-hint') ? saveHint : null;
+      },
+      querySelectorAll(selector) {
+        if (selector.includes('data-config-save-state')) return [saveState];
+        if (selector.includes('data-save-config-v2')) return [saveButton];
+        if (selector.includes('config-field-error-v2')) return domErrors;
+        return [];
+      },
       documentElement: {dataset: {}},
     },
     window: {addEventListener() {}, scrollTo() {}, confirm() { return true; }},
@@ -39,7 +57,13 @@ function createConfigView(fields = []) {
       render: renderConfigSectionV2, renderDomain: renderConfigDomainSectionV2,
       bind: bindConfigLayoutV2, save: saveConfigUpdates,
       pending: CONFIG_PENDING_UPDATES, setPending: setPendingConfigValue,
+      forcePending: (key, value) => setPendingConfigValue(key, value, {force: true}),
+      errors: CONFIG_FIELD_ERRORS_V2, compositeModes: CONFIG_COMPOSITE_MODES_V2,
+      read: readConfigElementValue, track: trackConfigFieldChange,
+      saveUi: updateConfigSaveUi, domErrors, ui: {saveCopy, saveHint},
       proxySection: key => proxyConfigSectionForKey(key)[0],
+      emailVisible: emailSectionEnabledV2,
+      control: renderConfigControlMarkupV2,
       search(query, menu) { CONFIG_NAV_QUERY_V2 = query; selectConfigSearchDestinationV2(menu); },
       fields(value) { CONFIG = value; },
       state() { return {
@@ -49,59 +73,39 @@ function createConfigView(fields = []) {
       }; },
     };
   `, context);
-  return {view: context.view, context, storage, nodes};
+  return {view: context.view, context, storage, nodes, domErrors};
 }
 
 const field = (key, group, extra = {}) => ({key, group, label: key, type: 'str', value: '', ...extra});
 
-test('所有原始配置领域只归入一个菜单，重复展示项不再重复计数', () => {
+test('配置导航使用六个主分类，字段只进入一个编辑投影', () => {
   const domains = ['通用配置', '注册主链路', '账号补全', '注册调试', '邮箱 / OTP', '接码平台',
     '代理与网络', 'RoxyBrowser', '浏览器画像', '人工节奏', 'Codex', '提链', 'WebUI 授权', '定时任务', '任务中心'];
   const fields = domains.map((domain, index) => field(`KEY_${index}`, domain));
   const {view} = createConfigView([...fields, {...fields[0]}]);
   const groups = view.groups();
-  assert.equal(Object.keys(groups).length, 9);
-  assert.equal(Object.values(groups).flat().length, fields.length);
+  assert.equal(Object.keys(groups).length, 6);
   assert.deepEqual(Array.from(view.names()), Object.keys(groups));
-  assert.deepEqual(Array.from(groups['浏览器设置'], item => item.group), ['RoxyBrowser', '浏览器画像', '人工节奏']);
-  assert.deepEqual(Array.from(groups['系统设置'], item => item.group), ['通用配置', 'WebUI 授权', '定时任务', '任务中心']);
+  assert.equal(Object.values(groups).flat().length, fields.length);
+  assert.deepEqual(Object.keys(groups), ['系统与维护', '注册与账号', '邮箱与验证码', '代理与网络', '浏览器', '服务集成']);
 });
 
-test('旧菜单直达会迁移主菜单并定位原始分类，保留全部未保存值', () => {
+test('旧入口迁移到新分类并保留草稿值', () => {
   const fields = [field('ROXY_API_BASE', 'RoxyBrowser'), field('HUMANIZE_DELAY_FACTOR', '人工节奏', {type: 'float', value: 1})];
   const {view, storage} = createConfigView(fields);
   view.setPending('ROXY_API_BASE', 'http://127.0.0.1:5888');
   view.open('人工节奏');
-  assert.equal(view.state().menu, '浏览器设置');
-  assert.equal(view.state().domains['浏览器设置'], '人工节奏');
+  assert.equal(view.state().menu, '浏览器');
+  assert.equal(view.state().domains['浏览器'], '人工节奏');
   assert.equal(storage.get('gpt_console_config_group'), '人工节奏');
-  view.open('RoxyBrowser');
-  const markup = view.render('浏览器设置', view.groups()['浏览器设置']);
-  assert.ok(markup.includes('data-config-domain-v2="人工节奏"'));
-  assert.ok(markup.includes('id="cfg-浏览器设置"'));
-  assert.ok(markup.includes('value="http://127.0.0.1:5888"'));
-  assert.equal(view.pending.ROXY_API_BASE, 'http://127.0.0.1:5888');
   view.destination('执行方式');
-  assert.equal(view.state().menu, '注册设置');
-  assert.equal(view.state().domains['注册设置'], '注册主链路');
+  assert.equal(view.state().menu, '注册与账号');
   view.destination('网站配置');
-  assert.equal(view.state().menu, '系统设置');
-  assert.equal(view.state().domains['系统设置'], 'WebUI 授权');
+  assert.equal(view.state().menu, '系统与维护');
+  assert.equal(view.pending.ROXY_API_BASE, 'http://127.0.0.1:5888');
 });
 
-test('旧 localStorage 领域名在加载时恢复到新主菜单和对应分类', () => {
-  const fields = [field('WEBUI_AUTH_CODE', 'WebUI 授权'), field('AT_AUTO_REFRESH_ENABLED', '定时任务', {type: 'bool'})];
-  const {view, nodes, storage, context} = createConfigView(fields);
-  storage.set('gpt_console_config_group', '定时任务');
-  nodes.set('configNavV2', {innerHTML: ''});
-  nodes.set('configSectionsV2', {innerHTML: ''});
-  vm.runInContext('renderConfigLayoutV2()', context);
-  assert.equal(view.state().menu, '系统设置');
-  assert.equal(view.state().domains['系统设置'], '定时任务');
-  assert.ok(nodes.get('configSectionsV2').innerHTML.includes('ChatGPT AT 自动刷新'));
-});
-
-test('搜索配置键或领域会打开合并分类和邮箱、代理、接码、Codex 的具体子标签', () => {
+test('搜索配置键、帮助文案和旧领域可以定位隐藏子节', () => {
   const fields = [
     field('ROXY_API_BASE', 'RoxyBrowser'), field('TASK_CENTER_RETENTION_DAYS', '任务中心'),
     field('EMAIL_BUTLER_API_BASE', '邮箱 / OTP'), field('ICLOUD_HME_API_BASE', '邮箱 / OTP'),
@@ -111,177 +115,179 @@ test('搜索配置键或领域会打开合并分类和邮箱、代理、接码�
   ];
   const {view} = createConfigView(fields);
   view.search('TASK_CENTER_RETENTION_DAYS');
-  assert.equal(view.state().menu, '系统设置');
-  assert.equal(view.state().domains['系统设置'], '任务中心');
+  assert.equal(view.state().menu, '系统与维护');
   for (const [query, property, expected] of [
     ['ICLOUD_HME_API_BASE', 'email', 'iCloud 隐藏邮箱'],
     ['Email Butler', 'email', 'Email Butler'],
-    ['PROXY_1024_API_URL', 'proxy', '代理提供商'],
-    ['PLAN_CHECK_TIMEOUT', 'proxy', '账号动作线路'],
+    ['PROXY_1024_API_URL', 'proxy', '代理来源'],
+    ['PLAN_CHECK_TIMEOUT', 'menu', '注册与账号'],
     ['L_API_BASE', 'sms', 'L 接码'],
     ['CPA_MANAGEMENT_URL', 'codex', 'CPA配置'],
   ]) {
     view.search(query);
     assert.equal(view.state()[property], expected);
-    const groups = view.groups();
-    assert.ok(view.render(view.state().menu, groups[view.state().menu]).includes(query === 'Email Butler' ? 'EMAIL_BUTLER_API_BASE' : query));
   }
 });
 
-test('完整配置键优先于其他字段键和帮助文案中的包含匹配', () => {
+test('套餐业务参数进入注册与账号，代理池兼容字段单独归组', () => {
   const fields = [
+    field('PLAN_CHECK_COUNTRIES', '代理与网络', {type: 'list_str_multiline', value: ['JP'], country_codes: ['JP', 'US']}),
+    field('PLAN_CHECK_TIMEOUT', '代理与网络', {type: 'int', value: 30}),
+    field('PROXY_POOL_SOURCE', '代理与网络', {options: [{value: '1024proxy', label: '1024Proxy'}, {value: 'manual', label: '手动代理'}]}),
     field('ACCOUNT_PLAN_CHECK_PROXY_MODE', '代理与网络'),
-    field('ACCOUNT_ACTION_PROXY_RETRIES', '代理与网络'),
-    field('PLAN_CHECK_PROXY_ALLOW_REUSE', '代理与网络'),
-    field('PLAN_CHECK_PROXY_MODE', '代理与网络'),
-    field('PLAN_CHECK_PROXY', '代理与网络'),
-    field('ACCOUNT_ACTION_PROXY', '代理与网络'),
+    field('REGISTRATION_PROXY_RETRIES', '代理与网络', {type: 'int', value: 1}),
+    field('ACCOUNT_ACTION_PROXY_RETRY_DELAY', '代理与网络', {type: 'float', value: 0.5}),
+    field('PROXY_1024_REGION', '代理与网络'),
   ];
   const {view} = createConfigView(fields);
-  for (const key of ['PLAN_CHECK_PROXY_MODE', 'PLAN_CHECK_PROXY', 'ACCOUNT_ACTION_PROXY']) {
-    view.search(key.toLowerCase());
-    assert.equal(view.state().proxy, '静态代理池');
-    const markup = view.render('代理与网络', view.groups()['代理与网络']);
-    assert.ok(markup.includes(`data-key="${key}"`));
-  }
+  const groups = view.groups();
+  assert.deepEqual(Array.from(groups['注册与账号'], item => item.key), ['PLAN_CHECK_COUNTRIES', 'PLAN_CHECK_TIMEOUT', 'REGISTRATION_PROXY_RETRIES', 'ACCOUNT_ACTION_PROXY_RETRY_DELAY']);
+  assert.equal(view.proxySection('PROXY_POOL_SOURCE'), '代理来源');
+  assert.equal(view.proxySection('PROXY_POOL_WAIT_TIMEOUT'), '库存策略');
+  assert.equal(view.proxySection('ACCOUNT_PLAN_CHECK_PROXY_MODE'), '高级兼容');
+  assert.equal(view.proxySection('REGISTRATION_PROXY_RETRIES'), '注册主链路');
+  assert.equal(view.proxySection('ACCOUNT_ACTION_PROXY_RETRY_DELAY'), '账号补全');
+  assert.equal(view.proxySection('PROXY_1024_REGION'), '高级兼容');
 });
 
-test('定时任务同页展示各服务完整策略，查询套餐和注册重试归属对应线路', () => {
-  const fields = [
-    field('EMAIL_BUTLER_RISK_SCAN_ENABLED', '定时任务', {type: 'bool'}),
-    field('AT_AUTO_REFRESH_ENABLED', '定时任务', {type: 'bool'}),
-    field('CODEX_TOKEN_AUTO_REFRESH_ENABLED', '定时任务', {type: 'bool'}),
-    field('CODEX_TOKEN_REFRESH_BEFORE_HOURS', '定时任务', {type: 'int', value: 24}),
-  ];
-  const {view} = createConfigView(fields);
-  const markup = view.render('系统设置', view.groups()['系统设置']);
-  for (const item of fields) assert.equal((markup.match(new RegExp(`data-key="${item.key}"`, 'g')) || []).length, 1);
-  for (const title of ['Email Butler 风险扫描', 'ChatGPT AT 自动刷新', 'Codex Token 自动刷新']) assert.ok(markup.includes(title));
-  for (const key of ['PLAN_CHECK_TIMEOUT', 'PLAN_CHECK_MAX_ATTEMPTS', 'PLAN_CHECK_RETRY_DELAY',
-    'PLAN_CHECK_REGISTRATION_RECHECK_DELAY', 'PLAN_CHECK_MIN_INTERVAL', 'PLAN_CHECK_JITTER',
-    'ACCOUNT_ACTION_PROXY_RETRIES', 'ACCOUNT_ACTION_PROXY_RETRY_DELAY']) assert.equal(view.proxySection(key), '账号动作线路');
-  for (const key of ['REGISTRATION_PROXY_MODE', 'REGISTRATION_PROXY_RETRIES', 'REGISTRATION_PROXY_RETRY_DELAY']) assert.equal(view.proxySection(key), '注册线路');
-  for (const key of ['PLAN_CHECK_PROXY_MODE', 'PLAN_CHECK_PROXY', 'ACCOUNT_ACTION_PROXY_MODE', 'ACCOUNT_ACTION_PROXY']) assert.equal(view.proxySection(key), '静态代理池');
-});
-
-test('账号动作按功能归组，套餐的代理、国家、重试和节奏完整集中且每项只展示一次', () => {
-  const featureKeys = {
-    '查询套餐': [
-      'ACCOUNT_PLAN_CHECK_PROXY_MODE', 'PLAN_CHECK_PROXY_ALLOW_REUSE', 'PLAN_CHECK_PROXY_REUSE_LIMIT',
-      'PLAN_CHECK_PAYMENT_METHODS_ENABLED', 'PLAN_CHECK_COUNTRIES', 'PLAN_CHECK_COUNTRY_WAIT_TIMEOUT', 'PLAN_CHECK_TIMEOUT',
-      'PLAN_CHECK_MAX_ATTEMPTS', 'PLAN_CHECK_RETRY_DELAY', 'PLAN_CHECK_MIN_INTERVAL',
-      'PLAN_CHECK_JITTER', 'PLAN_CHECK_REGISTRATION_RECHECK_DELAY',
-    ],
-    '查活与刷新 AT': [
-      'ACCOUNT_LIVE_CHECK_PROXY_MODE', 'ACCOUNT_REFRESH_AT_PROXY_MODE',
-      'ACCOUNT_ACTION_PROXY_RETRIES', 'ACCOUNT_ACTION_PROXY_RETRY_DELAY',
-    ],
-    '补密码': ['ACCOUNT_PASSWORD_PROXY_MODE'],
-    '补 2FA': ['ACCOUNT_2FA_PROXY_MODE'],
-    '邮箱换绑': ['ACCOUNT_EMAIL_CHANGE_PROXY_MODE'],
-    'Codex OAuth': ['ACCOUNT_CODEX_PROXY_MODE'],
-  };
-  const fields = Object.values(featureKeys).flat().reverse().map(key => field(key, '代理与网络',
-    key === 'PLAN_CHECK_PROXY_ALLOW_REUSE' ? {type: 'bool', value: true}
-      : key === 'PLAN_CHECK_PAYMENT_METHODS_ENABLED' ? {type: 'bool', value: false}
-      : key === 'PLAN_CHECK_COUNTRIES' ? {type: 'list_str_multiline', value: ['JP'], country_codes: ['JP', 'US']}
-        : {}));
-  const {view} = createConfigView(fields);
-  view.search('PLAN_CHECK_TIMEOUT');
-  const markup = view.render('代理与网络', view.groups()['代理与网络']);
-  const sections = new Map(Array.from(markup.matchAll(/<section[^>]*data-config-proxy-feature="([^"]+)"[^>]*>([\s\S]*?)<\/section>/g),
-    match => [match[1], match[2]]));
-  assert.deepEqual(Array.from(sections.keys()), Object.keys(featureKeys));
-  for (const [title, keys] of Object.entries(featureKeys)) {
-    const section = sections.get(title);
-    assert.deepEqual(Array.from(section.matchAll(/data-key="([^"]+)"/g), match => match[1]), keys);
-    for (const key of keys) {
-      assert.equal(view.proxySection(key), '账号动作线路');
-      assert.equal((markup.match(new RegExp(`data-key="${key}"`, 'g')) || []).length, 1);
-    }
-  }
-  const plan = sections.get('查询套餐');
-  assert.equal((plan.match(/data-key=/g) || []).length, 12);
-  assert.match(plan, /type="checkbox" role="switch" data-key="PLAN_CHECK_PROXY_ALLOW_REUSE" checked/);
-  assert.match(plan, /type="checkbox" role="switch" data-key="PLAN_CHECK_PAYMENT_METHODS_ENABLED" aria-label=/);
-  assert.ok(!/data-key="PLAN_CHECK_PAYMENT_METHODS_ENABLED" checked/.test(plan));
-  assert.ok(!markup.includes('class="config-switches-v2"'));
-  assert.ok(!plan.includes('data-key="ACCOUNT_ACTION_PROXY_RETRIES"'));
-  assert.ok(!plan.includes('data-key="ACCOUNT_ACTION_PROXY_RETRY_DELAY"'));
-});
-
-test('支付方式开关默认关闭，跨分类保留选择且保存为布尔值', async () => {
-  const key = 'PLAN_CHECK_PAYMENT_METHODS_ENABLED';
-  const {view, context} = createConfigView([
-    field(key, '代理与网络', {type: 'bool', value: false, label: '查询支付方式'}),
-    field('PROXY_POOL_MIN_READY', '代理与网络', {type: 'int', value: 20}),
+test('统一多选保留顺序、未知值和可搜索摘要', () => {
+  const {view} = createConfigView([
+    field('EMAIL_SOURCE', '邮箱 / OTP', {value: 'mailnest,outlook', options: [
+      {value: 'outlook', label: 'Outlook'}, {value: 'mailnest', label: 'MailNest'},
+    ]}),
+    field('ROXY_RANDOM_OS_CHOICES', 'RoxyBrowser', {type: 'str', value: 'Windows,custom', options: [
+      {value: 'Windows', label: 'Windows'}, {value: 'macOS', label: 'macOS'},
+    ]}),
   ]);
-  view.search(key);
-  let markup = view.render('代理与网络', view.groups()['代理与网络']);
-  assert.equal(view.state().proxy, '账号动作线路');
-  assert.match(markup, /查询支付方式/);
-  assert.ok(!/data-key="PLAN_CHECK_PAYMENT_METHODS_ENABLED" checked/.test(markup));
-  view.setPending(key, true);
-  view.search('PROXY_POOL_MIN_READY');
-  view.search(key);
-  markup = view.render('代理与网络', view.groups()['代理与网络']);
-  assert.match(markup, /data-key="PLAN_CHECK_PAYMENT_METHODS_ENABLED" checked/);
-  let payload;
-  context.api = async (_url, options) => { payload = JSON.parse(options.body); return {reloaded: true}; };
-  await view.save();
-  assert.deepEqual(payload.updates, {[key]: true});
-  view.fields([field(key, '代理与网络', {type: 'bool', value: true, label: '查询支付方式'})]);
-  view.setPending(key, false);
-  await view.save();
-  assert.deepEqual(payload.updates, {[key]: false});
+  const email = view.control(view.groups()['邮箱与验证码'][0]);
+  const roxy = view.control(view.groups()['浏览器'][0]);
+  assert.ok(email.includes('data-multi-picker="EMAIL_SOURCE"'));
+  assert.ok(email.includes('data-key="EMAIL_SOURCE" value="mailnest,outlook"'));
+  assert.ok(roxy.includes('当前值（custom）'));
+  assert.ok(email.includes('select class="config-multi-compat-v2" multiple'));
 });
 
-test('切换代理分类和账号功能保留未保存国家、开关和重试值，并统一提交原配置键', async () => {
-  const fields = [
-    field('PLAN_CHECK_PROXY_ALLOW_REUSE', '代理与网络', {type: 'bool', value: true}),
-    field('PLAN_CHECK_COUNTRIES', '代理与网络', {type: 'list_str_multiline', value: ['JP'], country_codes: ['JP', 'US', 'DE']}),
-    field('ACCOUNT_ACTION_PROXY_RETRIES', '代理与网络', {type: 'int', value: 2}),
-    field('PROXY_POOL_COUNTRIES', '代理与网络', {type: 'list_str_multiline', value: ['JP'], country_codes: ['JP', 'US', 'DE']}),
-    field('PLAN_CHECK_PROXY', '代理与网络'),
-  ];
-  const {view, context} = createConfigView(fields);
-  view.search('PLAN_CHECK_COUNTRIES');
-  view.setPending('PLAN_CHECK_COUNTRIES', ['DE', 'US']);
-  view.setPending('PLAN_CHECK_PROXY_ALLOW_REUSE', false);
-  view.search('ACCOUNT_ACTION_PROXY_RETRIES');
-  view.setPending('ACCOUNT_ACTION_PROXY_RETRIES', 3);
-  view.search('PROXY_POOL_COUNTRIES');
-  assert.equal(view.state().proxy, '独立代理池');
-  view.setPending('PROXY_POOL_COUNTRIES', []);
-  const poolMarkup = view.render('代理与网络', view.groups()['代理与网络']);
-  assert.ok(poolMarkup.includes('data-key="PROXY_POOL_COUNTRIES" value=""'));
-  assert.ok(poolMarkup.includes('未选择额外预热国家'));
-  view.search('PLAN_CHECK_PROXY');
-  assert.equal(view.state().proxy, '静态代理池');
-  view.render('代理与网络', view.groups()['代理与网络']);
-  view.search('PLAN_CHECK_COUNTRIES');
-  assert.equal(view.state().proxy, '账号动作线路');
-  const actionMarkup = view.render('代理与网络', view.groups()['代理与网络']);
-  assert.ok(actionMarkup.includes('data-key="PLAN_CHECK_COUNTRIES" value="DE,US"'));
-  assert.match(actionMarkup, /data-key="ACCOUNT_ACTION_PROXY_RETRIES"[^>]*value="3"/);
-  assert.match(actionMarkup, /data-key="PLAN_CHECK_PROXY_ALLOW_REUSE" aria-label=/);
-  assert.ok(!/data-key="PLAN_CHECK_PROXY_ALLOW_REUSE" checked/.test(actionMarkup));
-  const expected = {
-    PLAN_CHECK_COUNTRIES: ['DE', 'US'], PLAN_CHECK_PROXY_ALLOW_REUSE: false,
-    ACCOUNT_ACTION_PROXY_RETRIES: 3, PROXY_POOL_COUNTRIES: [],
+test('敏感字段默认留空不清除，并提供显式清除入口', () => {
+  const {view} = createConfigView([
+    field('API_KEY', '通用配置', {secret: true, configured: true}),
+    field('PROXY_POOL', '代理与网络', {secret: true, type: 'list_str_multiline', value: ['masked-proxy']}),
+    field('PROXY_POOL_DEFAULT_COUNTRY', '代理与网络', {country_codes: ['JP', 'NA'], value: 'JP'}),
+  ]);
+  const markup = view.control(view.groups()['系统与维护'][0]);
+  assert.ok(markup.includes('data-secret-input="true"'));
+  assert.ok(markup.includes('data-clear-secret="API_KEY"'));
+  const proxyMarkup = view.control(view.groups()['代理与网络'].find(item => item.key === 'PROXY_POOL'));
+  assert.ok(proxyMarkup.includes('data-clear-secret="PROXY_POOL"'));
+  assert.ok(proxyMarkup.includes('<textarea'));
+  const input = (key, value, secretClear = 'true') => ({
+    value, type: 'text', checked: false, dataset: {key, secretClear},
+    closest(selector) {
+      if (selector.includes('[data-key]')) return this;
+      if (selector === '#tab-config') return {};
+      return null;
+    },
+  });
+  view.track({target: input('API_KEY', '')});
+  view.track({target: input('PROXY_POOL', '')});
+  assert.equal(view.pending.API_KEY, '');
+  assert.deepEqual(Array.from(view.pending.PROXY_POOL), []);
+  assert.equal(view.read({dataset: {}, value: 'NA'}, {key: 'PROXY_POOL_DEFAULT_COUNTRY', type: 'str'}), 'NA');
+});
+
+test('等待和价格上限保留原配置类型并支持显式模式', () => {
+  const {view} = createConfigView([
+    field('PROXY_POOL_WAIT_TIMEOUT', '代理与网络', {type: 'int', value: 45}),
+    field('SMS_MAX_PRICE', '接码平台', {type: 'str', value: ''}),
+  ]);
+  const waitMarkup = view.control(view.groups()['代理与网络'].find(item => item.key === 'PROXY_POOL_WAIT_TIMEOUT'));
+  const priceMarkup = view.control(view.groups()['邮箱与验证码']?.find(item => item.key === 'SMS_MAX_PRICE') || field('SMS_MAX_PRICE', '接码平台', {type: 'str', value: ''}));
+  assert.ok(waitMarkup.includes('持续等待'));
+  assert.ok(waitMarkup.includes('限时等待'));
+  assert.ok(priceMarkup.includes('不设上限'));
+  assert.ok(priceMarkup.includes('设上限'));
+  const composite = (mode, raw) => {
+    const root = {querySelector(selector) {
+      if (selector.includes('data-composite-mode')) return {value: mode};
+      return {value: raw};
+    }};
+    return {value: mode, dataset: {}, closest(selector) {
+      return selector === '[data-config-composite-key]' ? root : null;
+    }};
   };
-  assert.deepEqual(JSON.parse(JSON.stringify(view.pending)), expected);
-  context.api = async () => { throw new Error('模拟保存失败'); };
-  await view.save();
-  assert.deepEqual(JSON.parse(JSON.stringify(view.pending)), expected);
-  let payload;
-  context.api = async (_url, options) => { payload = JSON.parse(options.body); return {reloaded: true}; };
-  await view.save();
-  assert.deepEqual(payload.updates, expected);
-  assert.equal(Object.keys(view.pending).length, 0);
+  assert.equal(view.read(composite('timed', '45'), {key: 'PROXY_POOL_WAIT_TIMEOUT', type: 'int'}), 45);
+  assert.equal(view.read(composite('continuous', '45'), {key: 'PROXY_POOL_WAIT_TIMEOUT', type: 'int'}), 0);
+  assert.equal(view.read(composite('limited', '0.25'), {key: 'SMS_MAX_PRICE', type: 'str'}), '0.25');
+  assert.equal(view.read(composite('unlimited', '0.25'), {key: 'SMS_MAX_PRICE', type: 'str'}), '');
 });
 
-test('跨菜单修改统一保存，失败时完整保留待保存值', async () => {
+test('复合控件跨分类重绘保留限时空草稿，不伪造为零或不限', () => {
+  const {view} = createConfigView([
+    field('PROXY_POOL_WAIT_TIMEOUT', '代理与网络', {type: 'int', value: 45}),
+    field('SMS_MAX_PRICE', '接码平台', {type: 'str', value: '0.25'}),
+  ]);
+  view.compositeModes.PROXY_POOL_WAIT_TIMEOUT = 'timed';
+  view.compositeModes.SMS_MAX_PRICE = 'limited';
+  view.setPending('PROXY_POOL_WAIT_TIMEOUT', null);
+  view.setPending('SMS_MAX_PRICE', '');
+  const waitMarkup = view.control(view.groups()['代理与网络'].find(item => item.key === 'PROXY_POOL_WAIT_TIMEOUT'));
+  const priceMarkup = view.control(view.groups()['邮箱与验证码'].find(item => item.key === 'SMS_MAX_PRICE'));
+  assert.match(waitMarkup, /option value="timed" selected/);
+  assert.match(waitMarkup, /data-composite-seconds[^>]*value=""/);
+  assert.match(priceMarkup, /option value="limited" selected/);
+  assert.match(priceMarkup, /data-composite-value[^>]*value=""/);
+  const compositeRoot = {
+    querySelector(selector) {
+      if (selector.includes('data-composite-mode')) return {value: 'timed'};
+      return {value: ''};
+    },
+  };
+  const emptySeconds = {
+    value: '', type: 'number', dataset: {waitSecondsKey: 'PROXY_POOL_WAIT_TIMEOUT'},
+    hasAttribute: () => false,
+    closest(selector) {
+      if (selector.includes('[data-wait-seconds-key]')) return this;
+      if (selector === '[data-config-composite-key]') return compositeRoot;
+      if (selector === '#tab-config') return {};
+      return null;
+    },
+  };
+  view.track({target: emptySeconds});
+  assert.equal(view.pending.PROXY_POOL_WAIT_TIMEOUT, null);
+});
+
+test('隐藏的复合空草稿保存前仍校验，不发送零或不限', async () => {
+  const {view, context} = createConfigView([
+    field('PROXY_POOL_WAIT_TIMEOUT', '代理与网络', {type: 'int', value: 45}),
+    field('SMS_MAX_PRICE', '接码平台', {type: 'str', value: '0.25'}),
+  ]);
+  view.compositeModes.PROXY_POOL_WAIT_TIMEOUT = 'timed';
+  view.setPending('PROXY_POOL_WAIT_TIMEOUT', null);
+  let called = false;
+  context.api = async () => { called = true; return {reloaded: true}; };
+  await view.save();
+  assert.equal(called, false);
+  assert.equal(view.errors.PROXY_POOL_WAIT_TIMEOUT, '请填写限时等待秒数，或切换为持续等待');
+  assert.equal(view.pending.PROXY_POOL_WAIT_TIMEOUT, null);
+});
+
+test('iCloud forward_butler 才会让 Email Butler 作为依赖可见', () => {
+  const fields = [
+    field('EMAIL_SOURCE', '邮箱 / OTP', {value: 'icloud_hide'}),
+    field('ICLOUD_HME_INBOX_MODE', '邮箱 / OTP', {value: 'forward_imap'}),
+  ];
+  const {view} = createConfigView(fields);
+  assert.equal(view.emailVisible('Email Butler'), false);
+  view.setPending('ICLOUD_HME_INBOX_MODE', 'forward_butler');
+  assert.equal(view.emailVisible('Email Butler'), true);
+  view.setPending('ICLOUD_HME_INBOX_MODE', 'sidecar');
+  view.setPending('EMAIL_SOURCE', 'icloud_hide,email_butler');
+  assert.equal(view.emailVisible('Email Butler'), true);
+  view.setPending('EMAIL_SOURCE', 'icloud_hme');
+  view.setPending('ICLOUD_HME_INBOX_MODE', 'forward_butler');
+  assert.equal(view.emailVisible('Email Butler'), true);
+});
+
+test('跨菜单草稿统一保存，失败时保留待保存值', async () => {
   const fields = [field('ROXY_API_BASE', 'RoxyBrowser'), field('TASK_CENTER_RETENTION_DAYS', '任务中心', {type: 'int', value: 30})];
   const {view, context} = createConfigView(fields);
   view.setPending('ROXY_API_BASE', 'http://127.0.0.1:5888');
@@ -289,10 +295,76 @@ test('跨菜单修改统一保存，失败时完整保留待保存值', async ()
   view.setPending('TASK_CENTER_RETENTION_DAYS', 60);
   context.api = async () => { throw new Error('模拟保存失败'); };
   await view.save();
-  assert.equal(Object.keys(view.pending).length, 2);
+  assert.deepEqual(JSON.parse(JSON.stringify(view.pending)), {ROXY_API_BASE: 'http://127.0.0.1:5888', TASK_CENTER_RETENTION_DAYS: 60});
   let payload;
   context.api = async (_url, options) => { payload = JSON.parse(options.body); return {reloaded: true}; };
   await view.save();
   assert.deepEqual(payload.updates, {ROXY_API_BASE: 'http://127.0.0.1:5888', TASK_CENTER_RETENTION_DAYS: 60});
   assert.equal(Object.keys(view.pending).length, 0);
+});
+
+test('字段校验错误定位到投影菜单并保留草稿，成功保存后清除错误', async () => {
+  const {view, context} = createConfigView([
+    field('PLAN_CHECK_TIMEOUT', '代理与网络', {type: 'float', value: 30}),
+  ]);
+  view.setPending('PLAN_CHECK_TIMEOUT', 45);
+  context.api = async () => {
+    const error = new Error('校验失败');
+    error.fields = {PLAN_CHECK_TIMEOUT: '套餐查询超时必须在允许范围内'};
+    throw error;
+  };
+  await view.save();
+  assert.equal(view.errors.PLAN_CHECK_TIMEOUT, '套餐查询超时必须在允许范围内');
+  assert.equal(view.state().menu, '注册与账号');
+  assert.equal(view.pending.PLAN_CHECK_TIMEOUT, 45);
+  context.api = async () => ({reloaded: true});
+  await view.save();
+  assert.equal(Object.keys(view.errors).length, 0);
+  assert.equal(Object.keys(view.pending).length, 0);
+});
+
+test('字段校验失败提示检查标记配置，普通错误仍提示服务状态', async () => {
+  const {view, context} = createConfigView([
+    field('PLAN_CHECK_TIMEOUT', '代理与网络', {type: 'float', value: 30}),
+  ]);
+  view.setPending('PLAN_CHECK_TIMEOUT', 45);
+  context.api = async () => {
+    const error = new Error('校验失败');
+    error.fields = {PLAN_CHECK_TIMEOUT: '套餐查询超时必须在允许范围内'};
+    throw error;
+  };
+  await view.save();
+  assert.equal(view.ui.saveCopy.textContent, '请检查标记的配置项');
+  assert.equal(view.ui.saveHint.textContent, '请检查标记的配置项后再保存');
+
+  context.api = async () => { throw new Error('服务不可用'); };
+  await view.save();
+  assert.equal(view.ui.saveCopy.textContent, '保存失败，请重试');
+  assert.equal(view.ui.saveHint.textContent, '请检查网络或服务状态后重试');
+});
+
+test('任意配置编辑清除本轮服务端错误和页面错误节点，不重绘配置区', () => {
+  const {view, domErrors} = createConfigView([
+    field('REGISTER_NAME', '注册主链路', {value: '旧值'}),
+  ]);
+  view.errors.REGISTER_NAME = '旧错误';
+  view.errors.OTHER_FIELD = '另一个错误';
+  domErrors.push({removed: false, remove() { this.removed = true; }});
+  domErrors.push({removed: false, remove() { this.removed = true; }});
+  const row = {querySelector() { return null; }};
+  const input = {
+    value: '新值', type: 'text', dataset: {key: 'REGISTER_NAME'},
+    closest(selector) {
+      if (selector.includes('[data-key]')) return this;
+      if (selector === '#tab-config') return {};
+      if (selector === '[data-config-composite-key]') return null;
+      if (selector === '[data-multi-picker]') return null;
+      return row;
+    },
+    hasAttribute() { return false; },
+  };
+  view.track({target: input});
+  assert.equal(Object.keys(view.errors).length, 0);
+  assert.deepEqual(domErrors.map(item => item.removed), [true, true]);
+  assert.equal(view.pending.REGISTER_NAME, '新值');
 });

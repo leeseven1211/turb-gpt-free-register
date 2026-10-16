@@ -111,6 +111,8 @@ class RemailWebUiTests(PostgresTestCase):
         remail = next(source for source in email_summary["sources"] if source["source"] == "remail")
         self.assertEqual(remail, {
             "source": "remail", "label": "Remail", "kind": "on_demand", "enabled": True,
+            "default_visible": True, "dependency": False, "dependency_reason": "",
+            "history_available": False,
         })
         self.assertEqual(email_summary["local_total"], 0)
         self.assertEqual(email_summary["local_available"], 0)

@@ -96,13 +96,23 @@ def _local_proxy_status(proxy: str) -> tuple[bool, bool, str | None]:
         return False, False, f"代理地址解析失败（{type(exc).__name__}）"
 
 
-def resolve_plan_check_route(explicit_proxy: Optional[str] = None) -> dict:
+def resolve_plan_check_route(explicit_proxy: Optional[str] = None, *, session: BrowserSession | None = None) -> dict:
     """解析套餐查询的实际网络路径。
 
-    explicit_proxy 不是 None 时表示 API 调用方明确覆盖配置；空字符串代表直连。
+    非空 explicit_proxy 表示同一认证链已明确交付的线路；空字符串继续申请统一池线路。
     """
-    if explicit_proxy is not None:
-        selected = str(explicit_proxy or "").strip()
+    if session is not None:
+        # 已有会话沿用其实际线路，不额外占用一条根本不会使用的池租约。
+        actual_proxy = getattr(session, "proxy", None)
+        selected = actual_proxy if isinstance(actual_proxy, str) else explicit_proxy
+        if not str(selected or "").strip():
+            raise ValueError("已有查询会话缺少代理线路，请先从统一代理池领取")
+        return {
+            "proxy": selected, "proxy_mode": "session", "network_route": "proxy",
+            "proxy_used": _mask_proxy(selected), "proxy_fallback_reason": None,
+        }
+    if explicit_proxy is not None and str(explicit_proxy or "").strip():
+        selected = str(explicit_proxy).strip()
         return {
             "proxy": selected,
             "proxy_mode": "request",
@@ -111,50 +121,29 @@ def resolve_plan_check_route(explicit_proxy: Optional[str] = None) -> dict:
             "proxy_fallback_reason": None,
         }
 
-    from config import proxy as proxy_cfg
+    # 旧 CLI 的 PLAN_CHECK_PROXY_MODE/PLAN_CHECK_PROXY 只保留兼容读取；新
+    # 套餐请求也必须领取统一池租约，不能自动直连或随机抽静态 URL。
+    from core.account_proxy import acquire_account_proxy
 
-    mode = str(getattr(proxy_cfg, "PLAN_CHECK_PROXY_MODE", "auto") or "auto").strip().lower()
-    if mode not in {"auto", "proxy", "direct"}:
-        raise ValueError(f"PLAN_CHECK_PROXY_MODE={mode!r} 无效，可选 auto / proxy / direct")
-    if mode == "direct":
-        return {
-            "proxy": "",
-            "proxy_mode": mode,
-            "network_route": "direct",
-            "proxy_used": None,
-            "proxy_fallback_reason": None,
-        }
-
-    selected = str(getattr(proxy_cfg, "PLAN_CHECK_PROXY", "") or "").strip()
-    if not selected:
-        selected = str(proxy_cfg.pick_proxy() or "").strip()
-    if not selected:
-        if mode == "proxy":
-            raise ValueError("套餐查询网络模式为 proxy，但未配置 PLAN_CHECK_PROXY 或 PROXY_POOL")
-        return {
-            "proxy": "",
-            "proxy_mode": mode,
-            "network_route": "direct",
-            "proxy_used": None,
-            "proxy_fallback_reason": "未配置套餐查询代理或代理池",
-        }
-
-    is_local, available, reason = _local_proxy_status(selected)
-    if mode == "auto" and is_local and not available:
-        return {
-            "proxy": "",
-            "proxy_mode": mode,
-            "network_route": "direct_fallback",
-            "proxy_used": _mask_proxy(selected),
-            "proxy_fallback_reason": reason,
-        }
+    route = acquire_account_proxy(purpose="plan-check")
     return {
-        "proxy": selected,
-        "proxy_mode": mode,
-        "network_route": "proxy",
-        "proxy_used": _mask_proxy(selected),
+        "proxy": route.proxy_url,
+        **route.public_dict(),
         "proxy_fallback_reason": None,
+        "_route": route,
     }
+
+
+def _release_plan_route(route: dict | None) -> None:
+    """释放 standalone 套餐查询创建的统一池租约。"""
+    if not isinstance(route, dict):
+        return
+    selected = route.get("_route")
+    if selected is not None:
+        try:
+            selected.release("completed")
+        except Exception:
+            logger.warning("套餐查询释放统一代理租约失败", exc_info=True)
 
 
 def decode_jwt_payload_unverified(token: str) -> dict:
@@ -420,7 +409,7 @@ def query_account_quota(
         return {"quota_status": "failed", "quota_checked_at": now_iso(), "quota_error": "token 为空"}
     claims = token_claims(token)
     try:
-        route = resolve_plan_check_route(proxy)
+        route = resolve_plan_check_route(proxy, session=session)
         timeout_seconds, _attempts, _delay = _plan_check_settings(timeout, 1, 0)
     except Exception as exc:
         return {
@@ -434,7 +423,7 @@ def query_account_quota(
     try:
         env = session or BrowserSession(proxy=route["proxy"], detect_exit_geo=False)
         result = _query_account_quota(env, token, claims, timeout_seconds)
-        result.update({key: value for key, value in route.items() if key != "proxy"})
+        result.update({key: value for key, value in route.items() if key != "proxy" and not key.startswith("_")})
         return result
     except Exception as exc:
         logger.debug("仅额度查询失败: %s", type(exc).__name__, exc_info=True)
@@ -450,6 +439,7 @@ def query_account_quota(
                 env.session.close()
             except Exception:
                 pass
+        _release_plan_route(route)
 
 
 def parse_accounts_check(data: dict, *, token: str = "") -> dict:
@@ -667,7 +657,7 @@ def check_account_plan(
         }
 
     try:
-        route = resolve_plan_check_route(proxy)
+        route = resolve_plan_check_route(proxy, session=session)
     except Exception as exc:
         return {
             "ok": False,
@@ -676,10 +666,11 @@ def check_account_plan(
             "error": f"套餐查询网络配置错误: {exc}",
             **{k: v for k, v in claims.items() if k != "payload"},
         }
-    route_meta = {k: v for k, v in route.items() if k != "proxy"}
+    route_meta = {k: v for k, v in route.items() if k != "proxy" and not k.startswith("_")}
     try:
         timeout_seconds, attempts, base_delay = _plan_check_settings(timeout, max_attempts, retry_delay)
     except Exception as exc:
+        _release_plan_route(route)
         return {
             "ok": False,
             "checked_at": now_iso(),
@@ -764,8 +755,10 @@ def check_account_plan(
                             deadline_at=deadline_at, checkpoint=checkout_checkpoint, claims=claims,
                         )
                     probe_result = parsed
+                    _release_plan_route(route)
                     return parsed
         except (OperationCancelled, OperationAccountDeactivated, OperationLeaseLost):
+            _release_plan_route(route)
             raise
         except Exception as exc:
             logger.debug("套餐查询失败: %s: %s", type(exc).__name__, exc, exc_info=True)
@@ -804,6 +797,7 @@ def check_account_plan(
             **{k: v for k, v in claims.items() if k != "payload"},
         })
         if not last_result.get("retryable") or attempt >= attempts:
+            _release_plan_route(route)
             return last_result
 
         wait_seconds = _retry_wait_seconds(resp, base_delay, attempt)
@@ -817,6 +811,7 @@ def check_account_plan(
         if wait_seconds > 0:
             time.sleep(wait_seconds)
 
+    _release_plan_route(route)
     return last_result or {
         "ok": False,
         "checked_at": now_iso(),

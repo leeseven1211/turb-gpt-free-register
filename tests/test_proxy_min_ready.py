@@ -14,6 +14,16 @@ from tests.support_pg import PostgresTestCase
 class ProxyMinReadyTests(PostgresTestCase):
     def setUp(self):
         self._number = 0
+        self._pool_config = patch.multiple(
+            "config.proxy",
+            PROXY_POOL_SOURCE="1024proxy",
+            PROXY_POOL_DEFAULT_COUNTRY="US",
+            PROXY_1024_API_URL="https://example.test/api",
+            PROXY_1024_PROTOCOL="http",
+            PROXY_1024_SESSION_MINUTES=30,
+        )
+        self._pool_config.start()
+        self.addCleanup(self._pool_config.stop)
 
     def new_anchor(self, *, seconds=1800):
         self._number += 1
@@ -188,7 +198,7 @@ class ProxyMinReadyTests(PostgresTestCase):
         patches = self.pool_patches()
         with patches[0], patches[1], patches[2], patches[3], patches[4] as supply:
             profile = proxy_pool._profile("1024proxy", {
-                "api_url": "https://example.test/api", "session_minutes": 30,
+                "api_url": "https://example.test/api", "protocol": "http", "session_minutes": 30,
             })
             for _ in range(3):
                 self.assertTrue(proxy_pool.maintain_once())
@@ -210,7 +220,7 @@ class ProxyMinReadyTests(PostgresTestCase):
         patches = self.pool_patches()
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
             profile = proxy_pool._profile("1024proxy", {
-                "api_url": "https://example.test/api", "session_minutes": 30,
+                "api_url": "https://example.test/api", "protocol": "http", "session_minutes": 30,
             })
             profile.waiting = 3
             for _ in range(4):
@@ -231,7 +241,7 @@ class ProxyMinReadyTests(PostgresTestCase):
         patches = self.pool_patches()
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
             profile = proxy_pool._profile("1024proxy", {
-                "api_url": "https://example.test/api", "session_minutes": 30,
+                "api_url": "https://example.test/api", "protocol": "http", "session_minutes": 30,
             })
             for _ in range(3):
                 self.assertTrue(proxy_pool.maintain_once())
@@ -270,7 +280,7 @@ class ProxyMinReadyTests(PostgresTestCase):
         patches = self.pool_patches()
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
             profile = proxy_pool._profile("1024proxy", {
-                "api_url": "https://example.test/api", "session_minutes": 30,
+                "api_url": "https://example.test/api", "protocol": "http", "session_minutes": 30,
             })
             slot, anchor = self.seed_ready(profile=profile.key)
             record_store.patch_row(store.RESOURCES, slot["id"], {"checked_at": store._stamp(-120)})
@@ -288,7 +298,7 @@ class ProxyMinReadyTests(PostgresTestCase):
         patches = self.pool_patches()
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
             profile = proxy_pool._profile("1024proxy", {
-                "api_url": "https://example.test/api", "session_minutes": 30,
+                "api_url": "https://example.test/api", "protocol": "http", "session_minutes": 30,
             })
             checks = {}
             for _ in range(5):

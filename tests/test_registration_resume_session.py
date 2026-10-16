@@ -192,7 +192,7 @@ class ResumeSessionFlowTests(unittest.TestCase):
             yield driver, mocks
 
     def run_registration(self, **kwargs):
-        args = {"existing_password": "unit-original-password", "profile_id": "unit-profile",
+        args = {"proxy": "http://pool.example:8080", "existing_password": "unit-original-password", "profile_id": "unit-profile",
                 "email_source": "icloud_hide", "registration_options": {
                     "password_enabled": True, "twofa_enabled": False,
                     "codex_enabled": False, "plan_check_enabled": False}}

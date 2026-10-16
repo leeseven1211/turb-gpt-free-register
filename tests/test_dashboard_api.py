@@ -501,6 +501,60 @@ console.log('ok');
         self.assertNotIn("access_token", str(payload))
         self.assertNotIn("api_key", str(payload).lower())
 
+    @patch("webui.routes.dashboard.admin_repository.dashboard_aggregates", return_value={
+        "accounts": {"total": 0, "active": 0, "archived": 0, "codex_ready": 0, "plans": {}},
+        "jobs": {"total": 0, "counts": {}, "today_counts": {}},
+        "email_status_rows": [
+            {"source": "outlook", "status": "disabled", "count": 2},
+            {"source": "icloud_hide", "status": "available", "count": 1},
+        ],
+        "codex": {},
+    })
+    @patch("core.proxy_provider.active_proxy_leases", return_value=[])
+    @patch("core.proxy_provider.registration_proxy_mode", return_value="none")
+    def test_dashboard_email_sources_include_visibility_and_forward_butler_dependency(
+        self, *_mocks
+    ):
+        with patch("config.email.EMAIL_SOURCE", "icloud_hide"), patch(
+            "config.email.ICLOUD_HME_INBOX_MODE", "forward_butler"
+        ):
+            response = self.client.get("/api/dashboard", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        sources = {item["source"]: item for item in response.get_json()["email"]["sources"]}
+
+        self.assertTrue(sources["icloud_hide"]["enabled"])
+        self.assertTrue(sources["icloud_hide"]["default_visible"])
+        self.assertTrue(sources["outlook"]["history_available"])
+        self.assertFalse(sources["outlook"]["default_visible"])
+        self.assertFalse(sources["email_butler"]["enabled"])
+        self.assertTrue(sources["email_butler"]["dependency"])
+        self.assertTrue(sources["email_butler"]["default_visible"])
+        self.assertIn("forward_butler", sources["email_butler"]["dependency_reason"])
+        self.assertFalse(sources["gptmail"]["default_visible"])
+
+    @patch("webui.routes.dashboard.admin_repository.dashboard_aggregates", return_value={
+        "accounts": {"total": 0, "active": 0, "archived": 0, "codex_ready": 0, "plans": {}},
+        "jobs": {"total": 0, "counts": {}, "today_counts": {}},
+        "email_status_rows": [
+            {"source": "outlook", "status": "available", "count": 2},
+        ],
+        "codex": {},
+    })
+    @patch("core.proxy_provider.active_proxy_leases", return_value=[])
+    @patch("core.proxy_provider.registration_proxy_mode", return_value="none")
+    def test_dashboard_manual_mode_with_explicit_empty_source_has_no_enabled_source(
+        self, *_mocks
+    ):
+        with patch("config.email.EMAIL_SOURCE", ""), patch(
+            "config.email.USE_EMAIL_SERVICE", False
+        ):
+            response = self.client.get("/api/dashboard", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()["email"]
+        self.assertEqual(payload["enabled_count"], 0)
+        self.assertTrue(all(not item["enabled"] for item in payload["sources"]))
+        self.assertTrue(all(not item["default_visible"] for item in payload["sources"]))
+
     def test_jobs_status_filter_keeps_global_counts(self):
         self.seed(record_store.JOBS, [
             {"job_uuid": "j3", "status": "success"},
@@ -592,8 +646,8 @@ console.log('ok');
         self.assertNotIn('data-lifecycle-section-v2', html)
         self.assertNotIn('renderLifecycleDriverSelect', html)
         self.assertIn('config-setting-row-v2', html)
-        self.assertIn("'注册设置': ['注册主链路', '注册调试']", html)
-        self.assertIn("'系统设置': ['通用配置', 'WebUI 授权', '定时任务', '任务中心']", html)
+        self.assertIn("'注册与账号': ['注册主链路', '账号补全', '注册与账号']", html)
+        self.assertIn("'系统与维护': ['通用配置', 'WebUI 授权', '定时任务', '任务中心', '注册调试']", html)
         self.assertIn('注册调试', html)
         operation_start = html.index('>操作</span>')
         deactivation_mail = html.index('>查封号邮件</button>')
@@ -651,8 +705,10 @@ console.log('ok');
         self.assertIn('data-progress-retry-job', html)
         self.assertIn('batch-progress-v2-step-duration', html)
         self.assertIn('data-progress-duration-start', html)
-        self.assertIn('repeat(var(--batch-progress-step-count, 1), minmax(64px, 1fr))', html)
-        self.assertIn('style="--batch-progress-step-count:${Math.max(stages.length, 1)}"', html)
+        modern_css = (Path(__file__).resolve().parents[1] / 'webui/static/css/modern.css').read_text(encoding='utf-8')
+        self.assertIn('grid-template-columns:repeat(var(--batch-progress-step-count),minmax(0,1fr));', modern_css)
+        jobs_js = (Path(__file__).resolve().parents[1] / 'webui/static/js/modern/jobs.js').read_text(encoding='utf-8')
+        self.assertIn('style="--batch-progress-step-count:${Math.max(displayStages.length, 1)}"', jobs_js)
         self.assertNotIn('repeat(11, minmax(74px, 1fr))', html)
         self.assertIn('batchProgressRenderSignature', html)
         self.assertIn('currentBatchJobs().find', html)

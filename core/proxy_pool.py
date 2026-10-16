@@ -33,6 +33,18 @@ class ProxyPoolConfigurationError(ValueError):
     code = "proxy_pool_invalid_lifetime"
 
 
+def _normalize_country(value: str | None, *, allow_empty: bool = True) -> str:
+    """只接受 ISO 3166-1 alpha-2 国家码，拒绝 Rand/未知两位码。"""
+    from config.countries import ISO_3166_ALPHA2
+
+    country = str(value or "").strip().upper()
+    if not country and allow_empty:
+        return ""
+    if country == "RAND" or country not in ISO_3166_ALPHA2:
+        raise ValueError(f"代理池国家必须是已知 ISO 3166-1 两位代码：{value}")
+    return country
+
+
 @dataclass
 class Profile:
     key: str
@@ -80,6 +92,78 @@ def _provider_options(**kwargs) -> dict:
             "session_minutes": kwargs.get("session_minutes") or cfg.PROXY_1024_SESSION_MINUTES}
 
 
+def _normalize_pool_source(value: str | None) -> str:
+    """将池来源配置归一为当前池内适配器名称。
+
+    业务调用方不应选择供应商。这里保留 ``1024proxy`` 和 ``manual`` 两个
+    池内来源，旧配置值只用于迁移，不会把新领取路由回 direct 或固定旧平台。
+    """
+    raw = str(value or "").strip().lower()
+    aliases = {
+        "1024": "1024proxy",
+        "1024proxy": "1024proxy",
+        "provider": "1024proxy",
+        "provider:1024proxy": "1024proxy",
+        "pool": "manual",
+        "static_pool": "manual",
+        "proxy_pool": "manual",
+        "manual": "manual",
+    }
+    return aliases.get(raw, "manual" if raw in {"direct", "none"} else raw or "manual")
+
+
+def pool_source() -> str:
+    """返回当前统一代理池来源，不读取任何业务动作的供应商选择。
+
+    新配置不存在时兼容旧 ``REGISTRATION_PROXY_MODE`` 与静态池。即使旧值
+    是 direct/none，也不会为新业务请求创建直连线路。
+    """
+    from config import proxy as cfg
+
+    configured = getattr(cfg, "PROXY_POOL_SOURCE", None)
+    if str(configured or "").strip():
+        source = _normalize_pool_source(configured)
+    else:
+        legacy = str(getattr(cfg, "REGISTRATION_PROXY_MODE", "") or "").strip().lower()
+        if legacy in {"1024", "1024proxy", "provider"}:
+            source = "1024proxy"
+        elif legacy in {"pool", "static_pool", "proxy_pool"}:
+            source = "manual"
+        else:
+            # 旧 direct/none 只代表历史快照，不应偷偷回退静态池或直连；
+            # 统一池的默认来源仍是 1024Proxy，缺配置时明确报错。
+            source = "1024proxy"
+    if source not in {"1024proxy", "manual"}:
+        raise ValueError(f"不支持的代理池来源: {source!r}")
+    return source
+
+
+def default_country() -> str:
+    """返回无目标国家领取时使用的池默认国家。"""
+    from config import proxy as cfg
+
+    raw = getattr(cfg, "PROXY_POOL_DEFAULT_COUNTRY", None)
+    if not str(raw or "").strip():
+        raw = getattr(cfg, "PROXY_1024_REGION", "")
+    return _normalize_country(raw)
+
+
+def _pool_countries() -> list[str]:
+    """合并默认国家与预热国家，保持配置顺序并去重。"""
+    from config import proxy as cfg
+    from config.countries import normalize_plan_check_countries, normalize_proxy_pool_countries
+
+    values: list[str] = []
+    default = default_country()
+    if default:
+        values.append(default)
+    values.extend(normalize_proxy_pool_countries(getattr(cfg, "PROXY_POOL_COUNTRIES", [])))
+    # 套餐多国是业务目标国家，不是供应商选择；当前池应提前准备这些
+    # 国家，避免某个动作配置决定是否建立库存 profile。
+    values.extend(normalize_plan_check_countries(getattr(cfg, "PLAN_CHECK_COUNTRIES", [])))
+    return list(dict.fromkeys(str(value).strip().upper() for value in values if str(value).strip()))
+
+
 def _static_claim_scope(options: dict) -> dict:
     """同一静态来源的国家库存共享端点，不依赖进程内 profile 已恢复。"""
     from config.countries import ISO_3166_ALPHA2
@@ -93,62 +177,46 @@ def _static_claim_scope(options: dict) -> dict:
             "required_region": str(options.get("region") or "").strip().upper() or None}
 
 
-def _plan_check_provider_enabled() -> bool:
-    """仅当账号查套餐实际解析为 provider:1024proxy 时允许国家预热。"""
-    try:
-        from core.account_proxy import account_action_proxy_mode
-
-        return account_action_proxy_mode("plan-check") == "provider:1024proxy"
-    except Exception:
-        return False
-
-
-def _plan_check_static_pool_enabled() -> bool:
-    """返回账号查套餐是否明确使用静态池。"""
-    try:
-        from core.account_proxy import account_action_proxy_mode
-
-        return account_action_proxy_mode("plan-check") == "pool"
-    except Exception:
-        return False
-
-
 def _configured_profile_options() -> list[tuple[str, dict]]:
-    """只为实际启用的来源合并注册、额外预热和套餐查询国家。"""
+    """按当前统一池来源与目标国家建立 profile，不读取业务供应商配置。"""
     from config import proxy as cfg
-    from config.countries import normalize_plan_check_countries, normalize_proxy_pool_countries
-
-    try:
-        extra = normalize_proxy_pool_countries(getattr(cfg, "PROXY_POOL_COUNTRIES", []))
-        plan = normalize_plan_check_countries(getattr(cfg, "PLAN_CHECK_COUNTRIES", []))
-    except (TypeError, ValueError) as exc:
-        logger.warning("代理池国家配置无效，跳过预热：%s", exc)
-        return []
-    mode = str(cfg.REGISTRATION_PROXY_MODE).lower()
-    plan_provider = _plan_check_provider_enabled()
-    plan_static = _plan_check_static_pool_enabled()
+    source = pool_source()
+    countries = _pool_countries()
     profiles: dict[str, tuple[str, dict]] = {}
 
     def add(provider: str, options: dict) -> None:
         profiles[_profile_key(provider, options)] = (provider, options)
 
-    if str(cfg.PROXY_1024_API_URL or "").strip() and (mode in {"1024", "1024proxy"} or plan_provider):
-        if mode in {"1024", "1024proxy"}:
-            add("1024proxy", _provider_options())
-        for country in dict.fromkeys(extra + (plan if plan_provider else [])):
+    if source == "1024proxy" and str(getattr(cfg, "PROXY_1024_API_URL", "") or "").strip():
+        add("1024proxy", _provider_options(region=default_country() or None))
+        for country in countries:
             add("1024proxy", _provider_options(region=country))
-    if mode == "pool" and cfg.PROXY_POOL:
-        urls = list(cfg.PROXY_POOL)
+    if source == "manual" and list(getattr(cfg, "PROXY_POOL", []) or []):
+        urls = list(getattr(cfg, "PROXY_POOL", []) or [])
         add("proxy_pool", {"urls": urls})
-        for country in extra:
+        for country in countries:
             add("proxy_pool", {"urls": urls, "region": country})
-    if plan_static:
-        selected = str(getattr(cfg, "ACCOUNT_ACTION_PROXY", "") or "").strip()
-        urls = [selected] if selected else list(cfg.PROXY_POOL or [])
-        if urls:
-            for country in dict.fromkeys(extra + plan):
-                add("proxy_pool", {"urls": urls, "region": country})
     return list(profiles.values())
+
+
+def _public_source_profile(country: str | None) -> tuple[str, dict, dict]:
+    """解析一次当前池来源；每次等待轮次都会重新调用以支持热切换。"""
+    from config import proxy as cfg
+
+    source = pool_source()
+    selected = _normalize_country(country)
+    if source == "1024proxy":
+        options = _provider_options(region=selected or None)
+        if not str(options["api_url"] or "").strip():
+            raise ValueError("代理池缺少 1024Proxy 提取配置")
+        return "1024proxy", options, {}
+    urls = list(getattr(cfg, "PROXY_POOL", []) or [])
+    if not urls:
+        raise ValueError("统一代理池未配置手动代理地址")
+    options = {"urls": urls}
+    if selected:
+        options["region"] = selected
+    return "proxy_pool", options, _static_claim_scope(options)
 
 
 def _prewarm_plan_country_profiles(policy: dict) -> None:
@@ -161,6 +229,45 @@ def _prewarm_plan_country_profiles(policy: dict) -> None:
         except ProxyPoolConfigurationError:
             continue
         _profile(provider, options)
+
+
+def _current_profile_keys() -> set[str]:
+    """只返回当前配置来源的 profile，避免旧来源继续被预热或补货。"""
+    try:
+        return {_profile_key(provider, options) for provider, options in _configured_profile_options()}
+    except (ValueError, TypeError, KeyError):
+        # 配置尚未完整时不为历史 profile 补货；领取入口会返回明确配置错误。
+        return set()
+
+
+def _profile_is_current(profile: Profile, configured_keys: set[str] | None = None) -> bool:
+    """判断 profile 是否仍属于当前来源和连接配置，国家不参与白名单判断。"""
+    if configured_keys and profile.key in configured_keys:
+        return True
+    try:
+        from config import proxy as cfg
+
+        source = pool_source()
+        if source == "1024proxy":
+            if profile.provider != "1024proxy" or not str(getattr(cfg, "PROXY_1024_API_URL", "") or "").strip():
+                return False
+            options = _provider_options(region=None)
+            if any(profile.options.get(key) != options.get(key)
+                   for key in ("api_url", "protocol", "session_minutes")):
+                return False
+            region = profile.options.get("region")
+            _normalize_country(region)
+            return True
+        urls = [str(url).strip() for url in list(getattr(cfg, "PROXY_POOL", []) or []) if str(url).strip()]
+        if profile.provider != "proxy_pool" or not urls:
+            return False
+        profile_urls = [str(url).strip() for url in profile.options.get("urls", []) if str(url).strip()]
+        if profile_urls != urls:
+            return False
+        _normalize_country(profile.options.get("region"))
+        return True
+    except (ValueError, TypeError, KeyError):
+        return False
 
 
 def _validate_lifetime(provider: str, options: dict, policy: dict) -> None:
@@ -205,15 +312,74 @@ def stop() -> None:
 atexit.register(stop)
 
 
+def acquire_proxy(
+    *,
+    purpose: str = "registration",
+    country: str | None = None,
+    region: str | None = None,
+    timeout: float | None = None,
+    budget: float | None = None,
+    progress_callback=None,
+    cancel=None,
+    account_id: int | None = None,
+    operation_task_id: int | None = None,
+    operation_run_id: int | None = None,
+    registration_job_id: int | None = None,
+    route_attempt_no: int | None = None,
+    correlation_id: str | int | None = None,
+    job_id: str | int | None = None,
+    allow_reuse: bool = False,
+    reuse_limit: int | None = None,
+):
+    """统一业务领取入口。
+
+    业务只提交用途、国家、领取预算和关联 ID；当前代理平台或手动来源由
+    池配置决定。``provider``、供应商 API 和手工 URL 仅在本模块内部传给
+    底层适配器，避免注册、账号动作和套餐查询重新绕过池。
+    """
+    selected_region = _normalize_country(country or region) or default_country() or None
+    correlation = job_id if job_id is not None else correlation_id
+    selected_timeout = timeout if timeout is not None else budget
+    common = {
+        "purpose": purpose,
+        "region": selected_region,
+        "timeout": selected_timeout,
+        "progress_callback": progress_callback,
+        "cancel": cancel,
+        "account_id": account_id,
+        "operation_task_id": operation_task_id,
+        "operation_run_id": operation_run_id,
+        "registration_job_id": registration_job_id,
+        "route_attempt_no": route_attempt_no,
+        "allow_reuse": allow_reuse,
+        "reuse_limit": reuse_limit,
+    }
+    if correlation is not None:
+        common["job_id"] = correlation
+    common = {key: value for key, value in common.items() if value is not None}
+    provider, options, claim_scope = _public_source_profile(selected_region)
+    return acquire(
+        provider=provider,
+        static_urls=options.get("urls"),
+        _source_resolver=lambda: _public_source_profile(selected_region),
+        _claim_scope=claim_scope,
+        **common,
+    )
+
+
 def acquire(*, provider: str = "1024proxy", progress_callback=None, cancel=None, timeout: float | None = None,
             allow_reuse: bool = False, reuse_limit: int | None = None,
-            static_urls: list[str] | None = None, **kwargs):
+            static_urls: list[str] | None = None, _source_resolver=None,
+            _claim_scope: dict | None = None, **kwargs):
     """任务只等待已校验库存；默认持续等待，可显式限制领取期限。"""
     from core.operation_runtime import check_cancelled
 
     policy = settings()
-    if provider == "1024proxy":
+    if _source_resolver is not None:
+        provider, options, claim_scope = _source_resolver()
+    elif provider == "1024proxy":
         options = _provider_options(**kwargs)
+        claim_scope = {}
     else:
         options = {"urls": list(static_urls or [])}
         # 只有调用方明确提供目标国家时才分裂静态池 profile；保持注册和
@@ -221,13 +387,15 @@ def acquire(*, provider: str = "1024proxy", progress_callback=None, cancel=None,
         selected_region = str(kwargs.get("region") or "").strip().upper()
         if selected_region:
             options["region"] = selected_region
+        claim_scope = _claim_scope or _static_claim_scope(options)
     if provider == "1024proxy" and not str(options["api_url"] or "").strip():
         raise ValueError("代理池缺少 1024Proxy 提取配置")
     if provider == "proxy_pool" and not options["urls"]:
         raise ValueError("静态代理池为空")
     _validate_lifetime(provider, options, policy)
     profile = _profile(provider, options)
-    claim_scope = _static_claim_scope(options) if provider == "proxy_pool" else {}
+    if _source_resolver is None and provider == "proxy_pool":
+        claim_scope = _claim_scope or _static_claim_scope(options)
     purpose = str(kwargs.get("purpose") or "registration")
     if allow_reuse and purpose != "plan-check":
         raise ValueError("仅套餐查询允许复用代理")
@@ -258,11 +426,30 @@ def acquire(*, provider: str = "1024proxy", progress_callback=None, cancel=None,
 
     with _lock:
         profile.waiting += 1
+
+    def switch_profile(next_provider: str, next_options: dict, next_scope: dict) -> None:
+        """校验并完成等待计数的原子迁移，失败时保留原 profile 计数。"""
+        nonlocal provider, options, claim_scope, profile
+        _validate_lifetime(next_provider, next_options, policy)
+        next_profile = _profile(next_provider, next_options)
+        if next_profile.key == profile.key:
+            return
+        with _lock:
+            profile.waiting -= 1
+            next_profile.waiting += 1
+        provider, options, claim_scope, profile = next_provider, next_options, next_scope, next_profile
+
     try:
         start()
         report("正在从代理池申请已校验线路")
         while True:
             checkpoint()
+            if _source_resolver is not None:
+                # 来源热切换只影响后续实际领取；原 deadline 与关联信息保持不变。
+                next_provider, next_options, next_scope = _source_resolver()
+                next_key = _profile_key(next_provider, next_options)
+                if next_key != profile.key:
+                    switch_profile(next_provider, next_options, next_scope)
             if _stop.is_set():
                 raise ProxyPoolTimeout("代理池已停止，未分配线路")
             if deadline is not None and time.monotonic() >= deadline:
@@ -281,7 +468,18 @@ def acquire(*, provider: str = "1024proxy", progress_callback=None, cancel=None,
                 lease = None
             if lease:
                 confirming_delivery = False
+                lease_returned = False
                 try:
+                    # 配置可能在数据库领取期间切换；解析异常也必须经过
+                    # 下面的补偿路径，不能让已领取租约悬空。
+                    if _source_resolver is not None:
+                        next_provider, next_options, next_scope = _source_resolver()
+                        if _profile_key(next_provider, next_options) != profile.key:
+                            store.release(lease, reason="allocation_cancelled", cooldown=0,
+                                          before_delivery=True)
+                            lease_returned = True
+                            switch_profile(next_provider, next_options, next_scope)
+                            continue
                     checkpoint()
                     if _stop.is_set() or (deadline is not None and time.monotonic() >= deadline):
                         raise ProxyPoolTimeout("代理池领取已超时或停止，晚到线路已归还")
@@ -296,8 +494,9 @@ def acquire(*, provider: str = "1024proxy", progress_callback=None, cancel=None,
                             raise ProxyPoolTimeout("代理池领取已超时或停止，晚到线路已归还")
                 except BaseException:
                     # 事务确认已提交但尚未返回的线路也可补偿；真实交付后的普通释放不返还次数。
-                    store.release(lease, reason="allocation_cancelled", cooldown=0,
-                                  **({"before_delivery": True} if confirming_delivery else {}))
+                    if not lease_returned:
+                        store.release(lease, reason="allocation_cancelled", cooldown=0,
+                                      **({"before_delivery": True} if confirming_delivery else {}))
                     raise
                 _wake.set()
                 return lease
@@ -456,8 +655,11 @@ def maintain_once(*, role: str = "all") -> bool:
     global _maintenance_turn
     policy = settings()
     _prewarm_plan_country_profiles(policy)
+    current_keys = _current_profile_keys()
     with _lock:
-        warm = {item.key for item in _profiles.values() if item.waiting or time.monotonic() - item.touched <= policy["max_idle"]}
+        warm = {item.key for item in _profiles.values()
+                if _profile_is_current(item, current_keys)
+                and (item.waiting or time.monotonic() - item.touched <= policy["max_idle"])}
     for resource in store.maintenance(max_age=policy["max_age"], max_idle=policy["max_idle"], min_ready=policy["min_ready"],
                                       min_ttl=policy["min_ttl"], max_size=policy["max_size"], warm_profiles=warm):
         _retire(resource)
@@ -465,6 +667,7 @@ def maintain_once(*, role: str = "all") -> bool:
         profiles = sorted(_profiles.values(), key=lambda item: (
             not bool(item.waiting), item.last_served, -item.waiting, item.touched,
         ))
+        profiles = [item for item in profiles if _profile_is_current(item, current_keys)]
         # 排序与首个维护机会的预留在同一锁内，两个 worker 不反复抢同一地区。
         if profiles:
             _maintenance_turn += 1

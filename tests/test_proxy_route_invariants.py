@@ -1,6 +1,7 @@
 import unittest
 import ast
 import inspect
+import sys
 import textwrap
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -8,6 +9,49 @@ from urllib.parse import parse_qs, urlparse
 
 
 class ProxyRouteInvariantTests(unittest.TestCase):
+    def test_cloak_registration_requires_pool_proxy_when_default_proxy_disabled(self):
+        from core import cloakbrowser_driver
+
+        with patch.object(cloakbrowser_driver._cfg, "CLOAK_USE_PROXY", False):
+            with self.assertRaisesRegex(RuntimeError, "必须使用统一代理池"):
+                cloakbrowser_driver.build_cloak_driver()
+
+    def test_cloak_registration_keeps_explicit_lease_when_default_proxy_disabled(self):
+        from core import cloakbrowser_driver
+
+        browser = MagicMock()
+        context = MagicMock()
+        browser.new_context.return_value = context
+        context.new_page.return_value = MagicMock()
+        cloak_module = SimpleNamespace(
+            launch=MagicMock(return_value=browser),
+            launch_persistent_context=MagicMock(),
+        )
+        with (
+            patch.dict(sys.modules, {"cloakbrowser": cloak_module}),
+            patch.object(cloakbrowser_driver._cfg, "CLOAK_USE_PROXY", False),
+            patch.object(cloakbrowser_driver, "_build_cloak_locale_options", return_value={}),
+        ):
+            cloakbrowser_driver.build_cloak_driver(proxy="http://proxy.example:8080")
+
+        self.assertEqual(
+            "http://proxy.example:8080",
+            cloak_module.launch.call_args.kwargs["proxy"],
+        )
+
+    def test_roxy_registration_rejects_proxyless_business_entry(self):
+        from core.registration.roxy import run_roxy_registration
+
+        with self.assertRaisesRegex(RuntimeError, "必须使用统一代理池"):
+            run_roxy_registration("account@example.com", "Example", "2000-01-01")
+
+    def test_protocol_registration_rejects_proxyless_business_entry(self):
+        from core.registration.protocol import run_protocol_registration
+
+        for proxy in (None, ""):
+            with self.subTest(proxy=proxy), self.assertRaisesRegex(RuntimeError, "必须使用统一代理池"):
+                run_protocol_registration("account@example.com", "Example", "2000-01-01", proxy=proxy)
+
     def test_browser_runtime_timeout_does_not_quarantine_proxy(self):
         from core import codex_retry_service
 
@@ -378,7 +422,7 @@ class ProxyRouteInvariantTests(unittest.TestCase):
             patch.object(live_check_service, "token_claims", return_value={"token_expired": True}),
             patch.object(live_check_service, "_append_log"),
             patch.object(live_check_service._QUEUE_SLOTS, "release"),
-            patch("core.account_proxy.acquire_account_proxy", return_value=route),
+            patch("core.account_proxy.acquire_account_proxy", return_value=route) as acquire,
             patch("core.storage.account_auth.ensure_account_protocol_identity", return_value=identity) as ensure,
             patch("core.protocol_v2_liveness.refresh_access_token", return_value=refreshed) as refresh,
         ):
@@ -394,6 +438,7 @@ class ProxyRouteInvariantTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         ensure.assert_called_once_with(85)
         self.assertIs(identity, refresh.call_args.kwargs["identity"])
+        self.assertNotIn("explicit_proxy", acquire.call_args.kwargs)
         route.release.assert_called_once_with(reason="live-check-85")
 
     def test_live_check_uses_valid_saved_token_before_email_login(self):

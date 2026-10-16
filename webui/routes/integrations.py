@@ -61,6 +61,23 @@ def create_integrations_blueprint(context: WebUIContext):
             logger.warning("读取提链类型失败：%s", type(exc).__name__)
             return jsonify({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}), 400
 
+    @bp.get("/api/icloud-hme/accounts")
+    def api_icloud_hme_accounts():
+        """只读已保存连接的账号目录，不同步、创建或领取隐藏邮箱。"""
+        try:
+            from core.icloud_hme_client import list_accounts
+
+            accounts = list_accounts()
+            return jsonify({"ok": True, "items": [
+                {"id": str(item["id"]), "label": str(item.get("name") or item.get("label") or item["id"]),
+                 "status": str(item.get("status") or "unknown")}
+                for item in accounts if isinstance(item, dict) and item.get("id")
+            ]})
+        except Exception as exc:
+            # 异常可能携带服务 URL 或凭据；页面只显示可操作的简短说明。
+            logger.warning("读取 iCloud 账号目录失败：%s", type(exc).__name__)
+            return jsonify({"ok": False, "error": "无法读取 iCloud 账号目录，请检查已保存的连接配置；当前账号选择已保留"}), 400
+
     @bp.post("/api/proxy-provider/test")
     def api_proxy_provider_test():
         """实际提取并检测一个 1024Proxy IP，供配置页本地联调。"""

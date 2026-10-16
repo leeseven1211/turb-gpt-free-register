@@ -1074,6 +1074,7 @@ async function api(url, opts = {}) {
     if (!r.ok) {
       const error = new Error(j.error || ('HTTP '+r.status));
       error.code = j.code || '';
+      error.fields = j.fields && typeof j.fields === 'object' ? j.fields : {};
       throw error;
     }
     return j;

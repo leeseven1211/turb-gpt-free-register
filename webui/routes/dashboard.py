@@ -129,13 +129,28 @@ def create_dashboard_blueprint(context: WebUIContext):
             summary = dict(pool_counts.get(source) or {})
             summary["total"] = sum(summary.values())
             local_pools.append((source, label, summary))
-        enabled_sources = set(parse_email_sources(email_cfg.EMAIL_SOURCE))
+        # parse_email_sources 保留历史兼容语义：空值回退 Outlook。资源页需要
+        # 反映手动模式下的显式空来源，因此这里先区分“未配置来源”和兼容回退。
+        raw_email_sources = email_cfg.EMAIL_SOURCE
+        has_configured_email_source = bool(raw_email_sources.strip()) if isinstance(raw_email_sources, str) else bool(raw_email_sources)
+        enabled_sources = set(parse_email_sources(raw_email_sources)) if has_configured_email_source else set()
+        # EMAIL_SOURCE 是邮箱来源是否启用的唯一事实。收件方式可能让 iCloud
+        # 依赖 Email Butler 的收件能力，即使 Butler 本身没有参与发号，也要
+        # 在资源页保留这项依赖的可见性。
+        dependent_sources: set[str] = set()
+        inbox_mode = str(getattr(email_cfg, "ICLOUD_HME_INBOX_MODE", "") or "").strip().lower()
+        if "icloud_hide" in enabled_sources and inbox_mode == "forward_butler":
+            dependent_sources.add("email_butler")
         pool_rows = [
             {
                 "source": source,
                 "label": label,
                 "kind": "local_pool",
                 "enabled": source in enabled_sources,
+                "dependency": source in dependent_sources,
+                "dependency_reason": "iCloud 隐藏邮箱使用 forward_butler 收件" if source in dependent_sources else "",
+                "history_available": bool(summary.get("total", 0)),
+                "default_visible": source in enabled_sources or source in dependent_sources,
                 **{key: int(summary.get(key, 0) or 0) for key in ("total", "available", "used", "failed", "disabled")},
             }
             for source, label, summary in local_pools
@@ -146,6 +161,10 @@ def create_dashboard_blueprint(context: WebUIContext):
             "label": EMAIL_SOURCE_LABELS.get(source, source),
             "kind": "on_demand",
             "enabled": source in enabled_sources,
+            "dependency": source in dependent_sources,
+            "dependency_reason": "iCloud 隐藏邮箱使用 forward_butler 收件" if source in dependent_sources else "",
+            "history_available": False,
+            "default_visible": source in enabled_sources or source in dependent_sources,
         } for source in on_demand_sources)
 
         active_leases = active_proxy_leases()

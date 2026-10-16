@@ -18,7 +18,7 @@ from config import (
     USER_AGENT, SEC_CH_UA, SEC_CH_UA_PLATFORM, SEC_CH_UA_MOBILE,
     SEND_HIGH_ENTROPY_CLIENT_HINTS,
     ACCEPT_LANGUAGE, IMPERSONATE, OAI_CLIENT_BUILD_NUMBER, OAI_CLIENT_VERSION,
-    REQUEST_TIMEOUT, pick_proxy, pick_browser_profile, build_browser_environment,
+    REQUEST_TIMEOUT, pick_browser_profile, build_browser_environment,
     validate_browser_profile,
 )
 from config.browser import resolve_chrome_identity
@@ -86,14 +86,12 @@ class BrowserSession:
         # proxy=""    → 禁用代理（直连）
         # proxy="..." → 使用指定代理
         if proxy is None:
-            from core.proxy_provider import registration_proxy_mode
-
-            if registration_proxy_mode() == "1024":
-                raise RuntimeError(
-                    "当前启用了 1024Proxy，BrowserSession 禁止在未传代理时回退 PROXY_POOL；"
-                    "请先通过注册代理或账号功能代理服务领取租约"
-                )
-            self.proxy = pick_proxy()
+            # 统一代理池必须先交付租约；这里不能按旧静态池随机抽取，
+            # 否则会绕过国家、寿命、独占和实际供应商追踪。
+            raise RuntimeError(
+                "统一代理池禁止在未领取线路时回退 PROXY_POOL；"
+                "请先通过注册或账号功能代理服务领取租约"
+            )
         else:
             self.proxy = proxy
 

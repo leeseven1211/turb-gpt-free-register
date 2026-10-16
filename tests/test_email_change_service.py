@@ -83,7 +83,7 @@ class EmailChangeProtocolContractTests(unittest.TestCase):
         complete.assert_called_once()
         warm.assert_called_once_with(fresh_session, "fresh-at")
 
-    def test_recent_login_uses_protocol_direct_fallback_after_proxy_403(self):
+    def test_recent_login_does_not_fallback_to_direct_after_proxy_403(self):
         from core import account_liveness
 
         old_session = Mock()
@@ -98,7 +98,7 @@ class EmailChangeProtocolContractTests(unittest.TestCase):
         with patch.object(
             account_liveness,
             "_network_preflight_with_retry",
-            side_effect=[RuntimeError("HTTP 403 from auth.openai.com"), (fresh_session, "authorize")],
+            side_effect=RuntimeError("HTTP 403 from auth.openai.com"),
         ) as preflight, patch.object(
             account_liveness,
             "follow_authorize",
@@ -108,18 +108,17 @@ class EmailChangeProtocolContractTests(unittest.TestCase):
             "_complete_recent_login_on_session",
             return_value=({"accessToken": "fresh-at"}, "password_mfa_totp"),
         ), patch.object(account_liveness, "_warm_authenticated_session"):
-            result = account_liveness.perform_recent_login(
-                old_session,
-                "old@example.test",
-                email_source="email_butler",
-                access_token="old-at",
-            )
+            with self.assertRaisesRegex(RuntimeError, "HTTP 403"):
+                account_liveness.perform_recent_login(
+                    old_session,
+                    "old@example.test",
+                    email_source="email_butler",
+                    access_token="old-at",
+                )
 
-        self.assertIs(fresh_session, result["protocol_session"])
-        self.assertEqual(2, preflight.call_count)
-        self.assertEqual(old_session.proxy, preflight.call_args_list[0].args[1])
-        self.assertEqual("", preflight.call_args_list[1].args[1])
-        self.assertIsNone(preflight.call_args_list[1].kwargs["identity"])
+        preflight.assert_called_once()
+        self.assertEqual(old_session.proxy, preflight.call_args.args[1])
+        self.assertEqual("stable-device", preflight.call_args.kwargs["identity"]["device_id"])
 
     def test_follow_reauth_rejects_failed_navigation_response(self):
         from core.account_export import _follow_reauth
