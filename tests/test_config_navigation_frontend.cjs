@@ -168,7 +168,7 @@ test('账号动作按功能归组，套餐的代理、国家、重试和节奏�
   const featureKeys = {
     '查询套餐': [
       'ACCOUNT_PLAN_CHECK_PROXY_MODE', 'PLAN_CHECK_PROXY_ALLOW_REUSE', 'PLAN_CHECK_PROXY_REUSE_LIMIT',
-      'PLAN_CHECK_COUNTRIES', 'PLAN_CHECK_COUNTRY_WAIT_TIMEOUT', 'PLAN_CHECK_TIMEOUT',
+      'PLAN_CHECK_PAYMENT_METHODS_ENABLED', 'PLAN_CHECK_COUNTRIES', 'PLAN_CHECK_COUNTRY_WAIT_TIMEOUT', 'PLAN_CHECK_TIMEOUT',
       'PLAN_CHECK_MAX_ATTEMPTS', 'PLAN_CHECK_RETRY_DELAY', 'PLAN_CHECK_MIN_INTERVAL',
       'PLAN_CHECK_JITTER', 'PLAN_CHECK_REGISTRATION_RECHECK_DELAY',
     ],
@@ -183,6 +183,7 @@ test('账号动作按功能归组，套餐的代理、国家、重试和节奏�
   };
   const fields = Object.values(featureKeys).flat().reverse().map(key => field(key, '代理与网络',
     key === 'PLAN_CHECK_PROXY_ALLOW_REUSE' ? {type: 'bool', value: true}
+      : key === 'PLAN_CHECK_PAYMENT_METHODS_ENABLED' ? {type: 'bool', value: false}
       : key === 'PLAN_CHECK_COUNTRIES' ? {type: 'list_str_multiline', value: ['JP'], country_codes: ['JP', 'US']}
         : {}));
   const {view} = createConfigView(fields);
@@ -200,11 +201,39 @@ test('账号动作按功能归组，套餐的代理、国家、重试和节奏�
     }
   }
   const plan = sections.get('查询套餐');
-  assert.equal((plan.match(/data-key=/g) || []).length, 11);
+  assert.equal((plan.match(/data-key=/g) || []).length, 12);
   assert.match(plan, /type="checkbox" role="switch" data-key="PLAN_CHECK_PROXY_ALLOW_REUSE" checked/);
+  assert.match(plan, /type="checkbox" role="switch" data-key="PLAN_CHECK_PAYMENT_METHODS_ENABLED" aria-label=/);
+  assert.ok(!/data-key="PLAN_CHECK_PAYMENT_METHODS_ENABLED" checked/.test(plan));
   assert.ok(!markup.includes('class="config-switches-v2"'));
   assert.ok(!plan.includes('data-key="ACCOUNT_ACTION_PROXY_RETRIES"'));
   assert.ok(!plan.includes('data-key="ACCOUNT_ACTION_PROXY_RETRY_DELAY"'));
+});
+
+test('支付方式开关默认关闭，跨分类保留选择且保存为布尔值', async () => {
+  const key = 'PLAN_CHECK_PAYMENT_METHODS_ENABLED';
+  const {view, context} = createConfigView([
+    field(key, '代理与网络', {type: 'bool', value: false, label: '查询支付方式'}),
+    field('PROXY_POOL_MIN_READY', '代理与网络', {type: 'int', value: 20}),
+  ]);
+  view.search(key);
+  let markup = view.render('代理与网络', view.groups()['代理与网络']);
+  assert.equal(view.state().proxy, '账号动作线路');
+  assert.match(markup, /查询支付方式/);
+  assert.ok(!/data-key="PLAN_CHECK_PAYMENT_METHODS_ENABLED" checked/.test(markup));
+  view.setPending(key, true);
+  view.search('PROXY_POOL_MIN_READY');
+  view.search(key);
+  markup = view.render('代理与网络', view.groups()['代理与网络']);
+  assert.match(markup, /data-key="PLAN_CHECK_PAYMENT_METHODS_ENABLED" checked/);
+  let payload;
+  context.api = async (_url, options) => { payload = JSON.parse(options.body); return {reloaded: true}; };
+  await view.save();
+  assert.deepEqual(payload.updates, {[key]: true});
+  view.fields([field(key, '代理与网络', {type: 'bool', value: true, label: '查询支付方式'})]);
+  view.setPending(key, false);
+  await view.save();
+  assert.deepEqual(payload.updates, {[key]: false});
 });
 
 test('切换代理分类和账号功能保留未保存国家、开关和重试值，并统一提交原配置键', async () => {

@@ -83,6 +83,8 @@ PLAN_CHECK_PROXY = schema_default("PLAN_CHECK_PROXY")
 PLAN_CHECK_PROXY_ALLOW_REUSE = schema_default("PLAN_CHECK_PROXY_ALLOW_REUSE")
 # 开启复用时，同一实际出口 IP 在租约有效期内允许建立的套餐查询租约数；包含首次租用。
 PLAN_CHECK_PROXY_REUSE_LIMIT = schema_default("PLAN_CHECK_PROXY_REUSE_LIMIT")
+# 独立查套餐是否额外预检 Plus 的支付方式和应付金额；默认只查询套餐优惠。
+PLAN_CHECK_PAYMENT_METHODS_ENABLED = schema_default("PLAN_CHECK_PAYMENT_METHODS_ENABLED")
 # 独立账号查套餐按此顺序冻结国家；空列表保持旧的注册国家单次查询路径。
 PLAN_CHECK_COUNTRIES = schema_default("PLAN_CHECK_COUNTRIES")
 PLAN_CHECK_COUNTRY_WAIT_TIMEOUT = schema_default("PLAN_CHECK_COUNTRY_WAIT_TIMEOUT")

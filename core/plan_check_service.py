@@ -78,6 +78,7 @@ PLAN_CONFIG_ALLOWLIST = {
     "proxy_reuse_limit": "PLAN_CHECK_PROXY_REUSE_LIMIT",
     "countries": "PLAN_CHECK_COUNTRIES",
     "country_wait_timeout": "PLAN_CHECK_COUNTRY_WAIT_TIMEOUT",
+    "payment_methods_enabled": "PLAN_CHECK_PAYMENT_METHODS_ENABLED",
     "legacy_route_source": "ACCOUNT_ACTION_PROXY_MODE",
     "registration_route_source": "REGISTRATION_PROXY_MODE",
 }
@@ -87,6 +88,14 @@ def _snapshot_value(snapshot, key: str, default=None):
     if isinstance(snapshot, dict) and key in snapshot:
         return snapshot[key]
     return default
+
+
+def _payment_methods_enabled(config_snapshot: dict | None = None) -> bool:
+    """支付预检遵循入队快照，兼容缺少该字段的历史任务。"""
+    return bool(_snapshot_value(
+        config_snapshot, "payment_methods_enabled",
+        getattr(proxy_cfg, "PLAN_CHECK_PAYMENT_METHODS_ENABLED", False),
+    ))
 
 
 def _captured_proxy_source(purpose: str) -> str | None:
@@ -263,7 +272,7 @@ def _query_account_plan(
         })
     if session is not None:
         query_kwargs["session"] = session
-    if include_checkout:
+    if include_checkout and not str(trigger).startswith("registration"):
         query_kwargs.update(include_checkout=True, checkout_country=checkout_country,
                             checkout_checkpoint=checkout_checkpoint)
     result = check_account_plan(access_token, **query_kwargs)
@@ -399,6 +408,7 @@ def _run_country_plan_checks(
 
     from config.countries import normalize_plan_check_countries
     countries = normalize_plan_check_countries(countries)
+    include_checkout = _payment_methods_enabled(config_snapshot) and not str(trigger).startswith("registration")
     timeout = max(1, min(60, float(_snapshot_value(config_snapshot, "plan_check_timeout", 15))))
     attempts = max(1, min(4, int(_snapshot_value(config_snapshot, "plan_check_max_attempts", 2))))
     wait_timeout = float(_snapshot_value(config_snapshot, "country_wait_timeout", getattr(proxy_cfg, "PLAN_CHECK_COUNTRY_WAIT_TIMEOUT", 60)))
@@ -493,7 +503,7 @@ def _run_country_plan_checks(
                     access_token, proxy=route.proxy_url, timezone_offset_min=timezone_offset_min,
                     timeout=min(timeout, remaining / 2), max_attempts=1, retry_delay=0,
                     deadline_at=progress["deadline_at"],
-                    include_checkout=True, checkout_country=country,
+                    include_checkout=include_checkout, checkout_country=country,
                     checkout_checkpoint=lambda message: _checkpoint(operation_context, message),
                 )
                 answer.update({key: value for key, value in route_info.items() if key not in {"proxy_used", "proxy_url"}})
@@ -670,7 +680,8 @@ def _run_plan_check(
             proxy=account_route.proxy_url,
             timezone_offset_min=timezone_offset_min,
             config_snapshot=config_snapshot,
-            include_checkout=not str(trigger).startswith("registration"),
+            include_checkout=(not str(trigger).startswith("registration")
+                              and _payment_methods_enabled(config_snapshot)),
             checkout_country=account_route.public_dict().get("proxy_region") or getattr(account_route, "region", None),
             checkout_checkpoint=lambda message: _checkpoint(operation_context, message),
         )

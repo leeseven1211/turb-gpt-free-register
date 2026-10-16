@@ -352,6 +352,7 @@ _DEFAULTS: dict[str, Any] = {
     "PLAN_CHECK_PROXY": "",
     "PLAN_CHECK_PROXY_ALLOW_REUSE": True,
     "PLAN_CHECK_PROXY_REUSE_LIMIT": 3,
+    "PLAN_CHECK_PAYMENT_METHODS_ENABLED": False,
     "PLAN_CHECK_COUNTRIES": ["JP", "VN", "IN"],
     "PLAN_CHECK_COUNTRY_WAIT_TIMEOUT": 60,
     "ACCOUNT_ACTION_PROXY_MODE": "registration",
@@ -538,6 +539,10 @@ _FIELD_DEFINITIONS = [
     {
         "key": "PLAN_CHECK_PROXY_REUSE_LIMIT", "file": "proxy.py", "type": "int", "group": "代理与网络",
         "label": "查询套餐同一 IP 租用次数上限", "help": "仅影响使用代理池的查套餐（1024Proxy/静态代理池）；按实际出口 IP 在租约有效期内累计，包含首次租用。释放或进程重启不会清零，达到上限后换线；1024Proxy 仍验证出口国家，静态代理池仍使用健康校验。仅在允许复用 IP 开启时生效。",
+    },
+    {
+        "key": "PLAN_CHECK_PAYMENT_METHODS_ENABLED", "file": "proxy.py", "type": "bool", "group": "代理与网络",
+        "label": "查询支付方式", "help": "默认关闭。开启后独立查套餐会额外预检 Plus 活动的应付金额、结账会话和可用支付方式，耗时更长且可能因网络失败。关闭时只查套餐和优惠，不创建结账会话；不影响注册查套餐。新任务入队时生效，重跑沿用原任务设置。",
     },
     {
         "key": "PLAN_CHECK_COUNTRIES", "file": "proxy.py", "type": "list_str_multiline", "group": "代理与网络",

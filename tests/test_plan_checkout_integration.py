@@ -99,7 +99,8 @@ class PlanCheckoutRequestTests(unittest.TestCase):
         with patch.object(plan_check_service, 'check_account_plan', return_value={'ok': True, 'plus_promo_eligible': True}) as query, \
              patch.object(plan_check_service, '_wait_for_rate_slot'):
             plan_check_service._query_account_plan(email='synthetic@example.test', access_token='synthetic-token',
-                trigger='registration_auto', proxy='JP', timezone_offset_min='-', checkout_country='JP')
+                trigger='registration_auto', proxy='JP', timezone_offset_min='-', checkout_country='JP',
+                include_checkout=True, config_snapshot={'payment_methods_enabled': True})
         self.assertNotIn('include_checkout', query.call_args.kwargs)
         self.assertNotIn('checkout_country', query.call_args.kwargs)
 
@@ -120,6 +121,13 @@ class PlanCheckoutRequestTests(unittest.TestCase):
         self.assertTrue(query.call_args.kwargs['include_checkout'])
         self.assertEqual('JP', query.call_args.kwargs['checkout_country'])
 
+    def test_legacy_snapshot_without_payment_choice_uses_current_config(self):
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled), \
+                 patch.object(plan_check_service.proxy_cfg, 'PLAN_CHECK_PAYMENT_METHODS_ENABLED', enabled, create=True):
+                self.assertIs(enabled, plan_check_service._payment_methods_enabled({}))
+                self.assertIs(enabled, plan_check_service._payment_methods_enabled(None))
+
 
 class PlanCheckoutCountryIntegrationTests(PostgresTestCase):
     def setUp(self):
@@ -127,6 +135,92 @@ class PlanCheckoutCountryIntegrationTests(PostgresTestCase):
             'email': 'checkout-integration@example.test', 'access_token': 'synthetic-token',
             'plan_check_status': 'queued', 'current_plan_type': 'free'})
         self.context = SimpleNamespace(checkpoint=Mock(), report=Mock(return_value={}), finish=Mock())
+
+    def test_default_disabled_single_and_multi_country_queries_never_probe_payment(self):
+        for countries in (None, ['JP', 'VN']):
+            with self.subTest(countries=countries):
+                self._execute_with_real_plan_query(countries=countries, snapshot={}, enabled=False)
+
+    def test_frozen_payment_choice_controls_single_and_multi_country_queries(self):
+        for enabled in (False, True):
+            for countries in (None, ['JP', 'VN']):
+                with self.subTest(enabled=enabled, countries=countries):
+                    self._execute_with_real_plan_query(
+                        countries=countries, snapshot={'payment_methods_enabled': enabled},
+                        enabled=enabled, current_enabled=not enabled,
+                    )
+
+    def test_queued_payment_choice_and_manual_retry_keep_original_snapshot(self):
+        from config.schema import ConfigSnapshot
+        from core.operations import task_gateway
+        from core.storage import operation
+        task_gateway.init()
+        plan_check_service.register_operation_handlers()
+        submit = task_gateway.submit_durable_operation
+        def submit_without_dispatch(**kwargs):
+            kwargs['dispatch'] = False
+            return submit(**kwargs)
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                snapshot = ConfigSnapshot({
+                    'PLAN_CHECK_COUNTRIES': ['JP'],
+                    'ACCOUNT_PLAN_CHECK_PROXY_MODE': 'provider:1024proxy',
+                    'PLAN_CHECK_PAYMENT_METHODS_ENABLED': enabled,
+                    'PLAN_CHECK_COUNTRY_WAIT_TIMEOUT': 5,
+                }, {'ACCOUNT_PLAN_CHECK_PROXY_MODE': 'env'}, revision=23)
+                with patch.object(plan_check_service, 'get_config_snapshot', return_value=snapshot), \
+                     patch.object(task_gateway, 'submit_durable_operation', side_effect=submit_without_dispatch):
+                    submitted = plan_check_service.enqueue_account_plan_check(account_id=self.account_id,
+                        email='checkout-integration@example.test', trigger='manual',
+                        access_token='synthetic-token',
+                        timezone_offset_min='-', batch_id=None, idempotency_key=None)
+                task_id, run_id = submitted['task_id'], submitted['run_id']
+                self.assertIs(enabled, operation.get_run(run_id)['data']['config_snapshot']['payment_methods_enabled'])
+                route = SimpleNamespace(proxy_url='JP', region='JP', release=Mock(),
+                    public_dict=lambda: {'proxy_region': 'JP', 'proxy_provider': '1024proxy'})
+                with patch.object(plan_check_service.proxy_cfg, 'PLAN_CHECK_PAYMENT_METHODS_ENABLED', not enabled, create=True), \
+                     patch('core.account_proxy.acquire_account_proxy', return_value=route), \
+                     patch.object(plan_check_service, '_wait_for_rate_slot'), \
+                     patch.object(plan_check_service, 'check_account_plan', return_value=offer_result('JP', 100)) as query:
+                    first = task_gateway._execute_operation_handler('plan_check', run_id)
+                    retry = operation.retry_runtime_task(task_id)
+                    self.assertIs(enabled, retry['data']['config_snapshot']['payment_methods_enabled'])
+                    second = task_gateway._execute_operation_handler('plan_check', int(retry['id']))
+                self.assertEqual('success', first['status'])
+                self.assertEqual('success', second['status'])
+                self.assertEqual([enabled, enabled], [call.kwargs['include_checkout'] for call in query.call_args_list])
+
+    def _execute_with_real_plan_query(self, *, countries, snapshot, enabled, current_enabled=False):
+        mode = 'multi' if countries else 'single'
+        account_id = record_store.insert_row(record_store.ACCOUNTS, {
+            'email': f'payment-choice-{self.account_id}-{mode}-{enabled}@example.test',
+            'access_token': 'synthetic-token', 'plan_check_status': 'queued',
+        })
+        request_tests = PlanCheckoutRequestTests()
+        def acquire(**kwargs):
+            country = kwargs.get('region') or 'JP'
+            return SimpleNamespace(proxy_url=country, region=country, release=Mock(),
+                public_dict=lambda: {'proxy_region': country, 'proxy_provider': '1024proxy'})
+        def query(token, **kwargs):
+            return chatgpt_plan.check_account_plan(token, session=request_tests.env(), **kwargs)
+        with patch('core.account_proxy.acquire_account_proxy', side_effect=acquire), \
+             patch.object(plan_check_service.proxy_cfg, 'PLAN_CHECK_PAYMENT_METHODS_ENABLED', current_enabled, create=True), \
+             patch.object(plan_check_service, 'check_account_plan', side_effect=query), \
+             patch.object(plan_check_service, '_wait_for_rate_slot'), \
+             patch.object(chatgpt_plan, '_query_account_quota', return_value={}), \
+             patch('core.checkout_probe.query_checkout_details', side_effect=lambda token, **kw: checkout_answer(kw['country'])) as probe:
+            result = plan_check_service._run_plan_check(account_id=account_id,
+                email='payment-choice@example.test', access_token='synthetic-token', trigger='manual',
+                proxy=None, timezone_offset_min='-', countries=countries,
+                operation_context=self.context, config_snapshot={'country_wait_timeout': 5, **snapshot})
+        self.assertTrue(result['ok'])
+        self.assertEqual((len(countries) if countries else 1) if enabled else 0, probe.call_count)
+        account = db.get_account(account_id)
+        self.assertEqual('free_trial', account['plus_promo_kind'])
+        self.assertEqual('success', self.context.finish.call_args.kwargs['status'])
+        if not enabled:
+            self.assertNotIn('checkout_status', str(account['account_promotions']))
+            self.assertEqual(0, self.context.finish.call_args.kwargs['result_summary']['checkout_check_count'])
 
     def test_payment_failure_is_partial_task_but_three_successful_plan_countries(self):
         routes = []
@@ -153,7 +247,7 @@ class PlanCheckoutCountryIntegrationTests(PostgresTestCase):
             result = plan_check_service._run_plan_check(account_id=self.account_id,
                 email='checkout-integration@example.test', access_token='synthetic-token', trigger='manual_bulk',
                 proxy=None, timezone_offset_min='-', countries=['JP', 'VN', 'IN'], operation_context=self.context,
-                config_snapshot={'country_wait_timeout': 5})
+                config_snapshot={'country_wait_timeout': 5, 'payment_methods_enabled': True})
         account = db.get_account(self.account_id)
         self.assertTrue(result['ok'])
         self.assertEqual(['success'] * 3, [r['status'] for r in account['plan_check_country_results']])

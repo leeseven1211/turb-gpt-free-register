@@ -14,8 +14,10 @@ class PlanCountryConfigTests(unittest.TestCase):
     def test_config_package_reexports_plan_country_settings(self):
         self.assertEqual(["JP", "VN", "IN"], config.PLAN_CHECK_COUNTRIES)
         self.assertEqual(60, config.PLAN_CHECK_COUNTRY_WAIT_TIMEOUT)
+        self.assertFalse(config.PLAN_CHECK_PAYMENT_METHODS_ENABLED)
         self.assertIn("PLAN_CHECK_COUNTRIES", config.__all__)
         self.assertIn("PLAN_CHECK_COUNTRY_WAIT_TIMEOUT", config.__all__)
+        self.assertIn("PLAN_CHECK_PAYMENT_METHODS_ENABLED", config.__all__)
 
     def test_normalize_countries_accepts_common_separators_and_preserves_order(self):
         self.assertEqual(
@@ -36,11 +38,17 @@ class PlanCountryConfigTests(unittest.TestCase):
     def test_schema_exposes_country_list_and_wait_timeout(self):
         countries = schema.CONFIG_SCHEMA["PLAN_CHECK_COUNTRIES"]
         timeout = schema.CONFIG_SCHEMA["PLAN_CHECK_COUNTRY_WAIT_TIMEOUT"]
+        payment_methods = schema.CONFIG_SCHEMA["PLAN_CHECK_PAYMENT_METHODS_ENABLED"]
         self.assertEqual(["JP", "VN", "IN"], countries.default)
         self.assertEqual("list_str_multiline", countries.type)
         self.assertEqual("代理与网络", countries.group)
         self.assertEqual(60, timeout.default)
         self.assertEqual({"min": 5, "max": 300}, timeout.range)
+        self.assertIs(False, payment_methods.default)
+        self.assertEqual("bool", payment_methods.type)
+        self.assertEqual("代理与网络", payment_methods.group)
+        self.assertIs(True, schema.validate_value("PLAN_CHECK_PAYMENT_METHODS_ENABLED", "true"))
+        self.assertIs(False, schema.validate_value("PLAN_CHECK_PAYMENT_METHODS_ENABLED", "false"))
         self.assertEqual(["US", "JP"], schema.validate_value("PLAN_CHECK_COUNTRIES", "us jp"))
         self.assertEqual([], schema.validate_value("PLAN_CHECK_COUNTRIES", ""))
         with self.assertRaises(schema.ConfigValidationError):
@@ -59,7 +67,8 @@ class PlanCountryConfigTests(unittest.TestCase):
             try:
                 config.reload_all()
                 path.write_text(
-                    "PLAN_CHECK_COUNTRIES=us, jp\nPLAN_CHECK_COUNTRY_WAIT_TIMEOUT=120\n",
+                    "PLAN_CHECK_COUNTRIES=us, jp\nPLAN_CHECK_COUNTRY_WAIT_TIMEOUT=120\n"
+                    "PLAN_CHECK_PAYMENT_METHODS_ENABLED=true\n",
                     encoding="utf-8",
                 )
                 with patch.dict(os.environ, {"PYTHON_DOTENV_DISABLED": "0"}):
@@ -68,10 +77,18 @@ class PlanCountryConfigTests(unittest.TestCase):
                 proxy = importlib.import_module("config.proxy")
                 self.assertEqual(["US", "JP"], proxy.PLAN_CHECK_COUNTRIES)
                 self.assertEqual(120, proxy.PLAN_CHECK_COUNTRY_WAIT_TIMEOUT)
+                self.assertTrue(proxy.PLAN_CHECK_PAYMENT_METHODS_ENABLED)
                 self.assertEqual(["US", "JP"], list(schema.non_sensitive_snapshot()["PLAN_CHECK_COUNTRIES"]))
+                self.assertIs(True, schema.non_sensitive_snapshot()["PLAN_CHECK_PAYMENT_METHODS_ENABLED"])
+                path.write_text("PLAN_CHECK_PAYMENT_METHODS_ENABLED=false\n", encoding="utf-8")
+                with patch.dict(os.environ, {"PYTHON_DOTENV_DISABLED": "0"}):
+                    config.reload_all()
+                self.assertFalse(proxy.PLAN_CHECK_PAYMENT_METHODS_ENABLED)
+                self.assertIs(False, schema.non_sensitive_snapshot()["PLAN_CHECK_PAYMENT_METHODS_ENABLED"])
             finally:
                 os.environ.pop("PLAN_CHECK_COUNTRIES", None)
                 os.environ.pop("PLAN_CHECK_COUNTRY_WAIT_TIMEOUT", None)
+                os.environ.pop("PLAN_CHECK_PAYMENT_METHODS_ENABLED", None)
                 config.reload_all()
 
 
