@@ -34,7 +34,7 @@ function createResizableTable(key, savedWidths, savedTotal, options = {}) {
     [`gpt_console_table_widths_${key}`, JSON.stringify(savedWidths)],
     [`gpt_console_table_total_${key}`, String(savedTotal)],
   ]);
-  if (key === 'accounts' && options.layoutVersion) storage.set(layoutStorageKey, '1');
+  if (key === 'accounts' && options.layoutVersion) storage.set(layoutStorageKey, options.layoutVersion === true ? '2' : options.layoutVersion);
   const style = {
     width: '',
     setProperty(name, value) { this[name] = value; },
@@ -165,7 +165,7 @@ test('未标记的历史超宽操作列只迁移一次，并保持其余列像�
   const migrated = pixelWidths(first.table);
   migrated.slice(0, last).forEach((width, index) => assertPixels(width, before[index], `迁移后第 ${index} 列`));
   assertPixels(migrated[last], 108, '迁移后的操作列');
-  assert.equal(first.storage.get(first.layoutStorageKey), '1');
+  assert.equal(first.storage.get(first.layoutStorageKey), '2');
   assert.ok(Math.abs(Number(first.storage.get('gpt_console_table_total_accounts')) - 1514.72) < 0.01);
 
   const reloaded = createResizableTable(
@@ -187,7 +187,7 @@ test('已标记的新布局允许用户把操作列调到 600px，刷新后不�
   const before = pixelWidths(first.table);
   const last = before.length - 1;
   assertPixels(before[last], 600);
-  assert.equal(first.storage.get(first.layoutStorageKey), '1');
+  assert.equal(first.storage.get(first.layoutStorageKey), '2');
 
   const reloaded = createResizableTable(
     'accounts',
@@ -210,7 +210,7 @@ test('未标记但末列不明显过宽的历史布局保持原比例', () => {
   const actual = pixelWidths(table.table);
   actual.forEach((width, index) => assertPixels(width, pixels[index], `保留历史布局第 ${index} 列`));
   assert.equal(table.storage.get('gpt_console_table_widths_accounts'), JSON.stringify(saved));
-  assert.equal(table.storage.get(table.layoutStorageKey), '1');
+  assert.equal(table.storage.get(table.layoutStorageKey), '2');
 });
 
 test('账号列向左拖动保持整表宽度并把空间交给邻列；其他表保持相邻列拖动', () => {
@@ -250,5 +250,49 @@ test('账号表最后操作列也可大幅调宽，并保持其他列像素宽�
   assertPixels(after[last], before[last] + 500);
   table.listeners.get('pointerup')();
   assert.equal(table.storage.get('gpt_console_table_total_accounts'), '1500');
-  assert.equal(table.storage.get(table.layoutStorageKey), '1');
+  assert.equal(table.storage.get(table.layoutStorageKey), '2');
+});
+
+test('旧相邻拖动布局清理操作列残留空白，保留前面列宽并在刷新后稳定', () => {
+  const saved = [0.03110207, 0.03987567, 0.13956959, 0.05410544, 0.05102565, 0.05344955, 0.04367788, 0.05344955, 0.04127298, 0.08696603, 0.04357332, 0.07112983, 0.05385829, 0.09039752, 0.14654664];
+  const total = 1643.7813;
+  const sum = saved.reduce((value, width) => value + width, 0);
+  const original = saved.map(value => value / sum * total);
+  const first = createResizableTable('accounts', saved, total, {layoutVersion: '1'});
+  const migrated = pixelWidths(first.table);
+  original.slice(0, -1).forEach((width, index) => assertPixels(migrated[index], width));
+  assertPixels(migrated.at(-1), 108);
+  assertPixels(first.table.getBoundingClientRect().width, total - original.at(-1) + 108);
+  assert.ok(first.table.getBoundingClientRect().width < 1610, '内容可以放下时应消除横向溢出');
+  assert.equal(first.storage.get(first.layoutStorageKey), '2');
+  const reloaded = createResizableTable('accounts', JSON.parse(first.storage.get('gpt_console_table_widths_accounts')), Number(first.storage.get('gpt_console_table_total_accounts')), {layoutVersion: true});
+  pixelWidths(reloaded.table).forEach((width, index) => assertPixels(width, migrated[index]));
+});
+
+test('旧布局中的紧凑末列升级时不被放大', () => {
+  const pixels = [36, 72, 160, 80, 84, 88, 72, 88, 88, 192, 72, 88, 72, 96, 60];
+  const total = pixels.reduce((sum, width) => sum + width, 0);
+  const result = createResizableTable('accounts', pixels, total, {layoutVersion: '1'});
+  pixelWidths(result.table).forEach((width, index) => assertPixels(width, pixels[index]));
+  assert.equal(result.storage.get(result.layoutStorageKey), '2');
+});
+
+test('收窄创建列同步缩表且不扩大操作列，同次拖回原位可还原', () => {
+  const pixels = [36, 72, 160, 80, 84, 88, 72, 88, 88, 192, 72, 88, 72, 148, 108];
+  const total = pixels.reduce((sum, width) => sum + width, 0);
+  const result = createResizableTable('accounts', pixels, total, {layoutVersion: true});
+  const index = pixels.length - 2;
+  result.headers[index].handle.onpointerdown({button: 0, clientX: 100, preventDefault() {}, stopPropagation() {}});
+  result.listeners.get('pointermove')({clientX: 0});
+  assertPixels(result.table.getBoundingClientRect().width, total - 100);
+  const narrower = pixelWidths(result.table);
+  pixels.slice(0, index).forEach((width, i) => assertPixels(narrower[i], width));
+  assertPixels(narrower[index], 48);
+  assertPixels(narrower.at(-1), 108);
+  result.listeners.get('pointermove')({clientX: 100});
+  pixelWidths(result.table).forEach((width, i) => assertPixels(width, pixels[i]));
+  result.listeners.get('pointermove')({clientX: 0});
+  result.listeners.get('pointerup')();
+  const reloaded = createResizableTable('accounts', JSON.parse(result.storage.get('gpt_console_table_widths_accounts')), Number(result.storage.get('gpt_console_table_total_accounts')), {layoutVersion: true});
+  pixelWidths(reloaded.table).forEach((width, i) => assertPixels(width, narrower[i]));
 });

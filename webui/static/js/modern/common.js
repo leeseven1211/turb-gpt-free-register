@@ -370,6 +370,7 @@ function pagerSetSize(id, val) {
 // 账号表允许内容截断；只保留足以抓住拖动手柄的极小正宽度。
 const ACCOUNT_COLUMN_MIN_WIDTH = 28;
 const ACCOUNT_COLUMN_LAYOUT_STORAGE_KEY = 'gpt_console_accounts_columns_v2';
+const ACCOUNT_COLUMN_LAYOUT_VERSION = '2';
 const TABLE_DEFAULT_WIDTHS = {
   jobs:     [4, 6, 15, 9, 11, 8, 9, 9, 13, 16],
   // 默认账号行按桌面视口排布；长内容仍可从单元格提示和详情抽屉查看。
@@ -407,7 +408,7 @@ function saveTableWidths(key, widths, total = 0) {
   const precision = key === 'accounts' ? 8 : 4;
   localStorage.setItem(TABLE_WIDTH_STORAGE_PREFIX + key, JSON.stringify(widths.map(value => Number(value.toFixed(precision)))));
   if (total > 0) localStorage.setItem(TABLE_WIDTH_TOTAL_STORAGE_PREFIX + key, String(key === 'accounts' ? Number(total.toFixed(4)) : Math.round(total)));
-  if (key === 'accounts') localStorage.setItem(ACCOUNT_COLUMN_LAYOUT_STORAGE_KEY, '1');
+  if (key === 'accounts') localStorage.setItem(ACCOUNT_COLUMN_LAYOUT_STORAGE_KEY, ACCOUNT_COLUMN_LAYOUT_VERSION);
 }
 
 function resetResizableTable(key) {
@@ -477,21 +478,24 @@ function initResizableTable(table) {
   let effectiveWidths = savedWidths || TABLE_DEFAULT_WIDTHS[key];
   if (key === 'accounts') {
     let tableWidth = readSavedTableTotal(key) || 1396;
-    if (savedWidths && localStorage.getItem(ACCOUNT_COLUMN_LAYOUT_STORAGE_KEY) !== '1') {
+    const layoutVersion = localStorage.getItem(ACCOUNT_COLUMN_LAYOUT_STORAGE_KEY);
+    if (savedWidths && layoutVersion !== ACCOUNT_COLUMN_LAYOUT_VERSION) {
       const weights = savedWidths.map(value => Math.max(0, Number(value) || 0));
       const weightTotal = weights.reduce((sum, value) => sum + value, 0);
       const lastIndex = weights.length - 1;
       const actionWidth = weightTotal > 0 ? weights[lastIndex] / weightTotal * tableWidth : 0;
       const defaultActionWidth = TABLE_DEFAULT_WIDTHS.accounts[lastIndex];
-      // 旧布局可能把收窄其他列后剩余的宽度都留在操作列。只修正明显异常的
-      // 旧末列，前面各列继续保持原像素宽度；有版本标记的手动布局不再压缩。
-      if (actionWidth > defaultActionWidth * 2 && actionWidth > tableWidth * .2) {
+      // 旧相邻拖动布局会把创建列收窄的空间转给操作列；升级时清理一次，
+      // 保留前面各列的像素宽度。新版本中主动拖宽的末列继续正常记忆。
+      const hasTransferredSpace = layoutVersion === '1' && actionWidth > defaultActionWidth;
+      const hasLegacyBlank = actionWidth > defaultActionWidth * 2 && actionWidth > tableWidth * .2;
+      if (hasTransferredSpace || hasLegacyBlank) {
         effectiveWidths = weights.map(value => value / weightTotal * tableWidth);
         effectiveWidths[lastIndex] = defaultActionWidth;
         tableWidth = Number(effectiveWidths.reduce((sum, value) => sum + value, 0).toFixed(4));
         saveTableWidths(key, effectiveWidths.map(value => value / tableWidth), tableWidth);
       }
-      localStorage.setItem(ACCOUNT_COLUMN_LAYOUT_STORAGE_KEY, '1');
+      localStorage.setItem(ACCOUNT_COLUMN_LAYOUT_STORAGE_KEY, ACCOUNT_COLUMN_LAYOUT_VERSION);
     }
     table.style.setProperty('width', `${tableWidth}px`, 'important');
   }
@@ -540,6 +544,14 @@ function initResizableTable(table) {
           // 普通拖动先在当前列和下一列之间交换宽度，避免整表右侧整体后移。
           // 下一列收缩到 28px 后，继续向右拖才把超出的部分加到整表宽度。
           const requestedDelta = Math.max(minCurrent - startWidths[index], delta);
+          if (nextIndex === headers.length - 1 && requestedDelta < 0) {
+            // 创建列向左收窄时直接缩表，避免把腾出的宽度堆到操作列。
+            nextWidths[index] += requestedDelta;
+            const nextTableWidth = Math.max(1, tableWidth + requestedDelta);
+            table.style.setProperty('width', `${nextTableWidth}px`, 'important');
+            applyResizableTableWidths(table, nextWidths.map(value => value / nextTableWidth));
+            return;
+          }
           const nextShrinkRoom = Math.max(0, startWidths[nextIndex] - ACCOUNT_COLUMN_MIN_WIDTH);
           const transferredDelta = Math.min(requestedDelta, nextShrinkRoom);
           const tableGrowth = Math.max(0, requestedDelta - transferredDelta);
