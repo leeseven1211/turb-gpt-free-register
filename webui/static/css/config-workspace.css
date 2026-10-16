@@ -10,6 +10,29 @@
   overflow: visible;
 }
 
+#tab-config .config-section-v2-body {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  padding: 8px 16px 12px;
+}
+
+#tab-config .config-section-v2-body > .config-setting-row-v2 {
+  grid-template-columns: minmax(0, 1fr) minmax(220px, .85fr);
+  grid-template-rows: auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 0;
+  padding: 8px 12px;
+}
+
+#tab-config .config-section-v2-body > .config-setting-row-v2:has(textarea) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+#tab-config .config-section-v2-body > .config-setting-row-v2 .config-setting-copy-v2 {
+  gap: 4px 8px;
+}
+
 #tab-config .config-setting-list-v2 {
   overflow: visible;
 }
@@ -19,8 +42,8 @@
   grid-template-rows: 1fr auto;
   align-items: start;
   gap: 8px;
-  min-height: 74px;
-  padding: 16px 18px;
+  min-height: 60px;
+  padding: 10px 14px;
 }
 
 #tab-config .config-setting-list-v2 > .config-setting-row-v2 {
@@ -28,6 +51,30 @@
   grid-template-rows: auto;
   align-items: center;
   gap: 18px;
+}
+
+#tab-config .config-switches-v2 {
+  gap: 8px;
+  padding: 8px 16px 10px;
+}
+
+#tab-config .config-switches-v2 > .config-setting-row-v2 {
+  grid-template-columns: minmax(0, 1fr) 44px;
+  grid-template-rows: auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 60px;
+  padding: 8px 10px;
+}
+
+#tab-config .config-switches-v2 > .config-setting-row-v2 .config-setting-control-v2 {
+  justify-content: flex-end;
+  width: 44px;
+  min-height: 44px;
+}
+
+#tab-config .config-switches-v2 > .config-setting-row-v2 .config-switch-v2-toggle {
+  margin-top: 0;
 }
 
 #tab-config .config-setting-copy-v2 {
@@ -481,11 +528,22 @@
 }
 
 @media (max-width: 760px) {
+  #tab-config .config-section-v2-body {
+    padding: 8px 12px 12px;
+  }
+
+  #tab-config .config-switches-v2 {
+    padding: 8px 12px;
+  }
+
   #tab-config .config-setting-row-v2,
-  #tab-config .config-setting-list-v2 > .config-setting-row-v2 {
+  #tab-config .config-setting-list-v2 > .config-setting-row-v2,
+  #tab-config .config-section-v2-body > .config-setting-row-v2 {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: 1fr auto;
     gap: 10px;
+    min-height: 0;
+    padding: 11px 12px;
   }
 
   #tab-config .config-setting-control-v2 {
