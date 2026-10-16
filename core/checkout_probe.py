@@ -456,11 +456,13 @@ def query_checkout_details(token: str, *, session, country: str, campaign_id: st
         response_status = getattr(getattr(exc, "response", None), "status_code", None)
         has_http_response = (isinstance(response_status, int) and not isinstance(response_status, bool)
                              and 100 <= response_status <= 599)
+        # ProxyError 已确认代理隧道失败；附带的连接阶段响应不代表目标请求已完成。
+        transport_failure = isinstance(exc, curl_exceptions.ProxyError) or (
+            not has_http_response and isinstance(exc, (
+                curl_exceptions.ConnectionError, curl_exceptions.SSLError, curl_exceptions.Timeout,
+            )))
         if (stage in _HTTP_STAGES and str(getattr(session, "proxy", None) or "").strip()
-                and not has_http_response and isinstance(exc, (
-                    curl_exceptions.ProxyError, curl_exceptions.ConnectionError,
-                    curl_exceptions.SSLError, curl_exceptions.Timeout,
-                ))):
+                and transport_failure):
             result["proxy_transport_failure"] = True
     public = public_checkout_details(result)
     # 仅供本次查询释放线路时使用，持久化优惠仍由公开字段白名单过滤。

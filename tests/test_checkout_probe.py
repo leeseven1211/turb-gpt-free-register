@@ -360,12 +360,14 @@ class CheckoutProbeTests(unittest.TestCase):
 
     def test_http_responses_direct_connections_and_non_http_stages_do_not_fault_proxy(self):
         for stage in ("pricing", "sentinel_request", "create", "oaics_state", "stripe_init"):
-            for status in (403, 429):
-                with self.subTest(stage=stage, http_status=status):
-                    error = curl_exceptions.ProxyError("private upstream response", code=56,
-                                                       response=self.response({}, status=status))
-                    result = self._transport_failure_query(stage, error)
-                    self.assertNotIn("proxy_transport_failure", result)
+            for exception in (curl_exceptions.ConnectionError, curl_exceptions.SSLError,
+                              curl_exceptions.Timeout, curl_exceptions.HTTPError):
+                for status in (200, 403, 429, 502):
+                    with self.subTest(stage=stage, exception=exception.__name__, http_status=status):
+                        error = exception("private upstream response", code=56,
+                                          response=self.response({}, status=status))
+                        result = self._transport_failure_query(stage, error)
+                        self.assertNotIn("proxy_transport_failure", result)
             with self.subTest(stage=stage, direct=True):
                 self.env.proxy = None
                 result = self._transport_failure_query(stage, curl_exceptions.Timeout("private timeout", code=28))
@@ -378,6 +380,39 @@ class CheckoutProbeTests(unittest.TestCase):
             with self.subTest(stage=stage):
                 result = self._transport_failure_query(stage, curl_exceptions.Timeout("private timeout", code=28))
                 self.assertNotIn("proxy_transport_failure", result)
+
+    def test_proxy_tunnel_error_with_partial_http_status_still_faults_proxy(self):
+        for stage in ("pricing", "sentinel_request", "create", "oaics_state", "stripe_init"):
+            for status in (200, 403, 429, 502):
+                with self.subTest(stage=stage, http_status=status):
+                    exception = curl_exceptions.code2error(56, "CONNECT private proxy failure")
+                    self.assertIs(exception, curl_exceptions.ProxyError)
+                    error = exception("CONNECT private proxy failure", code=56,
+                                      response=self.response({}, status=status))
+                    result = self._transport_failure_query(stage, error)
+                    self.assertIs(result.get("proxy_transport_failure"), True)
+                    self.assertNotIn("proxy_transport_failure", probe.public_checkout_details(result))
+                    self.assertNotIn("private", json.dumps(result))
+                    self.assertLessEqual(self.env.post.call_count, 1)
+                    self.env.proxy = None
+                    self.assertNotIn("proxy_transport_failure", self._transport_failure_query(stage, error))
+                    self.env.proxy = "http://proxy.invalid:8080"
+
+    def test_completed_http_403_and_429_never_fault_proxy(self):
+        for stage in ("pricing", "create"):
+            for status in (403, 429):
+                with self.subTest(stage=stage, http_status=status):
+                    self.env.reset_mock(side_effect=True)
+                    self.env.get.return_value = self.response(self.pricing)
+                    response = self.response({"error": "private upstream response"}, status=status)
+                    if stage == "pricing":
+                        self.env.get.return_value = response
+                    else:
+                        self.env.post.return_value = response
+                    result = self.query()
+                    self.assertEqual("failed", result["checkout_status"])
+                    self.assertEqual(status, result["checkout_http_status"])
+                    self.assertNotIn("proxy_transport_failure", result)
 
     def test_missing_campaign_and_unverified_go_plan_skip_without_requests(self):
         for campaign, plan in (("", "plus"), ("go-free", "go")):
