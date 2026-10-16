@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from core import db, task_run_log
-from core.operation_runtime import OperationCancelled
+from core.operation_runtime import OperationCancelled, report_stage
 from core.operations import task_gateway as account_task_store
 from core.auth_challenge import (
     PasswordSetupNotReadyError,
@@ -51,6 +51,20 @@ _BROWSER_SETUP_PAGE_STATE_MARKERS = (
     "staleelementreferenceexception",
     "设置页邮箱重认证后未返回 chatgpt 设置页",
 )
+
+
+def _report_account_setup_event(task_id: int | None, **event) -> None:
+    """旧账号任务和原生 Run 共用阶段上报，零 ID 不再丢弃执行证据。"""
+    if task_id:
+        account_task_store.append_event(task_id, **event)
+        return
+    report_stage(
+        stage=event["stage"],
+        message=event["message"],
+        state=event.get("state"),
+        level=event.get("level", "INFO"),
+        detail=event.get("detail"),
+    )
 
 
 def _is_retryable_account_setup_error(exc: BaseException) -> bool:
@@ -794,7 +808,7 @@ def _build_roxy_account_setup(
                 **session_kwargs,
             ):
                 raise RuntimeError("重新登录已取得 ChatGPT Token，但写回账号失败")
-            account_task_store.append_event(
+            _report_account_setup_event(
                 task_id,
                 stage="token",
                 message="重新登录取得的 ChatGPT Token 已写回账号",
@@ -816,29 +830,29 @@ def _build_roxy_account_setup(
                 or _totp_setup_pending(account)
             )
         )
-        if not include_password:
-            account_task_store.append_event(
+        if not include_password and task_id:
+            _report_account_setup_event(
                 task_id,
                 stage="login_password",
                 message="本次操作未请求补充账号密码，跳过此步骤",
                 state="skipped",
             )
-        if not include_twofa:
-            account_task_store.append_event(
+        if not include_twofa and task_id:
+            _report_account_setup_event(
                 task_id,
                 stage="twofa",
                 message="本次操作未请求补充 Authenticator 2FA，跳过此步骤",
                 state="skipped",
             )
-        if not needs_password:
-            account_task_store.append_event(
+        if include_password and not needs_password:
+            _report_account_setup_event(
                 task_id,
                 stage="login_password",
                 message="账号密码无需补充，跳过此步骤",
                 state="skipped",
             )
-        if not needs_twofa:
-            account_task_store.append_event(
+        if include_twofa and not needs_twofa:
+            _report_account_setup_event(
                 task_id,
                 stage="twofa",
                 message="账号已有 Authenticator 2FA，跳过此步骤",
@@ -879,7 +893,7 @@ def _build_roxy_account_setup(
             # account action starts. Re-read runtime truth to avoid opening the
             # security settings page and attempting a second password change.
             if _account_login_password(db.get_account_by_email(email) or {}) and not force_password_reset:
-                account_task_store.append_event(
+                _report_account_setup_event(
                     task_id,
                     stage="login_password",
                     message="登录阶段已通过邮箱重置补齐账号密码，跳过设置页重复提交",
@@ -898,7 +912,7 @@ def _build_roxy_account_setup(
                     if not db.update_account_login_password(email, value, source="retry"):
                         raise RuntimeError("账号密码提交后写入账号检查点失败")
                 password_saved = True
-                account_task_store.append_event(
+                _report_account_setup_event(
                     task_id,
                     stage="login_password",
                     message="账号密码提交后已写入本地检查点，等待页面确认",
@@ -906,7 +920,7 @@ def _build_roxy_account_setup(
                     state="running",
                 )
 
-            account_task_store.append_event(
+            _report_account_setup_event(
                 task_id,
                 stage="login_password",
                 message="账号缺少账号密码，先在安全设置中补充随机密码",
@@ -942,7 +956,7 @@ def _build_roxy_account_setup(
                     eligible=False,
                     reason="remote_not_eligible",
                 )
-                account_task_store.append_event(
+                _report_account_setup_event(
                     task_id,
                     stage="login_password_result",
                     message="ChatGPT 当前不支持添加账号密码，跳过重复重试",
@@ -972,7 +986,7 @@ def _build_roxy_account_setup(
                         reason="password_settings_entry_unavailable",
                         evidence="stable_settings_page",
                     )
-                    account_task_store.append_event(
+                    _report_account_setup_event(
                         task_id,
                         stage="login_password_result",
                         message="ChatGPT 设置页没有添加账号密码入口，跳过密码并继续其它步骤",
@@ -991,7 +1005,7 @@ def _build_roxy_account_setup(
                     raise PasswordSetupUnsupportedError(
                         "设置页没有添加账号密码入口"
                     ) from exc
-                account_task_store.append_event(
+                _report_account_setup_event(
                     task_id,
                     stage="login_password_result",
                     message="账号密码补充失败，停止后续账号配置",
@@ -1000,7 +1014,7 @@ def _build_roxy_account_setup(
                     state="failed",
                 )
                 return False, f"{type(exc).__name__}: {str(exc)[:180]}"
-            account_task_store.append_event(
+            _report_account_setup_event(
                 task_id,
                 stage="login_password_result",
                 message="账号密码已补充并保存",
@@ -1048,7 +1062,7 @@ def _build_roxy_account_setup(
             if error:
                 errors.append(f"{label}：{error}")
 
-        account_task_store.append_event(
+        _report_account_setup_event(
             task_id,
             stage="account_setup",
             message="账号密码与 Authenticator 2FA 串行执行，避免覆盖同一浏览器会话",
@@ -1058,7 +1072,7 @@ def _build_roxy_account_setup(
         _collect("Authenticator 2FA", _setup_twofa())
 
         if errors:
-            account_task_store.append_event(
+            _report_account_setup_event(
                 task_id,
                 stage="account_setup_result",
                 message="账号配置部分完成，存在失败步骤，可重跑补齐",
@@ -1071,7 +1085,7 @@ def _build_roxy_account_setup(
             )
             raise RuntimeError("账号配置部分失败：" + "；".join(errors))
         if unsupported_errors:
-            account_task_store.append_event(
+            _report_account_setup_event(
                 task_id,
                 stage="account_setup_result",
                 message="账号密码当前不支持，已继续执行其它账号配置步骤",
@@ -1244,6 +1258,10 @@ def run_twofa_worker(
 
         plan_result = None
         if "plan_check" in requested_steps:
+            _report_account_setup_event(
+                task_id, stage="network", state="running",
+                message="正在分配套餐查询线路",
+            )
             plan_route = acquire_account_proxy(
                 account_id=int(account.get("id") or 0) or None,
                 email=email,
@@ -1252,7 +1270,7 @@ def run_twofa_worker(
             )
             plan_route_summary = plan_route.public_dict()
             route_summary = plan_route_summary
-            account_task_store.append_event(
+            _report_account_setup_event(
                 task_id,
                 stage="network",
                 message="已分配套餐查询线路",
@@ -1307,6 +1325,10 @@ def run_twofa_worker(
             return result
 
         setup_proxy_purpose = "password-setup" if "password" in requested_steps else "twofa-setup"
+        _report_account_setup_event(
+            task_id, stage="network", state="running",
+            message="正在分配账号配置线路",
+        )
         account_route = acquire_account_proxy(
             account_id=int(account.get("id") or 0) or None,
             email=email,
@@ -1314,7 +1336,7 @@ def run_twofa_worker(
             cancel=lambda: check_stop_requested(email),
         )
         route_summary = account_route.public_dict()
-        account_task_store.append_event(
+        _report_account_setup_event(
             task_id,
             stage="network",
             message="已分配账号配置线路",
@@ -1355,7 +1377,7 @@ def run_twofa_worker(
                     ) from exc
                 direct_protocol_failed = True
                 direct_error = f"{type(exc).__name__}: {str(exc)[:220]}"
-                account_task_store.append_event(
+                _report_account_setup_event(
                     task_id,
                     stage="twofa_result",
                     message="协议 2FA 开通失败",
@@ -1387,7 +1409,7 @@ def run_twofa_worker(
                         "proxy_mode": account_route.mode,
                     }
                     return result
-                account_task_store.append_event(
+                _report_account_setup_event(
                     task_id,
                     stage="twofa",
                     message="协议 2FA 未完成，按配置回退 Roxy 安全设置页面",
@@ -1414,7 +1436,7 @@ def run_twofa_worker(
                         source="account_setup",
                     )
                 return result
-        account_task_store.append_event(
+        _report_account_setup_event(
             task_id,
             stage="browser",
             message=f"重新登录 ChatGPT，处理{ '、'.join(label for label in setup_labels if label != '套餐') }",
@@ -1448,7 +1470,7 @@ def run_twofa_worker(
             with _ACCOUNT_SETUP_DB_LOCK:
                 if not db.update_account_login_password(email, value, source="password_reset"):
                     raise RuntimeError("密码重置提交后写入账号检查点失败")
-            account_task_store.append_event(
+            _report_account_setup_event(
                 task_id,
                 stage="login_password",
                 message="邮箱重置新密码提交后已写入本地检查点，等待页面确认",
@@ -1460,7 +1482,7 @@ def run_twofa_worker(
             with _ACCOUNT_SETUP_DB_LOCK:
                 if not db.update_account_login_password(email, value, source="password_change"):
                     raise RuntimeError("修改密码远端确认后写入本地检查点失败")
-            account_task_store.append_event(
+            _report_account_setup_event(
                 task_id,
                 stage="login_password_result",
                 message="新密码已重新登录验证并写入本地",
@@ -1507,7 +1529,7 @@ def run_twofa_worker(
                 browser_retry_attempts += 1
                 reason_code = _account_setup_retry_reason(exc)
                 error_type = type(exc).__name__
-                account_task_store.append_event(
+                _report_account_setup_event(
                     task_id,
                     stage="browser",
                     message=(
@@ -1548,7 +1570,7 @@ def run_twofa_worker(
                     cancel=lambda: check_stop_requested(email),
                 )
                 route_summary = account_route.public_dict()
-                account_task_store.append_event(
+                _report_account_setup_event(
                     task_id,
                     stage="network",
                     message="已为浏览器账号配置重试更换线路",
@@ -1561,12 +1583,13 @@ def run_twofa_worker(
                     },
                     state="success",
                 )
-        account_task_store.append_event(
-            task_id,
-            stage="browser",
-            message="ChatGPT 重新登录与账号配置检查已完成",
-            state="success",
-        )
+        if task_id:
+            _report_account_setup_event(
+                task_id,
+                stage="browser",
+                message="ChatGPT 重新登录与账号配置检查已完成",
+                state="success",
+            )
         browser_stage_finished = True
         check_stop_requested(email)
         result = {
@@ -1592,8 +1615,8 @@ def run_twofa_worker(
         }
         return result
     except (CodexRetryStopped, OperationCancelled) as exc:
-        if browser_stage_started and not browser_stage_finished:
-            account_task_store.append_event(
+        if task_id and browser_stage_started and not browser_stage_finished:
+            _report_account_setup_event(
                 task_id,
                 stage="browser",
                 message="ChatGPT 重新登录流程已被用户停止",
@@ -1605,9 +1628,9 @@ def run_twofa_worker(
     except Exception as exc:
         unsupported = isinstance(exc, PasswordSetupUnsupportedError)
         if browser_stage_started and not browser_stage_finished and not unsupported:
-            account_task_store.append_event(
+            _report_account_setup_event(
                 task_id,
-                stage="browser",
+                stage="browser" if task_id else str(task_run_log.current_context().get("stage") or "browser"),
                 message="ChatGPT 重新登录与账号配置检查失败",
                 level="ERROR",
                 detail={"error": f"{type(exc).__name__}: {str(exc)[:220]}"},
@@ -1621,7 +1644,7 @@ def run_twofa_worker(
         if deactivated:
             deactivated_persisted = _persist_account_deactivated(email, exc)
             error_code = error_code or "account_deactivated"
-            account_task_store.append_event(
+            _report_account_setup_event(
                 task_id,
                 stage="account_status",
                 message=(

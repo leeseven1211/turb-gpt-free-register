@@ -131,9 +131,11 @@ class EmailFrontendLoadingTests(unittest.TestCase):
         )
         original_submit = email_otp._submit_email_step
         submit_attempts = []
+        submit_budgets = []
 
         def submit_step(*args):
             submit_attempts.append(clock.now)
+            submit_budgets.append(driver._registration_stage_budget)
             if len(submit_attempts) == 1:
                 # 表单接管竞态发生在真正点击之前，没有 UI 提交回执。
                 clock.sleep(10)
@@ -158,7 +160,8 @@ class EmailFrontendLoadingTests(unittest.TestCase):
         fallback.assert_called_once_with(driver, "unit@example.test")
         self.assertGreaterEqual(clock.now, 40)
         self.assertLess(clock.now, 70)
-        self.assertEqual(driver._registration_stage_budget.deadline, 70)
+        self.assertEqual(submit_budgets[-1].deadline, 70)
+        self.assertFalse(hasattr(driver, "_registration_stage_budget"))
 
     def test_dispatched_ui_is_observed_without_reclick_or_nextauth(self):
         clock = _Clock()
@@ -243,9 +246,11 @@ class EmailFrontendLoadingTests(unittest.TestCase):
         driver = SimpleNamespace(current_url="https://chatgpt.com/auth/login", execute_script=Mock(return_value=False))
         original_submit = email_otp._submit_email_step
         submit_attempts = []
+        submit_budgets = []
 
         def submit_step(*args):
             submit_attempts.append(clock.now)
+            submit_budgets.append(driver._registration_stage_budget)
             if len(submit_attempts) == 1:
                 clock.sleep(10)
                 raise email_otp._EmailFrontendNotReady("email_frontend_not_ready")
@@ -264,7 +269,8 @@ class EmailFrontendLoadingTests(unittest.TestCase):
         self.assertEqual(clock.now, 55)
         stable.assert_not_called()
         fallback.assert_called_once_with(driver, "unit@example.test")
-        self.assertEqual(driver._registration_stage_budget.deadline, 55)
+        self.assertEqual(submit_budgets[-1].deadline, 55)
+        self.assertFalse(hasattr(driver, "_registration_stage_budget"))
 
     def test_frontend_ready_just_before_deadline_does_not_dispatch_after_pause(self):
         clock = _Clock()
@@ -281,9 +287,11 @@ class EmailFrontendLoadingTests(unittest.TestCase):
         driver = SimpleNamespace(current_url="https://chatgpt.com/auth/login", execute_script=Mock(side_effect=frontend_probe))
         original_submit = email_otp._submit_email_step
         submit_attempts = []
+        submit_budgets = []
 
         def submit_step(*args):
             submit_attempts.append(clock.now)
+            submit_budgets.append(driver._registration_stage_budget)
             if len(submit_attempts) == 1:
                 clock.sleep(10)
                 raise email_otp._EmailFrontendNotReady("email_frontend_not_ready")
@@ -304,7 +312,8 @@ class EmailFrontendLoadingTests(unittest.TestCase):
         self.assertEqual(step.call_count, 2)
         self.assertEqual(ready_at, [69.9])
         self.assertAlmostEqual(clock.now, 70.3)
-        self.assertEqual(driver._registration_stage_budget.deadline, 70)
+        self.assertEqual(submit_budgets[-1].deadline, 70)
+        self.assertFalse(hasattr(driver, "_registration_stage_budget"))
         stable.assert_not_called()
         observed.assert_not_called()
         fallback.assert_called_once_with(driver, "unit@example.test")

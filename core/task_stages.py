@@ -95,6 +95,7 @@ STAGES: dict[str, dict[str, str]] = {
     "refresh_token": {"label": "刷新 Token", "group": "account"},
     "account_setup_dispatch": {"label": "提交账号配置任务", "group": "account"},
     "account_setup": {"label": "执行账号配置", "group": "account"},
+    "account_status": {"label": "确认账号状态", "group": "account"},
     "dispatch": {"label": "提交独立子任务", "group": "system"},
     "password_checkpoint": {"label": "保存密码检查点", "group": "security"},
     "password_reset": {"label": "重置账号密码", "group": "security"},
@@ -287,6 +288,18 @@ def business_step_id(task_type: Any, raw_stage: Any, run: dict[str, Any] | None 
     return item.get("id") if item else None
 
 
+_ACCOUNT_SETUP_TASK_TYPES = {
+    "account_setup_retry", "password_setup", "password_change",
+    "twofa_setup", "twofa_change", "twofa_retry",
+}
+
+
+def is_task_lifecycle_stage(task_type: Any, stage: Any) -> bool:
+    """账号配置执行器的外层起止记录不代表某个业务步骤已经开始。"""
+    task_key = str(task_type or "").strip().lower()
+    return normalize_stage(stage) == "account_setup" and task_key in _ACCOUNT_SETUP_TASK_TYPES
+
+
 def resolve_step(task_type: Any, stage: Any, detail: dict[str, Any] | None = None, run: dict[str, Any] | None = None) -> str | None:
     """将 raw event 解析为稳定的顶层业务步骤 ID。
 
@@ -295,11 +308,15 @@ def resolve_step(task_type: Any, stage: Any, detail: dict[str, Any] | None = Non
     """
     detail_value = detail if isinstance(detail, dict) else {}
     task_key = str(task_type or "").strip().lower()
+    if is_task_lifecycle_stage(task_key, stage):
+        return None
     explicit = str(detail_value.get("main_step_id") or detail_value.get("step_id") or "").strip()
     known = {item["id"] for item in flow_for(task_key, run)}
     if explicit in known:
         return explicit
     raw = normalize_stage(stage)
+    if raw == "account_status" and task_key in _ACCOUNT_SETUP_TASK_TYPES:
+        return "result"
     if raw in known:
         return raw
     item = step_for_raw_stage(task_key, raw, run)

@@ -172,6 +172,11 @@ class BrowserAuthInitializationTests(unittest.TestCase):
         clock = _Clock()
         driver = SimpleNamespace(current_url="https://chatgpt.com/auth/login", execute_script=Mock(return_value=True))
         seen = []
+
+        def submit_stable(*_args):
+            seen.append(driver._registration_stage_budget)
+            return {"ok": True}
+
         with ExitStack() as stack:
             stack.enter_context(patch.object(email_otp, "time", clock))
             stack.enter_context(patch.object(email_otp, "_type_email_address", return_value="email"))
@@ -179,15 +184,18 @@ class BrowserAuthInitializationTests(unittest.TestCase):
             stack.enter_context(patch.object(email_otp, "human_delay"))
             stack.enter_context(patch.object(email_otp, "_browser_actions_enabled", return_value=False))
             stack.enter_context(patch.object(email_otp, "_stabilize_email_input_before_submit", return_value={"ok": True}))
-            stack.enter_context(patch.object(email_otp, "_submit_email_form_stable", return_value={"ok": True}))
+            stack.enter_context(patch.object(email_otp, "_submit_email_form_stable", side_effect=submit_stable))
             stack.enter_context(patch.object(email_otp, "_wait_email_submit_next_state", return_value="otp"))
             result = email_otp._submit_email_and_wait_next(driver, "unit@example.test")
 
         self.assertEqual(result, "otp")
         # _submit_email_step 使用真实实现；提交前钩子会在进入
         # _submit_email_form_stable 前观察共享提交预算。
-        self.assertIsInstance(driver._registration_stage_budget, StageBudget)
-        self.assertLessEqual(driver._registration_stage_budget.remaining(), 60)
+        self.assertEqual(len(seen), 1)
+        self.assertIsInstance(seen[0], StageBudget)
+        self.assertLessEqual(seen[0].remaining(), 60)
+        self.assertFalse(hasattr(driver, "_registration_stage_budget"))
+        self.assertFalse(hasattr(driver, "_registration_before_email_dispatch"))
 
     def test_total_timeout_smaller_than_soft_outer_limit_is_preserved(self):
         clock = _Clock()

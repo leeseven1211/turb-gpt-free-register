@@ -789,13 +789,14 @@ class AccountActionLoginTests(unittest.TestCase):
         data_saver = Mock()
         session = {"accessToken": "fresh-token", "expires": "2026-09-01T00:00:00Z"}
         action = Mock(return_value=True)
+        stages = []
         with (
             patch.object(roxy_codex_oauth, "RoxyBrowserClient", return_value=client),
             patch.object(roxy_codex_oauth, "_build_driver", return_value=driver),
             patch.object(roxy_codex_oauth, "_detect_browser_kind", return_value="Roxy"),
             patch.object(roxy_codex_oauth, "_center_browser_window"),
             patch.object(roxy_codex_oauth, "clear_roxy_browser_auth_state"),
-            patch.object(roxy_codex_oauth, "_fill_email_and_otp"),
+            patch.object(roxy_codex_oauth, "_fill_email_and_otp", side_effect=lambda *_args, **_kwargs: stages.append(("login", "entered"))),
             patch("core.registration.selenium_auth.complete_profile_page", return_value=True) as complete_profile,
             patch("core.registration.selenium_auth.fetch_chatgpt_session", return_value=session),
             patch("core.profile_utils.generate_random_birthday", return_value="1995-01-02"),
@@ -807,8 +808,10 @@ class AccountActionLoginTests(unittest.TestCase):
         ):
             self.assertTrue(roxy_codex_oauth.run_roxy_chatgpt_account_action(
                 "a@example.com", action=action,
+                stage_reporter=lambda **event: stages.append((event["stage"], event["state"])),
             ))
 
+        self.assertEqual(stages[:2], [("browser", "success"), ("login", "entered")])
         complete_profile.assert_called_once()
         action.assert_called_once_with(driver, session)
         client.open_profile_for_account.assert_called_once_with(
@@ -822,6 +825,23 @@ class AccountActionLoginTests(unittest.TestCase):
         client.open_profile.assert_not_called()
         driver.quit.assert_called_once_with()
         client.cleanup_profile.assert_called_once_with(opened)
+
+    def test_profile_open_failure_does_not_report_browser_started(self):
+        client = Mock()
+        client.open_profile_for_account.side_effect = RuntimeError("浏览器环境启动失败")
+        stage_reporter = Mock()
+        with (
+            patch.object(roxy_codex_oauth, "RoxyBrowserClient", return_value=client),
+            patch.object(roxy_codex_oauth, "_build_driver") as build_driver,
+            patch("core.roxy_profile_binding.account_profile_id_by_email", return_value=""),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "浏览器环境启动失败"):
+                roxy_codex_oauth.run_roxy_chatgpt_account_action(
+                    "a@example.com", action=Mock(), stage_reporter=stage_reporter,
+                )
+
+        build_driver.assert_not_called()
+        stage_reporter.assert_not_called()
 
 
 class AccountTaskApiTests(PostgresTestCase):

@@ -236,6 +236,163 @@ def test_observed_order_event_ids_and_children_are_retained():
     assert _step(snapshot, "set_password")["started_at"] == "2026-01-01T00:00:04Z"
 
 
+def test_account_setup_lifecycle_does_not_start_password_or_mask_login_failure():
+    events = [
+        _event("outer-start", "account_setup", "running", created_at="2026-10-16T06:02:02Z"),
+        _event("login-start", "login", "running", created_at="2026-10-16T06:02:16Z"),
+        _event("login-failed", "login", "failed", message="登录页面未就绪", created_at="2026-10-16T06:03:20Z"),
+        _event("outer-failed", "account_setup", "failed", created_at="2026-10-16T06:03:21Z"),
+    ]
+    for task_type in ("password_setup", "password_change", "account_setup_retry"):
+        snapshot = build_progress_snapshot(1, 2, task_type, _run("failed"), events)
+        assert not any(item["id"].startswith("unknown:") for item in snapshot["main_steps"])
+        password = _step(snapshot, "set_password")
+        assert password["started_at"] is None
+        assert password["observed_order"] is None
+        assert password["display_status"] == "record_incomplete"
+        assert _step(snapshot, "authenticate")["started_at"] == "2026-10-16T06:02:16Z"
+        assert snapshot["failure"]["step_id"] == "authenticate"
+        assert snapshot["failure"]["event_id"] == "login-failed"
+        lifecycle = snapshot["task_lifecycle"][0]
+        assert lifecycle["id"] == "account_setup"
+        assert lifecycle["event_ids"] == ["outer-start", "outer-failed"]
+        assert lifecycle["state"] == "failed"
+        assert lifecycle["started_at"] == "2026-10-16T06:02:02Z"
+
+
+def test_missing_resource_observations_keep_template_positions_before_login():
+    events = [_event("login", "login", "running", created_at="2026-10-16T06:02:16Z")]
+    snapshot = build_progress_snapshot(1, 2, "password_setup", _run(), events)
+    assert [item["id"] for item in snapshot["main_steps"]] == ["network", "browser", "authenticate", "set_password", "result"]
+    for step_id in ("network", "browser", "set_password"):
+        step = _step(snapshot, step_id)
+        assert step["observed_order"] is None
+        assert step["state"] == "pending"
+        assert step["started_at"] is None
+    assert snapshot["current"]["step_id"] == "authenticate"
+
+
+def test_lifecycle_does_not_activate_twofa_and_retains_unconfirmed_state():
+    events = [
+        _event("start", "account_setup", "running"),
+        _event("unconfirmed", "account_setup_result", "pending", detail={"evidence": "unconfirmed"}),
+    ]
+    for task_type in ("twofa_setup", "twofa_change", "twofa_retry"):
+        snapshot = build_progress_snapshot(1, 2, task_type, _run("request_unknown"), events)
+        twofa = _step(snapshot, "set_twofa")
+        assert twofa["evidence"] == "unobserved"
+        assert twofa["started_at"] is None
+        assert snapshot["task_lifecycle"][0]["event_ids"] == ["start", "unconfirmed"]
+        assert snapshot["task_lifecycle"][0]["evidence"] == "unconfirmed"
+        assert snapshot["outcome"]["status"] == "request_unknown"
+
+
+def test_real_password_event_starts_password_after_outer_setup_and_login():
+    events = [
+        _event("outer", "account_setup", "running", created_at="2026-10-16T06:00:00Z"),
+        _event("login", "login", "success", created_at="2026-10-16T06:00:10Z"),
+        _event("password", "password_reset", "running", created_at="2026-10-16T06:00:20Z"),
+    ]
+    snapshot = build_progress_snapshot(1, 2, "password_setup", _run(), events)
+    assert _step(snapshot, "set_password")["started_at"] == "2026-10-16T06:00:20Z"
+    assert snapshot["current"]["step_id"] == "set_password"
+    assert snapshot["task_lifecycle"][0]["last_event_id"] == "outer"
+
+
+def test_setup_lifecycle_prevents_never_started_guess_when_run_start_is_missing():
+    snapshot = build_progress_snapshot(1, 2, "password_setup", _run("failed", started_at=None), [
+        _event("outer", "account_setup", "running", created_at="2026-10-16T06:02:02Z"),
+    ])
+    for step in snapshot["main_steps"]:
+        if step["id"] != "result":
+            assert step["display_status"] == "record_incomplete"
+            assert step["started_at"] is None
+    assert snapshot["task_lifecycle"][0]["started_at"] == "2026-10-16T06:02:02Z"
+
+
+def test_password_reauthentication_unknown_keeps_real_password_time_and_missing_resource_positions():
+    events = [
+        _event("outer", "account_setup", "running", created_at="2026-10-16T06:02:02Z"),
+        _event("login-ready", "login", "success", created_at="2026-10-16T06:02:40Z"),
+        _event("reset", "password_reset", "running", created_at="2026-10-16T06:02:50Z"),
+        _event("login-again", "login", "running", created_at="2026-10-16T06:03:07Z"),
+    ]
+    snapshot = build_progress_snapshot(1, 2, "password_setup", _run("attention_required", progress_stage="login"), events)
+    assert [step["id"] for step in snapshot["main_steps"]] == ["network", "browser", "authenticate", "set_password", "result"]
+    for step_id in ("network", "browser"):
+        step = _step(snapshot, step_id)
+        assert step["display_status"] == "record_incomplete"
+        assert step["started_at"] is None
+        assert step["observed_order"] is None
+    password = _step(snapshot, "set_password")
+    assert password["state"] == "pending"
+    assert password["display_status"] == "attention_required"
+    assert password["started_at"] == "2026-10-16T06:02:50Z"
+    assert password["completed_at"] is None
+    assert password["event_ids"] == ["reset"]
+    assert snapshot["failure"]["step_id"] == "authenticate"
+    assert snapshot["failure"]["event_id"] == "login-again"
+    assert snapshot["current"] is None
+
+
+def test_parent_setup_dispatch_remains_business_step_and_route_lifecycle_stays_job_level():
+    from core.task_stages import resolve_step
+    assert resolve_step("password_setup", "account_setup") is None
+    assert resolve_step("twofa_setup", "account_setup") is None
+    assert resolve_step("account_completion", "account_setup") == "account_setup_dispatch"
+    parent = build_progress_snapshot(1, 2, "account_completion", _run(), [_event("dispatch", "account_setup", "running")])
+    assert _step(parent, "account_setup_dispatch")["event_ids"] == ["dispatch"]
+    assert parent["task_lifecycle"] == []
+    events = [
+        {**_event("outer", "account_setup", "running"), "run_id": 2},
+        {**_event("login", "login", "running", detail={"route_attempt_no": 1}), "run_id": 2},
+    ]
+    snapshot = build_progress_snapshot(1, 2, "password_setup", _run(route_attempt_no=1), events)
+    assert snapshot["task_lifecycle"][0]["event_ids"] == ["outer"]
+    assert not snapshot.get("history_unknown")
+
+
+def test_setup_account_status_confirmation_preserves_deactivated_result_and_failure_location():
+    cases = [
+        ("password_setup", "login", "authenticate"),
+        ("password_change", "login", "authenticate"),
+        ("account_setup_retry", "login", "authenticate"),
+        ("twofa_retry", "login", "authenticate"),
+        ("twofa_change", "login", "authenticate"),
+        ("twofa_setup", "twofa", "set_twofa"),
+    ]
+    for task_type, failure_stage, failure_step in cases:
+        events = [
+            _event("outer", "account_setup", "running"),
+            _event("failure", failure_stage, "failed", message="账号已停用", detail={"error_code": "account_deactivated"}),
+            _event("persisted", "account_status", "success", detail={"status": "deactivated", "persisted": True, "evidence": "explicit"}),
+        ]
+        snapshot = build_progress_snapshot(1, 2, task_type, _run("deactivated"), events)
+        assert not any(step["id"].startswith("unknown:") for step in snapshot["main_steps"])
+        result = _step(snapshot, "result")
+        assert result["state"] == "failed"
+        assert result["display_status"] == "deactivated"
+        assert result["attempts"][0]["raw_stage"] == "account_status"
+        assert result["attempts"][0]["evidence"] == "explicit"
+        assert result["attempts"][0]["state"] == "success"
+        assert snapshot["outcome"]["status"] == "deactivated"
+        assert snapshot["failure"]["step_id"] == failure_step
+        assert snapshot["failure"]["event_id"] == "failure"
+
+
+def test_account_status_confirmation_is_not_task_completion_or_global_stage_alias():
+    from core.task_stages import resolve_step
+    snapshot = build_progress_snapshot(1, 2, "password_setup", _run(), [
+        _event("persisted", "account_status", "success"),
+    ])
+    assert _step(snapshot, "result")["display_status"] == "pending"
+    assert snapshot["outcome"]["status"] == "running"
+    assert snapshot["failure"] is None
+    assert snapshot["current"] is None
+    for task_type in ("registration", "token_refresh", "codex_retry", "account_completion"):
+        assert resolve_step(task_type, "account_status") is None
+
+
 def test_unknown_explicit_stage_is_inserted_before_result():
     snapshot = build_progress_snapshot(99, 100, "password_setup", _run("running"), [_event("u1", "new_executor_stage", "running"), _event("u2", "new_executor_stage", "success")])
     assert snapshot["main_steps"][-1]["id"] == "result"
@@ -600,7 +757,9 @@ def test_failure_prefers_unrecovered_event_and_classifies_unknown_reconcile():
     assert snapshot["failure"]["event_id"] == "3"
     assert snapshot["failure"]["evidence"] == "explicit"
     assert snapshot["failure"]["reconcile_required"] is True
-    assert snapshot["failure"]["error_info"]["error_code"] == "request_unknown"
+    assert snapshot["failure"]["error_info"]["error_code"] == "login_receipt_missing"
+    assert snapshot["failure"]["error_info"]["original_error_code"] == "request_unknown"
+    assert snapshot["failure"]["error_info"]["reconcile_required"] is True
 
 
 def test_failed_run_without_failed_event_uses_inferred_last_activity():
@@ -651,7 +810,9 @@ def test_normalized_event_keeps_original_stage_and_database_id():
 def test_legacy_node_order_uses_start_time_not_completion_time():
     events = [_event(1, 'login', 'success', created_at='2026-01-01T00:00:02Z'), _event(2, 'browser', 'success', detail={'started_at': '2026-01-01T00:00:01Z'}, created_at='2026-01-01T00:00:05Z')]
     snapshot = build_progress_snapshot(1, 2, 'codex_retry', _run('success'), events)
-    assert [step['id'] for step in snapshot['main_steps']][:2] == ['browser', 'authenticate']
+    observed = [step['id'] for step in snapshot['main_steps'] if step['observed_order'] is not None]
+    assert observed == ['browser', 'authenticate']
+    assert [step['id'] for step in snapshot['main_steps']][:5] == ['preflight', 'network', 'browser', 'auth_url', 'authenticate']
 
 
 def test_fallback_success_recovers_business_failure_without_masking_login_failure():
@@ -829,7 +990,8 @@ def test_dependency_cannot_overwrite_actual_reverse_order_or_started_later_step(
         _event(3, 'refresh_token', 'running', created_at='2026-10-09T01:00:02Z'),
     ]
     snapshot = build_progress_snapshot(1, 2, 'token_refresh', _run('failed'), events)
-    assert [value['id'] for value in snapshot['main_steps']][:3] == ['token', 'authenticate', 'refresh_token']
+    observed = [value['id'] for value in snapshot['main_steps'] if value['observed_order'] is not None]
+    assert observed == ['token', 'authenticate', 'refresh_token']
     assert _step(snapshot, 'token')['state'] == 'success'
     assert _step(snapshot, 'refresh_token')['display_status'] == 'unconfirmed'
 

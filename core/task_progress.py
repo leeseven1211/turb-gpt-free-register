@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Any, Iterable
 
 from core.task_run_log import redact_text
-from core.task_stages import REGISTRATION_AUTH_STAGES, flow_for, normalize_stage, normalize_step_state, resolve_step, stage_label
+from core.task_stages import REGISTRATION_AUTH_STAGES, flow_for, is_task_lifecycle_stage, normalize_stage, normalize_step_state, resolve_step, stage_label
 
 
 _CHILD_LABELS = {
@@ -492,7 +492,16 @@ def _ordered_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
     observed.sort(key=lambda value: (_time_value(value.get("started_at")) is None, _time_value(value.get("started_at")) or 0, value["observed_order"]))
     for index, value in enumerate(observed, 1):
         value["observed_order"] = index
-    return [*observed, *planned, *result]
+    # 实际执行顺序只由观测决定；缺少记录的模板节点仍放回计划位置，
+    # 避免“登录验证”已有记录时，把此前的网络和浏览器显示到流程末尾。
+    template_order = {value["id"]: index for index, value in enumerate(body) if value.get("group") != "unknown"}
+    ordered = list(observed)
+    for value in planned:
+        position = template_order.get(value["id"])
+        next_index = next((index for index, candidate in enumerate(ordered)
+                           if position is not None and template_order.get(candidate["id"], -1) > position), len(ordered))
+        ordered.insert(next_index, value)
+    return [*ordered, *result]
 
 
 def _legacy_events(run: dict[str, Any]) -> list[dict[str, Any]]:
@@ -608,6 +617,7 @@ def _remote_boundary_step(task_type: str, event: dict[str, Any], steps: list[dic
 def _close_terminal_steps(
     steps: list[dict[str, Any]], *, run: dict[str, Any], attempts: list[dict[str, Any]],
     template_order: dict[str, int], recorded_steps: set[str], unmapped_activity: bool,
+    task_lifecycle_observed: bool,
 ) -> None:
     """终态只关闭界面活动态，分别说明未执行与记录缺口。
 
@@ -634,7 +644,7 @@ def _close_terminal_steps(
                     blocked_by[item["id"]] = failure
             if len(blocked_by) == previous:
                 break
-    never_started = "started_at" in run and run.get("started_at") is None and not attempts and not recorded_steps and not unmapped_activity
+    never_started = "started_at" in run and run.get("started_at") is None and not attempts and not recorded_steps and not unmapped_activity and not task_lifecycle_observed
     cancel_status = status in {"cancelled", "canceled", "stopped", "interrupted"}
     unresolved_display = status if reconcile else "interrupted" if cancel_status else "unconfirmed"
     for item in steps:
@@ -940,6 +950,7 @@ def build_progress_snapshot(
     observations: dict[str, list[dict[str, Any]]] = {}
     activity: list[dict[str, Any]] = []
     attempts: list[dict[str, Any]] = []
+    task_lifecycle: dict[str, dict[str, Any]] = {}
     explicit = False
     order = 0
     source_events = [dict(value) for value in (events or []) if isinstance(value, dict)]
@@ -967,7 +978,7 @@ def build_progress_snapshot(
         filtered_routes: list[dict[str, Any]] = []
         for value in source_events:
             route_no = _event_route_attempt_no(value)
-            if route_no == selected_route or (route_no is None and (_event_is_job_level(value) or (not explicit_routes and selected_route is None))):
+            if route_no == selected_route or (route_no is None and (_event_is_job_level(value) or is_task_lifecycle_stage(task_key, _raw_stage(value)) or (not explicit_routes and selected_route is None))):
                 filtered_routes.append(value)
             elif route_no is None:
                 unknown_events.append({**value, "unknown_reason": "事件缺少线路归属"})
@@ -983,6 +994,14 @@ def build_progress_snapshot(
         state = _event_state(event)
         raw = _raw_stage(event)
         detail = _event_detail(event)
+        if is_task_lifecycle_stage(task_key, raw):
+            # 外层账号配置覆盖网络、登录、密码及 2FA，不能把它归入任一
+            # 业务阶段；单独保留证据，也避免收尾失败遮住实际失败位置。
+            if state is not None:
+                lifecycle = task_lifecycle.setdefault(raw, _step({"id": raw, "label": stage_label(raw), "group": "system"}, planned=False))
+                _record(lifecycle, event, state, raw=_original_stage(event) or raw, child_id=None, order=order)
+                explicit = explicit or bool(_event_id(event))
+            continue
         recorded_id = _raw_to_main(task_key, raw, detail, steps)
         boundary_id = _remote_boundary_step(task_key, event, steps, attempts) if recorded_id is None else None
         if boundary_id:
@@ -1021,7 +1040,9 @@ def build_progress_snapshot(
             child_id = "password_checkpoint"
         attempt = _record(item, event, state, raw=_original_stage(event) or raw, child_id=child_id, order=order)
         record = {**attempt, "main_step_id": main_id, "child_step_id": child_id, "label": item["label"], "sequence": order}
-        observations.setdefault(main_id, []).append({"state": state, "event_id": _event_id(event), "raw_stage": _original_stage(event) or raw})
+        # 废号写回确认只证明账号状态已保存，不能把运行中的任务标成成功。
+        if main_id != "result" or raw != "account_status":
+            observations.setdefault(main_id, []).append({"state": state, "event_id": _event_id(event), "raw_stage": _original_stage(event) or raw})
         attempts.append(record)
         activity.append(record)
         order += 1
@@ -1049,20 +1070,26 @@ def build_progress_snapshot(
                     child["display_status"] = "recovered"
                     child["reason"] = "此前尝试失败，后续重试已恢复；原失败记录保留"
     outcome = _result(ordered, run_value, observations)
-    _close_terminal_steps(ordered, run=run_value, attempts=attempts, template_order=template_order, recorded_steps=recorded_steps, unmapped_activity=unmapped_activity)
+    _close_terminal_steps(
+        ordered, run=run_value, attempts=attempts, template_order=template_order,
+        recorded_steps=recorded_steps, unmapped_activity=unmapped_activity,
+        task_lifecycle_observed=any(item.get("observed_order") is not None for item in task_lifecycle.values()),
+    )
     _skip_disabled_registration_steps(ordered, task_key, run_value, recorded_steps)
-    source = "explicit" if explicit else "legacy_derived" if activity else "insufficient_evidence"
+    source = "explicit" if explicit else "legacy_derived" if activity or task_lifecycle else "insufficient_evidence"
     failure = _failure(task_key, run_value, current_attempts, current_activity)
     current = _current(ordered, current_activity, str(run_value.get("status") or ""))
     debug_pause = _project_debug_pause(ordered, run_value, current)
     payload = {"flow_version": 3 if route_numbers else 2, "selected_route_attempt_no": selected_route, "steps": ordered, "run": {"id": run_value.get("id"), "status": run_value.get("status"), "progress_stage": run_value.get("progress_stage"), "result_summary": run_value.get("result_summary") or {}}, "events": attempts, "history_unknown": [{"event_id": _event_id(value), "reason": value.get("unknown_reason")} for value in unknown_events]}
     payload["debug_pause"] = debug_pause
+    payload["task_lifecycle"] = list(task_lifecycle.values())
     revision = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]
     result = {
         "task_id": int(task_id), "run_id": int(run_id), "flow_version": 3 if route_numbers else 2,
         "revision": revision, "source": source, "main_steps": ordered,
         "current": current,
         "outcome": outcome, "failure": failure,
+        "task_lifecycle": list(task_lifecycle.values()),
         "selected_route_attempt_no": selected_route,
         "time_basis": {
             "run_duration_ms": run_value.get("duration_ms"),

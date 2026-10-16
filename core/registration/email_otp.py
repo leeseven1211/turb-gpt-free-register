@@ -1468,10 +1468,16 @@ def _submit_email_and_wait_next(
     driver._email_submission_diagnostics = None
     # 仅显式续跑入口可标记为 resume_login；存储层仍会核对原 Attempt
     # 已保存密码和恢复 checkpoint，普通入口不能借此绕过未知提交围栏。
-    had_resume_scope = hasattr(driver, "_registration_resume_login")
-    previous_resume_scope = getattr(driver, "_registration_resume_login", False)
-    had_email_progress = hasattr(driver, "_registration_email_progress")
-    previous_email_progress = getattr(driver, "_registration_email_progress", None)
+    # 这些属性只属于本次邮箱流程；补密码会在同一 driver 上再次独立登录，
+    # 不能沿用本次已耗尽的预算，也不能删除调用方或外层流程自己的回调。
+    scope_attributes = (
+        "_registration_resume_login", "_registration_email_progress",
+        "_registration_stage_budget", "_registration_before_email_dispatch",
+    )
+    previous_scope = {
+        name: (hasattr(driver, name), getattr(driver, name, None))
+        for name in scope_attributes
+    }
     driver._registration_resume_login = bool(allow_login_password)
     try:
         return _submit_email_and_wait_next_impl(
@@ -1484,24 +1490,14 @@ def _submit_email_and_wait_next(
         raise
     finally:
         driver._email_submission_receipt = None
-        if had_email_progress:
-            driver._registration_email_progress = previous_email_progress
-        else:
-            try:
-                delattr(driver, "_registration_email_progress")
-            except AttributeError:
-                pass
-        try:
-            delattr(driver, "_registration_before_email_dispatch")
-        except AttributeError:
-            pass
-        if had_resume_scope:
-            driver._registration_resume_login = previous_resume_scope
-        else:
-            try:
-                delattr(driver, "_registration_resume_login")
-            except AttributeError:
-                pass
+        for name, (existed, previous_value) in previous_scope.items():
+            if existed:
+                setattr(driver, name, previous_value)
+            else:
+                try:
+                    delattr(driver, name)
+                except AttributeError:
+                    pass
 
 
 def _submit_email_and_wait_next_impl(

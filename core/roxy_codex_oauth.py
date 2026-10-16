@@ -759,7 +759,7 @@ def _relogin_after_password_reset(
     *,
     stage_reporter=None,
 ) -> None:
-    """Establish a normal ChatGPT session after reset APIs return without one."""
+    """密码重置后，用独立的邮箱提交预算重新建立 ChatGPT 会话。"""
     _clear_confirmed_email_submission(driver)
     _report_login_stage(stage_reporter, 'login', '密码重置已完成，使用新密码重新建立账号会话')
     _safe_get(
@@ -772,9 +772,19 @@ def _relogin_after_password_reset(
     human_delay('navigate')
     _maybe_accept(driver)
     try:
-        _type_email_address(driver, email, timeout=12)
-        human_delay('form')
-        _submit_email_step(driver)
+        from core.registration.email_otp import _submit_email_and_wait_next
+
+        # 密码重置和首次登录是两个独立认证阶段；重新登录同样需要等待
+        # 表单接管并确认落点，避免沿用首次邮箱提交已耗尽的预算。
+        _submit_email_and_wait_next(
+            driver,
+            email,
+            allow_login_password=True,
+            on_progress=lambda phase, message: _report_login_stage(
+                stage_reporter, 'login', message, detail={'email_phase': phase},
+            ),
+        )
+        _report_login_stage(stage_reporter, 'login', '已确认重置密码后邮箱登录的后续认证页面', state='success')
     except Exception:
         state = _login_challenge_state(driver)
         if _is_login_advanced(driver, state):
@@ -3845,6 +3855,7 @@ def run_roxy_chatgpt_account_action(
 
         asset_cache = browser_asset_policy.start_auth_asset_cache(opened, driver, flow="account_action")
         driver.set_page_load_timeout(int(_roxy_cfg.ROXY_SELENIUM_TIMEOUT))
+        _report_login_stage(stage_reporter, 'browser', '账号配置浏览器已启动并连接', state='success')
         clear_roxy_browser_auth_state(driver)
         logger.info("[Codex][Browser] 开始建立 ChatGPT 账号会话：%s", email)
         _fill_email_and_otp(

@@ -20,6 +20,170 @@ class _FakeDriver:
 
 
 class RoxyEmailRecoveryTests(unittest.TestCase):
+    def test_password_relogin_does_not_reuse_completed_email_budget(self):
+        driver = _FakeDriver()
+        completed_budgets = []
+        now = [0.0]
+        outer_budget = email_otp.StageBudget.start(180, clock=lambda: now[0])
+
+        def confirm_password_page(current_driver, *_args, **_kwargs):
+            completed_budgets.append(current_driver._registration_stage_budget)
+            return "login_password"
+
+        with (
+            patch.object(email_otp.StageBudget, "start", return_value=outer_budget),
+            patch.object(email_otp, "_type_email_address", return_value="email"),
+            patch.object(email_otp, "_email_input_value_state", return_value={"inputs": [{"value": "test@example.com"}]}),
+            patch.object(email_otp, "human_delay"),
+            patch.object(email_otp, "_submit_email_step"),
+            patch.object(email_otp, "_wait_email_submit_next_state", side_effect=confirm_password_page),
+        ):
+            self.assertEqual(email_otp._submit_email_and_wait_next(
+                driver, "test@example.com", allow_login_password=True,
+            ), "login_password")
+
+        # 重置密码耗时后再次登录，不能读到上一次邮箱流程已过期的预算。
+        now[0] = 181.0
+        self.assertTrue(completed_budgets[0].expired())
+        with (
+            patch.object(email_otp, "_wait_email_frontend_ready"),
+            patch.object(email_otp, "_stabilize_email_input_before_submit", return_value={"ok": True}),
+            patch.object(email_otp, "_submit_email_form_stable", return_value={"ok": True}) as submit,
+            patch.object(email_otp, "_assert_not_external_idp"),
+            patch.object(email_otp.time, "sleep"),
+        ):
+            email_otp._submit_email_step(driver, "test@example.com")
+        submit.assert_called_once_with(driver, "test@example.com")
+        self.assertFalse(hasattr(driver, "_registration_stage_budget"))
+        self.assertFalse(hasattr(driver, "_registration_before_email_dispatch"))
+
+    def test_email_scope_restores_caller_values_or_removes_temporary_values(self):
+        attributes = (
+            "_registration_resume_login", "_registration_email_progress",
+            "_registration_stage_budget", "_registration_before_email_dispatch",
+        )
+        for existing_scope in (False, True):
+            for error in (None, RuntimeError("登录失败"), StageTimeout("阶段超时")):
+                with self.subTest(existing_scope=existing_scope, error=type(error).__name__):
+                    driver = _FakeDriver()
+                    previous = dict(zip(attributes, (
+                        False, None, email_otp.StageBudget.start(90), Mock(),
+                    ))) if existing_scope else {}
+                    for name, value in previous.items():
+                        setattr(driver, name, value)
+                    with (
+                        patch.object(email_otp, "_type_email_address", return_value="email"),
+                        patch.object(email_otp, "_email_input_value_state", return_value={"inputs": [{"value": "test@example.com"}]}),
+                        patch.object(email_otp, "human_delay"),
+                        patch.object(email_otp, "_submit_email_step", side_effect=error),
+                        patch.object(email_otp, "_wait_email_submit_next_state", return_value="otp"),
+                    ):
+                        if error is None:
+                            self.assertEqual(email_otp._submit_email_and_wait_next(driver, "test@example.com"), "otp")
+                        else:
+                            with self.assertRaises(type(error)):
+                                email_otp._submit_email_and_wait_next(driver, "test@example.com")
+                    for name in attributes:
+                        self.assertEqual(hasattr(driver, name), existing_scope, name)
+                        if existing_scope:
+                            self.assertIs(getattr(driver, name), previous[name], name)
+
+    def test_email_unknown_dispatch_restores_scope_after_timeout_conversion(self):
+        driver = _FakeDriver()
+        previous_budget = email_otp.StageBudget.start(90)
+        previous_hook = Mock()
+        driver._registration_stage_budget = previous_budget
+        driver._registration_before_email_dispatch = previous_hook
+
+        def submit_then_timeout(current_driver, _email):
+            current_driver._email_submission_receipt = {"id": "test-submission"}
+            raise StageTimeout("阶段超时")
+
+        with (
+            patch.object(email_otp, "_type_email_address", return_value="email"),
+            patch.object(email_otp, "_email_input_value_state", return_value={"inputs": [{"value": "test@example.com"}]}),
+            patch.object(email_otp, "human_delay"),
+            patch.object(email_otp, "_submit_email_step", side_effect=submit_then_timeout),
+            patch.object(email_otp, "_log_email_submission_timeout"),
+        ):
+            with self.assertRaises(email_otp._EmailSubmissionUnknown):
+                email_otp._submit_email_and_wait_next(driver, "test@example.com")
+        self.assertIs(driver._registration_stage_budget, previous_budget)
+        self.assertIs(driver._registration_before_email_dispatch, previous_hook)
+        self.assertIsNone(driver._email_submission_receipt)
+        previous_hook.assert_not_called()
+
+    def test_nested_email_flow_restores_active_outer_budget_and_dispatch_hook(self):
+        for inner_failure in (False, True):
+            with self.subTest(inner_failure=inner_failure):
+                driver = _FakeDriver()
+                active_email = [None]
+
+                def type_email(_driver, email, **_kwargs):
+                    active_email[0] = email
+                    return "email"
+
+                def submit(current_driver, email):
+                    if email == "inner@example.com":
+                        if inner_failure:
+                            raise RuntimeError("内层登录失败")
+                        return
+                    outer_scope = {
+                        name: getattr(current_driver, name) for name in (
+                            "_registration_resume_login", "_registration_email_progress",
+                            "_registration_stage_budget", "_registration_before_email_dispatch",
+                        )
+                    }
+                    try:
+                        email_otp._submit_email_and_wait_next(current_driver, "inner@example.com")
+                    except RuntimeError:
+                        if not inner_failure:
+                            raise
+                    for name, value in outer_scope.items():
+                        self.assertIs(getattr(current_driver, name), value, name)
+                    # 内层结束后外层仍能切换自己的提交预算。
+                    current_driver._registration_before_email_dispatch()
+
+                with (
+                    patch.object(email_otp, "_type_email_address", side_effect=type_email),
+                    patch.object(email_otp, "_email_input_value_state", side_effect=lambda _driver: {"inputs": [{"value": active_email[0]}]}),
+                    patch.object(email_otp, "human_delay"),
+                    patch.object(email_otp, "_submit_email_step", side_effect=submit),
+                    patch.object(email_otp, "_wait_email_submit_next_state", return_value="otp"),
+                ):
+                    self.assertEqual(email_otp._submit_email_and_wait_next(
+                        driver, "outer@example.com", allow_login_password=True,
+                    ), "otp")
+                self.assertFalse(hasattr(driver, "_registration_stage_budget"))
+                self.assertFalse(hasattr(driver, "_registration_before_email_dispatch"))
+
+    def test_email_submission_keeps_original_outer_deadline_during_call(self):
+        driver = _FakeDriver()
+        now = [0.0]
+        outer_budget = email_otp.StageBudget.start(10, clock=lambda: now[0])
+
+        def submit(current_driver, _email):
+            preparation = current_driver._registration_stage_budget
+            now[0] = 9.0
+            submission = current_driver._registration_before_email_dispatch()
+            self.assertIsNot(submission, preparation)
+            self.assertEqual(submission.deadline, outer_budget.deadline)
+            now[0] = 10.0
+            submission.require("邮箱首次提交")
+
+        with (
+            patch.object(email_otp.StageBudget, "start", return_value=outer_budget),
+            patch.object(email_otp, "_type_email_address", return_value="email"),
+            patch.object(email_otp, "_email_input_value_state", return_value={"inputs": [{"value": "test@example.com"}]}),
+            patch.object(email_otp, "human_delay"),
+            patch.object(email_otp, "_submit_email_step", side_effect=submit),
+            patch.object(email_otp, "_wait_email_submit_next_state") as wait_next,
+        ):
+            with self.assertRaises(StageTimeout):
+                email_otp._submit_email_and_wait_next(driver, "test@example.com", total_timeout=10)
+        wait_next.assert_not_called()
+        self.assertFalse(hasattr(driver, "_registration_stage_budget"))
+
     def test_zero_email_input_budget_does_not_restore_default_timeout(self):
         driver = _FakeDriver()
         with patch.object(roxy_registration, "_find_visible_email_input_js") as find_input:
