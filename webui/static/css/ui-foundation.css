@@ -3463,6 +3463,15 @@ table[data-resizable-table="codex"] {
   line-height: 18px;
 }
 
+/* 账号状态与快捷操作使用和密码复制一致的字号。 */
+#accountsPanelV2 table[data-resizable-table="accounts"] .col-token .acc-v2-token-state,
+#accountsPanelV2 table[data-resizable-table="accounts"] .col-token > .acc-v2-muted,
+#accountsPanelV2 table[data-resizable-table="accounts"] [data-account-totp-cell] button,
+#accountsPanelV2 table[data-resizable-table="accounts"] .col-risk-mail :is(button, .pill),
+#accountsPanelV2 table[data-resizable-table="accounts"] .col-status .acc-v2-codex {
+  font-size: var(--ui-font-size-sm);
+}
+
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-time-label {
   flex: 0 0 auto;
   color: #737d8d;
