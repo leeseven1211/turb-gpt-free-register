@@ -3500,10 +3500,38 @@
 }
 
 #tab-config .config-proxy-features-v2 .config-proxy-feature-v2 {
+  --config-feature-accent: var(--ui-color-brand);
+  --config-feature-soft: var(--ui-color-brand-soft);
   min-width: 0;
-  border: 1px solid var(--ui-color-border);
+  border: 1px solid color-mix(in srgb, var(--config-feature-accent) 28%, var(--ui-color-border));
   border-radius: var(--ui-radius-md);
   background: var(--ui-color-surface);
+}
+
+/* 功能颜色只标识分类，运行状态仍由各字段的文字与状态标记表达。 */
+#tab-config .config-proxy-feature-v2[data-config-proxy-feature="查询套餐"] {
+  --config-feature-accent: var(--ui-color-info);
+  --config-feature-soft: var(--ui-color-info-soft);
+}
+
+#tab-config .config-proxy-feature-v2[data-config-proxy-feature="查活与刷新 AT"] {
+  --config-feature-accent: #0d9488;
+  --config-feature-soft: #eefaf7;
+}
+
+#tab-config .config-proxy-feature-v2[data-config-proxy-feature="补密码"] {
+  --config-feature-accent: var(--ui-color-warning);
+  --config-feature-soft: var(--ui-color-warning-soft);
+}
+
+#tab-config .config-proxy-feature-v2[data-config-proxy-feature="补 2FA"] {
+  --config-feature-accent: #0891b2;
+  --config-feature-soft: #eefaff;
+}
+
+#tab-config .config-proxy-feature-v2[data-config-proxy-feature="邮箱换绑"] {
+  --config-feature-accent: #c74b87;
+  --config-feature-soft: #fff2f8;
 }
 
 #tab-config .config-proxy-features-v2 .config-proxy-feature-v2:has(.config-field-v2:nth-child(2)) {
@@ -3513,9 +3541,10 @@
 #tab-config .config-proxy-features-v2 .config-proxy-feature-v2 > h4 {
   margin: 0;
   padding: 10px 12px;
-  border-bottom: 1px solid var(--ui-color-border);
+  border-bottom: 1px solid color-mix(in srgb, var(--config-feature-accent) 20%, var(--ui-color-border));
   border-radius: var(--ui-radius-md) var(--ui-radius-md) 0 0;
-  background: var(--ui-color-surface-subtle);
+  background: var(--config-feature-soft);
+  box-shadow: inset 4px 0 0 var(--config-feature-accent);
   color: var(--ui-color-text);
   font-size: 14px;
   font-weight: 730;
