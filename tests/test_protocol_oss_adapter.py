@@ -66,6 +66,31 @@ def test_protocol_oss_maps_existing_identity_to_local_manual_reconcile():
     session.close.assert_called_once_with()
 
 
+def test_protocol_oss_reports_missing_module_name_without_exposing_exception_text():
+    session = Mock(proxy="http://proxy.example:8080")
+    missing_module = ModuleNotFoundError("No module named 'safe_probe_dependency'", name="safe_probe_dependency")
+    with (
+        patch("core.registration.protocol_oss.BrowserSession", return_value=session),
+        patch("core.email_provider.validate_email_source", return_value="icloud_hide"),
+        patch("core.email_provider.resolve_email_source", return_value="icloud_hide"),
+        patch("core.registration.protocol_oss._run_upstream_protocol", side_effect=missing_module),
+        patch("core.email_provider.retain_email"),
+        patch("core.registration_service.report_job_progress"),
+    ):
+        result = run_protocol_oss_registration(
+            email="protocol-oss@example.test",
+            name="Test User",
+            proxy=session.proxy,
+            email_source="icloud_hide",
+        )
+
+    assert result["cause_code"] == "python_module_missing"
+    assert result["error"] == "开源 Protocol 缺少 Python 依赖：safe_probe_dependency"
+    assert "No module named" not in result["error"]
+    assert result["request_unknown"] is False
+    session.close.assert_called_once_with()
+
+
 def test_protocol_oss_persists_core_account_before_local_postprocessing():
     session = Mock()
     session.device_id = "device-fixture"

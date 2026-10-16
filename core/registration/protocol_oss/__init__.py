@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any
 
@@ -691,7 +692,15 @@ def run_protocol_oss_registration(
             checkpoint_account_id=account_id,
             otp_send_in_flight=False,
         )
-        error = _safe_protocol_registration_error(exc, cause_code)
+        missing_module = str(getattr(exc, "name", "") or "")
+        if isinstance(exc, ModuleNotFoundError) and len(missing_module) <= 160 and re.fullmatch(
+            r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*",
+            missing_module,
+        ):
+            cause_code = "python_module_missing"
+            error = f"开源 Protocol 缺少 Python 依赖：{missing_module}"
+        else:
+            error = _safe_protocol_registration_error(exc, cause_code)
         try:
             if isinstance(exc, _openai_auth.AccountUnusableError):
                 mark_email_permanently_unusable(
