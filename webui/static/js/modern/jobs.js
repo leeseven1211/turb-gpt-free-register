@@ -738,13 +738,12 @@ async function refreshJobsManual(btn) {
 
 let modalScrollY = 0;
 function updateModalScrollLock() {
-  const opened = !$('#logPanel').classList.contains('hidden')
-    || !$('#liveLogPanel').classList.contains('hidden')
-    || !$('#accountTaskLogPanel').classList.contains('hidden')
-    || !$('#qrPanel').classList.contains('hidden')
-    || !$('#outlookImportModal').classList.contains('hidden')
-    || !$('#accountDetailDrawer').classList.contains('hidden')
-    || !$('#emailChangeModal').classList.contains('hidden');
+  // 弹窗所在页面隐藏后，不能继续锁住当前页面。
+  const opened = ['logPanel', 'liveLogPanel', 'accountTaskLogPanel', 'qrPanel',
+    'outlookImportModal', 'accountDetailDrawer', 'emailChangeModal'].some(id => {
+    const panel = document.getElementById(id);
+    return panel && !panel.closest('.hidden, [hidden]');
+  });
   const locked = document.body.classList.contains('modal-open');
   if (opened && !locked) {
     modalScrollY = window.scrollY || document.documentElement.scrollTop || 0;

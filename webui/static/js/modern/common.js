@@ -1291,11 +1291,24 @@ function updateTopbarClock() {
 updateTopbarClock();
 setInterval(updateTopbarClock, 30000);
 
+function closePageDialogsForNavigation() {
+  // 离开页面时走完整关闭逻辑，清理轮询、焦点状态和滚动锁。
+  const dialogs = [
+    ['accountTaskLogPanel', typeof closeAccountTaskLogModal === 'function' ? closeAccountTaskLogModal : null],
+    ['accountDetailDrawer', typeof closeAccountDetail === 'function' ? closeAccountDetail : null],
+    ['emailChangeModal', typeof closeEmailChangeModal === 'function' ? () => closeEmailChangeModal({restoreFocus:false}) : null],
+    ['liveLogPanel', typeof closeLiveLogModal === 'function' ? closeLiveLogModal : null],
+    ['overviewCustomizer', typeof closeOverviewCustomizer === 'function' ? closeOverviewCustomizer : null],
+  ];
+  for (const [id, close] of dialogs) {
+    const panel = document.getElementById(id);
+    if (panel && !panel.classList.contains('hidden') && close) close();
+  }
+}
+
 function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   if (!NAV_ALLOWED_TABS.includes(tab)) tab = 'overview';
-  const taskDialog = $('#accountTaskLogPanel');
-  if (tab !== ACTIVE_TAB && taskDialog && !taskDialog.classList.contains('hidden')
-      && typeof closeAccountTaskLogModal === 'function') closeAccountTaskLogModal();
+  if (tab !== ACTIVE_TAB) closePageDialogsForNavigation();
   const proxyTrafficDialog = document.getElementById('proxyTrafficDetailDialog');
   if (tab !== 'proxy-traffic' && proxyTrafficDialog?.open) proxyTrafficDialog.close();
   ACTIVE_TAB = tab;
@@ -1316,6 +1329,7 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   }
   const contentTab = tab === 'tasks' ? 'accounts' : tab;
   contentTabs.forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== contentTab));
+  if (typeof updateModalScrollLock === 'function') updateModalScrollLock();
   const meta = TAB_META[tab];
   const currentView = document.getElementById(`tab-${contentTab}`)?.dataset.moduleView;
   const description = MODULE_VIEW_META[tab]?.[currentView] || meta.description;
@@ -1365,7 +1379,9 @@ const MODULE_VIEW_META = {
 function setModuleView(module, view, persist=true, historyMode='push') {
   const tab = document.getElementById(`tab-${module}`);
   if (!tab || !MODULE_VIEW_META[module]?.[view]) return;
+  if (tab.dataset.moduleView !== view) closePageDialogsForNavigation();
   tab.dataset.moduleView = view;
+  if (typeof updateModalScrollLock === 'function') updateModalScrollLock();
   if (persist) localStorage.setItem(`gpt_console_module_view_${module}`, view);
   document.querySelectorAll(`[data-module-subnav="${module}"] [data-view]`).forEach(btn => {
     btn.classList.toggle('is-active', btn.dataset.view === view);
