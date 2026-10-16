@@ -437,7 +437,7 @@ test('折扣期限缺失不补月份，非月周期保留单位，支付方式�
   }
 });
 
-test('多国详情和任务摘要展示完整国家结果与成功总数', () => {
+test('多国详情保留成功总数，任务摘要只展示国家结果和异常状态', () => {
   const account = {
     id: 8,
     current_plan_type: 'free',
@@ -454,12 +454,16 @@ test('多国详情和任务摘要展示完整国家结果与成功总数', () =>
   assert.match(drawer, /VN 优惠/);
   assert.match(drawer, /IN 优惠/);
   assert.match(drawer, /HTTP 429/);
+  assert.match(drawer, /1\/3 个国家成功/);
   const result = view.accountTaskResultText({task_type: 'plan_check', status: 'success', result_summary: account});
-  assert.match(result, /1\/3/);
+  assert.doesNotMatch(result, /国家查询|个国家成功|1\/3/);
+  assert.match(result, /^套餐 free · 部分失败 · JP Go: 免费/);
+  assert.match(result, /VN Plus: 免费/);
+  assert.match(result, /IN 已取消/);
   assert.match(result, /部分失败/);
 });
 
-test('任务摘要只有多国汇总字段时仍按国家计数并展示带国家的优惠', () => {
+test('任务摘要只有多国汇总字段时省略成功计数并保留国家优惠与失败提示', () => {
   const result = view.accountTaskResultText({task_type: 'plan_check', status: 'success', result_summary: {
     current_plan_type: 'free',
     plan_check_countries: ['JP', 'VN', 'IN'],
@@ -472,7 +476,8 @@ test('任务摘要只有多国汇总字段时仍按国家计数并展示带国�
       {plan: 'plus', kind: 'discount', discount_percentage: 20, country: 'VN', stale: true},
     ],
   }});
-  assert.match(result, /1\/3/);
+  assert.doesNotMatch(result, /国家查询|个国家成功|1\/3/);
+  assert.match(result, /失败国家：VN、IN/);
   assert.match(result, /部分失败/);
   assert.match(result, /JP/);
   assert.match(result, /VN/);

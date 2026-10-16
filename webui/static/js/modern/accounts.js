@@ -1726,15 +1726,15 @@ function _accountCountryTaskSummary(r, overallTaskStatus = '') {
   const active = results.some(item => ['queued', 'running'].includes(String(item.status || '').toLowerCase())) || ['queued', 'running'].includes(String(overallTaskStatus || '').toLowerCase());
   const allFailed = total > 0 && success === 0 && failed >= total;
   const interrupted = ['failed', 'cancelled'].includes(String(overallTaskStatus || '').toLowerCase()) && active;
-  const state = allFailed ? ' · 全部失败' : interrupted ? ` · ${overallTaskStatus === 'cancelled' ? '已取消' : '查询中断'}` : failed && success ? ' · 部分失败' : active ? ' · 查询中' : '';
-  const failedText = (!results.length && summaryData.failedCountries.length) ? ` · 失败国家：${summaryData.failedCountries.join('、')}` : '';
+  const state = allFailed ? '全部失败' : interrupted ? (overallTaskStatus === 'cancelled' ? '已取消' : '查询中断') : failed && success ? '部分失败' : active ? '查询中' : '';
+  const failedText = (!results.length && summaryData.failedCountries.length) ? `失败国家：${summaryData.failedCountries.join('、')}` : '';
   const offers = _accountCountryPromotionDisplays(r).map(display => {
     const best = _accountCountryPromotionBest(display);
     const label = _accountPromotionLabel(best);
     const plan = ['free_trial', 'discount', 'other_promo'].includes(best.kind) ? `${_promotionPlanLabel(best.plan)}: ` : '';
     return `${display.country} ${plan}${label}`;
   }).join(' · ');
-  return `国家查询 ${success}/${total} 个国家成功${state}${failedText}${offers ? ` · ${offers}` : ''}`;
+  return [state, failedText, offers].filter(Boolean).join(' · ');
 }
 function _accountPromotionLabel(item) {
   const periods = Number(item.duration_num_periods);
