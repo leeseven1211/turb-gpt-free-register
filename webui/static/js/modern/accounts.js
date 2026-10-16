@@ -2026,28 +2026,31 @@ function _deactivationMailCell(r) {
   const sender = r.deactivation_mail_sender || '';
   const err = r.deactivation_mail_error || '';
   const supported = ['email_butler','cloudflare','icloud_hide'].includes((r.email_source || '').toString().toLowerCase());
-  let badge = '<span class="pill status-used">待扫描</span>';
   let title = '尚未扫描';
+  if (detected) {
+    title = [received && `收件: ${received}`, sender && `发件人: ${sender}`, subject].filter(Boolean).join('；') || '已收到封号邮件';
+    return `<div class="account-cell-lines status-action-cell" title="${esc(title)}"><div class="account-cell-line"><span class="pill status-failed" title="${esc(title)}">封号</span></div></div>`;
+  }
+  let disabled = false;
+  let buttonTitle = '扫描该账号对应邮箱；不会刷新 AT';
   if (!supported || status === 'unsupported') {
-    badge = '<span class="pill status-used">不支持</span>';
+    disabled = true;
     title = err || '当前邮箱来源暂不支持扫描';
-  } else if (detected) {
-    badge = '<span class="pill status-failed">已收到</span>';
-    title = [received && `收件: ${received}`, sender && `发件人: ${sender}`, subject].filter(Boolean).join('；');
+    buttonTitle = title;
   } else if (status === 'queued' || status === 'running') {
-    badge = `<span class="pill status-running">${status === 'queued' ? '排队中' : '扫描中'}</span>`;
-    title = '正在扫描邮箱，不会刷新 AT';
+    disabled = true;
+    title = status === 'queued'
+      ? '排队中；正在扫描邮箱，不会刷新 AT'
+      : '扫描中；正在扫描邮箱，不会刷新 AT';
+    buttonTitle = title;
   } else if (status === 'success') {
-    badge = '<span class="pill status-success">未发现</span>';
     title = checked ? `扫描时间: ${checked}` : '未发现高置信度封号通知';
   } else if (status === 'failed') {
-    badge = '<span class="pill status-running">扫描失败</span>';
     title = err || checked || '扫描失败';
   }
-  const button = supported && !['queued','running'].includes(status)
-    ? `<button type="button" data-deactivation-mail-check="${esc(r.id)}" title="扫描该账号对应邮箱；不会刷新 AT">复查</button>`
-    : '';
-  return `<div class="account-cell-lines status-action-cell" title="${esc(title)}"><div class="account-cell-line">${badge}</div>${button ? `<div class="account-cell-line">${button}</div>` : ''}</div>`;
+  const disabledAttr = disabled ? ' disabled' : '';
+  const button = `<button type="button" data-deactivation-mail-check="${esc(r.id)}"${disabledAttr} title="${esc(buttonTitle)}">复查</button>`;
+  return `<div class="account-cell-lines status-action-cell" title="${esc(title)}"><div class="account-cell-line">${button}</div></div>`;
 }
 function _accountsV2MoreMenu(r) {
   const parts = [
