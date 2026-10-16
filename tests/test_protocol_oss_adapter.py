@@ -4,6 +4,7 @@ import pytest
 
 from core.registration.protocol_oss import (
     _classify_upstream_continuation,
+    _run_upstream_protocol,
     _run_local_postprocessing,
     run_protocol_oss_registration,
 )
@@ -19,6 +20,34 @@ def test_protocol_oss_requires_the_task_proxy_before_opening_a_session():
             )
 
     browser_session.assert_not_called()
+
+
+def test_protocol_oss_upstream_flow_imports_existing_liveness_module():
+    with (
+        patch(
+            "core.registration.protocol_oss._openai_auth.network_preflight",
+            side_effect=RuntimeError("preflight fixture"),
+        ),
+        patch("core.registration_service.report_job_progress"),
+        patch("core.registration_service.check_stop_requested"),
+        patch("core.humanize.delay"),
+        patch(
+            "core.registration.protocol_oss._upstream_config.CHATGPT_ANON_BOOTSTRAP_ENABLED",
+            False,
+        ),
+        pytest.raises(RuntimeError, match="preflight fixture"),
+    ):
+        _run_upstream_protocol(
+            Mock(proxy="http://proxy.example:8080"),
+            email="protocol-oss@example.test",
+            name="Test User",
+            birthday="1990-01-01",
+            otp_code=None,
+            email_source="icloud_hide",
+            existing_password=None,
+            existing_totp_secret=None,
+            options={},
+        )
 
 
 def test_protocol_oss_classifies_existing_new_and_unknown_auth_continuations():

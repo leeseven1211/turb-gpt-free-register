@@ -110,7 +110,7 @@ def _run_upstream_protocol(
     from core.email_provider import wait_for_otp
     from core.humanize import delay as human_delay
     from core.registration.checkpoints import save_protocol_password_checkpoint
-    from core.registration.protocol_v2_liveness import _is_mfa
+    from core.protocol_v2_liveness import _is_mfa
     from core.registration_service import (
         StopRequested,
         check_stop_requested,
