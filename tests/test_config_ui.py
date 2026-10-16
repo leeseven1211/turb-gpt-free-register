@@ -58,6 +58,10 @@ vm.runInContext(process.argv[2], context);
         self._run_config_control_js(r'''
 const field = {key: 'PROXY_POOL_COUNTRIES', type: 'list_str_multiline',
   label: '代理池预热国家', value: [], country_codes: ['US', 'JP', 'SG', 'DE']};
+const legacy = renderConfigControlMarkupV2({...field, country_codes: undefined, value: ['JP']});
+assert.ok(legacy.includes('data-key="PROXY_POOL_COUNTRIES"'));
+assert.ok(!legacy.includes('data-country-picker'));
+assert.ok(legacy.includes('JP</textarea>'));
 assert.ok(renderConfigControlMarkupV2(field).includes('。"></textarea>'));
 assert.deepEqual(Array.from(configCountryOptionsV2(field, '日本'), item => item.code), ['JP']);
 assert.deepEqual(Array.from(configCountryOptionsV2(field, ' de '), item => item.code), ['DE']);

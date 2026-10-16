@@ -828,7 +828,7 @@ function renderConfigControlMarkupV2(f) {
   const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
   let control = '';
   const driverChoices = configDriverChoices(f);
-  if (f.key === 'PROXY_POOL_COUNTRIES') {
+  if (f.key === 'PROXY_POOL_COUNTRIES' && Array.isArray(f.country_codes) && f.country_codes.length) {
     control = renderConfigCountryControlV2(f, fv);
   } else if (f.key === 'EMAIL_SOURCE') {
     const selectedValues = String(fv || '').split(',').map(value => value.trim().toLowerCase()).filter(Boolean);
