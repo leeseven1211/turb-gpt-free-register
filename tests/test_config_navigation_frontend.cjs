@@ -164,6 +164,94 @@ test('定时任务同页展示各服务完整策略，查询套餐和注册重�
   for (const key of ['PLAN_CHECK_PROXY_MODE', 'PLAN_CHECK_PROXY', 'ACCOUNT_ACTION_PROXY_MODE', 'ACCOUNT_ACTION_PROXY']) assert.equal(view.proxySection(key), '静态代理池');
 });
 
+test('账号动作按功能归组，套餐的代理、国家、重试和节奏完整集中且每项只展示一次', () => {
+  const featureKeys = {
+    '查询套餐': [
+      'ACCOUNT_PLAN_CHECK_PROXY_MODE', 'PLAN_CHECK_PROXY_ALLOW_REUSE', 'PLAN_CHECK_PROXY_REUSE_LIMIT',
+      'PLAN_CHECK_COUNTRIES', 'PLAN_CHECK_COUNTRY_WAIT_TIMEOUT', 'PLAN_CHECK_TIMEOUT',
+      'PLAN_CHECK_MAX_ATTEMPTS', 'PLAN_CHECK_RETRY_DELAY', 'PLAN_CHECK_MIN_INTERVAL',
+      'PLAN_CHECK_JITTER', 'PLAN_CHECK_REGISTRATION_RECHECK_DELAY',
+    ],
+    '查活与刷新 AT': [
+      'ACCOUNT_LIVE_CHECK_PROXY_MODE', 'ACCOUNT_REFRESH_AT_PROXY_MODE',
+      'ACCOUNT_ACTION_PROXY_RETRIES', 'ACCOUNT_ACTION_PROXY_RETRY_DELAY',
+    ],
+    '补密码': ['ACCOUNT_PASSWORD_PROXY_MODE'],
+    '补 2FA': ['ACCOUNT_2FA_PROXY_MODE'],
+    '邮箱换绑': ['ACCOUNT_EMAIL_CHANGE_PROXY_MODE'],
+    'Codex OAuth': ['ACCOUNT_CODEX_PROXY_MODE'],
+  };
+  const fields = Object.values(featureKeys).flat().reverse().map(key => field(key, '代理与网络',
+    key === 'PLAN_CHECK_PROXY_ALLOW_REUSE' ? {type: 'bool', value: true}
+      : key === 'PLAN_CHECK_COUNTRIES' ? {type: 'list_str_multiline', value: ['JP'], country_codes: ['JP', 'US']}
+        : {}));
+  const {view} = createConfigView(fields);
+  view.search('PLAN_CHECK_TIMEOUT');
+  const markup = view.render('代理与网络', view.groups()['代理与网络']);
+  const sections = new Map(Array.from(markup.matchAll(/<section[^>]*data-config-proxy-feature="([^"]+)"[^>]*>([\s\S]*?)<\/section>/g),
+    match => [match[1], match[2]]));
+  assert.deepEqual(Array.from(sections.keys()), Object.keys(featureKeys));
+  for (const [title, keys] of Object.entries(featureKeys)) {
+    const section = sections.get(title);
+    assert.deepEqual(Array.from(section.matchAll(/data-key="([^"]+)"/g), match => match[1]), keys);
+    for (const key of keys) {
+      assert.equal(view.proxySection(key), '账号动作线路');
+      assert.equal((markup.match(new RegExp(`data-key="${key}"`, 'g')) || []).length, 1);
+    }
+  }
+  const plan = sections.get('查询套餐');
+  assert.equal((plan.match(/data-key=/g) || []).length, 11);
+  assert.match(plan, /type="checkbox" role="switch" data-key="PLAN_CHECK_PROXY_ALLOW_REUSE" checked/);
+  assert.ok(!markup.includes('class="config-switches-v2"'));
+  assert.ok(!plan.includes('data-key="ACCOUNT_ACTION_PROXY_RETRIES"'));
+  assert.ok(!plan.includes('data-key="ACCOUNT_ACTION_PROXY_RETRY_DELAY"'));
+});
+
+test('切换代理分类和账号功能保留未保存国家、开关和重试值，并统一提交原配置键', async () => {
+  const fields = [
+    field('PLAN_CHECK_PROXY_ALLOW_REUSE', '代理与网络', {type: 'bool', value: true}),
+    field('PLAN_CHECK_COUNTRIES', '代理与网络', {type: 'list_str_multiline', value: ['JP'], country_codes: ['JP', 'US', 'DE']}),
+    field('ACCOUNT_ACTION_PROXY_RETRIES', '代理与网络', {type: 'int', value: 2}),
+    field('PROXY_POOL_COUNTRIES', '代理与网络', {type: 'list_str_multiline', value: ['JP'], country_codes: ['JP', 'US', 'DE']}),
+    field('PLAN_CHECK_PROXY', '代理与网络'),
+  ];
+  const {view, context} = createConfigView(fields);
+  view.search('PLAN_CHECK_COUNTRIES');
+  view.setPending('PLAN_CHECK_COUNTRIES', ['DE', 'US']);
+  view.setPending('PLAN_CHECK_PROXY_ALLOW_REUSE', false);
+  view.search('ACCOUNT_ACTION_PROXY_RETRIES');
+  view.setPending('ACCOUNT_ACTION_PROXY_RETRIES', 3);
+  view.search('PROXY_POOL_COUNTRIES');
+  assert.equal(view.state().proxy, '独立代理池');
+  view.setPending('PROXY_POOL_COUNTRIES', []);
+  const poolMarkup = view.render('代理与网络', view.groups()['代理与网络']);
+  assert.ok(poolMarkup.includes('data-key="PROXY_POOL_COUNTRIES" value=""'));
+  assert.ok(poolMarkup.includes('未选择额外预热国家'));
+  view.search('PLAN_CHECK_PROXY');
+  assert.equal(view.state().proxy, '静态代理池');
+  view.render('代理与网络', view.groups()['代理与网络']);
+  view.search('PLAN_CHECK_COUNTRIES');
+  assert.equal(view.state().proxy, '账号动作线路');
+  const actionMarkup = view.render('代理与网络', view.groups()['代理与网络']);
+  assert.ok(actionMarkup.includes('data-key="PLAN_CHECK_COUNTRIES" value="DE,US"'));
+  assert.match(actionMarkup, /data-key="ACCOUNT_ACTION_PROXY_RETRIES"[^>]*value="3"/);
+  assert.match(actionMarkup, /data-key="PLAN_CHECK_PROXY_ALLOW_REUSE" aria-label=/);
+  assert.ok(!/data-key="PLAN_CHECK_PROXY_ALLOW_REUSE" checked/.test(actionMarkup));
+  const expected = {
+    PLAN_CHECK_COUNTRIES: ['DE', 'US'], PLAN_CHECK_PROXY_ALLOW_REUSE: false,
+    ACCOUNT_ACTION_PROXY_RETRIES: 3, PROXY_POOL_COUNTRIES: [],
+  };
+  assert.deepEqual(JSON.parse(JSON.stringify(view.pending)), expected);
+  context.api = async () => { throw new Error('模拟保存失败'); };
+  await view.save();
+  assert.deepEqual(JSON.parse(JSON.stringify(view.pending)), expected);
+  let payload;
+  context.api = async (_url, options) => { payload = JSON.parse(options.body); return {reloaded: true}; };
+  await view.save();
+  assert.deepEqual(payload.updates, expected);
+  assert.equal(Object.keys(view.pending).length, 0);
+});
+
 test('跨菜单修改统一保存，失败时完整保留待保存值', async () => {
   const fields = [field('ROXY_API_BASE', 'RoxyBrowser'), field('TASK_CENTER_RETENTION_DAYS', '任务中心', {type: 'int', value: 30})];
   const {view, context} = createConfigView(fields);

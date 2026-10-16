@@ -37,6 +37,7 @@ vm.runInContext(extractFunction(common, 'isPlaceholderEmpty'), context);
 for (const name of [
   'configSchemaOptions', 'configDriverChoices',
   'configCountryCodesV2', 'configCountryNameV2', 'configCountryOptionsV2',
+  'configCountrySummaryV2',
   'renderConfigCountryChipsV2', 'renderConfigCountryOptionsV2', 'renderConfigCountryControlV2',
   'renderConfigControlMarkupV2', 'readConfigElementValue',
 ]) {
@@ -54,35 +55,66 @@ vm.runInContext(process.argv[2], context);
         )
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
-    def test_pool_country_picker_searches_chinese_names_and_codes_and_keeps_pending_selection(self):
+    def test_country_pickers_search_names_and_codes_and_keep_ordered_pending_selection(self):
         self._run_config_control_js(r'''
-const field = {key: 'PROXY_POOL_COUNTRIES', type: 'list_str_multiline',
-  label: '代理池预热国家', value: [], country_codes: ['US', 'JP', 'SG', 'DE']};
-const legacy = renderConfigControlMarkupV2({...field, country_codes: undefined, value: ['JP']});
-assert.ok(legacy.includes('data-key="PROXY_POOL_COUNTRIES"'));
-assert.ok(!legacy.includes('data-country-picker'));
-assert.ok(legacy.includes('JP</textarea>'));
-assert.ok(renderConfigControlMarkupV2(field).includes('。"></textarea>'));
-assert.deepEqual(Array.from(configCountryOptionsV2(field, '日本'), item => item.code), ['JP']);
-assert.deepEqual(Array.from(configCountryOptionsV2(field, ' de '), item => item.code), ['DE']);
-assert.equal(configCountryOptionsV2(field, '不存在的国家').length, 0);
-CONFIG_PENDING_UPDATES.PROXY_POOL_COUNTRIES = ['SG', 'JP'];
-const markup = renderConfigControlMarkupV2(field);
-assert.ok(markup.includes('data-country-code="SG" aria-pressed="true"'));
-assert.ok(markup.includes('data-country-code="US" aria-pressed="false"'));
-assert.ok(markup.indexOf('data-country-remove="SG"') < markup.indexOf('data-country-remove="JP"'));
-assert.ok(markup.includes('SG\nJP</textarea>'));
-assert.ok(markup.includes('可选 4 个国家 / 地区'));
+for (const key of ['PROXY_POOL_COUNTRIES', 'PLAN_CHECK_COUNTRIES']) {
+  const field = {key, type: 'list_str_multiline', label: '国家列表',
+    value: ['SG', 'JP'], country_codes: ['US', 'JP', 'SG', 'DE']};
+  assert.deepEqual(Array.from(configCountryOptionsV2(field, '日本'), item => item.code), ['JP']);
+  assert.deepEqual(Array.from(configCountryOptionsV2(field, ' de '), item => item.code), ['DE']);
+  assert.equal(configCountryOptionsV2(field, '不存在的国家').length, 0);
+  const saved = renderConfigControlMarkupV2(field);
+  assert.ok(saved.includes(`<input type="hidden" data-key="${key}" value="SG,JP">`));
+  assert.ok(saved.indexOf('data-country-remove="SG"') < saved.indexOf('data-country-remove="JP"'));
+
+  CONFIG_PENDING_UPDATES[key] = ['DE', 'JP'];
+  const markup = renderConfigControlMarkupV2(field);
+  assert.ok(markup.includes(`data-country-picker="${key}"`));
+  assert.ok(markup.includes('config-country-picker-v2--compact'));
+  assert.ok(markup.includes('<details class="config-country-choices-v2">'));
+  assert.ok(!/<details[^>]*\bopen(?:\s|>|=)/.test(markup));
+  assert.equal((markup.match(/<summary\b/g) || []).length, 1);
+  assert.ok(markup.includes('<span data-country-summary>德国 DE、日本 JP</span>'));
+  assert.ok(markup.includes('data-country-count>2 国</span>'));
+  assert.ok(markup.includes('data-country-code="DE" aria-pressed="true"'));
+  assert.ok(markup.includes('data-country-code="SG" aria-pressed="false"'));
+  assert.ok(markup.indexOf('data-country-remove="DE"') < markup.indexOf('data-country-remove="JP"'));
+  assert.ok(markup.includes(`<input type="hidden" data-key="${key}" value="DE,JP">`));
+  assert.equal((markup.match(new RegExp(`data-key="${key}"`, 'g')) || []).length, 1);
+  assert.ok(!markup.includes('<textarea'));
+  assert.ok(!markup.includes('data-country-raw'));
+  assert.ok(markup.includes('可选 4 个国家 / 地区'));
+}
 ''')
 
-    def test_pool_country_input_normalizes_separators_without_dropping_invalid_values_or_splitting_proxies(self):
+    def test_empty_country_selection_explains_each_feature_and_overrides_saved_values(self):
         self._run_config_control_js(r'''
-const field = {key: 'PROXY_POOL_COUNTRIES', type: 'list_str_multiline'};
-const read = value => Array.from(readConfigElementValue({dataset: {}, value}, field));
-assert.deepEqual(read('jp, US\n sg jp'), ['JP', 'US', 'SG']);
-assert.deepEqual(read(''), []);
-// 无效代码保留给后端校验，不能在多选操作时静默丢弃。
-assert.deepEqual(read('jp ZZ'), ['JP', 'ZZ']);
+for (const [key, summary, help] of [
+  ['PLAN_CHECK_COUNTRIES', '沿用账号注册国家', '按选择顺序查询；留空沿用账号注册国家，不影响注册查套餐。'],
+  ['PROXY_POOL_COUNTRIES', '未选择额外预热国家', '留空不额外预热；实际可用线路取决于代理来源和库存。'],
+]) {
+  const field = {key, type: 'list_str_multiline', label: '国家列表', value: ['JP'], country_codes: ['US', 'JP']};
+  CONFIG_PENDING_UPDATES[key] = [];
+  const markup = renderConfigControlMarkupV2(field);
+  assert.ok(markup.includes(`<span data-country-summary>${summary}</span>`));
+  assert.ok(markup.includes('data-country-count>多选</span>'));
+  assert.ok(markup.includes(`<input type="hidden" data-key="${key}" value="">`));
+  assert.ok(!markup.includes('aria-pressed="true"'));
+  assert.ok(markup.includes(help));
+}
+''')
+
+    def test_country_inputs_normalize_separators_without_dropping_invalid_values_or_splitting_proxies(self):
+        self._run_config_control_js(r'''
+for (const key of ['PROXY_POOL_COUNTRIES', 'PLAN_CHECK_COUNTRIES']) {
+  const field = {key, type: 'list_str_multiline'};
+  const read = value => Array.from(readConfigElementValue({dataset: {}, value}, field));
+  assert.deepEqual(read('jp, US\n sg jp'), ['JP', 'US', 'SG']);
+  assert.deepEqual(read(''), []);
+  // 无效代码保留给后端校验，不能在多选操作时静默丢弃。
+  assert.deepEqual(read('jp ZZ'), ['JP', 'ZZ']);
+  assert.deepEqual(Array.from(configCountryCodesV2(['sg', 'JP', 'sg'])), ['SG', 'JP']);
+}
 const proxies = {key: 'PROXY_POOL', type: 'list_str_multiline'};
 assert.deepEqual(Array.from(readConfigElementValue({dataset: {}, value: 'http://proxy.test/a,b'}, proxies)), ['http://proxy.test/a,b']);
 ''')

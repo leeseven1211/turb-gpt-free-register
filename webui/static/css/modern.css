@@ -3489,3 +3489,190 @@
   .accounts-table-v2 .account-promotion-cell--countries { align-items: stretch; }
   .accounts-table-v2 .account-promotion-country-row { min-height: 32px; }
 }
+
+/* 配置页：账号动作按功能归组，字段内容自然撑高，减少无意义留白。 */
+#tab-config .config-proxy-features-v2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  min-width: 0;
+  padding: 16px 20px 20px;
+}
+
+#tab-config .config-proxy-features-v2 .config-proxy-feature-v2 {
+  min-width: 0;
+  border: 1px solid var(--ui-color-border);
+  border-radius: var(--ui-radius-md);
+  background: var(--ui-color-surface);
+}
+
+#tab-config .config-proxy-features-v2 .config-proxy-feature-v2:has(.config-field-v2:nth-child(2)) {
+  grid-column: 1 / -1;
+}
+
+#tab-config .config-proxy-features-v2 .config-proxy-feature-v2 > h4 {
+  margin: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--ui-color-border);
+  border-radius: var(--ui-radius-md) var(--ui-radius-md) 0 0;
+  background: var(--ui-color-surface-subtle);
+  color: var(--ui-color-text);
+  font-size: 14px;
+  font-weight: 730;
+  line-height: 1.4;
+}
+
+#tab-config .config-proxy-features-v2 .config-proxy-feature-v2 > .config-section-v2-body {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 0;
+  padding: 12px;
+}
+
+#tab-config .config-proxy-features-v2 .config-proxy-feature-v2 > .config-section-v2-body:has(> .config-field-v2:only-child) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+#tab-config .config-proxy-feature-v2 .config-field-v2 > input[type="checkbox"] {
+  grid-column: auto;
+  grid-row: auto;
+  justify-self: start;
+}
+
+#tab-config .config-proxy-features-v2 .config-proxy-feature-v2 .config-section-v2-body > .config-field-v2 {
+  display: grid;
+  align-content: start;
+  gap: 0;
+  min-width: 0;
+  min-height: 0;
+  padding: 10px;
+  border-color: var(--ui-color-border);
+  background: var(--ui-color-surface-subtle);
+}
+
+#tab-config .config-proxy-features-v2 .config-proxy-feature-v2 .config-field-v2 > .hint {
+  min-height: 0;
+  margin-top: 5px;
+  line-height: 1.4;
+}
+
+#tab-config .config-proxy-features-v2 .config-proxy-feature-v2 .config-field-v2 > :is(input, select, textarea, .config-ep-select) {
+  margin-top: 8px;
+}
+
+/* 国家选择收起为一行；展开内容留在文档流中，避免被配置容器裁切。 */
+#tab-config .config-country-picker-v2.config-country-picker-v2--compact {
+  display: block;
+  min-width: 0;
+  margin-top: 8px;
+}
+
+#tab-config .config-country-picker-v2--compact > input[type="hidden"] {
+  display: none;
+}
+
+#tab-config .config-country-picker-v2--compact .config-country-choices-v2 {
+  min-width: 0;
+}
+
+#tab-config .config-country-picker-v2--compact .config-country-choices-v2 > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  height: 44px;
+  min-height: 44px;
+  padding: 0 12px;
+  list-style: none;
+}
+
+#tab-config .config-country-picker-v2--compact .config-country-choices-v2 > summary::-webkit-details-marker {
+  display: none;
+}
+
+#tab-config .config-country-picker-v2--compact .config-country-choices-v2 > summary::after {
+  content: '';
+  flex: 0 0 6px;
+  width: 6px;
+  height: 6px;
+  margin: -3px 2px 0 3px;
+  border-right: 2px solid var(--ui-color-text-muted);
+  border-bottom: 2px solid var(--ui-color-text-muted);
+  transform: rotate(45deg);
+}
+
+#tab-config .config-country-picker-v2--compact .config-country-choices-v2[open] > summary::after {
+  margin-top: 3px;
+  transform: rotate(225deg);
+}
+
+#tab-config .config-country-picker-v2--compact [data-country-summary] {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#tab-config .config-country-picker-v2--compact .config-country-count-v2 {
+  flex: 0 0 auto;
+  color: var(--ui-color-text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+#tab-config .config-country-picker-v2--compact .config-country-menu-v2 {
+  position: static;
+  min-width: 0;
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--ui-color-border);
+  border-radius: var(--ui-radius-md);
+  background: var(--ui-color-surface);
+}
+
+#tab-config .config-country-picker-v2--compact .config-country-menu-v2 > input {
+  min-height: 44px;
+  margin-top: 0;
+}
+
+#tab-config .config-country-picker-v2--compact .config-country-chips-v2 {
+  gap: 6px;
+  margin-top: 8px;
+}
+
+#tab-config .config-country-picker-v2--compact .config-country-options-v2 {
+  grid-template-columns: repeat(auto-fit, minmax(min(130px, 100%), 1fr));
+  gap: 6px;
+  max-height: 240px;
+  margin-block: 8px;
+}
+
+#tab-config .config-country-picker-v2--compact :is(.config-country-option-v2, .config-country-chip-v2) {
+  min-height: 44px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+#tab-config .config-country-picker-v2--compact .config-country-menu-v2 > .hint {
+  display: block;
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+@media (max-width: 600px) {
+  #tab-config [data-config-section="代理与网络"] .config-section-v2-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  #tab-config .config-proxy-features-v2 {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+    padding: 14px;
+  }
+
+  #tab-config .config-proxy-features-v2 .config-proxy-feature-v2 > .config-section-v2-body {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 10px;
+  }
+}

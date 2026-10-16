@@ -122,7 +122,7 @@ class ConfigField:
             out["allow_prefix"] = self.allow_prefix
         if self.csv_options:
             out["csv_options"] = list(self.csv_options)
-        if self.key == "PROXY_POOL_COUNTRIES":
+        if self.key in {"PROXY_POOL_COUNTRIES", "PLAN_CHECK_COUNTRIES"}:
             from config.countries import ISO_3166_ALPHA2
 
             out["country_codes"] = sorted(ISO_3166_ALPHA2)

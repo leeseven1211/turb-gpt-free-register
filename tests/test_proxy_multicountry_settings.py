@@ -19,7 +19,7 @@ POLICY = {"min_ready": 2, "max_size": 20, "wait_timeout": 0, "min_ttl": 300,
           "max_age": 60, "max_idle": 300, "workers": 5}
 
 
-def test_pool_country_picker_uses_the_same_catalog_as_configuration_validation():
+def test_country_pickers_use_the_same_catalog_as_configuration_validation():
     """国家选择目录与后端校验保持一致，且不改变其他字段的元数据。"""
     field = schema.CONFIG_SCHEMA["PROXY_POOL_COUNTRIES"]
     metadata = field.metadata()
@@ -31,10 +31,17 @@ def test_pool_country_picker_uses_the_same_catalog_as_configuration_validation()
             assert schema.validate_value(key, value) == ["NA"]
     assert "options" not in metadata
     assert "Rand" not in countries
-    assert "country_codes" not in schema.CONFIG_SCHEMA["PLAN_CHECK_COUNTRIES"].metadata()
+    plan_field = schema.CONFIG_SCHEMA["PLAN_CHECK_COUNTRIES"]
+    plan_metadata = plan_field.metadata()
+    assert plan_metadata["country_codes"] == countries
+    assert schema.validate_value("PLAN_CHECK_COUNTRIES", countries) == countries
+    assert "options" not in plan_metadata
     assert "country_codes" not in schema.CONFIG_SCHEMA["PROXY_POOL"].metadata()
     countries.clear()
     assert field.metadata()["country_codes"] == sorted(ISO_3166_ALPHA2)
+    assert plan_metadata["country_codes"] == sorted(ISO_3166_ALPHA2)
+    plan_metadata["country_codes"].clear()
+    assert plan_field.metadata()["country_codes"] == sorted(ISO_3166_ALPHA2)
 
 
 def test_pool_countries_validate_and_reload_without_changing_plan_countries():

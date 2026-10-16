@@ -30,6 +30,22 @@ const CONFIG_NAV_CATEGORY_RULES_V2 = {
   '资源与服务': new Set(['代理与网络', '浏览器设置', 'Codex', '提链']),
   '系统': new Set(['系统设置']),
 };
+const CONFIG_PROXY_FEATURES_V2 = [
+  ['查询套餐', [
+    'ACCOUNT_PLAN_CHECK_PROXY_MODE', 'PLAN_CHECK_PROXY_ALLOW_REUSE', 'PLAN_CHECK_PROXY_REUSE_LIMIT',
+    'PLAN_CHECK_COUNTRIES', 'PLAN_CHECK_COUNTRY_WAIT_TIMEOUT', 'PLAN_CHECK_TIMEOUT',
+    'PLAN_CHECK_MAX_ATTEMPTS', 'PLAN_CHECK_RETRY_DELAY', 'PLAN_CHECK_MIN_INTERVAL',
+    'PLAN_CHECK_JITTER', 'PLAN_CHECK_REGISTRATION_RECHECK_DELAY',
+  ]],
+  ['查活与刷新 AT', [
+    'ACCOUNT_LIVE_CHECK_PROXY_MODE', 'ACCOUNT_REFRESH_AT_PROXY_MODE',
+    'ACCOUNT_ACTION_PROXY_RETRIES', 'ACCOUNT_ACTION_PROXY_RETRY_DELAY',
+  ]],
+  ['补密码', ['ACCOUNT_PASSWORD_PROXY_MODE']],
+  ['补 2FA', ['ACCOUNT_2FA_PROXY_MODE']],
+  ['邮箱换绑', ['ACCOUNT_EMAIL_CHANGE_PROXY_MODE']],
+  ['Codex OAuth', ['ACCOUNT_CODEX_PROXY_MODE']],
+];
 
 function configMenuGroupV2(name) {
   const domain = CONFIG_DOMAIN_ALIASES_V2[name] || name || '其他';
@@ -838,7 +854,7 @@ function configCountryOptionsV2(f, query = '') {
 }
 
 function renderConfigCountryChipsV2(codes) {
-  if (!codes.length) return '<span class="hint">未选择额外预热国家</span>';
+  if (!codes.length) return '<span class="hint">尚未选择国家</span>';
   return codes.map(code => `<button type="button" class="config-country-chip-v2" data-country-remove="${attrEsc(code)}" aria-label="移除 ${attrEsc(configCountryNameV2(code))} ${attrEsc(code)}">${esc(configCountryNameV2(code))} <code>${esc(code)}</code><span aria-hidden="true">×</span></button>`).join('');
 }
 
@@ -848,27 +864,40 @@ function renderConfigCountryOptionsV2(f, codes, query = '') {
   return options.map((item, index) => `<button type="button" class="config-country-option-v2" data-country-code="${attrEsc(item.code)}" aria-pressed="${codes.includes(item.code)}" tabindex="${index ? '-1' : '0'}"><span>${esc(item.name)}</span><code>${esc(item.code)}</code></button>`).join('');
 }
 
+function configCountrySummaryV2(f, codes) {
+  return codes.length ? codes.map(code => `${configCountryNameV2(code)} ${code}`).join('、')
+    : f.key === 'PLAN_CHECK_COUNTRIES' ? '沿用账号注册国家' : '未选择额外预热国家';
+}
+
 function renderConfigCountryControlV2(f, value) {
   const codes = configCountryCodesV2(value);
-  return `<div class="config-country-picker-v2" data-country-picker="${attrEsc(f.key)}">
-    <div class="config-country-chips-v2" data-country-chips role="group" aria-label="已选国家，可点击移除">${renderConfigCountryChipsV2(codes)}</div>
+  const summary = configCountrySummaryV2(f, codes);
+  const help = f.key === 'PLAN_CHECK_COUNTRIES'
+    ? '按选择顺序查询；留空沿用账号注册国家，不影响注册查套餐。'
+    : '留空不额外预热；实际可用线路取决于代理来源和库存。';
+  return `<div class="config-country-picker-v2 config-country-picker-v2--compact" data-country-picker="${attrEsc(f.key)}">
     <details class="config-country-choices-v2">
-      <summary>选择国家 / 地区（可多选）</summary>
-      <input type="search" data-country-search placeholder="搜索中文名称或代码，如 日本 / JP" aria-label="搜索国家或地区" autocomplete="off">
-      <div class="config-country-options-v2" data-country-options role="group" aria-label="国家列表，可用方向键切换">${renderConfigCountryOptionsV2(f, codes)}</div>
-      <span class="hint">可选 ${configCountryOptionsV2(f).length} 个国家 / 地区；实际可用线路取决于代理来源和库存。</span>
+      <summary title="${attrEsc(summary)}" aria-label="${attrEsc(f.label)}：${attrEsc(summary)}，点击选择国家，可多选"><span data-country-summary>${esc(summary)}</span><span class="config-country-count-v2" data-country-count>${codes.length ? `${codes.length} 国` : '多选'}</span></summary>
+      <div class="config-country-menu-v2">
+        <input type="search" data-country-search placeholder="搜索国家，如 日本 / JP" aria-label="搜索国家或地区" autocomplete="off">
+        <div class="config-country-chips-v2" data-country-chips role="group" aria-label="已选国家，可点击移除">${renderConfigCountryChipsV2(codes)}</div>
+        <div class="config-country-options-v2" data-country-options role="group" aria-label="国家列表，可用方向键切换">${renderConfigCountryOptionsV2(f, codes)}</div>
+        <span class="hint">可选 ${configCountryOptionsV2(f).length} 个国家 / 地区；${esc(help)}</span>
+      </div>
     </details>
-    <details class="config-country-raw-v2">
-      <summary>粘贴或编辑国家代码</summary>
-      <textarea rows="2" data-key="${attrEsc(f.key)}" aria-label="${attrEsc(f.label)}国家代码" placeholder="如 JP, US, SG；留空不额外预热" title="支持换行、逗号或空格分隔 ISO 两位代码，自动大写去重。留空不额外预热。">${attrEsc(codes.join('\n'))}</textarea>
-    </details>
+    <input type="hidden" data-key="${attrEsc(f.key)}" value="${attrEsc(codes.join(','))}">
   </div>`;
 }
 
 function syncConfigCountryPickerV2(picker) {
   const field = configSchemaField(picker.dataset.countryPicker);
-  const textarea = picker.querySelector('[data-key]');
-  const codes = configCountryCodesV2(textarea.value);
+  const input = picker.querySelector('[data-key]');
+  const codes = configCountryCodesV2(input.value);
+  const summary = configCountrySummaryV2(field, codes);
+  picker.querySelector('[data-country-summary]').textContent = summary;
+  picker.querySelector('[data-country-count]').textContent = codes.length ? `${codes.length} 国` : '多选';
+  picker.querySelector('summary').title = summary;
+  picker.querySelector('summary').setAttribute('aria-label', `${field.label}：${summary}，点击选择国家，可多选`);
   picker.querySelector('[data-country-chips]').innerHTML = renderConfigCountryChipsV2(codes);
   picker.querySelector('[data-country-options]').innerHTML = renderConfigCountryOptionsV2(field, codes, picker.querySelector('[data-country-search]').value);
 }
@@ -881,11 +910,11 @@ function bindConfigCountryPickersV2() {
     picker.addEventListener('click', e => {
       const button = e.target.closest('[data-country-code], [data-country-remove]');
       if (!button) return;
-      const textarea = picker.querySelector('[data-key]');
+      const input = picker.querySelector('[data-key]');
       const code = button.dataset.countryCode || button.dataset.countryRemove;
-      const codes = configCountryCodesV2(textarea.value);
-      textarea.value = (codes.includes(code) ? codes.filter(item => item !== code) : [...codes, code]).join('\n');
-      textarea.dispatchEvent(new Event('input', {bubbles: true}));
+      const codes = configCountryCodesV2(input.value);
+      input.value = (codes.includes(code) ? codes.filter(item => item !== code) : [...codes, code]).join(',');
+      input.dispatchEvent(new Event('input', {bubbles: true}));
       const focusTarget = button.dataset.countryCode
         ? picker.querySelector(`[data-country-code="${code}"]`)
         : picker.querySelector('[data-country-chips] button') || picker.querySelector('summary');
@@ -918,7 +947,7 @@ function renderConfigControlMarkupV2(f) {
   const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
   let control = '';
   const driverChoices = configDriverChoices(f);
-  if (f.key === 'PROXY_POOL_COUNTRIES' && Array.isArray(f.country_codes) && f.country_codes.length) {
+  if (['PROXY_POOL_COUNTRIES', 'PLAN_CHECK_COUNTRIES'].includes(f.key) && Array.isArray(f.country_codes) && f.country_codes.length) {
     control = renderConfigCountryControlV2(f, fv);
   } else if (f.key === 'EMAIL_SOURCE') {
     const selectedValues = String(fv || '').split(',').map(value => value.trim().toLowerCase()).filter(Boolean);
@@ -941,7 +970,7 @@ function renderConfigControlMarkupV2(f) {
     const disabled = options.length === 1 ? ' disabled' : '';
     const syncKeys = f.key === 'CODEX_OAUTH_DRIVER' ? ['ACCOUNT_CODEX_DRIVER'] : [];
     const syncAttr = syncKeys.length ? ` data-sync-keys="${attrEsc(syncKeys.join(','))}"` : '';
-    control = `<select data-key="${attrEsc(f.key)}"${syncAttr}${disabled}>${options.map(item => `<option value="${attrEsc(item.value)}"${current === item.value ? ' selected' : ''}>${esc(item.label)}</option>`).join('')}</select>`;
+    control = `<select data-key="${attrEsc(f.key)}" aria-label="${attrEsc(f.label)}"${syncAttr}${disabled}>${options.map(item => `<option value="${attrEsc(item.value)}"${current === item.value ? ' selected' : ''}>${esc(item.label)}</option>`).join('')}</select>`;
   } else if (f.type === 'int') {
     control = `<input type="number" data-key="${attrEsc(f.key)}"${configRangeAttrs(f, '1')} value="${attrEsc(fv == null ? '' : fv)}">`;
   } else if (f.type === 'float') {
@@ -978,14 +1007,16 @@ function renderConfigSettingRowV2(f, controlMarkup = null, options = {}) {
 }
 function renderConfigPlainFieldV2(f) {
   // 国家选择器含多个交互控件，不能放进关联单个输入框的 label。
-  const tag = f.key === 'PROXY_POOL_COUNTRIES' ? 'div' : 'label';
+  const tag = ['PROXY_POOL_COUNTRIES', 'PLAN_CHECK_COUNTRIES'].includes(f.key) ? 'div' : 'label';
+  const help = f.key === 'PLAN_CHECK_COUNTRIES' ? '按选择顺序查询；不选时沿用账号注册国家，不影响注册查套餐。'
+    : f.key === 'PROXY_POOL_COUNTRIES' ? '选择额外预热国家；不选时按现有线路策略备货。' : f.help || '';
   return `
     <${tag} class="fld config-field-v2">
       <span class="config-field-v2-head">
         <span class="config-field-label-v2">${esc(f.label)} ${renderConfigFieldStatusV2(f)}</span>
         <code class="config-field-key-v2">${esc(f.key)}</code>
       </span>
-      <span class="hint">${esc(f.help || '')}</span>
+      <span class="hint" title="${attrEsc(f.help || '')}">${esc(help)}</span>
       ${renderConfigControlMarkupV2(f)}
     </${tag}>
   `;
@@ -1070,6 +1101,17 @@ function renderCodexFieldV2(f) {
   return renderConfigPlainFieldV2(f);
 }
 
+function renderProxyActionFieldsV2(fields) {
+  const known = new Set(CONFIG_PROXY_FEATURES_V2.flatMap(([, keys]) => keys));
+  const groups = CONFIG_PROXY_FEATURES_V2.map(([title, keys]) => [title, orderedConfigFieldsV2(fields, keys)]);
+  groups.push(['其他账号动作', fields.filter(field => !known.has(field.key))]);
+  return `<div class="config-proxy-features-v2">${groups.filter(([, items]) => items.length).map(([title, items]) => `
+    <section class="config-proxy-feature-v2" data-config-proxy-feature="${attrEsc(title)}">
+      <h4>${esc(title)}</h4>
+      <div class="config-section-v2-body">${items.map(renderConfigPlainFieldV2).join('')}</div>
+    </section>`).join('')}</div>`;
+}
+
 function renderSectionedConfigSectionV2(name, fields, sectionForKey, preferred, activeRef, dataAttr) {
   const slug = configGroupSlug(name);
   const bySection = {};
@@ -1087,6 +1129,10 @@ function renderSectionedConfigSectionV2(name, fields, sectionForKey, preferred, 
   const current = bySection[active] || { help: '', fields: [] };
   const switches = current.fields.filter(f => f.type === 'bool');
   const inputs = current.fields.filter(f => f.type !== 'bool');
+  const body = name === '代理与网络' && active === '账号动作线路'
+    ? renderProxyActionFieldsV2(current.fields)
+    : `${switches.length ? `<div class="config-switches-v2">${switches.map(f => renderFeatureSwitchField(f, { withIcon: false })).join('')}</div>` : ''}
+       ${inputs.length ? `<div class="config-section-v2-body">${inputs.map(renderConfigPlainFieldV2).join('')}</div>` : ''}`;
   let extra = '';
   if (name === '邮箱 / OTP' && active === 'CloudMail') {
     extra = renderCloudMailTokenToolsV2();
@@ -1111,8 +1157,7 @@ function renderSectionedConfigSectionV2(name, fields, sectionForKey, preferred, 
         `).join('')}
       </div>
       ${current.help ? `<p class="config-section-v2-subhelp">${esc(current.help)}</p>` : ''}
-      ${switches.length ? `<div class="config-switches-v2">${switches.map(f => renderFeatureSwitchField(f, { withIcon: false })).join('')}</div>` : ''}
-      ${inputs.length ? `<div class="config-section-v2-body">${inputs.map(renderConfigPlainFieldV2).join('')}</div>` : ''}
+      ${body}
       ${extra}
       ${renderConfigSaveActions()}
     </section>
@@ -1689,9 +1734,8 @@ function readConfigElementValue(el, f) {
   if (el.dataset.toggleOnValue) return el.checked ? el.dataset.toggleOnValue : el.dataset.toggleOffValue;
   if (el.multiple) return Array.from(el.selectedOptions || []).map(option => option.value).join(',');
   if (f.type === 'list_str_multiline') {
-    if (f.key === 'PROXY_POOL_COUNTRIES') return configCountryCodesV2(el.value);
-    const separator = f.key === 'PLAN_CHECK_COUNTRIES' ? /[\s,]+/ : /\n/;
-    return el.value.split(separator).map(s=>s.trim()).filter(Boolean);
+    if (['PROXY_POOL_COUNTRIES', 'PLAN_CHECK_COUNTRIES'].includes(f.key)) return configCountryCodesV2(el.value);
+    return el.value.split(/\n/).map(s=>s.trim()).filter(Boolean);
   }
   if (f.type === 'bool') {
     if (el.type === 'checkbox') return !!el.checked;
@@ -1714,6 +1758,8 @@ function trackConfigFieldChange(e) {
   [f.key, ...syncKeys].filter((key, index, all) => all.indexOf(key) === index).forEach(key => {
     if (CONFIG.some(item => item.key === key)) setPendingConfigValue(key, value);
   });
+  const status = el.closest('.config-field-v2, .config-setting-row-v2')?.querySelector('.config-field-status-v2');
+  if (status) status.outerHTML = renderConfigFieldStatusV2(f);
   renderConfigOverviewCards();
   if (f.key === 'REGISTRATION_AUTH_MODE' || f.key === 'ACCOUNT_LIVE_CHECK_BROWSER_ENABLED') renderConfigLayoutV2();
   updateConfigSaveUi();
