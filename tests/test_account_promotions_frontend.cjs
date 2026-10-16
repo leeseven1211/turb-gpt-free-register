@@ -584,6 +584,128 @@ test('空国家列表且国家计数为 null 时，单次任务摘要不误显�
   assert.doesNotMatch(result, /国家查询/);
 });
 
+test('多国任务精简结果只显示套餐和最佳优惠，完整浮窗保留逐国 Go 与 Plus', () => {
+  const task = {task_type: 'plan_check', status: 'success', result_summary: {
+    current_plan_type: 'free', plan_check_status: 'success',
+    plan_check_country_results: [
+      {country: 'JP', status: 'success', result: {account_promotions: [goTrial, plusDiscount]}},
+      {country: 'VN', status: 'success', result: {account_promotions: [
+        {plan: 'go', kind: 'none'}, {...goTrial, plan: 'plus'},
+      ]}},
+      {country: 'IN', status: 'success', result: {account_promotions: [
+        {plan: 'go', kind: 'none'}, {plan: 'plus', kind: 'none'},
+      ]}},
+    ],
+  }};
+  const compact = view.accountTaskResultText(task, true);
+  assert.match(compact, /^free · Plus:? 免费 1个月$/);
+  assert.doesNotMatch(compact, /JP|VN|IN|国家查询|个国家成功/);
+  const tooltip = view.accountTaskResultTooltipText(task);
+  assert.match(tooltip, /套餐 free/);
+  assert.match(tooltip, /JP[\s\S]*Go: 免费 1个月/);
+  assert.match(tooltip, /JP[\s\S]*Plus: 五折 2个月/);
+  assert.match(tooltip, /\n[^\n]*VN/);
+  assert.match(tooltip, /VN[\s\S]*Plus: 免费 1个月/);
+  assert.match(tooltip, /\n[^\n]*IN/);
+  assert.match(tooltip, /IN[\s\S]*Plus: 无优惠/);
+  assert.doesNotMatch(tooltip, /国家查询|个国家成功|3\/3/);
+});
+
+test('精简优惠优先免费再折扣，同级选择 Plus 并区分待查询与待核验', () => {
+  const compact = account_promotions => view.accountTaskResultText({
+    task_type: 'plan_check', status: 'success', result_summary: {...checked, account_promotions},
+  }, true);
+  assert.match(compact([goTrial, plusDiscount]), /^free · Go:? 免费 1个月$/);
+  assert.match(compact([goTrial, {...goTrial, plan: 'plus'}]), /^free · Plus:? 免费 1个月$/);
+  assert.match(compact([
+    {plan: 'go', kind: 'discount', discount_percentage: 20}, plusDiscount,
+  ]), /^free · Plus:? 五折 2个月$/);
+  assert.match(view._accountTaskPromotionSummary([{plan: 'plus', kind: 'none'}]), /^无优惠$/);
+  assert.match(view._accountTaskPromotionSummary([{plan: 'plus', kind: 'pending'}]), /待查询/);
+  assert.match(view._accountTaskPromotionSummary([{plan: 'plus', kind: 'unknown'}]), /待核验/);
+  assert.doesNotMatch(view._accountTaskPromotionSummary([
+    {...goTrial, plan: 'plus', stale: true}, {...goTrial, plan: 'plus', stale: false},
+  ]), /历史/);
+});
+
+test('多国均无优惠时任务精简结果合并状态，浮窗仍列出每个国家', () => {
+  const task = {task_type: 'plan_check', status: 'success', result_summary: {
+    current_plan_type: 'free', plan_check_status: 'success',
+    plan_check_country_results: ['JP', 'VN'].map(country => ({country, status: 'success', result: {
+      account_promotions: [{plan: 'go', kind: 'none'}, {plan: 'plus', kind: 'none'}],
+    }})),
+  }};
+  assert.equal(view.accountTaskResultText(task, true), 'free · 无优惠');
+  const tooltip = view.accountTaskResultTooltipText(task);
+  assert.match(tooltip, /JP[\s\S]*Go: 无优惠[\s\S]*Plus: 无优惠/);
+  assert.match(tooltip, /VN[\s\S]*Go: 无优惠[\s\S]*Plus: 无优惠/);
+});
+
+test('部分失败任务精简结果标记历史优惠，浮窗保留失败原因和取消状态', () => {
+  const task = {task_type: 'plan_check', status: 'success', result_summary: {
+    current_plan_type: 'free', plan_check_status: 'success', plan_check_partial: true,
+    plan_check_country_results: [
+      {country: 'JP', status: 'success', result: {account_promotions: [{plan: 'go', kind: 'none'}, plusDiscount]}},
+      {country: 'VN', status: 'failed', error: 'HTTP 429', last_success_at: '2026-10-14 09:00:00', result: {
+        account_promotions: [{plan: 'go', kind: 'none'}, {...goTrial, plan: 'plus', duration_num_periods: 2}],
+      }},
+      {country: 'IN', status: 'cancelled', error: '已取消'},
+    ],
+  }};
+  const compact = view.accountTaskResultText(task, true);
+  assert.match(compact, /^free · /);
+  assert.match(compact, /Plus:? 免费 2个月/);
+  assert.match(compact, /部分失败/);
+  assert.match(compact, /历史/);
+  assert.doesNotMatch(compact, /JP|VN|IN|HTTP 429|失败国家/);
+  const tooltip = view.accountTaskResultTooltipText(task);
+  assert.match(tooltip, /VN[\s\S]*Plus: 免费 2个月/);
+  assert.match(tooltip, /显示上次成功快照/);
+  assert.match(tooltip, /本次查询失败: HTTP 429/);
+  assert.match(tooltip, /IN[\s\S]*已取消/);
+  assert.doesNotMatch(tooltip, /国家查询|个国家成功|1\/3/);
+});
+
+test('明确空国家列表时任务精简结果和浮窗使用最新单次结果', () => {
+  const task = {task_type: 'plan_check', status: 'success', result_summary: {
+    ...checked, plan_check_countries: [], country_total_count: null, country_success_count: null,
+    plan_check_country_results: [{country: 'JP', status: 'success', result: {
+      account_promotions: [{...goTrial, plan: 'plus', duration_num_periods: 12}],
+    }}],
+  }};
+  assert.match(view.accountTaskResultText(task, true), /^free · Go:? 免费 1个月$/);
+  const tooltip = view.accountTaskResultTooltipText(task);
+  assert.match(tooltip, /Go: 免费 1个月/);
+  assert.match(tooltip, /Plus: 五折 2个月/);
+  assert.doesNotMatch(tooltip, /JP|12个月|国家查询|0\/0/);
+});
+
+test('任务套餐精简入口使用可聚焦按钮且浮窗保留全部详情并转义 HTML', () => {
+  const task = {task_type: 'plan_check', status: 'success', result_summary: {
+    current_plan_type: 'free', plan_check_status: 'success', plan_check_partial: true,
+    plan_check_country_results: [
+      {country: 'JP', status: 'success', result: {account_promotions: [goTrial, plusDiscount]}},
+      {country: 'VN', status: 'failed', error: '错误 " <img src=x> & \'失败\''},
+    ],
+  }};
+  const html = view.accountTaskPlanResultMarkup(task);
+  assert.match(html, /^<button\b/);
+  assert.match(html, /type="button"/);
+  assert.match(html, /class="account-task-result-summary"/);
+  assert.match(html, /data-account-task-result-tooltip(?:\s|=|>)/);
+  assert.match(html, /data-accounts-tooltip="[^"]*JP[^"]*VN/);
+  assert.match(html, /aria-label="[^"]*查看套餐查询详情/);
+  assert.match(html, /free · [^<]*免费 1个月/);
+  assert.doesNotMatch(html, /\stitle=/);
+  assert.doesNotMatch(html, /<img\b/);
+  assert.match(html, /&quot; &lt;img src=x&gt; &amp; &#39;失败&#39;/);
+  const tooltip = promotionTooltip(html);
+  assert.match(tooltip, /JP[\s\S]*Go: 免费 1个月[\s\S]*Plus: 五折 2个月/);
+  assert.match(tooltip, /VN[\s\S]*本次查询失败/);
+  assert.equal((html.match(/<button\b/g) || []).length, 1);
+  assert.equal((html.match(/<\/button>/g) || []).length, 1);
+});
+
 test('所有国家失败时详情显示全部失败，查询中断不会显示绿色成功', () => {
   const allFailed = view._accountDetailMarkup({
     current_plan_type: 'free', plan_check_partial: true,

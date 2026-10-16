@@ -33,7 +33,7 @@ function accountTaskErrorDisplayTitle(info, raw = '') {
   return info?.code === 'request_unknown' && info?.cause_summary
     ? `${title} · ${info.cause_display_code ? `${info.cause_display_code} · ` : ''}${info.cause_summary}` : title;
 }
-function accountTaskResultText(task) {
+function accountTaskResultText(task, compact = false) {
   const status = String(task.status || '');
   if (status === 'queued') return '等待执行';
   if (status === 'running') return '执行中';
@@ -44,13 +44,15 @@ function accountTaskResultText(task) {
   }
   if (task.task_type === 'plan_check') {
     const plan = String(result.current_plan_type || '');
-    const countrySummary = _accountCountryTaskSummary(result, task.status);
-    if (countrySummary) return `${plan ? `套餐 ${plan} · ` : ''}${countrySummary}`;
+    const prefix = plan ? `${compact ? plan : `套餐 ${plan}`} · ` : '';
+    const countrySummary = _accountCountryTaskSummary(result, task.status, compact);
+    if (countrySummary) return `${prefix}${countrySummary}`;
     if (Array.isArray(result.account_promotions)) {
-      const promotions = _accountPromotionGroups(_accountPromotions(result)).map(_accountPromotionGroupLabel).join(' · ');
-      return `${plan ? `套餐 ${plan} · ` : ''}${promotions}`;
+      const items = _accountPromotions(result);
+      const promotions = compact ? _accountTaskPromotionSummary(items) : _accountPromotionGroups(items).map(_accountPromotionGroupLabel).join(' · ');
+      return `${prefix}${promotions}`;
     }
-    return plan ? (plan.toLowerCase() === 'free' ? `套餐 ${plan} · Plus ${_plusPromotionLabel(result)}` : `套餐 ${plan}`) : '查询完成';
+    return plan ? (plan.toLowerCase() === 'free' ? `${prefix}Plus ${_plusPromotionLabel(result)}` : `${compact ? '' : '套餐 '}${plan}`) : '查询完成';
   }
   if (task.task_type === 'deactivation_mail') {
     if (!Object.prototype.hasOwnProperty.call(result, 'detected')) return '-';
@@ -406,6 +408,11 @@ function syncAccountTasksSelectAll(checked) {
 function renderAccountTasks() {
   const body = $('#accountTasksBody');
   if (!body) return;
+  const tooltipTarget = typeof _accountsTooltipTarget === 'undefined' ? null : _accountsTooltipTarget;
+  const tooltipTaskId = tooltipTarget?.dataset.accountTaskResultTooltip;
+  const tooltipView = tooltipTaskId ? rememberTaskTooltipView() : null;
+  const restoreTooltipFocus = tooltipTaskId && document.activeElement === tooltipTarget;
+  if (tooltipTaskId) _hideAccountsTooltip();
   const pageIds = new Set(ACCOUNT_TASKS.map(task => Number(task.id)));
   ACCOUNT_TASK_SELECTED.forEach(id => { if (!pageIds.has(Number(id))) ACCOUNT_TASK_SELECTED.delete(id); });
   body.innerHTML = ACCOUNT_TASKS.map(task => {
@@ -424,6 +431,7 @@ function renderAccountTasks() {
     const error = task.error_message || '';
     const errorInfo = task.error_info || null;
     const errorText = accountTaskErrorDisplayText(errorInfo, error);
+    const compactPlanResult = task.task_type === 'plan_check' && !active && !error;
     return `<tr class="${ACCOUNT_TASK_SELECTED.has(Number(task.id)) ? 'is-selected' : ''}">
       <td class="task-col-check col-check"><input type="checkbox" data-account-task-select="${esc(task.id)}" ${ACCOUNT_TASK_SELECTED.has(Number(task.id)) ? 'checked' : ''} aria-label="选择任务 #${esc(task.id)}"></td>
       <td>#${esc(task.id)}</td>
@@ -435,7 +443,7 @@ function renderAccountTasks() {
       <td>${esc(task.run_count || 0)} 次<div class="sub-cell">最近 #${esc(task.last_run_no || '-')}</div></td>
       <td>${esc(stage)}${failureLocation ? `<div class="sub-cell">${esc(failureLocation)}</div>` : ''}<div class="sub-cell">${esc(formatTaskDuration(task.duration_ms))}</div></td>
       <td title="${esc(formatDateTime(task.created_at))} → ${esc(formatDateTime(task.completed_at))}">${esc(formatDateTime(task.created_at))}<div class="sub-cell">${esc(formatDateTime(task.completed_at))}</div></td>
-      <td class="task-error" title="${esc(error ? accountTaskErrorDisplayTitle(errorInfo, error) : result)}">${error ? `${taskErrorBadge(errorInfo)}<span class="task-error-cell-text">${esc(short(errorText, 90))}</span>` : esc(short(result, 90))}</td>
+      <td class="task-error"${compactPlanResult ? '' : ` title="${esc(error ? accountTaskErrorDisplayTitle(errorInfo, error) : result)}"`}>${compactPlanResult ? accountTaskPlanResultMarkup(task) : error ? `${taskErrorBadge(errorInfo)}<span class="task-error-cell-text">${esc(short(errorText, 90))}</span>` : esc(short(result, 90))}</td>
       <td><div class="task-row-actions"><button type="button" class="task-row-action" data-account-task-log="${esc(task.id)}">日志</button>${stoppable ? `<button type="button" class="task-row-action task-row-action--terminate" data-account-task-terminate="${esc(task.id)}" aria-label="${terminationLabel}任务 #${esc(task.id)}">${terminationLabel}</button>` : ''}${retryable ? `<button type="button" class="task-row-action task-row-action--retry" data-account-task-retry="${esc(task.id)}">重跑</button>` : ''}${!active ? `<button type="button" class="task-row-action task-row-action--delete" data-account-task-delete="${esc(task.id)}">删除</button>` : ''}</div></td>
     </tr>`;
   }).join('') || renderTableStateRow(12, '暂无任务记录', '调整搜索或筛选条件后再试。');
@@ -444,6 +452,13 @@ function renderAccountTasks() {
   updateAccountTaskSelectionUi();
   autoSizeResizableTableColumns(document.querySelector('table[data-resizable-table="accountTasks"]'));
   _renderPager('accountTasks', ACCOUNT_TASKS_TOTAL);
+  if (tooltipTaskId) {
+    const target = Array.from(body.querySelectorAll('[data-account-task-result-tooltip]')).find(item => item.dataset.accountTaskResultTooltip === tooltipTaskId);
+    if (target) {
+      if (restoreTooltipFocus) target.focus({preventScroll:true});
+      restoreTaskTooltipView(target, tooltipView);
+    }
+  }
 }
 async function loadAccountTasks() {
   if (accountTasksLoading) {
@@ -1323,7 +1338,7 @@ function restoreTaskTooltipView(target, view) {
 }
 
 function _accountsTooltipSelector() {
-  return '.accounts-table-v2 .col-plan [data-accounts-tooltip], .accounts-table-v2 .col-quota [data-accounts-tooltip], .accounts-table-v2 .col-trial [data-accounts-tooltip], #accountTaskStageProgress [data-accounts-tooltip], #batchProgressListV2 [data-accounts-tooltip]';
+  return '.accounts-table-v2 .col-plan [data-accounts-tooltip], .accounts-table-v2 .col-quota [data-accounts-tooltip], .accounts-table-v2 .col-trial [data-accounts-tooltip], #accountTaskStageProgress [data-accounts-tooltip], #batchProgressListV2 [data-accounts-tooltip], #accountTasksBody [data-account-task-result-tooltip]';
 }
 
 function _hideAccountsTooltip() {
@@ -1363,9 +1378,9 @@ function _showAccountsTooltip(target) {
   _accountsTooltipTarget = target;
   _accountsTooltipDescription = target.getAttribute('aria-describedby');
   target.setAttribute('aria-describedby', [_accountsTooltipDescription, _accountsTooltipNode.id].filter(Boolean).join(' '));
-  _accountsTooltipNode.classList.toggle('is-task-step', Boolean(target.closest('#accountTaskStageProgress, #batchProgressListV2')));
+  _accountsTooltipNode.classList.toggle('is-task-step', Boolean(target.closest('#accountTaskStageProgress, #batchProgressListV2, [data-account-task-result-tooltip]')));
   _accountsTooltipNode.classList.toggle('is-promotion', Boolean(target.closest('.col-trial')));
-  _accountsTooltipNode.tabIndex = target.closest('#accountTaskStageProgress, #batchProgressListV2, .col-trial') ? 0 : -1;
+  _accountsTooltipNode.tabIndex = target.closest('#accountTaskStageProgress, #batchProgressListV2, .col-trial, [data-account-task-result-tooltip]') ? 0 : -1;
   _accountsTooltipNode.textContent = message;
   _accountsTooltipNode.hidden = false;
   _accountsTooltipNode.style.left = '0px';
@@ -1413,8 +1428,8 @@ function _showAccountsTooltip(target) {
   window.addEventListener('scroll', event => {
     if (_accountsTooltipNode?.contains(event.target)) return;
     const target = _accountsTooltipTarget;
-    // 聚焦可触发表格自动横向滚动，仍可见的国家优惠需要重新定位提示。
-    if (target?.closest('.col-trial') && document.activeElement === target) {
+    // 聚焦可触发表格自动横向滚动，仍可见的优惠或任务结果需要重新定位提示。
+    if ((target?.closest('.col-trial') || target?.closest('[data-account-task-result-tooltip]')) && document.activeElement === target) {
       const rect = target.getBoundingClientRect();
       if (rect.right > 0 && rect.left < window.innerWidth && rect.bottom > 0 && rect.top < window.innerHeight) {
         _showAccountsTooltip(target);
@@ -1426,14 +1441,14 @@ function _showAccountsTooltip(target) {
   window.addEventListener('resize', _hideAccountsTooltip);
   document.addEventListener('click', event => {
     const target = targetFor(event.target);
-    if (target?.closest('.col-trial')) {
+    if (target?.closest('.col-trial, [data-account-task-result-tooltip]')) {
       _showAccountsTooltip(target);
       return;
     }
     if (!_accountsTooltipNode?.contains(event.target)) _hideAccountsTooltip();
   }, true);
   document.addEventListener('keydown', event => {
-    if (!_accountsTooltipTarget?.closest('#accountTaskStageProgress, #batchProgressListV2, .col-trial')) return;
+    if (!_accountsTooltipTarget?.closest('#accountTaskStageProgress, #batchProgressListV2, .col-trial, [data-account-task-result-tooltip]')) return;
     if (event.key === 'ArrowDown' && document.activeElement === _accountsTooltipTarget) {
       event.preventDefault();
       _accountsTooltipNode?.focus({preventScroll:true});
@@ -1712,12 +1727,13 @@ function _accountCountryTaskSummaryData(r) {
   const success = successIsNumber ? successRaw : 0;
   return {countries, total, success, failedCountries};
 }
-function _accountCountryTaskSummary(r, overallTaskStatus = '') {
+function _accountCountryTaskState(r, overallTaskStatus = '') {
+  if (Array.isArray(r?.plan_check_countries) && r.plan_check_countries.length === 0) return null;
   const results = Array.isArray(r?.plan_check_country_results)
     ? r.plan_check_country_results.filter(item => item && String(item.country || '').trim())
     : [];
   const summaryData = _accountCountryTaskSummaryData(r);
-  if (!results.length && !summaryData) return '';
+  if (!results.length && !summaryData) return null;
   const success = results.length ? results.filter(item => String(item.status || '').toLowerCase() === 'success').length : summaryData.success;
   const total = results.length ? results.length : summaryData.total;
   const failed = results.length
@@ -1728,13 +1744,54 @@ function _accountCountryTaskSummary(r, overallTaskStatus = '') {
   const interrupted = ['failed', 'cancelled'].includes(String(overallTaskStatus || '').toLowerCase()) && active;
   const state = allFailed ? '全部失败' : interrupted ? (overallTaskStatus === 'cancelled' ? '已取消' : '查询中断') : failed && success ? '部分失败' : active ? '查询中' : '';
   const failedText = (!results.length && summaryData.failedCountries.length) ? `失败国家：${summaryData.failedCountries.join('、')}` : '';
-  const offers = _accountCountryPromotionDisplays(r).map(display => {
+  return {state, failedText};
+}
+function _accountTaskPromotionSummary(items) {
+  const best = [...items].sort((a, b) => _compareAccountPromotions(a, b) || Number(Boolean(a.stale)) - Number(Boolean(b.stale)))[0];
+  if (!best) return '待查询';
+  const hasOffer = ['free_trial', 'discount', 'other_promo'].includes(best.kind);
+  return [
+    `${hasOffer ? `${_promotionPlanLabel(best.plan)} ` : ''}${_accountPromotionLabel(best)}`,
+    best.stale ? '历史' : '',
+  ].filter(Boolean).join(' · ');
+}
+function _accountCountryTaskSummary(r, overallTaskStatus = '', compact = false) {
+  const status = _accountCountryTaskState(r, overallTaskStatus);
+  if (!status) return '';
+  const displays = _accountCountryPromotionDisplays({...r, plan_check_status: r.plan_check_status || overallTaskStatus});
+  const offers = compact ? _accountTaskPromotionSummary(displays.flatMap(display => display.items)) : displays.map(display => {
     const best = _accountCountryPromotionBest(display);
     const label = _accountPromotionLabel(best);
     const plan = ['free_trial', 'discount', 'other_promo'].includes(best.kind) ? `${_promotionPlanLabel(best.plan)}: ` : '';
     return `${display.country} ${plan}${label}`;
   }).join(' · ');
-  return [state, failedText, offers].filter(Boolean).join(' · ');
+  return [status.state, compact ? '' : status.failedText, offers].filter(Boolean).join(' · ');
+}
+function accountTaskResultTooltipText(task) {
+  const result = task.result_summary || {};
+  const status = _accountCountryTaskState(result, task.status);
+  const displays = _accountCountryPromotionDisplays({...result, plan_check_status: result.plan_check_status || task.status});
+  const details = [
+    result.current_plan_type ? `套餐 ${result.current_plan_type}` : '套餐查询结果',
+    status?.state,
+    status?.failedText,
+  ];
+  if (displays.length) {
+    displays.forEach(display => {
+      details.push([
+        `${display.country}${display.stale ? '（历史）' : ''}`,
+        ...display.items.map(item => _accountPromotionTooltip(item)),
+        display.context,
+      ].filter(Boolean).join('\n'));
+    });
+  } else {
+    details.push(..._accountPromotions(result).map(item => _accountPromotionTooltip(item)));
+  }
+  return details.filter(Boolean).join('\n');
+}
+function accountTaskPlanResultMarkup(task) {
+  const summary = accountTaskResultText(task, true);
+  return `<button type="button" class="account-task-result-summary" data-account-task-result-tooltip="${esc(task.id || '')}" data-accounts-tooltip="${esc(accountTaskResultTooltipText(task))}" aria-label="${esc(`查看套餐查询详情：${summary}`)}">${esc(summary)}</button>`;
 }
 function _accountPromotionLabel(item) {
   const periods = Number(item.duration_num_periods);

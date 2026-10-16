@@ -1130,6 +1130,12 @@
     .account-tasks-table .jobs-v2-pill--running { color:#ad6810; background:#fff7e6; border-color:#f5d293; }
     .account-tasks-table .jobs-v2-pill--muted { color:#737b88; background:#f5f6f8; border-color:#e1e4e9; }
     .account-tasks-table .task-error { color:#8a6070; }
+    .account-tasks-table .account-task-result-summary {
+      display:block; max-width:100%; min-height:28px; padding:0; border:0; border-radius:3px;
+      background:transparent; color:inherit; font:inherit; text-align:left;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:help;
+    }
+    .account-tasks-table .account-task-result-summary:focus-visible { outline:2px solid #6366f1; outline-offset:2px; }
     .account-tasks-table .task-row-actions { display:flex; align-items:center; gap:6px; }
     .account-tasks-table .task-row-action {
       min-height:28px; padding:0 10px; border:1px solid #dcdfe6; border-radius:6px;
