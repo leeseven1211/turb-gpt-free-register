@@ -1330,7 +1330,7 @@
     .accounts-table-v2 .col-account-status { width: 104px; }
     .accounts-table-v2 .col-plan { width: 120px; }
     .accounts-table-v2 .col-quota { width: 146px; }
-    .accounts-table-v2 .col-trial { width: 166px; }
+    .accounts-table-v2 .col-trial { width: 220px; }
     .accounts-table-v2 .col-small { width: 72px; }
     .accounts-table-v2 .col-risk-mail { width: 112px; }
     .accounts-table-v2 .col-status { width: 100px; }
@@ -1412,22 +1412,32 @@
       display: flex; align-items: center; min-width: 0;
     }
     .accounts-table-v2 .account-promotion-cell--countries {
-      flex-wrap: wrap; align-content: center; gap: 4px;
+      flex-direction: column; align-items: stretch; gap: 2px;
     }
     .accounts-table-v2 .account-promotion-cell .pill { max-width: 100%; min-width: 0; }
-    .accounts-table-v2 .account-promotion-cell--countries .pill {
-      max-width: 100%; gap: 4px; cursor: help;
+    .accounts-table-v2 .account-promotion-country-row {
+      display: flex; align-items: center; min-width: 0; max-width: 100%; height: 24px; gap: 2px;
+      color: #606266; border-radius: 3px; font-size: 12px; line-height: 1.3; cursor: help;
+    }
+    .accounts-table-v2 .account-promotion-cell .account-promotion-country-row:focus-visible {
+      outline: 2px solid #377dff; outline-offset: 2px;
+    }
+    .accounts-table-v2 .account-promotion-country-row.is-success { color: #18776b; }
+    .accounts-table-v2 .account-promotion-country-row.is-warning { color: #9b5900; }
+    .accounts-table-v2 .account-promotion-country-row.is-danger { color: #c23b3b; }
+    .accounts-table-v2 .account-promotion-country-row .account-promotion-label {
+      color: #606266; text-overflow: ellipsis;
     }
     .accounts-table-v2 .account-promotion-country {
       display: inline-flex; align-items: center; flex: 0 0 auto; gap: 3px;
-      color: currentColor; font-size: 10px; font-weight: 800; letter-spacing: .04em; white-space: nowrap;
+      color: currentColor; font-size: 12px; font-weight: 700; white-space: nowrap;
     }
     .accounts-table-v2 .account-promotion-stale {
       flex: 0 0 auto; padding: 1px 3px; border: 1px solid currentColor; border-radius: 3px;
       font-size: 9px; font-weight: 700; letter-spacing: 0; line-height: 1.2; white-space: nowrap;
     }
-    .accounts-table-v2 .account-promotion-cell--countries .pill.is-stale {
-      border-style: dashed; opacity: .86;
+    .accounts-table-v2 .account-promotion-country-row.is-stale {
+      opacity: .86;
     }
     .accounts-table-v2 .account-promotion-label {
       min-width: 0; overflow: hidden; text-overflow: clip; white-space: nowrap;
@@ -3471,5 +3481,5 @@
 @media (max-width: 560px) {
   .proxy-pool-country-cards { grid-template-columns: 1fr; }
   .accounts-table-v2 .account-promotion-cell--countries { align-items: stretch; }
-  .accounts-table-v2 .account-promotion-cell--countries .pill { min-height: 32px; }
+  .accounts-table-v2 .account-promotion-country-row { min-height: 32px; }
 }

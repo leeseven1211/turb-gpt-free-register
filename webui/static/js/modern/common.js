@@ -365,7 +365,7 @@ const TABLE_DEFAULT_WIDTHS = {
   jobs:     [4, 6, 15, 9, 11, 8, 9, 9, 13, 16],
   // Desktop account rows need to scan in one viewport; long values keep
   // their full text in the cell title and the detail drawer.
-  accounts: [3, 6, 17, 7, 6, 6, 7, 7, 8, 16, 9, 8, 8, 8, 10],
+  accounts: [3, 6, 17, 7, 6, 6, 7, 7, 8, 24, 9, 8, 8, 8, 10],
   codex:    [4, 19, 7, 9, 9, 11, 11, 11, 11, 19],
   outlook:  [4, 20, 9, 9, 8, 14, 14, 18],
   accountTasks: [4, 6, 9, 18, 10, 11, 13, 10, 11, 17, 15, 10],

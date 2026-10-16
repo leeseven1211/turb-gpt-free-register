@@ -1748,6 +1748,8 @@ function _accountPromotionDetail(item, context = '') {
   if (item.summary && item.summary !== _accountPromotionLabel(item)) details.push(String(item.summary));
   if (item.title) details.push(String(item.title));
   if (item.campaign_id) details.push(`活动 ${item.campaign_id}`);
+  const methods = _accountPromotionPaymentMethods(item);
+  if (methods.length) details.push(`支付方式: ${methods.join(' ')}`);
   if (context) details.push(context);
   return details.join('；');
 }
@@ -1810,23 +1812,61 @@ function _accountPromotionGroupDetail(group, context = '') {
   if (context) details.push(context);
   return details.join('；');
 }
+function _accountPlusPromotion(items) {
+  return items.filter(item => item.plan === 'plus').sort(_compareAccountPromotions)[0] || {plan: 'plus', kind: 'unknown'};
+}
+function _accountPromotionPaymentMethods(item) {
+  // 支付方式必须属于该套餐活动，不能按国家推断或借用 Go 的结账结果。
+  const methods = Array.isArray(item.payment_method_types) ? item.payment_method_types : [];
+  const labels = {card: '银行卡', link: 'Link', upi: 'UPI'};
+  return [...new Set(methods.filter(value => typeof value === 'string' && value.trim()).map(value => {
+    const method = value.trim();
+    return Object.hasOwn(labels, method.toLowerCase()) ? labels[method.toLowerCase()] : method;
+  }))];
+}
+function _accountPlusCellLabel(item) {
+  if (item.kind === 'unknown') return '待查询';
+  if (item.kind === 'not_applicable') return '无优惠';
+  return _accountPromotionLabel(item);
+}
+function _accountCountryPlusHeading(country, item) {
+  if (item.kind === 'other_promo') return `${country}-其他优惠`;
+  if (item.kind !== 'discount') return country;
+  const percentage = typeof item.discount_percentage === 'boolean' ? NaN : Number(item.discount_percentage);
+  const discount = Number.isFinite(percentage) && percentage > 0 && percentage < 100 ? `${percentage}%` : '折扣';
+  const count = typeof item.duration_num_periods === 'boolean' ? NaN : Number(item.duration_num_periods);
+  const units = {month: '', year: '年', week: '周', day: '天'};
+  const period = String(item.duration_period || '').toLowerCase();
+  const duration = Number.isFinite(count) && count > 0 && Object.hasOwn(units, period) ? `-${count}${units[period]}` : '';
+  return `${country}-${discount}${duration}`;
+}
 function _promotionCell(r) {
   const classes = {success: 'status-success', danger: 'status-failed', warning: 'status-running', neutral: 'status-used'};
   const countryDisplays = _accountCountryPromotionDisplays(r);
   if (countryDisplays.length) {
-    return `<div class="account-promotion-cell account-promotion-cell--countries">${countryDisplays.map(display => {
-      const best = _accountCountryPromotionBest(display);
+    const rows = countryDisplays.map(display => ({display, best: _accountPlusPromotion(display.items)}));
+    const detail = countryDisplays.map(display => `${display.country}\n${_accountCountryPromotionDetail(display)}`).join('\n\n');
+    const allNone = rows.every(({best}) => ['none', 'not_applicable'].includes(best.kind));
+    const allPending = rows.every(({best}) => ['unknown', 'pending'].includes(best.kind));
+    if ((allNone || allPending) && rows.every(({display}) => !display.stale)) {
+      return `<div class="account-promotion-cell"><span class="pill ${allNone ? classes.neutral : classes.warning}" data-accounts-tooltip="${esc(detail)}" tabindex="0"><span class="account-promotion-label">${allNone ? '无优惠' : '待查询'}</span></span></div>`;
+    }
+    // 无优惠的国家留在浮窗中；查询失败、待查询和历史结果仍在列表明确标记。
+    const visibleRows = rows.filter(({display, best}) => display.stale || !['none', 'not_applicable'].includes(best.kind));
+    return `<div class="account-promotion-cell account-promotion-cell--countries">${visibleRows.map(({display, best}) => {
       const hasOffer = ['free_trial', 'discount', 'other_promo'].includes(best.kind);
-      const bestLabel = `${hasOffer ? `${_promotionPlanLabel(best.plan)}: ` : ''}${_accountPromotionLabel(best)}`;
-      const detail = _accountCountryPromotionDetail(display);
-      const countryBadge = `<span class="account-promotion-country">${esc(display.country)}${display.stale ? '<span class="account-promotion-stale">历史</span>' : ''}</span>`;
-      return `<span class="pill ${classes[_accountPromotionTone(best)]}${display.stale ? ' is-stale' : ''}" data-accounts-tooltip="${esc(detail)}" tabindex="0">${countryBadge}<span class="account-promotion-label">${esc(bestLabel)}</span></span>`;
+      const methods = _accountPromotionPaymentMethods(best);
+      const label = hasOffer ? (methods.join(' ') || '支付方式待查询') : _accountPlusCellLabel(best);
+      const heading = _accountCountryPlusHeading(display.country, best);
+      const countryBadge = `<span class="account-promotion-country">${esc(heading)}${display.stale ? '<span class="account-promotion-stale">历史</span>' : ''}：</span>`;
+      const tooltip = hasOffer && !methods.length ? `${display.country} Plus：支付方式待查询\n\n${detail}` : detail;
+      return `<span class="account-promotion-country-row is-${_accountPromotionTone(best)}${display.stale ? ' is-stale' : ''}" data-accounts-tooltip="${esc(tooltip)}" tabindex="0">${countryBadge}<span class="account-promotion-label">${esc(label)}</span></span>`;
     }).join('')}</div>`;
   }
   const display = _accountPromotionDisplay(r);
-  const best = [...display.items].sort(_compareAccountPromotions)[0];
+  const best = _accountPlusPromotion(display.items);
   const hasOffer = ['free_trial', 'discount', 'other_promo'].includes(best.kind);
-  const label = `${hasOffer ? `${_promotionPlanLabel(best.plan)}: ` : ''}${_accountPromotionLabel(best)}`;
+  const label = `${hasOffer ? 'Plus: ' : ''}${_accountPlusCellLabel(best)}`;
   const detail = _accountPromotionGroups(display.items).flatMap(group => group.items.map(item => _accountPromotionDetail(item))).join('\n');
   const tooltip = [detail, display.context].filter(Boolean).join('\n');
   return `<div class="account-promotion-cell"><span class="pill ${classes[_accountPromotionTone(best)]}" data-accounts-tooltip="${esc(tooltip)}" tabindex="0"><span class="account-promotion-label">${esc(label)}</span></span></div>`;
