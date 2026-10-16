@@ -1845,8 +1845,14 @@ function _accountCountryPlusHeading(country, item) {
   const duration = Number.isFinite(count) && count > 0 && Object.hasOwn(units, period) ? `-${count}${units[period]}` : '';
   return `${country}-${discount}${duration}`;
 }
+function _accountPromotionRowMarkup({best, country = '', stale = false, label, tooltip}) {
+  const heading = country
+    ? `<span class="account-promotion-country">${esc(_accountCountryPlusHeading(country, best))}${stale ? '<span class="account-promotion-stale">历史</span>' : ''}：</span>`
+    : '';
+  return `<span class="account-promotion-country-row is-${_accountPromotionTone(best)}${stale ? ' is-stale' : ''}" data-accounts-tooltip="${esc(tooltip)}" tabindex="0">${heading}<span class="account-promotion-label">${esc(label)}</span></span>`;
+}
 function _promotionCell(r) {
-  const classes = {success: 'status-success', danger: 'status-failed', warning: 'status-running', neutral: 'status-used'};
+  const cell = lines => `<div class="account-promotion-cell account-promotion-cell--countries">${lines.join('')}</div>`;
   const countryDisplays = _accountCountryPromotionDisplays(r);
   if (countryDisplays.length) {
     const rows = countryDisplays.map(display => ({display, best: _accountPlusPromotion(display.items)}));
@@ -1854,7 +1860,7 @@ function _promotionCell(r) {
     const allNone = rows.every(({best}) => ['none', 'not_applicable'].includes(best.kind));
     const allPending = rows.every(({best}) => ['unknown', 'pending'].includes(best.kind));
     if ((allNone || allPending) && rows.every(({display}) => !display.stale)) {
-      return `<div class="account-promotion-cell"><span class="pill ${allNone ? classes.neutral : classes.warning}" data-accounts-tooltip="${esc(detail)}" tabindex="0"><span class="account-promotion-label">${allNone ? '无优惠' : '待查询'}</span></span></div>`;
+      return cell([_accountPromotionRowMarkup({best: {kind: allNone ? 'none' : 'pending'}, label: allNone ? '无优惠' : '待查询', tooltip: detail})]);
     }
     // 先按 Plus 结果优先级排列，同级仍保留配置国家顺序。
     const visibleRows = rows
@@ -1870,10 +1876,8 @@ function _promotionCell(r) {
       const hasOffer = ['free_trial', 'discount', 'other_promo'].includes(best.kind);
       const methods = _accountPromotionPaymentMethods(best);
       const label = hasOffer ? (methods.join(' ') || '支付方式待查询') : _accountPlusCellLabel(best);
-      const heading = _accountCountryPlusHeading(display.country, best);
-      const countryBadge = `<span class="account-promotion-country">${esc(heading)}${display.stale ? '<span class="account-promotion-stale">历史</span>' : ''}：</span>`;
       const tooltip = hasOffer && !methods.length ? `${display.country} Plus：支付方式待查询\n\n${detail}` : detail;
-      return `<span class="account-promotion-country-row is-${_accountPromotionTone(best)}${display.stale ? ' is-stale' : ''}" data-accounts-tooltip="${esc(tooltip)}" tabindex="0">${countryBadge}<span class="account-promotion-label">${esc(label)}</span></span>`;
+      return _accountPromotionRowMarkup({best, country: display.country, stale: display.stale, label, tooltip});
     };
     const first = visibleRows[0];
     const lines = first ? [countryMarkup(first)] : [];
@@ -1882,7 +1886,7 @@ function _promotionCell(r) {
     } else {
       lines.push(...visibleRows.slice(1).map(countryMarkup));
     }
-    return `<div class="account-promotion-cell account-promotion-cell--countries">${lines.join('')}</div>`;
+    return cell(lines);
   }
   const display = _accountPromotionDisplay(r);
   const best = _accountPlusPromotion(display.items);
@@ -1891,10 +1895,9 @@ function _promotionCell(r) {
   const country = /^[A-Z]{2}$/.test(countryValue) ? countryValue : '国家未记录';
   const label = hasOffer ? (_accountPromotionPaymentMethods(best).join(' ') || '支付方式待查询') : _accountPlusCellLabel(best);
   const historical = r.plan_check_status === 'failed' && !!r.plan_last_success_at;
-  const heading = hasOffer ? `<span class="account-promotion-country">${esc(_accountCountryPlusHeading(country, best))}${historical ? '<span class="account-promotion-stale">历史</span>' : ''}：</span>` : '';
   const detail = _accountPromotionGroups(display.items).flatMap(group => group.items.map(item => _accountPromotionDetail(item))).join('\n');
   const tooltip = [hasOffer ? `${country} Plus: ${_accountPromotionLabel(best)}` : '', detail, display.context].filter(Boolean).join('\n');
-  return `<div class="account-promotion-cell"><span class="pill ${classes[_accountPromotionTone(best)]}" data-accounts-tooltip="${esc(tooltip)}" tabindex="0">${heading}<span class="account-promotion-label">${esc(label)}</span></span></div>`;
+  return cell([_accountPromotionRowMarkup({best, country: hasOffer ? country : '', stale: historical, label, tooltip})]);
 }
 function _planAction(r) {
   if (accountIsDeactivated(r)) return '';

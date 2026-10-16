@@ -54,6 +54,14 @@ function promotionTooltip(html) {
   return [...html.matchAll(/data-accounts-tooltip="([^"]*)"/g)].map(match => match[1]).join('\n');
 }
 
+function promotionStructure(html) {
+  const cell = html.match(/<div class="([^"]*account-promotion-cell[^"]*)">/);
+  const row = html.match(/<span class="([^"]*account-promotion-country-row[^"]*)"/);
+  assert.ok(cell, '优惠应使用统一 cell 容器');
+  assert.ok(row, '优惠应使用统一 country row');
+  return {cell: cell[1], row: row[1]};
+}
+
 function assertSinglePromotion(html, expected) {
   if (expected.startsWith('Plus: ')) {
     assert.deepEqual(visiblePromotionLabels(html), ['支付方式待查询']);
@@ -62,7 +70,10 @@ function assertSinglePromotion(html, expected) {
   } else {
     assert.deepEqual(visiblePromotionLabels(html), [expected], '列表只显示 Plus 最高优惠或一个状态');
   }
-  assert.equal((html.match(/class="pill /g) || []).length, 1);
+  const structure = promotionStructure(html);
+  assert.match(structure.cell, /^account-promotion-cell account-promotion-cell--countries$/);
+  assert.match(structure.row, /^account-promotion-country-row is-(success|danger|warning|neutral)(?: |$)/);
+  assert.equal((html.match(/class="pill /g) || []).length, 0, '优惠行不再使用 pill');
   assert.equal((html.match(/tabindex="0"/g) || []).length, 1);
   assert.equal((html.match(/data-accounts-tooltip=/g) || []).length, 1);
 }
@@ -115,6 +126,43 @@ test('旧 Plus 快照展示其优惠，提示中的 Go 保留待查询而不误�
   assertSinglePromotion(html, 'Plus: 五折 3个月');
   assert.match(promotionTooltip(html), /Go: 待查询/);
   assert.doesNotMatch(promotionTooltip(html), /Go: 无优惠/);
+});
+
+test('单国旧优惠与单国家结果统一容器和 tone，无优惠分支也保留提示焦点结构', () => {
+  const plusTrial = {...goTrial, plan: 'plus'};
+  const legacy = view._promotionCell({current_plan_type: 'free', plan_check_status: 'success', plan_check_countries: [], account_promotions: [goTrial, plusTrial]});
+  const country = view._promotionCell({plan_check_status: 'success', plan_check_country_results: [
+    {country: 'JP', status: 'success', result: {account_promotions: [goTrial, plusTrial]}},
+  ]});
+  assert.deepEqual(promotionStructure(legacy), promotionStructure(country));
+  assert.match(promotionStructure(legacy).row, /is-success/);
+  assert.equal((legacy.match(/class="pill /g) || []).length, 0);
+  assert.equal((country.match(/class="pill /g) || []).length, 0);
+  assert.equal((legacy.match(/data-accounts-tooltip=/g) || []).length, 1);
+  assert.equal((country.match(/data-accounts-tooltip=/g) || []).length, 1);
+  assert.equal((legacy.match(/tabindex="0"/g) || []).length, 1);
+  assert.equal((country.match(/tabindex="0"/g) || []).length, 1);
+  assert.match(promotionTooltip(legacy), /Plus: 免费 1个月/);
+  assert.match(promotionTooltip(country), /Plus: 免费 1个月/);
+
+  const singleNone = view._promotionCell({...checked, account_promotions: [
+    {plan: 'go', kind: 'none', eligible: false}, {plan: 'plus', kind: 'none', eligible: false},
+  ]});
+  const multiNone = view._promotionCell({plan_check_status: 'success', plan_check_country_results: [
+    {country: 'JP', status: 'success', result: {account_promotions: [goTrial, {plan: 'plus', kind: 'none'}]}},
+    {country: 'VN', status: 'success', result: {account_promotions: [goTrial, {plan: 'plus', kind: 'none'}]}},
+  ]});
+  assert.deepEqual(promotionStructure(singleNone), promotionStructure(multiNone));
+  assert.match(promotionStructure(singleNone).row, /is-neutral/);
+  assert.equal((singleNone.match(/class="pill /g) || []).length, 0);
+  assert.equal((multiNone.match(/class="pill /g) || []).length, 0);
+  assert.equal((singleNone.match(/data-accounts-tooltip=/g) || []).length, 1);
+  assert.equal((multiNone.match(/data-accounts-tooltip=/g) || []).length, 1);
+  assert.equal((singleNone.match(/tabindex="0"/g) || []).length, 1);
+  assert.equal((multiNone.match(/tabindex="0"/g) || []).length, 1);
+  assert.match(promotionTooltip(singleNone), /Go: 无优惠/);
+  assert.match(promotionTooltip(multiNone), /JP/);
+  assert.match(promotionTooltip(multiNone), /VN/);
 });
 
 test('明确无优惠合并为一个状态，部分未知记录不隐藏已知优惠', () => {

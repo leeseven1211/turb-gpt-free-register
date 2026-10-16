@@ -3438,6 +3438,19 @@ table[data-resizable-table="codex"] {
   align-items: center;
 }
 
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-country-row {
+  height: 100%;
+  min-height: 0;
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-country-row .account-promotion-label {
+  text-overflow: clip;
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-country-row > .account-promotion-label:only-child {
+  color: inherit;
+}
+
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-country-summary {
   display: flex;
   align-items: center;
