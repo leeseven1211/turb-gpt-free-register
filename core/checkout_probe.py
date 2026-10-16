@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import time
@@ -18,6 +19,8 @@ from core.operations.task_gateway import OperationLeaseLost
 from core.sentinel import build_sentinel_request_body, generate_requirements_token
 from core.sentinel_runner import generate_sentinel_token
 
+logger = logging.getLogger(__name__)
+_STAGES = frozenset({"pricing", "sentinel_request", "sentinel_token", "create", "oaics_state", "stripe_init", "parse"})
 _CHATGPT = "https://chatgpt.com"
 _CHECKOUT_PATH = "/backend-api/payments/checkout"
 _ENTITIES = {"openai_llc", "openai_ie"}
@@ -156,6 +159,18 @@ class _ProbeFailure(Exception):
         self.status = status
 
 
+def _log_failure(country: str, stage: str, exc: Exception) -> None:
+    """只记录受控分类，不把异常原文、请求地址或私有响应写入日志。"""
+    safe_country = country if re.fullmatch(r"[A-Z]{2}", country) else "unknown"
+    safe_stage = stage if stage in _STAGES else "parse"
+    name = type(exc).__name__
+    safe_name = name if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", name) else "Exception"
+    code = getattr(exc, "code", None)
+    safe_code = int(code) if isinstance(code, int) and not isinstance(code, bool) and 0 <= code <= 999 else None
+    logger.warning("[结账预检] 失败 country=%s stage=%s exception=%s curl_code=%s",
+                   safe_country, safe_stage, safe_name, safe_code)
+
+
 def _remaining(timeout: float, deadline_at: float) -> float:
     remaining = min(timeout, deadline_at - time.time())
     if remaining < 0.001:
@@ -192,7 +207,10 @@ def _headers(session, token: str, path: str, *, claims: dict | None = None, refe
     return headers
 
 
-def _checkout_risk_headers(session, campaign: str, timeout: float, deadline_at: float, checkpoint) -> dict:
+def _checkout_risk_headers(session, campaign: str, timeout: float, deadline_at: float, checkpoint,
+                           stage_callback=None) -> dict:
+    if stage_callback is not None:
+        stage_callback("sentinel_request")
     flow = "chatgpt_checkout"
     profile = dict(getattr(session, "browser_profile", None) or {})
     from config import SENTINEL_SV
@@ -207,6 +225,8 @@ def _checkout_risk_headers(session, campaign: str, timeout: float, deadline_at: 
     )
     challenge = _response_json(response, "结账风控预检失败")
     challenge["_request_p"] = proof
+    if stage_callback is not None:
+        stage_callback("sentinel_token")
     _checkpoint(checkpoint, "生成结账风控令牌")
     token = generate_sentinel_token(
         challenge=challenge, flow=flow, device_id=session.device_id,
@@ -329,6 +349,12 @@ def query_checkout_details(token: str, *, session, country: str, campaign_id: st
     """每次调用最多创建一个结账会话，后续只读已返回的官方会话。"""
     result = {"checkout_status": "failed", "checkout_checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
               "checkout_country": str(country or "").strip().upper()}
+    stage = "parse"
+
+    def mark_stage(value: str) -> None:
+        nonlocal stage
+        stage = value if value in _STAGES else "parse"
+
     try:
         timeout = float(timeout)
         if not math.isfinite(timeout) or timeout <= 0:
@@ -352,6 +378,7 @@ def query_checkout_details(token: str, *, session, country: str, campaign_id: st
             raise _ProbeFailure("没有可核验的优惠活动")
         cc = result["checkout_country"]
         pricing_path = f"/backend-api/checkout_pricing_config/configs/{cc}"
+        stage = "pricing"
         _checkpoint(checkpoint, "查询结账定价配置")
         response = session.get(_CHATGPT + pricing_path, headers=_headers(session, token, pricing_path, claims=claims),
                                timeout=_remaining(timeout, deadline_at), allow_redirects=False)
@@ -364,7 +391,9 @@ def query_checkout_details(token: str, *, session, country: str, campaign_id: st
         if not isinstance(code, str) or not re.fullmatch(r"[A-Za-z]{3}", code) or isinstance(exponent, bool) or not isinstance(exponent, int) or not 0 <= exponent <= 3:
             raise _ProbeFailure("定价配置无效")
         result.update(checkout_currency=code.upper(), checkout_currency_exponent=exponent)
-        risk_headers = _checkout_risk_headers(session, campaign, timeout, deadline_at, checkpoint)
+        stage = "sentinel_request"
+        risk_headers = _checkout_risk_headers(session, campaign, timeout, deadline_at, checkpoint, mark_stage)
+        stage = "create"
         _checkpoint(checkpoint, "创建结账预检会话")
         headers = _headers(session, token, _CHECKOUT_PATH, claims=claims,
                            referer=f"{_CHATGPT}/?promo_campaign={quote(campaign, safe='')}")
@@ -376,12 +405,14 @@ def query_checkout_details(token: str, *, session, country: str, campaign_id: st
                                 timeout=_remaining(timeout, deadline_at), allow_redirects=False)
         data = _response_json(response, "创建结账会话失败")
         result["checkout_http_status"] = response.status_code
+        stage = "parse"
         checkout_id = data.get("checkout_session_id") or data.get("id")
         if isinstance(checkout_id, str) and re.fullmatch(r"oaics_[A-Za-z0-9_-]{1,240}", checkout_id):
             result["session_type"] = "oaics"
             entity = data.get("processor_entity")
             if entity not in _ENTITIES:
                 raise _ProbeFailure("结账处理实体无效")
+            stage = "oaics_state"
             _checkpoint(checkpoint, "读取结账会话状态")
             path = f"{_CHECKOUT_PATH}/{entity}/{checkout_id}"
             response = session.get(_CHATGPT + path, headers=_headers(session, token, path, claims=claims),
@@ -393,10 +424,12 @@ def query_checkout_details(token: str, *, session, country: str, campaign_id: st
             key = data.get("publishable_key")
             if not isinstance(key, str) or not re.fullmatch(r"pk_live_[A-Za-z0-9]{8,240}", key):
                 raise _ProbeFailure("结账公开密钥无效")
+            stage = "stripe_init"
             _checkpoint(checkpoint, "读取 Stripe 支付方式")
             data, result["checkout_http_status"] = _stripe_init(session, checkout_id, key, timeout, deadline_at)
         else:
             raise _ProbeFailure("结账会话类型未知")
+        stage = "parse"
         _checkpoint(checkpoint, "完成结账预检")
         _remaining(timeout, deadline_at)
         methods, amount, source = _details(data, code)
@@ -406,13 +439,17 @@ def query_checkout_details(token: str, *, session, country: str, campaign_id: st
                       checkout_amount_due_minor=amount, checkout_amount_source=source)
     except (OperationCancelled, OperationAccountDeactivated, OperationLeaseLost):
         raise
-    except TimeoutError:
+    except TimeoutError as exc:
+        _log_failure(result["checkout_country"], stage, exc)
+        result["checkout_http_status"] = None
         result["checkout_error"] = "结账预检预算已用尽"
     except _ProbeFailure as exc:
         result["checkout_error"] = exc.message
         if exc.status is not None:
             result["checkout_http_status"] = exc.status
-    except Exception:
+    except Exception as exc:
         # 不返回异常原文；其中可能含 Token、Cookie、URL、代理凭据或服务端原文。
+        _log_failure(result["checkout_country"], stage, exc)
+        result["checkout_http_status"] = None
         result["checkout_error"] = "结账预检失败"
     return public_checkout_details(result)

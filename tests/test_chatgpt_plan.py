@@ -5,9 +5,45 @@ from unittest.mock import Mock, patch
 from curl_cffi import requests as curl_requests
 
 from core import chatgpt_plan, registration_plan_capture
+from core import browser_traffic, protocol_traffic
+from core.session import BrowserSession
 
 
 class ChatGPTPlanTests(unittest.TestCase):
+    def test_query_flushes_final_http_counts_only_for_its_own_session(self):
+        for external in (False, True):
+            with self.subTest(external=external):
+                env = BrowserSession(proxy="", detect_exit_geo=False)
+                env.protocol_traffic = protocol_traffic.ProtocolTrafficCapture(
+                    {"operation_task_id": 1}, clock=lambda: 100.0,
+                )
+                response = Mock(status_code=200, text="{}", content=b"{}",
+                                upload_size=0, download_size=2, redirect_count=0)
+                response.json.return_value = self._accounts_check_payload()
+
+                def quota(session, *_args):
+                    session.get("https://chatgpt.com/backend-api/wham/usage", timeout=1)
+                    return {}
+
+                with patch.object(chatgpt_plan, "BrowserSession", return_value=env), \
+                     patch.object(chatgpt_plan, "resolve_plan_check_route", return_value={"proxy": ""}), \
+                     patch.object(chatgpt_plan, "_query_account_quota", side_effect=quota), \
+                     patch.object(env.session, "get", return_value=response), \
+                     patch.object(env.session, "close", wraps=env.session.close) as close, \
+                     patch.object(browser_traffic, "persist_summary") as persist, \
+                     patch("core.registration_debug.record_protocol_exchange"):
+                    result = chatgpt_plan.check_account_plan(
+                        "synthetic-token", max_attempts=1, timezone_offset_min="0",
+                        **({"session": env} if external else {}),
+                    )
+                    self.assertTrue(result["ok"])
+                    # 同一个节流窗口内第二个请求也须在自有会话结束时落盘。
+                    self.assertEqual(1 if external else 2,
+                                     persist.call_args.kwargs["summary"]["request_count"])
+                    self.assertEqual(0 if external else 1, close.call_count)
+                    if external:
+                        env.close()
+
     @staticmethod
     def _accounts_check_payload(plus_campaign=None):
         item = {

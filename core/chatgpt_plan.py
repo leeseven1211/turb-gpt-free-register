@@ -789,7 +789,7 @@ def check_account_plan(
                 )
             if env is not None and owns_session:
                 try:
-                    env.session.close()
+                    env.close()
                 except Exception:
                     pass
 

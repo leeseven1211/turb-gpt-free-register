@@ -3,6 +3,7 @@
 import json
 import time
 import unittest
+from contextlib import ExitStack
 from unittest.mock import Mock, patch
 
 from core import checkout_probe as probe
@@ -221,9 +222,10 @@ class CheckoutProbeTests(unittest.TestCase):
 
     def test_budget_exhausted_by_risk_does_not_create_checkout(self):
         self.env.get.return_value = self.response(self.pricing)
-        with patch.object(probe.time, "time", side_effect=[100, 100, 105]):
+        with patch.object(probe.time, "time", side_effect=[100, 100, 105]), patch.object(probe.logger, "warning"):
             result = self.query(deadline_at=104)
         self.assertEqual(result["checkout_error"], "结账预检预算已用尽")
+        self.assertIsNone(result["checkout_http_status"])
         self.env.post.assert_not_called()
 
     def test_post_timeout_is_not_replayed_and_does_not_expose_exception(self):
@@ -234,6 +236,86 @@ class CheckoutProbeTests(unittest.TestCase):
         self.assertEqual(self.env.post.call_count, 1)
         self.assertNotIn("private-access-token", json.dumps(result))
         self.assertNotIn("evil.invalid", json.dumps(result))
+
+    def test_sentinel_request_failure_logs_only_safe_stage_and_curl_code(self):
+        self.risk.stop()
+        self.env.get.return_value = self.response(self.pricing)
+        error = RuntimeError("private-access-token https://secret.invalid/oaics_private person@example.com")
+        error.code = 56
+        self.env.post.side_effect = error
+        with patch.object(probe, "generate_sentinel_token") as runner, self.assertLogs(probe.logger, level="WARNING") as logs:
+            result = self.query()
+        self.assertEqual(result["checkout_status"], "failed")
+        self.assertIsNone(result["checkout_http_status"])
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("country=JP stage=sentinel_request exception=RuntimeError curl_code=56", logs.output[0])
+        self.assertNotIn("sentinel_token", logs.output[0])
+        self.assertNotIn("private", logs.output[0])
+        self.assertNotIn("secret.invalid", logs.output[0])
+        self.assertNotIn("https://", logs.output[0])
+        self.assertNotIn("person@", logs.output[0])
+        self.assertIsNone(logs.records[0].exc_info)
+        runner.assert_not_called()
+        self.assertEqual(self.env.post.call_count, 1)
+
+    def test_sentinel_token_failure_and_timeout_are_distinct_from_request(self):
+        self.risk.stop()
+        self.env.get.return_value = self.response(self.pricing)
+        self.env.post.return_value = self.response({"token": "private-challenge"})
+        for error in (RuntimeError("private-access-token https://secret.invalid"), TimeoutError("private-access-token https://secret.invalid")):
+            with self.subTest(error=type(error).__name__):
+                with patch.object(probe, "generate_sentinel_token", side_effect=error), self.assertLogs(probe.logger, level="WARNING") as logs:
+                    result = self.query()
+                self.assertEqual(result["checkout_status"], "failed")
+                self.assertIsNone(result["checkout_http_status"])
+                self.assertEqual(len(logs.output), 1)
+                self.assertIn("country=JP stage=sentinel_token", logs.output[0])
+                self.assertNotIn("sentinel_request", logs.output[0])
+                self.assertNotIn("private", logs.output[0])
+                self.assertNotIn("https://", logs.output[0])
+                self.assertEqual(result["checkout_error"], "结账预检预算已用尽" if isinstance(error, TimeoutError) else "结账预检失败")
+
+    def test_other_network_and_parse_phases_have_fixed_safe_diagnostics(self):
+        for stage in ("pricing", "create", "oaics_state", "stripe_init", "parse"):
+            with self.subTest(stage=stage), ExitStack() as stack:
+                self.env.reset_mock()
+                self.env.get.side_effect = None
+                self.env.post.side_effect = None
+                self.env.get.return_value = self.response(self.pricing)
+                error = RuntimeError("private-access-token https://secret.invalid")
+                error.code = "https://secret.invalid/private-access-token"
+                if stage == "pricing":
+                    self.env.get.side_effect = error
+                elif stage == "create":
+                    self.env.post.side_effect = error
+                elif stage == "oaics_state":
+                    self.prepare_oaics({})
+                    self.env.get.side_effect = [self.response(self.pricing), error]
+                elif stage == "stripe_init":
+                    self.env.post.return_value = self.response({"id": "cs_live_private_session", "publishable_key": "pk_live_demo123456"})
+                    stack.enter_context(patch.object(probe, "_stripe_init", side_effect=error))
+                else:
+                    self.prepare_oaics({"payment_method_types": ["card"], "total": {"total": 0}})
+                    stack.enter_context(patch.object(probe, "_details", side_effect=error))
+                with self.assertLogs(probe.logger, level="WARNING") as logs:
+                    result = self.query()
+                self.assertEqual(result["checkout_status"], "failed")
+                self.assertIsNone(result["checkout_http_status"])
+                self.assertEqual(len(logs.output), 1)
+                self.assertIn(f"country=JP stage={stage} exception=RuntimeError curl_code=None", logs.output[0])
+                self.assertNotIn("private", logs.output[0])
+                self.assertNotIn("https://", logs.output[0])
+                self.assertLessEqual(self.env.post.call_count, 1)
+
+    def test_real_sentinel_http_failure_retains_its_response_status(self):
+        self.risk.stop()
+        self.env.get.return_value = self.response(self.pricing)
+        self.env.post.return_value = self.response({"error": "private-access-token https://secret.invalid"}, status=403)
+        result = self.query()
+        self.assertEqual(result["checkout_status"], "failed")
+        self.assertEqual(result["checkout_http_status"], 403)
+        self.assertEqual(result["checkout_error"], "结账风控预检失败")
+        self.assertNotIn("private", json.dumps(result))
 
     def test_missing_campaign_and_unverified_go_plan_skip_without_requests(self):
         for campaign, plan in (("", "plus"), ("go-free", "go")):
