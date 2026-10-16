@@ -369,6 +369,7 @@ function pagerSetSize(id, val) {
 // ---------- 统一列表列宽 ----------
 // 账号表允许内容截断；只保留足以抓住拖动手柄的极小正宽度。
 const ACCOUNT_COLUMN_MIN_WIDTH = 28;
+const ACCOUNT_COLUMN_LAYOUT_STORAGE_KEY = 'gpt_console_accounts_columns_v2';
 const TABLE_DEFAULT_WIDTHS = {
   jobs:     [4, 6, 15, 9, 11, 8, 9, 9, 13, 16],
   // 默认账号行按桌面视口排布；长内容仍可从单元格提示和详情抽屉查看。
@@ -405,7 +406,8 @@ function readSavedTableTotal(key) {
 function saveTableWidths(key, widths, total = 0) {
   const precision = key === 'accounts' ? 8 : 4;
   localStorage.setItem(TABLE_WIDTH_STORAGE_PREFIX + key, JSON.stringify(widths.map(value => Number(value.toFixed(precision)))));
-  if (total > 0) localStorage.setItem(TABLE_WIDTH_TOTAL_STORAGE_PREFIX + key, String(Math.round(total)));
+  if (total > 0) localStorage.setItem(TABLE_WIDTH_TOTAL_STORAGE_PREFIX + key, String(key === 'accounts' ? Number(total.toFixed(4)) : Math.round(total)));
+  if (key === 'accounts') localStorage.setItem(ACCOUNT_COLUMN_LAYOUT_STORAGE_KEY, '1');
 }
 
 function resetResizableTable(key) {
@@ -413,6 +415,7 @@ function resetResizableTable(key) {
   if (!table) return;
   localStorage.removeItem(TABLE_WIDTH_STORAGE_PREFIX + key);
   localStorage.removeItem(TABLE_WIDTH_TOTAL_STORAGE_PREFIX + key);
+  if (key === 'accounts') localStorage.removeItem(ACCOUNT_COLUMN_LAYOUT_STORAGE_KEY);
   table.dataset.autoSized = '0';
   table.style.removeProperty('width');
   if (key === 'accounts') table.style.setProperty('width', '1396px', 'important');
@@ -471,12 +474,26 @@ function initResizableTable(table) {
   if (savedWidths && key === 'accountTasks') {
     table.style.removeProperty('width');
   }
-  const effectiveWidths = savedWidths || TABLE_DEFAULT_WIDTHS[key];
+  let effectiveWidths = savedWidths || TABLE_DEFAULT_WIDTHS[key];
   if (key === 'accounts') {
-    // 保存值中的 widths 是比例，total 是用户实际调整后的整表宽度。
-    // 不再按默认列宽扩表或修正比例，以便窄列在刷新后仍保持用户选择。
-    const savedTotal = readSavedTableTotal(key);
-    table.style.setProperty('width', `${savedTotal || 1396}px`, 'important');
+    let tableWidth = readSavedTableTotal(key) || 1396;
+    if (savedWidths && localStorage.getItem(ACCOUNT_COLUMN_LAYOUT_STORAGE_KEY) !== '1') {
+      const weights = savedWidths.map(value => Math.max(0, Number(value) || 0));
+      const weightTotal = weights.reduce((sum, value) => sum + value, 0);
+      const lastIndex = weights.length - 1;
+      const actionWidth = weightTotal > 0 ? weights[lastIndex] / weightTotal * tableWidth : 0;
+      const defaultActionWidth = TABLE_DEFAULT_WIDTHS.accounts[lastIndex];
+      // 旧布局可能把收窄其他列后剩余的宽度都留在操作列。只修正明显异常的
+      // 旧末列，前面各列继续保持原像素宽度；有版本标记的手动布局不再压缩。
+      if (actionWidth > defaultActionWidth * 2 && actionWidth > tableWidth * .2) {
+        effectiveWidths = weights.map(value => value / weightTotal * tableWidth);
+        effectiveWidths[lastIndex] = defaultActionWidth;
+        tableWidth = Number(effectiveWidths.reduce((sum, value) => sum + value, 0).toFixed(4));
+        saveTableWidths(key, effectiveWidths.map(value => value / tableWidth), tableWidth);
+      }
+      localStorage.setItem(ACCOUNT_COLUMN_LAYOUT_STORAGE_KEY, '1');
+    }
+    table.style.setProperty('width', `${tableWidth}px`, 'important');
   }
   applyResizableTableWidths(table, effectiveWidths);
 
