@@ -1663,7 +1663,11 @@ function _accountCountryPromotionDisplays(r) {
   const countryResults = Array.isArray(r?.plan_check_country_results)
     ? r.plan_check_country_results.filter(item => item && String(item.country || '').trim())
     : [];
-  if (countryResults.length) return countryResults.map(item => _accountCountryResultItems(item, r?.plan_check_status));
+  if (countryResults.length) return countryResults.map(item => ({
+    ..._accountCountryResultItems(item, r?.plan_check_status),
+    queryContext: ['failed', 'cancelled'].includes(String(item.status || '').toLowerCase())
+      ? _accountPromotionQueryTooltip(item.status, _accountCountryResultError(item)) : '',
+  }));
   const items = Array.isArray(r?.account_promotions)
     ? _accountPromotions(r).filter(item => String(item.country || '').trim())
     : [];
@@ -1834,6 +1838,22 @@ function _accountPlusCellLabel(item) {
   if (item.kind === 'not_applicable') return '无优惠';
   return _accountPromotionLabel(item);
 }
+function _accountPromotionTooltip(item) {
+  const details = [`${_promotionPlanLabel(item.plan)}: ${_accountPromotionLabel(item)}`];
+  if (['free_trial', 'discount', 'other_promo'].includes(item.kind)) {
+    const methods = _accountPromotionPaymentMethods(item);
+    details.push(`支付方式: ${methods.join(' ') || '待查询'}`);
+  }
+  return details.join('；');
+}
+function _accountPromotionQueryTooltip(queryStatus, error = '') {
+  const status = String(queryStatus || '').toLowerCase();
+  if (status === 'queued') return '新任务排队中';
+  if (status === 'running') return '新任务正在执行';
+  if (status === 'failed') return `本次查询失败: ${error || '未知错误'}`;
+  if (status === 'cancelled') return `本次查询已取消${error ? `: ${error}` : ''}`;
+  return '';
+}
 function _accountCountryPlusHeading(country, item) {
   if (item.kind === 'other_promo') return `${country}-其他优惠`;
   if (item.kind !== 'discount') return country;
@@ -1856,7 +1876,13 @@ function _promotionCell(r) {
   const countryDisplays = _accountCountryPromotionDisplays(r);
   if (countryDisplays.length) {
     const rows = countryDisplays.map(display => ({display, best: _accountPlusPromotion(display.items)}));
-    const detail = countryDisplays.map(display => `${display.country}\n${_accountCountryPromotionDetail(display)}`).join('\n\n');
+    const detail = [
+      ...rows.map(({display, best}) => [
+        `${display.country}${display.stale ? '（历史）' : ''} ${_accountPromotionTooltip(best)}`,
+        display.queryContext,
+      ].filter(Boolean).join('\n')),
+      _accountPromotionQueryTooltip(r.plan_check_status, r.plan_check_error),
+    ].filter(Boolean).join('\n');
     const allNone = rows.every(({best}) => ['none', 'not_applicable'].includes(best.kind));
     const allPending = rows.every(({best}) => ['unknown', 'pending'].includes(best.kind));
     if ((allNone || allPending) && rows.every(({display}) => !display.stale)) {
@@ -1876,8 +1902,7 @@ function _promotionCell(r) {
       const hasOffer = ['free_trial', 'discount', 'other_promo'].includes(best.kind);
       const methods = _accountPromotionPaymentMethods(best);
       const label = hasOffer ? (methods.join(' ') || '支付方式待查询') : _accountPlusCellLabel(best);
-      const tooltip = hasOffer && !methods.length ? `${display.country} Plus：支付方式待查询\n\n${detail}` : detail;
-      return _accountPromotionRowMarkup({best, country: display.country, stale: display.stale, label, tooltip});
+      return _accountPromotionRowMarkup({best, country: display.country, stale: display.stale, label, tooltip: detail});
     };
     const first = visibleRows[0];
     const lines = first ? [countryMarkup(first)] : [];
@@ -1895,8 +1920,11 @@ function _promotionCell(r) {
   const country = /^[A-Z]{2}$/.test(countryValue) ? countryValue : '国家未记录';
   const label = hasOffer ? (_accountPromotionPaymentMethods(best).join(' ') || '支付方式待查询') : _accountPlusCellLabel(best);
   const historical = r.plan_check_status === 'failed' && !!r.plan_last_success_at;
-  const detail = _accountPromotionGroups(display.items).flatMap(group => group.items.map(item => _accountPromotionDetail(item))).join('\n');
-  const tooltip = [hasOffer ? `${country} Plus: ${_accountPromotionLabel(best)}` : '', detail, display.context].filter(Boolean).join('\n');
+  const tooltip = [
+    `${hasOffer ? `${country} ` : ''}${_accountPromotionTooltip(best)}`,
+    historical ? '显示上次成功快照' : '',
+    _accountPromotionQueryTooltip(r.plan_check_status, r.plan_check_error),
+  ].filter(Boolean).join('\n');
   return cell([_accountPromotionRowMarkup({best, country: hasOffer ? country : '', stale: historical, label, tooltip})]);
 }
 function _planAction(r) {
